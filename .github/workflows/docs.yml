@@ -84,23 +84,44 @@ jobs:
       name: production-docs
       url: https://docs.atlasinference.io/
     steps:
+      - name: Check deploy secret presence
+        # Skip deploy entirely when DEPLOY_SSH_PRIVATE_KEY is not
+        # configured (e.g. on a fresh fork or before the maintainer
+        # has wired up the production-docs environment). The job still
+        # exits success — the docs artifact uploaded by the build job
+        # remains downloadable for inspection.
+        id: secret_check
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$DEPLOY_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::DEPLOY_SSH_PRIVATE_KEY not set — skipping rsync deploy. Configure the production-docs environment secrets to enable."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download site artifact
+        if: steps.secret_check.outputs.configured == 'true'
         uses: actions/download-artifact@v4
         with:
           name: docs-site
           path: site
 
       - name: Install rsync
+        if: steps.secret_check.outputs.configured == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends rsync openssh-client
 
       - name: Load SSH key
+        if: steps.secret_check.outputs.configured == 'true'
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
 
       - name: Pin host key
+        if: steps.secret_check.outputs.configured == 'true'
         env:
           KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
         run: |
@@ -109,6 +130,7 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       - name: Deploy
+        if: steps.secret_check.outputs.configured == 'true'
         env:
           DEPLOY_SSH_HOST:  ${{ secrets.DEPLOY_SSH_HOST }}
           DEPLOY_SSH_USER:  ${{ secrets.DEPLOY_SSH_USER }}
