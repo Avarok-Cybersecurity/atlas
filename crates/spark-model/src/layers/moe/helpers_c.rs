@@ -5,7 +5,6 @@
 use super::*;
 
 impl MoeLayer {
-
     /// Pre-dequant dense (non-expert) NVFP4 weights to FP8 for zero-overhead prefill.
     ///
     /// Only affects gate GEMM and shared expert GEMMs.  Expert weights stay NVFP4

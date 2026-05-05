@@ -45,7 +45,7 @@ unsafe extern "C" {
     fn cuGetErrorString(error: i32, pStr: *mut *const i8) -> i32;
 }
 
-/// Resolve a CUresult status code into "<NAME>: <description>" via
+/// Resolve a CUresult status code into `"<NAME>: <description>"` via
 /// cuGetErrorName + cuGetErrorString. Returns "CUDA_UNKNOWN" / "(no message)"
 /// if the driver doesn't recognize the code.
 pub fn cuda_error_text(status: i32) -> String {
@@ -217,7 +217,12 @@ impl AtlasRegistry {
         })?;
         let mut func: *mut c_void = std::ptr::null_mut();
         let status =
-            unsafe { cuModuleGetFunction(&mut func, *raw_mod, c_name.as_ptr() as *const i8) };
+            // SAFETY: pointer cast handles the platform difference between
+            // `c_char = i8` (x86_64) and `c_char = u8` (aarch64); we use
+            // `.cast()` rather than `as *const i8` so clippy's
+            // `unnecessary_cast` is satisfied on x86_64 builds while the
+            // call still type-checks on aarch64 (Atlas's actual GB10 target).
+            unsafe { cuModuleGetFunction(&mut func, *raw_mod, c_name.as_ptr().cast()) };
         if status != 0 {
             return Err(AtlasError::ModuleLoad(format!(
                 "{module_name}::{func_name}: cuModuleGetFunction failed: {}",

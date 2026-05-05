@@ -7,7 +7,11 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use super::super::{LayerType, ModelConfig, QuantizationConfig, VisionConfig, default_conv_kernel, default_one, default_one_f64, default_partial_rotary, default_rms_eps, default_rope_theta, finalize_config, validate_config, parse_quantization_config, parse_vision_config};
+use super::super::{
+    LayerType, ModelConfig, QuantizationConfig, VisionConfig, default_conv_kernel, default_one,
+    default_one_f64, default_partial_rotary, default_rms_eps, default_rope_theta, finalize_config,
+    parse_quantization_config, parse_vision_config, validate_config,
+};
 
 pub(crate) fn parse_gemma4_params(raw: &serde_json::Value) -> Result<ModelConfig> {
     let tc = raw
@@ -176,9 +180,10 @@ pub(crate) fn parse_gemma4_params(raw: &serde_json::Value) -> Result<ModelConfig
     // Override softcap via env for A/B testing (llama.cpp #21390: 25.0 fixes
     // creative diversity collapse for NVFP4 Gemma-4 at BF16 precision).
     if let Ok(v) = std::env::var("ATLAS_SOFTCAP_OVERRIDE")
-        && let Ok(cap) = v.parse::<f32>() {
-            config.final_logit_softcapping = cap;
-        }
+        && let Ok(cap) = v.parse::<f32>()
+    {
+        config.final_logit_softcapping = cap;
+    }
     let _softcap_from_config = raw
         .get("text_config")
         .and_then(|tc| tc.get("final_logit_softcapping"))
@@ -189,4 +194,3 @@ pub(crate) fn parse_gemma4_params(raw: &serde_json::Value) -> Result<ModelConfig
     finalize_config(&mut config, raw)?;
     Ok(config)
 }
-

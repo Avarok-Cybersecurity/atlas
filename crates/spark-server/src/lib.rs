@@ -16,9 +16,9 @@ pub mod tokenizer;
 // The three pure modules added in PR 4 (OpenAI compat remaining items) are
 // public here so `cargo test -p spark-server --lib` can exercise their
 // unit tests without needing to build the full binary.
+#[path = "auth.rs"]
+pub mod auth;
 #[path = "rate_limiter.rs"]
 pub mod rate_limiter;
 #[path = "refusal.rs"]
 pub mod refusal;
-#[path = "auth.rs"]
-pub mod auth;

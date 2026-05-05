@@ -5,97 +5,49 @@
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
-use axum::response::sse::{
-    Event,
-    KeepAlive,
-};
-use axum::response::{
-    IntoResponse,
-    Json,
-    Response,
-    Sse,
-};
+use axum::response::sse::{Event, KeepAlive};
+use axum::response::{IntoResponse, Json, Response, Sse};
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::AppState;
 use crate::openai::{
-    ChatCompletionChunk,
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    CompletionChunk,
-    CompletionRequest,
-    CompletionResponse,
-    ModelInfo,
-    ModelListResponse,
-    Usage,
+    ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, CompletionChunk,
+    CompletionRequest, CompletionResponse, ModelInfo, ModelListResponse, Usage,
 };
 use crate::tool_parser;
 
 // Sibling-cluster items hoisted from the original `api.rs`. These uses
 // give every sub-file access to helpers that the un-split file took for
 // granted via single-module visibility.
+use super::super::chat::chat_completions_inner;
 use super::super::compact::{
-    compact_messages,
-    openai_error_response,
-    openai_error_response_with_param,
-};
-use super::super::sanitizer::{
-    F7_STALL_WARN_THRESHOLD,
-    F7_STALL_REFUSE_THRESHOLD,
-    F7StallBuckets,
-    ToolKind,
-    classify_tool,
-    extract_bash_final_action,
-    primary_arg_for_tool,
-    sanitize_content_chunk,
+    compact_messages, openai_error_response, openai_error_response_with_param,
 };
 use super::super::completions::not_supported;
-use super::{
-    F23ProgressMetrics,
-    F29EnvironmentFact,
-    F37FailureClass,
-    F49DuplicateWrite,
-    append_f7_reminder_to_last_user,
-    build_f7_stall_reminder,
-    bump_f12_tool_call_count,
-    check_loop_watchdog,
-    collect_f7_stall_buckets,
-    f23_build_reminder,
-    f23_normalize_and_hash,
-    f23_refuse_threshold,
-    f23_score_progress,
-    f23_warn_threshold,
-    f28_text_looks_like_error,
-    f29_extract_binary_from_error_line,
-    f29_extract_environment_facts,
-    f29_inject_environment_facts,
-    f37_classify_failure,
-    f49_build_banner,
-    f49_detect_duplicate_writes,
-    f49_extract_write_path_and_content,
-    f50_append_original_error,
-    flush_content_sanitizer,
-    prepend_reminder_to_system,
-    recent_message_is_tool_error,
-    strip_xml_leaks_from_assistant_content,
+use super::super::inference_impl::{
+    extract_thinking, strip_stop_sequences, tokenize_stop_sequences,
 };
 use super::super::inference_types::{
-    GrammarSpec,
-    InferenceRequest,
-    InferenceResponse,
-    StreamEvent,
-    TokenLogprobs,
+    GrammarSpec, InferenceRequest, InferenceResponse, StreamEvent, TokenLogprobs,
 };
-use super::super::inference_impl::{
-    extract_thinking,
-    strip_stop_sequences,
-    tokenize_stop_sequences,
+use super::super::sanitizer::{
+    F7_STALL_REFUSE_THRESHOLD, F7_STALL_WARN_THRESHOLD, F7StallBuckets, ToolKind, classify_tool,
+    extract_bash_final_action, primary_arg_for_tool, sanitize_content_chunk,
 };
 use super::super::strip::strip_thinking_tags;
-use super::super::chat::chat_completions_inner;
-
+use super::{
+    F23ProgressMetrics, F29EnvironmentFact, F37FailureClass, F49DuplicateWrite,
+    append_f7_reminder_to_last_user, build_f7_stall_reminder, bump_f12_tool_call_count,
+    check_loop_watchdog, collect_f7_stall_buckets, f23_build_reminder, f23_normalize_and_hash,
+    f23_refuse_threshold, f23_score_progress, f23_warn_threshold, f28_text_looks_like_error,
+    f29_extract_binary_from_error_line, f29_extract_environment_facts,
+    f29_inject_environment_facts, f37_classify_failure, f49_build_banner,
+    f49_detect_duplicate_writes, f49_extract_write_path_and_content, f50_append_original_error,
+    flush_content_sanitizer, prepend_reminder_to_system, recent_message_is_tool_error,
+    strip_xml_leaks_from_assistant_content,
+};
 
 // Re-export sibling helpers via crate::api::* for short paths.
 use super::super::inference_types::*;
@@ -131,10 +83,13 @@ pub fn f32_reposition_failed_tool_result(
     // refusal (F31 already put a freshness signal at the tail).
     if let Some(last) = messages.last()
         && last.role == "tool"
-            && last.content.text.starts_with("[tool error]\n[atlas-stall-guard]")
-        {
-            return false;
-        }
+        && last
+            .content
+            .text
+            .starts_with("[tool error]\n[atlas-stall-guard]")
+    {
+        return false;
+    }
     let dup = messages[idx].clone();
     messages.push(dup);
     true
@@ -167,9 +122,10 @@ pub fn f31_inject_hard_refusal(
         if m.role == "assistant" {
             if let Some(tcs) = &m.tool_calls
                 && let Some(first) = tcs.first()
-                    && let Some(id) = first.id.as_ref() {
-                        anchor = Some((i, id.clone()));
-                    }
+                && let Some(id) = first.id.as_ref()
+            {
+                anchor = Some((i, id.clone()));
+            }
             break;
         }
     }
@@ -185,7 +141,9 @@ pub fn f31_inject_hard_refusal(
     if messages.iter().any(|m| {
         m.role == "tool"
             && m.tool_call_id.as_deref() == Some(tool_call_id.as_str())
-            && m.content.text.starts_with("[tool error]\n[atlas-stall-guard]")
+            && m.content
+                .text
+                .starts_with("[tool error]\n[atlas-stall-guard]")
     }) {
         return false;
     }
@@ -205,9 +163,15 @@ pub fn f31_inject_hard_refusal(
         .count();
 
     let directive = match prior_stall_guards {
-        0 => "STOP retrying. Reply to the user with a plain-text explanation of what is blocking and what you need from them. Do NOT call any tool again — your next response must contain text only.",
-        1 => "SECOND REFUSAL. The previous stall-guard was ignored — you continued issuing tool calls. This is not productive. Stop retrying immediately. Reply to the user in plain text with a description of what is blocking; do not call any tool, do not paste code, do not narrate next steps.",
-        _ => "REPEATED REFUSALS. Atlas has injected multiple stall-guards and you continued generating tool calls. The agentic harness is not making progress. Acknowledge to the user that the task cannot be completed in this environment and explain why. Do not emit any further tool calls.",
+        0 => {
+            "STOP retrying. Reply to the user with a plain-text explanation of what is blocking and what you need from them. Do NOT call any tool again — your next response must contain text only."
+        }
+        1 => {
+            "SECOND REFUSAL. The previous stall-guard was ignored — you continued issuing tool calls. This is not productive. Stop retrying immediately. Reply to the user in plain text with a description of what is blocking; do not call any tool, do not paste code, do not narrate next steps."
+        }
+        _ => {
+            "REPEATED REFUSALS. Atlas has injected multiple stall-guards and you continued generating tool calls. The agentic harness is not making progress. Acknowledge to the user that the task cannot be completed in this environment and explain why. Do not emit any further tool calls."
+        }
     };
     let body = format!(
         "[tool error]\n[atlas-stall-guard] This conversation has made {} tool \
@@ -280,7 +244,8 @@ pub struct F39FailureCache {
     /// Tool-name → set of first-word binaries known to be missing.
     /// Only populated for `BinaryMissing` class (where ANY future
     /// invocation of that binary will fail).
-    pub missing_bins_by_tool: std::collections::HashMap<String, std::collections::HashMap<String, u32>>,
+    pub missing_bins_by_tool:
+        std::collections::HashMap<String, std::collections::HashMap<String, u32>>,
 }
 
 /// Extract the binary name (first word) from a Bash command, after
@@ -297,9 +262,7 @@ pub fn f39_extract_binary_name(tool: &str, primary_arg: &str) -> Option<String> 
     Some(first_word.to_string())
 }
 
-pub fn f39_build_failure_cache(
-    messages: &[crate::openai::IncomingMessage],
-) -> F39FailureCache {
+pub fn f39_build_failure_cache(messages: &[crate::openai::IncomingMessage]) -> F39FailureCache {
     let mut cache = F39FailureCache::default();
     let mut pending_calls: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
@@ -312,31 +275,35 @@ pub fn f39_build_failure_cache(
                         continue;
                     }
                     let name = tc.function.name.clone();
-                    let Some(arg) =
-                        primary_arg_for_tool(&name, &tc.function.arguments)
-                    else {
+                    let Some(arg) = primary_arg_for_tool(&name, &tc.function.arguments) else {
                         continue;
                     };
                     pending_calls.insert(id, (name, arg));
                 }
             }
         } else if m.role == "tool" {
-            let Some(id) = m.tool_call_id.as_ref() else { continue };
-            let Some((name, arg)) = pending_calls.remove(id) else { continue };
+            let Some(id) = m.tool_call_id.as_ref() else {
+                continue;
+            };
+            let Some((name, arg)) = pending_calls.remove(id) else {
+                continue;
+            };
             if let Some(class) = f37_classify_failure(&m.content.text) {
-                let entry = cache.direct.entry((name.clone(), arg.clone())).or_insert((0, class));
+                let entry = cache
+                    .direct
+                    .entry((name.clone(), arg.clone()))
+                    .or_insert((0, class));
                 entry.0 += 1;
                 entry.1 = class;
                 // F39 fallback: when the binary is missing, ALL
                 // future invocations with the same first-word will
                 // fail. Cache the binary name separately.
                 if class == F37FailureClass::BinaryMissing
-                    && let Some(bin) = f39_extract_binary_name(&name, &arg) {
-                        let bm = cache.missing_bins_by_tool
-                            .entry(name)
-                            .or_default();
-                        *bm.entry(bin).or_insert(0) += 1;
-                    }
+                    && let Some(bin) = f39_extract_binary_name(&name, &arg)
+                {
+                    let bm = cache.missing_bins_by_tool.entry(name).or_default();
+                    *bm.entry(bin).or_insert(0) += 1;
+                }
             }
         }
     }
@@ -361,15 +328,17 @@ pub fn f39_detect_recent_retries(
             break;
         }
     }
-    let Some(asst) = last_asst else { return Vec::new() };
-    let Some(tcs) = &asst.tool_calls else { return Vec::new() };
-    let mut seen: std::collections::HashSet<(String, String)> =
-        std::collections::HashSet::new();
+    let Some(asst) = last_asst else {
+        return Vec::new();
+    };
+    let Some(tcs) = &asst.tool_calls else {
+        return Vec::new();
+    };
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     let mut matches: Vec<F39PermanentFailureMatch> = Vec::new();
     for tc in tcs {
         let name = tc.function.name.clone();
-        let Some(arg) = primary_arg_for_tool(&name, &tc.function.arguments)
-        else {
+        let Some(arg) = primary_arg_for_tool(&name, &tc.function.arguments) else {
             continue;
         };
         let key = (name.clone(), arg.clone());
@@ -378,28 +347,30 @@ pub fn f39_detect_recent_retries(
         }
         // 1) Direct match against (tool, primary_arg).
         if let Some((count, class)) = cache.direct.get(&key)
-            && *count >= 1 {
-                matches.push(F39PermanentFailureMatch {
-                    tool: name.clone(),
-                    primary_arg: arg.clone(),
-                    class: *class,
-                    prior_failure_count: *count,
-                });
-                continue;
-            }
+            && *count >= 1
+        {
+            matches.push(F39PermanentFailureMatch {
+                tool: name.clone(),
+                primary_arg: arg.clone(),
+                class: *class,
+                prior_failure_count: *count,
+            });
+            continue;
+        }
         // 2) Fallback for Bash: first-word binary lookup. Catches
         //    `cargo init --offline` retry after `cargo init` failed
         //    with `command not found` — same missing binary.
         if let Some(bin) = f39_extract_binary_name(&name, &arg)
             && let Some(bm) = cache.missing_bins_by_tool.get(&name)
-                && let Some(count) = bm.get(&bin) {
-                    matches.push(F39PermanentFailureMatch {
-                        tool: name,
-                        primary_arg: arg,
-                        class: F37FailureClass::BinaryMissing,
-                        prior_failure_count: *count,
-                    });
-                }
+            && let Some(count) = bm.get(&bin)
+        {
+            matches.push(F39PermanentFailureMatch {
+                tool: name,
+                primary_arg: arg,
+                class: F37FailureClass::BinaryMissing,
+                prior_failure_count: *count,
+            });
+        }
     }
     matches
 }
@@ -448,11 +419,7 @@ pub fn f39_build_circuit_breaker_banner(matches: &[F39PermanentFailureMatch]) ->
 /// known permanent failure. Reuses `primary_arg_for_tool` (file_path
 /// for Write/Edit/Read, `extract_bash_final_action` for Bash) and
 /// the F39 cache's first-word-binary fallback for Bash.
-pub fn f44_check_permanent_failure(
-    cache: &F39FailureCache,
-    tool: &str,
-    args_json: &str,
-) -> bool {
+pub fn f44_check_permanent_failure(cache: &F39FailureCache, tool: &str, args_json: &str) -> bool {
     let Some(primary_arg) = primary_arg_for_tool(tool, args_json) else {
         tracing::debug!(tool = %tool, "F44/F55: primary_arg_for_tool returned None");
         return false;
@@ -468,14 +435,15 @@ pub fn f44_check_permanent_failure(
     }
     if let Some(bin) = f39_extract_binary_name(tool, &primary_arg)
         && let Some(missing) = cache.missing_bins_by_tool.get(tool)
-            && missing.contains_key(&bin) {
-                tracing::info!(
-                    tool = %tool,
-                    bin = %bin,
-                    "F44/F55: bin-fallback cache hit — suppressing tool_call"
-                );
-                return true;
-            }
+        && missing.contains_key(&bin)
+    {
+        tracing::info!(
+            tool = %tool,
+            bin = %bin,
+            "F44/F55: bin-fallback cache hit — suppressing tool_call"
+        );
+        return true;
+    }
     tracing::debug!(
         tool = %tool,
         primary_arg = %primary_arg,

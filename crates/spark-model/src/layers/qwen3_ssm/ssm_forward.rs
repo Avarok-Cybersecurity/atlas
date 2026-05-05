@@ -5,7 +5,6 @@
 use super::*;
 
 impl Qwen3SsmLayer {
-
     pub(super) fn ssm_forward(
         &self,
         normed: DevicePtr,

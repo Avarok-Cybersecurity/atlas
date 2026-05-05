@@ -126,9 +126,7 @@ pub fn sample_with_params_seeded(
         return raw_logits
             .iter()
             .enumerate()
-            .max_by(|a, b| {
-                a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(i, _)| i as u32)
             .unwrap_or(0);
     }
@@ -290,4 +288,3 @@ pub fn sample_with_params_seeded(
     }
     probs.last().map_or(0, |p| p.0)
 }
-

@@ -93,8 +93,7 @@ fn bench_moe_decode_vs_prefill(c: &mut Criterion) {
     gpu::gpu_sync(stream).unwrap();
 
     let expert_indices_host: Vec<u32> = (0..TOP_K).collect();
-    let expert_indices_dev =
-        gpu::gpu_alloc_zeroed(stream, expert_indices_host.len() * 4).unwrap();
+    let expert_indices_dev = gpu::gpu_alloc_zeroed(stream, expert_indices_host.len() * 4).unwrap();
     h2d(expert_indices_dev, &expert_indices_host);
 
     // Activation A (1 token × K BF16) — scalar kernel processes 1 token per launch
@@ -110,14 +109,12 @@ fn bench_moe_decode_vs_prefill(c: &mut Criterion) {
     // ── TC kernel buffers (max M = 256, M*top_k tokens) ─────────────
     const M_MAX: u32 = 256;
     let total_tokens_max = M_MAX * NUM_EXPERTS;
-    let tc_a_dev = gpu::gpu_alloc_zeroed(stream, (total_tokens_max as usize) * (K as usize) * 2)
-        .unwrap();
-    let tc_c_dev = gpu::gpu_alloc_zeroed(stream, (total_tokens_max as usize) * (N as usize) * 2)
-        .unwrap();
-    let tc_offsets_dev =
-        gpu::gpu_alloc_zeroed(stream, ((NUM_EXPERTS + 1) as usize) * 4).unwrap();
-    let tc_sorted_ids_dev =
-        gpu::gpu_alloc_zeroed(stream, (total_tokens_max as usize) * 4).unwrap();
+    let tc_a_dev =
+        gpu::gpu_alloc_zeroed(stream, (total_tokens_max as usize) * (K as usize) * 2).unwrap();
+    let tc_c_dev =
+        gpu::gpu_alloc_zeroed(stream, (total_tokens_max as usize) * (N as usize) * 2).unwrap();
+    let tc_offsets_dev = gpu::gpu_alloc_zeroed(stream, ((NUM_EXPERTS + 1) as usize) * 4).unwrap();
+    let tc_sorted_ids_dev = gpu::gpu_alloc_zeroed(stream, (total_tokens_max as usize) * 4).unwrap();
     gpu::gpu_sync(stream).unwrap();
 
     let scale2_unit: f32 = 1.0;
@@ -133,8 +130,7 @@ fn bench_moe_decode_vs_prefill(c: &mut Criterion) {
     // Pre-populate TC offsets/sorted_ids per M (host-side prep, uploaded inside loop)
     for &m in m_set {
         // expert_offsets: each expert gets M tokens → offsets [0, M, 2M, ..., 8M]
-        let offsets_host: Vec<i32> =
-            (0..=NUM_EXPERTS as i32).map(|i| i * m as i32).collect();
+        let offsets_host: Vec<i32> = (0..=NUM_EXPERTS as i32).map(|i| i * m as i32).collect();
         h2d(tc_offsets_dev, &offsets_host);
         // sorted_token_ids: just 0..M*8 (identity mapping)
         let sorted_ids_host: Vec<i32> = (0..(m * NUM_EXPERTS) as i32).collect();

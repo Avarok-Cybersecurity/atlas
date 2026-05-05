@@ -4,11 +4,7 @@
 //! (extracted from `api.rs`, lines 20-225).
 
 use axum::http::StatusCode;
-use axum::response::{
-    IntoResponse,
-    Json,
-    Response,
-};
+use axum::response::{IntoResponse, Json, Response};
 
 /// OpenAI-compatible JSON error response.
 /// Coding agents (OpenCode, Cline, nanobot) expect this exact structure.
@@ -18,7 +14,7 @@ use axum::response::{
 /// appropriate compaction stage. Always keeps system message + last N messages.
 ///
 /// Stage 2 (80%): Truncate middle tool responses to first+last 3 lines
-/// Stage 3 (85%): Replace middle tool responses with "[truncated]" pointers
+/// Stage 3 (85%): Replace middle tool responses with `"[truncated]"` pointers
 /// Stage 4 (90%): Drop oldest middle message pairs (keep last 6)
 /// Stage 5 (95%): Trim system prompt + keep only last 4 messages
 pub fn compact_messages(

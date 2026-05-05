@@ -11,9 +11,7 @@ use super::ctx::MistralLayerCtx;
 use crate::layer::TransformerLayer;
 use crate::layers::qwen3_attention::MlaWeights;
 use crate::layers::{FfnComponent, MoeLayer, Qwen3AttentionLayer};
-use crate::weight_map::{
-    AttentionWeights, DenseWeight, QuantizedWeight, dense, load_moe_mistral,
-};
+use crate::weight_map::{AttentionWeights, DenseWeight, QuantizedWeight, dense, load_moe_mistral};
 
 pub(super) fn assemble_layer(
     ctx: MistralLayerCtx<'_>,
@@ -76,12 +74,24 @@ pub(super) fn assemble_layer(
     let wkv_a_dense = require(ctx.wkv_a_dense, "wkv_a_dense")?;
     let mla_weights = MlaWeights {
         wq_a: wq_a_dense,
-        wq_a_nvfp4: if disable_nvfp4_mla { None } else { ctx.wq_a_nvfp4 },
+        wq_a_nvfp4: if disable_nvfp4_mla {
+            None
+        } else {
+            ctx.wq_a_nvfp4
+        },
         wq_b: require(ctx.wq_b, "wq_b")?,
-        wq_b_nvfp4: if disable_nvfp4_mla { None } else { ctx.wq_b_nvfp4 },
+        wq_b_nvfp4: if disable_nvfp4_mla {
+            None
+        } else {
+            ctx.wq_b_nvfp4
+        },
         q_a_norm: require(ctx.q_a_norm, "q_a_norm")?,
         wkv_a: wkv_a_dense,
-        wkv_a_nvfp4: if disable_nvfp4_mla { None } else { ctx.wkv_a_nvfp4 },
+        wkv_a_nvfp4: if disable_nvfp4_mla {
+            None
+        } else {
+            ctx.wkv_a_nvfp4
+        },
         wkv_b: require(ctx.wkv_b, "wkv_b")?,
         kv_a_norm: require(ctx.kv_a_norm, "kv_a_norm")?,
         wkv_a_rope: require(ctx.wkv_a_rope_dense, "wkv_a_rope_dense")?,
@@ -128,24 +138,26 @@ fn build_moe_ffn(
         return FfnComponent::None;
     }
     match load_moe_mistral(store, i, config.num_experts, gpu, config) {
-        Ok(moe_weights) => match MoeLayer::new(moe_weights, config.num_experts, None, gpu, config) {
-            Ok(mut moe) => {
-                // Skip MoE transpose for Mistral on single GPU: saves
-                // ~1.5 GB per layer (54 GB total). Prefill uses the
-                // untransposed path (slightly slower but avoids OOM).
-                // EP: enough memory per rank, transpose for faster prefill.
-                if config.ep_world_size > 1 {
-                    if let Err(e) = moe.transpose_for_prefill(gpu, config) {
+        Ok(moe_weights) => {
+            match MoeLayer::new(moe_weights, config.num_experts, None, gpu, config) {
+                Ok(mut moe) => {
+                    // Skip MoE transpose for Mistral on single GPU: saves
+                    // ~1.5 GB per layer (54 GB total). Prefill uses the
+                    // untransposed path (slightly slower but avoids OOM).
+                    // EP: enough memory per rank, transpose for faster prefill.
+                    if config.ep_world_size > 1
+                        && let Err(e) = moe.transpose_for_prefill(gpu, config)
+                    {
                         tracing::warn!("L{i}: MoE transpose failed: {e}, using untransposed");
                     }
+                    FfnComponent::Moe(moe)
                 }
-                FfnComponent::Moe(moe)
+                Err(e) => {
+                    tracing::warn!("L{i}: MoE construction failed: {e}, using None");
+                    FfnComponent::None
+                }
             }
-            Err(e) => {
-                tracing::warn!("L{i}: MoE construction failed: {e}, using None");
-                FfnComponent::None
-            }
-        },
+        }
         Err(e) => {
             tracing::warn!("L{i}: MoE weight load failed: {e}, using None");
             FfnComponent::None

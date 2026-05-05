@@ -26,15 +26,15 @@ use crate::openai;
 use crate::tool_parser;
 
 #[allow(unused_imports)]
-use super::types::*;
+use super::convert::*;
 #[allow(unused_imports)]
 use super::helpers::*;
-#[allow(unused_imports)]
-use super::convert::*;
 #[allow(unused_imports)]
 use super::translate::*;
 #[allow(unused_imports)]
 use super::translator::*;
+#[allow(unused_imports)]
+use super::types::*;
 #[allow(unused_imports)]
 /// Translate an OpenAI SSE response into Anthropic's structured event
 /// stream, **per-chunk**: each OpenAI `data: {…}` line that arrives
@@ -48,7 +48,10 @@ use super::translator::*;
 /// emitted events are sent down an `mpsc` channel that's wrapped as
 /// a `ReceiverStream` and handed to axum's `Sse::new` — the same
 /// pattern api.rs uses for its own SSE response.
-pub(super) async fn wrap_chat_sse_for_anthropic(chat_resp: Response, req_model: String) -> Response {
+pub(super) async fn wrap_chat_sse_for_anthropic(
+    chat_resp: Response,
+    req_model: String,
+) -> Response {
     let (parts, body) = chat_resp.into_parts();
     if !parts.status.is_success() {
         // Forward error envelope verbatim, status preserved.

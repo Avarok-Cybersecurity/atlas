@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use super::*;
 
 #[test]
@@ -69,4 +71,3 @@ fn test_minimax_xml_tool_grammar_no_tools() {
     let result = engine.compile_minimax_xml_tool_grammar(&[], false);
     assert!(matches!(result, Err(GrammarError::NoTools)));
 }
-

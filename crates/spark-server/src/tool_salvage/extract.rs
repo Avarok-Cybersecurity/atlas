@@ -26,9 +26,10 @@ pub(super) fn extract_xml(content: &str, matchers: &[ToolShape]) -> Vec<ToolCall
             let body_end = body_start + rel_close;
             let body = &content[body_start..body_end];
             if let Some(args) = parse_xml_kv(body, m)
-                && let Some(tc) = synthesise(m.name(), &args, "xml") {
-                    out.push(tc);
-                }
+                && let Some(tc) = synthesise(m.name(), &args, "xml")
+            {
+                out.push(tc);
+            }
             search = body_end + close.len();
         }
     }
@@ -38,7 +39,10 @@ pub(super) fn extract_xml(content: &str, matchers: &[ToolShape]) -> Vec<ToolCall
 /// Body of an XML block parsed as `<KEY>VAL</KEY>` pairs. Keys are
 /// matched case-insensitively against the tool's declared
 /// properties; values are JSON-stringified.
-pub(super) fn parse_xml_kv(body: &str, shape: &ToolShape) -> Option<serde_json::Map<String, serde_json::Value>> {
+pub(super) fn parse_xml_kv(
+    body: &str,
+    shape: &ToolShape,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
     let mut out = serde_json::Map::new();
     let bytes = body.as_bytes();
     let mut pos = 0;
@@ -102,13 +106,21 @@ pub(super) fn extract_fenced(content: &str, matchers: &[ToolShape]) -> Vec<ToolC
         let body_end = body_start + close_rel;
         let body = content[body_start..body_end].trim_end();
         // info-string may include `LANG:filename` — split on `:`
-        let lang = info.split(':').next().unwrap_or("").trim().to_ascii_lowercase();
+        let lang = info
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
         let path_in_info = info.split_once(':').map(|(_, p)| p.trim().to_string());
-        let lang_aliases = [lang.as_str(), match lang.as_str() {
-            "shell" | "sh" => "bash",
-            "powershell" | "ps1" => "bash",
-            other => other,
-        }];
+        let lang_aliases = [
+            lang.as_str(),
+            match lang.as_str() {
+                "shell" | "sh" => "bash",
+                "powershell" | "ps1" => "bash",
+                other => other,
+            },
+        ];
 
         for m in matchers {
             let mname = m.name_lower();
@@ -202,7 +214,10 @@ pub(super) fn extract_heredoc(content: &str, matchers: &[ToolShape]) -> Vec<Tool
             if let Some((path_prop, content_prop)) = m.path_and_content() {
                 let mut args = serde_json::Map::new();
                 args.insert(path_prop, serde_json::Value::String(path.to_string()));
-                args.insert(content_prop, serde_json::Value::String(body.trim_end().to_string()));
+                args.insert(
+                    content_prop,
+                    serde_json::Value::String(body.trim_end().to_string()),
+                );
                 if let Some(tc) = synthesise(m.name(), &args, "heredoc") {
                     out.push(tc);
                 }
@@ -220,9 +235,9 @@ pub(super) fn extract_heredoc(content: &str, matchers: &[ToolShape]) -> Vec<Tool
 /// body before the next header or end-of-content.
 pub(super) fn extract_header_body(content: &str, matchers: &[ToolShape]) -> Vec<ToolCall> {
     // Find the first matcher that has the file-write shape.
-    let writer = matchers.iter().find_map(|m| {
-        m.path_and_content().map(|(p, c)| (m, p, c))
-    });
+    let writer = matchers
+        .iter()
+        .find_map(|m| m.path_and_content().map(|(p, c)| (m, p, c)));
     let Some((write_shape, path_prop, content_prop)) = writer else {
         return Vec::new();
     };

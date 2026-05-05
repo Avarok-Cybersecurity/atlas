@@ -58,10 +58,11 @@ impl SessionSsmManager {
     /// Returns true and updates last_access if owned.
     pub fn owns_snapshot(&mut self, session_hash: u64, slot_id: usize) -> bool {
         if let Some(state) = self.sessions.get_mut(&session_hash)
-            && state.snapshot_slots.contains(&slot_id) {
-                state.last_access = Instant::now();
-                return true;
-            }
+            && state.snapshot_slots.contains(&slot_id)
+        {
+            state.last_access = Instant::now();
+            return true;
+        }
         false
     }
 

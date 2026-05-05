@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // ── Schema enforcement ─────────────────────────────────────────────────
 
 /// Add `"minLength": 1` to all required string properties in a tool's
@@ -55,7 +57,9 @@ pub fn augment_schema_with_tafc_think(schema: &serde_json::Value) -> serde_json:
     schema
 }
 
-pub(super) fn enforce_min_length_on_required_strings(schema: &serde_json::Value) -> serde_json::Value {
+pub(super) fn enforce_min_length_on_required_strings(
+    schema: &serde_json::Value,
+) -> serde_json::Value {
     let mut schema = schema.clone();
     let obj = match schema.as_object_mut() {
         Some(o) => o,
@@ -79,9 +83,7 @@ pub(super) fn enforce_min_length_on_required_strings(schema: &serde_json::Value)
     if let Some(props) = obj.get_mut("properties").and_then(|p| p.as_object_mut()) {
         for key in &required {
             if let Some(prop) = props.get_mut(key).and_then(|p| p.as_object_mut()) {
-                let is_string = prop
-                    .get("type")
-                    .and_then(|t| t.as_str()) == Some("string");
+                let is_string = prop.get("type").and_then(|t| t.as_str()) == Some("string");
                 if is_string && !prop.contains_key("minLength") {
                     prop.insert("minLength".to_string(), serde_json::Value::Number(1.into()));
                 }
@@ -130,22 +132,24 @@ fn sanitize_recursive(
         .get("$ref")
         .and_then(|v| v.as_str())
         .map(String::from)
-        && let Some(resolved) = resolve_local_ref(&ref_str, root) {
-            result.remove("$ref");
-            if let Some(resolved_obj) = resolved.as_object() {
-                for (k, v) in resolved_obj {
-                    if !result.contains_key(k) {
-                        result.insert(k.clone(), v.clone());
-                    }
+        && let Some(resolved) = resolve_local_ref(&ref_str, root)
+    {
+        result.remove("$ref");
+        if let Some(resolved_obj) = resolved.as_object() {
+            for (k, v) in resolved_obj {
+                if !result.contains_key(k) {
+                    result.insert(k.clone(), v.clone());
                 }
             }
         }
+    }
 
     // ── Empty enum ──
     if let Some(arr) = result.get("enum").and_then(|v| v.as_array())
-        && arr.is_empty() {
-            result.remove("enum");
-        }
+        && arr.is_empty()
+    {
+        result.remove("enum");
+    }
 
     // ── Empty / single-element anyOf / oneOf ──
     for key in ["anyOf", "oneOf"] {
@@ -199,23 +203,24 @@ fn sanitize_recursive(
             let mut merged_type: Option<serde_json::Value> = None;
             for sub in &arr {
                 if let Some(s) = sanitize_recursive(sub, root, depth + 1)
-                    && let Some(o) = s.as_object() {
-                        if let Some(t) = o.get("type") {
-                            merged_type.get_or_insert_with(|| t.clone());
+                    && let Some(o) = s.as_object()
+                {
+                    if let Some(t) = o.get("type") {
+                        merged_type.get_or_insert_with(|| t.clone());
+                    }
+                    if let Some(p) = o.get("properties").and_then(|p| p.as_object()) {
+                        for (k, v) in p {
+                            merged_props.insert(k.clone(), v.clone());
                         }
-                        if let Some(p) = o.get("properties").and_then(|p| p.as_object()) {
-                            for (k, v) in p {
-                                merged_props.insert(k.clone(), v.clone());
-                            }
-                        }
-                        if let Some(r) = o.get("required").and_then(|r| r.as_array()) {
-                            for item in r {
-                                if !merged_required.contains(item) {
-                                    merged_required.push(item.clone());
-                                }
+                    }
+                    if let Some(r) = o.get("required").and_then(|r| r.as_array()) {
+                        for item in r {
+                            if !merged_required.contains(item) {
+                                merged_required.push(item.clone());
                             }
                         }
                     }
+                }
             }
             result.remove("allOf");
             if let Some(t) = merged_type {
@@ -237,9 +242,7 @@ fn sanitize_recursive(
     // ── Empty object (no properties, no additional) ──
     // In XML format, xgrammar's VisitObject produces an empty EBNF rule body
     // when there are no properties and no additionalProperties/unevaluatedProperties.
-    let is_object = result
-        .get("type")
-        .and_then(|t| t.as_str()) == Some("object");
+    let is_object = result.get("type").and_then(|t| t.as_str()) == Some("object");
     let has_props = result
         .get("properties")
         .and_then(|p| p.as_object())
@@ -258,37 +261,40 @@ fn sanitize_recursive(
 
     // ── Recurse into property schemas ──
     if let Some(props) = result.get("properties").cloned()
-        && let Some(props_obj) = props.as_object() {
-            let mut new_props = serde_json::Map::new();
-            for (k, v) in props_obj {
-                if let Some(sanitized) = sanitize_recursive(v, root, depth + 1) {
-                    new_props.insert(k.clone(), sanitized);
-                } else {
-                    // Property schema is unsatisfiable — drop it and remove from required.
-                    if let Some(req) = result.get_mut("required").and_then(|r| r.as_array_mut()) {
-                        req.retain(|r| r.as_str() != Some(k.as_str()));
-                    }
+        && let Some(props_obj) = props.as_object()
+    {
+        let mut new_props = serde_json::Map::new();
+        for (k, v) in props_obj {
+            if let Some(sanitized) = sanitize_recursive(v, root, depth + 1) {
+                new_props.insert(k.clone(), sanitized);
+            } else {
+                // Property schema is unsatisfiable — drop it and remove from required.
+                if let Some(req) = result.get_mut("required").and_then(|r| r.as_array_mut()) {
+                    req.retain(|r| r.as_str() != Some(k.as_str()));
                 }
             }
-            result.insert(
-                "properties".to_string(),
-                serde_json::Value::Object(new_props),
-            );
         }
+        result.insert(
+            "properties".to_string(),
+            serde_json::Value::Object(new_props),
+        );
+    }
 
     // Recurse into items (array element schema).
     if let Some(items) = result.get("items").cloned()
         && items.is_object()
-            && let Some(sanitized) = sanitize_recursive(&items, root, depth + 1) {
-                result.insert("items".to_string(), sanitized);
-            }
+        && let Some(sanitized) = sanitize_recursive(&items, root, depth + 1)
+    {
+        result.insert("items".to_string(), sanitized);
+    }
 
     // Recurse into additionalProperties when it's a schema object.
     if let Some(addl) = result.get("additionalProperties").cloned()
         && addl.is_object()
-            && let Some(sanitized) = sanitize_recursive(&addl, root, depth + 1) {
-                result.insert("additionalProperties".to_string(), sanitized);
-            }
+        && let Some(sanitized) = sanitize_recursive(&addl, root, depth + 1)
+    {
+        result.insert("additionalProperties".to_string(), sanitized);
+    }
 
     Some(serde_json::Value::Object(result))
 }

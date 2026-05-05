@@ -111,7 +111,6 @@ mod tests {
     use std::io::Write;
 
     fn temp_dir() -> PathBuf {
-        
         std::env::temp_dir().join(format!(
             "atlas_spill_test_{}",
             std::time::SystemTime::now()

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! F4 (2026-04-26): Jaccard sentence-level loop guard.
 //!
 //! Catches the agentic-failure mode where a model emits the same
@@ -86,9 +88,10 @@ impl SimHashLoopGuard {
         if shingles.is_empty() {
             return false;
         }
-        let dup = self.ring.iter().any(|prev| {
-            jaccard_pct(&shingles, prev) >= self.threshold_pct
-        });
+        let dup = self
+            .ring
+            .iter()
+            .any(|prev| jaccard_pct(&shingles, prev) >= self.threshold_pct);
         if self.ring.len() >= self.cap {
             self.ring.pop_front();
         }
@@ -121,11 +124,10 @@ fn normalize(s: &str) -> Vec<u8> {
         if c.is_ascii_alphanumeric() {
             out.push(c);
             last_was_space = false;
-        } else if (c == b' ' || c == b'\t' || c == b'\n' || c == b'\r')
-            && !last_was_space {
-                out.push(b' ');
-                last_was_space = true;
-            }
+        } else if (c == b' ' || c == b'\t' || c == b'\n' || c == b'\r') && !last_was_space {
+            out.push(b' ');
+            last_was_space = true;
+        }
         // skip punctuation entirely
     }
     if out.last() == Some(&b' ') {
@@ -311,7 +313,12 @@ mod tests {
         // recognised as boundaries so SimHash can hash and dedup
         // them. The cc-session-fix34 23x repetition ended with
         // `directly:` and SimHash never ran because of this.
-        assert!(ends_at_sentence_boundary("Let me try a different approach - let me use the cargo bin directly:").is_some());
+        assert!(
+            ends_at_sentence_boundary(
+                "Let me try a different approach - let me use the cargo bin directly:"
+            )
+            .is_some()
+        );
         assert!(ends_at_sentence_boundary("Step one:").is_some());
         assert!(ends_at_sentence_boundary("Step one: ").is_some());
     }
@@ -321,7 +328,8 @@ mod tests {
         // The cc-session-fix34 sentence repeated 23 times must
         // trip on the SECOND check (first novel, second duplicate).
         let mut g = SimHashLoopGuard::new();
-        let s = "I see the issue. Let me try a different approach - let me use the cargo bin directly:";
+        let s =
+            "I see the issue. Let me try a different approach - let me use the cargo bin directly:";
         assert!(!g.check(s), "first emit must be novel");
         assert!(g.check(s), "exact repeat must trip");
     }

@@ -12,11 +12,11 @@ use anyhow::Result;
 
 use crate::group::GroupKey;
 
-pub mod posix;
 pub mod io_uring;
+pub mod posix;
 
-pub use posix::PosixBackend;
 pub use self::io_uring::IoUringBackend;
+pub use posix::PosixBackend;
 
 /// One read request: pull `group` from disk, land it at `dst_dev_ptr`.
 #[derive(Clone, Copy, Debug)]

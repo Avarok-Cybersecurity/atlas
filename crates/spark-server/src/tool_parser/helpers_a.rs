@@ -288,10 +288,9 @@ fn repair_bare_object_json(s: &str) -> String {
             start = i + 1;
         }
     }
-    if start < inner.len()
-        && !append_repaired_member(&mut out, &inner[start..], &mut first) {
-            return s.to_string();
-        }
+    if start < inner.len() && !append_repaired_member(&mut out, &inner[start..], &mut first) {
+        return s.to_string();
+    }
     out.push('}');
     out
 }
@@ -345,4 +344,3 @@ fn append_repaired_member(out: &mut String, member: &str, first: &mut bool) -> b
     out.push_str(&val_quoted);
     true
 }
-

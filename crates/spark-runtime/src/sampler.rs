@@ -176,7 +176,7 @@ impl Sampler {
 
     /// Sample a token from logits on the GPU.
     ///
-    /// `logits_ptr` points to [vocab_size] BF16 values on device.
+    /// `logits_ptr` points to `[vocab_size]` BF16 values on device.
     /// Reads BF16, expands to FP32, then samples with full precision.
     pub fn sample(
         &mut self,
@@ -365,7 +365,6 @@ pub fn apply_dry_penalty(
     }
 }
 
-
 mod sample_impl;
 pub use sample_impl::{sample_with_params_history, sample_with_params_seeded};
 
@@ -428,7 +427,6 @@ fn bf16_to_f32(lo: u8, hi: u8) -> f32 {
     let bits = (lo as u32) | ((hi as u32) << 8);
     f32::from_bits(bits << 16)
 }
-
 
 #[cfg(test)]
 mod tests;

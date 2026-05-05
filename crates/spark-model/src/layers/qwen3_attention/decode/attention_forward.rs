@@ -54,7 +54,8 @@ impl Qwen3AttentionLayer {
             block_table.len() >= expected_window_size,
             "Qwen3AttentionLayer::decode entered with under-allocated block_table \
              ({}/{} blocks) — caller must call ensure_blocks_through_decode",
-            block_table.len(), expected_window_size,
+            block_table.len(),
+            expected_window_size,
         );
 
         // Q/K/V projections into separate regions of qkv_output (GEMV for M=1)
@@ -370,8 +371,19 @@ impl Qwen3AttentionLayer {
         // K/V are contiguous (separate dense_gemm outputs), stride = nkv * hd
         let kv_stride = nkv * hd;
         self.write_kv_cache(
-            ctx.gpu, k_out, v_out, kv_cache, meta.slot, 1, nkv, hd, bs as u32, kv_stride,
-            kv_stride, stream, ctx.graph_capture,
+            ctx.gpu,
+            k_out,
+            v_out,
+            kv_cache,
+            meta.slot,
+            1,
+            nkv,
+            hd,
+            bs as u32,
+            kv_stride,
+            kv_stride,
+            stream,
+            ctx.graph_capture,
         )?;
 
         // Turbo KV cache: apply WHT to Q before paged decode.
@@ -418,8 +430,15 @@ impl Qwen3AttentionLayer {
             // this step's new block; here we just push this layer's K/V
             // bytes to the on-disk file under each block's disk_id.
             self.high_speed_swap_offload_new_blocks(
-                kv_cache, block_table, disk_block_ids, disk_last_offloaded_per_layer,
-                ctx, stream, nkv, hd, bs,
+                kv_cache,
+                block_table,
+                disk_block_ids,
+                disk_last_offloaded_per_layer,
+                ctx,
+                stream,
+                nkv,
+                hd,
+                bs,
             )?;
             // Streaming attention over the full disk-side history.
             spark_storage::with_local(|hss| {
@@ -430,7 +449,8 @@ impl Qwen3AttentionLayer {
                     q_out.0,
                     attn_out.0,
                 )
-            }).expect("local installed checked in high_speed_swap_engaged")?;
+            })
+            .expect("local installed checked in high_speed_swap_engaged")?;
         } else {
             self.run_paged_decode(
                 ctx.gpu,

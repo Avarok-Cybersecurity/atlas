@@ -38,9 +38,9 @@ pub struct MlaWeights {
     /// Q rope projection: wq_b_rope[nq*rope, q_lora] — Q_rope = wq_b_rope @ Q_latent
     /// Extracted from wq_b rows [n*hd+nope .. n*hd+nope+rope] for each head.
     pub wq_b_rope: DenseWeight,
-    /// Fused Q absorption: W_QK_absorbed[nq*kv_lora, q_lora] — Q_absorbed = W_QK @ Q_latent
-    /// Precomputed as: W_QK[n, lkv, l] = sum_p wq_b_nope[n, p, l] * W_UK[n, p, lkv]
-    /// Enables single GEMV: Q_absorbed[nq*kv_lora] = W_QK[nq*kv_lora, q_lora] @ Q_latent[q_lora]
+    /// Fused Q absorption: `W_QK_absorbed[nq*kv_lora, q_lora]` — Q_absorbed = W_QK @ Q_latent
+    /// Precomputed as: `W_QK[n, lkv, l] = sum_p wq_b_nope[n, p, l] * W_UK[n, p, lkv]`
+    /// Enables single GEMV: `Q_absorbed[nq*kv_lora] = W_QK[nq*kv_lora, q_lora] @ Q_latent[q_lora]`
     pub w_qk_absorbed: DenseWeight,
     /// Block-diagonal W_UK for prefill batched GEMM: [nq*kv_lora, nq*nope]
     /// Single GEMM replaces 32*N per-head GEMV calls for Q absorption in prefill.

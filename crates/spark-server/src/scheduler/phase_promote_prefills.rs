@@ -31,26 +31,29 @@ pub(super) fn promote_completed_prefills(
                 tracing::error!("phase_promote_prefills: free_sequence (error path): {e:#}");
             }
             if let Err(e) = model.ep_broadcast_cmd(0xFFFFFFF1) {
-                tracing::error!("phase_promote_prefills: ep_broadcast free+realloc (error path): {e:#}");
+                tracing::error!(
+                    "phase_promote_prefills: ep_broadcast free+realloc (error path): {e:#}"
+                );
             }
             continue;
         };
-        let spontaneous_think =
-            !p.enable_thinking && think_start_token == Some(first);
+        let spontaneous_think = !p.enable_thinking && think_start_token == Some(first);
         // Only stream non-EOS tokens (OpenAI: stop seq not in output).
-        if !spontaneous_think && !p.eos_tokens.contains(&first)
+        if !spontaneous_think
+            && !p.eos_tokens.contains(&first)
             && let ResponseSink::Streaming(ref tx) = p.sink
             && let Err(e) = tx.blocking_send(StreamEvent::Token(first))
         {
-            tracing::warn!("phase_promote_prefills: first-token send failed (receiver dropped): {e}");
+            tracing::warn!(
+                "phase_promote_prefills: first-token send failed (receiver dropped): {e}"
+            );
         }
-        let use_legacy_tool_call = p.require_tool_call
-            && p.grammar_state.is_none()
-            && tool_call_start_token.is_some();
+        let use_legacy_tool_call =
+            p.require_tool_call && p.grammar_state.is_none() && tool_call_start_token.is_some();
         let now = Instant::now();
         let cached_prompt_tok = p.seq.cached_prefix_tokens as u32;
-        let immediate_finish = !spontaneous_think
-            && (p.eos_tokens.contains(&first) || p.max_tokens <= 1);
+        let immediate_finish =
+            !spontaneous_think && (p.eos_tokens.contains(&first) || p.max_tokens <= 1);
 
         let mut a = build_active_seq_from_prefill(
             p,
@@ -101,7 +104,11 @@ fn build_active_seq_from_prefill(
         } else {
             vec![first]
         },
-        remaining: if immediate_finish { 0 } else { p.max_tokens - 1 },
+        remaining: if immediate_finish {
+            0
+        } else {
+            p.max_tokens - 1
+        },
         min_tokens: p.min_tokens,
         eos_tokens: p.eos_tokens,
         finished: immediate_finish,

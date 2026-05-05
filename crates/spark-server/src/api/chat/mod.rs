@@ -126,8 +126,7 @@ pub(crate) async fn chat_completions_inner(
     };
 
     // ── Phase 2: thinking resolution (pre-template) ─────────────
-    let (enable_thinking, thinking_budget) =
-        thinking::resolve_thinking(&state, &req, tools_active);
+    let (enable_thinking, thinking_budget) = thinking::resolve_thinking(&state, &req, tools_active);
 
     // ── Phase 3: stale-failure observation masking ──────────────
     {
@@ -156,12 +155,7 @@ pub(crate) async fn chat_completions_inner(
     let loop_detect::LoopDetectOut {
         suppress_tool_call,
         tool_call_repeat_count,
-    } = loop_detect::check_loops(
-        &req,
-        &mut messages,
-        consecutive_tool_errors,
-        tools_active,
-    );
+    } = loop_detect::check_loops(&req, &mut messages, consecutive_tool_errors, tools_active);
 
     // ── Phase 5: render Jinja template + image-pad expansion ────
     let template::TemplateOut {

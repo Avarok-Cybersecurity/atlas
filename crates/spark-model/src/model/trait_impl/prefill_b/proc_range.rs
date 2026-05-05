@@ -9,9 +9,9 @@
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 
+use super::super::super::types::TransformerModel;
 use crate::layers::ops;
 use crate::traits::SequenceState;
-use super::super::super::types::TransformerModel;
 
 pub(super) enum ProcRange {
     /// Process this many tokens; phase 3+ run normally.

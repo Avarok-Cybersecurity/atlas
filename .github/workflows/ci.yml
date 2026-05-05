@@ -77,12 +77,79 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
+      - name: Generate libcuda.so stub for no-GPU linking
+        # spark-storage uses raw `extern "C"` FFI to libcuda (cuStreamCreate
+        # etc.). Without libcuda on the runner the linker fails with
+        # `undefined reference to cu*` even though `ATLAS_SKIP_BUILD=1`
+        # avoids nvcc. We synthesize a stub `libcuda.so` whose symbols
+        # all return a non-zero CUDA error code (100 = CUDA_ERROR_NO_DEVICE)
+        # so any GPU test that *does* try to call cuInit fails-fast at
+        # runtime — matching what happens on a real no-GPU host. GPU tests
+        # are `#[ignore]`-gated so they never invoke these stubs in the
+        # default `cargo test` run; they're only here to satisfy the
+        # linker.
+        run: |
+          set -euo pipefail
+          cat > /tmp/libcuda_stub.c <<'EOF'
+          /* Stub for CUDA driver API symbols spark-storage links against.
+           * Each returns CUDA_ERROR_NO_DEVICE (100) so callers fail-fast.
+           * Generated for CI link-time only; never exercised at runtime
+           * because every test that touches these is #[ignore]-gated. */
+          int cuInit(unsigned int x) { (void)x; return 100; }
+          int cuDeviceGet(void *a, int b) { (void)a; (void)b; return 100; }
+          int cuCtxCreate_v2(void **a, unsigned int b, int c) { (void)a; (void)b; (void)c; return 100; }
+          int cuCtxDestroy_v2(void *a) { (void)a; return 100; }
+          int cuCtxGetCurrent(void **a) { (void)a; return 100; }
+          int cuStreamCreate(void **a, unsigned int b) { (void)a; (void)b; return 100; }
+          int cuStreamDestroy_v2(void *a) { (void)a; return 100; }
+          int cuStreamSynchronize(void *a) { (void)a; return 100; }
+          int cuStreamBeginCapture_v2(void *a, int b) { (void)a; (void)b; return 100; }
+          int cuStreamEndCapture(void *a, void **b) { (void)a; (void)b; return 100; }
+          int cuModuleLoadData(void **a, const void *b) { (void)a; (void)b; return 100; }
+          int cuModuleUnload(void *a) { (void)a; return 100; }
+          int cuModuleGetFunction(void **a, void *b, const char *c) { (void)a; (void)b; (void)c; return 100; }
+          int cuLaunchKernel(void *f, unsigned int gx, unsigned int gy, unsigned int gz,
+                             unsigned int bx, unsigned int by, unsigned int bz,
+                             unsigned int sm, void *s, void **p, void **e) {
+              (void)f; (void)gx; (void)gy; (void)gz; (void)bx; (void)by; (void)bz;
+              (void)sm; (void)s; (void)p; (void)e; return 100;
+          }
+          int cuEventCreate(void **a, unsigned int b) { (void)a; (void)b; return 100; }
+          int cuEventDestroy_v2(void *a) { (void)a; return 100; }
+          int cuEventRecord(void *a, void *b) { (void)a; (void)b; return 100; }
+          int cuEventSynchronize(void *a) { (void)a; return 100; }
+          int cuMemAlloc_v2(unsigned long long *a, unsigned long b) { (void)a; (void)b; return 100; }
+          int cuMemFree_v2(unsigned long long a) { (void)a; return 100; }
+          int cuMemAllocHost_v2(void **a, unsigned long b) { (void)a; (void)b; return 100; }
+          int cuMemFreeHost(void *a) { (void)a; return 100; }
+          int cuMemcpyHtoDAsync_v2(unsigned long long a, const void *b, unsigned long c, void *d) {
+              (void)a; (void)b; (void)c; (void)d; return 100;
+          }
+          int cuMemcpyDtoHAsync_v2(void *a, unsigned long long b, unsigned long c, void *d) {
+              (void)a; (void)b; (void)c; (void)d; return 100;
+          }
+          int cuMemsetD32Async(unsigned long long a, unsigned int b, unsigned long c, void *d) {
+              (void)a; (void)b; (void)c; (void)d; return 100;
+          }
+          int cuGraphInstantiateWithFlags(void **a, void *b, unsigned long long c) {
+              (void)a; (void)b; (void)c; return 100;
+          }
+          int cuGraphLaunch(void *a, void *b) { (void)a; (void)b; return 100; }
+          int cuGraphExecDestroy(void *a) { (void)a; return 100; }
+          int cuGraphDestroy(void *a) { (void)a; return 100; }
+          EOF
+          cc -shared -fPIC -nostdlib -o /tmp/libcuda.so /tmp/libcuda_stub.c
+          sudo install -m 0644 /tmp/libcuda.so /usr/lib/x86_64-linux-gnu/libcuda.so
+          # Some build scripts also probe /usr/local/cuda/.../stubs
+          sudo mkdir -p /usr/local/cuda/targets/x86_64-linux/lib/stubs
+          sudo install -m 0644 /tmp/libcuda.so /usr/local/cuda/targets/x86_64-linux/lib/stubs/libcuda.so
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Default `cargo test` skips `#[ignore]`-gated tests, which is
-      # exactly what we want — the integration tests in
-      # `crates/spark-server/tests/integration.rs` require a GB10 + cached
-      # model weights and are run locally with `-- --ignored`.
+      # exactly what we want — every test that requires a real GPU
+      # (spark-runtime, spark-storage, atlas-kernels, atlas-spark-bench
+      # correctness, spark-server integration) carries `#[ignore]` and
+      # is run locally on GB10 hardware via `-- --ignored`.
       - run: cargo test --workspace --locked
 
   # cargo-deny runs in security.yml with path filters on Cargo.toml / Cargo.lock /

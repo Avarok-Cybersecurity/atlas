@@ -4,8 +4,8 @@
 
 use anyhow::Result;
 
-use super::ctx::MistralLayerCtx;
 use super::super::gpu_alloc_or_managed;
+use super::ctx::MistralLayerCtx;
 use crate::weight_map::DenseWeight;
 
 pub(super) fn build_per_head_views(ctx: &mut MistralLayerCtx<'_>) -> Result<()> {

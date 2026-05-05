@@ -42,15 +42,39 @@ impl Qwen3AttentionLayer {
             );
         if v == 3 && self.w4a16_gemm_t_m128_v3_k.0 != 0 {
             crate::layers::ops::w4a16_gemm_n128_m128_v3(
-                gpu, self.w4a16_gemm_t_m128_v3_k, input, weight, output, m, n, k, stream,
+                gpu,
+                self.w4a16_gemm_t_m128_v3_k,
+                input,
+                weight,
+                output,
+                m,
+                n,
+                k,
+                stream,
             )
         } else if v != 1 && self.w4a16_gemm_t_m128_v2_k.0 != 0 {
             crate::layers::ops::w4a16_gemm_n128_m128_v2(
-                gpu, self.w4a16_gemm_t_m128_v2_k, input, weight, output, m, n, k, stream,
+                gpu,
+                self.w4a16_gemm_t_m128_v2_k,
+                input,
+                weight,
+                output,
+                m,
+                n,
+                k,
+                stream,
             )
         } else {
             crate::layers::ops::w4a16_gemm_n128_m128(
-                gpu, self.w4a16_gemm_t_m128_k, input, weight, output, m, n, k, stream,
+                gpu,
+                self.w4a16_gemm_t_m128_k,
+                input,
+                weight,
+                output,
+                m,
+                n,
+                k,
+                stream,
             )
         }
     }
@@ -162,11 +186,12 @@ impl Qwen3AttentionLayer {
         }
         // O proj: use attn.o_proj (non-transposed QuantizedWeight)
         if self.o_nvfp4_t.is_some() {
-            self.o_fp8 = Some(
-                self.attn
-                    .o_proj
-                    .predequant_to_fp8(gpu, predequant_k, h, q_dim, stream)?,
-            );
+            self.o_fp8 =
+                Some(
+                    self.attn
+                        .o_proj
+                        .predequant_to_fp8(gpu, predequant_k, h, q_dim, stream)?,
+                );
         }
         Ok(())
     }

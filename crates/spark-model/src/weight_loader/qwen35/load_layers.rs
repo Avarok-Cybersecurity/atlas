@@ -11,8 +11,8 @@ use spark_runtime::weights::WeightStore;
 
 use super::super::{ModelWeightLoader, QuantFormat, WeightFormat};
 use crate::layer::TransformerLayer;
-use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_fp8_block_scaled};
 use crate::layers::{FfnComponent, MoeLayer, Qwen3AttentionLayer};
+use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_fp8_block_scaled};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, Nvfp4Variant, QuantizedWeight, dense, detect_nvfp4_variant,
     load_fp8_block_scaled_as_fp8weight, load_kv_scales, load_moe_qwen35,
@@ -34,8 +34,7 @@ pub(super) fn load_layers(
         config.layer_types.clone()
     };
 
-    let mut layers: Vec<Box<dyn TransformerLayer>> =
-        Vec::with_capacity(config.num_hidden_layers);
+    let mut layers: Vec<Box<dyn TransformerLayer>> = Vec::with_capacity(config.num_hidden_layers);
     let mut attn_idx = 0usize;
 
     // C.3 (2026-04-25): per-(layer, role) precision schedule. The
@@ -172,46 +171,41 @@ pub(super) fn load_layers(
         if native_fp8
             && let Ok(fp8_experts) =
                 load_moe_qwen35_fp8_experts(store, &lp, config.num_experts, gpu, config)
-            {
-                let sp = format!("{lp}.mlp.shared_expert");
-                use crate::weight_map::{Fp8ExpertWeight as FEW, Fp8Weight as FW};
-                use spark_runtime::gpu::DevicePtr;
-                let null_fw = FW {
-                    weight: DevicePtr::NULL,
-                    row_scale: DevicePtr::NULL,
-                    n: 0,
-                    k: 0,
-                };
-                let sh_gate =
-                    load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.gate_proj"), gpu);
-                let sh_up =
-                    load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.up_proj"), gpu);
-                let sh_down =
-                    load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.down_proj"), gpu);
-                if sh_gate.is_err() || sh_up.is_err() || sh_down.is_err() {
-                    tracing::warn!(
-                        "Layer {i}: shared expert FP8 load failed (gate={}, up={}, down={})",
-                        sh_gate.is_ok(),
-                        sh_up.is_ok(),
-                        sh_down.is_ok(),
-                    );
-                }
-                let shared_fp8 = FEW {
-                    gate_proj: sh_gate.unwrap_or(null_fw),
-                    up_proj: sh_up.unwrap_or(null_fw),
-                    down_proj: sh_down.unwrap_or(null_fw),
-                };
-                if let Err(e) = moe_layer.set_fp8_experts(&fp8_experts, shared_fp8, gpu) {
-                    tracing::error!(
-                        "Layer {i}: failed to build FP8 expert pointer tables: {e:#}"
-                    );
-                    tracing::warn!(
-                        "Layer {i}: falling back to NVFP4-only decode for MoE experts"
-                    );
-                } else {
-                    tracing::info!("Layer {i}: MoE experts loaded as native FP8");
-                }
+        {
+            let sp = format!("{lp}.mlp.shared_expert");
+            use crate::weight_map::{Fp8ExpertWeight as FEW, Fp8Weight as FW};
+            use spark_runtime::gpu::DevicePtr;
+            let null_fw = FW {
+                weight: DevicePtr::NULL,
+                row_scale: DevicePtr::NULL,
+                n: 0,
+                k: 0,
+            };
+            let sh_gate =
+                load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.gate_proj"), gpu);
+            let sh_up = load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.up_proj"), gpu);
+            let sh_down =
+                load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.down_proj"), gpu);
+            if sh_gate.is_err() || sh_up.is_err() || sh_down.is_err() {
+                tracing::warn!(
+                    "Layer {i}: shared expert FP8 load failed (gate={}, up={}, down={})",
+                    sh_gate.is_ok(),
+                    sh_up.is_ok(),
+                    sh_down.is_ok(),
+                );
             }
+            let shared_fp8 = FEW {
+                gate_proj: sh_gate.unwrap_or(null_fw),
+                up_proj: sh_up.unwrap_or(null_fw),
+                down_proj: sh_down.unwrap_or(null_fw),
+            };
+            if let Err(e) = moe_layer.set_fp8_experts(&fp8_experts, shared_fp8, gpu) {
+                tracing::error!("Layer {i}: failed to build FP8 expert pointer tables: {e:#}");
+                tracing::warn!("Layer {i}: falling back to NVFP4-only decode for MoE experts");
+            } else {
+                tracing::info!("Layer {i}: MoE experts loaded as native FP8");
+            }
+        }
 
         let ffn = FfnComponent::Moe(moe_layer);
 
@@ -234,17 +228,13 @@ pub(super) fn load_layers(
                                      _full_k: usize,
                                      kind: TpShardKind|
                  -> Result<crate::weight_map::Fp8Weight> {
-                    let src = load_fp8_block_scaled_as_fp8weight(
-                        store,
-                        &format!("{p}.{name}"),
-                        gpu,
-                    )?;
+                    let src =
+                        load_fp8_block_scaled_as_fp8weight(store, &format!("{p}.{name}"), gpu)?;
                     if tp_size == 1 {
                         return Ok(src);
                     }
-                    let sharded = shard_fp8_block_scaled(
-                        &src, kind, tp_rank, tp_size, block_size, gpu,
-                    )?;
+                    let sharded =
+                        shard_fp8_block_scaled(&src, kind, tp_rank, tp_size, block_size, gpu)?;
                     gpu.free(src.weight)?;
                     gpu.free(src.row_scale)?;
                     Ok(sharded)
@@ -328,21 +318,15 @@ pub(super) fn load_layers(
                 layers.push(layer);
                 attn_idx += 1;
             }
-            LayerType::LinearAttention if native_fp8 && false => {
-                let layer = linear_attn_arms::build_linear_attention_fp8(
-                    i,
-                    store,
-                    &lp,
-                    gpu,
-                    variant,
-                    config,
-                    h,
-                    input_norm,
-                    post_attn_norm,
-                    ffn,
-                )?;
-                layers.push(layer);
-            }
+            // LinearAttention native-FP8 path was previously wired here as
+            // `if native_fp8 && false => build_linear_attention_fp8(...)`
+            // but the FP8 GDN kernels are still stabilizing and the arm
+            // was permanently short-circuited. The NVFP4 fallback below
+            // handles every LinearAttention layer regardless of `native_fp8`.
+            // To re-enable: revive the call to
+            // `linear_attn_arms::build_linear_attention_fp8` in this arm
+            // and gate it behind a real predicate (env-var or feature
+            // flag), not a literal `false`.
             LayerType::LinearAttention => {
                 let layer = linear_attn_arms::build_linear_attention_nvfp4(
                     store,

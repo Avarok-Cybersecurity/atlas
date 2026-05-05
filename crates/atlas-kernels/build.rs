@@ -391,11 +391,11 @@ fn list_subdirs(dir: &std::path::Path) -> Vec<String> {
     dirs
 }
 
-
 #[path = "build_parse.rs"]
 mod build_parse;
-use build_parse::{parse_behavior, parse_dflash, parse_kernel_toml, parse_model_types, parse_sampling_presets};
-
+use build_parse::{
+    parse_behavior, parse_dflash, parse_kernel_toml, parse_model_types, parse_sampling_presets,
+};
 
 /// Collect .cu files with shadowing: common dir provides the base set,
 /// model-specific dir can override individual files by matching filename.
@@ -441,11 +441,9 @@ fn find_cu_files(kernel_dir: &std::path::Path) -> Vec<PathBuf> {
         .collect()
 }
 
-
 #[path = "build_codegen.rs"]
 mod build_codegen;
 use build_codegen::generate_target_ptx_rs;
-
 
 #[path = "build_target.rs"]
 mod build_target;

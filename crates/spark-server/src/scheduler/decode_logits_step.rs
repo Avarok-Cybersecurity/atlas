@@ -4,7 +4,6 @@
 
 use super::*;
 
-
 /// Sample and process decode logits for all active sequences.
 ///
 /// Factored out of `step_decode_only` so that `mixed_forward` can reuse
@@ -38,57 +37,66 @@ pub fn process_decode_logits(
         || any_logprobs
         || model_logits_fp32;
 
-    let new_tokens: Vec<(u32, Option<crate::api::TokenLogprobs>)> = if active
-        .iter()
-        .all(|a| a.temperature == 0.0)
-        && !any_grammar
-        && !needs_host_logits
-    {
-        // Fast path: all greedy, no grammar, no thinking — GPU argmax for the full batch.
-        match model.argmax_batch(logits, n, 0) {
-            Ok(t) => t.into_iter().map(|tok| (tok, None)).collect(),
-            Err(e) => {
-                tracing::error!("argmax_batch error: {e:#}");
+    let new_tokens: Vec<(u32, Option<crate::api::TokenLogprobs>)> =
+        if active.iter().all(|a| a.temperature == 0.0) && !any_grammar && !needs_host_logits {
+            // Fast path: all greedy, no grammar, no thinking — GPU argmax for the full batch.
+            match model.argmax_batch(logits, n, 0) {
+                Ok(t) => t.into_iter().map(|tok| (tok, None)).collect(),
+                Err(e) => {
+                    tracing::error!("argmax_batch error: {e:#}");
+                    for mut a in active.drain(..) {
+                        send_error(model, &mut a, &format!("{e:#}"));
+                    }
+                    return;
+                }
+            }
+        } else {
+            // Host-side path: copy all batch logits to host, sample per-sequence.
+            // Required when any sequence has temperature > 0 or grammar constraints.
+            let vocab_size = model.vocab_size();
+            // FP32 lm_head dispatch (Gemma-4 dense + ATLAS_GEMMA4_FP32_LMHEAD=1).
+            // When the model writes FP32 logits to its decode-logits buffer, we
+            // copy 4 bytes/element and skip the BF16→FP32 expansion. Earlier
+            // bisection at model.rs:1192-1201 incorrectly concluded FP32 lm_head
+            // had no effect on Gemma-4 because this dispatch was never wired —
+            // the scheduler always read the (stale) BF16 logits buffer.
+            // FP32 lm_head dispatch (Gemma-4 dense). When `use_fp32_logits` is
+            // on, the per-token decode lm_head writes 4 bytes/element. The
+            // passed `logits` pointer is whatever the most-recent forward
+            // returned — that's already the correct buffer (prefill or decode).
+            // We just need to read it with the matching width.
+            let logits_fp32 = model.decode_logits_fp32();
+            let elem_bytes = if logits_fp32 { 4 } else { 2 };
+            let mut buf = vec![0u8; n * vocab_size * elem_bytes];
+            if let Err(e) = model.copy_logits_to_host(logits, &mut buf) {
+                tracing::error!("copy_logits_to_host error: {e:#}");
                 for mut a in active.drain(..) {
                     send_error(model, &mut a, &format!("{e:#}"));
                 }
                 return;
             }
-        }
-    } else {
-        // Host-side path: copy all batch logits to host, sample per-sequence.
-        // Required when any sequence has temperature > 0 or grammar constraints.
-        let vocab_size = model.vocab_size();
-        // FP32 lm_head dispatch (Gemma-4 dense + ATLAS_GEMMA4_FP32_LMHEAD=1).
-        // When the model writes FP32 logits to its decode-logits buffer, we
-        // copy 4 bytes/element and skip the BF16→FP32 expansion. Earlier
-        // bisection at model.rs:1192-1201 incorrectly concluded FP32 lm_head
-        // had no effect on Gemma-4 because this dispatch was never wired —
-        // the scheduler always read the (stale) BF16 logits buffer.
-        // FP32 lm_head dispatch (Gemma-4 dense). When `use_fp32_logits` is
-        // on, the per-token decode lm_head writes 4 bytes/element. The
-        // passed `logits` pointer is whatever the most-recent forward
-        // returned — that's already the correct buffer (prefill or decode).
-        // We just need to read it with the matching width.
-        let logits_fp32 = model.decode_logits_fp32();
-        let elem_bytes = if logits_fp32 { 4 } else { 2 };
-        let mut buf = vec![0u8; n * vocab_size * elem_bytes];
-        if let Err(e) = model.copy_logits_to_host(logits, &mut buf) {
-            tracing::error!("copy_logits_to_host error: {e:#}");
-            for mut a in active.drain(..) {
-                send_error(model, &mut a, &format!("{e:#}"));
-            }
-            return;
-        }
-        active.iter_mut().enumerate().map(|(i, a)| {
-            process_seq_logits(
-                model, a, &buf, i, vocab_size, elem_bytes, logits_fp32,
-                think_end_token, think_start_token,
-                tool_call_start_token, tool_call_end_token,
-                reflection_suppress_ids, adaptive_sampling,
-            )
-        }).collect()
-    };
+            active
+                .iter_mut()
+                .enumerate()
+                .map(|(i, a)| {
+                    process_seq_logits(
+                        model,
+                        a,
+                        &buf,
+                        i,
+                        vocab_size,
+                        elem_bytes,
+                        logits_fp32,
+                        think_end_token,
+                        think_start_token,
+                        tool_call_start_token,
+                        tool_call_end_token,
+                        reflection_suppress_ids,
+                        adaptive_sampling,
+                    )
+                })
+                .collect()
+        };
     let step_ms = t0.elapsed().as_secs_f64() * 1000.0;
     if tracing::enabled!(tracing::Level::DEBUG) {
         let token_ids: Vec<u32> = new_tokens.iter().map(|(t, _)| *t).collect();
@@ -159,9 +167,10 @@ pub fn process_decode_logits(
         // stripped from the API output and should not consume grammar
         // slots (matches the bitmask-skip in the sampler above).
         if !a.inside_thinking
-            && let Some(ref mut gs) = a.grammar_state {
-                gs.accept_token(tok);
-            }
+            && let Some(ref mut gs) = a.grammar_state
+        {
+            gs.accept_token(tok);
+        }
 
         // Thinking tokens don't count toward remaining (thinking is "free").
         if a.inside_thinking {
@@ -179,12 +188,12 @@ pub fn process_decode_logits(
                 a.thinking_tokens += 1;
                 // Set force_end_thinking when budget exhausted (picked up next iteration)
                 if let Some(budget) = a.thinking_budget
-                    && a.thinking_tokens >= budget && !a.force_end_thinking {
-                        a.force_end_thinking = true;
-                        tracing::info!(
-                            "Thinking budget exhausted ({budget} tokens), forcing </think>"
-                        );
-                    }
+                    && a.thinking_tokens >= budget
+                    && !a.force_end_thinking
+                {
+                    a.force_end_thinking = true;
+                    tracing::info!("Thinking budget exhausted ({budget} tokens), forcing </think>");
+                }
                 // Token-level fence-loop detection. Catches the Qwen3.5-35B
                 // phrase attractor (`Running:\`\`\`bash cmd\`\`\`Executing:…`
                 // cycling) within ~24-60 tokens of the loop starting,
@@ -253,8 +262,7 @@ pub fn process_decode_logits(
             // forever (the `tool_choice="auto"` grammar never
             // self-terminates — see grammar.rs:461-462).
             if !a.inside_tool_body && a.grammar_state.is_some() {
-                a.prose_tokens_since_last_tool =
-                    a.prose_tokens_since_last_tool.saturating_add(1);
+                a.prose_tokens_since_last_tool = a.prose_tokens_since_last_tool.saturating_add(1);
                 if a.prose_tokens_since_last_tool > MAX_INTER_TOOL_PROSE {
                     tracing::warn!(
                         prose_tokens = a.prose_tokens_since_last_tool,
@@ -383,10 +391,10 @@ pub fn process_decode_logits(
         // `<tool_call>\n<function=NAME>\n<parameter=…` and is well
         // below typical real tool-call output sizes (>100 tokens).
         const POST_THINK_MIN_CONTENT: u32 = 16;
-        let post_think_content_tokens = (a.output_tokens.len() as u32)
-            .saturating_sub(a.thinking_tokens);
-        let post_think_suppresses_eos = a.think_ended
-            && post_think_content_tokens < POST_THINK_MIN_CONTENT;
+        let post_think_content_tokens =
+            (a.output_tokens.len() as u32).saturating_sub(a.thinking_tokens);
+        let post_think_suppresses_eos =
+            a.think_ended && post_think_content_tokens < POST_THINK_MIN_CONTENT;
         let suppress_eos = grammar_suppresses_eos
             || legacy_suppresses_eos
             || min_tokens_suppresses
@@ -417,28 +425,31 @@ pub fn process_decode_logits(
             // blocking response path's reasoning_content extraction.
             let suppress_stream = a.inside_thinking && !a.enable_thinking;
             if let ResponseSink::Streaming(ref tx) = a.sink
-                && !suppress_stream {
-                    let event = if let Some(lp) = a.logprobs_data.last().cloned() {
-                        StreamEvent::TokenWithLogprobs(tok, lp)
-                    } else {
-                        StreamEvent::Token(tok)
-                    };
-                    match tx.try_send(event) {
-                        Ok(()) => {}
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                            tracing::debug!("Streaming receiver dropped (decode_logits), finishing seq");
+                && !suppress_stream
+            {
+                let event = if let Some(lp) = a.logprobs_data.last().cloned() {
+                    StreamEvent::TokenWithLogprobs(tok, lp)
+                } else {
+                    StreamEvent::Token(tok)
+                };
+                match tx.try_send(event) {
+                    Ok(()) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        tracing::debug!(
+                            "Streaming receiver dropped (decode_logits), finishing seq"
+                        );
+                        a.finished = true;
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
+                        if let Err(e) = tx.blocking_send(event) {
+                            tracing::error!(
+                                "Streaming send failed during backpressure (decode_logits): {e}"
+                            );
                             a.finished = true;
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                            if let Err(e) = tx.blocking_send(event) {
-                                tracing::error!(
-                                    "Streaming send failed during backpressure (decode_logits): {e}"
-                                );
-                                a.finished = true;
-                            }
                         }
                     }
                 }
+            }
             if a.remaining == 0 {
                 tracing::info!(
                     "process_decode_logits: remaining=0, output_tokens={}, thinking_tokens={}",
@@ -496,10 +507,11 @@ pub fn process_decode_logits(
             // Check request timeout.
             if !a.finished
                 && let Some(deadline) = a.timeout_at
-                    && Instant::now() >= deadline {
-                        tracing::warn!("Request timeout after {:?}", a.request_start.elapsed());
-                        a.finished = true;
-                    }
+                && Instant::now() >= deadline
+            {
+                tracing::warn!("Request timeout after {:?}", a.request_start.elapsed());
+                a.finished = true;
+            }
         }
     }
 }

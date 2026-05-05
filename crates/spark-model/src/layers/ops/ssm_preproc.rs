@@ -292,4 +292,3 @@ pub fn dense_gemm_ba_gates_prefill(
 }
 
 // ── Sampling ─────────────────────────────────────────────────────
-

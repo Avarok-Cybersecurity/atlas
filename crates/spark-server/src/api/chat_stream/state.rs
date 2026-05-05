@@ -79,10 +79,7 @@ pub(super) struct StreamState {
 }
 
 impl StreamState {
-    pub(super) fn new(
-        tools_active: bool,
-        enable_thinking: bool,
-    ) -> Self {
+    pub(super) fn new(tools_active: bool, enable_thinking: bool) -> Self {
         Self {
             all_toks: Vec::new(),
             emitted: 0,
@@ -102,8 +99,7 @@ impl StreamState {
             simhash_guard: crate::loop_simhash::SimHashLoopGuard::new(),
             simhash_pending: String::new(),
             tool_arg_dedup: crate::tool_arg_dedup::ToolArgDedup::new(),
-            tool_arg_dedup_within:
-                crate::tool_arg_dedup::ToolArgDedup::with_params(4, 2, 3),
+            tool_arg_dedup_within: crate::tool_arg_dedup::ToolArgDedup::with_params(4, 2, 3),
             streaming_tool_args: HashMap::new(),
             tool_calls_emitted_count: 0,
             detector: if tools_active {

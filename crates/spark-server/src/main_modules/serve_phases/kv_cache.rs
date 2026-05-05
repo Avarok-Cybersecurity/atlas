@@ -42,9 +42,11 @@ pub(crate) fn resolve_prefill_budget(
                 "--high-speed-swap: clamping max_prefill_tokens from {} to {} \
                  (cap {} × bs {} − max_batch_size {}) to keep chunked prefill \
                  within the rolling HBM window",
-                prefill_budget_pre_hss, clamped,
+                prefill_budget_pre_hss,
+                clamped,
                 args.high_speed_swap_cache_blocks_per_seq,
-                args.block_size, args.max_batch_size,
+                args.block_size,
+                args.max_batch_size,
             );
         }
         clamped
@@ -56,7 +58,10 @@ pub(crate) fn resolve_prefill_budget(
         .max(args.max_batch_size);
     tracing::info!(
         "Prefill config: ssm_prefill_chunk={}, args.max_prefill_tokens={}, prefill_budget={}, max_batch_tokens={}",
-        ssm_prefill_chunk, args.max_prefill_tokens, prefill_budget, max_batch_tokens,
+        ssm_prefill_chunk,
+        args.max_prefill_tokens,
+        prefill_budget,
+        max_batch_tokens,
     );
     if args.max_prefill_tokens == 0 && args.max_seq_len > 32768 {
         tracing::warn!(
@@ -67,7 +72,11 @@ pub(crate) fn resolve_prefill_budget(
             args.max_seq_len,
         );
     }
-    PrefillBudget { prefill_budget, max_batch_tokens, spec_tokens }
+    PrefillBudget {
+        prefill_budget,
+        max_batch_tokens,
+        spec_tokens,
+    }
 }
 
 pub(crate) struct KvCacheConfig {
@@ -91,9 +100,9 @@ pub(crate) fn resolve_kv_cache_config(
     // `后汉书` token loop) and the FP8 KV mismatch on bf16-required attention
     // paths. We respect the user's choice so experimentation isn't blocked,
     // but the warning makes the cause traceable when decode goes degenerate.
-    let effective_kv_dtype_str: String = if behavior_default_kv_dtype.is_empty() {
-        args.kv_cache_dtype.clone()
-    } else if args.kv_cache_dtype == behavior_default_kv_dtype {
+    let effective_kv_dtype_str: String = if behavior_default_kv_dtype.is_empty()
+        || args.kv_cache_dtype == behavior_default_kv_dtype
+    {
         args.kv_cache_dtype.clone()
     } else if args.kv_cache_dtype == "fp8" {
         tracing::info!(
@@ -155,8 +164,10 @@ pub(crate) fn resolve_kv_cache_config(
         tracing::info!(
             "Auto-enabling --kv-high-precision-layers {} for {} ({}/{} attn layers BF16; \
              scaled with attn-layer count to keep accumulated turbo quant error tractable)",
-            auto_hp, effective_kv_dtype_str,
-            (auto_hp * 2).min(num_attn_layers), num_attn_layers,
+            auto_hp,
+            effective_kv_dtype_str,
+            (auto_hp * 2).min(num_attn_layers),
+            num_attn_layers,
         );
         auto_hp
     } else {

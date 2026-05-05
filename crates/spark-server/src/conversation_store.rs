@@ -267,16 +267,17 @@ pub enum AddItemsError {
 /// `item_<conv>_<idx>`.
 fn stamp_id(mut v: serde_json::Value, conv_id: &str, idx: usize) -> serde_json::Value {
     if let Some(obj) = v.as_object_mut()
-        && !obj.contains_key("id") {
-            obj.insert(
-                "id".to_string(),
-                serde_json::Value::String(format!(
-                    "item_{}_{}",
-                    conv_id.trim_start_matches("conv_"),
-                    idx
-                )),
-            );
-        }
+        && !obj.contains_key("id")
+    {
+        obj.insert(
+            "id".to_string(),
+            serde_json::Value::String(format!(
+                "item_{}_{}",
+                conv_id.trim_start_matches("conv_"),
+                idx
+            )),
+        );
+    }
     v
 }
 

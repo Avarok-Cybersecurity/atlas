@@ -305,4 +305,3 @@ pub fn responses_event_name(ev: &ResponsesStreamEvent) -> &'static str {
         ResponsesStreamEvent::Failed { .. } => "response.failed",
     }
 }
-

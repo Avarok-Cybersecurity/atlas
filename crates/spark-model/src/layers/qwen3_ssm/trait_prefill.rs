@@ -5,7 +5,6 @@
 use super::*;
 
 impl Qwen3SsmLayer {
-
     #[allow(clippy::too_many_arguments)]
     pub(super) fn prefill_inner(
         &self,

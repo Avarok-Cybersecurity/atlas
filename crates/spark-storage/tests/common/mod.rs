@@ -39,9 +39,7 @@ pub fn random_bf16(n: usize, rng: &mut ChaCha8Rng) -> Vec<bf16> {
 }
 
 pub fn tempdir(name: &str) -> PathBuf {
-    let p = std::env::temp_dir().join(format!(
-        "atlas-storage-e2e-{name}-{}", std::process::id()
-    ));
+    let p = std::env::temp_dir().join(format!("atlas-storage-e2e-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).unwrap();
     p
@@ -77,8 +75,12 @@ pub fn populate_disk(backend: &mut PosixBackend, k: &[bf16], v: &[bf16]) {
                     raw,
                 );
             }
-            backend.write_from_host(GroupKey::new(0, blk, kh, KvKind::K), &k_padded).unwrap();
-            backend.write_from_host(GroupKey::new(0, blk, kh, KvKind::V), &v_padded).unwrap();
+            backend
+                .write_from_host(GroupKey::new(0, blk, kh, KvKind::K), &k_padded)
+                .unwrap();
+            backend
+                .write_from_host(GroupKey::new(0, blk, kh, KvKind::V), &v_padded)
+                .unwrap();
         }
     }
 }
@@ -86,10 +88,19 @@ pub fn populate_disk(backend: &mut PosixBackend, k: &[bf16], v: &[bf16]) {
 pub fn build_setup(seed: u64, dir: &PathBuf) -> (Vec<bf16>, Vec<bf16>, Vec<bf16>, PosixBackend) {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let q = random_bf16(NUM_SEQS * NUM_Q_HEADS * HEAD_DIM as usize, &mut rng);
-    let total = NUM_BLOCKS as usize * BLOCK_SIZE as usize * NUM_KV_HEADS as usize * HEAD_DIM as usize;
+    let total =
+        NUM_BLOCKS as usize * BLOCK_SIZE as usize * NUM_KV_HEADS as usize * HEAD_DIM as usize;
     let k = random_bf16(total, &mut rng);
     let v = random_bf16(total, &mut rng);
-    let spec = GroupLayout::new(NUM_LAYERS, NUM_BLOCKS, NUM_KV_HEADS, BLOCK_SIZE, HEAD_DIM, 2, FS_BLOCK);
+    let spec = GroupLayout::new(
+        NUM_LAYERS,
+        NUM_BLOCKS,
+        NUM_KV_HEADS,
+        BLOCK_SIZE,
+        HEAD_DIM,
+        2,
+        FS_BLOCK,
+    );
     let layout = Layout::create(dir, spec).unwrap();
     let mut backend = PosixBackend::new(layout).unwrap();
     populate_disk(&mut backend, &k, &v);
@@ -101,13 +112,27 @@ pub fn build_setup_iouring(
     seed: u64,
     dir: &PathBuf,
     qd: usize,
-) -> (Vec<bf16>, Vec<bf16>, Vec<bf16>, spark_storage::backend::IoUringBackend) {
+) -> (
+    Vec<bf16>,
+    Vec<bf16>,
+    Vec<bf16>,
+    spark_storage::backend::IoUringBackend,
+) {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let q = random_bf16(NUM_SEQS * NUM_Q_HEADS * HEAD_DIM as usize, &mut rng);
-    let total = NUM_BLOCKS as usize * BLOCK_SIZE as usize * NUM_KV_HEADS as usize * HEAD_DIM as usize;
+    let total =
+        NUM_BLOCKS as usize * BLOCK_SIZE as usize * NUM_KV_HEADS as usize * HEAD_DIM as usize;
     let k = random_bf16(total, &mut rng);
     let v = random_bf16(total, &mut rng);
-    let spec = GroupLayout::new(NUM_LAYERS, NUM_BLOCKS, NUM_KV_HEADS, BLOCK_SIZE, HEAD_DIM, 2, FS_BLOCK);
+    let spec = GroupLayout::new(
+        NUM_LAYERS,
+        NUM_BLOCKS,
+        NUM_KV_HEADS,
+        BLOCK_SIZE,
+        HEAD_DIM,
+        2,
+        FS_BLOCK,
+    );
     let layout = Layout::create(dir, spec).unwrap();
     let mut backend = spark_storage::backend::IoUringBackend::new(layout, qd).unwrap();
     populate_disk_via(&mut backend, &k, &v);
@@ -150,8 +175,12 @@ fn populate_disk_via<B: spark_storage::backend::StorageBackend + ?Sized>(
                     raw,
                 );
             }
-            backend.write_from_host(GroupKey::new(0, blk, kh, KvKind::K), &k_padded).unwrap();
-            backend.write_from_host(GroupKey::new(0, blk, kh, KvKind::V), &v_padded).unwrap();
+            backend
+                .write_from_host(GroupKey::new(0, blk, kh, KvKind::K), &k_padded)
+                .unwrap();
+            backend
+                .write_from_host(GroupKey::new(0, blk, kh, KvKind::V), &v_padded)
+                .unwrap();
         }
     }
 }
@@ -161,7 +190,9 @@ pub fn diff_stats(a: &[bf16], b: &[bf16]) -> (f32, f32) {
     let mut sum_d = 0.0_f32;
     for (x, y) in a.iter().zip(b) {
         let d = (x.to_f32() - y.to_f32()).abs();
-        if d > max_d { max_d = d; }
+        if d > max_d {
+            max_d = d;
+        }
         sum_d += d;
     }
     (max_d, sum_d / a.len() as f32)

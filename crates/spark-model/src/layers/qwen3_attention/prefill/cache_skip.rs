@@ -106,17 +106,7 @@ impl Qwen3AttentionLayer {
         // ── Standard Q/K/V projection (non-MLA models) ──
         if self.mla.is_none() {
             self.prefill_attention_cache_skip_qkv(
-                normed,
-                normed_fp8,
-                n,
-                h,
-                nkv,
-                hd,
-                q_proj_dim,
-                kv_dim,
-                num_tokens,
-                bf16,
-                ctx,
+                normed, normed_fp8, n, h, nkv, hd, q_proj_dim, kv_dim, num_tokens, bf16, ctx,
                 stream,
             )?;
         } // end if self.mla.is_none() (standard projection path)

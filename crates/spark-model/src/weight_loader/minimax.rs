@@ -14,7 +14,7 @@
 //!   * 3 MTP draft modules (vs 1 in Qwen3.5) — M5 follow-up
 //!   * Native FP8 E4M3 with `weight_block_size=[128,128]` — M4 follow-up
 //!
-//! Layer construction here produces a Vec<Qwen3AttentionLayer> with:
+//! Layer construction here produces a `Vec<Qwen3AttentionLayer>` with:
 //!   * Attention: runtime-quantize Q/K/V/O from BF16 to NVFP4 (same
 //!     code path as qwen35_dense `Standard` variant); `AttentionWeights`
 //!     carries both the full-hidden qk_norm weights (MiniMax-active) and
@@ -176,15 +176,8 @@ impl ModelWeightLoader for MinimaxM2WeightLoader {
                 // TP shard the BF16 weight before NVFP4 quantization. When
                 // tp_size == 1 the helper returns the input pointer untouched
                 // so the existing single-rank path is unchanged.
-                let (sharded_ptr, local_n, local_k) = shard_dense_bf16(
-                    dense_w.weight,
-                    full_n,
-                    full_k,
-                    kind,
-                    tp_rank,
-                    tp_size,
-                    gpu,
-                )?;
+                let (sharded_ptr, local_n, local_k) =
+                    shard_dense_bf16(dense_w.weight, full_n, full_k, kind, tp_rank, tp_size, gpu)?;
                 let sharded = DenseWeight {
                     weight: sharded_ptr,
                 };
@@ -232,10 +225,14 @@ impl ModelWeightLoader for MinimaxM2WeightLoader {
             // it reads a BF16 weight from the store, TP-shards before
             // quantization, and converts to NVFP4. Helper handles the
             // dimension math for all four projections.
-            let [(q_dense, q_nvfp4), (k_dense, k_nvfp4), (v_dense, v_nvfp4), (_o_dense, o_nvfp4)] =
-                load_qkvo_tp(config, |name, full_n, full_k, kind| {
-                    load_and_quant(name, full_n, full_k, kind)
-                })?;
+            let [
+                (q_dense, q_nvfp4),
+                (k_dense, k_nvfp4),
+                (v_dense, v_nvfp4),
+                (_o_dense, o_nvfp4),
+            ] = load_qkvo_tp(config, |name, full_n, full_k, kind| {
+                load_and_quant(name, full_n, full_k, kind)
+            })?;
 
             let (k_scale, v_scale) = load_kv_scales(store, &p, gpu);
 

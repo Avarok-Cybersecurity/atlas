@@ -9,8 +9,8 @@
 //! FP8 (8-bit), or BF16 (16-bit). Higher precision improves draft acceptance
 //! at the cost of increased MTP forward latency.
 
-use std::any::Any;
 use parking_lot::Mutex;
+use std::any::Any;
 
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
@@ -226,12 +226,11 @@ impl MtpHead {
             MtpQuantization::Bf16 => Ok(ProjectionWeight::Bf16(*bf16)),
         }
     }
-
 }
 
-mod new;
 mod forward;
 mod moe_forward;
+mod new;
 
 impl DraftProposer for MtpHead {
     fn alloc_state(&self, _gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>> {
@@ -348,9 +347,7 @@ impl DraftProposer for MtpHead {
             .downcast_mut::<MtpProposerState>()
             .ok_or_else(|| anyhow::anyhow!("Invalid MTP proposer state"))?;
         if !mtp_state.block_table.is_empty() {
-            self.kv_cache
-                .lock()
-                .free_blocks(&mtp_state.block_table);
+            self.kv_cache.lock().free_blocks(&mtp_state.block_table);
             mtp_state.block_table.clear();
         }
         mtp_state.seq_len = 0;

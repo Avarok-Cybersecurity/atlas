@@ -60,18 +60,14 @@ pub(super) async fn dispatch_streaming(
             "n > 1 is not supported in streaming mode".to_string(),
         );
     }
-    let tool_defs: Vec<tool_parser::ToolDefinition> =
-        req.tools.clone().unwrap_or_default();
+    let tool_defs: Vec<tool_parser::ToolDefinition> = req.tools.clone().unwrap_or_default();
     // Sort by length descending so the streaming stop-string scan
     // matches the longest overlapping prefix first (e.g. when the
     // caller provides ["</answer", "</answer>"], `find` would
     // otherwise truncate at the shorter, wrong boundary).
     let mut stop_strings = req.stop.clone();
     stop_strings.sort_by_key(|s| std::cmp::Reverse(s.len()));
-    let stream_include_usage = req
-        .stream_options
-        .map(|o| o.include_usage)
-        .unwrap_or(false);
+    let stream_include_usage = req.stream_options.map(|o| o.include_usage).unwrap_or(false);
     let req_service_tier = req.service_tier.clone();
     let req_metadata = req.metadata.clone();
     let ctx_for_stream = req_ctx.as_ref().map(|e| e.0.clone());

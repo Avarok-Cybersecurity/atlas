@@ -43,9 +43,7 @@ use spark_runtime::weights::WeightStore;
 
 use crate::layer::TransformerLayer;
 use crate::layers::VisionEncoder;
-use crate::weight_map::{
-    DenseWeight, MtpWeights, Nvfp4Variant, detect_nvfp4_variant,
-};
+use crate::weight_map::{DenseWeight, MtpWeights, Nvfp4Variant, detect_nvfp4_variant};
 
 /// Runtime quantization format for weight dispatch.
 ///
@@ -89,7 +87,7 @@ impl QuantFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WeightFormat {
     /// NVFP4 E2M1 on disk (nvidia ModelOpt or compressed-tensors).
-    /// Weights load directly into [`QuantizedWeight`] with no conversion.
+    /// Weights load directly into `QuantizedWeight` with no conversion.
     Nvfp4,
     /// FP8 E4M3 block-scaled on disk (e.g. `quant_method: "fp8"` with `weight_block_size`).
     /// Each weight tensor has a `weight_scale_inv` (BF16 per-block) companion.

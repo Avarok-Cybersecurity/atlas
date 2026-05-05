@@ -37,13 +37,12 @@
 //! identical for every call. Deviations get a per-site comment.
 
 use anyhow::{Context, Result};
+use parking_lot::Mutex;
 use std::ffi::c_void;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::ptr;
-use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
 
 use crate::nccl::{self, NcclComm, NcclDataType, NcclResult, NcclUniqueId};
 
@@ -521,6 +520,5 @@ impl Drop for NcclBackend {
         }
     }
 }
-
 
 mod comm_impl;

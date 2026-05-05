@@ -64,4 +64,3 @@ pub(super) fn parse_tools_tag_calls(text: &str) -> (Option<String>, Vec<ToolCall
 // first — the first one that extracts any call wins. If none do, salvage
 // passes run in order; the first salvage that extracts a call wins. Each
 // pass is a `ToolCallPass` impl and mutates a shared `PassState`.
-

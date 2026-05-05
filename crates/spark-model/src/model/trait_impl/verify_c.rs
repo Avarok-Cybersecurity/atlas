@@ -18,9 +18,9 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -28,21 +28,20 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::super::ssm_pool::SsmStatePool;
+use super::super::ssm_snapshot::SsmSnapshotPool;
+use super::super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::super::types::{TransformerModel, PinnedMetaStaging};
-use super::super::ssm_pool::SsmStatePool;
-use super::super::ssm_snapshot::SsmSnapshotPool;
-use super::super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
 
 impl TransformerModel {
     pub(super) fn decode_verify_graphed_k3_dispatch(
@@ -67,9 +66,7 @@ impl TransformerModel {
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
-        let mut kv_cache = self
-            .kv_cache
-            .lock();
+        let mut kv_cache = self.kv_cache.lock();
 
         // ── Phase 1: Pre-graph (varies per step, NOT captured) ──
 
@@ -83,7 +80,14 @@ impl TransformerModel {
         for t in 0..k {
             let pos = seq.seq_len + t;
             let blocks_needed = (pos / bs) + 1;
-            ensure_blocks_through_decode(seq, blocks_needed - 1, &mut kv_cache, self.prefix_cache.as_ref(), self.gpu.as_ref(), stream)?;
+            ensure_blocks_through_decode(
+                seq,
+                blocks_needed - 1,
+                &mut kv_cache,
+                self.prefix_cache.as_ref(),
+                self.gpu.as_ref(),
+                stream,
+            )?;
         }
 
         // 1c. Upload 3-entry attention metadata
@@ -168,10 +172,7 @@ impl TransformerModel {
         // ── Phase 2: CUDA graph capture / replay ──
 
         let mut graph_cache = if use_graphs {
-            Some(
-                self.verify3_graph
-                    .lock(),
-            )
+            Some(self.verify3_graph.lock())
         } else {
             None
         };
@@ -181,9 +182,10 @@ impl TransformerModel {
             .as_ref()
             .and_then(|c| c.get(&seq.slot_idx).copied());
         if let Some(graph) = cached_for_slot
-            && graph.0 != 0 {
-                self.gpu.launch_graph(graph, stream)?;
-            }
+            && graph.0 != 0
+        {
+            self.gpu.launch_graph(graph, stream)?;
+        }
         let need_run = cached_for_slot.is_none();
         if need_run {
             let seq_lens_vec: Vec<usize> = (0..k).map(|t| seq.seq_len + t).collect();
@@ -292,5 +294,4 @@ impl TransformerModel {
 
         Ok([tok0, tok1, tok2])
     }
-
 }

@@ -4,7 +4,6 @@
 
 use super::*;
 
-
 /// Emit a token for an active sequence (stream + bookkeeping).
 ///
 /// Per OpenAI spec, stop/EOS tokens are NOT streamed to the client —
@@ -26,13 +25,14 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
     // poisoning its context and causing the observed multi-turn drift /
     // "file was corrupted" hallucinations in opencode.
     if let Some(ims) = im_start_hard_stop()
-        && tok == ims {
-            a.finished = true;
-            tracing::debug!(
-                "<|im_start|> hard-stop fired (id={ims}); ending turn before grammar/suppress_eos"
-            );
-            return;
-        }
+        && tok == ims
+    {
+        a.finished = true;
+        tracing::debug!(
+            "<|im_start|> hard-stop fired (id={ims}); ending turn before grammar/suppress_eos"
+        );
+        return;
+    }
 
     // Spontaneous <think>: model generates <think> even when thinking was not
     // requested. Enter thinking mode so EOS is suppressed and thinking content
@@ -79,9 +79,10 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
     // sequence is inside `<think>`…`</think>` so the matcher only
     // sees the final-output token stream.
     if !a.inside_thinking
-        && let Some(ref mut gs) = a.grammar_state {
-            gs.accept_token(tok);
-        }
+        && let Some(ref mut gs) = a.grammar_state
+    {
+        gs.accept_token(tok);
+    }
 
     // Accumulate logprobs data for blocking responses.
     if let Some(lp) = logprobs {
@@ -108,10 +109,12 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         } else {
             a.thinking_tokens += 1;
             if let Some(budget) = a.thinking_budget
-                && a.thinking_tokens >= budget && !a.force_end_thinking {
-                    a.force_end_thinking = true;
-                    tracing::info!("Thinking budget exhausted ({budget} tokens), forcing </think>");
-                }
+                && a.thinking_tokens >= budget
+                && !a.force_end_thinking
+            {
+                a.force_end_thinking = true;
+                tracing::info!("Thinking budget exhausted ({budget} tokens), forcing </think>");
+            }
         }
     } else {
         a.remaining -= 1;
@@ -142,35 +145,34 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
     // of spontaneous-thinking content so it doesn't pollute opencode's history.
     let suppress_stream = a.inside_thinking && !a.enable_thinking;
     if let ResponseSink::Streaming(ref tx) = a.sink
-        && !suppress_stream {
-            let event = if let Some(lp) = a.logprobs_data.last().cloned() {
-                StreamEvent::TokenWithLogprobs(tok, lp)
-            } else {
-                StreamEvent::Token(tok)
-            };
-            // Discriminate transient backpressure (channel full) from a real
-            // consumer-drop (channel closed). The previous `try_send().is_err()`
-            // collapsed the two and silently terminated the seq with
-            // `finish_reason="length"` whenever the SSE consumer momentarily
-            // stalled — surfaced as "request stops half-way" in Open WebUI.
-            match tx.try_send(event) {
-                Ok(()) => {}
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                    tracing::debug!("Streaming receiver dropped, finishing seq");
+        && !suppress_stream
+    {
+        let event = if let Some(lp) = a.logprobs_data.last().cloned() {
+            StreamEvent::TokenWithLogprobs(tok, lp)
+        } else {
+            StreamEvent::Token(tok)
+        };
+        // Discriminate transient backpressure (channel full) from a real
+        // consumer-drop (channel closed). The previous `try_send().is_err()`
+        // collapsed the two and silently terminated the seq with
+        // `finish_reason="length"` whenever the SSE consumer momentarily
+        // stalled — surfaced as "request stops half-way" in Open WebUI.
+        match tx.try_send(event) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                tracing::debug!("Streaming receiver dropped, finishing seq");
+                a.finished = true;
+                return;
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
+                if let Err(e) = tx.blocking_send(event) {
+                    tracing::error!("Streaming send failed during backpressure: {e}");
                     a.finished = true;
                     return;
                 }
-                Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                    if let Err(e) = tx.blocking_send(event) {
-                        tracing::error!(
-                            "Streaming send failed during backpressure: {e}"
-                        );
-                        a.finished = true;
-                        return;
-                    }
-                }
             }
         }
+    }
     if a.remaining == 0 {
         tracing::info!(
             "emit_token: remaining=0, output_tokens={}, thinking_tokens={}",

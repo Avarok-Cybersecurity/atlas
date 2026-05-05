@@ -45,7 +45,6 @@ pub(super) fn diag_norm(
 }
 
 /// Debug: read back FP32 GPU tensor and compute L2 norm + first 4 values.
-
 pub fn diag_norm_f32(
     gpu: &dyn GpuBackend,
     ptr: DevicePtr,
@@ -74,7 +73,6 @@ pub fn diag_norm_f32(
 
 /// Gemma-4 diagnostic gate. Set ATLAS_DIAG_GEMMA4=1 to enable per-layer
 /// hidden-state norm dumps in the decode path. Heavy (one d2h copy per
-
 pub(super) fn gemma4_diag_enabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| {

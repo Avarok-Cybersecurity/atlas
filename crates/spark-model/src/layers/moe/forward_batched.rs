@@ -5,7 +5,6 @@
 use super::*;
 
 impl MoeLayer {
-
     /// Batched forward: GEMM gate for N tokens, per-token expert dispatch.
     ///
     /// Gate projection reads weights once for N tokens (GEMM M=N).
@@ -148,9 +147,15 @@ impl MoeLayer {
             } else if self.use_t_layout_for_prefill() {
                 // Phase 8a unified-layout NVFP4 batched prefill — transposed
                 // kernels coalesce well at large N. Hybrid mode lands here too.
-                let gate_t = self.gate_ptrs_t.as_ref().expect("gate_ptrs_t under unified_t");
+                let gate_t = self
+                    .gate_ptrs_t
+                    .as_ref()
+                    .expect("gate_ptrs_t under unified_t");
                 let up_t = self.up_ptrs_t.as_ref().expect("up_ptrs_t under unified_t");
-                let down_t = self.down_ptrs_t.as_ref().expect("down_ptrs_t under unified_t");
+                let down_t = self
+                    .down_ptrs_t
+                    .as_ref()
+                    .expect("down_ptrs_t under unified_t");
                 let null_qw = QuantizedWeight::null();
                 let sh_gate_t = self.shared_gate_t.as_ref().unwrap_or(&null_qw);
                 let sh_up_t = self.shared_up_t.as_ref().unwrap_or(&null_qw);
@@ -258,13 +263,14 @@ impl MoeLayer {
 
             // EP all-reduce per-token partial output
             if let Some(comm) = ctx.comm
-                && comm.world_size() > 1 {
-                    if ctx.graph_capture {
-                        comm.all_reduce(output_t.0, h as usize * 2)?;
-                    } else {
-                        comm.all_reduce_async(output_t.0, h as usize * 2, stream)?;
-                    }
+                && comm.world_size() > 1
+            {
+                if ctx.graph_capture {
+                    comm.all_reduce(output_t.0, h as usize * 2)?;
+                } else {
+                    comm.all_reduce_async(output_t.0, h as usize * 2, stream)?;
                 }
+            }
         }
 
         Ok(())

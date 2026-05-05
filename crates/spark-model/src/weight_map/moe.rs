@@ -16,15 +16,15 @@ pub struct MoeWeights {
     pub gate: DenseWeight,
     /// Shared expert (always active).
     pub shared_expert: ExpertWeight,
-    /// Shared expert gate sigmoid weight: [1] BF16.
+    /// Shared expert gate sigmoid weight: `[1]` BF16.
     pub shared_expert_gate: DenseWeight,
     /// Per-expert weights: 512 experts.
     pub experts: Vec<ExpertWeight>,
     /// Optional router pre-normalization weight.
     /// Set for Gemma-4 MoE where the HF reference applies a pure RMSNorm to
     /// the router input followed by a per-dim scale multiplication:
-    ///   router_input = rms_norm(x) * scale * hidden_size^(-0.5)
-    /// Stored as a BF16 [hidden_size] vector containing `scale * root_size`
+    ///   `router_input = rms_norm(x) * scale * hidden_size^(-0.5)`
+    /// Stored as a BF16 `[hidden_size]` vector containing `scale * root_size`
     /// so the existing rms_norm kernel (`output = x/rms(x) * weight`) applies
     /// both steps in one pass. `None` for models that feed the router from
     /// the raw post-attention residual.
@@ -102,13 +102,13 @@ pub struct DenseExpertWeight {
 /// Single decoder layer + concat projection. All projection weights are BF16
 /// and get quantized to NVFP4 at load time by the weight loader.
 pub struct MtpWeights {
-    /// RMSNorm on token embedding before concat: [hidden_size] BF16.
+    /// RMSNorm on token embedding before concat: `[hidden_size]` BF16.
     pub pre_fc_norm_embedding: DenseWeight,
-    /// RMSNorm on target hidden state before concat: [hidden_size] BF16.
+    /// RMSNorm on target hidden state before concat: `[hidden_size]` BF16.
     pub pre_fc_norm_hidden: DenseWeight,
-    /// Concat projection: [hidden_size, 2*hidden_size] BF16.
+    /// Concat projection: `[hidden_size, 2*hidden_size]` BF16.
     pub fc: DenseWeight,
-    /// Input layernorm for the attention layer: [hidden_size] BF16.
+    /// Input layernorm for the attention layer: `[hidden_size]` BF16.
     pub input_layernorm: DenseWeight,
     /// Attention projections (all BF16).
     pub q_proj: DenseWeight,
@@ -117,7 +117,7 @@ pub struct MtpWeights {
     pub o_proj: DenseWeight,
     pub q_norm: DenseWeight,
     pub k_norm: DenseWeight,
-    /// Post-attention layernorm: [hidden_size] BF16.
+    /// Post-attention layernorm: `[hidden_size]` BF16.
     pub post_attn_layernorm: DenseWeight,
     /// MoE router gate: [num_experts, hidden_size] BF16.
     pub moe_gate: DenseWeight,
@@ -127,7 +127,6 @@ pub struct MtpWeights {
     pub shared_expert_gate: DenseWeight,
     /// Per-expert weights (512 experts, BF16).
     pub experts: Vec<DenseExpertWeight>,
-    /// Final output RMSNorm: [hidden_size] BF16.
+    /// Final output RMSNorm: `[hidden_size]` BF16.
     pub norm: DenseWeight,
 }
-

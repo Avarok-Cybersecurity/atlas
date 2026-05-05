@@ -8,18 +8,12 @@ use axum::response::sse::Event;
 use crate::openai::{ChatCompletionChunk, Usage};
 use crate::tool_parser;
 
-use super::super::failures::{
-    bump_f12_tool_call_count,
-    flush_content_sanitizer,
-};
+use super::super::failures::{bump_f12_tool_call_count, flush_content_sanitizer};
 use super::super::sanitizer::sanitize_content_chunk;
 use super::ctx::StreamCtx;
 use super::state::StreamState;
 use super::tool_handlers::{
-    handle_complete_tool_call,
-    handle_tool_call_delta,
-    handle_tool_call_end,
-    handle_tool_call_start,
+    handle_complete_tool_call, handle_tool_call_delta, handle_tool_call_end, handle_tool_call_start,
 };
 
 type SseVec = Vec<Result<Event, std::convert::Infallible>>;
@@ -54,14 +48,10 @@ pub(super) fn handle_done(
                         &ctx.leak_markers,
                     );
                     if !sanitized.is_empty() {
-                        let chunk = ChatCompletionChunk::content_chunk(
-                            &ctx.model,
-                            &ctx.id,
-                            sanitized,
-                        );
-                        sse_events.push(Ok(Event::default().data(
-                            serde_json::to_string(&chunk).unwrap_or_default(),
-                        )));
+                        let chunk =
+                            ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized);
+                        sse_events.push(Ok(Event::default()
+                            .data(serde_json::to_string(&chunk).unwrap_or_default())));
                     }
                 }
                 tool_parser::DetectorOutput::ToolCall(mut tc, tc_idx) => {
@@ -95,9 +85,9 @@ pub(super) fn handle_done(
             state.refusal_scan_buf.push_str(&tail);
         }
         let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, tail);
-        sse_events.push(Ok(Event::default().data(
-            serde_json::to_string(&chunk).unwrap_or_default(),
-        )));
+        sse_events.push(Ok(
+            Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
+        ));
     }
 
     // ── Usage block ─────────────────────────────────────────────────
@@ -125,13 +115,9 @@ pub(super) fn handle_done(
     };
 
     // ── Last-resort tool salvage ────────────────────────────────────
-    if !state.salvaged_tool_call
-        && !state.detector.as_ref().is_some_and(|d| d.has_tool_calls())
-    {
-        let salvaged = crate::tool_salvage::salvage(
-            &state.refusal_scan_buf,
-            &ctx.tool_defs_for_backfill,
-        );
+    if !state.salvaged_tool_call && !state.detector.as_ref().is_some_and(|d| d.has_tool_calls()) {
+        let salvaged =
+            crate::tool_salvage::salvage(&state.refusal_scan_buf, &ctx.tool_defs_for_backfill);
         for (idx, tc) in salvaged.iter().enumerate() {
             tracing::warn!(
                 tool = %tc.function.name,
@@ -143,20 +129,19 @@ pub(super) fn handle_done(
                 ctx.max_tool_calls_per_response,
                 &mut state.stop_string_triggered,
             );
-            let start =
-                ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, idx);
-            sse_events.push(Ok(Event::default().data(
-                serde_json::to_string(&start).unwrap_or_default(),
-            )));
+            let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, idx);
+            sse_events.push(Ok(
+                Event::default().data(serde_json::to_string(&start).unwrap_or_default())
+            ));
             let frag = ChatCompletionChunk::tool_call_args_fragment(
                 &ctx.model,
                 &ctx.id,
                 idx,
                 &tc.function.arguments,
             );
-            sse_events.push(Ok(Event::default().data(
-                serde_json::to_string(&frag).unwrap_or_default(),
-            )));
+            sse_events.push(Ok(
+                Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
+            ));
         }
         if !salvaged.is_empty() {
             state.salvaged_tool_call = true;
@@ -187,12 +172,10 @@ pub(super) fn handle_done(
     let emit_separate_usage = ctx.req_stream_include_usage;
     let usage_for_dump = usage.clone();
     if emit_separate_usage {
-        let usage_chunk =
-            ChatCompletionChunk::usage_only_chunk(&ctx.model, &ctx.id, usage.clone());
+        let usage_chunk = ChatCompletionChunk::usage_only_chunk(&ctx.model, &ctx.id, usage.clone());
         let json = serde_json::to_string(&usage_chunk).unwrap_or_default();
         sse_events.push(Ok(Event::default().data(json)));
-        let final_chunk =
-            ChatCompletionChunk::final_chunk_no_usage(&ctx.model, &ctx.id, fr);
+        let final_chunk = ChatCompletionChunk::final_chunk_no_usage(&ctx.model, &ctx.id, fr);
         let json = serde_json::to_string(&final_chunk).unwrap_or_default();
         sse_events.push(Ok(Event::default().data(json)));
     } else {

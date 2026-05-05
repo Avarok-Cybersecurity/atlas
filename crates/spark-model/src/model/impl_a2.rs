@@ -2,9 +2,9 @@
 
 #![allow(unused_imports, dead_code)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -12,25 +12,22 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::ssm_pool::SsmStatePool;
+use super::ssm_snapshot::SsmSnapshotPool;
+use super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::types::{TransformerModel, PinnedMetaStaging};
-use super::ssm_pool::SsmStatePool;
-use super::ssm_snapshot::SsmSnapshotPool;
-use super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
-
 
 impl TransformerModel {
-
     pub(super) fn comm_ref(&self) -> Option<&dyn spark_comm::CommBackend> {
         self.comm.as_deref()
     }
@@ -55,9 +52,10 @@ impl TransformerModel {
         // SAFETY: Called from Drop, which runs on the owning thread.
         let staging = unsafe { &*self.pinned_staging.get() };
         if !staging.ptr.is_null()
-            && let Err(e) = self.gpu.free_host_pinned(staging.ptr, staging.bytes) {
-                tracing::warn!("Failed to free pinned staging: {e}");
-            }
+            && let Err(e) = self.gpu.free_host_pinned(staging.ptr, staging.bytes)
+        {
+            tracing::warn!("Failed to free pinned staging: {e}");
+        }
     }
 
     pub(super) fn ensure_chunked_prefill_meta<'a>(
@@ -323,5 +321,4 @@ impl TransformerModel {
 
         Ok(true)
     }
-
 }

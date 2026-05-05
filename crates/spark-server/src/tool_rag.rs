@@ -84,11 +84,7 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 /// Retrieve the top-K tool names most similar to `query_embedding`.
 /// Returns names in descending similarity order. When `k >= anchors.len()`,
 /// returns all anchor names sorted by similarity.
-pub fn retrieve_top_k(
-    query_embedding: &[f32],
-    anchors: &[ToolAnchor],
-    k: usize,
-) -> Vec<String> {
+pub fn retrieve_top_k(query_embedding: &[f32], anchors: &[ToolAnchor], k: usize) -> Vec<String> {
     let mut scored: Vec<(f32, &str)> = anchors
         .iter()
         .map(|a| (cosine(query_embedding, &a.embedding), a.name.as_str()))
@@ -110,7 +106,10 @@ where
     F: Fn(&T) -> &str,
 {
     let keep_set: HashSet<&str> = keep.iter().map(|s| s.as_str()).collect();
-    tools.into_iter().filter(|t| keep_set.contains(get_name(t))).collect()
+    tools
+        .into_iter()
+        .filter(|t| keep_set.contains(get_name(t)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -164,14 +163,21 @@ mod tests {
             })
             .collect();
         for w in scored.windows(2) {
-            assert!(w[0] >= w[1] - 1e-5, "scores must be sorted descending: {:?}", scored);
+            assert!(
+                w[0] >= w[1] - 1e-5,
+                "scores must be sorted descending: {:?}",
+                scored
+            );
         }
     }
 
     #[test]
     fn retrieve_top_k_clamped_to_anchor_count() {
         let anchors = vec![ToolAnchor::build(
-            "only", &["the only tool"], "", &StubEmbedder,
+            "only",
+            &["the only tool"],
+            "",
+            &StubEmbedder,
         )];
         let q = StubEmbedder.embed("anything");
         let top = retrieve_top_k(&q, &anchors, 100);

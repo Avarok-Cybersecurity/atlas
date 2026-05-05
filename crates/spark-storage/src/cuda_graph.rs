@@ -49,7 +49,10 @@ impl CapturedStep {
             unsafe { cuGraphDestroy(graph) };
             bail!("cuGraphInstantiateWithFlags failed: {s3}");
         }
-        Ok(Self { graph, graph_exec: exec })
+        Ok(Self {
+            graph,
+            graph_exec: exec,
+        })
     }
 
     pub fn launch(&self, stream: u64) -> Result<()> {

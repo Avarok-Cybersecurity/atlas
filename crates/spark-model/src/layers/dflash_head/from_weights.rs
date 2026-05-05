@@ -7,9 +7,9 @@
 //! cache setup) and [`BlockDiffusionDraftHead::validate_against_target`].
 
 use anyhow::Result;
+use parking_lot::Mutex;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::{KvCacheConfig, KvCacheDtype, PagedKvCache};
-use parking_lot::Mutex;
 
 use super::{
     BlockDiffusionDraftHead, DflashKernels, DflashLayer, DflashQuantization, DflashScratch,
@@ -233,10 +233,7 @@ impl BlockDiffusionDraftHead {
             num_kv_heads,
             head_dim,
             vocab_size,
-            draft_vocab_size: weights
-                .config
-                .draft_vocab_size
-                .unwrap_or(vocab_size),
+            draft_vocab_size: weights.config.draft_vocab_size.unwrap_or(vocab_size),
             gamma: gamma_val,
             mask_token_id,
             window_size,

@@ -7,9 +7,9 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -17,21 +17,20 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::super::ssm_pool::SsmStatePool;
+use super::super::ssm_snapshot::SsmSnapshotPool;
+use super::super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::super::types::{TransformerModel, PinnedMetaStaging};
-use super::super::ssm_pool::SsmStatePool;
-use super::super::ssm_snapshot::SsmSnapshotPool;
-use super::super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
 
 impl TransformerModel {
     pub(super) fn prefill_twophase_dispatch(
@@ -110,9 +109,7 @@ impl TransformerModel {
             self.buffers.zero_all(self.gpu.as_ref(), stream)?;
         }
 
-        let mut kv_cache = self
-            .kv_cache
-            .lock();
+        let mut kv_cache = self.kv_cache.lock();
 
         // ── 1. Embed ALL tokens → [total_len, H] contiguous ──
         {
@@ -138,25 +135,26 @@ impl TransformerModel {
         {
             let pending = *self.vision_embed_patches.lock();
             if pending > 0
-                && let Some(ve) = &self.vision_encoder {
-                    let pad_id = self
-                        .config
-                        .vision
-                        .as_ref()
-                        .map(|v| v.image_pad_token_id)
-                        .filter(|v| *v != 0)
-                        .unwrap_or(crate::layers::vision_encoder::IMAGE_PAD_TOKEN_ID);
-                    let mut img_idx = 0usize;
-                    for (i, &tok) in tokens.iter().enumerate() {
-                        if tok == pad_id {
-                            let src = ve.buf_out.offset(img_idx * ve.out_hidden_size * 2);
-                            let dst = hidden.offset(i * h * fp32);
-                            self.gpu
-                                .copy_d2d_async(src, dst, ve.out_hidden_size * 2, stream)?;
-                            img_idx += 1;
-                        }
+                && let Some(ve) = &self.vision_encoder
+            {
+                let pad_id = self
+                    .config
+                    .vision
+                    .as_ref()
+                    .map(|v| v.image_pad_token_id)
+                    .filter(|v| *v != 0)
+                    .unwrap_or(crate::layers::vision_encoder::IMAGE_PAD_TOKEN_ID);
+                let mut img_idx = 0usize;
+                for (i, &tok) in tokens.iter().enumerate() {
+                    if tok == pad_id {
+                        let src = ve.buf_out.offset(img_idx * ve.out_hidden_size * 2);
+                        let dst = hidden.offset(i * h * fp32);
+                        self.gpu
+                            .copy_d2d_async(src, dst, ve.out_hidden_size * 2, stream)?;
+                        img_idx += 1;
                     }
                 }
+            }
         }
 
         // ── 2. Prefix cache lookup + block allocation for full sequence ──
@@ -224,7 +222,14 @@ impl TransformerModel {
 
         // Allocate all KV blocks upfront for the full sequence.
         let blocks_needed = (total_len - 1) / bs + 1;
-        ensure_blocks_through_prefill(seq, blocks_needed - 1, &mut kv_cache, self.prefix_cache.as_ref(), self.gpu.as_ref(), stream)?;
+        ensure_blocks_through_prefill(
+            seq,
+            blocks_needed - 1,
+            &mut kv_cache,
+            self.prefix_cache.as_ref(),
+            self.gpu.as_ref(),
+            stream,
+        )?;
 
         // Determine effective processing range (skip Marconi-cached tokens).
         let (proc_start, proc_count) = if marconi_skip && kv_write_start > 0 {
@@ -235,7 +240,8 @@ impl TransformerModel {
 
         // If the entire prompt is cached, just process the last token for logits.
         if proc_count == 0 {
-            return self.prefill_full_cache_hit(tokens, seq, hidden, h as u32, bs, total_len, stream);
+            return self
+                .prefill_full_cache_hit(tokens, seq, hidden, h as u32, bs, total_len, stream);
         }
 
         // Re-embed only the uncached portion at hidden[0..proc_count].
@@ -293,7 +299,9 @@ impl TransformerModel {
                 stg.slots.clear();
                 stg.slots
                     .extend((proc_start..proc_start + proc_count).map(|i| {
-                        let block_idx = seq.physical_block_for(i / bs).unwrap_or(self.dummy_kv_block);
+                        let block_idx = seq
+                            .physical_block_for(i / bs)
+                            .unwrap_or(self.dummy_kv_block);
                         (block_idx as i64) * (bs as i64) + ((i % bs) as i64)
                     }));
                 cursor = slot_offset;
@@ -501,5 +509,4 @@ impl TransformerModel {
 
         Ok(self.decode_logits_ptr())
     }
-
 }

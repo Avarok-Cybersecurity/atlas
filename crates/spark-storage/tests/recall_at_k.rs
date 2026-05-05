@@ -75,8 +75,7 @@ fn build_needle_haystack(seed: u64) -> (Vec<bf16>, Vec<bf16>, HashSet<usize>) {
         let blk = block_pool[n];
         needles.insert(blk);
         let off = (n.wrapping_mul(7919)) % BLOCK_SIZE;
-        let k_offset =
-            (blk * BLOCK_SIZE * NUM_KV_HEADS + off * NUM_KV_HEADS + kh) * HEAD_DIM;
+        let k_offset = (blk * BLOCK_SIZE * NUM_KV_HEADS + off * NUM_KV_HEADS + kh) * HEAD_DIM;
         for i in 0..HEAD_DIM {
             let qv = q[qh * HEAD_DIM + i].to_f32();
             k[k_offset + i] = bf16::from_f32(NEEDLE_BETA * qv);
@@ -92,6 +91,7 @@ fn topk(scores: &[f32], k: usize) -> HashSet<usize> {
 }
 
 #[test]
+#[ignore = "requires GPU"]
 fn recall_at_10_percent_meets_target() {
     let ctx = CudaCtx::new(0).expect("cuda init");
     let dims = PredictorDims {
@@ -123,17 +123,31 @@ fn recall_at_10_percent_meets_target() {
                 ctx.stream,
             )
             .unwrap();
-            pred.project_kv_block(&ctx, 0, blk, k_block_dev.ptr).unwrap();
+            pred.project_kv_block(&ctx, 0, blk, k_block_dev.ptr)
+                .unwrap();
         }
         // Project Q.
         let q_dev = DeviceBuffer::new(q.len() * 2).unwrap();
         let q_proj_dev = DeviceBuffer::new(NUM_Q_HEADS * R * 2).unwrap();
-        copy_h_to_d_async(q_dev.ptr, q.as_ptr() as *const c_void, q.len() * 2, ctx.stream).unwrap();
+        copy_h_to_d_async(
+            q_dev.ptr,
+            q.as_ptr() as *const c_void,
+            q.len() * 2,
+            ctx.stream,
+        )
+        .unwrap();
         pred.project_q(&ctx, q_dev.ptr, q_proj_dev.ptr).unwrap();
 
         // Score every block (a_g_seq points at the contiguous layer slice).
         let scores_dev = DeviceBuffer::new(NUM_BLOCKS * 4).unwrap();
-        pred.score_blocks(&ctx, q_proj_dev.ptr, pred.a_g_dev_ptr(), scores_dev.ptr, NUM_BLOCKS).unwrap();
+        pred.score_blocks(
+            &ctx,
+            q_proj_dev.ptr,
+            pred.a_g_dev_ptr(),
+            scores_dev.ptr,
+            NUM_BLOCKS,
+        )
+        .unwrap();
         let mut scores = vec![0.0_f32; NUM_BLOCKS];
         copy_d_to_h_async(
             scores.as_mut_ptr() as *mut c_void,
@@ -157,7 +171,12 @@ fn recall_at_10_percent_meets_target() {
         recalls.push(recall);
     }
     let mean = recalls.iter().sum::<f32>() / recalls.len() as f32;
-    eprintln!("mean recall@{:.0}% over {} seeds = {:.3}", RECALL_K_FRAC * 100.0, SEEDS.len(), mean);
+    eprintln!(
+        "mean recall@{:.0}% over {} seeds = {:.3}",
+        RECALL_K_FRAC * 100.0,
+        SEEDS.len(),
+        mean
+    );
     assert!(
         mean >= RECALL_TARGET,
         "recall@10% mean = {mean:.3} < target {RECALL_TARGET}; bump R from {R} or rework predictor"

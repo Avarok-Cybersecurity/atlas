@@ -175,8 +175,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         total_reasoning_tokens += response.reasoning_tokens;
         // cached_prompt_tokens is a per-request prefix-cache hit count; for
         // n>1 we only charge once (same prompt reused).
-        total_cached_prompt_tokens =
-            total_cached_prompt_tokens.max(response.cached_prompt_tokens);
+        total_cached_prompt_tokens = total_cached_prompt_tokens.max(response.cached_prompt_tokens);
 
         let (reasoning_content_i, output_text_i) =
             decode_response_text(&state, &response, enable_thinking);
@@ -319,8 +318,7 @@ fn build_choice_message(
                         .unwrap_or(c.len());
                     c = format!("{}{}", &c[..start], &c[end..]);
                 }
-                loop {
-                    let Some(start) = c.find("```") else { break };
+                while let Some(start) = c.find("```") {
                     let after_open = start + 3;
                     let Some(rel_close) = c[after_open..].find("```") else {
                         break;

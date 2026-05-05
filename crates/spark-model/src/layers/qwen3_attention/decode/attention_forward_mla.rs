@@ -336,14 +336,16 @@ impl Qwen3AttentionLayer {
                     stream,
                 )?;
             } else {
-                ctx.gpu.copy_d2d_async(kv_latent, k_cache_entry, mla.kv_lora_rank * 2, stream)?;
+                ctx.gpu
+                    .copy_d2d_async(kv_latent, k_cache_entry, mla.kv_lora_rank * 2, stream)?;
                 ctx.gpu.copy_d2d_async(
                     k_rope_single,
                     k_cache_entry.offset(mla.kv_lora_rank * 2),
                     mla.rope * 2,
                     stream,
                 )?;
-                ctx.gpu.copy_d2d_async(kv_latent, v_cache_entry, mla.kv_lora_rank * 2, stream)?;
+                ctx.gpu
+                    .copy_d2d_async(kv_latent, v_cache_entry, mla.kv_lora_rank * 2, stream)?;
                 ctx.gpu.memset_async(
                     v_cache_entry.offset(mla.kv_lora_rank * 2),
                     0,

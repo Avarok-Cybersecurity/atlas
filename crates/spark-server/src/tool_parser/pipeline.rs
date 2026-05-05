@@ -178,10 +178,7 @@ impl ToolCallPass for BareFunctionAttrPass {
         let text = state.remaining.clone();
         let mut cur = text.as_str();
         let mut first = true;
-        while let Some(start) = cur
-            .find("<function=")
-            .or_else(|| cur.find("<function "))
-        {
+        while let Some(start) = cur.find("<function=").or_else(|| cur.find("<function ")) {
             if first {
                 let before = cur[..start].trim();
                 if !before.is_empty() {
@@ -300,8 +297,7 @@ impl ToolCallPass for ParamAsFunctionSalvagePass {
             Some(p) => p,
             None => return,
         };
-        let Some(tc) =
-            parse_qwen3_coder_call(&reconstructed[func_start..], *state.call_counter)
+        let Some(tc) = parse_qwen3_coder_call(&reconstructed[func_start..], *state.call_counter)
         else {
             return;
         };
@@ -314,4 +310,3 @@ impl ToolCallPass for ParamAsFunctionSalvagePass {
         state.remaining.clear();
     }
 }
-

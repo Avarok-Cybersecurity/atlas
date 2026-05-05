@@ -86,4 +86,3 @@ pub(crate) fn moe_sorted_silu_down(
         .arg_u32(total_expanded)
         .launch(stream)
 }
-

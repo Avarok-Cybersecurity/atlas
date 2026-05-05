@@ -54,10 +54,10 @@ pub(super) fn parse_one_call(text: &str, idx: u32) -> Option<ToolCall> {
                     for (i, ch) in args_text.char_indices().rev() {
                         if (ch == '}' || ch == ']')
                             && serde_json::from_str::<serde_json::Value>(&args_text[..=i]).is_ok()
-                            {
-                                best = args_text[..=i].to_string();
-                                break;
-                            }
+                        {
+                            best = args_text[..=i].to_string();
+                            break;
+                        }
                     }
                     best
                 }
@@ -192,15 +192,16 @@ fn parse_minimax_xml_call(text: &str, idx: u32) -> Option<ToolCall> {
     if is_write_tool {
         for key in PATH_KEYS {
             if let Some(serde_json::Value::String(v)) = args.get(*key)
-                && v.trim().is_empty() {
-                    tracing::warn!(
-                        tool = %func_name,
-                        key = key,
-                        "F80b: dropping minimax_xml call with empty required path; \
-                         model self-truncation"
-                    );
-                    return None;
-                }
+                && v.trim().is_empty()
+            {
+                tracing::warn!(
+                    tool = %func_name,
+                    key = key,
+                    "F80b: dropping minimax_xml call with empty required path; \
+                     model self-truncation"
+                );
+                return None;
+            }
         }
     }
 
@@ -271,4 +272,3 @@ fn extract_json_string(text: &str, key: &str) -> Option<String> {
     }
     None
 }
-

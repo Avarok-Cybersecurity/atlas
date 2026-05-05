@@ -216,7 +216,7 @@ pub fn mla_q_final_assemble_batched(
         .launch(stream)
 }
 
-/// Grouped GEMM for MLA: G independent [M,K_g]@[N_g,K_g]^T→[M,N_g] in one launch.
+/// Grouped GEMM for MLA: G independent `[M,K_g]@[N_g,K_g]^T→[M,N_g]` in one launch.
 /// Grid: (M*G, ceil(N_g/4), 1)  Block: (256, 1, 1)
 #[allow(clippy::too_many_arguments)]
 pub fn grouped_gemm_mla(
@@ -367,4 +367,3 @@ pub fn paged_decode_attn_fp8(
         .arg_u64(cache_stride)
         .launch(stream)
 }
-

@@ -182,4 +182,3 @@ pub fn rope_yarn(
         .arg_f32(theta)
         .launch(stream)
 }
-

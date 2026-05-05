@@ -7,7 +7,9 @@ use super::types::{AnthropicContent, ContentBlock};
 /// Flatten Anthropic message content blocks into a single text string.
 /// For assistant messages with tool_use blocks, also extracts tool calls
 /// so they can be formatted by the tool parser for multi-turn.
-pub(super) fn flatten_content(content: &AnthropicContent) -> (String, Vec<tool_parser::IncomingToolCall>) {
+pub(super) fn flatten_content(
+    content: &AnthropicContent,
+) -> (String, Vec<tool_parser::IncomingToolCall>) {
     match content {
         AnthropicContent::Text(s) => (s.clone(), Vec::new()),
         AnthropicContent::Blocks(blocks) => {

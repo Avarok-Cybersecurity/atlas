@@ -74,7 +74,7 @@ pub fn rms_norm_residual(
 
 /// Fused residual add + RMS norm + residual save.
 ///
-/// hidden[i] += src[i]; normed = rms_norm(hidden) * (1+weight); residual = hidden.
+/// `hidden[i] += src[i]; normed = rms_norm(hidden) * (1+weight); residual = hidden`.
 /// Eliminates one kernel launch per fusion site (48 per decode step).
 ///
 /// Kernel: `residual_add_rms_norm(hidden, src, weight, output, residual, hidden_size, eps)`
@@ -174,4 +174,3 @@ pub fn gated_rms_norm_prefill(
 }
 
 // ── GEMM ───────────────────────────────────────────────────────────
-

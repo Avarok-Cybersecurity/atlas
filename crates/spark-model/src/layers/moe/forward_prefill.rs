@@ -5,7 +5,6 @@
 use super::*;
 
 impl MoeLayer {
-
     /// N-token prefill via grouped GEMM: sort-by-expert → tensor-core GEMM per expert.
     ///
     /// Each expert's weight matrix is loaded once (not per-token), cutting LPDDR5X
@@ -107,7 +106,16 @@ impl MoeLayer {
         };
 
         if has_shared {
-            self.run_shared_expert_prefill(input, n, h, shared_inter, aux, stream, use_overlap, ctx)?;
+            self.run_shared_expert_prefill(
+                input,
+                n,
+                h,
+                shared_inter,
+                aux,
+                stream,
+                use_overlap,
+                ctx,
+            )?;
         }
         prof_step!("shared_expert");
 
@@ -271,8 +279,7 @@ impl MoeLayer {
                 // models that don't ship it). max_m_tiles_m128 = ceil(...
                 // /128) instead of /64; reuse the same upper bound by
                 // halving (each m128 tile covers 2 m64 tiles).
-                let use_m128 = self.nvfp4_gate_up_m128
-                    && self.moe_fused_gate_up_t_k64_m128.0 != 0;
+                let use_m128 = self.nvfp4_gate_up_m128 && self.moe_fused_gate_up_t_k64_m128.0 != 0;
                 if use_m128 {
                     let max_m_tiles_m128 = max_m_tiles.div_ceil(2).max(1);
                     ops::moe_w4a16_fused_gate_up_k64_m128(
@@ -445,45 +452,46 @@ impl MoeLayer {
 
         // EP all-reduce
         if let Some(comm) = ctx.comm
-            && comm.world_size() > 1 {
-                let _t0 = if ctx.profile {
-                    ctx.gpu.synchronize(stream)?;
-                    Some(std::time::Instant::now())
-                } else {
-                    None
-                };
-                if ctx.graph_capture {
-                    comm.all_reduce(output.0, num_tokens * h as usize * 2)?;
-                } else {
-                    comm.all_reduce_async(output.0, num_tokens * h as usize * 2, stream)?;
-                }
-                if let Some(t0) = _t0 {
-                    ctx.gpu.synchronize(stream)?;
-                    tracing::info!(
-                        "  EP allreduce (moe out) N={}: {}µs",
-                        num_tokens,
-                        t0.elapsed().as_micros(),
-                    );
-                }
-                // Add shared expert ONCE after all-reduce (prevents EP doubling)
-                if has_shared {
-                    let shared_down_out = ctx.buffers.attn_output();
-                    if use_overlap {
-                        ctx.gpu.stream_wait_event(stream, self.event_b)?;
-                    }
-                    ops::moe_batched_blend(
-                        ctx.gpu,
-                        self.moe_batched_blend,
-                        output,
-                        shared_down_out,
-                        input,
-                        self.weights.shared_expert_gate.weight,
-                        h,
-                        n,
-                        stream,
-                    )?;
-                }
+            && comm.world_size() > 1
+        {
+            let _t0 = if ctx.profile {
+                ctx.gpu.synchronize(stream)?;
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
+            if ctx.graph_capture {
+                comm.all_reduce(output.0, num_tokens * h as usize * 2)?;
+            } else {
+                comm.all_reduce_async(output.0, num_tokens * h as usize * 2, stream)?;
             }
+            if let Some(t0) = _t0 {
+                ctx.gpu.synchronize(stream)?;
+                tracing::info!(
+                    "  EP allreduce (moe out) N={}: {}µs",
+                    num_tokens,
+                    t0.elapsed().as_micros(),
+                );
+            }
+            // Add shared expert ONCE after all-reduce (prevents EP doubling)
+            if has_shared {
+                let shared_down_out = ctx.buffers.attn_output();
+                if use_overlap {
+                    ctx.gpu.stream_wait_event(stream, self.event_b)?;
+                }
+                ops::moe_batched_blend(
+                    ctx.gpu,
+                    self.moe_batched_blend,
+                    output,
+                    shared_down_out,
+                    input,
+                    self.weights.shared_expert_gate.weight,
+                    h,
+                    n,
+                    stream,
+                )?;
+            }
+        }
 
         Ok(())
     }

@@ -8,18 +8,18 @@
 //! Atlas is designed so that:
 //! - **Build time**: kernel source files are compiled by a target-specific
 //!   compiler into a target-specific binary format (PTX, SPIR-V, metallib).
-//! - **Runtime**: the binary modules are loaded via [`GpuBackend::kernel()`]
-//!   and executed via [`GpuBackend::launch()`].
+//! - **Runtime**: the binary modules are loaded via `GpuBackend::kernel()`
+//!   and executed via `GpuBackend::launch()`.
 //!
 //! This module covers the **build-time** contract. The runtime contract is
-//! defined by [`GpuBackend`](crate::gpu::GpuBackend) in spark-runtime.
+//! defined by `GpuBackend` in spark-runtime.
 //!
 //! # Extending to new hardware
 //!
 //! 1. Create a `HARDWARE.toml` in `kernels/<hw>/` with `vendor = "<vendor>"`.
 //! 2. Implement [`ComputeTarget`] for the new vendor.
 //! 3. Write kernel source files in the vendor's language (`.cu`, `.metal`, `.cl`).
-//! 4. Implement [`GpuBackend`] in spark-runtime for the vendor's runtime API.
+//! 4. Implement `GpuBackend` in spark-runtime for the vendor's runtime API.
 
 use std::path::{Path, PathBuf};
 

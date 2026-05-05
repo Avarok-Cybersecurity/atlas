@@ -2,9 +2,9 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -12,21 +12,20 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::super::ssm_pool::SsmStatePool;
+use super::super::ssm_snapshot::SsmSnapshotPool;
+use super::super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::super::types::{TransformerModel, PinnedMetaStaging};
-use super::super::ssm_pool::SsmStatePool;
-use super::super::ssm_snapshot::SsmSnapshotPool;
-use super::super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
 
 impl TransformerModel {
     pub(super) fn decode_verify_dispatch(
@@ -59,9 +58,7 @@ impl TransformerModel {
         let hidden = self.buffers.hidden_states(); // [K, H]
         let residual = self.buffers.residual(); // [K, H]
 
-        let mut kv_cache = self
-            .kv_cache
-            .lock();
+        let mut kv_cache = self.kv_cache.lock();
 
         // ── Embed all K tokens into hidden[K, H] ──
         for (t, &token) in tokens.iter().enumerate() {
@@ -79,7 +76,14 @@ impl TransformerModel {
                     let pos = seq.seq_len + t;
                     let bs = kv_cache.block_size();
                     let blocks_needed = (pos / bs) + 1;
-                    ensure_blocks_through_decode(seq, blocks_needed - 1, &mut kv_cache, self.prefix_cache.as_ref(), self.gpu.as_ref(), stream)?;
+                    ensure_blocks_through_decode(
+                        seq,
+                        blocks_needed - 1,
+                        &mut kv_cache,
+                        self.prefix_cache.as_ref(),
+                        self.gpu.as_ref(),
+                        stream,
+                    )?;
 
                     // Upload per-token attention metadata
                     let meta_base = self.buffers.scratch().offset(32768);
@@ -87,7 +91,9 @@ impl TransformerModel {
                     let pos_val = pos as u32;
                     self.gpu
                         .copy_h2d_async(&pos_val.to_le_bytes(), meta_base, stream)?;
-                    let block_idx = seq.physical_block_for(pos / bs).unwrap_or(self.dummy_kv_block);
+                    let block_idx = seq
+                        .physical_block_for(pos / bs)
+                        .unwrap_or(self.dummy_kv_block);
                     let global_slot = (block_idx as i64) * (bs as i64) + ((pos % bs) as i64);
                     self.gpu.copy_h2d_async(
                         &global_slot.to_le_bytes(),
@@ -273,7 +279,11 @@ impl TransformerModel {
         Ok(())
     }
 
-    pub(super) fn rollback_ssm_states_dispatch(&self, seq: &mut SequenceState, num_accepted: usize) -> Result<()> {
+    pub(super) fn rollback_ssm_states_dispatch(
+        &self,
+        seq: &mut SequenceState,
+        num_accepted: usize,
+    ) -> Result<()> {
         use crate::layer::SsmLayerState;
 
         let stream = self.gpu.default_stream();
@@ -341,5 +351,4 @@ impl TransformerModel {
         // are on the same CUDA stream, so ordering is guaranteed.
         Ok(())
     }
-
 }

@@ -132,7 +132,7 @@ pub struct DenseWeight {
 pub struct Fp8DenseWeight {
     /// FP8 E4M3 weight data: [N, K] bytes.
     pub weight: DevicePtr,
-    /// Per-row dequant scale: [N] f32.
+    /// Per-row dequant scale: `[N]` f32.
     pub row_scale: DevicePtr,
 }
 
@@ -146,7 +146,7 @@ pub struct Fp8DenseWeight {
 pub struct Fp8Weight {
     /// [N, K] FP8 E4M3 weight bytes on GPU.
     pub weight: DevicePtr,
-    /// [N] f32 per-row dequant scale on GPU.
+    /// `[N]` f32 per-row dequant scale on GPU.
     pub row_scale: DevicePtr,
     /// Output dimension (rows).
     pub n: u32,
@@ -171,7 +171,7 @@ pub struct Fp8WeightTransposed {
 
 impl Fp8Weight {
     /// Transpose this FP8 weight for coalesced prefill GEMM.
-    /// Allocates new GPU buffers for B_t[K,N] and scale_t[K/128, N/128].
+    /// Allocates new GPU buffers for `B_t[K,N]` and `scale_t[K/128, N/128]`.
     pub fn transpose_for_gemm(
         &self,
         gpu: &dyn GpuBackend,
@@ -218,4 +218,3 @@ impl Fp8Weight {
         })
     }
 }
-

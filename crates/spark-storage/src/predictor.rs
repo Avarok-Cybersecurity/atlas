@@ -37,7 +37,11 @@ pub struct PredictorDims {
 impl PredictorDims {
     pub fn validate(&self) -> Result<()> {
         if !self.num_q_heads.is_multiple_of(self.num_kv_heads) {
-            bail!("num_q_heads ({}) must divide num_kv_heads ({})", self.num_q_heads, self.num_kv_heads);
+            bail!(
+                "num_q_heads ({}) must divide num_kv_heads ({})",
+                self.num_q_heads,
+                self.num_kv_heads
+            );
         }
         Ok(())
     }
@@ -46,12 +50,7 @@ impl PredictorDims {
     }
     pub fn a_g_bytes(&self) -> usize {
         // K_lr is stored per-token: [num_layers, num_blocks, num_kv_heads, block_size, r]
-        self.num_layers
-            * self.max_blocks
-            * self.num_kv_heads
-            * self.block_size
-            * self.r
-            * 2
+        self.num_layers * self.max_blocks * self.num_kv_heads * self.block_size * self.r * 2
     }
     pub fn per_layer_block_floats(&self) -> usize {
         self.num_kv_heads * self.block_size * self.r
@@ -67,8 +66,8 @@ pub struct Predictor {
     f_q_proj: u64,
     f_kv_proj: u64,
     f_score: u64,
-    p_dev: DeviceBuffer,         // [head_dim, r] BF16, immutable after init
-    a_g_dev: DeviceBuffer,       // [num_layers, max_blocks, num_kv_heads, r] BF16
+    p_dev: DeviceBuffer,   // [head_dim, r] BF16, immutable after init
+    a_g_dev: DeviceBuffer, // [num_layers, max_blocks, num_kv_heads, r] BF16
 }
 
 impl Predictor {
@@ -107,13 +106,26 @@ impl Predictor {
         let shape = PredictorShape::new(dims.head_dim, dims.r);
         let p_host = build_projection(shape, projection_seed);
         let p_dev = DeviceBuffer::new(dims.p_bytes())?;
-        copy_h_to_d_async(p_dev.ptr, p_host.as_ptr() as *const c_void, dims.p_bytes(), stream)?;
+        copy_h_to_d_async(
+            p_dev.ptr,
+            p_host.as_ptr() as *const c_void,
+            dims.p_bytes(),
+            stream,
+        )?;
         // Allocate A_g (zeroed initially via cuMemAlloc which doesn't zero — but
         // unwritten slots are unused; the predictor never reads a slot that
         // hasn't been populated by `project_kv_block`).
         let a_g_dev = DeviceBuffer::new(dims.a_g_bytes())?;
         stream_sync(stream)?;
-        Ok(Self { dims, _modules: modules, f_q_proj, f_kv_proj, f_score, p_dev, a_g_dev })
+        Ok(Self {
+            dims,
+            _modules: modules,
+            f_q_proj,
+            f_kv_proj,
+            f_score,
+            p_dev,
+            a_g_dev,
+        })
     }
 
     /// `q` device pointer to `[num_q_heads, head_dim]` BF16.
@@ -137,13 +149,15 @@ impl Predictor {
             &mut o_v as *mut _ as *mut c_void,
             &mut nq as *mut _ as *mut c_void,
             &mut hd as *mut _ as *mut c_void,
-            &mut r  as *mut _ as *mut c_void,
+            &mut r as *mut _ as *mut c_void,
         ];
         launch_kernel(
             self.f_q_proj,
             (self.dims.num_q_heads as u32, 1, 1),
             (self.dims.r as u32, 1, 1),
-            0, stream, &mut params,
+            0,
+            stream,
+            &mut params,
         )
     }
 
@@ -187,13 +201,19 @@ impl Predictor {
             &mut bs as *mut _ as *mut c_void,
             &mut nk as *mut _ as *mut c_void,
             &mut hd as *mut _ as *mut c_void,
-            &mut r  as *mut _ as *mut c_void,
+            &mut r as *mut _ as *mut c_void,
         ];
         launch_kernel(
             self.f_kv_proj,
-            (self.dims.num_kv_heads as u32, self.dims.block_size as u32, 1),
+            (
+                self.dims.num_kv_heads as u32,
+                self.dims.block_size as u32,
+                1,
+            ),
             (self.dims.r as u32, 1, 1),
-            0, stream, &mut params,
+            0,
+            stream,
+            &mut params,
         )
     }
 
@@ -236,14 +256,16 @@ impl Predictor {
             &mut nq as *mut _ as *mut c_void,
             &mut nk as *mut _ as *mut c_void,
             &mut bs as *mut _ as *mut c_void,
-            &mut r  as *mut _ as *mut c_void,
+            &mut r as *mut _ as *mut c_void,
             &mut gqa as *mut _ as *mut c_void,
         ];
         launch_kernel(
             self.f_score,
             (num_active_blocks as u32, 1, 1),
             (128, 1, 1),
-            0, stream, &mut params,
+            0,
+            stream,
+            &mut params,
         )
     }
 
@@ -265,8 +287,7 @@ pub fn read_k_lr_slot(
 ) -> Result<Vec<bf16>> {
     let dims = pred.dims();
     let n = dims.per_layer_block_floats();
-    let slot = pred.a_g_dev.ptr
-        + (((layer * dims.max_blocks + block) * n) * 2) as u64;
+    let slot = pred.a_g_dev.ptr + (((layer * dims.max_blocks + block) * n) * 2) as u64;
     let mut host = vec![bf16::from_f32(0.0); n];
     copy_d_to_h_async(host.as_mut_ptr() as *mut c_void, slot, n * 2, ctx.stream)?;
     stream_sync(ctx.stream)?;

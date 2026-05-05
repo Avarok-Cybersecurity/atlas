@@ -26,15 +26,15 @@ use crate::openai;
 use crate::tool_parser;
 
 #[allow(unused_imports)]
-use super::types::*;
-#[allow(unused_imports)]
 use super::convert::*;
+#[allow(unused_imports)]
+use super::handlers_stream::*;
 #[allow(unused_imports)]
 use super::translate::*;
 #[allow(unused_imports)]
 use super::translator::*;
 #[allow(unused_imports)]
-use super::handlers_stream::*;
+use super::types::*;
 
 pub(super) fn anthropic_error(status: StatusCode, error_type: &str, message: String) -> Response {
     let body = serde_json::json!({

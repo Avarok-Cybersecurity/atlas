@@ -2,7 +2,7 @@
 
 //! Real CUDA GPU backend using AtlasRegistry.
 //!
-//! SBIO IORouter: all CUDA operations flow through [`GpuBackend`].
+//! SBIO IORouter: all CUDA operations flow through `GpuBackend`.
 //! Uses `AtlasRegistry` for kernel loading/launching and raw CUDA
 //! driver API for memory management.
 
@@ -102,7 +102,6 @@ impl AtlasCudaBackend {
     }
 }
 
-
 // ── OOM Watchdog ────────────────────────────────────────────────────
 //
 // Background task that polls GPU free memory every `interval` and calls
@@ -187,7 +186,6 @@ pub fn spawn_oom_watchdog(
         }
     })
 }
-
 
 #[cfg(test)]
 mod tests;

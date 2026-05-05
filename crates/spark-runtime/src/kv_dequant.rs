@@ -29,15 +29,14 @@ pub const NVFP4_GROUP_SIZE: usize = 16;
 /// E2M1 4-bit codebook (NVFP4). Matches
 /// `kernels/gb10/nvfp4/paged_decode_attn_nvfp4.cu:118`.
 pub const NVFP4_E2M1_LUT: [f32; 16] = [
-    0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0,
-    -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
+    0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
 ];
 
 /// Turbo4 16-level Lloyd-Max codebook. Matches
 /// `kernels/gb10/nvfp4/paged_decode_attn_turbo4.cu:121`.
 pub const TURBO4_LUT: [f32; 16] = [
-    -2.7326, -2.0690, -1.6180, -1.2562, -0.9423, -0.6568, -0.3880, -0.1284,
-    0.1284, 0.3880, 0.6568, 0.9423, 1.2562, 1.6180, 2.0690, 2.7326,
+    -2.7326, -2.0690, -1.6180, -1.2562, -0.9423, -0.6568, -0.3880, -0.1284, 0.1284, 0.3880, 0.6568,
+    0.9423, 1.2562, 1.6180, 2.0690, 2.7326,
 ];
 
 /// Turbo3 8-level Lloyd-Max codebook. Matches
@@ -398,9 +397,7 @@ mod tests {
                 for byte_idx in 0..head_data_bytes {
                     raw[d_off + byte_idx] = nibble_lo | (nibble_hi << 4);
                 }
-                let s_off = data_section_bytes
-                    + tok * token_scale_stride
-                    + kv_h * head_scale_bytes;
+                let s_off = data_section_bytes + tok * token_scale_stride + kv_h * head_scale_bytes;
                 raw[s_off] = FP8_ONE;
             }
         }

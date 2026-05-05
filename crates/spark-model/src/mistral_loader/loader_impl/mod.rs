@@ -134,17 +134,15 @@ impl MistralWeightLoader {
         let mut yarn_inv_freq_shared = spark_runtime::gpu::DevicePtr::NULL;
 
         for i in 0..n {
-            let mut ctx = ctx::MistralLayerCtx::new(
-                store, config, gpu, absmax_k, quantize_k, stream, i,
-            );
+            let mut ctx =
+                ctx::MistralLayerCtx::new(store, config, gpu, absmax_k, quantize_k, stream, i);
             phase_lora_qkv::load_lora_qkv(&mut ctx)?;
             phase_per_head::build_per_head_views(&mut ctx)?;
             phase_qk_absorbed::build_w_qk_absorbed(&mut ctx)?;
             phase_block_diag::build_block_diagonals(&mut ctx)?;
             phase_o_proj::load_o_proj(&mut ctx)?;
-            let yarn_inv_freq = ctx::ensure_yarn_inv_freq(
-                &mut yarn_inv_freq_shared, config, rope, gpu,
-            )?;
+            let yarn_inv_freq =
+                ctx::ensure_yarn_inv_freq(&mut yarn_inv_freq_shared, config, rope, gpu)?;
             let layer = phase_assemble::assemble_layer(ctx, yarn_inv_freq, layer_kv_dtypes)?;
             layers.push(layer);
 

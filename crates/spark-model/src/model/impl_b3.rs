@@ -2,9 +2,9 @@
 
 #![allow(unused_imports, dead_code)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -12,22 +12,20 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::ssm_pool::SsmStatePool;
+use super::ssm_snapshot::SsmSnapshotPool;
+use super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::types::{TransformerModel, PinnedMetaStaging};
-use super::ssm_pool::SsmStatePool;
-use super::ssm_snapshot::SsmSnapshotPool;
-use super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
-
 
 impl TransformerModel {
     pub(super) fn run_mtp_propose_inner(
@@ -157,7 +155,11 @@ impl TransformerModel {
         if self.dflash_capture_layers.is_empty() {
             return Ok(());
         }
-        let slot_idx = match self.dflash_capture_layers.iter().position(|&l| l == layer_idx) {
+        let slot_idx = match self
+            .dflash_capture_layers
+            .iter()
+            .position(|&l| l == layer_idx)
+        {
             Some(s) => s,
             None => return Ok(()),
         };
@@ -236,17 +238,27 @@ impl TransformerModel {
     /// sharded — same pattern as MTP under EP — see model.rs:7232 comment),
     /// so non-rank-0 ranks skip the capture. The captured hiddens are
     /// post-TP-allreduce so semantically correct on rank 0.
-    pub(super) fn try_dflash_capture(&self, layer_idx: usize, token_idx: usize, stream: u64) -> Result<()> {
+    pub(super) fn try_dflash_capture(
+        &self,
+        layer_idx: usize,
+        token_idx: usize,
+        stream: u64,
+    ) -> Result<()> {
         let dst = match self.dflash_hidden_save {
             Some(p) => p,
             None => return Ok(()),
         };
         // Rank-0 gate (mirrors save_hidden_for_mtp's effective behavior).
         if let Some(ref c) = self.comm
-            && c.rank() != 0 {
+            && c.rank() != 0
+        {
             return Ok(());
         }
-        let slot = match self.dflash_capture_layers.iter().position(|&l| l == layer_idx) {
+        let slot = match self
+            .dflash_capture_layers
+            .iter()
+            .position(|&l| l == layer_idx)
+        {
             Some(s) => s,
             None => return Ok(()),
         };

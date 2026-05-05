@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use std::ffi::c_void;
 
 use super::{ReadRequest, StorageBackend};
-use crate::cuda_min::{copy_h_to_d_async, stream_sync, PinnedBuffer};
+use crate::cuda_min::{PinnedBuffer, copy_h_to_d_async, stream_sync};
 use crate::group::GroupKey;
 use crate::layout::Layout;
 
@@ -57,16 +57,15 @@ impl StorageBackend for PosixBackend {
     fn write_from_host(&mut self, key: GroupKey, src: &[u8]) -> Result<()> {
         let bytes = self.layout.group_bytes() as usize;
         if src.len() != bytes {
-            bail!("write_from_host: src len {} != group bytes {bytes}", src.len());
+            bail!(
+                "write_from_host: src len {} != group bytes {bytes}",
+                src.len()
+            );
         }
         // O_DIRECT requires page-aligned source. Stage through the pinned
         // bounce buffer (which is page-aligned per cuMemAllocHost contract).
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                src.as_ptr(),
-                self.bounce.ptr as *mut u8,
-                bytes,
-            );
+            std::ptr::copy_nonoverlapping(src.as_ptr(), self.bounce.ptr as *mut u8, bytes);
         }
         let fd = self.layout.fd(key.layer);
         let off = self.layout.offset(key) as i64;
@@ -101,15 +100,14 @@ mod tests {
     use crate::group::{GroupLayout, KvKind};
 
     fn tempdir(name: &str) -> std::path::PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "atlas-storage-{}-{}", name, std::process::id()
-        ));
+        let p = std::env::temp_dir().join(format!("atlas-storage-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p
     }
 
     #[test]
+    #[ignore = "requires GPU"]
     fn write_then_read_round_trip() {
         // CUDA must be initialised before any pinned-host allocation.
         let _ctx = crate::cuda_min::CudaCtx::new(0).expect("cuda init");
@@ -124,12 +122,21 @@ mod tests {
         backend.drop_pagecache();
 
         let dev = crate::cuda_min::DeviceBuffer::new(bytes).unwrap();
-        let req = ReadRequest { group: key, dst_dev_ptr: dev.ptr };
+        let req = ReadRequest {
+            group: key,
+            dst_dev_ptr: dev.ptr,
+        };
         // Construct a stream from the (already-existing) ctx to satisfy the
         // backend signature.
         backend.read(&[req], _ctx.stream).unwrap();
         let mut host_back = vec![0_u8; bytes];
-        crate::cuda_min::copy_d_to_h_async(host_back.as_mut_ptr() as *mut c_void, dev.ptr, bytes, _ctx.stream).unwrap();
+        crate::cuda_min::copy_d_to_h_async(
+            host_back.as_mut_ptr() as *mut c_void,
+            dev.ptr,
+            bytes,
+            _ctx.stream,
+        )
+        .unwrap();
         crate::cuda_min::stream_sync(_ctx.stream).unwrap();
         assert_eq!(host_back, pat);
         std::fs::remove_dir_all(&dir).ok();

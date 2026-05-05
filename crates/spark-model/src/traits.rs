@@ -112,7 +112,9 @@ impl SequenceState {
     /// helper, so no separate field is needed.
     #[inline]
     pub fn hss_window_start(&self) -> usize {
-        self.disk_block_ids.len().saturating_sub(self.block_table.len())
+        self.disk_block_ids
+            .len()
+            .saturating_sub(self.block_table.len())
     }
 
     /// Map an absolute logical block index → physical HBM block id.
@@ -140,6 +142,5 @@ impl SequenceState {
 /// `Sync` safety: the model is exclusively accessed from the scheduler
 /// thread. The `unsafe impl Sync` on `TransformerModel` documents this
 /// single-thread invariant — do NOT share `&dyn Model` across threads.
-
 mod model;
 pub use model::Model;

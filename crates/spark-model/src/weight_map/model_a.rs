@@ -14,7 +14,7 @@ use super::*;
 pub struct ModelWeights {
     /// Embedding table: [vocab_size, hidden_size] BF16.
     pub embed_tokens: DenseWeight,
-    /// Final RMS norm: [hidden_size] BF16.
+    /// Final RMS norm: `[hidden_size]` BF16.
     pub final_norm: DenseWeight,
     /// LM head: [hidden_size, vocab_size] BF16.
     pub lm_head: DenseWeight,
@@ -321,4 +321,3 @@ pub(crate) fn dequant_fp8_to_bf16_into(
     gpu.copy_h2d(&bf16_buf, dest)?;
     Ok(DenseWeight { weight: dest })
 }
-

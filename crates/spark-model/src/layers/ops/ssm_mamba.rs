@@ -246,4 +246,3 @@ pub fn mamba2_ssm_prefill_persistent(
         .arg_u32(y_stride)
         .launch(stream)
 }
-

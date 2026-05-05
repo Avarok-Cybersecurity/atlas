@@ -256,4 +256,3 @@ pub fn prefill_attention_paged_nvfp4_64(
         .arg_u64(data_section_bytes)
         .launch(stream)
 }
-

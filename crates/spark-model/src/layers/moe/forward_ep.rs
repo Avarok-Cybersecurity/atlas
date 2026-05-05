@@ -5,7 +5,6 @@
 use super::*;
 
 impl MoeLayer {
-
     /// 4. Computes local experts on local + received tokens
     /// 5. Sends results back (combine)
     /// 6. Weighted sum into output

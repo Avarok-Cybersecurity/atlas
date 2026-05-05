@@ -28,6 +28,7 @@ pub(super) struct TemplateOut {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::result_large_err)]
 pub(super) fn render_template(
     state: &Arc<AppState>,
     req: &ChatCompletionRequest,
@@ -41,8 +42,7 @@ pub(super) fn render_template(
     let template_thinking = enable_thinking;
 
     // Build JSON messages with structured tool_calls for Jinja.
-    let stripper_tools: &[tool_parser::ToolDefinition] =
-        req.tools.as_deref().unwrap_or(&[]);
+    let stripper_tools: &[tool_parser::ToolDefinition] = req.tools.as_deref().unwrap_or(&[]);
     let json_messages: Vec<serde_json::Value> = messages
         .iter()
         .map(|m| {
@@ -56,8 +56,7 @@ pub(super) fn render_template(
                 m.content.clone()
             };
             let content_val = if m.image_count > 0 {
-                let mut items: Vec<serde_json::Value> =
-                    Vec::with_capacity(m.image_count + 1);
+                let mut items: Vec<serde_json::Value> = Vec::with_capacity(m.image_count + 1);
                 for _ in 0..m.image_count {
                     items.push(serde_json::json!({"type": "image"}));
                 }
@@ -136,9 +135,7 @@ pub(super) fn render_template(
     };
 
     // Template-forced thinking detection.
-    let (enable_thinking, thinking_budget) = if let Some(think_start) =
-        state.think_start_token_id
-    {
+    let (enable_thinking, thinking_budget) = if let Some(think_start) = state.think_start_token_id {
         let tail = &prompt_tokens[prompt_tokens.len().saturating_sub(8)..];
         let last_start = tail.iter().rposition(|t| *t == think_start);
         let has_unclosed_think = match (last_start, state.think_end_token_id) {

@@ -69,7 +69,6 @@ pub struct BufferArena {
     sizes: BufferSizes,
 }
 
-
 impl BufferArena {
     /// Allocate all intermediate buffers on the GPU.
     pub fn new(
@@ -269,7 +268,6 @@ impl BufferArena {
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests;

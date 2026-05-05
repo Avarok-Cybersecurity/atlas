@@ -78,8 +78,16 @@ impl Qwen3AttentionLayer {
             );
         }
 
-        let attn_out =
-            self.attention_forward(normed, seq_len, block_table, disk_block_ids, disk_last_offloaded_per_layer, kv_cache, ctx, stream)?;
+        let attn_out = self.attention_forward(
+            normed,
+            seq_len,
+            block_table,
+            disk_block_ids,
+            disk_last_offloaded_per_layer,
+            kv_cache,
+            ctx,
+            stream,
+        )?;
         // TP all-reduce on attn_out after o_proj (Megatron row-parallel
         // pattern). When tp_world_size==1 this is a no-op. The o_proj GEMM
         // produced this rank's partial output on the full hidden dim; the

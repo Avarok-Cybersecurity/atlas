@@ -373,4 +373,3 @@ pub fn gdn_decode_chunk2(
         .arg_u32(gb_stride)
         .launch(stream)
 }
-

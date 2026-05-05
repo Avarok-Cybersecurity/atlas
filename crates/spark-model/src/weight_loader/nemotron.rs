@@ -8,13 +8,11 @@ use spark_runtime::weights::WeightStore;
 
 use super::ModelWeightLoader;
 use crate::layer::TransformerLayer;
+use crate::layers::{FfnComponent, NemotronMamba2Layer, NemotronMoeLayer, Qwen3AttentionLayer};
 use crate::tp_shard::{TpAttentionDims, TpShardKind, shard_dense_bf16, shard_quantized_nvfp4};
-use crate::layers::{
-    FfnComponent, NemotronMamba2Layer, NemotronMoeLayer,
-    Qwen3AttentionLayer,
-};
 use crate::weight_map::{
-    DenseWeight, MtpWeights, NemotronSsmQuant, dense, dequant_fp8_to_bf16_into, load_nemotron_attention, load_nemotron_moe, load_nemotron_ssm, quantize_to_nvfp4,
+    DenseWeight, MtpWeights, NemotronSsmQuant, dense, dequant_fp8_to_bf16_into,
+    load_nemotron_attention, load_nemotron_moe, load_nemotron_ssm, quantize_to_nvfp4,
 };
 
 pub struct NemotronHWeightLoader;
@@ -28,7 +26,6 @@ impl ModelWeightLoader for NemotronHWeightLoader {
         // every rank; MoE under EP+TP composition only uses EP.
         true
     }
-
 
     fn load_layers(
         &self,
@@ -136,7 +133,8 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                             moe.fc2_latent_proj.is_some(),
                             moe.shared_up.weight_scale_2,
                             moe.shared_down.weight_scale_2,
-                            moe.experts.first()
+                            moe.experts
+                                .first()
                                 .map(|e| e.up_proj.weight_scale_2)
                                 .unwrap_or(0.0),
                         );
@@ -156,8 +154,14 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                         let group_size = 16usize;
                         if let Some(q) = q_nvfp4.as_ref() {
                             let s = shard_quantized_nvfp4(
-                                q, dims.full_q_n, dims.h,
-                                TpShardKind::ColumnParallel, tp_rank, tp_size, group_size, gpu,
+                                q,
+                                dims.full_q_n,
+                                dims.h,
+                                TpShardKind::ColumnParallel,
+                                tp_rank,
+                                tp_size,
+                                group_size,
+                                gpu,
                             )?;
                             gpu.free(q.weight)?;
                             gpu.free(q.weight_scale)?;
@@ -165,8 +169,14 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                         }
                         if let Some(k) = k_nvfp4.as_ref() {
                             let s = shard_quantized_nvfp4(
-                                k, dims.full_kv_n, dims.h,
-                                TpShardKind::ColumnParallel, tp_rank, tp_size, group_size, gpu,
+                                k,
+                                dims.full_kv_n,
+                                dims.h,
+                                TpShardKind::ColumnParallel,
+                                tp_rank,
+                                tp_size,
+                                group_size,
+                                gpu,
                             )?;
                             gpu.free(k.weight)?;
                             gpu.free(k.weight_scale)?;
@@ -174,8 +184,14 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                         }
                         if let Some(v) = v_nvfp4.as_ref() {
                             let s = shard_quantized_nvfp4(
-                                v, dims.full_kv_n, dims.h,
-                                TpShardKind::ColumnParallel, tp_rank, tp_size, group_size, gpu,
+                                v,
+                                dims.full_kv_n,
+                                dims.h,
+                                TpShardKind::ColumnParallel,
+                                tp_rank,
+                                tp_size,
+                                group_size,
+                                gpu,
                             )?;
                             gpu.free(v.weight)?;
                             gpu.free(v.weight_scale)?;
@@ -184,8 +200,14 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                         // O proj is stored on attn.o_proj as QuantizedWeight in NVFP4-disk path.
                         let o_old = attn.o_proj;
                         let o_sharded = shard_quantized_nvfp4(
-                            &o_old, dims.h, dims.full_o_in,
-                            TpShardKind::RowParallel, tp_rank, tp_size, group_size, gpu,
+                            &o_old,
+                            dims.h,
+                            dims.full_o_in,
+                            TpShardKind::RowParallel,
+                            tp_rank,
+                            tp_size,
+                            group_size,
+                            gpu,
                         )?;
                         gpu.free(o_old.weight)?;
                         gpu.free(o_old.weight_scale)?;
@@ -202,28 +224,56 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                         // sharding (config head counts already TP-divided).
                         if tp_size > 1 {
                             let (qp, _, _) = shard_dense_bf16(
-                                attn.q_proj.weight, dims.full_q_n, dims.h,
-                                TpShardKind::ColumnParallel, tp_rank, tp_size, gpu,
+                                attn.q_proj.weight,
+                                dims.full_q_n,
+                                dims.h,
+                                TpShardKind::ColumnParallel,
+                                tp_rank,
+                                tp_size,
+                                gpu,
                             )?;
-                            if qp != attn.q_proj.weight { gpu.free(attn.q_proj.weight)?; }
+                            if qp != attn.q_proj.weight {
+                                gpu.free(attn.q_proj.weight)?;
+                            }
                             attn.q_proj.weight = qp;
                             let (kp, _, _) = shard_dense_bf16(
-                                attn.k_proj.weight, dims.full_kv_n, dims.h,
-                                TpShardKind::ColumnParallel, tp_rank, tp_size, gpu,
+                                attn.k_proj.weight,
+                                dims.full_kv_n,
+                                dims.h,
+                                TpShardKind::ColumnParallel,
+                                tp_rank,
+                                tp_size,
+                                gpu,
                             )?;
-                            if kp != attn.k_proj.weight { gpu.free(attn.k_proj.weight)?; }
+                            if kp != attn.k_proj.weight {
+                                gpu.free(attn.k_proj.weight)?;
+                            }
                             attn.k_proj.weight = kp;
                             let (vp, _, _) = shard_dense_bf16(
-                                attn.v_proj.weight, dims.full_kv_n, dims.h,
-                                TpShardKind::ColumnParallel, tp_rank, tp_size, gpu,
+                                attn.v_proj.weight,
+                                dims.full_kv_n,
+                                dims.h,
+                                TpShardKind::ColumnParallel,
+                                tp_rank,
+                                tp_size,
+                                gpu,
                             )?;
-                            if vp != attn.v_proj.weight { gpu.free(attn.v_proj.weight)?; }
+                            if vp != attn.v_proj.weight {
+                                gpu.free(attn.v_proj.weight)?;
+                            }
                             attn.v_proj.weight = vp;
                             let (op, _, _) = shard_dense_bf16(
-                                o_dense.weight, dims.h, dims.full_o_in,
-                                TpShardKind::RowParallel, tp_rank, tp_size, gpu,
+                                o_dense.weight,
+                                dims.h,
+                                dims.full_o_in,
+                                TpShardKind::RowParallel,
+                                tp_rank,
+                                tp_size,
+                                gpu,
                             )?;
-                            if op != o_dense.weight { gpu.free(o_dense.weight)?; }
+                            if op != o_dense.weight {
+                                gpu.free(o_dense.weight)?;
+                            }
                             o_dense.weight = op;
                         }
                         let q = quantize_to_nvfp4(

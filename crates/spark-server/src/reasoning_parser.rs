@@ -19,10 +19,10 @@ pub trait ReasoningParser: Send + Sync {
     /// Parser name for logging (e.g. "qwen", "mistral").
     fn name(&self) -> &str;
 
-    /// Opening tag text (e.g. "<think>", "[THINK]").
+    /// Opening tag text (e.g. `"<think>"`, `"[THINK]"`).
     fn start_tag(&self) -> &str;
 
-    /// Closing tag text (e.g. "</think>", "[/THINK]").
+    /// Closing tag text (e.g. `"</think>"`, `"[/THINK]"`).
     fn end_tag(&self) -> &str;
 
     /// Resolve the end-of-thinking token ID from the tokenizer.

@@ -302,4 +302,3 @@ pub fn prefill_attention_paged_fp8_dflash(
         .arg_u64(cache_stride)
         .launch(stream)
 }
-

@@ -66,10 +66,7 @@ pub fn shard_dense_bf16(
     if tp_size <= 1 || kind == TpShardKind::Replicated {
         return Ok((src, out_dim, in_dim));
     }
-    ensure!(
-        tp_rank < tp_size,
-        "tp_rank {tp_rank} >= tp_size {tp_size}"
-    );
+    ensure!(tp_rank < tp_size, "tp_rank {tp_rank} >= tp_size {tp_size}");
     match kind {
         TpShardKind::Replicated => unreachable!("handled above"),
         TpShardKind::ColumnParallel => {
@@ -125,10 +122,7 @@ pub fn shard_dense_1d_bf16(
     if tp_size <= 1 {
         return Ok((src, dim));
     }
-    ensure!(
-        tp_rank < tp_size,
-        "tp_rank {tp_rank} >= tp_size {tp_size}"
-    );
+    ensure!(tp_rank < tp_size, "tp_rank {tp_rank} >= tp_size {tp_size}");
     ensure!(
         dim.is_multiple_of(tp_size),
         "shard_dense_1d_bf16: dim {dim} not divisible by tp_size {tp_size}",
@@ -260,8 +254,18 @@ where
 {
     let dims = TpAttentionDims::from_config(config);
     let q = proj_loader("q_proj", dims.full_q_n, dims.h, TpShardKind::ColumnParallel)?;
-    let k = proj_loader("k_proj", dims.full_kv_n, dims.h, TpShardKind::ColumnParallel)?;
-    let v = proj_loader("v_proj", dims.full_kv_n, dims.h, TpShardKind::ColumnParallel)?;
+    let k = proj_loader(
+        "k_proj",
+        dims.full_kv_n,
+        dims.h,
+        TpShardKind::ColumnParallel,
+    )?;
+    let v = proj_loader(
+        "v_proj",
+        dims.full_kv_n,
+        dims.h,
+        TpShardKind::ColumnParallel,
+    )?;
     // O proj input dim is the un-gated attention output. For gated
     // models (Qwen3-Next), this differs from `full_q_n` which includes
     // the doubled gate.
@@ -316,9 +320,7 @@ impl TpMoeDims {
     /// row-parallel on inter (so `[h, inter]` rows truncate to `[h, inter/tp]`).
     pub fn proj_shape(&self, name: &str) -> Option<(usize, usize, TpShardKind)> {
         match name {
-            "gate_proj" | "up_proj" => {
-                Some((self.full_inter, self.h, TpShardKind::ColumnParallel))
-            }
+            "gate_proj" | "up_proj" => Some((self.full_inter, self.h, TpShardKind::ColumnParallel)),
             "down_proj" => Some((self.h, self.full_inter, TpShardKind::RowParallel)),
             _ => None,
         }

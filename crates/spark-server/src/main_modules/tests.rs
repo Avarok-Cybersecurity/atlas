@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use clap::Parser;
 
 use crate::cli::{Cli, Command};

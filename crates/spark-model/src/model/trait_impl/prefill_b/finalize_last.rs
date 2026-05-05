@@ -13,9 +13,9 @@ use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::super::super::types::TransformerModel;
 use crate::layers::ops;
 use crate::traits::SequenceState;
-use super::super::super::types::TransformerModel;
 
 impl TransformerModel {
     pub(super) fn prefill_b_finalize_last(
@@ -29,7 +29,11 @@ impl TransformerModel {
         stream: u64,
     ) -> Result<DevicePtr> {
         let h = self.config.hidden_size;
-        let fp32 = if self.config.use_fp32_residual() { 4usize } else { 2usize };
+        let fp32 = if self.config.use_fp32_residual() {
+            4usize
+        } else {
+            2usize
+        };
         let hidden = self.buffers.hidden_states();
         let bs = kv_cache.block_size();
 
@@ -89,8 +93,7 @@ impl TransformerModel {
                     .partial_cmp(&logit_vals[a])
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
-            let top5: Vec<(usize, f32)> =
-                idx.iter().take(5).map(|&i| (i, logit_vals[i])).collect();
+            let top5: Vec<(usize, f32)> = idx.iter().take(5).map(|&i| (i, logit_vals[i])).collect();
             tracing::warn!(
                 "DIAG logits[0..{}]: max={max:.4} min={min:.4} nan={nan_count} top5={top5:?}",
                 n_logits,

@@ -2,9 +2,9 @@
 
 #![allow(unused_imports, dead_code)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -12,22 +12,20 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::ssm_pool::SsmStatePool;
+use super::ssm_snapshot::SsmSnapshotPool;
+use super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::types::{TransformerModel, PinnedMetaStaging};
-use super::ssm_pool::SsmStatePool;
-use super::ssm_snapshot::SsmSnapshotPool;
-use super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
-
 
 impl TransformerModel {
     pub(super) fn generate_self_speculative_inner(
@@ -126,9 +124,10 @@ impl TransformerModel {
             }
 
             if let Some(last) = output_tokens.last()
-                && params.stop_token_ids.contains(last) {
-                    break;
-                }
+                && params.stop_token_ids.contains(last)
+            {
+                break;
+            }
         }
 
         output_tokens.truncate(params.max_tokens);
@@ -279,25 +278,26 @@ impl TransformerModel {
             proposer.after_verify(num_accepted, prop_state.as_mut(), stream)?;
 
             if let Some(last) = output_tokens.last()
-                && params.stop_token_ids.contains(last) {
-                    if total_steps > 0 {
-                        tracing::info!(
-                            "Speculative decode: {} steps, {}/{} accepted ({:.0}%)",
-                            total_steps,
-                            total_accepted,
-                            total_proposed,
-                            if total_proposed > 0 {
-                                total_accepted as f64 / total_proposed as f64 * 100.0
-                            } else {
-                                0.0
-                            },
-                        );
-                    }
-                    return Ok(crate::engine::GenerateResult {
-                        output_tokens,
-                        finish_reason: "stop".to_string(),
-                    });
+                && params.stop_token_ids.contains(last)
+            {
+                if total_steps > 0 {
+                    tracing::info!(
+                        "Speculative decode: {} steps, {}/{} accepted ({:.0}%)",
+                        total_steps,
+                        total_accepted,
+                        total_proposed,
+                        if total_proposed > 0 {
+                            total_accepted as f64 / total_proposed as f64 * 100.0
+                        } else {
+                            0.0
+                        },
+                    );
                 }
+                return Ok(crate::engine::GenerateResult {
+                    output_tokens,
+                    finish_reason: "stop".to_string(),
+                });
+            }
         }
 
         output_tokens.truncate(params.max_tokens);
@@ -321,5 +321,4 @@ impl TransformerModel {
             finish_reason: "length".to_string(),
         })
     }
-
 }

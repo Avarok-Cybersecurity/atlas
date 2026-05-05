@@ -5,100 +5,51 @@
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
-use axum::response::sse::{
-    Event,
-    KeepAlive,
-};
-use axum::response::{
-    IntoResponse,
-    Json,
-    Response,
-    Sse,
-};
+use axum::response::sse::{Event, KeepAlive};
+use axum::response::{IntoResponse, Json, Response, Sse};
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::AppState;
 use crate::openai::{
-    ChatCompletionChunk,
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    CompletionChunk,
-    CompletionRequest,
-    CompletionResponse,
-    ModelInfo,
-    ModelListResponse,
-    Usage,
+    ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, CompletionChunk,
+    CompletionRequest, CompletionResponse, ModelInfo, ModelListResponse, Usage,
 };
 use crate::tool_parser;
 
 // Sibling-cluster items hoisted from the original `api.rs`. These uses
 // give every sub-file access to helpers that the un-split file took for
 // granted via single-module visibility.
+use super::super::chat::chat_completions_inner;
 use super::super::compact::{
-    compact_messages,
-    openai_error_response,
-    openai_error_response_with_param,
-};
-use super::super::sanitizer::{
-    F7_STALL_WARN_THRESHOLD,
-    F7_STALL_REFUSE_THRESHOLD,
-    F7StallBuckets,
-    ToolKind,
-    classify_tool,
-    extract_bash_final_action,
-    primary_arg_for_tool,
-    sanitize_content_chunk,
+    compact_messages, openai_error_response, openai_error_response_with_param,
 };
 use super::super::completions::not_supported;
-use super::{
-    F29EnvironmentFact,
-    F39FailureCache,
-    F39PermanentFailureMatch,
-    F49DuplicateWrite,
-    append_f7_reminder_to_last_user,
-    build_f7_stall_reminder,
-    bump_f12_tool_call_count,
-    check_loop_watchdog,
-    collect_f7_stall_buckets,
-    f28_text_looks_like_error,
-    f29_extract_binary_from_error_line,
-    f29_extract_environment_facts,
-    f29_inject_environment_facts,
-    f31_inject_hard_refusal,
-    f32_reposition_failed_tool_result,
-    f39_build_circuit_breaker_banner,
-    f39_build_failure_cache,
-    f39_class_label,
-    f39_detect_recent_retries,
-    f39_extract_binary_name,
-    f44_check_permanent_failure,
-    f49_build_banner,
-    f49_detect_duplicate_writes,
-    f49_extract_write_path_and_content,
-    f50_append_original_error,
-    f60_disable_mtp_for_request,
-    flush_content_sanitizer,
-    prepend_reminder_to_system,
-    recent_message_is_tool_error,
-    strip_xml_leaks_from_assistant_content,
+use super::super::inference_impl::{
+    extract_thinking, strip_stop_sequences, tokenize_stop_sequences,
 };
 use super::super::inference_types::{
-    GrammarSpec,
-    InferenceRequest,
-    InferenceResponse,
-    StreamEvent,
-    TokenLogprobs,
+    GrammarSpec, InferenceRequest, InferenceResponse, StreamEvent, TokenLogprobs,
 };
-use super::super::inference_impl::{
-    extract_thinking,
-    strip_stop_sequences,
-    tokenize_stop_sequences,
+use super::super::sanitizer::{
+    F7_STALL_REFUSE_THRESHOLD, F7_STALL_WARN_THRESHOLD, F7StallBuckets, ToolKind, classify_tool,
+    extract_bash_final_action, primary_arg_for_tool, sanitize_content_chunk,
 };
 use super::super::strip::strip_thinking_tags;
-use super::super::chat::chat_completions_inner;
-
+use super::{
+    F29EnvironmentFact, F39FailureCache, F39PermanentFailureMatch, F49DuplicateWrite,
+    append_f7_reminder_to_last_user, build_f7_stall_reminder, bump_f12_tool_call_count,
+    check_loop_watchdog, collect_f7_stall_buckets, f28_text_looks_like_error,
+    f29_extract_binary_from_error_line, f29_extract_environment_facts,
+    f29_inject_environment_facts, f31_inject_hard_refusal, f32_reposition_failed_tool_result,
+    f39_build_circuit_breaker_banner, f39_build_failure_cache, f39_class_label,
+    f39_detect_recent_retries, f39_extract_binary_name, f44_check_permanent_failure,
+    f49_build_banner, f49_detect_duplicate_writes, f49_extract_write_path_and_content,
+    f50_append_original_error, f60_disable_mtp_for_request, flush_content_sanitizer,
+    prepend_reminder_to_system, recent_message_is_tool_error,
+    strip_xml_leaks_from_assistant_content,
+};
 
 // Re-export sibling helpers via crate::api::* for short paths.
 use super::super::inference_types::*;
@@ -117,10 +68,7 @@ pub fn f37_classify_failure(t: &str) -> Option<F37FailureClass> {
     if t.contains("[atlas-stall-guard]") || t.contains("[atlas-permanent-failure]") {
         return Some(F37FailureClass::StallGuard);
     }
-    if t.contains("command not found")
-        || t.contains(": not found")
-        || t.contains("Exit code 127")
-    {
+    if t.contains("command not found") || t.contains(": not found") || t.contains("Exit code 127") {
         return Some(F37FailureClass::BinaryMissing);
     }
     if t.contains("already exists")
@@ -203,8 +151,7 @@ pub fn f23_normalize_and_hash(content: &str) -> u64 {
 pub fn f23_score_progress(messages: &[crate::openai::IncomingMessage]) -> F23ProgressMetrics {
     let mut score: i32 = 0;
     let mut attempts: u32 = 0;
-    let mut seen_hashes: std::collections::HashMap<u64, u32> =
-        std::collections::HashMap::new();
+    let mut seen_hashes: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
     // F40 (2026-04-26): also track (tool, primary_arg) collisions
     // on the ASSISTANT side. A4 audit found that 3 successful
     // Cargo.toml writes scored +3 because each had unique result
@@ -227,29 +174,28 @@ pub fn f23_score_progress(messages: &[crate::openai::IncomingMessage]) -> F23Pro
     let mut last_call_key_seen: Option<(String, String)> = None;
     for m in messages {
         if m.role == "assistant"
-            && let Some(tcs) = &m.tool_calls {
-                attempts = attempts.saturating_add(tcs.len() as u32);
-                // F40: count call-key collisions.
-                for tc in tcs {
-                    let name = tc.function.name.clone();
-                    let Some(arg) =
-                        primary_arg_for_tool(&name, &tc.function.arguments)
-                    else {
-                        continue;
-                    };
-                    let key = (name.clone(), arg.clone());
-                    let prior = *seen_call_keys
-                        .entry(key.clone())
-                        .and_modify(|c| *c += 1)
-                        .or_insert(1);
-                    if prior > 1 {
-                        score -= 1;
-                    }
-                    // F53: remember the most-recent assistant tool_call
-                    // key so we can pair it with its result below.
-                    last_call_key_seen = Some(key);
+            && let Some(tcs) = &m.tool_calls
+        {
+            attempts = attempts.saturating_add(tcs.len() as u32);
+            // F40: count call-key collisions.
+            for tc in tcs {
+                let name = tc.function.name.clone();
+                let Some(arg) = primary_arg_for_tool(&name, &tc.function.arguments) else {
+                    continue;
+                };
+                let key = (name.clone(), arg.clone());
+                let prior = *seen_call_keys
+                    .entry(key.clone())
+                    .and_modify(|c| *c += 1)
+                    .or_insert(1);
+                if prior > 1 {
+                    score -= 1;
                 }
+                // F53: remember the most-recent assistant tool_call
+                // key so we can pair it with its result below.
+                last_call_key_seen = Some(key);
             }
+        }
         if m.role == "tool" {
             let content = &m.content.text;
             // 1) Explicit error markers (F6 prepends "[tool error]\n").
@@ -276,26 +222,23 @@ pub fn f23_score_progress(messages: &[crate::openai::IncomingMessage]) -> F23Pro
             // catches repeated "mkdir succeeds with no output"
             // patterns that other detectors silently neutral on.
             let stripped = content.trim();
-            let trivial_success =
-                stripped.is_empty() || stripped == "Done" || stripped == "OK";
+            let trivial_success = stripped.is_empty() || stripped == "Done" || stripped == "OK";
             if trivial_success {
                 if let Some(call_key) = last_call_key_seen.take() {
                     let prev = last_result_for_call.get(&call_key).copied();
                     last_result_for_call.insert(call_key.clone(), h);
                     if let Some(p) = prev
-                        && p == h {
-                            // same call, same trivial result, recurring →
-                            // -2 from the 3rd occurrence (the 1st recur is the 2nd
-                            // call; the 2nd recur is the 3rd — start penalising at
-                            // the 2nd recur to align with "3+ occurrences").
-                            let count = seen_call_keys
-                                .get(&call_key)
-                                .copied()
-                                .unwrap_or(1);
-                            if count >= 3 {
-                                score -= 2;
-                            }
+                        && p == h
+                    {
+                        // same call, same trivial result, recurring →
+                        // -2 from the 3rd occurrence (the 1st recur is the 2nd
+                        // call; the 2nd recur is the 3rd — start penalising at
+                        // the 2nd recur to align with "3+ occurrences").
+                        let count = seen_call_keys.get(&call_key).copied().unwrap_or(1);
+                        if count >= 3 {
+                            score -= 2;
                         }
+                    }
                 }
                 continue; // 0 from baseline; F53 already adjusted score
             }

@@ -132,7 +132,7 @@ pub fn dense_gemv(
 
 /// Dense FP8-weight GEMV (M=1): C = A @ (dequant(B_fp8) * row_scale).
 ///
-/// A: [1, K] BF16, B: [N, K] FP8 E4M3, row_scale: [N] f32, C: [1, N] BF16.
+/// A: `[1, K]` BF16, B: `[N, K]` FP8 E4M3, row_scale: `[N]` f32, C: `[1, N]` BF16.
 /// Halves weight bandwidth vs dense_gemv (1 byte/weight instead of 2).
 /// 4 outputs/block, 64 threads (2 warps) per output.
 ///
@@ -162,7 +162,7 @@ pub fn dense_gemv_fp8w(
 
 /// W8A16 GEMV (M=1): C = A @ dequant_lut(B_fp8) * row_scale for FP8 E4M3 weights.
 ///
-/// A: [1, K] BF16, B: [N, K] FP8 E4M3 bytes, row_scale: [N] f32, C: [1, N] BF16.
+/// A: `[1, K]` BF16, B: `[N, K]` FP8 E4M3 bytes, row_scale: `[N]` f32, C: `[1, N]` BF16.
 /// Uses a 256-entry E4M3 LUT in shared memory for branchless dequant (no hardware
 /// FP4/FP8 conversion PTX needed — works on SM121 without `cvt.rn.satfinite`).
 /// 4 outputs/block, 64 threads (2 warps) per output. Cross-warp smem reduction.
@@ -193,7 +193,7 @@ pub fn w8a16_gemv(
         .launch(stream)
 }
 
-/// W8A16 GEMM (M>1): C[M,N] = A[M,K] @ dequant(B[N,K]) for prefill.
+/// W8A16 GEMM (M>1): `C[M,N] = A[M,K] @ dequant(B[N,K])` for prefill.
 ///
 /// Uses 256-entry E4M3 LUT + BF16 2D block scales.
 /// Grid: (ceil(N/64), ceil(M/64), 1)  Block: (128, 1, 1)
@@ -225,7 +225,7 @@ pub fn w8a16_gemm(
 
 /// Fused gate GEMV + topK softmax for M=1 decode.
 ///
-/// Single kernel that computes gate[num_experts] = A[K] @ B_gate[num_experts, K]
+/// Single kernel that computes `gate[num_experts] = A[K] @ B_gate[num_experts, K]`
 /// then extracts top-K indices + softmax weights. Saves 1 launch vs separate
 /// gate GEMV + topK kernels.
 ///
@@ -298,9 +298,9 @@ pub fn moe_fp8_grouped_gemm(
         .launch(stream)
 }
 
-/// W8A16 Transposed GEMM: C[M,N] = A[M,K] @ dequant(B_t[K,N]) with coalesced reads.
+/// W8A16 Transposed GEMM: `C[M,N] = A[M,K] @ dequant(B_t[K,N])` with coalesced reads.
 ///
-/// Uses transposed FP8 weights B_t[K,N] and block_scale_t[K/128, N/128] for
+/// Uses transposed FP8 weights `B_t[K,N]` and `block_scale_t[K/128, N/128]` for
 /// coalesced N-dimension reads. ~14x faster than non-transposed w8a16_gemm at long M.
 /// Grid: (ceil(N/64), ceil(M/64), 1)  Block: (128, 1, 1)
 #[allow(clippy::too_many_arguments)]
@@ -329,7 +329,7 @@ pub fn w8a16_gemm_t(
         .launch(stream)
 }
 
-/// Transpose FP8 weight matrix on GPU: B[N,K] → B_t[K,N].
+/// Transpose FP8 weight matrix on GPU: `B[N,K]` → `B_t[K,N]`.
 /// Grid: (ceil(N*K/256), 1, 1)  Block: (256, 1, 1)
 pub fn transpose_fp8(
     gpu: &dyn GpuBackend,
@@ -376,4 +376,3 @@ pub fn transpose_block_scale(
 //
 // These wrappers select the correct kernel based on the QuantWeight
 // variant. Adding a new quant format requires only a new match arm here.
-

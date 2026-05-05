@@ -2,9 +2,9 @@
 
 #![allow(unused_imports, dead_code)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -12,22 +12,20 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::ssm_pool::SsmStatePool;
+use super::ssm_snapshot::SsmSnapshotPool;
+use super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::types::{TransformerModel, PinnedMetaStaging};
-use super::ssm_pool::SsmStatePool;
-use super::ssm_snapshot::SsmSnapshotPool;
-use super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
-
 
 impl TransformerModel {
     pub fn new(
@@ -172,18 +170,17 @@ impl TransformerModel {
         gpu.synchronize(gpu.default_stream())?;
 
         // Build MTP proposer (extracted to keep `new` under the file cap).
-        let proposer: Option<Arc<dyn DraftProposer>> =
-            super::impl_a1_init::build_mtp_proposer(
-                use_speculative,
-                mtp_weights,
-                embed_tokens,
-                lm_head_nvfp4,
-                &config,
-                gpu.as_ref(),
-                mtp_quant,
-                mtp_vocab_size,
-                max_seq_len,
-            );
+        let proposer: Option<Arc<dyn DraftProposer>> = super::impl_a1_init::build_mtp_proposer(
+            use_speculative,
+            mtp_weights,
+            embed_tokens,
+            lm_head_nvfp4,
+            &config,
+            gpu.as_ref(),
+            mtp_quant,
+            mtp_vocab_size,
+            max_seq_len,
+        );
 
         if self_speculative {
             let num_ssm = config.num_ssm_layers();
@@ -219,20 +216,21 @@ impl TransformerModel {
 
         // EP: register moe_output buffer with NCCL and provide bf16_add kernel.
         if let Some(ref comm) = comm
-            && comm.world_size() == 2 {
-                let moe_ptr = buffers.moe_output().0;
-                let moe_bytes = buffers.sizes().moe_output;
-                match comm.register_buffer(moe_ptr, moe_bytes) {
-                    Ok(_) => tracing::info!("Registered moe_output ({moe_bytes} B) with NCCL"),
-                    Err(e) => tracing::warn!("ncclCommRegister moe_output failed (non-fatal): {e}"),
-                }
-                match gpu.kernel("bf16_add", "bf16_add_inplace") {
-                    Ok(k) => comm.set_add_kernel(k.0),
-                    Err(e) => tracing::warn!(
-                        "bf16_add_inplace kernel not found (send/recv disabled): {e}"
-                    ),
+            && comm.world_size() == 2
+        {
+            let moe_ptr = buffers.moe_output().0;
+            let moe_bytes = buffers.sizes().moe_output;
+            match comm.register_buffer(moe_ptr, moe_bytes) {
+                Ok(_) => tracing::info!("Registered moe_output ({moe_bytes} B) with NCCL"),
+                Err(e) => tracing::warn!("ncclCommRegister moe_output failed (non-fatal): {e}"),
+            }
+            match gpu.kernel("bf16_add", "bf16_add_inplace") {
+                Ok(k) => comm.set_add_kernel(k.0),
+                Err(e) => {
+                    tracing::warn!("bf16_add_inplace kernel not found (send/recv disabled): {e}")
                 }
             }
+        }
 
         // Allocate pinned host staging buffer for batched metadata H2D.
         let pinned_bytes = buffers.sizes().scratch.max(64 * 1024);
@@ -266,16 +264,15 @@ impl TransformerModel {
         // FP32 softcap variant — only loaded when both softcap and FP32
         // residual are active (i.e. Gemma-4 dense). Other models keep the
         // BF16 softcap (or no softcap at all).
-        let logit_softcap_fp32_kernel =
-            if config.final_logit_softcapping > 0.0 && fp32_residual {
-                gpu.kernel("logit_softcap", "logit_softcap_fp32")
-                    .unwrap_or_else(|e| {
-                        tracing::warn!("logit_softcap_fp32 kernel not found: {e}");
-                        KernelHandle(0)
-                    })
-            } else {
-                KernelHandle(0)
-            };
+        let logit_softcap_fp32_kernel = if config.final_logit_softcapping > 0.0 && fp32_residual {
+            gpu.kernel("logit_softcap", "logit_softcap_fp32")
+                .unwrap_or_else(|e| {
+                    tracing::warn!("logit_softcap_fp32 kernel not found: {e}");
+                    KernelHandle(0)
+                })
+        } else {
+            KernelHandle(0)
+        };
         // FP32 logits gate. The LM head produces FP32 (rather than BF16)
         // logits when the residual stream is FP32 AND the LM head is a
         // dense BF16 weight (no NVFP4 quant). NVFP4 LM heads keep their
@@ -310,16 +307,11 @@ impl TransformerModel {
         // doesn't materially fix Gemma-4's structural NVFP4 attention
         // drift on greedy code generation. Fix is upstream of lm_head.
         let env_override = std::env::var("ATLAS_GEMMA4_FP32_LMHEAD").ok();
-        let fp32_requested = match env_override.as_deref() {
-            Some("1") | Some("true") => true,
-            _ => false,
-        };
+        let fp32_requested = matches!(env_override.as_deref(), Some("1") | Some("true"));
         let use_fp32_logits = fp32_requested
             && fp32_residual
-            && (
-                (lm_head_nvfp4.is_none() && dense_gemv_fp32out_kernel.0 != 0)
-                || (lm_head_nvfp4.is_some() && w4a16_gemv_logits_kernel.0 != 0)
-            );
+            && ((lm_head_nvfp4.is_none() && dense_gemv_fp32out_kernel.0 != 0)
+                || (lm_head_nvfp4.is_some() && w4a16_gemv_logits_kernel.0 != 0));
         // Dedicated FP32 logits scratch — only the single-token decode path
         // uses it. Prefill and batched-decode lm_head still write BF16 to the
         // shared `buffers.logits()`. Sized for one row of `vocab_size` FP32.

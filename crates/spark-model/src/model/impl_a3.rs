@@ -2,9 +2,9 @@
 
 #![allow(unused_imports, dead_code)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -12,22 +12,20 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::ssm_pool::SsmStatePool;
+use super::ssm_snapshot::SsmSnapshotPool;
+use super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::types::{TransformerModel, PinnedMetaStaging};
-use super::ssm_pool::SsmStatePool;
-use super::ssm_snapshot::SsmSnapshotPool;
-use super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
-
 
 impl TransformerModel {
     pub(super) fn embed(&self, token: u32, output: DevicePtr, stream: u64) -> Result<()> {
@@ -66,7 +64,12 @@ impl TransformerModel {
     /// For the rare case of scaling a BF16 buffer while FP32 residual is
     /// ALSO active (e.g. the decode embed() scratch which is deliberately
     /// BF16 before a bf16_to_f32 cast), use `scale_embeddings_bf16`.
-    pub(super) fn scale_embeddings(&self, data: DevicePtr, num_tokens: usize, stream: u64) -> Result<()> {
+    pub(super) fn scale_embeddings(
+        &self,
+        data: DevicePtr,
+        num_tokens: usize,
+        stream: u64,
+    ) -> Result<()> {
         if self.config.use_fp32_residual() {
             self.scale_embeddings_fp32(data, num_tokens, stream)
         } else {
@@ -74,7 +77,12 @@ impl TransformerModel {
         }
     }
 
-    pub(super) fn scale_embeddings_bf16(&self, data: DevicePtr, num_tokens: usize, stream: u64) -> Result<()> {
+    pub(super) fn scale_embeddings_bf16(
+        &self,
+        data: DevicePtr,
+        num_tokens: usize,
+        stream: u64,
+    ) -> Result<()> {
         if self.embed_scale_kernel.0 == 0 {
             return Ok(());
         }
@@ -89,7 +97,12 @@ impl TransformerModel {
             .launch(stream)
     }
 
-    pub(super) fn scale_embeddings_fp32(&self, data: DevicePtr, num_tokens: usize, stream: u64) -> Result<()> {
+    pub(super) fn scale_embeddings_fp32(
+        &self,
+        data: DevicePtr,
+        num_tokens: usize,
+        stream: u64,
+    ) -> Result<()> {
         use spark_runtime::kernel_args::KernelLaunch;
         let kernel = self.gpu.kernel("embed_scale", "f32_scale_inplace")?;
         let n = (num_tokens * self.config.hidden_size) as u32;
@@ -321,7 +334,7 @@ impl TransformerModel {
     /// after `self.lm_head(...)` must use this so the sampler reads the
     /// correct buffer dtype (the BF16 buffer is stale/empty in the FP32
     /// path because lm_head writes elsewhere). Pair with
-    /// [`logits_ptr_is_fp32`] / `decode_logits_fp32` for dtype-aware reads.
+    /// `logits_ptr_is_fp32` / `decode_logits_fp32` for dtype-aware reads.
     pub fn decode_logits_ptr(&self) -> DevicePtr {
         if self.use_fp32_logits {
             self.logits_fp32_buf

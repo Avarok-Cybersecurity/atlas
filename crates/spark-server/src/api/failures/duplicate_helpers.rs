@@ -75,10 +75,7 @@ pub fn check_loop_watchdog(
     if needle.is_empty() {
         return false;
     }
-    let exact_occurrences = loop_scan_buf
-        .lines()
-        .filter(|l| norm(l) == needle)
-        .count();
+    let exact_occurrences = loop_scan_buf.lines().filter(|l| norm(l) == needle).count();
     if exact_occurrences >= 4 {
         tracing::warn!(
             occurrences = exact_occurrences,

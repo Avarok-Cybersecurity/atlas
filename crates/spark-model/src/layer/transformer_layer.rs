@@ -109,10 +109,10 @@ pub trait TransformerLayer: Send + Sync {
     /// chunk of `num_tokens` tokens, then copies the GDN inputs (packed QKV,
     /// gate/beta, Z) into the full-sequence `gdn_bufs` at `token_offset`.
     ///
-    /// Does NOT run the GDN recurrence — that happens in [`prefill_gdn_full`]
+    /// Does NOT run the GDN recurrence — that happens in `prefill_gdn_full`
     /// after all chunks have staged their inputs.
     ///
-    /// Attention layers: default falls back to full [`prefill`] (no phasing).
+    /// Attention layers: default falls back to full `prefill` (no phasing).
     #[allow(clippy::too_many_arguments)]
     fn prefill_phase1(
         &self,
@@ -189,8 +189,8 @@ pub trait TransformerLayer: Send + Sync {
 
     /// Returns true if this layer is an SSM layer (supports two-phase prefill).
     ///
-    /// When true, the model loop can use [`prefill_phase1`] / [`prefill_gdn_full`] /
-    /// [`prefill_phase3`] instead of the monolithic [`prefill`].
+    /// When true, the model loop can use `prefill_phase1` / `prefill_gdn_full` /
+    /// `prefill_phase3` instead of the monolithic `prefill`.
     fn is_ssm_layer(&self) -> bool {
         false
     }
@@ -211,7 +211,7 @@ pub trait TransformerLayer: Send + Sync {
         Ok(())
     }
 
-    /// Like [`transpose_moe_for_prefill`] but only transposes the gate+up
+    /// Like `transpose_moe_for_prefill` but only transposes the gate+up
     /// projections (skips the down projection), reducing the transpose cost
     /// from 3× to 2× per expert. Used as a memory-tight fallback by the
     /// MiniMax loader when full transpose doesn't fit.
@@ -381,7 +381,7 @@ pub trait TransformerLayer: Send + Sync {
     /// Allocate per-sequence state for this layer.
     ///
     /// Called once when a new sequence is created. Returns:
-    /// - [`EmptyLayerState`] for pure attention layers
-    /// - [`SsmLayerState`] for SSM/recurrent layers
+    /// - `EmptyLayerState` for pure attention layers
+    /// - `SsmLayerState` for SSM/recurrent layers
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>>;
 }

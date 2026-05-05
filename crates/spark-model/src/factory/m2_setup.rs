@@ -61,7 +61,7 @@ pub(super) fn maybe_run_minimax_m2_moe_transpose(
             gb(free),
         );
         for layer in layers.iter_mut() {
-            layer.transpose_moe_for_prefill_hybrid(gpu, &config)?;
+            layer.transpose_moe_for_prefill_hybrid(gpu, config)?;
         }
         tracing::info!(
             "MoE transpose pass (hybrid layout): done, {:.1} GB free",
@@ -77,7 +77,7 @@ pub(super) fn maybe_run_minimax_m2_moe_transpose(
             gb(free),
         );
         for layer in layers.iter_mut() {
-            layer.transpose_moe_for_prefill_unified(gpu, &config)?;
+            layer.transpose_moe_for_prefill_unified(gpu, config)?;
         }
         tracing::info!(
             "MoE transpose pass (unified layout): done, {:.1} GB free",
@@ -91,7 +91,7 @@ pub(super) fn maybe_run_minimax_m2_moe_transpose(
             gb(free),
         );
         for layer in layers.iter_mut() {
-            layer.transpose_moe_for_prefill(gpu, &config)?;
+            layer.transpose_moe_for_prefill(gpu, config)?;
         }
         tracing::info!(
             "MoE transpose pass: done, {:.1} GB free",
@@ -106,7 +106,7 @@ pub(super) fn maybe_run_minimax_m2_moe_transpose(
             gb(cost_gate_up),
         );
         for layer in layers.iter_mut() {
-            layer.transpose_moe_gate_up_for_prefill(gpu, &config)?;
+            layer.transpose_moe_gate_up_for_prefill(gpu, config)?;
         }
         tracing::info!(
             "MoE transpose pass: gate+up done, {:.1} GB free \
@@ -131,10 +131,8 @@ pub(super) fn maybe_run_minimax_m2_moe_transpose(
         // (128 local experts × 3072 × 1024/2 packed + same shape for
         // scale × 1/8 group): ~200 MB packed + ~24 MB scale ≈ 230 MB.
         // Fits comfortably in the 7 GB free post-gate+up.
-        let n_per_expert_packed: usize =
-            config.hidden_size * config.moe_intermediate_size / 2;
-        let n_per_expert_scale: usize =
-            config.hidden_size * config.moe_intermediate_size / 16;
+        let n_per_expert_packed: usize = config.hidden_size * config.moe_intermediate_size / 2;
+        let n_per_expert_scale: usize = config.hidden_size * config.moe_intermediate_size / 16;
         let local_experts_count: usize = (0..config.num_experts)
             .filter(|e| config.is_local_expert(*e))
             .count();

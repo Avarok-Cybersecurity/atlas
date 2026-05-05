@@ -8,7 +8,9 @@ use std::collections::HashMap;
 
 use super::{DflashRaw, ModelTypeMatch, SamplingCat};
 
-pub(super) fn parse_kernel_toml(kernel_dir: &std::path::Path) -> (Vec<String>, HashMap<String, String>) {
+pub(super) fn parse_kernel_toml(
+    kernel_dir: &std::path::Path,
+) -> (Vec<String>, HashMap<String, String>) {
     let kernel_toml_path = kernel_dir.join("KERNEL.toml");
     let kernel_toml: toml::Value = toml::from_str(
         &std::fs::read_to_string(&kernel_toml_path)
@@ -86,10 +88,7 @@ pub(super) fn parse_sampling_presets(
                     .get("dry_multiplier")
                     .and_then(|t| t.as_float())
                     .unwrap_or(0.0) as f32,
-                dry_base: v
-                    .get("dry_base")
-                    .and_then(|t| t.as_float())
-                    .unwrap_or(1.75) as f32,
+                dry_base: v.get("dry_base").and_then(|t| t.as_float()).unwrap_or(1.75) as f32,
                 dry_allowed_length: v
                     .get("dry_allowed_length")
                     .and_then(|t| t.as_integer())
@@ -118,12 +117,34 @@ pub(super) fn parse_behavior(
 ) -> (bool, u32, bool, usize, String, u32, bool, String, bool) {
     let model_toml_path = model_dir.join("MODEL.toml");
     if !model_toml_path.exists() {
-        return (true, 256, false, 0, String::new(), 0, false, String::new(), false);
+        return (
+            true,
+            256,
+            false,
+            0,
+            String::new(),
+            0,
+            false,
+            String::new(),
+            false,
+        );
     }
     let content = std::fs::read_to_string(&model_toml_path).unwrap_or_default();
     let toml: toml::Value = match toml::from_str(&content) {
         Ok(v) => v,
-        Err(_) => return (true, 256, false, 0, String::new(), 0, false, String::new(), false),
+        Err(_) => {
+            return (
+                true,
+                256,
+                false,
+                0,
+                String::new(),
+                0,
+                false,
+                String::new(),
+                false,
+            );
+        }
     };
     let b = toml.get("behavior");
     let thinking_in_tools = b

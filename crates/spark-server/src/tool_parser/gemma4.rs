@@ -40,18 +40,19 @@ impl ToolCallParser for Gemma4Parser {
             out.push('{');
             // Convert JSON arguments to native format
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&tc.function.arguments)
-                && let Some(obj) = v.as_object() {
-                    let mut first = true;
-                    for (key, val) in obj {
-                        if !first {
-                            out.push(',');
-                        }
-                        first = false;
-                        out.push_str(key);
-                        out.push(':');
-                        format_gemma4_value(&mut out, val);
+                && let Some(obj) = v.as_object()
+            {
+                let mut first = true;
+                for (key, val) in obj {
+                    if !first {
+                        out.push(',');
                     }
+                    first = false;
+                    out.push_str(key);
+                    out.push(':');
+                    format_gemma4_value(&mut out, val);
                 }
+            }
             out.push_str("}<tool_call|>");
         }
         out
@@ -63,4 +64,3 @@ impl ToolCallParser for Gemma4Parser {
 }
 
 // ── Mistral native parser (Mistral Small 4) ──
-

@@ -29,6 +29,7 @@ fn cfg(dir: &str) -> HighSpeedSwapConfig {
 }
 
 #[test]
+#[ignore = "requires GPU"]
 fn alloc_free_round_trip() {
     let _ctx = CudaCtx::new(0).expect("cuda init");
     let mut hss = HighSpeedSwap::new(&_ctx, cfg("rt"), dims()).unwrap();
@@ -44,6 +45,7 @@ fn alloc_free_round_trip() {
 }
 
 #[test]
+#[ignore = "requires GPU"]
 fn ref_counting_holds() {
     let _ctx = CudaCtx::new(0).expect("cuda init");
     let mut hss = HighSpeedSwap::new(&_ctx, cfg("rc"), dims()).unwrap();
@@ -63,6 +65,7 @@ fn ref_counting_holds() {
 }
 
 #[test]
+#[ignore = "requires GPU"]
 fn capacity_exhaustion_then_recovery() {
     let _ctx = CudaCtx::new(0).expect("cuda init");
     let mut hss = HighSpeedSwap::new(&_ctx, cfg("cap"), dims()).unwrap();

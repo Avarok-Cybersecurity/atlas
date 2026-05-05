@@ -12,8 +12,8 @@
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
-use crate::layers::ops;
 use super::super::types::TransformerModel;
+use crate::layers::ops;
 
 /// Returns `(decode_logits, prefill_logits)`. `prefill_logits` is
 /// `DevicePtr::NULL` when `prefill_is_last == false`.

@@ -177,14 +177,7 @@ impl Qwen3AttentionLayer {
         } else if let Some(nvfp4_t) = nvfp4_t {
             if n > 128 {
                 self.w4a16_gemm_m128_dispatch(
-                    ctx.gpu,
-                    normed,
-                    nvfp4_t,
-                    out,
-                    n,
-                    out_dim,
-                    h,
-                    stream,
+                    ctx.gpu, normed, nvfp4_t, out, n, out_dim, h, stream,
                 )?;
             } else {
                 ops::w4a16_gemm_n128(
@@ -211,7 +204,9 @@ impl Qwen3AttentionLayer {
                 h,
                 stream,
             )
-            .map_err(|e| anyhow::anyhow!("{label} w4a16_gemm failed: m={n} n={out_dim} k={h}: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!("{label} w4a16_gemm failed: m={n} n={out_dim} k={h}: {e}")
+            })?;
         } else {
             ops::dense_gemm(
                 ctx.gpu,

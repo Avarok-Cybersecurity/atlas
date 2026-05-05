@@ -2,9 +2,9 @@
 
 #![allow(unused_imports, dead_code)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -12,18 +12,16 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::ssm_pool::SsmStatePool;
+use super::ssm_snapshot::SsmSnapshotPool;
+use super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::types::{TransformerModel, PinnedMetaStaging};
-use super::ssm_pool::SsmStatePool;
-use super::ssm_snapshot::SsmSnapshotPool;
-
 
 /// Apply an `EvictedBlocks` result to the production cache and the HSS
 /// orchestrator. Physical blocks return to the free list; disk-block IDs get
@@ -107,10 +105,7 @@ pub(crate) fn ensure_blocks_through_decode(
     gpu: &dyn GpuBackend,
     stream: u64,
 ) -> Result<()> {
-    let cap = kv_cache
-        .config()
-        .cache_blocks_per_seq
-        .map(|c| c as usize);
+    let cap = kv_cache.config().cache_blocks_per_seq.map(|c| c as usize);
     // Loop invariant: each iter either slides (frees a block) or grows
     // block_table by one. Terminates when the highest needed logical block
     // is in-window.
@@ -126,28 +121,33 @@ pub(crate) fn ensure_blocks_through_decode(
             if slide_count > 0 || alloc_count > 0 {
                 tracing::trace!(
                     "ensure_blocks_through_decode: abs={} ws={} bt_len={} slid={} alloc'd={}",
-                    abs_block_idx, ws, bt_len, slide_count, alloc_count
+                    abs_block_idx,
+                    ws,
+                    bt_len,
+                    slide_count,
+                    alloc_count
                 );
             }
             return Ok(());
         }
         // We need to extend block_table by at least one. If at cap, slide.
         if let Some(c) = cap
-            && bt_len >= c {
-                debug_assert!(
-                    seq.disk_last_offloaded_per_layer
-                        .iter()
-                        .all(|&n| n as usize == seq.disk_block_ids.len()),
-                    "Phase 6.3 invariant: all attention layers must offload before slide. \
+            && bt_len >= c
+        {
+            debug_assert!(
+                seq.disk_last_offloaded_per_layer
+                    .iter()
+                    .all(|&n| n as usize == seq.disk_block_ids.len()),
+                "Phase 6.3 invariant: all attention layers must offload before slide. \
                      disk_block_ids.len()={}, per-layer cursors={:?}",
-                    seq.disk_block_ids.len(),
-                    seq.disk_last_offloaded_per_layer
-                );
-                let evicted = seq.block_table.remove(0);
-                kv_cache.free_block(evicted);
-                slide_count += 1;
-                continue;
-            }
+                seq.disk_block_ids.len(),
+                seq.disk_last_offloaded_per_layer
+            );
+            let evicted = seq.block_table.remove(0);
+            kv_cache.free_block(evicted);
+            slide_count += 1;
+            continue;
+        }
         // F77 (2026-04-30): same try_alloc → evict prefix cache → retry
         // pattern as ensure_blocks_through_prefill. Without the
         // eviction fallback, multi-turn opencode sessions exhaust the
@@ -165,8 +165,14 @@ pub(crate) fn ensure_blocks_through_decode(
                     anyhow::anyhow!(
                         "alloc failed in ensure_blocks_through_decode: abs={} ws={} bt_len={} \
                          cap={:?} free_blocks={} slid={} alloc'd={}: {}",
-                        abs_block_idx, ws, bt_len, cap, kv_cache.num_free_blocks(),
-                        slide_count, alloc_count, e
+                        abs_block_idx,
+                        ws,
+                        bt_len,
+                        cap,
+                        kv_cache.num_free_blocks(),
+                        slide_count,
+                        alloc_count,
+                        e
                     )
                 })?
             }
@@ -210,10 +216,7 @@ pub(crate) fn ensure_blocks_through_prefill(
     gpu: &dyn GpuBackend,
     stream: u64,
 ) -> Result<()> {
-    let cap = kv_cache
-        .config()
-        .cache_blocks_per_seq
-        .map(|c| c as usize);
+    let cap = kv_cache.config().cache_blocks_per_seq.map(|c| c as usize);
     loop {
         let ws = seq.hss_window_start();
         let bt_len = seq.block_table.len();
@@ -223,17 +226,18 @@ pub(crate) fn ensure_blocks_through_prefill(
         }
         // Slide first when at HSS cap.
         if let Some(c) = cap
-            && bt_len >= c {
-                debug_assert!(
-                    seq.disk_last_offloaded_per_layer
-                        .iter()
-                        .all(|&n| n as usize == seq.disk_block_ids.len()),
-                    "Phase 6.3 invariant violated in prefill"
-                );
-                let evicted = seq.block_table.remove(0);
-                kv_cache.free_block(evicted);
-                continue;
-            }
+            && bt_len >= c
+        {
+            debug_assert!(
+                seq.disk_last_offloaded_per_layer
+                    .iter()
+                    .all(|&n| n as usize == seq.disk_block_ids.len()),
+                "Phase 6.3 invariant violated in prefill"
+            );
+            let evicted = seq.block_table.remove(0);
+            kv_cache.free_block(evicted);
+            continue;
+        }
         // Try alloc; on failure, evict prefix-cache entries and retry once.
         let blk = match kv_cache.try_alloc_block() {
             Some(b) => b,

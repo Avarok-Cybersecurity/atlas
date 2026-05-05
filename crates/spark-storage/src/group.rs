@@ -30,7 +30,12 @@ pub struct GroupKey {
 
 impl GroupKey {
     pub fn new(layer: u32, block: u32, kv_head: u16, kv_kind: KvKind) -> Self {
-        Self { layer, block, kv_head, kv_kind: kv_kind as u8 }
+        Self {
+            layer,
+            block,
+            kv_head,
+            kv_kind: kv_kind as u8,
+        }
     }
     pub fn kind(self) -> KvKind {
         match self.kv_kind {
@@ -63,14 +68,18 @@ impl GroupLayout {
     ) -> Self {
         let raw = (block_size as u64) * (head_dim as u64) * (elem_bytes as u64);
         let group_stride = raw.div_ceil(fs_block_size) * fs_block_size;
-        Self { num_layers, num_blocks, num_kv_heads, group_stride, fs_block_size }
+        Self {
+            num_layers,
+            num_blocks,
+            num_kv_heads,
+            group_stride,
+            fs_block_size,
+        }
     }
 
     /// Bytes occupied by one full layer in its file (K + V across all blocks).
     pub fn bytes_per_layer(&self) -> u64 {
-        2 * (self.num_blocks as u64)
-            * (self.num_kv_heads as u64)
-            * self.group_stride
+        2 * (self.num_blocks as u64) * (self.num_kv_heads as u64) * self.group_stride
     }
 
     /// File offset for `key` within its layer's file.

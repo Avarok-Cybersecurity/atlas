@@ -177,18 +177,19 @@ pub fn parse_tool_calls(text: &str) -> (Option<String>, Vec<ToolCall>) {
                 let json_slice = &args_part[..end_rel];
                 let converted = gemma4_to_json(json_slice);
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&converted)
-                    && v.is_object() {
-                        let args = serde_json::to_string(&v).unwrap_or_else(|_| "{}".into());
-                        calls.push(ToolCall {
-                            id: next_tool_call_id(),
-                            call_type: "function".into(),
-                            function: FunctionCall {
-                                name,
-                                arguments: args,
-                            },
-                        });
-                        return (None, calls);
-                    }
+                    && v.is_object()
+                {
+                    let args = serde_json::to_string(&v).unwrap_or_else(|_| "{}".into());
+                    calls.push(ToolCall {
+                        id: next_tool_call_id(),
+                        call_type: "function".into(),
+                        function: FunctionCall {
+                            name,
+                            arguments: args,
+                        },
+                    });
+                    return (None, calls);
+                }
             }
         }
     }
@@ -332,4 +333,3 @@ pub fn parse_tool_calls(text: &str) -> (Option<String>, Vec<ToolCall>) {
     };
     (content, calls)
 }
-

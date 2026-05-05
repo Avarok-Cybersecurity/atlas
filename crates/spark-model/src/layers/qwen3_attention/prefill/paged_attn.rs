@@ -77,8 +77,6 @@ impl Qwen3AttentionLayer {
             stream,
         } = *args;
 
-        let q_contiguous = q_contiguous;
-        let attn_out = attn_out;
         let bs_u = bs as u32;
 
         if seq_len_start > 0 && self.high_speed_swap_engaged(kv_cache) {

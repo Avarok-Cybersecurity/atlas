@@ -21,9 +21,10 @@ fn parse_args() -> Result<ProbeConfig> {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--dir" => {
-                dir = Some(PathBuf::from(args.next().ok_or_else(|| {
-                    anyhow::anyhow!("--dir requires a value")
-                })?));
+                dir = Some(PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("--dir requires a value"))?,
+                ));
             }
             "--test-bytes" => {
                 bytes = args
@@ -52,7 +53,10 @@ fn main() -> Result<()> {
     let cfg = parse_args()?;
     eprintln!("== Atlas storage probe ==");
     eprintln!("dir            : {}", cfg.dir.display());
-    eprintln!("test file size : {} MiB", cfg.test_file_bytes / (1024 * 1024));
+    eprintln!(
+        "test file size : {} MiB",
+        cfg.test_file_bytes / (1024 * 1024)
+    );
     let result = run_probe(&cfg)?;
     eprintln!();
     eprintln!("libcufile.so loaded     : {}", result.libcufile_loaded);

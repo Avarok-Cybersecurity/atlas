@@ -119,17 +119,18 @@ impl StreamingToolDetector {
                 // emission. The name header is emitted immediately so clients get instant
                 // feedback that a tool call started.
                 if self.current_tc_name.is_none()
-                    && let Some(name) = extract_streaming_name(&self.buffer) {
-                        let id = next_tool_call_id();
-                        let idx = self.call_counter as usize;
-                        outputs.push(DetectorOutput::ToolCallStart {
-                            id: id.clone(),
-                            name: name.clone(),
-                            idx,
-                        });
-                        self.current_tc_name = Some(name);
-                        self.current_tc_id = Some(id);
-                    }
+                    && let Some(name) = extract_streaming_name(&self.buffer)
+                {
+                    let id = next_tool_call_id();
+                    let idx = self.call_counter as usize;
+                    outputs.push(DetectorOutput::ToolCallStart {
+                        id: id.clone(),
+                        name: name.clone(),
+                        idx,
+                    });
+                    self.current_tc_name = Some(name);
+                    self.current_tc_id = Some(id);
+                }
                 break; // Wait for more tokens (args buffered until </tool_call>)
             } else if let Some(mistral_start) = self.buffer.find(MISTRAL_TOOL_CALLS_TAG) {
                 // Mistral native: [TOOL_CALLS]name[ARGS]{json}
@@ -276,12 +277,11 @@ impl StreamingToolDetector {
         // When inside_tag was true, we have the raw content between
         // <tool_call> and end-of-stream (</tool_call> was a stop token
         // and wasn't streamed). Try to parse the tool call directly.
-        if was_inside_tag
-            && let Some(tc) = parse_one_call(text.trim(), self.call_counter) {
-                let idx = self.call_counter as usize;
-                self.call_counter += 1;
-                return vec![DetectorOutput::ToolCall(tc, idx)];
-            }
+        if was_inside_tag && let Some(tc) = parse_one_call(text.trim(), self.call_counter) {
+            let idx = self.call_counter as usize;
+            self.call_counter += 1;
+            return vec![DetectorOutput::ToolCall(tc, idx)];
+        }
 
         let text = if was_inside_tag {
             format!("<tool_call>{text}")
@@ -372,4 +372,3 @@ impl StreamingToolDetector {
         buf.len()
     }
 }
-

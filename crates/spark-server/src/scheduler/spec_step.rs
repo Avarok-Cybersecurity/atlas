@@ -4,7 +4,6 @@
 
 use super::*;
 
-
 /// Self-speculative step: draft via layer-skipping, verify with full model.
 /// Combines bootstrap + verify in one step (no pipeline).
 pub fn step_self_spec(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: usize) {

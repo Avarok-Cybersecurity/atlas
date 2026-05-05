@@ -79,5 +79,4 @@ pub struct VisionEncoder {
     rope_inv_freq: Vec<f32>,      // [head_dim / 4] frequencies
 }
 
-
 mod enc_impl;

@@ -10,9 +10,9 @@ use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::super::super::types::TransformerModel;
 use crate::layer::{AttnMetadataDev, ForwardContext};
 use crate::traits::SequenceState;
-use super::super::super::types::TransformerModel;
 
 impl TransformerModel {
     pub(super) fn prefill_b_forward_layers(
@@ -34,7 +34,11 @@ impl TransformerModel {
         stream: u64,
     ) -> Result<()> {
         let h = self.config.hidden_size;
-        let fp32 = if self.config.use_fp32_residual() { 4usize } else { 2usize };
+        let fp32 = if self.config.use_fp32_residual() {
+            4usize
+        } else {
+            2usize
+        };
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 

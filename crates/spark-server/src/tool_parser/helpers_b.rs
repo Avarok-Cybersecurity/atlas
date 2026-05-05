@@ -183,4 +183,3 @@ pub(super) fn append_tool_choice_instruction(prompt: &mut String, tool_choice: &
 }
 
 // ── Output parsing (format-agnostic) ──
-

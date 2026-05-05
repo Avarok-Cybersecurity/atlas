@@ -10,8 +10,8 @@
 use anyhow::Result;
 use spark_runtime::kv_cache::PagedKvCache;
 
-use crate::traits::SequenceState;
 use super::super::super::types::TransformerModel;
+use crate::traits::SequenceState;
 
 impl TransformerModel {
     pub(super) fn prefill_b_save_checkpoint(
@@ -82,8 +82,7 @@ impl TransformerModel {
         // represented by physical HBM blocks — the rolling-window slice
         // would mis-represent the cached entry. Skip the prefix-cache insert
         // in that case; the SSM snapshot is freed to avoid leaks.
-        let skip_boundary_insert =
-            seq.hss_window_start() > 0 || end_block > seq.block_table.len();
+        let skip_boundary_insert = seq.hss_window_start() > 0 || end_block > seq.block_table.len();
         if skip_boundary_insert {
             self.ssm_snapshots.free(snap_id);
             return Ok(());

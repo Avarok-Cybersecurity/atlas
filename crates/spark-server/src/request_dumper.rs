@@ -17,10 +17,10 @@
 //! is logged once and serving continues. Dump failures MUST NOT kill
 //! live requests.
 
-use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use parking_lot::Mutex;
+use std::io::Write;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Shared handle installed in `AppState::dump_writer` when `--dump` is
@@ -104,7 +104,10 @@ impl DumpHandle {
         let mut obj = serde_json::Map::with_capacity(6);
         obj.insert("ts".into(), serde_json::Value::String(iso8601_now()));
         obj.insert("kind".into(), serde_json::Value::String(kind.into()));
-        obj.insert("endpoint".into(), serde_json::Value::String(endpoint.into()));
+        obj.insert(
+            "endpoint".into(),
+            serde_json::Value::String(endpoint.into()),
+        );
         obj.insert("seq".into(), serde_json::Value::Number(seq.into()));
         if let Some(s) = is_stream {
             obj.insert("stream".into(), serde_json::Value::Bool(s));
@@ -137,11 +140,7 @@ impl DumpHandle {
     }
 
     fn log_io_error_once(&self, msg: &str) {
-        if !self
-            .inner
-            .io_error_logged
-            .swap(true, Ordering::Relaxed)
-        {
+        if !self.inner.io_error_logged.swap(true, Ordering::Relaxed) {
             tracing::warn!(path = %self.inner.path.display(), "{msg}");
         }
     }
@@ -201,7 +200,12 @@ mod tests {
     fn resolve_auto_goes_to_tmp() {
         let p = resolve_path("<auto>");
         assert!(p.starts_with(std::env::temp_dir()));
-        assert!(p.file_name().unwrap().to_string_lossy().starts_with("atlas-dump-"));
+        assert!(
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("atlas-dump-")
+        );
     }
 
     #[test]
@@ -212,7 +216,8 @@ mod tests {
 
     #[test]
     fn dump_writes_pair_with_shared_seq() {
-        let tmp = std::env::temp_dir().join(format!("atlas-dump-test-{}.jsonl", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("atlas-dump-test-{}.jsonl", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
         let h = DumpHandle::open(tmp.clone()).expect("open");
 

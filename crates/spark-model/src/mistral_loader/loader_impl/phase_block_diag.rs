@@ -5,8 +5,8 @@
 
 use anyhow::Result;
 
-use super::ctx::MistralLayerCtx;
 use super::super::gpu_alloc_or_managed;
+use super::ctx::MistralLayerCtx;
 use crate::weight_map::DenseWeight;
 
 pub(super) fn build_block_diagonals(ctx: &mut MistralLayerCtx<'_>) -> Result<()> {
@@ -75,7 +75,11 @@ pub(super) fn build_block_diagonals(ctx: &mut MistralLayerCtx<'_>) -> Result<()>
         );
     }
 
-    ctx.w_uk_block_diag = Some(DenseWeight { weight: w_uk_bd_ptr });
-    ctx.w_uv_block_diag = Some(DenseWeight { weight: w_uv_bd_ptr });
+    ctx.w_uk_block_diag = Some(DenseWeight {
+        weight: w_uk_bd_ptr,
+    });
+    ctx.w_uv_block_diag = Some(DenseWeight {
+        weight: w_uv_bd_ptr,
+    });
     Ok(())
 }

@@ -11,9 +11,7 @@ use crate::openai::ChatCompletionChunk;
 use crate::tool_parser;
 
 use super::super::failures::{
-    bump_f12_tool_call_count,
-    f44_check_permanent_failure,
-    flush_content_sanitizer,
+    bump_f12_tool_call_count, f44_check_permanent_failure, flush_content_sanitizer,
 };
 use super::ctx::StreamCtx;
 use super::state::StreamState;
@@ -35,16 +33,12 @@ pub(super) fn handle_complete_tool_call(
         &ctx.leak_markers,
     );
     if !pre_tool_tail.is_empty() {
-        let chunk =
-            ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, pre_tool_tail);
-        sse_events.push(Ok(Event::default().data(
-            serde_json::to_string(&chunk).unwrap_or_default(),
-        )));
+        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, pre_tool_tail);
+        sse_events.push(Ok(
+            Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
+        ));
     }
-    tool_parser::backfill_required_params(
-        std::slice::from_mut(tc),
-        &ctx.tool_defs_for_backfill,
-    );
+    tool_parser::backfill_required_params(std::slice::from_mut(tc), &ctx.tool_defs_for_backfill);
     if let Some(ref cwd) = ctx.cwd_for_normalize {
         tool_parser::normalize_paths(std::slice::from_mut(tc), cwd);
     }
@@ -55,9 +49,9 @@ pub(super) fn handle_complete_tool_call(
         );
         let msg = format!("[atlas] Tool call rejected: {e}");
         let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, msg);
-        sse_events.push(Ok(Event::default().data(
-            serde_json::to_string(&chunk).unwrap_or_default(),
-        )));
+        sse_events.push(Ok(
+            Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
+        ));
         state.stop_string_triggered = true;
     } else if state
         .tool_arg_dedup
@@ -74,20 +68,19 @@ pub(super) fn handle_complete_tool_call(
             ctx.max_tool_calls_per_response,
             &mut state.stop_string_triggered,
         );
-        let start =
-            ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, tc_idx);
-        sse_events.push(Ok(Event::default().data(
-            serde_json::to_string(&start).unwrap_or_default(),
-        )));
+        let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, tc_idx);
+        sse_events.push(Ok(
+            Event::default().data(serde_json::to_string(&start).unwrap_or_default())
+        ));
         let frag = ChatCompletionChunk::tool_call_args_fragment(
             &ctx.model,
             &ctx.id,
             tc_idx,
             &tc.function.arguments,
         );
-        sse_events.push(Ok(Event::default().data(
-            serde_json::to_string(&frag).unwrap_or_default(),
-        )));
+        sse_events.push(Ok(
+            Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
+        ));
     }
 }
 
@@ -106,13 +99,14 @@ pub(super) fn handle_tool_call_start(
         &ctx.leak_markers,
     );
     if !pre_tool_tail.is_empty() {
-        let chunk =
-            ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, pre_tool_tail);
-        sse_events.push(Ok(Event::default().data(
-            serde_json::to_string(&chunk).unwrap_or_default(),
-        )));
+        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, pre_tool_tail);
+        sse_events.push(Ok(
+            Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
+        ));
     }
-    state.streaming_tool_args.insert(idx, (name.clone(), String::new()));
+    state
+        .streaming_tool_args
+        .insert(idx, (name.clone(), String::new()));
     let tc = tool_parser::ToolCall {
         id: tc_id,
         call_type: "function".to_string(),
@@ -127,9 +121,9 @@ pub(super) fn handle_tool_call_start(
         &mut state.stop_string_triggered,
     );
     let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, &tc, idx);
-    sse_events.push(Ok(Event::default().data(
-        serde_json::to_string(&start).unwrap_or_default(),
-    )));
+    sse_events.push(Ok(
+        Event::default().data(serde_json::to_string(&start).unwrap_or_default())
+    ));
 }
 
 /// `DetectorOutput::ToolCallDelta` — incremental: append args.
@@ -144,21 +138,16 @@ pub(super) fn handle_tool_call_delta(
         entry.1.push_str(&args);
     }
     if !args.is_empty() {
-        let frag =
-            ChatCompletionChunk::tool_call_args_fragment(&ctx.model, &ctx.id, idx, &args);
-        sse_events.push(Ok(Event::default().data(
-            serde_json::to_string(&frag).unwrap_or_default(),
-        )));
+        let frag = ChatCompletionChunk::tool_call_args_fragment(&ctx.model, &ctx.id, idx, &args);
+        sse_events.push(Ok(
+            Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
+        ));
     }
 }
 
 /// `DetectorOutput::ToolCallEnd` — F11 within-response dedup +
 /// F44 cross-turn permanent-failure check.
-pub(super) fn handle_tool_call_end(
-    state: &mut StreamState,
-    ctx: &StreamCtx,
-    idx: usize,
-) {
+pub(super) fn handle_tool_call_end(state: &mut StreamState, ctx: &StreamCtx, idx: usize) {
     if let Some((name, args_json)) = state.streaming_tool_args.remove(&idx) {
         if state.tool_arg_dedup_within.check(&name, &args_json) {
             tracing::warn!(

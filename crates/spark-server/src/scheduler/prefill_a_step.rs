@@ -4,7 +4,6 @@
 
 use super::*;
 
-
 /// Start a chunked prefill: process chunk 0, return result.
 pub fn start_chunked_prefill(
     think_end_token: Option<u32>,
@@ -150,10 +149,14 @@ pub fn start_chunked_prefill(
             let msg = format!("prefill_chunk failed: {e:#}");
             send_error_to_sink(&mut sink, &msg);
             if let Err(free_err) = model.free_sequence(&mut seq) {
-                tracing::error!("prefill_a_step: free_sequence (after prefill error): {free_err:#}");
+                tracing::error!(
+                    "prefill_a_step: free_sequence (after prefill error): {free_err:#}"
+                );
             }
             if let Err(bcast_err) = model.ep_broadcast_cmd(0xFFFFFFF1) {
-                tracing::error!("prefill_a_step: ep_broadcast (after prefill error): {bcast_err:#}");
+                tracing::error!(
+                    "prefill_a_step: ep_broadcast (after prefill error): {bcast_err:#}"
+                );
             }
             return Err(e);
         }
@@ -179,10 +182,14 @@ pub fn start_chunked_prefill(
                 let msg = format!("sample_token failed: {e:#}");
                 send_error_to_sink(&mut sink, &msg);
                 if let Err(free_err) = model.free_sequence(&mut seq) {
-                    tracing::error!("prefill_a_step: free_sequence (after sample error): {free_err:#}");
+                    tracing::error!(
+                        "prefill_a_step: free_sequence (after sample error): {free_err:#}"
+                    );
                 }
                 if let Err(bcast_err) = model.ep_broadcast_cmd(0xFFFFFFF1) {
-                    tracing::error!("prefill_a_step: ep_broadcast (after sample error): {bcast_err:#}");
+                    tracing::error!(
+                        "prefill_a_step: ep_broadcast (after sample error): {bcast_err:#}"
+                    );
                 }
                 return Err(e);
             }

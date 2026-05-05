@@ -56,4 +56,3 @@ impl ToolCallParser for MistralNativeParser {
         format!("[TOOL_RESULTS]{content}[/TOOL_RESULTS]")
     }
 }
-

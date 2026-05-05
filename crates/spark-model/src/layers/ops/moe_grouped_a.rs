@@ -353,7 +353,7 @@ pub fn moe_w4a16_fused_gate_up_n128(
         .launch(stream)
 }
 
-/// Element-wise SiLU activation + multiply: output[i] = silu(gate[i]) * up[i].
+/// Element-wise SiLU activation + multiply: `output[i] = silu(gate[i]) * up[i]`.
 ///
 /// Grid: (ceil(total_elements/256), 1, 1)  Block: (256, 1, 1)
 pub fn moe_silu_mul(
@@ -463,4 +463,3 @@ pub fn moe_batched_blend(
         .arg_u32(num_tokens)
         .launch(stream)
 }
-

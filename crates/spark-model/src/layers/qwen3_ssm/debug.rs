@@ -5,7 +5,6 @@
 use super::*;
 
 impl Qwen3SsmLayer {
-
     /// Debug: read first N BF16 values from device and log them.
     pub(super) fn debug_bf16(gpu: &dyn GpuBackend, label: &str, ptr: DevicePtr, n: usize) {
         let mut buf = vec![0u8; n * 2];

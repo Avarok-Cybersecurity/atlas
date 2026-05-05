@@ -271,5 +271,4 @@ impl BlockDiffusionDraftHead {
         dstate.last_num_drafted = drafts.len();
         Ok(drafts)
     }
-
 }

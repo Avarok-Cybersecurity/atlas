@@ -6,8 +6,8 @@
 
 use anyhow::{Result, bail};
 
-use crate::gpu::{DevicePtr, GpuBackend};
 use super::{KvCacheConfig, KvCacheDtype, LayerPool, PagedKvCache};
+use crate::gpu::{DevicePtr, GpuBackend};
 
 impl PagedKvCache {
     /// Allocate the KV cache pool on the GPU.

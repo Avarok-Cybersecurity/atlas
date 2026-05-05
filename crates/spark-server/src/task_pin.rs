@@ -112,10 +112,7 @@ mod tests {
 
     #[test]
     fn extract_original_goal_skips_empty_user_messages() {
-        let msgs = vec![
-            pair("user", "   \n  "),
-            pair("user", "the real ask"),
-        ];
+        let msgs = vec![pair("user", "   \n  "), pair("user", "the real ask")];
         let got = extract_original_goal(&msgs, |m| (m.0.as_str(), m.1.as_str()));
         assert_eq!(got, Some("the real ask"));
     }
@@ -133,8 +130,14 @@ mod tests {
     #[test]
     fn build_reminder_includes_goal_verbatim_and_count() {
         let r = build_reminder("create an axum server", 4);
-        assert!(r.contains("create an axum server"), "must quote verbatim: {r}");
-        assert!(r.contains("4 consecutive"), "must mention failure count: {r}");
+        assert!(
+            r.contains("create an axum server"),
+            "must quote verbatim: {r}"
+        );
+        assert!(
+            r.contains("4 consecutive"),
+            "must mention failure count: {r}"
+        );
         assert!(r.contains("system-reminder"));
     }
 
@@ -142,7 +145,10 @@ mod tests {
     fn build_reminder_truncates_oversized_goal() {
         let long = "a".repeat(2000);
         let r = build_reminder(&long, 3);
-        assert!(r.len() < 2000, "reminder body must cap at MAX_GOAL_QUOTE_BYTES");
+        assert!(
+            r.len() < 2000,
+            "reminder body must cap at MAX_GOAL_QUOTE_BYTES"
+        );
         assert!(r.contains("…"), "truncated marker present: {}", &r[..200]);
     }
 

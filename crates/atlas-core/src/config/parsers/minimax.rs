@@ -7,7 +7,11 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use super::super::{LayerType, ModelConfig, QuantizationConfig, VisionConfig, default_conv_kernel, default_one, default_one_f64, default_partial_rotary, default_rms_eps, default_rope_theta, finalize_config, validate_config, parse_quantization_config, parse_vision_config};
+use super::super::{
+    LayerType, ModelConfig, QuantizationConfig, VisionConfig, default_conv_kernel, default_one,
+    default_one_f64, default_partial_rotary, default_rms_eps, default_rope_theta, finalize_config,
+    parse_quantization_config, parse_vision_config, validate_config,
+};
 
 pub(crate) fn parse_minimax_m2(raw: &serde_json::Value) -> Result<ModelConfig> {
     // Start from the flat deserialization — ModelConfig defaults cover the
@@ -22,9 +26,10 @@ pub(crate) fn parse_minimax_m2(raw: &serde_json::Value) -> Result<ModelConfig> {
     // kept. Same shape as parse_config's qwen3_5_moe branch.
     if config.rope_theta == default_rope_theta()
         && let Some(rp) = raw.get("rope_parameters")
-            && let Some(theta) = rp.get("rope_theta").and_then(serde_json::Value::as_f64) {
-                config.rope_theta = theta;
-            }
+        && let Some(theta) = rp.get("rope_theta").and_then(serde_json::Value::as_f64)
+    {
+        config.rope_theta = theta;
+    }
 
     // num_local_experts → num_experts (MiniMax uses the newer name).
     if config.num_experts == 0 {
@@ -51,8 +56,8 @@ pub(crate) fn parse_minimax_m2(raw: &serde_json::Value) -> Result<ModelConfig> {
         && let Some(list) = raw
             .get("attn_type_list")
             .and_then(serde_json::Value::as_array)
-        {
-            config.layer_types = list.iter().map(|v| {
+    {
+        config.layer_types = list.iter().map(|v| {
                 match v.as_u64().unwrap_or(1) {
                     1 => LayerType::FullAttention,
                     other => panic!(
@@ -60,7 +65,7 @@ pub(crate) fn parse_minimax_m2(raw: &serde_json::Value) -> Result<ModelConfig> {
                     ),
                 }
             }).collect();
-        }
+    }
 
     // MTP: MiniMax exposes `use_mtp` + `num_mtp_modules` + `mtp_transformer_layers`.
     // We already deserialize those fields above via serde default. Reflect
@@ -92,4 +97,3 @@ pub(crate) fn parse_minimax_m2(raw: &serde_json::Value) -> Result<ModelConfig> {
     finalize_config(&mut config, raw)?;
     Ok(config)
 }
-

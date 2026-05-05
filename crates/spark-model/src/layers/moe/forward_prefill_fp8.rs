@@ -5,7 +5,6 @@
 use super::*;
 
 impl MoeLayer {
-
     /// EP token dispatch/combine forward pass (Workstream 3A scaffold).
     ///
     /// Instead of dense all-reduce, this:
@@ -295,9 +294,10 @@ impl MoeLayer {
         // forward_k3() which already do this in the right order; mirrors
         // vllm PR #39181.
         if let Some(comm) = ctx.comm
-            && comm.world_size() > 1 {
-                comm.all_reduce_async(output.0, num_tokens * h as usize * 2, stream)?;
-            }
+            && comm.world_size() > 1
+        {
+            comm.all_reduce_async(output.0, num_tokens * h as usize * 2, stream)?;
+        }
 
         // Shared expert blend (post-allreduce).
         if has_shared {

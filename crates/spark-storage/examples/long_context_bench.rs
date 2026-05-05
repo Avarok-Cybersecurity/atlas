@@ -60,7 +60,9 @@ fn parse_args() -> Args {
             "--scratch-blocks" => scratch_blocks = a.next().unwrap().parse().unwrap(),
             "--steps" => steps = a.next().unwrap().parse().unwrap(),
             "--help" | "-h" => {
-                eprintln!("usage: long-context-bench --dir <p> [--context-blocks N] [--scratch-blocks N] [--steps N]");
+                eprintln!(
+                    "usage: long-context-bench --dir <p> [--context-blocks N] [--scratch-blocks N] [--steps N]"
+                );
                 std::process::exit(0);
             }
             other => panic!("unknown arg: {other}"),
@@ -68,21 +70,27 @@ fn parse_args() -> Args {
     }
     Args {
         dir: dir.expect("--dir required"),
-        context_blocks, scratch_blocks, steps,
+        context_blocks,
+        scratch_blocks,
+        steps,
     }
 }
 
 fn random_bf16(n: usize, rng: &mut ChaCha8Rng) -> Vec<bf16> {
     let dist = StandardNormal;
     let inv = 1.0_f32 / (HEAD_DIM as f32).sqrt();
-    (0..n).map(|_| {
-        let v: f32 = dist.sample(rng);
-        bf16::from_f32(v * inv)
-    }).collect()
+    (0..n)
+        .map(|_| {
+            let v: f32 = dist.sample(rng);
+            bf16::from_f32(v * inv)
+        })
+        .collect()
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).init();
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .init();
     let args = parse_args();
     let _ = std::fs::remove_dir_all(&args.dir);
     std::fs::create_dir_all(&args.dir)?;
@@ -100,8 +108,12 @@ fn main() -> Result<()> {
     let context_tokens = args.context_blocks as usize * BLOCK_SIZE as usize;
     eprintln!(
         "context: {} blocks × {} tokens = {} tokens; scratch = {} blocks ({}× over-subscription); steps = {}",
-        args.context_blocks, BLOCK_SIZE, context_tokens, args.scratch_blocks,
-        args.context_blocks / args.scratch_blocks.max(1), args.steps,
+        args.context_blocks,
+        BLOCK_SIZE,
+        context_tokens,
+        args.scratch_blocks,
+        args.context_blocks / args.scratch_blocks.max(1),
+        args.steps,
     );
 
     let cfg = HighSpeedSwapConfig {
@@ -130,19 +142,40 @@ fn main() -> Result<()> {
     let t_offload = Instant::now();
     for blk in 0..args.context_blocks {
         let off = blk as usize * block_floats;
-        copy_h_to_d_async(k_block_dev.ptr, k[off..off + block_floats].as_ptr() as *const c_void, block_bytes, ctx.stream)?;
+        copy_h_to_d_async(
+            k_block_dev.ptr,
+            k[off..off + block_floats].as_ptr() as *const c_void,
+            block_bytes,
+            ctx.stream,
+        )?;
         stream_sync(ctx.stream)?;
-        hss.offload_block(&ctx, 0, blk, k_block_dev.ptr,
-            &k[off..off + block_floats], &v[off..off + block_floats])?;
+        hss.offload_block(
+            &ctx,
+            0,
+            blk,
+            k_block_dev.ptr,
+            &k[off..off + block_floats],
+            &v[off..off + block_floats],
+        )?;
     }
     let offload_dt = t_offload.elapsed().as_secs_f64();
     let offload_mib = (args.context_blocks as f64) * (block_bytes as f64) * 2.0 / (1024.0 * 1024.0);
-    eprintln!("offload: {} blocks ({:.1} MiB K+V) in {:.2}s = {:.1} MiB/s",
-        args.context_blocks, offload_mib, offload_dt, offload_mib / offload_dt);
+    eprintln!(
+        "offload: {} blocks ({:.1} MiB K+V) in {:.2}s = {:.1} MiB/s",
+        args.context_blocks,
+        offload_mib,
+        offload_dt,
+        offload_mib / offload_dt
+    );
 
     let q_dev = DeviceBuffer::new(q.len() * 2)?;
     let out_dev = DeviceBuffer::new(NUM_Q_HEADS as usize * HEAD_DIM as usize * 2)?;
-    copy_h_to_d_async(q_dev.ptr, q.as_ptr() as *const c_void, q.len() * 2, ctx.stream)?;
+    copy_h_to_d_async(
+        q_dev.ptr,
+        q.as_ptr() as *const c_void,
+        q.len() * 2,
+        ctx.stream,
+    )?;
     stream_sync(ctx.stream)?;
     let seq: Vec<u32> = (0..args.context_blocks).collect();
 
@@ -175,8 +208,10 @@ fn main() -> Result<()> {
         eprintln!();
         eprintln!("== In-HBM reference (full context resident):");
         eprintln!("   per-step latency : {hbm_us:.0} µs");
-        eprintln!("   streaming overhead: {ratio:.2}× ({:.0} µs of NVMe streaming + tile loop)",
-            per_step_us - hbm_us);
+        eprintln!(
+            "   streaming overhead: {ratio:.2}× ({:.0} µs of NVMe streaming + tile loop)",
+            per_step_us - hbm_us
+        );
     }
     let _ = out_dev;
     Ok(())
@@ -207,29 +242,84 @@ fn run_in_hbm(
     let counts_dev = DeviceBuffer::new(4)?;
     let counts = [blocks as i32];
     let out_dev = DeviceBuffer::new(NUM_Q_HEADS as usize * HEAD_DIM as usize * 2)?;
-    copy_h_to_d_async(q_dev.ptr, q.as_ptr() as *const c_void, q.len() * 2, ctx.stream)?;
-    copy_h_to_d_async(k_dev.ptr, k.as_ptr() as *const c_void, k.len() * 2, ctx.stream)?;
-    copy_h_to_d_async(v_dev.ptr, v.as_ptr() as *const c_void, v.len() * 2, ctx.stream)?;
-    copy_h_to_d_async(bt_dev.ptr, bt.as_ptr() as *const c_void, bt.len() * 4, ctx.stream)?;
-    copy_h_to_d_async(counts_dev.ptr, counts.as_ptr() as *const c_void, 4, ctx.stream)?;
+    copy_h_to_d_async(
+        q_dev.ptr,
+        q.as_ptr() as *const c_void,
+        q.len() * 2,
+        ctx.stream,
+    )?;
+    copy_h_to_d_async(
+        k_dev.ptr,
+        k.as_ptr() as *const c_void,
+        k.len() * 2,
+        ctx.stream,
+    )?;
+    copy_h_to_d_async(
+        v_dev.ptr,
+        v.as_ptr() as *const c_void,
+        v.len() * 2,
+        ctx.stream,
+    )?;
+    copy_h_to_d_async(
+        bt_dev.ptr,
+        bt.as_ptr() as *const c_void,
+        bt.len() * 4,
+        ctx.stream,
+    )?;
+    copy_h_to_d_async(
+        counts_dev.ptr,
+        counts.as_ptr() as *const c_void,
+        4,
+        ctx.stream,
+    )?;
     let (s_blk, s_tok, s_kvh) = attn.paged_strides();
     // Warmup.
     for _ in 0..2 {
         attn.begin_step(ctx, 1)?;
-        attn.step_tile(ctx, q_dev.ptr, k_dev.ptr, v_dev.ptr, bt_dev.ptr, counts_dev.ptr, 1, s_blk, s_tok, s_kvh, BLOCK_SIZE as i32)?;
+        attn.step_tile(
+            ctx,
+            q_dev.ptr,
+            k_dev.ptr,
+            v_dev.ptr,
+            bt_dev.ptr,
+            counts_dev.ptr,
+            1,
+            s_blk,
+            s_tok,
+            s_kvh,
+            BLOCK_SIZE as i32,
+        )?;
         attn.finalize(ctx, out_dev.ptr, 1)?;
     }
     stream_sync(ctx.stream)?;
     let t = Instant::now();
     for _ in 0..steps {
         attn.begin_step(ctx, 1)?;
-        attn.step_tile(ctx, q_dev.ptr, k_dev.ptr, v_dev.ptr, bt_dev.ptr, counts_dev.ptr, 1, s_blk, s_tok, s_kvh, BLOCK_SIZE as i32)?;
+        attn.step_tile(
+            ctx,
+            q_dev.ptr,
+            k_dev.ptr,
+            v_dev.ptr,
+            bt_dev.ptr,
+            counts_dev.ptr,
+            1,
+            s_blk,
+            s_tok,
+            s_kvh,
+            BLOCK_SIZE as i32,
+        )?;
         attn.finalize(ctx, out_dev.ptr, 1)?;
     }
     stream_sync(ctx.stream)?;
     let dt = t.elapsed().as_secs_f64();
     let _ = (q_dev, k_dev, v_dev, bt_dev, counts_dev, out_dev);
     let mut _swallow = vec![0_u8; 1];
-    copy_d_to_h_async(_swallow.as_mut_ptr() as *mut c_void, ctx.stream as u64, 0, ctx.stream).ok();
+    copy_d_to_h_async(
+        _swallow.as_mut_ptr() as *mut c_void,
+        ctx.stream as u64,
+        0,
+        ctx.stream,
+    )
+    .ok();
     Ok(dt * 1e6 / steps as f64)
 }

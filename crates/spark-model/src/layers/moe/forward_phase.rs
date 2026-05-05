@@ -34,9 +34,15 @@ impl MoeLayer {
         // for all three projections. Only fires when ATLAS_UNIFIED_MOE_LAYOUT=1
         // AND the weight loader has built persistent transposed copies for
         // gate / up / down (no lazy-scratch path).
-        let gate_t = self.gate_ptrs_t.as_ref().expect("gate_ptrs_t under unified_t");
+        let gate_t = self
+            .gate_ptrs_t
+            .as_ref()
+            .expect("gate_ptrs_t under unified_t");
         let up_t = self.up_ptrs_t.as_ref().expect("up_ptrs_t under unified_t");
-        let down_t = self.down_ptrs_t.as_ref().expect("down_ptrs_t under unified_t");
+        let down_t = self
+            .down_ptrs_t
+            .as_ref()
+            .expect("down_ptrs_t under unified_t");
         let null_qw = QuantizedWeight::null();
         let sh_gate_t = self.shared_gate_t.as_ref().unwrap_or(&null_qw);
         let sh_up_t = self.shared_up_t.as_ref().unwrap_or(&null_qw);

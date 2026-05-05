@@ -80,13 +80,29 @@ impl NemotronMoeLayer {
 
         if self.moe_latent_size > 0 {
             self.decode_latent_moe(
-                hidden, normed, indices_dev, weights_dev, ctx, stream,
-                h, inter, shared_inter, top_k,
+                hidden,
+                normed,
+                indices_dev,
+                weights_dev,
+                ctx,
+                stream,
+                h,
+                inter,
+                shared_inter,
+                top_k,
             )
         } else {
             self.decode_direct_moe(
-                hidden, normed, indices_dev, weights_dev, ctx, stream,
-                h, inter, shared_inter, top_k,
+                hidden,
+                normed,
+                indices_dev,
+                weights_dev,
+                ctx,
+                stream,
+                h,
+                inter,
+                shared_inter,
+                top_k,
             )
         }
     }

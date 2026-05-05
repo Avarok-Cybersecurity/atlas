@@ -8,7 +8,10 @@ use tokio::sync::mpsc;
 
 use crate::api::InferenceRequest;
 use crate::tokenizer::ChatTokenizer;
-use crate::{auth, conversation_store, rate_limiter, reasoning_parser, request_dumper, response_store, tool_parser};
+use crate::{
+    auth, conversation_store, rate_limiter, reasoning_parser, request_dumper, response_store,
+    tool_parser,
+};
 
 /// Shared application state accessible from all HTTP handlers.
 pub struct AppState {
@@ -62,7 +65,7 @@ pub struct AppState {
     /// Compaction triggers when prompt exceeds 50% of this value.
     /// 0 = use max_seq_len instead.
     pub effective_context: usize,
-    /// Model-specific behavior overrides from MODEL.toml [behavior].
+    /// Model-specific behavior overrides from MODEL.toml `[behavior]`.
     /// Embedded at build time via atlas-kernels.
     pub behavior: atlas_kernels::ModelBehavior,
     /// Global kill switch for thinking / reasoning output. When true,

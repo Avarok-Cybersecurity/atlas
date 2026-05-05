@@ -16,8 +16,8 @@
 //! returns the bonus token repeated `num_drafts` times so the verify path
 //! degenerates to single-token decode (acceptance ~100% but no speedup).
 
-use std::any::Any;
 use parking_lot::Mutex;
+use std::any::Any;
 
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
@@ -256,7 +256,6 @@ pub struct BlockDiffusionDraftHead {
     pub quant: DflashQuantization,
 }
 
-
 mod forward_block;
 mod forward_block_layer;
 mod from_weights;
@@ -300,7 +299,18 @@ impl DraftProposer for BlockDiffusionDraftHead {
         grammar_bitmask: Option<&[i32]>,
         target_hidden_stack: Option<spark_runtime::gpu::DevicePtr>,
     ) -> Result<Vec<u32>> {
-        self.propose_drafts(last_token, target_hidden, position, num_drafts, state, ctx, stream, draft_embed_target, grammar_bitmask, target_hidden_stack)
+        self.propose_drafts(
+            last_token,
+            target_hidden,
+            position,
+            num_drafts,
+            state,
+            ctx,
+            stream,
+            draft_embed_target,
+            grammar_bitmask,
+            target_hidden_stack,
+        )
     }
 
     fn after_verify(

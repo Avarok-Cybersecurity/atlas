@@ -5,7 +5,6 @@
 use super::*;
 
 impl MoeLayer {
-
     /// Wire a shared per-prefill down_proj scratch + transposed pointer table.
     ///
     /// Called by the factory after the persistent MoE transpose pass falls
@@ -105,7 +104,8 @@ impl MoeLayer {
         }
         // prefill_stream waits for compute_stream's "attention done" point.
         ctx.gpu.record_event(self.event_a, compute_stream)?;
-        ctx.gpu.stream_wait_event(self.prefill_stream, self.event_a)?;
+        ctx.gpu
+            .stream_wait_event(self.prefill_stream, self.event_a)?;
 
         let num_experts = ctx.config.num_experts as u32;
         let h = ctx.config.hidden_size as u32;

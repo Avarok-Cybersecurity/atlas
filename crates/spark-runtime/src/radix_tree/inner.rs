@@ -63,9 +63,9 @@ impl RadixTreeInner {
     pub(super) fn new() -> Self {
         let root = RadixNode {
             children: HashMap::new(),
-            block_idx: u32::MAX, // sentinel — root has no block
+            block_idx: u32::MAX,     // sentinel — root has no block
             disk_block_id: u32::MAX, // sentinel — root has no disk slot either
-            context_hash: 0,     // root context hash is 0
+            context_hash: 0,         // root context hash is 0
             ref_count: 0,
             last_access: 0,
             parent: None,
@@ -158,14 +158,15 @@ impl RadixTreeInner {
             if !found
                 && let Some((ref partial_toks, partial_block, partial_disk)) =
                     self.nodes[current].partial_suffix
-                    && partial_toks.len() >= suffix.len() && &partial_toks[..suffix.len()] == suffix
-                    {
-                        // Partial suffix doesn't have context_hash — only match if parent chain matched.
-                        // ref_count check not applicable to partial suffix (it's metadata, not a node).
-                        matched_blocks.push(partial_block);
-                        matched_disk.push(partial_disk);
-                        matched_tokens += remainder;
-                    }
+                && partial_toks.len() >= suffix.len()
+                && &partial_toks[..suffix.len()] == suffix
+            {
+                // Partial suffix doesn't have context_hash — only match if parent chain matched.
+                // ref_count check not applicable to partial suffix (it's metadata, not a node).
+                matched_blocks.push(partial_block);
+                matched_disk.push(partial_disk);
+                matched_tokens += remainder;
+            }
         }
 
         (matched_blocks, matched_disk, matched_tokens)
@@ -246,7 +247,11 @@ impl RadixTreeInner {
             let ctx_hash = context_hash_combine(parent_ctx_hash, chunk);
             let token_start = i * block_size;
             let is_seq_owned = token_start >= matched_tokens;
-            let disk_id = if hss_active { disk_block_ids[i] } else { u32::MAX };
+            let disk_id = if hss_active {
+                disk_block_ids[i]
+            } else {
+                u32::MAX
+            };
 
             if let Some(&child) = self.nodes[current].children.get(chunk) {
                 // Node exists — update access time, context_hash, and ensure
@@ -353,9 +358,10 @@ impl RadixTreeInner {
                     }
 
                     if let Some(parent_id) = self.nodes[node_id].parent
-                        && let Some(key) = self.nodes[node_id].parent_key.clone() {
-                            self.nodes[parent_id].children.remove(&key);
-                        }
+                        && let Some(key) = self.nodes[node_id].parent_key.clone()
+                    {
+                        self.nodes[parent_id].children.remove(&key);
+                    }
 
                     self.nodes[node_id].block_idx = u32::MAX;
                     self.nodes[node_id].disk_block_id = u32::MAX;

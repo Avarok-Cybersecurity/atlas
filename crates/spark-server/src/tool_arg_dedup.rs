@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! F5 (2026-04-26): tool-call argument hash dedup.
 //!
 //! Catches the agentic-failure mode where the model emits the *same*

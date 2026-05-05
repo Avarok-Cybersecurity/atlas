@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Parity test: FastSafetensorsLoader must produce byte-identical weights
 //! to the mmap-based SafetensorsLoader for the same file.
 //!

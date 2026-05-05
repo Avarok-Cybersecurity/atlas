@@ -55,17 +55,17 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
                     && let Some(theta) = rope_params
                         .get("rope_theta")
                         .and_then(serde_json::Value::as_f64)
-                    {
-                        config.rope_theta = theta;
-                    }
+                {
+                    config.rope_theta = theta;
+                }
                 // FP8 checkpoints store partial_rotary_factor inside rope_parameters
                 if config.partial_rotary_factor == default_partial_rotary()
                     && let Some(prf) = rope_params
                         .get("partial_rotary_factor")
                         .and_then(serde_json::Value::as_f64)
-                    {
-                        config.partial_rotary_factor = prf;
-                    }
+                {
+                    config.partial_rotary_factor = prf;
+                }
             }
             // Qwen3.5 MoE unconditionally normalizes top-K expert weights
             // (hardcoded in HF's Qwen3_5MoeTopKRouter, no config toggle).
@@ -96,13 +96,14 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
             // mrope_interleaved / mrope_section flags.
             if let Some(rope_params) = text_config.get("rope_parameters") {
                 if let Some(ms) = rope_params.get("mrope_section").and_then(|v| v.as_array())
-                    && ms.len() == 3 {
-                        config.mrope_section = [
-                            ms[0].as_u64().unwrap_or(0) as usize,
-                            ms[1].as_u64().unwrap_or(0) as usize,
-                            ms[2].as_u64().unwrap_or(0) as usize,
-                        ];
-                    }
+                    && ms.len() == 3
+                {
+                    config.mrope_section = [
+                        ms[0].as_u64().unwrap_or(0) as usize,
+                        ms[1].as_u64().unwrap_or(0) as usize,
+                        ms[2].as_u64().unwrap_or(0) as usize,
+                    ];
+                }
                 config.mrope_interleaved = rope_params
                     .get("mrope_interleaved")
                     .and_then(|v| v.as_bool())
@@ -167,4 +168,3 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
         }
     }
 }
-

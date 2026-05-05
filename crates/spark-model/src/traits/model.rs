@@ -147,7 +147,7 @@ pub trait Model: Send + Sync {
 
     /// Copy logits from device to host buffer (for CPU-side sampling).
     ///
-    /// `logits_ptr` points to [vocab_size] BF16 values on device.
+    /// `logits_ptr` points to `[vocab_size]` BF16 values on device.
     /// `dst` must be at least `vocab_size * 2` bytes.
     fn copy_logits_to_host(&self, logits_ptr: DevicePtr, dst: &mut [u8]) -> Result<()>;
 
@@ -238,7 +238,7 @@ pub trait Model: Send + Sync {
     ) -> Result<[u32; 2]>;
 
     /// CUDA-graphed K=3 verify (1 verified + 2 drafts). Returns 3 argmax IDs.
-    /// SSM intermediates [0] and [1] are saved for partial rollback.
+    /// SSM intermediates `[0]` and `[1]` are saved for partial rollback.
     fn decode_verify_graphed_k3(
         &self,
         tokens: &[u32; 3],
@@ -425,7 +425,7 @@ pub trait Model: Send + Sync {
 
     /// Launch SSM state rollback + checkpoint on the secondary stream.
     ///
-    /// Used on the reject path: rollback to intermediate[0], then checkpoint
+    /// Used on the reject path: rollback to `intermediate[0]`, then checkpoint
     /// the rolled-back state for the next verify iteration.
     fn start_rollback_and_checkpoint_async(
         &self,

@@ -18,7 +18,7 @@ pub use transformer_layer::TransformerLayer;
 
 /// Per-layer persistent state tracked across decode steps.
 ///
-/// Attention layers use [`EmptyLayerState`] (KV lives in [`PagedKvCache`]).
+/// Attention layers use [`EmptyLayerState`] (KV lives in `PagedKvCache`).
 /// SSM layers use [`SsmLayerState`] (recurrent h_state + conv_state).
 /// Custom layers can implement this trait for arbitrary state.
 pub trait LayerState: Send + Sync {
@@ -27,7 +27,7 @@ pub trait LayerState: Send + Sync {
 }
 
 /// Empty state for layers that store all persistent state externally
-/// (e.g., attention layers where KV is in [`PagedKvCache`]).
+/// (e.g., attention layers where KV is in `PagedKvCache`).
 pub struct EmptyLayerState;
 
 impl LayerState for EmptyLayerState {
@@ -74,13 +74,13 @@ impl LayerState for SsmLayerState {
 /// 12 attention layers. Eliminates 44 redundant H2D copies per step.
 ///
 /// For batched decode (num_seqs > 1), arrays are contiguous:
-/// - positions: [N] u32
-/// - slots: [N] i64
-/// - seq_lens: [N] i32
-/// - block_table: [N * max_blocks_per_seq] i32 (row-major)
+/// - positions: `[N]` u32
+/// - slots: `[N]` i64
+/// - seq_lens: `[N]` i32
+/// - block_table: `[N * max_blocks_per_seq]` i32 (row-major)
 #[derive(Clone, Copy)]
 pub struct AttnMetadataDev {
-    /// Position values: [N] u32 at this device address. For multi-modal
+    /// Position values: `[N]` u32 at this device address. For multi-modal
     /// MRoPE this is the temporal (T) stream; callers set
     /// `positions_h`/`positions_w` to distinct buffers only when the token
     /// stream contains image or video patches.
@@ -92,11 +92,11 @@ pub struct AttnMetadataDev {
     /// Width (W) position stream for MRoPE-interleaved. Same fallback as
     /// `positions_h`.
     pub positions_w: DevicePtr,
-    /// Slot mappings: [N] i64 at this device address.
+    /// Slot mappings: `[N]` i64 at this device address.
     pub slot: DevicePtr,
-    /// Sequence lengths (+1): [N] i32 at this device address.
+    /// Sequence lengths (+1): `[N]` i32 at this device address.
     pub seq_len: DevicePtr,
-    /// Block tables: [N * max_blocks_per_seq] i32 at this device address.
+    /// Block tables: `[N * max_blocks_per_seq]` i32 at this device address.
     pub block_table: DevicePtr,
     /// Number of blocks per sequence row in block_table.
     pub max_blocks_per_seq: u32,
@@ -160,7 +160,5 @@ pub struct ForwardContext<'a> {
 ///
 /// The generic model loop iterates `layers` without knowing whether
 /// each is attention, SSM, MoE, or dense FFN.
-
-
 #[cfg(test)]
 mod tests;

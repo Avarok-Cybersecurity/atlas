@@ -22,7 +22,7 @@ use super::*;
 /// Fused weighted sum + sigmoid blend + gate scalar GEMV.
 ///
 /// Computes gate_scalar = dot(input, gate_weight) inline, then:
-/// output[j] = sum_e weights[e] * expert_out[e,j] + sigmoid(gate_scalar) * shared_out[j]
+/// `output[j] = sum_e weights[e] * expert_out[e,j] + sigmoid(gate_scalar) * shared_out[j]`
 ///
 /// Each block independently computes the gate scalar dot product (redundant but
 /// only 8KB per block for K=2048 — negligible). Eliminates the separate dense_gemv
@@ -335,4 +335,3 @@ pub fn moe_weighted_sum_blend_batch3(
 }
 
 // ── MoE prefill (N-token batch) ──────────────────────────────────
-

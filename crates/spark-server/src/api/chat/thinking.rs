@@ -38,9 +38,7 @@ pub(super) fn resolve_thinking(
     };
     // F28: auto-disable thinking on turns following a tool error.
     let et = if et && recent_message_is_tool_error(&req.messages) {
-        tracing::info!(
-            "F28: disabling thinking on this turn (most recent message is tool error)"
-        );
+        tracing::info!("F28: disabling thinking on this turn (most recent message is tool error)");
         false
     } else {
         et

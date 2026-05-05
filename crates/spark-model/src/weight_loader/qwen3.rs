@@ -7,17 +7,14 @@ use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
 
 use super::{ModelWeightLoader, QuantFormat};
-use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_dense_bf16, shard_fp8_block_scaled};
 use crate::layer::TransformerLayer;
-use crate::layers::{
-    FfnComponent, MoeLayer,
-    Qwen3AttentionLayer, Qwen3SsmLayer,
-};
+use crate::layers::{FfnComponent, MoeLayer, Qwen3AttentionLayer, Qwen3SsmLayer};
+use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_dense_bf16, shard_fp8_block_scaled};
 use crate::weight_map::{
-    AttentionWeights, DenseWeight, MtpWeights, Nvfp4Variant,
-    QuantizeCtx, QuantizedWeight, dense, detect_nvfp4_variant, load_attention,
-    load_fp8_block_scaled_as_fp8weight, load_kv_scales, load_moe, load_moe_qwen35_fp8_experts, load_moe_skip_experts,
-    load_mtp, load_ssm, quantize_to_nvfp4,
+    AttentionWeights, DenseWeight, MtpWeights, Nvfp4Variant, QuantizeCtx, QuantizedWeight, dense,
+    detect_nvfp4_variant, load_attention, load_fp8_block_scaled_as_fp8weight, load_kv_scales,
+    load_moe, load_moe_qwen35_fp8_experts, load_moe_skip_experts, load_mtp, load_ssm,
+    quantize_to_nvfp4,
 };
 
 pub struct Qwen3WeightLoader;
@@ -31,7 +28,6 @@ impl ModelWeightLoader for Qwen3WeightLoader {
         // correct and the bulk of compute (attention + MoE) is sharded.
         true
     }
-
 
     fn load_layers(
         &self,
@@ -139,33 +135,33 @@ impl ModelWeightLoader for Qwen3WeightLoader {
             if native_fp8
                 && let Ok(fp8_experts) =
                     load_moe_qwen35_fp8_experts(store, &lp, config.num_experts, gpu, config)
-                {
-                    let sp = format!("{lp}.mlp.shared_expert");
-                    use crate::weight_map::{Fp8ExpertWeight as FEW, Fp8Weight as FW};
-                    use spark_runtime::gpu::DevicePtr;
-                    let null_fw = FW {
-                        weight: DevicePtr::NULL,
-                        row_scale: DevicePtr::NULL,
-                        n: 0,
-                        k: 0,
-                    };
-                    let sh_gate =
-                        load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.gate_proj"), gpu);
-                    let sh_up =
-                        load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.up_proj"), gpu);
-                    let sh_down =
-                        load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.down_proj"), gpu);
-                    let shared_fp8 = FEW {
-                        gate_proj: sh_gate.unwrap_or(null_fw),
-                        up_proj: sh_up.unwrap_or(null_fw),
-                        down_proj: sh_down.unwrap_or(null_fw),
-                    };
-                    if let Err(e) = moe_layer.set_fp8_experts(&fp8_experts, shared_fp8, gpu) {
-                        tracing::error!("Layer {i}: FP8 expert tables failed: {e:#}");
-                    } else {
-                        tracing::info!("Layer {i}: MoE experts loaded as native FP8");
-                    }
+            {
+                let sp = format!("{lp}.mlp.shared_expert");
+                use crate::weight_map::{Fp8ExpertWeight as FEW, Fp8Weight as FW};
+                use spark_runtime::gpu::DevicePtr;
+                let null_fw = FW {
+                    weight: DevicePtr::NULL,
+                    row_scale: DevicePtr::NULL,
+                    n: 0,
+                    k: 0,
+                };
+                let sh_gate =
+                    load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.gate_proj"), gpu);
+                let sh_up =
+                    load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.up_proj"), gpu);
+                let sh_down =
+                    load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.down_proj"), gpu);
+                let shared_fp8 = FEW {
+                    gate_proj: sh_gate.unwrap_or(null_fw),
+                    up_proj: sh_up.unwrap_or(null_fw),
+                    down_proj: sh_down.unwrap_or(null_fw),
+                };
+                if let Err(e) = moe_layer.set_fp8_experts(&fp8_experts, shared_fp8, gpu) {
+                    tracing::error!("Layer {i}: FP8 expert tables failed: {e:#}");
+                } else {
+                    tracing::info!("Layer {i}: MoE experts loaded as native FP8");
                 }
+            }
 
             let ffn = FfnComponent::Moe(moe_layer);
 
@@ -181,17 +177,13 @@ impl ModelWeightLoader for Qwen3WeightLoader {
                                     _full_k: usize,
                                     kind: TpShardKind|
                      -> Result<crate::weight_map::Fp8Weight> {
-                        let src = load_fp8_block_scaled_as_fp8weight(
-                            store,
-                            &format!("{p}.{name}"),
-                            gpu,
-                        )?;
+                        let src =
+                            load_fp8_block_scaled_as_fp8weight(store, &format!("{p}.{name}"), gpu)?;
                         if tp_size == 1 {
                             return Ok(src);
                         }
-                        let sharded = shard_fp8_block_scaled(
-                            &src, kind, tp_rank, tp_size, block_size, gpu,
-                        )?;
+                        let sharded =
+                            shard_fp8_block_scaled(&src, kind, tp_rank, tp_size, block_size, gpu)?;
                         gpu.free(src.weight)?;
                         gpu.free(src.row_scale)?;
                         Ok(sharded)
@@ -250,28 +242,56 @@ impl ModelWeightLoader for Qwen3WeightLoader {
                         use crate::tp_shard::TpAttentionDims;
                         let dims = TpAttentionDims::from_config(config);
                         let (qp, _, _) = shard_dense_bf16(
-                            attn.q_proj.weight, dims.full_q_n, dims.h,
-                            TpShardKind::ColumnParallel, tp_rank, tp_size, gpu,
+                            attn.q_proj.weight,
+                            dims.full_q_n,
+                            dims.h,
+                            TpShardKind::ColumnParallel,
+                            tp_rank,
+                            tp_size,
+                            gpu,
                         )?;
-                        if qp != attn.q_proj.weight { gpu.free(attn.q_proj.weight)?; }
+                        if qp != attn.q_proj.weight {
+                            gpu.free(attn.q_proj.weight)?;
+                        }
                         attn.q_proj.weight = qp;
                         let (kp, _, _) = shard_dense_bf16(
-                            attn.k_proj.weight, dims.full_kv_n, dims.h,
-                            TpShardKind::ColumnParallel, tp_rank, tp_size, gpu,
+                            attn.k_proj.weight,
+                            dims.full_kv_n,
+                            dims.h,
+                            TpShardKind::ColumnParallel,
+                            tp_rank,
+                            tp_size,
+                            gpu,
                         )?;
-                        if kp != attn.k_proj.weight { gpu.free(attn.k_proj.weight)?; }
+                        if kp != attn.k_proj.weight {
+                            gpu.free(attn.k_proj.weight)?;
+                        }
                         attn.k_proj.weight = kp;
                         let (vp, _, _) = shard_dense_bf16(
-                            attn.v_proj.weight, dims.full_kv_n, dims.h,
-                            TpShardKind::ColumnParallel, tp_rank, tp_size, gpu,
+                            attn.v_proj.weight,
+                            dims.full_kv_n,
+                            dims.h,
+                            TpShardKind::ColumnParallel,
+                            tp_rank,
+                            tp_size,
+                            gpu,
                         )?;
-                        if vp != attn.v_proj.weight { gpu.free(attn.v_proj.weight)?; }
+                        if vp != attn.v_proj.weight {
+                            gpu.free(attn.v_proj.weight)?;
+                        }
                         attn.v_proj.weight = vp;
                         let (op, _, _) = shard_dense_bf16(
-                            attn.o_proj.weight, dims.h, dims.full_o_in,
-                            TpShardKind::RowParallel, tp_rank, tp_size, gpu,
+                            attn.o_proj.weight,
+                            dims.h,
+                            dims.full_o_in,
+                            TpShardKind::RowParallel,
+                            tp_rank,
+                            tp_size,
+                            gpu,
                         )?;
-                        if op != attn.o_proj.weight { gpu.free(attn.o_proj.weight)?; }
+                        if op != attn.o_proj.weight {
+                            gpu.free(attn.o_proj.weight)?;
+                        }
                         attn.o_proj.weight = op;
                     }
                     let q_nvfp4 = quantize_to_nvfp4(

@@ -15,8 +15,8 @@ use std::sync::Arc;
 use axum::response::sse::Event;
 use tokio::sync::mpsc;
 
-use crate::AppState;
 use super::responses_translate::{build_responses_usage, emit};
+use crate::AppState;
 
 /// Emit the opening `response.created` and `response.in_progress` SSE
 /// frames. Returns the next free sequence number.
@@ -74,7 +74,9 @@ pub(super) async fn emit_responses_prologue(
                 .data(j)))
             .await
     {
-        tracing::warn!("responses_stream: response.in_progress send failed (receiver dropped): {e}");
+        tracing::warn!(
+            "responses_stream: response.in_progress send failed (receiver dropped): {e}"
+        );
     }
     seq += 1;
     seq
@@ -219,15 +221,17 @@ pub(super) async fn finalize_responses_stream(
     // the running `completed_items` log so multi-item streams (text→fc→text)
     // surface every emitted item, not just the last live one.
     let final_output = completed_items;
-    let usage = final_usage.as_ref().map(build_responses_usage).unwrap_or(
-        crate::openai::ResponsesUsage {
-            input_tokens: 0,
-            input_tokens_details: None,
-            output_tokens: 0,
-            output_tokens_details: None,
-            total_tokens: 0,
-        },
-    );
+    let usage =
+        final_usage
+            .as_ref()
+            .map(build_responses_usage)
+            .unwrap_or(crate::openai::ResponsesUsage {
+                input_tokens: 0,
+                input_tokens_details: None,
+                output_tokens: 0,
+                output_tokens_details: None,
+                total_tokens: 0,
+            });
     let final_status: &'static str = if finish_reason == "error" {
         "failed"
     } else {
@@ -259,60 +263,59 @@ pub(super) async fn finalize_responses_stream(
     }
     // Persist for previous_response_id resume (Responses API defaults
     // to store=true; we respect the caller's store field).
-    if store_flag
-        && let Ok(body) = serde_json::to_value(&final_resp) {
-            let mut transcript = input_messages;
-            // Rebuild structured tool_calls from the accumulated
-            // function-call output items so previous_response_id
-            // resume sees the model's prior tool calls. Without
-            // this, multi-turn streaming Responses chains lose
-            // every function_call across turns and the model
-            // re-issues them on resume.
-            let stored_tool_calls: Vec<crate::tool_parser::IncomingToolCall> = final_resp
-                .output
-                .iter()
-                .filter_map(|item| match item {
-                    crate::openai::ResponsesOutputItem::FunctionCall {
-                        call_id,
-                        name,
-                        arguments,
-                        ..
-                    } => Some(crate::tool_parser::IncomingToolCall {
-                        id: Some(call_id.clone()),
-                        function: crate::tool_parser::IncomingFunction {
-                            name: name.clone(),
-                            arguments: arguments.clone(),
-                        },
-                    }),
-                    _ => None,
-                })
-                .collect();
-            if !transcript_text.is_empty() || !stored_tool_calls.is_empty() {
-                transcript.push(crate::openai::IncomingMessage {
-                    role: "assistant".to_string(),
-                    content: crate::openai::ParsedContent {
-                        text: transcript_text.clone(),
-                        images: Vec::new(),
+    if store_flag && let Ok(body) = serde_json::to_value(&final_resp) {
+        let mut transcript = input_messages;
+        // Rebuild structured tool_calls from the accumulated
+        // function-call output items so previous_response_id
+        // resume sees the model's prior tool calls. Without
+        // this, multi-turn streaming Responses chains lose
+        // every function_call across turns and the model
+        // re-issues them on resume.
+        let stored_tool_calls: Vec<crate::tool_parser::IncomingToolCall> = final_resp
+            .output
+            .iter()
+            .filter_map(|item| match item {
+                crate::openai::ResponsesOutputItem::FunctionCall {
+                    call_id,
+                    name,
+                    arguments,
+                    ..
+                } => Some(crate::tool_parser::IncomingToolCall {
+                    id: Some(call_id.clone()),
+                    function: crate::tool_parser::IncomingFunction {
+                        name: name.clone(),
+                        arguments: arguments.clone(),
                     },
-                    tool_calls: if stored_tool_calls.is_empty() {
-                        None
-                    } else {
-                        Some(stored_tool_calls)
-                    },
-                    tool_call_id: None,
-                    name: None,
-                });
-            }
-            store_ref.insert(crate::response_store::StoredEntry {
-                id: resp_id.clone(),
-                kind: crate::response_store::StoredKind::Response,
-                model: model.clone(),
-                created_at,
-                messages: transcript,
-                body,
-                last_access: std::time::Instant::now(),
+                }),
+                _ => None,
+            })
+            .collect();
+        if !transcript_text.is_empty() || !stored_tool_calls.is_empty() {
+            transcript.push(crate::openai::IncomingMessage {
+                role: "assistant".to_string(),
+                content: crate::openai::ParsedContent {
+                    text: transcript_text.clone(),
+                    images: Vec::new(),
+                },
+                tool_calls: if stored_tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(stored_tool_calls)
+                },
+                tool_call_id: None,
+                name: None,
             });
         }
+        store_ref.insert(crate::response_store::StoredEntry {
+            id: resp_id.clone(),
+            kind: crate::response_store::StoredKind::Response,
+            model: model.clone(),
+            created_at,
+            messages: transcript,
+            body,
+            last_access: std::time::Instant::now(),
+        });
+    }
     // Append the new user items + assistant output to the linked
     // conversation (best-effort; silent on failure so the primary
     // SSE stream is never disrupted by conversation-store issues).
@@ -328,7 +331,9 @@ pub(super) async fn finalize_responses_stream(
         if !batch.is_empty()
             && let Err(e) = state_arc.conversation_store.add_items(cid, batch)
         {
-            tracing::warn!("responses_stream_finalize: conversation_store.add_items failed for {cid}: {e:?}");
+            tracing::warn!(
+                "responses_stream_finalize: conversation_store.add_items failed for {cid}: {e:?}"
+            );
         }
     }
     // Emit response.refusal.done before completed so safety-aware

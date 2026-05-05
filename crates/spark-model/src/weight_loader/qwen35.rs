@@ -10,10 +10,7 @@ use spark_runtime::weights::WeightStore;
 
 use super::ModelWeightLoader;
 use crate::layer::TransformerLayer;
-use crate::weight_map::{
-    DenseWeight, MtpWeights, dense, detect_nvfp4_variant, load_mtp,
-};
-
+use crate::weight_map::{DenseWeight, MtpWeights, dense, detect_nvfp4_variant, load_mtp};
 
 pub struct Qwen35WeightLoader;
 
@@ -30,8 +27,6 @@ impl ModelWeightLoader for Qwen35WeightLoader {
         // recover the per-rank SSM memory.
         true
     }
-
-
 
     fn load_layers(
         &self,

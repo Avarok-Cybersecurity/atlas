@@ -300,4 +300,3 @@ pub(crate) fn interleave_ba(
     gpu.copy_h2d(&ba_cpu, buf)?;
     Ok(DenseWeight { weight: buf })
 }
-

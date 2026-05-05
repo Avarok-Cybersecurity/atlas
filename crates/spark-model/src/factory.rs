@@ -43,10 +43,7 @@ pub struct DflashBuildArgs<'a> {
 /// This is the ONLY place model_type strings are matched. All downstream
 /// code is model-agnostic.
 pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoader>> {
-    let normalized = config
-        .model_type
-        .to_lowercase()
-        .replace(['-', '.'], "_");
+    let normalized = config.model_type.to_lowercase().replace(['-', '.'], "_");
     match normalized.as_str() {
         // Qwen3 family: sub-dispatch by config predicates
         "qwen3_next" => Ok(Box::new(Qwen3WeightLoader)),

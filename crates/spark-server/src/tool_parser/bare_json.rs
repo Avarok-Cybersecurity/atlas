@@ -64,4 +64,3 @@ impl ToolCallParser for BareJsonParser {
 }
 
 // ── Hermes parser (Qwen3, Qwen3-Next, Qwen3-VL) ──
-

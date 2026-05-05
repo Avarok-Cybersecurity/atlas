@@ -47,8 +47,8 @@ pub struct HeuristicClassifier;
 impl KeepClassifier for HeuristicClassifier {
     fn keep_probs(&self, tokens: &[&str]) -> Vec<f32> {
         const STOPWORDS: &[&str] = &[
-            "the", "a", "an", "and", "or", "but", "of", "in", "on", "at", "to",
-            "for", "with", "by", "as", "is", "was", "are", "were", "be", "been",
+            "the", "a", "an", "and", "or", "but", "of", "in", "on", "at", "to", "for", "with",
+            "by", "as", "is", "was", "are", "were", "be", "been",
         ];
         tokens
             .iter()
@@ -72,11 +72,7 @@ impl KeepClassifier for HeuristicClassifier {
 ///
 /// The threshold is auto-tuned: the classifier's per-token probs are
 /// sorted, the cut is placed at the rank that yields the target ratio.
-pub fn compress<C: KeepClassifier>(
-    text: &str,
-    target_ratio: f32,
-    classifier: &C,
-) -> (String, f32) {
+pub fn compress<C: KeepClassifier>(text: &str, target_ratio: f32, classifier: &C) -> (String, f32) {
     let target_ratio = target_ratio.clamp(0.05, 1.0);
     let tokens: Vec<&str> = text.split_whitespace().collect();
     if tokens.is_empty() {

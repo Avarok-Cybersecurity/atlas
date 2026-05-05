@@ -144,14 +144,25 @@ impl Qwen3AttentionLayer {
         // to fit the prefill. Phase 6.2.b will route chunked-prefill reads
         // through the orchestrator and remove this constraint.
         if self.high_speed_swap_engaged(kv_cache) {
-            let nq = self.num_q_heads_override.unwrap_or(ctx.config.num_attention_heads) as u32;
-            let nkv = self.num_kv_heads_override.unwrap_or(ctx.config.num_key_value_heads) as u32;
+            let nq = self
+                .num_q_heads_override
+                .unwrap_or(ctx.config.num_attention_heads) as u32;
+            let nkv = self
+                .num_kv_heads_override
+                .unwrap_or(ctx.config.num_key_value_heads) as u32;
             let hd = self.head_dim_override.unwrap_or(ctx.config.head_dim) as u32;
             let bs = kv_cache.block_size();
             let _ = nq; // silence unused
             self.high_speed_swap_offload_new_blocks(
-                kv_cache, block_table, disk_block_ids, disk_last_offloaded_per_layer,
-                ctx, stream, nkv, hd, bs,
+                kv_cache,
+                block_table,
+                disk_block_ids,
+                disk_last_offloaded_per_layer,
+                ctx,
+                stream,
+                nkv,
+                hd,
+                bs,
             )?;
             // Touch nq once to keep the existing variable binding's compile error away.
             let _ = nq;
@@ -355,5 +366,4 @@ impl Qwen3AttentionLayer {
 
         Ok(())
     }
-
 }

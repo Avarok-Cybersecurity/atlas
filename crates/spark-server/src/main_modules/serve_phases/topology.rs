@@ -25,13 +25,19 @@ pub(crate) fn resolve_topology(
     } else {
         (args.tp_size.max(1), args.ep_size.max(1))
     };
-    let derived_world = if tp_size == ep_size { tp_size } else { tp_size * ep_size };
+    let derived_world = if tp_size == ep_size {
+        tp_size
+    } else {
+        tp_size * ep_size
+    };
     let world_size = if args.world_size <= 1 && (tp_size > 1 || ep_size > 1) {
         tracing::info!(
             "Auto-derived world_size={} from --tp-size {} --ep-size {} (rule: \
              tp==ep → overlapping = tp; else orthogonal = tp×ep). Pass \
              --world-size to override.",
-            derived_world, tp_size, ep_size,
+            derived_world,
+            tp_size,
+            ep_size,
         );
         derived_world
     } else {
@@ -46,7 +52,10 @@ pub(crate) fn resolve_topology(
             "Invalid parallelism topology: world_size={} but tp_size={} × ep_size={} = {}. \
              Either use orthogonal mesh (world = tp × ep) or overlapping groups \
              (world = tp = ep, used for 2-GPU TP+EP composition).",
-            world_size, tp_size, ep_size, tp_size * ep_size,
+            world_size,
+            tp_size,
+            ep_size,
+            tp_size * ep_size,
         );
     };
     config.tp_rank = tp_rank;
@@ -66,33 +75,49 @@ pub(crate) fn resolve_topology(
             );
         }
         drop(loader);
-        if config.num_attention_heads % tp_size != 0 {
+        if !config.num_attention_heads.is_multiple_of(tp_size) {
             anyhow::bail!(
                 "TP requires num_attention_heads ({}) divisible by tp_size ({})",
-                config.num_attention_heads, tp_size,
+                config.num_attention_heads,
+                tp_size,
             );
         }
-        if config.num_key_value_heads % tp_size != 0 {
+        if !config.num_key_value_heads.is_multiple_of(tp_size) {
             anyhow::bail!(
                 "TP requires num_key_value_heads ({}) divisible by tp_size ({})",
-                config.num_key_value_heads, tp_size,
+                config.num_key_value_heads,
+                tp_size,
             );
         }
         config.num_attention_heads /= tp_size;
         config.num_key_value_heads /= tp_size;
         tracing::info!(
             "TP-local head counts: num_attention_heads={}, num_key_value_heads={}",
-            config.num_attention_heads, config.num_key_value_heads,
+            config.num_attention_heads,
+            config.num_key_value_heads,
         );
     }
     if world_size > 1 {
         let (start, end) = config.local_expert_range();
         tracing::info!(
             "Parallelism: global rank {}/{} (tp_rank={}/{}, ep_rank={}/{}), local experts [{}, {})",
-            args.rank, world_size, tp_rank, tp_size, ep_rank, ep_size, start, end,
+            args.rank,
+            world_size,
+            tp_rank,
+            tp_size,
+            ep_rank,
+            ep_size,
+            start,
+            end,
         );
     }
-    Ok(Topology { world_size, tp_size, ep_size, tp_rank, ep_rank })
+    Ok(Topology {
+        world_size,
+        tp_size,
+        ep_size,
+        tp_rank,
+        ep_rank,
+    })
 }
 
 pub(crate) fn init_nccl_comm(
@@ -106,11 +131,18 @@ pub(crate) fn init_nccl_comm(
     }
     tracing::info!(
         "Initializing NCCL: rank {}/{}, master {}:{}",
-        args.rank, world_size, args.master_addr, args.master_port
+        args.rank,
+        world_size,
+        args.master_addr,
+        args.master_port
     );
     let cuda_stream = gpu.default_stream();
     let backend = spark_comm::NcclBackend::new(
-        args.rank, world_size, &args.master_addr, args.master_port, cuda_stream,
+        args.rank,
+        world_size,
+        &args.master_addr,
+        args.master_port,
+        cuda_stream,
     )
     .context("Failed to initialize NCCL")?;
     tracing::info!("NCCL initialized: rank {}", backend.rank());

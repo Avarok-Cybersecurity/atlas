@@ -238,7 +238,8 @@ pub fn build_model(
             "--high-speed-swap KV: {} attn layers ({}); HBM-shrink applies to all \
              (Phase 6.2.c proper — host dequant for FP8/NVFP4/Turbo3/Turbo4/Turbo8; \
              predictor scoring uses LRU for non-BF16 layers)",
-            total, summary.join(" + ")
+            total,
+            summary.join(" + ")
         );
     }
     let actual_free = gpu.free_memory()?;
@@ -282,7 +283,9 @@ pub fn build_model(
                  {} blocks × {} tok/block = {} max tokens",
                 actual_free as f64 / (1024.0 * 1024.0 * 1024.0),
                 allocatable as f64 / (1024.0 * 1024.0 * 1024.0),
-                n, kv_block_size, max_kv_tokens,
+                n,
+                kv_block_size,
+                max_kv_tokens,
             );
             n
         }

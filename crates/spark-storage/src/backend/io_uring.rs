@@ -11,7 +11,7 @@ use std::ffi::c_void;
 use std::os::fd::RawFd;
 
 use super::{ReadRequest, StorageBackend};
-use crate::cuda_min::{copy_h_to_d_async, stream_sync, CudaEvent, PinnedBuffer};
+use crate::cuda_min::{CudaEvent, PinnedBuffer, copy_h_to_d_async, stream_sync};
 use crate::group::GroupKey;
 use crate::layout::Layout;
 
@@ -54,7 +54,13 @@ impl IoUringBackend {
                 .context("register_buffers")?;
         }
         let events: Vec<Option<CudaEvent>> = (0..qd).map(|_| None).collect();
-        Ok(Self { layout, ring, buffers, events, qd })
+        Ok(Self {
+            layout,
+            ring,
+            buffers,
+            events,
+            qd,
+        })
     }
 
     pub fn layout(&self) -> &Layout {
@@ -121,7 +127,9 @@ impl StorageBackend for IoUringBackend {
         while completed < requests.len() {
             // Submit while we have a free buffer and pending requests.
             while next_submit < requests.len() {
-                let Some(&buf_idx) = free_bufs.last() else { break };
+                let Some(&buf_idx) = free_bufs.last() else {
+                    break;
+                };
                 self.wait_buffer_free(buf_idx as usize)?;
                 free_bufs.pop();
                 let req = &requests[next_submit];
@@ -132,7 +140,9 @@ impl StorageBackend for IoUringBackend {
                 next_submit += 1;
             }
             // Submit and wait for at least one completion.
-            self.ring.submit_and_wait(1).context("io_uring submit_and_wait")?;
+            self.ring
+                .submit_and_wait(1)
+                .context("io_uring submit_and_wait")?;
             // Drain everything that's ready.
             let cq = self.ring.completion();
             for cqe in cq {
@@ -144,13 +154,16 @@ impl StorageBackend for IoUringBackend {
                     bail!("io_uring read failed for req {req_idx}: errno {}", -result);
                 }
                 if result as u32 != bytes {
-                    bail!(
-                        "io_uring short read: req {req_idx} got {result}, expected {bytes}"
-                    );
+                    bail!("io_uring short read: req {req_idx} got {result}, expected {bytes}");
                 }
                 let req = &requests[req_idx];
                 let buf = &self.buffers[buf_idx as usize];
-                copy_h_to_d_async(req.dst_dev_ptr, buf.ptr as *const c_void, bytes as usize, stream)?;
+                copy_h_to_d_async(
+                    req.dst_dev_ptr,
+                    buf.ptr as *const c_void,
+                    bytes as usize,
+                    stream,
+                )?;
                 let ev = CudaEvent::new()?;
                 ev.record(stream)?;
                 self.events[buf_idx as usize] = Some(ev);
@@ -171,16 +184,15 @@ impl StorageBackend for IoUringBackend {
     fn write_from_host(&mut self, key: GroupKey, src: &[u8]) -> Result<()> {
         let bytes = self.layout.group_bytes() as usize;
         if src.len() != bytes {
-            bail!("write_from_host: src len {} != group bytes {bytes}", src.len());
+            bail!(
+                "write_from_host: src len {} != group bytes {bytes}",
+                src.len()
+            );
         }
         // Stage through buffer 0 — pinned + page-aligned for O_DIRECT.
         self.wait_buffer_free(0)?;
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                src.as_ptr(),
-                self.buffers[0].ptr as *mut u8,
-                bytes,
-            );
+            std::ptr::copy_nonoverlapping(src.as_ptr(), self.buffers[0].ptr as *mut u8, bytes);
         }
         let fd = self.layout.fd(key.layer);
         let off = self.layout.offset(key) as i64;
@@ -203,15 +215,14 @@ mod tests {
     use std::path::PathBuf;
 
     fn tempdir(name: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "atlas-iouring-{}-{}", name, std::process::id()
-        ));
+        let p = std::env::temp_dir().join(format!("atlas-iouring-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p
     }
 
     #[test]
+    #[ignore = "requires GPU"]
     fn write_then_read_round_trip() {
         let _ctx = CudaCtx::new(0).expect("cuda init");
         let dir = tempdir("rt");
@@ -220,19 +231,31 @@ mod tests {
         let mut backend = IoUringBackend::new(layout, 4).unwrap();
         let bytes = backend.layout().group_bytes() as usize;
         // Three different patterns at three different keys to exercise SQ depth.
-        let patterns: Vec<(GroupKey, Vec<u8>)> = (0..4u32).map(|b| {
-            let k = GroupKey::new(0, b, 0, KvKind::K);
-            let pat: Vec<u8> = (0..bytes).map(|i| ((i + b as usize) & 0xFF) as u8).collect();
-            (k, pat)
-        }).collect();
+        let patterns: Vec<(GroupKey, Vec<u8>)> = (0..4u32)
+            .map(|b| {
+                let k = GroupKey::new(0, b, 0, KvKind::K);
+                let pat: Vec<u8> = (0..bytes)
+                    .map(|i| ((i + b as usize) & 0xFF) as u8)
+                    .collect();
+                (k, pat)
+            })
+            .collect();
         for (k, p) in &patterns {
             backend.write_from_host(*k, p).unwrap();
         }
         backend.drop_pagecache();
-        let dev: Vec<DeviceBuffer> = patterns.iter().map(|_| DeviceBuffer::new(bytes).unwrap()).collect();
-        let reqs: Vec<ReadRequest> = patterns.iter().zip(&dev).map(|((k, _), d)| {
-            ReadRequest { group: *k, dst_dev_ptr: d.ptr }
-        }).collect();
+        let dev: Vec<DeviceBuffer> = patterns
+            .iter()
+            .map(|_| DeviceBuffer::new(bytes).unwrap())
+            .collect();
+        let reqs: Vec<ReadRequest> = patterns
+            .iter()
+            .zip(&dev)
+            .map(|((k, _), d)| ReadRequest {
+                group: *k,
+                dst_dev_ptr: d.ptr,
+            })
+            .collect();
         backend.read(&reqs, _ctx.stream).unwrap();
         for ((_, expected), d) in patterns.iter().zip(&dev) {
             let mut got = vec![0_u8; bytes];

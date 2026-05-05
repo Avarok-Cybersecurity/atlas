@@ -17,7 +17,7 @@ pub trait Reduce {
         stream_ptr: u64,
     ) -> Result<()>;
 
-    /// Weighted sum of expert outputs: output = sum(weights[i] * expert_out[i]) for topk experts.
+    /// Weighted sum of expert outputs: `output = sum(weights[i] * expert_out[i])` for topk experts.
     fn moe_sum(
         &self,
         expert_outputs_ptr: u64, // [num_tokens * topk, hidden_size] BF16

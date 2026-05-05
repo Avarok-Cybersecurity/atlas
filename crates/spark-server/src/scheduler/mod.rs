@@ -13,54 +13,53 @@
 //! When busy: drains pending queue (mutex lock) after each decode step.
 
 // ── Submodules (split for ≤500 LoC files) ──────────────────────────────────
-mod helpers;
-mod repetition;
-mod decode_step;
-mod decode_logits_step;
 mod decode_logits_seq;
-mod spec_step;
+mod decode_logits_step;
+mod decode_step;
+mod emit_step;
+mod helpers;
+mod lifecycle;
+mod logprobs;
+mod mod_helpers;
 mod mtp_step;
+mod phase_continue_prefills;
+mod phase_promote_prefills;
+mod phase_start_prefills;
+mod prefill_a_step;
+mod prefill_b_step;
+mod repetition;
+mod sample_step;
+mod spec_step;
+mod types;
 mod verify_dflash_step;
 mod verify_k2_step;
 mod verify_k3_step;
 mod verify_k4_step;
-mod logprobs;
-mod emit_step;
-mod prefill_a_step;
-mod prefill_b_step;
-mod sample_step;
-mod lifecycle;
-mod types;
-mod mod_helpers;
-mod phase_start_prefills;
-mod phase_continue_prefills;
-mod phase_promote_prefills;
 
-pub use helpers::set_im_start_hard_stop;
-pub use helpers::set_enable_loop_watchdog;
-pub use helpers::{CONTENT_LOOP_PERIOD_MIN, CONTENT_LOOP_PERIOD_MAX};
-use helpers::*;
-use repetition::*;
-use decode_step::*;
-use decode_logits_step::*;
 use decode_logits_seq::*;
-use spec_step::*;
+use decode_logits_step::*;
+use decode_step::*;
+use emit_step::*;
+pub use helpers::set_enable_loop_watchdog;
+pub use helpers::set_im_start_hard_stop;
+use helpers::*;
+pub use helpers::{CONTENT_LOOP_PERIOD_MAX, CONTENT_LOOP_PERIOD_MIN};
+use lifecycle::*;
+use logprobs::*;
+use mod_helpers::*;
 use mtp_step::*;
+use phase_continue_prefills::continue_in_progress_prefills;
+use phase_start_prefills::start_new_requests;
+use prefill_a_step::*;
+use prefill_b_step::*;
+use repetition::*;
+use sample_step::*;
+use spec_step::*;
+use types::*;
 use verify_dflash_step::*;
 use verify_k2_step::*;
 use verify_k3_step::*;
 use verify_k4_step::*;
-use logprobs::*;
-use emit_step::*;
-use prefill_a_step::*;
-use prefill_b_step::*;
-use sample_step::*;
-use lifecycle::*;
-use types::*;
-use mod_helpers::*;
-use phase_start_prefills::start_new_requests;
-use phase_continue_prefills::continue_in_progress_prefills;
-
 
 // Re-exports threaded through `use super::*;` in sibling step files —
 // keep these imports here even though `run` itself doesn't reference all
@@ -70,9 +69,7 @@ use parking_lot::{Condvar, Mutex};
 use spark_model::traits::{Model, SequenceState};
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::kv_spill::KvSpillManager;
-use spark_runtime::sampler::{
-    SamplingParams, sample_with_params, sample_with_params_history,
-};
+use spark_runtime::sampler::{SamplingParams, sample_with_params, sample_with_params_history};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -185,13 +182,8 @@ pub fn run(
 
     loop {
         // ── Drain pending → start prefill (chunked or full) ──
-        let new_reqs = drain_pending_requests(
-            &pending,
-            &active,
-            &prefilling,
-            &*policy,
-            max_batch_size,
-        );
+        let new_reqs =
+            drain_pending_requests(&pending, &active, &prefilling, &*policy, max_batch_size);
         if new_reqs.is_empty() && active.is_empty() && prefilling.is_empty() {
             // Receiver thread was closed (shutdown).
             let pending_closed = pending.0.lock().closed;
@@ -257,7 +249,7 @@ pub fn run(
         // ── Continue in-progress prefills ──
         let did_mixed_step = continue_in_progress_prefills(
             &*model,
-            &policy,
+            &*policy,
             &mut active,
             &mut prefilling,
             max_prefill_tokens,
@@ -292,10 +284,12 @@ pub fn run(
                 if let Some(ref mut proposer) = ngram_proposer {
                     step_ngram(&*model, &mut active, proposer);
                 }
-            } else if use_self_speculative && active.len() == 1 && active[0].grammar_state.is_none() {
+            } else if use_self_speculative && active.len() == 1 && active[0].grammar_state.is_none()
+            {
                 // Self-speculative: draft via layer-skipping, verify with full model.
                 step_self_spec(&*model, &mut active, num_drafts);
-            } else if use_mtp && active.len() == 1
+            } else if use_mtp
+                && active.len() == 1
                 && !active[0].inside_thinking
                 && !active[0].suppress_tool_call
                 && !active[0].disable_mtp
@@ -381,4 +375,3 @@ pub fn run(
     let _ = model.ep_broadcast_cmd(0xFFFFFFFF);
     tracing::info!("Scheduler stopped");
 }
-

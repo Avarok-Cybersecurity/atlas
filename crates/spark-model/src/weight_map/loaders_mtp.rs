@@ -123,7 +123,7 @@ pub enum Nvfp4Variant {
     /// Attention/SSM projections are NVFP4 quantized.
     CompressedTensors,
     /// FP8 block-scaled (e.g. Qwen/Qwen3.5-35B-A3B-FP8):
-    /// weight (float8_e4m3fn) + weight_scale_inv (BF16 per-[128,128]-block).
+    /// weight (float8_e4m3fn) + weight_scale_inv (BF16 per-`[128,128]`-block).
     /// All quantized weights get dequanted to BF16 at load time, then runtime-quantized to NVFP4.
     Fp8Dequanted,
     /// Raw BF16/FP16 fine-tunes (e.g. samuelcardillo/Carnice-MoE-35B-A3B):
@@ -133,4 +133,3 @@ pub enum Nvfp4Variant {
     /// the user gets a warning at startup.
     Bf16Raw,
 }
-

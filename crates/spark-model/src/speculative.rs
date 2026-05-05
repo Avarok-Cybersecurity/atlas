@@ -15,7 +15,7 @@ use crate::layer::ForwardContext;
 /// Per-sequence state owned by a [`DraftProposer`].
 ///
 /// Stores KV cache, hidden states, or whatever the proposer needs
-/// across decode steps. Follows the same downcasting pattern as [`LayerState`].
+/// across decode steps. Follows the same downcasting pattern as `LayerState`.
 pub trait ProposerState: Send + Sync {
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;

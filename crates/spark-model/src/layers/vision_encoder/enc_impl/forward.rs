@@ -80,22 +80,23 @@ impl VisionEncoder {
             // then apply the merger out-of-place so the residual stream
             // into the next ViT block stays unperturbed.
             if let Some((ds_idx, &ds_block)) = next_ds
-                && block_1indexed == ds_block {
-                    self.gpu_copy_bf16(gpu, self.buf_h1, self.buf_h2, n_h_bytes, stream)?;
-                    let offset_rows = (ds_idx + 1) * merged_p;
-                    let out_slice = self.buf_out.offset(offset_rows * self.out_hidden_size * 2);
-                    self.apply_merger(
-                        &self.deepstack[ds_idx],
-                        p,
-                        grid_h,
-                        grid_w,
-                        self.buf_h2,
-                        out_slice,
-                        gpu,
-                        stream,
-                    )?;
-                    next_ds = deepstack_iter.next();
-                }
+                && block_1indexed == ds_block
+            {
+                self.gpu_copy_bf16(gpu, self.buf_h1, self.buf_h2, n_h_bytes, stream)?;
+                let offset_rows = (ds_idx + 1) * merged_p;
+                let out_slice = self.buf_out.offset(offset_rows * self.out_hidden_size * 2);
+                self.apply_merger(
+                    &self.deepstack[ds_idx],
+                    p,
+                    grid_h,
+                    grid_w,
+                    self.buf_h2,
+                    out_slice,
+                    gpu,
+                    stream,
+                )?;
+                next_ds = deepstack_iter.next();
+            }
         }
 
         // Final merger runs on buf_h1 in-place (no subsequent block to protect).

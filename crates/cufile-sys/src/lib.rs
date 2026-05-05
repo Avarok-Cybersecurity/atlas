@@ -47,7 +47,10 @@ pub struct CUfileDescrHandle {
 
 impl CUfileDescrHandle {
     pub fn from_fd(fd: c_int) -> Self {
-        Self { fd, _pad: [0; 8 - core::mem::size_of::<c_int>()] }
+        Self {
+            fd,
+            _pad: [0; 8 - core::mem::size_of::<c_int>()],
+        }
     }
 }
 
@@ -63,8 +66,7 @@ pub type FnDriverClose = unsafe extern "C" fn() -> CUfileError_t;
 pub type FnHandleRegister =
     unsafe extern "C" fn(*mut CUfileHandle_t, *mut CUfileDescr_t) -> CUfileError_t;
 pub type FnHandleDeregister = unsafe extern "C" fn(CUfileHandle_t);
-pub type FnBufRegister =
-    unsafe extern "C" fn(*const c_void, libc::size_t, c_int) -> CUfileError_t;
+pub type FnBufRegister = unsafe extern "C" fn(*const c_void, libc::size_t, c_int) -> CUfileError_t;
 pub type FnBufDeregister = unsafe extern "C" fn(*const c_void) -> CUfileError_t;
 pub type FnRead = unsafe extern "C" fn(
     CUfileHandle_t,
@@ -116,10 +118,7 @@ impl CuFile {
     }
 
     fn resolve(lib: Library) -> Result<Self, String> {
-        unsafe fn sym<'a, T: Copy + 'a>(
-            lib: &'a Library,
-            name: &[u8],
-        ) -> Result<T, String> {
+        unsafe fn sym<'a, T: Copy + 'a>(lib: &'a Library, name: &[u8]) -> Result<T, String> {
             unsafe {
                 let s: Symbol<'a, T> = lib
                     .get(name)
@@ -131,8 +130,7 @@ impl CuFile {
             let driver_open = sym::<FnDriverOpen>(&lib, b"cuFileDriverOpen\0")?;
             let driver_close = sym::<FnDriverClose>(&lib, b"cuFileDriverClose\0")?;
             let handle_register = sym::<FnHandleRegister>(&lib, b"cuFileHandleRegister\0")?;
-            let handle_deregister =
-                sym::<FnHandleDeregister>(&lib, b"cuFileHandleDeregister\0")?;
+            let handle_deregister = sym::<FnHandleDeregister>(&lib, b"cuFileHandleDeregister\0")?;
             let buf_register = sym::<FnBufRegister>(&lib, b"cuFileBufRegister\0")?;
             let buf_deregister = sym::<FnBufDeregister>(&lib, b"cuFileBufDeregister\0")?;
             let read = sym::<FnRead>(&lib, b"cuFileRead\0")?;

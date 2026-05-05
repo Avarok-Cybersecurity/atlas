@@ -2,9 +2,9 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -12,32 +12,34 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::super::ssm_pool::SsmStatePool;
+use super::super::ssm_snapshot::SsmSnapshotPool;
+use super::super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::super::types::{TransformerModel, PinnedMetaStaging};
-use super::super::ssm_pool::SsmStatePool;
-use super::super::ssm_snapshot::SsmSnapshotPool;
-use super::super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
 
 impl TransformerModel {
-    pub(super) fn decode_dispatch(&self, token: u32, seq: &mut SequenceState, _stream: u64) -> Result<DevicePtr> {
+    pub(super) fn decode_dispatch(
+        &self,
+        token: u32,
+        seq: &mut SequenceState,
+        _stream: u64,
+    ) -> Result<DevicePtr> {
         // Use backend's own stream (non-default, required for CUDA graph capture).
         let stream = self.gpu.default_stream();
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
-        let mut kv_cache = self
-            .kv_cache
-            .lock();
+        let mut kv_cache = self.kv_cache.lock();
 
         // ── Phase 1: Operations OUTSIDE graph (vary per token) ──
 
@@ -54,7 +56,14 @@ impl TransformerModel {
         // 2. Pre-allocate KV cache blocks + upload attention metadata
         let bs = kv_cache.block_size();
         let blocks_needed = (seq.seq_len / bs) + 1;
-        ensure_blocks_through_decode(seq, blocks_needed - 1, &mut kv_cache, self.prefix_cache.as_ref(), self.gpu.as_ref(), stream)?;
+        ensure_blocks_through_decode(
+            seq,
+            blocks_needed - 1,
+            &mut kv_cache,
+            self.prefix_cache.as_ref(),
+            self.gpu.as_ref(),
+            stream,
+        )?;
 
         let meta_base = self.buffers.scratch().offset(32768);
         let max_blocks = seq.block_table.len() as u32;
@@ -63,7 +72,9 @@ impl TransformerModel {
         self.gpu
             .copy_h2d_async(&pos_val.to_le_bytes(), meta_base, stream)?;
 
-        let block_idx = seq.physical_block_for(seq.seq_len / bs).unwrap_or(self.dummy_kv_block);
+        let block_idx = seq
+            .physical_block_for(seq.seq_len / bs)
+            .unwrap_or(self.dummy_kv_block);
         let global_slot = (block_idx as i64) * (bs as i64) + ((seq.seq_len % bs) as i64);
         self.gpu
             .copy_h2d_async(&global_slot.to_le_bytes(), meta_base.offset(8), stream)?;
@@ -133,10 +144,7 @@ impl TransformerModel {
         // ── Phase 2: Try CUDA graph replay ──
 
         let mut graph_cache = if use_graphs {
-            Some(
-                self.decode_graph
-                    .lock(),
-            )
+            Some(self.decode_graph.lock())
         } else {
             None
         };
@@ -149,12 +157,13 @@ impl TransformerModel {
         // SLOT-KEYED LOOKUP: only replay if this seq's slot matches a captured graph.
         if let Some(ref cache) = graph_cache
             && let Some(graph) = cache.get(&seq.slot_idx)
-                && graph.0 != 0 {
-                    self.gpu.launch_graph(*graph, stream)?;
-                    seq.tokens.push(token);
-                    seq.seq_len += 1;
-                    return Ok(self.decode_logits_ptr());
-                }
+            && graph.0 != 0
+        {
+            self.gpu.launch_graph(*graph, stream)?;
+            seq.tokens.push(token);
+            seq.seq_len += 1;
+            return Ok(self.decode_logits_ptr());
+        }
 
         // ── Phase 3: Capture new CUDA graph (or run eagerly for EP) ──
 
@@ -198,10 +207,13 @@ impl TransformerModel {
         // Periodic SSM state normalization during decode.
         // Mamba-2 has no per-token gate clamping (unlike GDN), so state can drift
         // from accumulated BF16 input truncation. Normalize every 64 tokens.
-        if self.config.mamba_num_heads > 0 && seq.seq_len > 0 && seq.seq_len.is_multiple_of(64)
-            && let Err(e) = self.normalize_ssm_states(seq, stream) {
-                tracing::warn!("Periodic SSM state normalization failed: {e:#}");
-            }
+        if self.config.mamba_num_heads > 0
+            && seq.seq_len > 0
+            && seq.seq_len.is_multiple_of(64)
+            && let Err(e) = self.normalize_ssm_states(seq, stream)
+        {
+            tracing::warn!("Periodic SSM state normalization failed: {e:#}");
+        }
 
         let normed = self.buffers.norm_output();
         let h = self.config.hidden_size as u32;
@@ -289,5 +301,4 @@ impl TransformerModel {
 
         Ok(self.decode_logits_ptr())
     }
-
 }

@@ -24,7 +24,7 @@ pub(super) struct LoopDetectOut {
 
 pub(super) fn check_loops(
     req: &ChatCompletionRequest,
-    messages: &mut Vec<MsgEntry>,
+    messages: &mut [MsgEntry],
     consecutive_tool_errors: u32,
     tools_active: bool,
 ) -> LoopDetectOut {
@@ -65,10 +65,9 @@ pub(super) fn check_loops(
         if m.role != "assistant" {
             continue;
         }
-        let tool_args_len: usize = m
-            .tool_calls
-            .as_ref()
-            .map_or(0, |tcs| tcs.iter().map(|tc| tc.function.arguments.len()).sum());
+        let tool_args_len: usize = m.tool_calls.as_ref().map_or(0, |tcs| {
+            tcs.iter().map(|tc| tc.function.arguments.len()).sum()
+        });
         let is_substantial = m.content.text.len() >= 500 || tool_args_len >= 100;
         if is_substantial {
             break;
@@ -95,11 +94,7 @@ pub(super) fn check_loops(
             suppress_tool_call = true;
             tool_call_repeat_count = *run_length;
             crate::metrics::LOOP_DETECTOR_VERDICTS
-                .with_label_values(&[
-                    "suppress",
-                    channel.name(),
-                    if spinning { "1" } else { "0" },
-                ])
+                .with_label_values(&["suppress", channel.name(), if spinning { "1" } else { "0" }])
                 .inc();
         }
         crate::loop_detector::LoopState::Hint {

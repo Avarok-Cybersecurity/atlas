@@ -153,4 +153,3 @@ pub fn stream_sync(stream: u64) -> Result<()> {
     }
     Ok(())
 }
-
