@@ -1,0 +1,14 @@
+[package]
+name = "atlas-activation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Atlas: activation function helpers (SiLU, GeLU, sigmoid-mul) — placeholder layer for future host-side primitives."
+repository.workspace = true
+
+[dependencies]
+atlas-core = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

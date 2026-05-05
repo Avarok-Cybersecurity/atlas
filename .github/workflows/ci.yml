@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Skip CUDA/nvcc in build.rs so clippy/check can run on hosts without a GPU.
+  # Emits a stub target_ptx.rs that satisfies the atlas-kernels include.
+  ATLAS_SKIP_BUILD: "1"
+  # Short-circuit cudarc's nvcc probe (format is {major}0{minor}0; 13000 == CUDA 13.0).
+  # Required for `cargo test` on a runner without nvcc.
+  CUDARC_CUDA_VERSION: "13000"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    name: cargo fmt --check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: cargo clippy --tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install vendor/xgrammar-rs build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Lint policy lives in the workspace `Cargo.toml` `[workspace.lints]`
+      # block (deny `warnings` + `clippy::all`, with a few targeted
+      # allows for kernel-style signatures). Each crate inherits via
+      # `[lints] workspace = true`, and `lib.rs` / `main.rs` re-add the
+      # same denies as inner attributes so they apply even when the
+      # workspace lints table isn't honoured (e.g. older tooling).
+      - run: cargo clippy --workspace --tests
+
+  license-headers:
+    name: SPDX license headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: apache/skywalking-eyes/header@v0.6.0
+        with:
+          config: .licenserc.yaml
+          mode: check
+
+  typos:
+    name: typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crate-ci/typos@master
+
+  test:
+    name: cargo test --workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install vendor/xgrammar-rs build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Default `cargo test` skips `#[ignore]`-gated tests, which is
+      # exactly what we want — the integration tests in
+      # `crates/spark-server/tests/integration.rs` require a GB10 + cached
+      # model weights and are run locally with `-- --ignored`.
+      - run: cargo test --workspace --locked
+
+  # cargo-deny runs in security.yml with path filters on Cargo.toml / Cargo.lock /
+  # deny.toml plus a weekly cron. Not duplicated here.

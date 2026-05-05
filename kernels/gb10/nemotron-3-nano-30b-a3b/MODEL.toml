@@ -1,0 +1,54 @@
+[model]
+name = "nemotron-3-nano-30b-a3b"
+hf_id = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4"
+model_type = "nemotron_h"
+architecture = "hybrid_mamba2_moe_attention"
+parameters = "30B"
+active_parameters = "3.5B"
+
+[[model_types]]
+model_type = "nemotron_h"
+
+# Nemotron-H uses ChatML format. No official sampling recommendations.
+# Conservative defaults to prevent repetition in hybrid SSM architecture.
+[sampling.thinking_text]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+# Tool-calling preset: lower temperature for deterministic tool calls.
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[behavior]
+# Disable thinking when tools are active. Like Qwen3.5, Nemotron-H Nano
+# suffers from Think-Satisfy: model reasons about tools in <think>, then
+# outputs JSON narration instead of <tool_call> XML format.
+thinking_in_tools = false
+# Bumped 256 → 1024 in pass-17: fib prompt's reasoning trace needs room to
+# complete (before bump, model hit budget mid-step and force-end-thinking
+# fired with the model still mid-reasoning, causing prose to spill into the
+# post-</think> content slot and break code extraction).
+max_thinking_budget = 2048
+# Nemotron-H Nano is a thinking-first model: it is trained to produce a
+# <think>...</think> reasoning trace before the final answer. Default to
+# thinking enabled so the server's reasoning parser (`qwen` style)
+# strips the block and returns clean `content`.
+thinking_default = true

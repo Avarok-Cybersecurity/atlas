@@ -1,0 +1,76 @@
+[package]
+name = "atlas-spark-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+ureq = { version = "3", features = ["json"] }
+
+# Kernel microbenchmark dependencies
+atlas-core = { workspace = true }
+atlas-kernels = { workspace = true }
+cudarc = { workspace = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+parking_lot = { workspace = true }
+
+# ── HTTP-level benchmarks ──
+
+[[bench]]
+name = "prefill"
+harness = false
+
+[[bench]]
+name = "decode"
+harness = false
+
+[[bench]]
+name = "e2e"
+harness = false
+
+[[bench]]
+name = "concurrent"
+harness = false
+
+# ── Kernel microbenchmarks ──
+
+[[bench]]
+name = "norm"
+harness = false
+
+[[bench]]
+name = "activation"
+harness = false
+
+[[bench]]
+name = "gemm"
+harness = false
+
+[[bench]]
+name = "rope"
+harness = false
+
+[[bench]]
+name = "moe"
+harness = false
+
+[[bench]]
+name = "moe_decode_vs_prefill"
+harness = false
+
+[[bench]]
+name = "attention"
+harness = false
+
+[[bench]]
+name = "ssm"
+harness = false
+
+
+[lints]
+workspace = true

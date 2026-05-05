@@ -1,0 +1,47 @@
+/* Atlas book — small accent overlay on mdBook's navy theme. */
+
+:root {
+    --atlas-orange: #ff6600;
+    --atlas-orange-dim: #cc5200;
+}
+
+.navy .menu-title,
+.navy .chapter li.chapter-item strong {
+    color: var(--atlas-orange);
+}
+
+.navy a,
+.navy a:visited {
+    color: var(--atlas-orange);
+}
+
+.navy a:hover {
+    color: var(--atlas-orange-dim);
+    text-decoration: underline;
+}
+
+.navy code {
+    color: #f0f0f0;
+    background: #1a1e24;
+}
+
+/* Tighter table rows for the many model / kernel matrices. */
+.content table td,
+.content table th {
+    padding: 4px 10px;
+}
+
+/* Callout styling for > blockquotes we use as "note" banners. */
+.content blockquote {
+    border-left: 3px solid var(--atlas-orange);
+    background: rgba(255, 102, 0, 0.06);
+    padding: 0.5em 1em;
+    margin: 1em 0;
+}
+
+/* Make the headline number in the intro pop. */
+.atlas-headline {
+    font-size: 1.6em;
+    font-weight: 600;
+    color: var(--atlas-orange);
+}

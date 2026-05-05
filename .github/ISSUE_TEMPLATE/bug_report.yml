@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a defect in Atlas — wrong output, crash, performance regression, or build failure.
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Atlas is a GPU-bound inference stack — the more
+        precise the reproducer (model, docker tag, hardware, exact command),
+        the faster we can land a fix.
+
+  - type: input
+    id: atlas-version
+    attributes:
+      label: Atlas version / docker tag
+      description: e.g. `avarok/atlas-gb10:alpha-2.44` or `git rev-parse HEAD`
+      placeholder: alpha-2.44
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: HuggingFace ID of the model
+      placeholder: nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      description: GPU + node count (single-GPU vs EP=2)
+      placeholder: 1× GB10, single-GPU
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Launch command
+      description: The exact `docker run` / `serve` command you used.
+      render: bash
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include the first ~100 lines of server logs, any stack trace, and any visible output snippets.
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: GPU memory pressure, concurrent clients, network/NCCL config, anything else you suspect is relevant.

@@ -1,0 +1,12 @@
+# Layer Gemma-4 FP32 lm_head + softcap fix on top of tp-all baseline.
+#
+# Build:
+#   ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL='*' ATLAS_TARGET_QUANT='*' \
+#     cargo build --release -p spark-server
+#   cp target/release/spark spark-fastbin
+#   docker build -f docker/gb10/Dockerfile.gemma-fp32 -t atlas-gb10:gemma-fp32 .
+
+FROM atlas-gb10:tp-all
+
+COPY spark-fastbin /usr/local/bin/spark
+COPY jinja-templates/ /jinja-templates/

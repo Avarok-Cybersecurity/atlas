@@ -1,0 +1,74 @@
+# Atlas Spark — All models on GB10 (multi-target binary)
+#
+# Build from repo root:
+#   docker build -f docker/gb10/Dockerfile -t atlas-gb10 .
+#
+# Run (auto-selects kernels based on model config):
+#   docker run --gpus all --ipc=host -p 8888:8888 \
+#     -v ~/.cache/huggingface:/root/.cache/huggingface \
+#     atlas-gb10 serve nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4
+#
+#   docker run --gpus all --ipc=host -p 8888:8888 \
+#     -v ~/.cache/huggingface:/root/.cache/huggingface \
+#     atlas-gb10 serve Kbenkhaled/Qwen3.5-35B-A3B-NVFP4
+
+# ── Build stage ──────────────────────────────────────────────────
+FROM nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d AS builder
+
+RUN apt-get update -qq && \
+    apt-get install -y -qq curl build-essential pkg-config git cmake libclang-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+ENV CUDA_HOME=/usr/local/cuda
+# Override rust-toolchain.toml's 1.85 pin: a transitive dep (libloading 0.9)
+# now requires >= 1.88. Using `stable` defers to the toolchain that rustup
+# installed above (currently 1.93).
+ENV RUSTUP_TOOLCHAIN=stable
+
+WORKDIR /build
+
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates/ crates/
+COPY vendor/ vendor/
+COPY kernels/ kernels/
+COPY jinja-templates/ jinja-templates/
+
+ENV ATLAS_TARGET_HW=gb10
+ENV ATLAS_TARGET_MODEL=*
+ENV ATLAS_TARGET_QUANT=*
+
+RUN cargo build --release -p spark-server
+
+# ── Runtime stage ────────────────────────────────────────────────
+FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04@sha256:95318efecfd68ab3d109da5277863257b06137c84f34a87f38de970d5cd035d3
+
+LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
+
+# NCCL for multi-GPU (EP=2), RDMA userspace for RoCE transport.
+# NCCL ≥ 2.28 is required for `ncclMemAlloc`/`ncclMemFree` symmetric memory
+# windows (substrate for device-API fused allreduce kernels). Ubuntu 24.04
+# default `libnccl2` may resolve to 2.27.x; explicitly pin via NVIDIA's
+# CUDA APT repo. The base `nvidia/cuda:13.0.0` image already has the
+# CUDA repo enabled.
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends --allow-change-held-packages \
+      "libnccl2 (>= 2.28)" libibverbs1 librdmacm1 ibverbs-providers \
+      libnl-3-200 libnl-route-3-200 && \
+    rm -rf /var/lib/apt/lists/* && \
+    # Sanity-check the linked NCCL is ≥ 2.28 — fail-fast if the constraint
+    # didn't resolve as expected (e.g. apt repo only had 2.27).
+    NCCL_VER=$(dpkg-query -W -f='${Version}' libnccl2) && \
+    echo "Linked NCCL: $NCCL_VER" && \
+    dpkg --compare-versions "$NCCL_VER" ge "2.28" || \
+      (echo "ERROR: NCCL $NCCL_VER < 2.28 — symmetric memory APIs unavailable" && exit 1)
+
+COPY --from=builder /build/target/release/spark /usr/local/bin/spark
+COPY --from=builder /build/jinja-templates/ /jinja-templates/
+COPY LICENSE /LICENSE
+
+ENV RUST_LOG=info
+EXPOSE 8888
+
+ENTRYPOINT ["spark"]

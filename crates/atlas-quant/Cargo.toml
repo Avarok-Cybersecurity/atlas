@@ -1,0 +1,14 @@
+[package]
+name = "atlas-quant"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Atlas: quantization helpers (NVFP4 / FP8 / W4A16) — placeholder layer for future host-side quant routines."
+repository.workspace = true
+
+[dependencies]
+atlas-core = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

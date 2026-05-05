@@ -1,0 +1,59 @@
+[model]
+name = "qwen3-vl-30b-a3b"
+hf_id = "ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4"
+params = "30B"
+active_params = "3B"
+architecture = "Full Attention + MoE"
+
+layers_total = 48
+layers_full_attention = 48
+layers_linear_attention = 0
+
+moe_experts = 128
+moe_topk = 8
+moe_intermediate = 768
+
+hidden_dim = 2048
+head_dim = 128
+q_heads = 32
+kv_heads = 4
+
+vocab_size = 151936
+max_position_embeddings = 262144
+rope_theta = 5000000
+attn_output_gate = false
+
+mtp_layers = 0
+vision = true
+
+# Qwen3-VL — vision model, no official thinking mode.
+# VL tasks use lower temperature per Qwen3.5 guidance.
+[sampling.thinking_text]
+temperature = 0.7
+top_p = 0.80
+top_k = 20
+presence_penalty = 1.5
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.80
+top_k = 20
+presence_penalty = 1.5
+
+[[model_types]]
+model_type = "qwen3_vl_moe"
+
+[kernel]
+moe_gate_shmem_bytes = 4096   # hidden_dim(2048) * sizeof(bf16)
+
+[behavior]
+# Content-loop watchdog disabled: 2026-05-05 chess-game stress sweep
+# showed this MoE A3B variant finishes naturally with EOS on long-code
+# prompts. Only the dense Qwen 27B variants need the watchdog.
+enable_loop_watchdog = false

@@ -1,0 +1,310 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "Bash",
+      "description": "Executes a given bash command and returns its output. The working directory persists between commands, but shell state does not. IMPORTANT: Avoid using this tool to run find, grep, cat, head, tail, sed, awk, or echo commands. Instead, use the appropriate dedicated tool. While the Bash tool can do similar things, it's better to use the built-in tools as they provide a better user experience.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "The command to execute"
+          },
+          "description": {
+            "type": "string",
+            "description": "Clear, concise description of what this command does in active voice"
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Optional timeout in milliseconds (max 600000)"
+          }
+        },
+        "required": ["command"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "Read",
+      "description": "Reads a file from the local filesystem. You can access any file directly by using this tool. The file_path parameter must be an absolute path, not a relative path. By default, it reads up to 2000 lines starting from the beginning of the file. When you already know which part of the file you need, only read that part. Results are returned using cat -n format, with line numbers starting at 1.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "The absolute path to the file to read"
+          },
+          "offset": {
+            "type": "number",
+            "description": "The line number to start reading from. Only provide if the file is too large to read at once"
+          },
+          "limit": {
+            "type": "number",
+            "description": "The number of lines to read. Only provide if the file is too large to read at once."
+          }
+        },
+        "required": ["file_path"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "Write",
+      "description": "Writes a file to the local filesystem. This tool will overwrite the existing file if there is one at the provided path. If this is an existing file, you MUST use the Read tool first to read the file's contents. Prefer the Edit tool for modifying existing files. Only use this tool to create new files or for complete rewrites.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "The absolute path to the file to write (must be absolute, not relative)"
+          },
+          "content": {
+            "type": "string",
+            "description": "The content to write to the file"
+          }
+        },
+        "required": ["file_path", "content"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "Edit",
+      "description": "Performs exact string replacements in files. You must use your Read tool at least once in the conversation before editing. The edit will FAIL if old_string is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all to change every instance of old_string.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "The absolute path to the file to modify"
+          },
+          "old_string": {
+            "type": "string",
+            "description": "The text to replace"
+          },
+          "new_string": {
+            "type": "string",
+            "description": "The text to replace it with (must be different from old_string)"
+          },
+          "replace_all": {
+            "type": "boolean",
+            "default": false,
+            "description": "Replace all occurrences of old_string (default false)"
+          }
+        },
+        "required": ["file_path", "old_string", "new_string"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "Glob",
+      "description": "Fast file pattern matching tool that works with any codebase size. Supports glob patterns like '**/*.js' or 'src/**/*.ts'. Returns matching file paths sorted by modification time. Use this tool when you need to find files by name patterns.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "The glob pattern to match files against"
+          },
+          "path": {
+            "type": "string",
+            "description": "The directory to search in. If not specified, the current working directory will be used."
+          }
+        },
+        "required": ["pattern"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "Grep",
+      "description": "A powerful search tool built on ripgrep. Supports full regex syntax (e.g., 'log.*Error', 'function\\s+\\w+'). Filter files with glob parameter (e.g., '*.js', '**/*.tsx') or type parameter (e.g., 'js', 'py', 'rust'). Output modes: 'content' shows matching lines, 'files_with_matches' shows only file paths (default), 'count' shows match counts.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "The regular expression pattern to search for in file contents"
+          },
+          "path": {
+            "type": "string",
+            "description": "File or directory to search in. Defaults to current working directory."
+          },
+          "glob": {
+            "type": "string",
+            "description": "Glob pattern to filter files (e.g. '*.js', '*.{ts,tsx}')"
+          },
+          "output_mode": {
+            "type": "string",
+            "enum": ["content", "files_with_matches", "count"],
+            "description": "Output mode. Defaults to 'files_with_matches'."
+          },
+          "context": {
+            "type": "number",
+            "description": "Number of lines to show before and after each match"
+          },
+          "type": {
+            "type": "string",
+            "description": "File type to search (e.g., 'js', 'py', 'rust')"
+          }
+        },
+        "required": ["pattern"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "WebFetch",
+      "description": "Fetches content from a URL. Can retrieve HTML pages, API responses, and other web content. Returns the page content as text.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The URL to fetch content from"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Optional prompt to guide content extraction"
+          }
+        },
+        "required": ["url"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "WebSearch",
+      "description": "Searches the web for information. Returns search results with titles, URLs, and snippets.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The search query"
+          },
+          "domain": {
+            "type": "string",
+            "description": "Optional domain to restrict search to"
+          }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "Task",
+      "description": "Launch a new agent to handle complex, multi-step tasks autonomously. The Task tool launches specialized agents that autonomously handle complex tasks. Each agent operates independently and returns results when complete. Provide clear, detailed prompts so the agent can work autonomously and return exactly the information you need.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "A short (3-5 word) description of the task"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "The task for the agent to perform"
+          }
+        },
+        "required": ["description", "prompt"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "TodoWrite",
+      "description": "Write and manage a list of todo items for tracking tasks. Each item has an id, content, and status (pending, in_progress, or completed). Use this tool frequently to plan and track progress on tasks.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "todos": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Unique identifier for the todo item"
+                },
+                "content": {
+                  "type": "string",
+                  "description": "Description of the todo item"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": ["pending", "in_progress", "completed"],
+                  "description": "Current status of the todo item"
+                }
+              },
+              "required": ["id", "content", "status"],
+              "additionalProperties": false
+            },
+            "description": "List of todo items to write"
+          }
+        },
+        "required": ["todos"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "TodoRead",
+      "description": "Read the current list of todo items to check progress and status of tasks.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "NotebookEdit",
+      "description": "Edit a Jupyter notebook cell. Replaces the source of a specific cell with new content.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "notebook_path": {
+            "type": "string",
+            "description": "The absolute path to the Jupyter notebook file"
+          },
+          "cell_number": {
+            "type": "integer",
+            "description": "The cell number to edit (0-indexed)"
+          },
+          "new_source": {
+            "type": "string",
+            "description": "The new source content for the cell"
+          }
+        },
+        "required": ["notebook_path", "cell_number", "new_source"],
+        "additionalProperties": false
+      }
+    }
+  }
+]

@@ -1,0 +1,12 @@
+[hardware]
+name = "gb10"
+vendor = "nvidia"
+arch = "sm_121f"
+compute_capability = "12.1"
+memory_bandwidth_gbps = 273
+memory_type = "LPDDR5X"
+memory_gb = 120
+# BF16 residual: 2x throughput on bandwidth-limited LPDDR5X (135 vs 63 tok/s).
+# FP32 residual prevents BF16 truncation at 20K+ context but costs 2x bandwidth.
+# Set true for HBM systems (B200, H100) where bandwidth isn't the bottleneck.
+use_fp32_residual = false

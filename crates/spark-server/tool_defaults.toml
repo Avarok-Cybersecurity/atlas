@@ -1,0 +1,36 @@
+# Default tool-call-parser per model_type.
+# Override at runtime with --tool-call-parser <format>.
+#
+# Supported formats:
+#   hermes      — JSON: <tool_call>{"name":"fn","arguments":{...}}</tool_call>
+#   qwen3_coder — XML:  <tool_call><function=fn><parameter=k>v</parameter></function></tool_call>
+#   gemma4      — Native: <|tool_call>call:fn{key:val,...}<tool_call|>
+#   mistral     — Native: [TOOL_CALLS]fn[ARGS]{"k":"v",...}
+
+[model_type]
+qwen3_5_moe = "qwen3_coder"    # Qwen3.5-35B, Qwen3.5-122B — native XML format
+qwen3_5     = "qwen3_coder"    # Qwen3.5-27B Dense — native XML format
+qwen3_6_moe = "qwen3_coder"    # Qwen3.6-35B — same XML format; MRoPE-interleaved only differs at kernel layer
+nemotron_h  = "qwen3_coder"    # Nemotron-H 30B — native XML format
+qwen3_next  = "hermes"        # Qwen3-Next-80B
+qwen3_vl_moe = "hermes"       # Qwen3-VL-30B
+mistral     = "mistral"       # Mistral Small 4 — native [TOOL_CALLS]name[ARGS]{json}
+gemma4      = "gemma4"        # Gemma-4 — native format: <|tool_call>call:name{...}<tool_call|>
+minimax_m2  = "minimax_xml"    # MiniMax M2 — <minimax:tool_call><invoke name=""><parameter name="">...
+
+# Default reasoning parser per model_type.
+# Override at runtime with --reasoning-parser <format>.
+#
+# Supported formats:
+#   qwen    — <think>...</think> (Qwen3.5, Nemotron, DeepSeek-R1)
+#   mistral — [THINK]...[/THINK]
+
+[reasoning]
+qwen3_5_moe = "qwen"
+qwen3_5     = "qwen"
+qwen3_6_moe = "qwen"
+nemotron_h  = "qwen"
+qwen3_next  = "qwen"
+qwen3_vl_moe = "qwen"
+mistral     = "mistral"
+minimax_m2  = "qwen"           # MiniMax uses <think>...</think> via chat_template

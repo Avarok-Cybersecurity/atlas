@@ -1,0 +1,53 @@
+[model]
+name = "mistral-small-4"
+hf_id = "mistralai/Mistral-Small-4-119B-2603-NVFP4"
+model_type = "mistral"
+architecture = "mla_moe_attention"
+parameters = "119B"
+active_parameters = "6.5B"
+
+[[model_types]]
+model_type = "mistral"
+
+# Mistral uses [INST] format, not ChatML.
+# No official sampling recommendations yet.
+[sampling.thinking_text]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[behavior]
+thinking_in_tools = true
+max_thinking_budget = 256
+# Mistral Small 4 is a thinking-first model — the HF jinja template sets
+# `reasoning_effort: high` by default and the model was trained to reason
+# before answering. Honor that intent when the client sends no reasoning
+# parameter. Clients can opt out per-request with `reasoning_effort: none`
+# (or Anthropic `thinking.type: disabled`, or OpenAI `reasoning.effort: none`).
+# The server operator can force off with `--disable-thinking`.
+thinking_default = false
+# BF16 KV cache default — MLA latent space values exceed FP8 E4M3 range (±448).
+default_kv_dtype = "bf16"
+fp8_kv_calibration_tokens = 256
+
+[kernel]
+moe_gate_shmem_bytes = 8192   # dim(4096) * sizeof(bf16)

@@ -1,0 +1,79 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/atlas-core",
+    "crates/atlas-quant",
+    "crates/atlas-norm",
+    "crates/atlas-activation",
+    "crates/atlas-embed",
+    "crates/atlas-reduce",
+    "crates/atlas-kernels",
+    "crates/spark-runtime",
+    "crates/spark-comm",
+    "crates/spark-model",
+    "crates/spark-server",
+    "crates/atlas-spark-bench",
+    "crates/cufile-sys",
+    "crates/spark-storage",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "AGPL-3.0-only"
+authors = ["Atlas Contributors"]
+repository = "https://github.com/Avarok-Cybersecurity/atlas"
+homepage = "https://atlasinference.io"
+documentation = "https://docs.atlasinference.io"
+readme = "README.md"
+keywords = ["llm", "inference", "cuda", "blackwell", "gpu"]
+categories = ["science", "command-line-utilities"]
+
+[workspace.dependencies]
+# CUDA FFI
+cudarc = { version = "0.19", features = ["driver", "nvrtc", "cuda-version-from-build-system"] }
+
+# Serialization (HF config.json)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Synchronization — parking_lot Mutex/RwLock are faster than std::sync,
+# don't poison, and `.lock()` returns the guard directly (no Result).
+# Already a transitive dep of several crates so this adds no binary
+# overhead — just standardizes the API across the workspace.
+parking_lot = "0.12"
+
+# Workspace crates
+atlas-core = { path = "crates/atlas-core" }
+atlas-quant = { path = "crates/atlas-quant" }
+atlas-norm = { path = "crates/atlas-norm" }
+atlas-activation = { path = "crates/atlas-activation" }
+atlas-embed = { path = "crates/atlas-embed" }
+atlas-reduce = { path = "crates/atlas-reduce" }
+atlas-kernels = { path = "crates/atlas-kernels" }
+
+[patch.crates-io]
+xgrammar-rs = { path = "vendor/xgrammar-rs" }
+
+# Workspace-wide lint policy. Each crate also adds `#![deny(warnings)]` /
+# `#![deny(clippy::all)]` to its `lib.rs`/`main.rs`; this section extends
+# the same policy to integration tests, benches, and examples (which are
+# compiled as separate targets and would otherwise inherit nothing).
+[workspace.lints.rust]
+warnings = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+too_many_arguments = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"
+doc_lazy_continuation = "allow"
+doc_overindented_list_items = "allow"
+type_complexity = "allow"
+ptr_arg = "allow"
+if_same_then_else = "allow"

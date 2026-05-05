@@ -1,0 +1,43 @@
+[book]
+title = "The Atlas Book"
+authors = ["Atlas Contributors"]
+description = "A comprehensive guide to Atlas — pure-Rust LLM inference for hyperoptimized (Hardware, Model, Quantization) kernel targets."
+language = "en"
+multilingual = false
+src = "src"
+
+[build]
+build-dir = "output"
+create-missing = false
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+site-url = "/"
+git-repository-url = "https://github.com/Avarok-Cybersecurity/atlas"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/Avarok-Cybersecurity/atlas/edit/main/book/{path}"
+no-section-label = false
+additional-css = ["theme/css/atlas.css"]
+
+[output.html.print]
+enable = true
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 30
+teaser-word-count = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 1
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
+
+[output.html.redirect]
+"/api.html" = "/api/"
+"/api/index.html" = "/api/"

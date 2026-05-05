@@ -1,0 +1,70 @@
+# Build artifacts
+target/
+**/target/
+*.o
+*.ptx
+*.bak
+
+# mdBook output (book/src is tracked; book/output is generated)
+/book/output/
+/book/book/
+
+# Editor / agent scratch
+.claude/
+.gemini/
+.agent*/
+.codex/
+.vscode/
+.idea/
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Compiled binaries accidentally landing at repo root
+/spark-fastbin
+/a.out
+
+# Profiling artifacts
+*.nsys-rep
+*.ncu-rep
+*.qdrep
+*.sqlite
+perf.data*
+core.*
+
+# Environment / secrets
+.env
+.env.*
+
+# Root-level ad-hoc logs (tracked test result logs under tests/ are intentional)
+/*.log
+
+# Bench result artifacts (regenerated per run)
+/bench-*-results*.json
+/bench_*_results*.json
+/bench-*-results*.log
+/conc-bench-results/
+/bench-results/
+/bench-4configs/
+/bench-4configs-mtp/
+/bench-5configs-final/
+/bench_concurrency_results*.json
+# JSON results inside bench/ (scripts stay, snapshots don't)
+bench/*.json
+
+# Test run history snapshots — none are committed; results are
+# regenerated per-host and contain machine-specific paths/timestamps.
+tests/all_models_results/
+tests/all_models_results.*/
+tests/all_models_results_pass*/
+
+# Nested scratch / experiment projects
+/tmp/
+/tools/
+
+# OS
+.DS_Store
+Thumbs.db

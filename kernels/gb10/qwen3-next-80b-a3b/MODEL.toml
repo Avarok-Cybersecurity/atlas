@@ -1,0 +1,62 @@
+[model]
+name = "qwen3-next-80b-a3b"
+hf_id = "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4"
+params = "80B"
+active_params = "3B"
+layers_attention = 12
+layers_ssm = 36
+moe_experts = 512
+moe_topk = 10
+hidden_dim = 2048
+head_dim = 256
+q_heads = 16
+kv_heads = 2
+
+# Qwen3-Next — older architecture, no official thinking mode.
+[sampling.thinking_text]
+temperature = 0.7
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[[model_types]]
+model_type = "qwen3_next"
+
+# Model-specific behavior overrides. Without this section the server
+# falls back to the hardcoded defaults in atlas-kernels/build.rs
+# (max_thinking_budget=256), which is too low for users running
+# extended reasoning prompts on Qwen3-Next-80B.
+[behavior]
+# Content-loop watchdog disabled: 2026-05-05 chess-game stress
+# sweep showed Qwen3-Next-80B (hybrid attention + Mamba MoE A3B)
+# finishes cleanly on long-code prompts. Only the dense Qwen 27B
+# variants need the watchdog.
+enable_loop_watchdog = false
+# Qwen3-Next-80B does not have an official thinking-mode template,
+# but supports `enable_thinking=true` via the chat-template kwargs.
+# When tools are active, leave thinking on — the model uses it
+# constructively for multi-step tool reasoning.
+thinking_in_tools = true
+# Generous ceiling for extended reasoning prompts. Per-request
+# `thinking.budget_tokens` still wins below this; CLI
+# `--max-thinking-budget` overrides this entirely.
+max_thinking_budget = 4096
+thinking_default = false
+# Benchmarked 2026-04-11: K=2 (1 draft) is the sweet spot for the
+# 80B-A3B MoE — verify overhead at K=3 wipes out acceptance gains.
+default_num_drafts = 1
+
+[kernel]
+moe_gate_shmem_bytes = 4096   # hidden_dim(2048) * sizeof(bf16)

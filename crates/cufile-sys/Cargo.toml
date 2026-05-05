@@ -1,0 +1,13 @@
+[package]
+name = "cufile-sys"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Atlas: minimal raw FFI types and dlopen wrapper for libcufile (NVIDIA GPUDirect Storage)"
+
+[dependencies]
+libloading = "0.8"
+libc = "0.2"
+
+[lints]
+workspace = true

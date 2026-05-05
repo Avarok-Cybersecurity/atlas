@@ -1,0 +1,32 @@
+# Atlas CODEOWNERS
+#
+# Lines starting with `#` are comments. The first matching pattern wins.
+# Replace the placeholder usernames below with real GitHub handles before
+# enabling required-reviewer enforcement on the repo.
+#
+# Reference: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default fallback — every PR pings the maintainer.
+*                                            @tbraun96 @azeezish
+
+# Compute path: kernel registration, model loaders, hot-path Rust.
+kernels/                                     @tbraun96 @azeezish
+crates/atlas-kernels/                        @tbraun96 @azeezish
+crates/spark-model/                          @tbraun96 @azeezish
+crates/spark-runtime/                        @tbraun96 @azeezish
+
+# Server / HTTP API surface.
+crates/spark-server/                         @tbraun96 @azeezish
+
+# Multi-rank communication (NCCL / RDMA).
+crates/spark-comm/                           @tbraun96 @azeezish
+
+# Storage / NVMe-backed swap.
+crates/spark-storage/                        @tbraun96 @azeezish
+
+# Build, CI, governance.
+.github/                                     @tbraun96 @azeezish
+docs/adr/                                    @tbraun96 @azeezish
+Cargo.toml                                   @tbraun96 @azeezish
+LICENSE                                      @tbraun96 @azeezish
+CLA.md                                       @tbraun96 @azeezish

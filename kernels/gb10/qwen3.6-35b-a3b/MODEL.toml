@@ -1,0 +1,129 @@
+[model]
+name = "qwen3.6-35b-a3b"
+hf_id = "Qwen/Qwen3.6-35B-A3B-FP8"
+params = "35B"
+active_params = "3B"
+architecture = "Gated DeltaNet + Full Attention + MoE + MRoPE"
+
+layers_total = 40
+layers_linear_attention = 30
+layers_full_attention = 10
+layer_pattern = "3:1 (linear, linear, linear, full)"
+
+moe_experts = 256
+moe_topk = 8
+moe_intermediate = 512
+shared_expert_intermediate = 512
+
+hidden_dim = 2048
+head_dim = 256
+q_heads = 16
+kv_heads = 2
+
+linear_attn_key_heads = 16
+linear_attn_key_dim = 128
+linear_attn_value_heads = 32
+linear_attn_value_dim = 128
+linear_conv_kernel = 4
+
+vocab_size = 248320
+max_position_embeddings = 262144
+rope_theta = 10000000
+partial_rotary_factor = 0.25
+attn_output_gate = true
+
+# MRoPE (multi-modal rotary position embedding). Qwen3.6's full-attention
+# layers use interleaved 3-axis rope. Text-only serving keeps H and W
+# position IDs at zero (generation is temporal only), but the rope kernel
+# still needs the interleaved channel layout.
+mrope_interleaved = true
+mrope_section = [11, 11, 10]
+
+mtp_layers = 1
+mtp_type = "full_attention"
+# Vision tower loaded from checkpoint (27 blocks, first 4 BF16, rest FP8).
+vision = true
+
+# Effective context for agentic tasks (tokens). Server-side compaction
+# triggers when prompt exceeds 50% of this value. The 35B hybrid SSM
+# (30 GDN + 10 attention layers) has ~16-24K effective context for tool
+# calling despite 256K positional budget.
+effective_context = 24576
+
+# Recommended sampling defaults per category (from Qwen3.5 model card).
+# Used when the client doesn't send explicit values.
+# Categories: thinking_text, thinking_coding, non_thinking, tools
+[sampling.thinking_text]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+# Tool-calling preset: Qwen team recommends temperature=0.6 for coding tasks.
+# Greedy (0.0) causes self-reinforcement repetition loops at long context.
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+# Model-specific behavior overrides. These control server-side hacks that
+# compensate for model quirks. Defaults are sane for most models; override
+# here when a model family has known failure modes.
+[behavior]
+# Content-loop watchdog disabled: 2026-05-05 chess-game stress
+# sweep showed this MoE A3B variant finishes cleanly on long-code
+# prompts. Only the dense Qwen 27B variants need it.
+enable_loop_watchdog = false
+# Disable thinking when tools are active. Qwen3.5 suffers from "Think-Satisfy":
+# model reasons about tool calls in <think>, convinces itself the task is done,
+# then narrates instead of calling tools.
+thinking_in_tools = false
+# Maximum thinking budget (tokens). Prevents overthinking.
+# Client-specified budget takes precedence if lower.
+max_thinking_budget = 512
+# Default num_drafts for speculative decoding (K = num_drafts + 1).
+# Benchmarked 2026-04-10 on GB10: K=2 (1 draft) yields 117.8 tok/s vs
+# K=3 (2 drafts) at 82.4 tok/s — 43% faster. The MoE verify overhead
+# dominates any acceptance-rate gain at K=3 for this 35B-A3B model.
+default_num_drafts = 1
+
+[[model_types]]
+model_type = "qwen3_6_moe"
+hidden_size = 2048
+
+[kernel]
+moe_gate_shmem_bytes = 4096   # hidden_dim(2048) * sizeof(bf16)
+
+# DFlash block-diffusion speculative decoding (Z Lab, arXiv 2602.06036).
+# When the user passes `--dflash` without an explicit `--draft-model`,
+# this drafter is loaded alongside the target. Drafter dimensions
+# (8 layers, hidden=2048, GQA 32:4, vocab=248320) come from
+# `z-lab/Qwen3.6-35B-A3B-DFlash/config.json`. `target_layer_ids` lists
+# the 5 target-side layer indices whose post-residual hidden states the
+# drafter consumes via its `fc` projection (shallow→deep order matters).
+# `mask_token_id` fills γ "to-be-predicted" positions in block diffusion.
+# `window_size` enables sliding-window attention in the drafter at long
+# context — community-tested 4096 is the upstream sglang/vLLM default.
+[dflash]
+draft_model = "z-lab/Qwen3.6-35B-A3B-DFlash"
+gamma = 16
+window_size = 4096
+mask_token_id = 248070
+target_layer_ids = [1, 10, 19, 28, 37]

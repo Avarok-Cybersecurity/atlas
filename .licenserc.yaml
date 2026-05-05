@@ -1,0 +1,13 @@
+header:
+  license:
+    spdx-id: AGPL-3.0-only
+    content: |
+      SPDX-License-Identifier: AGPL-3.0-only
+  paths:
+    - 'crates/**/*.rs'
+    - 'kernels/**/*.{cu,cuh,h,hpp,cpp}'
+    - 'cuda_kernels/**/*.{cu,cuh,h,hpp,cpp}'
+  paths-ignore:
+    - 'target/**'
+    - 'vendor/**'
+  comment: on-failure

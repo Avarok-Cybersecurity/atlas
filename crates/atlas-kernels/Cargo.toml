@@ -1,0 +1,15 @@
+[package]
+name = "atlas-kernels"
+version = "0.1.1"
+edition = "2024"
+license.workspace = true
+description = "Atlas CUDA kernel PTX — compiled from kernels/{hw}/{model}/{quant}/*.cu"
+
+[dependencies]
+atlas-core = { workspace = true }
+
+[build-dependencies]
+toml = "0.8"
+
+[lints]
+workspace = true

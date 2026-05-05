@@ -1,0 +1,27 @@
+[package]
+name = "spark-model"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Atlas Spark model — Qwen3 forward pass orchestration"
+
+[dependencies]
+atlas-core = { workspace = true }
+atlas-kernels = { workspace = true }
+spark-runtime = { path = "../spark-runtime" }
+spark-comm = { path = "../spark-comm" }
+spark-storage = { path = "../spark-storage" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = "0.1"
+half = "2"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+spark-runtime = { path = "../spark-runtime", features = ["test-utils"] }
+
+[lints]
+workspace = true

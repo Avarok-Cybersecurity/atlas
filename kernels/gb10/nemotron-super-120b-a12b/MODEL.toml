@@ -1,0 +1,81 @@
+[model]
+name = "nemotron-super-120b-a12b"
+hf_id = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
+model_type = "nemotron_h"
+architecture = "hybrid_mamba2_latent_moe_attention"
+parameters = "120B"
+active_parameters = "12B"
+
+[[model_types]]
+model_type = "nemotron_h"
+hidden_size = 4096
+
+# Nemotron-H Super uses ChatML + LatentMoE. No official sampling recommendations.
+[sampling.thinking_text]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+# Tool-calling preset: lower temperature for deterministic tool calls.
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[behavior]
+# Disable thinking when tools are active. With `tool_call_parser = "bare_json"`
+# (set below), grammar-constrained decoding enforces the exact tool-call JSON
+# schema from token 1. Letting the model think first puts the JSON inside the
+# `<think>...</think>` block where parse_tool_calls strips it before
+# extraction (verified pass-30: reasoning_content carried the correct
+# `{"name":"get_weather","arguments":{"city":"Paris"}}` while content was
+# degenerate post-think tokens, scoring 0/2). With thinking_in_tools=false the
+# template emits `<think></think>\n` and the model goes straight to the JSON
+# tool call, which the grammar shapes correctly. Thinking still works on
+# non-tool requests via thinking_default below.
+thinking_in_tools = false
+# Skip the Nemotron-H chat template's `<tool_call>\n` steering prefix.
+# The prefix was added for Nano's "Think-Satisfy + JSON narration" fix
+# but on Super causes a `<tool_call>\n<tool_call>\n...` emission loop
+# because Super was NOT trained to have its first generated token inside
+# a pre-opened tool_call block. Let the model open <tool_call> naturally
+# after closing </think>.
+disable_tool_steering = true
+# Per-model tool-call parser override. Nemotron-Super was not trained on
+# the qwen3_coder XML tool format (the nemotron_h family default). Forcing
+# qwen3_coder grammar puts it into a token loop on `<tool_call>` (token
+# 131071 / Chinese-character repeats observed). Bare-JSON keeps the model
+# on its trained distribution: it emits a top-level `{"name":"...",
+# "arguments":{...}}` object directly, with grammar enforcing the schema
+# (prevents hallucinated field names like "tool" instead of "name").
+# Nano-30B keeps the qwen3_coder default since it was trained on that format.
+tool_call_parser = "bare_json"
+# Nemotron-Super rambles deep in its thinking trace — pass-8 showed 256
+# wasn't enough for the Reasoning test ("Actually they'd ask..." leaked
+# because </think> was forced before a conclusion landed). 1024 gives
+# enough headroom for the full chain-of-thought on non-trivial questions
+# while still reserving budget headroom at typical max_tokens=1024-2048.
+max_thinking_budget = 2048
+# Nemotron-Super is a thinking-first model — it is TRAINED to produce a
+# <think>...</think> reasoning trace before the answer. Forcing
+# `enable_thinking=false` in the generation prompt prematurely closes the
+# think block and the model continues producing analysis-style text
+# ("We need to produce a Python code...") instead of the answer
+# (pass-7 fib regression). Let the model think, and the server's
+# `reasoning_parser = "qwen"` strips the block before returning `content`.
+thinking_default = true

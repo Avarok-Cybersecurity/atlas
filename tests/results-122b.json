@@ -1,0 +1,87 @@
+{
+  "model": "Sehyo/Qwen3.5-122B-A10B-NVFP4",
+  "timestamp": "2026-04-02 02:01:44",
+  "coherence": [
+    {
+      "name": "Factual",
+      "status": "PASS",
+      "tps": 16.035593003741116,
+      "text": "The capital of Japan is Tokio."
+    },
+    {
+      "name": "Reasoning",
+      "status": "PASS",
+      "tps": 16.491302055640826,
+      "text": "To find the average speed, use the formula:\n\n$$ \\text{Speed} = \\frac{\\text{Distance}}{\\text{Time}} $$\n\n**Work:**\n$$ \\text{Speed} = \\frac{120 \\text{ km}}{2 \\text{ hours}} $$\n$$ \\text{Average Speed} = 60 \\text{ km/h} $$"
+    },
+    {
+      "name": "Creative",
+      "status": "PASS",
+      "tps": 16.315073800816016,
+      "text": "Blue waves crash on sand,\nDeep water holds secrets still,\nTides pull at the shore."
+    }
+  ],
+  "tool_calls": [
+    {
+      "name": "Weather",
+      "status": "PASS",
+      "tool_name": "get_weather",
+      "tool_args": "{\"city\":\"Paris\"}"
+    },
+    {
+      "name": "Search",
+      "status": "PASS",
+      "tool_name": "web_search",
+      "tool_args": "{\"num_results\":10,\"query\":\"latest NVIDIA GPU benchmarks 2024 2025\"}"
+    }
+  ],
+  "tps": [
+    {
+      "max_tokens": 50,
+      "completion_tokens": 96,
+      "tps": 15.927271113395854,
+      "elapsed": 6.027397871017456,
+      "status": "PASS"
+    },
+    {
+      "max_tokens": 150,
+      "completion_tokens": 260,
+      "tps": 16.70209946396003,
+      "elapsed": 15.56690526008606,
+      "status": "PASS"
+    },
+    {
+      "max_tokens": 300,
+      "completion_tokens": 571,
+      "tps": 16.898488192880787,
+      "elapsed": 33.79000496864319,
+      "status": "FAIL"
+    }
+  ],
+  "long_context": [
+    {
+      "target_input": 4000,
+      "actual_input": 6500,
+      "completion_tokens": 150,
+      "tps": 8.790746316317591,
+      "elapsed": 17.063397645950317,
+      "status": "PASS"
+    },
+    {
+      "target_input": 8000,
+      "actual_input": 12980,
+      "completion_tokens": 168,
+      "tps": 6.2397022935401765,
+      "elapsed": 26.92436146736145,
+      "status": "PASS"
+    },
+    {
+      "target_input": 16000,
+      "actual_input": 26001,
+      "completion_tokens": 161,
+      "tps": 3.34354955045997,
+      "elapsed": 48.152419328689575,
+      "status": "FAIL"
+    }
+  ]
+}

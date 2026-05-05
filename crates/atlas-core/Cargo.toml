@@ -1,0 +1,17 @@
+[package]
+name = "atlas-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Atlas: shared types, model config parsing, registry, and per-target build manifests for the Atlas inference engine."
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+cudarc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,64 @@
+[model]
+name = "qwen3.5-27b"
+hf_id = "Kbenkhaled/Qwen3.5-27B-NVFP4"
+params = "27B"
+active_params = "27B"
+architecture = "Hybrid Attention + SSM (Dense FFN)"
+
+layers_total = 64
+layers_full_attention = 16
+layers_linear_attention = 48
+
+hidden_dim = 5120
+head_dim = 256
+q_heads = 24
+kv_heads = 4
+intermediate_size = 17408
+
+vocab_size = 248320
+max_position_embeddings = 262144
+rope_theta = 10000000
+attn_output_gate = true
+partial_rotary_factor = 0.25
+
+mtp_layers = 0
+
+[[model_types]]
+model_type = "qwen3_5"
+
+# Kbenkhaled's re-uploaded Qwen3.5-27B-NVFP4 enables MRoPE
+# (mrope_interleaved + mrope_section=[11,11,10]) in text_config.
+# parse_qwen3_5_config rewrites model_type to "qwen3_6_moe" when MRoPE
+# is detected (see atlas-core/src/config.rs:956). hidden_size=5120
+# distinguishes this hybrid 27B from the 35B variant (hidden_size=2048).
+# These kernels already support the MRoPE-interleaved RoPE path.
+[[model_types]]
+model_type = "qwen3_6_moe"
+hidden_size = 5120
+
+# Qwen3.5 recommended sampling (from model card).
+[sampling.thinking_text]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+presence_penalty = 1.5
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.non_thinking]
+temperature = 1.0
+top_p = 1.0
+top_k = 20
+presence_penalty = 2.0
+
+[behavior]
+# Content-loop watchdog enabled: dense Qwen3.5-27B has a known
+# prose-attractor failure mode (2026-04-26 field reports) and the
+# 2026-05-05 chess-game stress sweep confirmed it loops on long-code
+# prompts (`.btn-reset` block × N at 13.4 t/s). MoE A3B/A10B variants
+# in the family don't need it.
+enable_loop_watchdog = true

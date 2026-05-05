@@ -1,0 +1,14 @@
+target/
+.git/
+docs/
+historical-python/
+test_data/
+bench_*.sh
+bench_*.py
+bench_*.json
+*.md
+SECURITY.md
+.github/
+.clang-format
+.antigravityignore
+deny.toml

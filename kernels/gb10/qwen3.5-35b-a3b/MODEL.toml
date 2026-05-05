@@ -1,0 +1,180 @@
+[model]
+name = "qwen3.5-35b-a3b"
+hf_id = "Sehyo/Qwen3.5-35B-A3B-NVFP4"
+params = "35B"
+active_params = "3B"
+architecture = "Gated DeltaNet + Full Attention + MoE"
+
+layers_total = 40
+layers_linear_attention = 30
+layers_full_attention = 10
+layer_pattern = "3:1 (linear, linear, linear, full)"
+
+moe_experts = 256
+moe_topk = 8
+moe_intermediate = 512
+shared_expert_intermediate = 512
+
+hidden_dim = 2048
+head_dim = 256
+q_heads = 16
+kv_heads = 2
+
+linear_attn_key_heads = 16
+linear_attn_key_dim = 128
+linear_attn_value_heads = 32
+linear_attn_value_dim = 128
+linear_conv_kernel = 4
+
+vocab_size = 248320
+max_position_embeddings = 262144
+rope_theta = 10000000
+partial_rotary_factor = 0.25
+attn_output_gate = true
+
+mtp_layers = 1
+mtp_type = "full_attention"
+vision = true
+
+# Effective context for agentic tasks (tokens). Server-side compaction
+# triggers when prompt exceeds 50% of this value. The 35B hybrid SSM
+# (30 GDN + 10 attention layers) has ~16-24K effective context for tool
+# calling despite 256K positional budget.
+effective_context = 24576
+
+# Recommended sampling defaults per category (from Qwen3.5 model card).
+# Used when the client doesn't send explicit values.
+# Categories: thinking_text, thinking_coding, non_thinking, tools
+[sampling.thinking_text]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+# Tool-calling preset. Sourced from the Qwen/Qwen3.5-35B-A3B HF model
+# card. (temperature, top_p, top_k) track the Thinking/Coding row
+# because opencode-style agentic coding matches that distribution
+# closer than Instruct/General.
+#
+# `presence_penalty = 1.5` is Qwen's OFFICIAL remediation for the
+# "endless repetitions" failure mode — direct quote from the card:
+#   "you can adjust the presence_penalty parameter between 0 and 2 to
+#    reduce endless repetitions. However, using a higher value may
+#    occasionally result in language mixing and a slight decrease in
+#    model performance."
+#
+# Without it, on the A3B hybrid (30 GDN SSM + 10 full-attention)
+# the model falls into `\`\`\`bash cmd \`\`\`` markdown-fence narration
+# loops at turn ~7-8 of opencode agentic sessions, even though
+# temperature > 0 prevents strictly-greedy loops. Observed in dump
+# seq=19 (2026-04-24); tracked upstream in QwenLM/Qwen3.5#115,
+# Qwen3.6#88, qwen-code#1403, vllm#27157. Our own
+# docs/history/SSM_CATASTROPHIC_FORGETTING_TODO.md already documents
+# the symptom and recommends enabling a repetition suppressor on the
+# tools preset.
+#
+# We do NOT raise `repetition_penalty` above 1.0 — Qwen deprecates it
+# for this SKU (Qwen3-VL#1611: "breaks the transcription of naturally
+# repetitive text" — e.g. legitimate variable names in code).
+[sampling.tools]
+# Anti-repetition stack (2026-04-25, A.1 from fuzzy-imagining-lemur plan).
+#
+# Combined: LZ penalty (information-theoretic, scales with match
+# length × frequency) + DRY (fixed-length n-gram suppression with
+# breakers). Both target n-gram repeats but at different scales:
+# - LZ: 3/4/5-gram windows over last 256 tokens, frequency-weighted
+# - DRY: longest-match exponential, sequence-break aware
+#
+# Lowered `presence_penalty` 1.5 → 0.6 (vendor-recommended floor): the
+# 2025-12 production-repetition survey (arXiv:2512.04419) finds 1.5
+# hurts long agentic responses by suppressing legitimate token reuse
+# in code/JSON. LZ penalty (arXiv:2504.20131) replaces the heavy work
+# of presence_penalty — it's a per-extension penalty, not flat-per-
+# unique-token, so it correctly distinguishes "phrase loop" from
+# "legitimate vocabulary reuse" without the 1.5-presence regression.
+# Active when `lz_penalty > 0`. SGLang ships a vectorized reference
+# at strength=0.2, lossless on AIME/GPQA.
+#
+# DRY remains: `allowed_length=4` lets short legit repeats through
+# (variable names, identifiers) but catches the bash-fence narration
+# attractor at ≥5-token matches.
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.6
+frequency_penalty = 0.0
+lz_penalty = 0.2
+dry_multiplier = 0.8
+dry_base = 1.75
+dry_allowed_length = 4
+
+# Model-specific behavior overrides. These control server-side hacks that
+# compensate for model quirks. Defaults are sane for most models; override
+# here when a model family has known failure modes.
+[behavior]
+# Content-loop watchdog disabled: 2026-05-05 chess-game stress
+# sweep showed this MoE A3B variant finishes cleanly on long-code
+# prompts (no period-N repetition observed). The watchdog also
+# false-positives on legitimate `[null × 8]` chess-board init rows.
+# Only the dense Qwen 27B variants need it.
+enable_loop_watchdog = false
+# Disable thinking when tools are active. Qwen3.5 suffers from "Think-Satisfy":
+# model reasons about tool calls in <think>, convinces itself the task is done,
+# then narrates instead of calling tools.
+thinking_in_tools = false
+# Maximum thinking budget (tokens). Prevents overthinking.
+# Client-specified budget takes precedence if lower.
+# F54 (2026-04-27): lowered 512 → 256. opencode-fix36 showed
+# the model thinking 201.2s on a single turn → BPE state
+# corruption (`version="021"` instead of `"0.1.0"`) and raw
+# `<tool_call>` XML reaching content channel after the budget-
+# forced `</think>`. Halving the budget halves the time the
+# model spends in the corruption-prone state.
+max_thinking_budget = 256
+# Default num_drafts for speculative decoding (K = num_drafts + 1).
+# Benchmarked 2026-04-10 on GB10: K=2 (1 draft) yields 117.8 tok/s vs
+# K=3 (2 drafts) at 82.4 tok/s — 43% faster. The MoE verify overhead
+# dominates any acceptance-rate gain at K=3 for this 35B-A3B model.
+default_num_drafts = 1
+
+[[model_types]]
+model_type = "qwen3_5_moe"
+
+# ── Mixed-precision dtype schedule (C.3, 2026-04-25, pending impl) ──
+#
+# Per EAQuant + NVIDIA Transformer Engine 2.14 guidance: in MoE
+# models, sensitivity to quantization is concentrated in (1) the
+# router layer, (2) the LM head, and (3) the first 1-2 transformer
+# blocks + the last 2-3 blocks. Keeping these in BF16 / FP8 while
+# remaining experts run in NVFP4 closes >50% of the quantization gap
+# at minimal memory cost (router is hidden×n_experts ≈ 2048×128 ≈
+# 524KB BF16; LM head is hidden×vocab ≈ 2048×152K ≈ 597MB BF16).
+#
+# Activation requires `weight_loader` to honour per-layer dtype
+# overrides. Pre-stage configuration (commented out until loader
+# wiring lands):
+#
+#   [precision]
+#   router_dtype = "bf16"          # MoE gate weights
+#   lm_head_dtype = "bf16"         # final unembedding
+#   sensitive_block_dtype = "fp8"  # blocks 0,1 and N-2,N-1
+#   sensitive_block_indices = [0, 1, 38, 39]  # for 40-layer model
+#   default_dtype = "nvfp4"        # everything else
+
+[kernel]
+moe_gate_shmem_bytes = 4096   # hidden_dim(2048) * sizeof(bf16)

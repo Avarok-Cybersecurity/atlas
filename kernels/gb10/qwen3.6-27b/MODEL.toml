@@ -1,0 +1,109 @@
+[model]
+name = "qwen3.6-27b"
+hf_id = "Qwen/Qwen3.6-27B"
+params = "27B"
+active_params = "27B"
+architecture = "Hybrid Attention + GDN + Dense FFN + MRoPE"
+
+# Architecture mirrors the existing Qwen3.5-27B (hybrid GDN + full-attention,
+# 4:1 pattern). Diff vs Qwen3.5-27B: vocab 152K → 248K, MRoPE-interleaved
+# enabled by default in the upstream config (Qwen3.5-27B picked up MRoPE only
+# in Kbenkhaled's NVFP4 re-upload; Qwen3.6-27B has it natively).
+layers_total = 64
+layers_full_attention = 16
+layers_linear_attention = 48
+
+hidden_dim = 5120
+head_dim = 256
+q_heads = 24
+kv_heads = 4
+intermediate_size = 17408
+
+vocab_size = 248320
+max_position_embeddings = 262144
+rope_theta = 10000000
+attn_output_gate = true
+partial_rotary_factor = 0.25
+
+# MRoPE (multi-modal rotary position embedding). Same configuration as
+# Qwen3.6-35B-A3B's full-attention layers — interleaved 3-axis rope. Text-only
+# serving keeps H/W position IDs at zero.
+mrope_interleaved = true
+mrope_section = [11, 11, 10]
+
+mtp_layers = 0
+
+# Effective context for agentic tasks. Mirrors Qwen3.5-27B's empirical bound
+# (Atlas's hybrid-GDN long-context behavior is consistent across 27B variants).
+effective_context = 24576
+
+# Recommended sampling defaults (carried over from Qwen3.5 family).
+[sampling.thinking_text]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[behavior]
+# Content-loop watchdog enabled: dense Qwen3.6-27B has a known
+# prose-attractor failure mode (2026-04-26 field reports) and the
+# 2026-05-05 chess-game stress sweep confirmed it loops on long-code
+# prompts (CSS block repetition at 13.3 t/s for ~3990 tokens). MoE
+# A3B/A10B variants in the family don't need it.
+enable_loop_watchdog = true
+thinking_in_tools = false
+max_thinking_budget = 512
+default_num_drafts = 1
+
+# Upstream Qwen/Qwen3.6-27B reports `model_type = "qwen3_5"` in config.json.
+# Atlas's `parse_qwen3_5_config` (atlas-core/src/config.rs) rewrites this to
+# `qwen3_6_moe` when MRoPE-interleaved is detected — same path Qwen3.5-27B
+# already uses for the Kbenkhaled NVFP4 re-upload. The factory routes through
+# the existing `Qwen35WeightLoader`; no new loader is needed because the
+# weight key naming is unchanged from Qwen3.5.
+[[model_types]]
+model_type = "qwen3_5"
+hidden_size = 5120
+
+[[model_types]]
+model_type = "qwen3_6_moe"
+hidden_size = 5120
+
+# DFlash block-diffusion speculative decoding pairing.
+# Drafter (`z-lab/Qwen3.6-27B-DFlash`) is a separate 8-layer Qwen3-arch
+# transformer that emits γ=16 tokens per step via bidirectional in-block
+# attention. The 27B target's hidden_size (5120) determines the drafter's
+# `fc` projection input dimension (5 * 5120 = 25600) — different from the
+# 35B-A3B target's drafter (5 * 2048 = 10240) but the drafter checkpoint
+# itself is the right shape per its own config.json.
+[dflash]
+draft_model = "z-lab/Qwen3.6-27B-DFlash"
+gamma = 16
+window_size = 4096
+mask_token_id = 248070
+# Verified 2026-05-03 against z-lab/Qwen3.6-27B-DFlash/config.json.
+# `dflash_loader::parse_dflash_config` reads these from the drafter's
+# config.json at runtime; this MODEL.toml field is the fallback default.
+target_layer_ids = [1, 16, 31, 46, 61]

@@ -1,0 +1,43 @@
+[model]
+name = "qwen3.5-27b"
+hf_id = "Kbenkhaled/Qwen3.5-27B-NVFP4"
+params = "27B"
+active_params = "27B"
+architecture = "Hybrid Attention + SSM (Dense FFN)"
+
+layers_total = 64
+layers_full_attention = 16
+layers_linear_attention = 48
+
+hidden_dim = 5120
+head_dim = 256
+q_heads = 24
+kv_heads = 4
+intermediate_size = 17408
+
+vocab_size = 248320
+max_position_embeddings = 262144
+rope_theta = 10000000
+attn_output_gate = true
+partial_rotary_factor = 0.25
+
+mtp_layers = 0
+
+# Qwen3.5 recommended sampling (from model card).
+[sampling.thinking_text]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+presence_penalty = 1.5
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.non_thinking]
+temperature = 1.0
+top_p = 1.0
+top_k = 20
+presence_penalty = 2.0

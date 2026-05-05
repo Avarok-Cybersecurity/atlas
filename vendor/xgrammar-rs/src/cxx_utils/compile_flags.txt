@@ -1,0 +1,6 @@
+-std=c++17
+
+# Allow includes from crate headers (e.g. cxx_utils.hpp)
+-I..
+
+

@@ -1,0 +1,8 @@
+[toolchain]
+# Pinned to a specific stable for reproducible builds. The xgrammar
+# vendor crate's transitive `libloading@0.9` requires rustc 1.88+;
+# we pin to a known-good minor that satisfies it. Bump deliberately
+# rather than tracking `stable` — auto-upgrades have produced subtle
+# clippy lint surprises across the kernel-launching code.
+channel = "1.93.1"
+components = ["rustfmt", "clippy"]

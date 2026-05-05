@@ -1,0 +1,72 @@
+[model]
+name = "gemma-4-26b-a4b"
+hf_id = "bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16"
+model_type = "gemma4"
+architecture = "moe_attention"
+parameters = "26B"
+active_parameters = "4B"
+
+layers_total = 30
+layers_sliding_attention = 25
+layers_full_attention = 5
+layer_pattern = "5:1 (sliding, sliding, sliding, sliding, sliding, full)"
+
+hidden_dim = 2816
+head_dim = 256
+global_head_dim = 512
+q_heads = 16
+kv_heads = 8
+num_global_kv_heads = 2
+
+intermediate_size = 2112
+moe_intermediate_size = 704
+moe_experts = 128
+moe_top_k = 8
+vocab_size = 262144
+max_position_embeddings = 262144
+sliding_window = 1024
+
+rope_theta_sliding = 10000.0
+rope_theta_full = 1000000.0
+partial_rotary_factor = 0.25
+
+rms_norm_eps = 1e-6
+hidden_activation = "gelu_pytorch_tanh"
+tie_word_embeddings = true
+final_logit_softcapping = 30.0
+
+vision = true
+
+mtp_layers = 0
+
+effective_context = 16384
+
+[sampling.thinking_text]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.95
+top_k = 20
+
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+
+[behavior]
+thinking_in_tools = true
+max_thinking_budget = 512
+# BF16 KV cache default — large final norm weights (mean=29, max=588) produce
+# K/V values exceeding FP8 E4M3 range (±448). Even with calibration, FP8
+# precision is insufficient for this model. vLLM also uses BF16 for Gemma 4.
+default_kv_dtype = "bf16"
+fp8_kv_calibration_tokens = 256
+
+[[model_types]]
+model_type = "gemma4"
+hidden_size = 2816
+
+[kernel]

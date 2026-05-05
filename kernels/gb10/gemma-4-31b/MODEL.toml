@@ -1,0 +1,90 @@
+[model]
+name = "gemma-4-31b"
+hf_id = "nvidia/Gemma-4-31B-IT-NVFP4"
+model_type = "gemma4"
+architecture = "dense_attention"
+parameters = "31B"
+active_parameters = "31B"
+
+layers_total = 60
+layers_sliding_attention = 50
+layers_full_attention = 10
+layer_pattern = "5:1 (sliding, sliding, sliding, sliding, sliding, full)"
+
+hidden_dim = 5376
+head_dim = 256
+global_head_dim = 512
+q_heads = 32
+kv_heads = 16
+num_global_kv_heads = 4
+
+intermediate_size = 21504
+vocab_size = 262144
+max_position_embeddings = 262144
+sliding_window = 1024
+
+# RoPE: different theta for sliding vs full attention layers
+rope_theta_sliding = 10000.0
+rope_theta_full = 1000000.0
+partial_rotary_factor = 0.25
+
+rms_norm_eps = 1e-6
+hidden_activation = "gelu_pytorch_tanh"
+tie_word_embeddings = true
+final_logit_softcapping = 30.0
+
+vision = true
+
+# Gemma-4 is a dense model (no MoE, no MTP).
+moe_experts = 0
+mtp_layers = 0
+
+# Effective context for agentic tasks (tokens). Gemma-4 has 256K positional
+# budget but sliding window of 1024 on 50/60 layers constrains effective
+# context for tool calling.
+effective_context = 16384
+
+# Conservative sampling defaults. Gemma-4 has no official recommendations yet.
+[sampling.thinking_text]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+# repetition_penalty: 1.1 lightly penalizes loops at temp=0.3 (Creative haiku
+# test); higher values degrade output quality. 1.0 = off.
+repetition_penalty = 1.1
+
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[behavior]
+# Gemma-4 uses <|channel>thought\n...<channel|> for thinking, which is
+# structurally separate from tool calls. Enable thinking with tools.
+thinking_in_tools = true
+max_thinking_budget = 512
+# BF16 KV cache — Gemma-4's large final norm weights (mean=29, max=588)
+# exceed FP8 E4M3 range (±448), causing attention corruption with FP8/NVFP4 KV.
+default_kv_dtype = "bf16"
+
+[[model_types]]
+model_type = "gemma4"
+hidden_size = 5376
+
+[kernel]
+# No MoE gate shared memory needed (dense model).

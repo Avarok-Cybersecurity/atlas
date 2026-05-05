@@ -1,0 +1,37 @@
+[build]
+extra_nvcc_flags = ["--fmad=false", "-DHDIM=128"]
+
+# File stem → module name overrides.
+# Any .cu file not listed here uses its file stem as the module name.
+[modules]
+e2m1_branchless = "e2m1"
+moe_permute = "moe"
+dense_gemm_bf16 = "gemm"
+rms_norm = "norm"
+argmax_bf16 = "argmax"
+dense_gemv_bf16 = "gemv"
+dense_gemv_fp8w = "gemv_fp8w"
+moe_shared_expert_fused_batch2 = "moe_fused_batch2"
+quantize_bf16_to_nvfp4 = "quantize_nvfp4"
+paged_decode_attn = "paged_decode"
+paged_decode_attn_fp8 = "paged_decode_fp8"
+paged_decode_attn_nvfp4 = "paged_decode_nvfp4"
+w4a16_gemm = "w4a16"
+kv_cache_append = "kv_cache"
+moe_w4a16_grouped_gemm = "moe_w4a16"
+moe_sorted_prefill = "moe_sorted"
+moe_shared_expert_fused_batch3 = "moe_fused_batch3"
+inferspark_prefill_paged = "prefill_paged"
+inferspark_prefill_paged_fp8 = "prefill_paged_fp8"
+inferspark_prefill_paged_nvfp4 = "prefill_paged_nvfp4"
+vision_encoder = "vision_encoder"
+reshape_and_cache_turbo = "reshape_and_cache_turbo"
+paged_decode_attn_turbo4 = "paged_decode_turbo4"
+wht_bf16 = "wht_bf16"
+paged_decode_attn_turbo8 = "paged_decode_turbo8"
+paged_decode_attn_turbo4_512 = "paged_decode_turbo4_512"
+paged_decode_attn_turbo8_512 = "paged_decode_turbo8_512"
+paged_decode_attn_turbo3 = "paged_decode_turbo3"
+paged_decode_attn_turbo3_128 = "paged_decode_turbo3_128"
+paged_decode_attn_turbo4_128 = "paged_decode_turbo4_128"
+paged_decode_attn_turbo8_128 = "paged_decode_turbo8_128"

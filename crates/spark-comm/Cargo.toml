@@ -1,0 +1,14 @@
+[package]
+name = "spark-comm"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Atlas Spark communication backend — collective operations abstraction"
+
+[dependencies]
+anyhow = { workspace = true }
+tracing = "0.1"
+parking_lot = { workspace = true }
+
+[lints]
+workspace = true

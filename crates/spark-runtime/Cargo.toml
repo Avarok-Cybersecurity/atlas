@@ -1,0 +1,47 @@
+[package]
+name = "spark-runtime"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Atlas Spark runtime — GPU backend, weight loading, KV cache, scheduler"
+autobenches = false
+
+[features]
+test-utils = []
+
+[[bin]]
+name = "bench_fast_weights"
+path = "benches/bench_fast_weights.rs"
+required-features = ["test-utils"]
+
+# Integration test gated by `test-utils` because it depends on the
+# `gpu::mock` module, which is itself `cfg(any(test, feature = "test-utils"))`.
+# Without this gate, default `cargo test --workspace` would attempt to compile
+# this test against the lib (no cfg(test)), fail to find `gpu::mock`, and
+# block CI. With the gate, `cargo test --workspace` cleanly skips it; run it
+# explicitly via `cargo test -p spark-runtime --features test-utils`.
+[[test]]
+name = "fast_weights_parity"
+path = "tests/fast_weights_parity.rs"
+required-features = ["test-utils"]
+
+[dependencies]
+atlas-core = { workspace = true }
+atlas-kernels = { workspace = true }
+cudarc = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+safetensors = "0.5"
+memmap2 = "0.9"
+tracing = "0.1"
+tokio = { version = "1", features = ["rt", "sync", "time", "parking_lot"] }
+rand = "0.8"
+half = "2"
+parking_lot = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true

@@ -1,0 +1,121 @@
+name: Docs
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Skip CUDA/nvcc in build.rs so rustdoc can run on hosts without a GPU.
+  # - ATLAS_SKIP_BUILD=1: atlas-kernels emits a stub target_ptx.rs
+  # - CUDARC_CUDA_VERSION=13000: short-circuits cudarc's `nvcc --version`
+  #   probe. Format is {major}0{minor}0 — 13000 == CUDA 13.0, Atlas's minimum.
+  ATLAS_SKIP_BUILD: "1"
+  CUDARC_CUDA_VERSION: "13000"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build mdBook + rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install vendor/xgrammar-rs build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
+
+      - name: Install mdBook
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: '0.4.40'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build mdBook
+        run: mdbook build book
+
+      - name: Build rustdoc
+        run: cargo doc --workspace --no-deps
+
+      - name: Assemble site (mdBook + rustdoc at /api/)
+        run: |
+          mkdir -p book/output/api
+          cp -a target/doc/. book/output/api/
+          # Friendly index inside /api/ pointing at atlas_core
+          cat > book/output/api/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html><head><meta charset="utf-8">
+          <title>Atlas API Reference</title>
+          <meta http-equiv="refresh" content="0; url=atlas_core/index.html">
+          </head><body>
+          <p>Redirecting to <a href="atlas_core/index.html">atlas_core</a>…</p>
+          </body></html>
+          EOF
+
+      - name: Upload site artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-site
+          path: book/output
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy to avarok via rsync
+    needs: build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    environment:
+      name: production-docs
+      url: https://docs.atlasinference.io/
+    steps:
+      - name: Download site artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docs-site
+          path: site
+
+      - name: Install rsync
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rsync openssh-client
+
+      - name: Load SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+
+      - name: Pin host key
+        env:
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KNOWN_HOSTS" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy
+        env:
+          DEPLOY_SSH_HOST:  ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_USER:  ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_SSH_PORT:  ${{ secrets.DEPLOY_SSH_PORT }}
+          DEPLOY_PATH:      ${{ secrets.DEPLOY_PATH }}
+        run: |
+          PORT="${DEPLOY_SSH_PORT:-22}"
+          rsync -az --delete --chmod=D755,F644 \
+            -e "ssh -p ${PORT}" \
+            site/ "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/"

@@ -1,0 +1,39 @@
+[package]
+name = "spark-storage"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Atlas: high-speed NVMe-backed KV cache offload (cuFile/GDS + io_uring)"
+
+[dependencies]
+cufile-sys = { path = "../cufile-sys" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = "0.1"
+half = "2"
+rand = "0.8"
+rand_chacha = "0.3"
+rand_distr = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+io-uring = "0.7"
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+
+[[example]]
+name = "gds-probe"
+path = "examples/gds_probe.rs"
+
+[[example]]
+name = "iouring-bench"
+path = "examples/iouring_bench.rs"
+
+[[example]]
+name = "long-context-bench"
+path = "examples/long_context_bench.rs"
+
+[lints]
+workspace = true

@@ -1,0 +1,4 @@
+[env]
+# Force dynamic CRT for all C/C++ builds spawned by build scripts (cc/cmake)
+CFLAGS_x86_64_pc_windows_msvc = "/MD"
+CXXFLAGS_x86_64_pc_windows_msvc = "/MD"

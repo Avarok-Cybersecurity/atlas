@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose a new capability, model, kernel target, or API surface.
+title: "[feat] "
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What are you trying to do? What's the underlying problem or use case?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Sketch of the API / kernel / model support you'd like. Concrete examples help.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - New model support (HF checkpoint integration)
+        - New kernel target (H, M_q)
+        - New quantization format
+        - Server / API change
+        - Distributed / networking
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing Atlas features, other inference stacks, or workarounds you've ruled out.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Links to papers, upstream issues, reference implementations.

@@ -1,0 +1,98 @@
+[model]
+name = "minimax-m2-229b"
+hf_id = "MiniMaxAI/MiniMax-M2.7"
+params = "229B"
+active_params = "~10B"
+architecture = "Full Attention + 256-expert Sigmoid-Routed MoE + MTP K=3"
+
+layers_total = 62
+layers_linear_attention = 0
+layers_full_attention = 62
+layer_pattern = "all full attention (attn_type_list = [1] * 62)"
+
+moe_experts = 256
+moe_topk = 8
+moe_intermediate = 1536
+shared_expert_intermediate = 0
+moe_scoring_func = "sigmoid"
+moe_routing_bias = true
+
+hidden_dim = 3072
+head_dim = 128
+q_heads = 48
+kv_heads = 8
+
+# Partial RoPE — only first 64 of 128 head dims are rotated.
+rotary_dim = 64
+rope_theta = 5000000
+partial_rotary_factor = 0.5
+
+# Per-layer learned q_layernorm / k_layernorm of shape [head_dim].
+qk_norm_type = "per_layer"
+
+vocab_size = 200064
+max_position_embeddings = 196608
+attn_output_gate = false
+
+# MTP: 3 sequential draft modules, each a single transformer layer.
+mtp_layers = 3
+mtp_transformer_layers = 1
+mtp_type = "full_attention"
+
+vision = false
+
+# Sampling defaults lifted from the MiniMax M2 model card recommendations
+# (tuned for agentic / coding workloads). Adjust after M4 bring-up if
+# community reports divergent preferences.
+[sampling.default]
+temperature = 1.0
+top_p = 0.95
+top_k = 40
+
+[sampling.coding]
+temperature = 0.4
+top_p = 0.95
+top_k = 20
+
+[behavior]
+# MiniMax M2's chat_template.jinja appends `<think>\n` unconditionally
+# at `add_generation_prompt` (line 164). With `thinking_in_tools=false`
+# the reasoning parser strips `<think>...</think>` from `content`, but
+# the model still spends tokens inside `<think>` before emitting either
+# (a) a tool call (`<minimax:tool_call>...`) or (b) free-form code/text.
+# `max_thinking_budget` caps that spontaneous-thinking phase: when the
+# scheduler detects `<think>` without an explicit per-request budget,
+# it uses this number as the cap. Hit the cap → `</think>` is force-
+# emitted → real content begins. 1024 tokens at ~17 tok/s ≈ 60 s of
+# reasoning headroom: long enough for fib's chain-of-thought trace,
+# short enough that Search emits its tool call inside the test timeout.
+# `thinking_default = false` makes the OpenAI-style API treat
+# `extra_body.thinking.budget_tokens` as opt-in (matches MiniMax's
+# `thinking_in_tools=false` story for tool-active requests).
+thinking_in_tools = false
+max_thinking_budget = 1024
+thinking_default = false
+
+[[model_types]]
+model_type = "minimax_m2"
+hidden_size = 3072
+
+# Wildcard for hidden_sizes other than 3072. Needed so the tiny-random test
+# variant (yujiepan/minimax-m2.7-tiny-random, hidden_size=8) routes to this
+# target for dispatch-layer smoke tests. Exact-match 3072 wins for the
+# real checkpoint per atlas_kernels::ptx_for_config resolution order.
+[[model_types]]
+model_type = "minimax_m2"
+
+[kernel]
+# hidden_dim(3072) * sizeof(bf16) — same shape as Qwen3.5-122B so the
+# existing 6144-byte gate path reuses cleanly once M3 wires sigmoid routing.
+moe_gate_shmem_bytes = 6144
+
+# ── Kernel target staging ────────────────────────────────────────────────
+# `nvfp4/` quant subdir registers the target by compiling all common kernels
+# with `-DHDIM=128` (same convention as Nemotron-Super which also uses
+# head_dim=128). No minimax-specific .cu overrides yet — M2/M3/M4 loader
+# work fleshes out forward paths on top of these shared kernels.
+#
+# See docs/MINIMAX-2.7-GAMEPLAN.md + MINIMAX-M3-DESIGN.md + MINIMAX-M5-DESIGN.md.

@@ -1,0 +1,71 @@
+name: File size cap (≤500 LoC per .rs)
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-file-sizes:
+    name: Enforce ≤500 LoC per source file
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check no .rs file exceeds 500 lines
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Cap is 500 LoC per Rust source file in crates/.
+          # Allow-list: previously held the last two unsplittable
+          # monoliths (`chat.rs` 1121 LoC and `chat_stream.rs`
+          # 1484 LoC). Wave 4g (2026-05-03) lifted both via the
+          # `Ctx`+`State` struct pattern, splitting into
+          # `api/chat/{mod,msg_entry,thinking,loop_detect,template,sampling_setup}.rs`
+          # and `api/chat_stream/{mod,state,ctx,handle_token,handle_done,handle_error,tool_handlers}.rs`
+          # respectively. The list is now empty; adding to it
+          # requires a rationale comment AND tracking issue.
+          allow_list=()
+
+          violations=0
+          while IFS= read -r -d '' file; do
+            lines=$(wc -l < "$file")
+            if [[ $lines -gt 500 ]]; then
+              # Strip leading "./" if present
+              normalized="${file#./}"
+              # Check allow-list
+              allowed=0
+              for entry in "${allow_list[@]}"; do
+                if [[ "$normalized" == "$entry" ]]; then
+                  allowed=1
+                  break
+                fi
+              done
+              if [[ $allowed -eq 1 ]]; then
+                echo "::warning file=$normalized::Allow-listed: $lines LoC (>500). Reduce when feasible."
+              else
+                echo "::error file=$normalized::$lines LoC exceeds 500-line cap. Split into sub-modules per Atlas idiom (see crates/spark-model/src/layers/qwen3_attention/ for compute-heavy template, crates/spark-model/src/weight_loader/ for variant-dispatch template)."
+                violations=$((violations + 1))
+              fi
+            fi
+          done < <(find crates -name '*.rs' -not -name '*.bak' -not -path '*/target/*' -print0)
+
+          if [[ $violations -gt 0 ]]; then
+            echo ""
+            echo "❌ $violations file(s) exceed the 500-line cap. Split them per Atlas idiom."
+            echo ""
+            echo "Quick fix: extract a cohesive cluster (impl block, related fns, tests)"
+            echo "to a sibling file:"
+            echo "  1. cp foo.rs foo.rs.bak"
+            echo "  2. mkdir foo/  (Rust 2018+ allows foo.rs + foo/ submodules)"
+            echo "  3. Move the cluster to foo/<cluster>.rs with pub(super) on cross-file private items"
+            echo "  4. Add 'mod <cluster>;' + 'pub use <cluster>::*' as needed in foo.rs"
+            echo "  5. cargo check -p <crate> must pass"
+            exit 1
+          fi
+
+          echo "✓ All .rs files in crates/ are ≤500 LoC (or in the allow-list)."
