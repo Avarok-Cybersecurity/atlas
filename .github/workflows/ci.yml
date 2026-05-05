@@ -91,46 +91,86 @@ jobs:
         run: |
           set -euo pipefail
           cat > /tmp/libcuda_stub.c <<'EOF'
-          /* Stub for CUDA driver API symbols spark-storage links against.
+          /* Stub for every CUDA driver API symbol that any Atlas crate
+           * links against (spark-storage, atlas-core::registry, cudarc).
            * Each returns CUDA_ERROR_NO_DEVICE (100) so callers fail-fast.
            * Generated for CI link-time only; never exercised at runtime
            * because every test that touches these is #[ignore]-gated. */
+          /* Init / device / context */
           int cuInit(unsigned int x) { (void)x; return 100; }
           int cuDeviceGet(void *a, int b) { (void)a; (void)b; return 100; }
+          int cuCtxCreate(void **a, unsigned int b, int c) { (void)a; (void)b; (void)c; return 100; }
           int cuCtxCreate_v2(void **a, unsigned int b, int c) { (void)a; (void)b; (void)c; return 100; }
           int cuCtxDestroy_v2(void *a) { (void)a; return 100; }
           int cuCtxGetCurrent(void **a) { (void)a; return 100; }
+          int cuCtxSetCurrent(void *a) { (void)a; return 100; }
+          /* Errors */
+          int cuGetErrorName(int code, const char **out) { (void)code; (void)out; return 100; }
+          int cuGetErrorString(int code, const char **out) { (void)code; (void)out; return 100; }
+          /* Streams */
           int cuStreamCreate(void **a, unsigned int b) { (void)a; (void)b; return 100; }
           int cuStreamDestroy_v2(void *a) { (void)a; return 100; }
           int cuStreamSynchronize(void *a) { (void)a; return 100; }
+          int cuStreamBeginCapture(void *a, int b) { (void)a; (void)b; return 100; }
           int cuStreamBeginCapture_v2(void *a, int b) { (void)a; (void)b; return 100; }
           int cuStreamEndCapture(void *a, void **b) { (void)a; (void)b; return 100; }
+          int cuStreamWaitEvent(void *a, void *b, unsigned int c) { (void)a; (void)b; (void)c; return 100; }
+          /* Modules + launch */
           int cuModuleLoadData(void **a, const void *b) { (void)a; (void)b; return 100; }
           int cuModuleUnload(void *a) { (void)a; return 100; }
           int cuModuleGetFunction(void **a, void *b, const char *c) { (void)a; (void)b; (void)c; return 100; }
+          int cuFuncSetAttribute(void *f, int attr, int val) { (void)f; (void)attr; (void)val; return 100; }
           int cuLaunchKernel(void *f, unsigned int gx, unsigned int gy, unsigned int gz,
                              unsigned int bx, unsigned int by, unsigned int bz,
                              unsigned int sm, void *s, void **p, void **e) {
               (void)f; (void)gx; (void)gy; (void)gz; (void)bx; (void)by; (void)bz;
               (void)sm; (void)s; (void)p; (void)e; return 100;
           }
+          /* Events */
           int cuEventCreate(void **a, unsigned int b) { (void)a; (void)b; return 100; }
           int cuEventDestroy_v2(void *a) { (void)a; return 100; }
           int cuEventRecord(void *a, void *b) { (void)a; (void)b; return 100; }
           int cuEventSynchronize(void *a) { (void)a; return 100; }
+          int cuEventElapsedTime(float *a, void *b, void *c) { (void)a; (void)b; (void)c; return 100; }
+          /* Memory — device */
+          int cuMemAlloc(unsigned long long *a, unsigned long b) { (void)a; (void)b; return 100; }
           int cuMemAlloc_v2(unsigned long long *a, unsigned long b) { (void)a; (void)b; return 100; }
+          int cuMemAllocManaged(unsigned long long *a, unsigned long b, unsigned int c) {
+              (void)a; (void)b; (void)c; return 100;
+          }
           int cuMemFree_v2(unsigned long long a) { (void)a; return 100; }
+          int cuMemGetInfo(unsigned long *a, unsigned long *b) { (void)a; (void)b; return 100; }
+          int cuMemGetInfo_v2(unsigned long *a, unsigned long *b) { (void)a; (void)b; return 100; }
+          /* Memory — host (pinned) */
+          int cuMemAllocHost(void **a, unsigned long b) { (void)a; (void)b; return 100; }
           int cuMemAllocHost_v2(void **a, unsigned long b) { (void)a; (void)b; return 100; }
           int cuMemFreeHost(void *a) { (void)a; return 100; }
+          /* Memcpy / memset */
+          int cuMemcpyHtoD(unsigned long long a, const void *b, unsigned long c) {
+              (void)a; (void)b; (void)c; return 100;
+          }
+          int cuMemcpyHtoD_v2(unsigned long long a, const void *b, unsigned long c) {
+              (void)a; (void)b; (void)c; return 100;
+          }
+          int cuMemcpyHtoDAsync(unsigned long long a, const void *b, unsigned long c, void *d) {
+              (void)a; (void)b; (void)c; (void)d; return 100;
+          }
           int cuMemcpyHtoDAsync_v2(unsigned long long a, const void *b, unsigned long c, void *d) {
               (void)a; (void)b; (void)c; (void)d; return 100;
           }
           int cuMemcpyDtoHAsync_v2(void *a, unsigned long long b, unsigned long c, void *d) {
               (void)a; (void)b; (void)c; (void)d; return 100;
           }
+          int cuMemcpyDtoDAsync_v2(unsigned long long a, unsigned long long b, unsigned long c, void *d) {
+              (void)a; (void)b; (void)c; (void)d; return 100;
+          }
+          int cuMemsetD8Async(unsigned long long a, unsigned char b, unsigned long c, void *d) {
+              (void)a; (void)b; (void)c; (void)d; return 100;
+          }
           int cuMemsetD32Async(unsigned long long a, unsigned int b, unsigned long c, void *d) {
               (void)a; (void)b; (void)c; (void)d; return 100;
           }
+          /* Graphs */
           int cuGraphInstantiateWithFlags(void **a, void *b, unsigned long long c) {
               (void)a; (void)b; (void)c; return 100;
           }
