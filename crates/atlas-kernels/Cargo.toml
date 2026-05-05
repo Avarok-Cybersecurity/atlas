@@ -9,7 +9,7 @@ description = "Atlas CUDA kernel PTX — compiled from kernels/{hw}/{model}/{qua
 atlas-core = { workspace = true }
 
 [build-dependencies]
-toml = "0.8"
+toml = "1.1"
 
 [lints]
 workspace = true
