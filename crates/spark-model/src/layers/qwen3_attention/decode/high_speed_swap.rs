@@ -74,7 +74,8 @@ impl Qwen3AttentionLayer {
             disk_block_ids.len() >= block_table.len(),
             "Phase 6.3 invariant: alloc helper must keep disk_block_ids ≥ block_table.len() \
              (got disk={} bt={})",
-            disk_block_ids.len(), block_table.len()
+            disk_block_ids.len(),
+            block_table.len()
         );
 
         // Step 2: per-layer catch-up. THIS layer's offloaded count
@@ -109,7 +110,8 @@ impl Qwen3AttentionLayer {
                     "high-speed-swap: layer {} block {} was evicted before this layer offloaded \
                      it. This indicates an out-of-order layer execution bug — every layer must \
                      offload its K/V before sliding-window eviction runs.",
-                    self.attn_layer_idx, logical_pos
+                    self.attn_layer_idx,
+                    logical_pos
                 );
             }
             let bt_idx = logical_pos - window_start;
@@ -227,7 +229,12 @@ impl Qwen3AttentionLayer {
             spark_storage::with_local(|hss| {
                 match layer_dtype {
                     KvCacheDtype::Bf16 => hss.offload_block_on_stream(
-                        stream, layer_u32, disk_id, k_block_dev, &k_host, &v_host,
+                        stream,
+                        layer_u32,
+                        disk_id,
+                        k_block_dev,
+                        &k_host,
+                        &v_host,
                     ),
                     // Quantized: skip predictor projection — the BF16 kernel
                     // would OOB-read on a non-BF16 layout. Eviction degrades
@@ -236,7 +243,8 @@ impl Qwen3AttentionLayer {
                         stream, layer_u32, disk_id, &k_host, &v_host,
                     ),
                 }
-            }).expect("local_installed checked in high_speed_swap_engaged")?;
+            })
+            .expect("local_installed checked in high_speed_swap_engaged")?;
         }
         disk_last_offloaded_per_layer[self.attn_layer_idx] = total as u32;
         Ok(())

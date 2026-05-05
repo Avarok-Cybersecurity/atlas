@@ -2,8 +2,6 @@
 
 //! Fuzzy repetition detector + tests.
 
-
-
 /// Detect intra-response fuzzy repetition loop in the tail of `tokens`.
 ///
 /// Returns `Some((pattern_len, mis_a, mis_b))` if the last `3 * pattern_len`

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use super::*;
 
 fn url_of(a: &Annotation) -> (usize, usize, &str, &str) {
@@ -34,16 +36,14 @@ fn trailing_sentence_punct_stripped() {
 
 #[test]
 fn wikipedia_parens_preserved() {
-    let got =
-        extract_url_annotations("see https://en.wikipedia.org/wiki/Foo_(bar) now").unwrap();
+    let got = extract_url_annotations("see https://en.wikipedia.org/wiki/Foo_(bar) now").unwrap();
     let (_, _, u, _) = url_of(&got[0]);
     assert_eq!(u, "https://en.wikipedia.org/wiki/Foo_(bar)");
 }
 
 #[test]
 fn markdown_link_uses_title() {
-    let got =
-        extract_url_annotations("read [the docs](https://example.com/api) today").unwrap();
+    let got = extract_url_annotations("read [the docs](https://example.com/api) today").unwrap();
     assert_eq!(got.len(), 1);
     let (_, _, u, t) = url_of(&got[0]);
     assert_eq!(u, "https://example.com/api");
@@ -186,10 +186,9 @@ fn responses_string_tool_choice_accepted() {
 fn markdown_link_with_parens_in_url_preserved() {
     // Wikipedia URLs contain `(...)` which the bare `find(')')` would
     // truncate. Verify the balanced-paren scan keeps the full URL.
-    let got = extract_url_annotations(
-        "see [Foo (bar)](https://en.wikipedia.org/wiki/Foo_(bar)) here",
-    )
-    .unwrap();
+    let got =
+        extract_url_annotations("see [Foo (bar)](https://en.wikipedia.org/wiki/Foo_(bar)) here")
+            .unwrap();
     assert_eq!(got.len(), 1);
     let (_, _, u, t) = url_of(&got[0]);
     assert_eq!(u, "https://en.wikipedia.org/wiki/Foo_(bar)");

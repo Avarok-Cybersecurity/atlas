@@ -61,7 +61,7 @@ pub(crate) enum ExpertPtrSet {
 
 /// MoE feed-forward network component.
 ///
-/// Not a [`TransformerLayer`] — used as a component inside layers
+/// Not a `TransformerLayer` — used as a component inside layers
 /// for the FFN/MoE block after post-attention norm.
 #[allow(dead_code)]
 pub struct MoeLayer {
@@ -246,22 +246,20 @@ pub struct MoeLayer {
     pub is_dflash_capture_layer: bool,
 }
 
-
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
-mod init;
+mod forward;
+mod forward_batched;
+mod forward_ep;
+mod forward_k2;
+mod forward_k3;
+mod forward_phase;
+mod forward_prefill;
+mod forward_prefill_fp8;
+mod forward_prefill_phase;
 mod helpers_a;
 mod helpers_b;
 mod helpers_c;
-mod forward;
-mod forward_phase;
-mod forward_batched;
-mod forward_k2;
-mod forward_k3;
-mod forward_prefill;
-mod forward_prefill_phase;
-mod forward_prefill_fp8;
-mod forward_ep;
-
+mod init;
 
 /// Build a device-side pointer table from pre-transposed QuantizedWeight vec.
 fn build_ptr_table_from_qw(

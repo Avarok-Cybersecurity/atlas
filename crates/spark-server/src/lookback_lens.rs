@@ -52,7 +52,7 @@ pub struct AttentionSums {
 }
 
 impl AttentionSums {
-    /// Build the per-head ratio feature vector: ratio[h] =
+    /// Build the per-head ratio feature vector: `ratio[h] =`
     /// lookback / (lookback + rest). Bounded in [0, 1]; closer to
     /// 1 means the head is "looking back" at the tool result.
     pub fn ratios(&self) -> Vec<f32> {
@@ -64,11 +64,7 @@ impl AttentionSums {
             .zip(self.rest_sums.iter())
             .map(|(lb, rest)| {
                 let denom = lb + rest;
-                if denom > 1e-10 {
-                    lb / denom
-                } else {
-                    0.0
-                }
+                if denom > 1e-10 { lb / denom } else { 0.0 }
             })
             .collect()
     }
@@ -100,7 +96,11 @@ impl GroundedClassifier {
         if ratios.len() != self.weights.len() {
             return 0.5; // uninformative fallback
         }
-        let dot: f32 = ratios.iter().zip(self.weights.iter()).map(|(r, w)| r * w).sum();
+        let dot: f32 = ratios
+            .iter()
+            .zip(self.weights.iter())
+            .map(|(r, w)| r * w)
+            .sum();
         let z = dot + self.bias;
         1.0 / (1.0 + (-z).exp())
     }

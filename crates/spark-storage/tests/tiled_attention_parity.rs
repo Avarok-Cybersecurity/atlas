@@ -91,14 +91,22 @@ fn run_gpu(tile_size: usize, q: &[bf16], k: &[bf16], v: &[bf16], block_table: &[
             tile_blocks_dev.ptr,
             tile_counts_dev.ptr,
             NUM_SEQS,
-            s_blk, s_tok, s_kvh,
+            s_blk,
+            s_tok,
+            s_kvh,
             BLOCK_SIZE as i32,
         )
         .unwrap();
     }
     attn.finalize(&ctx, output_dev.ptr, NUM_SEQS).unwrap();
     let mut out = vec![bf16::from_f32(0.0); NUM_SEQS * NUM_Q_HEADS * HEAD_DIM];
-    copy_d_to_h_async(out.as_mut_ptr() as *mut c_void, output_dev.ptr, out.len() * 2, ctx.stream).unwrap();
+    copy_d_to_h_async(
+        out.as_mut_ptr() as *mut c_void,
+        output_dev.ptr,
+        out.len() * 2,
+        ctx.stream,
+    )
+    .unwrap();
     stream_sync(ctx.stream).unwrap();
     out
 }
@@ -115,8 +123,19 @@ fn run_ref(tile_size: usize, q: &[bf16], k: &[bf16], v: &[bf16], block_table: &[
         tile[..n].copy_from_slice(&block_table[start..end]);
         let counts = vec![n as i32; NUM_SEQS];
         step_tile_ref(
-            &mut state, q, k, v, &tile, &counts,
-            NUM_SEQS, NUM_Q_HEADS, NUM_KV_HEADS, HEAD_DIM, BLOCK_SIZE, tile_size, gqa,
+            &mut state,
+            q,
+            k,
+            v,
+            &tile,
+            &counts,
+            NUM_SEQS,
+            NUM_Q_HEADS,
+            NUM_KV_HEADS,
+            HEAD_DIM,
+            BLOCK_SIZE,
+            tile_size,
+            gqa,
         );
     }
     finalize_ref(&state, NUM_SEQS, NUM_Q_HEADS, HEAD_DIM)
@@ -127,7 +146,9 @@ fn diff_stats(a: &[bf16], b: &[bf16]) -> (f32, f32) {
     let mut sum_d = 0.0_f32;
     for (x, y) in a.iter().zip(b) {
         let d = (x.to_f32() - y.to_f32()).abs();
-        if d > max_d { max_d = d; }
+        if d > max_d {
+            max_d = d;
+        }
         sum_d += d;
     }
     (max_d, sum_d / a.len() as f32)
@@ -143,6 +164,7 @@ fn build_inputs(seed: u64) -> (Vec<bf16>, Vec<bf16>, Vec<bf16>, Vec<i32>) {
 }
 
 #[test]
+#[ignore = "requires GPU"]
 fn single_tile_matches_reference() {
     let (q, k, v, bt) = build_inputs(0xCAFE);
     let gpu = run_gpu(NUM_BLOCKS, &q, &k, &v, &bt);
@@ -153,6 +175,7 @@ fn single_tile_matches_reference() {
 }
 
 #[test]
+#[ignore = "requires GPU"]
 fn multi_tile_matches_single_tile() {
     let (q, k, v, bt) = build_inputs(0xBEEF);
     let single = run_gpu(NUM_BLOCKS, &q, &k, &v, &bt);

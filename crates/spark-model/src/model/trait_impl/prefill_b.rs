@@ -21,17 +21,17 @@
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 
-use crate::traits::{Model, SequenceState};
 use super::super::types::TransformerModel;
+use crate::traits::{Model, SequenceState};
 
 mod embed_chunk;
+mod finalize_last;
+mod forward_layers;
 mod prefix_lookup;
 mod proc_range;
+mod save_checkpoint;
 mod upload_meta;
 mod upload_paged;
-mod forward_layers;
-mod finalize_last;
-mod save_checkpoint;
 
 impl TransformerModel {
     pub(super) fn prefill_chunk_dispatch(
@@ -78,22 +78,14 @@ impl TransformerModel {
             self.buffers.zero_all(self.gpu.as_ref(), stream)?;
         }
 
-        let mut kv_cache = self
-            .kv_cache
-            .lock();
+        let mut kv_cache = self.kv_cache.lock();
 
         // ── Phase 1+1b: embed chunk + vision pad overlay ──
         self.prefill_b_embed_chunk(tokens, chunk_start, chunk_len, stream)?;
 
         // ── Phase 2: prefix-cache lookup + EP sync + Marconi snapshot restore ──
-        let (kv_write_start, marconi_skip) = self.prefill_b_prefix_lookup(
-            tokens,
-            seq,
-            chunk_start,
-            total,
-            &mut kv_cache,
-            stream,
-        )?;
+        let (kv_write_start, marconi_skip) =
+            self.prefill_b_prefix_lookup(tokens, seq, chunk_start, total, &mut kv_cache, stream)?;
 
         // Allocate blocks needed through end of this chunk.
         let bs = kv_cache.block_size();
@@ -119,9 +111,11 @@ impl TransformerModel {
             marconi_skip,
             stream,
         )? {
-            proc_range::ProcRange::Compute { proc_start, proc_count, effective_seq_len_start } => {
-                (proc_start, proc_count, effective_seq_len_start)
-            }
+            proc_range::ProcRange::Compute {
+                proc_start,
+                proc_count,
+                effective_seq_len_start,
+            } => (proc_start, proc_count, effective_seq_len_start),
             proc_range::ProcRange::EarlyReturn(ptr) => return Ok(ptr),
         };
 

@@ -19,7 +19,6 @@ pub(super) fn handle_error(ctx: &StreamCtx, msg: String) -> SseVec {
     let err = serde_json::json!({
         "error": {"message": msg, "type": "server_error", "code": 500}
     });
-    let mut events: SseVec = Vec::new();
-    events.push(Ok(Event::default().data(err.to_string())));
+    let events: SseVec = vec![Ok(Event::default().data(err.to_string()))];
     events
 }

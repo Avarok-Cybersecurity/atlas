@@ -5,99 +5,50 @@
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
-use axum::response::sse::{
-    Event,
-    KeepAlive,
-};
-use axum::response::{
-    IntoResponse,
-    Json,
-    Response,
-    Sse,
-};
+use axum::response::sse::{Event, KeepAlive};
+use axum::response::{IntoResponse, Json, Response, Sse};
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::AppState;
 use crate::openai::{
-    ChatCompletionChunk,
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    CompletionChunk,
-    CompletionRequest,
-    CompletionResponse,
-    ModelInfo,
-    ModelListResponse,
-    Usage,
+    ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, CompletionChunk,
+    CompletionRequest, CompletionResponse, ModelInfo, ModelListResponse, Usage,
 };
 use crate::tool_parser;
 
 // Sibling-cluster items hoisted from the original `api.rs`. These uses
 // give every sub-file access to helpers that the un-split file took for
 // granted via single-module visibility.
+use super::super::chat::chat_completions_inner;
 use super::super::compact::{
-    compact_messages,
-    openai_error_response,
-    openai_error_response_with_param,
-};
-use super::super::sanitizer::{
-    F7_STALL_WARN_THRESHOLD,
-    F7_STALL_REFUSE_THRESHOLD,
-    F7StallBuckets,
-    ToolKind,
-    classify_tool,
-    extract_bash_final_action,
-    primary_arg_for_tool,
-    sanitize_content_chunk,
+    compact_messages, openai_error_response, openai_error_response_with_param,
 };
 use super::super::completions::not_supported;
-use super::{
-    F23ProgressMetrics,
-    F29EnvironmentFact,
-    F37FailureClass,
-    F39FailureCache,
-    F39PermanentFailureMatch,
-    append_f7_reminder_to_last_user,
-    build_f7_stall_reminder,
-    collect_f7_stall_buckets,
-    f23_build_reminder,
-    f23_normalize_and_hash,
-    f23_refuse_threshold,
-    f23_score_progress,
-    f23_warn_threshold,
-    f28_text_looks_like_error,
-    f29_extract_binary_from_error_line,
-    f29_extract_environment_facts,
-    f29_inject_environment_facts,
-    f31_inject_hard_refusal,
-    f32_reposition_failed_tool_result,
-    f37_classify_failure,
-    f39_build_circuit_breaker_banner,
-    f39_build_failure_cache,
-    f39_class_label,
-    f39_detect_recent_retries,
-    f39_extract_binary_name,
-    f44_check_permanent_failure,
-    f60_disable_mtp_for_request,
-    prepend_reminder_to_system,
-    recent_message_is_tool_error,
+use super::super::inference_impl::{
+    extract_thinking, strip_stop_sequences, tokenize_stop_sequences,
 };
 use super::super::inference_types::{
-    GrammarSpec,
-    InferenceRequest,
-    InferenceResponse,
-    StreamEvent,
-    TokenLogprobs,
+    GrammarSpec, InferenceRequest, InferenceResponse, StreamEvent, TokenLogprobs,
 };
-use super::super::inference_impl::{
-    extract_thinking,
-    strip_stop_sequences,
-    tokenize_stop_sequences,
+use super::super::sanitizer::{
+    F7_STALL_REFUSE_THRESHOLD, F7_STALL_WARN_THRESHOLD, F7StallBuckets, ToolKind, classify_tool,
+    extract_bash_final_action, primary_arg_for_tool, sanitize_content_chunk,
 };
 use super::super::strip::strip_thinking_tags;
-use super::super::chat::chat_completions_inner;
-
+use super::{
+    F23ProgressMetrics, F29EnvironmentFact, F37FailureClass, F39FailureCache,
+    F39PermanentFailureMatch, append_f7_reminder_to_last_user, build_f7_stall_reminder,
+    collect_f7_stall_buckets, f23_build_reminder, f23_normalize_and_hash, f23_refuse_threshold,
+    f23_score_progress, f23_warn_threshold, f28_text_looks_like_error,
+    f29_extract_binary_from_error_line, f29_extract_environment_facts,
+    f29_inject_environment_facts, f31_inject_hard_refusal, f32_reposition_failed_tool_result,
+    f37_classify_failure, f39_build_circuit_breaker_banner, f39_build_failure_cache,
+    f39_class_label, f39_detect_recent_retries, f39_extract_binary_name,
+    f44_check_permanent_failure, f60_disable_mtp_for_request, prepend_reminder_to_system,
+    recent_message_is_tool_error,
+};
 
 // Re-export sibling helpers via crate::api::* for short paths.
 use super::super::inference_types::*;
@@ -107,10 +58,7 @@ pub struct F49DuplicateWrite {
     pub prior_count: u32,
 }
 
-pub fn f49_extract_write_path_and_content(
-    name: &str,
-    args_json: &str,
-) -> Option<(String, u64)> {
+pub fn f49_extract_write_path_and_content(name: &str, args_json: &str) -> Option<(String, u64)> {
     // F51: case-insensitive tool family check. opencode uses
     // lowercase `write`/`edit`; Claude Code uses uppercase.
     let kind = classify_tool(name);
@@ -135,7 +83,12 @@ pub fn f49_extract_write_path_and_content(
     obj.get("oldString")
         .and_then(|o| o.as_str())
         .zip(obj.get("newString").and_then(|n| n.as_str()))
-        .map(|(o, n)| (path.to_string(), f23_normalize_and_hash(&format!("{o}\u{1F}{n}"))))
+        .map(|(o, n)| {
+            (
+                path.to_string(),
+                f23_normalize_and_hash(&format!("{o}\u{1F}{n}")),
+            )
+        })
 }
 
 pub fn f49_detect_duplicate_writes(
@@ -154,11 +107,14 @@ pub fn f49_detect_duplicate_writes(
     let Some(last_idx) = last_asst_idx else {
         return Vec::new();
     };
-    let mut seen: std::collections::HashMap<(String, u64), u32> =
-        std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<(String, u64), u32> = std::collections::HashMap::new();
     for (i, m) in messages.iter().enumerate() {
-        if i >= last_idx { break; }
-        if m.role != "assistant" { continue; }
+        if i >= last_idx {
+            break;
+        }
+        if m.role != "assistant" {
+            continue;
+        }
         let Some(tcs) = &m.tool_calls else { continue };
         for tc in tcs {
             let name = tc.function.name.clone();
@@ -170,17 +126,21 @@ pub fn f49_detect_duplicate_writes(
         }
     }
     let last = &messages[last_idx];
-    let Some(tcs) = &last.tool_calls else { return Vec::new() };
+    let Some(tcs) = &last.tool_calls else {
+        return Vec::new();
+    };
     let mut hits: Vec<F49DuplicateWrite> = Vec::new();
-    let mut emitted: std::collections::HashSet<(String, u64)> =
-        std::collections::HashSet::new();
+    let mut emitted: std::collections::HashSet<(String, u64)> = std::collections::HashSet::new();
     for tc in tcs {
         let name = tc.function.name.clone();
-        let Some((path, hash)) =
-            f49_extract_write_path_and_content(&name, &tc.function.arguments)
-        else { continue };
+        let Some((path, hash)) = f49_extract_write_path_and_content(&name, &tc.function.arguments)
+        else {
+            continue;
+        };
         let key = (path.clone(), hash);
-        if !emitted.insert(key.clone()) { continue; }
+        if !emitted.insert(key.clone()) {
+            continue;
+        }
         if let Some(prior_count) = seen.get(&key) {
             hits.push(F49DuplicateWrite {
                 file_path: path,
@@ -199,9 +159,7 @@ pub fn f49_detect_duplicate_writes(
 // src/main.rs` error scrolled past attention focus when 4 successful
 // Write tool_results pushed it backward, so the model fell back to
 // generic syntax paraphrasing.
-pub fn f50_append_original_error(
-    messages: &mut Vec<crate::openai::IncomingMessage>,
-) -> bool {
+pub fn f50_append_original_error(messages: &mut Vec<crate::openai::IncomingMessage>) -> bool {
     // Find the FIRST role:tool message whose content has an error
     // signature. Skip the most recent few tool_results (assume those
     // are the misdiagnosed-rewrite results). We anchor on the
@@ -213,7 +171,9 @@ pub fn f50_append_original_error(
             break;
         }
     }
-    let Some(orig_idx) = original_idx else { return false };
+    let Some(orig_idx) = original_idx else {
+        return false;
+    };
     // Skip if the original error is already at the tail (or near it).
     if messages.len().saturating_sub(orig_idx + 1) < 2 {
         return false;
@@ -222,10 +182,10 @@ pub fn f50_append_original_error(
     // for this conversation (idempotent).
     if let Some(last) = messages.last()
         && last.role == "tool"
-            && last.content.text.starts_with("[atlas-original-error]")
-        {
-            return false;
-        }
+        && last.content.text.starts_with("[atlas-original-error]")
+    {
+        return false;
+    }
     // Anchor to the most recent assistant turn's first tool_call id
     // so transport-level frame validators don't drop the synthesised
     // tool_result. We synthesise as a `role: tool` reply.
@@ -234,13 +194,16 @@ pub fn f50_append_original_error(
         if m.role == "assistant" {
             if let Some(tcs) = &m.tool_calls
                 && let Some(first) = tcs.first()
-                    && let Some(id) = first.id.as_ref() {
-                        anchor_id = Some(id.clone());
-                    }
+                && let Some(id) = first.id.as_ref()
+            {
+                anchor_id = Some(id.clone());
+            }
             break;
         }
     }
-    let Some(tool_call_id) = anchor_id else { return false };
+    let Some(tool_call_id) = anchor_id else {
+        return false;
+    };
     let original_text = messages[orig_idx].content.text.clone();
     let body = format!(
         "[atlas-original-error] You have lost focus on the ORIGINAL error that prompted this work. Re-read it carefully — it likely cites a specific file, line, or symbol that needs to change:\n\n\
@@ -298,11 +261,13 @@ pub fn f49_build_banner(hits: &[F49DuplicateWrite]) -> String {
 /// server) reproduced the collapse, proving the failure is
 /// prompt-induced, not state-induced. The toxic input:
 ///
-///     message[4] = assistant:
-///       content: "…Let me create the Rust calculator module with the
-///                 source files first.\n\n<read><filePath>…</filePath>
-///                 <offset>1</offset><limit>100</limit></read>"
-///       tool_calls: [{name: "write", …}]
+/// ```text
+/// message[4] = assistant:
+///   content: "…Let me create the Rust calculator module with the
+///             source files first.\n\n<read><filePath>…</filePath>
+///             <offset>1</offset><limit>100</limit></read>"
+///   tool_calls: [{name: "write", …}]
+/// ```
 ///
 /// The XML `<read>` block in `content` is a hallucinated mirror of
 /// (and in fact contradicts) the real `tool_calls[0]` field. The
@@ -336,9 +301,7 @@ pub fn strip_xml_leaks_from_assistant_content(
     // taught the model that emitting the prose envelope is a valid
     // tool-call substitute (Phase-1 leak-then-collapse pattern,
     // see history/SSM_CATASTROPHIC_FORGETTING_TODO.md).
-    const HARNESS_TAGS: &[&str] = &[
-        "task", "file", "content", "description", "prompt", "glob",
-    ];
+    const HARNESS_TAGS: &[&str] = &["task", "file", "content", "description", "prompt", "glob"];
     let mut leak_names: Vec<String> = tool_defs
         .iter()
         .filter_map(|t| {
@@ -395,7 +358,7 @@ pub fn strip_xml_leaks_from_assistant_content(
     // blank line so the rendered prompt doesn't carry a suspicious
     // run of empties where the block used to be.
     let trimmed = out.trim_end_matches([' ', '\t']);
-    
+
     trimmed.replace("\n\n\n", "\n\n")
 }
 
@@ -430,10 +393,7 @@ pub fn flush_content_sanitizer(
     let final_text = std::mem::take(tag_scan_buf);
     let looks_like_partial_tag = {
         let t = final_text.trim_end();
-        tag_max > 0
-            && t.starts_with('<')
-            && !t.contains(char::is_whitespace)
-            && t.len() < tag_max
+        tag_max > 0 && t.starts_with('<') && !t.contains(char::is_whitespace) && t.len() < tag_max
     };
     if looks_like_partial_tag {
         String::new()

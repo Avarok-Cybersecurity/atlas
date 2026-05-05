@@ -15,8 +15,8 @@
 //! is uncontended (single inference thread) so lock overhead is negligible.
 
 use anyhow::Result;
-use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use parking_lot::Mutex;
+use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 /// FP8 E4M3 max representable magnitude.
 const FP8_E4M3_MAX: f32 = 448.0;

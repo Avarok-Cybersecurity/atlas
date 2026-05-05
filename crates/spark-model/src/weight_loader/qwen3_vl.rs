@@ -8,16 +8,12 @@ use spark_runtime::weights::WeightStore;
 
 use super::{ModelWeightLoader, WeightFormat};
 use crate::layer::TransformerLayer;
-use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_quantized_nvfp4};
 use crate::layers::vision_encoder::{MergerLayer, ViTBlock};
-use crate::layers::{
-    FfnComponent, MoeLayer,
-    Qwen3AttentionLayer, VisionEncoder,
-};
+use crate::layers::{FfnComponent, MoeLayer, Qwen3AttentionLayer, VisionEncoder};
+use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_quantized_nvfp4};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, MtpWeights, dense, detect_nvfp4_variant, load_kv_scales,
-    load_moe_no_shared, quantize_to_nvfp4,
-    quantized_auto,
+    load_moe_no_shared, quantize_to_nvfp4, quantized_auto,
 };
 
 pub struct Qwen3VLWeightLoader;

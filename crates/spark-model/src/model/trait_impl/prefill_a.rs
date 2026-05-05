@@ -9,9 +9,9 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -19,24 +19,26 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::super::ssm_pool::SsmStatePool;
+use super::super::ssm_snapshot::SsmSnapshotPool;
+use super::super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::super::types::{TransformerModel, PinnedMetaStaging};
-use super::super::ssm_pool::SsmStatePool;
-use super::super::ssm_snapshot::SsmSnapshotPool;
-use super::super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
 
 impl TransformerModel {
-    pub(super) fn prepare_vision_embed_dispatch(&self, images: &[(Vec<f32>, usize, usize)]) -> Result<()> {
+    pub(super) fn prepare_vision_embed_dispatch(
+        &self,
+        images: &[(Vec<f32>, usize, usize)],
+    ) -> Result<()> {
         let ve = match &self.vision_encoder {
             Some(ve) => ve,
             None => return Ok(()),
@@ -60,7 +62,12 @@ impl TransformerModel {
         Ok(())
     }
 
-    pub(super) fn prefill_dispatch(&self, tokens: &[u32], seq: &mut SequenceState, stream: u64) -> Result<DevicePtr> {
+    pub(super) fn prefill_dispatch(
+        &self,
+        tokens: &[u32],
+        seq: &mut SequenceState,
+        stream: u64,
+    ) -> Result<DevicePtr> {
         let n = tokens.len();
         if n <= 1 {
             // Single token: use decode path (CUDA graph optimized)
@@ -101,9 +108,7 @@ impl TransformerModel {
             self.buffers.zero_all(self.gpu.as_ref(), stream)?;
         }
 
-        let mut kv_cache = self
-            .kv_cache
-            .lock();
+        let mut kv_cache = self.kv_cache.lock();
 
         // ── 1. Prefix cache lookup (BEFORE embedding — Marconi may skip tokens) ──
         let bs = kv_cache.block_size();
@@ -135,17 +140,27 @@ impl TransformerModel {
         // single Flash Attention pass runs (no per-chunk offload window).
         // Bail with a clear message directing to chunked prefill.
         if let Some(cap) = kv_cache.config().cache_blocks_per_seq
-            && blocks_needed > cap as usize {
-                anyhow::bail!(
-                    "high-speed-swap: prompt of {} blocks exceeds \
+            && blocks_needed > cap as usize
+        {
+            anyhow::bail!(
+                "high-speed-swap: prompt of {} blocks exceeds \
                      --high-speed-swap-cache-blocks-per-seq={}; this single-shot \
                      prefill path requires the whole prompt fit in HBM. Use \
                      chunked prefill (set --max-prefill-tokens ≤ {} × block_size) \
                      to stream long prompts to disk.",
-                    blocks_needed, cap, cap
-                );
-            }
-        ensure_blocks_through_prefill(seq, blocks_needed - 1, &mut kv_cache, self.prefix_cache.as_ref(), self.gpu.as_ref(), stream)?;
+                blocks_needed,
+                cap,
+                cap
+            );
+        }
+        ensure_blocks_through_prefill(
+            seq,
+            blocks_needed - 1,
+            &mut kv_cache,
+            self.prefix_cache.as_ref(),
+            self.gpu.as_ref(),
+            stream,
+        )?;
 
         // ── Marconi: try to restore SSM state and skip cached prefix ──
         // With intermediate checkpoints, ssm_snapshot_tokens may be less than
@@ -280,7 +295,9 @@ impl TransformerModel {
             stg.slots.clear();
             stg.slots
                 .extend((seq_len_start..seq_len_start + proc_count).map(|i| {
-                    let block_idx = seq.physical_block_for(i / bs).unwrap_or(self.dummy_kv_block);
+                    let block_idx = seq
+                        .physical_block_for(i / bs)
+                        .unwrap_or(self.dummy_kv_block);
                     (block_idx as i64) * (bs as i64) + ((i % bs) as i64)
                 }));
 
@@ -472,5 +489,4 @@ impl TransformerModel {
 
         Ok(self.decode_logits_ptr())
     }
-
 }

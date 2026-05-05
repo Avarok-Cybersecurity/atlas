@@ -2,7 +2,7 @@
 
 //! Shared kernel dispatch operations.
 //!
-//! Freestanding functions wrapping CUDA kernel launches via [`KernelLaunch`].
+//! Freestanding functions wrapping CUDA kernel launches via `KernelLaunch`.
 //! Layer implementations compose these to build forward passes.
 //!
 //! Each function's parameters exactly match the corresponding CUDA kernel
@@ -11,56 +11,56 @@
 //! Refactor wave 4a (2026-05-03): split into `ops/` sub-modules with thematic
 //! groupings. All public functions remain available at this path via re-export.
 
-#[path = "ops/norm.rs"]
-mod norm;
-#[path = "ops/gemm_dense.rs"]
-mod gemm_dense;
-#[path = "ops/gemm_quant.rs"]
-mod gemm_quant;
-#[path = "ops/quant_dispatch.rs"]
-mod quant_dispatch;
-#[path = "ops/embeddings.rs"]
-mod embeddings;
-#[path = "ops/kv_cache.rs"]
-mod kv_cache;
-#[path = "ops/prefill_attn_a.rs"]
-mod prefill_attn_a;
-#[path = "ops/prefill_attn_b.rs"]
-mod prefill_attn_b;
-#[path = "ops/ssm_mamba.rs"]
-mod ssm_mamba;
-#[path = "ops/ssm_gdn_a.rs"]
-mod ssm_gdn_a;
-#[path = "ops/ssm_gdn_b.rs"]
-mod ssm_gdn_b;
 #[path = "ops/activations.rs"]
 mod activations;
-#[path = "ops/ssm_preproc.rs"]
-mod ssm_preproc;
-#[path = "ops/sampling.rs"]
-mod sampling;
-#[path = "ops/moe_gate.rs"]
-mod moe_gate;
-#[path = "ops/moe_expert.rs"]
-mod moe_expert;
-#[path = "ops/moe_expert_more.rs"]
-mod moe_expert_more;
-#[path = "ops/moe_prefill.rs"]
-mod moe_prefill;
-#[path = "ops/moe_grouped_a.rs"]
-mod moe_grouped_a;
-#[path = "ops/moe_grouped_b.rs"]
-mod moe_grouped_b;
-#[path = "ops/prefill_attn_main_a.rs"]
-mod prefill_attn_main_a;
-#[path = "ops/prefill_attn_main_b.rs"]
-mod prefill_attn_main_b;
+#[path = "ops/embeddings.rs"]
+mod embeddings;
 #[path = "ops/fp8_moe.rs"]
 mod fp8_moe;
 #[path = "ops/fp8_moe_batch_a.rs"]
 mod fp8_moe_batch_a;
 #[path = "ops/fp8_moe_batch_b.rs"]
 mod fp8_moe_batch_b;
+#[path = "ops/gemm_dense.rs"]
+mod gemm_dense;
+#[path = "ops/gemm_quant.rs"]
+mod gemm_quant;
+#[path = "ops/kv_cache.rs"]
+mod kv_cache;
+#[path = "ops/moe_expert.rs"]
+mod moe_expert;
+#[path = "ops/moe_expert_more.rs"]
+mod moe_expert_more;
+#[path = "ops/moe_gate.rs"]
+mod moe_gate;
+#[path = "ops/moe_grouped_a.rs"]
+mod moe_grouped_a;
+#[path = "ops/moe_grouped_b.rs"]
+mod moe_grouped_b;
+#[path = "ops/moe_prefill.rs"]
+mod moe_prefill;
+#[path = "ops/norm.rs"]
+mod norm;
+#[path = "ops/prefill_attn_a.rs"]
+mod prefill_attn_a;
+#[path = "ops/prefill_attn_b.rs"]
+mod prefill_attn_b;
+#[path = "ops/prefill_attn_main_a.rs"]
+mod prefill_attn_main_a;
+#[path = "ops/prefill_attn_main_b.rs"]
+mod prefill_attn_main_b;
+#[path = "ops/quant_dispatch.rs"]
+mod quant_dispatch;
+#[path = "ops/sampling.rs"]
+mod sampling;
+#[path = "ops/ssm_gdn_a.rs"]
+mod ssm_gdn_a;
+#[path = "ops/ssm_gdn_b.rs"]
+mod ssm_gdn_b;
+#[path = "ops/ssm_mamba.rs"]
+mod ssm_mamba;
+#[path = "ops/ssm_preproc.rs"]
+mod ssm_preproc;
 
 pub use activations::*;
 pub use embeddings::*;

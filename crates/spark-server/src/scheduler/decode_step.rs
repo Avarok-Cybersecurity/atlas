@@ -4,7 +4,6 @@
 
 use super::*;
 
-
 /// Decode-only step: batched decode for all active sequences (no MTP).
 pub fn step_decode_only(
     model: &dyn Model,

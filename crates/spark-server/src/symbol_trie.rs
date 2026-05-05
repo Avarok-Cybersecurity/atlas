@@ -186,8 +186,7 @@ mod tests {
 
     #[test]
     fn two_symbols_share_prefix() {
-        let trie =
-            SymbolTrie::build(&["read file", "read dir"], &WordTokeniser).unwrap();
+        let trie = SymbolTrie::build(&["read file", "read dir"], &WordTokeniser).unwrap();
         let read_toks = WordTokeniser.encode("read");
         let read_node = trie.walk_prefix(&read_toks).expect("walk hits 'read'");
         // Not terminal — both symbols extend.
@@ -199,8 +198,7 @@ mod tests {
     #[test]
     fn prefix_overlap_keeps_terminal_at_inner_node() {
         // "read" itself is a symbol AND a prefix of "read file".
-        let trie =
-            SymbolTrie::build(&["read", "read file"], &WordTokeniser).unwrap();
+        let trie = SymbolTrie::build(&["read", "read file"], &WordTokeniser).unwrap();
         let read_toks = WordTokeniser.encode("read");
         let read_node = trie.walk_prefix(&read_toks).expect("walk hits 'read'");
         assert!(trie.is_terminal(read_node), "'read' alone is terminal");
@@ -218,11 +216,7 @@ mod tests {
 
     #[test]
     fn allowed_next_tokens_is_sorted() {
-        let trie = SymbolTrie::build(
-            &["zebra", "alpha", "delta"],
-            &WordTokeniser,
-        )
-        .unwrap();
+        let trie = SymbolTrie::build(&["zebra", "alpha", "delta"], &WordTokeniser).unwrap();
         let root_allowed = trie.allowed_next_tokens(0);
         // Should be sorted ascending — caller can binary-search the AND-mask.
         for window in root_allowed.windows(2) {

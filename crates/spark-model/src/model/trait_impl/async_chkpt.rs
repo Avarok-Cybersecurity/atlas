@@ -2,9 +2,9 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -12,21 +12,20 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::super::ssm_pool::SsmStatePool;
+use super::super::ssm_snapshot::SsmSnapshotPool;
+use super::super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::super::types::{TransformerModel, PinnedMetaStaging};
-use super::super::ssm_pool::SsmStatePool;
-use super::super::ssm_snapshot::SsmSnapshotPool;
-use super::super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
 
 impl TransformerModel {
     pub(super) fn start_checkpoint_async_dispatch(&self, seq: &mut SequenceState) -> Result<()> {
@@ -163,8 +162,12 @@ impl TransformerModel {
                     .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
 
                 // No-op if checkpoint isn't populated (non-MTP path).
-                let Some(h_ckpt) = ssm.h_state_checkpoint else { continue };
-                let Some(conv_ckpt) = ssm.conv_state_checkpoint else { continue };
+                let Some(h_ckpt) = ssm.h_state_checkpoint else {
+                    continue;
+                };
+                let Some(conv_ckpt) = ssm.conv_state_checkpoint else {
+                    continue;
+                };
 
                 let nv = self.config.linear_num_value_heads;
                 let vd = self.config.linear_value_head_dim;
@@ -197,7 +200,8 @@ impl TransformerModel {
             // Full reject: canonical state untouched — no commit needed.
             // Still record the event so sync_secondary has something to wait
             // on (defensive: ensures pre-verify ordering on next iteration).
-            self.gpu.record_event(self.secondary_event, self.secondary_stream)?;
+            self.gpu
+                .record_event(self.secondary_event, self.secondary_stream)?;
             return Ok(());
         }
 
@@ -243,8 +247,7 @@ impl TransformerModel {
                     let conv_inter =
                         self.ssm_pool
                             .conv_intermediate(ssm_layer_idx, slot, inter_idx);
-                    self.gpu
-                        .copy_d2d_async(h_inter, h_ckpt, h_bytes, stream)?;
+                    self.gpu.copy_d2d_async(h_inter, h_ckpt, h_bytes, stream)?;
                     self.gpu
                         .copy_d2d_async(conv_inter, conv_ckpt, conv_bytes, stream)?;
                 }
@@ -256,5 +259,4 @@ impl TransformerModel {
         self.gpu.record_event(self.secondary_event, stream)?;
         Ok(())
     }
-
 }

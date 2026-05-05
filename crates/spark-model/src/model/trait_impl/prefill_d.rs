@@ -14,9 +14,9 @@ use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::super::types::TransformerModel;
 use crate::layers::ops;
 use crate::traits::SequenceState;
-use super::super::types::TransformerModel;
 
 impl TransformerModel {
     /// Full-prompt cache-hit fast path: re-embed just the last token,

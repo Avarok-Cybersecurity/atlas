@@ -5,7 +5,6 @@
 use super::*;
 
 impl Qwen3SsmLayer {
-
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_batched_inner(
         &self,
@@ -279,7 +278,6 @@ impl Qwen3SsmLayer {
                 num_tokens,
             );
         }
-
 
         let args = super::trait_decode_batched_conv_gdn::ConvGdnArgs {
             num_tokens,

@@ -11,7 +11,6 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 
 impl MtpHead {
-
     /// Read the draft token ID that was stored on GPU by the last
     /// `forward_one` call with `draft_embed_target = Some(...)`.
     ///

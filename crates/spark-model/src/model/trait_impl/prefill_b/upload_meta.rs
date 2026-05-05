@@ -10,8 +10,8 @@ use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::kv_cache::PagedKvCache;
 
-use crate::traits::SequenceState;
 use super::super::super::types::TransformerModel;
+use crate::traits::SequenceState;
 
 pub(super) struct MetaLayout {
     pub meta_base: DevicePtr,
@@ -147,7 +147,9 @@ impl TransformerModel {
                 stg.slots.clear();
                 stg.slots
                     .extend((proc_start..proc_start + proc_count).map(|i| {
-                        let block_idx = seq.physical_block_for(i / bs).unwrap_or(self.dummy_kv_block);
+                        let block_idx = seq
+                            .physical_block_for(i / bs)
+                            .unwrap_or(self.dummy_kv_block);
                         (block_idx as i64) * (bs as i64) + ((i % bs) as i64)
                     }));
                 cursor = slot_offset;

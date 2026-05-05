@@ -38,7 +38,7 @@ pub fn step_tile_ref(
     q: &[bf16],
     k_pool: &[bf16],
     v_pool: &[bf16],
-    tile_blocks: &[i32],     // [num_seqs, tile_capacity]
+    tile_blocks: &[i32],       // [num_seqs, tile_capacity]
     tile_block_counts: &[i32], // [num_seqs]
     num_seqs: usize,
     num_q_heads: usize,
@@ -90,7 +90,12 @@ pub fn step_tile_ref(
     }
 }
 
-pub fn finalize_ref(state: &AttnState, num_seqs: usize, num_q_heads: usize, head_dim: usize) -> Vec<bf16> {
+pub fn finalize_ref(
+    state: &AttnState,
+    num_seqs: usize,
+    num_q_heads: usize,
+    head_dim: usize,
+) -> Vec<bf16> {
     let mut out = vec![bf16::from_f32(0.0); num_seqs * num_q_heads * head_dim];
     for seq in 0..num_seqs {
         for qh in 0..num_q_heads {

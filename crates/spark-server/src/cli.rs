@@ -82,7 +82,7 @@ pub struct ServeArgs {
     /// When set, the server forces thinking OFF regardless of what the
     /// client requests (reasoning_effort, thinking.budget_tokens, etc.)
     /// or what MODEL.toml declares as the default. Precedence (highest
-    /// wins): this flag → request body → MODEL.toml [behavior].thinking_default.
+    /// wins): this flag → request body → MODEL.toml `[behavior]`.thinking_default.
     ///
     /// Harry Potter alias: `--stupify` (stuns the model's inner monologue).
     #[arg(long, visible_alias = "stupify", default_value_t = false)]
@@ -178,7 +178,7 @@ pub struct ServeArgs {
     /// With no value: a temp file is created under $TMPDIR and its
     /// path is logged at INFO on startup. With a PATH: appends (never
     /// truncates) to that file. Each line is one JSON object:
-    ///   { "ts": "<iso8601>", "endpoint": "...", "kind": "request"|"response",
+    ///   `{ "ts": "<iso8601>", "endpoint": "...", "kind": "request"|"response",`
     ///     "seq": N, "body": { ... } }
     /// so entries can be grouped by `seq` to reconstruct pairs.
     #[arg(long, num_args = 0..=1, default_missing_value = "<auto>", value_name = "PATH")]

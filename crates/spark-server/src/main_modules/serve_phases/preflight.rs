@@ -119,7 +119,11 @@ pub(crate) fn preflight_reserve(
         anyhow::bail!(
             "Preflight failed: inference buffers alone need {:.2} GB but only {:.2} GB is free on the GPU \
              (before weights load). SSM pool + GDN chunked prefill scales with --max-seq-len={} × --max-batch-size={}.{}",
-            need_gb, free_gb, args.max_seq_len, args.max_batch_size, hint,
+            need_gb,
+            free_gb,
+            args.max_seq_len,
+            args.max_batch_size,
+            hint,
         );
     }
     tracing::info!(
@@ -170,7 +174,11 @@ pub(crate) fn post_load_memory_audit(
 ) -> Result<()> {
     let estimated_free = free_mem.saturating_sub(weight_bytes);
     let actual_free = gpu.free_memory().unwrap_or(estimated_free);
-    let available_free = if actual_free > 0 { actual_free } else { estimated_free };
+    let available_free = if actual_free > 0 {
+        actual_free
+    } else {
+        estimated_free
+    };
     if available_free < total_reserve {
         let avail_gb = available_free as f64 / (1024.0 * 1024.0 * 1024.0);
         let need_gb = total_reserve as f64 / (1024.0 * 1024.0 * 1024.0);
@@ -190,14 +198,19 @@ pub(crate) fn post_load_memory_audit(
              After loading {:.2} GB of weights, only {:.2} GB remains \
              but {:.2} GB is needed for SSM state pool ({} slots × {} layers) + scratch buffers.{}",
             weight_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
-            avail_gb, need_gb, args.max_batch_size, config.num_ssm_layers(), hint,
+            avail_gb,
+            need_gb,
+            args.max_batch_size,
+            config.num_ssm_layers(),
+            hint,
         );
     }
     if gdn_two_phase_bytes > 0 {
         tracing::info!(
             "GDN chunked prefill reserve: {} MB (chunk_size={}, max_seq_len={})",
             gdn_two_phase_bytes / (1024 * 1024),
-            max_batch_tokens_pre, args.max_seq_len,
+            max_batch_tokens_pre,
+            args.max_seq_len,
         );
     }
     tracing::info!(

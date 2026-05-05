@@ -5,7 +5,6 @@
 use super::*;
 
 impl MoeLayer {
-
     /// Pick the FP8 grouped GEMM kernel handle — v2 (coalesced thread remap)
     /// when ATLAS_FP8_MOE_COALESCED=1 and the v2 kernel is linked into the
     /// image; v1 otherwise. v1 is the validated default path so any image
@@ -202,12 +201,16 @@ impl MoeLayer {
         self.up_ptrs_t = Some(build_ptr_table_from_qw(&up_t, gpu)?);
         // Shared expert (tiny, do unconditionally — fits regardless).
         if !self.weights.shared_expert.gate_proj.is_null() && shared_inter > 0 {
-            self.shared_gate_t = Some(
-                self.weights.shared_expert.gate_proj.transpose_for_gemm(gpu, shared_inter, h)?,
-            );
-            self.shared_up_t = Some(
-                self.weights.shared_expert.up_proj.transpose_for_gemm(gpu, shared_inter, h)?,
-            );
+            self.shared_gate_t = Some(self.weights.shared_expert.gate_proj.transpose_for_gemm(
+                gpu,
+                shared_inter,
+                h,
+            )?);
+            self.shared_up_t = Some(self.weights.shared_expert.up_proj.transpose_for_gemm(
+                gpu,
+                shared_inter,
+                h,
+            )?);
         }
 
         if !keep_originals {
@@ -252,9 +255,11 @@ impl MoeLayer {
         }
         self.down_ptrs_t = Some(build_ptr_table_from_qw(&down_t, gpu)?);
         if !self.weights.shared_expert.down_proj.is_null() && shared_inter > 0 {
-            self.shared_down_t = Some(
-                self.weights.shared_expert.down_proj.transpose_for_gemm(gpu, h, shared_inter)?,
-            );
+            self.shared_down_t = Some(self.weights.shared_expert.down_proj.transpose_for_gemm(
+                gpu,
+                h,
+                shared_inter,
+            )?);
         }
 
         if !keep_originals {

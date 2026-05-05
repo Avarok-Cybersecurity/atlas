@@ -26,9 +26,10 @@ fn resolve_schema_type(schema: &serde_json::Value) -> Option<&str> {
         if let Some(variants) = schema.get(key).and_then(|v| v.as_array()) {
             for variant in variants {
                 if let Some(t) = variant.get("type").and_then(|t| t.as_str())
-                    && t != "null" {
-                        return Some(t);
-                    }
+                    && t != "null"
+                {
+                    return Some(t);
+                }
             }
         }
     }
@@ -169,10 +170,9 @@ pub fn backfill_required_params(calls: &mut [ToolCall], tools: &[ToolDefinition]
             }
         }
 
-        if changed
-            && let Ok(new_args) = serde_json::to_string(&serde_json::Value::Object(args)) {
-                call.function.arguments = new_args;
-            }
+        if changed && let Ok(new_args) = serde_json::to_string(&serde_json::Value::Object(args)) {
+            call.function.arguments = new_args;
+        }
     }
 }
 
@@ -260,10 +260,9 @@ pub fn normalize_paths(calls: &mut [ToolCall], cwd: &str) {
                 }
             }
         }
-        if changed
-            && let Ok(new_args) = serde_json::to_string(&serde_json::Value::Object(args)) {
-                call.function.arguments = new_args;
-            }
+        if changed && let Ok(new_args) = serde_json::to_string(&serde_json::Value::Object(args)) {
+            call.function.arguments = new_args;
+        }
     }
 }
 
@@ -299,14 +298,15 @@ pub fn validate_tool_calls(
         // map to the closest available tool (NVFP4 models often drop prefixes
         // like "get_" or use abbreviations like "weather" for "get_weather").
         if tools.iter().all(|t| t.function.name != call.function.name)
-            && let Some(best) = fuzzy_match_tool_name(&call.function.name, tools) {
-                tracing::info!(
-                    "Fuzzy tool name repair: '{}' -> '{}'",
-                    call.function.name,
-                    best
-                );
-                call.function.name = best;
-            }
+            && let Some(best) = fuzzy_match_tool_name(&call.function.name, tools)
+        {
+            tracing::info!(
+                "Fuzzy tool name repair: '{}' -> '{}'",
+                call.function.name,
+                best
+            );
+            call.function.name = best;
+        }
         match validate_single_tool_call(call, tools) {
             Ok(()) => valid.push(call.clone()),
             Err(msg) => errors.push(msg),
@@ -424,17 +424,26 @@ pub fn validate_single_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> R
     // chance to recover instead of opencode echoing EISDIR forever.
     // Read/Glob/LS keep the lenient behavior (Theia's
     // getWorkspaceFileList legitimately passes path="").
-    const WRITE_FAMILY: &[&str] = &["Write", "write", "Edit", "edit", "MultiEdit", "multiEdit", "multi_edit"];
+    const WRITE_FAMILY: &[&str] = &[
+        "Write",
+        "write",
+        "Edit",
+        "edit",
+        "MultiEdit",
+        "multiEdit",
+        "multi_edit",
+    ];
     if WRITE_FAMILY.contains(&name.as_str()) {
         for key in PATH_KEYS {
             if let Some(serde_json::Value::String(path)) = args.get(*key)
-                && path.trim().is_empty() {
-                    return Err(format!(
-                        "Error: {name} requires a non-empty '{key}'. \
+                && path.trim().is_empty()
+            {
+                return Err(format!(
+                    "Error: {name} requires a non-empty '{key}'. \
                          Got empty string — provide an absolute path \
                          like '/tmp/calc-test75/Cargo.toml'."
-                    ));
-                }
+                ));
+            }
         }
     }
     if FILE_TOOLS.contains(&name.as_str()) {
@@ -468,4 +477,3 @@ pub fn validate_single_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> R
 
     Ok(())
 }
-

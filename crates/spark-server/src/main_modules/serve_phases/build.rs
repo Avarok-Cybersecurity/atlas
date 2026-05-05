@@ -153,10 +153,7 @@ pub(crate) fn maybe_run_ep_worker(
     let rank = args.rank;
     let model_owned = model.take().expect("EP worker requires owned model");
     let model_has_proposer = model_owned.has_proposer();
-    if !args.speculative
-        && !args.self_speculative
-        && !args.ngram_speculative
-        && model_has_proposer
+    if !args.speculative && !args.self_speculative && !args.ngram_speculative && model_has_proposer
     {
         let override_set = matches!(
             std::env::var("ATLAS_ALLOW_SPEC_MISMATCH").as_deref(),

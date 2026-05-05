@@ -7,8 +7,8 @@
 
 use anyhow::Result;
 
-use crate::layers::ops;
 use super::super::super::types::TransformerModel;
+use crate::layers::ops;
 
 impl TransformerModel {
     pub(super) fn prefill_b_embed_chunk(
@@ -19,7 +19,11 @@ impl TransformerModel {
         stream: u64,
     ) -> Result<()> {
         let h = self.config.hidden_size;
-        let fp32 = if self.config.use_fp32_residual() { 4usize } else { 2usize };
+        let fp32 = if self.config.use_fp32_residual() {
+            4usize
+        } else {
+            2usize
+        };
         let hidden = self.buffers.hidden_states();
 
         // ── 1. Embed chunk tokens → [chunk_len, H] contiguous ──
@@ -52,26 +56,27 @@ impl TransformerModel {
         {
             let pending = *self.vision_embed_patches.lock();
             if pending > 0
-                && let Some(ve) = &self.vision_encoder {
-                    let chunk_tokens = &tokens[chunk_start..chunk_start + chunk_len];
-                    let pad_id = self
-                        .config
-                        .vision
-                        .as_ref()
-                        .map(|v| v.image_pad_token_id)
-                        .filter(|v| *v != 0)
-                        .unwrap_or(crate::layers::vision_encoder::IMAGE_PAD_TOKEN_ID);
-                    let mut img_idx = 0usize; // index into buf_out rows
-                    for (i, &tok) in chunk_tokens.iter().enumerate() {
-                        if tok == pad_id {
-                            let src = ve.buf_out.offset(img_idx * ve.out_hidden_size * 2);
-                            let dst = hidden.offset(i * h * fp32);
-                            self.gpu
-                                .copy_d2d_async(src, dst, ve.out_hidden_size * 2, stream)?;
-                            img_idx += 1;
-                        }
+                && let Some(ve) = &self.vision_encoder
+            {
+                let chunk_tokens = &tokens[chunk_start..chunk_start + chunk_len];
+                let pad_id = self
+                    .config
+                    .vision
+                    .as_ref()
+                    .map(|v| v.image_pad_token_id)
+                    .filter(|v| *v != 0)
+                    .unwrap_or(crate::layers::vision_encoder::IMAGE_PAD_TOKEN_ID);
+                let mut img_idx = 0usize; // index into buf_out rows
+                for (i, &tok) in chunk_tokens.iter().enumerate() {
+                    if tok == pad_id {
+                        let src = ve.buf_out.offset(img_idx * ve.out_hidden_size * 2);
+                        let dst = hidden.offset(i * h * fp32);
+                        self.gpu
+                            .copy_d2d_async(src, dst, ve.out_hidden_size * 2, stream)?;
+                        img_idx += 1;
                     }
                 }
+            }
         }
 
         Ok(())

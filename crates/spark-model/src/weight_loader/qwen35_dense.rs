@@ -8,15 +8,12 @@ use spark_runtime::weights::WeightStore;
 
 use super::{ModelWeightLoader, WeightFormat};
 use crate::layer::TransformerLayer;
+use crate::layers::{DenseFfnLayer, FfnComponent, Qwen3AttentionLayer, Qwen3SsmLayer};
 use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_dense_bf16, shard_quantized_nvfp4};
-use crate::layers::{
-    DenseFfnLayer, FfnComponent,
-    Qwen3AttentionLayer, Qwen3SsmLayer,
-};
 use crate::weight_map::{
-    AttentionWeights, DenseWeight, MtpWeights, Nvfp4Variant, SsmWeights, dense, dense_auto, dequant_nvfp4_to_bf16, detect_nvfp4_variant,
-    gpu_concat_rows, interleave_ba, load_dense_ffn, load_kv_scales, load_ssm_qwen35, quantize_to_nvfp4,
-    quantized_auto,
+    AttentionWeights, DenseWeight, MtpWeights, Nvfp4Variant, SsmWeights, dense, dense_auto,
+    dequant_nvfp4_to_bf16, detect_nvfp4_variant, gpu_concat_rows, interleave_ba, load_dense_ffn,
+    load_kv_scales, load_ssm_qwen35, quantize_to_nvfp4, quantized_auto,
 };
 
 pub struct Qwen35DenseWeightLoader;
@@ -121,15 +118,20 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         | Nvfp4Variant::Bf16Raw => {
                             // BF16 → NVFP4 path: shard BF16 then quantize per-rank.
                             let load_bf16_then_nvfp4 = |name: &str,
-                                                       full_n: usize,
-                                                       full_k: usize,
-                                                       kind: TpShardKind|
-                             -> Result<(DenseWeight, crate::weight_map::QuantizedWeight)> {
+                                                        full_n: usize,
+                                                        full_k: usize,
+                                                        kind: TpShardKind|
+                             -> Result<(
+                                DenseWeight,
+                                crate::weight_map::QuantizedWeight,
+                            )> {
                                 let src = dense_auto(store, &format!("{p}.{name}.weight"), gpu)?;
                                 let (sharded_ptr, local_n, local_k) = shard_dense_bf16(
                                     src.weight, full_n, full_k, kind, tp_rank, tp_size, gpu,
                                 )?;
-                                let sharded = DenseWeight { weight: sharded_ptr };
+                                let sharded = DenseWeight {
+                                    weight: sharded_ptr,
+                                };
                                 let q = quantize_to_nvfp4(
                                     &sharded, local_n, local_k, gpu, absmax_k, quantize_k, stream,
                                 )?;

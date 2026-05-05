@@ -14,11 +14,11 @@ use anyhow::Result;
 use atlas_core::config::LayerType;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
+use super::super::block_mgmt::{ensure_blocks_through_decode, extract_layer_refs};
+use super::super::types::TransformerModel;
 use crate::layer::{ForwardContext, LayerState, SsmLayerState};
 use crate::layers::ops;
 use crate::traits::{Model, SequenceState};
-use super::super::block_mgmt::{ensure_blocks_through_decode, extract_layer_refs};
-use super::super::types::TransformerModel;
 
 impl TransformerModel {
     pub(super) fn decode_batch_dispatch(
@@ -73,13 +73,18 @@ impl TransformerModel {
         }
 
         // 1c. Allocate KV blocks for active sequences
-        let mut kv_cache = self
-            .kv_cache
-            .lock();
+        let mut kv_cache = self.kv_cache.lock();
         let bs = kv_cache.block_size();
         for seq in seqs.iter_mut() {
             let blocks_needed = (seq.seq_len / bs) + 1;
-            ensure_blocks_through_decode(seq, blocks_needed - 1, &mut kv_cache, self.prefix_cache.as_ref(), self.gpu.as_ref(), stream)?;
+            ensure_blocks_through_decode(
+                seq,
+                blocks_needed - 1,
+                &mut kv_cache,
+                self.prefix_cache.as_ref(),
+                self.gpu.as_ref(),
+                stream,
+            )?;
         }
 
         // 1d. Upload metadata with fixed stride (active + padding)
@@ -106,28 +111,26 @@ impl TransformerModel {
 
         // ── Phase 2: CUDA graph lookup / capture ──
         let mut graphs = if use_graphs {
-            Some(
-                self.batch_decode_graphs
-                    .lock(),
-            )
+            Some(self.batch_decode_graphs.lock())
         } else {
             None
         };
 
         if let Some(ref graphs) = graphs
-            && let Some(&graph) = graphs.get(&padded_n) {
-                // Graph exists — replay (kernels use updated metadata + SSM pool addresses)
-                if graph.0 != 0 {
-                    self.gpu.launch_graph(graph, stream)?;
-                }
-
-                // ── Phase 3: Post-graph (update sequence state) ──
-                for (i, seq) in seqs.iter_mut().enumerate() {
-                    seq.tokens.push(tokens[i]);
-                    seq.seq_len += 1;
-                }
-                return Ok(self.decode_logits_ptr());
+            && let Some(&graph) = graphs.get(&padded_n)
+        {
+            // Graph exists — replay (kernels use updated metadata + SSM pool addresses)
+            if graph.0 != 0 {
+                self.gpu.launch_graph(graph, stream)?;
             }
+
+            // ── Phase 3: Post-graph (update sequence state) ──
+            for (i, seq) in seqs.iter_mut().enumerate() {
+                seq.tokens.push(tokens[i]);
+                seq.seq_len += 1;
+            }
+            return Ok(self.decode_logits_ptr());
+        }
         {
             // First time for this padded_n — capture a new graph (or run eagerly for EP).
             // Build layer states for all padded_n sequences (real + dummy padding).

@@ -256,4 +256,3 @@ pub(crate) fn quantized_v2(
         input_scale: ptr(store, &format!("{prefix}.input_global_scale"))?,
     })
 }
-

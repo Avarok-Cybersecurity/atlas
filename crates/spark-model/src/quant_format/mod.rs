@@ -69,7 +69,7 @@ pub trait QuantFormat: Send + Sync + std::fmt::Debug {
 
     /// Effective variant for a specific module: the base variant, or
     /// `Bf16Raw` if the module is in the ignore list. Loaders should
-    /// consult this instead of [`base_variant`] when loading per-module.
+    /// consult this instead of `base_variant` when loading per-module.
     fn variant_for(&self, module_path: &str) -> Nvfp4Variant {
         if self.is_ignored(module_path) {
             Nvfp4Variant::Bf16Raw

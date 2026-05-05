@@ -174,6 +174,5 @@ pub fn generate_speculative(
     model.generate_speculative(prompt_tokens, params, num_drafts)
 }
 
-
 #[cfg(test)]
 mod tests;

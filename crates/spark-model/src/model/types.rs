@@ -2,9 +2,9 @@
 
 #![allow(unused_imports, dead_code)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -12,17 +12,15 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::ssm_pool::SsmStatePool;
+use super::ssm_snapshot::SsmSnapshotPool;
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::ssm_pool::SsmStatePool;
-use super::ssm_snapshot::SsmSnapshotPool;
-
 
 /// Architecture-agnostic transformer model.
 ///
@@ -197,6 +195,7 @@ pub struct TransformerModel {
     ///   - dense_gemv_bf16_fp32out kernel writes to `logits_fp32_buf`
     ///   - logit_softcap_fp32 kernel applied in place on the FP32 buffer
     ///   - sampler reads FP32 directly, skipping BF16→FP32 expansion
+    ///
     /// Gated by config.model_type=="gemma4" via use_fp32_residual() — other
     /// models keep the BF16 path. Prefill / batched-decode lm_head still
     /// write BF16 to `buffers.logits()`; only single-token decode is FP32

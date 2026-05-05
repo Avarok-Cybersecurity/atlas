@@ -202,7 +202,10 @@ fn test_greedy_applies_repetition_penalty_before_argmax() {
     params.repetition_penalty = 1.5;
     let history = vec![1u32, 1u32];
     let token = sample_with_params_seeded(&logits, &params, &history, None);
-    assert_eq!(token, 3, "rep_penalty must shift greedy argmax away from history-repeated token");
+    assert_eq!(
+        token, 3,
+        "rep_penalty must shift greedy argmax away from history-repeated token"
+    );
 
     // Sanity: same prompt without history → original argmax (token 1).
     let token_no_hist = sample_with_params_seeded(&logits, &params, &[], None);
@@ -211,7 +214,10 @@ fn test_greedy_applies_repetition_penalty_before_argmax() {
     // Sanity: rep_penalty=1.0 (default) → original argmax even with history.
     params.repetition_penalty = 1.0;
     let token_no_pen = sample_with_params_seeded(&logits, &params, &history, None);
-    assert_eq!(token_no_pen, 1, "rep_penalty=1.0 is no-op even with history");
+    assert_eq!(
+        token_no_pen, 1,
+        "rep_penalty=1.0 is no-op even with history"
+    );
 }
 
 #[test]

@@ -5,7 +5,6 @@
 use super::*;
 
 impl MoeLayer {
-
     /// Fused K=3 forward: process 3 tokens through MoE in 5 kernel launches.
     ///
     /// Gate GEMV batch3 → batched topK → fused expert gate+up → fused silu+down → fused wsum+blend.
@@ -167,9 +166,15 @@ impl MoeLayer {
             // Phase 8a unified-layout NVFP4 batch=3 verify (MTP K=3). Hybrid
             // mode skips this branch — small-N MTP verify wins on warp-
             // reduction originals.
-            let gate_t = self.gate_ptrs_t.as_ref().expect("gate_ptrs_t under unified_t");
+            let gate_t = self
+                .gate_ptrs_t
+                .as_ref()
+                .expect("gate_ptrs_t under unified_t");
             let up_t = self.up_ptrs_t.as_ref().expect("up_ptrs_t under unified_t");
-            let down_t = self.down_ptrs_t.as_ref().expect("down_ptrs_t under unified_t");
+            let down_t = self
+                .down_ptrs_t
+                .as_ref()
+                .expect("down_ptrs_t under unified_t");
             let null_qw = QuantizedWeight::null();
             let sh_gate_t = self.shared_gate_t.as_ref().unwrap_or(&null_qw);
             let sh_up_t = self.shared_up_t.as_ref().unwrap_or(&null_qw);
@@ -284,38 +289,39 @@ impl MoeLayer {
 
         // EP all-reduce: sum partial outputs for 3 tokens
         if let Some(comm) = ctx.comm
-            && comm.world_size() > 1 {
-                if ctx.graph_capture {
-                    comm.all_reduce(output.0, 3 * h as usize * 2)?;
+            && comm.world_size() > 1
+        {
+            if ctx.graph_capture {
+                comm.all_reduce(output.0, 3 * h as usize * 2)?;
+            } else {
+                comm.all_reduce_async(output.0, 3 * h as usize * 2, stream)?;
+            }
+            // Add shared expert with sigmoid gate (BUG #41 fix)
+            if !shared_down_out.is_null() {
+                if self.weights.shared_expert_gate.weight.0 == 0 {
+                    ops::residual_add(
+                        ctx.gpu,
+                        self.residual_add,
+                        output,
+                        shared_down_out,
+                        3 * h,
+                        stream,
+                    )?;
                 } else {
-                    comm.all_reduce_async(output.0, 3 * h as usize * 2, stream)?;
-                }
-                // Add shared expert with sigmoid gate (BUG #41 fix)
-                if !shared_down_out.is_null() {
-                    if self.weights.shared_expert_gate.weight.0 == 0 {
-                        ops::residual_add(
-                            ctx.gpu,
-                            self.residual_add,
-                            output,
-                            shared_down_out,
-                            3 * h,
-                            stream,
-                        )?;
-                    } else {
-                        ops::moe_batched_blend(
-                            ctx.gpu,
-                            self.moe_batched_blend,
-                            output,
-                            shared_down_out,
-                            input,
-                            self.weights.shared_expert_gate.weight,
-                            h,
-                            3,
-                            stream,
-                        )?;
-                    }
+                    ops::moe_batched_blend(
+                        ctx.gpu,
+                        self.moe_batched_blend,
+                        output,
+                        shared_down_out,
+                        input,
+                        self.weights.shared_expert_gate.weight,
+                        h,
+                        3,
+                        stream,
+                    )?;
                 }
             }
+        }
 
         Ok(())
     }

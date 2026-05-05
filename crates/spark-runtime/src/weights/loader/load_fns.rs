@@ -11,7 +11,6 @@ use super::super::{WeightDtype, WeightTensor, evict_page_cache};
 use super::{SafetensorsIndex, check_oom_guard, estimate_has_fp8, estimate_load_bytes};
 use crate::gpu::GpuBackend;
 
-
 pub(super) fn load_sharded(
     model_dir: &Path,
     index_path: &Path,

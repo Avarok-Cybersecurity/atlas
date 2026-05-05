@@ -72,9 +72,10 @@ pub(super) fn parse_qwen3_coder_call(text: &str, _idx: u32) -> Option<ToolCall> 
         // the same function"; this guard handles "consecutive
         // function blocks".
         if let Some(fc) = rest.find("</function>")
-            && fc < p {
-                break;
-            }
+            && fc < p
+        {
+            break;
+        }
         rest = &rest[p + "<parameter=".len()..];
         let key_end = rest.find('>')?;
         let param_name = rest[..key_end].trim().to_string();
@@ -102,9 +103,8 @@ pub(super) fn parse_qwen3_coder_call(text: &str, _idx: u32) -> Option<ToolCall> 
             }
         }
         let raw_value = rest[..val_end].trim();
-        let advanced_to_func_close = !consumed_close
-            && val_end < rest.len()
-            && rest[val_end..].starts_with("</function>");
+        let advanced_to_func_close =
+            !consumed_close && val_end < rest.len() && rest[val_end..].starts_with("</function>");
         rest = if consumed_close {
             &rest[val_end + "</parameter>".len()..]
         } else if val_end < rest.len() {
@@ -142,9 +142,9 @@ pub(super) fn parse_qwen3_coder_call(text: &str, _idx: u32) -> Option<ToolCall> 
         if body.starts_with('{')
             && let Ok(json_args) =
                 serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(body)
-            {
-                args = json_args;
-            }
+        {
+            args = json_args;
+        }
     }
 
     // TAFC strip (A.4, 2026-04-25): the optional `_think` scratchpad
@@ -292,4 +292,3 @@ pub(super) fn bare_function_end(text: &str) -> Option<usize> {
     }
     None
 }
-

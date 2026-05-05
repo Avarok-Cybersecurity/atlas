@@ -128,20 +128,11 @@ impl ToolCallParser for MinimaxXmlParser {
                 "</minimax:tool_call>",
                 "</tool_call>",
             ],
-            envelope_open: &[
-                "<minimax:tool_call>",
-                "<minimax:_call>",
-                "<tool_call>",
-            ],
-            envelope_close: &[
-                "</minimax:tool_call>",
-                "</minimax:_call>",
-                "</tool_call>",
-            ],
+            envelope_open: &["<minimax:tool_call>", "<minimax:_call>", "<tool_call>"],
+            envelope_close: &["</minimax:tool_call>", "</minimax:_call>", "</tool_call>"],
         };
         MARKERS
     }
 }
 
 // ── Bare JSON parser (Nemotron-Super-120B) ──
-

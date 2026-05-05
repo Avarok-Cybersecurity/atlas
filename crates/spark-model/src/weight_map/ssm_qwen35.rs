@@ -22,11 +22,11 @@ pub struct SsmWeightsQwen35 {
     pub in_proj_b: DenseWeight,
     /// Conv1d weight: [d_inner, 1, d_conv] BF16.
     pub conv1d: DenseWeight,
-    /// A_log parameter: [num_v_heads] FP32.
+    /// A_log parameter: `[num_v_heads]` FP32.
     pub a_log: DenseWeight,
-    /// dt_bias parameter: [num_v_heads] FP32.
+    /// dt_bias parameter: `[num_v_heads]` FP32.
     pub dt_bias: DenseWeight,
-    /// Gate norm weight: [value_dim] BF16.
+    /// Gate norm weight: `[value_dim]` BF16.
     pub norm: DenseWeight,
     /// Output projection: [value_dim, hidden_size] BF16 (NOT NVFP4 — quantizer skipped these).
     pub out_proj: DenseWeight,
@@ -92,11 +92,10 @@ pub(crate) fn load_moe_qwen35(
     let inter = config.moe_intermediate_size;
     let h = config.hidden_size;
 
-    let load_bf16_then_nvfp4 =
-        |full_prefix: &str, n: usize, k: usize| -> Result<QuantizedWeight> {
-            let bf16 = dense(store, &format!("{full_prefix}.weight"))?;
-            quantize_to_nvfp4(&bf16, n, k, gpu, absmax_k, quantize_k, stream)
-        };
+    let load_bf16_then_nvfp4 = |full_prefix: &str, n: usize, k: usize| -> Result<QuantizedWeight> {
+        let bf16 = dense(store, &format!("{full_prefix}.weight"))?;
+        quantize_to_nvfp4(&bf16, n, k, gpu, absmax_k, quantize_k, stream)
+    };
 
     // Qwen3.6-35B-A3B BF16 release ships a FUSED MoE layout: one
     // `experts.gate_up_proj: [num_experts, 2*inter, hidden]` and one
@@ -108,39 +107,32 @@ pub(crate) fn load_moe_qwen35(
         && store.contains(&fused_gate_up_key)
         && store.contains(&fused_down_key);
 
-    let load_expert_fused =
-        |expert_idx: usize| -> Result<ExpertWeight> {
-            // gate_up: [num_experts, 2*inter, hidden] BF16
-            let fused_gu = store.get(&fused_gate_up_key)?;
-            // down: [num_experts, hidden, inter] BF16
-            let fused_d = store.get(&fused_down_key)?;
-            let bf16 = 2usize;
-            let gu_per_expert_bytes = 2 * inter * h * bf16;
-            let d_per_expert_bytes = h * inter * bf16;
-            let gate_off = expert_idx * gu_per_expert_bytes;
-            let up_off = gate_off + inter * h * bf16;
-            let down_off = expert_idx * d_per_expert_bytes;
-            let gate_dw = DenseWeight {
-                weight: fused_gu.ptr.offset(gate_off),
-            };
-            let up_dw = DenseWeight {
-                weight: fused_gu.ptr.offset(up_off),
-            };
-            let down_dw = DenseWeight {
-                weight: fused_d.ptr.offset(down_off),
-            };
-            Ok(ExpertWeight {
-                gate_proj: quantize_to_nvfp4(
-                    &gate_dw, inter, h, gpu, absmax_k, quantize_k, stream,
-                )?,
-                up_proj: quantize_to_nvfp4(
-                    &up_dw, inter, h, gpu, absmax_k, quantize_k, stream,
-                )?,
-                down_proj: quantize_to_nvfp4(
-                    &down_dw, h, inter, gpu, absmax_k, quantize_k, stream,
-                )?,
-            })
+    let load_expert_fused = |expert_idx: usize| -> Result<ExpertWeight> {
+        // gate_up: [num_experts, 2*inter, hidden] BF16
+        let fused_gu = store.get(&fused_gate_up_key)?;
+        // down: [num_experts, hidden, inter] BF16
+        let fused_d = store.get(&fused_down_key)?;
+        let bf16 = 2usize;
+        let gu_per_expert_bytes = 2 * inter * h * bf16;
+        let d_per_expert_bytes = h * inter * bf16;
+        let gate_off = expert_idx * gu_per_expert_bytes;
+        let up_off = gate_off + inter * h * bf16;
+        let down_off = expert_idx * d_per_expert_bytes;
+        let gate_dw = DenseWeight {
+            weight: fused_gu.ptr.offset(gate_off),
         };
+        let up_dw = DenseWeight {
+            weight: fused_gu.ptr.offset(up_off),
+        };
+        let down_dw = DenseWeight {
+            weight: fused_d.ptr.offset(down_off),
+        };
+        Ok(ExpertWeight {
+            gate_proj: quantize_to_nvfp4(&gate_dw, inter, h, gpu, absmax_k, quantize_k, stream)?,
+            up_proj: quantize_to_nvfp4(&up_dw, inter, h, gpu, absmax_k, quantize_k, stream)?,
+            down_proj: quantize_to_nvfp4(&down_dw, h, inter, gpu, absmax_k, quantize_k, stream)?,
+        })
+    };
 
     let load_expert = |prefix: &str| -> Result<ExpertWeight> {
         match variant {
@@ -380,4 +372,3 @@ pub(crate) fn load_moe_no_shared(
         correction_bias: None,
     })
 }
-

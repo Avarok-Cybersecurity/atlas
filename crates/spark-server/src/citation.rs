@@ -177,17 +177,16 @@ fn numeric_ref_citations(content: &str) -> Vec<Annotation> {
                 next.trim_start().starts_with("http")
             };
             let is_definition = at_line_start && next_is_url_hint;
-            if !is_definition
-                && let Some((url, title)) = defs.get(label) {
-                    out.push(Annotation::UrlCitation {
-                        url_citation: UrlCitation {
-                            start_index: start,
-                            end_index: close + 1,
-                            url: url.clone(),
-                            title: title.clone().unwrap_or_else(|| label.to_string()),
-                        },
-                    });
-                }
+            if !is_definition && let Some((url, title)) = defs.get(label) {
+                out.push(Annotation::UrlCitation {
+                    url_citation: UrlCitation {
+                        start_index: start,
+                        end_index: close + 1,
+                        url: url.clone(),
+                        title: title.clone().unwrap_or_else(|| label.to_string()),
+                    },
+                });
+            }
             i = close + 1;
         } else {
             i = start + 1;

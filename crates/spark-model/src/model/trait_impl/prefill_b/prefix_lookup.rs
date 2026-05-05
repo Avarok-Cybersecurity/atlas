@@ -8,9 +8,9 @@
 use anyhow::Result;
 use spark_runtime::kv_cache::PagedKvCache;
 
-use crate::traits::SequenceState;
 use super::super::super::block_mgmt::reuse_prefix_match_disk_ids;
 use super::super::super::types::TransformerModel;
+use crate::traits::SequenceState;
 
 impl TransformerModel {
     pub(super) fn prefill_b_prefix_lookup(
@@ -57,7 +57,8 @@ impl TransformerModel {
                     self.prefix_cache.release(tokens, bs);
                     if agreed > 0 {
                         prefix_match =
-                            self.prefix_cache.lookup(&tokens[..agreed], bs, seq.session_hash);
+                            self.prefix_cache
+                                .lookup(&tokens[..agreed], bs, seq.session_hash);
                     } else {
                         prefix_match = spark_runtime::prefix_cache::PrefixMatch::empty();
                     }

@@ -5,7 +5,6 @@
 use super::*;
 
 impl Qwen3SsmLayer {
-
     #[allow(clippy::too_many_arguments)]
     /// Multi-sequence decode: falls back to per-sequence single decode.
     ///

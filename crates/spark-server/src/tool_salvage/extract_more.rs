@@ -10,9 +10,11 @@ use crate::tool_parser::{FunctionCall, ToolCall};
 /// boundary because the trigger (`<function=` etc.) was never
 /// emitted. Examples:
 ///
-///   "Write /tmp/x.toml\n\n[package]\nname=…"
-///   "Bash ls -la /tmp"
-///   "Read /path/to/file"
+/// ```text
+/// "Write /tmp/x.toml\n\n[package]\nname=…"
+/// "Bash ls -la /tmp"
+/// "Read /path/to/file"
+/// ```
 ///
 /// Strategy:
 ///  - For tools with a single required string param (bash, read):
@@ -79,10 +81,7 @@ pub(super) fn extract_bare_tool_invocation(content: &str, matchers: &[ToolShape]
                 _ => continue,
             };
             // Strip trailing punctuation/colon that prose attaches.
-            let raw_arg = raw_arg
-                .trim_end_matches([':', ',', ';'])
-                .trim()
-                .to_string();
+            let raw_arg = raw_arg.trim_end_matches([':', ',', ';']).trim().to_string();
             if raw_arg.is_empty() {
                 continue;
             }
@@ -188,14 +187,9 @@ pub(super) fn extract_bare_tool_invocation(content: &str, matchers: &[ToolShape]
 ///     adjacent).
 ///   - PATH must be a non-empty token-like string after trim.
 ///   - BODY must be non-empty after trim.
-pub(super) fn extract_file_content_pair(
-    content: &str,
-    matchers: &[ToolShape],
-) -> Vec<ToolCall> {
+pub(super) fn extract_file_content_pair(content: &str, matchers: &[ToolShape]) -> Vec<ToolCall> {
     // Locate the write-shape tool. If none declared, no salvage.
-    let write_shape = matchers
-        .iter()
-        .find(|m| m.path_and_content().is_some());
+    let write_shape = matchers.iter().find(|m| m.path_and_content().is_some());
     let Some(write_shape) = write_shape else {
         return Vec::new();
     };
@@ -253,16 +247,22 @@ pub(super) fn extract_file_content_pair(
 }
 
 const KNOWN_EXTS: &[&str] = &[
-    "toml", "rs", "md", "json", "yml", "yaml", "py", "js", "ts", "tsx",
-    "jsx", "html", "css", "scss", "sh", "bash", "zsh", "sql", "cfg",
-    "ini", "env", "txt", "go", "java", "kt", "swift", "c", "cpp", "cc",
-    "h", "hpp", "rb", "php", "pl", "lua", "vim", "tf", "proto",
-    "graphql", "xml", "csv", "tsv",
+    "toml", "rs", "md", "json", "yml", "yaml", "py", "js", "ts", "tsx", "jsx", "html", "css",
+    "scss", "sh", "bash", "zsh", "sql", "cfg", "ini", "env", "txt", "go", "java", "kt", "swift",
+    "c", "cpp", "cc", "h", "hpp", "rb", "php", "pl", "lua", "vim", "tf", "proto", "graphql", "xml",
+    "csv", "tsv",
 ];
 
 const KNOWN_EXACT: &[&str] = &[
-    "dockerfile", "makefile", ".gitignore", ".env", "license", "readme",
-    "cargo.lock", ".dockerignore", ".editorconfig",
+    "dockerfile",
+    "makefile",
+    ".gitignore",
+    ".env",
+    "license",
+    "readme",
+    "cargo.lock",
+    ".dockerignore",
+    ".editorconfig",
 ];
 
 pub(super) fn looks_like_path(line: &str) -> Option<String> {
@@ -270,7 +270,10 @@ pub(super) fn looks_like_path(line: &str) -> Option<String> {
     if trimmed.is_empty() || trimmed.len() > 200 {
         return None;
     }
-    if trimmed.chars().any(|c| c.is_ascii_whitespace() || c == '"' || c == '\'') {
+    if trimmed
+        .chars()
+        .any(|c| c.is_ascii_whitespace() || c == '"' || c == '\'')
+    {
         return None;
     }
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
@@ -280,8 +283,7 @@ pub(super) fn looks_like_path(line: &str) -> Option<String> {
     if KNOWN_EXACT.iter().any(|&k| lower == k) {
         return Some(trimmed.to_string());
     }
-    let stem = trimmed
-        .trim_end_matches([':', ',', '.', ';']);
+    let stem = trimmed.trim_end_matches([':', ',', '.', ';']);
     if stem.is_empty() {
         return None;
     }
@@ -292,7 +294,9 @@ pub(super) fn looks_like_path(line: &str) -> Option<String> {
     }
     let body = &stem[..last_dot];
     if body.is_empty()
-        || !body.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '/' || c == '.')
+        || !body
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '/' || c == '.')
     {
         return None;
     }
@@ -304,8 +308,7 @@ pub(super) fn synthesise(
     args: &serde_json::Map<String, serde_json::Value>,
     source: &'static str,
 ) -> Option<ToolCall> {
-    let arguments =
-        serde_json::to_string(&serde_json::Value::Object(args.clone())).ok()?;
+    let arguments = serde_json::to_string(&serde_json::Value::Object(args.clone())).ok()?;
     let id = format!(
         "call_salvage_{source}_{}",
         std::time::SystemTime::now()

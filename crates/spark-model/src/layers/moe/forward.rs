@@ -5,7 +5,6 @@
 use super::*;
 
 impl MoeLayer {
-
     /// Forward pass: gate → top-K routing → batched expert FFN → blend.
     ///
     /// All expert dispatch stays on device — zero D2H synchronization.
@@ -438,44 +437,38 @@ impl MoeLayer {
         // Each rank only computed its local experts (remote → zero), so
         // SUM gives the correct global result.
         if let Some(comm) = ctx.comm
-            && comm.world_size() > 1 {
-                if ctx.graph_capture {
-                    comm.all_reduce(output.0, h as usize * 2)?;
+            && comm.world_size() > 1
+        {
+            if ctx.graph_capture {
+                comm.all_reduce(output.0, h as usize * 2)?;
+            } else {
+                comm.all_reduce_async(output.0, h as usize * 2, stream)?;
+            }
+            // Now add shared expert contribution ONCE (after all-reduce).
+            // Must apply the sigmoid gate: output += sigmoid(dot(input, gate_w)) * shared_out.
+            // Using moe_batched_blend with num_tokens=1 computes the gate and blends correctly.
+            // BUG #41 fix: previous code used residual_add (ignoring the gate), producing
+            // wrong output that compounded across 48 layers into gibberish.
+            if !shared_out.is_null() {
+                if self.weights.shared_expert_gate.weight.0 == 0 {
+                    // No gate weight (e.g., Mistral): shared expert always at full strength.
+                    ops::residual_add(ctx.gpu, self.residual_add, output, shared_out, h, stream)?;
                 } else {
-                    comm.all_reduce_async(output.0, h as usize * 2, stream)?;
-                }
-                // Now add shared expert contribution ONCE (after all-reduce).
-                // Must apply the sigmoid gate: output += sigmoid(dot(input, gate_w)) * shared_out.
-                // Using moe_batched_blend with num_tokens=1 computes the gate and blends correctly.
-                // BUG #41 fix: previous code used residual_add (ignoring the gate), producing
-                // wrong output that compounded across 48 layers into gibberish.
-                if !shared_out.is_null() {
-                    if self.weights.shared_expert_gate.weight.0 == 0 {
-                        // No gate weight (e.g., Mistral): shared expert always at full strength.
-                        ops::residual_add(
-                            ctx.gpu,
-                            self.residual_add,
-                            output,
-                            shared_out,
-                            h,
-                            stream,
-                        )?;
-                    } else {
-                        // Gated shared expert (e.g., Qwen3.5): apply sigmoid gate.
-                        ops::moe_batched_blend(
-                            ctx.gpu,
-                            self.moe_batched_blend,
-                            output,
-                            shared_out,
-                            input,
-                            self.weights.shared_expert_gate.weight,
-                            h,
-                            1,
-                            stream,
-                        )?;
-                    }
+                    // Gated shared expert (e.g., Qwen3.5): apply sigmoid gate.
+                    ops::moe_batched_blend(
+                        ctx.gpu,
+                        self.moe_batched_blend,
+                        output,
+                        shared_out,
+                        input,
+                        self.weights.shared_expert_gate.weight,
+                        h,
+                        1,
+                        stream,
+                    )?;
                 }
             }
+        }
 
         if tracing::enabled!(tracing::Level::DEBUG) {
             ctx.gpu.synchronize(stream)?;

@@ -87,12 +87,13 @@ pub(super) fn extract_streaming_name(buffer: &str) -> Option<String> {
             .unwrap_or(after)
             .trim_start();
         if let Some(after) = after.strip_prefix('"')
-            && let Some(end) = after.find('"') {
-                let name = &after[..end];
-                if !name.is_empty() {
-                    return Some(name.to_string());
-                }
+            && let Some(end) = after.find('"')
+        {
+            let name = &after[..end];
+            if !name.is_empty() {
+                return Some(name.to_string());
             }
+        }
     }
     None
 }
@@ -102,14 +103,15 @@ pub(super) fn extract_streaming_name(buffer: &str) -> Option<String> {
 fn find_args_start(buffer: &str) -> usize {
     // Qwen3-Coder: after <function=NAME>\n
     if let Some(pos) = buffer.find("<function=")
-        && let Some(gt) = buffer[pos..].find('>') {
-            let after_gt = pos + gt + 1;
-            // Skip leading newline after >
-            if after_gt < buffer.len() && buffer.as_bytes().get(after_gt) == Some(&b'\n') {
-                return after_gt + 1;
-            }
-            return after_gt;
+        && let Some(gt) = buffer[pos..].find('>')
+    {
+        let after_gt = pos + gt + 1;
+        // Skip leading newline after >
+        if after_gt < buffer.len() && buffer.as_bytes().get(after_gt) == Some(&b'\n') {
+            return after_gt + 1;
         }
+        return after_gt;
+    }
     // Hermes JSON: after "arguments":
     if let Some(pos) = buffer.find("\"arguments\"") {
         let after = &buffer[pos + "\"arguments\"".len()..];
@@ -126,4 +128,3 @@ impl Default for StreamingToolDetector {
         Self::new()
     }
 }
-

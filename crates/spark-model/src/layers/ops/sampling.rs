@@ -66,7 +66,7 @@ pub fn embed_from_argmax(
 /// Batched embedding: gather N rows from embedding table in one launch.
 ///
 /// Replaces N individual D2D copies with a single kernel.
-/// `token_ids_dev` must point to [num_tokens] u32 on device.
+/// `token_ids_dev` must point to `[num_tokens]` u32 on device.
 ///
 /// Kernel: `batched_embed(token_ids, embed_table, output, hidden_size)`
 /// Grid: (num_tokens, 1, 1)  Block: (256, 1, 1)
@@ -91,4 +91,3 @@ pub fn batched_embed(
 }
 
 // ── MoE routing ──────────────────────────────────────────────────
-

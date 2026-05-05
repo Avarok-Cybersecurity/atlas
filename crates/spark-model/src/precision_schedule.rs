@@ -212,11 +212,11 @@ impl PrecisionSchedule {
         // (they have their own role-specific overrides).
         if let Some(li) = layer_idx
             && matches!(role, Role::Attention | Role::Expert | Role::SharedExpert)
-                && self.sensitive_layers.contains(&li)
-                && self.sensitive_dtype.is_override()
-            {
-                return self.sensitive_dtype;
-            }
+            && self.sensitive_layers.contains(&li)
+            && self.sensitive_dtype.is_override()
+        {
+            return self.sensitive_dtype;
+        }
         let role_dtype = match role {
             Role::Router => self.router_dtype,
             Role::LmHead => self.lm_head_dtype,
@@ -265,11 +265,11 @@ mod tests {
     #[test]
     fn role_override_wins_over_default() {
         let s = PrecisionSchedule::build(
-            Dtype::Bf16,        // router
-            Dtype::Bf16,        // lm head
-            &[],                // no sensitive layers
-            Dtype::Inherit,     // sensitive dtype unused
-            Dtype::Nvfp4,       // bulk default
+            Dtype::Bf16,    // router
+            Dtype::Bf16,    // lm head
+            &[],            // no sensitive layers
+            Dtype::Inherit, // sensitive dtype unused
+            Dtype::Nvfp4,   // bulk default
         );
         assert!(s.has_any_override());
         assert_eq!(s.dtype_for(None, Role::Router), Dtype::Bf16);
@@ -298,13 +298,7 @@ mod tests {
     fn sensitive_layer_does_not_override_router_or_lm_head() {
         // Router is not Attention/Expert; sensitivity table never
         // applies to it. Routing dtype is governed by router_dtype only.
-        let s = PrecisionSchedule::build(
-            Dtype::Bf16,
-            Dtype::Bf16,
-            &[0],
-            Dtype::Fp8,
-            Dtype::Nvfp4,
-        );
+        let s = PrecisionSchedule::build(Dtype::Bf16, Dtype::Bf16, &[0], Dtype::Fp8, Dtype::Nvfp4);
         assert_eq!(s.dtype_for(Some(0), Role::Router), Dtype::Bf16);
         assert_eq!(s.dtype_for(Some(0), Role::LmHead), Dtype::Bf16);
     }

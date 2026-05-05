@@ -5,7 +5,6 @@
 use super::*;
 
 impl Qwen3SsmLayer {
-
     pub(super) fn is_ssm_layer_inner(&self) -> bool {
         true
     }

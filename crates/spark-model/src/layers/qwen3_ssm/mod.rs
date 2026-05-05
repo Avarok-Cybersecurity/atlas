@@ -114,21 +114,208 @@ pub struct Qwen3SsmLayer {
     fp8_gemm_t_m128_k: KernelHandle, // M128: halves B re-reads for out_proj at ISL > 128
 }
 
-
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
+mod debug;
 mod init;
 mod ssm_forward;
-mod debug;
 mod trait_decode;
 mod trait_decode_batched;
 mod trait_decode_batched_conv_gdn;
 mod trait_decode_multi_seq;
 mod trait_prefill;
+mod trait_prefill_gdn;
 mod trait_prefill_helper;
 mod trait_prefill_phase1;
-mod trait_prefill_gdn;
 mod trait_prefill_phase3;
 
+// ── TransformerLayer impl (delegates to per-file inherent _inner methods) ──
+impl TransformerLayer for Qwen3SsmLayer {
+    fn decode(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        state: &mut dyn LayerState,
+        kv_cache: &mut PagedKvCache,
+        seq_len: usize,
+        block_table: &mut Vec<u32>,
+        disk_block_ids: &mut Vec<u32>,
+        disk_last_offloaded_per_layer: &mut Vec<u32>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        self.decode_inner(
+            hidden,
+            residual,
+            state,
+            kv_cache,
+            seq_len,
+            block_table,
+            disk_block_ids,
+            disk_last_offloaded_per_layer,
+            ctx,
+            stream,
+        )
+    }
+
+    fn decode_batched(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        num_tokens: usize,
+        state: &mut dyn LayerState,
+        kv_cache: &mut PagedKvCache,
+        seq_len: usize,
+        block_table: &mut Vec<u32>,
+        disk_block_ids: &mut Vec<u32>,
+        disk_last_offloaded_per_layer: &mut Vec<u32>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        self.decode_batched_inner(
+            hidden,
+            residual,
+            num_tokens,
+            state,
+            kv_cache,
+            seq_len,
+            block_table,
+            disk_block_ids,
+            disk_last_offloaded_per_layer,
+            ctx,
+            stream,
+        )
+    }
+
+    fn decode_multi_seq<'a, 'b: 'a>(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        num_seqs: usize,
+        states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        kv_cache: &mut PagedKvCache,
+        seq_lens: &[usize],
+        block_tables: &[Vec<u32>],
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        self.decode_multi_seq_inner(
+            hidden,
+            residual,
+            num_seqs,
+            states,
+            kv_cache,
+            seq_lens,
+            block_tables,
+            ctx,
+            stream,
+        )
+    }
+
+    fn prefill(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        num_tokens: usize,
+        state: &mut dyn LayerState,
+        kv_cache: &mut PagedKvCache,
+        seq_len_start: usize,
+        block_table: &mut Vec<u32>,
+        disk_block_ids: &mut Vec<u32>,
+        disk_last_offloaded_per_layer: &mut Vec<u32>,
+        kv_write_start: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        self.prefill_inner(
+            hidden,
+            residual,
+            num_tokens,
+            state,
+            kv_cache,
+            seq_len_start,
+            block_table,
+            disk_block_ids,
+            disk_last_offloaded_per_layer,
+            kv_write_start,
+            ctx,
+            stream,
+        )
+    }
+
+    fn is_ssm_layer(&self) -> bool {
+        self.is_ssm_layer_inner()
+    }
+
+    fn prefill_phase1(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        num_tokens: usize,
+        state: &mut dyn LayerState,
+        kv_cache: &mut PagedKvCache,
+        seq_len_start: usize,
+        block_table: &mut Vec<u32>,
+        disk_block_ids: &mut Vec<u32>,
+        disk_last_offloaded_per_layer: &mut Vec<u32>,
+        kv_write_start: usize,
+        gdn_bufs: &GdnPrefillBuffers,
+        token_offset: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        self.prefill_phase1_inner(
+            hidden,
+            residual,
+            num_tokens,
+            state,
+            kv_cache,
+            seq_len_start,
+            block_table,
+            disk_block_ids,
+            disk_last_offloaded_per_layer,
+            kv_write_start,
+            gdn_bufs,
+            token_offset,
+            ctx,
+            stream,
+        )
+    }
+
+    fn prefill_gdn_full(
+        &self,
+        state: &mut dyn LayerState,
+        gdn_bufs: &GdnPrefillBuffers,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        self.prefill_gdn_full_inner(state, gdn_bufs, ctx, stream)
+    }
+
+    fn prefill_phase3(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        num_tokens: usize,
+        gdn_bufs: &GdnPrefillBuffers,
+        token_offset: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        self.prefill_phase3_inner(
+            hidden,
+            residual,
+            num_tokens,
+            gdn_bufs,
+            token_offset,
+            ctx,
+            stream,
+        )
+    }
+
+    fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
+        self.alloc_state_inner(gpu)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -159,140 +346,5 @@ mod tests {
         let conv_state = gpu.alloc(conv_bytes).unwrap();
         assert!(!h_state.is_null());
         assert!(!conv_state.is_null());
-    }
-}
-
-// ── TransformerLayer impl (delegates to per-file inherent _inner methods) ──
-impl TransformerLayer for Qwen3SsmLayer {
-    fn decode(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        state: &mut dyn LayerState,
-        kv_cache: &mut PagedKvCache,
-        seq_len: usize,
-        block_table: &mut Vec<u32>,
-        disk_block_ids: &mut Vec<u32>,
-        disk_last_offloaded_per_layer: &mut Vec<u32>,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.decode_inner(
-            hidden, residual, state, kv_cache, seq_len, block_table,
-            disk_block_ids, disk_last_offloaded_per_layer, ctx, stream,
-        )
-    }
-
-    fn decode_batched(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        num_tokens: usize,
-        state: &mut dyn LayerState,
-        kv_cache: &mut PagedKvCache,
-        seq_len: usize,
-        block_table: &mut Vec<u32>,
-        disk_block_ids: &mut Vec<u32>,
-        disk_last_offloaded_per_layer: &mut Vec<u32>,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.decode_batched_inner(
-            hidden, residual, num_tokens, state, kv_cache, seq_len, block_table,
-            disk_block_ids, disk_last_offloaded_per_layer, ctx, stream,
-        )
-    }
-
-    fn decode_multi_seq<'a, 'b: 'a>(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        num_seqs: usize,
-        states: &'a mut [&'b mut (dyn LayerState + 'static)],
-        kv_cache: &mut PagedKvCache,
-        seq_lens: &[usize],
-        block_tables: &[Vec<u32>],
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.decode_multi_seq_inner(
-            hidden, residual, num_seqs, states, kv_cache, seq_lens, block_tables, ctx, stream,
-        )
-    }
-
-    fn prefill(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        num_tokens: usize,
-        state: &mut dyn LayerState,
-        kv_cache: &mut PagedKvCache,
-        seq_len_start: usize,
-        block_table: &mut Vec<u32>,
-        disk_block_ids: &mut Vec<u32>,
-        disk_last_offloaded_per_layer: &mut Vec<u32>,
-        kv_write_start: usize,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_inner(
-            hidden, residual, num_tokens, state, kv_cache, seq_len_start, block_table,
-            disk_block_ids, disk_last_offloaded_per_layer, kv_write_start, ctx, stream,
-        )
-    }
-
-    fn is_ssm_layer(&self) -> bool {
-        self.is_ssm_layer_inner()
-    }
-
-    fn prefill_phase1(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        num_tokens: usize,
-        state: &mut dyn LayerState,
-        kv_cache: &mut PagedKvCache,
-        seq_len_start: usize,
-        block_table: &mut Vec<u32>,
-        disk_block_ids: &mut Vec<u32>,
-        disk_last_offloaded_per_layer: &mut Vec<u32>,
-        kv_write_start: usize,
-        gdn_bufs: &GdnPrefillBuffers,
-        token_offset: usize,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_phase1_inner(
-            hidden, residual, num_tokens, state, kv_cache, seq_len_start, block_table,
-            disk_block_ids, disk_last_offloaded_per_layer, kv_write_start, gdn_bufs,
-            token_offset, ctx, stream,
-        )
-    }
-
-    fn prefill_gdn_full(
-        &self,
-        state: &mut dyn LayerState,
-        gdn_bufs: &GdnPrefillBuffers,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_gdn_full_inner(state, gdn_bufs, ctx, stream)
-    }
-
-    fn prefill_phase3(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        num_tokens: usize,
-        gdn_bufs: &GdnPrefillBuffers,
-        token_offset: usize,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_phase3_inner(hidden, residual, num_tokens, gdn_bufs, token_offset, ctx, stream)
-    }
-
-    fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
-        self.alloc_state_inner(gpu)
     }
 }

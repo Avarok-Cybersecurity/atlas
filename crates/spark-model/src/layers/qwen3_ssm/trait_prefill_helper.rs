@@ -11,9 +11,9 @@
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 
+use super::Qwen3SsmLayer;
 use crate::layer::ForwardContext;
 use crate::layers::ops;
-use super::Qwen3SsmLayer;
 
 impl Qwen3SsmLayer {
     pub(super) fn prefill_out_proj_dispatch(

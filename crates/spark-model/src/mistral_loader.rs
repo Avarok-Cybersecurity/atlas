@@ -3,7 +3,7 @@
 //! Weight loader for Mistral Small 4 (MLA + MoE architecture).
 //!
 //! GQA fallback: MLA LoRA projections are expanded to dense at load time
-//! via GPU matmul. Q = wq_b @ wq_a, K/V split from wkv_b @ wkv_a[:kv_lora].
+//! via GPU matmul. Q = wq_b @ wq_a, K/V split from `wkv_b @ wkv_a[:kv_lora]`.
 //! Loses MLA's 12.8x KV cache compression but produces coherent output.
 
 use anyhow::Result;
@@ -55,6 +55,5 @@ fn gpu_matmul(
     gpu.synchronize(stream)?;
     Ok(c)
 }
-
 
 mod loader_impl;

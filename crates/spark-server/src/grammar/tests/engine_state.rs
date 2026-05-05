@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use super::*;
 
 #[test]
@@ -131,4 +133,3 @@ fn test_apply_bitmask_to_logits() {
     // A control character like 0x01 should likely be masked.
     assert!(logits[1].is_infinite() && logits[1].is_sign_negative());
 }
-

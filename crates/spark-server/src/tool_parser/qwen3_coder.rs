@@ -38,10 +38,7 @@ impl ToolCallParser for Qwen3CoderParser {
         // call. Per Anthropic's leaked Claude Code prompt + plan
         // F33 design.
         for tool in tools {
-            let json = if matches!(
-                tool.function.name.as_str(),
-                "Bash" | "bash"
-            ) {
+            let json = if matches!(tool.function.name.as_str(), "Bash" | "bash") {
                 let mut t = tool.clone();
                 let suffix = " | After ONE failure with \"command not found\" or exit code 127, do NOT retry the same command — the binary is permanently unavailable in this environment. Choose a different approach or tell the user the dependency is missing.";
                 t.function.description = Some(match t.function.description {
@@ -214,4 +211,3 @@ Example:\n\
 }
 
 // ── Gemma-4 parser (native format) ──
-

@@ -78,9 +78,7 @@ pub(super) fn build_mtp_proposer(
                 Some(Arc::new(head) as Arc<dyn DraftProposer>)
             }
             Err(e) => {
-                tracing::warn!(
-                    "Failed to build MTP head: {e}. Speculative decoding disabled."
-                );
+                tracing::warn!("Failed to build MTP head: {e}. Speculative decoding disabled.");
                 None
             }
         }
@@ -89,9 +87,7 @@ pub(super) fn build_mtp_proposer(
         let heads: Result<Vec<_>> = mtp_weights.into_iter().map(build_head).collect();
         match heads.and_then(crate::layers::mtp_multi::MultiModuleMtpHead::new) {
             Ok(multi) => {
-                tracing::info!(
-                    "MTP speculative decoding: ENABLED (multi-module, {count} heads)"
-                );
+                tracing::info!("MTP speculative decoding: ENABLED (multi-module, {count} heads)");
                 Some(Arc::new(multi) as Arc<dyn DraftProposer>)
             }
             Err(e) => {

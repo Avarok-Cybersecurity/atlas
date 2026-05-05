@@ -64,7 +64,11 @@ impl Qwen3SsmLayer {
                 }
             },
             gdn_k: gpu.kernel("gated_delta_rule", "gated_delta_rule_decode")?,
-            gdn_f32_k: super::super::try_kernel(gpu, "gated_delta_rule", "gated_delta_rule_decode_f32"),
+            gdn_f32_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule",
+                "gated_delta_rule_decode_f32",
+            ),
             ba_gates_k: gpu.kernel("ssm_preprocess", "dense_gemv_ba_gates")?,
             residual_add_k: if config.use_fp32_residual() {
                 gpu.kernel("norm", "f32_residual_add")
@@ -118,7 +122,11 @@ impl Qwen3SsmLayer {
             gdn_wy4_k: gpu.kernel("gated_delta_rule_wy4", "gated_delta_rule_wy4")?,
             // wy17 only present in qwen3.6-35b-a3b's PTX module set; NULL on other targets.
             // decode_batched(K=17) checks for non-NULL before dispatching the fused path.
-            gdn_wy17_k: super::super::try_kernel(gpu, "gated_delta_rule_wy17", "gated_delta_rule_wy17"),
+            gdn_wy17_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy17",
+                "gated_delta_rule_wy17",
+            ),
             h_state_bytes: nv * vd * kd * 4, // FP32 [nv, kd, vd] transposed for coalescing
             conv_state_bytes: conv_dim * d_conv * 4, // FP32 [conv_dim, d_conv]
             qkvz_fp8: None,

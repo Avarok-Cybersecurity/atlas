@@ -202,9 +202,7 @@ impl MtpHead {
         )?;
 
         // 8. Upload attention metadata for MTP KV cache
-        let mut kv_cache = self
-            .kv_cache
-            .lock();
+        let mut kv_cache = self.kv_cache.lock();
         let bs = kv_cache.block_size();
         let blocks_needed = (state.seq_len / bs) + 1;
         while state.block_table.len() < blocks_needed {
@@ -405,8 +403,7 @@ impl MtpHead {
             for tok in 0..vocab {
                 let word = tok / 32;
                 let bit = tok % 32;
-                let allowed = word < bitmask.len()
-                    && (bitmask[word] & (1i32 << bit)) != 0;
+                let allowed = word < bitmask.len() && (bitmask[word] & (1i32 << bit)) != 0;
                 if allowed {
                     any_allowed = true;
                 } else {
@@ -488,5 +485,4 @@ impl MtpHead {
         state.seq_len += 1;
         Ok(token_id)
     }
-
 }

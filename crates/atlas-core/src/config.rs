@@ -158,8 +158,8 @@ pub struct ModelConfig {
     #[serde(default = "default_one_f64")]
     pub routed_scaling_factor: f64,
     /// LatentMoE: latent projection dimension for routed experts (Super 120B).
-    /// When present, routed experts operate in latent space [moe_latent_size]
-    /// instead of full [hidden_size]. Absent for Nano 30B.
+    /// When present, routed experts operate in latent space `[moe_latent_size]`
+    /// instead of full `[hidden_size]`. Absent for Nano 30B.
     #[serde(default)]
     pub moe_latent_size: usize,
 
@@ -419,7 +419,6 @@ pub(crate) fn default_conv_kernel() -> usize {
     4
 }
 
-
 mod dispatch;
 mod factory;
 mod methods;
@@ -428,8 +427,8 @@ mod parsers;
 mod tests;
 
 pub use dispatch::parse_config;
-pub use parsers::{parse_mistral_params, parse_quantization_config};
 pub(crate) use parsers::{parse_gemma4_params, parse_minimax_m2, parse_vision_config};
+pub use parsers::{parse_mistral_params, parse_quantization_config};
 
 pub(crate) fn finalize_config(config: &mut ModelConfig, raw: &serde_json::Value) -> Result<()> {
     if config.quantization_config.is_none() {
@@ -449,9 +448,8 @@ pub(crate) fn validate_config(config: &ModelConfig) -> Result<()> {
         );
     }
 
-    let has_ssm = config
-        .layer_types.contains(&LayerType::LinearAttention)
-        || config.linear_num_key_heads > 0;
+    let has_ssm =
+        config.layer_types.contains(&LayerType::LinearAttention) || config.linear_num_key_heads > 0;
     if has_ssm && config.linear_num_key_heads == 0 && config.mamba_num_heads == 0 {
         anyhow::bail!(
             "SSM model detected but linear_num_key_heads is 0 in config.json. \

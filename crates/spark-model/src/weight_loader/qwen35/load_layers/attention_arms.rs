@@ -80,27 +80,28 @@ pub(super) fn build_full_attention_nvfp4(
             };
             (attn, Some(q), Some(k), Some(v))
         }
-        Nvfp4Variant::Standard
-        | Nvfp4Variant::Fp8Dequanted
-        | Nvfp4Variant::Bf16Raw => {
+        Nvfp4Variant::Standard | Nvfp4Variant::Fp8Dequanted | Nvfp4Variant::Bf16Raw => {
             tracing::info!("Layer {i}: loading attention projections ({variant:?})");
-            let load_bf16_then_nvfp4 = |name: &str,
-                                        full_n: usize,
-                                        full_k: usize,
-                                        kind: TpShardKind|
-             -> Result<(DenseWeight, crate::weight_map::QuantizedWeight)> {
-                let src = dense_auto(store, &format!("{p}.{name}.weight"), gpu)?;
-                let (sharded_ptr, local_n, local_k) =
-                    shard_dense_bf16(src.weight, full_n, full_k, kind, tp_rank, tp_size, gpu)?;
-                let sharded = DenseWeight { weight: sharded_ptr };
-                let q = quantize_to_nvfp4(
-                    &sharded, local_n, local_k, gpu, absmax_k, quantize_k, stream,
-                )?;
-                if sharded_ptr != src.weight {
-                    gpu.free(sharded_ptr)?;
-                }
-                Ok((src, q))
-            };
+            let load_bf16_then_nvfp4 =
+                |name: &str,
+                 full_n: usize,
+                 full_k: usize,
+                 kind: TpShardKind|
+                 -> Result<(DenseWeight, crate::weight_map::QuantizedWeight)> {
+                    let src = dense_auto(store, &format!("{p}.{name}.weight"), gpu)?;
+                    let (sharded_ptr, local_n, local_k) =
+                        shard_dense_bf16(src.weight, full_n, full_k, kind, tp_rank, tp_size, gpu)?;
+                    let sharded = DenseWeight {
+                        weight: sharded_ptr,
+                    };
+                    let q = quantize_to_nvfp4(
+                        &sharded, local_n, local_k, gpu, absmax_k, quantize_k, stream,
+                    )?;
+                    if sharded_ptr != src.weight {
+                        gpu.free(sharded_ptr)?;
+                    }
+                    Ok((src, q))
+                };
             tracing::info!("Layer {i}: BF16 → NVFP4 (TP-aware)");
             let [
                 (q_dense, q_nvfp4),

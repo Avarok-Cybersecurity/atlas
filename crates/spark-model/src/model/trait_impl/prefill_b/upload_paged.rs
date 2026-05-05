@@ -9,9 +9,9 @@ use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::super::super::types::TransformerModel;
 use crate::layers::ops;
 use crate::traits::SequenceState;
-use super::super::super::types::TransformerModel;
 
 impl TransformerModel {
     pub(super) fn prefill_b_upload_paged(

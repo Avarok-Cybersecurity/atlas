@@ -12,8 +12,8 @@ use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use crate::bench::{
-    BenchResult, RAND_IO_BYTES, RAND_ITERS, SEQ_IO_BYTES, SEQ_ITERS, bench_cufile,
-    bench_io_uring, bench_posix, open_test_file,
+    BenchResult, RAND_IO_BYTES, RAND_ITERS, SEQ_IO_BYTES, SEQ_ITERS, bench_cufile, bench_io_uring,
+    bench_posix, open_test_file,
 };
 use crate::cuda_min::{CudaCtx, DeviceBuffer, PinnedBuffer};
 
@@ -72,7 +72,12 @@ where
 {
     match f() {
         Ok(r) => {
-            tracing::info!("{label}: {:.1} MiB/s ({} iters @ {} bytes)", r.mib_per_sec, r.iters, r.bytes_per_io);
+            tracing::info!(
+                "{label}: {:.1} MiB/s ({} iters @ {} bytes)",
+                r.mib_per_sec,
+                r.iters,
+                r.bytes_per_io
+            );
             Some(r.mib_per_sec)
         }
         Err(e) => {
@@ -106,11 +111,7 @@ pub fn run_probe(cfg: &ProbeConfig) -> Result<ProbeResult> {
         if r.err == cufile_sys::CU_FILE_SUCCESS {
             driver_open_ok = true;
         } else {
-            driver_open_err = Some(format!(
-                "{} ({})",
-                r.err,
-                cufile_sys::err_to_str(r.err)
-            ));
+            driver_open_err = Some(format!("{} ({})", r.err, cufile_sys::err_to_str(r.err)));
         }
     }
 
@@ -131,26 +132,56 @@ pub fn run_probe(cfg: &ProbeConfig) -> Result<ProbeResult> {
         })
     });
     let iou_seq = run_one_bench("io_uring seq 4MiB", || {
-        bench_io_uring(&cuda, fd, file_bytes, &pinned, &dev, SEQ_IO_BYTES, SEQ_ITERS, true)
+        bench_io_uring(
+            &cuda,
+            fd,
+            file_bytes,
+            &pinned,
+            &dev,
+            SEQ_IO_BYTES,
+            SEQ_ITERS,
+            true,
+        )
     });
     let iou_rand = run_one_bench("io_uring rand 64KiB", || {
-        bench_io_uring(&cuda, fd, file_bytes, &pinned, &dev, RAND_IO_BYTES, RAND_ITERS, false)
+        bench_io_uring(
+            &cuda,
+            fd,
+            file_bytes,
+            &pinned,
+            &dev,
+            RAND_IO_BYTES,
+            RAND_ITERS,
+            false,
+        )
     });
     let posix_seq = run_one_bench("posix seq 4MiB", || {
-        bench_posix(&cuda, fd, file_bytes, &pinned, &dev, SEQ_IO_BYTES, SEQ_ITERS, true)
+        bench_posix(
+            &cuda,
+            fd,
+            file_bytes,
+            &pinned,
+            &dev,
+            SEQ_IO_BYTES,
+            SEQ_ITERS,
+            true,
+        )
     });
     let posix_rand = run_one_bench("posix rand 64KiB", || {
-        bench_posix(&cuda, fd, file_bytes, &pinned, &dev, RAND_IO_BYTES, RAND_ITERS, false)
+        bench_posix(
+            &cuda,
+            fd,
+            file_bytes,
+            &pinned,
+            &dev,
+            RAND_IO_BYTES,
+            RAND_ITERS,
+            false,
+        )
     });
     let _ = (file, dev, pinned, cuda);
 
-    let (recommended, reason) = decide(
-        nvidia_fs,
-        driver_open_ok,
-        cufile_seq,
-        iou_seq,
-        posix_seq,
-    );
+    let (recommended, reason) = decide(nvidia_fs, driver_open_ok, cufile_seq, iou_seq, posix_seq);
 
     Ok(ProbeResult {
         libcufile_loaded,
@@ -181,16 +212,28 @@ fn decide(
     let iu = iou.unwrap_or(0.0);
     let px = posix.unwrap_or(0.0);
     if nvfs && cufile_open && cf >= iu * 1.05 {
-        return (Backend::CuFileDirect, format!("nvidia-fs loaded; cuFile {cf:.0} MiB/s ≥ io_uring {iu:.0} MiB/s"));
+        return (
+            Backend::CuFileDirect,
+            format!("nvidia-fs loaded; cuFile {cf:.0} MiB/s ≥ io_uring {iu:.0} MiB/s"),
+        );
     }
     if cufile_open && cf >= iu.max(px) * 1.05 {
-        return (Backend::CuFileCompat, format!("cuFile compat-mode {cf:.0} MiB/s beats io_uring {iu:.0} / posix {px:.0}"));
+        return (
+            Backend::CuFileCompat,
+            format!("cuFile compat-mode {cf:.0} MiB/s beats io_uring {iu:.0} / posix {px:.0}"),
+        );
     }
     if iu >= px && iu > 0.0 {
-        return (Backend::IoUring, format!("io_uring {iu:.0} MiB/s ≥ posix {px:.0} MiB/s"));
+        return (
+            Backend::IoUring,
+            format!("io_uring {iu:.0} MiB/s ≥ posix {px:.0} MiB/s"),
+        );
     }
     if px > 0.0 {
-        return (Backend::PosixOnly, format!("posix-only fallback {px:.0} MiB/s"));
+        return (
+            Backend::PosixOnly,
+            format!("posix-only fallback {px:.0} MiB/s"),
+        );
     }
     (Backend::None, "no backend produced bandwidth".into())
 }

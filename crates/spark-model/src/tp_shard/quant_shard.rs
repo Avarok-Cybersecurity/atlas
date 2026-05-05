@@ -250,5 +250,3 @@ pub fn shard_fp8_block_scaled(
         }
     }
 }
-
-

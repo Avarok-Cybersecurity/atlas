@@ -39,7 +39,10 @@ pub(crate) fn load_model_config(model_dir: &Path) -> Result<(ModelConfig, String
         std::fs::read_to_string(&params_path)
             .with_context(|| format!("Failed to read {}", params_path.display()))?
     } else {
-        anyhow::bail!("No config.json or params.json found in {}", model_dir.display());
+        anyhow::bail!(
+            "No config.json or params.json found in {}",
+            model_dir.display()
+        );
     };
     let config = if params_path.exists() && !config_path.exists() {
         atlas_core::config::parse_mistral_params(&config_json)
@@ -75,7 +78,8 @@ pub(crate) fn cap_vocab_size_to_tokenizer(model_dir: &Path, config: &mut ModelCo
         if tok_vocab > 0 && tok_vocab < config.vocab_size {
             tracing::info!(
                 "Capping vocab_size from {} to {} (tokenizer)",
-                config.vocab_size, tok_vocab,
+                config.vocab_size,
+                tok_vocab,
             );
             config.vocab_size = tok_vocab;
         }
@@ -91,7 +95,8 @@ pub(crate) fn apply_model_default_num_drafts(
         if model_default != args.num_drafts {
             tracing::info!(
                 "num_drafts: using MODEL.toml default_num_drafts={} (K={}) — pass --num-drafts to override",
-                model_default, model_default + 1,
+                model_default,
+                model_default + 1,
             );
             args.num_drafts = model_default;
         }

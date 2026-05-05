@@ -111,7 +111,10 @@ mod tests {
         let heads = vec![
             HeadId { layer: 5, head: 3 },
             HeadId { layer: 10, head: 7 },
-            HeadId { layer: 10, head: 11 },
+            HeadId {
+                layer: 10,
+                head: 11,
+            },
         ];
         let s = RetrievalHeadSet::new(heads, 40);
         assert!(s.is_calibrated());

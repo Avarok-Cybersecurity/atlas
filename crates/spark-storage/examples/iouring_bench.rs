@@ -80,7 +80,10 @@ fn main() -> Result<()> {
         backend.read(&reqs, _ctx.stream)?;
         let dt = t.elapsed().as_secs_f64();
         let mib = (n_iters * group_bytes) as f64 / (1024.0 * 1024.0);
-        eprintln!("qd={qd:>3}: {:>8.1} MiB/s ({n_iters} reads of {group_bytes}B in {dt:.3}s)", mib / dt);
+        eprintln!(
+            "qd={qd:>3}: {:>8.1} MiB/s ({n_iters} reads of {group_bytes}B in {dt:.3}s)",
+            mib / dt
+        );
     }
 
     std::fs::remove_dir_all(&dir).ok();

@@ -26,17 +26,17 @@ use crate::openai;
 use crate::tool_parser;
 
 #[allow(unused_imports)]
-use super::types::*;
+use super::convert::*;
+#[allow(unused_imports)]
+use super::handlers_stream::*;
 #[allow(unused_imports)]
 use super::helpers::*;
-#[allow(unused_imports)]
-use super::convert::*;
 #[allow(unused_imports)]
 use super::translate::*;
 #[allow(unused_imports)]
 use super::translator::*;
 #[allow(unused_imports)]
-use super::handlers_stream::*;
+use super::types::*;
 
 // ── Handler ──
 
@@ -48,10 +48,7 @@ use super::handlers_stream::*;
 /// response back into Anthropic format. The Anthropic-specific surface is
 /// strictly format conversion — no policy or sampling decisions are made
 /// here.
-pub async fn messages(
-    State(state): State<Arc<AppState>>,
-    body: axum::body::Bytes,
-) -> Response {
+pub async fn messages(State(state): State<Arc<AppState>>, body: axum::body::Bytes) -> Response {
     // 1. Parse the Anthropic request.
     let req: MessagesRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
@@ -194,7 +191,6 @@ pub async fn messages(
     }
 }
 
-
 // ── Count tokens endpoint ──
 
 /// POST /v1/messages/count_tokens — returns input token count.
@@ -294,36 +290,38 @@ pub async fn count_tokens(
             } else {
                 None
             };
-        if tools_active && role == "user"
-            && let AnthropicContent::Blocks(blocks) = &m.content {
-                let has_tool_result = blocks
-                    .iter()
-                    .any(|b| matches!(b, ContentBlock::ToolResult { .. }));
-                if has_tool_result {
-                    for block in blocks {
-                        match block {
-                            ContentBlock::ToolResult { content, .. } => {
-                                let result_text =
-                                    content.as_ref().map(|c| c.to_text()).unwrap_or_default();
-                                messages.push(CountMsgEntry {
-                                    role: "tool".into(),
-                                    content: result_text,
-                                    tool_calls: None,
-                                });
-                            }
-                            ContentBlock::Text { text: t } if !t.is_empty() => {
-                                messages.push(CountMsgEntry {
-                                    role: "user".into(),
-                                    content: t.clone(),
-                                    tool_calls: None,
-                                });
-                            }
-                            _ => {}
+        if tools_active
+            && role == "user"
+            && let AnthropicContent::Blocks(blocks) = &m.content
+        {
+            let has_tool_result = blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolResult { .. }));
+            if has_tool_result {
+                for block in blocks {
+                    match block {
+                        ContentBlock::ToolResult { content, .. } => {
+                            let result_text =
+                                content.as_ref().map(|c| c.to_text()).unwrap_or_default();
+                            messages.push(CountMsgEntry {
+                                role: "tool".into(),
+                                content: result_text,
+                                tool_calls: None,
+                            });
                         }
+                        ContentBlock::Text { text: t } if !t.is_empty() => {
+                            messages.push(CountMsgEntry {
+                                role: "user".into(),
+                                content: t.clone(),
+                                tool_calls: None,
+                            });
+                        }
+                        _ => {}
                     }
-                    continue;
                 }
+                continue;
             }
+        }
 
         messages.push(CountMsgEntry {
             role: role.to_string(),

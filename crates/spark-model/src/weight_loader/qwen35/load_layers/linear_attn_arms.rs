@@ -12,12 +12,15 @@ use spark_runtime::weights::WeightStore;
 use crate::layer::TransformerLayer;
 use crate::layers::{FfnComponent, Qwen3SsmLayer};
 use crate::weight_map::{
-    DenseWeight, Fp8Weight, Nvfp4Variant, QuantizedWeight, SsmWeights,
-    gpu_concat_rows, interleave_ba,
-    load_fp8_block_scaled_as_fp8weight, load_ssm_qwen35, quantize_to_nvfp4,
+    DenseWeight, Fp8Weight, Nvfp4Variant, QuantizedWeight, SsmWeights, gpu_concat_rows,
+    interleave_ba, load_fp8_block_scaled_as_fp8weight, load_ssm_qwen35, quantize_to_nvfp4,
 };
 
-#[allow(clippy::too_many_arguments)]
+// Currently unused while the FP8 LinearAttention dispatch arm in the
+// caller (`load_layers.rs`) is short-circuited; preserved for the
+// in-progress FP8 GDN kernel work, see the comment in `load_layers.rs`
+// above the `LayerType::LinearAttention` arm.
+#[allow(dead_code, clippy::too_many_arguments)]
 pub(super) fn build_linear_attention_fp8(
     layer_idx: usize,
     store: &WeightStore,
@@ -33,12 +36,9 @@ pub(super) fn build_linear_attention_fp8(
     let p = format!("{lp}.linear_attn");
     tracing::info!("Layer {layer_idx}: loading SSM FP8 native");
 
-    let qkv_fp8 =
-        load_fp8_block_scaled_as_fp8weight(store, &format!("{p}.in_proj_qkv"), gpu)?;
-    let z_fp8 =
-        load_fp8_block_scaled_as_fp8weight(store, &format!("{p}.in_proj_z"), gpu)?;
-    let out_fp8 =
-        load_fp8_block_scaled_as_fp8weight(store, &format!("{p}.out_proj"), gpu)?;
+    let qkv_fp8 = load_fp8_block_scaled_as_fp8weight(store, &format!("{p}.in_proj_qkv"), gpu)?;
+    let z_fp8 = load_fp8_block_scaled_as_fp8weight(store, &format!("{p}.in_proj_z"), gpu)?;
+    let out_fp8 = load_fp8_block_scaled_as_fp8weight(store, &format!("{p}.out_proj"), gpu)?;
 
     let qkv_rows = qkv_fp8.n as usize;
     let z_rows = z_fp8.n as usize;
@@ -173,15 +173,8 @@ pub(super) fn build_linear_attention_nvfp4(
     )?;
 
     let qkvz_size = config.ssm_qkvz_size();
-    let qkvz_nvfp4 = quantize_to_nvfp4(
-        &qkvz_dense,
-        qkvz_size,
-        h,
-        gpu,
-        absmax_k,
-        quantize_k,
-        stream,
-    )?;
+    let qkvz_nvfp4 =
+        quantize_to_nvfp4(&qkvz_dense, qkvz_size, h, gpu, absmax_k, quantize_k, stream)?;
 
     let qkvz_nvfp4_t = qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h)?;
 

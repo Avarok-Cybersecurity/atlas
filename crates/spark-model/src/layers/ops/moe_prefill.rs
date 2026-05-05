@@ -187,7 +187,7 @@ pub fn w4a16_gemv_dual(
 
 /// W4A16 GEMV with fused SiLU input: silu(gate)*up as activation, GEMV with down weights.
 ///
-/// Reads gate_out[K] and up_out[K] BF16, computes silu(gate)*up per element
+/// Reads `gate_out[K]` and `up_out[K]` BF16, computes silu(gate)*up per element
 /// inline, then multiplies by dequanted NVFP4 weights. Eliminates silu_mul kernel.
 ///
 /// Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1)
@@ -219,7 +219,7 @@ pub fn w4a16_gemv_silu_input(
 
 /// Sigmoid-gated blend reading gate scalar from device memory.
 ///
-/// output[i] += sigmoid(bf16_to_f32(*gate_ptr)) * src[i]
+/// `output[i] += sigmoid(bf16_to_f32(*gate_ptr)) * src[i]`
 ///
 /// Kernel: `bf16_sigmoid_blend_device(output, src, gate_ptr, n)`
 /// Grid: (ceil(n/256), 1, 1)  Block: (256, 1, 1)
@@ -243,4 +243,3 @@ pub fn sigmoid_blend_device(
 }
 
 // ── MoE grouped GEMM (future) ──────────────────────────────────
-

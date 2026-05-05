@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use super::*;
 
 #[test]
@@ -105,4 +107,3 @@ fn test_multiple_tools_hermes() {
         result.as_ref().err().unwrap()
     );
 }
-

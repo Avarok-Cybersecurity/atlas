@@ -54,7 +54,10 @@ pub fn looks_like_error(body: &str) -> bool {
 /// that must NOT be masked — typically the last 2 in the conversation.
 /// Returns the indices into `bodies` of messages that are recent
 /// enough to leave intact.
-fn fresh_error_indices(bodies: &[(usize, &str)], keep_recent: usize) -> std::collections::HashSet<usize> {
+fn fresh_error_indices(
+    bodies: &[(usize, &str)],
+    keep_recent: usize,
+) -> std::collections::HashSet<usize> {
     let mut out = std::collections::HashSet::new();
     let total = bodies.len();
     if total <= keep_recent {
@@ -104,7 +107,10 @@ fn envelope(attempt_idx: usize, total_attempts: usize, excerpt: &str) -> String 
 /// `bodies_in` is `(role, body)` newest-LAST. Returns a `Vec<Option<String>>`
 /// parallel to the input: `Some(new_body)` means replace, `None`
 /// means leave alone.
-pub fn compute_masking(bodies_in: &[(&str, &str)], keep_recent_errors: usize) -> Vec<Option<String>> {
+pub fn compute_masking(
+    bodies_in: &[(&str, &str)],
+    keep_recent_errors: usize,
+) -> Vec<Option<String>> {
     // Index error-shaped tool/user bodies in document order.
     let candidates: Vec<(usize, &str)> = bodies_in
         .iter()
@@ -142,9 +148,15 @@ mod tests {
 
     #[test]
     fn looks_like_error_recognises_common_signatures() {
-        assert!(looks_like_error("Exit code 127\n/bin/bash: line 1: cargo: command not found"));
-        assert!(looks_like_error("Error: ENOENT: no such file or directory, open '/x'"));
-        assert!(looks_like_error("Traceback (most recent call last):\n  File...\nKeyError: 'x'"));
+        assert!(looks_like_error(
+            "Exit code 127\n/bin/bash: line 1: cargo: command not found"
+        ));
+        assert!(looks_like_error(
+            "Error: ENOENT: no such file or directory, open '/x'"
+        ));
+        assert!(looks_like_error(
+            "Traceback (most recent call last):\n  File...\nKeyError: 'x'"
+        ));
         assert!(!looks_like_error("File written successfully at /tmp/x.txt"));
         assert!(!looks_like_error("hi"));
     }
@@ -165,27 +177,41 @@ mod tests {
 
     #[test]
     fn fresh_two_errors_left_intact_older_masked() {
-        let body = format!("{}{}", "Exit code 127\n/bin/bash: line 1: cargo: command not found\n", "x".repeat(300));
+        let body = format!(
+            "{}{}",
+            "Exit code 127\n/bin/bash: line 1: cargo: command not found\n",
+            "x".repeat(300)
+        );
         let msgs = vec![
-            ("user", "build something"),  // 0
-            ("assistant", "trying"),      // 1
-            ("tool", body.as_str()),      // 2 — error, oldest
-            ("assistant", "again"),       // 3
-            ("tool", body.as_str()),      // 4 — error
-            ("assistant", "again"),       // 5
-            ("tool", body.as_str()),      // 6 — error, FRESH
-            ("assistant", "again"),       // 7
-            ("tool", body.as_str()),      // 8 — error, FRESHEST
+            ("user", "build something"), // 0
+            ("assistant", "trying"),     // 1
+            ("tool", body.as_str()),     // 2 — error, oldest
+            ("assistant", "again"),      // 3
+            ("tool", body.as_str()),     // 4 — error
+            ("assistant", "again"),      // 5
+            ("tool", body.as_str()),     // 6 — error, FRESH
+            ("assistant", "again"),      // 7
+            ("tool", body.as_str()),     // 8 — error, FRESHEST
         ];
         let mask = compute_masking(&msgs, 2);
-        assert!(mask[2].is_some(), "oldest error must be masked: got {:?}", mask[2]);
-        assert!(mask[4].is_some(), "second-oldest error must be masked: got {:?}", mask[4]);
+        assert!(
+            mask[2].is_some(),
+            "oldest error must be masked: got {:?}",
+            mask[2]
+        );
+        assert!(
+            mask[4].is_some(),
+            "second-oldest error must be masked: got {:?}",
+            mask[4]
+        );
         assert!(mask[6].is_none(), "fresh error must stay verbatim");
         assert!(mask[8].is_none(), "freshest error must stay verbatim");
         let masked = mask[2].as_ref().unwrap();
         assert!(masked.contains("stale tool failure"));
-        assert!(masked.contains("Exit code 127") || masked.contains("cargo"),
-            "summary must include excerpt: {masked}");
+        assert!(
+            masked.contains("Exit code 127") || masked.contains("cargo"),
+            "summary must include excerpt: {masked}"
+        );
     }
 
     #[test]
@@ -198,7 +224,10 @@ mod tests {
             ("tool", small),
         ];
         let mask = compute_masking(&msgs, 2);
-        assert!(mask.iter().all(|m| m.is_none()), "<200B errors not worth masking");
+        assert!(
+            mask.iter().all(|m| m.is_none()),
+            "<200B errors not worth masking"
+        );
     }
 
     #[test]
@@ -211,8 +240,10 @@ mod tests {
             ("tool", success.as_str()),
         ];
         let mask = compute_masking(&msgs, 2);
-        assert!(mask.iter().all(|m| m.is_none()),
-            "successful tool results must never be masked");
+        assert!(
+            mask.iter().all(|m| m.is_none()),
+            "successful tool results must never be masked"
+        );
     }
 
     #[test]
@@ -225,7 +256,9 @@ mod tests {
             ("assistant", body.as_str()),
         ];
         let mask = compute_masking(&msgs, 2);
-        assert!(mask.iter().all(|m| m.is_none()),
-            "assistant messages are not tool results");
+        assert!(
+            mask.iter().all(|m| m.is_none()),
+            "assistant messages are not tool results"
+        );
     }
 }

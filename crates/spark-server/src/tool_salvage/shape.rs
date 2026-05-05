@@ -31,7 +31,11 @@ impl<'a> ToolShape<'a> {
                 }
             }
         }
-        Self { def, properties, required }
+        Self {
+            def,
+            properties,
+            required,
+        }
     }
 
     pub(super) fn name(&self) -> &str {
@@ -46,13 +50,14 @@ impl<'a> ToolShape<'a> {
     /// if any. Used to emit arguments in the schema's expected case.
     pub(super) fn original_property(&self, lower_name: &str) -> Option<String> {
         if let Some(params) = &self.def.function.parameters
-            && let Some(props) = params.get("properties").and_then(|v| v.as_object()) {
-                for k in props.keys() {
-                    if k.to_ascii_lowercase() == lower_name {
-                        return Some(k.clone());
-                    }
+            && let Some(props) = params.get("properties").and_then(|v| v.as_object())
+        {
+            for k in props.keys() {
+                if k.to_ascii_lowercase() == lower_name {
+                    return Some(k.clone());
                 }
             }
+        }
         None
     }
 
@@ -104,7 +109,12 @@ impl<'a> ToolShape<'a> {
     pub(super) fn path_and_content(&self) -> Option<(String, String)> {
         const PATH_NAMES: &[&str] = &["path", "file_path", "filepath", "file"];
         const CONTENT_NAMES: &[&str] = &[
-            "content", "text", "body", "data", "file_content", "filecontent",
+            "content",
+            "text",
+            "body",
+            "data",
+            "file_content",
+            "filecontent",
         ];
         let path = PATH_NAMES.iter().find_map(|n| {
             if self.properties.iter().any(|p| p == n) {

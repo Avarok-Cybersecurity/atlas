@@ -25,9 +25,16 @@ pub(super) fn install_high_speed_swap(
             tracing::info!(
                 "--high-speed-swap installing: dir={}, scratch={} blocks, qd={}, rank={}, \
                  model: {} layers × {}/{} (q/kv) heads × hd={}, bs={}, max_blocks={}",
-                cfg.dir.display(), cfg.resident_blocks, cfg.qd, cfg.rank,
-                dims.num_layers, dims.num_q_heads, dims.num_kv_heads,
-                dims.head_dim, dims.block_size, dims.max_blocks_per_layer,
+                cfg.dir.display(),
+                cfg.resident_blocks,
+                cfg.qd,
+                cfg.rank,
+                dims.num_layers,
+                dims.num_q_heads,
+                dims.num_kv_heads,
+                dims.head_dim,
+                dims.block_size,
+                dims.max_blocks_per_layer,
             );
             // Use the model's default stream (cuMemcpyHtoDAsync(stream=0))
             // for orchestrator setup. The hot-path API takes its own stream.
@@ -76,7 +83,9 @@ pub(super) fn drain_pending_requests(
     // Ask policy whether to accept prefills this iteration.
     let timings: Vec<ActiveSeqTiming> = active
         .iter()
-        .map(|a| ActiveSeqTiming { last_token_time: a.last_token_time })
+        .map(|a| ActiveSeqTiming {
+            last_token_time: a.last_token_time,
+        })
         .collect();
 
     if g.requests.is_empty() || !policy.should_prefill(&timings) {
@@ -90,7 +99,10 @@ pub(super) fn drain_pending_requests(
         .requests
         .iter()
         .enumerate()
-        .map(|(i, req)| PendingRequestInfo { prompt_len: req.prompt_len(), index: i })
+        .map(|(i, req)| PendingRequestInfo {
+            prompt_len: req.prompt_len(),
+            index: i,
+        })
         .collect();
     let selected = policy.select_prefills(&infos, cap);
 

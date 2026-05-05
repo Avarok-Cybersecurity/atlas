@@ -4,7 +4,6 @@
 
 use super::*;
 
-
 /// Prefill a new request and return an ActiveSeq ready for batched decode.
 /// Returns None if the sequence completed during prefill (EOS on first token).
 pub fn prefill_request(
@@ -132,10 +131,14 @@ pub fn prefill_request(
             let msg = format!("prefill failed: {e:#}");
             send_error_to_sink(&mut sink, &msg);
             if let Err(free_err) = model.free_sequence(&mut seq) {
-                tracing::error!("prefill_b_step: free_sequence (after prefill error): {free_err:#}");
+                tracing::error!(
+                    "prefill_b_step: free_sequence (after prefill error): {free_err:#}"
+                );
             }
             if let Err(bcast_err) = model.ep_broadcast_cmd(0xFFFFFFF1) {
-                tracing::error!("prefill_b_step: ep_broadcast (after prefill error): {bcast_err:#}");
+                tracing::error!(
+                    "prefill_b_step: ep_broadcast (after prefill error): {bcast_err:#}"
+                );
             }
             return Err(e);
         }
@@ -293,7 +296,7 @@ pub fn prefill_request(
         f27_last_emitted_token: 0,
         tool_call_start_token,
         tool_call_opened: false,
-                                    inside_tool_body: false,
+        inside_tool_body: false,
         tool_call_end_token,
         grammar_state,
         last_token_time: now,

@@ -42,7 +42,10 @@ impl HighSpeedSwapConfig {
             bail!("--high-speed-swap-resident-blocks must be > 0");
         }
         if self.rank == 0 || self.rank > 128 {
-            bail!("--high-speed-swap-rank must be in 1..=128, got {}", self.rank);
+            bail!(
+                "--high-speed-swap-rank must be in 1..=128, got {}",
+                self.rank
+            );
         }
         if self.qd == 0 || self.qd > 64 {
             bail!("--high-speed-swap-qd must be in 1..=64, got {}", self.qd);

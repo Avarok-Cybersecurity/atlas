@@ -38,11 +38,11 @@ use cudarc::driver::LaunchConfig;
 
 use super::{
     AtlasCudaBackend, cuCtxSetCurrent, cuEventCreate, cuEventDestroy_v2, cuEventRecord,
-    cuGraphDestroy, cuGraphExecDestroy, cuGraphInstantiateWithFlags, cuGraphLaunch,
-    cuMemAllocHost_v2, cuMemAllocManaged, cuMemAlloc_v2, cuMemFreeHost, cuMemFree_v2,
-    cuMemGetInfo_v2, cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2,
-    cuMemsetD8Async, cuStreamBeginCapture, cuStreamCreate, cuStreamEndCapture,
-    cuStreamSynchronize, cuStreamWaitEvent,
+    cuGraphDestroy, cuGraphExecDestroy, cuGraphInstantiateWithFlags, cuGraphLaunch, cuMemAlloc_v2,
+    cuMemAllocHost_v2, cuMemAllocManaged, cuMemFree_v2, cuMemFreeHost, cuMemGetInfo_v2,
+    cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async,
+    cuStreamBeginCapture, cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize,
+    cuStreamWaitEvent,
 };
 use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 
@@ -139,12 +139,7 @@ impl GpuBackend for AtlasCudaBackend {
         // copy may run on the default stream concurrently with kernels on
         // `stream` and read torn bytes (HSS Turbo8 race, 2026-04-28).
         let status = unsafe {
-            cuMemcpyDtoHAsync_v2(
-                dst.as_mut_ptr() as *mut c_void,
-                src.0,
-                dst.len(),
-                stream,
-            )
+            cuMemcpyDtoHAsync_v2(dst.as_mut_ptr() as *mut c_void, src.0, dst.len(), stream)
         };
         if status != 0 {
             bail!("cuMemcpyDtoHAsync_v2 (on_stream) failed: status {status}");

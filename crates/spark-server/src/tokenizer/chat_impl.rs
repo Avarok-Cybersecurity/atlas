@@ -32,25 +32,27 @@ impl ChatTokenizer {
         // Priority 1: Override template from jinja-templates/{model_type}.jinja
         // Priority 2: Template from tokenizer_config.json (shipped with model weights)
         // Priority 3: Default ChatML fallback
-        let chat_template =
-            if let Some(override_tmpl) = super::jinja_helpers::load_override_template(model_type, repo_root) {
-                override_tmpl
-            } else if let Some(config_tmpl) = super::jinja_helpers::load_config_template(model_dir)? {
-                config_tmpl
-            } else {
-                tracing::warn!("No chat template found — using default ChatML");
-                super::jinja_helpers::default_chatml_template(supports_thinking)
-            };
+        let chat_template = if let Some(override_tmpl) =
+            super::jinja_helpers::load_override_template(model_type, repo_root)
+        {
+            override_tmpl
+        } else if let Some(config_tmpl) = super::jinja_helpers::load_config_template(model_dir)? {
+            config_tmpl
+        } else {
+            tracing::warn!("No chat template found — using default ChatML");
+            super::jinja_helpers::default_chatml_template(supports_thinking)
+        };
 
         let jinja_env = super::jinja_helpers::build_jinja_env(&chat_template)?;
 
         // Load OpenAI-variant template if it exists (jinja-templates/openai/{model_type}.jinja).
         // This variant gates historical <think> wrappers on enable_thinking, preventing
         // spontaneous thinking during tool-use when thinking is disabled.
-        let openai_jinja_env = super::jinja_helpers::load_openai_template(model_type, repo_root).and_then(|tmpl| {
-            tracing::info!("Loaded OpenAI-variant Jinja template for {model_type}");
-            super::jinja_helpers::build_jinja_env(&tmpl).ok()
-        });
+        let openai_jinja_env = super::jinja_helpers::load_openai_template(model_type, repo_root)
+            .and_then(|tmpl| {
+                tracing::info!("Loaded OpenAI-variant Jinja template for {model_type}");
+                super::jinja_helpers::build_jinja_env(&tmpl).ok()
+            });
 
         tracing::info!("Loaded tokenizer from {}", tokenizer_path.display());
         Ok(Self {
@@ -63,10 +65,8 @@ impl ChatTokenizer {
         })
     }
 
-    /// Build a precompiled minijinja Environment from the chat template.
-    /// Leaks the template string to 'static — acceptable since one ChatTokenizer
-    /// lives for the entire server lifetime.
-
+    /// Returns a borrowed reference to the underlying HF tokenizer (for
+    /// callers that need to drive low-level encode/decode directly).
     pub fn inner(&self) -> &tokenizers::Tokenizer {
         &self.tokenizer
     }
@@ -176,7 +176,7 @@ impl ChatTokenizer {
     }
 
     /// Apply the OpenAI-variant template (if available), falling back to the default.
-    /// The OpenAI variant gates historical <think> wrappers on enable_thinking,
+    /// The OpenAI variant gates historical `<think>` wrappers on enable_thinking,
     /// preventing the model from learning a "always think" pattern during tool use.
     pub fn apply_chat_template_openai(
         &self,

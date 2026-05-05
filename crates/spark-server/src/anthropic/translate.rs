@@ -26,15 +26,15 @@ use crate::openai;
 use crate::tool_parser;
 
 #[allow(unused_imports)]
-use super::types::*;
+use super::convert::*;
+#[allow(unused_imports)]
+use super::handlers_stream::*;
 #[allow(unused_imports)]
 use super::helpers::*;
 #[allow(unused_imports)]
-use super::convert::*;
-#[allow(unused_imports)]
 use super::translator::*;
 #[allow(unused_imports)]
-use super::handlers_stream::*;
+use super::types::*;
 
 /// Audit the Anthropic→OpenAI translation for structural drift.
 ///
@@ -148,7 +148,9 @@ pub(super) fn audit_translation_drift(req: &MessagesRequest, chat_json: &serde_j
         && (openai_first_role != Some("system")
             || openai_first_content.is_none_or(|s| s.trim().is_empty()))
     {
-        anomalies.push("non-empty Anthropic system did NOT produce a non-empty system message".to_string());
+        anomalies.push(
+            "non-empty Anthropic system did NOT produce a non-empty system message".to_string(),
+        );
     }
 
     if anomalies.is_empty() {
@@ -182,11 +184,7 @@ pub(super) fn anthropic_to_chat_request_json(req: &MessagesRequest) -> serde_jso
                 .iter()
                 .filter(|b| {
                     b.block_type == "text"
-                        && !b
-                            .text
-                            .as_deref()
-                            .unwrap_or("")
-                            .starts_with("x-anthropic-")
+                        && !b.text.as_deref().unwrap_or("").starts_with("x-anthropic-")
                 })
                 .filter_map(|b| b.text.clone())
                 .collect::<Vec<_>>()
@@ -299,22 +297,24 @@ pub(super) fn anthropic_to_chat_request_json(req: &MessagesRequest) -> serde_jso
 
     // tool_choice mapping
     let tool_choice_json: Option<serde_json::Value> =
-        req.tool_choice.as_ref().map(|tc| match tc.choice_type.as_str() {
-            "any" => serde_json::json!("required"),
-            "auto" => serde_json::json!("auto"),
-            "none" => serde_json::json!("none"),
-            "tool" => {
-                if let Some(name) = &tc.name {
-                    serde_json::json!({
-                        "type": "function",
-                        "function": { "name": name },
-                    })
-                } else {
-                    serde_json::json!("auto")
+        req.tool_choice
+            .as_ref()
+            .map(|tc| match tc.choice_type.as_str() {
+                "any" => serde_json::json!("required"),
+                "auto" => serde_json::json!("auto"),
+                "none" => serde_json::json!("none"),
+                "tool" => {
+                    if let Some(name) = &tc.name {
+                        serde_json::json!({
+                            "type": "function",
+                            "function": { "name": name },
+                        })
+                    } else {
+                        serde_json::json!("auto")
+                    }
                 }
-            }
-            _ => serde_json::json!("auto"),
-        });
+                _ => serde_json::json!("auto"),
+            });
 
     let mut chat = serde_json::json!({
         "model": req.model,
@@ -357,7 +357,10 @@ pub(super) fn anthropic_to_chat_request_json(req: &MessagesRequest) -> serde_jso
 /// Translate a non-streaming chat-completion JSON body into Anthropic's
 /// `MessagesResponse` shape. Reads the body via untyped `serde_json::Value`
 /// so we don't need ChatCompletionResponse to derive Deserialize.
-pub(super) fn chat_to_anthropic_response(chat_value: &serde_json::Value, model: String) -> MessagesResponse {
+pub(super) fn chat_to_anthropic_response(
+    chat_value: &serde_json::Value,
+    model: String,
+) -> MessagesResponse {
     let id = chat_value
         .get("id")
         .and_then(|v| v.as_str())
@@ -379,10 +382,7 @@ pub(super) fn chat_to_anthropic_response(chat_value: &serde_json::Value, model: 
         .and_then(|c| c.get(0))
         .cloned()
         .unwrap_or_default();
-    let msg = choice
-        .get("message")
-        .cloned()
-        .unwrap_or_default();
+    let msg = choice.get("message").cloned().unwrap_or_default();
     let finish_reason = choice
         .get("finish_reason")
         .and_then(|v| v.as_str())
@@ -404,11 +404,12 @@ pub(super) fn chat_to_anthropic_response(chat_value: &serde_json::Value, model: 
 
     // Text content
     if let Some(text) = msg.get("content").and_then(|v| v.as_str())
-        && !text.is_empty() {
-            content.push(ResponseBlock::Text {
-                text: text.to_string(),
-            });
-        }
+        && !text.is_empty()
+    {
+        content.push(ResponseBlock::Text {
+            text: text.to_string(),
+        });
+    }
 
     // Tool calls
     if let Some(tcs) = msg.get("tool_calls").and_then(|v| v.as_array()) {

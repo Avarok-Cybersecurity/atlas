@@ -51,10 +51,7 @@ pub(crate) struct SamplingDefaults {
     pub(crate) min_p: f32,
 }
 
-pub(crate) fn load_sampling_defaults(
-    model_dir: &Path,
-    args: &cli::ServeArgs,
-) -> SamplingDefaults {
+pub(crate) fn load_sampling_defaults(model_dir: &Path, args: &cli::ServeArgs) -> SamplingDefaults {
     let gen_config_path = model_dir.join("generation_config.json");
     let gen_cfg = std::fs::read_to_string(&gen_config_path)
         .ok()
@@ -150,10 +147,7 @@ pub(crate) fn log_response_store_audit(
     }
 }
 
-pub(crate) fn log_behavior_audit(
-    args: &cli::ServeArgs,
-    ptx_set: &atlas_kernels::TargetPtxSet,
-) {
+pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels::TargetPtxSet) {
     if !ptx_set.behavior.thinking_in_tools {
         tracing::info!("Model behavior: thinking disabled when tools active (MODEL.toml)");
     }

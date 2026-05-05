@@ -229,8 +229,8 @@ pub mod mock {
     //! Mock GPU backend for unit tests (no GPU required).
 
     use super::*;
-    use std::collections::HashMap;
     use parking_lot::Mutex;
+    use std::collections::HashMap;
 
     #[derive(Debug)]
     pub struct MockAlloc {
@@ -276,10 +276,7 @@ pub mod mock {
         }
 
         pub fn read_alloc(&self, ptr: DevicePtr) -> Option<Vec<u8>> {
-            self.allocs
-                .lock()
-                .get(&ptr.0)
-                .map(|a| a.data.clone())
+            self.allocs.lock().get(&ptr.0).map(|a| a.data.clone())
         }
     }
 

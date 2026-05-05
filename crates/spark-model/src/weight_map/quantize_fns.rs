@@ -53,7 +53,7 @@ pub fn quantize_to_fp8(
 ///
 /// Expects two tensors in the store:
 ///   - `{name}.weight`: FP8E4M3 [N, K] (1 byte per element)
-///   - `{name}.weight_scale`: f32 [N] per-row dequant scale
+///   - `{name}.weight_scale`: f32 `[N]` per-row dequant scale
 ///
 /// Both are already on GPU from safetensors mmap — no conversion needed.
 /// Returns an [`Fp8Weight`] ready for the `w8a16_gemv` LUT kernel.
@@ -118,4 +118,3 @@ pub fn load_fp8_weight(store: &WeightStore, name: &str, gpu: &dyn GpuBackend) ->
         k: k as u32,
     })
 }
-

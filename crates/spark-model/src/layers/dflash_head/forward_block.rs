@@ -38,10 +38,7 @@ impl BlockDiffusionDraftHead {
         // context, distant history adds noise to attention.
         // ATLAS_DFLASH_DEBUG_CTX_OFF=1 disables ctx entirely (eff_ctx=0)
         // for A/B testing whether the drafter actually responds to ctx.
-        let force_no_ctx = std::env::var("ATLAS_DFLASH_DEBUG_CTX_OFF")
-            .ok()
-            .as_deref()
-            == Some("1");
+        let force_no_ctx = std::env::var("ATLAS_DFLASH_DEBUG_CTX_OFF").ok().as_deref() == Some("1");
         let force_ctx_used: Option<usize> = std::env::var("ATLAS_DFLASH_DEBUG_CTX_USED")
             .ok()
             .and_then(|s| s.parse::<usize>().ok());
@@ -63,10 +60,7 @@ impl BlockDiffusionDraftHead {
         // Debug dump gated by env var: prints first 10 BF16 floats of key
         // intermediates so a Python reference run on the same checkpoint
         // can be compared element-wise. Use ATLAS_DFLASH_DEBUG_DUMP=1.
-        let debug_dump = std::env::var("ATLAS_DFLASH_DEBUG_DUMP")
-            .ok()
-            .as_deref()
-            == Some("1");
+        let debug_dump = std::env::var("ATLAS_DFLASH_DEBUG_DUMP").ok().as_deref() == Some("1");
         let dump_bf16 = |label: &str, ptr: spark_runtime::gpu::DevicePtr, n: usize| -> Result<()> {
             if !debug_dump {
                 return Ok(());
@@ -109,8 +103,7 @@ impl BlockDiffusionDraftHead {
                 let mut bytes = Vec::with_capacity(n_rows * n_cols * 2);
                 for i in 0..n_rows {
                     for j in 0..n_cols {
-                        let v = 0.01_f32 * ((i + 1) as f32) * ((j + 1) as f32)
-                            / (n_cols as f32);
+                        let v = 0.01_f32 * ((i + 1) as f32) * ((j + 1) as f32) / (n_cols as f32);
                         // f32 → bf16 (truncate-to-zero of low 16 bits).
                         let bits = v.to_bits();
                         let bf16_bits = (bits >> 16) as u16;
@@ -179,11 +172,7 @@ impl BlockDiffusionDraftHead {
                 )?;
             }
             if eff_ctx > 0 {
-                dump_bf16(
-                    "step0.fc_proj.pre_norm[0]",
-                    self.scratch.fc_proj,
-                    10,
-                )?;
+                dump_bf16("step0.fc_proj.pre_norm[0]", self.scratch.fc_proj, 10)?;
                 ops::rms_norm(
                     gpu,
                     self.kernels.rms_norm,
@@ -212,10 +201,7 @@ impl BlockDiffusionDraftHead {
             .map(|i| (ctx_start + i) as i32)
             .chain((0..self.gamma).map(|i| (position + i) as i32))
             .collect();
-        let pos_bytes: Vec<u8> = pos_host
-            .iter()
-            .flat_map(|p| p.to_le_bytes())
-            .collect();
+        let pos_bytes: Vec<u8> = pos_host.iter().flat_map(|p| p.to_le_bytes()).collect();
         gpu.copy_h2d(&pos_bytes, self.scratch.position_ids)?;
         if debug_dump {
             tracing::info!(
@@ -239,10 +225,12 @@ impl BlockDiffusionDraftHead {
                 eff_ctx * self.hidden_size * bf16,
             )?;
         }
-        let token_ids_host: Vec<i32> = std::iter::repeat(0i32)
-            .take(eff_ctx)
+        let token_ids_host: Vec<i32> = std::iter::repeat_n(0i32, eff_ctx)
             .chain(std::iter::once(last_token as i32))
-            .chain(std::iter::repeat(self.mask_token_id as i32).take(self.gamma - 1))
+            .chain(std::iter::repeat_n(
+                self.mask_token_id as i32,
+                self.gamma - 1,
+            ))
             .collect();
         if debug_dump {
             tracing::info!(
@@ -288,15 +276,17 @@ impl BlockDiffusionDraftHead {
             let mut bytes = Vec::with_capacity(self.gamma * self.hidden_size * 2);
             for t in 0..self.gamma {
                 for j in 0..self.hidden_size {
-                    let v = 0.001_f32 * ((t + 1) as f32) * ((j + 1) as f32)
-                        / (self.hidden_size as f32);
+                    let v =
+                        0.001_f32 * ((t + 1) as f32) * ((j + 1) as f32) / (self.hidden_size as f32);
                     let bf16_bits = (v.to_bits() >> 16) as u16;
                     bytes.extend_from_slice(&bf16_bits.to_le_bytes());
                 }
             }
             gpu.copy_h2d(
                 &bytes,
-                self.scratch.stream_buf.offset(eff_ctx * self.hidden_size * bf16),
+                self.scratch
+                    .stream_buf
+                    .offset(eff_ctx * self.hidden_size * bf16),
             )?;
         }
 
@@ -366,10 +356,7 @@ impl BlockDiffusionDraftHead {
 
         // ── Step 5: argmax per row → γ token ids ──
         for i in 0..self.gamma {
-            let logits_row = self
-                .scratch
-                .logits
-                .offset(i * self.vocab_size * bf16);
+            let logits_row = self.scratch.logits.offset(i * self.vocab_size * bf16);
             let token_slot = self.scratch.draft_tokens_dev.offset(i * 4);
             ops::argmax_bf16(
                 gpu,

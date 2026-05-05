@@ -66,9 +66,10 @@ pub fn parse_quantization_config(raw: &serde_json::Value) -> Option<Quantization
     {
         for v in arr {
             if let Some(s) = v.as_str()
-                && !ignore_modules.contains(&s.to_string()) {
-                    ignore_modules.push(s.to_string());
-                }
+                && !ignore_modules.contains(&s.to_string())
+            {
+                ignore_modules.push(s.to_string());
+            }
         }
     }
 
@@ -85,4 +86,3 @@ pub fn parse_quantization_config(raw: &serde_json::Value) -> Option<Quantization
         ignore_modules,
     })
 }
-

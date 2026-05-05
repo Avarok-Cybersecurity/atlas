@@ -3,15 +3,13 @@
 //! MTP head constructor.
 
 use anyhow::Result;
+use parking_lot::Mutex;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::{KvCacheConfig, KvCacheDtype, PagedKvCache};
-use parking_lot::Mutex;
 
 use super::{MtpHead, MtpQuantization, ProjectionWeight};
 use crate::layers::MoeLayer;
-use crate::weight_map::{
-    DenseWeight, MoeWeights, MtpWeights, QuantizedWeight, quantize_to_nvfp4,
-};
+use crate::weight_map::{DenseWeight, MoeWeights, MtpWeights, QuantizedWeight, quantize_to_nvfp4};
 
 impl MtpHead {
     pub fn new(

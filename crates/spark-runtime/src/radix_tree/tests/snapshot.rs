@@ -9,7 +9,6 @@ use crate::radix_tree::RadixTree;
 use super::super::hash_token_prefix;
 use super::super::snapshot::SsmSnapshotIndex;
 
-
 #[test]
 fn test_insert_without_snapshot() {
     let tree = RadixTree::new();

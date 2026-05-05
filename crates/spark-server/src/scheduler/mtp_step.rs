@@ -4,7 +4,6 @@
 
 use super::*;
 
-
 /// MTP-aware step: bootstrap sequences without drafts, then verify via CUDA graph.
 /// Supports K=2 (num_drafts=1) and K=3 (num_drafts=2).
 pub fn step_mtp(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: usize) {
@@ -70,7 +69,14 @@ pub fn step_mtp(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: usize) 
             continue;
         }
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(tok, a.seq.seq_len, num_drafts, &mut a.seq, 0, _mtp_grammar_mask.as_deref()) {
+        match model.run_mtp_propose_multi(
+            tok,
+            a.seq.seq_len,
+            num_drafts,
+            &mut a.seq,
+            0,
+            _mtp_grammar_mask.as_deref(),
+        ) {
             Ok(drafts) if !drafts.is_empty() => {
                 tracing::debug!("MTP bootstrap: tok={tok} → drafts={drafts:?}");
                 a.pending_drafts = drafts;

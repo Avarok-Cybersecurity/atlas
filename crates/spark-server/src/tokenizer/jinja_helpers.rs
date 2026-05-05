@@ -49,7 +49,7 @@ pub(super) fn build_jinja_env(chat_template: &str) -> Result<minijinja::Environm
     // `UnknownMethod` errors, so it is a no-cost compat layer.
     env.set_unknown_method_callback(
         |state, value, method, args| -> Result<minijinja::Value, minijinja::Error> {
-            use minijinja::value::{from_args, ValueKind};
+            use minijinja::value::{ValueKind, from_args};
             if value.kind() == ValueKind::Map {
                 match method {
                     "items" => {
@@ -58,7 +58,8 @@ pub(super) fn build_jinja_env(chat_template: &str) -> Result<minijinja::Environm
                     }
                     "keys" => {
                         let _: () = from_args(args)?;
-                        return state.apply_filter("dictsort", std::slice::from_ref(value))
+                        return state
+                            .apply_filter("dictsort", std::slice::from_ref(value))
                             .and_then(|sorted| {
                                 state.apply_filter(
                                     "map",
@@ -73,7 +74,8 @@ pub(super) fn build_jinja_env(chat_template: &str) -> Result<minijinja::Environm
                     }
                     "values" => {
                         let _: () = from_args(args)?;
-                        return state.apply_filter("dictsort", std::slice::from_ref(value))
+                        return state
+                            .apply_filter("dictsort", std::slice::from_ref(value))
                             .and_then(|sorted| {
                                 state.apply_filter(
                                     "map",
@@ -114,10 +116,7 @@ pub(super) fn load_override_template(model_type: &str, repo_root: Option<&Path>)
             r.join(TEMPLATE_OVERRIDE_DIR)
                 .join(format!("{model_type}.jinja"))
         }),
-        Some(
-            std::path::PathBuf::from(TEMPLATE_OVERRIDE_DIR)
-                .join(format!("{model_type}.jinja")),
-        ),
+        Some(std::path::PathBuf::from(TEMPLATE_OVERRIDE_DIR).join(format!("{model_type}.jinja"))),
     ];
     for candidate in candidates.into_iter().flatten() {
         if candidate.exists() {
@@ -181,8 +180,8 @@ pub(super) fn load_config_template(model_dir: &Path) -> Result<Option<String>> {
     if !config_path.exists() {
         return Ok(None);
     }
-    let config_json = std::fs::read_to_string(&config_path)
-        .context("Failed to read tokenizer_config.json")?;
+    let config_json =
+        std::fs::read_to_string(&config_path).context("Failed to read tokenizer_config.json")?;
     let config: serde_json::Value =
         serde_json::from_str(&config_json).context("Failed to parse tokenizer_config.json")?;
     match config.get("chat_template").and_then(|v| v.as_str()) {

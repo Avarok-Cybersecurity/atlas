@@ -285,13 +285,15 @@ impl ChatCompletionRequest {
             return true;
         }
         if let Some(ref rc) = self.reasoning
-            && rc.effort.is_some() {
-                return true;
-            }
+            && rc.effort.is_some()
+        {
+            return true;
+        }
         if let Some(ref kw) = self.chat_template_kwargs
-            && (kw.thinking_budget.is_some() || kw.enable_thinking.is_some()) {
-                return true;
-            }
+            && (kw.thinking_budget.is_some() || kw.enable_thinking.is_some())
+        {
+            return true;
+        }
         if self.enable_thinking {
             return true;
         }
@@ -302,9 +304,10 @@ impl ChatCompletionRequest {
         // 1. Anthropic: thinking.budget_tokens
         if let Some(ref tc) = self.thinking {
             if let Some(ref t) = tc.thinking_type
-                && t == "disabled" {
-                    return (false, Some(0));
-                }
+                && t == "disabled"
+            {
+                return (false, Some(0));
+            }
             if let Some(budget) = tc.budget_tokens {
                 return (true, Some(budget));
             }
@@ -319,18 +322,19 @@ impl ChatCompletionRequest {
 
         // 3. OpenAI: reasoning.effort
         if let Some(ref rc) = self.reasoning
-            && let Some(ref effort) = rc.effort {
-                let budget = match effort.as_str() {
-                    "none" => 0,
-                    "minimal" => 64,
-                    "low" => 128,
-                    "medium" => 256,
-                    "high" => 512,
-                    "xhigh" | "max" => 1024,
-                    _ => DEFAULT_THINKING_BUDGET,
-                };
-                return (budget > 0, Some(budget));
-            }
+            && let Some(ref effort) = rc.effort
+        {
+            let budget = match effort.as_str() {
+                "none" => 0,
+                "minimal" => 64,
+                "low" => 128,
+                "medium" => 256,
+                "high" => 512,
+                "xhigh" | "max" => 1024,
+                _ => DEFAULT_THINKING_BUDGET,
+            };
+            return (budget > 0, Some(budget));
+        }
 
         // 4. vLLM stable: chat_template_kwargs
         if let Some(ref kwargs) = self.chat_template_kwargs {
@@ -386,4 +390,3 @@ where
         RawStop::Null(()) => Ok(Vec::new()),
     }
 }
-

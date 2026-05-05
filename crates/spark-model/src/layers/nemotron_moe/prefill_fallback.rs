@@ -72,7 +72,10 @@ impl NemotronMoeLayer {
             }
 
             if self.moe_latent_size > 0 {
-                let token_latent = p.latent_base.unwrap().offset(t * p.latent as usize * 2usize);
+                let token_latent = p
+                    .latent_base
+                    .unwrap()
+                    .offset(t * p.latent as usize * 2usize);
                 let expert_up_out = ctx.buffers.expert_up_out();
                 ops::moe_expert_gemv(
                     ctx.gpu,
@@ -89,8 +92,9 @@ impl NemotronMoeLayer {
                     0,
                     stream,
                 )?;
-                let token_shared_up =
-                    p.shared_up_out_base.offset(t * p.shared_inter as usize * 2usize);
+                let token_shared_up = p
+                    .shared_up_out_base
+                    .offset(t * p.shared_inter as usize * 2usize);
                 let expert_down_out = ctx.buffers.expert_down_out();
                 let shared_down_out = ctx.buffers.ssm_deinterleaved();
                 let max_n = (p.h as u32).max(p.latent);
@@ -178,8 +182,9 @@ impl NemotronMoeLayer {
                     0,
                     stream,
                 )?;
-                let token_shared_up =
-                    p.shared_up_out_base.offset(t * p.shared_inter as usize * 2usize);
+                let token_shared_up = p
+                    .shared_up_out_base
+                    .offset(t * p.shared_inter as usize * 2usize);
                 let expert_down_out = ctx.buffers.expert_down_out();
                 let shared_down_out = ctx.buffers.ssm_deinterleaved();
                 let smem = (p.shared_inter.max(p.inter) as usize) * 4;

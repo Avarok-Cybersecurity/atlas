@@ -5,7 +5,6 @@
 use super::*;
 
 impl Qwen3SsmLayer {
-
     pub(super) fn prefill_gdn_full_inner(
         &self,
         state: &mut dyn LayerState,

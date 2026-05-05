@@ -26,15 +26,15 @@ use crate::openai;
 use crate::tool_parser;
 
 #[allow(unused_imports)]
-use super::types::*;
+use super::convert::*;
+#[allow(unused_imports)]
+use super::handlers_stream::*;
 #[allow(unused_imports)]
 use super::helpers::*;
 #[allow(unused_imports)]
-use super::convert::*;
-#[allow(unused_imports)]
 use super::translate::*;
 #[allow(unused_imports)]
-use super::handlers_stream::*;
+use super::types::*;
 
 /// Open-block tracker for the streaming translator's state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,9 +193,10 @@ impl AnthropicTranslator {
         // Pick up the chat-completion id on the first chunk that
         // carries it (typically the role chunk).
         if self.msg_id.is_empty()
-            && let Some(s) = val.get("id").and_then(|v| v.as_str()) {
-                self.msg_id = s.to_string();
-            }
+            && let Some(s) = val.get("id").and_then(|v| v.as_str())
+        {
+            self.msg_id = s.to_string();
+        }
 
         let choice = match val.get("choices").and_then(|c| c.get(0)) {
             Some(c) => c,
@@ -255,58 +256,60 @@ impl AnthropicTranslator {
         // the server has stalled (2026-04-25 incident).
         if let Some(d) = delta
             && let Some(text) = d.get("reasoning_content").and_then(|v| v.as_str())
-                && !text.is_empty() {
-                    if !matches!(self.open_block, OpenBlock::Thinking) {
-                        if let Some(stop) = self.close_open_block() {
-                            out.push(stop);
-                        }
-                        out.push(Self::make_event(
-                            "content_block_start",
-                            serde_json::json!({
-                                "type": "content_block_start",
-                                "index": self.block_idx,
-                                "content_block": {"type": "thinking", "thinking": ""},
-                            }),
-                        ));
-                        self.open_block = OpenBlock::Thinking;
-                    }
-                    out.push(Self::make_event(
-                        "content_block_delta",
-                        serde_json::json!({
-                            "type": "content_block_delta",
-                            "index": self.block_idx,
-                            "delta": {"type": "thinking_delta", "thinking": text},
-                        }),
-                    ));
+            && !text.is_empty()
+        {
+            if !matches!(self.open_block, OpenBlock::Thinking) {
+                if let Some(stop) = self.close_open_block() {
+                    out.push(stop);
                 }
+                out.push(Self::make_event(
+                    "content_block_start",
+                    serde_json::json!({
+                        "type": "content_block_start",
+                        "index": self.block_idx,
+                        "content_block": {"type": "thinking", "thinking": ""},
+                    }),
+                ));
+                self.open_block = OpenBlock::Thinking;
+            }
+            out.push(Self::make_event(
+                "content_block_delta",
+                serde_json::json!({
+                    "type": "content_block_delta",
+                    "index": self.block_idx,
+                    "delta": {"type": "thinking_delta", "thinking": text},
+                }),
+            ));
+        }
 
         // Text content delta.
         if let Some(d) = delta {
             if let Some(text) = d.get("content").and_then(|v| v.as_str())
-                && !text.is_empty() {
-                    if !matches!(self.open_block, OpenBlock::Text) {
-                        if let Some(stop) = self.close_open_block() {
-                            out.push(stop);
-                        }
-                        out.push(Self::make_event(
-                            "content_block_start",
-                            serde_json::json!({
-                                "type": "content_block_start",
-                                "index": self.block_idx,
-                                "content_block": {"type": "text", "text": ""},
-                            }),
-                        ));
-                        self.open_block = OpenBlock::Text;
+                && !text.is_empty()
+            {
+                if !matches!(self.open_block, OpenBlock::Text) {
+                    if let Some(stop) = self.close_open_block() {
+                        out.push(stop);
                     }
                     out.push(Self::make_event(
-                        "content_block_delta",
+                        "content_block_start",
                         serde_json::json!({
-                            "type": "content_block_delta",
+                            "type": "content_block_start",
                             "index": self.block_idx,
-                            "delta": {"type": "text_delta", "text": text},
+                            "content_block": {"type": "text", "text": ""},
                         }),
                     ));
+                    self.open_block = OpenBlock::Text;
                 }
+                out.push(Self::make_event(
+                    "content_block_delta",
+                    serde_json::json!({
+                        "type": "content_block_delta",
+                        "index": self.block_idx,
+                        "delta": {"type": "text_delta", "text": text},
+                    }),
+                ));
+            }
 
             // Tool-call deltas. OpenAI emits these as an array; each
             // entry has `index` (which OpenAI tool-call slot it
@@ -314,8 +317,7 @@ impl AnthropicTranslator {
             // `function.arguments` (a string fragment).
             if let Some(tcs) = d.get("tool_calls").and_then(|v| v.as_array()) {
                 for tc in tcs {
-                    let oa_idx =
-                        tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                    let oa_idx = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                     let id = tc
                         .get("id")
                         .and_then(|v| v.as_str())
@@ -343,8 +345,7 @@ impl AnthropicTranslator {
                             // fragments stay queued.
                             continue;
                         }
-                        if !matches!(self.open_block, OpenBlock::ToolUse(idx) if idx == oa_idx)
-                        {
+                        if !matches!(self.open_block, OpenBlock::ToolUse(idx) if idx == oa_idx) {
                             if let Some(stop) = self.close_open_block() {
                                 out.push(stop);
                             }
@@ -364,8 +365,7 @@ impl AnthropicTranslator {
                             self.open_block = OpenBlock::ToolUse(oa_idx);
                             self.tool_started.insert(oa_idx, ());
                         }
-                    } else if !matches!(self.open_block, OpenBlock::ToolUse(idx) if idx == oa_idx)
-                    {
+                    } else if !matches!(self.open_block, OpenBlock::ToolUse(idx) if idx == oa_idx) {
                         // Should be unreachable now that
                         // `close_open_block` clears `tool_started`
                         // for `ToolUse` (F3, 2026-04-26): if the
@@ -412,28 +412,29 @@ impl AnthropicTranslator {
         // message_delta + message_stop. The OpenAI stream may follow
         // up with a [DONE] sentinel after this; we ignore it.
         if let Some(fr) = choice.get("finish_reason").and_then(|v| v.as_str())
-            && !self.finished {
-                self.ensure_message_start(out);
-                if let Some(stop) = self.close_open_block() {
-                    out.push(stop);
-                }
-                out.push(Self::make_event(
-                    "message_delta",
-                    serde_json::json!({
-                        "type": "message_delta",
-                        "delta": {
-                            "stop_reason": convert_stop_reason(fr),
-                            "stop_sequence": serde_json::Value::Null,
-                        },
-                        "usage": {"output_tokens": self.completion_tokens},
-                    }),
-                ));
-                out.push(Self::make_event(
-                    "message_stop",
-                    serde_json::json!({"type": "message_stop"}),
-                ));
-                self.finished = true;
+            && !self.finished
+        {
+            self.ensure_message_start(out);
+            if let Some(stop) = self.close_open_block() {
+                out.push(stop);
             }
+            out.push(Self::make_event(
+                "message_delta",
+                serde_json::json!({
+                    "type": "message_delta",
+                    "delta": {
+                        "stop_reason": convert_stop_reason(fr),
+                        "stop_sequence": serde_json::Value::Null,
+                    },
+                    "usage": {"output_tokens": self.completion_tokens},
+                }),
+            ));
+            out.push(Self::make_event(
+                "message_stop",
+                serde_json::json!({"type": "message_stop"}),
+            ));
+            self.finished = true;
+        }
     }
 
     /// Stream ended without an explicit `finish_reason`. Best-effort

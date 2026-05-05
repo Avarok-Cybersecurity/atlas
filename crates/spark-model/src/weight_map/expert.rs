@@ -32,9 +32,9 @@ pub struct AttentionWeights {
     pub v_proj: DenseWeight,
     /// O projection: [num_heads * head_dim, hidden_size] NVFP4.
     pub o_proj: QuantizedWeight,
-    /// Q RMS norm weight: [head_dim] BF16 (per-head Qwen3-family convention).
+    /// Q RMS norm weight: `[head_dim]` BF16 (per-head Qwen3-family convention).
     pub q_norm: DenseWeight,
-    /// K RMS norm weight: [head_dim] BF16 (per-head Qwen3-family convention).
+    /// K RMS norm weight: `[head_dim]` BF16 (per-head Qwen3-family convention).
     pub k_norm: DenseWeight,
     /// MiniMax-style full-hidden Q RMSNorm weight: [num_heads * head_dim] BF16.
     ///
@@ -64,11 +64,11 @@ pub struct SsmWeights {
     pub in_proj_ba: DenseWeight,
     /// Conv1d weight: [d_inner, 1, d_conv] BF16.
     pub conv1d: DenseWeight,
-    /// A_log parameter: [num_v_heads] FP32.
+    /// A_log parameter: `[num_v_heads]` FP32.
     pub a_log: DenseWeight,
-    /// dt_bias parameter: [num_v_heads] FP32.
+    /// dt_bias parameter: `[num_v_heads]` FP32.
     pub dt_bias: DenseWeight,
-    /// Gate norm weight: [hidden_size] BF16.
+    /// Gate norm weight: `[hidden_size]` BF16.
     pub norm: DenseWeight,
     /// Output projection: [hidden_size, hidden_size] NVFP4.
     pub out_proj: QuantizedWeight,
@@ -222,4 +222,3 @@ impl From<Fp8ExpertWeight> for QuantExpertWeight {
         }
     }
 }
-

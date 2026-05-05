@@ -351,4 +351,3 @@ pub fn bf16_to_fp8(
         .arg_u32(total_elements)
         .launch(stream)
 }
-

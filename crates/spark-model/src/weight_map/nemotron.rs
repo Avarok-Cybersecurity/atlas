@@ -16,19 +16,19 @@ use super::*;
 pub struct NemotronSsmWeights {
     /// in_proj: [in_proj_size, hidden_size] NVFP4.
     pub in_proj: QuantizedWeight,
-    /// out_proj: [hidden_size, d_inner] NVFP4.
+    /// out_proj: `[hidden_size, d_inner]` NVFP4.
     pub out_proj: QuantizedWeight,
-    /// conv1d weight: [d_xBC, 1, conv_kernel] BF16.
+    /// conv1d weight: `[d_xBC, 1, conv_kernel]` BF16.
     pub conv1d_weight: DenseWeight,
-    /// conv1d bias: [d_xBC] BF16.
+    /// conv1d bias: `[d_xBC]` BF16.
     pub conv1d_bias: DenseWeight,
-    /// A_log: [mamba_num_heads] BF16 (cast to FP32 at runtime).
+    /// A_log: `[mamba_num_heads]` BF16 (cast to FP32 at runtime).
     pub a_log: DenseWeight,
-    /// D skip-connection: [mamba_num_heads] BF16.
+    /// D skip-connection: `[mamba_num_heads]` BF16.
     pub d_param: DenseWeight,
-    /// dt_bias: [mamba_num_heads] BF16.
+    /// dt_bias: `[mamba_num_heads]` BF16.
     pub dt_bias: DenseWeight,
-    /// SSM internal norm: [d_inner] BF16 (applied to y before gating with z).
+    /// SSM internal norm: `[d_inner]` BF16 (applied to y before gating with z).
     pub ssm_norm: DenseWeight,
 }
 
@@ -52,7 +52,7 @@ impl NemotronExpertWeight {
 pub struct NemotronMoeWeights {
     /// Router gate: [num_experts, hidden_size] F32→BF16.
     pub gate: DenseWeight,
-    /// Expert score correction bias: [num_experts] F32.
+    /// Expert score correction bias: `[num_experts]` F32.
     pub e_score_correction_bias: DenseWeight,
     /// Per-expert weights (routed): NVFP4.
     pub experts: Vec<NemotronExpertWeight>,
@@ -300,13 +300,11 @@ pub(crate) fn load_nemotron_moe(
     let moe_input = config.moe_input_size();
     let moe_inter = config.moe_intermediate_size;
     let first_local = (0..num_experts).find(|e| config.is_local_expert(*e));
-    let experts_are_nvfp4 = first_local.is_none_or(|e| {
-        store.contains(&format!("{p}.experts.{e}.up_proj.weight_scale_2"))
-    });
+    let experts_are_nvfp4 = first_local
+        .is_none_or(|e| store.contains(&format!("{p}.experts.{e}.up_proj.weight_scale_2")));
     let experts_are_fp8 = !experts_are_nvfp4
-        && first_local.is_some_and(|e| {
-            store.contains(&format!("{p}.experts.{e}.up_proj.weight_scale"))
-        });
+        && first_local
+            .is_some_and(|e| store.contains(&format!("{p}.experts.{e}.up_proj.weight_scale")));
     if !experts_are_nvfp4 && layer < 2 {
         tracing::info!(
             "L{layer} MoE experts: {} → NVFP4 (runtime quantization, {} experts)",
@@ -380,4 +378,3 @@ pub(crate) fn load_nemotron_moe(
         fc2_latent_proj,
     })
 }
-

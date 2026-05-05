@@ -87,9 +87,10 @@ impl IncomingMessage {
                                 let part_kind =
                                     po.get("type").and_then(|t| t.as_str()).unwrap_or("");
                                 if matches!(part_kind, "input_text" | "output_text" | "text")
-                                    && let Some(t) = po.get("text").and_then(|t| t.as_str()) {
-                                        text.push_str(t);
-                                    }
+                                    && let Some(t) = po.get("text").and_then(|t| t.as_str())
+                                {
+                                    text.push_str(t);
+                                }
                             }
                         }
                     }
@@ -228,4 +229,3 @@ where
     }
     Ok(out)
 }
-

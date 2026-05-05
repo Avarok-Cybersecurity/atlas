@@ -68,8 +68,7 @@ impl Qwen3AttentionLayer {
                 // Turbo8 scales to BF16 (~0.4% precision); WHT is back on by
                 // default. Turbo3/4 still use FP8 scales — they're affected
                 // less because their LUTs already have lower precision targets.
-                if self.wht_bf16_k.0 != 0
-                    && (head_dim == 128 || head_dim == 256 || head_dim == 512)
+                if self.wht_bf16_k.0 != 0 && (head_dim == 128 || head_dim == 256 || head_dim == 512)
                 {
                     use spark_runtime::kernel_args::KernelLaunch;
                     let total_heads = num_kv_heads * num_tokens;
@@ -129,10 +128,9 @@ impl Qwen3AttentionLayer {
             ),
             _ => {
                 // FP8 KV cache
-                if !graph_capture
-                    && let Some(ref cal) = self.fp8_calibration {
-                        cal.observe(gpu, k, v, num_tokens, num_kv_heads, head_dim, stream)?;
-                    }
+                if !graph_capture && let Some(ref cal) = self.fp8_calibration {
+                    cal.observe(gpu, k, v, num_tokens, num_kv_heads, head_dim, stream)?;
+                }
                 let (k_scale, v_scale) = self.effective_fp8_scales();
                 ops::reshape_and_cache_fp8(
                     gpu,

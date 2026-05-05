@@ -9,8 +9,7 @@ use atlas_core::config::ModelConfig;
 use crate::cli;
 
 pub(crate) struct TokenizerRuntime {
-    pub(crate) reasoning_parser_box:
-        Option<Box<dyn crate::reasoning_parser::ReasoningParser>>,
+    pub(crate) reasoning_parser_box: Option<Box<dyn crate::reasoning_parser::ReasoningParser>>,
     pub(crate) think_end_token: Option<u32>,
     pub(crate) think_start_token: Option<u32>,
     pub(crate) reflection_suppress_ids: Vec<u32>,
@@ -149,11 +148,8 @@ pub(crate) fn resolve_tokenizer_runtime(
     let grammar_engine = {
         let stop_ids: Vec<i32> = eos_tokens.iter().map(|&id| id as i32).collect();
         let model_vocab_size = Some(config.vocab_size);
-        match grammar::GrammarEngine::from_tokenizer(
-            tokenizer.inner(),
-            model_vocab_size,
-            &stop_ids,
-        ) {
+        match grammar::GrammarEngine::from_tokenizer(tokenizer.inner(), model_vocab_size, &stop_ids)
+        {
             Ok(engine) => {
                 tracing::info!(
                     "Grammar engine initialized (vocab_size={}, vocab_type=auto-detected from tokenizer)",

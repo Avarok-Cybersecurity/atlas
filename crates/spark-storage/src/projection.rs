@@ -7,8 +7,8 @@
 
 use half::bf16;
 use rand::SeedableRng;
-use rand_chacha::ChaCha8Rng;
 use rand::distributions::Distribution;
+use rand_chacha::ChaCha8Rng;
 use rand_distr::StandardNormal;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

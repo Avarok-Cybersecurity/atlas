@@ -208,7 +208,7 @@ impl RateLimiter {
     /// caller's best guess at how many tokens this call will burn
     /// (prompt + max completion). Streaming callers pass their worst-case
     /// so the reservation is conservative; on completion they call
-    /// [`refund_tokens`] with the true-up.
+    /// `refund_tokens` with the true-up.
     pub fn admit(&self, key: &str, estimated_tokens: u64) -> RateDecision {
         let now = Instant::now();
         self.scrub_if_due(now);
@@ -411,7 +411,6 @@ fn hash_token(tok: &str) -> String {
     }
     format!("{h:016x}")
 }
-
 
 #[cfg(test)]
 #[path = "rate_limiter/tests.rs"]

@@ -43,7 +43,9 @@ pub(crate) fn load_weight_store(
             tracing::info!("Using fast weight loader (O_DIRECT + pipelined read/copy)");
             let mut loader = if ep_size > 1 {
                 spark_runtime::fast_weights::FastSafetensorsLoader::with_ep(
-                    ep_rank, ep_size, config.num_experts,
+                    ep_rank,
+                    ep_size,
+                    config.num_experts,
                 )
             } else {
                 spark_runtime::fast_weights::FastSafetensorsLoader::new()
@@ -59,9 +61,7 @@ pub(crate) fn load_weight_store(
         }
     } else {
         let mut loader = if ep_size > 1 {
-            spark_runtime::weights::SafetensorsLoader::with_ep(
-                ep_rank, ep_size, config.num_experts,
-            )
+            spark_runtime::weights::SafetensorsLoader::with_ep(ep_rank, ep_size, config.num_experts)
         } else {
             spark_runtime::weights::SafetensorsLoader::new()
         };

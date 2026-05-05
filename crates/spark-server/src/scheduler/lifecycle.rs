@@ -4,7 +4,6 @@
 
 use super::*;
 
-
 /// Send final response and free GPU resources for a completed sequence.
 pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
     let last_tok = a.output_tokens.last().copied();
@@ -30,23 +29,30 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
                 reasoning_tokens: a.thinking_tokens,
                 cached_prompt_tokens: a.cached_prompt_tokens,
             }) {
-                tracing::warn!("finish_sequence: streaming Done send failed (receiver dropped): {e}");
+                tracing::warn!(
+                    "finish_sequence: streaming Done send failed (receiver dropped): {e}"
+                );
             }
         }
         ResponseSink::Blocking(tx) => {
             if let Some(tx) = tx.take() {
                 let ttft_ms = a.decode_start.duration_since(a.request_start).as_secs_f64() * 1000.0;
                 let decode_ms = a.decode_start.elapsed().as_secs_f64() * 1000.0;
-                if tx.send(Ok(InferenceResponse {
-                    output_tokens: a.output_tokens.clone(),
-                    finish_reason: reason.to_string(),
-                    time_to_first_token_ms: ttft_ms,
-                    decode_time_ms: decode_ms,
-                    logprobs: std::mem::take(&mut a.logprobs_data),
-                    reasoning_tokens: a.thinking_tokens,
-                    cached_prompt_tokens: a.cached_prompt_tokens,
-                })).is_err() {
-                    tracing::warn!("finish_sequence: blocking response send failed (receiver dropped)");
+                if tx
+                    .send(Ok(InferenceResponse {
+                        output_tokens: a.output_tokens.clone(),
+                        finish_reason: reason.to_string(),
+                        time_to_first_token_ms: ttft_ms,
+                        decode_time_ms: decode_ms,
+                        logprobs: std::mem::take(&mut a.logprobs_data),
+                        reasoning_tokens: a.thinking_tokens,
+                        cached_prompt_tokens: a.cached_prompt_tokens,
+                    }))
+                    .is_err()
+                {
+                    tracing::warn!(
+                        "finish_sequence: blocking response send failed (receiver dropped)"
+                    );
                 }
             }
         }
@@ -106,7 +112,9 @@ pub fn send_error_to_sink(sink: &mut ResponseSink, msg: &str) {
     match sink {
         ResponseSink::Streaming(tx) => {
             if let Err(e) = tx.blocking_send(StreamEvent::Error(msg.to_string())) {
-                tracing::warn!("send_error_to_sink: streaming Error send failed (receiver dropped): {e}");
+                tracing::warn!(
+                    "send_error_to_sink: streaming Error send failed (receiver dropped): {e}"
+                );
             }
         }
         ResponseSink::Blocking(tx) => {

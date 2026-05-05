@@ -27,7 +27,14 @@ impl HighSpeedSwap {
         k_block_host: &[half::bf16],
         v_block_host: &[half::bf16],
     ) -> Result<()> {
-        self.offload_block_on_stream(ctx.stream, layer, block, k_block_dev, k_block_host, v_block_host)
+        self.offload_block_on_stream(
+            ctx.stream,
+            layer,
+            block,
+            k_block_dev,
+            k_block_host,
+            v_block_host,
+        )
     }
 
     /// Stream-only variant for production callers (spark-model decode path).
@@ -45,7 +52,13 @@ impl HighSpeedSwap {
         // the predictor's project_kv_block kernel reads it as BF16. Non-BF16
         // callers must use `offload_block_no_predict_on_stream`.
         self.offload_block_inner_on_stream(
-            stream, layer, block, k_block_dev, k_block_host, v_block_host, true,
+            stream,
+            layer,
+            block,
+            k_block_dev,
+            k_block_host,
+            v_block_host,
+            true,
         )
     }
 
@@ -63,7 +76,13 @@ impl HighSpeedSwap {
         v_block_host: &[half::bf16],
     ) -> Result<()> {
         self.offload_block_inner_on_stream(
-            stream, layer, block, 0, k_block_host, v_block_host, false,
+            stream,
+            layer,
+            block,
+            0,
+            k_block_host,
+            v_block_host,
+            false,
         )
     }
 
@@ -79,8 +98,12 @@ impl HighSpeedSwap {
         do_predict: bool,
     ) -> Result<()> {
         if do_predict {
-            self.predictor
-                .project_kv_block_on_stream(stream, layer as usize, block as usize, k_block_dev)?;
+            self.predictor.project_kv_block_on_stream(
+                stream,
+                layer as usize,
+                block as usize,
+                k_block_dev,
+            )?;
         }
         let bs = self.model.block_size as usize;
         let nkv = self.model.num_kv_heads as usize;
@@ -103,14 +126,10 @@ impl HighSpeedSwap {
                     v_stripe.extend_from_slice(&x.to_le_bytes());
                 }
             }
-            self.backend.write_from_host(
-                GroupKey::new(layer, block, kh as u16, KvKind::K),
-                &k_stripe,
-            )?;
-            self.backend.write_from_host(
-                GroupKey::new(layer, block, kh as u16, KvKind::V),
-                &v_stripe,
-            )?;
+            self.backend
+                .write_from_host(GroupKey::new(layer, block, kh as u16, KvKind::K), &k_stripe)?;
+            self.backend
+                .write_from_host(GroupKey::new(layer, block, kh as u16, KvKind::V), &v_stripe)?;
         }
         // Drop the resident-cache copy (if any). The on-disk image was just
         // overwritten; without invalidation, attend_layer_on_stream would
@@ -153,9 +172,7 @@ impl HighSpeedSwap {
         output_dev: u64,
     ) -> Result<()> {
         let bs = self.model.block_size as i32;
-        self.attend_layer_on_stream_with_q_pos(
-            stream, layer, seq_block_ids, q_dev, output_dev, bs,
-        )
+        self.attend_layer_on_stream_with_q_pos(stream, layer, seq_block_ids, q_dev, output_dev, bs)
     }
 
     /// Causal-masking variant: `last_block_valid_slots` controls how many
@@ -174,13 +191,29 @@ impl HighSpeedSwap {
     ) -> Result<()> {
         // 1. Project Q. 2. Score every block at this layer (only seq subset
         //    is consumed; the rest is wasted compute but score_blocks is µs).
-        self.predictor.project_q_on_stream(stream, q_dev, self.q_proj.ptr)?;
+        self.predictor
+            .project_q_on_stream(stream, q_dev, self.q_proj.ptr)?;
         let m = &self.model;
         let layer_a_g = self.predictor.a_g_dev_ptr()
-            + (layer as u64) * (m.max_blocks_per_layer as u64)
-                * (m.num_kv_heads as u64) * (m.block_size as u64) * (self.cfg.rank as u64) * 2;
-        self.predictor.score_blocks_on_stream(stream, self.q_proj.ptr, layer_a_g, self.block_scores_dev.ptr, m.max_blocks_per_layer as usize)?;
-        copy_d_to_h_async(self.score_host_buf.as_mut_ptr() as *mut c_void, self.block_scores_dev.ptr, self.score_host_buf.len() * 4, stream)?;
+            + (layer as u64)
+                * (m.max_blocks_per_layer as u64)
+                * (m.num_kv_heads as u64)
+                * (m.block_size as u64)
+                * (self.cfg.rank as u64)
+                * 2;
+        self.predictor.score_blocks_on_stream(
+            stream,
+            self.q_proj.ptr,
+            layer_a_g,
+            self.block_scores_dev.ptr,
+            m.max_blocks_per_layer as usize,
+        )?;
+        copy_d_to_h_async(
+            self.score_host_buf.as_mut_ptr() as *mut c_void,
+            self.block_scores_dev.ptr,
+            self.score_host_buf.len() * 4,
+            stream,
+        )?;
         stream_sync(stream)?;
 
         // 3. Tile loop.
@@ -214,7 +247,8 @@ impl HighSpeedSwap {
                 let slot = self.pool.assign(key, &candidates)?;
                 pinned.push(slot);
                 self.eviction.touch(slot);
-                self.eviction.record_score(slot, self.score_host_buf[blk as usize]);
+                self.eviction
+                    .record_score(slot, self.score_host_buf[blk as usize]);
                 // Find this block's index in the tile so the block_table is right.
                 let idx = tile.iter().position(|&x| x == blk).unwrap();
                 block_table[idx] = slot as i32;
@@ -233,8 +267,18 @@ impl HighSpeedSwap {
 
             // 4. Tiled attention launch.
             let counts = [(tile.len()) as i32];
-            copy_h_to_d_async(self.block_table_dev.ptr, block_table.as_ptr() as *const c_void, tile_cap * 4, stream)?;
-            copy_h_to_d_async(self.counts_dev.ptr, counts.as_ptr() as *const c_void, 4, stream)?;
+            copy_h_to_d_async(
+                self.block_table_dev.ptr,
+                block_table.as_ptr() as *const c_void,
+                tile_cap * 4,
+                stream,
+            )?;
+            copy_h_to_d_async(
+                self.counts_dev.ptr,
+                counts.as_ptr() as *const c_void,
+                4,
+                stream,
+            )?;
             let (s_blk, s_tok, s_kvh) = self.attn.scratch_pool_strides();
             let v_off = (self.model.num_kv_heads as u64)
                 * (self.model.block_size as u64)
@@ -248,13 +292,16 @@ impl HighSpeedSwap {
                 self.model.block_size as i32
             };
             self.attn.step_tile_on_stream(
-                stream, q_dev,
+                stream,
+                q_dev,
                 self.pool.pool_dev_ptr(),
                 self.pool.pool_dev_ptr() + v_off,
                 self.block_table_dev.ptr,
                 self.counts_dev.ptr,
                 1,
-                s_blk, s_tok, s_kvh,
+                s_blk,
+                s_tok,
+                s_kvh,
                 lbvs,
             )?;
             tile_idx = tile_end;
@@ -264,7 +311,13 @@ impl HighSpeedSwap {
     }
 
     /// Test/diag accessors.
-    pub fn pool(&self) -> &ScratchPool { &self.pool }
-    pub fn predictor(&self) -> &Predictor { &self.predictor }
-    pub fn config(&self) -> &HighSpeedSwapConfig { &self.cfg }
+    pub fn pool(&self) -> &ScratchPool {
+        &self.pool
+    }
+    pub fn predictor(&self) -> &Predictor {
+        &self.predictor
+    }
+    pub fn config(&self) -> &HighSpeedSwapConfig {
+        &self.cfg
+    }
 }

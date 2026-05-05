@@ -38,9 +38,9 @@ pub struct HighSpeedSwap {
     eviction: EvictionPolicy,
     // Reusable scratch buffers.
     q_proj: DeviceBuffer,
-    block_scores_dev: DeviceBuffer,    // [max_blocks] f32
-    block_table_dev: DeviceBuffer,     // [tile_capacity] i32
-    counts_dev: DeviceBuffer,          // [1] i32 (single seq)
+    block_scores_dev: DeviceBuffer, // [max_blocks] f32
+    block_table_dev: DeviceBuffer,  // [tile_capacity] i32
+    counts_dev: DeviceBuffer,       // [1] i32 (single seq)
     score_host_buf: Vec<f32>,
     // Disk-block-ID allocator (Phase 6.1.a, refactored). One global
     // allocator: a `disk_block_id` indexes the SAME logical position
@@ -59,7 +59,11 @@ struct DiskState {
 
 impl DiskState {
     fn new() -> Self {
-        Self { next_id: 0, free_list: Vec::new(), refcount: Vec::new() }
+        Self {
+            next_id: 0,
+            free_list: Vec::new(),
+            refcount: Vec::new(),
+        }
     }
 }
 
@@ -119,8 +123,18 @@ impl HighSpeedSwap {
         let score_host_buf = vec![0.0_f32; model.max_blocks_per_layer as usize];
         let disk_state = DiskState::new();
         Ok(Self {
-            cfg, model, predictor, pool, backend, attn, eviction,
-            q_proj, block_scores_dev, block_table_dev, counts_dev, score_host_buf,
+            cfg,
+            model,
+            predictor,
+            pool,
+            backend,
+            attn,
+            eviction,
+            q_proj,
+            block_scores_dev,
+            block_table_dev,
+            counts_dev,
+            score_host_buf,
             disk_state,
         })
     }
@@ -222,11 +236,7 @@ thread_local! {
 
 /// Install the orchestrator on the current thread. Idempotent (overwrites
 /// any prior installation, dropping it).
-pub fn install_local(
-    stream: u64,
-    cfg: HighSpeedSwapConfig,
-    model: ModelDims,
-) -> Result<()> {
+pub fn install_local(stream: u64, cfg: HighSpeedSwapConfig, model: ModelDims) -> Result<()> {
     let hss = HighSpeedSwap::new_on_stream(stream, cfg, model)?;
     LOCAL.with(|cell| {
         *cell.borrow_mut() = Some(hss);

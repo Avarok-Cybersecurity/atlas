@@ -4,7 +4,6 @@
 
 use super::*;
 
-
 /// Extract top-K logprobs from an FP32 logits slice for one token position.
 ///
 /// Computes log-softmax over the logits, extracts the logprob of the sampled

@@ -11,11 +11,11 @@ use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{AttnMetadataDev, LayerState};
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights};
-use super::types::{TransformerModel, PinnedMetaStaging};
 
 mod async_chkpt;
 mod decode_a;
@@ -85,7 +85,16 @@ impl Model for TransformerModel {
         prefill_is_last: bool,
         stream: u64,
     ) -> Result<crate::traits::MixedForwardResult> {
-        self.mixed_forward_dispatch(decode_tokens, decode_seqs, prefill_tokens, prefill_seq, prefill_chunk_start, prefill_chunk_len, prefill_is_last, stream)
+        self.mixed_forward_dispatch(
+            decode_tokens,
+            decode_seqs,
+            prefill_tokens,
+            prefill_seq,
+            prefill_chunk_start,
+            prefill_chunk_len,
+            prefill_is_last,
+            stream,
+        )
     }
     fn vocab_size(&self) -> usize {
         self.vocab_size_dispatch()
@@ -210,7 +219,14 @@ impl Model for TransformerModel {
         _stream: u64,
         grammar_bitmask: Option<&[i32]>,
     ) -> Result<Vec<u32>> {
-        self.run_mtp_propose_multi_dispatch(token, position, num_drafts, seq, _stream, grammar_bitmask)
+        self.run_mtp_propose_multi_dispatch(
+            token,
+            position,
+            num_drafts,
+            seq,
+            _stream,
+            grammar_bitmask,
+        )
     }
     fn read_deferred_draft_token(&self) -> Result<u32> {
         self.read_deferred_draft_token_dispatch()

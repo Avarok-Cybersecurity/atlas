@@ -46,4 +46,3 @@ pub(crate) fn parse_vision_config(raw: &serde_json::Value) -> Option<VisionConfi
         image_pad_token_id,
     })
 }
-

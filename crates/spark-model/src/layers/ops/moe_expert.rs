@@ -423,4 +423,3 @@ pub fn moe_expert_silu_down_shared_fp8(
         .arg_u32(top_k)
         .launch(stream)
 }
-

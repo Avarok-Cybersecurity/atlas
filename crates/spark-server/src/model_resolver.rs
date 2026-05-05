@@ -165,10 +165,7 @@ fn find_snapshot_with_weights(snapshots_root: &Path) -> Option<PathBuf> {
             Some((mtime, p))
         })
         .collect();
-    entries
-        .into_iter()
-        .max_by_key(|(t, _)| *t)
-        .map(|(_, p)| p)
+    entries.into_iter().max_by_key(|(t, _)| *t).map(|(_, p)| p)
 }
 
 /// Determine the HF hub cache root directory.
@@ -300,7 +297,8 @@ mod tests {
         // has the actual weights. Resolver must return the sibling instead
         // of bailing out (the dual-DGX sweep can't pass --model-from-path).
         let tmp = tempfile::tempdir().unwrap();
-        let bad = setup_mock_cache_no_weights(tmp.path(), "nvidia", "Gemma-4-31B-IT-NVFP4", "05fa17");
+        let bad =
+            setup_mock_cache_no_weights(tmp.path(), "nvidia", "Gemma-4-31B-IT-NVFP4", "05fa17");
         // Pre-existing sibling snapshot with safetensors.
         let model_cache = bad.parent().unwrap().parent().unwrap();
         let good_hash = "1365cf";
@@ -310,7 +308,11 @@ mod tests {
         fs::write(good.join("model-00001-of-00004.safetensors"), b"shard").unwrap();
         // Touch the good dir so its mtime is newer than the bad one.
         std::thread::sleep(std::time::Duration::from_millis(20));
-        fs::write(good.join("model-00001-of-00004.safetensors"), b"shard-newer").unwrap();
+        fs::write(
+            good.join("model-00001-of-00004.safetensors"),
+            b"shard-newer",
+        )
+        .unwrap();
 
         let result = resolve_model_dir("nvidia/Gemma-4-31B-IT-NVFP4", Some(tmp.path()));
         assert!(result.is_ok(), "expected fallback to succeed: {:?}", result);

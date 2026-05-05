@@ -73,10 +73,7 @@ pub(super) fn build_moe_ffn(
 
 /// Allocate a BF16 ones-filled buffer of length `head_dim` for v_norm
 /// (Gemma-4 v_norm is identity-shaped per HF reference).
-pub(super) fn make_v_norm_ones_bf16(
-    gpu: &dyn GpuBackend,
-    head_dim: usize,
-) -> Result<DenseWeight> {
+pub(super) fn make_v_norm_ones_bf16(gpu: &dyn GpuBackend, head_dim: usize) -> Result<DenseWeight> {
     let bytes = head_dim * 2; // BF16
     let ptr = gpu.alloc(bytes)?;
     // BF16 1.0 = 0x3F80 little-endian → bytes 0x80, 0x3F
@@ -102,12 +99,27 @@ pub(super) fn build_bf16_mlp(
         return Ok(None);
     }
     use crate::weight_map::dequant_nvfp4_to_bf16;
-    let gate_bf16 =
-        dequant_nvfp4_to_bf16(store, &format!("{lp}.mlp.gate_proj"), config.intermediate_size, h, gpu)?;
-    let up_bf16 =
-        dequant_nvfp4_to_bf16(store, &format!("{lp}.mlp.up_proj"), config.intermediate_size, h, gpu)?;
-    let down_bf16 =
-        dequant_nvfp4_to_bf16(store, &format!("{lp}.mlp.down_proj"), h, config.intermediate_size, gpu)?;
+    let gate_bf16 = dequant_nvfp4_to_bf16(
+        store,
+        &format!("{lp}.mlp.gate_proj"),
+        config.intermediate_size,
+        h,
+        gpu,
+    )?;
+    let up_bf16 = dequant_nvfp4_to_bf16(
+        store,
+        &format!("{lp}.mlp.up_proj"),
+        config.intermediate_size,
+        h,
+        gpu,
+    )?;
+    let down_bf16 = dequant_nvfp4_to_bf16(
+        store,
+        &format!("{lp}.mlp.down_proj"),
+        h,
+        config.intermediate_size,
+        gpu,
+    )?;
     Ok(Some((gate_bf16, up_bf16, down_bf16)))
 }
 
@@ -129,10 +141,7 @@ pub(super) fn load_final_norm_impl(
     dense(store, &format!("{prefix}.norm.weight"))
 }
 
-pub(super) fn load_lm_head_impl(
-    store: &WeightStore,
-    config: &ModelConfig,
-) -> Result<DenseWeight> {
+pub(super) fn load_lm_head_impl(store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
     // Gemma-4 uses tied embeddings (no separate lm_head tensor).
     // Check for explicit lm_head first, fall back to embed_tokens.
     for pattern in &[

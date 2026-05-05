@@ -5,98 +5,49 @@
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
-use axum::response::sse::{
-    Event,
-    KeepAlive,
-};
-use axum::response::{
-    IntoResponse,
-    Json,
-    Response,
-    Sse,
-};
+use axum::response::sse::{Event, KeepAlive};
+use axum::response::{IntoResponse, Json, Response, Sse};
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::AppState;
 use crate::openai::{
-    ChatCompletionChunk,
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    CompletionChunk,
-    CompletionRequest,
-    CompletionResponse,
-    ModelInfo,
-    ModelListResponse,
-    Usage,
+    ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, CompletionChunk,
+    CompletionRequest, CompletionResponse, ModelInfo, ModelListResponse, Usage,
 };
 use crate::tool_parser;
 
 // Sibling-cluster items hoisted from the original `api.rs`. These uses
 // give every sub-file access to helpers that the un-split file took for
 // granted via single-module visibility.
+use super::super::chat::chat_completions_inner;
 use super::super::compact::{
-    compact_messages,
-    openai_error_response,
-    openai_error_response_with_param,
-};
-use super::super::sanitizer::{
-    F7_STALL_WARN_THRESHOLD,
-    F7_STALL_REFUSE_THRESHOLD,
-    F7StallBuckets,
-    ToolKind,
-    classify_tool,
-    extract_bash_final_action,
-    primary_arg_for_tool,
-    sanitize_content_chunk,
+    compact_messages, openai_error_response, openai_error_response_with_param,
 };
 use super::super::completions::not_supported;
-use super::{
-    F23ProgressMetrics,
-    F37FailureClass,
-    F39FailureCache,
-    F39PermanentFailureMatch,
-    F49DuplicateWrite,
-    bump_f12_tool_call_count,
-    check_loop_watchdog,
-    f23_build_reminder,
-    f23_normalize_and_hash,
-    f23_refuse_threshold,
-    f23_score_progress,
-    f23_warn_threshold,
-    f31_inject_hard_refusal,
-    f32_reposition_failed_tool_result,
-    f37_classify_failure,
-    f39_build_circuit_breaker_banner,
-    f39_build_failure_cache,
-    f39_class_label,
-    f39_detect_recent_retries,
-    f39_extract_binary_name,
-    f44_check_permanent_failure,
-    f49_build_banner,
-    f49_detect_duplicate_writes,
-    f49_extract_write_path_and_content,
-    f50_append_original_error,
-    f60_disable_mtp_for_request,
-    flush_content_sanitizer,
-    strip_xml_leaks_from_assistant_content,
+use super::super::inference_impl::{
+    extract_thinking, strip_stop_sequences, tokenize_stop_sequences,
 };
 use super::super::inference_types::{
-    GrammarSpec,
-    InferenceRequest,
-    InferenceResponse,
-    StreamEvent,
-    TokenLogprobs,
+    GrammarSpec, InferenceRequest, InferenceResponse, StreamEvent, TokenLogprobs,
 };
-use super::super::inference_impl::{
-    extract_thinking,
-    strip_stop_sequences,
-    tokenize_stop_sequences,
+use super::super::sanitizer::{
+    F7_STALL_REFUSE_THRESHOLD, F7_STALL_WARN_THRESHOLD, F7StallBuckets, ToolKind, classify_tool,
+    extract_bash_final_action, primary_arg_for_tool, sanitize_content_chunk,
 };
 use super::super::strip::strip_thinking_tags;
-use super::super::chat::chat_completions_inner;
-
+use super::{
+    F23ProgressMetrics, F37FailureClass, F39FailureCache, F39PermanentFailureMatch,
+    F49DuplicateWrite, bump_f12_tool_call_count, check_loop_watchdog, f23_build_reminder,
+    f23_normalize_and_hash, f23_refuse_threshold, f23_score_progress, f23_warn_threshold,
+    f31_inject_hard_refusal, f32_reposition_failed_tool_result, f37_classify_failure,
+    f39_build_circuit_breaker_banner, f39_build_failure_cache, f39_class_label,
+    f39_detect_recent_retries, f39_extract_binary_name, f44_check_permanent_failure,
+    f49_build_banner, f49_detect_duplicate_writes, f49_extract_write_path_and_content,
+    f50_append_original_error, f60_disable_mtp_for_request, flush_content_sanitizer,
+    strip_xml_leaks_from_assistant_content,
+};
 
 // Re-export sibling helpers via crate::api::* for short paths.
 use super::super::inference_types::*;
@@ -133,9 +84,7 @@ pub fn build_f7_stall_reminder(buckets: &F7StallBuckets) -> Option<String> {
         return None;
     }
     warn_lines.sort();
-    let any_at_refuse = buckets
-        .values()
-        .any(|&c| c >= F7_STALL_REFUSE_THRESHOLD);
+    let any_at_refuse = buckets.values().any(|&c| c >= F7_STALL_REFUSE_THRESHOLD);
     let body = warn_lines.join("\n");
     let directive = if any_at_refuse {
         "STOP retrying. Respond to the user with a plain text message explaining what is blocking and what you need from them. Do NOT call any tool again — your next response must contain text only."
@@ -183,28 +132,24 @@ pub fn prepend_reminder_to_system(
     reminder: &str,
 ) {
     let trimmed = reminder.trim_matches(|c: char| c == '\n' || c == ' ');
-    let block = format!(
-        "<atlas_runtime_notice>\n{trimmed}\n</atlas_runtime_notice>\n\n"
-    );
-    let has_system_at_zero =
-        messages.first().is_some_and(|m| m.role == "system");
+    let block = format!("<atlas_runtime_notice>\n{trimmed}\n</atlas_runtime_notice>\n\n");
+    let has_system_at_zero = messages.first().is_some_and(|m| m.role == "system");
     if has_system_at_zero {
         let txt = &mut messages[0].content.text;
         if let Some(start) = txt.find("<atlas_runtime_notice>")
-            && let Some(end) = txt[start..].find("</atlas_runtime_notice>\n\n") {
-                let abs_end = start + end + "</atlas_runtime_notice>\n\n".len();
-                txt.replace_range(start..abs_end, &block);
-                return;
-            }
+            && let Some(end) = txt[start..].find("</atlas_runtime_notice>\n\n")
+        {
+            let abs_end = start + end + "</atlas_runtime_notice>\n\n".len();
+            txt.replace_range(start..abs_end, &block);
+            return;
+        }
         let mut new_txt = block;
         new_txt.push_str(txt);
         messages[0].content.text = new_txt;
     } else {
         messages.insert(
             0,
-            crate::openai::IncomingMessage::synthetic_system(
-                block.trim_end().to_string(),
-            ),
+            crate::openai::IncomingMessage::synthetic_system(block.trim_end().to_string()),
         );
     }
 }
@@ -264,16 +209,15 @@ pub fn f29_extract_binary_from_error_line(line: &str) -> Option<String> {
     // suffix as the binary name. E.g.
     //   "/bin/bash: line 1: cargo" → "cargo"
     //   "cargo" → "cargo"
-    let binary = prefix
-        .rsplit([' ', ':', '\t'])
-        .next()?
-        .trim();
+    let binary = prefix.rsplit([' ', ':', '\t']).next()?.trim();
     // Sanity: binary names are typically [A-Za-z0-9_-]+, no spaces,
     // not too long. Reject if it looks like a path or sentence.
     if binary.is_empty()
         || binary.len() > 40
         || binary.contains('/')
-        || !binary.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+        || !binary
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
     {
         return None;
     }
@@ -283,8 +227,7 @@ pub fn f29_extract_binary_from_error_line(line: &str) -> Option<String> {
 pub fn f29_extract_environment_facts(
     messages: &[crate::openai::IncomingMessage],
 ) -> Vec<F29EnvironmentFact> {
-    let mut counts: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
+    let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for m in messages {
         if m.role != "tool" {
             continue;
@@ -299,7 +242,10 @@ pub fn f29_extract_environment_facts(
         .into_iter()
         .filter_map(|(binary, observed_count)| {
             if observed_count >= F29_MIN_FAILURES_FOR_FACT {
-                Some(F29EnvironmentFact { binary, observed_count })
+                Some(F29EnvironmentFact {
+                    binary,
+                    observed_count,
+                })
             } else {
                 None
             }
@@ -336,17 +282,17 @@ pub fn f29_inject_environment_facts(
     );
 
     // Locate or synthesise system message at position 0.
-    let has_system_at_zero =
-        messages.first().is_some_and(|m| m.role == "system");
+    let has_system_at_zero = messages.first().is_some_and(|m| m.role == "system");
     if has_system_at_zero {
         // Idempotent replace: if a previous block exists, swap it.
         let txt = &mut messages[0].content.text;
         if let Some(start) = txt.find("<environment_facts>")
-            && let Some(end) = txt[start..].find("</environment_facts>\n\n") {
-                let abs_end = start + end + "</environment_facts>\n\n".len();
-                txt.replace_range(start..abs_end, &block);
-                return;
-            }
+            && let Some(end) = txt[start..].find("</environment_facts>\n\n")
+        {
+            let abs_end = start + end + "</environment_facts>\n\n".len();
+            txt.replace_range(start..abs_end, &block);
+            return;
+        }
         // No prior block — prepend.
         let mut new_txt = block;
         new_txt.push_str(txt);

@@ -113,7 +113,7 @@ impl Default for SamplingPresets {
     }
 }
 
-/// Model-specific behavior flags from MODEL.toml [behavior].
+/// Model-specific behavior flags from MODEL.toml `[behavior]`.
 #[derive(Debug, Clone)]
 pub struct ModelBehavior {
     /// Allow thinking when tools are active. Default: true.

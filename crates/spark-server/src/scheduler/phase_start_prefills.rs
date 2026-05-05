@@ -108,11 +108,7 @@ pub(super) fn start_new_requests(
 /// SSM-pool-full preemption: free oldest active sequence and surface a
 /// 503-equivalent error to the preempted request. Mirrors vLLM's
 /// preemption strategy — never return HTTP 500 for resource exhaustion.
-fn handle_prefill_start_error(
-    model: &dyn Model,
-    e: &anyhow::Error,
-    active: &mut Vec<ActiveSeq>,
-) {
+fn handle_prefill_start_error(model: &dyn Model, e: &anyhow::Error, active: &mut Vec<ActiveSeq>) {
     let err_msg = format!("{e:#}");
     if err_msg.contains("pool exhausted") && !active.is_empty() {
         let victim_idx = active.len() - 1;

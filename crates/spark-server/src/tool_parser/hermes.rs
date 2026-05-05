@@ -56,4 +56,3 @@ impl ToolCallParser for HermesParser {
 }
 
 // ── Qwen3-Coder parser (Qwen3.5, Nemotron-H) ──
-

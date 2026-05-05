@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Benchmark harness: compare SafetensorsLoader (mmap) vs FastSafetensorsLoader
 //! on real model directories, writing bytes into MockGpuBackend so the disk →
 //! host stage is the bottleneck (MockGpuBackend::copy_h2d is a `Vec::copy_from_slice`).

@@ -40,6 +40,7 @@ pub(super) struct SamplingSetup {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::result_large_err)]
 pub(super) fn build_sampling(
     state: &Arc<AppState>,
     req: &ChatCompletionRequest,
@@ -73,30 +74,26 @@ pub(super) fn build_sampling(
     if !(-2.0..=2.0).contains(&presence_penalty) {
         return Err(openai_error_response(
             StatusCode::BAD_REQUEST,
-            format!(
-                "presence_penalty must be between -2.0 and 2.0, got {presence_penalty}"
-            ),
+            format!("presence_penalty must be between -2.0 and 2.0, got {presence_penalty}"),
         ));
     }
     if !(-2.0..=2.0).contains(&frequency_penalty) {
         return Err(openai_error_response(
             StatusCode::BAD_REQUEST,
-            format!(
-                "frequency_penalty must be between -2.0 and 2.0, got {frequency_penalty}"
-            ),
+            format!("frequency_penalty must be between -2.0 and 2.0, got {frequency_penalty}"),
         ));
     }
 
     // Logit bias from OpenAI (string keys) → Vec<(u32, f32)>.
-    let mut logit_bias: Vec<(u32, f32)> =
-        req.logit_bias.as_ref().map_or(Vec::new(), |map| {
-            map.iter()
-                .filter_map(|(k, &v)| k.parse::<u32>().ok().map(|id| (id, v)))
-                .collect()
-        });
+    let mut logit_bias: Vec<(u32, f32)> = req.logit_bias.as_ref().map_or(Vec::new(), |map| {
+        map.iter()
+            .filter_map(|(k, &v)| k.parse::<u32>().ok().map(|id| (id, v)))
+            .collect()
+    });
 
     // Exponential `<tool_call>` bias decay.
-    if tools_active && !suppress_tool_call
+    if tools_active
+        && !suppress_tool_call
         && let Some(tc_id) = state.tool_call_start_token_id
     {
         let bias = match tool_call_repeat_count {
@@ -152,9 +149,10 @@ pub(super) fn build_sampling(
             || parser_is_bare_json);
 
     // response_format vs tools mutual exclusion.
-    let has_response_format = req.response_format.as_ref().is_some_and(|rf| {
-        !matches!(rf, crate::openai::ResponseFormat::Text)
-    });
+    let has_response_format = req
+        .response_format
+        .as_ref()
+        .is_some_and(|rf| !matches!(rf, crate::openai::ResponseFormat::Text));
     if has_response_format && tools_active {
         return Err(openai_error_response(
             StatusCode::BAD_REQUEST,

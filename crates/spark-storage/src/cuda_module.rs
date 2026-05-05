@@ -12,9 +12,14 @@ unsafe extern "C" {
     fn cuModuleGetFunction(func: *mut u64, module: u64, name: *const std::ffi::c_char) -> i32;
     fn cuLaunchKernel(
         func: u64,
-        grid_x: u32, grid_y: u32, grid_z: u32,
-        block_x: u32, block_y: u32, block_z: u32,
-        shared_bytes: u32, stream: u64,
+        grid_x: u32,
+        grid_y: u32,
+        grid_z: u32,
+        block_x: u32,
+        block_y: u32,
+        block_z: u32,
+        shared_bytes: u32,
+        stream: u64,
         kernel_params: *mut *mut c_void,
         extra: *mut *mut c_void,
     ) -> i32;
@@ -111,9 +116,15 @@ pub fn launch_kernel(
 ) -> Result<()> {
     let s = unsafe {
         cuLaunchKernel(
-            func, grid.0, grid.1, grid.2,
-            block.0, block.1, block.2,
-            shared_bytes, stream,
+            func,
+            grid.0,
+            grid.1,
+            grid.2,
+            block.0,
+            block.1,
+            block.2,
+            shared_bytes,
+            stream,
             params.as_mut_ptr(),
             std::ptr::null_mut(),
         )

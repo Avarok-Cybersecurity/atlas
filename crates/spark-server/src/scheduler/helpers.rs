@@ -22,8 +22,7 @@ pub fn bf16_to_f32(lo: u8, hi: u8) -> f32 {
 /// with `load(Ordering::Relaxed)` on the emit path — no atomicity contract
 /// beyond "set once before the first request lands", which is guaranteed
 /// by the main.rs init ordering.
-static IM_START_HARD_STOP: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0);
+static IM_START_HARD_STOP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Install the ChatML role-boundary hard-stop. Called once from `main.rs`
 /// at startup when `<|im_start|>` resolves to a single token id. Noop when
@@ -327,10 +326,10 @@ mod thinking_loop_tests {
         // misses this; the substring-repeat detector must catch it.
         let fence: Vec<u32> = vec![100, 101, 102, 103, 104, 105, 106, 107, 108, 109];
         let prefixes: [&[u32]; 4] = [
-            &[200, 201], // "Running:"
-            &[202, 203], // "Executing:"
+            &[200, 201],      // "Running:"
+            &[202, 203],      // "Executing:"
             &[204, 205, 206], // "I need to run:"
-            &[207], // "Run:"
+            &[207],           // "Run:"
         ];
         let mut tokens: Vec<u32> = (0..30).collect();
         for pre in prefixes.iter() {

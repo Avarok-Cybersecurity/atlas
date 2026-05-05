@@ -14,9 +14,7 @@
 use anyhow::{Context, Result, bail};
 use std::ffi::c_void;
 
-use crate::cuda_min::{
-    CudaCtx, CudaModule, DeviceBuffer, launch_kernel,
-};
+use crate::cuda_min::{CudaCtx, CudaModule, DeviceBuffer, launch_kernel};
 
 include!(concat!(env!("OUT_DIR"), "/storage_ptx.rs"));
 
@@ -37,7 +35,11 @@ pub struct TiledAttentionDims {
 impl TiledAttentionDims {
     pub fn validate(&self) -> Result<()> {
         if !self.num_q_heads.is_multiple_of(self.num_kv_heads) {
-            bail!("num_q_heads ({}) must divide num_kv_heads ({})", self.num_q_heads, self.num_kv_heads);
+            bail!(
+                "num_q_heads ({}) must divide num_kv_heads ({})",
+                self.num_q_heads,
+                self.num_kv_heads
+            );
         }
         if self.head_dim > 256 {
             bail!("head_dim {} exceeds MAX_HEAD_DIM=256", self.head_dim);
@@ -105,7 +107,15 @@ impl TiledAttention {
         let m_state = DeviceBuffer::new(dims.m_bytes())?;
         let l_state = DeviceBuffer::new(dims.l_bytes())?;
         let o_state = DeviceBuffer::new(dims.o_bytes())?;
-        Ok(Self { dims, _modules: modules, f_step, f_finalize, m_state, l_state, o_state })
+        Ok(Self {
+            dims,
+            _modules: modules,
+            f_step,
+            f_finalize,
+            m_state,
+            l_state,
+            o_state,
+        })
     }
 
     /// Reset (m, l, o) for `num_seqs` sequences. Call once at the start of
@@ -116,17 +126,27 @@ impl TiledAttention {
 
     pub fn begin_step_on_stream(&self, stream: u64, num_seqs: usize) -> Result<()> {
         if num_seqs > self.dims.max_seqs {
-            bail!("begin_step num_seqs {} > max_seqs {}", num_seqs, self.dims.max_seqs);
+            bail!(
+                "begin_step num_seqs {} > max_seqs {}",
+                num_seqs,
+                self.dims.max_seqs
+            );
         }
         let n_q = num_seqs * self.dims.num_q_heads;
         let n_o = n_q * self.dims.head_dim;
         unsafe {
             let s = cuMemsetD32Async(self.m_state.ptr, NEG_INF_F32_BITS, n_q, stream);
-            if s != 0 { bail!("cuMemsetD32Async m_state failed: {s}"); }
+            if s != 0 {
+                bail!("cuMemsetD32Async m_state failed: {s}");
+            }
             let s = cuMemsetD32Async(self.l_state.ptr, 0, n_q, stream);
-            if s != 0 { bail!("cuMemsetD32Async l_state failed: {s}"); }
+            if s != 0 {
+                bail!("cuMemsetD32Async l_state failed: {s}");
+            }
             let s = cuMemsetD32Async(self.o_state.ptr, 0, n_o, stream);
-            if s != 0 { bail!("cuMemsetD32Async o_state failed: {s}"); }
+            if s != 0 {
+                bail!("cuMemsetD32Async o_state failed: {s}");
+            }
         }
         Ok(())
     }
@@ -173,8 +193,17 @@ impl TiledAttention {
         last_block_valid_slots: i32,
     ) -> Result<()> {
         self.step_tile_on_stream(
-            ctx.stream, q, k_pool, v_pool, tile_blocks, tile_block_counts,
-            num_seqs, blk_stride, tok_stride, kvh_stride, last_block_valid_slots,
+            ctx.stream,
+            q,
+            k_pool,
+            v_pool,
+            tile_blocks,
+            tile_block_counts,
+            num_seqs,
+            blk_stride,
+            tok_stride,
+            kvh_stride,
+            last_block_valid_slots,
         )
     }
 
@@ -235,7 +264,9 @@ impl TiledAttention {
             self.f_step,
             (num_seqs as u32, self.dims.num_q_heads as u32, 1),
             (self.dims.head_dim as u32, 1, 1),
-            0, stream, &mut params,
+            0,
+            stream,
+            &mut params,
         )
     }
 
@@ -261,7 +292,9 @@ impl TiledAttention {
             self.f_finalize,
             (num_seqs as u32, self.dims.num_q_heads as u32, 1),
             (self.dims.head_dim as u32, 1, 1),
-            0, stream, &mut params,
+            0,
+            stream,
+            &mut params,
         )
     }
 

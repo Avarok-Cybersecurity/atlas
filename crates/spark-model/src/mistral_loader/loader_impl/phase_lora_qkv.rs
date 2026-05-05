@@ -29,7 +29,13 @@ pub(super) fn load_lora_qkv(ctx: &mut MistralLayerCtx<'_>) -> Result<()> {
     // ATLAS_NVFP4_MLA=0 to force BF16.
     let wq_a_dense = dense(ctx.store, &format!("{ap}.wq_a.weight"))?;
     let wq_a_nvfp4 = Some(quantize_to_nvfp4(
-        &wq_a_dense, q_lora, h, gpu, ctx.absmax_k, ctx.quantize_k, ctx.stream,
+        &wq_a_dense,
+        q_lora,
+        h,
+        gpu,
+        ctx.absmax_k,
+        ctx.quantize_k,
+        ctx.stream,
     )?);
     let mut wq_b = dense(ctx.store, &format!("{ap}.wq_b.weight"))?;
 
@@ -41,8 +47,13 @@ pub(super) fn load_lora_qkv(ctx: &mut MistralLayerCtx<'_>) -> Result<()> {
     if tp_size > 1 {
         let full_rows = n_heads * tp_size * hd;
         let (sharded, _, _) = shard_dense_bf16(
-            wq_b.weight, full_rows, q_lora,
-            TpShardKind::ColumnParallel, tp_rank, tp_size, gpu,
+            wq_b.weight,
+            full_rows,
+            q_lora,
+            TpShardKind::ColumnParallel,
+            tp_rank,
+            tp_size,
+            gpu,
         )?;
         if sharded != wq_b.weight {
             gpu.free(wq_b.weight)?;
@@ -50,7 +61,13 @@ pub(super) fn load_lora_qkv(ctx: &mut MistralLayerCtx<'_>) -> Result<()> {
         wq_b.weight = sharded;
     }
     let wq_b_nvfp4 = Some(quantize_to_nvfp4(
-        &wq_b, n_heads * hd, q_lora, gpu, ctx.absmax_k, ctx.quantize_k, ctx.stream,
+        &wq_b,
+        n_heads * hd,
+        q_lora,
+        gpu,
+        ctx.absmax_k,
+        ctx.quantize_k,
+        ctx.stream,
     )?);
     let q_a_norm = dense(ctx.store, &format!("{ap}.q_a_norm.weight"))?;
 
@@ -58,7 +75,13 @@ pub(super) fn load_lora_qkv(ctx: &mut MistralLayerCtx<'_>) -> Result<()> {
     // last rope for K_rope.
     let wkv_a_dense = dense(ctx.store, &format!("{ap}.wkv_a_with_mqa.weight"))?;
     let wkv_a_nvfp4 = Some(quantize_to_nvfp4(
-        &wkv_a_dense, kv_lora + rope, h, gpu, ctx.absmax_k, ctx.quantize_k, ctx.stream,
+        &wkv_a_dense,
+        kv_lora + rope,
+        h,
+        gpu,
+        ctx.absmax_k,
+        ctx.quantize_k,
+        ctx.stream,
     )?);
     let wkv_a_rope_dense = DenseWeight {
         weight: wkv_a_dense.weight.offset(kv_lora * h * bf16),
@@ -67,8 +90,13 @@ pub(super) fn load_lora_qkv(ctx: &mut MistralLayerCtx<'_>) -> Result<()> {
     if tp_size > 1 {
         let full_rows = n_kv * tp_size * (nope + v_dim);
         let (sharded, _, _) = shard_dense_bf16(
-            wkv_b.weight, full_rows, kv_lora,
-            TpShardKind::ColumnParallel, tp_rank, tp_size, gpu,
+            wkv_b.weight,
+            full_rows,
+            kv_lora,
+            TpShardKind::ColumnParallel,
+            tp_rank,
+            tp_size,
+            gpu,
         )?;
         if sharded != wkv_b.weight {
             gpu.free(wkv_b.weight)?;

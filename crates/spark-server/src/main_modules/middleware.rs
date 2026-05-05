@@ -199,7 +199,10 @@ pub(crate) async fn rate_limit_middleware(
     resp
 }
 
-pub(crate) fn apply_rate_headers(headers: &mut axum::http::HeaderMap, d: &rate_limiter::RateDecision) {
+pub(crate) fn apply_rate_headers(
+    headers: &mut axum::http::HeaderMap,
+    d: &rate_limiter::RateDecision,
+) {
     use axum::http::{HeaderName, HeaderValue};
     let set = |h: &mut axum::http::HeaderMap, k: &'static str, v: String| {
         if let Ok(val) = HeaderValue::from_str(&v) {

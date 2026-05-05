@@ -100,21 +100,64 @@ fn build(ctx: &CudaCtx, seed: u64) -> Bundle {
     let scores = DeviceBuffer::new(NUM_BLOCKS * 4).unwrap();
     let output = DeviceBuffer::new(NUM_SEQS * NUM_Q_HEADS * HEAD_DIM * 2).unwrap();
 
-    copy_h_to_d_async(q.ptr, q_host.as_ptr() as *const c_void, q_host.len() * 2, ctx.stream).unwrap();
-    copy_h_to_d_async(k.ptr, k_host.as_ptr() as *const c_void, k_host.len() * 2, ctx.stream).unwrap();
-    copy_h_to_d_async(v.ptr, v_host.as_ptr() as *const c_void, v_host.len() * 2, ctx.stream).unwrap();
-    copy_h_to_d_async(block_table.ptr, block_table_host.as_ptr() as *const c_void, block_table_host.len() * 4, ctx.stream).unwrap();
-    copy_h_to_d_async(counts.ptr, counts_host.as_ptr() as *const c_void, counts_host.len() * 4, ctx.stream).unwrap();
+    copy_h_to_d_async(
+        q.ptr,
+        q_host.as_ptr() as *const c_void,
+        q_host.len() * 2,
+        ctx.stream,
+    )
+    .unwrap();
+    copy_h_to_d_async(
+        k.ptr,
+        k_host.as_ptr() as *const c_void,
+        k_host.len() * 2,
+        ctx.stream,
+    )
+    .unwrap();
+    copy_h_to_d_async(
+        v.ptr,
+        v_host.as_ptr() as *const c_void,
+        v_host.len() * 2,
+        ctx.stream,
+    )
+    .unwrap();
+    copy_h_to_d_async(
+        block_table.ptr,
+        block_table_host.as_ptr() as *const c_void,
+        block_table_host.len() * 4,
+        ctx.stream,
+    )
+    .unwrap();
+    copy_h_to_d_async(
+        counts.ptr,
+        counts_host.as_ptr() as *const c_void,
+        counts_host.len() * 4,
+        ctx.stream,
+    )
+    .unwrap();
     // Pre-populate K_lr for every block so score_blocks has real anchors.
     for blk in 0..NUM_BLOCKS {
         let block_offset = blk * BLOCK_SIZE * NUM_KV_HEADS * HEAD_DIM * 2;
-        predictor.project_kv_block(ctx, 0, blk, k.ptr + block_offset as u64).unwrap();
+        predictor
+            .project_kv_block(ctx, 0, blk, k.ptr + block_offset as u64)
+            .unwrap();
     }
     stream_sync(ctx.stream).unwrap();
 
     Bundle {
-        predictor, attn, q, q_proj, k, v, block_table, counts, scores, output,
-        n_q: q_host.len(), n_k: k_host.len(), n_out: NUM_SEQS * NUM_Q_HEADS * HEAD_DIM,
+        predictor,
+        attn,
+        q,
+        q_proj,
+        k,
+        v,
+        block_table,
+        counts,
+        scores,
+        output,
+        n_q: q_host.len(),
+        n_k: k_host.len(),
+        n_out: NUM_SEQS * NUM_Q_HEADS * HEAD_DIM,
     }
 }
 
@@ -122,22 +165,47 @@ fn build(ctx: &CudaCtx, seed: u64) -> Bundle {
 /// eager-mode and inside `CapturedStep::capture` for the graph variant.
 fn issue_decode_body(ctx: &CudaCtx, b: &Bundle) -> anyhow::Result<()> {
     b.predictor.project_q(ctx, b.q.ptr, b.q_proj.ptr)?;
-    b.predictor.score_blocks(ctx, b.q_proj.ptr, b.predictor.a_g_dev_ptr(), b.scores.ptr, NUM_BLOCKS)?;
+    b.predictor.score_blocks(
+        ctx,
+        b.q_proj.ptr,
+        b.predictor.a_g_dev_ptr(),
+        b.scores.ptr,
+        NUM_BLOCKS,
+    )?;
     b.attn.begin_step(ctx, NUM_SEQS)?;
     let (s_blk, s_tok, s_kvh) = b.attn.paged_strides();
-    b.attn.step_tile(ctx, b.q.ptr, b.k.ptr, b.v.ptr, b.block_table.ptr, b.counts.ptr, NUM_SEQS, s_blk, s_tok, s_kvh, BLOCK_SIZE as i32)?;
+    b.attn.step_tile(
+        ctx,
+        b.q.ptr,
+        b.k.ptr,
+        b.v.ptr,
+        b.block_table.ptr,
+        b.counts.ptr,
+        NUM_SEQS,
+        s_blk,
+        s_tok,
+        s_kvh,
+        BLOCK_SIZE as i32,
+    )?;
     b.attn.finalize(ctx, b.output.ptr, NUM_SEQS)?;
     Ok(())
 }
 
 fn read_output(ctx: &CudaCtx, b: &Bundle) -> Vec<bf16> {
     let mut out = vec![bf16::from_f32(0.0); b.n_out];
-    copy_d_to_h_async(out.as_mut_ptr() as *mut c_void, b.output.ptr, out.len() * 2, ctx.stream).unwrap();
+    copy_d_to_h_async(
+        out.as_mut_ptr() as *mut c_void,
+        b.output.ptr,
+        out.len() * 2,
+        ctx.stream,
+    )
+    .unwrap();
     stream_sync(ctx.stream).unwrap();
     out
 }
 
 #[test]
+#[ignore = "requires GPU"]
 fn graph_replay_matches_eager() {
     let ctx = CudaCtx::new(0).expect("cuda init");
     let bundle = build(&ctx, 0xCAFE);
@@ -153,13 +221,16 @@ fn graph_replay_matches_eager() {
     let mut max_d = 0.0_f32;
     for (a, b) in eager_out.iter().zip(&graph_out) {
         let d = (a.to_f32() - b.to_f32()).abs();
-        if d > max_d { max_d = d; }
+        if d > max_d {
+            max_d = d;
+        }
     }
     eprintln!("graph vs eager max abs diff = {max_d:.3e}");
     assert!(max_d < 1e-2, "graph replay diverged: {max_d}");
 }
 
 #[test]
+#[ignore = "requires GPU"]
 fn graph_replay_speedup() {
     let ctx = CudaCtx::new(0).expect("cuda init");
     let bundle = build(&ctx, 0xBEEF);
@@ -199,10 +270,14 @@ fn graph_replay_speedup() {
         Ok(())
     })
     .unwrap();
-    for _ in 0..WARMUP { captured.launch(ctx.stream).unwrap(); }
+    for _ in 0..WARMUP {
+        captured.launch(ctx.stream).unwrap();
+    }
     stream_sync(ctx.stream).unwrap();
     let t = Instant::now();
-    for _ in 0..ITERS { captured.launch(ctx.stream).unwrap(); }
+    for _ in 0..ITERS {
+        captured.launch(ctx.stream).unwrap();
+    }
     stream_sync(ctx.stream).unwrap();
     let graph_us = t.elapsed().as_secs_f64() * 1e6 / ITERS as f64;
 

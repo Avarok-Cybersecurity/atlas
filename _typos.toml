@@ -1,0 +1,65 @@
+# typos (https://github.com/crate-ci/typos) config for Atlas.
+#
+# Ignore directories that mirror upstream content we don't control —
+# `test_data/` holds verbatim HuggingFace `config.json` snapshots whose
+# tensor field names (e.g. `in_proj_ba`, `in_proj_qkvz`) read like typos
+# but are the canonical upstream identifiers.
+#
+# `vendor/` is third-party source (xgrammar-rs) imported in-tree; we
+# don't ship typo fixes upstream from here.
+#
+# Generated build output (`target/`, `book/output/`) is excluded too.
+
+[default]
+extend-ignore-identifiers-re = [
+    # `in_proj_ba` is the bias projection in NVIDIA's NV-FP4 Mamba/SSM
+    # checkpoints (`in_proj_ba` = b + a parameters); not a typo of `by`/`be`.
+    "in_proj_ba",
+    # `iy_base`, `iy` etc. — CUDA kernel variable name for "index Y";
+    # the typos checker mistakes it for `it`. Common in our 2D launch
+    # configs (`ix`, `iy` for column/row).
+    "iy.*",
+    # `BA_GEMM` — A+B linear-attention GEMM in the design docs. Not a
+    # typo of `BY`/`BE`.
+    "BA_GEMM",
+]
+
+[default.extend-words]
+# CUDA device-attribute constant token. Not a typo of `OPTION`.
+OPTIN = "OPTIN"
+# `image_grid_thw` is the HuggingFace tensor name for vision-input
+# (Time, Height, Width) shape. Not a typo of `the`/`thaw`.
+thw = "thw"
+# `Tooks Court, Chancery Lane, London` — verbatim Dickens text from
+# Bleak House, used as a benchmark prompt fixture. Not a typo.
+TOOKS = "TOOKS"
+# Walsh-Hadamard Transform — appears as `WHT` / `wht_bf16` / `wht` in
+# kernel names, file names, and TurboQuant documentation. Not a typo of `WHAT`.
+WHT = "WHT"
+wht = "wht"
+# `BA`/`ba` literal kernel-name token (e.g. `BA_GEMM`, `in_proj_ba`,
+# `wkv_a_ba`). Domain abbreviation, not the English preposition.
+BA = "BA"
+ba = "ba"
+# Output-tokens loop variable in Python benchmark scripts (`for ot in ...`).
+ot = "ot"
+# Steps-per-second shorthand in concurrency benchmark output.
+stps = "stps"
+# `mis-` is a legitimate English prefix (`mis-set`, `mis-interpreted`,
+# `mis-aligned`); the default checker flags it as a substring of `miss`.
+mis = "mis"
+
+[default.extend-identifiers]
+# Pattern compounds the checker doesn't handle via the default list.
+wht_bf16 = "wht_bf16"
+wht_dim = "wht_dim"
+wht_stride = "wht_stride"
+
+[files]
+extend-exclude = [
+    "test_data/",
+    "vendor/",
+    "target/",
+    "book/output/",
+    "tests/all_models_results*/",
+]

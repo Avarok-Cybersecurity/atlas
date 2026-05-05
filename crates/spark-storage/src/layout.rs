@@ -41,7 +41,11 @@ impl Layout {
                 .with_context(|| format!("fallocate {}", p.display()))?;
             files.push(f.into());
         }
-        Ok(Self { dir: dir.to_path_buf(), spec, files })
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            spec,
+            files,
+        })
     }
 
     /// Open an existing layout (panics if a file is missing or undersized).
@@ -59,12 +63,18 @@ impl Layout {
             if len < spec.bytes_per_layer() {
                 anyhow::bail!(
                     "layer file {} is undersized: {} < {}",
-                    p.display(), len, spec.bytes_per_layer()
+                    p.display(),
+                    len,
+                    spec.bytes_per_layer()
                 );
             }
             files.push(f.into());
         }
-        Ok(Self { dir: dir.to_path_buf(), spec, files })
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            spec,
+            files,
+        })
     }
 
     pub fn fd(&self, layer: u32) -> RawFd {
@@ -119,9 +129,7 @@ mod tests {
     }
 
     fn tempdir() -> PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "atlas-storage-test-{}", std::process::id()
-        ));
+        let p = std::env::temp_dir().join(format!("atlas-storage-test-{}", std::process::id()));
         std::fs::create_dir_all(&p).unwrap();
         p
     }

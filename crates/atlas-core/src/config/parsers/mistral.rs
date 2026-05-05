@@ -7,7 +7,11 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use super::super::{LayerType, ModelConfig, QuantizationConfig, VisionConfig, default_conv_kernel, default_one, default_one_f64, default_partial_rotary, default_rms_eps, default_rope_theta, finalize_config, validate_config, parse_quantization_config, parse_vision_config};
+use super::super::{
+    LayerType, ModelConfig, QuantizationConfig, VisionConfig, default_conv_kernel, default_one,
+    default_one_f64, default_partial_rotary, default_rms_eps, default_rope_theta, finalize_config,
+    parse_quantization_config, parse_vision_config, validate_config,
+};
 
 pub fn parse_mistral_params(json: &str) -> Result<ModelConfig> {
     let raw: serde_json::Value =
@@ -166,4 +170,3 @@ pub fn parse_mistral_params(json: &str) -> Result<ModelConfig> {
     finalize_config(&mut config, &raw)?;
     Ok(config)
 }
-

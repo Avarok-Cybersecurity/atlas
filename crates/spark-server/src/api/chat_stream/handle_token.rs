@@ -13,29 +13,19 @@ use axum::response::sse::Event;
 use crate::openai::ChatCompletionChunk;
 use crate::tool_parser;
 
-use super::super::failures::{
-    bump_f12_tool_call_count,
-    check_loop_watchdog,
-};
+use super::super::failures::{bump_f12_tool_call_count, check_loop_watchdog};
 use super::super::sanitizer::sanitize_content_chunk;
 use super::ctx::StreamCtx;
 use super::state::StreamState;
 use super::tool_handlers::{
-    handle_complete_tool_call,
-    handle_tool_call_delta,
-    handle_tool_call_end,
-    handle_tool_call_start,
+    handle_complete_tool_call, handle_tool_call_delta, handle_tool_call_end, handle_tool_call_start,
 };
 
 type SseVec = Vec<Result<Event, std::convert::Infallible>>;
 
 /// Process one token. Returns the SSE events to forward to the
 /// client (empty `Vec` is valid).
-pub(super) fn handle_token(
-    state: &mut StreamState,
-    ctx: &StreamCtx,
-    tok: u32,
-) -> SseVec {
+pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> SseVec {
     let mut sse_events: SseVec = Vec::new();
     state.all_toks.push(tok);
 
@@ -82,7 +72,11 @@ pub(super) fn handle_token(
         // Still in thinking — accumulate but don't emit as content
         if ctx.enable_thinking {
             // Open thinking: emit as reasoning_content
-            let full = ctx.state.tokenizer.decode(&state.all_toks).unwrap_or_default();
+            let full = ctx
+                .state
+                .tokenizer
+                .decode(&state.all_toks)
+                .unwrap_or_default();
             let stable_end = full.trim_end_matches('\u{FFFD}').len();
             if stable_end > state.emitted {
                 let mut cleaned = full[state.emitted..stable_end].to_string();
@@ -142,8 +136,7 @@ pub(super) fn handle_token(
                     &ctx.leak_markers,
                 );
                 if !cleaned.trim().is_empty() {
-                    let chunk =
-                        ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, cleaned);
+                    let chunk = ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, cleaned);
                     let json = serde_json::to_string(&chunk).unwrap_or_default();
                     sse_events.push(Ok(Event::default().data(json)));
                 }
@@ -182,11 +175,7 @@ pub(super) fn handle_token(
             "<analysis>",
         ] {
             while let Some(pos) = delta.find(tag) {
-                delta = format!(
-                    "{}{}",
-                    &delta[..pos],
-                    delta[pos + tag.len()..].trim_start()
-                );
+                delta = format!("{}{}", &delta[..pos], delta[pos + tag.len()..].trim_start());
             }
         }
         // If model re-opens <think>, suppress content from <think> onward.
@@ -329,10 +318,9 @@ fn process_detector_content(
     let semantic_trip = if !state.loop_watchdog_triggered {
         state.simhash_pending.push_str(sanitized);
         let mut dup = false;
-        if crate::loop_simhash::ends_at_sentence_boundary(&state.simhash_pending).is_some() {
-            dup = state.simhash_guard.check(&state.simhash_pending);
-            state.simhash_pending.clear();
-        } else if state.simhash_pending.len() >= 1024 {
+        if crate::loop_simhash::ends_at_sentence_boundary(&state.simhash_pending).is_some()
+            || state.simhash_pending.len() >= 1024
+        {
             dup = state.simhash_guard.check(&state.simhash_pending);
             state.simhash_pending.clear();
         }
@@ -361,10 +349,8 @@ fn process_detector_content(
         state.loop_watchdog_triggered = true;
         state.stop_string_triggered = true;
 
-        let salvaged = crate::tool_salvage::salvage(
-            &state.loop_scan_buf,
-            &ctx.tool_defs_for_backfill,
-        );
+        let salvaged =
+            crate::tool_salvage::salvage(&state.loop_scan_buf, &ctx.tool_defs_for_backfill);
         let mut events: SseVec = Vec::new();
         for (idx, tc) in salvaged.iter().enumerate() {
             tracing::warn!(
@@ -377,20 +363,19 @@ fn process_detector_content(
                 ctx.max_tool_calls_per_response,
                 &mut state.stop_string_triggered,
             );
-            let start =
-                ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, idx);
-            events.push(Ok(Event::default().data(
-                serde_json::to_string(&start).unwrap_or_default(),
-            )));
+            let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, idx);
+            events.push(Ok(
+                Event::default().data(serde_json::to_string(&start).unwrap_or_default())
+            ));
             let frag = ChatCompletionChunk::tool_call_args_fragment(
                 &ctx.model,
                 &ctx.id,
                 idx,
                 &tc.function.arguments,
             );
-            events.push(Ok(Event::default().data(
-                serde_json::to_string(&frag).unwrap_or_default(),
-            )));
+            events.push(Ok(
+                Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
+            ));
         }
         if !salvaged.is_empty() {
             state.salvaged_tool_call = true;
@@ -402,14 +387,9 @@ fn process_detector_content(
         if state.refusal_scan_buf.len() < 16_384 {
             state.refusal_scan_buf.push_str(sanitized);
         }
-        let chunk = ChatCompletionChunk::content_chunk(
-            &ctx.model,
-            &ctx.id,
-            sanitized.to_string(),
-        );
+        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized.to_string());
         let json = serde_json::to_string(&chunk).unwrap_or_default();
-        let mut events: SseVec = Vec::new();
-        events.push(Ok(Event::default().data(json)));
+        let events: SseVec = vec![Ok(Event::default().data(json))];
         return Some(events);
     }
     None
@@ -417,11 +397,7 @@ fn process_detector_content(
 
 /// Detector-active branch's `Content(text)` arm: sanitize first,
 /// then run the shared semantic/token watchdog + emit pipeline.
-fn detector_content_arm(
-    state: &mut StreamState,
-    ctx: &StreamCtx,
-    text: &str,
-) -> Option<SseVec> {
+fn detector_content_arm(state: &mut StreamState, ctx: &StreamCtx, text: &str) -> Option<SseVec> {
     let sanitized = sanitize_content_chunk(
         text,
         &mut state.tag_scan_buf,
@@ -431,4 +407,3 @@ fn detector_content_arm(
     );
     process_detector_content(state, ctx, &sanitized)
 }
-

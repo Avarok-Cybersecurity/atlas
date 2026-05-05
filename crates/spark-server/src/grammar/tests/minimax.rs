@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use super::*;
 use xgrammar::{CompiledGrammar, GrammarMatcher};
 
@@ -45,8 +47,8 @@ fn minimax_test_tool_defs() -> Vec<ToolDefinition> {
 /// have to also feed an EOS token, which is irrelevant for testing
 /// what byte strings the structural-tag converter accepts.
 fn grammar_accepts(compiled: &CompiledGrammar, input: &str) -> bool {
-    let mut matcher = GrammarMatcher::new(compiled, None, true, -1)
-        .expect("GrammarMatcher::new failed");
+    let mut matcher =
+        GrammarMatcher::new(compiled, None, true, -1).expect("GrammarMatcher::new failed");
     if !matcher.accept_string(input, false) {
         return false;
     }

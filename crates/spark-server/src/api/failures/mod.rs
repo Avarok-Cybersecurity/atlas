@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Cross-turn failure-recovery sub-systems extracted from `api.rs`.
-//! Each sibling file groups one cluster of "F<n>" tagged helpers used by
+//! Each sibling file groups one cluster of `"F<n>"` tagged helpers used by
 //! `chat_completions` to detect and mitigate stalled / looping agents.
 
 mod circuit;

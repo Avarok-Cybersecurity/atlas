@@ -2,9 +2,9 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -12,21 +12,20 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::super::ssm_pool::SsmStatePool;
+use super::super::ssm_snapshot::SsmSnapshotPool;
+use super::super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::super::types::{TransformerModel, PinnedMetaStaging};
-use super::super::ssm_pool::SsmStatePool;
-use super::super::ssm_snapshot::SsmSnapshotPool;
-use super::super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
 
 impl TransformerModel {
     pub(super) fn cache_sequence_dispatch(&self, seq: &SequenceState) {
@@ -152,7 +151,10 @@ impl TransformerModel {
         if let Some(graph) = self.decode_graph.lock().remove(&seq.slot_idx)
             && let Err(e) = self.gpu.destroy_graph(graph)
         {
-            tracing::error!("free_sequence: destroy_graph(decode_graph[{}]): {e:#}", seq.slot_idx);
+            tracing::error!(
+                "free_sequence: destroy_graph(decode_graph[{}]): {e:#}",
+                seq.slot_idx
+            );
         }
         // batch_decode_graphs is keyed by padded_n, not slot — but the captured
         // graphs DO contain per-slot SSM pointers from the active set at capture
@@ -172,22 +174,30 @@ impl TransformerModel {
             if let Some(graph) = graph_mutex.lock().remove(&seq.slot_idx)
                 && let Err(e) = self.gpu.destroy_graph(graph)
             {
-                tracing::error!("free_sequence: destroy_graph(verify[{}]): {e:#}", seq.slot_idx);
+                tracing::error!(
+                    "free_sequence: destroy_graph(verify[{}]): {e:#}",
+                    seq.slot_idx
+                );
             }
         }
 
         // Free MTP proposer state (KV cache blocks).
         if let Some(ref proposer) = self.proposer
-            && let Some(ref mut pstate) = seq.proposer_state {
-                proposer.free_state(pstate.as_mut())?;
-            }
+            && let Some(ref mut pstate) = seq.proposer_state
+        {
+            proposer.free_state(pstate.as_mut())?;
+        }
 
         self.free_chunked_prefill_meta(seq)?;
 
         Ok(())
     }
 
-    pub(super) fn compact_sequence_dispatch(&self, seq: &mut SequenceState, new_slot: usize) -> Result<()> {
+    pub(super) fn compact_sequence_dispatch(
+        &self,
+        seq: &mut SequenceState,
+        new_slot: usize,
+    ) -> Result<()> {
         let old_slot = seq.slot_idx;
         if old_slot == new_slot {
             return Ok(());
@@ -371,5 +381,4 @@ impl TransformerModel {
     pub(super) fn num_free_blocks_dispatch(&self) -> usize {
         self.kv_cache.lock().num_free_blocks()
     }
-
 }

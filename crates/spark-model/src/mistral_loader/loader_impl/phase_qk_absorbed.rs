@@ -5,8 +5,8 @@
 
 use anyhow::Result;
 
-use super::ctx::MistralLayerCtx;
 use super::super::gpu_alloc_or_managed;
+use super::ctx::MistralLayerCtx;
 use crate::weight_map::DenseWeight;
 
 pub(super) fn build_w_qk_absorbed(ctx: &mut MistralLayerCtx<'_>) -> Result<()> {

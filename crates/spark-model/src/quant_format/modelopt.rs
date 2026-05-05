@@ -34,7 +34,7 @@ use crate::weight_map::Nvfp4Variant;
 #[derive(Debug)]
 pub struct ModeloptFormat {
     /// `quant_algo` declared in config (`"NVFP4"`, `"FP8"`, …). Used for
-    /// diagnostic logging — the actual dispatch uses [`base_variant`].
+    /// diagnostic logging — the actual dispatch uses `base_variant`.
     pub algo: String,
     /// Module-path globs to load as dense BF16 rather than NVFP4.
     pub ignore_modules: Vec<String>,

@@ -14,18 +14,18 @@ use anyhow::{Context, Result};
 use tokio::sync::mpsc;
 
 use crate::api::InferenceRequest;
+use crate::main_modules::AppState;
+use crate::main_modules::serve_phases;
 use crate::tokenizer::ChatTokenizer;
 #[allow(unused_imports)]
 use crate::{
-    adaptive_sampler, anthropic, api, citation, cli, conversation_store, grammar,
-    halluc_probe, hint_injector, llmlingua, lookback_lens, loop_detector, loop_simhash,
-    lqer, metrics, model_resolver, moe_quality, ngram, observation_mask, openai,
-    rate_limiter, reasoning_parser, refusal, request_dumper, response_store,
-    retrieval_heads, scheduler, scheduling_policy, session_manager, symbol_trie,
-    task_pin, tokenizer, tool_arg_dedup, tool_parser, tool_rag, tool_salvage,
+    adaptive_sampler, anthropic, api, citation, cli, conversation_store, grammar, halluc_probe,
+    hint_injector, llmlingua, lookback_lens, loop_detector, loop_simhash, lqer, metrics,
+    model_resolver, moe_quality, ngram, observation_mask, openai, rate_limiter, reasoning_parser,
+    refusal, request_dumper, response_store, retrieval_heads, scheduler, scheduling_policy,
+    session_manager, symbol_trie, task_pin, tokenizer, tool_arg_dedup, tool_parser, tool_rag,
+    tool_salvage,
 };
-use crate::main_modules::AppState;
-use crate::main_modules::serve_phases;
 
 pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     tracing::info!("Atlas Spark starting...");
@@ -210,20 +210,21 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         kv_dtype,
         layer_dtypes,
         hss_cache_blocks_per_seq,
-    } = serve_phases::resolve_kv_cache_config(&args, &config, &ptx_set.behavior.default_kv_dtype)?;
+    } = serve_phases::resolve_kv_cache_config(&args, &config, ptx_set.behavior.default_kv_dtype)?;
     let dflash_drafter_state = serve_phases::load_dflash_drafter(&args, &ptx_set, gpu.as_ref())?;
-    let dflash_args = dflash_drafter_state.as_ref().map(|(s, c)| {
-        spark_model::factory::DflashBuildArgs {
-            drafter_store: s,
-            drafter_config: c.clone(),
-            gamma: Some(args.dflash_gamma),
-            window_size: if args.dflash_window_size > 0 {
-                Some(args.dflash_window_size)
-            } else {
-                None
-            },
-        }
-    });
+    let dflash_args =
+        dflash_drafter_state
+            .as_ref()
+            .map(|(s, c)| spark_model::factory::DflashBuildArgs {
+                drafter_store: s,
+                drafter_config: c.clone(),
+                gamma: Some(args.dflash_gamma),
+                window_size: if args.dflash_window_size > 0 {
+                    Some(args.dflash_window_size)
+                } else {
+                    None
+                },
+            });
     let model = serve_phases::build_model(
         &args,
         &config,
@@ -313,8 +314,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // dispatches both MTP and DFlash proposers via the shared `DraftProposer`
     // trait + the `drafts.len() ≥ 4` ladder route to `step_verify_dflash`
     // (scheduler.rs:3013). So `--dflash` enables `use_speculative` too.
-    let use_speculative =
-        (args.speculative || args.dflash) && scheduler_model.has_proposer();
+    let use_speculative = (args.speculative || args.dflash) && scheduler_model.has_proposer();
     let use_self_spec = args.self_speculative && scheduler_model.has_self_speculative();
     let use_ngram_spec = args.ngram_speculative;
     // For DFlash, force `num_drafts = γ - 1` so the scheduler asks the
@@ -472,7 +472,8 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     serve_phases::log_behavior_audit(&args, &ptx_set);
 
     // 9-11. Build router + start HTTP server (extracted: serve_router.rs).
-    crate::main_modules::serve_router::build_and_serve(state, model_ready, &args.bind, args.port).await
+    crate::main_modules::serve_router::build_and_serve(state, model_ready, &args.bind, args.port)
+        .await
 }
 
 /// Resolve `--require-auth` / `--auth-tokens-file` / `--auth-token` into an

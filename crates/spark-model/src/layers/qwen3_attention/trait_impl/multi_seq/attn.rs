@@ -15,7 +15,18 @@ use crate::layers::qwen3_attention::Qwen3AttentionLayer;
 impl Qwen3AttentionLayer {
     /// Phase 3: per-token RoPE (each sequence has its own position).
     pub(super) fn ms_phase_rope(&self, c: &MultiSeqCtx<'_>, meta: AttnMetadataDev) -> Result<()> {
-        let MultiSeqCtx { fwd, n, stream, nq, nkv, hd, q_proj_bytes, per_seq_qkv, qkv_buf, .. } = *c;
+        let MultiSeqCtx {
+            fwd,
+            n,
+            stream,
+            nq,
+            nkv,
+            hd,
+            q_proj_bytes,
+            per_seq_qkv,
+            qkv_buf,
+            ..
+        } = *c;
         for i in 0..n {
             let q_out_i = qkv_buf.offset(i * per_seq_qkv);
             let k_out_i = q_out_i.offset(q_proj_bytes);
@@ -26,7 +37,10 @@ impl Qwen3AttentionLayer {
                 q_out_i,
                 k_out_i,
                 pos_i,
-                1, nq, nkv, hd,
+                1,
+                nq,
+                nkv,
+                hd,
                 self.rotary_dim_override
                     .unwrap_or(fwd.config.rotary_dim() as u32),
                 self.rope_theta_override
@@ -44,7 +58,19 @@ impl Qwen3AttentionLayer {
         kv_cache: &mut PagedKvCache,
         meta: AttnMetadataDev,
     ) -> Result<()> {
-        let MultiSeqCtx { fwd, n, stream, nkv, hd, bs, bf16, q_proj_bytes, per_seq_qkv, qkv_buf, .. } = *c;
+        let MultiSeqCtx {
+            fwd,
+            n,
+            stream,
+            nkv,
+            hd,
+            bs,
+            bf16,
+            q_proj_bytes,
+            per_seq_qkv,
+            qkv_buf,
+            ..
+        } = *c;
         let kv_stride = nkv * hd;
         for i in 0..n {
             let q_out_i = qkv_buf.offset(i * per_seq_qkv);
@@ -52,9 +78,19 @@ impl Qwen3AttentionLayer {
             let v_out_i = k_out_i.offset((nkv * hd) as usize * bf16);
             let slot_i = meta.slot.offset(i * 8); // i64 per slot
             self.write_kv_cache(
-                fwd.gpu, k_out_i, v_out_i, kv_cache, slot_i,
-                1, nkv, hd, bs, kv_stride, kv_stride,
-                stream, fwd.graph_capture,
+                fwd.gpu,
+                k_out_i,
+                v_out_i,
+                kv_cache,
+                slot_i,
+                1,
+                nkv,
+                hd,
+                bs,
+                kv_stride,
+                kv_stride,
+                stream,
+                fwd.graph_capture,
             )?;
         }
         Ok(())
@@ -68,7 +104,20 @@ impl Qwen3AttentionLayer {
         kv_cache: &mut PagedKvCache,
         meta: AttnMetadataDev,
     ) -> Result<DevicePtr> {
-        let MultiSeqCtx { fwd, n, stream, nq, nkv, hd, bs, bf16, q_dim, per_seq_qkv, qkv_buf, .. } = *c;
+        let MultiSeqCtx {
+            fwd,
+            n,
+            stream,
+            nq,
+            nkv,
+            hd,
+            bs,
+            bf16,
+            q_dim,
+            per_seq_qkv,
+            qkv_buf,
+            ..
+        } = *c;
         // Build contiguous Q buffer [N, nq*hd] for batched attention.
         let q_contiguous = fwd.buffers.ssm_qkvz();
         for i in 0..n {
@@ -91,7 +140,10 @@ impl Qwen3AttentionLayer {
             meta.seq_len,
             meta.max_blocks_per_seq,
             n as u32,
-            nq, nkv, hd, bs,
+            nq,
+            nkv,
+            hd,
+            bs,
             inv_sqrt_d,
             nq * hd,
             fwd.buffers.splitk_workspace(),
@@ -107,14 +159,31 @@ impl Qwen3AttentionLayer {
         c: &MultiSeqCtx<'_>,
         attn_out: DevicePtr,
     ) -> Result<DevicePtr> {
-        let MultiSeqCtx { fwd, n, stream, h, nq, hd, bf16, q_dim, per_seq_qkv, qkv_buf, .. } = *c;
+        let MultiSeqCtx {
+            fwd,
+            n,
+            stream,
+            h,
+            nq,
+            hd,
+            bf16,
+            q_dim,
+            per_seq_qkv,
+            qkv_buf,
+            ..
+        } = *c;
         if self.gated {
             for i in 0..n {
                 let gate_i = qkv_buf.offset(i * per_seq_qkv + q_dim as usize * bf16);
                 let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
                 ops::sigmoid_gate_mul(
-                    fwd.gpu, self.sigmoid_gate_mul_k,
-                    attn_out_i, gate_i, attn_out_i, q_dim, stream,
+                    fwd.gpu,
+                    self.sigmoid_gate_mul_k,
+                    attn_out_i,
+                    gate_i,
+                    attn_out_i,
+                    q_dim,
+                    stream,
                 )?;
             }
         }
@@ -126,31 +195,52 @@ impl Qwen3AttentionLayer {
                 let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
                 let o_out_i = o_out.offset(i * h * bf16);
                 ops::w8a16_gemv(
-                    fwd.gpu, self.w8a16_gemv_k,
-                    attn_out_i, o_fp8.weight, o_fp8.row_scale,
-                    o_out_i, h as u32, nq * hd, stream,
+                    fwd.gpu,
+                    self.w8a16_gemv_k,
+                    attn_out_i,
+                    o_fp8.weight,
+                    o_fp8.row_scale,
+                    o_out_i,
+                    h as u32,
+                    nq * hd,
+                    stream,
                 )?;
             }
         } else if n == 3 && !self.attn.o_proj.is_null() {
             ops::w4a16_gemv_batch3(
-                fwd.gpu, self.w4a16_gemv_batch3_k,
-                attn_out, &self.attn.o_proj, o_out,
-                h as u32, nq * hd, stream,
+                fwd.gpu,
+                self.w4a16_gemv_batch3_k,
+                attn_out,
+                &self.attn.o_proj,
+                o_out,
+                h as u32,
+                nq * hd,
+                stream,
             )?;
         } else if n == 2 && !self.attn.o_proj.is_null() {
             ops::w4a16_gemv_batch2(
-                fwd.gpu, self.w4a16_gemv_batch2_k,
-                attn_out, &self.attn.o_proj, o_out,
-                h as u32, nq * hd, stream,
+                fwd.gpu,
+                self.w4a16_gemv_batch2_k,
+                attn_out,
+                &self.attn.o_proj,
+                o_out,
+                h as u32,
+                nq * hd,
+                stream,
             )?;
         } else {
             for i in 0..n {
                 let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
                 let o_out_i = o_out.offset(i * h * bf16);
                 ops::w4a16_gemv(
-                    fwd.gpu, self.w4a16_gemv_k,
-                    attn_out_i, &self.attn.o_proj, o_out_i,
-                    h as u32, nq * hd, stream,
+                    fwd.gpu,
+                    self.w4a16_gemv_k,
+                    attn_out_i,
+                    &self.attn.o_proj,
+                    o_out_i,
+                    h as u32,
+                    nq * hd,
+                    stream,
                 )?;
             }
         }

@@ -229,9 +229,10 @@ fn extract_expert_idx(name: &str) -> Option<usize> {
     ] {
         if let Some(tail) = name.split(marker).nth(1)
             && let Some(end) = tail.find('.')
-                && let Ok(idx) = tail[..end].parse::<usize>() {
-                    return Some(idx);
-                }
+            && let Ok(idx) = tail[..end].parse::<usize>()
+        {
+            return Some(idx);
+        }
     }
     None
 }

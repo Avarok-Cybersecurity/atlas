@@ -47,7 +47,7 @@ pub fn launch_config(n: u32, block_size: u32) -> LaunchConfig {
     }
 }
 
-/// Launch vector_add kernel: C[i] = A[i] + B[i].
+/// Launch vector_add kernel: `C[i] = A[i] + B[i]`.
 ///
 /// This uses the safe cudarc launch_builder API with u64 device pointers.
 /// Since u64 implements DeviceRepr, no FFI conversion is needed.

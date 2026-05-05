@@ -2,9 +2,9 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -12,21 +12,20 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::super::ssm_pool::SsmStatePool;
+use super::super::ssm_snapshot::SsmSnapshotPool;
+use super::super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::super::types::{TransformerModel, PinnedMetaStaging};
-use super::super::ssm_pool::SsmStatePool;
-use super::super::ssm_snapshot::SsmSnapshotPool;
-use super::super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
 
 impl TransformerModel {
     pub(super) fn vocab_size_dispatch(&self) -> usize {
@@ -48,7 +47,11 @@ impl TransformerModel {
         })
     }
 
-    pub(super) fn normalize_ssm_states_dispatch(&self, seq: &SequenceState, stream: u64) -> Result<()> {
+    pub(super) fn normalize_ssm_states_dispatch(
+        &self,
+        seq: &SequenceState,
+        stream: u64,
+    ) -> Result<()> {
         use spark_runtime::kernel_args::KernelLaunch;
 
         let num_ssm = self.ssm_pool.num_ssm_layers;
@@ -178,7 +181,11 @@ impl TransformerModel {
         })
     }
 
-    pub(super) fn copy_logits_to_host_dispatch(&self, logits_ptr: DevicePtr, dst: &mut [u8]) -> Result<()> {
+    pub(super) fn copy_logits_to_host_dispatch(
+        &self,
+        logits_ptr: DevicePtr,
+        dst: &mut [u8],
+    ) -> Result<()> {
         self.gpu.copy_d2h(logits_ptr, dst)
     }
 
@@ -190,7 +197,11 @@ impl TransformerModel {
         self.buffers.logits()
     }
 
-    pub(super) fn argmax_on_device_dispatch(&self, logits_ptr: DevicePtr, _stream: u64) -> Result<u32> {
+    pub(super) fn argmax_on_device_dispatch(
+        &self,
+        logits_ptr: DevicePtr,
+        _stream: u64,
+    ) -> Result<u32> {
         // Use backend's default stream (same as decode) to avoid implicit
         // sync overhead from legacy default stream (handle 0).
         let stream = self.gpu.default_stream();
@@ -202,8 +213,7 @@ impl TransformerModel {
         // batched-decode / non-Gemma-4 paths) and argmax_bf16 applies.
         // The kernel arg layout is identical (ptr, ptr, u32), so dispatch
         // is just a kernel-handle swap.
-        let is_fp32 =
-            self.use_fp32_logits && logits_ptr.0 == self.logits_fp32_buf.0;
+        let is_fp32 = self.use_fp32_logits && logits_ptr.0 == self.logits_fp32_buf.0;
         let kernel = if is_fp32 {
             self.argmax_logits_kernel
         } else {
@@ -225,7 +235,12 @@ impl TransformerModel {
         Ok(gpu_token)
     }
 
-    pub(super) fn argmax_batch_dispatch(&self, logits_ptr: DevicePtr, n: usize, _stream: u64) -> Result<Vec<u32>> {
+    pub(super) fn argmax_batch_dispatch(
+        &self,
+        logits_ptr: DevicePtr,
+        n: usize,
+        _stream: u64,
+    ) -> Result<Vec<u32>> {
         let stream = self.gpu.default_stream();
         let v = self.config.vocab_size;
         let bf16 = 2usize;
@@ -265,5 +280,4 @@ impl TransformerModel {
         // norm_output() holds the post-final-norm hidden state from the last decode
         self.buffers.norm_output()
     }
-
 }

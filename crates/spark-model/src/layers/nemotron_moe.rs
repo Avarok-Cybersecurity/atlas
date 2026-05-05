@@ -4,7 +4,7 @@
 //!
 //! Supports two variants:
 //!   - **Nano 30B**: Direct MoE — experts operate on full hidden_size.
-//!   - **Super 120B**: LatentMoE — routed experts operate in latent space [moe_latent_size],
+//!   - **Super 120B**: LatentMoE — routed experts operate in latent space `[moe_latent_size]`,
 //!     with fc1/fc2 latent projections bridging hidden↔latent.
 //!
 //! Forward: RMS norm → gate → sigmoid topK routing → (fc1_latent if latent) →
@@ -173,13 +173,15 @@ impl NemotronMoeLayer {
                 }
             }
             if up_t.len() == self.weights.experts.len()
-                && let Ok(ptrs) = build_ptr_table_from_weights(&up_t, gpu) {
-                    self.up_ptrs_t = Some(ptrs);
-                }
+                && let Ok(ptrs) = build_ptr_table_from_weights(&up_t, gpu)
+            {
+                self.up_ptrs_t = Some(ptrs);
+            }
             if down_t.len() == self.weights.experts.len()
-                && let Ok(ptrs) = build_ptr_table_from_weights(&down_t, gpu) {
-                    self.down_ptrs_t = Some(ptrs);
-                }
+                && let Ok(ptrs) = build_ptr_table_from_weights(&down_t, gpu)
+            {
+                self.down_ptrs_t = Some(ptrs);
+            }
         }
 
         // Transpose shared expert weights (only for direct MoE — Super is too memory-tight)
@@ -199,8 +201,8 @@ impl NemotronMoeLayer {
 }
 
 mod decode_helpers;
-mod prefill_sorted;
 mod prefill_fallback;
+mod prefill_sorted;
 
 use prefill_sorted::SortedPrefillCtx;
 

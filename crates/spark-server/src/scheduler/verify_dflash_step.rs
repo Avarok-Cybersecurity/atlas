@@ -4,7 +4,6 @@
 
 use super::*;
 
-
 /// DFlash γ-token verify with accept-prefix.
 ///
 /// Phase 3 minimal-viable implementation: routes `[last_token, drafts...]`
@@ -27,12 +26,7 @@ use super::*;
 ///     accepted bonus token (the next propose() needs the latest hidden).
 ///   * Sliding-window state rollback for sliding-attention layers
 ///     (Gemma-4-style; not used by Qwen3.6 targets).
-pub fn step_verify_dflash(
-    model: &dyn Model,
-    a: &mut ActiveSeq,
-    drafts: &[u32],
-    num_drafts: usize,
-) {
+pub fn step_verify_dflash(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_drafts: usize) {
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
         a.finished = true;
@@ -118,7 +112,11 @@ pub fn step_verify_dflash(
     crate::metrics::SPEC_DECODE_VERIFY
         .with_label_values(&[
             "dflash",
-            if num_accepted == drafts.len() { "accept_all" } else { "accept_partial" },
+            if num_accepted == drafts.len() {
+                "accept_all"
+            } else {
+                "accept_partial"
+            },
         ])
         .inc();
 

@@ -179,7 +179,11 @@ impl Signature {
         } else {
             HashSet::new()
         };
-        Self { text, tools, combined }
+        Self {
+            text,
+            tools,
+            combined,
+        }
     }
 
     /// True iff every channel is empty — the message contributed
@@ -278,9 +282,17 @@ pub fn detect(recent_newest_first: &[Signature]) -> LoopState {
             // run_length pairs == run_length+1 turns.
             let turns = run_length + 1;
             if high_band || (score >= HIGH_SIMILARITY && turns >= 3) || turns >= 4 {
-                LoopState::Suppress { score, run_length: turns, channel }
+                LoopState::Suppress {
+                    score,
+                    run_length: turns,
+                    channel,
+                }
             } else {
-                LoopState::Hint { score, run_length: turns, channel }
+                LoopState::Hint {
+                    score,
+                    run_length: turns,
+                    channel,
+                }
             }
         }
     }
@@ -331,7 +343,6 @@ fn jaccard(a: &HashSet<u64>, b: &HashSet<u64>) -> f64 {
         intersection / union
     }
 }
-
 
 #[cfg(test)]
 mod tests;

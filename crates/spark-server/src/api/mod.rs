@@ -29,26 +29,26 @@
 //! - `strip`              — legacy `strip_thinking_tags` for completions
 //! - `tests/`             — extracted `sanitizer_tests` module split four ways
 
-pub mod compact;
 pub mod chat;
 pub mod chat_blocking;
 pub mod chat_phases;
 pub mod chat_stream;
 pub mod chat_stream_dispatch;
+pub mod compact;
 pub mod completions;
-pub mod sanitizer;
+pub mod conversations;
 pub mod failures;
-pub mod stubs;
+pub mod inference_impl;
+pub mod inference_types;
+pub mod misc_handlers;
 pub mod responses;
 pub mod responses_stream;
 pub mod responses_stream_finalize;
 pub mod responses_translate;
+pub mod sanitizer;
 pub mod stored;
-pub mod conversations;
-pub mod misc_handlers;
-pub mod inference_types;
-pub mod inference_impl;
 pub mod strip;
+pub mod stubs;
 
 #[cfg(test)]
 mod tests;
@@ -64,10 +64,9 @@ pub use compact::compact_messages;
 pub use completions::{completions, embeddings_stub, get_model, list_models};
 #[allow(unused_imports)]
 pub use conversations::{
-    AddItemsRequest, CreateConversationRequest, UpdateConversationRequest,
-    add_conversation_items, create_conversation, delete_conversation,
-    delete_conversation_item, get_conversation, get_conversation_item,
-    list_conversation_items, update_conversation,
+    AddItemsRequest, CreateConversationRequest, UpdateConversationRequest, add_conversation_items,
+    create_conversation, delete_conversation, delete_conversation_item, get_conversation,
+    get_conversation_item, list_conversation_items, update_conversation,
 };
 #[allow(unused_imports)]
 pub use inference_types::{
@@ -75,18 +74,16 @@ pub use inference_types::{
 };
 #[allow(unused_imports)]
 pub use misc_handlers::{
-    DetokenizeRequest, cancel_response, detokenize, health, health_live,
-    metrics_handler, tokenize,
+    DetokenizeRequest, cancel_response, detokenize, health, health_live, metrics_handler, tokenize,
 };
 #[allow(unused_imports)]
 pub use responses::responses_endpoint;
 #[allow(unused_imports)]
 pub use stored::{
-    delete_stored_response, get_stored_completion, get_stored_response,
-    list_response_input_items,
+    delete_stored_response, get_stored_completion, get_stored_response, list_response_input_items,
 };
 #[allow(unused_imports)]
 pub use stubs::{
-    audio_stub, batch_get_stub, batch_list_stub, batches_stub, files_stub,
-    images_stub, moderations_stub,
+    audio_stub, batch_get_stub, batch_list_stub, batches_stub, files_stub, images_stub,
+    moderations_stub,
 };

@@ -69,7 +69,11 @@ pub fn bench_cufile(
     let mut handle: CUfileHandle_t = std::ptr::null_mut();
     let err = unsafe { (cufile.handle_register)(&mut handle, &mut descr) };
     if err.err != CU_FILE_SUCCESS {
-        bail!("cuFileHandleRegister failed: {} ({})", err.err, err_to_str(err.err));
+        bail!(
+            "cuFileHandleRegister failed: {} ({})",
+            err.err,
+            err_to_str(err.err)
+        );
     }
     let _ = unsafe { (cufile.buf_register)(dev.ptr as *const c_void, dev.bytes, 0) };
     let t = Instant::now();
@@ -79,9 +83,7 @@ pub fn bench_cufile(
         } else {
             rand_offset(file_bytes, io_bytes, i) as i64
         };
-        let n = unsafe {
-            (cufile.read)(handle, dev.ptr as *mut c_void, io_bytes, off as _, 0)
-        };
+        let n = unsafe { (cufile.read)(handle, dev.ptr as *mut c_void, io_bytes, off as _, 0) };
         if n != io_bytes as isize {
             unsafe {
                 let _ = (cufile.buf_deregister)(dev.ptr as *const c_void);
@@ -132,12 +134,21 @@ pub fn bench_io_uring(
             .offset(off)
             .build()
             .user_data(0);
-        unsafe { ring.submission().push(&read_e).map_err(|_| anyhow::anyhow!("sq full"))? };
-        ring.submit_and_wait(1).context("io_uring submit_and_wait")?;
+        unsafe {
+            ring.submission()
+                .push(&read_e)
+                .map_err(|_| anyhow::anyhow!("sq full"))?
+        };
+        ring.submit_and_wait(1)
+            .context("io_uring submit_and_wait")?;
         let mut cq = ring.completion();
         let entry: io_uring::cqueue::Entry = cq.next().expect("cqe");
         if entry.result() != chunk as i32 {
-            bail!("io_uring read returned {}, expected {}", entry.result(), chunk);
+            bail!(
+                "io_uring read returned {}, expected {}",
+                entry.result(),
+                chunk
+            );
         }
         drop(cq);
         copy_h_to_d_async(dev.ptr, host_ptr as *const c_void, chunk, ctx.stream)?;

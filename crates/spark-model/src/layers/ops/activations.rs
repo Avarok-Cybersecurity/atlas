@@ -36,7 +36,7 @@ pub fn silu_mul(
         .launch(stream)
 }
 
-/// L2 normalization (in-place): data[i] = data[i] / sqrt(sum(data^2) + eps).
+/// L2 normalization (in-place): `data[i] = data[i] / sqrt(sum(data^2) + eps)`.
 ///
 /// Applied per head: data is [num_heads, head_dim], each head normalized independently.
 /// Required for Gated Delta Net Q/K normalization (use_qk_l2norm_in_kernel=True).
@@ -64,7 +64,7 @@ pub fn l2_norm(
         .launch(stream)
 }
 
-/// Element-wise sigmoid gate: output[i] = input[i] * sigmoid(gate[i]).
+/// Element-wise sigmoid gate: `output[i] = input[i] * sigmoid(gate[i])`.
 ///
 /// Used for gated attention in Qwen3: attn_output = attn_output * sigmoid(q_gate).
 ///
@@ -89,7 +89,7 @@ pub fn sigmoid_gate_mul(
         .launch(stream)
 }
 
-/// BF16 residual add: residual[i] += src[i] (in-place).
+/// BF16 residual add: `residual[i] += src[i]` (in-place).
 ///
 /// Kernel: `bf16_residual_add(residual, src, n)`
 /// Grid: (ceil(n/256), 1, 1)  Block: (256, 1, 1)
@@ -110,7 +110,7 @@ pub fn residual_add(
         .launch(stream)
 }
 
-/// BF16 → FP32 conversion: dst[i] = (float)src[i].
+/// BF16 → FP32 conversion: `dst[i] = (float)src[i]`.
 ///
 /// Kernel: `bf16_to_f32(src, dst, n)`
 /// Grid: (ceil(n/256), 1, 1)  Block: (256, 1, 1)
@@ -131,7 +131,7 @@ pub fn bf16_to_f32(
         .launch(stream)
 }
 
-/// BF16 scaled accumulate: output[i] += scale * src[i].
+/// BF16 scaled accumulate: `output[i] += scale * src[i]`.
 ///
 /// Kernel: `bf16_scaled_add(output, src, scale, n)`
 /// Grid: (ceil(n/256), 1, 1)  Block: (256, 1, 1)
@@ -178,4 +178,3 @@ pub fn sigmoid_blend(
 }
 
 // ── SSM Preprocessing ─────────────────────────────────────────────
-

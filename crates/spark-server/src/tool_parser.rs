@@ -340,40 +340,39 @@ impl ToolCallFormat {
 
 // ── MiniMax XML parser (MiniMax M2.7) ──
 
-
 // ── Sub-modules (split from monolithic file) ──
-mod minimax_xml;
 mod bare_json;
-mod hermes;
-mod qwen3_coder;
 mod gemma4;
-mod mistral;
 mod helpers_a;
 mod helpers_b;
+mod hermes;
+mod minimax_xml;
+mod mistral;
 mod parse_dispatch;
 mod parse_single_a;
 mod parse_single_b;
 mod parse_tools_tag;
 mod pipeline;
 mod pipeline_helpers;
+mod qwen3_coder;
 mod streaming;
 mod streaming_impl;
 mod validation;
 
-pub use minimax_xml::*;
 pub use bare_json::*;
-pub use hermes::*;
-pub use qwen3_coder::*;
 pub use gemma4::*;
-pub use mistral::*;
 use helpers_a::*;
 use helpers_b::*;
+pub use hermes::*;
+pub use minimax_xml::*;
+pub use mistral::*;
 pub use parse_dispatch::*;
 use parse_single_a::*;
 use parse_single_b::*;
 use parse_tools_tag::*;
 pub use pipeline::*;
 use pipeline_helpers::*;
+pub use qwen3_coder::*;
 pub use streaming::*;
 pub use validation::*;
 

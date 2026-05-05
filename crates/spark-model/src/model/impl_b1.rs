@@ -2,9 +2,9 @@
 
 #![allow(unused_imports, dead_code)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -12,22 +12,20 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::ssm_pool::SsmStatePool;
+use super::ssm_snapshot::SsmSnapshotPool;
+use super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::types::{TransformerModel, PinnedMetaStaging};
-use super::ssm_pool::SsmStatePool;
-use super::ssm_snapshot::SsmSnapshotPool;
-use super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
-
 
 impl TransformerModel {
     /// Upload batch metadata with fixed stride for CUDA graph compatibility.
@@ -63,7 +61,9 @@ impl TransformerModel {
 
             let block_idx = pos as usize / block_size;
             let block_offset = pos as usize % block_size;
-            let physical_block = seq.physical_block_for(block_idx).unwrap_or(self.dummy_kv_block);
+            let physical_block = seq
+                .physical_block_for(block_idx)
+                .unwrap_or(self.dummy_kv_block);
             let slot = (physical_block as i64) * (block_size as i64) + (block_offset as i64);
             slots.push(slot);
 
@@ -157,7 +157,9 @@ impl TransformerModel {
 
             let block_idx = pos as usize / block_size;
             let block_offset = pos as usize % block_size;
-            let physical_block = seq.physical_block_for(block_idx).unwrap_or(self.dummy_kv_block);
+            let physical_block = seq
+                .physical_block_for(block_idx)
+                .unwrap_or(self.dummy_kv_block);
             let slot = (physical_block as i64) * (block_size as i64) + (block_offset as i64);
             slots.push(slot);
 
@@ -381,14 +383,17 @@ impl TransformerModel {
     /// Eager decode skipping SSM layers. Used by self-speculative drafting.
     /// KV cache entries are appended (will be overwritten by verify).
     /// SSM state is NOT updated (SSM layers are skipped entirely).
-    pub(super) fn decode_draft(&self, token: u32, seq: &mut SequenceState, _stream: u64) -> Result<DevicePtr> {
+    pub(super) fn decode_draft(
+        &self,
+        token: u32,
+        seq: &mut SequenceState,
+        _stream: u64,
+    ) -> Result<DevicePtr> {
         let stream = self.gpu.default_stream();
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
-        let mut kv_cache = self
-            .kv_cache
-            .lock();
+        let mut kv_cache = self.kv_cache.lock();
 
         // 1. Embedding lookup
         self.embed(token, hidden, stream)?;
@@ -396,7 +401,14 @@ impl TransformerModel {
         // 2. Pre-allocate KV cache blocks + upload attention metadata
         let bs = kv_cache.block_size();
         let blocks_needed = (seq.seq_len / bs) + 1;
-        ensure_blocks_through_decode(seq, blocks_needed - 1, &mut kv_cache, self.prefix_cache.as_ref(), self.gpu.as_ref(), stream)?;
+        ensure_blocks_through_decode(
+            seq,
+            blocks_needed - 1,
+            &mut kv_cache,
+            self.prefix_cache.as_ref(),
+            self.gpu.as_ref(),
+            stream,
+        )?;
 
         let meta_base = self.buffers.scratch().offset(32768);
         let max_blocks = seq.block_table.len() as u32;
@@ -405,7 +417,9 @@ impl TransformerModel {
         self.gpu
             .copy_h2d_async(&pos_val.to_le_bytes(), meta_base, stream)?;
 
-        let block_idx = seq.physical_block_for(seq.seq_len / bs).unwrap_or(self.dummy_kv_block);
+        let block_idx = seq
+            .physical_block_for(seq.seq_len / bs)
+            .unwrap_or(self.dummy_kv_block);
         let global_slot = (block_idx as i64) * (bs as i64) + ((seq.seq_len % bs) as i64);
         self.gpu
             .copy_h2d_async(&global_slot.to_le_bytes(), meta_base.offset(8), stream)?;
@@ -482,5 +496,4 @@ impl TransformerModel {
 
         Ok(self.decode_logits_ptr())
     }
-
 }

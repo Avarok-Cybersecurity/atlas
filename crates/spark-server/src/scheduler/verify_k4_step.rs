@@ -4,7 +4,6 @@
 
 use super::*;
 
-
 /// K=4 verify: [last_token, draft1, draft2, draft3] → [v0, v1, v2, v3].
 /// Four outcomes: accept 0, 1, 2, or 3 drafts.
 pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_drafts: usize) {
@@ -115,7 +114,14 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
         }
         let t_propose = Instant::now();
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(v3, a.seq.seq_len, num_drafts, &mut a.seq, 0, _mtp_grammar_mask.as_deref()) {
+        match model.run_mtp_propose_multi(
+            v3,
+            a.seq.seq_len,
+            num_drafts,
+            &mut a.seq,
+            0,
+            _mtp_grammar_mask.as_deref(),
+        ) {
             Ok(d) if !d.is_empty() => a.pending_drafts = d,
             Ok(_) => {}
             Err(e) => {
@@ -158,7 +164,14 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
         }
         let t_propose = Instant::now();
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(v2, a.seq.seq_len, num_drafts, &mut a.seq, 0, _mtp_grammar_mask.as_deref()) {
+        match model.run_mtp_propose_multi(
+            v2,
+            a.seq.seq_len,
+            num_drafts,
+            &mut a.seq,
+            0,
+            _mtp_grammar_mask.as_deref(),
+        ) {
             Ok(d) if !d.is_empty() => a.pending_drafts = d,
             Ok(_) => {}
             Err(e) => {
@@ -197,7 +210,14 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
         }
         let t_propose = Instant::now();
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(v1, a.seq.seq_len, num_drafts, &mut a.seq, 0, _mtp_grammar_mask.as_deref()) {
+        match model.run_mtp_propose_multi(
+            v1,
+            a.seq.seq_len,
+            num_drafts,
+            &mut a.seq,
+            0,
+            _mtp_grammar_mask.as_deref(),
+        ) {
             Ok(d) if !d.is_empty() => a.pending_drafts = d,
             Ok(_) => {}
             Err(e) => {
@@ -234,7 +254,14 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
         }
         let t_propose = Instant::now();
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(v0, a.seq.seq_len, num_drafts, &mut a.seq, 0, _mtp_grammar_mask.as_deref()) {
+        match model.run_mtp_propose_multi(
+            v0,
+            a.seq.seq_len,
+            num_drafts,
+            &mut a.seq,
+            0,
+            _mtp_grammar_mask.as_deref(),
+        ) {
             Ok(d) if !d.is_empty() => a.pending_drafts = d,
             Ok(_) => {}
             Err(e) => {

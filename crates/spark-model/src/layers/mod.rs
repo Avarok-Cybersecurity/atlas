@@ -15,7 +15,9 @@ pub mod qwen3_ssm;
 pub mod vision_encoder;
 
 pub use dense_ffn::{DenseFfnLayer, FfnActivation};
-pub use dflash_head::{BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization};
+pub use dflash_head::{
+    BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization,
+};
 pub use moe::MoeLayer;
 pub use mtp_head::{MtpHead, MtpQuantization};
 pub use nemotron_mamba2::NemotronMamba2Layer;

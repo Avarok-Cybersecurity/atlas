@@ -16,10 +16,9 @@ use super::compact::{openai_error_response, openai_error_response_with_param};
 use super::failures::{
     F23ProgressMetrics, append_f7_reminder_to_last_user, build_f7_stall_reminder,
     collect_f7_stall_buckets, f23_build_reminder, f23_score_progress,
-    f29_extract_environment_facts, f29_inject_environment_facts,
-    f31_inject_hard_refusal, f32_reposition_failed_tool_result,
-    f39_build_circuit_breaker_banner, f39_detect_recent_retries, f49_build_banner,
-    f49_detect_duplicate_writes, f50_append_original_error,
+    f29_extract_environment_facts, f29_inject_environment_facts, f31_inject_hard_refusal,
+    f32_reposition_failed_tool_result, f39_build_circuit_breaker_banner, f39_detect_recent_retries,
+    f49_build_banner, f49_detect_duplicate_writes, f50_append_original_error,
     prepend_reminder_to_system, recent_message_is_tool_error,
 };
 use super::sanitizer::{F7_STALL_REFUSE_THRESHOLD, F7_STALL_WARN_THRESHOLD};
@@ -28,6 +27,7 @@ use super::sanitizer::{F7_STALL_REFUSE_THRESHOLD, F7_STALL_WARN_THRESHOLD};
 /// temperature/top_p ranges, tool_choice mode/required compatibility.
 /// Returns `Err(Response)` for fail-fast 400 paths so the caller can
 /// `?` directly into a Response.
+#[allow(clippy::result_large_err)]
 pub(super) fn validate_input(req: &ChatCompletionRequest) -> Result<(), Response> {
     if req.messages.is_empty() {
         return Err(openai_error_response_with_param(
@@ -138,9 +138,7 @@ pub(super) fn apply_failure_guards(req: &mut ChatCompletionRequest) -> F23Progre
 
     // F32: duplicate failed tool_result at conversation tail.
     if f32_reposition_failed_tool_result(&mut req.messages) {
-        tracing::info!(
-            "F32: duplicated most-recent failed tool_result at conversation tail"
-        );
+        tracing::info!("F32: duplicated most-recent failed tool_result at conversation tail");
     }
 
     // F39: cross-turn permanent-failure circuit breaker.
@@ -172,8 +170,7 @@ pub(super) fn apply_failure_guards(req: &mut ChatCompletionRequest) -> F23Progre
 
     // F35 / F52: turn-conditional failure-recovery clause with concrete fallbacks.
     if recent_message_is_tool_error(&req.messages) {
-        let f35_clause =
-            "<failure_recovery>\nThe previous tool call failed with an error. \
+        let f35_clause = "<failure_recovery>\nThe previous tool call failed with an error. \
              That failure is a deterministic fact about this environment — \
              retrying with cosmetic variations (different mkdir prefix, \
              different cd path, different flag order) cannot change the \
@@ -185,7 +182,9 @@ pub(super) fn apply_failure_guards(req: &mut ChatCompletionRequest) -> F23Progre
              Do NOT emit a generic \"please clarify your request\" question — the user already gave the request. Pick (a), (b), or (c) and execute it.\n\
              </failure_recovery>";
         prepend_reminder_to_system(&mut req.messages, f35_clause);
-        tracing::debug!("F35: prepended failure_recovery clause (most recent message is tool error)");
+        tracing::debug!(
+            "F35: prepended failure_recovery clause (most recent message is tool error)"
+        );
     }
 
     // F29: scan tool-result history for repeated `command not found` failures

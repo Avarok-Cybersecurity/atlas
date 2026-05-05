@@ -28,9 +28,19 @@ impl Qwen3AttentionLayer {
         config: &atlas_core::config::ModelConfig,
     ) -> Result<Self> {
         Self::new_with_gating(
-            input_norm, attn, post_attn_norm, ffn, attn_layer_idx,
-            q_nvfp4, k_nvfp4, v_nvfp4, true,
-            gpu, kv_dtype, fp8_calibration_tokens, config,
+            input_norm,
+            attn,
+            post_attn_norm,
+            ffn,
+            attn_layer_idx,
+            q_nvfp4,
+            k_nvfp4,
+            v_nvfp4,
+            true,
+            gpu,
+            kv_dtype,
+            fp8_calibration_tokens,
+            config,
         )
     }
 
@@ -49,9 +59,19 @@ impl Qwen3AttentionLayer {
         config: &atlas_core::config::ModelConfig,
     ) -> Result<Self> {
         Self::new_with_gating(
-            input_norm, attn, post_attn_norm, ffn, attn_layer_idx,
-            q_nvfp4, k_nvfp4, v_nvfp4, false,
-            gpu, kv_dtype, fp8_calibration_tokens, config,
+            input_norm,
+            attn,
+            post_attn_norm,
+            ffn,
+            attn_layer_idx,
+            q_nvfp4,
+            k_nvfp4,
+            v_nvfp4,
+            false,
+            gpu,
+            kv_dtype,
+            fp8_calibration_tokens,
+            config,
         )
     }
 
@@ -205,22 +225,48 @@ impl Qwen3AttentionLayer {
                 KvCacheDtype::Bf16 => {
                     super::super::try_kernel(gpu, "paged_decode_attn_512", "paged_decode_attn")
                 }
-                KvCacheDtype::Turbo4 => {
-                    super::super::try_kernel(gpu, "paged_decode_turbo4_512", "paged_decode_attn_turbo4")
-                }
-                KvCacheDtype::Turbo8 => {
-                    super::super::try_kernel(gpu, "paged_decode_turbo8_512", "paged_decode_attn_turbo8")
-                }
-                KvCacheDtype::Turbo3 => {
-                    super::super::try_kernel(gpu, "paged_decode_turbo4_512", "paged_decode_attn_turbo4")
-                }
-                _ => super::super::try_kernel(gpu, "paged_decode_attn_fp8_512", "paged_decode_attn_fp8"),
+                KvCacheDtype::Turbo4 => super::super::try_kernel(
+                    gpu,
+                    "paged_decode_turbo4_512",
+                    "paged_decode_attn_turbo4",
+                ),
+                KvCacheDtype::Turbo8 => super::super::try_kernel(
+                    gpu,
+                    "paged_decode_turbo8_512",
+                    "paged_decode_attn_turbo8",
+                ),
+                KvCacheDtype::Turbo3 => super::super::try_kernel(
+                    gpu,
+                    "paged_decode_turbo4_512",
+                    "paged_decode_attn_turbo4",
+                ),
+                _ => super::super::try_kernel(
+                    gpu,
+                    "paged_decode_attn_fp8_512",
+                    "paged_decode_attn_fp8",
+                ),
             },
-            paged_decode_mla_k: super::super::try_kernel(gpu, "paged_decode_mla", "paged_decode_attn"),
+            paged_decode_mla_k: super::super::try_kernel(
+                gpu,
+                "paged_decode_mla",
+                "paged_decode_attn",
+            ),
             mla_batched_gemv_k: super::super::try_kernel(gpu, "mla_absorbed", "mla_batched_gemv"),
-            mla_q_rope_scatter_k: super::super::try_kernel(gpu, "mla_absorbed", "mla_q_rope_scatter"),
-            mla_q_rope_writeback_k: super::super::try_kernel(gpu, "mla_absorbed", "mla_q_rope_writeback"),
-            mla_cache_assemble_k: super::super::try_kernel(gpu, "mla_absorbed", "mla_cache_assemble"),
+            mla_q_rope_scatter_k: super::super::try_kernel(
+                gpu,
+                "mla_absorbed",
+                "mla_q_rope_scatter",
+            ),
+            mla_q_rope_writeback_k: super::super::try_kernel(
+                gpu,
+                "mla_absorbed",
+                "mla_q_rope_writeback",
+            ),
+            mla_cache_assemble_k: super::super::try_kernel(
+                gpu,
+                "mla_absorbed",
+                "mla_cache_assemble",
+            ),
             mla_q_rope_extract_batched_k: super::super::try_kernel(
                 gpu,
                 "mla_absorbed",
@@ -246,19 +292,31 @@ impl Qwen3AttentionLayer {
                 "mla_prefill_attn",
                 "mla_prefill_attn_320",
             ),
-            grouped_gemm_mla_k: super::super::try_kernel(gpu, "grouped_gemm_mla", "grouped_gemm_mla"),
+            grouped_gemm_mla_k: super::super::try_kernel(
+                gpu,
+                "grouped_gemm_mla",
+                "grouped_gemm_mla",
+            ),
             mla_q_final_assemble_k: super::super::try_kernel(
                 gpu,
                 "mla_absorbed",
                 "mla_q_final_assemble_batched",
             ),
-            mla_fused_prefill_k: super::super::try_kernel(gpu, "mla_fused_prefill", "mla_fused_prefill"),
+            mla_fused_prefill_k: super::super::try_kernel(
+                gpu,
+                "mla_fused_prefill",
+                "mla_fused_prefill",
+            ),
             gemm_splitk_partial_k: super::super::try_kernel(
                 gpu,
                 "gemm_splitk",
                 "dense_gemm_splitk_partial",
             ),
-            gemm_splitk_reduce_k: super::super::try_kernel(gpu, "gemm_splitk", "dense_gemm_splitk_reduce"),
+            gemm_splitk_reduce_k: super::super::try_kernel(
+                gpu,
+                "gemm_splitk",
+                "dense_gemm_splitk_reduce",
+            ),
             dense_gemm_tc_k: super::super::try_kernel(gpu, "gemm_tc", "dense_gemm_tc"),
             paged_decode_splitk_k: match kv_dtype {
                 KvCacheDtype::Nvfp4 => {
@@ -310,8 +368,16 @@ impl Qwen3AttentionLayer {
             w4a16_gemm_t_k: gpu.kernel("w4a16", "w4a16_gemm_t")?,
             w4a16_gemm_t_k64_k: gpu.kernel("w4a16", "w4a16_gemm_t_k64")?,
             w4a16_gemm_t_m128_k: gpu.kernel("w4a16", "w4a16_gemm_t_m128")?,
-            w4a16_gemm_t_m128_v2_k: super::super::try_kernel(gpu, "w4a16_v2", "w4a16_gemm_t_m128_v2"),
-            w4a16_gemm_t_m128_v3_k: super::super::try_kernel(gpu, "w4a16_v3", "w4a16_gemm_t_m128_v3"),
+            w4a16_gemm_t_m128_v2_k: super::super::try_kernel(
+                gpu,
+                "w4a16_v2",
+                "w4a16_gemm_t_m128_v2",
+            ),
+            w4a16_gemm_t_m128_v3_k: super::super::try_kernel(
+                gpu,
+                "w4a16_v3",
+                "w4a16_gemm_t_m128_v3",
+            ),
             dense_gemm_k: gpu.kernel("gemm", "dense_gemm_bf16")?,
             prefill_attn_k: gpu.kernel("inferspark_prefill", "inferspark_prefill")?,
             prefill_attn_512_k: super::super::try_kernel(

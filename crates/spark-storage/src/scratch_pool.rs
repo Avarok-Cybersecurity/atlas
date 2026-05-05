@@ -66,7 +66,13 @@ impl ScratchPool {
         let pool = DeviceBuffer::new(dims.pool_bytes())?;
         let residents = vec![None; dims.num_slots as usize];
         let free_list = (0..dims.num_slots).collect();
-        Ok(Self { dims, pool, residents, lookup: HashMap::new(), free_list })
+        Ok(Self {
+            dims,
+            pool,
+            residents,
+            lookup: HashMap::new(),
+            free_list,
+        })
     }
 
     pub fn dims(&self) -> ScratchDims {
@@ -129,7 +135,12 @@ impl ScratchPool {
                 // backed by a known key) and is not pinned.
                 let mut chosen = None;
                 for &c in evict_candidates {
-                    if self.residents.get(c as usize).and_then(|r| r.as_ref()).is_some() {
+                    if self
+                        .residents
+                        .get(c as usize)
+                        .and_then(|r| r.as_ref())
+                        .is_some()
+                    {
                         chosen = Some(c);
                         break;
                     }
@@ -180,6 +191,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires GPU"]
     fn assign_and_lookup() {
         let _ctx = ctx();
         let mut pool = ScratchPool::new(ScratchDims {
@@ -196,21 +208,34 @@ mod tests {
         assert_eq!(s0, s0_again);
         // Fill the pool.
         for b in 8..11 {
-            pool.assign(ResidentKey { layer: 0, block: b }, &[]).unwrap();
+            pool.assign(ResidentKey { layer: 0, block: b }, &[])
+                .unwrap();
         }
         assert_eq!(pool.free_count(), 0);
         // Evict the lowest-scoring slot (caller passes it in).
-        let evicted = pool.assign(ResidentKey { layer: 0, block: 99 }, &[s0]).unwrap();
+        let evicted = pool
+            .assign(
+                ResidentKey {
+                    layer: 0,
+                    block: 99,
+                },
+                &[s0],
+            )
+            .unwrap();
         assert_eq!(evicted, s0); // s0 was the eviction candidate
         assert_eq!(pool.lookup(k0), None); // k0 displaced
     }
 
     #[test]
+    #[ignore = "requires GPU"]
     fn slot_pointer_layout() {
         let _ctx = ctx();
         let pool = ScratchPool::new(ScratchDims {
-            num_slots: 2, num_kv_heads: 4, group_stride: 4096,
-        }).unwrap();
+            num_slots: 2,
+            num_kv_heads: 4,
+            group_stride: 4096,
+        })
+        .unwrap();
         let base = pool.pool_dev_ptr();
         assert_eq!(pool.slot_dev_ptr(0), base);
         assert_eq!(pool.slot_dev_ptr(1), base + 8 * 4096);

@@ -257,4 +257,3 @@ pub(crate) fn load_mtp(
         norm: dense(store, "mtp.norm.weight")?,
     })
 }
-

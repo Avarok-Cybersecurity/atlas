@@ -177,9 +177,10 @@ fn messages_to_disk_json(msgs: &[IncomingMessage]) -> serde_json::Value {
                     obj.insert("content".into(), serde_json::Value::Array(parts));
                 }
                 if let Some(tc) = &m.tool_calls
-                    && let Ok(v) = serde_json::to_value(tc) {
-                        obj.insert("tool_calls".into(), v);
-                    }
+                    && let Ok(v) = serde_json::to_value(tc)
+                {
+                    obj.insert("tool_calls".into(), v);
+                }
                 if let Some(id) = &m.tool_call_id {
                     obj.insert("tool_call_id".into(), serde_json::Value::String(id.clone()));
                 }
@@ -225,9 +226,10 @@ impl StoreBackend for FilesystemBackend {
     fn forget(&self, id: &str) {
         let path = self.path_for(id);
         if let Err(e) = std::fs::remove_file(&path)
-            && e.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!("response_store: remove {}: {e}", path.display());
-            }
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!("response_store: remove {}: {e}", path.display());
+        }
     }
 
     fn replay(&self, ttl: Duration) -> Vec<StoredEntry> {
@@ -305,7 +307,6 @@ struct Inner {
     map: HashMap<String, StoredEntry>,
     order: std::collections::VecDeque<String>,
 }
-
 
 pub struct GetResult {
     pub model: String,

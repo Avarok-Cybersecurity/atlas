@@ -39,7 +39,16 @@ impl Qwen3AttentionLayer {
         stream: u64,
     ) -> Result<()> {
         let qg_out = ctx.buffers.qkv_output();
-        self.prefill_one_proj(Proj::Q, normed, qg_out, n, q_proj_dim as u32, h, ctx, stream)?;
+        self.prefill_one_proj(
+            Proj::Q,
+            normed,
+            qg_out,
+            n,
+            q_proj_dim as u32,
+            h,
+            ctx,
+            stream,
+        )?;
 
         let k_contiguous = ctx.buffers.ssm_qkvz();
         self.prefill_one_proj(Proj::K, normed, k_contiguous, n, nkv * hd, h, ctx, stream)?;
@@ -141,14 +150,7 @@ impl Qwen3AttentionLayer {
         } else if let Some(nvfp4_t) = nvfp4_t {
             if n > 128 {
                 self.w4a16_gemm_m128_dispatch(
-                    ctx.gpu,
-                    normed,
-                    nvfp4_t,
-                    out,
-                    n,
-                    out_dim,
-                    h,
-                    stream,
+                    ctx.gpu, normed, nvfp4_t, out, n, out_dim, h, stream,
                 )?;
             } else {
                 ops::w4a16_gemm_n128(

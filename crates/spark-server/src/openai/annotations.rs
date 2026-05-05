@@ -55,9 +55,9 @@ pub struct UrlCitation {
 /// The extractor handles three shapes:
 /// - Markdown links `[title](url)` — title from the `[...]` text.
 /// - Bare URLs — title is the URL itself.
-/// - URLs inside fenced code blocks (``` `)   or inline code (`` `...` ``)
+/// - URLs inside fenced code blocks (triple backticks) or inline code (`` `...` ``)
 ///   are **skipped** — illustrative code, not citations. This prevents
-///   false positives on model output like "curl https://example.com".
+///   false positives on model output like `curl https://example.com`.
 ///
 /// Returns `None` when no URLs remain so the wire format stays identical
 /// for non-web-search responses.
@@ -279,4 +279,3 @@ fn mask_code_spans(content: &str) -> String {
     }
     String::from_utf8(out).expect("mask preserves UTF-8")
 }
-

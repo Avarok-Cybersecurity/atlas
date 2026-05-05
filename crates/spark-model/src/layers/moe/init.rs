@@ -102,7 +102,11 @@ impl MoeLayer {
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
-            moe_gate_topk_fused_k: super::super::try_kernel(gpu, "moe_gate_topk", "moe_gate_topk_fused"),
+            moe_gate_topk_fused_k: super::super::try_kernel(
+                gpu,
+                "moe_gate_topk",
+                "moe_gate_topk_fused",
+            ),
             w4a16_gemm_t: gpu.kernel("w4a16", "w4a16_gemm_t")?,
             bf16_to_fp8_k: gpu.kernel("w4a16", "bf16_to_fp8")?,
             fp8_gemm_k: gpu.kernel("w4a16", "fp8_gemm_t")?,

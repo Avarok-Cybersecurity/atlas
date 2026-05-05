@@ -2,9 +2,9 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -12,21 +12,20 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::super::ssm_pool::SsmStatePool;
+use super::super::ssm_snapshot::SsmSnapshotPool;
+use super::super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::super::types::{TransformerModel, PinnedMetaStaging};
-use super::super::ssm_pool::SsmStatePool;
-use super::super::ssm_snapshot::SsmSnapshotPool;
-use super::super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
 
 impl TransformerModel {
     pub(super) fn generate_speculative_dispatch(
@@ -83,11 +82,20 @@ impl TransformerModel {
         self.self_speculative
     }
 
-    pub(super) fn decode_draft_dispatch(&self, token: u32, seq: &mut SequenceState, stream: u64) -> Result<DevicePtr> {
+    pub(super) fn decode_draft_dispatch(
+        &self,
+        token: u32,
+        seq: &mut SequenceState,
+        stream: u64,
+    ) -> Result<DevicePtr> {
         TransformerModel::decode_draft(self, token, seq, stream)
     }
 
-    pub(super) fn save_hidden_for_mtp_dispatch(&self, token_idx: usize, _stream: u64) -> Result<()> {
+    pub(super) fn save_hidden_for_mtp_dispatch(
+        &self,
+        token_idx: usize,
+        _stream: u64,
+    ) -> Result<()> {
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let _bf16 = 2usize;
@@ -156,5 +164,4 @@ impl TransformerModel {
         }
         Ok(())
     }
-
 }

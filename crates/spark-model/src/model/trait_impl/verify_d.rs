@@ -11,9 +11,9 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -21,21 +21,20 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::super::ssm_pool::SsmStatePool;
+use super::super::ssm_snapshot::SsmSnapshotPool;
+use super::super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::super::types::{TransformerModel, PinnedMetaStaging};
-use super::super::ssm_pool::SsmStatePool;
-use super::super::ssm_snapshot::SsmSnapshotPool;
-use super::super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
 
 impl TransformerModel {
     pub(super) fn decode_verify_graphed_kgamma_dispatch(
@@ -63,9 +62,7 @@ impl TransformerModel {
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
-        let mut kv_cache = self
-            .kv_cache
-            .lock();
+        let mut kv_cache = self.kv_cache.lock();
 
         // ── Phase 1: Pre-graph (varies per step, NOT captured) ──
 
@@ -98,9 +95,8 @@ impl TransformerModel {
         let max_blocks = self.max_blocks_per_seq;
 
         let positions: Vec<u32> = (0..k).map(|t| (seq.seq_len + t) as u32).collect();
-        let pos_bytes = unsafe {
-            std::slice::from_raw_parts(positions.as_ptr() as *const u8, k * 4)
-        };
+        let pos_bytes =
+            unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, k * 4) };
         self.gpu.copy_h2d_async(pos_bytes, meta_base, stream)?;
 
         let mut slots = vec![0i64; k];
@@ -113,16 +109,12 @@ impl TransformerModel {
         }
         // 256-byte gap mirrors K=4 layout for ABI compatibility with
         // attention kernels that index meta_base + fixed offsets.
-        let slot_bytes = unsafe {
-            std::slice::from_raw_parts(slots.as_ptr() as *const u8, k * 8)
-        };
+        let slot_bytes = unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, k * 8) };
         self.gpu
             .copy_h2d_async(slot_bytes, meta_base.offset(256), stream)?;
 
         let seq_lens: Vec<i32> = (0..k).map(|t| (seq.seq_len + t + 1) as i32).collect();
-        let sl_bytes = unsafe {
-            std::slice::from_raw_parts(seq_lens.as_ptr() as *const u8, k * 4)
-        };
+        let sl_bytes = unsafe { std::slice::from_raw_parts(seq_lens.as_ptr() as *const u8, k * 4) };
         self.gpu
             .copy_h2d_async(sl_bytes, meta_base.offset(512), stream)?;
 
@@ -134,9 +126,8 @@ impl TransformerModel {
                 bt_buf[row * mb + j] = block as i32;
             }
         }
-        let bt_bytes = unsafe {
-            std::slice::from_raw_parts(bt_buf.as_ptr() as *const u8, needed * 4)
-        };
+        let bt_bytes =
+            unsafe { std::slice::from_raw_parts(bt_buf.as_ptr() as *const u8, needed * 4) };
         self.gpu
             .copy_h2d_async(bt_bytes, meta_base.offset(768), stream)?;
 
@@ -156,10 +147,7 @@ impl TransformerModel {
         // ATLAS_DFLASH_DEBUG_NO_GRAPH=1 forces eager (no graph capture) so
         // CUDA_LAUNCH_BLOCKING=1 reports the exact failing kernel — used
         // to localize K=γ illegal-address crashes downstream of SSM.
-        let force_eager = std::env::var("ATLAS_DFLASH_DEBUG_NO_GRAPH")
-            .ok()
-            .as_deref()
-            == Some("1");
+        let force_eager = std::env::var("ATLAS_DFLASH_DEBUG_NO_GRAPH").ok().as_deref() == Some("1");
         let use_graphs = self.comm.is_none()
             && !self
                 .suppress_graphs
@@ -180,10 +168,7 @@ impl TransformerModel {
         // ── Phase 2: CUDA graph capture / replay ──
 
         let mut graph_cache = if use_graphs {
-            Some(
-                self.verify_kgamma_graph
-                    .lock(),
-            )
+            Some(self.verify_kgamma_graph.lock())
         } else {
             None
         };
@@ -316,5 +301,4 @@ impl TransformerModel {
 
         Ok(out)
     }
-
 }

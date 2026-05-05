@@ -17,7 +17,7 @@ use super::*;
 ///   - `{prefix}.weight_scale_inv`: BF16 tensor [N/block, K/block]
 ///
 /// The `w8a16_gemv` kernel uses 2D block scales directly:
-///   dequant[i,j] = E4M3_LUT[fp8[i,j]] * block_scale[i/BS, j/BS]
+///   `dequant[i,j] = E4M3_LUT[fp8[i,j]] * block_scale[i/BS, j/BS]`
 /// No per-row max reduction needed — the kernel loads the correct block
 /// scale for each 128-element K chunk.
 pub fn load_fp8_block_scaled_as_fp8weight(
@@ -257,4 +257,3 @@ pub(crate) fn load_moe_skip_experts(
         true,
     )
 }
-

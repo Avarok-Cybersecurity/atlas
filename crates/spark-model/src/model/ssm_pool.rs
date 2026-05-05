@@ -2,9 +2,9 @@
 
 #![allow(unused_imports, dead_code)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -12,21 +12,19 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::ssm_snapshot::SsmSnapshotPool;
+use super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::types::{TransformerModel, PinnedMetaStaging};
-use super::ssm_snapshot::SsmSnapshotPool;
-use super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
-
 
 /// Pre-allocated contiguous GPU memory pool for SSM layer states.
 ///
@@ -190,12 +188,22 @@ impl SsmStatePool {
 
     /// Get fixed-address intermediate h_state for K=2/3/4 verify.
     /// `token_idx` is 0..3 (which token in the verify pass).
-    pub(super) fn h_intermediate(&self, ssm_layer_idx: usize, slot: usize, token_idx: usize) -> DevicePtr {
+    pub(super) fn h_intermediate(
+        &self,
+        ssm_layer_idx: usize,
+        slot: usize,
+        token_idx: usize,
+    ) -> DevicePtr {
         let ni = self.num_intermediates;
         self.h_intermediate_pools[ssm_layer_idx].offset((slot * ni + token_idx) * self.h_bytes)
     }
 
-    pub(super) fn conv_intermediate(&self, ssm_layer_idx: usize, slot: usize, token_idx: usize) -> DevicePtr {
+    pub(super) fn conv_intermediate(
+        &self,
+        ssm_layer_idx: usize,
+        slot: usize,
+        token_idx: usize,
+    ) -> DevicePtr {
         let ni = self.num_intermediates;
         self.conv_intermediate_pools[ssm_layer_idx]
             .offset((slot * ni + token_idx) * self.conv_bytes)
@@ -225,7 +233,13 @@ impl SsmStatePool {
         Ok(())
     }
 
-    pub(super) fn copy_slot(&self, from: usize, to: usize, gpu: &dyn GpuBackend, stream: u64) -> Result<()> {
+    pub(super) fn copy_slot(
+        &self,
+        from: usize,
+        to: usize,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
         for i in 0..self.num_ssm_layers {
             gpu.copy_d2d_async(
                 self.h_state(i, from),

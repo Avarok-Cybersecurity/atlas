@@ -159,41 +159,43 @@ pub(super) fn parse_json_fallback_calls(text: &str) -> Vec<ToolCall> {
             // Try array-style: ["tool_name", {"param": "value"}]
             if let Some(arr) = obj.as_array()
                 && arr.len() == 2
-                    && let (Some(name), Some(_args_obj)) = (arr[0].as_str(), arr[1].as_object()) {
-                        calls.push(ToolCall {
-                            id: next_tool_call_id(),
-                            call_type: "function".to_string(),
-                            function: FunctionCall {
-                                name: name.to_string(),
-                                arguments: serde_json::to_string(&arr[1]).unwrap_or_default(),
-                            },
-                        });
-                        continue;
-                    }
+                && let (Some(name), Some(_args_obj)) = (arr[0].as_str(), arr[1].as_object())
+            {
+                calls.push(ToolCall {
+                    id: next_tool_call_id(),
+                    call_type: "function".to_string(),
+                    function: FunctionCall {
+                        name: name.to_string(),
+                        arguments: serde_json::to_string(&arr[1]).unwrap_or_default(),
+                    },
+                });
+                continue;
+            }
         }
 
         // Try multiline Hermes-style (JSON spanning multiple lines)
         // Look for {"name": "..." patterns in multi-line candidates
-        if candidate.contains("\"name\"") && candidate.contains("\"arguments\"")
+        if candidate.contains("\"name\"")
+            && candidate.contains("\"arguments\"")
             && let Ok(obj) = serde_json::from_str::<serde_json::Value>(candidate)
-                && let Some(name) = obj.get("name").and_then(|n| n.as_str()) {
-                    let args = obj
-                        .get("arguments")
-                        .map(|a| serde_json::to_string(a).unwrap_or_default())
-                        .unwrap_or_else(|| "{}".to_string());
-                    calls.push(ToolCall {
-                        id: next_tool_call_id(),
-                        call_type: "function".to_string(),
-                        function: FunctionCall {
-                            name: name.to_string(),
-                            arguments: args,
-                        },
-                    });
-                }
+            && let Some(name) = obj.get("name").and_then(|n| n.as_str())
+        {
+            let args = obj
+                .get("arguments")
+                .map(|a| serde_json::to_string(a).unwrap_or_default())
+                .unwrap_or_else(|| "{}".to_string());
+            calls.push(ToolCall {
+                id: next_tool_call_id(),
+                call_type: "function".to_string(),
+                function: FunctionCall {
+                    name: name.to_string(),
+                    arguments: args,
+                },
+            });
+        }
     }
 
     calls
 }
 
 // ── Streaming tool call detector ──
-

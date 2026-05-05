@@ -2,7 +2,10 @@
 
 //! Per-request grammar matching state.
 
-use xgrammar::{CompiledGrammar, DLDataType, DLDataTypeCode, DLDevice, DLDeviceType, DLTensor, GrammarMatcher, allocate_token_bitmask, get_bitmask_shape, reset_token_bitmask};
+use xgrammar::{
+    CompiledGrammar, DLDataType, DLDataTypeCode, DLDevice, DLDeviceType, DLTensor, GrammarMatcher,
+    allocate_token_bitmask, get_bitmask_shape, reset_token_bitmask,
+};
 
 use super::engine::GrammarError;
 

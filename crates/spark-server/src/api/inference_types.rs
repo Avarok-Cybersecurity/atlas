@@ -5,31 +5,16 @@
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
-use axum::response::sse::{
-    Event,
-    KeepAlive,
-};
-use axum::response::{
-    IntoResponse,
-    Json,
-    Response,
-    Sse,
-};
+use axum::response::sse::{Event, KeepAlive};
+use axum::response::{IntoResponse, Json, Response, Sse};
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::AppState;
 use crate::openai::{
-    ChatCompletionChunk,
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    CompletionChunk,
-    CompletionRequest,
-    CompletionResponse,
-    ModelInfo,
-    ModelListResponse,
-    Usage,
+    ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, CompletionChunk,
+    CompletionRequest, CompletionResponse, ModelInfo, ModelListResponse, Usage,
 };
 use crate::tool_parser;
 
@@ -67,7 +52,7 @@ pub enum InferenceRequest {
         prompt_tokens: Vec<u32>,
         /// Session hash for SSM snapshot isolation (hash of first 64 prompt tokens).
         session_hash: u64,
-        /// Preprocessed image data: (pixels [P,1536] f32, grid_h, grid_w) per image.
+        /// Preprocessed image data: (pixels `[P,1536]` f32, grid_h, grid_w) per image.
         image_pixels: Vec<(Vec<f32>, usize, usize)>,
         max_tokens: usize,
         /// Minimum tokens before allowing EOS/stop (0 = no minimum).
@@ -137,7 +122,7 @@ pub enum InferenceRequest {
         prompt_tokens: Vec<u32>,
         /// Session hash for SSM snapshot isolation (hash of first 64 prompt tokens).
         session_hash: u64,
-        /// Preprocessed image data: (pixels [P,1536] f32, grid_h, grid_w) per image.
+        /// Preprocessed image data: (pixels `[P,1536]` f32, grid_h, grid_w) per image.
         image_pixels: Vec<(Vec<f32>, usize, usize)>,
         max_tokens: usize,
         /// Minimum tokens before allowing EOS/stop (0 = no minimum).

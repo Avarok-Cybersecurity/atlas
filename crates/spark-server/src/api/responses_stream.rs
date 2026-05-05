@@ -5,118 +5,58 @@
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
-use axum::response::sse::{
-    Event,
-    KeepAlive,
-};
-use axum::response::{
-    IntoResponse,
-    Json,
-    Response,
-    Sse,
-};
+use axum::response::sse::{Event, KeepAlive};
+use axum::response::{IntoResponse, Json, Response, Sse};
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::AppState;
-use crate::openai::{
-    ChatCompletionChunk,
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    CompletionChunk,
-    CompletionRequest,
-    CompletionResponse,
-    ModelInfo,
-    ModelListResponse,
-    Usage,
-};
-use crate::tool_parser;
-use super::responses_translate::{find_frame_end, emit, build_responses_usage, translate_chat_response_to_responses};
+use super::chat_stream::chat_completions_stream;
 use super::responses_stream_finalize::{
-    CloseOpenCtx,
-    FinalizeCtx,
-    close_open_items,
-    emit_responses_prologue,
-    finalize_responses_stream,
+    CloseOpenCtx, FinalizeCtx, close_open_items, emit_responses_prologue, finalize_responses_stream,
+};
+use super::responses_translate::{
+    build_responses_usage, emit, find_frame_end, translate_chat_response_to_responses,
 };
 use super::stored::extract_assistant_incoming_message;
-use super::chat_stream::chat_completions_stream;
+use crate::AppState;
+use crate::openai::{
+    ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, CompletionChunk,
+    CompletionRequest, CompletionResponse, ModelInfo, ModelListResponse, Usage,
+};
+use crate::tool_parser;
 // Sibling-cluster items hoisted from the original `api.rs`.
-use super::compact::{
-    compact_messages,
-    openai_error_response,
-    openai_error_response_with_param,
-};
-use super::sanitizer::{
-    F7_STALL_WARN_THRESHOLD,
-    F7_STALL_REFUSE_THRESHOLD,
-    F7StallBuckets,
-    ToolKind,
-    classify_tool,
-    extract_bash_final_action,
-    primary_arg_for_tool,
-    sanitize_content_chunk,
-};
+use super::chat::chat_completions_inner;
+use super::compact::{compact_messages, openai_error_response, openai_error_response_with_param};
 use super::completions::not_supported;
 use super::failures::{
-    F23ProgressMetrics,
-    F29EnvironmentFact,
-    F37FailureClass,
-    F39FailureCache,
-    F39PermanentFailureMatch,
-    F49DuplicateWrite,
-    append_f7_reminder_to_last_user,
-    build_f7_stall_reminder,
-    bump_f12_tool_call_count,
-    check_loop_watchdog,
-    collect_f7_stall_buckets,
-    f23_build_reminder,
-    f23_normalize_and_hash,
-    f23_refuse_threshold,
-    f23_score_progress,
-    f23_warn_threshold,
-    f28_text_looks_like_error,
-    f29_extract_binary_from_error_line,
-    f29_extract_environment_facts,
-    f29_inject_environment_facts,
-    f31_inject_hard_refusal,
-    f32_reposition_failed_tool_result,
-    f37_classify_failure,
-    f39_build_circuit_breaker_banner,
-    f39_build_failure_cache,
-    f39_class_label,
-    f39_detect_recent_retries,
-    f39_extract_binary_name,
-    f44_check_permanent_failure,
-    f49_build_banner,
-    f49_detect_duplicate_writes,
-    f49_extract_write_path_and_content,
-    f50_append_original_error,
-    f60_disable_mtp_for_request,
-    flush_content_sanitizer,
-    prepend_reminder_to_system,
-    recent_message_is_tool_error,
+    F23ProgressMetrics, F29EnvironmentFact, F37FailureClass, F39FailureCache,
+    F39PermanentFailureMatch, F49DuplicateWrite, append_f7_reminder_to_last_user,
+    build_f7_stall_reminder, bump_f12_tool_call_count, check_loop_watchdog,
+    collect_f7_stall_buckets, f23_build_reminder, f23_normalize_and_hash, f23_refuse_threshold,
+    f23_score_progress, f23_warn_threshold, f28_text_looks_like_error,
+    f29_extract_binary_from_error_line, f29_extract_environment_facts,
+    f29_inject_environment_facts, f31_inject_hard_refusal, f32_reposition_failed_tool_result,
+    f37_classify_failure, f39_build_circuit_breaker_banner, f39_build_failure_cache,
+    f39_class_label, f39_detect_recent_retries, f39_extract_binary_name,
+    f44_check_permanent_failure, f49_build_banner, f49_detect_duplicate_writes,
+    f49_extract_write_path_and_content, f50_append_original_error, f60_disable_mtp_for_request,
+    flush_content_sanitizer, prepend_reminder_to_system, recent_message_is_tool_error,
     strip_xml_leaks_from_assistant_content,
 };
+use super::inference_impl::{extract_thinking, strip_stop_sequences, tokenize_stop_sequences};
 use super::inference_types::{
-    GrammarSpec,
-    InferenceRequest,
-    InferenceResponse,
-    StreamEvent,
-    TokenLogprobs,
+    GrammarSpec, InferenceRequest, InferenceResponse, StreamEvent, TokenLogprobs,
 };
-use super::inference_impl::{
-    extract_thinking,
-    strip_stop_sequences,
-    tokenize_stop_sequences,
+use super::sanitizer::{
+    F7_STALL_REFUSE_THRESHOLD, F7_STALL_WARN_THRESHOLD, F7StallBuckets, ToolKind, classify_tool,
+    extract_bash_final_action, primary_arg_for_tool, sanitize_content_chunk,
 };
 use super::strip::strip_thinking_tags;
-use super::chat::chat_completions_inner;
 // Re-export sibling helpers via crate::api::* for short paths.
-use super::sanitizer::*;
 use super::failures::*;
 use super::inference_types::*;
+use super::sanitizer::*;
 
 pub(super) async fn responses_endpoint_stream(
     state: State<Arc<AppState>>,
@@ -201,15 +141,7 @@ pub(super) async fn responses_endpoint_stream(
         let mut accumulator = Vec::<u8>::new();
         let mut refusal_text: Option<String> = None;
 
-        seq = emit_responses_prologue(
-            &tx,
-            seq,
-            &resp_id,
-            created_at,
-            &model,
-            &metadata,
-        )
-        .await;
+        seq = emit_responses_prologue(&tx, seq, &resp_id, created_at, &model, &metadata).await;
 
         let mut data_stream = body.into_data_stream();
         while let Some(next) = data_stream.next().await {
@@ -238,9 +170,10 @@ pub(super) async fn responses_endpoint_stream(
                 };
                 // Chat chunks: { choices: [{ delta: {content|tool_calls|reasoning_content}, finish_reason, ... }], usage }
                 if let Some(u) = chunk.get("usage")
-                    && !u.is_null() {
-                        final_usage = Some(u.clone());
-                    }
+                    && !u.is_null()
+                {
+                    final_usage = Some(u.clone());
+                }
                 let Some(choice) = chunk
                     .get("choices")
                     .and_then(|c| c.as_array())
@@ -259,101 +192,104 @@ pub(super) async fn responses_endpoint_stream(
                 // Refusal delta (post-hoc: one chunk carries the full
                 // refusal sentence, emitted by the inner chat streamer).
                 if let Some(r) = delta.get("refusal").and_then(|v| v.as_str())
-                    && !r.is_empty() {
-                        refusal_text = Some(r.to_string());
-                        let ev = crate::openai::ResponsesStreamEvent::RefusalDelta {
-                            sequence_number: seq,
-                            item_id: message_item_id.clone(),
-                            output_index,
-                            content_index: 0,
-                            delta: r.to_string(),
-                        };
-                        emit(&tx, &ev).await;
-                        seq += 1;
-                    }
+                    && !r.is_empty()
+                {
+                    refusal_text = Some(r.to_string());
+                    let ev = crate::openai::ResponsesStreamEvent::RefusalDelta {
+                        sequence_number: seq,
+                        item_id: message_item_id.clone(),
+                        output_index,
+                        content_index: 0,
+                        delta: r.to_string(),
+                    };
+                    emit(&tx, &ev).await;
+                    seq += 1;
+                }
 
                 // Text content delta.
                 if let Some(text) = delta.get("content").and_then(|v| v.as_str())
-                    && !text.is_empty() {
-                        // If a function_call is currently open, close it
-                        // before opening a fresh message item — otherwise
-                        // the message would collide with the function_call
-                        // on the same `output_index`.
-                        if fc_started && !fc_done {
-                            if let Some(fcid) = fc_item_id.clone() {
-                                let ev = crate::openai::ResponsesStreamEvent::FunctionCallArgumentsDone {
+                    && !text.is_empty()
+                {
+                    // If a function_call is currently open, close it
+                    // before opening a fresh message item — otherwise
+                    // the message would collide with the function_call
+                    // on the same `output_index`.
+                    if fc_started && !fc_done {
+                        if let Some(fcid) = fc_item_id.clone() {
+                            let ev =
+                                crate::openai::ResponsesStreamEvent::FunctionCallArgumentsDone {
                                     sequence_number: seq,
                                     item_id: fcid.clone(),
                                     output_index,
                                     arguments: tool_args.clone(),
                                 };
-                                emit(&tx, &ev).await;
-                                seq += 1;
-                                let done = crate::openai::ResponsesOutputItem::FunctionCall {
-                                    id: fcid,
-                                    call_id: current_tool_call_id.clone().unwrap_or_default(),
-                                    name: current_tool_name.clone().unwrap_or_default(),
-                                    arguments: tool_args.clone(),
-                                    status: "completed",
-                                };
-                                completed_items.push(done.clone());
-                                let ev = crate::openai::ResponsesStreamEvent::OutputItemDone {
-                                    sequence_number: seq,
-                                    output_index,
-                                    item: done,
-                                };
-                                emit(&tx, &ev).await;
-                                seq += 1;
-                            }
-                            output_index += 1;
-                            message_item_id = format!("msg_{}_{}", resp_id, output_index);
-                            fc_done = true;
-                            // Reset per-message text so the new message's
-                            // OutputTextDone carries only the post-fc text.
-                            content_text.clear();
-                        }
-                        if !message_started {
-                            message_started = true;
-                            // output_item.added for the message item.
-                            let item = crate::openai::ResponsesOutputItem::Message {
-                                id: message_item_id.clone(),
-                                status: "in_progress",
-                                role: "assistant",
-                                content: vec![],
-                            };
-                            let ev = crate::openai::ResponsesStreamEvent::OutputItemAdded {
-                                sequence_number: seq,
-                                output_index,
-                                item,
-                            };
                             emit(&tx, &ev).await;
                             seq += 1;
-                            // content_part.added.
-                            let cp = crate::openai::ResponsesContentPart::OutputText {
-                                text: String::new(),
-                                annotations: None,
+                            let done = crate::openai::ResponsesOutputItem::FunctionCall {
+                                id: fcid,
+                                call_id: current_tool_call_id.clone().unwrap_or_default(),
+                                name: current_tool_name.clone().unwrap_or_default(),
+                                arguments: tool_args.clone(),
+                                status: "completed",
                             };
-                            let ev = crate::openai::ResponsesStreamEvent::ContentPartAdded {
+                            completed_items.push(done.clone());
+                            let ev = crate::openai::ResponsesStreamEvent::OutputItemDone {
                                 sequence_number: seq,
-                                item_id: message_item_id.clone(),
                                 output_index,
-                                content_index: 0,
-                                part: cp,
+                                item: done,
                             };
                             emit(&tx, &ev).await;
                             seq += 1;
                         }
-                        content_text.push_str(text);
-                        let ev = crate::openai::ResponsesStreamEvent::OutputTextDelta {
+                        output_index += 1;
+                        message_item_id = format!("msg_{}_{}", resp_id, output_index);
+                        fc_done = true;
+                        // Reset per-message text so the new message's
+                        // OutputTextDone carries only the post-fc text.
+                        content_text.clear();
+                    }
+                    if !message_started {
+                        message_started = true;
+                        // output_item.added for the message item.
+                        let item = crate::openai::ResponsesOutputItem::Message {
+                            id: message_item_id.clone(),
+                            status: "in_progress",
+                            role: "assistant",
+                            content: vec![],
+                        };
+                        let ev = crate::openai::ResponsesStreamEvent::OutputItemAdded {
+                            sequence_number: seq,
+                            output_index,
+                            item,
+                        };
+                        emit(&tx, &ev).await;
+                        seq += 1;
+                        // content_part.added.
+                        let cp = crate::openai::ResponsesContentPart::OutputText {
+                            text: String::new(),
+                            annotations: None,
+                        };
+                        let ev = crate::openai::ResponsesStreamEvent::ContentPartAdded {
                             sequence_number: seq,
                             item_id: message_item_id.clone(),
                             output_index,
                             content_index: 0,
-                            delta: text.to_string(),
+                            part: cp,
                         };
                         emit(&tx, &ev).await;
                         seq += 1;
                     }
+                    content_text.push_str(text);
+                    let ev = crate::openai::ResponsesStreamEvent::OutputTextDelta {
+                        sequence_number: seq,
+                        item_id: message_item_id.clone(),
+                        output_index,
+                        content_index: 0,
+                        delta: text.to_string(),
+                    };
+                    emit(&tx, &ev).await;
+                    seq += 1;
+                }
 
                 // Tool-call fragments.
                 if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {

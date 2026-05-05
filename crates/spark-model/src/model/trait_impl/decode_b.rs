@@ -7,9 +7,9 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -17,21 +17,20 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
+use super::super::block_mgmt::{
+    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
+    extract_layer_refs, reuse_prefix_match_disk_ids,
+};
+use super::super::ssm_pool::SsmStatePool;
+use super::super::ssm_snapshot::SsmSnapshotPool;
+use super::super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{
-    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState,
-    TransformerLayer,
+    AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
-use super::super::types::{TransformerModel, PinnedMetaStaging};
-use super::super::ssm_pool::SsmStatePool;
-use super::super::ssm_snapshot::SsmSnapshotPool;
-use super::super::block_mgmt::{
-    apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
-    extract_layer_refs, reuse_prefix_match_disk_ids,
-};
 
 impl TransformerModel {
     pub(super) fn mixed_forward_dispatch(
@@ -147,21 +146,33 @@ impl TransformerModel {
         }
 
         // ── 2. Lock KV cache once for both decode and prefill ──
-        let mut kv_cache = self
-            .kv_cache
-            .lock();
+        let mut kv_cache = self.kv_cache.lock();
         let bs = kv_cache.block_size();
 
         // 2a. Allocate KV blocks for decode sequences
         for seq in decode_seqs.iter_mut() {
             let blocks_needed = (seq.seq_len / bs) + 1;
-            ensure_blocks_through_decode(seq, blocks_needed - 1, &mut kv_cache, self.prefix_cache.as_ref(), self.gpu.as_ref(), stream)?;
+            ensure_blocks_through_decode(
+                seq,
+                blocks_needed - 1,
+                &mut kv_cache,
+                self.prefix_cache.as_ref(),
+                self.gpu.as_ref(),
+                stream,
+            )?;
         }
 
         // 2b. Allocate KV blocks for prefill sequence
         let prefill_end_pos = prefill_chunk_start + n_prefill;
         let prefill_blocks_needed = (prefill_end_pos - 1) / bs + 1;
-        ensure_blocks_through_prefill(prefill_seq, prefill_blocks_needed - 1, &mut kv_cache, self.prefix_cache.as_ref(), self.gpu.as_ref(), stream)?;
+        ensure_blocks_through_prefill(
+            prefill_seq,
+            prefill_blocks_needed - 1,
+            &mut kv_cache,
+            self.prefix_cache.as_ref(),
+            self.gpu.as_ref(),
+            stream,
+        )?;
 
         // ── 3. Upload decode metadata ──
         //
@@ -214,7 +225,9 @@ impl TransformerModel {
                 stg.slots.clear();
                 stg.slots
                     .extend((proc_start..proc_start + proc_count).map(|i| {
-                        let block_idx = prefill_seq.physical_block_for(i / bs).unwrap_or(self.dummy_kv_block);
+                        let block_idx = prefill_seq
+                            .physical_block_for(i / bs)
+                            .unwrap_or(self.dummy_kv_block);
                         (block_idx as i64) * (bs as i64) + ((i % bs) as i64)
                     }));
                 cursor = slot_offset;
@@ -464,5 +477,4 @@ impl TransformerModel {
             prefill_logits,
         })
     }
-
 }

@@ -313,4 +313,3 @@ pub(crate) fn load_quantized_proj_qwen35(
 ) -> Result<QuantizedWeight> {
     quantized_v2(store, prefix, gpu)
 }
-

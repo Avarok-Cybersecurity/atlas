@@ -4,7 +4,6 @@
 
 use super::*;
 
-
 /// Re-sample verify tokens from the logits buffer when temperature > 0.
 ///
 /// After `decode_verify_graphed`, the logits buffer still contains valid
@@ -130,8 +129,8 @@ pub fn sample_token(
             frequency_penalty: 0.0,
             repetition_penalty_window: 0,
             lz_penalty: DEFAULT_LZ_PENALTY,
-        edt_strength: 0.0,
-        edt_floor: 0.1,
+            edt_strength: 0.0,
+            edt_floor: 0.1,
             dry_multiplier: DEFAULT_DRY_MULTIPLIER,
             dry_base: DEFAULT_DRY_BASE,
             dry_allowed_length: DEFAULT_DRY_ALLOWED_LENGTH,
@@ -203,8 +202,8 @@ pub fn sample_token_with_grammar(
             frequency_penalty: 0.0,
             repetition_penalty_window: 0,
             lz_penalty: DEFAULT_LZ_PENALTY,
-        edt_strength: 0.0,
-        edt_floor: 0.1,
+            edt_strength: 0.0,
+            edt_floor: 0.1,
             dry_multiplier: DEFAULT_DRY_MULTIPLIER,
             dry_base: DEFAULT_DRY_BASE,
             dry_allowed_length: DEFAULT_DRY_ALLOWED_LENGTH,

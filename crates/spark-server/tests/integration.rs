@@ -294,7 +294,13 @@ fn coherence_test_capital_of_france() -> Result<()> {
 
     // Load tokenizer
     use spark_server::tokenizer::ChatTokenizer;
-    let tokenizer = ChatTokenizer::from_model_dir(model_dir, config.eos_token_id, false, &config.model_type, None)?;
+    let tokenizer = ChatTokenizer::from_model_dir(
+        model_dir,
+        config.eos_token_id,
+        false,
+        &config.model_type,
+        None,
+    )?;
 
     // Encode prompt with chat template
     let messages = vec![(
@@ -367,7 +373,13 @@ fn streaming_coherence_test() -> Result<()> {
     let (model, config) = setup_model(model_dir)?;
 
     use spark_server::tokenizer::ChatTokenizer;
-    let tokenizer = ChatTokenizer::from_model_dir(model_dir, config.eos_token_id, false, &config.model_type, None)?;
+    let tokenizer = ChatTokenizer::from_model_dir(
+        model_dir,
+        config.eos_token_id,
+        false,
+        &config.model_type,
+        None,
+    )?;
 
     let messages = vec![(
         "user".to_string(),
@@ -450,7 +462,13 @@ fn speculative_decode_coherence() -> Result<()> {
     assert!(model.has_proposer(), "MTP proposer should be enabled");
 
     use spark_server::tokenizer::ChatTokenizer;
-    let tokenizer = ChatTokenizer::from_model_dir(model_dir, config.eos_token_id, false, &config.model_type, None)?;
+    let tokenizer = ChatTokenizer::from_model_dir(
+        model_dir,
+        config.eos_token_id,
+        false,
+        &config.model_type,
+        None,
+    )?;
 
     let messages = vec![(
         "user".to_string(),

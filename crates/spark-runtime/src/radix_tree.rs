@@ -33,7 +33,6 @@ pub(crate) fn hash_token_prefix(tokens: &[u32], count: usize) -> u64 {
     h
 }
 
-
 /// Thread-safe radix tree prefix cache.
 ///
 /// SSM snapshots are stored in a separate `SsmSnapshotIndex`, decoupled from
@@ -87,10 +86,7 @@ impl PrefixCache for RadixTree {
         // the caller can check `!matched_disk_block_ids.is_empty()` as the
         // HSS-engaged signal. When HSS *is* in use every entry should be a
         // valid disk_id (not MAX).
-        let matched_disk_block_ids = if matched_disk_block_ids
-            .iter()
-            .all(|&id| id == u32::MAX)
-        {
+        let matched_disk_block_ids = if matched_disk_block_ids.iter().all(|&id| id == u32::MAX) {
             Vec::new()
         } else {
             matched_disk_block_ids
@@ -171,8 +167,7 @@ impl PrefixCache for RadixTree {
         let (physical, disk) = self.inner.lock().evict(num_blocks);
         // Filter MAX sentinels out — the caller only needs disk_block_ids to
         // dec_disk_ref on, and MAX entries don't correspond to a live HSS ref.
-        let disk_block_ids: Vec<u32> =
-            disk.into_iter().filter(|&id| id != u32::MAX).collect();
+        let disk_block_ids: Vec<u32> = disk.into_iter().filter(|&id| id != u32::MAX).collect();
         EvictedBlocks {
             physical,
             disk_block_ids,
@@ -193,4 +188,3 @@ impl PrefixCache for RadixTree {
         (entries, entries)
     }
 }
-

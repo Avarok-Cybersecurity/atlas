@@ -13,14 +13,14 @@ use anyhow::Result;
 use spark_model::traits::{Model, SequenceState};
 use std::time::Instant;
 
-use super::*;
 use super::phase_promote_prefills::promote_completed_prefills;
+use super::*;
 use crate::scheduling_policy::{ActiveSeqTiming, SchedulingPolicy};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn continue_in_progress_prefills(
     model: &dyn Model,
-    policy: &Box<dyn SchedulingPolicy>,
+    policy: &dyn SchedulingPolicy,
     active: &mut Vec<ActiveSeq>,
     prefilling: &mut Vec<PrefillInProgress>,
     max_prefill_tokens: usize,
@@ -65,8 +65,7 @@ pub(super) fn continue_in_progress_prefills(
         // Two-phase SSM prefill: when the full sequence hasn't started
         // chunking yet (chunk_offset == 0) and is longer than one chunk,
         // use the two-phase path for better SSM state quality.
-        let use_twophase =
-            p.chunk_offset == 0 && p.prompt_tokens.len() > max_prefill_tokens;
+        let use_twophase = p.chunk_offset == 0 && p.prompt_tokens.len() > max_prefill_tokens;
         if use_twophase {
             tracing::info!(
                 "Two-phase prefill: {} tokens, chunk_size={}",
@@ -82,8 +81,7 @@ pub(super) fn continue_in_progress_prefills(
                 Ok(logits) => {
                     p.chunk_offset = p.prompt_tokens.len();
                     let _ = model.record_event(prefill_event, prefill_stream);
-                    let _ =
-                        model.stream_wait_event(model.default_stream(), prefill_event);
+                    let _ = model.stream_wait_event(model.default_stream(), prefill_event);
                     match sample_token(
                         model,
                         logits,
@@ -103,9 +101,7 @@ pub(super) fn continue_in_progress_prefills(
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "Two-phase prefill failed, falling back to chunked: {e:#}"
-                    );
+                    tracing::warn!("Two-phase prefill failed, falling back to chunked: {e:#}");
                     // Fall through to the standard chunk loop below
                 }
             }
@@ -232,8 +228,7 @@ fn run_standard_chunk_loop(
                             tracing::warn!("SSM state normalization failed: {e:#}");
                         }
                         let _ = model.record_event(prefill_event, prefill_stream);
-                        let _ = model
-                            .stream_wait_event(model.default_stream(), prefill_event);
+                        let _ = model.stream_wait_event(model.default_stream(), prefill_event);
                         match sample_token(
                             model,
                             result.prefill_logits,
@@ -255,8 +250,7 @@ fn run_standard_chunk_loop(
 
                     // Process decode logits for active sequences.
                     let _ = model.record_event(prefill_event, prefill_stream);
-                    let _ = model
-                        .stream_wait_event(model.default_stream(), prefill_event);
+                    let _ = model.stream_wait_event(model.default_stream(), prefill_event);
                     process_decode_logits(
                         model,
                         active,
@@ -316,8 +310,7 @@ fn run_standard_chunk_loop(
                 }
                 if is_last {
                     let _ = model.record_event(prefill_event, prefill_stream);
-                    let _ = model
-                        .stream_wait_event(model.default_stream(), prefill_event);
+                    let _ = model.stream_wait_event(model.default_stream(), prefill_event);
                     match sample_token(
                         model,
                         logits,
@@ -351,4 +344,3 @@ fn run_standard_chunk_loop(
         }
     }
 }
-

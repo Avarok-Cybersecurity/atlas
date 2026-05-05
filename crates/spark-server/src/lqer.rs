@@ -5,8 +5,10 @@
 //! Reference: Zhang et al., ICML 2024. Per quantized linear weight
 //! matrix W (FP8 / NVFP4), compute SVD of the dequantization error:
 //!
-//!     E = W_bf16 - dequant(Q(W))
-//!     E ≈ U_k Σ_k V_k^T   (rank-k truncated SVD)
+//! ```text
+//! E = W_bf16 - dequant(Q(W))
+//! E ≈ U_k Σ_k V_k^T   (rank-k truncated SVD)
+//! ```
 //!
 //! Then at inference, output ← Q(W) · x + (U_k Σ_k V_k^T) · x. The
 //! second term is a small BF16 GEMM applied in parallel; rank=10%
@@ -215,9 +217,9 @@ pub fn parse_lqer_bytes(buf: &[u8]) -> Result<LqerCorrection, LqerLoadError> {
         });
     }
     let layer_name = std::str::from_utf8(&buf[28..name_end])
-        .map_err(|_| LqerLoadError::InvalidName(
-            String::from_utf8(buf[28..name_end].to_vec()).unwrap_err(),
-        ))?
+        .map_err(|_| {
+            LqerLoadError::InvalidName(String::from_utf8(buf[28..name_end].to_vec()).unwrap_err())
+        })?
         .to_string();
 
     // Pad name region up to 8-byte alignment.
@@ -233,9 +235,7 @@ pub fn parse_lqer_bytes(buf: &[u8]) -> Result<LqerCorrection, LqerLoadError> {
     let left_bytes = rows
         .checked_mul(rank)
         .and_then(|x| x.checked_mul(2))
-        .ok_or_else(|| LqerLoadError::ShapeMismatch(
-            "rows × rank × 2 overflowed".into(),
-        ))?;
+        .ok_or_else(|| LqerLoadError::ShapeMismatch("rows × rank × 2 overflowed".into()))?;
     let left_end = aligned + left_bytes;
     if buf.len() < left_end {
         return Err(LqerLoadError::Truncated {
@@ -248,9 +248,7 @@ pub fn parse_lqer_bytes(buf: &[u8]) -> Result<LqerCorrection, LqerLoadError> {
     let right_bytes = rank
         .checked_mul(cols)
         .and_then(|x| x.checked_mul(2))
-        .ok_or_else(|| LqerLoadError::ShapeMismatch(
-            "rank × cols × 2 overflowed".into(),
-        ))?;
+        .ok_or_else(|| LqerLoadError::ShapeMismatch("rank × cols × 2 overflowed".into()))?;
     let right_end = left_end + right_bytes;
     if buf.len() < right_end {
         return Err(LqerLoadError::Truncated {
@@ -313,15 +311,13 @@ pub fn load_from_dir(dir: &Path) -> LqerCorrectionSet {
         if path.extension().and_then(|s| s.to_str()) != Some("lqer") {
             continue;
         }
-        match std::fs::read(&path).map_err(LqerLoadError::from).and_then(|b| parse_lqer_bytes(&b))
+        match std::fs::read(&path)
+            .map_err(LqerLoadError::from)
+            .and_then(|b| parse_lqer_bytes(&b))
         {
             Ok(c) => set.insert(c),
             Err(e) => {
-                tracing::warn!(
-                    "Skipping malformed LQER file {}: {}",
-                    path.display(),
-                    e
-                );
+                tracing::warn!("Skipping malformed LQER file {}: {}", path.display(), e);
             }
         }
     }
@@ -398,7 +394,9 @@ mod tests {
 
     fn make_correction(name: &str, rows: usize, cols: usize, rank: usize) -> LqerCorrection {
         let left_bf16: Vec<u8> = (0..rows * rank * 2).map(|i| (i & 0xFF) as u8).collect();
-        let right_bf16: Vec<u8> = (0..rank * cols * 2).map(|i| ((i ^ 0xA5) & 0xFF) as u8).collect();
+        let right_bf16: Vec<u8> = (0..rank * cols * 2)
+            .map(|i| ((i ^ 0xA5) & 0xFF) as u8)
+            .collect();
         LqerCorrection {
             layer_name: name.to_string(),
             rank,

@@ -262,7 +262,6 @@ pub struct PagedKvCache {
     config: KvCacheConfig,
 }
 
-
+mod paged_impl;
 #[cfg(test)]
 mod tests;
-mod paged_impl;

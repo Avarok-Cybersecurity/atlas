@@ -86,11 +86,8 @@ impl GrammarEngine {
     ) -> Result<Self, GrammarError> {
         let backend_str = tokenizer
             .to_string(false)
-            .map_err(|e| GrammarError::Compilation(format!(
-                "tokenizer serialize failed: {e}"
-            )))?;
-        let metadata = detect_metadata_from_hf(&backend_str)
-            .map_err(GrammarError::Compilation)?;
+            .map_err(|e| GrammarError::Compilation(format!("tokenizer serialize failed: {e}")))?;
+        let metadata = detect_metadata_from_hf(&backend_str).map_err(GrammarError::Compilation)?;
         let detected_label = match metadata.vocab_type {
             VocabType::RAW => "raw",
             VocabType::BYTE_FALLBACK => "byte_fallback",

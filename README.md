@@ -54,7 +54,7 @@ Arxiv is getting countless papers published every day on AI. Nobody can keep up.
 
 #### Plug and Play Design
 
-Our system is modular, with tight abstraction boundaries and trait requirements that force the architecture to take on a certain form. This form is designed to prevent pidgeon-holling the project into the wrong direction. The business logic is the same across all hardware/model combinations, just the concrete implementations differ.
+Our system is modular, with tight abstraction boundaries and trait requirements that force the architecture to take on a certain form. This form is designed to prevent pigeon-holing the project into the wrong direction. The business logic is the same across all hardware/model combinations, just the concrete implementations differ.
 
 ## Architecture
 
