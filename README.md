@@ -291,29 +291,18 @@ We compete with vLLM and TensorRT-LLM on the same GB10. On Qwen3.5-35B-A3B with 
 
 The kernel-by-kernel comparison against PyTorch eager (35 hyperoptimized CUDA kernels, all wins on production-relevant shapes) lives in the [benchmarks chapter](book/src/operations/benchmarks.md) along with the methodology footnotes — read them; they matter.
 
-## What Works Today
+## KV Cache Quantization
 
-A condensed status of the surface area. Every box below is shipped, exercised by the integration suite, and reachable from the Docker image you can pull right now.
+Atlas stores attention key/value state in one of six quantized formats, selected via `--kv-cache-dtype`. Lower bit-widths fit more tokens in GPU memory at the cost of precision; the Turbo family adds Walsh-Hadamard rotation and Lloyd-Max optimal codebooks to recover accuracy at the same bit rate. Mix dtypes per layer with `--kv-high-precision-layers` to keep boundary layers at BF16 while compressing the middle.
 
-| Component | Status |
-|---|---|
-| HuggingFace `config.json` parsing — text + nested vision configs | ✅ |
-| Fast safetensors loader (`O_DIRECT` + pipelined reader, on by default; 1.5–2.5× faster cold-load than mmap) | ✅ |
-| Full attention, SSM/GDN, Mamba-2, MRoPE | ✅ |
-| MoE routing up to 512 experts | ✅ |
-| KV cache dtypes — BF16, FP8, NVFP4, turbo3, turbo4 | ✅ |
-| OpenAI- and Anthropic-compatible HTTP API (streaming + non-streaming) | ✅ |
-| Tool calling (Hermes, Qwen3-Coder, Mistral formats) with grammar-constrained decoding | ✅ |
-| Reasoning / thinking tokens with budget cap | ✅ |
-| Concurrent batched decode + per-batch CUDA graphs | ✅ |
-| MTP speculative decoding (K=2, pipelined verify) | ✅ |
-| N-gram and self-speculative decoding (optional) | ✅ |
-| Prefix caching via radix tree (RadixAttention) + SSM snapshot cache (Marconi-style) — 10× warm-cache TTFT | ✅ |
-| Vision encoder (Qwen3-VL, Qwen3.6 ViT) | ✅ |
-| Multi-GPU expert parallelism (EP=2 over RoCEv2) | ✅ |
-| SLO-aware scheduling, chunked prefill, active context compaction | ✅ |
-| Auto OOM pre-flight + UVM fallback on host OOM | ✅ |
-| High-speed NVMe KV swap (Phase 6.3, sliding-window aware) | ✅ |
+| CLI flag | Bits/element | Scale overhead | Technique | When to use |
+|---|---:|---|---|---|
+| `bf16` | 16 | — | Raw BF16 storage | Maximum precision; short-context or quality-critical workloads |
+| `fp8` | 8 | Per-tensor FP32 scale (from checkpoint or online calibration via `--fp8-kv-calibration-tokens`) | FP8 E4M3 with static or calibrated per-tensor scale | **Default.** Safe baseline — half the memory of BF16, minimal quality loss for most models |
+| `turbo8` | 8 | Per-group BF16 scale (2 bytes / 16 elements) | Walsh-Hadamard rotation → FP8 E4M3 + BF16 per-group scales | FP8-level memory with outlier suppression; recommended for many-layer models (e.g. MiniMax M2.7, 58 layers) where per-group FP8 scales compound |
+| `nvfp4` | 4 | Per-group FP8 scale (1 byte / 16 elements) | E2M1 packed nibbles (NVIDIA NVFP4 format) | 4× compression vs BF16; good for long-context with `--kv-high-precision-layers auto` |
+| `turbo4` | 4 | Per-group FP8 scale (1 byte / 16 elements) | Walsh-Hadamard rotation → Lloyd-Max optimal 4-bit codebook | ~2× lower MSE than NVFP4 at the same bit rate; same memory footprint |
+| `turbo3` | 3 | Per-group FP8 scale (1 byte / 16 elements) | Walsh-Hadamard rotation → Lloyd-Max 3-bit codebook (8 levels, packed 8 values → 3 bytes) | Maximum compression (22% smaller than turbo4); experimental |
 
 ## Quick Start
 
