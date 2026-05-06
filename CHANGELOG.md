@@ -4,8 +4,9 @@ All notable changes to Atlas are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-For per-release engineering notes (kernel-level wins, regression sweeps,
-infra changes), see [`docs/releases/`](docs/releases/).
+For per-release deep dives — kernel-level wins, the engineering history
+behind specific subsystems — see the
+[Atlas Spark Journey](docs/ATLAS_SPARK_JOURNEY.md).
 
 ## [Unreleased]
 
@@ -49,11 +50,11 @@ targeting NVIDIA GB10 (DGX Spark, SM121) with twelve hand-tuned
 
 ### Engineering notes
 
-For the kernel-level perf history (every long-context regression
-sweep, the unwrap audit, the parking_lot migration, the libcuda+libnccl
-stub for CI, the eight-stage scheduler refactor, etc.) see
-[`docs/releases/alpha-2.43.md`](docs/releases/alpha-2.43.md) and
-[`docs/releases/alpha-2.44.md`](docs/releases/alpha-2.44.md).
+For the kernel-level perf history — long-context regression sweeps,
+the parking_lot migration, the libcuda + libnccl CI stubs, the
+multi-stage scheduler refactor — see
+[`docs/ATLAS_SPARK_JOURNEY.md`](docs/ATLAS_SPARK_JOURNEY.md) and the
+[`book/`](book/) chapters under `deep-dives/`.
 
 [Unreleased]: https://github.com/Avarok-Cybersecurity/atlas/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/Avarok-Cybersecurity/atlas/releases/tag/v0.1.0
