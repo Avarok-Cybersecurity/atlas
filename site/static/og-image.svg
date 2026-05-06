@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif">
+  <!-- Background matches the site `bg` token -->
+  <rect width="1200" height="630" fill="#0a0c10"/>
+
+  <!-- Three chevrons (same colors as logo.svg / favicon.svg) -->
+  <g fill="none" stroke-width="44" stroke-linecap="round" stroke-linejoin="round" transform="translate(110 165)">
+    <polyline points="0,0 160,150 0,300" stroke="#BE9DF8"/>
+    <polyline points="135,0 295,150 135,300" stroke="#49C3DB"/>
+    <polyline points="270,0 430,150 270,300" stroke="#12B981"/>
+  </g>
+
+  <!-- Wordmark — large -->
+  <text x="630" y="320" fill="#E6E8EC" font-size="160" font-weight="700" letter-spacing="-2">Atlas</text>
+
+  <!-- Subtitle -->
+  <text x="632" y="395" fill="#9397A0" font-size="46" font-weight="500" letter-spacing="2">INFERENCE ENGINE</text>
+
+  <!-- Tagline -->
+  <text x="634" y="475" fill="#7c3aed" font-size="34" font-weight="400">Pure Rust LLM Inference</text>
+</svg>

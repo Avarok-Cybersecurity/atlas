@@ -1,0 +1,16 @@
+{
+  "name": "Atlas Inference Engine",
+  "short_name": "Atlas",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "theme_color": "#0a0c10",
+  "background_color": "#0a0c10",
+  "display": "standalone",
+  "start_url": "/"
+}

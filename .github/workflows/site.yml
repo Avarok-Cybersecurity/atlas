@@ -1,0 +1,115 @@
+name: Site
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'site/**'
+      - '.github/workflows/site.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'site/**'
+      - '.github/workflows/site.yml'
+
+concurrency:
+  group: site-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build SvelteKit site
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        run: bun x --bun vite build
+
+      - name: Upload site artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: marketing-site
+          path: site/build
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy to avarok via rsync
+    needs: build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    environment:
+      name: production-site
+      url: https://atlasinference.io/
+    steps:
+      - name: Check deploy secret presence
+        # Skip deploy entirely when DEPLOY_SSH_PRIVATE_KEY isn't
+        # configured on the `production-site` environment. The job
+        # still exits success — the marketing-site artifact uploaded
+        # by the build job remains downloadable for inspection.
+        id: secret_check
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$DEPLOY_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::DEPLOY_SSH_PRIVATE_KEY not set on production-site environment — skipping rsync deploy. Configure the environment secrets to enable."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download site artifact
+        if: steps.secret_check.outputs.configured == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: marketing-site
+          path: site
+
+      - name: Install rsync
+        if: steps.secret_check.outputs.configured == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rsync openssh-client
+
+      - name: Load SSH key
+        if: steps.secret_check.outputs.configured == 'true'
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+
+      - name: Pin host key
+        if: steps.secret_check.outputs.configured == 'true'
+        env:
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KNOWN_HOSTS" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy
+        if: steps.secret_check.outputs.configured == 'true'
+        env:
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+          DEPLOY_PATH:     ${{ secrets.DEPLOY_PATH }}
+        run: |
+          PORT="${DEPLOY_SSH_PORT:-22}"
+          rsync -az --delete --chmod=D755,F644 \
+            -e "ssh -p ${PORT}" \
+            site/ "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/"
