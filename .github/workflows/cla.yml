@@ -20,7 +20,9 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      issues: write
       statuses: write
+      actions: write
     steps:
       - name: "CLA Assistant"
         if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
@@ -38,6 +40,9 @@ jobs:
           lock-pullrequest-aftermerge: false
           create-file-commit-message: 'chore: setup CLA signatures file'
           signed-commit-message: 'chore: $username CLA signature added'
-          custom-notsigned-prcomment: 'Thank you for your contribution to Atlas! To protect the open-source community and our Enterprise Edition, we require all contributors to sign our Contributor License Agreement (CLA).\n\nPlease review the [CLA Document](https://github.com/${{ github.repository }}/blob/main/CLA.md) and respond to this comment with exactly:\n\n`I have read the CLA Document and I hereby sign the CLA`\n\nto agree and unblock this PR.'
+          custom-notsigned-prcomment: |
+            Thanks for the contribution. Before we can merge, please sign our [Contributor License Agreement](https://github.com/${{ github.repository }}/blob/main/CLA.md) by replying to this comment with exactly:
+
+            `I have read the CLA Document and I hereby sign the CLA`
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
           custom-allsigned-prcomment: 'All contributors have signed the CLA. Thank you!'
