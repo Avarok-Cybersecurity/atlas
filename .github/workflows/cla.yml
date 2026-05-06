@@ -9,6 +9,18 @@ on:
 jobs:
   CLAAssistant:
     runs-on: ubuntu-latest
+    # contributor-assistant/github-action stores signatures in
+    # `signatures/version1/cla.json` on the configured branch and
+    # comments on the PR; both need write access. The default
+    # `secrets.GITHUB_TOKEN` only grants `contents: read` on
+    # `pull_request_target`, which produced "Could not retrieve
+    # repository contents. Status: 404" on the first run after the
+    # repo went public. Granting the action the minimum permissions
+    # it actually needs.
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: write
     steps:
       - name: "CLA Assistant"
         if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
