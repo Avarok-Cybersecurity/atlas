@@ -4,6 +4,9 @@ target/
 *.o
 *.ptx
 *.bak
+# Vendored crate's `Cargo.toml.orig` from upstream merge — regenerated
+# on every `cargo vendor`, shouldn't be tracked.
+**/Cargo.toml.orig
 
 # mdBook output (book/src is tracked; book/output is generated)
 /book/output/
