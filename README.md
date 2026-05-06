@@ -16,7 +16,18 @@
     <a href="LICENSE"><img alt="License: AGPLv3" src="https://img.shields.io/badge/license-AGPLv3-yellow?style=flat-square"></a>
     <a href="#build"><img alt="Pure Rust" src="https://img.shields.io/badge/runtime-pure%20Rust-orange?style=flat-square"></a>
     <a href="https://hub.docker.com/r/avarok/atlas-gb10"><img alt="Docker Hub" src="https://img.shields.io/badge/Docker%20Hub-avarok%2Fatlas--gb10-2496ED?style=flat-square&logo=docker&logoColor=white"></a>
+    <a href="https://discord.gg/DwF3brBMpw"><img alt="Discord" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2FDwF3brBMpw%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&label=discord&suffix=%20members&style=flat-square&logo=discord&logoColor=white&color=5865F2"></a>
   </p>
+</p>
+
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/7909c9ca-ce36-4e79-8977-b32948909298" controls muted playsinline width="820"></video>
+</p>
+
+<p align="center">
+  <a href="#run-atlas"><img alt="Quick Start — under 2 minutes" src="https://img.shields.io/badge/%E2%9A%A1%20Quick%20Start%20%E2%80%94%20%3C%202%20min-2EA44F?style=for-the-badge&logo=docker&logoColor=white"></a>
+  <a href="https://atlasinference.io"><img alt="atlasinference.io" src="https://img.shields.io/badge/%F0%9F%8C%90%20atlasinference.io-F48C06?style=for-the-badge"></a>
+  <a href="https://x.com/AIshaqui81766/status/2052121270506930276"><img alt="Launch announcement on X" src="https://img.shields.io/badge/%F0%9D%95%8F%20Launch%20Announcement-000000?style=for-the-badge&logo=x&logoColor=white"></a>
 </p>
 
 ## Philosophy
@@ -311,13 +322,26 @@ Atlas stores attention key/value state in one of six quantized formats, selected
 
 The whole supported model matrix lives in one Docker image. Pull it, mount your HuggingFace cache, point Atlas at any model ID from the table above:
 
+<a id="run-atlas"></a>
+
 ```bash
 docker pull avarok/atlas-gb10:latest
 
-docker run --gpus all --ipc=host -p 8888:8888 \
+sudo docker run -d --name atlas \
+  --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   avarok/atlas-gb10:latest \
-  serve Sehyo/Qwen3.5-35B-A3B-NVFP4 --speculative --mtp-quantization nvfp4
+  serve Qwen/Qwen3.6-35B-A3B-FP8 \
+    --port 8888 \
+    --max-seq-len 65536 \
+    --kv-cache-dtype fp8 \
+    --kv-high-precision-layers auto \
+    --gpu-memory-utilization 0.90 \
+    --scheduling-policy slai \
+    --quantization fp8 \
+    --tool-call-parser qwen3_coder \
+    --enable-prefix-caching \
+    --speculative
 ```
 
 That's it. Anything OpenAI-compatible — `curl`, the OpenAI SDK, Open WebUI, opencode — points at port 8888:
