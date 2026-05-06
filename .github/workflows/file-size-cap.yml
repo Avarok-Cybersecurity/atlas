@@ -14,7 +14,7 @@ jobs:
     name: Enforce ≤500 LoC per source file
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Check no .rs file exceeds 500 lines
         shell: bash
