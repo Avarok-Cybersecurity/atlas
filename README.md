@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/7909c9ca-ce36-4e79-8977-b32948909298" controls muted playsinline width="820"></video>
+  <a href="assets/atlas-demo.mp4"><img alt="Atlas demo — click for full-quality MP4" src="assets/atlas-demo.gif" width="820" /></a>
 </p>
 
 <p align="center">
