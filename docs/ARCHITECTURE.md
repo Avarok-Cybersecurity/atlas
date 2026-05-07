@@ -148,7 +148,7 @@ $ ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=qwen3.6-35b-a3b ATLAS_TARGET_QUANT=nvf
 
 What happens:
 1. Cargo invokes `atlas-kernels/build.rs`.
-2. `build.rs` walks `kernels/gb10/qwen3.6-35b-a3b/nvfp4/*.cu` + `kernels/gb10/nvfp4/*.cu` (shared), invokes `nvcc -arch=sm_121 --ptx` on each, and emits `OUT_DIR/target_ptx.rs` with the resulting PTX bytes.
+2. `build.rs` walks `kernels/gb10/qwen3.6-35b-a3b/nvfp4/*.cu` + `kernels/gb10/common/*.cu` (shared), invokes `nvcc -arch=sm_121 --ptx` on each, and emits `OUT_DIR/target_ptx.rs` with the resulting PTX bytes.
 3. The Rust crates compile, linking the generated module.
 4. At runtime, `spark-runtime::gpu` loads the PTX into the CUDA driver and exposes kernel handles.
 

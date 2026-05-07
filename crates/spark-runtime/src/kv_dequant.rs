@@ -27,20 +27,20 @@ use half::bf16;
 pub const NVFP4_GROUP_SIZE: usize = 16;
 
 /// E2M1 4-bit codebook (NVFP4). Matches
-/// `kernels/gb10/nvfp4/paged_decode_attn_nvfp4.cu:118`.
+/// `kernels/gb10/common/paged_decode_attn_nvfp4.cu:118`.
 pub const NVFP4_E2M1_LUT: [f32; 16] = [
     0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
 ];
 
 /// Turbo4 16-level Lloyd-Max codebook. Matches
-/// `kernels/gb10/nvfp4/paged_decode_attn_turbo4.cu:121`.
+/// `kernels/gb10/common/paged_decode_attn_turbo4.cu:121`.
 pub const TURBO4_LUT: [f32; 16] = [
     -2.7326, -2.0690, -1.6180, -1.2562, -0.9423, -0.6568, -0.3880, -0.1284, 0.1284, 0.3880, 0.6568,
     0.9423, 1.2562, 1.6180, 2.0690, 2.7326,
 ];
 
 /// Turbo3 8-level Lloyd-Max codebook. Matches
-/// `kernels/gb10/nvfp4/paged_decode_attn_turbo3.cu:137`.
+/// `kernels/gb10/common/paged_decode_attn_turbo3.cu:137`.
 pub const TURBO3_LUT: [f32; 8] = [
     -2.1520, -1.3440, -0.7560, -0.2451, 0.2451, 0.7560, 1.3440, 2.1520,
 ];
@@ -132,7 +132,7 @@ pub fn dequant_4bit_block_to_bf16(
 ///   data:   `bs * nkv * (hd * 3 / 8)` bytes — 8 values packed in 3 bytes.
 ///   scales: `bs * nkv * (hd / NVFP4_GROUP_SIZE)` bytes.
 /// Bit packing for 8 vals v0..v7 in 3 bytes b0,b1,b2 (mirrors
-/// `kernels/gb10/nvfp4/paged_decode_attn_turbo3.cu:67-75`):
+/// `kernels/gb10/common/paged_decode_attn_turbo3.cu:67-75`):
 ///   v0 = b0 & 0x7
 ///   v1 = (b0 >> 3) & 0x7
 ///   v2 = ((b0 >> 6) | (b1 << 2)) & 0x7
@@ -196,7 +196,7 @@ pub fn dequant_turbo3_block_to_bf16(
 /// Layout per block (post 2026-04-28 BF16-scale upgrade):
 ///   data:   `bs * nkv * hd` bytes (1 FP8 byte per element).
 ///   scales: `bs * nkv * (hd / NVFP4_GROUP_SIZE) * 2` bytes (BF16 = 2 bytes/scale).
-/// Mirrors `kernels/gb10/nvfp4/paged_decode_attn_turbo8*.cu` post-upgrade.
+/// Mirrors `kernels/gb10/common/paged_decode_attn_turbo8*.cu` post-upgrade.
 pub fn dequant_turbo8_block_to_bf16(
     raw: &[u8],
     bs: usize,

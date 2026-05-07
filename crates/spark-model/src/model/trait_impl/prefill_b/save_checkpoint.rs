@@ -108,13 +108,14 @@ impl TransformerModel {
         // block in this checkpoint, avoiding a double-bump that would leak
         // the cache's baseline ref by +1 per checkpointed block after the
         // eventual release().
-        self.prefix_cache.insert(
+        let acquired = self.prefix_cache.insert(
             boundary_tokens,
             boundary_blocks,
             boundary_disk,
             bs,
             end_token,
         );
+        super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
         if let Some(old) = self.prefix_cache.insert_intermediate_snapshot(
             boundary_tokens,
             boundary_blocks,

@@ -27,7 +27,7 @@
 // Reduction primitives match per-token baseline bit-exactly.
 
 #include <cuda_bf16.h>
-#include "../../nvfp4/gdn_reduce.cuh"
+#include "../../common/gdn_reduce.cuh"
 #define BLOCK_SIZE 128
 #define K_TOKENS 17
 

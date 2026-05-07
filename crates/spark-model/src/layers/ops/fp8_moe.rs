@@ -280,7 +280,7 @@ pub fn moe_transpose_u8_batched(
 // ─────────────────────────────────────────────────────────────────────
 // Phase 8a — Transposed-layout decode MoE kernel bindings.
 //
-// Match the kernels in `kernels/gb10/nvfp4/moe_shared_expert_fused*_t.cu`.
+// Match the kernels in `kernels/gb10/common/moe_shared_expert_fused*_t.cu`.
 // Same arg order as the non-transposed counterparts; grid changes to
 // `ceil(N/128)` (each thread = one output position, lanes coalesced).
 // Pointer-table args point at TRANSPOSED weights `[K/2, N]` (NVFP4) or

@@ -55,13 +55,14 @@ impl TransformerModel {
                 && !self.tokens_have_vision_pad(&seq.tokens)
                 && seq.hss_window_start() == 0
             {
-                self.prefix_cache.insert(
+                let acquired = self.prefix_cache.insert(
                     &seq.tokens,
                     &seq.block_table,
                     &seq.disk_block_ids,
                     bs,
                     seq.prompt_len,
                 );
+                super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
                 // Bump KV block ref_counts so the prefix cache "owns" a reference.
                 // This keeps blocks alive after free_sequence drops the sequence's ref.
                 // Eviction (return_evicted_block) releases these refs when nodes are removed.

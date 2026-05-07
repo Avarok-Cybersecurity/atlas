@@ -226,7 +226,7 @@ impl RadixTreeInner {
         disk_block_ids: &[u32],
         block_size: usize,
         matched_tokens: usize,
-    ) {
+    ) -> Vec<u32> {
         let access = self.next_access();
         let mut current = self.root;
         let mut parent_ctx_hash: u64 = 0; // root context hash
@@ -241,6 +241,15 @@ impl RadixTreeInner {
             disk_block_ids.len(),
             block_table.len(),
         );
+
+        // Issue #17: collect disk_ids on which the cache newly takes an
+        // ownership ref. Caller `inc_disk_ref`s these so the swap allocator's
+        // refcount tracks the cache's reachability. Two acquisition events:
+        //   1. New node creation with a real disk_id.
+        //   2. Existing node, MAX → real disk_id (first-time HSS population).
+        // Re-insertion of an already-cached (node, disk_id) pair is NOT an
+        // acquisition — the cache's ref already covers it.
+        let mut newly_acquired: Vec<u32> = Vec::new();
 
         for i in 0..num_blocks {
             let chunk = &tokens[i * block_size..(i + 1) * block_size];
@@ -269,8 +278,10 @@ impl RadixTreeInner {
                 // pre-HSS and a later HSS-enabled sequence touches the
                 // same prefix — defensive, shouldn't fire under normal
                 // operation since cache_blocks_per_seq is set at startup.)
-                if hss_active && self.nodes[child].disk_block_id == u32::MAX {
+                if hss_active && self.nodes[child].disk_block_id == u32::MAX && disk_id != u32::MAX
+                {
                     self.nodes[child].disk_block_id = disk_id;
+                    newly_acquired.push(disk_id);
                 }
                 parent_ctx_hash = ctx_hash;
                 current = child;
@@ -291,6 +302,9 @@ impl RadixTreeInner {
                 self.nodes[current]
                     .children
                     .insert(chunk.to_vec(), child_id);
+                if hss_active && disk_id != u32::MAX {
+                    newly_acquired.push(disk_id);
+                }
                 parent_ctx_hash = ctx_hash;
                 current = child_id;
             }
@@ -305,8 +319,21 @@ impl RadixTreeInner {
             } else {
                 u32::MAX
             };
+            // partial_suffix overwrites any prior partial slot. If the prior
+            // slot held a real disk_id distinct from the new one, the cache
+            // is silently dropping a ref to that old id; surface it on the
+            // returned acquisitions only when we actually accept a NEW real
+            // disk_id (matching the same "new acquisition" definition as the
+            // full-block path above). This branch fires rarely — partial
+            // slots are tail-only and typically unique per-prefix.
+            let prior = self.nodes[current].partial_suffix.as_ref().map(|p| p.2);
             self.nodes[current].partial_suffix = Some((partial_toks, partial_block, partial_disk));
+            if hss_active && partial_disk != u32::MAX && prior != Some(partial_disk) {
+                newly_acquired.push(partial_disk);
+            }
         }
+
+        newly_acquired
     }
 
     /// Evict up to `num_blocks` LRU zero-ref leaf nodes.

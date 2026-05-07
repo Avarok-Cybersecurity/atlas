@@ -70,13 +70,14 @@ impl TransformerModel {
         self.lm_head(normed, stream)?;
         // Prefix cache insert (no new snapshot needed — SSM state unchanged).
         if !self.tokens_have_vision_pad(tokens) {
-            self.prefix_cache.insert(
+            let acquired = self.prefix_cache.insert(
                 tokens,
                 &seq.block_table,
                 &seq.disk_block_ids,
                 bs,
                 seq.cached_prefix_tokens,
             );
+            super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
         }
         Ok(self.decode_logits_ptr())
     }
@@ -131,34 +132,40 @@ impl TransformerModel {
                     // token stream collides across distinct images, so do
                     // not admit either the snapshot or the radix block.
                     self.ssm_snapshots.free(snap_id);
-                } else if let Some(old) = self.prefix_cache.insert_with_snapshot(
-                    tokens,
-                    &seq.block_table,
-                    &seq.disk_block_ids,
-                    bs,
-                    snap_id,
-                    seq.session_hash,
-                    seq.cached_prefix_tokens,
-                ) {
-                    self.ssm_snapshots.free(old);
+                } else {
+                    let (displaced, acquired) = self.prefix_cache.insert_with_snapshot(
+                        tokens,
+                        &seq.block_table,
+                        &seq.disk_block_ids,
+                        bs,
+                        snap_id,
+                        seq.session_hash,
+                        seq.cached_prefix_tokens,
+                    );
+                    super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+                    if let Some(old) = displaced {
+                        self.ssm_snapshots.free(old);
+                    }
                 }
             } else if !self.tokens_have_vision_pad(tokens) {
-                self.prefix_cache.insert(
+                let acquired = self.prefix_cache.insert(
                     tokens,
                     &seq.block_table,
                     &seq.disk_block_ids,
                     bs,
                     seq.cached_prefix_tokens,
                 );
+                super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
             }
         } else if !self.tokens_have_vision_pad(tokens) {
-            self.prefix_cache.insert(
+            let acquired = self.prefix_cache.insert(
                 tokens,
                 &seq.block_table,
                 &seq.disk_block_ids,
                 bs,
                 seq.cached_prefix_tokens,
             );
+            super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
         }
     }
 
@@ -216,7 +223,7 @@ impl TransformerModel {
                     tokens.len(),
                     seq.block_table.len(),
                 );
-                if let Some(old) = self.prefix_cache.insert_with_snapshot(
+                let (displaced, acquired) = self.prefix_cache.insert_with_snapshot(
                     tokens,
                     &seq.block_table,
                     &seq.disk_block_ids,
@@ -224,26 +231,30 @@ impl TransformerModel {
                     snap_id,
                     seq.session_hash,
                     seq.cached_prefix_tokens,
-                ) {
+                );
+                super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+                if let Some(old) = displaced {
                     self.ssm_snapshots.free(old);
                 }
             } else if !self.tokens_have_vision_pad(tokens) {
-                self.prefix_cache.insert(
+                let acquired = self.prefix_cache.insert(
                     tokens,
                     &seq.block_table,
                     &seq.disk_block_ids,
                     bs,
                     seq.cached_prefix_tokens,
                 );
+                super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
             }
         } else if !self.tokens_have_vision_pad(tokens) {
-            self.prefix_cache.insert(
+            let acquired = self.prefix_cache.insert(
                 tokens,
                 &seq.block_table,
                 &seq.disk_block_ids,
                 bs,
                 seq.cached_prefix_tokens,
             );
+            super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
         }
     }
 }

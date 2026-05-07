@@ -107,14 +107,14 @@ impl PrefixCache for RadixTree {
         disk_block_ids: &[u32],
         block_size: usize,
         matched_tokens: usize,
-    ) {
+    ) -> Vec<u32> {
         self.inner.lock().insert(
             tokens,
             block_table,
             disk_block_ids,
             block_size,
             matched_tokens,
-        );
+        )
     }
 
     fn insert_with_snapshot(
@@ -126,9 +126,9 @@ impl PrefixCache for RadixTree {
         snapshot_id: usize,
         session_hash: u64,
         matched_tokens: usize,
-    ) -> Option<usize> {
+    ) -> (Option<usize>, Vec<u32>) {
         // Phase 1: insert tree nodes (lock inner, then release)
-        self.inner.lock().insert(
+        let newly_acquired = self.inner.lock().insert(
             tokens,
             block_table,
             disk_block_ids,
@@ -138,7 +138,8 @@ impl PrefixCache for RadixTree {
         // Phase 2: register snapshot in index (lock snapshot_index, inner NOT held)
         let prefix_hash = hash_token_prefix(tokens, tokens.len());
         let mut idx = self.snapshot_index.lock();
-        idx.insert(prefix_hash, snapshot_id, session_hash, tokens.len())
+        let displaced = idx.insert(prefix_hash, snapshot_id, session_hash, tokens.len());
+        (displaced, newly_acquired)
     }
 
     fn insert_intermediate_snapshot(

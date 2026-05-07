@@ -282,7 +282,7 @@ extern "C" __global__ void residual_add_rms_norm(
 // Gemma-4-31B so cumulative early-layer `layer_scalar` values (L0=0.089,
 // L1=0.065 ...) don't underflow BF16 and collapse activations into
 // repetition-attractor tokens. Qwen3-Next has equivalent `_f32` variants
-// in `kernels/gb10/nvfp4/rms_norm.cu` but with the offset formula
+// in `kernels/gb10/common/rms_norm.cu` but with the offset formula
 // `out = x * rms * (1+w)`, which does not apply to Gemma-4.
 //
 // These kernels are named `_f32_abs` so the Rust dispatch can pick them
@@ -496,6 +496,6 @@ extern "C" __global__ void f32_residual_add(
 }
 
 // NOTE: `bf16_to_f32` is available via the common `residual_add` module
-// (kernels/gb10/nvfp4/residual_add.cu) which is NOT shadowed by Gemma-4.
+// (kernels/gb10/common/residual_add.cu) which is NOT shadowed by Gemma-4.
 // The Rust-side lookup `gpu.kernel("residual_add", "bf16_to_f32")` therefore
 // resolves correctly without needing a Gemma-4 duplicate.

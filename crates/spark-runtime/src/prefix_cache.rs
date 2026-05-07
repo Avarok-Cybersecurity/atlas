@@ -134,8 +134,15 @@ pub trait PrefixCache: Send + Sync {
     /// `block_table` when populated. The cache stores these alongside the
     /// physical block IDs and returns them in `EvictedBlocks` so the
     /// caller can `dec_disk_ref` the orchestrator's per-block refcount.
-    /// The caller is responsible for `inc_disk_ref`-ing each ID before
-    /// passing it in (the cache holds these refs until eviction).
+    ///
+    /// **Disk-ref obligation (Issue #17 fix):** the returned vec lists every
+    /// disk_block_id on which this insert call newly took an ownership ref
+    /// (a node was created OR an existing node had its `disk_block_id`
+    /// populated for the first time). The caller MUST `inc_disk_ref` each
+    /// returned ID so the swap allocator's refcount matches the cache's
+    /// reachability. Already-cached portions (matched-prefix entries, or
+    /// blocks a prior intermediate insert already covered) are NOT in the
+    /// returned vec — re-incing them would leak the cache's refcount.
     ///
     /// `matched_tokens` is the number of tokens the inserting sequence
     /// already acquired via `lookup()`'s `inc_refs` (0 for a cache-miss
@@ -151,7 +158,7 @@ pub trait PrefixCache: Send + Sync {
         disk_block_ids: &[u32],
         block_size: usize,
         matched_tokens: usize,
-    );
+    ) -> Vec<u32>;
 
     /// Insert blocks with an SSM state snapshot registered in the snapshot index.
     ///
@@ -160,7 +167,9 @@ pub trait PrefixCache: Send + Sync {
     /// in `PrefixMatch::ssm_snapshot` so the caller can restore SSM state.
     /// `session_hash` tags the snapshot for session-scoped isolation.
     /// `matched_tokens` has the same semantics as in `insert`.
-    /// Returns the displaced snapshot ID if an existing entry was overwritten.
+    /// Returns `(displaced_snapshot_id, newly_acquired_disk_ids)`. The
+    /// disk-ref obligation matches `insert`: caller `inc_disk_ref`s each
+    /// returned ID.
     #[allow(clippy::too_many_arguments)]
     fn insert_with_snapshot(
         &self,
@@ -171,7 +180,7 @@ pub trait PrefixCache: Send + Sync {
         snapshot_id: usize,
         session_hash: u64,
         matched_tokens: usize,
-    ) -> Option<usize>;
+    ) -> (Option<usize>, Vec<u32>);
 
     /// Insert an SSM snapshot at an intermediate token boundary.
     ///
@@ -238,7 +247,8 @@ impl PrefixCache for NoPrefixCaching {
         _disk_block_ids: &[u32],
         _block_size: usize,
         _matched_tokens: usize,
-    ) {
+    ) -> Vec<u32> {
+        Vec::new()
     }
 
     fn insert_with_snapshot(
@@ -250,8 +260,8 @@ impl PrefixCache for NoPrefixCaching {
         _snapshot_id: usize,
         _session_hash: u64,
         _matched_tokens: usize,
-    ) -> Option<usize> {
-        None
+    ) -> (Option<usize>, Vec<u32>) {
+        (None, Vec::new())
     }
 
     fn insert_intermediate_snapshot(
@@ -309,7 +319,8 @@ mod tests {
         assert!(m.is_empty());
 
         // These should not panic
-        cache.insert(&tokens, &block_table, &disk_block_ids, 4, 0);
+        let new_acq = cache.insert(&tokens, &block_table, &disk_block_ids, 4, 0);
+        assert!(new_acq.is_empty());
         cache.release(&tokens, 4);
 
         let evicted = cache.evict(10);

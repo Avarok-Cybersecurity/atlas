@@ -50,6 +50,34 @@ pub(crate) fn apply_evicted_blocks(
     }
 }
 
+/// Apply the disk-ref obligation reported by a `prefix_cache.insert*` call.
+/// The cache returns the disk_block_ids on which it newly took an ownership
+/// ref (a node was created OR an existing node had its disk_block_id
+/// populated for the first time). The caller `inc_disk_ref`s each one so
+/// the swap allocator's refcount matches the cache's reachability.
+///
+/// Without this, the cache stores disk_block_ids whose only live ref is
+/// the sequence's; when `free_sequence` decs, the ID is reclaimed by the
+/// swap allocator while the cache still references it — the next prefix
+/// hit then trips `inc_disk_ref` on a freed ID and panics the scheduler
+/// thread (Issue #17, panic at `high_speed_swap.rs:167`).
+pub(crate) fn cache_acquires_disk_refs(newly_acquired: &[u32]) {
+    if newly_acquired.is_empty() {
+        return;
+    }
+    if let Some(res) = spark_storage::with_local(|hss| {
+        for &id in newly_acquired {
+            if id != u32::MAX {
+                hss.inc_disk_ref(id);
+            }
+        }
+        Ok(())
+    }) && let Err(e) = res
+    {
+        tracing::debug!("cache_acquires_disk_refs: spark_storage::with_local: {e:#}");
+    }
+}
+
 /// Phase 6.1.e: bump disk-side refcounts for blocks reused from a prefix-cache
 /// hit, and push the disk_block_ids onto the sequence's history. The cache's
 /// own ref keeps these slots alive across eviction; we add the seq's ref so

@@ -84,7 +84,7 @@ impl BlockDiffusionDraftHead {
         // FP8-aware paged-attention kernel. Module/function names verified
         // against existing Atlas resolutions in `qwen3_attention/mod.rs` and
         // `mtp_head.rs` plus the `extern "C" __global__` declarations under
-        // `kernels/gb10/nvfp4/`.
+        // `kernels/gb10/common/`.
         let kernels = DflashKernels {
             // DFlash drafter uses HF's vanilla RMSNorm convention
             // (`out = x * w / RMS(x)`), NOT Atlas's default offset-from-1
@@ -118,15 +118,26 @@ impl BlockDiffusionDraftHead {
             residual_add: gpu.kernel("residual_add", "bf16_residual_add")?,
             argmax: gpu.kernel("argmax", "argmax_bf16")?,
             batched_embed: gpu.kernel("embed_from_argmax", "batched_embed")?,
-            // Drafter has head_dim=128, but qwen3.6-35b-a3b target's
+            // Drafter has head_dim=128, but the target's
             // `inferspark_prefill` is compiled with HDIM=256. Using that
             // kernel produces corrupted attn_out for the drafter (kernel
             // reads 256 elements per head when only 128 are valid →
             // garbage in the back half of SMEM tiles → per-head sign-flip
             // pattern across q-heads). The HDIM=128 specialization
-            // `inferspark_prefill_h128` lives in the qwen3.6-35b-a3b
-            // model-override kernel dir.
-            prefill_attn: gpu.kernel("inferspark_prefill_h128", "inferspark_prefill_h128")?,
+            // `inferspark_prefill_h128.cu` lives in the shared kernel
+            // dir (`kernels/<hw>/common/`) so every target gets it.
+            prefill_attn: gpu
+                .kernel("inferspark_prefill_h128", "inferspark_prefill_h128")
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "{e}\n\nDFlash needs the HDIM=128 prefill kernel \
+                         (`inferspark_prefill_h128`) compiled for this target. \
+                         The kernel source lives at \
+                         `kernels/<hw>/common/inferspark_prefill_h128.cu`. \
+                         If you've added a new hardware target, copy the \
+                         .cu file there."
+                    )
+                })?,
         };
 
         // Per-step scratch buffers. BF16 = 2 bytes/element.

@@ -170,7 +170,7 @@ extern "C" __global__ void rope_forward_yarn(
     // Mistral uses rope_interleave=True: weights store rope dims as
     // (d0,d1),(d2,d3),... so pair_idx i rotates (d_2i, d_2i+1).
     // NOT split-half (d_i, d_i+half_rot) — that convention is used by
-    // neox-style models in the common kernels/gb10/nvfp4/rope.cu.
+    // neox-style models in the common kernels/gb10/common/rope.cu.
     const unsigned int d0 = 2 * pair_idx;
     const unsigned int d1 = 2 * pair_idx + 1;
     float x0 = (float)ptr[d0];

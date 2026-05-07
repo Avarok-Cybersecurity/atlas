@@ -272,7 +272,8 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
         );
     }
 
-    // Expand model wildcard (exclude common quant dirs like nvfp4/)
+    // Expand model wildcard (exclude the `common/` shared-kernel dir,
+    // which has no MODEL.toml).
     let models: Vec<String> = if model_spec == "*" {
         list_subdirs(&hw_dir)
             .into_iter()
@@ -298,7 +299,14 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
 
         for quant in &quants {
             let model_kernel_dir = model_dir.join(quant);
-            let common_kernel_dir = hw_dir.join(quant);
+            // Shared kernels live in `kernels/<hw>/common/` and apply to
+            // every (model, quant) target on this hardware. Most kernels
+            // here are dtype-agnostic (BF16 norms/embeds/attn) — the dir
+            // is named `common` rather than after a single quant because
+            // its contents span BF16, FP8, NVFP4, W4A16, W8A16, and
+            // turbo3/4/8 KV-cache flavours. Per-model specialisations
+            // still live under `kernels/<hw>/<model>/<quant>/`.
+            let common_kernel_dir = hw_dir.join("common");
 
             // At least one of common or model-specific dir must exist
             let has_model_dir = model_kernel_dir.is_dir();

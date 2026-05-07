@@ -2,7 +2,7 @@
 
 ## Kernel Origin
 
-Inherits all kernels from parent `kernels/gb10/nvfp4/`. Model-specific `.cu` files
+Inherits all kernels from parent `kernels/gb10/common/`. Model-specific `.cu` files
 in this directory shadow the parent versions for dimension-tuned optimizations.
 
 ## Dimension Changes vs 35B
