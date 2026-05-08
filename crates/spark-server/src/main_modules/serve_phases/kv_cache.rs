@@ -83,35 +83,22 @@ pub(crate) fn resolve_prefill_budget(
                 args.max_batch_size,
             );
         }
-        // Issue #31: prefill of prompts > hss_cap_tokens triggers the
-        // slide-before-alloc loop in block_mgmt::ensure_blocks_through_prefill,
-        // which advances `disk_block_ids.len()` past `block_table.len()` BEFORE
-        // any attention layer has offloaded its K/V to disk. The first attn
-        // layer's offload then bails (see high_speed_swap.rs:107). The chunked
-        // prefill reads through the HSS orchestrator (Phase 6.2.b) are not
-        // implemented yet, so the only correct combination today is:
-        //   * either `cap × block_size ≥ max_seq_len` (HSS as scratch only,
-        //     never actually slides during prefill), or
-        //   * a checkpoint that fits long generation in decode (HSS engages
-        //     only after generation crosses the window, where decode CAN
-        //     route through the orchestrator).
-        // Warn loud and clear when these constraints aren't met.
+        // Issue #31 was fixed by the cursor-advance-during-slide change in
+        // `block_mgmt::ensure_blocks_through_{prefill,decode}` plus the
+        // post-prefix-cache-hit cursor advance in
+        // `prefill_b/prefix_lookup.rs`. Long prompts with HSS now work; the
+        // earlier startup WARN that flagged this combination as broken is
+        // obsolete and has been removed. Per-config diagnostics live at
+        // INFO level on the next line.
         if args.max_seq_len > hss_cap_tokens {
-            tracing::warn!(
-                "--high-speed-swap is engaged but --max-seq-len ({} tokens) > \
-                 cap × block_size ({} blocks × {} = {} tokens). Prompts longer \
-                 than {} tokens will fail mid-prefill with \
-                 'high-speed-swap: layer N block M was evicted before this \
-                 layer offloaded it' (issue #31). Either raise \
-                 --high-speed-swap-cache-blocks-per-seq to >= {} (so \
-                 cap × bs >= max_seq_len) or drop --high-speed-swap if KV \
-                 fits HBM at your batch size and quantization.",
-                args.max_seq_len,
+            tracing::info!(
+                "--high-speed-swap engaged: cap={} blocks × bs={} = {} tokens HBM-resident, \
+                 --max-seq-len={} tokens total. Prefill slides will advance per-layer offload \
+                 cursors as the window moves so older blocks stay reachable on disk.",
                 args.high_speed_swap_cache_blocks_per_seq,
                 args.block_size,
                 hss_cap_tokens,
-                hss_cap_tokens,
-                args.max_seq_len.div_ceil(args.block_size),
+                args.max_seq_len,
             );
         }
         clamped

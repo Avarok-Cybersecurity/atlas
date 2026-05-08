@@ -83,6 +83,24 @@ impl TransformerModel {
                 &prefix_match.matched_disk_block_ids,
                 &mut seq.disk_block_ids,
             );
+            // Issue #31: the prefix cache stores per-layer K/V on disk for every
+            // matched block (that's the radix-tree invariant — blocks with a
+            // non-MAX `disk_block_id` are fully offloaded across every attention
+            // layer). Advance every layer's offload cursor to match the new
+            // `disk_block_ids.len()` so the slide-before-alloc loop in
+            // `block_mgmt::ensure_blocks_through_prefill` doesn't bail later
+            // when it discovers `disk_last_offloaded[L] < window_start`. Without
+            // this, gbanyan's repro (long prompt + prefix-caching + HSS) tripped
+            // `offload_layer_kv` on the first attn layer with `attn_layer_idx=0,
+            // logical_pos=0, window_start>0` because the cached blocks pushed
+            // `disk_block_ids` and `block_table` forward without notifying the
+            // layer cursors.
+            let new_total = seq.disk_block_ids.len() as u32;
+            for cursor in seq.disk_last_offloaded_per_layer.iter_mut() {
+                if *cursor < new_total {
+                    *cursor = new_total;
+                }
+            }
             // Marconi: restore SSM snapshot if available.
             // With intermediate checkpoints, ssm_snapshot_tokens may be less than
             // matched_tokens. We skip SSM computation only up to ssm_snapshot_tokens
