@@ -33,6 +33,40 @@ pub(crate) fn resolve_prefill_budget(
     } else {
         args.max_seq_len
     };
+    // Issue #15: when prefix caching + SSM snapshots are both enabled, the
+    // SSM snapshot taken at finalize_last (token_count = full prompt length)
+    // is unreachable from future requests because the radix-tree match for
+    // a different prompt length will be < tokens.len(). Intermediate
+    // checkpoints are saved by `prefill_b_save_checkpoint` only at chunk
+    // ends whose end_block is a multiple of `ssm_checkpoint_interval`, so a
+    // single-chunk prefill produces zero reachable snapshots. Auto-clamp
+    // the prefill budget to a checkpoint-aligned size so chunked prefill
+    // actually fires and downstream agentic conversations get cache hits.
+    let prefill_budget_pre_hss = if !user_set_prefill
+        && args.enable_prefix_caching
+        && args.ssm_checkpoint_interval > 0
+        && args.ssm_cache_slots > 0
+    {
+        let target = args.ssm_checkpoint_interval * args.block_size;
+        if prefill_budget_pre_hss > target && target > 0 {
+            tracing::info!(
+                "--enable-prefix-caching with --ssm-checkpoint-interval={} \
+                 and --block-size={}: auto-clamping max_prefill_tokens \
+                 from {} to {} so chunked prefill fires at SSM-checkpoint \
+                 boundaries (issue #15). Override with --max-prefill-tokens \
+                 to keep the larger value.",
+                args.ssm_checkpoint_interval,
+                args.block_size,
+                prefill_budget_pre_hss,
+                target,
+            );
+            target
+        } else {
+            prefill_budget_pre_hss
+        }
+    } else {
+        prefill_budget_pre_hss
+    };
     let prefill_budget = if args.high_speed_swap {
         let hss_cap_tokens = args.high_speed_swap_cache_blocks_per_seq as usize * args.block_size;
         let hss_chunk_max = hss_cap_tokens.saturating_sub(args.max_batch_size);
