@@ -249,10 +249,8 @@ impl GrammarEngine {
                 // narrow down which schema triggered xgrammar's EBNF parser
                 // (Discord 2026-05-07 a1vadfs report on
                 // mmangkad/Qwen3.6-27B-NVFP4: "EBNF parser error at line N").
-                let tool_names: Vec<&str> = sanitized_tools
-                    .iter()
-                    .map(|st| st.name.as_str())
-                    .collect();
+                let tool_names: Vec<&str> =
+                    sanitized_tools.iter().map(|st| st.name.as_str()).collect();
                 tracing::info!(
                     "qwen_xml_parameter grammar fell back to json_schema ({e:?}). \
                      Functional but slightly looser tool-call grammar. Tools in \
