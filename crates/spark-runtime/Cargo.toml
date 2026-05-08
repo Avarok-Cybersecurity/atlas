@@ -14,7 +14,6 @@ metal = [
     "dep:objc2-metal",
     "dep:objc2-foundation",
     "dep:dispatch2",
-    "dep:tokenizers",
     "atlas-core/metal",
 ]
 test-utils = []
@@ -52,14 +51,13 @@ name = "metal_layer3_bench"
 path = "examples/metal_layer3_bench.rs"
 required-features = ["metal"]
 
-# End-to-end inference demo: tokenize a prompt, run all 32 layers
-# (full_attention via real kernels + linear_attention as identity
-# passthrough — GDN orchestration pending), apply LM head against
-# tied embed_tokens, sample greedily, decode the next token.
-[[example]]
-name = "metal_qwen35_inference"
-path = "examples/metal_qwen35_inference/main.rs"
-required-features = ["metal"]
+# Note: the end-to-end Qwen3.5-4B-MLX-8bit inference demo lives in
+# `crates/spark-model/examples/metal_qwen35_inference/` because the
+# per-layer forward path it drives lives in `spark_model::forward`,
+# and `spark-runtime` cannot depend on `spark-model` (`spark-model`
+# already depends on `spark-runtime`). Run it via:
+#   cargo run --release --no-default-features --features metal \
+#       -p spark-model --example metal_qwen35_inference
 
 # Integration test gated by `test-utils` because it depends on the
 # `gpu::mock` module, which is itself `cfg(any(test, feature = "test-utils"))`.
@@ -76,11 +74,6 @@ required-features = ["test-utils"]
 atlas-core = { workspace = true }
 atlas-kernels = { workspace = true }
 cudarc = { workspace = true, optional = true }
-
-# Used by the metal_qwen35_inference example only — gated dev-dep
-# would be cleaner but the example itself is required-features = metal,
-# so a normal optional dep keyed off metal feature is the simpler shape.
-tokenizers = { version = "0.21", optional = true, default-features = false, features = ["onig"] }
 
 # Apple Metal backend deps. Activated only by `--features metal`.
 objc2 = { version = "0.6", optional = true }

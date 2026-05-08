@@ -23,6 +23,10 @@ metal = [
     "spark-storage/metal",
     "spark-comm/metal",
 ]
+# Pulls in the host-side example deps (tokenizers, memmap2, safetensors).
+# Kept off the bare `metal` feature so a metal-feature library build
+# doesn't drag in the tokenizer crate.
+metal-example = ["metal", "dep:tokenizers", "dep:memmap2", "dep:safetensors"]
 
 [dependencies]
 atlas-core = { workspace = true }
@@ -43,6 +47,25 @@ half = "2"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 parking_lot = { workspace = true }
+
+# Used by the `metal_qwen35_inference` example only — gated by
+# `required-features = ["metal-example"]` on the `[[example]]` block
+# below so default Linux builds don't pull these in.
+tokenizers = { version = "0.21", optional = true, default-features = false, features = ["onig"] }
+memmap2 = { version = "0.9", optional = true }
+safetensors = { version = "0.5", optional = true }
+
+# End-to-end Qwen3.5-4B-MLX-8bit decode driver. Loads weights via
+# `MlxInt8Weight`, kernel handles via `Qwen35Kernels::resolve`, and
+# routes every per-layer kernel-launch sequence through
+# `spark_model::forward::qwen3_5::forward_*`. The same forward path
+# is what a future CUDA / ROCm / WebGPU end-to-end driver would
+# call — the example just owns the per-backend weight type and
+# kernel directory.
+[[example]]
+name = "metal_qwen35_inference"
+path = "examples/metal_qwen35_inference/main.rs"
+required-features = ["metal-example"]
 
 [dev-dependencies]
 # `default-features = false` so a metal-feature build of spark-model doesn't
