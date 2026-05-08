@@ -180,6 +180,8 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         let (reasoning_content_i, output_text_i) =
             decode_response_text(&state, &response, enable_thinking);
         let output_text_i = strip_stop_sequences(output_text_i, &req.stop);
+        let output_text_i =
+            super::chat::repair_json::repair_json_object_prefix(&req, output_text_i);
 
         let (message, finish_reason_i) = build_choice_message(
             &state,
