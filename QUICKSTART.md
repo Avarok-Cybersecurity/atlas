@@ -223,31 +223,41 @@ sudo docker run -d \
 
 ---
 
-## 6. Qwen3.5-122B MoE — Single Node (122B MoE, ~50 tok/s)
+## 6. Qwen3.5-122B MoE — Single Node (122B MoE, ~33 tok/s decode)
 
-All 256 experts on one GB10. Weights are ~76 GB NVFP4, leaving ~33 GB for KV cache,
-SSM state, and buffers. Must use `max-batch-size 1` and `max-seq-len 4096`.
+All 256 experts on one GB10. The 122B NVFP4 checkpoint is ~81 GB on disk (65 GB FP4
+experts + 16 GB BF16 modules: Mamba projections, embeddings, MTP, vision); after
+Atlas's buffer arena, dequant scratch, MoE routing state, and CUDA context, you're
+left with ~1.5–2 GB headroom for KV cache. That's why `--max-num-seqs` and
+`--max-seq-len` have to stay tight.
+
+Verified end-to-end: model loads in ~3 minutes, `/v1/chat/completions` answers
+correctly (single-call decode 33.4 tok/s at batch=1), 4-way concurrent requests
+serve cleanly. KV cache holds ~35K tokens (16K per slot × 4 slots, with overlap).
 
 ```bash
-sudo docker run -d \
-  --name atlas-122b \
+sudo docker run -d --name atlas \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   avarok/atlas-gb10:latest \
   serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
     --port 8888 \
-    --max-seq-len 4096 \
-    --max-batch-size 1 \
-    --kv-cache-dtype nvfp4 \
-    --gpu-memory-utilization 0.88 \
+    --max-seq-len 16384 \
+    --kv-cache-dtype fp8 \
+    --kv-high-precision-layers auto \
+    --gpu-memory-utilization 0.92 \
     --scheduling-policy slai \
-    --speculative \
-    --mtp-quantization nvfp4
+    --max-batch-size 1 \
+    --max-num-seqs 4 \
+    --oom-guard-mb 1024 \
+    --ssm-cache-slots 0 \
+    --tool-call-parser qwen3_coder
 ```
 
-> **Note:** Single-node 122B has not been benchmarked yet. Expected ~50 tok/s based on
-> EP=2 results. Memory is tight — if OOM occurs, lower `--gpu-memory-utilization` to 0.85
-> or reduce `--max-seq-len` to 2048.
+> **If you see "KV cache can hold at most 0 concurrent sequence(s)":** drop
+> `--max-num-seqs` (or `--max-seq-len`). The error means the leftover ~2 GB
+> couldn't fit a single KV slot at the requested context length. The recipe above
+> is the largest config that fits cleanly on a stock 119.7 GB Spark.
 
 ---
 

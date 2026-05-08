@@ -1,12 +1,18 @@
 <script>
-  import { dockerCommand } from '$lib/data.js';
+  import { dockerCommand, dockerCommand122B } from '$lib/data.js';
 
-  let copied = $state(false);
-  async function copy() {
+  let copied35 = $state(false);
+  let copied122 = $state(false);
+  async function copy(text, which) {
     try {
-      await navigator.clipboard.writeText(dockerCommand);
-      copied = true;
-      setTimeout(() => (copied = false), 1600);
+      await navigator.clipboard.writeText(text);
+      if (which === '35') {
+        copied35 = true;
+        setTimeout(() => (copied35 = false), 1600);
+      } else {
+        copied122 = true;
+        setTimeout(() => (copied122 = false), 1600);
+      }
     } catch {}
   }
 </script>
@@ -24,12 +30,25 @@
         <div class="term-dots" aria-hidden="true">
           <span></span><span></span><span></span>
         </div>
-        <div class="term-title">Qwen3.5-35B, 130 tok/s on a single Spark</div>
-        <button type="button" class="hero-install-copy" onclick={copy} aria-label="Copy commands">
-          {copied ? 'Copied' : 'Copy'}
+        <div class="term-title">Qwen3.5-35B &mdash; 130 tok/s on a single Spark</div>
+        <button type="button" class="hero-install-copy" onclick={() => copy(dockerCommand, '35')} aria-label="Copy 35B command">
+          {copied35 ? 'Copied' : 'Copy'}
         </button>
       </div>
       <pre class="term-body">{dockerCommand}</pre>
+    </div>
+
+    <div class="term-card" style="margin-top: 1.25rem;">
+      <div class="term-head">
+        <div class="term-dots" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </div>
+        <div class="term-title">Qwen3.5-122B &mdash; ~33 tok/s on a single Spark</div>
+        <button type="button" class="hero-install-copy" onclick={() => copy(dockerCommand122B, '122')} aria-label="Copy 122B command">
+          {copied122 ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre class="term-body">{dockerCommand122B}</pre>
     </div>
 
     <p class="try-foot">

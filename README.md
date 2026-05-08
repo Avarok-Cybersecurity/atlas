@@ -324,6 +324,8 @@ The whole supported model matrix lives in one Docker image. Pull it, mount your 
 
 <a id="run-atlas"></a>
 
+**Qwen3.6-35B (FP8) — 130 tok/s on a single Spark:**
+
 ```bash
 docker pull avarok/atlas-gb10:latest
 
@@ -341,6 +343,29 @@ sudo docker run -d --name atlas \
     --tool-call-parser qwen3_coder \
     --enable-prefix-caching \
     --speculative
+```
+
+**Qwen3.5-122B (NVFP4) — single Spark, ~33 tok/s decode at batch=1:**
+
+The 122B NVFP4 weights + Atlas runtime overhead leave only ~2 GB for KV cache on a 119.7 GB GB10, so keep `--max-num-seqs` low and use a tighter `--max-seq-len`. This recipe is verified end-to-end (model loads, `/v1/chat/completions` answers correctly, 4-way concurrent serves cleanly):
+
+```bash
+sudo docker run -d --name atlas \
+  --network host --gpus all --ipc=host \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  avarok/atlas-gb10:latest \
+  serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
+    --port 8888 \
+    --max-seq-len 16384 \
+    --kv-cache-dtype fp8 \
+    --kv-high-precision-layers auto \
+    --gpu-memory-utilization 0.92 \
+    --scheduling-policy slai \
+    --max-batch-size 1 \
+    --max-num-seqs 4 \
+    --oom-guard-mb 1024 \
+    --ssm-cache-slots 0 \
+    --tool-call-parser qwen3_coder
 ```
 
 That's it. Anything OpenAI-compatible — `curl`, the OpenAI SDK, Open WebUI, opencode — points at port 8888:
