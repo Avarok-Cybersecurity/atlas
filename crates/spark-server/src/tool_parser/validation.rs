@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #![allow(unused_imports, dead_code)]
 
-use super::*;
 use super::fuzzy_match::fuzzy_match_tool_name;
+use super::*;
 
 /// Fix tool call arguments: schema-aware type coercion + backfill missing params.
 ///

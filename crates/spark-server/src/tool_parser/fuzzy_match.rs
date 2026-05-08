@@ -23,10 +23,7 @@ use super::ToolDefinition;
 /// 3. Single-tool fallback — model clearly intended *something*.
 ///
 /// Only returns a match if exactly one tool matches (ambiguous = reject).
-pub(super) fn fuzzy_match_tool_name(
-    model_name: &str,
-    tools: &[ToolDefinition],
-) -> Option<String> {
+pub(super) fn fuzzy_match_tool_name(model_name: &str, tools: &[ToolDefinition]) -> Option<String> {
     if tools.is_empty() || model_name.is_empty() {
         return None;
     }
