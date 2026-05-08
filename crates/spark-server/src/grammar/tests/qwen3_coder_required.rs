@@ -63,8 +63,7 @@ fn qwen3_coder_grammar_accepts_canonical() {
         .compile_qwen3_coder_tool_grammar(&tools, true)
         .expect("compile must succeed");
 
-    let canonical =
-        "<tool_call>\n<function=exec>\n<parameter=command>\nls /tmp\n</parameter>\n</function>\n</tool_call>";
+    let canonical = "<tool_call>\n<function=exec>\n<parameter=command>\nls /tmp\n</parameter>\n</function>\n</tool_call>";
     assert!(
         grammar_accepts(&compiled, canonical),
         "canonical exec invocation must be accepted; input: {canonical:?}"
@@ -73,12 +72,7 @@ fn qwen3_coder_grammar_accepts_canonical() {
 
 /// Regression test for issue #40 / OpenClaw: when the schema declares
 /// `required: ["command"]`, the grammar must REJECT a tool call body
-/// with zero `<parameter=>` blocks. Failing this test means the
-/// upstream xgrammar bug is still present.
-///
-/// Currently FAILS against xgrammar v0.1.32. Will PASS once the
-/// `xgrammar-pins.toml` is updated to a fork with the
-/// `min_properties >= required.size()` fix.
+/// with zero `<parameter=>` blocks.
 #[test]
 fn qwen3_coder_grammar_rejects_empty_required_param() {
     let vocab = test_vocab();
@@ -92,11 +86,69 @@ fn qwen3_coder_grammar_rejects_empty_required_param() {
     let empty_body = "<tool_call>\n<function=exec>\n</function>\n</tool_call>";
     assert!(
         !grammar_accepts(&compiled, empty_body),
-        "qwen3_coder grammar with required=['command'] must REJECT empty body \
-         (no <parameter=> blocks). Currently accepts due to upstream xgrammar \
-         bug in GetPartialRuleForProperties — Case-1 (min=0,max=-1) emits \
-         `first_sep_rule | (property)*` when spec.min_properties==0, ignoring \
-         spec.required. Fix: bump min_properties to required.size() in \
-         json_schema_converter.cc. Input: {empty_body:?}"
+        "qwen3_coder grammar with required=['command'] must REJECT empty body. \
+         Input: {empty_body:?}"
+    );
+}
+
+/// Multi-property variant: schema declares one required field plus
+/// several optional fields. Mirrors OpenClaw's `exec` tool shape
+/// (command required; env/cwd/timeout optional). The model is free
+/// to emit ANY permutation of fields, but must always include the
+/// required one.
+#[test]
+fn qwen3_coder_grammar_rejects_empty_with_optional_fields_present() {
+    let tools = vec![ToolDefinition {
+        tool_type: "function".to_string(),
+        function: crate::tool_parser::FunctionDefinition {
+            name: "exec".to_string(),
+            description: Some("Run a shell command".to_string()),
+            parameters: Some(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "env": {"type": "string"},
+                    "cwd": {"type": "string"},
+                    "timeout_seconds": {"type": "integer"}
+                },
+                "required": ["command"]
+            })),
+        },
+    }];
+
+    let vocab = test_vocab();
+    let stop_ids = vec![130i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+    let compiled = engine
+        .compile_qwen3_coder_tool_grammar(&tools, true)
+        .expect("compile must succeed");
+
+    let empty_body = "<tool_call>\n<function=exec>\n</function>\n</tool_call>";
+    assert!(
+        !grammar_accepts(&compiled, empty_body),
+        "qwen3_coder grammar with required=['command'] + 3 optional fields \
+         must STILL reject empty body. Input: {empty_body:?}"
+    );
+
+    // Just an optional, no required → still rejected
+    let only_optional = "<tool_call>\n<function=exec>\n<parameter=cwd>\n/tmp\n</parameter>\n</function>\n</tool_call>";
+    assert!(
+        !grammar_accepts(&compiled, only_optional),
+        "qwen3_coder grammar must reject body with only an OPTIONAL parameter \
+         when 'command' is required. Input: {only_optional:?}"
+    );
+
+    // Required-only is fine
+    let only_required = "<tool_call>\n<function=exec>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>";
+    assert!(
+        grammar_accepts(&compiled, only_required),
+        "required-only body must be accepted. Input: {only_required:?}"
+    );
+
+    // Required + optional is fine (any order)
+    let both_in_order = "<tool_call>\n<function=exec>\n<parameter=command>\nls\n</parameter>\n<parameter=cwd>\n/tmp\n</parameter>\n</function>\n</tool_call>";
+    assert!(
+        grammar_accepts(&compiled, both_in_order),
+        "required+optional in declaration order must be accepted. Input: {both_in_order:?}"
     );
 }
