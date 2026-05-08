@@ -140,6 +140,16 @@ pub(crate) async fn build_and_serve(
              --bind 127.0.0.1 (or set --require-auth and a real firewall) before \
              accepting traffic."
         );
+    } else if bind == "127.0.0.1" || bind == "localhost" || bind == "::1" {
+        // m00ch13 (Discord 2026-05-07): combined `--network host` with `-p 8000`
+        // expecting LAN reachability and got refused from another machine. The
+        // default loopback bind is correct for security, but the failure mode
+        // ("connection refused from $LAN_IP") is opaque without this hint.
+        tracing::info!(
+            "API reachable only from this machine (loopback). To expose on the \
+             LAN pass --bind 0.0.0.0; combine with --require-auth and \
+             --auth-tokens-file for non-trusted networks."
+        );
     }
     tracing::info!("Listening on {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
