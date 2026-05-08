@@ -98,7 +98,20 @@ impl GrammarState {
     /// Returns `true` if the token was accepted by the grammar.
     /// Returns `false` if the token violates the grammar (should not happen
     /// if the bitmask was applied correctly).
+    ///
+    /// Short-circuits with `true` once the matcher has reached its
+    /// terminated (accepting) state — feeding tokens past the stop into
+    /// xgrammar emits a `grammar_matcher.cc:493` warning ("matcher has
+    /// terminated, but is trying to accept new token") for every trailing
+    /// token in spec-decode draft runs (Discord 2026-05-08 universe06608).
+    /// Returning `true` keeps the spec-decode boundary heuristic in
+    /// `truncate_drafts_at_grammar_boundary` consistent — drafts past a
+    /// completed grammar are not "rejected by grammar"; they are simply
+    /// past the stop, which the EOS handler will terminate independently.
     pub fn accept_token(&mut self, token_id: u32) -> bool {
+        if self.matcher.is_terminated() {
+            return true;
+        }
         self.matcher.accept_token(token_id as i32)
     }
 

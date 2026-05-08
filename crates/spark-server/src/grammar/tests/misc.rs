@@ -3,6 +3,40 @@
 use super::*;
 
 #[test]
+fn test_accept_token_after_termination_short_circuits() {
+    let vocab = test_vocab();
+    let stop_ids = vec![130i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+
+    let compiled = engine.compile_json_grammar().unwrap();
+    let mut state = GrammarState::new(&compiled, engine.vocab_size()).unwrap();
+    assert!(state.accept_token(b'{' as u32));
+    assert!(state.accept_token(b'}' as u32));
+    let _ = state.accept_token(130);
+    assert!(
+        state.is_terminated(),
+        "grammar must reach terminated state for this test to be meaningful"
+    );
+
+    // Discord 2026-05-08 universe06608: xgrammar emits a
+    // `grammar_matcher.cc:493` warning when a token is fed to a
+    // terminated matcher (happens under --speculative when the verifier
+    // has accepted a stop token but more drafts in the same step still
+    // feed into accept_token via the emit_step path). The short-circuit
+    // must return true (accept) so spec-decode draft truncation doesn't
+    // treat post-stop tokens as grammar rejections.
+    assert!(
+        state.accept_token(198),
+        "post-termination accept_token must short-circuit to true (token id 198 \
+         was the specific id from the user report; any id should behave the same)"
+    );
+    assert!(
+        state.accept_token(0),
+        "post-termination accept_token must remain a no-op for any token id"
+    );
+}
+
+#[test]
 fn test_fill_bitmask_after_stop_token() {
     let vocab = test_vocab();
     let stop_ids = vec![130i32]; // <eos>
