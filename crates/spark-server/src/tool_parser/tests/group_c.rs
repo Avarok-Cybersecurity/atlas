@@ -370,3 +370,89 @@ fn leak_markers_minimax_has_invoke_open() {
     assert!(m.close.contains(&"</minimax:tool_call>"));
     assert!(m.close.contains(&"</tool_call>"));
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// MCP separator-drift fuzzy match (Discord report 2026-05-08, _trithemius)
+//
+// Qwen3.6-35B-A3B-FP8 + MCP: "Unknown tool XXX" where XXX is registered.
+// Root cause: MTP / FP8 quantization occasionally drops or duplicates an
+// underscore in MCP-style names (`mcp__discord__...`). Strict equality
+// then misses, the substring fuzzy strategies miss because neither side
+// is a clean substring of the other once the separator count drifts.
+// `validate_tool_calls` should repair these via the normalize-separators
+// strategy before failing.
+// ────────────────────────────────────────────────────────────────────────
+
+fn _mcp_tool(name: &str) -> ToolDefinition {
+    ToolDefinition {
+        tool_type: "function".to_string(),
+        function: FunctionDefinition {
+            name: name.to_string(),
+            description: None,
+            parameters: Some(serde_json::json!({})),
+        },
+    }
+}
+
+fn _mcp_call(name: &str) -> ToolCall {
+    ToolCall {
+        id: "call_test".to_string(),
+        call_type: "function".to_string(),
+        function: FunctionCall {
+            name: name.to_string(),
+            arguments: "{}".to_string(),
+        },
+    }
+}
+
+#[test]
+fn fuzzy_repair_mcp_double_underscore_dropped() {
+    let tools = vec![_mcp_tool("mcp__discord__discord_send")];
+    let calls = vec![_mcp_call("mcp_discord__discord_send")];
+    let v = validate_tool_calls(calls, &tools);
+    assert!(v.errors.is_empty(), "errors: {:?}", v.errors);
+    assert_eq!(v.valid.len(), 1);
+    assert_eq!(v.valid[0].function.name, "mcp__discord__discord_send");
+}
+
+#[test]
+fn fuzzy_repair_mcp_double_underscore_added() {
+    let tools = vec![_mcp_tool("mcp_discord_send")];
+    let calls = vec![_mcp_call("mcp__discord__send")];
+    let v = validate_tool_calls(calls, &tools);
+    assert!(v.errors.is_empty(), "errors: {:?}", v.errors);
+    assert_eq!(v.valid.len(), 1);
+    assert_eq!(v.valid[0].function.name, "mcp_discord_send");
+}
+
+#[test]
+fn fuzzy_repair_dash_vs_underscore() {
+    let tools = vec![_mcp_tool("read-file")];
+    let calls = vec![_mcp_call("read_file")];
+    let v = validate_tool_calls(calls, &tools);
+    assert!(v.errors.is_empty(), "errors: {:?}", v.errors);
+    assert_eq!(v.valid.len(), 1);
+    assert_eq!(v.valid[0].function.name, "read-file");
+}
+
+#[test]
+fn fuzzy_repair_case_insensitive() {
+    let tools = vec![_mcp_tool("get_weather")];
+    let calls = vec![_mcp_call("Get_Weather")];
+    let v = validate_tool_calls(calls, &tools);
+    assert!(v.errors.is_empty(), "errors: {:?}", v.errors);
+    assert_eq!(v.valid.len(), 1);
+    assert_eq!(v.valid[0].function.name, "get_weather");
+}
+
+#[test]
+fn fuzzy_repair_no_false_positive_on_distinct_names() {
+    let tools = vec![_mcp_tool("get_weather"), _mcp_tool("get_news")];
+    let calls = vec![_mcp_call("get_unknown")];
+    let v = validate_tool_calls(calls, &tools);
+    // Neither tool is a separator-normalized exact match for "get_unknown".
+    // Substring strategies also reject. Should error cleanly.
+    assert_eq!(v.valid.len(), 0);
+    assert_eq!(v.errors.len(), 1);
+    assert!(v.errors[0].contains("Unknown tool"));
+}
