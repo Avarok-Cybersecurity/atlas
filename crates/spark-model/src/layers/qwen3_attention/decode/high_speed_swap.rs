@@ -106,12 +106,47 @@ impl Qwen3AttentionLayer {
         let start = last.min(total - 1);
         for logical_pos in start..total {
             if logical_pos < window_start {
+                // Issue #31: the slide-before-alloc loop in
+                // `block_mgmt::ensure_blocks_through_prefill` advanced the
+                // sliding window past `logical_pos` before this layer got
+                // a chance to offload. The invariant declared at line 122-127
+                // of `block_mgmt.rs` (every attention layer must catch up
+                // its offloads before any slide) is debug-asserted only —
+                // release builds silently let the slide proceed, then this
+                // check trips at the next offload pass.
+                //
+                // Practical fix until Phase 6.2.b lands chunked-prefill
+                // reads through the HSS orchestrator: ensure
+                // `--high-speed-swap-cache-blocks-per-seq × --block-size`
+                // is large enough that the per-chunk prefill never grows
+                // `disk_block_ids` past `block_table.len()` faster than the
+                // per-layer offload can keep up. Drop --high-speed-swap if
+                // KV fits HBM at this batch size.
                 anyhow::bail!(
                     "high-speed-swap: layer {} block {} was evicted before this layer offloaded \
-                     it. This indicates an out-of-order layer execution bug — every layer must \
-                     offload its K/V before sliding-window eviction runs.",
+                     it (issue #31). \n\
+                     Diagnostic state: attn_layer_idx={}, logical_pos={}, \
+                     window_start={}, total=disk_block_ids.len()={}, \
+                     block_table.len()={}, this_layer.last_offloaded={}, \
+                     all_layer_cursors={:?}.\n\
+                     This means the sliding-window eviction loop advanced past disk slot \
+                     {} before attention layer {} could push its K/V there. The slide-before-alloc \
+                     invariant in block_mgmt.rs (every attention layer must offload before any \
+                     slide) is debug-asserted only — release builds skip it.\n\
+                     Workaround: raise --high-speed-swap-cache-blocks-per-seq so \
+                     `cap × block_size` ≥ your largest prompt, OR drop --high-speed-swap \
+                     entirely if KV fits HBM at this batch/quant.",
                     self.attn_layer_idx,
-                    logical_pos
+                    logical_pos,
+                    self.attn_layer_idx,
+                    logical_pos,
+                    window_start,
+                    total,
+                    block_table.len(),
+                    last,
+                    disk_last_offloaded_per_layer,
+                    logical_pos,
+                    self.attn_layer_idx,
                 );
             }
             let bt_idx = logical_pos - window_start;
