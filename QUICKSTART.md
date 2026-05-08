@@ -188,7 +188,7 @@ sudo docker run -d \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   avarok/atlas-gb10:latest \
-  serve Kbenkhaled/Qwen3.5-35B-A3B-NVFP4 \
+  serve Sehyo/Qwen3.5-35B-A3B-NVFP4 \
     --port 8888 \
     --max-seq-len 8192 \
     --kv-cache-dtype nvfp4 \
@@ -395,7 +395,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="Kbenkhaled/Qwen3.5-35B-A3B-NVFP4",
+    model="Sehyo/Qwen3.5-35B-A3B-NVFP4",
     messages=[{"role": "user", "content": "Hello!"}],
     max_tokens=200,
     stream=True,
@@ -439,7 +439,7 @@ sudo docker run -d \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   avarok/atlas-gb10:latest \
-  serve Kbenkhaled/Qwen3.5-35B-A3B-NVFP4 \
+  serve Sehyo/Qwen3.5-35B-A3B-NVFP4 \
     --port 8888 \
     --max-seq-len 8192 \
     --kv-cache-dtype nvfp4 \
@@ -455,7 +455,7 @@ sudo docker run -d \
 curl -s http://localhost:8888/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Kbenkhaled/Qwen3.5-35B-A3B-NVFP4",
+    "model": "Sehyo/Qwen3.5-35B-A3B-NVFP4",
     "messages": [{"role": "user", "content": "What is the weather in Paris?"}],
     "tools": [{
       "type": "function",
@@ -501,7 +501,7 @@ curl -s http://localhost:8888/v1/chat/completions \
 curl -s http://localhost:8888/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Kbenkhaled/Qwen3.5-35B-A3B-NVFP4",
+    "model": "Sehyo/Qwen3.5-35B-A3B-NVFP4",
     "messages": [
       {"role": "user", "content": "What is the weather in Paris?"},
       {"role": "assistant", "content": null, "tool_calls": [{"id": "call_00000000", "type": "function", "function": {"name": "get_weather", "arguments": "{\"location\":\"Paris\"}"}}]},
