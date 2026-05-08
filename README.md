@@ -368,6 +368,10 @@ sudo docker run -d --name atlas \
     --tool-call-parser qwen3_coder
 ```
 
+**Note:** `--speculative` (MTP) on single-Spark 122B costs ~1.5 GB for the draft head + draft KV and forces `--max-seq-len` down to ~4 K. Either run without `--speculative` at 16 K (the recipe above), or move to EP=2 across two Sparks ([`QUICKSTART.md`](QUICKSTART.md) §5) for both speculative decoding *and* a 16 K+ window.
+
+For longer contexts on a single Spark, add `--high-speed-swap --high-speed-swap-dir /path/on/nvme --high-speed-swap-cache-blocks-per-seq 64`. HSS keeps a rolling 1024-token KV window in HBM and streams older blocks to NVMe through an io_uring orchestrator — works with any `--max-seq-len` you can fit on disk. The Docker container needs `--security-opt seccomp=unconfined --ulimit memlock=-1` for io_uring access.
+
 That's it. Anything OpenAI-compatible — `curl`, the OpenAI SDK, Open WebUI, opencode — points at port 8888:
 
 ```bash
