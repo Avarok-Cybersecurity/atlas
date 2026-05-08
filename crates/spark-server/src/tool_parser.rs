@@ -357,6 +357,7 @@ mod pipeline_helpers;
 mod qwen3_coder;
 mod streaming;
 mod streaming_impl;
+mod fuzzy_match;
 mod validation;
 
 pub use bare_json::*;
