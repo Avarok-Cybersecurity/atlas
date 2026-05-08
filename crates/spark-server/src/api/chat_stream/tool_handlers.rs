@@ -169,9 +169,7 @@ pub(super) fn handle_tool_call_delta(
         if let Some(ref cwd) = ctx.cwd_for_normalize {
             tool_parser::normalize_paths(std::slice::from_mut(&mut tc), cwd);
         }
-        if let Err(e) =
-            tool_parser::validate_single_tool_call(&tc, &ctx.tool_defs_for_backfill)
-        {
+        if let Err(e) = tool_parser::validate_single_tool_call(&tc, &ctx.tool_defs_for_backfill) {
             tracing::warn!(
                 tool = %name,
                 "tool call validation error (stream Δ): {e}; replacing with content and ending"
