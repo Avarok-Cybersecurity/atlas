@@ -385,6 +385,65 @@ use super::super::*;
     // ── Qwen3-Coder format ──
 
     #[test]
+    fn parse_qwen3_coder_empty_body_then_backfill() {
+        // Repro of OpenClaw 2026.5.7 + Qwen3.6-35B-A3B-NVFP4 + 21 tools
+        // multi-turn agentic regression (issue #40 / Discord #bugs
+        // 2026-05-08 universe06608): the model emits the `exec`
+        // function with NO `<parameter=>` blocks under long-context
+        // tool-saturation pressure. The parser correctly returns
+        // arguments=`{}`. The streaming path (path B in
+        // chat_stream/tool_handlers.rs) was emitting that `{}` directly
+        // to the client without running backfill_required_params, so
+        // tools that declare `required: [command]` reached OpenClaw as
+        // bare `{}` and were rejected ("must have required properties
+        // command"). The non-streaming path always ran backfill, so the
+        // two code paths diverged.
+        //
+        // This test verifies the recovery semantics: parse → empty
+        // args → backfill adds the required string field with empty
+        // value (mirroring path A) → validator passes (only
+        // WRITE_FAMILY rejects empty paths; `exec` is not in that
+        // list). The chat_stream::tool_handlers fix calls this same
+        // chain inside handle_tool_call_delta so streaming behaviour
+        // matches.
+        let input = "<tool_call>\n\
+            <function=exec>\n\
+            </function>\n\
+            </tool_call>";
+        let (_c, mut calls) = parse_tool_calls(input);
+        assert_eq!(calls.len(), 1, "parser must yield the named call even with no params");
+        assert_eq!(calls[0].function.name, "exec");
+        assert_eq!(
+            calls[0].function.arguments, "{}",
+            "no params → empty JSON object"
+        );
+
+        let tool = ToolDefinition {
+            tool_type: "function".to_string(),
+            function: FunctionDefinition {
+                name: "exec".to_string(),
+                description: None,
+                parameters: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"]
+                })),
+            },
+        };
+        backfill_required_params(&mut calls, std::slice::from_ref(&tool));
+        let args: serde_json::Value =
+            serde_json::from_str(&calls[0].function.arguments).unwrap();
+        assert_eq!(
+            args["command"], "",
+            "backfill must add the required string key with an empty default"
+        );
+        assert!(
+            validate_single_tool_call(&calls[0], std::slice::from_ref(&tool)).is_ok(),
+            "validator passes once required key is present (non-WRITE-family)"
+        );
+    }
+
+    #[test]
     fn parse_qwen3_coder_single_param() {
         let input = "<tool_call>\n\
             <function=get_weather>\n\
