@@ -42,7 +42,7 @@
         <DiscordIcon />
         Join Discord
       </a>
-      <a href="#try" class="btn btn-secondary">See all commands</a>
+      <a href="#try" class="btn btn-secondary">Run it now</a>
     </div>
   </div>
 </section>
