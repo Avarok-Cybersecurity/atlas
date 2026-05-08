@@ -252,25 +252,35 @@ pub fn build_model(
     // blocks live on disk under the orchestrator's control.
     let num_kv_blocks = match hss_cache_blocks_per_seq {
         Some(cap) => {
-            // Phase 6.3: pool = max_batch × cap + 1 dummy + 1 spare per seq.
-            // Reasons:
-            //   * +1 dummy: the dummy_kv_block (allocated once at model init,
-            //     used for OOB-safe paged-kernel reads) permanently consumes
-            //     one slot.
-            //   * +1 spare per seq: the slide-then-alloc round-trip in
-            //     `ensure_blocks_through_decode` needs the just-freed block
-            //     back from the LIFO free list. With exactly cap blocks, the
-            //     last grow-to-cap step has zero free blocks, and the next
-            //     step's alloc fires before the slide can free one (the loop
-            //     orders slide-before-alloc, but alloc-without-slide hits the
-            //     final block first).
+            // Phase 6.3 (original): pool = max_batch × cap + 1 dummy + 1 spare per seq.
+            // Issue #31 (2026-05-08): the cap×bs sizing assumed prefill would
+            // fit in cap blocks AND the slide-during-prefill path would handle
+            // any overflow. Live-tested: slides during prefill produce silently
+            // wrong attention output (the orchestrator-fed disk-read path is
+            // wired up for DECODE attention only — Phase 6.2.a — not for
+            // prefill — Phase 6.2.b deferred). The companion change in
+            // `block_mgmt::ensure_blocks_through_prefill` removes the broken
+            // slide; this change resizes the pool so prefill can grow up to
+            // `max_seq_len` blocks without hitting "no free blocks". HBM-shrink
+            // remains in effect post-prefill: the FIRST decode step finds
+            // bt_len > cap and slides down via the orchestrator-aware path
+            // (which IS correct).
             //
-            // The +1-per-seq covers the gap between bt_len=cap-1 (last
-            // pre-slide alloc) and bt_len=cap (slide-then-alloc steady state).
-            let n = max_batch_size * (cap as usize + 1) + 1;
+            // Sizing rationale:
+            //   * Per-seq blocks: `max(cap + 1, ceil(max_seq_len / block_size))`
+            //     so prefill of any prompt up to max_seq_len fits in HBM.
+            //   * +1 dummy slot for OOB-safe paged-kernel reads.
+            //
+            // For multi-seq HSS where the user wanted strict HBM-shrink, this
+            // increases pool size by `(max_seq_len_blocks - cap) × max_batch`
+            // bytes per block. The existing post-load OOM check (line 304+)
+            // catches infeasible configs at startup with a clear message.
+            let max_seq_blocks = max_seq_len.div_ceil(kv_block_size);
+            let per_seq = (cap as usize + 1).max(max_seq_blocks);
+            let n = max_batch_size * per_seq + 1;
             tracing::info!(
-                "--high-speed-swap: HBM cache sized to {n} blocks ({} batch × ({cap}+1 spare) + 1 dummy); \
-                 older blocks stream from disk via the orchestrator",
+                "--high-speed-swap: HBM cache sized to {n} blocks ({} batch × max(cap={cap}+1, max_seq_len_blocks={max_seq_blocks}) + 1 dummy); \
+                 prefill grows monotonically, decode shrinks to cap × bs and streams older blocks from disk via the orchestrator",
                 max_batch_size
             );
             n

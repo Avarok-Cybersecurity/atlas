@@ -293,10 +293,25 @@ pub(crate) fn ensure_blocks_through_decode(
 /// Same as `ensure_blocks_through_decode` but with a prefix-cache eviction
 /// fallback: if `kv_cache.alloc_block()` would fail (no free physical
 /// blocks AND not at HSS cap), it asks the prefix cache to evict LRU
-/// entries before retrying. With HSS off, this matches the existing
-/// `try_alloc_block` → evict-prefix-cache → `alloc_block` pattern at
-/// every prefill site. With HSS on, the slide path takes priority over
-/// the prefix-cache evict (cap is the binding constraint).
+/// entries before retrying.
+///
+/// Issue #31 (2026-05-08): the previous version of this helper slid the
+/// HBM window forward when `block_table.len() >= cap` to make room for
+/// new prefill allocs. That was wrong — slid-out blocks have their K/V
+/// on disk via the per-layer offload, but the attention KERNEL during
+/// prefill reads K/V from `block_table[bt_idx]` only (HBM), and the
+/// orchestrator-fed disk-read path is wired up for DECODE attention
+/// only (Phase 6.2.a), not for prefill (Phase 6.2.b deferred). So a
+/// prefill that slid produced silently-wrong attention output for any
+/// position outside the post-slide window. The original author's design
+/// comment in `qwen3_attention/trait_impl/prefill_inner.rs:138-145`
+/// states the intended invariant: "Sliding-window eviction is NOT
+/// triggered here — prefill grows HBM monotonically; the cap kicks in
+/// during decode." This helper now enforces that invariant by never
+/// sliding during prefill. Cap-bound HBM is restored once the first
+/// `ensure_blocks_through_decode` call hits the `bt_len >= cap` branch
+/// (where attention reads through the orchestrator's tiled path, so
+/// slides are correctness-safe).
 pub(crate) fn ensure_blocks_through_prefill(
     seq: &mut SequenceState,
     abs_block_idx: usize,
@@ -313,26 +328,14 @@ pub(crate) fn ensure_blocks_through_prefill(
         if in_window {
             return Ok(());
         }
-        // Slide first when at HSS cap.
-        if let Some(c) = cap
-            && bt_len >= c
-        {
-            // Issue #31: see `ensure_blocks_through_decode`. Bail in
-            // release mode if any attention layer hasn't offloaded the
-            // block being evicted; advance every cursor after a
-            // successful slide.
-            check_safe_to_evict(&seq.disk_last_offloaded_per_layer, ws).map_err(|e| {
-                anyhow::anyhow!(
-                    "{e} (prefill path; disk_block_ids.len()={}, block_table.len()={})",
-                    seq.disk_block_ids.len(),
-                    seq.block_table.len(),
-                )
-            })?;
-            let evicted = seq.block_table.remove(0);
-            kv_cache.free_block(evicted);
-            advance_layer_cursors_after_slide(&mut seq.disk_last_offloaded_per_layer, ws + 1);
-            continue;
-        }
+        // Issue #31: NEVER slide during prefill. block_table grows
+        // monotonically until the chunk's full token range is in-window.
+        // HBM headroom is preserved by the existing prefix-cache eviction
+        // fallback below when `try_alloc_block` returns None. The cap
+        // (when HSS is engaged) is enforced lazily on the first decode
+        // step, where attention reads through the orchestrator's tiled
+        // path and slides are correctness-safe.
+
         // Try alloc; on failure, evict prefix-cache entries and retry once.
         let blk = match kv_cache.try_alloc_block() {
             Some(b) => b,

@@ -55,6 +55,26 @@ impl Qwen3AttentionLayer {
         ctx: &ForwardContext,
         args: &mut PagedAttnArgs,
     ) -> Result<PagedAttnOutcome> {
+        // Issue #31 (2026-05-08): the HSS streaming prefill branch
+        // (`hss.attend_layer_on_stream_with_q_pos`) was an early attempt at
+        // Phase 6.2.b. It reads K/V from DISK for every prior position via
+        // `disk_block_ids[..n_blocks]`. But the CURRENT chunk's blocks
+        // haven't been offloaded yet at attention-compute time (offload
+        // runs after attention in `prefill_inner`), so the disk reads for
+        // those blocks return zeros/stale bytes → silently-wrong output
+        // (gbanyan's repro: prompt > cap×bs produces garbage even after
+        // the slide-during-prefill fix).
+        //
+        // With the companion change in `factory/build.rs` (HSS pool sized
+        // to `max(cap+1, max_seq_len_blocks)` per seq) plus the no-slide-
+        // during-prefill change in `block_mgmt`, every prior chunk's K/V
+        // remains HBM-resident through the entire prefill. Fall through
+        // to the normal paged-attention paths which read from
+        // `kv_cache.{k,v}_pool_ptr` (HBM) and produce correct output.
+        //
+        // The `high_speed_swap_offload_new_blocks` call still runs at the
+        // end of `prefill_inner` so blocks reach disk for the orchestrator-
+        // tiled DECODE attention (which IS correctly wired up).
         let PagedAttnArgs {
             q_contiguous,
             k_contiguous: _,
@@ -62,12 +82,12 @@ impl Qwen3AttentionLayer {
             attn_out,
             n,
             seq_len_start,
-            num_tokens,
+            num_tokens: _,
             nq,
             nkv,
             hd,
             bs,
-            bf16,
+            bf16: _,
             inv_sqrt_d,
             kv_len,
             meta,
@@ -76,68 +96,10 @@ impl Qwen3AttentionLayer {
             ref mut disk_last_offloaded_per_layer,
             stream,
         } = *args;
+        let _ = &disk_block_ids; // unused after issue #31 (HSS-streaming branch removed)
+        let _ = &disk_last_offloaded_per_layer;
 
         let bs_u = bs as u32;
-
-        if seq_len_start > 0 && self.high_speed_swap_engaged(kv_cache) {
-            self.high_speed_swap_offload_new_blocks(
-                kv_cache,
-                block_table,
-                disk_block_ids,
-                disk_last_offloaded_per_layer,
-                ctx,
-                stream,
-                nkv,
-                hd,
-                bs,
-            )?;
-            let is_turbo = matches!(
-                self.kv_dtype,
-                KvCacheDtype::Turbo3 | KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8
-            );
-            let needs_wht =
-                is_turbo && self.wht_bf16_k.0 != 0 && (hd == 128 || hd == 256 || hd == 512);
-            if needs_wht {
-                use spark_runtime::kernel_args::KernelLaunch;
-                KernelLaunch::new(ctx.gpu, self.wht_bf16_k)
-                    .grid([nq * (num_tokens as u32), 1, 1])
-                    .block([32, 1, 1])
-                    .arg_ptr(q_contiguous)
-                    .arg_u32(hd)
-                    .launch(stream)?;
-            }
-            let nq_hd_bytes: u64 = (nq as u64) * (hd as u64) * (bf16 as u64);
-            let result = spark_storage::with_local(|hss| {
-                for q_idx in 0..num_tokens {
-                    let abs_pos = seq_len_start + q_idx;
-                    let n_blocks = (abs_pos / bs) + 1;
-                    let n_blocks = n_blocks.min(disk_block_ids.len());
-                    let q_offset = (q_idx as u64) * nq_hd_bytes;
-                    let out_offset = (q_idx as u64) * nq_hd_bytes;
-                    let last_block_valid_slots = ((abs_pos % bs) + 1) as i32;
-                    hss.attend_layer_on_stream_with_q_pos(
-                        stream,
-                        self.attn_layer_idx as u32,
-                        &disk_block_ids[..n_blocks],
-                        q_contiguous.0 + q_offset,
-                        attn_out.0 + out_offset,
-                        last_block_valid_slots,
-                    )?;
-                }
-                Ok(())
-            });
-            result.expect("HSS local installed but with_local returned None")?;
-            if needs_wht {
-                use spark_runtime::kernel_args::KernelLaunch;
-                KernelLaunch::new(ctx.gpu, self.wht_bf16_k)
-                    .grid([nq * (num_tokens as u32), 1, 1])
-                    .block([32, 1, 1])
-                    .arg_ptr(attn_out)
-                    .arg_u32(hd)
-                    .launch(stream)?;
-            }
-            return Ok(PagedAttnOutcome::EarlyReturn(attn_out));
-        }
 
         // HDIM=512 path: Gemma-4 long-attention layers.
         if hd > 256 && self.prefill_attn_512_k.0 != 0 && seq_len_start == 0 {
