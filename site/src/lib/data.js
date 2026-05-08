@@ -169,7 +169,6 @@ sudo docker run -d --name atlas \\
     --kv-high-precision-layers auto \\
     --gpu-memory-utilization 0.90 \\
     --scheduling-policy slai \\
-    --quantization fp8 \\
     --tool-call-parser qwen3_coder \\
     --enable-prefix-caching \\
     --speculative`;
