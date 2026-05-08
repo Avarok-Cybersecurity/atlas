@@ -19,6 +19,7 @@
 
 pub mod engine;
 pub mod factory;
+pub mod forward;
 pub mod layer;
 pub mod layers;
 pub mod mistral_loader;

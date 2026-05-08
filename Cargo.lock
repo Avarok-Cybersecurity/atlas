@@ -2444,12 +2444,15 @@ dependencies = [
  "base64 0.22.1",
  "half",
  "image",
+ "memmap2",
  "parking_lot",
+ "safetensors",
  "serde",
  "serde_json",
  "spark-comm",
  "spark-runtime",
  "spark-storage",
+ "tokenizers",
  "tracing",
 ]
 
@@ -2473,7 +2476,6 @@ dependencies = [
  "safetensors",
  "serde",
  "serde_json",
- "tokenizers",
  "tokio",
  "tracing",
 ]

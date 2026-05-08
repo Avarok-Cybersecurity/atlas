@@ -82,18 +82,6 @@ jobs:
             # the launch-day allow-list pending a free-function
             # `ops/{alloc,copy,launch,events}.rs` extraction.
             "crates/spark-runtime/src/metal_backend.rs"
-            # 700 LoC — end-to-end Qwen3.5 Metal inference example.
-            # The struct/forward-fn definitions for FA + GDN have
-            # already been extracted to siblings (`full_attention.rs`,
-            # `linear_attention.rs`, `dims.rs`); what's left is the
-            # `main` driver: env+config parsing, weight load, kernel
-            # handle resolution, prefill loop, decode loop, sampler,
-            # residual-stream dump scaffolding. Each phase is short and
-            # linear; splitting the driver just inflates argument-list
-            # plumbing for ~20 kernel handles + 4 scratch structs +
-            # several vec-of-layer aliases. Tracked under the
-            # launch-day allow-list.
-            "crates/spark-runtime/examples/metal_qwen35_inference/main.rs"
           )
 
           violations=0
