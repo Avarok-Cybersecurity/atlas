@@ -240,9 +240,26 @@ impl GrammarEngine {
         ) {
             Ok(compiled) => Ok(compiled),
             Err(e) => {
-                // Fall back to json_schema content type if qwen_xml_parameter not supported.
-                tracing::warn!(
-                    "qwen_xml_parameter grammar failed ({e:?}), retrying with json_schema"
+                // Fall back to json_schema content type if qwen_xml_parameter
+                // EBNF generation hits an edge case for one of these tool
+                // schemas. The fallback path is fully functional — accuracy
+                // is comparable, just the grammar is JSON-shaped instead of
+                // XML-parameter-shaped under the hood. Emit at INFO with the
+                // tool list so a follow-up bug report has the context to
+                // narrow down which schema triggered xgrammar's EBNF parser
+                // (Discord 2026-05-07 a1vadfs report on
+                // mmangkad/Qwen3.6-27B-NVFP4: "EBNF parser error at line N").
+                let tool_names: Vec<&str> = sanitized_tools
+                    .iter()
+                    .map(|st| st.name.as_str())
+                    .collect();
+                tracing::info!(
+                    "qwen_xml_parameter grammar fell back to json_schema ({e:?}). \
+                     Functional but slightly looser tool-call grammar. Tools in \
+                     this batch: [{}]. If you want to help narrow this down, \
+                     set RUST_LOG=trace and re-run — the rejected schema is \
+                     emitted at trace level by xgrammar.",
+                    tool_names.join(", "),
                 );
                 let tag_entries_fallback: Vec<serde_json::Value> = sanitized_tools
                     .iter()
