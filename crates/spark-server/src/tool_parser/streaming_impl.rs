@@ -277,9 +277,33 @@ impl StreamingToolDetector {
         // When inside_tag was true, we have the raw content between
         // <tool_call> and end-of-stream (</tool_call> was a stop token
         // and wasn't streamed). Try to parse the tool call directly.
+        //
+        // Issue #33: if the incremental path already emitted ToolCallStart
+        // for this call (current_tc_name is Some), the downstream consumer
+        // has already sent a `tool_calls[0].id=A,name=…,args=""` chunk to
+        // the client. Emitting a fresh `ToolCall(tc, idx)` here makes
+        // `handle_complete_tool_call` send ANOTHER `tool_call_start_chunk`
+        // with a brand-new id (parse_one_call generates one), so the client
+        // sees two distinct `id`s for the same `index:0` and either drops
+        // one or dispatches the wrong one with empty args. Mirror the
+        // in-stream close path: emit ToolCallDelta + ToolCallEnd against
+        // the already-streamed header, not a full ToolCall.
         if was_inside_tag && let Some(tc) = parse_one_call(text.trim(), self.call_counter) {
             let idx = self.call_counter as usize;
             self.call_counter += 1;
+            self.emitted_tool_calls = true;
+            if self.current_tc_name.is_some() {
+                self.current_tc_name = None;
+                self.current_tc_id = None;
+                self.current_tc_emitted = 0;
+                return vec![
+                    DetectorOutput::ToolCallDelta {
+                        args: tc.function.arguments,
+                        idx,
+                    },
+                    DetectorOutput::ToolCallEnd { idx },
+                ];
+            }
             return vec![DetectorOutput::ToolCall(tc, idx)];
         }
 
