@@ -15,6 +15,7 @@ use crate::layer::{AttnMetadataDev, ForwardContext};
 use crate::layers::ops;
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub(super) struct PagedAttnArgs<'a> {
     pub q_contiguous: DevicePtr,
     pub k_contiguous: DevicePtr,
@@ -41,6 +42,7 @@ pub(super) struct PagedAttnArgs<'a> {
 /// short-circuit (HSS streaming branch, which already produced the final
 /// output). `Continue` means the caller should run sections 9 + 10
 /// (sigmoid-gate × attn_out + O-projection).
+#[allow(dead_code)]
 pub(super) enum PagedAttnOutcome {
     EarlyReturn(DevicePtr),
     Continue,
@@ -91,7 +93,7 @@ impl Qwen3AttentionLayer {
             inv_sqrt_d,
             kv_len,
             meta,
-            block_table,
+            block_table: _,
             ref mut disk_block_ids,
             ref mut disk_last_offloaded_per_layer,
             stream,
