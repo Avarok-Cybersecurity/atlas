@@ -172,8 +172,6 @@ impl GrammarEngine {
         }
 
         let mut tag_entries = Vec::with_capacity(tools.len());
-        let mut triggers = Vec::new();
-        let mut seen_triggers = HashMap::<String, bool>::new();
 
         // Pre-sanitize all schemas so the fallback path can reuse them.
         struct SanitizedTool {
@@ -218,16 +216,43 @@ impl GrammarEngine {
                 "content": {"type": "qwen_xml_parameter", "json_schema": st.schema},
                 "end": end,
             }));
-            let trigger = format!("<tool_call>\n<function={}", st.name);
-            if !seen_triggers.contains_key(&trigger) {
-                seen_triggers.insert(trigger.clone(), true);
-                triggers.push(trigger);
-            }
         }
 
         if tag_entries.is_empty() {
             return Err(GrammarError::NoTools);
         }
+
+        // Trigger selection depends on `use_triggers` (i.e. tool_choice mode):
+        //
+        // * tool_choice="auto" (use_triggers=true): per-tool LATE triggers
+        //   `<tool_call>\n<function=NAME`. The model is free to emit a
+        //   `<tool_call>` token and then *not* commit (e.g. by emitting
+        //   plain prose afterwards), which is the ergonomic behaviour
+        //   most pass-not-fail scenarios depend on (TC-11 mental math,
+        //   TC-39 restraint, TC-43 ask-for-missing-arg, TC-48 multi-turn
+        //   email composition). Late triggers preserve that freedom.
+        //
+        // * tool_choice="required"/specific (use_triggers=false): SHORT
+        //   shared trigger `<tool_call>`. Without it, the model can — and
+        //   does — emit `<tool_call><tool_call>…` indefinitely under
+        //   required mode (`at_least_one=true` only suppresses EOS, it
+        //   does not constrain content); LATE triggers stay in
+        //   free-preamble forever because the `<tool_call>` special
+        //   token never extends to the required `\n<function=` prefix.
+        //   The SHORT trigger engages the moment the open token is
+        //   sampled, locking xgrammar's `triggered_tags` alternation onto
+        //   one of `\n<function=NAME>` for each registered tool — the
+        //   `<tool_call><tool_call>…` lockup is unreachable by
+        //   construction. Mirrors compile_minimax_xml_tool_grammar's F67
+        //   fix for the same xgrammar behaviour pattern.
+        let triggers: Vec<String> = if use_triggers {
+            sanitized_tools
+                .iter()
+                .map(|st| format!("<tool_call>\n<function={}", st.name))
+                .collect()
+        } else {
+            vec!["<tool_call>".to_string()]
+        };
 
         let at_least_one = !use_triggers;
         let stop_after_first = !use_triggers;

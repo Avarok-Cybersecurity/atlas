@@ -148,22 +148,47 @@ pub(super) fn build_sampling(
         }) || parser_is_minimax_xml
             || parser_is_bare_json);
 
-    // response_format vs tools mutual exclusion.
+    // response_format + tools coexistence.
+    //
+    // OpenAI's API allows both fields in the same request; agentic pipelines
+    // routinely set both (the model emits a tool call on turn N, then a
+    // schema-shaped final answer on turn N+1). XGrammar's structural-tag
+    // grammar enforces *one* shape per request, so we pick which one wins:
+    //   * `tool_choice="none"` → tools won't be called, enforce response_format
+    //   * any other tool_choice → enforce tool-call grammar; the schema text
+    //     is conventionally embedded in the user/system message by the
+    //     caller, and capable models (Qwen3.6, etc.) follow it without
+    //     server-side enforcement on free-text turns.
     let has_response_format = req
         .response_format
         .as_ref()
         .is_some_and(|rf| !matches!(rf, crate::openai::ResponseFormat::Text));
-    if has_response_format && tools_active {
-        return Err(openai_error_response(
-            StatusCode::BAD_REQUEST,
-            "Cannot use both 'response_format' (json_object/json_schema) and 'tools' in the same request"
-                .to_string(),
-        ));
-    }
+    let tool_choice_none = req
+        .tool_choice
+        .as_ref()
+        .is_some_and(|tc| matches!(tc, tool_parser::ToolChoice::Mode(m) if m == "none"));
+    let response_format_only = has_response_format && (!tools_active || tool_choice_none);
 
     // Grammar spec (XGrammar structural-tag enforcement).
     let use_triggers = !tool_choice_required;
-    let grammar_spec: Option<GrammarSpec> = if tools_active {
+    let grammar_spec: Option<GrammarSpec> = if response_format_only {
+        match req.response_format.as_ref().unwrap() {
+            crate::openai::ResponseFormat::JsonObject => Some(GrammarSpec::JsonObject),
+            crate::openai::ResponseFormat::JsonSchema { json_schema } => {
+                Some(GrammarSpec::JsonSchema {
+                    schema: json_schema.schema.to_string(),
+                })
+            }
+            crate::openai::ResponseFormat::Text => None,
+        }
+    } else if tools_active {
+        if has_response_format {
+            tracing::info!(
+                "response_format + tools both set; enforcing tool-call grammar. \
+                 Schema-shape compliance falls to the model (embed schema text in \
+                 the user/system message for best results)."
+            );
+        }
         let parser = state.tool_call_parser.as_ref().map(std::sync::Arc::clone);
         let mut tools = req.tools.as_ref().cloned().unwrap_or_default();
         if let Some(tool_parser::ToolChoice::Specific { ref function }) = req.tool_choice {
@@ -174,16 +199,6 @@ pub(super) fn build_sampling(
             parser: p,
             use_triggers,
         })
-    } else if has_response_format {
-        match req.response_format.as_ref().unwrap() {
-            crate::openai::ResponseFormat::JsonObject => Some(GrammarSpec::JsonObject),
-            crate::openai::ResponseFormat::JsonSchema { json_schema } => {
-                Some(GrammarSpec::JsonSchema {
-                    schema: json_schema.schema.to_string(),
-                })
-            }
-            crate::openai::ResponseFormat::Text => None,
-        }
     } else {
         None
     };
