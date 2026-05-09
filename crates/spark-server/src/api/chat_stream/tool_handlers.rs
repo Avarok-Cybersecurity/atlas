@@ -63,6 +63,23 @@ pub(super) fn handle_complete_tool_call(
         );
         state.stop_string_triggered = true;
     } else {
+        // Bug-2 name-run cap (mirrors handle_tool_call_end): catches
+        // runaway loops in the complete-tool-call path that
+        // tool_arg_dedup misses because of args drift.
+        let run_len = match &state.name_run {
+            Some((prev, n)) if prev == &tc.function.name => n + 1,
+            _ => 1,
+        };
+        state.name_run = Some((tc.function.name.clone(), run_len));
+        if run_len >= MAX_CONSEC_SAME_NAME_CALLS {
+            tracing::warn!(
+                tool = %tc.function.name,
+                run = run_len,
+                "Bug-2 name-run cap tripped (complete-call path): {run_len} successive `{}` tool calls; ending response",
+                tc.function.name
+            );
+            state.stop_string_triggered = true;
+        }
         bump_f12_tool_call_count(
             &mut state.tool_calls_emitted_count,
             ctx.max_tool_calls_per_response,
@@ -198,7 +215,18 @@ pub(super) fn handle_tool_call_delta(
 }
 
 /// `DetectorOutput::ToolCallEnd` — F11 within-response dedup +
-/// F44 cross-turn permanent-failure check.
+/// F44 cross-turn permanent-failure check + Bug-2 name-run cap.
+///
+/// Bug-2 cap (`MAX_CONSEC_SAME_NAME_CALLS`): trips when the same tool
+/// name fires N times in a row regardless of args. F11 keys on
+/// `(name, canonical_args)` and is defeated by runaway loops where
+/// the model rolls a fresh timestamp / sequence number / id into the
+/// payload each iteration; the F12 total cap (default 12) is the
+/// only other server-side circuit, but a runaway can already have
+/// flooded the SSE channel before F12 fires. The name-run cap is
+/// strictly tighter than F11 and F12 for the runaway pattern.
+const MAX_CONSEC_SAME_NAME_CALLS: u32 = 6;
+
 pub(super) fn handle_tool_call_end(state: &mut StreamState, ctx: &StreamCtx, idx: usize) {
     if let Some((name, args_json)) = state.streaming_tool_args.remove(&idx) {
         if state.tool_arg_dedup_within.check(&name, &args_json) {
@@ -213,6 +241,19 @@ pub(super) fn handle_tool_call_end(state: &mut StreamState, ctx: &StreamCtx, idx
             tracing::warn!(
                 tool = %name,
                 "F44 streaming circuit-breaker tripped: tool_call matches a permanently-failed prior call; ending response"
+            );
+            state.stop_string_triggered = true;
+        }
+        let run_len = match &state.name_run {
+            Some((prev, n)) if prev == &name => n + 1,
+            _ => 1,
+        };
+        state.name_run = Some((name.clone(), run_len));
+        if run_len >= MAX_CONSEC_SAME_NAME_CALLS && !state.stop_string_triggered {
+            tracing::warn!(
+                tool = %name,
+                run = run_len,
+                "Bug-2 name-run cap tripped: {run_len} successive `{name}` tool calls; ending response (F11 missed because args drift)"
             );
             state.stop_string_triggered = true;
         }

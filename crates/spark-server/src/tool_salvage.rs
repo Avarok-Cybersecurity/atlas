@@ -115,6 +115,18 @@ pub fn salvage(content: &str, tools: &[ToolDefinition]) -> Vec<ToolCall> {
     for tc in extract::extract_header_body(content, &matchers) {
         emit_unique(tc, &mut out);
     }
+    // `<invoke name="TOOL">…<parameter name="K">V</parameter>…</invoke>` —
+    // MiniMax / Anthropic-style XML invocation form. Runs after the
+    // qwen3_coder-shape XML extractor so a properly-formed
+    // `<TOOL>...</TOOL>` block wins; only the cross-format
+    // contamination cases (Qwen3.6 emitting MiniMax syntax mid-
+    // multi-tool-call burst, observed 2026-05-09 OpenClaw run) need
+    // the looser `<invoke>` shape. Higher priority than
+    // bare_tool_invocation because the body is structurally more
+    // explicit.
+    for tc in extract_more::extract_invoke_blocks(content, &matchers) {
+        emit_unique(tc, &mut out);
+    }
     // Outer-boundary prose-pseudotool catch (#3, 2026-04-25). Looks
     // for "<ToolName> <arg>" or "<ToolName>(<arg>)" lines that ARE
     // the bare prose form of a tool invocation. Catches the failure

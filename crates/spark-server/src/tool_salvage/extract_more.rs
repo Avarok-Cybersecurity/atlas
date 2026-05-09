@@ -303,6 +303,135 @@ pub(super) fn looks_like_path(line: &str) -> Option<String> {
     Some(stem.to_string())
 }
 
+/// `<invoke name="TOOL"> <parameter name="KEY">VAL</parameter>... </invoke>` —
+/// MiniMax / Anthropic-style XML invocation form. The qwen3_coder
+/// streaming detector only recognises `<tool_call>\n<function=…>` so
+/// when Qwen3.6 cross-contaminates and emits MiniMax syntax mid-
+/// response (observed 2026-05-09 OpenClaw stress run after 5 successful
+/// qwen3_coder envelopes — model switched to `<_calls>\n<invoke name=
+/// "write">\n<parameter name="path">…` for the next batch and Atlas's
+/// inter-tool prose budget stopped the response with `length` after
+/// ~386 tokens of "content"), salvage rescues the calls so the
+/// finish_reason settles on `tool_calls` and the orchestrator gets
+/// usable structured output instead of partial XML in `content`.
+///
+/// Strategy: scan for `<invoke name="X">`, find the matching
+/// `</invoke>`, walk inner `<parameter name="K">VAL</parameter>`
+/// blocks. Tolerates BPE-broken openers (`<invoke name="…"`,
+/// `<_calls>`, `<minimax:_call>`, etc.) — only the inner shape needs
+/// to be intact.
+pub(super) fn extract_invoke_blocks(content: &str, matchers: &[ToolShape]) -> Vec<ToolCall> {
+    let mut out = Vec::new();
+    let mut search = 0usize;
+    while let Some(rel) = content[search..].find("<invoke name=") {
+        let invoke_open = search + rel;
+        let after_attr = invoke_open + "<invoke name=".len();
+        // Read the quoted name.
+        let bytes = content.as_bytes();
+        if after_attr >= bytes.len() {
+            break;
+        }
+        let quote = bytes[after_attr];
+        if quote != b'"' && quote != b'\'' {
+            search = after_attr;
+            continue;
+        }
+        let name_start = after_attr + 1;
+        let Some(name_end_rel) = content[name_start..].find(quote as char) else {
+            break;
+        };
+        let name = &content[name_start..name_start + name_end_rel];
+        // Match against declared tools (case-insensitive).
+        let lower = name.to_ascii_lowercase();
+        let Some(shape) = matchers.iter().find(|m| m.name_lower() == lower) else {
+            // Not a declared tool; skip this <invoke> entirely.
+            search = name_start + name_end_rel + 1;
+            continue;
+        };
+        // Find matching </invoke> close.
+        let after_open_tag = name_start + name_end_rel + 1; // past closing quote
+        // Skip to '>' of the open tag.
+        let Some(gt_rel) = content[after_open_tag..].find('>') else {
+            break;
+        };
+        let body_start = after_open_tag + gt_rel + 1;
+        let Some(close_rel) = content[body_start..].find("</invoke>") else {
+            // No close tag — bail (response was truncated mid-invoke).
+            break;
+        };
+        let body_end = body_start + close_rel;
+        let body = &content[body_start..body_end];
+        if let Some(args) = parse_parameter_blocks(body, shape)
+            && let Some(tc) = synthesise(shape.name(), &args, "invoke")
+        {
+            out.push(tc);
+        }
+        search = body_end + "</invoke>".len();
+    }
+    out
+}
+
+/// Body of an `<invoke>` block parsed as `<parameter name="K">VAL
+/// </parameter>` pairs. Keys are matched case-insensitively against
+/// the tool's declared properties; values are JSON-stringified.
+/// Tolerates the BPE-broken `<parameter name="…"` form (the closing
+/// quote of `name="..."` is sometimes followed directly by content
+/// without `>`).
+fn parse_parameter_blocks(
+    body: &str,
+    shape: &ToolShape,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let mut out = serde_json::Map::new();
+    let needle = "<parameter name=";
+    let mut search = 0usize;
+    while let Some(rel) = body[search..].find(needle) {
+        let pos = search + rel;
+        let after = pos + needle.len();
+        let bytes = body.as_bytes();
+        if after >= bytes.len() {
+            break;
+        }
+        let quote = bytes[after];
+        if quote != b'"' && quote != b'\'' {
+            search = after;
+            continue;
+        }
+        let key_start = after + 1;
+        let Some(key_end_rel) = body[key_start..].find(quote as char) else {
+            break;
+        };
+        let key = &body[key_start..key_start + key_end_rel];
+        let after_key_close_quote = key_start + key_end_rel + 1;
+        // Find the value start: after a `>` (well-formed) or directly
+        // after the closing quote (BPE-broken — strip leading
+        // whitespace/newline).
+        let val_start = match body[after_key_close_quote..].find('>') {
+            Some(g) if g <= 2 => after_key_close_quote + g + 1,
+            _ => after_key_close_quote,
+        };
+        // Find end: prefer `</parameter>`, fall back to the next
+        // `<parameter` opener (BPE-broken closer scenarios).
+        let next_close = body[val_start..]
+            .find("</parameter>")
+            .map(|p| (p, "</parameter>".len()));
+        let next_open = body[val_start..].find("<parameter").map(|p| (p, 0usize));
+        let (end_rel, advance) = match (next_close, next_open) {
+            (Some(c), Some(o)) if c.0 <= o.0 => c,
+            (Some(c), None) => c,
+            (None, Some(o)) => o,
+            (Some(c), Some(_)) => c,
+            (None, None) => break,
+        };
+        let value = body[val_start..val_start + end_rel].trim().to_string();
+        let lower = key.to_ascii_lowercase();
+        if let Some(prop) = shape.original_property(&lower) {
+            out.insert(prop, serde_json::Value::String(value));
+        }
+        search = val_start + end_rel + advance;
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
 pub(super) fn synthesise(
     name: &str,
     args: &serde_json::Map<String, serde_json::Value>,

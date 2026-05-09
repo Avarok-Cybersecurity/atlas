@@ -71,6 +71,17 @@ pub(super) struct StreamState {
     pub(super) streaming_tool_args: HashMap<usize, (String, String)>,
     /// F12: per-response total tool-call count.
     pub(super) tool_calls_emitted_count: usize,
+    /// Bug-2 (OpenClaw 2026-05-08): per-tool-name consecutive-call
+    /// guard. F11 keys on `(name, canonical_args)` and is defeated by
+    /// runaway loops where the model varies args slightly each
+    /// iteration (e.g. timestamps, sequence numbers, IDs). This
+    /// counter trips whenever the same tool name fires in N
+    /// successive `ToolCallEnd` events regardless of args drift,
+    /// catching the `cron`+`exec` alternation pattern observed when
+    /// the streaming detector did successfully classify the calls.
+    /// `(last_name, run_length)`. `last_name = None` means the run
+    /// was just broken by a different tool name.
+    pub(super) name_run: Option<(String, u32)>,
     /// Streaming tool-call detector (`Some` iff `tools_active`).
     pub(super) detector: Option<tool_parser::StreamingToolDetector>,
     /// True iff the reasoning/`<think>` phase has finished. Starts
@@ -102,6 +113,7 @@ impl StreamState {
             tool_arg_dedup_within: crate::tool_arg_dedup::ToolArgDedup::with_params(4, 2, 3),
             streaming_tool_args: HashMap::new(),
             tool_calls_emitted_count: 0,
+            name_run: None,
             detector: if tools_active {
                 Some(tool_parser::StreamingToolDetector::new())
             } else {

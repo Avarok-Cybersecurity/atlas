@@ -307,6 +307,45 @@ pub fn parse_tool_calls(text: &str) -> (Option<String>, Vec<ToolCall>) {
         }
     }
 
+    // Fallback 2c: BARE `<invoke name="X">…<parameter name="K">V</parameter>…</invoke>`
+    // blocks without any envelope (no `<tool_call>`, no `<minimax:tool_call>`).
+    // Triggered by Qwen3.6 cross-format contamination — observed
+    // 2026-05-09 OpenClaw stress run where the model issued 5 well-formed
+    // qwen3_coder envelopes then switched mid-response to MiniMax-style
+    // bare `<invoke>` blocks. The non-streaming chat_blocking path has
+    // no separate salvage hook (unlike chat_stream's tool_salvage),
+    // so we recover here using the existing `parse_minimax_xml_calls_all`
+    // — same function the streaming detector uses for the inner body
+    // of a MiniMax envelope.
+    if calls.is_empty() && text.contains("<invoke name=") {
+        let bare_invoke_calls = super::parse_minimax_xml_calls_all(text);
+        if !bare_invoke_calls.is_empty() {
+            // Strip the recovered invoke blocks from content so the
+            // client doesn't see both the structured tool_calls and
+            // the literal XML in `content`.
+            let mut clean = text.to_string();
+            let mut search = 0usize;
+            while let Some(rel) = clean[search..].find("<invoke name=") {
+                let start = search + rel;
+                match clean[start..].find("</invoke>") {
+                    Some(e) => {
+                        let end = start + e + "</invoke>".len();
+                        clean.drain(start..end);
+                        search = start;
+                    }
+                    None => break,
+                }
+            }
+            let trimmed = clean.trim();
+            let content = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+            return (content, bare_invoke_calls);
+        }
+    }
+
     // Fallback 3: look for JSON tool calls in code blocks or bare JSON.
     // When the model ignores the XML format entirely and writes tool invocations
     // as JSON in markdown code blocks or bare Hermes-style JSON, catch them here.
