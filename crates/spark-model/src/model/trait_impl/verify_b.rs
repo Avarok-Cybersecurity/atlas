@@ -214,24 +214,55 @@ impl TransformerModel {
                 let layer_type = self.config.layer_type(layer_idx);
 
                 if layer_type == LayerType::FullAttention {
-                    // Attention: treat 2 tokens as 2 virtual sequences via
-                    // decode_multi_seq. EmptyLayerState has no actual state.
-                    let mut dummy_states: Vec<Box<dyn LayerState>> = (0..k)
-                        .map(|_| layer.alloc_state(self.gpu.as_ref()))
-                        .collect::<Result<_>>()?;
-                    let mut refs: Vec<&mut (dyn LayerState + 'static)> =
-                        dummy_states.iter_mut().map(|s| s.as_mut()).collect();
-                    layer.decode_multi_seq(
-                        hidden,
-                        residual,
-                        k,
-                        &mut refs,
-                        &mut kv_cache,
-                        &seq_lens_vec,
-                        &block_tables_vec,
-                        &ctx,
-                        stream,
-                    )?;
+                    if hss_engaged {
+                        // HSS path: `decode_multi_seq` calls the production
+                        // paged-decode kernel which reads K/V from HBM only
+                        // (`meta.block_table`). Under HSS, HBM is capped to
+                        // `cache_blocks_per_seq` blocks, so older context
+                        // lives only on disk and is unreachable from the
+                        // multi-Q kernel — Q/V attends only over the recent
+                        // ~cap×bs tokens, missing the long-context history.
+                        // The single-token `decode` path routes through the
+                        // HSS orchestrator (`attend_layer_on_stream`) which
+                        // reads the full history from disk. Fall back to
+                        // `decode_batched` (N sequential single-token
+                        // decodes via the orchestrator) at the cost of
+                        // ~k× attention launches per verify step. Mirrors
+                        // the SSM branch below which already uses
+                        // decode_batched for the same correctness reason.
+                        layer.decode_batched(
+                            hidden,
+                            residual,
+                            k,
+                            seq.layer_states[layer_idx].as_mut(),
+                            &mut kv_cache,
+                            seq.seq_len,
+                            &mut seq.block_table,
+                            &mut seq.disk_block_ids,
+                            &mut seq.disk_last_offloaded_per_layer,
+                            &ctx,
+                            stream,
+                        )?;
+                    } else {
+                        // Attention: treat 2 tokens as 2 virtual sequences via
+                        // decode_multi_seq. EmptyLayerState has no actual state.
+                        let mut dummy_states: Vec<Box<dyn LayerState>> = (0..k)
+                            .map(|_| layer.alloc_state(self.gpu.as_ref()))
+                            .collect::<Result<_>>()?;
+                        let mut refs: Vec<&mut (dyn LayerState + 'static)> =
+                            dummy_states.iter_mut().map(|s| s.as_mut()).collect();
+                        layer.decode_multi_seq(
+                            hidden,
+                            residual,
+                            k,
+                            &mut refs,
+                            &mut kv_cache,
+                            &seq_lens_vec,
+                            &block_tables_vec,
+                            &ctx,
+                            stream,
+                        )?;
+                    }
                 } else {
                     // SSM: process K=2 tokens for one sequence via decode_batched.
                     layer.decode_batched(
