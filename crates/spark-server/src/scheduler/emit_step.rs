@@ -27,6 +27,18 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
     if let Some(ims) = im_start_hard_stop()
         && tok == ims
     {
+        // Push the hard-stop token to output_tokens so lifecycle.rs reports
+        // `finish_reason="stop"` (because `<|im_start|>` is registered in
+        // `eos_tokens` at startup — see tokenizer_runtime.rs::im_start_id).
+        // Without this push, `last_tok = output_tokens.last()` is the prior
+        // content token, lifecycle's `is_eos` check fails, and the response
+        // is mis-reported as `finish_reason="length"` (Bug 3 from OpenClaw
+        // 2026-05-08 session: "Done: 13 tokens (length) despite max_tokens=
+        // 8192" — clients then misinterpret the truncation as a real
+        // length-limit hit and either retry or surface a wrong error).
+        // The streamed-text path strips stop tokens server-side, so the
+        // client never sees the literal `<|im_start|>` bytes.
+        a.output_tokens.push(tok);
         a.finished = true;
         tracing::debug!(
             "<|im_start|> hard-stop fired (id={ims}); ending turn before grammar/suppress_eos"
