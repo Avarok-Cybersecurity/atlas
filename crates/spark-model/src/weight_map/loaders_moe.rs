@@ -178,6 +178,13 @@ pub(crate) fn load_moe_mistral(
 /// MTP weights use `mtp.*` prefix. For NVFP4/BF16 models all are BF16 in safetensors.
 /// For FP8 models, projections/experts are FP8 block-scaled → dequanted to BF16 here.
 /// Quantization to NVFP4 happens in the weight_loader, not here.
+///
+/// Two FFN flavors are auto-detected:
+/// - **MoE** (Qwen3.5-MoE / Qwen3.6-A3B): router `mtp.layers.0.mlp.gate.weight`
+///   plus per-expert or stacked expert tensors and a shared expert.
+/// - **Dense** (Qwen3.6-27B-FP8): single `mtp.layers.0.mlp.{gate,up,down}_proj.weight`
+///   triple, no router or experts. Distinguished by absence of `.gate.weight`
+///   and presence of `.gate_proj.weight` directly under `mlp`.
 pub(crate) fn load_mtp(
     store: &WeightStore,
     num_experts: usize,
@@ -196,6 +203,46 @@ pub(crate) fn load_mtp(
             _ => dense(store, name),
         }
     };
+
+    // Dense FFN MTP head: triple of {gate,up,down}_proj directly under
+    // `mtp.layers.0.mlp`, with no `.gate.weight` router. Short-circuit before
+    // any MoE-shaped loads so a dense checkpoint doesn't trip on missing
+    // `shared_expert.*` tensors.
+    let dense_gate_proj = format!("{mlp}.gate_proj.weight");
+    let moe_router = format!("{mlp}.gate.weight");
+    if store.contains(&dense_gate_proj) && !store.contains(&moe_router) {
+        let dense_ffn = DenseExpertWeight {
+            gate_proj: load(&dense_gate_proj)?,
+            up_proj: load(&format!("{mlp}.up_proj.weight"))?,
+            down_proj: load(&format!("{mlp}.down_proj.weight"))?,
+        };
+        let null = DenseWeight {
+            weight: DevicePtr::NULL,
+        };
+        return Ok(MtpWeights {
+            pre_fc_norm_embedding: dense(store, "mtp.pre_fc_norm_embedding.weight")?,
+            pre_fc_norm_hidden: dense(store, "mtp.pre_fc_norm_hidden.weight")?,
+            fc: load("mtp.fc.weight")?,
+            input_layernorm: dense(store, "mtp.layers.0.input_layernorm.weight")?,
+            q_proj: load(&format!("{p}.q_proj.weight"))?,
+            k_proj: load(&format!("{p}.k_proj.weight"))?,
+            v_proj: load(&format!("{p}.v_proj.weight"))?,
+            o_proj: load(&format!("{p}.o_proj.weight"))?,
+            q_norm: dense(store, &format!("{p}.q_norm.weight"))?,
+            k_norm: dense(store, &format!("{p}.k_norm.weight"))?,
+            post_attn_layernorm: dense(store, "mtp.layers.0.post_attention_layernorm.weight")?,
+            moe_gate: null,
+            shared_expert: DenseExpertWeight {
+                gate_proj: null,
+                up_proj: null,
+                down_proj: null,
+            },
+            shared_expert_gate: null,
+            experts: Vec::new(),
+            dense_ffn: Some(dense_ffn),
+            norm: dense(store, "mtp.norm.weight")?,
+        });
+    }
 
     let shared_expert = DenseExpertWeight {
         gate_proj: load(&format!("{mlp}.shared_expert.gate_proj.weight"))?,
@@ -254,6 +301,7 @@ pub(crate) fn load_mtp(
         shared_expert,
         shared_expert_gate: dense(store, &format!("{mlp}.shared_expert_gate.weight"))?,
         experts,
+        dense_ffn: None,
         norm: dense(store, "mtp.norm.weight")?,
     })
 }

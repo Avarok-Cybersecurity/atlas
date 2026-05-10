@@ -106,6 +106,12 @@ pub struct MtpHead {
     moe_gate: DenseWeight,
     shared_expert_gate: DenseWeight,
 
+    /// Dense FFN triple `(gate_proj, up_proj, down_proj)` for MTP heads
+    /// bundled with dense (non-MoE) checkpoints. When `Some`, the forward
+    /// path skips routing/expert dispatch and runs a single MLP. The MoE
+    /// fields above are unused/None in that mode.
+    dense_ffn_generic: Option<(ProjectionWeight, ProjectionWeight, ProjectionWeight)>,
+
     // Precision mode
     quant: MtpQuantization,
 

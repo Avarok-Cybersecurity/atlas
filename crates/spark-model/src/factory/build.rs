@@ -100,6 +100,16 @@ pub fn build_model(
     let final_norm = loader.load_final_norm(store, &config, gpu.as_ref())?;
     let lm_head = loader.load_lm_head(store, &config)?;
     let mtp_weights = loader.load_mtp_weights_multi(store, &config, gpu.as_ref())?;
+    // Capability warning: user asked for `--speculative` but the model has no
+    // MTP head bundled, so speculative decoding will silently no-op. Surface
+    // this loudly so the user knows the flag was inert.
+    if use_speculative && mtp_weights.is_empty() {
+        tracing::warn!(
+            "`--speculative` was requested but no MTP weights were loaded for this \
+             model — speculative decoding will be disabled. Either drop `--speculative` \
+             or use a checkpoint that ships an MTP head (e.g. `mtp.safetensors`)."
+        );
+    }
     let vision_encoder = loader.load_vision_encoder(store, &config, gpu.as_ref())?;
 
     // If the checkpoint's `quantization_config.ignore_modules` lists MTP

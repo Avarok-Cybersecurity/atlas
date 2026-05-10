@@ -31,7 +31,15 @@ impl MtpHead {
         let nq = config.num_attention_heads;
         let nkv = config.num_key_value_heads;
         let hd = config.head_dim;
-        let inter = config.moe_intermediate_size;
+        // Dense MTP heads use the dense `intermediate_size`; MoE MTP heads
+        // use `moe_intermediate_size`. The bundled `mtp.safetensors` always
+        // matches the main model's FFN width (Qwen3.6-27B FP8: 17408 dense;
+        // Qwen3.6-A3B-NVFP4: 1024 per expert).
+        let inter = if config.moe_intermediate_size > 0 {
+            config.moe_intermediate_size
+        } else {
+            config.intermediate_size
+        };
 
         let q = |bf16: &DenseWeight, n: usize, k: usize| -> Result<ProjectionWeight> {
             Self::quantize_proj(bf16, n, k, quant, gpu, absmax_k, nvfp4_k, fp8_k, stream)
@@ -44,8 +52,31 @@ impl MtpHead {
         let v_proj = q(&weights.v_proj, nkv * hd, h)?;
         let o_proj = q(&weights.o_proj, h, nq * hd)?;
 
+        // Dense FFN MTP heads (Qwen3.6-27B-FP8) bypass the MoE setup entirely.
+        // We quantize the dense gate/up/down triple and stash it; the MoE
+        // fields stay None and the forward path takes the dense shortcut.
+        let dense_ffn_generic = if let Some(dense_ffn) = weights.dense_ffn.as_ref() {
+            if matches!(quant, MtpQuantization::Nvfp4) {
+                anyhow::bail!(
+                    "MTP NVFP4 mode is not supported for dense FFN MTP heads yet \
+                     (Qwen3.6-27B-FP8 ships an FP8 MTP head — use \
+                     `--mtp-quantization fp8` or `bf16`)"
+                );
+            }
+            Some((
+                q(&dense_ffn.gate_proj, inter, h)?,
+                q(&dense_ffn.up_proj, inter, h)?,
+                q(&dense_ffn.down_proj, h, inter)?,
+            ))
+        } else {
+            None
+        };
+
         // MoE: NVFP4 uses fused MoeLayer; FP8/BF16 stores per-expert weights
-        let (moe_nvfp4, moe_experts_generic, moe_shared_generic) = match quant {
+        let (moe_nvfp4, moe_experts_generic, moe_shared_generic) = if dense_ffn_generic.is_some() {
+            (None, None, None)
+        } else {
+            match quant {
             MtpQuantization::Nvfp4 => {
                 let gate_nvfp4 = quantize_to_nvfp4(
                     &weights.moe_gate,
@@ -147,6 +178,7 @@ impl MtpHead {
                 );
                 (None, Some(experts_g), Some(shared))
             }
+            }
         };
 
         // MTP KV cache: 1 attention layer
@@ -197,13 +229,21 @@ impl MtpHead {
         } else {
             config.vocab_size
         };
+        let ffn_kind: &str = if dense_ffn_generic.is_some() {
+            "dense FFN"
+        } else if moe_nvfp4.is_some() {
+            "MoE (NVFP4 fused)"
+        } else {
+            "MoE (per-expert)"
+        };
         tracing::info!(
-            "MTP head: quant={:?}, fc=[{h},{h2}], attn Q=[{qd},{h}], {ne} experts, \
-             vocab={ev}/{fv} (LM head {lm:.1} MB)",
+            "MTP head: quant={:?}, fc=[{h},{h2}], attn Q=[{qd},{h}], ffn={ffn}, \
+             {ne} experts, vocab={ev}/{fv} (LM head {lm:.1} MB)",
             quant,
             h2 = h * 2,
             qd = nq * hd * 2,
-            ne = config.num_experts,
+            ffn = ffn_kind,
+            ne = if dense_ffn_generic.is_some() { 0 } else { config.num_experts },
             ev = effective_vocab,
             fv = config.vocab_size,
             lm = (effective_vocab * h / 2) as f64 / (1024.0 * 1024.0),
@@ -227,6 +267,7 @@ impl MtpHead {
             moe_shared_generic,
             moe_gate: weights.moe_gate,
             shared_expert_gate: weights.shared_expert_gate,
+            dense_ffn_generic,
             quant,
             mtp_vocab_size,
             embed_tokens,
