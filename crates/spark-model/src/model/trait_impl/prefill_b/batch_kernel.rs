@@ -334,6 +334,24 @@ impl TransformerModel {
         let stage_size = (proc_count * n * 16) + (n * 32) + 256;
         scratch_cursor += stage_size;
 
+        // Q12 safety: assert scratch headroom before consuming the
+        // h_state_ptrs JIT slot per SSM layer. h_state_ptrs is N*8 bytes.
+        // The scratch budget for batched dispatch is dominated by the
+        // per-stream meta blocks + stacked BatchedAttnMetadata; bail if
+        // we'd exceed scratch capacity rather than overrun into another
+        // buffer.
+        let scratch_bytes = self.buffers.sizes().scratch;
+        let projected_usage = scratch_cursor + (n * std::mem::size_of::<u64>());
+        if projected_usage > scratch_bytes {
+            anyhow::bail!(
+                "kernel-batched prefill scratch overflow: projected {} bytes \
+                 > scratch capacity {} bytes (n={n}, chunk_len={chunk_len}, \
+                 proc_count={proc_count}). Falling back to per-stream.",
+                projected_usage,
+                scratch_bytes
+            );
+        }
+
         // GDN buffers (for SSM layers).
         let gdn_bufs = GdnPrefillBuffers {
             qkv: self.gdn_buf_qkv,

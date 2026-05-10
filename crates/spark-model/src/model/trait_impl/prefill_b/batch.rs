@@ -118,18 +118,44 @@ impl TransformerModel {
         // (e.g. proc_count mismatch from differing prefix-cache hits) leave
         // the streams in a partially-mutated state — we propagate that Err
         // so the caller can retry single-stream or surface to the user.
-        if self.kernel_batched_eligible(streams) {
+        //
+        // Runtime kill switch: set `ATLAS_Q12_BATCHED=0` to force-disable
+        // the kernel-batched path without rebuilding. Default is enabled
+        // (any unset / non-"0" value). Useful for the kernel-validation
+        // session when isolating a regression to the batched path.
+        let q12_batched_enabled = std::env::var("ATLAS_Q12_BATCHED")
+            .map(|v| v != "0" && v.to_lowercase() != "false")
+            .unwrap_or(true);
+        if q12_batched_enabled && self.kernel_batched_eligible(streams) {
+            tracing::debug!(
+                target: "atlas::q12",
+                n = n,
+                chunk_len = streams[0].chunk_len,
+                is_last_chunk = streams[0].is_last_chunk,
+                "Q12 kernel-batched dispatch attempt"
+            );
             match self.prefill_batch_chunk_kernel_batched(streams, stream) {
-                Ok(v) => return Ok(v),
+                Ok(v) => {
+                    tracing::debug!(target: "atlas::q12", "Q12 kernel-batched succeeded");
+                    return Ok(v);
+                }
                 Err(e) => {
                     // Structural bails (proc_count/seq_lens_start mismatch,
-                    // unsupported layer feature) are logged at debug —
-                    // expected to occur for some workloads.
-                    tracing::debug!(
-                        "kernel-batched prefill bailed → falling back to per-stream: {e}"
+                    // unsupported layer feature) are logged at info so the
+                    // first occurrence is visible in production logs without
+                    // requiring debug-level tracing. Subsequent bails are
+                    // still logged but with reduced verbosity in tight loops.
+                    tracing::info!(
+                        target: "atlas::q12",
+                        "Q12 kernel-batched bailed → falling back to per-stream: {e}"
                     );
                 }
             }
+        } else if !q12_batched_enabled {
+            tracing::trace!(
+                target: "atlas::q12",
+                "Q12 kernel-batched disabled via ATLAS_Q12_BATCHED=0"
+            );
         }
 
         // EP active → NCCL needs the default stream.
