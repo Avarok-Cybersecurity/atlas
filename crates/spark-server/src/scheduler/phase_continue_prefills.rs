@@ -429,11 +429,23 @@ fn run_standard_chunk_loop(
                     }
                     break;
                 }
-                // If active sequences exist, yield after 1 chunk.
-                if !active.is_empty() {
-                    break;
-                }
-                // Otherwise, continue processing next chunk immediately.
+                // Always yield after 1 chunk so the outer scheduler loop
+                // can drain new pending requests (Q12).
+                //
+                // Previously this only broke when `active.is_empty() == false`,
+                // leaving back-to-back chunked prefill to monopolise the
+                // scheduler when a single stream was prefilling alone. That
+                // produced the asymmetric-TTFT bug observed in q12-repro:
+                // a second client request that arrived 10 ms after the first
+                // had to wait 2:10 for the first stream's full prefill before
+                // the scheduler iterated again and picked it up.
+                //
+                // Cost: tiny — the outer loop re-enters this function on the
+                // very next iteration and processes the same stream's next
+                // chunk via `prefilling.first_mut()`. The single-stream
+                // TTFT regression for short prompts (≤2 chunks) is one
+                // extra scheduler-loop pass (~µs).
+                break;
             }
             Err(e) => {
                 tracing::error!("Prefill chunk error: {e:#}");
