@@ -49,6 +49,8 @@ mod prefill_attn_b;
 mod prefill_attn_main_a;
 #[path = "ops/prefill_attn_main_b.rs"]
 mod prefill_attn_main_b;
+#[path = "ops/prefill_attn_batched.rs"]
+mod prefill_attn_batched;
 #[path = "ops/quant_dispatch.rs"]
 mod quant_dispatch;
 #[path = "ops/sampling.rs"]
@@ -82,6 +84,7 @@ pub use prefill_attn_a::*;
 pub use prefill_attn_b::*;
 pub use prefill_attn_main_a::*;
 pub use prefill_attn_main_b::*;
+pub use prefill_attn_batched::*;
 pub use quant_dispatch::*;
 pub use sampling::*;
 pub use ssm_gdn_a::*;
