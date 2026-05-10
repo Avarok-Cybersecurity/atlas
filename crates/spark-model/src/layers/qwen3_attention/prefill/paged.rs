@@ -222,24 +222,39 @@ impl Qwen3AttentionLayer {
         }
 
         // ── 6. RoPE for chunk tokens ──
-        let meta = ctx
-            .attn_metadata
-            .expect("attention prefill requires metadata");
+        // Q12 Path B: in batched mode, ctx.attn_metadata is None — the
+        // model dispatcher (prefill_batch_chunk_kernel_batched) sets
+        // attn_metadata=None when calling the layer because per-stream
+        // metadata is split across the batched_meta device arrays. So
+        // we only require ctx.attn_metadata to be Some in single-stream
+        // mode (batched_meta = None).
+        let meta_for_single = match (batched_meta, ctx.attn_metadata) {
+            (Some(_), _) => None,
+            (None, Some(m)) => Some(m),
+            (None, None) => anyhow::bail!(
+                "prefill_attention_paged: single-stream mode requires ctx.attn_metadata"
+            ),
+        };
 
-        // Q12 Path B: resolve positions / slot pointers. When `batched_meta`
-        // is set, RoPE / KV-write read from the stacked arrays
-        // (`positions_stacked`, `slot_stacked`) built by
-        // `stage_batched_attn_metadata`. The kernels themselves are
-        // token-parallel and don't care whether the array spans one
-        // stream or N stacked streams.
-        let bmeta_positions = batched_meta.map(|m| m.positions_stacked).unwrap_or(meta.positions);
+        // Resolve positions / slot pointers. When `batched_meta` is set,
+        // RoPE / KV-write read from the stacked arrays. When in
+        // single-stream mode, fall back to meta.{positions,slot}.
+        let bmeta_positions = batched_meta
+            .map(|m| m.positions_stacked)
+            .or(meta_for_single.map(|m| m.positions))
+            .unwrap();
         let bmeta_positions_h = batched_meta
             .map(|m| m.positions_h_stacked)
-            .unwrap_or(meta.positions_h);
+            .or(meta_for_single.map(|m| m.positions_h))
+            .unwrap();
         let bmeta_positions_w = batched_meta
             .map(|m| m.positions_w_stacked)
-            .unwrap_or(meta.positions_w);
-        let bmeta_slot = batched_meta.map(|m| m.slot_stacked).unwrap_or(meta.slot);
+            .or(meta_for_single.map(|m| m.positions_w))
+            .unwrap();
+        let bmeta_slot = batched_meta
+            .map(|m| m.slot_stacked)
+            .or(meta_for_single.map(|m| m.slot))
+            .unwrap();
         if self.mla.is_some() {
             // MLA: RoPE already applied inside the MLA block to rope portions only.
         } else if let Some(ref mla) = self.mla {
@@ -379,6 +394,9 @@ impl Qwen3AttentionLayer {
             };
             self.prefill_attention_paged_attn_batched(kv_cache, ctx, &args)?;
         } else {
+            // Single-stream path requires meta_for_single (validated above).
+            let meta = meta_for_single
+                .expect("single-stream mode: meta_for_single guaranteed by validation above");
             let mut args = super::paged_attn::PagedAttnArgs {
                 q_contiguous,
                 k_contiguous,
