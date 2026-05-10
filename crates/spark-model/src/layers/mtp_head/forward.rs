@@ -326,18 +326,23 @@ impl MtpHead {
             stream,
         )?;
 
-        // 10. MoE FFN
-        let moe_out = match self.quant {
-            MtpQuantization::Nvfp4 => self
-                .moe_nvfp4
-                .as_ref()
-                .unwrap()
-                .forward(normed2, ctx, stream)?,
-            MtpQuantization::Fp8 | MtpQuantization::Bf16 => {
-                self.moe_forward_generic(normed2, ctx, stream)?
+        // 10. FFN: dense shortcut for non-MoE MTP heads (Qwen3.6-27B-FP8),
+        //     otherwise routed MoE.
+        let ffn_out = if self.dense_ffn_generic.is_some() {
+            self.dense_ffn_forward_generic(normed2, ctx, stream)?
+        } else {
+            match self.quant {
+                MtpQuantization::Nvfp4 => self
+                    .moe_nvfp4
+                    .as_ref()
+                    .unwrap()
+                    .forward(normed2, ctx, stream)?,
+                MtpQuantization::Fp8 | MtpQuantization::Bf16 => {
+                    self.moe_forward_generic(normed2, ctx, stream)?
+                }
             }
         };
-        ops::residual_add(ctx.gpu, self.residual_add_k, hidden, moe_out, h, stream)?;
+        ops::residual_add(ctx.gpu, self.residual_add_k, hidden, ffn_out, h, stream)?;
 
         // 11. Final norm
         let final_normed = ctx.buffers.norm_output();
