@@ -24,6 +24,7 @@ use spark_runtime::gpu::DevicePtr;
 use super::super::types::TransformerModel;
 use crate::traits::{Model, SequenceState};
 
+mod batch;
 mod embed_chunk;
 mod finalize_last;
 mod forward_layers;
