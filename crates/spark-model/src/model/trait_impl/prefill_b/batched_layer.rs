@@ -86,18 +86,34 @@ impl TransformerModel {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        // TODO(kernel-session): batched attention layer body.
+        // Q12 Path B: dispatch to the layer's batched-attention method.
+        // `Qwen3AttentionLayer::prefill_inner_batched_q12` performs the full
+        // attention-layer prefill (rms_norm + residual + qkv_proj + RoPE +
+        // KV-write + batched attention compute + o_proj + post-attn norm +
+        // FFN + final residual) on the stacked input. The kernel-batched
+        // attention step uses `block_table_ptrs[N]` from `meta`.
         //
-        // The body replacement is documented in the module-level docs above.
-        // Until it lands, this stub returns Err so callers can detect the
-        // unimplemented state and fall back to per-stream
-        // `prefill_chunk_dispatch`.
-        let _ = (layer, layer_idx, hidden_stacked, residual_stacked, seqs,
-                 kv_cache, kv_write_starts, seq_lens_start, meta, ctx, stream);
-        anyhow::bail!(
-            "prefill_attn_batched_layer: stub body — caller should fall back \
-             to per-stream prefill_chunk_dispatch until kernel-session wiring \
-             lands. See module docstring for the body replacement plan."
+        // The layer override bails Err for unsupported paths (MLA,
+        // HDIM=512, HSS engaged, seq_len_start == 0); on Err the caller
+        // (Phase 4b dispatch) should treat the whole batched path as
+        // ineligible and fall back to per-stream prefill.
+        debug_assert_eq!(seqs.len() as u32, meta.batch_size);
+        let _ = (layer_idx, kv_write_starts);
+        let num_tokens = meta.total_tokens as usize;
+        // Mut borrow on seqs is unused inside this branch (the batched
+        // attention call routes block-table info through meta.block_table_ptrs
+        // and seq mutations are not needed for attention prefill). Drop
+        // the borrow before calling.
+        let _ = seqs;
+        layer.prefill_inner_batched_q12(
+            hidden_stacked,
+            residual_stacked,
+            num_tokens,
+            kv_cache,
+            seq_lens_start,
+            meta,
+            ctx,
+            stream,
         )
     }
 

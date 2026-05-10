@@ -7,7 +7,7 @@ use atlas_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::PagedKvCache;
 
-use super::{ForwardContext, GdnPrefillBuffers, LayerState};
+use super::{BatchedAttnMetadata, ForwardContext, GdnPrefillBuffers, LayerState};
 
 pub trait TransformerLayer: Send + Sync {
     /// Decode one token through this layer, modifying `hidden` in-place.
@@ -243,6 +243,38 @@ pub trait TransformerLayer: Send + Sync {
         _stream: u64,
     ) -> Result<()> {
         Ok(()) // No-op for attention layers
+    }
+
+    /// Q12 Path B: batched attention prefill across N stacked-input streams.
+    ///
+    /// Runs the full attention-layer prefill (rms_norm + residual, QKV proj,
+    /// RoPE, KV-write, batched attention compute, O proj, post-attn norm,
+    /// FFN, final residual) over `num_tokens = batch_size * chunk_len`
+    /// stacked tokens, using `batched_meta` for per-stream metadata
+    /// resolution.
+    ///
+    /// Default impl returns Err — only `Qwen3AttentionLayer` overrides.
+    /// SSM/dense layers don't override (they have their own batched paths
+    /// or work without batched metadata).
+    ///
+    /// Caller (model-level `prefill_attn_batched_layer`) is responsible for
+    /// ensuring all streams share the same chunk_len, seq_len_start
+    /// (q_offset), and that the layer is not MLA / not HDIM=512 / not HSS-
+    /// engaged. The override bails Err if any unsupported case is detected.
+    fn prefill_inner_batched_q12(
+        &self,
+        _hidden_stacked: DevicePtr,
+        _residual_stacked: DevicePtr,
+        _num_tokens: usize,
+        _kv_cache: &mut PagedKvCache,
+        _seq_len_start: usize,
+        _batched_meta: &BatchedAttnMetadata,
+        _ctx: &ForwardContext,
+        _stream: u64,
+    ) -> Result<()> {
+        anyhow::bail!(
+            "prefill_inner_batched_q12: not implemented for this layer type"
+        )
     }
 
     /// Q12 Path B: batched GDN recurrence across N streams.

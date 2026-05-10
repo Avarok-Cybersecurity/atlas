@@ -10,7 +10,7 @@ use spark_runtime::kv_cache::PagedKvCache;
 
 use super::super::Qwen3AttentionLayer;
 use super::diag_norm;
-use crate::layer::{ForwardContext, LayerState};
+use crate::layer::{BatchedAttnMetadata, ForwardContext, LayerState};
 use crate::layers::ops;
 
 impl Qwen3AttentionLayer {
@@ -27,6 +27,12 @@ impl Qwen3AttentionLayer {
         disk_block_ids: &mut Vec<u32>,
         disk_last_offloaded_per_layer: &mut Vec<u32>,
         kv_write_start: usize,
+        // Q12 Path B: when Some, the attention compute step uses the
+        // batched paged-prefill kernel. Stacked-input semantics apply —
+        // `num_tokens` must equal `batched_meta.total_tokens` and the
+        // hidden/residual buffers contain N streams' data concatenated
+        // at offsets `b * chunk_len * H * dtype`.
+        batched_meta: Option<&BatchedAttnMetadata>,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
@@ -72,6 +78,16 @@ impl Qwen3AttentionLayer {
         }
 
         // ── 2. Attention ──
+        // Q12 Path B: batched mode requires seq_len_start > 0 (paged path).
+        // The non-paged BR=32 batched kernel is not yet shipped, so caller
+        // must constrain to paged-path workloads (which is the natural Q12
+        // case after prefix-cache lookup).
+        if batched_meta.is_some() && seq_len_start == 0 {
+            anyhow::bail!(
+                "prefill_inner: batched mode requires seq_len_start > 0 (paged path); \
+                 got seq_len_start=0. Caller must fall back to per-stream for this chunk."
+            );
+        }
         let attn_out = if seq_len_start == 0 {
             // Chunk 0 (or non-chunked): Flash Attention on contiguous Q/K/V.
             self.prefill_attention_with_cache_skip(
@@ -84,10 +100,8 @@ impl Qwen3AttentionLayer {
             )?
         } else {
             // Chunk 1+: GEMM-batched Q/K/V + per-token paged decode attention.
-            // New Q tokens must attend to ALL prior K/V stored in paged cache.
-            // Phase 6.2.b — block_table/disk_block_ids/disk_last_offloaded_per_layer
-            // are threaded so the function can route through HSS when --high-speed-swap
-            // is engaged on a BF16 layer.
+            // batched_meta is threaded so prefill_attention_paged uses the
+            // batched kernel + block_table_ptrs when set.
             self.prefill_attention_paged(
                 normed,
                 num_tokens,
@@ -96,6 +110,7 @@ impl Qwen3AttentionLayer {
                 block_table,
                 disk_block_ids,
                 disk_last_offloaded_per_layer,
+                batched_meta,
                 ctx,
                 stream,
             )?
@@ -143,6 +158,13 @@ impl Qwen3AttentionLayer {
         // (long single-chunk prompts), the user must size cache_blocks_per_seq
         // to fit the prefill. Phase 6.2.b will route chunked-prefill reads
         // through the orchestrator and remove this constraint.
+        if batched_meta.is_some() && self.high_speed_swap_engaged(kv_cache) {
+            anyhow::bail!(
+                "prefill_inner: batched mode does not support HSS-engaged layers \
+                 (layer {}). Caller should fall back to per-stream for this chunk.",
+                self.attn_layer_idx
+            );
+        }
         if self.high_speed_swap_engaged(kv_cache) {
             let nq = self
                 .num_q_heads_override
