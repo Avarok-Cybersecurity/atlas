@@ -219,6 +219,17 @@ pub struct Qwen3AttentionLayer {
     pub(super) prefill_attn_paged_fp8_64_k: KernelHandle,
     pub(super) prefill_attn_paged_nvfp4_64_k: KernelHandle,
     pub(super) prefill_attn_paged_turbo4_64_k: KernelHandle,
+    // ── Q12 Phase 3: same-chunk-len batched paged-prefill kernels ──
+    // Each takes `const int* const* block_table_ptrs` + per-batch Q/O
+    // offsets. Used by `Qwen3AttentionLayer::prefill_batched` when N≥2
+    // streams share the same chunk_len. Null on targets that don't
+    // carry the corresponding kernel (e.g. CPU backend).
+    pub(super) prefill_attn_paged_batched_k: KernelHandle,
+    pub(super) prefill_attn_paged_fp8_batched_k: KernelHandle,
+    pub(super) prefill_attn_paged_nvfp4_batched_k: KernelHandle,
+    pub(super) prefill_attn_paged_batched_64_k: KernelHandle,
+    pub(super) prefill_attn_paged_fp8_batched_64_k: KernelHandle,
+    pub(super) prefill_attn_paged_nvfp4_batched_64_k: KernelHandle,
     // Batched prefill kernels
     pub(super) deinterleave_qg_split_k: KernelHandle,
     pub(super) deinterleave_qg_split_qnorm_k: KernelHandle,

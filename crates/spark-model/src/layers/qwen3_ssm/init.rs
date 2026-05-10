@@ -110,6 +110,27 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_wy64_prefill",
                 "gated_delta_rule_prefill_wy64",
             ),
+            // ── Q12 Phase 2b: batched GDN kernel handles ──
+            gdn_prefill_wy32_batched_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy64_prefill",
+                "gated_delta_rule_prefill_wy64_batched",
+            ),
+            gdn_prefill_persistent_batched_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_persistent",
+                "gated_delta_rule_prefill_persistent_batched",
+            ),
+            gdn_prefill_persistent_wy4_batched_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_persistent",
+                "gated_delta_rule_prefill_persistent_wy4_batched",
+            ),
+            gdn_prefill_split4_batched_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule",
+                "gated_delta_rule_prefill_split4_batched",
+            ),
             compute_gdn_gates_k: gpu.kernel("ssm_preprocess", "compute_gdn_gates")?,
             ba_gates_prefill_k: gpu.kernel("ssm_preprocess", "dense_gemm_ba_gates_prefill")?,
             conv1d_prefill_k: gpu.kernel("causal_conv1d", "causal_conv1d_update_prefill")?,
