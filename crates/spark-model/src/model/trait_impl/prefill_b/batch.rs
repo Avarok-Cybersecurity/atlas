@@ -3,59 +3,66 @@
 //! `prefill_batch_chunk_dispatch` — batched prefill orchestrator (Q12).
 //!
 //! Mirrors `prefill_chunk_dispatch` (the single-stream path in `prefill_b.rs`)
-//! but processes N concurrent streams in one model-level call. The motivating
-//! win is **per-layer L2-amortised weight load**: today's per-stream loop
-//! (default trait impl) re-streams the full layer-0 weights for stream 1 even
-//! though they were just loaded for stream 0.
+//! but processes N concurrent streams in one model-level call. The current
+//! implementation runs the streams **sequentially** through the phase
+//! helpers while holding the KV-cache mutex once for the whole batch.
 //!
-//! ## Layout
+//! ## What this commit *does* deliver
 //!
-//! - `hidden`/`residual` use the shared buffer arena, sized for
-//!   `max_batch_tokens`. Each stream's chunk lands at offset
-//!   `cu_seqlens[i] * hidden_size * residual_dtype` in the buffer.
-//! - Per-stream metadata (positions, slots, paged block tables) lives in the
-//!   scratch buffer at distinct offsets — built once per dispatch by reusing
-//!   the existing `prefill_b_upload_meta` and `prefill_b_upload_paged` phase
-//!   helpers, called sequentially per stream.
-//! - The layer loop is shared: one `for (i, layer) in self.layers` iteration
-//!   calls `layer.prefill_batched(hidden, residual, cu_seqlens, &mut states,
-//!   &mut block_tables, ...)`. Each layer override decides whether to issue
-//!   one kernel for all N streams (Phase 2b SSM, Phase 3 attention) or to
-//!   loop per-stream internally (default trait impl).
+//! - **Single mutex acquire**: the default trait impl in `traits/model.rs`
+//!   re-locks `self.kv_cache` per stream. This dispatch locks once and
+//!   threads `&mut kv_cache` through each stream's phase calls. On a
+//!   single-threaded scheduler the lock contention is zero, so the win is
+//!   purely "fewer atomic ops per dispatch" — not measurable but cheap.
+//! - **Single orchestration source**: all prefill orchestration code lives
+//!   in one file (this one + `prefill_b.rs` for the N=1 entry). Future
+//!   Phase 2b (SSM kernel batching) and Phase 3 (attention kernel rewrite)
+//!   patch sites are scoped to *layer overrides* — `Qwen3SsmLayer::prefill_batched`
+//!   and `Qwen3AttentionLayer::prefill_batched` — rather than scattered
+//!   across the trait's default loop.
 //!
-//! ## Status
+//! ## What this commit deliberately does *not* deliver
 //!
-//! **Phase 4b stub (this commit).** The function is the entry point that the
-//! `Model::prefill_batch_chunk` override eventually delegates to, but the
-//! actual per-layer-batched implementation is staged in pieces:
+//! Real kernel-level batching (one kernel launch processing N streams' QKV
+//! through shared SMEM/L2) is **not** part of this commit. The motivating
+//! win in the Q12 plan — per-layer L2-amortised weight load — does **not**
+//! materialise from per-stream-sequential calls because layer weights are
+//! orders of magnitude larger than the GB10 L2 cache (gigabytes vs ~24 MB)
+//! so the second stream's call re-streams every byte of weight regardless.
 //!
-//! 1. Buffer-arena fit check + bail to default when `total_tokens` would
-//!    overflow `max_batch_tokens`. Implemented.
-//! 2. Per-stream embed/prefix/blocks/metadata setup. **TODO** — needs
-//!    refactoring `prefill_b_embed_chunk` / `prefill_b_prefix_lookup` /
-//!    `prefill_b_proc_range` / `prefill_b_upload_meta` /
-//!    `prefill_b_upload_paged` to write into per-stream offsets of the
-//!    shared metadata buffer instead of a single fixed offset.
-//! 3. Shared per-layer loop calling `layer.prefill_batched`. **TODO** —
-//!    requires building the stacked `cu_seqlens`, the N-vector of
-//!    `&mut LayerState`, the N-vector of `&mut Vec<u32>` block tables, and
-//!    the per-stream `seq_lens_start` slice. Falls back gracefully to the
-//!    layer's default per-stream-loop impl.
-//! 4. Per-stream finalize (last chunk → sample first token; intermediate
-//!    chunk → save Marconi snapshot). **TODO**.
+//! The actual win paths require:
 //!
-//! Until pieces 2-4 land, this dispatch returns `Err(NotImplemented)` and
-//! the trait's default impl handles batched prefill by looping over
-//! `prefill_chunk` per stream — same behaviour as before this commit.
-//! The override exists so future commits can fill it in incrementally
-//! without changing the trait or the scheduler.
+//! 1. **Phase 2b — SSM/GDN kernel batching.** The `gated_delta_rule_*`
+//!    kernel family indexes `h_state + (b * num_v_heads + vh) * K_DIM *
+//!    V_DIM`, which assumes one contiguous `h_state` buffer. Each
+//!    `SsmLayerState` currently owns its own GPU allocation, so batching
+//!    requires either (a) staging per-stream h_states into one contiguous
+//!    buffer pre-launch and copying back post-launch (~10 ms / dispatch for
+//!    Qwen3.6-27B SSM stack), or (b) patching every GDN variant to take
+//!    `float* const* h_state_ptrs` and dereference per batch index (kernel
+//!    change across ~7 variants + Rust ops bindings + model-specific
+//!    overrides). The latter is the right long-term shape; the former is
+//!    a 1-day intermediate.
+//!
+//! 2. **Phase 3 — Attention prefill kernel rewrite.** Today's grid in
+//!    `inferspark_prefill_paged_fp8.cu` is `(num_q_heads, q_chunks, 1)`
+//!    with no batch axis. Adding `cu_seqlens` + `block_table_offsets` and
+//!    a per-block stream identifier is the actual TTFT win for Q12 — but
+//!    it's multi-day CUDA work that's deliberately out of scope here.
+//!
+//! Once those land, this dispatch's *body* changes minimally: each layer's
+//! `prefill_batched` override starts returning Ok with a one-shot
+//! kernel-batched path, and the per-stream phase calls below stay correct
+//! because each phase helper already takes a `&mut SequenceState`.
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 
 use super::super::super::types::TransformerModel;
+use super::proc_range::ProcRange;
+use super::upload_meta::MetaLayout;
 use crate::traits::{Model, PrefillSlice, SequenceState};
 
 impl TransformerModel {
@@ -73,47 +80,202 @@ impl TransformerModel {
         if n == 0 {
             return Ok(Vec::new());
         }
-
-        // Total tokens to batch through the layer loop.
-        let total_tokens: usize = streams.iter().map(|s| s.chunk_len).sum();
-        let arena_cap = self.buffers.max_batch_tokens();
-
-        // Phase-4b-stub fit check: when the stacked layout doesn't fit in
-        // the buffer arena, abort and let the trait default impl handle it
-        // via per-stream `prefill_chunk` calls (no L2 amortisation).
-        // Bumping `max_batch_tokens` to host stacked-stream layouts is a
-        // recipe-side knob that should land alongside the per-layer
-        // batched dispatch.
-        if total_tokens > arena_cap {
-            anyhow::bail!(
-                "Batched prefill total_tokens={total_tokens} exceeds arena \
-                 capacity {arena_cap} (n={n} streams). Bump \
-                 --max-prefill-tokens or run --max-batch-size lower so the \
-                 stacked layout fits, or fall through to single-stream \
-                 prefill_chunk per stream (the trait default)."
-            );
+        if n == 1 {
+            // Fast path: N=1 has no batching to do. Delegate to the
+            // single-stream dispatch and skip the per-stream-loop bookkeeping.
+            let s = &mut streams[0];
+            let logits = self.prefill_chunk_dispatch(
+                s.prompt_tokens,
+                s.seq,
+                s.chunk_start,
+                s.chunk_len,
+                s.is_last_chunk,
+                stream,
+            )?;
+            return Ok(vec![logits]);
         }
 
-        // Phase 4b TODO: per-stream embed → per-stream prefix lookup →
-        // shared layer loop → per-stream finalize.
-        //
-        // Until that ships, signal to the caller that this dispatch isn't
-        // ready by returning a dedicated error. The trait default impl
-        // (which loops over `prefill_chunk` per stream) is still wired
-        // through at the trait level, so callers that need batched prefill
-        // for correctness keep working — the only thing this stub gives up
-        // is the L2-amortised path. Dropping into the default impl is one
-        // catch-and-fallback away in the `prefill_batch_chunk` override
-        // (see TransformerModel impl in `mod.rs`).
-        //
-        // Mark unused to suppress dead-code warnings on n+total_tokens until
-        // the stub is fleshed out.
-        let _ = stream;
-        let _ = (n, total_tokens);
-        Err(anyhow!(
-            "TransformerModel::prefill_batch_chunk_dispatch — Phase 4b \
-             body not yet implemented; caller should fall back to default \
-             trait impl (per-stream prefill_chunk loop)."
-        ))
+        // Buffer-arena fit check (per-stream sequential layout still respects
+        // arena cap on each call). Bail loud if any stream's chunk exceeds
+        // the arena — CUDA 700 territory.
+        let arena_cap = self.buffers.max_batch_tokens();
+        for (i, s) in streams.iter().enumerate() {
+            if s.chunk_len > arena_cap {
+                anyhow::bail!(
+                    "Batched prefill stream {i} chunk_len={} exceeds arena \
+                     capacity {arena_cap}. Reduce --max-prefill-tokens.",
+                    s.chunk_len
+                );
+            }
+        }
+
+        // EP active → NCCL needs the default stream.
+        let stream = if self.comm.is_some() && self.config.ep_world_size > 1 {
+            self.gpu.default_stream()
+        } else {
+            stream
+        };
+
+        // Lock KV cache once for the whole batched dispatch.
+        let mut kv_cache = self.kv_cache.lock();
+
+        let mut logits_out: Vec<DevicePtr> = Vec::with_capacity(n);
+
+        for slice in streams.iter_mut() {
+            let tokens = slice.prompt_tokens;
+            let chunk_start = slice.chunk_start;
+            let chunk_len = slice.chunk_len;
+            let is_last_chunk = slice.is_last_chunk;
+            let total = tokens.len();
+            let seq = &mut *slice.seq;
+
+            // EP=2 zeroes ALL buffers per chunk for NCCL defence-in-depth.
+            // EP=1 zeroes essentials only at chunk_start==0 (stale data).
+            if self.comm.is_some() {
+                self.buffers.zero_all(self.gpu.as_ref(), stream)?;
+            } else if chunk_start == 0 {
+                self.buffers.zero_all(self.gpu.as_ref(), stream)?;
+            }
+
+            // Phase 1+1b: embed at the shared hidden-buffer offset 0.
+            // (Per-stream offsets in the buffer are deferred to Phase 2b/3
+            // when the kernel-batched path actually reads N streams' worth
+            // of hidden at once; today each stream's layer-loop consumes
+            // offset 0 before the next stream overwrites it.)
+            self.prefill_b_embed_chunk(tokens, chunk_start, chunk_len, stream)?;
+
+            // Phase 2: prefix-cache + EP-sync + Marconi.
+            let (kv_write_start, marconi_skip) = self.prefill_b_prefix_lookup(
+                tokens,
+                seq,
+                chunk_start,
+                total,
+                &mut kv_cache,
+                stream,
+            )?;
+
+            // Block allocation through end of chunk.
+            let bs = kv_cache.block_size();
+            let end_pos = chunk_start + chunk_len;
+            let blocks_needed = (end_pos - 1) / bs + 1;
+            super::super::super::block_mgmt::ensure_blocks_through_prefill(
+                seq,
+                blocks_needed - 1,
+                &mut kv_cache,
+                self.prefix_cache.as_ref(),
+                self.gpu.as_ref(),
+                stream,
+            )?;
+
+            // Phase 2b: proc range (may early-return on full prefix hit
+            // of an intermediate chunk).
+            let (proc_start, proc_count, effective_seq_len_start) = match self
+                .prefill_b_proc_range(
+                    tokens,
+                    seq,
+                    chunk_start,
+                    chunk_len,
+                    is_last_chunk,
+                    kv_write_start,
+                    marconi_skip,
+                    stream,
+                )? {
+                ProcRange::Compute {
+                    proc_start,
+                    proc_count,
+                    effective_seq_len_start,
+                } => (proc_start, proc_count, effective_seq_len_start),
+                ProcRange::EarlyReturn(ptr) => {
+                    logits_out.push(ptr);
+                    continue;
+                }
+            };
+
+            // Phase 3+3b: positions / MRoPE / paged metadata.
+            let MetaLayout {
+                meta_base,
+                slot_offset,
+                pos_stream_bytes,
+                use_mrope,
+                needs_paged,
+            } = self.prefill_b_upload_meta(
+                tokens,
+                seq,
+                chunk_start,
+                chunk_len,
+                proc_start,
+                proc_count,
+                effective_seq_len_start,
+                &kv_cache,
+                stream,
+            )?;
+
+            if needs_paged {
+                self.prefill_b_upload_paged(
+                    seq,
+                    total,
+                    proc_start,
+                    proc_count,
+                    meta_base,
+                    slot_offset,
+                    &kv_cache,
+                    stream,
+                )?;
+            }
+
+            // Synchronise H2D before layer compute (GB10 DMA quirk —
+            // see prefill_chunk_dispatch comment).
+            self.gpu.synchronize(stream)?;
+
+            // Phase 4: forward through all layers (per-stream — Phase 2b/3
+            // will hoist this out of the loop with `layer.prefill_batched`).
+            self.prefill_b_forward_layers(
+                seq,
+                &mut kv_cache,
+                chunk_start,
+                chunk_len,
+                is_last_chunk,
+                proc_count,
+                effective_seq_len_start,
+                kv_write_start,
+                marconi_skip,
+                meta_base,
+                slot_offset,
+                pos_stream_bytes,
+                use_mrope,
+                needs_paged,
+                stream,
+            )?;
+
+            // Phase 5: update sequence state.
+            seq.tokens
+                .extend_from_slice(&tokens[chunk_start..chunk_start + chunk_len]);
+            seq.seq_len = chunk_start + chunk_len;
+
+            let logits = if is_last_chunk {
+                self.prefill_b_finalize_last(
+                    tokens,
+                    seq,
+                    &mut kv_cache,
+                    chunk_start,
+                    chunk_len,
+                    proc_count,
+                    stream,
+                )?
+            } else {
+                self.prefill_b_save_checkpoint(
+                    tokens,
+                    seq,
+                    &mut kv_cache,
+                    chunk_start,
+                    chunk_len,
+                    stream,
+                )?;
+                DevicePtr::NULL
+            };
+            logits_out.push(logits);
+        }
+
+        Ok(logits_out)
     }
 }
