@@ -14,6 +14,7 @@ use spark_model::traits::{Model, PrefillSlice, SequenceState};
 use spark_runtime::gpu::DevicePtr;
 use std::time::Instant;
 
+use super::decode_logits_step::process_decode_logits;
 use super::phase_promote_prefills::promote_completed_prefills;
 use super::*;
 use crate::scheduling_policy::{ActiveSeqTiming, SchedulingPolicy};
@@ -58,45 +59,49 @@ pub(super) fn continue_in_progress_prefills(
 
     let mut completed_indices = Vec::new();
 
-    // ── Batched-prefill path (Q12) ──
+    // ── Batched-prefill paths (Q12) ──
     //
-    // Fires when 2+ streams are prefilling concurrently AND there are no
-    // active decode sequences AND we're not in EP mode. Calls the new
-    // `prefill_batch_chunk` model API once per scheduler iteration,
-    // advancing every prefilling stream's chunk in lockstep. Eliminates the
-    // FIFO `prefilling.first_mut()` starvation that produced the asymmetric
-    // 24+131 s TTFT documented in qwen-refactor notes §6.
+    // Two branches fire when 2+ streams are prefilling concurrently. Both
+    // replace the FIFO `prefilling.first_mut()` advance that caused the
+    // asymmetric 24+131 s TTFT documented in qwen-refactor notes §6.
     //
-    // Phase 4a (this commit) uses the default trait impl which loops over
-    // single-stream `prefill_chunk` per stream — no kernel-level batching
-    // yet, but the API surface is wired end-to-end and TTFT is
-    // distributed fairly across streams. Phase 2/3 of the plan replace
-    // the default impl with concrete batched dispatch (true L2-amortised
-    // weight load + batched GDN/attention kernels).
+    // Phase 4a (commit 2ff926d): active.is_empty() case → prefill_batch_chunk.
+    // Phase 5 (this commit): active.is_nonempty() case → mixed_forward_batch
+    // (N decode tokens + M prefill chunks fused). Lifts the implicit MTP /
+    // self-spec / N-gram-spec gating since those only apply to active
+    // sequences, not freshly-prefilling ones — the active-side decode is
+    // still handled by `step_decode_only` / `step_mtp` etc. via
+    // `process_decode_logits` on the returned decode logits.
+    //
+    // Phase 4a/5 use the default trait impls (per-stream loops). No
+    // kernel-level batching yet — the win is fairness/TTFT distribution.
+    // Phase 2/3 of the plan replace the default impls with concrete
+    // batched dispatch (true L2-amortised weight load + batched GDN/attn).
     //
     // Gates:
     //   - `prefilling.len() >= 2` — single-stream stays on the existing
     //     two-phase / chunked / mixed_forward path (preserves correctness
     //     and the long-prompt two-phase optimisation).
-    //   - `active.is_empty()` — when active is non-empty, the existing
-    //     mixed_forward path fuses 1 prefill chunk + N decode tokens. The
-    //     more general `mixed_forward_batch` (N prefills + M decodes) lands
-    //     in a later phase.
     //   - `!model.is_ep()` — EP=2 needs a new BATCH_PREFILL_CHUNK opcode
     //     (Phase 6) to broadcast batched chunks to the worker rank.
-    //   - `!use_mtp && !use_self_speculative && !use_ngram_speculative` —
-    //     the default `prefill_batch_chunk` impl loops over `prefill_chunk`,
-    //     which doesn't carry MTP/spec state. Phase 5 lifts these.
-    //
-    // When the batched path fires, it returns early so the existing
-    // single-stream code below is bypassed.
-    let can_batch_prefill = prefilling.len() >= 2
+    //   - For the mixed-batch branch only: skip when active.len() == 1 AND
+    //     a speculative path is active. Speculative decode (`step_mtp`,
+    //     `step_self_spec`, `step_ngram`) handles its own forward; mixing
+    //     it with `mixed_forward_batch` would double-decode the active
+    //     stream. With more than one active sequence, speculative is off
+    //     by construction (those step_* paths require active.len()==1) so
+    //     the mixed branch is safe.
+    let single_active_with_spec = active.len() == 1
+        && (use_mtp || use_self_speculative || use_ngram_speculative);
+    let can_batch_prefill_only = prefilling.len() >= 2
         && active.is_empty()
-        && !model.is_ep()
-        && !use_mtp
-        && !use_self_speculative
-        && !use_ngram_speculative;
-    if can_batch_prefill {
+        && !model.is_ep();
+    let can_batch_mixed = prefilling.len() >= 2
+        && !active.is_empty()
+        && !single_active_with_spec
+        && !model.is_ep();
+
+    if can_batch_prefill_only {
         run_batched_prefill_step(
             model,
             prefilling,
@@ -104,6 +109,38 @@ pub(super) fn continue_in_progress_prefills(
             max_prefill_tokens,
             prefill_stream,
             prefill_event,
+        );
+        promote_completed_prefills(
+            model,
+            prefilling,
+            completed_indices,
+            active,
+            think_end_token,
+            think_start_token,
+            tool_call_start_token,
+            tool_call_end_token,
+        );
+        return did_mixed_step;
+    }
+
+    if can_batch_mixed {
+        let t0_mixed = Instant::now();
+        run_batched_mixed_step(
+            model,
+            active,
+            prefilling,
+            &mut completed_indices,
+            max_prefill_tokens,
+            prefill_stream,
+            prefill_event,
+            t0_mixed,
+            think_end_token,
+            think_start_token,
+            tool_call_start_token,
+            tool_call_end_token,
+            reflection_suppress_ids,
+            adaptive_sampling,
+            &mut did_mixed_step,
         );
         promote_completed_prefills(
             model,
@@ -522,4 +559,145 @@ fn run_batched_prefill_step(
     if elapsed > 1000 {
         tracing::debug!("Batched prefill step: {n} streams, {elapsed}µs total");
     }
+}
+
+/// Batched mixed step (Q12, Phase 5): N decode tokens + M prefill chunks
+/// fused via `model.mixed_forward_batch`. Like `run_batched_prefill_step`
+/// but for the active-nonempty case — replaces the existing single-prefill
+/// `mixed_forward` call with the M-stream variant.
+///
+/// On success sets `did_mixed_step = true` so the caller skips the standalone
+/// decode dispatch (active sequences' next tokens are already sampled here).
+///
+/// Phase 5 uses the default trait impl which serializes (`decode_batch` then
+/// per-stream `prefill_chunk` loop). Phase 2/3 will override with true
+/// kernel-level batched mixed forward.
+#[allow(clippy::too_many_arguments)]
+fn run_batched_mixed_step(
+    model: &dyn Model,
+    active: &mut Vec<ActiveSeq>,
+    prefilling: &mut [PrefillInProgress],
+    completed_indices: &mut Vec<(usize, Option<u32>)>,
+    max_prefill_tokens: usize,
+    prefill_stream: u64,
+    prefill_event: u64,
+    t0_step: Instant,
+    think_end_token: Option<u32>,
+    think_start_token: Option<u32>,
+    tool_call_start_token: Option<u32>,
+    tool_call_end_token: Option<u32>,
+    reflection_suppress_ids: &[u32],
+    adaptive_sampling: bool,
+    did_mixed_step: &mut bool,
+) {
+    let n_prefill = prefilling.len();
+    let n_decode = active.len();
+
+    // Capture per-stream chunk_len + is_last (same MLA gate + WY4 alignment
+    // as `run_batched_prefill_step`).
+    let mut chunk_lens: Vec<usize> = Vec::with_capacity(n_prefill);
+    let mut is_last_flags: Vec<bool> = Vec::with_capacity(n_prefill);
+    for p in prefilling.iter() {
+        let remaining = p.prompt_tokens.len() - p.chunk_offset;
+        let effective_max = if model.is_mla() { remaining } else { max_prefill_tokens };
+        let mut chunk_len = remaining.min(effective_max);
+        let is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
+        if !is_last && chunk_len >= 4 {
+            chunk_len = (chunk_len / 4) * 4;
+        }
+        chunk_lens.push(chunk_len);
+        is_last_flags.push(is_last);
+    }
+
+    // Gather decode-side inputs.
+    let decode_tokens: Vec<u32> = active.iter().map(|a| a.last_token).collect();
+
+    // Build slices in a temporary scope so the &mut borrows on prefilling
+    // and active drop before we re-borrow active mutably for
+    // `process_decode_logits`.
+    let result = {
+        let mut decode_refs: Vec<&mut SequenceState> =
+            active.iter_mut().map(|a| &mut a.seq).collect();
+        let mut prefill_slices: Vec<PrefillSlice<'_>> = prefilling
+            .iter_mut()
+            .enumerate()
+            .map(|(i, p)| PrefillSlice {
+                prompt_tokens: &p.prompt_tokens,
+                seq: &mut p.seq,
+                chunk_start: p.chunk_offset,
+                chunk_len: chunk_lens[i],
+                is_last_chunk: is_last_flags[i],
+            })
+            .collect();
+        model.mixed_forward_batch(
+            &decode_tokens,
+            &mut decode_refs,
+            &mut prefill_slices,
+            prefill_stream,
+        )
+    };
+
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(
+                "Mixed-batch forward error (n_decode={n_decode}, n_prefill={n_prefill}): {e:#}",
+            );
+            for i in 0..n_prefill {
+                completed_indices.push((i, None));
+            }
+            return;
+        }
+    };
+
+    let _ = model.record_event(prefill_event, prefill_stream);
+    let _ = model.stream_wait_event(model.default_stream(), prefill_event);
+
+    // Advance prefill offsets and sample first tokens for streams that just
+    // finished their last chunk.
+    debug_assert_eq!(result.prefill_logits.len(), n_prefill);
+    for (i, p) in prefilling.iter_mut().enumerate() {
+        p.chunk_offset += chunk_lens[i];
+        if !is_last_flags[i] {
+            continue;
+        }
+        let logits = result.prefill_logits[i];
+        if logits == DevicePtr::NULL {
+            tracing::error!("Mixed-batch: stream {i} marked is_last but model returned NULL logits");
+            completed_indices.push((i, None));
+            continue;
+        }
+        match sample_token(model, logits, p.temperature, p.top_k, p.top_p, &p.eos_tokens) {
+            Ok(first) => {
+                tracing::info!(
+                    "Mixed-batch prefill[{i}/{n_prefill}] first token: {first} (chunk_len={}, total_tokens={})",
+                    chunk_lens[i],
+                    p.prompt_tokens.len(),
+                );
+                completed_indices.push((i, Some(first)));
+            }
+            Err(e) => {
+                tracing::error!("Mixed-batch prefill[{i}] sampling: {e:#}");
+                completed_indices.push((i, None));
+            }
+        }
+    }
+
+    // Process decode logits for the active lanes — mirrors what
+    // `run_standard_chunk_loop`'s mixed_forward branch does.
+    if n_decode > 0 && result.decode_logits != DevicePtr::NULL {
+        process_decode_logits(
+            model,
+            active,
+            result.decode_logits,
+            t0_step,
+            think_end_token,
+            think_start_token,
+            tool_call_start_token,
+            tool_call_end_token,
+            reflection_suppress_ids,
+            adaptive_sampling,
+        );
+    }
+    *did_mixed_step = true;
 }
