@@ -31,6 +31,7 @@ mod forward_layers;
 mod prefix_lookup;
 mod proc_range;
 mod save_checkpoint;
+mod stage_batched;
 mod upload_meta;
 mod upload_paged;
 
