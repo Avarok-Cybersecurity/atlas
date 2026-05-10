@@ -113,38 +113,98 @@ impl TransformerModel {
         residual_stacked: DevicePtr,
         seqs: &mut [&mut SequenceState],
         kv_cache: &mut PagedKvCache,
+        seqs_proc_start: &[usize],
         meta: &BatchedAttnMetadata,
         gdn_bufs: &GdnPrefillBuffers,
+        h_state_ptrs_scratch_offset: usize,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        // TODO(kernel-session): batched SSM layer body.
-        //
-        // Plan:
-        //   for b in 0..n {
-        //       layer.prefill_phase1(... hidden_b, residual_b, chunk_len,
-        //           seqs[b].layer_states[layer_idx], kv_cache,
-        //           seqs[b].seq_len_start, ..., gdn_bufs,
-        //           token_offset = b * chunk_len, ctx, stream)?;
-        //   }
-        //   // Build h_state_ptrs[N] device array
-        //   let h_state_ptrs_dev = stage_h_state_ptrs(layer_idx, seqs, ctx)?;
-        //   // ONE batched GDN
-        //   layer.prefill_gdn_full_batched(h_state_ptrs_dev, gdn_bufs,
-        //       batch_size=n, seq_len=chunk_len, ctx, stream)?;
-        //   for b in 0..n {
-        //       layer.prefill_phase3(... hidden_b, residual_b, chunk_len,
-        //           gdn_bufs, token_offset = b * chunk_len, ctx, stream)?;
-        //   }
-        //
-        // Stub: bail and let caller fall back.
-        let _ = (layer, layer_idx, hidden_stacked, residual_stacked, seqs,
-                 kv_cache, meta, gdn_bufs, ctx, stream);
-        anyhow::bail!(
-            "prefill_ssm_batched_layer: stub body — caller should fall back \
-             to per-stream prefill_chunk_dispatch until kernel-session wiring \
-             lands. See module docstring for the body replacement plan."
-        )
+        let n = seqs.len();
+        debug_assert_eq!(n as u32, meta.batch_size);
+        debug_assert_eq!(n, seqs_proc_start.len());
+        let chunk_len = meta.chunk_len as usize;
+        let h = ctx.config.hidden_size;
+        let dtype_bytes = if ctx.config.use_fp32_residual() { 4usize } else { 2usize };
+
+        // ── Phase 1: per-stream projections + conv1d + L2 norm ──
+        // Each stream's data lands in gdn_bufs at offset `b * chunk_len`.
+        // The `_kv_write_start` arg is ignored by SSM layers (recurrent
+        // state requires all tokens, no skip), so we pass 0.
+        for (b, seq) in seqs.iter_mut().enumerate() {
+            let h_b = hidden_stacked.offset(b * chunk_len * h * dtype_bytes);
+            let r_b = residual_stacked.offset(b * chunk_len * h * dtype_bytes);
+            // Split borrow so we can pass multiple &mut fields of the same seq.
+            let (block_table, disk_block_ids, disk_last, layer_state) = {
+                let SequenceState {
+                    block_table,
+                    disk_block_ids,
+                    disk_last_offloaded_per_layer,
+                    layer_states,
+                    ..
+                } = &mut **seq;
+                (
+                    block_table,
+                    disk_block_ids,
+                    disk_last_offloaded_per_layer,
+                    layer_states[layer_idx].as_mut(),
+                )
+            };
+            layer.prefill_phase1(
+                h_b,
+                r_b,
+                chunk_len,
+                layer_state,
+                kv_cache,
+                seqs_proc_start[b],
+                block_table,
+                disk_block_ids,
+                disk_last,
+                0,
+                gdn_bufs,
+                b * chunk_len,
+                ctx,
+                stream,
+            )?;
+        }
+
+        // ── Phase 2: ONE batched GDN kernel call ──
+        // Stage h_state_ptrs[N] device array at the dedicated scratch offset
+        // (caller computes this offset to avoid colliding with the
+        // BatchedAttnMetadata staging at scratch[0..]).
+        let h_state_ptrs_dev =
+            self.stage_h_state_ptrs(layer_idx, seqs, h_state_ptrs_scratch_offset, stream)?;
+
+        layer.prefill_gdn_full_batched(
+            h_state_ptrs_dev,
+            gdn_bufs,
+            meta.batch_size,
+            meta.chunk_len,
+            ctx,
+            stream,
+        )?;
+
+        // ── Phase 3: per-stream gated-RMS-norm + out-proj + MoE ──
+        for (b, seq) in seqs.iter_mut().enumerate() {
+            let h_b = hidden_stacked.offset(b * chunk_len * h * dtype_bytes);
+            let r_b = residual_stacked.offset(b * chunk_len * h * dtype_bytes);
+            layer.prefill_phase3(
+                h_b,
+                r_b,
+                chunk_len,
+                gdn_bufs,
+                b * chunk_len,
+                ctx,
+                stream,
+            )?;
+            // Suppress unused-binding warnings — seq could be queried for
+            // future per-stream metadata in phase3 but currently isn't.
+            let _ = seq;
+        }
+
+        // meta is consumed for chunk_len/batch_size above.
+        let _ = meta;
+        Ok(())
     }
 
     /// Run one dense (non-SSM, non-attention-stateful) layer over N stacked-

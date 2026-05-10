@@ -245,6 +245,35 @@ pub trait TransformerLayer: Send + Sync {
         Ok(()) // No-op for attention layers
     }
 
+    /// Q12 Path B: batched GDN recurrence across N streams.
+    ///
+    /// Runs the same WY32 / persistent / split4 GDN kernel as
+    /// `prefill_gdn_full` but with `batch_size = batch_size` and
+    /// `h_state_ptrs` pointing to a device array of N per-stream h_state
+    /// pointers (staged by `TransformerModel::stage_h_state_ptrs`).
+    /// `gdn_bufs.qkv` / `gate_beta` / `output` are stacked across N
+    /// streams contiguously: each stream's data lives at
+    /// `b * chunk_len * conv_dim` (BF16) within the buffer.
+    ///
+    /// Default impl returns `Err` — the SSM layer override implements the
+    /// actual batched dispatch using the kernel handles loaded in
+    /// commit `8d07ca4`. Attention layers don't override (they don't
+    /// have a GDN step).
+    fn prefill_gdn_full_batched(
+        &self,
+        _h_state_ptrs: DevicePtr,
+        _gdn_bufs: &GdnPrefillBuffers,
+        _batch_size: u32,
+        _chunk_len: u32,
+        _ctx: &ForwardContext,
+        _stream: u64,
+    ) -> Result<()> {
+        anyhow::bail!(
+            "prefill_gdn_full_batched: layer does not implement batched GDN \
+             — caller should fall back to per-stream prefill_gdn_full"
+        )
+    }
+
     /// Two-phase SSM prefill — Phase 3: post-GDN processing.
     ///
     /// Reads GDN output and Z gate from `gdn_bufs` at `token_offset`,

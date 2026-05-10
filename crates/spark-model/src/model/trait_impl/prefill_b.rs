@@ -29,6 +29,7 @@ mod batched_layer;
 mod embed_chunk;
 mod finalize_last;
 mod forward_layers;
+mod h_state_ptrs;
 mod prefix_lookup;
 mod proc_range;
 mod save_checkpoint;
