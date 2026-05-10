@@ -34,7 +34,7 @@
 use anyhow::{Result, bail};
 use spark_runtime::gpu::DevicePtr;
 
-use super::{MixedForwardResult, SequenceState};
+use super::{MixedBatchResult, MixedForwardResult, PrefillSlice, SequenceState};
 
 pub trait Model: Send + Sync {
     /// Run prefill: process all prompt tokens through the model.
@@ -102,6 +102,64 @@ pub trait Model: Send + Sync {
             stream,
         )?;
         Ok(MixedForwardResult {
+            decode_logits,
+            prefill_logits,
+        })
+    }
+
+    /// Process N concurrent prefill chunks in one forward pass (same weight
+    /// load amortised across N streams). The default implementation falls
+    /// back to a per-stream loop calling `prefill_chunk` — implementors that
+    /// support kernel-level batched prefill should override this.
+    ///
+    /// Returns a `Vec<DevicePtr>` parallel to `streams`: each entry is the
+    /// last-token logits pointer for that stream when its chunk is
+    /// `is_last_chunk`, or `DevicePtr::NULL` otherwise.
+    ///
+    /// Tracks issue Q12 in
+    /// `/workspace/atlas-internal/qwen-refactor/notes.md`.
+    fn prefill_batch_chunk(
+        &self,
+        streams: &mut [PrefillSlice<'_>],
+        stream: u64,
+    ) -> Result<Vec<DevicePtr>> {
+        // Default: serialized per-stream prefill_chunk. This preserves
+        // current behavior for any model that doesn't override; only the
+        // weight-streaming amortisation is lost vs a true batched path.
+        let mut out = Vec::with_capacity(streams.len());
+        for slice in streams.iter_mut() {
+            let logits = self.prefill_chunk(
+                slice.prompt_tokens,
+                slice.seq,
+                slice.chunk_start,
+                slice.chunk_len,
+                slice.is_last_chunk,
+                stream,
+            )?;
+            out.push(logits);
+        }
+        Ok(out)
+    }
+
+    /// Generalised mixed forward: M decode tokens + N concurrent prefill
+    /// chunks fused into one forward pass. Default: delegates to
+    /// `decode_batch` + `prefill_batch_chunk` serially. Models that
+    /// implement true mixed batching should override.
+    fn mixed_forward_batch(
+        &self,
+        decode_tokens: &[u32],
+        decode_seqs: &mut [&mut SequenceState],
+        prefill_streams: &mut [PrefillSlice<'_>],
+        stream: u64,
+    ) -> Result<MixedBatchResult> {
+        // Default: serial execution.
+        let decode_logits = if !decode_tokens.is_empty() {
+            self.decode_batch(decode_tokens, decode_seqs, stream)?
+        } else {
+            spark_runtime::gpu::DevicePtr::NULL
+        };
+        let prefill_logits = self.prefill_batch_chunk(prefill_streams, stream)?;
+        Ok(MixedBatchResult {
             decode_logits,
             prefill_logits,
         })

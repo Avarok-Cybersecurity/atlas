@@ -20,6 +20,39 @@ pub struct MixedForwardResult {
     pub prefill_logits: DevicePtr,
 }
 
+/// Per-stream input slice for batched prefill.
+///
+/// One of these per concurrent prefilling stream — `prefill_batch_chunk` and
+/// `mixed_forward_batch` accept a `&mut [PrefillSlice<'_>]` and process all
+/// streams' chunks in a single forward pass. See Q12 in
+/// `/workspace/atlas-internal/qwen-refactor/notes.md` for the bug this
+/// fixes (concurrent prefills serialized through `prefilling.first_mut()`
+/// in the scheduler, causing 5× asymmetric TTFT).
+pub struct PrefillSlice<'a> {
+    /// Full prompt tokens for this stream.
+    pub prompt_tokens: &'a [u32],
+    /// Per-stream sequence state (KV blocks, SSM slot, etc.).
+    pub seq: &'a mut SequenceState,
+    /// Token offset into `prompt_tokens` where this chunk starts.
+    pub chunk_start: usize,
+    /// Number of tokens in this chunk.
+    pub chunk_len: usize,
+    /// Whether this is the final chunk for this stream (controls whether
+    /// the model emits last-token logits for sampling).
+    pub is_last_chunk: bool,
+}
+
+/// Result of a fully-batched mixed forward pass: M decode tokens + N prefill
+/// chunks in one pass.
+pub struct MixedBatchResult {
+    /// Logits for decode lanes: [M, vocab] BF16. NULL if no decode lanes.
+    pub decode_logits: DevicePtr,
+    /// Logits per prefill stream — one DevicePtr per stream in the input
+    /// slice, in the same order. Each entry is `[1, vocab]` BF16 when that
+    /// stream's chunk was `is_last_chunk`, or NULL otherwise.
+    pub prefill_logits: Vec<DevicePtr>,
+}
+
 /// Per-sequence paged attention metadata for chunked prefill.
 ///
 /// Positions and slots remain chunk-local, but the paged block table and
