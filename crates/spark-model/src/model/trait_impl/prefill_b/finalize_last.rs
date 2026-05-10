@@ -18,7 +18,7 @@ use crate::layers::ops;
 use crate::traits::SequenceState;
 
 impl TransformerModel {
-    pub(super) fn prefill_b_finalize_last(
+    pub(in crate::model) fn prefill_b_finalize_last(
         &self,
         tokens: &[u32],
         seq: &mut SequenceState,
