@@ -109,6 +109,29 @@ impl TransformerModel {
             }
         }
 
+        // Q12 Path B: kernel-batched fast path. Check eligibility upfront
+        // (cheap) and, when viable, dispatch to the outer-layer-loop
+        // implementation that uses BatchedAttnMetadata + per-layer batched
+        // dispatchers. On Err from the kernel path, fall through to the
+        // per-stream body below. The kernel path bails BEFORE any state
+        // mutation on the structural eligibility check; mid-Phase-A bails
+        // (e.g. proc_count mismatch from differing prefix-cache hits) leave
+        // the streams in a partially-mutated state — we propagate that Err
+        // so the caller can retry single-stream or surface to the user.
+        if self.kernel_batched_eligible(streams) {
+            match self.prefill_batch_chunk_kernel_batched(streams, stream) {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    // Structural bails (proc_count/seq_lens_start mismatch,
+                    // unsupported layer feature) are logged at debug —
+                    // expected to occur for some workloads.
+                    tracing::debug!(
+                        "kernel-batched prefill bailed → falling back to per-stream: {e}"
+                    );
+                }
+            }
+        }
+
         // EP active → NCCL needs the default stream.
         let stream = if self.comm.is_some() && self.config.ep_world_size > 1 {
             self.gpu.default_stream()
