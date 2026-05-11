@@ -5,6 +5,8 @@
 //! `chat_completions` to detect and mitigate stalled / looping agents.
 
 mod circuit;
+#[cfg(test)]
+mod circuit_tests;
 mod circuit_f60;
 mod classification;
 mod duplicate;

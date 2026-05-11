@@ -452,3 +452,4 @@ pub fn f44_check_permanent_failure(cache: &F39FailureCache, tool: &str, args_jso
     );
     false
 }
+
