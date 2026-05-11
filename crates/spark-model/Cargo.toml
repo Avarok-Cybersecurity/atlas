@@ -51,7 +51,7 @@ parking_lot = { workspace = true }
 # Used by the `metal_qwen35_inference` example only — gated by
 # `required-features = ["metal-example"]` on the `[[example]]` block
 # below so default Linux builds don't pull these in.
-tokenizers = { version = "0.21", optional = true, default-features = false, features = ["onig"] }
+tokenizers = { version = "0.23", optional = true, default-features = false, features = ["onig"] }
 memmap2 = { version = "0.9", optional = true }
 safetensors = { version = "0.5", optional = true }
 
