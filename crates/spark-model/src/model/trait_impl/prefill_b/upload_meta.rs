@@ -70,7 +70,6 @@ impl TransformerModel {
         meta_base: DevicePtr,
         stream: u64,
     ) -> Result<MetaLayout> {
-
         // MRoPE-interleaved packs three u32 position streams (T, H, W).
         let use_mrope = self.config.mrope_interleaved;
         let pos_stream_bytes = proc_count * 4;

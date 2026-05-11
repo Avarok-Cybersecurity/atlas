@@ -295,8 +295,7 @@ impl Qwen3SsmLayer {
                 smem,
                 stream,
             )?;
-        } else if (256..=4096).contains(&chunk_len)
-            && self.gdn_prefill_persistent_batched_k.0 != 0
+        } else if (256..=4096).contains(&chunk_len) && self.gdn_prefill_persistent_batched_k.0 != 0
         {
             ops::gdn_prefill_persistent_batched(
                 ctx.gpu,

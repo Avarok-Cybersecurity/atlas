@@ -141,7 +141,11 @@ impl TransformerModel {
         debug_assert_eq!(n, seqs_proc_start.len());
         let chunk_len = meta.chunk_len as usize;
         let h = ctx.config.hidden_size;
-        let dtype_bytes = if ctx.config.use_fp32_residual() { 4usize } else { 2usize };
+        let dtype_bytes = if ctx.config.use_fp32_residual() {
+            4usize
+        } else {
+            2usize
+        };
 
         // ── Phase 1: per-stream projections + conv1d + L2 norm ──
         // Each stream's data lands in gdn_bufs at offset `b * chunk_len`.
@@ -204,15 +208,7 @@ impl TransformerModel {
         for (b, seq) in seqs.iter_mut().enumerate() {
             let h_b = hidden_stacked.offset(b * chunk_len * h * dtype_bytes);
             let r_b = residual_stacked.offset(b * chunk_len * h * dtype_bytes);
-            layer.prefill_phase3(
-                h_b,
-                r_b,
-                chunk_len,
-                gdn_bufs,
-                b * chunk_len,
-                ctx,
-                stream,
-            )?;
+            layer.prefill_phase3(h_b, r_b, chunk_len, gdn_bufs, b * chunk_len, ctx, stream)?;
             // Suppress unused-binding warnings — seq could be queried for
             // future per-stream metadata in phase3 but currently isn't.
             let _ = seq;

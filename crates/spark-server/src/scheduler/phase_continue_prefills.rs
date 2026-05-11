@@ -92,8 +92,8 @@ pub(super) fn continue_in_progress_prefills(
     // path is active (those step_* paths require active.len()==1 and
     // mixing would double-decode). Spec is off by construction when
     // active.len() ≥ 2, so the mixed branch is safe there.
-    let single_active_with_spec = active.len() == 1
-        && (use_mtp || use_self_speculative || use_ngram_speculative);
+    let single_active_with_spec =
+        active.len() == 1 && (use_mtp || use_self_speculative || use_ngram_speculative);
     // BISECT: ATLAS_BISECT_Q12_DISABLE=1 forces the per-stream FIFO path
     // (pre-Q12 behavior) so we can isolate whether the chunked-prefill +
     // concurrent-decode crash originates in the Q12 batched-prefill
@@ -101,10 +101,8 @@ pub(super) fn continue_in_progress_prefills(
     let q12_dispatch_disabled = std::env::var("ATLAS_BISECT_Q12_DISABLE")
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
-    let can_batch_prefill_only = !q12_dispatch_disabled
-        && prefilling.len() >= 2
-        && active.is_empty()
-        && !model.is_ep();
+    let can_batch_prefill_only =
+        !q12_dispatch_disabled && prefilling.len() >= 2 && active.is_empty() && !model.is_ep();
     let can_batch_mixed = !q12_dispatch_disabled
         && prefilling.len() >= 2
         && !active.is_empty()

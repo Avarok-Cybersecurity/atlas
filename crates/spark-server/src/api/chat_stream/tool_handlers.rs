@@ -88,7 +88,11 @@ pub(super) fn handle_complete_tool_call(
         // Successful complete-call path — log + metric to match the
         // blocking and incremental-streaming paths.
         let preview: String = tc.function.arguments.chars().take(120).collect();
-        let s = if tc.function.arguments.len() > preview.len() { "…" } else { "" };
+        let s = if tc.function.arguments.len() > preview.len() {
+            "…"
+        } else {
+            ""
+        };
         tracing::info!("Tool call: {}({preview}{s})", tc.function.name);
         crate::metrics::TOOL_CALLS_TOTAL.inc();
         let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, tc_idx);
@@ -267,7 +271,11 @@ pub(super) fn handle_tool_call_end(state: &mut StreamState, ctx: &StreamCtx, idx
             // Successful streaming tool call — log + metric to match the
             // blocking and complete-call paths.
             let preview: String = args_json.chars().take(120).collect();
-            let s = if args_json.len() > preview.len() { "…" } else { "" };
+            let s = if args_json.len() > preview.len() {
+                "…"
+            } else {
+                ""
+            };
             tracing::info!("Tool call: {name}({preview}{s})");
             crate::metrics::TOOL_CALLS_TOTAL.inc();
         }

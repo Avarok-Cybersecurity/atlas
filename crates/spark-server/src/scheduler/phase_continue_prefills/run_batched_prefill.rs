@@ -41,7 +41,11 @@ pub(super) fn run_batched_prefill_step(
         // Same MLA correctness gate as `run_standard_chunk_loop` — MLA
         // models lack a paged-MLA prefill kernel so multi-chunk prefill
         // silently corrupts attention. Force single-chunk for MLA.
-        let effective_max = if model.is_mla() { remaining } else { max_prefill_tokens };
+        let effective_max = if model.is_mla() {
+            remaining
+        } else {
+            max_prefill_tokens
+        };
         let mut chunk_len = remaining.min(effective_max);
         let is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
         // Align intermediate chunks to GDN WY4 boundary (4 tokens).
@@ -87,7 +91,11 @@ pub(super) fn run_batched_prefill_step(
     let _ = model.record_event(prefill_event, prefill_stream);
     let _ = model.stream_wait_event(model.default_stream(), prefill_event);
 
-    debug_assert_eq!(logits_per_stream.len(), n, "prefill_batch_chunk returned wrong logit count");
+    debug_assert_eq!(
+        logits_per_stream.len(),
+        n,
+        "prefill_batch_chunk returned wrong logit count"
+    );
 
     // Advance offsets and sample first token where the chunk just completed.
     for (i, p) in prefilling.iter_mut().enumerate() {
@@ -103,7 +111,14 @@ pub(super) fn run_batched_prefill_step(
             completed_indices.push((i, None));
             continue;
         }
-        match sample_token(model, logits, p.temperature, p.top_k, p.top_p, &p.eos_tokens) {
+        match sample_token(
+            model,
+            logits,
+            p.temperature,
+            p.top_k,
+            p.top_p,
+            &p.eos_tokens,
+        ) {
             Ok(first) => {
                 tracing::info!(
                     "Batched prefill[{i}/{n}] first token: {first} (chunk_len={}, total_tokens={})",

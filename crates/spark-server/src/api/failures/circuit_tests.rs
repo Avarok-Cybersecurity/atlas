@@ -83,7 +83,10 @@ fn banner_singular_pluralization() {
         prior_failure_count: 1,
     };
     let body = f39_build_circuit_breaker_banner(&[m1]);
-    assert!(body.contains("failed 1 time "), "singular form expected: {body}");
+    assert!(
+        body.contains("failed 1 time "),
+        "singular form expected: {body}"
+    );
     assert!(body.contains("<atlas_circuit_breaker>"));
     assert!(body.contains("Bash(cargo init)"));
 }
@@ -97,7 +100,10 @@ fn banner_plural_pluralization() {
         prior_failure_count: 3,
     };
     let body = f39_build_circuit_breaker_banner(&[m]);
-    assert!(body.contains("failed 3 times "), "plural form expected: {body}");
+    assert!(
+        body.contains("failed 3 times "),
+        "plural form expected: {body}"
+    );
 }
 
 #[test]

@@ -44,12 +44,11 @@ impl TransformerModel {
     /// Returns true when the batched-kernel path is viable for these
     /// streams. Cheap upfront check — caller (dispatch) falls back to
     /// per-stream when false.
-    pub(in crate::model) fn kernel_batched_eligible(
-        &self,
-        streams: &[PrefillSlice<'_>],
-    ) -> bool {
+    pub(in crate::model) fn kernel_batched_eligible(&self, streams: &[PrefillSlice<'_>]) -> bool {
         check_kernel_batched_eligible(
-            streams.iter().map(|s| (s.chunk_len, s.chunk_start, s.is_last_chunk)),
+            streams
+                .iter()
+                .map(|s| (s.chunk_len, s.chunk_start, s.is_last_chunk)),
             streams.len(),
             self.buffers.max_batch_tokens(),
             &self.config.model_type,
@@ -108,7 +107,6 @@ where
 }
 
 impl TransformerModel {
-
     /// Q12 Path B: full kernel-batched prefill orchestration.
     ///
     /// Caller (prefill_batch_chunk_dispatch) MUST have verified
@@ -215,8 +213,8 @@ impl TransformerModel {
             )?;
 
             // Effective processing range.
-            let (proc_start, proc_count, effective_seq_len_start) =
-                match self.prefill_b_proc_range(
+            let (proc_start, proc_count, effective_seq_len_start) = match self
+                .prefill_b_proc_range(
                     tokens,
                     seq,
                     chunk_start,
@@ -226,16 +224,16 @@ impl TransformerModel {
                     marconi_skip,
                     stream,
                 )? {
-                    ProcRange::Compute {
-                        proc_start,
-                        proc_count,
-                        effective_seq_len_start,
-                    } => (proc_start, proc_count, effective_seq_len_start),
-                    ProcRange::EarlyReturn(_) => anyhow::bail!(
-                        "kernel-batched: stream {b} early-returned during proc_range \
+                ProcRange::Compute {
+                    proc_start,
+                    proc_count,
+                    effective_seq_len_start,
+                } => (proc_start, proc_count, effective_seq_len_start),
+                ProcRange::EarlyReturn(_) => anyhow::bail!(
+                    "kernel-batched: stream {b} early-returned during proc_range \
                          — eligibility check missed this. Caller should fall back."
-                    ),
-                };
+                ),
+            };
 
             // Cross-stream consistency: all streams must share proc_count
             // and effective_seq_len_start (q_offset) for the batched
@@ -291,9 +289,9 @@ impl TransformerModel {
             // must match.
             match (use_mrope, layout.use_mrope) {
                 (None, m) => use_mrope = Some(m),
-                (Some(prev), m) if prev != m => anyhow::bail!(
-                    "kernel-batched: stream {b} use_mrope={m} mismatch with stream 0"
-                ),
+                (Some(prev), m) if prev != m => {
+                    anyhow::bail!("kernel-batched: stream {b} use_mrope={m} mismatch with stream 0")
+                }
                 _ => {}
             }
             match (needs_paged, layout.needs_paged) {
@@ -405,8 +403,7 @@ impl TransformerModel {
         let h_state_ptrs_off = scratch_cursor;
 
         // Per-stream kv_write_starts vector for attention dispatcher.
-        let kv_write_starts: Vec<usize> =
-            per_stream.iter().map(|m| m.kv_write_start_eff).collect();
+        let kv_write_starts: Vec<usize> = per_stream.iter().map(|m| m.kv_write_start_eff).collect();
 
         // Outer layer loop with mixed dispatch.
         for (layer_idx, layer) in self.layers.iter().enumerate() {
@@ -415,8 +412,7 @@ impl TransformerModel {
                 streams.iter_mut().map(|s| &mut *s.seq).collect();
 
             if layer.is_ssm_layer() {
-                let proc_starts: Vec<usize> =
-                    per_stream.iter().map(|m| m.proc_start).collect();
+                let proc_starts: Vec<usize> = per_stream.iter().map(|m| m.proc_start).collect();
                 self.prefill_ssm_batched_layer(
                     layer.as_ref(),
                     layer_idx,

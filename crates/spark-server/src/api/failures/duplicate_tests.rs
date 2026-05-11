@@ -36,10 +36,8 @@ fn write_extract_path_and_content_hash() {
 #[test]
 fn write_extract_camelcase_path() {
     // opencode uses filePath instead of file_path.
-    let out = f49_extract_write_path_and_content(
-        "write",
-        r#"{"filePath":"/tmp/y.rs","content":"x"}"#,
-    );
+    let out =
+        f49_extract_write_path_and_content("write", r#"{"filePath":"/tmp/y.rs","content":"x"}"#);
     let (path, _hash) = out.expect("camelCase must work");
     assert_eq!(path, "/tmp/y.rs");
 }
@@ -47,27 +45,19 @@ fn write_extract_camelcase_path() {
 #[test]
 fn write_same_content_same_hash() {
     // Hash is deterministic — same content twice → same hash.
-    let a = f49_extract_write_path_and_content(
-        "Write",
-        r#"{"file_path":"/tmp/x.rs","content":"abc"}"#,
-    );
-    let b = f49_extract_write_path_and_content(
-        "Write",
-        r#"{"file_path":"/tmp/x.rs","content":"abc"}"#,
-    );
+    let a =
+        f49_extract_write_path_and_content("Write", r#"{"file_path":"/tmp/x.rs","content":"abc"}"#);
+    let b =
+        f49_extract_write_path_and_content("Write", r#"{"file_path":"/tmp/x.rs","content":"abc"}"#);
     assert_eq!(a, b);
 }
 
 #[test]
 fn write_different_content_different_hash() {
-    let a = f49_extract_write_path_and_content(
-        "Write",
-        r#"{"file_path":"/tmp/x.rs","content":"abc"}"#,
-    );
-    let b = f49_extract_write_path_and_content(
-        "Write",
-        r#"{"file_path":"/tmp/x.rs","content":"xyz"}"#,
-    );
+    let a =
+        f49_extract_write_path_and_content("Write", r#"{"file_path":"/tmp/x.rs","content":"abc"}"#);
+    let b =
+        f49_extract_write_path_and_content("Write", r#"{"file_path":"/tmp/x.rs","content":"xyz"}"#);
     assert_ne!(a.unwrap().1, b.unwrap().1);
 }
 
@@ -93,20 +83,8 @@ fn edit_missing_old_new_returns_none() {
 
 #[test]
 fn extract_non_write_tool_returns_none() {
-    assert!(
-        f49_extract_write_path_and_content(
-            "Bash",
-            r#"{"command":"cargo build"}"#,
-        )
-        .is_none()
-    );
-    assert!(
-        f49_extract_write_path_and_content(
-            "Read",
-            r#"{"file_path":"/tmp/x.rs"}"#,
-        )
-        .is_none()
-    );
+    assert!(f49_extract_write_path_and_content("Bash", r#"{"command":"cargo build"}"#,).is_none());
+    assert!(f49_extract_write_path_and_content("Read", r#"{"file_path":"/tmp/x.rs"}"#,).is_none());
 }
 
 #[test]
@@ -118,11 +96,17 @@ fn extract_malformed_json_returns_none() {
 
 #[test]
 fn banner_singular_plural() {
-    let one = F49DuplicateWrite { file_path: "/a".into(), prior_count: 1 };
+    let one = F49DuplicateWrite {
+        file_path: "/a".into(),
+        prior_count: 1,
+    };
     let body = f49_build_banner(&[one]);
     assert!(body.contains("written 1 time "), "singular: {body}");
 
-    let two = F49DuplicateWrite { file_path: "/b".into(), prior_count: 3 };
+    let two = F49DuplicateWrite {
+        file_path: "/b".into(),
+        prior_count: 3,
+    };
     let body = f49_build_banner(&[two]);
     assert!(body.contains("written 3 times "), "plural: {body}");
 }
@@ -130,8 +114,14 @@ fn banner_singular_plural() {
 #[test]
 fn banner_multiple_files_listed() {
     let hits = vec![
-        F49DuplicateWrite { file_path: "/a".into(), prior_count: 1 },
-        F49DuplicateWrite { file_path: "/b".into(), prior_count: 2 },
+        F49DuplicateWrite {
+            file_path: "/a".into(),
+            prior_count: 1,
+        },
+        F49DuplicateWrite {
+            file_path: "/b".into(),
+            prior_count: 2,
+        },
     ];
     let body = f49_build_banner(&hits);
     assert!(body.contains("/a"));
@@ -189,9 +179,6 @@ fn strip_short_tool_name_does_not_match() {
 #[test]
 fn strip_case_insensitive() {
     let tools = vec![tool("Write")];
-    let out = strip_xml_leaks_from_assistant_content(
-        "<WRITE>body</WRITE>",
-        &tools,
-    );
+    let out = strip_xml_leaks_from_assistant_content("<WRITE>body</WRITE>", &tools);
     assert!(out.trim().is_empty());
 }

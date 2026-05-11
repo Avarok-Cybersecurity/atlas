@@ -193,10 +193,26 @@ mod tests {
     fn watchdog_fuzzy_normalization_collapses_whitespace() {
         let mut buf = String::new();
         // Same phrase, different whitespace each time — must still fuzzy-match.
-        assert!(!check_loop_watchdog("Running cargo test now\n", &mut buf, false));
-        assert!(!check_loop_watchdog("  Running cargo test now  \n", &mut buf, false));
-        assert!(!check_loop_watchdog("Running cargo  test  now\n", &mut buf, false));
-        assert!(check_loop_watchdog("Running\tcargo test now\n", &mut buf, false));
+        assert!(!check_loop_watchdog(
+            "Running cargo test now\n",
+            &mut buf,
+            false
+        ));
+        assert!(!check_loop_watchdog(
+            "  Running cargo test now  \n",
+            &mut buf,
+            false
+        ));
+        assert!(!check_loop_watchdog(
+            "Running cargo  test  now\n",
+            &mut buf,
+            false
+        ));
+        assert!(check_loop_watchdog(
+            "Running\tcargo test now\n",
+            &mut buf,
+            false
+        ));
     }
 
     #[test]
@@ -219,6 +235,10 @@ mod tests {
         // After two 5KB pushes the buffer is 10KB; a third triggers the
         // 10_240-byte cap and drains down to 8KB.
         check_loop_watchdog(&big, &mut buf, false);
-        assert!(buf.len() <= 10_240, "buffer should self-trim, got {}", buf.len());
+        assert!(
+            buf.len() <= 10_240,
+            "buffer should self-trim, got {}",
+            buf.len()
+        );
     }
 }

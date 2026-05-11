@@ -13,15 +13,30 @@ fn s(chunk_len: usize, chunk_start: usize, is_last: bool) -> (usize, usize, bool
 
 #[test]
 fn rejects_under_two_streams() {
-    assert!(!check_kernel_batched_eligible(std::iter::empty(), 0, 8192, "qwen3_next", 256));
-    assert!(!check_kernel_batched_eligible(vec![s(4096, 0, false)], 1, 8192, "qwen3_next", 256));
+    assert!(!check_kernel_batched_eligible(
+        std::iter::empty(),
+        0,
+        8192,
+        "qwen3_next",
+        256
+    ));
+    assert!(!check_kernel_batched_eligible(
+        vec![s(4096, 0, false)],
+        1,
+        8192,
+        "qwen3_next",
+        256
+    ));
 }
 
 #[test]
 fn accepts_uniform_n_2() {
     assert!(check_kernel_batched_eligible(
         vec![s(4096, 0, false), s(4096, 0, false)],
-        2, 8192, "qwen3_next", 256,
+        2,
+        8192,
+        "qwen3_next",
+        256,
     ));
 }
 
@@ -29,7 +44,10 @@ fn accepts_uniform_n_2() {
 fn rejects_mismatched_chunk_len() {
     assert!(!check_kernel_batched_eligible(
         vec![s(4096, 0, false), s(2048, 0, false)],
-        2, 16384, "qwen3_next", 256,
+        2,
+        16384,
+        "qwen3_next",
+        256,
     ));
 }
 
@@ -39,7 +57,10 @@ fn rejects_mismatched_chunk_start() {
     // stream 0 at chunk_start=12288, stream 1 at chunk_start=4096.
     assert!(!check_kernel_batched_eligible(
         vec![s(4096, 12288, false), s(4096, 4096, false)],
-        2, 16384, "qwen3_next", 256,
+        2,
+        16384,
+        "qwen3_next",
+        256,
     ));
 }
 
@@ -47,7 +68,10 @@ fn rejects_mismatched_chunk_start() {
 fn rejects_mismatched_is_last() {
     assert!(!check_kernel_batched_eligible(
         vec![s(4096, 0, false), s(4096, 0, true)],
-        2, 8192, "qwen3_next", 256,
+        2,
+        8192,
+        "qwen3_next",
+        256,
     ));
 }
 
@@ -56,7 +80,10 @@ fn rejects_arena_overflow() {
     // N=2 × 4096 = 8192 > 4100 arena → reject.
     assert!(!check_kernel_batched_eligible(
         vec![s(4096, 0, false), s(4096, 0, false)],
-        2, 4100, "qwen3_next", 256,
+        2,
+        4100,
+        "qwen3_next",
+        256,
     ));
 }
 
@@ -64,7 +91,10 @@ fn rejects_arena_overflow() {
 fn rejects_mla_model() {
     assert!(!check_kernel_batched_eligible(
         vec![s(4096, 0, false), s(4096, 0, false)],
-        2, 8192, "mistral", 128,
+        2,
+        8192,
+        "mistral",
+        128,
     ));
 }
 
@@ -73,7 +103,10 @@ fn rejects_large_head_dim() {
     // Gemma-4 long-attention head_dim=512 → reject.
     assert!(!check_kernel_batched_eligible(
         vec![s(4096, 0, false), s(4096, 0, false)],
-        2, 8192, "gemma4", 512,
+        2,
+        8192,
+        "gemma4",
+        512,
     ));
 }
 
@@ -81,6 +114,9 @@ fn rejects_large_head_dim() {
 fn accepts_n_4_uniform() {
     assert!(check_kernel_batched_eligible(
         vec![s(2048, 0, false); 4],
-        4, 8192, "qwen3_next", 256,
+        4,
+        8192,
+        "qwen3_next",
+        256,
     ));
 }

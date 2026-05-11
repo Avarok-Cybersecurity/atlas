@@ -407,21 +407,30 @@ mod tests {
     #[test]
     fn build_reminder_returns_none_when_under_warn() {
         // attempts=0, score=0: no reminder.
-        let m = F23ProgressMetrics { score: 0, attempts: 0 };
+        let m = F23ProgressMetrics {
+            score: 0,
+            attempts: 0,
+        };
         assert!(f23_build_reminder(m).is_none());
     }
 
     #[test]
     fn build_reminder_returns_none_when_score_positive() {
         // Score > 0 means progress — no reminder regardless of attempts.
-        let m = F23ProgressMetrics { score: 5, attempts: 100 };
+        let m = F23ProgressMetrics {
+            score: 5,
+            attempts: 100,
+        };
         assert!(f23_build_reminder(m).is_none());
     }
 
     #[test]
     fn build_reminder_warns_at_warn_threshold() {
         // Default warn=4: 4 attempts, no progress → Some(warn).
-        let m = F23ProgressMetrics { score: 0, attempts: 4 };
+        let m = F23ProgressMetrics {
+            score: 0,
+            attempts: 4,
+        };
         let out = f23_build_reminder(m);
         assert!(out.is_some());
         assert!(out.unwrap().contains("F23 STALL"));
@@ -430,7 +439,10 @@ mod tests {
     #[test]
     fn build_reminder_refuses_at_refuse_threshold() {
         // Default refuse=6: 6 attempts, no progress → Some(refuse).
-        let m = F23ProgressMetrics { score: 0, attempts: 6 };
+        let m = F23ProgressMetrics {
+            score: 0,
+            attempts: 6,
+        };
         let out = f23_build_reminder(m);
         assert!(out.is_some());
         let body = out.unwrap();

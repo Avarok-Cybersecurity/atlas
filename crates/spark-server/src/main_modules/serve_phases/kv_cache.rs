@@ -119,14 +119,16 @@ pub(crate) fn resolve_prefill_budget(
             Ok(n) if n >= default_max_batch_tokens => {
                 tracing::info!(
                     "ATLAS_MAX_BATCH_TOKENS override: {} (default would be {})",
-                    n, default_max_batch_tokens
+                    n,
+                    default_max_batch_tokens
                 );
                 n
             }
             Ok(n) => {
                 tracing::warn!(
                     "ATLAS_MAX_BATCH_TOKENS={} ignored — must be >= default {}",
-                    n, default_max_batch_tokens
+                    n,
+                    default_max_batch_tokens
                 );
                 default_max_batch_tokens
             }

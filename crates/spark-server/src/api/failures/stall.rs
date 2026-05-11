@@ -424,7 +424,9 @@ mod tests {
 
     #[test]
     fn f28_tool_error_prefix() {
-        assert!(f28_text_looks_like_error("[tool error] something went wrong"));
+        assert!(f28_text_looks_like_error(
+            "[tool error] something went wrong"
+        ));
         assert!(f28_text_looks_like_error("Error: bad input"));
     }
 

@@ -47,7 +47,11 @@ pub(super) fn run_batched_mixed_step(
     let mut is_last_flags: Vec<bool> = Vec::with_capacity(n_prefill);
     for p in prefilling.iter() {
         let remaining = p.prompt_tokens.len() - p.chunk_offset;
-        let effective_max = if model.is_mla() { remaining } else { max_prefill_tokens };
+        let effective_max = if model.is_mla() {
+            remaining
+        } else {
+            max_prefill_tokens
+        };
         let mut chunk_len = remaining.min(effective_max);
         let is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
         if !is_last && chunk_len >= 4 {
@@ -111,11 +115,20 @@ pub(super) fn run_batched_mixed_step(
         }
         let logits = result.prefill_logits[i];
         if logits == DevicePtr::NULL {
-            tracing::error!("Mixed-batch: stream {i} marked is_last but model returned NULL logits");
+            tracing::error!(
+                "Mixed-batch: stream {i} marked is_last but model returned NULL logits"
+            );
             completed_indices.push((i, None));
             continue;
         }
-        match sample_token(model, logits, p.temperature, p.top_k, p.top_p, &p.eos_tokens) {
+        match sample_token(
+            model,
+            logits,
+            p.temperature,
+            p.top_k,
+            p.top_p,
+            &p.eos_tokens,
+        ) {
             Ok(first) => {
                 tracing::info!(
                     "Mixed-batch prefill[{i}/{n_prefill}] first token: {first} (chunk_len={}, total_tokens={})",

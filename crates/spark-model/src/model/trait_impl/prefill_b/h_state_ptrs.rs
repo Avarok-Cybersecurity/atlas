@@ -63,10 +63,7 @@ impl TransformerModel {
 
         let dst = self.buffers.scratch().offset(scratch_offset_bytes);
         let bytes = unsafe {
-            std::slice::from_raw_parts(
-                h_ptrs.as_ptr() as *const u8,
-                n * std::mem::size_of::<u64>(),
-            )
+            std::slice::from_raw_parts(h_ptrs.as_ptr() as *const u8, n * std::mem::size_of::<u64>())
         };
         self.gpu.copy_h2d_async(bytes, dst, stream)?;
         Ok(dst)

@@ -193,9 +193,7 @@ pub trait TransformerLayer: Send + Sync {
         _ctx: &ForwardContext,
         _stream: u64,
     ) -> Result<()> {
-        anyhow::bail!(
-            "prefill_inner_batched_q12: not implemented for this layer type"
-        )
+        anyhow::bail!("prefill_inner_batched_q12: not implemented for this layer type")
     }
 
     /// Q12 Path B: batched GDN recurrence across N streams.

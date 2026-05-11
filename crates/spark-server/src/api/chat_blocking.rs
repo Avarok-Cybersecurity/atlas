@@ -342,7 +342,7 @@ fn build_choice_message(
             if !validated.valid.is_empty() {
                 for tc in &validated.valid {
                     let p: String = tc.function.arguments.chars().take(120).collect();
-                    let s = if tc.function.arguments.len() > p.len() { "…" } else { "" };
+                    let s = ["", "…"][usize::from(tc.function.arguments.len() > p.len())];
                     tracing::info!("Tool call: {}({p}{s})", tc.function.name);
                     crate::metrics::TOOL_CALLS_TOTAL.inc();
                 }

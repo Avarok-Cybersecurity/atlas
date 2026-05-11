@@ -401,9 +401,8 @@ mod tests {
 
     #[test]
     fn bash_final_action_returns_last_segment() {
-        let out = extract_bash_final_action(
-            "mkdir -p /tmp/x/src && cd /tmp/x && cargo init --name a",
-        );
+        let out =
+            extract_bash_final_action("mkdir -p /tmp/x/src && cd /tmp/x && cargo init --name a");
         assert!(out.starts_with("cargo init"), "got: {out}");
     }
 
@@ -456,7 +455,10 @@ mod tests {
         // ToolKind::Other has no well-known key but fallback path may
         // return the first non-empty string field.
         let out = primary_arg_for_tool("GetWeather", r#"{"location":"Paris"}"#);
-        assert!(out.is_some(), "fallback path should return some(location=Paris)");
+        assert!(
+            out.is_some(),
+            "fallback path should return some(location=Paris)"
+        );
     }
 
     #[test]
