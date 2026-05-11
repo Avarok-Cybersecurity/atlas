@@ -10,6 +10,8 @@ mod circuit_tests;
 mod circuit_f60;
 mod classification;
 mod duplicate;
+#[cfg(test)]
+mod duplicate_tests;
 mod duplicate_helpers;
 mod stall;
 
