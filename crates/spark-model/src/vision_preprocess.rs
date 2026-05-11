@@ -139,4 +139,31 @@ mod tests {
         assert_eq!(h % 32, 0);
         assert_eq!(w % 32, 0);
     }
+
+    #[test]
+    fn test_image_pad_count_2x2_merge() {
+        // Standard Qwen3-VL: 2×2 spatial merger folds a patch block
+        // into one embedding token.
+        assert_eq!(image_pad_count(64, 64, 2), 32 * 32);
+        assert_eq!(image_pad_count(40, 80, 2), 20 * 40);
+    }
+
+    #[test]
+    fn test_image_pad_count_no_merge() {
+        // spatial_merge_size=1 → identity (each patch → one token).
+        assert_eq!(image_pad_count(64, 64, 1), 64 * 64);
+        assert_eq!(image_pad_count(8, 12, 1), 96);
+    }
+
+    #[test]
+    fn test_image_pad_count_zero_sms_clamps_to_one() {
+        // sms=0 is invalid; clamps to 1 so we never divide by zero.
+        assert_eq!(image_pad_count(64, 64, 0), 64 * 64);
+    }
+
+    #[test]
+    fn test_image_pad_count_non_divisible_floors() {
+        // Integer division truncates: 65/2 = 32 (not 33).
+        assert_eq!(image_pad_count(65, 64, 2), 32 * 32);
+    }
 }
