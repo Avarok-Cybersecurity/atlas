@@ -181,7 +181,20 @@ impl TransformerModel {
         // Decode metadata is small (padded_n ≤ 8, ~33KB max) and the logits buffer
         // is large (16 * vocab * 2 bytes ≈ 4.8MB). The logits are overwritten in
         // step 7 after the layer loop completes.
-        let decode_meta_base = self.buffers.logits();
+        //
+        // BUG FIX 2026-05-10: offset by 64KB to avoid being overwritten by MoE
+        // forward's `shared_gate_scratch` which also uses `logits` as scratch
+        // (moe/forward.rs:211, forward_batched.rs:61, forward_k2.rs:91, etc.).
+        // Without this offset, the first MoE call during the layer loop
+        // overwrites decode_meta's positions/slots/seq_lens/block_table at
+        // logits[0..16K], causing subsequent attention kernels to read
+        // corrupted block_table → CUDA-700 illegal memory access. Reproducer:
+        // Qwen3-Next-80B + 2 streams + chunked prefill, when one finishes
+        // first and `mixed_forward` runs decode+prefill fused. 64KB offset
+        // leaves room for the largest known shared-expert scratch
+        // (shared_expert_intermediate_size × 2 ≤ 32KB observed for any
+        // current Atlas model — 64KB is 2× safety margin).
+        let decode_meta_base = self.buffers.logits().offset(65536);
 
         let decode_metadata = self.upload_batch_metadata_at(
             decode_seqs,
