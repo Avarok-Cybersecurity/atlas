@@ -2,7 +2,7 @@
 
 //! Nemotron MoE prefill — sorted-MoE expert dispatch path.
 //!
-//! Extracted from [`super::NemotronMoeLayer::prefill`] for file-size budget.
+//! Extracted from `NemotronMoeLayer::prefill` for file-size budget.
 //! See `nemotron_moe.rs` for the surrounding setup; this helper handles the
 //! batched grouped-GEMM dispatch when sorted-MoE kernels are available.
 

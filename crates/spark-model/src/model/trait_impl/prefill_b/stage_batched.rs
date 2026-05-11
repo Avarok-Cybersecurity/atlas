@@ -10,12 +10,12 @@
 //! and `seq_len` device pointers populated.
 //!
 //! Layout produced (all in scratch buffer, distinct offsets):
-//!   - positions_stacked       [total_tokens]           u32 = 4 B
-//!   - positions_h_stacked     [total_tokens]           u32 (MRoPE only)
-//!   - positions_w_stacked     [total_tokens]           u32 (MRoPE only)
-//!   - slot_stacked            [total_tokens]           i64 = 8 B
-//!   - block_table_ptrs        [batch_size]             DevicePtr = 8 B
-//!   - seq_len_ptrs            [batch_size]             DevicePtr = 8 B
+//!   - positions_stacked       `[total_tokens]`           u32 = 4 B
+//!   - positions_h_stacked     `[total_tokens]`           u32 (MRoPE only)
+//!   - positions_w_stacked     `[total_tokens]`           u32 (MRoPE only)
+//!   - slot_stacked            `[total_tokens]`           i64 = 8 B
+//!   - block_table_ptrs        `[batch_size]`             DevicePtr = 8 B
+//!   - seq_len_ptrs            `[batch_size]`             DevicePtr = 8 B
 //!
 //! `h_state_ptrs` is NOT staged here — it's per-layer (each SSM layer
 //! owns its own h_state allocations across streams), so

@@ -223,7 +223,7 @@ pub(crate) fn load_moe_minimax(
 ///
 /// Differences from Qwen3.5:
 /// - Router at `{lp}.router.proj.weight` (not `{lp}.mlp.gate.weight`)
-/// - Router `scale` [H] and `per_expert_scale` [E] fused into gate at load time
+/// - Router `scale` `[H]` and `per_expert_scale` `[E]` fused into gate at load time
 /// - Experts at `{lp}.moe.experts.{e}` (not `{lp}.mlp.experts.{e}`)
 /// - No shared expert (dense MLP is loaded separately as primary FFN)
 pub(crate) fn load_moe_gemma4(

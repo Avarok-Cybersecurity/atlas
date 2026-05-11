@@ -48,8 +48,8 @@ pub struct Fp8KvCalibration {
     inner: Mutex<CalibrationInner>,
     /// Number of warmup tokens before freezing scales.
     warmup_tokens: usize,
-    /// GPU buffer for absmax reduction output: [1] f32 for K, [1] f32 for V.
-    /// Layout: [k_absmax: f32, v_absmax: f32] = 8 bytes.
+    /// GPU buffer for absmax reduction output: `[1]` f32 for K, `[1]` f32 for V.
+    /// Layout: `[k_absmax: f32, v_absmax: f32]` = 8 bytes.
     absmax_buf: DevicePtr,
     /// Kernel handle for bf16_absmax reduction.
     absmax_kernel: KernelHandle,

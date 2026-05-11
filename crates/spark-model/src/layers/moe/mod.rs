@@ -19,11 +19,11 @@ use crate::weight_map::{ExpertWeight, Fp8ExpertWeight, Fp8Weight, MoeWeights, Qu
 /// expert_id from device memory, then indexes these tables to find
 /// the correct weight pointers — no CPU involvement needed.
 pub(crate) struct ExpertPtrTable {
-    /// [num_experts] u64 device pointers to each expert's B_packed.
+    /// `[num_experts]` u64 device pointers to each expert's B_packed.
     pub(crate) packed_ptrs: DevicePtr,
-    /// [num_experts] u64 device pointers to each expert's B_scale.
+    /// `[num_experts]` u64 device pointers to each expert's B_scale.
     pub(crate) scale_ptrs: DevicePtr,
-    /// [num_experts] f32 per-expert scale2 values.
+    /// `[num_experts]` f32 per-expert scale2 values.
     pub(crate) scale2_vals: DevicePtr,
 }
 
@@ -33,9 +33,9 @@ pub(crate) struct ExpertPtrTable {
 /// NVFP4's 3 (packed + scale + scale2). The fused FP8 MoE kernel indexes
 /// these tables by expert_id to load the correct FP8 weight matrix.
 pub(crate) struct Fp8ExpertPtrTable {
-    /// [num_experts] u64 device pointers to each expert's FP8 weight.
+    /// `[num_experts]` u64 device pointers to each expert's FP8 weight.
     pub(crate) weight_ptrs: DevicePtr,
-    /// [num_experts] u64 device pointers to each expert's block scales.
+    /// `[num_experts]` u64 device pointers to each expert's block scales.
     pub(crate) scale_ptrs: DevicePtr,
 }
 
