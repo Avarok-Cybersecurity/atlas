@@ -53,7 +53,7 @@ parking_lot = { workspace = true }
 # below so default Linux builds don't pull these in.
 tokenizers = { version = "0.21", optional = true, default-features = false, features = ["onig"] }
 memmap2 = { version = "0.9", optional = true }
-safetensors = { version = "0.5", optional = true }
+safetensors = { version = "0.7", optional = true }
 
 # End-to-end Qwen3.5-4B-MLX-8bit decode driver. Loads weights via
 # `MlxInt8Weight`, kernel handles via `Qwen35Kernels::resolve`, and

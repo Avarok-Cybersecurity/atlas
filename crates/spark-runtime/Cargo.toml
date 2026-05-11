@@ -102,7 +102,7 @@ dispatch2 = { version = "0.3", optional = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-safetensors = "0.5"
+safetensors = "0.7"
 memmap2 = "0.9"
 tracing = "0.1"
 tokio = { version = "1", features = ["rt", "sync", "time", "parking_lot"] }
