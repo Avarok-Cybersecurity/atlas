@@ -67,7 +67,10 @@ pub fn step_verify_k3(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
         return;
     }
 
-    tracing::info!(
+    // Per-verify trace at debug — fires every 1-3 output tokens during
+    // spec-decode and spams Docker logs at info level. Power-user
+    // diagnostics: `RUST_LOG=spark::scheduler::verify_k3_step=debug`.
+    tracing::debug!(
         "K3 verify: tokens=[{},{},{}] → v=[{v0},{v1},{v2}] drafts=[{},{}] accepted={num_accepted} seq_len={}",
         tokens_k3[0],
         tokens_k3[1],

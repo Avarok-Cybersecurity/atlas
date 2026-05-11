@@ -72,7 +72,10 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
         return;
     }
 
-    tracing::info!(
+    // Per-verify trace at debug — fires every 1-4 output tokens during
+    // spec-decode and spams Docker logs at info level. Power-user
+    // diagnostics: `RUST_LOG=spark::scheduler::verify_k4_step=debug`.
+    tracing::debug!(
         "K4 verify: tokens=[{},{},{},{}] → v=[{v0},{v1},{v2},{v3}] drafts=[{},{},{}] accepted={num_accepted} seq_len={}",
         tokens_k4[0],
         tokens_k4[1],
