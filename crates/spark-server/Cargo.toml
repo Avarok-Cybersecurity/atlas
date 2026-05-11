@@ -47,7 +47,7 @@ axum = { version = "0.8", features = ["json"] }
 tokio = { version = "1", features = ["full", "parking_lot"] }
 tokio-stream = "0.1"
 futures = "0.3"
-rayon = "1.10"
+rayon = "1.12"
 parking_lot = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
