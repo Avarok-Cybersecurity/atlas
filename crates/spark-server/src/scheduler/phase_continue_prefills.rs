@@ -79,38 +79,19 @@ pub(super) fn continue_in_progress_prefills(
 
     let mut completed_indices = Vec::new();
 
-    // ── Batched-prefill paths (Q12) ──
+    // Q12 batched-prefill paths. Two branches fire when 2+ streams are
+    // prefilling concurrently (replaces the FIFO `prefilling.first_mut()`
+    // advance — see qwen-refactor notes §6 for the asymmetric-TTFT
+    // bug it fixes). The active-empty case routes to `prefill_batch_chunk`;
+    // active-nonempty routes to `mixed_forward_batch` (N decode + M
+    // prefill fused). Both call the default trait impl today (per-stream
+    // loops); Q12 Phase 2/3 replace with kernel-level batched dispatch.
     //
-    // Two branches fire when 2+ streams are prefilling concurrently. Both
-    // replace the FIFO `prefilling.first_mut()` advance that caused the
-    // asymmetric 24+131 s TTFT documented in qwen-refactor notes §6.
-    //
-    // Phase 4a (commit 2ff926d): active.is_empty() case → prefill_batch_chunk.
-    // Phase 5 (commit a542463): active.is_nonempty() case → mixed_forward_batch
-    // (N decode tokens + M prefill chunks fused). Lifts the implicit MTP /
-    // self-spec / N-gram-spec gating since those only apply to active
-    // sequences, not freshly-prefilling ones — the active-side decode is
-    // still handled by `step_decode_only` / `step_mtp` etc. via
-    // `process_decode_logits` on the returned decode logits.
-    //
-    // Phase 4a/5 use the default trait impls (per-stream loops). No
-    // kernel-level batching yet — the win is fairness/TTFT distribution.
-    // Phase 2/3 of the plan replace the default impls with concrete
-    // batched dispatch (true L2-amortised weight load + batched GDN/attn).
-    //
-    // Gates:
-    //   - `prefilling.len() >= 2` — single-stream stays on the existing
-    //     two-phase / chunked / mixed_forward path (preserves correctness
-    //     and the long-prompt two-phase optimisation).
-    //   - `!model.is_ep()` — EP=2 needs a new BATCH_PREFILL_CHUNK opcode
-    //     (Phase 6) to broadcast batched chunks to the worker rank.
-    //   - For the mixed-batch branch only: skip when active.len() == 1 AND
-    //     a speculative path is active. Speculative decode (`step_mtp`,
-    //     `step_self_spec`, `step_ngram`) handles its own forward; mixing
-    //     it with `mixed_forward_batch` would double-decode the active
-    //     stream. With more than one active sequence, speculative is off
-    //     by construction (those step_* paths require active.len()==1) so
-    //     the mixed branch is safe.
+    // Gates: N≥2 prefilling, no EP (worker opcode pending, Phase 6),
+    // and for mixed-batch only: skip if active.len()==1 AND a speculative
+    // path is active (those step_* paths require active.len()==1 and
+    // mixing would double-decode). Spec is off by construction when
+    // active.len() ≥ 2, so the mixed branch is safe there.
     let single_active_with_spec = active.len() == 1
         && (use_mtp || use_self_speculative || use_ngram_speculative);
     // BISECT: ATLAS_BISECT_Q12_DISABLE=1 forces the per-stream FIFO path
