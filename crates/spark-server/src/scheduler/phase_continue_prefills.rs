@@ -299,7 +299,15 @@ fn run_standard_chunk_loop(
         }
 
         // ── Mixed forward: fuse prefill chunk + decode in one pass ──
-        let can_mix = !active.is_empty()
+        // ATLAS_BISECT_NO_MIX=1 forces this branch to false so we can
+        // diagnose whether the chunked-prefill+concurrent CUDA-700 lives
+        // inside `mixed_forward` (active+prefill fused) vs the pure
+        // decode-batch path.
+        let no_mix_bisect = std::env::var("ATLAS_BISECT_NO_MIX")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
+        let can_mix = !no_mix_bisect
+            && !active.is_empty()
             && !model.is_ep()
             && !use_mtp
             && !use_self_speculative
