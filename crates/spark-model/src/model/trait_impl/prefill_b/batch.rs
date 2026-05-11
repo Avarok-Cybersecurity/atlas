@@ -77,6 +77,14 @@ impl TransformerModel {
         stream: u64,
     ) -> Result<Vec<DevicePtr>> {
         let n = streams.len();
+        // Q12 diagnostic: dispatch entry. Useful to confirm scheduler is
+        // funneling concurrent prefills here. Debug-level by default;
+        // promote with `RUST_LOG=atlas::q12=debug`.
+        tracing::debug!(
+            target: "atlas::q12",
+            n = n,
+            "prefill_batch_chunk_dispatch entry"
+        );
         if n == 0 {
             return Ok(Vec::new());
         }
@@ -155,6 +163,22 @@ impl TransformerModel {
             tracing::trace!(
                 target: "atlas::q12",
                 "Q12 kernel-batched disabled via ATLAS_Q12_BATCHED=0"
+            );
+        } else {
+            // Observability: eligibility failed. Surface why so operators
+            // can diagnose silent fallback. Logged at debug to avoid log
+            // floods on hot paths.
+            let chunk_lens: Vec<usize> = streams.iter().map(|s| s.chunk_len).collect();
+            let total: usize = chunk_lens.iter().sum();
+            tracing::debug!(
+                target: "atlas::q12",
+                n = n,
+                chunk_lens = ?chunk_lens,
+                total = total,
+                arena_cap = self.buffers.max_batch_tokens(),
+                head_dim = self.config.head_dim,
+                model_type = self.config.model_type.as_str(),
+                "Q12 kernel-batched ineligible — falling back to per-stream"
             );
         }
 
