@@ -57,6 +57,17 @@ impl TransformerModel {
         if !streams.iter().all(|s| s.chunk_len == chunk_len) {
             return false;
         }
+        // Same `chunk_start` across streams. Different chunk_start values
+        // produce different `effective_seq_len_start` post-Marconi/
+        // prefix-cache, which the batched attention kernel cannot handle.
+        // Empirically (2026-05-11, q12-repro 32K c=2) the scheduler admits
+        // streams at different ticks so stream 0 runs 2-3 chunks ahead of
+        // stream 1 — without this check the dispatch would bail mid-flight
+        // after partial state mutation.
+        let chunk_start = streams[0].chunk_start;
+        if !streams.iter().all(|s| s.chunk_start == chunk_start) {
+            return false;
+        }
         // Same `is_last_chunk` flag (finalize_last on last; save_checkpoint
         // on intermediate — can't mix within one batched dispatch).
         let is_last = streams[0].is_last_chunk;

@@ -169,11 +169,13 @@ impl TransformerModel {
             // can diagnose silent fallback. Logged at debug to avoid log
             // floods on hot paths.
             let chunk_lens: Vec<usize> = streams.iter().map(|s| s.chunk_len).collect();
+            let chunk_starts: Vec<usize> = streams.iter().map(|s| s.chunk_start).collect();
             let total: usize = chunk_lens.iter().sum();
             tracing::debug!(
                 target: "atlas::q12",
                 n = n,
                 chunk_lens = ?chunk_lens,
+                chunk_starts = ?chunk_starts,
                 total = total,
                 arena_cap = self.buffers.max_batch_tokens(),
                 head_dim = self.config.head_dim,
