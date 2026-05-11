@@ -169,10 +169,17 @@ pub fn step_verify_k3(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             }
         }
         let propose_us = t_propose.elapsed().as_micros();
-        tracing::info!(
+        // Rate-limit to every 50 tokens (matches ACCEPT-2 above).
+        tracing::debug!(
             "K3 ACCEPT-1: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
+        if a.seq.seq_len.is_multiple_of(50) {
+            tracing::info!(
+                "K3 ACCEPT-1 sample: verify={verify_us}μs propose={propose_us}μs seq_len={}",
+                a.seq.seq_len
+            );
+        }
     } else {
         a.seq.seq_len -= 2;
         a.seq.tokens.pop();
@@ -212,9 +219,15 @@ pub fn step_verify_k3(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             }
         }
         let propose_us = t_propose.elapsed().as_micros();
-        tracing::info!(
+        tracing::debug!(
             "K3 REJECT: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
+        if a.seq.seq_len.is_multiple_of(50) {
+            tracing::info!(
+                "K3 REJECT sample: verify={verify_us}μs propose={propose_us}μs seq_len={}",
+                a.seq.seq_len
+            );
+        }
     }
 }
