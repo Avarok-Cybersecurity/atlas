@@ -85,6 +85,15 @@ pub(super) fn handle_complete_tool_call(
             ctx.max_tool_calls_per_response,
             &mut state.stop_string_triggered,
         );
+        // Successful complete-call path — log a request-level summary
+        // matching the blocking and incremental-streaming paths.
+        let preview: String = tc.function.arguments.chars().take(120).collect();
+        let truncated = tc.function.arguments.len() > preview.len();
+        tracing::info!(
+            "Tool call: {}({preview}{})",
+            tc.function.name,
+            if truncated { "…" } else { "" }
+        );
         let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, tc_idx);
         sse_events.push(Ok(
             Event::default().data(serde_json::to_string(&start).unwrap_or_default())
@@ -256,6 +265,17 @@ pub(super) fn handle_tool_call_end(state: &mut StreamState, ctx: &StreamCtx, idx
                 "Bug-2 name-run cap tripped: {run_len} successive `{name}` tool calls; ending response (F11 missed because args drift)"
             );
             state.stop_string_triggered = true;
+        }
+        if !state.stop_string_triggered {
+            // Successful streaming tool call — log to match the blocking
+            // path's "Tool call: name(args)" line so the request-level
+            // summary is consistent across streaming and blocking modes.
+            let preview: String = args_json.chars().take(120).collect();
+            let truncated = args_json.len() > preview.len();
+            tracing::info!(
+                "Tool call: {name}({preview}{})",
+                if truncated { "…" } else { "" }
+            );
         }
     }
 }
