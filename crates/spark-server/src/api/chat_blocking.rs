@@ -344,18 +344,10 @@ fn build_choice_message(
             });
             message.content = content;
             if !validated.valid.is_empty() {
-                // Surface what the model decided to call. Helps users
-                // debug Atlas + agentic clients without combing token-
-                // level traces.
                 for tc in &validated.valid {
-                    let preview: String = tc.function.arguments.chars().take(120).collect();
-                    let truncated = tc.function.arguments.len() > preview.len();
-                    tracing::info!(
-                        "Tool call: {}({}{})",
-                        tc.function.name,
-                        preview,
-                        if truncated { "…" } else { "" }
-                    );
+                    let p: String = tc.function.arguments.chars().take(120).collect();
+                    let suffix = if tc.function.arguments.len() > p.len() { "…" } else { "" };
+                    tracing::info!("Tool call: {}({}{})", tc.function.name, p, suffix);
                 }
                 message.tool_calls = Some(validated.valid);
                 finish_reason_i = "tool_calls".to_string();

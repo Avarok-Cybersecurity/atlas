@@ -206,19 +206,10 @@ impl MoeLayer {
         let expert_gate_out = ctx.buffers.expert_gate_out();
         let expert_up_out = ctx.buffers.expert_up_out();
         let expert_down_out = ctx.buffers.expert_down_out();
-        // ⚠ logits buffer aliased for shared expert gate scratch
-        // (ssm_ba is too small: 128 bytes vs shared_inter * 2 ≥ 1024
-        // bytes needed). Caller-side users of `buffers.logits()`
-        // during the forward layer loop MUST offset past the
-        // `shared_expert_intermediate_size * 2` write region.
-        // See `model/trait_impl/decode_b.rs:197` for an example
-        // — decode_meta_base uses `logits.offset(65536)` to give a
-        // 64 KB safety margin past this aliased region. Failing to
-        // offset corrupts whatever was written to logits[0..],
-        // typically surfacing as CUDA-700 illegal memory access at
-        // the next paged-attention kernel reading a corrupted
-        // block_table. See `project_batch_decode_corruption.md`
-        // memory (bug 2, 2026-05-10) for full context.
+        // ⚠ `logits` aliased as shared-gate scratch — concurrent users
+        // MUST offset past `shared_expert_intermediate_size * 2`
+        // (decode_b.rs:197 uses .offset(65536)). See bug 2 in memory
+        // `project_batch_decode_corruption.md` (2026-05-10).
         let shared_gate_scratch = ctx.buffers.logits();
         let shared_up_scratch = ctx.buffers.ssm_qkvz();
         let shared_out = ctx.buffers.attn_output();
