@@ -13,7 +13,7 @@ use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_dense_bf16, shard_quantiz
 use crate::weight_map::{
     AttentionWeights, DenseWeight, MtpWeights, Nvfp4Variant, SsmWeights, dense, dense_auto,
     dequant_nvfp4_to_bf16, detect_nvfp4_variant, gpu_concat_rows, interleave_ba, load_dense_ffn,
-    load_kv_scales, load_ssm_qwen35, quantize_to_nvfp4, quantized_auto,
+    load_kv_scales, load_mtp, load_ssm_qwen35, quantize_to_nvfp4, quantized_auto,
 };
 
 pub struct Qwen35DenseWeightLoader;
@@ -331,10 +331,32 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
 
     fn load_mtp_weights(
         &self,
-        _store: &WeightStore,
-        _config: &ModelConfig,
-        _gpu: &dyn GpuBackend,
+        store: &WeightStore,
+        config: &ModelConfig,
+        gpu: &dyn GpuBackend,
     ) -> Result<Option<MtpWeights>> {
-        Ok(None)
+        if !store.contains("mtp.fc.weight") {
+            return Ok(None);
+        }
+        let variant = detect_nvfp4_variant(store, config);
+        tracing::info!(
+            "Loading dense MTP weights (variant={:?}, hidden={}, inter={})",
+            variant,
+            config.hidden_size,
+            config.intermediate_size,
+        );
+        // `load_mtp` auto-detects MoE vs dense FFN by inspecting the weight
+        // names. For dense Qwen3.6-27B-FP8 it returns a MtpWeights with
+        // `dense_ffn = Some(...)` and NULL placeholders for the MoE fields.
+        let mtp = load_mtp(store, config.num_experts, gpu, variant)?;
+        if mtp.dense_ffn.is_some() {
+            tracing::info!("Dense MTP head ready (FP8 e4m3 projections + dense gate/up/down MLP)");
+        } else {
+            tracing::info!(
+                "MoE MTP head ready ({} experts) — dense loader sees MoE bundle",
+                mtp.experts.len(),
+            );
+        }
+        Ok(Some(mtp))
     }
 }

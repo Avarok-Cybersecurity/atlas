@@ -127,7 +127,7 @@ impl TransformerModel {
 
     /// Upload batch metadata to a caller-specified device address.
     ///
-    /// Same layout as [`upload_batch_metadata_fixed`] (positions at +0, slots
+    /// Same layout as `upload_batch_metadata_fixed` (positions at +0, slots
     /// at +256, seq_lens at +512, block_table at +768) but writes to
     /// `meta_base` instead of the hardcoded `scratch+32768`. Used by the
     /// fused `mixed_forward` to place decode metadata at a non-conflicting

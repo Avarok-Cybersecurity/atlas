@@ -149,6 +149,30 @@ pub(crate) fn preflight_reserve(
         buffer_arena_bytes / (1024 * 1024),
         free_mem as f64 / (1024.0 * 1024.0 * 1024.0),
     );
+    // Q09: per-component breakdown so future MTP/spec-decode reserve
+    // jumps are diagnosable from the log alone. Each line is dropped at
+    // debug to avoid noise on hot startup paths; flip to info if you
+    // need to trace a specific deployment's reserve.
+    let spec_on = args.speculative || args.self_speculative || args.ngram_speculative;
+    tracing::debug!(
+        "Preflight reserve breakdown: \
+         ssm_pool={} MB ({}× max_batch × {} ssm_layers × (h+conv)), \
+         ssm_snapshot={} MB ({} slots), \
+         gdn_two_phase={} MB ({} tokens), \
+         cuda_headroom={} MB ({}), \
+         spec_on={}, num_drafts={}",
+        ssm_pool_bytes / (1024 * 1024),
+        ssm_multiplier,
+        config.num_ssm_layers(),
+        ssm_snapshot_bytes / (1024 * 1024),
+        args.ssm_cache_slots,
+        gdn_two_phase_bytes / (1024 * 1024),
+        max_batch_tokens_pre,
+        cuda_headroom / (1024 * 1024),
+        if spec_on { "spec/MTP on" } else { "no spec" },
+        spec_on,
+        if spec_on { args.num_drafts as i64 } else { -1 },
+    );
     Ok(ReservePreflight {
         inference_reserve,
         buffer_arena_bytes,

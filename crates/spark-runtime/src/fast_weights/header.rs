@@ -29,7 +29,7 @@ pub(super) struct TensorMeta {
 }
 
 /// Discover which safetensor files to load. Mirrors the resolution order in
-/// [`crate::weights::SafetensorsLoader::load`].
+/// `crate::weights::SafetensorsLoader::load`.
 ///
 /// Returns `(shard_files, Some(tensor→shard))` when an index is present and
 /// `(shard_files, None)` when we're loading everything in the listed files.

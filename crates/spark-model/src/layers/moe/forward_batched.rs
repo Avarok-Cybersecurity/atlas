@@ -58,6 +58,10 @@ impl MoeLayer {
         let expert_gate_out = ctx.buffers.expert_gate_out();
         let expert_up_out = ctx.buffers.expert_up_out();
         let expert_down_out = ctx.buffers.expert_down_out();
+        // ⚠ logits buffer aliased — see warning in moe/forward.rs:208-219
+        // and project_batch_decode_corruption.md (bug 2). Concurrent
+        // callers using `buffers.logits()` during the forward loop MUST
+        // offset past `shared_expert_intermediate_size * 2` bytes.
         let shared_gate_scratch = ctx.buffers.logits();
         let shared_up_scratch = ctx.buffers.ssm_qkvz();
 

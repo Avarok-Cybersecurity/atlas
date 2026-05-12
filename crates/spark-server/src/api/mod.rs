@@ -54,13 +54,14 @@ pub mod stubs;
 mod tests;
 
 // Re-exports to preserve the original `crate::api::*` import surface.
-#[allow(unused_imports)]
+// `#[allow(unused_imports)]` is applied only where the re-export is
+// part of the public surface but happens to be unreferenced this build
+// (Request types kept for external clients / schema generation, plus
+// `compact_messages` whose handler is wired directly in serve_router).
 pub use chat::chat_completions;
-#[allow(unused_imports)]
 pub(crate) use chat::chat_completions_inner;
 #[allow(unused_imports)]
 pub use compact::compact_messages;
-#[allow(unused_imports)]
 pub use completions::{completions, embeddings_stub, get_model, list_models};
 #[allow(unused_imports)]
 pub use conversations::{
@@ -68,7 +69,6 @@ pub use conversations::{
     create_conversation, delete_conversation, delete_conversation_item, get_conversation,
     get_conversation_item, list_conversation_items, update_conversation,
 };
-#[allow(unused_imports)]
 pub use inference_types::{
     GrammarSpec, InferenceRequest, InferenceResponse, StreamEvent, TokenLogprobs,
 };
@@ -76,13 +76,10 @@ pub use inference_types::{
 pub use misc_handlers::{
     DetokenizeRequest, cancel_response, detokenize, health, health_live, metrics_handler, tokenize,
 };
-#[allow(unused_imports)]
 pub use responses::responses_endpoint;
-#[allow(unused_imports)]
 pub use stored::{
     delete_stored_response, get_stored_completion, get_stored_response, list_response_input_items,
 };
-#[allow(unused_imports)]
 pub use stubs::{
     audio_stub, batch_get_stub, batch_list_stub, batches_stub, files_stub, images_stub,
     moderations_stub,

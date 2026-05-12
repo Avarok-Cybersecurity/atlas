@@ -160,7 +160,7 @@ pub struct TransformerModel {
     /// Kernel handle for fused SSM state normalization (prevents state explosion
     /// during long chunked prefill — the SSM forgetting bug).
     pub(super) ssm_state_norm_kernel: KernelHandle,
-    /// GPU buffer for ssm_state_clamp_norm_fused's pointer table [num_ssm_layers].
+    /// GPU buffer for ssm_state_clamp_norm_fused's pointer table `[num_ssm_layers]`.
     pub(super) ssm_norm_ptrs_buf: DevicePtr,
 
     // ── Two-phase SSM prefill buffers ──
@@ -216,11 +216,11 @@ pub(crate) struct PinnedMetaStaging {
     pub(super) ptr: *mut u8,
     /// Size in bytes.
     pub(super) bytes: usize,
-    /// Reusable Vec<u32> for positions (avoids per-chunk heap allocation).
+    /// Reusable `Vec<u32>` for positions (avoids per-chunk heap allocation).
     pub(super) positions: Vec<u32>,
     pub(super) positions_h: Vec<u32>,
     pub(super) positions_w: Vec<u32>,
-    /// Reusable Vec<i64> for slot mappings (avoids per-chunk heap allocation).
+    /// Reusable `Vec<i64>` for slot mappings (avoids per-chunk heap allocation).
     pub(super) slots: Vec<i64>,
 }
 

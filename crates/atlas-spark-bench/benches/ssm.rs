@@ -232,7 +232,7 @@ fn bench_gdn_chunk2(c: &mut Criterion) {
     // Strides for chunk2 kernel
     let qk_stride: u32 = conv_dim as u32;
     let v_stride_val: u32 = conv_dim as u32;
-    let gb_stride: u32 = (num_v_heads * 2) as u32;
+    let gb_stride: u32 = num_v_heads * 2;
 
     // Per-token offsets for sequential path
     let q0_offset = 0_u64;

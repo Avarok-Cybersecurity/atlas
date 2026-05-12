@@ -7,7 +7,7 @@ use spark_runtime::gpu::DevicePtr;
 use spark_runtime::kv_cache::PagedKvCache;
 
 use super::super::Qwen3AttentionLayer;
-use crate::layer::ForwardContext;
+use crate::layer::{BatchedAttnMetadata, ForwardContext};
 use crate::layers::ops;
 
 impl Qwen3AttentionLayer {
@@ -20,6 +20,12 @@ impl Qwen3AttentionLayer {
         block_table: &Vec<u32>,
         disk_block_ids: &mut Vec<u32>,
         disk_last_offloaded_per_layer: &mut Vec<u32>,
+        // Q12 Path B: when Some, attention compute uses the batched kernel
+        // with `block_table_ptrs` from the supplied BatchedAttnMetadata;
+        // positions / slot reads switch to the stacked variants from the
+        // same struct. When None, the function behaves single-stream
+        // (reading from ctx.attn_metadata as before).
+        batched_meta: Option<&BatchedAttnMetadata>,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<DevicePtr> {
@@ -39,6 +45,16 @@ impl Qwen3AttentionLayer {
         let q_dim = (nq * hd) as usize;
         let q_proj_dim = if self.gated { q_dim * 2 } else { q_dim };
         let kv_dim = (nkv * hd) as usize;
+
+        // Q12 Path B: batched mode does not support MLA layers (separate
+        // KV layout). Caller must gate this out at the outer dispatch.
+        if batched_meta.is_some() && self.mla.is_some() {
+            anyhow::bail!(
+                "prefill_attention_paged: batched_meta with MLA layer is not supported \
+                 (layer {}). Caller must route MLA layers to per-stream.",
+                self.attn_layer_idx
+            );
+        }
 
         // ── MLA 2-step prefill (reference: HuggingFace modeling_mistral4.py) ──
         if self.mla.is_some() {
@@ -206,9 +222,39 @@ impl Qwen3AttentionLayer {
         }
 
         // ── 6. RoPE for chunk tokens ──
-        let meta = ctx
-            .attn_metadata
-            .expect("attention prefill requires metadata");
+        // Q12 Path B: in batched mode, ctx.attn_metadata is None — the
+        // model dispatcher (prefill_batch_chunk_kernel_batched) sets
+        // attn_metadata=None when calling the layer because per-stream
+        // metadata is split across the batched_meta device arrays. So
+        // we only require ctx.attn_metadata to be Some in single-stream
+        // mode (batched_meta = None).
+        let meta_for_single = match (batched_meta, ctx.attn_metadata) {
+            (Some(_), _) => None,
+            (None, Some(m)) => Some(m),
+            (None, None) => anyhow::bail!(
+                "prefill_attention_paged: single-stream mode requires ctx.attn_metadata"
+            ),
+        };
+
+        // Resolve positions / slot pointers. When `batched_meta` is set,
+        // RoPE / KV-write read from the stacked arrays. When in
+        // single-stream mode, fall back to meta.{positions,slot}.
+        let bmeta_positions = batched_meta
+            .map(|m| m.positions_stacked)
+            .or(meta_for_single.map(|m| m.positions))
+            .unwrap();
+        let bmeta_positions_h = batched_meta
+            .map(|m| m.positions_h_stacked)
+            .or(meta_for_single.map(|m| m.positions_h))
+            .unwrap();
+        let bmeta_positions_w = batched_meta
+            .map(|m| m.positions_w_stacked)
+            .or(meta_for_single.map(|m| m.positions_w))
+            .unwrap();
+        let bmeta_slot = batched_meta
+            .map(|m| m.slot_stacked)
+            .or(meta_for_single.map(|m| m.slot))
+            .unwrap();
         if self.mla.is_some() {
             // MLA: RoPE already applied inside the MLA block to rope portions only.
         } else if let Some(ref mla) = self.mla {
@@ -219,7 +265,7 @@ impl Qwen3AttentionLayer {
                     self.rope_yarn_k,
                     q_contiguous,
                     k_contiguous,
-                    meta.positions,
+                    bmeta_positions,
                     n,
                     nq,
                     nkv,
@@ -235,7 +281,7 @@ impl Qwen3AttentionLayer {
                     self.rope_k,
                     q_contiguous,
                     k_contiguous,
-                    meta.positions,
+                    bmeta_positions,
                     n,
                     nq,
                     nkv,
@@ -256,7 +302,7 @@ impl Qwen3AttentionLayer {
                 self.rope_proportional_k,
                 q_contiguous,
                 k_contiguous,
-                meta.positions,
+                bmeta_positions,
                 n,
                 nq,
                 nkv,
@@ -272,9 +318,9 @@ impl Qwen3AttentionLayer {
                 self.rope_mrope_interleaved_k,
                 q_contiguous,
                 k_contiguous,
-                meta.positions,
-                meta.positions_h,
-                meta.positions_w,
+                bmeta_positions,
+                bmeta_positions_h,
+                bmeta_positions_w,
                 n,
                 nq,
                 nkv,
@@ -291,7 +337,7 @@ impl Qwen3AttentionLayer {
                 self.rope_k,
                 q_contiguous,
                 k_contiguous,
-                meta.positions,
+                bmeta_positions,
                 n,
                 nq,
                 nkv,
@@ -313,7 +359,7 @@ impl Qwen3AttentionLayer {
                 k_contiguous,
                 v_contiguous,
                 kv_cache,
-                meta.slot,
+                bmeta_slot,
                 n,
                 nkv,
                 hd,
@@ -329,7 +375,28 @@ impl Qwen3AttentionLayer {
         let attn_out = ctx.buffers.attn_output();
         let inv_sqrt_d = self.effective_attn_scale(hd);
         let kv_len = (seq_len_start + num_tokens) as u32;
-        {
+        if let Some(bmeta) = batched_meta {
+            // Q12 Path B: batched paged-prefill attention. The kernel reads
+            // Q/O at per-batch offsets internally via blockIdx.z and uses
+            // block_table_ptrs[b] for each stream's paged KV pages.
+            let args = super::paged_attn_batched::PagedAttnBatchedArgs {
+                q_contiguous,
+                attn_out,
+                seq_len_start,
+                nq,
+                nkv,
+                hd,
+                bs,
+                inv_sqrt_d,
+                kv_len,
+                batched_meta: bmeta,
+                stream,
+            };
+            self.prefill_attention_paged_attn_batched(kv_cache, ctx, &args)?;
+        } else {
+            // Single-stream path requires meta_for_single (validated above).
+            let meta = meta_for_single
+                .expect("single-stream mode: meta_for_single guaranteed by validation above");
             let mut args = super::paged_attn::PagedAttnArgs {
                 q_contiguous,
                 k_contiguous,

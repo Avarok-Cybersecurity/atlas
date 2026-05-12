@@ -137,7 +137,7 @@ impl TransformerModel {
     ///   - The seq has no `DflashProposerState`
     ///   - Rank > 0 under EP/TP (drafter is rank-0 only)
     ///
-    /// Layout: writes hidden[t] BF16 into
+    /// Layout: writes `hidden[t]` BF16 into
     /// `acc[(chunk_start + t) * 5 * h + slot_idx * h]` for each t.
     /// Per-layer call performs `proc_count` strided d2d_async copies —
     /// at typical prefill of 128–4096 tokens × 5 capture layers, total

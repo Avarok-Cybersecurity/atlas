@@ -8,14 +8,36 @@
 //!
 //! Returns `did_mixed_step` so the caller can skip the standalone decode
 //! call (mixed forward already processed decode logits).
+//!
+//! Layout: this file is the dispatcher only; the three per-path bodies
+//! live in the sibling sub-modules under `phase_continue_prefills/` to
+//! keep each unit ≤250 LoC per `crates/.../CLAUDE.md` core directive #4
+//! and ≤500 LoC per `.github/workflows/file-size-cap.yml`.
+//!
+//!  - `run_standard`        — single-stream chunked-prefill body
+//!                            (mixed_forward or plain prefill_chunk).
+//!  - `run_batched_prefill` — Q12 N-stream batched-prefill step.
+//!  - `run_batched_mixed`   — Q12 Phase 5 batched mixed (decode+prefill) step.
 
-use anyhow::Result;
-use spark_model::traits::{Model, SequenceState};
+#[path = "phase_continue_prefills/run_batched_mixed.rs"]
+mod run_batched_mixed;
+#[path = "phase_continue_prefills/run_batched_prefill.rs"]
+mod run_batched_prefill;
+#[path = "phase_continue_prefills/run_standard.rs"]
+mod run_standard;
+
 use std::time::Instant;
 
+use spark_model::traits::Model;
+
 use super::phase_promote_prefills::promote_completed_prefills;
-use super::*;
+use super::sample_token;
+use super::types::{ActiveSeq, PrefillInProgress};
 use crate::scheduling_policy::{ActiveSeqTiming, SchedulingPolicy};
+
+use run_batched_mixed::run_batched_mixed_step;
+use run_batched_prefill::run_batched_prefill_step;
+use run_standard::run_standard_chunk_loop;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn continue_in_progress_prefills(
@@ -56,6 +78,91 @@ pub(super) fn continue_in_progress_prefills(
     }
 
     let mut completed_indices = Vec::new();
+
+    // Q12 batched-prefill paths. Two branches fire when 2+ streams are
+    // prefilling concurrently (replaces the FIFO `prefilling.first_mut()`
+    // advance — see qwen-refactor notes §6 for the asymmetric-TTFT
+    // bug it fixes). The active-empty case routes to `prefill_batch_chunk`;
+    // active-nonempty routes to `mixed_forward_batch` (N decode + M
+    // prefill fused). Both call the default trait impl today (per-stream
+    // loops); Q12 Phase 2/3 replace with kernel-level batched dispatch.
+    //
+    // Gates: N≥2 prefilling, no EP (worker opcode pending, Phase 6),
+    // and for mixed-batch only: skip if active.len()==1 AND a speculative
+    // path is active (those step_* paths require active.len()==1 and
+    // mixing would double-decode). Spec is off by construction when
+    // active.len() ≥ 2, so the mixed branch is safe there.
+    let single_active_with_spec =
+        active.len() == 1 && (use_mtp || use_self_speculative || use_ngram_speculative);
+    // BISECT: ATLAS_BISECT_Q12_DISABLE=1 forces the per-stream FIFO path
+    // (pre-Q12 behavior) so we can isolate whether the chunked-prefill +
+    // concurrent-decode crash originates in the Q12 batched-prefill
+    // dispatch or pre-existing chunked-prefill state mutation.
+    let q12_dispatch_disabled = std::env::var("ATLAS_BISECT_Q12_DISABLE")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+    let can_batch_prefill_only =
+        !q12_dispatch_disabled && prefilling.len() >= 2 && active.is_empty() && !model.is_ep();
+    let can_batch_mixed = !q12_dispatch_disabled
+        && prefilling.len() >= 2
+        && !active.is_empty()
+        && !single_active_with_spec
+        && !model.is_ep();
+
+    if can_batch_prefill_only {
+        run_batched_prefill_step(
+            model,
+            prefilling,
+            &mut completed_indices,
+            max_prefill_tokens,
+            prefill_stream,
+            prefill_event,
+        );
+        promote_completed_prefills(
+            model,
+            prefilling,
+            completed_indices,
+            active,
+            think_end_token,
+            think_start_token,
+            tool_call_start_token,
+            tool_call_end_token,
+        );
+        return did_mixed_step;
+    }
+
+    if can_batch_mixed {
+        let t0_mixed = Instant::now();
+        run_batched_mixed_step(
+            model,
+            active,
+            prefilling,
+            &mut completed_indices,
+            max_prefill_tokens,
+            prefill_stream,
+            prefill_event,
+            t0_mixed,
+            think_end_token,
+            think_start_token,
+            tool_call_start_token,
+            tool_call_end_token,
+            reflection_suppress_ids,
+            adaptive_sampling,
+            &mut did_mixed_step,
+        );
+        promote_completed_prefills(
+            model,
+            prefilling,
+            completed_indices,
+            active,
+            think_end_token,
+            think_start_token,
+            tool_call_start_token,
+            tool_call_end_token,
+        );
+        return did_mixed_step;
+    }
+
     // Process the FIRST in-progress prefill. When no active decode
     // sequences, run all remaining chunks in a tight loop to minimize
     // TTFT. Otherwise, run 1 chunk and yield to decode.
@@ -145,202 +252,4 @@ pub(super) fn continue_in_progress_prefills(
     );
 
     did_mixed_step
-}
-
-/// Inner loop: try mixed_forward first when conditions allow; else fall
-/// back to plain prefill_chunk + EP broadcast.
-#[allow(clippy::too_many_arguments)]
-fn run_standard_chunk_loop(
-    model: &dyn Model,
-    p: &mut PrefillInProgress,
-    idx: usize,
-    active: &mut Vec<ActiveSeq>,
-    max_prefill_tokens: usize,
-    prefill_stream: u64,
-    prefill_event: u64,
-    use_mtp: bool,
-    use_self_speculative: bool,
-    use_ngram_speculative: bool,
-    think_end_token: Option<u32>,
-    think_start_token: Option<u32>,
-    tool_call_start_token: Option<u32>,
-    tool_call_end_token: Option<u32>,
-    reflection_suppress_ids: &[u32],
-    adaptive_sampling: bool,
-    completed_indices: &mut Vec<(usize, Option<u32>)>,
-    did_mixed_step: &mut bool,
-) {
-    loop {
-        let remaining = p.prompt_tokens.len() - p.chunk_offset;
-        // MLA correctness gate: Atlas has no `prefill_attention_paged_mla_*`
-        // kernel; the existing MLA prefill at qwen3_attention/prefill.rs:1723
-        // only attends over the current chunk's K/V, so multi-chunk prefill
-        // silently corrupts attention output. Force single-chunk until a
-        // paged-MLA prefill kernel lands. Hurts cold TTFT on long MLA
-        // prompts but preserves correctness.
-        let effective_max = if model.is_mla() {
-            remaining
-        } else {
-            max_prefill_tokens
-        };
-        let mut chunk_len = remaining.min(effective_max);
-        let is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
-        // Align intermediate chunks to GDN WY4 boundary (4 tokens).
-        if !is_last && chunk_len >= 4 {
-            chunk_len = (chunk_len / 4) * 4;
-        }
-
-        // ── Mixed forward: fuse prefill chunk + decode in one pass ──
-        let can_mix = !active.is_empty()
-            && !model.is_ep()
-            && !use_mtp
-            && !use_self_speculative
-            && !use_ngram_speculative;
-
-        if can_mix {
-            let decode_tokens: Vec<u32> = active.iter().map(|a| a.last_token).collect();
-            let mut decode_refs: Vec<&mut SequenceState> =
-                active.iter_mut().map(|a| &mut a.seq).collect();
-            let t0_mixed = Instant::now();
-
-            match model.mixed_forward(
-                &decode_tokens,
-                &mut decode_refs,
-                &p.prompt_tokens,
-                &mut p.seq,
-                p.chunk_offset,
-                chunk_len,
-                is_last,
-                prefill_stream,
-            ) {
-                Ok(result) => {
-                    p.chunk_offset += chunk_len;
-                    tracing::info!(
-                        "Mixed forward: prefill {}/{} tokens + {} decode",
-                        p.chunk_offset,
-                        p.prompt_tokens.len(),
-                        decode_tokens.len(),
-                    );
-
-                    // Process prefill logits (if last chunk).
-                    if is_last {
-                        if let Err(e) = model.normalize_ssm_states(&p.seq, prefill_stream) {
-                            tracing::warn!("SSM state normalization failed: {e:#}");
-                        }
-                        let _ = model.record_event(prefill_event, prefill_stream);
-                        let _ = model.stream_wait_event(model.default_stream(), prefill_event);
-                        match sample_token(
-                            model,
-                            result.prefill_logits,
-                            p.temperature,
-                            p.top_k,
-                            p.top_p,
-                            &p.eos_tokens,
-                        ) {
-                            Ok(first) => {
-                                tracing::info!("Mixed prefill first token: {first}");
-                                completed_indices.push((idx, Some(first)));
-                            }
-                            Err(e) => {
-                                tracing::error!("Mixed prefill sampling: {e:#}");
-                                completed_indices.push((idx, None));
-                            }
-                        }
-                    }
-
-                    // Process decode logits for active sequences.
-                    let _ = model.record_event(prefill_event, prefill_stream);
-                    let _ = model.stream_wait_event(model.default_stream(), prefill_event);
-                    process_decode_logits(
-                        model,
-                        active,
-                        result.decode_logits,
-                        t0_mixed,
-                        think_end_token,
-                        think_start_token,
-                        tool_call_start_token,
-                        tool_call_end_token,
-                        reflection_suppress_ids,
-                        adaptive_sampling,
-                    );
-                    *did_mixed_step = true;
-                }
-                Err(e) => {
-                    tracing::error!("Mixed forward error: {e:#}");
-                    completed_indices.push((idx, None));
-                }
-            }
-            break;
-        }
-
-        // ── Standard path: prefill chunk only, decode separately ──
-        // EP: broadcast chunk tokens to worker (bulk, single NCCL op).
-        let ep_ok = (|| -> Result<()> {
-            model.ep_broadcast_cmd(0xFFFFFFF0)?;
-            model.ep_broadcast_cmd(chunk_len as u32)?;
-            model.ep_broadcast_cmd(p.chunk_offset as u32)?;
-            model.ep_broadcast_cmd(p.prompt_tokens.len() as u32)?;
-            model.ep_broadcast_tokens(&p.prompt_tokens)?;
-            Ok(())
-        })();
-        if let Err(e) = ep_ok {
-            tracing::error!("EP broadcast chunk: {e:#}");
-            completed_indices.push((idx, None));
-            break;
-        }
-
-        match model.prefill_chunk(
-            &p.prompt_tokens,
-            &mut p.seq,
-            p.chunk_offset,
-            chunk_len,
-            is_last,
-            prefill_stream,
-        ) {
-            Ok(logits) => {
-                p.chunk_offset += chunk_len;
-                tracing::info!(
-                    "Prefill chunk {}/{} tokens",
-                    p.chunk_offset,
-                    p.prompt_tokens.len(),
-                );
-                // Normalize SSM states after EVERY chunk to prevent state drift.
-                if let Err(e) = model.normalize_ssm_states(&p.seq, prefill_stream) {
-                    tracing::warn!("SSM state normalization failed: {e:#}");
-                }
-                if is_last {
-                    let _ = model.record_event(prefill_event, prefill_stream);
-                    let _ = model.stream_wait_event(model.default_stream(), prefill_event);
-                    match sample_token(
-                        model,
-                        logits,
-                        p.temperature,
-                        p.top_k,
-                        p.top_p,
-                        &p.eos_tokens,
-                    ) {
-                        Ok(first) => {
-                            tracing::info!("Prefill first token: {first}");
-                            completed_indices.push((idx, Some(first)));
-                        }
-                        Err(e) => {
-                            tracing::error!("Chunked prefill argmax: {e:#}");
-                            completed_indices.push((idx, None));
-                        }
-                    }
-                    break;
-                }
-                // If active sequences exist, yield after 1 chunk.
-                if !active.is_empty() {
-                    break;
-                }
-                // Otherwise, continue processing next chunk immediately.
-            }
-            Err(e) => {
-                tracing::error!("Prefill chunk error: {e:#}");
-                completed_indices.push((idx, None));
-                break;
-            }
-        }
-    }
 }

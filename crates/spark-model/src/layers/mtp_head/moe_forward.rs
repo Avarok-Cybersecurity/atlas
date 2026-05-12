@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Generic per-expert MoE forward path for FP8/BF16 expert weights,
-//! plus the deferred draft-token D2H readback used by the proposer trait impl.
+//! plus the deferred draft-token D2H readback used by the proposer trait impl,
+//! plus a dense-FFN shortcut for non-MoE MTP heads (Qwen3.6-27B-FP8).
 
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
@@ -20,6 +21,53 @@ impl MtpHead {
         let mut buf = [0u8; 4];
         gpu.copy_d2h(self.draft_token_id_dev, &mut buf)?;
         Ok(u32::from_le_bytes(buf))
+    }
+
+    /// Dense FFN forward for Qwen3.6-27B-FP8 (and other dense MTP heads):
+    /// `out = down_proj( silu(gate_proj(x)) * up_proj(x) )`.
+    ///
+    /// One MLP, no router, no expert dispatch. Reuses the same FP8/BF16
+    /// kernels (`dense_gemv_*`, `moe_silu_mul`) the per-expert path uses,
+    /// so no new kernel wiring is required.
+    pub(super) fn dense_ffn_forward_generic(
+        &self,
+        input: DevicePtr,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<DevicePtr> {
+        let h = ctx.config.hidden_size as u32;
+        // Dense MTP heads use the main model's dense `intermediate_size`
+        // (Qwen3.6-27B: 17408). `moe_intermediate_size` is 0 for dense
+        // checkpoints and would request a zero-element GEMV.
+        let inter = if ctx.config.intermediate_size > 0 {
+            ctx.config.intermediate_size as u32
+        } else {
+            ctx.config.moe_intermediate_size as u32
+        };
+        let (gate_w, up_w, down_w) = self
+            .dense_ffn_generic
+            .as_ref()
+            .expect("dense_ffn_forward_generic called without dense_ffn_generic populated");
+
+        let gate_out = ctx.buffers.expert_gate_out();
+        let up_out = ctx.buffers.expert_up_out();
+
+        self.gemv(ctx.gpu, input, gate_w, gate_out, inter, h, stream)?;
+        self.gemv(ctx.gpu, input, up_w, up_out, inter, h, stream)?;
+
+        ops::moe_silu_mul(
+            ctx.gpu,
+            self.moe_silu_mul_k.unwrap(),
+            gate_out,
+            up_out,
+            gate_out,
+            inter,
+            stream,
+        )?;
+
+        let output = ctx.buffers.moe_output();
+        self.gemv(ctx.gpu, gate_out, down_w, output, h, inter, stream)?;
+        Ok(output)
     }
 
     /// Generic MoE forward for FP8/BF16 expert weights.

@@ -1,40 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-#[allow(unused_imports)]
-use std::sync::Arc;
+use axum::response::sse::Event;
 
-#[allow(unused_imports)]
-use axum::extract::State;
-#[allow(unused_imports)]
-use axum::extract::rejection::JsonRejection;
-#[allow(unused_imports)]
-use axum::http::StatusCode;
-#[allow(unused_imports)]
-use axum::response::sse::{Event, KeepAlive};
-#[allow(unused_imports)]
-use axum::response::{IntoResponse, Json, Response, Sse};
-#[allow(unused_imports)]
-use futures::StreamExt;
-#[allow(unused_imports)]
-use serde::{Deserialize, Serialize};
-
-#[allow(unused_imports)]
-use crate::AppState;
-#[allow(unused_imports)]
-use crate::openai;
-#[allow(unused_imports)]
-use crate::tool_parser;
-
-#[allow(unused_imports)]
-use super::convert::*;
-#[allow(unused_imports)]
-use super::handlers_stream::*;
-#[allow(unused_imports)]
 use super::helpers::*;
-#[allow(unused_imports)]
-use super::translate::*;
-#[allow(unused_imports)]
-use super::types::*;
 
 /// Open-block tracker for the streaming translator's state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -35,7 +35,7 @@ pub(crate) struct SsmStatePool {
     pub(super) h_state_pools: Vec<DevicePtr>,
     pub(super) conv_state_pools: Vec<DevicePtr>,
     /// Per-slot K=3 intermediate checkpoint pools (only allocated when has_mtp).
-    /// Layout: [num_ssm_layers], each allocation = max_slots * 3 * h_bytes.
+    /// Layout: `[num_ssm_layers]`, each allocation = max_slots * 3 * h_bytes.
     pub(super) h_intermediate_pools: Vec<DevicePtr>,
     pub(super) conv_intermediate_pools: Vec<DevicePtr>,
     /// Per-slot SSM state checkpoint pools (only allocated when has_mtp).

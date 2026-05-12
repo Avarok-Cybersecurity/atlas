@@ -455,6 +455,143 @@ store_h_split4:
     }
 }
 
+// ───────────────────────────────────────────────────────────────────────
+// Q12 Phase 2b: same-chunk-len batched split4. h_state per-stream via
+// h_state_ptrs[b]; QKV/gate/beta/output stacked with `b * seq_len * stride`
+// offset; otherwise byte-identical to gated_delta_rule_prefill_split4.
+// Single-stream variant above unchanged.
+// ───────────────────────────────────────────────────────────────────────
+extern "C" __global__ void __launch_bounds__(32, 1)
+gated_delta_rule_prefill_split4_batched(
+    float* const* __restrict__ h_state_ptrs,
+    const __nv_bfloat16* __restrict__ query,
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int batch_size,
+    unsigned int seq_len,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride
+) {
+    const unsigned int vh    = blockIdx.x / 4;
+    const unsigned int split = blockIdx.x % 4;
+    const unsigned int b     = blockIdx.y;
+    if (vh >= num_v_heads || b >= batch_size) return;
+
+    const unsigned int tid_local  = threadIdx.x;
+    const unsigned int quarter    = blockDim.x;
+    const unsigned int tid        = split * quarter + tid_local;
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+
+    const unsigned long long qk_batch_off = (unsigned long long)b * seq_len * qk_stride;
+    const unsigned long long v_batch_off  = (unsigned long long)b * seq_len * v_stride;
+    const unsigned long long gb_batch_off = (unsigned long long)b * seq_len * gb_stride;
+    const unsigned long long out_batch_off = (unsigned long long)b * seq_len * num_v_heads * v_dim;
+
+    extern __shared__ float smem[];
+    float* smem_k0 = smem;
+    float* smem_q0 = smem + K_DIM;
+    float* smem_k1 = smem + 2 * K_DIM;
+    float* smem_q1 = smem + 3 * K_DIM;
+
+    float* H_global = h_state_ptrs[b] + ((unsigned long long)vh * K_DIM * v_dim);
+
+    float H_reg[K_DIM];
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j++) {
+        H_reg[j] = H_global[j * v_dim + tid];
+    }
+
+    float inv_sqrt_d = rsqrtf((float)k_dim);
+
+    if (seq_len == 0) goto store_h_split4_batched;
+
+    {
+        unsigned long long qk_off = qk_batch_off + kh * k_dim;
+        smem_k0[tid_local]            = (float)key[qk_off + tid_local];
+        smem_k0[tid_local + quarter]  = (float)key[qk_off + tid_local + quarter];
+        smem_k0[tid_local + 2*quarter]= (float)key[qk_off + tid_local + 2*quarter];
+        smem_k0[tid_local + 3*quarter]= (float)key[qk_off + tid_local + 3*quarter];
+        smem_q0[tid_local]            = (float)query[qk_off + tid_local];
+        smem_q0[tid_local + quarter]  = (float)query[qk_off + tid_local + quarter];
+        smem_q0[tid_local + 2*quarter]= (float)query[qk_off + tid_local + 2*quarter];
+        smem_q0[tid_local + 3*quarter]= (float)query[qk_off + tid_local + 3*quarter];
+    }
+    __syncthreads();
+
+    for (unsigned int t = 0; t < seq_len; t++) {
+        float* cur_k = (t & 1) ? smem_k1 : smem_k0;
+        float* cur_q = (t & 1) ? smem_q1 : smem_q0;
+        float* nxt_k = (t & 1) ? smem_k0 : smem_k1;
+        float* nxt_q = (t & 1) ? smem_q0 : smem_q1;
+
+        if (t + 1 < seq_len) {
+            unsigned long long qk_off_nxt = qk_batch_off + (unsigned long long)(t + 1) * qk_stride + kh * k_dim;
+            nxt_k[tid_local]            = (float)key[qk_off_nxt + tid_local];
+            nxt_k[tid_local + quarter]  = (float)key[qk_off_nxt + tid_local + quarter];
+            nxt_k[tid_local + 2*quarter]= (float)key[qk_off_nxt + tid_local + 2*quarter];
+            nxt_k[tid_local + 3*quarter]= (float)key[qk_off_nxt + tid_local + 3*quarter];
+            nxt_q[tid_local]            = (float)query[qk_off_nxt + tid_local];
+            nxt_q[tid_local + quarter]  = (float)query[qk_off_nxt + tid_local + quarter];
+            nxt_q[tid_local + 2*quarter]= (float)query[qk_off_nxt + tid_local + 2*quarter];
+            nxt_q[tid_local + 3*quarter]= (float)query[qk_off_nxt + tid_local + 3*quarter];
+        }
+
+        float v_i  = (float)value[v_batch_off + (unsigned long long)t * v_stride + vh * v_dim + tid];
+        float g_t  = fminf(fmaxf(gate[gb_batch_off + (unsigned long long)t * gb_stride + vh], 1e-6f), 1.0f - 1e-6f);
+        float bt_t = beta[gb_batch_off + (unsigned long long)t * gb_stride + vh];
+
+        float hk0 = 0.0f, hk1 = 0.0f, hk2 = 0.0f, hk3 = 0.0f;
+        #pragma unroll
+        for (int j = 0; j < K_DIM; j += 4) {
+            hk0 += H_reg[j]     * cur_k[j];
+            hk1 += H_reg[j + 1] * cur_k[j + 1];
+            hk2 += H_reg[j + 2] * cur_k[j + 2];
+            hk3 += H_reg[j + 3] * cur_k[j + 3];
+        }
+        float hk_dot = (hk0 + hk1) + (hk2 + hk3);
+
+        float v_new = (v_i - g_t * hk_dot) * bt_t;
+
+        float qd0 = 0.0f, qd1 = 0.0f, qd2 = 0.0f, qd3 = 0.0f;
+        #pragma unroll
+        for (int j = 0; j < K_DIM; j += 4) {
+            float h0 = g_t * H_reg[j]     + cur_k[j]     * v_new;
+            float h1 = g_t * H_reg[j + 1] + cur_k[j + 1] * v_new;
+            float h2 = g_t * H_reg[j + 2] + cur_k[j + 2] * v_new;
+            float h3 = g_t * H_reg[j + 3] + cur_k[j + 3] * v_new;
+            H_reg[j]     = h0;
+            H_reg[j + 1] = h1;
+            H_reg[j + 2] = h2;
+            H_reg[j + 3] = h3;
+            qd0 += h0 * cur_q[j];
+            qd1 += h1 * cur_q[j + 1];
+            qd2 += h2 * cur_q[j + 2];
+            qd3 += h3 * cur_q[j + 3];
+        }
+        float q_dot = (qd0 + qd1) + (qd2 + qd3);
+
+        output[out_batch_off + ((unsigned long long)t * num_v_heads + vh) * v_dim + tid] =
+            __float2bfloat16(q_dot * inv_sqrt_d);
+
+        __syncthreads();
+    }
+
+store_h_split4_batched:
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j++) {
+        H_global[j * v_dim + tid] = H_reg[j];
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Decode, Chunk2, Chunk3 kernels — identical to parent (no changes).
 // ═══════════════════════════════════════════════════════════════════

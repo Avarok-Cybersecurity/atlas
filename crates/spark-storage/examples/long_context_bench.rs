@@ -316,7 +316,7 @@ fn run_in_hbm(
     let mut _swallow = vec![0_u8; 1];
     copy_d_to_h_async(
         _swallow.as_mut_ptr() as *mut c_void,
-        ctx.stream as u64,
+        ctx.stream,
         0,
         ctx.stream,
     )

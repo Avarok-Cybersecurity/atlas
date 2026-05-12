@@ -13,7 +13,7 @@ use super::super::super::types::TransformerModel;
 use crate::traits::SequenceState;
 
 impl TransformerModel {
-    pub(super) fn prefill_b_prefix_lookup(
+    pub(in crate::model) fn prefill_b_prefix_lookup(
         &self,
         tokens: &[u32],
         seq: &mut SequenceState,

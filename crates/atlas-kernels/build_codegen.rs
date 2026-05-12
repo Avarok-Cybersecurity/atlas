@@ -32,10 +32,13 @@ pub(super) fn generate_target_ptx_rs(
     //            `pub fn ptx_modules() -> Vec<(&str, &str)>`
     //   binary → `pub const FOO_METALLIB: &[u8] = include_bytes!(...)`,
     //            `pub fn metallib_modules() -> Vec<(&str, &[u8])>`
-    let (const_suffix, ty, include_macro, fn_root, modules_ty) = if output_is_text {
+    // `const_ty` drops the `'static` (consts default to `'static` —
+    // clippy::redundant_static_lifetimes); `modules_ty` keeps it (no
+    // elision possible for function return signature).
+    let (const_suffix, const_ty, include_macro, fn_root, modules_ty) = if output_is_text {
         (
             "PTX",
-            "&'static str",
+            "&str",
             "include_str!",
             "ptx_modules",
             "Vec<(&'static str, &'static str)>",
@@ -43,7 +46,7 @@ pub(super) fn generate_target_ptx_rs(
     } else {
         (
             "METALLIB",
-            "&'static [u8]",
+            "&[u8]",
             "include_bytes!",
             "metallib_modules",
             "Vec<(&'static str, &'static [u8])>",
@@ -63,7 +66,7 @@ pub(super) fn generate_target_ptx_rs(
         for (stem, module_name) in modules {
             let const_name = format!("{}{}_{}", prefix, module_name.to_uppercase(), const_suffix);
             g.push_str(&format!(
-                "pub const {const_name}: {ty} = \
+                "pub const {const_name}: {const_ty} = \
                  {include_macro}(concat!(env!(\"ATLAS_PTX_DIR\"), \"/t{idx}__{stem}.{output_ext}\"));\n"
             ));
         }

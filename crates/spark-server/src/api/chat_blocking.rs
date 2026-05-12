@@ -336,14 +336,16 @@ fn build_choice_message(
                     let close_end = after_open + rel_close + 3;
                     c = format!("{}{}", &c[..start], &c[close_end..]);
                 }
-                let trimmed = c.trim().to_string();
-                if trimmed.is_empty() {
-                    return trimmed;
-                }
-                trimmed
+                c.trim().to_string()
             });
             message.content = content;
             if !validated.valid.is_empty() {
+                for tc in &validated.valid {
+                    let p: String = tc.function.arguments.chars().take(120).collect();
+                    let s = ["", "…"][usize::from(tc.function.arguments.len() > p.len())];
+                    tracing::info!("Tool call: {}({p}{s})", tc.function.name);
+                    crate::metrics::TOOL_CALLS_TOTAL.inc();
+                }
                 message.tool_calls = Some(validated.valid);
                 finish_reason_i = "tool_calls".to_string();
             }

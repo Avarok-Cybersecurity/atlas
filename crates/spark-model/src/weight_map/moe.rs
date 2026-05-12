@@ -120,13 +120,21 @@ pub struct MtpWeights {
     /// Post-attention layernorm: `[hidden_size]` BF16.
     pub post_attn_layernorm: DenseWeight,
     /// MoE router gate: [num_experts, hidden_size] BF16.
+    /// NULL when `dense_ffn` is `Some` (dense FFN MTP head).
     pub moe_gate: DenseWeight,
-    /// Shared expert (BF16).
+    /// Shared expert (BF16). NULL fields when `dense_ffn` is `Some`.
     pub shared_expert: DenseExpertWeight,
     /// Shared expert gate: [1, hidden_size] BF16.
+    /// NULL when `dense_ffn` is `Some`.
     pub shared_expert_gate: DenseWeight,
     /// Per-expert weights (512 experts, BF16).
+    /// Empty when `dense_ffn` is `Some`.
     pub experts: Vec<DenseExpertWeight>,
+    /// Dense FFN triple (`gate_proj`, `up_proj`, `down_proj`) — used by MTP
+    /// heads bundled with dense (non-MoE) FP8 checkpoints, e.g.
+    /// `Qwen/Qwen3.6-27B-FP8`. When `Some`, the MoE fields above are unused
+    /// and the forward path takes the dense MLP shortcut.
+    pub dense_ffn: Option<DenseExpertWeight>,
     /// Final output RMSNorm: `[hidden_size]` BF16.
     pub norm: DenseWeight,
 }

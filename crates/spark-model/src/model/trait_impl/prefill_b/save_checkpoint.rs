@@ -14,7 +14,7 @@ use super::super::super::types::TransformerModel;
 use crate::traits::SequenceState;
 
 impl TransformerModel {
-    pub(super) fn prefill_b_save_checkpoint(
+    pub(in crate::model) fn prefill_b_save_checkpoint(
         &self,
         tokens: &[u32],
         seq: &mut SequenceState,

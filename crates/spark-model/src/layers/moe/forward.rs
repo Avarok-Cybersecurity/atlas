@@ -206,8 +206,10 @@ impl MoeLayer {
         let expert_gate_out = ctx.buffers.expert_gate_out();
         let expert_up_out = ctx.buffers.expert_up_out();
         let expert_down_out = ctx.buffers.expert_down_out();
-        // Use logits buffer for shared expert gate scratch (ssm_ba is too small:
-        // 128 bytes vs shared_inter * 2 = 1024 bytes needed).
+        // ⚠ `logits` aliased as shared-gate scratch — concurrent users
+        // MUST offset past `shared_expert_intermediate_size * 2`
+        // (decode_b.rs:197 uses .offset(65536)). See bug 2 in memory
+        // `project_batch_decode_corruption.md` (2026-05-10).
         let shared_gate_scratch = ctx.buffers.logits();
         let shared_up_scratch = ctx.buffers.ssm_qkvz();
         let shared_out = ctx.buffers.attn_output();

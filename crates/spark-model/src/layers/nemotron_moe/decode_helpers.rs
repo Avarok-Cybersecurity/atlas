@@ -3,8 +3,8 @@
 //! Per-token decode helpers for [`super::NemotronMoeLayer`].
 //!
 //! Two MoE shapes:
-//!   - `decode_direct_moe` (Nano 30B): experts operate in hidden space [H].
-//!   - `decode_latent_moe`  (Super 120B): experts operate in latent space [L]
+//!   - `decode_direct_moe` (Nano 30B): experts operate in hidden space `[H]`.
+//!   - `decode_latent_moe`  (Super 120B): experts operate in latent space `[L]`
 //!     with fc1/fc2 projections bridging hidden ↔ latent.
 
 use anyhow::Result;
@@ -198,13 +198,13 @@ impl NemotronMoeLayer {
         ops::residual_add(ctx.gpu, self.residual_add_k, hidden, output, h, stream)
     }
 
-    /// Super 120B: LatentMoE — routed experts operate in latent space [moe_latent_size].
+    /// Super 120B: LatentMoE — routed experts operate in latent space `[moe_latent_size]`.
     ///
-    /// fc1_latent(normed) → latent [L]
-    /// routed up(latent) → [inter], relu²+down → [L]
-    /// weighted_sum → combined [L]
-    /// fc2_latent(combined) → routed_out [H]
-    /// shared up(normed) → [shared_inter], relu²+down → shared_out [H]
+    /// fc1_latent(normed) → latent `[L]`
+    /// routed up(latent) → `[inter]`, relu²+down → `[L]`
+    /// weighted_sum → combined `[L]`
+    /// fc2_latent(combined) → routed_out `[H]`
+    /// shared up(normed) → `[shared_inter]`, relu²+down → shared_out `[H]`
     /// output = routed_out + shared_out
     pub(super) fn decode_latent_moe(
         &self,

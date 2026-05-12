@@ -18,7 +18,7 @@ use crate::layers::ops;
 use crate::traits::SequenceState;
 
 impl TransformerModel {
-    pub(super) fn prefill_b_finalize_last(
+    pub(in crate::model) fn prefill_b_finalize_last(
         &self,
         tokens: &[u32],
         seq: &mut SequenceState,
@@ -26,6 +26,33 @@ impl TransformerModel {
         chunk_start: usize,
         chunk_len: usize,
         proc_count: usize,
+        stream: u64,
+    ) -> Result<DevicePtr> {
+        self.prefill_b_finalize_last_at(
+            tokens,
+            seq,
+            kv_cache,
+            chunk_start,
+            chunk_len,
+            proc_count,
+            0,
+            stream,
+        )
+    }
+
+    /// Q12 Path B: stream-offset-aware finalize for the kernel-batched
+    /// orchestrator. `hidden_stream_offset_tokens` is `b * chunk_len`
+    /// where `b` is the stream's index in the batched dispatch.
+    /// All other args identical to `prefill_b_finalize_last`.
+    pub(in crate::model) fn prefill_b_finalize_last_at(
+        &self,
+        tokens: &[u32],
+        seq: &mut SequenceState,
+        kv_cache: &mut PagedKvCache,
+        chunk_start: usize,
+        chunk_len: usize,
+        proc_count: usize,
+        hidden_stream_offset_tokens: usize,
         stream: u64,
     ) -> Result<DevicePtr> {
         let h = self.config.hidden_size;
@@ -38,7 +65,8 @@ impl TransformerModel {
         let bs = kv_cache.block_size();
 
         // ── 6. Final norm on LAST token only ──
-        let last_hidden = hidden.offset((proc_count - 1) * h * fp32);
+        let last_token_offset = hidden_stream_offset_tokens + proc_count - 1;
+        let last_hidden = hidden.offset(last_token_offset * h * fp32);
         let normed = self.buffers.norm_output();
         let eps = self.config.rms_norm_eps as f32;
         ops::rms_norm(

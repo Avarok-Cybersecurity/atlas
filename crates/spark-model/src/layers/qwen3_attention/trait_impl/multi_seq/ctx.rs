@@ -8,7 +8,7 @@ use spark_runtime::gpu::DevicePtr;
 use crate::layer::ForwardContext;
 use crate::layers::qwen3_attention::Qwen3AttentionLayer;
 
-/// Shared scalars / buffer pointers for [`super::decode_multi_seq_inner`].
+/// Shared scalars / buffer pointers for `super::decode_multi_seq_inner`.
 /// Built once in the orchestrator, then handed to each phase by `&self`.
 #[allow(dead_code)]
 pub(super) struct MultiSeqCtx<'a> {

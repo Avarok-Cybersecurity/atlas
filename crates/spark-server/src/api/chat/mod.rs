@@ -177,8 +177,9 @@ pub(crate) async fn chat_completions_inner(
     };
 
     let session_hash = crate::session_manager::compute_session_hash(&prompt_tokens);
+    let tools_count = req.tools.as_ref().map_or(0, |t| t.len());
     tracing::info!(
-        "Session {session_hash:#x}: {prompt_tokens} prompt tokens, tools={tools_active}",
+        "Session {session_hash:#x}: {prompt_tokens} prompt tokens, tools={tools_active} ({tools_count} defined)",
         prompt_tokens = prompt_tokens.len()
     );
     let prompt_len = prompt_tokens.len();

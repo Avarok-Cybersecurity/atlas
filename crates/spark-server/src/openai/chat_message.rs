@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-#[allow(unused_imports)]
-use serde::{Deserialize, Serialize};
-
-#[allow(unused_imports)]
-use super::*;
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct IncomingMessage {

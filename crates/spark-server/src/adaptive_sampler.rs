@@ -207,3 +207,107 @@ impl AdaptiveSamplingState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn st(temp: f32, zone: GenerationZone) -> AdaptiveSamplingState {
+        let mut s = AdaptiveSamplingState::new(temp);
+        s.zone = zone;
+        s
+    }
+
+    #[test]
+    fn temperature_zero_stays_zero() {
+        // Greedy request must not be overridden by adaptive logic.
+        let s = st(0.0, GenerationZone::FreeText);
+        assert_eq!(s.effective_temperature(), 0.0);
+    }
+
+    #[test]
+    fn tool_call_zone_caps_temperature() {
+        // ToolCall zone clamps base to <=0.3 even when caller wanted higher.
+        let s = st(1.0, GenerationZone::ToolCall);
+        assert!(s.effective_temperature() <= 0.3);
+    }
+
+    #[test]
+    fn structured_zone_scales_down() {
+        // StructuredOutput multiplies base by 0.6 (no entropy boost yet).
+        let s = st(1.0, GenerationZone::StructuredOutput);
+        let t = s.effective_temperature();
+        assert!((t - 0.6).abs() < 1e-4, "expected ~0.6, got {t}");
+    }
+
+    #[test]
+    fn freetext_zone_passes_through() {
+        // FreeText with no entropy history is unchanged.
+        let s = st(0.7, GenerationZone::FreeText);
+        let t = s.effective_temperature();
+        assert!((t - 0.7).abs() < 1e-4, "expected ~0.7, got {t}");
+    }
+
+    #[test]
+    fn should_use_greedy_when_temp_zero() {
+        let s = st(0.0, GenerationZone::FreeText);
+        assert!(s.should_use_greedy(&[1.0, 2.0, 3.0]));
+    }
+
+    #[test]
+    fn should_use_greedy_when_top_prob_high() {
+        // Logits with one very dominant entry → top1 prob ≈ 1.0 > any threshold.
+        let s = st(0.7, GenerationZone::FreeText);
+        assert!(s.should_use_greedy(&[20.0, 0.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn should_not_use_greedy_when_top_prob_low() {
+        // Uniform logits → top1 prob = 1/N → well below threshold.
+        let s = st(0.7, GenerationZone::FreeText);
+        assert!(!s.should_use_greedy(&[1.0, 1.0, 1.0, 1.0]));
+    }
+
+    #[test]
+    fn should_not_use_greedy_with_non_finite_logits() {
+        // NaN-only / all-NEG_INF logits return false (safe default).
+        let s = st(0.7, GenerationZone::FreeText);
+        assert!(!s.should_use_greedy(&[f32::NEG_INFINITY, f32::NEG_INFINITY]));
+    }
+
+    #[test]
+    fn entropy_boost_zero_under_threshold() {
+        let s = st(0.7, GenerationZone::FreeText);
+        // consecutive_low_entropy starts at 0 → no boost.
+        assert_eq!(s.entropy_diversity_boost(), 0.0);
+    }
+
+    #[test]
+    fn entropy_boost_tool_zone_disabled() {
+        let mut s = st(0.7, GenerationZone::ToolCall);
+        s.consecutive_low_entropy = 32; // would trigger 0.3 boost
+        // ToolCall zone short-circuits to 0.
+        assert_eq!(s.entropy_diversity_boost(), 0.0);
+    }
+
+    #[test]
+    fn lz_multiplier_tool_zone_disabled() {
+        let mut s = st(0.7, GenerationZone::ToolCall);
+        s.lz_ratio = 0.05; // would trigger 1.8x boost
+        // ToolCall zone short-circuits to 1.0.
+        assert_eq!(s.lz_temperature_multiplier(), 1.0);
+    }
+
+    #[test]
+    fn lz_multiplier_brackets() {
+        let mut s = st(0.7, GenerationZone::FreeText);
+        s.lz_ratio = 0.10;
+        assert_eq!(s.lz_temperature_multiplier(), 1.8);
+        s.lz_ratio = 0.20;
+        assert_eq!(s.lz_temperature_multiplier(), 1.4);
+        s.lz_ratio = 0.30;
+        assert_eq!(s.lz_temperature_multiplier(), 1.2);
+        s.lz_ratio = 0.50;
+        assert_eq!(s.lz_temperature_multiplier(), 1.0);
+    }
+}

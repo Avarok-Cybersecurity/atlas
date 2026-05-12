@@ -337,7 +337,7 @@ impl NcclBackend {
     ///
     /// For world_size == 2:
     ///   1. Group send+recv (one RDMA write each direction)
-    ///   2. Local BF16 add: ptr[i] += recv_buffer[i]
+    ///   2. Local BF16 add: `ptr[i] += recv_buffer[i]`
     fn all_reduce_2rank(&self, ptr: u64, bytes: usize, stream: u64) -> Result<()> {
         let count = bytes / 2; // BF16 element count
         let partner = (1 - self.rank) as i32;
