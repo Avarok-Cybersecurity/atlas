@@ -120,10 +120,10 @@ pub(super) fn parse_sampling_presets(
 }
 
 /// Parse [behavior] from MODEL.toml. Returns
-/// (thinking_in_tools, max_thinking_budget, thinking_default, fp8_kv_calibration_tokens, default_kv_dtype, default_num_drafts, disable_tool_steering, tool_call_parser, enable_loop_watchdog).
+/// (thinking_in_tools, max_thinking_budget, thinking_default, fp8_kv_calibration_tokens, default_kv_dtype, default_num_drafts, disable_tool_steering, tool_call_parser, enable_loop_watchdog, skip_template_tools).
 pub(super) fn parse_behavior(
     model_dir: &std::path::Path,
-) -> (bool, u32, bool, usize, String, u32, bool, String, bool) {
+) -> (bool, u32, bool, usize, String, u32, bool, String, bool, bool) {
     let model_toml_path = model_dir.join("MODEL.toml");
     if !model_toml_path.exists() {
         return (
@@ -135,6 +135,7 @@ pub(super) fn parse_behavior(
             0,
             false,
             String::new(),
+            false,
             false,
         );
     }
@@ -151,6 +152,7 @@ pub(super) fn parse_behavior(
                 0,
                 false,
                 String::new(),
+                false,
                 false,
             );
         }
@@ -197,6 +199,10 @@ pub(super) fn parse_behavior(
         .and_then(|v| v.get("enable_loop_watchdog"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let skip_template_tools = b
+        .and_then(|v| v.get("skip_template_tools"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     (
         thinking_in_tools,
         max_thinking_budget,
@@ -207,6 +213,7 @@ pub(super) fn parse_behavior(
         disable_tool_steering,
         tool_call_parser,
         enable_loop_watchdog,
+        skip_template_tools,
     )
 }
 

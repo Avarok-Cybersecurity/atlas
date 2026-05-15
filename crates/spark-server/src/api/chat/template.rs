@@ -74,15 +74,22 @@ pub(super) fn render_template(
             msg
         })
         .collect();
-    let jinja_tools: Option<Vec<serde_json::Value>> = if tools_active {
-        req.tools.as_ref().map(|ts| {
-            ts.iter()
-                .map(|t| serde_json::to_value(t).unwrap_or_default())
-                .collect()
-        })
-    } else {
-        None
-    };
+    // When skip_template_tools is set, the tool-call parser's system_prompt()
+    // is the sole source of tool schema and format instructions. Passing
+    // jinja_tools here would cause the template to also render tool defs in
+    // its own format (e.g. XML for nemotron_h.jinja), producing contradictory
+    // instructions that confuse models trained on a different output format
+    // (e.g. Nemotron-Super-120B trained on bare JSON, not XML tool_call).
+    let jinja_tools: Option<Vec<serde_json::Value>> =
+        if tools_active && !state.behavior.skip_template_tools {
+            req.tools.as_ref().map(|ts| {
+                ts.iter()
+                    .map(|t| serde_json::to_value(t).unwrap_or_default())
+                    .collect()
+            })
+        } else {
+            None
+        };
 
     // Progressive auto-compact (DISABLED BY DEFAULT 2026-04-25 —
     // see project_no_auto_compaction memory feedback).

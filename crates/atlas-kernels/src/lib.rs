@@ -163,6 +163,19 @@ pub struct ModelBehavior {
     /// JSON arrays of similar objects, multiplication tables). Enable only
     /// when the model has been observed to need it.
     pub enable_loop_watchdog: bool,
+    /// When true, do not pass tool definitions to the Jinja chat template
+    /// (`jinja_tools` stays `None`). Use this for models where the tool-call
+    /// parser already injects a complete system-prompt with tool schemas and
+    /// format instructions, and the template's own XML tool rendering would
+    /// produce contradictory instructions.
+    ///
+    /// Example: Nemotron-Super-120B uses `bare_json` grammar (parser emits
+    /// JSON-schema + bare-JSON instructions) while the `nemotron_h.jinja`
+    /// template would additionally render XML `<function>` blocks and tell
+    /// the model to output `<tool_call>` XML — the opposite format. Setting
+    /// `skip_template_tools = true` suppresses the template rendering and
+    /// leaves the parser's instructions as the sole tool-format signal.
+    pub skip_template_tools: bool,
 }
 
 impl Default for ModelBehavior {
@@ -177,6 +190,7 @@ impl Default for ModelBehavior {
             disable_tool_steering: false,
             tool_call_parser: "",
             enable_loop_watchdog: false,
+            skip_template_tools: false,
         }
     }
 }

@@ -71,6 +71,13 @@ tool_call_parser = "bare_json"
 # enough headroom for the full chain-of-thought on non-trivial questions
 # while still reserving budget headroom at typical max_tokens=1024-2048.
 max_thinking_budget = 2048
+# Do not pass tool definitions to the Jinja template (jinja_tools=None).
+# The nemotron_h.jinja template would render XML <function> blocks and
+# instruct the model to use <tool_call> XML format — the opposite of what
+# bare_json expects. With skip_template_tools=true the bare_json parser's
+# system_prompt() is the sole source of tool schema and format instructions,
+# keeping the model on its trained bare-JSON distribution.
+skip_template_tools = true
 # Nemotron-Super is a thinking-first model — it is TRAINED to produce a
 # <think>...</think> reasoning trace before the answer. Forcing
 # `enable_thinking=false` in the generation prompt prematurely closes the

@@ -13,7 +13,7 @@
 |-------|---------|----------|-----------|------------|------------|-------------|--------|
 | **Qwen3.5-122B** | 90 GB | 0.8 GB (FP8) | 3/3 | 2/2 | 16.5 tok/s | 26K PASS | **PASS** |
 | **Mistral Small 4** | 66 GB | 38 GB (BF16) | 3/3 | 2/2 | 34-40 tok/s | **>1K FAIL** (fix committed) | **NEEDS RETEST** |
-| **Nemotron Super 120B** | 94 GB | tiny (FP8) | 3/3 | 0/2 | 20-22 tok/s | 6.5K PASS, 13K FAIL | **PARTIAL** (wrong parser in test) |
+| **Nemotron Super 120B** | 94 GB | tiny (FP8) | 3/3 | 0/2 | 20-22 tok/s | 6.5K PASS, 13K FAIL | **PARTIAL** (wrong parser + template conflict fixed) |
 
 ---
 
@@ -135,7 +135,7 @@ that build also contains the same cache-skip path bug.
 
 ## 3. nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 — PARTIAL
 
-### Launch Command
+### Launch Command (original, broken)
 ```bash
 sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
@@ -143,6 +143,17 @@ sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
     --port 8888 --kv-cache-dtype fp8 --kv-high-precision-layers auto \
     --gpu-memory-utilization 0.92 --scheduling-policy slai \
     --max-seq-len 65536 --tool-call-parser qwen3_coder --ssm-cache-slots 0
+```
+
+### Launch Command (correct — after fix)
+```bash
+sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  atlas-test:latest serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 \
+    --port 8888 --kv-cache-dtype fp8 --kv-high-precision-layers auto \
+    --gpu-memory-utilization 0.92 --scheduling-policy slai \
+    --max-seq-len 65536 --ssm-cache-slots 0
+    # No --tool-call-parser: MODEL.toml supplies bare_json
 ```
 
 ### Memory Budget
@@ -164,73 +175,59 @@ sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
 
 ### Issues
 
-#### 1. Tool calling — wrong parser specified in test launch command
+#### 1. Tool calling — TWO bugs fixed
 
-**Root cause** (corrected from previous analysis):
+**Bug A: Wrong parser in test launch command**
 
-The test launch command passes `--tool-call-parser qwen3_coder`, which overrides `MODEL.toml`'s
-`tool_call_parser = "bare_json"` (`runtime.rs:resolve_tool_call_parser` — CLI wins over
-MODEL.toml). Nemotron Super 120B was trained on bare-JSON tool calling, NOT the qwen3_coder
-XML format. The MODEL.toml comment is explicit:
+The original test passed `--tool-call-parser qwen3_coder`, overriding MODEL.toml's correct
+`tool_call_parser = "bare_json"`. Nemotron Super 120B was trained on bare-JSON tool calling,
+not the qwen3_coder XML format. The MODEL.toml comment is explicit about this:
 
 > "Bare-JSON keeps the model on its trained distribution: it emits a top-level
-> `{"name":"...","arguments":{...}}` object directly, with grammar enforcing the schema
-> (prevents hallucinated field names like "tool" instead of "name"). Nano-30B keeps the
-> qwen3_coder default since it was trained on that format."
+> `{"name":"...","arguments":{...}}` object directly."
 
-**Why the test produced no tool calls** (chain):
-1. `--tool-call-parser qwen3_coder` → qwen3_coder parser selected (wrong for this model)
-2. `disable_tool_steering=true` (MODEL.toml) → nemotron_h.jinja does NOT emit the `<tool_call>` prefix in the generation prompt (this flag was added because the prefix causes a `<tool_call>\n<tool_call>...` emission loop when qwen3_coder grammar is forced on this model)
-3. Without the prefix, with `tool_choice="auto"`, the model sees tool definitions but no pressure to call tools → generates natural language
+With `qwen3_coder` forced + `disable_tool_steering=true` (MODEL.toml), the generation prompt
+contains no `<tool_call>` prefix, so the model sees tool definitions but generates natural
+language rather than XML tags. Fix: omit `--tool-call-parser` to let MODEL.toml pick `bare_json`.
 
-**Additional correction from previous analysis**: `ToolCallParser::system_prompt()` IS called
-in `api/chat/mod.rs:110` (`if tools_active && let Some(ref parser) = state.tool_call_parser`).
-It prepends parser-specific tool instructions to the system message BEFORE jinja rendering.
-The jinja template then ALSO renders tool definitions. With qwen3_coder selected, the model
-receives: (a) JSON-format tool definitions from `system_prompt()` + (b) XML-format tool
-definitions from jinja — two conflicting formats. With the correct `bare_json` parser,
-`system_prompt()` emits JSON-format instructions that align with the model's training.
+**Bug B: Contradictory template tool injection (code fix)**
 
-**Correct launch command for Nemotron tool calling**:
-```bash
-atlas-test:latest serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 \
-    --port 8888 --kv-cache-dtype fp8 --kv-high-precision-layers auto \
-    --gpu-memory-utilization 0.92 --scheduling-policy slai \
-    --max-seq-len 65536 --ssm-cache-slots 0
-    # Omit --tool-call-parser to let MODEL.toml pick bare_json
-```
+Even with the correct `bare_json` parser, a second issue remained: `template.rs` was always
+passing `jinja_tools` to the Jinja template when `tools_active`. For Nemotron Super 120B:
 
-**Expected behavior with correct parser**: grammar-constrained bare-JSON decoding enforces
-the `{"name":"...","arguments":{...}}` schema from token 1; model stays on its trained
-distribution and produces valid tool calls.
+- `bare_json::system_prompt()` injects: JSON-schema tool defs + "emit bare JSON `{name, arguments}`"
+- `nemotron_h.jinja` (receiving `jinja_tools`): renders XML `<function>` blocks + "emit `<tool_call>` XML"
+
+These format instructions directly contradict each other. The model trained on bare JSON gets
+XML instructions from the template plus bare-JSON instructions from the parser.
+
+**Fix applied**: Added `ModelBehavior::skip_template_tools` (default: `false`). When `true`,
+`template.rs` sets `jinja_tools = None` so the Jinja template renders no tool definitions or
+format instructions. The parser's `system_prompt()` becomes the sole source of tool schema and
+format instructions. Set `skip_template_tools = true` in
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`.
+
+With both fixes in place, the expected flow is:
+1. `bare_json::system_prompt()` → sole tool defs in system message (bare-JSON format)
+2. `nemotron_h.jinja` → no XML tool blocks (jinja_tools=None)
+3. Generation prompt: `<|im_start|>assistant\n<think></think>\n` (thinking_in_tools=false, disable_tool_steering=true)
+4. xgrammar enforces `{"name":"...","arguments":{...}}` schema from token 1
+5. Model stays on trained bare-JSON distribution → valid structured tool calls
+
+**Needs retest** to confirm tool calling works after both fixes.
 
 #### 2. Long context >8K — SSM state saturation
 
 SSM (Mamba-2) state saturates with long inputs, producing truncated/incoherent output. Known
-architectural limitation of fixed-size SSM recurrent state; not a code bug.
+architectural limitation of fixed-size Mamba-2 recurrent state; not a code bug.
 
 ---
 
-## Action Items
+## Action Items (updated 2026-05-15)
 
-1. **[P0 FIXED] Mistral MLA prefill bug**: `cache_skip_mla.rs` used `inferspark_prefill_64`
-   (HDIM=256) for MLA attention with `head_dim=128`. Fix committed — replaced with
-   `prefill_attn_k` → `inferspark_prefill_h128` (HDIM=128), matching the paged path.
-   **Needs retest** to confirm long-context coherence is restored.
-
-2. **[FIXED — wrong test configuration] Nemotron tool calling**: The test launch command
-   incorrectly specified `--tool-call-parser qwen3_coder`, overriding MODEL.toml's
-   `tool_call_parser = "bare_json"`. Nemotron Super 120B was trained on bare-JSON; the CLI
-   override combined with `disable_tool_steering=true` produced zero tool calls. Retest
-   without `--tool-call-parser` (letting MODEL.toml choose `bare_json`) should yield working
-   tool calls with grammar-constrained JSON output.
-
-3. **[CLOSED — by design] SSM pool memory with `--ssm-cache-slots 0`**: The 1206 MB pool is
-   the **active decode state pool** (`SsmStatePool`, sized by `max_batch_size × num_ssm_layers
-   × state_bytes`). The separate **Marconi snapshot pool** (`SsmSnapshotPool`, controlled by
-   `--ssm-cache-slots`) IS correctly empty when `--ssm-cache-slots 0` is set — zero GPU
-   allocation confirmed in `ssm_snapshot.rs`. The decode pool cannot be zero-sized while SSM
-   inference is active. No code change required.
-
-4. **[KNOWN] Nemotron long context >8K**: SSM state saturation is an architectural limitation
-   of fixed-size Mamba-2 recurrent state. Document as a known constraint.
+| # | Priority | Status | Item |
+|---|----------|--------|------|
+| 1 | P0 | **FIXED — needs retest** | Mistral MLA: `cache_skip_mla.rs` used HDIM=256 kernel for head_dim=128; fixed to use `prefill_attn_k` (HDIM=128) |
+| 2 | P1 | **FIXED — needs retest** | Nemotron tool calling: (A) wrong CLI parser in test (use MODEL.toml bare_json); (B) `skip_template_tools=true` prevents contradictory XML injection from template |
+| 3 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool, not snapshot cache; `--ssm-cache-slots 0` correctly disables only Marconi prefix caching |
+| 4 | P2 | **CLOSED — known** | Nemotron long context >8K: Mamba-2 fixed-size state saturation, architectural limitation |
