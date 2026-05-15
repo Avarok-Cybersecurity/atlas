@@ -48,6 +48,10 @@ pub fn start_chunked_prefill(
     let req_lz_penalty = req.lz_penalty();
     let logit_bias = req.logit_bias().to_vec();
     let req_min_tokens = req.min_tokens();
+    // Request-level min_content_tokens takes max with the model behavior default
+    // so the caller can raise the floor without being able to lower it below the
+    // model's own minimum (the behavior field is the unconditional floor).
+    let min_content_tokens = req.min_content_tokens().max(min_content_tokens);
     let req_session_hash = req.session_hash();
     let req_enable_thinking = req.enable_thinking();
     let req_thinking_budget = req.thinking_budget();

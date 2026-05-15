@@ -44,6 +44,7 @@ pub fn prefill_request(
     let req_lz_penalty = req.lz_penalty();
     let logit_bias = req.logit_bias().to_vec();
     let req_min_tokens = req.min_tokens();
+    let min_content_tokens = req.min_content_tokens().max(min_content_tokens);
     let req_session_hash = req.session_hash();
     let req_enable_thinking = req.enable_thinking();
     let req_thinking_budget = req.thinking_budget();

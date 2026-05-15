@@ -301,6 +301,14 @@ impl InferenceRequest {
         }
     }
 
+    /// Minimum content tokens post-`</think>` before EOS is allowed (0 = use model default).
+    pub fn min_content_tokens(&self) -> usize {
+        match self {
+            InferenceRequest::Blocking { min_content_tokens, .. } => *min_content_tokens,
+            InferenceRequest::Streaming { min_content_tokens, .. } => *min_content_tokens,
+        }
+    }
+
     /// Number of top logprobs to return per token. None = disabled.
     pub fn top_logprobs(&self) -> Option<u8> {
         match self {

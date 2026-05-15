@@ -203,6 +203,7 @@ pub fn lower_responses_to_chat(
         stop: Vec::new(),
         response_format: None,
         min_tokens: 0,
+        min_content_tokens: 0,
         seed: None,
         logprobs: None,
         top_logprobs: None,

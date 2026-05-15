@@ -58,6 +58,9 @@ pub enum InferenceRequest {
         max_tokens: usize,
         /// Minimum tokens before allowing EOS/stop (0 = no minimum).
         min_tokens: usize,
+        /// Minimum content tokens post-`</think>` before EOS is allowed.
+        /// Takes max with model behavior default. 0 = use model default only.
+        min_content_tokens: usize,
         temperature: f32,
         /// Top-k: keep only the k highest-probability tokens (0 = disabled).
         top_k: u32,
@@ -132,6 +135,9 @@ pub enum InferenceRequest {
         max_tokens: usize,
         /// Minimum tokens before allowing EOS/stop (0 = no minimum).
         min_tokens: usize,
+        /// Minimum content tokens post-`</think>` before EOS is allowed.
+        /// Takes max with model behavior default. 0 = use model default only.
+        min_content_tokens: usize,
         temperature: f32,
         /// Top-k: keep only the k highest-probability tokens (0 = disabled).
         top_k: u32,

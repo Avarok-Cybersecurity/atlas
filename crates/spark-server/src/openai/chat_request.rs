@@ -83,6 +83,12 @@ pub struct ChatCompletionRequest {
     /// 0 = no minimum (default). Useful for preventing empty responses.
     #[serde(default)]
     pub min_tokens: usize,
+    /// Minimum content tokens to emit after `</think>` before EOS is allowed.
+    /// Overrides (takes max with) the model's `[behavior].min_content_tokens`.
+    /// 0 = use model default. Useful for code-generation requests where the
+    /// model might stop after a brief intro sentence.
+    #[serde(default)]
+    pub min_content_tokens: usize,
     /// Seed for deterministic sampling. When set, stochastic sampling uses this
     /// seed for the RNG, producing reproducible output for the same inputs.
     /// None = non-deterministic (default).

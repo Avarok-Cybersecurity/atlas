@@ -117,6 +117,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
             },
             max_tokens,
             min_tokens: req.min_tokens,
+            min_content_tokens: req.min_content_tokens,
             temperature,
             top_k,
             top_p,
