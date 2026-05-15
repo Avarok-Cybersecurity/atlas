@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (investigation updated 2026-05-11)
+**Date**: 2026-05-15 (updated with bug investigation findings)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -12,7 +12,7 @@
 | Model | Weights | KV Cache | Coherence | Tool Calls | Decode TPS | Long Context | Status |
 |-------|---------|----------|-----------|------------|------------|-------------|--------|
 | **Qwen3.5-122B** | 90 GB | 0.8 GB (FP8) | 3/3 | 2/2 | 16.5 tok/s | 26K PASS | **PASS** |
-| **Mistral Small 4** | 66 GB | 38 GB (BF16) | 3/3 | 2/2 | 34-40 tok/s | **>1K FAIL** | **FAIL** |
+| **Mistral Small 4** | 66 GB | 38 GB (BF16) | 3/3 | 2/2 | 34-40 tok/s | **>1K FAIL** (fix committed) | **NEEDS RETEST** |
 | **Nemotron Super 120B** | 94 GB | tiny (FP8) | 3/3 | 0/2 | 20-22 tok/s | 6.5K PASS, 13K FAIL | **PARTIAL** |
 
 ---
@@ -92,14 +92,36 @@ sudo docker run -d --name atlas-mistral --gpus all --ipc=host --network host \
 | **Long ctx ~4.4K in** | **FAIL** | Total gibberish |
 | **Long ctx ~6.5K in** | **FAIL** | Total gibberish |
 
-### NVFP4 Precision Limitation: Context Degrades at >600 Input Tokens
+### BUG FOUND AND FIXED: Wrong HDIM Kernel in MLA Cache-Skip Prefill Path
 
-**Threshold**: ~600-1000 diverse input tokens
-**Confirmed on**: BOTH atlas-test:latest AND avarok/atlas-alpha-2.7 (identical behavior)
-**NOT a code bug**: Exhaustive code review (see investigation log below) confirms this is a fundamental NVFP4 quantization limitation for MLA architecture.
-**Root cause**: NVFP4 quantization of MLA projections + MoE experts accumulates numerical error through the 36-layer attention stack. The MLA compressed KV space (320 dims) amplifies small quantization errors.
+**Root cause** (code bug, NOT an NVFP4 limitation):
 
-**Test results (diverse, non-repetitive content):**
+`cache_skip_mla.rs` called `ops::prefill_attention_64` with kernel handle `prefill_attn_64_k`,
+which maps to `inferspark_prefill_64` — a BR=64 flash attention kernel compiled with
+`#define HDIM 256`. Mistral Small 4 MLA uses `head_dim=128`.
+
+The HDIM=256 kernel loads 256 elements per Q head (reading 128 valid + 128 from the adjacent
+head's data) and performs QK^T over 256/16=16 k-iterations instead of the correct 8. It also
+writes 256 output elements per head, overflowing into adjacent head's output buffer. This
+corrupts attention across all 36 layers. With short sequences the corruption is limited in
+scope; beyond ~600-1000 tokens the extra KV pairs accumulate enough cross-head contamination
+to produce incoherent output.
+
+The paged MLA path (`paged_mla.rs`) correctly used `prefill_attn_k` → `inferspark_prefill`
+→ `inferspark_prefill_h128` (HDIM=128). The cache-skip path was not updated to match.
+
+**Fix applied** (`crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip_mla.rs`):
+- Replaced `ops::prefill_attention_64(…, self.prefill_attn_64_k, …)` with
+  `ops::prefill_attention(…, prefill_k, …)` where `prefill_k` is chosen as
+  `prefill_attn_512_k` for `hd > 256` else `prefill_attn_k` (matches `paged_mla.rs`)
+- Replaced `1.0f32 / (hd as f32).sqrt()` with `self.effective_attn_scale(hd)`
+- Replaced hardcoded `0` for `sliding_window` with `self.sliding_window.unwrap_or(0)`
+
+**Previous incorrect diagnosis**: The prior results entry attributed this to NVFP4
+quantization. That was wrong — identical failure appears on avarok/atlas-alpha-2.7 because
+that build also contains the same cache-skip path bug.
+
+**Test results (diverse, non-repetitive content — BEFORE fix):**
 | Input tokens | Output quality |
 |-------------|---------------|
 | 253 | Perfect (structured, correct) |
@@ -107,38 +129,7 @@ sudo docker run -d --name atlas-mistral --gpus all --ipc=host --network host \
 | 1087 | Gibberish |
 | 2156+ | Complete garbage |
 
-**Short-context is excellent**: 3/3 coherence, 2/2 tool calls, 40.3 tok/s. Only viable for inputs <600 tokens.
-
-**Possible mitigations**:
-1. FP8 model variant (not published)
-2. Selective BF16 dequant for MLA projections (keep W_kv_a, W_kv_b, W_q at BF16)
-3. Accept the ~600 token input limit
-
-### Code Investigation Log (2026-05-11)
-
-All suspected code paths were audited; no Atlas-side bug was found.
-
-**`kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu`**
-- All kernels (`mla_batched_gemv`, `mla_q_rope_*`, `mla_kv_assemble_batched`, etc.) are BF16 throughout.
-- Grid dims use `unsigned long long`; no 32-bit overflow at large seq_len.
-- Shared memory sizing is fixed per-head; no seq_len-dependent overflow risk.
-
-**`crates/spark-model/src/layers/qwen3_attention/prefill/paged_mla.rs`**
-- Buffer sequence is correct with no aliasing: `ssm_ba`→q_latent, `qkv_output`→qg_out, `expert_gate_out`→kv_latent, `ssm_deinterleaved`→kv_expanded, `ssm_ba`(reuse)→k_rope_buf, `ssm_conv_out_f32`→q_rope_tmp, `ssm_qkvz`→k_contiguous, `expert_down_out`→mla_k_cache, `attn_output`→attn_out, `norm_output`→o_out.
-- Calls `ops::prefill_attention` (BF16, BR=32, Grid=[num_q_heads, ceil(n/32), batch]) with current-chunk tokens only — no paged history (MLA uses absorbed decode for history).
-- `inv_sqrt_d = self.effective_attn_scale(hd=128)` is correct for direct 128-dim attention.
-- Writes compressed 320-dim MLA entries to paged KV cache for future decode steps.
-
-**`crates/spark-model/src/layers/qwen3_attention/decode/attention_forward_mla.rs`**
-- Absorbed decode: Q_absorbed (320-dim) × K_cache (320-dim); mathematically equivalent to direct 128-dim prefill attention. No inconsistency between paths.
-
-**`crates/spark-model/src/layers/qwen3_attention/init.rs`**
-- `prefill_attn_k` and `paged_decode_mla_k` are always loaded as BF16 kernels, regardless of `kv_dtype`. No FP8/BF16 mixing on MLA paths.
-
-**`crates/spark-server/src/main_modules/kv_dtypes.rs`**
-- `build_layer_kv_dtypes(Bf16, num_attn_layers, kv_hp_layers)` returns `[]` (empty vector = all layers uniform BF16) when base dtype is already BF16. `--kv-high-precision-layers auto` with `--kv-cache-dtype bf16` is therefore a no-op. No FP8 mixing.
-
-**Conclusion**: The gibberish at >1K tokens is not caused by any Atlas code path. It reproduces identically on an independent release build. NVFP4 quantization error accumulation through the MLA architecture is the confirmed cause.
+**Needs retest** after this commit to confirm fix resolves long-context failures.
 
 ---
 
@@ -175,34 +166,63 @@ sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
 
 #### 1. Tool calling — model not trained on qwen3_coder XML format
 
-**Root cause** (confirmed via code review, 2026-05-11):
+**Root cause** (confirmed via code review):
 
-Nemotron Super 120B was not fine-tuned on the qwen3_coder XML tool-call format (`<tool_call>\n<function=NAME>\n<parameter=...>`). The `nemotron_h.jinja` template itself contains an explicit comment acknowledging this:
-> "For larger variants (Super 120B) the prefix causes a `<tool_call>` emission loop because the model wasn't trained on the qwen3_coder XML format — pass `disable_tool_steering=true` to skip."
+Nemotron Super 120B was not fine-tuned on the qwen3_coder XML tool-call format
+(`<tool_call>\n<function=NAME>\n<parameter=...>`). The `nemotron_h.jinja` template contains
+an explicit comment acknowledging this:
+> "For larger variants (Super 120B) the prefix causes a `<tool_call>` emission loop because
+> the model wasn't trained on the qwen3_coder XML format — pass `disable_tool_steering=true`
+> to skip."
 
 Additional factors confirmed by code inspection:
-- The `ToolCallParser::system_prompt()` method is **never called** in the main chat flow (`template.rs` / `chat/mod.rs`). Tool definitions reach the model only through the Jinja template, so there is no duplicate or conflicting system-prompt injection.
-- With `tool_choice="auto"`, `use_triggers=true` is passed to XGrammar's structural-tag grammar, which allows the model to produce a natural-language response rather than a `<tool_call>` block. The model consistently exercises this escape hatch.
-- The exponential logit bias on the `<tool_call>` start token (+3.0 on first attempt) is insufficient to overcome the model's strong prior against this format.
+- The `ToolCallParser::system_prompt()` method is **never called** in the main chat flow
+  (`template.rs` / `chat/mod.rs`). Tool definitions reach the model only through the Jinja
+  template; no duplicate or conflicting system-prompt injection.
+- With `tool_choice="auto"`, `use_triggers=true` is passed to XGrammar's structural-tag
+  grammar, which allows the model to produce a natural-language response rather than a
+  `<tool_call>` block. The model consistently exercises this escape hatch.
+- The exponential logit bias on the `<tool_call>` start token (+3.0 on first attempt) is
+  insufficient to overcome the model's strong prior against this format.
 
-**Workaround**: pass `tool_choice="required"` at the API level. This sets `use_triggers=false`, forcing the XGrammar constraint to require a tool-call block and making the bias irrelevant. Quality of generated arguments may still be poor because the model was not trained on this schema.
+**Contributing factor**: The launch command passes `--tool-call-parser qwen3_coder`, which
+overrides `MODEL.toml`'s `tool_call_parser = "bare_json"`. With `disable_tool_steering=true`
+(from MODEL.toml) suppressing the `<tool_call>` prefix AND qwen3_coder selected, the model
+receives no tool-call steering at all.
 
-**Proper fix**: use a tool-calling format that Nemotron Super 120B was actually trained on (likely Llama 3 / `<|python_tag|>` or NIM-format JSON). A dedicated `nemotron_super.jinja` + matching parser would be needed.
+**Workaround**: pass `tool_choice="required"` at the API level. This sets `use_triggers=false`,
+forcing XGrammar to require a tool-call block. Argument quality may still be poor.
+
+**Proper fix**: use a tool-calling format that Nemotron Super 120B was actually trained on
+(likely Llama 3 / `<|python_tag|>` or NIM-format JSON). A dedicated `nemotron_super.jinja`
++ matching parser would be needed.
 
 #### 2. Long context >8K — SSM state saturation
 
-SSM (Mamba-2) state saturates with long inputs, producing truncated/incoherent output. This is a known architectural limitation of fixed-size SSM recurrent state and is not a code bug.
+SSM (Mamba-2) state saturates with long inputs, producing truncated/incoherent output. Known
+architectural limitation of fixed-size SSM recurrent state; not a code bug.
 
 ---
 
 ## Action Items
 
-All three priority items were investigated on 2026-05-11. No Atlas-side code bugs were found.
+1. **[P0 FIXED] Mistral MLA prefill bug**: `cache_skip_mla.rs` used `inferspark_prefill_64`
+   (HDIM=256) for MLA attention with `head_dim=128`. Fix committed — replaced with
+   `prefill_attn_k` → `inferspark_prefill_h128` (HDIM=128), matching the paged path.
+   **Needs retest** to confirm long-context coherence is restored.
 
-1. **[CLOSED — not a code bug] Mistral MLA prefill**: Full audit of `mla_absorbed.cu`, `paged_mla.rs`, `attention_forward_mla.rs`, `init.rs`, and `kv_dtypes.rs` found no defect. The gibberish at >1K tokens is a fundamental NVFP4 quantization limitation for MLA architecture and reproduces identically on an independent release build. See investigation log in section 2 above.
+2. **[OPEN — model limitation] Nemotron tool calling**: Root cause is that Super 120B was not
+   trained on the qwen3_coder XML format. A dedicated jinja template + parser using the format
+   the model was actually trained on (likely Llama 3 or NIM JSON) is the correct fix.
+   Short-term workaround: `tool_choice="required"` forces XGrammar to require a tool-call
+   block, but argument quality will be degraded.
 
-2. **[OPEN — model limitation] Nemotron tool calling**: Root cause is that Super 120B was not trained on the qwen3_coder XML format. A dedicated jinja template + parser using the format the model was actually trained on (likely Llama 3 or NIM JSON) is the correct fix. Short-term workaround: `tool_choice="required"` forces XGrammar to require a tool-call block, but argument quality will be degraded.
+3. **[CLOSED — by design] SSM pool memory with `--ssm-cache-slots 0`**: The 1206 MB pool is
+   the **active decode state pool** (`SsmStatePool`, sized by `max_batch_size × num_ssm_layers
+   × state_bytes`). The separate **Marconi snapshot pool** (`SsmSnapshotPool`, controlled by
+   `--ssm-cache-slots`) IS correctly empty when `--ssm-cache-slots 0` is set — zero GPU
+   allocation confirmed in `ssm_snapshot.rs`. The decode pool cannot be zero-sized while SSM
+   inference is active. No code change required.
 
-3. **[CLOSED — by design] SSM pool memory with `--ssm-cache-slots 0`**: The 1206 MB pool reported in logs is the **active decode state pool** (`SsmStatePool`, allocated as `max_batch_size × num_ssm_layers × state_bytes`). This is distinct from the **Marconi snapshot pool** (`SsmSnapshotPool`, controlled by `--ssm-cache-slots`). The CLI value IS correctly propagated: `ssm_cache_slots=0` → `SsmSnapshotPool::new(0, ...)` → zero snapshot slots allocated. The 1206 MB decode pool cannot be zero-sized while SSM inference is active; it holds the recurrent state for each sequence in flight. No action needed.
-
-4. **[KNOWN] Nemotron long context >8K**: SSM state saturation is an architectural limitation of fixed-size Mamba-2 recurrent state. Document as a known constraint.
+4. **[KNOWN] Nemotron long context >8K**: SSM state saturation is an architectural limitation
+   of fixed-size Mamba-2 recurrent state. Document as a known constraint.

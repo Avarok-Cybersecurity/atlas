@@ -305,9 +305,15 @@ impl Qwen3AttentionLayer {
             stream,
         )?;
         let attn_out_fb = ctx.buffers.attn_output();
-        ops::prefill_attention_64(
+        let inv_sqrt_d = self.effective_attn_scale(hd);
+        let prefill_k = if hd > 256 && self.prefill_attn_512_k.0 != 0 {
+            self.prefill_attn_512_k
+        } else {
+            self.prefill_attn_k
+        };
+        ops::prefill_attention(
             ctx.gpu,
-            self.prefill_attn_64_k,
+            prefill_k,
             qg_out,
             k_contiguous,
             v_contiguous,
@@ -317,12 +323,12 @@ impl Qwen3AttentionLayer {
             nq,
             nkv,
             hd,
-            1.0f32 / (hd as f32).sqrt(),
+            inv_sqrt_d,
             true,
-            0,
+            self.sliding_window.unwrap_or(0),
             stream,
         )
-        .map_err(|e| anyhow::anyhow!("MLA flash_attn_64 fallback: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("MLA cache-skip flash_attn: {e}"))?;
         // wo projection — output to qkv_output (norm_output aliases downstream)
         let o_out = ctx.buffers.qkv_output();
         if let Some(ref wo_nvfp4) = mla.wo_nvfp4 {
