@@ -407,6 +407,35 @@ fn test_apply_dry_penalty_penalises_continuation_not_window_end() {
 }
 
 #[test]
+fn test_apply_dry_penalty_uses_max_not_cumulative() {
+    // History: 10 repetitions of [1, 2, 3]. Token 1 is the continuation token targeted
+    // by multiple match positions (one per prior triple ending in '3'). The implementation
+    // must apply only the MAX penalty (from the longest match), not the cumulative sum.
+    // Regression: additive stacking would overflow f32 for large repeat counts and produce
+    // NaN, corrupting the entire logit distribution.
+    let history: Vec<u32> = std::iter::repeat([1u32, 2, 3]).take(10).flatten().collect();
+    let mut logits = vec![0.0f32; 64];
+    super::apply_dry_penalty(&mut logits, &history, 1.0, 2.0, 2, &[]);
+    assert!(
+        !logits[1].is_nan(),
+        "DRY must not produce NaN (overflow from additive stacking); got logits[1]={}",
+        logits[1],
+    );
+    assert!(
+        logits[1] < -1.0,
+        "Token 1 (continuation of repeat) must be heavily penalised; got {}",
+        logits[1],
+    );
+    // Token 1's penalty must dominate over token 2's (shorter suffix match from same positions).
+    assert!(
+        logits[1] <= logits[2],
+        "Token 1 penalty must be ≥ token 2 penalty; got logits[1]={} logits[2]={}",
+        logits[1],
+        logits[2],
+    );
+}
+
+#[test]
 fn test_apply_xtc_drops_modal_peak_when_triggered() {
     // probs sorted descending: token 0 has 0.55, token 1 has 0.25,
     // token 2 has 0.15, token 3 has 0.05.

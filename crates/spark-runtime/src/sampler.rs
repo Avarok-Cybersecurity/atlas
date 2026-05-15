@@ -372,6 +372,11 @@ pub fn apply_dry_penalty(
     // `# start-button { … } # start-button { … }` at long context
     // despite dry_multiplier=0.8 because the wrong token was being
     // penalised.)
+    // Collect the MAX penalty per token ID across all match positions, then apply once.
+    // Using MAX instead of cumulative sum prevents double-counting from overlapping suffix
+    // windows and avoids f32 overflow → NaN when match_lengths grow large (e.g. 1.75^448
+    // overflows at ~150 repetitions of an 8-token unit with dry_base=1.75).
+    let mut max_penalty = vec![0.0f32; n];
     #[allow(clippy::needless_range_loop)]
     for i in 0..hist_len.saturating_sub(1) {
         let len = match_lengths[i];
@@ -381,9 +386,16 @@ pub fn apply_dry_penalty(
                 let token = history[extend_pos] as usize;
                 if token < n {
                     let penalty = multiplier * base.powi((len - allowed) as i32);
-                    logits[token] -= penalty;
+                    if penalty > max_penalty[token] {
+                        max_penalty[token] = penalty;
+                    }
                 }
             }
+        }
+    }
+    for (token, &p) in max_penalty.iter().enumerate() {
+        if p > 0.0 {
+            logits[token] -= p;
         }
     }
 }
