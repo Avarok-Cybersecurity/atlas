@@ -13,7 +13,7 @@
 |-------|---------|----------|-----------|------------|------------|-------------|--------|
 | **Qwen3.5-122B** | 90 GB | 0.8 GB (FP8) | 3/3 | 2/2 | 16.5 tok/s | 26K PASS | **PASS** |
 | **Mistral Small 4** | 66 GB | 38 GB (BF16) | 3/3 | 2/2 | 34-40 tok/s | **>1K FAIL** (fix committed) | **NEEDS RETEST** |
-| **Nemotron Super 120B** | 94 GB | tiny (FP8) | 3/3 | 0/2 | 20-22 tok/s | 6.5K PASS, 13K FAIL | **PARTIAL** |
+| **Nemotron Super 120B** | 94 GB | tiny (FP8) | 3/3 | 0/2 | 20-22 tok/s | 6.5K PASS, 13K FAIL | **PARTIAL** (wrong parser in test) |
 
 ---
 
@@ -164,38 +164,45 @@ sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
 
 ### Issues
 
-#### 1. Tool calling — model not trained on qwen3_coder XML format
+#### 1. Tool calling — wrong parser specified in test launch command
 
-**Root cause** (confirmed via code review):
+**Root cause** (corrected from previous analysis):
 
-Nemotron Super 120B was not fine-tuned on the qwen3_coder XML tool-call format
-(`<tool_call>\n<function=NAME>\n<parameter=...>`). The `nemotron_h.jinja` template contains
-an explicit comment acknowledging this:
-> "For larger variants (Super 120B) the prefix causes a `<tool_call>` emission loop because
-> the model wasn't trained on the qwen3_coder XML format — pass `disable_tool_steering=true`
-> to skip."
+The test launch command passes `--tool-call-parser qwen3_coder`, which overrides `MODEL.toml`'s
+`tool_call_parser = "bare_json"` (`runtime.rs:resolve_tool_call_parser` — CLI wins over
+MODEL.toml). Nemotron Super 120B was trained on bare-JSON tool calling, NOT the qwen3_coder
+XML format. The MODEL.toml comment is explicit:
 
-Additional factors confirmed by code inspection:
-- The `ToolCallParser::system_prompt()` method is **never called** in the main chat flow
-  (`template.rs` / `chat/mod.rs`). Tool definitions reach the model only through the Jinja
-  template; no duplicate or conflicting system-prompt injection.
-- With `tool_choice="auto"`, `use_triggers=true` is passed to XGrammar's structural-tag
-  grammar, which allows the model to produce a natural-language response rather than a
-  `<tool_call>` block. The model consistently exercises this escape hatch.
-- The exponential logit bias on the `<tool_call>` start token (+3.0 on first attempt) is
-  insufficient to overcome the model's strong prior against this format.
+> "Bare-JSON keeps the model on its trained distribution: it emits a top-level
+> `{"name":"...","arguments":{...}}` object directly, with grammar enforcing the schema
+> (prevents hallucinated field names like "tool" instead of "name"). Nano-30B keeps the
+> qwen3_coder default since it was trained on that format."
 
-**Contributing factor**: The launch command passes `--tool-call-parser qwen3_coder`, which
-overrides `MODEL.toml`'s `tool_call_parser = "bare_json"`. With `disable_tool_steering=true`
-(from MODEL.toml) suppressing the `<tool_call>` prefix AND qwen3_coder selected, the model
-receives no tool-call steering at all.
+**Why the test produced no tool calls** (chain):
+1. `--tool-call-parser qwen3_coder` → qwen3_coder parser selected (wrong for this model)
+2. `disable_tool_steering=true` (MODEL.toml) → nemotron_h.jinja does NOT emit the `<tool_call>` prefix in the generation prompt (this flag was added because the prefix causes a `<tool_call>\n<tool_call>...` emission loop when qwen3_coder grammar is forced on this model)
+3. Without the prefix, with `tool_choice="auto"`, the model sees tool definitions but no pressure to call tools → generates natural language
 
-**Workaround**: pass `tool_choice="required"` at the API level. This sets `use_triggers=false`,
-forcing XGrammar to require a tool-call block. Argument quality may still be poor.
+**Additional correction from previous analysis**: `ToolCallParser::system_prompt()` IS called
+in `api/chat/mod.rs:110` (`if tools_active && let Some(ref parser) = state.tool_call_parser`).
+It prepends parser-specific tool instructions to the system message BEFORE jinja rendering.
+The jinja template then ALSO renders tool definitions. With qwen3_coder selected, the model
+receives: (a) JSON-format tool definitions from `system_prompt()` + (b) XML-format tool
+definitions from jinja — two conflicting formats. With the correct `bare_json` parser,
+`system_prompt()` emits JSON-format instructions that align with the model's training.
 
-**Proper fix**: use a tool-calling format that Nemotron Super 120B was actually trained on
-(likely Llama 3 / `<|python_tag|>` or NIM-format JSON). A dedicated `nemotron_super.jinja`
-+ matching parser would be needed.
+**Correct launch command for Nemotron tool calling**:
+```bash
+atlas-test:latest serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 \
+    --port 8888 --kv-cache-dtype fp8 --kv-high-precision-layers auto \
+    --gpu-memory-utilization 0.92 --scheduling-policy slai \
+    --max-seq-len 65536 --ssm-cache-slots 0
+    # Omit --tool-call-parser to let MODEL.toml pick bare_json
+```
+
+**Expected behavior with correct parser**: grammar-constrained bare-JSON decoding enforces
+the `{"name":"...","arguments":{...}}` schema from token 1; model stays on its trained
+distribution and produces valid tool calls.
 
 #### 2. Long context >8K — SSM state saturation
 
@@ -211,11 +218,12 @@ architectural limitation of fixed-size SSM recurrent state; not a code bug.
    `prefill_attn_k` → `inferspark_prefill_h128` (HDIM=128), matching the paged path.
    **Needs retest** to confirm long-context coherence is restored.
 
-2. **[OPEN — model limitation] Nemotron tool calling**: Root cause is that Super 120B was not
-   trained on the qwen3_coder XML format. A dedicated jinja template + parser using the format
-   the model was actually trained on (likely Llama 3 or NIM JSON) is the correct fix.
-   Short-term workaround: `tool_choice="required"` forces XGrammar to require a tool-call
-   block, but argument quality will be degraded.
+2. **[FIXED — wrong test configuration] Nemotron tool calling**: The test launch command
+   incorrectly specified `--tool-call-parser qwen3_coder`, overriding MODEL.toml's
+   `tool_call_parser = "bare_json"`. Nemotron Super 120B was trained on bare-JSON; the CLI
+   override combined with `disable_tool_steering=true` produced zero tool calls. Retest
+   without `--tool-call-parser` (letting MODEL.toml choose `bare_json`) should yield working
+   tool calls with grammar-constrained JSON output.
 
 3. **[CLOSED — by design] SSM pool memory with `--ssm-cache-slots 0`**: The 1206 MB pool is
    the **active decode state pool** (`SsmStatePool`, sized by `max_batch_size × num_ssm_layers
