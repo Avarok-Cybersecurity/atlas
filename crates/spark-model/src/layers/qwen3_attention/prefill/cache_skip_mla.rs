@@ -304,31 +304,62 @@ impl Qwen3AttentionLayer {
             nq * hd,
             stream,
         )?;
+        // MLA absorbed attention: fused Q_absorb + flash attn (320-dim) + V_extract.
+        // inferspark_prefill_64 has compile-time HDIM=256; MLA kv_stride=nkv*hd=128 so
+        // col>=128 aliases K[k+1][0..127] — corrupts attention scores over long contexts.
         let attn_out_fb = ctx.buffers.attn_output();
         let inv_sqrt_d = self.effective_attn_scale(hd);
-        let prefill_k = if hd > 256 && self.prefill_attn_512_k.0 != 0 {
-            self.prefill_attn_512_k
+        if self.mla_fused_prefill_k.0 != 0 {
+            // KV cache already written above; pass k/v_cache_assembled as scratch targets
+            // for the fused kernel's cache-write step (harmless overwrite of same data).
+            ops::mla_fused_prefill(
+                ctx.gpu,
+                self.mla_fused_prefill_k,
+                qg_out,
+                q_rope_tmp,
+                kv_latent,
+                k_rope_buf,
+                mla.w_uk_t.weight,
+                mla.w_uv.weight,
+                attn_out_fb,
+                k_cache_assembled,
+                v_cache_assembled,
+                n,
+                nq,
+                mla_nope,
+                mla_rope,
+                kv_lora,
+                mla_v_dim,
+                hd,
+                inv_sqrt_d,
+                stream,
+            )?;
         } else {
-            self.prefill_attn_k
-        };
-        ops::prefill_attention(
-            ctx.gpu,
-            prefill_k,
-            qg_out,
-            k_contiguous,
-            v_contiguous,
-            attn_out_fb,
-            n,
-            1,
-            nq,
-            nkv,
-            hd,
-            inv_sqrt_d,
-            true,
-            self.sliding_window.unwrap_or(0),
-            stream,
-        )
-        .map_err(|e| anyhow::anyhow!("MLA cache-skip flash_attn: {e}"))?;
+            // Fallback: expanded path. Broken for Mistral MLA (hd=128 < HDIM=256 kernel).
+            let prefill_k = if hd > 256 && self.prefill_attn_512_k.0 != 0 {
+                self.prefill_attn_512_k
+            } else {
+                self.prefill_attn_k
+            };
+            ops::prefill_attention(
+                ctx.gpu,
+                prefill_k,
+                qg_out,
+                k_contiguous,
+                v_contiguous,
+                attn_out_fb,
+                n,
+                1,
+                nq,
+                nkv,
+                hd,
+                inv_sqrt_d,
+                true,
+                self.sliding_window.unwrap_or(0),
+                stream,
+            )
+            .map_err(|e| anyhow::anyhow!("MLA cache-skip flash_attn: {e}"))?;
+        }
         // wo projection — output to qkv_output (norm_output aliases downstream)
         let o_out = ctx.buffers.qkv_output();
         if let Some(ref wo_nvfp4) = mla.wo_nvfp4 {
@@ -340,7 +371,7 @@ impl Qwen3AttentionLayer {
                 o_out,
                 n,
                 h,
-                nq * hd,
+                nq * mla_v_dim,
                 stream,
             )?;
         } else {
@@ -352,7 +383,7 @@ impl Qwen3AttentionLayer {
                 o_out,
                 n,
                 h,
-                nq * hd,
+                nq * mla_v_dim,
                 stream,
             )?;
         }

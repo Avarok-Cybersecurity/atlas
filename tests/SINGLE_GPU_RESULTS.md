@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-05-15 (updated with bug investigation findings)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis + fixes)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -12,7 +12,7 @@
 | Model | Weights | KV Cache | Coherence | Tool Calls | Decode TPS | Long Context | Status |
 |-------|---------|----------|-----------|------------|------------|-------------|--------|
 | **Qwen3.5-122B** | 90 GB | 0.8 GB (FP8) | 3/3 | 2/2 | 16.5 tok/s | 26K PASS | **PASS** |
-| **Mistral Small 4** | 66 GB | 38 GB (BF16) | 3/3 | 2/2 | 34-40 tok/s | **>1K FAIL** (fix committed) | **NEEDS RETEST** |
+| **Mistral Small 4** | 66 GB | 38 GB (BF16) | 3/3 | 2/2 | 34-40 tok/s | **>1K FAIL** (fixes committed) | **NEEDS RETEST** |
 | **Nemotron Super 120B** | 94 GB | tiny (FP8) | 3/3 | 0/2 | 20-22 tok/s | 6.5K PASS, 13K FAIL | **PARTIAL** (wrong parser + template conflict fixed) |
 
 ---
@@ -61,7 +61,7 @@ sudo docker run -d --name atlas-122b --gpus all --ipc=host --network host \
 
 ---
 
-## 2. mistralai/Mistral-Small-4-119B-2603-NVFP4 — FAIL (long context bug)
+## 2. mistralai/Mistral-Small-4-119B-2603-NVFP4 — BUG FIXED (retest needed)
 
 ### Launch Command
 ```bash
@@ -79,7 +79,7 @@ sudo docker run -d --name atlas-mistral --gpus all --ipc=host --network host \
 - KV cache: 55497 blocks = 888K tokens (38.1 GB, BF16, MLA compressed)
 - Massive headroom (47 GB free after weights)
 
-### Results
+### Original Test Results (before fixes)
 | Test | Result | Details |
 |------|--------|---------|
 | Coherence (all 3) | PASS | All correct and coherent |
@@ -92,34 +92,19 @@ sudo docker run -d --name atlas-mistral --gpus all --ipc=host --network host \
 | **Long ctx ~4.4K in** | **FAIL** | Total gibberish |
 | **Long ctx ~6.5K in** | **FAIL** | Total gibberish |
 
-### BUG FOUND AND FIXED: Wrong HDIM Kernel in MLA Cache-Skip Prefill Path
+### BUG 1 FIXED: MLA Prefill Uses Wrong Kernel (HDIM=256 vs head_dim=128)
 
 **Root cause** (code bug, NOT an NVFP4 limitation):
 
-`cache_skip_mla.rs` called `ops::prefill_attention_64` with kernel handle `prefill_attn_64_k`,
-which maps to `inferspark_prefill_64` — a BR=64 flash attention kernel compiled with
-`#define HDIM 256`. Mistral Small 4 MLA uses `head_dim=128`.
+Both the paged and cache-skip MLA prefill paths called flash attention kernels compiled
+with `#define HDIM 256`. Mistral Small 4 MLA uses `head_dim=128` (nope=64 + rope=64,
+nkv=1). The assembled K buffer stride is `kv_dim = nkv * hd = 128` BF16 per token.
 
-The HDIM=256 kernel loads 256 elements per Q head (reading 128 valid + 128 from the adjacent
-head's data) and performs QK^T over 256/16=16 k-iterations instead of the correct 8. It also
-writes 256 output elements per head, overflowing into adjacent head's output buffer. This
-corrupts attention across all 36 layers. With short sequences the corruption is limited in
-scope; beyond ~600-1000 tokens the extra KV pairs accumulate enough cross-head contamination
-to produce incoherent output.
-
-The paged MLA path (`paged_mla.rs`) correctly used `prefill_attn_k` → `inferspark_prefill`
-→ `inferspark_prefill_h128` (HDIM=128). The cache-skip path was not updated to match.
-
-**Fix applied** (`crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip_mla.rs`):
-- Replaced `ops::prefill_attention_64(…, self.prefill_attn_64_k, …)` with
-  `ops::prefill_attention(…, prefill_k, …)` where `prefill_k` is chosen as
-  `prefill_attn_512_k` for `hd > 256` else `prefill_attn_k` (matches `paged_mla.rs`)
-- Replaced `1.0f32 / (hd as f32).sqrt()` with `self.effective_attn_scale(hd)`
-- Replaced hardcoded `0` for `sliding_window` with `self.sliding_window.unwrap_or(0)`
-
-**Previous incorrect diagnosis**: The prior results entry attributed this to NVFP4
-quantization. That was wrong — identical failure appears on avarok/atlas-alpha-2.7 because
-that build also contains the same cache-skip path bug.
+The HDIM=256 kernel loads 256 K elements per row (128 valid + 128 spilling into the next
+token's K data), runs QK^T over 256/16=16 k-iterations instead of the correct 8, and
+contaminates attention scores with look-ahead information from K[k+1]. This corruption
+compounds across all 36 attention layers — short contexts (<600 tokens) are dominated by
+the real signal; beyond ~1000 tokens the accumulated contamination produces gibberish.
 
 **Test results (diverse, non-repetitive content — BEFORE fix):**
 | Input tokens | Output quality |
@@ -129,16 +114,30 @@ that build also contains the same cache-skip path bug.
 | 1087 | Gibberish |
 | 2156+ | Complete garbage |
 
-**Needs retest** after this commit to confirm fix resolves long-context failures.
+**Previous incorrect diagnosis**: The prior results entry attributed this to NVFP4
+quantization. That was wrong — the same failure appeared on avarok/atlas-alpha-2.7
+because both builds contained the same prefill kernel bug.
 
-### SECOND BUG FIXED: Mistral Loader Defaults MLA Layers to Fp8
+**Fix applied** (`paged_mla.rs` and `cache_skip_mla.rs`):
+- Route MLA prefill through `ops::mla_fused_prefill` when the kernel is loaded.
+  This kernel operates entirely in the absorbed 320-dim latent space:
+  1. Q_absorbed[256] = Q_nope[64] @ W_UK^T — no HDIM mismatch possible
+  2. Q_final = [Q_absorbed | Q_rope_rotated] ∈ R^320
+  3. Online softmax attention: Q_final · kv_latent^T (causal)
+  4. V_out[128] = attn_latent[256] @ W_UV^T
+- The HDIM=256 `inferspark_prefill` kernel is kept as a fallback for non-MLA layers
+  (hd=256 or hd=512) with a clear comment marking it broken for MLA hd<256.
+- Also corrects O-projection input dimension from `nq * hd` to `nq * mla_v_dim`
+  (numerically equal for Mistral where v_dim==hd==128, but semantically correct).
 
-A second independent bug was found in the Mistral weight loader. Even if the correct
-HDIM=128 kernel is used, MLA data must be stored in BF16 — not FP8.
+### BUG 2 FIXED: Mistral Loader Defaults MLA Layers to Fp8
+
+A second independent bug was found in the Mistral weight loader. Even with the correct
+attention kernel, MLA KV data must be stored in BF16 — not FP8.
 
 **Root cause**: `build_layer_kv_dtypes()` in `kv_dtypes.rs` returns an empty slice (`[]`)
-when `kv_dtype == KvCacheDtype::Bf16` (an optimization meaning "no per-layer override needed,
-all layers use the base dtype"). The Mistral weight loader in
+when `kv_dtype == KvCacheDtype::Bf16` (meaning "no per-layer override needed, all layers
+use the base dtype"). The Mistral weight loader in
 `mistral_loader/loader_impl/phase_assemble.rs` had:
 
 ```rust
@@ -146,12 +145,8 @@ let kv_dtype = layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Fp8);
 ```
 
 When the slice is empty, `.get(i)` returns `None` for every layer index, so all 36 MLA
-attention layers silently default to `Fp8`. MLA compressed latent KV vectors have dynamic
-range far exceeding FP8's E4M3 limit (±448), so they were being clipped on every write.
-
-Other weight loaders use direct index notation `layer_kv_dtypes[i]`, which panics on an
-empty slice and therefore cannot hit this bug. Only the Mistral loader's `.get(i).unwrap_or`
-pattern triggered the silent misfault.
+attention layers silently defaulted to `Fp8`. MLA compressed latent KV vectors have
+dynamic range far exceeding FP8's E4M3 limit (±448), so they were clipped on every write.
 
 **Fix applied** (`crates/spark-model/src/mistral_loader/loader_impl/phase_assemble.rs`):
 ```rust
@@ -162,24 +157,16 @@ let kv_dtype = layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Fp8);
 let kv_dtype = layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Bf16);
 ```
 
-This fix and the HDIM kernel fix are complementary: the kernel fix ensures correct attention
-computation; the dtype fix ensures KV data isn't precision-clipped before decode reads it.
+Both fixes are complementary: the kernel fix ensures correct attention computation; the
+dtype fix ensures KV data isn't precision-clipped before decode reads it.
+
+**Needs retest** after both commits to confirm long-context failures are resolved.
 
 ---
 
-## 3. nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 — PARTIAL
+## 3. nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 — PARTIAL (retest needed)
 
 ### Launch Command (original, broken)
-```bash
-sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
-  -v ~/.cache/huggingface:/root/.cache/huggingface \
-  atlas-test:latest serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 \
-    --port 8888 --kv-cache-dtype fp8 --kv-high-precision-layers auto \
-    --gpu-memory-utilization 0.92 --scheduling-policy slai \
-    --max-seq-len 65536 --tool-call-parser qwen3_coder --ssm-cache-slots 0
-```
-
-### Launch Command (correct — after fix)
 ```bash
 sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
@@ -195,7 +182,7 @@ sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
 - SSM state pool: used for 40 Mamba2 layers
 - KV cache: minimal (only 8 attention layers)
 
-### Results
+### Original Test Results (before corrected launch command)
 | Test | Result | Details |
 |------|--------|---------|
 | Coherence (all 3) | PASS | All correct and coherent |
@@ -261,7 +248,7 @@ architectural limitation of fixed-size Mamba-2 recurrent state; not a code bug.
 
 | # | Priority | Status | Item |
 |---|----------|--------|------|
-| 1 | P0 | **FIXED — needs retest** | Mistral MLA (kernel): `cache_skip_mla.rs` used HDIM=256 kernel for head_dim=128; fixed to use `prefill_attn_k` (HDIM=128) |
+| 1 | P0 | **FIXED — needs retest** | Mistral MLA (kernel): both `paged_mla.rs` and `cache_skip_mla.rs` used HDIM=256 kernels for head_dim=128; fixed to use `mla_fused_prefill` (absorbed 320-dim path) |
 | 2 | P0 | **FIXED — needs retest** | Mistral MLA (dtype): `phase_assemble.rs` `unwrap_or(Fp8)` on empty layer_kv_dtypes → all MLA layers stored KV in FP8 instead of BF16; fixed to `unwrap_or(Bf16)` |
 | 3 | P1 | **FIXED — needs retest** | Nemotron tool calling: (A) wrong CLI parser in test (use MODEL.toml bare_json); (B) `skip_template_tools=true` prevents contradictory XML injection from template |
 | 4 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool, not snapshot cache; `--ssm-cache-slots 0` correctly disables only Marconi prefix caching |

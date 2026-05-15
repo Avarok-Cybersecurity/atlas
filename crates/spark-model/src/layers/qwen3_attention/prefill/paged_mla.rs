@@ -252,33 +252,66 @@ impl Qwen3AttentionLayer {
             ctx.graph_capture,
         )?;
 
-        // Direct flash attention with expanded Q/K/V (not from paged cache).
+        // MLA absorbed attention: Q_absorb in latent space → flash attn (320-dim) → V_extract.
+        // inferspark_prefill has a compile-time HDIM=256 but the assembled K buffer has
+        // stride kv_dim=nkv*hd=128 per token.  For col>=128 the kernel reads
+        // K[k+1][0..127] instead of valid data — cross-token contamination that compounds
+        // over 36 attention layers, producing gibberish for >1000-token prefills.
         let attn_out = ctx.buffers.attn_output();
         let inv_sqrt_d = self.effective_attn_scale(hd);
-        let prefill_k = if hd > 256 && self.prefill_attn_512_k.0 != 0 {
-            self.prefill_attn_512_k
+        if self.mla_fused_prefill_k.0 != 0 {
+            // Fused: Q_absorption + attention in 320-dim latent space + V_extraction +
+            // cache write — all in one kernel launch per (head, token) CTA.
+            ops::mla_fused_prefill(
+                ctx.gpu,
+                self.mla_fused_prefill_k,
+                qg_out,
+                q_rope_tmp,
+                kv_latent,
+                k_rope_buf,
+                mla.w_uk_t.weight,
+                mla.w_uv.weight,
+                attn_out,
+                mla_k_cache,
+                mla_v_cache,
+                n,
+                nq,
+                mla_nope,
+                mla_rope,
+                kv_lora,
+                mla_v_dim,
+                hd,
+                inv_sqrt_d,
+                stream,
+            )?;
         } else {
-            self.prefill_attn_k
-        };
-        ops::prefill_attention(
-            ctx.gpu,
-            prefill_k,
-            qg_out,
-            k_contiguous,
-            v_contiguous,
-            attn_out,
-            n,
-            1,
-            nq,
-            nkv,
-            hd,
-            inv_sqrt_d,
-            true,
-            self.sliding_window.unwrap_or(0),
-            stream,
-        )?;
+            // Fallback: expanded path. Broken for Mistral MLA (hd=128 < HDIM=256 kernel
+            // constant). Load the mla_fused_prefill kernel to fix long-context prefill.
+            let prefill_k = if hd > 256 && self.prefill_attn_512_k.0 != 0 {
+                self.prefill_attn_512_k
+            } else {
+                self.prefill_attn_k
+            };
+            ops::prefill_attention(
+                ctx.gpu,
+                prefill_k,
+                qg_out,
+                k_contiguous,
+                v_contiguous,
+                attn_out,
+                n,
+                1,
+                nq,
+                nkv,
+                hd,
+                inv_sqrt_d,
+                true,
+                self.sliding_window.unwrap_or(0),
+                stream,
+            )?;
+        }
 
-        // O projection: [N, nq*hd] → [N, H]
+        // O projection: [N, nq*v_dim] → [N, H]
         let o_out = ctx.buffers.norm_output();
         if let Some(ref wo_nvfp4) = mla.wo_nvfp4 {
             ops::w4a16_gemm(
@@ -289,7 +322,7 @@ impl Qwen3AttentionLayer {
                 o_out,
                 n,
                 h,
-                nq * hd,
+                nq * mla_v_dim,
                 stream,
             )?;
         } else {
@@ -301,7 +334,7 @@ impl Qwen3AttentionLayer {
                 o_out,
                 n,
                 h,
-                nq * hd,
+                nq * mla_v_dim,
                 stream,
             )?;
         }
