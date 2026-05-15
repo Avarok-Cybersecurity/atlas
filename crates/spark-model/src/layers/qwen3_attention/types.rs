@@ -210,6 +210,10 @@ pub struct Qwen3AttentionLayer {
     /// HDIM=512 paged prefill (BF16 KV) for Gemma-4 chunked long-context prefill
     pub(super) prefill_attn_paged_512_k: KernelHandle,
     pub(super) prefill_attn_64_k: KernelHandle,
+    /// HDIM=128 contiguous prefill — BR=32 (MLA unabsorbed prefill, head_dim=128)
+    pub(super) prefill_attn_128_k: KernelHandle,
+    /// HDIM=128 contiguous prefill — BR=64 (MLA unabsorbed prefill, seq_len>=256)
+    pub(super) prefill_attn_64_128_k: KernelHandle,
     pub(super) prefill_attn_paged_k: KernelHandle,
     pub(super) prefill_attn_paged_fp8_k: KernelHandle,
     pub(super) prefill_attn_paged_nvfp4_k: KernelHandle,

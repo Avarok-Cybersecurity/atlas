@@ -248,102 +248,38 @@ impl Qwen3AttentionLayer {
         // inv_sqrt_d: 1/sqrt(kv_lora + rope) = 1/sqrt(320) — absorbed dimension, NOT hd.
         // Using 1/sqrt(hd=128) would over-sharpen softmax by sqrt(128/320) ≈ 0.63.
         let attn_out_fb = ctx.buffers.attn_output();
+        // inv_sqrt_d in the absorbed space: 1/sqrt(kv_lora + rope) = 1/sqrt(320).
+        // Using 1/sqrt(hd=128) would over-sharpen softmax by sqrt(128/320) ≈ 0.63.
         let inv_sqrt_d_absorbed = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt();
-        if self.mla_fused_prefill_k.0 != 0 {
-            ops::mla_fused_prefill(
-                ctx.gpu,
-                self.mla_fused_prefill_k,
-                qg_out,
-                q_rope_tmp,
-                kv_latent,
-                k_rope_buf,
-                mla.w_uk_t.weight,
-                mla.w_uv.weight,
-                attn_out_fb,
-                DevicePtr::NULL,
-                DevicePtr::NULL,
-                n,
-                nq,
-                mla_nope,
-                mla_rope,
-                kv_lora,
-                mla_v_dim,
-                hd,
-                inv_sqrt_d_absorbed,
-                stream,
-            )
-            .map_err(|e| anyhow::anyhow!("MLA fused prefill: {e}"))?;
-        } else {
-            // Fallback: expanded unabsorbed path. Broken for Mistral MLA
-            // (inferspark_prefill HDIM=256 vs hd=128) — keep for non-MLA hd≥256.
-            let kv_expanded_dim = nkv * (mla_nope + mla_v_dim);
-            let kv_expanded = ctx.buffers.ssm_deinterleaved();
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                kv_latent,
-                &mla.wkv_b,
-                kv_expanded,
-                n,
-                kv_expanded_dim,
-                kv_lora,
-                stream,
-            )?;
-            let k_contiguous = ctx.buffers.ssm_qkvz();
-            let v_contiguous = k_contiguous.offset(num_tokens * kv_dim * bf16);
-            ops::mla_kv_assemble_batched(
-                ctx.gpu,
-                self.mla_kv_assemble_batched_k,
-                kv_expanded,
-                k_rope_buf,
-                k_contiguous,
-                v_contiguous,
-                n,
-                nkv,
-                mla_nope,
-                mla_v_dim,
-                mla_rope,
-                hd,
-                nkv * (mla_nope + mla_v_dim),
-                stream,
-            )?;
-            ops::mla_q_rope_writeback_batched(
-                ctx.gpu,
-                self.mla_q_rope_writeback_batched_k,
-                q_rope_tmp,
-                qg_out,
-                n,
-                nq,
-                hd,
-                mla_nope,
-                mla_rope,
-                nq * hd,
-                stream,
-            )?;
-            let prefill_k = if hd > 256 && self.prefill_attn_512_k.0 != 0 {
-                self.prefill_attn_512_k
-            } else {
-                self.prefill_attn_k
-            };
-            ops::prefill_attention(
-                ctx.gpu,
-                prefill_k,
-                qg_out,
-                k_contiguous,
-                v_contiguous,
-                attn_out_fb,
-                n,
-                1,
-                nq,
-                nkv,
-                hd,
-                self.effective_attn_scale(hd),
-                true,
-                self.sliding_window.unwrap_or(0),
-                stream,
-            )
-            .map_err(|e| anyhow::anyhow!("MLA cache-skip flash_attn fallback: {e}"))?;
-        }
+        anyhow::ensure!(
+            self.mla_fused_prefill_k.0 != 0,
+            "MLA cache-skip prefill requires mla_fused_prefill kernel \
+             (inferspark_prefill HDIM=256 is broken for MLA hd=128; \
+              rebuild with kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu)"
+        );
+        ops::mla_fused_prefill(
+            ctx.gpu,
+            self.mla_fused_prefill_k,
+            qg_out,
+            q_rope_tmp,
+            kv_latent,
+            k_rope_buf,
+            mla.w_uk_t.weight,
+            mla.w_uv.weight,
+            attn_out_fb,
+            DevicePtr::NULL,
+            DevicePtr::NULL,
+            n,
+            nq,
+            mla_nope,
+            mla_rope,
+            kv_lora,
+            mla_v_dim,
+            hd,
+            inv_sqrt_d_absorbed,
+            stream,
+        )
+        .map_err(|e| anyhow::anyhow!("MLA fused prefill: {e}"))?;
         // wo projection — output to qkv_output (norm_output aliases downstream)
         let o_out = ctx.buffers.qkv_output();
         if let Some(ref wo_nvfp4) = mla.wo_nvfp4 {

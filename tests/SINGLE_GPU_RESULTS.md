@@ -183,6 +183,17 @@ sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
     # No --tool-call-parser: MODEL.toml supplies bare_json
 ```
 
+### Correct Launch Command (no --tool-call-parser override)
+```bash
+sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  atlas-test:latest serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 \
+    --port 8888 --kv-cache-dtype fp8 --kv-high-precision-layers auto \
+    --gpu-memory-utilization 0.92 --scheduling-policy slai \
+    --max-seq-len 65536 --ssm-cache-slots 0
+```
+(MODEL.toml supplies `tool_call_parser = "bare_json"` and `disable_tool_steering = true` automatically)
+
 ### Memory Budget
 - Weights: ~94 GB (17 shards)
 - SSM state pool: used for 40 Mamba2 layers

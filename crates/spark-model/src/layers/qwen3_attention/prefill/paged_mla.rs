@@ -285,10 +285,14 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         } else {
-            // Fallback: expanded path. Broken for Mistral MLA (hd=128 < HDIM=256 kernel
-            // constant). Load the mla_fused_prefill kernel to fix long-context prefill.
+            // Fallback unabsorbed path. Select kernel by head_dim:
+            // hd<=128 → HDIM=128 kernel (MLA Mistral; HDIM=256 over-reads adjacent heads)
+            // hd>256  → HDIM=512 kernel (Gemma-4 full-attn)
+            // else    → HDIM=256 default (standard GQA)
             let prefill_k = if hd > 256 && self.prefill_attn_512_k.0 != 0 {
                 self.prefill_attn_512_k
+            } else if hd <= 128 && self.prefill_attn_128_k.0 != 0 {
+                self.prefill_attn_128_k
             } else {
                 self.prefill_attn_k
             };
