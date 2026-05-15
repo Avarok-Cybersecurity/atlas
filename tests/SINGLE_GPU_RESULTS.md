@@ -131,6 +131,40 @@ that build also contains the same cache-skip path bug.
 
 **Needs retest** after this commit to confirm fix resolves long-context failures.
 
+### SECOND BUG FIXED: Mistral Loader Defaults MLA Layers to Fp8
+
+A second independent bug was found in the Mistral weight loader. Even if the correct
+HDIM=128 kernel is used, MLA data must be stored in BF16 — not FP8.
+
+**Root cause**: `build_layer_kv_dtypes()` in `kv_dtypes.rs` returns an empty slice (`[]`)
+when `kv_dtype == KvCacheDtype::Bf16` (an optimization meaning "no per-layer override needed,
+all layers use the base dtype"). The Mistral weight loader in
+`mistral_loader/loader_impl/phase_assemble.rs` had:
+
+```rust
+let kv_dtype = layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Fp8);
+```
+
+When the slice is empty, `.get(i)` returns `None` for every layer index, so all 36 MLA
+attention layers silently default to `Fp8`. MLA compressed latent KV vectors have dynamic
+range far exceeding FP8's E4M3 limit (±448), so they were being clipped on every write.
+
+Other weight loaders use direct index notation `layer_kv_dtypes[i]`, which panics on an
+empty slice and therefore cannot hit this bug. Only the Mistral loader's `.get(i).unwrap_or`
+pattern triggered the silent misfault.
+
+**Fix applied** (`crates/spark-model/src/mistral_loader/loader_impl/phase_assemble.rs`):
+```rust
+// Before (bug):
+let kv_dtype = layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Fp8);
+
+// After (fix — empty slice means "use base dtype" which was explicitly bf16):
+let kv_dtype = layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Bf16);
+```
+
+This fix and the HDIM kernel fix are complementary: the kernel fix ensures correct attention
+computation; the dtype fix ensures KV data isn't precision-clipped before decode reads it.
+
 ---
 
 ## 3. nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 — PARTIAL
@@ -227,7 +261,8 @@ architectural limitation of fixed-size Mamba-2 recurrent state; not a code bug.
 
 | # | Priority | Status | Item |
 |---|----------|--------|------|
-| 1 | P0 | **FIXED — needs retest** | Mistral MLA: `cache_skip_mla.rs` used HDIM=256 kernel for head_dim=128; fixed to use `prefill_attn_k` (HDIM=128) |
-| 2 | P1 | **FIXED — needs retest** | Nemotron tool calling: (A) wrong CLI parser in test (use MODEL.toml bare_json); (B) `skip_template_tools=true` prevents contradictory XML injection from template |
-| 3 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool, not snapshot cache; `--ssm-cache-slots 0` correctly disables only Marconi prefix caching |
-| 4 | P2 | **CLOSED — known** | Nemotron long context >8K: Mamba-2 fixed-size state saturation, architectural limitation |
+| 1 | P0 | **FIXED — needs retest** | Mistral MLA (kernel): `cache_skip_mla.rs` used HDIM=256 kernel for head_dim=128; fixed to use `prefill_attn_k` (HDIM=128) |
+| 2 | P0 | **FIXED — needs retest** | Mistral MLA (dtype): `phase_assemble.rs` `unwrap_or(Fp8)` on empty layer_kv_dtypes → all MLA layers stored KV in FP8 instead of BF16; fixed to `unwrap_or(Bf16)` |
+| 3 | P1 | **FIXED — needs retest** | Nemotron tool calling: (A) wrong CLI parser in test (use MODEL.toml bare_json); (B) `skip_template_tools=true` prevents contradictory XML injection from template |
+| 4 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool, not snapshot cache; `--ssm-cache-slots 0` correctly disables only Marconi prefix caching |
+| 5 | P2 | **CLOSED — known** | Nemotron long context >8K: Mamba-2 fixed-size state saturation, architectural limitation |
