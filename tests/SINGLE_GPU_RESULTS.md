@@ -88,9 +88,9 @@ sudo docker run -d --name atlas-mistral --gpus all --ipc=host --network host \
 | TPS (150 tok) | 37.3 tok/s | Approaching peak |
 | TPS (300 tok) | 40.3 tok/s | Peak decode speed |
 | Long ctx 1K in | PASS | Coherent |
-| **Long ctx ~1.8K in** | **FAIL** | Repetitive gibberish |
-| **Long ctx ~4.4K in** | **FAIL** | Total gibberish |
-| **Long ctx ~6.5K in** | **FAIL** | Total gibberish |
+| **Long ctx ~1.8K in** | **FAIL (pre-fix)** | Repetitive gibberish |
+| **Long ctx ~4.4K in** | **FAIL (pre-fix)** | Total gibberish |
+| **Long ctx ~6.5K in** | **FAIL (pre-fix)** | Total gibberish |
 
 ### BUG 1 FIXED: MLA Prefill Uses Wrong Kernel (HDIM=256 vs head_dim=128)
 
@@ -105,6 +105,11 @@ token's K data), runs QK^T over 256/16=16 k-iterations instead of the correct 8,
 contaminates attention scores with look-ahead information from K[k+1]. This corruption
 compounds across all 36 attention layers — short contexts (<600 tokens) are dominated by
 the real signal; beyond ~1000 tokens the accumulated contamination produces gibberish.
+
+Additionally, the remote's `mla_fused_prefill` call used `inv_sqrt_d = 1/sqrt(hd=128)` but
+the absorbed attention dimension is 320, requiring `1/sqrt(320)`. Using the wrong scale
+over-sharpens softmax by √(128/320) ≈ 0.63, adding a second source of corruption on top
+of the HDIM mismatch. Both are fixed.
 
 **Test results (diverse, non-repetitive content — BEFORE fix):**
 | Input tokens | Output quality |
@@ -125,6 +130,7 @@ because both builds contained the same prefill kernel bug.
   2. Q_final = [Q_absorbed | Q_rope_rotated] ∈ R^320
   3. Online softmax attention: Q_final · kv_latent^T (causal)
   4. V_out[128] = attn_latent[256] @ W_UV^T
+- `inv_sqrt_d = 1/sqrt(320)` — correct absorbed dimension (was mistakenly 1/sqrt(128))
 - The HDIM=256 `inferspark_prefill` kernel is kept as a fallback for non-MLA layers
   (hd=256 or hd=512) with a clear comment marking it broken for MLA hd<256.
 - Also corrects O-projection input dimension from `nq * hd` to `nq * mla_v_dim`
@@ -248,8 +254,8 @@ architectural limitation of fixed-size Mamba-2 recurrent state; not a code bug.
 
 | # | Priority | Status | Item |
 |---|----------|--------|------|
-| 1 | P0 | **FIXED — needs retest** | Mistral MLA (kernel): both `paged_mla.rs` and `cache_skip_mla.rs` used HDIM=256 kernels for head_dim=128; fixed to use `mla_fused_prefill` (absorbed 320-dim path) |
+| 1 | P0 | **FIXED — needs retest** | Mistral MLA (kernel): `cache_skip_mla.rs` used HDIM=256 kernel for head_dim=128, AND wrong inv_sqrt_d (1/√128 instead of 1/√320); fixed both via `mla_fused_prefill` absorbed path |
 | 2 | P0 | **FIXED — needs retest** | Mistral MLA (dtype): `phase_assemble.rs` `unwrap_or(Fp8)` on empty layer_kv_dtypes → all MLA layers stored KV in FP8 instead of BF16; fixed to `unwrap_or(Bf16)` |
 | 3 | P1 | **FIXED — needs retest** | Nemotron tool calling: (A) wrong CLI parser in test (use MODEL.toml bare_json); (B) `skip_template_tools=true` prevents contradictory XML injection from template |
-| 4 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool, not snapshot cache; `--ssm-cache-slots 0` correctly disables only Marconi prefix caching |
+| 4 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool (`SsmStatePool`), not snapshot cache; sized by `--max-batch-size` (8). `--ssm-cache-slots 0` correctly disables only Marconi prefix-cache snapshots (`SsmSnapshotPool`). No code bug. |
 | 5 | P2 | **CLOSED — known** | Nemotron long context >8K: Mamba-2 fixed-size state saturation, architectural limitation |

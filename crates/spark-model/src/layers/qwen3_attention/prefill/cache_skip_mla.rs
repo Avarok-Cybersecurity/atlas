@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! MLA branch of `prefill_attention_with_cache_skip`. Mistral4-style
-//! 2-step prefill with the unabsorbed/MHA fused fallback path that
-//! expands K/V via `wkv_b` and runs HDIM=128 FlashAttention. Extracted
-//! from `cache_skip.rs` to keep that file under 500 LoC.
+//! absorbed MLA prefill: Q_absorption + causal attention + V_extraction
+//! via `mla_fused_prefill` (HDIM=320 absorbed space). Extracted from
+//! `cache_skip.rs` to keep that file under 500 LoC.
 
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
@@ -13,18 +13,13 @@ use super::super::Qwen3AttentionLayer;
 use crate::layer::ForwardContext;
 use crate::layers::ops;
 
-#[allow(clippy::too_many_arguments)]
 pub(super) struct CacheSkipMlaArgs {
     pub normed: DevicePtr,
-    pub num_tokens: usize,
     pub n: u32,
     pub h: u32,
     pub nq: u32,
-    pub nkv: u32,
     pub hd: u32,
-    pub kv_dim: usize,
     pub eps: f32,
-    pub bf16: usize,
     pub stream: u64,
 }
 
@@ -37,19 +32,7 @@ impl Qwen3AttentionLayer {
         ctx: &ForwardContext,
         args: &CacheSkipMlaArgs,
     ) -> Result<DevicePtr> {
-        let CacheSkipMlaArgs {
-            normed,
-            num_tokens,
-            n,
-            h,
-            nq,
-            nkv,
-            hd,
-            kv_dim,
-            eps,
-            bf16,
-            stream,
-        } = *args;
+        let CacheSkipMlaArgs { normed, n, h, nq, hd, eps, stream } = *args;
         let mla = self
             .mla
             .as_ref()
@@ -259,59 +242,14 @@ impl Qwen3AttentionLayer {
             ctx.graph_capture,
         )?;
 
-        // Unabsorbed (MHA) prefill: expand K/V via wkv_b, use HDIM=128 FlashAttention
-        let kv_expanded_dim = nkv * (mla_nope + mla_v_dim);
-        let kv_expanded = ctx.buffers.ssm_deinterleaved();
-        ops::dense_gemm(
-            ctx.gpu,
-            self.dense_gemm_k,
-            kv_latent,
-            &mla.wkv_b,
-            kv_expanded,
-            n,
-            kv_expanded_dim,
-            kv_lora,
-            stream,
-        )?;
-        let k_contiguous = ctx.buffers.ssm_qkvz();
-        let v_contiguous = k_contiguous.offset(num_tokens * kv_dim * bf16);
-        ops::mla_kv_assemble_batched(
-            ctx.gpu,
-            self.mla_kv_assemble_batched_k,
-            kv_expanded,
-            k_rope_buf,
-            k_contiguous,
-            v_contiguous,
-            n,
-            nkv,
-            mla_nope,
-            mla_v_dim,
-            mla_rope,
-            hd,
-            nkv * (mla_nope + mla_v_dim),
-            stream,
-        )?;
-        ops::mla_q_rope_writeback_batched(
-            ctx.gpu,
-            self.mla_q_rope_writeback_batched_k,
-            q_rope_tmp,
-            qg_out,
-            n,
-            nq,
-            hd,
-            mla_nope,
-            mla_rope,
-            nq * hd,
-            stream,
-        )?;
-        // MLA absorbed attention: fused Q_absorb + flash attn (320-dim) + V_extract.
+        // MLA absorbed attention: fused Q_absorb + attention (320-dim) + V_extract.
         // inferspark_prefill_64 has compile-time HDIM=256; MLA kv_stride=nkv*hd=128 so
         // col>=128 aliases K[k+1][0..127] — corrupts attention scores over long contexts.
+        // inv_sqrt_d: 1/sqrt(kv_lora + rope) = 1/sqrt(320) — absorbed dimension, NOT hd.
+        // Using 1/sqrt(hd=128) would over-sharpen softmax by sqrt(128/320) ≈ 0.63.
         let attn_out_fb = ctx.buffers.attn_output();
-        let inv_sqrt_d = self.effective_attn_scale(hd);
+        let inv_sqrt_d_absorbed = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt();
         if self.mla_fused_prefill_k.0 != 0 {
-            // KV cache already written above; pass k/v_cache_assembled as scratch targets
-            // for the fused kernel's cache-write step (harmless overwrite of same data).
             ops::mla_fused_prefill(
                 ctx.gpu,
                 self.mla_fused_prefill_k,
@@ -322,8 +260,8 @@ impl Qwen3AttentionLayer {
                 mla.w_uk_t.weight,
                 mla.w_uv.weight,
                 attn_out_fb,
-                k_cache_assembled,
-                v_cache_assembled,
+                DevicePtr::NULL,
+                DevicePtr::NULL,
                 n,
                 nq,
                 mla_nope,
@@ -331,11 +269,57 @@ impl Qwen3AttentionLayer {
                 kv_lora,
                 mla_v_dim,
                 hd,
-                inv_sqrt_d,
+                inv_sqrt_d_absorbed,
+                stream,
+            )
+            .map_err(|e| anyhow::anyhow!("MLA fused prefill: {e}"))?;
+        } else {
+            // Fallback: expanded unabsorbed path. Broken for Mistral MLA
+            // (inferspark_prefill HDIM=256 vs hd=128) — keep for non-MLA hd≥256.
+            let kv_expanded_dim = nkv * (mla_nope + mla_v_dim);
+            let kv_expanded = ctx.buffers.ssm_deinterleaved();
+            ops::dense_gemm(
+                ctx.gpu,
+                self.dense_gemm_k,
+                kv_latent,
+                &mla.wkv_b,
+                kv_expanded,
+                n,
+                kv_expanded_dim,
+                kv_lora,
                 stream,
             )?;
-        } else {
-            // Fallback: expanded path. Broken for Mistral MLA (hd=128 < HDIM=256 kernel).
+            let k_contiguous = ctx.buffers.ssm_qkvz();
+            let v_contiguous = k_contiguous.offset(num_tokens * kv_dim * bf16);
+            ops::mla_kv_assemble_batched(
+                ctx.gpu,
+                self.mla_kv_assemble_batched_k,
+                kv_expanded,
+                k_rope_buf,
+                k_contiguous,
+                v_contiguous,
+                n,
+                nkv,
+                mla_nope,
+                mla_v_dim,
+                mla_rope,
+                hd,
+                nkv * (mla_nope + mla_v_dim),
+                stream,
+            )?;
+            ops::mla_q_rope_writeback_batched(
+                ctx.gpu,
+                self.mla_q_rope_writeback_batched_k,
+                q_rope_tmp,
+                qg_out,
+                n,
+                nq,
+                hd,
+                mla_nope,
+                mla_rope,
+                nq * hd,
+                stream,
+            )?;
             let prefill_k = if hd > 256 && self.prefill_attn_512_k.0 != 0 {
                 self.prefill_attn_512_k
             } else {
@@ -353,12 +337,12 @@ impl Qwen3AttentionLayer {
                 nq,
                 nkv,
                 hd,
-                inv_sqrt_d,
+                self.effective_attn_scale(hd),
                 true,
                 self.sliding_window.unwrap_or(0),
                 stream,
             )
-            .map_err(|e| anyhow::anyhow!("MLA cache-skip flash_attn: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("MLA cache-skip flash_attn fallback: {e}"))?;
         }
         // wo projection — output to qkv_output (norm_output aliases downstream)
         let o_out = ctx.buffers.qkv_output();

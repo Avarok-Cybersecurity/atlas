@@ -89,15 +89,11 @@ impl Qwen3AttentionLayer {
         if self.mla.is_some() {
             let args = super::cache_skip_mla::CacheSkipMlaArgs {
                 normed,
-                num_tokens,
                 n,
                 h,
                 nq,
-                nkv,
                 hd,
-                kv_dim,
                 eps,
-                bf16,
                 stream,
             };
             return self.prefill_attention_cache_skip_mla(kv_cache, ctx, &args);
