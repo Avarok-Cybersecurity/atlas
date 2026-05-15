@@ -63,6 +63,17 @@ pub struct SamplingCategory {
     /// `presence_penalty` regression. 0.0 = disabled. SGLang reference
     /// strength = 0.2 (lossless on AIME/GPQA).
     pub lz_penalty: f32,
+    /// XTC (Exclude Top Choices) probability — per-token chance to apply
+    /// the XTC mask, which drops all post-softmax probs ≥ `xtc_threshold`
+    /// except the lowest one in that set. Designed to break
+    /// token-different but lexically-similar repetition attractors that
+    /// DRY can't catch (dense Qwen3.6-27B CSS-block loops). 0.0 = off.
+    /// oobabooga PR #6335.
+    pub xtc_probability: f32,
+    /// XTC threshold — only post-softmax probs ≥ this value are eligible
+    /// for the XTC mask. Below-threshold tokens are always kept. 0.1 is
+    /// the upstream default.
+    pub xtc_threshold: f32,
 }
 
 /// Model-specific sampling presets loaded from MODEL.toml `[sampling.*]`.
@@ -91,6 +102,8 @@ impl Default for SamplingPresets {
             dry_base: 1.75,
             dry_allowed_length: 2,
             lz_penalty: 0.0,
+            xtc_probability: 0.0,
+            xtc_threshold: 0.1,
         };
         let tools_cat = SamplingCategory {
             temperature: 0.6,
@@ -103,6 +116,8 @@ impl Default for SamplingPresets {
             dry_base: 1.75,
             dry_allowed_length: 2,
             lz_penalty: 0.0,
+            xtc_probability: 0.0,
+            xtc_threshold: 0.1,
         };
         Self {
             thinking_text: default_cat,

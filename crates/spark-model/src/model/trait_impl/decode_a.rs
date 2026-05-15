@@ -230,8 +230,71 @@ impl TransformerModel {
             stream,
         )?;
 
+        // MTP↔main comparator tap: snapshot the main model's pre-LM-head
+        // hidden state for the MTP head to compare against. Gated on
+        // ATLAS_MTP_DIVERGENCE_COMPARE=1 and capped at 12 captures.
+        // Forces a stream sync — never on by default. Also gated on
+        // `!use_graphs`: synchronize / copy_d2h during CUDA graph capture
+        // invalidates the capture (CUDA_ERROR_STREAM_CAPTURE_INVALIDATED 901).
+        // Comparator usage therefore requires running with CUDA graphs
+        // disabled (e.g. --no-cuda-graphs).
+        let capture_main_compare = !use_graphs
+            && crate::mtp_divergence::enabled()
+            && crate::mtp_divergence::should_capture();
+        if capture_main_compare {
+            let _ = self.gpu.synchronize(stream);
+            let h_us = self.config.hidden_size;
+            let mut buf = vec![0u8; h_us * 2];
+            if let Err(e) = self.gpu.copy_d2h(normed, &mut buf) {
+                tracing::warn!("MTP_COMPARE main hidden d2h: {e:#}");
+            } else {
+                let f = crate::mtp_divergence::bf16_bytes_to_f32(&buf);
+                let pos = seq.seq_len as u64;
+                let main_l2 = crate::mtp_divergence::l2_norm(&f);
+                tracing::info!("MAIN_DIV pos={pos} final_normed_l2={main_l2:.4}");
+                crate::mtp_divergence::record_main_hidden(pos, f);
+            }
+        }
+
         // LM head reads from normed directly (no D2D copy needed)
         self.lm_head(normed, stream)?;
+
+        // MTP↔main comparator tap (post-LM-head): record main's top-5
+        // logits so the MTP-side dump can compute top-5 Jaccard.
+        if capture_main_compare {
+            let _ = self.gpu.synchronize(stream);
+            let v_us = self.config.vocab_size;
+            let logit_vals: Vec<f32> = if self.use_fp32_logits {
+                let mut buf = vec![0u8; v_us * 4];
+                if self.gpu.copy_d2h(self.logits_fp32_buf, &mut buf).is_err() {
+                    Vec::new()
+                } else {
+                    buf.chunks_exact(4)
+                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        .collect()
+                }
+            } else {
+                let mut buf = vec![0u8; v_us * 2];
+                if self.gpu.copy_d2h(self.buffers.logits(), &mut buf).is_err() {
+                    Vec::new()
+                } else {
+                    crate::mtp_divergence::bf16_bytes_to_f32(&buf)
+                }
+            };
+            if !logit_vals.is_empty() {
+                let mut idx: Vec<usize> = (0..logit_vals.len()).collect();
+                idx.sort_by(|&a, &b| {
+                    logit_vals[b]
+                        .partial_cmp(&logit_vals[a])
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let top5: Vec<(u32, f32)> =
+                    idx.iter().take(5).map(|&i| (i as u32, logit_vals[i])).collect();
+                let argmax = top5.first().map(|p| p.0);
+                tracing::info!("MAIN_DIV top5={top5:?}");
+                crate::mtp_divergence::record_main_top5(top5, argmax);
+            }
+        }
 
         // Decode-step diagnostic for Gemma-4 degeneration analysis. Only fires
         // when ATLAS_DIAG_GEMMA4=1 (which also disables CUDA graphs upstream,

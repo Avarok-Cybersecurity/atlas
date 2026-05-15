@@ -23,6 +23,14 @@ struct SamplingCat {
     // over the recent token window. 0.0 = disabled. 0.2 is the SGLang
     // reference value; lossless on AIME/GPQA at that strength.
     lz_penalty: f32,
+    // XTC (Exclude Top Choices) — oobabooga PR #6335. When `xtc_probability`
+    // > 0, on a per-token coin flip drop all tokens with post-softmax
+    // prob ≥ `xtc_threshold` except the lowest-prob one in that set.
+    // Targeted remedy for token-different but lexically-similar repetition
+    // attractors that DRY can't catch (e.g. dense Qwen3.6-27B's CSS-block
+    // long-context loops).
+    xtc_probability: f32,
+    xtc_threshold: f32,
 }
 
 impl Default for SamplingCat {
@@ -38,6 +46,8 @@ impl Default for SamplingCat {
             dry_base: 1.75,
             dry_allowed_length: 2,
             lz_penalty: 0.0,
+            xtc_probability: 0.0,
+            xtc_threshold: 0.1,
         }
     }
 }

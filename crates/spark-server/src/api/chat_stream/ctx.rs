@@ -27,4 +27,9 @@ pub(super) struct StreamCtx {
     pub(super) dump_seq: Option<u64>,
     pub(super) f44_cache: F39FailureCache,
     pub(super) f44_cache_active: bool,
+    /// Shared back-channel set when the SimHash semantic-loop watchdog
+    /// fires (or any other streaming-side terminator). The scheduler's
+    /// `emit_token` polls this and finishes the seq, so the model
+    /// stops generating instead of running to `max_tokens`.
+    pub(super) cancel_flag: Arc<std::sync::atomic::AtomicBool>,
 }

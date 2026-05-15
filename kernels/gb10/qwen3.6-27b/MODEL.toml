@@ -37,13 +37,34 @@ mtp_layers = 0
 # (Atlas's hybrid-GDN long-context behavior is consistent across 27B variants).
 effective_context = 24576
 
-# Recommended sampling defaults (carried over from Qwen3.5 family).
+# Official Qwen3.6-27B sampling recommendations (HF model card), plus
+# Atlas's anti-repetition stack (DRY + LZ) on every preset. The Qwen
+# values for temperature / top_p / top_k / presence_penalty are kept
+# verbatim — DRY and LZ are additive and target the multi-token
+# phrase-loop attractor that flat per-unique-token presence_penalty
+# can't break (see `atlas-kernels/src/lib.rs::SamplingCategory`:
+# "presence_penalty on its own is a FLAT per-unique-token hit … DRY
+# scales with the repeat-length and is the published remedy"). LZ at
+# 0.2 is the SGLang reference (arXiv:2504.20131); DRY at (0.8, 1.75, 2)
+# catches ≥3-token repeats — matches llama.cpp / KoboldAI defaults — to
+# break the `#plane { cursor: pointer; }` and CSS-block phrase-loop
+# attractors observed in OpenWebUI long-code sessions where the looser
+# allowed_length=4 left enough room to settle into 4-token cycles.
+#
+# Atlas's sampler now consumes the full token sequence (prompt + output)
+# for penalties — matching HF Transformers / vLLM / llama.cpp — so
+# Qwen's `non_thinking.presence_penalty=1.5` behaves as upstream intends
+# (chat-template stop tokens share the pressure, no premature EOS).
 [sampling.thinking_text]
-temperature = 0.6
+temperature = 1.0
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
+lz_penalty = 0.2
+dry_multiplier = 0.8
+dry_base = 1.75
+dry_allowed_length = 2
 
 [sampling.thinking_coding]
 temperature = 0.6
@@ -51,13 +72,31 @@ top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
+lz_penalty = 0.2
+dry_multiplier = 0.8
+dry_base = 1.75
+dry_allowed_length = 2
+# XTC (Exclude Top Choices) opt-in. Dense Qwen3.6-27B-FP8 has a
+# documented long-context attractor where it emits token-different but
+# lexically-similar CSS/HTML blocks (e.g. `#game-container { width: 100vw; }`
+# alternating with `#game-container { position: relative; }`). DRY misses
+# this because the token sequence varies between repeats. XTC drops the
+# modal peak on a 30% coin flip, forcing the sampler off the attractor.
+# Known upstream issue (QwenLM/Qwen3.5 #115, vLLM #27157) — sampler-side
+# mitigation is the realistic remedy.
+xtc_probability = 0.3
+xtc_threshold = 0.1
 
 [sampling.non_thinking]
 temperature = 0.7
 top_p = 0.8
 top_k = 20
-presence_penalty = 0.0
+presence_penalty = 1.5
 frequency_penalty = 0.0
+lz_penalty = 0.2
+dry_multiplier = 0.8
+dry_base = 1.75
+dry_allowed_length = 2
 
 [sampling.tools]
 temperature = 0.6
@@ -65,6 +104,10 @@ top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
+lz_penalty = 0.2
+dry_multiplier = 0.8
+dry_base = 1.75
+dry_allowed_length = 2
 
 [behavior]
 # Content-loop watchdog enabled: dense Qwen3.6-27B has a known
@@ -74,8 +117,17 @@ frequency_penalty = 0.0
 # A3B/A10B variants in the family don't need it.
 enable_loop_watchdog = true
 thinking_in_tools = false
+# Enable thinking by default for OpenAI/OpenWebUI-compatible requests.
+# Tool-active turns still suppress thinking unless the client explicitly
+# requests reasoning because `thinking_in_tools=false` above.
+thinking_default = true
 max_thinking_budget = 512
-default_num_drafts = 1
+# K=2 verify (num_drafts=1) is broken for this model — produces gibberish
+# at ~50 tokens. K=3 (num_drafts=2) produces coherent output for 2000+
+# tokens with slow SSM drift past that. K=1 (no MTP) is fully clean.
+# 2026-05-14: defaulted to K=3 as the practical fix; K=2 codepath bug
+# tracked in memory/project_dense_27b_mtp_residual.md.
+default_num_drafts = 2
 
 # Upstream Qwen/Qwen3.6-27B reports `model_type = "qwen3_5"` in config.json.
 # Atlas's `parse_qwen3_5_config` (atlas-core/src/config.rs) rewrites this to

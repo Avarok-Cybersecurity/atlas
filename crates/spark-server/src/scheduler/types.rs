@@ -53,6 +53,10 @@ pub(super) struct PrefillInProgress {
     pub dry_base: f32,
     pub dry_allowed_length: u32,
     pub dry_sequence_breakers: Vec<u32>,
+    /// XTC (Exclude Top Choices) probability. 0.0 = off. See SamplingParams.
+    pub xtc_probability: f32,
+    /// XTC threshold (min post-softmax prob for exclusion eligibility).
+    pub xtc_threshold: f32,
     pub logit_bias: Vec<(u32, f32)>,
     pub enable_thinking: bool,
     pub thinking_budget: Option<u32>,
@@ -71,6 +75,7 @@ pub(super) struct PrefillInProgress {
     pub seed: Option<u64>,
     pub top_logprobs: Option<u8>,
     pub timeout_at: Option<Instant>,
+    pub cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// An in-flight sequence participating in batched decode.
@@ -98,6 +103,10 @@ pub(super) struct ActiveSeq {
     pub dry_base: f32,
     pub dry_allowed_length: u32,
     pub dry_sequence_breakers: Vec<u32>,
+    /// XTC (Exclude Top Choices) probability. 0.0 = off. See SamplingParams.
+    pub xtc_probability: f32,
+    /// XTC threshold (min post-softmax prob for exclusion eligibility).
+    pub xtc_threshold: f32,
     pub logit_bias: Vec<(u32, f32)>,
     /// Tracks whether the model is inside `<think>...</think>` reasoning.
     pub inside_thinking: bool,
@@ -122,6 +131,14 @@ pub(super) struct ActiveSeq {
     pub think_start_token: Option<u32>,
     /// True after the first `</think>` token is generated.
     pub think_ended: bool,
+    /// True iff `think_ended` was set because the thinking-loop watchdog
+    /// force-closed `</think>` (i.e. `force_end_thinking` was active at
+    /// the moment of emission). Lets the post-think EOS guard
+    /// distinguish "natural </think> after the model said its piece"
+    /// (no guard needed — model is free to EOS immediately) from
+    /// "watchdog force-closed </think> mid-narration" (16-token guard
+    /// applies so the model doesn't dribble a half-tool-call and stop).
+    pub think_was_force_ended: bool,
     /// One-shot signal: set when `</think>` was the most recently emitted token.
     pub think_just_ended: bool,
     /// Consecutive `</think>` tokens skipped outside thinking. Safety limit: 50.
@@ -178,6 +195,12 @@ pub(super) struct ActiveSeq {
     pub adaptive: crate::adaptive_sampler::AdaptiveSamplingState,
     /// Number of prompt tokens served by the prefix cache (no prefill cost).
     pub cached_prompt_tokens: u32,
+    /// Streaming-side back-channel for early termination — set when the
+    /// SimHash loop-watchdog (or any future streaming terminator) wants
+    /// the scheduler to stop. `emit_token` polls this and finishes the
+    /// seq instead of running to `max_tokens`. `None` for blocking
+    /// requests (no streaming-layer to set it).
+    pub cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// A sequence that has been swapped out to disk (KV + SSM state saved to file).
@@ -206,6 +229,10 @@ pub(super) struct SwappedSeq {
     pub dry_base: f32,
     pub dry_allowed_length: u32,
     pub dry_sequence_breakers: Vec<u32>,
+    /// XTC (Exclude Top Choices) probability. 0.0 = off. See SamplingParams.
+    pub xtc_probability: f32,
+    /// XTC threshold (min post-softmax prob for exclusion eligibility).
+    pub xtc_threshold: f32,
     pub logit_bias: Vec<(u32, f32)>,
     pub inside_thinking: bool,
     pub enable_thinking: bool,
@@ -217,6 +244,7 @@ pub(super) struct SwappedSeq {
     pub think_end_token: Option<u32>,
     pub think_start_token: Option<u32>,
     pub think_ended: bool,
+    pub think_was_force_ended: bool,
     pub think_just_ended: bool,
     pub think_skip_count: u32,
     pub require_tool_call: bool,
@@ -234,6 +262,7 @@ pub(super) struct SwappedSeq {
     pub tool_call_start_token: Option<u32>,
     pub tool_call_opened: bool,
     pub tool_call_end_token: Option<u32>,
+    pub cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub last_token_time: Instant,
     pub request_start: Instant,
     pub decode_start: Instant,

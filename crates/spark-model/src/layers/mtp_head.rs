@@ -120,7 +120,18 @@ pub struct MtpHead {
 
     // Shared weights from target model
     embed_tokens: DenseWeight,
-    lm_head_nvfp4: QuantizedWeight,
+    /// LM head used for draft sampling. Held as a `ProjectionWeight`
+    /// (same enum the in-block attention projections use) so the
+    /// MTP head can dispatch via whichever precision the main-model
+    /// verifier is using — Nvfp4, native FP8 block-scaled, per-row
+    /// FP8 (`Fp8`), or Bf16. Matching the verifier's LM-head
+    /// precision is required to keep proposer/verifier logit
+    /// distributions aligned; mismatched precisions (e.g. NVFP4
+    /// proposer vs BF16 verifier) drive MTP K=2 acceptance to near
+    /// zero on the affected models. Future-proofing: when
+    /// checkpoints ship native FP8 lm_head this slot can hold the
+    /// `Fp8BlockScaled` variant without further plumbing.
+    lm_head: ProjectionWeight,
 
     // KV cache for MTP attention (1 layer, separate from target)
     kv_cache: Mutex<PagedKvCache>,

@@ -76,8 +76,16 @@ extern "C" __global__ void rope_forward_mrope_interleaved(
 
     // Shared inverse-frequency schedule (FP64 powf to avoid drift).
     const double freq_exp_d = (double)(2 * pair_idx) / (double)rotary_dim;
-    const float freq = (float)(1.0 / pow((double)theta, freq_exp_d));
-    const float angle = (float)abs_pos * freq;
+    const double freq_d = 1.0 / pow((double)theta, freq_exp_d);
+    // Angle is computed in FP64 so the `pos × freq` product is exact
+    // (the previous `(float)abs_pos * freq` lost up to ~1e-4 rad
+    // for small-frequency channels at pos > 1000 because both
+    // factors had to be representable in F32 simultaneously). Cast
+    // to F32 only for `__sincosf`; the SP sincos rounding error
+    // (~1 ULP) is dominated by the BF16 final cast a few lines
+    // below, so this gives torch-FP64-bit-equivalent angles.
+    const double angle_d = (double)abs_pos * freq_d;
+    const float angle = (float)angle_d;
     const float cos_val = cosf(angle);
     const float sin_val = sinf(angle);
 

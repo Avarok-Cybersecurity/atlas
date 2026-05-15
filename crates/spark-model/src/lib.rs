@@ -20,10 +20,13 @@
 pub mod engine;
 pub mod factory;
 pub mod forward;
+pub mod kernel_registry;
+pub mod loader_progress;
 pub mod layer;
 pub mod layers;
 pub mod mistral_loader;
 pub mod model;
+pub mod mtp_divergence;
 pub mod precision_schedule;
 pub mod preflight;
 pub mod quant_format;

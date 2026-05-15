@@ -108,6 +108,8 @@ fn test_top_n_sigma_keeps_high_logits() {
         dry_base: 1.75,
         dry_allowed_length: 2,
         dry_sequence_breakers: Vec::new(),
+        xtc_probability: 0.0,
+        xtc_threshold: 0.1,
         max_tokens: 10,
         stop_token_ids: Vec::new(),
         seed: None,
@@ -153,6 +155,8 @@ fn test_top_n_sigma_disabled_at_zero() {
         dry_base: 1.75,
         dry_allowed_length: 2,
         dry_sequence_breakers: Vec::new(),
+        xtc_probability: 0.0,
+        xtc_threshold: 0.1,
         max_tokens: 10,
         stop_token_ids: Vec::new(),
         seed: None,
@@ -276,6 +280,8 @@ fn test_top_n_sigma_filters_extreme_outliers() {
         dry_base: 1.75,
         dry_allowed_length: 2,
         dry_sequence_breakers: Vec::new(),
+        xtc_probability: 0.0,
+        xtc_threshold: 0.1,
         max_tokens: 10,
         stop_token_ids: Vec::new(),
         seed: None,
@@ -288,4 +294,150 @@ fn test_top_n_sigma_filters_extreme_outliers() {
             "extreme low-logit tokens should be filtered at tight sigma"
         );
     }
+}
+
+// ── Leviathan rejection-sampling primitives ────────────────────────
+
+#[test]
+fn softmax_token_prob_one_hot() {
+    // Very-peaked logits → softmax should be ≈1.0 at the peak.
+    let logits = [-1000.0_f32, 0.0, -1000.0, -1000.0];
+    let p = super::softmax_token_prob(&logits, 1);
+    assert!((p - 1.0).abs() < 1e-6, "one-hot p={p}");
+    let p0 = super::softmax_token_prob(&logits, 0);
+    // Non-peak logit at -1000 vs peak at 0: exp(-1000) underflows in
+    // f32 to exactly 0.0; the assertion is "near zero" not "≤ 0".
+    assert!(p0 < 1e-30, "non-peak p0={p0}");
+}
+
+#[test]
+fn softmax_token_prob_uniform() {
+    let logits = [1.5_f32; 16];
+    let p = super::softmax_token_prob(&logits, 7);
+    // Uniform over 16 → 1/16.
+    assert!((p - 1.0 / 16.0).abs() < 1e-6, "uniform p={p}");
+}
+
+#[test]
+fn softmax_token_prob_sums_to_one() {
+    let logits = [0.1_f32, 0.5, -0.3, 2.0, 1.0, -1.5, 0.0, 0.8];
+    let sum: f32 = (0..logits.len() as u32)
+        .map(|t| super::softmax_token_prob(&logits, t))
+        .sum();
+    assert!(
+        (sum - 1.0).abs() < 1e-5,
+        "softmax should sum to 1.0, got {sum}"
+    );
+}
+
+#[test]
+fn softmax_token_prob_out_of_bounds() {
+    let logits = [0.0_f32, 1.0, 2.0];
+    assert_eq!(super::softmax_token_prob(&logits, 99), 0.0);
+}
+
+#[test]
+fn sample_excluding_drops_draft_token() {
+    // Sharply peaked at token 5: greedy would return 5. With temp=0
+    // (post-penalty argmax bypass), excluding 5 must return the
+    // second-best (token 2).
+    let mut logits = vec![-100.0_f32; 32];
+    logits[5] = 10.0;
+    logits[2] = 5.0;
+    let params = SamplingParams {
+        temperature: 0.0, // hits the post-penalty argmax branch
+        top_k: 0,
+        top_p: 1.0,
+        top_n_sigma: 0.0,
+        min_p: 0.0,
+        logit_bias: Vec::new(),
+        repetition_penalty: 1.0,
+        repetition_penalty_window: 0,
+        presence_penalty: 0.0,
+        frequency_penalty: 0.0,
+        lz_penalty: 0.0,
+        edt_strength: 0.0,
+        edt_floor: 0.1,
+        dry_multiplier: 0.0,
+        dry_base: 1.75,
+        dry_allowed_length: 2,
+        dry_sequence_breakers: Vec::new(),
+        xtc_probability: 0.0,
+        xtc_threshold: 0.1,
+        max_tokens: 0,
+        stop_token_ids: Vec::new(),
+        seed: Some(42),
+    };
+    let token = super::sample_excluding(&logits, &params, &[], 5);
+    assert_eq!(token, 2, "expected second-best after excluding peak");
+}
+
+#[test]
+fn test_apply_dry_penalty_penalises_continuation_not_window_end() {
+    // History contains a 3-period repeat: [10, 20, 30, 10, 20, 30].
+    // The model is about to emit the 7th token. If it emits 10, the
+    // pattern continues into a 4th [10, 20, 30] iteration. DRY must
+    // penalise token 10 (the continuation), NOT token 30 (the last
+    // token already in the window).
+    //
+    // Regression test for the original `extend_pos = i + len` bug
+    // (penalised history[i + len] = 30) which made DRY silently
+    // ineffective for backward-matched repeats — the same bug that
+    // let dense Qwen 3.6 27B FP8 loop on CSS-rule output for
+    // thousands of tokens despite dry_multiplier=0.8.
+    let history: Vec<u32> = vec![10, 20, 30, 10, 20, 30];
+    let mut logits = vec![0.0f32; 64];
+    super::apply_dry_penalty(&mut logits, &history, 1.0, 2.0, 2, &[]);
+    // Token 10 should be heavily penalised (would extend the repeat).
+    assert!(
+        logits[10] < -1.0,
+        "DRY must penalise the continuation token 10, got logits[10]={}",
+        logits[10]
+    );
+    // Token 30 is the LAST token already in history — emitting 30
+    // would NOT extend the [10,20,30] pattern (it'd break it), so
+    // DRY must not penalise it.
+    assert!(
+        logits[30] >= 0.0,
+        "DRY must not penalise token 30 (already trailing in history); got logits[30]={}",
+        logits[30]
+    );
+    // Token 50 is uninvolved; left alone.
+    assert_eq!(logits[50], 0.0);
+}
+
+#[test]
+fn test_apply_xtc_drops_modal_peak_when_triggered() {
+    // probs sorted descending: token 0 has 0.55, token 1 has 0.25,
+    // token 2 has 0.15, token 3 has 0.05.
+    // With xtc_threshold=0.1, the eligible set is {0, 1, 2}.
+    // XTC keeps the LAST of that set (token 2 at 0.15) and drops
+    // tokens 0 and 1 (the higher-prob candidates).
+    let mut probs = vec![(0u32, 0.55f32), (1, 0.25), (2, 0.15), (3, 0.05)];
+    // random < probability → trigger.
+    super::apply_xtc(&mut probs, 1.0, 0.1, 0.0);
+    // Tokens 0 and 1 must be gone, token 2 (lowest-prob eligible) kept,
+    // token 3 (below threshold) kept.
+    assert!(probs.iter().all(|p| p.0 != 0), "token 0 should be dropped");
+    assert!(probs.iter().all(|p| p.0 != 1), "token 1 should be dropped");
+    assert!(probs.iter().any(|p| p.0 == 2), "token 2 (lowest above-thresh) kept");
+    assert!(probs.iter().any(|p| p.0 == 3), "token 3 (below-thresh) kept");
+}
+
+#[test]
+fn test_apply_xtc_noop_when_not_triggered() {
+    let original = vec![(0u32, 0.55f32), (1, 0.25), (2, 0.15), (3, 0.05)];
+    let mut probs = original.clone();
+    // random >= probability → no-op.
+    super::apply_xtc(&mut probs, 0.3, 0.1, 0.9);
+    assert_eq!(probs, original);
+}
+
+#[test]
+fn test_apply_xtc_noop_when_only_one_above_threshold() {
+    // Only token 0 is above threshold; XTC needs ≥2 to do anything.
+    let original = vec![(0u32, 0.95f32), (1, 0.03), (2, 0.02)];
+    let mut probs = original.clone();
+    super::apply_xtc(&mut probs, 1.0, 0.1, 0.0);
+    assert_eq!(probs, original);
 }

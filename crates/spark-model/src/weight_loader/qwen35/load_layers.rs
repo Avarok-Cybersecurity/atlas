@@ -347,8 +347,10 @@ pub(super) fn load_layers(
             LayerType::Moe => unreachable!("Qwen3.5 has no standalone MoE layers"),
         }
 
+        crate::loader_progress::inc();
         if (i + 1) % 10 == 0 || i < 5 {
             let free_gb = gpu.free_memory()? as f64 / (1024.0 * 1024.0 * 1024.0);
+            crate::loader_progress::set_message(format!("{free_gb:.1} GB GPU free"));
             tracing::info!("Loaded layers 0..{} — {free_gb:.1} GB free", i + 1);
         }
     }

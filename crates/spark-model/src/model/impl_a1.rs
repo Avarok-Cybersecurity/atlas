@@ -170,11 +170,23 @@ impl TransformerModel {
         gpu.synchronize(gpu.default_stream())?;
 
         // Build MTP proposer (extracted to keep `new` under the file cap).
+        // Pass the BF16 lm_head so the proposer can match the main-model
+        // verifier's LM-head precision when the model opts out of NVFP4
+        // (dense Qwen 3.x, Gemma-4 dense). The MTP head decides at
+        // runtime whether to use the BF16 or NVFP4 path; matching the
+        // verifier eliminates the proposer↔verifier distribution
+        // mismatch that drives near-zero MTP K=2 acceptance.
+        let lm_head_bf16_for_mtp = if config.skip_lm_head_quantization() {
+            Some(lm_head_weight)
+        } else {
+            None
+        };
         let proposer: Option<Arc<dyn DraftProposer>> = super::impl_a1_init::build_mtp_proposer(
             use_speculative,
             mtp_weights,
             embed_tokens,
             lm_head_nvfp4,
+            lm_head_bf16_for_mtp,
             &config,
             gpu.as_ref(),
             mtp_quant,
@@ -425,7 +437,9 @@ impl TransformerModel {
             // naturally outside the captured region.
             suppress_graphs: std::sync::atomic::AtomicBool::new(
                 has_fp8_calibration
-                    || std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true"),
+                    || std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true")
+                    || std::env::var("ATLAS_MTP_DIVERGENCE_COMPARE")
+                        .is_ok_and(|v| v == "1" || v == "true"),
             ),
             ssm_pool,
             ssm_snapshots,

@@ -127,6 +127,8 @@ fn build_active_seq_from_prefill(
         dry_base: p.dry_base,
         dry_allowed_length: p.dry_allowed_length,
         dry_sequence_breakers: Vec::new(),
+        xtc_probability: p.xtc_probability,
+        xtc_threshold: p.xtc_threshold,
         logit_bias: p.logit_bias,
         pending_drafts: Vec::new(),
         inside_thinking: if immediate_finish {
@@ -155,6 +157,9 @@ fn build_active_seq_from_prefill(
         } else {
             !p.enable_thinking && think_end_token.is_some()
         },
+        // Template-preclosed `</think>` is never a watchdog force-close;
+        // never gate EOS on a forced-close that didn't happen.
+        think_was_force_ended: false,
         think_just_ended: false,
         think_skip_count: 0,
         require_tool_call: use_legacy_tool_call,
@@ -181,5 +186,6 @@ fn build_active_seq_from_prefill(
         logprobs_data: Vec::new(),
         timeout_at: p.timeout_at,
         adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
+        cancel_flag: p.cancel_flag,
     }
 }

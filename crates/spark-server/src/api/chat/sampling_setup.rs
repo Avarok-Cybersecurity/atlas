@@ -30,6 +30,10 @@ pub(super) struct SamplingSetup {
     pub(super) dry_base: f32,
     pub(super) dry_allowed_length: u32,
     pub(super) lz_penalty: f32,
+    /// XTC (Exclude Top Choices) probability. 0.0 = off. Populated from
+    /// MODEL.toml `[sampling.*].xtc_probability`.
+    pub(super) xtc_probability: f32,
+    pub(super) xtc_threshold: f32,
     pub(super) logit_bias: Vec<(u32, f32)>,
     pub(super) max_tokens: usize,
     pub(super) stop_tokens: Vec<u32>,
@@ -50,9 +54,19 @@ pub(super) fn build_sampling(
     tool_call_repeat_count: usize,
 ) -> Result<SamplingSetup, Response> {
     // Preset selection.
+    // Qwen3.6 official docs recommend temperature=0.6 for code
+    // generation and temperature=1.0 (or 0.6) for general text.
+    // When thinking is enabled, detect coding-focused prompts to
+    // select the `thinking_coding` preset (temp=0.6) instead of
+    // `thinking_text` (temp=1.0), which reduces loop attractors
+    // on long code-generation tasks.
     let preset = if tools_active {
         &state.sampling_presets.tools
+    } else if enable_thinking && is_coding_prompt(&req.messages) {
+        tracing::debug!("sampling: thinking_coding preset (code-generation prompt)");
+        &state.sampling_presets.thinking_coding
     } else if enable_thinking {
+        tracing::debug!("sampling: thinking_text preset (general prompt)");
         &state.sampling_presets.thinking_text
     } else {
         &state.sampling_presets.non_thinking
@@ -69,6 +83,8 @@ pub(super) fn build_sampling(
     let dry_base = preset.dry_base;
     let dry_allowed_length = preset.dry_allowed_length;
     let lz_penalty = preset.lz_penalty;
+    let xtc_probability = preset.xtc_probability;
+    let xtc_threshold = preset.xtc_threshold;
 
     // OpenAI-style penalty range validation.
     if !(-2.0..=2.0).contains(&presence_penalty) {
@@ -227,6 +243,8 @@ pub(super) fn build_sampling(
         dry_base,
         dry_allowed_length,
         lz_penalty,
+        xtc_probability,
+        xtc_threshold,
         logit_bias,
         max_tokens,
         stop_tokens,
@@ -235,4 +253,31 @@ pub(super) fn build_sampling(
         timeout_at,
         top_logprobs,
     })
+}
+
+/// Heuristic: does the last user message request code generation?
+/// Selects `thinking_coding` (temp=0.6) over `thinking_text` (temp=1.0)
+/// to reduce loop attractors on long code-generation tasks.
+/// Matches Qwen3.6 official docs: "For code, temperature should be
+/// lower; for text, temperature can be higher."
+fn is_coding_prompt(messages: &[crate::openai::IncomingMessage]) -> bool {
+    let content = match messages.last() {
+        Some(m) => &m.content.text,
+        None => return false,
+    };
+    let lower = content.to_ascii_lowercase();
+    let word_count = lower.split_whitespace().count();
+    if word_count < 4 {
+        return false;
+    }
+    let coding_keywords: &[&str] = &[
+        "code", "program", "function", "class", "method", "script",
+        "html", "css", "javascript", "js ", "python", "rust",
+        "react", "component", "app ", "application", "implement",
+        "algorithm", "api ", "debug", "refactor", "build",
+        "write a", "create a", "generate", "develop", "snippet",
+        "website", "web page", "webapp", "todo app", "game",
+        "cli ", "server", "database", "sql", "query",
+    ];
+    coding_keywords.iter().any(|kw| lower.contains(kw))
 }

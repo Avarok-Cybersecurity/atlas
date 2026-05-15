@@ -70,8 +70,14 @@ extern "C" __global__ void rope_forward(
     // FP32 powf() has ~1e-6 relative error; at position 30K this causes ~0.03 rad drift.
     // freq_i = 1.0 / theta^(2*pair_idx / rotary_dim)
     const double freq_exp_d = (double)(2 * pair_idx) / (double)rotary_dim;
-    const float freq = (float)(1.0 / pow((double)theta, freq_exp_d));
-    const float angle = (float)abs_pos * freq;
+    const double freq_d = 1.0 / pow((double)theta, freq_exp_d);
+    // 2026-05-14: keep the `pos × freq` product in FP64 too. The old
+    // `(float)abs_pos * freq` lost up to ~1e-4 rad at long position
+    // for the smallest-frequency channels (e.g. Qwen3.6-27B pos=1500
+    // pair=31). FP64 multiply is exact; the F32 cast for sincos
+    // costs ~1 ULP, which is below the downstream BF16 rounding.
+    const double angle_d = (double)abs_pos * freq_d;
+    const float angle = (float)angle_d;
     const float cos_val = cosf(angle);
     const float sin_val = sinf(angle);
 
@@ -167,8 +173,12 @@ extern "C" __global__ void rope_forward_proportional(
 
     // freq = 1 / theta^(2 * pair_idx / head_dim)  (proportional: denom=head_dim)
     const double freq_exp_d = (double)(2 * pair_idx) / (double)head_dim;
-    const float freq = (float)(1.0 / pow((double)theta, freq_exp_d));
-    const float angle = (float)abs_pos * freq;
+    const double freq_d = 1.0 / pow((double)theta, freq_exp_d);
+    // FP64 pos*freq product (same rationale as the standard RoPE
+    // kernel above): F32 multiply lost ~1e-4 rad at long position
+    // for smallest-frequency channels.
+    const double angle_d = (double)abs_pos * freq_d;
+    const float angle = (float)angle_d;
     const float cos_val = cosf(angle);
     const float sin_val = sinf(angle);
 
@@ -243,8 +253,13 @@ extern "C" __global__ void rope_forward_yarn(
     const unsigned int abs_pos = positions[batch * seq_len + seq_pos];
 
     // Use pre-computed frequency from inv_freq table (YaRN/NTK-aware)
-    const float freq = inv_freq[pair_idx];
-    const float angle = (float)abs_pos * freq;
+    // inv_freq is FP32 from the host (precomputed in Rust), so we
+    // can't recover lost precision in `freq` itself — but we can
+    // still keep the `pos × freq` product in FP64 to avoid the
+    // ~1e-4 rad drift at long position.
+    const double freq_d = (double)inv_freq[pair_idx];
+    const double angle_d = (double)abs_pos * freq_d;
+    const float angle = (float)angle_d;
     const float cos_val = cosf(angle);
     const float sin_val = sinf(angle);
 

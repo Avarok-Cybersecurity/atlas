@@ -79,8 +79,8 @@ lazy_static! {
     pub static ref SPEC_DECODE_VERIFY: IntCounterVec =
         register_int_counter_vec!(
             "atlas_spec_decode_verify_total",
-            "MTP draft verify outcomes by K and result",
-            &["k", "outcome"]
+            "MTP draft verify outcomes by K, result, and acceptance mode",
+            &["k", "outcome", "mode"]
         ).unwrap();
 
     // ── Tool-call telemetry ──

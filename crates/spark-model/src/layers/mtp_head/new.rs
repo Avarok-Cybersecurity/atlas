@@ -16,6 +16,12 @@ impl MtpHead {
         weights: MtpWeights,
         embed_tokens: DenseWeight,
         lm_head_nvfp4: QuantizedWeight,
+        // BF16 lm_head, populated when the main-model verifier uses
+        // BF16 (skip_lm_head_quantization=true). When `Some`, takes
+        // precedence over the NVFP4 lm_head so the proposer matches
+        // the verifier's precision. See `lm_head` field doc on
+        // `MtpHead` for the long story.
+        lm_head_bf16: Option<DenseWeight>,
         config: &atlas_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
         quant: MtpQuantization,
@@ -45,29 +51,66 @@ impl MtpHead {
             Self::quantize_proj(bf16, n, k, quant, gpu, absmax_k, nvfp4_k, fp8_k, stream)
         };
 
-        // Quantize projections
+        // `fc` is always BF16 on disk (concat projection from
+        // `[embed, hidden] → hidden`, not part of the transformer
+        // block), so it always goes through the runtime-quantize
+        // path. For the four attention projections (q/k/v/o) prefer
+        // native FP8 block-scaled weights loaded zero-copy from disk
+        // (Qwen3.6-27B-FP8 ships them as F8_E4M3 + BF16 block scales).
+        // Falls back to the BF16 runtime-quantize path only when the
+        // checkpoint doesn't ship native FP8 (older checkpoints, BF16
+        // fine-tunes). This eliminates the lossy `FP8 → BF16 (load)
+        // → per-row FP8 (runtime)` round-trip that was visible as
+        // cumulative precision drift at long context.
         let fc = q(&weights.fc, h, h * 2)?;
-        let q_proj = q(&weights.q_proj, nq * hd * 2, h)?;
-        let k_proj = q(&weights.k_proj, nkv * hd, h)?;
-        let v_proj = q(&weights.v_proj, nkv * hd, h)?;
-        let o_proj = q(&weights.o_proj, h, nq * hd)?;
+        let (q_proj, k_proj, v_proj, o_proj) =
+            if let Some(ref nat) = weights.native_fp8 {
+                tracing::info!(
+                    "MTP head: using native FP8 block-scaled attention projections from checkpoint (no runtime quantization)"
+                );
+                (
+                    ProjectionWeight::Fp8BlockScaled(nat.q_proj),
+                    ProjectionWeight::Fp8BlockScaled(nat.k_proj),
+                    ProjectionWeight::Fp8BlockScaled(nat.v_proj),
+                    ProjectionWeight::Fp8BlockScaled(nat.o_proj),
+                )
+            } else {
+                (
+                    q(&weights.q_proj, nq * hd * 2, h)?,
+                    q(&weights.k_proj, nkv * hd, h)?,
+                    q(&weights.v_proj, nkv * hd, h)?,
+                    q(&weights.o_proj, h, nq * hd)?,
+                )
+            };
 
         // Dense FFN MTP heads (Qwen3.6-27B-FP8) bypass the MoE setup entirely.
         // We quantize the dense gate/up/down triple and stash it; the MoE
         // fields stay None and the forward path takes the dense shortcut.
         let dense_ffn_generic = if let Some(dense_ffn) = weights.dense_ffn.as_ref() {
-            if matches!(quant, MtpQuantization::Nvfp4) {
-                anyhow::bail!(
-                    "MTP NVFP4 mode is not supported for dense FFN MTP heads yet \
-                     (Qwen3.6-27B-FP8 ships an FP8 MTP head — use \
-                     `--mtp-quantization fp8` or `bf16`)"
-                );
+            // Native FP8 block-scaled fast path: use the zero-copy
+            // dense FFN projections when the checkpoint ships them.
+            if let Some(ref nat) = weights.native_fp8
+                && let Some(ref dn) = nat.dense_ffn
+            {
+                Some((
+                    ProjectionWeight::Fp8BlockScaled(dn.gate_proj),
+                    ProjectionWeight::Fp8BlockScaled(dn.up_proj),
+                    ProjectionWeight::Fp8BlockScaled(dn.down_proj),
+                ))
+            } else {
+                if matches!(quant, MtpQuantization::Nvfp4) {
+                    anyhow::bail!(
+                        "MTP NVFP4 mode is not supported for dense FFN MTP heads yet \
+                         (Qwen3.6-27B-FP8 ships an FP8 MTP head — use \
+                         `--mtp-quantization fp8` or `bf16`)"
+                    );
+                }
+                Some((
+                    q(&dense_ffn.gate_proj, inter, h)?,
+                    q(&dense_ffn.up_proj, inter, h)?,
+                    q(&dense_ffn.down_proj, h, inter)?,
+                ))
             }
-            Some((
-                q(&dense_ffn.gate_proj, inter, h)?,
-                q(&dense_ffn.up_proj, inter, h)?,
-                q(&dense_ffn.down_proj, h, inter)?,
-            ))
         } else {
             None
         };
@@ -224,25 +267,35 @@ impl MtpHead {
             moe_topk_k,
             moe_silu_mul_k,
             moe_weighted_sum_blend_k,
-        ) = match quant {
-            MtpQuantization::Nvfp4 => (None, None, None, None, None, None),
-            MtpQuantization::Fp8 => (
-                // BF16 GEMV needed for gate (always BF16) + generic MoE dispatch
-                Some(gpu.kernel("gemv", "dense_gemv_bf16")?),
-                Some(gpu.kernel("gemv_fp8w", "dense_gemv_fp8w")?),
-                Some(gpu.kernel("ssm_preprocess", "deinterleave_qg")?),
-                Some(gpu.kernel("moe_topk", "moe_topk_softmax")?),
-                Some(gpu.kernel("moe_silu_mul", "moe_silu_mul")?),
-                Some(gpu.kernel("moe_expert_gemv", "moe_weighted_sum_blend")?),
-            ),
-            MtpQuantization::Bf16 => (
-                Some(gpu.kernel("gemv", "dense_gemv_bf16")?),
-                None,
-                Some(gpu.kernel("ssm_preprocess", "deinterleave_qg")?),
-                Some(gpu.kernel("moe_topk", "moe_topk_softmax")?),
-                Some(gpu.kernel("moe_silu_mul", "moe_silu_mul")?),
-                Some(gpu.kernel("moe_expert_gemv", "moe_weighted_sum_blend")?),
-            ),
+        ) = {
+            // 2026-05-14: the generic-forward kernels are needed by the
+            // dense-FFN MTP head (Qwen3.6-27B-FP8) regardless of the
+            // `--mtp-quantization` setting — `dense_ffn_forward_generic`
+            // calls `moe_silu_mul` and `deinterleave_qg`. Previously
+            // these were only loaded for `Fp8`/`Bf16` quant, and the
+            // `Nvfp4` default crashed at first decode (`unwrap()` on
+            // `None`) once native-FP8 weights made the dense MTP path
+            // actually reachable. Load them unconditionally — they're
+            // small (~few KB) and used by both the dense-FFN shortcut
+            // and the generic MoE path.
+            let dense_gemv_k = Some(gpu.kernel("gemv", "dense_gemv_bf16")?);
+            let dense_gemv_fp8w_k = match quant {
+                MtpQuantization::Fp8 => Some(gpu.kernel("gemv_fp8w", "dense_gemv_fp8w")?),
+                _ => None,
+            };
+            let deinterleave_qg_k = Some(gpu.kernel("ssm_preprocess", "deinterleave_qg")?);
+            let moe_topk_k = Some(gpu.kernel("moe_topk", "moe_topk_softmax")?);
+            let moe_silu_mul_k = Some(gpu.kernel("moe_silu_mul", "moe_silu_mul")?);
+            let moe_weighted_sum_blend_k =
+                Some(gpu.kernel("moe_expert_gemv", "moe_weighted_sum_blend")?);
+            (
+                dense_gemv_k,
+                dense_gemv_fp8w_k,
+                deinterleave_qg_k,
+                moe_topk_k,
+                moe_silu_mul_k,
+                moe_weighted_sum_blend_k,
+            )
         };
 
         let effective_vocab = if mtp_vocab_size > 0 {
@@ -296,7 +349,48 @@ impl MtpHead {
             quant,
             mtp_vocab_size,
             embed_tokens,
-            lm_head_nvfp4,
+            // Resolve the LM head precision: prefer BF16 (matches a
+            // BF16 main-model verifier — no quantization noise), else
+            // fall back to NVFP4 (legacy behavior). Future
+            // checkpoints shipping native FP8 lm_head should extend
+            // this resolution to populate `ProjectionWeight::Fp8BlockScaled`
+            // and the dispatch will follow automatically via the
+            // `gemv()` helper.
+            lm_head: {
+                let pw = match lm_head_bf16 {
+                    Some(w) => ProjectionWeight::Bf16(w),
+                    None => ProjectionWeight::Nvfp4(lm_head_nvfp4),
+                };
+                // Record the MTP head's lm_head precision so the
+                // startup kernel-selection table shows the *actual*
+                // dispatch (BF16 when the main model uses BF16,
+                // NVFP4 otherwise). Matching the verifier's
+                // precision is what keeps proposer/verifier logits
+                // aligned.
+                match &pw {
+                    ProjectionWeight::Bf16(_) => crate::kernel_registry::record_preferred(
+                        "LM head (MTP draft)",
+                        "dense_gemv (BF16, matches main verifier)",
+                        "lm_head_bf16 passed through — proposer/verifier precision aligned",
+                    ),
+                    ProjectionWeight::Nvfp4(_) => crate::kernel_registry::record_only(
+                        "LM head (MTP draft)",
+                        "w4a16_gemv (NVFP4)",
+                        "main verifier uses NVFP4 lm_head — proposer matches",
+                    ),
+                    ProjectionWeight::Fp8BlockScaled(_) => crate::kernel_registry::record_preferred(
+                        "LM head (MTP draft)",
+                        "w8a16_gemv (FP8 block-scaled)",
+                        "matches verifier's native-FP8 lm_head precision",
+                    ),
+                    ProjectionWeight::Fp8(_) => crate::kernel_registry::record_only(
+                        "LM head (MTP draft)",
+                        "dense_gemv_fp8w (FP8 per-row)",
+                        "main verifier uses per-row FP8 lm_head",
+                    ),
+                }
+                pw
+            },
             kv_cache: Mutex::new(kv_cache),
             attn_layer_idx: 0,
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,

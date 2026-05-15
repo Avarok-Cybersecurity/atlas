@@ -75,11 +75,20 @@ pub(super) fn handle_done(
     }
 
     // ── Sanitizer tail flush ────────────────────────────────────────
-    let tail = flush_content_sanitizer(
-        &mut state.tag_scan_buf,
-        &mut state.suppressing_param_leak,
-        &ctx.leak_markers,
-    );
+    let tail = if state.loop_watchdog_triggered {
+        // The token arm has already emitted the final safe delta
+        // (for example, an auto-closed HTML document) and set the
+        // stream stop flag. Do not flush held sanitizer bytes here:
+        // they can be the first markdown/prose bytes that caused the
+        // watchdog stop.
+        String::new()
+    } else {
+        flush_content_sanitizer(
+            &mut state.tag_scan_buf,
+            &mut state.suppressing_param_leak,
+            &ctx.leak_markers,
+        )
+    };
     if !tail.is_empty() {
         if state.refusal_scan_buf.len() < 16_384 {
             state.refusal_scan_buf.push_str(&tail);

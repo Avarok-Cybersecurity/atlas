@@ -225,6 +225,29 @@ impl ModelConfig {
             // Allow rollback via env for A/B testing.
             return std::env::var("ATLAS_GEMMA4_LMHEAD_NVFP4").ok().as_deref() != Some("1");
         }
+        // Dense Qwen 3.x (qwen3.5-27B, qwen3.6-27B-FP8) hits the same
+        // long-context argmax-flip mode that Gemma-4 dense did: at 64
+        // layers + 248K vocab the NVFP4 lm_head quantization noise
+        // shifts top-1 tiebreaks at long context, locking the model
+        // into lexically-different-but-semantically-identical CSS-block
+        // attractors (e.g. `.board { display:flex; }` → `display:
+        // flexbox` → `display: flex box` cycling at ~3000 tokens).
+        // Keep the dense lm_head as BF16 — costs ~2.6 GB extra on 27B
+        // (5120×248070×2 vs ×0.5 bytes/weight) which fits comfortably
+        // in GB10's 120 GB pool. MoE variants don't exhibit this
+        // (each token's logits depend on only ~3B active params, so
+        // accumulated NVFP4 noise is far below MoE routing noise).
+        // Allow rollback via env for A/B testing.
+        let is_dense_qwen3x = matches!(
+            self.model_type.as_str(),
+            "qwen3_5" | "qwen3_6_moe" | "qwen3_5_moe" | "qwen35" | "qwen35_moe"
+        ) && self.num_experts == 0;
+        if is_dense_qwen3x {
+            return std::env::var("ATLAS_QWEN3X_LMHEAD_NVFP4")
+                .ok()
+                .as_deref()
+                != Some("1");
+        }
         false
     }
 

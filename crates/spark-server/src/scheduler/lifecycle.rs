@@ -9,13 +9,11 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
     let last_tok = a.output_tokens.last().copied();
     let is_eos = last_tok.is_some_and(|t| a.eos_tokens.contains(&t));
     let is_tool_call_end = last_tok == a.tool_call_end_token;
-    let reason = if is_eos {
-        "stop"
-    } else if is_tool_call_end {
-        "tool_calls"
-    } else {
-        "length"
-    };
+    let cancelled_by_watchdog = a
+        .cancel_flag
+        .as_ref()
+        .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire));
+    let reason = finish_reason_for(is_eos, is_tool_call_end, cancelled_by_watchdog);
     match &mut a.sink {
         ResponseSink::Streaming(tx) => {
             let ttft_ms = a.decode_start.duration_since(a.request_start).as_secs_f64() * 1000.0;
@@ -76,6 +74,20 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
     // EP: signal worker to free+realloc its mirrored sequence.
     if let Err(e) = model.ep_broadcast_cmd(0xFFFFFFF1) {
         tracing::error!("EP broadcast free+realloc: {e:#}");
+    }
+}
+
+fn finish_reason_for(
+    is_eos: bool,
+    is_tool_call_end: bool,
+    cancelled_by_watchdog: bool,
+) -> &'static str {
+    if cancelled_by_watchdog || is_eos {
+        "stop"
+    } else if is_tool_call_end {
+        "tool_calls"
+    } else {
+        "length"
     }
 }
 
@@ -183,6 +195,8 @@ pub fn swap_out_sequence(
         dry_base: a.dry_base,
         dry_allowed_length: a.dry_allowed_length,
         dry_sequence_breakers: a.dry_sequence_breakers,
+        xtc_probability: a.xtc_probability,
+        xtc_threshold: a.xtc_threshold,
         logit_bias: a.logit_bias,
         inside_thinking: a.inside_thinking,
         enable_thinking: a.enable_thinking,
@@ -194,6 +208,7 @@ pub fn swap_out_sequence(
         think_end_token: a.think_end_token,
         think_start_token: a.think_start_token,
         think_ended: a.think_ended,
+        think_was_force_ended: a.think_was_force_ended,
         think_just_ended: a.think_just_ended,
         think_skip_count: a.think_skip_count,
         require_tool_call: a.require_tool_call,
@@ -219,6 +234,7 @@ pub fn swap_out_sequence(
         timeout_at: a.timeout_at,
         swap_id,
         cached_prompt_tokens: a.cached_prompt_tokens,
+        cancel_flag: a.cancel_flag,
     })
 }
 
@@ -264,6 +280,8 @@ pub fn resume_swapped_seq(
         dry_base: s.dry_base,
         dry_allowed_length: s.dry_allowed_length,
         dry_sequence_breakers: s.dry_sequence_breakers,
+        xtc_probability: s.xtc_probability,
+        xtc_threshold: s.xtc_threshold,
         logit_bias: s.logit_bias,
         inside_thinking: s.inside_thinking,
         enable_thinking: s.enable_thinking,
@@ -275,6 +293,7 @@ pub fn resume_swapped_seq(
         think_end_token: s.think_end_token,
         think_start_token: s.think_start_token,
         think_ended: s.think_ended,
+        think_was_force_ended: s.think_was_force_ended,
         think_just_ended: s.think_just_ended,
         think_skip_count: s.think_skip_count,
         require_tool_call: s.require_tool_call,
@@ -307,5 +326,31 @@ pub fn resume_swapped_seq(
         timeout_at: s.timeout_at,
         adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(s.temperature),
         cached_prompt_tokens: s.cached_prompt_tokens,
+        cancel_flag: s.cancel_flag,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::finish_reason_for;
+
+    #[test]
+    fn watchdog_cancel_reports_stop() {
+        assert_eq!(finish_reason_for(false, false, true), "stop");
+    }
+
+    #[test]
+    fn eos_reports_stop() {
+        assert_eq!(finish_reason_for(true, false, false), "stop");
+    }
+
+    #[test]
+    fn tool_call_end_reports_tool_calls() {
+        assert_eq!(finish_reason_for(false, true, false), "tool_calls");
+    }
+
+    #[test]
+    fn exhausted_budget_reports_length() {
+        assert_eq!(finish_reason_for(false, false, false), "length");
+    }
 }

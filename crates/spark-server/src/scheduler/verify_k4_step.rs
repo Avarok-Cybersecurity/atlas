@@ -42,21 +42,40 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
     a.last_token_time = Instant::now();
     let [v0_argmax, v1_argmax, v2_argmax, v3_argmax] = result;
 
-    // Use argmax for speculative acceptance (see K=2 comment).
-    let v0 = v0_argmax;
-    let v1 = v1_argmax;
-    let v2 = v2_argmax;
-    let v3 = v3_argmax;
-
-    let num_accepted = if drafts[0] != v0 {
-        0
-    } else if drafts[1] != v1 {
-        1
-    } else if drafts[2] != v2 {
-        2
+    // Leviathan-2023 rejection sampling at the K=4 verify positions —
+    // see `verify_k2_step.rs` and `leviathan_verify.rs` for the
+    // design rationale.
+    let accept = verify_leviathan(
+        model,
+        a,
+        drafts,
+        &[v0_argmax, v1_argmax, v2_argmax, v3_argmax],
+    );
+    let mode_label = if verify_needs_leviathan(a) {
+        "leviathan"
     } else {
-        3
+        "argmax"
     };
+    crate::metrics::SPEC_DECODE_VERIFY
+        .with_label_values(&[
+            "4",
+            // Full accept (all 3 drafts accepted) = num_accepted=3.
+            if accept.num_accepted == 3 {
+                "accept"
+            } else {
+                "reject"
+            },
+            mode_label,
+        ])
+        .inc();
+    let num_accepted = accept.num_accepted;
+    let (v0, v1, v2) = match (accept.num_accepted, accept.reject_token) {
+        (0, Some(r)) => (r, v1_argmax, v2_argmax),
+        (1, Some(r)) => (v0_argmax, r, v2_argmax),
+        (2, Some(r)) => (v0_argmax, v1_argmax, r),
+        _ => (v0_argmax, v1_argmax, v2_argmax),
+    };
+    let v3 = accept.tail_token.unwrap_or(v3_argmax);
 
     // Extract logprobs from verify logits buffer (K=4 positions) when requested.
     let verify_lps = if let Some(top_logprobs) = a.top_logprobs {

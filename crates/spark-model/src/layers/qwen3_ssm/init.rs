@@ -23,7 +23,7 @@ impl Qwen3SsmLayer {
         // conv_dim = Q_flat + K_flat + V_flat = 2*key_dim + value_dim = 8192
         let conv_dim = nk * kd * 2 + nv * vd;
 
-        Ok(Self {
+        let layer = Self {
             input_norm,
             ssm,
             post_attn_norm,
@@ -154,7 +154,47 @@ impl Qwen3SsmLayer {
             out_proj_fp8: None,
             fp8_gemm_k: gpu.kernel("w4a16", "fp8_gemm_t")?,
             fp8_gemm_t_m128_k: gpu.kernel("w4a16", "fp8_gemm_t_m128")?,
-        })
+        };
+        // Record the precision-sensitive kernel selections so silent
+        // fallbacks (e.g. F32 GDN kernel not built for this target →
+        // BF16 decode → long-context coherence collapse) surface in
+        // the startup kernel-selection table. Dedup'd by component
+        // name; subsequent layers re-record but are dropped.
+        use crate::kernel_registry::{record_fallback, record_only, record_preferred};
+        let gdn_f32_ok = layer.gdn_f32_k.0 != 0 && layer.gated_rms_norm_f32_k.0 != 0;
+        if gdn_f32_ok {
+            record_preferred(
+                "GDN forward (decode)",
+                "gated_delta_rule::gated_delta_rule_decode_f32 + norm::gated_rms_norm_f32_input",
+                "F32 GDN kernels registered for this target — long-context coherent",
+            );
+        } else {
+            record_fallback(
+                "GDN forward (decode)",
+                "gated_delta_rule::gated_delta_rule_decode (BF16)",
+                "F32 GDN kernel(s) missing — BF16 truncation compounds across 48+ layers; \
+                 dense Qwen 3.6 27B decode WILL drift into garbage syntax past ~1500 tok",
+            );
+        }
+        if layer.conv1d_l2norm_f32_k.0 != 0 {
+            record_preferred(
+                "SSM conv1d L2Norm",
+                "causal_conv1d::causal_conv1d_update_l2norm_f32",
+                "F32 conv1d L2Norm registered",
+            );
+        } else {
+            record_fallback(
+                "SSM conv1d L2Norm",
+                "causal_conv1d::causal_conv1d_update_l2norm (BF16)",
+                "F32 conv1d L2Norm missing — SSM long-context coherence degrades past ~8k tok",
+            );
+        }
+        record_only(
+            "SSM state precision",
+            "FP32 in-place",
+            "ssm_pool stores h_state + conv_state as FP32 regardless of weight dtype",
+        );
+        Ok(layer)
     }
 
     /// Construct an SSM layer where QKVZ projection output is already sequential.

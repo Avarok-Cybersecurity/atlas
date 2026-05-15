@@ -22,7 +22,25 @@ use crate::{
     session_manager,
 };
 
+/// ASCII banner shown at server startup. Kept in source (not loaded from
+/// a file) so it ships baked into the binary and survives stripped/minimal
+/// container images. The block-letter style matches the project's docs.
+const ATLAS_BANNER: &str = r#"
+   █████╗ ████████╗██╗      █████╗ ███████╗
+  ██╔══██╗╚══██╔══╝██║     ██╔══██╗██╔════╝
+  ███████║   ██║   ██║     ███████║███████╗
+  ██╔══██║   ██║   ██║     ██╔══██║╚════██║
+  ██║  ██║   ██║   ███████╗██║  ██║███████║
+  ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚══════╝
+       Pure Rust LLM Inference
+"#;
+
 pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
+    // Banner goes to stderr (matches tracing's default sink) so it
+    // doesn't interleave with structured-log lines on stdout in
+    // production. eprintln keeps it unconditional even before the
+    // tracing subscriber is initialised.
+    eprintln!("{ATLAS_BANNER}");
     tracing::info!("Atlas Spark starting...");
     tracing::info!("Licensed under AGPL-3.0-only — see /LICENSE in this container");
 

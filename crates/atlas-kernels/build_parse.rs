@@ -106,6 +106,14 @@ pub(super) fn parse_sampling_presets(
                     .get("lz_penalty")
                     .and_then(|t| t.as_float())
                     .unwrap_or(0.0) as f32,
+                xtc_probability: v
+                    .get("xtc_probability")
+                    .and_then(|t| t.as_float())
+                    .unwrap_or(0.0) as f32,
+                xtc_threshold: v
+                    .get("xtc_threshold")
+                    .and_then(|t| t.as_float())
+                    .unwrap_or(0.1) as f32,
             },
             None => SamplingCat::default(),
         }

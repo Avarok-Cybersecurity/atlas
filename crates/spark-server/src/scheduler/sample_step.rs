@@ -4,60 +4,6 @@
 
 use super::*;
 
-/// Re-sample verify tokens from the logits buffer when temperature > 0.
-///
-/// After `decode_verify_graphed`, the logits buffer still contains valid
-/// BF16 logits for each verified position (`[k, vocab_size]`). The CUDA
-/// graph bakes in argmax, but when the request has temperature > 0 we need
-/// stochastic sampling. This copies the logits to host and samples per
-/// position, returning the temperature-sampled tokens.
-///
-/// Falls back to `argmax_tokens` if the D2H copy fails.
-#[allow(dead_code)]
-pub fn verify_resample(model: &dyn Model, argmax_tokens: &[u32], temperature: f32) -> Vec<u32> {
-    if temperature == 0.0 {
-        return argmax_tokens.to_vec();
-    }
-    let k = argmax_tokens.len();
-    let vocab = model.vocab_size();
-    let total_bytes = k * vocab * 2;
-    let mut buf = vec![0u8; total_bytes];
-    if model
-        .copy_logits_to_host(model.logits_buffer_ptr(), &mut buf)
-        .is_err()
-    {
-        return argmax_tokens.to_vec();
-    }
-    let params = SamplingParams {
-        temperature,
-        top_k: 0,
-        top_p: 1.0,
-        top_n_sigma: 0.0,
-        min_p: 0.0,
-        logit_bias: Vec::new(),
-        repetition_penalty: 1.0,
-        presence_penalty: 0.0,
-        frequency_penalty: 0.0,
-        repetition_penalty_window: 0,
-        lz_penalty: DEFAULT_LZ_PENALTY,
-        edt_strength: 0.0,
-        edt_floor: 0.1,
-        dry_multiplier: DEFAULT_DRY_MULTIPLIER,
-        dry_base: DEFAULT_DRY_BASE,
-        dry_allowed_length: DEFAULT_DRY_ALLOWED_LENGTH,
-        dry_sequence_breakers: Vec::new(),
-        max_tokens: 0,
-        stop_token_ids: Vec::new(),
-        seed: None,
-    };
-    (0..k)
-        .map(|i| {
-            let slice = &buf[i * vocab * 2..(i + 1) * vocab * 2];
-            sample_with_params(slice, &params)
-        })
-        .collect()
-}
-
 /// Sample one token from device logits, applying temperature/top-k/top-p if non-greedy.
 ///
 /// `suppress_ids`: token IDs to mask to -inf before sampling (e.g. EOS on first token).
@@ -135,6 +81,8 @@ pub fn sample_token(
             dry_base: DEFAULT_DRY_BASE,
             dry_allowed_length: DEFAULT_DRY_ALLOWED_LENGTH,
             dry_sequence_breakers: Vec::new(),
+            xtc_probability: 0.0,
+            xtc_threshold: 0.1,
             max_tokens: 0,
             stop_token_ids: Vec::new(),
             seed: None,
@@ -208,6 +156,8 @@ pub fn sample_token_with_grammar(
             dry_base: DEFAULT_DRY_BASE,
             dry_allowed_length: DEFAULT_DRY_ALLOWED_LENGTH,
             dry_sequence_breakers: Vec::new(),
+            xtc_probability: 0.0,
+            xtc_threshold: 0.1,
             max_tokens: 0,
             stop_token_ids: Vec::new(),
             seed: None,

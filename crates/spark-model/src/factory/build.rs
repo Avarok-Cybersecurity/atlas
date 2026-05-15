@@ -95,7 +95,12 @@ pub fn build_model(
     // "use global num_kv_heads/head_dim for all layers" (backward compatible).
     config.kv_layer_dims = loader.kv_layer_dims(&config);
 
+    // Loader progress: bar advances inside per-loader load_layers loops.
+    // Loaders that aren't wired silently no-op (their existing per-layer
+    // tracing::info! lines continue to fire).
+    crate::loader_progress::start(config.num_hidden_layers);
     let mut layers = loader.load_layers(store, &config, gpu.as_ref(), &attn_layer_dtypes)?;
+    crate::loader_progress::finish();
     let embed = loader.load_embedding(store, &config)?;
     let final_norm = loader.load_final_norm(store, &config, gpu.as_ref())?;
     let lm_head = loader.load_lm_head(store, &config)?;
@@ -137,26 +142,60 @@ pub fn build_model(
         mtp_quant
     };
 
-    // ── Step 3: Quantize LM head to NVFP4 for fast decode ──
+    // ── Step 3: Quantize LM head to NVFP4 ──
+    //
+    // The NVFP4 LM head serves two clients:
+    //   1) The main model's `lm_head()` decode path (fastest single-token
+    //      decode, but lossy at long context for dense Qwen 3.x / Gemma-4).
+    //   2) The MTP head's draft proposal LM head (always wants NVFP4 — drafts
+    //      are verified by the main model so quantization noise here is
+    //      bounded; using NVFP4 keeps draft propose ~5× faster).
+    //
+    // `config.skip_lm_head_quantization()` controls only client #1: when
+    // true, the main model dispatches via BF16 `dense_gemv` instead of
+    // NVFP4 `w4a16_gemv` (see `impl_a3::lm_head`). The NVFP4 buffer is
+    // still produced so MTP can use it. (Pre-2026-05-14 this branch
+    // skipped quantization entirely when client #1 wanted BF16, which
+    // silently disabled MTP — `impl_a1_init.rs` bails when
+    // `lm_head_nvfp4 = None` and `mtp_weights` is non-empty.)
     let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
     let quantize_k = gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?;
     let stream = gpu.default_stream();
-    let lm_head_nvfp4 = if config.skip_lm_head_quantization() {
-        tracing::info!("LM head kept as BF16 (skip NVFP4 quantization per model config)");
-        None
-    } else {
-        let q = quantize_to_nvfp4(
-            &lm_head,
+    let main_uses_bf16_lm_head = config.skip_lm_head_quantization();
+    let q = quantize_to_nvfp4(
+        &lm_head,
+        config.vocab_size,
+        config.hidden_size,
+        gpu.as_ref(),
+        absmax_k,
+        quantize_k,
+        stream,
+    )?;
+    if main_uses_bf16_lm_head {
+        tracing::info!(
+            "LM head: NVFP4 buffer produced for MTP draft propose; main model decode keeps BF16 (vocab={})",
             config.vocab_size,
-            config.hidden_size,
-            gpu.as_ref(),
-            absmax_k,
-            quantize_k,
-            stream,
-        )?;
+        );
+        crate::kernel_registry::record_preferred(
+            "LM head (main decode)",
+            "dense_gemv (BF16 on-disk, no requantize)",
+            "skip_lm_head_quantization=true — source precision preserved",
+        );
+        // MTP head's lm_head dispatch is recorded inside `MtpHead::new`
+        // when the head is actually constructed (it may pick BF16 to
+        // match the verifier when `lm_head_bf16` is passed through,
+        // not the NVFP4 default).
+    } else {
         tracing::info!("LM head quantized to NVFP4 (vocab={})", config.vocab_size);
-        Some(q)
-    };
+        crate::kernel_registry::record_fallback(
+            "LM head (main decode)",
+            "w4a16_gemv (NVFP4 runtime-quantized from BF16)",
+            "checkpoint stores BF16 lm_head but model_type does NOT opt out of \
+             NVFP4 quantization — 4-bit precision noise can flip argmax tiebreaks \
+             on long-context creative output",
+        );
+    }
+    let lm_head_nvfp4 = Some(q);
 
     // ── Step 3b: Post-load MoE prefill transpose (MiniMax EP=2 TTFT fix) ──
     //
@@ -406,6 +445,16 @@ pub fn build_model(
             );
         }
     }
+
+    // ── Step 8: Dump kernel-selection table ──
+    //
+    // One-shot table of every precision-sensitive kernel choice made
+    // during model construction. Loud-warns any silent fallback row
+    // (e.g. F32 GDN kernel not built for this target → BF16 fallback
+    // → long-context decode collapse — exactly the failure mode that
+    // took multiple days to track down on dense Qwen 3.6 27B FP8).
+    // Future similar fallbacks now show up at first boot.
+    crate::kernel_registry::dump();
 
     Ok(Box::new(model))
 }

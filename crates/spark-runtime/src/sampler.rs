@@ -101,6 +101,18 @@ pub struct SamplingParams {
     /// DRY sequence breaker token IDs. Delimiters (newlines, colons, quotes, braces) that
     /// reset sequence tracking. Critical for JSON/tool call output where structural tokens repeat.
     pub dry_sequence_breakers: Vec<u32>,
+    /// XTC (Exclude Top Choices) probability — chance per token to apply
+    /// the XTC mask. 0.0 = disabled. Recommended: 0.3 for models prone
+    /// to token-different but lexically-similar repetition loops at
+    /// long context (e.g. dense Qwen3.6-27B-FP8). When triggered, drops
+    /// all tokens with prob ≥ `xtc_threshold` except the LOWEST-prob
+    /// one in that set, forcing the sampler off the modal peak.
+    /// oobabooga PR #6335.
+    pub xtc_probability: f32,
+    /// XTC threshold — only tokens with post-softmax probability ≥ this
+    /// value are eligible for exclusion. Recommended: 0.1. Below-threshold
+    /// tokens are always kept. Inactive when xtc_probability == 0.0.
+    pub xtc_threshold: f32,
     /// Maximum tokens to generate.
     pub max_tokens: usize,
     /// Stop token IDs.
@@ -131,6 +143,8 @@ impl SamplingParams {
             dry_base: 1.75,
             dry_allowed_length: 2,
             dry_sequence_breakers: Vec::new(),
+            xtc_probability: 0.0,
+            xtc_threshold: 0.1,
             max_tokens,
             stop_token_ids: Vec::new(),
             seed: None,
@@ -345,15 +359,24 @@ pub fn apply_dry_penalty(
         match_lengths[i] = len;
     }
 
-    // For each position where a match of length > allowed was found, the token
-    // that FOLLOWS the match in history (history[i - 1] looking backward from the match start)
-    // would extend a repeat if generated next. Penalize it.
+    // For each position where a match of length > allowed was found, the
+    // token that would EXTEND the repeat is the one that followed the
+    // match window in history. The loop above walks backward (`j -= 1;
+    // k -= 1;`), so the match window ENDS at position `i` and spans
+    // `[i - len + 1, i]`. The token following that window — and thus
+    // the token the model would emit to continue the repeat — is at
+    // `history[i + 1]`. (Previously this was `history[i + len]`, which
+    // is the LAST token already in the matched window and isn't a
+    // continuation; that bug silently disabled DRY for every model.
+    // 2026-05-14 regression: dense Qwen 3.6 27B FP8 looped on
+    // `# start-button { … } # start-button { … }` at long context
+    // despite dry_multiplier=0.8 because the wrong token was being
+    // penalised.)
     #[allow(clippy::needless_range_loop)]
     for i in 0..hist_len.saturating_sub(1) {
         let len = match_lengths[i];
         if len > allowed {
-            // The token at history[i + len] (one past the match) would extend the repeat
-            let extend_pos = i + len;
+            let extend_pos = i + 1;
             if extend_pos < hist_len {
                 let token = history[extend_pos] as usize;
                 if token < n {
@@ -365,8 +388,59 @@ pub fn apply_dry_penalty(
     }
 }
 
+/// XTC (Exclude Top Choices) sampler — drops the modal peak when triggered.
+///
+/// On a per-token coin flip (`xtc_probability`), drop every token with
+/// post-softmax prob ≥ `xtc_threshold` except the LOWEST-prob one in that
+/// set. Below-threshold tokens are never touched.
+///
+/// Effect: forces the sampler off the modal peak when multiple plausible
+/// continuations exist (the only condition under which a meaningful set
+/// has prob ≥ threshold). Targeted remedy for token-different but
+/// lexically-similar repetition attractors (e.g. dense Qwen3.6-27B-FP8
+/// CSS-block loops at long context) that DRY misses because the token
+/// sequence varies between repeats. See oobabooga PR #6335.
+///
+/// Operates on the post-softmax `probs` vector (descending-sorted on
+/// entry per `sample_impl`); the function preserves the sort order.
+/// `random` must be a [0.0, 1.0) sample drawn once per token by the
+/// caller so seed control is centralised in `sample_with_params_seeded`.
+pub fn apply_xtc(probs: &mut Vec<(u32, f32)>, probability: f32, threshold: f32, random: f32) {
+    if probability <= 0.0 || random >= probability || probs.len() < 2 {
+        return;
+    }
+    let total: f32 = probs.iter().map(|p| p.1).sum();
+    if total <= 0.0 {
+        return;
+    }
+    // Indices of tokens whose NORMALISED prob ≥ threshold.
+    let mut hit: Vec<usize> = probs
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| (p.1 / total) >= threshold)
+        .map(|(i, _)| i)
+        .collect();
+    if hit.len() < 2 {
+        return;
+    }
+    // probs is sorted descending; drop all but the LAST hit (lowest-prob
+    // token in the above-threshold set).
+    hit.pop();
+    let drop: std::collections::HashSet<usize> = hit.into_iter().collect();
+    let mut new_probs = Vec::with_capacity(probs.len() - drop.len());
+    for (i, p) in probs.iter().enumerate() {
+        if !drop.contains(&i) {
+            new_probs.push(*p);
+        }
+    }
+    *probs = new_probs;
+}
+
 mod sample_impl;
 pub use sample_impl::{sample_with_params_history, sample_with_params_seeded};
+
+mod leviathan;
+pub use leviathan::{sample_excluding, seeded_uniform_f32, softmax_token_prob};
 
 /// Convenience wrapper: sample without token history (no repetition penalty).
 pub fn sample_with_params(data: &[u8], params: &SamplingParams) -> u32 {

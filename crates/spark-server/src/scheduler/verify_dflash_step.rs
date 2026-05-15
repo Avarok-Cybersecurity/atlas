@@ -117,6 +117,7 @@ pub fn step_verify_dflash(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], 
             } else {
                 "accept_partial"
             },
+            "dflash",
         ])
         .inc();
 

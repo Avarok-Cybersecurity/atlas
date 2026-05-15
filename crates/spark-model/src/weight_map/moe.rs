@@ -97,6 +97,40 @@ pub struct DenseExpertWeight {
     pub down_proj: DenseWeight,
 }
 
+/// Native FP8 block-scaled projection bundle for the MTP head, loaded
+/// zero-copy from `mtp.safetensors` when the checkpoint stores those
+/// projections as `F8_E4M3 + BF16 weight_scale_inv` (Qwen3.6-27B-FP8).
+/// Used to avoid the lossy `FP8 → BF16 (load) → per-row FP8 (runtime
+/// quantize)` round-trip that `MtpHead::quantize_proj` would otherwise
+/// perform.
+///
+/// Empirically, the upstream Qwen3.6-FP8 MTP checkpoints store
+/// `mtp.fc.weight` as BF16 (it's the concat projection from
+/// `[embed, hidden] → hidden`, not part of the transformer block), so
+/// `fc` is **not** carried here — the BF16 path handles it. The four
+/// `*_proj` cover attention QKVO at native FP8, and `dense_ffn`
+/// carries the dense FFN gate/up/down. MoE expert weights are not
+/// included yet (extending to routed experts is a follow-up).
+#[derive(Debug, Clone, Copy)]
+pub struct MtpNativeFp8Projections {
+    pub q_proj: Fp8Weight,
+    pub k_proj: Fp8Weight,
+    pub v_proj: Fp8Weight,
+    pub o_proj: Fp8Weight,
+    /// Dense FFN projections — populated for dense FFN MTP heads
+    /// (Qwen3.6-27B-FP8). `None` for MoE MTP heads.
+    pub dense_ffn: Option<MtpNativeFp8DenseFfn>,
+}
+
+/// FP8 dense FFN triple inside an MTP head, parallel to
+/// `DenseExpertWeight` but at native FP8 precision.
+#[derive(Debug, Clone, Copy)]
+pub struct MtpNativeFp8DenseFfn {
+    pub gate_proj: Fp8Weight,
+    pub up_proj: Fp8Weight,
+    pub down_proj: Fp8Weight,
+}
+
 /// MTP (Multi-Token Prediction) head weights (all BF16 from safetensors).
 ///
 /// Single decoder layer + concat projection. All projection weights are BF16
@@ -135,6 +169,16 @@ pub struct MtpWeights {
     /// `Qwen/Qwen3.6-27B-FP8`. When `Some`, the MoE fields above are unused
     /// and the forward path takes the dense MLP shortcut.
     pub dense_ffn: Option<DenseExpertWeight>,
+    /// Native on-disk FP8 (block-scaled) projections — when `Some`, the
+    /// MTP head builder uses these directly via `ProjectionWeight::Fp8BlockScaled`
+    /// and skips the BF16→per-row-FP8 runtime quantization in `quantize_proj`.
+    /// Populated when the checkpoint's `mtp.*.weight` tensors are
+    /// `F8_E4M3 + BF16 weight_scale_inv` (Qwen3.6-27B-FP8's `mtp.safetensors`).
+    /// The corresponding BF16 fields in this struct are still populated
+    /// (norms, embed-side `pre_fc_norm_*`) for the non-quantized paths,
+    /// but the projections themselves are loaded zero-copy at native
+    /// FP8 precision rather than round-tripped through BF16.
+    pub native_fp8: Option<MtpNativeFp8Projections>,
     /// Final output RMSNorm: `[hidden_size]` BF16.
     pub norm: DenseWeight,
 }

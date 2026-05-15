@@ -162,6 +162,8 @@ pub async fn completions(
         dry_multiplier: 0.0,
         dry_base: 1.75,
         dry_allowed_length: 2,
+        xtc_probability: 0.0,
+        xtc_threshold: 0.1,
         lz_penalty: 0.0,
         logit_bias,
         stop_tokens,
@@ -292,6 +294,8 @@ pub(super) async fn completions_stream(
         dry_multiplier: 0.0,
         dry_base: 1.75,
         dry_allowed_length: 2,
+        xtc_probability: 0.0,
+        xtc_threshold: 0.1,
         lz_penalty: 0.0,
         logit_bias,
         stop_tokens,
@@ -305,6 +309,9 @@ pub(super) async fn completions_stream(
         top_logprobs: None,
         timeout_at: None,
         token_tx,
+        // Legacy /v1/completions has no streaming-side watchdog; the
+        // back-channel exists for symmetry but is never set.
+        cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     state.request_tx.send(request).await.map_err(|_| {

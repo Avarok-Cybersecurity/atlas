@@ -42,6 +42,8 @@ pub fn start_chunked_prefill(
     let dry_multiplier = req.dry_multiplier();
     let dry_base = req.dry_base();
     let dry_allowed_length = req.dry_allowed_length();
+    let xtc_probability = req.xtc_probability();
+    let xtc_threshold = req.xtc_threshold();
     let req_lz_penalty = req.lz_penalty();
     let logit_bias = req.logit_bias().to_vec();
     let req_min_tokens = req.min_tokens();
@@ -57,6 +59,7 @@ pub fn start_chunked_prefill(
     let req_seed = req.seed();
     let req_top_logprobs = req.top_logprobs();
     let req_timeout_at = req.timeout_at();
+    let req_cancel_flag = req.cancel_flag();
     let grammar_spec = req.take_grammar_spec();
     let grammar_state = compile_grammar_state(grammar_engine, &grammar_spec);
     let (prompt_tokens, max_tokens, mut sink, image_pixels, temperature) = match req {
@@ -234,6 +237,8 @@ pub fn start_chunked_prefill(
                 dry_base,
                 dry_allowed_length,
                 dry_sequence_breakers: Vec::new(),
+                xtc_probability,
+                xtc_threshold,
                 logit_bias: logit_bias.clone(),
                 pending_drafts: Vec::new(),
                 inside_thinking: req_enable_thinking && think_end_token.is_some(),
@@ -247,6 +252,7 @@ pub fn start_chunked_prefill(
                 think_end_token,
                 think_start_token,
                 think_ended: !req_enable_thinking && think_end_token.is_some(),
+                think_was_force_ended: false,
                 think_just_ended: false,
                 think_skip_count: 0,
                 require_tool_call: use_legacy_tool_call,
@@ -273,6 +279,7 @@ pub fn start_chunked_prefill(
                 logprobs_data: Vec::new(),
                 timeout_at: req_timeout_at,
                 adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
+                cancel_flag: req_cancel_flag.clone(),
             };
             finish_sequence(model, &mut a);
             Ok(StartPrefillResult::Finished)
@@ -305,6 +312,8 @@ pub fn start_chunked_prefill(
                 dry_base,
                 dry_allowed_length,
                 dry_sequence_breakers: Vec::new(),
+                xtc_probability,
+                xtc_threshold,
                 logit_bias: logit_bias.clone(),
                 pending_drafts: Vec::new(),
                 inside_thinking: spontaneous_think
@@ -327,6 +336,7 @@ pub fn start_chunked_prefill(
                 } else {
                     !req_enable_thinking && think_end_token.is_some()
                 },
+                think_was_force_ended: false,
                 think_just_ended: false,
                 think_skip_count: 0,
                 require_tool_call: use_legacy_tool_call,
@@ -353,6 +363,7 @@ pub fn start_chunked_prefill(
                 logprobs_data: Vec::new(),
                 timeout_at: req_timeout_at,
                 adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
+                cancel_flag: req_cancel_flag.clone(),
             }))
         }
     } else {
@@ -383,6 +394,8 @@ pub fn start_chunked_prefill(
             dry_base,
             dry_allowed_length,
             dry_sequence_breakers: Vec::new(),
+            xtc_probability,
+            xtc_threshold,
             logit_bias,
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
@@ -394,6 +407,7 @@ pub fn start_chunked_prefill(
             seed: req_seed,
             top_logprobs: req_top_logprobs,
             timeout_at: req_timeout_at,
+            cancel_flag: req_cancel_flag,
         }))
     }
 }

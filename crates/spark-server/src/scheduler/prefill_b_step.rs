@@ -55,6 +55,7 @@ pub fn prefill_request(
     let req_seed = req.seed();
     let req_top_logprobs = req.top_logprobs();
     let req_timeout_at = req.timeout_at();
+    let req_cancel_flag = req.cancel_flag();
     let grammar_spec = req.take_grammar_spec();
     let grammar_state = compile_grammar_state(grammar_engine, &grammar_spec);
     let (prompt_tokens, max_tokens, mut sink, image_pixels, temperature) = match req {
@@ -192,6 +193,8 @@ pub fn prefill_request(
             dry_base: DEFAULT_DRY_BASE,
             dry_allowed_length: DEFAULT_DRY_ALLOWED_LENGTH,
             dry_sequence_breakers: Vec::new(),
+            xtc_probability: 0.0,
+            xtc_threshold: 0.1,
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
             inside_thinking: req_enable_thinking && think_end_token.is_some(),
@@ -205,6 +208,7 @@ pub fn prefill_request(
             think_end_token,
             think_start_token,
             think_ended: !req_enable_thinking && think_end_token.is_some(),
+            think_was_force_ended: false,
             think_just_ended: false,
             think_skip_count: 0,
             require_tool_call: use_legacy_tool_call,
@@ -231,6 +235,7 @@ pub fn prefill_request(
             logprobs_data: Vec::new(),
             timeout_at: req_timeout_at,
             adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
+            cancel_flag: req_cancel_flag.clone(),
         };
         finish_sequence(model, &mut a);
         return Ok(None);
@@ -260,6 +265,8 @@ pub fn prefill_request(
         dry_base: DEFAULT_DRY_BASE,
         dry_allowed_length: DEFAULT_DRY_ALLOWED_LENGTH,
         dry_sequence_breakers: Vec::new(),
+        xtc_probability: 0.0,
+        xtc_threshold: 0.1,
         logit_bias,
         pending_drafts: Vec::new(),
         inside_thinking: spontaneous_think || (req_enable_thinking && think_end_token.is_some()),
@@ -281,6 +288,7 @@ pub fn prefill_request(
         } else {
             !req_enable_thinking && think_end_token.is_some()
         },
+        think_was_force_ended: false,
         think_just_ended: false,
         think_skip_count: 0,
         require_tool_call: use_legacy_tool_call,
@@ -307,5 +315,6 @@ pub fn prefill_request(
         logprobs_data: Vec::new(),
         timeout_at: req_timeout_at,
         adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
+        cancel_flag: req_cancel_flag,
     }))
 }

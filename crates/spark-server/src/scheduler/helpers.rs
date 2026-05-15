@@ -36,6 +36,90 @@ pub fn im_start_hard_stop() -> Option<u32> {
     let id = IM_START_HARD_STOP.load(std::sync::atomic::Ordering::Relaxed);
     if id == 0 { None } else { Some(id) }
 }
+
+#[derive(Debug)]
+struct HtmlCompletionGuard {
+    start_patterns: Vec<Vec<u32>>,
+    close_patterns: Vec<Vec<u32>>,
+}
+
+static HTML_COMPLETION_GUARD: std::sync::OnceLock<HtmlCompletionGuard> = std::sync::OnceLock::new();
+
+/// Install tokenizer-specific token patterns used to detect a generated
+/// full HTML document. When the output has started with `<!DOCTYPE html`
+/// or `<html` but no later `</html>`, decode masks EOS-like stop tokens
+/// so dense code models do not terminate immediately after `</script>`.
+pub fn set_html_completion_guard_patterns(
+    start_patterns: Vec<Vec<u32>>,
+    close_patterns: Vec<Vec<u32>>,
+) {
+    let start_patterns = dedupe_nonempty_patterns(start_patterns);
+    let close_patterns = dedupe_nonempty_patterns(close_patterns);
+    if start_patterns.is_empty() || close_patterns.is_empty() {
+        return;
+    }
+    let _ = HTML_COMPLETION_GUARD.set(HtmlCompletionGuard {
+        start_patterns,
+        close_patterns,
+    });
+}
+
+#[inline]
+pub fn should_suppress_eos_for_html(
+    output_tokens: &[u32],
+    inside_thinking: bool,
+    inside_tool_body: bool,
+    grammar_active: bool,
+) -> bool {
+    !inside_thinking
+        && !inside_tool_body
+        && !grammar_active
+        && HTML_COMPLETION_GUARD
+            .get()
+            .is_some_and(|guard| html_completion_guard_active_with_patterns(output_tokens, guard))
+}
+
+fn dedupe_nonempty_patterns(mut patterns: Vec<Vec<u32>>) -> Vec<Vec<u32>> {
+    patterns.retain(|p| !p.is_empty());
+    patterns.sort_unstable();
+    patterns.dedup();
+    patterns
+}
+
+fn html_completion_guard_active_with_patterns(
+    output_tokens: &[u32],
+    guard: &HtmlCompletionGuard,
+) -> bool {
+    let Some(last_start) = last_pattern_match(output_tokens, &guard.start_patterns) else {
+        return false;
+    };
+    !has_pattern_match_at_or_after(output_tokens, &guard.close_patterns, last_start)
+}
+
+fn last_pattern_match(tokens: &[u32], patterns: &[Vec<u32>]) -> Option<usize> {
+    patterns
+        .iter()
+        .filter(|p| p.len() <= tokens.len())
+        .flat_map(|p| {
+            tokens
+                .windows(p.len())
+                .enumerate()
+                .filter_map(|(idx, window)| (window == p.as_slice()).then_some(idx))
+        })
+        .max()
+}
+
+fn has_pattern_match_at_or_after(tokens: &[u32], patterns: &[Vec<u32>], start: usize) -> bool {
+    patterns
+        .iter()
+        .filter(|p| p.len() <= tokens.len())
+        .any(|p| {
+            tokens
+                .windows(p.len())
+                .enumerate()
+                .any(|(idx, window)| idx >= start && window == p.as_slice())
+        })
+}
 // ── Sampling defaults (SSOT) ────────────────────────────────────────────────
 // All SamplingParams constructors reference these constants. Change here, not
 // at each call site.
@@ -107,8 +191,16 @@ pub const THINK_LOOP_SCAN_WINDOW: usize = 160;
 pub const CONTENT_LOOP_MIN_TOKENS: u32 = 96;
 pub const CONTENT_LOOP_CHECK_STRIDE: u32 = 16;
 pub const CONTENT_LOOP_PERIOD_MIN: usize = 8;
-pub const CONTENT_LOOP_PERIOD_MAX: usize = 64;
-pub const CONTENT_LOOP_MIN_REPEATS: usize = 3;
+// Was 64; bumped to 128 (2026-05-14) because dense Qwen 3.6 27B's
+// long-context CSS-block degeneration cycles in 30-90-token blocks
+// (e.g. `#ui-layer { position: absolute; top: 0; left: 0; width:
+// 100%; height: 100%; pointer-events: none; }` is ~50 tokens; with
+// outer brace/whitespace context the period can exceed 64). The
+// API-level duplicate-line watchdog catches it eventually but only
+// after ~1500 tokens; widening the period range here lets the
+// token-level detector stop the loop ~3× sooner.
+pub const CONTENT_LOOP_PERIOD_MAX: usize = 128;
+pub const CONTENT_LOOP_MIN_REPEATS: usize = 4;
 pub const CONTENT_LOOP_SCAN_WINDOW: usize = 280;
 
 static ENABLE_LOOP_WATCHDOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -345,19 +437,20 @@ mod thinking_loop_tests {
     // ── Content-phase loop detector tests (Claude Code 2026-04-26 fix) ──
 
     #[test]
-    fn content_loop_detects_sentence_triple_repeat() {
+    fn content_loop_detects_sentence_quad_repeat() {
         // Simulates "I see I've been creating Cargo.toml files but the
         // user hasn't given me a task. Let me wait for their
-        // instructions." as a 22-token sentence repeating 3× — exactly
+        // instructions." as a 22-token sentence repeating 4× — exactly
         // the Claude Code 2026-04-26 degeneration. Must fire.
         let sentence: Vec<u32> = (1000..1022).collect();
         let mut tokens: Vec<u32> = (0..100).collect(); // prior content
         tokens.extend(sentence.iter()); // r1
         tokens.extend(sentence.iter()); // r2
         tokens.extend(sentence.iter()); // r3
+        tokens.extend(sentence.iter()); // r4
         assert!(
             detect_content_token_loop(&tokens),
-            "22-token sentence repeating 3× must trigger content-loop watchdog"
+            "22-token sentence repeating 4× must trigger content-loop watchdog"
         );
     }
 
@@ -399,7 +492,72 @@ mod thinking_loop_tests {
         tokens.extend(sentence.iter()); // r2 only
         assert!(
             !detect_content_token_loop(&tokens),
-            "two repeats in content must not trigger (need 3)"
+            "two repeats in content must not trigger"
         );
+    }
+
+    #[test]
+    fn content_loop_rejects_three_repeats() {
+        // Three repeated structured/code-shaped blocks can be legitimate
+        // (CSS rules, SVG/D3 groups, JSON rows). The streaming text
+        // watchdog handles higher-confidence repetition with more
+        // context, so the scheduler token guard waits for four.
+        let block: Vec<u32> = (700..724).collect();
+        let mut tokens: Vec<u32> = (0..100).collect();
+        tokens.extend(block.iter());
+        tokens.extend(block.iter());
+        tokens.extend(block.iter());
+        assert!(
+            !detect_content_token_loop(&tokens),
+            "three repeats in content must not trigger"
+        );
+    }
+
+    #[test]
+    fn html_guard_inactive_without_start_pattern() {
+        let guard = HtmlCompletionGuard {
+            start_patterns: vec![vec![1, 2]],
+            close_patterns: vec![vec![3, 4]],
+        };
+        assert!(!html_completion_guard_active_with_patterns(
+            &[9, 9, 3, 4],
+            &guard
+        ));
+    }
+
+    #[test]
+    fn html_guard_active_after_start_without_close() {
+        let guard = HtmlCompletionGuard {
+            start_patterns: vec![vec![1, 2]],
+            close_patterns: vec![vec![3, 4]],
+        };
+        assert!(html_completion_guard_active_with_patterns(
+            &[9, 1, 2, 8, 8],
+            &guard
+        ));
+    }
+
+    #[test]
+    fn html_guard_inactive_after_close_follows_latest_start() {
+        let guard = HtmlCompletionGuard {
+            start_patterns: vec![vec![1, 2]],
+            close_patterns: vec![vec![3, 4]],
+        };
+        assert!(!html_completion_guard_active_with_patterns(
+            &[1, 2, 8, 3, 4],
+            &guard
+        ));
+    }
+
+    #[test]
+    fn html_guard_tracks_latest_document_restart() {
+        let guard = HtmlCompletionGuard {
+            start_patterns: vec![vec![1, 2]],
+            close_patterns: vec![vec![3, 4]],
+        };
+        assert!(html_completion_guard_active_with_patterns(
+            &[1, 2, 3, 4, 9, 1, 2, 8],
+            &guard
+        ));
     }
 }

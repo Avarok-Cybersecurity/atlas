@@ -43,6 +43,18 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = "0.1"
+# Startup kernel-selection telemetry: prints a one-line-per-component
+# table at server startup showing which precision variant was selected
+# and which silently fell back to a worse path. Catches the kind of
+# "GDN F32 kernel not built for this target → silent BF16 fallback →
+# long-context decode collapse" failure mode that took multiple days
+# to track down on dense Qwen 3.6 27B FP8.
+comfy-table = { version = "7", default-features = false, features = ["tty"] }
+# Loader progress bar — used by `loader_progress` to draw a
+# per-layer ETA + percentage when models load weights. Without
+# default features so we don't pull in `unicode-width`'s rare CJK
+# tables; ASCII bar style covers serving containers.
+indicatif = { version = "0.18", default-features = false }
 half = "2"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

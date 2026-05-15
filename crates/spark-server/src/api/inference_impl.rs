@@ -183,6 +183,26 @@ impl InferenceRequest {
         }
     }
 
+    /// XTC (Exclude Top Choices) probability. 0.0 = off.
+    pub fn xtc_probability(&self) -> f32 {
+        match self {
+            InferenceRequest::Blocking {
+                xtc_probability, ..
+            } => *xtc_probability,
+            InferenceRequest::Streaming {
+                xtc_probability, ..
+            } => *xtc_probability,
+        }
+    }
+
+    /// XTC threshold (min post-softmax prob for exclusion eligibility).
+    pub fn xtc_threshold(&self) -> f32 {
+        match self {
+            InferenceRequest::Blocking { xtc_threshold, .. } => *xtc_threshold,
+            InferenceRequest::Streaming { xtc_threshold, .. } => *xtc_threshold,
+        }
+    }
+
     /// Per-token logit bias.
     pub fn logit_bias(&self) -> &[(u32, f32)] {
         match self {
@@ -294,6 +314,16 @@ impl InferenceRequest {
         match self {
             InferenceRequest::Blocking { timeout_at, .. } => *timeout_at,
             InferenceRequest::Streaming { timeout_at, .. } => *timeout_at,
+        }
+    }
+
+    /// Streaming-side cancel flag (`None` for blocking requests). Set by
+    /// the streaming layer's SimHash semantic-loop watchdog; polled by
+    /// `emit_token` to terminate the seq.
+    pub fn cancel_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        match self {
+            InferenceRequest::Blocking { .. } => None,
+            InferenceRequest::Streaming { cancel_flag, .. } => Some(cancel_flag.clone()),
         }
     }
 }

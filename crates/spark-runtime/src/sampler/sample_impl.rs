@@ -4,7 +4,9 @@
 // implementation). Split out of `sampler.rs` to keep the parent file
 // under the 500-line cap. The parent re-exports these via `pub use`.
 
-use super::{SamplingParams, apply_dry_penalty, apply_lz_penalty, read_f32, record_entropy};
+use super::{
+    SamplingParams, apply_dry_penalty, apply_lz_penalty, apply_xtc, read_f32, record_entropy,
+};
 
 pub fn sample_with_params_history(
     data: &[u8],
@@ -243,6 +245,36 @@ pub fn sample_with_params_seeded(
                 })
                 .sum();
             record_entropy(h);
+        }
+    }
+
+    // ── 4c. XTC: probabilistically drop the modal peak to break
+    // token-different but lexically-similar attractors. Runs before
+    // min_p / top_p so those filter the post-XTC set. Pre-sorted
+    // descending entry order is preserved by `apply_xtc`. The random
+    // draw uses the same seed pipeline as the final multinomial.
+    if params.xtc_probability > 0.0 {
+        let xtc_random: f32 = if let Some(s) = seed {
+            use rand::Rng;
+            use rand::SeedableRng;
+            // Different seed offset than the multinomial draw so the
+            // XTC gate isn't perfectly correlated with the eventual
+            // pick. Wrapping_add keeps determinism intact.
+            let mut rng = rand::rngs::StdRng::seed_from_u64(s.wrapping_add(0x58_54_43_00));
+            rng.r#gen::<f32>()
+        } else {
+            rand::random::<f32>()
+        };
+        apply_xtc(&mut probs, params.xtc_probability, params.xtc_threshold, xtc_random);
+        if probs.is_empty() {
+            // Fallback to argmax on the original logits (every above-threshold
+            // token was dropped + no below-threshold survivors — pathological).
+            return raw_logits
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(i, _)| i as u32)
+                .unwrap_or(0);
         }
     }
 

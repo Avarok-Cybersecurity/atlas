@@ -27,6 +27,14 @@ pub fn process_decode_logits(
     // the host-side sampling path for its logits slice.
     let any_grammar = active.iter().any(|a| a.grammar_state.is_some());
     let any_logprobs = active.iter().any(|a| a.top_logprobs.is_some());
+    let any_html_eos_guard = active.iter().any(|a| {
+        should_suppress_eos_for_html(
+            &a.output_tokens,
+            a.inside_thinking,
+            a.inside_tool_body,
+            a.grammar_state.is_some(),
+        )
+    });
     // FP32 lm_head models (Gemma-4 dense) MUST use the host-side path —
     // `argmax_batch` assumes BF16 layout and would interpret 4-byte FP32
     // values as 2-byte BF16 pairs, returning garbage tokens.
@@ -35,6 +43,7 @@ pub fn process_decode_logits(
         .iter()
         .any(|a| a.inside_thinking || a.think_ended || a.grammar_state.is_some())
         || any_logprobs
+        || any_html_eos_guard
         || model_logits_fp32;
 
     let new_tokens: Vec<(u32, Option<crate::api::TokenLogprobs>)> =
@@ -110,6 +119,17 @@ pub fn process_decode_logits(
     let now = Instant::now();
     for (i, (tok, logprobs)) in new_tokens.into_iter().enumerate() {
         let a = &mut active[i];
+        if let Some(ref flag) = a.cancel_flag
+            && flag.load(std::sync::atomic::Ordering::Acquire)
+        {
+            a.finished = true;
+            tracing::info!(
+                "process_decode_logits: cancel_flag set; finishing seq after {} output tokens",
+                a.output_tokens.len(),
+            );
+            continue;
+        }
+
         a.last_token = tok;
         a.last_token_time = now;
 
@@ -175,6 +195,13 @@ pub fn process_decode_logits(
         // Thinking tokens don't count toward remaining (thinking is "free").
         if a.inside_thinking {
             if think_end_token == Some(tok) {
+                // Capture whether the watchdog force-closed `</think>`
+                // BEFORE we reset `force_end_thinking`. The post-think
+                // EOS guard below uses this to fire ONLY for forced
+                // closes — natural `</think>` emissions are allowed to
+                // EOS immediately so short answers ("19") don't get
+                // padded into chat-template-leakage.
+                a.think_was_force_ended = a.force_end_thinking;
                 a.inside_thinking = false;
                 a.force_end_thinking = false;
                 a.consecutive_confident = 0;
@@ -236,12 +263,28 @@ pub fn process_decode_logits(
             // streaming an unending repetition that wedges Claude
             // Code's display. Disabled inside grammar/tool-body
             // because structured JSON repeats are legitimate.
+            // 2026-05-14: pass only the post-thinking content slice
+            // to the loop detector. Previously the full `output_tokens`
+            // (thinking + content) was passed, which broke the
+            // period-detector's tail-window alignment: thinking-phase
+            // tokens at the head of the window prevented the
+            // detector from finding contiguous repeats once the
+            // content phase entered a fixed-point cycle. Symptom:
+            // dense Qwen 3.6 27B's CSS-block cycle (30-50 token
+            // period exact repeat) ran to max_tokens without
+            // triggering the watchdog, despite enable_loop_watchdog
+            // being on. Slicing by `thinking_tokens` removes the
+            // misaligned thinking prefix from the detector's input.
+            let content_slice = a
+                .output_tokens
+                .get(a.thinking_tokens as usize..)
+                .unwrap_or(&a.output_tokens);
             if enable_loop_watchdog()
                 && a.grammar_state.is_none()
                 && !a.inside_tool_body
                 && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
                 && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
-                && detect_content_token_loop(&a.output_tokens)
+                && detect_content_token_loop(content_slice)
             {
                 tracing::warn!(
                     content_tokens = a.content_tokens,
@@ -250,6 +293,9 @@ pub fn process_decode_logits(
                     CONTENT_LOOP_PERIOD_MIN,
                     CONTENT_LOOP_PERIOD_MAX,
                 );
+                if let Some(ref flag) = a.cancel_flag {
+                    flag.store(true, std::sync::atomic::Ordering::Release);
+                }
                 a.finished = true;
             }
 
@@ -384,22 +430,44 @@ pub fn process_decode_logits(
         // session ends with a partial tool-call shell but no real
         // call. We require at least POST_THINK_MIN_CONTENT non-thinking
         // tokens after `think_ended` before EOS is allowed, giving the
-        // model the room to actually open a `<tool_call>` block. Same
-        // shape as the existing `min_tokens` guard, but counted from
-        // the `</think>` boundary so it doesn't penalise turns that
-        // never entered thinking. 16 tokens is enough to start
+        // model the room to actually open a `<tool_call>` block. 16
+        // tokens is enough to start
         // `<tool_call>\n<function=NAME>\n<parameter=…` and is well
         // below typical real tool-call output sizes (>100 tokens).
+        //
+        // 2026-05-14: gate this on `think_was_force_ended` AND on
+        // tool-call expectation. The guard's original purpose is
+        // strictly tool-call recovery (let the model open
+        // `<tool_call>` after the watchdog force-closed `</think>`
+        // mid-narration). Outside of tool-call requests, the model
+        // should be free to EOS the instant it's done — otherwise
+        // benign bullet-list reasoning ("1. **Step**: …", which
+        // trips the period-4 thinking-loop watchdog) triggers a
+        // 16-token EOS suppression and the model dribbles
+        // chat-template-leakage ("19\n\nuser\n\nassistant\n…") into
+        // the response. Only force-close + tool-call-pending should
+        // gate EOS; force-close on a plain chat completion is the
+        // model finishing its reasoning, not a missing tool call.
+        let tool_call_pending = a.require_tool_call || a.grammar_state.is_some();
         const POST_THINK_MIN_CONTENT: u32 = 16;
         let post_think_content_tokens =
             (a.output_tokens.len() as u32).saturating_sub(a.thinking_tokens);
-        let post_think_suppresses_eos =
-            a.think_ended && post_think_content_tokens < POST_THINK_MIN_CONTENT;
+        let post_think_suppresses_eos = a.think_ended
+            && a.think_was_force_ended
+            && tool_call_pending
+            && post_think_content_tokens < POST_THINK_MIN_CONTENT;
+        let html_suppresses_eos = should_suppress_eos_for_html(
+            &a.output_tokens,
+            a.inside_thinking,
+            a.inside_tool_body,
+            a.grammar_state.is_some(),
+        );
         let suppress_eos = grammar_suppresses_eos
             || legacy_suppresses_eos
             || min_tokens_suppresses
             || thinking_suppresses_eos
-            || post_think_suppresses_eos;
+            || post_think_suppresses_eos
+            || html_suppresses_eos;
 
         if a.eos_tokens.contains(&tok) && !suppress_eos {
             // Stop/EOS token: do NOT stream to client (OpenAI spec: returned text
@@ -501,6 +569,9 @@ pub fn process_decode_logits(
                      mismatches), stopping at {} tokens",
                     a.output_tokens.len()
                 );
+                if let Some(ref flag) = a.cancel_flag {
+                    flag.store(true, std::sync::atomic::Ordering::Release);
+                }
                 a.finished = true;
             }
 

@@ -211,7 +211,16 @@ impl TransformerModel {
         } else {
             (self.buffers.logits(), false)
         };
-        if let Some(ref nvfp4) = self.lm_head_nvfp4 {
+        // Main decode dispatch: prefer BF16 dense_gemv when the model's
+        // config opts out of LM-head quantization (Gemma-4 dense, dense
+        // Qwen 3.x). The NVFP4 buffer in `self.lm_head_nvfp4` is still
+        // produced for the MTP head to use for draft propose; this
+        // branch just ensures the main verifier path stays at the
+        // checkpoint's source precision (BF16 for Qwen3.6-27B-FP8).
+        let main_bf16_lm_head = self.config.skip_lm_head_quantization();
+        if let Some(ref nvfp4) = self.lm_head_nvfp4
+            && !main_bf16_lm_head
+        {
             // Pick FP32-output variant when the FP32 logits buffer is the
             // destination. Same packed-NVFP4 weights, same activation, but the
             // accumulator is NOT downcast to BF16 — closes the 0.125-logit

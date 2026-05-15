@@ -15,6 +15,27 @@ use super::{Qwen3SsmLayer, SsmLayerState};
 use crate::layer::ForwardContext;
 use crate::layers::ops;
 
+/// True iff `ATLAS_K2_SEQUENTIAL=1` is set in the environment. Cached after
+/// the first call. When true, the K=2 fused WY2 path is bypassed and K=2
+/// verify falls through to the sequential single-token loop. Used to A/B
+/// test a hypothesised WY2 vs sequential GDN intermediate-semantics
+/// mismatch on dense Qwen3.6-27B-FP8 (0% MTP K=2 accept rate).
+fn k2_sequential_override() -> bool {
+    use std::sync::atomic::{AtomicI8, Ordering};
+    static STATE: AtomicI8 = AtomicI8::new(-1);
+    match STATE.load(Ordering::Relaxed) {
+        0 => false,
+        1 => true,
+        _ => {
+            let on = std::env::var("ATLAS_K2_SEQUENTIAL")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            STATE.store(if on { 1 } else { 0 }, Ordering::Relaxed);
+            on
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) struct ConvGdnArgs {
     pub num_tokens: usize,
@@ -184,8 +205,14 @@ impl Qwen3SsmLayer {
                 (nv * 2) as u32, // gb_stride
                 stream,
             )?;
-        } else if num_tokens == 2 {
+        } else if num_tokens == 2 && !k2_sequential_override() {
             // ── K=2 fused path: conv1d sequential, L2 norm sequential, GDN chunk2 ──
+            //
+            // ATLAS_K2_SEQUENTIAL=1 disables this path and routes K=2 verify
+            // through the K∉{2,3,4,17} sequential else-branch instead. Used to
+            // localise a hypothesised WY2 vs sequential GDN intermediate-
+            // semantics mismatch causing 0% MTP K=2 accept on dense Qwen3.6-
+            // 27B-FP8 (see plans/please-look-at-the-prancy-rabbit.md).
             let qkv_0 = deinterleaved;
             let conv_out_0 = conv_out_buf;
             ops::conv1d_update_l2norm(

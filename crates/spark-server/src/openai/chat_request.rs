@@ -355,8 +355,12 @@ impl ChatCompletionRequest {
         }
 
         // 6. Model default from MODEL.toml [behavior].thinking_default.
+        // Leave the budget unset here so the caller can apply the
+        // model-specific [behavior].max_thinking_budget. The generic
+        // DEFAULT_THINKING_BUDGET is only for explicit request-body
+        // enablement channels that do not include a budget.
         if model_default {
-            (true, Some(DEFAULT_THINKING_BUDGET))
+            (true, None)
         } else {
             (false, None)
         }

@@ -592,17 +592,37 @@ store_h_split4_batched:
     }
 }
 
+
 // ═══════════════════════════════════════════════════════════════════
-// Decode, Chunk2, Chunk3 kernels — identical to parent (no changes).
+// Register-Tiled Decode — eliminates redundant H global reads.
+//
+// Original decode reads H[128×128] from global memory TWICE per head:
+//   Pass 1: hk_dot = H^T · k  (128 global reads per thread)
+//   Pass 2: H_new, q_dot      (128 global reads + 128 writes per thread)
+//   Total: 256 reads + 128 writes = 384 transactions per thread
+//
+// Register-tiled version:
+//   Load: H → H_reg[128]      (128 global reads)
+//   Pass 1: hk_dot from H_reg (0 global reads — registers)
+//   Pass 2: update + q_dot    (0 global reads — registers)
+//   Store: H_reg → H          (128 global writes)
+//   Total: 128 reads + 128 writes = 256 transactions per thread
+//
+// 33% less global memory traffic for GDN state per layer.
+// At 48 SSM layers × 32 v_heads × 64KB/head = 96 MB saved per decode step.
+//
+// __launch_bounds__(128, 1) forces max register allocation (512 regs/thread)
+// to keep H_reg[128] entirely in registers (no spill to L1).
+//
+// Grid: (num_v_heads, batch, 1)   Block: (128, 1, 1)
 // ═══════════════════════════════════════════════════════════════════
 
-#define BLOCK_SIZE 128
-
-extern "C" __global__ void gated_delta_rule_decode(
+extern "C" __global__ void __launch_bounds__(128, 1)
+gated_delta_rule_decode(
     float* __restrict__ h_state,
-    const float* __restrict__ query,       // FP32 — prevents recurrent precision drift
-    const float* __restrict__ key,         // FP32
-    const float* __restrict__ value,       // FP32
+    const float* __restrict__ query,       // FP32 (was BF16) — prevents recurrent precision drift
+    const float* __restrict__ key,         // FP32 (was BF16)
+    const float* __restrict__ value,       // FP32 (was BF16)
     const float* __restrict__ gate,
     const float* __restrict__ beta,
     __nv_bfloat16* __restrict__ output,
@@ -618,54 +638,86 @@ extern "C" __global__ void gated_delta_rule_decode(
     const unsigned int tid = threadIdx.x;
     const unsigned int head_repeat = num_v_heads / num_k_heads;
     const unsigned int kh = vh / head_repeat;
-    float* H = h_state + ((b * num_v_heads + vh) * k_dim * v_dim);
-    const float* q_ptr = query + (b * num_k_heads + kh) * k_dim;
+
+    float* H_global = h_state + ((unsigned long long)(b * num_v_heads + vh) * K_DIM * v_dim);
+
+    // Load k, q into shared memory (broadcast across all 128 threads)
+    __shared__ float smem_k[K_DIM];
+    __shared__ float smem_q[K_DIM];
     const float* k_ptr = key + (b * num_k_heads + kh) * k_dim;
-    const float* v_ptr = value + (b * num_v_heads + vh) * v_dim;
-    const float g = fminf(fmaxf(gate[b * num_v_heads + vh], 1e-6f), 1.0f - 1e-6f);
-    const float bt = beta[b * num_v_heads + vh];
-    __shared__ float smem_k[128];
-    __shared__ float smem_q[128];
-    if (tid < k_dim) {
-        smem_k[tid] = k_ptr[tid];
-        smem_q[tid] = q_ptr[tid];
-    }
+    const float* q_ptr = query + (b * num_k_heads + kh) * k_dim;
+    smem_k[tid] = k_ptr[tid];  // Already FP32, no conversion needed
+    smem_q[tid] = q_ptr[tid];
     __syncthreads();
-    if (tid < v_dim) {
-        float v_i = v_ptr[tid];
-        float hk_dot = 0.0f;
-        #pragma unroll 4
-        for (unsigned int j = 0; j < k_dim; j += 4) {
-            float h0 = H[(j+0)*v_dim+tid]; float h1 = H[(j+1)*v_dim+tid];
-            float h2 = H[(j+2)*v_dim+tid]; float h3 = H[(j+3)*v_dim+tid];
-            hk_dot += h0*smem_k[j] + h1*smem_k[j+1] + h2*smem_k[j+2] + h3*smem_k[j+3];
-        }
-        float v_new_i = (v_i - g * hk_dot) * bt;
-        float q_dot = 0.0f;
-        #pragma unroll 4
-        for (unsigned int j = 0; j < k_dim; j += 4) {
-            float h0 = H[(j+0)*v_dim+tid]; float h1 = H[(j+1)*v_dim+tid];
-            float h2 = H[(j+2)*v_dim+tid]; float h3 = H[(j+3)*v_dim+tid];
-            h0 = g*h0 + smem_k[j]*v_new_i;     h1 = g*h1 + smem_k[j+1]*v_new_i;
-            h2 = g*h2 + smem_k[j+2]*v_new_i;   h3 = g*h3 + smem_k[j+3]*v_new_i;
-            H[(j+0)*v_dim+tid]=h0; H[(j+1)*v_dim+tid]=h1;
-            H[(j+2)*v_dim+tid]=h2; H[(j+3)*v_dim+tid]=h3;
-            q_dot += h0*smem_q[j] + h1*smem_q[j+1] + h2*smem_q[j+2] + h3*smem_q[j+3];
-        }
-        float inv_sqrt_d = rsqrtf((float)k_dim);
-        output[(b*num_v_heads+vh)*v_dim+tid] = __float2bfloat16(q_dot*inv_sqrt_d);
+
+    // Load H column into registers — ONE global read per element
+    float H_reg[K_DIM];
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j++) {
+        H_reg[j] = H_global[j * v_dim + tid];
+    }
+
+    float v_i = value[(b * num_v_heads + vh) * v_dim + tid];  // Already FP32
+    float g = fminf(fmaxf(gate[b * num_v_heads + vh], 1e-6f), 1.0f - 1e-6f);
+    float bt = beta[b * num_v_heads + vh];
+
+    // Pass 1: hk_dot = H_reg^T · k (from registers, zero global reads)
+    float hk0 = 0.0f, hk1 = 0.0f, hk2 = 0.0f, hk3 = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j += 4) {
+        hk0 += H_reg[j]     * smem_k[j];
+        hk1 += H_reg[j + 1] * smem_k[j + 1];
+        hk2 += H_reg[j + 2] * smem_k[j + 2];
+        hk3 += H_reg[j + 3] * smem_k[j + 3];
+    }
+    float hk_dot = (hk0 + hk1) + (hk2 + hk3);
+
+    float v_new = (v_i - g * hk_dot) * bt;
+
+    // Pass 2: update H_reg + compute q_dot (from registers, zero global reads)
+    float qd0 = 0.0f, qd1 = 0.0f, qd2 = 0.0f, qd3 = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j += 4) {
+        float h0 = g * H_reg[j]     + smem_k[j]     * v_new;
+        float h1 = g * H_reg[j + 1] + smem_k[j + 1] * v_new;
+        float h2 = g * H_reg[j + 2] + smem_k[j + 2] * v_new;
+        float h3 = g * H_reg[j + 3] + smem_k[j + 3] * v_new;
+        H_reg[j]     = h0;
+        H_reg[j + 1] = h1;
+        H_reg[j + 2] = h2;
+        H_reg[j + 3] = h3;
+        qd0 += h0 * smem_q[j];
+        qd1 += h1 * smem_q[j + 1];
+        qd2 += h2 * smem_q[j + 2];
+        qd3 += h3 * smem_q[j + 3];
+    }
+    float q_dot = (qd0 + qd1) + (qd2 + qd3);
+
+    float inv_sqrt_d = rsqrtf((float)k_dim);
+    output[(b * num_v_heads + vh) * v_dim + tid] = __float2bfloat16(q_dot * inv_sqrt_d);
+
+    // Write H from registers → global — ONE global write per element
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j++) {
+        H_global[j * v_dim + tid] = H_reg[j];
     }
 }
 
-// FP32 output variant — eliminates BF16 truncation in recurrent path.
-extern "C" __global__ void gated_delta_rule_decode_f32(
+// ═══════════════════════════════════════════════════════════════════
+// FP32 OUTPUT VARIANT — eliminates BF16 truncation in recurrent path.
+// Prevents cumulative precision drift at 15K+ decode tokens.
+// Identical to gated_delta_rule_decode except output is float*.
+// ═══════════════════════════════════════════════════════════════════
+
+extern "C" __global__ void __launch_bounds__(128, 1)
+gated_delta_rule_decode_f32(
     float* __restrict__ h_state,
     const float* __restrict__ query,
     const float* __restrict__ key,
     const float* __restrict__ value,
     const float* __restrict__ gate,
     const float* __restrict__ beta,
-    float* __restrict__ output,
+    float* __restrict__ output,            // FP32 output (was BF16)
     unsigned int batch_size,
     unsigned int num_k_heads,
     unsigned int num_v_heads,
@@ -678,46 +730,90 @@ extern "C" __global__ void gated_delta_rule_decode_f32(
     const unsigned int tid = threadIdx.x;
     const unsigned int head_repeat = num_v_heads / num_k_heads;
     const unsigned int kh = vh / head_repeat;
-    float* H = h_state + ((b * num_v_heads + vh) * k_dim * v_dim);
-    const float* q_ptr = query + (b * num_k_heads + kh) * k_dim;
+
+    float* H_global = h_state + ((unsigned long long)(b * num_v_heads + vh) * K_DIM * v_dim);
+
+    __shared__ float smem_k[K_DIM];
+    __shared__ float smem_q[K_DIM];
     const float* k_ptr = key + (b * num_k_heads + kh) * k_dim;
-    const float* v_ptr = value + (b * num_v_heads + vh) * v_dim;
-    const float g = fminf(fmaxf(gate[b * num_v_heads + vh], 1e-6f), 1.0f - 1e-6f);
-    const float bt = beta[b * num_v_heads + vh];
-    __shared__ float smem_k[128];
-    __shared__ float smem_q[128];
-    if (tid < k_dim) {
-        smem_k[tid] = k_ptr[tid];
-        smem_q[tid] = q_ptr[tid];
-    }
+    const float* q_ptr = query + (b * num_k_heads + kh) * k_dim;
+    smem_k[tid] = k_ptr[tid];
+    smem_q[tid] = q_ptr[tid];
     __syncthreads();
-    if (tid < v_dim) {
-        float v_i = v_ptr[tid];
-        float hk_dot = 0.0f;
-        #pragma unroll 4
-        for (unsigned int j = 0; j < k_dim; j += 4) {
-            float h0 = H[(j+0)*v_dim+tid]; float h1 = H[(j+1)*v_dim+tid];
-            float h2 = H[(j+2)*v_dim+tid]; float h3 = H[(j+3)*v_dim+tid];
-            hk_dot += h0*smem_k[j] + h1*smem_k[j+1] + h2*smem_k[j+2] + h3*smem_k[j+3];
-        }
-        float v_new_i = (v_i - g * hk_dot) * bt;
-        float q_dot = 0.0f;
-        #pragma unroll 4
-        for (unsigned int j = 0; j < k_dim; j += 4) {
-            float h0 = H[(j+0)*v_dim+tid]; float h1 = H[(j+1)*v_dim+tid];
-            float h2 = H[(j+2)*v_dim+tid]; float h3 = H[(j+3)*v_dim+tid];
-            h0 = g*h0 + smem_k[j]*v_new_i;     h1 = g*h1 + smem_k[j+1]*v_new_i;
-            h2 = g*h2 + smem_k[j+2]*v_new_i;   h3 = g*h3 + smem_k[j+3]*v_new_i;
-            H[(j+0)*v_dim+tid]=h0; H[(j+1)*v_dim+tid]=h1;
-            H[(j+2)*v_dim+tid]=h2; H[(j+3)*v_dim+tid]=h3;
-            q_dot += h0*smem_q[j] + h1*smem_q[j+1] + h2*smem_q[j+2] + h3*smem_q[j+3];
-        }
-        float inv_sqrt_d = rsqrtf((float)k_dim);
-        output[(b*num_v_heads+vh)*v_dim+tid] = q_dot * inv_sqrt_d;  // FP32 direct
+
+    float H_reg[K_DIM];
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j++) {
+        H_reg[j] = H_global[j * v_dim + tid];
+    }
+
+    float v_i = value[(b * num_v_heads + vh) * v_dim + tid];
+    float g = fminf(fmaxf(gate[b * num_v_heads + vh], 1e-6f), 1.0f - 1e-6f);
+    float bt = beta[b * num_v_heads + vh];
+
+    float hk0 = 0.0f, hk1 = 0.0f, hk2 = 0.0f, hk3 = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j += 4) {
+        hk0 += H_reg[j]     * smem_k[j];
+        hk1 += H_reg[j + 1] * smem_k[j + 1];
+        hk2 += H_reg[j + 2] * smem_k[j + 2];
+        hk3 += H_reg[j + 3] * smem_k[j + 3];
+    }
+    float hk_dot = (hk0 + hk1) + (hk2 + hk3);
+
+    float v_new = (v_i - g * hk_dot) * bt;
+
+    float qd0 = 0.0f, qd1 = 0.0f, qd2 = 0.0f, qd3 = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j += 4) {
+        float h0 = g * H_reg[j]     + smem_k[j]     * v_new;
+        float h1 = g * H_reg[j + 1] + smem_k[j + 1] * v_new;
+        float h2 = g * H_reg[j + 2] + smem_k[j + 2] * v_new;
+        float h3 = g * H_reg[j + 3] + smem_k[j + 3] * v_new;
+        H_reg[j]     = h0;
+        H_reg[j + 1] = h1;
+        H_reg[j + 2] = h2;
+        H_reg[j + 3] = h3;
+        qd0 += h0 * smem_q[j];
+        qd1 += h1 * smem_q[j + 1];
+        qd2 += h2 * smem_q[j + 2];
+        qd3 += h3 * smem_q[j + 3];
+    }
+    float q_dot = (qd0 + qd1) + (qd2 + qd3);
+
+    float inv_sqrt_d = rsqrtf((float)k_dim);
+    output[(b * num_v_heads + vh) * v_dim + tid] = q_dot * inv_sqrt_d;  // FP32 direct
+
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j++) {
+        H_global[j * v_dim + tid] = H_reg[j];
     }
 }
 
-extern "C" __global__ void gated_delta_rule_chunk2(
+// ═══════════════════════════════════════════════════════════════════
+// Register-Tiled Chunk2 — MTP K=2 verify path.
+//
+// Original chunk2 uses h_state_intermediate as a global-memory
+// ping-pong buffer between token 0 and token 1:
+//   Token 0: read H (128), update → write H_inter (128)
+//   Token 1: read H_inter (128), update → write H (128)
+//   Total: 256 reads + 256 writes = 512 transactions per thread
+//
+// Register-tiled version:
+//   Load H → H_reg[128]         (128 reads)
+//   Token 0: hk_dot + update    (0 reads — registers)
+//   Token 1: hk_dot + update    (0 reads — registers)
+//   Store H_reg → H             (128 writes)
+//   Total: 128 reads + 128 writes = 256 transactions per thread
+//
+// 50% less global memory traffic. h_state_intermediate is NOT USED
+// (parameter kept for ABI compatibility with Rust launcher).
+//
+// Grid: (num_v_heads, batch, 1)   Block: (128, 1, 1)
+// ═══════════════════════════════════════════════════════════════════
+
+extern "C" __global__ void __launch_bounds__(128, 1)
+gated_delta_rule_chunk2(
     float* __restrict__ h_state,
     const __nv_bfloat16* __restrict__ query,
     const __nv_bfloat16* __restrict__ key,
@@ -741,61 +837,115 @@ extern "C" __global__ void gated_delta_rule_chunk2(
     const unsigned int tid = threadIdx.x;
     const unsigned int head_repeat = num_v_heads / num_k_heads;
     const unsigned int kh = vh / head_repeat;
-    const unsigned int hv_size = k_dim * v_dim;
-    float* H = h_state + ((b*num_v_heads+vh)*hv_size);
-    float* H_inter = h_state_intermediate + ((b*num_v_heads+vh)*hv_size);
-    const __nv_bfloat16* q0=query+(b*2)*qk_stride+kh*k_dim;
-    const __nv_bfloat16* k0=key+(b*2)*qk_stride+kh*k_dim;
-    const __nv_bfloat16* v0=value+(b*2)*v_stride+vh*v_dim;
-    const float g0=fminf(fmaxf(gate[(b*2)*gb_stride+vh], 1e-6f), 1.0f - 1e-6f), bt0=beta[(b*2)*gb_stride+vh];
-    const __nv_bfloat16* q1=query+(b*2+1)*qk_stride+kh*k_dim;
-    const __nv_bfloat16* k1=key+(b*2+1)*qk_stride+kh*k_dim;
-    const __nv_bfloat16* v1=value+(b*2+1)*v_stride+vh*v_dim;
-    const float g1=fminf(fmaxf(gate[(b*2+1)*gb_stride+vh], 1e-6f), 1.0f - 1e-6f), bt1=beta[(b*2+1)*gb_stride+vh];
-    __shared__ float sk0[128],sq0[128],sk1[128],sq1[128];
-    if (tid<k_dim) {
-        sk0[tid]=(float)k0[tid]; sq0[tid]=(float)q0[tid];
-        sk1[tid]=(float)k1[tid]; sq1[tid]=(float)q1[tid];
+
+    float* H_global = h_state + ((unsigned long long)(b * num_v_heads + vh) * K_DIM * v_dim);
+
+    // Load k/q for both tokens into shared memory
+    __shared__ float sk0[K_DIM], sq0[K_DIM], sk1[K_DIM], sq1[K_DIM];
+    {
+        unsigned long long qk0 = (unsigned long long)(b * 2) * qk_stride + kh * k_dim;
+        unsigned long long qk1 = (unsigned long long)(b * 2 + 1) * qk_stride + kh * k_dim;
+        sk0[tid] = (float)key[qk0 + tid];   sq0[tid] = (float)query[qk0 + tid];
+        sk1[tid] = (float)key[qk1 + tid];   sq1[tid] = (float)query[qk1 + tid];
     }
     __syncthreads();
-    if (tid<v_dim) {
-        float vi0=(float)v0[tid], vi1=(float)v1[tid];
-        float hk0=0.0f;
-        #pragma unroll 4
-        for (unsigned int j=0;j<k_dim;j+=4) {
-            float h0=H[(j+0)*v_dim+tid],h1=H[(j+1)*v_dim+tid],h2=H[(j+2)*v_dim+tid],h3=H[(j+3)*v_dim+tid];
-            hk0+=h0*sk0[j]+h1*sk0[j+1]+h2*sk0[j+2]+h3*sk0[j+3];
-        }
-        float v_new_0=(vi0-g0*hk0)*bt0;
-        float q0_dot=0.0f,hk1=0.0f;
-        #pragma unroll 4
-        for (unsigned int j=0;j<k_dim;j+=4) {
-            float h0=H[(j+0)*v_dim+tid],h1=H[(j+1)*v_dim+tid],h2=H[(j+2)*v_dim+tid],h3=H[(j+3)*v_dim+tid];
-            h0=g0*h0+sk0[j]*v_new_0; h1=g0*h1+sk0[j+1]*v_new_0;
-            h2=g0*h2+sk0[j+2]*v_new_0; h3=g0*h3+sk0[j+3]*v_new_0;
-            H_inter[(j+0)*v_dim+tid]=h0; H_inter[(j+1)*v_dim+tid]=h1;
-            H_inter[(j+2)*v_dim+tid]=h2; H_inter[(j+3)*v_dim+tid]=h3;
-            q0_dot+=h0*sq0[j]+h1*sq0[j+1]+h2*sq0[j+2]+h3*sq0[j+3];
-            hk1+=h0*sk1[j]+h1*sk1[j+1]+h2*sk1[j+2]+h3*sk1[j+3];
-        }
-        float v_new_1=(vi1-g1*hk1)*bt1;
-        float q1_dot=0.0f;
-        #pragma unroll 4
-        for (unsigned int j=0;j<k_dim;j+=4) {
-            float h0=H_inter[(j+0)*v_dim+tid],h1=H_inter[(j+1)*v_dim+tid],h2=H_inter[(j+2)*v_dim+tid],h3=H_inter[(j+3)*v_dim+tid];
-            h0=g1*h0+sk1[j]*v_new_1; h1=g1*h1+sk1[j+1]*v_new_1;
-            h2=g1*h2+sk1[j+2]*v_new_1; h3=g1*h3+sk1[j+3]*v_new_1;
-            H[(j+0)*v_dim+tid]=h0; H[(j+1)*v_dim+tid]=h1;
-            H[(j+2)*v_dim+tid]=h2; H[(j+3)*v_dim+tid]=h3;
-            q1_dot+=h0*sq1[j]+h1*sq1[j+1]+h2*sq1[j+2]+h3*sq1[j+3];
-        }
-        float inv_sqrt_d=rsqrtf((float)k_dim);
-        output[(b*2*num_v_heads+vh)*v_dim+tid]=__float2bfloat16(q0_dot*inv_sqrt_d);
-        output[((b*2+1)*num_v_heads+vh)*v_dim+tid]=__float2bfloat16(q1_dot*inv_sqrt_d);
+
+    // Load H column into registers — ONE read
+    float H_reg[K_DIM];
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j++) {
+        H_reg[j] = H_global[j * v_dim + tid];
+    }
+
+    float vi0 = (float)value[(unsigned long long)(b * 2) * v_stride + vh * v_dim + tid];
+    float vi1 = (float)value[(unsigned long long)(b * 2 + 1) * v_stride + vh * v_dim + tid];
+    float g0 = fminf(fmaxf(gate[(unsigned long long)(b * 2) * gb_stride + vh], 1e-6f), 1.0f - 1e-6f);
+    float bt0 = beta[(unsigned long long)(b * 2) * gb_stride + vh];
+    float g1 = fminf(fmaxf(gate[(unsigned long long)(b * 2 + 1) * gb_stride + vh], 1e-6f), 1.0f - 1e-6f);
+    float bt1 = beta[(unsigned long long)(b * 2 + 1) * gb_stride + vh];
+
+    // ── Token 0 ──
+    // Pass 1: hk_dot from registers
+    float hk_a = 0.0f, hk_b = 0.0f, hk_c = 0.0f, hk_d = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j += 4) {
+        hk_a += H_reg[j]     * sk0[j];
+        hk_b += H_reg[j + 1] * sk0[j + 1];
+        hk_c += H_reg[j + 2] * sk0[j + 2];
+        hk_d += H_reg[j + 3] * sk0[j + 3];
+    }
+    float v_new_0 = (vi0 - g0 * ((hk_a + hk_b) + (hk_c + hk_d))) * bt0;
+
+    // Pass 2: update H_reg, compute q0_dot and hk1_dot simultaneously
+    float qd0a = 0.0f, qd0b = 0.0f, qd0c = 0.0f, qd0d = 0.0f;
+    float hk1a = 0.0f, hk1b = 0.0f, hk1c = 0.0f, hk1d = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j += 4) {
+        float h0 = g0 * H_reg[j]     + sk0[j]     * v_new_0;
+        float h1 = g0 * H_reg[j + 1] + sk0[j + 1] * v_new_0;
+        float h2 = g0 * H_reg[j + 2] + sk0[j + 2] * v_new_0;
+        float h3 = g0 * H_reg[j + 3] + sk0[j + 3] * v_new_0;
+        H_reg[j]     = h0;
+        H_reg[j + 1] = h1;
+        H_reg[j + 2] = h2;
+        H_reg[j + 3] = h3;
+        qd0a += h0 * sq0[j];     qd0b += h1 * sq0[j + 1];
+        qd0c += h2 * sq0[j + 2]; qd0d += h3 * sq0[j + 3];
+        hk1a += h0 * sk1[j];     hk1b += h1 * sk1[j + 1];
+        hk1c += h2 * sk1[j + 2]; hk1d += h3 * sk1[j + 3];
+    }
+    float q0_dot = (qd0a + qd0b) + (qd0c + qd0d);
+    float v_new_1 = (vi1 - g1 * ((hk1a + hk1b) + (hk1c + hk1d))) * bt1;
+
+    // ── Token 1 ──
+    // Update H_reg, compute q1_dot
+    float qd1a = 0.0f, qd1b = 0.0f, qd1c = 0.0f, qd1d = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j += 4) {
+        float h0 = g1 * H_reg[j]     + sk1[j]     * v_new_1;
+        float h1 = g1 * H_reg[j + 1] + sk1[j + 1] * v_new_1;
+        float h2 = g1 * H_reg[j + 2] + sk1[j + 2] * v_new_1;
+        float h3 = g1 * H_reg[j + 3] + sk1[j + 3] * v_new_1;
+        H_reg[j]     = h0;
+        H_reg[j + 1] = h1;
+        H_reg[j + 2] = h2;
+        H_reg[j + 3] = h3;
+        qd1a += h0 * sq1[j];     qd1b += h1 * sq1[j + 1];
+        qd1c += h2 * sq1[j + 2]; qd1d += h3 * sq1[j + 3];
+    }
+    float q1_dot = (qd1a + qd1b) + (qd1c + qd1d);
+
+    float inv_sqrt_d = rsqrtf((float)k_dim);
+    output[((unsigned long long)(b * 2) * num_v_heads + vh) * v_dim + tid] =
+        __float2bfloat16(q0_dot * inv_sqrt_d);
+    output[((unsigned long long)(b * 2 + 1) * num_v_heads + vh) * v_dim + tid] =
+        __float2bfloat16(q1_dot * inv_sqrt_d);
+
+    // Write H from registers → global — ONE write
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j++) {
+        H_global[j * v_dim + tid] = H_reg[j];
     }
 }
 
-extern "C" __global__ void gated_delta_rule_chunk3(
+// ═══════════════════════════════════════════════════════════════════
+// Register-Tiled Chunk3 — MTP K=3 verify path.
+//
+// Original chunk3 uses TWO intermediate buffers in global memory:
+//   Token 0: read H → write Hi0    (128 reads + 128 writes)
+//   Token 1: read Hi0 → write Hi1  (128 reads + 128 writes)
+//   Token 2: read Hi1 → write H    (128 reads + 128 writes)
+//   Total: 384 reads + 384 writes = 768 transactions per thread
+//
+// Register-tiled: all 3 tokens from H_reg, no intermediate buffers.
+//   Total: 128 reads + 128 writes = 256 transactions per thread
+//   67% reduction in global memory traffic.
+//
+// Grid: (num_v_heads, batch, 1)   Block: (128, 1, 1)
+// ═══════════════════════════════════════════════════════════════════
+
+extern "C" __global__ void __launch_bounds__(128, 1)
+gated_delta_rule_chunk3(
     float* __restrict__ h_state,
     const __nv_bfloat16* __restrict__ query,
     const __nv_bfloat16* __restrict__ key,
@@ -820,76 +970,113 @@ extern "C" __global__ void gated_delta_rule_chunk3(
     const unsigned int tid = threadIdx.x;
     const unsigned int head_repeat = num_v_heads / num_k_heads;
     const unsigned int kh = vh / head_repeat;
-    const unsigned int hv_size = k_dim * v_dim;
-    float* H = h_state + ((b*num_v_heads+vh)*hv_size);
-    float* Hi0 = h_state_inter0 + ((b*num_v_heads+vh)*hv_size);
-    float* Hi1 = h_state_inter1 + ((b*num_v_heads+vh)*hv_size);
-    const __nv_bfloat16* q0=query+(b*3)*qk_stride+kh*k_dim;
-    const __nv_bfloat16* k0=key+(b*3)*qk_stride+kh*k_dim;
-    const __nv_bfloat16* v0=value+(b*3)*v_stride+vh*v_dim;
-    const float g0=fminf(fmaxf(gate[(b*3)*gb_stride+vh], 1e-6f), 1.0f - 1e-6f), bt0=beta[(b*3)*gb_stride+vh];
-    const __nv_bfloat16* q1=query+(b*3+1)*qk_stride+kh*k_dim;
-    const __nv_bfloat16* k1=key+(b*3+1)*qk_stride+kh*k_dim;
-    const __nv_bfloat16* v1=value+(b*3+1)*v_stride+vh*v_dim;
-    const float g1=fminf(fmaxf(gate[(b*3+1)*gb_stride+vh], 1e-6f), 1.0f - 1e-6f), bt1=beta[(b*3+1)*gb_stride+vh];
-    const __nv_bfloat16* q2=query+(b*3+2)*qk_stride+kh*k_dim;
-    const __nv_bfloat16* k2=key+(b*3+2)*qk_stride+kh*k_dim;
-    const __nv_bfloat16* v2=value+(b*3+2)*v_stride+vh*v_dim;
-    const float g2=fminf(fmaxf(gate[(b*3+2)*gb_stride+vh], 1e-6f), 1.0f - 1e-6f), bt2=beta[(b*3+2)*gb_stride+vh];
-    __shared__ float sk0[128],sq0[128],sk1[128],sq1[128],sk2[128],sq2[128];
-    if (tid<k_dim) {
-        sk0[tid]=(float)k0[tid]; sq0[tid]=(float)q0[tid];
-        sk1[tid]=(float)k1[tid]; sq1[tid]=(float)q1[tid];
-        sk2[tid]=(float)k2[tid]; sq2[tid]=(float)q2[tid];
+
+    float* H_global = h_state + ((unsigned long long)(b * num_v_heads + vh) * K_DIM * v_dim);
+
+    // Load k/q for all 3 tokens
+    __shared__ float sk0[K_DIM], sq0[K_DIM], sk1[K_DIM], sq1[K_DIM], sk2[K_DIM], sq2[K_DIM];
+    {
+        unsigned long long qk0 = (unsigned long long)(b * 3) * qk_stride + kh * k_dim;
+        unsigned long long qk1 = (unsigned long long)(b * 3 + 1) * qk_stride + kh * k_dim;
+        unsigned long long qk2 = (unsigned long long)(b * 3 + 2) * qk_stride + kh * k_dim;
+        sk0[tid] = (float)key[qk0 + tid]; sq0[tid] = (float)query[qk0 + tid];
+        sk1[tid] = (float)key[qk1 + tid]; sq1[tid] = (float)query[qk1 + tid];
+        sk2[tid] = (float)key[qk2 + tid]; sq2[tid] = (float)query[qk2 + tid];
     }
     __syncthreads();
-    if (tid<v_dim) {
-        float vi0=(float)v0[tid],vi1=(float)v1[tid],vi2=(float)v2[tid];
-        float hk0=0.0f;
-        #pragma unroll 4
-        for (unsigned int j=0;j<k_dim;j+=4) {
-            float h0=H[(j+0)*v_dim+tid],h1=H[(j+1)*v_dim+tid],h2=H[(j+2)*v_dim+tid],h3=H[(j+3)*v_dim+tid];
-            hk0+=h0*sk0[j]+h1*sk0[j+1]+h2*sk0[j+2]+h3*sk0[j+3];
-        }
-        float v_new_0=(vi0-g0*hk0)*bt0;
-        float q0_dot=0.0f,hk1=0.0f;
-        #pragma unroll 4
-        for (unsigned int j=0;j<k_dim;j+=4) {
-            float h0=H[(j+0)*v_dim+tid],h1=H[(j+1)*v_dim+tid],h2=H[(j+2)*v_dim+tid],h3=H[(j+3)*v_dim+tid];
-            h0=g0*h0+sk0[j]*v_new_0; h1=g0*h1+sk0[j+1]*v_new_0;
-            h2=g0*h2+sk0[j+2]*v_new_0; h3=g0*h3+sk0[j+3]*v_new_0;
-            Hi0[(j+0)*v_dim+tid]=h0; Hi0[(j+1)*v_dim+tid]=h1;
-            Hi0[(j+2)*v_dim+tid]=h2; Hi0[(j+3)*v_dim+tid]=h3;
-            q0_dot+=h0*sq0[j]+h1*sq0[j+1]+h2*sq0[j+2]+h3*sq0[j+3];
-            hk1+=h0*sk1[j]+h1*sk1[j+1]+h2*sk1[j+2]+h3*sk1[j+3];
-        }
-        float v_new_1=(vi1-g1*hk1)*bt1;
-        float q1_dot=0.0f,hk2=0.0f;
-        #pragma unroll 4
-        for (unsigned int j=0;j<k_dim;j+=4) {
-            float h0=Hi0[(j+0)*v_dim+tid],h1=Hi0[(j+1)*v_dim+tid],h2=Hi0[(j+2)*v_dim+tid],h3=Hi0[(j+3)*v_dim+tid];
-            h0=g1*h0+sk1[j]*v_new_1; h1=g1*h1+sk1[j+1]*v_new_1;
-            h2=g1*h2+sk1[j+2]*v_new_1; h3=g1*h3+sk1[j+3]*v_new_1;
-            Hi1[(j+0)*v_dim+tid]=h0; Hi1[(j+1)*v_dim+tid]=h1;
-            Hi1[(j+2)*v_dim+tid]=h2; Hi1[(j+3)*v_dim+tid]=h3;
-            q1_dot+=h0*sq1[j]+h1*sq1[j+1]+h2*sq1[j+2]+h3*sq1[j+3];
-            hk2+=h0*sk2[j]+h1*sk2[j+1]+h2*sk2[j+2]+h3*sk2[j+3];
-        }
-        float v_new_2=(vi2-g2*hk2)*bt2;
-        float q2_dot=0.0f;
-        #pragma unroll 4
-        for (unsigned int j=0;j<k_dim;j+=4) {
-            float h0=Hi1[(j+0)*v_dim+tid],h1=Hi1[(j+1)*v_dim+tid],h2=Hi1[(j+2)*v_dim+tid],h3=Hi1[(j+3)*v_dim+tid];
-            h0=g2*h0+sk2[j]*v_new_2; h1=g2*h1+sk2[j+1]*v_new_2;
-            h2=g2*h2+sk2[j+2]*v_new_2; h3=g2*h3+sk2[j+3]*v_new_2;
-            H[(j+0)*v_dim+tid]=h0; H[(j+1)*v_dim+tid]=h1;
-            H[(j+2)*v_dim+tid]=h2; H[(j+3)*v_dim+tid]=h3;
-            q2_dot+=h0*sq2[j]+h1*sq2[j+1]+h2*sq2[j+2]+h3*sq2[j+3];
-        }
-        float inv_sqrt_d=rsqrtf((float)k_dim);
-        output[(b*3*num_v_heads+vh)*v_dim+tid]=__float2bfloat16(q0_dot*inv_sqrt_d);
-        output[((b*3+1)*num_v_heads+vh)*v_dim+tid]=__float2bfloat16(q1_dot*inv_sqrt_d);
-        output[((b*3+2)*num_v_heads+vh)*v_dim+tid]=__float2bfloat16(q2_dot*inv_sqrt_d);
+
+    // Load H column into registers — ONE read
+    float H_reg[K_DIM];
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j++) {
+        H_reg[j] = H_global[j * v_dim + tid];
+    }
+
+    float vi0 = (float)value[(unsigned long long)(b * 3) * v_stride + vh * v_dim + tid];
+    float vi1 = (float)value[(unsigned long long)(b * 3 + 1) * v_stride + vh * v_dim + tid];
+    float vi2 = (float)value[(unsigned long long)(b * 3 + 2) * v_stride + vh * v_dim + tid];
+    float g0 = fminf(fmaxf(gate[(unsigned long long)(b * 3) * gb_stride + vh], 1e-6f), 1.0f - 1e-6f);
+    float bt0 = beta[(unsigned long long)(b * 3) * gb_stride + vh];
+    float g1 = fminf(fmaxf(gate[(unsigned long long)(b * 3 + 1) * gb_stride + vh], 1e-6f), 1.0f - 1e-6f);
+    float bt1 = beta[(unsigned long long)(b * 3 + 1) * gb_stride + vh];
+    float g2 = fminf(fmaxf(gate[(unsigned long long)(b * 3 + 2) * gb_stride + vh], 1e-6f), 1.0f - 1e-6f);
+    float bt2 = beta[(unsigned long long)(b * 3 + 2) * gb_stride + vh];
+
+    // ── Token 0 ──
+    float hk_a = 0.0f, hk_b = 0.0f, hk_c = 0.0f, hk_d = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j += 4) {
+        hk_a += H_reg[j]     * sk0[j];
+        hk_b += H_reg[j + 1] * sk0[j + 1];
+        hk_c += H_reg[j + 2] * sk0[j + 2];
+        hk_d += H_reg[j + 3] * sk0[j + 3];
+    }
+    float v_new_0 = (vi0 - g0 * ((hk_a + hk_b) + (hk_c + hk_d))) * bt0;
+
+    // Update H_reg, compute q0_dot + hk1_dot
+    float qd0a = 0.0f, qd0b = 0.0f, qd0c = 0.0f, qd0d = 0.0f;
+    float hk1a = 0.0f, hk1b = 0.0f, hk1c = 0.0f, hk1d = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j += 4) {
+        float h0 = g0 * H_reg[j]     + sk0[j]     * v_new_0;
+        float h1 = g0 * H_reg[j + 1] + sk0[j + 1] * v_new_0;
+        float h2 = g0 * H_reg[j + 2] + sk0[j + 2] * v_new_0;
+        float h3 = g0 * H_reg[j + 3] + sk0[j + 3] * v_new_0;
+        H_reg[j] = h0; H_reg[j+1] = h1; H_reg[j+2] = h2; H_reg[j+3] = h3;
+        qd0a += h0 * sq0[j];     qd0b += h1 * sq0[j + 1];
+        qd0c += h2 * sq0[j + 2]; qd0d += h3 * sq0[j + 3];
+        hk1a += h0 * sk1[j];     hk1b += h1 * sk1[j + 1];
+        hk1c += h2 * sk1[j + 2]; hk1d += h3 * sk1[j + 3];
+    }
+    float q0_dot = (qd0a + qd0b) + (qd0c + qd0d);
+    float v_new_1 = (vi1 - g1 * ((hk1a + hk1b) + (hk1c + hk1d))) * bt1;
+
+    // ── Token 1 ──
+    // Update H_reg, compute q1_dot + hk2_dot
+    float qd1a = 0.0f, qd1b = 0.0f, qd1c = 0.0f, qd1d = 0.0f;
+    float hk2a = 0.0f, hk2b = 0.0f, hk2c = 0.0f, hk2d = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j += 4) {
+        float h0 = g1 * H_reg[j]     + sk1[j]     * v_new_1;
+        float h1 = g1 * H_reg[j + 1] + sk1[j + 1] * v_new_1;
+        float h2 = g1 * H_reg[j + 2] + sk1[j + 2] * v_new_1;
+        float h3 = g1 * H_reg[j + 3] + sk1[j + 3] * v_new_1;
+        H_reg[j] = h0; H_reg[j+1] = h1; H_reg[j+2] = h2; H_reg[j+3] = h3;
+        qd1a += h0 * sq1[j];     qd1b += h1 * sq1[j + 1];
+        qd1c += h2 * sq1[j + 2]; qd1d += h3 * sq1[j + 3];
+        hk2a += h0 * sk2[j];     hk2b += h1 * sk2[j + 1];
+        hk2c += h2 * sk2[j + 2]; hk2d += h3 * sk2[j + 3];
+    }
+    float q1_dot = (qd1a + qd1b) + (qd1c + qd1d);
+    float v_new_2 = (vi2 - g2 * ((hk2a + hk2b) + (hk2c + hk2d))) * bt2;
+
+    // ── Token 2 ──
+    // Update H_reg, compute q2_dot
+    float qd2a = 0.0f, qd2b = 0.0f, qd2c = 0.0f, qd2d = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j += 4) {
+        float h0 = g2 * H_reg[j]     + sk2[j]     * v_new_2;
+        float h1 = g2 * H_reg[j + 1] + sk2[j + 1] * v_new_2;
+        float h2 = g2 * H_reg[j + 2] + sk2[j + 2] * v_new_2;
+        float h3 = g2 * H_reg[j + 3] + sk2[j + 3] * v_new_2;
+        H_reg[j] = h0; H_reg[j+1] = h1; H_reg[j+2] = h2; H_reg[j+3] = h3;
+        qd2a += h0 * sq2[j];     qd2b += h1 * sq2[j + 1];
+        qd2c += h2 * sq2[j + 2]; qd2d += h3 * sq2[j + 3];
+    }
+    float q2_dot = (qd2a + qd2b) + (qd2c + qd2d);
+
+    float inv_sqrt_d = rsqrtf((float)k_dim);
+    output[((unsigned long long)(b * 3) * num_v_heads + vh) * v_dim + tid] =
+        __float2bfloat16(q0_dot * inv_sqrt_d);
+    output[((unsigned long long)(b * 3 + 1) * num_v_heads + vh) * v_dim + tid] =
+        __float2bfloat16(q1_dot * inv_sqrt_d);
+    output[((unsigned long long)(b * 3 + 2) * num_v_heads + vh) * v_dim + tid] =
+        __float2bfloat16(q2_dot * inv_sqrt_d);
+
+    // Write H from registers → global — ONE write
+    #pragma unroll
+    for (int j = 0; j < K_DIM; j++) {
+        H_global[j * v_dim + tid] = H_reg[j];
     }
 }
 

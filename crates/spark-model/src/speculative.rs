@@ -71,6 +71,51 @@ pub trait DraftProposer: Send + Sync {
         Ok(0)
     }
 
+    /// Forward-compat hook for Leviathan-2023 rejection sampling.
+    ///
+    /// Returns the proposer's per-draft probability `p_draft(draft[i])`
+    /// alongside the draft tokens. The default implementation calls
+    /// `propose` and returns `p_draft = 1.0` for every draft — the
+    /// correct value for any *argmax* proposer (which all of Atlas's
+    /// current proposers are; see `mtp_head/forward.rs:382-488`).
+    ///
+    /// A future stochastic proposer that overrides this method lets
+    /// the verifier compute the proper general acceptance probability
+    /// `min(1, p_target(x) / p_draft(x))` rather than the argmax-only
+    /// simplification `p_target(x)`. No caller invokes the override
+    /// yet — `scheduler/leviathan_verify.rs` assumes `p_draft = 1.0`
+    /// implicitly. Wire callers to use `propose_with_probs` once a
+    /// stochastic proposer ships.
+    #[allow(clippy::too_many_arguments)]
+    fn propose_with_probs(
+        &self,
+        last_token: u32,
+        target_hidden: DevicePtr,
+        position: usize,
+        num_drafts: usize,
+        state: &mut dyn ProposerState,
+        ctx: &ForwardContext,
+        stream: u64,
+        draft_embed_target: Option<DevicePtr>,
+        grammar_bitmask: Option<&[i32]>,
+        target_hidden_stack: Option<DevicePtr>,
+    ) -> Result<(Vec<u32>, Vec<f32>)> {
+        let toks = self.propose(
+            last_token,
+            target_hidden,
+            position,
+            num_drafts,
+            state,
+            ctx,
+            stream,
+            draft_embed_target,
+            grammar_bitmask,
+            target_hidden_stack,
+        )?;
+        let probs = vec![1.0_f32; toks.len()];
+        Ok((toks, probs))
+    }
+
     /// Called after target verification to trim proposer state.
     ///
     /// `num_accepted` indicates how many draft tokens were accepted.

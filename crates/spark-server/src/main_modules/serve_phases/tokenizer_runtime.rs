@@ -95,6 +95,74 @@ pub(crate) fn resolve_tokenizer_runtime(
         tracing::info!("ChatML role-boundary hard stop: <|im_start|> (id {id}) registered");
     }
 
+    let html_start_patterns = encode_html_guard_patterns(
+        tokenizer,
+        &[
+            "<!DOCTYPE html",
+            "<!DOCTYPE html>",
+            "<!doctype html",
+            "<!doctype html>",
+            "<html",
+            "<html>",
+            " <!DOCTYPE html",
+            " <!DOCTYPE html>",
+            " <!doctype html",
+            " <!doctype html>",
+            " <html",
+            " <html>",
+            "\n<!DOCTYPE html",
+            "\n<!DOCTYPE html>",
+            "\n<!doctype html",
+            "\n<!doctype html>",
+            "\n<html",
+            "\n<html>",
+            "```html\n<!DOCTYPE html",
+            "```html\n<!DOCTYPE html>",
+            "```html\n<!doctype html",
+            "```html\n<!doctype html>",
+            "```html\n<html",
+            "```html\n<html>",
+            "\n```html\n<!DOCTYPE html",
+            "\n```html\n<!DOCTYPE html>",
+            "\n```html\n<!doctype html",
+            "\n```html\n<!doctype html>",
+            "\n```html\n<html",
+            "\n```html\n<html>",
+            "```\n<!DOCTYPE html",
+            "```\n<!DOCTYPE html>",
+            "\n```\n<!DOCTYPE html",
+            "\n```\n<!DOCTYPE html>",
+        ],
+    );
+    let html_close_patterns = encode_html_guard_patterns(
+        tokenizer,
+        &[
+            "</html>",
+            "</html>\n",
+            "</html>\n```",
+            "\n</html>",
+            "\n</html>\n",
+            "\n</html>\n```",
+            "</body></html>",
+            "</body></html>\n",
+            "</body>\n</html>",
+            "</body>\n</html>\n",
+            "\n</body></html>",
+            "\n</body>\n</html>",
+            "</script></body></html>",
+            "</script>\n</body>\n</html>",
+            "\n</script>\n</body>\n</html>",
+        ],
+    );
+    let html_start_count = html_start_patterns.len();
+    let html_close_count = html_close_patterns.len();
+    crate::scheduler::set_html_completion_guard_patterns(html_start_patterns, html_close_patterns);
+    tracing::info!(
+        "HTML completion guard: {} start patterns, {} close patterns registered",
+        html_start_count,
+        html_close_count,
+    );
+
     let reflection_words = [
         "wait", "Wait", "however", "However", "actually", "Actually", "hmm", "Hmm",
     ];
@@ -173,4 +241,18 @@ pub(crate) fn resolve_tokenizer_runtime(
         tool_call_end_token,
         grammar_engine,
     }
+}
+
+fn encode_html_guard_patterns(
+    tokenizer: &crate::tokenizer::ChatTokenizer,
+    patterns: &[&str],
+) -> Vec<Vec<u32>> {
+    let mut encoded: Vec<Vec<u32>> = patterns
+        .iter()
+        .filter_map(|pattern| tokenizer.encode(pattern).ok())
+        .filter(|ids| !ids.is_empty())
+        .collect();
+    encoded.sort_unstable();
+    encoded.dedup();
+    encoded
 }

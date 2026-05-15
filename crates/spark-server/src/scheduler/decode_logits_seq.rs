@@ -201,6 +201,19 @@ pub fn process_seq_logits(
         gs.apply_bitmask_to_logits(&mut f32_logits);
     }
 
+    if should_suppress_eos_for_html(
+        &a.output_tokens,
+        a.inside_thinking,
+        a.inside_tool_body,
+        a.grammar_state.is_some(),
+    ) {
+        for &eos in &a.eos_tokens {
+            if (eos as usize) < f32_logits.len() {
+                f32_logits[eos as usize] = f32::NEG_INFINITY;
+            }
+        }
+    }
+
     // F72 (byte-level partial-trigger anchor) was removed — see
     // F73 / fix42. The sampler-side anchor hung the server in
     // production despite passing isolated unit tests; the
@@ -292,11 +305,31 @@ pub fn process_seq_logits(
             dry_base: a.dry_base,
             dry_allowed_length: a.dry_allowed_length,
             dry_sequence_breakers: a.dry_sequence_breakers.clone(),
+            // XTC: disable inside tool-call JSON for the same reason DRY
+            // is disabled — schema-fixed tokens must not be replaced by
+            // lower-prob alternatives. Active elsewhere when the model
+            // opts in via MODEL.toml.
+            xtc_probability: if in_tool { 0.0 } else { a.xtc_probability },
+            xtc_threshold: a.xtc_threshold,
             max_tokens: 0,
             stop_token_ids: Vec::new(),
             seed: step_seed,
         },
-        &a.output_tokens,
+        // Penalty path consumes the FULL token sequence (prompt + output),
+        // matching HF Transformers / vLLM / llama.cpp behaviour. The
+        // earlier `&a.output_tokens` (generated-only) underwent two bugs
+        // at non-zero penalty values: (1) chat-template stop tokens
+        // (`<|im_end|>`, `</think>`, …) lived only in the prompt so they
+        // never got penalised, leaving EOS relatively more attractive
+        // than every generated token and causing premature stops at
+        // upstream-published `presence_penalty=1.5`; (2) the "topic
+        // suppression" semantics of OpenAI's presence_penalty spec
+        // (penalise topics from the conversation so the model talks
+        // about new ones) couldn't fire because the prompt's topic
+        // tokens were invisible to the sampler. The
+        // `repetition_penalty_window` field still caps how far back the
+        // sampler scans when callers want a bounded sliding window.
+        &a.seq.tokens,
     );
 
     // F26 (2026-04-26): kernel-level entropy-collapse guard.

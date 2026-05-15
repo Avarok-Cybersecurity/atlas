@@ -64,6 +64,37 @@ pub fn load_fp8_block_scaled_as_fp8weight(
     })
 }
 
+/// Load a native FP8 dense MLP triple (gate_proj, up_proj, down_proj) as
+/// [`crate::layers::dense_ffn::Fp8DenseFfnWeights`].
+///
+/// Used by the dense Qwen3.6-27B-FP8 loader to keep the FFN at native
+/// FP8 with 2D block scales instead of the lossy FP8 → BF16 → NVFP4
+/// re-quantization the default `load_dense_ffn` path performs. The
+/// downgrade is what causes the documented "prose-attractor" failure
+/// mode in `kernels/gb10/qwen3.6-27b/MODEL.toml:103-108`.
+///
+/// The caller is responsible for ensuring the checkpoint actually
+/// ships native FP8 weights for these projections — pass when
+/// `Nvfp4Variant::Fp8Dequanted` is detected. The
+/// `load_fp8_block_scaled_as_fp8weight` helper bails if a projection
+/// is not FP8E4M3, so a mis-typed checkpoint surfaces an explicit
+/// error rather than silently mis-loading.
+pub fn load_dense_ffn_fp8(
+    store: &WeightStore,
+    prefix: &str,
+    gpu: &dyn GpuBackend,
+) -> Result<crate::layers::dense_ffn::Fp8DenseFfnWeights> {
+    use crate::layers::dense_ffn::Fp8DenseFfnWeights;
+    let gate = load_fp8_block_scaled_as_fp8weight(store, &format!("{prefix}.mlp.gate_proj"), gpu)?;
+    let up = load_fp8_block_scaled_as_fp8weight(store, &format!("{prefix}.mlp.up_proj"), gpu)?;
+    let down = load_fp8_block_scaled_as_fp8weight(store, &format!("{prefix}.mlp.down_proj"), gpu)?;
+    Ok(Fp8DenseFfnWeights {
+        gate_proj: gate,
+        up_proj: up,
+        down_proj: down,
+    })
+}
+
 /// Quantize a BF16 dense weight to NVFP4 on GPU.
 ///
 /// Two-phase: (1) find global max, (2) per-group E2M1 quantization.

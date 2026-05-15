@@ -156,11 +156,29 @@ pub(crate) async fn build_and_serve(
     // `into_make_service_with_connect_info` exposes the socket peer addr
     // to extractors — needed by `rate_limit_middleware` when the caller
     // didn't send X-Forwarded-For.
+    // Clean-shutdown hook: SIGINT (Ctrl+C) → axum drains in-flight
+    // requests and exits. Without this the binary exited via tokio's
+    // default abort behaviour on Ctrl+C, which left CUDA streams in
+    // mid-decode (leaking GPU memory until the container was killed).
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
+    .with_graceful_shutdown(async {
+        match tokio::signal::ctrl_c().await {
+            Ok(_) => {
+                tracing::info!(
+                    "Shutdown signal received (Ctrl+C) — draining in-flight requests, \
+                     stopping HTTP listener, exiting cleanly"
+                );
+            }
+            Err(e) => {
+                tracing::warn!("Ctrl+C handler install failed: {e}; shutdown will be hard");
+            }
+        }
+    })
     .await?;
+    tracing::info!("HTTP server stopped — goodbye");
 
     Ok(())
 }

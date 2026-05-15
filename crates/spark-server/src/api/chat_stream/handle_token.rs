@@ -13,7 +13,9 @@ use axum::response::sse::Event;
 use crate::openai::ChatCompletionChunk;
 use crate::tool_parser;
 
-use super::super::failures::{bump_f12_tool_call_count, check_loop_watchdog};
+use super::super::failures::{
+    HTML_RESTART_GUARD_MIN_BYTES, bump_f12_tool_call_count, check_loop_watchdog_with_context,
+};
 use super::super::sanitizer::sanitize_content_chunk;
 use super::ctx::StreamCtx;
 use super::state::StreamState;
@@ -22,6 +24,13 @@ use super::tool_handlers::{
 };
 
 type SseVec = Vec<Result<Event, std::convert::Infallible>>;
+const HTML_AUTOCLOSE_MIN_BYTES: usize = 4_000;
+
+enum IncompleteHtmlFenceAction {
+    Hold,
+    Release(String),
+    AutoClose(String),
+}
 
 /// Process one token. Returns the SSE events to forward to the
 /// client (empty `Vec` is valid).
@@ -223,6 +232,9 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
     }
 
     if state.stop_string_triggered {
+        if state.loop_watchdog_triggered {
+            return sse_events;
+        }
         if !delta.is_empty() {
             let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, delta);
             let json = serde_json::to_string(&chunk).unwrap_or_default();
@@ -312,10 +324,209 @@ fn process_detector_content(
     // Inlining: this helper is only called once per branch with the
     // correct input type; it never re-sanitizes. The parameter is the
     // post-sanitizer text in both call sites.
-    let sanitized = sanitized_or_raw;
+    let sanitized_cow = match stage_incomplete_html_fence_hold(state, sanitized_or_raw) {
+        Some(IncompleteHtmlFenceAction::Hold) => return Some(Vec::new()),
+        Some(IncompleteHtmlFenceAction::Release(released)) => std::borrow::Cow::Owned(released),
+        Some(IncompleteHtmlFenceAction::AutoClose(final_delta)) => {
+            state.loop_watchdog_triggered = true;
+            state.stop_string_triggered = true;
+            ctx.cancel_flag
+                .store(true, std::sync::atomic::Ordering::Release);
+            tracing::warn!(
+                "loop watchdog fired — auto-closed substantial HTML document at split markdown fence"
+            );
+            if !final_delta.is_empty() {
+                let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, final_delta);
+                let json = serde_json::to_string(&chunk).unwrap_or_default();
+                return Some(vec![Ok(Event::default().data(json))]);
+            }
+            return Some(Vec::new());
+        }
+        None => std::borrow::Cow::Borrowed(sanitized_or_raw),
+    };
+    let sanitized = sanitized_cow.as_ref();
+    let sanitized_lower = sanitized.to_ascii_lowercase();
+    if !state.structured_content_seen && looks_like_structured_content(&sanitized_lower) {
+        state.structured_content_seen = true;
+    }
 
-    // F4 SimHash guard.
-    let semantic_trip = if !state.loop_watchdog_triggered {
+// ── Post-HTML hold: suppress self-critique after `</html>` ──────
+    //
+    // When we've seen a complete HTML document (<!doctype html>...
+    // </html>) with only whitespace/fences after it, we enter
+    // `html_complete_seen` mode. On each subsequent chunk:
+    //   - whitespace / backticks / newlines → emit normally
+    //   - closing ``` fence → emit it, EXIT hold (downstream
+    //     SimHash/watchdog will catch degeneration loops)
+    //   - structural content (<tag, ```, {, [) → exit hold, process
+    //   - any other alphabetic prose → self-critique, fire watchdog
+    //
+    // The prose detection is language-agnostic: any Unicode alphabetic
+    // character starting a line after </html> signals natural-language
+    // self-critique, whether English, Chinese, Arabic, etc. Valid
+    // structural continuations (new code blocks, HTML tags, JSON) are
+    // distinguished from prose by their opening characters.
+    if state.html_complete_seen {
+        let only_whitespace_or_fences = sanitized
+            .trim()
+            .chars()
+            .all(|c| c.is_ascii_whitespace() || c == '`');
+        if only_whitespace_or_fences {
+            // Closing markdown fence in the whitespace: the code block
+            // has ended.  Exit hold mode so that downstream watchdogs
+            // (SimHash, line-level loop check) handle any later prose.
+            if sanitized.contains("```") {
+                state.html_complete_seen = false;
+            }
+            // Emit whitespace/fences regardless.
+            if !sanitized.is_empty() {
+                let chunk =
+                    ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized.to_string());
+                let json = serde_json::to_string(&chunk).unwrap_or_default();
+                return Some(vec![Ok(Event::default().data(json))]);
+            }
+            return None;
+        }
+        // Non-whitespace content after a complete HTML document.
+        // Use language-agnostic structural classification: any
+        // Unicode alphabetic character starting a line is natural-
+        // language prose (self-critique), unless it's a structural
+        // continuation (code fence, HTML tag, JSON, list).
+        let trimmed = sanitized.trim();
+        let first_char = trimmed.chars().next();
+        let is_structural = first_char.is_some_and(|c| {
+            matches!(c, '<' | '`' | '{' | '[' | '#' | '-' | '*' | '|')
+        });
+        let starts_with_prose = first_char.is_some_and(|c| c.is_alphabetic());
+        if starts_with_prose && !is_structural {
+            state.loop_watchdog_triggered = true;
+            state.stop_string_triggered = true;
+            ctx.cancel_flag
+                .store(true, std::sync::atomic::Ordering::Release);
+            tracing::warn!(
+                "loop watchdog fired — self-critique prose after complete HTML document (post-HTML hold)"
+            );
+            return Some(Vec::new());
+        }
+        // Structural continuation (code fence, HTML tag, etc.).
+        // Exit hold mode and process normally.
+        state.html_complete_seen = false;
+        // Fall through to normal processing below.
+    }
+
+    // HTML document boundary detection. Dense Qwen3.6 sometimes
+    // closes a complete HTML document, then starts self-critique
+    // ("Wait, the above..."). When we see a complete document, we
+    // classify the trailing content:
+    //   - alphabetic prose immediately after </html> → fire watchdog
+    //   - only whitespace/fences after </html> → enter hold mode
+    //     (see html_complete_seen above)
+    let prior_lower = state.loop_scan_buf.to_ascii_lowercase();
+    let combined_lower = format!("{prior_lower}{sanitized_lower}");
+    if !state.structured_content_seen && looks_like_structured_content(&combined_lower) {
+        state.structured_content_seen = true;
+    }
+    update_html_doc_state(state, sanitized, &sanitized_lower, &combined_lower);
+    if combined_lower.contains("<!doctype html")
+        && let Some(html_end_start) = combined_lower.rfind("</html>")
+    {
+        let prior_len = prior_lower.len();
+        let html_end = html_end_start + "</html>".len();
+        let html_start = combined_lower[..html_end_start]
+            .rfind("<!doctype html")
+            .or_else(|| combined_lower[..html_end_start].rfind("<html"));
+        if let Some(html_start) = html_start
+            && html_end.saturating_sub(html_start) >= HTML_RESTART_GUARD_MIN_BYTES
+        {
+            let emit_start = html_end.saturating_sub(prior_len).min(sanitized.len());
+            let mut trailing_fence_len = 0usize;
+            for (rel, ch) in sanitized[emit_start..].char_indices() {
+                if ch.is_ascii_whitespace() || ch == '`' {
+                    trailing_fence_len = rel + ch.len_utf8();
+                    continue;
+                }
+                break;
+            }
+            let after_html = &combined_lower[html_end..];
+            let after_fence =
+                after_html.trim_start_matches(|c: char| c.is_ascii_whitespace() || c == '`');
+            // Language-agnostic prose detection: any Unicode alphabetic
+            // character after </html> signals self-critique, unless
+            // it starts with a structural continuation character.
+            let after_fence_first = after_fence.chars().next();
+            let is_structural_continuation = after_fence_first.is_some_and(|c| {
+                matches!(c, '<' | '`' | '{' | '[' | '#' | '-' | '*' | '|')
+            });
+            let starts_with_prose = after_fence_first.is_some_and(|c| c.is_alphabetic());
+            if starts_with_prose && !is_structural_continuation {
+                // Self-critique prose detected immediately after </html>.
+                // Emit everything up to the HTML end (plus fences/whitespace)
+                // and fire the watchdog.
+                state.loop_watchdog_triggered = true;
+                state.stop_string_triggered = true;
+                ctx.cancel_flag
+                    .store(true, std::sync::atomic::Ordering::Release);
+                let emit_end = emit_start + trailing_fence_len;
+                let final_delta = sanitized[..emit_end].to_string();
+                if !final_delta.is_empty() {
+                    let chunk =
+                        ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, final_delta);
+                    let json = serde_json::to_string(&chunk).unwrap_or_default();
+                    return Some(vec![Ok(Event::default().data(json))]);
+                }
+                return Some(Vec::new());
+            }
+            // Only whitespace/fences after </html> — enter post-HTML
+            // hold mode instead of immediately firing the watchdog.
+            // Subsequent tokens will be held back until we can determine
+            // whether they're self-critique or a legitimate continuation.
+            if after_fence.is_empty() {
+                state.html_complete_seen = true;
+            }
+        }
+    }
+    if state.html_doc_started
+        && !state.html_doc_closed
+        && state.html_doc_bytes >= HTML_AUTOCLOSE_MIN_BYTES
+        && let Some(final_delta) = maybe_autoclose_incomplete_html_at_code_fence(
+            sanitized,
+            state.html_body_closed,
+            html_autoclose_needs_script_close(state),
+        )
+    {
+        state.loop_watchdog_triggered = true;
+        state.stop_string_triggered = true;
+        ctx.cancel_flag
+            .store(true, std::sync::atomic::Ordering::Release);
+        tracing::warn!(
+            "loop watchdog fired — auto-closed substantial HTML document before markdown explanation"
+        );
+        if !final_delta.is_empty() {
+            let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, final_delta);
+            let json = serde_json::to_string(&chunk).unwrap_or_default();
+            return Some(vec![Ok(Event::default().data(json))]);
+        }
+        return Some(Vec::new());
+    }
+
+    // Track ``` fence toggles. Odd count in this chunk flips the
+    // inside_code_block state; even count (e.g. open+close in one
+    // delta) nets to no toggle. Used to suppress the SimHash
+    // semantic-loop guard inside fenced code — see the field doc
+    // on `StreamState::inside_code_block` for rationale.
+    let fence_count = sanitized.matches("```").count();
+    if fence_count % 2 == 1 {
+        state.inside_code_block = !state.inside_code_block;
+    }
+
+    // F4 SimHash guard. Skipped inside code blocks because code
+    // chunks (CSS rules, JS function bodies) share enough common
+    // tokens to false-positive on similarity, prematurely
+    // terminating long code generations. The line-level
+    // `check_loop_watchdog` still runs with its code-aware
+    // threshold; F27 logit-fingerprint guard at the scheduler
+    // also remains active.
+    let semantic_trip = if !state.loop_watchdog_triggered && !state.inside_code_block {
         state.simhash_pending.push_str(sanitized);
         let mut dup = false;
         if crate::loop_simhash::ends_at_sentence_boundary(&state.simhash_pending).is_some()
@@ -330,13 +541,20 @@ fn process_detector_content(
         }
         dup
     } else {
+        // Inside a code block — drop any partial buffer so we don't
+        // cross-compare pre-block prose against post-block prose
+        // when we eventually exit the code block.
+        if state.inside_code_block {
+            state.simhash_pending.clear();
+        }
         false
     };
 
-    let token_trip = check_loop_watchdog(
+    let token_trip = check_loop_watchdog_with_context(
         sanitized,
         &mut state.loop_scan_buf,
         state.loop_watchdog_triggered,
+        state.structured_content_seen || state.inside_code_block,
     );
 
     if semantic_trip || token_trip {
@@ -348,6 +566,16 @@ fn process_detector_content(
         }
         state.loop_watchdog_triggered = true;
         state.stop_string_triggered = true;
+        // Signal the scheduler to finish this seq instead of running to
+        // `max_tokens`. Pre-fix the watchdog only set
+        // `stop_string_triggered`, which suppressed SSE deltas but did
+        // not propagate to scheduling — under MTP (greedy verify
+        // bypasses DRY/LZ/presence_penalty) the model kept emitting
+        // the loop tokens until the cap, wasting decode cycles and
+        // surfacing `finish_reason="length"` to the client. See
+        // `inference_types::InferenceRequest::Streaming::cancel_flag`.
+        ctx.cancel_flag
+            .store(true, std::sync::atomic::Ordering::Release);
 
         let salvaged =
             crate::tool_salvage::salvage(&state.loop_scan_buf, &ctx.tool_defs_for_backfill);
@@ -395,6 +623,181 @@ fn process_detector_content(
     None
 }
 
+fn looks_like_structured_content(lower: &str) -> bool {
+    lower.contains("<!doctype html")
+        || lower.contains("<html")
+        || lower.contains("<style")
+        || lower.contains("<script")
+        || lower.contains("</div>")
+        || lower.contains("function ")
+        || lower.contains("const ")
+        || lower.contains("class ")
+}
+
+fn update_html_doc_state(
+    state: &mut StreamState,
+    sanitized: &str,
+    sanitized_lower: &str,
+    combined_lower: &str,
+) {
+    if !state.html_doc_started && looks_like_html_document(combined_lower) {
+        state.html_doc_started = true;
+    }
+    if !state.html_doc_started || state.html_doc_closed {
+        return;
+    }
+    state.html_doc_bytes = state.html_doc_bytes.saturating_add(sanitized.len());
+    let script_opens = sanitized_lower.matches("<script").count();
+    let script_closes = sanitized_lower.matches("</script>").count();
+    if script_opens > 0 {
+        state.html_open_script_tags = state.html_open_script_tags.saturating_add(script_opens);
+    }
+    if script_closes > 0 {
+        state.html_open_script_tags = state.html_open_script_tags.saturating_sub(script_closes);
+    }
+    if combined_lower.contains("</script>") {
+        state.html_script_closed = true;
+    }
+    if combined_lower.contains("</body>") {
+        state.html_body_closed = true;
+    }
+    if combined_lower.contains("</html>") {
+        state.html_doc_closed = true;
+    }
+}
+
+fn looks_like_html_document(lower: &str) -> bool {
+    lower.contains("<!doctype html")
+        || lower.contains("<html")
+        || lower.contains("<head")
+        || lower.contains("<body")
+        || lower.contains("<style")
+        || lower.contains("</style>")
+        || lower.contains("<script")
+        || lower.contains("</script>")
+}
+
+fn html_autoclose_eligible(state: &StreamState) -> bool {
+    state.html_doc_started
+        && !state.html_doc_closed
+        && state.html_doc_bytes >= HTML_AUTOCLOSE_MIN_BYTES
+}
+
+fn html_autoclose_needs_script_close(state: &StreamState) -> bool {
+    state.html_open_script_tags > 0 || (!state.html_body_closed && state.html_script_closed)
+}
+
+fn stage_incomplete_html_fence_hold(
+    state: &mut StreamState,
+    sanitized: &str,
+) -> Option<IncompleteHtmlFenceAction> {
+    if !html_autoclose_eligible(state) {
+        if state.pending_incomplete_html_fence.is_empty() {
+            return None;
+        }
+        let mut released = std::mem::take(&mut state.pending_incomplete_html_fence);
+        released.push_str(sanitized);
+        return Some(IncompleteHtmlFenceAction::Release(released));
+    }
+
+    if state.pending_incomplete_html_fence.is_empty() && !sanitized.contains('`') {
+        return None;
+    }
+
+    if state.pending_incomplete_html_fence.is_empty() {
+        if let Some(final_delta) = maybe_autoclose_incomplete_html_at_code_fence(
+            sanitized,
+            state.html_body_closed,
+            html_autoclose_needs_script_close(state),
+        ) {
+            return Some(IncompleteHtmlFenceAction::AutoClose(final_delta));
+        }
+        if let Some(suffix_start) = trailing_partial_markdown_fence_start(sanitized) {
+            state
+                .pending_incomplete_html_fence
+                .push_str(&sanitized[suffix_start..]);
+            let prefix = &sanitized[..suffix_start];
+            if prefix.is_empty() {
+                return Some(IncompleteHtmlFenceAction::Hold);
+            }
+            return Some(IncompleteHtmlFenceAction::Release(prefix.to_string()));
+        }
+        return None;
+    }
+
+    state.pending_incomplete_html_fence.push_str(sanitized);
+    if let Some(final_delta) = maybe_autoclose_incomplete_html_at_code_fence(
+        &state.pending_incomplete_html_fence,
+        state.html_body_closed,
+        html_autoclose_needs_script_close(state),
+    ) {
+        state.pending_incomplete_html_fence.clear();
+        return Some(IncompleteHtmlFenceAction::AutoClose(final_delta));
+    }
+
+    let only_possible_fence = state
+        .pending_incomplete_html_fence
+        .chars()
+        .all(|c| c.is_ascii_whitespace() || c == '`');
+    if only_possible_fence {
+        return Some(IncompleteHtmlFenceAction::Hold);
+    }
+
+    let released = std::mem::take(&mut state.pending_incomplete_html_fence);
+    Some(IncompleteHtmlFenceAction::Release(released))
+}
+
+fn trailing_partial_markdown_fence_start(sanitized: &str) -> Option<usize> {
+    let trimmed_end = sanitized
+        .trim_end_matches(|c: char| c.is_ascii_whitespace())
+        .len();
+    let trimmed = &sanitized[..trimmed_end];
+    let mut tick_count = 0usize;
+    let mut suffix_start = trimmed.len();
+    for (idx, ch) in trimmed.char_indices().rev() {
+        if ch != '`' {
+            break;
+        }
+        tick_count += 1;
+        suffix_start = idx;
+    }
+    if matches!(tick_count, 1 | 2) {
+        Some(suffix_start)
+    } else {
+        None
+    }
+}
+
+fn maybe_autoclose_incomplete_html_at_code_fence(
+    sanitized: &str,
+    body_closed: bool,
+    script_open: bool,
+) -> Option<String> {
+    let fence_start = sanitized.find("```")?;
+    let mut injection = String::new();
+    if script_open {
+        injection.push_str("\n</script>");
+    }
+    if !body_closed {
+        injection.push_str("\n</body>");
+    }
+    injection.push_str("\n</html>\n");
+    let mut emit_end = fence_start;
+    for (rel, ch) in sanitized[fence_start..].char_indices() {
+        if ch.is_ascii_whitespace() || ch == '`' {
+            emit_end = fence_start + rel + ch.len_utf8();
+            continue;
+        }
+        break;
+    }
+    Some(format!(
+        "{}{}{}",
+        &sanitized[..fence_start],
+        injection,
+        &sanitized[fence_start..emit_end]
+    ))
+}
+
 /// Detector-active branch's `Content(text)` arm: sanitize first,
 /// then run the shared semantic/token watchdog + emit pipeline.
 fn detector_content_arm(state: &mut StreamState, ctx: &StreamCtx, text: &str) -> Option<SseVec> {
@@ -406,4 +809,184 @@ fn detector_content_arm(state: &mut StreamState, ctx: &StreamCtx, text: &str) ->
         &ctx.leak_markers,
     );
     process_detector_content(state, ctx, &sanitized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn autoclose_incomplete_html_before_markdown_fence() {
+        let prior = format!(
+            "```html\n<!DOCTYPE html><html><body><script>{}</script>\n",
+            "x".repeat(HTML_AUTOCLOSE_MIN_BYTES)
+        );
+        let sanitized = "```\n\n### Explanation";
+        let mut state = StreamState::new(false, false);
+        update_html_doc_state(
+            &mut state,
+            &prior,
+            &prior.to_ascii_lowercase(),
+            &prior.to_ascii_lowercase(),
+        );
+        let out = maybe_autoclose_incomplete_html_at_code_fence(
+            sanitized,
+            state.html_body_closed,
+            state.html_open_script_tags > 0,
+        )
+        .expect("expected auto-close delta");
+        assert!(out.contains("</body>\n</html>\n```"));
+        assert!(!out.contains("Explanation"));
+    }
+
+    #[test]
+    fn autoclose_gate_ignores_short_html_drafts() {
+        let prior = "<!DOCTYPE html><html><body><script>let x = 1;</script>\n";
+        let sanitized = "```\n\n### Explanation";
+        let mut state = StreamState::new(false, false);
+        update_html_doc_state(
+            &mut state,
+            prior,
+            &prior.to_ascii_lowercase(),
+            &prior.to_ascii_lowercase(),
+        );
+        assert!(state.html_doc_bytes < HTML_AUTOCLOSE_MIN_BYTES);
+        assert!(maybe_autoclose_incomplete_html_at_code_fence(sanitized, false, false).is_some());
+    }
+
+    #[test]
+    fn autoclose_adds_script_close_for_open_main_script() {
+        let prior = format!(
+            "<!DOCTYPE html><html><head><script src=\"three.js\"></script></head><body><script>{}",
+            "x".repeat(HTML_AUTOCLOSE_MIN_BYTES)
+        );
+        let sanitized = "```\n\n### Explanation";
+        let mut state = StreamState::new(false, false);
+        update_html_doc_state(
+            &mut state,
+            &prior,
+            &prior.to_ascii_lowercase(),
+            &prior.to_ascii_lowercase(),
+        );
+        assert_eq!(state.html_open_script_tags, 1);
+        let out = maybe_autoclose_incomplete_html_at_code_fence(
+            sanitized,
+            state.html_body_closed,
+            state.html_open_script_tags > 0,
+        )
+        .expect("expected auto-close delta");
+        assert!(out.contains("</script>\n</body>\n</html>\n```"));
+    }
+
+    #[test]
+    fn autoclose_adds_script_close_after_seen_script_tags() {
+        let mut state = StreamState::new(false, false);
+        state.html_doc_started = true;
+        state.html_doc_bytes = HTML_AUTOCLOSE_MIN_BYTES;
+        state.html_script_closed = true;
+
+        match stage_incomplete_html_fence_hold(&mut state, "```\n\n### Explanation") {
+            Some(IncompleteHtmlFenceAction::AutoClose(out)) => {
+                assert!(out.contains("</script>\n</body>\n</html>\n```"));
+                assert!(!out.contains("Explanation"));
+            }
+            _ => panic!("expected heuristic script close to auto-close"),
+        }
+    }
+
+    #[test]
+    fn autoclose_html_state_detects_split_script_close() {
+        let mut state = StreamState::new(false, false);
+        let first = "<!DOCTYPE html><html><head><script src=\"three.js\"></scr";
+        update_html_doc_state(
+            &mut state,
+            first,
+            &first.to_ascii_lowercase(),
+            &first.to_ascii_lowercase(),
+        );
+        assert!(!state.html_script_closed);
+
+        let second = "ipt></head><body><script>";
+        update_html_doc_state(
+            &mut state,
+            second,
+            &second.to_ascii_lowercase(),
+            &format!(
+                "{}{}",
+                first.to_ascii_lowercase(),
+                second.to_ascii_lowercase()
+            ),
+        );
+        assert!(state.html_script_closed);
+    }
+
+    #[test]
+    fn autoclose_stages_split_markdown_fence() {
+        let mut state = StreamState::new(false, false);
+        state.html_doc_started = true;
+        state.html_doc_bytes = HTML_AUTOCLOSE_MIN_BYTES;
+
+        assert!(matches!(
+            stage_incomplete_html_fence_hold(&mut state, "`"),
+            Some(IncompleteHtmlFenceAction::Hold)
+        ));
+        assert_eq!(state.pending_incomplete_html_fence, "`");
+        assert!(matches!(
+            stage_incomplete_html_fence_hold(&mut state, "`"),
+            Some(IncompleteHtmlFenceAction::Hold)
+        ));
+
+        match stage_incomplete_html_fence_hold(&mut state, "`\n\n### Explanation") {
+            Some(IncompleteHtmlFenceAction::AutoClose(out)) => {
+                assert!(out.contains("</body>\n</html>\n```"));
+                assert!(!out.contains("Explanation"));
+            }
+            _ => panic!("expected split fence to auto-close"),
+        }
+        assert!(state.pending_incomplete_html_fence.is_empty());
+    }
+
+    #[test]
+    fn autoclose_holds_trailing_partial_fence_after_code_prefix() {
+        let mut state = StreamState::new(false, false);
+        state.html_doc_started = true;
+        state.html_doc_bytes = HTML_AUTOCLOSE_MIN_BYTES;
+        state.html_open_script_tags = 1;
+
+        match stage_incomplete_html_fence_hold(&mut state, "buildings=[];\n``") {
+            Some(IncompleteHtmlFenceAction::Release(out)) => {
+                assert_eq!(out, "buildings=[];\n");
+            }
+            _ => panic!("expected code prefix to release while holding partial fence"),
+        }
+        assert_eq!(state.pending_incomplete_html_fence, "``");
+
+        match stage_incomplete_html_fence_hold(&mut state, "`\n\n### Explanation") {
+            Some(IncompleteHtmlFenceAction::AutoClose(out)) => {
+                assert!(out.contains("</script>\n</body>\n</html>\n```"));
+                assert!(!out.contains("Explanation"));
+            }
+            _ => panic!("expected trailing split fence to auto-close"),
+        }
+        assert!(state.pending_incomplete_html_fence.is_empty());
+    }
+
+    #[test]
+    fn autoclose_hold_releases_template_backtick() {
+        let mut state = StreamState::new(false, false);
+        state.html_doc_started = true;
+        state.html_doc_bytes = HTML_AUTOCLOSE_MIN_BYTES;
+
+        assert!(matches!(
+            stage_incomplete_html_fence_hold(&mut state, "`"),
+            Some(IncompleteHtmlFenceAction::Hold)
+        ));
+        match stage_incomplete_html_fence_hold(&mut state, "altitude`") {
+            Some(IncompleteHtmlFenceAction::Release(out)) => {
+                assert_eq!(out, "`altitude`");
+            }
+            _ => panic!("expected non-fence backtick to release"),
+        }
+        assert!(state.pending_incomplete_html_fence.is_empty());
+    }
 }

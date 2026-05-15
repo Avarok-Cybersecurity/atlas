@@ -277,7 +277,37 @@ impl TransformerModel {
     }
 
     pub(super) fn hidden_after_norm_dispatch(&self) -> DevicePtr {
-        // norm_output() holds the post-final-norm hidden state from the last decode
-        self.buffers.norm_output()
+        // norm_output() holds the post-final-norm hidden state from the last
+        // decode step. The MTP head's `pre_fc_norm_hidden` then normalises
+        // again — i.e. the head sees a doubly-normalised vector.
+        //
+        // For the MoE MTP heads (Qwen3.5-35B / 122B) this happens to work:
+        // those checkpoints have `pre_fc_norm_hidden.γ` baked to compensate
+        // for the second normalisation, and they observe ≥85% K=2 accept.
+        //
+        // For dense Qwen3.6-27B-FP8 the comparator (MTP_COMPARE) shows
+        // cos(MTP, main) ≈ 0 at delta=1 — directional information is
+        // destroyed by the second norm because that head's γ profile
+        // expects PRE-norm input. Setting `ATLAS_MTP_PRE_NORM_INPUT=1`
+        // switches the target source to `hidden_states()` (pre-final-
+        // norm) — the upstream Qwen3.6-dense-MTP contract.
+        use std::sync::atomic::{AtomicI8, Ordering};
+        static STATE: AtomicI8 = AtomicI8::new(-1);
+        let pre_norm = match STATE.load(Ordering::Relaxed) {
+            0 => false,
+            1 => true,
+            _ => {
+                let on = std::env::var("ATLAS_MTP_PRE_NORM_INPUT")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+                STATE.store(if on { 1 } else { 0 }, Ordering::Relaxed);
+                on
+            }
+        };
+        if pre_norm {
+            self.buffers.hidden_states()
+        } else {
+            self.buffers.norm_output()
+        }
     }
 }

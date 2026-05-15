@@ -13,6 +13,24 @@ use super::*;
 /// When `logprobs` is Some, the logprobs data is accumulated for blocking
 /// responses and sent via `StreamEvent::TokenWithLogprobs` for streaming.
 pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::TokenLogprobs>) {
+    // Streaming-side back-channel: if the SimHash loop watchdog (or any
+    // future streaming terminator) fired, finish the seq now. Without
+    // this, the watchdog only suppressed downstream SSE deltas while
+    // the scheduler kept generating to `max_tokens` — under MTP
+    // (greedy verify) the loop tokens kept getting accepted because
+    // DRY/LZ/presence_penalty are sampler-side and the verify path
+    // uses argmax. Polled here so it lands on the very next emission.
+    if let Some(ref flag) = a.cancel_flag
+        && flag.load(std::sync::atomic::Ordering::Acquire)
+    {
+        a.finished = true;
+        tracing::info!(
+            "emit_token: cancel_flag set (loop watchdog); finishing seq after {} output tokens",
+            a.output_tokens.len(),
+        );
+        return;
+    }
+
     // ChatML role-boundary HARD stop (`<|im_start|>`).
     //
     // Handled BEFORE grammar advance / EOS suppression: if the model

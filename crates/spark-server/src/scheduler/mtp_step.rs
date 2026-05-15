@@ -34,13 +34,23 @@ pub fn step_mtp(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: usize) 
                 continue;
             }
         };
+        let suppress_ids: &[u32] = if should_suppress_eos_for_html(
+            &a.output_tokens,
+            a.inside_thinking,
+            a.inside_tool_body,
+            a.grammar_state.is_some(),
+        ) {
+            &a.eos_tokens
+        } else {
+            &[]
+        };
         let tok = match sample_token_with_grammar(
             model,
             logits,
             a.temperature,
             a.top_k,
             a.top_p,
-            &[],
+            suppress_ids,
             a.grammar_state.as_mut(),
         ) {
             Ok(t) => t,
@@ -114,6 +124,23 @@ pub fn step_mtp(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: usize) 
             if kept < drafts.len() {
                 drafts.truncate(kept);
             }
+            if drafts.is_empty() {
+                continue;
+            }
+        }
+        if should_suppress_eos_for_html(
+            &a.output_tokens,
+            a.inside_thinking,
+            a.inside_tool_body,
+            a.grammar_state.is_some(),
+        ) && let Some(pos) = drafts.iter().position(|tok| a.eos_tokens.contains(tok))
+        {
+            tracing::debug!(
+                kept = pos,
+                dropped = drafts.len() - pos,
+                "HTML completion guard: truncated MTP drafts at EOS before </html>"
+            );
+            drafts.truncate(pos);
             if drafts.is_empty() {
                 continue;
             }

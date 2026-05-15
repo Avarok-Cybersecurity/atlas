@@ -9,6 +9,7 @@ use axum::response::sse::{Event, KeepAlive};
 use axum::response::{IntoResponse, Json, Response, Sse};
 use futures::StreamExt;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::AppState;
@@ -79,6 +80,10 @@ pub enum InferenceRequest {
         dry_multiplier: f32,
         dry_base: f32,
         dry_allowed_length: u32,
+        /// XTC (Exclude Top Choices) probability — see SamplingParams.
+        /// Populated from MODEL.toml `[sampling.*].xtc_probability` (0.0 = off).
+        xtc_probability: f32,
+        xtc_threshold: f32,
         /// LZ penalty (A.1, arXiv:2504.20131). Per-extension n-gram
         /// penalty over the recent 256-token window. Populated from
         /// MODEL.toml `[sampling.*].lz_penalty`. 0.0 = disabled.
@@ -147,6 +152,10 @@ pub enum InferenceRequest {
         dry_multiplier: f32,
         dry_base: f32,
         dry_allowed_length: u32,
+        /// XTC (Exclude Top Choices) probability — see SamplingParams.
+        /// Populated from MODEL.toml `[sampling.*].xtc_probability` (0.0 = off).
+        xtc_probability: f32,
+        xtc_threshold: f32,
         /// LZ penalty (A.1, see Blocking variant).
         lz_penalty: f32,
         /// Per-token logit bias: (token_id, bias_value) pairs.
@@ -182,6 +191,20 @@ pub enum InferenceRequest {
         /// Request timeout as absolute deadline. None = no timeout.
         timeout_at: Option<std::time::Instant>,
         token_tx: tokio::sync::mpsc::Sender<StreamEvent>,
+        /// Back-channel for streaming-side termination requests.
+        ///
+        /// Set by the streaming layer when the SimHash semantic-loop
+        /// watchdog (`handle_token::process_detector_content`) detects a
+        /// paraphrased-sentence loop. The scheduler polls this in
+        /// `emit_token` and finishes the sequence when set, instead of
+        /// running to `max_tokens` and reporting `finish_reason="length"`.
+        ///
+        /// Pre-fix the watchdog only set `state.stop_string_triggered`,
+        /// which suppressed further SSE deltas but did not signal the
+        /// scheduler — under MTP (greedy verify) the model continued
+        /// generating the same loop tokens until `max_tokens`, wasting
+        /// decode cycles on output the client never sees.
+        cancel_flag: Arc<AtomicBool>,
     },
 }
 

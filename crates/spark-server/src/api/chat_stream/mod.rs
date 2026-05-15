@@ -63,6 +63,8 @@ pub(crate) async fn chat_completions_stream(
     dry_base: f32,
     dry_allowed_length: u32,
     lz_penalty: f32,
+    xtc_probability: f32,
+    xtc_threshold: f32,
     logit_bias: Vec<(u32, f32)>,
     enable_thinking: bool,
     thinking_budget: Option<u32>,
@@ -97,6 +99,16 @@ pub(crate) async fn chat_completions_stream(
     let (token_tx, token_rx) = tokio::sync::mpsc::channel::<StreamEvent>(1024);
     let prompt_len = prompt_tokens.len();
 
+    // Back-channel cancel flag for streaming-side termination (e.g. the
+    // SimHash semantic-loop watchdog in `handle_token`). The streaming
+    // layer sets it; the scheduler's `emit_token` polls it and finishes
+    // the seq. Without this the watchdog only suppressed downstream SSE
+    // emission while the scheduler kept generating to `max_tokens`,
+    // wasting decode cycles and reporting `finish_reason="length"` to
+    // the client. See `inference_types::InferenceRequest::Streaming::
+    // cancel_flag` for the full rationale.
+    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     // Scheduler tracks thinking only when the template actually opens it.
     // When enable_thinking=false, the template inserts closed
     // `<think>\n\n</think>\n\n` and the model generates no thinking tokens —
@@ -120,6 +132,8 @@ pub(crate) async fn chat_completions_stream(
         dry_base,
         dry_allowed_length,
         lz_penalty,
+        xtc_probability,
+        xtc_threshold,
         logit_bias,
         stop_tokens,
         enable_thinking: scheduler_thinking,
@@ -132,6 +146,7 @@ pub(crate) async fn chat_completions_stream(
         top_logprobs,
         timeout_at,
         token_tx,
+        cancel_flag: cancel_flag.clone(),
     };
 
     state.request_tx.send(request).await.map_err(|_| {
@@ -191,6 +206,7 @@ pub(crate) async fn chat_completions_stream(
         dump_seq,
         f44_cache,
         f44_cache_active,
+        cancel_flag,
     };
 
     let mut stream_state = StreamState::new(tools_active, enable_thinking);

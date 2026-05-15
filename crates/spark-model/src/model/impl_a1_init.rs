@@ -27,11 +27,17 @@ use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 /// Returns `None` when speculative decoding is off, when no MTP weights
 /// are available, or when the LM head is not NVFP4 (MTP heads need the
 /// NVFP4 LM head for shared output projection).
+// BF16 LM head — when `Some`, the MTP head uses it for draft
+// proposal so the proposer's logit distribution matches the
+// main-model verifier's (which is also BF16 in that case).
+// Without this, the proposer's NVFP4 logits diverge from the
+// BF16 verifier and draft acceptance collapses to near zero.
 pub(super) fn build_mtp_proposer(
     use_speculative: bool,
     mtp_weights: Vec<MtpWeights>,
     embed_tokens: DenseWeight,
     lm_head_nvfp4: Option<QuantizedWeight>,
+    lm_head_bf16: Option<DenseWeight>,
     config: &ModelConfig,
     gpu: &dyn GpuBackend,
     mtp_quant: crate::layers::MtpQuantization,
@@ -59,11 +65,26 @@ pub(super) fn build_mtp_proposer(
             return None;
         }
     };
+    // ATLAS_MTP_AUDIT_PTRS=1 — log main model's embed_tokens ptr so we can
+    // compare it against "MTP_PTRS embed_tokens=0x..." emitted in forward.rs.
+    // If they match, the MTP head received the correct embed table. This fires
+    // once at startup since build_mtp_proposer is called only at model load time.
+    if std::env::var("ATLAS_MTP_AUDIT_PTRS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        tracing::info!(
+            "MTP_PTRS build main_embed=0x{:016x} (passed to MTP as embed_tokens)",
+            embed_tokens.weight.0,
+        );
+    }
+
     let build_head = |mtp_wts: MtpWeights| {
         crate::layers::MtpHead::new(
             mtp_wts,
             embed_tokens,
             lm_nvfp4,
+            lm_head_bf16,
             config,
             gpu,
             mtp_quant,

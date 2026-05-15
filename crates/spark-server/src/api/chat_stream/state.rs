@@ -87,6 +87,50 @@ pub(super) struct StreamState {
     /// True iff the reasoning/`<think>` phase has finished. Starts
     /// `true` when the request did not enable thinking.
     pub(super) thinking_done: bool,
+    /// True iff the streaming content is currently inside a fenced
+    /// code block (between ``` markers). Toggled per delta in
+    /// `process_detector_content`. The SimHash semantic-loop
+    /// watchdog is *skipped* while this is true — CSS/HTML/JS has
+    /// no sentence boundaries, so SimHash flushes via its 1024-byte
+    /// fallback and consecutive code chunks share enough common
+    /// tokens (`{`, `;`, identifiers) to false-positive on
+    /// similarity even when the code is structurally distinct.
+    /// The line-level watchdog at `check_loop_watchdog` already
+    /// applies its own code-aware tolerance; this flag only
+    /// suppresses the SimHash detector.
+    pub(super) inside_code_block: bool,
+    /// Sticky hint that this response has entered a structured
+    /// HTML/CSS/JS/code payload. Raw HTML can exceed the watchdog's
+    /// rolling tail buffer, so relying only on the latest 8 KB to
+    /// infer code context can false-positive on repeated layout
+    /// phrases after the opening tags have rolled out.
+    pub(super) structured_content_seen: bool,
+    /// True when we've seen a complete HTML document (`<!doctype html>
+    /// ...</html>`) with only whitespace/fences after the closing
+    /// tag. In this state, the next content is held back briefly:
+    /// whitespace/fences are emitted, but alphabetic prose (self-
+    /// critique like "Wait, the above...") triggers the watchdog.
+    /// Without this hold, we'd either fire prematurely on the
+    /// clean document end (stopping multi-part responses) or let
+    /// self-critique fragments leak through before detection.
+    pub(super) html_complete_seen: bool,
+    /// Sticky state for long generated HTML documents. The rolling
+    /// loop-scan buffer is capped, so by the time a large code block
+    /// closes its ``` fence, the original `<!DOCTYPE html>` may have
+    /// rolled out. These fields preserve enough document state to
+    /// auto-close substantial incomplete HTML before markdown
+    /// explanation loops.
+    pub(super) html_doc_started: bool,
+    pub(super) html_doc_closed: bool,
+    pub(super) html_body_closed: bool,
+    pub(super) html_script_closed: bool,
+    pub(super) html_open_script_tags: usize,
+    pub(super) html_doc_bytes: usize,
+    /// Short hold buffer for possible closing Markdown fences after a
+    /// substantial incomplete HTML document. Some token streams split
+    /// ``` across three chunks, so scanning only the current delta
+    /// misses the last chance to auto-close the HTML before prose.
+    pub(super) pending_incomplete_html_fence: String,
 }
 
 impl StreamState {
@@ -120,6 +164,16 @@ impl StreamState {
                 None
             },
             thinking_done: !enable_thinking,
+            inside_code_block: false,
+            structured_content_seen: false,
+            html_complete_seen: false,
+            html_doc_started: false,
+            html_doc_closed: false,
+            html_body_closed: false,
+            html_script_closed: false,
+            html_open_script_tags: 0,
+            html_doc_bytes: 0,
+            pending_incomplete_html_fence: String::new(),
         }
     }
 }

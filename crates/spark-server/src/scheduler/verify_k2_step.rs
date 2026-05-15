@@ -45,12 +45,27 @@ pub fn step_verify_k2(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
     a.last_token_time = Instant::now();
     let [v0_argmax, v1_argmax] = result;
 
-    // Use argmax for speculative acceptance. Temperature-aware resampling
-    // (verify_resample) requires blocking D2H copy (~0.8ms/step overhead).
-    // TODO: implement GPU-side temperature sampling to avoid D2H penalty.
-    let v0 = v0_argmax;
-    let v1 = v1_argmax;
-    let accepted = drafts[0] == v0;
+    // Leviathan-2023 rejection sampling at the verify positions. When
+    // DRY or LZ is configured, `verify_leviathan` reads target logits
+    // D2H, applies the loop-detecting penalties, and accepts each
+    // draft with `p_target(draft)` (the simplification for an argmax
+    // proposer: `p_draft = 1` so `min(1, p_t/p_d) = p_t`). On reject
+    // it returns a residual sample drawn from the penalised target
+    // with the draft token excluded — the loop-breaking step that
+    // prevents the CSS-attractor class observed pre-fix. When no
+    // penalty is set, this falls back to the existing argmax cascade
+    // (zero D2H overhead).
+    let accept = verify_leviathan(model, a, drafts, &[v0_argmax, v1_argmax]);
+    let mode_label = if verify_needs_leviathan(a) {
+        "leviathan"
+    } else {
+        "argmax"
+    };
+    let (v0, accepted) = match accept.reject_token {
+        Some(reject_tok) => (reject_tok, false),
+        None => (v0_argmax, true),
+    };
+    let v1 = accept.tail_token.unwrap_or(v1_argmax);
 
     // Extract logprobs from verify logits buffer (K=2 positions) when requested.
     let verify_lps = if let Some(top_logprobs) = a.top_logprobs {
@@ -72,7 +87,7 @@ pub fn step_verify_k2(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
     // worth its overhead. Baseline acceptance is the prerequisite
     // signal — high accept rate means EASD has little to gain.
     crate::metrics::SPEC_DECODE_VERIFY
-        .with_label_values(&["2", if accepted { "accept" } else { "reject" }])
+        .with_label_values(&["2", if accepted { "accept" } else { "reject" }, mode_label])
         .inc();
 
     if accepted {
