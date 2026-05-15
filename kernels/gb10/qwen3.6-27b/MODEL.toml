@@ -122,11 +122,10 @@ thinking_in_tools = false
 # requests reasoning because `thinking_in_tools=false` above.
 thinking_default = true
 max_thinking_budget = 512
-# K=2 verify (num_drafts=1) is broken for this model — produces gibberish
-# at ~50 tokens. K=3 (num_drafts=2) produces coherent output for 2000+
-# tokens with slow SSM drift past that. K=1 (no MTP) is fully clean.
-# 2026-05-14: defaulted to K=3 as the practical fix; K=2 codepath bug
-# tracked in memory/project_dense_27b_mtp_residual.md.
+# K=2 verify (gdn_decode_wy2): v0 is correct (coherent output) but v1 is
+# wrong — accept rate ~4% regardless of thinking on/off (2026-05-15 meas).
+# K=3 verify (gdn_decode_wy3): both positions correct, ~68% accept rate.
+# Keep K=3 until gdn_decode_wy2 intermediate-state bug is fixed.
 default_num_drafts = 2
 
 # Upstream Qwen/Qwen3.6-27B reports `model_type = "qwen3_5"` in config.json.
