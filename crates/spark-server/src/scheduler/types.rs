@@ -36,6 +36,7 @@ pub(super) struct PrefillInProgress {
     pub chunk_offset: usize,
     pub max_tokens: usize,
     pub min_tokens: usize,
+    pub min_content_tokens: usize,
     pub eos_tokens: Vec<u32>,
     pub sink: ResponseSink,
     pub request_start: Instant,
@@ -86,6 +87,9 @@ pub(super) struct ActiveSeq {
     pub output_tokens: Vec<u32>,
     pub remaining: usize,
     pub min_tokens: usize,
+    /// Minimum content tokens to emit after `</think>` before EOS is allowed.
+    /// 0 = disabled. Set from MODEL.toml `[behavior].min_content_tokens`.
+    pub min_content_tokens: usize,
     pub eos_tokens: Vec<u32>,
     pub finished: bool,
     pub sink: ResponseSink,
@@ -213,6 +217,7 @@ pub(super) struct SwappedSeq {
     pub output_tokens: Vec<u32>,
     pub remaining: usize,
     pub min_tokens: usize,
+    pub min_content_tokens: usize,
     pub eos_tokens: Vec<u32>,
     pub sink: ResponseSink,
     pub temperature: f32,

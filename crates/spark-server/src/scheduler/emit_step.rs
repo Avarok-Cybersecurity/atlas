@@ -159,8 +159,18 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         .as_ref()
         .is_some_and(|gs| !gs.is_terminated());
     let legacy_suppresses_eos = a.require_tool_call;
-    let min_tokens_suppresses = a.output_tokens.len() < a.min_tokens;
-    let suppress_eos = grammar_suppresses_eos || legacy_suppresses_eos || min_tokens_suppresses;
+    // When thinking was used, min_tokens counts content-only tokens so callers
+    // don't need to know how many reasoning tokens were spent.
+    let effective_len = if a.think_ended {
+        a.content_tokens as usize
+    } else {
+        a.output_tokens.len()
+    };
+    let min_tokens_suppresses = effective_len < a.min_tokens;
+    let content_min_suppresses =
+        a.think_ended && (a.content_tokens as usize) < a.min_content_tokens;
+    let suppress_eos =
+        grammar_suppresses_eos || legacy_suppresses_eos || min_tokens_suppresses || content_min_suppresses;
 
     if a.eos_tokens.contains(&tok) && !suppress_eos {
         a.finished = true;

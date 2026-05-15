@@ -170,6 +170,7 @@ pub(super) fn generate_target_ptx_rs(
              \x20               disable_tool_steering: {},\n\
              \x20               tool_call_parser: \"{}\",\n\
              \x20               enable_loop_watchdog: {},\n\
+             \x20               min_content_tokens: {},\n\
              \x20           }},\n\
              \x20           model_type_matches: vec![{}],\n\
              \x20           dflash: {},\n\
@@ -188,6 +189,7 @@ pub(super) fn generate_target_ptx_rs(
             target.behavior_disable_tool_steering,
             target.behavior_tool_call_parser,
             target.behavior_enable_loop_watchdog,
+            target.behavior_min_content_tokens,
             target.model_type_matches.iter().map(|m| {
                 let hs = match m.hidden_size {
                     Some(v) => format!("Some({v})"),

@@ -84,6 +84,7 @@ struct Target {
     behavior_disable_tool_steering: bool,
     behavior_tool_call_parser: String,
     behavior_enable_loop_watchdog: bool,
+    behavior_min_content_tokens: u32,
     /// Which `(model_type, hidden_size)` pairs this kernel target supports.
     /// Parsed from `[[model_types]]` in MODEL.toml.
     model_type_matches: Vec<ModelTypeMatch>,
@@ -372,6 +373,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 b_disable_tool_steering,
                 b_tool_call_parser,
                 b_enable_loop_watchdog,
+                b_min_content_tokens,
             ) = parse_behavior(&model_dir);
             let model_type_matches = parse_model_types(&model_dir);
             let dflash = parse_dflash(&model_dir);
@@ -402,6 +404,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 behavior_disable_tool_steering: b_disable_tool_steering,
                 behavior_tool_call_parser: b_tool_call_parser,
                 behavior_enable_loop_watchdog: b_enable_loop_watchdog,
+                behavior_min_content_tokens: b_min_content_tokens,
                 model_type_matches,
                 dflash,
             });

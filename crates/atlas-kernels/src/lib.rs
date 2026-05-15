@@ -178,6 +178,11 @@ pub struct ModelBehavior {
     /// JSON arrays of similar objects, multiplication tables). Enable only
     /// when the model has been observed to need it.
     pub enable_loop_watchdog: bool,
+    /// Suppress EOS for the first N content tokens after `</think>`.
+    /// Prevents early stop after a brief intro sentence ("Here is the answer.")
+    /// when the model treats the thinking block as its main response.
+    /// 0 = disabled (default).
+    pub min_content_tokens: u32,
 }
 
 impl Default for ModelBehavior {
@@ -192,6 +197,7 @@ impl Default for ModelBehavior {
             disable_tool_steering: false,
             tool_call_parser: "",
             enable_loop_watchdog: false,
+            min_content_tokens: 0,
         }
     }
 }

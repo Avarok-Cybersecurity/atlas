@@ -128,10 +128,10 @@ pub(super) fn parse_sampling_presets(
 }
 
 /// Parse [behavior] from MODEL.toml. Returns
-/// (thinking_in_tools, max_thinking_budget, thinking_default, fp8_kv_calibration_tokens, default_kv_dtype, default_num_drafts, disable_tool_steering, tool_call_parser, enable_loop_watchdog).
+/// (thinking_in_tools, max_thinking_budget, thinking_default, fp8_kv_calibration_tokens, default_kv_dtype, default_num_drafts, disable_tool_steering, tool_call_parser, enable_loop_watchdog, min_content_tokens).
 pub(super) fn parse_behavior(
     model_dir: &std::path::Path,
-) -> (bool, u32, bool, usize, String, u32, bool, String, bool) {
+) -> (bool, u32, bool, usize, String, u32, bool, String, bool, u32) {
     let model_toml_path = model_dir.join("MODEL.toml");
     if !model_toml_path.exists() {
         return (
@@ -144,6 +144,7 @@ pub(super) fn parse_behavior(
             false,
             String::new(),
             false,
+            0,
         );
     }
     let content = std::fs::read_to_string(&model_toml_path).unwrap_or_default();
@@ -160,6 +161,7 @@ pub(super) fn parse_behavior(
                 false,
                 String::new(),
                 false,
+                0,
             );
         }
     };
@@ -205,6 +207,11 @@ pub(super) fn parse_behavior(
         .and_then(|v| v.get("enable_loop_watchdog"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let min_content_tokens = b
+        .and_then(|v| v.get("min_content_tokens"))
+        .and_then(|v| v.as_integer())
+        .map(|v| v as u32)
+        .unwrap_or(0);
     (
         thinking_in_tools,
         max_thinking_budget,
@@ -215,6 +222,7 @@ pub(super) fn parse_behavior(
         disable_tool_steering,
         tool_call_parser,
         enable_loop_watchdog,
+        min_content_tokens,
     )
 }
 

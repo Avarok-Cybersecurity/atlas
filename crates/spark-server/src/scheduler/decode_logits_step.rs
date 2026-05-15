@@ -462,12 +462,17 @@ pub fn process_decode_logits(
             a.inside_tool_body,
             a.grammar_state.is_some(),
         );
+        // Suppress EOS for the first min_content_tokens content tokens post-thinking.
+        // Prevents the model from stopping after a brief intro sentence.
+        let content_min_suppresses =
+            a.think_ended && (a.content_tokens as usize) < a.min_content_tokens;
         let suppress_eos = grammar_suppresses_eos
             || legacy_suppresses_eos
             || min_tokens_suppresses
             || thinking_suppresses_eos
             || post_think_suppresses_eos
-            || html_suppresses_eos;
+            || html_suppresses_eos
+            || content_min_suppresses;
 
         if a.eos_tokens.contains(&tok) && !suppress_eos {
             // Stop/EOS token: do NOT stream to client (OpenAI spec: returned text
