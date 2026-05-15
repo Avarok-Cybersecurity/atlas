@@ -121,7 +121,10 @@ thinking_in_tools = false
 # Tool-active turns still suppress thinking unless the client explicitly
 # requests reasoning because `thinking_in_tools=false` above.
 thinking_default = true
-max_thinking_budget = 512
+# 8192 gives the model enough planning space for complex multi-file / long-code
+# generation tasks (Three.js apps, full algorithms, etc.). 512 was too small —
+# the model would sketch a brief plan then output a skeleton and stop.
+max_thinking_budget = 8192
 # K=2 verify: MTP propose now accumulates KV history correctly (2026-05-15
 # fix: after_verify no longer trims the first valid KV on REJECT). Accept rate
 # expected ~50%+ vs prior ~0%. K=3 also preserved (slightly better on partial

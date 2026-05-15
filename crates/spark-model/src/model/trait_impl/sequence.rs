@@ -143,42 +143,25 @@ impl TransformerModel {
             }
         }
 
-        // Invalidate cached CUDA graphs that reference this sequence's slot
-        // — the graph was captured with this slot's KV/SSM pointers baked in,
-        // and replaying after the slot is freed would read stale data.
-        // decode_graph is keyed by slot, so drop only this slot's entry.
-        // (parking_lot::Mutex::lock() never poisons, so the previous `if let
-        // Ok(...) = .lock()` graceful-recovery branch is unreachable.)
-        if let Some(graph) = self.decode_graph.lock().remove(&seq.slot_idx)
-            && let Err(e) = self.gpu.destroy_graph(graph)
-        {
-            tracing::error!(
-                "free_sequence: destroy_graph(decode_graph[{}]): {e:#}",
-                seq.slot_idx
-            );
-        }
-        // batch_decode_graphs is keyed by padded_n, not slot — but the captured
-        // graphs DO contain per-slot SSM pointers from the active set at capture
-        // time. Drop them all (they'll be re-captured on next batched decode).
+        // CUDA graph cache retention across requests:
+        // decode_graph and verify*_graph are keyed by slot_idx, which maps to
+        // fixed GPU addresses in the SSM state pool (h_state_pools[l].offset(slot *
+        // h_bytes) — computed once at pool init, never moved). These addresses are
+        // stable across request boundaries: ssm_pool.zero_slot() above clears the
+        // slot's data, and the next request's prefill repopulates it before decode
+        // starts. The graph captures kernel dispatch patterns with baked-in SSM
+        // pointers, but NOT the data values — those are read at replay time from
+        // the now-valid pool memory. Retaining the graph avoids the ~14-second
+        // re-capture overhead on every request for the same slot.
+        //
+        // batch_decode_graphs is keyed by padded_n and contains SSM pointers from
+        // ALL active slots at capture time. Those pointers span multiple slot indices
+        // whose lifetimes are independent, so the batch graph must be discarded when
+        // any participating slot is freed (the padded entry for that slot becomes
+        // stale relative to the newly-assigned sequence's zeroed SSM state).
         for (_, graph) in self.batch_decode_graphs.lock().drain() {
             if let Err(e) = self.gpu.destroy_graph(graph) {
                 tracing::error!("free_sequence: destroy_graph(batch_decode_graphs entry): {e:#}");
-            }
-        }
-        // Verify graphs are now slot-keyed (sibling of decode_graph fix).
-        // Drop only this slot's entry to preserve other concurrent seqs' graphs.
-        for graph_mutex in [
-            &self.verify2_graph,
-            &self.verify3_graph,
-            &self.verify4_graph,
-        ] {
-            if let Some(graph) = graph_mutex.lock().remove(&seq.slot_idx)
-                && let Err(e) = self.gpu.destroy_graph(graph)
-            {
-                tracing::error!(
-                    "free_sequence: destroy_graph(verify[{}]): {e:#}",
-                    seq.slot_idx
-                );
             }
         }
 
