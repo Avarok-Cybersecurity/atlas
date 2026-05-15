@@ -140,8 +140,9 @@ pub struct ServeArgs {
 
     /// Number of draft tokens per speculative step (1=K=2, 2=K=3, 3=K=4 verify).
     /// Higher K verifies more drafts per step. Uses WY-chunkwise GDN kernels.
-    #[arg(long, default_value_t = 1)]
-    pub num_drafts: usize,
+    /// When omitted, uses MODEL.toml [behavior].default_num_drafts (fallback: 1).
+    #[arg(long)]
+    pub num_drafts: Option<usize>,
 
     /// Maximum concurrent sequences batched into one GPU decode step.
     #[arg(long, default_value_t = 8)]

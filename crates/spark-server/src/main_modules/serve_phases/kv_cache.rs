@@ -19,7 +19,7 @@ pub(crate) fn resolve_prefill_budget(
     ssm_prefill_chunk: usize,
 ) -> PrefillBudget {
     let spec_tokens = if args.speculative || args.self_speculative || args.ngram_speculative {
-        args.num_drafts + 2
+        args.num_drafts.unwrap_or(1) + 2
     } else {
         1
     };

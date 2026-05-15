@@ -340,13 +340,23 @@ impl DraftProposer for MtpHead {
             .downcast_mut::<MtpProposerState>()
             .ok_or_else(|| anyhow::anyhow!("Invalid MTP proposer state"))?;
 
-        // Trim rejected drafts from MTP KV cache.
+        // Trim rejected SPECULATIVE KV entries from MTP KV cache.
         // num_drafted was recorded in the last propose() call.
-        // We trim `num_drafted - num_accepted` entries.
-        // e.g. K=2: drafted 1, accepted 0 → trim 1. accepted 1 → trim 0.
-        // e.g. K=3: drafted 2, accepted 0 → trim 2. accepted 1 → trim 1. accepted 2 → trim 0.
+        //
+        // The first forward_one call in propose() uses the actual accepted
+        // token + main model's target_hidden — always valid context, never
+        // trimmed. Only subsequent positions (i ≥ 1) used speculative inputs
+        // (a draft token + MTP's own hidden) and must be trimmed when rejected.
+        //
+        // Formula: trim = max(0, num_drafted - num_accepted - 1)
+        // K=2: drafted=1, accepted=0 → trim 0 (keep slot, MTP KV grows by 1/step)
+        //      drafted=1, accepted=1 → trim 0 (same as before)
+        // K=3: drafted=2, accepted=0 → trim 1 (keep first slot, drop speculative)
+        //      drafted=2, accepted=1 → trim 0 (both slots valid: first correct,
+        //                                       second used accepted draft token)
+        //      drafted=2, accepted=2 → trim 0 (same as before)
         let num_drafted = mtp_state.last_num_drafted.max(1);
-        let num_to_trim = num_drafted.saturating_sub(num_accepted);
+        let num_to_trim = num_drafted.saturating_sub(num_accepted + 1);
         let old_sl = mtp_state.seq_len;
         if num_to_trim > 0 {
             mtp_state.seq_len = mtp_state.seq_len.saturating_sub(num_to_trim);

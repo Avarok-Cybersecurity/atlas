@@ -342,7 +342,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     let num_drafts = if args.dflash {
         args.dflash_gamma.saturating_sub(1).max(1)
     } else {
-        args.num_drafts
+        args.num_drafts.unwrap_or(1)
     };
 
     if args.dflash {

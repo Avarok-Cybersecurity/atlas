@@ -24,7 +24,7 @@ pub(crate) fn preflight_reserve(
     let h_state_bytes = config.ssm_h_state_bytes();
     let conv_state_bytes = config.ssm_conv_state_bytes();
     let ssm_multiplier = if args.speculative || args.self_speculative || args.ngram_speculative {
-        1 + (args.num_drafts + 1) + 1
+        1 + (args.num_drafts.unwrap_or(1) + 1) + 1
     } else {
         1
     };
@@ -33,7 +33,7 @@ pub(crate) fn preflight_reserve(
         * (h_state_bytes + conv_state_bytes)
         * ssm_multiplier;
     let spec_tokens_pre = if args.speculative || args.self_speculative || args.ngram_speculative {
-        args.num_drafts + 2
+        args.num_drafts.unwrap_or(1) + 2
     } else {
         1
     };
@@ -171,7 +171,7 @@ pub(crate) fn preflight_reserve(
         cuda_headroom / (1024 * 1024),
         if spec_on { "spec/MTP on" } else { "no spec" },
         spec_on,
-        if spec_on { args.num_drafts as i64 } else { -1 },
+        if spec_on { args.num_drafts.unwrap_or(1) as i64 } else { -1 },
     );
     Ok(ReservePreflight {
         inference_reserve,

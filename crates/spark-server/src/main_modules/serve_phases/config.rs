@@ -90,15 +90,18 @@ pub(crate) fn apply_model_default_num_drafts(
     args: &mut cli::ServeArgs,
     ptx_set: &atlas_kernels::TargetPtxSet,
 ) {
-    if ptx_set.behavior.default_num_drafts > 0 && args.num_drafts == 1 {
-        let model_default = ptx_set.behavior.default_num_drafts as usize;
-        if model_default != args.num_drafts {
+    if args.num_drafts.is_none() {
+        let resolved = if ptx_set.behavior.default_num_drafts > 0 {
+            let model_default = ptx_set.behavior.default_num_drafts as usize;
             tracing::info!(
                 "num_drafts: using MODEL.toml default_num_drafts={} (K={}) — pass --num-drafts to override",
                 model_default,
                 model_default + 1,
             );
-            args.num_drafts = model_default;
-        }
+            model_default
+        } else {
+            1
+        };
+        args.num_drafts = Some(resolved);
     }
 }

@@ -240,8 +240,13 @@ pub struct ReasoningConfig {
 }
 
 /// vLLM-style chat template kwargs.
+///
+/// Accepts both `enable_thinking` (vLLM canonical) and `thinking` (shorthand
+/// used by OpenWebUI and other clients) as aliases for the same boolean.
+/// Unknown fields are silently ignored for forward-compatibility.
 #[derive(Debug, Deserialize)]
 pub struct ChatTemplateKwargs {
+    #[serde(alias = "thinking")]
     pub enable_thinking: Option<bool>,
     pub thinking_budget: Option<u32>,
 }
