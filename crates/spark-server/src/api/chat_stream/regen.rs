@@ -64,33 +64,49 @@ fn data_event<T: serde::Serialize>(v: &T) -> Result<Event, Infallible> {
     Ok(Event::default().data(serde_json::to_string(v).unwrap_or_default()))
 }
 
-/// Decide whether to regenerate. Returns true iff Answer-Regen is enabled,
-/// not already used, the phase-1 reasoning is substantial, this is NOT a
-/// tool-call turn, and the visible content is empty or degenerate. The
-/// degeneracy markers MIRROR bench/reasoning_eval.py::score (SSOT).
-fn should_regenerate(state: &StreamState, ctx: &StreamCtx, finish_reason: &str) -> bool {
-    if !crate::scheduler::answer_regen_enabled() || state.regen_used {
-        return false;
-    }
-    if finish_reason == "tool_calls"
-        || state.salvaged_tool_call
-        || state.detector.as_ref().is_some_and(|d| d.has_tool_calls())
-    {
-        return false;
-    }
-    if state.regen_reasoning_acc.len() < crate::scheduler::answer_regen_min_reasoning_bytes() {
-        return false;
-    }
-    let c = &state.refusal_scan_buf; // post-sanitizer visible content (capped)
-    let low = c.to_ascii_lowercase();
+/// Pure degeneracy predicate on the visible content. MIRRORS
+/// bench/reasoning_eval.py::score (SSOT — server and harness must agree on
+/// "degenerate"). Used by both the streaming and blocking regen paths.
+pub(crate) fn content_is_degenerate(content: &str) -> bool {
+    let low = content.to_ascii_lowercase();
     let doctype = low.matches("<!doctype").count();
-    let role_leak = c.contains("\nassistant") || c.contains("\nuser") || c.contains("\ntool");
-    let degenerate = c.trim().is_empty()
+    let role_leak =
+        content.contains("\nassistant") || content.contains("\nuser") || content.contains("\ntool");
+    content.trim().is_empty()
         || doctype >= 2
         || (doctype >= 1 && !low.contains("</html>"))
-        || role_leak;
-    let _ = ctx;
-    degenerate
+        || role_leak
+}
+
+/// Pure regen decision shared by streaming + blocking. True iff Answer-Regen
+/// is enabled, the phase-1 reasoning is substantial, this is NOT a tool-call
+/// turn, and the visible content is empty/degenerate.
+pub(crate) fn should_regenerate_text(
+    content: &str,
+    reasoning_bytes: usize,
+    finish_reason: &str,
+    has_tool_calls: bool,
+) -> bool {
+    crate::scheduler::answer_regen_enabled()
+        && !has_tool_calls
+        && finish_reason != "tool_calls"
+        && reasoning_bytes >= crate::scheduler::answer_regen_min_reasoning_bytes()
+        && content_is_degenerate(content)
+}
+
+/// Streaming-path wrapper: pull the inputs off `StreamState` and delegate.
+fn should_regenerate(state: &StreamState, _ctx: &StreamCtx, finish_reason: &str) -> bool {
+    if state.regen_used {
+        return false;
+    }
+    let has_tool = state.salvaged_tool_call
+        || state.detector.as_ref().is_some_and(|d| d.has_tool_calls());
+    should_regenerate_text(
+        &state.refusal_scan_buf,
+        state.regen_reasoning_acc.len(),
+        finish_reason,
+        has_tool,
+    )
 }
 
 /// Phase-2 prompt = original prompt (which already ends at the thinking
@@ -98,7 +114,7 @@ fn should_regenerate(state: &StreamState, ctx: &StreamCtx, finish_reason: &str) 
 /// a `</think>` close + blank line. The model is now post-think and emits
 /// the final answer directly as content (phase-2 runs with thinking OFF).
 /// On any tokenizer error, returns `None` (caller falls back to Close).
-fn build_phase2_prompt(
+pub(crate) fn build_phase2_prompt(
     orig: &[u32],
     reasoning: &str,
     tokenizer: &crate::tokenizer::ChatTokenizer,

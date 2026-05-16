@@ -135,16 +135,34 @@ else TB_VERDICT="REVERTED (build fail)"; set_flag enable_thinkbrake false; fi
 say "ThinkBrake verdict: $TB_VERDICT"
 echo "- **ThinkBrake**: $TB_VERDICT" >> "$REPORT"
 
-# ---- 3. final image reflecting kept flags + report ----
+# ---- 3. Answer-Regen (DEER + ThinkBrake flags now frozen) ----
+AR_VERDICT="not-run"
+set_flag enable_answer_regen true
+if build answer-regen-on; then
+  if deploy answer-regen-on; then
+    python3 "$BENCH/reasoning_eval.py" run --n $N --seed $SEED \
+      --config answer-regen-on --out "$BENCH/results_answer_regen.json"
+    if python3 "$BENCH/reasoning_eval.py" gate \
+         "$BENCH/results_baseline.json" "$BENCH/results_answer_regen.json"; then
+      AR_VERDICT="KEPT (beat baseline)"
+    else
+      AR_VERDICT="REVERTED (did not beat baseline)"
+      set_flag enable_answer_regen false
+    fi
+  else AR_VERDICT="REVERTED (deploy fail)"; set_flag enable_answer_regen false; fi
+else AR_VERDICT="REVERTED (build fail)"; set_flag enable_answer_regen false; fi
+say "Answer-Regen verdict: $AR_VERDICT"
+echo "- **Answer-Regen**: $AR_VERDICT" >> "$REPORT"
+
+# ---- 4. final image reflecting kept flags + report ----
 build final-gated && deploy final-gated
 {
   echo ""
   echo "## Summary ($(ts))"
   echo "- DEER: $DEER_VERDICT"
   echo "- ThinkBrake: $TB_VERDICT"
-  echo "- Layer C (streaming Answer-Regen): pending — code not yet written;"
-  echo "  follow-up after these verdicts (per approved plan sequencing)."
-  echo "- Results: bench/results_{baseline,deer,thinkbrake}.json"
+  echo "- Answer-Regen: $AR_VERDICT"
+  echo "- Results: bench/results_{baseline,deer,thinkbrake,answer_regen}.json"
   echo "- Final deployed image: atlas-gb10:final-gated (kept flags only)"
 } >> "$REPORT"
 say "=== gate pipeline complete ; report: $REPORT ==="

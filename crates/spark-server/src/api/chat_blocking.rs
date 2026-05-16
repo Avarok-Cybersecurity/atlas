@@ -190,6 +190,81 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         let output_text_i =
             super::chat::repair_json::repair_json_object_prefix(&req, output_text_i);
 
+        // Layer C — blocking Answer-Regen. Empty/degenerate content with
+        // substantial reasoning (and not a tool turn) ⇒ one phase-2
+        // blocking generation (orig ++ reasoning ++ </think>, thinking
+        // off). Shared classifier/prompt with the streaming path; off ⇒
+        // inert (should_regenerate_text gates on answer_regen_enabled()).
+        let output_text_i = if !tools_active
+            && let Some(ref reasoning) = reasoning_content_i
+            && super::chat_stream::regen::should_regenerate_text(
+                &output_text_i,
+                reasoning.len(),
+                &response.finish_reason,
+                false,
+            )
+            && let Some(p2) = super::chat_stream::regen::build_phase2_prompt(
+                &prompt_tokens,
+                reasoning,
+                &state.tokenizer,
+            ) {
+            let (tx2, rx2) = tokio::sync::oneshot::channel();
+            let req2 = InferenceRequest::Blocking {
+                prompt_tokens: p2,
+                session_hash,
+                image_pixels: Vec::new(),
+                max_tokens,
+                min_tokens: req.min_tokens,
+                min_content_tokens: req.min_content_tokens,
+                temperature,
+                top_k,
+                top_p,
+                top_n_sigma,
+                min_p,
+                repetition_penalty,
+                presence_penalty,
+                frequency_penalty,
+                dry_multiplier,
+                dry_base,
+                dry_allowed_length,
+                lz_penalty,
+                xtc_probability,
+                xtc_threshold,
+                logit_bias: logit_bias.clone(),
+                stop_tokens: stop_tokens.clone(),
+                enable_thinking: false,
+                thinking_budget,
+                require_tool_call: false,
+                suppress_tool_call: false,
+                disable_mtp: f60_disable_mtp_for_request(false),
+                grammar_spec: None,
+                seed: req.seed.map(|s| s.wrapping_add(choice_idx as u64)),
+                top_logprobs: None,
+                timeout_at,
+                response_tx: tx2,
+            };
+            if state.request_tx.send(req2).await.is_ok() {
+                match rx2.await {
+                    Ok(Ok(r2)) => {
+                        total_completion_tokens += r2.output_tokens.len();
+                        let (_n2, c2) = decode_response_text(&state, &r2, false);
+                        let c2 = strip_stop_sequences(c2, &req.stop);
+                        tracing::info!(
+                            "Answer-Regen (blocking): phase-1 content degenerate; \
+                             replaced with phase-2 ({} chars)",
+                            c2.len()
+                        );
+                        c2
+                    }
+                    _ => output_text_i,
+                }
+            } else {
+                output_text_i
+            }
+        } else {
+            output_text_i
+        };
+
         let (message, finish_reason_i) = build_choice_message(
             &state,
             &req,

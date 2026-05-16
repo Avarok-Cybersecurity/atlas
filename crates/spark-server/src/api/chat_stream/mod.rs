@@ -23,7 +23,7 @@ mod ctx;
 mod handle_done;
 mod handle_error;
 mod handle_token;
-mod regen;
+pub(crate) mod regen;
 mod state;
 mod tool_handlers;
 
