@@ -437,6 +437,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             session_manager,
             scheduler_spontaneous_think_budget,
             ptx_set.behavior.min_content_tokens as usize,
+            ptx_set.behavior.min_thinking_tokens as usize,
         );
     });
 

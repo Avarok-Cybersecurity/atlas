@@ -139,6 +139,22 @@ default_num_drafts = 1
 # point html_suppresses_eos or html_document_is_complete take over), but
 # small enough that short Q&A answers aren't suppressed into hallucination.
 min_content_tokens = 25
+# Suppress </think> + EOS until the model has emitted at least N thinking
+# tokens. Dense Qwen3.6-27B with template-forced thinking bails out of
+# <think> after ~150 tokens with an INCOMPLETE plan (ends mid-sentence:
+# "...generate a single HTML file containing the complete 3D ches"), then
+# continues planning in the VISIBLE content channel where it degenerates
+# into a plan→restart loop ("I'll create...", partial code, "Wait, let
+# me...", restart `<!DOCTYPE html>` ×3) and a watchdog kills it with a
+# ~40-line stub (2026-05-16 OpenWebUI field report: "create a beautiful
+# 3D chess game"). The SAME prompt with thinking disabled produces a
+# clean, complete <html> file — proving the broken think→content
+# transition (not the model) is the fault. 512 forces a complete hidden
+# plan: comfortably past the ~150-token premature bail and past the
+# 400-token F2 confidence-stop gate ("the model needs room to plan"),
+# well under the 3686 effective budget. Symmetric with max_thinking_budget
+# (the max) and min_content_tokens (the post-</think> content floor).
+min_thinking_tokens = 512
 
 # Upstream Qwen/Qwen3.6-27B reports `model_type = "qwen3_5"` in config.json.
 # Atlas's `parse_qwen3_5_config` (atlas-core/src/config.rs) rewrites this to

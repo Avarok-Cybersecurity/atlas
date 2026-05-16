@@ -17,6 +17,7 @@ pub fn prefill_request(
     grammar_engine: &mut Option<GrammarEngine>,
     spontaneous_think_budget: u32,
     min_content_tokens: usize,
+    min_thinking_tokens: usize,
 ) -> Result<Option<ActiveSeq>> {
     // Merge user-supplied stop tokens with model EOS tokens.
     let stop_tokens = req.take_stop_tokens();
@@ -179,6 +180,7 @@ pub fn prefill_request(
             remaining: 0,
             min_tokens: req_min_tokens,
             min_content_tokens,
+            min_thinking_tokens,
             eos_tokens: eos_tokens.to_vec(),
             finished: true,
             sink,
@@ -252,6 +254,7 @@ pub fn prefill_request(
         remaining: max_tokens - 1,
         min_tokens: req_min_tokens,
         min_content_tokens,
+        min_thinking_tokens,
         eos_tokens: eos_tokens.to_vec(),
         finished: false,
         sink,

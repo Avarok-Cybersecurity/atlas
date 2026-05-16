@@ -110,6 +110,7 @@ pub fn run(
     mut session_manager: crate::session_manager::SessionSsmManager,
     spontaneous_think_budget: u32,
     min_content_tokens: usize,
+    min_thinking_tokens: usize,
 ) {
     model
         .bind_gpu_to_thread()
@@ -243,6 +244,7 @@ pub fn run(
             &mut grammar_engine,
             spontaneous_think_budget,
             min_content_tokens,
+            min_thinking_tokens,
             think_end_token,
             think_start_token,
             tool_call_start_token,

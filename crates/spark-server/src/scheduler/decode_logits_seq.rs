@@ -59,7 +59,13 @@ pub fn process_seq_logits(
     // confidence but are NOT signs the model is done thinking).
     // Previous thresholds (200 tokens, 10 consecutive) were too aggressive
     // and caused premature thinking termination in agentic coding sessions.
-    if a.inside_thinking && !a.force_end_thinking && a.thinking_tokens >= 400 {
+    // The min_thinking_tokens floor (below) also gates F2: confidence-stop
+    // must not fire before the model has produced a complete plan.
+    if a.inside_thinking
+        && !a.force_end_thinking
+        && a.thinking_tokens >= 400
+        && (a.thinking_tokens as usize) >= a.min_thinking_tokens
+    {
         let max_logit = f32_logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let sum_exp: f32 = f32_logits.iter().map(|&l| (l - max_logit).exp()).sum();
         if sum_exp > 0.0 && 1.0 / sum_exp >= 0.95 {
@@ -73,6 +79,44 @@ pub fn process_seq_logits(
             }
         } else {
             a.consecutive_confident = 0;
+        }
+    }
+
+    // Minimum thinking floor. While inside `<think>` and below the
+    // configured `min_thinking_tokens`, mask `</think>` AND every EOS
+    // token so the model physically cannot terminate reasoning early.
+    //
+    // Root cause this fixes (2026-05-16): dense Qwen3.6-27B with
+    // template-forced thinking bails out of `<think>` after ~150 tokens
+    // with an incomplete plan ("...generate a single HTML file containing
+    // the complete 3D ches"), then continues planning in the VISIBLE
+    // content channel where it degenerates into a plan→restart loop
+    // ("I'll create...", partial code, "Wait, let me...", restart). The
+    // same prompt with thinking disabled produces a clean complete file —
+    // proving the broken think→content transition is the cause. Forcing a
+    // complete hidden plan before the transition resolves it.
+    //
+    // Symmetric with `max_thinking_budget` (the max) and
+    // `min_content_tokens` (the post-`</think>` content floor). SOTA-
+    // aligned: vLLM reasoning-budget (issue #15418) implements min+max
+    // thinking limits via the same end-token logit mask. The
+    // `!force_end_thinking` guard yields to a legitimate
+    // budget-exhaustion close (min < max always, so this is defensive).
+    if a.inside_thinking
+        && !a.force_end_thinking
+        && a.min_thinking_tokens > 0
+        && (a.thinking_tokens as usize) < a.min_thinking_tokens
+    {
+        if let Some(end_tok) = think_end_token {
+            let idx = end_tok as usize;
+            if idx < f32_logits.len() {
+                f32_logits[idx] = f32::NEG_INFINITY;
+            }
+        }
+        for &eos in &a.eos_tokens {
+            if (eos as usize) < f32_logits.len() {
+                f32_logits[eos as usize] = f32::NEG_INFINITY;
+            }
         }
     }
 

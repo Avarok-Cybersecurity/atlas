@@ -23,6 +23,7 @@ pub(super) fn start_new_requests(
     grammar_engine: &mut Option<GrammarEngine>,
     spontaneous_think_budget: u32,
     min_content_tokens: usize,
+    min_thinking_tokens: usize,
     think_end_token: Option<u32>,
     think_start_token: Option<u32>,
     tool_call_start_token: Option<u32>,
@@ -54,6 +55,7 @@ pub(super) fn start_new_requests(
                 grammar_engine,
                 spontaneous_think_budget,
                 min_content_tokens,
+                min_thinking_tokens,
             ) {
                 Ok(StartPrefillResult::Active(a)) => {
                     tracing::info!(
@@ -90,6 +92,7 @@ pub(super) fn start_new_requests(
                 grammar_engine,
                 spontaneous_think_budget,
                 min_content_tokens,
+                min_thinking_tokens,
             ) {
                 Ok(Some(a)) => {
                     tracing::info!(

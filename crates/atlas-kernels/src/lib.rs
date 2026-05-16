@@ -183,6 +183,10 @@ pub struct ModelBehavior {
     /// when the model treats the thinking block as its main response.
     /// 0 = disabled (default).
     pub min_content_tokens: u32,
+    /// Suppress `</think>` until the model has emitted at least N thinking
+    /// tokens. Prevents premature thinking termination where the model dumps
+    /// incomplete planning into visible content. 0 = disabled (default).
+    pub min_thinking_tokens: u32,
 }
 
 impl Default for ModelBehavior {
@@ -198,6 +202,7 @@ impl Default for ModelBehavior {
             tool_call_parser: "",
             enable_loop_watchdog: false,
             min_content_tokens: 0,
+            min_thinking_tokens: 0,
         }
     }
 }

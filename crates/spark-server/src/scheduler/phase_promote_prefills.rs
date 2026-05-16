@@ -111,6 +111,7 @@ fn build_active_seq_from_prefill(
         },
         min_tokens: p.min_tokens,
         min_content_tokens: p.min_content_tokens,
+        min_thinking_tokens: p.min_thinking_tokens,
         eos_tokens: p.eos_tokens,
         finished: immediate_finish,
         sink: p.sink,
