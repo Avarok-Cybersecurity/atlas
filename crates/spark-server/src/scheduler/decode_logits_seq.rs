@@ -213,6 +213,22 @@ pub fn process_seq_logits(
             }
         }
     }
+    // Pre-sampling EOS mask for min_content_tokens: zero EOS logits before the
+    // model samples, so last_token is never set to EOS when we'd suppress it
+    // post-sampling. Without this, a suppressed EOS becomes last_token and the
+    // next decode sees it as context → model predicts role labels (hallucination).
+    if content_min_suppresses_eos(
+        a.think_ended,
+        a.content_tokens,
+        a.min_content_tokens,
+        &a.output_tokens,
+    ) {
+        for &eos in &a.eos_tokens {
+            if (eos as usize) < f32_logits.len() {
+                f32_logits[eos as usize] = f32::NEG_INFINITY;
+            }
+        }
+    }
 
     // F72 (byte-level partial-trigger anchor) was removed — see
     // F73 / fix42. The sampler-side anchor hung the server in

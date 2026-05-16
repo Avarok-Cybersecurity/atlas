@@ -79,6 +79,39 @@ pub fn should_suppress_eos_for_html(
             .is_some_and(|guard| html_completion_guard_active_with_patterns(output_tokens, guard))
 }
 
+/// Returns true when a complete HTML document has been generated: the start
+/// pattern (`<html` / `<!DOCTYPE html`) appeared AND the close pattern
+/// (`</html>`) followed it. Once true, `content_min_suppresses` should be
+/// released so EOS is allowed — forcing the model to continue past a
+/// structurally complete document causes degeneration.
+#[inline]
+pub fn html_document_is_complete(output_tokens: &[u32]) -> bool {
+    HTML_COMPLETION_GUARD
+        .get()
+        .is_some_and(|guard| {
+            let Some(last_start) = last_pattern_match(output_tokens, &guard.start_patterns) else {
+                return false;
+            };
+            has_pattern_match_at_or_after(output_tokens, &guard.close_patterns, last_start)
+        })
+}
+
+/// Returns true when EOS should be suppressed because not enough content
+/// tokens have been generated after `</think>`. Use this as the single source
+/// of truth — `decode_logits_seq`, `decode_logits_step`, `emit_step`, and
+/// the MTP paths all gate on this same condition.
+#[inline]
+pub fn content_min_suppresses_eos(
+    think_ended: bool,
+    content_tokens: u32,
+    min_content_tokens: usize,
+    output_tokens: &[u32],
+) -> bool {
+    think_ended
+        && (content_tokens as usize) < min_content_tokens
+        && !html_document_is_complete(output_tokens)
+}
+
 fn dedupe_nonempty_patterns(mut patterns: Vec<Vec<u32>>) -> Vec<Vec<u32>> {
     patterns.retain(|p| !p.is_empty());
     patterns.sort_unstable();

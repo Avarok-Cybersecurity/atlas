@@ -148,6 +148,8 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         }
     } else {
         a.remaining -= 1;
+        a.content_started = true;
+        a.content_tokens = a.content_tokens.saturating_add(1);
         // Clear think_just_ended one-shot now that we've consumed the
         // token after </think>.
         a.think_just_ended = false;
@@ -167,8 +169,12 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         a.output_tokens.len()
     };
     let min_tokens_suppresses = effective_len < a.min_tokens;
-    let content_min_suppresses =
-        a.think_ended && (a.content_tokens as usize) < a.min_content_tokens;
+    let content_min_suppresses = content_min_suppresses_eos(
+        a.think_ended,
+        a.content_tokens,
+        a.min_content_tokens,
+        &a.output_tokens,
+    );
     let suppress_eos =
         grammar_suppresses_eos || legacy_suppresses_eos || min_tokens_suppresses || content_min_suppresses;
 

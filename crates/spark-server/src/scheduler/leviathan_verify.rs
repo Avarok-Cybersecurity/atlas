@@ -39,7 +39,7 @@ use spark_runtime::sampler::{
     softmax_token_prob,
 };
 
-use super::helpers::bf16_to_f32;
+use super::helpers::{bf16_to_f32, content_min_suppresses_eos};
 
 /// Outcome of running Leviathan rejection sampling over K verify
 /// positions. The caller (`verify_kN_step.rs`) uses `num_accepted` to
@@ -67,6 +67,12 @@ pub fn verify_needs_leviathan(a: &ActiveSeq) -> bool {
             a.inside_thinking,
             a.inside_tool_body,
             a.grammar_state.is_some(),
+        )
+        || content_min_suppresses_eos(
+            a.think_ended,
+            a.content_tokens,
+            a.min_content_tokens,
+            &a.output_tokens,
         )
 }
 
@@ -143,6 +149,13 @@ fn run_leviathan_inner(
         a.inside_tool_body,
         a.grammar_state.is_some(),
     );
+    let content_min_suppresses = content_min_suppresses_eos(
+        a.think_ended,
+        a.content_tokens,
+        a.min_content_tokens,
+        &a.output_tokens,
+    );
+    let any_eos_suppressed = html_suppresses_eos || content_min_suppresses;
     // Penalties are applied to `logits` directly below; `params` here is
     // only for the `sample_excluding` residual sample and MUST NOT
     // re-apply them (`sample_with_params_history` would otherwise
@@ -213,7 +226,7 @@ fn run_leviathan_inner(
                 &a.dry_sequence_breakers,
             );
         }
-        if html_suppresses_eos {
+        if any_eos_suppressed {
             mask_eos(&mut logits, &a.eos_tokens);
         }
         for &(tid, bias) in &a.logit_bias {
@@ -262,7 +275,7 @@ fn run_leviathan_inner(
         // route is rarely taken. 2026-05-14: previously this loop
         // masked EOS unconditionally, which dragged short answers
         // like "19" into chat-template-leakage tails ("19\n\n\n19").
-        let eos_suppressed = html_suppresses_eos
+        let eos_suppressed = any_eos_suppressed
             || a.inside_tool_body
             || a
                 .grammar_state
@@ -293,7 +306,7 @@ fn run_leviathan_inner(
         dry_active,
         lz_active,
         dry_allowed,
-        html_suppresses_eos,
+        any_eos_suppressed,
     );
     Ok(VerifyAccept {
         num_accepted: drafts.len(),
@@ -313,11 +326,11 @@ fn guarded_tail_token(
     dry_active: bool,
     lz_active: bool,
     dry_allowed: u32,
-    html_suppresses_eos: bool,
+    eos_suppressed: bool,
 ) -> Option<u32> {
     let tail_pos = drafts.len();
     let tail = original_tail?;
-    if !html_suppresses_eos || !a.eos_tokens.contains(&tail) {
+    if !eos_suppressed || !a.eos_tokens.contains(&tail) {
         return Some(tail);
     }
     let slice_start = tail_pos.checked_mul(vocab)?.checked_mul(2)?;

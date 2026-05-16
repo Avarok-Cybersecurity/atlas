@@ -130,13 +130,15 @@ max_thinking_budget = 8192
 # expected ~50%+ vs prior ~0%. K=3 also preserved (slightly better on partial
 # accept). Reverted from the K=3 workaround now that K=2 is fixed.
 default_num_drafts = 1
-# Suppress EOS for the first 100 content tokens after </think>. Dense
+# Suppress EOS for the first N content tokens after </think>. Dense
 # Qwen3.6-27B with thinking enabled stops after ~17 tokens ("Here is the
 # complete answer.") when thinking ends naturally — the model treats the
 # hidden <think> block as its answer and uses visible content only as an
-# acknowledgment. 100 tokens clears any intro sentence and forces the
-# model into actual content generation.
-min_content_tokens = 100
+# acknowledgment. 25 tokens is just above the ~17-token intro sentence
+# threshold: enough to force the model into the first line of code (at which
+# point html_suppresses_eos or html_document_is_complete take over), but
+# small enough that short Q&A answers aren't suppressed into hallucination.
+min_content_tokens = 25
 
 # Upstream Qwen/Qwen3.6-27B reports `model_type = "qwen3_5"` in config.json.
 # Atlas's `parse_qwen3_5_config` (atlas-core/src/config.rs) rewrites this to

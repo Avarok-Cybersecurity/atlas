@@ -39,6 +39,11 @@ pub fn step_mtp(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: usize) 
             a.inside_thinking,
             a.inside_tool_body,
             a.grammar_state.is_some(),
+        ) || content_min_suppresses_eos(
+            a.think_ended,
+            a.content_tokens,
+            a.min_content_tokens,
+            &a.output_tokens,
         ) {
             &a.eos_tokens
         } else {
@@ -128,17 +133,24 @@ pub fn step_mtp(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: usize) 
                 continue;
             }
         }
-        if should_suppress_eos_for_html(
+        let eos_in_drafts_suppressed = should_suppress_eos_for_html(
             &a.output_tokens,
             a.inside_thinking,
             a.inside_tool_body,
             a.grammar_state.is_some(),
-        ) && let Some(pos) = drafts.iter().position(|tok| a.eos_tokens.contains(tok))
+        ) || content_min_suppresses_eos(
+            a.think_ended,
+            a.content_tokens,
+            a.min_content_tokens,
+            &a.output_tokens,
+        );
+        if eos_in_drafts_suppressed
+            && let Some(pos) = drafts.iter().position(|tok| a.eos_tokens.contains(tok))
         {
             tracing::debug!(
                 kept = pos,
                 dropped = drafts.len() - pos,
-                "HTML completion guard: truncated MTP drafts at EOS before </html>"
+                "EOS suppression guard: truncated MTP drafts at EOS"
             );
             drafts.truncate(pos);
             if drafts.is_empty() {
