@@ -147,6 +147,12 @@ pub(super) struct StreamState {
     /// plan-illustration snippet and we must fall through to the normal
     /// content phase so the real implementation is not truncated.
     pub(super) cf_content_bytes: usize,
+    /// Layer C — Answer-Regen: accumulated phase-1 reasoning text (capped),
+    /// used to seed the phase-2 prompt. Only grown when
+    /// `answer_regen_enabled()`; visible content reuses `refusal_scan_buf`.
+    pub(super) regen_reasoning_acc: String,
+    /// Loop-guard: at most one phase-2 regeneration per request.
+    pub(super) regen_used: bool,
 }
 
 impl StreamState {
@@ -195,6 +201,8 @@ impl StreamState {
                 && crate::scheduler::enable_think_content_carry_forward(),
             cf_content_mode: false,
             cf_content_bytes: 0,
+            regen_reasoning_acc: String::new(),
+            regen_used: false,
         }
     }
 }

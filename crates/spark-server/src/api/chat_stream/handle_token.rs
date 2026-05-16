@@ -219,6 +219,11 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
                 if stable.len() > state.emitted {
                     let residual = &stable[state.emitted..];
                     if !residual.trim().is_empty() {
+                        if crate::scheduler::answer_regen_enabled()
+                            && state.regen_reasoning_acc.len() < 32_768
+                        {
+                            state.regen_reasoning_acc.push_str(residual);
+                        }
                         let chunk = ChatCompletionChunk::reasoning_chunk(
                             &ctx.model,
                             &ctx.id,
@@ -342,6 +347,11 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
                     &ctx.leak_markers,
                 );
                 if !cleaned.trim().is_empty() {
+                    if crate::scheduler::answer_regen_enabled()
+                        && state.regen_reasoning_acc.len() < 32_768
+                    {
+                        state.regen_reasoning_acc.push_str(&cleaned);
+                    }
                     let chunk = ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, cleaned);
                     let json = serde_json::to_string(&chunk).unwrap_or_default();
                     sse_events.push(Ok(Event::default().data(json)));

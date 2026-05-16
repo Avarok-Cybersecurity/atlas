@@ -210,6 +210,18 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
             ptx_set.behavior.thinkbrake_bias,
         );
     }
+    crate::scheduler::set_answer_regen_config(
+        ptx_set.behavior.enable_answer_regen,
+        ptx_set.behavior.answer_regen_min_reasoning_bytes,
+    );
+    if ptx_set.behavior.enable_answer_regen {
+        tracing::info!(
+            "Model behavior: Answer-Regen ENABLED (min_reasoning={}B) — on empty/degenerate \
+             content with substantial reasoning, splice ONE phase-2 generation (orig + \
+             reasoning + </think> bridge, thinking off) as the answer",
+            ptx_set.behavior.answer_regen_min_reasoning_bytes,
+        );
+    }
     if args.disable_thinking {
         tracing::info!("--disable-thinking set: thinking is forced OFF for every request");
     }

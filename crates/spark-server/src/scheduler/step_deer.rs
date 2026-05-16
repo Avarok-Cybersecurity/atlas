@@ -29,6 +29,13 @@ pub fn deer_probe(model: &dyn Model, a: &mut ActiveSeq, think_end_token: Option<
     if !deer_enabled() {
         return;
     }
+    // Determinism harness: full short-circuit (no probe at all). Paired
+    // with ATLAS_DEER_FORCE_ROLLBACK on the SAME image — equal output
+    // proves the checkpoint/trial/rollback is byte-lossless. Single-image
+    // determinism gate (bench/reasoning_eval.py / gate_pipeline.sh).
+    if std::env::var_os("ATLAS_DEER_DISABLE").is_some() {
+        return;
+    }
     let Some(te) = think_end_token else {
         return;
     };

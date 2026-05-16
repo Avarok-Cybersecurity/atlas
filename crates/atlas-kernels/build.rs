@@ -93,6 +93,8 @@ struct Target {
     behavior_enable_thinkbrake: bool,
     behavior_thinkbrake_margin_tau: f32,
     behavior_thinkbrake_bias: f32,
+    behavior_enable_answer_regen: bool,
+    behavior_answer_regen_min_reasoning_bytes: u32,
     /// Which `(model_type, hidden_size)` pairs this kernel target supports.
     /// Parsed from `[[model_types]]` in MODEL.toml.
     model_type_matches: Vec<ModelTypeMatch>,
@@ -390,6 +392,8 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 b_enable_thinkbrake,
                 b_thinkbrake_margin_tau,
                 b_thinkbrake_bias,
+                b_enable_answer_regen,
+                b_answer_regen_min_reasoning_bytes,
             ) = parse_behavior(&model_dir);
             let model_type_matches = parse_model_types(&model_dir);
             let dflash = parse_dflash(&model_dir);
@@ -429,6 +433,8 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 behavior_enable_thinkbrake: b_enable_thinkbrake,
                 behavior_thinkbrake_margin_tau: b_thinkbrake_margin_tau,
                 behavior_thinkbrake_bias: b_thinkbrake_bias,
+                behavior_enable_answer_regen: b_enable_answer_regen,
+                behavior_answer_regen_min_reasoning_bytes: b_answer_regen_min_reasoning_bytes,
                 model_type_matches,
                 dflash,
             });

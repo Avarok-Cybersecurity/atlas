@@ -179,6 +179,8 @@ pub(super) fn generate_target_ptx_rs(
              \x20               enable_thinkbrake: {},\n\
              \x20               thinkbrake_margin_tau: {}f32,\n\
              \x20               thinkbrake_bias: {}f32,\n\
+             \x20               enable_answer_regen: {},\n\
+             \x20               answer_regen_min_reasoning_bytes: {},\n\
              \x20           }},\n\
              \x20           model_type_matches: vec![{}],\n\
              \x20           dflash: {},\n\
@@ -206,6 +208,8 @@ pub(super) fn generate_target_ptx_rs(
             target.behavior_enable_thinkbrake,
             target.behavior_thinkbrake_margin_tau,
             target.behavior_thinkbrake_bias,
+            target.behavior_enable_answer_regen,
+            target.behavior_answer_regen_min_reasoning_bytes,
             target.model_type_matches.iter().map(|m| {
                 let hs = match m.hidden_size {
                     Some(v) => format!("Some({v})"),

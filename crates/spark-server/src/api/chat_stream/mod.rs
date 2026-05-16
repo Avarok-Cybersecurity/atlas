@@ -23,6 +23,7 @@ mod ctx;
 mod handle_done;
 mod handle_error;
 mod handle_token;
+mod regen;
 mod state;
 mod tool_handlers;
 
@@ -115,6 +116,36 @@ pub(crate) async fn chat_completions_stream(
     // `<think>\n\n</think>\n\n` and the model generates no thinking tokens —
     // no need for scheduler tracking.
     let scheduler_thinking = enable_thinking;
+    // Layer C — capture phase-2 reusable params BEFORE the phase-1 request
+    // moves them. Inert unless `answer_regen_enabled()` (cheap clones).
+    let regen_tpl = regen::Phase2Tpl {
+        prompt_tokens: prompt_tokens.clone(),
+        session_hash,
+        max_tokens,
+        min_tokens,
+        min_content_tokens,
+        temperature,
+        top_k,
+        top_p,
+        top_n_sigma,
+        min_p,
+        repetition_penalty,
+        presence_penalty,
+        frequency_penalty,
+        dry_multiplier,
+        dry_base,
+        dry_allowed_length,
+        lz_penalty,
+        xtc_probability,
+        xtc_threshold,
+        logit_bias: logit_bias.clone(),
+        stop_tokens: stop_tokens.clone(),
+        thinking_budget,
+        disable_mtp: f60_disable_mtp_for_request(false),
+        seed,
+        timeout_at,
+    };
+
     let request = InferenceRequest::Streaming {
         prompt_tokens,
         session_hash,
@@ -212,6 +243,21 @@ pub(crate) async fn chat_completions_stream(
     };
 
     let mut stream_state = StreamState::new(tools_active, enable_thinking);
+
+    // Layer C — Answer-Regen path. Driver-task + ReceiverStream so a phase-2
+    // generation can be spliced before the terminal. When the flag is OFF
+    // (default) this branch is never taken and the original
+    // role.chain(token_stream).chain(done) path below runs verbatim —
+    // byte-identical to today, zero baseline/gate risk.
+    if crate::scheduler::answer_regen_enabled() {
+        return Ok(regen::answer_regen_response(
+            ctx,
+            stream_state,
+            token_rx,
+            role_json,
+            regen_tpl,
+        ));
+    }
 
     let token_stream = ReceiverStream::new(token_rx).flat_map(move |event| {
         let events = match event {

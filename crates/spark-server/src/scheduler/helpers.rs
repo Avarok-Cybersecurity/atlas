@@ -559,6 +559,26 @@ pub fn thinkbrake_bias() -> f32 {
     *THINKBRAKE_BIAS.get().unwrap_or(&2.5)
 }
 
+// ── Layer C — Answer-Regen config (set once at boot) ─────────────────────────
+static ENABLE_ANSWER_REGEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static ANSWER_REGEN_MIN_REASONING_BYTES: std::sync::OnceLock<u32> =
+    std::sync::OnceLock::new();
+
+/// Set once at boot from resolved `ModelBehavior` Answer-Regen fields.
+pub fn set_answer_regen_config(enabled: bool, min_reasoning_bytes: u32) {
+    let _ = ENABLE_ANSWER_REGEN.set(enabled);
+    let _ = ANSWER_REGEN_MIN_REASONING_BYTES.set(min_reasoning_bytes);
+}
+/// Per-model Answer-Regen enable. `false` until boot ⇒ off ⇒ the SSE
+/// path is byte-identical to today (phase-2 never constructed).
+pub fn answer_regen_enabled() -> bool {
+    *ENABLE_ANSWER_REGEN.get().unwrap_or(&false)
+}
+/// Minimum phase-1 reasoning bytes before Answer-Regen may trigger.
+pub fn answer_regen_min_reasoning_bytes() -> usize {
+    *ANSWER_REGEN_MIN_REASONING_BYTES.get().unwrap_or(&400) as usize
+}
+
 /// True iff the just-emitted token tail is a registered sentence/paragraph
 /// terminator (i.e. some pattern is a suffix of `output_tokens`). Inert
 /// (returns false) when no patterns are registered.

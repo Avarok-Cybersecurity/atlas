@@ -218,6 +218,15 @@ pub struct ModelBehavior {
     /// ThinkBrake `</think>` logit bias magnitude (gentle; model can still
     /// override if strongly reasoning). Default 2.5 (cf. tool-call −12.0).
     pub thinkbrake_bias: f32,
+    /// Layer C — Answer-Regen (arXiv 2510.14773). When a streaming/blocking
+    /// turn finishes with empty/degenerate visible content but substantial
+    /// reasoning, run ONE phase-2 generation (orig prompt + phase-1
+    /// reasoning + `</think>` bridge, thinking off) and stream/return its
+    /// content instead. Default `false` (off ⇒ byte-identical to today).
+    pub enable_answer_regen: bool,
+    /// Minimum phase-1 reasoning bytes before Answer-Regen may trigger
+    /// (avoids regenerating trivial turns). Default 400.
+    pub answer_regen_min_reasoning_bytes: u32,
 }
 
 impl Default for ModelBehavior {
@@ -241,6 +250,8 @@ impl Default for ModelBehavior {
             enable_thinkbrake: false,
             thinkbrake_margin_tau: 1.0,
             thinkbrake_bias: 2.5,
+            enable_answer_regen: false,
+            answer_regen_min_reasoning_bytes: 400,
         }
     }
 }
