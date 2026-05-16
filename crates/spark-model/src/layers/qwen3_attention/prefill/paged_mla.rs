@@ -285,14 +285,22 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         } else {
-            // Fallback unabsorbed path. Select kernel by head_dim:
-            // hd<=128 → HDIM=128 kernel (MLA Mistral; HDIM=256 over-reads adjacent heads)
-            // hd>256  → HDIM=512 kernel (Gemma-4 full-attn)
-            // else    → HDIM=256 default (standard GQA)
+            // Fallback unabsorbed path (mla_fused_prefill kernel unavailable).
+            // hd<=128 REQUIRES HDIM=128 kernel — HDIM=256 reads K[k+1][0..127] for
+            // col>=128, producing silent cross-token contamination that compounds
+            // over N attention layers. Guard hard here rather than corrupt silently.
+            anyhow::ensure!(
+                hd > 128 || self.prefill_attn_128_k.0 != 0,
+                "MLA paged prefill: head_dim={hd} requires either mla_fused_prefill or \
+                 inferspark_prefill_hd128 kernel (HDIM=256 over-reads adjacent K heads \
+                 for MLA with hd<=128 — rebuild with \
+                 kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu)",
+            );
+            // hd>256 → HDIM=512; hd<=128 → HDIM=128 (guarded above); else HDIM=256.
             let prefill_k = if hd > 256 && self.prefill_attn_512_k.0 != 0 {
                 self.prefill_attn_512_k
-            } else if hd <= 128 && self.prefill_attn_128_k.0 != 0 {
-                self.prefill_attn_128_k
+            } else if hd <= 128 {
+                self.prefill_attn_128_k // non-zero guaranteed by ensure! above
             } else {
                 self.prefill_attn_k
             };
