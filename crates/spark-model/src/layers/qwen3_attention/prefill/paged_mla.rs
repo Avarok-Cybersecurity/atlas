@@ -258,6 +258,10 @@ impl Qwen3AttentionLayer {
         // K[k+1][0..127] instead of valid data — cross-token contamination that compounds
         // over 36 attention layers, producing gibberish for >1000-token prefills.
         let attn_out = ctx.buffers.attn_output();
+        // Fused path operates in absorbed (kv_lora+rope)-dim space, not hd-dim space.
+        // Using 1/sqrt(hd=128) would over-sharpen softmax by sqrt(128/320) ≈ 0.63.
+        let inv_sqrt_d_absorbed = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt();
+        // Fallback expanded path uses standard 1/sqrt(hd) (or attn_scale_override).
         let inv_sqrt_d = self.effective_attn_scale(hd);
         if self.mla_fused_prefill_k.0 != 0 {
             // Fused: Q_absorption + attention in 320-dim latent space + V_extraction +
@@ -281,7 +285,7 @@ impl Qwen3AttentionLayer {
                 kv_lora,
                 mla_v_dim,
                 hd,
-                inv_sqrt_d,
+                inv_sqrt_d_absorbed,
                 stream,
             )?;
         } else {

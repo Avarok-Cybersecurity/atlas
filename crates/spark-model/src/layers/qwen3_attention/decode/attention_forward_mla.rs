@@ -372,7 +372,9 @@ impl Qwen3AttentionLayer {
 
         // Step 8: Paged decode attention
         let attn_out = ctx.buffers.attn_output();
-        let inv_sqrt_d = self.effective_attn_scale(hd);
+        // Absorbed MLA decode operates in (kv_lora+rope)-dim space; 1/sqrt(hd=128)
+        // would over-sharpen softmax vs the correct 1/sqrt(kv_lora+rope=320).
+        let inv_sqrt_d = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt();
         prof!("paged_attn", {
             ops::paged_decode_attn_bf16(
                 ctx.gpu,

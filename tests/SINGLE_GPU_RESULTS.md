@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis + fixes)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis + fixes); 2026-05-16 (scale fix)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -128,9 +128,12 @@ contaminates attention scores with look-ahead information from K[k+1]. This corr
 compounds across all 36 attention layers — short contexts (<600 tokens) are dominated by
 the real signal; beyond ~1000 tokens the accumulated contamination produces gibberish.
 
-Additionally, `inv_sqrt_d = 1/sqrt(hd=128)` was used but the absorbed attention dimension
+Additionally, `inv_sqrt_d = 1/sqrt(hd=128)` was used in both `paged_mla.rs` and
+`cache_skip_mla.rs` for the absorbed attention call, but the absorbed attention dimension
 is 320, requiring `1/sqrt(320)`. Using the wrong scale over-sharpens softmax by
-√(128/320) ≈ 0.63, adding a second source of corruption. Both are fixed.
+√(128/320) ≈ 0.63, adding a second source of corruption. The same bug existed in the
+decode path (`attention_forward_mla.rs`), which also called `paged_decode_attn_bf16` with
+320-dim Q/K but `1/sqrt(128)`. All three sites are now fixed.
 
 **Test results (diverse, non-repetitive content — BEFORE fix):**
 | Input tokens | Output quality |
@@ -144,14 +147,16 @@ is 320, requiring `1/sqrt(320)`. Using the wrong scale over-sharpens softmax by
 quantization. That was wrong — the same failure appeared on avarok/atlas-alpha-2.7
 because both builds contained the same prefill kernel bug.
 
-**Fix applied** (`paged_mla.rs` and `cache_skip_mla.rs`):
+**Fix applied** (`paged_mla.rs`, `cache_skip_mla.rs`, and `attention_forward_mla.rs`):
 - Route MLA prefill through `ops::mla_fused_prefill` when the kernel is loaded.
   This kernel operates entirely in the absorbed 320-dim latent space:
   1. Q_absorbed[256] = Q_nope[64] @ W_UK^T — no HDIM mismatch possible
   2. Q_final = [Q_absorbed | Q_rope_rotated] ∈ R^320
   3. Online softmax attention: Q_final · kv_latent^T (causal)
   4. V_out[128] = attn_latent[256] @ W_UV^T
-- `inv_sqrt_d = 1/sqrt(320)` — correct absorbed dimension (was mistakenly 1/sqrt(128))
+- `inv_sqrt_d = 1/sqrt(kv_lora + rope) = 1/sqrt(320)` — correct absorbed dimension
+  in all three paths (prefill paged, prefill cache-skip, decode). Was mistakenly
+  1/sqrt(hd=128) throughout.
 - The HDIM=256 `inferspark_prefill` kernel is kept as a fallback for non-MLA layers
   (hd=256 or hd=512) with a clear comment marking it broken for MLA hd<256.
 - Also corrects O-projection input dimension from `nq * hd` to `nq * mla_v_dim`
@@ -286,8 +291,9 @@ architectural limitation of fixed-size Mamba-2 recurrent state; not a code bug.
 
 | # | Priority | Status | Item |
 |---|----------|--------|------|
-| 1 | P0 | **FIXED — needs retest** | Mistral MLA (kernel): `cache_skip_mla.rs` used HDIM=256 kernel for head_dim=128, AND wrong inv_sqrt_d (1/√128 instead of 1/√320); fixed both via `mla_fused_prefill` absorbed path |
-| 2 | P0 | **FIXED — needs retest** | Mistral MLA (dtype): `phase_assemble.rs` `unwrap_or(Fp8)` on empty layer_kv_dtypes → all MLA layers stored KV in FP8 instead of BF16; fixed to `unwrap_or(Bf16)` |
-| 3 | P1 | **FIXED — needs retest** | Nemotron tool calling: (A) wrong CLI parser in test (use MODEL.toml bare_json); (B) `skip_template_tools=true` prevents contradictory XML injection from template |
-| 4 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool (`SsmStatePool`), not snapshot cache; sized by `--max-batch-size` (default 8). Use `--max-batch-size 1` on single-stream workloads to save ~1050 MB and expand KV cache capacity. `--ssm-cache-slots 0` correctly disables only Marconi prefix-cache snapshots (`SsmSnapshotPool`). |
+| 1 | P0 | **FIXED — needs retest** | Mistral MLA (kernel): `paged_mla.rs`/`cache_skip_mla.rs` used HDIM=256 kernel for head_dim=128; fixed via `mla_fused_prefill` absorbed path |
+| 2 | P0 | **FIXED — needs retest** | Mistral MLA (scale): all three MLA paths (`paged_mla.rs`, `cache_skip_mla.rs`, `attention_forward_mla.rs`) passed `1/√128` to 320-dim absorbed attention; fixed to `1/√(kv_lora+rope)=1/√320` |
+| 3 | P0 | **FIXED — needs retest** | Mistral MLA (dtype): `phase_assemble.rs` `unwrap_or(Fp8)` on empty layer_kv_dtypes → all MLA layers stored KV in FP8 instead of BF16; fixed to `unwrap_or(Bf16)` |
+| 4 | P1 | **FIXED — needs retest** | Nemotron tool calling: (A) wrong CLI parser in test (use MODEL.toml bare_json); (B) `skip_template_tools=true` prevents contradictory XML injection from template |
+| 5 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool (`SsmStatePool`), not snapshot cache; sized by `--max-batch-size` (default 8). Use `--max-batch-size 1` on single-stream workloads to save ~1050 MB and expand KV cache capacity. `--ssm-cache-slots 0` correctly disables only Marconi prefix-cache snapshots (`SsmSnapshotPool`). |
 | 5 | P2 | **CLOSED — known** | Nemotron long context >8K: Mamba-2 fixed-size state saturation, architectural limitation |
