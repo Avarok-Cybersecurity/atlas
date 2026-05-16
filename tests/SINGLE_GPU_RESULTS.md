@@ -34,7 +34,7 @@ sudo docker run -d --name atlas-122b --gpus all --ipc=host --network host \
 ### Memory Budget
 - Weights: ~90 GB (3 shards, 96K + 53K tensors)
 - Buffer arena: 2530 MB (8192-token chunks)
-- SSM state pool: 1206 MB (8 slots × 36 layers)
+- SSM state pool: 1206 MB (8 slots × 36 layers) — see note below
 - KV cache: 3375 blocks = 54K tokens (0.8 GB, FP8, 12 attn layers)
 - OOM guard: 4096 MB
 
@@ -58,6 +58,28 @@ sudo docker run -d --name atlas-122b --gpus all --ipc=host --network host \
 - TPS drops at long input due to SSM chunked prefill TTFT
 - Decode speed is consistent ~16.5 tok/s regardless of output length
 - vs EP=2 (44-51 tok/s): ~3x slower but fully functional
+
+### SSM Pool Memory (P2 investigation)
+
+`--ssm-cache-slots 0` does NOT eliminate the 1206 MB SSM state pool.
+There are two distinct pools:
+
+- **`SsmStatePool`** (`impl_a1.rs` line 134-149): Active decode pool — pre-allocated
+  per-sequence GPU buffers for live SSM state during inference. Sized by
+  `max_batch_size` (default 8), not `ssm_cache_slots`. For 122B with 36 SSM
+  layers: 8 slots × 36 layers × ~4 MB/slot ≈ 1206 MB. This pool is required for
+  correct SSM decode and cannot be reduced by `--ssm-cache-slots 0`.
+
+- **`SsmSnapshotPool`** (`impl_a1.rs` line 149): Marconi prefix-cache snapshots —
+  saves SSM state checkpoints for KV-cache reuse. Sized by `ssm_cache_slots`.
+  Setting `--ssm-cache-slots 0` correctly zeros this pool (negligible savings since
+  it was already small by default).
+
+**To reduce the active pool**: pass `--max-batch-size 1` on single-stream workloads.
+Reducing from 8 to 1 slot saves ~1050 MB, freeing that headroom for KV cache
+(potentially 10K+ additional cached tokens). Pure-attention models (Mistral, Nemotron
+attention layers) have `num_ssm_layers=0` so zero SSM memory is allocated regardless
+of any flag.
 
 ---
 
@@ -106,10 +128,9 @@ contaminates attention scores with look-ahead information from K[k+1]. This corr
 compounds across all 36 attention layers — short contexts (<600 tokens) are dominated by
 the real signal; beyond ~1000 tokens the accumulated contamination produces gibberish.
 
-Additionally, the remote's `mla_fused_prefill` call used `inv_sqrt_d = 1/sqrt(hd=128)` but
-the absorbed attention dimension is 320, requiring `1/sqrt(320)`. Using the wrong scale
-over-sharpens softmax by √(128/320) ≈ 0.63, adding a second source of corruption on top
-of the HDIM mismatch. Both are fixed.
+Additionally, `inv_sqrt_d = 1/sqrt(hd=128)` was used but the absorbed attention dimension
+is 320, requiring `1/sqrt(320)`. Using the wrong scale over-sharpens softmax by
+√(128/320) ≈ 0.63, adding a second source of corruption. Both are fixed.
 
 **Test results (diverse, non-repetitive content — BEFORE fix):**
 | Input tokens | Output quality |
@@ -268,5 +289,5 @@ architectural limitation of fixed-size Mamba-2 recurrent state; not a code bug.
 | 1 | P0 | **FIXED — needs retest** | Mistral MLA (kernel): `cache_skip_mla.rs` used HDIM=256 kernel for head_dim=128, AND wrong inv_sqrt_d (1/√128 instead of 1/√320); fixed both via `mla_fused_prefill` absorbed path |
 | 2 | P0 | **FIXED — needs retest** | Mistral MLA (dtype): `phase_assemble.rs` `unwrap_or(Fp8)` on empty layer_kv_dtypes → all MLA layers stored KV in FP8 instead of BF16; fixed to `unwrap_or(Bf16)` |
 | 3 | P1 | **FIXED — needs retest** | Nemotron tool calling: (A) wrong CLI parser in test (use MODEL.toml bare_json); (B) `skip_template_tools=true` prevents contradictory XML injection from template |
-| 4 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool (`SsmStatePool`), not snapshot cache; sized by `--max-batch-size` (8). `--ssm-cache-slots 0` correctly disables only Marconi prefix-cache snapshots (`SsmSnapshotPool`). No code bug. |
+| 4 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool (`SsmStatePool`), not snapshot cache; sized by `--max-batch-size` (default 8). Use `--max-batch-size 1` on single-stream workloads to save ~1050 MB and expand KV cache capacity. `--ssm-cache-slots 0` correctly disables only Marconi prefix-cache snapshots (`SsmSnapshotPool`). |
 | 5 | P2 | **CLOSED — known** | Nemotron long context >8K: Mamba-2 fixed-size state saturation, architectural limitation |
