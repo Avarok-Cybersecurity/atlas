@@ -31,6 +31,7 @@ mod prefill_b_step;
 mod repetition;
 mod sample_step;
 mod spec_step;
+mod step_deer;
 mod types;
 mod verify_dflash_step;
 mod verify_k2_step;
@@ -41,9 +42,15 @@ use decode_logits_seq::*;
 use decode_logits_step::*;
 use decode_step::*;
 use emit_step::*;
+pub use helpers::enable_think_content_carry_forward;
+pub use helpers::set_code_fence_guard_patterns;
+pub use helpers::set_deer_config;
 pub use helpers::set_enable_loop_watchdog;
+pub use helpers::set_sentence_end_patterns;
+pub use helpers::set_thinkbrake_config;
 pub use helpers::set_html_completion_guard_patterns;
 pub use helpers::set_im_start_hard_stop;
+pub use helpers::set_think_content_carry_forward;
 use helpers::*;
 pub use helpers::{CONTENT_LOOP_PERIOD_MAX, CONTENT_LOOP_PERIOD_MIN};
 use leviathan_verify::*;
@@ -58,6 +65,7 @@ use prefill_b_step::*;
 use repetition::*;
 use sample_step::*;
 use spec_step::*;
+use step_deer::deer_probe;
 use types::*;
 use verify_dflash_step::*;
 use verify_k2_step::*;
@@ -309,6 +317,15 @@ pub fn run(
                     for a in active.iter_mut() {
                         a.pending_drafts.clear();
                     }
+                }
+                // Layer A — DEER probe. SINGLE thinking sequence only: a
+                // per-seq trial decode mid-batch would corrupt the other
+                // sequences' shared `decode_batch`. MTP is already off
+                // during thinking (`!inside_thinking` guard above), so DEER
+                // and MTP never interact. May set `force_end_thinking`;
+                // never emits. Inert unless `enable_deer`.
+                if active.len() == 1 && active[0].inside_thinking {
+                    deer_probe(&*model, &mut active[0], think_end_token);
                 }
                 step_decode_only(
                     &*model,

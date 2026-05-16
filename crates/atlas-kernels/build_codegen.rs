@@ -172,6 +172,13 @@ pub(super) fn generate_target_ptx_rs(
              \x20               enable_loop_watchdog: {},\n\
              \x20               min_content_tokens: {},\n\
              \x20               min_thinking_tokens: {},\n\
+             \x20               enable_think_content_carry_forward: {},\n\
+             \x20               enable_deer: {},\n\
+             \x20               deer_confidence_threshold: {}f32,\n\
+             \x20               deer_min_thinking_tokens: {},\n\
+             \x20               enable_thinkbrake: {},\n\
+             \x20               thinkbrake_margin_tau: {}f32,\n\
+             \x20               thinkbrake_bias: {}f32,\n\
              \x20           }},\n\
              \x20           model_type_matches: vec![{}],\n\
              \x20           dflash: {},\n\
@@ -192,6 +199,13 @@ pub(super) fn generate_target_ptx_rs(
             target.behavior_enable_loop_watchdog,
             target.behavior_min_content_tokens,
             target.behavior_min_thinking_tokens,
+            target.behavior_enable_think_content_carry_forward,
+            target.behavior_enable_deer,
+            target.behavior_deer_confidence_threshold,
+            target.behavior_deer_min_thinking_tokens,
+            target.behavior_enable_thinkbrake,
+            target.behavior_thinkbrake_margin_tau,
+            target.behavior_thinkbrake_bias,
             target.model_type_matches.iter().map(|m| {
                 let hs = match m.hidden_size {
                     Some(v) => format!("Some({v})"),

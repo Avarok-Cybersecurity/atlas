@@ -171,6 +171,16 @@ pub(super) struct ActiveSeq {
     pub content_started: bool,
     /// Number of content tokens emitted post-`</think>`.
     pub content_tokens: u32,
+    /// Component P (think→content carry-forward). When the model writes a
+    /// COMPLETE artifact (code fence / HTML doc) inside `<think>`, this is
+    /// set to the index in `output_tokens` where that artifact begins, so
+    /// the response extractor relabels the think→content split there
+    /// instead of discarding the artifact and emitting the degenerate
+    /// post-`</think>` restart. `None` = no carry-forward (default / today's
+    /// behavior). Decided once at the `</think>` transition.
+    pub carry_forward_from: Option<usize>,
+    /// One-shot latch so the carry-forward decision is made exactly once.
+    pub carried_forward: bool,
     /// Free-text tokens emitted since the last `<tool_call>` opened.
     pub prose_tokens_since_last_tool: u32,
     /// F10 (2026-04-26): how many times the thinking-loop watchdog has fired.
@@ -263,6 +273,9 @@ pub(super) struct SwappedSeq {
     pub disable_mtp: bool,
     pub content_started: bool,
     pub content_tokens: u32,
+    /// Component P state preserved across swap-out/restore.
+    pub carry_forward_from: Option<usize>,
+    pub carried_forward: bool,
     pub prose_tokens_since_last_tool: u32,
     pub think_watchdog_fires: u32,
     pub entropy_collapse_streak: u32,

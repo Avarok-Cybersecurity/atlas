@@ -172,6 +172,32 @@ min_content_tokens = 25
 # well under the 3686 effective budget. Symmetric with max_thinking_budget
 # (the max) and min_content_tokens (the post-</think> content floor).
 min_thinking_tokens = 512
+# Think→content carry-forward (2026-05-16). Dense Qwen3.6-27B writes the
+# actual answer/code INSIDE <think>. Without this, a </think>-trigger
+# (F2 confidence-stop / thinking-loop watchdog) force-closes thinking
+# mid-code (code is trivially high-confidence), the thinking tokens are
+# discarded, and the model restarts the document in content where it
+# degenerates and the HTML-restart watchdog kills it at ~1380 tokens
+# (OpenWebUI "3D chess game" field report). Component G holds off every
+# </think>-trigger while a code fence / HTML doc is OPEN in <think>;
+# Component P promotes the COMPLETE thinking-block artifact to visible
+# content instead of discard+restart. Bounded by max_thinking_budget;
+# hard-disabled on tool-call / grammar turns. min_thinking_tokens /
+# min_content_tokens kept as belt-and-suspenders.
+enable_think_content_carry_forward = true
+
+# Layer A — DEER (arXiv 2504.15895). When confidently done reasoning inside
+# <think>, run a bounded trial decode (force </think> + a short probe
+# window); commit an early </think> only if the trial answer's min top-1
+# softmax confidence ≥ γ, else roll back exactly (KV via seq_len rewind +
+# GDN via rollback_ssm_states(seq,0)) and keep thinking. Single-stream
+# only; MTP is already off during thinking; hard-disabled on tool/grammar
+# and gated by Component G (never cut an open code fence/HTML doc). Set
+# `true` here to build the DEER candidate for the N≥10 gate vs the
+# cf-complete-gate baseline; revert to `false` if it does not beat baseline.
+enable_deer = true
+deer_confidence_threshold = 0.95
+deer_min_thinking_tokens = 512
 
 # Upstream Qwen/Qwen3.6-27B reports `model_type = "qwen3_5"` in config.json.
 # Atlas's `parse_qwen3_5_config` (atlas-core/src/config.rs) rewrites this to

@@ -86,6 +86,13 @@ struct Target {
     behavior_enable_loop_watchdog: bool,
     behavior_min_content_tokens: u32,
     behavior_min_thinking_tokens: u32,
+    behavior_enable_think_content_carry_forward: bool,
+    behavior_enable_deer: bool,
+    behavior_deer_confidence_threshold: f32,
+    behavior_deer_min_thinking_tokens: u32,
+    behavior_enable_thinkbrake: bool,
+    behavior_thinkbrake_margin_tau: f32,
+    behavior_thinkbrake_bias: f32,
     /// Which `(model_type, hidden_size)` pairs this kernel target supports.
     /// Parsed from `[[model_types]]` in MODEL.toml.
     model_type_matches: Vec<ModelTypeMatch>,
@@ -376,6 +383,13 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 b_enable_loop_watchdog,
                 b_min_content_tokens,
                 b_min_thinking_tokens,
+                b_enable_think_content_carry_forward,
+                b_enable_deer,
+                b_deer_confidence_threshold,
+                b_deer_min_thinking_tokens,
+                b_enable_thinkbrake,
+                b_thinkbrake_margin_tau,
+                b_thinkbrake_bias,
             ) = parse_behavior(&model_dir);
             let model_type_matches = parse_model_types(&model_dir);
             let dflash = parse_dflash(&model_dir);
@@ -408,6 +422,13 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 behavior_enable_loop_watchdog: b_enable_loop_watchdog,
                 behavior_min_content_tokens: b_min_content_tokens,
                 behavior_min_thinking_tokens: b_min_thinking_tokens,
+                behavior_enable_think_content_carry_forward: b_enable_think_content_carry_forward,
+                behavior_enable_deer: b_enable_deer,
+                behavior_deer_confidence_threshold: b_deer_confidence_threshold,
+                behavior_deer_min_thinking_tokens: b_deer_min_thinking_tokens,
+                behavior_enable_thinkbrake: b_enable_thinkbrake,
+                behavior_thinkbrake_margin_tau: b_thinkbrake_margin_tau,
+                behavior_thinkbrake_bias: b_thinkbrake_bias,
                 model_type_matches,
                 dflash,
             });

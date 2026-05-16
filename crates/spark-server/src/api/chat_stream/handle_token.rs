@@ -25,6 +25,99 @@ use super::tool_handlers::{
 
 type SseVec = Vec<Result<Event, std::convert::Infallible>>;
 const HTML_AUTOCLOSE_MIN_BYTES: usize = 4_000;
+/// Minimum content bytes carried forward from `<think>` for Component P
+/// to END the response (dropping the post-`</think>` restart). Below
+/// this, the flip was on a plan-illustration snippet — fall through to
+/// the normal content phase instead of truncating the real answer.
+/// ~2 KB is far above any plan sketch, far below a real single-file app.
+const CF_MIN_ARTIFACT_BYTES: usize = 2_000;
+
+/// Whether the carried thinking text holds a STRUCTURALLY COMPLETE
+/// artifact (not just a substantial draft). An HTML doc must have a
+/// `</html>` after its last start; otherwise a code fence must be
+/// balanced (even, non-zero ``` count). A draft the model abandons
+/// ("…Let's write the actual code now.") has no close → returns false
+/// so Component P does NOT truncate; the real post-`</think>`
+/// implementation is allowed to stream instead.
+fn cf_artifact_is_complete_text(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let html_start = ["<!doctype html", "<html>", "<html ", "<html\n"]
+        .iter()
+        .filter_map(|m| lower.rfind(m))
+        .max();
+    if let Some(start) = html_start {
+        return lower[start..].contains("</html>");
+    }
+    let fences = lower.matches("```").count();
+    fences >= 2 && fences % 2 == 0
+}
+
+/// Minimum byte span of a CURRENTLY-OPEN artifact inside `<think>`
+/// before the streaming channel flips to `content`. Reasoning plans
+/// contain tiny illustrative fences (a ~150 B `<!DOCTYPE>…</html>`
+/// skeleton, a 5-line sample) that OPEN and CLOSE quickly — they never
+/// stay open this long, so they keep streaming as `reasoning` (clean).
+/// Only a genuine large artifact stays open and crosses this, flipping
+/// to `content`.
+const CF_OPEN_FLIP_BYTES: usize = 1_200;
+
+/// If a substantial code/HTML artifact is currently OPEN (start marker
+/// seen, matching close NOT yet seen) in the decoded thinking text and
+/// its open span ≥ [`CF_OPEN_FLIP_BYTES`], return the byte offset of
+/// the artifact start (the flip point). Otherwise `None`. Offsets are
+/// byte-length-preserving under ASCII lowercasing and land on ASCII
+/// marker starts → valid `text` char boundaries.
+fn cf_open_artifact_flip_byte(text: &str) -> Option<usize> {
+    let lower = text.to_ascii_lowercase();
+    // HTML doc takes precedence (unambiguous `</html>` close).
+    let html_start = ["<!doctype html", "<html>", "<html ", "<html\n"]
+        .iter()
+        .filter_map(|m| lower.rfind(m))
+        .max();
+    if let Some(start) = html_start {
+        let closed = lower[start..].contains("</html>");
+        if !closed && text.len().saturating_sub(start) >= CF_OPEN_FLIP_BYTES {
+            return Some(start);
+        }
+        if closed {
+            return None; // skeleton closed → stay reasoning
+        }
+    }
+    // Language-tagged code fence (bare ``` excluded — plans use it).
+    const FENCE_OPENS: &[&str] = &[
+        "```html",
+        "```javascript",
+        "```js\n",
+        "```js ",
+        "```jsx",
+        "```typescript",
+        "```ts\n",
+        "```ts ",
+        "```tsx",
+        "```python",
+        "```py\n",
+        "```css",
+        "```json",
+        "```rust",
+        "```cpp",
+        "```c++",
+        "```go\n",
+        "```java",
+        "```bash",
+        "```sh\n",
+        "```svg",
+        "```xml",
+    ];
+    let fence_open = FENCE_OPENS.iter().filter_map(|m| lower.rfind(m)).max()?;
+    // A fence is OPEN iff there is no closing ``` after the opener.
+    let after = &lower[fence_open + 3..];
+    let closed = after.contains("```");
+    if !closed && text.len().saturating_sub(fence_open) >= CF_OPEN_FLIP_BYTES {
+        Some(fence_open)
+    } else {
+        None
+    }
+}
 
 enum IncompleteHtmlFenceAction {
     Hold,
@@ -43,6 +136,72 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
         if let Some(end_id) = ctx.state.think_end_token_id
             && tok == end_id
         {
+            // Component P (streaming): the artifact was written inside
+            // `<think>` and has been streaming as `content` since its
+            // start was detected. Component G guarantees `</think>` is
+            // only reached AFTER the artifact is complete. Emit the
+            // residual artifact bytes as content, then END the response
+            // so the degenerate post-`</think>` restart is dropped.
+            if state.cf_content_mode {
+                let mut residual = String::new();
+                let mut full = String::new();
+                if state.all_toks.len() > 1 {
+                    full = ctx
+                        .state
+                        .tokenizer
+                        .decode(&state.all_toks[..state.all_toks.len() - 1])
+                        .unwrap_or_default();
+                    let stable = full.trim_end_matches('\u{FFFD}');
+                    if stable.len() > state.emitted {
+                        residual = stable[state.emitted..].to_string();
+                        state.emitted = stable.len();
+                    }
+                }
+                let total = state.cf_content_bytes + residual.len();
+                // Only END the response (dropping the post-`</think>`
+                // restart) when the in-`<think>` artifact is BOTH
+                // structurally complete (closed) AND substantial. An
+                // incomplete draft ("…Let's write the actual code now.")
+                // means the real implementation is post-`</think>` — do
+                // NOT truncate it; fall through to the normal content
+                // phase (matches the no-carry-forward baseline, which
+                // for this model produces the real code post-`</think>`).
+                let complete = cf_artifact_is_complete_text(&full);
+                if !residual.is_empty() {
+                    let chunk =
+                        ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, residual);
+                    let json = serde_json::to_string(&chunk).unwrap_or_default();
+                    sse_events.push(Ok(Event::default().data(json)));
+                }
+                if complete && total >= CF_MIN_ARTIFACT_BYTES {
+                    state.thinking_done = true;
+                    state.stop_string_triggered = true;
+                    ctx.cancel_flag
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    tracing::info!(
+                        "Component P (streaming): COMPLETE substantial artifact ({total} B) \
+                         carried forward from <think>; ending response, dropping post-</think> \
+                         restart"
+                    );
+                    return sse_events;
+                }
+                // Incomplete draft (or sub-threshold): do NOT truncate.
+                // Fall through to the normal post-`</think>` content
+                // phase so the model's real implementation streams.
+                state.thinking_done = true;
+                state.cf_content_mode = false;
+                state.emitted = 0;
+                state.all_toks.clear();
+                if let Some(ref mut det) = state.detector {
+                    det.reset();
+                }
+                tracing::info!(
+                    "Component P (streaming): in-<think> artifact NOT complete-and-substantial \
+                     (complete={complete}, {total} B); not truncating — continuing into normal \
+                     content phase for the real post-</think> implementation"
+                );
+                return sse_events;
+            }
             state.thinking_done = true;
             // Emit only the residual reasoning delta not yet sent
             // by incremental streaming (e.g. trailing bytes held
@@ -87,6 +246,44 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
                 .decode(&state.all_toks)
                 .unwrap_or_default();
             let stable_end = full.trim_end_matches('\u{FFFD}').len();
+            // Component P (streaming eager-flip): a SUBSTANTIAL artifact
+            // is currently OPEN in `<think>` (≥CF_OPEN_FLIP_BYTES, no
+            // close yet) — plan-illustration snippets close long before
+            // this and never flip. On the flip token, re-emit the WHOLE
+            // artifact-so-far `[start..stable_end]` as `content` so the
+            // content channel holds the COMPLETE artifact (the
+            // `[start..emitted]` prefix already sent as reasoning is
+            // harmless — OpenWebUI shows it collapsed). Subsequent tokens
+            // append via the `cf_content_mode` branch.
+            if state.cf_active
+                && !state.cf_content_mode
+                && let Some(start) = cf_open_artifact_flip_byte(&full[..stable_end])
+                && stable_end > start
+            {
+                let delta = full[start..stable_end].to_string();
+                state.emitted = stable_end;
+                state.cf_content_bytes += delta.len();
+                state.cf_content_mode = true;
+                let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, delta);
+                let json = serde_json::to_string(&chunk).unwrap_or_default();
+                sse_events.push(Ok(Event::default().data(json)));
+                return sse_events;
+            }
+            if state.cf_content_mode {
+                // Artifact bytes → content verbatim (no reasoning cleanups).
+                if stable_end > state.emitted {
+                    let delta = full[state.emitted..stable_end].to_string();
+                    state.emitted = stable_end;
+                    if !delta.is_empty() {
+                        state.cf_content_bytes += delta.len();
+                        let chunk =
+                            ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, delta);
+                        let json = serde_json::to_string(&chunk).unwrap_or_default();
+                        sse_events.push(Ok(Event::default().data(json)));
+                    }
+                }
+                return sse_events;
+            }
             if stable_end > state.emitted {
                 let mut cleaned = full[state.emitted..stable_end].to_string();
                 state.emitted = stable_end;

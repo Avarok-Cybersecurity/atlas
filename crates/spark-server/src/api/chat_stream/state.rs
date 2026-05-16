@@ -131,6 +131,22 @@ pub(super) struct StreamState {
     /// ``` across three chunks, so scanning only the current delta
     /// misses the last chance to auto-close the HTML before prose.
     pub(super) pending_incomplete_html_fence: String,
+    /// Component P (think→content carry-forward). True when this stream
+    /// is eligible: thinking enabled, model flag on, no tools. While
+    /// eligible, the thinking-phase emitter watches for an artifact
+    /// start (HTML doc / language-tagged code fence).
+    pub(super) cf_active: bool,
+    /// Flipped true once the artifact start is detected inside `<think>`.
+    /// From that point the thinking-buffer bytes stream as `content`
+    /// (not `reasoning`), and the eventual `</think>` ends the response
+    /// so the degenerate post-`</think>` restart is dropped.
+    pub(super) cf_content_mode: bool,
+    /// Bytes streamed as content since the carry-forward flip. At
+    /// `</think>` we only END the response (dropping the post-`</think>`
+    /// restart) if this is substantial — otherwise the flip was on a
+    /// plan-illustration snippet and we must fall through to the normal
+    /// content phase so the real implementation is not truncated.
+    pub(super) cf_content_bytes: usize,
 }
 
 impl StreamState {
@@ -174,6 +190,11 @@ impl StreamState {
             html_open_script_tags: 0,
             html_doc_bytes: 0,
             pending_incomplete_html_fence: String::new(),
+            cf_active: enable_thinking
+                && !tools_active
+                && crate::scheduler::enable_think_content_carry_forward(),
+            cf_content_mode: false,
+            cf_content_bytes: 0,
         }
     }
 }

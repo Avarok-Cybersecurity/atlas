@@ -237,6 +237,37 @@ fn decode_response_text(
     enable_thinking: bool,
 ) -> (Option<String>, String) {
     if let Some(think_tok) = state.think_end_token_id {
+        // Component P (think→content carry-forward). The model wrote a
+        // COMPLETE artifact inside `<think>`; relabel the split at the
+        // artifact start. reasoning = tokens before the artifact;
+        // content = the artifact itself (`[start .. </think>)`), dropping
+        // the `</think>` and the degenerate post-`</think>` restart.
+        if enable_thinking
+            && let Some(start) = response.carry_forward_from
+            && start < response.output_tokens.len()
+        {
+            let artifact_end = response.output_tokens[start..]
+                .iter()
+                .position(|&t| t == think_tok)
+                .map(|rel| start + rel)
+                .unwrap_or(response.output_tokens.len());
+            let reasoning = if start > 0 {
+                state
+                    .tokenizer
+                    .decode(&response.output_tokens[..start])
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            } else {
+                None
+            };
+            let content = state
+                .tokenizer
+                .decode(&response.output_tokens[start..artifact_end])
+                .unwrap_or_default()
+                .trim_start()
+                .to_string();
+            return (reasoning, content);
+        }
         let last_think_pos = if enable_thinking {
             response.output_tokens.iter().rposition(|&t| t == think_tok)
         } else {

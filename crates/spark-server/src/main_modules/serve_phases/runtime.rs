@@ -172,6 +172,44 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
             crate::scheduler::CONTENT_LOOP_PERIOD_MAX,
         );
     }
+    crate::scheduler::set_think_content_carry_forward(
+        ptx_set.behavior.enable_think_content_carry_forward,
+    );
+    if ptx_set.behavior.enable_think_content_carry_forward {
+        tracing::info!(
+            "Model behavior: think→content carry-forward ENABLED (G: no </think> force-close \
+             while a code fence/HTML doc is open in <think>; P: complete thinking artifact \
+             promoted to content instead of discard+restart)"
+        );
+    }
+    crate::scheduler::set_deer_config(
+        ptx_set.behavior.enable_deer,
+        ptx_set.behavior.deer_confidence_threshold,
+        ptx_set.behavior.deer_min_thinking_tokens,
+    );
+    if ptx_set.behavior.enable_deer {
+        tracing::info!(
+            "Model behavior: DEER ENABLED (γ={}, min_thinking={}) — bounded trial decode on \
+             confident-done; commit early </think> only if trial answer is high-confidence, \
+             else exact rollback (KV+GDN) and keep thinking",
+            ptx_set.behavior.deer_confidence_threshold,
+            ptx_set.behavior.deer_min_thinking_tokens,
+        );
+    }
+    crate::scheduler::set_thinkbrake_config(
+        ptx_set.behavior.enable_thinkbrake,
+        ptx_set.behavior.thinkbrake_margin_tau,
+        ptx_set.behavior.thinkbrake_bias,
+    );
+    if ptx_set.behavior.enable_thinkbrake {
+        tracing::info!(
+            "Model behavior: ThinkBrake ENABLED (τ={}, bias=+{}) — gentle </think> logit \
+             nudge at sentence boundaries when top1−top2 margin ≥ τ; augments F2 (never \
+             replaces), gated by Component G + min-thinking",
+            ptx_set.behavior.thinkbrake_margin_tau,
+            ptx_set.behavior.thinkbrake_bias,
+        );
+    }
     if args.disable_thinking {
         tracing::info!("--disable-thinking set: thinking is forced OFF for every request");
     }

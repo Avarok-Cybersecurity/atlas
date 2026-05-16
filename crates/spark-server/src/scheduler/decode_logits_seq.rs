@@ -63,7 +63,6 @@ pub fn process_seq_logits(
     // penalising a reasoning model's reasoning vocabulary.
 
     // F2: Confidence-based early stop during thinking.
-    // F2: Confidence-based early stop during thinking.
     // When top-1 prob >= 0.95 for 30 consecutive tokens, force </think>.
     // Only kicks in after 400 thinking tokens — the model needs room to
     // plan (numbered lists, step-by-step reasoning have high per-token
@@ -72,8 +71,30 @@ pub fn process_seq_logits(
     // and caused premature thinking termination in agentic coding sessions.
     // The min_thinking_tokens floor (below) also gates F2: confidence-stop
     // must not fire before the model has produced a complete plan.
+    //
+    // (ThinkBrake — arXiv 2510.00546 — was trialed here as a log-prob-
+    // margin replacement for F2 but REGRESSED on its single validation
+    // run (42→14 JS markers, doctype restart) and cannot be validated
+    // from n=1 on a temp>0 stochastic workload; reverted to the proven
+    // F2 config. Revisit only with a proper multi-sample evaluation.)
+    //
+    // Component G (2026-05-16): F2 must NOT force-close `</think>` while a
+    // code fence / HTML document is OPEN inside thinking. Code is
+    // legitimately high-confidence (30 consecutive ≥0.95 is trivial for
+    // `<!DOCTYPE html><html>…`), so without this guard F2 guillotines the
+    // model mid-artifact, the work is discarded, and the model restarts
+    // the document in content where it degenerates. The guard is inert
+    // unless `enable_think_content_carry_forward` is set and is disabled
+    // on tool/grammar turns (see `thinking_artifact_open`).
+    let g_artifact_open = thinking_artifact_open(
+        &a.output_tokens,
+        a.inside_thinking,
+        a.require_tool_call,
+        a.grammar_state.is_some(),
+    );
     if a.inside_thinking
         && !a.force_end_thinking
+        && !g_artifact_open
         && a.thinking_tokens >= 400
         && (a.thinking_tokens as usize) >= a.min_thinking_tokens
     {
@@ -90,6 +111,46 @@ pub fn process_seq_logits(
             }
         } else {
             a.consecutive_confident = 0;
+        }
+    } else if g_artifact_open {
+        // Reset the streak so a confident run can't survive across the
+        // open artifact and trip F2 the instant it closes.
+        a.consecutive_confident = 0;
+    }
+
+    // Layer B — ThinkBrake (arXiv 2510.00546). AUGMENTS F2 (never replaces;
+    // F2's hard force-path stays as backstop). At a sentence/paragraph
+    // boundary, if the model is locally decisive (top1−top2 log-prob margin
+    // ≥ τ), add a GENTLE +bias to the `</think>` logit — the model can
+    // still override if strongly reasoning (preserves the F1-removal
+    // escape-hatch property). Same Component-G + min-thinking interlocks as
+    // DEER: never nudge while a code fence / HTML doc is open, never before
+    // the proven floor. Inert unless `enable_thinkbrake`; off on
+    // tool/grammar. Sentence-boundary gating is the conservative
+    // anti-mid-artifact property (ThinkBrake "boundaries only").
+    if thinkbrake_enabled()
+        && a.inside_thinking
+        && !a.force_end_thinking
+        && !a.require_tool_call
+        && a.grammar_state.is_none()
+        && !g_artifact_open
+        && (a.thinking_tokens as usize) >= a.min_thinking_tokens
+        && let Some(te) = think_end_token
+        && (te as usize) < f32_logits.len()
+        && at_sentence_boundary(&a.output_tokens)
+    {
+        // top1 / top2 in one pass (log-prob margin = logit1 − logit2).
+        let (mut t1, mut t2) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+        for &l in f32_logits.iter() {
+            if l > t1 {
+                t2 = t1;
+                t1 = l;
+            } else if l > t2 {
+                t2 = l;
+            }
+        }
+        if t1 - t2 >= thinkbrake_margin_tau() {
+            f32_logits[te as usize] += thinkbrake_bias();
         }
     }
 

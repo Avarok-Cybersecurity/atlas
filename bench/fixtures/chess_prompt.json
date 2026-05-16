@@ -1,0 +1,29 @@
+{
+  "_comment": "Exact OpenWebUI field-failure prompt (2026-05-16). Do NOT paraphrase — paraphrasing reintroduces the wrong-instrument error the eval harness exists to eliminate.",
+  "chess": {
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "Please create a beautiful 3D chess game using three js. Allow camera panning and switching sides so two people can play against each other. The default view should be from above and center to the board."}
+    ]
+  },
+  "qa_thinking": {
+    "messages": [
+      {"role": "user", "content": "Solve step by step: if a train travels 60 km in 45 minutes, what is its speed in km/h?"}
+    ]
+  },
+  "tool_call": {
+    "messages": [
+      {"role": "user", "content": "What is the current weather in Paris? Call the tool to find out."}
+    ],
+    "tools": [
+      {"type": "function", "function": {"name": "get_weather", "description": "Get the current weather for a city.", "parameters": {"type": "object", "properties": {"city": {"type": "string", "description": "City name"}}, "required": ["city"]}}}
+    ],
+    "tool_choice": "auto"
+  },
+  "non_thinking": {
+    "messages": [
+      {"role": "user", "content": "What is the capital of France? Answer in one short sentence."}
+    ],
+    "chat_template_kwargs": {"enable_thinking": false}
+  }
+}

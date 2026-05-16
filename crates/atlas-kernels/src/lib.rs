@@ -187,6 +187,37 @@ pub struct ModelBehavior {
     /// tokens. Prevents premature thinking termination where the model dumps
     /// incomplete planning into visible content. 0 = disabled (default).
     pub min_thinking_tokens: u32,
+    /// Enable the think→content carry-forward architecture: while a code
+    /// fence / HTML document is OPEN inside `<think>`, no `</think>`-trigger
+    /// (F2 confidence-stop, thinking-loop watchdog) may force-close thinking
+    /// (Component G); and when `</think>` is reached with a COMPLETE artifact
+    /// in the thinking buffer, that artifact is promoted to visible content
+    /// instead of discarded+restarted (Component P). Default `false` — only
+    /// reasoning models that write their answer/code inside `<think>` (dense
+    /// Qwen3.6-27B) need it. Hard-disabled on tool-call / grammar turns.
+    pub enable_think_content_carry_forward: bool,
+    /// Layer A — DEER (arXiv 2504.15895). When `inside_thinking` and
+    /// confidently done reasoning, run a bounded trial decode; commit an
+    /// early `</think>` only if the trial answer is high-confidence, else
+    /// roll back exactly (KV+GDN state) and keep thinking. Default `false`.
+    pub enable_deer: bool,
+    /// DEER commit threshold γ: min over the probe window of top-1 softmax
+    /// confidence must be ≥ this to commit the early `</think>`. Default 0.95.
+    pub deer_confidence_threshold: f32,
+    /// DEER never probes before this many thinking tokens (default = the
+    /// proven `min_thinking_tokens` floor; 0 ⇒ fall back to min_thinking).
+    pub deer_min_thinking_tokens: u32,
+    /// Layer B — ThinkBrake (arXiv 2510.00546). At a sentence boundary
+    /// inside `<think>`, if the top1−top2 log-prob margin ≥ τ, add a GENTLE
+    /// +bias to the `</think>` logit (NOT a hard force — augments F2, never
+    /// replaces it). Default `false`.
+    pub enable_thinkbrake: bool,
+    /// ThinkBrake margin τ (nats): only nudge `</think>` when the model is
+    /// locally decisive (top1−top2 ≥ τ). Default 1.0.
+    pub thinkbrake_margin_tau: f32,
+    /// ThinkBrake `</think>` logit bias magnitude (gentle; model can still
+    /// override if strongly reasoning). Default 2.5 (cf. tool-call −12.0).
+    pub thinkbrake_bias: f32,
 }
 
 impl Default for ModelBehavior {
@@ -203,6 +234,13 @@ impl Default for ModelBehavior {
             enable_loop_watchdog: false,
             min_content_tokens: 0,
             min_thinking_tokens: 0,
+            enable_think_content_carry_forward: false,
+            enable_deer: false,
+            deer_confidence_threshold: 0.95,
+            deer_min_thinking_tokens: 0,
+            enable_thinkbrake: false,
+            thinkbrake_margin_tau: 1.0,
+            thinkbrake_bias: 2.5,
         }
     }
 }

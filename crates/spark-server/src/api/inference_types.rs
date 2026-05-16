@@ -240,6 +240,13 @@ pub struct InferenceResponse {
     /// Number of prompt tokens served by the prefix cache (no prefill compute
     /// cost). Reported as `usage.prompt_tokens_details.cached_tokens`.
     pub cached_prompt_tokens: u32,
+    /// Component P (think→content carry-forward): when `Some(idx)`, the
+    /// blocking response splitter relabels the think→content boundary at
+    /// `output_tokens[idx]` (the start of the complete artifact written
+    /// inside `<think>`) instead of the last `</think>`, so the artifact
+    /// is surfaced as `content` and the degenerate post-`</think>` restart
+    /// is dropped. `None` = today's last-`</think>` split.
+    pub carry_forward_from: Option<usize>,
 }
 
 /// Events sent during streaming generation.

@@ -128,10 +128,10 @@ pub(super) fn parse_sampling_presets(
 }
 
 /// Parse [behavior] from MODEL.toml. Returns
-/// (thinking_in_tools, max_thinking_budget, thinking_default, fp8_kv_calibration_tokens, default_kv_dtype, default_num_drafts, disable_tool_steering, tool_call_parser, enable_loop_watchdog, min_content_tokens, min_thinking_tokens).
+/// (thinking_in_tools, max_thinking_budget, thinking_default, fp8_kv_calibration_tokens, default_kv_dtype, default_num_drafts, disable_tool_steering, tool_call_parser, enable_loop_watchdog, min_content_tokens, min_thinking_tokens, enable_think_content_carry_forward, enable_deer, deer_confidence_threshold, deer_min_thinking_tokens, enable_thinkbrake, thinkbrake_margin_tau, thinkbrake_bias).
 pub(super) fn parse_behavior(
     model_dir: &std::path::Path,
-) -> (bool, u32, bool, usize, String, u32, bool, String, bool, u32, u32) {
+) -> (bool, u32, bool, usize, String, u32, bool, String, bool, u32, u32, bool, bool, f32, u32, bool, f32, f32) {
     let model_toml_path = model_dir.join("MODEL.toml");
     if !model_toml_path.exists() {
         return (
@@ -146,6 +146,13 @@ pub(super) fn parse_behavior(
             false,
             0,
             0,
+            false,
+            false,
+            0.95,
+            0,
+            false,
+            1.0,
+            2.5,
         );
     }
     let content = std::fs::read_to_string(&model_toml_path).unwrap_or_default();
@@ -164,6 +171,13 @@ pub(super) fn parse_behavior(
                 false,
                 0,
                 0,
+                false,
+                false,
+                0.95,
+                0,
+                false,
+                1.0,
+                2.5,
             );
         }
     };
@@ -219,6 +233,38 @@ pub(super) fn parse_behavior(
         .and_then(|v| v.as_integer())
         .map(|v| v as u32)
         .unwrap_or(0);
+    let enable_think_content_carry_forward = b
+        .and_then(|v| v.get("enable_think_content_carry_forward"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let enable_deer = b
+        .and_then(|v| v.get("enable_deer"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let deer_confidence_threshold = b
+        .and_then(|v| v.get("deer_confidence_threshold"))
+        .and_then(|v| v.as_float())
+        .map(|v| v as f32)
+        .unwrap_or(0.95);
+    let deer_min_thinking_tokens = b
+        .and_then(|v| v.get("deer_min_thinking_tokens"))
+        .and_then(|v| v.as_integer())
+        .map(|v| v as u32)
+        .unwrap_or(0);
+    let enable_thinkbrake = b
+        .and_then(|v| v.get("enable_thinkbrake"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let thinkbrake_margin_tau = b
+        .and_then(|v| v.get("thinkbrake_margin_tau"))
+        .and_then(|v| v.as_float())
+        .map(|v| v as f32)
+        .unwrap_or(1.0);
+    let thinkbrake_bias = b
+        .and_then(|v| v.get("thinkbrake_bias"))
+        .and_then(|v| v.as_float())
+        .map(|v| v as f32)
+        .unwrap_or(2.5);
     (
         thinking_in_tools,
         max_thinking_budget,
@@ -231,6 +277,13 @@ pub(super) fn parse_behavior(
         enable_loop_watchdog,
         min_content_tokens,
         min_thinking_tokens,
+        enable_think_content_carry_forward,
+        enable_deer,
+        deer_confidence_threshold,
+        deer_min_thinking_tokens,
+        enable_thinkbrake,
+        thinkbrake_margin_tau,
+        thinkbrake_bias,
     )
 }
 

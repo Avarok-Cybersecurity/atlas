@@ -163,6 +163,41 @@ pub(crate) fn resolve_tokenizer_runtime(
         html_close_count,
     );
 
+    // Code-fence guard (Component G/P fallback when no HTML doc present):
+    // canonical triple-backtick markers. Qwen-family tokenizers emit ``` as
+    // its own token at BOTH the opening (``` + lang) and the close, so the
+    // bare-backtick variants suffice for open/close parity. Language-tagged
+    // opens are listed too in case a tokenizer fuses ```lang into one token.
+    let fence_patterns = encode_html_guard_patterns(
+        tokenizer,
+        &[
+            "```", "```\n", "\n```", "\n```\n", " ```", " ```\n",
+            "```html", "```html\n", "\n```html", "\n```html\n",
+            "```js", "```js\n", "```javascript", "```javascript\n",
+            "```python", "```python\n", "```css", "```css\n",
+            "```ts", "```typescript", "```jsx", "```tsx", "```json",
+            "```\n\n", "\n```\n\n",
+        ],
+    );
+    let fence_count = fence_patterns.len();
+    crate::scheduler::set_code_fence_guard_patterns(fence_patterns);
+    tracing::info!("Code-fence guard: {fence_count} fence patterns registered");
+
+    // Layer B — ThinkBrake sentence-end token patterns. ThinkBrake only
+    // nudges `</think>` when the just-emitted tail is a sentence/paragraph
+    // terminator (conservative anti-mid-artifact). Reuse the generic
+    // string→token encoder; inert unless ThinkBrake is enabled.
+    let sentence_end_patterns = encode_html_guard_patterns(
+        tokenizer,
+        &[
+            ". ", ".\n", ".\n\n", ".", "?\n", "? ", "?", "!\n", "! ", "!",
+            "。", "。\n", "\n\n", ":\n", ":\n\n", "```\n\n",
+        ],
+    );
+    let se_count = sentence_end_patterns.len();
+    crate::scheduler::set_sentence_end_patterns(sentence_end_patterns);
+    tracing::info!("ThinkBrake sentence-end guard: {se_count} patterns registered");
+
     let reflection_words = [
         "wait", "Wait", "however", "However", "actually", "Actually", "hmm", "Hmm",
     ];

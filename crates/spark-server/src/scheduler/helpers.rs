@@ -112,6 +112,166 @@ pub fn content_min_suppresses_eos(
         && !html_document_is_complete(output_tokens)
 }
 
+// ── Think→content carry-forward (Components G + P) ──────────────────────────
+// Dense Qwen3.6-27B writes the actual answer/code INSIDE `<think>`. The
+// boundary is a guillotine with a lossy seam: a `</think>`-trigger (F2
+// confidence-stop / thinking-loop watchdog) force-closes thinking mid-code
+// (W1), then the thinking tokens are discarded and the model restarts the
+// document in content where it degenerates (W2). Component G gates the
+// cutters while an artifact is OPEN; Component P promotes a COMPLETE
+// thinking-block artifact to visible content instead of discard+restart.
+// Both are no-ops unless `enable_think_content_carry_forward` is set, and
+// are hard-disabled on tool-call / grammar turns.
+
+struct CodeFenceGuard {
+    /// Tokenizations of a triple-backtick fence marker (open or close —
+    /// they share the same ``` sequence; parity of the running count
+    /// distinguishes open vs closed). Includes language-tagged opens
+    /// (```` ```html ````, ```` ```js ````) and bare/newline variants.
+    fence_patterns: Vec<Vec<u32>>,
+}
+
+static CODE_FENCE_GUARD: std::sync::OnceLock<CodeFenceGuard> = std::sync::OnceLock::new();
+
+/// Install tokenizer-specific triple-backtick fence patterns. Mirrors
+/// [`set_html_completion_guard_patterns`]; idempotent.
+pub fn set_code_fence_guard_patterns(fence_patterns: Vec<Vec<u32>>) {
+    let fence_patterns = dedupe_nonempty_patterns(fence_patterns);
+    if fence_patterns.is_empty() {
+        return;
+    }
+    let _ = CODE_FENCE_GUARD.set(CodeFenceGuard { fence_patterns });
+}
+
+/// True when a markdown code fence is currently OPEN (odd number of
+/// non-overlapping fence markers seen).
+#[inline]
+pub fn code_fence_is_open(output_tokens: &[u32]) -> bool {
+    CODE_FENCE_GUARD.get().is_some_and(|g| {
+        count_nonoverlapping_pattern_matches(output_tokens, &g.fence_patterns) % 2 == 1
+    })
+}
+
+/// True when at least one code fence has been opened AND closed (even,
+/// non-zero fence-marker count).
+#[inline]
+pub fn code_fence_is_complete(output_tokens: &[u32]) -> bool {
+    CODE_FENCE_GUARD.get().is_some_and(|g| {
+        let c = count_nonoverlapping_pattern_matches(output_tokens, &g.fence_patterns);
+        c >= 2 && c % 2 == 0
+    })
+}
+
+/// Component G predicate. True while the model is mid-artifact inside
+/// `<think>` and a `</think>`-trigger must be held off. Nested-fence rule:
+/// when an HTML doc start is present the HTML guard is authoritative
+/// (`</html>` is unambiguous); only fall back to fence parity otherwise.
+/// Hard-disabled when the flag is off or on tool-call / grammar turns.
+#[inline]
+pub fn thinking_artifact_open(
+    output_tokens: &[u32],
+    inside_thinking: bool,
+    require_tool_call: bool,
+    grammar_active: bool,
+) -> bool {
+    if !enable_think_content_carry_forward()
+        || !inside_thinking
+        || require_tool_call
+        || grammar_active
+    {
+        return false;
+    }
+    if html_doc_start_present(output_tokens) {
+        return HTML_COMPLETION_GUARD
+            .get()
+            .is_some_and(|g| html_completion_guard_active_with_patterns(output_tokens, g));
+    }
+    code_fence_is_open(output_tokens)
+}
+
+/// Minimum token span of a thinking-block artifact for it to be eligible
+/// for carry-forward. Reasoning models pepper their PLAN with tiny
+/// illustrative snippets (a ~30-token `<!DOCTYPE>…</html>` skeleton, a
+/// 5-line sample `css`/`js` fence). Those are "complete" but are NOT the
+/// answer — carrying one forward ships the sketch and truncates the real
+/// implementation. A real single-file Three.js app is several thousand
+/// tokens; 600 (~2 KB) is far above any plan sketch and far below a real
+/// artifact. Mirrors the existing HTML_AUTOCLOSE_MIN_BYTES/
+/// HTML_RESTART_GUARD_MIN_BYTES substantiality philosophy.
+pub const MIN_CARRY_FORWARD_ARTIFACT_TOKENS: usize = 600;
+
+/// Component P eligibility predicate. True when the thinking buffer holds
+/// a COMPLETE *and SUBSTANTIAL* artifact that should be promoted to
+/// content instead of discarded. Same nested-fence rule and tool/grammar
+/// disable as G. The substantiality gate rejects plan-illustration
+/// snippets (see [`MIN_CARRY_FORWARD_ARTIFACT_TOKENS`]).
+#[inline]
+pub fn thinking_artifact_complete(
+    output_tokens: &[u32],
+    require_tool_call: bool,
+    grammar_active: bool,
+) -> bool {
+    if !enable_think_content_carry_forward() || require_tool_call || grammar_active {
+        return false;
+    }
+    if html_doc_start_present(output_tokens) {
+        if !html_document_is_complete(output_tokens) {
+            return false;
+        }
+        // Substantiality: span from the last HTML start to its close.
+        let Some(g) = HTML_COMPLETION_GUARD.get() else {
+            return false;
+        };
+        let Some(start) = last_pattern_match(output_tokens, &g.start_patterns) else {
+            return false;
+        };
+        let Some(close) =
+            first_pattern_match_at_or_after(output_tokens, &g.close_patterns, start)
+        else {
+            return false;
+        };
+        return close.saturating_sub(start) >= MIN_CARRY_FORWARD_ARTIFACT_TOKENS;
+    }
+    if !code_fence_is_complete(output_tokens) {
+        return false;
+    }
+    // Substantiality: span between the first and last fence marker.
+    let Some(g) = CODE_FENCE_GUARD.get() else {
+        return false;
+    };
+    match (
+        first_pattern_match(output_tokens, &g.fence_patterns),
+        last_pattern_match(output_tokens, &g.fence_patterns),
+    ) {
+        (Some(first), Some(last)) => {
+            last.saturating_sub(first) >= MIN_CARRY_FORWARD_ARTIFACT_TOKENS
+        }
+        _ => false,
+    }
+}
+
+/// Index in `output_tokens` where the carried-forward artifact begins:
+/// the last HTML doc start, else the first code-fence marker. `None` when
+/// no artifact start is present. Used by Component P to relabel the
+/// think→content split point.
+#[inline]
+pub fn artifact_start_index(output_tokens: &[u32]) -> Option<usize> {
+    if let Some(g) = HTML_COMPLETION_GUARD.get()
+        && let Some(idx) = last_pattern_match(output_tokens, &g.start_patterns)
+    {
+        return Some(idx);
+    }
+    let g = CODE_FENCE_GUARD.get()?;
+    first_pattern_match(output_tokens, &g.fence_patterns)
+}
+
+#[inline]
+fn html_doc_start_present(output_tokens: &[u32]) -> bool {
+    HTML_COMPLETION_GUARD
+        .get()
+        .is_some_and(|g| last_pattern_match(output_tokens, &g.start_patterns).is_some())
+}
+
 fn dedupe_nonempty_patterns(mut patterns: Vec<Vec<u32>>) -> Vec<Vec<u32>> {
     patterns.retain(|p| !p.is_empty());
     patterns.sort_unstable();
@@ -152,6 +312,58 @@ fn has_pattern_match_at_or_after(tokens: &[u32], patterns: &[Vec<u32>], start: u
                 .enumerate()
                 .any(|(idx, window)| idx >= start && window == p.as_slice())
         })
+}
+
+/// First (lowest) start index where any pattern matches.
+fn first_pattern_match(tokens: &[u32], patterns: &[Vec<u32>]) -> Option<usize> {
+    patterns
+        .iter()
+        .filter(|p| p.len() <= tokens.len())
+        .flat_map(|p| {
+            tokens
+                .windows(p.len())
+                .enumerate()
+                .filter_map(|(idx, window)| (window == p.as_slice()).then_some(idx))
+        })
+        .min()
+}
+
+/// Lowest index >= `start` where any pattern matches.
+fn first_pattern_match_at_or_after(
+    tokens: &[u32],
+    patterns: &[Vec<u32>],
+    start: usize,
+) -> Option<usize> {
+    patterns
+        .iter()
+        .filter(|p| p.len() <= tokens.len())
+        .flat_map(|p| {
+            tokens
+                .windows(p.len())
+                .enumerate()
+                .filter_map(|(idx, w)| (idx >= start && w == p.as_slice()).then_some(idx))
+        })
+        .min()
+}
+
+/// Count non-overlapping occurrences of any pattern, scanning left→right
+/// and advancing past a match by its length (greedy). Used for code-fence
+/// parity: an opened-but-not-closed fence ⇒ odd count.
+fn count_nonoverlapping_pattern_matches(tokens: &[u32], patterns: &[Vec<u32>]) -> usize {
+    let mut count = 0usize;
+    let mut i = 0usize;
+    'scan: while i < tokens.len() {
+        for p in patterns {
+            let n = p.len();
+            if n > 0 && i + n <= tokens.len() && &tokens[i..i + n] == p.as_slice() {
+                count += 1;
+                i += n;
+                continue 'scan;
+            }
+        }
+        i += 1;
+    }
+    count
 }
 // ── Sampling defaults (SSOT) ────────────────────────────────────────────────
 // All SamplingParams constructors reference these constants. Change here, not
@@ -249,6 +461,115 @@ pub fn set_enable_loop_watchdog(enabled: bool) {
 /// behavior plumbing → scheduler start).
 pub fn enable_loop_watchdog() -> bool {
     *ENABLE_LOOP_WATCHDOG.get().unwrap_or(&false)
+}
+
+static ENABLE_THINK_CONTENT_CARRY_FORWARD: std::sync::OnceLock<bool> =
+    std::sync::OnceLock::new();
+
+/// Set once at startup from the resolved
+/// `ModelBehavior.enable_think_content_carry_forward`. Idempotent.
+pub fn set_think_content_carry_forward(enabled: bool) {
+    let _ = ENABLE_THINK_CONTENT_CARRY_FORWARD.set(enabled);
+}
+
+/// Read the per-model think→content carry-forward flag set at boot.
+/// Defaults `false` until `set_think_content_carry_forward` runs, so all
+/// `thinking_artifact_*` predicates are inert (other models byte-identical).
+pub fn enable_think_content_carry_forward() -> bool {
+    *ENABLE_THINK_CONTENT_CARRY_FORWARD.get().unwrap_or(&false)
+}
+
+// ── Layer A — DEER config (set once at boot from ModelBehavior) ──────────────
+static ENABLE_DEER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static DEER_CONF_THRESHOLD: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+static DEER_MIN_THINKING: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
+/// DEER bounded trial-decode window (probe tokens after a forced `</think>`).
+/// Small: just enough to read whether the first answer tokens are confident.
+pub const DEER_PROBE_WINDOW: usize = 4;
+/// DEER only probes once F2's confidence streak has reached this — a cheap
+/// pre-filter so the (bounded but non-free) trial runs rarely.
+pub const DEER_TRIGGER_STREAK: u32 = 12;
+
+/// Set once at boot from resolved `ModelBehavior` DEER fields. Idempotent.
+pub fn set_deer_config(enabled: bool, conf_threshold: f32, min_thinking: u32) {
+    let _ = ENABLE_DEER.set(enabled);
+    let _ = DEER_CONF_THRESHOLD.set(conf_threshold);
+    let _ = DEER_MIN_THINKING.set(min_thinking);
+}
+
+/// Per-model DEER enable flag. `false` until `set_deer_config` runs ⇒ the
+/// DEER probe is inert (other models byte-identical).
+pub fn deer_enabled() -> bool {
+    *ENABLE_DEER.get().unwrap_or(&false)
+}
+
+/// DEER commit threshold γ (min-over-window top-1 softmax). Default 0.95.
+pub fn deer_confidence_threshold() -> f32 {
+    *DEER_CONF_THRESHOLD.get().unwrap_or(&0.95)
+}
+
+/// DEER never probes before this many thinking tokens. Falls back to the
+/// caller-supplied `min_thinking_tokens` floor when 0/unset.
+pub fn deer_min_thinking_tokens(min_thinking_floor: u32) -> u32 {
+    let v = *DEER_MIN_THINKING.get().unwrap_or(&0);
+    if v == 0 { min_thinking_floor } else { v }
+}
+
+// ── Layer B — ThinkBrake config + sentence-end guard ─────────────────────────
+static ENABLE_THINKBRAKE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static THINKBRAKE_TAU: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+static THINKBRAKE_BIAS: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+
+struct SentenceEndGuard {
+    /// Tokenizations of sentence/paragraph terminators (`. `, `.\n`, `? `,
+    /// `! `, `。`, …). ThinkBrake only nudges `</think>` at these — never
+    /// mid-sentence — which is the conservative anti-mid-artifact property.
+    patterns: Vec<Vec<u32>>,
+}
+static SENTENCE_END_GUARD: std::sync::OnceLock<SentenceEndGuard> = std::sync::OnceLock::new();
+
+/// Install tokenizer-specific sentence-end token patterns. Mirrors
+/// [`set_code_fence_guard_patterns`]; idempotent; inert when unset.
+pub fn set_sentence_end_patterns(patterns: Vec<Vec<u32>>) {
+    let patterns = dedupe_nonempty_patterns(patterns);
+    if patterns.is_empty() {
+        return;
+    }
+    let _ = SENTENCE_END_GUARD.set(SentenceEndGuard { patterns });
+}
+
+/// Set once at boot from resolved `ModelBehavior` ThinkBrake fields.
+pub fn set_thinkbrake_config(enabled: bool, tau: f32, bias: f32) {
+    let _ = ENABLE_THINKBRAKE.set(enabled);
+    let _ = THINKBRAKE_TAU.set(tau);
+    let _ = THINKBRAKE_BIAS.set(bias);
+}
+
+/// Per-model ThinkBrake enable. `false` until boot ⇒ inert.
+pub fn thinkbrake_enabled() -> bool {
+    *ENABLE_THINKBRAKE.get().unwrap_or(&false)
+}
+/// ThinkBrake margin τ (nats). Default 1.0.
+pub fn thinkbrake_margin_tau() -> f32 {
+    *THINKBRAKE_TAU.get().unwrap_or(&1.0)
+}
+/// ThinkBrake gentle `</think>` logit bias. Default 2.5.
+pub fn thinkbrake_bias() -> f32 {
+    *THINKBRAKE_BIAS.get().unwrap_or(&2.5)
+}
+
+/// True iff the just-emitted token tail is a registered sentence/paragraph
+/// terminator (i.e. some pattern is a suffix of `output_tokens`). Inert
+/// (returns false) when no patterns are registered.
+pub fn at_sentence_boundary(output_tokens: &[u32]) -> bool {
+    SENTENCE_END_GUARD.get().is_some_and(|g| {
+        g.patterns.iter().any(|p| {
+            !p.is_empty()
+                && p.len() <= output_tokens.len()
+                && output_tokens[output_tokens.len() - p.len()..] == p[..]
+        })
+    })
 }
 
 /// F2 (2026-04-26): cap on free-text tokens between successive
@@ -592,5 +913,72 @@ mod thinking_loop_tests {
             &[1, 2, 3, 4, 9, 1, 2, 8],
             &guard
         ));
+    }
+
+    // ── Component G/P core logic (OnceLock-free helpers) ────────────────
+
+    #[test]
+    fn fence_count_parity_open_vs_complete() {
+        let fence = vec![vec![5_u32]]; // single-token ``` marker
+        // none → 0 (neither open nor complete)
+        assert_eq!(count_nonoverlapping_pattern_matches(&[1, 2, 3], &fence), 0);
+        // one ``` → odd → OPEN
+        assert_eq!(
+            count_nonoverlapping_pattern_matches(&[1, 5, 2, 3], &fence),
+            1
+        );
+        // two ``` → even, non-zero → COMPLETE
+        assert_eq!(
+            count_nonoverlapping_pattern_matches(&[5, 1, 2, 5], &fence),
+            2
+        );
+        // three ``` → odd → OPEN again (a new block started)
+        assert_eq!(
+            count_nonoverlapping_pattern_matches(&[5, 1, 5, 2, 5], &fence),
+            3
+        );
+    }
+
+    #[test]
+    fn fence_count_non_overlapping_multi_token() {
+        // ```html = [9,9,9] ; bare ``` = [9,9,9] would overlap, so use
+        // distinct multi-token patterns and confirm greedy advance.
+        let patterns = vec![vec![9_u32, 8], vec![7]];
+        // [9,8] then [7]: two non-overlapping markers (even → complete)
+        assert_eq!(
+            count_nonoverlapping_pattern_matches(&[1, 9, 8, 2, 7, 3], &patterns),
+            2
+        );
+        // overlapping-ish: [9,8,8] only one [9,8] match (advance by 2)
+        assert_eq!(
+            count_nonoverlapping_pattern_matches(&[9, 8, 8], &patterns),
+            1
+        );
+    }
+
+    #[test]
+    fn first_pattern_match_returns_lowest_index() {
+        let pats = vec![vec![2_u32, 3], vec![7]];
+        assert_eq!(first_pattern_match(&[0, 7, 1, 2, 3, 9], &pats), Some(1));
+        assert_eq!(first_pattern_match(&[0, 1, 2, 3], &pats), Some(2));
+        assert_eq!(first_pattern_match(&[0, 1, 9], &pats), None);
+    }
+
+    #[test]
+    fn artifact_predicates_disabled_on_tool_and_grammar_and_flag_off() {
+        // Safety-critical invariant: with the flag unset (default in
+        // tests) OR on tool-call / grammar turns, both predicates are
+        // inert — other models / tool / grammar paths byte-identical.
+        let toks = [1_u32, 2, 3];
+        // flag off (OnceLock unset in unit tests) → always false
+        assert!(!thinking_artifact_open(&toks, true, false, false));
+        assert!(!thinking_artifact_complete(&toks, false, false));
+        // tool-call / grammar disable (checked before any OnceLock)
+        assert!(!thinking_artifact_open(&toks, true, true, false));
+        assert!(!thinking_artifact_open(&toks, true, false, true));
+        assert!(!thinking_artifact_complete(&toks, true, false));
+        assert!(!thinking_artifact_complete(&toks, false, true));
+        // not inside thinking → open predicate false
+        assert!(!thinking_artifact_open(&toks, false, false, false));
     }
 }

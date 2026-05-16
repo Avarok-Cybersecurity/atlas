@@ -131,6 +131,22 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
             // One-shot for the next decode step: pin to
             // tool_call_start_token if require_tool_call (Change 3b).
             a.think_just_ended = true;
+            // Component P (MTP path): mirror decode_logits_step — arm
+            // carry-forward when a complete artifact sits inside <think>.
+            if !a.carried_forward
+                && thinking_artifact_complete(
+                    &a.output_tokens,
+                    a.require_tool_call,
+                    a.grammar_state.is_some(),
+                )
+                && let Some(start) = artifact_start_index(&a.output_tokens)
+            {
+                a.carry_forward_from = Some(start);
+                a.carried_forward = true;
+                tracing::info!(
+                    "Component P (MTP): carry-forward armed at output_tokens[{start}]"
+                );
+            }
             tracing::info!(
                 "Thinking ended after {} tokens (budget={:?})",
                 a.thinking_tokens,

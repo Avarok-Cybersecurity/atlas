@@ -45,6 +45,7 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
                         logprobs: std::mem::take(&mut a.logprobs_data),
                         reasoning_tokens: a.thinking_tokens,
                         cached_prompt_tokens: a.cached_prompt_tokens,
+                        carry_forward_from: a.carry_forward_from,
                     }))
                     .is_err()
                 {
@@ -218,6 +219,8 @@ pub fn swap_out_sequence(
         disable_mtp: a.disable_mtp,
         content_started: a.content_started,
         content_tokens: a.content_tokens,
+        carry_forward_from: a.carry_forward_from,
+        carried_forward: a.carried_forward,
         prose_tokens_since_last_tool: a.prose_tokens_since_last_tool,
         think_watchdog_fires: a.think_watchdog_fires,
         entropy_collapse_streak: a.entropy_collapse_streak,
@@ -305,6 +308,8 @@ pub fn resume_swapped_seq(
         disable_mtp: s.disable_mtp,
         content_started: false,
         content_tokens: 0,
+        carry_forward_from: s.carry_forward_from,
+        carried_forward: s.carried_forward,
         prose_tokens_since_last_tool: 0,
         think_watchdog_fires: s.think_watchdog_fires,
         entropy_collapse_streak: 0,

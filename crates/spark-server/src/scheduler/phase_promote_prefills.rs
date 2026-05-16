@@ -172,6 +172,8 @@ fn build_active_seq_from_prefill(
         disable_mtp: p.disable_mtp,
         content_started: false,
         content_tokens: 0,
+        carry_forward_from: None,
+        carried_forward: false,
         prose_tokens_since_last_tool: 0,
         think_watchdog_fires: 0,
         entropy_collapse_streak: 0,

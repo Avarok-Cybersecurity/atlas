@@ -211,6 +211,27 @@ pub fn process_decode_logits(
                 // tool call (Change 3b). Cleared in the `else`
                 // branch below on the next emit.
                 a.think_just_ended = true;
+                // Component P: if the model wrote a COMPLETE artifact
+                // (code fence / HTML doc) inside `<think>`, relabel the
+                // think→content split at the artifact start so the
+                // response extractor surfaces that artifact as content
+                // instead of discarding it and emitting the degenerate
+                // post-`</think>` restart. One-shot via `carried_forward`.
+                if !a.carried_forward
+                    && thinking_artifact_complete(
+                        &a.output_tokens,
+                        a.require_tool_call,
+                        a.grammar_state.is_some(),
+                    )
+                    && let Some(start) = artifact_start_index(&a.output_tokens)
+                {
+                    a.carry_forward_from = Some(start);
+                    a.carried_forward = true;
+                    tracing::info!(
+                        "Component P: carry-forward armed at output_tokens[{start}] \
+                         (complete artifact in <think>; post-</think> restart will be dropped)"
+                    );
+                }
             } else {
                 a.thinking_tokens += 1;
                 // Set force_end_thinking when budget exhausted (picked up next iteration)
@@ -236,9 +257,21 @@ pub fn process_decode_logits(
                 // exhaustion) is still present after the floor and is
                 // caught then; the thinking_budget-exhaustion path above is
                 // the ultimate backstop. Same gate as F2 confidence-stop.
+                //
+                // Component G (2026-05-16): also must NOT fire while a code
+                // fence / HTML document is OPEN inside thinking — repetitive
+                // code structure (CSS blocks, repeated rows) trips the
+                // period-4..20 needle-match. Inert unless
+                // `enable_think_content_carry_forward`; off on tool/grammar.
                 if !a.force_end_thinking
                     && a.thinking_tokens >= THINK_LOOP_MIN_TOKENS
                     && (a.thinking_tokens as usize) >= a.min_thinking_tokens
+                    && !thinking_artifact_open(
+                        &a.output_tokens,
+                        a.inside_thinking,
+                        a.require_tool_call,
+                        a.grammar_state.is_some(),
+                    )
                     && a.thinking_tokens.is_multiple_of(THINK_LOOP_CHECK_STRIDE)
                     && detect_thinking_token_loop(&a.output_tokens)
                 {
