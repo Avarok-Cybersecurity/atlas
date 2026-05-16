@@ -100,6 +100,24 @@ pub(crate) async fn chat_completions_inner(
         && req.tools.as_ref().is_some_and(|t| !t.is_empty())
         && !req.tool_choice.as_ref().is_some_and(|tc| tc.is_none());
 
+    // Inject parser-specific behavioral system prompt when tools are active.
+    // Each ToolCallParser defines guardrails (e.g. "emit <tool_call> immediately,
+    // do not narrate") that the Jinja chat template alone does not enforce.
+    if tools_active && let Some(ref parser) = state.tool_call_parser {
+        let default_choice = crate::tool_parser::ToolChoice::Mode("auto".to_string());
+        let tool_choice = req.tool_choice.as_ref().unwrap_or(&default_choice);
+        let tool_prompt =
+            parser.system_prompt(req.tools.as_deref().unwrap_or(&[]), tool_choice);
+        if let Some(first) = req.messages.first_mut().filter(|m| m.role == "system") {
+            first.content.text = format!("{}\n\n{}", tool_prompt, first.content.text);
+        } else {
+            req.messages.insert(
+                0,
+                crate::openai::IncomingMessage::synthetic_system(tool_prompt),
+            );
+        }
+    }
+
     tracing::info!(
         "Request: model={}, messages={}, tools={}, tools_active={}, tool_choice={:?}, stream={}, temp={:?}, max_tokens={}, freq_pen={:?}, rep_pen={:?}",
         req.model,
