@@ -225,8 +225,20 @@ pub fn process_decode_logits(
                 // phrase attractor (`Running:\`\`\`bash cmd\`\`\`Executing:…`
                 // cycling) within ~24-60 tokens of the loop starting,
                 // instead of waiting for the 256-token thinking budget.
+                // The watchdog MUST respect the min_thinking_tokens floor
+                // (SSOT for "how long the model needs to plan"). It fired
+                // at 64 tokens on a legitimate numbered plan ("1. Understand
+                // Request: - Goal: ... - Features: ...") whose markdown
+                // skeleton (`\n- **`, `:**`) trips the period-4..20
+                // needle-match — force-closing </think> mid-plan and
+                // corrupting the whole response (2026-05-16). A GENUINE
+                // degenerate loop (Qwen3.6 #88: repeats until budget
+                // exhaustion) is still present after the floor and is
+                // caught then; the thinking_budget-exhaustion path above is
+                // the ultimate backstop. Same gate as F2 confidence-stop.
                 if !a.force_end_thinking
                     && a.thinking_tokens >= THINK_LOOP_MIN_TOKENS
+                    && (a.thinking_tokens as usize) >= a.min_thinking_tokens
                     && a.thinking_tokens.is_multiple_of(THINK_LOOP_CHECK_STRIDE)
                     && detect_thinking_token_loop(&a.output_tokens)
                 {

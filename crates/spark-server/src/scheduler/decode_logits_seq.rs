@@ -18,7 +18,7 @@ pub fn process_seq_logits(
     _think_start_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     _tool_call_end_token: Option<u32>,
-    reflection_suppress_ids: &[u32],
+    _reflection_suppress_ids: &[u32],
     adaptive_sampling: bool,
 ) -> (u32, Option<crate::api::TokenLogprobs>) {
     let slice = &buf[i * vocab_size * elem_bytes..(i + 1) * vocab_size * elem_bytes];
@@ -41,15 +41,26 @@ pub fn process_seq_logits(
             .collect()
     };
 
-    // F1: Reflection token suppression during thinking.
-    // Penalize "wait", "however", "actually" etc. to prevent circular reasoning.
-    if a.inside_thinking {
-        for &rid in reflection_suppress_ids {
-            if (rid as usize) < f32_logits.len() {
-                f32_logits[rid as usize] -= 10.0;
-            }
-        }
-    }
+    // F1 (REMOVED 2026-05-16): reflection-token suppression during thinking.
+    //
+    // F1 subtracted -10.0 (~22000x probability crush) from the logits of
+    // "wait"/"Wait"/"however"/"However"/"actually"/"Actually"/"hmm"/"Hmm"
+    // while `inside_thinking`, on the theory it "prevents circular
+    // reasoning". It does the OPPOSITE. Modern reasoning models (Qwen3,
+    // DeepSeek-R1) are *trained* to use these as productive reasoning
+    // operators — "Wait, let me just write the code." / "Actually, here
+    // is the file:" are the exact pivot phrases that move the model from
+    // a planning preamble into committing to an answer. Suppressing them
+    // removes the model's escape hatch and traps it in an announce-restart
+    // loop ("I'll create… Let me… Here is…" forever) — the 2026-05-16
+    // OpenWebUI "3D chess game" field failure. The codebase's own cited
+    // reference, s1 (arXiv 2501.19393, see the F9 comment below), shows
+    // *injecting* "Wait" EXTENDS productive reasoning — F1 is exactly
+    // backwards. Genuine literal "wait…wait…wait" spirals are already
+    // covered by DRY (dry_allowed_length=2) + the loop watchdog; F1's
+    // blanket logit crush was an unprincipled sledgehammer. Removed
+    // outright rather than tuned — there is no correct nonzero value for
+    // penalising a reasoning model's reasoning vocabulary.
 
     // F2: Confidence-based early stop during thinking.
     // F2: Confidence-based early stop during thinking.

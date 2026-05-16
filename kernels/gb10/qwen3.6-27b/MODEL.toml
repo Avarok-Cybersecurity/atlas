@@ -70,7 +70,24 @@ dry_allowed_length = 2
 temperature = 0.6
 top_p = 0.95
 top_k = 20
-presence_penalty = 0.0
+# ROOT CAUSE + FIX (2026-05-16, OpenWebUI "3D chess game" field report):
+# The official Qwen3.6-27B model card sets thinking-mode
+# presence_penalty=0.0 and EXPLICITLY states: "adjust the presence_penalty
+# parameter between 0 and 2 to reduce endless repetitions." With 0.0 the
+# model falls into a documented announce/restart degeneration loop on
+# complex code-gen ("I'll write the code… Let me… Here is…" / verbatim
+# `<!DOCTYPE html>…- Meta tags - Three.js` ×3 / planning-bullet leak into
+# content) — confirmed upstream on official vLLM/BF16 (QwenLM/Qwen3.6 #88:
+# 17.4% truncation, 84% repetition on hard code prompts; #115, #145).
+# Atlas had faithfully copied the card's 0.0; thinking-OFF was always
+# clean ONLY because [sampling.non_thinking] uses presence_penalty=1.5.
+# Bisected live: same prompt + presence_penalty=1.5 → real Three.js code
+# (13 JS API calls, valid </html></script>, no restart loop) vs 0.0 →
+# pure degeneration. 1.5 mirrors the battle-tested non_thinking value;
+# DRY/LZ/XTC restored (they target the complementary multi-token phrase
+# and lexically-similar-CSS attractors presence_penalty can't break — a
+# diagnostic run with them zeroed produced a MORE verbatim loop).
+presence_penalty = 1.5
 frequency_penalty = 0.0
 lz_penalty = 0.2
 dry_multiplier = 0.8
