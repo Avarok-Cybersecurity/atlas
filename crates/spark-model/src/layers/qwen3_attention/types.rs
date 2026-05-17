@@ -174,6 +174,10 @@ pub struct Qwen3AttentionLayer {
     pub(super) mla_q_final_assemble_k: KernelHandle,
     /// Fused MLA prefill: Q_absorb + attention + V_extract in one kernel.
     pub(super) mla_fused_prefill_k: KernelHandle,
+    /// Paged MLA prefill attention (HDIM=320) for multi-chunk prefill (seq_len_start > 0).
+    pub(super) mla_prefill_paged_k: KernelHandle,
+    /// Batched V extraction for N-token MLA prefill: [N, nq, mla_cache_dim] → [N, nq, v_dim].
+    pub(super) mla_v_extract_batched_k: KernelHandle,
     /// Split-K GEMM for skinny prefill matrices (M < 64).
     pub(super) gemm_splitk_partial_k: KernelHandle,
     pub(super) gemm_splitk_reduce_k: KernelHandle,

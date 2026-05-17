@@ -284,6 +284,51 @@ pub fn mla_prefill_attention_320(
         .launch(stream)
 }
 
+/// Paged MLA prefill attention — absorbed form, HDIM=320, multi-chunk (seq_len_start > 0).
+///
+/// Q [q_len, nq, 320] attends to KV cache (paged) over kv_len tokens with causal masking.
+/// Q at local position i (global position q_offset + i) attends to KV 0..q_offset+i.
+///
+/// Grid: (num_q_heads, ceil(q_len/16), 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn mla_prefill_paged_320(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    output: DevicePtr,
+    block_table: DevicePtr,
+    q_len: u32,
+    kv_len: u32,
+    q_offset: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    cache_block_size: u32,
+    inv_sqrt_d: f32,
+    stream: u64,
+) -> Result<()> {
+    let br = 16u32; // MLA_BR in the kernel
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_q_heads, div_ceil(q_len, br), 1])
+        .block([256, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(output)
+        .arg_ptr(block_table)
+        .arg_u32(q_len)
+        .arg_u32(kv_len)
+        .arg_u32(q_offset)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(cache_block_size)
+        .arg_f32(inv_sqrt_d)
+        .launch(stream)
+}
+
 pub fn paged_decode_attn_bf16(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,

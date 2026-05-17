@@ -71,6 +71,7 @@ impl Qwen3AttentionLayer {
                 bf16,
                 bs: bs as u32,
                 stream,
+                seq_len_start,
             };
             return self.prefill_attention_paged_mla(kv_cache, ctx, &args);
         }

@@ -342,6 +342,104 @@ extern "C" __global__ void mla_q_final_assemble_batched(
     }
 }
 
+// Batched V extraction for N-token MLA prefill.
+//
+// Extends mla_batched_gemv to a batch of N tokens by adding blockIdx.z for
+// the token dimension.  Used in multi-chunk prefill (seq_len_start > 0).
+//
+// For each (token, head): output[token, head, :] = W_UV[head] @ input[token, head, 0..K]
+// where input has input_head_stride elements per head (only first K are used).
+//
+// Grid: (ceil(N_out / (N_PER_BLOCK*2)), num_heads, N_tokens)  Block: (256, 1, 1)
+extern "C" __global__ void mla_v_extract_batched(
+    const __nv_bfloat16* __restrict__ input,    // [N_tokens, num_heads, input_head_stride]
+    const __nv_bfloat16* __restrict__ weight,   // [num_heads, N_out, K]
+    __nv_bfloat16* __restrict__ output,          // [N_tokens, num_heads, output_head_stride]
+    unsigned int N_out,              // v_dim = 128
+    unsigned int K,                  // kv_lora = 256
+    unsigned int num_heads,          // nq = 32
+    unsigned int input_head_stride,  // mla_cache_dim = 320 (elements per head in input)
+    unsigned int output_head_stride  // v_dim = 128 (elements per head in output)
+) {
+    const unsigned int token = blockIdx.z;
+    const unsigned int head  = blockIdx.y;
+    const unsigned int tid   = threadIdx.x;
+
+    const unsigned int threads_per_out = BLOCK_SIZE / N_PER_BLOCK;  // 64
+    const unsigned int local_out = tid / threads_per_out;           // 0..3
+    const unsigned int lane      = tid % threads_per_out;           // 0..63
+
+    const unsigned int n1 = blockIdx.x * (N_PER_BLOCK * 2) + local_out * 2;
+    const unsigned int n2 = n1 + 1;
+    if (n1 >= N_out) return;
+    const bool have_n2 = (n2 < N_out);
+
+    const unsigned long long tok_in_off  = (unsigned long long)token * num_heads * input_head_stride;
+    const unsigned long long tok_out_off = (unsigned long long)token * num_heads * output_head_stride;
+
+    const __nv_bfloat16* A = input  + tok_in_off  + (unsigned long long)head * input_head_stride;
+    const __nv_bfloat16* B = weight + (unsigned long long)head * N_out * K;
+    __nv_bfloat16*       C = output + tok_out_off + (unsigned long long)head * output_head_stride;
+
+    const unsigned int K4 = K / 4;
+    const unsigned long long* A64 = (const unsigned long long*)A;
+
+    float acc1 = 0.0f, acc2 = 0.0f;
+    for (unsigned int k4 = lane; k4 < K4; k4 += threads_per_out) {
+        unsigned long long av = A64[k4];
+        float a0, a1, a2, a3;
+        unsigned int lo = (unsigned int)av;
+        unsigned int hi = (unsigned int)(av >> 32);
+        __nv_bfloat16 tmp;
+        *(unsigned short*)&tmp = (unsigned short)(lo & 0xFFFF); a0 = __bfloat162float(tmp);
+        *(unsigned short*)&tmp = (unsigned short)(lo >> 16);     a1 = __bfloat162float(tmp);
+        *(unsigned short*)&tmp = (unsigned short)(hi & 0xFFFF); a2 = __bfloat162float(tmp);
+        *(unsigned short*)&tmp = (unsigned short)(hi >> 16);     a3 = __bfloat162float(tmp);
+
+        unsigned int base_k = k4 * 4;
+        float w10 = __bfloat162float(B[n1 * K + base_k]);
+        float w11 = __bfloat162float(B[n1 * K + base_k + 1]);
+        float w12 = __bfloat162float(B[n1 * K + base_k + 2]);
+        float w13 = __bfloat162float(B[n1 * K + base_k + 3]);
+        acc1 += a0 * w10 + a1 * w11 + a2 * w12 + a3 * w13;
+
+        if (have_n2) {
+            float w20 = __bfloat162float(B[n2 * K + base_k]);
+            float w21 = __bfloat162float(B[n2 * K + base_k + 1]);
+            float w22 = __bfloat162float(B[n2 * K + base_k + 2]);
+            float w23 = __bfloat162float(B[n2 * K + base_k + 3]);
+            acc2 += a0 * w20 + a1 * w21 + a2 * w22 + a3 * w23;
+        }
+    }
+
+    #pragma unroll
+    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+        acc1 += __shfl_down_sync(0xFFFFFFFF, acc1, offset);
+        if (have_n2) acc2 += __shfl_down_sync(0xFFFFFFFF, acc2, offset);
+    }
+
+    __shared__ float s_partial[N_PER_BLOCK * 2][2];
+    unsigned int warp_in_out  = (tid % threads_per_out) / WARP_SIZE;
+    unsigned int lane_in_warp = tid % WARP_SIZE;
+    if (lane_in_warp == 0) {
+        s_partial[local_out * 2][warp_in_out] = acc1;
+        if (have_n2) s_partial[local_out * 2 + 1][warp_in_out] = acc2;
+    }
+    __syncthreads();
+
+    unsigned int warps_per_out = threads_per_out / WARP_SIZE;
+    if (lane_in_warp == 0 && warp_in_out == 0) {
+        float sum1 = 0.0f;
+        for (unsigned int w = 0; w < warps_per_out; w++) sum1 += s_partial[local_out * 2][w];
+        C[n1] = __float2bfloat16(sum1);
+        if (have_n2) {
+            float sum2 = 0.0f;
+            for (unsigned int w = 0; w < warps_per_out; w++) sum2 += s_partial[local_out * 2 + 1][w];
+            C[n2] = __float2bfloat16(sum2);
+        }
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // DECODE SINGLE-TOKEN VARIANTS (existing)
 // ════════════════════════════════════════════════════════════════════════════

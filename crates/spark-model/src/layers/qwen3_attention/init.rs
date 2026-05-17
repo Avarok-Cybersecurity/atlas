@@ -307,6 +307,16 @@ impl Qwen3AttentionLayer {
                 "mla_fused_prefill",
                 "mla_fused_prefill",
             ),
+            mla_prefill_paged_k: super::super::try_kernel(
+                gpu,
+                "mla_prefill_paged",
+                "mla_prefill_paged_320",
+            ),
+            mla_v_extract_batched_k: super::super::try_kernel(
+                gpu,
+                "mla_absorbed",
+                "mla_v_extract_batched",
+            ),
             gemm_splitk_partial_k: super::super::try_kernel(
                 gpu,
                 "gemm_splitk",

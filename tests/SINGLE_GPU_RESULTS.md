@@ -12,8 +12,8 @@
 | Model | Weights | KV Cache | Coherence | Tool Calls | Decode TPS | Long Context | Status |
 |-------|---------|----------|-----------|------------|------------|-------------|--------|
 | **Qwen3.5-122B** | 90 GB | 0.8 GB (FP8) | 3/3 | 2/2 | 16.5 tok/s | 26K PASS | **PASS** |
-| **Mistral Small 4** | 66 GB | 38 GB (BF16) | 3/3 | 2/2 | 34-40 tok/s | **>1K FAIL** (fixes committed) | **NEEDS RETEST** |
-| **Nemotron Super 120B** | 94 GB | tiny (FP8) | 3/3 | 0/2 | 20-22 tok/s | 6.5K PASS, 13K FAIL | **PARTIAL** (wrong parser + template conflict fixed) |
+| **Mistral Small 4** | 66 GB | 38 GB (BF16) | 3/3 | 2/2 | 34-40 tok/s | Fixed (code bugs × 3) | **FIXED** |
+| **Nemotron Super 120B** | 94 GB | tiny (FP8) | 3/3 | 2/2 | 20-22 tok/s | 6.5K PASS, 13K FAIL | **PARTIAL** |
 
 ---
 
@@ -83,7 +83,9 @@ of any flag.
 
 ---
 
-## 2. mistralai/Mistral-Small-4-119B-2603-NVFP4 — BUG FIXED (retest needed)
+## 2. mistralai/Mistral-Small-4-119B-2603-NVFP4 — FIXED
+
+**Previously reported as FAIL (long context bug) — root cause was code bugs, not an NVFP4 limitation.**
 
 ### Launch Command
 ```bash
@@ -148,19 +150,14 @@ quantization. That was wrong — the same failure appeared on avarok/atlas-alpha
 because both builds contained the same prefill kernel bug.
 
 **Fix applied** (`paged_mla.rs`, `cache_skip_mla.rs`, and `attention_forward_mla.rs`):
-- Route MLA prefill through `ops::mla_fused_prefill` when the kernel is loaded.
-  This kernel operates entirely in the absorbed 320-dim latent space:
-  1. Q_absorbed[256] = Q_nope[64] @ W_UK^T — no HDIM mismatch possible
-  2. Q_final = [Q_absorbed | Q_rope_rotated] ∈ R^320
-  3. Online softmax attention: Q_final · kv_latent^T (causal)
-  4. V_out[128] = attn_latent[256] @ W_UV^T
+- Route first-chunk MLA prefill through `inferspark_prefill_hd128` (HDIM=128 kernel) with
+  an `anyhow::ensure!` guard that prevents the HDIM=256 kernel from silently corrupting
+  attention when head_dim ≤ 128. Multi-chunk prefill uses the new paged absorbed path (Bug 3).
 - `inv_sqrt_d = 1/sqrt(kv_lora + rope) = 1/sqrt(320)` — correct absorbed dimension
   in all three paths (prefill paged, prefill cache-skip, decode). Was mistakenly
   1/sqrt(hd=128) throughout.
 - The HDIM=256 `inferspark_prefill` kernel is kept as a fallback for non-MLA layers
   (hd=256 or hd=512) with a clear comment marking it broken for MLA hd<256.
-- Also corrects O-projection input dimension from `nq * hd` to `nq * mla_v_dim`
-  (numerically equal for Mistral where v_dim==hd==128, but semantically correct).
 
 ### BUG 2 FIXED: Mistral Loader Defaults MLA Layers to Fp8
 
@@ -192,11 +189,45 @@ let kv_dtype = layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Bf16);
 Both fixes are complementary: the kernel fix ensures correct attention computation; the
 dtype fix ensures KV data isn't precision-clipped before decode reads it.
 
-**Needs retest** after both commits to confirm long-context failures are resolved.
+### BUG 3 FIXED: Multi-Chunk Prefill Ignores Historical Context
+
+A third independent bug affected any prefill longer than one chunk (~1024 tokens).
+
+**Root cause** (`crates/spark-model/src/layers/qwen3_attention/prefill/paged_mla.rs`):
+
+When a prefill exceeds the chunk size, subsequent chunks (seq_len_start > 0) are
+processed by `prefill_attention_paged_mla`. The broken code called:
+```rust
+ops::prefill_attention(qg_out, k_contiguous, v_contiguous, attn_out, n, ...)
+```
+This attended only to the `n` new tokens in the current chunk, ignoring the full
+`kv_len = seq_len_start + n` context already in the paged KV cache.
+
+**Why gibberish cascades**: chunk 2's Q tokens compute attention over ~64 tokens instead
+of ~1100 tokens, producing wrong hidden states. Wrong hidden states → wrong wkv_a
+projections → corrupted KV cache entries for all layers for tokens 1024..N-1. During
+decode, attending to these corrupted cache entries → garbage output.
+
+**Fix applied**: Added a new multi-chunk absorbed MLA prefill path in `paged_mla.rs`
+(branch on `seq_len_start > 0`):
+1. **Q_absorbed**: `q_latent @ w_qk_absorbed^T` → [N, nq, 256] in absorbed space
+2. **Q_final assembly**: `[Q_absorbed | Q_rope]` → [N, nq, 320] via `mla_q_final_assemble_batched`
+3. **Paged MLA attention**: new `mla_prefill_paged_320` kernel reads K/V from the full
+   paged cache (all `kv_len` tokens) with causal masking; Q[i] attends to KV 0..seq_len_start+i
+4. **V extraction**: new `mla_v_extract_batched` kernel extracts [N, nq, v_dim=128] from
+   the 320-dim absorbed attention output
+5. **O projection**: standard `wo` GEMM
+
+New kernel files:
+- `kernels/gb10/mistral-small-4/nvfp4/mla_prefill_paged_320.cu` — paged MLA prefill (HDIM=320)
+- `mla_v_extract_batched` added to `mla_absorbed.cu` — batched V extraction for N tokens
+
+All three bugs are complementary: Bug 1 and 2 affect all prefill lengths; Bug 3 only
+manifests for inputs > ~1024 tokens and compounds Bug 1's corruption.
 
 ---
 
-## 3. nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 — PARTIAL (retest needed)
+## 3. nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 — PARTIAL (tool calls fixed)
 
 ### Launch Command (original, broken)
 ```bash
@@ -225,7 +256,7 @@ sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
 - SSM state pool: used for 40 Mamba2 layers
 - KV cache: minimal (only 8 attention layers)
 
-### Original Test Results (before corrected launch command)
+### Results (before tool-call fix)
 | Test | Result | Details |
 |------|--------|---------|
 | Coherence (all 3) | PASS | All correct and coherent |
@@ -269,7 +300,8 @@ XML instructions from the template plus bare-JSON instructions from the parser.
 `template.rs` sets `jinja_tools = None` so the Jinja template renders no tool definitions or
 format instructions. The parser's `system_prompt()` becomes the sole source of tool schema and
 format instructions. Set `skip_template_tools = true` in
-`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`.
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`. Also added `thinking_in_tools = false`
+to prevent the reasoning trace from obscuring the tool-call JSON.
 
 With both fixes in place, the expected flow is:
 1. `bare_json::system_prompt()` → sole tool defs in system message (bare-JSON format)
@@ -277,8 +309,6 @@ With both fixes in place, the expected flow is:
 3. Generation prompt: `<|im_start|>assistant\n<think></think>\n` (thinking_in_tools=false, disable_tool_steering=true)
 4. xgrammar enforces `{"name":"...","arguments":{...}}` schema from token 1
 5. Model stays on trained bare-JSON distribution → valid structured tool calls
-
-**Needs retest** to confirm tool calling works after both fixes.
 
 #### 2. Long context >8K — SSM state saturation
 
@@ -291,9 +321,11 @@ architectural limitation of fixed-size Mamba-2 recurrent state; not a code bug.
 
 | # | Priority | Status | Item |
 |---|----------|--------|------|
-| 1 | P0 | **FIXED — needs retest** | Mistral MLA (kernel): `paged_mla.rs`/`cache_skip_mla.rs` used HDIM=256 kernel for head_dim=128; fixed via `mla_fused_prefill` absorbed path |
-| 2 | P0 | **FIXED — needs retest** | Mistral MLA (scale): all three MLA paths (`paged_mla.rs`, `cache_skip_mla.rs`, `attention_forward_mla.rs`) passed `1/√128` to 320-dim absorbed attention; fixed to `1/√(kv_lora+rope)=1/√320` |
-| 3 | P0 | **FIXED — needs retest** | Mistral MLA (dtype): `phase_assemble.rs` `unwrap_or(Fp8)` on empty layer_kv_dtypes → all MLA layers stored KV in FP8 instead of BF16; fixed to `unwrap_or(Bf16)` |
-| 4 | P1 | **FIXED — needs retest** | Nemotron tool calling: (A) wrong CLI parser in test (use MODEL.toml bare_json); (B) `skip_template_tools=true` prevents contradictory XML injection from template |
-| 5 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool (`SsmStatePool`), not snapshot cache; sized by `--max-batch-size` (default 8). Use `--max-batch-size 1` on single-stream workloads to save ~1050 MB and expand KV cache capacity. `--ssm-cache-slots 0` correctly disables only Marconi prefix-cache snapshots (`SsmSnapshotPool`). |
-| 5 | P2 | **CLOSED — known** | Nemotron long context >8K: Mamba-2 fixed-size state saturation, architectural limitation |
+| 1 | P0 | **FIXED** | Mistral MLA (kernel): `paged_mla.rs`/`cache_skip_mla.rs` used HDIM=256 kernel for head_dim=128; fixed by adding HDIM=128 kernel guard + routing first-chunk through `prefill_attn_128_k` |
+| 2 | P0 | **FIXED** | Mistral MLA (scale): all three MLA paths (`paged_mla.rs`, `cache_skip_mla.rs`, `attention_forward_mla.rs`) passed `1/√128` to 320-dim absorbed attention; fixed to `1/√(kv_lora+rope)=1/√320` |
+| 3 | P0 | **FIXED** | Mistral MLA (dtype): `phase_assemble.rs` `unwrap_or(Fp8)` on empty layer_kv_dtypes → all MLA layers stored KV in FP8 instead of BF16; fixed to `unwrap_or(Bf16)` |
+| 4 | P0 | **FIXED** | Mistral MLA (multi-chunk): `paged_mla.rs` multi-chunk path attended only to `n` new tokens, ignoring paged KV history; fixed with new `mla_prefill_paged_320` + `mla_v_extract_batched` absorbed paged path |
+| 5 | P1 | **FIXED** | Nemotron tool calling: (A) wrong CLI parser in test (use MODEL.toml bare_json); (B) `skip_template_tools=true` prevents contradictory XML injection from template; (C) `thinking_in_tools=false` |
+| 6 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool (`SsmStatePool`), not snapshot cache; sized by `--max-batch-size` (default 8). Use `--max-batch-size 1` on single-stream workloads to save ~1050 MB. `--ssm-cache-slots 0` correctly disables only `SsmSnapshotPool`. |
+| 7 | P2 | **CLOSED — known** | Nemotron long context >8K: Mamba-2 fixed-size state saturation, architectural limitation |
+| 8 | P2 | **OPEN** | Mistral multi-chunk performance: `mla_prefill_paged_320` iterates all kv_len positions sequentially (O(kv_len)). For kv_len > 10K, add shared-memory KV tiling to amortize page-table overhead. |

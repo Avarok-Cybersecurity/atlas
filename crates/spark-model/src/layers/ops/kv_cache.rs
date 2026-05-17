@@ -166,6 +166,40 @@ pub fn mla_batched_gemv(
         .launch(stream)
 }
 
+/// Batched V extraction for N-token MLA prefill.
+/// For each (token, head): output[token, head, :] = W_UV[head] @ input[token, head, 0..k]
+/// where input has input_head_stride elements per head (only first k are used).
+///
+/// Grid: (ceil(n_out/8), num_heads, n_tokens)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn mla_v_extract_batched(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: DevicePtr,
+    output: DevicePtr,
+    n_out: u32,
+    k: u32,
+    num_heads: u32,
+    input_head_stride: u32,
+    output_head_stride: u32,
+    n_tokens: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n_out, 8), num_heads, n_tokens])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight)
+        .arg_ptr(output)
+        .arg_u32(n_out)
+        .arg_u32(k)
+        .arg_u32(num_heads)
+        .arg_u32(input_head_stride)
+        .arg_u32(output_head_stride)
+        .launch(stream)
+}
+
 /// MLA Q_rope scatter: copy rope portion from q_full to strided q_absorbed_buf. 1 kernel replaces 32 D2D copies.
 #[allow(clippy::too_many_arguments)]
 pub fn mla_q_rope_scatter(
