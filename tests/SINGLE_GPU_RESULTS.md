@@ -317,7 +317,35 @@ architectural limitation of fixed-size Mamba-2 recurrent state; not a code bug.
 
 ---
 
-## Action Items (updated 2026-05-15)
+### KERNEL AUDIT: `mla_fused_prefill.cu` — confirmed correct
+
+A full audit of `kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu` (the cache-skip
+single-chunk path, grid `[nq, seq_len, 1]`) confirmed the algorithm is correct:
+
+- **Online softmax**: standard Milakov-Norouzi algorithm in FP32; numerically stable across
+  all sequence lengths.
+- **Weight layout**: `w_uk_t` is transposed to `[kv_lora, nope]` per head in `phase_per_head.rs`
+  (from the checkpoint's `[nope, kv_lora]` layout), matching the kernel's access pattern.
+  `w_uv` is stored as `[v_dim, kv_lora]` per head; the kernel's dot-product convention
+  correctly implements `V_out = attn_latent @ W_UV`.
+- **Buffer aliasing**: `ssm_ba()` is reused for both `q_latent` and `k_rope_buf` — safe because
+  `q_latent`'s consumers (`wq_b` GEMM output) complete before `k_rope_buf` is populated.
+- **`--kv-high-precision-layers auto` interaction**: `build_layer_kv_dtypes()` returns `[]`
+  (no per-layer override) when the base `kv_dtype` is already BF16; `kv_hp_layers=2` has no
+  effect. No FP8/BF16 mixing for Mistral.
+
+**One code-quality fix applied** (`mla_fused_prefill.cu`):
+`__shared__ float smem_dot[8]` was declared inside the `kv_pos` loop body. CUDA compilers
+hoist `__shared__` to function scope regardless, but placing it inside the loop makes NVCC's
+lifetime-based shared memory layout analysis ambiguous: the compiler could theoretically
+choose to alias `smem_dot[0..7]` with the first 8 elements of `smem_q[320]` across iterations
+(since `smem_dot` appears to start a new lifetime on each iteration). Moved declaration to
+just before the loop alongside `m_prev`/`l_prev`, making the non-overlapping live ranges
+explicit and preventing any possible aliasing.
+
+---
+
+## Action Items (updated 2026-05-17)
 
 | # | Priority | Status | Item |
 |---|----------|--------|------|
@@ -325,7 +353,8 @@ architectural limitation of fixed-size Mamba-2 recurrent state; not a code bug.
 | 2 | P0 | **FIXED** | Mistral MLA (scale): all three MLA paths (`paged_mla.rs`, `cache_skip_mla.rs`, `attention_forward_mla.rs`) passed `1/√128` to 320-dim absorbed attention; fixed to `1/√(kv_lora+rope)=1/√320` |
 | 3 | P0 | **FIXED** | Mistral MLA (dtype): `phase_assemble.rs` `unwrap_or(Fp8)` on empty layer_kv_dtypes → all MLA layers stored KV in FP8 instead of BF16; fixed to `unwrap_or(Bf16)` |
 | 4 | P0 | **FIXED** | Mistral MLA (multi-chunk): `paged_mla.rs` multi-chunk path attended only to `n` new tokens, ignoring paged KV history; fixed with new `mla_prefill_paged_320` + `mla_v_extract_batched` absorbed paged path |
-| 5 | P1 | **FIXED** | Nemotron tool calling: (A) wrong CLI parser in test (use MODEL.toml bare_json); (B) `skip_template_tools=true` prevents contradictory XML injection from template; (C) `thinking_in_tools=false` |
-| 6 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool (`SsmStatePool`), not snapshot cache; sized by `--max-batch-size` (default 8). Use `--max-batch-size 1` on single-stream workloads to save ~1050 MB. `--ssm-cache-slots 0` correctly disables only `SsmSnapshotPool`. |
-| 7 | P2 | **CLOSED — known** | Nemotron long context >8K: Mamba-2 fixed-size state saturation, architectural limitation |
-| 8 | P2 | **OPEN** | Mistral multi-chunk performance: `mla_prefill_paged_320` iterates all kv_len positions sequentially (O(kv_len)). For kv_len > 10K, add shared-memory KV tiling to amortize page-table overhead. |
+| 5 | P0 | **FIXED** | `mla_fused_prefill.cu`: `__shared__ smem_dot[8]` declared inside `kv_pos` loop → potential NVCC aliasing with `smem_q` across iterations; moved to function scope before loop |
+| 6 | P1 | **FIXED** | Nemotron tool calling: (A) wrong CLI parser in test (use MODEL.toml bare_json); (B) `skip_template_tools=true` prevents contradictory XML injection from template; (C) `thinking_in_tools=false` |
+| 7 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool (`SsmStatePool`), not snapshot cache; sized by `--max-batch-size` (default 8). Use `--max-batch-size 1` on single-stream workloads to save ~1050 MB. `--ssm-cache-slots 0` correctly disables only `SsmSnapshotPool`. |
+| 8 | P2 | **CLOSED — known** | Nemotron long context >8K: Mamba-2 fixed-size state saturation, architectural limitation |
+| 9 | P2 | **OPEN** | Mistral multi-chunk performance: `mla_prefill_paged_320` iterates all kv_len positions sequentially (O(kv_len)). For kv_len > 10K, add shared-memory KV tiling to amortize page-table overhead. |

@@ -110,6 +110,10 @@ extern "C" __global__ void mla_fused_prefill(
     // 256 threads collaborate to reduce 320 dims.
     // Each thread handles ceil(320/256) = 2 dims (with some idle).
 
+    // Declared here (not inside the loop) so NVCC cannot alias this with smem_q
+    // across iterations when doing lifetime-based shared memory layout optimization.
+    __shared__ float smem_dot[8];  // 8 warps
+
     float m_prev = -FLT_MAX;
     float l_prev = 0.0f;
     // Accumulate weighted KV latent (only first 256 dims for V extraction)
@@ -140,7 +144,6 @@ extern "C" __global__ void mla_fused_prefill(
             dot += __shfl_down_sync(0xFFFFFFFF, dot, offset);
         }
         // Lane 0 of each warp has partial sum. Reduce across warps via shared memory.
-        __shared__ float smem_dot[8];  // 8 warps
         unsigned int warp_id = tid / 32;
         unsigned int lane_id = tid % 32;
         if (lane_id == 0) {
