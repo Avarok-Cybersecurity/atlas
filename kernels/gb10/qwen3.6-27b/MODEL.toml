@@ -73,6 +73,12 @@ frequency_penalty = 0.0
 # prompts (CSS block repetition at 13.3 t/s for ~3990 tokens). MoE
 # A3B/A10B variants in the family don't need it.
 enable_loop_watchdog = true
+# Thinking on by default: dense Qwen3.6-27B is a reasoning model and
+# clients (Open WebUI etc.) send plain requests with no enable_thinking
+# flag. Without this the chat template injects an empty
+# `<think>\n\n</think>` (thinking-off marker) so reasoning_content is
+# always empty. An explicit per-request enable_thinking=false still wins.
+thinking_default = true
 thinking_in_tools = false
 max_thinking_budget = 512
 default_num_drafts = 1
