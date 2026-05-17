@@ -116,6 +116,14 @@ pub(super) struct ActiveSeq {
     pub force_end_thinking: bool,
     /// Consecutive tokens where top-1 softmax prob >= 0.95 (for confidence early stop).
     pub consecutive_confident: u32,
+    /// True while the model is inside an unclosed ``` code fence within
+    /// the current thinking block. Toggled on each sampled code-fence
+    /// token. The F2 confidence early-stop is suppressed while this is
+    /// set: code is near-deterministic (high top-1 prob) but that is
+    /// NOT a "done reasoning" signal — braking here truncates the model
+    /// mid-statement. Per-seq state, persisted across decode steps and
+    /// snapshots.
+    pub in_code_fence: bool,
     /// Token ID for `</think>` (needed for budget enforcement in emit_token).
     pub think_end_token: Option<u32>,
     /// Token ID for `<think>` (needed for spontaneous thinking detection in emit_token).
@@ -214,6 +222,7 @@ pub(super) struct SwappedSeq {
     pub thinking_tokens: u32,
     pub force_end_thinking: bool,
     pub consecutive_confident: u32,
+    pub in_code_fence: bool,
     pub think_end_token: Option<u32>,
     pub think_start_token: Option<u32>,
     pub think_ended: bool,

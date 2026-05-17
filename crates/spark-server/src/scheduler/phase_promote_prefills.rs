@@ -145,6 +145,7 @@ fn build_active_seq_from_prefill(
         cached_prompt_tokens: cached_prompt_tok,
         force_end_thinking: false,
         consecutive_confident: 0,
+        in_code_fence: false,
         think_end_token,
         think_start_token,
         // When thinking is disabled but model supports thinking, the template

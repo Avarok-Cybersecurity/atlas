@@ -271,6 +271,58 @@ pub fn detect_token_loop(
     }
     false
 }
+
+/// Flip `in_fence` when the just-sampled token `tok` is the model's
+/// atomic ``` code-fence token. `fence_tok == None` (tokenizer has no
+/// single fence token) disables the guard: the fence state can never
+/// become `true`, so F2 keeps its prior behaviour (fail-open, PCND —
+/// no implicit default, the absence is explicit and inert).
+///
+/// Pure parity function — the single source of truth for fence
+/// tracking, called from the decode token-accept path and unit-tested
+/// directly (no ActiveSeq / logits mocking required).
+pub fn toggle_code_fence(in_fence: bool, tok: u32, fence_tok: Option<u32>) -> bool {
+    match fence_tok {
+        Some(f) if f == tok => !in_fence,
+        _ => in_fence,
+    }
+}
+
+/// F2 confidence-run accumulator. Given whether the current token is
+/// high-confidence (top-1 softmax ≥ 0.95) and the prior consecutive
+/// run length, return `(new_run, should_arm_force_end)`.
+///
+/// Pure accumulator — runs the SAME inside and outside a ``` fence.
+/// We deliberately keep *detecting* inside code: a model that drafts
+/// an unbounded code block in its reasoning still needs braking. What
+/// must NOT happen is the forced `</think>` landing mid-statement —
+/// that boundary decision is `should_inject_think_end` below, which
+/// defers the injection until the fence closes (a safe boundary).
+///
+/// `CONFIDENCE_RUN_LIMIT` (30) is named, not a magic literal (SSOT).
+pub const CONFIDENCE_RUN_LIMIT: u32 = 30;
+
+pub fn confidence_run_step(confident: bool, prev_run: u32) -> (u32, bool) {
+    if confident {
+        let run = prev_run + 1;
+        (run, run >= CONFIDENCE_RUN_LIMIT)
+    } else {
+        (0, false)
+    }
+}
+
+/// Boundary gate for the forced `</think>` injection. F2 / the
+/// thinking-budget cap may *arm* `force_end_thinking` while the model
+/// is mid-code-block; injecting `</think>` there would split a
+/// statement (the 2026-05-17 thinkbrake bug) and corrupt the answer.
+/// Defer the injection until the ``` fence closes — code blocks in
+/// reasoning are finite, so the brake then fires cleanly at the
+/// block boundary (right after the closing ```), never mid-statement.
+/// Outside a fence it fires immediately, exactly as before.
+pub fn should_inject_think_end(force_end_thinking: bool, in_code_fence: bool) -> bool {
+    force_end_thinking && !in_code_fence
+}
+
 #[cfg(test)]
 mod thinking_loop_tests {
     use super::*;
@@ -401,5 +453,87 @@ mod thinking_loop_tests {
             !detect_content_token_loop(&tokens),
             "two repeats in content must not trigger (need 3)"
         );
+    }
+
+    // ── Code-fence guard for the F2 confidence early-stop ──────────────
+    // Regression coverage for the 2026-05-17 thinkbrake bug: the model
+    // drafting a ```python block inside <think> produced 30+ consecutive
+    // ≥0.95 tokens, tripping F2 and force-injecting </think> mid-line.
+
+    const FENCE: u32 = 71093; // Qwen3.x atomic ``` token
+
+    #[test]
+    fn fence_toggles_on_fence_token() {
+        assert!(toggle_code_fence(false, FENCE, Some(FENCE)), "``` opens fence");
+        assert!(!toggle_code_fence(true, FENCE, Some(FENCE)), "``` closes fence");
+    }
+
+    #[test]
+    fn fence_unchanged_by_non_fence_token() {
+        assert!(!toggle_code_fence(false, 42, Some(FENCE)));
+        assert!(toggle_code_fence(true, 42, Some(FENCE)));
+    }
+
+    #[test]
+    fn fence_guard_disabled_when_no_fence_token() {
+        // Tokenizer split ``` → guard inert, never enters a fence.
+        assert!(!toggle_code_fence(false, FENCE, None));
+    }
+
+    #[test]
+    fn f2_arms_after_30_confident_tokens() {
+        // Pure accumulator: 30 consecutive confident tokens arm the brake.
+        let mut run = 0;
+        let mut fired = false;
+        for _ in 0..CONFIDENCE_RUN_LIMIT {
+            let (next, fire) = confidence_run_step(true, run);
+            run = next;
+            fired |= fire;
+        }
+        assert_eq!(run, CONFIDENCE_RUN_LIMIT);
+        assert!(fired, "30 consecutive confident tokens must arm F2");
+    }
+
+    #[test]
+    fn f2_run_breaks_on_non_confident_token() {
+        let (run, fire) = confidence_run_step(false, 25);
+        assert_eq!(run, 0);
+        assert!(!fire);
+    }
+
+    #[test]
+    fn f2_accumulates_inside_code_too() {
+        // Detection runs everywhere — code is finite and must still be
+        // brakeable. (Mid-statement safety is the *injection* gate's job,
+        // see `defer_*` tests below — NOT suppression of detection.)
+        let (run, fire) = confidence_run_step(true, 29);
+        assert_eq!(run, 30);
+        assert!(fire, "F2 arms even inside a fence; injection is what defers");
+    }
+
+    // ── should_inject_think_end: the safe-boundary defer gate ─────────
+    // This is the core of the 2026-05-17 fix: the forced </think> may be
+    // armed mid-code-block, but it must not be *injected* there.
+
+    #[test]
+    fn defer_injection_while_in_code_fence() {
+        assert!(
+            !should_inject_think_end(true, true),
+            "armed brake must NOT inject </think> mid-code-fence (would split a statement)"
+        );
+    }
+
+    #[test]
+    fn inject_once_fence_closes() {
+        assert!(
+            should_inject_think_end(true, false),
+            "armed brake fires cleanly once the ``` fence has closed"
+        );
+    }
+
+    #[test]
+    fn no_injection_when_not_armed() {
+        assert!(!should_inject_think_end(false, false));
+        assert!(!should_inject_think_end(false, true));
     }
 }

@@ -52,27 +52,38 @@ pub fn process_seq_logits(
     }
 
     // F2: Confidence-based early stop during thinking.
-    // F2: Confidence-based early stop during thinking.
     // When top-1 prob >= 0.95 for 30 consecutive tokens, force </think>.
     // Only kicks in after 400 thinking tokens — the model needs room to
     // plan (numbered lists, step-by-step reasoning have high per-token
     // confidence but are NOT signs the model is done thinking).
     // Previous thresholds (200 tokens, 10 consecutive) were too aggressive
     // and caused premature thinking termination in agentic coding sessions.
+    //
+    // Code-fence handling: a ``` block inside the reasoning is even
+    // MORE confident than prose (Python/JSON syntax is near-
+    // deterministic: `def`/`(`/`:`/indent/`return`), so 30 consecutive
+    // ≥0.95 tokens trips trivially while the model is *productively*
+    // drafting code. We still ARM the brake here (a model can ramble in
+    // code forever — it must eventually stop), but the forced </think>
+    // injection is DEFERRED until the fence closes (see
+    // `should_inject_think_end` at the injection site below), so the
+    // boundary lands cleanly right after the code block instead of
+    // splitting a statement. The token-period THINK_LOOP watchdog
+    // (decode_logits_step) also stays active in fences.
     if a.inside_thinking && !a.force_end_thinking && a.thinking_tokens >= 400 {
         let max_logit = f32_logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let sum_exp: f32 = f32_logits.iter().map(|&l| (l - max_logit).exp()).sum();
-        if sum_exp > 0.0 && 1.0 / sum_exp >= 0.95 {
-            a.consecutive_confident += 1;
-            if a.consecutive_confident >= 30 {
-                a.force_end_thinking = true;
-                tracing::info!(
-                    "Confidence early stop: top-1 prob >= 0.95 for 30 tokens (after {} thinking tokens)",
-                    a.thinking_tokens
-                );
-            }
-        } else {
-            a.consecutive_confident = 0;
+        let confident = sum_exp > 0.0 && 1.0 / sum_exp >= 0.95;
+        let (run, force_end) = confidence_run_step(confident, a.consecutive_confident);
+        a.consecutive_confident = run;
+        if force_end {
+            a.force_end_thinking = true;
+            tracing::info!(
+                "Confidence early stop armed: top-1 prob >= 0.95 for {} tokens (after {} thinking tokens){}",
+                CONFIDENCE_RUN_LIMIT,
+                a.thinking_tokens,
+                if a.in_code_fence { " — deferred until ``` fence closes" } else { "" }
+            );
         }
     }
 
@@ -131,9 +142,13 @@ pub fn process_seq_logits(
         }
     }
 
-    // Force </think> when budget exhausted OR confidence early stop triggered.
+    // Force </think> when budget exhausted OR confidence early stop
+    // triggered — but DEFER while inside a ``` code fence so the
+    // injection never splits a code statement (2026-05-17 thinkbrake
+    // fix). The fence closes within a bounded number of tokens, then
+    // this fires cleanly at the block boundary.
     if a.inside_thinking
-        && a.force_end_thinking
+        && should_inject_think_end(a.force_end_thinking, a.in_code_fence)
         && let Some(end_tok) = think_end_token
     {
         let end_idx = end_tok as usize;

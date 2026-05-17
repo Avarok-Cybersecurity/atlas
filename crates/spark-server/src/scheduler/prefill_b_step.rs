@@ -202,6 +202,7 @@ pub fn prefill_request(
             cached_prompt_tokens: cached_prompt_tok,
             force_end_thinking: false,
             consecutive_confident: 0,
+            in_code_fence: false,
             think_end_token,
             think_start_token,
             think_ended: !req_enable_thinking && think_end_token.is_some(),
@@ -274,6 +275,7 @@ pub fn prefill_request(
         cached_prompt_tokens: cached_prompt_tok,
         force_end_thinking: false,
         consecutive_confident: 0,
+        in_code_fence: false,
         think_end_token,
         think_start_token,
         think_ended: if spontaneous_think {

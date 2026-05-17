@@ -12,6 +12,14 @@ pub(crate) struct TokenizerRuntime {
     pub(crate) reasoning_parser_box: Option<Box<dyn crate::reasoning_parser::ReasoningParser>>,
     pub(crate) think_end_token: Option<u32>,
     pub(crate) think_start_token: Option<u32>,
+    /// Token ID for a markdown code fence (```). Used to suppress the
+    /// confidence-based thinking early-stop (F2) while the model is
+    /// productively emitting a fenced code block inside `<think>`:
+    /// code tokens are near-deterministic (top-1 prob ≥ 0.95 for long
+    /// runs) but that is NOT a "done reasoning" signal. `None` =
+    /// tokenizer has no atomic fence token → guard disabled (fail-open,
+    /// F2 keeps its prior behaviour).
+    pub(crate) code_fence_token: Option<u32>,
     pub(crate) reflection_suppress_ids: Vec<u32>,
     pub(crate) tool_call_start_token: Option<u32>,
     pub(crate) tool_call_end_token: Option<u32>,
@@ -72,6 +80,16 @@ pub(crate) fn resolve_tokenizer_runtime(
         .encode("<think>")
         .ok()
         .and_then(|ids| if ids.len() == 1 { Some(ids[0]) } else { None });
+    // Markdown code fence (```) as a single atomic token (Qwen3.x BPE:
+    // id 71093). Resolved the same way as think_start_token; `None` if
+    // the tokenizer splits it (guard fails open — see struct doc).
+    let code_fence_token: Option<u32> = tokenizer
+        .encode("```")
+        .ok()
+        .and_then(|ids| if ids.len() == 1 { Some(ids[0]) } else { None });
+    if let Some(fid) = code_fence_token {
+        tracing::info!("Code-fence token: {} (``` — F2 fence guard active)", fid);
+    }
     if let Some(tid) = think_end_token {
         tracing::info!(
             "Thinking end token: {} ({})",
@@ -168,6 +186,7 @@ pub(crate) fn resolve_tokenizer_runtime(
         reasoning_parser_box,
         think_end_token,
         think_start_token,
+        code_fence_token,
         reflection_suppress_ids,
         tool_call_start_token,
         tool_call_end_token,
