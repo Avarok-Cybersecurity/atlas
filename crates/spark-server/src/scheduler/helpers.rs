@@ -450,8 +450,26 @@ pub fn confidence_run_step(confident: bool, prev_run: u32) -> (u32, bool) {
 /// reasoning are finite, so the brake then fires cleanly at the
 /// block boundary (right after the closing ```), never mid-statement.
 /// Outside a fence it fires immediately, exactly as before.
-pub fn should_inject_think_end(force_end_thinking: bool, in_code_fence: bool) -> bool {
-    force_end_thinking && !in_code_fence
+/// In-fence deferral is BOUNDED: if thinking has overrun its budget by
+/// this factor while still in a ``` fence, inject `</think>` anyway.
+/// Without this, a model that writes its entire deliverable as a code
+/// block inside `<think>` keeps `in_code_fence=true` forever, the
+/// budget/F2 brake is deferred indefinitely, and the real answer is
+/// trapped in reasoning_content with an empty content (observed
+/// 2026-05-17: 3D-chess prompt → 3025 reasoning tokens vs 256 budget,
+/// 499-char content stub). 3× budget tolerates a legit in-think code
+/// block; beyond that a hard cut beats dumping the whole answer.
+pub const THINK_DEFER_BUDGET_FACTOR: u32 = 3;
+/// Absolute in-fence deferral ceiling when no thinking budget is set
+/// (F2/THINK_LOOP armed force_end with `thinking_budget=None`).
+pub const THINK_DEFER_ABS_CEILING: u32 = 2048;
+
+pub fn should_inject_think_end(
+    force_end_thinking: bool,
+    in_code_fence: bool,
+    hard_override: bool,
+) -> bool {
+    force_end_thinking && (!in_code_fence || hard_override)
 }
 
 #[cfg(test)]
@@ -649,7 +667,7 @@ mod thinking_loop_tests {
     #[test]
     fn defer_injection_while_in_code_fence() {
         assert!(
-            !should_inject_think_end(true, true),
+            !should_inject_think_end(true, true, false),
             "armed brake must NOT inject </think> mid-code-fence (would split a statement)"
         );
     }
@@ -657,15 +675,29 @@ mod thinking_loop_tests {
     #[test]
     fn inject_once_fence_closes() {
         assert!(
-            should_inject_think_end(true, false),
+            should_inject_think_end(true, false, false),
             "armed brake fires cleanly once the ``` fence has closed"
         );
     }
 
     #[test]
+    fn hard_override_breaks_unbounded_in_fence_defer() {
+        // The 2026-05-17 chess regression: model writes its whole
+        // answer as a ```block inside <think>, fence never closes,
+        // budget brake deferred forever. hard_override must force the
+        // injection even mid-fence.
+        assert!(
+            should_inject_think_end(true, true, true),
+            "armed + in-fence + budget massively overrun must HARD-inject </think>"
+        );
+        // Not armed → still nothing, even with override.
+        assert!(!should_inject_think_end(false, true, true));
+    }
+
+    #[test]
     fn no_injection_when_not_armed() {
-        assert!(!should_inject_think_end(false, false));
-        assert!(!should_inject_think_end(false, true));
+        assert!(!should_inject_think_end(false, false, false));
+        assert!(!should_inject_think_end(false, true, false));
     }
 
     // ── Digit-normalized content-loop watchdog ───────────────────────

@@ -38,26 +38,60 @@ mtp_layers = 0
 effective_context = 24576
 
 # Recommended sampling defaults (carried over from Qwen3.5 family).
+#
+# presence_penalty=1.5 — replicates commit 6c69d3f, which LIVE-BISECTED
+# the OpenWebUI "3D chess game" degeneration: thinking-mode
+# presence_penalty=0.0 (faithfully copied from the official Qwen3.6-27B
+# card) drops the model into a documented announce/restart + verbatim
+# CSS-block loop on hard code-gen (QwenLM/Qwen3.6 #88/#115/#145). Same
+# prompt + presence_penalty=1.5 → real Three.js code, no restart loop.
+# The card itself says: "adjust presence_penalty between 0 and 2 to
+# reduce endless repetitions." NOTE: 6c69d3f set this on
+# `thinking_coding` because that branch routed code prompts there; THIS
+# branch's build_sampling (api/chat/sampling_setup.rs) routes
+# enable_thinking → `thinking_text` and thinking-off → `non_thinking`
+# (no thinking_coding selection), so the fix must live on the presets
+# actually selected here. tools stays 0.0 (grammar-constrained).
+# Anti-repetition stack mirrors commit 6c69d3f's battle-tested
+# code-gen preset. presence_penalty alone (single-token) breaks the
+# loop but distorts long code-gen into early termination; 6c69d3f
+# pairs it with DRY (multi-token phrase repeats) + LZ (n-gram
+# patterns) — all three are required together. XTC (the
+# lexically-similar-CSS-block knob) is NOT ported on this branch
+# (no parser/sampler support); the digit-normalized content-loop
+# watchdog covers the near-duplicate case as the safety net.
 [sampling.thinking_text]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
-presence_penalty = 0.0
+presence_penalty = 1.5
 frequency_penalty = 0.0
+lz_penalty = 0.2
+dry_multiplier = 0.8
+dry_base = 1.75
+dry_allowed_length = 2
 
 [sampling.thinking_coding]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
-presence_penalty = 0.0
+presence_penalty = 1.5
 frequency_penalty = 0.0
+lz_penalty = 0.2
+dry_multiplier = 0.8
+dry_base = 1.75
+dry_allowed_length = 2
 
 [sampling.non_thinking]
 temperature = 0.7
 top_p = 0.8
 top_k = 20
-presence_penalty = 0.0
+presence_penalty = 1.5
 frequency_penalty = 0.0
+lz_penalty = 0.2
+dry_multiplier = 0.8
+dry_base = 1.75
+dry_allowed_length = 2
 
 [sampling.tools]
 temperature = 0.6

@@ -147,8 +147,17 @@ pub fn process_seq_logits(
     // injection never splits a code statement (2026-05-17 thinkbrake
     // fix). The fence closes within a bounded number of tokens, then
     // this fires cleanly at the block boundary.
+    // Bound the in-fence deferral: a model that writes its whole answer
+    // as a code block inside <think> never closes the fence, so an
+    // unbounded defer traps the deliverable in reasoning. Past
+    // THINK_DEFER_BUDGET_FACTOR× the budget (or the absolute ceiling
+    // when budget is None), inject </think> even mid-fence.
+    let defer_hard_override = match a.thinking_budget {
+        Some(b) => a.thinking_tokens >= b.saturating_mul(THINK_DEFER_BUDGET_FACTOR),
+        None => a.thinking_tokens >= THINK_DEFER_ABS_CEILING,
+    };
     if a.inside_thinking
-        && should_inject_think_end(a.force_end_thinking, a.in_code_fence)
+        && should_inject_think_end(a.force_end_thinking, a.in_code_fence, defer_hard_override)
         && let Some(end_tok) = think_end_token
     {
         let end_idx = end_tok as usize;
