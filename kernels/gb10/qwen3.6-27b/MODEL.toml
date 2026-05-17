@@ -39,32 +39,33 @@ effective_context = 24576
 
 # Recommended sampling defaults (carried over from Qwen3.5 family).
 #
-# presence_penalty=1.5 — replicates commit 6c69d3f, which LIVE-BISECTED
+# Anti-repetition stack derived from commit 6c69d3f (which LIVE-BISECTED
 # the OpenWebUI "3D chess game" degeneration: thinking-mode
-# presence_penalty=0.0 (faithfully copied from the official Qwen3.6-27B
-# card) drops the model into a documented announce/restart + verbatim
-# CSS-block loop on hard code-gen (QwenLM/Qwen3.6 #88/#115/#145). Same
-# prompt + presence_penalty=1.5 → real Three.js code, no restart loop.
-# The card itself says: "adjust presence_penalty between 0 and 2 to
-# reduce endless repetitions." NOTE: 6c69d3f set this on
-# `thinking_coding` because that branch routed code prompts there; THIS
-# branch's build_sampling (api/chat/sampling_setup.rs) routes
-# enable_thinking → `thinking_text` and thinking-off → `non_thinking`
-# (no thinking_coding selection), so the fix must live on the presets
-# actually selected here. tools stays 0.0 (grammar-constrained).
-# Anti-repetition stack mirrors commit 6c69d3f's battle-tested
-# code-gen preset. presence_penalty alone (single-token) breaks the
-# loop but distorts long code-gen into early termination; 6c69d3f
-# pairs it with DRY (multi-token phrase repeats) + LZ (n-gram
-# patterns) — all three are required together. XTC (the
-# lexically-similar-CSS-block knob) is NOT ported on this branch
-# (no parser/sampler support); the digit-normalized content-loop
-# watchdog covers the near-duplicate case as the safety net.
+# presence_penalty=0.0 — copied from the official Qwen3.6-27B card —
+# drops the model into an announce/restart + verbatim-CSS loop on hard
+# code-gen; QwenLM/Qwen3.6 #88/#115/#145).
+#
+# presence_penalty RETUNED 1.5 → 1.0 (2026-05-17, this branch). 6c69d3f
+# used 1.5 on `thinking_coding` WITH XTC and code-routing; THIS branch's
+# build_sampling routes enable_thinking → `thinking_text` (no
+# thinking_coding selection) and has NO XTC port, and Open WebUI sends
+# no sampling params so requests run at the preset default temp=0.6
+# (stochastic, NOT greedy). Swept presence_penalty ∈ {0.3,0.5,0.8,1.0,
+# 1.5} live at temp=0.6 on the chess prompt: 1.5 → premature EOS (574
+# tok, 0 THREE. calls — the flat per-seen-token penalty boosts EOS once
+# common code tokens are exhausted); 0.3 → complete but 3× wasteful
+# announce/restart rewrites; 1.0 → single coherent complete impl
+# (</script></body></html>, 17 THREE. calls, finish=stop, no loop). 1.0
+# is the balance point between premature-termination and restart-spam
+# at temp=0.6. DRY (multi-token phrase) + LZ (n-gram) carry the
+# precision loop-breaking that presence (single-token) can't; the
+# digit-normalized content-loop watchdog is the hard-stop safety net.
+# tools stays 0.0 (grammar-constrained).
 [sampling.thinking_text]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
-presence_penalty = 1.5
+presence_penalty = 1.0
 frequency_penalty = 0.0
 lz_penalty = 0.2
 dry_multiplier = 0.8
@@ -75,7 +76,7 @@ dry_allowed_length = 2
 temperature = 0.6
 top_p = 0.95
 top_k = 20
-presence_penalty = 1.5
+presence_penalty = 1.0
 frequency_penalty = 0.0
 lz_penalty = 0.2
 dry_multiplier = 0.8
@@ -86,7 +87,7 @@ dry_allowed_length = 2
 temperature = 0.7
 top_p = 0.8
 top_k = 20
-presence_penalty = 1.5
+presence_penalty = 1.0
 frequency_penalty = 0.0
 lz_penalty = 0.2
 dry_multiplier = 0.8
