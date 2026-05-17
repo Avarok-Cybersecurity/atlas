@@ -90,6 +90,36 @@ pub(crate) fn resolve_tokenizer_runtime(
     if let Some(fid) = code_fence_token {
         tracing::info!("Code-fence token: {} (``` — F2 fence guard active)", fid);
     }
+
+    // Digit-normalized content-loop watchdog mask (Qwen3.6-27B greedy
+    // template degeneration: `- B(46) = N\n- B(47) = M\n …` to the cap).
+    // `mask[id] == true` iff the token decodes to a pure ASCII-digit run
+    // with at most one leading space. `decode_with_special` drives the
+    // byte-level decoder so a leading space is ' ' (NOT the raw `Ġ` BPE
+    // marker that `id_to_token` would yield). Built unconditionally
+    // (cheap, model-agnostic, one-time); only *consumed* under the
+    // per-model `enable_loop_watchdog()` gate. Fail-open: any decode
+    // error leaves that id `false`.
+    {
+        let vocab_size = tokenizer.inner().get_vocab_size(true);
+        let mut mask: Vec<bool> = vec![false; vocab_size];
+        let mut numeric_count = 0usize;
+        for (id, slot) in mask.iter_mut().enumerate() {
+            if let Ok(s) = tokenizer.decode_with_special(&[id as u32]) {
+                let body = s.strip_prefix(' ').unwrap_or(&s);
+                if !body.is_empty() && body.bytes().all(|b| b.is_ascii_digit()) {
+                    *slot = true;
+                    numeric_count += 1;
+                }
+            }
+        }
+        crate::scheduler::set_numeric_token_mask(std::sync::Arc::from(mask));
+        tracing::info!(
+            "Numeric-token mask: {numeric_count}/{vocab_size} ids classified \
+             as digit-runs (digit-normalized content-loop path active)"
+        );
+    }
+
     if let Some(tid) = think_end_token {
         tracing::info!(
             "Thinking end token: {} ({})",

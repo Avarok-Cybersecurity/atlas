@@ -110,6 +110,18 @@ pub const CONTENT_LOOP_PERIOD_MIN: usize = 8;
 pub const CONTENT_LOOP_PERIOD_MAX: usize = 64;
 pub const CONTENT_LOOP_MIN_REPEATS: usize = 3;
 pub const CONTENT_LOOP_SCAN_WINDOW: usize = 280;
+/// Min repeats for the digit-normalized content-loop path. Stricter
+/// than `CONTENT_LOOP_MIN_REPEATS` (3) because numeric normalization
+/// collapses more sequences to a common period — requiring 4 keeps a
+/// legitimate 3-item numbered list (`- item 1\n- item 2\n- item 3`)
+/// from tripping the hard stop.
+pub const CONTENT_LOOP_NORM_MIN_REPEATS: usize = 4;
+/// Sentinel substituted for every numeric token in the normalized
+/// scan-window tail. `u32::MAX` can never collide with a real vocab id
+/// (Qwen3.6 vocab ≤ ~152k), and the `(t as usize) < mask.len()` bound
+/// in the classifier means a stray real `u32::MAX` would degrade to
+/// "structural", never a false numeric — safe either way.
+pub const NUMERIC_SENTINEL: u32 = u32::MAX;
 
 static ENABLE_LOOP_WATCHDOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
@@ -124,6 +136,25 @@ pub fn set_enable_loop_watchdog(enabled: bool) {
 /// behavior plumbing → scheduler start).
 pub fn enable_loop_watchdog() -> bool {
     *ENABLE_LOOP_WATCHDOG.get().unwrap_or(&false)
+}
+
+/// `mask[id] == true` iff token `id` decodes to a pure ASCII-digit run
+/// (optionally one leading space). Built once at startup from the
+/// tokenizer; drives the digit-normalized content-loop path. Fail-open:
+/// never set (or build failed) → normalized path inert, the exact
+/// detector is unaffected.
+static NUMERIC_TOKEN_MASK: std::sync::OnceLock<std::sync::Arc<[bool]>> =
+    std::sync::OnceLock::new();
+
+/// Set once at startup from the resolved tokenizer. Idempotent.
+pub fn set_numeric_token_mask(mask: std::sync::Arc<[bool]>) {
+    let _ = NUMERIC_TOKEN_MASK.set(mask);
+}
+
+/// Read the numeric-token mask. `None` until `set_numeric_token_mask`
+/// runs — callers must treat `None` as "normalized path disabled".
+pub fn numeric_token_mask() -> Option<std::sync::Arc<[bool]>> {
+    NUMERIC_TOKEN_MASK.get().cloned()
 }
 
 /// F2 (2026-04-26): cap on free-text tokens between successive
@@ -232,6 +263,56 @@ pub fn detect_content_token_loop(tokens: &[u32]) -> bool {
     )
 }
 
+/// Digit-normalized content-loop detector. Maps every numeric token in
+/// the scan-window TAIL to [`NUMERIC_SENTINEL`], then period-matches —
+/// catching the Qwen3.6-27B greedy degeneration where the line template
+/// is fixed (`- B(46) = N\n`) but the integer payload varies each line,
+/// so the exact [`detect_content_token_loop`] never fires.
+///
+/// Allocates only the ≤ `CONTENT_LOOP_SCAN_WINDOW` tail copy; the full
+/// history is never normalized. FP mitigation: stricter
+/// `CONTENT_LOOP_NORM_MIN_REPEATS`, and the matched period must contain
+/// BOTH a sentinel (numeric) and a non-sentinel (structural) token —
+/// pure-number columns and pure-prose loops are left to the exact path.
+pub fn detect_content_token_loop_normalized(tokens: &[u32], mask: &[bool]) -> bool {
+    let n = tokens.len();
+    if n < CONTENT_LOOP_MIN_TOKENS as usize {
+        return false;
+    }
+    let tail_start = n.saturating_sub(CONTENT_LOOP_SCAN_WINDOW);
+    let is_numeric = |t: u32| (t as usize) < mask.len() && mask[t as usize];
+    // Map numeric tokens to the sentinel AND run-length-collapse
+    // consecutive sentinels to ONE. Qwen3.6 is digit-level
+    // (`104509868777` → 12 single-digit tokens, `273508641` → 9), so a
+    // bare 1:1 map would leave variable-length sentinel runs and the
+    // period would still vary line to line. Collapsing makes
+    // `- B(<digits>) = <digits>\n` identical regardless of digit count.
+    let mut norm: Vec<u32> = Vec::with_capacity(CONTENT_LOOP_SCAN_WINDOW);
+    for &t in &tokens[tail_start..] {
+        if is_numeric(t) {
+            if norm.last() != Some(&NUMERIC_SENTINEL) {
+                norm.push(NUMERIC_SENTINEL);
+            }
+        } else {
+            norm.push(t);
+        }
+    }
+    // No qualifying period can exist without both kinds of token —
+    // cheap early-out before the O(period·window) scan.
+    let has_sentinel = norm.iter().any(|&t| t == NUMERIC_SENTINEL);
+    let has_struct = norm.iter().any(|&t| t != NUMERIC_SENTINEL);
+    if !has_sentinel || !has_struct {
+        return false;
+    }
+    detect_token_loop_with_period(
+        &norm,
+        CONTENT_LOOP_PERIOD_MIN,
+        CONTENT_LOOP_PERIOD_MAX,
+        CONTENT_LOOP_NORM_MIN_REPEATS,
+        CONTENT_LOOP_SCAN_WINDOW,
+    )
+}
+
 /// Substring-occurrence loop detector used by both the thinking
 /// and content phases. Returns `true` iff some contiguous
 /// subsequence of length `p ∈ [period_min, period_max]` appears
@@ -255,6 +336,56 @@ pub fn detect_token_loop(
             continue;
         }
         let needle = &tail[tail.len() - period..];
+        let mut count = 0usize;
+        let mut pos = 0usize;
+        while pos + period <= tail.len() {
+            if &tail[pos..pos + period] == needle {
+                count += 1;
+                if count >= min_repeats {
+                    return true;
+                }
+                pos += period; // non-overlapping
+            } else {
+                pos += 1;
+            }
+        }
+    }
+    false
+}
+
+/// Like [`detect_token_loop`] but only accepts a periodic match whose
+/// `needle` (the period-length window) contains BOTH a
+/// [`NUMERIC_SENTINEL`] and a non-sentinel token. Used exclusively by
+/// the digit-normalized path so a pure-number column or a pure-prose
+/// repeat does not trip here (those remain the exact detector's job).
+/// The `< min_tokens` guard is the caller's `CONTENT_LOOP_MIN_TOKENS`
+/// check, so this takes only the tail/period rules.
+///
+/// ~20 lines duplicate `detect_token_loop`'s scan: the per-period
+/// needle predicate needs the matched window, which `detect_token_loop`
+/// (`-> bool`) hides. Duplicating is lower-risk than adding a closure
+/// param to a function with 13 existing tests + the exact call site;
+/// the exact detector stays byte-identical (regression-tested).
+fn detect_token_loop_with_period(
+    tokens: &[u32],
+    period_min: usize,
+    period_max: usize,
+    min_repeats: usize,
+    scan_window: usize,
+) -> bool {
+    let n = tokens.len();
+    let tail_start = n.saturating_sub(scan_window);
+    let tail = &tokens[tail_start..];
+    for period in period_min..=period_max {
+        if tail.len() < period * min_repeats {
+            continue;
+        }
+        let needle = &tail[tail.len() - period..];
+        let needle_ok = needle.iter().any(|&t| t == NUMERIC_SENTINEL)
+            && needle.iter().any(|&t| t != NUMERIC_SENTINEL);
+        if !needle_ok {
+            continue;
+        }
         let mut count = 0usize;
         let mut pos = 0usize;
         while pos + period <= tail.len() {
@@ -535,5 +666,137 @@ mod thinking_loop_tests {
     fn no_injection_when_not_armed() {
         assert!(!should_inject_think_end(false, false));
         assert!(!should_inject_think_end(false, true));
+    }
+
+    // ── Digit-normalized content-loop watchdog ───────────────────────
+    // Regression for the 2026-05-17 Qwen3.6-27B greedy degeneration:
+    // `- B(46) = N\n- B(47) = M\n …` — fixed line template, varying
+    // integer payload, runs to max_tokens. Convention: structural token
+    // ids 1..=11, numeric ids 100..=199; mask len 1100 (prefix noise
+    // ids 900..=990 are out of the numeric range → structural).
+
+    fn numeric_mask() -> Vec<bool> {
+        let mut m = vec![false; 1100];
+        for (i, slot) in m.iter_mut().enumerate() {
+            *slot = (100..=199).contains(&i);
+        }
+        m
+    }
+
+    /// 12-token template `[1..=6, <num>, 7..=11]`; `num` varies each
+    /// repeat so the exact detector cannot match, but normalization
+    /// collapses every repeat to an identical period.
+    fn varying_template_stream(repeats: u32) -> Vec<u32> {
+        let mut t: Vec<u32> = (900u32..990).collect(); // 90 structural-noise prefix
+        for k in 0..repeats {
+            t.extend([1, 2, 3, 4, 5, 6]);
+            t.push(100 + k); // distinct numeric payload per repeat
+            t.extend([7, 8, 9, 10, 11]);
+        }
+        t
+    }
+
+    #[test]
+    fn norm_fires_on_varying_numeric_template() {
+        let t = varying_template_stream(5);
+        let mask = numeric_mask();
+        assert!(
+            !detect_content_token_loop(&t),
+            "exact detector must miss: integer tokens differ every repeat"
+        );
+        assert!(
+            detect_content_token_loop_normalized(&t, &mask),
+            "normalized detector must catch the fixed template (5 repeats >= 4)"
+        );
+    }
+
+    #[test]
+    fn norm_rejects_3item_list_and_pure_columns() {
+        let mask = numeric_mask();
+
+        // (a) Only 3 repeats — below CONTENT_LOOP_NORM_MIN_REPEATS (4):
+        // a legitimate 3-item numbered list must not hard-stop.
+        let three = varying_template_stream(3);
+        assert!(
+            !detect_content_token_loop_normalized(&three, &mask),
+            "3 repeats < NORM_MIN_REPEATS=4 must not fire"
+        );
+
+        // (b) Pure-number column (period has no structural token):
+        // structural prefix keeps global has_struct true, so the
+        // per-period needle requirement is what must reject it.
+        let mut col: Vec<u32> = (900u32..990).collect();
+        for k in 0..6 {
+            col.extend([100 + k; 12]); // 12 numeric tokens, no structural
+        }
+        assert!(
+            !detect_content_token_loop_normalized(&col, &mask),
+            "pure-number period (no structural token) is the exact path's job"
+        );
+
+        // (c) Pure-prose period (no numeric token): early-out on
+        // !has_sentinel — left to the exact detector.
+        let mut prose: Vec<u32> = (900u32..960).collect();
+        for _ in 0..6 {
+            prose.extend([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        }
+        assert!(
+            !detect_content_token_loop_normalized(&prose, &mask),
+            "pure-prose period (no numeric) must defer to exact detector"
+        );
+    }
+
+    #[test]
+    fn exact_prose_loop_still_caught_regression() {
+        // Byte-identical period x4, no mask: the EXACT detector must
+        // still fire — guards that detect_token_loop_with_period's
+        // duplication did not perturb detect_token_loop.
+        let mut t: Vec<u32> = (900u32..990).collect();
+        for _ in 0..4 {
+            t.extend([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        }
+        assert!(
+            detect_content_token_loop(&t),
+            "exact byte-identical content loop must still be caught"
+        );
+    }
+
+    #[test]
+    fn norm_fires_on_variable_length_digit_runs() {
+        // The real shape: `- B(46) = 104509868777\n` — digit-level
+        // tokenizer, so the index and value are RUNS of single-digit
+        // tokens of DIFFERING length each line. Run-collapse must make
+        // `- B(<run>) = <run>\n` identical regardless of digit count.
+        let mask = numeric_mask();
+        // structural template: [1,2,3] <idx-run> [4,5] <val-run> [6,7,8]
+        // → collapsed period = 3 + 1 + 2 + 1 + 3 = 10 (>= PERIOD_MIN 8).
+        let mut t: Vec<u32> = (900u32..990).collect();
+        for k in 0..5u32 {
+            t.extend([1, 2, 3]);
+            // index run: 2..3 digit tokens, length varies with k
+            t.extend(std::iter::repeat_n(100 + (k % 10), 2 + (k % 2) as usize));
+            t.extend([4, 5]);
+            // value run: 9..13 digit tokens, length varies with k
+            t.extend(std::iter::repeat_n(101 + (k % 9), 9 + k as usize));
+            t.extend([6, 7, 8]);
+        }
+        assert!(
+            !detect_content_token_loop(&t),
+            "exact detector misses: digit-run lengths differ every line"
+        );
+        assert!(
+            detect_content_token_loop_normalized(&t, &mask),
+            "run-collapse must catch the variable-length digit-run template"
+        );
+    }
+
+    #[test]
+    fn norm_inert_with_empty_mask() {
+        // mask=&[] → is_numeric always false → no sentinel → early-out.
+        let t = varying_template_stream(5);
+        assert!(
+            !detect_content_token_loop_normalized(&t, &[]),
+            "empty mask must make the normalized path inert (fail-open)"
+        );
     }
 }
