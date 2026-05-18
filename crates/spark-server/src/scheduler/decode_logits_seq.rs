@@ -292,6 +292,15 @@ pub fn process_seq_logits(
     // body (free text + `<think>`) the full preset
     // applies: this is where prose loops actually live.
     let in_tool = a.inside_tool_body && !a.inside_thinking;
+    // Phase 2: scale anti-repetition penalties by the per-output-length
+    // ramp (2a) and the content-loop escalation level (2b). Identity at
+    // the documented defaults (slope 0 / esc 0). Disabled inside tool
+    // bodies — structured JSON repeats are legitimate there.
+    let rfac = if in_tool {
+        1.0
+    } else {
+        resample_penalty_factor(a.output_tokens.len(), a.resample_escalation)
+    };
     let sampled = sample_with_params_history(
         f32_bytes,
         &SamplingParams {
@@ -303,12 +312,16 @@ pub fn process_seq_logits(
             logit_bias: a.logit_bias.clone(),
             repetition_penalty: if in_tool { 1.0 } else { a.repetition_penalty },
             repetition_penalty_window: a.repetition_penalty_window,
-            presence_penalty: if in_tool { 0.0 } else { a.presence_penalty },
+            presence_penalty: if in_tool {
+                0.0
+            } else {
+                (a.presence_penalty * rfac).min(RESAMPLE_PRESENCE_MAX)
+            },
             frequency_penalty: if in_tool { 0.0 } else { a.frequency_penalty },
             lz_penalty: if a.grammar_state.is_some() {
                 0.0
             } else {
-                a.lz_penalty
+                a.lz_penalty * rfac
             },
             edt_strength: 0.0,
             edt_floor: 0.1,
@@ -316,7 +329,11 @@ pub fn process_seq_logits(
             // remains active to dampen `<think>` fence-narration
             // attractors. Inside the body, disabled — JSON
             // patterns repeat and that's correct.
-            dry_multiplier: if in_tool { 0.0 } else { a.dry_multiplier },
+            dry_multiplier: if in_tool {
+                0.0
+            } else {
+                a.dry_multiplier * rfac
+            },
             dry_base: a.dry_base,
             dry_allowed_length: a.dry_allowed_length,
             dry_sequence_breakers: a.dry_sequence_breakers.clone(),
