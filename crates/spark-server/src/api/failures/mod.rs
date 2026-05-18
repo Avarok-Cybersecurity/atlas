@@ -6,9 +6,13 @@
 
 mod circuit;
 mod circuit_f60;
+#[cfg(test)]
+mod circuit_tests;
 mod classification;
 mod duplicate;
 mod duplicate_helpers;
+#[cfg(test)]
+mod duplicate_tests;
 mod stall;
 
 pub(super) use circuit::*;

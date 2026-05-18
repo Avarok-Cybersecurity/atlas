@@ -14,7 +14,7 @@ use crate::weight_map::DenseWeight;
 
 pub struct MistralWeightLoader;
 
-/// GPU matmul: C[M,N] = A[M,K] × B[K,N] using dense_gemm_bf16 kernel.
+/// GPU matmul: `C[M,N] = A[M,K] × B[K,N]` using dense_gemm_bf16 kernel.
 /// Allocate GPU memory, falling back to managed (UVM) if device alloc fails.
 /// Uses a static flag to avoid retrying device alloc after the first failure
 /// (which wastes time and fragments memory).

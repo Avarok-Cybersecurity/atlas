@@ -24,12 +24,19 @@ use spark_runtime::gpu::DevicePtr;
 use super::super::types::TransformerModel;
 use crate::traits::{Model, SequenceState};
 
+mod batch;
+mod batch_kernel;
+#[cfg(test)]
+mod batch_kernel_tests;
+mod batched_layer;
 mod embed_chunk;
 mod finalize_last;
 mod forward_layers;
+mod h_state_ptrs;
 mod prefix_lookup;
 mod proc_range;
 mod save_checkpoint;
+mod stage_batched;
 mod upload_meta;
 mod upload_paged;
 

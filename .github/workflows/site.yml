@@ -27,7 +27,7 @@ jobs:
       run:
         working-directory: site
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install bun
         uses: oven-sh/setup-bun@v2
@@ -41,7 +41,7 @@ jobs:
         run: bun x --bun vite build
 
       - name: Upload site artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: marketing-site
           path: site/build
@@ -75,7 +75,7 @@ jobs:
 
       - name: Download site artifact
         if: steps.secret_check.outputs.configured == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: marketing-site
           path: site
@@ -88,7 +88,7 @@ jobs:
 
       - name: Load SSH key
         if: steps.secret_check.outputs.configured == 'true'
-        uses: webfactory/ssh-agent@v0.9.0
+        uses: webfactory/ssh-agent@v0.10.0
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
 

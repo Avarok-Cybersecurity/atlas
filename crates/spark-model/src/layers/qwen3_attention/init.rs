@@ -411,6 +411,37 @@ impl Qwen3AttentionLayer {
                 "prefill_paged_turbo4",
                 "inferspark_prefill_paged_turbo4_64",
             ),
+            // ── Q12 Phase 3: batched paged-prefill kernel handles ──
+            prefill_attn_paged_batched_k: super::super::try_kernel(
+                gpu,
+                "inferspark_prefill_paged_batched",
+                "inferspark_prefill_paged_batched",
+            ),
+            prefill_attn_paged_fp8_batched_k: super::super::try_kernel(
+                gpu,
+                "inferspark_prefill_paged_fp8_batched",
+                "inferspark_prefill_paged_fp8_batched",
+            ),
+            prefill_attn_paged_nvfp4_batched_k: super::super::try_kernel(
+                gpu,
+                "inferspark_prefill_paged_nvfp4_batched",
+                "inferspark_prefill_paged_nvfp4_batched",
+            ),
+            prefill_attn_paged_batched_64_k: super::super::try_kernel(
+                gpu,
+                "inferspark_prefill_paged_batched",
+                "inferspark_prefill_paged_batched_64",
+            ),
+            prefill_attn_paged_fp8_batched_64_k: super::super::try_kernel(
+                gpu,
+                "inferspark_prefill_paged_fp8_batched",
+                "inferspark_prefill_paged_fp8_batched_64",
+            ),
+            prefill_attn_paged_nvfp4_batched_64_k: super::super::try_kernel(
+                gpu,
+                "inferspark_prefill_paged_nvfp4_batched",
+                "inferspark_prefill_paged_nvfp4_batched_64",
+            ),
             deinterleave_qg_split_k: gpu.kernel("ssm_preprocess", "deinterleave_qg_split")?,
             deinterleave_qg_split_qnorm_k: gpu
                 .kernel("ssm_preprocess", "deinterleave_qg_split_qnorm")?,

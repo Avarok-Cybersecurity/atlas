@@ -14,7 +14,7 @@ use spark_runtime::kv_cache::PagedKvCache;
 use super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{AttnMetadataDev, LayerState};
 use crate::speculative::DraftProposer;
-use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
+use crate::traits::{ChunkedPrefillPageMetadata, Model, PrefillSlice, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights};
 
 mod async_chkpt;
@@ -95,6 +95,47 @@ impl Model for TransformerModel {
             prefill_is_last,
             stream,
         )
+    }
+
+    /// Q12 Phase 4b override: try the model-level batched dispatch
+    /// (`prefill_batch_chunk_dispatch`) first; on the not-yet-implemented
+    /// stub failure, fall back to the trait's default per-stream loop.
+    /// This keeps callers correct while the per-layer-batched body is
+    /// staged in subsequent commits.
+    fn prefill_batch_chunk(
+        &self,
+        streams: &mut [PrefillSlice<'_>],
+        stream: u64,
+    ) -> Result<Vec<DevicePtr>> {
+        // Try the concrete dispatch. The Phase 4b stub returns Err for the
+        // "not-yet-implemented" path so we transparently downgrade to the
+        // single-stream-loop default impl. Once Phase 2b/3 land, the
+        // dispatch returns Ok with logits and this fallback becomes dead
+        // code that we can drop.
+        match self.prefill_batch_chunk_dispatch(streams, stream) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                // Log at debug — under expected for this stub. Promotes to
+                // info if a real error is encountered (future Phase 4b body).
+                tracing::debug!(
+                    "prefill_batch_chunk_dispatch unavailable, falling back to \
+                     per-stream loop: {e}"
+                );
+                let mut out = Vec::with_capacity(streams.len());
+                for slice in streams.iter_mut() {
+                    let logits = self.prefill_chunk(
+                        slice.prompt_tokens,
+                        slice.seq,
+                        slice.chunk_start,
+                        slice.chunk_len,
+                        slice.is_last_chunk,
+                        stream,
+                    )?;
+                    out.push(logits);
+                }
+                Ok(out)
+            }
+        }
     }
     fn vocab_size(&self) -> usize {
         self.vocab_size_dispatch()

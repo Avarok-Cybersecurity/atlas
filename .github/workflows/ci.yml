@@ -24,7 +24,7 @@ jobs:
     name: cargo fmt --check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -34,7 +34,7 @@ jobs:
     name: cargo clippy --tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install vendor/xgrammar-rs build deps
         run: |
           sudo apt-get update
@@ -55,8 +55,8 @@ jobs:
     name: SPDX license headers
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: apache/skywalking-eyes/header@v0.6.0
+      - uses: actions/checkout@v6
+      - uses: apache/skywalking-eyes/header@v0.8.0
         with:
           config: .licenserc.yaml
           mode: check
@@ -65,14 +65,14 @@ jobs:
     name: typos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: crate-ci/typos@master
 
   test:
     name: cargo test --workspace
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install vendor/xgrammar-rs build deps
         run: |
           sudo apt-get update
@@ -250,7 +250,7 @@ jobs:
     name: cargo test --features metal (macOS aarch64)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Apple Silicon path: no CUDA toolchain, no nvcc. The `metal`

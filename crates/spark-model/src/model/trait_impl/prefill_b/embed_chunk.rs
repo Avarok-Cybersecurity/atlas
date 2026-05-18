@@ -18,15 +18,32 @@ impl TransformerModel {
         chunk_len: usize,
         stream: u64,
     ) -> Result<()> {
+        // Single-stream entry point: write to the arena's hidden buffer at offset 0.
+        let hidden = self.buffers.hidden_states();
+        self.prefill_b_embed_chunk_at(tokens, chunk_start, chunk_len, hidden, stream)
+    }
+
+    /// Embed `chunk_len` tokens into `hidden_dst` starting at position 0
+    /// of the destination, then apply embedding scale + vision-pad overlay.
+    /// Used by both the single-stream entry point above (writing into the
+    /// arena's `hidden_states()`) and by Q12 batched prefill (writing into
+    /// per-stream offsets of a shared stacked-streams buffer).
+    pub(in crate::model) fn prefill_b_embed_chunk_at(
+        &self,
+        tokens: &[u32],
+        chunk_start: usize,
+        chunk_len: usize,
+        hidden_dst: spark_runtime::gpu::DevicePtr,
+        stream: u64,
+    ) -> Result<()> {
         let h = self.config.hidden_size;
         let fp32 = if self.config.use_fp32_residual() {
             4usize
         } else {
             2usize
         };
-        let hidden = self.buffers.hidden_states();
 
-        // ── 1. Embed chunk tokens → [chunk_len, H] contiguous ──
+        // ── 1. Embed chunk tokens → [chunk_len, H] contiguous at hidden_dst ──
         // Upload token IDs to device and do a single batched embed kernel launch
         // instead of chunk_len individual D2D copies.
         {
@@ -42,12 +59,12 @@ impl TransformerModel {
                 self.batched_embed_kernel,
                 token_ids_dev,
                 self.embed_tokens.weight,
-                hidden,
+                hidden_dst,
                 chunk_len as u32,
                 h as u32,
                 stream,
             )?;
-            self.scale_embeddings(hidden, chunk_len, stream)?;
+            self.scale_embeddings(hidden_dst, chunk_len, stream)?;
         }
 
         // ── 1b. Overwrite image_pad token positions with vision encoder embeddings ──
@@ -70,7 +87,7 @@ impl TransformerModel {
                 for (i, &tok) in chunk_tokens.iter().enumerate() {
                     if tok == pad_id {
                         let src = ve.buf_out.offset(img_idx * ve.out_hidden_size * 2);
-                        let dst = hidden.offset(i * h * fp32);
+                        let dst = hidden_dst.offset(i * h * fp32);
                         self.gpu
                             .copy_d2d_async(src, dst, ve.out_hidden_size * 2, stream)?;
                         img_idx += 1;

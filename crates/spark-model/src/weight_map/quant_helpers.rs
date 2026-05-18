@@ -24,9 +24,9 @@ pub(super) fn dequant_fp8_bytes_to_bf16(fp8_buf: &[u8], scale: f32) -> Vec<u8> {
 /// Dequantize FP8 E4M3 block-scaled weight → BF16.
 ///
 /// Block-scaled FP8 (e.g. `quant_method: "fp8"` with `weight_block_size: [128, 128]`):
-///   - `{prefix}.weight`: FP8E4M3 tensor of shape [N, K]
-///   - `{prefix}.weight_scale_inv`: BF16 tensor of shape [N/block, K/block]
-///   - Dequant: bf16[i,j] = fp8[i,j] * scale_inv[i/block, j/block]
+///   - `{prefix}.weight`: FP8E4M3 tensor of shape `[N, K]`
+///   - `{prefix}.weight_scale_inv`: BF16 tensor of shape `[N/block, K/block]`
+///   - Dequant: `bf16[i,j] = fp8[i,j] * scale_inv[i/block, j/block]`
 ///
 /// Returns a BF16 DenseWeight on GPU.
 pub(crate) fn dequant_fp8_blockscaled_to_bf16(

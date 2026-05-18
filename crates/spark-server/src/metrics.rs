@@ -82,4 +82,17 @@ lazy_static! {
             "MTP draft verify outcomes by K and result",
             &["k", "outcome"]
         ).unwrap();
+
+    // ── Tool-call telemetry ──
+    //
+    // Total successful tool calls emitted by the API layer (sum across
+    // streaming + blocking). Paired with the "Tool call: name(args)"
+    // info log so operators can both grep logs and graph rates.
+    // Unlabeled (no `name` label) — high-cardinality tool names would
+    // blow up Prometheus cardinality.
+    pub static ref TOOL_CALLS_TOTAL: IntCounter =
+        register_int_counter!(
+            "atlas_tool_calls_total",
+            "Total successful tool calls emitted by the server"
+        ).unwrap();
 }

@@ -5,7 +5,9 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::PagedKvCache;
 
 use super::Qwen3AttentionLayer;
-use crate::layer::{EmptyLayerState, ForwardContext, LayerState, TransformerLayer};
+use crate::layer::{
+    BatchedAttnMetadata, EmptyLayerState, ForwardContext, LayerState, TransformerLayer,
+};
 use crate::layers::FfnComponent;
 
 mod decode_inner;
@@ -138,6 +140,44 @@ impl TransformerLayer for Qwen3AttentionLayer {
             disk_block_ids,
             disk_last_offloaded_per_layer,
             kv_write_start,
+            None, // batched_meta — single-stream
+            ctx,
+            stream,
+        )
+    }
+
+    /// Q12 Path B: batched-mode attention prefill via `prefill_inner` with
+    /// `batched_meta = Some`. The model-level `prefill_attn_batched_layer`
+    /// calls this method. Per-stream block_table is unused under batched
+    /// mode (block_table_ptrs from batched_meta carries them); we still
+    /// pass an empty Vec to satisfy the signature.
+    fn prefill_inner_batched_q12(
+        &self,
+        hidden_stacked: DevicePtr,
+        residual_stacked: DevicePtr,
+        num_tokens: usize,
+        kv_cache: &mut PagedKvCache,
+        seq_len_start: usize,
+        batched_meta: &BatchedAttnMetadata,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let mut empty_state = EmptyLayerState;
+        let mut empty_block_table: Vec<u32> = Vec::new();
+        let mut empty_disk_block_ids: Vec<u32> = Vec::new();
+        let mut empty_disk_last: Vec<u32> = Vec::new();
+        self.prefill_inner(
+            hidden_stacked,
+            residual_stacked,
+            num_tokens,
+            &mut empty_state,
+            kv_cache,
+            seq_len_start,
+            &mut empty_block_table,
+            &mut empty_disk_block_ids,
+            &mut empty_disk_last,
+            0,
+            Some(batched_meta),
             ctx,
             stream,
         )

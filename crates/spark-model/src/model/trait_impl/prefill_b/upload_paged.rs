@@ -14,7 +14,7 @@ use crate::layers::ops;
 use crate::traits::SequenceState;
 
 impl TransformerModel {
-    pub(super) fn prefill_b_upload_paged(
+    pub(in crate::model) fn prefill_b_upload_paged(
         &self,
         seq: &mut SequenceState,
         total: usize,

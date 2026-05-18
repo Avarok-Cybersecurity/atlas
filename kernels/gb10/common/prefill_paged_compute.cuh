@@ -46,7 +46,19 @@ extern "C" __global__ void KERNEL_NAME(
     K_CACHE_TYPE K_cache,
     V_CACHE_TYPE V_cache,
     __nv_bfloat16* __restrict__ O,
+#ifdef PREFILL_BATCHED
+    // Q12 Phase 3: batched paged prefill.
+    // - block_table_ptrs[b] is the per-stream paged-KV block table.
+    // - Q and O are stacked: [batch, q_len, num_q_heads, head_dim] flattened
+    //   contiguously. Each stream's Q/O lands at `b * q_len * q_seq_stride`.
+    // - All other parameters are SHARED across streams (same q_len, kv_len,
+    //   q_offset etc.). The scheduler enforces same-chunk-len batching.
+    // - Grid extended to (num_q_heads, q_chunks, batch_size); blockIdx.z = b.
+    const int* const* __restrict__ block_table_ptrs,
+    const unsigned int batch_size,
+#else
     const int* __restrict__ block_table,
+#endif
     const unsigned int q_len,
     const unsigned int kv_len,
     const unsigned int q_offset,
@@ -60,6 +72,11 @@ extern "C" __global__ void KERNEL_NAME(
 ) {
     const unsigned int q_head = blockIdx.x;
     const unsigned int q_block = blockIdx.y;
+#ifdef PREFILL_BATCHED
+    const unsigned int b = blockIdx.z;
+    if (b >= batch_size) return;
+    const int* const __restrict__ block_table = block_table_ptrs[b];
+#endif
     const unsigned int tid = threadIdx.x;
     const unsigned int warp_id = tid / 32;
     const unsigned int lane_id = tid % 32;
@@ -71,6 +88,10 @@ extern "C" __global__ void KERNEL_NAME(
     const unsigned int q_tile_len = q_tile_end - q_start;
     const unsigned int q_seq_stride = num_q_heads * head_dim;
     const unsigned int kv_head = q_head / (num_q_heads / num_kv_heads);
+#ifdef PREFILL_BATCHED
+    // Per-batch Q/O offsets — stacked [batch, q_len, num_q_heads, head_dim].
+    const unsigned long long q_batch_off = (unsigned long long)b * q_len * q_seq_stride;
+#endif
 
     __shared__ __nv_bfloat16 smem_Q[BR][HDIM_PAD];
     __shared__ __nv_bfloat16 smem_K[2][BC][HDIM_PAD];  // double-buffered
@@ -110,7 +131,11 @@ extern "C" __global__ void KERNEL_NAME(
             unsigned int row = idx / cpr, col = (idx % cpr) * 8;
             unsigned int sa = __cvta_generic_to_shared(&smem_Q[row][col]);
             if (q_start + row < q_len) {
+#ifdef PREFILL_BATCHED
+                const void* gm = (const void*)&Q[q_batch_off + (q_start+row)*q_seq_stride + q_head*head_dim + col];
+#else
                 const void* gm = (const void*)&Q[(q_start+row)*q_seq_stride + q_head*head_dim + col];
+#endif
                 asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(sa), "l"(gm));
             } else { *((uint4*)&smem_Q[row][col]) = make_uint4(0,0,0,0); }
         }
@@ -317,7 +342,11 @@ extern "C" __global__ void KERNEL_NAME(
             il1=(lv1>0)?(1.f/lv1):0;
         }
 
+#ifdef PREFILL_BATCHED
+        __nv_bfloat16* ob=O+q_batch_off+q_head*head_dim;
+#else
         __nv_bfloat16* ob=O+q_head*head_dim;
+#endif
         #pragma unroll
         for(int nt=0;nt<N_TILES_PER_WARP;nt++){
             unsigned int c0=(pv_n_start+nt)*8+tid_in_group*2;
@@ -368,7 +397,12 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
     K_CACHE_TYPE K_cache,
     V_CACHE_TYPE V_cache,
     __nv_bfloat16* __restrict__ O,
+#ifdef PREFILL_BATCHED
+    const int* const* __restrict__ block_table_ptrs,
+    const unsigned int batch_size,
+#else
     const int* __restrict__ block_table,
+#endif
     const unsigned int q_len,
     const unsigned int kv_len,
     const unsigned int q_offset,
@@ -382,6 +416,11 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
 ) {
     const unsigned int q_head = blockIdx.x;
     const unsigned int q_block = blockIdx.y;
+#ifdef PREFILL_BATCHED
+    const unsigned int b = blockIdx.z;
+    if (b >= batch_size) return;
+    const int* const __restrict__ block_table = block_table_ptrs[b];
+#endif
     const unsigned int tid = threadIdx.x;
     const unsigned int warp_id = tid / 32;
     const unsigned int lane_id = tid % 32;
@@ -393,6 +432,9 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
     const unsigned int q_tile_len = q_tile_end - q_start;
     const unsigned int q_seq_stride = num_q_heads * head_dim;
     const unsigned int kv_head = q_head / (num_q_heads / num_kv_heads);
+#ifdef PREFILL_BATCHED
+    const unsigned long long q_batch_off = (unsigned long long)b * q_len * q_seq_stride;
+#endif
 
     __shared__ __nv_bfloat16 smem_Q64[BR64][HDIM_PAD];
     __shared__ __nv_bfloat16 smem_K64[2][BC][HDIM_PAD];
@@ -429,7 +471,11 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
             unsigned int row = idx / cpr, col = (idx % cpr) * 8;
             unsigned int sa = __cvta_generic_to_shared(&smem_Q64[row][col]);
             if (q_start + row < q_len) {
+#ifdef PREFILL_BATCHED
+                const void* gm = (const void*)&Q[q_batch_off + (q_start+row)*q_seq_stride + q_head*head_dim + col];
+#else
                 const void* gm = (const void*)&Q[(q_start+row)*q_seq_stride + q_head*head_dim + col];
+#endif
                 asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(sa), "l"(gm));
             } else { *((uint4*)&smem_Q64[row][col]) = make_uint4(0,0,0,0); }
         }
@@ -635,7 +681,11 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
             il1=(lv1>0)?(1.f/lv1):0;
         }
 
+#ifdef PREFILL_BATCHED
+        __nv_bfloat16* ob=O+q_batch_off+q_head*head_dim;
+#else
         __nv_bfloat16* ob=O+q_head*head_dim;
+#endif
         #pragma unroll
         for(int nt=0;nt<N_TILES_PER_WARP;nt++){
             unsigned int c0=(pv_n_start+nt)*8+tid_in_group*2;

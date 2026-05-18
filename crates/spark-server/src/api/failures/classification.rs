@@ -297,3 +297,156 @@ pub fn f23_build_reminder(metrics: F23ProgressMetrics) -> Option<String> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_stall_guard() {
+        assert_eq!(
+            f37_classify_failure("[atlas-stall-guard] something"),
+            Some(F37FailureClass::StallGuard)
+        );
+        assert_eq!(
+            f37_classify_failure("[atlas-permanent-failure] xx"),
+            Some(F37FailureClass::StallGuard)
+        );
+    }
+
+    #[test]
+    fn classify_binary_missing() {
+        assert_eq!(
+            f37_classify_failure("bash: foo: command not found"),
+            Some(F37FailureClass::BinaryMissing)
+        );
+        assert_eq!(
+            f37_classify_failure("zsh: bar: not found"),
+            Some(F37FailureClass::BinaryMissing)
+        );
+        assert_eq!(
+            f37_classify_failure("Exit code 127"),
+            Some(F37FailureClass::BinaryMissing)
+        );
+    }
+
+    #[test]
+    fn classify_permission_denied() {
+        assert_eq!(
+            f37_classify_failure("Permission denied"),
+            Some(F37FailureClass::PermissionDenied)
+        );
+        assert_eq!(
+            f37_classify_failure("open: EACCES"),
+            Some(F37FailureClass::PermissionDenied)
+        );
+    }
+
+    #[test]
+    fn classify_not_found() {
+        assert_eq!(
+            f37_classify_failure("No such file or directory"),
+            Some(F37FailureClass::NotFound)
+        );
+        assert_eq!(
+            f37_classify_failure("readdir: ENOENT"),
+            Some(F37FailureClass::NotFound)
+        );
+        assert_eq!(
+            f37_classify_failure("cannot access /tmp/x"),
+            Some(F37FailureClass::NotFound)
+        );
+    }
+
+    #[test]
+    fn classify_already_exists() {
+        assert_eq!(
+            f37_classify_failure("file already exists"),
+            Some(F37FailureClass::AlreadyExists)
+        );
+        assert_eq!(
+            f37_classify_failure("cannot be run on existing directory"),
+            Some(F37FailureClass::AlreadyExists)
+        );
+    }
+
+    #[test]
+    fn classify_invalid_argument() {
+        assert_eq!(
+            f37_classify_failure("TypeError: bad value"),
+            Some(F37FailureClass::InvalidArgument)
+        );
+        assert_eq!(
+            f37_classify_failure("Error [ERR_INVALID_ARG_VALUE]"),
+            Some(F37FailureClass::InvalidArgument)
+        );
+    }
+
+    #[test]
+    fn classify_unknown_returns_none() {
+        assert_eq!(f37_classify_failure(""), None);
+        assert_eq!(f37_classify_failure("OK"), None);
+        assert_eq!(f37_classify_failure("Random output"), None);
+    }
+
+    #[test]
+    fn normalize_hash_stable() {
+        // Same string → same hash, twice.
+        let h1 = f23_normalize_and_hash("hello world");
+        let h2 = f23_normalize_and_hash("hello world");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn normalize_hash_differs_for_different_content() {
+        let a = f23_normalize_and_hash("hello world");
+        let b = f23_normalize_and_hash("goodbye world");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn build_reminder_returns_none_when_under_warn() {
+        // attempts=0, score=0: no reminder.
+        let m = F23ProgressMetrics {
+            score: 0,
+            attempts: 0,
+        };
+        assert!(f23_build_reminder(m).is_none());
+    }
+
+    #[test]
+    fn build_reminder_returns_none_when_score_positive() {
+        // Score > 0 means progress — no reminder regardless of attempts.
+        let m = F23ProgressMetrics {
+            score: 5,
+            attempts: 100,
+        };
+        assert!(f23_build_reminder(m).is_none());
+    }
+
+    #[test]
+    fn build_reminder_warns_at_warn_threshold() {
+        // Default warn=4: 4 attempts, no progress → Some(warn).
+        let m = F23ProgressMetrics {
+            score: 0,
+            attempts: 4,
+        };
+        let out = f23_build_reminder(m);
+        assert!(out.is_some());
+        assert!(out.unwrap().contains("F23 STALL"));
+    }
+
+    #[test]
+    fn build_reminder_refuses_at_refuse_threshold() {
+        // Default refuse=6: 6 attempts, no progress → Some(refuse).
+        let m = F23ProgressMetrics {
+            score: 0,
+            attempts: 6,
+        };
+        let out = f23_build_reminder(m);
+        assert!(out.is_some());
+        let body = out.unwrap();
+        assert!(body.contains("F23 STALL"));
+        assert!(body.contains("STOP"), "refuse-level message includes STOP");
+    }
+}

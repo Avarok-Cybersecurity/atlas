@@ -16,6 +16,7 @@ mod cache_skip_mla;
 mod cache_skip_qkv;
 mod paged;
 mod paged_attn;
+mod paged_attn_batched;
 mod paged_mla;
 mod paged_oproj;
 mod paged_qkv;

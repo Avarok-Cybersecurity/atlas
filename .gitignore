@@ -79,3 +79,4 @@ tests/all_models_results_pass*/
 # OS
 .DS_Store
 Thumbs.db
+target-verify/

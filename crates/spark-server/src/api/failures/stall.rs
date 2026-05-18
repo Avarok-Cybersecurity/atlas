@@ -357,3 +357,101 @@ pub fn f28_text_looks_like_error(t: &str) -> bool {
     ];
     SIGNATURES.iter().any(|s| t.contains(s))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── f29_extract_binary_from_error_line ────────────────────────
+
+    #[test]
+    fn binary_from_command_not_found() {
+        assert_eq!(
+            f29_extract_binary_from_error_line("/bin/sh: 1: cargo: command not found"),
+            Some("cargo".to_string())
+        );
+    }
+
+    #[test]
+    fn binary_from_bare_not_found() {
+        assert_eq!(
+            f29_extract_binary_from_error_line("npm: not found"),
+            Some("npm".to_string())
+        );
+    }
+
+    #[test]
+    fn binary_from_bash_format() {
+        assert_eq!(
+            f29_extract_binary_from_error_line("/bin/bash: line 1: cargo: command not found"),
+            Some("cargo".to_string())
+        );
+    }
+
+    #[test]
+    fn binary_no_suffix_returns_none() {
+        assert_eq!(
+            f29_extract_binary_from_error_line("just some random text"),
+            None
+        );
+    }
+
+    #[test]
+    fn binary_too_long_rejected() {
+        // 50-char "binary name" — exceeds 40-char sanity cap.
+        let line = format!("{}: command not found", "x".repeat(50));
+        assert_eq!(f29_extract_binary_from_error_line(&line), None);
+    }
+
+    #[test]
+    fn binary_with_path_rejected() {
+        // Looks like a path, not a bare binary name.
+        assert_eq!(
+            f29_extract_binary_from_error_line("/usr/bin/foo: command not found"),
+            None
+        );
+    }
+
+    #[test]
+    fn binary_accepts_dotted_name() {
+        assert_eq!(
+            f29_extract_binary_from_error_line("python3.11: command not found"),
+            Some("python3.11".to_string())
+        );
+    }
+
+    // ── f28_text_looks_like_error ─────────────────────────────────
+
+    #[test]
+    fn f28_tool_error_prefix() {
+        assert!(f28_text_looks_like_error(
+            "[tool error] something went wrong"
+        ));
+        assert!(f28_text_looks_like_error("Error: bad input"));
+    }
+
+    #[test]
+    fn f28_exit_code_signature() {
+        assert!(f28_text_looks_like_error("Build failed. Exit code 127"));
+    }
+
+    #[test]
+    fn f28_permission_signature() {
+        assert!(f28_text_looks_like_error("Permission denied: /tmp/x"));
+        assert!(f28_text_looks_like_error("open EACCES"));
+    }
+
+    #[test]
+    fn f28_opencode_signature() {
+        // F41 added opencode-specific patterns.
+        assert!(f28_text_looks_like_error("TypeError: cannot read property"));
+        assert!(f28_text_looks_like_error("ERR_INVALID_ARG_VALUE"));
+    }
+
+    #[test]
+    fn f28_clean_output_is_not_error() {
+        assert!(!f28_text_looks_like_error("OK"));
+        assert!(!f28_text_looks_like_error("Build successful"));
+        assert!(!f28_text_looks_like_error(""));
+    }
+}

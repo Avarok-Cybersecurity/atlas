@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! [`DraftProposer::propose`] body for [`super::BlockDiffusionDraftHead`].
+//! `DraftProposer::propose` body for [`super::BlockDiffusionDraftHead`].
 //!
 //! Split out of `dflash_head.rs` for file-size budget. Trait impl
 //! delegates to [`BlockDiffusionDraftHead::propose_drafts`].

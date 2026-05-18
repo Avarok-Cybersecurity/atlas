@@ -324,10 +324,22 @@ impl Qwen3SsmLayer {
             let dst = ssm_out_safe.offset(i * h * bf16);
             ctx.gpu.copy_d2d_async(src, dst, h * bf16, stream)?;
         }
+        // STRIDE FIX (mirrors 2026-04-22 fix at lines 47/57): use dynamic
+        // residual_elem instead of hardcoded `* 4`. On GB10 hidden states
+        // are BF16 (2 bytes), not FP32. Hardcoded `i * h * 4` causes
+        // position 1+ in concurrent batched decode to read/write at WRONG
+        // offsets, producing either silent gibberish (small N) or CUDA-700
+        // illegal memory access (large per-seq offsets exceeding allocated
+        // buffer region). See project_batch_decode_corruption.md memory.
+        let residual_elem = if ctx.config.use_fp32_residual() {
+            4usize
+        } else {
+            2usize
+        };
         for i in 0..n {
-            let hidden_i = hidden.offset(i * h * 4); // FP32
+            let hidden_i = hidden.offset(i * h * residual_elem);
             let ssm_out_i = ssm_out_safe.offset(i * h * bf16);
-            let residual_i = residual.offset(i * h * 4); // FP32
+            let residual_i = residual.offset(i * h * residual_elem);
             let normed2 = ctx.buffers.norm_output().offset(i * h * bf16);
             ops::residual_add_rms_norm(
                 ctx.gpu,

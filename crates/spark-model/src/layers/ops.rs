@@ -45,6 +45,8 @@ mod norm;
 mod prefill_attn_a;
 #[path = "ops/prefill_attn_b.rs"]
 mod prefill_attn_b;
+#[path = "ops/prefill_attn_batched.rs"]
+mod prefill_attn_batched;
 #[path = "ops/prefill_attn_main_a.rs"]
 mod prefill_attn_main_a;
 #[path = "ops/prefill_attn_main_b.rs"]
@@ -57,6 +59,8 @@ mod sampling;
 mod ssm_gdn_a;
 #[path = "ops/ssm_gdn_b.rs"]
 mod ssm_gdn_b;
+#[path = "ops/ssm_gdn_batched.rs"]
+mod ssm_gdn_batched;
 #[path = "ops/ssm_mamba.rs"]
 mod ssm_mamba;
 #[path = "ops/ssm_preproc.rs"]
@@ -80,11 +84,13 @@ pub use moe_prefill::*;
 pub use norm::*;
 pub use prefill_attn_a::*;
 pub use prefill_attn_b::*;
+pub use prefill_attn_batched::*;
 pub use prefill_attn_main_a::*;
 pub use prefill_attn_main_b::*;
 pub use quant_dispatch::*;
 pub use sampling::*;
 pub use ssm_gdn_a::*;
 pub use ssm_gdn_b::*;
+pub use ssm_gdn_batched::*;
 pub use ssm_mamba::*;
 pub use ssm_preproc::*;
