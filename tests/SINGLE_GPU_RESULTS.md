@@ -186,6 +186,13 @@ let kv_dtype = layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Fp8);
 let kv_dtype = layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Bf16);
 ```
 
+**Source-level hardening** (`crates/spark-server/src/main_modules/kv_dtypes.rs`):
+`build_layer_kv_dtypes` was also fixed to never return an empty vec when `kv_dtype == BF16`
+— it now returns `vec![BF16; num_attention_layers]` directly. This prevents any other loader
+that calls `build_layer_kv_dtypes` and falls back to `unwrap_or(Fp8)` from hitting the same
+silent downcast. The `phase_assemble.rs` fix is the minimal per-site correction; the
+`kv_dtypes.rs` fix eliminates the hazard at the source.
+
 Both fixes are complementary: the kernel fix ensures correct attention computation; the
 dtype fix ensures KV data isn't precision-clipped before decode reads it.
 
@@ -351,7 +358,7 @@ explicit and preventing any possible aliasing.
 |---|----------|--------|------|
 | 1 | P0 | **FIXED** | Mistral MLA (kernel): `paged_mla.rs`/`cache_skip_mla.rs` used HDIM=256 kernel for head_dim=128; fixed by adding HDIM=128 kernel guard + routing first-chunk through `prefill_attn_128_k` |
 | 2 | P0 | **FIXED** | Mistral MLA (scale): all three MLA paths (`paged_mla.rs`, `cache_skip_mla.rs`, `attention_forward_mla.rs`) passed `1/√128` to 320-dim absorbed attention; fixed to `1/√(kv_lora+rope)=1/√320` |
-| 3 | P0 | **FIXED** | Mistral MLA (dtype): `phase_assemble.rs` `unwrap_or(Fp8)` on empty layer_kv_dtypes → all MLA layers stored KV in FP8 instead of BF16; fixed to `unwrap_or(Bf16)` |
+| 3 | P0 | **FIXED** | Mistral MLA (dtype): `phase_assemble.rs` `unwrap_or(Fp8)` on empty layer_kv_dtypes → all MLA layers stored KV in FP8 instead of BF16; fixed to `unwrap_or(Bf16)`. Source hardened: `kv_dtypes.rs` now returns `vec![BF16; N]` (not empty) when kv_dtype is BF16, preventing silent FP8 fallback in any loader. |
 | 4 | P0 | **FIXED** | Mistral MLA (multi-chunk): `paged_mla.rs` multi-chunk path attended only to `n` new tokens, ignoring paged KV history; fixed with new `mla_prefill_paged_320` + `mla_v_extract_batched` absorbed paged path |
 | 5 | P0 | **FIXED** | `mla_fused_prefill.cu`: `__shared__ smem_dot[8]` declared inside `kv_pos` loop → potential NVCC aliasing with `smem_q` across iterations; moved to function scope before loop |
 | 6 | P1 | **FIXED** | Nemotron tool calling: (A) wrong CLI parser in test (use MODEL.toml bare_json); (B) `skip_template_tools=true` prevents contradictory XML injection from template; (C) `thinking_in_tools=false` |

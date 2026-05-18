@@ -6,7 +6,10 @@
 ///
 /// When `high_precision_layers` is 0, returns an empty vec (all layers use uniform dtype).
 /// When non-zero, the first N and last N attention layers use BF16; middle layers use
-/// the base `kv_dtype`. If `kv_dtype` is already BF16, returns empty vec (no benefit).
+/// the base `kv_dtype`.
+///
+/// When `kv_dtype` is BF16, every attention layer must use BF16 — returning an empty vec
+/// would cause callers that fall back to `unwrap_or(Fp8)` to silently use FP8 instead.
 pub(crate) fn build_layer_kv_dtypes(
     kv_dtype: spark_runtime::kv_cache::KvCacheDtype,
     num_attention_layers: usize,
@@ -14,7 +17,11 @@ pub(crate) fn build_layer_kv_dtypes(
 ) -> Vec<spark_runtime::kv_cache::KvCacheDtype> {
     use spark_runtime::kv_cache::KvCacheDtype;
 
-    if high_precision_layers == 0 || kv_dtype == KvCacheDtype::Bf16 {
+    if kv_dtype == KvCacheDtype::Bf16 {
+        return vec![KvCacheDtype::Bf16; num_attention_layers];
+    }
+
+    if high_precision_layers == 0 {
         return vec![];
     }
 
