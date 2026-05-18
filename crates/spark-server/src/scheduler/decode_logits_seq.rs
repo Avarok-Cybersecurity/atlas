@@ -82,7 +82,11 @@ pub fn process_seq_logits(
                 "Confidence early stop armed: top-1 prob >= 0.95 for {} tokens (after {} thinking tokens){}",
                 CONFIDENCE_RUN_LIMIT,
                 a.thinking_tokens,
-                if a.in_code_fence { " — deferred until ``` fence closes" } else { "" }
+                if a.in_code_fence {
+                    " — deferred until ``` fence closes"
+                } else {
+                    ""
+                }
             );
         }
     }

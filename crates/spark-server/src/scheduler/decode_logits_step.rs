@@ -254,9 +254,9 @@ pub fn process_decode_logits(
                 && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
                 && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
                 && (detect_content_token_loop(&a.output_tokens)
-                    || numeric_token_mask().as_deref().is_some_and(|m| {
-                        detect_content_token_loop_normalized(&a.output_tokens, m)
-                    }))
+                    || numeric_token_mask()
+                        .as_deref()
+                        .is_some_and(|m| detect_content_token_loop_normalized(&a.output_tokens, m)))
             {
                 tracing::warn!(
                     content_tokens = a.content_tokens,

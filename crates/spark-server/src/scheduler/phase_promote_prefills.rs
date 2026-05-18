@@ -21,7 +21,7 @@ pub(super) fn promote_completed_prefills(
     tool_call_end_token: Option<u32>,
 ) {
     // Process in reverse order so swap_remove indices stay valid.
-    completed_indices.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    completed_indices.sort_unstable_by_key(|x| std::cmp::Reverse(x.0));
     for (idx, maybe_token) in completed_indices {
         let p = prefilling.swap_remove(idx);
         let Some(first) = maybe_token else {
