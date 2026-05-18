@@ -83,10 +83,15 @@ fn test_build_layer_kv_dtypes_disabled() {
 }
 
 #[test]
-fn test_build_layer_kv_dtypes_bf16_noop() {
-    // Already BF16 — no benefit from high-precision overlay
-    let dtypes = build_layer_kv_dtypes(spark_runtime::kv_cache::KvCacheDtype::Bf16, 12, 2);
-    assert!(dtypes.is_empty());
+fn test_build_layer_kv_dtypes_bf16_all_layers() {
+    // When base dtype is BF16, ALL layers must be BF16 — returning empty would
+    // let callers with unwrap_or(Fp8) silently downgrade MLA KV latents to FP8.
+    use spark_runtime::kv_cache::KvCacheDtype;
+    let dtypes = build_layer_kv_dtypes(KvCacheDtype::Bf16, 12, 2);
+    assert_eq!(dtypes.len(), 12);
+    for d in &dtypes {
+        assert_eq!(*d, KvCacheDtype::Bf16);
+    }
 }
 
 #[test]

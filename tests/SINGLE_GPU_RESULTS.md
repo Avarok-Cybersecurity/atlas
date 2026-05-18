@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis + fixes); 2026-05-16 (scale fix)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis + fixes); 2026-05-16 (scale fix); 2026-05-18 (kv_dtypes hardening + test fix)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -366,3 +366,4 @@ explicit and preventing any possible aliasing.
 | 8 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool (`SsmStatePool`), not snapshot cache; sized by `--max-batch-size` (default 8). Use `--max-batch-size 1` on single-stream workloads to save ~1050 MB. `--ssm-cache-slots 0` correctly disables only `SsmSnapshotPool`; CLI value is correctly propagated through `serve_phases/build.rs` → `factory/build.rs` → `impl_a1.rs`. |
 | 9 | P2 | **CLOSED — known** | Nemotron long context >8K: Mamba-2 fixed-size state saturation, architectural limitation |
 | 10 | P2 | **OPEN** | Mistral multi-chunk performance: `mla_prefill_paged_320` iterates all kv_len positions sequentially (O(kv_len)). For kv_len > 10K, add shared-memory KV tiling to amortize page-table overhead. |
+| 11 | P1 | **FIXED** | `kv_dtypes.rs` hardening test: `test_build_layer_kv_dtypes_bf16_noop` asserted `is_empty()` — the OLD broken behavior. After the item-3 hardening (`kv_dtype==BF16` → return full BF16 vec), this test became a failing regression trap. Fixed: test renamed `test_build_layer_kv_dtypes_bf16_all_layers` and updated to assert all 12 layers are BF16, confirming the hardened path is exercised. |
