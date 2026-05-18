@@ -16,6 +16,7 @@
 
 pub mod dflash_loader;
 mod gemma4;
+mod glm4_lite;
 mod minimax;
 mod nemotron;
 mod qwen3;
@@ -28,6 +29,7 @@ pub use dflash_loader::{
     store_has_dflash_weights,
 };
 pub use gemma4::Gemma4WeightLoader;
+pub use glm4_lite::Glm4LiteWeightLoader;
 pub use minimax::MinimaxM2WeightLoader;
 pub use nemotron::NemotronHWeightLoader;
 pub use qwen3::Qwen3WeightLoader;

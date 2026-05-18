@@ -1,0 +1,37 @@
+# GLM-4.7-Flash NVFP4 kernel manifest (Phase 0 scaffold).
+#
+# This target reuses the Qwen3.5 NVFP4 kernel set entirely — same w4a16
+# decode/prefill kernels, same NVFP4 quantization helpers, same paged
+# attention. The two model-specific additions land in later phases:
+#
+#   * MLA decode kernel — already exists at
+#     `crates/spark-model/src/layers/qwen3_attention/decode/attention_forward_mla.rs`
+#     (authored for Mistral); GLM dims need verification (qk_head_dim=256,
+#     v_head_dim=256, num_heads=20).
+#   * noaux_tc + sigmoid + bias-correction MoE routing — MiniMax M2 has
+#     the bias correction loaded but routing dispatch is pending; GLM
+#     will be the first concrete user (see plan §Phase 3).
+#
+# Until the GLM-specific kernels need their own .cu files, copy the
+# Qwen3.5-A3B build (`fmad=false` + the standard module name overrides).
+[build]
+extra_nvcc_flags = ["--fmad=false"]
+
+[modules]
+e2m1_branchless = "e2m1"
+moe_permute = "moe"
+dense_gemm_bf16 = "gemm"
+rms_norm = "norm"
+argmax_bf16 = "argmax"
+dense_gemv_bf16 = "gemv"
+moe_shared_expert_fused_batch2 = "moe_fused_batch2"
+moe_shared_expert_fused_batch3 = "moe_fused_batch3"
+quantize_bf16_to_nvfp4 = "quantize_nvfp4"
+paged_decode_attn = "paged_decode"
+paged_decode_attn_nvfp4 = "paged_decode_nvfp4"
+w4a16_gemm = "w4a16"
+kv_cache_append = "kv_cache"
+moe_w4a16_grouped_gemm = "moe_w4a16"
+moe_sorted_prefill = "moe_sorted"
+inferspark_prefill_paged = "prefill_paged"
+inferspark_prefill_paged_nvfp4 = "prefill_paged_nvfp4"
