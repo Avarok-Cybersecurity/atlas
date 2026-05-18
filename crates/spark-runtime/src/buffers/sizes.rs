@@ -69,11 +69,10 @@ impl BufferSizes {
         //
         // MoE scratch: 2 * M * top_k * 4 (indices [M*top_k] u32 + weights [M*top_k] f32)
         let moe_scratch = 2 * m * top_k * 4;
-        let max_blocks = if kv_block_size > 0 {
-            max_seq_len / kv_block_size + 1
-        } else {
-            256
-        };
+        let max_blocks = max_seq_len
+            .checked_div(kv_block_size)
+            .map(|q| q + 1)
+            .unwrap_or(256);
         // Prefill metadata: mirrors exact layout in prefill_chunk(). MRoPE
         // (Qwen3-VL / Qwen3.6) uploads THREE u32 position streams packed
         // back-to-back (T, H, W); every other model uploads ONE. Sizing the

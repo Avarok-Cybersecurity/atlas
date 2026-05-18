@@ -35,7 +35,11 @@ pub(super) fn generate_target_ptx_rs(
     let (const_suffix, ty, include_macro, fn_root, modules_ty) = if output_is_text {
         (
             "PTX",
-            "&'static str",
+            // `&str` not `&'static str`: a `const` is implicitly 'static,
+            // so the explicit lifetime trips clippy::redundant_static_lifetimes
+            // on the generated file. Fn-return `modules_ty` keeps explicit
+            // 'static (required there; that lint doesn't apply to fn sigs).
+            "&str",
             "include_str!",
             "ptx_modules",
             "Vec<(&'static str, &'static str)>",
@@ -43,7 +47,8 @@ pub(super) fn generate_target_ptx_rs(
     } else {
         (
             "METALLIB",
-            "&'static [u8]",
+            // `&[u8]` not `&'static [u8]` — see PTX branch comment.
+            "&[u8]",
             "include_bytes!",
             "metallib_modules",
             "Vec<(&'static str, &'static [u8])>",

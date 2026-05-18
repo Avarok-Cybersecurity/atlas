@@ -16,6 +16,7 @@ pub fn process_decode_logits(
     t0: std::time::Instant,
     think_end_token: Option<u32>,
     think_start_token: Option<u32>,
+    code_fence_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     reflection_suppress_ids: &[u32],
@@ -178,6 +179,7 @@ pub fn process_decode_logits(
                 a.inside_thinking = false;
                 a.force_end_thinking = false;
                 a.consecutive_confident = 0;
+                a.in_code_fence = false;
                 a.think_ended = true;
                 // One-shot: pin the next sampled token to the
                 // tool-call-start token if the request requires a
@@ -186,6 +188,16 @@ pub fn process_decode_logits(
                 a.think_just_ended = true;
             } else {
                 a.thinking_tokens += 1;
+                // Track ``` code-fence parity within the thinking block:
+                // each fence token flips in/out of a fenced code span.
+                // The F2 confidence early-stop (process_seq_logits) is
+                // suppressed while `in_code_fence` — code is near-
+                // deterministic (high top-1 prob) but that is NOT a
+                // "done reasoning" signal; braking here truncates the
+                // model mid-statement. THINK_LOOP (below) deliberately
+                // stays active even inside fences: it catches
+                // *repeating* fence-narration, not one coherent block.
+                a.in_code_fence = toggle_code_fence(a.in_code_fence, tok, code_fence_token);
                 // Set force_end_thinking when budget exhausted (picked up next iteration)
                 if let Some(budget) = a.thinking_budget
                     && a.thinking_tokens >= budget
@@ -241,7 +253,10 @@ pub fn process_decode_logits(
                 && !a.inside_tool_body
                 && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
                 && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
-                && detect_content_token_loop(&a.output_tokens)
+                && (detect_content_token_loop(&a.output_tokens)
+                    || numeric_token_mask()
+                        .as_deref()
+                        .is_some_and(|m| detect_content_token_loop_normalized(&a.output_tokens, m)))
             {
                 tracing::warn!(
                     content_tokens = a.content_tokens,

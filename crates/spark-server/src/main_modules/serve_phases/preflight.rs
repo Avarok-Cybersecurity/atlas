@@ -118,11 +118,10 @@ pub(crate) fn preflight_reserve(
                 0
             }
         };
-        let suggested = if per_tok_bytes > 0 {
-            (budget_for_seq_term / per_tok_bytes).max(2048)
-        } else {
-            0
-        };
+        let suggested = budget_for_seq_term
+            .checked_div(per_tok_bytes)
+            .map(|q| q.max(2048))
+            .unwrap_or(0);
         let hint = if suggested > 0 && suggested < args.max_seq_len {
             format!(
                 " Try --max-seq-len {} (or lower --max-batch-size / --num-drafts).",
