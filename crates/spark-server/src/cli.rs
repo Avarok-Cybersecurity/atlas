@@ -150,7 +150,7 @@ pub struct ServeArgs {
     /// MTP head weight precision: nvfp4 (fastest, recommended — uses fused
     /// device-side expert dispatch), fp8 (balanced but slower due to D2H sync
     /// in MoE), bf16 (highest accuracy, most memory).
-    #[arg(long, default_value = "nvfp4")]
+    #[arg(long, default_value = "bf16")]
     pub mtp_quantization: String,
 
     /// MTP draft vocabulary size. Limits the LM head GEMV to the first N
