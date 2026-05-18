@@ -216,6 +216,7 @@ pub(super) fn parse_behavior(
 /// Missing `hidden_size` = wildcard (matches any hidden_size not caught by a more specific entry).
 pub(super) fn parse_model_types(model_dir: &std::path::Path) -> Vec<ModelTypeMatch> {
     let model_toml_path = model_dir.join("MODEL.toml");
+    println!("cargo:rerun-if-changed={}", model_toml_path.display());
     if !model_toml_path.exists() {
         return Vec::new();
     }

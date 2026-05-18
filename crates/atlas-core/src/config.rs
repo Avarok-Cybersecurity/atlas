@@ -8,6 +8,38 @@ fn nullable_u32<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<u
     Option::<u32>::deserialize(d).map(|v| v.unwrap_or(0))
 }
 
+/// Deserialize a u32 that may be null, a scalar, or an array (GLM uses an array for eos_token_id).
+/// Arrays take the first element; null or empty array → 0.
+fn nullable_u32_or_array<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<u32, D::Error> {
+    use serde::de::{self, Visitor};
+    use std::fmt;
+    struct U32OrArray;
+    impl<'de> Visitor<'de> for U32OrArray {
+        type Value = u32;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "null, u32, or array of u32")
+        }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<u32, E> {
+            Ok(v as u32)
+        }
+        fn visit_none<E: de::Error>(self) -> Result<u32, E> {
+            Ok(0)
+        }
+        fn visit_unit<E: de::Error>(self) -> Result<u32, E> {
+            Ok(0)
+        }
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<u32, A::Error> {
+            let first = seq.next_element::<u32>()?.unwrap_or(0);
+            // drain remaining elements so serde doesn't see trailing characters
+            while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+            Ok(first)
+        }
+    }
+    d.deserialize_any(U32OrArray)
+}
+
 /// Layer type in a hybrid transformer model.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -116,7 +148,7 @@ pub struct ModelConfig {
     /// BOS token ID (null → 0 for models without explicit BOS).
     #[serde(default, deserialize_with = "nullable_u32")]
     pub bos_token_id: u32,
-    #[serde(default, deserialize_with = "nullable_u32")]
+    #[serde(default, deserialize_with = "nullable_u32_or_array")]
     pub eos_token_id: u32,
     #[serde(default)]
     pub tie_word_embeddings: bool,

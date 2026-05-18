@@ -1,0 +1,98 @@
+[model]
+name = "glm-4.7-flash-a3b"
+hf_id = "GadflyII/GLM-4.7-Flash-NVFP4"
+params = "35B"
+active_params = "3B"
+architecture = "MLA + MoE (DeepSeek-V3-mini) + MTP"
+
+layers_total = 47
+layers_dense_ffn = 1            # first_k_dense_replace
+layers_moe = 46
+first_k_dense_replace = 1
+
+# Multi-head Latent Attention (MLA).
+hidden_dim = 2048
+q_lora_rank = 768
+kv_lora_rank = 512
+qk_nope_head_dim = 192
+qk_rope_head_dim = 64
+v_head_dim = 256
+q_heads = 20
+kv_heads = 20                   # MHA after MLA projection
+head_dim = 256                  # v_head_dim; qk_head_dim = nope+rope = 256
+
+# MoE.
+moe_experts = 64                # n_routed_experts
+moe_topk = 4                    # num_experts_per_tok
+moe_intermediate = 1536
+shared_experts = 1              # n_shared_experts
+shared_expert_intermediate = 1536
+topk_method = "noaux_tc"        # sigmoid + e_score_correction_bias
+routed_scaling_factor = 1.8
+norm_topk_prob = true
+n_group = 1
+topk_group = 1
+
+# Dense FFN (layer 0 only).
+dense_intermediate = 10240
+
+# MTP (single nextn module, DeepSeek-V3 layout at index 47).
+mtp_layers = 1
+mtp_type = "mla_moe"
+mtp_eh_proj_quant = "nvfp4"     # vs Qwen3.5's BF16 mtp.fc
+
+vocab_size = 154880
+max_position_embeddings = 202752
+rope_theta = 1000000
+partial_rotary_factor = 1.0     # full rotary on qk_rope_head_dim only
+
+vision = false
+
+# Effective context for agentic tasks (tokens). Pure-attention MLA scales
+# linearly with KV cache; 24K mirrors Qwen3.6 conservatism until
+# server-side compaction is validated for GLM.
+effective_context = 24576
+
+# Sampling presets — from the GLM-4.5/4.7 model cards.
+[sampling.thinking_text]
+temperature = 0.6
+top_p = 0.95
+top_k = 40
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 40
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[sampling.non_thinking]
+temperature = 0.8
+top_p = 0.95
+top_k = 40
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 40
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[behavior]
+default_kv_dtype = "bf16"
+thinking_default = true
+max_thinking_budget = 4096
+enable_loop_watchdog = false
+thinking_in_tools = false       # match Qwen3.5 — prevents "Think-Satisfy" on tool turns
+default_num_drafts = 1          # K=2 with MTP enabled
+
+[[model_types]]
+model_type = "glm4_moe_lite"
+hidden_size = 2048
+
+[kernel]
+moe_gate_shmem_bytes = 4096     # hidden_dim(2048) * sizeof(bf16)

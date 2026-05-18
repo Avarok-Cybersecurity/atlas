@@ -158,6 +158,32 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
         }
         "gemma4" => parse_gemma4_params(&raw),
         "minimax_m2" => parse_minimax_m2(&raw),
+        "glm4_moe_lite" => {
+            let mut config: ModelConfig =
+                serde_json::from_str(json).context("Failed to parse glm4_moe_lite config.json")?;
+            // GLM uses qk_nope_head_dim + qk_rope_head_dim as effective head_dim
+            // (no separate head_dim field in config.json)
+            if config.head_dim == 0 {
+                config.head_dim = config.qk_nope_head_dim + config.qk_rope_head_dim;
+            }
+            // GLM uses n_routed_experts instead of num_experts
+            if config.num_experts == 0 && config.n_routed_experts > 0 {
+                config.num_experts = config.n_routed_experts;
+            }
+            // Shared expert uses same intermediate size as routed experts
+            if config.shared_expert_intermediate_size == 0 && config.moe_intermediate_size > 0 {
+                config.shared_expert_intermediate_size = config.moe_intermediate_size;
+            }
+            // RoPE applies only to qk_rope_head_dim dims per head
+            if config.qk_rope_head_dim > 0 && config.head_dim > 0 {
+                config.partial_rotary_factor =
+                    config.qk_rope_head_dim as f64 / config.head_dim as f64;
+            }
+            // GLM has no gated attention
+            config.attn_gated = false;
+            finalize_config(&mut config, &raw)?;
+            Ok(config)
+        }
         _ => {
             // Flat config (qwen3_next, etc.)
             let mut config: ModelConfig =
