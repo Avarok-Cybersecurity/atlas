@@ -30,27 +30,55 @@ const content = sample.content || "";
 const finish = sample.finish_reason;
 
 // --- 1. Extract the JS to validate ----------------------------------------
-// Largest fenced block; if HTML, concatenate inline <script> bodies
-// (skip external src=). If js/ts, use verbatim.
-function extractJs(text) {
-  const fences = [...text.matchAll(/```([a-zA-Z0-9]*)\n([\s\S]*?)```/g)];
+// The model's wrapping is unreliable — and crucially, DEGENERATE output
+// usually never emits the closing ``` (or </script>), so a closed-only
+// extractor would return "" exactly on the failing samples and mask the
+// signal. Handle: closed fences, an UNCLOSED trailing fence, no fence at
+// all (raw HTML), and unclosed <script>.
+function fenceBlock(text) {
   let block = "";
   let lang = "";
-  for (const m of fences) {
+  for (const m of text.matchAll(/```([a-zA-Z0-9]*)\n([\s\S]*?)```/g)) {
     if (m[2].length > block.length) {
       block = m[2];
       lang = (m[1] || "").toLowerCase();
     }
   }
+  // Unclosed trailing fence: opener with no matching closer → to EOF.
+  const open = text.match(/```([a-zA-Z0-9]*)\n([\s\S]*)$/);
+  if (open && open[2].length > block.length && !open[2].includes("```")) {
+    block = open[2];
+    lang = (open[1] || "").toLowerCase();
+  }
+  // No fence at all but clearly HTML/JS → treat whole text as the block.
+  if (!block && /<!DOCTYPE|<html|<script|new\s+THREE\./i.test(text)) {
+    block = text;
+  }
+  return { block, lang };
+}
+
+function extractJs(text) {
+  const { block, lang } = fenceBlock(text);
   if (!block) return "";
-  if (lang === "html" || /<script[\s>]/i.test(block)) {
-    const scripts = [
-      ...block.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi),
-    ];
-    return scripts
-      .filter((s) => !/\bsrc\s*=/.test(s[1]))
-      .map((s) => s[2])
-      .join("\n;\n");
+  const looksHtml = lang === "html" || /<script[\s>]/i.test(block);
+  if (looksHtml) {
+    const out = [];
+    // Closed <script>…</script> bodies (skip external src=).
+    for (const s of block.matchAll(
+      /<script\b([^>]*)>([\s\S]*?)<\/script>/gi
+    )) {
+      if (!/\bsrc\s*=/.test(s[1])) out.push(s[2]);
+    }
+    // Unclosed trailing <script> (truncated mid-script) → to EOF.
+    const lastOpen = block.match(/<script\b([^>]*)>([\s\S]*)$/i);
+    if (
+      lastOpen &&
+      !/\bsrc\s*=/.test(lastOpen[1]) &&
+      !/<\/script>/i.test(lastOpen[2])
+    ) {
+      out.push(lastOpen[2]);
+    }
+    if (out.length) return out.join("\n;\n");
   }
   return block;
 }
