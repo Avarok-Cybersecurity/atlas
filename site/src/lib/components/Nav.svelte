@@ -13,6 +13,7 @@
       <a href="#speed">Why Atlas</a>
       <a href="#models">Models</a>
       <a href="#try">Try It</a>
+      <a href="https://sparkrun.dev/runtimes/atlas/" target="_blank" rel="noopener">sparkrun</a>
       <a href="#community">Community</a>
       <a href="#roadmap">Roadmap</a>
       <a

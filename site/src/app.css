@@ -241,6 +241,94 @@ footer { border-top: 1px solid var(--border); padding: 3rem 2rem; }
 .fcol a:hover { color: #fff; }
 .footer-bottom { max-width: 1200px; margin: 1.5rem auto 0; padding-top: 1.25rem; border-top: 1px solid var(--border); text-align: center; font-size: 0.7rem; color: var(--t3); }
 
+/* Model Slider (SSOT carousel of recipe families) */
+.ms-carousel { position: relative; }
+.ms-controls {
+  display: flex; align-items: center; justify-content: center;
+  gap: 1rem; margin-bottom: 1.25rem;
+}
+.ms-arrow {
+  flex-shrink: 0; width: 38px; height: 38px; border-radius: 50%;
+  background: var(--card); border: 1px solid var(--border); color: var(--t1);
+  font-size: 1.2rem; line-height: 1; cursor: pointer;
+  transition: border-color 0.2s, background 0.2s, transform 0.2s;
+  display: flex; align-items: center; justify-content: center;
+}
+.ms-arrow:hover { border-color: rgba(124,58,237,0.45); background: rgba(124,58,237,0.08); transform: translateY(-1px); }
+.ms-dots { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; justify-content: center; }
+.ms-dot {
+  width: 9px; height: 9px; border-radius: 50%; padding: 0;
+  background: var(--border); border: none; cursor: pointer;
+  transition: background 0.2s, transform 0.2s, box-shadow 0.2s;
+}
+.ms-dot:hover { background: var(--t3); }
+.ms-dot.is-active { background: var(--grad); box-shadow: 0 0 10px rgba(124,58,237,0.5); transform: scale(1.25); }
+.ms-viewport {
+  width: 100%; overflow-x: hidden; border-radius: 14px;
+  scroll-snap-type: x mandatory;
+}
+.ms-track { display: flex; transition: transform 0.45s cubic-bezier(0.22,0.61,0.36,1); will-change: transform; }
+.ms-slide { flex: 0 0 100%; min-width: 100%; scroll-snap-align: start; padding: 2px; }
+.ms-famcard { position: relative; overflow: hidden; padding: 0; }
+.ms-accent { height: 4px; width: 100%; background: var(--grad); }
+.ms-famhead {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 1rem; padding: 1.5rem 1.75rem 1rem; flex-wrap: wrap;
+}
+.ms-famhead h3 { font-size: 1.2rem; font-weight: 800; letter-spacing: -0.02em; }
+.ms-count {
+  font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--cyan);
+}
+.ms-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1rem; padding: 0 1.75rem 1.75rem;
+}
+.subcard {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 1.1rem 1.15rem;
+  transition: border-color 0.25s, transform 0.25s;
+  display: flex; flex-direction: column; gap: 0.6rem;
+}
+.subcard:hover { border-color: rgba(124,58,237,0.3); transform: translateY(-2px); }
+.subcard-label { font-size: 0.92rem; font-weight: 700; color: var(--t1); }
+.subcard-meta { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.chip {
+  display: inline-block; font-size: 0.6rem; font-weight: 700;
+  padding: 0.2rem 0.5rem; border-radius: 4px; letter-spacing: 0.04em;
+  text-transform: uppercase; border: 1px solid transparent;
+}
+.chip-nvfp4 { background: rgba(124,58,237,0.15); color: #a78bfa; border-color: rgba(124,58,237,0.3); }
+.chip-fp8 { background: rgba(6,182,212,0.15); color: var(--cyan); border-color: rgba(6,182,212,0.3); }
+.chip-bf16 { background: rgba(136,136,160,0.14); color: var(--t2); border-color: rgba(136,136,160,0.25); }
+.chip-single { background: rgba(255,255,255,0.04); color: var(--t2); border-color: var(--border); }
+.chip-ep2 { background: rgba(16,185,129,0.15); color: var(--green); border-color: rgba(16,185,129,0.3); }
+.chip-tp2 { background: rgba(251,191,36,0.15); color: #fbbf24; border-color: rgba(251,191,36,0.3); }
+.chip-params { background: rgba(255,255,255,0.04); color: var(--t2); border-color: var(--border); }
+.subcard-hf {
+  font-size: 0.7rem; color: var(--t3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cmd-pill {
+  display: flex; align-items: center; gap: 0.5rem;
+  background: #0b0b14; border: 1px solid var(--border);
+  border-radius: 7px; padding: 0.45rem 0.45rem 0.45rem 0.7rem;
+  margin-top: auto;
+}
+.cmd-text {
+  flex: 1; min-width: 0; color: var(--cyan); font-size: 0.7rem;
+  overflow-x: auto; white-space: nowrap; scrollbar-width: thin;
+}
+.cmd-copy {
+  flex-shrink: 0; background: rgba(124,58,237,0.15); color: #a78bfa;
+  border: 1px solid rgba(124,58,237,0.35); border-radius: 5px;
+  padding: 0.3rem 0.6rem; font-size: 0.66rem; font-weight: 700;
+  cursor: pointer; transition: background 0.15s, color 0.15s;
+  font-family: 'JetBrains Mono', monospace; letter-spacing: 0.03em;
+}
+.cmd-copy:hover { background: rgba(124,58,237,0.28); color: #fff; }
+.ms-foot { font-size: 0.72rem; color: var(--t3); margin-top: 1.5rem; font-style: italic; line-height: 1.7; }
+
 @media (max-width: 768px) {
   .nav-links { display: none; }
   .pillars { grid-template-columns: 1fr; }
@@ -251,4 +339,10 @@ footer { border-top: 1px solid var(--border); padding: 3rem 2rem; }
   .hero-install { flex-wrap: wrap; gap: 0.5rem; padding: 0.6rem 0.7rem; }
   .hero-install-cmd { width: 100%; font-size: 0.72rem; }
   .hero-install-copy { margin-left: auto; }
+  .ms-grid { grid-template-columns: 1fr; padding: 0 1.1rem 1.25rem; }
+  .ms-famhead { padding: 1.15rem 1.1rem 0.85rem; }
+  .ms-viewport {
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+    touch-action: pan-x pan-y;
+  }
 }
