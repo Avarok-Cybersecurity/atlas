@@ -159,6 +159,15 @@ export const testimonials = [
 // + NVIDIA container runtime — it does not install the container engine.
 export const quickInstall = `uvx sparkrun setup install`;
 
-export const dockerCommand = `uvx sparkrun setup install
+// The command users see and copy: curl the static quickstart script and pipe
+// it to sh. The script (static/quickstart.sh, served at /quickstart.sh) checks
+// whether sparkrun is already installed before installing it via uvx, then
+// runs the default recipe. The raw equivalent is kept below for reference.
+export const runCommand = 'curl -fsSL https://atlasinference.io/quickstart.sh | sh';
+// What the script does, spelled out (not shown in the terminal card).
+export const runCommandRaw =
+  'uvx sparkrun setup install && sparkrun run @atlas/qwen3.6-35b-a3b-fp8-mtp-atlas';
 
-sparkrun run @atlas/qwen3.6-35b-a3b-fp8-mtp-atlas`;
+// X / Twitter handle for Atlas.
+export const xHandle = '@atlasinference';
+export const xUrl = 'https://x.com/atlasinference';

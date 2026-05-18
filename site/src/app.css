@@ -241,34 +241,51 @@ footer { border-top: 1px solid var(--border); padding: 3rem 2rem; }
 .fcol a:hover { color: #fff; }
 .footer-bottom { max-width: 1200px; margin: 1.5rem auto 0; padding-top: 1.25rem; border-top: 1px solid var(--border); text-align: center; font-size: 0.7rem; color: var(--t3); }
 
-/* Model Slider (SSOT carousel of recipe families) */
-.ms-carousel { position: relative; }
-.ms-controls {
-  display: flex; align-items: center; justify-content: center;
-  gap: 1rem; margin-bottom: 1.25rem;
+/* Model navigation (SSOT 3-level tabs: vendor -> subfamily -> recipes) */
+.mnav { position: relative; }
+/* Level 1: vendor brand tabs */
+.mnav-vendors {
+  display: flex; flex-wrap: wrap; gap: 0.6rem;
+  margin-bottom: 1rem;
 }
-.ms-arrow {
-  flex-shrink: 0; width: 38px; height: 38px; border-radius: 50%;
-  background: var(--card); border: 1px solid var(--border); color: var(--t1);
-  font-size: 1.2rem; line-height: 1; cursor: pointer;
-  transition: border-color 0.2s, background 0.2s, transform 0.2s;
-  display: flex; align-items: center; justify-content: center;
+.mnav-vendor {
+  display: inline-flex; align-items: center; gap: 0.55rem;
+  background: var(--card); border: 1px solid var(--border); color: var(--t2);
+  border-radius: 10px; padding: 0.6rem 1rem;
+  font-size: 0.9rem; font-weight: 700; letter-spacing: -0.01em;
+  cursor: pointer; transition: border-color 0.2s, background 0.2s, color 0.2s, transform 0.2s;
 }
-.ms-arrow:hover { border-color: rgba(124,58,237,0.45); background: rgba(124,58,237,0.08); transform: translateY(-1px); }
-.ms-dots { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; justify-content: center; }
-.ms-dot {
-  width: 9px; height: 9px; border-radius: 50%; padding: 0;
-  background: var(--border); border: none; cursor: pointer;
-  transition: background 0.2s, transform 0.2s, box-shadow 0.2s;
+.mnav-vendor:hover { border-color: rgba(124,58,237,0.4); color: var(--t1); transform: translateY(-1px); }
+.mnav-vendor.is-active {
+  color: #fff; border-color: rgba(124,58,237,0.55);
+  background: rgba(124,58,237,0.14);
+  box-shadow: 0 2px 14px rgba(124,58,237,0.25);
 }
-.ms-dot:hover { background: var(--t3); }
-.ms-dot.is-active { background: var(--grad); box-shadow: 0 0 10px rgba(124,58,237,0.5); transform: scale(1.25); }
-.ms-viewport {
-  width: 100%; overflow-x: hidden; border-radius: 14px;
-  scroll-snap-type: x mandatory;
+.mnav-ico { width: 18px; height: 18px; flex-shrink: 0; }
+.mnav-vendor.is-active .mnav-ico { color: #a78bfa; }
+/* Level 2: subfamily sub-tabs */
+.mnav-subs {
+  display: flex; flex-wrap: wrap; gap: 0.45rem;
+  margin-bottom: 1.25rem;
 }
-.ms-track { display: flex; transition: transform 0.45s cubic-bezier(0.22,0.61,0.36,1); will-change: transform; }
-.ms-slide { flex: 0 0 100%; min-width: 100%; scroll-snap-align: start; padding: 2px; }
+.mnav-sub {
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  background: rgba(255,255,255,0.02); border: 1px solid var(--border); color: var(--t2);
+  border-radius: 7px; padding: 0.4rem 0.75rem;
+  font-size: 0.78rem; font-weight: 600;
+  cursor: pointer; transition: border-color 0.2s, background 0.2s, color 0.2s;
+}
+.mnav-sub:hover { border-color: rgba(6,182,212,0.4); color: var(--t1); }
+.mnav-sub.is-active {
+  color: var(--t1); border-color: rgba(6,182,212,0.5);
+  background: rgba(6,182,212,0.1);
+}
+.mnav-sub-count {
+  font-size: 0.62rem; font-weight: 700;
+  background: rgba(255,255,255,0.06); color: var(--t3);
+  border-radius: 999px; padding: 0.05rem 0.4rem; line-height: 1.4;
+}
+.mnav-sub.is-active .mnav-sub-count { background: rgba(6,182,212,0.2); color: var(--cyan); }
 .ms-famcard { position: relative; overflow: hidden; padding: 0; }
 .ms-accent { height: 4px; width: 100%; background: var(--grad); }
 .ms-famhead {
@@ -341,8 +358,12 @@ footer { border-top: 1px solid var(--border); padding: 3rem 2rem; }
   .hero-install-copy { margin-left: auto; }
   .ms-grid { grid-template-columns: 1fr; padding: 0 1.1rem 1.25rem; }
   .ms-famhead { padding: 1.15rem 1.1rem 0.85rem; }
-  .ms-viewport {
-    overflow-x: auto; -webkit-overflow-scrolling: touch;
-    touch-action: pan-x pan-y;
+  /* Tab rows wrap by default; on very narrow screens allow them to
+     scroll horizontally instead of stacking many rows tall. */
+  .mnav-vendors, .mnav-subs {
+    flex-wrap: nowrap; overflow-x: auto;
+    -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y;
+    scrollbar-width: thin; padding-bottom: 0.35rem;
   }
+  .mnav-vendor, .mnav-sub { flex-shrink: 0; }
 }

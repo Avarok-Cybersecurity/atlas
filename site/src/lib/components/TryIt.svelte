@@ -1,10 +1,10 @@
 <script>
-  import { dockerCommand } from '$lib/data.js';
+  import { runCommand } from '$lib/data.js';
 
   let copied = $state(false);
   async function copy() {
     try {
-      await navigator.clipboard.writeText(dockerCommand);
+      await navigator.clipboard.writeText(runCommand);
       copied = true;
       setTimeout(() => (copied = false), 1600);
     } catch {}
@@ -14,12 +14,15 @@
 <section id="try" class="try-section">
   <div class="container">
     <div class="slabel">Try It Yourself</div>
-    <h2 class="stitle">Up and running in two commands</h2>
+    <h2 class="stitle">Up and running in one command</h2>
     <p class="ssub">
-      Don't take our word for it. Install
-      <a href="https://sparkrun.dev/runtimes/atlas/" class="ssub-link">sparkrun</a>,
-      run an Atlas recipe on your DGX Spark, and see the difference. sparkrun pulls
-      &amp; runs the Atlas image for you — it uses your existing Docker/Podman +
+      Don't take our word for it. One command on your DGX Spark and you're
+      serving. The
+      <a href="/quickstart.sh" class="ssub-link">quickstart script</a>
+      installs
+      <a href="https://sparkrun.dev/runtimes/atlas/" class="ssub-link">sparkrun</a>
+      only if it isn't already present, then runs the recipe. sparkrun pulls
+      &amp; runs the Atlas image for you using your existing Docker/Podman +
       NVIDIA container runtime.
     </p>
 
@@ -29,11 +32,11 @@
           <span></span><span></span><span></span>
         </div>
         <div class="term-title">Run with sparkrun — Qwen3.6-35B-A3B FP8 + MTP on a single Spark</div>
-        <button type="button" class="hero-install-copy" onclick={copy} aria-label="Copy sparkrun commands">
+        <button type="button" class="hero-install-copy" onclick={copy} aria-label="Copy install command">
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
-      <pre class="term-body">{dockerCommand}</pre>
+      <pre class="term-body">$ {runCommand}</pre>
     </div>
 
     <p class="try-foot">
