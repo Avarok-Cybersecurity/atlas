@@ -350,9 +350,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         // `dense_ffn = Some(...)` and NULL placeholders for the MoE fields.
         let mtp = load_mtp(store, config.num_experts, gpu, variant)?;
         if mtp.dense_ffn.is_some() {
-            tracing::info!(
-                "Dense MTP head ready (FP8 e4m3 projections + dense gate/up/down MLP)"
-            );
+            tracing::info!("Dense MTP head ready (FP8 e4m3 projections + dense gate/up/down MLP)");
         } else {
             tracing::info!(
                 "MoE MTP head ready ({} experts) — dense loader sees MoE bundle",
