@@ -23,7 +23,8 @@
     url: 'https://atlasinference.io/',
     sameAs: [
       'https://sparkrun.dev/runtimes/atlas/',
-      'https://github.com/Avarok-Cybersecurity/atlas-recipes'
+      'https://github.com/Avarok-Cybersecurity/atlas-recipes',
+      'https://x.com/atlasinference'
     ]
   })}<\/script>`}
 </svelte:head>

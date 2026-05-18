@@ -1,5 +1,5 @@
 <script>
-  import { discordUrl, redditUrl } from '$lib/data.js';
+  import { discordUrl, redditUrl, xUrl, xHandle } from '$lib/data.js';
 </script>
 
 <footer>
@@ -22,6 +22,7 @@
     <div class="fcol">
       <h4>Community</h4>
       <a href={discordUrl}>Discord</a>
+      <a href={xUrl} target="_blank" rel="noopener">X {xHandle}</a>
       <a href={redditUrl}>Reddit</a>
     </div>
     <div class="fcol">

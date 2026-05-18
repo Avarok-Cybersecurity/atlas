@@ -1,6 +1,7 @@
 <script>
-  import { discordUrl } from '$lib/data.js';
+  import { discordUrl, xUrl } from '$lib/data.js';
   import GithubIcon from './GithubIcon.svelte';
+  import XIcon from './XIcon.svelte';
 </script>
 
 <nav>
@@ -24,6 +25,15 @@
         aria-label="Atlas on GitHub"
       >
         <GithubIcon size={20} />
+      </a>
+      <a
+        href={xUrl}
+        class="nav-icon-link"
+        target="_blank"
+        rel="noopener"
+        aria-label="Atlas on X (@atlasinference)"
+      >
+        <XIcon size={18} />
       </a>
       <a href={discordUrl} class="nav-cta">Join Discord</a>
     </div>
