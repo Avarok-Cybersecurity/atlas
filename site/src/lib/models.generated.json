@@ -1,0 +1,233 @@
+[
+  {
+    "family": "gemma4",
+    "displayName": "Gemma 4",
+    "recipes": [
+      {
+        "displayName": "Gemma 4 26B A4B NVFP4",
+        "hfId": "bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16",
+        "params": "26B",
+        "quant": "nvfp4",
+        "topology": "single",
+        "recipeStem": "gemma-4-26b-a4b-nvfp4",
+        "command": "sparkrun run @atlas/gemma-4-26b-a4b-nvfp4"
+      },
+      {
+        "displayName": "Gemma 4 31B NVFP4",
+        "hfId": "nvidia/Gemma-4-31B-IT-NVFP4",
+        "params": "31B",
+        "quant": "nvfp4",
+        "topology": "single",
+        "recipeStem": "gemma-4-31b-nvfp4",
+        "command": "sparkrun run @atlas/gemma-4-31b-nvfp4"
+      }
+    ]
+  },
+  {
+    "family": "minimax-m2.7",
+    "displayName": "MiniMax M2.7",
+    "recipes": [
+      {
+        "displayName": "Minimax M2.7 NVFP4 EP=2",
+        "hfId": "lukealonso/MiniMax-M2.7-NVFP4",
+        "params": "230B",
+        "quant": "nvfp4",
+        "topology": "EP=2",
+        "recipeStem": "minimax-m2.7-nvfp4-ep2",
+        "command": "sparkrun run @atlas/minimax-m2.7-nvfp4-ep2"
+      }
+    ]
+  },
+  {
+    "family": "mistral-small-4",
+    "displayName": "Mistral Small 4",
+    "recipes": [
+      {
+        "displayName": "Mistral Small 4 119B NVFP4",
+        "hfId": "mistralai/Mistral-Small-4-119B-2603-NVFP4",
+        "params": "119B",
+        "quant": "nvfp4",
+        "topology": "single",
+        "recipeStem": "mistral-small-4-119b-nvfp4",
+        "command": "sparkrun run @atlas/mistral-small-4-119b-nvfp4"
+      }
+    ]
+  },
+  {
+    "family": "nemotron-3-nano",
+    "displayName": "Nemotron-3 Nano",
+    "recipes": [
+      {
+        "displayName": "Nemotron 3 Nano 30B A3B NVFP4",
+        "hfId": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
+        "params": "30B",
+        "quant": "nvfp4",
+        "topology": "single",
+        "recipeStem": "nemotron-3-nano-30b-a3b-nvfp4",
+        "command": "sparkrun run @atlas/nemotron-3-nano-30b-a3b-nvfp4"
+      }
+    ]
+  },
+  {
+    "family": "nemotron-3-super",
+    "displayName": "Nemotron-3 Super",
+    "recipes": [
+      {
+        "displayName": "Nemotron 3 Super 120B A12B NVFP4",
+        "hfId": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
+        "params": "120B",
+        "quant": "nvfp4",
+        "topology": "single",
+        "recipeStem": "nemotron-3-super-120b-a12b-nvfp4",
+        "command": "sparkrun run @atlas/nemotron-3-super-120b-a12b-nvfp4"
+      }
+    ]
+  },
+  {
+    "family": "qwen3-coder-next",
+    "displayName": "Qwen3-Coder-Next",
+    "recipes": [
+      {
+        "displayName": "Qwen3 Coder Next FP8",
+        "hfId": "Qwen/Qwen3-Coder-Next-FP8",
+        "params": "80B",
+        "quant": "fp8",
+        "topology": "single",
+        "recipeStem": "qwen3-coder-next-fp8",
+        "command": "sparkrun run @atlas/qwen3-coder-next-fp8"
+      }
+    ]
+  },
+  {
+    "family": "qwen3-next",
+    "displayName": "Qwen3-Next",
+    "recipes": [
+      {
+        "displayName": "Qwen3 Next 80B A3B NVFP4",
+        "hfId": "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4",
+        "params": "80B",
+        "quant": "nvfp4",
+        "topology": "single",
+        "recipeStem": "qwen3-next-80b-a3b-nvfp4",
+        "command": "sparkrun run @atlas/qwen3-next-80b-a3b-nvfp4"
+      }
+    ]
+  },
+  {
+    "family": "qwen3-vl",
+    "displayName": "Qwen3-VL",
+    "recipes": [
+      {
+        "displayName": "Qwen3 VL 30B A3B NVFP4",
+        "hfId": "ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4",
+        "params": "30B",
+        "quant": "nvfp4",
+        "topology": "single",
+        "recipeStem": "qwen3-vl-30b-a3b-nvfp4",
+        "command": "sparkrun run @atlas/qwen3-vl-30b-a3b-nvfp4"
+      }
+    ]
+  },
+  {
+    "family": "qwen3.5",
+    "displayName": "Qwen3.5",
+    "recipes": [
+      {
+        "displayName": "Qwen3.5 0.8B BF16",
+        "hfId": "Qwen/Qwen3.5-0.8B",
+        "params": "0.8B",
+        "quant": "none",
+        "topology": "single",
+        "recipeStem": "qwen3.5-0.8b-bf16-atlas",
+        "command": "sparkrun run @atlas/qwen3.5-0.8b-bf16-atlas"
+      },
+      {
+        "displayName": "Qwen3.5 122B A10B NVFP4 EP=2",
+        "hfId": "Sehyo/Qwen3.5-122B-A10B-NVFP4",
+        "params": "122B",
+        "quant": "nvfp4",
+        "topology": "EP=2",
+        "recipeStem": "qwen3.5-122b-a10b-nvfp4-ep2",
+        "command": "sparkrun run @atlas/qwen3.5-122b-a10b-nvfp4-ep2"
+      },
+      {
+        "displayName": "Qwen3.5 122B A10B NVFP4 Single",
+        "hfId": "Sehyo/Qwen3.5-122B-A10B-NVFP4",
+        "params": "122B",
+        "quant": "nvfp4",
+        "topology": "single",
+        "recipeStem": "qwen3.5-122b-a10b-nvfp4-single",
+        "command": "sparkrun run @atlas/qwen3.5-122b-a10b-nvfp4-single"
+      },
+      {
+        "displayName": "Qwen3.5 27B Dense NVFP4",
+        "hfId": "Kbenkhaled/Qwen3.5-27B-NVFP4",
+        "params": "27B",
+        "quant": "nvfp4",
+        "topology": "single",
+        "recipeStem": "qwen3.5-27b-dense-nvfp4",
+        "command": "sparkrun run @atlas/qwen3.5-27b-dense-nvfp4"
+      },
+      {
+        "displayName": "Qwen3.5 35B A3B NVFP4",
+        "hfId": "Sehyo/Qwen3.5-35B-A3B-NVFP4",
+        "params": "35B",
+        "quant": "nvfp4",
+        "topology": "single",
+        "recipeStem": "qwen3.5-35b-a3b-nvfp4",
+        "command": "sparkrun run @atlas/qwen3.5-35b-a3b-nvfp4"
+      }
+    ]
+  },
+  {
+    "family": "qwen3.6",
+    "displayName": "Qwen3.6",
+    "recipes": [
+      {
+        "displayName": "Qwen3.6 27B Dense FP8",
+        "hfId": "Qwen/Qwen3.6-27B-FP8",
+        "params": "27B",
+        "quant": "fp8",
+        "topology": "single",
+        "recipeStem": "qwen3.6-27b-dense-fp8-atlas",
+        "command": "sparkrun run @atlas/qwen3.6-27b-dense-fp8-atlas"
+      },
+      {
+        "displayName": "Qwen3.6 27B Dense FP8 MTP",
+        "hfId": "Qwen/Qwen3.6-27B-FP8",
+        "params": "27B",
+        "quant": "fp8",
+        "topology": "single",
+        "recipeStem": "qwen3.6-27b-dense-fp8-mtp-atlas",
+        "command": "sparkrun run @atlas/qwen3.6-27b-dense-fp8-mtp-atlas"
+      },
+      {
+        "displayName": "Qwen3.6 27B FP8 MTP",
+        "hfId": "Qwen/Qwen3.6-27B-FP8",
+        "params": "27B",
+        "quant": "fp8",
+        "topology": "single",
+        "recipeStem": "qwen3.6-27b-fp8-mtp-atlas",
+        "command": "sparkrun run @atlas/qwen3.6-27b-fp8-mtp-atlas"
+      },
+      {
+        "displayName": "Qwen3.6 35B A3B FP8 MTP",
+        "hfId": "Qwen/Qwen3.6-35B-A3B-FP8",
+        "params": "35B",
+        "quant": "fp8",
+        "topology": "single",
+        "recipeStem": "qwen3.6-35b-a3b-fp8-mtp-atlas",
+        "command": "sparkrun run @atlas/qwen3.6-35b-a3b-fp8-mtp-atlas"
+      },
+      {
+        "displayName": "Qwen3.6 35B A3B NVFP4",
+        "hfId": "RedHatAI/Qwen3.6-35B-A3B-NVFP4",
+        "params": "35B",
+        "quant": "nvfp4",
+        "topology": "single",
+        "recipeStem": "qwen3.6-35b-a3b-nvfp4-atlas",
+        "command": "sparkrun run @atlas/qwen3.6-35b-a3b-nvfp4-atlas"
+      }
+    ]
+  }
+]

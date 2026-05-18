@@ -153,22 +153,12 @@ export const testimonials = [
   }
 ];
 
-// Hero shows the install step (pull). TryIt below shows pull + full run.
-export const quickInstall = `docker pull avarok/atlas-gb10:latest`;
+// Hero shows the install step. TryIt below shows install + run.
+// sparkrun pulls & runs the avarok/atlas-gb10:latest image for you
+// (the recipe declares `container:`); it uses an existing Docker/Podman
+// + NVIDIA container runtime — it does not install the container engine.
+export const quickInstall = `uvx sparkrun setup install`;
 
-export const dockerCommand = `docker pull avarok/atlas-gb10:latest
+export const dockerCommand = `uvx sparkrun setup install
 
-sudo docker run -d --name atlas \\
-  --network host --gpus all --ipc=host \\
-  -v ~/.cache/huggingface:/root/.cache/huggingface \\
-  avarok/atlas-gb10:latest \\
-  serve Qwen/Qwen3.6-35B-A3B-FP8 \\
-    --port 8888 \\
-    --max-seq-len 65536 \\
-    --kv-cache-dtype fp8 \\
-    --kv-high-precision-layers auto \\
-    --gpu-memory-utilization 0.90 \\
-    --scheduling-policy slai \\
-    --tool-call-parser qwen3_coder \\
-    --enable-prefix-caching \\
-    --speculative`;
+sparkrun run @atlas/qwen3.6-35b-a3b-fp8-mtp-atlas`;
