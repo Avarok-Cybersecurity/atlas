@@ -352,7 +352,7 @@ explicit and preventing any possible aliasing.
 
 ---
 
-## Action Items (updated 2026-05-17)
+## Action Items (updated 2026-05-18)
 
 | # | Priority | Status | Item |
 |---|----------|--------|------|
@@ -362,6 +362,7 @@ explicit and preventing any possible aliasing.
 | 4 | P0 | **FIXED** | Mistral MLA (multi-chunk): `paged_mla.rs` multi-chunk path attended only to `n` new tokens, ignoring paged KV history; fixed with new `mla_prefill_paged_320` + `mla_v_extract_batched` absorbed paged path |
 | 5 | P0 | **FIXED** | `mla_fused_prefill.cu`: `__shared__ smem_dot[8]` declared inside `kv_pos` loop → potential NVCC aliasing with `smem_q` across iterations; moved to function scope before loop |
 | 6 | P1 | **FIXED** | Nemotron tool calling: (A) wrong CLI parser in test (use MODEL.toml bare_json); (B) `skip_template_tools=true` prevents contradictory XML injection from template; (C) `thinking_in_tools=false` |
-| 7 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool (`SsmStatePool`), not snapshot cache; sized by `--max-batch-size` (default 8). Use `--max-batch-size 1` on single-stream workloads to save ~1050 MB. `--ssm-cache-slots 0` correctly disables only `SsmSnapshotPool`. |
-| 8 | P2 | **CLOSED — known** | Nemotron long context >8K: Mamba-2 fixed-size state saturation, architectural limitation |
-| 9 | P2 | **OPEN** | Mistral multi-chunk performance: `mla_prefill_paged_320` iterates all kv_len positions sequentially (O(kv_len)). For kv_len > 10K, add shared-memory KV tiling to amortize page-table overhead. |
+| 7 | P1 | **FIXED** | Nemotron count_tokens: `anthropic/handlers.rs` `count_tokens` endpoint did not check `skip_template_tools`, passing Jinja tool defs to the template even for `bare_json` models, inflating the returned token count with XML `<function>` blocks not present in the real prompt. Fixed: condition now mirrors `template.rs` (`tools_active && !state.behavior.skip_template_tools`). |
+| 8 | P2 | **CLOSED — by design** | SSM pool 1206 MB: active decode state pool (`SsmStatePool`), not snapshot cache; sized by `--max-batch-size` (default 8). Use `--max-batch-size 1` on single-stream workloads to save ~1050 MB. `--ssm-cache-slots 0` correctly disables only `SsmSnapshotPool`; CLI value is correctly propagated through `serve_phases/build.rs` → `factory/build.rs` → `impl_a1.rs`. |
+| 9 | P2 | **CLOSED — known** | Nemotron long context >8K: Mamba-2 fixed-size state saturation, architectural limitation |
+| 10 | P2 | **OPEN** | Mistral multi-chunk performance: `mla_prefill_paged_320` iterates all kv_len positions sequentially (O(kv_len)). For kv_len > 10K, add shared-memory KV tiling to amortize page-table overhead. |

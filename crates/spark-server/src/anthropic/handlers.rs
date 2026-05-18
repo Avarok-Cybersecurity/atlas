@@ -319,17 +319,23 @@ pub async fn count_tokens(
             msg
         })
         .collect();
-    let jinja_tools: Option<Vec<serde_json::Value>> = if tools_active {
-        req.tools.as_ref().map(|ts| {
-            let oai = convert_tools(ts);
-            oai.iter().map(|t| serde_json::json!({
-                "type": "function",
-                "function": { "name": t.function.name, "description": t.function.description, "parameters": t.function.parameters }
-            })).collect()
-        })
-    } else {
-        None
-    };
+    // Mirror template.rs: skip_template_tools means the bare-json parser's
+    // system_prompt() is the sole source of tool schema, so jinja_tools must
+    // be None here too. Passing tools to the Jinja template when
+    // skip_template_tools=true would count the XML <function> block tokens
+    // that the real prompt never includes, inflating the returned count.
+    let jinja_tools: Option<Vec<serde_json::Value>> =
+        if tools_active && !state.behavior.skip_template_tools {
+            req.tools.as_ref().map(|ts| {
+                let oai = convert_tools(ts);
+                oai.iter().map(|t| serde_json::json!({
+                    "type": "function",
+                    "function": { "name": t.function.name, "description": t.function.description, "parameters": t.function.parameters }
+                })).collect()
+            })
+        } else {
+            None
+        };
 
     let input_tokens = match state.tokenizer.apply_chat_template_jinja(
         &json_messages,
