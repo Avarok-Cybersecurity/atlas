@@ -106,72 +106,27 @@ def agg(vals):
     }
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--url", default="http://localhost:8888/v1/chat/completions")
-    ap.add_argument("--model", default="Qwen/Qwen3.6-27B-FP8")
-    ap.add_argument("--n", type=int, default=10)
-    ap.add_argument("--temp", type=float, default=0.6)
-    ap.add_argument("--max-tokens", type=int, default=16000)
-    ap.add_argument(
-        "--label",
-        required=True,
-        help="run label, e.g. baseline-mtp-off / phase1a-mtp-on",
-    )
-    ap.add_argument("--outdir", default=str(HERE / "results"))
-    args = ap.parse_args()
+def score_seed(sp: pathlib.Path) -> dict:
+    """Analyze a saved seed sample; carry finish_reason/stats through."""
+    raw = json.loads(sp.read_text())
+    m = analyze(sp)
+    m["seed"] = raw["seed"]
+    m["finish_reason"] = raw.get("finish_reason")
+    m["stats"] = raw.get("stats", {})
+    return m
 
-    seeds = list(range(1, args.n + 1))  # fixed -> paired across runs
-    outdir = pathlib.Path(args.outdir) / args.label
-    outdir.mkdir(parents=True, exist_ok=True)
 
-    per_seed = []
-    for seed in seeds:
-        print(f"[{args.label}] seed={seed} ...", flush=True)
-        try:
-            R, C, fin, st = stream_one(
-                args.url, args.model, seed, args.temp, args.max_tokens
-            )
-        except Exception as e:  # network/timeout -> record as hard failure
-            per_seed.append(
-                {"seed": seed, "error": str(e), "completeness_pass": False}
-            )
-            print(f"  seed={seed} ERROR {e}", flush=True)
-            continue
-        sp = outdir / f"seed{seed}.json"
-        sp.write_text(
-            json.dumps(
-                {
-                    "seed": seed,
-                    "finish_reason": fin,
-                    "reasoning": R,
-                    "content": C,
-                    "stats": st,
-                },
-                ensure_ascii=False,
-            )
-        )
-        m = analyze(sp)
-        m["seed"] = seed
-        m["finish_reason"] = fin
-        m["stats"] = st
-        per_seed.append(m)
-        print(
-            f"  seed={seed} pass={m.get('completeness_pass')} "
-            f"valid_js_lines={m.get('valid_js_line_count')} "
-            f"dup_decl={m.get('duplicate_declaration_count')} "
-            f"deg@{m.get('tokens_to_first_degeneration')} fin={fin}",
-            flush=True,
-        )
-
+def summarize(per_seed, args, seeds) -> int:
+    """SSOT aggregation + gate. Used by both live and --reanalyze paths."""
     npass = sum(1 for s in per_seed if s.get("completeness_pass"))
+    need = int(PASS_GATE_FRAC * args.n)
     summary = {
         "label": args.label,
         "n": args.n,
         "temp": args.temp,
         "seeds": seeds,
         "completeness_pass_count": npass,
-        "gate": f"{npass}/{args.n} (need >= {int(PASS_GATE_FRAC * args.n)})",
+        "gate": f"{npass}/{args.n} (need >= {need})",
         "valid_js_line_count": agg(
             [s.get("valid_js_line_count") for s in per_seed]
         ),
@@ -197,7 +152,80 @@ def main() -> int:
     print(f"  finish_reasons             {summary['finish_reasons']}")
     print(f"  summary -> {summ_path}")
     print("=" * 64)
-    return 0 if npass >= int(PASS_GATE_FRAC * args.n) else 1
+    return 0 if npass >= need else 1
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--url", default="http://localhost:8888/v1/chat/completions")
+    ap.add_argument("--model", default="Qwen/Qwen3.6-27B-FP8")
+    ap.add_argument("--n", type=int, default=10)
+    ap.add_argument("--temp", type=float, default=0.6)
+    ap.add_argument("--max-tokens", type=int, default=16000)
+    ap.add_argument(
+        "--label",
+        required=True,
+        help="run label, e.g. baseline-mtp-off / phase1a-mtp-on",
+    )
+    ap.add_argument("--outdir", default=str(HERE / "results"))
+    ap.add_argument(
+        "--reanalyze",
+        action="store_true",
+        help="skip generation; re-score saved results/<label>/seed*.json "
+        "with the current analyzer (e.g. after an analyze.mjs fix)",
+    )
+    args = ap.parse_args()
+
+    seeds = list(range(1, args.n + 1))  # fixed -> paired across runs
+    outdir = pathlib.Path(args.outdir) / args.label
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    per_seed = []
+    for seed in seeds:
+        sp = outdir / f"seed{seed}.json"
+        if args.reanalyze:
+            if not sp.exists():
+                print(f"  seed={seed} MISSING {sp}", flush=True)
+                per_seed.append({"seed": seed, "completeness_pass": False})
+                continue
+            m = score_seed(sp)
+        else:
+            print(f"[{args.label}] seed={seed} ...", flush=True)
+            try:
+                R, C, fin, st = stream_one(
+                    args.url, args.model, seed, args.temp, args.max_tokens
+                )
+            except Exception as e:  # network/timeout -> hard failure
+                per_seed.append(
+                    {"seed": seed, "error": str(e),
+                     "completeness_pass": False}
+                )
+                print(f"  seed={seed} ERROR {e}", flush=True)
+                continue
+            sp.write_text(
+                json.dumps(
+                    {
+                        "seed": seed,
+                        "finish_reason": fin,
+                        "reasoning": R,
+                        "content": C,
+                        "stats": st,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            m = score_seed(sp)
+        per_seed.append(m)
+        print(
+            f"  seed={seed} pass={m.get('completeness_pass')} "
+            f"valid_js_lines={m.get('valid_js_line_count')} "
+            f"dup_decl={m.get('duplicate_declaration_count')} "
+            f"deg@{m.get('tokens_to_first_degeneration')} "
+            f"fin={m.get('finish_reason')}",
+            flush=True,
+        )
+
+    return summarize(per_seed, args, seeds)
 
 
 if __name__ == "__main__":
