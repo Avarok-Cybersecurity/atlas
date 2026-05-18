@@ -104,6 +104,55 @@ pub struct AttnMetadataDev {
     pub num_seqs: u32,
 }
 
+/// Q12 batched-prefill device-side metadata.
+///
+/// The single-stream `AttnMetadataDev` collapses per-stream pointers into
+/// concrete device pointers because there's only one stream. For Q12 we
+/// dispatch N concurrent prefilling streams through one batched kernel,
+/// and the kernel takes:
+///   - stacked positions / slot tables (one big buffer with all streams'
+///     data concatenated in cu_seqlens order), and
+///   - per-stream pointer arrays for block_table / seq_len / h_state.
+///
+/// Built once per `prefill_batch_chunk_dispatch` call by
+/// `stage_batched_attn_metadata`; threaded through the model-level
+/// per-layer batched dispatch (`prefill_attn_batched_layer`,
+/// `prefill_ssm_batched_layer`) — see `model/trait_impl/prefill_b/batch.rs`.
+pub struct BatchedAttnMetadata {
+    /// Stacked positions across all streams: `[total_tokens]` u32 at this
+    /// address. For MRoPE interleaved this is the temporal (T) stream.
+    pub positions_stacked: DevicePtr,
+    /// MRoPE H position stream, stacked. Equal to `positions_stacked` when
+    /// MRoPE is disabled.
+    pub positions_h_stacked: DevicePtr,
+    /// MRoPE W position stream, stacked. Equal to `positions_stacked` when
+    /// MRoPE is disabled.
+    pub positions_w_stacked: DevicePtr,
+    /// Stacked slot indices for KV writes: `[total_tokens]` i64.
+    pub slot_stacked: DevicePtr,
+    /// Per-stream block_table pointer array: `[batch_size]` of `DevicePtr`,
+    /// each element pointing to a stream's chunked-prefill block_table.
+    /// Used by `prefill_attention_paged_*_batched` kernels.
+    pub block_table_ptrs: DevicePtr,
+    /// Per-stream seq_len pointer array: `[batch_size]` of `DevicePtr`.
+    pub seq_len_ptrs: DevicePtr,
+    // Note: `h_state_ptrs` is NOT cached in BatchedAttnMetadata because
+    // it's per-layer (each SSM layer's SsmLayerState has its own h_state
+    // allocation). `prefill_ssm_batched_layer` stages h_state_ptrs JIT
+    // per-layer-call into the model's scratch buffer.
+    /// Number of batched streams.
+    pub batch_size: u32,
+    /// Per-stream chunk_len (SAME for all streams — scheduler-enforced
+    /// constraint via `can_batch_prefill_only`).
+    pub chunk_len: u32,
+    /// Total tokens stacked across streams: `batch_size * chunk_len`.
+    pub total_tokens: u32,
+    /// Maximum block_table length across the batch (kernel uses for
+    /// bounds checking; per-stream block_table reads via the pointer
+    /// array dereference).
+    pub max_blocks_per_seq: u32,
+}
+
 /// Device pointers to full-sequence GDN input/output buffers.
 ///
 /// Used by the two-phase SSM prefill: phase 1 writes GDN inputs here,

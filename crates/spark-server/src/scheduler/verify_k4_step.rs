@@ -72,7 +72,10 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
         return;
     }
 
-    tracing::info!(
+    // Per-verify trace at debug — fires every 1-4 output tokens during
+    // spec-decode and spams Docker logs at info level. Power-user
+    // diagnostics: `RUST_LOG=spark::scheduler::verify_k4_step=debug`.
+    tracing::debug!(
         "K4 verify: tokens=[{},{},{},{}] → v=[{v0},{v1},{v2},{v3}] drafts=[{},{},{}] accepted={num_accepted} seq_len={}",
         tokens_k4[0],
         tokens_k4[1],
@@ -179,10 +182,19 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             }
         }
         let propose_us = t_propose.elapsed().as_micros();
-        tracing::info!(
+        // Rate-limit to every 50 tokens (matches ACCEPT-3 above and the
+        // K2 ACCEPT line in verify_k2_step.rs:119). Full per-event traces
+        // available via `RUST_LOG=spark::scheduler::verify_k4_step=debug`.
+        tracing::debug!(
             "K4 ACCEPT-2: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
+        if a.seq.seq_len.is_multiple_of(50) {
+            tracing::info!(
+                "K4 ACCEPT-2 sample: verify={verify_us}μs propose={propose_us}μs seq_len={}",
+                a.seq.seq_len
+            );
+        }
     } else if num_accepted == 1 {
         a.seq.seq_len -= 2;
         a.seq.tokens.pop();
@@ -225,10 +237,16 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             }
         }
         let propose_us = t_propose.elapsed().as_micros();
-        tracing::info!(
+        tracing::debug!(
             "K4 ACCEPT-1: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
+        if a.seq.seq_len.is_multiple_of(50) {
+            tracing::info!(
+                "K4 ACCEPT-1 sample: verify={verify_us}μs propose={propose_us}μs seq_len={}",
+                a.seq.seq_len
+            );
+        }
     } else {
         a.seq.seq_len -= 3;
         a.seq.tokens.pop();
@@ -269,9 +287,15 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             }
         }
         let propose_us = t_propose.elapsed().as_micros();
-        tracing::info!(
+        tracing::debug!(
             "K4 REJECT: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
+        if a.seq.seq_len.is_multiple_of(50) {
+            tracing::info!(
+                "K4 REJECT sample: verify={verify_us}μs propose={propose_us}μs seq_len={}",
+                a.seq.seq_len
+            );
+        }
     }
 }

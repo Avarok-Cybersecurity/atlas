@@ -13,7 +13,7 @@ use super::super::super::types::TransformerModel;
 use crate::layers::ops;
 use crate::traits::SequenceState;
 
-pub(super) enum ProcRange {
+pub(in crate::model) enum ProcRange {
     /// Process this many tokens; phase 3+ run normally.
     Compute {
         proc_start: usize,
@@ -25,7 +25,7 @@ pub(super) enum ProcRange {
 }
 
 impl TransformerModel {
-    pub(super) fn prefill_b_proc_range(
+    pub(in crate::model) fn prefill_b_proc_range(
         &self,
         tokens: &[u32],
         seq: &mut SequenceState,

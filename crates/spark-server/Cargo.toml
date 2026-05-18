@@ -47,11 +47,11 @@ axum = { version = "0.8", features = ["json"] }
 tokio = { version = "1", features = ["full", "parking_lot"] }
 tokio-stream = "0.1"
 futures = "0.3"
-rayon = "1.10"
+rayon = "1.12"
 parking_lot = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 toml = "0.8"
 minijinja = { version = "2", features = ["builtins", "adjacent_loop_items", "json"] }
 xgrammar-rs = "0.1"

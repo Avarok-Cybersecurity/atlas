@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-#[allow(unused_imports)]
 use serde::{Deserialize, Serialize};
-
-#[allow(unused_imports)]
-use super::*;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ChatMessage {

@@ -2,7 +2,7 @@
 
 //! Nemotron MoE prefill — semi-batched per-token fallback path.
 //!
-//! Extracted from [`super::NemotronMoeLayer::prefill`] for file-size budget.
+//! Extracted from `NemotronMoeLayer::prefill` for file-size budget.
 //! Used when sorted-MoE kernels are unavailable: routes all tokens in one
 //! launch when possible, then dispatches expert GEMVs per-token.
 

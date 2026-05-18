@@ -1,0 +1,12 @@
+# Thinkbrake code-fence fix — layer the rebuilt spark binary onto the
+# exact image under test (atlas-gb10:answer-regen-bon) so ONLY the
+# binary changes and the runtime/model layers stay byte-identical.
+#
+# Build:
+#   cargo build --release -p spark-server   # in atlas-builder
+#   cp target/release/spark spark-fastbin
+#   docker build -f docker/gb10/Dockerfile.fence -t atlas-gb10:thinkbrake-fence .
+FROM atlas-gb10:answer-regen-bon
+
+COPY spark-fastbin /usr/local/bin/spark
+COPY jinja-templates/ /jinja-templates/

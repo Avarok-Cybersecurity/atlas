@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-#[allow(unused_imports)]
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-#[allow(unused_imports)]
 use super::*;
 
 /// Chat completion request (subset of OpenAI spec).

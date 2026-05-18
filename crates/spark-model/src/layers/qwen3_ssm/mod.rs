@@ -85,6 +85,14 @@ pub struct Qwen3SsmLayer {
     /// WY32 chunked prefill: processes 32 tokens per WY iteration with H in
     /// shared memory. ~30x faster than per-token for 14k+ sequences.
     gdn_prefill_wy32_k: KernelHandle,
+    // ── Q12 Phase 2b: same-chunk-len batched GDN prefill kernels ──
+    // Each takes `float* const* h_state_ptrs` plus stacked QKV/gate/beta/output.
+    // Used by `Qwen3SsmLayer::prefill_batched` when N≥2 streams have matching
+    // chunk_len. Null on targets that don't carry the corresponding kernel.
+    gdn_prefill_wy32_batched_k: KernelHandle,
+    gdn_prefill_persistent_batched_k: KernelHandle,
+    gdn_prefill_persistent_wy4_batched_k: KernelHandle,
+    gdn_prefill_split4_batched_k: KernelHandle,
     compute_gdn_gates_k: KernelHandle,
     ba_gates_prefill_k: KernelHandle,
     // Kernels — prefill (multi-token sequential)
@@ -289,6 +297,25 @@ impl TransformerLayer for Qwen3SsmLayer {
         stream: u64,
     ) -> Result<()> {
         self.prefill_gdn_full_inner(state, gdn_bufs, ctx, stream)
+    }
+
+    fn prefill_gdn_full_batched(
+        &self,
+        h_state_ptrs: DevicePtr,
+        gdn_bufs: &GdnPrefillBuffers,
+        batch_size: u32,
+        chunk_len: u32,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        self.prefill_gdn_full_batched_inner(
+            h_state_ptrs,
+            gdn_bufs,
+            batch_size,
+            chunk_len,
+            ctx,
+            stream,
+        )
     }
 
     fn prefill_phase3(

@@ -13,7 +13,7 @@ use spark_runtime::kv_cache::PagedKvCache;
 use super::super::super::types::TransformerModel;
 use crate::traits::SequenceState;
 
-pub(super) struct MetaLayout {
+pub(in crate::model) struct MetaLayout {
     pub meta_base: DevicePtr,
     pub slot_offset: usize,
     pub pos_stream_bytes: usize,
@@ -34,12 +34,42 @@ impl TransformerModel {
         kv_cache: &PagedKvCache,
         stream: u64,
     ) -> Result<MetaLayout> {
-        // Carve the chunk metadata region out of the persistent scratch
-        // buffer (after the MoE topk staging area).
+        // Single-stream entry point: lay metadata at the default offset
+        // after the MoE topk staging area.
         let moe_scratch_bytes = proc_count * self.config.num_experts_per_tok * 4 * 2;
         let meta_offset = (moe_scratch_bytes + 7) & !7;
         let meta_base = self.buffers.scratch().offset(meta_offset);
+        self.prefill_b_upload_meta_at(
+            tokens,
+            seq,
+            chunk_start,
+            chunk_len,
+            proc_start,
+            proc_count,
+            effective_seq_len_start,
+            kv_cache,
+            meta_base,
+            stream,
+        )
+    }
 
+    /// Build positions + slots metadata for `proc_count` tokens and upload
+    /// to the caller-provided `meta_base` device pointer. Used by both the
+    /// single-stream entry point above and Q12 batched prefill (multiple
+    /// per-stream metadata blocks concatenated in one big scratch region).
+    pub(in crate::model) fn prefill_b_upload_meta_at(
+        &self,
+        tokens: &[u32],
+        seq: &mut SequenceState,
+        chunk_start: usize,
+        chunk_len: usize,
+        proc_start: usize,
+        proc_count: usize,
+        effective_seq_len_start: usize,
+        kv_cache: &PagedKvCache,
+        meta_base: DevicePtr,
+        stream: u64,
+    ) -> Result<MetaLayout> {
         // MRoPE-interleaved packs three u32 position streams (T, H, W).
         let use_mrope = self.config.mrope_interleaved;
         let pos_stream_bytes = proc_count * 4;
