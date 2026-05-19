@@ -168,7 +168,6 @@ fn build_active_seq_from_prefill(
         content_tokens: 0,
         prose_tokens_since_last_tool: 0,
         think_watchdog_fires: 0,
-        resample_escalation: 0,
         entropy_collapse_streak: 0,
         f27_fingerprint_ring: std::collections::VecDeque::with_capacity(F27_RING_CAP),
         f27_attractor_streak: 0,

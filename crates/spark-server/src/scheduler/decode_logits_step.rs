@@ -253,41 +253,19 @@ pub fn process_decode_logits(
                 && !a.inside_tool_body
                 && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
                 && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
-            {
-                let looped = detect_content_token_loop(&a.output_tokens)
+                && (detect_content_token_loop(&a.output_tokens)
                     || numeric_token_mask()
                         .as_deref()
-                        .is_some_and(|m| detect_content_token_loop_normalized(&a.output_tokens, m));
-                if looped {
-                    // Phase 2: escalate anti-repetition pressure (scales
-                    // penalties on subsequent steps via
-                    // resample_penalty_factor) to steer the model OUT of
-                    // the loop instead of truncating the response. Only
-                    // after RESAMPLE_MAX_ESC un-cleared escalations fall
-                    // back to the original hard finish — never regress
-                    // safety. RESAMPLE_MAX_ESC=0 ⇒ exactly the old kill.
-                    a.resample_escalation = a.resample_escalation.saturating_add(1);
-                    if a.resample_escalation > RESAMPLE_MAX_ESC {
-                        tracing::warn!(
-                            content_tokens = a.content_tokens,
-                            output_len = a.output_tokens.len(),
-                            "Content-loop watchdog: {} escalations exhausted; ending response early",
-                            RESAMPLE_MAX_ESC,
-                        );
-                        a.finished = true;
-                    } else {
-                        tracing::warn!(
-                            content_tokens = a.content_tokens,
-                            esc = a.resample_escalation,
-                            "Content-loop watchdog fired (period-{}…{}); escalating anti-repetition resample",
-                            CONTENT_LOOP_PERIOD_MIN,
-                            CONTENT_LOOP_PERIOD_MAX,
-                        );
-                    }
-                } else if a.resample_escalation > 0 {
-                    // Loop cleared this stride → relax one level (recovered).
-                    a.resample_escalation -= 1;
-                }
+                        .is_some_and(|m| detect_content_token_loop_normalized(&a.output_tokens, m)))
+            {
+                tracing::warn!(
+                    content_tokens = a.content_tokens,
+                    output_len = a.output_tokens.len(),
+                    "Content-loop watchdog fired (period-{}…{} repeat in tail); ending response early",
+                    CONTENT_LOOP_PERIOD_MIN,
+                    CONTENT_LOOP_PERIOD_MAX,
+                );
+                a.finished = true;
             }
 
             // F2 (2026-04-26): bounded inter-tool prose budget.
