@@ -4,11 +4,17 @@
 use super::*;
 
 /// Auto-detect and parse inner content of a `<tool_call>` block.
-/// Tries Gemma-4 native, JSON (hermes), qwen3_coder XML, then tag-style XML fallback.
+/// Tries Gemma-4 native, JSON (hermes), qwen3_coder XML, GLM-4.7 arg_key/arg_value, then tag-style XML fallback.
 pub(super) fn parse_one_call(text: &str, idx: u32) -> Option<ToolCall> {
     // Try Gemma-4 native: call:fn_name{...} or _call:fn_name{...}
     if text.starts_with("call:") || text.starts_with("_call:") {
         return parse_gemma4_native_call(text);
+    }
+    // Try GLM-4.7 format: function_name<arg_key>k</arg_key><arg_value>v</arg_value>...
+    if (text.contains("<arg_key>") || text.contains("<arg_value>"))
+        && let Some(tc) = super::glm4::parse_glm4_call(text)
+    {
+        return Some(tc);
     }
     // Try JSON (hermes format) — complete JSON first
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {

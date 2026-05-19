@@ -17,6 +17,7 @@ qwen3_vl_moe = "hermes"       # Qwen3-VL-30B
 mistral     = "mistral"       # Mistral Small 4 — native [TOOL_CALLS]name[ARGS]{json}
 gemma4      = "gemma4"        # Gemma-4 — native format: <|tool_call>call:name{...}<tool_call|>
 minimax_m2  = "minimax_xml"    # MiniMax M2 — <minimax:tool_call><invoke name=""><parameter name="">...
+glm4_moe_lite = "glm4"        # GLM-4.7-Flash — <tool_call>fn<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>
 
 # Default reasoning parser per model_type.
 # Override at runtime with --reasoning-parser <format>.
@@ -34,3 +35,4 @@ qwen3_next  = "qwen"
 qwen3_vl_moe = "qwen"
 mistral     = "mistral"
 minimax_m2  = "qwen"           # MiniMax uses <think>...</think> via chat_template
+glm4_moe_lite = "qwen"        # GLM-4.7-Flash uses <think>...</think>
