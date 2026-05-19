@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis + fixes); 2026-05-16 (scale fix); 2026-05-18 (kv_dtypes hardening + test fix)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis + fixes); 2026-05-16 (scale fix); 2026-05-18 (kv_dtypes hardening + test fix); 2026-05-19 (verification: all P0/P1 bugs confirmed fixed)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -352,7 +352,7 @@ explicit and preventing any possible aliasing.
 
 ---
 
-## Action Items (updated 2026-05-18)
+## Action Items (updated 2026-05-19)
 
 | # | Priority | Status | Item |
 |---|----------|--------|------|
@@ -367,3 +367,31 @@ explicit and preventing any possible aliasing.
 | 9 | P2 | **CLOSED — known** | Nemotron long context >8K: Mamba-2 fixed-size state saturation, architectural limitation |
 | 10 | P2 | **OPEN** | Mistral multi-chunk performance: `mla_prefill_paged_320` iterates all kv_len positions sequentially (O(kv_len)). For kv_len > 10K, add shared-memory KV tiling to amortize page-table overhead. |
 | 11 | P1 | **FIXED** | `kv_dtypes.rs` hardening test: `test_build_layer_kv_dtypes_bf16_noop` asserted `is_empty()` — the OLD broken behavior. After the item-3 hardening (`kv_dtype==BF16` → return full BF16 vec), this test became a failing regression trap. Fixed: test renamed `test_build_layer_kv_dtypes_bf16_all_layers` and updated to assert all 12 layers are BF16, confirming the hardened path is exercised. |
+
+---
+
+## 2026-05-19 Verification
+
+Full cross-file audit of all three reported issues against the spec_ssm branch HEAD. No new code changes needed — all bugs are fixed and documented.
+
+### P1 — Mistral Small 4 MLA prefill (confirmed fixed)
+
+Audited files: `cache_skip_mla.rs`, `mla_fused_prefill.cu`, `kv_dtypes.rs`, `phase_assemble.rs`, `attention_forward_mla.rs`, `yarn.rs`.
+
+**Cache-skip (non-paged) prefill path** (`cache_skip_mla.rs`): routes through `ops::mla_fused_prefill` with `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)`. An `anyhow::ensure!` guard rejects the old HDIM=256 kernel path for MLA models. Buffer layout is correct (ssm_ba reuse is safe — q_latent consumers finish before k_rope_buf is populated).
+
+**`mla_fused_prefill.cu` kernel**: no seq_len overflow hazards. `smem_q[320]`, `smem_dot[8]`, `smem_latent[256]` are all fixed-size. The online softmax loop uses `kv_end = min(q_pos + 1, seq_len)` for correct causal masking. `smem_dot` is declared at function scope (before the loop), eliminating the NVCC aliasing hazard. The kernel is O(seq_len) per query token — correct for all seq_len values up to the 65 K max.
+
+**BF16 KV dispatch**: `build_layer_kv_dtypes` returns `vec![BF16; N]` (not `[]`) when `kv_dtype == BF16`. `phase_assemble.rs` uses `unwrap_or(KvCacheDtype::Bf16)`. `--kv-high-precision-layers auto` maps to `hp=2`, but since `kv_dtype == BF16` the early-return path fires and all 36 MLA layers are uniformly BF16 — no FP8/BF16 mixing.
+
+**Decode path** (`attention_forward_mla.rs`): uses `1/sqrt(kv_lora + mla_rope = 320)` (line 377), consistent with the fixed prefill paths. No HDIM mismatch in the decode kernel.
+
+**YaRN** (`yarn.rs`): implements the correct dimension-index-space formula with `find_correction_dim`, `beta_fast=32`, `beta_slow=1`, `factor=128`. The "YaRN inv_freq" root-cause attribution in the original test report was a misdiagnosis — yarn.rs was already correct and the actual bugs were the 5 MLA code issues above.
+
+### P2 — Nemotron Super 120B tool calling (confirmed fixed)
+
+`nemotron_h.jinja` has `{%- if tools and not disable_tool_steering %}` at the generation prompt — the steering prefix is skipped when `disable_tool_steering = true`. `MODEL.toml` sets `disable_tool_steering = true`, `tool_call_parser = "bare_json"`, `skip_template_tools = true`. With `skip_template_tools = true`, `template.rs` passes `jinja_tools = None` so the template renders no XML tool definitions. The `BareJsonParser::system_prompt()` is the sole source of tool-schema and format instructions (bare-JSON, `{"name":"...","arguments":{...}}`). No format-instruction conflict remains.
+
+### P3 — SSM cache slots / pool allocation (confirmed by design)
+
+`--ssm-cache-slots` is propagated from CLI → `serve_phases/build.rs:71` → `TransformerModel::new(ssm_cache_slots, ...)` → `SsmSnapshotPool::new(ssm_cache_slots, ...)`. Setting `--ssm-cache-slots 0` correctly zeroes the **snapshot** pool (`SsmSnapshotPool`) while leaving the **active decode** pool (`SsmStatePool`) untouched. `SsmStatePool` is sized by `--max-batch-size` (default 8) because each in-flight sequence needs its own h_state/conv_state buffer for correct SSM recurrence. To reduce the 1206 MB active pool, pass `--max-batch-size 1` for single-stream workloads.
