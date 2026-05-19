@@ -26,10 +26,24 @@ import urllib.request
 HERE = pathlib.Path(__file__).parent
 PROMPT = (HERE / "prompts" / "chess3d.txt").read_text().strip()
 PASS_GATE_FRAC = 0.8  # >=8/10; see plan Phase 0 gate definition.
+OVERRIDES: dict = {}  # populated from CLI in main(); empty = shipped preset
 
 
-def stream_one(url: str, model: str, seed: int, temp: float, max_tokens: int):
-    """One streamed completion. Returns (reasoning, content, finish, stats)."""
+def stream_one(
+    url: str,
+    model: str,
+    seed: int,
+    temp: float,
+    max_tokens: int,
+    overrides: dict | None = None,
+):
+    """One streamed completion. Returns (reasoning, content, finish, stats).
+
+    `overrides` (e.g. presence_penalty / frequency_penalty /
+    enable_thinking) are merged into the request body ONLY when
+    explicitly provided. Default = unchanged shipped behaviour (server
+    applies its MODEL.toml sampling preset). PCND: no hidden defaults.
+    """
     body = {
         "model": model,
         "messages": [{"role": "user", "content": PROMPT}],
@@ -38,6 +52,8 @@ def stream_one(url: str, model: str, seed: int, temp: float, max_tokens: int):
         "temperature": temp,
         "seed": seed,  # paired comparison; harmless if server ignores it.
     }
+    if overrides:
+        body.update(overrides)
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
@@ -162,6 +178,15 @@ def main() -> int:
     ap.add_argument("--n", type=int, default=10)
     ap.add_argument("--temp", type=float, default=0.6)
     ap.add_argument("--max-tokens", type=int, default=16000)
+    # Optional sampling overrides — only sent when explicitly passed, so
+    # the default cell exercises the server's shipped MODEL.toml preset.
+    ap.add_argument("--presence-penalty", type=float, default=None)
+    ap.add_argument("--frequency-penalty", type=float, default=None)
+    ap.add_argument(
+        "--no-thinking",
+        action="store_true",
+        help="send enable_thinking=false (vLLM-minimal cell)",
+    )
     ap.add_argument(
         "--label",
         required=True,
@@ -175,6 +200,19 @@ def main() -> int:
         "with the current analyzer (e.g. after an analyze.mjs fix)",
     )
     args = ap.parse_args()
+
+    # Build the sampling-override dict from only the explicitly-set flags.
+    global OVERRIDES
+    OVERRIDES = {}
+    if args.presence_penalty is not None:
+        OVERRIDES["presence_penalty"] = args.presence_penalty
+    if args.frequency_penalty is not None:
+        OVERRIDES["frequency_penalty"] = args.frequency_penalty
+    if args.no_thinking:
+        OVERRIDES["enable_thinking"] = False
+        OVERRIDES["chat_template_kwargs"] = {"enable_thinking": False}
+    if OVERRIDES:
+        print(f"[overrides] {OVERRIDES}", flush=True)
 
     seeds = list(range(1, args.n + 1))  # fixed -> paired across runs
     outdir = pathlib.Path(args.outdir) / args.label
@@ -193,7 +231,12 @@ def main() -> int:
             print(f"[{args.label}] seed={seed} ...", flush=True)
             try:
                 R, C, fin, st = stream_one(
-                    args.url, args.model, seed, args.temp, args.max_tokens
+                    args.url,
+                    args.model,
+                    seed,
+                    args.temp,
+                    args.max_tokens,
+                    OVERRIDES,
                 )
             except Exception as e:  # network/timeout -> hard failure
                 per_seed.append(
