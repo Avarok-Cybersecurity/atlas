@@ -106,8 +106,7 @@ pub(crate) async fn chat_completions_inner(
     if tools_active && let Some(ref parser) = state.tool_call_parser {
         let default_choice = crate::tool_parser::ToolChoice::Mode("auto".to_string());
         let tool_choice = req.tool_choice.as_ref().unwrap_or(&default_choice);
-        let tool_prompt =
-            parser.system_prompt(req.tools.as_deref().unwrap_or(&[]), tool_choice);
+        let tool_prompt = parser.system_prompt(req.tools.as_deref().unwrap_or(&[]), tool_choice);
         if let Some(first) = req.messages.first_mut().filter(|m| m.role == "system") {
             first.content.text = format!("{}\n\n{}", tool_prompt, first.content.text);
         } else {
