@@ -493,10 +493,10 @@ fn load_glm_moe(
     let mut moe = MoeLayer::new(moe_weights, n_experts, gate_nvfp4, gpu, config)?;
     // Skip MoE transpose for single-GPU to save ~33 GB peak.
     // Prefill falls back to the untransposed path (slightly slower).
-    if config.ep_world_size > 1 {
-        if let Err(e) = moe.transpose_for_prefill(gpu, config) {
-            tracing::warn!("GLM MoE transpose failed: {e:#}; using untransposed");
-        }
+    if config.ep_world_size > 1
+        && let Err(e) = moe.transpose_for_prefill(gpu, config)
+    {
+        tracing::warn!("GLM MoE transpose failed: {e:#}; using untransposed");
     }
     moe.predequant_for_prefill(gpu, config, stream)?;
 

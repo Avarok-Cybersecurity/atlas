@@ -112,13 +112,13 @@ impl MoeLayer {
 
             prof!("topk", {
                 if let Some(bias) = self.correction_bias_dev {
-                    // DeepSeek-V3 / MiniMax-M2 sigmoid + correction bias:
+                    // DeepSeek-V3 / GLM / MiniMax-M2 sigmoid + correction bias:
                     //   scores   = sigmoid(gate_logits)
                     //   indices  = topk(scores + bias)
                     //   weights  = scores[indices] / sum(scores[indices])
                     // Kernel does all three steps; norm_topk_prob toggles
-                    // the final divide, scaling_factor = 1.0 (MiniMax has
-                    // no routed_scaling_factor, unlike Nemotron-H's 2.5).
+                    // the final divide. routed_scaling_factor defaults to 1.0
+                    // (MiniMax, DeepSeek-V3) but GLM uses 1.8.
                     ops::moe_topk_sigmoid(
                         ctx.gpu,
                         self.moe_topk_sigmoid_k,
@@ -129,7 +129,7 @@ impl MoeLayer {
                         num_experts,
                         top_k,
                         ctx.config.norm_topk_prob,
-                        1.0,
+                        ctx.config.routed_scaling_factor as f32,
                         stream,
                     )
                 } else {

@@ -65,8 +65,7 @@ echo "   Speculative: DISABLED (MTP Phase 4 pending)"
 "$SPARK_BIN" serve "$MODEL_ID" \
     --port "$ATLAS_PORT" \
     --max-seq-len 60000 \
-    --kv-cache-dtype nvfp4 \
-    --kv-high-precision-layers auto \
+    --kv-cache-dtype bf16 \
     --gpu-memory-utilization 0.45 \
     --scheduling-policy slai \
     &
