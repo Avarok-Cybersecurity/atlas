@@ -1,5 +1,5 @@
 [model]
-name = "glm-4.7-flash-a3b"
+name = "glm-4.7-flash"
 hf_id = "GadflyII/GLM-4.7-Flash-NVFP4"
 params = "35B"
 active_params = "3B"

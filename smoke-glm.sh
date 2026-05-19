@@ -31,7 +31,7 @@ trap cleanup EXIT INT TERM
 
 # ── 1. Build ──────────────────────────────────────────────────────────────────
 echo "🔨 Building spark (GLM target)..."
-ATLAS_TARGET_MODEL=glm-4.7-flash-a3b \
+ATLAS_TARGET_MODEL=glm-4.7-flash \
     cargo build --release -p spark-server
 
 # ── 2. Start ──────────────────────────────────────────────────────────────────

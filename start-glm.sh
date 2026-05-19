@@ -8,7 +8,7 @@
 # Usage: ./start-glm.sh
 #
 # Build first:
-#   ATLAS_TARGET_MODEL=glm-4.7-flash-a3b cargo build --release -p spark-server
+#   ATLAS_TARGET_MODEL=glm-4.7-flash cargo build --release -p spark-server
 #
 # Architecture:
 #   Copilot / VS Code → LiteLLM (11111) → Atlas spark (9999)
@@ -27,7 +27,7 @@ LITELLM_PORT="${LITE_LLM_PROXY_PORT:-11111}"
 if [[ ! -x "$SPARK_BIN" ]]; then
     echo "❌ Binary not found: $SPARK_BIN"
     echo "   Build first:"
-    echo "   ATLAS_TARGET_MODEL=glm-4.7-flash-a3b cargo build --release -p spark-server"
+    echo "   ATLAS_TARGET_MODEL=glm-4.7-flash cargo build --release -p spark-server"
     exit 1
 fi
 

@@ -9,9 +9,9 @@
 ### Phase 0 — Scaffolding
 - `crates/spark-model/src/factory.rs` — `glm4_moe_lite` dispatch arm + unit test
 - `crates/spark-model/src/weight_loader/mod.rs` — registers `Glm4LiteWeightLoader`
-- `kernels/gb10/glm-4.7-flash-a3b/nvfp4/KERNEL.toml` — kernel manifest (reuses Qwen3.5 PTX set)
-- `kernels/gb10/glm-4.7-flash-a3b/nvfp4/MODEL.toml` — model config (model-level, inside nvfp4/)
-- `kernels/gb10/glm-4.7-flash-a3b/MODEL.toml` — model-level MODEL.toml with `[[model_types]]` entry (**untracked**)
+- `kernels/gb10/glm-4.7-flash/nvfp4/KERNEL.toml` — kernel manifest (reuses Qwen3.5 PTX set)
+- `kernels/gb10/glm-4.7-flash/nvfp4/MODEL.toml` — model config (model-level, inside nvfp4/)
+- `kernels/gb10/glm-4.7-flash/MODEL.toml` — model-level MODEL.toml with `[[model_types]]` entry (**untracked**)
 - `jinja-templates/glm4_5.jinja` — chat template
 - `docs/design/GLM-4.7-FLASH-IMPL-PLAN.md` — 7-phase design doc
 - All compile, clippy, 65 tests pass
@@ -32,8 +32,8 @@
 - `crates/atlas-core/src/config/dispatch.rs` — `glm4_moe_lite` parse branch: computes `head_dim`, maps `n_routed_experts`, sets `partial_rotary_factor`, clears `attn_gated`
 
 ### MLA kernels (untracked)
-- `kernels/gb10/glm-4.7-flash-a3b/nvfp4/paged_decode_attn_mla.cu` — GLM-specific MLA decode kernel (HDIM=576: kv_lora_rank=512 + qk_rope_head_dim=64)
-- `kernels/gb10/glm-4.7-flash-a3b/nvfp4/mla_absorbed.cu` — copied from Mistral (runtime-parametric)
+- `kernels/gb10/glm-4.7-flash/nvfp4/paged_decode_attn_mla.cu` — GLM-specific MLA decode kernel (HDIM=576: kv_lora_rank=512 + qk_rope_head_dim=64)
+- `kernels/gb10/glm-4.7-flash/nvfp4/mla_absorbed.cu` — copied from Mistral (runtime-parametric)
 - `KERNEL.toml` updated: added `paged_decode_attn_mla`, `mla_absorbed`, `moe_topk_sigmoid` entries + `-DHDIM=256` build flag
 
 ### Startup script (untracked)
@@ -46,10 +46,10 @@
 **Smoke test fails:**
 ```
 No compiled kernel target matches model_type 'glm4_moe_lite' / hidden_size=2048
-Available targets: ['glm-4.7-flash-a3b']
+Available targets: ['glm-4.7-flash']
 ```
 
-**Root cause identified:** The `[[model_types]]` entry lives in `kernels/gb10/glm-4.7-flash-a3b/MODEL.toml`. This file was created **after** the last `cargo build --release`, and `atlas-kernels/build.rs` does **not** emit `cargo:rerun-if-changed` for `MODEL.toml` — only for `.cu` files and `KERNEL.toml`. So the binary was compiled without the `glm4_moe_lite` → `glm-4.7-flash-a3b` mapping baked in.
+**Root cause identified:** The `[[model_types]]` entry lives in `kernels/gb10/glm-4.7-flash/MODEL.toml`. This file was created **after** the last `cargo build --release`, and `atlas-kernels/build.rs` does **not** emit `cargo:rerun-if-changed` for `MODEL.toml` — only for `.cu` files and `KERNEL.toml`. So the binary was compiled without the `glm4_moe_lite` → `glm-4.7-flash` mapping baked in.
 
 ---
 
@@ -62,11 +62,11 @@ Commit all untracked/modified files, then force rebuild:
 cd /home/sna/ai-projects/atlas
 
 # Stage everything
-git add kernels/gb10/glm-4.7-flash-a3b/MODEL.toml
-git add kernels/gb10/glm-4.7-flash-a3b/nvfp4/MODEL.toml
-git add kernels/gb10/glm-4.7-flash-a3b/nvfp4/KERNEL.toml
-git add kernels/gb10/glm-4.7-flash-a3b/nvfp4/paged_decode_attn_mla.cu
-git add kernels/gb10/glm-4.7-flash-a3b/nvfp4/mla_absorbed.cu
+git add kernels/gb10/glm-4.7-flash/MODEL.toml
+git add kernels/gb10/glm-4.7-flash/nvfp4/MODEL.toml
+git add kernels/gb10/glm-4.7-flash/nvfp4/KERNEL.toml
+git add kernels/gb10/glm-4.7-flash/nvfp4/paged_decode_attn_mla.cu
+git add kernels/gb10/glm-4.7-flash/nvfp4/mla_absorbed.cu
 git add crates/atlas-core/src/config.rs
 git add crates/atlas-core/src/config/dispatch.rs
 git commit -m "feat(glm): kernel target, MLA kernels, config parsing fixes"
@@ -75,7 +75,7 @@ git commit -m "feat(glm): kernel target, MLA kernels, config parsing fixes"
 touch crates/atlas-kernels/build.rs
 
 # Build only the GLM target (faster)
-ATLAS_TARGET_MODEL=glm-4.7-flash-a3b cargo build --release -p spark-server
+ATLAS_TARGET_MODEL=glm-4.7-flash cargo build --release -p spark-server
 ```
 
 > Also consider adding `println!("cargo:rerun-if-changed={}", model_toml_path.display());`
@@ -115,11 +115,11 @@ python3 bench/bench-quick.py --port 9999 --model glm4_moe_lite
 |------|--------|---------|
 | `crates/spark-model/src/weight_loader/glm4_lite.rs` | ✅ committed | Full weight loader |
 | `crates/spark-model/src/factory.rs` | ✅ committed | `glm4_moe_lite` dispatch |
-| `kernels/gb10/glm-4.7-flash-a3b/MODEL.toml` | ⚠️ untracked | `[[model_types]]` → runtime matching |
-| `kernels/gb10/glm-4.7-flash-a3b/nvfp4/MODEL.toml` | ⚠️ untracked | Sampling presets |
-| `kernels/gb10/glm-4.7-flash-a3b/nvfp4/KERNEL.toml` | ⚠️ modified | MLA + MoE module entries |
-| `kernels/gb10/glm-4.7-flash-a3b/nvfp4/paged_decode_attn_mla.cu` | ⚠️ untracked | MLA decode kernel |
-| `kernels/gb10/glm-4.7-flash-a3b/nvfp4/mla_absorbed.cu` | ⚠️ untracked | MLA absorbed kernel |
+| `kernels/gb10/glm-4.7-flash/MODEL.toml` | ⚠️ untracked | `[[model_types]]` → runtime matching |
+| `kernels/gb10/glm-4.7-flash/nvfp4/MODEL.toml` | ⚠️ untracked | Sampling presets |
+| `kernels/gb10/glm-4.7-flash/nvfp4/KERNEL.toml` | ⚠️ modified | MLA + MoE module entries |
+| `kernels/gb10/glm-4.7-flash/nvfp4/paged_decode_attn_mla.cu` | ⚠️ untracked | MLA decode kernel |
+| `kernels/gb10/glm-4.7-flash/nvfp4/mla_absorbed.cu` | ⚠️ untracked | MLA absorbed kernel |
 | `crates/atlas-core/src/config.rs` | ⚠️ modified | `eos_token_id` array fix |
 | `crates/atlas-core/src/config/dispatch.rs` | ⚠️ modified | `glm4_moe_lite` config parse |
 | `start-glm.sh` | ⚠️ untracked | Startup script |

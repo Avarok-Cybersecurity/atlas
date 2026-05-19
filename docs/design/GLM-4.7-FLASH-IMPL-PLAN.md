@@ -33,8 +33,8 @@ Files:
 - `crates/spark-model/src/factory.rs` — add dispatch arm
 - `crates/spark-model/src/weight_loader/mod.rs` — re-export `Glm4LiteWeightLoader`
 - `crates/spark-model/src/weight_loader/glm4_lite.rs` — skeleton w/ TODO!()
-- `kernels/gb10/glm-4.7-flash-a3b/nvfp4/MODEL.toml` — kernel target config
-- `kernels/gb10/glm-4.7-flash-a3b/nvfp4/KERNEL.toml` — kernel manifest
+- `kernels/gb10/glm-4.7-flash/nvfp4/MODEL.toml` — kernel target config
+- `kernels/gb10/glm-4.7-flash/nvfp4/KERNEL.toml` — kernel manifest
 - `jinja-templates/glm4_5.jinja` — chat template (ported from HF)
 - `docs/design/GLM-4.7-FLASH-IMPL-PLAN.md` — this plan, in-repo
 
@@ -86,7 +86,7 @@ Files:
 - Wire into `MtpHead` / `MtpMulti` (1 module).
 
 ### Phase 5 — MODEL.toml + behavior
-- `kernels/gb10/glm-4.7-flash-a3b/nvfp4/MODEL.toml` declares:
+- `kernels/gb10/glm-4.7-flash/nvfp4/MODEL.toml` declares:
   - `model_types = [{ model_type = "glm4_moe_lite", hidden_size = 2048 }]`
   - Sampling presets (GLM card: T=0.6 thinking, T=0.8 non-thinking,
     top_p=0.95, top_k=40).
@@ -101,7 +101,7 @@ Files:
   GLM-specific newlines). Confirm with a smoke test.
 
 ### Phase 7 — Build, smoke test, benchmark
-- `cargo build --release` with `ATLAS_TARGET_MODEL=glm-4.7-flash-a3b`.
+- `cargo build --release` with `ATLAS_TARGET_MODEL=glm-4.7-flash`.
 - `./target/release/spark serve GadflyII/GLM-4.7-Flash-NVFP4 --port 9999`.
 - Validate text completion correctness via the existing `bench/bench-quick.py`.
 - Run `benchmark_all_engines.sh` in the GLM repo against Atlas as a 4th
