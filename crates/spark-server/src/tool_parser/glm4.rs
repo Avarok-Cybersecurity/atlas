@@ -47,6 +47,10 @@ impl ToolCallParser for Glm4Parser {
                 .unwrap_or(serde_json::Value::Object(Default::default()));
             out.push_str("<tool_call>");
             out.push_str(&tc.function.name);
+            // GLM-4.7 tokenizer requires a newline between function name and
+            // first arg_key — matches the jinja template:
+            //   {{ '<tool_call>' + tc.name }}\n{% for k,v %}<arg_key>k</arg_key>...
+            out.push('\n');
             if let Some(obj) = args.as_object() {
                 for (key, val) in obj {
                     let val_str = match val {

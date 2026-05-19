@@ -1,0 +1,8 @@
+[2m2026-05-19T12:15:45.338593Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Atlas Spark starting...
+[2m2026-05-19T12:15:45.338634Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Licensed under AGPL-3.0-only — see /LICENSE in this container
+[2m2026-05-19T12:15:45.338666Z[0m [32m INFO[0m [2mspark::model_resolver[0m[2m:[0m Model: GadflyII/GLM-4.7-Flash-NVFP4 (resolved to /home/sna/.cache/huggingface/hub/models--GadflyII--GLM-4.7-Flash-NVFP4/snapshots/3cdd7f37b66dc9063aacb0418e74041fe5316984)
+[2m2026-05-19T12:15:45.338669Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Port: 9999
+[2m2026-05-19T12:15:45.338670Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m SSM decode dtype: f32 (full precision)
+[2m2026-05-19T12:15:45.338719Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Quantization config: method="compressed-tensors", algo="NVFP4", format="nvfp4-pack-quantized", 4 module(s) in ignore list
+[2m2026-05-19T12:15:45.338722Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Model config: 47 layers, 47 attention, 0 SSM, 64 experts, rope_theta=1000000, head_dim=256, rotary_dim=64
+[2m2026-05-19T12:15:45.338736Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Selected kernel target: (sm_121, glm-4.7-flash-a3b, nvfp4) (90 modules)

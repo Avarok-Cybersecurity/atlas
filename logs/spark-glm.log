@@ -1,0 +1,92 @@
+nohup: ignoring input
+[2m2026-05-19T12:08:00.456979Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Atlas Spark starting...
+[2m2026-05-19T12:08:00.457027Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Licensed under AGPL-3.0-only — see /LICENSE in this container
+[2m2026-05-19T12:08:00.457091Z[0m [32m INFO[0m [2mspark::model_resolver[0m[2m:[0m Model: GadflyII/GLM-4.7-Flash-NVFP4 (resolved to /home/sna/.cache/huggingface/hub/models--GadflyII--GLM-4.7-Flash-NVFP4/snapshots/3cdd7f37b66dc9063aacb0418e74041fe5316984)
+[2m2026-05-19T12:08:00.457099Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Port: 9999
+[2m2026-05-19T12:08:00.457102Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m SSM decode dtype: f32 (full precision)
+[2m2026-05-19T12:08:00.457182Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Quantization config: method="compressed-tensors", algo="NVFP4", format="nvfp4-pack-quantized", 4 module(s) in ignore list
+[2m2026-05-19T12:08:00.457194Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Model config: 47 layers, 47 attention, 0 SSM, 64 experts, rope_theta=1000000, head_dim=256, rotary_dim=64
+[2m2026-05-19T12:08:00.457217Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Selected kernel target: (sm_121, glm-4.7-flash-a3b, nvfp4) (90 modules)
+[2m2026-05-19T12:08:00.689807Z[0m [32m INFO[0m [2mspark_runtime::cuda_backend[0m[2m:[0m AtlasCudaBackend initialized on GPU 0 with 90 PTX modules
+[2m2026-05-19T12:08:00.689921Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::preflight[0m[2m:[0m GPU 0: 119.7 GB total, 113.3 GB free
+[2m2026-05-19T12:08:00.689931Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::preflight[0m[2m:[0m Preflight reserve: inference=512 MB, buffer_arena=1379 MB (pre-load free: 113.3 GB)
+[2m2026-05-19T12:08:00.689944Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m OOM watchdog started (threshold: 2 GB, interval: 2s)
+[2m2026-05-19T12:08:00.689949Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m OOM guard reserve: 4096 MB
+[2m2026-05-19T12:08:00.689952Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::weights[0m[2m:[0m Using fast weight loader (O_DIRECT + pipelined read/copy)
+[2m2026-05-19T12:08:00.811202Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-load pre-flight: 19.04 GB on-disk, 1.3x overhead = 24.75 GB peak, 113.32 GB free, 4.0 GB reserve (FP8: false)
+[2m2026-05-19T12:08:00.812286Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 1/4: model-00000-of-00004.safetensors (8231 tensors)
+[2m2026-05-19T12:08:00.820748Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard has 8231 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-05-19T12:08:06.035158Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 1/4 done — GPU memory: 6.27 GB used, 107.05 GB free
+[2m2026-05-19T12:08:06.036581Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 2/4: model-00001-of-00004.safetensors (10905 tensors)
+[2m2026-05-19T12:08:06.050999Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard has 10905 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-05-19T12:08:11.014877Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 2/4 done — GPU memory: 12.31 GB used, 101.00 GB free
+[2m2026-05-19T12:08:11.016931Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 3/4: model-00002-of-00004.safetensors (10941 tensors)
+[2m2026-05-19T12:08:11.036576Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard has 10941 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-05-19T12:08:15.785813Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 3/4 done — GPU memory: 18.33 GB used, 94.99 GB free
+[2m2026-05-19T12:08:15.786965Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 4/4: model-00003-of-00004.safetensors (7136 tensors)
+[2m2026-05-19T12:08:15.796313Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard has 7136 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-05-19T12:08:19.520147Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 4/4 done — GPU memory: 23.20 GB used, 90.11 GB free
+[2m2026-05-19T12:08:19.520431Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loaded 37213 weight tensors
+[2m2026-05-19T12:08:19.528973Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::weights[0m[2m:[0m Loaded 37213 weight tensors
+[2m2026-05-19T12:08:19.534995Z[0m [32m INFO[0m [2mspark_model::preflight[0m[2m:[0m Pre-flight: checkpoint has 1 layer(s) beyond num_hidden_layers=47 (max index 47). Treating extras as MTP/draft modules.
+[2m2026-05-19T12:08:19.542130Z[0m [32m INFO[0m [2mspark_model::preflight[0m[2m:[0m Pre-flight checks passed
+[2m2026-05-19T12:08:19.542161Z[0m [32m INFO[0m [2mspark_model::quant_format[0m[2m:[0m QuantFormat: compressed-tensors (format="nvfp4-pack-quantized"), 4 ignored module(s)
+[2m2026-05-19T12:08:19.542166Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Quantization format: compressed-tensors (base variant CompressedTensors), ignored globs = 4
+[2m2026-05-19T12:08:19.542758Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::preflight[0m[2m:[0m Weights: 19.04 GB, estimated free: 94.3 GB, actual free: 90.1 GB (reserve: 512 MB)
+[2m2026-05-19T12:08:19.542774Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::kv_cache[0m[2m:[0m Prefill config: ssm_prefill_chunk=0, args.max_prefill_tokens=8192, prefill_budget=8192, max_batch_tokens=8193
+[2m2026-05-19T12:08:19.542782Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::build[0m[2m:[0m Prefix caching: disabled
+[2m2026-05-19T12:08:19.944393Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::config[0m[2m:[0m Capping vocab_size from 154880 to 154856 (tokenizer)
+[2m2026-05-19T12:08:19.966659Z[0m [32m INFO[0m [2mspark_model::weight_loader::glm4_lite[0m[2m:[0m GLM-4.7-Flash: detected NVFP4 variant CompressedTensors
+[2m2026-05-19T12:08:19.966843Z[0m [32m INFO[0m [2mspark_model::weight_loader::glm4_lite[0m[2m:[0m GLM RoPE inv_freq: 32 pairs, theta=1e6, [0]=1.0000e0 [last]=1.5399e-6
+[2m2026-05-19T12:08:19.966928Z[0m [32m INFO[0m [2mspark_model::weight_map::loaders_fp8[0m[2m:[0m quantize_to_nvfp4: n=768 k=2048 total=1572864 global_max=0.125977 scale2=0.00004687 grid1=1024
+[2m2026-05-19T12:08:19.967042Z[0m [32m INFO[0m [2mspark_model::weight_map::loaders_fp8[0m[2m:[0m quantize_to_nvfp4: n=5120 k=768 total=3932160 global_max=0.789062 scale2=0.00029355 grid1=1024
+[2m2026-05-19T12:08:19.967467Z[0m [32m INFO[0m [2mspark_model::weight_map::loaders_fp8[0m[2m:[0m quantize_to_nvfp4: n=576 k=2048 total=1179648 global_max=1.632812 scale2=0.00060745 grid1=1024
+[2m2026-05-19T12:08:19.967801Z[0m [32m INFO[0m [2mspark_model::weight_map::loaders_fp8[0m[2m:[0m quantize_to_nvfp4: n=2048 k=5120 total=10485760 global_max=0.298828 scale2=0.00011117 grid1=1024
+[2m2026-05-19T12:08:21.271652Z[0m [32m INFO[0m [2mspark_model::weight_loader::glm4_lite[0m[2m:[0m GLM W_QK_absorbed: [10240, 768] (15.7 MB/layer)
+[2m2026-05-19T12:08:21.317666Z[0m [32m INFO[0m [2mspark_model::weight_loader::glm4_lite[0m[2m:[0m GLM MLA block-diag: W_UK [10240,3840] (78.6MB), W_UV [5120,10240] (104.9MB)
+[2m2026-05-19T12:08:21.325952Z[0m [32m INFO[0m [2mspark_model::weight_map::loaders_fp8[0m[2m:[0m quantize_to_nvfp4: n=768 k=2048 total=1572864 global_max=0.120117 scale2=0.00004469 grid1=1024
+[2m2026-05-19T12:08:30.860724Z[0m [32m INFO[0m [2mspark_model::weight_loader::glm4_lite[0m[2m:[0m GLM L8/47 done — 94.8 GB free
+[2m2026-05-19T12:08:41.775756Z[0m [32m INFO[0m [2mspark_model::weight_loader::glm4_lite[0m[2m:[0m GLM L16/47 done — 93.0 GB free
+[2m2026-05-19T12:08:52.706327Z[0m [32m INFO[0m [2mspark_model::weight_loader::glm4_lite[0m[2m:[0m GLM L24/47 done — 91.2 GB free
+[2m2026-05-19T12:09:03.627305Z[0m [32m INFO[0m [2mspark_model::weight_loader::glm4_lite[0m[2m:[0m GLM L32/47 done — 89.3 GB free
+[2m2026-05-19T12:09:14.566513Z[0m [32m INFO[0m [2mspark_model::weight_loader::glm4_lite[0m[2m:[0m GLM L40/47 done — 87.5 GB free
+[2m2026-05-19T12:09:24.132575Z[0m [32m INFO[0m [2mspark_model::weight_loader::glm4_lite[0m[2m:[0m GLM L47/47 done — 85.8 GB free
+[2m2026-05-19T12:09:24.132617Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m LM head kept as BF16 (skip NVFP4 quantization per model config)
+[2m2026-05-19T12:09:24.185208Z[0m [32m INFO[0m [2mspark_runtime::buffers[0m[2m:[0m Buffer arena: 8193 tokens × 1380.1 MB total (attn_out=180.0MB, ssm_deint=180.0MB, kv_lora_rank=512)
+[2m2026-05-19T12:09:24.185247Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m MLA absorbed KV cache: 1 head × 576 dims (512+64) per token (vs 20 heads × 256)
+[2m2026-05-19T12:09:24.185328Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m KV cache (post-construction): 78.5 GB free, 78.0 GB allocatable, 41098 blocks × 16 tok/block = 657568 max tokens
+[2m2026-05-19T12:09:26.500487Z[0m [32m INFO[0m [2mspark_runtime::kv_cache::paged_impl[0m[2m:[0m KV cache: 41098 blocks × 47 layers × 36864 bytes/block = 66.3 GB total
+[2m2026-05-19T12:09:26.500640Z[0m [32m INFO[0m [2mspark_model::model::impl_a1[0m[2m:[0m TransformerModel: 47 layers, vocab=154856, hidden=2048
+[2m2026-05-19T12:09:26.500647Z[0m [32m INFO[0m [2mspark_model::model::ssm_pool[0m[2m:[0m SSM state pool: 1 slots × 0 layers = 0 MB
+[2m2026-05-19T12:09:26.500650Z[0m [32m INFO[0m [2mspark_model::model::impl_a1[0m[2m:[0m Marconi intermediate checkpoints: every 256 blocks (4096 tokens at block_size=16)
+[2m2026-05-19T12:09:26.502183Z[0m [32m INFO[0m [2mspark_model::model::impl_a1[0m[2m:[0m Pinned metadata staging: 1439 KB
+[2m2026-05-19T12:09:26.510601Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m EOS tokens (from generation_config.json): [154820, 154827, 154829]
+[2m2026-05-19T12:09:26.510615Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Default sampling: temperature=1, top_k=20, top_p=0.95, top_n_sigma=1, min_p=0
+[2m2026-05-19T12:09:26.884255Z[0m [32m INFO[0m [2mspark::tokenizer::jinja_helpers[0m[2m:[0m Using override Jinja template from ./jinja-templates/glm4_moe_lite.jinja (3066 chars)
+[2m2026-05-19T12:09:26.884899Z[0m [32m INFO[0m [2mspark::tokenizer::chat_impl[0m[2m:[0m Loaded tokenizer from /home/sna/.cache/huggingface/hub/models--GadflyII--GLM-4.7-Flash-NVFP4/snapshots/3cdd7f37b66dc9063aacb0418e74041fe5316984/tokenizer.json
+[2m2026-05-19T12:09:26.916418Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Thinking start token: 154841 (<think>)
+[2m2026-05-19T12:09:26.916495Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Reflection suppression tokens: 7 IDs resolved
+[2m2026-05-19T12:09:26.916514Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Tool call start token: 154843 (<tool_call>)
+[2m2026-05-19T12:09:26.916517Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Tool call end token: 154844 (</tool_call>)
+[2m2026-05-19T12:09:27.180602Z[0m [32m INFO[0m [2mspark::grammar::engine[0m[2m:[0m Grammar: detected tokenizer vocab_type=byte_level, add_prefix_space=false
+[2m2026-05-19T12:09:27.259838Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Grammar engine initialized (vocab_size=154856, vocab_type=auto-detected from tokenizer)
+[2m2026-05-19T12:09:27.260457Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Scheduling policy: FIFO
+[2m2026-05-19T12:09:27.261184Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Tool call parser: disabled (no mapping for model_type 'glm4_moe_lite')
+[2m2026-05-19T12:09:27.261226Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Response store: max_entries=10000, ttl=86400s, persist=memory-only
+[2m2026-05-19T12:09:27.261231Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Model behavior: thinking disabled when tools active (MODEL.toml)
+[2m2026-05-19T12:09:27.261233Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Model behavior: max_thinking_budget=4096, thinking_default=true
+[2m2026-05-19T12:09:27.261268Z[0m [32m INFO[0m [2mspark::scheduler[0m[2m:[0m Scheduler started (batched mode, max_batch=1, mtp=false, ngram=false, num_drafts=0, policy=fifo, chunked_prefill=true, max_prefill_tokens=8192)
+[2m2026-05-19T12:09:27.261387Z[0m [32m INFO[0m [2mspark::scheduler[0m[2m:[0m Swap space: 3 GB at /tmp/atlas-swap/
+[2m2026-05-19T12:09:27.261440Z[0m [32m INFO[0m [2mspark::main_modules::serve_router[0m[2m:[0m API reachable only from this machine (loopback). To expose on the LAN pass --bind 0.0.0.0; combine with --require-auth and --auth-tokens-file for non-trusted networks.
+[2m2026-05-19T12:09:27.261446Z[0m [32m INFO[0m [2mspark::main_modules::serve_router[0m[2m:[0m Listening on 127.0.0.1:9999
+[2m2026-05-19T12:09:57.103849Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m Request: model=GadflyII/GLM-4.7-Flash-NVFP4, messages=1, tools=0, tools_active=false, tool_choice=None, stream=false, temp=None, max_tokens=30, freq_pen=None, rep_pen=None
+[2m2026-05-19T12:09:57.103955Z[0m [32m INFO[0m [2mspark::tokenizer::chat_impl[0m[2m:[0m Jinja rendered (81 chars): "[gMASK]<sop><|user|>What is 2+2? Answer with just the number.<|assistant|><think>"
+[2m2026-05-19T12:09:57.104049Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m Session 0xd0ef84ebf4c8b0da: 18 prompt tokens, tools=false (0 defined)
+[2m2026-05-19T12:09:57.104101Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Thinking enabled, budget=Some(27)
+[2m2026-05-19T12:09:57.104117Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Chunked prefill start: 18 prompt tokens, chunk_size=18, max_tokens=30
+[2m2026-05-19T12:09:57.377540Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Prefill first token: 59
+[2m2026-05-19T12:09:57.377571Z[0m [32m INFO[0m [2mspark::scheduler::phase_start_prefills[0m[2m:[0m Prefilled (single chunk): seq_len=18, remaining=29
+[2m2026-05-19T12:09:57.377661Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a[0m[2m:[0m CUDA graph capture: starting for 47 layers
+[2m2026-05-19T12:09:57.380769Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a[0m[2m:[0m CUDA graph captured successfully for slot=0 (handle=279084158730016)
+[2m2026-05-19T12:09:58.116500Z[0m [32m INFO[0m [2mspark::scheduler::decode_logits_step[0m[2m:[0m process_decode_logits: remaining=0, output_tokens=30, thinking_tokens=0
+[2m2026-05-19T12:09:58.116534Z[0m [32m INFO[0m [2mspark::scheduler::lifecycle[0m[2m:[0m Done: 30 tokens (length) 40.6 tok/s, TTFT=273.5ms

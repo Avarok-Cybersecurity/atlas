@@ -89,6 +89,8 @@ max_thinking_budget = 4096
 enable_loop_watchdog = false
 thinking_in_tools = false       # match Qwen3.5 — prevents "Think-Satisfy" on tool turns
 default_num_drafts = 1          # K=2 with MTP enabled
+tool_call_parser = "glm4"       # <tool_call>fn<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>
+reasoning_parser = "qwen"       # GLM-4.7-Flash uses <think>...
 
 [[model_types]]
 model_type = "glm4_moe_lite"

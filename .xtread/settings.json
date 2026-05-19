@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/sna/ai-projects/**)",
+      "Bash(grep *)",
+      "Bash(ls *)",
+      "Bash(find *)",
+      "Bash(pgrep *)"
+    ]
+  },
+  "$version": 3
+}

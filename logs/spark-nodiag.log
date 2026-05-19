@@ -1,0 +1,20 @@
+[2m2026-05-19T12:19:54.737725Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Atlas Spark starting...
+[2m2026-05-19T12:19:54.737798Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Licensed under AGPL-3.0-only — see /LICENSE in this container
+[2m2026-05-19T12:19:54.737857Z[0m [32m INFO[0m [2mspark::model_resolver[0m[2m:[0m Model: GadflyII/GLM-4.7-Flash-NVFP4 (resolved to /home/sna/.cache/huggingface/hub/models--GadflyII--GLM-4.7-Flash-NVFP4/snapshots/3cdd7f37b66dc9063aacb0418e74041fe5316984)
+[2m2026-05-19T12:19:54.737864Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Port: 9999
+[2m2026-05-19T12:19:54.737867Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m SSM decode dtype: f32 (full precision)
+[2m2026-05-19T12:19:54.737948Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Quantization config: method="compressed-tensors", algo="NVFP4", format="nvfp4-pack-quantized", 4 module(s) in ignore list
+[2m2026-05-19T12:19:54.737972Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Model config: 47 layers, 47 attention, 0 SSM, 64 experts, rope_theta=1000000, head_dim=256, rotary_dim=64
+[2m2026-05-19T12:19:54.737998Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Selected kernel target: (sm_121, glm-4.7-flash-a3b, nvfp4) (90 modules)
+[2m2026-05-19T12:19:54.967702Z[0m [32m INFO[0m [2mspark_runtime::cuda_backend[0m[2m:[0m AtlasCudaBackend initialized on GPU 0 with 90 PTX modules
+[2m2026-05-19T12:19:54.967831Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::preflight[0m[2m:[0m GPU 0: 119.7 GB total, 113.3 GB free
+[2m2026-05-19T12:19:54.967840Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::preflight[0m[2m:[0m Preflight reserve: inference=512 MB, buffer_arena=1378 MB (pre-load free: 113.3 GB)
+[2m2026-05-19T12:19:54.967852Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m OOM watchdog started (threshold: 2 GB, interval: 2s)
+[2m2026-05-19T12:19:54.967856Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m OOM guard reserve: 4096 MB
+[2m2026-05-19T12:19:54.967860Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::weights[0m[2m:[0m Using fast weight loader (O_DIRECT + pipelined read/copy)
+[2m2026-05-19T12:19:55.077157Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-load pre-flight: 19.04 GB on-disk, 1.3x overhead = 24.75 GB peak, 113.31 GB free, 4.0 GB reserve (FP8: false)
+[2m2026-05-19T12:19:55.078261Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 1/4: model-00000-of-00004.safetensors (8231 tensors)
+[2m2026-05-19T12:19:55.086625Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard has 8231 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-05-19T12:19:59.948578Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 1/4 done — GPU memory: 6.21 GB used, 107.10 GB free
+[2m2026-05-19T12:19:59.949922Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 2/4: model-00001-of-00004.safetensors (10905 tensors)
+[2m2026-05-19T12:19:59.965978Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard has 10905 tensors (> 5000 cap) — using buffered+pipelined path

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/sna/ai-projects/**)"
+    ]
+  }
+}

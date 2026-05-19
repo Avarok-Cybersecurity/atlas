@@ -51,6 +51,7 @@ echo "   Model: $MODEL_ID"
     --max-batch-size 1 \
     --gpu-memory-utilization 0.45 \
     --scheduling-policy slai \
+    --max-prefill-tokens 50000 \
     &
 SPARK_PID=$!
 

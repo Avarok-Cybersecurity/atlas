@@ -1,0 +1,364 @@
+2026-05-18 08:59:01,535 litellm.image_request     INFO     ============================================================
+2026-05-18 08:59:01,535 litellm.image_request     INFO     LiteLLM Qwen3.6-35B-A3B Proxy Started
+2026-05-18 08:59:01,535 server_compress           INFO     Starting LiteLLM proxy on 0.0.0.0:11111
+2026-05-18 08:59:01,536 server_compress           INFO     Config: /home/sna/ai-projects/lunch-model/lite_llm_config.yaml
+2026-05-18 08:59:01,536 server_compress           INFO     Assistant history sanitization enabled
+2026-05-18 08:59:01,536 server_compress           INFO     Registered custom callbacks: 1
+2026-05-18 08:59:01,536 server_compress           INFO       - QwenTokenTracker
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: unified_guardrail.py:79 - UnifiedLLMGuardrails initialized with optional_params: {}
+2026-05-18 08:59:01,590 LiteLLM Proxy             DEBUG    UnifiedLLMGuardrails initialized with optional_params: {}
+2026-05-18 08:59:01,733 mcp.server.lowlevel.server DEBUG    Initializing server 'litellm-mcp-server'
+[92m08:59:01 - LiteLLM:DEBUG[0m: sse_transport.py:51 - SseServerTransport initialized with endpoint: /mcp/sse/messages
+2026-05-18 08:59:01,733 LiteLLM                   DEBUG    SseServerTransport initialized with endpoint: /mcp/sse/messages
+2026-05-18 08:59:01,733 mcp.server.lowlevel.server DEBUG    Registering handler for ListToolsRequest
+2026-05-18 08:59:01,733 mcp.server.lowlevel.server DEBUG    Registering handler for CallToolRequest
+2026-05-18 08:59:01,734 mcp.server.lowlevel.server DEBUG    Registering handler for PromptListRequest
+2026-05-18 08:59:01,734 mcp.server.lowlevel.server DEBUG    Registering handler for GetPromptRequest
+2026-05-18 08:59:01,734 mcp.server.lowlevel.server DEBUG    Registering handler for ListResourcesRequest
+2026-05-18 08:59:01,734 mcp.server.lowlevel.server DEBUG    Registering handler for ListResourceTemplatesRequest
+2026-05-18 08:59:01,734 mcp.server.lowlevel.server DEBUG    Registering handler for ReadResourceRequest
+[92m08:59:01 - LiteLLM Proxy:INFO[0m: debug_utils.py:44 - Current GC thresholds: gen0=700, gen1=10, gen2=10
+2026-05-18 08:59:01,799 LiteLLM Proxy             INFO     Current GC thresholds: gen0=700, gen1=10, gen2=10
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.aporia_ai
+2026-05-18 08:59:01,829 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.aporia_ai
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.hiddenlayer
+2026-05-18 08:59:01,830 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.hiddenlayer
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.promptguard
+2026-05-18 08:59:01,905 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.promptguard
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.onyx
+2026-05-18 08:59:01,905 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.onyx
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.guardrails_ai
+2026-05-18 08:59:01,905 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.guardrails_ai
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.custom_code
+2026-05-18 08:59:01,906 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.custom_code
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.model_armor
+2026-05-18 08:59:01,906 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.model_armor
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.lasso
+2026-05-18 08:59:01,906 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.lasso
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.dynamoai
+2026-05-18 08:59:01,906 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.dynamoai
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.tool_policy
+2026-05-18 08:59:01,908 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.tool_policy
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.ibm_guardrails
+2026-05-18 08:59:01,908 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.ibm_guardrails
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.zscaler_ai_guard
+2026-05-18 08:59:01,908 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.zscaler_ai_guard
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.mcp_security
+2026-05-18 08:59:01,908 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.mcp_security
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.litellm_content_filter
+2026-05-18 08:59:01,909 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.litellm_content_filter
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.qualifire
+2026-05-18 08:59:01,911 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.qualifire
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.mcp_jwt_signer
+2026-05-18 08:59:01,911 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.mcp_jwt_signer
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.javelin
+2026-05-18 08:59:01,912 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.javelin
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.akto
+2026-05-18 08:59:01,913 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.akto
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.pillar
+2026-05-18 08:59:01,913 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.pillar
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.panw_prisma_airs
+2026-05-18 08:59:01,913 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.panw_prisma_airs
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.prompt_security
+2026-05-18 08:59:01,914 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.prompt_security
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.crowdstrike_aidr
+2026-05-18 08:59:01,914 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.crowdstrike_aidr
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.grayswan
+2026-05-18 08:59:01,914 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.grayswan
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.aim
+2026-05-18 08:59:01,914 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.aim
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.noma
+2026-05-18 08:59:01,917 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.noma
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.pangea
+2026-05-18 08:59:01,917 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.pangea
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.generic_guardrail_api
+2026-05-18 08:59:01,917 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.generic_guardrail_api
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.unified_guardrail
+2026-05-18 08:59:01,925 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.unified_guardrail
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.block_code_execution
+2026-05-18 08:59:01,925 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.block_code_execution
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.enkryptai
+2026-05-18 08:59:01,926 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.enkryptai
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.semantic_guard
+2026-05-18 08:59:01,926 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.semantic_guard
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.openai
+2026-05-18 08:59:01,926 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.openai
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.mcp_end_user_permission
+2026-05-18 08:59:01,926 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.mcp_end_user_permission
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:171 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.azure
+2026-05-18 08:59:01,927 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.azure
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.aporia_ai
+2026-05-18 08:59:01,927 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.aporia_ai
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.aporia_ai: ['aporia']
+2026-05-18 08:59:01,927 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.aporia_ai: ['aporia']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.hiddenlayer
+2026-05-18 08:59:01,927 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.hiddenlayer
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.hiddenlayer: ['hiddenlayer']
+2026-05-18 08:59:01,927 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.hiddenlayer: ['hiddenlayer']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.promptguard
+2026-05-18 08:59:01,927 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.promptguard
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.promptguard: ['promptguard']
+2026-05-18 08:59:01,927 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.promptguard: ['promptguard']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.onyx
+2026-05-18 08:59:01,927 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.onyx
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.onyx: ['onyx']
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.onyx: ['onyx']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.guardrails_ai
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.guardrails_ai
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.guardrails_ai: ['guardrails_ai']
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.guardrails_ai: ['guardrails_ai']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.custom_code
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.custom_code
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.custom_code: ['custom_code']
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.custom_code: ['custom_code']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.model_armor
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.model_armor
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.model_armor: ['model_armor']
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.model_armor: ['model_armor']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.lasso
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.lasso
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.lasso: ['lasso']
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.lasso: ['lasso']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.dynamoai
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.dynamoai
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.dynamoai: ['dynamoai']
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.dynamoai: ['dynamoai']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.tool_policy
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.tool_policy
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:108 - Found initialize_guardrail function in litellm.proxy.guardrails.guardrail_hooks.tool_policy
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Found initialize_guardrail function in litellm.proxy.guardrails.guardrail_hooks.tool_policy
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.ibm_guardrails
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.ibm_guardrails
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.ibm_guardrails: ['ibm_guardrails']
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.ibm_guardrails: ['ibm_guardrails']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.zscaler_ai_guard
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.zscaler_ai_guard
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.zscaler_ai_guard: ['zscaler_ai_guard']
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.zscaler_ai_guard: ['zscaler_ai_guard']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.mcp_security
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.mcp_security
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.mcp_security: ['mcp_security']
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.mcp_security: ['mcp_security']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.litellm_content_filter
+2026-05-18 08:59:01,928 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.litellm_content_filter
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.litellm_content_filter: ['litellm_content_filter']
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.litellm_content_filter: ['litellm_content_filter']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.qualifire
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.qualifire
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.qualifire: ['qualifire']
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.qualifire: ['qualifire']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.mcp_jwt_signer
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.mcp_jwt_signer
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.mcp_jwt_signer: ['mcp_jwt_signer']
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.mcp_jwt_signer: ['mcp_jwt_signer']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.javelin
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.javelin
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.javelin: ['javelin']
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.javelin: ['javelin']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.akto
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.akto
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.akto: ['akto']
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.akto: ['akto']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.pillar
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.pillar
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.pillar: ['pillar']
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.pillar: ['pillar']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.panw_prisma_airs
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.panw_prisma_airs
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.panw_prisma_airs: ['panw_prisma_airs']
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.panw_prisma_airs: ['panw_prisma_airs']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.prompt_security
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.prompt_security
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.prompt_security: ['prompt_security']
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.prompt_security: ['prompt_security']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.crowdstrike_aidr
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.crowdstrike_aidr
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.crowdstrike_aidr: ['crowdstrike_aidr']
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.crowdstrike_aidr: ['crowdstrike_aidr']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.grayswan
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.grayswan
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.grayswan: ['grayswan']
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.grayswan: ['grayswan']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.aim
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.aim
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.aim: ['aim']
+2026-05-18 08:59:01,929 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.aim: ['aim']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.noma
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.noma
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.noma: ['noma', 'noma_v2']
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.noma: ['noma', 'noma_v2']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.pangea
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.pangea
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.pangea: ['pangea']
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.pangea: ['pangea']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.generic_guardrail_api
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.generic_guardrail_api
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.generic_guardrail_api: ['generic_guardrail_api']
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.generic_guardrail_api: ['generic_guardrail_api']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.unified_guardrail
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.unified_guardrail
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.block_code_execution
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.block_code_execution
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.block_code_execution: ['block_code_execution']
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.block_code_execution: ['block_code_execution']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.enkryptai
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.enkryptai
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.enkryptai: ['enkryptai']
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.enkryptai: ['enkryptai']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.semantic_guard
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.semantic_guard
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.semantic_guard: ['semantic_guard']
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.semantic_guard: ['semantic_guard']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.openai
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.openai
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.openai: ['openai_moderation']
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.openai: ['openai_moderation']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.mcp_end_user_permission
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.mcp_end_user_permission
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.mcp_end_user_permission: ['mcp_end_user_permission']
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.mcp_end_user_permission: ['mcp_end_user_permission']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:90 - Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.azure
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Discovering guardrails in: litellm.proxy.guardrails.guardrail_hooks.azure
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:99 - Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.azure: ['azure/prompt_shield', 'azure/text_moderations']
+2026-05-18 08:59:01,930 LiteLLM Proxy             DEBUG    Found guardrail_initializer_registry in litellm.proxy.guardrails.guardrail_hooks.azure: ['azure/prompt_shield', 'azure/text_moderations']
+[92m08:59:01 - LiteLLM Proxy:DEBUG[0m: guardrail_registry.py:119 - Discovered 35 guardrail initializers: ['aporia', 'hiddenlayer', 'promptguard', 'onyx', 'guardrails_ai', 'custom_code', 'model_armor', 'lasso', 'dynamoai', 'tool_policy', 'ibm_guardrails', 'zscaler_ai_guard', 'mcp_security', 'litellm_content_filter', 'qualifire', 'mcp_jwt_signer', 'javelin', 'akto', 'pillar', 'panw_prisma_airs', 'prompt_security', 'crowdstrike_aidr', 'grayswan', 'aim', 'noma', 'noma_v2', 'pangea', 'generic_guardrail_api', 'block_code_execution', 'enkryptai', 'semantic_guard', 'openai_moderation', 'mcp_end_user_permission', 'azure/prompt_shield', 'azure/text_moderations']
+2026-05-18 08:59:01,931 LiteLLM Proxy             DEBUG    Discovered 35 guardrail initializers: ['aporia', 'hiddenlayer', 'promptguard', 'onyx', 'guardrails_ai', 'custom_code', 'model_armor', 'lasso', 'dynamoai', 'tool_policy', 'ibm_guardrails', 'zscaler_ai_guard', 'mcp_security', 'litellm_content_filter', 'qualifire', 'mcp_jwt_signer', 'javelin', 'akto', 'pillar', 'panw_prisma_airs', 'prompt_security', 'crowdstrike_aidr', 'grayswan', 'aim', 'noma', 'noma_v2', 'pangea', 'generic_guardrail_api', 'block_code_execution', 'enkryptai', 'semantic_guard', 'openai_moderation', 'mcp_end_user_permission', 'azure/prompt_shield', 'azure/text_moderations']
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: litellm_license.py:29 - License Str value - None
+2026-05-18 08:59:02,439 LiteLLM Proxy             DEBUG    License Str value - None
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: litellm_license.py:104 - litellm.proxy.auth.litellm_license.py::is_premium() - ENTERING 'IS_PREMIUM' - LiteLLM License=None
+2026-05-18 08:59:02,439 LiteLLM Proxy             DEBUG    litellm.proxy.auth.litellm_license.py::is_premium() - ENTERING 'IS_PREMIUM' - LiteLLM License=None
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: litellm_license.py:114 - litellm.proxy.auth.litellm_license.py::is_premium() - Updated 'self.license_str' - None
+2026-05-18 08:59:02,439 LiteLLM Proxy             DEBUG    litellm.proxy.auth.litellm_license.py::is_premium() - Updated 'self.license_str' - None
+[92m08:59:02 - LiteLLM Proxy:INFO[0m: proxy_server.py:1372 - Using packaged UI directory: /home/sna/ai-projects/lunch-model/venv/lib/python3.12/site-packages/litellm/proxy/_experimental/out
+2026-05-18 08:59:02,439 LiteLLM Proxy             INFO     Using packaged UI directory: /home/sna/ai-projects/lunch-model/venv/lib/python3.12/site-packages/litellm/proxy/_experimental/out
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: proxy_server.py:1264 - Detected restructured UI via pattern: found policies/index.html
+2026-05-18 08:59:02,440 LiteLLM Proxy             DEBUG    Detected restructured UI via pattern: found policies/index.html
+[92m08:59:02 - LiteLLM Proxy:INFO[0m: proxy_server.py:1484 - Skipping UI restructuring: /home/sna/ai-projects/lunch-model/venv/lib/python3.12/site-packages/litellm/proxy/_experimental/out is already pre-restructured
+2026-05-18 08:59:02,440 LiteLLM Proxy             INFO     Skipping UI restructuring: /home/sna/ai-projects/lunch-model/venv/lib/python3.12/site-packages/litellm/proxy/_experimental/out is already pre-restructured
+2026-05-18 08:59:02,933 qwen_local_rag            INFO     Installed local Qwen RAG endpoints
+INFO:     Started server process [51557]
+INFO:     Waiting for application startup.
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: proxy_server.py:804 - litellm.proxy.proxy_server.py::startup() - CHECKING PREMIUM USER - False
+2026-05-18 08:59:02,941 LiteLLM Proxy             DEBUG    litellm.proxy.proxy_server.py::startup() - CHECKING PREMIUM USER - False
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: proxy_server.py:817 - worker_config: None
+2026-05-18 08:59:02,941 LiteLLM Proxy             DEBUG    worker_config: None
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: proxy_server.py:3390 - [94m setting litellm.drop_params=True[0m
+2026-05-18 08:59:02,943 LiteLLM Proxy             DEBUG    [94m setting litellm.drop_params=True[0m
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: proxy_server.py:3390 - [94m setting litellm.request_timeout=300[0m
+2026-05-18 08:59:02,943 LiteLLM Proxy             DEBUG    [94m setting litellm.request_timeout=300[0m
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: proxy_server.py:3390 - [94m setting litellm.set_verbose=False[0m
+2026-05-18 08:59:02,943 LiteLLM Proxy             DEBUG    [94m setting litellm.set_verbose=False[0m
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: proxy_server.py:3390 - [94m setting litellm.system_prompt=You are a helpful, concise coding assistant.
+Match response length to the request: trivial questions get trivial answers.
+Do not repeat reasoning or restart from scratch.
+Do not emit Error:/Exception:/Warning: labels unless there is a genuine error.
+Stop as soon as the task is done.
+[0m
+2026-05-18 08:59:02,943 LiteLLM Proxy             DEBUG    [94m setting litellm.system_prompt=You are a helpful, concise coding assistant.
+Match response length to the request: trivial questions get trivial answers.
+Do not repeat reasoning or restart from scratch.
+Do not emit Error:/Exception:/Warning: labels unless there is a genuine error.
+Stop as soon as the task is done.
+[0m
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: proxy_server.py:3862 - _alerting_callbacks: {'completion_model': 'qwen3.6-35b-nvfp4'}
+2026-05-18 08:59:02,943 LiteLLM Proxy             DEBUG    _alerting_callbacks: {'completion_model': 'qwen3.6-35b-nvfp4'}
+[92m08:59:02 - LiteLLM Proxy:CRITICAL[0m: proxy_server.py:3443 - LITELLM_MASTER_KEY is not set! All requests will be treated as INTERNAL_USER with no admin access. Set LITELLM_MASTER_KEY for production use.
+2026-05-18 08:59:02,943 LiteLLM Proxy             CRITICAL LITELLM_MASTER_KEY is not set! All requests will be treated as INTERNAL_USER with no admin access. Set LITELLM_MASTER_KEY for production use.
+[92m08:59:02 - LiteLLM Proxy:INFO[0m: proxy_server.py:3597 - background_health_check_config enabled=False shared=False interval_seconds=300 max_concurrency=None details=True health_check_routing=False
+2026-05-18 08:59:02,943 LiteLLM Proxy             INFO     background_health_check_config enabled=False shared=False interval_seconds=300 max_concurrency=None details=True health_check_routing=False
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5620 - checking potential_model_names in litellm.model_cost: {'split_model': '05b0518eb2468e79b86d6624f2b5dce71e2d94a48a21ccf4eb48a88653b8db78', 'combined_model_name': '05b0518eb2468e79b86d6624f2b5dce71e2d94a48a21ccf4eb48a88653b8db78', 'stripped_model_name': '05b0518eb2468e79b86d6624f2b5dce71e2d94a48a21ccf4eb48a88653b8db78', 'combined_stripped_model_name': '05b0518eb2468e79b86d6624f2b5dce71e2d94a48a21ccf4eb48a88653b8db78', 'custom_llm_provider': None}
+2026-05-18 08:59:02,944 LiteLLM                   DEBUG    checking potential_model_names in litellm.model_cost: {'split_model': '05b0518eb2468e79b86d6624f2b5dce71e2d94a48a21ccf4eb48a88653b8db78', 'combined_model_name': '05b0518eb2468e79b86d6624f2b5dce71e2d94a48a21ccf4eb48a88653b8db78', 'stripped_model_name': '05b0518eb2468e79b86d6624f2b5dce71e2d94a48a21ccf4eb48a88653b8db78', 'combined_stripped_model_name': '05b0518eb2468e79b86d6624f2b5dce71e2d94a48a21ccf4eb48a88653b8db78', 'custom_llm_provider': None}
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5915 - Error getting model info: This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+2026-05-18 08:59:02,944 LiteLLM                   DEBUG    Error getting model info: This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:2900 - added/updated model=05b0518eb2468e79b86d6624f2b5dce71e2d94a48a21ccf4eb48a88653b8db78 in litellm.model_cost: 05b0518eb2468e79b86d6624f2b5dce71e2d94a48a21ccf4eb48a88653b8db78
+2026-05-18 08:59:02,944 LiteLLM                   DEBUG    added/updated model=05b0518eb2468e79b86d6624f2b5dce71e2d94a48a21ccf4eb48a88653b8db78 in litellm.model_cost: 05b0518eb2468e79b86d6624f2b5dce71e2d94a48a21ccf4eb48a88653b8db78
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5620 - checking potential_model_names in litellm.model_cost: {'split_model': 'RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'combined_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'stripped_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'combined_stripped_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'custom_llm_provider': 'openai'}
+2026-05-18 08:59:02,945 LiteLLM                   DEBUG    checking potential_model_names in litellm.model_cost: {'split_model': 'RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'combined_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'stripped_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'combined_stripped_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'custom_llm_provider': 'openai'}
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5915 - Error getting model info: This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+2026-05-18 08:59:02,945 LiteLLM                   DEBUG    Error getting model info: This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:2900 - added/updated model=openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4 in litellm.model_cost: openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4
+2026-05-18 08:59:02,945 LiteLLM                   DEBUG    added/updated model=openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4 in litellm.model_cost: openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5620 - checking potential_model_names in litellm.model_cost: {'split_model': '82645fd31cd6cb26af437ee9c11376b94add2723589ace491992c364f5322fdb', 'combined_model_name': '82645fd31cd6cb26af437ee9c11376b94add2723589ace491992c364f5322fdb', 'stripped_model_name': '82645fd31cd6cb26af437ee9c11376b94add2723589ace491992c364f5322fdb', 'combined_stripped_model_name': '82645fd31cd6cb26af437ee9c11376b94add2723589ace491992c364f5322fdb', 'custom_llm_provider': None}
+2026-05-18 08:59:02,945 LiteLLM                   DEBUG    checking potential_model_names in litellm.model_cost: {'split_model': '82645fd31cd6cb26af437ee9c11376b94add2723589ace491992c364f5322fdb', 'combined_model_name': '82645fd31cd6cb26af437ee9c11376b94add2723589ace491992c364f5322fdb', 'stripped_model_name': '82645fd31cd6cb26af437ee9c11376b94add2723589ace491992c364f5322fdb', 'combined_stripped_model_name': '82645fd31cd6cb26af437ee9c11376b94add2723589ace491992c364f5322fdb', 'custom_llm_provider': None}
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5915 - Error getting model info: This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+2026-05-18 08:59:02,946 LiteLLM                   DEBUG    Error getting model info: This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:2900 - added/updated model=82645fd31cd6cb26af437ee9c11376b94add2723589ace491992c364f5322fdb in litellm.model_cost: 82645fd31cd6cb26af437ee9c11376b94add2723589ace491992c364f5322fdb
+2026-05-18 08:59:02,946 LiteLLM                   DEBUG    added/updated model=82645fd31cd6cb26af437ee9c11376b94add2723589ace491992c364f5322fdb in litellm.model_cost: 82645fd31cd6cb26af437ee9c11376b94add2723589ace491992c364f5322fdb
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5620 - checking potential_model_names in litellm.model_cost: {'split_model': 'RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'combined_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'stripped_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'combined_stripped_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'custom_llm_provider': 'openai'}
+2026-05-18 08:59:02,946 LiteLLM                   DEBUG    checking potential_model_names in litellm.model_cost: {'split_model': 'RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'combined_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'stripped_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'combined_stripped_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'custom_llm_provider': 'openai'}
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5725 - model=openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4, custom_llm_provider=openai has no input_cost_per_token in model_cost_map. Defaulting to 0.
+2026-05-18 08:59:02,946 LiteLLM                   DEBUG    model=openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4, custom_llm_provider=openai has no input_cost_per_token in model_cost_map. Defaulting to 0.
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5737 - model=openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4, custom_llm_provider=openai has no output_cost_per_token in model_cost_map. Defaulting to 0.
+2026-05-18 08:59:02,946 LiteLLM                   DEBUG    model=openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4, custom_llm_provider=openai has no output_cost_per_token in model_cost_map. Defaulting to 0.
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:2900 - added/updated model=openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4 in litellm.model_cost: openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4
+2026-05-18 08:59:02,946 LiteLLM                   DEBUG    added/updated model=openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4 in litellm.model_cost: openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5620 - checking potential_model_names in litellm.model_cost: {'split_model': '3eea32d45c26c6b633961d6477000d43bf89a4e95de713e149ec3b7ff082b99d', 'combined_model_name': '3eea32d45c26c6b633961d6477000d43bf89a4e95de713e149ec3b7ff082b99d', 'stripped_model_name': '3eea32d45c26c6b633961d6477000d43bf89a4e95de713e149ec3b7ff082b99d', 'combined_stripped_model_name': '3eea32d45c26c6b633961d6477000d43bf89a4e95de713e149ec3b7ff082b99d', 'custom_llm_provider': None}
+2026-05-18 08:59:02,946 LiteLLM                   DEBUG    checking potential_model_names in litellm.model_cost: {'split_model': '3eea32d45c26c6b633961d6477000d43bf89a4e95de713e149ec3b7ff082b99d', 'combined_model_name': '3eea32d45c26c6b633961d6477000d43bf89a4e95de713e149ec3b7ff082b99d', 'stripped_model_name': '3eea32d45c26c6b633961d6477000d43bf89a4e95de713e149ec3b7ff082b99d', 'combined_stripped_model_name': '3eea32d45c26c6b633961d6477000d43bf89a4e95de713e149ec3b7ff082b99d', 'custom_llm_provider': None}
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5915 - Error getting model info: This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+2026-05-18 08:59:02,947 LiteLLM                   DEBUG    Error getting model info: This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:2900 - added/updated model=3eea32d45c26c6b633961d6477000d43bf89a4e95de713e149ec3b7ff082b99d in litellm.model_cost: 3eea32d45c26c6b633961d6477000d43bf89a4e95de713e149ec3b7ff082b99d
+2026-05-18 08:59:02,947 LiteLLM                   DEBUG    added/updated model=3eea32d45c26c6b633961d6477000d43bf89a4e95de713e149ec3b7ff082b99d in litellm.model_cost: 3eea32d45c26c6b633961d6477000d43bf89a4e95de713e149ec3b7ff082b99d
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5620 - checking potential_model_names in litellm.model_cost: {'split_model': 'RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'combined_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'stripped_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'combined_stripped_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'custom_llm_provider': 'openai'}
+2026-05-18 08:59:02,947 LiteLLM                   DEBUG    checking potential_model_names in litellm.model_cost: {'split_model': 'RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'combined_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'stripped_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'combined_stripped_model_name': 'openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4', 'custom_llm_provider': 'openai'}
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:2900 - added/updated model=openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4 in litellm.model_cost: openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4
+2026-05-18 08:59:02,947 LiteLLM                   DEBUG    added/updated model=openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4 in litellm.model_cost: openai/RedHatAI/Qwen3.6-35B-A3B-NVFP4
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5620 - checking potential_model_names in litellm.model_cost: {'split_model': '12fd6cf572a449350f6bfa21badecb23f1104114a254806103e042830cbe89dc', 'combined_model_name': '12fd6cf572a449350f6bfa21badecb23f1104114a254806103e042830cbe89dc', 'stripped_model_name': '12fd6cf572a449350f6bfa21badecb23f1104114a254806103e042830cbe89dc', 'combined_stripped_model_name': '12fd6cf572a449350f6bfa21badecb23f1104114a254806103e042830cbe89dc', 'custom_llm_provider': None}
+2026-05-18 08:59:02,947 LiteLLM                   DEBUG    checking potential_model_names in litellm.model_cost: {'split_model': '12fd6cf572a449350f6bfa21badecb23f1104114a254806103e042830cbe89dc', 'combined_model_name': '12fd6cf572a449350f6bfa21badecb23f1104114a254806103e042830cbe89dc', 'stripped_model_name': '12fd6cf572a449350f6bfa21badecb23f1104114a254806103e042830cbe89dc', 'combined_stripped_model_name': '12fd6cf572a449350f6bfa21badecb23f1104114a254806103e042830cbe89dc', 'custom_llm_provider': None}
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5915 - Error getting model info: This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+2026-05-18 08:59:02,947 LiteLLM                   DEBUG    Error getting model info: This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:2900 - added/updated model=12fd6cf572a449350f6bfa21badecb23f1104114a254806103e042830cbe89dc in litellm.model_cost: 12fd6cf572a449350f6bfa21badecb23f1104114a254806103e042830cbe89dc
+2026-05-18 08:59:02,947 LiteLLM                   DEBUG    added/updated model=12fd6cf572a449350f6bfa21badecb23f1104114a254806103e042830cbe89dc in litellm.model_cost: 12fd6cf572a449350f6bfa21badecb23f1104114a254806103e042830cbe89dc
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5620 - checking potential_model_names in litellm.model_cost: {'split_model': 'Sehyo/Qwen3.5-35B-A3B-NVFP4', 'combined_model_name': 'openai/Sehyo/Qwen3.5-35B-A3B-NVFP4', 'stripped_model_name': 'openai/Sehyo/Qwen3.5-35B-A3B-NVFP4', 'combined_stripped_model_name': 'openai/Sehyo/Qwen3.5-35B-A3B-NVFP4', 'custom_llm_provider': 'openai'}
+2026-05-18 08:59:02,947 LiteLLM                   DEBUG    checking potential_model_names in litellm.model_cost: {'split_model': 'Sehyo/Qwen3.5-35B-A3B-NVFP4', 'combined_model_name': 'openai/Sehyo/Qwen3.5-35B-A3B-NVFP4', 'stripped_model_name': 'openai/Sehyo/Qwen3.5-35B-A3B-NVFP4', 'combined_stripped_model_name': 'openai/Sehyo/Qwen3.5-35B-A3B-NVFP4', 'custom_llm_provider': 'openai'}
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5915 - Error getting model info: This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+2026-05-18 08:59:02,948 LiteLLM                   DEBUG    Error getting model info: This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:2900 - added/updated model=openai/Sehyo/Qwen3.5-35B-A3B-NVFP4 in litellm.model_cost: openai/Sehyo/Qwen3.5-35B-A3B-NVFP4
+2026-05-18 08:59:02,948 LiteLLM                   DEBUG    added/updated model=openai/Sehyo/Qwen3.5-35B-A3B-NVFP4 in litellm.model_cost: openai/Sehyo/Qwen3.5-35B-A3B-NVFP4
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5620 - checking potential_model_names in litellm.model_cost: {'split_model': '6f7026d65c9a63859d0adaa36d843d21e4d42f8f3d4c27b9b65c3b25181c8d5b', 'combined_model_name': '6f7026d65c9a63859d0adaa36d843d21e4d42f8f3d4c27b9b65c3b25181c8d5b', 'stripped_model_name': '6f7026d65c9a63859d0adaa36d843d21e4d42f8f3d4c27b9b65c3b25181c8d5b', 'combined_stripped_model_name': '6f7026d65c9a63859d0adaa36d843d21e4d42f8f3d4c27b9b65c3b25181c8d5b', 'custom_llm_provider': None}
+2026-05-18 08:59:02,948 LiteLLM                   DEBUG    checking potential_model_names in litellm.model_cost: {'split_model': '6f7026d65c9a63859d0adaa36d843d21e4d42f8f3d4c27b9b65c3b25181c8d5b', 'combined_model_name': '6f7026d65c9a63859d0adaa36d843d21e4d42f8f3d4c27b9b65c3b25181c8d5b', 'stripped_model_name': '6f7026d65c9a63859d0adaa36d843d21e4d42f8f3d4c27b9b65c3b25181c8d5b', 'combined_stripped_model_name': '6f7026d65c9a63859d0adaa36d843d21e4d42f8f3d4c27b9b65c3b25181c8d5b', 'custom_llm_provider': None}
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5915 - Error getting model info: This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+2026-05-18 08:59:02,948 LiteLLM                   DEBUG    Error getting model info: This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:2900 - added/updated model=6f7026d65c9a63859d0adaa36d843d21e4d42f8f3d4c27b9b65c3b25181c8d5b in litellm.model_cost: 6f7026d65c9a63859d0adaa36d843d21e4d42f8f3d4c27b9b65c3b25181c8d5b
+2026-05-18 08:59:02,948 LiteLLM                   DEBUG    added/updated model=6f7026d65c9a63859d0adaa36d843d21e4d42f8f3d4c27b9b65c3b25181c8d5b in litellm.model_cost: 6f7026d65c9a63859d0adaa36d843d21e4d42f8f3d4c27b9b65c3b25181c8d5b
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5620 - checking potential_model_names in litellm.model_cost: {'split_model': 'Qwen/Qwen3-ASR-1.7B', 'combined_model_name': 'openai/Qwen/Qwen3-ASR-1.7B', 'stripped_model_name': 'openai/Qwen/Qwen3-ASR-1.7B', 'combined_stripped_model_name': 'openai/Qwen/Qwen3-ASR-1.7B', 'custom_llm_provider': 'openai'}
+2026-05-18 08:59:02,948 LiteLLM                   DEBUG    checking potential_model_names in litellm.model_cost: {'split_model': 'Qwen/Qwen3-ASR-1.7B', 'combined_model_name': 'openai/Qwen/Qwen3-ASR-1.7B', 'stripped_model_name': 'openai/Qwen/Qwen3-ASR-1.7B', 'combined_stripped_model_name': 'openai/Qwen/Qwen3-ASR-1.7B', 'custom_llm_provider': 'openai'}
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:5915 - Error getting model info: This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+2026-05-18 08:59:02,949 LiteLLM                   DEBUG    Error getting model info: This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+[92m08:59:02 - LiteLLM:DEBUG[0m: utils.py:2900 - added/updated model=openai/Qwen/Qwen3-ASR-1.7B in litellm.model_cost: openai/Qwen/Qwen3-ASR-1.7B
+2026-05-18 08:59:02,949 LiteLLM                   DEBUG    added/updated model=openai/Qwen/Qwen3-ASR-1.7B in litellm.model_cost: openai/Qwen/Qwen3-ASR-1.7B
+[92m08:59:02 - LiteLLM Router:DEBUG[0m: router.py:7008 - 
+Initialized Model List ['qwen3.6-35b-nvfp4', 'qwen36flash', 'qwen36-think', 'qwen3.5-35b-nvfp4', 'qwen3-asr']
+2026-05-18 08:59:02,949 LiteLLM Router            DEBUG    
+Initialized Model List ['qwen3.6-35b-nvfp4', 'qwen36flash', 'qwen36-think', 'qwen3.5-35b-nvfp4', 'qwen3-asr']
+[92m08:59:02 - LiteLLM Router:INFO[0m: router.py:802 - Routing strategy: simple-shuffle
+2026-05-18 08:59:02,949 LiteLLM Router            INFO     Routing strategy: simple-shuffle
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: proxy_server.py:3838 - Policy engine: no policies in config, skipping
+2026-05-18 08:59:02,949 LiteLLM Proxy             DEBUG    Policy engine: no policies in config, skipping
+[92m08:59:02 - LiteLLM:DEBUG[0m: logging_callback_manager.py:336 - Custom logger of type SkillsInjectionHook, key: SkillsInjectionHook-max_iterations=10-sandbox_timeout=120-message_logging=True-turn_off_message_logging=False already exists in [<qwen_token_tracker.QwenTokenTracker object at 0xf90e85135e20>, <litellm.proxy.hooks.litellm_skills.main.SkillsInjectionHook object at 0xf90e495d11f0>, <litellm.proxy.hooks.model_max_budget_limiter._PROXY_VirtualKeyModelMaxBudgetLimiter object at 0xf90e466e5fa0>, <litellm.proxy.hooks.max_budget_limiter._PROXY_MaxBudgetLimiter object at 0xf90e44dc25a0>, <litellm.proxy.hooks.parallel_request_limiter_v3._PROXY_MaxParallelRequestsHandler_v3 object at 0xf90e44dc20c0>, <litellm.proxy.hooks.cache_control_check._PROXY_CacheControlCheck object at 0xf90e462ea600>, <litellm.proxy.hooks.responses_id_security.ResponsesIDSecurity object at 0xf90e459a7c20>], not adding again..
+2026-05-18 08:59:02,949 LiteLLM                   DEBUG    Custom logger of type SkillsInjectionHook, key: SkillsInjectionHook-max_iterations=10-sandbox_timeout=120-message_logging=True-turn_off_message_logging=False already exists in [<qwen_token_tracker.QwenTokenTracker object at 0xf90e85135e20>, <litellm.proxy.hooks.litellm_skills.main.SkillsInjectionHook object at 0xf90e495d11f0>, <litellm.proxy.hooks.model_max_budget_limiter._PROXY_VirtualKeyModelMaxBudgetLimiter object at 0xf90e466e5fa0>, <litellm.proxy.hooks.max_budget_limiter._PROXY_MaxBudgetLimiter object at 0xf90e44dc25a0>, <litellm.proxy.hooks.parallel_request_limiter_v3._PROXY_MaxParallelRequestsHandler_v3 object at 0xf90e44dc20c0>, <litellm.proxy.hooks.cache_control_check._PROXY_CacheControlCheck object at 0xf90e462ea600>, <litellm.proxy.hooks.responses_id_security.ResponsesIDSecurity object at 0xf90e459a7c20>], not adding again..
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: proxy_server.py:896 - About to initialize semantic tool filter
+2026-05-18 08:59:02,950 LiteLLM Proxy             DEBUG    About to initialize semantic tool filter
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: proxy_server.py:899 - litellm_settings keys = ['drop_params', 'request_timeout', 'set_verbose', 'system_prompt']
+2026-05-18 08:59:02,950 LiteLLM Proxy             DEBUG    litellm_settings keys = ['drop_params', 'request_timeout', 'set_verbose', 'system_prompt']
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: proxy_server.py:6143 - Semantic tool filter not configured or not enabled, skipping initialization
+2026-05-18 08:59:02,950 LiteLLM Proxy             DEBUG    Semantic tool filter not configured or not enabled, skipping initialization
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: proxy_server.py:906 - After semantic tool filter initialization
+2026-05-18 08:59:02,950 LiteLLM Proxy             DEBUG    After semantic tool filter initialization
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: proxy_server.py:920 - prisma_client: None
+2026-05-18 08:59:02,950 LiteLLM Proxy             DEBUG    prisma_client: None
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: proxy_server.py:6880 - LiteLLM: Pyroscope profiling is disabled (set LITELLM_ENABLE_PYROSCOPE=true to enable).
+2026-05-18 08:59:02,950 LiteLLM Proxy             DEBUG    LiteLLM: Pyroscope profiling is disabled (set LITELLM_ENABLE_PYROSCOPE=true to enable).
+[92m08:59:02 - LiteLLM Proxy:INFO[0m: proxy_server.py:756 - SESSION REUSE: Created shared aiohttp session for connection pooling (ID: 273839686010832, limit=1000, limit_per_host=500)
+2026-05-18 08:59:02,950 LiteLLM Proxy             INFO     SESSION REUSE: Created shared aiohttp session for connection pooling (ID: 273839686010832, limit=1000, limit_per_host=500)
+[92m08:59:02 - LiteLLM Proxy:DEBUG[0m: hanging_request_check.py:148 - Checking for hanging requests....
+2026-05-18 08:59:02,950 LiteLLM Proxy             DEBUG    Checking for hanging requests....
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:11111 (Press CTRL+C to quit)
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+[92m08:59:40 - LiteLLM Proxy:INFO[0m: proxy_server.py:971 - SESSION REUSE: Closed shared aiohttp session
+2026-05-18 08:59:40,517 LiteLLM Proxy             INFO     SESSION REUSE: Closed shared aiohttp session
+[92m08:59:40 - LiteLLM Proxy:INFO[0m: proxy_server.py:708 - Shutting down LiteLLM Proxy Server
+2026-05-18 08:59:40,517 LiteLLM Proxy             INFO     Shutting down LiteLLM Proxy Server
+INFO:     Application shutdown complete.
+INFO:     Finished server process [51557]
