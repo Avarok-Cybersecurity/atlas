@@ -158,10 +158,6 @@ pub(super) struct ActiveSeq {
     pub prose_tokens_since_last_tool: u32,
     /// F10 (2026-04-26): how many times the thinking-loop watchdog has fired.
     pub think_watchdog_fires: u32,
-    /// Phase 2 (2026-05-18): content-loop watchdog escalation level —
-    /// scales anti-repetition penalties to break the loop instead of
-    /// truncating; capped by RESAMPLE_MAX_ESC then falls back to kill.
-    pub resample_escalation: u8,
     /// F26 (2026-04-26): consecutive sample steps with collapsed entropy.
     pub entropy_collapse_streak: u32,
     /// F27 (2026-04-26): ring buffer of recent logit-distribution fingerprints.
@@ -240,7 +236,6 @@ pub(super) struct SwappedSeq {
     pub content_tokens: u32,
     pub prose_tokens_since_last_tool: u32,
     pub think_watchdog_fires: u32,
-    pub resample_escalation: u8,
     pub entropy_collapse_streak: u32,
     pub f27_fingerprint_ring: std::collections::VecDeque<u64>,
     pub f27_attractor_streak: u32,
