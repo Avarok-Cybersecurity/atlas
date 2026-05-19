@@ -91,8 +91,12 @@ done
 # ── start LiteLLM proxy ───────────────────────────────────────────────────────
 echo "🚀 Starting LiteLLM proxy on port $LITELLM_PORT..."
 cd "$LUNCH_MODEL_DIR"
-ATLAS_PORT="$ATLAS_PORT" LITE_LLM_PROXY_PORT="$LITELLM_PORT" \
-    venv/bin/python3 server_compress.py \
+ATLAS_PORT="$ATLAS_PORT" \
+    LITELLM_MASTER_KEY="sk-dummy" \
+    venv/bin/litellm \
+        --config "${LUNCH_MODEL_DIR}/lite_llm_config_glm.yaml" \
+        --port "$LITELLM_PORT" \
+        --host 0.0.0.0 \
     &> "${SCRIPT_DIR}/logs/litellm-glm.log" &
 LITELLM_PID=$!
 echo "   LiteLLM PID: $LITELLM_PID  (logs: ${SCRIPT_DIR}/logs/litellm-glm.log)"
