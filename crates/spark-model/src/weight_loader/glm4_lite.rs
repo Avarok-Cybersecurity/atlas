@@ -29,7 +29,7 @@ use crate::weight_map::{
     AttentionWeights, DenseWeight, MtpWeights, QuantizedWeight, dense, detect_nvfp4_variant,
     load_dense_ffn, quantize_to_nvfp4, quantized_auto,
 };
-use crate::weight_map::{MoeWeights, ExpertWeight};
+use crate::weight_map::{ExpertWeight, MoeWeights};
 
 pub struct Glm4LiteWeightLoader;
 
@@ -87,7 +87,11 @@ impl ModelWeightLoader for Glm4LiteWeightLoader {
         // first_k_dense_replace: layer 0 uses dense FFN, rest use MoE.
         // ModelConfig doesn't expose this directly; use intermediate_size > 0
         // as the proxy (layer 0 uses intermediate_size, layers 1+ use moe_intermediate_size).
-        let first_k_dense = if config.intermediate_size > 0 { 1usize } else { 0 };
+        let first_k_dense = if config.intermediate_size > 0 {
+            1usize
+        } else {
+            0
+        };
 
         let variant = detect_nvfp4_variant(store, config);
         tracing::info!("GLM-4.7-Flash: detected NVFP4 variant {variant:?}");
@@ -106,17 +110,15 @@ impl ModelWeightLoader for Glm4LiteWeightLoader {
             let lp = format!("model.layers.{i}");
             let ap = format!("{lp}.self_attn");
 
-            let input_norm =
-                dense(store, &format!("{lp}.input_layernorm.weight"))
-                    .with_context(|| format!("GLM L{i} input_layernorm"))?;
-            let post_norm =
-                dense(store, &format!("{lp}.post_attention_layernorm.weight"))
-                    .with_context(|| format!("GLM L{i} post_attention_layernorm"))?;
+            let input_norm = dense(store, &format!("{lp}.input_layernorm.weight"))
+                .with_context(|| format!("GLM L{i} input_layernorm"))?;
+            let post_norm = dense(store, &format!("{lp}.post_attention_layernorm.weight"))
+                .with_context(|| format!("GLM L{i} post_attention_layernorm"))?;
 
             // ── MLA loading (phases A–E, inlined for GLM tensor names) ──
             let mla = load_glm_mla(
-                store, &ap, config, gpu, absmax_k, quantize_k, stream,
-                i, h, q_lora, kv_lora, nope, rope, v_dim, n_heads, n_kv, hd, inv_freq,
+                store, &ap, config, gpu, absmax_k, quantize_k, stream, i, h, q_lora, kv_lora, nope,
+                rope, v_dim, n_heads, n_kv, hd, inv_freq,
             )
             .with_context(|| format!("GLM L{i} MLA"))?;
 
@@ -132,11 +134,16 @@ impl ModelWeightLoader for Glm4LiteWeightLoader {
                 FfnComponent::Dense(layer)
             } else {
                 // Layers 1–46: noaux_tc MoE (64 routed + 1 shared expert).
-                load_glm_moe(store, &lp, config, gpu, variant, absmax_k, quantize_k, stream, i)
-                    .with_context(|| format!("GLM L{i} MoE"))?
+                load_glm_moe(
+                    store, &lp, config, gpu, variant, absmax_k, quantize_k, stream, i,
+                )
+                .with_context(|| format!("GLM L{i} MoE"))?
             };
 
-            let kv_dtype = layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Bf16);
+            let kv_dtype = layer_kv_dtypes
+                .get(i)
+                .copied()
+                .unwrap_or(KvCacheDtype::Bf16);
             let attn = dummy_attn();
             let mut layer = Qwen3AttentionLayer::new_ungated(
                 input_norm, attn, post_norm, ffn, i, None, None, None, gpu, kv_dtype, 0, config,
@@ -211,12 +218,20 @@ fn load_glm_mla(
     // GLM names: q_a_proj / q_b_proj / q_a_layernorm
     //            kv_a_proj_with_mqa / kv_b_proj / kv_a_layernorm / o_proj
     let wq_a_dense = dense(store, &format!("{ap}.q_a_proj.weight"))?;
-    let wq_a_nvfp4 = quantize_to_nvfp4(&wq_a_dense, q_lora, h, gpu, absmax_k, quantize_k, stream)
-        .ok();
+    let wq_a_nvfp4 =
+        quantize_to_nvfp4(&wq_a_dense, q_lora, h, gpu, absmax_k, quantize_k, stream).ok();
 
     let wq_b = dense(store, &format!("{ap}.q_b_proj.weight"))?;
-    let wq_b_nvfp4 =
-        quantize_to_nvfp4(&wq_b, n_heads * hd, q_lora, gpu, absmax_k, quantize_k, stream).ok();
+    let wq_b_nvfp4 = quantize_to_nvfp4(
+        &wq_b,
+        n_heads * hd,
+        q_lora,
+        gpu,
+        absmax_k,
+        quantize_k,
+        stream,
+    )
+    .ok();
 
     let q_a_norm = dense(store, &format!("{ap}.q_a_layernorm.weight"))?;
 
@@ -242,8 +257,16 @@ fn load_glm_mla(
 
     // ── Phase E: output projection ───────────────────────────────────────────
     let o_dense_bf16 = dense(store, &format!("{ap}.o_proj.weight"))?;
-    let o_nvfp4 =
-        quantize_to_nvfp4(&o_dense_bf16, h, n_heads * hd, gpu, absmax_k, quantize_k, stream).ok();
+    let o_nvfp4 = quantize_to_nvfp4(
+        &o_dense_bf16,
+        h,
+        n_heads * hd,
+        gpu,
+        absmax_k,
+        quantize_k,
+        stream,
+    )
+    .ok();
 
     // ── Phase B: per-head transpose of W_UK, W_UV; extract wq_b_rope ────────
     let stride = nope + v_dim;
@@ -402,15 +425,21 @@ fn load_glm_mla(
         wkv_b,
         kv_a_norm,
         wkv_a_rope: wkv_a_rope_dense,
-        wkv_a_merged: DenseWeight { weight: wkv_a_dense.weight },
+        wkv_a_merged: DenseWeight {
+            weight: wkv_a_dense.weight,
+        },
         wo: o_dense_bf16,
         wo_nvfp4: o_nvfp4,
         wq_b_rope: DenseWeight { weight: wqbr_ptr },
         w_uk_t: DenseWeight { weight: w_uk_t_ptr },
         w_uv: DenseWeight { weight: w_uv_ptr },
         w_qk_absorbed: DenseWeight { weight: wqk_ptr },
-        w_uk_block_diag: DenseWeight { weight: w_uk_bd_ptr },
-        w_uv_block_diag: DenseWeight { weight: w_uv_bd_ptr },
+        w_uk_block_diag: DenseWeight {
+            weight: w_uk_bd_ptr,
+        },
+        w_uv_block_diag: DenseWeight {
+            weight: w_uv_bd_ptr,
+        },
         yarn_inv_freq: inv_freq,
         q_lora_rank: q_lora,
         kv_lora_rank: kv_lora,
@@ -443,8 +472,7 @@ fn load_glm_moe(
     let gate = dense(store, &format!("{mlp}.gate.weight"))?;
 
     // Correction bias: F32 [n_experts] — GLM ships it as F32 already.
-    let correction_bias =
-        dense(store, &format!("{mlp}.gate.e_score_correction_bias")).ok();
+    let correction_bias = dense(store, &format!("{mlp}.gate.e_score_correction_bias")).ok();
 
     let load_expert = |prefix: &str| -> Result<ExpertWeight> {
         Ok(ExpertWeight {
@@ -457,29 +485,26 @@ fn load_glm_moe(
     // 64 routed experts.
     let mut experts = Vec::with_capacity(n_experts);
     for e in 0..n_experts {
-        let expert =
-            load_expert(&format!("{mlp}.experts.{e}")).unwrap_or_else(|err| {
-                tracing::warn!("GLM expert {e} load failed: {err:#}; using null");
-                ExpertWeight::null()
-            });
+        let expert = load_expert(&format!("{mlp}.experts.{e}")).unwrap_or_else(|err| {
+            tracing::warn!("GLM expert {e} load failed: {err:#}; using null");
+            ExpertWeight::null()
+        });
         experts.push(expert);
     }
 
     // 1 shared expert — GLM uses `shared_experts` (plural).
     // No shared_expert_gate; the shared expert is always applied unconditionally.
     // A null gate DenseWeight signals to the MoE kernel to skip sigmoid-gating.
-    let shared_expert = load_expert(&format!("{mlp}.shared_experts"))
-        .unwrap_or_else(|err| {
-            tracing::warn!("GLM shared_experts load failed: {err:#}; using null");
-            ExpertWeight::null()
-        });
+    let shared_expert = load_expert(&format!("{mlp}.shared_experts")).unwrap_or_else(|err| {
+        tracing::warn!("GLM shared_experts load failed: {err:#}; using null");
+        ExpertWeight::null()
+    });
     let shared_expert_gate = DenseWeight {
         weight: DevicePtr::NULL,
     };
 
     // Quantize gate weight to NVFP4 for the fused gate GEMM path.
-    let gate_nvfp4 =
-        quantize_to_nvfp4(&gate, n_experts, h, gpu, absmax_k, quantize_k, stream).ok();
+    let gate_nvfp4 = quantize_to_nvfp4(&gate, n_experts, h, gpu, absmax_k, quantize_k, stream).ok();
 
     let moe_weights = MoeWeights {
         gate,

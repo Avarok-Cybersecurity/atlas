@@ -178,8 +178,10 @@ impl TransformerModel {
                     }
                 }
             }
-            // Diagnostic: dump hidden state norm after first 4 and last 4 layers
-            if profile_now && (i < 4 || i >= self.layers.len() - 4) {
+            // Diagnostic: dump hidden state norm after first 4 and last 4 layers;
+            // or every layer when ATLAS_DIAG_GLM is set (for NaN bisection).
+            let glm_all_layers = std::env::var("ATLAS_DIAG_GLM").is_ok();
+            if profile_now && (i < 4 || i >= self.layers.len() - 4 || glm_all_layers) {
                 self.gpu.synchronize(stream)?;
                 let (_, norm) = self.readback_bf16(hidden, self.config.hidden_size.min(64))?;
                 tracing::info!("L{i} hidden[0] norm={norm:.4}");

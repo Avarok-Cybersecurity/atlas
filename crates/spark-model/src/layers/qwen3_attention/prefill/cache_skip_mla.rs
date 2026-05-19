@@ -6,12 +6,46 @@
 //! from `cache_skip.rs` to keep that file under 500 LoC.
 
 use anyhow::Result;
-use spark_runtime::gpu::DevicePtr;
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::PagedKvCache;
 
 use super::super::Qwen3AttentionLayer;
 use crate::layer::ForwardContext;
 use crate::layers::ops;
+
+fn glm_diag_enabled(layer_idx: usize) -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var("ATLAS_DIAG_GLM").is_ok())
+        && (layer_idx == 0 || layer_idx == 4 || layer_idx == 5 || layer_idx == 46)
+}
+
+fn glm_diag(gpu: &dyn GpuBackend, ptr: DevicePtr, n: usize, stream: u64, label: &str) {
+    let _ = gpu.synchronize(stream);
+    let mut buf = vec![0u16; n];
+    let bytes = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, n * 2) };
+    if gpu.copy_d2h(ptr, bytes).is_err() {
+        return;
+    }
+    let vals: Vec<f32> = buf
+        .iter()
+        .map(|&b| f32::from_bits((b as u32) << 16))
+        .collect();
+    let norm: f32 = vals.iter().map(|v| v * v).sum::<f32>().sqrt();
+    let max_abs: f32 = vals.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+    let has_nan = vals.iter().any(|v| v.is_nan());
+    let has_inf = vals.iter().any(|v| v.is_infinite());
+    let f4 = if vals.len() >= 4 {
+        format!(
+            "[{:.4},{:.4},{:.4},{:.4}]",
+            vals[0], vals[1], vals[2], vals[3]
+        )
+    } else {
+        format!("{:?}", &vals[..vals.len().min(4)])
+    };
+    tracing::info!(
+        "GLM-DIAG {label}: norm={norm:.4} max={max_abs:.4} nan={has_nan} inf={has_inf} first4={f4} n={n}"
+    );
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) struct CacheSkipMlaArgs {
@@ -61,6 +95,16 @@ impl Qwen3AttentionLayer {
         let mla_v_dim = mla.v_dim as u32;
         let mla_rope = mla.rope as u32;
         let use_tc = self.dense_gemm_tc_k.0 != 0;
+        let do_diag = glm_diag_enabled(self.attn_layer_idx);
+        if do_diag {
+            glm_diag(
+                ctx.gpu,
+                normed,
+                (n as usize) * (h as usize),
+                stream,
+                "normed_in",
+            );
+        }
 
         // Q: latent → norm → expand
         let q_latent = ctx.buffers.ssm_ba();
@@ -100,6 +144,15 @@ impl Qwen3AttentionLayer {
             eps,
             stream,
         )?;
+        if do_diag {
+            glm_diag(
+                ctx.gpu,
+                q_latent,
+                (n as usize) * (q_lora as usize),
+                stream,
+                "q_latent_normed",
+            );
+        }
         let qg_out = ctx.buffers.qkv_output();
         if use_tc {
             ops::dense_gemm_tc(
@@ -125,6 +178,15 @@ impl Qwen3AttentionLayer {
                 q_lora,
                 stream,
             )?;
+        }
+        if do_diag {
+            glm_diag(
+                ctx.gpu,
+                qg_out,
+                (n as usize) * (nq as usize) * (hd as usize),
+                stream,
+                "qg_out",
+            );
         }
 
         // KV latent + K_rope
@@ -165,6 +227,15 @@ impl Qwen3AttentionLayer {
             eps,
             stream,
         )?;
+        if do_diag {
+            glm_diag(
+                ctx.gpu,
+                kv_latent,
+                (n as usize) * (kv_lora as usize),
+                stream,
+                "kv_latent_normed",
+            );
+        }
         let k_rope_buf = ctx.buffers.ssm_ba();
         if use_tc {
             ops::dense_gemm_tc(
@@ -223,6 +294,15 @@ impl Qwen3AttentionLayer {
             ctx.config.rope_theta as f32,
             stream,
         )?;
+        if do_diag {
+            glm_diag(
+                ctx.gpu,
+                k_rope_buf,
+                (n as usize) * (mla_rope as usize),
+                stream,
+                "k_rope_buf_post_rope",
+            );
+        }
 
         let mla_cache_dim = kv_lora + mla_rope;
         // Cache assembly (needed for decode regardless of path)
@@ -273,6 +353,15 @@ impl Qwen3AttentionLayer {
             kv_lora,
             stream,
         )?;
+        if do_diag {
+            glm_diag(
+                ctx.gpu,
+                kv_expanded,
+                (n as usize) * (kv_expanded_dim as usize),
+                stream,
+                "kv_expanded",
+            );
+        }
         let k_contiguous = ctx.buffers.ssm_qkvz();
         let v_contiguous = k_contiguous.offset(num_tokens * kv_dim * bf16);
         ops::mla_kv_assemble_batched(
@@ -291,6 +380,22 @@ impl Qwen3AttentionLayer {
             nkv * (mla_nope + mla_v_dim),
             stream,
         )?;
+        if do_diag {
+            glm_diag(
+                ctx.gpu,
+                k_contiguous,
+                (n as usize) * (nkv as usize) * (hd as usize),
+                stream,
+                "k_contiguous",
+            );
+            glm_diag(
+                ctx.gpu,
+                v_contiguous,
+                (n as usize) * (nkv as usize) * (hd as usize),
+                stream,
+                "v_contiguous",
+            );
+        }
         ops::mla_q_rope_writeback_batched(
             ctx.gpu,
             self.mla_q_rope_writeback_batched_k,
@@ -304,6 +409,15 @@ impl Qwen3AttentionLayer {
             nq * hd,
             stream,
         )?;
+        if do_diag {
+            glm_diag(
+                ctx.gpu,
+                qg_out,
+                (n as usize) * (nq as usize) * (hd as usize),
+                stream,
+                "qg_out_post_rope_wb",
+            );
+        }
         let attn_out_fb = ctx.buffers.attn_output();
         ops::prefill_attention_64(
             ctx.gpu,
@@ -323,6 +437,15 @@ impl Qwen3AttentionLayer {
             stream,
         )
         .map_err(|e| anyhow::anyhow!("MLA flash_attn_64 fallback: {e}"))?;
+        if do_diag {
+            glm_diag(
+                ctx.gpu,
+                attn_out_fb,
+                (n as usize) * (nq as usize) * (hd as usize),
+                stream,
+                "attn_out_fb",
+            );
+        }
         // wo projection — output to qkv_output (norm_output aliases downstream)
         let o_out = ctx.buffers.qkv_output();
         if let Some(ref wo_nvfp4) = mla.wo_nvfp4 {
@@ -349,6 +472,9 @@ impl Qwen3AttentionLayer {
                 nq * hd,
                 stream,
             )?;
+        }
+        if do_diag {
+            glm_diag(ctx.gpu, o_out, (n as usize) * (h as usize), stream, "o_out");
         }
         Ok(o_out)
     }

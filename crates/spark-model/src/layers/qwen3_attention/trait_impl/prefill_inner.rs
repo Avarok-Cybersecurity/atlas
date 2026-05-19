@@ -244,11 +244,34 @@ impl Qwen3AttentionLayer {
         )
         .map_err(|e| anyhow::anyhow!("residual_add_rms_norm failed: n={n} h={h}: {e}"))?;
 
+        // GLM NaN bisection: check FFN input and output at layers 4-6.
+        let is_glm_nan_diag = std::env::var("ATLAS_DIAG_GLM").is_ok()
+            && ctx.profile
+            && (self.attn_layer_idx == 4 || self.attn_layer_idx == 5 || self.attn_layer_idx == 6);
+        if is_glm_nan_diag {
+            diag_norm(
+                ctx.gpu,
+                ctx.buffers.norm_output(),
+                h.min(64),
+                stream,
+                &format!("L{} ffn_input_normed", self.attn_layer_idx),
+            );
+        }
+
         self.ffn
             .forward_prefill(ctx.buffers.norm_output(), num_tokens, ctx, stream)
             .map_err(|e| anyhow::anyhow!("ffn.forward_prefill failed: {e}"))?;
 
         let dense_out = ctx.buffers.moe_output();
+        if is_glm_nan_diag {
+            diag_norm(
+                ctx.gpu,
+                dense_out,
+                h.min(64),
+                stream,
+                &format!("L{} ffn_output", self.attn_layer_idx),
+            );
+        }
 
         // DIAGNOSTIC: MoE output for L0 and L35
         if is_mistral_diag {
