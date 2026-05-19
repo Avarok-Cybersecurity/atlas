@@ -92,7 +92,6 @@ done
 echo "🚀 Starting LiteLLM proxy on port $LITELLM_PORT..."
 cd "$LUNCH_MODEL_DIR"
 ATLAS_PORT="$ATLAS_PORT" \
-    LITELLM_MASTER_KEY="sk-dummy" \
     venv/bin/litellm \
         --config "${LUNCH_MODEL_DIR}/lite_llm_config_glm.yaml" \
         --port "$LITELLM_PORT" \
