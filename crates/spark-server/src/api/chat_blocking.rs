@@ -273,7 +273,7 @@ fn decode_response_text(
 /// parsing, validation, content-strip + refusal-classifier all live
 /// here.
 fn build_choice_message(
-    _state: &AppState,
+    state: &AppState,
     req: &ChatCompletionRequest,
     response: &super::inference_types::InferenceResponse,
     reasoning_content_i: Option<String>,
@@ -305,6 +305,13 @@ fn build_choice_message(
         if !tool_calls_i.is_empty() {
             let tools_ref = req.tools.as_ref().cloned().unwrap_or_default();
             tool_parser::backfill_required_params(&mut tool_calls_i, &tools_ref);
+            if state
+                .tool_call_parser
+                .as_ref()
+                .map_or(false, |p| p.wants_typed_arguments())
+            {
+                tool_parser::coerce_all(&mut tool_calls_i, &tools_ref);
+            }
             if let Some(cwd) = cwd_hint {
                 tool_parser::normalize_paths(&mut tool_calls_i, cwd);
             }

@@ -87,6 +87,9 @@ frequency_penalty = 0.0
 # compensate for model quirks. Defaults are sane for most models; override
 # here when a model family has known failure modes.
 [behavior]
+# Use qwen3_xml instead of qwen3_coder: schema-driven type coercion fixes
+# empty-string parameter values observed with thinking mode (Qwen3.6 + think).
+tool_call_parser = "qwen3_xml"
 # Content-loop watchdog disabled: 2026-05-05 chess-game stress
 # sweep showed this MoE A3B variant finishes cleanly on long-code
 # prompts. Only the dense Qwen 27B variants need it.

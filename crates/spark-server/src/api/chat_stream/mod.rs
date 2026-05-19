@@ -185,6 +185,10 @@ pub(crate) async fn chat_completions_stream(
         cwd_for_normalize: cwd_hint,
         stop_strings,
         leak_markers,
+        wants_typed_arguments: state
+            .tool_call_parser
+            .as_ref()
+            .map_or(false, |p| p.wants_typed_arguments()),
         max_tool_calls_per_response,
         req_stream_include_usage,
         req_ctx,
