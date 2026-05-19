@@ -48,6 +48,7 @@ echo "   Model: $MODEL_ID"
     --port "$ATLAS_PORT" \
     --max-seq-len 60000 \
     --kv-cache-dtype bf16 \
+    --max-batch-size 1 \
     --gpu-memory-utilization 0.45 \
     --scheduling-policy slai \
     &
