@@ -28,6 +28,12 @@ type SseVec = Vec<Result<Event, std::convert::Infallible>>;
 pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> SseVec {
     let mut sse_events: SseVec = Vec::new();
     state.all_toks.push(tok);
+    // One push per call == one sampled token == one increment of
+    // `usage.completion_tokens`. Drained onto the next client-visible
+    // chunk (return_token_ids); a no-op clone-free take when opted out.
+    if ctx.req_return_token_ids {
+        state.pending_token_ids.push(tok);
+    }
 
     // ── Thinking-phase: token-ID based </think> detection ────────────
     if !state.thinking_done {
@@ -55,7 +61,8 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
                             &ctx.model,
                             &ctx.id,
                             residual.to_string(),
-                        );
+                        )
+                        .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
                         let json = serde_json::to_string(&chunk).unwrap_or_default();
                         sse_events.push(Ok(Event::default().data(json)));
                     }
@@ -136,7 +143,8 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
                     &ctx.leak_markers,
                 );
                 if !cleaned.trim().is_empty() {
-                    let chunk = ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, cleaned);
+                    let chunk = ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, cleaned)
+                        .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
                     let json = serde_json::to_string(&chunk).unwrap_or_default();
                     sse_events.push(Ok(Event::default().data(json)));
                 }
@@ -224,7 +232,8 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
 
     if state.stop_string_triggered {
         if !delta.is_empty() {
-            let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, delta);
+            let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, delta)
+                .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
             let json = serde_json::to_string(&chunk).unwrap_or_default();
             sse_events.push(Ok(Event::default().data(json)));
         }
@@ -387,7 +396,8 @@ fn process_detector_content(
         if state.refusal_scan_buf.len() < 16_384 {
             state.refusal_scan_buf.push_str(sanitized);
         }
-        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized.to_string());
+        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized.to_string())
+            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
         let json = serde_json::to_string(&chunk).unwrap_or_default();
         let events: SseVec = vec![Ok(Event::default().data(json))];
         return Some(events);

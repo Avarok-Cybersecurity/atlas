@@ -23,6 +23,7 @@ pub(super) struct StreamCtx {
     pub(super) leak_markers: tool_parser::LeakMarkers,
     pub(super) max_tool_calls_per_response: usize,
     pub(super) req_stream_include_usage: bool,
+    pub(super) req_return_token_ids: bool,
     pub(super) req_ctx: Option<crate::rate_limiter::RequestContext>,
     pub(super) dump_seq: Option<u64>,
     pub(super) f44_cache: F39FailureCache,
