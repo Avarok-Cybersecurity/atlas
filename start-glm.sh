@@ -64,10 +64,10 @@ echo "   Speculative: DISABLED (MTP Phase 4 pending)"
 
 "$SPARK_BIN" serve "$MODEL_ID" \
     --port "$ATLAS_PORT" \
-    --max-seq-len 60000 \
+    --max-seq-len 180000 \
     --kv-cache-dtype bf16 \
     --max-batch-size 1 \
-    --gpu-memory-utilization 0.45 \
+    --gpu-memory-utilization 0.85 \
     --scheduling-policy slai \
     &
 SPARK_PID=$!
