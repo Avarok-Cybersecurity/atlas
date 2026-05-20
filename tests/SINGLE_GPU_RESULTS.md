@@ -395,3 +395,51 @@ Audited files: `cache_skip_mla.rs`, `mla_fused_prefill.cu`, `kv_dtypes.rs`, `pha
 ### P3 — SSM cache slots / pool allocation (confirmed by design)
 
 `--ssm-cache-slots` is propagated from CLI → `serve_phases/build.rs:71` → `TransformerModel::new(ssm_cache_slots, ...)` → `SsmSnapshotPool::new(ssm_cache_slots, ...)`. Setting `--ssm-cache-slots 0` correctly zeroes the **snapshot** pool (`SsmSnapshotPool`) while leaving the **active decode** pool (`SsmStatePool`) untouched. `SsmStatePool` is sized by `--max-batch-size` (default 8) because each in-flight sequence needs its own h_state/conv_state buffer for correct SSM recurrence. To reduce the 1206 MB active pool, pass `--max-batch-size 1` for single-stream workloads.
+
+---
+
+## 2026-05-20 Re-verification (independent audit)
+
+Independent code walk on spec_ssm HEAD (`08214f9`) covering each filed issue.
+
+### P1 — Mistral Small 4 fixes confirmed
+
+**`kv_dtypes.rs` BF16 fix** (the primary root cause): `build_layer_kv_dtypes` line 20-22 now
+returns `vec![Bf16; num_attention_layers]` when `kv_dtype == BF16`, eliminating the
+`unwrap_or(Fp8)` silent-FP8 fallback that caused quantization garbage in MLA KV latents above
+~600 input tokens.
+
+**HDIM=128 guard** (`paged_mla.rs`): `anyhow::ensure!(hd > 128 || self.prefill_attn_128_k.0 != 0, ...)`
+at line 273 rejects the old HDIM=256 kernel for MLA with `head_dim=128`. Kernel selection
+(lines 278-284) picks `prefill_attn_128_k` when `hd <= 128`, `prefill_attn_512_k` when
+`hd > 256`, and `prefill_attn_k` otherwise.
+
+**Absorbed-space scale** (`attention_forward_mla.rs` line 375-377): decode path uses
+`1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` = 1/√320. The paged_mla.rs fused path
+also computes `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope)` for the fused kernel
+while keeping `inv_sqrt_d = effective_attn_scale(hd)` for the fallback expanded path.
+
+**`mla_fused_prefill.cu` scope**: `__shared__ float smem_dot[8]` is declared at line 115,
+before the `kv_pos` loop at line 122. Non-overlapping live ranges with `smem_q[320]`
+(line 75) and `smem_latent[256]` (line 190) are explicit.
+
+**MLA single-chunk guard**: `is_mla_dispatch()` returns `kv_lora_rank > 0` (true for
+Mistral at 256). All three scheduler paths (`run_standard.rs`, `run_batched_prefill.rs`,
+`run_batched_mixed.rs`) enforce `effective_max = remaining`, forcing single-chunk prefill.
+
+**Original YaRN misdiagnosis confirmed**: `yarn.rs` uses the correct dimension-index-space
+formula (low=7, high=15 for Mistral params) and was already correct before these fixes.
+The gibberish threshold at ~1000 tokens was driven by the FP8 KV latent bug, not YaRN.
+
+### P2 — Nemotron Super confirmed
+
+`MODEL.toml`: `disable_tool_steering = true`, `tool_call_parser = "bare_json"`,
+`thinking_in_tools = false` all present. `nemotron_h.jinja` generation prompt gates on
+`not disable_tool_steering`, confirmed at lines 204-217.
+
+### P3 — SSM pool confirmed
+
+`SsmSnapshotPool::new` lines 55-64: empty-pool fast-path for `num_slots == 0`; no GPU
+allocations. `SsmStatePool::new` (`impl_a1.rs:134`) uses `max_batch_size`, not
+`ssm_cache_slots`. Propagation chain intact: CLI → `build.rs` arg 41 (`ssm_cache_slots`)
+→ `TransformerModel::new` (line 373) → `SsmSnapshotPool::new` (line 144).
