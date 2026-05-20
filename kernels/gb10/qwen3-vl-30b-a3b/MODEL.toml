@@ -57,3 +57,5 @@ moe_gate_shmem_bytes = 4096   # hidden_dim(2048) * sizeof(bf16)
 # showed this MoE A3B variant finishes naturally with EOS on long-code
 # prompts. Only the dense Qwen 27B variants need the watchdog.
 enable_loop_watchdog = false
+# Thinking on by default for all Qwen reasoning-tier models (sweep 2026-05-20).
+thinking_default = true

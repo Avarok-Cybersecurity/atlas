@@ -151,6 +151,9 @@ pub struct ServeArgs {
     /// the default), fp8 (balanced but slower due to D2H sync in MoE),
     /// nvfp4 (fastest — uses fused device-side expert dispatch; opt in
     /// explicitly when throughput matters more than accuracy).
+    /// MTP head weight precision: nvfp4 (fastest, uses fused
+    /// device-side expert dispatch, lowest quality), fp8 (balanced but slower due to D2H sync
+    /// in MoE), bf16 (highest accuracy, most memory).
     #[arg(long, default_value = "bf16")]
     pub mtp_quantization: String,
 

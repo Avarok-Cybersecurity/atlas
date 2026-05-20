@@ -201,7 +201,7 @@ impl TransformerModel {
             self.gpu.synchronize(stream)?;
             let total_us = t0.elapsed().as_micros();
             let mut indexed: Vec<(usize, u128)> = layer_times.iter().copied().enumerate().collect();
-            indexed.sort_by(|a, b| b.1.cmp(&a.1));
+            indexed.sort_by_key(|x| std::cmp::Reverse(x.1));
             let top5: Vec<String> = indexed
                 .iter()
                 .take(5)

@@ -101,6 +101,24 @@ impl MoeLayer {
 
         // Gemma-4 router pre-norm (no-op for other models).
         let router_in = self.router_input(input, n, h, ctx, stream)?;
+        // ATLAS_DUMP_EXPERT_IDS: dump the gate INPUT (= post-attn-norm of
+        // hidden + SSM out_proj). If this matches HF's input to .gate but
+        // logits differ → gate matmul or weight loading is the bug.
+        if std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1") {
+            ctx.gpu.synchronize(stream)?;
+            let offset = (n - 1) as usize * h as usize * 2;
+            let mut buf = vec![0u8; h as usize * 2];
+            let _ = ctx.gpu.copy_d2h(router_in.offset(offset), &mut buf);
+            let v: Vec<f32> = buf.chunks_exact(2).map(|c| {
+                let bits = u16::from_le_bytes([c[0], c[1]]);
+                f32::from_bits((bits as u32) << 16)
+            }).collect();
+            let norm = v.iter().map(|x| x*x).sum::<f32>().sqrt();
+            tracing::info!(
+                "ATLAS_GATE_INPUT last_tok: |x|={:.4}  first5={:?}",
+                norm, &v[..5]
+            );
+        }
         // 1. Gate GEMM
         let gate_logits = ctx.buffers.gate_logits();
         if let Some(ref nvfp4) = self.gate_nvfp4 {
@@ -127,6 +145,33 @@ impl MoeLayer {
                 h,
                 stream,
             )?;
+        }
+
+        // ATLAS_DUMP_EXPERT_IDS=1 also dumps gate_logits BEFORE softmax+topK
+        // to attribute drift between gate matmul vs routing logic.
+        if std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1") {
+            ctx.gpu.synchronize(stream)?;
+            // gate_logits[n-1, :] = num_experts BF16 values for last token
+            let logits_offset = (n - 1) as usize * num_experts as usize * 2;
+            let mut buf = vec![0u8; num_experts as usize * 2];
+            let _ = ctx.gpu.copy_d2h(gate_logits.offset(logits_offset), &mut buf);
+            // Convert BF16 → float32 + print top 10 highest logits
+            let logits: Vec<f32> = buf.chunks_exact(2).map(|c| {
+                let bits = u16::from_le_bytes([c[0], c[1]]);
+                f32::from_bits((bits as u32) << 16)
+            }).collect();
+            let mut idx: Vec<usize> = (0..logits.len()).collect();
+            idx.sort_by(|&a, &b| logits[b].partial_cmp(&logits[a]).unwrap_or(std::cmp::Ordering::Equal));
+            let top10: Vec<(usize, f32)> = idx.iter().take(10).map(|&i| (i, logits[i])).collect();
+            tracing::info!(
+                "ATLAS_GATE_LOGITS last_tok: top10_(idx,val)={:?} mean={:.4} std={:.4}",
+                top10,
+                logits.iter().sum::<f32>() / logits.len() as f32,
+                {
+                    let mean = logits.iter().sum::<f32>() / logits.len() as f32;
+                    (logits.iter().map(|x| (x-mean).powi(2)).sum::<f32>() / logits.len() as f32).sqrt()
+                }
+            );
         }
 
         // 2. Batched topK dispatch (sigmoid+bias for MiniMax/DeepSeek-V3,
@@ -164,6 +209,24 @@ impl MoeLayer {
             )?;
         }
 
+        // ATLAS_DUMP_EXPERT_IDS=1 — log the last token's top-K expert
+        // indices + weights for drift attribution vs HF.
+        if std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1") {
+            ctx.gpu.synchronize(stream)?;
+            let mut idx_buf = vec![0u8; top_k as usize * 4];
+            let mut w_buf = vec![0u8; top_k as usize * 4];
+            let idx_offset = (n - 1) as usize * top_k as usize * 4;
+            let w_offset = idx_offset;
+            let _ = ctx.gpu.copy_d2h(indices_dev.offset(idx_offset), &mut idx_buf);
+            let _ = ctx.gpu.copy_d2h(weights_dev.offset(w_offset), &mut w_buf);
+            let ids: Vec<u32> = idx_buf.chunks_exact(4).map(|b| u32::from_le_bytes([b[0],b[1],b[2],b[3]])).collect();
+            let ws: Vec<f32> = w_buf.chunks_exact(4).map(|b| f32::from_le_bytes([b[0],b[1],b[2],b[3]])).collect();
+            tracing::info!(
+                "ATLAS_EXPERT_IDS last_tok: indices={:?} weights={:?} sum={:.4}",
+                ids, ws, ws.iter().sum::<f32>()
+            );
+        }
+
         // 3. Sort tokens by expert
         let te = total_expanded as usize;
         let sorted_token_ids = gate_logits;
@@ -184,9 +247,44 @@ impl MoeLayer {
             stream,
         )?;
 
-        // 4. Max M tiles (same heuristic as NVFP4)
+        // 4. Max M tiles — sized for worst-case expert skew, not 2× avg.
+        // The `(avg * 2)` heuristic silently truncated heavy experts:
+        // observed avg=129, max=929 tokens for one expert (= 7× avg) in
+        // a 4097-token chunk, dropping 609 rows for that expert and
+        // under-counting routed-MoE output systematically (-14% at L0).
+        // Now bumped to `(num_tokens * top_k).div_ceil(64)` which always
+        // covers the absolute worst case (1 expert eats all tokens).
+        // Cost: extra threadblocks for empty tiles (early-exit on
+        // `m_idx >= M_expert`), low overhead vs the previous correctness
+        // bug.
         let avg_per_expert = (num_tokens * top_k as usize).div_ceil(ne);
-        let max_m_tiles = (avg_per_expert * 2).div_ceil(64).max(1) as u32;
+        let max_m_tiles =
+            ((num_tokens * top_k as usize)).div_ceil(64).max(1) as u32;
+        // Diagnostic: log the actual peak per-expert load to verify the
+        // (avg*2) heuristic suffices. If any expert exceeds max_m_tiles*64,
+        // the grouped GEMM truncates that expert's rows silently — with the
+        // zero-init upstream, those rows are now 0 (not garbage), but the
+        // expert's contribution is still incomplete.
+        if std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1") {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                ctx.gpu.synchronize(stream).ok();
+                let dump_n = ne + 1;
+                let mut eo_buf = vec![0u8; dump_n * 4];
+                let _ = ctx.gpu.copy_d2h(expert_offsets, &mut eo_buf);
+                let eo: Vec<u32> = eo_buf.chunks_exact(4).map(|b| u32::from_le_bytes([b[0],b[1],b[2],b[3]])).collect();
+                let counts: Vec<u32> = (0..ne).map(|i| eo[i+1] - eo[i]).collect();
+                let max_cnt = *counts.iter().max().unwrap_or(&0);
+                let min_cnt = *counts.iter().min().unwrap_or(&0);
+                let max_idx = counts.iter().position(|&x| x == max_cnt).unwrap_or(0);
+                let kernel_max = max_m_tiles * 64;
+                tracing::info!(
+                    "ATLAS_EXPERT_LOAD: n_tokens={} avg={} max={} (expert {}) min={} max_m_tiles={} kernel_cap={} truncated={}",
+                    num_tokens, avg_per_expert, max_cnt, max_idx, min_cnt, max_m_tiles, kernel_max,
+                    max_cnt > kernel_max
+                );
+            });
+        }
 
         // 5. FP8 grouped gate+up GEMM
         let expert_gate_out = ctx.buffers.expert_gate_out();
@@ -205,6 +303,26 @@ impl MoeLayer {
             )?;
         }
         let fp8_grouped_k = self.fp8_grouped_kernel();
+        // 2026-05-20: zero expert buffers unconditionally before the grouped
+        // GEMMs. The `max_m_tiles = (avg*2).div_ceil(64)` heuristic assumes
+        // peak-per-expert ≤ 2× average; skewed routing (especially long
+        // chunks) violates this, leaving the un-processed rows uninitialized
+        // and propagating stale data through unpermute_reduce. Without this
+        // zeroing, the L0 MoE output magnitude is non-deterministic across
+        // runs and chunk sizes (verified: ATLAS_ROUTED_ONLY at chunk-4 L0
+        // varied 0.26-1.13 for the same prompt). Only EP-mode had this
+        // memset.
+        {
+            let gu_bytes = te * inter as usize * 2;
+            ctx.gpu.memset_async(expert_gate_out, 0, gu_bytes, stream)?;
+            ctx.gpu.memset_async(expert_up_out, 0, gu_bytes, stream)?;
+            ctx.gpu.memset_async(
+                ctx.buffers.expert_down_out(),
+                0,
+                te * h as usize * 2,
+                stream,
+            )?;
+        }
         if max_m_tiles > 0 {
             ops::moe_fp8_grouped_gemm(
                 ctx.gpu,
@@ -251,7 +369,6 @@ impl MoeLayer {
                 total_expanded * inter,
                 stream,
             )?;
-
             ops::moe_fp8_grouped_gemm(
                 ctx.gpu,
                 fp8_grouped_k,
@@ -302,6 +419,55 @@ impl MoeLayer {
         // Shared expert blend (post-allreduce).
         if has_shared {
             let shared_down_out = ctx.buffers.attn_output();
+            // ATLAS_DUMP_EXPERT_IDS=1: dump routed-only output + shared output
+            // BEFORE blend, so we can attribute the moe_out amplification.
+            if std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1") {
+                ctx.gpu.synchronize(stream)?;
+                let offset = (n - 1) as usize * h as usize * 2;
+                // routed-only (in `output` before blend)
+                let mut buf_r = vec![0u8; h as usize * 2];
+                let _ = ctx.gpu.copy_d2h(output.offset(offset), &mut buf_r);
+                let vr: Vec<f32> = buf_r.chunks_exact(2).map(|c| {
+                    let bits = u16::from_le_bytes([c[0], c[1]]);
+                    f32::from_bits((bits as u32) << 16)
+                }).collect();
+                let nr = vr.iter().map(|x| x*x).sum::<f32>().sqrt();
+                tracing::info!(
+                    "ATLAS_ROUTED_ONLY last_tok: |x|={:.4} first5={:?}",
+                    nr, &vr[..5]
+                );
+                // shared_down_out
+                let mut buf_s = vec![0u8; h as usize * 2];
+                let _ = ctx.gpu.copy_d2h(shared_down_out.offset(offset), &mut buf_s);
+                let vs: Vec<f32> = buf_s.chunks_exact(2).map(|c| {
+                    let bits = u16::from_le_bytes([c[0], c[1]]);
+                    f32::from_bits((bits as u32) << 16)
+                }).collect();
+                let ns = vs.iter().map(|x| x*x).sum::<f32>().sqrt();
+                tracing::info!(
+                    "ATLAS_SHARED_OUT last_tok: |x|={:.4} first5={:?}",
+                    ns, &vs[..5]
+                );
+                // gate scalar: dot(normed[last], gate_weight) → sigmoid
+                let mut buf_n = vec![0u8; h as usize * 2];
+                let mut buf_g = vec![0u8; h as usize * 2];
+                let _ = ctx.gpu.copy_d2h(input.offset(offset), &mut buf_n);
+                let _ = ctx.gpu.copy_d2h(self.weights.shared_expert_gate.weight, &mut buf_g);
+                let vn: Vec<f32> = buf_n.chunks_exact(2).map(|c| {
+                    let bits = u16::from_le_bytes([c[0], c[1]]);
+                    f32::from_bits((bits as u32) << 16)
+                }).collect();
+                let vg: Vec<f32> = buf_g.chunks_exact(2).map(|c| {
+                    let bits = u16::from_le_bytes([c[0], c[1]]);
+                    f32::from_bits((bits as u32) << 16)
+                }).collect();
+                let dot: f32 = vn.iter().zip(vg.iter()).map(|(a,b)| a*b).sum();
+                let sig = 1.0 / (1.0 + (-dot).exp());
+                tracing::info!(
+                    "ATLAS_SHARED_GATE last_tok: dot={:.4} sigmoid={:.6}",
+                    dot, sig
+                );
+            }
             ops::moe_batched_blend(
                 ctx.gpu,
                 self.moe_batched_blend,
@@ -313,6 +479,26 @@ impl MoeLayer {
                 n,
                 stream,
             )?;
+        }
+
+        // ATLAS_DUMP_EXPERT_IDS=1 also dumps the FINAL moe output (routed +
+        // shared blend) at the last token. Compared to HF L0_moe_out, this
+        // localizes residual-stream amplification to (a) too-large moe out,
+        // (b) too-large routed expert outputs, or (c) miscomputed shared gate.
+        if std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1") {
+            ctx.gpu.synchronize(stream)?;
+            let offset = (n - 1) as usize * h as usize * 2;
+            let mut buf = vec![0u8; h as usize * 2];
+            let _ = ctx.gpu.copy_d2h(output.offset(offset), &mut buf);
+            let v: Vec<f32> = buf.chunks_exact(2).map(|c| {
+                let bits = u16::from_le_bytes([c[0], c[1]]);
+                f32::from_bits((bits as u32) << 16)
+            }).collect();
+            let norm = v.iter().map(|x| x*x).sum::<f32>().sqrt();
+            tracing::info!(
+                "ATLAS_MOE_OUT last_tok: |x|={:.4} first5={:?}",
+                norm, &v[..5]
+            );
         }
 
         Ok(())

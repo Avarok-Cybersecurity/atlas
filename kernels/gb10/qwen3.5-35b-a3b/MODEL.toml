@@ -131,6 +131,8 @@ dry_allowed_length = 4
 # false-positives on legitimate `[null × 8]` chess-board init rows.
 # Only the dense Qwen 27B variants need it.
 enable_loop_watchdog = false
+# Thinking on by default for all Qwen reasoning-tier models (sweep 2026-05-20).
+thinking_default = true
 # Disable thinking when tools are active. Qwen3.5 suffers from "Think-Satisfy":
 # model reasons about tool calls in <think>, convinces itself the task is done,
 # then narrates instead of calling tools.
