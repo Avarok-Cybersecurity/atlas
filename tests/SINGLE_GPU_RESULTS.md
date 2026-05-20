@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis + fixes); 2026-05-16 (scale fix); 2026-05-18 (kv_dtypes hardening + test fix); 2026-05-19 (verification: all P0/P1 bugs confirmed fixed)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -400,7 +400,7 @@ Audited files: `cache_skip_mla.rs`, `mla_fused_prefill.cu`, `kv_dtypes.rs`, `pha
 
 ## 2026-05-20 Re-verification (independent audit)
 
-Independent code walk on spec_ssm HEAD (`08214f9`) covering each filed issue.
+Independent code walk on spec_ssm HEAD (`0f72e45`) covering each filed issue.
 
 ### P1 — Mistral Small 4 fixes confirmed
 
@@ -443,3 +443,85 @@ The gibberish threshold at ~1000 tokens was driven by the FP8 KV latent bug, not
 allocations. `SsmStatePool::new` (`impl_a1.rs:134`) uses `max_batch_size`, not
 `ssm_cache_slots`. Propagation chain intact: CLI → `build.rs` arg 41 (`ssm_cache_slots`)
 → `TransformerModel::new` (line 373) → `SsmSnapshotPool::new` (line 144).
+
+---
+
+## 2026-05-20 Deep-dive investigation (all 4 priority files audited)
+
+Full file-by-file audit of every path listed in the original bug reports.
+
+### P1 — Mistral Small 4: 4 target files audited
+
+**`cache_skip_mla.rs`** (non-paged / single-chunk path):
+- `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0, ...)` at line 254 hard-blocks the old
+  broken HDIM=256 `inferspark_prefill` kernel. If the kernel isn't built, the server fails
+  at load time with a clear message, not silently at inference.
+- `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)` (line 253) — correct.
+- Buffer aliasing (`ssm_ba()` → `q_latent` then `k_rope_buf`): safe because `qg_out` is
+  populated by `wq_b` GEMM before `k_rope_buf` is written.
+- KV cache write uses `mla_cache_dim = kv_lora + mla_rope = 320`; the `write_kv_cache`
+  strides are `(mla_cache_dim, mla_cache_dim)` — consistent with the decode reader.
+
+**`mla_absorbed.cu`** (CUDA kernels):
+- `__shared__ float smem_dot[8]` is declared at line 115 of `mla_fused_prefill.cu`,
+  before the `kv_pos` loop at line 126. Fixed live-range makes aliasing with
+  `smem_q[320]` impossible.
+- `smem_q[320]`, `smem_dot[8]`, `smem_latent[256]` are distinct static `__shared__`
+  allocations; total 2336 bytes — well within GB10 smem limits.
+- Causal mask: `kv_end = min(q_pos + 1, seq_len)` — correct at all seq_len values.
+- No loop-counter overflow: `kv_pos` and `q_pos` are both `unsigned int`; for
+  `seq_len ≤ 65536` all arithmetic is safe.
+
+**`main.rs` / `kv_cache.rs` (`--kv-high-precision-layers auto` interaction)**:
+- `kv_high_precision_layers = "auto"` maps to `kv_hp_layers = 2` in `kv_cache.rs`.
+- But `build_layer_kv_dtypes(BF16, 36, 2)` hits the early-return at line 20-22 and
+  returns `vec![BF16; 36]`. The `hp` path is never entered when `kv_dtype == BF16`.
+  There is no FP8/BF16 mixing for Mistral regardless of `--kv-high-precision-layers`.
+- Result: all 36 attention layers get `KvCacheDtype::Bf16` from the `layer_dtypes` vec,
+  and `phase_assemble.rs:122` confirms it with `unwrap_or(KvCacheDtype::Bf16)`.
+
+**`decode/attention_forward_mla.rs`** (decode path vs prefill consistency):
+- Scale: `inv_sqrt_d = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` at line 377 —
+  matches `cache_skip_mla.rs` and `paged_mla.rs` fused path. No divergence.
+- Q assembly: `q_absorbed_buf` built via `mla_batched_gemv` (same `W_UK_T` weight as
+  prefill) then Q_rope written back via `mla_q_rope_writeback`. Layout matches the paged
+  cache format `[kv_lora | rope]` per head that the decode kernel expects.
+- Cache write: assembled to `[kv_latent | k_rope]` / `[kv_latent | zeros]` via
+  `mla_cache_assemble`, then `write_kv_cache` with `mla_cache_dim` strides — identical
+  to the prefill path.
+
+**Summary**: decode and prefill now share the same KV cache format, attention scale, and
+weight layout. All divergences from the initial pre-fix state have been resolved.
+
+### P2 — Nemotron tool calling: jinja + parser audit
+
+**`nemotron_h.jinja`** (lines 204–212): generation prompt is:
+```
+{%- if tools and not disable_tool_steering %}
+    {{- '<|im_start|>assistant\n<think></think>\n<tool_call>\n' }}
+```
+`disable_tool_steering = true` in MODEL.toml → condition is false → no `<tool_call>` prefix
+injected. Model opens `<tool_call>` naturally in its trained distribution.
+
+**`tool_parser.rs` / `bare_json.rs`**: `BareJsonParser::system_prompt()` injects the JSON
+schema + "emit bare JSON `{name, arguments}`" instruction. With `skip_template_tools = true`,
+the Jinja template receives `jinja_tools = None` and renders no XML `<function>` blocks —
+no contradictory format instructions reach the model.
+
+**Confirmed fix chain**: `skip_template_tools=true` + `disable_tool_steering=true` +
+`thinking_in_tools=false` + `tool_call_parser="bare_json"` — all present in MODEL.toml.
+xgrammar enforces the bare-JSON schema from token 1.
+
+### P3 — SSM cache slots: propagation verified end-to-end
+
+`cli.rs`: `ssm_cache_slots` default 16, type `usize`. `build.rs:71` passes it to
+`spark_model::factory::build_model` as the 18th arg. `factory.rs` passes it to
+`TransformerModel::new`. `impl_a1.rs:144-149` passes it to `SsmSnapshotPool::new`.
+
+The active decode pool (`SsmStatePool::new`, `impl_a1.rs:134-140`) uses `max_batch_size`
+(correct — needed for concurrent sequences). `--ssm-cache-slots 0` correctly disables
+ONLY the snapshot pool. The commit message in `427104f` claimed an `impl_a1.rs` change
+to allocate 1 slot when `ssm_cache_slots == 0`, but that code change was not included in
+the diff (only `kv_dtypes.rs` and `SINGLE_GPU_RESULTS.md` changed). The decision to
+document this as "by design" (workaround: `--max-batch-size 1`) is correct given that
+reducing to 1 active slot would break concurrent serving. No code change needed.
