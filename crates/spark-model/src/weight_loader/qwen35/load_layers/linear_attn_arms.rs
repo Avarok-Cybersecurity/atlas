@@ -202,6 +202,14 @@ pub(super) fn build_linear_attention_nvfp4(
     // Unconditional for FP8-on-disk variants (mirrors dense).
     let (qkvz_fp8_prefill, out_proj_fp8_prefill) =
         if matches!(variant, Nvfp4Variant::Fp8Dequanted) {
+            // Diagnostic: fires once per LinearAttention layer (~30
+            // lines for 35B-A3B). Confirms the MoE Bug #1 cross-port
+            // (commit 7d5e8fc) is active and the SSM prefill path
+            // dispatches through fp8_gemm_n128, not w4a16_gemm.
+            tracing::info!(
+                "SSM[{lp}] in_proj_qkv + out_proj via native FP8 prefill GEMM \
+                 (BF16 act × FP8 weight via fp8_gemm_n128)"
+            );
             let b2f_k = gpu.kernel("w4a16", "bf16_to_fp8")?;
             let qkvz_total = (qkvz_size * h) as u32;
             let qkvz_fp8 = gpu.alloc(qkvz_size * h)?;
