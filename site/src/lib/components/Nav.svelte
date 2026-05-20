@@ -1,6 +1,7 @@
 <script>
-  import { discordUrl } from '$lib/data.js';
+  import { discordUrl, xUrl } from '$lib/data.js';
   import GithubIcon from './GithubIcon.svelte';
+  import XIcon from './XIcon.svelte';
 </script>
 
 <nav>
@@ -13,6 +14,7 @@
       <a href="#speed">Why Atlas</a>
       <a href="#models">Models</a>
       <a href="#try">Try It</a>
+      <a href="https://sparkrun.dev/runtimes/atlas/" target="_blank" rel="noopener">sparkrun</a>
       <a href="#community">Community</a>
       <a href="#roadmap">Roadmap</a>
       <a
@@ -23,6 +25,15 @@
         aria-label="Atlas on GitHub"
       >
         <GithubIcon size={20} />
+      </a>
+      <a
+        href={xUrl}
+        class="nav-icon-link"
+        target="_blank"
+        rel="noopener"
+        aria-label="Atlas on X (@atlasinference)"
+      >
+        <XIcon size={18} />
       </a>
       <a href={discordUrl} class="nav-cta">Join Discord</a>
     </div>
