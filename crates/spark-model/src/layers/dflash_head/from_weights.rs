@@ -189,52 +189,97 @@ impl BlockDiffusionDraftHead {
             position_ids: gpu.alloc(n_attn * 4)?,
         };
 
-        // Pre-compute yarn inv_freq table for drafter RoPE. Mirrors the
-        // formula in `mistral_loader.rs:518-577`. Drafter config:
-        //   factor = 64.0, beta_fast = 32.0, beta_slow = 1.0,
-        //   original_max_position_embeddings = 4096
-        let rope_theta = 10_000_000.0f32; // drafter rope_theta
+        // Pre-compute inv_freq table for drafter RoPE.
+        //
+        // The drafter's `config.json:rope_scaling` is the source of truth:
+        //   * `None`  ⇒ plain RoPE (`inv_freq[j] = 1 / θ^(2j/dim)`). The
+        //     v2 2026-04-27 Qwen3.6-DFlash drafter ships `rope_scaling: null`.
+        //   * `Some(yarn)` ⇒ YaRN-scaled table (Mistral-Small-4 lineage).
+        //
+        // Historical bug (Friday/Avarok 2026-05): this loader unconditionally
+        // applied YaRN with factor=64 / orig_max_pos=4096 hardcoded, which
+        // mis-scaled every low-frequency RoPE pair (pairs 0..11 divided by
+        // 64, pairs 11..26 ramped). Result: drafter Q/K rotations landed in
+        // the wrong angular basis at every layer → 0% draft acceptance. Now
+        // we read the drafter's own scaling block instead of guessing.
+        let rope_theta = weights.config.rope_theta;
         let rotary_dim = head_dim; // Qwen3.6-DFlash applies rope to full head_dim
-        let factor = 64.0f32;
-        let beta_fast = 32.0f32;
-        let beta_slow = 1.0f32;
-        let orig_max_pos = 4096.0f32;
         let dim_f = rotary_dim as f32;
         let n_pairs = rotary_dim / 2;
-        let find_correction_dim = |num_rot: f32| -> f32 {
-            (dim_f * (orig_max_pos / (num_rot * 2.0 * std::f32::consts::PI)).ln())
-                / (2.0 * rope_theta.ln())
-        };
-        let low = find_correction_dim(beta_fast).floor().max(0.0);
-        let high = find_correction_dim(beta_slow)
-            .ceil()
-            .min((rotary_dim - 1) as f32);
-        let ramp_denom = if (high - low).abs() < 1e-6 {
-            high - low + 0.001
-        } else {
-            high - low
-        };
         let mut inv_freq_table = vec![0.0f32; n_pairs];
+
+        // Default = plain RoPE. Overwritten in the YaRN arm below.
         for j in 0..n_pairs {
-            let pos_freq = rope_theta.powf((2 * j) as f32 / dim_f);
-            let inv_freq_extrap = 1.0 / pos_freq;
-            let inv_freq_interp = 1.0 / (factor * pos_freq);
-            let ramp = ((j as f32 - low) / ramp_denom).clamp(0.0, 1.0);
-            let extrap_factor = 1.0 - ramp;
-            inv_freq_table[j] =
-                inv_freq_interp * (1.0 - extrap_factor) + inv_freq_extrap * extrap_factor;
+            inv_freq_table[j] = 1.0 / rope_theta.powf((2 * j) as f32 / dim_f);
         }
+
+        let rope_kind: &str;
+        if let Some(scaling) = weights.config.rope_scaling.as_ref() {
+            match scaling.rope_type.as_deref() {
+                Some("yarn") => {
+                    let factor = scaling.factor.unwrap_or(1.0);
+                    let beta_fast = scaling.beta_fast.unwrap_or(32.0);
+                    let beta_slow = scaling.beta_slow.unwrap_or(1.0);
+                    let orig_max_pos = scaling.original_max_position_embeddings.unwrap_or(4096.0);
+                    let find_correction_dim = |num_rot: f32| -> f32 {
+                        (dim_f * (orig_max_pos / (num_rot * 2.0 * std::f32::consts::PI)).ln())
+                            / (2.0 * rope_theta.ln())
+                    };
+                    let low = find_correction_dim(beta_fast).floor().max(0.0);
+                    let high = find_correction_dim(beta_slow)
+                        .ceil()
+                        .min((rotary_dim - 1) as f32);
+                    let ramp_denom = if (high - low).abs() < 1e-6 {
+                        high - low + 0.001
+                    } else {
+                        high - low
+                    };
+                    for j in 0..n_pairs {
+                        let pos_freq = rope_theta.powf((2 * j) as f32 / dim_f);
+                        let inv_freq_extrap = 1.0 / pos_freq;
+                        let inv_freq_interp = 1.0 / (factor * pos_freq);
+                        let ramp = ((j as f32 - low) / ramp_denom).clamp(0.0, 1.0);
+                        let extrap_factor = 1.0 - ramp;
+                        inv_freq_table[j] = inv_freq_interp * (1.0 - extrap_factor)
+                            + inv_freq_extrap * extrap_factor;
+                    }
+                    tracing::info!(
+                        "DFlash RoPE = YaRN: theta={rope_theta}, factor={factor}, \
+                         beta_fast={beta_fast}, beta_slow={beta_slow}, \
+                         max_pos={orig_max_pos}, low_dim={low:.1}, high_dim={high:.1}",
+                    );
+                    rope_kind = "yarn";
+                }
+                Some(other) => {
+                    tracing::warn!(
+                        "DFlash drafter config has rope_scaling.rope_type={other:?} which Atlas \
+                         doesn't recognise — falling back to plain RoPE (theta={rope_theta})."
+                    );
+                    rope_kind = "plain (unknown rope_type)";
+                }
+                None => {
+                    tracing::warn!(
+                        "DFlash drafter config has rope_scaling without rope_type — \
+                         falling back to plain RoPE (theta={rope_theta})."
+                    );
+                    rope_kind = "plain (no rope_type)";
+                }
+            }
+        } else {
+            tracing::info!(
+                "DFlash RoPE = plain (no rope_scaling in drafter config), theta={rope_theta}, \
+                 {n_pairs} pairs",
+            );
+            rope_kind = "plain";
+        }
+        let _ = rope_kind; // logged above, retained for future debug surfaces
+
         let inv_freq_bytes: Vec<u8> = inv_freq_table
             .iter()
             .flat_map(|v| v.to_le_bytes())
             .collect();
         let yarn_inv_freq = gpu.alloc(inv_freq_bytes.len())?;
         gpu.copy_h2d(&inv_freq_bytes, yarn_inv_freq)?;
-        tracing::info!(
-            "DFlash yarn inv_freq: {} pairs, factor={factor}, beta_fast={beta_fast}, \
-             beta_slow={beta_slow}, max_pos={orig_max_pos}, low_dim={low:.1}, high_dim={high:.1}",
-            n_pairs,
-        );
 
         let head = Self {
             num_layers,
