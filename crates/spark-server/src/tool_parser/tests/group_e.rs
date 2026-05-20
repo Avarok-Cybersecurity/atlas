@@ -237,3 +237,46 @@ fn qwen3_xml_coerced_via_parse_and_coerce_all() {
     assert_eq!(args["limit"], 5, "limit must be integer 5 after coercion");
     assert_eq!(args["query"], "rust async");
 }
+
+#[test]
+fn coerce_boolean_false_lower() {
+    let tools = vec![make_tool(
+        "fn",
+        serde_json::json!({ "flag": { "type": "boolean" } }),
+    )];
+    let mut calls = vec![make_call("fn", r#"{"flag":"false"}"#)];
+    coerce_all(&mut calls, &tools);
+    let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+    assert_eq!(args["flag"], false);
+}
+
+#[test]
+fn coerce_boolean_true_capitalized() {
+    let tools = vec![make_tool(
+        "fn",
+        serde_json::json!({ "flag": { "type": "boolean" } }),
+    )];
+    let mut calls = vec![make_call("fn", r#"{"flag":"True"}"#)];
+    coerce_all(&mut calls, &tools);
+    let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+    assert_eq!(args["flag"], true);
+}
+
+#[test]
+fn coerce_invalid_arguments_json_is_noop() {
+    // Malformed JSON (e.g., truncated streaming output) must not panic or mutate.
+    let tools = vec![make_tool(
+        "fn",
+        serde_json::json!({ "limit": { "type": "integer" } }),
+    )];
+    let raw = r#"{"limit":"10""#; // missing closing }
+    let mut calls = vec![make_call("fn", raw)];
+    coerce_all(&mut calls, &tools);
+    assert_eq!(calls[0].function.arguments, raw);
+}
+
+#[test]
+fn tool_call_format_from_str_qwen3_xml() {
+    let fmt = "qwen3_xml".parse::<ToolCallFormat>().unwrap();
+    assert_eq!(fmt.name(), "qwen3_xml");
+}
