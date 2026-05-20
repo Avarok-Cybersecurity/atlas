@@ -268,6 +268,26 @@ impl MoeLayer {
             )?;
         }
         let fp8_grouped_k = self.fp8_grouped_kernel();
+        // 2026-05-20: zero expert buffers unconditionally before the grouped
+        // GEMMs. The `max_m_tiles = (avg*2).div_ceil(64)` heuristic assumes
+        // peak-per-expert ≤ 2× average; skewed routing (especially long
+        // chunks) violates this, leaving the un-processed rows uninitialized
+        // and propagating stale data through unpermute_reduce. Without this
+        // zeroing, the L0 MoE output magnitude is non-deterministic across
+        // runs and chunk sizes (verified: ATLAS_ROUTED_ONLY at chunk-4 L0
+        // varied 0.26-1.13 for the same prompt). Only EP-mode had this
+        // memset.
+        {
+            let gu_bytes = te * inter as usize * 2;
+            ctx.gpu.memset_async(expert_gate_out, 0, gu_bytes, stream)?;
+            ctx.gpu.memset_async(expert_up_out, 0, gu_bytes, stream)?;
+            ctx.gpu.memset_async(
+                ctx.buffers.expert_down_out(),
+                0,
+                te * h as usize * 2,
+                stream,
+            )?;
+        }
         if max_m_tiles > 0 {
             ops::moe_fp8_grouped_gemm(
                 ctx.gpu,
