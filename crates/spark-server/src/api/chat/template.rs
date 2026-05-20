@@ -74,14 +74,19 @@ pub(super) fn render_template(
             msg
         })
         .collect();
-    // When skip_template_tools is set, the tool-call parser's system_prompt()
-    // is the sole source of tool schema and format instructions. Passing
-    // jinja_tools here would cause the template to also render tool defs in
-    // its own format (e.g. XML for nemotron_h.jinja), producing contradictory
-    // instructions that confuse models trained on a different output format
-    // (e.g. Nemotron-Super-120B trained on bare JSON, not XML tool_call).
+    // When skip_template_tools (MODEL.toml) or parser.suppresses_jinja_tools()
+    // is set, the parser's system_prompt() is the sole source of tool schema
+    // and format instructions. Passing jinja_tools here would cause the template
+    // to also render tool defs in its own format (e.g. XML for nemotron_h.jinja),
+    // producing contradictory instructions (e.g. bare_json says "emit JSON, no
+    // tags"; nemotron_h.jinja says "NEVER emit JSON, use <tool_call> XML").
+    // Either flag independently suppresses jinja tool rendering.
+    let parser_suppresses = state
+        .tool_call_parser
+        .as_ref()
+        .is_some_and(|p| p.suppresses_jinja_tools());
     let jinja_tools: Option<Vec<serde_json::Value>> =
-        if tools_active && !state.behavior.skip_template_tools {
+        if tools_active && !state.behavior.skip_template_tools && !parser_suppresses {
             req.tools.as_ref().map(|ts| {
                 ts.iter()
                     .map(|t| serde_json::to_value(t).unwrap_or_default())

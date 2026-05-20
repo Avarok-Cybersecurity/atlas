@@ -49,6 +49,10 @@ impl ToolCallParser for BareJsonParser {
         prompt
     }
 
+    fn suppresses_jinja_tools(&self) -> bool {
+        true
+    }
+
     fn format_tool_calls(&self, calls: &[IncomingToolCall]) -> String {
         let mut out = String::new();
         for tc in calls {

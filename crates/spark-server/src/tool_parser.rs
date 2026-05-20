@@ -261,6 +261,23 @@ pub trait ToolCallParser: Send + Sync {
     fn broken_opener_stop_strings(&self) -> &'static [&'static str] {
         &[]
     }
+
+    /// When `true`, the Jinja chat template should receive `jinja_tools = None`
+    /// because this parser's `system_prompt()` already provides the complete
+    /// tool schema and output-format instructions. Passing tools to the template
+    /// on top of that causes it to emit a conflicting format section (e.g.
+    /// `nemotron_h.jinja`'s XML `# Tools` block directly contradicts the
+    /// `bare_json` parser's "emit JSON, do not wrap in tags" instruction).
+    ///
+    /// Complementary to `ModelBehavior::skip_template_tools` (MODEL.toml):
+    /// either flag independently suppresses jinja tool rendering. The parser-
+    /// level default ensures future bare_json models stay correct without
+    /// requiring an explicit MODEL.toml entry.
+    ///
+    /// Default `false` — templates render tool definitions normally.
+    fn suppresses_jinja_tools(&self) -> bool {
+        false
+    }
 }
 
 impl std::fmt::Display for dyn ToolCallParser {
