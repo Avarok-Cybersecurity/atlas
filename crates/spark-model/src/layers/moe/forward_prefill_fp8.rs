@@ -314,7 +314,6 @@ impl MoeLayer {
                 total_expanded * inter,
                 stream,
             )?;
-
             ops::moe_fp8_grouped_gemm(
                 ctx.gpu,
                 fp8_grouped_k,
@@ -365,6 +364,55 @@ impl MoeLayer {
         // Shared expert blend (post-allreduce).
         if has_shared {
             let shared_down_out = ctx.buffers.attn_output();
+            // ATLAS_DUMP_EXPERT_IDS=1: dump routed-only output + shared output
+            // BEFORE blend, so we can attribute the moe_out amplification.
+            if std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1") {
+                ctx.gpu.synchronize(stream)?;
+                let offset = (n - 1) as usize * h as usize * 2;
+                // routed-only (in `output` before blend)
+                let mut buf_r = vec![0u8; h as usize * 2];
+                let _ = ctx.gpu.copy_d2h(output.offset(offset), &mut buf_r);
+                let vr: Vec<f32> = buf_r.chunks_exact(2).map(|c| {
+                    let bits = u16::from_le_bytes([c[0], c[1]]);
+                    f32::from_bits((bits as u32) << 16)
+                }).collect();
+                let nr = vr.iter().map(|x| x*x).sum::<f32>().sqrt();
+                tracing::info!(
+                    "ATLAS_ROUTED_ONLY last_tok: |x|={:.4} first5={:?}",
+                    nr, &vr[..5]
+                );
+                // shared_down_out
+                let mut buf_s = vec![0u8; h as usize * 2];
+                let _ = ctx.gpu.copy_d2h(shared_down_out.offset(offset), &mut buf_s);
+                let vs: Vec<f32> = buf_s.chunks_exact(2).map(|c| {
+                    let bits = u16::from_le_bytes([c[0], c[1]]);
+                    f32::from_bits((bits as u32) << 16)
+                }).collect();
+                let ns = vs.iter().map(|x| x*x).sum::<f32>().sqrt();
+                tracing::info!(
+                    "ATLAS_SHARED_OUT last_tok: |x|={:.4} first5={:?}",
+                    ns, &vs[..5]
+                );
+                // gate scalar: dot(normed[last], gate_weight) → sigmoid
+                let mut buf_n = vec![0u8; h as usize * 2];
+                let mut buf_g = vec![0u8; h as usize * 2];
+                let _ = ctx.gpu.copy_d2h(input.offset(offset), &mut buf_n);
+                let _ = ctx.gpu.copy_d2h(self.weights.shared_expert_gate.weight, &mut buf_g);
+                let vn: Vec<f32> = buf_n.chunks_exact(2).map(|c| {
+                    let bits = u16::from_le_bytes([c[0], c[1]]);
+                    f32::from_bits((bits as u32) << 16)
+                }).collect();
+                let vg: Vec<f32> = buf_g.chunks_exact(2).map(|c| {
+                    let bits = u16::from_le_bytes([c[0], c[1]]);
+                    f32::from_bits((bits as u32) << 16)
+                }).collect();
+                let dot: f32 = vn.iter().zip(vg.iter()).map(|(a,b)| a*b).sum();
+                let sig = 1.0 / (1.0 + (-dot).exp());
+                tracing::info!(
+                    "ATLAS_SHARED_GATE last_tok: dot={:.4} sigmoid={:.6}",
+                    dot, sig
+                );
+            }
             ops::moe_batched_blend(
                 ctx.gpu,
                 self.moe_batched_blend,
@@ -376,6 +424,26 @@ impl MoeLayer {
                 n,
                 stream,
             )?;
+        }
+
+        // ATLAS_DUMP_EXPERT_IDS=1 also dumps the FINAL moe output (routed +
+        // shared blend) at the last token. Compared to HF L0_moe_out, this
+        // localizes residual-stream amplification to (a) too-large moe out,
+        // (b) too-large routed expert outputs, or (c) miscomputed shared gate.
+        if std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1") {
+            ctx.gpu.synchronize(stream)?;
+            let offset = (n - 1) as usize * h as usize * 2;
+            let mut buf = vec![0u8; h as usize * 2];
+            let _ = ctx.gpu.copy_d2h(output.offset(offset), &mut buf);
+            let v: Vec<f32> = buf.chunks_exact(2).map(|c| {
+                let bits = u16::from_le_bytes([c[0], c[1]]);
+                f32::from_bits((bits as u32) << 16)
+            }).collect();
+            let norm = v.iter().map(|x| x*x).sum::<f32>().sqrt();
+            tracing::info!(
+                "ATLAS_MOE_OUT last_tok: |x|={:.4} first5={:?}",
+                norm, &v[..5]
+            );
         }
 
         Ok(())
