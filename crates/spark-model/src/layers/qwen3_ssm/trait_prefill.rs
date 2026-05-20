@@ -112,7 +112,33 @@ impl Qwen3SsmLayer {
         } else {
             ctx.buffers.ssm_qkvz()
         };
-        if let Some(fp8) = self.qkvz_fp8 {
+        // Env override: ATLAS_GDN_BF16_WEIGHTS=1 forces the BF16 dense
+        // GEMM path for QKVZ — bypassing both FP8 and NVFP4 weight-quant
+        // paths. Tests whether weight-quantization noise on qkvz (esp.
+        // the W_z slice that feeds gnorm's silu gate) is the dominant
+        // source of long-context layer-1+ drift.
+        let force_bf16 = matches!(
+            std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(),
+            Some("1")
+        );
+        if force_bf16 {
+            ops::dense_gemm(
+                ctx.gpu,
+                self.dense_gemm_k,
+                normed,
+                &self.ssm.in_proj_qkvz,
+                proj_dst,
+                k,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "ssm prefill: QKVZ BF16 dense GEMM failed (M={k}, N={qkvz_size}): {e}"
+                )
+            })?;
+        } else if let Some(fp8) = self.qkvz_fp8 {
             ops::fp8_gemm_n128(
                 ctx.gpu,
                 self.fp8_gemm_k,
