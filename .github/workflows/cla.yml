@@ -36,7 +36,7 @@ jobs:
           path-to-signatures: 'signatures/version1/cla.json'
           path-to-document: 'https://github.com/${{ github.repository }}/blob/main/CLA.md'
           branch: 'cla-signatures'
-          allowlist: dependabot[bot],renovate[bot],google-labs-jules[bot],claude[bot]
+          allowlist: dependabot[bot],renovate[bot],google-labs-jules[bot],claude[bot],google-labs-jules,claude
           lock-pullrequest-aftermerge: false
           create-file-commit-message: 'chore: setup CLA signatures file'
           signed-commit-message: 'chore: $username CLA signature added'
