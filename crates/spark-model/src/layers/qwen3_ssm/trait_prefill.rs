@@ -27,6 +27,13 @@ impl Qwen3SsmLayer {
         let bf16 = 2usize;
         let fp32 = 4usize;
 
+        // Per-SSM-layer-prefill counter — used by ATLAS_GDN_DUMP hooks
+        // to attribute a captured intermediate to a specific SSM layer
+        // index. The N SSM layers in the model are called in order
+        // during one prefill, so layer N-1 sees counter == N-1.
+        let ssm_layer_idx = super::debug::SSM_LAYER_CALL_COUNTER
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         let ssm_state = state
             .as_any_mut()
             .downcast_mut::<SsmLayerState>()
@@ -259,6 +266,20 @@ impl Qwen3SsmLayer {
             conv_dim as u32,
             stream,
         )?;
+        // ATLAS_GDN_DUMP hook #1: post-conv1d (post-silu, applied inside
+        // the kernel). Last-token slice, flat [conv_dim] bf16. Layer
+        // index from SSM_LAYER_CALL_COUNTER; latched by per-layer
+        // AtomicBool so each (layer_idx, stage) dumps at most once.
+        super::debug::maybe_dump_gdn_buf(
+            ctx.gpu,
+            conv_out_buf,
+            (num_tokens - 1) * conv_dim * bf16,
+            conv_dim,
+            ssm_layer_idx,
+            "conv",
+            &super::debug::DUMP_CONV,
+            stream,
+        )?;
         prof!("conv1d", t0);
         t0 = if ctx.profile {
             ctx.gpu.synchronize(stream)?;
@@ -279,6 +300,19 @@ impl Qwen3SsmLayer {
             1e-6,
             k,
             conv_dim as u32,
+            stream,
+        )?;
+        // ATLAS_GDN_DUMP hook #2: post-L2 norm on q,k (v unchanged).
+        // Same buffer/shape as the conv dump — l2_norm operates in
+        // place on the q,k segments of conv_out_buf.
+        super::debug::maybe_dump_gdn_buf(
+            ctx.gpu,
+            conv_out_buf,
+            (num_tokens - 1) * conv_dim * bf16,
+            conv_dim,
+            ssm_layer_idx,
+            "l2",
+            &super::debug::DUMP_L2,
             stream,
         )?;
         prof!("l2_norm", t0);
@@ -372,6 +406,19 @@ impl Qwen3SsmLayer {
             )?;
         }
 
+        // ATLAS_GDN_DUMP hook #3: post-GDN recurrence (pre-gnorm,
+        // value-space). gdn_out_buf is [num_tokens, value_dim] bf16
+        // row-major; dump the last token's value_dim slice.
+        super::debug::maybe_dump_gdn_buf(
+            ctx.gpu,
+            gdn_out_buf,
+            (num_tokens - 1) * value_dim * bf16,
+            value_dim,
+            ssm_layer_idx,
+            "gdn",
+            &super::debug::DUMP_GDN,
+            stream,
+        )?;
         prof!("gdn_prefill", t0);
         t0 = if ctx.profile {
             ctx.gpu.synchronize(stream)?;
@@ -396,6 +443,21 @@ impl Qwen3SsmLayer {
             k,
             value_dim as u32,
             qkvz_size as u32,
+            stream,
+        )?;
+        // ATLAS_GDN_DUMP hook #4: post-gated-RMSNorm. Downstream
+        // `prefill_out_proj_dispatch` (line ~411) consumes this buffer
+        // as `[num_tokens, value_dim]`, so the row stride is value_dim
+        // (= nv*vd = 4096 for A3B). normed_out_buf aliases conv_out_buf
+        // (in-place reuse — conv_out is dead by this point).
+        super::debug::maybe_dump_gdn_buf(
+            ctx.gpu,
+            normed_out_buf,
+            (num_tokens - 1) * value_dim * bf16,
+            value_dim,
+            ssm_layer_idx,
+            "gnorm",
+            &super::debug::DUMP_GNORM,
             stream,
         )?;
         prof!("gated_rms_norm", t0);

@@ -99,6 +99,21 @@ Critical gotchas this investigation hit:
    target model is *supposed* to do (e.g., compare against vLLM greedy output for
    the same IDs). If the oracle itself is wrong, every layer comparison is noise.
 
+4. **Don't use an FP8 checkpoint for the BF16 reference.** HF Transformers may
+   silently `Loading: ignoring all *_scale_inv tensors` and reinterpret FP8 bytes
+   as BF16 — producing garbage values that mostly cross-correlate enough to look
+   like "some" signal. If `|hf in_proj_qkv| = 800000` when you expected ~200,
+   that's the smoking gun. Use the upstream BF16 checkpoint, not the FP8 quant.
+
+5. **When comparing across SUT configurations (e.g., chunked-vs-unchunked
+   prefill), guarantee the dumped position is the SAME** in every configuration.
+   A dumper that fires on `first_call`'s last token will capture position
+   `chunk_size - 1` under chunked prefill but position `L - 1` under single-chunk
+   — a different token, different input, naturally low cosine. The "drift" you
+   diagnose is then methodological noise, not a bug. Either dump on every call
+   (overwriting) so the *last* chunk's last token wins, or thread an
+   `is_last_chunk` flag through to the dumper.
+
 ---
 
 ## 4. Per-layer divergence comparator
@@ -204,6 +219,15 @@ hours, then disproven:
    attenuation).
 4. *"Per-head magnitude is a uniform deficit"* — refuted when std/min/max were
    actually computed and revealed the true high-std structure (§5).
+5. *"Chunked SSM prefill at chunk_size=4096 introduces state-transition
+   precision loss at long context"* (MoE 35B-A3B investigation, 2026-05-20) —
+   the cosine appeared to collapse from 0.9999 to 0.95 at L=16k under chunked
+   prefill but stay clean under single-chunk. This was traced to gotcha §3 #5:
+   the dumper's Once-latch captured position 4095 of chunk 1 instead of
+   position 16099 of the full prompt, comparing two different tokens against
+   the same HF reference. After fixing the dumper to overwrite on every call,
+   chunked and unchunked prefill produce identical math (cos 0.99989,
+   per-head std 0.018). Refuted.
 
 Each reversal cost hours. The discipline that limits the damage:
 
