@@ -247,9 +247,44 @@ impl MoeLayer {
             stream,
         )?;
 
-        // 4. Max M tiles (same heuristic as NVFP4)
+        // 4. Max M tiles — sized for worst-case expert skew, not 2× avg.
+        // The `(avg * 2)` heuristic silently truncated heavy experts:
+        // observed avg=129, max=929 tokens for one expert (= 7× avg) in
+        // a 4097-token chunk, dropping 609 rows for that expert and
+        // under-counting routed-MoE output systematically (-14% at L0).
+        // Now bumped to `(num_tokens * top_k).div_ceil(64)` which always
+        // covers the absolute worst case (1 expert eats all tokens).
+        // Cost: extra threadblocks for empty tiles (early-exit on
+        // `m_idx >= M_expert`), low overhead vs the previous correctness
+        // bug.
         let avg_per_expert = (num_tokens * top_k as usize).div_ceil(ne);
-        let max_m_tiles = (avg_per_expert * 2).div_ceil(64).max(1) as u32;
+        let max_m_tiles =
+            ((num_tokens * top_k as usize)).div_ceil(64).max(1) as u32;
+        // Diagnostic: log the actual peak per-expert load to verify the
+        // (avg*2) heuristic suffices. If any expert exceeds max_m_tiles*64,
+        // the grouped GEMM truncates that expert's rows silently — with the
+        // zero-init upstream, those rows are now 0 (not garbage), but the
+        // expert's contribution is still incomplete.
+        if std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1") {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                ctx.gpu.synchronize(stream).ok();
+                let dump_n = ne + 1;
+                let mut eo_buf = vec![0u8; dump_n * 4];
+                let _ = ctx.gpu.copy_d2h(expert_offsets, &mut eo_buf);
+                let eo: Vec<u32> = eo_buf.chunks_exact(4).map(|b| u32::from_le_bytes([b[0],b[1],b[2],b[3]])).collect();
+                let counts: Vec<u32> = (0..ne).map(|i| eo[i+1] - eo[i]).collect();
+                let max_cnt = *counts.iter().max().unwrap_or(&0);
+                let min_cnt = *counts.iter().min().unwrap_or(&0);
+                let max_idx = counts.iter().position(|&x| x == max_cnt).unwrap_or(0);
+                let kernel_max = max_m_tiles * 64;
+                tracing::info!(
+                    "ATLAS_EXPERT_LOAD: n_tokens={} avg={} max={} (expert {}) min={} max_m_tiles={} kernel_cap={} truncated={}",
+                    num_tokens, avg_per_expert, max_cnt, max_idx, min_cnt, max_m_tiles, kernel_max,
+                    max_cnt > kernel_max
+                );
+            });
+        }
 
         // 5. FP8 grouped gate+up GEMM
         let expert_gate_out = ctx.buffers.expert_gate_out();
