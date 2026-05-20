@@ -101,6 +101,24 @@ impl MoeLayer {
 
         // Gemma-4 router pre-norm (no-op for other models).
         let router_in = self.router_input(input, n, h, ctx, stream)?;
+        // ATLAS_DUMP_EXPERT_IDS: dump the gate INPUT (= post-attn-norm of
+        // hidden + SSM out_proj). If this matches HF's input to .gate but
+        // logits differ → gate matmul or weight loading is the bug.
+        if std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1") {
+            ctx.gpu.synchronize(stream)?;
+            let offset = (n - 1) as usize * h as usize * 2;
+            let mut buf = vec![0u8; h as usize * 2];
+            let _ = ctx.gpu.copy_d2h(router_in.offset(offset), &mut buf);
+            let v: Vec<f32> = buf.chunks_exact(2).map(|c| {
+                let bits = u16::from_le_bytes([c[0], c[1]]);
+                f32::from_bits((bits as u32) << 16)
+            }).collect();
+            let norm = v.iter().map(|x| x*x).sum::<f32>().sqrt();
+            tracing::info!(
+                "ATLAS_GATE_INPUT last_tok: |x|={:.4}  first5={:?}",
+                norm, &v[..5]
+            );
+        }
         // 1. Gate GEMM
         let gate_logits = ctx.buffers.gate_logits();
         if let Some(ref nvfp4) = self.gate_nvfp4 {
@@ -127,6 +145,33 @@ impl MoeLayer {
                 h,
                 stream,
             )?;
+        }
+
+        // ATLAS_DUMP_EXPERT_IDS=1 also dumps gate_logits BEFORE softmax+topK
+        // to attribute drift between gate matmul vs routing logic.
+        if std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1") {
+            ctx.gpu.synchronize(stream)?;
+            // gate_logits[n-1, :] = num_experts BF16 values for last token
+            let logits_offset = (n - 1) as usize * num_experts as usize * 2;
+            let mut buf = vec![0u8; num_experts as usize * 2];
+            let _ = ctx.gpu.copy_d2h(gate_logits.offset(logits_offset), &mut buf);
+            // Convert BF16 → float32 + print top 10 highest logits
+            let logits: Vec<f32> = buf.chunks_exact(2).map(|c| {
+                let bits = u16::from_le_bytes([c[0], c[1]]);
+                f32::from_bits((bits as u32) << 16)
+            }).collect();
+            let mut idx: Vec<usize> = (0..logits.len()).collect();
+            idx.sort_by(|&a, &b| logits[b].partial_cmp(&logits[a]).unwrap_or(std::cmp::Ordering::Equal));
+            let top10: Vec<(usize, f32)> = idx.iter().take(10).map(|&i| (i, logits[i])).collect();
+            tracing::info!(
+                "ATLAS_GATE_LOGITS last_tok: top10_(idx,val)={:?} mean={:.4} std={:.4}",
+                top10,
+                logits.iter().sum::<f32>() / logits.len() as f32,
+                {
+                    let mean = logits.iter().sum::<f32>() / logits.len() as f32;
+                    (logits.iter().map(|x| (x-mean).powi(2)).sum::<f32>() / logits.len() as f32).sqrt()
+                }
+            );
         }
 
         // 2. Batched topK dispatch (sigmoid+bias for MiniMax/DeepSeek-V3,
@@ -162,6 +207,24 @@ impl MoeLayer {
                 n,
                 stream,
             )?;
+        }
+
+        // ATLAS_DUMP_EXPERT_IDS=1 — log the last token's top-K expert
+        // indices + weights for drift attribution vs HF.
+        if std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1") {
+            ctx.gpu.synchronize(stream)?;
+            let mut idx_buf = vec![0u8; top_k as usize * 4];
+            let mut w_buf = vec![0u8; top_k as usize * 4];
+            let idx_offset = (n - 1) as usize * top_k as usize * 4;
+            let w_offset = idx_offset;
+            let _ = ctx.gpu.copy_d2h(indices_dev.offset(idx_offset), &mut idx_buf);
+            let _ = ctx.gpu.copy_d2h(weights_dev.offset(w_offset), &mut w_buf);
+            let ids: Vec<u32> = idx_buf.chunks_exact(4).map(|b| u32::from_le_bytes([b[0],b[1],b[2],b[3]])).collect();
+            let ws: Vec<f32> = w_buf.chunks_exact(4).map(|b| f32::from_le_bytes([b[0],b[1],b[2],b[3]])).collect();
+            tracing::info!(
+                "ATLAS_EXPERT_IDS last_tok: indices={:?} weights={:?} sum={:.4}",
+                ids, ws, ws.iter().sum::<f32>()
+            );
         }
 
         // 3. Sort tokens by expert

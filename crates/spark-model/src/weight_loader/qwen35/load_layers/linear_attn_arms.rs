@@ -267,5 +267,22 @@ pub(super) fn build_linear_attention_nvfp4(
     if qkvz_fp8_prefill.is_some() || out_proj_fp8_prefill.is_some() {
         layer.set_fp8_prefill_only_weights(qkvz_fp8_prefill, out_proj_fp8_prefill);
     }
+    // ATLAS_GDN_BF16_WEIGHTS=1 extension: also install BF16 out_proj so
+    // the prefill dispatcher takes the dense_gemm BF16 path (highest
+    // dispatch priority). Eliminates FP8/NVFP4 quant noise on out_proj
+    // — the noise was previously amplified by post_attn_norm's RMSNorm
+    // into wildly different gate inputs at the MoE block (cos=0.42 vs
+    // HF). Test fix for long-context drift root cause (commit 1db7572
+    // and onward investigation). ssm35.out_proj is the BF16 weight
+    // (loaded via dense_auto with FP8→BF16 dequant).
+    if matches!(std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(), Some("1")) {
+        // ssm35.out_proj weight is BF16 on GPU (from load_ssm_qwen35 →
+        // dense_auto on Fp8Dequanted variant). It's a separate buffer
+        // from out_proj_nvfp4 / out_proj_fp8_prefill. Set as dense path.
+        layer.out_proj_dense = Some(ssm35.out_proj);
+        tracing::info!(
+            "SSM[{lp}] ATLAS_GDN_BF16_WEIGHTS: out_proj routed through BF16 dense_gemm (overrides FP8/NVFP4)"
+        );
+    }
     Ok(Box::new(layer))
 }
