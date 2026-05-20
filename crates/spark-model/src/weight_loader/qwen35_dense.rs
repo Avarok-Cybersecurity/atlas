@@ -12,8 +12,9 @@ use crate::layers::{DenseFfnLayer, FfnComponent, Qwen3AttentionLayer, Qwen3SsmLa
 use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_dense_bf16, shard_quantized_nvfp4};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, MtpWeights, Nvfp4Variant, SsmWeights, dense, dense_auto,
-    dense_keep_f32, dequant_nvfp4_to_bf16, detect_nvfp4_variant, gpu_concat_rows, interleave_ba,
-    load_dense_ffn, load_kv_scales, load_mtp, load_ssm_qwen35, quantize_to_nvfp4, quantized_auto,
+    dense_f32_safe, dense_keep_f32, dequant_nvfp4_to_bf16, detect_nvfp4_variant, gpu_concat_rows,
+    interleave_ba, load_dense_ffn, load_kv_scales, load_mtp, load_ssm_qwen35, quantize_to_nvfp4,
+    quantized_auto,
 };
 
 pub struct Qwen35DenseWeightLoader;
@@ -58,27 +59,26 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             variant
         );
 
-        // Native FP8 SSM prefill GEMM (Qwen3.6-27B-FP8 root-cause fix):
-        // Atlas's current SSM in_proj_qkv path is FP8 → BF16 → NVFP4 → BF16
-        // (in `w4a16_gemm` dequant) → MMA — a double-quant chain whose
-        // NVFP4 hop's ~4-bit per-group precision is dominated by signal at
-        // q/v but attenuated into a k-direction error (HF conv-k ‖6.3‖ vs
-        // conv-v ‖117.2‖, ~18× smaller). When this flag is set AND the
-        // checkpoint is FP8 block-scaled, install a single-scale FP8 copy
+        // Native FP8 SSM prefill GEMM (Qwen3.6-27B-FP8 root-cause fix,
+        // commit 3ebc08a). Atlas's prior SSM in_proj_qkv path was
+        // FP8 → BF16 → NVFP4 → BF16 (in `w4a16_gemm` dequant) → MMA — a
+        // double-quant chain whose NVFP4 hop's ~4-bit per-group precision
+        // is dominated by signal at q/v but attenuated into a k-direction
+        // error (HF conv-k ‖6.3‖ vs conv-v ‖117.2‖, ~18× smaller). For
+        // every FP8-on-disk checkpoint we install a single-scale FP8 copy
         // of the stacked `[QKV|Z]` and `out_proj` weights for prefill,
         // bypassing the NVFP4 intermediate. Prefill dispatches via the
-        // existing `fp8_gemm_n128` (BF16 act × FP8 weight) — same path the
-        // MoE shared-expert FP8 prefill uses. Decode/GEMV unchanged.
-        // Additive, gated, PCND: unset = unchanged behavior.
-        let fp8_ssm_prefill = matches!(
-            std::env::var("ATLAS_FP8_SSM_PREFILL").ok().as_deref(),
-            Some("1")
-        ) && matches!(variant, Nvfp4Variant::Fp8Dequanted);
+        // existing `fp8_gemm_n128` (BF16 act × FP8 weight) — same path
+        // the MoE shared-expert FP8 prefill uses. Decode/GEMV unchanged.
+        // Originally env-gated `ATLAS_FP8_SSM_PREFILL=1`; promoted to
+        // unconditional 2026-05-20 after live verification (commit
+        // dfb4e8a era, tokens_to_first_degeneration 1,196 → 16,968).
+        let fp8_ssm_prefill = matches!(variant, Nvfp4Variant::Fp8Dequanted);
         let bf16_to_fp8_k = if fp8_ssm_prefill {
             tracing::info!(
-                "ATLAS_FP8_SSM_PREFILL=1: SSM in_proj_qkv + out_proj via native \
-                 FP8 prefill GEMM (BF16 act × FP8 weight via fp8_gemm_n128); \
-                 NVFP4 kept as structural fallback for decode batch paths"
+                "SSM in_proj_qkv + out_proj via native FP8 prefill GEMM \
+                 (BF16 act × FP8 weight via fp8_gemm_n128); NVFP4 kept as \
+                 structural fallback for decode batch paths"
             );
             Some(gpu.kernel("w4a16", "bf16_to_fp8")?)
         } else {
@@ -262,7 +262,11 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // already promotes these; dense was missing the mirror.
                     let a_log = dense_keep_f32(store, &format!("{la}.A_log"), gpu)?;
                     let dt_bias = dense_keep_f32(store, &format!("{la}.dt_bias"), gpu)?;
-                    let norm = dense(store, &format!("{la}.norm.weight"))?;
+                    // norm.weight: use `dense_f32_safe` (FP32-aware: detects
+                    // a fp32 checkpoint and truncates to BF16 with logging;
+                    // bf16 passes through). Mirrors `weight_map/ssm_qwen35.rs`
+                    // MoE sister loader (backported here 2026-05-20).
+                    let norm = dense_f32_safe(store, &format!("{la}.norm.weight"), gpu)?;
 
                     let qkvz_dense =
                         gpu_concat_rows(&qkv_dense, qkv_rows, &z_dense, z_rows, h, gpu)?;

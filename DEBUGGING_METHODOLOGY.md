@@ -286,8 +286,10 @@ a native-FP8 GEMM. The intermediate BF16 truncation noise was uniform across
 channels, but the depthwise conv weights for the *k* sub-segment were 18× smaller
 than for the *v* sub-segment, so SNR for k channels collapsed to <1. Conv-k
 cosine dropped to 0.55 against the HF oracle. Fix: route through native
-`fp8_gemm_n128` (BF16 act × FP8 weight, FP32 accumulator). Env-gated:
-`ATLAS_FP8_SSM_PREFILL=1`.
+`fp8_gemm_n128` (BF16 act × FP8 weight, FP32 accumulator). Originally
+env-gated `ATLAS_FP8_SSM_PREFILL=1`; promoted to unconditional 2026-05-20
+after a live-verified soak (and cross-ported to the MoE A3B sister loader
+once an audit found the same triple-quant chain there).
 
 **Bug #2** — `A_log` and `dt_bias` (per-head decay parameters for the GDR
 recurrence, shape `[48]`) were loaded as BF16 (96 bytes) but consumed by the
