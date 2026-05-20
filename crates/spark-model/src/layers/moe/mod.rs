@@ -250,6 +250,7 @@ pub struct MoeLayer {
 mod forward;
 mod forward_batched;
 mod forward_ep;
+mod dump;
 mod forward_k2;
 mod forward_k3;
 mod forward_phase;
