@@ -62,3 +62,5 @@ presence_penalty = 2.0
 # prompts (`.btn-reset` block × N at 13.4 t/s). MoE A3B/A10B variants
 # in the family don't need it.
 enable_loop_watchdog = true
+# Thinking on by default for all Qwen reasoning-tier models (sweep 2026-05-20).
+thinking_default = true

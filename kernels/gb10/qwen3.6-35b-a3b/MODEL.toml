@@ -91,6 +91,11 @@ frequency_penalty = 0.0
 # sweep showed this MoE A3B variant finishes cleanly on long-code
 # prompts. Only the dense Qwen 27B variants need it.
 enable_loop_watchdog = false
+# Thinking on by default — Qwen3.6 35B-A3B is a reasoning-tier MoE; CoT
+# materially improves coherence on multi-step prompts. Per-request override
+# via chat_template_kwargs.enable_thinking still wins; CLI --disable-thinking
+# is the kill-switch.
+thinking_default = true
 # Disable thinking when tools are active. Qwen3.5 suffers from "Think-Satisfy":
 # model reasons about tool calls in <think>, convinces itself the task is done,
 # then narrates instead of calling tools.
