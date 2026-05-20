@@ -50,18 +50,27 @@ impl Qwen3SsmLayer {
             deinterleave_k: gpu.kernel("ssm_preprocess", "deinterleave_qkvz")?,
             conv1d_k: gpu.kernel("causal_conv1d", "causal_conv1d_update")?,
             conv1d_l2norm_k: gpu.kernel("causal_conv1d", "causal_conv1d_update_l2norm")?,
+            // FP32 conv1d output prevents BF16 truncation in the recurrent
+            // path from compounding past ~8k tokens. The Metal backend
+            // (kernels/metal/common/causal_conv1d_update_l2norm.metal) only
+            // ships the BF16 variant; on those targets we fall back to the
+            // BF16 kernel via the `.0 != 0` gate at the use site
+            // (ssm_forward.rs). Warn instead of error: missing-on-Metal is
+            // expected, and a startup `error!` would page on benign cases.
             conv1d_l2norm_f32_k: {
-                let k = gpu.kernel("causal_conv1d", "causal_conv1d_update_l2norm_f32");
-                match k {
-                    Ok(h) => h,
-                    Err(_) => {
-                        tracing::error!(
-                            "FP32 conv1d kernel not found — SSM long-context coherence \
-                             WILL degrade after ~8k tokens due to BF16 precision loss"
-                        );
-                        KernelHandle(0)
-                    }
+                let h = super::super::try_kernel(
+                    gpu,
+                    "causal_conv1d",
+                    "causal_conv1d_update_l2norm_f32",
+                );
+                if h.0 == 0 {
+                    tracing::warn!(
+                        "FP32 conv1d kernel not loaded; SSM uses BF16 conv \
+                         output. Expect long-context coherence drift past ~8k \
+                         tokens on this backend."
+                    );
                 }
+                h
             },
             gdn_k: gpu.kernel("gated_delta_rule", "gated_delta_rule_decode")?,
             gdn_f32_k: super::super::try_kernel(
