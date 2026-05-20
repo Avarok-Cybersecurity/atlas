@@ -77,6 +77,21 @@ impl Qwen3SsmLayer {
                 .map_err(|e| anyhow::anyhow!("SSM prefill ENTRY: stream broken (k={k}): {e}"))?;
         }
 
+        // ATLAS_GDN_DUMP hook #0a: pre-input-norm hidden state for THIS
+        // layer (= last layer's output + residual). If this matches HF
+        // byte-perfectly while gnorm doesn't, drift originates INSIDE
+        // the current layer's compute (norm/qkv/conv/recur/gnorm).
+        super::debug::maybe_dump_gdn_buf(
+            ctx.gpu,
+            hidden,
+            (num_tokens - 1) * h * fp32,
+            h,
+            ssm_layer_idx,
+            "pre_norm",
+            &super::debug::DUMP_CONV,
+            stream,
+        )?;
+
         // ── 1. RMS norm + residual for N tokens ──
         let normed = ctx.buffers.norm_output();
         ops::rms_norm_residual(
@@ -89,6 +104,17 @@ impl Qwen3SsmLayer {
             k,
             h as u32,
             eps,
+            stream,
+        )?;
+        // ATLAS_GDN_DUMP hook #0b: post-input-norm (input to in_proj_qkv).
+        super::debug::maybe_dump_gdn_buf(
+            ctx.gpu,
+            normed,
+            (num_tokens - 1) * h * 2,
+            h,
+            ssm_layer_idx,
+            "post_norm",
+            &super::debug::DUMP_L2,
             stream,
         )?;
         if k > 4096 {
@@ -229,6 +255,20 @@ impl Qwen3SsmLayer {
                 stream,
             )?;
         }
+        // ATLAS_GDN_DUMP hook #0c: post-qkvz GEMM (deinterleaved input
+        // to conv1d). qkvz_size = key_dim*2 + value_dim*2 = 12288 for A3B
+        // (Q+K+V+Z, head-major within each segment). Compare against HF's
+        // in_proj_qkv output (only 8192 — Q+K+V; HF has separate in_proj_z).
+        super::debug::maybe_dump_gdn_buf(
+            ctx.gpu,
+            deinterleaved,
+            (num_tokens - 1) * qkvz_size * bf16,
+            qkvz_size,
+            ssm_layer_idx,
+            "post_qkvz",
+            &super::debug::DUMP_GDN,
+            stream,
+        )?;
 
         prof!("qkvz_gemm", t0);
         t0 = if ctx.profile {
@@ -360,13 +400,46 @@ impl Qwen3SsmLayer {
         let v_ptr = conv_out_buf.offset(key_dim * 2 * bf16);
         let gb_stride = (nv * 2) as u32;
 
-        // Env override for kernel investigation: ATLAS_DISABLE_WY4=1 forces
-        // fallback to the single-token persistent kernel (256<=k<=4096) or
-        // split4 — useful for isolating WY4 chunkwise-algebra numerical
-        // effects from per-token recurrence numerics.
+        // Env overrides for kernel investigation:
+        //   ATLAS_DISABLE_WY4=1       — skip WY4-persistent, fall through to
+        //                               single-token persistent (256..=4096)
+        //                               or split4.
+        //   ATLAS_FORCE_PERSISTENT=1  — force the single-token persistent
+        //                               kernel at any k (lifts the 4096 cap).
+        //                               Mathematically correct per-token
+        //                               sequential recurrence with FP32 SMEM
+        //                               H state — useful for isolating WY
+        //                               chunkwise reduction noise.
         let wy4_disabled =
             matches!(std::env::var("ATLAS_DISABLE_WY4").ok().as_deref(), Some("1"));
-        if !wy4_disabled && self.gdn_prefill_persistent_wy4_k.0 != 0 {
+        let force_persistent = matches!(
+            std::env::var("ATLAS_FORCE_PERSISTENT").ok().as_deref(),
+            Some("1")
+        );
+        if force_persistent && self.gdn_prefill_persistent_k.0 != 0 {
+            // Forced per-token persistent at ANY k.
+            ops::gdn_prefill_persistent(
+                ctx.gpu,
+                self.gdn_prefill_persistent_k,
+                ssm_state.h_state,
+                q_ptr,
+                k_ptr,
+                v_ptr,
+                gates_buf,
+                gates_buf.offset(nv * fp32),
+                gdn_out_buf,
+                1,
+                k,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32,
+                conv_dim as u32,
+                gb_stride,
+                stream,
+            )?;
+        } else if !wy4_disabled && self.gdn_prefill_persistent_wy4_k.0 != 0 {
             // WY4-persistent: H in shared memory, 4 tokens per iteration
             // smem = H[K_DIM*V_DIM] + 8*k/q buffers + warp sums + WY scalars
             let smem = (kd * vd * 4 + 8 * kd * 4 + 56) as u32;
