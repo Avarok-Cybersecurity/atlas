@@ -576,6 +576,17 @@ impl Qwen3SsmLayer {
         // ── 10. Output projection GEMM: [N, 4096] × [4096, 2048] → [N, 2048] ──
         let out_proj_buf = ctx.buffers.moe_output();
         self.prefill_out_proj_dispatch(ctx, normed_out_buf, out_proj_buf, k, h, value_dim, stream)?;
+        // ATLAS_GDN_DUMP hook: SSM out_proj output — drift attribution.
+        super::debug::maybe_dump_gdn_buf(
+            ctx.gpu,
+            out_proj_buf,
+            (num_tokens - 1) * h * bf16,
+            h,
+            ssm_layer_idx,
+            "out_proj",
+            &super::debug::DUMP_GDN,
+            stream,
+        )?;
 
         prof!("out_proj", t0);
         t0 = if ctx.profile {
@@ -603,6 +614,19 @@ impl Qwen3SsmLayer {
         // Batched MoE: 5 kernel launches for all N tokens
         self.ffn
             .forward_prefill(ctx.buffers.norm_output(), num_tokens, ctx, stream)?;
+        // ATLAS_GDN_DUMP hook: MoE output — KEY drift attribution test.
+        // If this matches HF byte-perfectly, MoE quant is not the source.
+        // If it drifts, MoE expert quantization is the confirmed cause.
+        super::debug::maybe_dump_gdn_buf(
+            ctx.gpu,
+            ctx.buffers.moe_output(),
+            (num_tokens - 1) * h * bf16,
+            h,
+            ssm_layer_idx,
+            "moe_out",
+            &super::debug::DUMP_GNORM,
+            stream,
+        )?;
         // Batch residual_add: moe_output[N*H] → hidden[N*H]
         ops::residual_add(
             ctx.gpu,
