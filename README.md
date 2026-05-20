@@ -14,7 +14,7 @@
   </p>
   <p align="center">
     <a href="LICENSE"><img alt="License: AGPLv3" src="https://img.shields.io/badge/license-AGPLv3-yellow?style=flat-square"></a>
-    <a href="#build"><img alt="Pure Rust" src="https://img.shields.io/badge/runtime-pure%20Rust-orange?style=flat-square"></a>
+    <a href="#quick-start"><img alt="Pure Rust" src="https://img.shields.io/badge/runtime-pure%20Rust-orange?style=flat-square"></a>
     <a href="https://hub.docker.com/r/avarok/atlas-gb10"><img alt="Docker Hub" src="https://img.shields.io/badge/Docker%20Hub-avarok%2Fatlas--gb10-2496ED?style=flat-square&logo=docker&logoColor=white"></a>
     <a href="https://discord.gg/DwF3brBMpw"><img alt="Discord" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2FDwF3brBMpw%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&label=discord&suffix=%20members&style=flat-square&logo=discord&logoColor=white&color=5865F2"></a>
   </p>
@@ -25,12 +25,32 @@
 </p>
 
 <p align="center">
-  <a href="#run-atlas"><img alt="Quick Start — under 2 minutes" src="https://img.shields.io/badge/%E2%9A%A1%20Quick%20Start%20%E2%80%94%20%3C%202%20min-2EA44F?style=for-the-badge&logo=docker&logoColor=white"></a>
+  <a href="#quick-start"><img alt="Quick Start — under 2 minutes" src="https://img.shields.io/badge/%E2%9A%A1%20Quick%20Start%20%E2%80%94%20%3C%202%20min-2EA44F?style=for-the-badge&logo=docker&logoColor=white"></a>
   <a href="https://atlasinference.io"><img alt="atlasinference.io" src="https://img.shields.io/badge/%F0%9F%8C%90%20atlasinference.io-F48C06?style=for-the-badge"></a>
   <a href="https://x.com/AIshaqui81766/status/2052121270506930276"><img alt="Launch announcement on X" src="https://img.shields.io/badge/%F0%9D%95%8F%20Launch%20Announcement-000000?style=for-the-badge&logo=x&logoColor=white"></a>
 </p>
 
-## Philosophy
+---
+
+## 📑 Table of Contents
+
+- [🧭 Philosophy](#philosophy)
+- [🏛️ Architecture](#architecture)
+- [📦 What We Ship Today](#models)
+- [⚡ Performance](#performance)
+- [🗜️ KV Cache Quantization](#kv-cache)
+- [🚀 Quick Start](#quick-start)
+- [🔬 Kernel Debugging](#debugging)
+- [🔌 Adding a New Hardware Target](#new-hardware)
+- [🧬 Adding a New Model](#new-model)
+- [📚 Citations](#citations)
+- [⚖️ License and Enterprise Edition](#license)
+
+---
+
+<a id="philosophy"></a>
+
+## 🧭 Philosophy
 
 The foundation of any given field of science is philosophy. It is that which inspires direction, structure, and mission.
 
@@ -70,7 +90,9 @@ Arxiv is getting countless papers published every day on AI. Nobody can keep up.
 
 Our system is modular, with tight abstraction boundaries and trait requirements that force the architecture to take on a certain form. This form is designed to prevent pigeon-holing the project into the wrong direction. The business logic is the same across all hardware/model combinations, just the concrete implementations differ.
 
-## Architecture
+<a id="architecture"></a>
+
+## 🏛️ Architecture
 
 The diagram below shows how a single HTTP request flows from the API surface down to hardware-specific CUDA kernel execution. **Dashed borders** mark the **plug-and-play** abstraction boundaries — the traits and registries where a new hardware target, model family, communication backend, or storage backend plugs in without touching the layers above or below it.
 
@@ -78,162 +100,98 @@ The diagram below shows how a single HTTP request flows from the API surface dow
 flowchart TB
     %% ── Colours & styles ──────────────────────────────────────────────
     classDef server fill:#2d6a4f,stroke:#1b4332,color:#d8f3dc
-    classDef sched fill:#1d3557,stroke:#0d1b2a,color:#a8dadc
-    classDef model fill:#6a040f,stroke:#370617,color:#fae0e4
-    classDef runtime fill:#7b2cbf,stroke:#3c096c,color:#e0aaff
-    classDef kernel fill:#e85d04,stroke:#9d0208,color:#fff
-    classDef plug fill:none,stroke:#f48c06,stroke-width:3,stroke-dasharray:6 4,color:#f48c06
-    classDef prim fill:#3a0ca3,stroke:#240046,color:#c8b6ff
-    classDef hw fill:#264653,stroke:#2a9d8f,color:#e9f5db
+    classDef scheduler fill:#1e6091,stroke:#184e77,color:#d9ed92
+    classDef model fill:#b5179e,stroke:#7209b7,color:#ffe5fc
+    classDef layer fill:#7209b7,stroke:#560bad,color:#ffd6ff
+    classDef kernel fill:#f48c06,stroke:#dc2f02,color:#fff
+    classDef storage fill:#264653,stroke:#1d3557,color:#a8dadc
+    classDef comm fill:#3a86ff,stroke:#1d3557,color:#fff
+    classDef trait stroke-dasharray: 6 4,stroke-width:2px
 
-    %% ════════════════════════════════════════════════════════════════
-    %% 1. HTTP API  (spark-server)
-    %% ════════════════════════════════════════════════════════════════
-    CLIENT["Client<br/>(OpenAI / Anthropic API)"]
-    API["spark-server — api.rs / anthropic.rs<br/>OpenAI + Anthropic HTTP surface<br/>Tool-call parsing · Streaming SSE"]:::server
-    CLIENT --> API
+    %% ── Top layer: HTTP API ───────────────────────────────────────────
+    HTTP["HTTP Server (spark-server)<br/>OpenAI · Anthropic · Responses"]:::server
+    SCHED["Scheduler<br/>batches, MTP verify, KV alloc"]:::scheduler
 
-    %% ════════════════════════════════════════════════════════════════
-    %% 2. Scheduler  (spark-server/scheduler.rs)
-    %% ════════════════════════════════════════════════════════════════
-    SCHED["Scheduler<br/>Batched decode · Chunked prefill · MTP spec-decode<br/>Grammar FSM · Thinking-loop watchdog<br/>Sampling (argmax / top-k / top-p / DRY / LZ)"]:::sched
-    API -->|"InferenceRequest<br/>via mpsc channel"| SCHED
+    HTTP --> SCHED
 
-    %% ════════════════════════════════════════════════════════════════
-    %% 3. Model trait  (spark-model/traits.rs) — PLUG & PLAY
-    %% ════════════════════════════════════════════════════════════════
-    MODEL_TRAIT{{"🔌 trait Model<br/>(spark-model/traits.rs)<br/>prefill · decode · decode_batch<br/>mixed_forward · speculative verify"}}:::plug
-    SCHED -->|"Box(dyn Model)"| MODEL_TRAIT
-
-    %% ════════════════════════════════════════════════════════════════
-    %% 4. Model factory + weight loaders  (spark-model)
-    %% ════════════════════════════════════════════════════════════════
-    FACTORY["factory.rs — loader_for_config()<br/>SSOT model_type → loader dispatch"]:::model
-    MODEL_TRAIT --> FACTORY
-
-    subgraph LOADERS ["🔌 Weight Loaders — trait ModelWeightLoader"]
-        direction LR
-        QWEN3["Qwen3<br/>qwen3.rs"]:::model
-        QWEN35["Qwen3.5 / 3.6<br/>qwen35.rs"]:::model
-        GEMMA4["Gemma-4<br/>gemma4.rs"]:::model
-        NEMOTRON["Nemotron-H<br/>nemotron.rs"]:::model
-        MINIMAX["MiniMax M2<br/>minimax.rs"]:::model
-        MISTRAL["Mistral<br/>mistral_loader.rs"]:::model
-        NEW_MODEL["🆕 Your Model<br/>impl ModelWeightLoader"]:::plug
+    %% ── Model abstraction (plug-in #1) ────────────────────────────────
+    subgraph MODEL ["🔌 trait Model"]
+      direction TB
+      TRANSFORMER["TransformerModel<br/>generic prefill/decode loop"]:::model
     end
-    FACTORY --> LOADERS
+    class MODEL trait
 
-    %% ════════════════════════════════════════════════════════════════
-    %% 5. Layer trait  (spark-model/layer.rs) — PLUG & PLAY
-    %% ════════════════════════════════════════════════════════════════
-    LAYER_TRAIT{{"🔌 trait TransformerLayer<br/>(spark-model/layer.rs)<br/>decode · prefill · decode_multi_seq<br/>SSM two-phase · MoE transpose"}}:::plug
-    LOADERS --> LAYER_TRAIT
+    SCHED --> MODEL
 
-    subgraph LAYERS ["Layer Implementations"]
-        direction LR
-        ATTN["Qwen3 Attention<br/>(GQA · MLA · MRoPE)"]:::model
-        SSM["Qwen3 SSM<br/>(GDN · Mamba-2)"]:::model
-        MOE["MoE FFN<br/>(top-k · sigmoid-route)"]:::model
-        DENSE["Dense FFN<br/>(GeGLU · SiLU)"]:::model
-        VIS["Vision Encoder<br/>(ViT blocks)"]:::model
+    %% ── Weight loader abstraction (plug-in #2) ────────────────────────
+    subgraph LOADER ["🔌 trait ModelWeightLoader"]
+      direction LR
+      QW35["Qwen3.5<br/>27B/35B/122B"]:::layer
+      QW36["Qwen3.6<br/>35B-A3B"]:::layer
+      QWNEXT["Qwen3-Next<br/>80B-A3B"]:::layer
+      QWVL["Qwen3-VL<br/>30B-A3B"]:::layer
+      GEMMA["Gemma-4<br/>26B/31B"]:::layer
+      MISTRAL["Mistral-Small-4<br/>119B"]:::layer
+      MINIMAX["MiniMax M2.7<br/>229B-A10B"]:::layer
+      NEMO["Nemotron-3<br/>Nano/Super"]:::layer
     end
-    LAYER_TRAIT --> LAYERS
+    class LOADER trait
 
-    %% ════════════════════════════════════════════════════════════════
-    %% 6. GPU backend trait  (spark-runtime/gpu.rs) — PLUG & PLAY
-    %% ════════════════════════════════════════════════════════════════
-    GPU_TRAIT{{"🔌 trait GpuBackend<br/>(spark-runtime/gpu.rs)<br/>alloc · free · launch · copy_h2d/d2h<br/>CUDA graphs · pinned memory"}}:::plug
-    LAYERS -->|"&dyn GpuBackend"| GPU_TRAIT
+    TRANSFORMER --> LOADER
 
-    subgraph GPU_IMPLS ["GPU Backend Implementations"]
-        direction LR
-        CUDA_BE["AtlasCudaBackend<br/>(production — CUDA driver)"]:::runtime
-        MOCK_BE["MockGpuBackend<br/>(unit tests)"]:::runtime
-        NEW_HW["🆕 Your Hardware<br/>impl GpuBackend"]:::plug
+    %% ── Layer trait (plug-in #3) ──────────────────────────────────────
+    subgraph LAYERS ["🔌 trait TransformerLayer"]
+      direction LR
+      ATTN["Attention<br/>(GQA, MLA, sliding)"]:::layer
+      SSM["SSM<br/>(Mamba-2, GDN)"]:::layer
+      MOE["MoE<br/>(routed + shared)"]:::layer
+      FFN["Dense FFN<br/>(GeGLU, SwiGLU)"]:::layer
+      MTP["MTP Head<br/>(draft proposer)"]:::layer
     end
-    GPU_TRAIT --> GPU_IMPLS
+    class LAYERS trait
 
-    %% ════════════════════════════════════════════════════════════════
-    %% 7. Runtime services  (spark-runtime)
-    %% ════════════════════════════════════════════════════════════════
-    subgraph RUNTIME ["spark-runtime"]
-        direction TB
-        KV["PagedKvCache<br/>BF16 · FP8 · NVFP4 · Turbo3/4/8"]:::runtime
-        BUFS["BufferArena<br/>Pre-allocated scratch"]:::runtime
-        WEIGHTS["WeightStore<br/>mmap / O_DIRECT loader"]:::runtime
-        SAMPLER["Sampler<br/>argmax · top-k/p · temperature"]:::runtime
+    LOADER --> LAYERS
+
+    %% ── GPU backend (plug-in #4) ──────────────────────────────────────
+    subgraph GPU ["🔌 trait GpuBackend"]
+      direction LR
+      CUDA["CUDA backend<br/>(GB10 / Blackwell)"]:::kernel
+      AMD["AMD ROCm<br/>(future)"]:::kernel
+      APPLE["Apple Metal<br/>(future)"]:::kernel
     end
-    LAYERS --> RUNTIME
+    class GPU trait
 
-    %% ════════════════════════════════════════════════════════════════
-    %% 8. Kernel registry  (atlas-core/registry.rs)
-    %% ════════════════════════════════════════════════════════════════
-    REGISTRY["AtlasRegistry<br/>Global PTX cache · cuLaunchKernel"]:::kernel
-    CUDA_BE --> REGISTRY
+    LAYERS --> GPU
 
-    %% ════════════════════════════════════════════════════════════════
-    %% 9. Kernel target system  (atlas-kernels) — PLUG & PLAY
-    %% ════════════════════════════════════════════════════════════════
-    KERNELS_CRATE{{"🔌 atlas-kernels<br/>KernelTarget = (HW × Model × Quant)<br/>build.rs → per-target PTX embedding<br/>MODEL.toml → SamplingPresets + ModelBehavior"}}:::plug
-    REGISTRY --> KERNELS_CRATE
-
-    subgraph TARGETS ["kernels/ — CUDA Kernel Targets"]
-        direction TB
-        subgraph GB10 ["kernels/gb10/ — HARDWARE.toml"]
-            direction LR
-            T1["qwen3-next-80b-a3b"]:::kernel
-            T2["qwen3.5-35b-a3b"]:::kernel
-            T3["gemma-4-26b-a4b"]:::kernel
-            T4["nemotron-3-nano-30b"]:::kernel
-            T5["minimax-m2-229b"]:::kernel
-            T6["mistral-small-4"]:::kernel
-            T7["+ 7 more targets"]:::kernel
-        end
-        NEW_TARGET["🆕 kernels/<hw>/<model>/<quant>/<br/>HARDWARE.toml + MODEL.toml + *.cu"]:::plug
+    %% ── Kernel registry (plug-in #5) ──────────────────────────────────
+    subgraph KERNELS ["🔌 kernels/<hw>/<model>/<quant>/ — auto-discovered"]
+      direction LR
+      K_GB10["gb10/qwen3.5-35b-a3b/nvfp4<br/>+ 11 other targets"]:::kernel
     end
-    KERNELS_CRATE --> TARGETS
+    class KERNELS trait
 
-    %% ════════════════════════════════════════════════════════════════
-    %% 10. Communication  (spark-comm) — PLUG & PLAY
-    %% ════════════════════════════════════════════════════════════════
-    COMM_TRAIT{{"🔌 trait CommBackend<br/>(spark-comm/lib.rs)<br/>all_reduce · broadcast · send_to/recv_from<br/>Expert Parallelism (EP)"}}:::plug
-    LAYERS -->|"&dyn CommBackend<br/>(EP all-reduce)"| COMM_TRAIT
+    CUDA --> KERNELS
 
-    subgraph COMM_IMPLS ["Comm Implementations"]
-        direction LR
-        SINGLE["SingleGpuBackend<br/>(no-op)"]:::prim
-        NCCL["NcclBackend<br/>(multi-GPU NCCL)"]:::prim
-        NEW_COMM["🆕 Your Transport<br/>impl CommBackend"]:::plug
+    %% ── EP / multi-GPU (plug-in #6) ───────────────────────────────────
+    subgraph EP ["🔌 trait CommBackend"]
+      direction LR
+      NCCL["NCCL<br/>(EP=2, all-reduce)"]:::comm
     end
-    COMM_TRAIT --> COMM_IMPLS
+    class EP trait
 
-    %% ════════════════════════════════════════════════════════════════
-    %% 11. Storage  (spark-storage) — PLUG & PLAY
-    %% ════════════════════════════════════════════════════════════════
-    STORAGE_TRAIT{{"🔌 trait StorageBackend<br/>(spark-storage/backend)<br/>High-Speed Swap — NVMe KV offload<br/>Predictive eviction · Tiled attention"}}:::plug
-    KV -->|"KV spill / restore"| STORAGE_TRAIT
+    LAYERS -.-> EP
 
-    subgraph STORAGE_IMPLS ["Storage Implementations"]
-        direction LR
-        IOURING["IoUringBackend"]:::prim
-        POSIX["PosixBackend"]:::prim
-        NEW_STORAGE["🆕 Your Backend<br/>impl StorageBackend"]:::plug
+    %% ── Storage backend (plug-in #7) ──────────────────────────────────
+    subgraph STORE ["🔌 trait StorageBackend"]
+      direction LR
+      IORING["io_uring<br/>(NVMe KV offload)"]:::storage
     end
-    STORAGE_TRAIT --> STORAGE_IMPLS
+    class STORE trait
 
-    %% ════════════════════════════════════════════════════════════════
-    %% 12. Shared primitives  (atlas-*)
-    %% ════════════════════════════════════════════════════════════════
-    subgraph PRIMITIVES ["Shared Primitives (atlas-*)"]
-        direction LR
-        P1["atlas-core<br/>Config · KernelTarget<br/>Registry · Compute"]:::prim
-        P2["atlas-quant<br/>NVFP4 · FP8"]:::prim
-        P3["atlas-norm<br/>RMS norm"]:::prim
-        P4["atlas-embed<br/>Embedding"]:::prim
-        P5["atlas-reduce<br/>Reductions"]:::prim
-        P6["atlas-activation<br/>SiLU · GeGLU"]:::prim
-    end
-    LAYERS -.->|"kernel wrappers"| PRIMITIVES
+    SCHED -.-> STORE
+
+    %% ── Cross-references ──────────────────────────────────────────────
+    KERNELS -. "kernels selected by<br/>(hardware × model × quant)<br/>at build time" .-> CUDA
 ```
 
 ### Reading the Diagram
@@ -260,7 +218,9 @@ flowchart TB
 6. **EP** → `CommBackend` handles cross-GPU all-reduce after MoE expert computation
 7. **Storage** → `StorageBackend` spills/restores KV blocks to NVMe for long-context sequences
 
-## What We Ship Today
+<a id="models"></a>
+
+## 📦 What We Ship Today
 
 We have to walk before we can run. Today's Atlas is targeted at a single hardware platform — NVIDIA's GB10 (DGX Spark, SM121) — and twelve hand-tuned (Hardware × Model × Quantization) targets. Every supported model below runs off one multi-model binary; the right kernel set is selected at startup from the model's `config.json`. No swapping images, no rebuilding, no per-model magic — just point Atlas at a HuggingFace ID.
 
@@ -281,7 +241,9 @@ We have to walk before we can run. Today's Atlas is targeted at a single hardwar
 
 This is a starting point, not a destination. The plug-and-play design above exists precisely so that AMD, Apple Silicon, Intel, and the next round of Blackwell parts can land here as community contributions, and so that the Llama 4s and DeepSeek V4s of next quarter slot in the same way the Qwens did this quarter. We did the hard part — bolting in the abstractions while bringing up the first twelve targets — so that adding the thirteenth is a weekend, not a quarter.
 
-## Performance
+<a id="performance"></a>
+
+## ⚡ Performance
 
 We're not going to spend much real estate on benchmark theatre. The numbers below are what the binary in this repository does on a single NVIDIA GB10, on a short prompt (`"What is the capital of France?"`, `max_tokens ≤ 30`, `temperature = 0.1`), measured end-to-end through the HTTP API. They are reproducible: `scripts/sweep_all_models.sh` is the harness, and the source for every kernel that produced them is in this repository.
 
@@ -305,7 +267,9 @@ We compete with vLLM and TensorRT-LLM on the same GB10. On Qwen3.5-35B-A3B with 
 
 The kernel-by-kernel comparison against PyTorch eager (35 hyperoptimized CUDA kernels, all wins on production-relevant shapes) lives in the [benchmarks chapter](book/src/operations/benchmarks.md) along with the methodology footnotes — read them; they matter.
 
-## KV Cache Quantization
+<a id="kv-cache"></a>
+
+## 🗜️ KV Cache Quantization
 
 Atlas stores attention key/value state in one of six quantized formats, selected via `--kv-cache-dtype`. Lower bit-widths fit more tokens in GPU memory at the cost of precision; the Turbo family adds Walsh-Hadamard rotation and Lloyd-Max optimal codebooks to recover accuracy at the same bit rate. Mix dtypes per layer with `--kv-high-precision-layers` to keep boundary layers at BF16 while compressing the middle.
 
@@ -318,13 +282,19 @@ Atlas stores attention key/value state in one of six quantized formats, selected
 | `turbo4` | 4 | Per-group FP8 scale (1 byte / 16 elements) | Walsh-Hadamard rotation → Lloyd-Max optimal 4-bit codebook | ~2× lower MSE than NVFP4 at the same bit rate; same memory footprint |
 | `turbo3` | 3 | Per-group FP8 scale (1 byte / 16 elements) | Walsh-Hadamard rotation → Lloyd-Max 3-bit codebook (8 levels, packed 8 values → 3 bytes) | Maximum compression (22% smaller than turbo4); experimental |
 
-## Quick Start
+<a id="quick-start"></a>
 
-The whole supported model matrix lives in one Docker image. Pull it, mount your HuggingFace cache, point Atlas at any model ID from the table above:
+## 🚀 Quick Start
+
+The whole supported model matrix lives in one Docker image. Pull it, mount your HuggingFace cache, point Atlas at any model ID from the [model table](#models).
+
+> **Defaults below are tuned for maximum accuracy under agentic-coding workloads** — 64K context window, BF16 MTP draft head (highest acceptance rate ⇒ highest end-to-end throughput), prefix caching for multi-turn tool loops, and FP8 KV cache with `auto`-promoted boundary layers. These are the recipes we use to drive opencode / Claude Code / Cline through Atlas on a single Spark.
 
 <a id="run-atlas"></a>
 
-**Qwen3.6-35B (FP8) — 130 tok/s on a single Spark:**
+### Recipe A — Qwen3.6-35B-A3B (FP8 hybrid MoE, ~130 tok/s)
+
+The default daily driver — 35 B params, 3 B active, GDN + attention + 256-expert MoE, MRoPE-positioned vision tower (text-only here).
 
 ```bash
 docker pull avarok/atlas-gb10:latest
@@ -340,14 +310,46 @@ sudo docker run -d --name atlas \
     --kv-high-precision-layers auto \
     --gpu-memory-utilization 0.90 \
     --scheduling-policy slai \
-    --tool-call-parser qwen3_coder \
     --enable-prefix-caching \
-    --speculative
+    --speculative \
+    --num-drafts 2 \
+    --tool-call-parser qwen3_coder
 ```
 
-**Qwen3.5-122B (NVFP4) — single Spark, ~33 tok/s decode at batch=1:**
+Why these flags:
 
-The 122B NVFP4 weights + Atlas runtime overhead leave only ~2 GB for KV cache on a 119.7 GB GB10, so keep `--max-num-seqs` low and use a tighter `--max-seq-len`. This recipe is verified end-to-end (model loads, `/v1/chat/completions` answers correctly, 4-way concurrent serves cleanly):
+- `--max-seq-len 65536` — 64K window for long agent traces, file reads, multi-step tool use.
+- `--kv-cache-dtype fp8 --kv-high-precision-layers auto` — half the memory of BF16, no measurable quality loss; the `auto` heuristic keeps first/last attention blocks at BF16 where the routing distribution is most sensitive.
+- `--scheduling-policy slai` — SLAi scheduler (Atlas's default) reorders concurrent sequences to keep MTP verify batches dense.
+- `--enable-prefix-caching` — radix-tree prefix cache; tool-use sessions reuse the system prompt + tool-defs + earlier turns.
+- `--speculative --num-drafts 2` — MTP draft head proposes 2 tokens per step. **No `--mtp-quantization` flag** ⇒ defaults to **BF16**, which gives the highest acceptance rate (lossier MTP projections lower acceptance and usually *worsen* end-to-end tok/s, despite the faster draft forward).
+- `--tool-call-parser qwen3_coder` — explicit Qwen XML tool format. Atlas auto-resolves the right parser from `tool_defaults.toml` per model; pass it anyway in production scripts.
+
+### Recipe B — Qwen3.5-35B-A3B (NVFP4, ~131 tok/s with MTP K=2)
+
+The fastest model in the matrix on a single Spark.
+
+```bash
+sudo docker run -d --name atlas \
+  --network host --gpus all --ipc=host \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  avarok/atlas-gb10:latest \
+  serve Sehyo/Qwen3.5-35B-A3B-NVFP4 \
+    --port 8888 \
+    --max-seq-len 65536 \
+    --kv-cache-dtype fp8 \
+    --kv-high-precision-layers auto \
+    --gpu-memory-utilization 0.90 \
+    --scheduling-policy slai \
+    --enable-prefix-caching \
+    --speculative \
+    --num-drafts 2 \
+    --tool-call-parser qwen3_coder
+```
+
+### Recipe C — Qwen3.5-122B-A10B (NVFP4, single Spark)
+
+The 122B NVFP4 weights + Atlas runtime overhead leave only ~2 GB for KV cache on a 119.7 GB GB10, so this recipe sacrifices `--speculative` (the MTP draft head + draft KV costs ~1.5 GB) to keep a real 16 K context window.  Verified end-to-end: model loads, `/v1/chat/completions` answers correctly, 4-way concurrent serves cleanly.
 
 ```bash
 sudo docker run -d --name atlas \
@@ -368,29 +370,94 @@ sudo docker run -d --name atlas \
     --tool-call-parser qwen3_coder
 ```
 
-**Note:** `--speculative` (MTP) on single-Spark 122B costs ~1.5 GB for the draft head + draft KV and forces `--max-seq-len` down to ~4 K. Either run without `--speculative` at 16 K (the recipe above), or move to EP=2 across two Sparks ([`QUICKSTART.md`](QUICKSTART.md) §5) for both speculative decoding *and* a 16 K+ window.
+For 122B with **both** `--speculative` *and* a 64 K window, move to EP=2 across two Sparks ([`QUICKSTART.md`](QUICKSTART.md) §5). For long contexts on a single Spark, add `--high-speed-swap --high-speed-swap-dir /path/on/nvme --high-speed-swap-cache-blocks-per-seq 64` — HSS keeps a rolling 1024-token KV window in HBM and streams older blocks to NVMe through an io_uring orchestrator. The container needs `--security-opt seccomp=unconfined --ulimit memlock=-1` for io_uring access.
 
-For longer contexts on a single Spark, add `--high-speed-swap --high-speed-swap-dir /path/on/nvme --high-speed-swap-cache-blocks-per-seq 64`. HSS keeps a rolling 1024-token KV window in HBM and streams older blocks to NVMe through an io_uring orchestrator — works with any `--max-seq-len` you can fit on disk. The Docker container needs `--security-opt seccomp=unconfined --ulimit memlock=-1` for io_uring access.
+### Hitting the Endpoint
 
-That's it. Anything OpenAI-compatible — `curl`, the OpenAI SDK, Open WebUI, opencode — points at port 8888:
+Atlas speaks OpenAI, Anthropic, and Responses APIs on the same port. `curl`, the OpenAI SDK, Open WebUI, opencode, Cline, Claude Code — point them at port 8888:
 
 ```bash
 curl http://localhost:8888/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"atlas","messages":[{"role":"user","content":"Hello!"}],"max_tokens":256}'
+  -d '{
+    "model":"atlas",
+    "messages":[{"role":"user","content":"Hello!"}],
+    "max_tokens":256
+  }'
 ```
 
-Per-model recipes (vision, MoE, multi-node EP=2, single-GPU 122B with the tighter budget) live in [`QUICKSTART.md`](QUICKSTART.md). Build-from-source instructions are in [`CONTRIBUTING.md`](CONTRIBUTING.md), and the kernel build pipeline is documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#build-pipeline).
+Per-model recipes (vision input, multi-node EP=2, single-GPU 122B with the tighter budget) live in [`QUICKSTART.md`](QUICKSTART.md). Build-from-source instructions are in [`CONTRIBUTING.md`](CONTRIBUTING.md), and the kernel build pipeline is documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#build-pipeline).
 
-## Adding a New Hardware Target
+<a id="debugging"></a>
+
+## 🔬 Kernel Debugging
+
+Atlas exposes a focused set of **environment-gated diagnostic dumps** for tracking down quality regressions — magnitude drift, expert-routing skew, MoE under-counting, and the rest of the bug class where the kernels run cleanly but the output slowly degrades. The dumps are zero-overhead when their env var is unset (single `var()` lookup per call, no GPU sync, no copy) so leaving the production binary instrumented is safe.
+
+**For the full diagnostic playbook** — including the cheapest-signal-first elimination ladder, how to build a byte-exact HF CPU oracle, the per-layer divergence comparator, and the methodological reversals that cost us hours — see [**`DEBUGGING_METHODOLOGY.md`**](DEBUGGING_METHODOLOGY.md). What follows is the env-var reference.
+
+### MoE-path dumps — `ATLAS_DUMP_EXPERT_IDS=1`
+
+Set `-e ATLAS_DUMP_EXPERT_IDS=1` on the container. The MoE prefill paths (both `forward_prefill_fp8.rs` and `forward_prefill.rs`) emit the following per-fire log lines, scoped to the **last token of the chunk** so the values are directly comparable to a single-pass reference forward at the same position:
+
+| Log marker | Fires | What it captures | Use it to localize |
+|---|---|---|---|
+| `ATLAS_FP8_GROUPED_KERNEL` | once (FP8 only) | v1 vs v2 grouped-GEMM selection | Confirm which kernel variant is active |
+| `ATLAS_EXPERT_LOAD` | once / server | Per-expert histogram + `truncated=true/false` flag | Spot `max_m_tiles` truncation against actual routing skew |
+| `ATLAS_GATE_INPUT` | per layer × chunk | post-norm router input (`\|x\|` + `first5`) | Verify the MoE block input matches the reference |
+| `ATLAS_GATE_LOGITS` | per layer × chunk | top-10 `(idx, val)` + mean + std of raw gate logits | Catch gate-matmul drift before softmax/topK |
+| `ATLAS_EXPERT_IDS` | per layer × chunk | top-K indices + renormalized weights + sum | Confirm routing decisions match HF |
+| `ATLAS_ROUTED_ONLY` | per layer × chunk | routed sum **before** shared blend | Isolate the routed-expert contribution |
+| `ATLAS_SHARED_OUT` | per layer × chunk | shared-expert output (pre-sigmoid) | Verify the dense FFN branch independently |
+| `ATLAS_SHARED_GATE` | per layer × chunk | `dot(input, gate_weight)` + sigmoid value | Confirm shared-expert attenuation matches |
+| `ATLAS_MOE_OUT` | per layer × chunk | final MoE block output (routed + blended) | The full-block ground truth vs the reference |
+
+### SSM-path dumps
+
+The SSM (GDN / Mamba-2) prefill in `qwen3_ssm/trait_prefill.rs` adds three pre-norm hooks under the same env var:
+
+| Log marker | What it captures |
+|---|---|
+| `ATLAS_PRENORM_HIDDEN` | Residual stream entering this layer (= previous layer's output) |
+| `ATLAS_PRENORM_OUTPROJ` | SSM `out_proj` output before residual add |
+| `ATLAS_PRENORM_SUM` | hidden + out_proj (the input to `post_attention_layernorm`) |
+
+Together, those plus the MoE dumps above give a complete trace of the residual stream at every layer boundary for any token in any chunk.
+
+### Path-toggle env vars
+
+For bisecting *which* code path is at fault, two override toggles let you swap the routed-expert dispatch at runtime without rebuilding:
+
+| Env var | Effect |
+|---|---|
+| `ATLAS_FP8_MOE_COALESCED=0` | Forces the FP8 grouped-GEMM v1 kernel (default is v2; v1 has a documented numerical bug for some `(token, expert)` tiles) |
+| `ATLAS_FORCE_NVFP4_MOE=1` | Routes an FP8 model's MoE through the NVFP4 path — useful for cross-validating that the bug is in one specific quant path |
+
+### How we use these in practice — 3-step workflow
+
+The order matters; this is the same workflow that found and fixed three compounding MoE bugs (commits `6a5fd3d`, `34626d3`, `adf39ce`, `ffdb41d`) on the Qwen3.6-A3B long-context investigation:
+
+1. **Build an HF reference oracle.** A single-precision forward pass through HF Transformers on the same token IDs (read them back from Atlas's `/tokenize` — *do not* re-render the chat template), with `output_hidden_states=True` and per-layer hooks on `mlp.gate`, `mlp.shared_expert`, and `mlp.shared_expert_gate`. Record `\|x\|` + `first5` per layer for the last token.
+2. **Spin up Atlas with `-e ATLAS_DUMP_EXPERT_IDS=1`.** Fire the same prompt. The MoE markers above give you per-layer Atlas values comparable to the oracle.
+3. **Per-layer comparator.** A short script (the comparator pattern is captured in [`DEBUGGING_METHODOLOGY.md` §4](DEBUGGING_METHODOLOGY.md#4-per-layer-divergence-comparator)) prints `ratio = |Atlas| / |HF|` and `overlap = |top-K_Atlas ∩ top-K_HF|` per layer. The first layer where the ratio falls outside `[0.95, 1.05]` or overlap drops below 6/8 is your first-divergent layer — start drilling there.
+
+For the 2026-05-20 MoE bug hunt this localized the issue from "16K context produces gibberish" to "L0 MoE output magnitude 3.4× too large because of three compounding bugs: v1 grouped-GEMM, missing zero-init, broken `max_m_tiles` heuristic" within a few iterations. After all three fixes, all 40 layers landed in `[0.977, 1.021]` of HF baseline — at the FP8 quantization noise floor.
+
+<a id="new-hardware"></a>
+
+## 🔌 Adding a New Hardware Target
 
 The full recipe is in [`docs/HARDWARE.md`](docs/HARDWARE.md#adding-a-new-hardware-target). The short version: implement two traits (`ComputeTarget` for the build-time compiler, `GpuBackend` for the runtime), drop kernel sources into `kernels/<your-hw>/`, add one match arm in the registry. There is a `MockGpuBackend` in `spark-runtime` that lets you write and test the entire scaffold without owning the hardware — every layer above the GPU trait is hardware-agnostic, so unit tests can run on a laptop. We bolted the project from "single CUDA target" to "trait-pluggable across vendors" specifically so that the AMD, Apple, and Intel ports stop being our problem and start being yours.
 
-## Adding a New Model
+<a id="new-model"></a>
+
+## 🧬 Adding a New Model
 
 Same story, smaller surface. Implement `ModelWeightLoader` (one struct, the existing `Qwen3AttentionLayer`/`MoeLayer`/`Qwen3SsmLayer`/`NemotronMamba2Layer` primitives cover most architectures), add one line to the factory dispatch, optionally drop a `MODEL.toml` for sampling defaults and behavior knobs. Kernels are reused; the scheduler is untouched; the server is oblivious. The step-by-step cookbook is in [`docs/HARDWARE.md`](docs/HARDWARE.md#adding-a-new-model-family). Once your loader produces coherent output on the integration coherence prompt, you are done — file the PR.
 
-## Citations
+<a id="citations"></a>
+
+## 📚 Citations
 
 We did not invent the kernels we ship. We picked the right ideas from the right papers, fused them together, and tuned them for one chip until they pinned the bandwidth ceiling. Atlas owes a direct intellectual debt to:
 
@@ -402,7 +469,9 @@ We did not invent the kernels we ship. We picked the right ideas from the right 
 
 If you wrote one of these papers and you spot a misattribution or a wrong technique credit on our side, open an issue. We would rather be corrected than wrong.
 
-## License and Enterprise Edition
+<a id="license"></a>
+
+## ⚖️ License and Enterprise Edition
 
 Atlas operates under a **dual-license** model. Both are real, both are intentional, and neither is a teaser for the other.
 
