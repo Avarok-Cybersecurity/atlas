@@ -334,7 +334,13 @@ impl Qwen3SsmLayer {
         let v_ptr = conv_out_buf.offset(key_dim * 2 * bf16);
         let gb_stride = (nv * 2) as u32;
 
-        if self.gdn_prefill_persistent_wy4_k.0 != 0 {
+        // Env override for kernel investigation: ATLAS_DISABLE_WY4=1 forces
+        // fallback to the single-token persistent kernel (256<=k<=4096) or
+        // split4 — useful for isolating WY4 chunkwise-algebra numerical
+        // effects from per-token recurrence numerics.
+        let wy4_disabled =
+            matches!(std::env::var("ATLAS_DISABLE_WY4").ok().as_deref(), Some("1"));
+        if !wy4_disabled && self.gdn_prefill_persistent_wy4_k.0 != 0 {
             // WY4-persistent: H in shared memory, 4 tokens per iteration
             // smem = H[K_DIM*V_DIM] + 8*k/q buffers + warp sums + WY scalars
             let smem = (kd * vd * 4 + 8 * kd * 4 + 56) as u32;
