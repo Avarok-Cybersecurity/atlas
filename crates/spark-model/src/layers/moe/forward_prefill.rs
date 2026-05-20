@@ -123,6 +123,7 @@ impl MoeLayer {
 
         // Gemma-4 router pre-norm (no-op for other models).
         let router_in = self.router_input(input, n, h, ctx, stream)?;
+        super::dump::dump_gate_input(ctx.gpu, stream, router_in, n, h)?;
         // 1. Gate GEMM: [N, H] × [H, num_experts] → [N, num_experts]
         let gate_logits = ctx.buffers.gate_logits();
         if let Some(fp8) = self.gate_fp8 {
@@ -162,6 +163,7 @@ impl MoeLayer {
                 stream,
             )?;
         }
+        super::dump::dump_gate_logits(ctx.gpu, stream, gate_logits, n, num_experts)?;
         prof_step!("gate_gemm");
 
         // 2. Batched topK dispatch. DeepSeek-V3 / MiniMax-M2 use sigmoid
@@ -200,6 +202,7 @@ impl MoeLayer {
                 stream,
             )?;
         }
+        super::dump::dump_expert_ids(ctx.gpu, stream, indices_dev, weights_dev, n, top_k)?;
         prof_step!("topk");
 
         // 3. Sort tokens by expert → L2-optimized ordering.
@@ -264,9 +267,18 @@ impl MoeLayer {
         // bug.
         //
         // Mirrors the FP8 path (see forward_prefill_fp8.rs).
-        let _avg_per_expert = (num_tokens * top_k as usize).div_ceil(ne);
+        let avg_per_expert = (num_tokens * top_k as usize).div_ceil(ne);
         let max_m_tiles =
             ((num_tokens * top_k as usize)).div_ceil(64).max(1) as u32;
+        super::dump::dump_expert_load(
+            ctx.gpu,
+            stream,
+            expert_offsets,
+            ne,
+            num_tokens,
+            avg_per_expert,
+            max_m_tiles,
+        );
         prof_step!("grid_setup");
 
         // 5. Grouped gate+up GEMM — cp.async pipelined FP8-MMA K64 (transposed).
@@ -454,6 +466,16 @@ impl MoeLayer {
             if use_overlap {
                 ctx.gpu.stream_wait_event(stream, self.event_b)?;
             }
+            super::dump::dump_routed_only(ctx.gpu, stream, output, n, h)?;
+            super::dump::dump_shared_out(ctx.gpu, stream, shared_down_out, n, h)?;
+            super::dump::dump_shared_gate(
+                ctx.gpu,
+                stream,
+                input,
+                self.weights.shared_expert_gate.weight,
+                n,
+                h,
+            )?;
             ops::moe_batched_blend(
                 ctx.gpu,
                 self.moe_batched_blend,
@@ -466,6 +488,7 @@ impl MoeLayer {
                 stream,
             )?;
         }
+        super::dump::dump_moe_out(ctx.gpu, stream, output, n, h)?;
         prof_step!("unpermute_blend");
 
         // EP all-reduce
