@@ -43,6 +43,9 @@ fn escape_to_codepoint(c: u8) -> Option<TCodepoint> {
         b'"' => 0x22,
         b'?' => 0x3F,
         b'\\' => 0x5C,
+        // `\/` -> `/`: keeps the EBNF lexer in sync with JSON's relaxed
+        // escape rule (upstream commit 5d65108, #626).
+        b'/' => 0x2F,
         b'a' => 0x07,
         b'b' => 0x08,
         b'f' => 0x0C,
@@ -280,6 +283,9 @@ mod tests {
         assert_eq!(parse_next_escaped(b"\\b", &empty_esc_map()), (0x08, 2));
         assert_eq!(parse_next_escaped(b"\\f", &empty_esc_map()), (0x0C, 2));
         assert_eq!(parse_next_escaped(b"\\\"", &empty_esc_map()), (0x22, 2));
+        // `\/` -> `/`: JSON's relaxed escape, accepted by the lexer
+        // (upstream commit 5d65108, #626).
+        assert_eq!(parse_next_escaped(b"\\/", &empty_esc_map()), (0x2F, 2));
     }
 
     #[test]

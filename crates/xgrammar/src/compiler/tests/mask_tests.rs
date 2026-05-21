@@ -22,7 +22,7 @@ fn mask_partition_is_a_total_cover() {
     let info = cg.tokenizer_info();
     let n = info.sorted_decoded_vocab().len() as i32;
 
-    for mask in cg.adaptive_token_mask().values() {
+    for (_, mask) in cg.all_reachable_masks() {
         let (accepted, rejected) = mask.materialize(info.sorted_decoded_vocab());
         let uncertain: HashSet<i32> = mask.uncertain_indices.iter().copied().collect();
         let mut all: HashSet<i32> = accepted.iter().copied().collect();
@@ -42,7 +42,7 @@ fn mask_root_rule_has_no_uncertain() {
     let cg = c
         .compile_grammar_from_ebnf("root ::= \"abc\"\n", "root")
         .unwrap();
-    for mask in cg.adaptive_token_mask().values() {
+    for (_, mask) in cg.all_reachable_masks() {
         assert!(
             mask.uncertain_indices.is_empty(),
             "root rule states must have no uncertain tokens"
@@ -66,7 +66,9 @@ fn mask_accepts_expected_first_token() {
         .unwrap();
     let start = fsm.start() as i32;
     let state = crate::earley::ParserState::new(root_id, root_body, start, -1, 0);
-    let mask = cg.mask_for_state(&state).expect("mask for start state");
+    // Drive the JIT path: the start state is the root rule's canonical
+    // key, so `is_root` is true.
+    let mask = cg.get_or_compute_mask(state, true);
     let (accepted, _) = mask.materialize(info.sorted_decoded_vocab());
     let acc_set: HashSet<i32> = accepted.into_iter().collect();
     assert!(acc_set.contains(&idx_of(info, b"a")), "should accept 'a'");

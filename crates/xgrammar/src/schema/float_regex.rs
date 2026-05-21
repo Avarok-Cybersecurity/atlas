@@ -24,6 +24,21 @@ fn format_float(value: f64, precision: i32) -> String {
     result
 }
 
+/// Escape the regex-significant `.` in a formatted-float boundary
+/// string so it is treated as a literal decimal point rather than the
+/// wildcard. Port of `EscapeDotForRegex` (upstream commit c4cf39f, #642).
+fn escape_dot_for_regex(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        if c == '.' {
+            result.push_str("\\.");
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 /// Strip the leading `^(` and trailing `)$` from an integer range
 /// regex so it can be embedded.
 fn strip_anchors(s: &str) -> String {
@@ -70,7 +85,9 @@ pub fn generate_float_range_regex(start: Option<f64>, end: Option<f64>, precisio
     match (start, end) {
         (Some(s), None) => {
             let s_str = format_float(s, precision);
-            parts.push(s_str.clone());
+            // Escape the literal `.` so it is not the regex wildcard
+            // (upstream commit c4cf39f, #642).
+            parts.push(escape_dot_for_regex(&s_str));
             if start_frac > 0.0 {
                 emit_frac_above(&mut parts, &s_str, is_start_neg, precision);
             }
@@ -81,7 +98,8 @@ pub fn generate_float_range_regex(start: Option<f64>, end: Option<f64>, precisio
         }
         (None, Some(e)) => {
             let e_str = format_float(e, precision);
-            parts.push(e_str.clone());
+            // Escape the literal `.` (upstream commit c4cf39f, #642).
+            parts.push(escape_dot_for_regex(&e_str));
             if end_frac > 0.0 {
                 emit_frac_below(&mut parts, &e_str, is_end_neg, precision);
             }
@@ -97,15 +115,17 @@ pub fn generate_float_range_regex(start: Option<f64>, end: Option<f64>, precisio
                 if start_frac == 0.0 && end_frac == 0.0 {
                     parts.push(start_int.to_string());
                 } else {
-                    parts.push(s_str.clone());
+                    // Escape literal `.` in float bounds (upstream c4cf39f, #642).
+                    parts.push(escape_dot_for_regex(&s_str));
                     if s_str != e_str {
-                        parts.push(e_str.clone());
+                        parts.push(escape_dot_for_regex(&e_str));
                     }
                 }
             } else {
-                parts.push(s_str.clone());
+                // Escape literal `.` in float bounds (upstream c4cf39f, #642).
+                parts.push(escape_dot_for_regex(&s_str));
                 if s_str != e_str {
-                    parts.push(e_str.clone());
+                    parts.push(escape_dot_for_regex(&e_str));
                 }
                 if end_int > start_int + 1 {
                     let ir = strip_anchors(&generate_range_regex(
@@ -251,5 +271,35 @@ mod tests {
     fn bounded_produces_anchored_regex() {
         let r = generate_float_range_regex(Some(1.0), Some(10.0), 6);
         assert!(r.starts_with("^(") && r.ends_with(")$"));
+    }
+
+    #[test]
+    fn escape_dot_helper() {
+        assert_eq!(escape_dot_for_regex("0.5"), r"0\.5");
+        assert_eq!(escape_dot_for_regex("-3.125"), r"-3\.125");
+        assert_eq!(escape_dot_for_regex("42"), "42");
+    }
+
+    #[test]
+    fn float_boundary_dot_is_escaped_not_wildcard() {
+        // Regression for upstream c4cf39f (#642): the decimal point of a
+        // float boundary must be a literal `\.`, never an unescaped `.`
+        // wildcard that would accept `0,5` etc.
+        let r = generate_float_range_regex(Some(0.5), None, 6);
+        assert!(r.contains(r"0\.5"), "expected escaped boundary in {r}");
+        // No bare `.` may appear except as part of an escaped `\.`.
+        let bytes: Vec<char> = r.chars().collect();
+        for (i, &c) in bytes.iter().enumerate() {
+            if c == '.' {
+                assert!(i > 0 && bytes[i - 1] == '\\', "unescaped dot in {r}");
+            }
+        }
+    }
+
+    #[test]
+    fn float_boundary_dot_escaped_both_bounds() {
+        let r = generate_float_range_regex(Some(0.25), Some(0.75), 6);
+        assert!(r.contains(r"0\.25"), "expected escaped start in {r}");
+        assert!(r.contains(r"0\.75"), "expected escaped end in {r}");
     }
 }

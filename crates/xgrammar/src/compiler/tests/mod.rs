@@ -47,11 +47,11 @@ pub(super) fn idx_of(info: &TokenizerInfo, token: &[u8]) -> i32 {
 }
 
 /// Optimize an EBNF grammar to the FSM-accelerated form the no-cache
-/// compiler core expects. Used by the determinism tests so a *single*
-/// optimized grammar (with a fixed FSM node numbering) is compiled by
-/// both the sequential and the rayon path — comparing two independent
-/// `GrammarOptimizer` runs would be invalid, since FSM construction
-/// numbers nodes non-deterministically.
+/// compiler core expects. Used by the JIT determinism tests so a
+/// *single* optimized grammar (with a fixed FSM node numbering) is
+/// compiled twice — comparing two independent `GrammarOptimizer` runs
+/// would be invalid, since FSM construction numbers nodes
+/// non-deterministically.
 pub(super) fn optimized(ebnf: &str) -> GrammarData {
     let g = parse_ebnf_default(ebnf).unwrap();
     GrammarOptimizer::apply(GrammarNormalizer::apply(g))

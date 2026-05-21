@@ -207,6 +207,28 @@ fn number_non_integer_bound_for_integer_type_errors() {
     assert_eq!(err.kind, SchemaErrorKind::InvalidSchema);
 }
 
+#[test]
+fn number_float_bound_dot_is_literal_not_wildcard() {
+    // Regression for upstream c4cf39f (#642): a float boundary's decimal
+    // point must compile to a literal-dot EBNF token `"."`, never the
+    // any-character wildcard `[\0-\U0010ffff]` that an unescaped regex
+    // `.` produces. Otherwise the grammar would accept `0,5` etc.
+    let got = json_schema_to_ebnf(r#"{"type":"number","minimum":0.5}"#, &no_space()).unwrap();
+    let root_line = got
+        .lines()
+        .find(|l| l.starts_with("root ::="))
+        .expect("root rule present");
+    assert!(
+        root_line.contains(r#""0" "." "5""#),
+        "float boundary `0.5` must compile to a literal dot:\n{root_line}"
+    );
+    assert!(
+        !root_line.contains(r"[\0-\U0010ffff]"),
+        "float boundary dot must not be the wildcard:\n{root_line}"
+    );
+    assert!(parse_ebnf_default(&got).is_ok());
+}
+
 // ===================== Range / float regex =====================
 
 #[test]

@@ -253,7 +253,10 @@ impl<'p> JsonSchemaConverter<'p> {
 
         self.indent = self.saved_indent.take().unwrap();
         if outer_xml {
-            self.nested_object_level = 0;
+            // The XML string/any rules belong to the param layer (level 1);
+            // the XML object rule belongs to the root layer (level 0).
+            // (upstream commit 41dbbb1, #634).
+            self.nested_object_level = 1;
             self.register_xml_basic_rules()?;
         }
         Ok(())
@@ -321,6 +324,10 @@ impl<'p> JsonSchemaConverter<'p> {
         let any_body = self.generate_any(XML_ANY);
         self.script.add_rule(XML_ANY, &any_body);
         self.add_cache("{}", XML_ANY);
+
+        // Reset to the root layer (level 0) for the XML object rule
+        // (upstream commit 41dbbb1, #634).
+        self.nested_object_level = 0;
 
         let obj_spec = super::spec::ObjectSpec {
             allow_additional_properties: true,

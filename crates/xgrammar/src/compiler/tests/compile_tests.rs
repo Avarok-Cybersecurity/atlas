@@ -15,7 +15,9 @@ fn compile_ebnf_grammar_succeeds() {
         .expect("compile");
     assert!(cg.grammar().optimized);
     assert_eq!(cg.tokenizer_info().vocab_size(), 20);
-    assert!(!cg.adaptive_token_mask().is_empty());
+    // Lazy path: masks are JIT-compiled on demand — driving the
+    // enumeration produces a non-empty set.
+    assert!(!cg.all_reachable_masks().is_empty());
 }
 
 #[test]
@@ -124,39 +126,60 @@ fn cache_size_grows_after_compile() {
 // ----- multi-threaded compilation determinism ----------------------
 
 #[test]
-fn multithread_compilation_is_deterministic() {
-    // One optimized grammar, compiled by both the single-threaded and
-    // the rayon mask-computation path — masks must be identical.
+fn jit_mask_compilation_is_deterministic() {
+    // `max_threads` is now unused (no eager parallel mask loop). Two
+    // independent compiles of the same grammar must still produce
+    // byte-identical lazily-computed masks for every reachable state.
     let grammar = optimized("root ::= \"yes\" | \"no\" | \"abc\"\n");
     let info = small_tokenizer();
-    let seq = compile_optimized_grammar(grammar.clone(), &info, 1);
-    let par = compile_optimized_grammar(grammar, &info, 8);
+    let a = compile_optimized_grammar(grammar.clone(), &info, 1);
+    let b = compile_optimized_grammar(grammar, &info, 8);
 
-    assert_eq!(
-        seq.adaptive_token_mask().len(),
-        par.adaptive_token_mask().len()
-    );
-    for (state, m1) in seq.adaptive_token_mask() {
-        let m2 = par
-            .mask_for_state(state)
-            .expect("rayon compile missing a state");
-        assert_eq!(m1, m2, "mask for {state:?} differs across thread counts");
+    let a_masks = a.all_reachable_masks();
+    let b_masks: std::collections::HashMap<_, _> = b.all_reachable_masks().into_iter().collect();
+    assert_eq!(a_masks.len(), b_masks.len());
+    for (state, m1) in &a_masks {
+        let m2 = b_masks.get(state).expect("second compile missing a state");
+        assert_eq!(
+            m1.as_ref(),
+            m2.as_ref(),
+            "JIT mask for {state:?} differs across compiles"
+        );
     }
 }
 
 #[test]
-fn multithread_builtin_json_matches_single_thread() {
+fn jit_builtin_json_masks_are_stable() {
     let grammar = optimized_builtin_json();
     let info = small_tokenizer();
-    let seq = compile_optimized_grammar(grammar.clone(), &info, 1);
-    let par = compile_optimized_grammar(grammar, &info, 4);
-    assert_eq!(
-        seq.adaptive_token_mask().len(),
-        par.adaptive_token_mask().len()
-    );
-    for (state, m1) in seq.adaptive_token_mask() {
-        assert_eq!(Some(m1), par.mask_for_state(state));
+    let a = compile_optimized_grammar(grammar.clone(), &info, 1);
+    let b = compile_optimized_grammar(grammar, &info, 4);
+    let a_masks = a.all_reachable_masks();
+    let b_masks: std::collections::HashMap<_, _> = b.all_reachable_masks().into_iter().collect();
+    assert_eq!(a_masks.len(), b_masks.len());
+    for (state, m1) in &a_masks {
+        assert_eq!(m1.as_ref(), b_masks.get(state).unwrap().as_ref());
     }
+}
+
+#[test]
+fn mask_cache_starts_empty_and_fills_lazily() {
+    // The XGrammar-2 JIT: compilation computes NO masks; they are
+    // populated only when reached.
+    let grammar = optimized("root ::= \"yes\" | \"no\"\n");
+    let info = small_tokenizer();
+    let cg = compile_optimized_grammar(grammar, &info, 1);
+    assert!(
+        cg.inner().mask_cache.is_empty(),
+        "mask cache must be empty right after compilation"
+    );
+    let masks = cg.all_reachable_masks();
+    assert!(!masks.is_empty());
+    assert_eq!(
+        cg.inner().mask_cache.len(),
+        masks.len(),
+        "every reached state must now be cached"
+    );
 }
 
 // ----- degenerate empty vocabulary ---------------------------------
@@ -174,7 +197,8 @@ fn empty_vocab_compiles_with_no_masks() {
     let cg = c
         .compile_grammar_from_ebnf("root ::= \"a\"\n", "root")
         .unwrap();
-    assert!(cg.adaptive_token_mask().is_empty());
+    assert!(cg.all_reachable_masks().is_empty());
+    assert!(cg.inner().mask_cache.is_empty());
 }
 
 // ----- structural tag ----------------------------------------------
@@ -185,7 +209,7 @@ fn compile_structural_tag_succeeds() {
     let doc = r#"{"type":"structural_tag","format":{"type":"const_string","value":"abc"}}"#;
     let cg = c.compile_structural_tag(doc).expect("structural tag");
     assert!(cg.grammar().optimized);
-    assert!(!cg.adaptive_token_mask().is_empty());
+    assert!(!cg.all_reachable_masks().is_empty());
 }
 
 #[test]

@@ -94,7 +94,21 @@ impl<'p> JsonSchemaConverter<'p> {
 
         self.indent.start_indent();
 
-        if !spec.pattern_properties.is_empty() || spec.property_names.is_some() {
+        let has_pattern = !spec.pattern_properties.is_empty() || spec.property_names.is_some();
+        if !spec.properties.is_empty() && has_pattern {
+            // Case 1a: named `properties` coexist with `patternProperties`
+            // and/or `propertyNames`. Feed the pattern alternatives into
+            // the named-property machinery as an additional-property
+            // override (upstream commit a6aeabb, #594).
+            could_be_empty = self.gen_object_props_and_patterns(
+                spec,
+                rule_name,
+                additional_suffix,
+                additional_property.as_ref(),
+                &mut result,
+            )?;
+        } else if has_pattern {
+            // Case 1b: patternProperties / propertyNames without named properties.
             could_be_empty = self.gen_object_pattern_case(spec, rule_name, &mut result)?;
         } else if !spec.properties.is_empty() {
             let partial = self.partial_rule_for_properties(
@@ -105,6 +119,7 @@ impl<'p> JsonSchemaConverter<'p> {
                 additional_suffix,
                 spec.min_properties,
                 spec.max_properties,
+                None,
             )?;
             result.push(' ');
             result.push_str(&partial);
@@ -138,6 +153,83 @@ impl<'p> JsonSchemaConverter<'p> {
             result = self.apply_could_be_empty(result, need_braces);
         }
         Ok(result)
+    }
+
+    /// Case 1a: named `properties` coexisting with `patternProperties`
+    /// and/or `propertyNames`. Builds the pattern alternatives as an
+    /// additional-property override fed into the named-property rule
+    /// machinery. Port of `GenerateObject` Case 1a (upstream a6aeabb, #594).
+    fn gen_object_props_and_patterns(
+        &mut self,
+        spec: &ObjectSpec,
+        rule_name: &str,
+        additional_suffix: &str,
+        additional_property: Option<&SchemaSpecPtr>,
+        result: &mut String,
+    ) -> SchemaResult<bool> {
+        let mut effective_additional: Option<SchemaSpecPtr> = additional_property.cloned();
+        let mut effective_suffix = additional_suffix.to_string();
+        let mut pp_override = String::new();
+
+        if !spec.pattern_properties.is_empty() {
+            // Build patternProperties as additional-property alternatives.
+            let mut pp_body = String::new();
+            for (i, pp) in spec.pattern_properties.iter().enumerate() {
+                let value = self.create_rule(&pp.schema, &format!("{rule_name}_pp_{i}"))?;
+                let key_regex = regex_to_ebnf(&pp.pattern, false).map_err(|e| {
+                    super::error::SchemaError::invalid(format!(
+                        "patternProperties regex failed: {e}"
+                    ))
+                })?;
+                let pp_single =
+                    format!("\"\\\"\"{key_regex}\"\\\"\" {} {value}", self.colon_pattern);
+                if i != 0 {
+                    pp_body.push_str(" | ");
+                }
+                pp_body.push_str(&pp_single);
+            }
+            // Merge with any explicit additionalProperties schema.
+            if let Some(add) = &effective_additional {
+                let add_value_rule =
+                    self.create_rule(add, &format!("{rule_name}_{effective_suffix}"))?;
+                let key = self.key_pattern().to_string();
+                let add_prop = self.format_other_property(&key, &add_value_rule);
+                pp_body.push_str(&format!(" | {add_prop}"));
+            }
+            // Parenthesize to keep EBNF precedence correct with `|` present.
+            pp_override = format!("({pp_body})");
+            if effective_additional.is_none() {
+                effective_additional = Some(SchemaSpec::make(SpecKind::Any, "", "any"));
+            }
+            effective_suffix = "pp".to_string();
+        } else if let Some(add) = &effective_additional {
+            // propertyNames constrains the keys of additional properties.
+            // Only applied when additional properties are allowed.
+            if let Some(prop_names) = &spec.property_names {
+                let key_pattern = self.create_rule(prop_names, &format!("{rule_name}_name"))?;
+                let val_rule = self.create_rule(add, &format!("{rule_name}_{effective_suffix}"))?;
+                pp_override = format!("{key_pattern} {} {val_rule}", self.colon_pattern);
+                effective_suffix = "pn".to_string();
+            }
+        }
+
+        let partial = self.partial_rule_for_properties(
+            &spec.properties,
+            &spec.required,
+            effective_additional.as_ref(),
+            rule_name,
+            &effective_suffix,
+            spec.min_properties,
+            spec.max_properties,
+            if pp_override.is_empty() {
+                None
+            } else {
+                Some(pp_override.as_str())
+            },
+        )?;
+        result.push(' ');
+        result.push_str(&partial);
+        Ok(spec.required.is_empty() && spec.min_properties == 0)
     }
 
     /// Handle the `patternProperties` / `propertyNames` object case.

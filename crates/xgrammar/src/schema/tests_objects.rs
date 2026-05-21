@@ -474,6 +474,11 @@ fn builtin_json_grammar_parses() {
     let _ = g;
 }
 
+// patternProperties + properties tests live in tests_pattern_props.rs
+// (split out to keep this file under the 500-LoC cap).
+#[path = "tests_pattern_props.rs"]
+mod pattern_props;
+
 // ===================== Caching / dedup =====================
 
 #[test]

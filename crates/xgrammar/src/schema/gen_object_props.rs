@@ -47,6 +47,11 @@ impl<'p> JsonSchemaConverter<'p> {
 
     /// Generate the partial rules for an object's named properties.
     /// Dispatches to the three cases of `GetPartialRuleForProperties`.
+    ///
+    /// `additional_prop_pattern_override`, when set, replaces the
+    /// auto-derived additional-property pattern — used to feed
+    /// `patternProperties`/`propertyNames` alternatives into the named
+    /// property machinery (upstream commit a6aeabb, #594).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn partial_rule_for_properties(
         &mut self,
@@ -57,6 +62,7 @@ impl<'p> JsonSchemaConverter<'p> {
         additional_suffix: &str,
         min_properties: i64,
         max_properties: i64,
+        additional_prop_pattern_override: Option<&str>,
     ) -> SchemaResult<String> {
         if max_properties == 0 {
             return Ok(String::new());
@@ -84,6 +90,7 @@ impl<'p> JsonSchemaConverter<'p> {
                 &first_sep,
                 &mid_sep,
                 &last_sep,
+                additional_prop_pattern_override,
             )
         } else {
             self.partial_rule_constrained(
@@ -98,6 +105,7 @@ impl<'p> JsonSchemaConverter<'p> {
                 &last_sep,
                 min_properties,
                 max_properties,
+                additional_prop_pattern_override,
             )
         }
     }
@@ -116,6 +124,7 @@ impl<'p> JsonSchemaConverter<'p> {
         first_sep: &str,
         mid_sep: &str,
         last_sep: &str,
+        additional_prop_pattern_override: Option<&str>,
     ) -> SchemaResult<String> {
         let n = properties.len();
         let mut rule_names: Vec<String> = vec![String::new(); n];
@@ -125,10 +134,15 @@ impl<'p> JsonSchemaConverter<'p> {
         // Last rule: either trailing additionals or empty.
         let mut additional_prop_pattern = String::new();
         if let Some(add) = additional {
-            let add_value_rule =
-                self.create_rule(add, &format!("{rule_name}_{additional_suffix}"))?;
-            let key = self.key_pattern().to_string();
-            additional_prop_pattern = self.format_other_property(&key, &add_value_rule);
+            // Override site 1 (upstream commit a6aeabb, #594).
+            if let Some(ovr) = additional_prop_pattern_override {
+                additional_prop_pattern = ovr.to_string();
+            } else {
+                let add_value_rule =
+                    self.create_rule(add, &format!("{rule_name}_{additional_suffix}"))?;
+                let key = self.key_pattern().to_string();
+                additional_prop_pattern = self.format_other_property(&key, &add_value_rule);
+            }
             let last_body = format!("({mid_sep} {additional_prop_pattern})*");
             let last_name = self
                 .script

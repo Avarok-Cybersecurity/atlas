@@ -2,35 +2,46 @@
 //
 // No-cache compilation core — port of `class GrammarCompilerSub`
 // (`MultiThreadCompileGrammar` + `TagDispatchOptimization`) from
-// `cpp/grammar_compiler.cc`.
+// `cpp/grammar_compiler.cc`, with the XGrammar-2 JIT optimization.
+//
+// XGrammar-2 JIT (lazy) MASK COMPILATION
+// --------------------------------------
+// The original port eagerly enumerated every reachable scanable state
+// of every rule and computed an `AdaptiveTokenMask` for ALL of them up
+// front (rayon-parallel). For tool-call JSON-schema grammars that is
+// hundreds of masks per `compile_*` call — most never used by a single
+// generation, making compilation ~1.5x slower than the C++ baseline.
+//
+// This port keeps Steps 1-2 (TagDispatch precomputation + FSM hashing)
+// but defers per-state mask computation entirely: the `CompiledGrammar`
+// is built with an empty `mask_cache`, and each state's mask is
+// computed lazily — on first lookup by the matcher — via
+// `CompiledGrammar::get_or_compute_mask`. The result is byte-identical
+// to the old eager output (same `MaskGenerator`, same canonical key).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use rayon::prelude::*;
-
-use crate::earley::{NO_PREV_INPUT_POS, ParserState};
 use crate::grammar::functor::GrammarFsmHasher;
 use crate::grammar::{GrammarData, GrammarExprType};
 use crate::tokenizer::TokenizerInfo;
 
 use super::compiled_grammar::{CompiledGrammar, CompiledGrammarImpl};
-use super::mask::AdaptiveTokenMask;
-use super::mask_gen::MaskGenerator;
 
-/// Compile an already-optimized grammar against `tokenizer_info`,
-/// precomputing every reachable scanable state's adaptive token mask.
+/// Compile an already-optimized grammar against `tokenizer_info`.
 ///
 /// Port of `GrammarCompilerSub::MultiThreadCompileGrammar`. The grammar
 /// passed in MUST already be optimized (FSMs built); the public
 /// `GrammarCompiler` entry points guarantee this.
 ///
-/// `max_threads > 1` parallelizes the per-state mask computation via
-/// rayon — the idiomatic Rust replacement for the C++ `ThreadPool`.
+/// Adaptive token masks are NOT computed here — they are compiled
+/// lazily on first matcher lookup (XGrammar-2 JIT). `_max_threads` is
+/// retained for API parity but is now unused: there is no eager
+/// per-state mask loop left to parallelize.
 pub(super) fn compile_optimized_grammar(
     grammar: GrammarData,
     tokenizer_info: &TokenizerInfo,
-    max_threads: usize,
+    _max_threads: usize,
 ) -> CompiledGrammar {
     let mut grammar = grammar;
     debug_assert!(
@@ -41,13 +52,16 @@ pub(super) fn compile_optimized_grammar(
     // Degenerate path: an empty vocabulary has no masks to compute.
     if tokenizer_info.vocab_size() == 0 {
         return CompiledGrammar::from_impl(Arc::new(CompiledGrammarImpl {
-            grammar,
+            grammar: Arc::new(grammar),
             tokenizer_info: tokenizer_info.clone(),
-            adaptive_token_mask: HashMap::new(),
+            mask_cache: dashmap::DashMap::new(),
+            tag_slice: HashMap::new(),
         }));
     }
 
-    // Step 1. TagDispatch second-slice precomputation.
+    // Step 1. TagDispatch second-slice precomputation. Retained on the
+    // `CompiledGrammarImpl` — the lazy mask computation feeds it to the
+    // `MaskGenerator` on demand.
     let tag_slice = tag_dispatch_optimization(&grammar, tokenizer_info);
 
     // Step 2. Hash the per-rule FSMs (the C++ does this when the
@@ -55,60 +69,14 @@ pub(super) fn compile_optimized_grammar(
     // harmless and let the matcher reuse them later).
     GrammarFsmHasher::apply(&mut grammar);
 
-    let grammar_arc = Arc::new(grammar);
-
-    // Step 3. Enumerate every reachable scanable state of every rule.
-    let root_rule_id = grammar_arc.root_rule_id();
-    let mut tasks: Vec<(ParserState, bool)> = Vec::new();
-    for rule_id in 0..grammar_arc.num_rules() {
-        let rule = grammar_arc.rule(rule_id);
-        let fsm = grammar_arc.per_rule_fsms[rule_id as usize]
-            .as_ref()
-            .expect("optimized grammar must have a per-rule FSM");
-        let mut reachable = ahash::AHashSet::new();
-        fsm.reachable_states(&mut reachable);
-        let is_root = rule_id == root_rule_id;
-        for state_id in reachable {
-            // A state is "scanable" iff it has an outgoing char-range
-            // edge (port of the FSM `IsScanableState` predicate — the
-            // `earley::fsm_view` module is private, so re-derived here).
-            let scanable = fsm
-                .fsm()
-                .edges(state_id as usize)
-                .iter()
-                .any(|e| e.is_char_range());
-            if !scanable {
-                continue;
-            }
-            let state =
-                ParserState::new(rule_id, rule.body_expr_id, state_id, NO_PREV_INPUT_POS, 0);
-            tasks.push((state, is_root));
-        }
-    }
-
-    // Step 4. Compute each state's adaptive token mask, in parallel
-    // when `max_threads > 1`.
-    let compute = |&(state, is_root): &(ParserState, bool)| {
-        let mut generator =
-            MaskGenerator::new(Arc::clone(&grammar_arc), state, tokenizer_info, &tag_slice);
-        (state, generator.get_adaptive_token_mask(is_root))
-    };
-
-    let entries: Vec<(ParserState, AdaptiveTokenMask)> = if max_threads > 1 {
-        tasks.par_iter().map(compute).collect()
-    } else {
-        tasks.iter().map(compute).collect()
-    };
-
-    let adaptive_token_mask: HashMap<ParserState, AdaptiveTokenMask> =
-        entries.into_iter().collect();
-
-    let grammar = Arc::try_unwrap(grammar_arc).unwrap_or_else(|arc| (*arc).clone());
-
+    // Steps 3-4 (enumerate reachable scanable states + compute every
+    // state's `AdaptiveTokenMask`) are DELETED — see the module docs.
+    // The mask cache starts empty and is populated lazily.
     CompiledGrammar::from_impl(Arc::new(CompiledGrammarImpl {
-        grammar,
+        grammar: Arc::new(grammar),
         tokenizer_info: tokenizer_info.clone(),
-        adaptive_token_mask,
+        mask_cache: dashmap::DashMap::new(),
+        tag_slice,
     }))
 }
 

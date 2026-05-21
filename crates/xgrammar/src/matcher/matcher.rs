@@ -20,10 +20,10 @@
 // the stop step must keep it). The matcher therefore owns its own
 // `stop_token_accepted` flag, undone precisely by `rollback`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
 use crate::compiler::CompiledGrammar;
-use crate::earley::{EarleyParser, ParserState, cache_key};
+use crate::earley::{EarleyParser, NO_PREV_INPUT_POS, ParserState};
 use crate::tokenizer::TokenizerInfo;
 
 /// A stateful matcher that matches sampled tokens against a compiled
@@ -38,16 +38,6 @@ use crate::tokenizer::TokenizerInfo;
 pub struct GrammarMatcher {
     /// The compiled grammar (shared, cheap to clone).
     compiled_grammar: CompiledGrammar,
-    /// Cache-key index over the compiled adaptive token masks.
-    ///
-    /// The compiler keys `adaptive_token_mask` by a canonical
-    /// `ParserState` (`rule_start_pos = -1`, `repeat_count = 0`), but
-    /// the parser's *live* scanable states carry real positions. The
-    /// C++ `adaptive_token_mask_cache` is hashed by `StateHashForCache`
-    /// — which ignores exactly those fields ([`cache_key`]). This map
-    /// reproduces that: cache-key tuple -> canonical state, so a live
-    /// state resolves to its mask via [`Self::mask_for_state`].
-    mask_index: HashMap<(i32, i32, i32, i32), ParserState>,
     /// The Earley parser driving byte-level matching.
     pub(super) parser: EarleyParser,
     /// Token ids that terminate generation. Either the override set or
@@ -90,16 +80,9 @@ impl GrammarMatcher {
         }
         let stop_token_ids = override_stop_tokens
             .unwrap_or_else(|| compiled_grammar.tokenizer_info().stop_token_ids().to_vec());
-        let parser =
-            EarleyParser::from_grammar(std::sync::Arc::new(compiled_grammar.grammar().clone()));
-        let mask_index = compiled_grammar
-            .adaptive_token_mask()
-            .keys()
-            .map(|s| (cache_key(s), *s))
-            .collect();
+        let parser = EarleyParser::from_grammar(compiled_grammar.grammar_arc());
         Self {
             compiled_grammar,
-            mask_index,
             parser,
             stop_token_ids,
             terminate_without_stop_token,
@@ -127,17 +110,30 @@ impl GrammarMatcher {
         self.compiled_grammar.tokenizer_info()
     }
 
-    /// Resolve a *live* parser state to the canonical [`ParserState`]
-    /// the compiler keyed its adaptive token mask under, via the
-    /// cache-key index. Returns `None` when the compiler produced no
-    /// mask for that state (e.g. an empty vocabulary).
+    /// Canonicalize a *live* parser state into the cache key the
+    /// compiler's mask cache is keyed by.
     ///
-    /// The caller looks the canonical state up in
-    /// [`CompiledGrammar::mask_for_state`] to get the actual mask — a
-    /// two-step lookup keeps the `&AdaptiveTokenMask` borrow tied to
-    /// the (cloneable) grammar rather than to `self`.
-    pub(super) fn canonical_mask_state(&self, state: &ParserState) -> Option<ParserState> {
-        self.mask_index.get(&cache_key(state)).copied()
+    /// The parser's live scanable states carry real positions
+    /// (`rule_start_pos`, `sub_element_id`, `repeat_count`,
+    /// `partial_codepoint`), but the adaptive-token-mask cache is
+    /// position-agnostic — the C++ `adaptive_token_mask_cache` hashes
+    /// by `StateHashForCache`. This reproduces the exact tuple the
+    /// eager compiler used as the cache key:
+    /// `(rule_id, body_expr_id, element_id, NO_PREV_INPUT_POS, 0)`.
+    /// The result is fed to [`CompiledGrammar::get_or_compute_mask`].
+    pub(super) fn canonical_mask_state(&self, live: &ParserState) -> ParserState {
+        let body_expr_id = self
+            .compiled_grammar
+            .grammar()
+            .rule(live.rule_id)
+            .body_expr_id;
+        ParserState::new(
+            live.rule_id,
+            body_expr_id,
+            live.element_id,
+            NO_PREV_INPUT_POS,
+            0,
+        )
     }
 
     /// The stop token ids that terminate this matcher.

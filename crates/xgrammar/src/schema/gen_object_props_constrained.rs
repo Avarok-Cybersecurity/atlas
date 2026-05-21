@@ -26,6 +26,7 @@ impl<'p> JsonSchemaConverter<'p> {
         last_sep: &str,
         min_properties: i64,
         max_properties: i64,
+        additional_prop_pattern_override: Option<&str>,
     ) -> SchemaResult<String> {
         let n = properties.len() as i32;
         let is_req = |name: &str| required.iter().any(|r| r == name);
@@ -35,10 +36,15 @@ impl<'p> JsonSchemaConverter<'p> {
         // Resolve the additional-property pattern up front.
         let mut additional_prop_pattern = String::new();
         if let Some(add) = additional {
-            let add_value_rule =
-                self.create_rule(add, &format!("{rule_name}_{additional_suffix}"))?;
-            let key = self.key_pattern().to_string();
-            additional_prop_pattern = self.format_other_property(&key, &add_value_rule);
+            // Override site 2/3 (upstream commit a6aeabb, #594).
+            if let Some(ovr) = additional_prop_pattern_override {
+                additional_prop_pattern = ovr.to_string();
+            } else {
+                let add_value_rule =
+                    self.create_rule(add, &format!("{rule_name}_{additional_suffix}"))?;
+                let key = self.key_pattern().to_string();
+                additional_prop_pattern = self.format_other_property(&key, &add_value_rule);
+            }
         }
 
         // ---- Compute key_matched_min / key_matched_max ranges. ----

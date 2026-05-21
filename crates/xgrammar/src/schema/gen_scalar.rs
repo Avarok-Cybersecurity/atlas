@@ -6,7 +6,7 @@
 
 use super::converter::{
     BASIC_ARRAY, BASIC_BOOLEAN, BASIC_NULL, BASIC_NUMBER, BASIC_OBJECT, BASIC_STRING,
-    BASIC_STRING_SUB, JsonSchemaConverter, XML_STRING,
+    BASIC_STRING_SUB, JsonSchemaConverter, XML_OBJECT, XML_STRING,
 };
 use super::error::{SchemaError, SchemaResult};
 use super::float_regex::generate_float_range_regex;
@@ -113,10 +113,17 @@ impl<'p> JsonSchemaConverter<'p> {
     }
 
     /// Generate the body for the "any" spec. Port of `GenerateAny`
-    /// plus the XML override.
+    /// plus the XML override (upstream commit 41dbbb1, #634).
     pub(super) fn generate_any(&self, _rule_name: &str) -> String {
-        if self.at_xml_layer() {
-            return format!("{XML_STRING} | {BASIC_ARRAY} | {BASIC_OBJECT}");
+        if self.is_xml() {
+            // Root XML layer: an arbitrary value is an XML object.
+            if self.nested_object_level == 0 {
+                return XML_OBJECT.to_string();
+            }
+            // XML param layer: a string, array, or object.
+            if self.nested_object_level == 1 {
+                return format!("{XML_STRING} | {BASIC_ARRAY} | {BASIC_OBJECT}");
+            }
         }
         format!(
             "{BASIC_NUMBER} | {BASIC_STRING} | {BASIC_BOOLEAN} | {BASIC_NULL} | \

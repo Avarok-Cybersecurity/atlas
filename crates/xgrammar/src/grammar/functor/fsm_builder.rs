@@ -9,7 +9,7 @@
 // into one shared `complete_fsm`. `GrammarData::per_rule_fsms[i]` holds
 // a compact view into that shared FSM for rule `i`.
 
-use crate::fsm::{CompactFsmWithStartEnd, DEFAULT_MAX_STATES, Fsm, FsmWithStartEnd};
+use crate::fsm::{CompactFsmWithStartEnd, Fsm, FsmWithStartEnd};
 use crate::grammar::data::GrammarData;
 use crate::grammar::expr::{GrammarExpr, GrammarExprType};
 
@@ -24,7 +24,12 @@ impl GrammarFsmBuilder {
     pub fn apply(grammar: &mut GrammarData) {
         let num_rules = grammar.num_rules();
         let mut complete = Fsm::with_states(0);
-        let mut per_rule: Vec<Option<FsmWithStartEnd>> = Vec::with_capacity(num_rules as usize);
+        // Each entry: the spliced view plus the *sub-FSM's* node/edge
+        // counts captured before splicing — needed so the per-rule
+        // `CompactFsmWithStartEnd` reports the sub-FSM size rather than
+        // the whole `complete_fsm` (upstream commit 58494db, #600).
+        let mut per_rule: Vec<Option<(FsmWithStartEnd, usize, usize)>> =
+            Vec::with_capacity(num_rules as usize);
 
         for i in 0..num_rules {
             let body_id = grammar.rule(i).body_expr_id;
@@ -35,18 +40,24 @@ impl GrammarFsmBuilder {
                 debug_assert_eq!(body.kind, GrammarExprType::Choices);
                 build_choices(&body, grammar)
             };
-            per_rule.push(rule_fsm.map(|f| splice_into(&mut complete, &f)));
+            per_rule.push(rule_fsm.map(|f| {
+                let node_num = f.num_states();
+                let edge_num = f.fsm().num_edges();
+                (splice_into(&mut complete, &f), node_num, edge_num)
+            }));
         }
 
         let compact_complete = complete.to_compact();
         let final_per_rule: Vec<Option<CompactFsmWithStartEnd>> = per_rule
             .into_iter()
             .map(|opt| {
-                opt.map(|view| {
-                    CompactFsmWithStartEnd::new(
+                opt.map(|(view, node_num, edge_num)| {
+                    CompactFsmWithStartEnd::new_view(
                         compact_complete.clone(),
                         view.start(),
                         view.ends().to_vec(),
+                        node_num,
+                        edge_num,
                     )
                 })
             })
@@ -220,11 +231,9 @@ pub fn build_choices(expr: &GrammarExpr<'_>, grammar: &GrammarData) -> Option<Fs
     let mut result = FsmWithStartEnd::union(&fsm_list);
     result = result.simplify_epsilon();
     result = result.merge_equivalent_successors();
-    if let Ok(dfa) = result.to_dfa(DEFAULT_MAX_STATES)
-        && let Ok(min) = dfa.minimize_dfa(DEFAULT_MAX_STATES)
-    {
-        result = min;
-    }
+    // Upstream commit 96ae88b (#616) dropped the `MinimizeDFA` call here:
+    // Hopcroft minimization does not reduce states on these grammars and
+    // scales super-linearly in state count, so it was pure wasted work.
     Some(result)
 }
 

@@ -13,7 +13,7 @@
 //   mask             — AdaptiveTokenMask (accept/reject/uncertain set)
 //   mask_gen         — per-state mask computation (EarleyParser scan)
 //   compiled_grammar — CompiledGrammar / CompiledGrammarImpl
-//   compile          — no-cache compilation core (parallel via rayon)
+//   compile          — no-cache compilation core (XGrammar-2 JIT)
 //   compiler         — GrammarCompiler with the dashmap-backed cache
 //
 // SIMPLIFICATIONS vs C++

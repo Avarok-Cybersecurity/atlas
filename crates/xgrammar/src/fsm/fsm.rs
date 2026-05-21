@@ -46,6 +46,11 @@ impl Fsm {
         self.edges.len()
     }
 
+    /// Total number of edges across all states.
+    pub fn num_edges(&self) -> usize {
+        self.edges.iter().map(Vec::len).sum()
+    }
+
     /// All adjacency rows.
     pub fn all_edges(&self) -> &[Vec<FsmEdge>] {
         &self.edges

@@ -68,8 +68,9 @@ pub struct GrammarCompiler {
 impl GrammarCompiler {
     /// Construct a compiler bound to `tokenizer_info`.
     ///
-    /// * `max_threads` — upper bound on parallelism for per-state mask
-    ///   computation (`1` disables the rayon path). Must be >= 1.
+    /// * `max_threads` — retained for API parity. Mask computation is
+    ///   now lazy (XGrammar-2 JIT), so there is no eager parallel loop
+    ///   to bound; the value is recorded but unused. Must be >= 1.
     /// * `cache_enabled` — whether to cache compiled grammars.
     /// * `cache_limit_bytes` — recorded memory budget; `-1` means
     ///   unlimited. (Reported by [`Self::cache_limit_bytes`]; this port

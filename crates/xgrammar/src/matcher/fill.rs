@@ -73,26 +73,27 @@ impl GrammarMatcher {
         let mut rejected: Vec<i32> = vec![-1];
 
         // Resolve each live scanable state to the canonical
-        // `ParserState` the compiler keyed its mask under (live states
-        // carry real positions; the mask cache is position-agnostic).
+        // `ParserState` the compiler keys its mask under (live states
+        // carry real positions; the mask cache is position-agnostic),
+        // then JIT-compile (or fetch from the lazy cache) its
+        // `AdaptiveTokenMask`.
         let live_states: Vec<_> = self.parser.latest_scanable_states().to_vec();
         let cg = self.compiled_grammar().clone();
+        let root_rule_id = cg.grammar().root_rule_id();
         let states: Vec<_> = live_states
             .iter()
             .map(|s| {
-                (
-                    *s,
-                    self.canonical_mask_state(s)
-                        .expect("every latest scanable state has a compiled mask"),
-                )
+                let canon = self.canonical_mask_state(s);
+                let is_root = canon.rule_id == root_rule_id;
+                (*s, cg.get_or_compute_mask(canon, is_root))
             })
             .collect();
         let sorted = self.tokenizer_info().sorted_decoded_vocab().to_vec();
         let subtree = self.tokenizer_info().trie_subtree_nodes_range().to_vec();
 
         // Pass 1: seed `accepted` from every state's static accepted set.
-        for (_, canon) in &states {
-            let mask = cg.mask_for_state(canon).expect("compiled mask");
+        for (_, mask) in &states {
+            let mask = mask.as_ref();
             match mask.store_type {
                 StoreType::AcceptedBitset => {
                     for (tid, slot) in accepted.iter_mut().enumerate() {
@@ -111,8 +112,8 @@ impl GrammarMatcher {
         }
 
         // Pass 2: resolve uncertain tokens per state via trial advance.
-        for (live, canon) in &states {
-            let mask = cg.mask_for_state(canon).expect("compiled mask");
+        for (live, mask) in &states {
+            let mask = mask.as_ref();
             let mut rejected_delta: Vec<i32> = Vec::new();
             self.parser.push_one_state_to_check(*live);
 

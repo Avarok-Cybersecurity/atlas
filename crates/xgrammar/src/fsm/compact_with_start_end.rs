@@ -12,24 +12,55 @@ use super::edge::edge_type;
 use super::with_start_end::FsmWithStartEnd;
 
 /// A compact FSM paired with start/accepting states.
+///
+/// `node_num` / `edge_num` record the size of the *logical* FSM this
+/// value represents. For a standalone FSM that equals the backing
+/// `fsm`'s own counts; for a per-rule view spliced into a shared
+/// `complete_fsm`, they record the sub-FSM's size — not the whole
+/// completed FSM. Distinguishing the two is the upstream #600 fix
+/// (`CompactFSMWithStartEndWithSize`, commit 58494db).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompactFsmWithStartEnd {
     pub(crate) fsm: CompactFsm,
     pub(crate) start: usize,
     pub(crate) ends: Vec<bool>,
     pub(crate) is_dfa: bool,
+    node_num: usize,
     edge_num: usize,
 }
 
 impl CompactFsmWithStartEnd {
-    /// Build from parts; `edge_num` is computed from the FSM.
+    /// Build a standalone compact FSM; `node_num`/`edge_num` are the
+    /// FSM's own counts.
     pub fn new(fsm: CompactFsm, start: usize, ends: Vec<bool>) -> Self {
+        let node_num = fsm.num_states();
         let edge_num = fsm.num_edges();
         Self {
             fsm,
             start,
             ends,
             is_dfa: false,
+            node_num,
+            edge_num,
+        }
+    }
+
+    /// Build a per-rule view onto a shared `complete_fsm`. `node_num`
+    /// and `edge_num` are the spliced-in sub-FSM's counts, *not* the
+    /// backing FSM's totals (upstream commit 58494db, #600).
+    pub fn new_view(
+        fsm: CompactFsm,
+        start: usize,
+        ends: Vec<bool>,
+        node_num: usize,
+        edge_num: usize,
+    ) -> Self {
+        Self {
+            fsm,
+            start,
+            ends,
+            is_dfa: false,
+            node_num,
             edge_num,
         }
     }
@@ -54,14 +85,25 @@ impl CompactFsmWithStartEnd {
         self.ends[state]
     }
 
-    /// Total states.
+    /// Number of states in the logical (sub-)FSM. For a per-rule view
+    /// this is the spliced-in sub-FSM's count, not the backing
+    /// `complete_fsm`'s total (upstream commit 58494db, #600).
     pub fn num_states(&self) -> usize {
-        self.fsm.num_states()
+        self.node_num
     }
 
-    /// Total edges.
+    /// Number of edges in the logical (sub-)FSM. For a per-rule view
+    /// this is the spliced-in sub-FSM's count, not the backing
+    /// `complete_fsm`'s total (upstream commit 58494db, #600).
     pub fn num_edges(&self) -> usize {
         self.edge_num
+    }
+
+    /// Number of states in the backing FSM storage — for a per-rule
+    /// view this is the whole shared `complete_fsm`. Use this (not
+    /// `num_states`) when indexing into the backing edge table.
+    pub fn backing_num_states(&self) -> usize {
+        self.fsm.num_states()
     }
 
     /// True if the FSM accepts the byte string.

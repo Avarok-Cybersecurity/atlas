@@ -92,7 +92,16 @@ impl FsmWithStartEnd {
 
     /// Merge states with identical incoming or outgoing transition
     /// structure (`ab | ac | ad` -> `a(b|c|d)`, and the mirror case).
+    ///
+    /// Upstream renamed this `MergeEquivalentStates` (commit 8d22ba0);
+    /// the port keeps the original name.
     pub fn merge_equivalent_successors(&self) -> FsmWithStartEnd {
+        // No merge is possible with fewer than 4 states: a Case 1 merge
+        // needs >=2 sinks sharing a source, a Case 2 merge needs >=2
+        // sources sharing a sink (upstream commit 96ae88b, #616).
+        if self.num_states() < 4 {
+            return self.copy();
+        }
         let mut result = self.copy();
         result.fsm_mut().sort_edges();
         let mut uf = UnionFindSet::new();
@@ -168,7 +177,13 @@ impl FsmWithStartEnd {
                 let node_edges: Vec<FsmEdge> = result.fsm().edges(i).to_vec();
                 let siblings: Vec<usize> = previous[next_state].keys().copied().collect();
                 for sibling in siblings {
+                    // Skip a sibling already merged earlier this iteration
+                    // (typically by Case 1): chaining a Case 2 merge onto it
+                    // can over-merge via transitive closure (upstream 8d22ba0,
+                    // #632). The `equiv_precursor` flag below was also fixed
+                    // from a wrongly-set `equiv_successor` in the same commit.
                     if sibling <= i
+                        || uf.contains(sibling as i32)
                         || next[sibling].len() != 1
                         || result.is_end_state(i) != result.is_end_state(sibling)
                     {
@@ -186,7 +201,7 @@ impl FsmWithStartEnd {
                         uf.add(i as i32);
                         uf.add(sibling as i32);
                         uf.union(i as i32, sibling as i32);
-                        equiv_successor = true;
+                        equiv_precursor = true;
                     }
                 }
             }
