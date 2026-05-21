@@ -299,8 +299,7 @@ pub fn strip_xml_leaks_from_assistant_content(
     // </content></task>` envelope (dump 2026-04-25 seq=104..111)
     // from polluting the next turn's prompt, which previously
     // taught the model that emitting the prose envelope is a valid
-    // tool-call substitute (Phase-1 leak-then-collapse pattern,
-    // see history/SSM_CATASTROPHIC_FORGETTING_TODO.md).
+    // tool-call substitute (Phase-1 leak-then-collapse pattern).
     const HARNESS_TAGS: &[&str] = &["task", "file", "content", "description", "prompt", "glob"];
     let mut leak_names: Vec<String> = tool_defs
         .iter()

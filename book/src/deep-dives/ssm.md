@@ -94,5 +94,4 @@ Each step calls into `spark-runtime::GpuBackend` via the layer's cached `KernelH
 - `kernels/gb10/<model>/<quant>/ssm_preprocess.cu`, `gdr.cu`, `causal_conv1d.cu`
 - `crates/spark-model/src/layers/qwen3_ssm.rs`, `nemotron_mamba2.rs`
 - `crates/spark-runtime/src/prefix_cache.rs` (Marconi SSM snapshot)
-- `docs/history/SSM_CATASTROPHIC_FORGETTING_TODO.md`
 - README "Atlas Spark" section — the SSM/GDN story in narrative form
