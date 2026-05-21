@@ -149,10 +149,10 @@ pub(crate) async fn chat_completions_inner(
     // the request so the existing resolve_thinking() chain sees them as
     // normal request-body fields. We don't mutate the resolution logic —
     // we just pre-populate the field it already checks.
-    if let Some(ref default_kw) = state.default_chat_template_kwargs {
-        if !req.thinking_explicitly_requested() {
-            req.chat_template_kwargs = Some(default_kw.clone());
-        }
+    if let Some(ref default_kw) = state.default_chat_template_kwargs
+        && !req.thinking_explicitly_requested()
+    {
+        req.chat_template_kwargs = Some(default_kw.clone());
     }
 
     // ── Phase 2: thinking resolution (pre-template) ─────────────

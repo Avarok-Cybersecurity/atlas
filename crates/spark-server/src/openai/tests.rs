@@ -215,10 +215,8 @@ fn responses_in_progress_event_name() {
 
 #[test]
 fn chat_template_kwargs_parse() {
-    let kw = ChatTemplateKwargs::from_json(
-        r#"{"enable_thinking":true,"thinking_budget":1024}"#,
-    )
-    .expect("should parse");
+    let kw = ChatTemplateKwargs::from_json(r#"{"enable_thinking":true,"thinking_budget":1024}"#)
+        .expect("should parse");
     assert_eq!(kw.enable_thinking, Some(true));
     assert_eq!(kw.thinking_budget, Some(1024));
 
