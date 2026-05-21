@@ -67,6 +67,7 @@ pub(super) fn promote_completed_prefills(
             think_start_token,
             tool_call_start_token,
             tool_call_end_token,
+            model.decode_rollback_ring_slots(),
         );
         if immediate_finish {
             finish_sequence(model, &mut a);
@@ -93,6 +94,8 @@ fn build_active_seq_from_prefill(
     think_start_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
+    // Phase-C decode-rollback ring capacity (`model.decode_rollback_ring_slots()`).
+    ssm_ring_capacity: usize,
 ) -> ActiveSeq {
     let temperature = p.temperature;
     ActiveSeq {
@@ -169,6 +172,7 @@ fn build_active_seq_from_prefill(
         prose_tokens_since_last_tool: 0,
         think_watchdog_fires: 0,
         rollback_count: 0,
+        ssm_rollback_ring: SsmDecodeRing::new(ssm_ring_capacity),
         tool_call_end_token,
         grammar_state: p.grammar_state,
         last_token_time: now,

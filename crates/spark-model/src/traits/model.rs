@@ -248,6 +248,56 @@ pub trait Model: Send + Sync {
     /// Rollback SSM states after partial acceptance.
     fn rollback_ssm_states(&self, seq: &mut SequenceState, num_accepted: usize) -> Result<()>;
 
+    /// True when this model has recurrent SSM / Mamba layers whose
+    /// `h_state` + `conv_state` are advanced in-place every decoded
+    /// token.
+    ///
+    /// Pure-attention models return `false` (the default): their only
+    /// per-token state is the paged KV cache, which the Phase-C
+    /// boundary rollback rewinds by lowering `seq_len`. Hybrid models
+    /// (Qwen3.6-A3B, MiniMax, Nemotron-nano) return `true` — for those
+    /// the scheduler MUST also restore the SSM state from a decode-time
+    /// snapshot, because the recurrent state cannot be undone by
+    /// lowering a cursor.
+    fn has_ssm_layers(&self) -> bool {
+        false
+    }
+
+    /// Number of decode-rollback SSM snapshot slots reserved **per
+    /// active sequence** (Phase-C). The scheduler's per-sequence
+    /// snapshot ring is sized from this. `0` (the default) means the
+    /// model keeps no decode-rollback snapshots — appropriate for
+    /// pure-attention models and for SSM models when the snapshot pool
+    /// has no capacity reserved. SSM models with a populated pool
+    /// override to `ROLLBACK_RESTEER_CAP + 1`.
+    fn decode_rollback_ring_slots(&self) -> usize {
+        0
+    }
+
+    /// Save `seq`'s live SSM `h_state` + `conv_state` (all SSM layers)
+    /// into the decode-rollback snapshot slot `ring_slot`.
+    ///
+    /// `ring_slot` is a per-sequence ring index in
+    /// `[0, decode_rollback_ring_slots())`; the model maps it to a
+    /// concrete snapshot-pool slot keyed by `seq.slot_idx`. Reuses the
+    /// same `SsmSnapshotPool` D2D copy primitive as Marconi prefix
+    /// caching and MTP verify (SSOT — one snapshot mechanism).
+    ///
+    /// Default: no-op `Ok(())` for pure-attention models, which have no
+    /// SSM state to snapshot.
+    fn save_decode_ssm_snapshot(&self, _seq: &SequenceState, _ring_slot: usize) -> Result<()> {
+        Ok(())
+    }
+
+    /// Restore `seq`'s SSM `h_state` + `conv_state` (all SSM layers)
+    /// from the decode-rollback snapshot slot `ring_slot` previously
+    /// written by [`Self::save_decode_ssm_snapshot`].
+    ///
+    /// Default: no-op `Ok(())` for pure-attention models.
+    fn restore_decode_ssm_snapshot(&self, _seq: &SequenceState, _ring_slot: usize) -> Result<()> {
+        Ok(())
+    }
+
     /// Speculative decoding via the model's internal MTP proposer; falls
     /// back to regular decode when no proposer is wired up.
     fn generate_speculative(

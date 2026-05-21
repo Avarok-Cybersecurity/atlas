@@ -284,6 +284,12 @@ pub fn resume_swapped_seq(
         prose_tokens_since_last_tool: 0,
         think_watchdog_fires: s.think_watchdog_fires,
         rollback_count: s.rollback_count,
+        // Decode-rollback SSM snapshots are GPU-resident and not part of
+        // the disk swap image — a resumed sequence starts with an empty
+        // ring. New boundary snapshots accrue as it decodes again; until
+        // one exists, a hybrid-model rollback declines to the hard stop
+        // (correct: there is no live snapshot to restore).
+        ssm_rollback_ring: SsmDecodeRing::new(model.decode_rollback_ring_slots()),
         tool_call_start_token: s.tool_call_start_token,
         tool_call_opened: s.tool_call_opened,
         // Resumed sequences re-enter outside any tool body — even if

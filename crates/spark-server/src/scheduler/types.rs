@@ -164,6 +164,14 @@ pub(super) struct ActiveSeq {
     /// watchdog reverts to a hard stop. See
     /// [`super::rollback::rollback_to_boundary`].
     pub rollback_count: u32,
+    /// Phase-C: decode-time SSM-snapshot ring for hybrid (attention +
+    /// Mamba/SSM) models. Records a bounded set of SSM `h_state` +
+    /// `conv_state` snapshots taken at boundary tokens so a watchdog
+    /// rollback can restore the recurrent state — not just the KV
+    /// cache — to the chosen boundary. Disabled (`capacity == 0`,
+    /// every op a no-op) for pure-attention models. See
+    /// [`super::ssm_decode_ring::SsmDecodeRing`].
+    pub ssm_rollback_ring: super::ssm_decode_ring::SsmDecodeRing,
     /// Grammar state for constrained decoding (tool_choice="required").
     pub grammar_state: Option<GrammarState>,
     /// MTP draft tokens awaiting verification.

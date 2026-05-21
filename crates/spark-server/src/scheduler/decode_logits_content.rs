@@ -17,7 +17,11 @@ use super::*;
 /// not inside `<think>`). Mutates `a` in place: decrements the
 /// generation budget, advances content counters, and runs the
 /// content-loop + inter-tool-prose watchdogs.
-pub fn handle_content_token(a: &mut ActiveSeq) {
+///
+/// `model` is needed by the Phase-C boundary rollback so it can restore
+/// SSM recurrent state on hybrid models (see
+/// [`super::rollback::rollback_to_boundary`]).
+pub fn handle_content_token(a: &mut ActiveSeq, model: &dyn Model) {
     a.remaining -= 1;
     a.content_started = true;
     a.content_tokens = a.content_tokens.saturating_add(1);
@@ -51,7 +55,7 @@ pub fn handle_content_token(a: &mut ActiveSeq) {
         // = CONTENT_LOOP_PERIOD_MAX so the rollback always escapes
         // the detected period. Falls back to the legacy hard stop
         // when disabled / capped / no boundary found.
-        match rollback_to_boundary(a, CONTENT_LOOP_PERIOD_MAX) {
+        match rollback_to_boundary(a, CONTENT_LOOP_PERIOD_MAX, model) {
             RollbackOutcome::RolledBack { dropped } => {
                 tracing::warn!(
                     content_tokens = a.content_tokens,
@@ -95,7 +99,7 @@ pub fn handle_content_token(a: &mut ActiveSeq) {
             // constrained tool-call decoder stays valid.
             // `min_keep` = CONTENT_LOOP_PERIOD_MAX drops a full
             // run-on sentence of stalled prose.
-            match rollback_to_boundary(a, CONTENT_LOOP_PERIOD_MAX) {
+            match rollback_to_boundary(a, CONTENT_LOOP_PERIOD_MAX, model) {
                 RollbackOutcome::RolledBack { dropped } => {
                     tracing::warn!(
                         max = max_prose,

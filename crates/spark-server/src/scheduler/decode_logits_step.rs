@@ -230,7 +230,9 @@ pub fn process_decode_logits(
             // Content-phase token: budget bookkeeping + the content-loop
             // and inter-tool-prose watchdogs. Extracted to
             // `decode_logits_content.rs` to keep this file ≤500 LoC.
-            handle_content_token(a);
+            // `model` is threaded through so a watchdog rollback can
+            // restore SSM recurrent state on hybrid models (Phase-C).
+            handle_content_token(a, model);
         }
 
         // Track <tool_call> token: once seen, legacy tool call requirement is satisfied.
@@ -373,6 +375,19 @@ pub fn process_decode_logits(
             // Don't add to output_tokens (EOS is discarded).
         } else {
             a.output_tokens.push(tok);
+            // Phase-C: if this committed token is a content-phase
+            // boundary token (sentence end / newline) and the model is
+            // hybrid (attention + SSM), snapshot the recurrent SSM
+            // state now so a later watchdog rollback to this boundary
+            // can also rewind h_state/conv_state — not just the KV
+            // cache. Gated to content tokens because the watchdogs that
+            // roll back all fire post-`</think>`, and `apply_rollback`
+            // requires every dropped token to be a content token. No-op
+            // for pure-attention models / disabled rings (see
+            // `rollback::snapshot_boundary_if_ssm`).
+            if !a.inside_thinking {
+                rollback::snapshot_boundary_if_ssm(a, model);
+            }
             // OPENCODE FIX: when the model spontaneously emits `<think>` even
             // though the request didn't ask for thinking (`enable_thinking=false`),
             // the `<think>` open token itself is suppressed (line ~1356), but
@@ -461,7 +476,7 @@ pub fn process_decode_logits(
                 // so generation cannot resume straight back into the
                 // loop. Falls back to the hard stop when declined.
                 let min_keep = pattern_len * 3;
-                match rollback_to_boundary(a, min_keep) {
+                match rollback_to_boundary(a, min_keep, model) {
                     RollbackOutcome::RolledBack { dropped } => {
                         tracing::warn!(
                             pattern_len,
