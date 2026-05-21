@@ -165,9 +165,7 @@ mod tests {
 
     #[test]
     fn tag_dispatch_root_passthrough() {
-        let g = normed(
-            "root ::= TagDispatch((\"a\", sub))\nsub ::= \"x\"\n",
-        );
+        let g = normed("root ::= TagDispatch((\"a\", sub))\nsub ::= \"x\"\n");
         let analyzed = LookaheadAssertionAnalyzer::apply(g.clone());
         assert_eq!(analyzed.num_rules(), g.num_rules());
     }

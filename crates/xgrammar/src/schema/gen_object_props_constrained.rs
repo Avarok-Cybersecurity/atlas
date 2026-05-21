@@ -104,11 +104,7 @@ impl<'p> JsonSchemaConverter<'p> {
         let mut rule_names: Vec<Vec<String>> = vec![Vec::new(); n as usize];
 
         // Last rule(s).
-        let last_upper = if has_max {
-            key_matched_max[last]
-        } else {
-            n
-        };
+        let last_upper = if has_max { key_matched_max[last] } else { n };
         for matched in key_matched_min[last]..=last_upper {
             if allow_additional {
                 let body = self.property_with_number_constraints(
@@ -117,10 +113,9 @@ impl<'p> JsonSchemaConverter<'p> {
                     max_properties,
                     matched as i64,
                 );
-                let name = self.script.add_rule(
-                    &format!("{rule_name}_part_{}_{matched}", n - 1),
-                    &body,
-                );
+                let name = self
+                    .script
+                    .add_rule(&format!("{rule_name}_part_{}_{matched}", n - 1), &body);
                 rule_names[last].push(name);
             } else {
                 rule_names[last].push("\"\"".to_string());
@@ -144,7 +139,8 @@ impl<'p> JsonSchemaConverter<'p> {
                     let idx1 = (matched - next_min + 1) as usize;
                     format!(
                         "{} | {mid_sep} {prop_pattern} {}",
-                        rule_names[i + 1][idx0], rule_names[i + 1][idx1]
+                        rule_names[i + 1][idx0],
+                        rule_names[i + 1][idx1]
                     )
                 };
                 let name = self

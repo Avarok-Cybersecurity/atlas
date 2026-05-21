@@ -60,11 +60,7 @@ fn space_replacer_decoder(token: &[u8]) -> Vec<u8> {
     let mut i = 0;
     while i < token.len() {
         // C++ guard is `i + 2 < size`, i.e. all three bytes addressable.
-        if i + 2 < token.len()
-            && token[i] == 0xE2
-            && token[i + 1] == 0x96
-            && token[i + 2] == 0x81
-        {
+        if i + 2 < token.len() && token[i] == 0xE2 && token[i + 1] == 0x96 && token[i + 2] == 0x81 {
             result.push(b' ');
             i += 3;
         } else {

@@ -12,7 +12,6 @@ use super::fsm::Fsm;
 use super::traversal;
 
 impl Fsm {
-
     /// Single-character / typed transition. Returns the first matching
     /// target, or [`NO_NEXT_STATE`]. `edge_type` must not be epsilon.
     pub fn next_state(&self, from: usize, value: i32, edge_type: i16) -> i32 {
@@ -35,14 +34,7 @@ impl Fsm {
         edge_type: i16,
         from_is_closure: bool,
     ) {
-        traversal::advance(
-            &self.edges,
-            from,
-            value,
-            result,
-            edge_type,
-            from_is_closure,
-        );
+        traversal::advance(&self.edges, from, value, result, edge_type, from_is_closure);
     }
 
     /// All rule ids referenced by `state`'s outgoing edges.

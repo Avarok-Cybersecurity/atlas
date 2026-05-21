@@ -41,12 +41,7 @@ pub fn add_sub_grammar(builder: &mut GrammarBuilder, sub_grammar: &GrammarData) 
 
 /// Recursively copy expr `expr_id` from `src` into `builder`, remapping
 /// rule ids through `id_map`.
-fn copy_expr(
-    builder: &mut GrammarBuilder,
-    src: &GrammarData,
-    expr_id: i32,
-    id_map: &[i32],
-) -> i32 {
+fn copy_expr(builder: &mut GrammarBuilder, src: &GrammarData, expr_id: i32, id_map: &[i32]) -> i32 {
     let e = src.expr(expr_id);
     match e.kind {
         GrammarExprType::RuleRef => builder.add_rule_ref(id_map[e.data[0] as usize]),
@@ -71,22 +66,20 @@ fn copy_expr(
         GrammarExprType::Sequence => {
             let ids: Vec<i32> = e
                 .data
-                .to_vec()
-                .into_iter()
-                .map(|c| copy_expr(builder, src, c, id_map))
+                .iter()
+                .map(|&c| copy_expr(builder, src, c, id_map))
                 .collect();
             builder.add_sequence(&ids)
         }
         GrammarExprType::Choices => {
             let ids: Vec<i32> = e
                 .data
-                .to_vec()
-                .into_iter()
-                .map(|c| copy_expr(builder, src, c, id_map))
+                .iter()
+                .map(|&c| copy_expr(builder, src, c, id_map))
                 .collect();
             builder.add_choices(&ids)
         }
-        _ => builder.add_grammar_expr(e.kind, &e.data.to_vec()),
+        _ => builder.add_grammar_expr(e.kind, e.data),
     }
 }
 

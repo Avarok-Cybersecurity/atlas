@@ -46,7 +46,7 @@ mod fill;
 mod matcher;
 
 pub use batch::BatchGrammarMatcher;
-pub use bitmask::{bitmask_size, BitmaskSlice, TokenBitmask, BITS_PER_WORD};
+pub use bitmask::{BITS_PER_WORD, BitmaskSlice, TokenBitmask, bitmask_size};
 pub use fill::FillError;
 pub use matcher::GrammarMatcher;
 

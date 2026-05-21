@@ -42,9 +42,9 @@ pub mod structure_normalizer;
 pub mod tag_dispatch_fsm;
 
 pub use analyzer::{AllowEmptyRuleAnalyzer, RuleRefGraphFinder, UsedRulesAnalyzer};
-pub use constructor::{add_sub_grammar, GrammarConcat, GrammarUnion};
+pub use constructor::{GrammarConcat, GrammarUnion, add_sub_grammar};
 pub use fsm_builder::GrammarFsmBuilder;
-pub use fsm_hasher::{hash_sequence, GrammarFsmHasher};
+pub use fsm_hasher::{GrammarFsmHasher, hash_sequence};
 pub use lookahead::LookaheadAssertionAnalyzer;
 pub use mutator::{GrammarMutator, MutatorState};
 pub use normalizer::{GrammarNormalizer, RootRuleRenamer, SingleElementExprEliminator};

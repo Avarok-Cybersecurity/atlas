@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use crate::earley::{ParserState, NO_PREV_INPUT_POS};
+use crate::earley::{NO_PREV_INPUT_POS, ParserState};
 use crate::grammar::functor::GrammarFsmHasher;
 use crate::grammar::{GrammarData, GrammarExprType};
 use crate::tokenizer::TokenizerInfo;
@@ -33,7 +33,10 @@ pub(super) fn compile_optimized_grammar(
     max_threads: usize,
 ) -> CompiledGrammar {
     let mut grammar = grammar;
-    debug_assert!(grammar.optimized, "grammar must be optimized before compile");
+    debug_assert!(
+        grammar.optimized,
+        "grammar must be optimized before compile"
+    );
 
     // Degenerate path: an empty vocabulary has no masks to compute.
     if tokenizer_info.vocab_size() == 0 {
@@ -77,13 +80,8 @@ pub(super) fn compile_optimized_grammar(
             if !scanable {
                 continue;
             }
-            let state = ParserState::new(
-                rule_id,
-                rule.body_expr_id,
-                state_id,
-                NO_PREV_INPUT_POS,
-                0,
-            );
+            let state =
+                ParserState::new(rule_id, rule.body_expr_id, state_id, NO_PREV_INPUT_POS, 0);
             tasks.push((state, is_root));
         }
     }
@@ -105,8 +103,7 @@ pub(super) fn compile_optimized_grammar(
     let adaptive_token_mask: HashMap<ParserState, AdaptiveTokenMask> =
         entries.into_iter().collect();
 
-    let grammar = Arc::try_unwrap(grammar_arc)
-        .unwrap_or_else(|arc| (*arc).clone());
+    let grammar = Arc::try_unwrap(grammar_arc).unwrap_or_else(|arc| (*arc).clone());
 
     CompiledGrammar::from_impl(Arc::new(CompiledGrammarImpl {
         grammar,
@@ -165,7 +162,5 @@ fn contains_from(haystack: &[u8], needle: &[u8], from: usize) -> bool {
     if from >= haystack.len() || needle.len() > haystack.len() - from {
         return false;
     }
-    haystack[from..]
-        .windows(needle.len())
-        .any(|w| w == needle)
+    haystack[from..].windows(needle.len()).any(|w| w == needle)
 }

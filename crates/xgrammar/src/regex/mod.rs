@@ -39,7 +39,7 @@ mod sub_handlers;
 
 pub use converter::{ConvertOutput, RegexConverter};
 
-use crate::grammar::{parse_ebnf, GrammarData};
+use crate::grammar::{GrammarData, parse_ebnf};
 
 /// Error raised while converting a regex to EBNF.
 ///

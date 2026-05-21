@@ -66,9 +66,9 @@ impl SchemaParser {
             return Ok(spec);
         }
 
-        let obj = schema.as_object().ok_or_else(|| {
-            SchemaError::invalid("Schema should be an object or bool")
-        })?;
+        let obj = schema
+            .as_object()
+            .ok_or_else(|| SchemaError::invalid("Schema should be an object or bool"))?;
 
         let result = self.dispatch(schema, obj, &cache_key, rule_name_hint, default_type)?;
         self.schema_cache.insert(cache_key, result.clone());

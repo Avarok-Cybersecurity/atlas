@@ -64,12 +64,7 @@ mod integration_tests {
         let compact_wse =
             CompactFsmWithStartEnd::new(compact.clone(), fsm.start(), fsm.ends().to_vec());
         assert!(compact_wse.accept_string(b"123456123"));
-        let back = FsmWithStartEnd::new(
-            compact.to_fsm(),
-            fsm.start(),
-            fsm.ends().to_vec(),
-            false,
-        );
+        let back = FsmWithStartEnd::new(compact.to_fsm(), fsm.start(), fsm.ends().to_vec(), false);
         assert!(back.accept_string(b"123456123"));
     }
 
@@ -145,8 +140,7 @@ mod integration_tests {
         // test_fsm.cc FunctionTest10
         let left = build("[c-f]+");
         let right = build("[d-h]*");
-        let inter =
-            FsmWithStartEnd::intersect(&left, &right, DEFAULT_MAX_STATES).unwrap();
+        let inter = FsmWithStartEnd::intersect(&left, &right, DEFAULT_MAX_STATES).unwrap();
         assert!(inter.accept_string(b"de"));
         assert!(inter.accept_string(b"def"));
         assert!(!inter.accept_string(b""));
@@ -196,8 +190,7 @@ mod integration_tests {
         // alternation each followed by "0123456789".  After minimize the
         // C++ asserts 111 states; we assert language correctness + that
         // minimize produces a small DFA.
-        let one =
-            "(a0123456789|b0123456789|c0123456789)";
+        let one = "(a0123456789|b0123456789|c0123456789)";
         let pattern = format!("{one}{one}");
         let fsm = build(&pattern);
         let simplified = fsm.simplify_epsilon().merge_equivalent_successors();
@@ -214,11 +207,8 @@ mod integration_tests {
         let pats: Vec<&[u8]> = vec![b"hello", b"hi", b"good"];
         let res = TrieFsmBuilder::build(&pats, &[], true, false).unwrap();
         let compact = res.fsm.fsm().to_compact();
-        let compact_wse = CompactFsmWithStartEnd::new(
-            compact,
-            res.fsm.start(),
-            res.fsm.ends().to_vec(),
-        );
+        let compact_wse =
+            CompactFsmWithStartEnd::new(compact, res.fsm.start(), res.fsm.ends().to_vec());
         assert!(compact_wse.accept_string(b"hello"));
         assert!(compact_wse.accept_string(b"hi"));
         assert!(!compact_wse.accept_string(b"he"));

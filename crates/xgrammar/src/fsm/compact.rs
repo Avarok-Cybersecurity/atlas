@@ -85,13 +85,7 @@ impl CompactFsm {
     /// `edge_type` into `targets` (cleared first). Because the compact
     /// rows are sorted, this could early-break, but for simplicity it
     /// scans the (small) row fully — behavior is identical.
-    pub fn next_states(
-        &self,
-        from: usize,
-        value: i32,
-        edge_type: i16,
-        targets: &mut Vec<i32>,
-    ) {
+    pub fn next_states(&self, from: usize, value: i32, edge_type: i16, targets: &mut Vec<i32>) {
         targets.clear();
         for edge in self.edges(from) {
             if traversal::edge_matches(edge, value, edge_type) {

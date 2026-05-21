@@ -7,7 +7,7 @@
 // `cpp/earley_parser.{h,cc}`.
 
 use super::parser::EarleyParser;
-use super::state::{ParserState, NO_PREV_INPUT_POS};
+use super::state::{NO_PREV_INPUT_POS, ParserState};
 
 impl EarleyParser {
     /// Remove the last `count` input positions — the rollback used by

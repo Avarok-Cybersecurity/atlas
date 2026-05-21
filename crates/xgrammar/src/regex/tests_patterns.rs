@@ -75,7 +75,6 @@ fn unclosed_paren() {
     assert!(e.message.contains("The parenthesis is not closed"));
 }
 
-
 // ---- real-world patterns --------------------------------------------
 
 #[test]

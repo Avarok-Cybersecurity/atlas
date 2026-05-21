@@ -276,9 +276,15 @@ mod tests {
 
     #[test]
     fn to_json_format() {
-        let m = HfMetadata { vocab_type: VocabType::ByteLevel, add_prefix_space: false };
+        let m = HfMetadata {
+            vocab_type: VocabType::ByteLevel,
+            add_prefix_space: false,
+        };
         assert_eq!(m.to_json(), r#"{"vocab_type":2,"add_prefix_space":false}"#);
-        let m2 = HfMetadata { vocab_type: VocabType::ByteFallback, add_prefix_space: true };
+        let m2 = HfMetadata {
+            vocab_type: VocabType::ByteFallback,
+            add_prefix_space: true,
+        };
         assert_eq!(m2.to_json(), r#"{"vocab_type":1,"add_prefix_space":true}"#);
     }
 

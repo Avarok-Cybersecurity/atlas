@@ -52,9 +52,7 @@ pub fn next_state(edges: &[Vec<FsmEdge>], from: usize, value: i32, edge_type: i1
 pub fn edge_matches(edge: &FsmEdge, value: i32, etype: i16) -> bool {
     match etype {
         edge_type::CHAR_RANGE => {
-            edge.is_char_range()
-                && (edge.min as i32) <= value
-                && (edge.max as i32) >= value
+            edge.is_char_range() && (edge.min as i32) <= value && (edge.max as i32) >= value
         }
         edge_type::RULE_REF => edge.is_rule_ref() && edge.max as i32 == value,
         edge_type::EOS => edge.is_eos(),
@@ -143,13 +141,17 @@ mod tests {
 
     #[test]
     fn advance_with_precomputed_closure() {
-        let edges = vec![
-            vec![FsmEdge::new(b'a' as i16, b'a' as i16, 1)],
-            vec![],
-        ];
+        let edges = vec![vec![FsmEdge::new(b'a' as i16, b'a' as i16, 1)], vec![]];
         let from: AHashSet<i32> = AHashSet::from_iter([0]);
         let mut result = AHashSet::new();
-        advance(&edges, &from, b'a' as i32, &mut result, edge_type::CHAR_RANGE, true);
+        advance(
+            &edges,
+            &from,
+            b'a' as i32,
+            &mut result,
+            edge_type::CHAR_RANGE,
+            true,
+        );
         assert_eq!(sorted(&result), vec![1]);
     }
 
@@ -158,7 +160,14 @@ mod tests {
         let edges = vec![vec![FsmEdge::new(b'a' as i16, b'a' as i16, 1)], vec![]];
         let from: AHashSet<i32> = AHashSet::from_iter([0]);
         let mut result = AHashSet::new();
-        advance(&edges, &from, b'z' as i32, &mut result, edge_type::CHAR_RANGE, true);
+        advance(
+            &edges,
+            &from,
+            b'z' as i32,
+            &mut result,
+            edge_type::CHAR_RANGE,
+            true,
+        );
         assert!(result.is_empty());
     }
 }

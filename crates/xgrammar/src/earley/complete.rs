@@ -8,7 +8,7 @@
 // past the rule reference.
 
 use super::parser::EarleyParser;
-use super::state::{ParserState, NO_PREV_INPUT_POS};
+use super::state::{NO_PREV_INPUT_POS, ParserState};
 use crate::grammar::GrammarExprType;
 
 impl EarleyParser {
@@ -70,7 +70,9 @@ impl EarleyParser {
                     self.queue.enqueue(next);
                 }
             }
-            other => panic!("Complete: non-FSM parent element must be RuleRef/Repeat, got {other:?}"),
+            other => {
+                panic!("Complete: non-FSM parent element must be RuleRef/Repeat, got {other:?}")
+            }
         }
     }
 

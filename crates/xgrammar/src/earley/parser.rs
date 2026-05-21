@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use super::queue::ProcessQueue;
-use super::state::{ParserState, NO_PREV_INPUT_POS, UNEXPANDED_RULE_START_SEQUENCE_ID};
+use super::state::{NO_PREV_INPUT_POS, ParserState, UNEXPANDED_RULE_START_SEQUENCE_ID};
 use crate::grammar::GrammarData;
 
 /// One `(referenced_rule_id, parent_state)` entry of the
@@ -79,11 +79,7 @@ impl EarleyParser {
     /// Panics if the grammar is not optimized (matches the C++
     /// `XGRAMMAR_LOG(FATAL)` contract — the FSM-accelerated parser
     /// requires `per_rule_fsms`).
-    pub fn new(
-        grammar: Arc<GrammarData>,
-        initial_state: ParserState,
-        need_expand: bool,
-    ) -> Self {
+    pub fn new(grammar: Arc<GrammarData>, initial_state: ParserState, need_expand: bool) -> Self {
         assert!(
             grammar.optimized,
             "EarleyParser requires an optimized grammar (run GrammarOptimizer first)"
@@ -151,11 +147,7 @@ impl EarleyParser {
         self.accept_stop_token = false;
 
         // Scan phase: every scanable state of the latest step.
-        let latest = self
-            .scanable_history
-            .last()
-            .cloned()
-            .unwrap_or_default();
+        let latest = self.scanable_history.last().cloned().unwrap_or_default();
         for state in &latest {
             self.scan(*state, ch);
         }

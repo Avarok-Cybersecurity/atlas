@@ -43,10 +43,10 @@ impl GrammarMatcher {
         terminate_without_stop_token: bool,
         max_rollback_tokens: i32,
     ) -> Result<Self, String> {
-        if let Some(ovr) = override_stop_tokens {
-            if ovr.is_empty() {
-                return Err("override_stop_tokens must not be empty".to_string());
-            }
+        if let Some(ovr) = override_stop_tokens
+            && ovr.is_empty()
+        {
+            return Err("override_stop_tokens must not be empty".to_string());
         }
         Ok(Self {
             inner: CoreMatcher::new(

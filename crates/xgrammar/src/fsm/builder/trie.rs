@@ -71,8 +71,7 @@ pub fn build_trie(
             let mut current = 0i32;
             for &ch in *excluded {
                 let ch16 = ch as i16;
-                let mut next =
-                    fsm.next_state(current as usize, ch16 as i32, edge_type::CHAR_RANGE);
+                let mut next = fsm.next_state(current as usize, ch16 as i32, edge_type::CHAR_RANGE);
                 if next == NO_NEXT_STATE {
                     next = fsm.add_state() as i32;
                     fsm.add_edge(current as usize, next as usize, ch16, ch16);
@@ -121,8 +120,7 @@ fn add_back_edges_to_fsm(fsm: &mut Fsm, start: usize, ends: &AHashSet<i32>) {
         if i == start || ends.contains(&(i as i32)) {
             continue;
         }
-        let mut edge_set: BTreeSet<OrdRange> =
-            fsm.edges(i).iter().map(|e| OrdRange(*e)).collect();
+        let mut edge_set: BTreeSet<OrdRange> = fsm.edges(i).iter().map(|e| OrdRange(*e)).collect();
 
         // Step 1: inherit the start state's edges (for chars not present).
         for root_edge in fsm.edges(start) {
@@ -136,8 +134,7 @@ fn add_back_edges_to_fsm(fsm: &mut Fsm, start: usize, ends: &AHashSet<i32>) {
     }
 
     // Finally, complete the start state itself with range edges.
-    let mut start_set: BTreeSet<OrdRange> =
-        fsm.edges(start).iter().map(|e| OrdRange(*e)).collect();
+    let mut start_set: BTreeSet<OrdRange> = fsm.edges(start).iter().map(|e| OrdRange(*e)).collect();
     fill_range_gaps(&mut start_set, start);
     *fsm.edges_mut(start) = start_set.iter().map(|o| o.0).collect();
 }

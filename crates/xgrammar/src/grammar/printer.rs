@@ -25,8 +25,8 @@ impl<'g> GrammarPrinter<'g> {
         Self { grammar }
     }
 
-    /// Print the complete grammar — one rule per line.
-    pub fn to_string(&self) -> String {
+    /// Render the complete grammar to EBNF text — one rule per line.
+    pub fn render(&self) -> String {
         let mut result = String::new();
         for i in 0..self.grammar.num_rules() {
             result.push_str(&self.print_rule(self.grammar.rule(i)));
@@ -83,8 +83,10 @@ impl<'g> GrammarPrinter<'g> {
     }
 
     fn print_character_class(e: &GrammarExpr<'_>) -> String {
-        let custom: HashMap<i32, String> =
-            HashMap::from([('-' as i32, "\\-".to_string()), (']' as i32, "\\]".to_string())]);
+        let custom: HashMap<i32, String> = HashMap::from([
+            ('-' as i32, "\\-".to_string()),
+            (']' as i32, "\\]".to_string()),
+        ]);
         let mut result = String::from("[");
         if e[0] != 0 {
             result.push('^');
@@ -107,14 +109,12 @@ impl<'g> GrammarPrinter<'g> {
     }
 
     fn print_sequence(&self, e: &GrammarExpr<'_>) -> String {
-        let parts: Vec<String> =
-            e.data.iter().map(|&id| self.print_expr_id(id)).collect();
+        let parts: Vec<String> = e.data.iter().map(|&id| self.print_expr_id(id)).collect();
         format!("({})", parts.join(" "))
     }
 
     fn print_choices(&self, e: &GrammarExpr<'_>) -> String {
-        let parts: Vec<String> =
-            e.data.iter().map(|&id| self.print_expr_id(id)).collect();
+        let parts: Vec<String> = e.data.iter().map(|&id| self.print_expr_id(id)).collect();
         format!("({})", parts.join(" | "))
     }
 
@@ -144,8 +144,11 @@ impl<'g> GrammarPrinter<'g> {
             "{indent}loop_after_dispatch={},\n",
             td.loop_after_dispatch
         ));
-        let excl: Vec<String> =
-            td.excluded_str.iter().map(|s| Self::print_string(s)).collect();
+        let excl: Vec<String> = td
+            .excluded_str
+            .iter()
+            .map(|s| Self::print_string(s))
+            .collect();
         result.push_str(&format!("{indent}excludes=({})\n)", excl.join(", ")));
         result
     }
@@ -165,7 +168,7 @@ impl<'g> GrammarPrinter<'g> {
 
 /// Convenience: render `grammar` as EBNF text.
 pub fn print_grammar(grammar: &GrammarData) -> String {
-    GrammarPrinter::new(grammar).to_string()
+    GrammarPrinter::new(grammar).render()
 }
 
 /// Convert a unicode codepoint to its UTF-8 byte values as `i32`s.

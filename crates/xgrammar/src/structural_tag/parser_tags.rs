@@ -8,7 +8,7 @@
 
 use super::error::{StructuralTagError, StructuralTagResult};
 use super::format::{Format, TagFormat};
-use super::parser::{find, StructuralTagParser};
+use super::parser::{StructuralTagParser, find};
 use crate::schema::JsonValue;
 
 impl StructuralTagParser {
@@ -39,11 +39,13 @@ impl StructuralTagParser {
         obj: &[(String, JsonValue)],
         kind: &str,
     ) -> StructuralTagResult<Vec<Format>> {
-        let array = find(obj, "elements").and_then(JsonValue::as_array).ok_or_else(|| {
-            StructuralTagError::invalid(format!(
-                "{kind} format must have an elements field with an array"
-            ))
-        })?;
+        let array = find(obj, "elements")
+            .and_then(JsonValue::as_array)
+            .ok_or_else(|| {
+                StructuralTagError::invalid(format!(
+                    "{kind} format must have an elements field with an array"
+                ))
+            })?;
         let mut elements = Vec::with_capacity(array.len());
         for element in array {
             elements.push(self.parse_format(element)?);
@@ -58,19 +60,16 @@ impl StructuralTagParser {
 
     /// Parse a tag-format value, checking the `type` field if present.
     /// Port of the `picojson::value` overload of `ParseTagFormat`.
-    pub(super) fn parse_tag_value(
-        &mut self,
-        value: &JsonValue,
-    ) -> StructuralTagResult<TagFormat> {
+    pub(super) fn parse_tag_value(&mut self, value: &JsonValue) -> StructuralTagResult<TagFormat> {
         let obj = value
             .as_object()
             .ok_or_else(|| StructuralTagError::invalid("Tag format must be an object"))?;
-        if let Some(t) = find(obj, "type") {
-            if t.as_str() != Some("tag") {
-                return Err(StructuralTagError::invalid(
-                    "Tag format's type must be a string \"tag\"",
-                ));
-            }
+        if let Some(t) = find(obj, "type")
+            && t.as_str() != Some("tag")
+        {
+            return Err(StructuralTagError::invalid(
+                "Tag format's type must be a string \"tag\"",
+            ));
         }
         self.parse_tag_obj(obj)
     }
@@ -81,9 +80,11 @@ impl StructuralTagParser {
         &mut self,
         obj: &[(String, JsonValue)],
     ) -> StructuralTagResult<TagFormat> {
-        let begin = find(obj, "begin").and_then(JsonValue::as_str).ok_or_else(|| {
-            StructuralTagError::invalid("Tag format's begin field must be a string")
-        })?;
+        let begin = find(obj, "begin")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                StructuralTagError::invalid("Tag format's begin field must be a string")
+            })?;
         let content_val = find(obj, "content")
             .ok_or_else(|| StructuralTagError::invalid("Tag format must have a content field"))?;
         let content = self.parse_format(content_val)?;
@@ -104,11 +105,13 @@ impl StructuralTagParser {
         obj: &[(String, JsonValue)],
         kind: &str,
     ) -> StructuralTagResult<Vec<TagFormat>> {
-        let array = find(obj, "tags").and_then(JsonValue::as_array).ok_or_else(|| {
-            StructuralTagError::invalid(format!(
-                "{kind} format must have a tags field with an array"
-            ))
-        })?;
+        let array = find(obj, "tags")
+            .and_then(JsonValue::as_array)
+            .ok_or_else(|| {
+                StructuralTagError::invalid(format!(
+                    "{kind} format must have a tags field with an array"
+                ))
+            })?;
         let mut tags = Vec::with_capacity(array.len());
         for tag in array {
             tags.push(self.parse_tag_value(tag)?);
@@ -126,11 +129,13 @@ impl StructuralTagParser {
         &mut self,
         obj: &[(String, JsonValue)],
     ) -> StructuralTagResult<Format> {
-        let triggers_arr = find(obj, "triggers").and_then(JsonValue::as_array).ok_or_else(|| {
-            StructuralTagError::invalid(
-                "Triggered tags format must have a triggers field with an array",
-            )
-        })?;
+        let triggers_arr = find(obj, "triggers")
+            .and_then(JsonValue::as_array)
+            .ok_or_else(|| {
+                StructuralTagError::invalid(
+                    "Triggered tags format must have a triggers field with an array",
+                )
+            })?;
         let mut triggers = Vec::with_capacity(triggers_arr.len());
         for trigger in triggers_arr {
             match trigger.as_str() {
@@ -138,7 +143,7 @@ impl StructuralTagParser {
                 _ => {
                     return Err(StructuralTagError::invalid(
                         "Triggered tags format's triggers must be non-empty strings",
-                    ))
+                    ));
                 }
             }
         }
@@ -167,11 +172,13 @@ impl StructuralTagParser {
         obj: &[(String, JsonValue)],
     ) -> StructuralTagResult<Format> {
         let tags = self.parse_tags(obj, "Tags with separator")?;
-        let separator = find(obj, "separator").and_then(JsonValue::as_str).ok_or_else(|| {
-            StructuralTagError::invalid(
-                "Tags with separator format's separator field must be a string",
-            )
-        })?;
+        let separator = find(obj, "separator")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                StructuralTagError::invalid(
+                    "Tags with separator format's separator field must be a string",
+                )
+            })?;
         let at_least_one = parse_bool_field(obj, "at_least_one")?;
         let stop_after_first = parse_bool_field(obj, "stop_after_first")?;
         Ok(Format::TagsWithSeparator {
@@ -226,7 +233,7 @@ fn parse_excludes(obj: &[(String, JsonValue)]) -> StructuralTagResult<Vec<String
             _ => {
                 return Err(StructuralTagError::invalid(
                     "Triggered tags format's excluded_strs must be non-empty strings",
-                ))
+                ));
             }
         }
     }

@@ -51,8 +51,8 @@ mod tests;
 pub use error::{StructuralTagError, StructuralTagResult};
 pub use format::{Format, SchemaStyle, StructuralTag, StructuralTagItem, TagFormat};
 
-use crate::grammar::builder::TagDispatchSpec;
 use crate::grammar::GrammarData;
+use crate::grammar::builder::TagDispatchSpec;
 
 /// Build a [`TagDispatchSpec`] from the structural-tag fields. Shared
 /// by the `any_text` and `triggered_tags` converters.

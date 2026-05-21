@@ -13,9 +13,9 @@
 pub fn format_to_regex(format: &str) -> Option<String> {
     let atext = r"[\w!#$%&'*+/=?^`{|}~-]";
     let dot_string = format!(r"({atext}+(\.{atext}+)*)");
-    let quoted_string =
-        r#"\\"(\\[\x20-\x7E]|[\x20\x21\x23-\x5B\x5D-\x7E])*\\""#;
-    let domain = r"([A-Za-z0-9]([\-A-Za-z0-9]*[A-Za-z0-9])?)((\.[A-Za-z0-9][\-A-Za-z0-9]*[A-Za-z0-9])*)";
+    let quoted_string = r#"\\"(\\[\x20-\x7E]|[\x20\x21\x23-\x5B\x5D-\x7E])*\\""#;
+    let domain =
+        r"([A-Za-z0-9]([\-A-Za-z0-9]*[A-Za-z0-9])?)((\.[A-Za-z0-9][\-A-Za-z0-9]*[A-Za-z0-9])*)";
 
     let pat: String = match format {
         "email" => format!("^({dot_string}|{quoted_string})@{domain}$"),
@@ -109,8 +109,7 @@ fn uri_reference_pattern() -> String {
     let userinfo = r"([\w\.~!$&'()*+,;=:-]|%[0-9A-Fa-f][0-9A-Fa-f])*";
     let host = r"([\w\.~!$&'()*+,;=-]|%[0-9A-Fa-f][0-9A-Fa-f])*";
     let authority = format!(r"({userinfo}@)?{host}(:\d*)?");
-    let relative_part =
-        format!("(//{authority}{path_abempty}|{path_absolute}|{path_noscheme})?");
+    let relative_part = format!("(//{authority}{path_abempty}|{path_absolute}|{path_noscheme})?");
     format!("^{relative_part}{query}{fragment}$")
 }
 

@@ -23,7 +23,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::compiler::CompiledGrammar;
-use crate::earley::{cache_key, EarleyParser, ParserState};
+use crate::earley::{EarleyParser, ParserState, cache_key};
 use crate::tokenizer::TokenizerInfo;
 
 /// A stateful matcher that matches sampled tokens against a compiled
@@ -86,16 +86,12 @@ impl GrammarMatcher {
     ) -> Self {
         let _ = max_rollback_tokens; // deprecated & unused, kept for ABI parity.
         if let Some(ref ovr) = override_stop_tokens {
-            assert!(
-                !ovr.is_empty(),
-                "override_stop_tokens must not be empty"
-            );
+            assert!(!ovr.is_empty(), "override_stop_tokens must not be empty");
         }
         let stop_token_ids = override_stop_tokens
             .unwrap_or_else(|| compiled_grammar.tokenizer_info().stop_token_ids().to_vec());
-        let parser = EarleyParser::from_grammar(std::sync::Arc::new(
-            compiled_grammar.grammar().clone(),
-        ));
+        let parser =
+            EarleyParser::from_grammar(std::sync::Arc::new(compiled_grammar.grammar().clone()));
         let mask_index = compiled_grammar
             .adaptive_token_mask()
             .keys()
@@ -139,7 +135,7 @@ impl GrammarMatcher {
     /// The caller looks the canonical state up in
     /// [`CompiledGrammar::mask_for_state`] to get the actual mask — a
     /// two-step lookup keeps the `&AdaptiveTokenMask` borrow tied to
-    /// the (clonable) grammar rather than to `self`.
+    /// the (cloneable) grammar rather than to `self`.
     pub(super) fn canonical_mask_state(&self, state: &ParserState) -> Option<ParserState> {
         self.mask_index.get(&cache_key(state)).copied()
     }

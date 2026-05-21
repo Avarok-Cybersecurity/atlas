@@ -50,11 +50,7 @@ fn is_excluded(format: &Format) -> bool {
 
 /// Visit a format. `enclosing_end` is the end-strings of the nearest
 /// enclosing tag. `depth` guards against pathological nesting.
-fn visit(
-    format: &mut Format,
-    enclosing_end: &[String],
-    depth: u32,
-) -> StructuralTagResult<()> {
+fn visit(format: &mut Format, enclosing_end: &[String], depth: u32) -> StructuralTagResult<()> {
     if depth > super::parser::MAX_FORMAT_DEPTH {
         return Err(StructuralTagError::invalid("Format nesting too deep"));
     }

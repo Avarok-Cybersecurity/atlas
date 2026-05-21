@@ -68,9 +68,9 @@ impl SchemaConverterOptions {
         if let Some((c, col)) = &self.separators {
             return (c.clone(), col.clone());
         }
-        let comma = if self.any_whitespace {
-            ","
-        } else if self.indent.is_some() {
+        // No space after the comma when whitespace is flexible or an
+        // explicit indent is set (the indent supplies the separation).
+        let comma = if self.any_whitespace || self.indent.is_some() {
             ","
         } else {
             ", "

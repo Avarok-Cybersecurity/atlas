@@ -69,8 +69,7 @@ impl<'p> JsonSchemaConverter<'p> {
         // Pre-create the value rules and property patterns.
         let mut prop_patterns: Vec<String> = Vec::with_capacity(properties.len());
         for (idx, prop) in properties.iter().enumerate() {
-            let value_rule =
-                self.create_rule(&prop.schema, &format!("{rule_name}_prop_{idx}"))?;
+            let value_rule = self.create_rule(&prop.schema, &format!("{rule_name}_prop_{idx}"))?;
             prop_patterns.push(self.format_property(&prop.name, &value_rule));
         }
 

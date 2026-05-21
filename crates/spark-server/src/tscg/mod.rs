@@ -113,7 +113,10 @@ mod tests {
         );
         let out = compile_tools(std::slice::from_ref(&t));
         // Signature line: required `query` before optional `path?`.
-        assert!(out.starts_with("search_files(query:str path?:str)"), "got: {out}");
+        assert!(
+            out.starts_with("search_files(query:str path?:str)"),
+            "got: {out}"
+        );
         // Description is on a `|` line and far shorter than the JSON.
         assert!(out.contains("\n|"), "got: {out}");
         assert!(out.len() < serde_json::to_string(&t).unwrap().len());

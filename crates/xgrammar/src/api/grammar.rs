@@ -13,8 +13,8 @@
 // Atlas's `grammar/compile_misc.rs` uses `Grammar::from_structural_tag`
 // followed by `compiler.compile_grammar(&grammar)`.
 
-use crate::grammar::{parse_ebnf, GrammarData};
-use crate::schema::{builtin_json_grammar_ebnf, json_schema_to_ebnf, SchemaConverterOptions};
+use crate::grammar::{GrammarData, parse_ebnf};
+use crate::schema::{SchemaConverterOptions, builtin_json_grammar_ebnf, json_schema_to_ebnf};
 use crate::structural_tag::structural_tag_to_grammar;
 
 /// A parsed grammar, ready to be handed to
@@ -55,8 +55,7 @@ impl Grammar {
         let options = SchemaConverterOptions {
             any_whitespace,
             indent,
-            separators: separators
-                .map(|(c, s)| (c.as_ref().to_string(), s.as_ref().to_string())),
+            separators: separators.map(|(c, s)| (c.as_ref().to_string(), s.as_ref().to_string())),
             strict_mode,
             max_whitespace_cnt,
             ..SchemaConverterOptions::default()

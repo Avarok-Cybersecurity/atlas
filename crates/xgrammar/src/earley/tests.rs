@@ -118,7 +118,7 @@ fn right_recursive_list() {
 #[test]
 fn empty_rule_accepts_empty_string() {
     let g = optimized("root ::= \"\"\n");
-    let mut p = EarleyParser::from_grammar(g);
+    let p = EarleyParser::from_grammar(g);
     assert!(p.is_completed());
 }
 
@@ -146,9 +146,7 @@ fn repetition_bounds() {
 #[test]
 fn repetition_with_empty() {
     // test_grammar_matcher_ebnf.py::test_repetition_with_empty
-    let g = optimized(
-        "root ::= rule {2, 3} \"d\"?\nrule ::= (\"a\" | [bc] {4,}) | \"\"\n",
-    );
+    let g = optimized("root ::= rule {2, 3} \"d\"?\nrule ::= (\"a\" | [bc] {4,}) | \"\"\n");
     assert!(accepts(g.clone(), "aaa"));
     assert!(accepts(g.clone(), ""));
     assert!(accepts(g.clone(), "a"));
@@ -372,9 +370,7 @@ fn unoptimized_grammar_panics() {
 
 #[test]
 fn deeply_nested_grammar() {
-    let g = optimized(
-        "root ::= a\na ::= b b\nb ::= c c\nc ::= d d\nd ::= \"x\"\n",
-    );
+    let g = optimized("root ::= a\na ::= b b\nb ::= c c\nc ::= d d\nd ::= \"x\"\n");
     // root -> 2 b -> 4 c -> 8 d -> 8 'x'
     assert!(accepts(g.clone(), "xxxxxxxx"));
     assert!(!accepts(g.clone(), "xxxxxxx"));

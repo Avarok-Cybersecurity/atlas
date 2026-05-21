@@ -28,8 +28,8 @@ pub mod union_find;
 
 pub use compact_2d_array::Compact2DArray;
 pub use encoding::{
-    byte_to_latin1, char_handling_error, char_to_utf8, handle_utf8_first_byte, hex_char_to_int,
-    latin1_to_bytes, parse_next_utf8, parse_utf8, TCodepoint,
+    TCodepoint, byte_to_latin1, char_handling_error, char_to_utf8, handle_utf8_first_byte,
+    hex_char_to_int, latin1_to_bytes, parse_next_utf8, parse_utf8,
 };
 pub use escape::{
     parse_next_escaped, parse_next_utf8_or_escaped, print_as_escaped, print_byte_as_escaped,

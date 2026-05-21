@@ -27,11 +27,7 @@ impl<'p> JsonSchemaConverter<'p> {
         result
     }
 
-    fn generate_array_inner(
-        &mut self,
-        spec: &ArraySpec,
-        rule_name: &str,
-    ) -> SchemaResult<String> {
+    fn generate_array_inner(&mut self, spec: &ArraySpec, rule_name: &str) -> SchemaResult<String> {
         self.indent.start_indent();
         let start_sep = self.indent.start_separator();
         let mid_sep = self.indent.middle_separator();
@@ -45,11 +41,10 @@ impl<'p> JsonSchemaConverter<'p> {
             item_rule_names.push(name);
         }
         let mut additional_rule_name = String::new();
-        if spec.allow_additional_items {
-            if let Some(add) = &spec.additional_items {
-                additional_rule_name =
-                    self.create_rule(add, &format!("{rule_name}_additional"))?;
-            }
+        if spec.allow_additional_items
+            && let Some(add) = &spec.additional_items
+        {
+            additional_rule_name = self.create_rule(add, &format!("{rule_name}_additional"))?;
         }
 
         self.indent.end_indent();
@@ -58,8 +53,7 @@ impl<'p> JsonSchemaConverter<'p> {
         let right = EbnfScriptCreator::str_lit("]");
 
         if spec.prefix_items.is_empty() {
-            let empty_part =
-                EbnfScriptCreator::concat(&[left.clone(), empty_sep, right.clone()]);
+            let empty_part = EbnfScriptCreator::concat(&[left.clone(), empty_sep, right.clone()]);
             if !spec.allow_additional_items {
                 return Ok(empty_part);
             }
@@ -68,10 +62,7 @@ impl<'p> JsonSchemaConverter<'p> {
             }
             if spec.min_items == 0 && spec.max_items != 0 {
                 let repeat = EbnfScriptCreator::repeat(
-                    &EbnfScriptCreator::concat(&[
-                        mid_sep.clone(),
-                        additional_rule_name.clone(),
-                    ]),
+                    &EbnfScriptCreator::concat(&[mid_sep.clone(), additional_rule_name.clone()]),
                     0,
                     if spec.max_items == -1 {
                         -1
@@ -122,8 +113,7 @@ impl<'p> JsonSchemaConverter<'p> {
                 left, start_sep, prefix_str, end_sep, right,
             ]));
         }
-        let min_items =
-            0i64.max(spec.min_items - item_rule_names.len() as i64);
+        let min_items = 0i64.max(spec.min_items - item_rule_names.len() as i64);
         let repeat = EbnfScriptCreator::repeat(
             &EbnfScriptCreator::concat(&[mid_sep, additional_rule_name]),
             min_items as i32,

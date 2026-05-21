@@ -227,21 +227,13 @@ impl Parser {
                                     self.pos += 1;
                                     self.expect('u')?;
                                     let lo = self.parse_hex4()?;
-                                    let c = 0x10000
-                                        + ((cp - 0xD800) << 10)
-                                        + (lo - 0xDC00);
-                                    s.push(
-                                        char::from_u32(c)
-                                            .ok_or("invalid surrogate pair")?,
-                                    );
+                                    let c = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                                    s.push(char::from_u32(c).ok_or("invalid surrogate pair")?);
                                 } else {
                                     return Err("lone high surrogate".to_string());
                                 }
                             } else {
-                                s.push(
-                                    char::from_u32(cp)
-                                        .ok_or("invalid \\u escape")?,
-                                );
+                                s.push(char::from_u32(cp).ok_or("invalid \\u escape")?);
                             }
                         }
                         other => return Err(format!("bad escape '\\{other}'")),
@@ -318,7 +310,11 @@ impl Parser {
         let as_f64: f64 = text
             .parse()
             .map_err(|_| format!("invalid number '{text}'"))?;
-        let as_i64 = if is_int { text.parse::<i64>().ok() } else { None };
+        let as_i64 = if is_int {
+            text.parse::<i64>().ok()
+        } else {
+            None
+        };
         Ok(JsonValue::Number { as_f64, as_i64 })
     }
 }

@@ -38,10 +38,7 @@ impl MutatorState {
 
 /// Decode a `TagDispatch` and rebuild it into `builder` unchanged.
 /// Shared by the default `visit_tag_dispatch` and several passes.
-pub fn rebuild_tag_dispatch(
-    builder: &mut GrammarBuilder,
-    td: &TagDispatch,
-) -> i32 {
+pub fn rebuild_tag_dispatch(builder: &mut GrammarBuilder, td: &TagDispatch) -> i32 {
     use crate::grammar::builder::TagDispatchSpec;
     let spec = TagDispatchSpec {
         tag_rule_pairs: td.tag_rule_pairs.clone(),
@@ -196,4 +193,3 @@ impl GrammarData {
         }
     }
 }
-

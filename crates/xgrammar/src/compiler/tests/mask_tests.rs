@@ -5,9 +5,9 @@
 use std::collections::HashSet;
 
 use super::{compiler, idx_of, small_tokenizer};
+use crate::compiler::AdaptiveTokenMask;
 use crate::compiler::mask::StoreType;
 use crate::compiler::mask_gen::possible_token_intervals;
-use crate::compiler::AdaptiveTokenMask;
 
 // ----- adaptive token mask correctness -----------------------------
 
@@ -16,7 +16,9 @@ fn mask_partition_is_a_total_cover() {
     // root ::= "a" — every state's accept/reject/uncertain partition
     // must be disjoint and cover the whole sorted vocabulary.
     let c = compiler(1);
-    let cg = c.compile_grammar_from_ebnf("root ::= \"a\"\n", "root").unwrap();
+    let cg = c
+        .compile_grammar_from_ebnf("root ::= \"a\"\n", "root")
+        .unwrap();
     let info = cg.tokenizer_info();
     let n = info.sorted_decoded_vocab().len() as i32;
 
@@ -37,7 +39,9 @@ fn mask_partition_is_a_total_cover() {
 #[test]
 fn mask_root_rule_has_no_uncertain() {
     let c = compiler(1);
-    let cg = c.compile_grammar_from_ebnf("root ::= \"abc\"\n", "root").unwrap();
+    let cg = c
+        .compile_grammar_from_ebnf("root ::= \"abc\"\n", "root")
+        .unwrap();
     for mask in cg.adaptive_token_mask().values() {
         assert!(
             mask.uncertain_indices.is_empty(),
@@ -51,11 +55,15 @@ fn mask_accepts_expected_first_token() {
     // root ::= "abc" — the initial state must accept the single-char
     // token "a" and the multi-char tokens "ab" / "abc", reject "b".
     let c = compiler(1);
-    let cg = c.compile_grammar_from_ebnf("root ::= \"abc\"\n", "root").unwrap();
+    let cg = c
+        .compile_grammar_from_ebnf("root ::= \"abc\"\n", "root")
+        .unwrap();
     let info = cg.tokenizer_info();
     let root_id = cg.grammar().root_rule_id();
     let root_body = cg.grammar().rule(root_id).body_expr_id;
-    let fsm = cg.grammar().per_rule_fsms[root_id as usize].as_ref().unwrap();
+    let fsm = cg.grammar().per_rule_fsms[root_id as usize]
+        .as_ref()
+        .unwrap();
     let start = fsm.start() as i32;
     let state = crate::earley::ParserState::new(root_id, root_body, start, -1, 0);
     let mask = cg.mask_for_state(&state).expect("mask for start state");
@@ -63,7 +71,10 @@ fn mask_accepts_expected_first_token() {
     let acc_set: HashSet<i32> = accepted.into_iter().collect();
     assert!(acc_set.contains(&idx_of(info, b"a")), "should accept 'a'");
     assert!(acc_set.contains(&idx_of(info, b"ab")), "should accept 'ab'");
-    assert!(acc_set.contains(&idx_of(info, b"abc")), "should accept 'abc'");
+    assert!(
+        acc_set.contains(&idx_of(info, b"abc")),
+        "should accept 'abc'"
+    );
     assert!(!acc_set.contains(&idx_of(info, b"b")), "must reject 'b'");
 }
 

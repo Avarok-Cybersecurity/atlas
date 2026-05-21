@@ -28,4 +28,4 @@ pub use functor::{
     GrammarUnion,
 };
 pub use parser::{ParseError, parse_ebnf, parse_ebnf_default};
-pub use printer::{print_grammar, GrammarPrinter};
+pub use printer::{GrammarPrinter, print_grammar};

@@ -137,10 +137,7 @@ impl AdaptiveTokenMask {
     ///
     /// Port of the partition-reconstruction logic in
     /// `AdaptiveTokenMask::Print`. Returns `(accepted, rejected)`.
-    pub fn materialize(
-        &self,
-        sorted_decoded_vocab: &[(i32, Vec<u8>)],
-    ) -> (Vec<i32>, Vec<i32>) {
+    pub fn materialize(&self, sorted_decoded_vocab: &[(i32, Vec<u8>)]) -> (Vec<i32>, Vec<i32>) {
         let n = sorted_decoded_vocab.len();
         let uncertain: std::collections::HashSet<i32> =
             self.uncertain_indices.iter().copied().collect();

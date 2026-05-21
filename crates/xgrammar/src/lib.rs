@@ -10,6 +10,12 @@
 // The algorithmic core lives in the modules below; `api` is the
 // vendored-signature façade Atlas's `spark-server` links against.
 
+// Index-based loops and same-named submodules (`fsm::fsm`,
+// `compiler::compiler`) are kept where they mirror the C++ source's
+// structure 1:1 — that traceability is deliberate for a line-by-line
+// port and makes diffing against upstream xgrammar tractable.
+#![allow(clippy::needless_range_loop, clippy::module_inception)]
+
 pub mod compiler;
 pub mod earley;
 pub mod fsm;
@@ -31,10 +37,10 @@ mod api;
 // (`xgrammar::compiler::GrammarCompiler`, etc.) for the crate's own
 // tests and any consumer that wants the richer pure-Rust API.
 pub use api::{
-    allocate_token_bitmask, detect_metadata_from_hf, get_bitmask_shape, reset_token_bitmask,
     BatchGrammarMatcher, CompiledGrammar, DLDataType, DLDataTypeCode, DLDevice, DLDeviceType,
     DLTensor, Grammar, GrammarCompiler, GrammarMatcher, HfMetadata, StructuralTagItem,
-    TokenizerInfo,
+    TokenizerInfo, allocate_token_bitmask, detect_metadata_from_hf, get_bitmask_shape,
+    reset_token_bitmask,
 };
 pub use tokenizer::VocabType;
 
@@ -44,12 +50,12 @@ pub use tokenizer::VocabType;
 // test suite and downstream consumers that want direct AST access.
 pub use grammar::{GrammarData, GrammarExpr, GrammarExprType, Rule, TagDispatch};
 pub use schema::{
-    deepseek_xml_tool_calling_to_ebnf, json_schema_to_ebnf, json_schema_to_grammar,
-    minimax_xml_tool_calling_to_ebnf, qwen_xml_tool_calling_to_ebnf, JsonFormat,
-    SchemaConverterOptions, SchemaError,
+    JsonFormat, SchemaConverterOptions, SchemaError, deepseek_xml_tool_calling_to_ebnf,
+    json_schema_to_ebnf, json_schema_to_grammar, minimax_xml_tool_calling_to_ebnf,
+    qwen_xml_tool_calling_to_ebnf,
 };
 pub use structural_tag::{
-    structural_tag_from_items, structural_tag_to_grammar, StructuralTag, StructuralTagError,
+    StructuralTag, StructuralTagError, structural_tag_from_items, structural_tag_to_grammar,
 };
 
 // ── `VocabType` SCREAMING-CASE aliases ─────────────────────────────

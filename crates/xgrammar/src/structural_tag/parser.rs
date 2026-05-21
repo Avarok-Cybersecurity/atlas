@@ -41,12 +41,12 @@ impl StructuralTagParser {
             .as_object()
             .ok_or_else(|| StructuralTagError::invalid("Structural tag must be an object"))?;
         // The type field is optional but must be "structural_tag" if present.
-        if let Some(t) = find(obj, "type") {
-            if t.as_str() != Some("structural_tag") {
-                return Err(StructuralTagError::invalid(
-                    "Structural tag's type must be a string \"structural_tag\"",
-                ));
-            }
+        if let Some(t) = find(obj, "type")
+            && t.as_str() != Some("structural_tag")
+        {
+            return Err(StructuralTagError::invalid(
+                "Structural tag's type must be a string \"structural_tag\"",
+            ));
         }
         // The format field is required.
         let format_val = find(obj, "format").ok_or_else(|| {
@@ -132,9 +132,11 @@ pub(super) fn find<'a>(obj: &'a [(String, JsonValue)], key: &str) -> Option<&'a 
 
 /// Port of `ParseConstStringFormat`.
 fn parse_const_string(obj: &[(String, JsonValue)]) -> StructuralTagResult<Format> {
-    let value = find(obj, "value").and_then(JsonValue::as_str).ok_or_else(|| {
-        StructuralTagError::invalid("ConstString format must have a value field with a string")
-    })?;
+    let value = find(obj, "value")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| {
+            StructuralTagError::invalid("ConstString format must have a value field with a string")
+        })?;
     Ok(Format::ConstString(value.to_string()))
 }
 
@@ -164,7 +166,7 @@ fn parse_json_schema(
             Some(_) => {
                 return Err(StructuralTagError::invalid(
                     "style must be \"json\", \"qwen_xml\", \"minimax_xml\", or \"deepseek_xml\"",
-                ))
+                ));
             }
         },
     };
@@ -208,7 +210,9 @@ fn parse_any_text(obj: &[(String, JsonValue)]) -> StructuralTagResult<Format> {
 
 /// Port of `ParseGrammarFormat`.
 fn parse_grammar(obj: &[(String, JsonValue)]) -> StructuralTagResult<Format> {
-    let grammar = find(obj, "grammar").and_then(JsonValue::as_str).filter(|s| !s.is_empty());
+    let grammar = find(obj, "grammar")
+        .and_then(JsonValue::as_str)
+        .filter(|s| !s.is_empty());
     match grammar {
         Some(g) => Ok(Format::Grammar(g.to_string())),
         None => Err(StructuralTagError::invalid(
@@ -219,7 +223,9 @@ fn parse_grammar(obj: &[(String, JsonValue)]) -> StructuralTagResult<Format> {
 
 /// Port of `ParseRegexFormat`.
 fn parse_regex(obj: &[(String, JsonValue)]) -> StructuralTagResult<Format> {
-    let pattern = find(obj, "pattern").and_then(JsonValue::as_str).filter(|s| !s.is_empty());
+    let pattern = find(obj, "pattern")
+        .and_then(JsonValue::as_str)
+        .filter(|s| !s.is_empty());
     match pattern {
         Some(p) => Ok(Format::Regex(p.to_string())),
         None => Err(StructuralTagError::invalid(

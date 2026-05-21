@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn first_byte_classification() {
         assert_eq!(handle_utf8_first_byte(0x41), (true, 1, 0x41));
-        assert_eq!(handle_utf8_first_byte(0xC2).0, true);
+        assert!(handle_utf8_first_byte(0xC2).0);
         assert_eq!(handle_utf8_first_byte(0xC2).1, 2);
         assert_eq!(handle_utf8_first_byte(0xE2).1, 3);
         assert_eq!(handle_utf8_first_byte(0xF0).1, 4);

@@ -10,7 +10,7 @@
 // an escape sequence.
 
 use super::encoding::{
-    char_handling_error, char_to_utf8, hex_char_to_int, parse_next_utf8, parse_utf8, TCodepoint,
+    TCodepoint, char_handling_error, char_to_utf8, hex_char_to_int, parse_next_utf8, parse_utf8,
 };
 use std::collections::HashMap;
 
@@ -286,7 +286,10 @@ mod tests {
     fn parse_hex_x_escape() {
         assert_eq!(parse_next_escaped(b"\\x41", &empty_esc_map()), (0x41, 4));
         // Arbitrary length.
-        assert_eq!(parse_next_escaped(b"\\x1F600", &empty_esc_map()), (0x1F600, 7));
+        assert_eq!(
+            parse_next_escaped(b"\\x1F600", &empty_esc_map()),
+            (0x1F600, 7)
+        );
         // Stops at first non-hex char.
         assert_eq!(parse_next_escaped(b"\\xABg", &empty_esc_map()), (0xAB, 4));
     }
@@ -294,7 +297,10 @@ mod tests {
     #[test]
     fn parse_unicode_escapes() {
         assert_eq!(parse_next_escaped(b"\\u00A9", &empty_esc_map()), (0xA9, 6));
-        assert_eq!(parse_next_escaped(b"\\u2603", &empty_esc_map()), (0x2603, 6));
+        assert_eq!(
+            parse_next_escaped(b"\\u2603", &empty_esc_map()),
+            (0x2603, 6)
+        );
         assert_eq!(
             parse_next_escaped(b"\\U0001F600", &empty_esc_map()),
             (0x1F600, 10)
@@ -304,17 +310,35 @@ mod tests {
     #[test]
     fn parse_invalid_escapes() {
         // Not a backslash.
-        assert_eq!(parse_next_escaped(b"n", &empty_esc_map()), (INVALID_ESCAPE, 0));
+        assert_eq!(
+            parse_next_escaped(b"n", &empty_esc_map()),
+            (INVALID_ESCAPE, 0)
+        );
         // Unknown escape letter.
-        assert_eq!(parse_next_escaped(b"\\z", &empty_esc_map()), (INVALID_ESCAPE, 0));
+        assert_eq!(
+            parse_next_escaped(b"\\z", &empty_esc_map()),
+            (INVALID_ESCAPE, 0)
+        );
         // Bare backslash.
-        assert_eq!(parse_next_escaped(b"\\", &empty_esc_map()), (INVALID_ESCAPE, 0));
+        assert_eq!(
+            parse_next_escaped(b"\\", &empty_esc_map()),
+            (INVALID_ESCAPE, 0)
+        );
         // \x with no hex digits.
-        assert_eq!(parse_next_escaped(b"\\xg", &empty_esc_map()), (INVALID_ESCAPE, 0));
+        assert_eq!(
+            parse_next_escaped(b"\\xg", &empty_esc_map()),
+            (INVALID_ESCAPE, 0)
+        );
         // \u with too few digits.
-        assert_eq!(parse_next_escaped(b"\\u12", &empty_esc_map()), (INVALID_ESCAPE, 0));
+        assert_eq!(
+            parse_next_escaped(b"\\u12", &empty_esc_map()),
+            (INVALID_ESCAPE, 0)
+        );
         // \u with a non-hex digit.
-        assert_eq!(parse_next_escaped(b"\\u12zz", &empty_esc_map()), (INVALID_ESCAPE, 0));
+        assert_eq!(
+            parse_next_escaped(b"\\u12zz", &empty_esc_map()),
+            (INVALID_ESCAPE, 0)
+        );
     }
 
     #[test]
@@ -327,7 +351,10 @@ mod tests {
     #[test]
     fn utf8_or_escaped_dispatch() {
         // Raw UTF-8 char.
-        assert_eq!(parse_next_utf8_or_escaped(b"A", &empty_esc_map()), (0x41, 1));
+        assert_eq!(
+            parse_next_utf8_or_escaped(b"A", &empty_esc_map()),
+            (0x41, 1)
+        );
         // Escape sequence.
         assert_eq!(
             parse_next_utf8_or_escaped(b"\\n", &empty_esc_map()),
@@ -363,8 +390,14 @@ mod tests {
 
     #[test]
     fn unescape_propagates_error() {
-        assert_eq!(unescape_string(b"\\z", &empty_esc_map()), Err(INVALID_ESCAPE));
-        assert_eq!(unescape_string(&[0x80], &empty_esc_map()), Err(INVALID_UTF8));
+        assert_eq!(
+            unescape_string(b"\\z", &empty_esc_map()),
+            Err(INVALID_ESCAPE)
+        );
+        assert_eq!(
+            unescape_string(&[0x80], &empty_esc_map()),
+            Err(INVALID_UTF8)
+        );
     }
 
     #[test]

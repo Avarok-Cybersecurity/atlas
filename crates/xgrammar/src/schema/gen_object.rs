@@ -3,7 +3,7 @@
 // Object EBNF generator — port of `JSONSchemaConverter::GenerateObject`
 // and the property-formatting hooks, plus the XML overrides.
 
-use super::converter::{xml_wrapper, JsonSchemaConverter};
+use super::converter::{JsonSchemaConverter, xml_wrapper};
 use super::error::SchemaResult;
 use super::spec::{ObjectSpec, SchemaSpec, SchemaSpecPtr, SpecKind};
 use crate::regex::regex_to_ebnf;
@@ -25,9 +25,7 @@ impl<'p> JsonSchemaConverter<'p> {
         if self.at_xml_layer() {
             let (prefix, suffix, param_suffix) = xml_wrapper(self.format);
             let ws = self.whitespace_pattern();
-            return format!(
-                "\"{prefix}{key}{suffix}\" {ws} {value_rule} {ws} \"{param_suffix}\""
-            );
+            return format!("\"{prefix}{key}{suffix}\" {ws} {value_rule} {ws} \"{param_suffix}\"");
         }
         format!(
             "{} {} {value_rule}",
@@ -82,19 +80,14 @@ impl<'p> JsonSchemaConverter<'p> {
 
         // Choose the additional-property schema, if any.
         let (additional_suffix, additional_property): (&str, Option<SchemaSpecPtr>) =
-            if spec.allow_additional_properties
-                && spec.additional_properties_schema.is_some()
-            {
+            if spec.allow_additional_properties && spec.additional_properties_schema.is_some() {
                 ("addl", spec.additional_properties_schema.clone())
             } else if spec.allow_unevaluated_properties
                 && spec.unevaluated_properties_schema.is_some()
             {
                 ("uneval", spec.unevaluated_properties_schema.clone())
             } else if spec.allow_additional_properties || spec.allow_unevaluated_properties {
-                (
-                    "addl",
-                    Some(SchemaSpec::make(SpecKind::Any, "", "any")),
-                )
+                ("addl", Some(SchemaSpec::make(SpecKind::Any, "", "any")))
             } else {
                 ("", None)
             };
@@ -161,26 +154,22 @@ impl<'p> JsonSchemaConverter<'p> {
         if spec.max_properties != 0 {
             if !spec.pattern_properties.is_empty() {
                 for (i, pp) in spec.pattern_properties.iter().enumerate() {
-                    let value =
-                        self.create_rule(&pp.schema, &format!("{rule_name}_prop_{i}"))?;
+                    let value = self.create_rule(&pp.schema, &format!("{rule_name}_prop_{i}"))?;
                     let key_regex = regex_to_ebnf(&pp.pattern, false).map_err(|e| {
                         super::error::SchemaError::invalid(format!(
                             "patternProperties regex failed: {e}"
                         ))
                     })?;
-                    let property_pattern = format!(
-                        "\"\\\"\"{key_regex}\"\\\"\" {} {value}",
-                        self.colon_pattern
-                    );
+                    let property_pattern =
+                        format!("\"\\\"\"{key_regex}\"\\\"\" {} {value}", self.colon_pattern);
                     if i != 0 {
                         property_rule_body.push_str(" | ");
                     }
-                    property_rule_body
-                        .push_str(&format!("({beg_seq} {property_pattern})"));
+                    property_rule_body.push_str(&format!("({beg_seq} {property_pattern})"));
                 }
                 property_rule_body.push(')');
-            } else if let Some(pn) = &spec.property_names {
-                let key_pattern = self.create_rule(pn, &format!("{rule_name}_name"))?;
+            } else if let Some(prop_names) = &spec.property_names {
+                let key_pattern = self.create_rule(prop_names, &format!("{rule_name}_name"))?;
                 let any = self.basic_any_rule();
                 property_rule_body.push_str(&format!(
                     "{beg_seq} {key_pattern} {} {any})",
@@ -188,8 +177,7 @@ impl<'p> JsonSchemaConverter<'p> {
                 ));
             }
 
-            let prop_rule_name =
-                self.script.allocate_rule_name(&format!("{rule_name}_prop"));
+            let prop_rule_name = self.script.allocate_rule_name(&format!("{rule_name}_prop"));
             self.script
                 .add_rule_with_allocated_name(&prop_rule_name, &property_rule_body);
 
@@ -201,9 +189,7 @@ impl<'p> JsonSchemaConverter<'p> {
                 1,
             );
             let next_end = self.next_separator(true);
-            result.push_str(&format!(
-                " {prop_rule_name} {constrained}{next_end}"
-            ));
+            result.push_str(&format!(" {prop_rule_name} {constrained}{next_end}"));
             return Ok(spec.min_properties == 0);
         }
         Ok(false)

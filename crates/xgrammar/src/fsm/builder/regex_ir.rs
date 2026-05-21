@@ -157,7 +157,9 @@ fn visit_repeat(
         result = FsmWithStartEnd::concat(&[result, child]);
         for end in 0..result.num_states() {
             if result.is_end_state(end) {
-                result.fsm_mut().add_epsilon_edge(end, end_of_lower as usize);
+                result
+                    .fsm_mut()
+                    .add_epsilon_edge(end, end_of_lower as usize);
             }
         }
         return Ok(result);
@@ -181,7 +183,6 @@ fn visit_repeat(
     }
     Ok(result)
 }
-
 
 // Leaf-FSM construction lives in `regex_leaf.rs`; re-exported here
 // so existing call sites (`super::regex_ir::build_leaf_fsm`) keep

@@ -132,7 +132,13 @@ mod tests {
 
     #[test]
     fn unexpanded_detection() {
-        let s = ParserState::new(0, UNEXPANDED_RULE_START_SEQUENCE_ID, 0, NO_PREV_INPUT_POS, 0);
+        let s = ParserState::new(
+            0,
+            UNEXPANDED_RULE_START_SEQUENCE_ID,
+            0,
+            NO_PREV_INPUT_POS,
+            0,
+        );
         assert!(s.is_unexpanded());
         assert!(!ParserState::new(0, 5, 0, 0, 0).is_unexpanded());
     }

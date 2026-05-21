@@ -113,20 +113,19 @@ fn leading_dash_lexes_as_identifier() {
     // tokenizes as an identifier, not a signed integer. The parser
     // then rejects it where an integer is expected.
     let toks = EbnfLexer::tokenize("root ::= \"a\"{-1}\n").unwrap();
-    assert!(toks
-        .iter()
-        .any(|t| t.ty == TokenType::Identifier && t.lexeme == "-1"));
+    assert!(
+        toks.iter()
+            .any(|t| t.ty == TokenType::Identifier && t.lexeme == "-1")
+    );
 }
 
 #[test]
 fn signed_integer_after_comma() {
     // `+5` after a comma: `+` is not a name char, so this lexes as a
     // signed integer literal.
-    let toks = EbnfLexer::tokenize("root ::= TagDispatch((\"t\", h), x=+5)\nh ::= \"h\"\n")
-        .unwrap();
-    assert!(toks
-        .iter()
-        .any(|t| matches!(t.value, TokenValue::Int(5))));
+    let toks =
+        EbnfLexer::tokenize("root ::= TagDispatch((\"t\", h), x=+5)\nh ::= \"h\"\n").unwrap();
+    assert!(toks.iter().any(|t| matches!(t.value, TokenValue::Int(5))));
 }
 
 #[test]
@@ -138,9 +137,10 @@ fn lookahead_lparen() {
 #[test]
 fn boolean_literal() {
     let toks = EbnfLexer::tokenize("root ::= TagDispatch(stop_eos=true)\n").unwrap();
-    assert!(toks
-        .iter()
-        .any(|t| t.ty == TokenType::BooleanLiteral && t.value == TokenValue::Bool(true)));
+    assert!(
+        toks.iter()
+            .any(|t| t.ty == TokenType::BooleanLiteral && t.value == TokenValue::Bool(true))
+    );
 }
 
 #[test]

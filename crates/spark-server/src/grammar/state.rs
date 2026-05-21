@@ -2,9 +2,7 @@
 
 //! Per-request grammar matching state.
 
-use xgrammar::{
-    CompiledGrammar, GrammarMatcher, allocate_token_bitmask, reset_token_bitmask,
-};
+use xgrammar::{CompiledGrammar, GrammarMatcher, allocate_token_bitmask, reset_token_bitmask};
 
 use super::engine::GrammarError;
 
@@ -138,7 +136,6 @@ impl GrammarState {
             }
         }
     }
-
 }
 
 // ── Vocabulary extraction helper ───────────────────────────────────────

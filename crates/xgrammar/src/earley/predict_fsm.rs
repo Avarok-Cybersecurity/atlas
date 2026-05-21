@@ -8,7 +8,7 @@
 // (predict with repeat-count bookkeeping).
 
 use super::parser::EarleyParser;
-use super::state::{ParserState, NO_PREV_INPUT_POS};
+use super::state::{NO_PREV_INPUT_POS, ParserState};
 
 /// What kind of non-epsilon expansion edge was encountered.
 struct RefEdge {
@@ -177,7 +177,12 @@ impl EarleyParser {
         } else {
             self.completable.len() as i32 - 1
         };
-        self.queue
-            .enqueue(ParserState::new(ref_rule_id, ref_body_id, start, new_pos, 0));
+        self.queue.enqueue(ParserState::new(
+            ref_rule_id,
+            ref_body_id,
+            start,
+            new_pos,
+            0,
+        ));
     }
 }

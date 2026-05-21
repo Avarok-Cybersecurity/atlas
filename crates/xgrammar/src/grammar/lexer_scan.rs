@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use crate::support::encoding::{self, char_handling_error};
 use crate::support::escape;
 
-use super::{EbnfLexer, LexError, Token, TokenType, TokenValue, MAX_INTEGER_IN_GRAMMAR};
+use super::{EbnfLexer, LexError, MAX_INTEGER_IN_GRAMMAR, Token, TokenType, TokenValue};
 
 impl EbnfLexer {
     /// Parse a `"..."` string literal.
@@ -25,8 +25,7 @@ impl EbnfLexer {
         let no_extra: HashMap<u8, i32> = HashMap::new();
         while self.peek(0) != 0 && !matches!(self.peek(0), b'"' | b'\n' | b'\r') {
             // INTEGRATION: support::escape::parse_next_utf8_or_escaped
-            let (cp, len) =
-                escape::parse_next_utf8_or_escaped(&self.input[self.pos..], &no_extra);
+            let (cp, len) = escape::parse_next_utf8_or_escaped(&self.input[self.pos..], &no_extra);
             match cp {
                 char_handling_error::INVALID_UTF8 => {
                     return Err(self.err("Invalid UTF8 sequence"));
@@ -163,7 +162,12 @@ impl EbnfLexer {
         self.consume_space();
         let (line, column) = (self.line, self.column);
         if self.peek(0) == 0 {
-            return Ok(vec![self.simple_token(TokenType::EndOfFile, "", line, column)]);
+            return Ok(vec![self.simple_token(
+                TokenType::EndOfFile,
+                "",
+                line,
+                column,
+            )]);
         }
         let single = |s: &mut Self, ty, lex: &str, n| {
             s.consume(n);
@@ -201,9 +205,7 @@ impl EbnfLexer {
 
     /// Re-tag the identifier that precedes a `::=` as a `RuleName`,
     /// validating that it sits at the start of a line.
-    pub(super) fn convert_identifier_to_rule_name(
-        tokens: &mut [Token],
-    ) -> Result<(), LexError> {
+    pub(super) fn convert_identifier_to_rule_name(tokens: &mut [Token]) -> Result<(), LexError> {
         let make_err = |t: &Token, msg: &str| LexError {
             line: t.line,
             column: t.column,

@@ -9,7 +9,7 @@
 // into one shared `complete_fsm`. `GrammarData::per_rule_fsms[i]` holds
 // a compact view into that shared FSM for rule `i`.
 
-use crate::fsm::{CompactFsmWithStartEnd, Fsm, FsmWithStartEnd, DEFAULT_MAX_STATES};
+use crate::fsm::{CompactFsmWithStartEnd, DEFAULT_MAX_STATES, Fsm, FsmWithStartEnd};
 use crate::grammar::data::GrammarData;
 use crate::grammar::expr::{GrammarExpr, GrammarExprType};
 
@@ -24,8 +24,7 @@ impl GrammarFsmBuilder {
     pub fn apply(grammar: &mut GrammarData) {
         let num_rules = grammar.num_rules();
         let mut complete = Fsm::with_states(0);
-        let mut per_rule: Vec<Option<FsmWithStartEnd>> =
-            Vec::with_capacity(num_rules as usize);
+        let mut per_rule: Vec<Option<FsmWithStartEnd>> = Vec::with_capacity(num_rules as usize);
 
         for i in 0..num_rules {
             let body_id = grammar.rule(i).body_expr_id;
@@ -137,8 +136,8 @@ fn build_negative_character_class(expr: &GrammarExpr<'_>) -> FsmWithStartEnd {
     let mut char_set = [false; 128];
     let mut i = 1;
     while i < expr.data.len() {
-        let lo = expr.data[i] as i32;
-        let mut hi = expr.data[i + 1] as i32;
+        let lo = expr.data[i];
+        let mut hi = expr.data[i + 1];
         if hi > 128 {
             hi = 127;
         }
@@ -221,10 +220,10 @@ pub fn build_choices(expr: &GrammarExpr<'_>, grammar: &GrammarData) -> Option<Fs
     let mut result = FsmWithStartEnd::union(&fsm_list);
     result = result.simplify_epsilon();
     result = result.merge_equivalent_successors();
-    if let Ok(dfa) = result.to_dfa(DEFAULT_MAX_STATES) {
-        if let Ok(min) = dfa.minimize_dfa(DEFAULT_MAX_STATES) {
-            result = min;
-        }
+    if let Ok(dfa) = result.to_dfa(DEFAULT_MAX_STATES)
+        && let Ok(min) = dfa.minimize_dfa(DEFAULT_MAX_STATES)
+    {
+        result = min;
     }
     Some(result)
 }
@@ -237,7 +236,6 @@ pub fn empty_fsm() -> FsmWithStartEnd {
     fsm.add_end_state(0);
     fsm
 }
-
 
 #[cfg(test)]
 #[path = "fsm_builder_tests.rs"]

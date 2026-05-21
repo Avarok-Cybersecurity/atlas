@@ -3,7 +3,7 @@
 // Compiler entry-point, cache and multi-thread-determinism tests.
 
 use super::{compiler, optimized, optimized_builtin_json, small_tokenizer};
-use crate::compiler::{compile::compile_optimized_grammar, CompileError, GrammarCompiler};
+use crate::compiler::{CompileError, GrammarCompiler, compile::compile_optimized_grammar};
 
 // ----- compile an EBNF grammar -------------------------------------
 
@@ -79,8 +79,12 @@ fn cache_hit_returns_same_compiled_grammar() {
 #[test]
 fn cache_miss_on_different_grammar() {
     let c = compiler(1);
-    let a = c.compile_grammar_from_ebnf("root ::= \"a\"\n", "root").unwrap();
-    let b = c.compile_grammar_from_ebnf("root ::= \"b\"\n", "root").unwrap();
+    let a = c
+        .compile_grammar_from_ebnf("root ::= \"a\"\n", "root")
+        .unwrap();
+    let b = c
+        .compile_grammar_from_ebnf("root ::= \"b\"\n", "root")
+        .unwrap();
     assert!(!std::sync::Arc::ptr_eq(a.inner(), b.inner()));
 }
 
@@ -167,7 +171,9 @@ fn empty_vocab_compiles_with_no_masks() {
         false,
     );
     let c = GrammarCompiler::new(info, 1, false, -1);
-    let cg = c.compile_grammar_from_ebnf("root ::= \"a\"\n", "root").unwrap();
+    let cg = c
+        .compile_grammar_from_ebnf("root ::= \"a\"\n", "root")
+        .unwrap();
     assert!(cg.adaptive_token_mask().is_empty());
 }
 

@@ -49,16 +49,17 @@ fn character_class_layout() {
     let g = b.get("root").unwrap();
     let ex = g.expr(0);
     assert_eq!(ex.kind, GrammarExprType::CharacterClass);
-    assert_eq!(ex.data, &[1, 'a' as i32, 'z' as i32, '0' as i32, '9' as i32]);
+    assert_eq!(
+        ex.data,
+        &[1, 'a' as i32, 'z' as i32, '0' as i32, '9' as i32]
+    );
 }
 
 #[test]
 fn character_class_star_layout() {
     let mut b = GrammarBuilder::new();
-    let e = b.add_character_class_star(
-        &[CharacterClassElement::new('a' as i32, 'z' as i32)],
-        false,
-    );
+    let e =
+        b.add_character_class_star(&[CharacterClassElement::new('a' as i32, 'z' as i32)], false);
     b.add_rule_named("root", e).unwrap();
     let g = b.get("root").unwrap();
     assert_eq!(g.expr(0).kind, GrammarExprType::CharacterClassStar);

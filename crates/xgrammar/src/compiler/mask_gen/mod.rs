@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use crate::earley::{EarleyParser, ParserState, NO_PREV_INPUT_POS};
+use crate::earley::{EarleyParser, NO_PREV_INPUT_POS, ParserState};
 use crate::grammar::{GrammarData, GrammarExprType};
 use crate::tokenizer::TokenizerInfo;
 

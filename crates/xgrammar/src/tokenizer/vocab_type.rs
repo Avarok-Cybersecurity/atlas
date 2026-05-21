@@ -76,7 +76,11 @@ mod tests {
 
     #[test]
     fn from_int_round_trip() {
-        for v in [VocabType::Raw, VocabType::ByteFallback, VocabType::ByteLevel] {
+        for v in [
+            VocabType::Raw,
+            VocabType::ByteFallback,
+            VocabType::ByteLevel,
+        ] {
             assert_eq!(VocabType::from_int(v.as_int()), Some(v));
         }
     }

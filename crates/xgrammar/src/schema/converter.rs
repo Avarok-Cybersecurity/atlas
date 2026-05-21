@@ -194,7 +194,8 @@ impl<'p> JsonSchemaConverter<'p> {
             self.nested_object_level = 0;
             let root_rule_name = self.script.allocate_rule_name("root");
             let body = self.generate_from_spec(spec, &root_rule_name)?;
-            self.script.add_rule_with_allocated_name(&root_rule_name, &body);
+            self.script
+                .add_rule_with_allocated_name(&root_rule_name, &body);
             return Ok(self.script.get_script());
         }
 
@@ -211,7 +212,8 @@ impl<'p> JsonSchemaConverter<'p> {
                 self.add_cache(&spec.cache_key, &root_rule_name);
             }
             let body = self.generate_from_spec(spec, &root_rule_name)?;
-            self.script.add_rule_with_allocated_name(&root_rule_name, &body);
+            self.script
+                .add_rule_with_allocated_name(&root_rule_name, &body);
         }
         Ok(self.script.get_script())
     }
@@ -265,8 +267,7 @@ impl<'p> JsonSchemaConverter<'p> {
         self.script.add_rule(BASIC_ANY, &any_body);
         self.add_cache("{}", BASIC_ANY);
 
-        let int_body =
-            self.generate_integer(&super::spec::IntegerSpec::default());
+        let int_body = self.generate_integer(&super::spec::IntegerSpec::default());
         self.script.add_rule(BASIC_INTEGER, &int_body);
         self.add_cache("{\"type\":\"integer\"}", BASIC_INTEGER);
 
@@ -284,16 +285,20 @@ impl<'p> JsonSchemaConverter<'p> {
         self.script.add_rule(BASIC_NULL, "\"null\"");
         self.add_cache("{\"type\":\"null\"}", BASIC_NULL);
 
-        let mut array_spec = super::spec::ArraySpec::default();
-        array_spec.allow_additional_items = true;
-        array_spec.additional_items = Some(any_spec.clone());
+        let array_spec = super::spec::ArraySpec {
+            allow_additional_items: true,
+            additional_items: Some(any_spec.clone()),
+            ..Default::default()
+        };
         let array_body = self.generate_array(&array_spec, BASIC_ARRAY)?;
         self.script.add_rule(BASIC_ARRAY, &array_body);
         self.add_cache("{\"type\":\"array\"}", BASIC_ARRAY);
 
-        let mut obj_spec = super::spec::ObjectSpec::default();
-        obj_spec.allow_additional_properties = true;
-        obj_spec.additional_properties_schema = Some(any_spec);
+        let obj_spec = super::spec::ObjectSpec {
+            allow_additional_properties: true,
+            additional_properties_schema: Some(any_spec),
+            ..Default::default()
+        };
         let obj_body = self.generate_object(&obj_spec, BASIC_OBJECT, true)?;
         self.script.add_rule(BASIC_OBJECT, &obj_body);
         self.add_cache("{\"type\":\"object\"}", BASIC_OBJECT);
@@ -317,10 +322,11 @@ impl<'p> JsonSchemaConverter<'p> {
         self.script.add_rule(XML_ANY, &any_body);
         self.add_cache("{}", XML_ANY);
 
-        let mut obj_spec = super::spec::ObjectSpec::default();
-        obj_spec.allow_additional_properties = true;
-        obj_spec.additional_properties_schema =
-            Some(SchemaSpec::make(SpecKind::Any, "{}", XML_ANY));
+        let obj_spec = super::spec::ObjectSpec {
+            allow_additional_properties: true,
+            additional_properties_schema: Some(SchemaSpec::make(SpecKind::Any, "{}", XML_ANY)),
+            ..Default::default()
+        };
         let obj_body = self.generate_object(&obj_spec, XML_OBJECT, true)?;
         self.script.add_rule(XML_OBJECT, &obj_body);
         self.add_cache("{\"type\":\"object\"}", XML_OBJECT);
@@ -332,11 +338,7 @@ impl<'p> JsonSchemaConverter<'p> {
 
     /// Create a rule for `spec` (or return a cached rule name) and
     /// return its name. Port of `CreateRule`.
-    pub(super) fn create_rule(
-        &mut self,
-        spec: &SchemaSpecPtr,
-        hint: &str,
-    ) -> SchemaResult<String> {
+    pub(super) fn create_rule(&mut self, spec: &SchemaSpecPtr, hint: &str) -> SchemaResult<String> {
         if let Some(cached) = self.get_cache(&spec.cache_key) {
             return Ok(cached);
         }

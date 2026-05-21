@@ -186,7 +186,7 @@ fn parse_to_ir(regex: &str) -> Result<RegexIr, String> {
             continue;
         }
         // Plain literal byte (possibly escaped). Sliced on `bytes` so a
-        // multi-byte UTF-8 codepoint splits cleanly into per-byte Leafs.
+        // multi-byte UTF-8 codepoint splits cleanly into per-byte leaves.
         let leaf_regex = if c != b'\\' {
             let s = bytes[i..i + 1].to_vec();
             i += 1;

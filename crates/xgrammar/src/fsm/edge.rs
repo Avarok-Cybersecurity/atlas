@@ -82,7 +82,11 @@ impl FsmEdge {
 
     /// Referenced rule id, or `-1` if this is not a rule reference.
     pub fn ref_rule_id(&self) -> i32 {
-        if self.is_rule_ref() { self.max as i32 } else { -1 }
+        if self.is_rule_ref() {
+            self.max as i32
+        } else {
+            -1
+        }
     }
 
     /// Index into `edge_aux_data`, or `-1` if not a repeat reference.

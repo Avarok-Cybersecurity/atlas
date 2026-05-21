@@ -52,20 +52,13 @@ impl EarleyParser {
     /// Advance a `CharacterClass` element by `ch`. On a completed
     /// (single- or multi-byte) match `element_id` advances; partial
     /// UTF-8 progress is recorded in `sub_element_id`/`partial_codepoint`.
-    pub(crate) fn advance_character_class(
-        &mut self,
-        state: ParserState,
-        ch: u8,
-        element_id: i32,
-    ) {
+    pub(crate) fn advance_character_class(&mut self, state: ParserState, ch: u8, element_id: i32) {
         let sub: GrammarExpr = self.grammar.expr(element_id);
         debug_assert_eq!(sub.kind, GrammarExprType::CharacterClass);
         let data = sub.data.to_vec();
         let is_negative = data[0] != 0;
 
-        if let Some((next, completed)) =
-            self.char_class_step(state, ch, &data, is_negative, true)
-        {
+        if let Some((next, completed)) = self.char_class_step(state, ch, &data, is_negative, true) {
             if completed {
                 self.queue.enqueue(next);
             } else {
@@ -88,8 +81,7 @@ impl EarleyParser {
         let data = sub.data.to_vec();
         let is_negative = data[0] != 0;
 
-        if let Some((next, completed)) =
-            self.char_class_step(state, ch, &data, is_negative, false)
+        if let Some((next, completed)) = self.char_class_step(state, ch, &data, is_negative, false)
         {
             if completed {
                 self.queue.enqueue(next);

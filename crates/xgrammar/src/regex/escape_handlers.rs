@@ -4,9 +4,9 @@
 // `RegexConverter::HandleCharEscape`, `HandleEscape` and
 // `HandleEscapeInCharClass` from `cpp/regex_converter.cc`.
 
-use super::cursor::Cursor;
 use super::RegexError;
-use crate::support::encoding::{char_handling_error, hex_char_to_int, TCodepoint};
+use super::cursor::Cursor;
+use crate::support::encoding::{TCodepoint, char_handling_error, hex_char_to_int};
 use crate::support::escape::{parse_next_escaped, print_as_escaped};
 use std::collections::HashMap;
 

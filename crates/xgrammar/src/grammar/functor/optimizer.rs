@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use super::analyzer::UsedRulesAnalyzer;
-use super::mutator::{rebuild_tag_dispatch, GrammarMutator, MutatorState, OwnedExpr};
+use super::mutator::{GrammarMutator, MutatorState, OwnedExpr, rebuild_tag_dispatch};
 use crate::grammar::data::GrammarData;
 use crate::grammar::expr::GrammarExprType;
 
@@ -138,8 +138,7 @@ impl GrammarMutator for RuleInliner {
                 .collect();
             // ...and splice each choice of the referenced rule before them.
             let ref_body_id = self.state().base.rule(rule_ref_id).body_expr_id;
-            let ref_choices: Vec<i32> =
-                self.state().base.expr(ref_body_id).data.to_vec();
+            let ref_choices: Vec<i32> = self.state().base.expr(ref_body_id).data.to_vec();
             for ref_cid in ref_choices {
                 let ref_choice = self.state().base.owned_expr(ref_cid);
                 assert_eq!(ref_choice.kind, GrammarExprType::Sequence);
@@ -179,7 +178,10 @@ impl DeadCodeEliminator {
             let rule = p.st().base.rule(rule_id).clone();
             let new_id = p.rule_id_map[&rule_id];
             let new_body = p.visit_expr_id(rule.body_expr_id);
-            p.st().builder.update_rule_body(new_id, new_body).expect("range");
+            p.st()
+                .builder
+                .update_rule_body(new_id, new_body)
+                .expect("range");
             let new_la = p.visit_lookahead(rule.lookahead_assertion_id);
             p.st()
                 .builder
@@ -218,7 +220,9 @@ impl GrammarMutator for DeadCodeEliminator {
 
     fn visit_repeat(&mut self, e: &OwnedExpr) -> i32 {
         let new_id = self.rule_id_map[&e.data[0]];
-        self.state().builder.add_repeat(new_id, e.data[1], e.data[2])
+        self.state()
+            .builder
+            .add_repeat(new_id, e.data[1], e.data[2])
     }
 }
 #[path = "optimizer_pipeline.rs"]

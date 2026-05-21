@@ -69,10 +69,7 @@ impl IndentManager {
         if !self.enable_newline {
             return "\"\"".to_string();
         }
-        format!(
-            "\"\\n{}\"",
-            " ".repeat(self.total_indent.max(0) as usize)
-        )
+        format!("\"\\n{}\"", " ".repeat(self.total_indent.max(0) as usize))
     }
 
     /// Separator between elements of a container.

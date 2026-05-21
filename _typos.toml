@@ -48,6 +48,9 @@ stps = "stps"
 # `mis-` is a legitimate English prefix (`mis-set`, `mis-interpreted`,
 # `mis-aligned`); the default checker flags it as a substring of `miss`.
 mis = "mis"
+# `abd` — a test-pattern token in the xgrammar FSM tests (`"abc|abd"`,
+# upstream test_fsm.cc FunctionTest7 alternation). Not a typo.
+abd = "abd"
 
 [default.extend-identifiers]
 # Pattern compounds the checker doesn't handle via the default list.

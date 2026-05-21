@@ -42,8 +42,7 @@ fn unicode_literals() {
 #[test]
 fn escape_special_chars() {
     let regex = r"\^\$\.\*\+\?\\\(\)\[\]\{\}\|\/";
-    let expected =
-        "root ::= \"^\" \"$\" \".\" \"*\" \"+\" \"\\?\" \"\\\\\" \"(\" \")\" \"[\" \"]\" \
+    let expected = "root ::= \"^\" \"$\" \".\" \"*\" \"+\" \"\\?\" \"\\\\\" \"(\" \")\" \"[\" \"]\" \
          \"{\" \"}\" \"|\" \"/\"\n";
     assert_eq!(ebnf(regex), expected);
 }
@@ -52,8 +51,7 @@ fn escape_special_chars() {
 fn escape_c_style() {
     // \"\'\a\f\n\r\t\v\0\e
     let regex = "\\\"\\'\\a\\f\\n\\r\\t\\v\\0\\e";
-    let expected =
-        "root ::= \"\\\"\" \"\\'\" \"\\a\" \"\\f\" \"\\n\" \"\\r\" \"\\t\" \"\\v\" \"\\0\" \"\\e\"\n";
+    let expected = "root ::= \"\\\"\" \"\\'\" \"\\a\" \"\\f\" \"\\n\" \"\\r\" \"\\t\" \"\\v\" \"\\0\" \"\\e\"\n";
     assert_eq!(ebnf(regex), expected);
 }
 
@@ -195,8 +193,7 @@ fn invalid_repetition_count() {
     for regex in ["a{}", "a{,3}", "a{1,", "a{1,x}", "a{1x}"] {
         let e = regex_to_ebnf(regex, true).unwrap_err();
         assert!(
-            e.message.contains("Invalid repetition count")
-                || e.message.contains("repetition"),
+            e.message.contains("Invalid repetition count") || e.message.contains("repetition"),
             "regex {regex:?} should be rejected, got {e}"
         );
     }
@@ -207,7 +204,6 @@ fn invalid_repetition_count() {
 #[test]
 fn dot_matches_anything() {
     let regex = r".+a.+";
-    let expected =
-        "root ::= [\\u0000-\\U0010FFFF]+ \"a\" [\\u0000-\\U0010FFFF]+\n";
+    let expected = "root ::= [\\u0000-\\U0010FFFF]+ \"a\" [\\u0000-\\U0010FFFF]+\n";
     assert_eq!(ebnf(regex), expected);
 }

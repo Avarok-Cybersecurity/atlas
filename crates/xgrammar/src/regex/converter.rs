@@ -3,10 +3,10 @@
 // Core regex→EBNF converter — port of `class RegexConverter` and
 // `RegexConverter::Convert` from `cpp/regex_converter.cc`.
 
+use super::RegexError;
 use super::cursor::Cursor;
 use super::escape_handlers::handle_escape;
 use super::sub_handlers::quant_char;
-use super::RegexError;
 use crate::support::encoding::TCodepoint;
 use crate::support::escape::print_as_escaped;
 use std::collections::HashMap;
@@ -102,10 +102,7 @@ impl RegexConverter {
                     self.add_segment(")");
                     self.cur.bump();
                 }
-                _ if c == '*' as TCodepoint
-                    || c == '+' as TCodepoint
-                    || c == '?' as TCodepoint =>
-                {
+                _ if c == '*' as TCodepoint || c == '+' as TCodepoint || c == '?' as TCodepoint => {
                     is_empty = false;
                     self.result.push(quant_char(c));
                     self.cur.bump();

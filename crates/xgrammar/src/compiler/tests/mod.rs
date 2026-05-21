@@ -13,7 +13,7 @@
 
 use crate::compiler::GrammarCompiler;
 use crate::grammar::functor::{GrammarNormalizer, GrammarOptimizer};
-use crate::grammar::{parse_ebnf, parse_ebnf_default, GrammarData};
+use crate::grammar::{GrammarData, parse_ebnf, parse_ebnf_default};
 use crate::tokenizer::{TokenizerInfo, VocabType};
 
 mod compile_tests;

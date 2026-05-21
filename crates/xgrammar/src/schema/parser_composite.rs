@@ -88,11 +88,8 @@ impl SchemaParser {
         let mut type_schemas = Vec::new();
         if type_arr.is_empty() {
             // Empty type array: drop `type` and re-parse as "any".
-            let copy: Vec<(String, JsonValue)> = base
-                .iter()
-                .filter(|(k, _)| k != "type")
-                .cloned()
-                .collect();
+            let copy: Vec<(String, JsonValue)> =
+                base.iter().filter(|(k, _)| k != "type").cloned().collect();
             let parsed = self.parse(&JsonValue::Object(copy), hint, None)?;
             type_schemas.push(parsed);
             return Ok(SpecKind::TypeArray(type_schemas));
@@ -125,11 +122,7 @@ impl SchemaParser {
     /// (whole-document), `#/path/to/def` JSON-pointer style refs, and
     /// circular references via a placeholder cache entry. Port of
     /// `ResolveRef`.
-    pub fn resolve_ref(
-        &mut self,
-        uri: &str,
-        _rule_name_hint: &str,
-    ) -> SchemaResult<SchemaSpecPtr> {
+    pub fn resolve_ref(&mut self, uri: &str, _rule_name_hint: &str) -> SchemaResult<SchemaSpecPtr> {
         if let Some(cached) = self.ref_cache.get(uri) {
             return Ok(cached.clone());
         }

@@ -22,6 +22,6 @@ pub mod info;
 pub mod vocab_type;
 
 pub use decoder::{byte_to_char_map, char_to_byte_map, decode_token};
-pub use hf_metadata::{detect_metadata_from_hf, HfMetadata};
+pub use hf_metadata::{HfMetadata, detect_metadata_from_hf};
 pub use info::TokenizerInfo;
 pub use vocab_type::VocabType;

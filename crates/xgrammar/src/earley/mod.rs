@@ -43,7 +43,7 @@ mod state;
 
 pub use parser::{CompletableEntry, EarleyParser};
 pub use queue::ProcessQueue;
-pub use state::{cache_key, ParserState, NO_PREV_INPUT_POS, UNEXPANDED_RULE_START_SEQUENCE_ID};
+pub use state::{NO_PREV_INPUT_POS, ParserState, UNEXPANDED_RULE_START_SEQUENCE_ID, cache_key};
 
 #[cfg(test)]
 mod tests;

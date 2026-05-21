@@ -35,9 +35,7 @@ impl EarleyParser {
         }
         let element = self.grammar.expr(seq[state.element_id as usize]);
         match element.kind {
-            GrammarExprType::ByteString
-                if (state.sub_element_id as usize) < element.len() =>
-            {
+            GrammarExprType::ByteString if (state.sub_element_id as usize) < element.len() => {
                 let b = element[state.sub_element_id as usize] as u8;
                 ranges.push((b, b));
             }

@@ -42,8 +42,7 @@ impl FsmWithStartEnd {
                 non_final.insert(i as i32);
             }
         }
-        let mut partitions: Vec<AHashSet<i32>> =
-            vec![final_states.clone(), non_final.clone()];
+        let mut partitions: Vec<AHashSet<i32>> = vec![final_states.clone(), non_final.clone()];
         let mut working: Vec<AHashSet<i32>> = vec![final_states, non_final];
 
         while let Some(current) = working.pop() {
@@ -105,8 +104,7 @@ impl FsmWithStartEnd {
     /// (no rule references).
     pub fn not(&self, max_result_num_states: usize) -> Result<FsmWithStartEnd, String> {
         if !self.is_leaf() {
-            return Err("Not operation is not supported for FSM with rule references."
-                .to_string());
+            return Err("Not operation is not supported for FSM with rule references.".to_string());
         }
         let mut result = if self.is_dfa {
             self.copy()
@@ -145,12 +143,9 @@ impl FsmWithStartEnd {
                 while right < 256 && !char_set[right] {
                     right += 1;
                 }
-                result.fsm_mut().add_edge(
-                    i,
-                    accept_all,
-                    left as i16,
-                    (right - 1) as i16,
-                );
+                result
+                    .fsm_mut()
+                    .add_edge(i, accept_all, left as i16, (right - 1) as i16);
                 left = right;
             }
         }

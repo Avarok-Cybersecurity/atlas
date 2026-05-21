@@ -21,10 +21,9 @@ impl EbnfParser {
             let (tag, rule_name) = self.tag_pair(arg, delta)?;
             let rule_id = self.builder.get_rule_id(&rule_name);
             if rule_id == -1 {
-                return Err(self.parse_error(
-                    &format!("Rule \"{rule_name}\" is not defined"),
-                    delta,
-                ));
+                return Err(
+                    self.parse_error(&format!("Rule \"{rule_name}\" is not defined"), delta)
+                );
             }
             spec.tag_rule_pairs.push((tag, rule_id));
         }
@@ -40,18 +39,14 @@ impl EbnfParser {
                 }
                 "loop_after_dispatch" => {
                     spec.loop_after_dispatch = expect_bool(value).ok_or_else(|| {
-                        self.parse_error(
-                            "loop_after_dispatch must be a boolean literal",
-                            delta,
-                        )
+                        self.parse_error("loop_after_dispatch must be a boolean literal", delta)
                     })?;
                 }
                 "stop_str" => {
                     spec.stop_str = self.tuple_of_strings(value, delta, "Stop strings")?;
                 }
                 "excludes" => {
-                    spec.excluded_str =
-                        self.tuple_of_strings(value, delta, "excluded strings")?;
+                    spec.excluded_str = self.tuple_of_strings(value, delta, "excluded strings")?;
                 }
                 _ => {}
             }
@@ -77,17 +72,11 @@ impl EbnfParser {
     }
 
     /// Decode one `("tag", rule_name)` positional tag-dispatch argument.
-    fn tag_pair(
-        &self,
-        arg: &MacroValue,
-        delta: i32,
-    ) -> Result<(String, String), ParseError> {
+    fn tag_pair(&self, arg: &MacroValue, delta: i32) -> Result<(String, String), ParseError> {
         let elems = match arg {
             MacroValue::Tuple(e) => e,
             _ => {
-                return Err(
-                    self.parse_error("Each tag dispatch element must be a tuple", delta)
-                );
+                return Err(self.parse_error("Each tag dispatch element must be a tuple", delta));
             }
         };
         if elems.len() != 2 {
@@ -99,17 +88,13 @@ impl EbnfParser {
         let tag = match &elems[0] {
             MacroValue::Str(s) if !s.is_empty() => s.clone(),
             _ => {
-                return Err(
-                    self.parse_error("Tag must be a non-empty string literal", delta)
-                );
+                return Err(self.parse_error("Tag must be a non-empty string literal", delta));
             }
         };
         let rule_name = match &elems[1] {
             MacroValue::Ident(s) => s.clone(),
             _ => {
-                return Err(
-                    self.parse_error("Rule reference must be an identifier", delta)
-                );
+                return Err(self.parse_error("Rule reference must be an identifier", delta));
             }
         };
         Ok((tag, rule_name))
@@ -131,10 +116,9 @@ impl EbnfParser {
             match e {
                 MacroValue::Str(s) if !s.is_empty() => out.push(s.clone()),
                 _ => {
-                    return Err(self.parse_error(
-                        "Stop string must be a non-empty string literal",
-                        delta,
-                    ));
+                    return Err(
+                        self.parse_error("Stop string must be a non-empty string literal", delta)
+                    );
                 }
             }
         }

@@ -200,8 +200,7 @@ impl MoeLayer {
         // `m_idx >= M_expert`), low overhead vs the previous correctness
         // bug.
         let avg_per_expert = (num_tokens * top_k as usize).div_ceil(ne);
-        let max_m_tiles =
-            ((num_tokens * top_k as usize)).div_ceil(64).max(1) as u32;
+        let max_m_tiles = (num_tokens * top_k as usize).div_ceil(64).max(1) as u32;
         super::dump::dump_expert_load(
             ctx.gpu,
             stream,

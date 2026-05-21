@@ -138,9 +138,10 @@ impl AllowEmptyRuleAnalyzer {
                 let seq = grammar.expr(seq_id);
                 if seq.kind == GrammarExprType::Sequence
                     && !seq.data.is_empty()
-                    && seq.data.iter().all(|&x| {
-                        grammar.expr(x).kind == GrammarExprType::CharacterClassStar
-                    })
+                    && seq
+                        .data
+                        .iter()
+                        .all(|&x| grammar.expr(x).kind == GrammarExprType::CharacterClassStar)
                 {
                     empty.insert(i);
                     break;
@@ -162,20 +163,14 @@ impl AllowEmptyRuleAnalyzer {
             match elem.kind {
                 GrammarExprType::RuleRef => empty.contains(&elem.data[0]),
                 GrammarExprType::CharacterClassStar => true,
-                GrammarExprType::Repeat => {
-                    empty.contains(&elem.data[0]) || elem.data[1] == 0
-                }
+                GrammarExprType::Repeat => empty.contains(&elem.data[0]) || elem.data[1] == 0,
                 _ => false,
             }
         })
     }
 
     /// Propagate emptiness through the reference graph (worklist).
-    fn find_indirect(
-        grammar: &GrammarData,
-        empty: &mut HashSet<i32>,
-        graph: &[Vec<i32>],
-    ) {
+    fn find_indirect(grammar: &GrammarData, empty: &mut HashSet<i32>, graph: &[Vec<i32>]) {
         let mut queue: VecDeque<i32> = empty.iter().copied().collect();
         while let Some(rule_id) = queue.pop_front() {
             for &referer in &graph[rule_id as usize] {
@@ -196,7 +191,6 @@ impl AllowEmptyRuleAnalyzer {
         }
     }
 }
-
 
 #[cfg(test)]
 #[path = "analyzer_tests.rs"]

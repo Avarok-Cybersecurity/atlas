@@ -31,6 +31,10 @@ pub(super) static SSM_LAYER_CALL_COUNTER: AtomicUsize = AtomicUsize::new(0);
 // constructor permits this initializer pattern in stable Rust.
 macro_rules! atomic_bool_array {
     () => {{
+        // `const ELEM` + `[ELEM; N]` is the canonical fixed-size
+        // array-of-atomics idiom; clippy's interior-mutable-const lint
+        // is a known false positive for it.
+        #[allow(clippy::declare_interior_mutable_const)]
         const ELEM: AtomicBool = AtomicBool::new(false);
         [ELEM; MAX_SSM_LAYERS]
     }};

@@ -6,7 +6,7 @@
 // 250-line cap. Port of the corresponding `EBNFParser` methods from
 // xgrammar `cpp/grammar_parser.cc`.
 
-use super::{EbnfParser, ParseError, MAX_NEST_LAYER};
+use super::{EbnfParser, MAX_NEST_LAYER, ParseError};
 use crate::grammar::builder::CharacterClassElement;
 use crate::grammar::lexer::{TokenType, TokenValue};
 
@@ -33,9 +33,7 @@ impl EbnfParser {
             is_negated = true;
             self.consume(1);
         }
-        while self.peek(0).ty != TokenType::RBracket
-            && self.peek(0).ty != TokenType::EndOfFile
-        {
+        while self.peek(0).ty != TokenType::RBracket && self.peek(0).ty != TokenType::EndOfFile {
             if self.peek(0).ty == TokenType::EscapeInCharClass {
                 return Err(
                     self.parse_error("Character class escape is not supported yet in EBNF", 0)

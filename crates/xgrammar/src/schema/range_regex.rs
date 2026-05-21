@@ -61,18 +61,21 @@ fn generate_number_patterns(lower: i64, upper: i64) -> Vec<String> {
             let common: String = sb[..prefix].iter().collect();
             patterns.push(format!(
                 "{common}{}",
-                make_pattern_for_digit_range(
-                    sb[prefix],
-                    eb[prefix],
-                    len - prefix as i32 - 1
-                )
+                make_pattern_for_digit_range(sb[prefix], eb[prefix], len - prefix as i32 - 1)
             ));
             continue;
         }
 
         if len == lower_len && len == upper_len {
             push_full_len_patterns(
-                &mut patterns, start, end, digit_min, digit_max, &sb, &eb, len,
+                &mut patterns,
+                start,
+                end,
+                digit_min,
+                digit_max,
+                &sb,
+                &eb,
+                len,
             );
         } else if len == lower_len && len != upper_len {
             if start == digit_min {
@@ -119,22 +122,14 @@ fn push_full_len_patterns(
             for (i, &ec) in eb.iter().enumerate() {
                 if i == 0 {
                     if ec > '1' {
-                        patterns.push(make_pattern_for_digit_range(
-                            '1',
-                            prev_char(ec),
-                            len - 1,
-                        ));
+                        patterns.push(make_pattern_for_digit_range('1', prev_char(ec), len - 1));
                     }
                 } else {
                     let pref: String = eb[..i].iter().collect();
                     if ec > '0' {
                         patterns.push(format!(
                             "{pref}{}",
-                            make_pattern_for_digit_range(
-                                '0',
-                                prev_char(ec),
-                                len - i as i32 - 1
-                            )
+                            make_pattern_for_digit_range('0', prev_char(ec), len - i as i32 - 1)
                         ));
                     }
                 }
@@ -145,22 +140,14 @@ fn push_full_len_patterns(
         for (i, &sc) in sb.iter().enumerate() {
             if i == 0 {
                 if sc < '9' {
-                    patterns.push(make_pattern_for_digit_range(
-                        next_char(sc),
-                        '9',
-                        len - 1,
-                    ));
+                    patterns.push(make_pattern_for_digit_range(next_char(sc), '9', len - 1));
                 }
             } else {
                 let pref: String = sb[..i].iter().collect();
                 if sc < '9' {
                     patterns.push(format!(
                         "{pref}{}",
-                        make_pattern_for_digit_range(
-                            next_char(sc),
-                            '9',
-                            len - i as i32 - 1
-                        )
+                        make_pattern_for_digit_range(next_char(sc), '9', len - i as i32 - 1)
                     ));
                 }
             }
@@ -199,11 +186,7 @@ fn push_full_distinct_first(patterns: &mut Vec<String>, sb: &[char], eb: &[char]
             if sc < '9' {
                 patterns.push(format!(
                     "{pref}{}",
-                    make_pattern_for_digit_range(
-                        next_char(sc),
-                        '9',
-                        len - i as i32 - 1
-                    )
+                    make_pattern_for_digit_range(next_char(sc), '9', len - i as i32 - 1)
                 ));
             }
         }
@@ -223,11 +206,7 @@ fn push_full_distinct_first(patterns: &mut Vec<String>, sb: &[char], eb: &[char]
             if ec > '0' {
                 patterns.push(format!(
                     "{pref}{}",
-                    make_pattern_for_digit_range(
-                        '0',
-                        prev_char(ec),
-                        len - i as i32 - 1
-                    )
+                    make_pattern_for_digit_range('0', prev_char(ec), len - i as i32 - 1)
                 ));
             }
         }
@@ -247,11 +226,7 @@ fn push_start_open(patterns: &mut Vec<String>, sb: &[char], len: i32) {
             if sc < '9' {
                 patterns.push(format!(
                     "{pref}{}",
-                    make_pattern_for_digit_range(
-                        next_char(sc),
-                        '9',
-                        len - i as i32 - 1
-                    )
+                    make_pattern_for_digit_range(next_char(sc), '9', len - i as i32 - 1)
                 ));
             }
         }
@@ -270,11 +245,7 @@ fn push_end_open(patterns: &mut Vec<String>, eb: &[char], len: i32) {
             if ec > '0' {
                 patterns.push(format!(
                     "{pref}{}",
-                    make_pattern_for_digit_range(
-                        '0',
-                        prev_char(ec),
-                        len - i as i32 - 1
-                    )
+                    make_pattern_for_digit_range('0', prev_char(ec), len - i as i32 - 1)
                 ));
             }
         }
@@ -403,7 +374,10 @@ mod tests {
         assert_eq!(generate_range_regex(Some(5), None), r"^([5-9]|[1-9]\d*)$");
         assert_eq!(generate_range_regex(None, Some(0)), r"^(-[1-9]\d*|0)$");
         assert_eq!(generate_range_regex(Some(5), Some(5)), r"^((5))$");
-        assert_eq!(generate_range_regex(Some(-10), Some(0)), r"^(-([1-9]|10)|0)$");
+        assert_eq!(
+            generate_range_regex(Some(-10), Some(0)),
+            r"^(-([1-9]|10)|0)$"
+        );
         assert_eq!(generate_range_regex(Some(0), Some(10)), r"^(0|([1-9]|10))$");
     }
 
@@ -413,7 +387,10 @@ mod tests {
             generate_range_regex(Some(1), Some(9999)),
             r"^(([1-9]|[1-9]\d{1}|[1-9]\d{2}|[1-9]\d{3}))$"
         );
-        assert_eq!(generate_range_regex(Some(s_int()), None), r"^([5-9]|[1-9]\d*)$");
+        assert_eq!(
+            generate_range_regex(Some(s_int()), None),
+            r"^([5-9]|[1-9]\d*)$"
+        );
     }
 
     fn s_int() -> i64 {

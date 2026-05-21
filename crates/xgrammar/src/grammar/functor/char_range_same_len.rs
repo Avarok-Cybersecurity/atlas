@@ -9,8 +9,21 @@ use crate::fsm::FsmWithStartEnd;
 
 /// Decompose `[min, max]` of packed UTF-8 values of the *same byte
 /// length* into byte-range edges from state `from` to state `to`.
-pub fn add_same_length_range(fsm: &mut FsmWithStartEnd, from: usize, to: usize, mut min: u32, mut max: u32) {
-    let bmin = |v: u32| [(v & 0xFF) as u8, (v >> 8) as u8, (v >> 16) as u8, (v >> 24) as u8];
+pub fn add_same_length_range(
+    fsm: &mut FsmWithStartEnd,
+    from: usize,
+    to: usize,
+    mut min: u32,
+    mut max: u32,
+) {
+    let bmin = |v: u32| {
+        [
+            (v & 0xFF) as u8,
+            (v >> 8) as u8,
+            (v >> 16) as u8,
+            (v >> 24) as u8,
+        ]
+    };
     let mut byte_min = bmin(min);
     let mut byte_max = bmin(max);
 
@@ -50,12 +63,8 @@ pub fn add_same_length_range(fsm: &mut FsmWithStartEnd, from: usize, to: usize, 
         }
         if byte_max[3] as i16 - byte_min[3] as i16 > 1 {
             let m1 = fsm.add_state();
-            fsm.fsm_mut().add_edge(
-                from,
-                m1,
-                byte_min[3] as i16 + 1,
-                byte_max[3] as i16 - 1,
-            );
+            fsm.fsm_mut()
+                .add_edge(from, m1, byte_min[3] as i16 + 1, byte_max[3] as i16 - 1);
             let m2 = fsm.add_state();
             fsm.fsm_mut().add_edge(m1, m2, 0x80, 0xBF);
             let m3 = fsm.add_state();
@@ -93,12 +102,8 @@ pub fn add_same_length_range(fsm: &mut FsmWithStartEnd, from: usize, to: usize, 
         }
         if byte_max[2] as i16 - byte_min[2] as i16 > 1 {
             let m1 = fsm.add_state();
-            fsm.fsm_mut().add_edge(
-                from,
-                m1,
-                byte_min[2] as i16 + 1,
-                byte_max[2] as i16 - 1,
-            );
+            fsm.fsm_mut()
+                .add_edge(from, m1, byte_min[2] as i16 + 1, byte_max[2] as i16 - 1);
             let m2 = fsm.add_state();
             fsm.fsm_mut().add_edge(m1, m2, 0x80, 0xBF);
             fsm.fsm_mut().add_edge(m2, to, 0x80, 0xBF);

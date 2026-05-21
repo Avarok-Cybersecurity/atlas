@@ -120,12 +120,8 @@ impl FsmWithStartEnd {
                 match idx {
                     Some(j) => dfa.fsm_mut().add_edge(now_process, j, lo as i16, hi as i16),
                     None => {
-                        dfa.fsm_mut().add_edge(
-                            now_process,
-                            closures.len(),
-                            lo as i16,
-                            hi as i16,
-                        );
+                        dfa.fsm_mut()
+                            .add_edge(now_process, closures.len(), lo as i16, hi as i16);
                         closures.push(next_closure);
                     }
                 }
@@ -137,19 +133,15 @@ impl FsmWithStartEnd {
                 match idx {
                     Some(j) => dfa.fsm_mut().add_rule_edge(now_process, j, *rule as i16),
                     None => {
-                        dfa.fsm_mut().add_rule_edge(
-                            now_process,
-                            closures.len(),
-                            *rule as i16,
-                        );
+                        dfa.fsm_mut()
+                            .add_rule_edge(now_process, closures.len(), *rule as i16);
                         closures.push(next_closure);
                     }
                 }
             }
 
             for aux_idx in &repeat_aux {
-                let next_closure =
-                    self.repeat_target_closure(&closures[now_process], *aux_idx);
+                let next_closure = self.repeat_target_closure(&closures[now_process], *aux_idx);
                 let idx = closures.iter().position(|c| *c == next_closure);
                 match idx {
                     Some(j) => dfa.fsm_mut().add_typed_edge(
@@ -171,7 +163,8 @@ impl FsmWithStartEnd {
             }
             now_process += 1;
         }
-        dfa.fsm_mut().set_edge_aux_data(self.fsm.edge_aux_data().to_vec());
+        dfa.fsm_mut()
+            .set_edge_aux_data(self.fsm.edge_aux_data().to_vec());
         dfa.is_dfa = true;
         Ok(dfa)
     }
@@ -181,9 +174,7 @@ impl FsmWithStartEnd {
         let mut next: AHashSet<i32> = AHashSet::new();
         for &state in from {
             for edge in self.fsm.edges(state as usize) {
-                if edge.is_rule_ref()
-                    && edge.ref_rule_id() == rule
-                    && !next.contains(&edge.target)
+                if edge.is_rule_ref() && edge.ref_rule_id() == rule && !next.contains(&edge.target)
                 {
                     let mut ec: AHashSet<i32> = AHashSet::from_iter([edge.target]);
                     self.fsm.epsilon_closure(&mut ec);

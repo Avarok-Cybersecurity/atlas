@@ -5,7 +5,7 @@
 // `test_token_operations`) and `test_grammar_matcher_ebnf.py`.
 
 use super::super::{BatchGrammarMatcher, GrammarMatcher};
-use super::{compile_ebnf, id_of, matcher, tok, STOP_ID};
+use super::{STOP_ID, compile_ebnf, id_of, matcher, tok};
 
 // ----- accept_string against EBNF grammars --------------------------
 
@@ -165,7 +165,8 @@ fn batch_accept_token_parallel_results() {
         GrammarMatcher::from_compiled_grammar(cg),
     ];
     // matcher 0 gets legal 'a', matcher 1 gets illegal 'x', 2 gets 'a'.
-    let res = BatchGrammarMatcher::accept_token(&mut ms, &[id_of("a"), id_of("x"), id_of("a")], false);
+    let res =
+        BatchGrammarMatcher::accept_token(&mut ms, &[id_of("a"), id_of("x"), id_of("a")], false);
     assert_eq!(res, vec![true, false, true]);
 }
 

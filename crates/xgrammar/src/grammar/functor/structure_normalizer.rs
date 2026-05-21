@@ -7,7 +7,7 @@
 // choices-of-sequences-of-elements (or a TagDispatch). New rules are
 // created where nesting must be flattened.
 
-use super::mutator::{rebuild_tag_dispatch, MutatorState, OwnedExpr};
+use super::mutator::{MutatorState, OwnedExpr, rebuild_tag_dispatch};
 use super::normalizer::SingleElementExprEliminator;
 use crate::grammar::data::GrammarData;
 use crate::grammar::expr::GrammarExprType;

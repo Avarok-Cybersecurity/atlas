@@ -33,8 +33,7 @@ impl<T: Clone + Eq + Hash + Ord> UnionFindSet<T> {
         if self.parent_and_size.contains_key(&element) {
             return false;
         }
-        self.parent_and_size
-            .insert(element.clone(), (element, 1));
+        self.parent_and_size.insert(element.clone(), (element, 1));
         true
     }
 

@@ -68,8 +68,7 @@ impl<T: Clone> Compact2DArray<T> {
 
     /// Approximate heap memory size in bytes (mirrors C++ `MemorySize`).
     pub fn memory_size(&self) -> usize {
-        self.data.len() * std::mem::size_of::<T>()
-            + self.indptr.len() * std::mem::size_of::<i32>()
+        self.data.len() * std::mem::size_of::<T>() + self.indptr.len() * std::mem::size_of::<i32>()
     }
 
     /// Raw element backing store (CSR `data` array).

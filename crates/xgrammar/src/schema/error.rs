@@ -14,7 +14,7 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchemaErrorKind {
     /// The schema document is structurally invalid (wrong JSON type
-    /// for a keyword, non-string `type`, unparseable JSON, ...).
+    /// for a keyword, non-string `type`, unparsable JSON, ...).
     InvalidSchema,
     /// The schema is well-formed but cannot accept any value (e.g.
     /// `false`, `minItems > maxItems`).

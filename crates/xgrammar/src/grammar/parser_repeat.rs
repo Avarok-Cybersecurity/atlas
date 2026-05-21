@@ -20,9 +20,7 @@ impl EbnfParser {
         mut lower: i64,
         mut upper: i64,
     ) -> Result<i32, ParseError> {
-        if (upper != -1 && upper <= UNZIP_THRESHOLD)
-            || (upper == -1 && lower <= UNZIP_THRESHOLD)
-        {
+        if (upper != -1 && upper <= UNZIP_THRESHOLD) || (upper == -1 && lower <= UNZIP_THRESHOLD) {
             return self.legacy_handle_repetition_range(grammar_expr_id, lower, upper);
         }
         let mut choices: Vec<i32> = Vec::new();
@@ -57,10 +55,7 @@ impl EbnfParser {
     /// Build the unbounded-repetition node for `{lower,}` — a
     /// `CharacterClassStar` for character classes, else a recursive
     /// rule `r ::= "" | a r`.
-    fn build_infinite_repetition(
-        &mut self,
-        grammar_expr_id: i32,
-    ) -> Result<i32, ParseError> {
+    fn build_infinite_repetition(&mut self, grammar_expr_id: i32) -> Result<i32, ParseError> {
         let rule_expr = self.builder.get_grammar_expr(grammar_expr_id);
         if rule_expr.kind == GrammarExprType::CharacterClass {
             let is_negative = rule_expr.data[0] != 0;
@@ -109,8 +104,7 @@ impl EbnfParser {
         let repeat_seq = self.builder.add_sequence(&[repeat_expr]);
         let repeated_ref = self.builder.add_choices(&[repeat_seq]);
         let inner_name = format!("{repeat_name}_inner");
-        let new_repeated_rule_id =
-            self.builder.add_rule_with_hint(&inner_name, repeated_ref)?;
+        let new_repeated_rule_id = self.builder.add_rule_with_hint(&inner_name, repeated_ref)?;
         let lookahead: Vec<i32> = vec![grammar_expr_id; UNZIP_THRESHOLD as usize];
         let la = self.builder.add_sequence(&lookahead);
         self.builder.update_lookahead_assertion(new_rule_id, la)?;

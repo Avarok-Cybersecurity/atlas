@@ -24,7 +24,11 @@ pub fn build_tag_dispatch_fsm(td: &TagDispatch) -> Option<FsmWithStartEnd> {
 
 /// EOS-stop variant: every non-tag-prefix state accepts.
 fn build_with_eos_stop(td: &TagDispatch) -> Option<FsmWithStartEnd> {
-    let tag_names: Vec<&[u8]> = td.tag_rule_pairs.iter().map(|(t, _)| t.as_bytes()).collect();
+    let tag_names: Vec<&[u8]> = td
+        .tag_rule_pairs
+        .iter()
+        .map(|(t, _)| t.as_bytes())
+        .collect();
     let excluded: Vec<&[u8]> = td.excluded_str.iter().map(|s| s.as_bytes()).collect();
     let trie = TrieFsmBuilder::build(&tag_names, &excluded, false, true)?;
     let mut fsm: Fsm = trie.fsm.fsm().clone();
@@ -54,8 +58,11 @@ fn build_with_eos_stop(td: &TagDispatch) -> Option<FsmWithStartEnd> {
 fn build_with_stop_string(td: &TagDispatch) -> Option<FsmWithStartEnd> {
     debug_assert!(!td.stop_str.is_empty());
     // Trie over tags ++ stop strings.
-    let mut all_names: Vec<&[u8]> =
-        td.tag_rule_pairs.iter().map(|(t, _)| t.as_bytes()).collect();
+    let mut all_names: Vec<&[u8]> = td
+        .tag_rule_pairs
+        .iter()
+        .map(|(t, _)| t.as_bytes())
+        .collect();
     for s in &td.stop_str {
         all_names.push(s.as_bytes());
     }

@@ -93,7 +93,12 @@ impl CompactFsmWithStartEnd {
 
     /// Expand into the mutable form.
     pub fn to_fsm(&self) -> FsmWithStartEnd {
-        FsmWithStartEnd::new(self.fsm.to_fsm(), self.start, self.ends.clone(), self.is_dfa)
+        FsmWithStartEnd::new(
+            self.fsm.to_fsm(),
+            self.start,
+            self.ends.clone(),
+            self.is_dfa,
+        )
     }
 
     /// Approximate heap footprint.

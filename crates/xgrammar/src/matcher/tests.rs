@@ -85,13 +85,16 @@ pub(super) fn accepted_ids(m: &mut GrammarMatcher) -> Vec<i32> {
     m.fill_next_token_bitmask(&mut buf, 0, false)
         .expect("fill should succeed");
     let mask = wrap(&buf, vocab);
-    (0..vocab as i32).filter(|&t| mask.is_set(t as usize)).collect()
+    (0..vocab as i32)
+        .filter(|&t| mask.is_set(t as usize))
+        .collect()
 }
 
 /// Wrap a raw word buffer into a `TokenBitmask` for assertions.
 pub(super) fn wrap(words: &[i32], vocab: usize) -> TokenBitmask {
     let mut b = TokenBitmask::new(vocab);
-    b.as_words_mut().copy_from_slice(&words[..bitmask_size(vocab)]);
+    b.as_words_mut()
+        .copy_from_slice(&words[..bitmask_size(vocab)]);
     b
 }
 

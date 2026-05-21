@@ -158,8 +158,11 @@ impl StructuralTagConverter {
             tag_rule_pairs.push((trigger.clone(), sub));
         }
 
-        let non_empty_ends: Vec<String> =
-            detected_end_strs.iter().filter(|s| !s.is_empty()).cloned().collect();
+        let non_empty_ends: Vec<String> = detected_end_strs
+            .iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect();
         let loop_after = !stop_after_first;
         let mut rule_expr = if non_empty_ends.is_empty() {
             self.builder.add_tag_dispatch(&super::tag_dispatch_spec(

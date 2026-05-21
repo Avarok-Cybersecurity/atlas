@@ -8,7 +8,7 @@
 // next-token bitmask is bit-identical to before the accepts.
 
 use super::super::bitmask::bitmask_size;
-use super::{accepted_ids, id_of, matcher, STOP_ID};
+use super::{STOP_ID, accepted_ids, id_of, matcher};
 
 // ----- rollback -----------------------------------------------------
 

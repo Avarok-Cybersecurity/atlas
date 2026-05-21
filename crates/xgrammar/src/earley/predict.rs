@@ -5,7 +5,7 @@
 // `cpp/earley_parser.cc`. The FSM-walk variant lives in `predict_fsm.rs`.
 
 use super::parser::EarleyParser;
-use super::state::{ParserState, NO_PREV_INPUT_POS};
+use super::state::{NO_PREV_INPUT_POS, ParserState};
 use crate::grammar::GrammarExprType;
 
 impl EarleyParser {
@@ -79,7 +79,10 @@ impl EarleyParser {
 
     /// True if `rule_id` is permitted to match the empty string.
     pub(crate) fn rule_allows_empty(&self, rule_id: i32) -> bool {
-        self.grammar.allow_empty_rule_ids.binary_search(&rule_id).is_ok()
+        self.grammar
+            .allow_empty_rule_ids
+            .binary_search(&rule_id)
+            .is_ok()
     }
 
     /// Expand a `RuleRef`/`Repeat` element of a non-FSM sequence body.
@@ -96,18 +99,14 @@ impl EarleyParser {
         let grammar_expr = self.grammar.expr(seq_id);
         let sub = self.grammar.expr(element_id);
         debug_assert_eq!(grammar_expr.kind, GrammarExprType::Sequence);
-        debug_assert!(
-            sub.kind == GrammarExprType::RuleRef || sub.kind == GrammarExprType::Repeat
-        );
+        debug_assert!(sub.kind == GrammarExprType::RuleRef || sub.kind == GrammarExprType::Repeat);
         let ref_rule_id = sub[0];
         let is_repeat = sub.kind == GrammarExprType::Repeat;
         let seq_len = grammar_expr.len();
         let cur_pos = self.completable.len() as i32 - 1;
 
         let mut right_recursion_to_root = false;
-        if state.element_id as usize != seq_len - 1
-            || is_repeat
-            || state.rule_start_pos == cur_pos
+        if state.element_id as usize != seq_len - 1 || is_repeat || state.rule_start_pos == cur_pos
         {
             self.completable
                 .last_mut()
@@ -156,7 +155,12 @@ impl EarleyParser {
         } else {
             self.completable.len() as i32 - 1
         };
-        self.queue
-            .enqueue(ParserState::new(ref_rule_id, ref_body_id, start, new_pos, 0));
+        self.queue.enqueue(ParserState::new(
+            ref_rule_id,
+            ref_body_id,
+            start,
+            new_pos,
+            0,
+        ));
     }
 }

@@ -14,12 +14,12 @@
 
 use super::error::{StructuralTagError, StructuralTagResult};
 use super::format::{Format, SchemaStyle, StructuralTag};
-use crate::grammar::functor::{add_sub_grammar, GrammarNormalizer};
-use crate::grammar::{parse_ebnf_default, GrammarBuilder, GrammarData};
+use crate::grammar::functor::{GrammarNormalizer, add_sub_grammar};
+use crate::grammar::{GrammarBuilder, GrammarData, parse_ebnf_default};
 use crate::regex::regex_to_ebnf;
 use crate::schema::{
-    deepseek_xml_tool_calling_to_ebnf, json_schema_to_ebnf, minimax_xml_tool_calling_to_ebnf,
-    qwen_xml_tool_calling_to_ebnf, SchemaConverterOptions,
+    SchemaConverterOptions, deepseek_xml_tool_calling_to_ebnf, json_schema_to_ebnf,
+    minimax_xml_tool_calling_to_ebnf, qwen_xml_tool_calling_to_ebnf,
 };
 
 /// Converts an analyzed structural tag into a [`GrammarData`].
@@ -155,8 +155,8 @@ impl StructuralTagConverter {
 
     /// Port of `VisitSub(RegexFormat)`.
     fn visit_regex(&mut self, pattern: &str) -> StructuralTagResult<i32> {
-        let ebnf = regex_to_ebnf(pattern, true)
-            .map_err(|e| StructuralTagError::invalid(e.to_string()))?;
+        let ebnf =
+            regex_to_ebnf(pattern, true).map_err(|e| StructuralTagError::invalid(e.to_string()))?;
         self.add_ebnf_sub_grammar(&ebnf)
     }
 
@@ -166,8 +166,11 @@ impl StructuralTagConverter {
         excludes: &[String],
         detected_end_strs: &[String],
     ) -> StructuralTagResult<i32> {
-        let non_empty_ends: Vec<String> =
-            detected_end_strs.iter().filter(|s| !s.is_empty()).cloned().collect();
+        let non_empty_ends: Vec<String> = detected_end_strs
+            .iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect();
         if !non_empty_ends.is_empty() {
             let expr = self.builder.add_tag_dispatch(&super::tag_dispatch_spec(
                 Vec::new(),
@@ -189,7 +192,9 @@ impl StructuralTagConverter {
             return self.add_rule("any_text", expr);
         }
         let any = self.builder.add_character_class_star(
-            &[crate::grammar::builder::CharacterClassElement::new(0, 0x10_FFFF)],
+            &[crate::grammar::builder::CharacterClassElement::new(
+                0, 0x10_FFFF,
+            )],
             false,
         );
         let seq = self.builder.add_sequence(&[any]);

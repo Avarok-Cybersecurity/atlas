@@ -12,9 +12,9 @@
 
 use crate::compiler::GrammarCompiler as CoreCompiler;
 
+use super::CompiledGrammar;
 use super::grammar::Grammar;
 use super::tokenizer::TokenizerInfo;
-use super::CompiledGrammar;
 
 /// Compiler that turns grammars / schemas / structural tags into a
 /// [`CompiledGrammar`], bound to a single tokenizer.

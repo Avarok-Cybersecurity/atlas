@@ -100,8 +100,7 @@ impl GrammarFsmHasher {
             if self.referrer_to_referee[i].is_empty() {
                 return i as i32;
             }
-            if self.referrer_to_referee[i].len() == 1
-                && self.referrer_to_referee[i][0] == i as i32
+            if self.referrer_to_referee[i].len() == 1 && self.referrer_to_referee[i][0] == i as i32
             {
                 return i as i32;
             }
@@ -130,9 +129,7 @@ impl GrammarFsmHasher {
             in_stack[i] = true;
             let mut cur = i as i32;
             let mut cycle: Vec<i32> = Vec::new();
-            while self.referrer_to_referee[cur as usize].len() == 1
-                && !not_simple[cur as usize]
-            {
+            while self.referrer_to_referee[cur as usize].len() == 1 && !not_simple[cur as usize] {
                 assert_ne!(
                     cur, self.referrer_to_referee[cur as usize][0],
                     "self-recursion cycle not allowed"
@@ -233,7 +230,6 @@ pub fn hash_sequence(grammar: &GrammarData, sequence_id: i32) -> Option<u64> {
     }
     Some(seed)
 }
-
 
 #[cfg(test)]
 #[path = "fsm_hasher_tests.rs"]

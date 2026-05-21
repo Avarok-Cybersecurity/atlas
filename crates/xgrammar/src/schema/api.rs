@@ -9,7 +9,7 @@ use super::error::{SchemaError, SchemaResult};
 use super::json_value::JsonValue;
 use super::options::{JsonFormat, SchemaConverterOptions};
 use super::parser::SchemaParser;
-use crate::grammar::{parse_ebnf_default, GrammarData};
+use crate::grammar::{GrammarData, parse_ebnf_default};
 
 /// Convert a JSON Schema document (already parsed into a [`JsonValue`])
 /// into an EBNF grammar string. Port of the `picojson::value`
@@ -26,10 +26,7 @@ pub fn json_value_to_ebnf(
 
 /// Convert a JSON Schema *string* into an EBNF grammar string. Port
 /// of the `std::string` overload of `JSONSchemaToEBNF`.
-pub fn json_schema_to_ebnf(
-    schema: &str,
-    options: &SchemaConverterOptions,
-) -> SchemaResult<String> {
+pub fn json_schema_to_ebnf(schema: &str, options: &SchemaConverterOptions) -> SchemaResult<String> {
     let value = JsonValue::parse(schema)
         .map_err(|e| SchemaError::invalid(format!("Failed to parse JSON schema: {e}")))?;
     json_value_to_ebnf(&value, options)
@@ -97,8 +94,7 @@ pub fn deepseek_xml_tool_calling_to_ebnf(schema: &str) -> SchemaResult<String> {
 /// subsystem.
 pub fn builtin_json_grammar_ebnf() -> String {
     // `{}` is always a valid schema and never fails to convert.
-    json_schema_to_ebnf("{}", &SchemaConverterOptions::default())
-        .unwrap_or_default()
+    json_schema_to_ebnf("{}", &SchemaConverterOptions::default()).unwrap_or_default()
 }
 
 /// Build the parsed [`GrammarData`] for the builtin-JSON grammar.

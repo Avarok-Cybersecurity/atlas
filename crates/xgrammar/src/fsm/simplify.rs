@@ -102,8 +102,7 @@ impl FsmWithStartEnd {
             uf.clear();
             let n = result.num_states();
             // previous_states[t][s] = edges s->t ; next_states[s][t] = edges s->t
-            let mut previous: Vec<AHashMap<usize, Vec<FsmEdge>>> =
-                vec![AHashMap::new(); n];
+            let mut previous: Vec<AHashMap<usize, Vec<FsmEdge>>> = vec![AHashMap::new(); n];
             let mut next: Vec<AHashMap<usize, Vec<FsmEdge>>> = vec![AHashMap::new(); n];
             for i in 0..n {
                 for edge in result.fsm().edges(i) {
@@ -136,9 +135,10 @@ impl FsmWithStartEnd {
                     if edges_to_i.len() != edges_to_sibling.len() {
                         break;
                     }
-                    let same = edges_to_i.iter().zip(&edges_to_sibling).all(|(a, b)| {
-                        a.min == b.min && a.max == b.max
-                    });
+                    let same = edges_to_i
+                        .iter()
+                        .zip(&edges_to_sibling)
+                        .all(|(a, b)| a.min == b.min && a.max == b.max);
                     if same {
                         uf.add(i as i32);
                         uf.add(sibling as i32);

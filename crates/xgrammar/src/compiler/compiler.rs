@@ -9,8 +9,8 @@
 use dashmap::DashMap;
 
 use crate::grammar::functor::{GrammarNormalizer, GrammarOptimizer};
-use crate::grammar::{parse_ebnf, GrammarData};
-use crate::schema::{builtin_json_grammar_ebnf, json_schema_to_ebnf, SchemaConverterOptions};
+use crate::grammar::{GrammarData, parse_ebnf};
+use crate::schema::{SchemaConverterOptions, builtin_json_grammar_ebnf, json_schema_to_ebnf};
 use crate::structural_tag::structural_tag_to_grammar;
 use crate::tokenizer::TokenizerInfo;
 
@@ -128,8 +128,8 @@ impl GrammarCompiler {
     ) -> Result<CompiledGrammar, CompileError> {
         // Parse eagerly so a malformed grammar is a typed error rather
         // than a cached panic.
-        let grammar = parse_ebnf(ebnf, root_rule_name)
-            .map_err(|e| CompileError::Grammar(e.to_string()))?;
+        let grammar =
+            parse_ebnf(ebnf, root_rule_name).map_err(|e| CompileError::Grammar(e.to_string()))?;
         let key = CacheKey::Ebnf {
             ebnf: ebnf.to_string(),
             root_rule: root_rule_name.to_string(),
@@ -143,10 +143,7 @@ impl GrammarCompiler {
     pub fn compile_grammar(&self, grammar: GrammarData) -> CompiledGrammar {
         let ebnf = crate::grammar::print_grammar(&grammar);
         let root_rule = grammar.root_rule().name.clone();
-        let key = CacheKey::Ebnf {
-            ebnf,
-            root_rule,
-        };
+        let key = CacheKey::Ebnf { ebnf, root_rule };
         self.get_or_compute(key, || self.compile_normalized(grammar))
     }
 
@@ -154,8 +151,7 @@ impl GrammarCompiler {
     /// `GrammarCompiler::CompileBuiltinJSONGrammar`.
     pub fn compile_builtin_json_grammar(&self) -> Result<CompiledGrammar, CompileError> {
         let ebnf = builtin_json_grammar_ebnf();
-        let grammar = parse_ebnf(&ebnf, "root")
-            .map_err(|e| CompileError::Schema(e.to_string()))?;
+        let grammar = parse_ebnf(&ebnf, "root").map_err(|e| CompileError::Schema(e.to_string()))?;
         Ok(self.get_or_compute(CacheKey::BuiltinJson, || self.compile_normalized(grammar)))
     }
 
@@ -179,8 +175,8 @@ impl GrammarCompiler {
             max_whitespace_cnt,
             ..SchemaConverterOptions::default()
         };
-        let ebnf =
-            json_schema_to_ebnf(schema, &options).map_err(|e| CompileError::Schema(e.to_string()))?;
+        let ebnf = json_schema_to_ebnf(schema, &options)
+            .map_err(|e| CompileError::Schema(e.to_string()))?;
         let grammar = parse_ebnf(&ebnf, "root")
             .map_err(|e| CompileError::Schema(format!("generated EBNF failed to parse: {e}")))?;
         let key = CacheKey::Schema {

@@ -125,8 +125,7 @@ pub(super) fn load_layers(
         // bug (L0 moe_out 3.3x too large vs HF). Keeps NVFP4 experts loaded
         // AND skips set_fp8_experts so forward dispatch falls through to the
         // NVFP4 path.
-        let force_nvfp4_moe =
-            std::env::var("ATLAS_FORCE_NVFP4_MOE").ok().as_deref() == Some("1");
+        let force_nvfp4_moe = std::env::var("ATLAS_FORCE_NVFP4_MOE").ok().as_deref() == Some("1");
         let skip_nvfp4_experts = native_fp8 && !force_nvfp4_moe;
         if skip_nvfp4_experts {
             tracing::info!(
@@ -181,7 +180,8 @@ pub(super) fn load_layers(
         }
 
         // Native FP8 MoE: load FP8 expert weights for decode
-        if native_fp8 && !force_nvfp4_moe
+        if native_fp8
+            && !force_nvfp4_moe
             && let Ok(fp8_experts) =
                 load_moe_qwen35_fp8_experts(store, &lp, config.num_experts, gpu, config)
         {

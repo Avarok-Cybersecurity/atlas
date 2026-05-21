@@ -109,20 +109,14 @@ impl MaskGenerator<'_> {
 
                 // Speculative fast-accept path.
                 if speculative
-                    && self.try_speculative_accept(
-                        token,
-                        i,
-                        &spec_mask,
-                        definite_bitset.as_deref(),
-                    )
+                    && self.try_speculative_accept(token, i, &spec_mask, definite_bitset.as_deref())
                 {
                     prev_token = Some(token.clone());
                     i += 1;
                     continue;
                 }
 
-                let advanced =
-                    self.scan_one_token(token, prev_token.as_deref(), &mut prev_matched);
+                let advanced = self.scan_one_token(token, prev_token.as_deref(), &mut prev_matched);
                 prev_token = Some(token.clone());
 
                 let can_reach_end = *self.can_reach_end_prefix_or_stack.last().unwrap();

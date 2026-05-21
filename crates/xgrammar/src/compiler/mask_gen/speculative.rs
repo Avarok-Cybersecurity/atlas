@@ -58,13 +58,9 @@ impl MaskGenerator<'_> {
             // recursively calls this same rule.
             if fsm.start() as i32 == elem {
                 for next in fsm.fsm().edges(edge.target as usize) {
-                    let recurses = (next.is_rule_ref()
-                        && next.ref_rule_id() == self.init_rule_id)
+                    let recurses = (next.is_rule_ref() && next.ref_rule_id() == self.init_rule_id)
                         || (next.is_repeat_ref()
-                            && fsm
-                                .fsm()
-                                .repeat_edge_info(next.aux_index())
-                                .rule_id as i32
+                            && fsm.fsm().repeat_edge_info(next.aux_index()).rule_id as i32
                                 == self.init_rule_id);
                     if recurses {
                         applicable = true;
@@ -103,9 +99,7 @@ impl MaskGenerator<'_> {
             false
         } else {
             // Self-recursive rule: every byte must be a safe ASCII byte.
-            let all_safe = token
-                .iter()
-                .all(|&b| b.is_ascii() && spec_mask[b as usize]);
+            let all_safe = token.iter().all(|&b| b.is_ascii() && spec_mask[b as usize]);
             if all_safe {
                 self.accepted.push(index);
                 return true;

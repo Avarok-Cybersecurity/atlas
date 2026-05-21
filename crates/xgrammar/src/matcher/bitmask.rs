@@ -134,7 +134,9 @@ impl TokenBitmask {
     /// Number of accepted (set) tokens over the logical vocabulary.
     #[must_use]
     pub fn count_set(&self) -> usize {
-        (0..self.vocab_size).filter(|&t| get_bit(&self.words, t)).count()
+        (0..self.vocab_size)
+            .filter(|&t| get_bit(&self.words, t))
+            .count()
     }
 
     /// True if every logical token bit is set.

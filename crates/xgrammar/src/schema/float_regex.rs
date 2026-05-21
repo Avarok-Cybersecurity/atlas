@@ -37,15 +37,11 @@ fn strip_anchors(s: &str) -> String {
 /// Generate a regex matching floats in `[start, end]` inclusive, each
 /// bound `None` meaning unbounded, with at most `precision`
 /// fractional digits. Port of `GenerateFloatRangeRegex`.
-pub fn generate_float_range_regex(
-    start: Option<f64>,
-    end: Option<f64>,
-    precision: i32,
-) -> String {
-    if let (Some(s), Some(e)) = (start, end) {
-        if s > e {
-            return "^()$".to_string();
-        }
+pub fn generate_float_range_regex(start: Option<f64>, end: Option<f64>, precision: i32) -> String {
+    if let (Some(s), Some(e)) = (start, end)
+        && s > e
+    {
+        return "^()$".to_string();
     }
     if start.is_none() && end.is_none() {
         return format!("^-?\\d+(\\.\\d{{1,{precision}}})?$");
@@ -112,8 +108,10 @@ pub fn generate_float_range_regex(
                     parts.push(e_str.clone());
                 }
                 if end_int > start_int + 1 {
-                    let ir =
-                        strip_anchors(&generate_range_regex(Some(start_int + 1), Some(end_int - 1)));
+                    let ir = strip_anchors(&generate_range_regex(
+                        Some(start_int + 1),
+                        Some(end_int - 1),
+                    ));
                     parts.push(format!("{ir}(\\.\\d{{1,{precision}}})?"));
                 }
                 if start_frac > 0.0 {
@@ -147,18 +145,12 @@ fn emit_frac_above(parts: &mut Vec<String>, num_str: &str, is_neg: bool, precisi
         if i == 0 {
             if is_neg {
                 for d in '0'..fc {
-                    parts.push(format!(
-                        "{int_part}\\.{d}\\d{{0,{}}}",
-                        precision - 1
-                    ));
+                    parts.push(format!("{int_part}\\.{d}\\d{{0,{}}}", precision - 1));
                 }
             } else {
                 let mut d = (fc as u8 + 1) as char;
                 while d <= '9' {
-                    parts.push(format!(
-                        "{int_part}\\.{d}\\d{{0,{}}}",
-                        precision - 1
-                    ));
+                    parts.push(format!("{int_part}\\.{d}\\d{{0,{}}}", precision - 1));
                     d = (d as u8 + 1) as char;
                 }
             }
@@ -201,18 +193,12 @@ fn emit_frac_below(parts: &mut Vec<String>, num_str: &str, is_neg: bool, precisi
             if is_neg {
                 let mut d = (fc as u8 + 1) as char;
                 while d <= '9' {
-                    parts.push(format!(
-                        "{int_part}\\.{d}\\d{{0,{}}}",
-                        precision - 1
-                    ));
+                    parts.push(format!("{int_part}\\.{d}\\d{{0,{}}}", precision - 1));
                     d = (d as u8 + 1) as char;
                 }
             } else {
                 for d in '0'..fc {
-                    parts.push(format!(
-                        "{int_part}\\.{d}\\d{{0,{}}}",
-                        precision - 1
-                    ));
+                    parts.push(format!("{int_part}\\.{d}\\d{{0,{}}}", precision - 1));
                 }
             }
         } else if is_neg {
@@ -258,7 +244,7 @@ mod tests {
     fn whole_number_format() {
         assert_eq!(format_float(3.0, 6), "3");
         assert_eq!(format_float(3.5, 6), "3.5");
-        assert_eq!(format_float(3.140000, 6), "3.14");
+        assert_eq!(format_float(3.120000, 6), "3.12");
     }
 
     #[test]

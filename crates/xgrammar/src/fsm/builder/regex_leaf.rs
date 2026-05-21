@@ -46,9 +46,7 @@ pub fn build_leaf_fsm(regex: &[u8]) -> FsmWithStartEnd {
     let bytes = regex;
     let mut result = FsmWithStartEnd::new(Fsm::with_states(0), 0, Vec::new(), true);
 
-    let is_class = !bytes.is_empty()
-        && bytes[0] == b'['
-        && bytes[bytes.len() - 1] == b']';
+    let is_class = !bytes.is_empty() && bytes[0] == b'[' && bytes[bytes.len() - 1] == b']';
 
     if !is_class {
         build_literal_leaf(&mut result, bytes);
@@ -202,4 +200,3 @@ fn build_class_leaf(result: &mut FsmWithStartEnd, bytes: &[u8]) {
     ends[1] = true;
     *result = FsmWithStartEnd::new(new_fsm, 0, ends, false);
 }
-

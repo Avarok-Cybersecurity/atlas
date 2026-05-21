@@ -268,8 +268,7 @@ impl MoeLayer {
         //
         // Mirrors the FP8 path (see forward_prefill_fp8.rs).
         let avg_per_expert = (num_tokens * top_k as usize).div_ceil(ne);
-        let max_m_tiles =
-            ((num_tokens * top_k as usize)).div_ceil(64).max(1) as u32;
+        let max_m_tiles = (num_tokens * top_k as usize).div_ceil(64).max(1) as u32;
         super::dump::dump_expert_load(
             ctx.gpu,
             stream,

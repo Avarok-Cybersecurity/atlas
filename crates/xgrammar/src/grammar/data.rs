@@ -253,7 +253,12 @@ mod tests {
     /// Build a tiny grammar by hand: one rule whose body is the byte
     /// string "ab". CSR slot for a ByteString: `[type=0, len=2, 'a','b']`.
     fn byte_string_grammar() -> GrammarData {
-        let expr_data = vec![GrammarExprType::ByteString as i32, 2, b'a' as i32, b'b' as i32];
+        let expr_data = vec![
+            GrammarExprType::ByteString as i32,
+            2,
+            b'a' as i32,
+            b'b' as i32,
+        ];
         let expr_indptr = vec![0];
         let rules = vec![Rule::new("root", 0)];
         GrammarData::from_parts(rules, expr_data, expr_indptr, 0)

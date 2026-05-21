@@ -52,7 +52,7 @@ pub use crate::matcher::BatchGrammarMatcher;
 // `HfMetadata` / `detect_metadata_from_hf` already match the vendored
 // signatures exactly (`Result<HfMetadata, String>`, fields
 // `vocab_type` + `add_prefix_space`).
-pub use crate::tokenizer::{detect_metadata_from_hf, HfMetadata};
+pub use crate::tokenizer::{HfMetadata, detect_metadata_from_hf};
 
 // `StructuralTagItem` is identical (`begin`, `schema`, `end`).
 pub use crate::structural_tag::StructuralTagItem;

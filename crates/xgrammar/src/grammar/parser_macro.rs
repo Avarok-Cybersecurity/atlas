@@ -34,9 +34,7 @@ impl EbnfParser {
         self.peek_and_consume(TokenType::LParen, "Expect ( after macro function name")?;
         if self.peek(0).ty != TokenType::RParen {
             loop {
-                if self.peek(0).ty == TokenType::Identifier
-                    && self.peek(1).ty == TokenType::Equal
-                {
+                if self.peek(0).ty == TokenType::Identifier && self.peek(1).ty == TokenType::Equal {
                     let name = match &self.peek(0).value {
                         TokenValue::Str(s) => s.clone(),
                         _ => return Err(self.parse_error("Expect identifier", 0)),

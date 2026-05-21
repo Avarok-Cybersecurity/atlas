@@ -33,7 +33,9 @@ impl EbnfParser {
         let new_rule_id = self.builder.add_empty_rule(new_rule_name)?;
         let ref_to_new_rule = self.builder.add_rule_ref(new_rule_id);
         let empty = self.builder.add_empty_str();
-        let seq = self.builder.add_sequence(&[grammar_expr_id, ref_to_new_rule]);
+        let seq = self
+            .builder
+            .add_sequence(&[grammar_expr_id, ref_to_new_rule]);
         let body = self.builder.add_choices(&[empty, seq]);
         self.builder.update_rule_body(new_rule_id, body)?;
         Ok(self.builder.add_rule_ref(new_rule_id))
@@ -47,7 +49,9 @@ impl EbnfParser {
         let new_rule_name = self.builder.get_new_rule_name(&self.cur_rule_name.clone());
         let new_rule_id = self.builder.add_empty_rule(new_rule_name)?;
         let ref_to_new_rule = self.builder.add_rule_ref(new_rule_id);
-        let seq = self.builder.add_sequence(&[grammar_expr_id, ref_to_new_rule]);
+        let seq = self
+            .builder
+            .add_sequence(&[grammar_expr_id, ref_to_new_rule]);
         let body = self.builder.add_choices(&[seq, grammar_expr_id]);
         self.builder.update_rule_body(new_rule_id, body)?;
         Ok(self.builder.add_rule_ref(new_rule_id))
@@ -129,7 +133,9 @@ impl EbnfParser {
             let new_rule_id = self.builder.add_empty_rule(name)?;
             let ref_to_new_rule = self.builder.add_rule_ref(new_rule_id);
             let empty = self.builder.add_empty_str();
-            let seq = self.builder.add_sequence(&[grammar_expr_id, ref_to_new_rule]);
+            let seq = self
+                .builder
+                .add_sequence(&[grammar_expr_id, ref_to_new_rule]);
             let body = self.builder.add_choices(&[empty, seq]);
             self.builder.update_rule_body(new_rule_id, body)?;
             elements.push(self.builder.add_rule_ref(new_rule_id));
@@ -152,7 +158,8 @@ impl EbnfParser {
         let empty = self.builder.add_empty_str();
         let last = self.builder.add_choices(&[empty, grammar_expr_id]);
         let last_idx = rest_rule_ids.len() - 1;
-        self.builder.update_rule_body(rest_rule_ids[last_idx], last)?;
+        self.builder
+            .update_rule_body(rest_rule_ids[last_idx], last)?;
         elements.push(self.builder.add_rule_ref(rest_rule_ids[0]));
         Ok(self.builder.add_sequence(&elements))
     }

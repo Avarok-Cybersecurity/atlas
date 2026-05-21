@@ -150,9 +150,11 @@ fn repetition_range_exact() {
 fn repetition_range_zero() {
     // {0} produces an empty sequence.
     let g = parse("root ::= \"a\"{0}\n");
-    assert!((0..g.num_exprs())
-        .map(|i| g.expr(i))
-        .any(|e| e.kind == GrammarExprType::Sequence && e.is_empty()));
+    assert!(
+        (0..g.num_exprs())
+            .map(|i| g.expr(i))
+            .any(|e| e.kind == GrammarExprType::Sequence && e.is_empty())
+    );
 }
 
 #[test]

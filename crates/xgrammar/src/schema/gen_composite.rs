@@ -40,13 +40,11 @@ impl<'p> JsonSchemaConverter<'p> {
         }
 
         let allocated = self.script.allocate_rule_name(&hint);
-        self.uri_to_rule
-            .insert(uri.to_string(), allocated.clone());
+        self.uri_to_rule.insert(uri.to_string(), allocated.clone());
 
         let resolved = self.parser.resolve_ref(uri, &allocated)?;
         let body = self.generate_from_spec(&resolved, &allocated)?;
-        self.script
-            .add_rule_with_allocated_name(&allocated, &body);
+        self.script.add_rule_with_allocated_name(&allocated, &body);
 
         if !resolved.cache_key.is_empty() {
             self.add_cache(&resolved.cache_key, &allocated);

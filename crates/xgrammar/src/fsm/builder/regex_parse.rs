@@ -108,4 +108,3 @@ pub(crate) fn finalize_ir(stack: Vec<StackItem>) -> Result<RegexIr, String> {
     }
     Ok(ir)
 }
-

@@ -6,7 +6,7 @@
 // `test_error_consecutive_quantifiers`). Split out of `parser_tests.rs`
 // to keep each file under the 250-line cap.
 
-use crate::grammar::parser::{parse_ebnf_default, ParseError};
+use crate::grammar::parser::{ParseError, parse_ebnf_default};
 
 fn err(src: &str) -> ParseError {
     parse_ebnf_default(src).expect_err("expected a parse error")
@@ -98,8 +98,14 @@ fn err_consecutive_quantifiers() {
         ParseError::Parse { msg, .. } => assert!(msg.contains("Expect element")),
         _ => panic!("expected parse error"),
     }
-    assert!(matches!(err("root ::= \"a\"++\n"), ParseError::Parse { .. }));
-    assert!(matches!(err("root ::= \"a\"??\n"), ParseError::Parse { .. }));
+    assert!(matches!(
+        err("root ::= \"a\"++\n"),
+        ParseError::Parse { .. }
+    ));
+    assert!(matches!(
+        err("root ::= \"a\"??\n"),
+        ParseError::Parse { .. }
+    ));
 }
 
 #[test]

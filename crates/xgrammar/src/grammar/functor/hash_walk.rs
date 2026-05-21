@@ -128,10 +128,7 @@ fn assign(map: &mut BTreeMap<i32, i32>, queue: &mut VecDeque<i32>, target: i32) 
 
 /// Partially hash an FSM: tolerated when up to one referenced rule is
 /// unhashed *and* that edge starts at the start state. `None` otherwise.
-pub fn partial_hash_fsm(
-    grammar: &GrammarData,
-    fsm_index: i32,
-) -> Option<(u64, Vec<(i32, i32)>)> {
+pub fn partial_hash_fsm(grammar: &GrammarData, fsm_index: i32) -> Option<(u64, Vec<(i32, i32)>)> {
     let fsm = grammar.per_rule_fsms[fsm_index as usize].as_ref()?;
     let start = fsm.start() as i32;
     let mut old_to_new: BTreeMap<i32, i32> = BTreeMap::new();

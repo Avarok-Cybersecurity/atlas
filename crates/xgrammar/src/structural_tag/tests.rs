@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 use super::*;
 use crate::earley::EarleyParser;
+use crate::grammar::GrammarData;
 use crate::grammar::functor::GrammarOptimizer;
 use crate::grammar::printer::print_grammar;
-use crate::grammar::GrammarData;
 
 /// Optimize a structural-tag grammar so the Earley parser can run.
 fn optimized(grammar: GrammarData) -> Arc<GrammarData> {
@@ -270,8 +270,7 @@ fn regex_format() {
 
 #[test]
 fn grammar_format() {
-    let g =
-        grammar_from_format(r#"{"type":"grammar","grammar":"root ::= \"ok\"\n"}"#).unwrap();
+    let g = grammar_from_format(r#"{"type":"grammar","grammar":"root ::= \"ok\"\n"}"#).unwrap();
     let g = optimized(g);
     assert!(accepts(Arc::clone(&g), "ok"));
     assert!(!accepts(g, "no"));
@@ -343,9 +342,10 @@ fn error_missing_format() {
 
 #[test]
 fn error_wrong_type_field() {
-    let err =
-        structural_tag_to_grammar(r#"{"type":"wrong","format":{"type":"const_string","value":"x"}}"#)
-            .unwrap_err();
+    let err = structural_tag_to_grammar(
+        r#"{"type":"wrong","format":{"type":"const_string","value":"x"}}"#,
+    )
+    .unwrap_err();
     assert!(matches!(err, StructuralTagError::InvalidStructuralTag(_)));
 }
 

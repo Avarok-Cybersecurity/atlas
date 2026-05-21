@@ -6,13 +6,12 @@
 // `HandleCharacterClass`, `HandleRepetitionRange` and
 // `HandleGroupModifier` from `cpp/regex_converter.cc`.
 
+use super::RegexError;
 use super::converter::RegexConverter;
 use super::escape_handlers::handle_escape_in_char_class;
-use super::RegexError;
-use crate::support::encoding::{char_to_utf8, TCodepoint};
+use crate::support::encoding::{TCodepoint, char_to_utf8};
 
 impl RegexConverter {
-
     /// Port of `HandleCharacterClass`.
     pub(super) fn handle_character_class(&mut self) -> Result<String, RegexError> {
         let mut cls = String::from("[");
@@ -89,9 +88,9 @@ impl RegexConverter {
         } else if c == '=' as TCodepoint || c == '!' as TCodepoint {
             return Err(self.cur.error("Lookahead is not supported yet."));
         } else if c == '<' as TCodepoint
-            && self.peek_at(1).is_some_and(|n| {
-                n == '=' as TCodepoint || n == '!' as TCodepoint
-            })
+            && self
+                .peek_at(1)
+                .is_some_and(|n| n == '=' as TCodepoint || n == '!' as TCodepoint)
         {
             return Err(self.cur.error("Lookbehind is not supported yet."));
         } else if c == '<' as TCodepoint {

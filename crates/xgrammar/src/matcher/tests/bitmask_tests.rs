@@ -13,7 +13,7 @@ use crate::compiler::GrammarCompiler;
 
 use super::super::bitmask::bitmask_size;
 use super::super::{BatchGrammarMatcher, FillError, TokenBitmask};
-use super::{accepted_ids, compile_ebnf, id_of, matcher, tok, wrap, STOP_ID};
+use super::{STOP_ID, accepted_ids, compile_ebnf, id_of, matcher, tok, wrap};
 
 // ----- TokenBitmask packed-layout unit tests ------------------------
 
@@ -121,9 +121,7 @@ fn fill_uncertain_token_partial_match_rejected() {
 #[test]
 fn fill_step_by_step_json_object() {
     // A small JSON-ish object grammar exercised token by token.
-    let mut m = matcher(
-        "root ::= \"{\" \"\\\"\" \"a\" \"\\\"\" \":\" \"1\" \"}\"\n",
-    );
+    let mut m = matcher("root ::= \"{\" \"\\\"\" \"a\" \"\\\"\" \":\" \"1\" \"}\"\n");
     let steps = ["{", "\"", "a", "\"", ":", "1", "}"];
     for s in steps {
         let acc = accepted_ids(&mut m);
@@ -257,7 +255,8 @@ fn batch_fill_empty_matchers_is_empty() {
     let bgm = BatchGrammarMatcher::new(Some(2));
     let mut ms: Vec<super::super::GrammarMatcher> = Vec::new();
     let mut buf: Vec<i32> = Vec::new();
-    assert!(bgm
-        .fill_next_token_bitmask(&mut ms, &mut buf, false)
-        .is_empty());
+    assert!(
+        bgm.fill_next_token_bitmask(&mut ms, &mut buf, false)
+            .is_empty()
+    );
 }

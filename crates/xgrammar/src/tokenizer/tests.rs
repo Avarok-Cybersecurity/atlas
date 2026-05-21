@@ -75,12 +75,20 @@ fn empty_vocab() {
 #[test]
 fn special_token_detection() {
     // Ported from test_special_token_detection: only "" is special.
-    let vocab: Vec<String> = ["", "<s>", "</s>", "[@BOS@]", "regular", "<>", "<think>", "</think>"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let vocab: Vec<String> = [
+        "", "<s>", "</s>", "[@BOS@]", "regular", "<>", "<think>", "</think>",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     // Explicit stop ids = [2] so "</s>" is a stop, not auto-detected.
-    let info = TokenizerInfo::new(&vocab, VocabType::ByteFallback, Some(8), Some(vec![2]), true);
+    let info = TokenizerInfo::new(
+        &vocab,
+        VocabType::ByteFallback,
+        Some(8),
+        Some(vec![2]),
+        true,
+    );
     assert_eq!(info.special_token_ids(), &[0]);
     assert_eq!(info.stop_token_ids(), &[2]);
 }
@@ -99,8 +107,7 @@ fn auto_detected_stop_tokens() {
 #[test]
 fn explicit_stop_tokens_override_detection() {
     // "</s>" is a detection marker but explicit ids win.
-    let vocab: Vec<String> =
-        ["a", "</s>", "b"].iter().map(|s| s.to_string()).collect();
+    let vocab: Vec<String> = ["a", "</s>", "b"].iter().map(|s| s.to_string()).collect();
     let info = TokenizerInfo::new(&vocab, VocabType::Raw, None, Some(vec![0, 2]), false);
     // id 1 ("</s>") is NOT a stop because it is not in the explicit set.
     assert_eq!(info.stop_token_ids(), &[0, 2]);
@@ -113,7 +120,10 @@ fn padding_vocab_size_creates_special_tokens() {
     let info = TokenizerInfo::new(&vocab, VocabType::Raw, Some(15), None, false);
     assert_eq!(info.vocab_size(), 15);
     // Trailing 5 ids are padding special tokens.
-    assert_eq!(&info.special_token_ids()[info.special_token_ids().len() - 5..], &[10, 11, 12, 13, 14]);
+    assert_eq!(
+        &info.special_token_ids()[info.special_token_ids().len() - 5..],
+        &[10, 11, 12, 13, 14]
+    );
     // decoded_vocab is padded to full length with empty byte strings.
     assert_eq!(info.decoded_vocab().len(), 15);
     assert!(info.decoded_vocab()[14].is_empty());
@@ -136,8 +146,11 @@ fn sorted_decoded_vocab_is_lexicographic() {
         .map(|s| s.to_string())
         .collect();
     let info = TokenizerInfo::new(&vocab, VocabType::Raw, None, None, false);
-    let sorted: Vec<&[u8]> =
-        info.sorted_decoded_vocab().iter().map(|(_, t)| t.as_slice()).collect();
+    let sorted: Vec<&[u8]> = info
+        .sorted_decoded_vocab()
+        .iter()
+        .map(|(_, t)| t.as_slice())
+        .collect();
     assert_eq!(sorted, vec![&b"apple"[..], b"banana", b"mango", b"zebra"]);
 }
 
@@ -149,7 +162,11 @@ fn sorted_excludes_stop_and_special() {
         .collect();
     let info = TokenizerInfo::new(&vocab, VocabType::Raw, None, None, false);
     // "" is special (id 0), "</s>" is stop (id 1) — neither sorted.
-    let ids: Vec<i32> = info.sorted_decoded_vocab().iter().map(|(i, _)| *i).collect();
+    let ids: Vec<i32> = info
+        .sorted_decoded_vocab()
+        .iter()
+        .map(|(i, _)| *i)
+        .collect();
     assert_eq!(ids.len(), 2);
     assert!(!ids.contains(&0));
     assert!(!ids.contains(&1));
@@ -178,8 +195,7 @@ fn trie_prefix_subtree_nesting() {
     // Sorted: "a","ab","abc". "a" contains nothing before it; "ab"
     // contains "a"? find("a" in "ab") -> yes -> nested. "abc" contains
     // "ab" -> nested. So subtree of entry 0 spans all 3.
-    let vocab: Vec<String> =
-        ["a", "ab", "abc"].iter().map(|s| s.to_string()).collect();
+    let vocab: Vec<String> = ["a", "ab", "abc"].iter().map(|s| s.to_string()).collect();
     let info = TokenizerInfo::new(&vocab, VocabType::Raw, None, None, false);
     let ranges = info.trie_subtree_nodes_range();
     assert_eq!(ranges, &[3, 3, 3]);
@@ -189,8 +205,13 @@ fn trie_prefix_subtree_nesting() {
 fn dump_metadata_format() {
     // Ported from test_dump_metadata_load metadata strings.
     let vocab: Vec<String> = (0..10).map(|i| format!("tok{i}")).collect();
-    let info =
-        TokenizerInfo::new(&vocab, VocabType::ByteFallback, Some(32000), Some(vec![2]), true);
+    let info = TokenizerInfo::new(
+        &vocab,
+        VocabType::ByteFallback,
+        Some(32000),
+        Some(vec![2]),
+        true,
+    );
     assert_eq!(
         info.dump_metadata(),
         r#"{"vocab_type":1,"vocab_size":32000,"add_prefix_space":true,"stop_token_ids":[2]}"#
@@ -212,8 +233,13 @@ fn dump_metadata_byte_level() {
     // Stop id must fall within the encoded vocab to be recorded — the
     // C++ only flags stop ids while iterating actual vocab entries.
     let vocab: Vec<String> = (0..3).map(|i| format!("tok{i}")).collect();
-    let info =
-        TokenizerInfo::new(&vocab, VocabType::ByteLevel, Some(128256), Some(vec![2]), false);
+    let info = TokenizerInfo::new(
+        &vocab,
+        VocabType::ByteLevel,
+        Some(128256),
+        Some(vec![2]),
+        false,
+    );
     assert_eq!(
         info.dump_metadata(),
         r#"{"vocab_type":2,"vocab_size":128256,"add_prefix_space":false,"stop_token_ids":[2]}"#
@@ -272,15 +298,17 @@ fn detect_metadata_standalone() {
     let json = r#"{"decoder":{"type":"ByteLevel"}}"#;
     let meta = crate::tokenizer::detect_metadata_from_hf(json).unwrap();
     assert_eq!(meta.vocab_type, VocabType::ByteLevel);
-    assert_eq!(meta.to_json(), r#"{"vocab_type":2,"add_prefix_space":false}"#);
+    assert_eq!(
+        meta.to_json(),
+        r#"{"vocab_type":2,"add_prefix_space":false}"#
+    );
 }
 
 #[test]
 fn deepseek_style_stop_marker_detected() {
     // DeepSeek-V2 end-of-sentence marker is in the detection set.
     let marker = "<\u{ff5c}end\u{2581}of\u{2581}sentence\u{ff5c}>";
-    let vocab: Vec<String> =
-        ["a", marker, "b"].iter().map(|s| s.to_string()).collect();
+    let vocab: Vec<String> = ["a", marker, "b"].iter().map(|s| s.to_string()).collect();
     let info = TokenizerInfo::new(&vocab, VocabType::Raw, None, None, false);
     assert_eq!(info.stop_token_ids(), &[1]);
 }

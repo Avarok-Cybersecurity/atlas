@@ -4,7 +4,7 @@
 // `converter.rs` to keep each file under the 250-line cap.
 
 use super::RegexError;
-use crate::support::encoding::{char_handling_error, char_to_utf8, parse_utf8, TCodepoint};
+use crate::support::encoding::{TCodepoint, char_handling_error, char_to_utf8, parse_utf8};
 /// A cursor over the regex codepoint stream.
 ///
 /// The C++ converter decodes the regex into a `std::vector<TCodepoint>`

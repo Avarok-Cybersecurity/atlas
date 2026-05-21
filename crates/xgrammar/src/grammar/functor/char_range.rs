@@ -133,7 +133,6 @@ pub fn add_character_range(
     }
 }
 
-
 #[cfg(test)]
 #[path = "char_range_tests.rs"]
 mod tests;

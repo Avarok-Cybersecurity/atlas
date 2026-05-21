@@ -5,8 +5,8 @@
 // and the XML overrides from `cpp/json_schema_converter*.cc`.
 
 use super::converter::{
-    JsonSchemaConverter, BASIC_ARRAY, BASIC_BOOLEAN, BASIC_NULL, BASIC_NUMBER, BASIC_OBJECT,
-    BASIC_STRING, BASIC_STRING_SUB, XML_STRING,
+    BASIC_ARRAY, BASIC_BOOLEAN, BASIC_NULL, BASIC_NUMBER, BASIC_OBJECT, BASIC_STRING,
+    BASIC_STRING_SUB, JsonSchemaConverter, XML_STRING,
 };
 use super::error::{SchemaError, SchemaResult};
 use super::float_regex::generate_float_range_regex;
@@ -19,9 +19,8 @@ use crate::regex::regex_to_ebnf;
 /// [`SchemaError`]. `with_rule_name = false` matches the C++
 /// `RegexToEBNF(..., false)` calls.
 fn regex_body(regex: &str) -> SchemaResult<String> {
-    regex_to_ebnf(regex, false).map_err(|e| {
-        SchemaError::invalid(format!("regex conversion failed: {e}"))
-    })
+    regex_to_ebnf(regex, false)
+        .map_err(|e| SchemaError::invalid(format!("regex conversion failed: {e}")))
 }
 
 impl<'p> JsonSchemaConverter<'p> {
@@ -72,10 +71,10 @@ impl<'p> JsonSchemaConverter<'p> {
             {
                 return Ok(XML_STRING.to_string());
             }
-            if let Some(fmt) = &spec.format {
-                if let Some(regex) = format_to_regex(fmt) {
-                    return regex_body(&regex);
-                }
+            if let Some(fmt) = &spec.format
+                && let Some(regex) = format_to_regex(fmt)
+            {
+                return regex_body(&regex);
             }
             if let Some(pattern) = &spec.pattern {
                 return regex_body(pattern);
@@ -91,11 +90,11 @@ impl<'p> JsonSchemaConverter<'p> {
         }
 
         // JSON-style string.
-        if let Some(fmt) = &spec.format {
-            if let Some(regex) = format_to_regex(fmt) {
-                let converted = regex_body(&regex)?;
-                return Ok(format!("\"\\\"\" {converted} \"\\\"\""));
-            }
+        if let Some(fmt) = &spec.format
+            && let Some(regex) = format_to_regex(fmt)
+        {
+            let converted = regex_body(&regex)?;
+            return Ok(format!("\"\\\"\" {converted} \"\\\"\""));
         }
         if let Some(pattern) = &spec.pattern {
             let converted = regex_body(pattern)?;
@@ -129,10 +128,7 @@ impl<'p> JsonSchemaConverter<'p> {
     /// JSON. Port of `GenerateConst` plus the XML override.
     pub(super) fn generate_const(&self, json_value: &str) -> String {
         if self.at_xml_layer() {
-            if json_value.len() >= 2
-                && json_value.starts_with('"')
-                && json_value.ends_with('"')
-            {
+            if json_value.len() >= 2 && json_value.starts_with('"') && json_value.ends_with('"') {
                 return format!("\"{}\"", &json_value[1..json_value.len() - 1]);
             }
             return format!("\"{json_value}\"");

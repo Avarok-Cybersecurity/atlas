@@ -33,9 +33,7 @@ impl SchemaParser {
 
         if let Some(items) = schema.get("items") {
             if items.as_bool().is_none() && !items.is_object() {
-                return Err(SchemaError::invalid(
-                    "items must be a boolean or an object",
-                ));
+                return Err(SchemaError::invalid("items must be a boolean or an object"));
             }
             if let Some(false) = items.as_bool() {
                 spec.allow_additional_items = false;
@@ -154,18 +152,18 @@ impl SchemaParser {
             }
         }
 
-        if let Some(pn) = schema.get("propertyNames") {
-            if !pn.is_object() {
+        if let Some(prop_names) = schema.get("propertyNames") {
+            if !prop_names.is_object() {
                 return Err(SchemaError::invalid("propertyNames must be an object"));
             }
-            if let Some(JsonValue::String(t)) = pn.get("type") {
-                if t != "string" {
-                    return Err(SchemaError::unsatisfiable(
-                        "propertyNames must be an object that validates string",
-                    ));
-                }
+            if let Some(JsonValue::String(t)) = prop_names.get("type")
+                && t != "string"
+            {
+                return Err(SchemaError::unsatisfiable(
+                    "propertyNames must be an object that validates string",
+                ));
             }
-            spec.property_names = Some(self.parse(pn, "property_name", Some("string"))?);
+            spec.property_names = Some(self.parse(prop_names, "property_name", Some("string"))?);
         }
 
         spec.allow_additional_properties = !self.strict_mode;
@@ -246,9 +244,7 @@ impl SchemaParser {
             JsonValue::Number {
                 as_i64: Some(i), ..
             } => Ok(*i),
-            _ => Err(SchemaError::invalid(format!(
-                "{name} must be an integer"
-            ))),
+            _ => Err(SchemaError::invalid(format!("{name} must be an integer"))),
         }
     }
 }

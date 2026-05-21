@@ -8,7 +8,6 @@
 // for repeat-reference edges. The C++ pimpl/shared_ptr indirection is
 // dropped — Rust callers `clone()` explicitly when they need a copy.
 
-
 use super::edge::{FsmEdge, RepeatEdgeRef, edge_type};
 
 /// Returned by [`Fsm::next_state`] when no transition exists.
@@ -140,8 +139,9 @@ impl Fsm {
         let aux_offset = self.edge_aux_data.len() as i16;
         self.edge_aux_data.extend_from_slice(&other.edge_aux_data);
 
-        let state_mapping: Vec<usize> =
-            (0..other.num_states()).map(|i| i + old_num_states).collect();
+        let state_mapping: Vec<usize> = (0..other.num_states())
+            .map(|i| i + old_num_states)
+            .collect();
 
         self.edges
             .resize(self.edges.len() + other.num_states(), Vec::new());
@@ -179,9 +179,7 @@ impl Fsm {
         let mut new_edges: Vec<Vec<FsmEdge>> = vec![Vec::new(); new_num_states];
         for (i, row) in self.edges.iter().enumerate() {
             for edge in row {
-                if edge.is_epsilon()
-                    && state_mapping[i] == state_mapping[edge.target as usize]
-                {
+                if edge.is_epsilon() && state_mapping[i] == state_mapping[edge.target as usize] {
                     continue; // skip epsilon self-loops
                 }
                 new_edges[state_mapping[i]].push(FsmEdge::new(
