@@ -14,6 +14,7 @@ pub mod compiler;
 pub mod earley;
 pub mod fsm;
 pub mod grammar;
+pub mod matcher;
 pub mod regex;
 pub mod schema;
 pub mod structural_tag;
@@ -22,6 +23,7 @@ pub mod tokenizer;
 
 pub use compiler::{CompiledGrammar, GrammarCompiler};
 pub use grammar::{GrammarData, GrammarExpr, GrammarExprType, Rule, TagDispatch};
+pub use matcher::{BatchGrammarMatcher, GrammarMatcher, TokenBitmask};
 pub use schema::{
     deepseek_xml_tool_calling_to_ebnf, json_schema_to_ebnf, json_schema_to_grammar,
     minimax_xml_tool_calling_to_ebnf, qwen_xml_tool_calling_to_ebnf, JsonFormat,
