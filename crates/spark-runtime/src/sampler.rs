@@ -77,17 +77,6 @@ pub struct SamplingParams {
     /// LZ penalty: penalize tokens that extend repeated n-gram patterns.
     /// 0.0 = disabled. 1.0 = moderate (default). Based on arXiv:2504.20131.
     pub lz_penalty: f32,
-    /// EDT (Entropy-conditioned Dynamic Temperature) strength
-    /// (arXiv:2403.14541 family). 0.0 = disabled. When > 0, the
-    /// effective temperature scales with the pre-temperature
-    /// distribution's normalised entropy: high entropy (uncertain) →
-    /// closer to base temperature, low entropy (confident) → reduced
-    /// temperature toward `edt_floor`. Recommended: 0.5-1.0.
-    pub edt_strength: f32,
-    /// EDT minimum effective temperature. When edt_strength > 0,
-    /// the per-token effective temperature is clamped above this
-    /// floor to prevent total collapse to greedy. Recommended: 0.1.
-    pub edt_floor: f32,
     /// DRY (Don't Repeat Yourself) penalty multiplier. From llama.cpp.
     /// Uses Z-algorithm O(n) sequence matching with exponential penalty.
     /// 0.0 = disabled. Recommended: 0.8.
@@ -125,8 +114,6 @@ impl SamplingParams {
             presence_penalty: 0.0,
             frequency_penalty: 0.0,
             lz_penalty: 0.0,
-            edt_strength: 0.0,
-            edt_floor: 0.1,
             dry_multiplier: 0.0,
             dry_base: 1.75,
             dry_allowed_length: 2,

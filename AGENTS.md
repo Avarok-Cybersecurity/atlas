@@ -140,6 +140,32 @@ If the scope grows past "one PR", split it. If you're about to modify
 something shared (a cross-cutting trait, a build script, CI config), flag
 it in the PR description so reviewers catch it.
 
+## Code Principles & Agent Workflow
+
+To ensure high code quality, all agents contributing to Atlas must strictly adhere to these core programming principles:
+
+### Core Directives
+- **Minimal Edits:** Make the smallest edit necessary—sufficient but not excessive.
+- **TDD & Testing:** Test-driven development is required. Minimize test mocking; maximize production code coverage. Never add test-specific workarounds to production paths.
+- **File Size:** Keep files ≤250 lines. Split larger files via exact piecewise copy when necessary.
+- **Security:** Write secure code adhering to OWASP, CWE, and NIST standards.
+
+### The "Big Three" Invariants (Always Apply)
+- **SSOT (Single Source of Truth):** Every data item has exactly one authoritative source. Derive, don't duplicate.
+- **PCND (Production Code, No Defaults):** No implicit defaults in production code. Require explicit config or fail fast.
+- **SBIO (Strict Boundary for I/O):** Business logic never performs I/O directly. Route through an IORouter abstraction.
+
+### Triggered Principles
+- **SDD (Split Driven Design):** Use when multiple implementations are needed, breaking apart large files, or eliminating duplication.
+- **CBD (Complex Bug Debugging):** Apply for non-trivial bugs, race conditions, async issues, or unclear failure modes.
+
+### Agent Workflow
+- **Plan First:** For any non-trivial task, create a detailed plan before implementation. Use subagents for complex exploration.
+- **Verify Before Done:** Never consider a task complete without proving it works (e.g., via tests or logs).
+- **Autonomous Fixes:** When given a bug report, fix it autonomously without asking for hand-holding.
+- **Self-Improvement:** After user corrections, capture the lesson to prevent the same mistake.
+- **Demand Elegance:** For complex fixes, choose the elegant, well-architected solution over a hacky workaround.
+
 See `CONTRIBUTING.md` for coding style and the CLA expectations,
 `SECURITY.md` for disclosure, and `docs/design/` for the authoritative
 architecture references.

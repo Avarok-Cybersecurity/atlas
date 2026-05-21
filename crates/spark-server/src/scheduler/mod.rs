@@ -43,6 +43,7 @@ use emit_step::*;
 pub use helpers::set_enable_loop_watchdog;
 pub use helpers::set_im_start_hard_stop;
 pub use helpers::set_numeric_token_mask;
+pub use helpers::{WatchdogParams, set_watchdog_params};
 use helpers::*;
 pub use helpers::{CONTENT_LOOP_PERIOD_MAX, CONTENT_LOOP_PERIOD_MIN};
 use lifecycle::*;

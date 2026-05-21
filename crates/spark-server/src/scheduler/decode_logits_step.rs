@@ -278,10 +278,11 @@ pub fn process_decode_logits(
             // self-terminates — see grammar.rs:461-462).
             if !a.inside_tool_body && a.grammar_state.is_some() {
                 a.prose_tokens_since_last_tool = a.prose_tokens_since_last_tool.saturating_add(1);
-                if a.prose_tokens_since_last_tool > MAX_INTER_TOOL_PROSE {
+                let max_prose = watchdog_params().max_inter_tool_prose;
+                if a.prose_tokens_since_last_tool > max_prose {
                     tracing::warn!(
                         prose_tokens = a.prose_tokens_since_last_tool,
-                        max = MAX_INTER_TOOL_PROSE,
+                        max = max_prose,
                         "Inter-tool prose budget exhausted, ending response"
                     );
                     a.finished = true;

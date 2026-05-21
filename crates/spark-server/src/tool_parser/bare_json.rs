@@ -35,7 +35,9 @@ impl ToolCallParser for BareJsonParser {
     }
 
     fn system_prompt(&self, tools: &[ToolDefinition], tool_choice: &ToolChoice) -> String {
-        let tools_json = serde_json::to_string(tools).unwrap_or_else(|_| "[]".into());
+        let tools_json = tool_list_body(tools, || {
+            serde_json::to_string(tools).unwrap_or_else(|_| "[]".into())
+        });
         let mut prompt = format!(
             "You are a function-calling AI model. You have access to the following tools, \
              provided as JSON schemas inside <tools></tools>:\n<tools>\n{tools_json}\n</tools>\n\n\

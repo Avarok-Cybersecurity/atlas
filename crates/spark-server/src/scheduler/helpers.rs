@@ -138,6 +138,66 @@ pub fn enable_loop_watchdog() -> bool {
     *ENABLE_LOOP_WATCHDOG.get().unwrap_or(&false)
 }
 
+/// Per-model tunables for the always-on decode-time watchdogs. Sourced
+/// from MODEL.toml `[behavior]`; the field defaults reproduce the
+/// historical hardcoded constants exactly, so a model that sets nothing
+/// behaves byte-identically to before parameterization.
+#[derive(Debug, Clone, Copy)]
+pub struct WatchdogParams {
+    /// Thinking-loop watchdog: substring-occurrence count that trips a
+    /// forced `</think>`. Default 3 (`THINK_LOOP_MIN_REPEATS`).
+    pub think_loop_min_repeats: usize,
+    /// Thinking-loop watchdog: trailing-token scan window. Default 160
+    /// (`THINK_LOOP_SCAN_WINDOW`).
+    pub think_loop_scan_window: usize,
+    /// F2 confidence-run early-stop enabled. Default `true`. Set false in
+    /// MODEL.toml for models whose deterministic code drafting trips the
+    /// heuristic.
+    pub confidence_early_stop: bool,
+    /// F2 confidence run length before arming forced `</think>`.
+    /// Default 30 (`CONFIDENCE_RUN_LIMIT`).
+    pub confidence_run_length: u32,
+    /// Fuzzy-repetition detector Hamming tolerance divisor: a
+    /// `pattern_len`-token window tolerates `pattern_len / div`
+    /// mismatches. Default 12 (~8%).
+    pub fuzzy_repeat_tolerance_div: usize,
+    /// Cap on free-text tokens between successive `<tool_call>` opens in
+    /// `tool_choice=auto`. Default 384 (`MAX_INTER_TOOL_PROSE`).
+    pub max_inter_tool_prose: u32,
+}
+
+/// Historical-default watchdog tunables — the single source of truth.
+/// Each field equals the constant the watchdog used before
+/// parameterization, so an unset MODEL.toml `[behavior]` is byte-exact.
+const DEFAULT_WATCHDOG_PARAMS: WatchdogParams = WatchdogParams {
+    think_loop_min_repeats: THINK_LOOP_MIN_REPEATS,
+    think_loop_scan_window: THINK_LOOP_SCAN_WINDOW,
+    confidence_early_stop: true,
+    confidence_run_length: CONFIDENCE_RUN_LIMIT,
+    fuzzy_repeat_tolerance_div: 12,
+    max_inter_tool_prose: MAX_INTER_TOOL_PROSE,
+};
+
+impl Default for WatchdogParams {
+    fn default() -> Self {
+        DEFAULT_WATCHDOG_PARAMS
+    }
+}
+
+static WATCHDOG_PARAMS: std::sync::OnceLock<WatchdogParams> = std::sync::OnceLock::new();
+
+/// Set once at startup from the resolved `ModelBehavior`. Idempotent.
+pub fn set_watchdog_params(p: WatchdogParams) {
+    let _ = WATCHDOG_PARAMS.set(p);
+}
+
+/// Read the per-model watchdog tunables. Returns the historical-default
+/// `WatchdogParams` until `set_watchdog_params` runs — so unit tests and
+/// any pre-boot caller see exactly the old hardcoded constants.
+pub fn watchdog_params() -> WatchdogParams {
+    *WATCHDOG_PARAMS.get().unwrap_or(&DEFAULT_WATCHDOG_PARAMS)
+}
+
 /// `mask[id] == true` iff token `id` decodes to a pure ASCII-digit run
 /// (optionally one leading space). Built once at startup from the
 /// tokenizer; drives the digit-normalized content-loop path. Fail-open:
@@ -168,64 +228,6 @@ pub fn numeric_token_mask() -> Option<std::sync::Arc<[bool]>> {
 /// non-tool-body tokens only.
 pub const MAX_INTER_TOOL_PROSE: u32 = 384;
 
-/// F26 (2026-04-26): kernel-level entropy-collapse guard.
-///
-/// Disabled (`STREAK_K = 0`). Field experience: F26's pure-entropy
-/// threshold can't distinguish wedged sampling from legitimate
-/// high-confidence output (confident prose, code, JSON arrays). The
-/// content-loop watchdog (`detect_content_token_loop`) gated on
-/// per-model `enable_loop_watchdog` is the correct detector for actual
-/// attractor states.
-///
-/// Constants kept so the call site at `decode_logits_seq.rs:285` still
-/// type-checks; with `STREAK_K = 0` the gate is a no-op.
-pub const ENTROPY_COLLAPSE_THRESHOLD_NATS: f32 = 0.5;
-pub const ENTROPY_COLLAPSE_STREAK_K: u32 = 0;
-pub const ENTROPY_COLLAPSE_WARMUP_TOKENS: usize = 32;
-
-/// F27 (2026-04-26): logit-space attractor fingerprint.
-///
-/// Hash the f32_logits at 64 strided positions (~vocab/64 spacing).
-/// Two tokens with near-identical logit distributions produce the
-/// same fingerprint. If the same fingerprint repeats across recent
-/// samples WHILE tokens varied (different sampled token each step),
-/// the model is in an attractor where its decision space is stable
-/// but it samples differently each time — exactly the
-/// "different-tokens, same-internal-state" pattern hidden-state
-/// cosine catches but at logit level (~1 µs/token, no kernel work).
-///
-/// `F27_RING_CAP`: ring buffer of recent fingerprints.
-/// `F27_STREAK_K`: consecutive matches before tripping.
-/// Same warmup + guard semantics as F26.
-pub const F27_RING_CAP: usize = 16;
-pub const F27_STREAK_K: u32 = 6;
-pub const F27_FINGERPRINT_SAMPLES: usize = 64;
-pub const F27_FINGERPRINT_QUANT: f32 = 2.0; // ~0.5 nat resolution
-
-/// Compute a strided 64-bit fingerprint of the logit distribution.
-/// Quantises each sampled value to ~0.5 nat resolution before
-/// hashing so tiny FP-noise differences don't change the hash.
-pub fn fingerprint_logits_strided(logits: &[f32]) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::Hasher;
-    let mut h = DefaultHasher::new();
-    let stride = (logits.len() / F27_FINGERPRINT_SAMPLES).max(1);
-    let mut taken = 0;
-    let mut i = 0;
-    while i < logits.len() && taken < F27_FINGERPRINT_SAMPLES {
-        let v = logits[i];
-        let q: i32 = if v.is_finite() {
-            (v * F27_FINGERPRINT_QUANT).round() as i32
-        } else {
-            i32::MIN
-        };
-        h.write_i32(q);
-        i += stride;
-        taken += 1;
-    }
-    h.finish()
-}
-
 /// Return `true` iff some contiguous subsequence of length
 /// `p ∈ [THINK_LOOP_PERIOD_MIN, THINK_LOOP_PERIOD_MAX]` appears
 /// `THINK_LOOP_MIN_REPEATS`+ times in the last
@@ -238,13 +240,14 @@ pub fn fingerprint_logits_strided(logits: &[f32]) -> u64 {
 /// periodic repeat" detector misses these; a substring-occurrence
 /// counter catches them.
 pub fn detect_thinking_token_loop(tokens: &[u32]) -> bool {
+    let wp = watchdog_params();
     detect_token_loop(
         tokens,
         THINK_LOOP_MIN_TOKENS as usize,
         THINK_LOOP_PERIOD_MIN,
         THINK_LOOP_PERIOD_MAX,
-        THINK_LOOP_MIN_REPEATS,
-        THINK_LOOP_SCAN_WINDOW,
+        wp.think_loop_min_repeats,
+        wp.think_loop_scan_window,
     )
 }
 
@@ -429,13 +432,14 @@ pub fn toggle_code_fence(in_fence: bool, tok: u32, fence_tok: Option<u32>) -> bo
 /// that boundary decision is `should_inject_think_end` below, which
 /// defers the injection until the fence closes (a safe boundary).
 ///
-/// `CONFIDENCE_RUN_LIMIT` (30) is named, not a magic literal (SSOT).
+/// `CONFIDENCE_RUN_LIMIT` (30) is the historical default; the live limit
+/// is `watchdog_params().confidence_run_length` (MODEL.toml-tunable).
 pub const CONFIDENCE_RUN_LIMIT: u32 = 30;
 
 pub fn confidence_run_step(confident: bool, prev_run: u32) -> (u32, bool) {
     if confident {
         let run = prev_run + 1;
-        (run, run >= CONFIDENCE_RUN_LIMIT)
+        (run, run >= watchdog_params().confidence_run_length)
     } else {
         (0, false)
     }
