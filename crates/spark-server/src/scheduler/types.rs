@@ -158,6 +158,12 @@ pub(super) struct ActiveSeq {
     pub prose_tokens_since_last_tool: u32,
     /// F10 (2026-04-26): how many times the thinking-loop watchdog has fired.
     pub think_watchdog_fires: u32,
+    /// Phase-C: how many times a degeneration watchdog has rolled this
+    /// sequence back to a boundary and re-steered. Capped at
+    /// [`atlas_kernels::ROLLBACK_RESTEER_CAP`]; once the cap is hit the
+    /// watchdog reverts to a hard stop. See
+    /// [`super::rollback::rollback_to_boundary`].
+    pub rollback_count: u32,
     /// Grammar state for constrained decoding (tool_choice="required").
     pub grammar_state: Option<GrammarState>,
     /// MTP draft tokens awaiting verification.
@@ -230,6 +236,8 @@ pub(super) struct SwappedSeq {
     pub content_tokens: u32,
     pub prose_tokens_since_last_tool: u32,
     pub think_watchdog_fires: u32,
+    /// Phase-C: watchdog rollback counter, preserved across snapshot/restore.
+    pub rollback_count: u32,
     pub tool_call_start_token: Option<u32>,
     pub tool_call_opened: bool,
     pub tool_call_end_token: Option<u32>,

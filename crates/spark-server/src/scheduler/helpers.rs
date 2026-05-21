@@ -164,18 +164,25 @@ pub struct WatchdogParams {
     /// Cap on free-text tokens between successive `<tool_call>` opens in
     /// `tool_choice=auto`. Default 384 (`MAX_INTER_TOOL_PROSE`).
     pub max_inter_tool_prose: u32,
+    /// Phase-C: when a degeneration watchdog fires, roll back to the last
+    /// well-formed boundary and re-steer instead of hard-stopping.
+    /// Default `true`. See [`super::rollback::rollback_to_boundary`].
+    pub rollback_resteer: bool,
 }
 
 /// Historical-default watchdog tunables — the single source of truth.
 /// Each field equals the constant the watchdog used before
 /// parameterization, so an unset MODEL.toml `[behavior]` is byte-exact.
+/// `CONFIDENCE_RUN_LIMIT` now lives in the sibling `confidence` module
+/// (F2 helper extraction); referenced here as the historical default.
 const DEFAULT_WATCHDOG_PARAMS: WatchdogParams = WatchdogParams {
     think_loop_min_repeats: THINK_LOOP_MIN_REPEATS,
     think_loop_scan_window: THINK_LOOP_SCAN_WINDOW,
     confidence_early_stop: true,
-    confidence_run_length: CONFIDENCE_RUN_LIMIT,
+    confidence_run_length: super::confidence::CONFIDENCE_RUN_LIMIT,
     fuzzy_repeat_tolerance_div: 12,
     max_inter_tool_prose: MAX_INTER_TOOL_PROSE,
+    rollback_resteer: true,
 };
 
 impl Default for WatchdogParams {
@@ -214,6 +221,27 @@ pub fn set_numeric_token_mask(mask: std::sync::Arc<[bool]>) {
 /// runs — callers must treat `None` as "normalized path disabled".
 pub fn numeric_token_mask() -> Option<std::sync::Arc<[bool]>> {
     NUMERIC_TOKEN_MASK.get().cloned()
+}
+
+/// `mask[id] == true` iff token `id` decodes to text ending in a
+/// well-formed generation boundary — a newline, or sentence-ending
+/// punctuation (`.`, `!`, `?`) optionally followed by a closing quote
+/// or whitespace. Built once at startup from the tokenizer; drives
+/// [`super::rollback::rollback_to_boundary`]'s boundary search.
+/// Fail-open: never set → rollback finds no boundary and the watchdog
+/// falls back to its hard stop.
+static BOUNDARY_TOKEN_MASK: std::sync::OnceLock<std::sync::Arc<[bool]>> =
+    std::sync::OnceLock::new();
+
+/// Set once at startup from the resolved tokenizer. Idempotent.
+pub fn set_boundary_token_mask(mask: std::sync::Arc<[bool]>) {
+    let _ = BOUNDARY_TOKEN_MASK.set(mask);
+}
+
+/// Read the boundary-token mask. `None` until `set_boundary_token_mask`
+/// runs — callers must treat `None` as "no boundary info available".
+pub fn boundary_token_mask() -> Option<std::sync::Arc<[bool]>> {
+    BOUNDARY_TOKEN_MASK.get().cloned()
 }
 
 /// F2 (2026-04-26): cap on free-text tokens between successive
@@ -405,75 +433,11 @@ fn detect_token_loop_with_period(
     false
 }
 
-/// Flip `in_fence` when the just-sampled token `tok` is the model's
-/// atomic ``` code-fence token. `fence_tok == None` (tokenizer has no
-/// single fence token) disables the guard: the fence state can never
-/// become `true`, so F2 keeps its prior behaviour (fail-open, PCND —
-/// no implicit default, the absence is explicit and inert).
-///
-/// Pure parity function — the single source of truth for fence
-/// tracking, called from the decode token-accept path and unit-tested
-/// directly (no ActiveSeq / logits mocking required).
-pub fn toggle_code_fence(in_fence: bool, tok: u32, fence_tok: Option<u32>) -> bool {
-    match fence_tok {
-        Some(f) if f == tok => !in_fence,
-        _ => in_fence,
-    }
-}
-
-/// F2 confidence-run accumulator. Given whether the current token is
-/// high-confidence (top-1 softmax ≥ 0.95) and the prior consecutive
-/// run length, return `(new_run, should_arm_force_end)`.
-///
-/// Pure accumulator — runs the SAME inside and outside a ``` fence.
-/// We deliberately keep *detecting* inside code: a model that drafts
-/// an unbounded code block in its reasoning still needs braking. What
-/// must NOT happen is the forced `</think>` landing mid-statement —
-/// that boundary decision is `should_inject_think_end` below, which
-/// defers the injection until the fence closes (a safe boundary).
-///
-/// `CONFIDENCE_RUN_LIMIT` (30) is the historical default; the live limit
-/// is `watchdog_params().confidence_run_length` (MODEL.toml-tunable).
-pub const CONFIDENCE_RUN_LIMIT: u32 = 30;
-
-pub fn confidence_run_step(confident: bool, prev_run: u32) -> (u32, bool) {
-    if confident {
-        let run = prev_run + 1;
-        (run, run >= watchdog_params().confidence_run_length)
-    } else {
-        (0, false)
-    }
-}
-
-/// Boundary gate for the forced `</think>` injection. F2 / the
-/// thinking-budget cap may *arm* `force_end_thinking` while the model
-/// is mid-code-block; injecting `</think>` there would split a
-/// statement (the 2026-05-17 thinkbrake bug) and corrupt the answer.
-/// Defer the injection until the ``` fence closes — code blocks in
-/// reasoning are finite, so the brake then fires cleanly at the
-/// block boundary (right after the closing ```), never mid-statement.
-/// Outside a fence it fires immediately, exactly as before.
-/// In-fence deferral is BOUNDED: if thinking has overrun its budget by
-/// this factor while still in a ``` fence, inject `</think>` anyway.
-/// Without this, a model that writes its entire deliverable as a code
-/// block inside `<think>` keeps `in_code_fence=true` forever, the
-/// budget/F2 brake is deferred indefinitely, and the real answer is
-/// trapped in reasoning_content with an empty content (observed
-/// 2026-05-17: 3D-chess prompt → 3025 reasoning tokens vs 256 budget,
-/// 499-char content stub). 3× budget tolerates a legit in-think code
-/// block; beyond that a hard cut beats dumping the whole answer.
-pub const THINK_DEFER_BUDGET_FACTOR: u32 = 3;
-/// Absolute in-fence deferral ceiling when no thinking budget is set
-/// (F2/THINK_LOOP armed force_end with `thinking_budget=None`).
-pub const THINK_DEFER_ABS_CEILING: u32 = 2048;
-
-pub fn should_inject_think_end(
-    force_end_thinking: bool,
-    in_code_fence: bool,
-    hard_override: bool,
-) -> bool {
-    force_end_thinking && (!in_code_fence || hard_override)
-}
+// F2 confidence-run + code-fence pure helpers (`toggle_code_fence`,
+// `confidence_run_step`, `should_inject_think_end` + their constants)
+// were moved to `confidence.rs` to keep this file ≤500 LoC. They are
+// re-exported through the scheduler module so existing `super::*`
+// call sites are unaffected.
 
 #[cfg(test)]
 #[path = "helpers_tests.rs"]

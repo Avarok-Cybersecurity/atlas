@@ -192,7 +192,31 @@ pub struct ModelBehavior {
     /// reliably unconstrained. When `true`, tool calls are parsed but
     /// not grammar-enforced.
     pub disable_tool_grammar: bool,
+    /// Phase-C: when a decode-time watchdog (content-loop, fuzzy-repeat,
+    /// inter-tool prose) detects degeneration, roll the sequence back to
+    /// the last well-formed boundary and let generation re-steer, instead
+    /// of hard-stopping the response. Default `true` (recovers responses,
+    /// especially mid-tool-call — arXiv:2603.27905 ATLAS-RTC). Set `false`
+    /// to keep the legacy hard-stop behavior. Capped at
+    /// [`crate::ROLLBACK_RESTEER_CAP`] rollbacks per sequence, after which
+    /// the hard-stop fires regardless.
+    pub rollback_resteer: bool,
+    /// Phase-C ROM (arXiv:2603.22016) scaffold. Path to a trained
+    /// repetition-onset detection head artifact. Empty string = no ROM
+    /// head; the F2 confidence heuristic stays as the fallback. A trained
+    /// artifact can be dropped in later via MODEL.toml
+    /// `[behavior].rom_head` without further code changes — the runtime
+    /// loads it through the [`crate::RomHead`] trait seam. The detector
+    /// itself is intentionally NOT implemented (no per-model trained head
+    /// is available); only the optional hook is wired.
+    pub rom_head: &'static str,
 }
+
+/// Phase-C: maximum number of watchdog-triggered rollbacks a single
+/// sequence may perform before the watchdog reverts to a hard stop.
+/// Bounds the worst case where re-steering re-enters the same attractor
+/// — without this a degenerate sequence could rollback indefinitely.
+pub const ROLLBACK_RESTEER_CAP: u32 = 2;
 
 impl Default for ModelBehavior {
     fn default() -> Self {
@@ -214,6 +238,8 @@ impl Default for ModelBehavior {
             max_inter_tool_prose: 384,
             tscg: false,
             disable_tool_grammar: false,
+            rollback_resteer: true,
+            rom_head: "",
         }
     }
 }

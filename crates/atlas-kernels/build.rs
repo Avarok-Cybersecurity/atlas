@@ -82,6 +82,8 @@ struct Target {
     behavior_max_inter_tool_prose: u32,
     behavior_tscg: bool,
     behavior_disable_tool_grammar: bool,
+    behavior_rollback_resteer: bool,
+    behavior_rom_head: String,
     /// Which `(model_type, hidden_size)` pairs this kernel target supports.
     /// Parsed from `[[model_types]]` in MODEL.toml.
     model_type_matches: Vec<ModelTypeMatch>,
@@ -398,6 +400,8 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 behavior_max_inter_tool_prose: pb.max_inter_tool_prose,
                 behavior_tscg: pb.tscg,
                 behavior_disable_tool_grammar: pb.disable_tool_grammar,
+                behavior_rollback_resteer: pb.rollback_resteer,
+                behavior_rom_head: pb.rom_head,
                 model_type_matches,
                 dflash,
             });

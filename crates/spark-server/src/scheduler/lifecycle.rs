@@ -204,6 +204,7 @@ pub fn swap_out_sequence(
         content_tokens: a.content_tokens,
         prose_tokens_since_last_tool: a.prose_tokens_since_last_tool,
         think_watchdog_fires: a.think_watchdog_fires,
+        rollback_count: a.rollback_count,
         tool_call_start_token: a.tool_call_start_token,
         tool_call_opened: a.tool_call_opened,
         tool_call_end_token: a.tool_call_end_token,
@@ -282,6 +283,7 @@ pub fn resume_swapped_seq(
         content_tokens: 0,
         prose_tokens_since_last_tool: 0,
         think_watchdog_fires: s.think_watchdog_fires,
+        rollback_count: s.rollback_count,
         tool_call_start_token: s.tool_call_start_token,
         tool_call_opened: s.tool_call_opened,
         // Resumed sequences re-enter outside any tool body — even if

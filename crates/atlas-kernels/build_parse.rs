@@ -141,6 +141,8 @@ pub(super) struct ParsedBehavior {
     pub max_inter_tool_prose: u32,
     pub tscg: bool,
     pub disable_tool_grammar: bool,
+    pub rollback_resteer: bool,
+    pub rom_head: String,
 }
 
 impl Default for ParsedBehavior {
@@ -163,6 +165,8 @@ impl Default for ParsedBehavior {
             max_inter_tool_prose: 384,
             tscg: false,
             disable_tool_grammar: false,
+            rollback_resteer: true,
+            rom_head: String::new(),
         }
     }
 }
@@ -258,6 +262,15 @@ pub(super) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .and_then(|v| v.get("disable_tool_grammar"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let rollback_resteer = b
+        .and_then(|v| v.get("rollback_resteer"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let rom_head = b
+        .and_then(|v| v.get("rom_head"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     ParsedBehavior {
         thinking_in_tools,
         max_thinking_budget,
@@ -276,6 +289,8 @@ pub(super) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         max_inter_tool_prose,
         tscg,
         disable_tool_grammar,
+        rollback_resteer,
+        rom_head,
     }
 }
 

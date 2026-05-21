@@ -120,6 +120,43 @@ pub(crate) fn resolve_tokenizer_runtime(
         );
     }
 
+    // Phase-C boundary-token mask (drives rollback-to-boundary). `mask[id]`
+    // is true iff the token decodes to text *ending* in a well-formed
+    // generation boundary: a newline, or sentence-ending punctuation
+    // (`.`/`!`/`?`) optionally trailed by a closing quote / bracket /
+    // whitespace. Built unconditionally (cheap, model-agnostic, one-time);
+    // consumed only when a watchdog fires under `rollback_resteer`.
+    // Fail-open: any decode error leaves that id `false`.
+    {
+        let vocab_size = tokenizer.inner().get_vocab_size(true);
+        let mut mask: Vec<bool> = vec![false; vocab_size];
+        let mut boundary_count = 0usize;
+        let is_boundary = |s: &str| -> bool {
+            // Trim trailing closing quotes / brackets / whitespace, then
+            // check the last meaningful byte.
+            let trimmed = s.trim_end_matches([' ', '\t', '"', '\'', ')', ']', '}', '\r']);
+            match trimmed.chars().last() {
+                Some('\n') => true,
+                Some('.') | Some('!') | Some('?') => true,
+                _ => s.ends_with('\n'),
+            }
+        };
+        for (id, slot) in mask.iter_mut().enumerate() {
+            if let Ok(s) = tokenizer.decode_with_special(&[id as u32])
+                && !s.is_empty()
+                && is_boundary(&s)
+            {
+                *slot = true;
+                boundary_count += 1;
+            }
+        }
+        crate::scheduler::set_boundary_token_mask(std::sync::Arc::from(mask));
+        tracing::info!(
+            "Boundary-token mask: {boundary_count}/{vocab_size} ids end in a \
+             newline / sentence boundary (Phase-C rollback-to-boundary active)"
+        );
+    }
+
     if let Some(tid) = think_end_token {
         tracing::info!(
             "Thinking end token: {} ({})",

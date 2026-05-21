@@ -168,6 +168,7 @@ fn build_active_seq_from_prefill(
         content_tokens: 0,
         prose_tokens_since_last_tool: 0,
         think_watchdog_fires: 0,
+        rollback_count: 0,
         tool_call_end_token,
         grammar_state: p.grammar_state,
         last_token_time: now,

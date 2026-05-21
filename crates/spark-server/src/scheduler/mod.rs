@@ -13,6 +13,8 @@
 //! When busy: drains pending queue (mutex lock) after each decode step.
 
 // ── Submodules (split for ≤500 LoC files) ──────────────────────────────────
+mod confidence;
+mod decode_logits_content;
 mod decode_logits_seq;
 mod decode_logits_step;
 mod decode_step;
@@ -28,6 +30,7 @@ mod phase_start_prefills;
 mod prefill_a_step;
 mod prefill_b_step;
 mod repetition;
+mod rollback;
 mod sample_step;
 mod spec_step;
 mod types;
@@ -36,10 +39,13 @@ mod verify_k2_step;
 mod verify_k3_step;
 mod verify_k4_step;
 
+use confidence::*;
+use decode_logits_content::*;
 use decode_logits_seq::*;
 use decode_logits_step::*;
 use decode_step::*;
 use emit_step::*;
+pub use helpers::set_boundary_token_mask;
 pub use helpers::set_enable_loop_watchdog;
 pub use helpers::set_im_start_hard_stop;
 pub use helpers::set_numeric_token_mask;
@@ -55,6 +61,7 @@ use phase_start_prefills::start_new_requests;
 use prefill_a_step::*;
 use prefill_b_step::*;
 use repetition::*;
+use rollback::{RollbackOutcome, rollback_to_boundary};
 use sample_step::*;
 use spec_step::*;
 use types::*;
