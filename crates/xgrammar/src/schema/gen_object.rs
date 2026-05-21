@@ -209,7 +209,7 @@ impl<'p> JsonSchemaConverter<'p> {
                 let key_pattern = self.create_rule(prop_names, &format!("{rule_name}_name"))?;
                 let val_rule = self.create_rule(add, &format!("{rule_name}_{effective_suffix}"))?;
                 pp_override = format!("{key_pattern} {} {val_rule}", self.colon_pattern);
-                effective_suffix = "pn".to_string();
+                effective_suffix = "propnames".to_string();
             }
         }
 
