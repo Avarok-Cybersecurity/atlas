@@ -182,4 +182,21 @@ pub(super) fn append_tool_choice_instruction(prompt: &mut String, tool_choice: &
     }
 }
 
+/// Render the `<tools>` body for a parser's `system_prompt()`.
+///
+/// When TSCG is enabled (MODEL.toml `[behavior].tscg`), returns the
+/// compact function-signature block. Otherwise calls `render_json` —
+/// the parser's existing JSON serialization — so the TSCG-off path is
+/// byte-identical to before this helper existed.
+pub(super) fn tool_list_body(
+    tools: &[ToolDefinition],
+    render_json: impl FnOnce() -> String,
+) -> String {
+    if crate::tscg::tscg_enabled() {
+        crate::tscg::compile_tools(tools)
+    } else {
+        render_json()
+    }
+}
+
 // ── Output parsing (format-agnostic) ──

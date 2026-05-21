@@ -172,6 +172,26 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
             crate::scheduler::CONTENT_LOOP_PERIOD_MAX,
         );
     }
+    // Phase-A: per-model watchdog tunables from MODEL.toml [behavior].
+    let b = &ptx_set.behavior;
+    crate::scheduler::set_watchdog_params(crate::scheduler::WatchdogParams {
+        think_loop_min_repeats: b.think_loop_min_repeats as usize,
+        think_loop_scan_window: b.think_loop_scan_window as usize,
+        confidence_early_stop: b.confidence_early_stop,
+        confidence_run_length: b.confidence_run_length,
+        fuzzy_repeat_tolerance_div: b.fuzzy_repeat_tolerance_div as usize,
+        max_inter_tool_prose: b.max_inter_tool_prose,
+    });
+    if !b.confidence_early_stop {
+        tracing::info!("Model behavior: F2 confidence early-stop DISABLED");
+    }
+    // Phase-B: TSCG tool-schema compilation (MODEL.toml [behavior].tscg).
+    crate::tscg::set_tscg_enabled(b.tscg);
+    if b.tscg {
+        tracing::info!(
+            "Model behavior: TSCG tool-schema compilation ENABLED (compact signatures)"
+        );
+    }
     if args.disable_thinking {
         tracing::info!("--disable-thinking set: thinking is forced OFF for every request");
     }
