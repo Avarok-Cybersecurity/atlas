@@ -590,3 +590,82 @@ The fix chain for Nemotron is now:
 `SsmStatePool` (+1 dummy slot) allocation confirmed correct (see 2026-05-20 deep-dive).
 `SsmSnapshotPool::new` still takes `ssm_cache_slots` directly; `--ssm-cache-slots 0`
 correctly zeros it. No code change needed or made.
+
+---
+
+## 2026-05-21 Independent Re-investigation (this session)
+
+Full file-by-file audit of all files named in the original bug reports against spec_ssm HEAD
+(`5721593`). No new bugs found. All prior fixes confirmed correct and complete.
+
+### P1 — Mistral Small 4 MLA prefill
+
+Files audited: `prefill/cache_skip_mla.rs`, `prefill/paged_mla.rs`,
+`decode/attention_forward_mla.rs`, `kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu`,
+`kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu`,
+`crates/spark-server/src/main_modules/kv_dtypes.rs`,
+`crates/spark-model/src/mistral_loader/loader_impl/phase_assemble.rs`,
+`crates/spark-model/src/mistral_loader/loader_impl/yarn.rs`.
+
+Key confirmations:
+- `cache_skip_mla.rs`: `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0)` hard-blocks any
+  fallback to the broken HDIM=256 path. `inv_sqrt_d_absorbed = 1/sqrt(320)` correct.
+  `write_kv_cache` strides use `mla_cache_dim` (320) on both K and V.
+- `mla_fused_prefill.cu`: `smem_dot[8]` at line 115 (before loop at 126), confirmed distinct
+  from `smem_q[320]` (line 75) and `smem_latent[256]` (line 190). Causal mask
+  `kv_end = min(q_pos+1, seq_len)` correct at all seq_len. All pointer offsets cast to
+  `unsigned long long` — no 32-bit overflow up to max_seq_len=65536.
+- `kv_dtypes.rs`: `build_layer_kv_dtypes(BF16, N, hp)` returns `vec![BF16; N]` via
+  early-return at line 20-22 — `--kv-high-precision-layers auto` (hp=2) has no effect when
+  `kv_dtype==BF16`. All 36 MLA layers uniformly BF16. No FP8/BF16 mixing possible.
+- `phase_assemble.rs`: `unwrap_or(KvCacheDtype::Bf16)` at line 122 — belt-and-suspenders
+  against any future case where the dtype vec is unexpectedly short.
+- `attention_forward_mla.rs`: decode scale `1/sqrt(kv_lora + mla_rope)` matches prefill
+  paths. KV cache format `[latent|rope]` / `[latent|zeros]` with `mla_cache_dim` strides
+  consistent across decode and both prefill paths.
+- `yarn.rs`: correct YaRN dimension-index-space formula, `low=7`, `high=15` for Mistral.
+  YaRN was never the bug; misdiagnosis in original test entry has been corrected in this doc.
+- `KERNEL.toml`: `mla_fused_prefill = "mla_fused_prefill"` and
+  `mla_prefill_paged_320 = "mla_prefill_paged"` both registered — kernels will load.
+  `paged_decode_attn_mla = "paged_decode_mla"` for decode. `-DHDIM=128` compile flag
+  correctly scopes all attention kernels.
+
+### P2 — Nemotron Super 120B tool calling
+
+Files audited: `jinja-templates/nemotron_h.jinja`,
+`crates/spark-server/src/tool_parser.rs`,
+`crates/spark-server/src/tool_parser/bare_json.rs`,
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`.
+
+Key confirmations:
+- `MODEL.toml`: `disable_tool_steering = true`, `tool_call_parser = "bare_json"`,
+  `skip_template_tools = true`, `thinking_in_tools = false` — all four present.
+- `nemotron_h.jinja` line 204: `{%- if tools and not disable_tool_steering %}` — steering
+  prefix gated off. Generation prompt falls through to `<|im_start|>assistant\n<think>\n`.
+- `BareJsonParser::suppresses_jinja_tools()` returns `true` — parser-level guarantee that
+  `template.rs` passes `jinja_tools = None` regardless of MODEL.toml. Dual-path protection:
+  either condition alone is sufficient to prevent XML format-instruction conflict.
+- `BareJsonParser::system_prompt()` produces the sole tool defs in bare-JSON format.
+  xgrammar compiles the tool grammar from token 1.
+
+### P3 — SSM cache slots
+
+Files audited: `crates/spark-server/src/cli.rs`,
+`crates/spark-model/src/model/ssm_pool.rs`,
+`crates/spark-model/src/model/ssm_snapshot.rs`,
+`crates/spark-model/src/model/impl_a1.rs`.
+
+Key confirmations:
+- `cli.rs` line 267: `ssm_cache_slots` default 16. `--ssm-cache-slots 0` correctly
+  propagates through the CLI argument.
+- `impl_a1.rs` line 134-149: `SsmStatePool::new` takes `max_batch_size` (default 8), NOT
+  `ssm_cache_slots`. For Qwen3.5-122B with 36 SSM layers: 8+1 slots × alloc per layer =
+  ~1206 MB. Independent of `--ssm-cache-slots`.
+- `impl_a1.rs` line 143-149: `SsmSnapshotPool::new(ssm_cache_slots, ...)` — `--ssm-cache-slots 0`
+  correctly zeros the snapshot pool.
+- **Mistral and pure-attention models**: `config.num_ssm_layers()` returns 0 → both pools
+  allocate zero GPU memory regardless of `--max-batch-size`. The 1206 MB SSM pool only
+  appears for hybrid models like Qwen3.5-122B (36 SSM layers) and Nemotron Super (40 Mamba-2 layers).
+
+**Conclusion**: all three priority issues are fully resolved. No new bugs found. Branch is
+ready for hardware re-test against the fixed build.
