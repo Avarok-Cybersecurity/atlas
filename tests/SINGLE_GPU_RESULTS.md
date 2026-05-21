@@ -669,3 +669,67 @@ Key confirmations:
 
 **Conclusion**: all three priority issues are fully resolved. No new bugs found. Branch is
 ready for hardware re-test against the fixed build.
+
+---
+
+## 2026-05-21 Final Verification (spec_ssm HEAD `22ae45f`)
+
+Fresh independent audit tracing each original bug report directly to the code, reading every
+file named in the task description. No regressions found; all fixes are present and correct.
+
+### P1 — Mistral Small 4 MLA prefill: exact code locations confirmed
+
+**`cache_skip_mla.rs`** (the non-paged / single-chunk prefill path, `prefill/cache_skip_mla.rs`):
+- Line 253: `inv_sqrt_d_absorbed = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` — `1/sqrt(320)`,
+  correct absorbed-space scale. Old value was `1/sqrt(hd=128)`, which over-sharpened softmax by
+  `sqrt(128/320) ≈ 0.63` and contributed directly to gibberish above ~1000 tokens.
+- Lines 254-259: `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0, "... HDIM=256 is broken for
+  MLA hd=128 ...")` — hard-blocks silent fallback to the old broken kernel at server startup.
+- Lines 229-243: `write_kv_cache` called with `mla_cache_dim` strides on both K and V,
+  matching the decode reader's expected `[kv_lora | mla_rope]` layout.
+
+**`mla_fused_prefill.cu`** (CUDA kernel, `kernels/gb10/mistral-small-4/nvfp4/`):
+- Line 44: parameter `float inv_sqrt_d` — caller passes `1/sqrt(320)` explicitly; kernel does
+  not recompute it, so no internal hardcoding risk.
+- Line 75: `__shared__ float smem_q[320]`; line 115: `__shared__ float smem_dot[8]`;
+  line 190: `__shared__ float smem_latent[256]` — all at function scope, non-overlapping
+  lifetimes, no NVCC aliasing risk.
+- Line 125: `kv_end = min(q_pos + 1, seq_len)` — correct causal bound at all seq_len values
+  up to 65536. No hardcoded cap; no 32-bit overflow (pointer offsets use `unsigned long long`).
+- Grid `(nq, seq_len, 1)` / block `(256, 1, 1)` — scales linearly with seq_len; no shared
+  memory or register pressure changes at >1K tokens.
+
+**`kv_cache.rs` / `main.rs` (`--kv-high-precision-layers auto` interaction)**:
+- `kv_cache.rs` line 231-257: `"auto"` maps to `kv_hp_layers = 2` (ceil(36/3) = 12, clamped
+  per model config). But `build_layer_kv_dtypes(BF16, 36, 2)` hits the early-return at
+  `kv_dtypes.rs` line 20-22 and returns `vec![BF16; 36]` — the `hp` path is never entered
+  when base dtype is BF16. No FP8/BF16 layer mixing is possible for Mistral.
+
+**`decode/attention_forward_mla.rs`** (decode path consistency):
+- Line 377: `let inv_sqrt_d = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` — identical
+  formula to the fixed prefill path.
+- Lines 379-394: calls `ops::paged_decode_attn_bf16(... inv_sqrt_d ...)` — uses the same scale,
+  same KV cache layout `[latent|rope]` / `[latent|zeros]` as prefill. No divergence.
+
+### P2 — Nemotron Super 120B tool calling: dual-path protection confirmed
+
+- `MODEL.toml` (`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`):
+  `disable_tool_steering = true` (line 58), `tool_call_parser = "bare_json"` (line 67),
+  `skip_template_tools = true` (line 80), `thinking_in_tools = false` (line 51) — all four
+  settings present.
+- `tool_parser.rs` lines 265-280: `suppresses_jinja_tools()` trait method added with default
+  `false`.
+- `bare_json.rs` lines 52-54: `BareJsonParser::suppresses_jinja_tools()` overrides to `true` —
+  parser-level guarantee that `template.rs` passes `jinja_tools = None` for any `bare_json`
+  model, regardless of MODEL.toml. Either condition alone prevents the XML format conflict.
+
+### P3 — SSM cache slots: propagation chain traced end-to-end
+
+- `cli.rs` line 268: `ssm_cache_slots: usize` — `--ssm-cache-slots 0` propagates through.
+- `impl_a1.rs` line 134-140: `SsmStatePool::new(gpu, &config, max_batch_size, ...)` — uses
+  `max_batch_size`, NOT `ssm_cache_slots`. This is required: each concurrent sequence needs its
+  own h_state/conv_state buffer.
+- `impl_a1.rs` line 143-149: `SsmSnapshotPool::new(ssm_cache_slots, ...)` — `--ssm-cache-slots 0`
+  correctly disables only the prefix-cache snapshot pool.
+- Pure-attention models (Mistral: 0 SSM layers, Nemotron attention layers only): both pools
+  allocate zero GPU memory regardless of flag values.
