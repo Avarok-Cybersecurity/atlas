@@ -12,6 +12,9 @@
 
 pub mod fsm;
 pub mod grammar;
+pub mod regex;
 pub mod support;
+pub mod tokenizer;
 
 pub use grammar::{GrammarData, GrammarExpr, GrammarExprType, Rule, TagDispatch};
+pub use tokenizer::{TokenizerInfo, VocabType};

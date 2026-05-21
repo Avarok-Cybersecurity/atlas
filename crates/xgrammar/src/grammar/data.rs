@@ -10,6 +10,7 @@
 // `[type, data_len, data0, data1, …]`.
 
 use super::expr::{GrammarExpr, GrammarExprType};
+use crate::fsm::{CompactFsm, CompactFsmWithStartEnd};
 
 /// A named production rule. `rule_id` is this rule's index in
 /// [`GrammarData::rules`].
@@ -61,9 +62,10 @@ const TAG_DISPATCH_EXTRA: usize = 4;
 
 /// The BNF grammar AST. Equivalent to xgrammar's `Grammar::Impl`.
 ///
-/// FSM acceleration fields (`complete_fsm`, `per_rule_fsms`, …) are
-/// added in port wave W2 once the `fsm` module lands; W1 covers the
-/// pure AST that every later wave builds against.
+/// The FSM acceleration fields (`complete_fsm`, `per_rule_fsms`,
+/// `per_rule_fsm_hashes`, `per_rule_fsm_new_state_ids`) are populated
+/// by the W3 grammar-functor passes (`GrammarFSMBuilder` /
+/// `GrammarFSMHasher`); they are `Default::default()` until then.
 #[derive(Debug, Clone, Default)]
 pub struct GrammarData {
     /// Rules, indexed by `rule_id`.
@@ -78,6 +80,18 @@ pub struct GrammarData {
     pub allow_empty_rule_ids: Vec<i32>,
     /// Whether grammar optimization passes have run.
     pub optimized: bool,
+    /// The single FSM holding every rule's states/edges, built by
+    /// `GrammarFSMBuilder`. Empty until the FSM builder runs.
+    pub complete_fsm: CompactFsm,
+    /// Per-rule FSM views into `complete_fsm`. `None` for a rule whose
+    /// body could not be expressed as an FSM. Empty until built.
+    pub per_rule_fsms: Vec<Option<CompactFsmWithStartEnd>>,
+    /// Per-rule structural hash of the rule's FSM, or `None` when the
+    /// rule could not be hashed. Set by `GrammarFSMHasher`.
+    pub per_rule_fsm_hashes: Vec<Option<u64>>,
+    /// Per-rule `(original_state_id, new_state_id)` mapping produced
+    /// alongside the hash by `GrammarFSMHasher`.
+    pub per_rule_fsm_new_state_ids: Vec<Vec<(i32, i32)>>,
 }
 
 impl GrammarData {
@@ -102,9 +116,20 @@ impl GrammarData {
             expr_data,
             expr_indptr,
             root_rule_id,
-            allow_empty_rule_ids: Vec::new(),
-            optimized: false,
+            ..Default::default()
         }
+    }
+
+    /// Mutable access to a rule's name — used by `RootRuleRenamer`.
+    pub fn set_rule_name(&mut self, rule_id: i32, name: impl Into<String>) {
+        self.rules[rule_id as usize].name = name.into();
+    }
+
+    /// Borrowed view of expr `expr_id` as `(type, &mut data[..])`. Used
+    /// by `RepetitionNormalizer` to rewrite a `Repeat` payload in place.
+    pub fn set_expr_data(&mut self, expr_id: i32, index: usize, value: i32) {
+        let start = self.expr_indptr[expr_id as usize] as usize;
+        self.expr_data[start + 2 + index] = value;
     }
 
     /// Number of rules.
@@ -146,6 +171,17 @@ impl GrammarData {
     /// Number of expressions.
     pub fn num_exprs(&self) -> i32 {
         self.expr_indptr.len() as i32
+    }
+
+    /// Append a raw `(type, data[])` expression to the CSR store and
+    /// return its new expr id. Used by `LookaheadAssertionAnalyzer`,
+    /// which adds Sequence exprs to an already-built grammar.
+    pub fn append_expr(&mut self, kind: GrammarExprType, data: &[i32]) -> i32 {
+        self.expr_indptr.push(self.expr_data.len() as i32);
+        self.expr_data.push(kind as i32);
+        self.expr_data.push(data.len() as i32);
+        self.expr_data.extend_from_slice(data);
+        self.expr_indptr.len() as i32 - 1
     }
 
     /// Borrowed view of expression `expr_id`. The CSR slot is
