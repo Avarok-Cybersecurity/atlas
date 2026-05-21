@@ -185,9 +185,7 @@ pub(super) fn build_sampling(
         // Structure-snowballing escape hatch (arXiv:2604.06066): this
         // model tool-calls more reliably unconstrained. Tool calls are
         // still parsed from the output — just not grammar-enforced.
-        tracing::info!(
-            "MODEL.toml [behavior].disable_tool_grammar=true — tool-call grammar OFF"
-        );
+        tracing::info!("MODEL.toml [behavior].disable_tool_grammar=true — tool-call grammar OFF");
         None
     } else if tools_active {
         if has_response_format {

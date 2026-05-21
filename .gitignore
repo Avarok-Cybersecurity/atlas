@@ -4,6 +4,9 @@ target/
 *.o
 *.ptx
 *.bak
+
+# tool-eval-bench run reports — local benchmark output, not source
+/runs/
 # Vendored crate's `Cargo.toml.orig` from upstream merge — regenerated
 # on every `cargo vendor`, shouldn't be tracked.
 **/Cargo.toml.orig

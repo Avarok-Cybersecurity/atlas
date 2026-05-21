@@ -363,10 +363,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // `w4a16_gemm_t`. Decode batch paths keep their NVFP4
                     // fallback (the `qkvz_nvfp4*` fields above).
                     if qkvz_fp8_prefill.is_some() || out_proj_fp8_prefill.is_some() {
-                        layer.set_fp8_prefill_only_weights(
-                            qkvz_fp8_prefill,
-                            out_proj_fp8_prefill,
-                        );
+                        layer.set_fp8_prefill_only_weights(qkvz_fp8_prefill, out_proj_fp8_prefill);
                     }
                     layers.push(Box::new(layer));
                 }

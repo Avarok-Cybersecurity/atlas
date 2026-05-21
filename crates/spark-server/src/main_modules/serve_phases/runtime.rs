@@ -188,9 +188,7 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
     // Phase-B: TSCG tool-schema compilation (MODEL.toml [behavior].tscg).
     crate::tscg::set_tscg_enabled(b.tscg);
     if b.tscg {
-        tracing::info!(
-            "Model behavior: TSCG tool-schema compilation ENABLED (compact signatures)"
-        );
+        tracing::info!("Model behavior: TSCG tool-schema compilation ENABLED (compact signatures)");
     }
     if args.disable_thinking {
         tracing::info!("--disable-thinking set: thinking is forced OFF for every request");
