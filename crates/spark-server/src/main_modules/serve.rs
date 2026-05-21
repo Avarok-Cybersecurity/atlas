@@ -463,6 +463,10 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             b
         },
         disable_thinking: args.disable_thinking,
+        default_chat_template_kwargs: args
+            .default_chat_template_kwargs
+            .as_ref()
+            .and_then(|s| crate::openai::ChatTemplateKwargs::from_json(s)),
         response_store,
         rate_limiter,
         conversation_store,

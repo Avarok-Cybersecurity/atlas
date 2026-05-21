@@ -95,6 +95,16 @@ pub struct ServeArgs {
     #[arg(long)]
     pub max_thinking_budget: Option<u32>,
 
+    /// Default chat template kwargs applied when the client sends no
+    /// thinking parameters (no `reasoning.effort`, `chat_template_kwargs`,
+    /// or `enable_thinking` in the request body). A JSON object with
+    /// optional keys: `enable_thinking` (bool), `thinking_budget` (u32).
+    ///
+    /// Precedence (highest wins): request body → this flag → MODEL.toml.
+    /// Example: `--default-chat-template-kwargs '{"enable_thinking":true}'`
+    #[arg(long, value_name = "JSON")]
+    pub default_chat_template_kwargs: Option<String>,
+
     /// Currently slower than regular decode for hybrid SSM models.
     #[arg(long, default_value_t = false)]
     pub speculative: bool,
