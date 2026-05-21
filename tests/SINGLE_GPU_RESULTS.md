@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -525,3 +525,68 @@ to allocate 1 slot when `ssm_cache_slots == 0`, but that code change was not inc
 the diff (only `kv_dtypes.rs` and `SINGLE_GPU_RESULTS.md` changed). The decision to
 document this as "by design" (workaround: `--max-batch-size 1`) is correct given that
 reducing to 1 active slot would break concurrent serving. No code change needed.
+
+---
+
+## 2026-05-21 Re-audit (HEAD `6b6e755`)
+
+Full re-investigation of all four files listed in the original bug reports, plus the
+latest feat commit. No new bugs found; all prior fixes confirmed correct.
+
+### P1 — Mistral Small 4: all fixes still hold
+
+**`cache_skip_mla.rs`**: routes single-chunk MLA prefill through `ops::mla_fused_prefill`
+(kernel handle `mla_fused_prefill_k`). `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0)`
+fails at server startup if the kernel binary is absent — prevents silent fallback to the
+broken HDIM=256 path. `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)`.
+`write_kv_cache` strides use `mla_cache_dim` on both K and V arms — consistent with the
+decode reader. Buffer reuse of `ssm_ba()` for `q_latent` then `k_rope_buf` is safe;
+all consumers of `q_latent` (the `wq_b` GEMM into `qg_out`) are enqueued before the
+`k_rope_buf` write starts.
+
+**`mla_absorbed.cu` / `mla_fused_prefill.cu`**: `smem_dot[8]` declared at function scope
+before the `kv_pos` loop, confirmed at line 115. No aliasing with `smem_q[320]` (line 75)
+or `smem_latent[256]` (line 190). Causal mask `kv_end = min(q_pos+1, seq_len)` is correct
+for all seq_len. All index arithmetic in the tile loop is `unsigned int` with
+`(unsigned long long)` pointer offsets — no 32-bit overflow up to seq_len=65536.
+
+**`kv_cache.rs` (`--kv-high-precision-layers auto`)**: `kv_hp_layers=2` for "auto", but
+`build_layer_kv_dtypes(BF16, N, 2)` returns `vec![BF16; N]` via the early-return at
+line 17-18 (`kv_dtype == Bf16` short-circuits). All 36 MLA layers are uniformly BF16.
+`phase_assemble.rs` uses `unwrap_or(KvCacheDtype::Bf16)` — no FP8 silent fallback.
+
+**`decode/attention_forward_mla.rs`**: absorbed-space scale confirmed at
+`1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()`. KV cache assembled as `[latent | rope]`
+/ `[latent | zeros]` via `mla_cache_assemble` with strides `mla_cache_dim` — identical
+to prefill path. Q_rope scatter/writeback layout matches paged cache format.
+
+**`yarn.rs`**: original YaRN-misdiagnosis attribution confirmed again. The
+`find_correction_dim` implementation uses dimension-index space with `beta_fast=32`,
+`beta_slow=1`, computing `low=7, high=15` for Mistral's params — was never the bug.
+
+### P2 — Nemotron: `suppresses_jinja_tools()` defense-in-depth (commit `6b6e755`)
+
+The latest commit added `ToolCallParser::suppresses_jinja_tools()` trait method (default
+`false`). `BareJsonParser` overrides to `true` — because its `system_prompt()` already
+provides the complete tool schema and format instructions, any Jinja template injection
+would produce conflicting format instructions. With this override in place, `template.rs`
+passes `jinja_tools = None` for any model whose parser returns `true` here, regardless of
+whether `skip_template_tools = true` is set in MODEL.toml.
+
+This is a defense-in-depth improvement: the original fix required `skip_template_tools =
+true` in MODEL.toml. With this change, any future model using `tool_call_parser = "bare_json"` gets correct behavior automatically without a MODEL.toml override. The Nemotron
+Super 120B MODEL.toml still has `skip_template_tools = true` (belt-and-suspenders), but
+either condition is now sufficient.
+
+The fix chain for Nemotron is now:
+1. Parser-level: `BareJsonParser::suppresses_jinja_tools() → true` (new, automatic)
+2. MODEL.toml: `skip_template_tools = true` (still present, redundant but harmless)
+3. Either condition independently prevents XML `<function>` blocks from the template
+4. `BareJsonParser::system_prompt()` is the sole source of tool defs (bare-JSON format)
+5. xgrammar enforces `{"name":"...","arguments":{...}}` schema from token 1
+
+### P3 — SSM pool: no change
+
+`SsmStatePool` (+1 dummy slot) allocation confirmed correct (see 2026-05-20 deep-dive).
+`SsmSnapshotPool::new` still takes `ssm_cache_slots` directly; `--ssm-cache-slots 0`
+correctly zeros it. No code change needed or made.
