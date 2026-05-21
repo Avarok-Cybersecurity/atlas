@@ -4,10 +4,9 @@
 # decoding engine. A from-scratch port of mlc-ai/xgrammar v0.1.32
 # (originally C++), eliminating the cxx FFI bridge and the C++
 # toolchain dependency. See PORT_PLAN.md for the port roadmap.
-# Standalone workspace during the port so `cargo` does not try to
-# attach this crate to the parent atlas-mtp workspace. Removed at
-# wave W7 when the crate is added to the atlas workspace `members`.
-[workspace]
+# W7: the standalone `[workspace]` table was removed so this crate
+# joins the parent atlas workspace (registered in the root
+# `Cargo.toml` `members` list); `spark-server` depends on it directly.
 
 [package]
 name = "xgrammar"

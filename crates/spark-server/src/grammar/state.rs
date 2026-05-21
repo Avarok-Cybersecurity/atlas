@@ -3,8 +3,7 @@
 //! Per-request grammar matching state.
 
 use xgrammar::{
-    CompiledGrammar, DLDataType, DLDataTypeCode, DLDevice, DLDeviceType, DLTensor, GrammarMatcher,
-    allocate_token_bitmask, get_bitmask_shape, reset_token_bitmask,
+    CompiledGrammar, GrammarMatcher, allocate_token_bitmask, reset_token_bitmask,
 };
 
 use super::engine::GrammarError;
@@ -19,10 +18,6 @@ pub struct GrammarState {
     matcher: GrammarMatcher,
     /// Bitmask buffer: `Box<[i32]>` of shape `(1, ceil(vocab_size / 32))`.
     bitmask_data: Box<[i32]>,
-    /// Shape array kept alive for DLTensor pointer stability.
-    bitmask_shape: [i64; 2],
-    /// Stride array kept alive for DLTensor pointer stability.
-    bitmask_strides: [i64; 2],
     vocab_size: usize,
 }
 
@@ -39,15 +34,10 @@ impl GrammarState {
         .map_err(GrammarError::Compilation)?;
 
         let bitmask_data = allocate_token_bitmask(1, vocab_size);
-        let (_, bitmask_cols) = get_bitmask_shape(1, vocab_size);
-        let bitmask_shape = [1i64, bitmask_cols as i64];
-        let bitmask_strides = [bitmask_cols as i64, 1i64];
 
         Ok(Self {
             matcher,
             bitmask_data,
-            bitmask_shape,
-            bitmask_strides,
             vocab_size,
         })
     }
@@ -71,8 +61,8 @@ impl GrammarState {
             return false;
         }
         reset_token_bitmask(&mut self.bitmask_data);
-        let mut tensor = self.make_bitmask_dltensor();
-        self.matcher.fill_next_token_bitmask(&mut tensor, 0, false)
+        self.matcher
+            .fill_next_token_bitmask(&mut self.bitmask_data, 0, false)
     }
 
     /// Raw bitmask data: `ceil(vocab_size / 32)` i32 words.
@@ -149,28 +139,6 @@ impl GrammarState {
         }
     }
 
-    /// Construct a [`DLTensor`] pointing at the internal bitmask buffer.
-    ///
-    /// The tensor is valid only while `self` is alive and the bitmask data
-    /// is not reallocated (it never is — size is fixed at construction).
-    fn make_bitmask_dltensor(&mut self) -> DLTensor {
-        DLTensor {
-            data: self.bitmask_data.as_mut_ptr() as *mut std::ffi::c_void,
-            device: DLDevice {
-                device_type: DLDeviceType::kDLCPU,
-                device_id: 0,
-            },
-            ndim: 2,
-            dtype: DLDataType {
-                code: DLDataTypeCode::kDLInt as u8,
-                bits: 32,
-                lanes: 1,
-            },
-            shape: self.bitmask_shape.as_mut_ptr(),
-            strides: self.bitmask_strides.as_mut_ptr(),
-            byte_offset: 0,
-        }
-    }
 }
 
 // ── Vocabulary extraction helper ───────────────────────────────────────
