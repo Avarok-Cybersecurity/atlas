@@ -10,6 +10,8 @@
 // wave-by-wave per PORT_PLAN.md; until then this crate is not yet a
 // drop-in replacement for the vendored `xgrammar-rs`.
 
+pub mod fsm;
 pub mod grammar;
+pub mod support;
 
 pub use grammar::{GrammarData, GrammarExpr, GrammarExprType, Rule, TagDispatch};

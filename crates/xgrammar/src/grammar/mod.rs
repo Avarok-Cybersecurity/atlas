@@ -12,8 +12,13 @@
 //   functor  — normalization passes  (cpp/grammar_functor.cc)  W3
 //   printer  — EBNF printer          (cpp/grammar_printer.cc)  W3
 
+pub mod builder;
 pub mod data;
 pub mod expr;
+pub mod lexer;
+pub mod parser;
 
+pub use builder::GrammarBuilder;
 pub use data::{GrammarData, Rule, TagDispatch};
 pub use expr::{GrammarExpr, GrammarExprType};
+pub use parser::{ParseError, parse_ebnf, parse_ebnf_default};
