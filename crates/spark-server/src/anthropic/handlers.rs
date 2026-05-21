@@ -319,13 +319,20 @@ pub async fn count_tokens(
             msg
         })
         .collect();
-    // Mirror template.rs: skip_template_tools means the bare-json parser's
+    // Mirror template.rs: skip_template_tools (MODEL.toml) OR
+    // parser.suppresses_jinja_tools() (parser-level trait) means the parser's
     // system_prompt() is the sole source of tool schema, so jinja_tools must
-    // be None here too. Passing tools to the Jinja template when
-    // skip_template_tools=true would count the XML <function> block tokens
-    // that the real prompt never includes, inflating the returned count.
+    // be None here too. Passing tools to the Jinja template when either flag
+    // is set would count the XML <function> block tokens that the real prompt
+    // never includes, inflating the returned count. Added suppresses_jinja_tools
+    // check here to mirror the template.rs path (6b6e755 added the trait but
+    // only updated the OpenAI path; Anthropic count_tokens was missed).
+    let parser_suppresses = state
+        .tool_call_parser
+        .as_ref()
+        .is_some_and(|p| p.suppresses_jinja_tools());
     let jinja_tools: Option<Vec<serde_json::Value>> =
-        if tools_active && !state.behavior.skip_template_tools {
+        if tools_active && !state.behavior.skip_template_tools && !parser_suppresses {
             req.tools.as_ref().map(|ts| {
                 let oai = convert_tools(ts);
                 oai.iter().map(|t| serde_json::json!({

@@ -116,9 +116,11 @@ pub(super) fn assemble_layer(
 
     let input_norm = dense(ctx.store, &format!("{prefix}.attention_norm.weight"))?;
     let post_norm = dense(ctx.store, &format!("{prefix}.ffn_norm.weight"))?;
-    // MLA compressed latents require BF16 precision. An empty layer_kv_dtypes
-    // slice means "use the base dtype as-is" (build_layer_kv_dtypes returns []
-    // when kv_dtype == Bf16). Fall back to Bf16, never Fp8.
+    // MLA compressed latents require BF16 precision.
+    // build_layer_kv_dtypes returns vec![BF16; n] when kv_dtype == BF16, so
+    // get(i) = Some(BF16) for all valid i. The unwrap_or(BF16) is a safety
+    // fallback for the kv_dtype!=BF16 + high_precision_layers=0 case where
+    // the vec is empty — ensures MLA layers never silently get FP8.
     let kv_dtype = layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Bf16);
 
     // ── MoE experts (w1=gate, w2=down, w3=up) ──

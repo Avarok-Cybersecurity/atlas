@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -733,3 +733,63 @@ file named in the task description. No regressions found; all fixes are present 
   correctly disables only the prefix-cache snapshot pool.
 - Pure-attention models (Mistral: 0 SSM layers, Nemotron attention layers only): both pools
   allocate zero GPU memory regardless of flag values.
+
+---
+
+## 2026-05-21 Investigation: P1/P2/P3 + new bug found and fixed
+
+Full independent investigation of all files named in the task description. All prior fixes
+confirmed intact. One new bug found and fixed.
+
+### P1 — Mistral Small 4 MLA prefill: all fixes confirmed
+
+All four P1 fixes verified against spec_ssm HEAD:
+
+- **`cache_skip_mla.rs`**: `mla_fused_prefill_k` guard + `1/sqrt(320)` scale + correct
+  `mla_cache_dim` strides all present and correct.
+- **`mla_fused_prefill.cu`**: `smem_dot[8]` at function scope (line 115), no aliasing risk.
+  Causal mask, pointer offsets, and 320-dim shared memory buffers verified.
+- **`kv_dtypes.rs` + `phase_assemble.rs`**: `build_layer_kv_dtypes(BF16, N, hp)` returns
+  `vec![BF16; N]` via early-return regardless of `hp` value. `unwrap_or(BF16)` fallback
+  confirmed. For Mistral (`--kv-cache-dtype bf16`): all 36 MLA layers get `KvCacheDtype::Bf16`.
+  No FP8/BF16 mixing possible.
+- **`attention_forward_mla.rs`**: decode scale `1/sqrt(320)`, KV cache format `[latent|rope]`
+  / `[latent|zeros]` with `mla_cache_dim` strides — identical to all prefill paths.
+
+**Stale comment fixed** (`phase_assemble.rs` line 119-122): previous comment stated
+"build_layer_kv_dtypes returns [] when kv_dtype == Bf16" — this was true of the old
+broken code but inverted after the `427104f` hardening fix. Updated to accurately describe
+the current behavior: the full `vec![BF16; N]` is returned, `get(i)` always finds `Some(BF16)`,
+and `unwrap_or(BF16)` now serves as a fallback for the `kv_dtype != BF16 && hp == 0` case.
+
+### P2 — Nemotron Super tool calling: new bug found and fixed
+
+**Audit of `anthropic/handlers.rs` `count_tokens` endpoint** revealed an asymmetry with the
+OpenAI path introduced when `6b6e755` added `ToolCallParser::suppresses_jinja_tools()`.
+
+**Bug**: `template.rs` (OpenAI path) checks BOTH `skip_template_tools` AND
+`parser_suppresses` when deciding whether to pass `jinja_tools` to the Jinja template:
+```rust
+// template.rs — correct:
+if tools_active && !state.behavior.skip_template_tools && !parser_suppresses {
+```
+But `anthropic/handlers.rs` `count_tokens` only checked `skip_template_tools`:
+```rust
+// handlers.rs — incomplete:
+if tools_active && !state.behavior.skip_template_tools {
+```
+
+**Impact**: a model that relies ONLY on `BareJsonParser::suppresses_jinja_tools() → true`
+(without `skip_template_tools = true` in MODEL.toml) would have its `count_tokens` response
+inflated by the XML `<function>` blocks that the Jinja template renders but the real
+generation prompt never includes. For Nemotron specifically this is benign (MODEL.toml has
+`skip_template_tools = true`), but the two paths were inconsistent.
+
+**Fix** (`crates/spark-server/src/anthropic/handlers.rs`): added `parser_suppresses` check
+mirroring `template.rs`, so both OpenAI and Anthropic paths honour `suppresses_jinja_tools()`
+as an independent gate on Jinja tool rendering.
+
+### P3 — SSM cache slots: no change
+
+Propagation chain re-verified (see 2026-05-21 final verification above). `SsmStatePool`
+sized by `max_batch_size`; `SsmSnapshotPool` sized by `ssm_cache_slots`. Correct behavior.
