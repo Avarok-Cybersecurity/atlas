@@ -240,10 +240,20 @@ pub struct ReasoningConfig {
 }
 
 /// vLLM-style chat template kwargs.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ChatTemplateKwargs {
     pub enable_thinking: Option<bool>,
     pub thinking_budget: Option<u32>,
+}
+
+impl ChatTemplateKwargs {
+    /// Parse from a JSON string. Returns `None` if parsing fails or string is empty.
+    pub fn from_json(s: &str) -> Option<Self> {
+        if s.trim().is_empty() {
+            return None;
+        }
+        serde_json::from_str(s).ok()
+    }
 }
 
 /// Default thinking budget when thinking is enabled but no explicit budget set.
