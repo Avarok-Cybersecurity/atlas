@@ -924,3 +924,39 @@ Traced each of the five bugs end-to-end in the current code:
 `cli.rs` `ssm_cache_slots` → `build.rs:71` → `impl_a1.rs:143` → `SsmSnapshotPool::new(ssm_cache_slots)`. `SsmStatePool::new` at `impl_a1.rs:134` uses `max_batch_size` (correct — each concurrent decode sequence needs its own h_state/conv_state). `--ssm-cache-slots 0` zeros ONLY `SsmSnapshotPool`; `SsmStatePool` unaffected. For pure-attention models (Mistral: 0 SSM layers), both pools allocate 0 GPU memory.
 
 **No new bugs found. All fixes verified correct. Branch ready for hardware validation.**
+
+---
+
+## 2026-05-22 Third Independent Verification (spec_ssm HEAD `2bf1da8`)
+
+Re-audit of all three priority areas plus explicit coverage of `inferspark_prefill_64`
+(the BR=64 Flash Attention kernel, used for non-MLA standard attention layers).
+
+### P1 — Mistral: all five fixes confirmed, `inferspark_prefill_64` audited
+
+All five bugs from prior sessions re-verified correct (kernel guard, dtype fallback, scale,
+multi-chunk path, smem aliasing). One additional kernel audited for completeness:
+
+**`kernels/gb10/common/inferspark_prefill.cu` `inferspark_prefill_64` function** (lines 505-928):
+This BR=64 variant is used for non-MLA standard attention layers (e.g. Qwen3.5-122B's 12
+attention layers). It is NOT used for Mistral MLA prefill (that path now uses
+`mla_fused_prefill_k` / `mla_prefill_paged_320`). Audit findings:
+- Grid `(num_q_heads, ceil(seq_len/64), batch)`: CUDA grid-Y limit 65535 not reached until
+  seq_len ≥ 64×65535 ≈ 4M tokens. Safe at all practical lengths.
+- Causal masking (lines 717-736): `kv_start + col > q_pos` correctly gates future tokens;
+  `col >= kv_len` and `row >= q_len` correctly handle partial last tiles. Correct at all seq_len.
+- Online softmax: per-row m/l tracking via warp-local registers (warps 0-3) and
+  `smem_ml64[BR64][2]` for cross-warp sync (warps 4-7). Rescale applied each KV block.
+  Final normalization: warps 0-3 use own `l_r0/l_r1`; warps 4-7 read `smem_ml64[row][1]`
+  (written during the last KV block, still valid after the final `__syncthreads()` at line 889).
+- KV-block limiting with causal (lines 576-580): `max_kv_block = (q_end - 1) / BC` prevents
+  processing future KV blocks — correct for any seq_len.
+- No shared memory, register, or arithmetic overflow hazards up to seq_len = 65536.
+
+**Conclusion**: `inferspark_prefill_64` is correct at all sequence lengths. No bugs found.
+
+### P2/P3 — Nemotron and SSM pool
+
+All fixes confirmed correct per prior sessions. No new findings.
+
+**Branch ready for hardware re-test.**
