@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+use super::prune::ProductivityTable;
 use super::queue::ProcessQueue;
 use super::state::{NO_PREV_INPUT_POS, ParserState, UNEXPANDED_RULE_START_SEQUENCE_ID};
 use crate::grammar::GrammarData;
@@ -72,6 +73,12 @@ pub struct EarleyParser {
     /// True after a one-off probe state has been pushed (see
     /// `push_one_state_to_check`); cleared on the next rollback.
     pub(crate) stop_token_is_accepted: bool,
+
+    /// Per-rule co-accessibility bitsets driving ZapFormat-style dead-
+    /// state pruning (Tier 3a). Computed once from the grammar's FSM
+    /// topology; consulted with O(1) bitset lookups after every advance.
+    /// See `prune.rs`.
+    pub(crate) productivity: ProductivityTable,
 }
 
 impl EarleyParser {
@@ -106,6 +113,7 @@ impl EarleyParser {
             initial_state
         };
 
+        let productivity = ProductivityTable::build(&grammar);
         let mut parser = Self {
             grammar,
             is_completed: Vec::new(),
@@ -117,6 +125,7 @@ impl EarleyParser {
             queue: ProcessQueue::new(),
             accept_stop_token: false,
             stop_token_is_accepted: false,
+            productivity,
         };
 
         if need_expand {
@@ -195,6 +204,10 @@ impl EarleyParser {
         }
 
         self.is_completed.push(self.accept_stop_token);
+        // ZapFormat dead-state pruning: drop scanable states whose FSM
+        // node can never reach its rule's end node before they enter the
+        // history. Language-preserving — see `prune.rs`.
+        self.productivity.prune(&mut self.to_be_added);
         let added = std::mem::take(&mut self.to_be_added);
         self.scanable_history.push_row_owned(added);
         true

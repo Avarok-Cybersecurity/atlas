@@ -37,6 +37,7 @@ mod parser;
 mod parser_api;
 mod predict;
 mod predict_fsm;
+mod prune;
 mod queue;
 mod scan;
 mod scan_charclass;

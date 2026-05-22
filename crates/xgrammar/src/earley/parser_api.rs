@@ -53,6 +53,8 @@ impl EarleyParser {
             }
         }
         self.is_completed.push(self.accept_stop_token);
+        // ZapFormat dead-state pruning — see `advance` / `prune.rs`.
+        self.productivity.prune(&mut self.to_be_added);
         let added = std::mem::take(&mut self.to_be_added);
         self.scanable_history.push_row_owned(added);
     }
