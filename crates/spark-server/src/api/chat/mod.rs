@@ -143,6 +143,18 @@ pub(crate) async fn chat_completions_inner(
         Err(resp) => return resp,
     };
 
+    // ── Phase 1.5: merge server-level chat_template_kwargs default ─
+    // When the client sends no thinking parameters and the server has a
+    // --default-chat-template-kwargs flag set, inject those kwargs into
+    // the request so the existing resolve_thinking() chain sees them as
+    // normal request-body fields. We don't mutate the resolution logic —
+    // we just pre-populate the field it already checks.
+    if let Some(ref default_kw) = state.default_chat_template_kwargs
+        && !req.thinking_explicitly_requested()
+    {
+        req.chat_template_kwargs = Some(default_kw.clone());
+    }
+
     // ── Phase 2: thinking resolution (pre-template) ─────────────
     let (enable_thinking, thinking_budget) = thinking::resolve_thinking(&state, &req, tools_active);
 

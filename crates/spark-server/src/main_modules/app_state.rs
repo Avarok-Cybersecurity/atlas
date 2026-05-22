@@ -72,6 +72,10 @@ pub struct AppState {
     /// thinking is forced OFF regardless of the request body or the
     /// model's MODEL.toml default. Wired from `--disable-thinking`.
     pub disable_thinking: bool,
+    /// Server-level default chat template kwargs applied when the client
+    /// sends no thinking parameters. Overridden per-request by the request
+    /// body. Wired from `--default-chat-template-kwargs`.
+    pub default_chat_template_kwargs: Option<crate::openai::ChatTemplateKwargs>,
     /// Shared in-memory store for stateful Responses API resume
     /// (`previous_response_id`) and opt-in Chat-Completions storage
     /// (`store: true`). Bounded LRU + TTL; env-configured at startup.

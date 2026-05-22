@@ -83,10 +83,8 @@ frequency_penalty = 0.0
 # loops at turn ~7-8 of opencode agentic sessions, even though
 # temperature > 0 prevents strictly-greedy loops. Observed in dump
 # seq=19 (2026-04-24); tracked upstream in QwenLM/Qwen3.5#115,
-# Qwen3.6#88, qwen-code#1403, vllm#27157. Our own
-# docs/history/SSM_CATASTROPHIC_FORGETTING_TODO.md already documents
-# the symptom and recommends enabling a repetition suppressor on the
-# tools preset.
+# Qwen3.6#88, qwen-code#1403, vllm#27157. The repetition suppressor
+# on the tools preset (`presence_penalty` below) is the mitigation.
 #
 # We do NOT raise `repetition_penalty` above 1.0 — Qwen deprecates it
 # for this SKU (Qwen3-VL#1611: "breaks the transcription of naturally

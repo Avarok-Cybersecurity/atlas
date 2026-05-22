@@ -153,22 +153,21 @@ export const testimonials = [
   }
 ];
 
-// Hero shows the install step (pull). TryIt below shows pull + full run.
-export const quickInstall = `docker pull avarok/atlas-gb10:latest`;
+// Hero shows the install step. TryIt below shows install + run.
+// sparkrun pulls & runs the avarok/atlas-gb10:latest image for you
+// (the recipe declares `container:`); it uses an existing Docker/Podman
+// + NVIDIA container runtime — it does not install the container engine.
+export const quickInstall = `uvx sparkrun setup install`;
 
-export const dockerCommand = `docker pull avarok/atlas-gb10:latest
+// The command users see and copy: curl the static quickstart script and pipe
+// it to sh. The script (static/quickstart.sh, served at /quickstart.sh) checks
+// whether sparkrun is already installed before installing it via uvx, then
+// runs the default recipe. The raw equivalent is kept below for reference.
+export const runCommand = 'curl -fsSL https://atlasinference.io/quickstart.sh | sh';
+// What the script does, spelled out (not shown in the terminal card).
+export const runCommandRaw =
+  'uvx sparkrun setup install && sparkrun run @atlas/qwen3.6-35b-a3b-fp8-mtp-atlas';
 
-sudo docker run -d --name atlas \\
-  --network host --gpus all --ipc=host \\
-  -v ~/.cache/huggingface:/root/.cache/huggingface \\
-  avarok/atlas-gb10:latest \\
-  serve Qwen/Qwen3.6-35B-A3B-FP8 \\
-    --port 8888 \\
-    --max-seq-len 65536 \\
-    --kv-cache-dtype fp8 \\
-    --kv-high-precision-layers auto \\
-    --gpu-memory-utilization 0.90 \\
-    --scheduling-policy slai \\
-    --tool-call-parser qwen3_coder \\
-    --enable-prefix-caching \\
-    --speculative`;
+// X / Twitter handle for Atlas.
+export const xHandle = '@atlasinference';
+export const xUrl = 'https://x.com/atlasinference';

@@ -1,5 +1,5 @@
 <script>
-  import { discordUrl, redditUrl } from '$lib/data.js';
+  import { discordUrl, redditUrl, xUrl, xHandle } from '$lib/data.js';
 </script>
 
 <footer>
@@ -15,8 +15,14 @@
       <a href="#roadmap">Roadmap</a>
     </div>
     <div class="fcol">
+      <h4>Run Atlas</h4>
+      <a href="https://sparkrun.dev/runtimes/atlas/" target="_blank" rel="noopener">sparkrun</a>
+      <a href="https://github.com/Avarok-Cybersecurity/atlas-recipes" target="_blank" rel="noopener">Recipes (SSOT)</a>
+    </div>
+    <div class="fcol">
       <h4>Community</h4>
       <a href={discordUrl}>Discord</a>
+      <a href={xUrl} target="_blank" rel="noopener">X {xHandle}</a>
       <a href={redditUrl}>Reddit</a>
     </div>
     <div class="fcol">
