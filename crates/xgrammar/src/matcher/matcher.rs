@@ -49,6 +49,11 @@ pub(super) struct FillScratch {
     pub(super) states: Vec<(ParserState, Arc<AdaptiveTokenMask>)>,
     /// Per-state delta of newly rejected uncertain-token indices.
     pub(super) rejected_delta: Vec<i32>,
+    /// Reusable packed-bitmask buffer for the Coalescence fast-path
+    /// (`forced_token` / `next_forced_tokens`). Sized to
+    /// `bitmask_size(vocab_size)` on first use and reused thereafter, so
+    /// the forced-token check costs no per-call heap allocation.
+    pub(super) coalesce_bitmask: Vec<i32>,
 }
 
 /// A stateful matcher that matches sampled tokens against a compiled

@@ -15,6 +15,8 @@
 //   matcher  — `GrammarMatcher`: construction, accept token/string,
 //              rollback, termination, reset.
 //   fill     — `FillNextTokenBitmask` + `FindJumpForwardString`.
+//   coalesce — Coalescence forced-token fast-path (Tier 3b):
+//              `forced_token` / `next_forced_tokens`.
 //   batch    — `BatchGrammarMatcher`: parallel batched bitmask fill.
 //
 // PORT NOTES / SIMPLIFICATIONS vs C++
@@ -39,6 +41,7 @@
 
 mod batch;
 mod bitmask;
+mod coalesce;
 mod fill;
 // The `GrammarMatcher` struct lives in `matcher.rs`; the file split
 // (struct vs. `fill.rs`) is required by the 250-line-per-file cap.

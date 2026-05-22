@@ -16,6 +16,15 @@
 //   compile          — no-cache compilation core (XGrammar-2 JIT)
 //   compiler         — GrammarCompiler with the dashmap-backed cache
 //   rule_cache       — cross-grammar RuleLevelCache (Tier 2)
+//   coalesce         — forced-token fast-path analysis (Tier 3b)
+//
+// TIER 3b PERF FEATURE — COALESCENCE
+// ----------------------------------
+// `coalesce` adds the dottxt.ai "Coalescence" forced-token fast-path:
+// when a constrained grammar admits exactly one legal token at the
+// current state, the matcher can emit that token directly and the
+// caller skips the (pointless) model sampling step. See `coalesce.rs`
+// and `GrammarMatcher::forced_token` / `next_forced_tokens`.
 //
 // SIMPLIFICATIONS vs C++
 // ----------------------
@@ -37,6 +46,7 @@
 //    eagerly warms the K most-expensive masks (during prefill, before
 //    decode), populating the lazy JIT cache.
 
+mod coalesce;
 mod compile;
 mod compiled_grammar;
 mod compiler;
@@ -44,6 +54,7 @@ mod mask;
 mod mask_gen;
 mod rule_cache;
 
+pub use coalesce::{Forced, analyze_bitmask};
 pub use compiled_grammar::{CompiledGrammar, CompiledGrammarImpl};
 pub use compiler::{CompileError, GrammarCompiler};
 pub use mask::{AdaptiveTokenMask, StoreType, USE_BITSET_THRESHOLD};

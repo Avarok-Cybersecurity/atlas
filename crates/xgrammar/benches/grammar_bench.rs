@@ -209,10 +209,115 @@ fn bench_accept_fill_loop(c: &mut Criterion) {
     group.finish();
 }
 
+// ── Coalescence forced-token fast-path (Tier 3b) ───────────────────
+//
+// A forced-token-heavy grammar: a long fixed literal. EVERY position is
+// grammar-determined — there is exactly one legal token at each step.
+// This is the structure Coalescence targets (nested JSON objects with
+// literal keys behave the same way). The bench contrasts:
+//   * `normal_fill_loop` — the per-step server loop: fill the bitmask,
+//                    then accept the token (one `compute_partitions` /
+//                    step, plus a model sample the bench cannot model);
+//   * `forced_chain` — detect + accept the whole forced run in one
+//                    `accept_forced_chain` walk.
+// `accept_forced_chain` advances the matcher as it walks (no peek /
+// rollback / re-accept), traversing the parser once. Each forced
+// position additionally skips the model sample — a GPU forward pass
+// far larger than the matcher work, which this matcher-only bench
+// cannot include; the measured delta is therefore a conservative
+// lower bound on the real Coalescence win.
+
+/// A grammar whose body is one long fixed literal — every token forced.
+const FORCED_LITERAL: &str =
+    "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";
+
+/// EBNF wrapping `FORCED_LITERAL` as the sole root production.
+fn forced_grammar_ebnf() -> String {
+    format!("root ::= \"{FORCED_LITERAL}\"\n")
+}
+
+/// Apply a packed accept bitmask to a logits vector, then pick the
+/// arg-max — a minimal CPU proxy for the "mask logits + sample" step a
+/// constrained-decoding server runs every position. The forced-token
+/// fast-path skips this entirely (the token is determined), so the
+/// bench charges it only to the baseline arm. `vocab_size` is fixed,
+/// so the cost is identical per step.
+fn mask_logits_and_sample(logits: &mut [f32], bitmask: &[i32]) -> usize {
+    for (tid, slot) in logits.iter_mut().enumerate() {
+        let word = bitmask[tid / 32] as u32;
+        if (word >> (tid % 32)) & 1 == 0 {
+            *slot = f32::NEG_INFINITY;
+        }
+    }
+    let mut best = 0usize;
+    let mut best_v = f32::NEG_INFINITY;
+    for (tid, &v) in logits.iter().enumerate() {
+        if v > best_v {
+            best_v = v;
+            best = tid;
+        }
+    }
+    best
+}
+
+fn bench_coalesce(c: &mut Criterion) {
+    let info = tokenizer_info();
+    let mut compiler = GrammarCompiler::new(&info, 1, false, -1).expect("GrammarCompiler::new");
+    let compiled = compiler
+        .compile_grammar_from_ebnf(&forced_grammar_ebnf(), "root")
+        .expect("compile forced-literal grammar");
+    let words = allocate_token_bitmask(1, VOCAB_SIZE).len();
+    let forced_ids: Vec<i32> = FORCED_LITERAL.bytes().map(|b| b as i32).collect();
+
+    let mut group = c.benchmark_group("coalesce");
+    group.sample_size(50);
+
+    // Baseline: the full per-step constrained-decoding loop — fill the
+    // mask, apply it to the logits + arg-max sample, accept the token —
+    // across the whole forced literal. This is what a server runs when
+    // it is unaware that every position is grammar-determined.
+    group.bench_function("normal_fill_sample_loop", |b| {
+        b.iter_batched(
+            || {
+                (
+                    GrammarMatcher::new(&compiled, None, false, -1).expect("GrammarMatcher::new"),
+                    vec![0i32; words],
+                    vec![0.0f32; VOCAB_SIZE],
+                )
+            },
+            |(mut matcher, mut bitmask, mut logits)| {
+                for &t in &forced_ids {
+                    black_box(matcher.fill_next_token_bitmask(&mut bitmask, 0, false));
+                    black_box(mask_logits_and_sample(&mut logits, &bitmask));
+                    matcher.accept_token(t);
+                }
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    // Coalesced: detect + accept the whole forced run in one walk. The
+    // parser is traversed once and — because each token is determined —
+    // the logit-mask + sample step is skipped for every position.
+    let _ = &forced_ids; // kept for the baseline arm above.
+    group.bench_function("forced_chain", |b| {
+        b.iter_batched(
+            || GrammarMatcher::new(&compiled, None, false, -1).expect("GrammarMatcher::new"),
+            |mut matcher| {
+                black_box(matcher.accept_forced_chain(usize::MAX));
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_compile,
     bench_fill_bitmask,
-    bench_accept_fill_loop
+    bench_accept_fill_loop,
+    bench_coalesce
 );
 criterion_main!(benches);
