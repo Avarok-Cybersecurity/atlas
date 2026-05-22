@@ -6,10 +6,11 @@
 //
 // The C++/Python tests load real HuggingFace tokenizers; here a small
 // hand-built `TokenizerInfo` exercises the same code paths. This file
-// holds the shared fixtures; the test cases live in two submodules to
-// keep every file under the 250-line cap:
+// holds the shared fixtures; the test cases live in submodules to keep
+// every file under the 250-line cap:
 //   compile_tests — compile entry points, cache behaviour, determinism
 //   mask_tests    — AdaptiveTokenMask partition correctness, intervals
+//   tier2_tests   — cross-grammar RuleLevelCache + compile_top_k_masks
 
 use crate::compiler::GrammarCompiler;
 use crate::grammar::functor::{GrammarNormalizer, GrammarOptimizer};
@@ -18,6 +19,7 @@ use crate::tokenizer::{TokenizerInfo, VocabType};
 
 mod compile_tests;
 mod mask_tests;
+mod tier2_tests;
 
 /// A tiny RAW-vocab tokenizer covering the bytes used in the test
 /// grammars: single ASCII chars plus a few multi-char tokens.

@@ -13,6 +13,7 @@
 // handling and the error type live in `builder_rules.rs`; tests in
 // `builder_tests.rs` — split to keep each file under the 250-line cap.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use super::data::{GrammarData, Rule};
@@ -70,6 +71,16 @@ pub struct GrammarBuilder {
     expr_data: Vec<i32>,
     expr_indptr: Vec<i32>,
     rule_name_to_id: HashMap<String, i32>,
+    /// Cache of the next suffix index to probe for each `name_hint`,
+    /// used by [`GrammarBuilder::get_new_rule_name`]. Port of upstream
+    /// `next_cnt_per_hint_` (xgrammar commit 96ae88b). Without this the
+    /// per-call probe restarts from `_1` every time, making repeated
+    /// calls with the same hint O(N) each (O(N^2) overall at high tool
+    /// counts). The cache is purely an optimization: every candidate is
+    /// still validated against `rule_name_to_id`, so the chosen name is
+    /// identical to the un-cached probe. `RefCell` keeps the public
+    /// `&self` signature stable.
+    next_cnt_per_hint: RefCell<HashMap<String, i32>>,
 }
 
 impl GrammarBuilder {
@@ -91,6 +102,9 @@ impl GrammarBuilder {
     }
     pub(super) fn rule_name_to_id_mut(&mut self) -> &mut HashMap<String, i32> {
         &mut self.rule_name_to_id
+    }
+    pub(super) fn next_cnt_per_hint(&self) -> &RefCell<HashMap<String, i32>> {
+        &self.next_cnt_per_hint
     }
 
     /// Finish building and return the [`GrammarData`], setting the root

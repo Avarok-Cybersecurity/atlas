@@ -16,9 +16,7 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 
-use xgrammar::{
-    GrammarCompiler, GrammarMatcher, TokenizerInfo, VocabType, allocate_token_bitmask,
-};
+use xgrammar::{GrammarCompiler, GrammarMatcher, TokenizerInfo, VocabType, allocate_token_bitmask};
 
 // ── Synthetic vocabulary ───────────────────────────────────────────
 //
@@ -88,8 +86,7 @@ fn compile_tool_schema(compiler: &mut GrammarCompiler) -> xgrammar::CompiledGram
 // list of single-byte token ids. `fill_next_token_bitmask` is timed at
 // the *first* generation step (root just opened) — the heaviest mask
 // because the largest set of tokens is still reachable.
-const VALID_JSON: &str =
-    r#"{"location": "Paris", "unit": "celsius", "days": 3, "detailed": true}"#;
+const VALID_JSON: &str = r#"{"location": "Paris", "unit": "celsius", "days": 3, "detailed": true}"#;
 
 /// The valid JSON as a sequence of single-byte token ids.
 fn valid_token_ids() -> Vec<i32> {
@@ -107,8 +104,8 @@ fn bench_compile(c: &mut Criterion) {
     // full compile (the path Tier 1 optimised), not a cache hit.
     group.bench_function("tool_schema", |b| {
         b.iter(|| {
-            let mut compiler = GrammarCompiler::new(&info, 1, false, -1)
-                .expect("GrammarCompiler::new");
+            let mut compiler =
+                GrammarCompiler::new(&info, 1, false, -1).expect("GrammarCompiler::new");
             black_box(compile_tool_schema(&mut compiler));
         });
     });
@@ -116,8 +113,8 @@ fn bench_compile(c: &mut Criterion) {
     // Built-in standard-JSON grammar.
     group.bench_function("builtin_json", |b| {
         b.iter(|| {
-            let mut compiler = GrammarCompiler::new(&info, 1, false, -1)
-                .expect("GrammarCompiler::new");
+            let mut compiler =
+                GrammarCompiler::new(&info, 1, false, -1).expect("GrammarCompiler::new");
             black_box(
                 compiler
                     .compile_builtin_json_grammar()
@@ -131,8 +128,7 @@ fn bench_compile(c: &mut Criterion) {
 
 fn bench_fill_bitmask(c: &mut Criterion) {
     let info = tokenizer_info();
-    let mut compiler =
-        GrammarCompiler::new(&info, 1, false, -1).expect("GrammarCompiler::new");
+    let mut compiler = GrammarCompiler::new(&info, 1, false, -1).expect("GrammarCompiler::new");
     let compiled = compile_tool_schema(&mut compiler);
     let words = allocate_token_bitmask(1, VOCAB_SIZE).len();
 
@@ -145,8 +141,7 @@ fn bench_fill_bitmask(c: &mut Criterion) {
         b.iter_batched(
             || {
                 (
-                    GrammarMatcher::new(&compiled, None, false, -1)
-                        .expect("GrammarMatcher::new"),
+                    GrammarMatcher::new(&compiled, None, false, -1).expect("GrammarMatcher::new"),
                     vec![0i32; words],
                 )
             },
@@ -164,8 +159,8 @@ fn bench_fill_bitmask(c: &mut Criterion) {
     group.bench_function("mid_step", |b| {
         b.iter_batched(
             || {
-                let mut matcher = GrammarMatcher::new(&compiled, None, false, -1)
-                    .expect("GrammarMatcher::new");
+                let mut matcher =
+                    GrammarMatcher::new(&compiled, None, false, -1).expect("GrammarMatcher::new");
                 for &t in &tokens[..half] {
                     matcher.accept_token(t);
                 }
@@ -183,8 +178,7 @@ fn bench_fill_bitmask(c: &mut Criterion) {
 
 fn bench_accept_fill_loop(c: &mut Criterion) {
     let info = tokenizer_info();
-    let mut compiler =
-        GrammarCompiler::new(&info, 1, false, -1).expect("GrammarCompiler::new");
+    let mut compiler = GrammarCompiler::new(&info, 1, false, -1).expect("GrammarCompiler::new");
     let compiled = compile_tool_schema(&mut compiler);
     let words = allocate_token_bitmask(1, VOCAB_SIZE).len();
     let tokens = valid_token_ids();
@@ -198,8 +192,7 @@ fn bench_accept_fill_loop(c: &mut Criterion) {
         b.iter_batched(
             || {
                 (
-                    GrammarMatcher::new(&compiled, None, false, -1)
-                        .expect("GrammarMatcher::new"),
+                    GrammarMatcher::new(&compiled, None, false, -1).expect("GrammarMatcher::new"),
                     vec![0i32; words],
                 )
             },

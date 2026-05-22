@@ -135,17 +135,27 @@ impl GrammarBuilder {
 
     /// Find an unused rule name starting from `name_hint`, appending an
     /// integer suffix (`_1`, `_2`, …) on collision.
+    ///
+    /// The first probed suffix is read from `next_cnt_per_hint` (a cache
+    /// of the last suffix reached for this hint) rather than restarting
+    /// from `1` every call. This makes repeated calls with the same hint
+    /// amortized O(1) instead of O(N) — see the field doc on
+    /// [`GrammarBuilder`]. Behavior is unchanged: every candidate is
+    /// still verified absent from `rule_name_to_id`, and the cache only
+    /// advances (never skips a still-free lower suffix, because suffixes
+    /// for a given hint are only ever consumed in increasing order).
     pub fn get_new_rule_name(&self, name_hint: &str) -> String {
         if !self.rule_name_to_id().contains_key(name_hint) {
             return name_hint.to_string();
         }
-        let mut cnt = 1;
+        let mut cache = self.next_cnt_per_hint().borrow_mut();
+        let cnt = cache.entry(name_hint.to_string()).or_insert(1);
         loop {
             let candidate = format!("{name_hint}_{cnt}");
             if !self.rule_name_to_id().contains_key(&candidate) {
                 return candidate;
             }
-            cnt += 1;
+            *cnt += 1;
         }
     }
 

@@ -132,8 +132,8 @@ fn jit_mask_compilation_is_deterministic() {
     // byte-identical lazily-computed masks for every reachable state.
     let grammar = optimized("root ::= \"yes\" | \"no\" | \"abc\"\n");
     let info = small_tokenizer();
-    let a = compile_optimized_grammar(grammar.clone(), &info, 1);
-    let b = compile_optimized_grammar(grammar, &info, 8);
+    let a = compile_optimized_grammar(grammar.clone(), &info, 1, None);
+    let b = compile_optimized_grammar(grammar, &info, 8, None);
 
     let a_masks = a.all_reachable_masks();
     let b_masks: std::collections::HashMap<_, _> = b.all_reachable_masks().into_iter().collect();
@@ -152,8 +152,8 @@ fn jit_mask_compilation_is_deterministic() {
 fn jit_builtin_json_masks_are_stable() {
     let grammar = optimized_builtin_json();
     let info = small_tokenizer();
-    let a = compile_optimized_grammar(grammar.clone(), &info, 1);
-    let b = compile_optimized_grammar(grammar, &info, 4);
+    let a = compile_optimized_grammar(grammar.clone(), &info, 1, None);
+    let b = compile_optimized_grammar(grammar, &info, 4, None);
     let a_masks = a.all_reachable_masks();
     let b_masks: std::collections::HashMap<_, _> = b.all_reachable_masks().into_iter().collect();
     assert_eq!(a_masks.len(), b_masks.len());
@@ -168,7 +168,7 @@ fn mask_cache_starts_empty_and_fills_lazily() {
     // populated only when reached.
     let grammar = optimized("root ::= \"yes\" | \"no\"\n");
     let info = small_tokenizer();
-    let cg = compile_optimized_grammar(grammar, &info, 1);
+    let cg = compile_optimized_grammar(grammar, &info, 1, None);
     assert!(
         cg.inner().mask_cache.lock().unwrap().is_empty(),
         "mask cache must be empty right after compilation"

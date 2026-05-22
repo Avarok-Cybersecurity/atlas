@@ -23,10 +23,12 @@ use std::sync::{Arc, Mutex};
 
 use ahash::AHashMap;
 
+use crate::grammar::functor::GrammarFsmHasher;
 use crate::grammar::{GrammarData, GrammarExprType};
 use crate::tokenizer::TokenizerInfo;
 
 use super::compiled_grammar::{CompiledGrammar, CompiledGrammarImpl};
+use super::rule_cache::RuleLevelCache;
 
 /// Compile an already-optimized grammar against `tokenizer_info`.
 ///
@@ -38,10 +40,16 @@ use super::compiled_grammar::{CompiledGrammar, CompiledGrammarImpl};
 /// lazily on first matcher lookup (XGrammar-2 JIT). `_max_threads` is
 /// retained for API parity but is now unused: there is no eager
 /// per-state mask loop left to parallelize.
+///
+/// `rule_cache` is the optional cross-grammar [`RuleLevelCache`] (passed
+/// from the [`super::GrammarCompiler`] so it is shared across every
+/// grammar that compiler builds). When present, the per-rule FSM hasher
+/// is run so the lazy mask computation can key into it.
 pub(super) fn compile_optimized_grammar(
-    grammar: GrammarData,
+    mut grammar: GrammarData,
     tokenizer_info: &TokenizerInfo,
     _max_threads: usize,
+    rule_cache: Option<RuleLevelCache>,
 ) -> CompiledGrammar {
     debug_assert!(
         grammar.optimized,
@@ -55,6 +63,7 @@ pub(super) fn compile_optimized_grammar(
             tokenizer_info: tokenizer_info.clone(),
             mask_cache: Mutex::new(AHashMap::new()),
             tag_slice: Arc::new(AHashMap::new()),
+            rule_cache: None,
         }));
     }
 
@@ -63,22 +72,27 @@ pub(super) fn compile_optimized_grammar(
     // feeds it to the `MaskGenerator` on demand without copying the map.
     let tag_slice = Arc::new(tag_dispatch_optimization(&grammar, tokenizer_info));
 
-    // Step 2 (`GrammarFsmHasher::apply`) is DELETED. The C++ runs the
-    // per-rule FSM hasher only when the rule-level cross-grammar cache
-    // is enabled — the hashes are that cache's lookup key and have no
-    // other consumer. This port does not yet implement the rule-level
-    // cache (see the module docs), so hashing every compile is pure
-    // dead work. Tier 2's cross-grammar cache will reinstate this call
-    // when it actually reads the hashes.
+    // Step 2. Per-rule FSM structural hashing (`GrammarFSMHasher::Apply`
+    // in the C++). The hashes + canonical state renumbering populate
+    // `grammar.per_rule_fsm_hashes` / `per_rule_fsm_new_state_ids`; they
+    // are the lookup keys of the cross-grammar `RuleLevelCache`. Tier 1
+    // removed this call as dead work because no cache consumed the
+    // hashes — Tier 2 re-enables it here, gated on the cache being
+    // present so a cache-disabled compiler pays nothing.
+    if rule_cache.is_some() {
+        GrammarFsmHasher::apply(&mut grammar);
+    }
 
     // Steps 3-4 (enumerate reachable scanable states + compute every
-    // state's `AdaptiveTokenMask`) are DELETED — see the module docs.
-    // The mask cache starts empty and is populated lazily.
+    // state's `AdaptiveTokenMask`) remain DELETED — see the module docs.
+    // The mask cache starts empty and is populated lazily; on a miss the
+    // lazy path consults `rule_cache` before recomputing.
     CompiledGrammar::from_impl(Arc::new(CompiledGrammarImpl {
         grammar: Arc::new(grammar),
         tokenizer_info: tokenizer_info.clone(),
         mask_cache: Mutex::new(AHashMap::new()),
         tag_slice,
+        rule_cache,
     }))
 }
 
