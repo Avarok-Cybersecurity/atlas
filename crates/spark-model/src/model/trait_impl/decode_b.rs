@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-
 //! Decode phase B — batched multi-sequence decode.
 //!
 //! Same POD-array-to-byte-slice `unsafe` pattern as `verify_c.rs`; see
