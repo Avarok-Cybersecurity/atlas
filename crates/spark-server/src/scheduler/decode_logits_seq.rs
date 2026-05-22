@@ -219,6 +219,45 @@ pub fn process_seq_logits(
     // limitation and rely on F26/F2 to terminate the response
     // cleanly when it happens.
 
+    // ── Forced-token fast-path (xgrammar Tier 3b, Coalescence) ──
+    // When the active tool-call grammar admits exactly one legal next
+    // token, the model sample is redundant: the token is determined.
+    // `forced_token()` returns `Some(id)` ONLY when the authoritative
+    // next-token bitmask has a single set bit — so emitting `id`
+    // directly is bit-identical to sampling from an all-but-`id`-masked
+    // logit vector (every other token would be `-inf`). We skip the
+    // O(vocab) bitmask fill *and* the O(vocab) CPU sampling scan for
+    // these positions; this is the big win for structured tool-call
+    // scaffolding (literal `<function=`, `</parameter>`, JSON
+    // punctuation emit with no sampling work).
+    //
+    // GUARDS — the fast-path fires only when ALL hold:
+    //  * not inside `<think>` — thinking is unconstrained (mirrors the
+    //    bitmask-skip below; thinking tokens never advance the grammar).
+    //  * the request actually has an active grammar (`grammar_state`).
+    //  * the kill-switch is on (default; `ATLAS_DISABLE_FORCED_TOKEN`).
+    //  * `top_logprobs` is NOT requested — logprobs are extracted from
+    //    the model's logit distribution; the fast-path never builds it.
+    //    Falling through to the normal masked-sample path keeps logprobs
+    //    byte-identical (the all-but-one mask makes the sample return
+    //    the same forced token anyway, so output is unchanged).
+    //
+    // The returned forced token still flows through the SAME caller
+    // accounting as a sampled token — `decode_logits_step` pushes it to
+    // `output_tokens`, calls `gs.accept_token`, runs stop-token / EOS /
+    // streaming handling — so all downstream state is identical.
+    if !a.inside_thinking
+        && a.top_logprobs.is_none()
+        && crate::scheduler::helpers::forced_token_fastpath_enabled()
+        && let Some(ref mut gs) = a.grammar_state
+        && let Some(forced) = gs.forced_token()
+    {
+        // `forced` is the sole grammar-legal token; `forced_token`
+        // returns only non-negative vocab ids (it reads them off the
+        // packed bitmask). Emit directly — no mask fill, no sample.
+        return (forced as u32, None);
+    }
+
     // Apply grammar bitmask BEFORE sampling — but NOT during
     // `<think>`…`</think>`. Thinking is free-form reasoning that
     // is stripped from the final API response, so forcing it

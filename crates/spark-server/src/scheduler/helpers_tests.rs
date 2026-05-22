@@ -269,3 +269,31 @@ fn norm_inert_with_empty_mask() {
         "empty mask must make the normalized path inert (fail-open)"
     );
 }
+
+// ── Forced-token fast-path kill-switch parsing ──────────────────────────────
+
+#[test]
+fn forced_token_fastpath_default_enabled() {
+    // Env unset → fast-path on (the default; output is bit-identical to
+    // the sampled path so there is no reason to ship it off).
+    assert!(parse_forced_token_fastpath(None));
+}
+
+#[test]
+fn forced_token_fastpath_disabled_by_truthy() {
+    // Explicit truthy values disable the fast-path (the kill-switch).
+    assert!(!parse_forced_token_fastpath(Some("1")));
+    assert!(!parse_forced_token_fastpath(Some("true")));
+    assert!(!parse_forced_token_fastpath(Some("TRUE")));
+    assert!(!parse_forced_token_fastpath(Some("  true  ")));
+}
+
+#[test]
+fn forced_token_fastpath_enabled_by_falsy_or_junk() {
+    // Anything that is not an explicit truthy value keeps it enabled —
+    // `0`, `false`, empty, and junk all mean "do not disable".
+    assert!(parse_forced_token_fastpath(Some("0")));
+    assert!(parse_forced_token_fastpath(Some("false")));
+    assert!(parse_forced_token_fastpath(Some("")));
+    assert!(parse_forced_token_fastpath(Some("yes")));
+}

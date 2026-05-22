@@ -56,10 +56,12 @@ impl TransformerModel {
 
         // Guard: fall back to default (sequential) for EP, oversized, no decode,
         // or MLA. MLA models route the decode portion through `decode_batch`,
-        // whose `decode_batch_dispatch` per-sequence MLA fallback uses the
-        // MLA-aware single-seq path; the fused `decode_multi_seq` body below
-        // has no MLA branch and would launch `dense_gemv` against the NULL
-        // `attn.q_proj` stub the Mistral loader installs (→ illegal address).
+        // whose `decode_batch_dispatch` dispatches the batched MLA branch
+        // (`ms_mla_decode`, issue #84). The fused `decode_multi_seq` body
+        // inlined below is NOT used for MLA here — it shares a single layer
+        // loop with the prefill chunk and that interleaving has not been
+        // validated for the absorbed-MLA path — so MLA stays on the
+        // dedicated `decode_batch` route.
         // Use padded_n (not n_decode) because padding slots consume hidden buffer space.
         if self.comm.is_some()
             || self.is_mla_dispatch()

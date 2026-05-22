@@ -48,37 +48,26 @@ impl TransformerModel {
             return Ok(self.decode_logits_ptr());
         }
 
-        // MLA models: the batched `decode_multi_seq` path has NO MLA branch —
-        // `ms_phase_qkv` always reads the standard `attn.q_proj` / `q_weight`
-        // tensors, which the Mistral MLA loader leaves as a NULL `DevicePtr`
-        // stub (mistral_loader phase_assemble: "dummy attention weights").
-        // For MLA the real projections live in `self.mla` and are only wired
-        // into the single-seq `attention_forward` (its `if self.mla.is_some()`
-        // early-return into `attention_forward_mla`). Routing an MLA model
-        // through `decode_multi_seq` launches `dense_gemv` against the NULL
-        // weight pointer → CUDA_ERROR_ILLEGAL_ADDRESS / SIGSEGV under conc≥2.
+        // MLA models: as of issue #84 the batched `decode_multi_seq` path
+        // HAS a genuine MLA branch (`ms_mla_decode` in
+        // `qwen3_attention/trait_impl/multi_seq/mla.rs`) — the batched
+        // analogue of `attention_forward_mla`. It reads `self.mla`'s
+        // projections (not the NULL `attn.q_proj` stub the Mistral loader
+        // installs) and isolates each sequence's compressed latent-KV via
+        // per-sequence metadata. Concurrent MLA decode therefore takes the
+        // normal batched path below — no host round-trip, no cross-seq
+        // contamination.
         //
-        // Fall back to per-sequence `decode()` (MLA-aware path). Each
-        // `decode()` unconditionally writes its logits into row 0 of
-        // `buffers.logits()` (via `lm_head`), but the caller's
-        // `argmax_batch` / host sampler expects a contiguous `[n, vocab]`
-        // buffer — one logits row per sequence.
-        //
-        // A pure device-side scatter is NOT safe here: the MLA `decode()`
-        // runs `Buffers::zero_all()` in its Phase 1 (decode_a.rs — required
-        // to clear stale MLA absorbed-attention scratch), and `zero_all`
-        // memsets the ENTIRE `logits` buffer. So any row-`i` logits scattered
-        // after `decode(i)` are wiped by `decode(i+1)`'s `zero_all`, leaving
-        // only the last sequence's row intact (observed: every sequence but
-        // one decodes a constant `vocab-1` token = argmax of a zeroed row).
-        //
-        // Stage each sequence's logits on the host immediately after its
-        // `decode()` (before the next call zeroes the buffer), then upload
-        // the assembled `[n, vocab]` batch back into `buffers.logits()` once
-        // the loop is done. n ≤ max_batch (small) and this path is the MLA
-        // concurrent-decode fallback only, so the host round-trip is an
-        // acceptable correctness cost.
-        if self.is_mla_dispatch() {
+        // The legacy per-sequence `decode()` fallback (host-staged logits +
+        // CUDA-graph suppression) is retained ONLY behind the
+        // `ATLAS_MLA_PERSEQ_FALLBACK` escape hatch, as a guarded safety net
+        // should a regression surface in the batched MLA path. It does NOT
+        // fully isolate concurrent sequences (each `decode()`'s
+        // `Buffers::zero_all` wipes the shared `logits` buffer), so it is
+        // not the default.
+        let mla_perseq_fallback = self.is_mla_dispatch()
+            && std::env::var("ATLAS_MLA_PERSEQ_FALLBACK").is_ok_and(|v| v == "1" || v == "true");
+        if mla_perseq_fallback {
             use std::sync::atomic::Ordering;
             let logits = self.decode_logits_ptr();
             let v = self.config.vocab_size;

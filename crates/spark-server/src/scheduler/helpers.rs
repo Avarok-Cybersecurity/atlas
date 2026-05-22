@@ -138,6 +138,52 @@ pub fn enable_loop_watchdog() -> bool {
     *ENABLE_LOOP_WATCHDOG.get().unwrap_or(&false)
 }
 
+// ── Grammar forced-token fast-path (xgrammar Tier 3b) ───────────────────────
+
+/// Resolved kill-switch for the grammar forced-token (Coalescence)
+/// fast-path. Computed once on first read from the environment.
+///
+/// The fast-path emits a token directly — skipping the model sample and
+/// the vocab-wide bitmask fill — only when the active tool-call grammar
+/// admits exactly one legal next token (xgrammar's `forced_token`
+/// guarantees a single-bit mask). Output is therefore bit-identical to
+/// the sampled path, so the fast-path is **on by default**.
+///
+/// `ATLAS_DISABLE_FORCED_TOKEN=1` (or `true`) forces it off — a
+/// kill-switch should a future grammar/matcher regression ever make the
+/// forced-token guarantee unsafe. This mirrors the env-var bisection
+/// gates already used in `phase_continue_prefills.rs` /
+/// `mod_helpers.rs`; a MODEL.toml `[behavior]` flag was not used because
+/// the `ModelBehavior` struct lives in the `atlas-kernels` crate, which
+/// this change deliberately does not touch.
+static FORCED_TOKEN_FASTPATH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Pure parse of the `ATLAS_DISABLE_FORCED_TOKEN` env value into the
+/// resolved "fast-path enabled" boolean. Split out of
+/// [`forced_token_fastpath_enabled`] so the parsing rule is unit-testable
+/// without touching the process-wide `OnceLock`.
+///
+/// `None` (env unset) → enabled. A truthy value (`"1"` / `"true"`,
+/// case-insensitive, surrounding whitespace ignored) → disabled.
+/// Everything else (empty, `"0"`, `"false"`, junk) → enabled.
+fn parse_forced_token_fastpath(env: Option<&str>) -> bool {
+    match env {
+        Some(v) => {
+            let v = v.trim();
+            !(v == "1" || v.eq_ignore_ascii_case("true"))
+        }
+        None => true,
+    }
+}
+
+/// Whether the grammar forced-token fast-path is enabled (default
+/// `true`; disabled by `ATLAS_DISABLE_FORCED_TOKEN=1`/`true`).
+pub fn forced_token_fastpath_enabled() -> bool {
+    *FORCED_TOKEN_FASTPATH.get_or_init(|| {
+        parse_forced_token_fastpath(std::env::var("ATLAS_DISABLE_FORCED_TOKEN").ok().as_deref())
+    })
+}
+
 /// Per-model tunables for the always-on decode-time watchdogs. Sourced
 /// from MODEL.toml `[behavior]`; the field defaults reproduce the
 /// historical hardcoded constants exactly, so a model that sets nothing

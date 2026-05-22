@@ -82,13 +82,6 @@ jobs:
             # the launch-day allow-list pending a free-function
             # `ops/{alloc,copy,launch,events}.rs` extraction.
             "crates/spark-runtime/src/metal_backend.rs"
-            # 696 LoC — Qwen3-SSM prefill orchestration (GDN recurrence +
-            # conv1d + gated-rms-norm + diagnostic-dump hooks). Grew with
-            # the SSM debug-dump instrumentation. Split tracked in #82.
-            "crates/spark-model/src/layers/qwen3_ssm/trait_prefill.rs"
-            # 538 LoC — MoE FP8/NVFP4 prefill GEMM orchestration (expert
-            # routing + grouped-GEMM dispatch). Split tracked in #82.
-            "crates/spark-model/src/layers/moe/forward_prefill.rs"
           )
 
           violations=0

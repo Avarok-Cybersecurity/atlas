@@ -8,6 +8,24 @@ use super::engine::GrammarError;
 
 // ── GrammarState ───────────────────────────────────────────────────────
 
+/// How many of the costliest token-masks to pre-warm when a grammar
+/// state is created (xgrammar Tier 2, overlapped mask generation).
+///
+/// `CompiledGrammar::compile_top_k_masks` ranks reachable scanable
+/// parser states by first-character scan breadth and eagerly populates
+/// the JIT mask cache for the top `k`. Called from [`GrammarState::new`]
+/// — which runs during the prefill phase of a grammar-constrained
+/// request, while the GPU is busy with the prompt — so the first decode
+/// steps never pay a cold mask-computation stall.
+///
+/// `8` is a deliberately small constant: a tool-call structural-tag
+/// grammar has only a handful of genuinely expensive states (the JSON
+/// string / value scanners), and the call is `<= ranked.len()` work, so
+/// over-provisioning `k` is harmless. The mask cache is per-grammar and
+/// shared (`Arc`) across every request that reuses the cached
+/// `CompiledGrammar`, so this warm-up amortizes across requests too.
+const FORCED_TOKEN_TOP_K: usize = 8;
+
 /// Per-request grammar matching state.
 ///
 /// Wraps a [`GrammarMatcher`] with its own bitmask buffer. The bitmask
@@ -23,6 +41,14 @@ impl GrammarState {
     /// Create a new per-request grammar state from a compiled grammar.
     ///
     /// `vocab_size` must match the tokenizer vocabulary used during compilation.
+    ///
+    /// As part of construction this pre-warms the [`FORCED_TOKEN_TOP_K`]
+    /// costliest token-masks via [`CompiledGrammar::compile_top_k_masks`]
+    /// (xgrammar Tier 2). Construction happens during prefill, so the
+    /// warm-up overlaps the prompt forward pass and the first decode
+    /// steps never stall on a cold mask computation. The warm-up only
+    /// populates a cache — it cannot change matcher behavior — so it is
+    /// safe unconditionally.
     pub fn new(compiled: &CompiledGrammar, vocab_size: usize) -> Result<Self, GrammarError> {
         let matcher = GrammarMatcher::new(
             compiled, None,  // use stop tokens from compiled grammar
@@ -30,6 +56,16 @@ impl GrammarState {
             -1,    // unlimited rollback
         )
         .map_err(GrammarError::Compilation)?;
+
+        // Tier 2 (overlapped mask generation): eagerly compute the
+        // costliest masks so they are warm before the first decode
+        // step. Pure cache population — no behavioral effect.
+        let warmed = compiled.compile_top_k_masks(FORCED_TOKEN_TOP_K);
+        tracing::debug!(
+            warmed,
+            requested = FORCED_TOKEN_TOP_K,
+            "Grammar: pre-warmed top-k token masks during prefill"
+        );
 
         let bitmask_data = allocate_token_bitmask(1, vocab_size);
 
@@ -101,6 +137,34 @@ impl GrammarState {
             return true;
         }
         self.matcher.accept_token(token_id as i32)
+    }
+
+    /// The single grammar-forced next token, if the current state
+    /// admits exactly one legal token (xgrammar Tier 3b, Coalescence).
+    ///
+    /// Returns `Some(token_id)` when the constrained grammar leaves no
+    /// choice — the token is fully determined, so the model sampling
+    /// step (and the full vocab-wide mask fill) for this position can be
+    /// skipped and `token_id` emitted directly. Returns `None` when the
+    /// continuation is a genuine choice, the state is dead, or the
+    /// matcher has terminated.
+    ///
+    /// CORRECTNESS: `forced_token` computes the same authoritative
+    /// next-token bitmask [`Self::fill_bitmask`] would and reports a
+    /// token only when it is the *sole* set bit — so it is, by
+    /// construction, the only grammar-legal token. The normal path could
+    /// only ever have sampled that exact token (every other token is
+    /// masked to `-inf`). The matcher state is left unchanged: the caller
+    /// must still feed the returned token back through
+    /// [`Self::accept_token`], exactly as for a sampled token.
+    ///
+    /// Returns `None` once the matcher has terminated (no further
+    /// constraint) — symmetric with [`Self::fill_bitmask`]'s guard.
+    pub fn forced_token(&mut self) -> Option<i32> {
+        if self.matcher.is_terminated() {
+            return None;
+        }
+        self.matcher.forced_token()
     }
 
     /// Whether the grammar has been fully matched (all required structure generated).

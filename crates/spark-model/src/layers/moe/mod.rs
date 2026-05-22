@@ -257,6 +257,7 @@ mod forward_phase;
 mod forward_prefill;
 mod forward_prefill_fp8;
 mod forward_prefill_phase;
+mod forward_prefill_routed;
 mod helpers_a;
 mod helpers_b;
 mod helpers_c;
