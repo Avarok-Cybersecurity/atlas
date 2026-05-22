@@ -21,10 +21,35 @@
 // `stop_token_accepted` flag, undone precisely by `rollback`.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
-use crate::compiler::CompiledGrammar;
+use crate::compiler::{AdaptiveTokenMask, CompiledGrammar};
 use crate::earley::{EarleyParser, NO_PREV_INPUT_POS, ParserState};
 use crate::tokenizer::TokenizerInfo;
+
+/// Reusable scratch buffers for [`GrammarMatcher::fill_next_token_bitmask`].
+///
+/// `fill_next_token_bitmask` / `compute_partitions` run once per decoded
+/// token. Allocating their working sets fresh each call costs ~2.3 MB of
+/// heap traffic per token (a `vocab_size` bool vec, a clone of the
+/// ~1.5 MB sorted decoded vocab, etc). The C++ matcher instead keeps
+/// member buffers and `.clear()`s them. This struct mirrors that: it is
+/// held on the matcher, `std::mem::take`-n during the fill, `.clear()`ed
+/// and reused, then restored.
+#[derive(Debug, Default)]
+pub(super) struct FillScratch {
+    /// `accepted[token_id]` — union of every state's accepted set.
+    pub(super) accepted: Vec<bool>,
+    /// Running rejected intersection; `{-1}` is the universal set.
+    pub(super) rejected: Vec<i32>,
+    /// Snapshot of the parser's latest scanable states (`Copy`), taken
+    /// once so no parser borrow is held across the trial-loop mutation.
+    pub(super) live_states: Vec<ParserState>,
+    /// Per-live-state `(state, mask)` pairs resolved for this fill.
+    pub(super) states: Vec<(ParserState, Arc<AdaptiveTokenMask>)>,
+    /// Per-state delta of newly rejected uncertain-token indices.
+    pub(super) rejected_delta: Vec<i32>,
+}
 
 /// A stateful matcher that matches sampled tokens against a compiled
 /// grammar — the core of grammar-guided generation.
@@ -36,8 +61,11 @@ use crate::tokenizer::TokenizerInfo;
 /// decoding); [`Self::reset`] returns to the initial state.
 #[derive(Debug)]
 pub struct GrammarMatcher {
-    /// The compiled grammar (shared, cheap to clone).
-    compiled_grammar: CompiledGrammar,
+    /// The compiled grammar (shared, cheap to clone). `pub(super)` so
+    /// the `fill` hot path can borrow it as a field disjoint from
+    /// `parser` and `scratch` (the borrow checker needs the concrete
+    /// field, not the whole-`self` accessor).
+    pub(super) compiled_grammar: CompiledGrammar,
     /// The Earley parser driving byte-level matching.
     pub(super) parser: EarleyParser,
     /// Token ids that terminate generation. Either the override set or
@@ -53,6 +81,10 @@ pub struct GrammarMatcher {
     /// One entry per `accept_token`/`accept_string` call; the rollback
     /// unit. A stop token contributes a `0`-length entry.
     token_length_history: VecDeque<usize>,
+    /// Reusable working buffers for the per-token bitmask fill. Taken
+    /// (`std::mem::take`) for the duration of the fill and restored
+    /// before return — see [`FillScratch`].
+    pub(super) scratch: FillScratch,
 }
 
 impl GrammarMatcher {
@@ -88,6 +120,7 @@ impl GrammarMatcher {
             terminate_without_stop_token,
             stop_token_accepted: false,
             token_length_history: VecDeque::new(),
+            scratch: FillScratch::default(),
         }
     }
 
