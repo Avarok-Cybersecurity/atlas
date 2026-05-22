@@ -2966,6 +2966,7 @@ version = "0.2.0"
 dependencies = [
  "ahash",
  "bitvec",
+ "criterion",
  "dashmap",
  "rayon",
  "serde",
