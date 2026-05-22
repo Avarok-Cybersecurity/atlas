@@ -27,6 +27,7 @@ use crate::grammar::functor::hash_sequence;
 use crate::support::hash::hash_combine;
 use crate::tokenizer::TokenizerInfo;
 
+use super::decompose::GrammarDecomposition;
 use super::mask::AdaptiveTokenMask;
 use super::mask_gen::MaskGenerator;
 use super::rule_cache::{RuleLevelCache, RuleMaskKey};
@@ -69,6 +70,13 @@ pub struct CompiledGrammarImpl {
     /// structurally identical to one seen in any previous request
     /// reuses its computed masks.
     pub rule_cache: Option<RuleLevelCache>,
+    /// WGRAMMAR static/dynamic decomposition (Tier 3c), computed ONCE
+    /// at compile time by [`super::decompose::decompose_static_regions`].
+    /// Classifies every rule as fixed scaffolding (with its literal
+    /// bytes precomputed) or a dynamic value slot — the compile-time
+    /// index of the grammar's static structure. See the module docs of
+    /// `decompose.rs` for how this composes with Tiers 2 and 3b.
+    pub decomposition: GrammarDecomposition,
 }
 
 impl CompiledGrammarImpl {
@@ -196,6 +204,21 @@ impl CompiledGrammar {
     /// The associated tokenizer info.
     pub fn tokenizer_info(&self) -> &TokenizerInfo {
         &self.pimpl.tokenizer_info
+    }
+
+    /// The WGRAMMAR static/dynamic decomposition (Tier 3c) — the
+    /// compile-time split of every rule body into fixed scaffolding
+    /// spans (with precomputed literal bytes) and dynamic value-slot
+    /// spans.
+    ///
+    /// Computed once during compilation. A scheduler / matcher can
+    /// consult it — before the first decode step — to learn the
+    /// grammar's static/dynamic structure without any per-token work.
+    /// Each [`Segment::Static`](super::Segment::Static) span is exactly
+    /// a forced-byte run Tier 3b would otherwise rediscover lazily; the
+    /// genuine WGRAMMAR delta is doing this at compile time.
+    pub fn decomposition(&self) -> &GrammarDecomposition {
+        &self.pimpl.decomposition
     }
 
     /// Get the adaptive token mask for a canonical parser state,

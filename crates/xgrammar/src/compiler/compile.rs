@@ -28,6 +28,7 @@ use crate::grammar::{GrammarData, GrammarExprType};
 use crate::tokenizer::TokenizerInfo;
 
 use super::compiled_grammar::{CompiledGrammar, CompiledGrammarImpl};
+use super::decompose::decompose_static_regions;
 use super::rule_cache::RuleLevelCache;
 
 /// Compile an already-optimized grammar against `tokenizer_info`.
@@ -57,13 +58,18 @@ pub(super) fn compile_optimized_grammar(
     );
 
     // Degenerate path: an empty vocabulary has no masks to compute.
+    // The WGRAMMAR decomposition is still computed — it is a grammar
+    // property, independent of the tokenizer — so the static/dynamic
+    // index is available even on the degenerate path.
     if tokenizer_info.vocab_size() == 0 {
+        let decomposition = decompose_static_regions(&grammar);
         return CompiledGrammar::from_impl(Arc::new(CompiledGrammarImpl {
             grammar: Arc::new(grammar),
             tokenizer_info: tokenizer_info.clone(),
             mask_cache: Mutex::new(AHashMap::new()),
             tag_slice: Arc::new(AHashMap::new()),
             rule_cache: None,
+            decomposition,
         }));
     }
 
@@ -83,6 +89,13 @@ pub(super) fn compile_optimized_grammar(
         GrammarFsmHasher::apply(&mut grammar);
     }
 
+    // Step 2c. WGRAMMAR static/dynamic decomposition (Tier 3c). A
+    // single linear walk of the optimized AST classifies every rule as
+    // fixed scaffolding (literal bytes precomputed here, once) or a
+    // dynamic value slot. The result is the compile-time index of the
+    // grammar's static structure — see `decompose.rs`.
+    let decomposition = decompose_static_regions(&grammar);
+
     // Steps 3-4 (enumerate reachable scanable states + compute every
     // state's `AdaptiveTokenMask`) remain DELETED — see the module docs.
     // The mask cache starts empty and is populated lazily; on a miss the
@@ -93,6 +106,7 @@ pub(super) fn compile_optimized_grammar(
         mask_cache: Mutex::new(AHashMap::new()),
         tag_slice,
         rule_cache,
+        decomposition,
     }))
 }
 

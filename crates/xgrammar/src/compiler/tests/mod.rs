@@ -8,9 +8,10 @@
 // hand-built `TokenizerInfo` exercises the same code paths. This file
 // holds the shared fixtures; the test cases live in submodules to keep
 // every file under the 250-line cap:
-//   compile_tests — compile entry points, cache behaviour, determinism
-//   mask_tests    — AdaptiveTokenMask partition correctness, intervals
-//   tier2_tests   — cross-grammar RuleLevelCache + compile_top_k_masks
+//   compile_tests   — compile entry points, cache behaviour, determinism
+//   mask_tests      — AdaptiveTokenMask partition correctness, intervals
+//   tier2_tests     — cross-grammar RuleLevelCache + compile_top_k_masks
+//   decompose_tests — WGRAMMAR static/dynamic decomposition (Tier 3c)
 
 use crate::compiler::GrammarCompiler;
 use crate::grammar::functor::{GrammarNormalizer, GrammarOptimizer};
@@ -18,6 +19,7 @@ use crate::grammar::{GrammarData, parse_ebnf, parse_ebnf_default};
 use crate::tokenizer::{TokenizerInfo, VocabType};
 
 mod compile_tests;
+mod decompose_tests;
 mod mask_tests;
 mod tier2_tests;
 

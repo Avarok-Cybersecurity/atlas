@@ -17,6 +17,7 @@
 //   compiler         — GrammarCompiler with the dashmap-backed cache
 //   rule_cache       — cross-grammar RuleLevelCache (Tier 2)
 //   coalesce         — forced-token fast-path analysis (Tier 3b)
+//   decompose        — WGRAMMAR static/dynamic decomposition (Tier 3c)
 //
 // TIER 3b PERF FEATURE — COALESCENCE
 // ----------------------------------
@@ -25,6 +26,19 @@
 // current state, the matcher can emit that token directly and the
 // caller skips the (pointless) model sampling step. See `coalesce.rs`
 // and `GrammarMatcher::forced_token` / `next_forced_tokens`.
+//
+// TIER 3c PERF FEATURE — WGRAMMAR STATIC/DYNAMIC DECOMPOSITION
+// ------------------------------------------------------------
+// `decompose` adds the compile-time half of WGRAMMAR (arXiv:2507.16768):
+// a tool-call schema grammar is ~99% fixed scaffolding (literal keys,
+// punctuation) and ~1% dynamic value slots. `decompose_static_regions`
+// classifies every rule as static (a fixed literal — a forced-token
+// chain Tier 3b would otherwise rediscover lazily at decode) or dynamic
+// (a value slot), and PRECOMPUTES the static literals once, at compile
+// time. The result is stored on `CompiledGrammar` — see
+// `CompiledGrammar::decomposition`. This is a classification + byte
+// precompute, NOT a second masking path: the matcher's actual
+// forced-token decisions still flow through Tier 3b.
 //
 // SIMPLIFICATIONS vs C++
 // ----------------------
@@ -50,6 +64,7 @@ mod coalesce;
 mod compile;
 mod compiled_grammar;
 mod compiler;
+mod decompose;
 mod mask;
 mod mask_gen;
 mod rule_cache;
@@ -57,6 +72,7 @@ mod rule_cache;
 pub use coalesce::{Forced, analyze_bitmask};
 pub use compiled_grammar::{CompiledGrammar, CompiledGrammarImpl};
 pub use compiler::{CompileError, GrammarCompiler};
+pub use decompose::{GrammarDecomposition, RuleDecomposition, Segment, decompose_static_regions};
 pub use mask::{AdaptiveTokenMask, StoreType, USE_BITSET_THRESHOLD};
 pub use rule_cache::{RuleLevelCache, RuleMaskKey, UNLIMITED_SIZE};
 
