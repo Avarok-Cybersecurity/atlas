@@ -20,15 +20,16 @@ impl EarleyParser {
     pub fn pop_last_states(&mut self, count: usize) {
         self.stop_token_is_accepted = false;
         assert!(
-            count < self.completable.len(),
+            (count as i32) < self.completable.len(),
             "cannot pop {count} states: only {} recorded",
             self.completable.len()
         );
-        let new_len = self.completable.len() - count;
-        self.completable.truncate(new_len);
+        // CSR rollback: dropping the last `count` rows is an O(count)
+        // offset truncation — `indptr` shrinks and `data` is cut at the
+        // new last offset. Restores the exact prior state.
+        self.completable.pop_rows(count as i32);
         self.is_completed.truncate(self.is_completed.len() - count);
-        self.scanable_history
-            .truncate(self.scanable_history.len() - count);
+        self.scanable_history.pop_rows(count as i32);
     }
 
     /// Push `state` into the parser and run predict/complete on it,
@@ -41,7 +42,7 @@ impl EarleyParser {
         if !self.expand_and_enqueue_unexpanded(state) {
             self.queue.enqueue(state);
         }
-        self.completable.push(Vec::new());
+        self.completable.push_row(&[]);
         while let Some(state) = self.queue.pop() {
             let (scanable, completable) = self.predict(state);
             if completable {
@@ -52,8 +53,10 @@ impl EarleyParser {
             }
         }
         self.is_completed.push(self.accept_stop_token);
+        // ZapFormat dead-state pruning — see `advance` / `prune.rs`.
+        self.productivity.prune(&mut self.to_be_added);
         let added = std::mem::take(&mut self.to_be_added);
-        self.scanable_history.push(added);
+        self.scanable_history.push_row_owned(added);
     }
 
     /// Push one state as an extra history step that only checks whether
@@ -61,16 +64,16 @@ impl EarleyParser {
     /// without running prediction/completion. Pop it with
     /// `pop_last_states(1)`.
     pub fn push_one_state_to_check(&mut self, state: ParserState) {
-        self.completable.push(Vec::new());
+        self.completable.push_row(&[]);
         self.is_completed
             .push(*self.is_completed.last().unwrap_or(&false));
-        self.scanable_history.push(vec![state]);
+        self.scanable_history.push_row(&[state]);
     }
 
     /// Reset the parser to a fresh parse of the grammar's root rule.
     pub fn reset(&mut self) {
-        self.completable.clear();
-        self.scanable_history.clear();
+        self.completable = Default::default();
+        self.scanable_history = Default::default();
         self.is_completed.clear();
         self.stop_token_is_accepted = false;
         debug_assert!(self.queue.is_empty());

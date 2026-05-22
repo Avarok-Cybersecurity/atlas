@@ -111,6 +111,67 @@ fn merge_tiny_fsm_unchanged() {
 }
 
 #[test]
+fn edge_csr_reset_and_rows() {
+    // EdgeCsr must lay rows out per row_sizes and reuse storage on reset.
+    let mut csr = EdgeCsr::default();
+    csr.reset_with_row_sizes(&[2, 0, 1]);
+    assert_eq!(csr.row(0).len(), 2);
+    assert_eq!(csr.row(1).len(), 0);
+    assert_eq!(csr.row(2).len(), 1);
+    csr.row_mut(0)[1] = EndpointEdge {
+        peer: 7,
+        min: 1,
+        max: 2,
+    };
+    assert_eq!(csr.row(0)[1].peer, 7);
+    // Reset to a smaller shape, storage reused, rows re-sized.
+    csr.reset_with_row_sizes(&[1]);
+    assert_eq!(csr.row(0).len(), 1);
+    assert_eq!(csr.indptr, vec![0, 1]);
+}
+
+#[test]
+fn distinct_peers_counts_groups() {
+    // Row 0 has two distinct peers, row 1 has one, row 2 is empty.
+    let mut csr = EdgeCsr::default();
+    csr.reset_with_row_sizes(&[3, 2, 0]);
+    csr.row_mut(0).copy_from_slice(&[
+        EndpointEdge {
+            peer: 1,
+            min: 0,
+            max: 0,
+        },
+        EndpointEdge {
+            peer: 1,
+            min: 1,
+            max: 1,
+        },
+        EndpointEdge {
+            peer: 4,
+            min: 0,
+            max: 0,
+        },
+    ]);
+    csr.row_mut(1).copy_from_slice(&[
+        EndpointEdge {
+            peer: 9,
+            min: 0,
+            max: 0,
+        },
+        EndpointEdge {
+            peer: 9,
+            min: 2,
+            max: 2,
+        },
+    ]);
+    let mut distinct = Vec::new();
+    let mut single = Vec::new();
+    distinct_peers(&csr, 3, &mut distinct, &mut single);
+    assert_eq!(distinct, vec![2, 1, 0]);
+    assert_eq!(single, vec![-1, 9, -1]);
+}
+
+#[test]
 fn simplify_idempotent_on_dfa() {
     let mut f = literal(b"a");
     f.is_dfa = true;

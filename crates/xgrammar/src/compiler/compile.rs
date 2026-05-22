@@ -19,14 +19,17 @@
 // `CompiledGrammar::get_or_compute_mask`. The result is byte-identical
 // to the old eager output (same `MaskGenerator`, same canonical key).
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use ahash::AHashMap;
 
 use crate::grammar::functor::GrammarFsmHasher;
 use crate::grammar::{GrammarData, GrammarExprType};
 use crate::tokenizer::TokenizerInfo;
 
 use super::compiled_grammar::{CompiledGrammar, CompiledGrammarImpl};
+use super::decompose::decompose_static_regions;
+use super::rule_cache::RuleLevelCache;
 
 /// Compile an already-optimized grammar against `tokenizer_info`.
 ///
@@ -38,45 +41,72 @@ use super::compiled_grammar::{CompiledGrammar, CompiledGrammarImpl};
 /// lazily on first matcher lookup (XGrammar-2 JIT). `_max_threads` is
 /// retained for API parity but is now unused: there is no eager
 /// per-state mask loop left to parallelize.
+///
+/// `rule_cache` is the optional cross-grammar [`RuleLevelCache`] (passed
+/// from the [`super::GrammarCompiler`] so it is shared across every
+/// grammar that compiler builds). When present, the per-rule FSM hasher
+/// is run so the lazy mask computation can key into it.
 pub(super) fn compile_optimized_grammar(
-    grammar: GrammarData,
+    mut grammar: GrammarData,
     tokenizer_info: &TokenizerInfo,
     _max_threads: usize,
+    rule_cache: Option<RuleLevelCache>,
 ) -> CompiledGrammar {
-    let mut grammar = grammar;
     debug_assert!(
         grammar.optimized,
         "grammar must be optimized before compile"
     );
 
     // Degenerate path: an empty vocabulary has no masks to compute.
+    // The WGRAMMAR decomposition is still computed — it is a grammar
+    // property, independent of the tokenizer — so the static/dynamic
+    // index is available even on the degenerate path.
     if tokenizer_info.vocab_size() == 0 {
+        let decomposition = decompose_static_regions(&grammar);
         return CompiledGrammar::from_impl(Arc::new(CompiledGrammarImpl {
             grammar: Arc::new(grammar),
             tokenizer_info: tokenizer_info.clone(),
-            mask_cache: dashmap::DashMap::new(),
-            tag_slice: HashMap::new(),
+            mask_cache: Mutex::new(AHashMap::new()),
+            tag_slice: Arc::new(AHashMap::new()),
+            rule_cache: None,
+            decomposition,
         }));
     }
 
     // Step 1. TagDispatch second-slice precomputation. Retained on the
-    // `CompiledGrammarImpl` — the lazy mask computation feeds it to the
-    // `MaskGenerator` on demand.
-    let tag_slice = tag_dispatch_optimization(&grammar, tokenizer_info);
+    // `CompiledGrammarImpl` (`Arc`-wrapped) — the lazy mask computation
+    // feeds it to the `MaskGenerator` on demand without copying the map.
+    let tag_slice = Arc::new(tag_dispatch_optimization(&grammar, tokenizer_info));
 
-    // Step 2. Hash the per-rule FSMs (the C++ does this when the
-    // rule-level cache is enabled; we always run it — the hashes are
-    // harmless and let the matcher reuse them later).
-    GrammarFsmHasher::apply(&mut grammar);
+    // Step 2. Per-rule FSM structural hashing (`GrammarFSMHasher::Apply`
+    // in the C++). The hashes + canonical state renumbering populate
+    // `grammar.per_rule_fsm_hashes` / `per_rule_fsm_new_state_ids`; they
+    // are the lookup keys of the cross-grammar `RuleLevelCache`. Tier 1
+    // removed this call as dead work because no cache consumed the
+    // hashes — Tier 2 re-enables it here, gated on the cache being
+    // present so a cache-disabled compiler pays nothing.
+    if rule_cache.is_some() {
+        GrammarFsmHasher::apply(&mut grammar);
+    }
+
+    // Step 2c. WGRAMMAR static/dynamic decomposition (Tier 3c). A
+    // single linear walk of the optimized AST classifies every rule as
+    // fixed scaffolding (literal bytes precomputed here, once) or a
+    // dynamic value slot. The result is the compile-time index of the
+    // grammar's static structure — see `decompose.rs`.
+    let decomposition = decompose_static_regions(&grammar);
 
     // Steps 3-4 (enumerate reachable scanable states + compute every
-    // state's `AdaptiveTokenMask`) are DELETED — see the module docs.
-    // The mask cache starts empty and is populated lazily.
+    // state's `AdaptiveTokenMask`) remain DELETED — see the module docs.
+    // The mask cache starts empty and is populated lazily; on a miss the
+    // lazy path consults `rule_cache` before recomputing.
     CompiledGrammar::from_impl(Arc::new(CompiledGrammarImpl {
         grammar: Arc::new(grammar),
         tokenizer_info: tokenizer_info.clone(),
-        mask_cache: dashmap::DashMap::new(),
+        mask_cache: Mutex::new(AHashMap::new()),
         tag_slice,
+        rule_cache,
+        decomposition,
     }))
 }
 
@@ -90,8 +120,8 @@ pub(super) fn compile_optimized_grammar(
 fn tag_dispatch_optimization(
     grammar: &GrammarData,
     tokenizer_info: &TokenizerInfo,
-) -> HashMap<i32, Vec<bool>> {
-    let mut result = HashMap::new();
+) -> AHashMap<i32, Vec<bool>> {
+    let mut result = AHashMap::new();
     let sorted = tokenizer_info.sorted_decoded_vocab();
 
     for rule_id in 0..grammar.num_rules() {

@@ -396,3 +396,15 @@ fn json_like_recursive_grammar() {
     assert!(!accepts(g.clone(), "{k:v,,k:v}"));
     assert!(!accepts(g, "{k}"));
 }
+
+/* -------------------- ZapFormat dead-state pruning -------------------- */
+//
+// These tests cover Tier 3a: the co-accessibility analysis in `prune.rs`
+// and its hook in `advance` / `push_state_and_expand`. They verify both
+// halves of the correctness contract:
+//   * pruning never removes a state that could lead to acceptance — so
+//     the accepted language and `is_completed` are unchanged;
+//   * the productivity analysis classifies nodes exactly.
+
+#[path = "prune_tests.rs"]
+mod prune_tests;

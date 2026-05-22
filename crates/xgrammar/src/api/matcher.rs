@@ -109,6 +109,49 @@ impl GrammarMatcher {
         self.inner.find_jump_forward_string_lossy()
     }
 
+    /// The single grammar-forced next token, if the current state
+    /// admits exactly one legal token (the dottxt.ai "Coalescence"
+    /// fast-path). When `Some`, the caller may skip the model sample
+    /// for this position and emit the returned token directly.
+    ///
+    /// Additive — not present in the vendored crate. See
+    /// `crate::matcher::GrammarMatcher::forced_token`.
+    pub fn forced_token(&mut self) -> Option<i32> {
+        self.inner.forced_token()
+    }
+
+    /// Inspect an already-filled next-token bitmask for the
+    /// forced-token condition — the zero-extra-work coalescence entry
+    /// point for a caller that just ran `fill_next_token_bitmask`.
+    ///
+    /// Additive. See `crate::matcher::GrammarMatcher::forced_from_bitmask`.
+    pub fn forced_from_bitmask(&self, bitmask: &mut [i32], index: i32) -> Option<i32> {
+        self.inner
+            .forced_from_bitmask(bitmask, index.max(0) as usize)
+    }
+
+    /// The maximal chain of grammar-forced tokens from the current
+    /// state — Coalescence's forced-chain. The caller skips the model
+    /// sample for every returned position. `max` caps the chain length
+    /// (`usize::MAX` for unbounded). The matcher state is unchanged;
+    /// the caller must feed the tokens back through `accept_token`.
+    ///
+    /// Additive. See `crate::matcher::GrammarMatcher::next_forced_tokens`.
+    pub fn next_forced_tokens(&mut self, max: usize) -> Vec<i32> {
+        self.inner.next_forced_tokens(max)
+    }
+
+    /// Detect the Coalescence forced chain and accept it in place — the
+    /// efficient server primitive. Advances the matcher past the whole
+    /// forced run (no peek / rollback / re-accept) and returns the
+    /// tokens accepted, in order; the caller skips the model sample for
+    /// each. `max` caps the run length (`usize::MAX` for unbounded).
+    ///
+    /// Additive. See `crate::matcher::GrammarMatcher::accept_forced_chain`.
+    pub fn accept_forced_chain(&mut self, max: usize) -> Vec<i32> {
+        self.inner.accept_forced_chain(max)
+    }
+
     /// Rollback the matcher by `num_tokens` tokens. Port of the
     /// vendored `GrammarMatcher::rollback`.
     pub fn rollback(&mut self, num_tokens: i32) {

@@ -22,14 +22,16 @@ impl EarleyParser {
     /// epsilon successors and predicting referenced rules.
     /// Port of `ExpandNextRuleRefElementOnFSM`.
     pub(crate) fn expand_next_rule_ref_on_fsm(&mut self, state: ParserState) {
-        let edges = {
-            let fsm = self.grammar.per_rule_fsms[state.rule_id as usize]
-                .as_ref()
-                .expect("FSM-backed rule must have a per-rule FSM");
-            fsm.fsm().edges(state.element_id as usize).to_vec()
-        };
+        // Hold an `Arc` clone (refcount bump, no data copy) so the
+        // borrowed edge slice stays valid across the `&mut self`
+        // queue / `predict_ref_edge` mutations — no per-call `to_vec()`.
+        let grammar = self.grammar.clone();
+        let fsm = grammar.per_rule_fsms[state.rule_id as usize]
+            .as_ref()
+            .expect("FSM-backed rule must have a per-rule FSM");
+        let edges = fsm.fsm().edges(state.element_id as usize);
 
-        for edge in &edges {
+        for edge in edges {
             if edge.is_epsilon() {
                 self.queue.enqueue(ParserState::new(
                     state.rule_id,
@@ -95,7 +97,7 @@ impl EarleyParser {
             ref_rule_id,
             is_repeat,
         } = ref_edge;
-        let cur_pos = self.completable.len() as i32 - 1;
+        let cur_pos = self.completable.len() - 1;
 
         // Right-recursion detection: a non-repeat ref whose target is a
         // terminal end node lets the callee complete straight to the
@@ -112,27 +114,11 @@ impl EarleyParser {
             if state.rule_start_pos == NO_PREV_INPUT_POS {
                 right_recursion_to_root = true;
             } else {
-                let parents = self.completable[state.rule_start_pos as usize].clone();
-                let mut to_add = Vec::new();
-                for (first, parent) in &parents {
-                    if *first != state.rule_id {
-                        continue;
-                    }
-                    let already = self
-                        .completable
-                        .last()
-                        .unwrap()
-                        .iter()
-                        .any(|(f, s)| *f == ref_rule_id && s == parent);
-                    if !already {
-                        to_add.push((ref_rule_id, *parent));
-                    }
-                }
-                self.completable.last_mut().unwrap().extend(to_add);
+                self.add_right_recursion_parents(state.rule_id, state.rule_start_pos, ref_rule_id);
             }
         } else if is_repeat {
             // Repeat ref: store the source node + preserve repeat_count.
-            self.completable.last_mut().unwrap().push((
+            self.completable.push_in_latest_row((
                 ref_rule_id,
                 ParserState::with_repeat(
                     state.rule_id,
@@ -145,7 +131,7 @@ impl EarleyParser {
             ));
         } else {
             // Plain rule ref: store the post-transition target node.
-            self.completable.last_mut().unwrap().push((
+            self.completable.push_in_latest_row((
                 ref_rule_id,
                 ParserState::new(
                     state.rule_id,
@@ -175,7 +161,7 @@ impl EarleyParser {
         let new_pos = if right_recursion_to_root {
             NO_PREV_INPUT_POS
         } else {
-            self.completable.len() as i32 - 1
+            self.completable.len() - 1
         };
         self.queue.enqueue(ParserState::new(
             ref_rule_id,

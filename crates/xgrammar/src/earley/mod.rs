@@ -12,9 +12,10 @@
 //
 // No `unsafe`. The C++ index-based state pools and CSR layouts of the
 // grammar/FSM are preserved and accessed safely via slices; the
-// parser's transient history is a `Vec<Vec<_>>` (rollback via
-// `truncate`), the idiomatic equivalent of the C++ `Compact2DArray`
-// push/pop.
+// parser's transient history (`completable`, `scanable_history`) is a
+// `support::Compact2DArray` (CSR: one flat data buffer + an offset
+// vector), matching the C++ `Compact2DArray` — contiguous, alloc-once,
+// with rollback as a cheap `pop_rows` truncation.
 //
 // Module map:
 //   state           — ParserState, the Earley item
@@ -36,6 +37,7 @@ mod parser;
 mod parser_api;
 mod predict;
 mod predict_fsm;
+mod prune;
 mod queue;
 mod scan;
 mod scan_charclass;

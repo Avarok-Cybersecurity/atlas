@@ -16,6 +16,7 @@ use crate::tokenizer::TokenizerInfo;
 
 use super::compile::compile_optimized_grammar;
 use super::compiled_grammar::CompiledGrammar;
+use super::rule_cache::{RuleLevelCache, UNLIMITED_SIZE};
 
 /// An error produced while compiling a grammar, schema or tag.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -63,6 +64,13 @@ pub struct GrammarCompiler {
     cache_enabled: bool,
     cache_limit_bytes: i64,
     cache: DashMap<CacheKey, CompiledGrammar>,
+    /// Cross-grammar adaptive-token-mask cache (Tier 2, upstream commit
+    /// `bfb2a79`). `Some` only when `cache_enabled` — a rule
+    /// structurally identical to one compiled for a previous request
+    /// reuses its masks. Shared (cloned `Arc` inside) into every
+    /// `CompiledGrammar` this compiler produces. Port of the C++
+    /// `GrammarCompiler::Impl::rule_level_cache_`.
+    rule_cache: Option<RuleLevelCache>,
 }
 
 impl GrammarCompiler {
@@ -88,12 +96,28 @@ impl GrammarCompiler {
             cache_limit_bytes >= -1,
             "cache_limit_bytes must be -1 (unlimited) or non-negative"
         );
+        // The cross-grammar `RuleLevelCache` exists only when caching is
+        // enabled. Its memory budget mirrors the C++ split: with an
+        // unlimited (`-1`) overall limit it is unbounded; otherwise it
+        // gets `limit - limit/3*2` bytes (~1/3 of the budget — the other
+        // ~2/3 goes to the grammar-level cache).
+        let rule_cache = if cache_enabled {
+            let budget = if cache_limit_bytes == -1 {
+                UNLIMITED_SIZE
+            } else {
+                (cache_limit_bytes - cache_limit_bytes / 3 * 2) as usize
+            };
+            Some(RuleLevelCache::new(budget))
+        } else {
+            None
+        };
         Self {
             tokenizer_info,
             max_threads,
             cache_enabled,
             cache_limit_bytes,
             cache: DashMap::new(),
+            rule_cache,
         }
     }
 
@@ -102,7 +126,12 @@ impl GrammarCompiler {
     fn compile_normalized(&self, grammar: GrammarData) -> CompiledGrammar {
         let normalized = GrammarNormalizer::apply(grammar);
         let optimized = GrammarOptimizer::apply(normalized);
-        compile_optimized_grammar(optimized, &self.tokenizer_info, self.max_threads)
+        compile_optimized_grammar(
+            optimized,
+            &self.tokenizer_info,
+            self.max_threads,
+            self.rule_cache.clone(),
+        )
     }
 
     /// Fetch from cache or compute via `f`, honoring `cache_enabled`.
@@ -206,19 +235,29 @@ impl GrammarCompiler {
         Ok(self.get_or_compute(key, || self.compile_normalized(grammar)))
     }
 
-    /// Clear the internal compiled-grammar cache. Port of
-    /// `GrammarCompiler::ClearCache`.
+    /// Clear the internal compiled-grammar cache *and* the cross-grammar
+    /// rule-level mask cache. Port of `GrammarCompiler::ClearCache`.
     pub fn clear_cache(&self) {
         self.cache.clear();
+        if let Some(rule_cache) = &self.rule_cache {
+            rule_cache.clear();
+        }
     }
 
-    /// Approximate bytes held by the cache. Port of
+    /// Approximate bytes held by the cache — the grammar-level compiled
+    /// grammars plus the cross-grammar rule-level mask cache. Port of
     /// `GrammarCompiler::GetCacheSizeBytes`.
     pub fn cache_size_bytes(&self) -> i64 {
-        self.cache
+        let grammar_bytes: i64 = self
+            .cache
             .iter()
             .map(|e| e.value().memory_size_bytes() as i64)
-            .sum()
+            .sum();
+        let rule_bytes = self
+            .rule_cache
+            .as_ref()
+            .map_or(0, |c| c.memory_size() as i64);
+        grammar_bytes + rule_bytes
     }
 
     /// The configured cache memory limit; `-1` means unlimited. Port of

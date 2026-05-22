@@ -17,6 +17,7 @@ use super::{BatchGrammarMatcher, GrammarMatcher, TokenBitmask};
 
 mod accept_tests;
 mod bitmask_tests;
+mod coalesce_tests;
 mod jump_rollback_tests;
 
 /// A tiny RAW-vocab tokenizer covering the bytes / multi-char tokens

@@ -198,6 +198,18 @@ impl<'a> BitmaskSlice<'a> {
         get_bit(self.words, token)
     }
 
+    /// The packed `i32` words backing this view — exactly
+    /// `bitmask_size(vocab_size)` of them.
+    ///
+    /// Padding bits beyond `vocab_size` in the final word are not
+    /// guaranteed cleared (only [`Self::fill_all`] / [`Self::clear`]
+    /// normalize them); callers that popcount must mask the tail or
+    /// only trust [`Self::vocab_size`] logical bits.
+    #[must_use]
+    pub fn words(&self) -> &[i32] {
+        self.words
+    }
+
     /// Reject every token.
     pub fn clear(&mut self) {
         fill(self.words, self.vocab_size, false);

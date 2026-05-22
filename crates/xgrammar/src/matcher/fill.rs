@@ -25,7 +25,7 @@ use crate::compiler::StoreType;
 use crate::support::int_set::{intset_intersection, intset_union};
 
 use super::bitmask::BitmaskSlice;
-use super::matcher::GrammarMatcher;
+use super::matcher::{FillScratch, GrammarMatcher};
 
 impl GrammarMatcher {
     /// Fill `bitmask` with the set of tokens acceptable for the next
@@ -57,46 +57,83 @@ impl GrammarMatcher {
             .ok_or(FillError::BufferTooSmall)?;
         let mut view = BitmaskSlice::new(slice, vocab_size).ok_or(FillError::BufferTooSmall)?;
 
-        let (accepted, rejected, can_reach_end) = self.compute_partitions();
-        self.set_token_bitmask(&mut view, &accepted, &rejected, can_reach_end);
+        // Take the reusable scratch buffers for the duration of the
+        // fill (a `Default::default()` left in their place), so the hot
+        // path owns them outright with no per-token allocation. They
+        // are restored unconditionally before returning.
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let can_reach_end = self.compute_partitions(&mut scratch);
+        self.set_token_bitmask(
+            &mut view,
+            &scratch.accepted,
+            &scratch.rejected,
+            can_reach_end,
+        );
+        self.scratch = scratch;
         Ok(!view.all_set())
     }
 
-    /// Compute the accepted-bitset and rejected-interset over every
-    /// latest scanable state, resolving uncertain tokens by trial.
-    /// Returns `(accepted_token_ids, rejected_interset, can_reach_end)`.
-    fn compute_partitions(&mut self) -> (Vec<bool>, Vec<i32>, bool) {
+    /// Populate `scratch.accepted` (accepted-bitset) and
+    /// `scratch.rejected` (rejected-interset) over every latest scanable
+    /// state, resolving uncertain tokens by trial. Returns
+    /// `can_reach_end`.
+    ///
+    /// All working buffers are reused from `scratch` — `.clear()`ed,
+    /// not reallocated — so this runs with zero heap traffic on the hot
+    /// path. The vocab-sized `sorted_decoded_vocab` and
+    /// `trie_subtree_nodes_range` are borrowed in place from
+    /// `self.compiled_grammar` (a field disjoint from `self.parser` and
+    /// `self.scratch`), never cloned.
+    fn compute_partitions(&mut self, scratch: &mut FillScratch) -> bool {
         let vocab_size = self.tokenizer_info().vocab_size();
         // `accepted[token_id]` — union of every state's accepted set.
-        let mut accepted = vec![false; vocab_size];
+        scratch.accepted.clear();
+        scratch.accepted.resize(vocab_size, false);
         // `rejected` — running intersection; `{-1}` is the universal set.
-        let mut rejected: Vec<i32> = vec![-1];
+        scratch.rejected.clear();
+        scratch.rejected.push(-1);
+
+        // Snapshot the parser's latest scanable states (`ParserState`
+        // is `Copy`) into the scratch buffer once, so the trial loop
+        // below can mutate `self.parser` freely without holding a
+        // borrow of `latest_scanable_states()`.
+        scratch.live_states.clear();
+        scratch
+            .live_states
+            .extend_from_slice(self.parser.latest_scanable_states());
 
         // Resolve each live scanable state to the canonical
         // `ParserState` the compiler keys its mask under (live states
         // carry real positions; the mask cache is position-agnostic),
         // then JIT-compile (or fetch from the lazy cache) its
-        // `AdaptiveTokenMask`.
-        let live_states: Vec<_> = self.parser.latest_scanable_states().to_vec();
-        let cg = self.compiled_grammar().clone();
-        let root_rule_id = cg.grammar().root_rule_id();
-        let states: Vec<_> = live_states
-            .iter()
-            .map(|s| {
-                let canon = self.canonical_mask_state(s);
-                let is_root = canon.rule_id == root_rule_id;
-                (*s, cg.get_or_compute_mask(canon, is_root))
-            })
-            .collect();
-        let sorted = self.tokenizer_info().sorted_decoded_vocab().to_vec();
-        let subtree = self.tokenizer_info().trie_subtree_nodes_range().to_vec();
+        // `AdaptiveTokenMask`. `get_or_compute_mask` returns an `Arc`.
+        let root_rule_id = self.compiled_grammar.grammar().root_rule_id();
+        scratch.states.clear();
+        for i in 0..scratch.live_states.len() {
+            let live = scratch.live_states[i];
+            let canon = self.canonical_mask_state(&live);
+            let is_root = canon.rule_id == root_rule_id;
+            let mask = self.compiled_grammar.get_or_compute_mask(canon, is_root);
+            scratch.states.push((live, mask));
+        }
+
+        // Vocab-sized tables borrowed in place — `self.compiled_grammar`
+        // is disjoint from `self.parser` and `scratch`.
+        let sorted = self
+            .compiled_grammar
+            .tokenizer_info()
+            .sorted_decoded_vocab();
+        let subtree = self
+            .compiled_grammar
+            .tokenizer_info()
+            .trie_subtree_nodes_range();
 
         // Pass 1: seed `accepted` from every state's static accepted set.
-        for (_, mask) in &states {
+        for (_, mask) in &scratch.states {
             let mask = mask.as_ref();
             match mask.store_type {
                 StoreType::AcceptedBitset => {
-                    for (tid, slot) in accepted.iter_mut().enumerate() {
+                    for (tid, slot) in scratch.accepted.iter_mut().enumerate() {
                         if mask.accepted_bitset[tid] {
                             *slot = true;
                         }
@@ -104,7 +141,7 @@ impl GrammarMatcher {
                 }
                 StoreType::Accepted => {
                     for &idx in &mask.accepted_indices {
-                        accepted[sorted[idx as usize].0 as usize] = true;
+                        scratch.accepted[sorted[idx as usize].0 as usize] = true;
                     }
                 }
                 StoreType::Rejected => {}
@@ -112,10 +149,15 @@ impl GrammarMatcher {
         }
 
         // Pass 2: resolve uncertain tokens per state via trial advance.
-        for (live, mask) in &states {
+        // Iterate by index so `scratch.states` is not borrowed across
+        // the `self.parser` mutation; the `Arc<AdaptiveTokenMask>` is
+        // cheap to clone and keeps the mask alive without that borrow.
+        for si in 0..scratch.states.len() {
+            let live = scratch.states[si].0;
+            let mask = std::sync::Arc::clone(&scratch.states[si].1);
             let mask = mask.as_ref();
-            let mut rejected_delta: Vec<i32> = Vec::new();
-            self.parser.push_one_state_to_check(*live);
+            scratch.rejected_delta.clear();
+            self.parser.push_one_state_to_check(live);
 
             let mut prev_token: Option<&[u8]> = None;
             let mut prev_matched = 0usize;
@@ -123,12 +165,12 @@ impl GrammarMatcher {
 
             for &cur_idx in &mask.uncertain_indices {
                 let (cur_id, ref cur_token) = sorted[cur_idx as usize];
-                if accepted[cur_id as usize] {
+                if scratch.accepted[cur_id as usize] {
                     continue;
                 }
                 if cur_idx < last_rejected_range {
                     if mask.store_type == StoreType::Rejected {
-                        rejected_delta.push(cur_idx);
+                        scratch.rejected_delta.push(cur_idx);
                     }
                     continue;
                 }
@@ -165,12 +207,12 @@ impl GrammarMatcher {
                 match mask.store_type {
                     StoreType::AcceptedBitset | StoreType::Accepted => {
                         if is_accepted {
-                            accepted[cur_id as usize] = true;
+                            scratch.accepted[cur_id as usize] = true;
                         }
                     }
                     StoreType::Rejected => {
                         if !is_accepted {
-                            rejected_delta.push(cur_idx);
+                            scratch.rejected_delta.push(cur_idx);
                         }
                     }
                 }
@@ -183,13 +225,12 @@ impl GrammarMatcher {
 
             if mask.store_type == StoreType::Rejected {
                 // rejected = intersect(rejected, mask.rejected ∪ delta)
-                intset_union(&mut rejected_delta, &mask.rejected_indices);
-                intset_intersection(&mut rejected, &rejected_delta);
+                intset_union(&mut scratch.rejected_delta, &mask.rejected_indices);
+                intset_intersection(&mut scratch.rejected, &scratch.rejected_delta);
             }
         }
 
-        let can_reach_end = self.parser.is_completed();
-        (accepted, rejected, can_reach_end)
+        self.parser.is_completed()
     }
 
     /// Turn the accepted-bitset + rejected-interset into the packed

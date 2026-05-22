@@ -41,7 +41,7 @@ pub(crate) struct MaskGenerator<'a> {
     init_rule_id: i32,
     init_state: ParserState,
     /// Per-tag-dispatch-rule "definitely accepted since 2nd char" bitset.
-    tag_dispatch_second_slice: &'a std::collections::HashMap<i32, Vec<bool>>,
+    tag_dispatch_second_slice: &'a ahash::AHashMap<i32, Vec<bool>>,
     // Scratch partitions.
     accepted: Vec<i32>,
     rejected: Vec<i32>,
@@ -56,7 +56,7 @@ impl<'a> MaskGenerator<'a> {
         grammar: Arc<GrammarData>,
         init_state: ParserState,
         tokenizer_info: &'a TokenizerInfo,
-        tag_dispatch_second_slice: &'a std::collections::HashMap<i32, Vec<bool>>,
+        tag_dispatch_second_slice: &'a ahash::AHashMap<i32, Vec<bool>>,
     ) -> Self {
         let parser = EarleyParser::new(Arc::clone(&grammar), init_state, false);
         Self {

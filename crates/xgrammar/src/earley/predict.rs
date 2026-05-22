@@ -77,6 +77,44 @@ impl EarleyParser {
         }
     }
 
+    /// Right-recursion: copy the matching ancestors of `src_rule_id`
+    /// recorded at completable row `src_pos` forward into the current
+    /// (last) completable row, tagged with `ref_rule_id`, skipping any
+    /// already present. Shared by the FSM and non-FSM predict paths.
+    ///
+    /// `src_pos` is always distinct from the last row here, so reading
+    /// the source CSR row and appending to the last row do not alias.
+    /// The matching source entries are buffered in the reusable
+    /// `parent_scratch` to avoid the per-call row clone; dedup is
+    /// checked against the last row before any append (the row is not
+    /// mutated during the scan), preserving the original semantics
+    /// exactly — including not de-duplicating within the added batch.
+    pub(crate) fn add_right_recursion_parents(
+        &mut self,
+        src_rule_id: i32,
+        src_pos: i32,
+        ref_rule_id: i32,
+    ) {
+        self.parent_scratch.clear();
+        let src_row = self.completable.row(src_pos);
+        for &(first, parent) in src_row {
+            if first != src_rule_id {
+                continue;
+            }
+            let already = self
+                .completable
+                .back()
+                .iter()
+                .any(|(f, s)| *f == ref_rule_id && *s == parent);
+            if !already {
+                self.parent_scratch.push((ref_rule_id, parent));
+            }
+        }
+        for i in 0..self.parent_scratch.len() {
+            self.completable.push_in_latest_row(self.parent_scratch[i]);
+        }
+    }
+
     /// True if `rule_id` is permitted to match the empty string.
     pub(crate) fn rule_allows_empty(&self, rule_id: i32) -> bool {
         self.grammar
@@ -103,36 +141,17 @@ impl EarleyParser {
         let ref_rule_id = sub[0];
         let is_repeat = sub.kind == GrammarExprType::Repeat;
         let seq_len = grammar_expr.len();
-        let cur_pos = self.completable.len() as i32 - 1;
+        let cur_pos = self.completable.len() - 1;
 
         let mut right_recursion_to_root = false;
         if state.element_id as usize != seq_len - 1 || is_repeat || state.rule_start_pos == cur_pos
         {
-            self.completable
-                .last_mut()
-                .unwrap()
-                .push((ref_rule_id, state));
+            self.completable.push_in_latest_row((ref_rule_id, state));
         } else if state.rule_start_pos == NO_PREV_INPUT_POS {
             right_recursion_to_root = true;
         } else {
             // Right recursion: copy the parent's ancestors forward.
-            let parents = self.completable[state.rule_start_pos as usize].clone();
-            let mut to_add = Vec::new();
-            for (first, parent) in &parents {
-                if *first != state.rule_id {
-                    continue;
-                }
-                let already = self
-                    .completable
-                    .last()
-                    .unwrap()
-                    .iter()
-                    .any(|(f, s)| *f == ref_rule_id && s == parent);
-                if !already {
-                    to_add.push((ref_rule_id, *parent));
-                }
-            }
-            self.completable.last_mut().unwrap().extend(to_add);
+            self.add_right_recursion_parents(state.rule_id, state.rule_start_pos, ref_rule_id);
         }
 
         if self.rule_allows_empty(ref_rule_id) {
@@ -153,7 +172,7 @@ impl EarleyParser {
         let new_pos = if right_recursion_to_root {
             NO_PREV_INPUT_POS
         } else {
-            self.completable.len() as i32 - 1
+            self.completable.len() - 1
         };
         self.queue.enqueue(ParserState::new(
             ref_rule_id,

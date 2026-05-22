@@ -144,6 +144,23 @@ fn new_rule_name_dedups() {
 }
 
 #[test]
+fn new_rule_name_cache_amortized() {
+    // The next_cnt_per_hint cache must produce the same names as a
+    // fresh-probe implementation even across many same-hint calls.
+    let mut b = GrammarBuilder::new();
+    let e = b.add_empty_str();
+    b.add_rule_named("t", e).unwrap();
+    for i in 1..=20 {
+        let name = b.get_new_rule_name("t");
+        assert_eq!(name, format!("t_{i}"));
+        b.add_rule_named(&name, e).unwrap();
+    }
+    // A still-free lower suffix introduced out of band is still found:
+    // a different hint shares no cache entry.
+    assert_eq!(b.get_new_rule_name("u"), "u");
+}
+
+#[test]
 fn rule_with_hint_unique() {
     let mut b = GrammarBuilder::new();
     let e = b.add_empty_str();
