@@ -54,9 +54,15 @@ impl TransformerModel {
             .find(|&s| s >= n_decode)
             .unwrap_or(n_decode);
 
-        // Guard: fall back to default (sequential) for EP, oversized, or no decode.
+        // Guard: fall back to default (sequential) for EP, oversized, no decode,
+        // or MLA. MLA models route the decode portion through `decode_batch`,
+        // whose `decode_batch_dispatch` per-sequence MLA fallback uses the
+        // MLA-aware single-seq path; the fused `decode_multi_seq` body below
+        // has no MLA branch and would launch `dense_gemv` against the NULL
+        // `attn.q_proj` stub the Mistral loader installs (→ illegal address).
         // Use padded_n (not n_decode) because padding slots consume hidden buffer space.
         if self.comm.is_some()
+            || self.is_mla_dispatch()
             || (padded_n_guard + n_prefill) > self.buffers.max_batch_tokens()
             || n_decode == 0
         {

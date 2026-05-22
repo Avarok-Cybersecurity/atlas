@@ -39,11 +39,78 @@ impl TransformerModel {
         }
 
         // EP mode: use per-sequence decode() to match the worker's batch size.
+        // EP workers run one sequence at a time, so the single-row logits
+        // buffer is consumed before the next call — no row scatter needed.
         if self.comm.is_some() {
             for i in 0..n {
                 self.decode(tokens[i], seqs[i], stream)?;
             }
             return Ok(self.decode_logits_ptr());
+        }
+
+        // MLA models: the batched `decode_multi_seq` path has NO MLA branch —
+        // `ms_phase_qkv` always reads the standard `attn.q_proj` / `q_weight`
+        // tensors, which the Mistral MLA loader leaves as a NULL `DevicePtr`
+        // stub (mistral_loader phase_assemble: "dummy attention weights").
+        // For MLA the real projections live in `self.mla` and are only wired
+        // into the single-seq `attention_forward` (its `if self.mla.is_some()`
+        // early-return into `attention_forward_mla`). Routing an MLA model
+        // through `decode_multi_seq` launches `dense_gemv` against the NULL
+        // weight pointer → CUDA_ERROR_ILLEGAL_ADDRESS / SIGSEGV under conc≥2.
+        //
+        // Fall back to per-sequence `decode()` (MLA-aware path). Each
+        // `decode()` unconditionally writes its logits into row 0 of
+        // `buffers.logits()` (via `lm_head`), but the caller's
+        // `argmax_batch` / host sampler expects a contiguous `[n, vocab]`
+        // buffer — one logits row per sequence.
+        //
+        // A pure device-side scatter is NOT safe here: the MLA `decode()`
+        // runs `Buffers::zero_all()` in its Phase 1 (decode_a.rs — required
+        // to clear stale MLA absorbed-attention scratch), and `zero_all`
+        // memsets the ENTIRE `logits` buffer. So any row-`i` logits scattered
+        // after `decode(i)` are wiped by `decode(i+1)`'s `zero_all`, leaving
+        // only the last sequence's row intact (observed: every sequence but
+        // one decodes a constant `vocab-1` token = argmax of a zeroed row).
+        //
+        // Stage each sequence's logits on the host immediately after its
+        // `decode()` (before the next call zeroes the buffer), then upload
+        // the assembled `[n, vocab]` batch back into `buffers.logits()` once
+        // the loop is done. n ≤ max_batch (small) and this path is the MLA
+        // concurrent-decode fallback only, so the host round-trip is an
+        // acceptable correctness cost.
+        if self.is_mla_dispatch() {
+            use std::sync::atomic::Ordering;
+            let logits = self.decode_logits_ptr();
+            let v = self.config.vocab_size;
+            let elem = if self.decode_logits_fp32() { 4 } else { 2 };
+            let row_bytes = v * elem;
+            // Suppress CUDA graphs for the loop: `decode()`'s graph cache is
+            // slot-keyed; capturing a graph for one slot inside the same
+            // stream-capture window as another slot's replay corrupts both.
+            let prev_suppress = self.suppress_graphs.swap(true, Ordering::Relaxed);
+            let result = (|| -> Result<()> {
+                let mut staged = vec![0u8; n * row_bytes];
+                for i in 0..n {
+                    self.decode(tokens[i], seqs[i], stream)?;
+                    // `decode()` wrote this sequence's logits to row 0.
+                    // Pull them to the host before the next `decode()`'s
+                    // `zero_all` wipes the buffer. `copy_d2h_on_stream`
+                    // syncs `stream` first, so the eager lm_head GEMV has
+                    // fully landed before the copy reads it.
+                    self.gpu.copy_d2h_on_stream(
+                        logits,
+                        &mut staged[i * row_bytes..(i + 1) * row_bytes],
+                        stream,
+                    )?;
+                }
+                // Upload the assembled [n, vocab] batch back to the device.
+                self.gpu.copy_h2d_async(&staged, logits, stream)?;
+                self.gpu.synchronize(stream)?;
+                Ok(())
+            })();
+            self.suppress_graphs.store(prev_suppress, Ordering::Relaxed);
+            result?;
+            return Ok(logits);
         }
 
         let stream = self.gpu.default_stream();
