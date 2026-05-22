@@ -55,10 +55,14 @@ impl EarleyParser {
     pub(crate) fn advance_character_class(&mut self, state: ParserState, ch: u8, element_id: i32) {
         let sub: GrammarExpr = self.grammar.expr(element_id);
         debug_assert_eq!(sub.kind, GrammarExprType::CharacterClass);
-        let data = sub.data.to_vec();
+        // `sub.data` is a borrowed slice into the grammar; iterate it in
+        // place — no per-byte `to_vec()` clone. `char_class_step` is
+        // `&self` and returns an owned result, so its borrow of the
+        // grammar ends before the `&mut self` enqueue below.
+        let data = sub.data;
         let is_negative = data[0] != 0;
 
-        if let Some((next, completed)) = self.char_class_step(state, ch, &data, is_negative, true) {
+        if let Some((next, completed)) = self.char_class_step(state, ch, data, is_negative, true) {
             if completed {
                 self.queue.enqueue(next);
             } else {
@@ -78,11 +82,11 @@ impl EarleyParser {
     ) {
         let sub: GrammarExpr = self.grammar.expr(element_id);
         debug_assert_eq!(sub.kind, GrammarExprType::CharacterClassStar);
-        let data = sub.data.to_vec();
+        // Borrowed slice into the grammar — no per-byte `to_vec()` clone.
+        let data = sub.data;
         let is_negative = data[0] != 0;
 
-        if let Some((next, completed)) = self.char_class_step(state, ch, &data, is_negative, false)
-        {
+        if let Some((next, completed)) = self.char_class_step(state, ch, data, is_negative, false) {
             if completed {
                 self.queue.enqueue(next);
             } else {

@@ -17,10 +17,9 @@
 // first lookup by the matcher, and caches it in `mask_cache`. Only the
 // states a generation actually visits get a mask computed, once each.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use dashmap::DashMap;
+use ahash::AHashMap;
 
 use crate::earley::ParserState;
 use crate::grammar::GrammarData;
@@ -39,14 +38,26 @@ pub struct CompiledGrammarImpl {
     /// The tokenizer this grammar was compiled against.
     pub tokenizer_info: TokenizerInfo,
     /// Lazy per-parser-state adaptive-token-mask cache. Equivalent to
-    /// the C++ `adaptive_token_mask_cache`, but populated on demand:
-    /// empty after compilation, filled by [`CompiledGrammar::
+    /// the C++ `adaptive_token_mask_cache` — a plain hash map, populated
+    /// on demand: empty after compilation, filled by [`CompiledGrammar::
     /// get_or_compute_mask`] as the matcher reaches each state.
-    pub mask_cache: DashMap<ParserState, Arc<AdaptiveTokenMask>>,
+    ///
+    /// The matcher drives one `CompiledGrammar` single-threaded per
+    /// request, so the C++ uses a plain `unordered_map` with no locking.
+    /// We cannot drop the lock entirely, however: [`super::super::
+    /// matcher::BatchGrammarMatcher`]'s rayon `par_iter_mut` fill path
+    /// runs many matchers that were all cloned from one `CompiledGrammar`
+    /// — they share this `Arc<CompiledGrammarImpl>` and may call
+    /// `get_or_compute_mask` concurrently. A single uncontended `Mutex`
+    /// lock is far cheaper than `DashMap`'s shard-hash + shard-select
+    /// machinery on every per-token lookup, while still keeping
+    /// `CompiledGrammarImpl: Sync`.
+    pub mask_cache: Mutex<AHashMap<ParserState, Arc<AdaptiveTokenMask>>>,
     /// TagDispatch second-slice precomputation, keyed by rule id. Built
     /// once at compile time and retained here so on-demand mask
-    /// computation can feed it to the [`MaskGenerator`].
-    pub tag_slice: HashMap<i32, Vec<bool>>,
+    /// computation can feed it to the [`MaskGenerator`]. `Arc`-wrapped
+    /// so [`MaskGenerator::new`] clones a pointer, not the map.
+    pub tag_slice: Arc<AHashMap<i32, Vec<bool>>>,
 }
 
 impl CompiledGrammarImpl {
@@ -59,8 +70,10 @@ impl CompiledGrammarImpl {
             + self.grammar.num_rules() as usize * 32;
         let mask_bytes: usize = self
             .mask_cache
-            .iter()
-            .map(|e| e.value().memory_size())
+            .lock()
+            .expect("mask_cache mutex poisoned")
+            .values()
+            .map(|m| m.memory_size())
             .sum();
         grammar_bytes + mask_bytes
     }
@@ -115,24 +128,37 @@ impl CompiledGrammar {
         canonical: ParserState,
         is_root: bool,
     ) -> Arc<AdaptiveTokenMask> {
-        if let Some(hit) = self.pimpl.mask_cache.get(&canonical) {
-            return Arc::clone(hit.value());
+        // Fast path: a cache hit takes one uncontended `Mutex` lock and
+        // an `Arc` clone — nothing else.
+        if let Some(hit) = self
+            .pimpl
+            .mask_cache
+            .lock()
+            .expect("mask_cache mutex poisoned")
+            .get(&canonical)
+        {
+            return Arc::clone(hit);
         }
-        Arc::clone(
-            self.pimpl
-                .mask_cache
-                .entry(canonical)
-                .or_insert_with(|| {
-                    let mut generator = MaskGenerator::new(
-                        Arc::clone(&self.pimpl.grammar),
-                        canonical,
-                        &self.pimpl.tokenizer_info,
-                        &self.pimpl.tag_slice,
-                    );
-                    Arc::new(generator.get_adaptive_token_mask(is_root))
-                })
-                .value(),
-        )
+        // Miss: compute the mask WITHOUT holding the lock — the
+        // `MaskGenerator` scan is expensive, and serializing it under
+        // the lock would defeat the parallel `BatchGrammarMatcher` fill.
+        // A concurrent computer of the same state simply does duplicate
+        // work; the `entry` double-check below keeps a single canonical
+        // `Arc` (compute-on-miss logic is otherwise identical to before).
+        // `&Arc<AHashMap>` deref-coerces to the `&AHashMap` argument.
+        let mut generator = MaskGenerator::new(
+            Arc::clone(&self.pimpl.grammar),
+            canonical,
+            &self.pimpl.tokenizer_info,
+            &self.pimpl.tag_slice,
+        );
+        let computed = Arc::new(generator.get_adaptive_token_mask(is_root));
+        let mut cache = self
+            .pimpl
+            .mask_cache
+            .lock()
+            .expect("mask_cache mutex poisoned");
+        Arc::clone(cache.entry(canonical).or_insert(computed))
     }
 
     /// Approximate memory usage in bytes. Port of

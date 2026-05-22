@@ -22,15 +22,22 @@ impl EarleyParser {
             return;
         }
 
-        let parents = self.completable[state.rule_start_pos as usize].clone();
-        for (ref_id, parent) in &parents {
-            if *ref_id != state.rule_id {
-                continue;
+        // Copy the matching parents out of the CSR row into the reusable
+        // scratch: the row borrows `self.completable`, which can't be
+        // held across the `&mut self` `complete_*_parent` calls below.
+        self.parent_scratch.clear();
+        let row = self.completable.row(state.rule_start_pos);
+        for &(ref_id, parent) in row {
+            if ref_id == state.rule_id {
+                self.parent_scratch.push((ref_id, parent));
             }
+        }
+        for i in 0..self.parent_scratch.len() {
+            let (ref_id, parent) = self.parent_scratch[i];
             if parent.rule_id == -1 {
-                self.complete_non_fsm_parent(*parent);
+                self.complete_non_fsm_parent(parent);
             } else {
-                self.complete_fsm_parent(*parent, *ref_id);
+                self.complete_fsm_parent(parent, ref_id);
             }
         }
     }
@@ -80,15 +87,17 @@ impl EarleyParser {
     /// edge for `ref_id`, apply the repeat-count bookkeeping; otherwise
     /// re-enqueue the parent so its FSM walk continues from `target`.
     fn complete_fsm_parent(&mut self, parent: ParserState, ref_id: i32) {
-        let edges = {
-            let fsm = self.grammar.per_rule_fsms[parent.rule_id as usize]
-                .as_ref()
-                .expect("FSM-backed parent must have a per-rule FSM");
-            fsm.fsm().edges(parent.element_id as usize).to_vec()
-        };
+        // Hold an `Arc` clone (refcount bump, no data copy) so the
+        // borrowed edge slice stays valid across the `&mut self`
+        // `queue.enqueue` calls — no per-call `to_vec()` clone.
+        let grammar = self.grammar.clone();
+        let fsm = grammar.per_rule_fsms[parent.rule_id as usize]
+            .as_ref()
+            .expect("FSM-backed parent must have a per-rule FSM");
+        let edges = fsm.fsm().edges(parent.element_id as usize);
 
         let mut handled_as_repeat = false;
-        for edge in &edges {
+        for edge in edges {
             if !edge.is_repeat_ref() {
                 continue;
             }

@@ -19,10 +19,10 @@
 // `CompiledGrammar::get_or_compute_mask`. The result is byte-identical
 // to the old eager output (same `MaskGenerator`, same canonical key).
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use crate::grammar::functor::GrammarFsmHasher;
+use ahash::AHashMap;
+
 use crate::grammar::{GrammarData, GrammarExprType};
 use crate::tokenizer::TokenizerInfo;
 
@@ -43,7 +43,6 @@ pub(super) fn compile_optimized_grammar(
     tokenizer_info: &TokenizerInfo,
     _max_threads: usize,
 ) -> CompiledGrammar {
-    let mut grammar = grammar;
     debug_assert!(
         grammar.optimized,
         "grammar must be optimized before compile"
@@ -54,20 +53,23 @@ pub(super) fn compile_optimized_grammar(
         return CompiledGrammar::from_impl(Arc::new(CompiledGrammarImpl {
             grammar: Arc::new(grammar),
             tokenizer_info: tokenizer_info.clone(),
-            mask_cache: dashmap::DashMap::new(),
-            tag_slice: HashMap::new(),
+            mask_cache: Mutex::new(AHashMap::new()),
+            tag_slice: Arc::new(AHashMap::new()),
         }));
     }
 
     // Step 1. TagDispatch second-slice precomputation. Retained on the
-    // `CompiledGrammarImpl` — the lazy mask computation feeds it to the
-    // `MaskGenerator` on demand.
-    let tag_slice = tag_dispatch_optimization(&grammar, tokenizer_info);
+    // `CompiledGrammarImpl` (`Arc`-wrapped) — the lazy mask computation
+    // feeds it to the `MaskGenerator` on demand without copying the map.
+    let tag_slice = Arc::new(tag_dispatch_optimization(&grammar, tokenizer_info));
 
-    // Step 2. Hash the per-rule FSMs (the C++ does this when the
-    // rule-level cache is enabled; we always run it — the hashes are
-    // harmless and let the matcher reuse them later).
-    GrammarFsmHasher::apply(&mut grammar);
+    // Step 2 (`GrammarFsmHasher::apply`) is DELETED. The C++ runs the
+    // per-rule FSM hasher only when the rule-level cross-grammar cache
+    // is enabled — the hashes are that cache's lookup key and have no
+    // other consumer. This port does not yet implement the rule-level
+    // cache (see the module docs), so hashing every compile is pure
+    // dead work. Tier 2's cross-grammar cache will reinstate this call
+    // when it actually reads the hashes.
 
     // Steps 3-4 (enumerate reachable scanable states + compute every
     // state's `AdaptiveTokenMask`) are DELETED — see the module docs.
@@ -75,7 +77,7 @@ pub(super) fn compile_optimized_grammar(
     CompiledGrammar::from_impl(Arc::new(CompiledGrammarImpl {
         grammar: Arc::new(grammar),
         tokenizer_info: tokenizer_info.clone(),
-        mask_cache: dashmap::DashMap::new(),
+        mask_cache: Mutex::new(AHashMap::new()),
         tag_slice,
     }))
 }
@@ -90,8 +92,8 @@ pub(super) fn compile_optimized_grammar(
 fn tag_dispatch_optimization(
     grammar: &GrammarData,
     tokenizer_info: &TokenizerInfo,
-) -> HashMap<i32, Vec<bool>> {
-    let mut result = HashMap::new();
+) -> AHashMap<i32, Vec<bool>> {
+    let mut result = AHashMap::new();
     let sorted = tokenizer_info.sorted_decoded_vocab();
 
     for rule_id in 0..grammar.num_rules() {

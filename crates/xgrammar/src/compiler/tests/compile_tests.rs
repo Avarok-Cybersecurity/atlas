@@ -170,13 +170,13 @@ fn mask_cache_starts_empty_and_fills_lazily() {
     let info = small_tokenizer();
     let cg = compile_optimized_grammar(grammar, &info, 1);
     assert!(
-        cg.inner().mask_cache.is_empty(),
+        cg.inner().mask_cache.lock().unwrap().is_empty(),
         "mask cache must be empty right after compilation"
     );
     let masks = cg.all_reachable_masks();
     assert!(!masks.is_empty());
     assert_eq!(
-        cg.inner().mask_cache.len(),
+        cg.inner().mask_cache.lock().unwrap().len(),
         masks.len(),
         "every reached state must now be cached"
     );
@@ -198,7 +198,7 @@ fn empty_vocab_compiles_with_no_masks() {
         .compile_grammar_from_ebnf("root ::= \"a\"\n", "root")
         .unwrap();
     assert!(cg.all_reachable_masks().is_empty());
-    assert!(cg.inner().mask_cache.is_empty());
+    assert!(cg.inner().mask_cache.lock().unwrap().is_empty());
 }
 
 // ----- structural tag ----------------------------------------------

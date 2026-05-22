@@ -39,21 +39,20 @@ impl EarleyParser {
     /// an end state) is added directly without re-processing; others go
     /// through the predict/complete queue.
     fn advance_fsm(&mut self, state: ParserState, ch: u8) {
-        let edges = {
-            let fsm = self.grammar.per_rule_fsms[state.rule_id as usize]
-                .as_ref()
-                .expect("FSM-backed rule must have a per-rule FSM");
-            fsm.fsm().edges(state.element_id as usize).to_vec()
-        };
-        for edge in &edges {
+        // Hold an `Arc` clone (refcount bump, no data copy) so the
+        // borrowed edge slice stays valid across the `&mut self`
+        // queue/`to_be_added` mutations — no per-scan `to_vec()` clone.
+        let grammar = self.grammar.clone();
+        let fsm = grammar.per_rule_fsms[state.rule_id as usize]
+            .as_ref()
+            .expect("FSM-backed rule must have a per-rule FSM");
+        let edges = fsm.fsm().edges(state.element_id as usize);
+        for edge in edges {
             if !edge.is_char_range() || (ch as i16) < edge.min || (ch as i16) > edge.max {
                 continue;
             }
             let mut next = state;
             next.element_id = edge.target;
-            let fsm = self.grammar.per_rule_fsms[state.rule_id as usize]
-                .as_ref()
-                .unwrap();
             let t = edge.target;
             let pure_scanable = !is_non_terminal_state(fsm, t)
                 && !fsm.is_end_state(t as usize)
