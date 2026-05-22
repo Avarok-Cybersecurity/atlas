@@ -887,3 +887,40 @@ These are **two distinct pools**:
 
 All action items from the 2026-05-19/20/21 investigation sessions are confirmed correct.
 No regressions introduced. Branch `spec_ssm` is ready for integration testing on hardware.
+
+---
+
+## 2026-05-22 Second Independent Verification (spec_ssm HEAD `ac64e99`)
+
+Full re-audit of all source files named in the task description. No new bugs found; all
+prior fixes confirmed correct. Key verifications below.
+
+### P1 — Mistral Small 4 MLA: five fixes confirmed, YaRN re-confirmed as misdiagnosis
+
+Traced each of the five bugs end-to-end in the current code:
+
+**Bug 1 (HDIM=256 kernel)**: `cache_skip_mla.rs` line 254 `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0, ...)` hard-rejects any HDIM=256 path at server load time. `mla_fused_prefill.cu` operates in 320-dim absorbed space — grid `[nq=32, seq_len, 1]`, block 256. Causal mask `kv_end = min(q_pos+1, seq_len)` correct at all seq_len up to 65535 (CUDA grid-Y limit). No arithmetic overflow: pointer offsets use `(unsigned long long)`.
+
+**Bug 2 (FP8 KV fallback)**: `kv_dtypes.rs` lines 20-22 return `vec![BF16; num_attention_layers]` when `kv_dtype==BF16` — early-return fires before the `hp==0 → []` path. `phase_assemble.rs` line 124 `unwrap_or(KvCacheDtype::Bf16)` confirmed. `--kv-high-precision-layers auto` maps to `hp=2` but has no effect (early-return on BF16). All 36 MLA layers are uniformly BF16; no FP8 mixing possible.
+
+**Bug 3 (wrong scale)**: `cache_skip_mla.rs` line 253 `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)`. `decode/attention_forward_mla.rs` line 377 identical formula. `paged_mla.rs` multi-chunk path `inv_sqrt_d = 1/sqrt(mla_cache_dim)`. All three paths consistent.
+
+**Bug 4 (multi-chunk paged path)**: `paged_mla.rs` `seq_len_start > 0` branch runs the absorbed `mla_prefill_paged_320` kernel with `kv_len = seq_len_start + n`, attending to the full paged context. The first-chunk path (`seq_len_start == 0`) uses `prefill_attn_128_k` (correct HDIM guard at lines 273-284).
+
+**Bug 5 (CUDA smem aliasing)**: `mla_fused_prefill.cu` line 115 `__shared__ float smem_dot[8]` confirmed at function scope before the `kv_pos` loop at line 126. `smem_q[320]` at line 75 and `smem_latent[256]` at line 190 are distinct allocations; total 2336 bytes — no bank conflicts.
+
+**Kernel launch parameters** (`prefill_attn_a.rs`): `mla_fused_prefill` grid `[nq, seq_len, 1]` — for N=1000 tokens, grid is (32, 1000, 1), well within CUDA grid-Y limit of 65535. `mla_v_extract_batched` grid `[div_ceil(v_dim=128, 8)=16, nq=32, n_tokens]` — also within limits. Both kernels scale linearly with seq_len; no per-token allocation.
+
+**YaRN `yarn.rs`**: `find_correction_dim` uses dimension-index space (correct HF formula). For Mistral (`rope=64 pairs, beta_fast=32, beta_slow=1, original_max_pos=8192, theta=1e7`): computed `low=7, high=15`. Never the bug.
+
+### P2 — Nemotron Super 120B tool calling: triple-layer protection confirmed
+
+1. `MODEL.toml` (all four flags): `tool_call_parser = "bare_json"`, `skip_template_tools = true`, `disable_tool_steering = true`, `thinking_in_tools = false` — all present.
+2. `bare_json.rs` `suppresses_jinja_tools() → true` — parser-level guarantee; `template.rs` passes `jinja_tools = None` for any bare-json model regardless of MODEL.toml.
+3. `anthropic/handlers.rs` lines 330-335 — `count_tokens` endpoint checks `parser_suppresses` in addition to `skip_template_tools`, mirroring `template.rs`. Asymmetry fixed in commit `2993894`.
+
+### P3 — SSM pool: propagation chain confirmed correct
+
+`cli.rs` `ssm_cache_slots` → `build.rs:71` → `impl_a1.rs:143` → `SsmSnapshotPool::new(ssm_cache_slots)`. `SsmStatePool::new` at `impl_a1.rs:134` uses `max_batch_size` (correct — each concurrent decode sequence needs its own h_state/conv_state). `--ssm-cache-slots 0` zeros ONLY `SsmSnapshotPool`; `SsmStatePool` unaffected. For pure-attention models (Mistral: 0 SSM layers), both pools allocate 0 GPU memory.
+
+**No new bugs found. All fixes verified correct. Branch ready for hardware validation.**
