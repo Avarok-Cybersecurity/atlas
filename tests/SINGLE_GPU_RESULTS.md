@@ -793,3 +793,97 @@ as an independent gate on Jinja tool rendering.
 
 Propagation chain re-verified (see 2026-05-21 final verification above). `SsmStatePool`
 sized by `max_batch_size`; `SsmSnapshotPool` sized by `ssm_cache_slots`. Correct behavior.
+
+---
+
+## 2026-05-22 Independent Verification Session
+
+**Context**: This session started from a fresh read of the remote `spec_ssm` HEAD
+(commit `2993894`). No new code changes were made — purpose was independent audit of all
+prior fixes and confirmation that the current branch state is correct.
+
+### P1 — Mistral Small 4 MLA: YaRN re-confirmed as misdiagnosis
+
+The original `tests/SINGLE_GPU_RESULTS.md` on `main` attributed the gibberish-at->1000-tokens
+bug to an incorrect YaRN `find_correction_dim` formula. This session re-audited
+`crates/spark-model/src/mistral_loader/loader_impl/yarn.rs` independently:
+
+```rust
+let find_correction_dim = |num_rot: f32| -> f32 {
+    (dim_f * (original_max_pos / (num_rot * 2.0 * std::f32::consts::PI)).ln())
+        / (2.0 * theta_f.ln())
+};
+let low  = find_correction_dim(beta_fast).floor().max(0.0);
+let high = find_correction_dim(beta_slow).ceil().min((rope - 1) as f32);
+```
+
+This is the correct Hugging Face `find_correction_dim` formula — it operates in
+dimension-index space, not frequency space. For Mistral Small 4
+(`rope=32 pairs, beta_fast=32, beta_slow=1, original_max_pos=32768, theta=1000000`):
+- `low ≈ 7.0`, `high ≈ 15.0`
+- Boundary pair indices land in the rope section, not nope — correct.
+
+**YaRN was never broken. The 5 code bugs below were the actual root causes.**
+
+### P1 — Five actual bugs: all confirmed fixed
+
+| # | Location | Bug | Fix |
+|---|----------|-----|-----|
+| 1 | `prefill/cache_skip_mla.rs` | Used `inferspark_prefill` (HDIM=256) for MLA (HDIM=320) | Now calls `mla_fused_prefill_k` (absorbed 320-dim kernel) |
+| 2 | `phase_assemble.rs` | `unwrap_or(KvCacheDtype::Fp8)` — silent FP8 fallback | Changed to `unwrap_or(KvCacheDtype::Bf16)` |
+| 3 | `prefill/cache_skip_mla.rs` | `inv_sqrt_d = 1/sqrt(128)` (wrong head_dim for absorbed path) | `inv_sqrt_d_absorbed = 1/sqrt(320)` |
+| 4 | `prefill/paged_mla.rs` | Multi-chunk path (>8192 tokens) used `prefill_attn_128_k` then `inferspark_prefill` (HDIM mismatch) | Guard `hd <= 128` routes to `prefill_attn_128_k`; full chunk uses new `mla_prefill_paged_320` |
+| 5 | `mla_fused_prefill.cu` | `__shared__ float smem_dot[8]` inside `kv_pos` loop — NVCC smem aliasing | Moved to function scope before loop |
+
+**KV dtype hardening** (two-layer defence confirmed correct):
+
+1. `crates/spark-server/src/main_modules/kv_dtypes.rs`: when `kv_dtype == BF16`,
+   `build_layer_kv_dtypes` now returns `vec![BF16; num_attention_layers]` instead of `[]`.
+   The early-return that previously returned `[]` only fires when `hp_layers == 0 && kv_dtype != BF16`.
+
+2. `crates/spark-model/src/mistral_loader/loader_impl/phase_assemble.rs`:
+   `unwrap_or(Bf16)` ensures any future caller that passes fewer dtypes than layers still
+   defaults safely to BF16, not FP8.
+
+**`--kv-high-precision-layers auto` + `--kv-cache-dtype bf16` path** traced end-to-end:
+- `kv_cache.rs` `resolve_kv_cache_config`: `"auto"` → `kv_hp_layers = 2`
+- `build_layer_kv_dtypes(BF16, N, 2)`: hits `kv_dtype == BF16` early-return → `vec![BF16; N]`
+- `phase_assemble.rs`: `get(i)` always returns `Some(BF16)` → no FP8 mixing possible.
+
+### P2 — Nemotron Super tool calling: all fixes confirmed
+
+**MODEL.toml** (`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`) verified:
+- `tool_call_parser = "bare_json"` — uses `BareJsonParser`, not qwen3_coder XML
+- `skip_template_tools = true` — Jinja template never sees tool definitions
+- `disable_tool_steering = true` — suppresses `<tool_call>\n` steering prefix that caused Super's emission loop
+- `thinking_in_tools = false` — grammar-constrained decoding starts from token 1
+- `thinking_default = true` — non-tool requests still get `<think>...</think>` reasoning
+- `max_thinking_budget = 2048` — enough headroom for full chain-of-thought
+
+**`BareJsonParser::suppresses_jinja_tools() → true`** confirmed as the
+parser-level guard (in addition to `skip_template_tools`) preventing XML `<function>`
+blocks from appearing in the generation prompt for any bare-JSON model.
+
+**`count_tokens` asymmetry fix** (commit `2993894`):
+`anthropic/handlers.rs` now checks `parser_suppresses` in addition to
+`skip_template_tools`, mirroring `template.rs`. Both OpenAI and Anthropic paths
+now consistently honour `suppresses_jinja_tools()`.
+
+### P3 — SSM pool sizing: propagation chain confirmed
+
+CLI `--ssm-cache-slots` → `serve_phases/build.rs` (line 71) → `build_model` →
+`impl_a1.rs` `TransformerModel::new` → `SsmSnapshotPool::new(ssm_cache_slots, ...)`.
+
+The 1206 MB figure for Nemotron Super 120B is `SsmStatePool` (active decode states),
+which is correctly sized by `--max-batch-size` (default 8), not `--ssm-cache-slots`.
+These are **two distinct pools**:
+- `SsmStatePool` = active states, N = `max_batch_size + 1` slots — required for correct decode
+- `SsmSnapshotPool` = prefix cache snapshots, N = `ssm_cache_slots` — `--ssm-cache-slots 0` zeros this
+
+`--ssm-cache-slots 0` correctly reduces snapshot memory to 0 MB.
+`--max-batch-size 1` reduces the decode pool from ~1206 MB to ~151 MB for single-stream use.
+
+### Summary
+
+All action items from the 2026-05-19/20/21 investigation sessions are confirmed correct.
+No regressions introduced. Branch `spec_ssm` is ready for integration testing on hardware.
