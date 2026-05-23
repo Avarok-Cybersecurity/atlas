@@ -43,6 +43,10 @@ use run_standard::run_standard_chunk_loop;
 /// batched-prefill / batched-mixed). `maybe_finalize` is idempotent post
 /// activation, and a no-op when `TURBO_INNERQ` was not set at startup —
 /// so calling on every chunk costs one OnceLock load in the disabled case.
+/// On non-cuda backends the driver doesn't exist (it talks to the CUDA
+/// Driver API directly via `atlas_core::registry`), so this collapses to
+/// a no-op via the `#[cfg]` gate.
+#[cfg(feature = "cuda")]
 pub(super) fn poll_innerq() {
     if let Some(driver) = spark_model::layers::qwen3_attention::INNERQ.get()
         && let Err(e) = driver.maybe_finalize(128)
@@ -50,6 +54,9 @@ pub(super) fn poll_innerq() {
         tracing::warn!("InnerQ maybe_finalize failed: {e:#}");
     }
 }
+
+#[cfg(not(feature = "cuda"))]
+pub(super) fn poll_innerq() {}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn continue_in_progress_prefills(
