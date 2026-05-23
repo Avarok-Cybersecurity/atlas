@@ -836,3 +836,624 @@ extern "C" __global__ void reshape_and_cache_flash_bf16k_turbo2v(
         vd[3] = vi[12] | (vi[13] << 2) | (vi[14] << 4) | (vi[15] << 6);
     }
 }
+
+// ── Asymmetric Fp8K + Turbo3V reshape_and_cache (TurboQuant+ asym) ──
+//
+// K is written as FP8 E4M3 (contiguous NHD layout, identical byte layout to
+// the FP8 baseline — caller passes `k_scale` so quant = bf16 / k_scale → fp8).
+// V is written as turbo3 (3-bit Lloyd-Max + per-group FP8 scale + matched-norm
+// L2 correction), identical math to reshape_and_cache_flash_bf16k_turbo3v's
+// V side. K and V pools have separate strides because they're sized for
+// different dtypes (FP8 = 1 b/elem K; turbo3 = ~0.5 b/elem V + scales).
+//
+// Grid: (num_tokens, 1, 1)   Block: (256, 1, 1)
+extern "C" __global__ void reshape_and_cache_flash_fp8k_turbo3v(
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    unsigned char* __restrict__ k_cache,        // FP8-typed K pool (byte-addressed)
+    unsigned char* __restrict__ v_cache,         // turbo3 byte-addressed V pool
+    const long long* __restrict__ slot_mapping,
+    const unsigned int num_kv_heads,
+    const unsigned int head_dim,
+    const unsigned int block_size,
+    const unsigned int key_stride,
+    const unsigned int value_stride,
+    const float k_scale,                                // FP8 K per-tensor quant scale
+    const unsigned long long k_block_stride_bytes,      // K-pool: fp8 bytes/block (= block_size*nkv*hd)
+    const unsigned long long v_block_stride_bytes,      // V-pool: turbo3 bytes/block
+    const unsigned long long v_data_section_bytes       // V-pool: 3-bit data section
+) {
+    const unsigned int token_idx = blockIdx.x;
+    const long long slot = slot_mapping[token_idx];
+    if (slot < 0) return;
+
+    const unsigned int block_idx = (unsigned int)(slot / block_size);
+    const unsigned int block_offset = (unsigned int)(slot % block_size);
+    const unsigned int n_elems = num_kv_heads * head_dim;
+    const unsigned int num_groups = n_elems / GROUP_SIZE;
+
+    const __nv_bfloat16* key_src = key + (unsigned long long)token_idx * key_stride;
+    const __nv_bfloat16* val_src = value + (unsigned long long)token_idx * value_stride;
+
+    // ── K-side write: BF16 → FP8 E4M3 (per-tensor scale) ──
+    // K pool element stride = block_size * n_elems (bytes), since 1 b/fp8 elem.
+    {
+        const unsigned long long k_block_stride_elems = (unsigned long long)block_size * n_elems;
+        unsigned char* key_dst = k_cache
+            + (unsigned long long)block_idx * k_block_stride_elems
+            + (unsigned long long)block_offset * n_elems;
+        const float inv_k_scale = 1.0f / k_scale;
+        // Vectorized BF16x2 → FP8x2 path. Pack 2 BF16 from a uint32, quant
+        // both, store as packed uint16. Same as reshape_and_cache_flash_fp8.
+        const unsigned int n_pairs = n_elems / 2;
+        const unsigned int n_rem = n_elems % 2;
+        const unsigned int* key_src32 = (const unsigned int*)key_src;
+        __nv_fp8x2_storage_t* key_dst16 = (__nv_fp8x2_storage_t*)key_dst;
+        for (unsigned int i = threadIdx.x; i < n_pairs; i += blockDim.x) {
+            unsigned int pk = key_src32[i];
+            float v0 = __bfloat162float(__ushort_as_bfloat16((unsigned short)(pk & 0xFFFF)));
+            float v1 = __bfloat162float(__ushort_as_bfloat16((unsigned short)(pk >> 16)));
+            float2 scaled = make_float2(v0 * inv_k_scale, v1 * inv_k_scale);
+            key_dst16[i] = __nv_cvt_float2_to_fp8x2(scaled, __NV_SATFINITE, __NV_E4M3);
+        }
+        if (n_rem > 0 && threadIdx.x == 0) {
+            unsigned int base = n_pairs * 2;
+            float kf = __bfloat162float(key_src[base]) * inv_k_scale;
+            ((__nv_fp8_storage_t*)key_dst)[base] = __nv_cvt_float_to_fp8(kf, __NV_SATFINITE, __NV_E4M3);
+        }
+    }
+
+    // ── V-side write: turbo3 (3-bit packed + FP8 group scale + matched-norm) ──
+    // Identical to reshape_and_cache_flash_bf16k_turbo3v's V side.
+    unsigned char* block_v = v_cache + (unsigned long long)block_idx * v_block_stride_bytes;
+    unsigned long long v_data_off = (unsigned long long)block_offset * (n_elems * 3 / 8);
+    unsigned long long v_scale_off = v_data_section_bytes
+        + (unsigned long long)block_offset * num_groups;
+
+    for (unsigned int g = threadIdx.x; g < num_groups; g += blockDim.x) {
+        unsigned int elem_offset = g * GROUP_SIZE;
+
+        float vf[16];
+        float v_norm_sq = 0.0f;
+        for (int i = 0; i < 16; i++) {
+            vf[i] = __bfloat162float(val_src[elem_offset + i]);
+            v_norm_sq += vf[i] * vf[i];
+        }
+        float v_max = 0.0f;
+        for (int i = 0; i < 16; i++) v_max = fmaxf(v_max, fabsf(vf[i]));
+
+        float v_inv = (v_max > 1e-12f) ? (TURBO3_MAX / v_max) : 1.0f;
+
+        unsigned char vi[16];
+        float v_recon_sq = 0.0f;
+        for (int i = 0; i < 16; i++) {
+            vi[i] = turbo3_quantize(vf[i] * v_inv);
+            float vc = TURBO3_CODEBOOK[vi[i]];
+            v_recon_sq += vc * vc;
+        }
+        float v_recon_norm = sqrtf(v_recon_sq);
+        float vs = (v_recon_norm > 1e-10f)
+            ? (sqrtf(v_norm_sq) / v_recon_norm)
+            : (v_max / TURBO3_MAX);
+        if (vs > FP8_E4M3_MAX) vs = FP8_E4M3_MAX;
+
+        ((__nv_fp8_storage_t*)(block_v + v_scale_off))[g] = float_to_fp8(vs);
+
+        unsigned int byte_base = elem_offset * 3 / 8;
+        unsigned char* vd = block_v + v_data_off + byte_base;
+        vd[0] = (vi[0]) | (vi[1] << 3) | (vi[2] << 6);
+        vd[1] = (vi[2] >> 2) | (vi[3] << 1) | (vi[4] << 4) | (vi[5] << 7);
+        vd[2] = (vi[5] >> 1) | (vi[6] << 2) | (vi[7] << 5);
+        vd[3] = (vi[8]) | (vi[9] << 3) | (vi[10] << 6);
+        vd[4] = (vi[10] >> 2) | (vi[11] << 1) | (vi[12] << 4) | (vi[13] << 7);
+        vd[5] = (vi[13] >> 1) | (vi[14] << 2) | (vi[15] << 5);
+    }
+}
+
+
+// ── Fp8K + Turbo4V reshape_and_cache (asymmetric: K=fp8, V=4-bit packed) ──
+//
+// K: BF16 → FP8 E4M3 (per-tensor `k_scale`), packed contiguous into the K pool.
+// V: turbo4 4-bit Lloyd-Max + per-group FP8 scale with matched-norm L2 correction.
+//
+// Grid: (num_tokens, 1, 1)   Block: (256, 1, 1)
+extern "C" __global__ void reshape_and_cache_flash_fp8k_turbo4v(
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    unsigned char* __restrict__ k_cache,
+    unsigned char* __restrict__ v_cache,
+    const long long* __restrict__ slot_mapping,
+    const unsigned int num_kv_heads,
+    const unsigned int head_dim,
+    const unsigned int block_size,
+    const unsigned int key_stride,
+    const unsigned int value_stride,
+    const float k_scale,
+    const unsigned long long k_block_stride_bytes,
+    const unsigned long long v_block_stride_bytes,
+    const unsigned long long v_data_section_bytes
+) {
+    const unsigned int token_idx = blockIdx.x;
+    const long long slot = slot_mapping[token_idx];
+    if (slot < 0) return;
+
+    const unsigned int block_idx = (unsigned int)(slot / block_size);
+    const unsigned int block_offset = (unsigned int)(slot % block_size);
+    const unsigned int n_elems = num_kv_heads * head_dim;
+    const unsigned int num_groups = n_elems / GROUP_SIZE;
+
+    const __nv_bfloat16* key_src = key + (unsigned long long)token_idx * key_stride;
+    const __nv_bfloat16* val_src = value + (unsigned long long)token_idx * value_stride;
+
+    // ── K-side write: BF16 → FP8 E4M3 ──
+    {
+        const unsigned long long k_block_stride_elems = (unsigned long long)block_size * n_elems;
+        unsigned char* key_dst = k_cache
+            + (unsigned long long)block_idx * k_block_stride_elems
+            + (unsigned long long)block_offset * n_elems;
+        const float inv_k_scale = 1.0f / k_scale;
+        const unsigned int n_pairs = n_elems / 2;
+        const unsigned int n_rem = n_elems % 2;
+        const unsigned int* key_src32 = (const unsigned int*)key_src;
+        __nv_fp8x2_storage_t* key_dst16 = (__nv_fp8x2_storage_t*)key_dst;
+        for (unsigned int i = threadIdx.x; i < n_pairs; i += blockDim.x) {
+            unsigned int pk = key_src32[i];
+            float v0 = __bfloat162float(__ushort_as_bfloat16((unsigned short)(pk & 0xFFFF)));
+            float v1 = __bfloat162float(__ushort_as_bfloat16((unsigned short)(pk >> 16)));
+            float2 scaled = make_float2(v0 * inv_k_scale, v1 * inv_k_scale);
+            key_dst16[i] = __nv_cvt_float2_to_fp8x2(scaled, __NV_SATFINITE, __NV_E4M3);
+        }
+        if (n_rem > 0 && threadIdx.x == 0) {
+            unsigned int base = n_pairs * 2;
+            float kf = __bfloat162float(key_src[base]) * inv_k_scale;
+            ((__nv_fp8_storage_t*)key_dst)[base] = __nv_cvt_float_to_fp8(kf, __NV_SATFINITE, __NV_E4M3);
+        }
+    }
+
+    // ── V-side write: turbo4 (4-bit packed + FP8 group scale + matched-norm) ──
+    unsigned char* block_v = v_cache + (unsigned long long)block_idx * v_block_stride_bytes;
+    unsigned long long v_data_off = (unsigned long long)block_offset * (n_elems / 2);
+    unsigned long long v_scale_off = v_data_section_bytes
+        + (unsigned long long)block_offset * num_groups;
+
+    for (unsigned int g = threadIdx.x; g < num_groups; g += blockDim.x) {
+        unsigned int elem_offset = g * GROUP_SIZE;
+
+        float vf[16];
+        float v_norm_sq = 0.0f;
+        for (int i = 0; i < 16; i++) {
+            vf[i] = __bfloat162float(val_src[elem_offset + i]);
+            v_norm_sq += vf[i] * vf[i];
+        }
+        float v_max = 0.0f;
+        for (int i = 0; i < 16; i++) v_max = fmaxf(v_max, fabsf(vf[i]));
+
+        float v_inv = (v_max > 1e-12f) ? (TURBO4_MAX / v_max) : 1.0f;
+
+        unsigned char vi[16];
+        float v_recon_sq = 0.0f;
+        for (int i = 0; i < 16; i++) {
+            vi[i] = turbo4_quantize(vf[i] * v_inv);
+            float vc = TURBO4_CODEBOOK[vi[i]];
+            v_recon_sq += vc * vc;
+        }
+        float v_recon_norm = sqrtf(v_recon_sq);
+        float vs = (v_recon_norm > 1e-10f)
+            ? (sqrtf(v_norm_sq) / v_recon_norm)
+            : (v_max / TURBO4_MAX);
+        if (vs > FP8_E4M3_MAX) vs = FP8_E4M3_MAX;
+
+        ((__nv_fp8_storage_t*)(block_v + v_scale_off))[g] = float_to_fp8(vs);
+
+        unsigned char* vd = block_v + v_data_off + elem_offset / 2;
+        for (int i = 0; i < 16; i += 2) {
+            vd[i/2] = vi[i] | (vi[i+1] << 4);
+        }
+    }
+}
+
+// ── Fp8K + Turbo2V reshape_and_cache (asymmetric: K=fp8, V=2-bit packed) ──
+//
+// K: BF16 → FP8 E4M3 (per-tensor `k_scale`), packed contiguous into the K pool.
+// V: turbo2 2-bit Lloyd-Max + per-group FP8 scale with matched-norm L2 correction.
+//
+// Grid: (num_tokens, 1, 1)   Block: (256, 1, 1)
+extern "C" __global__ void reshape_and_cache_flash_fp8k_turbo2v(
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    unsigned char* __restrict__ k_cache,
+    unsigned char* __restrict__ v_cache,
+    const long long* __restrict__ slot_mapping,
+    const unsigned int num_kv_heads,
+    const unsigned int head_dim,
+    const unsigned int block_size,
+    const unsigned int key_stride,
+    const unsigned int value_stride,
+    const float k_scale,
+    const unsigned long long k_block_stride_bytes,
+    const unsigned long long v_block_stride_bytes,
+    const unsigned long long v_data_section_bytes
+) {
+    const unsigned int token_idx = blockIdx.x;
+    const long long slot = slot_mapping[token_idx];
+    if (slot < 0) return;
+
+    const unsigned int block_idx = (unsigned int)(slot / block_size);
+    const unsigned int block_offset = (unsigned int)(slot % block_size);
+    const unsigned int n_elems = num_kv_heads * head_dim;
+    const unsigned int num_groups = n_elems / GROUP_SIZE;
+
+    const __nv_bfloat16* key_src = key + (unsigned long long)token_idx * key_stride;
+    const __nv_bfloat16* val_src = value + (unsigned long long)token_idx * value_stride;
+
+    // ── K-side write: BF16 → FP8 E4M3 ──
+    {
+        const unsigned long long k_block_stride_elems = (unsigned long long)block_size * n_elems;
+        unsigned char* key_dst = k_cache
+            + (unsigned long long)block_idx * k_block_stride_elems
+            + (unsigned long long)block_offset * n_elems;
+        const float inv_k_scale = 1.0f / k_scale;
+        const unsigned int n_pairs = n_elems / 2;
+        const unsigned int n_rem = n_elems % 2;
+        const unsigned int* key_src32 = (const unsigned int*)key_src;
+        __nv_fp8x2_storage_t* key_dst16 = (__nv_fp8x2_storage_t*)key_dst;
+        for (unsigned int i = threadIdx.x; i < n_pairs; i += blockDim.x) {
+            unsigned int pk = key_src32[i];
+            float v0 = __bfloat162float(__ushort_as_bfloat16((unsigned short)(pk & 0xFFFF)));
+            float v1 = __bfloat162float(__ushort_as_bfloat16((unsigned short)(pk >> 16)));
+            float2 scaled = make_float2(v0 * inv_k_scale, v1 * inv_k_scale);
+            key_dst16[i] = __nv_cvt_float2_to_fp8x2(scaled, __NV_SATFINITE, __NV_E4M3);
+        }
+        if (n_rem > 0 && threadIdx.x == 0) {
+            unsigned int base = n_pairs * 2;
+            float kf = __bfloat162float(key_src[base]) * inv_k_scale;
+            ((__nv_fp8_storage_t*)key_dst)[base] = __nv_cvt_float_to_fp8(kf, __NV_SATFINITE, __NV_E4M3);
+        }
+    }
+
+    // ── V-side write: turbo2 (2-bit packed + FP8 group scale + matched-norm) ──
+    unsigned char* block_v = v_cache + (unsigned long long)block_idx * v_block_stride_bytes;
+    unsigned long long v_data_off = (unsigned long long)block_offset * (n_elems / 4);
+    unsigned long long v_scale_off = v_data_section_bytes
+        + (unsigned long long)block_offset * num_groups;
+
+    for (unsigned int g = threadIdx.x; g < num_groups; g += blockDim.x) {
+        unsigned int elem_offset = g * GROUP_SIZE;
+
+        float vf[16];
+        float v_norm_sq = 0.0f;
+        for (int i = 0; i < 16; i++) {
+            vf[i] = __bfloat162float(val_src[elem_offset + i]);
+            v_norm_sq += vf[i] * vf[i];
+        }
+        float v_max = 0.0f;
+        for (int i = 0; i < 16; i++) v_max = fmaxf(v_max, fabsf(vf[i]));
+
+        float v_inv = (v_max > 1e-12f) ? (TURBO2_MAX / v_max) : 1.0f;
+
+        unsigned char vi[16];
+        float v_recon_sq = 0.0f;
+        for (int i = 0; i < 16; i++) {
+            vi[i] = turbo2_quantize(vf[i] * v_inv);
+            float vc = TURBO2_CODEBOOK[vi[i]];
+            v_recon_sq += vc * vc;
+        }
+        float v_recon_norm = sqrtf(v_recon_sq);
+        float vs = (v_recon_norm > 1e-10f)
+            ? (sqrtf(v_norm_sq) / v_recon_norm)
+            : (v_max / TURBO2_MAX);
+        if (vs > FP8_E4M3_MAX) vs = FP8_E4M3_MAX;
+
+        ((__nv_fp8_storage_t*)(block_v + v_scale_off))[g] = float_to_fp8(vs);
+
+        unsigned char* vd = block_v + v_data_off + elem_offset / 4;
+        vd[0] = vi[0]  | (vi[1]  << 2) | (vi[2]  << 4) | (vi[3]  << 6);
+        vd[1] = vi[4]  | (vi[5]  << 2) | (vi[6]  << 4) | (vi[7]  << 6);
+        vd[2] = vi[8]  | (vi[9]  << 2) | (vi[10] << 4) | (vi[11] << 6);
+        vd[3] = vi[12] | (vi[13] << 2) | (vi[14] << 4) | (vi[15] << 6);
+    }
+}
+
+// ============================================================================
+// TurboQuant+ both-sides-quantized asymmetric write kernels.
+// Each variant quantizes K and V independently into separate-stride pools.
+// K and V codebook + packing live in their own routines; matched-norm L2
+// scale correction applied to both sides (free quality win, ~0.5% PPL).
+// ============================================================================
+
+// ── Turbo4K + Turbo3V reshape_and_cache (asymmetric) ──
+//
+// K: turbo4 4-bit Lloyd-Max + per-group FP8 scale with matched-norm L2.
+// V: turbo3 3-bit Lloyd-Max + per-group FP8 scale with matched-norm L2.
+// Each pool has its own block stride and data-section size.
+//
+// Grid: (num_tokens, 1, 1)   Block: (256, 1, 1)
+extern "C" __global__ void reshape_and_cache_flash_turbo4k_turbo3v(
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    unsigned char* __restrict__ k_cache,        // turbo4 byte pool
+    unsigned char* __restrict__ v_cache,        // turbo3 byte pool
+    const long long* __restrict__ slot_mapping,
+    const unsigned int num_kv_heads,
+    const unsigned int head_dim,
+    const unsigned int block_size,
+    const unsigned int key_stride,
+    const unsigned int value_stride,
+    const unsigned long long k_block_stride_bytes,
+    const unsigned long long k_data_section_bytes,
+    const unsigned long long v_block_stride_bytes,
+    const unsigned long long v_data_section_bytes
+) {
+    const unsigned int token_idx = blockIdx.x;
+    const long long slot = slot_mapping[token_idx];
+    if (slot < 0) return;
+
+    const unsigned int block_idx = (unsigned int)(slot / block_size);
+    const unsigned int block_offset = (unsigned int)(slot % block_size);
+    const unsigned int n_elems = num_kv_heads * head_dim;
+    const unsigned int num_groups = n_elems / GROUP_SIZE;
+
+    const __nv_bfloat16* key_src = key + (unsigned long long)token_idx * key_stride;
+    const __nv_bfloat16* val_src = value + (unsigned long long)token_idx * value_stride;
+
+    // K-side: turbo4 (4-bit packed, 2 idx per byte) + FP8 group scale.
+    unsigned char* block_k = k_cache + (unsigned long long)block_idx * k_block_stride_bytes;
+    unsigned long long k_data_off = (unsigned long long)block_offset * (n_elems / 2);
+    unsigned long long k_scale_off = k_data_section_bytes
+        + (unsigned long long)block_offset * num_groups;
+
+    // V-side: turbo3 (3-bit packed) + FP8 group scale.
+    unsigned char* block_v = v_cache + (unsigned long long)block_idx * v_block_stride_bytes;
+    unsigned long long v_data_off = (unsigned long long)block_offset * (n_elems * 3 / 8);
+    unsigned long long v_scale_off = v_data_section_bytes
+        + (unsigned long long)block_offset * num_groups;
+
+    for (unsigned int g = threadIdx.x; g < num_groups; g += blockDim.x) {
+        unsigned int elem_offset = g * GROUP_SIZE;
+
+        float kf[16], vf[16];
+        float k_norm_sq = 0.0f, v_norm_sq = 0.0f;
+        for (int i = 0; i < 16; i++) {
+            kf[i] = __bfloat162float(key_src[elem_offset + i]);
+            vf[i] = __bfloat162float(val_src[elem_offset + i]);
+            k_norm_sq += kf[i] * kf[i];
+            v_norm_sq += vf[i] * vf[i];
+        }
+        float k_max = 0.0f, v_max = 0.0f;
+        for (int i = 0; i < 16; i++) {
+            k_max = fmaxf(k_max, fabsf(kf[i]));
+            v_max = fmaxf(v_max, fabsf(vf[i]));
+        }
+
+        float k_inv = (k_max > 1e-12f) ? (TURBO4_MAX / k_max) : 1.0f;
+        float v_inv = (v_max > 1e-12f) ? (TURBO3_MAX / v_max) : 1.0f;
+
+        unsigned char ki[16], vi[16];
+        float k_recon_sq = 0.0f, v_recon_sq = 0.0f;
+        for (int i = 0; i < 16; i++) {
+            ki[i] = turbo4_quantize(kf[i] * k_inv);
+            vi[i] = turbo3_quantize(vf[i] * v_inv);
+            float kc = TURBO4_CODEBOOK[ki[i]];
+            float vc = TURBO3_CODEBOOK[vi[i]];
+            k_recon_sq += kc * kc;
+            v_recon_sq += vc * vc;
+        }
+        float k_recon_norm = sqrtf(k_recon_sq);
+        float v_recon_norm = sqrtf(v_recon_sq);
+
+        float ks = (k_recon_norm > 1e-10f) ? (sqrtf(k_norm_sq) / k_recon_norm) : (k_max / TURBO4_MAX);
+        float vs = (v_recon_norm > 1e-10f) ? (sqrtf(v_norm_sq) / v_recon_norm) : (v_max / TURBO3_MAX);
+        if (ks > FP8_E4M3_MAX) ks = FP8_E4M3_MAX;
+        if (vs > FP8_E4M3_MAX) vs = FP8_E4M3_MAX;
+
+        ((__nv_fp8_storage_t*)(block_k + k_scale_off))[g] = float_to_fp8(ks);
+        ((__nv_fp8_storage_t*)(block_v + v_scale_off))[g] = float_to_fp8(vs);
+
+        // Pack K: 16 × 4-bit into 8 bytes (low nibble first).
+        unsigned char* kd = block_k + k_data_off + elem_offset / 2;
+        for (int i = 0; i < 16; i += 2) {
+            kd[i/2] = ki[i] | (ki[i+1] << 4);
+        }
+
+        // Pack V: 16 × 3-bit into 6 bytes (two halves of 8 → 3 bytes each).
+        unsigned int v_byte_base = elem_offset * 3 / 8;
+        unsigned char* vd = block_v + v_data_off + v_byte_base;
+        vd[0] = (vi[0]) | (vi[1] << 3) | (vi[2] << 6);
+        vd[1] = (vi[2] >> 2) | (vi[3] << 1) | (vi[4] << 4) | (vi[5] << 7);
+        vd[2] = (vi[5] >> 1) | (vi[6] << 2) | (vi[7] << 5);
+        vd[3] = (vi[8]) | (vi[9] << 3) | (vi[10] << 6);
+        vd[4] = (vi[10] >> 2) | (vi[11] << 1) | (vi[12] << 4) | (vi[13] << 7);
+        vd[5] = (vi[13] >> 1) | (vi[14] << 2) | (vi[15] << 5);
+    }
+}
+
+// ── Turbo4K + Turbo8V reshape_and_cache (asymmetric) ──
+//
+// K: turbo4 4-bit Lloyd-Max + FP8 group scale (matched-norm L2).
+// V: turbo8 FP8 E4M3 + BF16 group scale (amax scaling, 2 b/scale upgrade).
+extern "C" __global__ void reshape_and_cache_flash_turbo4k_turbo8v(
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    unsigned char* __restrict__ k_cache,        // turbo4 byte pool
+    unsigned char* __restrict__ v_cache,        // turbo8 byte pool
+    const long long* __restrict__ slot_mapping,
+    const unsigned int num_kv_heads,
+    const unsigned int head_dim,
+    const unsigned int block_size,
+    const unsigned int key_stride,
+    const unsigned int value_stride,
+    const unsigned long long k_block_stride_bytes,
+    const unsigned long long k_data_section_bytes,
+    const unsigned long long v_block_stride_bytes,
+    const unsigned long long v_data_section_bytes
+) {
+    const unsigned int token_idx = blockIdx.x;
+    const long long slot = slot_mapping[token_idx];
+    if (slot < 0) return;
+
+    const unsigned int block_idx = (unsigned int)(slot / block_size);
+    const unsigned int block_offset = (unsigned int)(slot % block_size);
+    const unsigned int n_elems = num_kv_heads * head_dim;
+    const unsigned int num_groups = n_elems / GROUP_SIZE;
+
+    const __nv_bfloat16* key_src = key + (unsigned long long)token_idx * key_stride;
+    const __nv_bfloat16* val_src = value + (unsigned long long)token_idx * value_stride;
+
+    // K-side: turbo4 (4-bit packed) + FP8 group scale.
+    unsigned char* block_k = k_cache + (unsigned long long)block_idx * k_block_stride_bytes;
+    unsigned long long k_data_off = (unsigned long long)block_offset * (n_elems / 2);
+    unsigned long long k_scale_off = k_data_section_bytes
+        + (unsigned long long)block_offset * num_groups;
+
+    // V-side: turbo8 (1 byte/elem FP8) + BF16 group scale (2 bytes per group).
+    unsigned char* block_v = v_cache + (unsigned long long)block_idx * v_block_stride_bytes;
+    unsigned long long v_data_off = (unsigned long long)block_offset * n_elems;
+    unsigned long long v_scale_off = v_data_section_bytes
+        + (unsigned long long)block_offset * num_groups * 2;
+
+    for (unsigned int g = threadIdx.x; g < num_groups; g += blockDim.x) {
+        unsigned int elem_offset = g * GROUP_SIZE;
+
+        float kf[16], vf[16];
+        float k_norm_sq = 0.0f;
+        for (int i = 0; i < 16; i++) {
+            kf[i] = __bfloat162float(key_src[elem_offset + i]);
+            vf[i] = __bfloat162float(val_src[elem_offset + i]);
+            k_norm_sq += kf[i] * kf[i];
+        }
+        float k_max = 0.0f, v_max = 0.0f;
+        for (int i = 0; i < 16; i++) {
+            k_max = fmaxf(k_max, fabsf(kf[i]));
+            v_max = fmaxf(v_max, fabsf(vf[i]));
+        }
+
+        // K-side: turbo4 quantize with matched-norm L2.
+        float k_inv = (k_max > 1e-12f) ? (TURBO4_MAX / k_max) : 1.0f;
+        unsigned char ki[16];
+        float k_recon_sq = 0.0f;
+        for (int i = 0; i < 16; i++) {
+            ki[i] = turbo4_quantize(kf[i] * k_inv);
+            float kc = TURBO4_CODEBOOK[ki[i]];
+            k_recon_sq += kc * kc;
+        }
+        float k_recon_norm = sqrtf(k_recon_sq);
+        float ks = (k_recon_norm > 1e-10f) ? (sqrtf(k_norm_sq) / k_recon_norm) : (k_max / TURBO4_MAX);
+        if (ks > FP8_E4M3_MAX) ks = FP8_E4M3_MAX;
+        ((__nv_fp8_storage_t*)(block_k + k_scale_off))[g] = float_to_fp8(ks);
+
+        unsigned char* kd = block_k + k_data_off + elem_offset / 2;
+        for (int i = 0; i < 16; i += 2) {
+            kd[i/2] = ki[i] | (ki[i+1] << 4);
+        }
+
+        // V-side: turbo8 amax scale (BF16 scale).
+        float v_scale = v_max / FP8_E4M3_MAX;
+        if (v_scale < 1e-12f) v_scale = 1e-12f;
+        ((__nv_bfloat16*)(block_v + v_scale_off))[g] = __float2bfloat16(v_scale);
+
+        float v_inv = 1.0f / v_scale;
+        unsigned char* vd = block_v + v_data_off + elem_offset;
+        for (int i = 0; i < 16; i++) {
+            float vs = fminf(fmaxf(vf[i] * v_inv, -FP8_E4M3_MAX), FP8_E4M3_MAX);
+            vd[i] = (unsigned char)float_to_fp8(vs);
+        }
+    }
+}
+
+// ── Turbo3K + Turbo8V reshape_and_cache (asymmetric) ──
+//
+// K: turbo3 3-bit Lloyd-Max + FP8 group scale (matched-norm L2).
+// V: turbo8 FP8 E4M3 + BF16 group scale.
+extern "C" __global__ void reshape_and_cache_flash_turbo3k_turbo8v(
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    unsigned char* __restrict__ k_cache,        // turbo3 byte pool
+    unsigned char* __restrict__ v_cache,        // turbo8 byte pool
+    const long long* __restrict__ slot_mapping,
+    const unsigned int num_kv_heads,
+    const unsigned int head_dim,
+    const unsigned int block_size,
+    const unsigned int key_stride,
+    const unsigned int value_stride,
+    const unsigned long long k_block_stride_bytes,
+    const unsigned long long k_data_section_bytes,
+    const unsigned long long v_block_stride_bytes,
+    const unsigned long long v_data_section_bytes
+) {
+    const unsigned int token_idx = blockIdx.x;
+    const long long slot = slot_mapping[token_idx];
+    if (slot < 0) return;
+
+    const unsigned int block_idx = (unsigned int)(slot / block_size);
+    const unsigned int block_offset = (unsigned int)(slot % block_size);
+    const unsigned int n_elems = num_kv_heads * head_dim;
+    const unsigned int num_groups = n_elems / GROUP_SIZE;
+
+    const __nv_bfloat16* key_src = key + (unsigned long long)token_idx * key_stride;
+    const __nv_bfloat16* val_src = value + (unsigned long long)token_idx * value_stride;
+
+    // K-side: turbo3 (3-bit packed) + FP8 group scale.
+    unsigned char* block_k = k_cache + (unsigned long long)block_idx * k_block_stride_bytes;
+    unsigned long long k_data_off = (unsigned long long)block_offset * (n_elems * 3 / 8);
+    unsigned long long k_scale_off = k_data_section_bytes
+        + (unsigned long long)block_offset * num_groups;
+
+    // V-side: turbo8 (1 byte/elem FP8) + BF16 group scale.
+    unsigned char* block_v = v_cache + (unsigned long long)block_idx * v_block_stride_bytes;
+    unsigned long long v_data_off = (unsigned long long)block_offset * n_elems;
+    unsigned long long v_scale_off = v_data_section_bytes
+        + (unsigned long long)block_offset * num_groups * 2;
+
+    for (unsigned int g = threadIdx.x; g < num_groups; g += blockDim.x) {
+        unsigned int elem_offset = g * GROUP_SIZE;
+
+        float kf[16], vf[16];
+        float k_norm_sq = 0.0f;
+        for (int i = 0; i < 16; i++) {
+            kf[i] = __bfloat162float(key_src[elem_offset + i]);
+            vf[i] = __bfloat162float(val_src[elem_offset + i]);
+            k_norm_sq += kf[i] * kf[i];
+        }
+        float k_max = 0.0f, v_max = 0.0f;
+        for (int i = 0; i < 16; i++) {
+            k_max = fmaxf(k_max, fabsf(kf[i]));
+            v_max = fmaxf(v_max, fabsf(vf[i]));
+        }
+
+        // K-side: turbo3 quantize with matched-norm L2.
+        float k_inv = (k_max > 1e-12f) ? (TURBO3_MAX / k_max) : 1.0f;
+        unsigned char ki[16];
+        float k_recon_sq = 0.0f;
+        for (int i = 0; i < 16; i++) {
+            ki[i] = turbo3_quantize(kf[i] * k_inv);
+            float kc = TURBO3_CODEBOOK[ki[i]];
+            k_recon_sq += kc * kc;
+        }
+        float k_recon_norm = sqrtf(k_recon_sq);
+        float ks = (k_recon_norm > 1e-10f) ? (sqrtf(k_norm_sq) / k_recon_norm) : (k_max / TURBO3_MAX);
+        if (ks > FP8_E4M3_MAX) ks = FP8_E4M3_MAX;
+        ((__nv_fp8_storage_t*)(block_k + k_scale_off))[g] = float_to_fp8(ks);
+
+        // Pack K: 16 × 3-bit into 6 bytes.
+        unsigned int k_byte_base = elem_offset * 3 / 8;
+        unsigned char* kd = block_k + k_data_off + k_byte_base;
+        kd[0] = (ki[0]) | (ki[1] << 3) | (ki[2] << 6);
+        kd[1] = (ki[2] >> 2) | (ki[3] << 1) | (ki[4] << 4) | (ki[5] << 7);
+        kd[2] = (ki[5] >> 1) | (ki[6] << 2) | (ki[7] << 5);
+        kd[3] = (ki[8]) | (ki[9] << 3) | (ki[10] << 6);
+        kd[4] = (ki[10] >> 2) | (ki[11] << 1) | (ki[12] << 4) | (ki[13] << 7);
+        kd[5] = (ki[13] >> 1) | (ki[14] << 2) | (ki[15] << 5);
+
+        // V-side: turbo8 amax scale (BF16 scale).
+        float v_scale = v_max / FP8_E4M3_MAX;
+        if (v_scale < 1e-12f) v_scale = 1e-12f;
+        ((__nv_bfloat16*)(block_v + v_scale_off))[g] = __float2bfloat16(v_scale);
+
+        float v_inv = 1.0f / v_scale;
+        unsigned char* vd = block_v + v_data_off + elem_offset;
+        for (int i = 0; i < 16; i++) {
+            float vs = fminf(fmaxf(vf[i] * v_inv, -FP8_E4M3_MAX), FP8_E4M3_MAX);
+            vd[i] = (unsigned char)float_to_fp8(vs);
+        }
+    }
+}
