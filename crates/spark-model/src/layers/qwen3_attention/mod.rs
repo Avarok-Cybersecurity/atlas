@@ -17,9 +17,19 @@
 mod decode;
 mod helpers;
 mod init;
+pub mod innerq_driver;
 mod prefill;
 mod prefill_weights;
 mod trait_impl;
 mod types;
 
+pub use innerq_driver::InnerQDriver;
 pub use types::{MlaWeights, Qwen3AttentionLayer};
+
+use std::sync::OnceLock;
+
+// Process-wide handle, populated at serve startup when `TURBO_INNERQ=N`
+// is set. `OnceLock` matches Atlas's pattern for other singletons (kernel
+// registry, EP comm). Kept here next to the driver itself so server code
+// just does `qwen3_attention::INNERQ.get()`.
+pub static INNERQ: OnceLock<InnerQDriver> = OnceLock::new();

@@ -39,6 +39,18 @@ use run_batched_mixed::run_batched_mixed_step;
 use run_batched_prefill::run_batched_prefill_step;
 use run_standard::run_standard_chunk_loop;
 
+/// Shared per-chunk InnerQ poll used by every prefill path (standard /
+/// batched-prefill / batched-mixed). `maybe_finalize` is idempotent post
+/// activation, and a no-op when `TURBO_INNERQ` was not set at startup —
+/// so calling on every chunk costs one OnceLock load in the disabled case.
+pub(super) fn poll_innerq() {
+    if let Some(driver) = spark_model::layers::qwen3_attention::INNERQ.get()
+        && let Err(e) = driver.maybe_finalize(128)
+    {
+        tracing::warn!("InnerQ maybe_finalize failed: {e:#}");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn continue_in_progress_prefills(
     model: &dyn Model,

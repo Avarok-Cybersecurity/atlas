@@ -389,13 +389,39 @@ impl Qwen3AttentionLayer {
         // Turbo KV cache: apply WHT to Q before paged decode.
         // KV cache stores WHT(K) and WHT(V). By Parseval's theorem,
         // <WHT(Q), WHT(K)> = <Q, K>, so WHT(Q) gives correct attention scores.
-        let is_turbo = matches!(
-            self.kv_dtype,
+        //
+        // Asymmetric K/V (e.g. K=turbo4, V=fp8): each side carries an
+        // independent rotation requirement. WHT(Q) fires only when K is a
+        // turbo type (we're dotting against rotated K); iWHT(out) below
+        // fires only when V is a turbo type (output is in rotated-V basis).
+        let (k_dtype, v_dtype) = self.kv_dtype.kv_pair();
+        let k_is_turbo = matches!(
+            k_dtype,
             KvCacheDtype::Turbo3 | KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8
         );
-        // Turbo: apply WHT(Q) before attention. Re-enabled by default after
-        // the BF16-scale upgrade for Turbo8 fixed the compound-precision bug.
-        if is_turbo && self.wht_bf16_k.0 != 0 && (hd == 128 || hd == 256 || hd == 512) {
+        let v_is_turbo = matches!(
+            v_dtype,
+            KvCacheDtype::Turbo3 | KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8
+        );
+        // InnerQ pre-WHT scale_inv on Q (no-op when d_innerq_active=0 on device).
+        // Bypass runtime WHT(Q) when weights are pre-rotated at load (TQ_PLUS_WEIGHT_ROTATION=1).
+        let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if k_is_turbo && self.innerq_apply_q_k.0 != 0 && hd == 128 {
+            use spark_runtime::kernel_args::KernelLaunch;
+            KernelLaunch::new(ctx.gpu, self.innerq_apply_q_k)
+                .grid([nq, 1, 1])
+                .block([32, 1, 1])
+                .arg_ptr(q_out)
+                .arg_u32(hd)
+                .launch(stream)?;
+        }
+        if k_is_turbo
+            && !weight_pre_rotated
+            && self.wht_bf16_k.0 != 0
+            && (hd == 128 || hd == 256 || hd == 512)
+        {
             use spark_runtime::kernel_args::KernelLaunch;
             KernelLaunch::new(ctx.gpu, self.wht_bf16_k)
                 .grid([nq, 1, 1]) // one warp per Q head
@@ -474,10 +500,19 @@ impl Qwen3AttentionLayer {
 
         // Turbo KV cache: apply iWHT to attention output.
         // Output = sum(softmax * WHT(V)) → real_output = iWHT(output).
-        // WHT is self-inverse (up to normalization, already handled in wht_bf16_inplace).
-        if is_turbo && self.wht_bf16_k.0 != 0 && (hd == 128 || hd == 256 || hd == 512) {
+        // With plain WHT this aliases the forward kernel (self-inverse). With
+        // TQ_PLUS_SIGNS the inverse reverses signs1/signs2 order.
+        //
+        // Guard checks V's turbo-ness (not K's): output sits in V's basis,
+        // so iWHT only fires when V is a turbo type. For asym K=turbo, V=non-
+        // turbo this branch correctly skips.
+        if v_is_turbo
+            && !weight_pre_rotated
+            && self.wht_bf16_k_inv.0 != 0
+            && (hd == 128 || hd == 256 || hd == 512)
+        {
             use spark_runtime::kernel_args::KernelLaunch;
-            KernelLaunch::new(ctx.gpu, self.wht_bf16_k)
+            KernelLaunch::new(ctx.gpu, self.wht_bf16_k_inv)
                 .grid([nq, 1, 1])
                 .block([32, 1, 1])
                 .arg_ptr(attn_out)

@@ -98,7 +98,7 @@ impl Qwen3AttentionLayer {
                 "paged_decode_nvfp4",
                 "paged_decode_attn_nvfp4",
             ),
-            KvCacheDtype::Turbo4 => {
+            KvCacheDtype::Turbo4 | KvCacheDtype::Turbo4KTurbo3V | KvCacheDtype::Turbo4KTurbo8V => {
                 let dm = if config.head_dim <= 128 {
                     "paged_decode_turbo4_128"
                 } else {
@@ -111,7 +111,7 @@ impl Qwen3AttentionLayer {
                     "paged_decode_attn_turbo4",
                 )
             }
-            KvCacheDtype::Turbo3 => {
+            KvCacheDtype::Turbo3 | KvCacheDtype::Turbo3KTurbo8V => {
                 let dm = if config.head_dim <= 128 {
                     "paged_decode_turbo3_128"
                 } else {
@@ -122,6 +122,17 @@ impl Qwen3AttentionLayer {
                     "reshape_and_cache_flash_turbo3",
                     dm,
                     "paged_decode_attn_turbo3",
+                )
+            }
+            KvCacheDtype::Turbo2 => {
+                // turbo2 decoder currently only has the hd<=128 variant; for
+                // larger head_dims the dispatcher falls back to the 128 path
+                // (will read out-of-bounds — not yet supported).
+                (
+                    "reshape_and_cache_turbo",
+                    "reshape_and_cache_flash_turbo2",
+                    "paged_decode_turbo2_128",
+                    "paged_decode_attn_turbo2",
                 )
             }
             KvCacheDtype::Turbo8 => {
@@ -137,7 +148,23 @@ impl Qwen3AttentionLayer {
                     "paged_decode_attn_turbo8",
                 )
             }
-            KvCacheDtype::Bf16 => (
+            KvCacheDtype::Bf16KTurbo3V => {
+                // TurboQuant+ safer-asym: K=bf16, V=turbo3. Combined write
+                // and decode kernels live in module `reshape_and_cache_turbo`
+                // and `paged_decode_bf16k_turbo3v_128`.
+                let dm = if config.head_dim <= 128 {
+                    "paged_decode_bf16k_turbo3v_128"
+                } else {
+                    "paged_decode_bf16k_turbo3v"
+                };
+                (
+                    "reshape_and_cache_turbo",
+                    "reshape_and_cache_flash_bf16k_turbo3v",
+                    dm,
+                    "paged_decode_attn_bf16k_turbo3v",
+                )
+            }
+            KvCacheDtype::Bf16 | KvCacheDtype::Bf16KTurbo4V | KvCacheDtype::Bf16KTurbo2V => (
                 "reshape_and_cache",
                 "reshape_and_cache_flash",
                 "paged_decode",
@@ -220,12 +247,28 @@ impl Qwen3AttentionLayer {
             rope_proportional_k: super::super::try_kernel(gpu, "rope", "rope_forward_proportional"),
             reshape_cache_k: gpu.kernel(reshape_mod, reshape_fn)?,
             wht_bf16_k: super::super::try_kernel(gpu, "wht_bf16", "wht_bf16_inplace"),
+            wht_bf16_k_inv: super::super::try_kernel(gpu, "wht_bf16", "wht_bf16_inplace_inv"),
+            innerq_apply_q_k: super::super::try_kernel(
+                gpu,
+                "tq_plus_innerq_apply",
+                "tq_plus_innerq_apply_q",
+            ),
+            innerq_apply_k_k: super::super::try_kernel(
+                gpu,
+                "tq_plus_innerq_apply",
+                "tq_plus_innerq_apply_k",
+            ),
             paged_decode_k: gpu.kernel(decode_mod, decode_fn)?,
             paged_decode_512_k: match kv_dtype {
-                KvCacheDtype::Bf16 => {
+                // Bf16KTurbo3V: no HDIM=512 variant yet — dispatch site checks
+                // `paged_decode_512_k.0 != 0` so leaving handle 0 keeps the
+                // HDIM=128 path active (correct for qwen3.6 head_dim=128).
+                KvCacheDtype::Bf16 | KvCacheDtype::Bf16KTurbo4V | KvCacheDtype::Bf16KTurbo2V => {
                     super::super::try_kernel(gpu, "paged_decode_attn_512", "paged_decode_attn")
                 }
-                KvCacheDtype::Turbo4 => super::super::try_kernel(
+                KvCacheDtype::Turbo4
+                | KvCacheDtype::Turbo4KTurbo3V
+                | KvCacheDtype::Turbo4KTurbo8V => super::super::try_kernel(
                     gpu,
                     "paged_decode_turbo4_512",
                     "paged_decode_attn_turbo4",
@@ -235,11 +278,13 @@ impl Qwen3AttentionLayer {
                     "paged_decode_turbo8_512",
                     "paged_decode_attn_turbo8",
                 ),
-                KvCacheDtype::Turbo3 => super::super::try_kernel(
-                    gpu,
-                    "paged_decode_turbo4_512",
-                    "paged_decode_attn_turbo4",
-                ),
+                KvCacheDtype::Turbo3 | KvCacheDtype::Turbo3KTurbo8V | KvCacheDtype::Turbo2 => {
+                    super::super::try_kernel(
+                        gpu,
+                        "paged_decode_turbo4_512",
+                        "paged_decode_attn_turbo4",
+                    )
+                }
                 _ => super::super::try_kernel(
                     gpu,
                     "paged_decode_attn_fp8_512",
@@ -322,14 +367,26 @@ impl Qwen3AttentionLayer {
                 KvCacheDtype::Nvfp4 => {
                     Some(gpu.kernel("paged_decode_nvfp4", "paged_decode_attn_splitk_nvfp4")?)
                 }
-                KvCacheDtype::Turbo3 | KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8 => None,
+                KvCacheDtype::Turbo3
+                | KvCacheDtype::Turbo4
+                | KvCacheDtype::Turbo8
+                | KvCacheDtype::Turbo4KTurbo3V
+                | KvCacheDtype::Turbo4KTurbo8V
+                | KvCacheDtype::Turbo3KTurbo8V
+                | KvCacheDtype::Bf16KTurbo3V => None,
                 _ => Some(gpu.kernel("paged_decode_fp8", "paged_decode_attn_splitk_fp8")?),
             },
             paged_decode_reduce_k: match kv_dtype {
                 KvCacheDtype::Nvfp4 => {
                     Some(gpu.kernel("paged_decode_nvfp4", "paged_decode_attn_reduce_nvfp4")?)
                 }
-                KvCacheDtype::Turbo3 | KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8 => None,
+                KvCacheDtype::Turbo3
+                | KvCacheDtype::Turbo4
+                | KvCacheDtype::Turbo8
+                | KvCacheDtype::Turbo4KTurbo3V
+                | KvCacheDtype::Turbo4KTurbo8V
+                | KvCacheDtype::Turbo3KTurbo8V
+                | KvCacheDtype::Bf16KTurbo3V => None,
                 _ => Some(gpu.kernel("paged_decode_fp8", "paged_decode_attn_reduce_fp8")?),
             },
             residual_add_k: if config.use_fp32_residual() {
@@ -406,10 +463,29 @@ impl Qwen3AttentionLayer {
                 .kernel("prefill_paged_fp8", "inferspark_prefill_paged_fp8_64")?,
             prefill_attn_paged_nvfp4_64_k: gpu
                 .kernel("prefill_paged_nvfp4", "inferspark_prefill_paged_nvfp4_64")?,
+            prefill_attn_paged_turbo2_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_turbo2",
+                "inferspark_prefill_paged_turbo2",
+            ),
+            prefill_attn_paged_turbo3_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_turbo3",
+                "inferspark_prefill_paged_turbo3_64",
+            ),
             prefill_attn_paged_turbo4_64_k: super::super::try_kernel(
                 gpu,
                 "prefill_paged_turbo4",
                 "inferspark_prefill_paged_turbo4_64",
+            ),
+            // TurboQuant+ safer-asym Bf16K + Turbo3V BR=64 prefill kernel.
+            // Compiled from inferspark_prefill_paged_bf16k_turbo3v.cu which
+            // forks prefill_paged_compute_asym.cuh (LOAD_K_TILE = bf16,
+            // LOAD_V_TILE = turbo3 3-bit dequant).
+            prefill_attn_paged_bf16k_turbo3v_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_bf16k_turbo3v",
+                "inferspark_prefill_paged_bf16k_turbo3v_64",
             ),
             // ── Q12 Phase 3: batched paged-prefill kernel handles ──
             prefill_attn_paged_batched_k: super::super::try_kernel(

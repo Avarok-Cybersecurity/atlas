@@ -15,15 +15,22 @@ impl PagedKvCache {
         let mut layers = Vec::with_capacity(config.num_layers);
         let mut total_bytes: usize = 0;
         for i in 0..config.num_layers {
-            let layer_block_bytes = config.block_bytes_for_layer(i);
-            let pool_bytes = num_blocks * layer_block_bytes;
-            let k_pool = gpu.alloc(pool_bytes)?;
-            let v_pool = gpu.alloc(pool_bytes)?;
-            total_bytes += pool_bytes * 2;
+            // Per-side block_bytes: for symmetric dtypes both are equal; for
+            // asymmetric (e.g. Bf16KTurbo3V) the K pool is allocated bf16-sized
+            // and the V pool is allocated turbo3-sized — avoids the 4× V over-
+            // allocation that would result from a single MAX-sized stride.
+            let k_block_bytes = config.k_block_bytes_for_layer(i);
+            let v_block_bytes = config.v_block_bytes_for_layer(i);
+            let k_pool_bytes = num_blocks * k_block_bytes;
+            let v_pool_bytes = num_blocks * v_block_bytes;
+            let k_pool = gpu.alloc(k_pool_bytes)?;
+            let v_pool = gpu.alloc(v_pool_bytes)?;
+            total_bytes += k_pool_bytes + v_pool_bytes;
             layers.push(LayerPool {
                 k_pool,
                 v_pool,
-                block_stride: layer_block_bytes,
+                k_block_stride: k_block_bytes,
+                v_block_stride: v_block_bytes,
                 dtype: config.dtype_for_layer(i),
             });
         }
@@ -86,10 +93,20 @@ impl PagedKvCache {
         stream: u64,
     ) -> anyhow::Result<()> {
         for layer in &self.layers {
-            let k_offset = block_idx as usize * layer.block_stride;
-            let v_offset = block_idx as usize * layer.block_stride;
-            gpu.memset_async(layer.k_pool.offset(k_offset), 0, layer.block_stride, stream)?;
-            gpu.memset_async(layer.v_pool.offset(v_offset), 0, layer.block_stride, stream)?;
+            let k_offset = block_idx as usize * layer.k_block_stride;
+            let v_offset = block_idx as usize * layer.v_block_stride;
+            gpu.memset_async(
+                layer.k_pool.offset(k_offset),
+                0,
+                layer.k_block_stride,
+                stream,
+            )?;
+            gpu.memset_async(
+                layer.v_pool.offset(v_offset),
+                0,
+                layer.v_block_stride,
+                stream,
+            )?;
         }
         Ok(())
     }
@@ -157,13 +174,17 @@ impl PagedKvCache {
     /// Get K cache pointer for a layer and block.
     pub fn k_cache_ptr(&self, layer_idx: usize, block_idx: u32) -> DevicePtr {
         let layer = &self.layers[layer_idx];
-        layer.k_pool.offset(block_idx as usize * layer.block_stride)
+        layer
+            .k_pool
+            .offset(block_idx as usize * layer.k_block_stride)
     }
 
     /// Get V cache pointer for a layer and block.
     pub fn v_cache_ptr(&self, layer_idx: usize, block_idx: u32) -> DevicePtr {
         let layer = &self.layers[layer_idx];
-        layer.v_pool.offset(block_idx as usize * layer.block_stride)
+        layer
+            .v_pool
+            .offset(block_idx as usize * layer.v_block_stride)
     }
 
     /// Get the full K cache pool pointer for a layer (for paged decode kernel).
@@ -188,8 +209,23 @@ impl PagedKvCache {
     }
 
     /// Block stride in bytes for a specific attention layer.
+    /// For symmetric dtypes returns the K stride (which equals V).
+    /// For asymmetric dtypes returns the K-side stride; use
+    /// `v_block_stride_bytes_for_layer` for the V-side stride explicitly.
     pub fn block_stride_bytes_for_layer(&self, layer_idx: usize) -> usize {
-        self.layers[layer_idx].block_stride
+        self.layers[layer_idx].k_block_stride
+    }
+
+    /// K-side block stride in bytes for a specific attention layer.
+    /// Same as `block_stride_bytes_for_layer`; named for clarity in asym call sites.
+    pub fn k_block_stride_bytes_for_layer(&self, layer_idx: usize) -> usize {
+        self.layers[layer_idx].k_block_stride
+    }
+
+    /// V-side block stride in bytes for a specific attention layer.
+    /// Differs from K-side only for asymmetric KV cache dtypes.
+    pub fn v_block_stride_bytes_for_layer(&self, layer_idx: usize) -> usize {
+        self.layers[layer_idx].v_block_stride
     }
 
     /// NVFP4 data section size in bytes per block (uniform).
@@ -205,6 +241,11 @@ impl PagedKvCache {
     /// Turbo3 data section bytes (3-bit packed).
     pub fn turbo3_data_bytes(&self) -> usize {
         self.config.turbo3_data_bytes()
+    }
+
+    /// Turbo2 data section bytes (2-bit packed).
+    pub fn turbo2_data_bytes(&self) -> usize {
+        self.config.turbo2_data_bytes()
     }
 
     /// Turbo8 data section bytes (FP8 E4M3 per element).
@@ -247,19 +288,21 @@ impl PagedKvCache {
 
     /// Read K and V data for one block at one layer from GPU to host.
     ///
-    /// Returns `(k_data, v_data)` where each is `block_stride` bytes.
+    /// Returns `(k_data, v_data)` sized to each side's block stride
+    /// (which may differ for asymmetric dtypes).
     pub fn read_block(
         &self,
         layer_idx: usize,
         block_idx: u32,
         gpu: &dyn GpuBackend,
     ) -> Result<(Vec<u8>, Vec<u8>)> {
-        let stride = self.layers[layer_idx].block_stride;
+        let k_stride = self.layers[layer_idx].k_block_stride;
+        let v_stride = self.layers[layer_idx].v_block_stride;
         let k_ptr = self.k_cache_ptr(layer_idx, block_idx);
         let v_ptr = self.v_cache_ptr(layer_idx, block_idx);
 
-        let mut k_data = vec![0u8; stride];
-        let mut v_data = vec![0u8; stride];
+        let mut k_data = vec![0u8; k_stride];
+        let mut v_data = vec![0u8; v_stride];
         gpu.copy_d2h(k_ptr, &mut k_data)?;
         gpu.copy_d2h(v_ptr, &mut v_data)?;
 

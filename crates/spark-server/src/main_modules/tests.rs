@@ -78,21 +78,36 @@ fn test_cli_parse_slai_policy() {
 #[test]
 fn test_build_layer_kv_dtypes_disabled() {
     // high_precision_layers=0 returns empty vec (backward compatible)
-    let dtypes = build_layer_kv_dtypes(spark_runtime::kv_cache::KvCacheDtype::Nvfp4, 12, 0);
+    let dtypes = build_layer_kv_dtypes(
+        spark_runtime::kv_cache::KvCacheDtype::Nvfp4,
+        12,
+        0,
+        spark_runtime::kv_cache::KvCacheDtype::Bf16,
+    );
     assert!(dtypes.is_empty());
 }
 
 #[test]
 fn test_build_layer_kv_dtypes_bf16_noop() {
     // Already BF16 — no benefit from high-precision overlay
-    let dtypes = build_layer_kv_dtypes(spark_runtime::kv_cache::KvCacheDtype::Bf16, 12, 2);
+    let dtypes = build_layer_kv_dtypes(
+        spark_runtime::kv_cache::KvCacheDtype::Bf16,
+        12,
+        2,
+        spark_runtime::kv_cache::KvCacheDtype::Bf16,
+    );
     assert!(dtypes.is_empty());
 }
 
 #[test]
 fn test_build_layer_kv_dtypes_basic() {
     use spark_runtime::kv_cache::KvCacheDtype;
-    let dtypes = build_layer_kv_dtypes(KvCacheDtype::Nvfp4, 12, 2);
+    let dtypes = build_layer_kv_dtypes(
+        KvCacheDtype::Nvfp4,
+        12,
+        2,
+        spark_runtime::kv_cache::KvCacheDtype::Bf16,
+    );
     assert_eq!(dtypes.len(), 12);
     // First 2: BF16
     assert_eq!(dtypes[0], KvCacheDtype::Bf16);
@@ -110,7 +125,12 @@ fn test_build_layer_kv_dtypes_basic() {
 fn test_build_layer_kv_dtypes_overlap() {
     use spark_runtime::kv_cache::KvCacheDtype;
     // 4 layers, hp=3 → all become BF16 (first 3 and last 3 overlap)
-    let dtypes = build_layer_kv_dtypes(KvCacheDtype::Fp8, 4, 3);
+    let dtypes = build_layer_kv_dtypes(
+        KvCacheDtype::Fp8,
+        4,
+        3,
+        spark_runtime::kv_cache::KvCacheDtype::Bf16,
+    );
     assert_eq!(dtypes.len(), 4);
     for d in &dtypes {
         assert_eq!(*d, KvCacheDtype::Bf16);
@@ -120,7 +140,12 @@ fn test_build_layer_kv_dtypes_overlap() {
 #[test]
 fn test_build_layer_kv_dtypes_single_layer() {
     use spark_runtime::kv_cache::KvCacheDtype;
-    let dtypes = build_layer_kv_dtypes(KvCacheDtype::Nvfp4, 1, 1);
+    let dtypes = build_layer_kv_dtypes(
+        KvCacheDtype::Nvfp4,
+        1,
+        1,
+        spark_runtime::kv_cache::KvCacheDtype::Bf16,
+    );
     assert_eq!(dtypes.len(), 1);
     assert_eq!(dtypes[0], KvCacheDtype::Bf16);
 }
