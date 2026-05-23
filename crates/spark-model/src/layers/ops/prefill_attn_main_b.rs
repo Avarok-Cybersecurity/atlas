@@ -406,3 +406,104 @@ pub fn prefill_attention_paged_bf16k_turbo3v_64(
         .arg_u64(v_data_section_bytes)
         .launch(stream)
 }
+
+
+/// Prefill paged attention — TurboQuant+ safer-asym Bf16K + Turbo4V (BR=64).
+///
+/// Same kernel ABI as `prefill_attention_paged_bf16k_turbo3v_64`; the
+/// underlying kernel uses a 4-bit V dequant path in `LOAD_V_TILE`.
+#[allow(clippy::too_many_arguments)]
+pub fn prefill_attention_paged_bf16k_turbo4v_64(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    output: DevicePtr,
+    block_table: DevicePtr,
+    q_len: u32,
+    kv_len: u32,
+    q_offset: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    cache_block_size: u32,
+    sliding_window: u32,
+    inv_sqrt_d: f32,
+    v_block_stride_bytes: u64,
+    v_data_section_bytes: u64,
+    stream: u64,
+) -> Result<()> {
+    let br = 64u32;
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_q_heads, div_ceil(q_len, br), 1])
+        .block([256, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(output)
+        .arg_ptr(block_table)
+        .arg_u32(q_len)
+        .arg_u32(kv_len)
+        .arg_u32(q_offset)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(cache_block_size)
+        .arg_u32(sliding_window)
+        .arg_u32(1u32)
+        .arg_f32(inv_sqrt_d)
+        .arg_u64(v_block_stride_bytes)
+        .arg_u64(v_data_section_bytes)
+        .launch(stream)
+}
+
+/// Prefill paged attention — TurboQuant+ safer-asym Bf16K + Turbo2V (BR=64).
+///
+/// 6.4x V compression. Same kernel ABI as `prefill_attention_paged_bf16k_turbo3v_64`;
+/// kernel uses a 2-bit V dequant path in `LOAD_V_TILE`.
+#[allow(clippy::too_many_arguments)]
+pub fn prefill_attention_paged_bf16k_turbo2v_64(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    output: DevicePtr,
+    block_table: DevicePtr,
+    q_len: u32,
+    kv_len: u32,
+    q_offset: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    cache_block_size: u32,
+    sliding_window: u32,
+    inv_sqrt_d: f32,
+    v_block_stride_bytes: u64,
+    v_data_section_bytes: u64,
+    stream: u64,
+) -> Result<()> {
+    let br = 64u32;
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_q_heads, div_ceil(q_len, br), 1])
+        .block([256, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(output)
+        .arg_ptr(block_table)
+        .arg_u32(q_len)
+        .arg_u32(kv_len)
+        .arg_u32(q_offset)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(cache_block_size)
+        .arg_u32(sliding_window)
+        .arg_u32(1u32)
+        .arg_f32(inv_sqrt_d)
+        .arg_u64(v_block_stride_bytes)
+        .arg_u64(v_data_section_bytes)
+        .launch(stream)
+}

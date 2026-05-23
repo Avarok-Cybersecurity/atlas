@@ -175,7 +175,90 @@ impl Qwen3AttentionLayer {
                     stream,
                 )
             }
-            KvCacheDtype::Bf16 | KvCacheDtype::Bf16KTurbo4V | KvCacheDtype::Bf16KTurbo2V => {
+            KvCacheDtype::Bf16KTurbo4V => {
+                // TurboQuant+ safer-asym: K = bf16, V = turbo4 — single
+                // combined write kernel writes K as bf16 + V as 4-bit packed
+                // with matched-norm scale into separate-stride pools.
+                //
+                // V-side WHT bookend (mirrors bf16k_turbo3v path). K stays
+                // in raw bf16 — no rotation needed because BF16 has enough
+                // dynamic range to absorb outliers natively.
+                let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+                if !weight_pre_rotated
+                    && self.wht_bf16_k.0 != 0
+                    && (head_dim == 128 || head_dim == 256 || head_dim == 512)
+                {
+                    use spark_runtime::kernel_args::KernelLaunch;
+                    let total_heads = num_kv_heads * num_tokens;
+                    KernelLaunch::new(gpu, self.wht_bf16_k)
+                        .grid([total_heads, 1, 1])
+                        .block([32, 1, 1])
+                        .arg_ptr(v)
+                        .arg_u32(head_dim)
+                        .launch(stream)?;
+                }
+                ops::reshape_and_cache_bf16k_turbo4v(
+                    gpu,
+                    self.reshape_cache_k,
+                    k,
+                    v,
+                    kv_cache.k_pool_ptr(self.attn_layer_idx),
+                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    slot,
+                    num_tokens,
+                    num_kv_heads,
+                    head_dim,
+                    block_size,
+                    key_stride,
+                    value_stride,
+                    kv_cache.k_block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.nvfp4_data_bytes() as u64,
+                    stream,
+                )
+            }
+            KvCacheDtype::Bf16KTurbo2V => {
+                // TurboQuant+ safer-asym: K = bf16, V = turbo2 (6.4x V
+                // compression). V-side WHT bookend; K stays raw bf16.
+                let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+                if !weight_pre_rotated
+                    && self.wht_bf16_k.0 != 0
+                    && (head_dim == 128 || head_dim == 256 || head_dim == 512)
+                {
+                    use spark_runtime::kernel_args::KernelLaunch;
+                    let total_heads = num_kv_heads * num_tokens;
+                    KernelLaunch::new(gpu, self.wht_bf16_k)
+                        .grid([total_heads, 1, 1])
+                        .block([32, 1, 1])
+                        .arg_ptr(v)
+                        .arg_u32(head_dim)
+                        .launch(stream)?;
+                }
+                ops::reshape_and_cache_bf16k_turbo2v(
+                    gpu,
+                    self.reshape_cache_k,
+                    k,
+                    v,
+                    kv_cache.k_pool_ptr(self.attn_layer_idx),
+                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    slot,
+                    num_tokens,
+                    num_kv_heads,
+                    head_dim,
+                    block_size,
+                    key_stride,
+                    value_stride,
+                    kv_cache.k_block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.turbo2_data_bytes() as u64,
+                    stream,
+                )
+            }
+            KvCacheDtype::Bf16 => {
                 ops::reshape_and_cache(
                     gpu,
                     self.reshape_cache_k,

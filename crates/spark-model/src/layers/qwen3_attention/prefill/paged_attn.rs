@@ -217,6 +217,68 @@ impl Qwen3AttentionLayer {
                         stream,
                     )?
                 }
+                (KvCacheDtype::Bf16KTurbo4V, _) => {
+                    // Bf16K + Turbo4V prefill (BR=64). K=bf16 cp.async,
+                    // V=turbo4 4-bit sync dequant.
+                    if self.prefill_attn_paged_bf16k_turbo4v_64_k.0 == 0 {
+                        anyhow::bail!(
+                            "Bf16KTurbo4V prefill kernel not loaded (layer {}); rebuild kernels.",
+                            self.attn_layer_idx
+                        );
+                    }
+                    ops::prefill_attention_paged_bf16k_turbo4v_64(
+                        ctx.gpu,
+                        self.prefill_attn_paged_bf16k_turbo4v_64_k,
+                        q_contiguous,
+                        kv_cache.k_pool_ptr(self.attn_layer_idx),
+                        kv_cache.v_pool_ptr(self.attn_layer_idx),
+                        attn_out,
+                        meta.block_table,
+                        n,
+                        kv_len,
+                        seq_len_start as u32,
+                        nq,
+                        nkv,
+                        hd,
+                        bs_u,
+                        self.sliding_window.unwrap_or(0),
+                        inv_sqrt_d,
+                        kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                        kv_cache.nvfp4_data_bytes() as u64,
+                        stream,
+                    )?
+                }
+                (KvCacheDtype::Bf16KTurbo2V, _) => {
+                    // Bf16K + Turbo2V prefill (BR=64). K=bf16 cp.async,
+                    // V=turbo2 2-bit sync dequant.
+                    if self.prefill_attn_paged_bf16k_turbo2v_64_k.0 == 0 {
+                        anyhow::bail!(
+                            "Bf16KTurbo2V prefill kernel not loaded (layer {}); rebuild kernels.",
+                            self.attn_layer_idx
+                        );
+                    }
+                    ops::prefill_attention_paged_bf16k_turbo2v_64(
+                        ctx.gpu,
+                        self.prefill_attn_paged_bf16k_turbo2v_64_k,
+                        q_contiguous,
+                        kv_cache.k_pool_ptr(self.attn_layer_idx),
+                        kv_cache.v_pool_ptr(self.attn_layer_idx),
+                        attn_out,
+                        meta.block_table,
+                        n,
+                        kv_len,
+                        seq_len_start as u32,
+                        nq,
+                        nkv,
+                        hd,
+                        bs_u,
+                        self.sliding_window.unwrap_or(0),
+                        inv_sqrt_d,
+                        kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                        kv_cache.turbo2_data_bytes() as u64,
+                        stream,
+                    )?
+                }
                 (KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8, true) => {
                     let data_bytes = match self.kv_dtype {
                         KvCacheDtype::Turbo3 | KvCacheDtype::Turbo3KTurbo8V => {
