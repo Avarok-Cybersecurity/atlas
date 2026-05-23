@@ -960,3 +960,69 @@ attention layers). It is NOT used for Mistral MLA prefill (that path now uses
 All fixes confirmed correct per prior sessions. No new findings.
 
 **Branch ready for hardware re-test.**
+
+---
+
+## 2026-05-23 Independent Verification (spec_ssm HEAD `2f9c5f4`)
+
+Fresh audit of all three priority areas. All prior fixes confirmed correct; no new bugs found.
+This session focused on buffer sizing and dimension correctness for the MLA prefill paths.
+
+### P1 — Mistral Small 4 MLA: buffer sizing and dimension verification
+
+**MLA dimension consistency** (traced through `crates/atlas-core/src/config/parsers/mistral.rs`):
+
+For Mistral Small 4: `head_dim=128`, `qk_nope_head_dim=64`, `qk_rope_head_dim=64`,
+`v_head_dim=128`, `kv_lora_rank=256`. Key identity: `nope + rope = 64 + 64 = 128 = v_head_dim`.
+No dimension mismatch between projection output sizes and attention kernel expectations.
+`mla_cache_dim = kv_lora_rank + qk_rope_head_dim = 256 + 64 = 320` — matches `HDIM=320`
+in the fused kernel and the `1/sqrt(320)` absorbed-space scale.
+
+**Buffer sizing — no overflow at any prefill length** (from `buffers/sizes.rs`):
+
+At 1000-token single-chunk prefill (`m=1000`, max_batch_tokens=8192):
+- `ssm_qkvz` sized for `max(8192 * 2 * kv_heads * hd * bf16, ...)` — far exceeds K+V needs
+  for any prefix length up to `max_batch_tokens`
+- `attn_output` includes MLA absorbed path: `m * num_attention_heads * (kv_lora_rank + qk_rope_head_dim) * bf16`
+- No buffer overflow possible at any prefill length up to `max_batch_tokens`
+
+**Buffer aliasing in `cache_skip_mla.rs`** (confirmed safe):
+
+`ssm_ba` is reused for `q_latent` then `k_rope_buf` — safe because `q_latent` is the input
+to the `wq_b` GEMM (producing `qg_out`) and that GEMM completes before `k_rope_buf` is
+populated. Sequential, not concurrent. No aliasing hazard.
+
+**Dead kernel code** (noted for clarity, not a bug):
+
+`mla_fused_prefill_k` (loaded from `mla_fused_prefill.cu`) and `prefill_attn_mla320_k`
+(loaded from `mla_prefill_attn.cu`, BR=16/BC=16, for ≤30-token absorbed prefill) are
+both loaded at startup but NOT dispatched on any hot path. The actual prefill path calls
+`mla_fused_prefill_k` for single-chunk and `mla_prefill_paged_320` for multi-chunk. The
+small `mla_prefill_attn.cu` kernel (`mla_prefill_attn_320`) is future/dead code.
+
+**`--kv-high-precision-layers auto` safety confirmed** (`kv_dtypes.rs` line 17):
+
+```rust
+if high_precision_layers == 0 || kv_dtype == KvCacheDtype::Bf16 { ... }
+```
+When `kv_dtype` is already `Bf16`, the HP override is a no-op regardless of the
+`hp_layers` count. For Mistral with `--kv-cache-dtype bf16`, all MLA layers are
+uniformly BF16; the `auto` flag causes no FP8/BF16 mixing.
+
+### P2 — Nemotron Super 120B tool calling: fix chain confirmed
+
+All four MODEL.toml flags present: `tool_call_parser = "bare_json"`,
+`disable_tool_steering = true`, `skip_template_tools = true`,
+`thinking_in_tools = false`. `BareJsonParser::suppresses_jinja_tools() → true`
+provides parser-level protection independently of MODEL.toml. `count_tokens` Anthropic
+path checks `parser_suppresses` mirroring `template.rs` (fixed in commit `2993894`).
+No new findings beyond prior sessions.
+
+### P3 — SSM pool: propagation confirmed
+
+`--ssm-cache-slots 0` → `SsmSnapshotPool::new(num_slots=0)` → early-return with no
+GPU allocation. The 1206 MB is `SsmStatePool` (active decode states sized by
+`--max-batch-size`, default 8) — confirmed independent of `--ssm-cache-slots`.
+No code change needed; `--max-batch-size 1` reduces to ~151 MB for single-stream use.
+
+**No new bugs found. All fixes confirmed correct.**
