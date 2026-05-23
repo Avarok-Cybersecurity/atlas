@@ -131,8 +131,7 @@ impl TransformerModel {
             std::fs::write(std::path::Path::new(&dir).join("atlas_logits.bin"), &lbytes).ok();
             let mut idx: Vec<usize> = (0..logit_vals.len()).collect();
             idx.sort_by(|&a, &b| logit_vals[b].partial_cmp(&logit_vals[a]).unwrap());
-            let top: Vec<(usize, f32)> =
-                idx.iter().take(10).map(|&i| (i, logit_vals[i])).collect();
+            let top: Vec<(usize, f32)> = idx.iter().take(10).map(|&i| (i, logit_vals[i])).collect();
             tracing::info!("ATLAS_NEMO_DUMP: top-10 logits = {top:?}");
         }
 
