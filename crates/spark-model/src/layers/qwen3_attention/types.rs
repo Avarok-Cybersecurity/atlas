@@ -251,6 +251,8 @@ pub struct Qwen3AttentionLayer {
     // Currently: Bf16K + Turbo3V (safer-asym variant — K kept at bf16 precision,
     // V aggressively compressed to 3-bit Lloyd-Max + FP8 group scale).
     pub(super) prefill_attn_paged_bf16k_turbo3v_64_k: KernelHandle,
+    pub(super) prefill_attn_paged_bf16k_turbo4v_64_k: KernelHandle,
+    pub(super) prefill_attn_paged_bf16k_turbo2v_64_k: KernelHandle,
     // ── Q12 Phase 3: same-chunk-len batched paged-prefill kernels ──
     // Each takes `const int* const* block_table_ptrs` + per-batch Q/O
     // offsets. Used by `Qwen3AttentionLayer::prefill_batched` when N≥2

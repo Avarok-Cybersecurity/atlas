@@ -97,13 +97,11 @@ impl Qwen3AttentionLayer {
         // writes V at full-K byte size into a V pool sized for the smaller
         // V-side turbo dtype, and either runs off the end of the V block or
         // reads garbage at decode. Bail at init rather than ship the silent
-        // wrong-output path; the only complete asym combo today is
-        // `Bf16KTurbo3V` (combined kernels in `reshape_and_cache_turbo.cu` +
-        // `paged_decode_attn_bf16k_turbo3v_128.cu`). Tracking: issue #91.
+        // wrong-output path; complete asym combos today are
+        // `Bf16KTurbo{2,3,4}V` (combined kernels in `reshape_and_cache_turbo.cu`
+        // + `paged_decode_attn_bf16k_turbo{2,3,4}v_128.cu`). Tracking: issue #91.
         match kv_dtype {
-            KvCacheDtype::Bf16KTurbo4V
-            | KvCacheDtype::Bf16KTurbo2V
-            | KvCacheDtype::Fp8KTurbo4V
+            KvCacheDtype::Fp8KTurbo4V
             | KvCacheDtype::Fp8KTurbo3V
             | KvCacheDtype::Fp8KTurbo2V
             | KvCacheDtype::Turbo4KTurbo3V
@@ -111,8 +109,8 @@ impl Qwen3AttentionLayer {
             | KvCacheDtype::Turbo3KTurbo8V => {
                 anyhow::bail!(
                     "KvCacheDtype::{kv_dtype:?} has no asymmetric combined kernel yet — \
-                     V-side dispatch would mis-size the V pool. Use `bf16k_turbo3v` (the \
-                     only complete asym combo today, requires a model with bf16 attention \
+                     V-side dispatch would mis-size the V pool. Use one of \
+                     `bf16k_turbo{{2,3,4}}v` (requires a model with bf16 attention \
                      weights), or fall back to a symmetric dtype. Tracking: issue #91."
                 );
             }
@@ -190,6 +188,38 @@ impl Qwen3AttentionLayer {
                     "reshape_and_cache_flash_bf16k_turbo3v",
                     dm,
                     "paged_decode_attn_bf16k_turbo3v",
+                )
+            }
+            KvCacheDtype::Bf16KTurbo4V => {
+                // TurboQuant+ safer-asym: K=bf16, V=turbo4. Combined write
+                // and decode kernels in module `reshape_and_cache_turbo`
+                // and `paged_decode_bf16k_turbo4v_128`.
+                let dm = if config.head_dim <= 128 {
+                    "paged_decode_bf16k_turbo4v_128"
+                } else {
+                    "paged_decode_bf16k_turbo4v"
+                };
+                (
+                    "reshape_and_cache_turbo",
+                    "reshape_and_cache_flash_bf16k_turbo4v",
+                    dm,
+                    "paged_decode_attn_bf16k_turbo4v",
+                )
+            }
+            KvCacheDtype::Bf16KTurbo2V => {
+                // TurboQuant+ safer-asym: K=bf16, V=turbo2 (6.4x V compression).
+                // Combined write and decode kernels in module
+                // `reshape_and_cache_turbo` and `paged_decode_bf16k_turbo2v_128`.
+                let dm = if config.head_dim <= 128 {
+                    "paged_decode_bf16k_turbo2v_128"
+                } else {
+                    "paged_decode_bf16k_turbo2v"
+                };
+                (
+                    "reshape_and_cache_turbo",
+                    "reshape_and_cache_flash_bf16k_turbo2v",
+                    dm,
+                    "paged_decode_attn_bf16k_turbo2v",
                 )
             }
             KvCacheDtype::Bf16 => (
@@ -419,7 +449,9 @@ impl Qwen3AttentionLayer {
                 KvCacheDtype::Turbo3
                 | KvCacheDtype::Turbo4
                 | KvCacheDtype::Turbo8
-                | KvCacheDtype::Bf16KTurbo3V => None,
+                | KvCacheDtype::Bf16KTurbo3V
+                | KvCacheDtype::Bf16KTurbo4V
+                | KvCacheDtype::Bf16KTurbo2V => None,
                 _ => Some(gpu.kernel("paged_decode_fp8", "paged_decode_attn_splitk_fp8")?),
             },
             paged_decode_reduce_k: match kv_dtype {
@@ -429,7 +461,9 @@ impl Qwen3AttentionLayer {
                 KvCacheDtype::Turbo3
                 | KvCacheDtype::Turbo4
                 | KvCacheDtype::Turbo8
-                | KvCacheDtype::Bf16KTurbo3V => None,
+                | KvCacheDtype::Bf16KTurbo3V
+                | KvCacheDtype::Bf16KTurbo4V
+                | KvCacheDtype::Bf16KTurbo2V => None,
                 _ => Some(gpu.kernel("paged_decode_fp8", "paged_decode_attn_reduce_fp8")?),
             },
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
@@ -510,6 +544,18 @@ impl Qwen3AttentionLayer {
                 gpu,
                 "prefill_paged_bf16k_turbo3v",
                 "inferspark_prefill_paged_bf16k_turbo3v_64",
+            ),
+            // Bf16K + Turbo4V BR=64 prefill (4-bit V dequant in LOAD_V_TILE).
+            prefill_attn_paged_bf16k_turbo4v_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_bf16k_turbo4v",
+                "inferspark_prefill_paged_bf16k_turbo4v_64",
+            ),
+            // Bf16K + Turbo2V BR=64 prefill (2-bit V dequant in LOAD_V_TILE).
+            prefill_attn_paged_bf16k_turbo2v_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_bf16k_turbo2v",
+                "inferspark_prefill_paged_bf16k_turbo2v_64",
             ),
             // ── Q12 Phase 3: batched paged-prefill kernel handles ──
             prefill_attn_paged_batched_k: super::super::try_kernel(

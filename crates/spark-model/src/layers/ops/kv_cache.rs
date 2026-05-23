@@ -347,6 +347,184 @@ pub fn paged_decode_attn_bf16k_turbo3v(
         .launch(stream)
 }
 
+/// Write K/V to paged Bf16K + Turbo4V (TurboQuant+ safer-asym) cache.
+///
+/// K written as raw BF16 NHD, V as 4-bit Lloyd-Max + FP8 per-group scale with
+/// matched-norm correction. K and V pools have separate strides.
+#[allow(clippy::too_many_arguments)]
+pub fn reshape_and_cache_bf16k_turbo4v(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    key: DevicePtr,
+    value: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    slot_mapping: DevicePtr,
+    num_tokens: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    block_size: u32,
+    key_stride: u32,
+    value_stride: u32,
+    k_block_stride_bytes: u64,
+    v_block_stride_bytes: u64,
+    v_data_section_bytes: u64,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_tokens, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(key)
+        .arg_ptr(value)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(slot_mapping)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(block_size)
+        .arg_u32(key_stride)
+        .arg_u32(value_stride)
+        .arg_u64(k_block_stride_bytes)
+        .arg_u64(v_block_stride_bytes)
+        .arg_u64(v_data_section_bytes)
+        .launch(stream)
+}
+
+/// Write K/V to paged Bf16K + Turbo2V (TurboQuant+ safer-asym) cache (6.4x V comp).
+#[allow(clippy::too_many_arguments)]
+pub fn reshape_and_cache_bf16k_turbo2v(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    key: DevicePtr,
+    value: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    slot_mapping: DevicePtr,
+    num_tokens: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    block_size: u32,
+    key_stride: u32,
+    value_stride: u32,
+    k_block_stride_bytes: u64,
+    v_block_stride_bytes: u64,
+    v_data_section_bytes: u64,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_tokens, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(key)
+        .arg_ptr(value)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(slot_mapping)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(block_size)
+        .arg_u32(key_stride)
+        .arg_u32(value_stride)
+        .arg_u64(k_block_stride_bytes)
+        .arg_u64(v_block_stride_bytes)
+        .arg_u64(v_data_section_bytes)
+        .launch(stream)
+}
+
+/// Paged decode attention for Bf16K + Turbo4V asymmetric KV cache.
+///
+/// K read as BF16 NHD, V as 4-bit Lloyd-Max packed bytes + FP8 per-group scale
+/// (sparse V on batched + remainder paths).
+#[allow(clippy::too_many_arguments)]
+pub fn paged_decode_attn_bf16k_turbo4v(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    output: DevicePtr,
+    block_tables: DevicePtr,
+    seq_lens: DevicePtr,
+    max_blocks_per_seq: u32,
+    num_seqs: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    block_size: u32,
+    inv_sqrt_d: f32,
+    q_stride: u32,
+    v_block_stride_bytes: u64,
+    v_data_section_bytes: u64,
+    sliding_window: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_q_heads, num_seqs, 1])
+        .block([256, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(output)
+        .arg_ptr(block_tables)
+        .arg_ptr(seq_lens)
+        .arg_u32(max_blocks_per_seq)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(block_size)
+        .arg_f32(inv_sqrt_d)
+        .arg_u32(q_stride)
+        .arg_u64(v_block_stride_bytes)
+        .arg_u64(v_data_section_bytes)
+        .arg_u32(sliding_window)
+        .launch(stream)
+}
+
+/// Paged decode attention for Bf16K + Turbo2V asymmetric KV cache (6.4x V comp).
+#[allow(clippy::too_many_arguments)]
+pub fn paged_decode_attn_bf16k_turbo2v(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    output: DevicePtr,
+    block_tables: DevicePtr,
+    seq_lens: DevicePtr,
+    max_blocks_per_seq: u32,
+    num_seqs: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    block_size: u32,
+    inv_sqrt_d: f32,
+    q_stride: u32,
+    v_block_stride_bytes: u64,
+    v_data_section_bytes: u64,
+    sliding_window: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_q_heads, num_seqs, 1])
+        .block([256, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(output)
+        .arg_ptr(block_tables)
+        .arg_ptr(seq_lens)
+        .arg_u32(max_blocks_per_seq)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(block_size)
+        .arg_f32(inv_sqrt_d)
+        .arg_u32(q_stride)
+        .arg_u64(v_block_stride_bytes)
+        .arg_u64(v_data_section_bytes)
+        .arg_u32(sliding_window)
+        .launch(stream)
+}
+
 /// `k_cache`/`v_cache` are the full pool base pointers.
 /// `cache_stride` is in elements (block_size * num_kv_heads * head_dim).
 pub fn reshape_and_cache_fp8(
