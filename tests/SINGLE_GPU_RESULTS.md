@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -1026,3 +1026,73 @@ GPU allocation. The 1206 MB is `SsmStatePool` (active decode states sized by
 No code change needed; `--max-batch-size 1` reduces to ~151 MB for single-stream use.
 
 **No new bugs found. All fixes confirmed correct.**
+
+---
+
+## 2026-05-23 Re-investigation (spec_ssm HEAD `3b848cc`)
+
+Fresh independent investigation starting from the task description and the original
+(main-branch) `SINGLE_GPU_RESULTS.md`, which attributed the Mistral gibberish bug to a
+YaRN `inv_freq` formula error. Files read from scratch and compared against spec_ssm HEAD.
+
+### P1 — Mistral Small 4 MLA: original YaRN diagnosis confirmed as misdiagnosis
+
+The task brief cited `yarn.rs` as the primary suspect. On spec_ssm, `yarn.rs` implements
+the correct Hugging Face `find_correction_dim` formula in dimension-index space:
+
+```rust
+let find_correction_dim = |num_rot: f32| -> f32 {
+    (dim_f * (original_max_pos / (num_rot * 2.0 * std::f32::consts::PI)).ln())
+        / (2.0 * theta_f.ln())
+};
+```
+
+For Mistral Small 4 (`rope_theta=1e7`, `dim=64 rope pairs`, `beta_fast=32`,
+`beta_slow=1`, `original_max_pos=8192`, `factor=128`): computed `low≈7, high≈15`.
+The ramp and inv_freq values are numerically correct. **YaRN was never the bug.**
+
+All five actual root causes are in `cache_skip_mla.rs`, `phase_assemble.rs`, and
+`paged_mla.rs` (not `yarn.rs`). All five are fixed on spec_ssm.
+
+### P1 — Dead-code removal: unreachable `else if self.mla.is_some()` branch
+
+**New code fix applied** (`cache_skip.rs`): after the MLA early-return at line 99
+(`return self.prefill_attention_cache_skip_mla(...)`), the subsequent
+`else if self.mla.is_some()` block at line 142 was unreachable dead code — no MLA
+flow survives past line 99. The block contained stale diagnostic `diag_norm` logging
+that was never exercised on Mistral Small 4. Removed in commit `3b848cc`.
+
+This brings `cache_skip.rs` to its minimal correct form: MLA → early return, standard
+path → deinterleave/norm/rope/cache-write/flash-attn chain.
+
+### P1 — spec_ssm `cache_skip_mla.rs` (the fixed version) confirmed
+
+The spec_ssm version of `cache_skip_mla.rs` is substantially different from main:
+
+| Aspect | main (broken) | spec_ssm (fixed) |
+|--------|--------------|-----------------|
+| Attention kernel | `prefill_attention_64` (HDIM=256) | `mla_fused_prefill` (HDIM=320) |
+| Attention scale | `1/sqrt(hd=128)` | `1/sqrt(kv_lora + mla_rope)=1/sqrt(320)` |
+| HDIM guard | none | `anyhow::ensure!(mla_fused_prefill_k.0 != 0)` |
+| K/V expansion | via `wkv_b` GEMM + assemble | absorbed-space: `kv_latent` direct |
+| Args struct | 11 fields incl. num_tokens, kv_dim, bf16 | 7 fields (minimal) |
+
+The fused 320-dim kernel (`mla_fused_prefill.cu`) handles Q-absorption, causal attention,
+and V-extraction in a single pass. `smem_dot[8]` is at function scope (not inside the
+`kv_pos` loop), eliminating the NVCC shared-memory aliasing hazard.
+
+### P2 — Nemotron Super 120B tool calling: confirmed fixed
+
+`MODEL.toml` verified: `disable_tool_steering = true`, `tool_call_parser = "bare_json"`,
+`skip_template_tools = true`, `thinking_in_tools = false`. `BareJsonParser::suppresses_jinja_tools() → true`
+provides parser-level protection. `anthropic/handlers.rs` `count_tokens` checks
+`parser_suppresses` consistently with `template.rs`. No format-instruction conflict.
+
+### P3 — SSM cache slots: two-pool design confirmed correct
+
+`SsmStatePool` sized by `max_batch_size` (active decode states); `SsmSnapshotPool` sized by
+`ssm_cache_slots` (prefix cache). `--ssm-cache-slots 0` zeros only the snapshot pool.
+`--max-batch-size 1` reduces the active pool from ~1206 MB to ~151 MB for single-stream.
+Pure-attention models (Mistral: 0 SSM layers) allocate zero SSM memory regardless.
+
+**No new bugs found. Branch `spec_ssm` is correct and ready for hardware re-test.**
