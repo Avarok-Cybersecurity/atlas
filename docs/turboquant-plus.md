@@ -317,68 +317,53 @@ matter more on models with wider per-channel variance distributions
 (Qwen3-Next-80B, MiniMax-M2), which is the follow-up bench. For
 Qwen3.6-A3B specifically the default config is the right choice.
 
-### Asymmetric variants — measured
+### Asymmetric variants — only Bf16KTurbo3V is wired end-to-end
 
-Same harness, asymmetric K/V dtypes. Qwen3.6-35B-FP8 ships NVFP4
-attention projections, so the `fp8k_*` variants load fine; the
-`bf16k_*` variants need a model that ships bf16 attention weights
-(the smoke test correctly reports `load_timeout` here, which is the
-distinguishing behaviour, not a kernel crash).
+The branch defines 9 asymmetric `KvCacheDtype` variants in the enum +
+per-side K/V cache pool refactor + 14 `KERNEL.toml` registrations. Of
+those 9 variants, **only `Bf16KTurbo3V` has a proper combined
+write+decode+prefill kernel stack** (`reshape_and_cache_flash_bf16k_turbo3v`,
+`paged_decode_attn_bf16k_turbo3v_128`,
+`inferspark_prefill_paged_bf16k_turbo3v`).
 
-| dtype          | env knob              | PPL sim | dec_short | pre_2K | pre_8K  | pre_16K | dec_after_8K |
-|----------------|-----------------------|--------:|----------:|-------:|--------:|--------:|-------------:|
-| bf16k_turbo4v  | default               | 0.5455  | 71.29     | 629.13 | 1228.38 | 1392.63 | 40.52        |
-| bf16k_turbo3v  | default               | load_timeout (model has FP8 attn weights, not bf16) |   |   |   |   |
-| fp8k_turbo4v   | default               | 0.6263  | 71.71     | 634.74 | 1237.46 | 1399.66 | 41.06        |
-| fp8k_turbo3v   | default               | 0.6263  | 71.83     | 625.32 | 1221.14 | 1383.34 | 40.80        |
-| fp8k_turbo4v   | `TQ_PLUS_WEIGHT_ROTATION=1` | **0.8485** | 34.64 | 315.28 | 614.44 | 695.17 | 20.42  |
-| fp8k_turbo3v   | `TQ_PLUS_WEIGHT_ROTATION=1` | **0.8485** | 34.58 | 616.59 | 1209.81 | 1377.54 | 20.30 |
+The other 8 variants would route through the K-side symmetric kernel
+(bf16/fp8 reshape + decode) which treats V as the K-side dtype and
+writes V at K-side byte size into a V pool that the per-side pool
+refactor sized for the smaller V-side turbo dtype. Result: V-side
+out-of-bounds writes or garbage reads at decode. This was caught
+empirically — Bench C measured `fp8k_turbo3v` PPL sim 0.6263 (vs fp8
+baseline 0.8485) and the asym-diag bench (Bench E) confirmed the bug
+disappears when the WHT round-trip is fully bypassed via
+`TQ_PLUS_WEIGHT_ROTATION=1`.
 
-Two honest observations to flag for reviewers, and one diagnostic
-finding that points at where the bug is:
+To prevent silent wrong-output, the 8 un-implemented asym variants
+now `anyhow::bail!()` at layer construction with a message pointing
+at issue #91:
 
-1. **Throughput on the default asym variants matches the symmetric
-   line** (~625-635 / 1220-1240 / 1380-1400 tok/s prefill). The
-   per-side cache pool refactor + the combined bf16k_turbo3v
-   write/decode/prefill kernels add no measurable overhead vs
-   symmetric. The asym infrastructure (separate K/V strides, two pool
-   pointers in flight, per-side block-byte APIs) is functional and
-   not a perf regression on the symmetric line.
+```
+KvCacheDtype::Fp8KTurbo3V has no asymmetric combined kernel yet —
+V-side dispatch would mis-size the V pool. Use `bf16k_turbo3v` (the
+only complete asym combo today, requires a model with bf16 attention
+weights), or fall back to a symmetric dtype. Tracking: issue #91.
+```
 
-2. **PPL sim on the default asym variants (0.55-0.63) is below the
-   symmetric turbo3 number (0.84)**, which is the opposite of what
-   the design predicts. K kept at higher precision should help
-   quality, not hurt. The math `iWHT(sum w_i · WHT(V_i)) = sum w_i ·
-   V_i` is linear, so an asym path with K raw + V WHT'd should
-   return correct attention output up to V-only quantisation noise.
+The enum + per-side pool + dispatch wiring + `KERNEL.toml`
+registrations + the prefill_paged_compute_asym template are all kept
+in place so future PRs adding asym kernels only need to write the
+kernel + lift the bail.
 
-3. **Diagnostic — `TQ_PLUS_WEIGHT_ROTATION=1` recovers correct
-   quality on both fp8k_* asym variants** (PPL sim jumps to 0.8485,
-   matching fp8 baseline). That env knob disables the runtime
-   `WHT(V)` at write and the `iWHT(output)` at decode in favour of
-   load-time rotation of the Q/K/V projection weights. The fact
-   that fully bypassing the runtime WHT round-trip restores the
-   expected quality localises the bug to **the asym path's
-   interaction between the runtime `WHT(V)` at write_kv_cache and
-   the corresponding `iWHT(attn_out)` at decode** — most likely a
-   missing Q-side rotation or a basis mismatch when K is raw and V
-   is rotated.
+On Qwen3.6-35B-FP8, the only usable asym variant is `Bf16KTurbo3V`
+itself, which fails to load (the model has FP8 attention projections,
+not bf16). That's the load-side smoke check working as designed —
+`tests/test_kv_dtype_smoke.py` reports SKIP for weight-incompat, FAIL
+for kernel crash. A bf16-attention model is needed to exercise the
+combined kernels end-to-end at this scale; that's a follow-up bench.
 
-   The 50% decode-throughput regression on `fp8k_turbo4v +
-   WeightRot` (34 tps vs 72 default) is a separate problem
-   tracking under the same issue: the load-time weight rotation
-   kernel may be firing per-forward instead of once at load, or
-   the dispatcher is double-rotating somewhere. The 3v variant
-   does NOT show the perf regression — only the 4v one — so the
-   bug is variant-specific dispatch state.
-
-   Bottom line: the default asym path has a known quality bug
-   (root cause localised to the WHT/iWHT round-trip in the asym
-   dispatcher), the WeightRot diagnostic fixes quality at a perf
-   cost, neither is the production path. The symmetric line is
-   the production path; asym ships behind opt-in
-   `--kv-cache-dtype` names with this section as the operator
-   contract. Tracking issue: [#91](https://github.com/Avarok-Cybersecurity/atlas/issues/91).
+Historical bench data for the broken default asym dispatch is
+preserved in `~/atlas_tqplus_bench/results/bench_C_asym.json` and the
+asym-diag rerun in `bench_E_asym_diag.json` (both showing the bug + the
+WeightRot workaround) — included for reviewer audit only, not as a
+claim of working asym performance.
 
 ### Asymmetric variants (measured)
 
