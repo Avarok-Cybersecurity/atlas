@@ -320,7 +320,9 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // Once enabled, the kernel-side apply pass starts accumulating K² stats
     // and the scheduler polls `maybe_finalize` per prefill chunk; once N
     // tokens have flowed through, scales activate and stay live for the
-    // process lifetime.
+    // process lifetime. CUDA-only: the driver talks to the CUDA Driver API
+    // directly via `atlas_core::registry`, which doesn't exist on metal.
+    #[cfg(feature = "cuda")]
     if let Some(driver) = spark_model::layers::qwen3_attention::InnerQDriver::from_env() {
         match driver.start() {
             Ok(()) => {
