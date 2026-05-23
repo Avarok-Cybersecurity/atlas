@@ -83,7 +83,7 @@ pub fn char_to_byte_map() -> &'static [i16; 324] {
 /// The GPT-2 bytes-to-unicode forward map: byte -> unicode codepoint.
 ///
 /// This is the table HuggingFace uses to *encode* the vocabulary; it is
-/// the exact inverse of [`CHAR_TO_BYTE_MAP`]. Derived (not duplicated)
+/// the exact inverse of `CHAR_TO_BYTE_MAP`. Derived (not duplicated)
 /// from the inverse table to keep a single source of truth.
 pub fn byte_to_char_map() -> &'static [u32; 256] {
     &BYTE_TO_CHAR_MAP
@@ -109,7 +109,7 @@ static CHAR_TO_BYTE_MAP: [i16; 324] = [
     147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 173,
 ];
 
-/// Forward map derived once from [`CHAR_TO_BYTE_MAP`] (SSOT: the inverse
+/// Forward map derived once from `CHAR_TO_BYTE_MAP` (SSOT: the inverse
 /// table is authoritative; this is `byte -> codepoint` such that
 /// `CHAR_TO_BYTE_MAP[byte_to_char(byte)] == byte`).
 static BYTE_TO_CHAR_MAP: [u32; 256] = build_byte_to_char_map();

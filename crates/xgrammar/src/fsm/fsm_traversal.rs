@@ -13,7 +13,7 @@ use super::traversal;
 
 impl Fsm {
     /// Single-character / typed transition. Returns the first matching
-    /// target, or [`NO_NEXT_STATE`]. `edge_type` must not be epsilon.
+    /// target, or `NO_NEXT_STATE`. `edge_type` must not be epsilon.
     pub fn next_state(&self, from: usize, value: i32, edge_type: i16) -> i32 {
         traversal::next_state(&self.edges, from, value, edge_type)
     }

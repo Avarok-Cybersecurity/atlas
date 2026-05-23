@@ -62,7 +62,7 @@ impl TokenizerInfo {
     /// * `vocab_size` — total id space; `None` means `encoded_vocab.len()`.
     ///   When larger, the trailing ids become padding special tokens.
     /// * `stop_token_ids` — explicit stop ids; `None` triggers
-    ///   detection via [`DETECTION_STOP_TOKENS`].
+    ///   detection via `DETECTION_STOP_TOKENS`.
     /// * `add_prefix_space` — recorded for metadata, no decoding effect.
     pub fn new(
         encoded_vocab: &[String],

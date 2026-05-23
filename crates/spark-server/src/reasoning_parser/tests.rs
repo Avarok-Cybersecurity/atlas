@@ -14,8 +14,10 @@ fn parser(fmt: ReasoningFormat) -> Box<dyn ReasoningParser> {
 #[test]
 fn qwen_closed_block_splits_on_end_tag() {
     let p = parser(ReasoningFormat::Qwen);
-    let (reasoning, content) =
-        p.extract_thinking("I need to think about this\n</think>\nThe answer is 42.", true);
+    let (reasoning, content) = p.extract_thinking(
+        "I need to think about this\n</think>\nThe answer is 42.",
+        true,
+    );
     assert_eq!(reasoning.unwrap(), "I need to think about this");
     assert_eq!(content, "The answer is 42.");
 }
@@ -24,7 +26,8 @@ fn qwen_closed_block_splits_on_end_tag() {
 fn deepseek_r1_closed_block_splits_on_end_tag() {
     // Nemotron output: prompt opened `<think>`, so no opening tag.
     let p = parser(ReasoningFormat::DeepSeekR1);
-    let (reasoning, content) = p.extract_thinking("counting steps</think>Your name is Zephyr.", true);
+    let (reasoning, content) =
+        p.extract_thinking("counting steps</think>Your name is Zephyr.", true);
     assert_eq!(reasoning.unwrap(), "counting steps");
     assert_eq!(content, "Your name is Zephyr.");
 }
@@ -33,7 +36,8 @@ fn deepseek_r1_closed_block_splits_on_end_tag() {
 fn minimax_strips_model_emitted_opening_tag() {
     // M2.7 re-emits its own `<think>` even though the prompt opened one.
     let p = parser(ReasoningFormat::MiniMax);
-    let (reasoning, content) = p.extract_thinking("<think>weighing options</think>final answer", true);
+    let (reasoning, content) =
+        p.extract_thinking("<think>weighing options</think>final answer", true);
     assert_eq!(reasoning.unwrap(), "weighing options");
     assert_eq!(content, "final answer");
 }
@@ -59,7 +63,12 @@ fn thinking_on_tagless_output_is_reasoning_not_content() {
             "{} must route tagless thinking-on output to reasoning",
             p.name(),
         );
-        assert_eq!(content, "", "{}: no raw chain-of-thought in content", p.name());
+        assert_eq!(
+            content,
+            "",
+            "{}: no raw chain-of-thought in content",
+            p.name()
+        );
     }
 }
 
@@ -97,8 +106,10 @@ fn truncated_reasoning_with_partial_tag_streamed_in() {
 #[test]
 fn mistral_closed_block() {
     let p = parser(ReasoningFormat::Mistral);
-    let (reasoning, content) =
-        p.extract_thinking("[THINK]Let me reason here[/THINK]Paris is the capital.", true);
+    let (reasoning, content) = p.extract_thinking(
+        "[THINK]Let me reason here[/THINK]Paris is the capital.",
+        true,
+    );
     assert_eq!(reasoning.unwrap(), "Let me reason here");
     assert_eq!(content, "Paris is the capital.");
 }

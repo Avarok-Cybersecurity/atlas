@@ -158,7 +158,7 @@ impl FsmWithStartEnd {
     /// the port keeps the original name.
     ///
     /// The incoming/outgoing edge relations are stored in two reused
-    /// CSR arrays ([`EdgeCsr`]) instead of per-state hash maps — port
+    /// CSR arrays (`EdgeCsr`) instead of per-state hash maps — port
     /// of upstream commit 96ae88b (#616), which found `build_maps`
     /// dominated the pass through hash-map and small-vector churn.
     pub fn merge_equivalent_successors(&self) -> FsmWithStartEnd {

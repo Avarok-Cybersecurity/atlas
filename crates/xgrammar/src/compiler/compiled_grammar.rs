@@ -37,7 +37,7 @@ use super::rule_cache::{RuleLevelCache, RuleMaskKey};
 #[derive(Debug)]
 pub struct CompiledGrammarImpl {
     /// The optimized, FSM-accelerated grammar (shared — the lazy
-    /// [`MaskGenerator`] needs an `Arc<GrammarData>`).
+    /// `MaskGenerator` needs an `Arc<GrammarData>`).
     pub grammar: Arc<GrammarData>,
     /// The tokenizer this grammar was compiled against.
     pub tokenizer_info: TokenizerInfo,
@@ -59,14 +59,14 @@ pub struct CompiledGrammarImpl {
     pub mask_cache: Mutex<AHashMap<ParserState, Arc<AdaptiveTokenMask>>>,
     /// TagDispatch second-slice precomputation, keyed by rule id. Built
     /// once at compile time and retained here so on-demand mask
-    /// computation can feed it to the [`MaskGenerator`]. `Arc`-wrapped
-    /// so [`MaskGenerator::new`] clones a pointer, not the map.
+    /// computation can feed it to the `MaskGenerator`. `Arc`-wrapped
+    /// so `MaskGenerator::new` clones a pointer, not the map.
     pub tag_slice: Arc<AHashMap<i32, Vec<bool>>>,
     /// The cross-grammar [`RuleLevelCache`], shared from the owning
     /// [`super::GrammarCompiler`] (`None` when the compiler's cache is
     /// disabled, or for the `vocab_size == 0` degenerate path). The lazy
     /// mask path consults it on a per-state cache miss before falling
-    /// back to a full [`MaskGenerator`] recomputation — a rule
+    /// back to a full `MaskGenerator` recomputation — a rule
     /// structurally identical to one seen in any previous request
     /// reuses its computed masks.
     pub rule_cache: Option<RuleLevelCache>,
@@ -114,7 +114,7 @@ impl CompiledGrammarImpl {
     /// `RuleLevelCache::Impl::NodeKey`. Upstream caches the
     /// *no-lookahead* mask under the bare `fsm_hash` and the
     /// lookahead-aware mask under `HashCombine(fsm_hash, lookahead_hash,
-    /// is_exact_lookahead)`. This port's [`MaskGenerator`] yields the
+    /// is_exact_lookahead)`. This port's `MaskGenerator` yields the
     /// final lookahead-applied mask in one shot, so the key folds in the
     /// lookahead hash (and `is_exact_lookahead`) whenever the rule has a
     /// lookahead assertion, and folds in `is_root` — guaranteeing a
@@ -196,7 +196,7 @@ impl CompiledGrammar {
     }
 
     /// Shared-pointer access to the optimized grammar — used to seed a
-    /// lazily-constructed [`MaskGenerator`].
+    /// lazily-constructed `MaskGenerator`.
     pub fn grammar_arc(&self) -> Arc<GrammarData> {
         Arc::clone(&self.pimpl.grammar)
     }
@@ -232,7 +232,7 @@ impl CompiledGrammar {
     /// root (the root rule has no uncertain tokens).
     ///
     /// The returned `Arc` is byte-identical to what the old eager
-    /// compile produced: same [`MaskGenerator`], same canonical key.
+    /// compile produced: same `MaskGenerator`, same canonical key.
     pub fn get_or_compute_mask(
         &self,
         canonical: ParserState,
@@ -276,7 +276,7 @@ impl CompiledGrammar {
         Arc::clone(cache.entry(canonical).or_insert(computed))
     }
 
-    /// Run a full [`MaskGenerator`] scan for `canonical` — the
+    /// Run a full `MaskGenerator` scan for `canonical` — the
     /// authoritative (uncached) mask computation. `&Arc<AHashMap>`
     /// deref-coerces to the `&AHashMap` argument.
     fn compute_mask(
