@@ -190,28 +190,27 @@ impl TransformerModel {
             // headerless little-endian f32: `<dir>/atlas_L{i}.bin`. Overwrites
             // on every call so the final chunk's last token wins (methodology
             // §3 gotcha #5). Compared 1:1 against the HF CPU/GPU oracle.
-            if is_last_chunk {
-                if let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP") {
-                    if !dir.is_empty() {
-                        self.gpu.synchronize(stream)?;
-                        let last_start = (proc_count - 1) * h;
-                        let (vals, _) = if self.config.use_fp32_residual() {
-                            self.readback_f32(hidden.offset(last_start * fp32), h)?
-                        } else {
-                            self.readback_bf16(hidden.offset(last_start * fp32), h)?
-                        };
-                        let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-                        std::fs::create_dir_all(&dir).ok();
-                        let path = std::path::Path::new(&dir).join(format!("atlas_L{i}.bin"));
-                        std::fs::write(&path, &bytes).ok();
-                        if i == self.layers.len() - 1 {
-                            tracing::info!(
-                                "ATLAS_NEMO_DUMP: wrote {} per-layer hidden \
-                                 vectors ({h} f32 each) to {dir}",
-                                self.layers.len()
-                            );
-                        }
-                    }
+            if is_last_chunk
+                && let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP")
+                && !dir.is_empty()
+            {
+                self.gpu.synchronize(stream)?;
+                let last_start = (proc_count - 1) * h;
+                let (vals, _) = if self.config.use_fp32_residual() {
+                    self.readback_f32(hidden.offset(last_start * fp32), h)?
+                } else {
+                    self.readback_bf16(hidden.offset(last_start * fp32), h)?
+                };
+                let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                std::fs::create_dir_all(&dir).ok();
+                let path = std::path::Path::new(&dir).join(format!("atlas_L{i}.bin"));
+                std::fs::write(&path, &bytes).ok();
+                if i == self.layers.len() - 1 {
+                    tracing::info!(
+                        "ATLAS_NEMO_DUMP: wrote {} per-layer hidden \
+                         vectors ({h} f32 each) to {dir}",
+                        self.layers.len()
+                    );
                 }
             }
             // Last-chunk diagnostic: log LAST token's hidden norm at every layer.

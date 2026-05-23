@@ -206,7 +206,7 @@ pub struct ModelBehavior {
     /// head; the F2 confidence heuristic stays as the fallback. A trained
     /// artifact can be dropped in later via MODEL.toml
     /// `[behavior].rom_head` without further code changes — the runtime
-    /// loads it through the [`crate::RomHead`] trait seam. The detector
+    /// loads it through the `RomHead` trait seam. The detector
     /// itself is intentionally NOT implemented (no per-model trained head
     /// is available); only the optional hook is wired.
     pub rom_head: &'static str,
