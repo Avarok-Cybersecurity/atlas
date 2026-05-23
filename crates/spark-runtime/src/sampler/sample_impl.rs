@@ -117,7 +117,7 @@ pub fn sample_with_params_seeded(
 
     // ── Greedy bypass (post-penalty argmax) ──
     // At `temperature == 0.0` we return argmax of the penalty/bias-modified
-    // logits. We bypass top_n_sigma, EDT, temperature scaling, top_k, top_p,
+    // logits. We bypass top_n_sigma, temperature scaling, top_k, top_p,
     // min_p — all of those either filter (set values to -inf) or apply
     // monotonic transforms, neither of which can re-order the maximum. Only
     // penalties + logit_bias actually re-order logits, so as long as those
@@ -149,62 +149,12 @@ pub fn sample_with_params_seeded(
         }
     }
 
-    // ── 1b. EDT — entropy-conditioned dynamic temperature ──
-    // arXiv:2403.14541 family. Scale the effective temperature by
-    // the normalised entropy of the (post-mask, pre-temperature)
-    // distribution: high entropy (uncertain) → close to base T,
-    // low entropy (confident) → reduced T toward `edt_floor`. Helps
-    // reasoning tasks where the model "knows" tokens (low H) but
-    // benefits from sampling diversity at branch points (high H).
-    let effective_temperature = if params.edt_strength > 0.0 {
-        let mut max_l = f32::NEG_INFINITY;
-        let mut count = 0usize;
-        for &v in raw_logits.iter() {
-            if v.is_finite() {
-                count += 1;
-                if v > max_l {
-                    max_l = v;
-                }
-            }
-        }
-        if count >= 2 && max_l.is_finite() {
-            // Compute softmax-norm entropy with numerical stability.
-            let mut sum_exp = 0.0f32;
-            for &v in raw_logits.iter() {
-                if v.is_finite() {
-                    sum_exp += (v - max_l).exp();
-                }
-            }
-            if sum_exp > 0.0 {
-                let mut h = 0.0f32;
-                for &v in raw_logits.iter() {
-                    if v.is_finite() {
-                        let p = (v - max_l).exp() / sum_exp;
-                        if p > 1e-10 {
-                            h -= p * p.ln();
-                        }
-                    }
-                }
-                let h_max = (count as f32).ln().max(1e-6);
-                let h_norm = (h / h_max).clamp(0.0, 1.0);
-                let scale = h_norm.powf(params.edt_strength);
-                (temperature * scale).max(params.edt_floor)
-            } else {
-                temperature
-            }
-        } else {
-            temperature
-        }
-    } else {
-        temperature
-    };
-
     // ── 2. Temperature scaling ──
     let mut logits: Vec<(u32, f32)> = raw_logits
         .iter()
         .enumerate()
         .filter(|(_, v)| v.is_finite()) // Skip -inf tokens from top-n-sigma
-        .map(|(i, v)| (i as u32, v / effective_temperature))
+        .map(|(i, v)| (i as u32, v / temperature))
         .collect();
 
     if logits.is_empty() {

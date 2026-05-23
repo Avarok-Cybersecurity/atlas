@@ -189,22 +189,43 @@ impl TransformerModel {
                 let layer_type = self.config.layer_type(layer_idx);
 
                 if layer_type == LayerType::FullAttention {
-                    let mut dummy_states: Vec<Box<dyn LayerState>> = (0..k)
-                        .map(|_| layer.alloc_state(self.gpu.as_ref()))
-                        .collect::<Result<_>>()?;
-                    let mut refs: Vec<&mut (dyn LayerState + 'static)> =
-                        dummy_states.iter_mut().map(|s| s.as_mut()).collect();
-                    layer.decode_multi_seq(
-                        hidden,
-                        residual,
-                        k,
-                        &mut refs,
-                        &mut kv_cache,
-                        &seq_lens_vec,
-                        &block_tables_vec,
-                        &ctx,
-                        stream,
-                    )?;
+                    if hss_engaged {
+                        // HSS path: decode_multi_seq's paged-decode kernel
+                        // reads K/V from HBM only, missing the long-context
+                        // history on disk. Fall back to decode_batched
+                        // (sequential single-token decodes via the HSS
+                        // orchestrator). See verify_b.rs for full rationale.
+                        layer.decode_batched(
+                            hidden,
+                            residual,
+                            k,
+                            seq.layer_states[layer_idx].as_mut(),
+                            &mut kv_cache,
+                            seq.seq_len,
+                            &mut seq.block_table,
+                            &mut seq.disk_block_ids,
+                            &mut seq.disk_last_offloaded_per_layer,
+                            &ctx,
+                            stream,
+                        )?;
+                    } else {
+                        let mut dummy_states: Vec<Box<dyn LayerState>> = (0..k)
+                            .map(|_| layer.alloc_state(self.gpu.as_ref()))
+                            .collect::<Result<_>>()?;
+                        let mut refs: Vec<&mut (dyn LayerState + 'static)> =
+                            dummy_states.iter_mut().map(|s| s.as_mut()).collect();
+                        layer.decode_multi_seq(
+                            hidden,
+                            residual,
+                            k,
+                            &mut refs,
+                            &mut kv_cache,
+                            &seq_lens_vec,
+                            &block_tables_vec,
+                            &ctx,
+                            stream,
+                        )?;
+                    }
                 } else {
                     layer.decode_batched(
                         hidden,

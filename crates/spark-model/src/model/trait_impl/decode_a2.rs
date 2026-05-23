@@ -39,11 +39,67 @@ impl TransformerModel {
         }
 
         // EP mode: use per-sequence decode() to match the worker's batch size.
+        // EP workers run one sequence at a time, so the single-row logits
+        // buffer is consumed before the next call — no row scatter needed.
         if self.comm.is_some() {
             for i in 0..n {
                 self.decode(tokens[i], seqs[i], stream)?;
             }
             return Ok(self.decode_logits_ptr());
+        }
+
+        // MLA models: as of issue #84 the batched `decode_multi_seq` path
+        // HAS a genuine MLA branch (`ms_mla_decode` in
+        // `qwen3_attention/trait_impl/multi_seq/mla.rs`) — the batched
+        // analogue of `attention_forward_mla`. It reads `self.mla`'s
+        // projections (not the NULL `attn.q_proj` stub the Mistral loader
+        // installs) and isolates each sequence's compressed latent-KV via
+        // per-sequence metadata. Concurrent MLA decode therefore takes the
+        // normal batched path below — no host round-trip, no cross-seq
+        // contamination.
+        //
+        // The legacy per-sequence `decode()` fallback (host-staged logits +
+        // CUDA-graph suppression) is retained ONLY behind the
+        // `ATLAS_MLA_PERSEQ_FALLBACK` escape hatch, as a guarded safety net
+        // should a regression surface in the batched MLA path. It does NOT
+        // fully isolate concurrent sequences (each `decode()`'s
+        // `Buffers::zero_all` wipes the shared `logits` buffer), so it is
+        // not the default.
+        let mla_perseq_fallback = self.is_mla_dispatch()
+            && std::env::var("ATLAS_MLA_PERSEQ_FALLBACK").is_ok_and(|v| v == "1" || v == "true");
+        if mla_perseq_fallback {
+            use std::sync::atomic::Ordering;
+            let logits = self.decode_logits_ptr();
+            let v = self.config.vocab_size;
+            let elem = if self.decode_logits_fp32() { 4 } else { 2 };
+            let row_bytes = v * elem;
+            // Suppress CUDA graphs for the loop: `decode()`'s graph cache is
+            // slot-keyed; capturing a graph for one slot inside the same
+            // stream-capture window as another slot's replay corrupts both.
+            let prev_suppress = self.suppress_graphs.swap(true, Ordering::Relaxed);
+            let result = (|| -> Result<()> {
+                let mut staged = vec![0u8; n * row_bytes];
+                for i in 0..n {
+                    self.decode(tokens[i], seqs[i], stream)?;
+                    // `decode()` wrote this sequence's logits to row 0.
+                    // Pull them to the host before the next `decode()`'s
+                    // `zero_all` wipes the buffer. `copy_d2h_on_stream`
+                    // syncs `stream` first, so the eager lm_head GEMV has
+                    // fully landed before the copy reads it.
+                    self.gpu.copy_d2h_on_stream(
+                        logits,
+                        &mut staged[i * row_bytes..(i + 1) * row_bytes],
+                        stream,
+                    )?;
+                }
+                // Upload the assembled [n, vocab] batch back to the device.
+                self.gpu.copy_h2d_async(&staged, logits, stream)?;
+                self.gpu.synchronize(stream)?;
+                Ok(())
+            })();
+            self.suppress_graphs.store(prev_suppress, Ordering::Relaxed);
+            result?;
+            return Ok(logits);
         }
 
         let stream = self.gpu.default_stream();

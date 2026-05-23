@@ -163,7 +163,60 @@ pub struct ModelBehavior {
     /// JSON arrays of similar objects, multiplication tables). Enable only
     /// when the model has been observed to need it.
     pub enable_loop_watchdog: bool,
+    /// Thinking-loop watchdog: substring-occurrence count that trips a
+    /// forced `</think>`. Default 3 (historical `THINK_LOOP_MIN_REPEATS`).
+    pub think_loop_min_repeats: u32,
+    /// Thinking-loop watchdog: trailing-token scan window. Default 160.
+    pub think_loop_scan_window: u32,
+    /// F2 confidence-run early-stop enabled. Default `true`. Set false
+    /// for models whose deterministic code drafting trips the heuristic.
+    pub confidence_early_stop: bool,
+    /// F2 confidence run length before arming forced `</think>`.
+    /// Default 30.
+    pub confidence_run_length: u32,
+    /// Fuzzy-repetition detector Hamming tolerance divisor: a
+    /// `pattern_len`-token window tolerates `pattern_len / div`
+    /// mismatches. Default 12 (~8%).
+    pub fuzzy_repeat_tolerance_div: u32,
+    /// Cap on free-text tokens between successive `<tool_call>` opens in
+    /// `tool_choice=auto`. Default 384. Agentic coding may want larger.
+    pub max_inter_tool_prose: u32,
+    /// TSCG (Tool-Schema Compilation) enabled — compile tool JSON
+    /// schemas to compact function signatures before prompting.
+    /// Default `false`; the TAS operator is tokenizer-specific so
+    /// enable + verify per model. arXiv:2605.04107.
+    pub tscg: bool,
+    /// Disable XGrammar tool-call constrained decoding for this model.
+    /// Default `false`. Escape hatch for the "structure snowballing"
+    /// alignment tax (arXiv:2604.06066) — a few models tool-call more
+    /// reliably unconstrained. When `true`, tool calls are parsed but
+    /// not grammar-enforced.
+    pub disable_tool_grammar: bool,
+    /// Phase-C: when a decode-time watchdog (content-loop, fuzzy-repeat,
+    /// inter-tool prose) detects degeneration, roll the sequence back to
+    /// the last well-formed boundary and let generation re-steer, instead
+    /// of hard-stopping the response. Default `true` (recovers responses,
+    /// especially mid-tool-call — arXiv:2603.27905 ATLAS-RTC). Set `false`
+    /// to keep the legacy hard-stop behavior. Capped at
+    /// [`crate::ROLLBACK_RESTEER_CAP`] rollbacks per sequence, after which
+    /// the hard-stop fires regardless.
+    pub rollback_resteer: bool,
+    /// Phase-C ROM (arXiv:2603.22016) scaffold. Path to a trained
+    /// repetition-onset detection head artifact. Empty string = no ROM
+    /// head; the F2 confidence heuristic stays as the fallback. A trained
+    /// artifact can be dropped in later via MODEL.toml
+    /// `[behavior].rom_head` without further code changes — the runtime
+    /// loads it through the `RomHead` trait seam. The detector
+    /// itself is intentionally NOT implemented (no per-model trained head
+    /// is available); only the optional hook is wired.
+    pub rom_head: &'static str,
 }
+
+/// Phase-C: maximum number of watchdog-triggered rollbacks a single
+/// sequence may perform before the watchdog reverts to a hard stop.
+/// Bounds the worst case where re-steering re-enters the same attractor
+/// — without this a degenerate sequence could rollback indefinitely.
+pub const ROLLBACK_RESTEER_CAP: u32 = 2;
 
 impl Default for ModelBehavior {
     fn default() -> Self {
@@ -177,6 +230,16 @@ impl Default for ModelBehavior {
             disable_tool_steering: false,
             tool_call_parser: "",
             enable_loop_watchdog: false,
+            think_loop_min_repeats: 3,
+            think_loop_scan_window: 160,
+            confidence_early_stop: true,
+            confidence_run_length: 30,
+            fuzzy_repeat_tolerance_div: 12,
+            max_inter_tool_prose: 384,
+            tscg: false,
+            disable_tool_grammar: false,
+            rollback_resteer: true,
+            rom_head: "",
         }
     }
 }

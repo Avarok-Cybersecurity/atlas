@@ -26,11 +26,26 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
-/// Pre-allocated GPU memory pool for SSM state snapshots (Marconi caching).
+/// Pre-allocated GPU memory pool for SSM state snapshots.
 ///
 /// Each snapshot slot stores a copy of h_state + conv_state for all SSM layers
-/// at a specific point in a token sequence. When a prefix cache hit occurs, the
-/// snapshot is restored to avoid re-running SSM computation for cached tokens.
+/// at a specific point in a token sequence.
+///
+/// The pool serves **two** independent consumers from one set of GPU
+/// allocations (SSOT — one snapshot mechanism, one D2D copy primitive):
+///
+/// 1. **Marconi prefix caching** — the LRU-managed `[0, num_slots)` slot
+///    region, allocated/freed via [`save`](Self::save) / [`free`](Self::free)
+///    against the `free_slots` list. When a prefix cache hit occurs the
+///    snapshot is restored to skip SSM recompute for cached tokens.
+///
+/// 2. **Phase-C decode-time boundary rollback** — a *separate*,
+///    deterministically-addressed `[0, decode_ring_slots)` region (per
+///    active sequence). No free list: ring slot `r` for SSM-pool
+///    sequence slot `s` lives at flat index `s * ring_slots + r`, so a
+///    sequence's snapshots never collide with another's and never
+///    contend with Marconi's LRU slots. Sized for `max_batch_size`
+///    sequences so the watchdog rollback always has capacity.
 pub(crate) struct SsmSnapshotPool {
     pub(super) h_snapshots: Vec<DevicePtr>,
     pub(super) conv_snapshots: Vec<DevicePtr>,
@@ -42,17 +57,42 @@ pub(crate) struct SsmSnapshotPool {
     /// Maps snapshot_slot_id → session_hash for session-scoped isolation.
     /// When restoring, skip snapshots that belong to a different session.
     pub(super) session_tags: Mutex<std::collections::HashMap<usize, u64>>,
+    /// Decode-rollback region: `h_snapshots` for the Phase-C ring.
+    /// Layout per layer: `[max_batch_size * decode_ring_slots * h_bytes]`.
+    /// Empty when `decode_ring_slots == 0`.
+    pub(super) decode_h_snapshots: Vec<DevicePtr>,
+    /// Decode-rollback region: `conv_snapshots` for the Phase-C ring.
+    pub(super) decode_conv_snapshots: Vec<DevicePtr>,
+    /// Number of decode-rollback ring slots reserved per active sequence.
+    /// 0 disables the decode-rollback region entirely.
+    pub(super) decode_ring_slots: usize,
+    /// Number of active-sequence slots the decode region is sized for
+    /// (equals `max_batch_size`). A sequence's SSM-pool `slot_idx` must
+    /// be `< decode_max_seqs` to use the decode region.
+    pub(super) decode_max_seqs: usize,
 }
 
 impl SsmSnapshotPool {
+    /// Build the snapshot pool.
+    ///
+    /// `num_slots` sizes the Marconi LRU region; `decode_ring_slots` ×
+    /// `decode_max_seqs` sizes the Phase-C decode-rollback region. A
+    /// pool with `num_slots == 0` but `decode_ring_slots > 0` is valid
+    /// (decode rollback enabled, Marconi caching disabled) and vice
+    /// versa — the two regions are independent.
     pub(super) fn new(
         num_slots: usize,
         h_bytes: usize,
         conv_bytes: usize,
         num_ssm_layers: usize,
+        decode_ring_slots: usize,
+        decode_max_seqs: usize,
         gpu: &dyn GpuBackend,
     ) -> Result<Self> {
-        if num_slots == 0 || num_ssm_layers == 0 {
+        let decode_enabled = num_ssm_layers > 0 && decode_ring_slots > 0 && decode_max_seqs > 0;
+        let marconi_enabled = num_ssm_layers > 0 && num_slots > 0;
+
+        if !marconi_enabled && !decode_enabled {
             return Ok(Self {
                 h_snapshots: Vec::new(),
                 conv_snapshots: Vec::new(),
@@ -62,36 +102,153 @@ impl SsmSnapshotPool {
                 conv_bytes,
                 num_ssm_layers,
                 session_tags: Mutex::new(std::collections::HashMap::new()),
+                decode_h_snapshots: Vec::new(),
+                decode_conv_snapshots: Vec::new(),
+                decode_ring_slots: 0,
+                decode_max_seqs: 0,
             });
         }
 
-        let mut h_snapshots = Vec::with_capacity(num_ssm_layers);
-        let mut conv_snapshots = Vec::with_capacity(num_ssm_layers);
-        for _ in 0..num_ssm_layers {
-            h_snapshots.push(gpu.alloc(num_slots * h_bytes)?);
-            conv_snapshots.push(gpu.alloc(num_slots * conv_bytes)?);
+        let mut h_snapshots = Vec::new();
+        let mut conv_snapshots = Vec::new();
+        if marconi_enabled {
+            for _ in 0..num_ssm_layers {
+                h_snapshots.push(gpu.alloc(num_slots * h_bytes)?);
+                conv_snapshots.push(gpu.alloc(num_slots * conv_bytes)?);
+            }
         }
 
-        let free_slots: Vec<usize> = (0..num_slots).rev().collect();
-        let total_mb = num_ssm_layers * num_slots * (h_bytes + conv_bytes) / (1024 * 1024);
+        let mut decode_h_snapshots = Vec::new();
+        let mut decode_conv_snapshots = Vec::new();
+        let decode_region = if decode_enabled {
+            decode_max_seqs * decode_ring_slots
+        } else {
+            0
+        };
+        if decode_enabled {
+            for _ in 0..num_ssm_layers {
+                decode_h_snapshots.push(gpu.alloc(decode_region * h_bytes)?);
+                decode_conv_snapshots.push(gpu.alloc(decode_region * conv_bytes)?);
+            }
+        }
+
+        let free_slots: Vec<usize> = if marconi_enabled {
+            (0..num_slots).rev().collect()
+        } else {
+            Vec::new()
+        };
+        let marconi_mb = num_ssm_layers * num_slots * (h_bytes + conv_bytes) / (1024 * 1024);
+        let decode_mb = num_ssm_layers * decode_region * (h_bytes + conv_bytes) / (1024 * 1024);
         tracing::info!(
-            "SSM snapshot pool (Marconi): {num_slots} slots × {num_ssm_layers} layers = {total_mb} MB",
+            "SSM snapshot pool: Marconi {num_slots} slots ({marconi_mb} MB), \
+             decode-rollback {decode_ring_slots} slots × {decode_max_seqs} seqs \
+             ({decode_mb} MB), {num_ssm_layers} layers",
         );
 
         Ok(Self {
             h_snapshots,
             conv_snapshots,
             free_slots: Mutex::new(free_slots),
-            num_slots,
+            num_slots: if marconi_enabled { num_slots } else { 0 },
             h_bytes,
             conv_bytes,
             num_ssm_layers,
             session_tags: Mutex::new(std::collections::HashMap::new()),
+            decode_h_snapshots,
+            decode_conv_snapshots,
+            decode_ring_slots: if decode_enabled { decode_ring_slots } else { 0 },
+            decode_max_seqs: if decode_enabled { decode_max_seqs } else { 0 },
         })
     }
 
+    /// Marconi prefix-cache region availability.
     pub(super) fn is_enabled(&self) -> bool {
         self.num_slots > 0
+    }
+
+    /// Phase-C decode-rollback region availability.
+    pub(super) fn decode_rollback_enabled(&self) -> bool {
+        self.decode_ring_slots > 0 && !self.decode_h_snapshots.is_empty()
+    }
+
+    /// Save the SSM state of pool slot `ssm_slot` into the decode-rollback
+    /// ring slot `(ssm_slot, ring_slot)`. Deterministic addressing — no
+    /// free list, no eviction. Errors if the decode region is disabled
+    /// or the indices are out of the reserved range (fail fast — a
+    /// silent skip would leave the watchdog rollback unable to undo SSM
+    /// state, corrupting every subsequent decode).
+    pub(super) fn save_decode(
+        &self,
+        ssm_slot: usize,
+        ring_slot: usize,
+        main_pool: &SsmStatePool,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        let flat = self.decode_flat_index(ssm_slot, ring_slot)?;
+        for i in 0..self.num_ssm_layers {
+            gpu.copy_d2d_async(
+                main_pool.h_state(i, ssm_slot),
+                self.decode_h_snapshots[i].offset(flat * self.h_bytes),
+                self.h_bytes,
+                stream,
+            )?;
+            gpu.copy_d2d_async(
+                main_pool.conv_state(i, ssm_slot),
+                self.decode_conv_snapshots[i].offset(flat * self.conv_bytes),
+                self.conv_bytes,
+                stream,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Restore the SSM state of pool slot `ssm_slot` from the
+    /// decode-rollback ring slot `(ssm_slot, ring_slot)`.
+    pub(super) fn restore_decode(
+        &self,
+        ssm_slot: usize,
+        ring_slot: usize,
+        main_pool: &SsmStatePool,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        let flat = self.decode_flat_index(ssm_slot, ring_slot)?;
+        for i in 0..self.num_ssm_layers {
+            gpu.copy_d2d_async(
+                self.decode_h_snapshots[i].offset(flat * self.h_bytes),
+                main_pool.h_state(i, ssm_slot),
+                self.h_bytes,
+                stream,
+            )?;
+            gpu.copy_d2d_async(
+                self.decode_conv_snapshots[i].offset(flat * self.conv_bytes),
+                main_pool.conv_state(i, ssm_slot),
+                self.conv_bytes,
+                stream,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Flat index into the decode-rollback region, with bounds checks.
+    fn decode_flat_index(&self, ssm_slot: usize, ring_slot: usize) -> Result<usize> {
+        if !self.decode_rollback_enabled() {
+            bail!("SSM decode-rollback region not allocated");
+        }
+        if ssm_slot >= self.decode_max_seqs {
+            bail!(
+                "SSM decode-rollback: ssm_slot {ssm_slot} >= reserved {} seqs",
+                self.decode_max_seqs
+            );
+        }
+        if ring_slot >= self.decode_ring_slots {
+            bail!(
+                "SSM decode-rollback: ring_slot {ring_slot} >= reserved {} slots",
+                self.decode_ring_slots
+            );
+        }
+        Ok(ssm_slot * self.decode_ring_slots + ring_slot)
     }
 
     /// Save SSM state from active pool slot into a snapshot slot.

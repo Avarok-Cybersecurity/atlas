@@ -1,0 +1,1 @@
+Please create a beautiful 3D chess game using three js. Allow camera panning and switching sides so two people can play against each other. The default view should be from above and center to the board.

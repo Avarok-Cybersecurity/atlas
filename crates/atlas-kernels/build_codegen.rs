@@ -168,6 +168,16 @@ pub(super) fn generate_target_ptx_rs(
              \x20               disable_tool_steering: {},\n\
              \x20               tool_call_parser: \"{}\",\n\
              \x20               enable_loop_watchdog: {},\n\
+             \x20               think_loop_min_repeats: {},\n\
+             \x20               think_loop_scan_window: {},\n\
+             \x20               confidence_early_stop: {},\n\
+             \x20               confidence_run_length: {},\n\
+             \x20               fuzzy_repeat_tolerance_div: {},\n\
+             \x20               max_inter_tool_prose: {},\n\
+             \x20               tscg: {},\n\
+             \x20               disable_tool_grammar: {},\n\
+             \x20               rollback_resteer: {},\n\
+             \x20               rom_head: \"{}\",\n\
              \x20           }},\n\
              \x20           model_type_matches: vec![{}],\n\
              \x20           dflash: {},\n\
@@ -186,6 +196,16 @@ pub(super) fn generate_target_ptx_rs(
             target.behavior_disable_tool_steering,
             target.behavior_tool_call_parser,
             target.behavior_enable_loop_watchdog,
+            target.behavior_think_loop_min_repeats,
+            target.behavior_think_loop_scan_window,
+            target.behavior_confidence_early_stop,
+            target.behavior_confidence_run_length,
+            target.behavior_fuzzy_repeat_tolerance_div,
+            target.behavior_max_inter_tool_prose,
+            target.behavior_tscg,
+            target.behavior_disable_tool_grammar,
+            target.behavior_rollback_resteer,
+            target.behavior_rom_head,
             target.model_type_matches.iter().map(|m| {
                 let hs = match m.hidden_size {
                     Some(v) => format!("Some({v})"),

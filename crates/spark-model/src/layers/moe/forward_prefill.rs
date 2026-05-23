@@ -123,6 +123,7 @@ impl MoeLayer {
 
         // Gemma-4 router pre-norm (no-op for other models).
         let router_in = self.router_input(input, n, h, ctx, stream)?;
+        super::dump::dump_gate_input(ctx.gpu, stream, router_in, n, h)?;
         // 1. Gate GEMM: [N, H] × [H, num_experts] → [N, num_experts]
         let gate_logits = ctx.buffers.gate_logits();
         if let Some(fp8) = self.gate_fp8 {
@@ -162,6 +163,7 @@ impl MoeLayer {
                 stream,
             )?;
         }
+        super::dump::dump_gate_logits(ctx.gpu, stream, gate_logits, n, num_experts)?;
         prof_step!("gate_gemm");
 
         // 2. Batched topK dispatch. DeepSeek-V3 / MiniMax-M2 use sigmoid
@@ -200,6 +202,7 @@ impl MoeLayer {
                 stream,
             )?;
         }
+        super::dump::dump_expert_ids(ctx.gpu, stream, indices_dev, weights_dev, n, top_k)?;
         prof_step!("topk");
 
         // 3. Sort tokens by expert → L2-optimized ordering.
@@ -249,168 +252,25 @@ impl MoeLayer {
         };
         prof_step!("pre_expert_norm");
 
-        // 4. Upper-bound max_m_tiles — avoids D2H sync + pipeline stall.
-        // Safety factor 2x: covers 99.9999% of real routing distributions (2x avg >> 3σ of
-        // Poisson(avg)). Factor 4x was over-cautious: for avg=30 it gave max_m_tiles=2
-        // (launching 4096 blocks, 21 waves) when ceil(30/64)=1 (2048 blocks, 10.7 waves).
-        let avg_per_expert = (num_tokens * top_k as usize).div_ceil(ne);
-        let max_m_tiles = (avg_per_expert * 2).div_ceil(64).max(1) as u32;
-        prof_step!("grid_setup");
-
-        // 5. Grouped gate+up GEMM — cp.async pipelined FP8-MMA K64 (transposed).
-        let expert_gate_out = ctx.buffers.expert_gate_out();
-        let expert_up_out = ctx.buffers.expert_up_out();
-        // EP: zero expert buffers so remote-expert positions (NULL ptr → kernel skip)
-        // don't carry stale data from previous requests into the weighted sum.
-        if ctx.comm.is_some() {
-            let gate_bytes = total_expanded as usize * inter as usize * 2;
-            let up_bytes = gate_bytes;
-            let down_bytes = total_expanded as usize * h as usize * 2;
-            ctx.gpu
-                .memset_async(expert_gate_out, 0, gate_bytes, stream)?;
-            ctx.gpu.memset_async(expert_up_out, 0, up_bytes, stream)?;
-            ctx.gpu
-                .memset_async(ctx.buffers.expert_down_out(), 0, down_bytes, stream)?;
-        }
-        if max_m_tiles > 0 {
-            if let (Some(gp), Some(up)) = (&self.gate_ptrs_t, &self.up_ptrs_t) {
-                // Block D #3 dispatch: M=128 path needs the env var on AND
-                // the kernel actually loaded (try_kernel returns 0 on
-                // models that don't ship it). max_m_tiles_m128 = ceil(...
-                // /128) instead of /64; reuse the same upper bound by
-                // halving (each m128 tile covers 2 m64 tiles).
-                let use_m128 = self.nvfp4_gate_up_m128 && self.moe_fused_gate_up_t_k64_m128.0 != 0;
-                if use_m128 {
-                    let max_m_tiles_m128 = max_m_tiles.div_ceil(2).max(1);
-                    ops::moe_w4a16_fused_gate_up_k64_m128(
-                        ctx.gpu,
-                        self.moe_fused_gate_up_t_k64_m128,
-                        expert_input,
-                        gp.packed_ptrs,
-                        gp.scale_ptrs,
-                        gp.scale2_vals,
-                        up.packed_ptrs,
-                        up.scale_ptrs,
-                        up.scale2_vals,
-                        expert_gate_out,
-                        expert_up_out,
-                        expert_offsets,
-                        sorted_token_ids,
-                        num_experts,
-                        inter,
-                        h,
-                        max_m_tiles_m128,
-                        stream,
-                    )?;
-                } else {
-                    ops::moe_w4a16_fused_gate_up_k64_n128(
-                        ctx.gpu,
-                        self.moe_fused_gate_up_t_k64,
-                        expert_input,
-                        gp.packed_ptrs,
-                        gp.scale_ptrs,
-                        gp.scale2_vals,
-                        up.packed_ptrs,
-                        up.scale_ptrs,
-                        up.scale2_vals,
-                        expert_gate_out,
-                        expert_up_out,
-                        expert_offsets,
-                        sorted_token_ids,
-                        num_experts,
-                        inter,
-                        h,
-                        max_m_tiles,
-                        stream,
-                    )?;
-                }
-            } else {
-                let (gp, up) = (&self.gate_ptrs, &self.up_ptrs);
-                ops::moe_w4a16_grouped_gemm_ptrtable(
-                    ctx.gpu,
-                    self.moe_grouped_gemm,
-                    expert_input,
-                    gp.packed_ptrs,
-                    gp.scale_ptrs,
-                    gp.scale2_vals,
-                    expert_gate_out,
-                    expert_offsets,
-                    sorted_token_ids,
-                    num_experts,
-                    inter,
-                    h,
-                    max_m_tiles,
-                    stream,
-                )?;
-                ops::moe_w4a16_grouped_gemm_ptrtable(
-                    ctx.gpu,
-                    self.moe_grouped_gemm,
-                    expert_input,
-                    up.packed_ptrs,
-                    up.scale_ptrs,
-                    up.scale2_vals,
-                    expert_up_out,
-                    expert_offsets,
-                    sorted_token_ids,
-                    num_experts,
-                    inter,
-                    h,
-                    max_m_tiles,
-                    stream,
-                )?;
-            }
-        }
-        prof_step!("grouped_gate_up");
-
-        // 6. Activation+mul for routed experts + grouped down GEMM (K64 pipelined).
+        // 4-6. Routed grouped-GEMM phase (grid sizing → grouped gate+up
+        // GEMM → SiLU → grouped down GEMM). Hoisted to forward_prefill_routed.rs
+        // to keep this file under the 500 LoC cap; behavior identical.
+        self.run_routed_grouped_gemm(
+            expert_input,
+            expert_offsets,
+            sorted_token_ids,
+            n,
+            h,
+            inter,
+            num_experts,
+            top_k,
+            num_tokens,
+            ne,
+            &mut t0,
+            ctx,
+            stream,
+        )?;
         let expert_down_out = ctx.buffers.expert_down_out();
-        if max_m_tiles > 0 {
-            ops::silu_mul(
-                ctx.gpu,
-                self.moe_act_mul,
-                expert_gate_out,
-                expert_up_out,
-                expert_gate_out,
-                total_expanded * inter,
-                stream,
-            )?;
-            if let Some(dp) = &self.down_ptrs_t {
-                ops::moe_w4a16_grouped_gemm_ptrtable_n128(
-                    ctx.gpu,
-                    self.moe_grouped_gemm_t_k64,
-                    expert_gate_out,
-                    dp.packed_ptrs,
-                    dp.scale_ptrs,
-                    dp.scale2_vals,
-                    expert_down_out,
-                    expert_offsets,
-                    DevicePtr(0),
-                    num_experts,
-                    h,
-                    inter,
-                    max_m_tiles,
-                    stream,
-                )?;
-            } else {
-                ops::moe_w4a16_grouped_gemm_ptrtable(
-                    ctx.gpu,
-                    self.moe_grouped_gemm,
-                    expert_gate_out,
-                    self.down_ptrs.packed_ptrs,
-                    self.down_ptrs.scale_ptrs,
-                    self.down_ptrs.scale2_vals,
-                    expert_down_out,
-                    expert_offsets,
-                    DevicePtr(0),
-                    num_experts,
-                    h,
-                    inter,
-                    max_m_tiles,
-                    stream,
-                )?;
-            }
-        }
-        prof_step!("grouped_silu_down");
 
         // 7. Unpermute + weighted reduce: scatter sorted outputs to token order
         let output = ctx.buffers.moe_output();
@@ -436,6 +296,16 @@ impl MoeLayer {
             if use_overlap {
                 ctx.gpu.stream_wait_event(stream, self.event_b)?;
             }
+            super::dump::dump_routed_only(ctx.gpu, stream, output, n, h)?;
+            super::dump::dump_shared_out(ctx.gpu, stream, shared_down_out, n, h)?;
+            super::dump::dump_shared_gate(
+                ctx.gpu,
+                stream,
+                input,
+                self.weights.shared_expert_gate.weight,
+                n,
+                h,
+            )?;
             ops::moe_batched_blend(
                 ctx.gpu,
                 self.moe_batched_blend,
@@ -448,6 +318,7 @@ impl MoeLayer {
                 stream,
             )?;
         }
+        super::dump::dump_moe_out(ctx.gpu, stream, output, n, h)?;
         prof_step!("unpermute_blend");
 
         // EP all-reduce

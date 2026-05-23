@@ -34,7 +34,20 @@ impl Qwen3AttentionLayer {
             )?;
             return Ok(());
         }
-        if n == 3 {
+        // MLA models (Mistral-Small-4) route the FFN through the
+        // sequential per-token branch below, NOT the fused `forward_k2`
+        // / `forward_k3` batched-MoE kernels. The batched-MoE K=2/K=3
+        // path has a pre-existing crash for Mistral-Small-4's MoE config
+        // (illegal address in `moe_expert_silu_down_shared_batch2`) — it
+        // was never exercised because Mistral always ran at batch=1. The
+        // sequential branch calls `FfnComponent::forward` (the proven
+        // single-token MoE path used by `decode()`), processing each
+        // sequence's normed input independently, so the batched MLA
+        // attention path (issue #84) gets correct, isolated FFN output
+        // without depending on the buggy batched-MoE kernels. Fixing the
+        // batched-MoE kernel is tracked separately (out of #84 scope).
+        let force_seq_ffn = self.mla.is_some();
+        if n == 3 && !force_seq_ffn {
             let normed2 = fwd.buffers.norm_output();
             ops::residual_add_rms_norm(
                 fwd.gpu,
@@ -59,7 +72,7 @@ impl Qwen3AttentionLayer {
                 (3 * h) as u32,
                 stream,
             )?;
-        } else if n == 2 {
+        } else if n == 2 && !force_seq_ffn {
             let normed2 = fwd.buffers.norm_output();
             ops::residual_add_rms_norm(
                 fwd.gpu,

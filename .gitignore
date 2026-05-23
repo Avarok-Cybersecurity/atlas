@@ -4,6 +4,9 @@ target/
 *.o
 *.ptx
 *.bak
+
+# tool-eval-bench run reports — local benchmark output, not source
+/runs/
 # Vendored crate's `Cargo.toml.orig` from upstream merge — regenerated
 # on every `cargo vendor`, shouldn't be tracked.
 **/Cargo.toml.orig
@@ -79,3 +82,28 @@ tests/all_models_results_pass*/
 # OS
 .DS_Store
 Thumbs.db
+target-verify/
+bench/longcode/results/
+
+# Diagnostic / scratch from debugging sessions (regenerated per investigation)
+/.dgx2-work/
+/tasks/
+/target-rebuild/
+/spark-fastbin-*
+bench/longcode/hang-forensics/*.log
+bench/longcode/hang-forensics/*.jsonl
+bench/longcode/hang-forensics/*.txt
+bench/longcode/hang-forensics/*.py
+bench/longcode/hang-forensics/*.sh
+bench/longcode/hang-forensics/*.jinja
+bench/longcode/hang-forensics/*.orig
+bench/longcode/hang-forensics/ROOT-CAUSE-NOTES.md
+
+# Throwaway/diagnostic Dockerfiles (the canonical ones stay under git)
+docker/gb10/Dockerfile.fix
+docker/gb10/Dockerfile.67fix
+docker/gb10/Dockerfile.combo
+docker/gb10/Dockerfile.ffnbf16
+docker/gb10/Dockerfile.fp32res
+docker/gb10/Dockerfile.hangdiag
+docker/gb10/Dockerfile.zeropen

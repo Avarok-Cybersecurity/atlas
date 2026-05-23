@@ -238,30 +238,64 @@ class TestRunner:
         )
 
     def test_default_max_tokens(self) -> None:
-        """Omitting max_tokens must NOT silently cap output at 256 tokens.
+        """The server must honor the max_tokens budget — model-agnostically.
 
-        Sets max_tokens=512 explicitly to force the server to generate at
-        least 256 tokens.  The counting prompt reliably fills the budget.
-        If the old 256-token default were still in effect, the server would
-        silently cap output below 512.
+        This is a *server* property, not a model one: the old failure was a
+        silent 256-token default cap. The previous version of this test
+        used a "count to 500" prompt and so actually measured whether the
+        *model* would enumerate 256+ tokens — which small models legitimately
+        decline to do (they elide with an ellipsis). That conflated server
+        behaviour with model willingness. Two model-agnostic checks instead:
+
+          A. Explicit budget is enforced — request max_tokens=64 on an
+             open-ended prompt every instruct model sustains well past 64
+             tokens; the server must cut it short, i.e. finish_reason must
+             be 'length' (proves the explicit cap is applied, not ignored).
+             The exact completion_tokens count is intentionally NOT asserted
+             — Atlas counts reasoning/thinking tokens into completion_tokens
+             while max_tokens caps content, so the two need not be equal;
+             finish_reason='length' is the thinking-agnostic signal.
+          B. No silent low default cap — omit max_tokens; the response must
+             NOT be truncated by a <=256 default. Fails only if
+             finish_reason=='length' AND completion_tokens<=256 (the
+             historical bug). A model that finishes naturally
+             (finish_reason='stop') or one cut by the real generous default
+             (length, >256) both pass — independent of model verbosity.
         """
-        pl = {
+        prompt = ("Write a long, detailed, multi-paragraph explanation of "
+                  "how computers work, from transistors up to operating "
+                  "systems.")
+
+        # A — an explicit small max_tokens must be enforced (cut short).
+        sA, bA = self._post({
             "model": self.model,
-            "messages": [{"role": "user", "content":
-                          "Count from 1 to 500, one number per line. "
-                          "Do not stop until you reach 500."}],
+            "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.0,
-            "max_tokens": 512,
-        }
-        status, body = self._post(pl, timeout=300)
-        if status != 200 or not isinstance(body, dict):
-            self.check("default max_tokens > 256", False, f"HTTP {status}")
-            return
-        ct = body["usage"]["completion_tokens"]
+            "max_tokens": 64,
+        }, timeout=120)
+        ctA = bA["usage"]["completion_tokens"] if (sA == 200 and isinstance(bA, dict)) else None
+        frA = bA["choices"][0].get("finish_reason") if (sA == 200 and isinstance(bA, dict)) else None
+        ok_a = sA == 200 and frA == "length"
+
+        # B — omitting max_tokens must not impose a silent <=256 cap.
+        sB, bB = self._post({
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.0,
+        }, timeout=300)
+        if sB == 200 and isinstance(bB, dict):
+            ctB = bB["usage"]["completion_tokens"]
+            frB = bB["choices"][0].get("finish_reason")
+            ok_b = not (frB == "length" and ctB <= 256)
+        else:
+            ctB, frB, ok_b = None, None, False
+
         self.check(
-            "default max_tokens > 256",
-            ct > 256,
-            f"completion_tokens={ct} (max_tokens=512, old cap was 256)",
+            "max_tokens honored (no silent cap)",
+            ok_a and ok_b,
+            f"A: status={sA} completion_tokens={ctA} finish_reason={frA!r} "
+            f"(want 64/'length'); B: status={sB} completion_tokens={ctB} "
+            f"finish_reason={frB!r} (fail only if 'length' and <=256)",
         )
 
     def test_multi_turn(self) -> None:

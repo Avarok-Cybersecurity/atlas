@@ -96,14 +96,33 @@ impl Qwen3AttentionLayer {
         // Window of HBM-resident blocks: block_table[0..block_table.len()]
         // covers logical positions [total - block_table.len(), total).
         let window_start = total.saturating_sub(block_table.len());
-        // Always re-offload the ACTIVE (last) block on every call. Decode
-        // writes one new slot per step into the existing last block — its
-        // HBM contents change without disk_block_ids.len() growing, so the
-        // naive `last..total` range would skip it and the streaming kernel
-        // would read stale (zero-init) bytes for slots 1..15 → degenerate
-        // attention → "the the the" loop. Setting `start = last.min(total-1)`
-        // guarantees the active block is re-pushed every step.
-        let start = last.min(total - 1);
+        // Always re-offload the BOUNDARY block (one before `last`) on every
+        // call, in addition to all blocks in `last..total`. Two cases:
+        //
+        // (1) Decode case: `last == total` (no new block this step). Slots in
+        //     the active block keep getting written one-per-step without
+        //     `disk_block_ids.len()` growing. `start = total - 1` ensures the
+        //     active block is re-pushed every step. Without this the streaming
+        //     kernel reads stale (zero-init) bytes for the unwritten slots
+        //     → degenerate attention → "the the the" loop.
+        //
+        // (2) Chunked-prefill boundary case (issue #31, follow-up to PR #37):
+        //     `last < total` after a new chunk advanced `disk_block_ids`. The
+        //     PREVIOUS chunk's last block (`last - 1`) typically has unwritten
+        //     tail slots — `reshape_and_cache_flash` writes only the chunk's
+        //     own token slots, so when chunk N ended mid-block it left the
+        //     tail slots zero on disk after the post-chunk-N offload. Chunk
+        //     N+1 fills those tail slots in HBM but the offload's `start =
+        //     last` skipped re-pushing the boundary block, so disk's
+        //     boundary-block tail stays permanently zeroed. Decode reads the
+        //     full history from disk via `attend_layer_on_stream`, so the
+        //     zeroed slots silently corrupt attention for the chunk-boundary
+        //     positions (manifests as needle-in-haystack precision loss in
+        //     long-context recall — see issue #31 differential tests).
+        //
+        // `last.saturating_sub(1).min(total - 1)` covers both cases at the
+        // cost of ~one extra D2H per layer per chunk (negligible).
+        let start = last.saturating_sub(1).min(total - 1);
         for logical_pos in start..total {
             if logical_pos < window_start {
                 // Issue #31: the slide-before-alloc loop in

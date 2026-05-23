@@ -62,6 +62,7 @@ pub(super) fn handle_complete_tool_call(
             "tool-arg dedup tripped: refusing redundant tool_call and ending response"
         );
         state.stop_string_triggered = true;
+        state.tool_loop_capped = true;
     } else {
         // Bug-2 name-run cap (mirrors handle_tool_call_end): catches
         // runaway loops in the complete-tool-call path that
@@ -79,6 +80,7 @@ pub(super) fn handle_complete_tool_call(
                 tc.function.name
             );
             state.stop_string_triggered = true;
+            state.tool_loop_capped = true;
         }
         bump_f12_tool_call_count(
             &mut state.tool_calls_emitted_count,
@@ -245,6 +247,7 @@ pub(super) fn handle_tool_call_end(state: &mut StreamState, ctx: &StreamCtx, idx
                 "F11 within-response dedup tripped: 2+ identical streaming tool calls; ending response"
             );
             state.stop_string_triggered = true;
+            state.tool_loop_capped = true;
         } else if ctx.f44_cache_active
             && f44_check_permanent_failure(&ctx.f44_cache, &name, &args_json)
         {
@@ -253,6 +256,7 @@ pub(super) fn handle_tool_call_end(state: &mut StreamState, ctx: &StreamCtx, idx
                 "F44 streaming circuit-breaker tripped: tool_call matches a permanently-failed prior call; ending response"
             );
             state.stop_string_triggered = true;
+            state.tool_loop_capped = true;
         }
         let run_len = match &state.name_run {
             Some((prev, n)) if prev == &name => n + 1,
@@ -266,6 +270,7 @@ pub(super) fn handle_tool_call_end(state: &mut StreamState, ctx: &StreamCtx, idx
                 "Bug-2 name-run cap tripped: {run_len} successive `{name}` tool calls; ending response (F11 missed because args drift)"
             );
             state.stop_string_triggered = true;
+            state.tool_loop_capped = true;
         }
         if !state.stop_string_triggered {
             // Successful streaming tool call — log + metric to match the

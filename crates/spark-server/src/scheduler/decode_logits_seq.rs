@@ -52,27 +52,46 @@ pub fn process_seq_logits(
     }
 
     // F2: Confidence-based early stop during thinking.
-    // F2: Confidence-based early stop during thinking.
     // When top-1 prob >= 0.95 for 30 consecutive tokens, force </think>.
     // Only kicks in after 400 thinking tokens — the model needs room to
     // plan (numbered lists, step-by-step reasoning have high per-token
     // confidence but are NOT signs the model is done thinking).
     // Previous thresholds (200 tokens, 10 consecutive) were too aggressive
     // and caused premature thinking termination in agentic coding sessions.
-    if a.inside_thinking && !a.force_end_thinking && a.thinking_tokens >= 400 {
+    //
+    // Code-fence handling: a ``` block inside the reasoning is even
+    // MORE confident than prose (Python/JSON syntax is near-
+    // deterministic: `def`/`(`/`:`/indent/`return`), so 30 consecutive
+    // ≥0.95 tokens trips trivially while the model is *productively*
+    // drafting code. We still ARM the brake here (a model can ramble in
+    // code forever — it must eventually stop), but the forced </think>
+    // injection is DEFERRED until the fence closes (see
+    // `should_inject_think_end` at the injection site below), so the
+    // boundary lands cleanly right after the code block instead of
+    // splitting a statement. The token-period THINK_LOOP watchdog
+    // (decode_logits_step) also stays active in fences.
+    if a.inside_thinking
+        && !a.force_end_thinking
+        && a.thinking_tokens >= 400
+        && crate::scheduler::helpers::watchdog_params().confidence_early_stop
+    {
         let max_logit = f32_logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let sum_exp: f32 = f32_logits.iter().map(|&l| (l - max_logit).exp()).sum();
-        if sum_exp > 0.0 && 1.0 / sum_exp >= 0.95 {
-            a.consecutive_confident += 1;
-            if a.consecutive_confident >= 30 {
-                a.force_end_thinking = true;
-                tracing::info!(
-                    "Confidence early stop: top-1 prob >= 0.95 for 30 tokens (after {} thinking tokens)",
-                    a.thinking_tokens
-                );
-            }
-        } else {
-            a.consecutive_confident = 0;
+        let confident = sum_exp > 0.0 && 1.0 / sum_exp >= 0.95;
+        let (run, force_end) = confidence_run_step(confident, a.consecutive_confident);
+        a.consecutive_confident = run;
+        if force_end {
+            a.force_end_thinking = true;
+            tracing::info!(
+                "Confidence early stop armed: top-1 prob >= 0.95 for {} tokens (after {} thinking tokens){}",
+                crate::scheduler::helpers::watchdog_params().confidence_run_length,
+                a.thinking_tokens,
+                if a.in_code_fence {
+                    " — deferred until ``` fence closes"
+                } else {
+                    ""
+                }
+            );
         }
     }
 
@@ -131,9 +150,22 @@ pub fn process_seq_logits(
         }
     }
 
-    // Force </think> when budget exhausted OR confidence early stop triggered.
+    // Force </think> when budget exhausted OR confidence early stop
+    // triggered — but DEFER while inside a ``` code fence so the
+    // injection never splits a code statement (2026-05-17 thinkbrake
+    // fix). The fence closes within a bounded number of tokens, then
+    // this fires cleanly at the block boundary.
+    // Bound the in-fence deferral: a model that writes its whole answer
+    // as a code block inside <think> never closes the fence, so an
+    // unbounded defer traps the deliverable in reasoning. Past
+    // THINK_DEFER_BUDGET_FACTOR× the budget (or the absolute ceiling
+    // when budget is None), inject </think> even mid-fence.
+    let defer_hard_override = match a.thinking_budget {
+        Some(b) => a.thinking_tokens >= b.saturating_mul(THINK_DEFER_BUDGET_FACTOR),
+        None => a.thinking_tokens >= THINK_DEFER_ABS_CEILING,
+    };
     if a.inside_thinking
-        && a.force_end_thinking
+        && should_inject_think_end(a.force_end_thinking, a.in_code_fence, defer_hard_override)
         && let Some(end_tok) = think_end_token
     {
         let end_idx = end_tok as usize;
@@ -186,6 +218,45 @@ pub fn process_seq_logits(
     // "model occasionally drifts on stressed prompts"
     // limitation and rely on F26/F2 to terminate the response
     // cleanly when it happens.
+
+    // ── Forced-token fast-path (xgrammar Tier 3b, Coalescence) ──
+    // When the active tool-call grammar admits exactly one legal next
+    // token, the model sample is redundant: the token is determined.
+    // `forced_token()` returns `Some(id)` ONLY when the authoritative
+    // next-token bitmask has a single set bit — so emitting `id`
+    // directly is bit-identical to sampling from an all-but-`id`-masked
+    // logit vector (every other token would be `-inf`). We skip the
+    // O(vocab) bitmask fill *and* the O(vocab) CPU sampling scan for
+    // these positions; this is the big win for structured tool-call
+    // scaffolding (literal `<function=`, `</parameter>`, JSON
+    // punctuation emit with no sampling work).
+    //
+    // GUARDS — the fast-path fires only when ALL hold:
+    //  * not inside `<think>` — thinking is unconstrained (mirrors the
+    //    bitmask-skip below; thinking tokens never advance the grammar).
+    //  * the request actually has an active grammar (`grammar_state`).
+    //  * the kill-switch is on (default; `ATLAS_DISABLE_FORCED_TOKEN`).
+    //  * `top_logprobs` is NOT requested — logprobs are extracted from
+    //    the model's logit distribution; the fast-path never builds it.
+    //    Falling through to the normal masked-sample path keeps logprobs
+    //    byte-identical (the all-but-one mask makes the sample return
+    //    the same forced token anyway, so output is unchanged).
+    //
+    // The returned forced token still flows through the SAME caller
+    // accounting as a sampled token — `decode_logits_step` pushes it to
+    // `output_tokens`, calls `gs.accept_token`, runs stop-token / EOS /
+    // streaming handling — so all downstream state is identical.
+    if !a.inside_thinking
+        && a.top_logprobs.is_none()
+        && crate::scheduler::helpers::forced_token_fastpath_enabled()
+        && let Some(ref mut gs) = a.grammar_state
+        && let Some(forced) = gs.forced_token()
+    {
+        // `forced` is the sole grammar-legal token; `forced_token`
+        // returns only non-negative vocab ids (it reads them off the
+        // packed bitmask). Emit directly — no mask fill, no sample.
+        return (forced as u32, None);
+    }
 
     // Apply grammar bitmask BEFORE sampling — but NOT during
     // `<think>`…`</think>`. Thinking is free-form reasoning that
@@ -282,8 +353,6 @@ pub fn process_seq_logits(
             } else {
                 a.lz_penalty
             },
-            edt_strength: 0.0,
-            edt_floor: 0.1,
             // DRY: same logic. Outside the tool body it
             // remains active to dampen `<think>` fence-narration
             // attractors. Inside the body, disabled — JSON
@@ -298,93 +367,6 @@ pub fn process_seq_logits(
         },
         &a.output_tokens,
     );
-
-    // F26 (2026-04-26): kernel-level entropy-collapse guard.
-    // The sampler thread-locally records the post-truncation
-    // entropy for the just-sampled distribution; read it here.
-    // If H is below threshold AND we're outside any guard
-    // (thinking, tool-body, grammar, warmup), increment the
-    // per-sequence streak counter. When the streak reaches
-    // ENTROPY_COLLAPSE_STREAK_K consecutive collapsed samples,
-    // force EOS — the model is on a distribution attractor
-    // that token-level dedup may miss.
-    //
-    // Greedy sampling bypasses record_entropy so last_entropy()
-    // returns stale data; skip the check in that case.
-    if !(a.temperature == 0.0
-        || greedy_gate
-        || a.inside_thinking
-        || a.inside_tool_body
-        || a.grammar_state.is_some())
-        && a.output_tokens.len() >= ENTROPY_COLLAPSE_WARMUP_TOKENS
-    {
-        let h = spark_runtime::sampler::last_entropy();
-        if h < ENTROPY_COLLAPSE_THRESHOLD_NATS {
-            a.entropy_collapse_streak = a.entropy_collapse_streak.saturating_add(1);
-            #[allow(clippy::absurd_extreme_comparisons)]
-            if ENTROPY_COLLAPSE_STREAK_K > 0
-                && a.entropy_collapse_streak >= ENTROPY_COLLAPSE_STREAK_K
-            {
-                tracing::warn!(
-                    entropy_nats = h,
-                    streak = a.entropy_collapse_streak,
-                    output_tokens = a.output_tokens.len(),
-                    "F26: entropy-collapse guard fired (sustained low H outside guards); ending response"
-                );
-                a.finished = true;
-            }
-        } else {
-            a.entropy_collapse_streak = 0;
-        }
-    } else {
-        // In a guarded context — reset streak so re-entering
-        // free-text region after a tool call starts fresh.
-        a.entropy_collapse_streak = 0;
-    }
-
-    // F27 (2026-04-26): logit-distribution fingerprint
-    // attractor detector. Same guards as F26 but uses a
-    // distinct signal (logit landscape stability with token
-    // diversity) so the two compose: F26 catches "same
-    // distribution shape AND model is decisive"; F27
-    // catches "same distribution shape AND model is sampling
-    // jitter on top of it" (token varies but the ranked
-    // candidates don't).
-    if !(a.temperature == 0.0
-        || greedy_gate
-        || a.inside_thinking
-        || a.inside_tool_body
-        || a.grammar_state.is_some())
-        && a.output_tokens.len() >= ENTROPY_COLLAPSE_WARMUP_TOKENS
-    {
-        let fp = fingerprint_logits_strided(&f32_logits);
-        let token_diversified = sampled != a.f27_last_emitted_token;
-        let dup = a.f27_fingerprint_ring.iter().any(|&p| p == fp);
-        if dup && token_diversified {
-            a.f27_attractor_streak = a.f27_attractor_streak.saturating_add(1);
-        } else if !dup {
-            a.f27_attractor_streak = 0;
-        }
-        if a.f27_fingerprint_ring.len() >= F27_RING_CAP {
-            a.f27_fingerprint_ring.pop_front();
-        }
-        a.f27_fingerprint_ring.push_back(fp);
-        a.f27_last_emitted_token = sampled;
-        if a.f27_attractor_streak >= F27_STREAK_K {
-            tracing::warn!(
-                ring_len = a.f27_fingerprint_ring.len(),
-                streak = a.f27_attractor_streak,
-                output_tokens = a.output_tokens.len(),
-                "F27: logit-fingerprint attractor (stable distribution, varying tokens); ending response"
-            );
-            a.finished = true;
-        }
-    } else {
-        // Guarded — reset streak (but keep ring so cross-guard
-        // entry doesn't lose recent fingerprints).
-        a.f27_attractor_streak = 0;
-        a.f27_last_emitted_token = sampled;
-    }
 
     // Extract top-K logprobs from f32_logits if requested.
     let logprobs = a

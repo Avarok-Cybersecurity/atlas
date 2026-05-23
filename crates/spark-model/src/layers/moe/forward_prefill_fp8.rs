@@ -101,6 +101,7 @@ impl MoeLayer {
 
         // Gemma-4 router pre-norm (no-op for other models).
         let router_in = self.router_input(input, n, h, ctx, stream)?;
+        super::dump::dump_gate_input(ctx.gpu, stream, router_in, n, h)?;
         // 1. Gate GEMM
         let gate_logits = ctx.buffers.gate_logits();
         if let Some(ref nvfp4) = self.gate_nvfp4 {
@@ -128,6 +129,8 @@ impl MoeLayer {
                 stream,
             )?;
         }
+
+        super::dump::dump_gate_logits(ctx.gpu, stream, gate_logits, n, num_experts)?;
 
         // 2. Batched topK dispatch (sigmoid+bias for MiniMax/DeepSeek-V3,
         //    softmax for everyone else — selection by `correction_bias_dev`).
@@ -164,6 +167,8 @@ impl MoeLayer {
             )?;
         }
 
+        super::dump::dump_expert_ids(ctx.gpu, stream, indices_dev, weights_dev, n, top_k)?;
+
         // 3. Sort tokens by expert
         let te = total_expanded as usize;
         let sorted_token_ids = gate_logits;
@@ -184,19 +189,44 @@ impl MoeLayer {
             stream,
         )?;
 
-        // 4. Max M tiles (same heuristic as NVFP4)
+        // 4. Max M tiles — sized for worst-case expert skew, not 2× avg.
+        // The `(avg * 2)` heuristic silently truncated heavy experts:
+        // observed avg=129, max=929 tokens for one expert (= 7× avg) in
+        // a 4097-token chunk, dropping 609 rows for that expert and
+        // under-counting routed-MoE output systematically (-14% at L0).
+        // Now bumped to `(num_tokens * top_k).div_ceil(64)` which always
+        // covers the absolute worst case (1 expert eats all tokens).
+        // Cost: extra threadblocks for empty tiles (early-exit on
+        // `m_idx >= M_expert`), low overhead vs the previous correctness
+        // bug.
         let avg_per_expert = (num_tokens * top_k as usize).div_ceil(ne);
-        let max_m_tiles = (avg_per_expert * 2).div_ceil(64).max(1) as u32;
+        let max_m_tiles = (num_tokens * top_k as usize).div_ceil(64).max(1) as u32;
+        super::dump::dump_expert_load(
+            ctx.gpu,
+            stream,
+            expert_offsets,
+            ne,
+            num_tokens,
+            avg_per_expert,
+            max_m_tiles,
+        );
 
         // 5. FP8 grouped gate+up GEMM
         let expert_gate_out = ctx.buffers.expert_gate_out();
         let expert_up_out = ctx.buffers.expert_up_out();
-        // EP: zero expert buffers for remote experts
-        if ctx.comm.is_some() {
-            let gate_bytes = te * inter as usize * 2;
-            ctx.gpu
-                .memset_async(expert_gate_out, 0, gate_bytes, stream)?;
-            ctx.gpu.memset_async(expert_up_out, 0, gate_bytes, stream)?;
+        let fp8_grouped_k = self.fp8_grouped_kernel();
+        // 2026-05-20: zero expert buffers unconditionally before the grouped
+        // GEMMs. Even with worst-case `max_m_tiles` (which sizes the grid
+        // for one-expert-eats-all), the kernel only writes rows where
+        // `m_idx < M_expert` per expert — rows past the expert's actual
+        // count keep stale data from the previous prefill (or uninit memory
+        // on first prefill) and contaminate unpermute_reduce. Previously
+        // guarded behind `ctx.comm.is_some()` (EP-only), making single-GPU
+        // non-deterministic.
+        {
+            let gu_bytes = te * inter as usize * 2;
+            ctx.gpu.memset_async(expert_gate_out, 0, gu_bytes, stream)?;
+            ctx.gpu.memset_async(expert_up_out, 0, gu_bytes, stream)?;
             ctx.gpu.memset_async(
                 ctx.buffers.expert_down_out(),
                 0,
@@ -204,7 +234,6 @@ impl MoeLayer {
                 stream,
             )?;
         }
-        let fp8_grouped_k = self.fp8_grouped_kernel();
         if max_m_tiles > 0 {
             ops::moe_fp8_grouped_gemm(
                 ctx.gpu,
@@ -251,7 +280,6 @@ impl MoeLayer {
                 total_expanded * inter,
                 stream,
             )?;
-
             ops::moe_fp8_grouped_gemm(
                 ctx.gpu,
                 fp8_grouped_k,
@@ -302,6 +330,16 @@ impl MoeLayer {
         // Shared expert blend (post-allreduce).
         if has_shared {
             let shared_down_out = ctx.buffers.attn_output();
+            super::dump::dump_routed_only(ctx.gpu, stream, output, n, h)?;
+            super::dump::dump_shared_out(ctx.gpu, stream, shared_down_out, n, h)?;
+            super::dump::dump_shared_gate(
+                ctx.gpu,
+                stream,
+                input,
+                self.weights.shared_expert_gate.weight,
+                n,
+                h,
+            )?;
             ops::moe_batched_blend(
                 ctx.gpu,
                 self.moe_batched_blend,
@@ -314,6 +352,8 @@ impl MoeLayer {
                 stream,
             )?;
         }
+
+        super::dump::dump_moe_out(ctx.gpu, stream, output, n, h)?;
 
         Ok(())
     }

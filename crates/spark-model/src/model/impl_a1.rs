@@ -139,12 +139,25 @@ impl TransformerModel {
             gpu.as_ref(),
         )?;
 
-        // Marconi SSM snapshot pool for prefix caching
+        // SSM snapshot pool: Marconi prefix-cache slots + Phase-C
+        // decode-rollback ring. The decode-rollback region is only sized
+        // for SSM models — `num_ssm_layers == 0` makes both regions
+        // collapse to empty. Per sequence the watchdog needs
+        // `ROLLBACK_RESTEER_CAP + 1` snapshots (one per allowed rollback,
+        // plus the current boundary); the region is sized for every
+        // active-sequence pool slot (`max_batch_size`).
+        let decode_ring_slots = if ssm_pool.num_ssm_layers > 0 {
+            (atlas_kernels::ROLLBACK_RESTEER_CAP as usize) + 1
+        } else {
+            0
+        };
         let ssm_snapshots = SsmSnapshotPool::new(
             ssm_cache_slots,
             ssm_pool.h_bytes,
             ssm_pool.conv_bytes,
             ssm_pool.num_ssm_layers,
+            decode_ring_slots,
+            max_batch_size,
             gpu.as_ref(),
         )?;
         if ssm_checkpoint_interval > 0 && ssm_cache_slots > 0 {

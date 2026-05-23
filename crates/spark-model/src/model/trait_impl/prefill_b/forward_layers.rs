@@ -184,6 +184,35 @@ impl TransformerModel {
                 let (_, norm) = self.readback_bf16(hidden, self.config.hidden_size.min(64))?;
                 tracing::info!("L{i} hidden[0] norm={norm:.4}");
             }
+            // Per-layer numerical-divergence dump (env-gated, zero overhead when
+            // unset). `ATLAS_NEMO_DUMP=<dir>` writes the LAST token's full
+            // post-layer residual-stream hidden vector for every layer as
+            // headerless little-endian f32: `<dir>/atlas_L{i}.bin`. Overwrites
+            // on every call so the final chunk's last token wins (methodology
+            // §3 gotcha #5). Compared 1:1 against the HF CPU/GPU oracle.
+            if is_last_chunk
+                && let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP")
+                && !dir.is_empty()
+            {
+                self.gpu.synchronize(stream)?;
+                let last_start = (proc_count - 1) * h;
+                let (vals, _) = if self.config.use_fp32_residual() {
+                    self.readback_f32(hidden.offset(last_start * fp32), h)?
+                } else {
+                    self.readback_bf16(hidden.offset(last_start * fp32), h)?
+                };
+                let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                std::fs::create_dir_all(&dir).ok();
+                let path = std::path::Path::new(&dir).join(format!("atlas_L{i}.bin"));
+                std::fs::write(&path, &bytes).ok();
+                if i == self.layers.len() - 1 {
+                    tracing::info!(
+                        "ATLAS_NEMO_DUMP: wrote {} per-layer hidden \
+                         vectors ({h} f32 each) to {dir}",
+                        self.layers.len()
+                    );
+                }
+            }
             // Last-chunk diagnostic: log LAST token's hidden norm at every layer.
             if profile_now && is_last_chunk && proc_count > 1 && (chunk_start + chunk_len) > 16384 {
                 self.gpu.synchronize(stream)?;
@@ -201,7 +230,7 @@ impl TransformerModel {
             self.gpu.synchronize(stream)?;
             let total_us = t0.elapsed().as_micros();
             let mut indexed: Vec<(usize, u128)> = layer_times.iter().copied().enumerate().collect();
-            indexed.sort_by(|a, b| b.1.cmp(&a.1));
+            indexed.sort_by_key(|x| std::cmp::Reverse(x.1));
             let top5: Vec<String> = indexed
                 .iter()
                 .take(5)

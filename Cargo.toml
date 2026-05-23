@@ -15,6 +15,7 @@ members = [
     "crates/atlas-spark-bench",
     "crates/cufile-sys",
     "crates/spark-storage",
+    "crates/xgrammar",
 ]
 
 [workspace.package]
@@ -60,8 +61,10 @@ atlas-embed = { path = "crates/atlas-embed" }
 atlas-reduce = { path = "crates/atlas-reduce" }
 atlas-kernels = { path = "crates/atlas-kernels" }
 
-[patch.crates-io]
-xgrammar-rs = { path = "vendor/xgrammar-rs" }
+# W7: the `[patch.crates-io] xgrammar-rs` entry was removed — Atlas now
+# depends on the pure-Rust `crates/xgrammar` crate directly (no FFI,
+# no C++ toolchain). The vendored C++ `vendor/xgrammar-rs/` tree has
+# been deleted; the grammar stack is 100% Rust.
 
 # Workspace-wide lint policy. Each crate also adds `#![deny(warnings)]` /
 # `#![deny(clippy::all)]` to its `lib.rs`/`main.rs`; this section extends

@@ -74,15 +74,22 @@ pub(super) fn render_template(
             msg
         })
         .collect();
-    let jinja_tools: Option<Vec<serde_json::Value>> = if tools_active {
-        req.tools.as_ref().map(|ts| {
-            ts.iter()
-                .map(|t| serde_json::to_value(t).unwrap_or_default())
-                .collect()
-        })
-    } else {
-        None
-    };
+    // When TSCG is enabled the parser's `system_prompt()` has already
+    // placed the compact tool signatures into messages[0]; passing
+    // `tools` to Jinja as well would re-render the full JSON schema and
+    // defeat the compaction. Pass `None` so the template's `{% if tools
+    // %}` branch falls through — the tool-call format instructions
+    // still come from `system_prompt()`.
+    let jinja_tools: Option<Vec<serde_json::Value>> =
+        if tools_active && !crate::tscg::tscg_enabled() {
+            req.tools.as_ref().map(|ts| {
+                ts.iter()
+                    .map(|t| serde_json::to_value(t).unwrap_or_default())
+                    .collect()
+            })
+        } else {
+            None
+        };
 
     // Progressive auto-compact (DISABLED BY DEFAULT 2026-04-25 —
     // see project_no_auto_compaction memory feedback).

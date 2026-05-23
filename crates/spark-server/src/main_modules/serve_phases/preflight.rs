@@ -79,8 +79,18 @@ pub(crate) fn preflight_reserve(
         args.block_size,
     )
     .total_bytes();
-    let ssm_snapshot_bytes =
-        args.ssm_cache_slots * config.num_ssm_layers() * (h_state_bytes + conv_state_bytes);
+    // SSM snapshot pool = Marconi prefix-cache region + Phase-C
+    // decode-rollback ring. The decode ring is sized per active
+    // sequence (`ROLLBACK_RESTEER_CAP + 1` slots × `max_batch_size`),
+    // and only allocated for SSM models. Mirrors `SsmSnapshotPool::new`.
+    let decode_ring_slots = if config.num_ssm_layers() > 0 {
+        (atlas_kernels::ROLLBACK_RESTEER_CAP as usize) + 1
+    } else {
+        0
+    };
+    let ssm_snapshot_bytes = (args.ssm_cache_slots + decode_ring_slots * args.max_batch_size)
+        * config.num_ssm_layers()
+        * (h_state_bytes + conv_state_bytes);
     let cuda_headroom: usize =
         if args.speculative || args.self_speculative || args.ngram_speculative {
             4 * 1024 * 1024 * 1024
@@ -118,11 +128,10 @@ pub(crate) fn preflight_reserve(
                 0
             }
         };
-        let suggested = if per_tok_bytes > 0 {
-            (budget_for_seq_term / per_tok_bytes).max(2048)
-        } else {
-            0
-        };
+        let suggested = budget_for_seq_term
+            .checked_div(per_tok_bytes)
+            .map(|q| q.max(2048))
+            .unwrap_or(0);
         let hint = if suggested > 0 && suggested < args.max_seq_len {
             format!(
                 " Try --max-seq-len {} (or lower --max-batch-size / --num-drafts).",

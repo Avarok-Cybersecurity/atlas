@@ -21,7 +21,7 @@ pub(super) fn promote_completed_prefills(
     tool_call_end_token: Option<u32>,
 ) {
     // Process in reverse order so swap_remove indices stay valid.
-    completed_indices.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    completed_indices.sort_unstable_by_key(|x| std::cmp::Reverse(x.0));
     for (idx, maybe_token) in completed_indices {
         let p = prefilling.swap_remove(idx);
         let Some(first) = maybe_token else {
@@ -67,6 +67,7 @@ pub(super) fn promote_completed_prefills(
             think_start_token,
             tool_call_start_token,
             tool_call_end_token,
+            model.decode_rollback_ring_slots(),
         );
         if immediate_finish {
             finish_sequence(model, &mut a);
@@ -93,6 +94,8 @@ fn build_active_seq_from_prefill(
     think_start_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
+    // Phase-C decode-rollback ring capacity (`model.decode_rollback_ring_slots()`).
+    ssm_ring_capacity: usize,
 ) -> ActiveSeq {
     let temperature = p.temperature;
     ActiveSeq {
@@ -145,6 +148,7 @@ fn build_active_seq_from_prefill(
         cached_prompt_tokens: cached_prompt_tok,
         force_end_thinking: false,
         consecutive_confident: 0,
+        in_code_fence: false,
         think_end_token,
         think_start_token,
         // When thinking is disabled but model supports thinking, the template
@@ -167,10 +171,8 @@ fn build_active_seq_from_prefill(
         content_tokens: 0,
         prose_tokens_since_last_tool: 0,
         think_watchdog_fires: 0,
-        entropy_collapse_streak: 0,
-        f27_fingerprint_ring: std::collections::VecDeque::with_capacity(F27_RING_CAP),
-        f27_attractor_streak: 0,
-        f27_last_emitted_token: 0,
+        rollback_count: 0,
+        ssm_rollback_ring: SsmDecodeRing::new(ssm_ring_capacity),
         tool_call_end_token,
         grammar_state: p.grammar_state,
         last_token_time: now,

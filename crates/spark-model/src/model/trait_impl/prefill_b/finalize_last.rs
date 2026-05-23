@@ -93,8 +93,47 @@ impl TransformerModel {
             );
         }
 
+        // Per-layer divergence dump: final-norm output (input to lm_head).
+        if let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP")
+            && !dir.is_empty()
+        {
+            self.gpu.synchronize(stream)?;
+            let (vals, _) = self.readback_bf16(normed, h)?;
+            let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+            std::fs::create_dir_all(&dir).ok();
+            std::fs::write(
+                std::path::Path::new(&dir).join("atlas_final_norm.bin"),
+                &bytes,
+            )
+            .ok();
+        }
+
         // ── 7. LM head on last token → logits ──
         self.lm_head(normed, stream)?;
+
+        // Per-layer divergence dump: full logits vector + top-10 token IDs.
+        if let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP")
+            && !dir.is_empty()
+        {
+            self.gpu.synchronize(stream)?;
+            let n_logits = self.config.vocab_size;
+            let mut buf = vec![0u8; n_logits * 2];
+            self.gpu.copy_d2h(self.buffers.logits(), &mut buf)?;
+            let logit_vals: Vec<f32> = buf
+                .chunks_exact(2)
+                .map(|c| {
+                    let bits = u16::from_le_bytes([c[0], c[1]]);
+                    f32::from_bits((bits as u32) << 16)
+                })
+                .collect();
+            let lbytes: Vec<u8> = logit_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+            std::fs::create_dir_all(&dir).ok();
+            std::fs::write(std::path::Path::new(&dir).join("atlas_logits.bin"), &lbytes).ok();
+            let mut idx: Vec<usize> = (0..logit_vals.len()).collect();
+            idx.sort_by(|&a, &b| logit_vals[b].partial_cmp(&logit_vals[a]).unwrap());
+            let top: Vec<(usize, f32)> = idx.iter().take(10).map(|&i| (i, logit_vals[i])).collect();
+            tracing::info!("ATLAS_NEMO_DUMP: top-10 logits = {top:?}");
+        }
 
         // Diagnostic: logits stats
         if (chunk_start + chunk_len) > 16384

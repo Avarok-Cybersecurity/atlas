@@ -247,6 +247,7 @@ pub struct MoeLayer {
 }
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
+mod dump;
 mod forward;
 mod forward_batched;
 mod forward_ep;
@@ -256,6 +257,7 @@ mod forward_phase;
 mod forward_prefill;
 mod forward_prefill_fp8;
 mod forward_prefill_phase;
+mod forward_prefill_routed;
 mod helpers_a;
 mod helpers_b;
 mod helpers_c;

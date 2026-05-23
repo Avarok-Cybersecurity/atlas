@@ -135,6 +135,8 @@ mod trait_prefill_gdn;
 mod trait_prefill_helper;
 mod trait_prefill_phase1;
 mod trait_prefill_phase3;
+mod trait_prefill_proj;
+mod trait_prefill_recur;
 
 // ── TransformerLayer impl (delegates to per-file inherent _inner methods) ──
 impl TransformerLayer for Qwen3SsmLayer {

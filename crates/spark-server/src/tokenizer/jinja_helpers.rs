@@ -47,9 +47,31 @@ pub(super) fn build_jinja_env(chat_template: &str) -> Result<minijinja::Environm
     // named items` and the second turn of every tool-use
     // conversation 500's. The callback only fires on
     // `UnknownMethod` errors, so it is a no-cost compat layer.
+    //
+    // Also bridges Python-style `str.split(sep)` to the minijinja
+    // `split` filter. Gemma-4's chat template calls `text.split('<channel|>')`
+    // and `part.split('<|channel>')` inside its `strip_thinking` macro
+    // (gemma4.jinja:143/145). minijinja has no `.split()` *method* on
+    // strings — only a filter — so every assistant (model-role) turn
+    // raised `UnknownMethod: string has no method named split`. The
+    // existing `convert_python_jinja_to_minijinja` text-rewrites only
+    // cover the literal `.split('<think>')`/`.split('</think>')`
+    // patterns; this callback makes `.split()` work for any separator.
     env.set_unknown_method_callback(
         |state, value, method, args| -> Result<minijinja::Value, minijinja::Error> {
             use minijinja::value::{ValueKind, from_args};
+            if value.kind() == ValueKind::String && method == "split" {
+                // Python `str.split(sep)` → minijinja `split` filter.
+                // The separator is forwarded verbatim; an absent
+                // separator falls through to the filter's default
+                // (whitespace split), matching Python semantics.
+                let (sep,): (Option<minijinja::Value>,) = from_args(args)?;
+                let mut filter_args = vec![value.clone()];
+                if let Some(sep) = sep {
+                    filter_args.push(sep);
+                }
+                return state.apply_filter("split", &filter_args);
+            }
             if value.kind() == ValueKind::Map {
                 match method {
                     "items" => {

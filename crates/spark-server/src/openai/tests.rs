@@ -210,3 +210,63 @@ fn responses_in_progress_event_name() {
     };
     assert_eq!(responses_event_name(&ev), "response.in_progress");
 }
+
+// ── ChatTemplateKwargs ────────────────────────────────────────────
+
+#[test]
+fn chat_template_kwargs_parse() {
+    let kw = ChatTemplateKwargs::from_json(r#"{"enable_thinking":true,"thinking_budget":1024}"#)
+        .expect("should parse");
+    assert_eq!(kw.enable_thinking, Some(true));
+    assert_eq!(kw.thinking_budget, Some(1024));
+
+    assert!(ChatTemplateKwargs::from_json("").is_none());
+}
+
+fn empty_chat_request() -> ChatCompletionRequest {
+    serde_json::from_value(serde_json::json!({
+        "model": "test",
+        "messages": [{"role": "user", "content": "hi"}],
+    }))
+    .expect("valid chat request")
+}
+
+#[test]
+fn server_default_merged_when_request_silent() {
+    let mut req = empty_chat_request();
+    assert!(req.chat_template_kwargs.is_none());
+
+    let server_kw = ChatTemplateKwargs {
+        enable_thinking: Some(true),
+        thinking_budget: None,
+    };
+    if !req.thinking_explicitly_requested() {
+        req.chat_template_kwargs = Some(server_kw);
+    }
+    assert!(req.chat_template_kwargs.is_some());
+
+    let (enabled, budget) = req.resolve_thinking(false);
+    assert!(enabled);
+    assert!(budget.is_some());
+}
+
+#[test]
+fn server_default_not_merged_when_request_explicit() {
+    let mut req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+        "model": "test",
+        "messages": [{"role": "user", "content": "hi"}],
+        "enable_thinking": true,
+    }))
+    .expect("valid chat request");
+    assert!(req.thinking_explicitly_requested());
+
+    let server_kw = ChatTemplateKwargs {
+        enable_thinking: Some(false),
+        thinking_budget: None,
+    };
+    if !req.thinking_explicitly_requested() {
+        req.chat_template_kwargs = Some(server_kw);
+    }
+    assert!(req.chat_template_kwargs.is_none());
+    assert!(req.resolve_thinking(false).0);
+}

@@ -119,41 +119,69 @@ pub(super) fn parse_sampling_presets(
     )
 }
 
-/// Parse [behavior] from MODEL.toml. Returns
-/// (thinking_in_tools, max_thinking_budget, thinking_default, fp8_kv_calibration_tokens, default_kv_dtype, default_num_drafts, disable_tool_steering, tool_call_parser, enable_loop_watchdog).
-pub(super) fn parse_behavior(
-    model_dir: &std::path::Path,
-) -> (bool, u32, bool, usize, String, u32, bool, String, bool) {
+/// Parsed `[behavior]` table from a model's MODEL.toml. Field defaults
+/// match `ModelBehavior::default()` so an absent table / absent field is
+/// behavior-neutral.
+#[derive(Clone)]
+pub(super) struct ParsedBehavior {
+    pub thinking_in_tools: bool,
+    pub max_thinking_budget: u32,
+    pub thinking_default: bool,
+    pub fp8_kv_calibration_tokens: usize,
+    pub default_kv_dtype: String,
+    pub default_num_drafts: u32,
+    pub disable_tool_steering: bool,
+    pub tool_call_parser: String,
+    pub enable_loop_watchdog: bool,
+    pub think_loop_min_repeats: u32,
+    pub think_loop_scan_window: u32,
+    pub confidence_early_stop: bool,
+    pub confidence_run_length: u32,
+    pub fuzzy_repeat_tolerance_div: u32,
+    pub max_inter_tool_prose: u32,
+    pub tscg: bool,
+    pub disable_tool_grammar: bool,
+    pub rollback_resteer: bool,
+    pub rom_head: String,
+}
+
+impl Default for ParsedBehavior {
+    fn default() -> Self {
+        Self {
+            thinking_in_tools: true,
+            max_thinking_budget: 256,
+            thinking_default: false,
+            fp8_kv_calibration_tokens: 0,
+            default_kv_dtype: String::new(),
+            default_num_drafts: 0,
+            disable_tool_steering: false,
+            tool_call_parser: String::new(),
+            enable_loop_watchdog: false,
+            think_loop_min_repeats: 3,
+            think_loop_scan_window: 160,
+            confidence_early_stop: true,
+            confidence_run_length: 30,
+            fuzzy_repeat_tolerance_div: 12,
+            max_inter_tool_prose: 384,
+            tscg: false,
+            disable_tool_grammar: false,
+            rollback_resteer: true,
+            rom_head: String::new(),
+        }
+    }
+}
+
+/// Parse `[behavior]` from MODEL.toml. Absent table or parse error →
+/// `ParsedBehavior::default()`.
+pub(super) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
     let model_toml_path = model_dir.join("MODEL.toml");
     if !model_toml_path.exists() {
-        return (
-            true,
-            256,
-            false,
-            0,
-            String::new(),
-            0,
-            false,
-            String::new(),
-            false,
-        );
+        return ParsedBehavior::default();
     }
     let content = std::fs::read_to_string(&model_toml_path).unwrap_or_default();
     let toml: toml::Value = match toml::from_str(&content) {
         Ok(v) => v,
-        Err(_) => {
-            return (
-                true,
-                256,
-                false,
-                0,
-                String::new(),
-                0,
-                false,
-                String::new(),
-                false,
-            );
-        }
+        Err(_) => return ParsedBehavior::default(),
     };
     let b = toml.get("behavior");
     let thinking_in_tools = b
@@ -197,7 +225,53 @@ pub(super) fn parse_behavior(
         .and_then(|v| v.get("enable_loop_watchdog"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    (
+    let think_loop_min_repeats = b
+        .and_then(|v| v.get("think_loop_min_repeats"))
+        .and_then(|v| v.as_integer())
+        .map(|v| v as u32)
+        .unwrap_or(3);
+    let think_loop_scan_window = b
+        .and_then(|v| v.get("think_loop_scan_window"))
+        .and_then(|v| v.as_integer())
+        .map(|v| v as u32)
+        .unwrap_or(160);
+    let confidence_early_stop = b
+        .and_then(|v| v.get("confidence_early_stop"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let confidence_run_length = b
+        .and_then(|v| v.get("confidence_run_length"))
+        .and_then(|v| v.as_integer())
+        .map(|v| v as u32)
+        .unwrap_or(30);
+    let fuzzy_repeat_tolerance_div = b
+        .and_then(|v| v.get("fuzzy_repeat_tolerance_div"))
+        .and_then(|v| v.as_integer())
+        .map(|v| v as u32)
+        .unwrap_or(12);
+    let max_inter_tool_prose = b
+        .and_then(|v| v.get("max_inter_tool_prose"))
+        .and_then(|v| v.as_integer())
+        .map(|v| v as u32)
+        .unwrap_or(384);
+    let tscg = b
+        .and_then(|v| v.get("tscg"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let disable_tool_grammar = b
+        .and_then(|v| v.get("disable_tool_grammar"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let rollback_resteer = b
+        .and_then(|v| v.get("rollback_resteer"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let rom_head = b
+        .and_then(|v| v.get("rom_head"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    ParsedBehavior {
         thinking_in_tools,
         max_thinking_budget,
         thinking_default,
@@ -207,7 +281,17 @@ pub(super) fn parse_behavior(
         disable_tool_steering,
         tool_call_parser,
         enable_loop_watchdog,
-    )
+        think_loop_min_repeats,
+        think_loop_scan_window,
+        confidence_early_stop,
+        confidence_run_length,
+        fuzzy_repeat_tolerance_div,
+        max_inter_tool_prose,
+        tscg,
+        disable_tool_grammar,
+        rollback_resteer,
+        rom_head,
+    }
 }
 
 /// Parse `[[model_types]]` from MODEL.toml.

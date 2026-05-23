@@ -13,6 +13,8 @@
 //! When busy: drains pending queue (mutex lock) after each decode step.
 
 // ── Submodules (split for ≤500 LoC files) ──────────────────────────────────
+mod confidence;
+mod decode_logits_content;
 mod decode_logits_seq;
 mod decode_logits_step;
 mod decode_step;
@@ -28,22 +30,29 @@ mod phase_start_prefills;
 mod prefill_a_step;
 mod prefill_b_step;
 mod repetition;
+mod rollback;
 mod sample_step;
 mod spec_step;
+mod ssm_decode_ring;
 mod types;
 mod verify_dflash_step;
 mod verify_k2_step;
 mod verify_k3_step;
 mod verify_k4_step;
 
+use confidence::*;
+use decode_logits_content::*;
 use decode_logits_seq::*;
 use decode_logits_step::*;
 use decode_step::*;
 use emit_step::*;
+pub use helpers::set_boundary_token_mask;
 pub use helpers::set_enable_loop_watchdog;
 pub use helpers::set_im_start_hard_stop;
+pub use helpers::set_numeric_token_mask;
 use helpers::*;
 pub use helpers::{CONTENT_LOOP_PERIOD_MAX, CONTENT_LOOP_PERIOD_MIN};
+pub use helpers::{WatchdogParams, set_watchdog_params};
 use lifecycle::*;
 use logprobs::*;
 use mod_helpers::*;
@@ -53,8 +62,10 @@ use phase_start_prefills::start_new_requests;
 use prefill_a_step::*;
 use prefill_b_step::*;
 use repetition::*;
+use rollback::{RollbackOutcome, rollback_to_boundary};
 use sample_step::*;
 use spec_step::*;
+use ssm_decode_ring::SsmDecodeRing;
 use types::*;
 use verify_dflash_step::*;
 use verify_k2_step::*;
@@ -99,6 +110,7 @@ pub fn run(
     block_size: usize,
     think_end_token: Option<u32>,
     think_start_token: Option<u32>,
+    code_fence_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     reflection_suppress_ids: Vec<u32>,
@@ -260,6 +272,7 @@ pub fn run(
             use_ngram_speculative,
             think_end_token,
             think_start_token,
+            code_fence_token,
             tool_call_start_token,
             tool_call_end_token,
             &reflection_suppress_ids,
@@ -308,6 +321,7 @@ pub fn run(
                     &mut active,
                     think_end_token,
                     think_start_token,
+                    code_fence_token,
                     tool_call_start_token,
                     tool_call_end_token,
                     &reflection_suppress_ids,

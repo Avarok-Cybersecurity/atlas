@@ -142,10 +142,7 @@ pub fn extract_url_annotations(content: &str) -> Option<Vec<Annotation>> {
         // Strip trailing sentence punctuation and unmatched close-parens /
         // markdown emphasis markers. Parens match pairs so URLs like
         // Wikipedia's `https://en.wikipedia.org/wiki/Foo_(bar)` survive.
-        loop {
-            let Some(last) = raw.chars().last() else {
-                break;
-            };
+        while let Some(last) = raw.chars().last() {
             let strip = match last {
                 '.' | ',' | ';' | ':' | '!' | '?' | '*' | '_' => true,
                 ')' => {

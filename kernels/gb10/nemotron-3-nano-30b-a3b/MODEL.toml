@@ -49,6 +49,8 @@ thinking_in_tools = false
 max_thinking_budget = 2048
 # Nemotron-H Nano is a thinking-first model: it is trained to produce a
 # <think>...</think> reasoning trace before the final answer. Default to
-# thinking enabled so the server's reasoning parser (`qwen` style)
-# strips the block and returns clean `content`.
+# thinking enabled so the server's reasoning parser (`deepseek_r1` style,
+# matching NVIDIA's shipped `nano_v3` parser) strips the block and returns
+# clean `content`. A tagless thinking-on output (cut off mid-think) is
+# treated as reasoning, never leaked into `content`.
 thinking_default = true
