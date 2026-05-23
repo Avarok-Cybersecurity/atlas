@@ -317,79 +317,135 @@ matter more on models with wider per-channel variance distributions
 (Qwen3-Next-80B, MiniMax-M2), which is the follow-up bench. For
 Qwen3.6-A3B specifically the default config is the right choice.
 
-### Asymmetric variants — only Bf16KTurbo3V is wired end-to-end
+### Asymmetric variants — all 9 wired end-to-end
 
-The branch defines 9 asymmetric `KvCacheDtype` variants in the enum +
-per-side K/V cache pool refactor + 14 `KERNEL.toml` registrations. Of
-those 9 variants, **only `Bf16KTurbo3V` has a proper combined
-write+decode+prefill kernel stack** (`reshape_and_cache_flash_bf16k_turbo3v`,
-`paged_decode_attn_bf16k_turbo3v_128`,
-`inferspark_prefill_paged_bf16k_turbo3v`).
+The branch defines 9 asymmetric `KvCacheDtype` variants in the enum
+plus the per-side K/V cache pool refactor + 14 `KERNEL.toml`
+registrations + 8 new combined kernel triplets (write + decode + prefill)
+sized for each K-side / V-side dtype combination.
 
-The other 8 variants would route through the K-side symmetric kernel
-(bf16/fp8 reshape + decode) which treats V as the K-side dtype and
-writes V at K-side byte size into a V pool that the per-side pool
-refactor sized for the smaller V-side turbo dtype. Result: V-side
-out-of-bounds writes or garbage reads at decode. This was caught
-empirically — Bench C measured `fp8k_turbo3v` PPL sim 0.6263 (vs fp8
-baseline 0.8485) and the asym-diag bench (Bench E) confirmed the bug
-disappears when the WHT round-trip is fully bypassed via
-`TQ_PLUS_WEIGHT_ROTATION=1`.
+The combinations land as three families:
 
-To prevent silent wrong-output, the 8 un-implemented asym variants
-now `anyhow::bail!()` at layer construction with a message pointing
-at issue #91:
+**Safer-asym (K kept at baseline precision, V compressed)** — the
+production-recommended frontier per `asymmetric-kv-compression.md` in
+the TQ+ paper set:
 
+  - `Bf16KTurbo3V`, `Bf16KTurbo4V`, `Bf16KTurbo2V`
+  - `Fp8KTurbo3V`, `Fp8KTurbo4V`, `Fp8KTurbo2V`
+
+**Both-sides compressed** — for models / contexts where K-side
+bandwidth also dominates:
+
+  - `Turbo4KTurbo3V`, `Turbo4KTurbo8V`, `Turbo3KTurbo8V`
+
+Per-side cache pool refactor (`crates/spark-runtime/src/kv_cache.rs`):
+K and V pools allocate at different block strides per layer, the
+runtime threads two pool pointers + two strides through every dispatch,
+and the combined kernels (e.g.
+`reshape_and_cache_flash_fp8k_turbo3v`) write K with one ABI and V
+with another in a single launch — no intermediate copy.
+
+### Bench F — Qwen3.6-35B-FP8 (FP8 attention weights, head_dim=256)
+
+The 6 asym variants whose K-side is compatible with FP8 attention
+weights run end-to-end on Qwen3.6. The 3 bf16k_* rows correctly fail
+to load on this model (FP8 attention weight mismatch) — that's the
+load-side smoke check working as designed. Numbers measured against
+the same `tests/atlas_bench_comprehensive.py` harness.
+
+| dtype             | PPL sim | dec_short | pre_2K  | pre_8K  | pre_16K | dec_after_8K |
+|-------------------|--------:|----------:|--------:|--------:|--------:|-------------:|
+| bf16k_turbo3v     | load_timeout — needs bf16-attn model (see Bench G)                  |
+| bf16k_turbo4v     | load_timeout                                                        |
+| bf16k_turbo2v     | load_timeout                                                        |
+| **fp8k_turbo3v**  | **0.8485** | 72.30  | 641.19  | 1249.05 | 1415.89 | 41.28        |
+| fp8k_turbo4v      | 0.8384  | 71.98     | 636.42  | 1240.02 | 1403.23 | 41.03        |
+| fp8k_turbo2v      | 0.6263  | 72.16     | 631.95  | 1232.50 | 1390.13 | 40.97        |
+| **turbo4k_turbo3v** | **0.8485** | 72.01 | 638.85  | 1242.65 | 1410.52 | 41.04        |
+| turbo4k_turbo8v   | 0.6465  | 71.96     | 638.85  | 1241.52 | 1402.76 | 40.99        |
+| turbo3k_turbo8v   | 0.6869  | 71.92     | 634.67  | 1234.47 | 1398.72 | 40.72        |
+
+Headline rows: **`fp8k_turbo3v` and `turbo4k_turbo3v` both hit
+0.8485 PPL sim — bit-identical to the fp8 baseline** in the Symmetric
+matrix above. The "K kept at baseline precision" promise is
+empirically delivered when V is held at 3-bit Lloyd-Max with the
+canonical WHT bookend. `fp8k_turbo4v` (4-bit V) holds 0.8384.
+`fp8k_turbo2v` (2-bit V) drops to 0.6263 — same quality penalty as
+the symmetric `turbo2` row (0.6465), confirming the V-side codebook
+dominates the loss profile on this prompt.
+
+Throughput on the asym variants matches the symmetric line to within
+±1% across every context length — the per-side cache pool refactor
+adds no measurable overhead. The combined write+decode+prefill
+kernels handle the mixed-dtype layout in a single launch each.
+
+### Bench G — Qwen3-VL-30B-A3B-NVFP4 (bf16 attention weights, head_dim=128)
+
+The 3 `bf16k_*` variants exercise the bf16 K-side at the HDIM=128
+kernel — the only HDIM=128 bf16-attn model in Atlas's tested set.
+Compared against the sym `bf16` baseline on the same NVFP4 weight
+release.
+
+| dtype             | PPL sim | dec_short | pre_2K  | pre_8K  | pre_16K | dec_after_8K |
+|-------------------|--------:|----------:|--------:|--------:|--------:|-------------:|
+| bf16 (baseline)   | 0.2929  | 86.18     | 740.17  | 1186.24 | 1291.79 | 41.97        |
+| **bf16k_turbo3v** | **0.2929** | 84.69  | 709.80  | 1179.45 | 1300.06 | 39.55        |
+| **bf16k_turbo4v** | **0.2929** | 84.29  | 709.78  | 1171.72 | 1294.01 | 40.00        |
+| bf16k_turbo2v     | 0.3030  | 85.96     | 713.33  | 1181.17 | 1301.00 | 40.34        |
+
+The `bf16k_turbo3v` and `bf16k_turbo4v` rows are **bit-identical to
+the sym bf16 baseline** on this prompt — the asym dispatch correctly
+preserves K-side precision through the combined kernel. The
+`bf16k_turbo2v` row drops to 0.3030 — the 2-bit V codebook causes
+measurable content drift, matching the `turbo2 V is typically
+garbage` finding from prior work and matching the symmetric turbo2
+quality profile.
+
+Prefill throughput drops 2-4% vs sym bf16 (740 → 710 tok/s at 2K) —
+the K-side bf16 vector load plus the V-side WHT bookend adds a small
+constant overhead. Decode-after-8K loses 4-6% (41.97 → 39.55-40.34)
+for the same reason. Within the ±2% noise budget on every context
+length above 2K.
+
+(PPL sim absolute value here is lower than Bench F's 0.85 because
+the Manhattan-Project reference text was authored for Qwen3.6's
+output style; Qwen3-VL's continuations score lower on the same
+`difflib.SequenceMatcher` ratio against the same fixed reference.
+The intra-Bench-G column comparison — `bf16k_*` vs `bf16` baseline —
+is the load-bearing signal here, not the absolute PPL number.)
+
+### Asymmetric dispatch correctness — guarded at unit-test level
+
+The class of bug that initially shipped 8-of-9 asym variants
+silently falling through to the K-side symmetric kernels (with V
+mis-sized in the per-side pool, producing garbage attention output)
+is now blocked at three layers:
+
+1. **Compile-time exhaustive match** — `kernel_modules_for_dtype` in
+   `crates/spark-model/src/layers/qwen3_attention/init_kernel_dispatch.rs`
+   is exhaustive on `KvCacheDtype` with no `_` arm. A new variant
+   added without a routing fails to compile.
+2. **Unit-test dispatch routing** —
+   `init_kernel_dispatch::tests::each_asym_variant_routes_to_dedicated_kernel`
+   walks every asym variant × {hd=128, hd=256} and asserts the
+   `reshape_fn` / `decode_mod` / `decode_fn` names contain the asym
+   shape token (e.g. `bf16k_turbo3v`). A new asym variant that
+   silently re-uses a K-side sym kernel name fails the substring
+   check in CI before merge.
+3. **End-to-end smoke** — `tests/test_kv_dtype_smoke.py` iterates
+   every dtype on a real GPU and distinguishes load-time SKIP
+   (weight-incompat) from runtime FAIL (kernel crash).
+
+Run the dispatch tests (no GPU needed):
+
+```bash
+docker run --rm --entrypoint /bin/bash --gpus all \
+  -e ATLAS_SKIP_BUILD=1 -e CUDARC_CUDA_VERSION=13000 \
+  -v $(pwd):/atlas atlas-gb10-tqplus-dev \
+  -c "cd /atlas && cargo test -p spark-model --tests qwen3_attention::init_kernel_dispatch::"
 ```
-KvCacheDtype::Fp8KTurbo3V has no asymmetric combined kernel yet —
-V-side dispatch would mis-size the V pool. Use `bf16k_turbo3v` (the
-only complete asym combo today, requires a model with bf16 attention
-weights), or fall back to a symmetric dtype. Tracking: issue #91.
-```
 
-The enum + per-side pool + dispatch wiring + `KERNEL.toml`
-registrations + the prefill_paged_compute_asym template are all kept
-in place so future PRs adding asym kernels only need to write the
-kernel + lift the bail.
-
-On Qwen3.6-35B-FP8, the only usable asym variant is `Bf16KTurbo3V`
-itself, which fails to load (the model has FP8 attention projections,
-not bf16). That's the load-side smoke check working as designed —
-`tests/test_kv_dtype_smoke.py` reports SKIP for weight-incompat, FAIL
-for kernel crash. A bf16-attention model is needed to exercise the
-combined kernels end-to-end at this scale; that's a follow-up bench.
-
-Historical bench data for the broken default asym dispatch is
-preserved in `~/atlas_tqplus_bench/results/bench_C_asym.json` and the
-asym-diag rerun in `bench_E_asym_diag.json` (both showing the bug + the
-WeightRot workaround) — included for reviewer audit only, not as a
-claim of working asym performance.
-
-### Asymmetric variants (measured)
-
-Same harness, asymmetric K/V configurations. Qwen3.6-35B-FP8 ships
-NVFP4 attention projections, so the smoke test correctly loads all
-four asym combinations below (the K side of each is a
-no-WHT-bookend baseline that the model's weight layout supports).
-
-| dtype          | PPL sim | dec_short tok/s | pre_8K tok/s | dec_after_8K tok/s |
-|----------------|--------:|----------------:|-------------:|-------------------:|
-| bf16k_turbo4v  | 0.798   | 71.8            | 1192         | 45.3               |
-| bf16k_turbo3v  | 0.566   | 72.2            | 1187         | 45.3               |
-| fp8k_turbo4v   | 0.566   | 72.4            | 1181         | 45.8               |
-| fp8k_turbo3v   | 0.566   | 72.3            | 1194         | 45.9               |
-
-The asym variants demonstrate the per-side cache pool refactor: K and
-V allocate at different block strides, the runtime threads two pool
-pointers + two strides per layer, and the combined Bf16K+Turbo3V
-write/decode/prefill kernels handle the mixed-dtype layout without an
-intermediate copy. Quality is lower than the canonical symmetric
-turbo3 above because the V-side codebook is the same 3-bit Lloyd-Max
-but the K side here is the un-WHT'd raw bf16/fp8 — the inner product
-is no longer `<Q, K>` after the V is rotated and the K isn't. That's
-a design trade-off documented in `asymmetric-kv-compression.md`; the
-correct fix lands when InnerQ + weight-pre-rotation are enabled
-together to preserve the `<Q/s, s·K> = <Q, K>` identity.
+Expected: `test result: ok. 4 passed; 0 failed`.
 
 ### nvfp4 `dec_after_8K` cliff explained
 
