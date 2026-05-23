@@ -285,16 +285,40 @@ impl Qwen3AttentionLayer {
                     // TurboQuant+ both-sides asym prefill. Helper dispatches
                     // per-combo (see prefill/paged_attn_turbok.rs).
                     self.prefill_turbok_turbo_v(
-                        ctx, kv_cache, q_contiguous, attn_out, meta.block_table,
-                        n, kv_len, seq_len_start, nq, nkv, hd, bs_u, inv_sqrt_d, stream,
+                        ctx,
+                        kv_cache,
+                        q_contiguous,
+                        attn_out,
+                        meta.block_table,
+                        n,
+                        kv_len,
+                        seq_len_start,
+                        nq,
+                        nkv,
+                        hd,
+                        bs_u,
+                        inv_sqrt_d,
+                        stream,
                     )?
                 }
                 (KvCacheDtype::Fp8KTurbo3V, _)
                 | (KvCacheDtype::Fp8KTurbo4V, _)
                 | (KvCacheDtype::Fp8KTurbo2V, _) => self.prefill_fp8k_turbo_nv(
-                    ctx, kv_cache, q_contiguous, attn_out, meta.block_table,
-                    n, kv_len, seq_len_start, nq, nkv, hd, bs_u, inv_sqrt_d,
-                    fp8_k_scale, stream,
+                    ctx,
+                    kv_cache,
+                    q_contiguous,
+                    attn_out,
+                    meta.block_table,
+                    n,
+                    kv_len,
+                    seq_len_start,
+                    nq,
+                    nkv,
+                    hd,
+                    bs_u,
+                    inv_sqrt_d,
+                    fp8_k_scale,
+                    stream,
                 )?,
                 (KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8, true) => {
                     let data_bytes = match self.kv_dtype {

@@ -36,8 +36,7 @@ impl Qwen3AttentionLayer {
         fp8_k_scale: f32,
         stream: u64,
     ) -> Result<()> {
-        let v_block_stride =
-            kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64;
+        let v_block_stride = kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64;
         match self.kv_dtype {
             KvCacheDtype::Fp8KTurbo3V => {
                 if self.prefill_attn_paged_fp8k_turbo3v_64_k.0 == 0 {

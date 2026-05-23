@@ -40,13 +40,21 @@ pub(super) fn kernel_modules_for_dtype(
         KvCacheDtype::Turbo4 => (
             "reshape_and_cache_turbo",
             "reshape_and_cache_flash_turbo4",
-            if hd_le_128 { "paged_decode_turbo4_128" } else { "paged_decode_turbo4" },
+            if hd_le_128 {
+                "paged_decode_turbo4_128"
+            } else {
+                "paged_decode_turbo4"
+            },
             "paged_decode_attn_turbo4",
         ),
         KvCacheDtype::Turbo3 => (
             "reshape_and_cache_turbo",
             "reshape_and_cache_flash_turbo3",
-            if hd_le_128 { "paged_decode_turbo3_128" } else { "paged_decode_turbo3" },
+            if hd_le_128 {
+                "paged_decode_turbo3_128"
+            } else {
+                "paged_decode_turbo3"
+            },
             "paged_decode_attn_turbo3",
         ),
         KvCacheDtype::Turbo2 => (
@@ -58,43 +66,71 @@ pub(super) fn kernel_modules_for_dtype(
         KvCacheDtype::Turbo8 => (
             "reshape_and_cache_turbo",
             "reshape_and_cache_flash_turbo8",
-            if hd_le_128 { "paged_decode_turbo8_128" } else { "paged_decode_turbo8" },
+            if hd_le_128 {
+                "paged_decode_turbo8_128"
+            } else {
+                "paged_decode_turbo8"
+            },
             "paged_decode_attn_turbo8",
         ),
         KvCacheDtype::Bf16KTurbo3V => (
             "reshape_and_cache_turbo",
             "reshape_and_cache_flash_bf16k_turbo3v",
-            if hd_le_128 { "paged_decode_bf16k_turbo3v_128" } else { "paged_decode_bf16k_turbo3v" },
+            if hd_le_128 {
+                "paged_decode_bf16k_turbo3v_128"
+            } else {
+                "paged_decode_bf16k_turbo3v"
+            },
             "paged_decode_attn_bf16k_turbo3v",
         ),
         KvCacheDtype::Bf16KTurbo4V => (
             "reshape_and_cache_turbo",
             "reshape_and_cache_flash_bf16k_turbo4v",
-            if hd_le_128 { "paged_decode_bf16k_turbo4v_128" } else { "paged_decode_bf16k_turbo4v" },
+            if hd_le_128 {
+                "paged_decode_bf16k_turbo4v_128"
+            } else {
+                "paged_decode_bf16k_turbo4v"
+            },
             "paged_decode_attn_bf16k_turbo4v",
         ),
         KvCacheDtype::Bf16KTurbo2V => (
             "reshape_and_cache_turbo",
             "reshape_and_cache_flash_bf16k_turbo2v",
-            if hd_le_128 { "paged_decode_bf16k_turbo2v_128" } else { "paged_decode_bf16k_turbo2v" },
+            if hd_le_128 {
+                "paged_decode_bf16k_turbo2v_128"
+            } else {
+                "paged_decode_bf16k_turbo2v"
+            },
             "paged_decode_attn_bf16k_turbo2v",
         ),
         KvCacheDtype::Fp8KTurbo3V => (
             "reshape_and_cache_turbo",
             "reshape_and_cache_flash_fp8k_turbo3v",
-            if hd_le_128 { "paged_decode_fp8k_turbo3v_128" } else { "paged_decode_fp8k_turbo3v" },
+            if hd_le_128 {
+                "paged_decode_fp8k_turbo3v_128"
+            } else {
+                "paged_decode_fp8k_turbo3v"
+            },
             "paged_decode_attn_fp8k_turbo3v",
         ),
         KvCacheDtype::Fp8KTurbo4V => (
             "reshape_and_cache_turbo",
             "reshape_and_cache_flash_fp8k_turbo4v",
-            if hd_le_128 { "paged_decode_fp8k_turbo4v_128" } else { "paged_decode_fp8k_turbo4v" },
+            if hd_le_128 {
+                "paged_decode_fp8k_turbo4v_128"
+            } else {
+                "paged_decode_fp8k_turbo4v"
+            },
             "paged_decode_attn_fp8k_turbo4v",
         ),
         KvCacheDtype::Fp8KTurbo2V => (
             "reshape_and_cache_turbo",
             "reshape_and_cache_flash_fp8k_turbo2v",
-            if hd_le_128 { "paged_decode_fp8k_turbo2v_128" } else { "paged_decode_fp8k_turbo2v" },
+            if hd_le_128 {
+                "paged_decode_fp8k_turbo2v_128"
+            } else {
+                "paged_decode_fp8k_turbo2v"
+            },
             "paged_decode_attn_fp8k_turbo2v",
         ),
         KvCacheDtype::Turbo4KTurbo3V => (
@@ -238,9 +274,7 @@ mod tests {
                     "{d:?} hd={hd}: decode_fn {df:?} doesn't contain {want:?}"
                 );
                 // And asym shape tokens must NOT appear in sym dtypes.
-                for asym_shape in
-                    &["bf16k_", "fp8k_", "turbo4k_", "turbo3k_"] as &[&str]
-                {
+                for asym_shape in &["bf16k_", "fp8k_", "turbo4k_", "turbo3k_"] as &[&str] {
                     assert!(
                         !df.contains(asym_shape),
                         "{d:?} hd={hd}: sym dtype routed to asym kernel {df:?}"
@@ -259,20 +293,29 @@ mod tests {
         // Turbo3 has both _128 and full variants.
         let (_, _, dm_128, _) = kernel_modules_for_dtype(KvCacheDtype::Turbo3, 128);
         let (_, _, dm_256, _) = kernel_modules_for_dtype(KvCacheDtype::Turbo3, 256);
-        assert!(dm_128.ends_with("_128"), "hd=128 turbo3: {dm_128} should end _128");
-        assert!(!dm_256.ends_with("_128"), "hd=256 turbo3: {dm_256} should not end _128");
+        assert!(
+            dm_128.ends_with("_128"),
+            "hd=128 turbo3: {dm_128} should end _128"
+        );
+        assert!(
+            !dm_256.ends_with("_128"),
+            "hd=256 turbo3: {dm_256} should not end _128"
+        );
 
         // Same shape gate for the asym families that support hd>128
         // (Bf16K/Fp8K — Turbo*KTurbo*V are 128-only today and the test
         // accepts that).
-        for asym in &[
-            KvCacheDtype::Bf16KTurbo3V,
-            KvCacheDtype::Fp8KTurbo3V,
-        ] {
+        for asym in &[KvCacheDtype::Bf16KTurbo3V, KvCacheDtype::Fp8KTurbo3V] {
             let (_, _, dm_128, _) = kernel_modules_for_dtype(*asym, 128);
             let (_, _, dm_256, _) = kernel_modules_for_dtype(*asym, 256);
-            assert!(dm_128.ends_with("_128"), "{asym:?} hd=128: {dm_128} should end _128");
-            assert!(!dm_256.ends_with("_128"), "{asym:?} hd=256: {dm_256} should not end _128");
+            assert!(
+                dm_128.ends_with("_128"),
+                "{asym:?} hd=128: {dm_128} should end _128"
+            );
+            assert!(
+                !dm_256.ends_with("_128"),
+                "{asym:?} hd=256: {dm_256} should not end _128"
+            );
         }
     }
 }
