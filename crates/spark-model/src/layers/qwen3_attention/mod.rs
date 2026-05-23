@@ -17,6 +17,7 @@
 mod decode;
 mod helpers;
 mod init;
+mod init_kernel_dispatch;
 pub mod innerq_driver;
 mod prefill;
 mod prefill_weights;
