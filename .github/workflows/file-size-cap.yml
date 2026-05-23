@@ -66,6 +66,14 @@ jobs:
             # Already heavily split (`serve_phases`, `serve_router`); the
             # remaining body is the linear bootstrapping sequence.
             "crates/spark-server/src/main_modules/serve.rs"
+            # 524 LoC — Qwen3 attention layer kernel-handle bootstrap.
+            # The TurboQuant+ asymmetric variants extend several existing
+            # `match kv_dtype` arms (turbo3 + asym pair members route to
+            # the same kernel module) and the new InnerQ + Turbo2 +
+            # Bf16K+Turbo3V handles slot into the single-pass struct
+            # constructor. Splitting fragments the kernel-loading
+            # sequence which is read top-to-bottom alongside `types.rs`.
+            "crates/spark-model/src/layers/qwen3_attention/init.rs"
             # 509 LoC — single integration test orchestration; one
             # comprehensive end-to-end harness. Splitting would require
             # extracting fixtures into a shared module that's only used
