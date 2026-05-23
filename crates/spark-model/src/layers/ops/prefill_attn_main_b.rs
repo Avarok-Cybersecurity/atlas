@@ -407,7 +407,6 @@ pub fn prefill_attention_paged_bf16k_turbo3v_64(
         .launch(stream)
 }
 
-
 /// Prefill paged attention — TurboQuant+ safer-asym Bf16K + Turbo4V (BR=64).
 ///
 /// Same kernel ABI as `prefill_attention_paged_bf16k_turbo3v_64`; the

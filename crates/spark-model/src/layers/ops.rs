@@ -51,12 +51,12 @@ mod prefill_attn_a;
 mod prefill_attn_b;
 #[path = "ops/prefill_attn_batched.rs"]
 mod prefill_attn_batched;
+#[path = "ops/prefill_attn_fp8k.rs"]
+mod prefill_attn_fp8k;
 #[path = "ops/prefill_attn_main_a.rs"]
 mod prefill_attn_main_a;
 #[path = "ops/prefill_attn_main_b.rs"]
 mod prefill_attn_main_b;
-#[path = "ops/prefill_attn_fp8k.rs"]
-mod prefill_attn_fp8k;
 #[path = "ops/prefill_attn_turbok.rs"]
 mod prefill_attn_turbok;
 #[path = "ops/quant_dispatch.rs"]
@@ -95,9 +95,9 @@ pub use norm::*;
 pub use prefill_attn_a::*;
 pub use prefill_attn_b::*;
 pub use prefill_attn_batched::*;
+pub use prefill_attn_fp8k::*;
 pub use prefill_attn_main_a::*;
 pub use prefill_attn_main_b::*;
-pub use prefill_attn_fp8k::*;
 pub use prefill_attn_turbok::*;
 pub use quant_dispatch::*;
 pub use sampling::*;
