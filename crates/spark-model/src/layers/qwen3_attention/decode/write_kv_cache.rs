@@ -258,6 +258,136 @@ impl Qwen3AttentionLayer {
                     stream,
                 )
             }
+            KvCacheDtype::Turbo4KTurbo3V
+            | KvCacheDtype::Turbo4KTurbo8V
+            | KvCacheDtype::Turbo3KTurbo8V => {
+                // TurboQuant+ both-sides asym: K and V are BOTH turbo dtypes.
+                // WHT bookend applies to BOTH K and V (mirrors sym turbo3/4/8/2
+                // arm) — and InnerQ apply also fires on K when active.
+                let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+                if !weight_pre_rotated
+                    && self.wht_bf16_k.0 != 0
+                    && (head_dim == 128 || head_dim == 256 || head_dim == 512)
+                {
+                    use spark_runtime::kernel_args::KernelLaunch;
+                    let total_heads = num_kv_heads * num_tokens;
+                    KernelLaunch::new(gpu, self.wht_bf16_k)
+                        .grid([total_heads, 1, 1])
+                        .block([32, 1, 1])
+                        .arg_ptr(k)
+                        .arg_u32(head_dim)
+                        .launch(stream)?;
+                    if self.innerq_apply_k_k.0 != 0 && head_dim == 128 {
+                        KernelLaunch::new(gpu, self.innerq_apply_k_k)
+                            .grid([total_heads, 1, 1])
+                            .block([32, 1, 1])
+                            .arg_ptr(k)
+                            .arg_u32(head_dim)
+                            .launch(stream)?;
+                    }
+                    KernelLaunch::new(gpu, self.wht_bf16_k)
+                        .grid([total_heads, 1, 1])
+                        .block([32, 1, 1])
+                        .arg_ptr(v)
+                        .arg_u32(head_dim)
+                        .launch(stream)?;
+                }
+                // Dispatch each combo with its own (k_data, v_data) sizes.
+                let k_block_stride = kv_cache.k_block_stride_bytes_for_layer(self.attn_layer_idx) as u64;
+                let v_block_stride = kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64;
+                let k_pool = kv_cache.k_pool_ptr(self.attn_layer_idx);
+                let v_pool = kv_cache.v_pool_ptr(self.attn_layer_idx);
+                match self.kv_dtype {
+                    KvCacheDtype::Turbo4KTurbo3V => ops::reshape_and_cache_turbo4k_turbo3v(
+                        gpu, self.reshape_cache_k, k, v, k_pool, v_pool, slot,
+                        num_tokens, num_kv_heads, head_dim, block_size,
+                        key_stride, value_stride,
+                        k_block_stride, kv_cache.nvfp4_data_bytes() as u64,
+                        v_block_stride, kv_cache.turbo3_data_bytes() as u64,
+                        stream,
+                    ),
+                    KvCacheDtype::Turbo4KTurbo8V => ops::reshape_and_cache_turbo4k_turbo8v(
+                        gpu, self.reshape_cache_k, k, v, k_pool, v_pool, slot,
+                        num_tokens, num_kv_heads, head_dim, block_size,
+                        key_stride, value_stride,
+                        k_block_stride, kv_cache.nvfp4_data_bytes() as u64,
+                        v_block_stride, kv_cache.turbo8_data_bytes() as u64,
+                        stream,
+                    ),
+                    KvCacheDtype::Turbo3KTurbo8V => ops::reshape_and_cache_turbo3k_turbo8v(
+                        gpu, self.reshape_cache_k, k, v, k_pool, v_pool, slot,
+                        num_tokens, num_kv_heads, head_dim, block_size,
+                        key_stride, value_stride,
+                        k_block_stride, kv_cache.turbo3_data_bytes() as u64,
+                        v_block_stride, kv_cache.turbo8_data_bytes() as u64,
+                        stream,
+                    ),
+                    _ => unreachable!(),
+                }
+            }
+            KvCacheDtype::Fp8KTurbo3V
+            | KvCacheDtype::Fp8KTurbo4V
+            | KvCacheDtype::Fp8KTurbo2V => {
+                // TurboQuant+ asym for FP8 models: K = fp8 (per-tensor `k_scale`),
+                // V = turbo{3,4,2}. Single combined write kernel quantizes K to
+                // FP8 and V to N-bit Lloyd-Max + matched-norm scale.
+                //
+                // V-side WHT bookend (mirrors bf16k_turbo*v path). K side gets
+                // no WHT — its FP8 dynamic range already covers attention scores
+                // adequately for the per-tensor scale model is calibrated for.
+                let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+                if !weight_pre_rotated
+                    && self.wht_bf16_k.0 != 0
+                    && (head_dim == 128 || head_dim == 256 || head_dim == 512)
+                {
+                    use spark_runtime::kernel_args::KernelLaunch;
+                    let total_heads = num_kv_heads * num_tokens;
+                    KernelLaunch::new(gpu, self.wht_bf16_k)
+                        .grid([total_heads, 1, 1])
+                        .block([32, 1, 1])
+                        .arg_ptr(v)
+                        .arg_u32(head_dim)
+                        .launch(stream)?;
+                }
+                let (k_scale, _v_scale) = self.effective_fp8_scales();
+                let k_block_stride =
+                    kv_cache.k_block_stride_bytes_for_layer(self.attn_layer_idx) as u64;
+                let v_block_stride =
+                    kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64;
+                let k_pool = kv_cache.k_pool_ptr(self.attn_layer_idx);
+                let v_pool = kv_cache.v_pool_ptr(self.attn_layer_idx);
+                match self.kv_dtype {
+                    KvCacheDtype::Fp8KTurbo3V => ops::reshape_and_cache_fp8k_turbo3v(
+                        gpu, self.reshape_cache_k, k, v, k_pool, v_pool, slot,
+                        num_tokens, num_kv_heads, head_dim, block_size,
+                        key_stride, value_stride, k_scale,
+                        k_block_stride, v_block_stride,
+                        kv_cache.turbo3_data_bytes() as u64,
+                        stream,
+                    ),
+                    KvCacheDtype::Fp8KTurbo4V => ops::reshape_and_cache_fp8k_turbo4v(
+                        gpu, self.reshape_cache_k, k, v, k_pool, v_pool, slot,
+                        num_tokens, num_kv_heads, head_dim, block_size,
+                        key_stride, value_stride, k_scale,
+                        k_block_stride, v_block_stride,
+                        kv_cache.nvfp4_data_bytes() as u64,
+                        stream,
+                    ),
+                    KvCacheDtype::Fp8KTurbo2V => ops::reshape_and_cache_fp8k_turbo2v(
+                        gpu, self.reshape_cache_k, k, v, k_pool, v_pool, slot,
+                        num_tokens, num_kv_heads, head_dim, block_size,
+                        key_stride, value_stride, k_scale,
+                        k_block_stride, v_block_stride,
+                        kv_cache.turbo2_data_bytes() as u64,
+                        stream,
+                    ),
+                    _ => unreachable!(),
+                }
+            }
             KvCacheDtype::Bf16 => {
                 ops::reshape_and_cache(
                     gpu,
