@@ -305,11 +305,19 @@ pub fn build_model(
     //               Predictor LRU.
     fn dtype_label(dt: KvCacheDtype) -> &'static str {
         match dt {
-            KvCacheDtype::Bf16 => "BF16",
-            KvCacheDtype::Fp8 => "FP8",
+            KvCacheDtype::Bf16
+            | KvCacheDtype::Bf16KTurbo4V
+            | KvCacheDtype::Bf16KTurbo3V
+            | KvCacheDtype::Bf16KTurbo2V => "BF16",
+            KvCacheDtype::Fp8
+            | KvCacheDtype::Fp8KTurbo4V
+            | KvCacheDtype::Fp8KTurbo3V
+            | KvCacheDtype::Fp8KTurbo2V => "FP8",
             KvCacheDtype::Nvfp4 => "NVFP4",
-            KvCacheDtype::Turbo3 => "Turbo3",
-            KvCacheDtype::Turbo4 => "Turbo4",
+            KvCacheDtype::Turbo3 | KvCacheDtype::Turbo3KTurbo8V | KvCacheDtype::Turbo2 => "Turbo3",
+            KvCacheDtype::Turbo4 | KvCacheDtype::Turbo4KTurbo3V | KvCacheDtype::Turbo4KTurbo8V => {
+                "Turbo4"
+            }
             KvCacheDtype::Turbo8 => "Turbo8",
         }
     }

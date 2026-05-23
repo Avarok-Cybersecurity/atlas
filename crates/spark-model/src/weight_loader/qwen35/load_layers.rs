@@ -2,6 +2,7 @@
 
 mod attention_arms;
 mod linear_attn_arms;
+mod tq_plus_weight_rotation;
 
 use anyhow::Result;
 use atlas_core::config::{LayerType, ModelConfig};

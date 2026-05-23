@@ -242,6 +242,15 @@ pub(crate) fn resolve_kv_cache_config(
             spark_runtime::kv_cache::KvCacheDtype::Turbo3
                 | spark_runtime::kv_cache::KvCacheDtype::Turbo4
                 | spark_runtime::kv_cache::KvCacheDtype::Turbo8
+                | spark_runtime::kv_cache::KvCacheDtype::Turbo4KTurbo3V
+                | spark_runtime::kv_cache::KvCacheDtype::Turbo4KTurbo8V
+                | spark_runtime::kv_cache::KvCacheDtype::Turbo3KTurbo8V
+                | spark_runtime::kv_cache::KvCacheDtype::Bf16KTurbo4V
+                | spark_runtime::kv_cache::KvCacheDtype::Bf16KTurbo3V
+                | spark_runtime::kv_cache::KvCacheDtype::Fp8KTurbo4V
+                | spark_runtime::kv_cache::KvCacheDtype::Fp8KTurbo3V
+                | spark_runtime::kv_cache::KvCacheDtype::Bf16KTurbo2V
+                | spark_runtime::kv_cache::KvCacheDtype::Fp8KTurbo2V
         ) {
         let auto_hp = ((num_attn_layers as f32 / 3.0).ceil() as usize).max(2);
         tracing::info!(
@@ -264,8 +273,12 @@ pub(crate) fn resolve_kv_cache_config(
             effective_kv_dtype_str,
         );
     }
-    let layer_dtypes =
-        crate::main_modules::build_layer_kv_dtypes(kv_dtype, num_attn_layers, kv_hp_layers);
+    let layer_dtypes = crate::main_modules::build_layer_kv_dtypes(
+        kv_dtype,
+        num_attn_layers,
+        kv_hp_layers,
+        spark_runtime::kv_cache::KvCacheDtype::Bf16,
+    );
     let hss_cache_blocks_per_seq = if args.high_speed_swap {
         Some(args.high_speed_swap_cache_blocks_per_seq)
     } else {

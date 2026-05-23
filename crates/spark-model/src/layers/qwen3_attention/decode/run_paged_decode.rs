@@ -116,14 +116,20 @@ impl Qwen3AttentionLayer {
                 }
             }
             // Turbo4/3: same 4-bit interface as NVFP4 (block_stride + data_section layout).
-            KvCacheDtype::Turbo4 | KvCacheDtype::Turbo3 => {
+            KvCacheDtype::Turbo4
+            | KvCacheDtype::Turbo3
+            | KvCacheDtype::Turbo3KTurbo8V
+            | KvCacheDtype::Turbo2 => {
                 let kernel = if head_dim > 256 && self.paged_decode_512_k.0 != 0 {
                     self.paged_decode_512_k
                 } else {
                     self.paged_decode_k
                 };
                 let data_bytes = match self.kv_dtype {
-                    KvCacheDtype::Turbo3 => kv_cache.turbo3_data_bytes() as u64,
+                    KvCacheDtype::Turbo3 | KvCacheDtype::Turbo3KTurbo8V => {
+                        kv_cache.turbo3_data_bytes() as u64
+                    }
+                    KvCacheDtype::Turbo2 => kv_cache.turbo2_data_bytes() as u64,
                     _ => kv_cache.turbo4_data_bytes() as u64,
                 };
                 ops::paged_decode_attn_nvfp4(
@@ -177,7 +183,36 @@ impl Qwen3AttentionLayer {
                     stream,
                 )
             }
-            KvCacheDtype::Bf16 => {
+            KvCacheDtype::Bf16KTurbo3V => {
+                // TurboQuant+ safer-asym Bf16K + Turbo3V combined paged decode.
+                // K read as BF16 NHD (vector loads), V read as turbo3 (3-bit
+                // packed + FP8 group scale, sparse-V threshold on batched +
+                // remainder paths). Single combined kernel per HDIM variant.
+                let sliding = self.sliding_window.unwrap_or(0);
+                ops::paged_decode_attn_bf16k_turbo3v(
+                    gpu,
+                    self.paged_decode_k,
+                    q,
+                    kv_cache.k_pool_ptr(self.attn_layer_idx),
+                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    output,
+                    block_table,
+                    seq_lens,
+                    max_blocks_per_seq,
+                    num_seqs,
+                    num_q_heads,
+                    num_kv_heads,
+                    head_dim,
+                    block_size,
+                    inv_sqrt_d,
+                    q_stride,
+                    kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.turbo3_data_bytes() as u64,
+                    sliding,
+                    stream,
+                )
+            }
+            KvCacheDtype::Bf16 | KvCacheDtype::Bf16KTurbo4V | KvCacheDtype::Bf16KTurbo2V => {
                 // BF16 paged decode — no Split-K (not implemented for BF16 yet)
                 // Use HDIM=512 kernel for Gemma-4 full-attention layers (head_dim > 256)
                 let kernel = if head_dim > 256 && self.paged_decode_512_k.0 != 0 {

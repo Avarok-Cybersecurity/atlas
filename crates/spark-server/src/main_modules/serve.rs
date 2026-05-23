@@ -316,6 +316,22 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     }
     let model = model_opt.expect("head retains model on rank 0");
 
+    // TQ+ InnerQ: opt-in via `TURBO_INNERQ=N` (N = calibration token count).
+    // Once enabled, the kernel-side apply pass starts accumulating K² stats
+    // and the scheduler polls `maybe_finalize` per prefill chunk; once N
+    // tokens have flowed through, scales activate and stay live for the
+    // process lifetime.
+    if let Some(driver) = spark_model::layers::qwen3_attention::InnerQDriver::from_env() {
+        match driver.start() {
+            Ok(()) => {
+                let _ = spark_model::layers::qwen3_attention::INNERQ.set(driver);
+            }
+            Err(e) => {
+                tracing::warn!("InnerQ calibration disabled: start() failed: {e:#}");
+            }
+        }
+    }
+
     // Build EOS token list from generation_config.json (authoritative) or config.json fallback
     let mut eos_tokens = serve_phases::load_eos_tokens(&model_dir, &config);
 

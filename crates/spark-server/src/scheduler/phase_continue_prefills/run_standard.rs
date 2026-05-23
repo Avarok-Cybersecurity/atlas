@@ -35,6 +35,11 @@ pub(super) fn run_standard_chunk_loop(
     completed_indices: &mut Vec<(usize, Option<u32>)>,
     did_mixed_step: &mut bool,
 ) {
+    // TQ+ InnerQ: poll once per chunk to see if calibration has banked
+    // enough K² stats to finalize scales. The driver itself is idempotent
+    // (no-op after activation), so calling on every chunk is cheap.
+    // Group size = 128 = Qwen3 head_dim (the only currently-supported shape).
+    super::poll_innerq();
     // Single chunk per call — the outer scheduler loop re-enters this
     // function on the very next iteration to advance the next stream
     // or the next chunk. This yield keeps fairness across pending

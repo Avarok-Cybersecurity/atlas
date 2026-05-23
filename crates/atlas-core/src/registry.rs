@@ -43,6 +43,18 @@ unsafe extern "C" {
     fn cuFuncSetAttribute(hfunc: *mut c_void, attrib: i32, value: i32) -> i32;
     fn cuGetErrorName(error: i32, pStr: *mut *const i8) -> i32;
     fn cuGetErrorString(error: i32, pStr: *mut *const i8) -> i32;
+    // Resolve a `__device__` symbol in a loaded CUmodule into a device pointer
+    // + size in bytes. Used by drivers that need to read/write device globals
+    // (e.g. InnerQ calibration state) without round-tripping through a kernel.
+    fn cuModuleGetGlobal_v2(
+        dptr: *mut u64,
+        bytes: *mut usize,
+        hmod: *mut c_void,
+        name: *const i8,
+    ) -> i32;
+    fn cuMemcpyHtoDAsync_v2(dst: u64, src: *const c_void, bytes: usize, stream: u64) -> i32;
+    fn cuMemcpyDtoHAsync_v2(dst: *mut c_void, src: u64, bytes: usize, stream: u64) -> i32;
+    fn cuStreamSynchronize(stream: u64) -> i32;
 }
 
 /// Resolve a CUresult status code into `"<NAME>: <description>"` via
@@ -237,6 +249,89 @@ impl AtlasRegistry {
     /// Get the raw CUstream handle for Atlas's own stream.
     pub fn raw_stream(&self) -> u64 {
         self.stream.cu_stream() as u64
+    }
+
+    /// Resolve a `__device__` symbol in a loaded PTX module to its device
+    /// pointer + byte length. Required for drivers that read/write device
+    /// globals without launching a kernel (e.g. InnerQ calibration state).
+    /// `symbol` must be the linker-visible name — C++ namespace symbols are
+    /// Itanium-mangled (`_ZN7tq_plus14d_innerq_scaleE`).
+    pub fn device_symbol(&self, module_name: &str, symbol: &str) -> Result<(u64, usize)> {
+        let raw_mod = self
+            .raw_modules
+            .get(module_name)
+            .ok_or_else(|| AtlasError::ModuleLoad(format!("Module '{module_name}' not loaded")))?;
+        let c_sym = CString::new(symbol).map_err(|e| {
+            AtlasError::ModuleLoad(format!("{module_name}::{symbol}: CString: {e}"))
+        })?;
+        let mut dptr: u64 = 0;
+        let mut bytes: usize = 0;
+        let status =
+            unsafe { cuModuleGetGlobal_v2(&mut dptr, &mut bytes, *raw_mod, c_sym.as_ptr().cast()) };
+        if status != 0 {
+            return Err(AtlasError::ModuleLoad(format!(
+                "{module_name}::{symbol}: cuModuleGetGlobal_v2 failed: {}",
+                cuda_error_text(status)
+            )));
+        }
+        Ok((dptr, bytes))
+    }
+
+    /// Async H2D copy into a previously-resolved device pointer.
+    ///
+    /// # Safety
+    /// Caller must ensure `dst` is a valid device pointer and the bytes
+    /// pointed to by `src` outlive the copy (host buffers must persist
+    /// until the next sync on `stream`).
+    pub unsafe fn copy_h2d_async(
+        &self,
+        dst: u64,
+        src: *const c_void,
+        bytes: usize,
+        stream: u64,
+    ) -> Result<()> {
+        let status = unsafe { cuMemcpyHtoDAsync_v2(dst, src, bytes, stream) };
+        if status != 0 {
+            return Err(AtlasError::KernelLaunch(format!(
+                "cuMemcpyHtoDAsync_v2 failed: {}",
+                cuda_error_text(status)
+            )));
+        }
+        Ok(())
+    }
+
+    /// Async D2H copy from a device pointer. Same lifetime caveats as the
+    /// H2D variant.
+    ///
+    /// # Safety
+    /// Caller must keep `dst` alive until `stream` is synchronised.
+    pub unsafe fn copy_d2h_async(
+        &self,
+        dst: *mut c_void,
+        src: u64,
+        bytes: usize,
+        stream: u64,
+    ) -> Result<()> {
+        let status = unsafe { cuMemcpyDtoHAsync_v2(dst, src, bytes, stream) };
+        if status != 0 {
+            return Err(AtlasError::KernelLaunch(format!(
+                "cuMemcpyDtoHAsync_v2 failed: {}",
+                cuda_error_text(status)
+            )));
+        }
+        Ok(())
+    }
+
+    /// Block the calling thread until all prior work on `stream` completes.
+    pub fn stream_synchronize(&self, stream: u64) -> Result<()> {
+        let status = unsafe { cuStreamSynchronize(stream) };
+        if status != 0 {
+            return Err(AtlasError::KernelLaunch(format!(
+                "cuStreamSynchronize failed: {}",
+                cuda_error_text(status)
+            )));
+        }
+        Ok(())
     }
 
     /// Launch a kernel on a specified raw CUDA stream.

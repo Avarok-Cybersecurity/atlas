@@ -208,8 +208,98 @@ pub fn prefill_attention_paged_fp8_64(
         .launch(stream)
 }
 
-/// Paged prefill Flash Attention — NVFP4 KV cache, BR=64 (256 threads).
+/// Paged prefill Flash Attention — Turbo3 KV cache (3-bit packed), BR=64.
 #[allow(clippy::too_many_arguments)]
+pub fn prefill_attention_paged_turbo3_64(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    output: DevicePtr,
+    block_table: DevicePtr,
+    q_len: u32,
+    kv_len: u32,
+    q_offset: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    cache_block_size: u32,
+    sliding_window: u32,
+    inv_sqrt_d: f32,
+    block_stride_bytes: u64,
+    data_section_bytes: u64,
+    stream: u64,
+) -> Result<()> {
+    let br = 64u32;
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_q_heads, div_ceil(q_len, br), 1])
+        .block([256, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(output)
+        .arg_ptr(block_table)
+        .arg_u32(q_len)
+        .arg_u32(kv_len)
+        .arg_u32(q_offset)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(cache_block_size)
+        .arg_u32(sliding_window)
+        .arg_u32(1u32)
+        .arg_f32(inv_sqrt_d)
+        .arg_u64(block_stride_bytes)
+        .arg_u64(data_section_bytes)
+        .launch(stream)
+}
+
+pub fn prefill_attention_paged_turbo2_64(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    output: DevicePtr,
+    block_table: DevicePtr,
+    q_len: u32,
+    kv_len: u32,
+    q_offset: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    cache_block_size: u32,
+    sliding_window: u32,
+    inv_sqrt_d: f32,
+    block_stride_bytes: u64,
+    data_section_bytes: u64,
+    stream: u64,
+) -> Result<()> {
+    let br = 32u32; // try BR=32 entry first while debugging BR=64 OOB
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_q_heads, div_ceil(q_len, br), 1])
+        .block([256, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(output)
+        .arg_ptr(block_table)
+        .arg_u32(q_len)
+        .arg_u32(kv_len)
+        .arg_u32(q_offset)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(cache_block_size)
+        .arg_u32(sliding_window)
+        .arg_u32(1u32)
+        .arg_f32(inv_sqrt_d)
+        .arg_u64(block_stride_bytes)
+        .arg_u64(data_section_bytes)
+        .launch(stream)
+}
+
 pub fn prefill_attention_paged_nvfp4_64(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
@@ -254,5 +344,65 @@ pub fn prefill_attention_paged_nvfp4_64(
         .arg_f32(inv_sqrt_d)
         .arg_u64(block_stride_bytes)
         .arg_u64(data_section_bytes)
+        .launch(stream)
+}
+
+/// Paged prefill (BR=64) for Bf16K + Turbo3V asymmetric KV cache.
+///
+/// Reads K as BF16 (NHD contiguous) and V as 3-bit Lloyd-Max packed bytes
+/// with FP8 per-group scale. Uses the asym prefill compute template
+/// (prefill_paged_compute_asym.cuh) which takes separate LOAD_K_TILE +
+/// LOAD_V_TILE macros — bf16 cp.async for K, sync dequant for V.
+///
+/// Kernel: `inferspark_prefill_paged_bf16k_turbo3v_64(Q, K_cache, V_cache,
+///          O, block_table, q_len, kv_len, q_offset, num_q_heads,
+///          num_kv_heads, head_dim, cache_block_size, sliding_window,
+///          causal_mask_enabled, inv_sqrt_d, v_block_stride_bytes,
+///          v_data_section_bytes)`
+/// Grid: (num_q_heads, div_ceil(q_len, BR), 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn prefill_attention_paged_bf16k_turbo3v_64(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    output: DevicePtr,
+    block_table: DevicePtr,
+    q_len: u32,
+    kv_len: u32,
+    q_offset: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    cache_block_size: u32,
+    sliding_window: u32,
+    inv_sqrt_d: f32,
+    v_block_stride_bytes: u64,
+    v_data_section_bytes: u64,
+    stream: u64,
+) -> Result<()> {
+    let br = 64u32;
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_q_heads, div_ceil(q_len, br), 1])
+        .block([256, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(output)
+        .arg_ptr(block_table)
+        .arg_u32(q_len)
+        .arg_u32(kv_len)
+        .arg_u32(q_offset)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(cache_block_size)
+        .arg_u32(sliding_window)
+        // causal_mask_enabled = 1 (default causal).
+        .arg_u32(1u32)
+        .arg_f32(inv_sqrt_d)
+        .arg_u64(v_block_stride_bytes)
+        .arg_u64(v_data_section_bytes)
         .launch(stream)
 }

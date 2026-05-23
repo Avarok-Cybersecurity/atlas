@@ -166,6 +166,15 @@ pub struct Qwen3AttentionLayer {
     pub(super) reshape_and_cache_flash_v_only_k: KernelHandle,
     /// WHT kernel for turbo KV cache.
     pub(super) wht_bf16_k: KernelHandle,
+    /// Inverse WHT. With TQ_PLUS_SIGNS off this aliases the forward kernel
+    /// (plain WHT is self-inverse); with TQ+ signs the inverse reverses the
+    /// signs1/signs2 order, which is required because (S2·H·S1)·(S2·H·S1) ≠ I.
+    pub(super) wht_bf16_k_inv: KernelHandle,
+    /// InnerQ application kernels (Q pre-WHT scale_inv, K post-WHT scale).
+    /// Returns 0 handle when InnerQ kernel module isn't loaded — caller should
+    /// guard launches with `.0 != 0`.
+    pub(super) innerq_apply_q_k: KernelHandle,
+    pub(super) innerq_apply_k_k: KernelHandle,
     pub(super) paged_decode_k: KernelHandle,
     /// HDIM=512 paged decode kernel for Gemma-4 full-attention layers
     pub(super) paged_decode_512_k: KernelHandle,
@@ -234,7 +243,14 @@ pub struct Qwen3AttentionLayer {
     pub(super) prefill_attn_paged_64_k: KernelHandle,
     pub(super) prefill_attn_paged_fp8_64_k: KernelHandle,
     pub(super) prefill_attn_paged_nvfp4_64_k: KernelHandle,
+    pub(super) prefill_attn_paged_turbo2_64_k: KernelHandle,
+    pub(super) prefill_attn_paged_turbo3_64_k: KernelHandle,
     pub(super) prefill_attn_paged_turbo4_64_k: KernelHandle,
+    // ── TurboQuant+ asymmetric BR=64 prefill kernels ──
+    // Combined-dtype kernels that read K and V with different on-disk layouts.
+    // Currently: Bf16K + Turbo3V (safer-asym variant — K kept at bf16 precision,
+    // V aggressively compressed to 3-bit Lloyd-Max + FP8 group scale).
+    pub(super) prefill_attn_paged_bf16k_turbo3v_64_k: KernelHandle,
     // ── Q12 Phase 3: same-chunk-len batched paged-prefill kernels ──
     // Each takes `const int* const* block_table_ptrs` + per-batch Q/O
     // offsets. Used by `Qwen3AttentionLayer::prefill_batched` when N≥2
