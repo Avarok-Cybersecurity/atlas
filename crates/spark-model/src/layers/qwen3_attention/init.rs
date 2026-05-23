@@ -91,20 +91,6 @@ impl Qwen3AttentionLayer {
         fp8_calibration_tokens: usize,
         config: &atlas_core::config::ModelConfig,
     ) -> Result<Self> {
-        // Asymmetric dtype variants that do not yet have proper combined
-        // (K-side ABI, V-side ABI) write+decode kernels would silently route
-        // through the sym K-side kernel — which treats V as the K-side dtype,
-        // writes V at full-K byte size into a V pool sized for the smaller
-        // V-side turbo dtype, and either runs off the end of the V block or
-        // reads garbage at decode. Bail at init rather than ship the silent
-        // wrong-output path; complete asym combos today are
-        // `Bf16KTurbo{2,3,4}V` (combined kernels in `reshape_and_cache_turbo.cu`
-        // + `paged_decode_attn_bf16k_turbo{2,3,4}v_128.cu`). Tracking: issue #91.
-        // No remaining asymmetric variants need bailing — all six
-        // bf16k_turbo*, fp8k_turbo*, and turbo*k_turbo*v combos now have
-        // combined kernels + dispatch wiring.
-
-
         let (reshape_mod, reshape_fn, decode_mod, decode_fn) =
             super::init_kernel_dispatch::kernel_modules_for_dtype(kv_dtype, config.head_dim);
         let mrope_interleaved = config.mrope_interleaved;
