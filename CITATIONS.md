@@ -6,30 +6,47 @@ publication or upstream PR.
 
 ## Prior art (in order it should be cited)
 
-### 1. Google ICLR 2026 — TurboQuant (canonical)
-- **TurboQuant: Lossless Quantization of Large Language Model KV Caches via
-  Walsh-Hadamard Transform and Lloyd-Max** — arXiv 2504.19874
-- Established the canonical TurboQuant rotation: **`signs1 → WHT → signs2`**
-  with independent Rademacher draws on each side. Lindeberg-CLT argument:
-  two-sided random sign masks Gaussianize an arbitrary input distribution
-  marginal, eliminating outlier mass that would otherwise clip in FP8 or waste
-  dynamic range in low-bit codebooks.
-- Atlas's `wht_bf16.cu` implemented plain WHT (no signs) — strictly weaker than
-  the canonical form.
+### 1. Google — TurboQuant (canonical)
+- **TurboQuant: Online Vector Quantization with Near-optimal Distortion
+  Rate** — Amir Zandieh, Majid Daliri, Majid Hadian, Vahab Mirrokni.
+  arXiv:[2504.19874](https://arxiv.org/abs/2504.19874) (April 2025, 25
+  pages).
+- Establishes that random rotation of input vectors induces a
+  concentrated Beta distribution on coordinates, after which the same
+  scalar Lloyd-Max quantizer can be applied per coordinate. For inner
+  product estimation specifically, the paper proposes a two-stage
+  approach: an MSE-optimal quantizer followed by a 1-bit Quantized JL
+  transform on the residual to remove bias. Information-theoretic
+  near-optimal distortion at all bit widths; the paper reports absolute
+  quality neutrality at 3.5 bits per channel and marginal degradation
+  at 2.5 bpc on KV cache quantization.
+- Atlas's `wht_bf16.cu` implemented plain WHT (no random sign mask) —
+  strictly weaker than the canonical Randomized Hadamard form.
 
-### 2. `TheTom/llama-cpp-turboquant` — Tom Turney's TurboQuant fork
-- First public llama.cpp fork implementing TurboQuant KV cache (`--kv-cache-dtype turbo3/turbo4/turbo8`).
-- Source: `ggml/src/ggml-cuda/turbo-wht.cu`, `turbo-quant.cuh`, `turbo-innerq.cu`.
-- The sign arrays vendored into `kernels/gb10/common/tq_plus_signs.cuh` are
-  byte-identical to `TURBO_WHT_SIGNS1`/`TURBO_WHT_SIGNS2` in `turbo-quant.cuh`
-  (seed=42 Rademacher draws).
-- The CLI surface `turbo3 / turbo4 / turbo8` that Atlas adopted matches this
-  fork's prior public CLI.
+### 2. `TheTom/turboquant_plus` — TurboQuant+ umbrella research repo
+- Primary research dumping ground for the TQ+ work that spans multiple
+  downstream inference engines (Atlas, llama.cpp, vLLM, etc.).
+  [https://github.com/TheTom/turboquant_plus](https://github.com/TheTom/turboquant_plus)
+- ~15 papers under `docs/papers/` plus reference quant/dequant
+  implementations and bench harnesses. Where the per-feature designs
+  cited below (matched-norm L2, sparse V, asymmetric K/V, InnerQ,
+  layer-aware V) are documented and benchmarked.
 
-### 3. Tom Turney — TurboQuant+ (TQ+) papers
-Beyond-Google research at `~/dev/turboquant-tinygrad-bridge/turboquant_plus/docs/papers/`
-(15 papers total, not vendored here). Pieces relevant to this branch's port
-sequence:
+### 3. `TheTom/llama-cpp-turboquant` — TurboQuant+ engine reference
+- First public llama.cpp fork implementing a complete TurboQuant KV
+  cache (`--kv-cache-dtype turbo3/turbo4/turbo8`).
+  [https://github.com/TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant)
+- Source: `ggml/src/ggml-cuda/turbo-wht.cu`, `turbo-quant.cuh`,
+  `turbo-innerq.cu`.
+- The sign arrays vendored into `kernels/gb10/common/tq_plus_signs.cuh`
+  are byte-identical to `TURBO_WHT_SIGNS1`/`TURBO_WHT_SIGNS2` in
+  `turbo-quant.cuh` (seed=42 Rademacher draws).
+- The CLI surface `turbo3 / turbo4 / turbo8` that Atlas adopted matches
+  this fork's prior public CLI.
+
+### 4. TurboQuant+ paper set — per-feature designs
+Pieces relevant to this branch's port sequence, all from
+`TheTom/turboquant_plus/docs/papers/`:
 
 - `asymmetric-kv-compression.md` — K is bandwidth-critical, V can tolerate
   harder quant. Motivates `KvCacheDtype::TurboKV { k: Turbo4, v: Turbo3 }`.
