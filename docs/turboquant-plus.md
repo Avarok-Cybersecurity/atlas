@@ -294,7 +294,7 @@ plus the asymmetric variants below).
 
 ### turbo3 env-knob ablation
 
-The branch ships two off-by-default env knobs: `TURBO_INnerQ=N` (per-
+The branch ships two off-by-default env knobs: `TURBO_INNERQ=N` (per-
 channel Q/K equalisation calibrated over N tokens) and
 `TQ_PLUS_WEIGHT_ROTATION=1` (rotates Q/K/V projection weights once at
 load time, drops 160 runtime WHT launches per decode token).

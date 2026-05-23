@@ -74,6 +74,36 @@ jobs:
             # constructor. Splitting fragments the kernel-loading
             # sequence which is read top-to-bottom alongside `types.rs`.
             "crates/spark-model/src/layers/qwen3_attention/init.rs"
+            # 552 LoC — Qwen3 attention decode dispatcher. TQ+ ships 9 asym
+            # KvCacheDtype variants (bf16k_/fp8k_/turbo*k_*); each takes a
+            # dedicated arm in the decode-kernel match expression. The fp8k_ +
+            # turbo*k_ wrappers were already extracted to sibling ops modules
+            # (`kv_cache_fp8k.rs`, `kv_cache_turbok.rs`); the dispatcher proper
+            # is the single per-call kernel-selection site and reads top-to-
+            # bottom with `write_kv_cache.rs` as a paired audit.
+            "crates/spark-model/src/layers/qwen3_attention/decode/run_paged_decode.rs"
+            # 522 LoC — paged-prefill kernel dispatcher (paired with decode
+            # dispatcher above). Fp8k_ asym was already extracted to
+            # `paged_attn_fp8k.rs`; the remaining tuple-match selects the
+            # prefill kernel handle per (KvCacheDtype, use_br64).
+            "crates/spark-model/src/layers/qwen3_attention/prefill/paged_attn.rs"
+            # 508 LoC — write_kv_cache dispatcher. Each KvCacheDtype arm runs
+            # the WHT bookend conditionally (gated on weight_pre_rotation env)
+            # then calls the per-variant reshape kernel. Splitting the arms
+            # into per-variant files would invert the read order with
+            # run_paged_decode.rs — they're audited as a pair.
+            "crates/spark-model/src/layers/qwen3_attention/decode/write_kv_cache.rs"
+            # 533 LoC — generic ops/kv_cache wrappers. Holds the BF16/FP8/NVFP4
+            # reshape_and_cache wrappers + the asym wrappers that share the
+            # same FFI signature shape. Asym variants with k_scale threading
+            # (fp8k_) were already extracted to `kv_cache_fp8k.rs`; turbo*k_
+            # to `kv_cache_turbok.rs`. The remainder is the wrapper backbone.
+            "crates/spark-model/src/layers/ops/kv_cache.rs"
+            # 508 LoC — prefill_attn ops wrappers. Same pattern: per-variant
+            # asym wrappers extracted to siblings (`prefill_attn_fp8k.rs`,
+            # `prefill_attn_turbok.rs`); this file is the original
+            # ungated/bf16/fp8/nvfp4/turbo3/turbo4 + Bf16KTurbo* set.
+            "crates/spark-model/src/layers/ops/prefill_attn_main_b.rs"
             # 509 LoC — single integration test orchestration; one
             # comprehensive end-to-end harness. Splitting would require
             # extracting fixtures into a shared module that's only used
