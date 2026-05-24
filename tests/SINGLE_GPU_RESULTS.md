@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -1096,3 +1096,46 @@ provides parser-level protection. `anthropic/handlers.rs` `count_tokens` checks
 Pure-attention models (Mistral: 0 SSM layers) allocate zero SSM memory regardless.
 
 **No new bugs found. Branch `spec_ssm` is correct and ready for hardware re-test.**
+
+---
+
+## 2026-05-24 Re-investigation (spec_ssm HEAD `91ce063`)
+
+Fresh independent investigation from the original task brief (3 priorities: Mistral long-context
+gibberish, Nemotron tool calls, SSM pool memory). Files read from scratch; all findings cross-checked
+against spec_ssm HEAD.
+
+### P1 — Mistral Small 4 MLA: all three bugs independently confirmed, all fixed
+
+Independent trace of the gibberish regression identified the HDIM=256/head_dim=128 kernel mismatch
+as the primary source of corruption — consistent with BUG 1 documented above. The original task brief
+attributed the failure to a YaRN `inv_freq` formula error; this session confirmed that diagnosis was
+incorrect. On spec_ssm `yarn.rs` implements the correct Hugging Face `find_correction_dim` formula;
+YaRN `inv_freq` values are numerically correct and were never a source of output degradation.
+
+All three actual fixes traced to current code:
+
+| Bug | File | Fix |
+|-----|------|-----|
+| HDIM=256 kernel (BUG 1) | `cache_skip_mla.rs`, `paged_mla.rs` | `mla_fused_prefill` (HDIM=320) + `prefill_attn_128_k` + `ensure!` guard |
+| Fp8 KV default (BUG 2) | `phase_assemble.rs`, `kv_dtypes.rs` | `unwrap_or(Bf16)` + always-emit BF16 vec |
+| Multi-chunk context loss (BUG 3) | `paged_mla.rs` | `mla_prefill_paged_320` absorbed paged path for `seq_len_start > 0` |
+
+`dflash_head/from_weights.rs` confirmed as a prior art reference — already loads
+`inferspark_prefill_h128` for the drafter head for the same HDIM mismatch reason.
+`cache_skip_mla.rs` now routes through `mla_fused_prefill` (320-dim absorbed) rather than
+a 128-dim unabsorbed path, making the `inferspark_prefill_h128` kernel unnecessary for this path.
+
+### P2 — Nemotron Super 120B tool calling: fix chain confirmed
+
+All four MODEL.toml flags present: `disable_tool_steering = true`, `tool_call_parser = "bare_json"`,
+`skip_template_tools = true`, `thinking_in_tools = false`. `BareJsonParser::suppresses_jinja_tools() → true`
+provides parser-level protection independently of MODEL.toml. No format-instruction conflict.
+
+### P3 — SSM pool: two-pool design confirmed correct
+
+`SsmStatePool` (sized by `--max-batch-size`, default 8) and `SsmSnapshotPool` (sized by
+`--ssm-cache-slots`) are fully independent. `--ssm-cache-slots 0` correctly zeroes only
+the snapshot pool. `--max-batch-size 1` reduces active pool to ~151 MB for single-stream serving.
+
+**No new bugs found. All fixes confirmed correct. Branch `spec_ssm` is correct and ready for hardware re-test.**
