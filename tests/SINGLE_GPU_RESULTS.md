@@ -1157,4 +1157,54 @@ MODEL.toml flags in place. Triple-layer protection intact.
 **P3 (SSM pools)**: Two-pool design re-verified. `SsmStatePool` sized by `--max-batch-size`;
 `SsmSnapshotPool` sized by `--ssm-cache-slots`. No CLI propagation bugs.
 
+No code changes required. All findings consistent with prior sessions.
+
+---
+
+## 2026-05-24 Third-pass verification — main vs spec_ssm cross-check
+
+Investigation started from `main` branch (pre-fix) code to independently verify what was broken,
+then cross-checked against spec_ssm fixes.
+
+### Pre-fix state (`main`): bugs independently confirmed
+
+**`paged_mla.rs` (main)**: flash attention used `prefill_attn_k` (inferspark_prefill, HDIM=256 at
+compile time) with `inv_sqrt_d = effective_attn_scale(hd=128) = 1/√128`. No kernel guard. The
+HDIM=256 kernel reads 256 K-elements per row while K stride is `nkv*hd = 128` — OOB reads corrupt
+attention scores. Both the kernel selection and scale were wrong.
+
+**`cache_skip_mla.rs` (main)**: called `ops::prefill_attention_64` with `prefill_attn_64_k`
+(inferspark_prefill_64, also HDIM=256) and hardcoded `1/sqrt(hd=128)`. Same two bugs. The fused
+absorbed path (`mla_fused_prefill_k`) was compiled into the kernel binary but never called in the
+prefill path.
+
+**`kv_dtypes.rs` (main)**: `build_layer_kv_dtypes` returned empty vec when `kv_dtype == BF16`.
+`phase_assemble.rs` indexed into the empty `layer_kv_dtypes` with `get(i).copied().unwrap_or(Fp8)`
+— all 36 MLA attention layers silently used FP8, quantizing the compressed KV latents.
+
+### Fixed state (spec_ssm): fixes verified
+
+**`cache_skip_mla.rs`**: `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0)` + routes through
+`ops::mla_fused_prefill` with `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)`.
+
+**`paged_mla.rs`**: `anyhow::ensure!(hd > 128 || self.prefill_attn_128_k.0 != 0)` + kernel
+selection picks `prefill_attn_128_k` when `hd <= 128`. Multi-chunk path (`seq_len_start > 0`)
+now uses the `mla_prefill_paged_320` absorbed paged kernel.
+
+**`kv_dtypes.rs`**: returns `vec![BF16; num_attention_layers]` when `kv_dtype == BF16`, never
+empty. `phase_assemble.rs` `unwrap_or(Bf16)` is now a safe fallback, not a latent FP8 trap.
+
+**YaRN** (`yarn.rs`): formula was correct on both branches. The original task brief diagnosis
+(YaRN `low_freq_factor` mis-aliasing) was incorrect — `yarn.rs` already used the right
+`find_correction_dim` formula in dimension-index space.
+
+**Nemotron MODEL.toml**: four flags present: `disable_tool_steering = true`,
+`tool_call_parser = "bare_json"`, `skip_template_tools = true`, `thinking_in_tools = false`.
+
+**SSM pool propagation**: `args.ssm_cache_slots` → `serve_phases/build.rs:71` →
+`factory/build.rs:373` → `TransformerModel::new(ssm_cache_slots)` → `SsmSnapshotPool::new(ssm_cache_slots)`.
+`SsmStatePool::new(&config, max_batch_size, ...)` — entirely separate, unaffected by `ssm_cache_slots`.
+
+**No new bugs found. All prior fixes confirmed correct.**
+
 No code changes required. All findings consistent with prior session.
