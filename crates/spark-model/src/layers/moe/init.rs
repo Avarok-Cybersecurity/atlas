@@ -98,9 +98,16 @@ impl MoeLayer {
                 "moe_fp8_grouped_gemm",
                 "moe_fp8_grouped_gemm_v2",
             ),
+            // 2026-05-20: default-ON. v1 had documented coalescing-perf bug;
+            // verified that v1 also has *numerical* bug for some
+            // (token, expert) tile combinations — chunk-4 last-token
+            // expert-200 up_proj output 2.4× too large vs v2 on
+            // Qwen3.6-35B-A3B-FP8 (matches HF reference). Drives long-context
+            // residual amplification at the prefill-chunk-4 boundary.
+            // Override via ATLAS_FP8_MOE_COALESCED=0 to restore v1.
             fp8_moe_coalesced_enabled: std::env::var("ATLAS_FP8_MOE_COALESCED")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false),
+                .unwrap_or(true),
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             moe_gate_topk_fused_k: super::super::try_kernel(
                 gpu,

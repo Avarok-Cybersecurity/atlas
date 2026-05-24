@@ -119,10 +119,21 @@ pub(super) fn load_layers(
         // When native_fp8, skip NVFP4 routed experts — FP8 fused batch1/2/3
         // kernels handle all MoE dispatch including MTP verify.
         // Saves ~33 GB on 122B EP=2, enabling FP8+MTP within memory budget.
-        let skip_nvfp4_experts = native_fp8;
+        //
+        // Diagnostic env: ATLAS_FORCE_NVFP4_MOE=1 forces the NVFP4 path even
+        // for FP8 models — used to localize FP8 grouped-GEMM amplification
+        // bug (L0 moe_out 3.3x too large vs HF). Keeps NVFP4 experts loaded
+        // AND skips set_fp8_experts so forward dispatch falls through to the
+        // NVFP4 path.
+        let force_nvfp4_moe = std::env::var("ATLAS_FORCE_NVFP4_MOE").ok().as_deref() == Some("1");
+        let skip_nvfp4_experts = native_fp8 && !force_nvfp4_moe;
         if skip_nvfp4_experts {
             tracing::info!(
                 "FP8: skipping NVFP4 routed experts (FP8 fused MoE batch1/2/3 handles all dispatch)"
+            );
+        } else if native_fp8 && force_nvfp4_moe {
+            tracing::warn!(
+                "ATLAS_FORCE_NVFP4_MOE=1: routing MoE through NVFP4 path (diagnostic — slower)"
             );
         }
         let moe_weights = load_moe_qwen35(
@@ -160,15 +171,17 @@ pub(super) fn load_layers(
         moe_layer.is_dflash_capture_layer = config.dflash_capture_layers.contains(&i);
         // With native FP8, the FP8 fused MoE kernel handles both prefill and decode.
         // Skip transposition and predequant (saves ~30 GB + CPU time for 122B EP=2).
-        if !native_fp8 && !skip_moe_transpose {
+        // ATLAS_FORCE_NVFP4_MOE=1 inverts: do the prep so NVFP4 path is usable.
+        if (!native_fp8 || force_nvfp4_moe) && !skip_moe_transpose {
             moe_layer.transpose_for_prefill(gpu, config)?;
         }
-        if !native_fp8 {
+        if !native_fp8 || force_nvfp4_moe {
             moe_layer.predequant_for_prefill(gpu, config, stream)?;
         }
 
         // Native FP8 MoE: load FP8 expert weights for decode
         if native_fp8
+            && !force_nvfp4_moe
             && let Ok(fp8_experts) =
                 load_moe_qwen35_fp8_experts(store, &lp, config.num_experts, gpu, config)
         {

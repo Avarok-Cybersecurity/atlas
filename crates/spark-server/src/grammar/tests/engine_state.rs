@@ -133,3 +133,185 @@ fn test_apply_bitmask_to_logits() {
     // A control character like 0x01 should likely be masked.
     assert!(logits[1].is_infinite() && logits[1].is_sign_negative());
 }
+
+// ── Forced-token fast-path (xgrammar Tier 3b, Coalescence) ──────────────────
+
+/// Count the allowed tokens in `state`'s current bitmask and return the
+/// single allowed token id when exactly one is allowed. This is the
+/// authoritative "what would the masked-sample path do" reference: with
+/// all-but-one token masked to `-inf`, any sampler (greedy or stochastic)
+/// returns that one surviving token.
+fn single_allowed_token(state: &GrammarState, vocab_size: usize) -> Option<u32> {
+    let mut found: Option<u32> = None;
+    for id in 0..vocab_size as u32 {
+        if state.is_token_allowed(id) {
+            if found.is_some() {
+                return None; // two or more allowed → genuine choice
+            }
+            found = Some(id);
+        }
+    }
+    found
+}
+
+/// CORRECTNESS: `forced_token()` agrees with the masked-sample path at
+/// every step. Whenever the grammar admits exactly one legal token, the
+/// fast-path token must equal the token the sampler would have produced
+/// from the all-but-one-masked logit vector; whenever two or more tokens
+/// are legal, `forced_token()` must decline (`None`) so the caller
+/// falls through to a real sample.
+#[test]
+fn test_forced_token_matches_masked_sample_path() {
+    let vocab = test_vocab();
+    let stop_ids = vec![130i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+    let vocab_size = engine.vocab_size();
+
+    // JSON-schema grammar with a required literal key forces a run of
+    // scaffolding bytes (`{`, then the `"name"` key spelling, `:` …).
+    let schema = r#"{
+        "type": "object",
+        "properties": { "name": { "type": "string" } },
+        "required": ["name"]
+    }"#;
+    let compiled = engine.compile_json_schema(schema).unwrap();
+    let mut state = GrammarState::new(&compiled, vocab_size).unwrap();
+
+    // Walk the grammar greedily for a bounded number of steps. At each
+    // step, the fast-path verdict must agree with the bitmask cardinality.
+    let mut saw_forced = false;
+    for _ in 0..64 {
+        if state.is_terminated() {
+            break;
+        }
+        let has_constraint = state.fill_bitmask();
+        assert!(has_constraint, "tool grammar always constrains");
+        let reference = single_allowed_token(&state, vocab_size);
+        let forced = state.forced_token().map(|t| t as u32);
+        assert_eq!(
+            forced, reference,
+            "forced_token() must equal the single-allowed-token reference",
+        );
+        // Advance: take the forced token when forced, else the first
+        // allowed token (any legal choice keeps the walk going).
+        let next = match reference {
+            Some(t) => {
+                saw_forced = true;
+                t
+            }
+            None => (0..vocab_size as u32)
+                .find(|&id| state.is_token_allowed(id))
+                .expect("non-terminated state has at least one allowed token"),
+        };
+        assert!(state.accept_token(next), "allowed token must be accepted");
+    }
+    // The required-key schema guarantees at least one forced step (the
+    // literal key spelling) — otherwise the test isn't exercising the
+    // fast-path at all.
+    assert!(saw_forced, "expected at least one grammar-forced token");
+}
+
+/// A forced token, fed back through `accept_token`, lands the matcher in
+/// exactly the state the normal sample-then-accept path would — so a
+/// fast-path emit is interchangeable with a sampled emit.
+#[test]
+fn test_forced_token_accept_advances_identically() {
+    let vocab = test_vocab();
+    let stop_ids = vec![130i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+    let vocab_size = engine.vocab_size();
+
+    let schema = r#"{
+        "type": "object",
+        "properties": { "name": { "type": "string" } },
+        "required": ["name"]
+    }"#;
+    let compiled = engine.compile_json_schema(schema).unwrap();
+
+    // Path A: the fast-path — emit `forced_token()`, then `accept_token`.
+    let mut fast = GrammarState::new(&compiled, vocab_size).unwrap();
+    // Path B: the normal path — `fill_bitmask`, then accept the (single)
+    // surviving token. With every other token masked the sampler is
+    // forced to this token, so this reproduces the masked-sample emit.
+    let mut slow = GrammarState::new(&compiled, vocab_size).unwrap();
+
+    for step in 0..32 {
+        if fast.is_terminated() || slow.is_terminated() {
+            break;
+        }
+        let Some(forced) = fast.forced_token() else {
+            break; // first genuine choice — fast-path no longer applies
+        };
+        let forced = forced as u32;
+
+        slow.fill_bitmask();
+        let slow_tok = single_allowed_token(&slow, vocab_size)
+            .expect("forced step on `fast` implies forced step on `slow`");
+        assert_eq!(forced, slow_tok, "step {step}: same forced token");
+
+        assert!(fast.accept_token(forced));
+        assert!(slow.accept_token(slow_tok));
+        // After accepting, both matchers must agree on the next mask.
+        let f_constraint = fast.fill_bitmask();
+        let s_constraint = slow.fill_bitmask();
+        assert_eq!(f_constraint, s_constraint, "step {step}: mask parity");
+        for id in 0..vocab_size as u32 {
+            assert_eq!(
+                fast.is_token_allowed(id),
+                slow.is_token_allowed(id),
+                "step {step}: token {id} allowed-bit parity",
+            );
+        }
+        assert_eq!(fast.is_terminated(), slow.is_terminated());
+    }
+}
+
+/// `forced_token()` declines once the matcher has terminated — symmetric
+/// with `fill_bitmask()`'s terminated guard, so the fast-path never
+/// emits past a completed grammar.
+#[test]
+fn test_forced_token_none_after_termination() {
+    let vocab = test_vocab();
+    let stop_ids = vec![130i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+
+    let compiled = engine.compile_json_grammar().unwrap();
+    let mut state = GrammarState::new(&compiled, engine.vocab_size()).unwrap();
+
+    // Drive a complete value `{}` then the stop token to terminate.
+    assert!(state.accept_token(b'{' as u32));
+    assert!(state.accept_token(b'}' as u32));
+    assert!(state.accept_token(130)); // <eos>
+    assert!(state.is_terminated());
+
+    assert_eq!(
+        state.forced_token(),
+        None,
+        "forced_token must decline on a terminated matcher",
+    );
+}
+
+/// A genuine multi-way choice is never reported as forced. After `{` a
+/// JSON object may continue with `"` (a key) or `}` (empty object) — two
+/// legal tokens — so `forced_token()` must return `None`.
+#[test]
+fn test_forced_token_none_on_genuine_choice() {
+    let vocab = test_vocab();
+    let stop_ids = vec![130i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+
+    let compiled = engine.compile_json_grammar().unwrap();
+    let mut state = GrammarState::new(&compiled, engine.vocab_size()).unwrap();
+
+    assert!(state.accept_token(b'{' as u32));
+    // Sanity: both continuations are genuinely legal.
+    state.fill_bitmask();
+    assert!(state.is_token_allowed(b'"' as u32));
+    assert!(state.is_token_allowed(b'}' as u32));
+
+    assert_eq!(
+        state.forced_token(),
+        None,
+        "a two-way choice must not be reported as forced",
+    );
+}

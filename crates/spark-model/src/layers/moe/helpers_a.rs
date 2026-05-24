@@ -11,11 +11,23 @@ impl MoeLayer {
     /// that predates the v2 kernel silently stays on the correct behaviour.
     #[inline]
     pub(super) fn fp8_grouped_kernel(&self) -> KernelHandle {
-        if self.fp8_moe_coalesced_enabled && self.moe_fp8_grouped_gemm_v2_k.0 != 0 {
+        let k = if self.fp8_moe_coalesced_enabled && self.moe_fp8_grouped_gemm_v2_k.0 != 0 {
             self.moe_fp8_grouped_gemm_v2_k
         } else {
             self.moe_fp8_grouped_gemm_k
-        }
+        };
+        // One-shot log to verify selection at runtime
+        static LOGGED: std::sync::Once = std::sync::Once::new();
+        LOGGED.call_once(|| {
+            tracing::info!(
+                "ATLAS_FP8_GROUPED_KERNEL: coalesced_enabled={} v2_handle={} v1_handle={} selected_handle={}",
+                self.fp8_moe_coalesced_enabled,
+                self.moe_fp8_grouped_gemm_v2_k.0,
+                self.moe_fp8_grouped_gemm_k.0,
+                k.0
+            );
+        });
+        k
     }
 
     /// Transpose MoE weights for coalesced prefill GEMM reads.

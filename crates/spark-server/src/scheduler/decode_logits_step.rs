@@ -16,6 +16,7 @@ pub fn process_decode_logits(
     t0: std::time::Instant,
     think_end_token: Option<u32>,
     think_start_token: Option<u32>,
+    code_fence_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     reflection_suppress_ids: &[u32],
@@ -178,6 +179,7 @@ pub fn process_decode_logits(
                 a.inside_thinking = false;
                 a.force_end_thinking = false;
                 a.consecutive_confident = 0;
+                a.in_code_fence = false;
                 a.think_ended = true;
                 // One-shot: pin the next sampled token to the
                 // tool-call-start token if the request requires a
@@ -186,6 +188,16 @@ pub fn process_decode_logits(
                 a.think_just_ended = true;
             } else {
                 a.thinking_tokens += 1;
+                // Track ``` code-fence parity within the thinking block:
+                // each fence token flips in/out of a fenced code span.
+                // The F2 confidence early-stop (process_seq_logits) is
+                // suppressed while `in_code_fence` — code is near-
+                // deterministic (high top-1 prob) but that is NOT a
+                // "done reasoning" signal; braking here truncates the
+                // model mid-statement. THINK_LOOP (below) deliberately
+                // stays active even inside fences: it catches
+                // *repeating* fence-narration, not one coherent block.
+                a.in_code_fence = toggle_code_fence(a.in_code_fence, tok, code_fence_token);
                 // Set force_end_thinking when budget exhausted (picked up next iteration)
                 if let Some(budget) = a.thinking_budget
                     && a.thinking_tokens >= budget
@@ -215,63 +227,12 @@ pub fn process_decode_logits(
                 }
             }
         } else {
-            a.remaining -= 1;
-            a.content_started = true;
-            a.content_tokens = a.content_tokens.saturating_add(1);
-            // think_just_ended is a one-shot: it was set when the prior
-            // token was `</think>`; clear it now that we've emitted the
-            // first content token (which Change 3b's mask pinned to
-            // tool_call_start_token when require_tool_call was set).
-            a.think_just_ended = false;
-
-            // Content-phase loop watchdog (2026-04-26 Claude Code
-            // degeneration fix). Catches the agentic-failure mode
-            // where the model emits the same sentence over and over
-            // ("I see I've been creating Cargo.toml files but the
-            // user hasn't given me a task. Let me wait for their
-            // instructions." × 12). LZ penalty at strength 0.2 nudges
-            // but cannot break the attractor once established — the
-            // hard stop here lets the API path emit a clean
-            // finish_reason="length"-equivalent instead of
-            // streaming an unending repetition that wedges Claude
-            // Code's display. Disabled inside grammar/tool-body
-            // because structured JSON repeats are legitimate.
-            if enable_loop_watchdog()
-                && a.grammar_state.is_none()
-                && !a.inside_tool_body
-                && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
-                && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
-                && detect_content_token_loop(&a.output_tokens)
-            {
-                tracing::warn!(
-                    content_tokens = a.content_tokens,
-                    output_len = a.output_tokens.len(),
-                    "Content-loop watchdog fired (period-{}…{} repeat in tail); ending response early",
-                    CONTENT_LOOP_PERIOD_MIN,
-                    CONTENT_LOOP_PERIOD_MAX,
-                );
-                a.finished = true;
-            }
-
-            // F2 (2026-04-26): bounded inter-tool prose budget.
-            // Counts only free-text tokens (not inside tool body,
-            // not inside grammar-constrained emission). When the
-            // budget trips we end the response cleanly so the next
-            // turn can re-plan with fresh context, instead of
-            // letting the model emit prose↔tool↔prose↔tool
-            // forever (the `tool_choice="auto"` grammar never
-            // self-terminates — see grammar.rs:461-462).
-            if !a.inside_tool_body && a.grammar_state.is_some() {
-                a.prose_tokens_since_last_tool = a.prose_tokens_since_last_tool.saturating_add(1);
-                if a.prose_tokens_since_last_tool > MAX_INTER_TOOL_PROSE {
-                    tracing::warn!(
-                        prose_tokens = a.prose_tokens_since_last_tool,
-                        max = MAX_INTER_TOOL_PROSE,
-                        "Inter-tool prose budget exhausted, ending response"
-                    );
-                    a.finished = true;
-                }
-            }
+            // Content-phase token: budget bookkeeping + the content-loop
+            // and inter-tool-prose watchdogs. Extracted to
+            // `decode_logits_content.rs` to keep this file ≤500 LoC.
+            // `model` is threaded through so a watchdog rollback can
+            // restore SSM recurrent state on hybrid models (Phase-C).
+            handle_content_token(a, model);
         }
 
         // Track <tool_call> token: once seen, legacy tool call requirement is satisfied.
@@ -414,6 +375,19 @@ pub fn process_decode_logits(
             // Don't add to output_tokens (EOS is discarded).
         } else {
             a.output_tokens.push(tok);
+            // Phase-C: if this committed token is a content-phase
+            // boundary token (sentence end / newline) and the model is
+            // hybrid (attention + SSM), snapshot the recurrent SSM
+            // state now so a later watchdog rollback to this boundary
+            // can also rewind h_state/conv_state — not just the KV
+            // cache. Gated to content tokens because the watchdogs that
+            // roll back all fire post-`</think>`, and `apply_rollback`
+            // requires every dropped token to be a content token. No-op
+            // for pure-attention models / disabled rings (see
+            // `rollback::snapshot_boundary_if_ssm`).
+            if !a.inside_thinking {
+                rollback::snapshot_boundary_if_ssm(a, model);
+            }
             // OPENCODE FIX: when the model spontaneously emits `<think>` even
             // though the request didn't ask for thinking (`enable_thinking=false`),
             // the `<think>` open token itself is suppressed (line ~1356), but
@@ -496,12 +470,31 @@ pub fn process_decode_logits(
                 && !inside_tool_call
                 && let Some((pattern_len, mis_a, mis_b)) = detect_fuzzy_repetition(&a.output_tokens)
             {
-                tracing::warn!(
-                    "Fuzzy repetition: {pattern_len}-tok pattern x3 ({mis_a}+{mis_b} \
-                     mismatches), stopping at {} tokens",
-                    a.output_tokens.len()
-                );
-                a.finished = true;
+                // Phase-C: roll back past the repeated window and
+                // re-steer. `min_keep` = pattern_len * 3 guarantees all
+                // three near-copies of the detected pattern are dropped
+                // so generation cannot resume straight back into the
+                // loop. Falls back to the hard stop when declined.
+                let min_keep = pattern_len * 3;
+                match rollback_to_boundary(a, min_keep, model) {
+                    RollbackOutcome::RolledBack { dropped } => {
+                        tracing::warn!(
+                            pattern_len,
+                            mismatches = mis_a + mis_b,
+                            dropped,
+                            rollback = a.rollback_count,
+                            "Fuzzy repetition detected; rolled back to boundary, re-steering"
+                        );
+                    }
+                    RollbackOutcome::Fallback(reason) => {
+                        tracing::warn!(
+                            "Fuzzy repetition: {pattern_len}-tok pattern x3 ({mis_a}+{mis_b} \
+                             mismatches), stopping at {} tokens (rollback declined: {reason:?})",
+                            a.output_tokens.len()
+                        );
+                        a.finished = true;
+                    }
+                }
             }
 
             // Check request timeout.

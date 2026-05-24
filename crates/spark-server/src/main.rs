@@ -59,6 +59,7 @@ mod tool_arg_dedup;
 pub mod tool_parser;
 mod tool_rag;
 mod tool_salvage;
+mod tscg;
 
 use anyhow::Result;
 use clap::Parser;

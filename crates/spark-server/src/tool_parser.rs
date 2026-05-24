@@ -250,17 +250,6 @@ pub trait ToolCallParser: Send + Sync {
     fn has_tool_grammar(&self) -> bool {
         false
     }
-
-    /// F71 (2026-04-29): "broken opener" stop strings — patterns that,
-    /// if they appear in the model's content stream, indicate the
-    /// model has fallen into a known BPE-merge attractor that produces
-    /// a *corrupted* tool-call envelope. No parser currently overrides;
-    /// F73's envelope-aware sanitizer (and `parse_tool_calls`'s
-    /// `<minimax:_call>` → `<tool_call>` normalisation) recover the
-    /// broken-envelope case at the streaming + parser layer instead.
-    fn broken_opener_stop_strings(&self) -> &'static [&'static str] {
-        &[]
-    }
 }
 
 impl std::fmt::Display for dyn ToolCallParser {

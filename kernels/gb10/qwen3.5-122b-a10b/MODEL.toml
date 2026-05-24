@@ -61,6 +61,8 @@ presence_penalty = 2.0
 # prompts (33.3 t/s, finish=stop, zero loops). Only the dense Qwen 27B
 # variants need the watchdog.
 enable_loop_watchdog = false
+# Thinking on by default for all Qwen reasoning-tier models (sweep 2026-05-20).
+thinking_default = true
 thinking_in_tools = false
 max_thinking_budget = 512
 

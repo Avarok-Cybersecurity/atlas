@@ -36,9 +36,14 @@ impl ToolCallParser for Qwen3CoderParser {
         // Bash tool's `description`. Tool-description text is part
         // of the tool schema render and is attended on every Bash
         // call. Per Anthropic's leaked Claude Code prompt + plan
-        // F33 design.
-        for tool in tools {
-            let json = if matches!(tool.function.name.as_str(), "Bash" | "bash") {
+        // F33 design. Applied to a working copy so the F33 rule is
+        // present whether the body renders as JSON or TSCG.
+        let f33_tools: Vec<ToolDefinition> = tools
+            .iter()
+            .map(|tool| {
+                if !matches!(tool.function.name.as_str(), "Bash" | "bash") {
+                    return tool.clone();
+                }
                 let mut t = tool.clone();
                 let suffix = " | After ONE failure with \"command not found\" or exit code 127, do NOT retry the same command — the binary is permanently unavailable in this environment. Choose a different approach or tell the user the dependency is missing.";
                 t.function.description = Some(match t.function.description {
@@ -46,12 +51,18 @@ impl ToolCallParser for Qwen3CoderParser {
                     Some(d) => d,
                     None => format!("[atlas-f33]{suffix}"),
                 });
-                serde_json::to_string(&t).unwrap_or_default()
-            } else {
-                serde_json::to_string(tool).unwrap_or_default()
-            };
-            prompt.push_str(&json);
+                t
+            })
+            .collect();
+        if crate::tscg::tscg_enabled() {
+            // TSCG: compact function signatures replace the JSON body.
+            prompt.push_str(&crate::tscg::compile_tools(&f33_tools));
             prompt.push('\n');
+        } else {
+            for t in &f33_tools {
+                prompt.push_str(&serde_json::to_string(t).unwrap_or_default());
+                prompt.push('\n');
+            }
         }
         // F34 (2026-04-26): negative-pattern walls have been trimmed
         // (per Wei et al. on contrastive in-context learning:

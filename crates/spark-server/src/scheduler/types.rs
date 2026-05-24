@@ -116,6 +116,14 @@ pub(super) struct ActiveSeq {
     pub force_end_thinking: bool,
     /// Consecutive tokens where top-1 softmax prob >= 0.95 (for confidence early stop).
     pub consecutive_confident: u32,
+    /// True while the model is inside an unclosed ``` code fence within
+    /// the current thinking block. Toggled on each sampled code-fence
+    /// token. The F2 confidence early-stop is suppressed while this is
+    /// set: code is near-deterministic (high top-1 prob) but that is
+    /// NOT a "done reasoning" signal — braking here truncates the model
+    /// mid-statement. Per-seq state, persisted across decode steps and
+    /// snapshots.
+    pub in_code_fence: bool,
     /// Token ID for `</think>` (needed for budget enforcement in emit_token).
     pub think_end_token: Option<u32>,
     /// Token ID for `<think>` (needed for spontaneous thinking detection in emit_token).
@@ -150,12 +158,20 @@ pub(super) struct ActiveSeq {
     pub prose_tokens_since_last_tool: u32,
     /// F10 (2026-04-26): how many times the thinking-loop watchdog has fired.
     pub think_watchdog_fires: u32,
-    /// F26 (2026-04-26): consecutive sample steps with collapsed entropy.
-    pub entropy_collapse_streak: u32,
-    /// F27 (2026-04-26): ring buffer of recent logit-distribution fingerprints.
-    pub f27_fingerprint_ring: std::collections::VecDeque<u64>,
-    pub f27_attractor_streak: u32,
-    pub f27_last_emitted_token: u32,
+    /// Phase-C: how many times a degeneration watchdog has rolled this
+    /// sequence back to a boundary and re-steered. Capped at
+    /// [`atlas_kernels::ROLLBACK_RESTEER_CAP`]; once the cap is hit the
+    /// watchdog reverts to a hard stop. See
+    /// [`super::rollback::rollback_to_boundary`].
+    pub rollback_count: u32,
+    /// Phase-C: decode-time SSM-snapshot ring for hybrid (attention +
+    /// Mamba/SSM) models. Records a bounded set of SSM `h_state` +
+    /// `conv_state` snapshots taken at boundary tokens so a watchdog
+    /// rollback can restore the recurrent state — not just the KV
+    /// cache — to the chosen boundary. Disabled (`capacity == 0`,
+    /// every op a no-op) for pure-attention models. See
+    /// [`super::ssm_decode_ring::SsmDecodeRing`].
+    pub ssm_rollback_ring: super::ssm_decode_ring::SsmDecodeRing,
     /// Grammar state for constrained decoding (tool_choice="required").
     pub grammar_state: Option<GrammarState>,
     /// MTP draft tokens awaiting verification.
@@ -214,6 +230,7 @@ pub(super) struct SwappedSeq {
     pub thinking_tokens: u32,
     pub force_end_thinking: bool,
     pub consecutive_confident: u32,
+    pub in_code_fence: bool,
     pub think_end_token: Option<u32>,
     pub think_start_token: Option<u32>,
     pub think_ended: bool,
@@ -227,10 +244,8 @@ pub(super) struct SwappedSeq {
     pub content_tokens: u32,
     pub prose_tokens_since_last_tool: u32,
     pub think_watchdog_fires: u32,
-    pub entropy_collapse_streak: u32,
-    pub f27_fingerprint_ring: std::collections::VecDeque<u64>,
-    pub f27_attractor_streak: u32,
-    pub f27_last_emitted_token: u32,
+    /// Phase-C: watchdog rollback counter, preserved across snapshot/restore.
+    pub rollback_count: u32,
     pub tool_call_start_token: Option<u32>,
     pub tool_call_opened: bool,
     pub tool_call_end_token: Option<u32>,

@@ -54,7 +54,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 toml = "0.8"
 minijinja = { version = "2", features = ["builtins", "adjacent_loop_items", "json"] }
-xgrammar-rs = "0.1"
+# Pure-Rust grammar-constrained decoding (W7: was the C++-backed
+# `xgrammar-rs = "0.1"` patched to `vendor/xgrammar-rs`; now the
+# from-scratch Rust port at `crates/xgrammar`). The crate's lib is
+# named `xgrammar`, so `use xgrammar::` resolves unchanged.
+xgrammar = { path = "../xgrammar" }
 prometheus = { version = "0.13", default-features = false }
 lazy_static = "1"
 tower-http = { version = "0.6", features = ["catch-panic", "cors"] }

@@ -191,6 +191,7 @@ pub fn swap_out_sequence(
         thinking_tokens: a.thinking_tokens,
         force_end_thinking: a.force_end_thinking,
         consecutive_confident: a.consecutive_confident,
+        in_code_fence: a.in_code_fence,
         think_end_token: a.think_end_token,
         think_start_token: a.think_start_token,
         think_ended: a.think_ended,
@@ -203,10 +204,7 @@ pub fn swap_out_sequence(
         content_tokens: a.content_tokens,
         prose_tokens_since_last_tool: a.prose_tokens_since_last_tool,
         think_watchdog_fires: a.think_watchdog_fires,
-        entropy_collapse_streak: a.entropy_collapse_streak,
-        f27_fingerprint_ring: a.f27_fingerprint_ring.clone(),
-        f27_attractor_streak: a.f27_attractor_streak,
-        f27_last_emitted_token: a.f27_last_emitted_token,
+        rollback_count: a.rollback_count,
         tool_call_start_token: a.tool_call_start_token,
         tool_call_opened: a.tool_call_opened,
         tool_call_end_token: a.tool_call_end_token,
@@ -272,6 +270,7 @@ pub fn resume_swapped_seq(
         thinking_tokens: s.thinking_tokens,
         force_end_thinking: s.force_end_thinking,
         consecutive_confident: s.consecutive_confident,
+        in_code_fence: s.in_code_fence,
         think_end_token: s.think_end_token,
         think_start_token: s.think_start_token,
         think_ended: s.think_ended,
@@ -284,10 +283,13 @@ pub fn resume_swapped_seq(
         content_tokens: 0,
         prose_tokens_since_last_tool: 0,
         think_watchdog_fires: s.think_watchdog_fires,
-        entropy_collapse_streak: 0,
-        f27_fingerprint_ring: s.f27_fingerprint_ring.clone(),
-        f27_attractor_streak: s.f27_attractor_streak,
-        f27_last_emitted_token: s.f27_last_emitted_token,
+        rollback_count: s.rollback_count,
+        // Decode-rollback SSM snapshots are GPU-resident and not part of
+        // the disk swap image — a resumed sequence starts with an empty
+        // ring. New boundary snapshots accrue as it decodes again; until
+        // one exists, a hybrid-model rollback declines to the hard stop
+        // (correct: there is no live snapshot to restore).
+        ssm_rollback_ring: SsmDecodeRing::new(model.decode_rollback_ring_slots()),
         tool_call_start_token: s.tool_call_start_token,
         tool_call_opened: s.tool_call_opened,
         // Resumed sequences re-enter outside any tool body — even if

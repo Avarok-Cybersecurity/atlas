@@ -284,6 +284,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         reasoning_parser_box,
         think_end_token,
         think_start_token,
+        code_fence_token,
         reflection_suppress_ids,
         tool_call_start_token,
         tool_call_end_token,
@@ -411,6 +412,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             block_size,
             think_end_token,
             think_start_token,
+            code_fence_token,
             tool_call_start_token,
             tool_call_end_token,
             reflection_suppress_ids,
@@ -463,6 +465,10 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             b
         },
         disable_thinking: args.disable_thinking,
+        default_chat_template_kwargs: args
+            .default_chat_template_kwargs
+            .as_ref()
+            .and_then(|s| crate::openai::ChatTemplateKwargs::from_json(s)),
         response_store,
         rate_limiter,
         conversation_store,

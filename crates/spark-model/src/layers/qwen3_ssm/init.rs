@@ -50,18 +50,27 @@ impl Qwen3SsmLayer {
             deinterleave_k: gpu.kernel("ssm_preprocess", "deinterleave_qkvz")?,
             conv1d_k: gpu.kernel("causal_conv1d", "causal_conv1d_update")?,
             conv1d_l2norm_k: gpu.kernel("causal_conv1d", "causal_conv1d_update_l2norm")?,
+            // FP32 conv1d output prevents BF16 truncation in the recurrent
+            // path from compounding past ~8k tokens. The Metal backend
+            // (kernels/metal/common/causal_conv1d_update_l2norm.metal) only
+            // ships the BF16 variant; on those targets we fall back to the
+            // BF16 kernel via the `.0 != 0` gate at the use site
+            // (ssm_forward.rs). Warn instead of error: missing-on-Metal is
+            // expected, and a startup `error!` would page on benign cases.
             conv1d_l2norm_f32_k: {
-                let k = gpu.kernel("causal_conv1d", "causal_conv1d_update_l2norm_f32");
-                match k {
-                    Ok(h) => h,
-                    Err(_) => {
-                        tracing::error!(
-                            "FP32 conv1d kernel not found — SSM long-context coherence \
-                             WILL degrade after ~8k tokens due to BF16 precision loss"
-                        );
-                        KernelHandle(0)
-                    }
+                let h = super::super::try_kernel(
+                    gpu,
+                    "causal_conv1d",
+                    "causal_conv1d_update_l2norm_f32",
+                );
+                if h.0 == 0 {
+                    tracing::warn!(
+                        "FP32 conv1d kernel not loaded; SSM uses BF16 conv \
+                         output. Expect long-context coherence drift past ~8k \
+                         tokens on this backend."
+                    );
                 }
+                h
             },
             gdn_k: gpu.kernel("gated_delta_rule", "gated_delta_rule_decode")?,
             gdn_f32_k: super::super::try_kernel(
@@ -197,6 +206,25 @@ impl Qwen3SsmLayer {
         // Set Fp8Weight for decode GEMV (w8a16_gemv, needs per-row scale)
         self.qkvz_fp8w = qkvz;
         self.out_proj_fp8w = out_proj;
+    }
+
+    /// Set raw FP8 DevicePtrs for the prefill GEMM path ONLY (no decode GEMV
+    /// scale fields). Used by the Qwen3.6-27B-FP8 native-FP8 SSM prefill path:
+    /// the FP8 buffer here is a single-scale FP8 (BF16 → FP8 truncation; values
+    /// already in FP8 range) suitable for `fp8_gemm_n128`. Decode falls back to
+    /// the NVFP4/BF16 paths via the existing `qkvz_nvfp4*` fields. PCND:
+    /// caller decides whether to install — never set implicitly.
+    pub fn set_fp8_prefill_only_weights(
+        &mut self,
+        qkvz_fp8: Option<DevicePtr>,
+        out_proj_fp8: Option<DevicePtr>,
+    ) {
+        if qkvz_fp8.is_some() {
+            self.qkvz_fp8 = qkvz_fp8;
+        }
+        if out_proj_fp8.is_some() {
+            self.out_proj_fp8 = out_proj_fp8;
+        }
     }
 
     /// Pre-dequant NVFP4 → FP8 for QKVZ and out_proj transposed weights.

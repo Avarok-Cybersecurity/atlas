@@ -112,10 +112,45 @@ impl Predictor {
             dims.p_bytes(),
             stream,
         )?;
+        // Preflight A_g sizing against free HBM. A_g grows linearly with
+        // `r × max_blocks × num_layers × num_kv_heads × block_size`, so a
+        // greedy `r=32` default plus a max-seq-len-sized block pool can blow
+        // past free HBM on the EP head (where the MoE-transpose pass already
+        // consumed ~40 GB). The raw `cuMemAlloc_v2` error gives the user
+        // nothing to act on; this preflight names the specific knobs.
+        // PR #47 follow-up — preflight pattern only, no behavior change on
+        // the happy path.
+        let a_g_need = dims.a_g_bytes();
+        let (free_hbm, _total_hbm) = crate::cuda_min::mem_info()?;
+        // Leave a 5% safety margin for the scratch pool, tiled-attention,
+        // and the smaller predictor buffers that follow.
+        let a_g_budget = free_hbm.saturating_mul(95) / 100;
+        if a_g_need > a_g_budget {
+            bail!(
+                "HSS predictor A_g would need {:.2} GB but only {:.2} GB of HBM is free \
+                 (5% margin reserved for scratch + tiled-attention).\n\
+                 Tune one of:\n  \
+                 - --high-speed-swap-rank: current {} ; try {} (halves A_g)\n  \
+                 - --max-seq-len: max_blocks={} → currently dominates A_g; halve --max-seq-len to halve A_g\n  \
+                 - --kv-cache-dtype nvfp4: halves the KV pool, freeing room for A_g\n  \
+                 - --gpu-memory-utilization: lower so weight-side allocations leave more HBM\n\
+                 A_g sizing = num_layers ({}) × max_blocks ({}) × num_kv_heads ({}) × block_size ({}) × r ({}) × 2 bytes.",
+                a_g_need as f64 / (1u64 << 30) as f64,
+                a_g_budget as f64 / (1u64 << 30) as f64,
+                dims.r,
+                dims.r / 2,
+                dims.max_blocks,
+                dims.num_layers,
+                dims.max_blocks,
+                dims.num_kv_heads,
+                dims.block_size,
+                dims.r,
+            );
+        }
         // Allocate A_g (zeroed initially via cuMemAlloc which doesn't zero — but
         // unwritten slots are unused; the predictor never reads a slot that
         // hasn't been populated by `project_kv_block`).
-        let a_g_dev = DeviceBuffer::new(dims.a_g_bytes())?;
+        let a_g_dev = DeviceBuffer::new(a_g_need)?;
         stream_sync(stream)?;
         Ok(Self {
             dims,

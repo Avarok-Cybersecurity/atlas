@@ -1,0 +1,5 @@
+# Pure-Rust-xgrammar build: pre-built spark binary over the atlas-gb10:fix
+# runtime layers. Used for the xgrammar-port tool-eval-bench parity gate.
+FROM atlas-gb10:fix
+COPY spark-fastbin /usr/local/bin/spark
+COPY jinja-templates/ /jinja-templates/

@@ -234,4 +234,48 @@ mod tests {
             "not valid json {"
         );
     }
+
+    /// Regression: Gemma-4's bundled template calls `text.split('<channel|>')`
+    /// inside its `strip_thinking` macro. minijinja has no `.split()` *method*
+    /// on strings, so before the unknown-method bridge every assistant
+    /// (model-role) turn raised `string has no method named split` and the
+    /// whole chat request 400'd. A null-content tool message is part of the
+    /// same conversation shape (coherence test "null content / tool role").
+    #[test]
+    fn render_gemma4_template_with_assistant_and_null_tool_content() {
+        let template_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../jinja-templates/gemma4.jinja"
+        );
+        let raw = std::fs::read_to_string(template_path)
+            .expect("bundled gemma4.jinja must be present in the repo");
+        let converted = super::jinja_helpers::convert_python_jinja_to_minijinja(&raw);
+        let env = super::jinja_helpers::build_jinja_env(&converted).expect("template compiles");
+        let tmpl = env.get_template("chat").unwrap();
+        // The exact shape of the "null content / tool role" coherence case:
+        // an assistant turn (exercises strip_thinking → .split) plus a
+        // tool-role message whose content is null.
+        let messages = vec![
+            json!({"role": "user", "content": "What time is it?"}),
+            json!({"role": "assistant", "content": "I'll check."}),
+            json!({"role": "tool", "content": null}),
+            json!({"role": "user", "content": "Thanks."}),
+        ];
+        let messages_val = minijinja::Value::from_serialize(&messages);
+        let ctx = minijinja::context! {
+            messages => messages_val,
+            tools => minijinja::Value::UNDEFINED,
+            add_generation_prompt => true,
+            enable_thinking => false,
+            bos_token => "<bos>",
+        };
+        let rendered = tmpl
+            .render(ctx)
+            .expect("Gemma-4 template must render assistant + null-content tool message");
+        // The assistant content survived strip_thinking's .split() round-trip.
+        assert!(
+            rendered.contains("I'll check."),
+            "expected assistant content in render: {rendered}"
+        );
+    }
 }

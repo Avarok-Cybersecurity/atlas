@@ -23,6 +23,8 @@ use crate::layers::ops;
 mod attn;
 mod ctx;
 mod ffn;
+mod mla;
+mod mla_gemv;
 mod qkv;
 
 impl Qwen3AttentionLayer {
@@ -57,23 +59,32 @@ impl Qwen3AttentionLayer {
             c.stream,
         )?;
 
-        // ── Phase 2: QKV projections (batch3 / batch2 / sequential) ──
-        self.ms_phase_qkv(&c)?;
-
-        // ── Phase 3: RoPE per-sequence ──
         let meta = ctx
             .attn_metadata
             .expect("attention layer requires metadata");
-        self.ms_phase_rope(&c, meta)?;
 
-        // ── Phase 4: KV cache write ──
-        self.ms_phase_cache_write(&c, kv_cache, meta)?;
+        // ── Phases 2-6: attention ──
+        // MLA models (Mistral-Small-4) take the dedicated absorbed-MLA
+        // batched path (issue #84). The standard `ms_phase_qkv` reads
+        // `attn.q_proj`, a NULL stub for MLA loaders — see `mla.rs`.
+        let o_out = if self.mla.is_some() {
+            self.ms_mla_decode(&c, kv_cache, meta)?
+        } else {
+            // ── Phase 2: QKV projections (batch3 / batch2 / sequential) ──
+            self.ms_phase_qkv(&c)?;
 
-        // ── Phase 5: paged decode attention (batched) ──
-        let attn_out = self.ms_phase_paged_decode(&c, kv_cache, meta)?;
+            // ── Phase 3: RoPE per-sequence ──
+            self.ms_phase_rope(&c, meta)?;
 
-        // ── Phase 6: gate multiply + O projection ──
-        let o_out = self.ms_phase_o_proj(&c, attn_out)?;
+            // ── Phase 4: KV cache write ──
+            self.ms_phase_cache_write(&c, kv_cache, meta)?;
+
+            // ── Phase 5: paged decode attention (batched) ──
+            let attn_out = self.ms_phase_paged_decode(&c, kv_cache, meta)?;
+
+            // ── Phase 6: gate multiply + O projection ──
+            self.ms_phase_o_proj(&c, attn_out)?
+        };
 
         // TP all-reduce on o_out after o_proj (Megatron row-parallel
         // pattern). Mirrors decode_inner.rs and prefill_inner.rs. Without
