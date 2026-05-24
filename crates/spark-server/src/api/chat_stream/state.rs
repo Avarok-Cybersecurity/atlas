@@ -99,6 +99,14 @@ pub(super) struct StreamState {
     /// True iff the reasoning/`<think>` phase has finished. Starts
     /// `true` when the request did not enable thinking.
     pub(super) thinking_done: bool,
+    /// `return_token_ids`: sampled token IDs not yet attached to an
+    /// emitted chunk. One ID is pushed per `handle_token` call (== one
+    /// sampled token == one increment of `usage.completion_tokens`),
+    /// then drained onto the next client-visible chunk. The sum of all
+    /// drained IDs across the stream therefore equals
+    /// `completion_tokens` exactly. Stays empty unless the request
+    /// opted in, so it costs nothing on the default path.
+    pub(super) pending_token_ids: Vec<u32>,
 }
 
 impl StreamState {
@@ -133,6 +141,7 @@ impl StreamState {
                 None
             },
             thinking_done: !enable_thinking,
+            pending_token_ids: Vec::new(),
         }
     }
 }

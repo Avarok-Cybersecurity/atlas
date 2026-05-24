@@ -24,6 +24,7 @@ mod handle_done;
 mod handle_error;
 mod handle_token;
 mod state;
+mod token_ids;
 mod tool_handlers;
 
 use axum::http::StatusCode;
@@ -78,6 +79,7 @@ pub(crate) async fn chat_completions_stream(
     timeout_at: Option<std::time::Instant>,
     stop_strings: Vec<String>,
     req_stream_include_usage: bool,
+    req_return_token_ids: bool,
     req_service_tier: Option<String>,
     req_metadata: Option<std::collections::HashMap<String, String>>,
     req_ctx: Option<crate::rate_limiter::RequestContext>,
@@ -187,6 +189,7 @@ pub(crate) async fn chat_completions_stream(
         leak_markers,
         max_tool_calls_per_response,
         req_stream_include_usage,
+        req_return_token_ids,
         req_ctx,
         dump_seq,
         f44_cache,

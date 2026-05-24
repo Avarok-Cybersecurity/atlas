@@ -45,6 +45,15 @@ pub struct ChatCompletionRequest {
     pub logit_bias: Option<std::collections::HashMap<String, f32>>,
     #[serde(default)]
     pub stream: bool,
+    /// Emit the exact sampled token IDs on each streamed chunk's
+    /// `choices[0].token_ids` (vLLM-compatible extension). Lets a
+    /// benchmark harness count `usage.completion_tokens` precisely
+    /// instead of re-tokenizing detokenized text (which over-counts,
+    /// since BPE is not homomorphic over fragment concatenation).
+    /// PCND: defaults false — opt-in only, so the default wire format
+    /// for every existing client stays byte-identical.
+    #[serde(default)]
+    pub return_token_ids: bool,
     /// Enable chain-of-thought reasoning (Qwen3.5 thinking models).
     /// false (default): appends `<think></think>` — model answers directly.
     /// true: appends `<think>\n` — model generates its reasoning first.
