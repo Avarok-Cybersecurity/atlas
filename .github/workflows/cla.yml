@@ -9,14 +9,6 @@ on:
 jobs:
   CLAAssistant:
     runs-on: ubuntu-latest
-    # contributor-assistant/github-action stores signatures in
-    # `signatures/version1/cla.json` on the configured branch and
-    # comments on the PR; both need write access. The default
-    # `secrets.GITHUB_TOKEN` only grants `contents: read` on
-    # `pull_request_target`, which produced "Could not retrieve
-    # repository contents. Status: 404" on the first run after the
-    # repo went public. Granting the action the minimum permissions
-    # it actually needs.
     permissions:
       contents: write
       pull-requests: write
@@ -24,14 +16,30 @@ jobs:
       statuses: write
       actions: write
     steps:
-      - name: "CLA Assistant"
+      - name: "Prepare Dynamic Signature Match"
         if: (contains(github.event.comment.body, 'recheck') || contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA')) || github.event_name == 'pull_request_target'
-        # Alpha Release
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          # Create a random delimiter to safely handle multiline markdown comments
+          DELIMITER=$(openssl rand -hex 8)
+          
+          # If the comment contains the signature, set the expected signature to their exact full comment
+          if [[ "$COMMENT_BODY" == *"I have read the CLA Document and I hereby sign the CLA"* && "${{ github.event_name }}" == "issue_comment" ]]; then
+            echo "SIGNATURE_TEXT<<$DELIMITER" >> $GITHUB_ENV
+            echo "$COMMENT_BODY" >> $GITHUB_ENV
+            echo "$DELIMITER" >> $GITHUB_ENV
+          else
+            # Fallback for rechecks or pull_request_target events
+            echo "SIGNATURE_TEXT=I have read the CLA Document and I hereby sign the CLA" >> $GITHUB_ENV
+          fi
+
+      - name: "CLA Assistant"
+        # Only run if the previous step successfully set the signature text
+        if: env.SIGNATURE_TEXT != ''
         uses: contributor-assistant/github-action@v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # To store signatures in a private repository, uncomment and use a PAT
-          # PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         with:
           path-to-signatures: 'signatures/version1/cla.json'
           path-to-document: 'https://github.com/${{ github.repository }}/blob/main/CLA.md'
@@ -39,10 +47,11 @@ jobs:
           allowlist: dependabot[bot],renovate[bot],google-labs-jules[bot],claude[bot],google-labs-jules,claude
           lock-pullrequest-aftermerge: false
           create-file-commit-message: 'chore: setup CLA signatures file'
-          signed-commit-message: 'chore: $username CLA signature added'
+          signed-commit-message: 'chore: $contributorName signed the CLA in PR #$pullRequestNo'
           custom-notsigned-prcomment: |
             Thanks for the contribution. Before we can merge, please sign our [Contributor License Agreement](https://github.com/${{ github.repository }}/blob/main/CLA.md) by replying to this comment with exactly:
 
             `I have read the CLA Document and I hereby sign the CLA`
-          custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
+          # Inject the dynamic environment variable here
+          custom-pr-sign-comment: ${{ env.SIGNATURE_TEXT }}
           custom-allsigned-prcomment: 'All contributors have signed the CLA. Thank you!'
