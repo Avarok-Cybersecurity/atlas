@@ -1139,3 +1139,22 @@ provides parser-level protection independently of MODEL.toml. No format-instruct
 the snapshot pool. `--max-batch-size 1` reduces active pool to ~151 MB for single-stream serving.
 
 **No new bugs found. All fixes confirmed correct. Branch `spec_ssm` is correct and ready for hardware re-test.**
+
+---
+
+## 2026-05-24 Second-pass verification (spec_ssm HEAD `7265f7f`)
+
+Independent re-read of key files after context compaction, verifying the prior session's conclusions.
+
+**P1 (Mistral MLA)**: `template.rs`, `bare_json.rs`, `hermes.rs`, `tool_parser.rs` all re-read.
+`mla_fused_prefill.cu` smem layout and `cache_skip_mla.rs` routing confirmed. Five bugs and fixes
+match prior documentation; no regressions introduced by `7265f7f` (docs-only commit).
+
+**P2 (Nemotron tool calling)**: `BareJsonParser::suppresses_jinja_tools() → true` present in
+`bare_json.rs`. `template.rs` checks both `skip_template_tools` and `parser_suppresses`. Four
+MODEL.toml flags in place. Triple-layer protection intact.
+
+**P3 (SSM pools)**: Two-pool design re-verified. `SsmStatePool` sized by `--max-batch-size`;
+`SsmSnapshotPool` sized by `--ssm-cache-slots`. No CLI propagation bugs.
+
+No code changes required. All findings consistent with prior session.
