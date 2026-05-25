@@ -31,8 +31,8 @@ impl Qwen3SsmLayer {
         // to attribute a captured intermediate to a specific SSM layer
         // index. The N SSM layers in the model are called in order
         // during one prefill, so layer N-1 sees counter == N-1.
-        let ssm_layer_idx = super::debug::SSM_LAYER_CALL_COUNTER
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let ssm_layer_idx =
+            super::debug::SSM_LAYER_CALL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let ssm_state = state
             .as_any_mut()
@@ -410,8 +410,10 @@ impl Qwen3SsmLayer {
         //                               sequential recurrence with FP32 SMEM
         //                               H state — useful for isolating WY
         //                               chunkwise reduction noise.
-        let wy4_disabled =
-            matches!(std::env::var("ATLAS_DISABLE_WY4").ok().as_deref(), Some("1"));
+        let wy4_disabled = matches!(
+            std::env::var("ATLAS_DISABLE_WY4").ok().as_deref(),
+            Some("1")
+        );
         let force_persistent = matches!(
             std::env::var("ATLAS_FORCE_PERSISTENT").ok().as_deref(),
             Some("1")
@@ -607,33 +609,42 @@ impl Qwen3SsmLayer {
             // Read hidden
             let mut buf_h = vec![0u8; h * 2];
             let _ = ctx.gpu.copy_d2h(hidden.offset(offset), &mut buf_h);
-            let v_h: Vec<f32> = buf_h.chunks_exact(2).map(|c| {
-                let bits = u16::from_le_bytes([c[0], c[1]]);
-                f32::from_bits((bits as u32) << 16)
-            }).collect();
-            let n_h = v_h.iter().map(|x| x*x).sum::<f32>().sqrt();
+            let v_h: Vec<f32> = buf_h
+                .chunks_exact(2)
+                .map(|c| {
+                    let bits = u16::from_le_bytes([c[0], c[1]]);
+                    f32::from_bits((bits as u32) << 16)
+                })
+                .collect();
+            let n_h = v_h.iter().map(|x| x * x).sum::<f32>().sqrt();
             // Read out_proj_buf
             let mut buf_o = vec![0u8; h * 2];
             let _ = ctx.gpu.copy_d2h(out_proj_buf.offset(offset), &mut buf_o);
-            let v_o: Vec<f32> = buf_o.chunks_exact(2).map(|c| {
-                let bits = u16::from_le_bytes([c[0], c[1]]);
-                f32::from_bits((bits as u32) << 16)
-            }).collect();
-            let n_o = v_o.iter().map(|x| x*x).sum::<f32>().sqrt();
+            let v_o: Vec<f32> = buf_o
+                .chunks_exact(2)
+                .map(|c| {
+                    let bits = u16::from_le_bytes([c[0], c[1]]);
+                    f32::from_bits((bits as u32) << 16)
+                })
+                .collect();
+            let n_o = v_o.iter().map(|x| x * x).sum::<f32>().sqrt();
             tracing::info!(
                 "ATLAS_PRENORM_HIDDEN last_tok: |x|={:.4} first5={:?}",
-                n_h, &v_h[..5]
+                n_h,
+                &v_h[..5]
             );
             tracing::info!(
                 "ATLAS_PRENORM_OUTPROJ last_tok: |x|={:.4} first5={:?}",
-                n_o, &v_o[..5]
+                n_o,
+                &v_o[..5]
             );
             // Also log the SUM manually
-            let v_sum: Vec<f32> = v_h.iter().zip(v_o.iter()).map(|(a,b)| a+b).collect();
-            let n_sum = v_sum.iter().map(|x| x*x).sum::<f32>().sqrt();
+            let v_sum: Vec<f32> = v_h.iter().zip(v_o.iter()).map(|(a, b)| a + b).collect();
+            let n_sum = v_sum.iter().map(|x| x * x).sum::<f32>().sqrt();
             tracing::info!(
                 "ATLAS_PRENORM_SUM (hidden+out_proj): |x|={:.4} first5={:?}",
-                n_sum, &v_sum[..5]
+                n_sum,
+                &v_sum[..5]
             );
         }
 

@@ -71,7 +71,14 @@ impl BlockDiffusionDraftHead {
             num_kv_heads,
             head_dim,
             num_layers,
-            dtype: KvCacheDtype::Fp8,
+            // Phase 2 (Option B): flip drafter KV cache to BF16. The BF16
+            // paged-attn dispatcher `prefill_attention_paged_dflash` reads
+            // contiguous BF16 K/V from the layer pool; FP8 here would force
+            // either an FP8 attn kernel (acceptance collapses on SM12.x —
+            // see dflash_head.rs:82–86) or a dtype-mismatched read. BF16
+            // first to land correctness; FP8 KV is a follow-up once the
+            // architecture is right.
+            dtype: KvCacheDtype::Bf16,
             layer_dtypes: vec![],
             layer_dims: vec![],
             cache_blocks_per_seq: None,
@@ -109,15 +116,28 @@ impl BlockDiffusionDraftHead {
             // `reshape_and_cache`, function is `reshape_and_cache_flash_fp8`
             // (qwen3_attention/mod.rs:377-378 uses the same path).
             reshape_cache_fp8: gpu.kernel("reshape_and_cache", "reshape_and_cache_flash_fp8")?,
+            // BF16 KV writeback — same module as the FP8 variant, different
+            // function symbol. Used by precompute_ctx_kv + the per-layer
+            // γ-block cache write that feeds prefill_attention_paged_dflash.
+            reshape_cache_bf16: gpu.kernel("reshape_and_cache", "reshape_and_cache_flash")?,
             // The Phase-2 γ-block kernel — same module as the existing
             // FP8 paged-prefill kernel (we just pass `causal_mask_enabled=0`
             // via a different dispatcher).
             prefill_attn_dflash_fp8: gpu
                 .kernel("prefill_paged_fp8", "inferspark_prefill_paged_fp8")?,
+            // Phase 2 (Option B) BF16 γ-block paged-attention. Same kernel
+            // module as the target's BF16 prefill (`prefill_paged`); the
+            // Rust dispatcher `ops::prefill_attention_paged_dflash` passes
+            // `causal_mask_enabled=0` for bidirectional γ-block attention.
+            prefill_attn_dflash_bf16: gpu.kernel("prefill_paged", "inferspark_prefill_paged")?,
             silu_mul: gpu.kernel("moe_silu_mul", "moe_silu_mul")?,
             residual_add: gpu.kernel("residual_add", "bf16_residual_add")?,
             argmax: gpu.kernel("argmax", "argmax_bf16")?,
             batched_embed: gpu.kernel("embed_from_argmax", "batched_embed")?,
+            // Phase 2 Option B: slot_mapping builder. Same kernel the
+            // target model uses for its KV cache writeback (see
+            // crates/spark-model/src/model/impl_a1.rs:92).
+            fill_slots: gpu.kernel("metadata_fill", "fill_slots_from_block_table")?,
             // Drafter has head_dim=128, but the target's
             // `inferspark_prefill` is compiled with HDIM=256. Using that
             // kernel produces corrupted attn_out for the drafter (kernel
@@ -184,6 +204,16 @@ impl BlockDiffusionDraftHead {
             mlp_up: gpu.alloc(n_attn * intermediate_size * bf16)?,
             stream_acc: gpu.alloc(n_attn * hidden_size * bf16)?,
             fc_proj: gpu.alloc(ctx_window * hidden_size * bf16)?,
+            // Phase 2 (Option B) precompute scratch. Worst-case the
+            // first propose runs precompute over the whole captured
+            // prefix up to `ctx_window`, so size for that. Per row:
+            // `L * 2 * kv_dim * bf16` bytes. At L=5, kv_dim=512,
+            // ctx_window=512: 5·2·512·512·2 = 5.24 MB.
+            fused_kv_out: gpu
+                .alloc(ctx_window * num_layers * 2 * num_kv_heads * head_dim * bf16)?,
+            // i64 slot mapping for reshape_and_cache (kernel takes
+            // `long long*`). One entry per new ctx row.
+            slot_mapping_dev: gpu.alloc(ctx_window * 8)?,
             logits: gpu.alloc(n_attn * vocab_size * bf16)?,
             draft_tokens_dev: gpu.alloc(n_attn * 4)?,
             position_ids: gpu.alloc(n_attn * 4)?,
@@ -281,6 +311,48 @@ impl BlockDiffusionDraftHead {
         let yarn_inv_freq = gpu.alloc(inv_freq_bytes.len())?;
         gpu.copy_h2d(&inv_freq_bytes, yarn_inv_freq)?;
 
+        // ── Phase 2 (Option B) fused KV weight build ──────────────
+        //
+        // Concatenate every drafter layer's `k_proj.weight` and
+        // `v_proj.weight` into a single `[L * 2 * kv_dim, h]` BF16
+        // tensor laid out as `[K_0, V_0, K_1, V_1, …, K_{L-1}, V_{L-1}]`.
+        // Lets `precompute_ctx_kv` derive all layers' ctx K/V in one
+        // fused `dense_gemm` instead of `2 * L` separate calls per
+        // propose. Layout matches vLLM's `_fused_kv_weight` in
+        // `qwen3_dflash.py:301-303`.
+        //
+        // Memory layout reasoning: per-layer K weight is `[kv_dim, h]`
+        // BF16 = `kv_dim * h * 2` bytes; V weight is the same shape.
+        // Fused buffer total = `L * 2 * kv_dim * h * 2` bytes.
+        // At L=5, kv_dim=512, h=2048: 5·2·512·2048·2 = 20.97 MB.
+        //
+        // We rely on the existing per-layer `DenseWeight.weight`
+        // device pointers — no host roundtrip, just GPU `copy_d2d`.
+        let kv_dim_bytes = num_kv_heads * head_dim * hidden_size * bf16; // K or V per layer
+        let fused_total_bytes = num_layers * 2 * kv_dim_bytes;
+        let fused_kv_weight = gpu.alloc(fused_total_bytes)?;
+        for (l, layer) in weights.layers.iter().enumerate() {
+            let layer_base = l * 2 * kv_dim_bytes;
+            // K slot for layer l.
+            gpu.copy_d2d(
+                layer.k_proj.weight,
+                fused_kv_weight.offset(layer_base),
+                kv_dim_bytes,
+            )?;
+            // V slot for layer l (immediately after K).
+            gpu.copy_d2d(
+                layer.v_proj.weight,
+                fused_kv_weight.offset(layer_base + kv_dim_bytes),
+                kv_dim_bytes,
+            )?;
+        }
+        tracing::info!(
+            "DFlash fused_kv_weight: {} bytes ({} layers × 2 × kv_dim × h × bf16), \
+             layout [K0,V0,K1,V1,…] to match vLLM precompute_and_store_context_kv",
+            fused_total_bytes,
+            num_layers,
+        );
+
         let head = Self {
             num_layers,
             hidden_size,
@@ -319,6 +391,10 @@ impl BlockDiffusionDraftHead {
                     down_proj: l.down_proj,
                 })
                 .collect(),
+            // Phase 2 stage 2: fused KV weight built above by copy_d2d
+            // from each layer's k_proj/v_proj. precompute_ctx_kv will
+            // GEMM against it in stage 3 once we wire the call site.
+            fused_kv_weight: Some(fused_kv_weight),
             kv_cache: Mutex::new(kv_cache),
             scratch,
             kernels,

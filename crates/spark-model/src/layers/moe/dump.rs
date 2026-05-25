@@ -23,10 +23,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 #[inline]
 pub fn enabled() -> bool {
-    std::env::var("ATLAS_DUMP_EXPERT_IDS")
-        .ok()
-        .as_deref()
-        == Some("1")
+    std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1")
 }
 
 /// Read a `[num_elements]` BF16 row at `ptr + offset_bytes` to a host
@@ -48,12 +45,7 @@ fn read_bf16_row(
 }
 
 /// |x| + first5 of a BF16 row at the last-token position.
-fn last_tok_stats(
-    gpu: &dyn GpuBackend,
-    ptr: DevicePtr,
-    n: usize,
-    width: usize,
-) -> (f32, Vec<f32>) {
+fn last_tok_stats(gpu: &dyn GpuBackend, ptr: DevicePtr, n: usize, width: usize) -> (f32, Vec<f32>) {
     let offset = (n - 1) * width * 2;
     let v = read_bf16_row(gpu, ptr, offset, width);
     let mag = v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -101,8 +93,7 @@ pub fn dump_gate_logits(
     idx_val.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     let top10: Vec<(usize, f32)> = idx_val.iter().take(10).copied().collect();
     let mean: f32 = logits.iter().sum::<f32>() / logits.len() as f32;
-    let var: f32 =
-        logits.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / logits.len() as f32;
+    let var: f32 = logits.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / logits.len() as f32;
     tracing::info!(
         "ATLAS_GATE_LOGITS last_tok: top10_(idx,val)={:?} mean={:.4} std={:.4}",
         top10,
@@ -277,10 +268,6 @@ pub fn dump_moe_out(
     }
     gpu.synchronize(stream)?;
     let (mag, first5) = last_tok_stats(gpu, output, n as usize, h as usize);
-    tracing::info!(
-        "ATLAS_MOE_OUT last_tok: |x|={:.4} first5={:?}",
-        mag,
-        first5
-    );
+    tracing::info!("ATLAS_MOE_OUT last_tok: |x|={:.4} first5={:?}", mag, first5);
     Ok(())
 }

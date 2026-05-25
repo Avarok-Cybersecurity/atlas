@@ -13,6 +13,12 @@ use super::BlockDiffusionDraftHead;
 use crate::layer::ForwardContext;
 
 impl BlockDiffusionDraftHead {
+    /// `option_b`: when `Some((block_table_dev, ctx_count))`, run the
+    /// Phase 2 γ-only paged-attention path. ctx K/V is precomputed into
+    /// the drafter's paged cache from `ctx_buffer` at slots
+    /// `[0..ctx_count)`, γ K/V is written by the layer body at slots
+    /// `[ctx_count..ctx_count+γ)`, attention reads all of
+    /// `kv_len = ctx_count + γ` from the cache.
     pub(super) fn forward_block(
         &self,
         last_token: u32,
@@ -20,6 +26,7 @@ impl BlockDiffusionDraftHead {
         ctx: &ForwardContext,
         stream: u64,
         ctx_buffer: Option<(DevicePtr, usize)>,
+        option_b: Option<(DevicePtr, u32)>,
     ) -> Result<Vec<u32>> {
         use crate::layers::ops;
 
@@ -53,6 +60,20 @@ impl BlockDiffusionDraftHead {
             }
             None => (None, 0, 0),
         };
+
+        // Phase 2 Option B: ctx K/V already lives in the paged cache
+        // (precompute_ctx_kv ran in propose.rs before forward_block).
+        // Force eff_ctx=0 to disable the in-layer ctx K/V recomputation
+        // and the ctx-side of the stream_buf / position_ids / fc_proj
+        // paths. The layer body runs over γ rows only and reads ctx
+        // K/V from the cache via the paged-attention dispatcher.
+        let (option_b_block_table, option_b_ctx_count) = match option_b {
+            Some((bt, cc)) => (Some(bt), cc),
+            None => (None, 0),
+        };
+        let option_b_on = option_b_block_table.is_some();
+        let eff_ctx = if option_b_on { 0 } else { eff_ctx };
+        let _ = ctx_base_ptr; // Option B doesn't read ctx from this path
         let n_attn = (eff_ctx + self.gamma) as u32;
         let target_hidden_dim = self.target_layer_ids.len() * self.target_hidden_size;
         let ctx_slot_bytes = target_hidden_dim * bf16;
@@ -78,6 +99,38 @@ impl BlockDiffusionDraftHead {
             tracing::info!("DFLASH DUMP {label} [{n}]: {:?}", &vals);
             Ok(())
         };
+
+        // ── Phase 2 Option B precompute (stage 3 — dump-only) ──────
+        // When ATLAS_DFLASH_PRECOMPUTE=1, run the new precompute_ctx_kv
+        // path in parallel to (not replacing) the existing fc gemv loop
+        // below. The precompute writes BF16 dump files to /tmp for the
+        // pyref diff harness; it does NOT yet feed the layer body's
+        // attention. Stage 4 will swap the layer body to read from the
+        // paged cache and remove the per-row gemv path entirely.
+        //
+        // Requires ATLAS_DFLASH_PRECOMPUTE_DUMP=1 to actually emit
+        // dump files; otherwise the kernel chain runs and discards
+        // intermediates (useful for perf-only A/B).
+        if std::env::var("ATLAS_DFLASH_PRECOMPUTE").ok().as_deref() == Some("1") {
+            if let Some(base) = ctx_base_ptr {
+                if eff_ctx > 0 {
+                    let start_slot = ctx_total.saturating_sub(eff_ctx);
+                    let abs_start = position.saturating_sub(eff_ctx);
+                    // slot_mapping unused in dump-only mode; pass the
+                    // scratch buffer so reshape_and_cache has a valid
+                    // pointer if ATLAS_DFLASH_PRECOMPUTE_COMMIT=1.
+                    self.precompute_ctx_kv(
+                        base,
+                        start_slot,
+                        eff_ctx,
+                        abs_start,
+                        self.scratch.slot_mapping_dev,
+                        ctx,
+                        stream,
+                    )?;
+                }
+            }
+        }
 
         // ── Step 0: fc projection of captured target hiddens ──
         // For each of the `eff_ctx` most-recent ctx positions, run a GEMV
@@ -156,6 +209,33 @@ impl BlockDiffusionDraftHead {
                     );
                 }
                 FULL_DUMP_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
+
+                // Write companion meta JSON for the pyref diff harness.
+                // Shapes/strides Atlas knows but the Python side can't
+                // infer from the .bin alone. Written once alongside the
+                // target_hidden dump so harness runs read a consistent
+                // snapshot.
+                let meta = format!(
+                    "{{\n  \"last_token\": {},\n  \"position\": {},\n  \"eff_ctx\": {},\n  \"n_layers_captured\": {},\n  \"target_hidden_size\": {},\n  \"gamma\": {},\n  \"hidden_size\": {},\n  \"num_kv_heads\": {},\n  \"head_dim\": {},\n  \"num_drafter_layers\": {},\n  \"rope_theta\": {}\n}}\n",
+                    last_token,
+                    position,
+                    eff_ctx,
+                    self.target_layer_ids.len(),
+                    self.target_hidden_size,
+                    self.gamma,
+                    self.hidden_size,
+                    self.num_kv_heads,
+                    self.head_dim,
+                    self.num_layers,
+                    self.rope_theta,
+                );
+                if let Err(e) = std::fs::write("/tmp/atlas_dflash_meta.json", &meta) {
+                    tracing::warn!("DFLASH DUMP_FULL: meta JSON write failed: {e}");
+                } else {
+                    tracing::info!(
+                        "DFLASH DUMP_FULL: wrote /tmp/atlas_dflash_meta.json companion to target_hidden"
+                    );
+                }
             }
             for i in 0..eff_ctx {
                 let src_slot = base.offset((start_slot + i) * ctx_slot_bytes);
@@ -297,22 +377,61 @@ impl BlockDiffusionDraftHead {
         // [eff_ctx..n_attn] are NOISE (full Q/K/V from embeddings).
         // Per-layer flow follows `dflash.py:Qwen3DFlashDecoderLayer.forward`.
         // Body extracted to `forward_block_layer.rs` for the 500-LoC budget.
-        for (layer_idx, layer) in self.layers.iter().enumerate() {
-            let args = super::forward_block_layer::LayerArgs {
-                layer_idx,
-                n_attn,
-                eff_ctx,
-                h,
-                q_dim,
-                kv_dim,
-                inter,
-                bf16,
-                inv_sqrt_d,
+        //
+        // Option B: layer body runs over γ rows only, reads ctx K/V from
+        // the paged cache. Slot mapping for the γ K/V writes is built
+        // once and reused across all drafter layers.
+        let slot_mapping_gamma_opt = if option_b_on {
+            let bt = option_b_block_table.unwrap();
+            // Build γ slot indices starting at logical position ctx_count.
+            ops::fill_slots_from_block_table(
+                gpu,
+                self.kernels.fill_slots,
+                self.scratch.slot_mapping_dev,
+                bt,
+                option_b_ctx_count,
+                self.gamma as u32,
+                16,
                 stream,
-            };
-            self.forward_block_layer(layer, &args, ctx, debug_dump)?;
+            )?;
+            Some(self.scratch.slot_mapping_dev)
+        } else {
+            None
+        };
+
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            if option_b_on {
+                let bt = option_b_block_table.unwrap();
+                let slot_mapping = slot_mapping_gamma_opt.unwrap();
+                let args = super::forward_block_layer_paged::PagedLayerArgs {
+                    layer_idx,
+                    ctx_count: option_b_ctx_count,
+                    h,
+                    q_dim,
+                    kv_dim,
+                    inter,
+                    inv_sqrt_d,
+                    slot_mapping_gamma: slot_mapping,
+                    block_table_dev: bt,
+                    stream,
+                };
+                self.forward_block_layer_paged(layer, &args, ctx)?;
+            } else {
+                let args = super::forward_block_layer::LayerArgs {
+                    layer_idx,
+                    n_attn,
+                    eff_ctx,
+                    h,
+                    q_dim,
+                    kv_dim,
+                    inter,
+                    bf16,
+                    inv_sqrt_d,
+                    stream,
+                };
+                self.forward_block_layer(layer, &args, ctx, debug_dump)?;
+            }
         }
-        // Drop the original inline loop body — extracted to helper.
 
         // ── Step 4: final RMSNorm + LM head on noise rows only ──
         // Skip ctx slots [0..eff_ctx] (their stream_buf is garbage from
@@ -385,10 +504,11 @@ impl BlockDiffusionDraftHead {
         static DRAFTS_DUMP_DONE: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
         if !DRAFTS_DUMP_DONE.load(std::sync::atomic::Ordering::Relaxed)
-            && std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
+            && (std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
                 .ok()
                 .as_deref()
                 == Some("1")
+                || std::env::var("ATLAS_DFLASH_LOG_DRAFTS").ok().as_deref() == Some("1"))
         {
             tracing::info!(
                 "DFLASH DUMP_FULL drafts (γ={}, last_token={}, position={}, eff_ctx={}): {:?}",
