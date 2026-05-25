@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -1208,3 +1208,49 @@ empty. `phase_assemble.rs` `unwrap_or(Bf16)` is now a safe fallback, not a laten
 **No new bugs found. All prior fixes confirmed correct.**
 
 No code changes required. All findings consistent with prior session.
+
+---
+
+## 2026-05-25 Fourth-pass verification (spec_ssm HEAD `59a55d5`)
+
+Independent investigation from the original task brief (Priority 1: Mistral MLA prefill gibberish
+at >1000 tokens; Priority 2: Nemotron tool calling; Priority 3: SSM cache slot memory).
+
+### Priority 1 — Mistral Small 4 MLA prefill: all fixes confirmed at HEAD
+
+Traced all three bugs identified by prior sessions:
+
+**BUG 1 — HDIM=256 kernel mismatch**: `cache_skip_mla.rs` now uses `ops::mla_fused_prefill` with
+`mla_fused_prefill_k` and `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)`.
+`anyhow::ensure!(self.mla_fused_prefill_k.0 != 0)` guard prevents silent fallback to the broken
+256-dim kernel. `paged_mla.rs` selects `prefill_attn_128_k` for `hd <= 128` with matching ensure
+guard. Both first-chunk and multi-chunk paths use the correct kernel and scale.
+
+**BUG 2 — BF16 KV silently downcast to FP8**: `kv_dtypes.rs` `build_layer_kv_dtypes` returns
+`vec![BF16; num_attention_layers]` when `kv_dtype == BF16`, never empty. `phase_assemble.rs`
+has `unwrap_or(KvCacheDtype::Bf16)` as a safe fallback (comment confirms intent).
+
+**BUG 3 — Multi-chunk context loss**: `paged_mla.rs` multi-chunk path (`seq_len_start > 0`)
+routes to the absorbed paged kernel (`mla_prefill_paged_320`) that reads from the compressed
+[kv_lora|rope]=320 paged cache rather than re-expanding KV from scratch.
+
+`yarn.rs` independently verified: `find_correction_dim` formula, ramp computation, and
+`beta_fast`/`beta_slow` defaults are all correct. The original task-brief YaRN diagnosis
+was not the root cause; all five bugs were in the MLA attention path and KV dtype routing.
+
+### Priority 2 — Nemotron Super 120B tool calling: confirmed fixed
+
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` verified: `disable_tool_steering = true`,
+`tool_call_parser = "bare_json"`, `thinking_in_tools = false`. `nemotron_h.jinja` generation
+prompt gates the `<tool_call>` steering prefix on `not disable_tool_steering` — confirmed the
+flag is read correctly.
+
+### Priority 3 — SSM cache slots: correct behavior confirmed
+
+`SsmStatePool::new(&config, max_batch_size, ...)` and `SsmSnapshotPool::new(ssm_cache_slots, ...)`
+are independent allocations. `--ssm-cache-slots 0` zeros the Marconi snapshot pool only; the
+active-state pool (1206 MB at default `--max-batch-size 8`) is required for inference and is
+unaffected. Use `--max-batch-size 1` to reduce active-state pool to ~151 MB for single-stream.
+Pure-attention models (Mistral: 0 SSM layers) allocate zero SSM memory regardless.
+
+**No new bugs found. spec_ssm branch is correct and ready for hardware re-test.**
