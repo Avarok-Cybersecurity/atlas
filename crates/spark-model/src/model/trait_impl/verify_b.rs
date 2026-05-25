@@ -340,6 +340,38 @@ impl TransformerModel {
         let tok0 = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
         let tok1 = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
 
+        // ATLAS_DFLASH_VERIFY_TRACE=1: dump top-5 logits at row 0 so we can
+        // tell apart "model genuinely predicts echo" (echo dominates) from
+        // "argmax is barely echo over a sensible candidate" (graph/KV
+        // staleness). Adds one synchronous vocab-sized D2H per verify; only
+        // pay for it when tracing is on.
+        if std::env::var("ATLAS_DFLASH_VERIFY_TRACE").ok().as_deref() == Some("1") {
+            let vocab = self.config.vocab_size;
+            let mut logits_row0 = vec![0u8; vocab * bf16];
+            let row0_ptr = self.buffers.logits();
+            if self.gpu.copy_d2h(row0_ptr, &mut logits_row0).is_ok() {
+                let mut scored: Vec<(u32, f32)> = (0..vocab)
+                    .map(|i| {
+                        let bits = u16::from_le_bytes([logits_row0[i * 2], logits_row0[i * 2 + 1]]);
+                        // bf16 → f32: shift bits left 16.
+                        let f = f32::from_bits((bits as u32) << 16);
+                        (i as u32, f)
+                    })
+                    .collect();
+                scored.select_nth_unstable_by(5, |a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                let mut top5: Vec<(u32, f32)> = scored.into_iter().take(8).collect();
+                top5.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                top5.truncate(5);
+                tracing::info!(
+                    "K2 TRACE row0 logits: input_tok0={} positions=[{},{}] top5={:?}",
+                    tokens[0],
+                    seq.seq_len,
+                    seq.seq_len + 1,
+                    top5,
+                );
+            }
+        }
+
         // EXPERIMENTAL: push ALL tokens (including tokens[0]) and advance
         // seq_len by K. Prior logic (`seq_len += k-1`, push only tokens[1..])
         // assumed tokens[0] was ALREADY in seq.tokens from a prior decode,

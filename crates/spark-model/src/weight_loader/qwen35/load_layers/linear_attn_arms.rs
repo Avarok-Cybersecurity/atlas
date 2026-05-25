@@ -200,42 +200,42 @@ pub(super) fn build_linear_attention_nvfp4(
     // by installing a single-scale FP8 copy of `qkvz_dense` and
     // `ssm35.out_proj` and dispatching prefill through `fp8_gemm_n128`.
     // Unconditional for FP8-on-disk variants (mirrors dense).
-    let (qkvz_fp8_prefill, out_proj_fp8_prefill) =
-        if matches!(variant, Nvfp4Variant::Fp8Dequanted) {
-            // Diagnostic: fires once per LinearAttention layer (~30
-            // lines for 35B-A3B). Confirms the MoE Bug #1 cross-port
-            // (commit 7d5e8fc) is active and the SSM prefill path
-            // dispatches through fp8_gemm_n128, not w4a16_gemm.
-            tracing::info!(
-                "SSM[{lp}] in_proj_qkv + out_proj via native FP8 prefill GEMM \
+    let (qkvz_fp8_prefill, out_proj_fp8_prefill) = if matches!(variant, Nvfp4Variant::Fp8Dequanted)
+    {
+        // Diagnostic: fires once per LinearAttention layer (~30
+        // lines for 35B-A3B). Confirms the MoE Bug #1 cross-port
+        // (commit 7d5e8fc) is active and the SSM prefill path
+        // dispatches through fp8_gemm_n128, not w4a16_gemm.
+        tracing::info!(
+            "SSM[{lp}] in_proj_qkv + out_proj via native FP8 prefill GEMM \
                  (BF16 act × FP8 weight via fp8_gemm_n128)"
-            );
-            let b2f_k = gpu.kernel("w4a16", "bf16_to_fp8")?;
-            let qkvz_total = (qkvz_size * h) as u32;
-            let qkvz_fp8 = gpu.alloc(qkvz_size * h)?;
-            crate::layers::ops::bf16_to_fp8(
-                gpu,
-                b2f_k,
-                qkvz_dense.weight,
-                qkvz_fp8,
-                qkvz_total,
-                stream,
-            )?;
-            let out_total = (h * value_dim) as u32;
-            let out_fp8 = gpu.alloc(h * value_dim)?;
-            crate::layers::ops::bf16_to_fp8(
-                gpu,
-                b2f_k,
-                ssm35.out_proj.weight,
-                out_fp8,
-                out_total,
-                stream,
-            )?;
-            gpu.synchronize(stream)?;
-            (Some(qkvz_fp8), Some(out_fp8))
-        } else {
-            (None, None)
-        };
+        );
+        let b2f_k = gpu.kernel("w4a16", "bf16_to_fp8")?;
+        let qkvz_total = (qkvz_size * h) as u32;
+        let qkvz_fp8 = gpu.alloc(qkvz_size * h)?;
+        crate::layers::ops::bf16_to_fp8(
+            gpu,
+            b2f_k,
+            qkvz_dense.weight,
+            qkvz_fp8,
+            qkvz_total,
+            stream,
+        )?;
+        let out_total = (h * value_dim) as u32;
+        let out_fp8 = gpu.alloc(h * value_dim)?;
+        crate::layers::ops::bf16_to_fp8(
+            gpu,
+            b2f_k,
+            ssm35.out_proj.weight,
+            out_fp8,
+            out_total,
+            stream,
+        )?;
+        gpu.synchronize(stream)?;
+        (Some(qkvz_fp8), Some(out_fp8))
+    } else {
+        (None, None)
+    };
 
     let ssm = SsmWeights {
         in_proj_qkvz: qkvz_dense,
@@ -275,7 +275,10 @@ pub(super) fn build_linear_attention_nvfp4(
     // HF). Test fix for long-context drift root cause (commit 1db7572
     // and onward investigation). ssm35.out_proj is the BF16 weight
     // (loaded via dense_auto with FP8→BF16 dequant).
-    if matches!(std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(), Some("1")) {
+    if matches!(
+        std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(),
+        Some("1")
+    ) {
         // ssm35.out_proj weight is BF16 on GPU (from load_ssm_qwen35 →
         // dense_auto on Fp8Dequanted variant). It's a separate buffer
         // from out_proj_nvfp4 / out_proj_fp8_prefill. Set as dense path.

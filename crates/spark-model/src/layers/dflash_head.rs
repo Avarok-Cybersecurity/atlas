@@ -37,11 +37,26 @@ pub struct DflashKernels {
     pub dense_gemm: KernelHandle,
     pub rope_qwen3: KernelHandle,
     pub reshape_cache_fp8: KernelHandle,
+    /// BF16 KV cache writeback. Used by Phase 2 `precompute_ctx_kv` and
+    /// the per-layer γ-block `reshape_and_cache` call to populate the
+    /// drafter's BF16 paged cache before each `prefill_attention_paged_dflash`.
+    pub reshape_cache_bf16: KernelHandle,
     pub prefill_attn_dflash_fp8: KernelHandle,
+    /// BF16 paged-attention dispatcher for the DFlash γ-block.
+    /// Calls `inferspark_prefill_paged` with `causal_mask_enabled=0`,
+    /// reading BF16 K/V from the per-layer paged cache pool. Phase 2
+    /// (Option B) drafter attention runs through this kernel; the FP8
+    /// variant above is retained for a future quality-validated FP8 KV
+    /// path. See `ops::prefill_attention_paged_dflash`.
+    pub prefill_attn_dflash_bf16: KernelHandle,
     pub silu_mul: KernelHandle,
     pub residual_add: KernelHandle,
     pub argmax: KernelHandle,
     pub batched_embed: KernelHandle,
+    /// Phase 2 Option B: builds `[count]` i32 slot indices on-device
+    /// from a host-provided block_table. Used by propose.rs to populate
+    /// the slot_mapping passed to reshape_and_cache and precompute_ctx_kv.
+    pub fill_slots: KernelHandle,
     /// Non-paged prefill attention (used for the γ-block self-attention
     /// when there's no persistent K/V cache to walk).
     pub prefill_attn: KernelHandle,
@@ -70,6 +85,14 @@ pub struct DflashScratch {
     /// `[ctx_window, draft_hidden]` BF16 — fc-projected + hidden_norm'd
     /// ctx for the most recent `ctx_window` target positions.
     pub fc_proj: DevicePtr,
+    /// Phase 2 (Option B) scratch for `precompute_ctx_kv`: fused KV
+    /// GEMM output, shape `[max_new_ctx, L * 2 * kv_dim]` BF16.
+    /// `max_new_ctx` = `ctx_window` (worst case: first propose runs
+    /// precompute over the entire prefix).
+    pub fused_kv_out: DevicePtr,
+    /// Phase 2 scratch: i32 slot mapping for the per-layer
+    /// `reshape_and_cache` calls. Sized `[ctx_window]`.
+    pub slot_mapping_dev: DevicePtr,
     pub logits: DevicePtr,
     pub draft_tokens_dev: DevicePtr,
     /// `[ctx_window + γ]` i32 positions. First ctx_window are
@@ -143,6 +166,23 @@ pub struct DflashProposerState {
     /// Width (bytes) of one `ctx_hidden_acc` slot — `5 * target_hidden * bf16`.
     /// Stored to avoid re-deriving on every append.
     pub ctx_slot_bytes: usize,
+
+    // ─── Phase 2 Option B fields (paged KV cache for ctx) ───────────────
+    /// Device-side block table for the drafter's paged KV cache. Allocated
+    /// once at first propose with enough u32 slots to cover `max_seq_len`
+    /// at block_size=16. Read by `prefill_attention_paged_dflash` to map
+    /// logical block indices to physical pool block indices. Mirrors the
+    /// host-side `block_table` Vec, copied to GPU after each `alloc_block`.
+    pub block_table_dev: Option<DevicePtr>,
+    /// Number of paged-cache slots populated with ctx K/V for this sequence.
+    /// Distinct from `ctx_len` (which counts target_hidden_acc slots). The
+    /// drafter writes one ctx K/V slot per accepted target token; the
+    /// γ-block then attends over `[0..ctx_count_drafter+γ)`. Bumped by γ
+    /// per propose (γ slots written for the noise rows) and trimmed in
+    /// `after_verify` by `(γ - num_accepted)`.
+    pub ctx_count_drafter: usize,
+    /// Cap for `ctx_count_drafter`. Mirrors `block_table.len() * block_size`.
+    pub max_ctx_count_drafter: usize,
 }
 
 impl ProposerState for DflashProposerState {
@@ -212,6 +252,20 @@ pub struct BlockDiffusionDraftHead {
     /// Drafter transformer layers (8 for Qwen3.6-35B-A3B-DFlash).
     pub layers: Vec<DflashLayer>,
 
+    /// Phase 2 (Option B) fused K/V projection across all L drafter layers.
+    /// Shape: `[L × 2 × kv_dim, h]` BF16 — concatenated `[K0; V0; K1; V1; …]`
+    /// (per-layer K then V interleaved). Built once at construction by
+    /// `copy_d2d`-stitching the per-layer `k_proj.weight` and `v_proj.weight`
+    /// pointers from `layers[i]`. Lets `precompute_ctx_kv` derive every
+    /// drafter layer's ctx K/V via a single `dense_gemm` of shape
+    /// `[new_ctx_count, h] × [h, L·2·kv_dim]` instead of 2·L per-layer GEMMs.
+    ///
+    /// `None` until Phase 2 lands the build (stage 1: kernel/dispatcher
+    /// scaffolding; stage 2: this allocation + the precompute_ctx_kv module;
+    /// stage 3: pyref bit-exact diff). Layout (K then V per layer) chosen
+    /// to match vLLM's `_fused_kv_weight` in `qwen3_dflash.py:381-389`.
+    pub fused_kv_weight: Option<DevicePtr>,
+
     /// Paged FP8 KV cache. One cache holding all `num_layers` drafter layers,
     /// laid out the same way the target's KV cache is — block-table-keyed,
     /// `num_layers × num_kv_heads × head_dim` per slot. Allocating a single
@@ -258,7 +312,9 @@ pub struct BlockDiffusionDraftHead {
 
 mod forward_block;
 mod forward_block_layer;
+mod forward_block_layer_paged;
 mod from_weights;
+mod precompute_ctx_kv;
 mod propose;
 
 impl DraftProposer for BlockDiffusionDraftHead {
@@ -283,6 +339,12 @@ impl DraftProposer for BlockDiffusionDraftHead {
             ctx_len: 0,
             max_ctx_len: self.max_seq_len,
             ctx_slot_bytes,
+            // Phase 2 Option B: lazily allocated on first propose when
+            // ATLAS_DFLASH_OPTION_B=1. None until then to keep alloc_state
+            // cheap for sequences that never use Option B.
+            block_table_dev: None,
+            ctx_count_drafter: 0,
+            max_ctx_count_drafter: 0,
         }))
     }
 
