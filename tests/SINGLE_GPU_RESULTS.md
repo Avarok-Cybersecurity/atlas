@@ -1405,3 +1405,101 @@ Pure-attention models (Mistral Small 4: 0 SSM layers) allocate zero SSM memory r
 `--ssm-cache-slots` or `--max-batch-size`.
 
 **No new bugs found. All fixes confirmed correct. Branch `spec_ssm` is correct and ready for hardware re-test.**
+
+---
+
+## 2026-05-25 Seventh-pass investigation (spec_ssm HEAD `0948d48`)
+
+Independent audit driven by the original task brief, reading each file named in the three
+priority descriptions from scratch. No new bugs found; all prior fixes confirmed correct.
+
+### Priority 1 — Mistral Small 4 MLA prefill (>1000 token gibberish)
+
+**`prefill/cache_skip_mla.rs`** (non-paged, single-chunk path — the direct-flash MLA path):
+- `inv_sqrt_d_absorbed = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` = `1/sqrt(320)` ✓
+- `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0, "MLA cache-skip prefill requires
+  mla_fused_prefill kernel (inferspark_prefill HDIM=256 is broken for MLA hd=128 ...)")` —
+  hard startup failure if kernel is absent; no silent HDIM=256 fallback possible.
+- `write_kv_cache` called with `mla_cache_dim` (kv_lora+mla_rope = 320) on both K and V strides.
+- Buffer aliasing: `ssm_ba()` serves as `q_latent` for `wq_a` → `wq_b` GEMMs, then as
+  `k_rope_buf` for `wkv_a_rope` GEMM. Safe: `qg_out` (wq_b output) is consumed by
+  `mla_q_rope_extract_batched` / `rope_yarn` before `k_rope_buf` is written.
+
+**`mla_absorbed.cu` / `mla_fused_prefill.cu`** (CUDA kernels):
+- `__shared__ float smem_dot[8]` at line 115 of `mla_fused_prefill.cu` — declared at function
+  scope before the `kv_pos` loop (line 126). Non-overlapping live ranges with `smem_q[320]`
+  (line 75) and `smem_latent[256]` (line 190). Total shared memory: 2336 bytes.
+- `kv_end = min(q_pos + 1, seq_len)` — correct causal masking at all seq_len values.
+- Grid `(nq=32, seq_len, 1)` / block `(256, 1, 1)`: for seq_len = 1000, grid is (32, 1000, 1),
+  well within CUDA limits. Kernel scales O(seq_len) per query — no structural cap at 1 K tokens.
+- All pointer offsets use `(unsigned long long)` casts: no 32-bit overflow at any seq_len ≤ 65535.
+- `mla_absorbed.cu` kernels (`mla_batched_gemv`, `mla_q_rope_scatter`, etc.) are decode-path
+  GEMV helpers; they are not involved in the single-chunk prefill path.
+
+**`decode/attention_forward_mla.rs`** (decode path comparison):
+- `inv_sqrt_d = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` (line 377) — identical formula
+  to the fixed prefill paths. KV cache assembled as `[kv_latent | k_rope]` / `[kv_latent | zeros]`
+  via `mla_cache_assemble` with `mla_cache_dim` strides — identical to `cache_skip_mla.rs`.
+- Decode path uses `paged_decode_attn_bf16` against the same 320-dim compressed cache format.
+  No divergence between decode and prefill in scale, cache layout, or BF16 precision.
+
+**`crates/spark-server/src/main.rs` / `kv_dtypes.rs`** (`--kv-high-precision-layers auto`):
+- `kv_high_precision_layers = "auto"` maps to `kv_hp_layers = 2` in `serve_phases/kv_cache.rs`.
+- `build_layer_kv_dtypes(KvCacheDtype::Bf16, N=36, hp=2)`: hits early-return at line 20-22
+  (`kv_dtype == Bf16` → return `vec![Bf16; num_attention_layers]`). The hp=2 path is never
+  entered. All 36 MLA attention layers are uniformly BF16. FP8/BF16 layer mixing is impossible
+  for any Mistral launch with `--kv-cache-dtype bf16`.
+- `phase_assemble.rs` `unwrap_or(KvCacheDtype::Bf16)`: belt-and-suspenders; always returns BF16
+  for Mistral since `build_layer_kv_dtypes` never returns an empty slice when dtype is BF16.
+
+**`mistral_loader/loader_impl/yarn.rs`** (YaRN inv_freq):
+- `find_correction_dim(num_rot) = dim * ln(max_pos / (num_rot * 2π)) / (2 * ln(base))` —
+  correct HF dimension-index-space formula. For Mistral Small 4 (`rope=64 pairs, beta_fast=32,
+  beta_slow=1, original_max_pos=8192, theta=1e7`): `low ≈ 7, high ≈ 15`. YaRN was never broken;
+  the original task-brief diagnosis was a misdiagnosis. The five MLA code bugs were the actual
+  root causes.
+
+**`prefill/paged_mla.rs`** (paged / multi-chunk path):
+- First chunk (`seq_len_start == 0`): `ensure!(hd > 128 || prefill_attn_128_k.0 != 0)` guard +
+  routes to `prefill_attn_128_k` for MLA (hd=128). No HDIM=256 kernel used.
+- Multi-chunk (`seq_len_start > 0`): `mla_prefill_paged_320` reads full `kv_len =
+  seq_len_start + n` tokens from the 320-dim compressed paged cache; Q[i] attends to KV
+  0..seq_len_start+i. Historical context is fully visible in all chunks.
+
+### Priority 2 — Nemotron Super 120B tool calling
+
+**`jinja-templates/nemotron_h.jinja`**: generation prompt at line 204:
+`{%- if tools and not disable_tool_steering %}` — `disable_tool_steering=true` in MODEL.toml
+suppresses the `<tool_call>\n` steering prefix that caused the emission loop on Super.
+
+**`crates/spark-server/src/tool_parser.rs`**: `ToolCallParser::suppresses_jinja_tools()`
+trait method (default `false`). `BareJsonParser` overrides to `true` — parser-level guarantee
+that `template.rs` passes `jinja_tools = None` for any bare-json model regardless of MODEL.toml.
+`anthropic/handlers.rs` `count_tokens` checks `parser_suppresses` mirroring `template.rs`
+(asymmetry fixed in commit `2993894`).
+
+**`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`**: all four required flags confirmed:
+`disable_tool_steering = true`, `tool_call_parser = "bare_json"`, `skip_template_tools = true`,
+`thinking_in_tools = false`. Triple-layer protection: (1) MODEL.toml flags, (2) parser-level
+`suppresses_jinja_tools()`, (3) `count_tokens` endpoint consistency. No format-instruction
+conflict between template and parser.
+
+### Priority 3 — SSM cache slots
+
+**`crates/spark-server/src/cli.rs`**: `pub ssm_cache_slots: usize` at line 279 (default 16).
+`--ssm-cache-slots 0` propagates via `serve_phases/build.rs:71` → `impl_a1.rs` arg list.
+
+**`crates/spark-model/src/model/ssm_pool.rs`** (`SsmStatePool`): allocated with `max_batch_size`
+(default 8) at `impl_a1.rs` line 134-140. `ssm_cache_slots` is NOT passed here. For
+Qwen3.5-122B (36 SSM layers, 8+1 slots): ~1206 MB. Required for concurrent decode — each
+in-flight sequence needs a dedicated h_state/conv_state buffer.
+
+**`crates/spark-model/src/model/impl_a1.rs`** lines 134-149: `SsmStatePool::new(&config,
+max_batch_size, ...)` and `SsmSnapshotPool::new(ssm_cache_slots, ...)` are two independent
+allocations. `--ssm-cache-slots 0` correctly zeroes only the prefix-cache snapshot pool
+(`SsmSnapshotPool`); active decode pool is unaffected.
+
+Pure-attention models (Mistral Small 4: 0 SSM layers): `config.num_ssm_layers() == 0` →
+both pools allocate 0 GPU memory regardless of `--ssm-cache-slots` or `--max-batch-size`.
+
+**No new bugs found. All fixes confirmed correct. Branch `spec_ssm` is ready for hardware re-test.**
