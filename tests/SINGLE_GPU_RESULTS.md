@@ -1254,3 +1254,69 @@ unaffected. Use `--max-batch-size 1` to reduce active-state pool to ~151 MB for 
 Pure-attention models (Mistral: 0 SSM layers) allocate zero SSM memory regardless.
 
 **No new bugs found. spec_ssm branch is correct and ready for hardware re-test.**
+
+---
+
+## 2026-05-25 Fifth-pass verification (spec_ssm HEAD `fd2e919`)
+
+Independent investigation from the original task brief (Priority 1: Mistral MLA prefill
+gibberish at >1000 tokens; Priority 2: Nemotron tool calling; Priority 3: SSM cache slot
+memory). All four target files per priority read from scratch.
+
+### Priority 1 — Mistral Small 4 MLA prefill
+
+**`cache_skip_mla.rs`** (non-paged / single-chunk path): calls `ops::mla_fused_prefill` with
+`mla_fused_prefill_k`; `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)`;
+`anyhow::ensure!(self.mla_fused_prefill_k.0 != 0)` hard-blocks any fallback to the HDIM=256
+broken kernel. KV cache write uses `mla_cache_dim` strides on both K and V.
+
+**`kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu`**: all CUDA kernels operate in BF16
+and are seq_len-agnostic (grid grows linearly with `n` or `num_tokens`). `smem_dot[8]`,
+`smem_q[320]`, `smem_latent[256]` are distinct static `__shared__` allocations. Causal mask
+`kv_end = min(q_pos+1, seq_len)` correct at all seq_len up to 65536. No seq_len limits,
+shared-memory overflow, or tile-loop bounds issues found.
+
+**`kv_cache.rs` + `kv_dtypes.rs` (`--kv-high-precision-layers auto`)**: `"auto"` → `kv_hp_layers=2`.
+`build_layer_kv_dtypes(BF16, 36, 2)` hits the early-return at line 20 (`kv_dtype == BF16`) and
+returns `vec![BF16; 36]`. No FP8/BF16 mixing for Mistral regardless of the `auto` value.
+`phase_assemble.rs` uses `unwrap_or(KvCacheDtype::Bf16)` — belt-and-suspenders.
+
+**`decode/attention_forward_mla.rs`**: `inv_sqrt_d = 1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)`;
+KV cache format `[latent|rope]` / `[latent|zeros]` with `mla_cache_dim` strides — consistent
+with both prefill paths. No divergence between prefill and decode.
+
+**`yarn.rs`**: independently re-verified. `find_correction_dim` uses the correct HF
+dimension-index-space formula. For Mistral (`rope_theta=1e7`, `rope_dim=64`, `beta_fast=32`,
+`beta_slow=1`, `original_max_pos=8192`, `factor=128`): `low≈7, high≈15`. Was never the bug;
+the original task brief diagnosis (YaRN `low_freq_factor` mis-aliasing) was a misdiagnosis.
+All five actual root causes were in the MLA attention path and KV dtype routing.
+
+**`paged_mla.rs`**: `seq_len_start == 0` path uses `prefill_attn_128_k` (hd≤128 guard with
+`ensure!`). `seq_len_start > 0` path uses `mla_prefill_paged_320` absorbed paged kernel
+reading `kv_len = seq_len_start + n` tokens from the compressed paged cache — historical
+context is not lost.
+
+### Priority 2 — Nemotron Super 120B tool calling
+
+**`nemotron_h.jinja`**: generation prompt line 204: `{%- if tools and not disable_tool_steering %}` —
+`<tool_call>` steering prefix correctly gated off when `disable_tool_steering=true`.
+
+**`tool_parser.rs` / `bare_json.rs`**: `BareJsonParser::suppresses_jinja_tools() → true` —
+parser-level guarantee that `template.rs` passes `jinja_tools = None` for any bare-json
+model, preventing XML `<function>` blocks regardless of MODEL.toml. `count_tokens`
+(`anthropic/handlers.rs`) checks `parser_suppresses` mirroring `template.rs`.
+
+**`MODEL.toml`**: all four flags present — `disable_tool_steering = true`,
+`tool_call_parser = "bare_json"`, `skip_template_tools = true`, `thinking_in_tools = false`.
+
+### Priority 3 — SSM cache slots
+
+**`cli.rs`**: `ssm_cache_slots: usize`, default 16. `--ssm-cache-slots 0` propagates through.
+**`model/ssm_pool.rs`** (`SsmStatePool`): allocated with `max_batch_size` (default 8), not
+`ssm_cache_slots`. For Qwen3.5-122B (36 SSM layers, 8+1 slots): ~1206 MB active decode pool.
+**`model/ssm_snapshot.rs`** (`SsmSnapshotPool`): `SsmSnapshotPool::new(num_slots=0, ...)` hits
+the early-return at line 95 when `!marconi_enabled && !decode_enabled` — no GPU allocations.
+`decode_enabled` requires `num_ssm_layers > 0`; Mistral has 0 SSM layers so both pools are
+zero. `--ssm-cache-slots 0` correctly zeroes only the snapshot pool.
+
+**No new bugs found. All fixes confirmed correct. Branch ready for hardware re-test.**
