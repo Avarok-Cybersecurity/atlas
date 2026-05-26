@@ -249,6 +249,70 @@ pub fn prefill_attention_paged_dflash(
         .launch(stream)
 }
 
+/// DFlash γ-block paged Flash Attention — BF16 KV cache, INDIRECT scalar args.
+///
+/// Phase 5 (CUDA graph) variant of [`prefill_attention_paged_dflash`]. Reads
+/// `kv_len` and `q_offset` from device pointers at kernel entry instead of
+/// taking them as kernel scalar arguments. This makes the launch graph-
+/// friendly: the host writes the dynamic values into `kv_len_q_offset_dev`
+/// (8 bytes: `[u32 kv_len, u32 q_offset]`) BEFORE entering the captured
+/// region, and the captured graph node binds only the pointer — replays
+/// pick up whatever values the host wrote pre-launch.
+///
+/// Resolves to kernel `inferspark_prefill_paged_indirect`. The kernel binary
+/// is otherwise identical to `inferspark_prefill_paged` (`causal_mask_enabled
+/// = 0` is still hardcoded here on the launch side).
+///
+/// Phase B note: defined but NOT YET WIRED IN to forward_block_layer_paged.
+/// Phase C swaps the dispatcher; Phase D adds graph capture around it.
+#[allow(clippy::too_many_arguments)]
+pub fn prefill_attention_paged_dflash_bf16_indirect(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    output: DevicePtr,
+    block_table: DevicePtr,
+    q_len: u32,
+    kv_len_q_offset_dev: DevicePtr,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    cache_block_size: u32,
+    sliding_window: u32,
+    inv_sqrt_d: f32,
+    stream: u64,
+) -> Result<()> {
+    let br = 32u32;
+    // q_offset's only role in the captured-args path is grid sizing; we still
+    // pass q_len (a model constant, γ) directly. The kernel will overwrite its
+    // scalar `kv_len`/`q_offset` slots from the indirect buffer at entry, so
+    // we feed placeholder zeros for those two args here — the values are
+    // *ignored* once `KERNEL_PREAMBLE` runs in the .cu file.
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_q_heads, div_ceil(q_len, br), 1])
+        .block([128, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(output)
+        .arg_ptr(block_table)
+        .arg_u32(q_len)
+        .arg_u32(0u32) // kv_len placeholder — overwritten by KERNEL_PREAMBLE
+        .arg_u32(0u32) // q_offset placeholder — overwritten by KERNEL_PREAMBLE
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(cache_block_size)
+        .arg_u32(sliding_window)
+        .arg_u32(0u32) // causal_mask_enabled = 0 (DFlash bidirectional)
+        .arg_f32(inv_sqrt_d)
+        .arg_ptr(kv_len_q_offset_dev) // KERNEL_EXTRA_PARAMS: kv_len_ptr
+        .arg_ptr(kv_len_q_offset_dev.offset(4)) // KERNEL_EXTRA_PARAMS: q_offset_ptr
+        .launch(stream)
+}
+
 /// Paged prefill Flash Attention — FP8 KV cache variant.
 #[allow(clippy::too_many_arguments)]
 pub fn prefill_attention_paged_fp8(

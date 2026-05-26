@@ -49,6 +49,13 @@ pub struct DflashKernels {
     /// variant above is retained for a future quality-validated FP8 KV
     /// path. See `ops::prefill_attention_paged_dflash`.
     pub prefill_attn_dflash_bf16: KernelHandle,
+    /// Phase 5 (CUDA graph) variant of `prefill_attn_dflash_bf16` that reads
+    /// `kv_len` and `q_offset` from device pointers instead of taking them as
+    /// kernel scalar args. Used by the graph-captured forward_block path so a
+    /// single graph instance can be replayed across steps with different
+    /// dynamic values written to the indirect-args buffer pre-launch.
+    /// Resolves to kernel `inferspark_prefill_paged_indirect`.
+    pub prefill_attn_dflash_bf16_indirect: KernelHandle,
     pub silu_mul: KernelHandle,
     pub residual_add: KernelHandle,
     pub argmax: KernelHandle,
@@ -93,6 +100,11 @@ pub struct DflashScratch {
     /// Phase 2 scratch: i32 slot mapping for the per-layer
     /// `reshape_and_cache` calls. Sized `[ctx_window]`.
     pub slot_mapping_dev: DevicePtr,
+    /// Phase 5 (CUDA graph) scratch: 8 bytes (`[u32 kv_len, u32 q_offset]`)
+    /// holding the per-call dynamic values that the indirect paged-attention
+    /// kernel reads at entry. Host writes via `copy_h2d` BEFORE entering the
+    /// captured region so the graph itself sees a stable device pointer.
+    pub option_b_indirect_args_dev: DevicePtr,
     pub logits: DevicePtr,
     pub draft_tokens_dev: DevicePtr,
     /// `[ctx_window + γ]` i32 positions. First ctx_window are
