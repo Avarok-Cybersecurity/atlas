@@ -290,17 +290,22 @@ impl BlockDiffusionDraftHead {
         }
 
         // 3f. paged attention — q_len=γ, kv_len=ctx_count+γ.
-        ops::prefill_attention_paged_dflash(
+        //
+        // Phase 5 (CUDA graph): kv_len and q_offset are read from
+        // `option_b_indirect_args_dev` at kernel entry rather than passed
+        // as scalar args, so the captured launch survives per-call value
+        // changes. Host writes the 8-byte pair in forward_block.rs
+        // pre-graph; replays pick up whatever's there.
+        ops::prefill_attention_paged_dflash_bf16_indirect(
             gpu,
-            self.kernels.prefill_attn_dflash_bf16,
+            self.kernels.prefill_attn_dflash_bf16_indirect,
             self.scratch.q_buf,
             k_pool,
             v_pool,
             self.scratch.attn_out,
             block_table_dev,
             g,
-            kv_len,
-            ctx_count,
+            self.scratch.option_b_indirect_args_dev,
             self.num_q_heads as u32,
             self.num_kv_heads as u32,
             self.head_dim as u32,
@@ -309,6 +314,10 @@ impl BlockDiffusionDraftHead {
             inv_sqrt_d,
             stream,
         )?;
+        // Suppress unused-var warning: kv_len and ctx_count are still
+        // computed for slot-mapping and slot-position arithmetic above;
+        // the indirect kernel pulls them from device memory at entry.
+        let _ = (kv_len, ctx_count);
 
         // 3g. o_proj — γ rows.
         ops::dense_gemm(

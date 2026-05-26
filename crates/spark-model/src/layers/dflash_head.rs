@@ -318,6 +318,23 @@ pub struct BlockDiffusionDraftHead {
     /// (degraded quality, ablation only).
     pub ctx_window: usize,
 
+    // === Phase D (CUDA graph capture) ===
+    /// Single captured forward_block graph. `None` until warm-up completes
+    /// and the first capture lands. Mutex guards both lookup and capture so
+    /// concurrent propose calls can't race a half-built graph. `GraphHandle(0)`
+    /// is the "empty capture" sentinel and is treated as a fallback to eager.
+    pub propose_graph: Mutex<Option<spark_runtime::gpu::GraphHandle>>,
+    /// When set, all `forward_block` calls run eagerly. Mirrors target-model
+    /// `TransformerModel::suppress_graphs` so external code can disable
+    /// graphs at runtime (e.g. while calibrating FP8 KV).
+    pub suppress_graphs: std::sync::atomic::AtomicBool,
+    /// How many eager warm-up calls we've executed against the graph path.
+    /// Default warmup target is 2 (override via `ATLAS_DFLASH_PROPOSE_WARMUP_N`).
+    /// Two eager passes warm the PTX→SASS cache, ramp GB10 clocks to steady
+    /// state, and bring hot weight tiles into L2 before the capture freezes
+    /// SASS variants the driver picks.
+    pub propose_warmup_count: std::sync::atomic::AtomicUsize,
+
     // Quantization mode (BF16 only for Phase 1).
     pub quant: DflashQuantization,
 }

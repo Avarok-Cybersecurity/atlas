@@ -394,100 +394,194 @@ impl BlockDiffusionDraftHead {
                 16,
                 stream,
             )?;
+            // Phase 5 (CUDA graph) pre-graph write: stash the per-propose
+            // dynamic `[kv_len, q_offset]` pair into the indirect-args
+            // buffer. The graph-captured paged-attention launch reads from
+            // this pointer at kernel entry, so a single graph instance can
+            // be replayed across propose calls with new values written here.
+            // Phase C uses it eagerly (no graph yet) to gate correctness.
+            let kv_len = option_b_ctx_count + self.gamma as u32;
+            let q_offset = option_b_ctx_count;
+            let indirect_bytes: [u8; 8] = {
+                let mut b = [0u8; 8];
+                b[0..4].copy_from_slice(&kv_len.to_ne_bytes());
+                b[4..8].copy_from_slice(&q_offset.to_ne_bytes());
+                b
+            };
+            gpu.copy_h2d(&indirect_bytes, self.scratch.option_b_indirect_args_dev)?;
             Some(self.scratch.slot_mapping_dev)
         } else {
             None
         };
 
-        for (layer_idx, layer) in self.layers.iter().enumerate() {
-            if option_b_on {
-                let bt = option_b_block_table.unwrap();
-                let slot_mapping = slot_mapping_gamma_opt.unwrap();
-                let args = super::forward_block_layer_paged::PagedLayerArgs {
-                    layer_idx,
-                    ctx_count: option_b_ctx_count,
-                    h,
-                    q_dim,
-                    kv_dim,
-                    inter,
-                    inv_sqrt_d,
-                    slot_mapping_gamma: slot_mapping,
-                    block_table_dev: bt,
-                    stream,
-                };
-                self.forward_block_layer_paged(layer, &args, ctx)?;
-            } else {
-                let args = super::forward_block_layer::LayerArgs {
-                    layer_idx,
-                    n_attn,
-                    eff_ctx,
-                    h,
-                    q_dim,
-                    kv_dim,
-                    inter,
-                    bf16,
-                    inv_sqrt_d,
-                    stream,
-                };
-                self.forward_block_layer(layer, &args, ctx, debug_dump)?;
+        // ── Phase D: CUDA graph capture/replay wraps the layer loop +
+        // post-norm + lm_head + argmax (all the per-propose compute). The
+        // pre-graph H2D writes above stash dynamic values into stable
+        // device pointers; the captured graph reads from those pointers
+        // every replay, so a single graph instance is reused across all
+        // propose calls.
+        //
+        // Eligibility: option_b path only (legacy non-paged path isn't
+        // graph-ready), suppress_graphs not set, none of the debug dumps
+        // enabled (those inject D2H/sync into the region and would taint
+        // the graph). Default warm-up N=2 (override
+        // `ATLAS_DFLASH_PROPOSE_WARMUP_N`) so PTX→SASS JIT, GB10 clock
+        // ramp, and L2 warming all happen eagerly before capture freezes
+        // a steady-state SASS pick.
+        let graph_eligible = option_b_on
+            && !self.suppress_graphs.load(std::sync::atomic::Ordering::Relaxed)
+            && !debug_dump
+            && std::env::var("ATLAS_DFLASH_PROPOSE_NO_GRAPH").is_err()
+            && std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL").is_err()
+            && std::env::var("ATLAS_DFLASH_OPTION_B_DIAG").is_err()
+            && std::env::var("ATLAS_DFLASH_PRECOMPUTE_DUMP").is_err()
+            && std::env::var("ATLAS_DFLASH_VERIFY_TRACE").is_err()
+            && std::env::var("ATLAS_DFLASH_LOG_DRAFTS").is_err()
+            && std::env::var("ATLAS_DFLASH_DEBUG_FORCE_PATTERN").is_err()
+            && std::env::var("ATLAS_DFLASH_DEBUG_FORCE_NOISE_PATTERN").is_err()
+            && std::env::var("ATLAS_DFLASH_DEBUG_CTX_OFF").is_err()
+            && std::env::var("ATLAS_DFLASH_DEBUG_CTX_USED").is_err();
+
+        let warmup_target: usize = std::env::var("ATLAS_DFLASH_PROPOSE_WARMUP_N")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(2);
+
+        // Helper closure: run the captured region (layer loop + norm + lm_head + argmax) eagerly.
+        let bf16_local = bf16;
+        let inv_sqrt_d_local = inv_sqrt_d;
+        let h_local = h;
+        let n_attn_local = n_attn;
+        let q_dim_local = q_dim;
+        let kv_dim_local = kv_dim;
+        let inter_local = inter;
+        let eff_ctx_local = eff_ctx;
+        let noise_byte_offset_local = eff_ctx * self.hidden_size * bf16;
+        let stream_noise_local = self.scratch.stream_buf.offset(noise_byte_offset_local);
+        let norm_noise_local = self.scratch.norm_buf.offset(noise_byte_offset_local);
+
+        let run_captured_region = || -> Result<()> {
+            for (layer_idx, layer) in self.layers.iter().enumerate() {
+                if option_b_on {
+                    let bt = option_b_block_table.unwrap();
+                    let slot_mapping = slot_mapping_gamma_opt.unwrap();
+                    let args = super::forward_block_layer_paged::PagedLayerArgs {
+                        layer_idx,
+                        ctx_count: option_b_ctx_count,
+                        h: h_local,
+                        q_dim: q_dim_local,
+                        kv_dim: kv_dim_local,
+                        inter: inter_local,
+                        inv_sqrt_d: inv_sqrt_d_local,
+                        slot_mapping_gamma: slot_mapping,
+                        block_table_dev: bt,
+                        stream,
+                    };
+                    self.forward_block_layer_paged(layer, &args, ctx)?;
+                } else {
+                    let args = super::forward_block_layer::LayerArgs {
+                        layer_idx,
+                        n_attn: n_attn_local,
+                        eff_ctx: eff_ctx_local,
+                        h: h_local,
+                        q_dim: q_dim_local,
+                        kv_dim: kv_dim_local,
+                        inter: inter_local,
+                        bf16: bf16_local,
+                        inv_sqrt_d: inv_sqrt_d_local,
+                        stream,
+                    };
+                    self.forward_block_layer(layer, &args, ctx, debug_dump)?;
+                }
             }
-        }
 
-        // ── Step 4: final RMSNorm + LM head on noise rows only ──
-        // Skip ctx slots [0..eff_ctx] (their stream_buf is garbage from
-        // layer accumulation). Read from offset `eff_ctx * h * bf16`.
-        let noise_byte_offset = eff_ctx * self.hidden_size * bf16;
-        let stream_noise = self.scratch.stream_buf.offset(noise_byte_offset);
-        let norm_noise = self.scratch.norm_buf.offset(noise_byte_offset);
-        ops::rms_norm(
-            gpu,
-            self.kernels.rms_norm,
-            stream_noise,
-            &self.norm,
-            norm_noise,
-            self.gamma as u32,
-            h,
-            self.rms_norm_eps,
-            stream,
-        )?;
-        ops::dense_gemm(
-            gpu,
-            self.kernels.dense_gemm,
-            norm_noise,
-            &crate::weight_map::DenseWeight {
-                weight: self.lm_head_shared,
-            },
-            self.scratch.logits,
-            self.gamma as u32,
-            self.vocab_size as u32,
-            h,
-            stream,
-        )?;
-
-        // Optional full-stream dump after final norm (debug; before lm_head).
-        if debug_dump {
-            dump_bf16("final.norm_buf[noise0]", norm_noise, 10)?;
-            // Sanity-check: dump first 10 BF16 values of target's lm_head_shared.
-            // If this returns zeros or garbage, the BF16 lm_head was freed by
-            // factory.rs's NVFP4 quantization step.
-            dump_bf16("final.lm_head_shared[0..10]", self.lm_head_shared, 10)?;
-        }
-
-        // ── Step 5: argmax per row → γ token ids ──
-        for i in 0..self.gamma {
-            let logits_row = self.scratch.logits.offset(i * self.vocab_size * bf16);
-            let token_slot = self.scratch.draft_tokens_dev.offset(i * 4);
-            ops::argmax_bf16(
+            ops::rms_norm(
                 gpu,
-                self.kernels.argmax,
-                logits_row,
-                token_slot,
-                self.vocab_size as u32,
+                self.kernels.rms_norm,
+                stream_noise_local,
+                &self.norm,
+                norm_noise_local,
+                self.gamma as u32,
+                h_local,
+                self.rms_norm_eps,
                 stream,
             )?;
-        }
-        if debug_dump {
-            dump_bf16("final.logits[noise0]", self.scratch.logits, 10)?;
+            ops::dense_gemm(
+                gpu,
+                self.kernels.dense_gemm,
+                norm_noise_local,
+                &crate::weight_map::DenseWeight {
+                    weight: self.lm_head_shared,
+                },
+                self.scratch.logits,
+                self.gamma as u32,
+                self.vocab_size as u32,
+                h_local,
+                stream,
+            )?;
+            for i in 0..self.gamma {
+                let logits_row = self.scratch.logits.offset(i * self.vocab_size * bf16_local);
+                let token_slot = self.scratch.draft_tokens_dev.offset(i * 4);
+                ops::argmax_bf16(
+                    gpu,
+                    self.kernels.argmax,
+                    logits_row,
+                    token_slot,
+                    self.vocab_size as u32,
+                    stream,
+                )?;
+            }
+            Ok(())
+        };
+
+        if graph_eligible {
+            let mut g = self.propose_graph.lock();
+            match *g {
+                Some(graph) if graph.0 != 0 => {
+                    // Hot path: replay the captured graph. No host work, no
+                    // per-kernel launch overhead, just one driver call to
+                    // schedule ~83 kernels.
+                    gpu.launch_graph(graph, stream)?;
+                }
+                _ => {
+                    let warmed =
+                        self.propose_warmup_count.load(std::sync::atomic::Ordering::Relaxed);
+                    if warmed < warmup_target {
+                        // Warm-up pass: eager. Don't capture yet — let the
+                        // driver JIT-pick steady-state SASS variants first.
+                        self.propose_warmup_count
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        run_captured_region()?;
+                    } else {
+                        // Warmed — capture now. End-cap returns a sentinel
+                        // GraphHandle(0) if the capture was empty; in that
+                        // case fall back to eager forever (don't cache zero).
+                        tracing::info!(
+                            "DFlash CUDA graph capture: starting (warmup_count={}, target={})",
+                            warmed,
+                            warmup_target
+                        );
+                        gpu.begin_capture(stream)?;
+                        run_captured_region()?;
+                        let graph = gpu.end_capture(stream)?;
+                        if graph.0 != 0 {
+                            tracing::info!(
+                                "DFlash CUDA graph capture: success handle={}",
+                                graph.0
+                            );
+                            *g = Some(graph);
+                            gpu.launch_graph(graph, stream)?;
+                        } else {
+                            tracing::warn!(
+                                "DFlash CUDA graph capture: empty graph, eager fallback"
+                            );
+                            run_captured_region()?;
+                        }
+                    }
+                }
+            }
+        } else {
+            run_captured_region()?;
         }
 
         // ── Step 6: D2H γ × 4 bytes ──
