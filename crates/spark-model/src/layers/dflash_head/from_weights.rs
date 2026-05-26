@@ -130,6 +130,15 @@ impl BlockDiffusionDraftHead {
             // Rust dispatcher `ops::prefill_attention_paged_dflash` passes
             // `causal_mask_enabled=0` for bidirectional γ-block attention.
             prefill_attn_dflash_bf16: gpu.kernel("prefill_paged", "inferspark_prefill_paged")?,
+            // Phase 5 (CUDA graph): indirect-args BF16 paged dispatcher. Same
+            // kernel as `prefill_attn_dflash_bf16` except `kv_len` and
+            // `q_offset` are read from device pointers at kernel entry, so the
+            // graph-captured launch can be replayed with new dynamic values
+            // without re-capture. See `inferspark_prefill_paged_indirect.cu`.
+            prefill_attn_dflash_bf16_indirect: gpu.kernel(
+                "prefill_paged_indirect",
+                "inferspark_prefill_paged_indirect",
+            )?,
             silu_mul: gpu.kernel("moe_silu_mul", "moe_silu_mul")?,
             residual_add: gpu.kernel("residual_add", "bf16_residual_add")?,
             argmax: gpu.kernel("argmax", "argmax_bf16")?,
@@ -214,6 +223,11 @@ impl BlockDiffusionDraftHead {
             // i64 slot mapping for reshape_and_cache (kernel takes
             // `long long*`). One entry per new ctx row.
             slot_mapping_dev: gpu.alloc(ctx_window * 8)?,
+            // Phase 5 (CUDA graph): 8 bytes of device memory holding the
+            // per-call `[u32 kv_len, u32 q_offset]` pair that the indirect
+            // paged-attention kernel reads at entry. Host writes via H2D
+            // BEFORE entering the captured region.
+            option_b_indirect_args_dev: gpu.alloc(8)?,
             logits: gpu.alloc(n_attn * vocab_size * bf16)?,
             draft_tokens_dev: gpu.alloc(n_attn * 4)?,
             position_ids: gpu.alloc(n_attn * 4)?,
