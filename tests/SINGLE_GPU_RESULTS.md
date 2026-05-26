@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5); 2026-05-26 (ninth-pass: cross-branch main-vs-spec_ssm audit, all fixes confirmed)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -1604,3 +1604,94 @@ Pure-attention models (Mistral Small 4: 0 SSM layers): `config.num_ssm_layers() 
 both pools allocate 0 GPU memory regardless of `--ssm-cache-slots` or `--max-batch-size`.
 
 **No new bugs found. All fixes confirmed correct. Branch `spec_ssm` is ready for hardware re-test.**
+
+
+---
+
+## 2026-05-26 Ninth-pass investigation (spec_ssm HEAD `080ef06`)
+
+Full independent investigation from the original task brief (3 priorities). Read all files on
+the **main branch first** (pre-fix state), then checked out spec_ssm and re-read the same
+files. This cross-branch comparison provides the strongest possible confirmation that the
+bugs described in the task brief are real, that the fixes on spec_ssm are correct, and that
+no regressions have been introduced.
+
+### Main branch (pre-fix) — bugs independently confirmed
+
+**`prefill/cache_skip_mla.rs` (main)**: the non-paged / single-chunk MLA prefill path called
+`ops::prefill_attention_64` with `self.prefill_attn_64_k` and hardcoded scale
+`1.0f32 / (hd as f32).sqrt()` = `1/sqrt(128)`. The `CacheSkipMlaArgs` struct had 11 fields
+including `num_tokens`, `kv_dim`, `bf16`. The `mla_fused_prefill_k` kernel handle existed
+but was never called. These two bugs (HDIM=256 kernel + wrong scale) were active on every
+MLA prefill at any sequence length.
+
+**`kv_dtypes.rs` (main)**: `build_layer_kv_dtypes(BF16, N, hp)` returned an empty `vec![]`
+when `kv_dtype == BF16` (early-return path). This caused `phase_assemble.rs`'s
+`get(i).copied().unwrap_or(KvCacheDtype::Fp8)` to silently downcast all 36 MLA attention
+layers to FP8 — compressing latent KV vectors whose dynamic range far exceeds FP8 E4M3
+(±448). Both bugs explain why the failure threshold was ~600–1000 tokens: short contexts
+could tolerate the contaminated scores and FP8 clipping; beyond ~1000 tokens the accumulated
+corruption made attention scores qualitatively wrong.
+
+**`yarn.rs` (main and spec_ssm, identical)**: `find_correction_dim` already used the correct
+HF dimension-index-space formula on both branches. The task brief's YaRN diagnosis
+(`low_freq_factor` mis-aliasing from Llama-3.1 formula) described code that does not exist
+in this repository. YaRN was never the bug.
+
+### spec_ssm branch (fixed) — fixes independently confirmed
+
+**`prefill/cache_skip_mla.rs`** (post-fix, 312 lines vs 355 lines on main):
+- `ops::mla_fused_prefill` called with `mla_fused_prefill_k` — absorbed 320-dim path.
+- `inv_sqrt_d_absorbed = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` = `1/sqrt(320)`.
+- `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0)` — hard startup failure if kernel
+  absent; no silent HDIM=256 fallback possible.
+- `CacheSkipMlaArgs` struct trimmed to 7 fields (removed `num_tokens`, `kv_dim`, `bf16`).
+- KV cache write uses `mla_cache_dim` (kv_lora + mla_rope = 320) strides on both K and V.
+
+**`mla_absorbed.cu` / `mla_fused_prefill.cu`** (no seq_len limits confirmed): all CUDA
+kernels are grid-parallel, scaling linearly with `n` or `seq_len`. `smem_dot[8]` at function
+scope. Causal mask `kv_end = min(q_pos+1, seq_len)` correct at all values. No shared-memory
+overflow, no 32-bit overflow (pointer offsets use `unsigned long long`). The `mla_absorbed.cu`
+file was read both from main (370 lines) and from spec_ssm (with 98 additional lines adding
+`mla_v_extract_batched` for the multi-chunk paged path); all kernels are correct.
+
+**`kv_dtypes.rs`**: `build_layer_kv_dtypes(BF16, N, hp)` returns `vec![BF16; N]` via
+early-return at the `kv_dtype == BF16` check — never empty. `phase_assemble.rs`
+`unwrap_or(KvCacheDtype::Bf16)` confirmed. `--kv-high-precision-layers auto` maps to hp=2
+but has no effect on the BF16 path; all 36 MLA layers are uniformly BF16.
+
+**`prefill/paged_mla.rs`**: `seq_len_start == 0` uses `prefill_attn_128_k` (HDIM=128 guard
+with `ensure!`). `seq_len_start > 0` (multi-chunk) uses `mla_prefill_paged_320` reading
+`kv_len = seq_len_start + n` tokens from the compressed 320-dim paged cache — historical
+context fully visible. `mla_prefill_paged_320.cu` (added in this branch) is a new 157-line
+absorbed paged kernel.
+
+**`decode/attention_forward_mla.rs`**: `inv_sqrt_d = 1/sqrt(kv_lora + mla_rope)` = `1/sqrt(320)`.
+KV format `[kv_latent|k_rope]` / `[kv_latent|zeros]` with `mla_cache_dim` strides — fully
+consistent with the fixed prefill paths. No decode/prefill divergence.
+
+### Priority 2 — Nemotron Super 120B tool calling: confirmed fixed
+
+`MODEL.toml` (`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`) — all four flags present:
+`disable_tool_steering = true`, `tool_call_parser = "bare_json"`, `skip_template_tools = true`,
+`thinking_in_tools = false`. `BareJsonParser::suppresses_jinja_tools() -> true` in `bare_json.rs`
+provides parser-level protection independently of MODEL.toml. `anthropic/handlers.rs`
+`count_tokens` checks `parser_suppresses` mirroring `template.rs`. Triple-layer protection
+intact; no format-instruction conflict possible.
+
+### Priority 3 — SSM cache slots: two independent pools, propagation correct
+
+`--ssm-cache-slots` (CLI default 16) -> `serve_phases/build.rs:71` -> `factory/build.rs:373` ->
+`TransformerModel::new(ssm_cache_slots)` -> `SsmSnapshotPool::new(ssm_cache_slots)`.
+
+`SsmStatePool::new(&config, max_batch_size, ...)` at `impl_a1.rs:134` uses `max_batch_size`
+(default 8) — an entirely separate argument, not `ssm_cache_slots`. For Qwen3.5-122B (36 SSM
+layers, 8+1 slots): ~1206 MB. Required for concurrent decode.
+
+`--ssm-cache-slots 0` correctly zeroes only `SsmSnapshotPool` (prefix-cache snapshots).
+`--max-batch-size 1` reduces `SsmStatePool` from ~1206 MB to ~151 MB for single-stream serving.
+Pure-attention models (Mistral Small 4: 0 SSM layers) allocate 0 GPU memory in both pools
+regardless of flag values.
+
+**No new bugs found. All fixes confirmed correct across both main (pre-fix) and spec_ssm
+(post-fix) branches. Branch `spec_ssm` is ready for hardware re-test.**
