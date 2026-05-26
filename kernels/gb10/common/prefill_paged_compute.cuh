@@ -60,8 +60,8 @@ extern "C" __global__ void KERNEL_NAME(
     const int* __restrict__ block_table,
 #endif
     const unsigned int q_len,
-    const unsigned int kv_len,
-    const unsigned int q_offset,
+    unsigned int kv_len,
+    unsigned int q_offset,
     const unsigned int num_q_heads,
     const unsigned int num_kv_heads,
     const unsigned int head_dim,
@@ -404,8 +404,8 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
     const int* __restrict__ block_table,
 #endif
     const unsigned int q_len,
-    const unsigned int kv_len,
-    const unsigned int q_offset,
+    unsigned int kv_len,
+    unsigned int q_offset,
     const unsigned int num_q_heads,
     const unsigned int num_kv_heads,
     const unsigned int head_dim,
