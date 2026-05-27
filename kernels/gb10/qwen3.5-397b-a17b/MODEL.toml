@@ -1,0 +1,126 @@
+# Atlas kernel target: nvidia/Qwen3.5-397B-A17B-NVFP4 — GB10 / NVFP4 / EP=4.
+#
+# Largest Qwen3.5 MoE checkpoint. Same Gated DeltaNet + Full Attention + MoE
+# hybrid architecture as qwen3.5-35b-a3b / qwen3.5-122b-a10b, scaled to 512
+# experts and hidden_size 4096. The NVFP4 weights (~200 GB) require 4-node
+# expert parallelism (EP=4, TP=1) on the 4x GB10 cluster — num_key_value_heads=2
+# cannot shard across 4 TP ranks.
+#
+# Kernel sources: this target reuses the qwen3.5-35b-a3b/nvfp4 overrides (copied
+# — kernels/ has no symlinks, so copies match repo convention) layered over the
+# shared kernels/gb10/common base. The overridden GEMMs (moe_w4a16_grouped_gemm,
+# w4a16_gemm) are byte-identical to the 122B's; gated_delta_rule carries the 35B's
+# faster register-tiled GDN decode. All three tile over runtime M/N/K and branch
+# on a runtime `num_experts` arg. The softmax router path used by the MoE EP
+# forward (moe_topk_softmax, kernels/gb10/common/moe_topk.cu) is sized
+# MAX_EXPERTS=512 — exactly fits this model's 512 experts.
+#
+# build.rs parses ONLY [[model_types]] / [sampling.*] / [behavior] below; the
+# dimension keys in [model] are documentation that mirrors config.json.
+
+[model]
+name = "qwen3.5-397b-a17b"
+hf_id = "nvidia/Qwen3.5-397B-A17B-NVFP4"
+params = "397B"
+active_params = "17B"
+architecture = "Gated DeltaNet + Full Attention + MoE"
+
+layers_total = 60
+layers_linear_attention = 45
+layers_full_attention = 15
+layer_pattern = "3:1 (linear, linear, linear, full)"  # full_attention_interval = 4
+
+moe_experts = 512
+moe_topk = 10
+moe_intermediate = 1024
+shared_expert_intermediate = 1024
+
+hidden_dim = 4096
+head_dim = 256
+q_heads = 32
+kv_heads = 2
+
+linear_attn_key_heads = 16
+linear_attn_key_dim = 128
+linear_attn_value_heads = 64
+linear_attn_value_dim = 128
+linear_conv_kernel = 4
+
+vocab_size = 248320
+max_position_embeddings = 262144
+rope_theta = 10000000
+partial_rotary_factor = 0.25
+attn_output_gate = true
+
+# MRoPE: the NVFP4 checkpoint sets mrope_interleaved + mrope_section in
+# config.json (text_config.rope_parameters), so parse_config rewrites
+# model_type qwen3_5_moe -> qwen3_6_moe at runtime (see [[model_types]]).
+# Text-only serving keeps H/W position IDs at zero.
+mrope_interleaved = true
+mrope_section = [11, 11, 10]
+
+mtp_layers = 1
+mtp_type = "full_attention"
+# Vision tower present in checkpoint, but the qwen3_6_moe path uses the
+# text-only Qwen35WeightLoader — vision weights are unused for text serving.
+vision = true
+
+# Recommended sampling defaults (Qwen3.5 model card). Mirror the
+# qwen3.5-35b-a3b / qwen3.5-122b-a10b base presets; the 35B's experimental
+# anti-repetition stack (lz/dry) is A3B-specific and intentionally omitted.
+[sampling.thinking_text]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[behavior]
+# Thinking OFF by default, budget capped at 128. Per the NVFP4 397B thinking-
+# budget sweep (2026-05-07): budget 128 is the sweet spot (~21s, correct
+# judgment); budget 256 is NON-MONOTONIC — WORSE than 128, the model talks
+# itself into wrong answers. Clients opt in per-request via thinking_token_budget.
+thinking_default = false
+thinking_in_tools = false
+max_thinking_budget = 128
+# A10B/A17B-class MoE finishes cleanly on long prompts (no period-N loops);
+# the content-loop watchdog is only needed on the dense Qwen 27B variants.
+enable_loop_watchdog = false
+# MTP is a confirmed dead end on the NVFP4 397B (2026-05-22): excellent
+# acceptance (80-97%) but accepted throughput collapses to 4-5 tok/s vs
+# ~19 tok/s without. NVFP4 checkpoint ships no MTP head weights → no drafts.
+default_num_drafts = 0
+
+[[model_types]]
+model_type = "qwen3_5_moe"
+hidden_size = 4096
+
+# mrope-interleaved MoE checkpoints get their model_type rewritten
+# qwen3_5_moe -> qwen3_6_moe by parse_config
+# (crates/atlas-core/src/config/dispatch.rs:116). The NVFP4 397B trips this
+# rewrite (the 2026-05-21 smoke test reported model_type 'qwen3_6_moe'), so
+# accept both forms at hidden_size 4096 — mirrors qwen3.5-122b-a10b.
+[[model_types]]
+model_type = "qwen3_6_moe"
+hidden_size = 4096
