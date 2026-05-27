@@ -231,6 +231,24 @@ TPEP_ROUNDS = [
 ]
 
 
+# ─── EP=4 rounds (4-node) ────────────────────────────────────────────────
+# The 397B NVFP4 (~200 GB across 512 experts) only fits with all four GB10
+# nodes in expert-parallel (EP=4, TP=1) — num_key_value_heads=2 can't shard
+# across 4 TP ranks. This harness's multi-rank driver (run_ep2_round) launches
+# exactly 2 ranks (head + one worker via ATLAS_WORKER_IP), so it CANNOT bring
+# up a 4-node EP=4 deployment as-is; generalizing the driver to N ranks is a
+# separate change.
+#
+# These specs are therefore recorded but SKIPPED by default. The real 4-node
+# smoke test runs via /home/cluster/launch-atlas-ep4.sh (see the notavault-atlas
+# notes / docs/DEPLOYMENT.md). Once the driver gains N-rank support, set
+# ATLAS_ENABLE_EP4=1 to execute these here.
+EP4_ROUNDS: List[TestSpec] = [
+    TestSpec("397B-nvfp4-ep4", "nvidia/Qwen3.5-397B-A17B-NVFP4",
+             ep_size=4, skip_longctx=True),
+]
+
+
 # ─── Docker helpers ────────────────────────────────────────────────────
 
 def sh(cmd, check=True, capture=False, timeout=None):
@@ -743,6 +761,24 @@ def main():
                 all_results[spec.label] = res
             with open(os.path.join(RESULTS_DIR, "_partial.json"), "w") as f:
                 json.dump(all_results, f, indent=2, default=str)
+
+    # EP=4 (4-node). Recorded in EP4_ROUNDS but skipped by default: run_ep2_round
+    # launches only 2 ranks, so it can't bring up a 4-node deployment. The real
+    # smoke test is /home/cluster/launch-atlas-ep4.sh. Opt in with ATLAS_ENABLE_EP4=1
+    # ONLY after run_ep2_round is generalized to N ranks (separate change).
+    if EP4_ROUNDS:
+        if os.environ.get("ATLAS_ENABLE_EP4") == "1":
+            for spec in EP4_ROUNDS:
+                res = run_ep2_round(spec)  # NOTE: requires N-rank driver support
+                if res:
+                    all_results[spec.label] = res
+                with open(os.path.join(RESULTS_DIR, "_partial.json"), "w") as f:
+                    json.dump(all_results, f, indent=2, default=str)
+        else:
+            labels = ", ".join(s.label for s in EP4_ROUNDS)
+            print(f"\n[skip] EP=4 round(s) [{labels}]: need a 4-node EP=4 deployment "
+                  f"(this harness launches 2 ranks). Run /home/cluster/launch-atlas-ep4.sh, "
+                  f"or set ATLAS_ENABLE_EP4=1 after the driver gains N-rank support.")
 
     # Final dump
     with open(os.path.join(RESULTS_DIR, "all_results.json"), "w") as f:
