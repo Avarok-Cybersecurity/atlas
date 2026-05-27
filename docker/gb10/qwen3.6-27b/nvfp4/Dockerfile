@@ -30,7 +30,6 @@ WORKDIR /build
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/
-COPY vendor/ vendor/
 COPY kernels/ kernels/
 
 ENV ATLAS_TARGET_HW=gb10
@@ -47,7 +46,7 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
 # NCCL for multi-GPU (EP=2), RDMA userspace for RoCE transport
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends --allow-change-held-packages \
-      "libnccl2 (>= 2.28)" libibverbs1 librdmacm1 ibverbs-providers \
+      libnccl2 libibverbs1 librdmacm1 ibverbs-providers \
       libnl-3-200 libnl-route-3-200 && \
     rm -rf /var/lib/apt/lists/* && \
     NCCL_VER=$(dpkg-query -W -f='${Version}' libnccl2) && \
