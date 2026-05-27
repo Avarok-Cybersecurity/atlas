@@ -1695,3 +1695,28 @@ regardless of flag values.
 
 **No new bugs found. All fixes confirmed correct across both main (pre-fix) and spec_ssm
 (post-fix) branches. Branch `spec_ssm` is ready for hardware re-test.**
+
+---
+
+## 2026-05-27 Tenth-pass investigation (spec_ssm HEAD `a82ba4a`)
+
+Session started from summarized context that predated pass 9. The summary described stale
+pre-fix file contents (notably `cache_skip_mla.rs` using `prefill_attention_64` and
+`phase_assemble.rs`'s `unwrap_or(Fp8)` being reachable), which initially led to intermediate
+conclusions consistent with those older states rather than the current fixed codebase.
+
+The session also read `yarn.rs` and found the `find_correction_dim` formula, and initially
+attributed the Mistral fix to YaRN (echoing the task-brief framing). The 9th pass correctly
+identifies that YaRN was never the bug in this repo — the real bugs were the HDIM/scale
+mismatch in `cache_skip_mla.rs` and the empty `kv_dtypes` vector triggering FP8 downcast.
+No new analysis contradicts the 9th-pass conclusions; those conclusions are correct.
+
+On `resolve_tool_call_parser` priority ordering: the session independently confirmed that
+CLI `--tool-call-parser` takes precedence over MODEL.toml. This is consistent with bug #6
+in the Issues table (already documented: wrong `--tool-call-parser qwen3_coder` CLI flag
+in the test command overrode `bare_json` — fixed by omitting the flag).
+
+After resetting `local spec_ssm` to `origin/spec_ssm`, all 9 passes of prior analysis
+are intact and consistent. No new bugs found in this session.
+
+**Branch `spec_ssm` confirmed ready for hardware re-test (tenth independent pass).**
