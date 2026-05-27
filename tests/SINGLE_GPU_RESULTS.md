@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5); 2026-05-26 (ninth-pass: cross-branch main-vs-spec_ssm audit, all fixes confirmed)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5); 2026-05-26 (ninth-pass: cross-branch main-vs-spec_ssm audit, all fixes confirmed); 2026-05-27 (eleventh-pass: warp-reduction correctness proof for mla_prefill_paged_320.cu, all fixes confirmed)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -1720,3 +1720,105 @@ After resetting `local spec_ssm` to `origin/spec_ssm`, all 9 passes of prior ana
 are intact and consistent. No new bugs found in this session.
 
 **Branch `spec_ssm` confirmed ready for hardware re-test (tenth independent pass).**
+
+---
+
+## 2026-05-27 Eleventh-pass investigation (spec_ssm HEAD `8a285cb`)
+
+Full independent audit of all files named in the three priority descriptions, reading each
+file from scratch on spec_ssm HEAD. No new bugs found; all prior fixes confirmed correct.
+One new finding documented: the `mla_prefill_paged_320.cu` warp-reduction correctness proof.
+
+### P1 — Mistral Small 4 MLA prefill: all fixes confirmed, warp-reduction audited
+
+All five root-cause bugs independently traced to current code and confirmed fixed.
+
+**`prefill/cache_skip_mla.rs`** (non-paged / single-chunk path):
+- `inv_sqrt_d_absorbed = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` = `1/sqrt(320)` ✓
+- `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0, ...)` — hard startup failure prevents
+  silent HDIM=256 fallback. `write_kv_cache` uses `mla_cache_dim` (320) strides on K and V.
+- `CacheSkipMlaArgs` struct has 7 fields; old 11-field version with stale `num_tokens`/`kv_dim`
+  removed. No dead-code MLA else-if branch (removed in commit `3b848cc`).
+
+**`mla_fused_prefill.cu`** (CUDA kernel):
+- `smem_dot[8]` at line 115, function scope before `kv_pos` loop (line 126). Distinct from
+  `smem_q[320]` (line 75) and `smem_latent[256]` (line 190). Total smem: 2336 bytes.
+- Causal mask `kv_end = min(q_pos+1, seq_len)` correct at all seq_len up to 65535.
+- Grid `(nq=32, seq_len, 1)` — scales linearly; no structural cap at any token count.
+- All pointer offsets cast to `(unsigned long long)`; no 32-bit overflow.
+
+**`kv_dtypes.rs` / `phase_assemble.rs`** (BF16 KV dtype chain):
+- `build_layer_kv_dtypes(BF16, 36, 2)` hits the early-return at line 20-22 (`kv_dtype == BF16`)
+  and returns `vec![BF16; 36]`. The `auto` → `hp=2` path is never entered for Mistral.
+- `phase_assemble.rs` `unwrap_or(KvCacheDtype::Bf16)` confirmed. No FP8 mixing possible.
+
+**`paged_mla.rs`**: first-chunk uses `prefill_attn_128_k` (hd≤128 guard). Multi-chunk uses
+`mla_prefill_paged_320` with `kv_len = seq_len_start + n`.
+
+**`decode/attention_forward_mla.rs`**: `inv_sqrt_d = 1/sqrt(kv_lora+mla_rope) = 1/sqrt(320)`;
+KV cache `[kv_latent|k_rope]`/`[kv_latent|zeros]` with `mla_cache_dim` strides — identical to
+both prefill paths.
+
+#### New analysis: `mla_prefill_paged_320.cu` warp-reduction correctness
+
+The kernel uses `MLA_LANES=16` threads per Q row and `MLA_BR=16` Q rows per block (256 threads
+total). A CUDA warp has 32 threads — so each warp spans q_row N (threads 0-15) and q_row N+1
+(threads 16-31). The reduction uses `__shfl_down_sync(0xFFFFFFFF, dot, offset)` for offsets
+8, 4, 2, 1. A concern was raised: at offset=8, lane 8 reads from lane 16 (different Q row),
+causing "cross-row contamination."
+
+**Formal proof that the reduction is correct:**
+
+The reduction only needs lanes 0 and 16 to hold the correct per-group sums. Tracing lane 0's
+dependencies at each step (using the synchronous pre-instruction register snapshot property):
+
+| Step | Lane 0 reads from | Lane 0's value after step |
+|------|-------------------|---------------------------|
+| init | — | dot[0] |
+| offset=8 | lane 8 (initial dot[8]) | dot[0]+dot[8] |
+| offset=4 | lane 4 (= dot[4]+dot[12] from prior step) | dot[0]+dot[4]+dot[8]+dot[12] |
+| offset=2 | lane 2 (= dot[2]+dot[6]+dot[10]+dot[14]) | dots 0,2,4,6,8,10,12,14 |
+| offset=1 | lane 1 (= dots 1,3,5,7,9,11,13,15) | **Σ dots 0–15** ✓ |
+
+Lanes 8-15 DO accumulate contaminated intermediate values (reading across the q_row boundary
+at offset=8), but lane 0 reads from lanes 1, 2, 4, 8 — all from within [0,15] — so lane 0's
+accumulation is entirely within q_row=0's data. Similarly lane 16's accumulation is entirely
+within q_row=1's data [16-31].
+
+The broadcast `score = __shfl_sync(0xFFFFFFFF, score, (warp_lane/16)*16)` then correctly
+distributes lane 0's sum to all of q_row=0, and lane 16's sum to all of q_row=1. **Kernel
+is correct; the cross-row intermediate values are wasted work, not errors.**
+
+The out-of-warp reads at lanes 24-31 (reading from lanes 32-39 during offset=8) produce
+undefined intermediate values for those lanes, but those lanes are only used to compute
+their own group-internal outputs, not to contaminate lane 16.
+
+### P2 — Nemotron Super 120B tool calling: confirmed fixed
+
+**`jinja-templates/nemotron_h.jinja`** line 204: `{%- if tools and not disable_tool_steering %}`
+— steering prefix off. `disable_tool_steering=true` AND `skip_template_tools=true` both present
+in MODEL.toml, so `tools` is also None → doubly gated.
+
+**`bare_json.rs`**: `BareJsonParser::suppresses_jinja_tools() → true` at line 52.
+Parser-level protection independent of MODEL.toml.
+
+**`anthropic/handlers.rs` `count_tokens`**: checks `parser_suppresses` (lines 322-335)
+mirroring `template.rs`. Both OpenAI and Anthropic paths consistently honour
+`suppresses_jinja_tools()`.
+
+**`MODEL.toml`**: `tool_call_parser = "bare_json"`, `skip_template_tools = true`,
+`disable_tool_steering = true`, `thinking_in_tools = false` — all four present.
+
+### P3 — SSM cache slots: confirmed by design
+
+`SsmStatePool::new(&config, max_batch_size, ...)` at `impl_a1.rs:134` uses `max_batch_size`
+(default 8). `SsmSnapshotPool::new(ssm_cache_slots, ...)` at `impl_a1.rs:143` uses
+`ssm_cache_slots`. `--ssm-cache-slots 0` correctly zeros only the snapshot pool.
+CLI propagation: `args.ssm_cache_slots` → `serve_phases/build.rs:71` → `impl_a1.rs:143`.
+
+`kv_cache.rs` `resolve_kv_cache_config` confirmed: `"auto"` → `kv_hp_layers=2`. The
+`build_layer_kv_dtypes(BF16, N, 2)` early-return ensures all MLA layers are uniformly
+BF16 — no FP8 mixing regardless of `--kv-high-precision-layers` value.
+
+**No new bugs found (eleventh independent pass). All fixes confirmed correct. Branch
+`spec_ssm` is correct and ready for hardware re-test.**
