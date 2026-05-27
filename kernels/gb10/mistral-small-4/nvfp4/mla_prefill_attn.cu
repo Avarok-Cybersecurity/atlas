@@ -64,6 +64,12 @@ extern "C" __global__ void mla_prefill_attn_320(
     const unsigned int lane = tid % 16;   // lane within query processing (0..15)
     const unsigned int warp_lane = tid % 32; // position within the 32-thread warp
 
+    // Half-warp mask: restrict shfl/shfl_down to the 16-thread sub-group that
+    // shares the same q_row.  Using 0xFFFFFFFF when the opposite half-warp has
+    // returned early (last tile, seq_len % MLA_BR != 0) is CUDA UB per §B.15.
+    // lane 0..15 → mask 0x0000FFFF, lane 16..31 → mask 0xFFFF0000.
+    const unsigned int lane_mask = (warp_lane < 16) ? 0x0000FFFFu : 0xFFFF0000u;
+
     if (q_row >= (q_end - q_start)) return;
 
     const unsigned int q_pos = q_start + q_row;
@@ -92,10 +98,9 @@ extern "C" __global__ void mla_prefill_attn_320(
                 dot += q_val * k_val;
             }
             // Warp reduce within 16 lanes (half a 32-thread warp).
-            // Use full warp mask (0xFFFFFFFF) to avoid UB from partial mask.
-            // Only reduce within 16-lane group by using offsets 1,2,4,8.
+            // lane_mask restricts to the correct 16-thread sub-group.
             for (int offset = 8; offset > 0; offset >>= 1) {
-                dot += __shfl_down_sync(0xFFFFFFFF, dot, offset);
+                dot += __shfl_down_sync(lane_mask, dot, offset);
             }
             // Lane 0 of each 16-lane group has the reduction result.
             // For warp_lane < 16: lane 0 has the result.
@@ -106,8 +111,9 @@ extern "C" __global__ void mla_prefill_attn_320(
             if (causal && kv_pos > q_pos) score = -FLT_MAX;
 
             // Broadcast score from lane 0 of each 16-lane group
-            // warp_lane % 16 == 0 has the correct value
-            score = __shfl_sync(0xFFFFFFFF, score, (warp_lane / 16) * 16);
+            // warp_lane % 16 == 0 has the correct value; lane_mask restricts
+            // to the correct half-warp.
+            score = __shfl_sync(lane_mask, score, (warp_lane / 16) * 16);
 
             // Online softmax update (all lanes compute uniformly)
             float m_new = fmaxf(m_prev, score);

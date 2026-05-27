@@ -2026,3 +2026,99 @@ Mistral Small 4 (0 SSM layers) allocate 0 MB in both pools unconditionally.
 
 No new bugs found. All four MLA prefill bugs are patched. No regressions introduced by
 commits `e7de0f4`–`7fe0788`. Branch `spec_ssm` is confirmed clean at HEAD `7fe0788`.
+
+---
+
+## 2026-05-27 Fourteenth-pass investigation (spec_ssm HEAD `ba5f40f`)
+
+Session started from a post-compaction summary that described a dormant latent bug in
+`kernels/gb10/mistral-small-4/nvfp4/mla_prefill_attn.cu`. After re-reading the file and
+the prior session's notes, the bug was confirmed, fixed, and committed.
+
+### P1 — Mistral Small 4: latent CUDA UB fixed in dormant kernel
+
+All prior fixes (Bugs 1–4 in the twelfth-pass table) re-confirmed at HEAD `ba5f40f`.
+
+#### New fix: CUDA warp-mask UB in `mla_prefill_attn_320` (`mla_prefill_attn.cu`)
+
+**Kernel status**: `mla_prefill_attn_320` is loaded at startup (kernel handle
+`prefill_attn_mla320_k`) but is **not dispatched on any hot path** in the current
+code. The single-chunk cache-skip path uses `mla_fused_prefill`; the paged
+multi-chunk path uses `mla_prefill_paged_320`. This kernel is dormant future/dead code.
+
+**Bug (CUDA UB — CUDA Programming Guide §B.15)**:
+
+The kernel uses 256 threads (16 per Q-row, 16 Q-rows per block). At the last tile, when
+`seq_len % MLA_BR != 0`, threads with `q_row >= (q_end - q_start)` return early:
+
+```c
+if (q_row >= (q_end - q_start)) return;  // some threads exit here
+```
+
+After this early return, the still-active threads execute:
+
+```c
+for (int offset = 8; offset > 0; offset >>= 1)
+    dot += __shfl_down_sync(0xFFFFFFFF, dot, offset);  // UB: departed threads in mask
+// ...
+score = __shfl_sync(0xFFFFFFFF, score, (warp_lane / 16) * 16);  // UB: same
+```
+
+Using `0xFFFFFFFF` (all 32 threads) when some threads have returned early is **undefined
+behavior**: the CUDA Programming Guide §B.15 requires that all threads named in the mask
+be "converged" (executing the same synchronous instruction). CUDA architectures prior to
+Volta may produce incorrect results; Hopper/Blackwell (GB10) is formally UB and may
+misspeculate.
+
+**Root cause**: Each 16-thread lane group spans half a warp. Thread pairs `[q_row 0, lane 0..15]`
+and `[q_row 1, lane 16..31]` share the same CUDA warp. At the last tile, if only one of the
+two `q_row` slots is active (e.g., `q_end - q_start == 1`), the opposite 16-thread half-warp
+returns early, making the full `0xFFFFFFFF` mask invalid.
+
+**Fix applied** (`kernels/gb10/mistral-small-4/nvfp4/mla_prefill_attn.cu`):
+
+```c
+// Added before the early return:
+const unsigned int lane_mask = (warp_lane < 16) ? 0x0000FFFFu : 0xFFFF0000u;
+
+if (q_row >= (q_end - q_start)) return;
+
+// Reduction (was 0xFFFFFFFF):
+for (int offset = 8; offset > 0; offset >>= 1)
+    dot += __shfl_down_sync(lane_mask, dot, offset);
+
+// Broadcast (was 0xFFFFFFFF):
+score = __shfl_sync(lane_mask, score, (warp_lane / 16) * 16);
+```
+
+`lane_mask = 0x0000FFFF` for the lower half-warp (threads 0–15, `q_row` 0) and
+`0xFFFF0000` for the upper half-warp (threads 16–31, `q_row` 1). Both masks are computed
+before the early return, so departed threads are never included in any synchronization.
+This makes the reduction and broadcast conform to §B.15 regardless of how many threads
+exit early at partial last tiles.
+
+**Why this fix is safe for full tiles**: When `q_end - q_start == MLA_BR` (all 16 rows
+active), no threads exit early. Both half-warps remain active for the full kernel body;
+the lane-restricted masks produce identical results to `0xFFFFFFFF` within each group,
+since no cross-group data is needed.
+
+**Impact**: Dormant kernel — not exercised in any production code path. The fix is
+proactive and prevents future breakage if the kernel is enabled. No functional regression
+to existing hot paths.
+
+### P2 — Nemotron Super 120B tool calling: confirmed fixed
+
+All four MODEL.toml flags present. `BareJsonParser::suppresses_jinja_tools() → true`
+provides parser-level protection independently of MODEL.toml. `count_tokens` Anthropic
+path checks `parser_suppresses`. No format-instruction conflict possible.
+
+### P3 — SSM cache slots: confirmed by design
+
+`SsmStatePool` sized by `max_batch_size`; `SsmSnapshotPool` sized by `ssm_cache_slots`.
+`--ssm-cache-slots 0` zeros only the snapshot pool. No code change needed.
+
+### Summary
+
+One new latent bug found and fixed in `mla_prefill_attn.cu` (dormant kernel, CUDA warp
+mask UB at partial last tiles). No regressions to existing hot paths. All prior fixes
+confirmed correct at HEAD `ba5f40f`.
