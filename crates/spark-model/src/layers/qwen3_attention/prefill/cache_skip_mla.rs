@@ -21,6 +21,10 @@ pub(super) struct CacheSkipMlaArgs {
     pub hd: u32,
     pub eps: f32,
     pub stream: u64,
+    /// Number of token positions whose KV entries are already in the cache
+    /// (prefix-cache hit). Only tokens `kv_write_start..n` need to be written.
+    /// 0 = no cached prefix (all tokens are new).
+    pub kv_write_start: usize,
 }
 
 impl Qwen3AttentionLayer {
@@ -32,7 +36,7 @@ impl Qwen3AttentionLayer {
         ctx: &ForwardContext,
         args: &CacheSkipMlaArgs,
     ) -> Result<DevicePtr> {
-        let CacheSkipMlaArgs { normed, n, h, nq, hd, eps, stream } = *args;
+        let CacheSkipMlaArgs { normed, n, h, nq, hd, eps, stream, kv_write_start } = *args;
         let mla = self
             .mla
             .as_ref()
@@ -226,21 +230,31 @@ impl Qwen3AttentionLayer {
             mla_cache_dim,
             stream,
         )?;
-        self.write_kv_cache(
-            ctx.gpu,
-            k_cache_assembled,
-            v_cache_assembled,
-            kv_cache,
-            meta.slot,
-            n,
-            1,
-            mla_cache_dim,
-            bs as u32,
-            mla_cache_dim,
-            mla_cache_dim,
-            stream,
-            ctx.graph_capture,
-        )?;
+        // Only write the tokens that are NOT already in the cache.
+        // kv_write_start tokens (prefix-cache hit) already have correct KV
+        // entries at their physical slots; skip them to avoid redundant writes.
+        // Mirror of the non-MLA `write_start` logic in cache_skip.rs.
+        let write_count = (n as usize).saturating_sub(kv_write_start);
+        if write_count > 0 {
+            let bf16 = 2usize; // bytes per BF16 element
+            let cache_elem_offset = kv_write_start * mla_cache_dim as usize;
+            let slot_byte_offset = kv_write_start * 8; // 8 bytes per u64 slot entry
+            self.write_kv_cache(
+                ctx.gpu,
+                k_cache_assembled.offset(cache_elem_offset * bf16),
+                v_cache_assembled.offset(cache_elem_offset * bf16),
+                kv_cache,
+                meta.slot.offset(slot_byte_offset),
+                write_count as u32,
+                1,
+                mla_cache_dim,
+                bs as u32,
+                mla_cache_dim,
+                mla_cache_dim,
+                stream,
+                ctx.graph_capture,
+            )?;
+        }
 
         // MLA absorbed attention: fused Q_absorb + attention (320-dim) + V_extract.
         // inferspark_prefill_64 has compile-time HDIM=256; MLA kv_stride=nkv*hd=128 so

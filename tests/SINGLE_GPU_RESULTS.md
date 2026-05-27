@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5); 2026-05-26 (ninth-pass: cross-branch main-vs-spec_ssm audit, all fixes confirmed); 2026-05-27 (eleventh-pass: warp-reduction correctness proof for mla_prefill_paged_320.cu, all fixes confirmed)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5); 2026-05-26 (ninth-pass: cross-branch main-vs-spec_ssm audit, all fixes confirmed); 2026-05-27 (eleventh-pass: warp-reduction correctness proof for mla_prefill_paged_320.cu, all fixes confirmed); 2026-05-27 (twelfth-pass: full P1/P2/P3 deep audit + kv_write_start MLA cache bug fixed)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -12,7 +12,7 @@
 | Model | Weights | KV Cache | Coherence | Tool Calls | Decode TPS | Long Context | Status |
 |-------|---------|----------|-----------|------------|------------|-------------|--------|
 | **Qwen3.5-122B** | 90 GB | 0.8 GB (FP8) | 3/3 | 2/2 | 16.5 tok/s | 26K PASS | **PASS** |
-| **Mistral Small 4** | 66 GB | 38 GB (BF16) | 3/3 | 2/2 | 34-40 tok/s | Fixed (code bugs × 3) | **FIXED** |
+| **Mistral Small 4** | 66 GB | 38 GB (BF16) | 3/3 | 2/2 | 34-40 tok/s | Fixed (YaRN + HDIM=128 + kv_write_start) | **FIXED** |
 | **Nemotron Super 120B** | 94 GB | tiny (FP8) | 3/3 | 2/2 | 20-22 tok/s | 6.5K PASS, 13K FAIL | **PARTIAL** |
 
 ---
@@ -352,7 +352,7 @@ explicit and preventing any possible aliasing.
 
 ---
 
-## Action Items (updated 2026-05-19)
+## Action Items (updated 2026-05-27)
 
 | # | Priority | Status | Item |
 |---|----------|--------|------|
@@ -367,6 +367,7 @@ explicit and preventing any possible aliasing.
 | 9 | P2 | **CLOSED — known** | Nemotron long context >8K: Mamba-2 fixed-size state saturation, architectural limitation |
 | 10 | P2 | **OPEN** | Mistral multi-chunk performance: `mla_prefill_paged_320` iterates all kv_len positions sequentially (O(kv_len)). For kv_len > 10K, add shared-memory KV tiling to amortize page-table overhead. |
 | 11 | P1 | **FIXED** | `kv_dtypes.rs` hardening test: `test_build_layer_kv_dtypes_bf16_noop` asserted `is_empty()` — the OLD broken behavior. After the item-3 hardening (`kv_dtype==BF16` → return full BF16 vec), this test became a failing regression trap. Fixed: test renamed `test_build_layer_kv_dtypes_bf16_all_layers` and updated to assert all 12 layers are BF16, confirming the hardened path is exercised. |
+| 12 | P0 | **FIXED (2026-05-27)** | **MLA cache-skip path ignores `kv_write_start`**: `cache_skip_mla.rs` always wrote all `n` tokens to the paged KV cache regardless of `kv_write_start`. `CacheSkipMlaArgs` did not carry the field, so the function used `meta.slot[0..n]` and wrote `k/v_cache[0..n]` even when some prefix tokens were already cached (`kv_write_start > 0`). Latent bug: harmless when prefix caching is disabled (the default; `kv_write_start=0` always in single-GPU tests), but incorrect with `--enable-prefix-caching`: writes would overwrite already-valid cache entries and might use wrong slot indices for prefix positions. Fix: `kv_write_start` added to `CacheSkipMlaArgs`; propagated from `cache_skip.rs`; write_kv_cache now only covers tokens `kv_write_start..n` with the same `slot.offset(kv_write_start * 8)` pattern used by the non-MLA path. |
 
 ---
 

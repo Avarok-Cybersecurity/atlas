@@ -95,6 +95,7 @@ impl Qwen3AttentionLayer {
                 hd,
                 eps,
                 stream,
+                kv_write_start,
             };
             return self.prefill_attention_cache_skip_mla(kv_cache, ctx, &args);
         }
