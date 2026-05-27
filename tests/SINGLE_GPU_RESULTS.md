@@ -1823,3 +1823,96 @@ BF16 — no FP8 mixing regardless of `--kv-high-precision-layers` value.
 
 **No new bugs found (eleventh independent pass). All fixes confirmed correct. Branch
 `spec_ssm` is correct and ready for hardware re-test.**
+
+---
+
+## 2026-05-27 Twelfth-pass investigation (spec_ssm HEAD `e7de0f4`)
+
+Full independent re-audit of all three priorities. One new latent bug found and fixed in
+this session: the MLA cache-skip path did not respect `kv_write_start` (Action Item 12).
+The fix was committed as `e7de0f4`. All prior fixes re-confirmed.
+
+### P1 — Mistral Small 4 MLA prefill: new bug found and fixed
+
+#### New fix: `kv_write_start` not propagated to MLA cache-skip path
+
+**Root cause:** `CacheSkipMlaArgs` did not carry a `kv_write_start` field.
+`prefill_attention_cache_skip_mla` therefore always called `write_kv_cache` with:
+- `meta.slot` starting at index 0 — wrong when `kv_write_start > 0`
+- K/V assembled buffers starting at element 0 — wrong when prefix is already cached
+
+The non-MLA path in `cache_skip.rs` had the correct pattern: `write_start = kv_write_start;
+write_count = n.saturating_sub(write_start)` with pointer offsets applied. MLA was missing
+the same guard entirely.
+
+**Impact:** Harmless when prefix caching is disabled (`kv_write_start = 0` always, which is
+the default in these single-GPU tests). Incorrect with `--enable-prefix-caching`: if a
+prefix-cache hit covers the first `K` tokens, the write would use slot indices `0..n-K`
+(the first `n-K` entries of `meta.slot[]`) but those entries point to *new-tail* physical
+pages — so prefix pages are never written. Worse, new-tail pages are written with
+prefix-position assembled KV data, corrupting the KV cache with wrong token content.
+
+**Fix (commit `e7de0f4`):**
+```rust
+// CacheSkipMlaArgs — added field:
+pub kv_write_start: usize,
+
+// write_kv_cache call — was: all n tokens from offset 0
+let write_count = (n as usize).saturating_sub(kv_write_start);
+if write_count > 0 {
+    let bf16 = 2usize;
+    let cache_elem_offset = kv_write_start * mla_cache_dim as usize;
+    let slot_byte_offset = kv_write_start * 8; // 8 bytes per u64 slot entry
+    self.write_kv_cache(
+        ctx.gpu,
+        k_cache_assembled.offset(cache_elem_offset * bf16),
+        v_cache_assembled.offset(cache_elem_offset * bf16),
+        kv_cache,
+        meta.slot.offset(slot_byte_offset),
+        write_count as u32,
+        ...
+    )?;
+}
+```
+The field is propagated from `cache_skip.rs` (where `kv_write_start` was already computed
+as `self.compute_kv_write_start(ctx, n)`) and passed through `CacheSkipMlaArgs`. This
+mirrors item-by-item the non-MLA `write_start` pattern on the standard Q/K/V path.
+
+#### Previously-confirmed fixes re-verified at HEAD `e7de0f4`
+
+**`prefill/cache_skip_mla.rs`** (non-paged / single-chunk path, 327 lines):
+- `inv_sqrt_d_absorbed = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` = `1/sqrt(320)` ✓
+- `mla_fused_prefill` called with `mla_fused_prefill_k`; `anyhow::ensure!` guard prevents
+  silent HDIM=256 fallback. Both K and V cache writes use `mla_cache_dim` (320) strides.
+- `CacheSkipMlaArgs` now has 8 fields (added `kv_write_start: usize`).
+
+**`kv_dtypes.rs`**: `build_layer_kv_dtypes(BF16, 36, 2)` returns `vec![BF16; 36]` via the
+`kv_dtype == BF16` early-return. `phase_assemble.rs` `unwrap_or(KvCacheDtype::Bf16)` provides
+secondary safety. No FP8 mixing possible for Mistral.
+
+**`paged_mla.rs`**: single-chunk `prefill_attn_128_k` with HDIM guard; multi-chunk
+`mla_prefill_paged_320` reading `kv_len = seq_len_start + n` from 320-dim paged cache.
+
+**`decode/attention_forward_mla.rs`**: `inv_sqrt_d = 1/sqrt(320)`;
+`[kv_latent|k_rope]`/`[kv_latent|zeros]` layout with `mla_cache_dim` strides — consistent
+with both prefill paths.
+
+**`mla_fused_prefill.cu` / `mla_prefill_paged_320.cu`**: no seq_len limits; linear grids;
+warp-reduction proven correct (eleventh-pass table — lane 0 accumulates only within rows
+0-15, lane 16 only within rows 16-31; cross-row intermediates in lanes 8-15 are discarded).
+
+### P2 — Nemotron Super 120B tool calling: confirmed fixed
+
+`MODEL.toml` has all four flags. `BareJsonParser::suppresses_jinja_tools() → true` provides
+parser-level protection independently. `count_tokens` Anthropic path checks `parser_suppresses`
+mirroring `template.rs`. No format-instruction conflict possible.
+
+### P3 — SSM cache slots: confirmed by design
+
+`SsmStatePool` sized by `max_batch_size` (separate from `ssm_cache_slots`). `--ssm-cache-slots 0`
+zeros only `SsmSnapshotPool`. For Qwen3.5-122B, `--max-batch-size 1` reduces state pool
+from ~1206 MB to ~151 MB. Pure-attention models (Mistral Small 4: 0 SSM layers) allocate
+0 MB in both pools regardless of flags. CLI propagation confirmed unchanged.
+
+**One new bug found and fixed (`kv_write_start` in MLA cache-skip path). All other fixes
+confirmed correct. Branch `spec_ssm` at HEAD `e7de0f4` is ready for hardware re-test.**
