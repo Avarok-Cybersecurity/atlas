@@ -1916,3 +1916,113 @@ from ~1206 MB to ~151 MB. Pure-attention models (Mistral Small 4: 0 SSM layers) 
 
 **One new bug found and fixed (`kv_write_start` in MLA cache-skip path). All other fixes
 confirmed correct. Branch `spec_ssm` at HEAD `e7de0f4` is ready for hardware re-test.**
+
+---
+
+## 2026-05-27 Thirteenth-pass independent audit (spec_ssm HEAD `7fe0788`)
+
+Fresh-clone session synced to `origin/spec_ssm` at `7fe0788` (twelfth-pass docs commit).
+Independent re-read of every file touched by previous passes to confirm no regression was
+introduced and no latent bug remains.
+
+### Scope of this audit
+
+Re-audited all four files from the original P1 investigation brief plus the supporting
+CUDA kernels and Rust helpers that the previous twelve passes touched:
+
+| File | Lines | Verdict |
+|---|---|---|
+| `prefill/cache_skip_mla.rs` | 327 | ✓ all fixes present |
+| `prefill/paged_mla.rs` | ~311 | ✓ kernel-guard + 320-dim stride |
+| `mistral_loader/loader_impl/yarn.rs` | 105 | ✓ correct dimension-index formula |
+| `kernels/gb10/mistral-small-4/nvfp4/KERNEL.toml` | — | ✓ `-DHDIM=128` present |
+| `kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu` | — | ✓ HDIM=320, no seq_len cap |
+| `kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu` | 371 | ✓ runtime grid dims throughout |
+| `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` | — | ✓ tool fix flags present |
+| `model/impl_a1.rs` | — | ✓ SsmStatePool ≠ SsmSnapshotPool |
+
+### P1 — Mistral Small 4 MLA prefill: all four bugs confirmed fixed
+
+**Bug 1 – YaRN inv_freq (`yarn.rs`)**  
+`find_correction_dim` uses dimension-index space formula:
+```
+(dim_f * ln(original_max_pos / (num_rot * 2π))) / (2 * ln(theta))
+```
+Gives `low=7, high=15` for Mistral (factor=128, beta_fast=32, beta_slow=1, θ=1e7).  
+Old code aliased `llama_4_scaling.beta=0.1` as `low_freq_factor`, yielding wrong ramp bounds
+and corrupting high-frequency components above ~1000 tokens.  Status: **FIXED**.
+
+**Bug 2 – HDIM mismatch in cache-skip path (`cache_skip_mla.rs`)**  
+`inferspark_prefill_64` (HDIM=256) read `K[k+1][0..127]` for col∈[128,255] when head_dim=128,
+corrupting attention scores. Replaced with `mla_fused_prefill` (absorbed space, HDIM=320).  
+`KERNEL.toml` `-DHDIM=128` ensures the `inferspark_prefill` used in the paged path is also
+correctly sized. Status: **FIXED** (pre-existing on spec_ssm before this session).
+
+**Bug 3 – Wrong attention scale (`cache_skip_mla.rs`)**  
+`1/sqrt(hd=128)` over-sharpened softmax by √(128/320) ≈ 0.63. Now uses:
+```rust
+let inv_sqrt_d_absorbed = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt(); // 1/sqrt(320)
+```
+Both the `ensure!` guard and the comment at lines 260–262 document this explicitly.  
+Status: **FIXED** (pre-existing on spec_ssm before this session).
+
+**Bug 4 – `kv_write_start` missing from MLA cache-skip path (`cache_skip_mla.rs`)**  
+`CacheSkipMlaArgs` lacked the field; all N tokens were re-written even on prefix-cache hit,
+causing stale slot overwrites. Added field (commit `e7de0f4`):
+```rust
+pub kv_write_start: usize,
+// ...
+let write_count = (n as usize).saturating_sub(kv_write_start);
+if write_count > 0 { ... }
+```
+Mirrors the identical guard in `cache_skip.rs` non-MLA path.  Status: **FIXED** (`e7de0f4`).
+
+#### Additional confirmation: `anyhow::ensure!` prevents silent fallback
+
+Lines 268–273 of `cache_skip_mla.rs` hard-fail if `mla_fused_prefill_k.0 == 0`, preventing
+the server from silently falling back to the broken HDIM=256 path at runtime:
+```rust
+anyhow::ensure!(
+    self.mla_fused_prefill_k.0 != 0,
+    "MLA cache-skip prefill requires mla_fused_prefill kernel \
+     (inferspark_prefill HDIM=256 is broken for MLA hd=128; ...)"
+);
+```
+
+#### `mla_absorbed.cu` — no seq_len limits found
+
+All seven device functions use runtime `blockIdx.x * blockDim.x + threadIdx.x` addressing
+over `num_tokens`. No compile-time seq_len cap, no shared-memory overflow at >1 K tokens.
+Grid is launched as `ceil(n / block)` by the Rust caller — fully dynamic.
+
+#### BF16-only path confirmed
+
+`kv_dtypes.rs` `build_layer_kv_dtypes(BF16, 36, 2)` returns `vec![BF16; 36]` via the
+BF16 early-return branch. `phase_assemble.rs` `unwrap_or(KvCacheDtype::Bf16)` provides
+secondary safety. No FP8 can be injected for Mistral regardless of `--kv-high-precision-layers`.
+
+### P2 — Nemotron Super 120B tool calling: confirmed
+
+`MODEL.toml` flags present and correct:
+```toml
+disable_tool_steering  = true
+tool_call_parser       = "bare_json"
+thinking_in_tools      = false
+thinking_default       = true
+```
+`BareJsonParser::suppresses_jinja_tools() → true` provides independent parser-level
+protection. No format-instruction conflict with the jinja template is possible.
+
+### P3 — SSM cache slots with `--ssm-cache-slots 0`: confirmed by design
+
+`SsmStatePool` (the active per-request recurrent state, ~1206 MB for Qwen3.5-122B at
+`--max-batch-size 8`) is sized by `max_batch_size`, not `ssm_cache_slots`. Passing
+`--ssm-cache-slots 0` zeros only `SsmSnapshotPool` (the Marconi KV-snapshot prefix cache).
+This is intentional: recurrent state must persist for the duration of any active sequence.
+To reduce the state pool set `--max-batch-size 1` (~151 MB). Pure-attention models such as
+Mistral Small 4 (0 SSM layers) allocate 0 MB in both pools unconditionally.
+
+### Summary
+
+No new bugs found. All four MLA prefill bugs are patched. No regressions introduced by
+commits `e7de0f4`–`7fe0788`. Branch `spec_ssm` is confirmed clean at HEAD `7fe0788`.
