@@ -33,19 +33,79 @@ impl TransformerModel {
         // Single-sequence: delegate to decode() which uses CUDA graphs.
         // decode_batch disables graphs for n≥2 (SSM state pointer staleness),
         // but n=1 is safe and benefits from graph replay (2x throughput).
+        //
+        // Broadcast the seq_id preamble + cmd here (rather than in the
+        // scheduler) so the EP n>1 branch below can interleave broadcasts
+        // with decode() calls — see that branch for the rationale.
         if n == 1 {
+            self.ep_broadcast_cmd_for_seq(seqs[0].slot_idx as u32, tokens[0])?;
             self.decode(tokens[0], seqs[0], stream)?;
             return Ok(self.decode_logits_ptr());
         }
 
-        // EP mode: use per-sequence decode() to match the worker's batch size.
-        // EP workers run one sequence at a time, so the single-row logits
-        // buffer is consumed before the next call — no row scatter needed.
+        // EP mode: interleave per-seq broadcast + decode + logits stage.
+        //
+        // Two things have to be true at once for multi-seq EP to work:
+        //
+        // 1. The per-layer NCCL all_reduces inside decode()'s forward pass
+        //    must align in size and ordering with the worker's matching
+        //    all_reduces. The worker runs one decode() per slot in its
+        //    ep_worker_step loop, so the head must also run one decode()
+        //    per seq — never a batched decode_multi_seq under EP. Same
+        //    `h * elem` allreduce shape per layer per seq.
+        //
+        // 2. The order of ops submitted to the NCCL comm must match
+        //    between ranks. Worker submits per seq: broadcast(preamble),
+        //    then N_layer × all_reduce(decode forward). If the head
+        //    broadcasts all N preambles up-front and then runs N decode()s,
+        //    head's comm-stream op order is [B,B,B,B,AR,AR,...,AR] while
+        //    worker's is [B,AR,...,AR,B,AR,...,AR,...]. NCCL collectives
+        //    match by submission position; mismatched op types at the
+        //    same position deadlock the comm (observed empirically as
+        //    "NCCL broadcast took 51.1s" on the worker followed by
+        //    "seq_id N exceeds slot capacity" reading stale comm data).
+        //
+        // So we broadcast (slot_idx, token) immediately before each
+        // self.decode() inside this loop. Both ranks now submit
+        // [B,AR,...,AR,B,AR,...,AR,...] in the same order.
+        //
+        // The "naive form" (just loop self.decode without staging) also
+        // overwrites the single-row logits buffer on every iteration —
+        // process_decode_logits would sample N rows of the last seq's
+        // logits. Stage each seq's row to host immediately after its
+        // decode() (the buffer is consumed within the scope of one
+        // decode()), then upload the assembled [n, vocab] back before
+        // returning. Same pattern as the MLA per-seq fallback below.
+        //
+        // No suppress_graphs dance: decode_dispatch already disables CUDA
+        // graphs under EP (`use_graphs = self.comm.is_none() && ...` at
+        // decode_a.rs:122), so each iteration runs eagerly and the per-slot
+        // graph cache is never touched in this branch.
         if self.comm.is_some() {
+            // Use the model's own default_stream throughout. decode_dispatch
+            // ignores the caller's `stream` and uses `self.gpu.default_stream()`
+            // for its forward-pass kernels, so issuing the per-seq copy on the
+            // caller's `stream` (often 0) would land it on a different CUDA
+            // stream than the writing GEMV — the copy could read stale logits.
+            // Match the stream decode() actually uses.
+            let work_stream = self.gpu.default_stream();
+            let logits = self.decode_logits_ptr();
+            let v = self.config.vocab_size;
+            let elem = if self.decode_logits_fp32() { 4 } else { 2 };
+            let row_bytes = v * elem;
+            let mut staged = vec![0u8; n * row_bytes];
             for i in 0..n {
-                self.decode(tokens[i], seqs[i], stream)?;
+                self.ep_broadcast_cmd_for_seq(seqs[i].slot_idx as u32, tokens[i])?;
+                self.decode(tokens[i], seqs[i], work_stream)?;
+                self.gpu.copy_d2h_on_stream(
+                    logits,
+                    &mut staged[i * row_bytes..(i + 1) * row_bytes],
+                    work_stream,
+                )?;
             }
-            return Ok(self.decode_logits_ptr());
+            self.gpu.copy_h2d_async(&staged, logits, work_stream)?;
+            self.gpu.synchronize(work_stream)?;
+            return Ok(logits);
         }
 
         // MLA models: as of issue #84 the batched `decode_multi_seq` path

@@ -45,16 +45,13 @@ pub fn step_decode_only(
         tracing::debug!("CONC_DIAG n={n}: {}", diag.join(" "));
     }
 
-    // EP: broadcast token(s) to worker before decode.
-    for &t in &tokens {
-        if let Err(e) = model.ep_broadcast_cmd(t) {
-            tracing::error!("EP broadcast token: {e:#}");
-            for mut a in active.drain(..) {
-                send_error(model, &mut a, &format!("EP broadcast: {e:#}"));
-            }
-            return;
-        }
-    }
+    // EP broadcasts (seq_id preamble + cmd per active seq) are emitted
+    // inside `decode_batch_dispatch` itself, interleaved with each per-seq
+    // `decode()` call. Batching them up-front here would diverge the head's
+    // comm-stream op order ([B,B,...,B,AR,AR,...]) from the worker's
+    // ([B,AR,...,AR,B,AR,...,AR,...]) and deadlock NCCL — observed
+    // empirically as a 51s broadcast timeout on the worker followed by
+    // stale comm data reads. See decode_a2.rs for the full rationale.
 
     let mut refs: Vec<&mut SequenceState> = active.iter_mut().map(|a| &mut a.seq).collect();
 

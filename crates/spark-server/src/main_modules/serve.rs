@@ -304,11 +304,25 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
 
     let scheduler_model = model;
     let scheduler_eos = eos_tokens;
-    // EP: force batch_size=1 (worker protocol is single-sequence).
-    // MTP speculative decoding IS supported with EP via verify broadcast protocol.
+    // EP gate. v1 single-sequence worker protocol required max_batch_size=1
+    // because each cmd targeted one slot and the head's per-token broadcast
+    // loop had no way to address slot N. v2 adds a per-cmd seq_id preamble
+    // (set ATLAS_EP_PROTOCOL=v2) so the worker routes commands by slot_idx
+    // and runs decode() per-seq. The head's decode_batch_dispatch EP branch
+    // stages each seq's logits row to host between decode() calls so all N
+    // rows survive into process_decode_logits — without that, the single-row
+    // logits buffer overwrites and N>1 produces garbage.
     let max_batch_size = if world_size > 1 {
-        tracing::info!("EP active: forcing max_batch_size=1");
-        1
+        if scheduler_model.ep_protocol_v2() {
+            tracing::info!(
+                "EP v2 active: honoring max_batch_size={}",
+                args.max_batch_size,
+            );
+            args.max_batch_size
+        } else {
+            tracing::info!("EP v1 active: forcing max_batch_size=1");
+            1
+        }
     } else {
         args.max_batch_size
     };
