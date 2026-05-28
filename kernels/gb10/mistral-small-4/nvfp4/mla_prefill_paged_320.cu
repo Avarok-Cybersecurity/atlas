@@ -81,6 +81,13 @@ extern "C" __global__ void mla_prefill_paged_320(
     const unsigned int q_row = tid / (unsigned int)MLA_LANES;
     const unsigned int lane  = tid % (unsigned int)MLA_LANES;
 
+    // Half-warp mask: restrict shfl/shfl_down to the 16-thread sub-group that
+    // shares the same q_row.  Using 0xFFFFFFFF when the opposite half-warp has
+    // returned early (last tile, q_len % MLA_BR != 0) is CUDA UB per §B.15
+    // (all threads named in the mask must be executing the same instruction).
+    // warp_lane 0..15 → mask 0x0000FFFF, warp_lane 16..31 → mask 0xFFFF0000.
+    const unsigned int lane_mask = (warp_lane < 16) ? 0x0000FFFFu : 0xFFFF0000u;
+
     if (q_row >= (q_end - q_start)) return;
 
     const unsigned int q_local  = q_start + q_row;
@@ -114,13 +121,13 @@ extern "C" __global__ void mla_prefill_paged_320(
             }
         }
 
-        // Reduce across 16 lanes (half a warp).  Use full warp mask; offsets 1-8 only.
+        // Reduce across 16 lanes (half a warp) using the half-warp mask.
         for (int offset = 8; offset > 0; offset >>= 1) {
-            dot += __shfl_down_sync(0xFFFFFFFF, dot, offset);
+            dot += __shfl_down_sync(lane_mask, dot, offset);
         }
         float score = dot * inv_sqrt_d;
         // Broadcast from lane 0 of each 16-lane group.
-        score = __shfl_sync(0xFFFFFFFF, score, (warp_lane / MLA_LANES) * MLA_LANES);
+        score = __shfl_sync(lane_mask, score, (warp_lane / MLA_LANES) * MLA_LANES);
 
         float m_new = fmaxf(m_prev, score);
         float alpha = expf(m_prev - m_new);

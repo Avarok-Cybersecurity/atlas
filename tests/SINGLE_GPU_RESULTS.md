@@ -2122,3 +2122,109 @@ path checks `parser_suppresses`. No format-instruction conflict possible.
 One new latent bug found and fixed in `mla_prefill_attn.cu` (dormant kernel, CUDA warp
 mask UB at partial last tiles). No regressions to existing hot paths. All prior fixes
 confirmed correct at HEAD `ba5f40f`.
+
+---
+
+## 2026-05-28 Fifteenth-pass investigation (spec_ssm HEAD `0b89988`)
+
+Full independent re-audit of all three priorities. One new bug found and fixed in this
+session: `mla_prefill_paged_320.cu` (the **live** multi-chunk paged MLA prefill kernel)
+carried the same CUDA warp-mask UB that was fixed in `mla_prefill_attn.cu` (dormant) by
+the fourteenth-pass commit `0b89988`.
+
+### P1 — Mistral Small 4: CUDA UB fixed in live hot-path kernel
+
+All prior fixes (Bugs 1–4 in the twelfth-pass table plus the `kv_write_start` field) re-
+confirmed at HEAD `0b89988`.
+
+#### New fix: CUDA warp-mask UB in `mla_prefill_paged_320` (hot-path kernel)
+
+**Kernel status**: `mla_prefill_paged_320` is the **live hot-path** kernel for all
+multi-chunk MLA prefill (called by `paged_mla.rs` when `seq_len_start > 0`). Unlike
+`mla_prefill_attn_320` (fixed in commit `0b89988`), which is dormant, this kernel is
+exercised on every multi-chunk prefill request to Mistral Small 4.
+
+**Bug**: The kernel uses the same 16-lanes-per-Q-row, 16-Q-rows-per-block (256 threads
+total) layout as `mla_prefill_attn_320`. At the last tile of a prefill, when
+`q_len % MLA_BR != 0`, the threads belonging to out-of-bounds Q rows return early:
+
+```c
+if (q_row >= (q_end - q_start)) return;
+```
+
+The still-active threads then call:
+
+```c
+for (int offset = 8; offset > 0; offset >>= 1)
+    dot += __shfl_down_sync(0xFFFFFFFF, dot, offset);  // UB: departed threads in mask
+
+score = __shfl_sync(0xFFFFFFFF, score, (warp_lane / MLA_LANES) * MLA_LANES);  // UB
+```
+
+Using `0xFFFFFFFF` when some threads have exited is **undefined behavior** per CUDA
+Programming Guide §B.15 (all threads named in the mask must be executing the same
+synchronous instruction).
+
+**Why the math still works (eleventh-pass proof, preserved for context)**: Each warp spans
+two Q-rows (threads 0-15 = row N, threads 16-31 = row N+1). For the lower half-warp
+(threads 0-15), the reduction at offsets 8, 4, 2, 1 only ever reads from threads 1, 2, 4,
+8 — all within [0, 15], all active. Threads 8-15 do read from the departed upper half-warp
+at offset=8, accumulating intermediate garbage, but those intermediate values only feed
+back into lanes 4-7 (not lane 0). Lane 0's accumulation is provably clean:
+`sum[0..15]` ✓. The broadcast from lane 0 distributes the correct sum to all active
+threads. So the result is mathematically correct even with `0xFFFFFFFF`.
+
+**Why we fix it anyway**: The mathematical proof holds only under the assumption that
+departed threads' registers return 0 (or harmless values). This is GPU-architecture-
+specific behavior, not guaranteed by the CUDA spec. On GB10 (Blackwell), the `__shfl_sync`
+implementation with an invalid mask is formally UB and may behave differently in future
+driver or compiler versions. Fixing it is a 3-line change identical to the fourteenth-pass
+fix in `mla_prefill_attn.cu`, and eliminates the UB from the hot-path kernel.
+
+**Fix applied** (`kernels/gb10/mistral-small-4/nvfp4/mla_prefill_paged_320.cu`):
+
+Added `lane_mask` before the early-return guard, mirroring `mla_prefill_attn.cu`:
+
+```c
+// Half-warp mask: restrict shfl/shfl_down to the 16-thread sub-group that
+// shares the same q_row.  Using 0xFFFFFFFF when the opposite half-warp has
+// returned early (last tile, q_len % MLA_BR != 0) is CUDA UB per §B.15.
+// warp_lane 0..15 → mask 0x0000FFFF, warp_lane 16..31 → mask 0xFFFF0000.
+const unsigned int lane_mask = (warp_lane < 16) ? 0x0000FFFFu : 0xFFFF0000u;
+
+if (q_row >= (q_end - q_start)) return;
+// ...
+for (int offset = 8; offset > 0; offset >>= 1)
+    dot += __shfl_down_sync(lane_mask, dot, offset);
+score = __shfl_sync(lane_mask, score, (warp_lane / MLA_LANES) * MLA_LANES);
+```
+
+`lane_mask = 0x0000FFFF` for threads 0-15 (q_row N) and `0xFFFF0000` for threads 16-31
+(q_row N+1). Both masks are computed before the early return, so departed threads are
+never named in any synchronization. For full tiles (`q_len % MLA_BR == 0`), no threads
+exit early and both masks produce identical results to `0xFFFFFFFF` within each group.
+
+**Consistency**: `mla_prefill_attn.cu` (dormant, fixed in commit `0b89988`) and
+`mla_prefill_paged_320.cu` (live hot-path, fixed in this session) now both use
+half-warp masks. The fix in `0b89988` noted this kernel as the live path; the
+present commit completes the fix for that path.
+
+### P2 — Nemotron Super 120B tool calling: confirmed fixed
+
+All four MODEL.toml flags present: `disable_tool_steering = true`,
+`tool_call_parser = "bare_json"`, `skip_template_tools = true`,
+`thinking_in_tools = false`. `BareJsonParser::suppresses_jinja_tools() → true`
+provides parser-level protection independently of MODEL.toml. `count_tokens` Anthropic
+path checks `parser_suppresses` mirroring `template.rs`. No format-instruction conflict.
+
+### P3 — SSM cache slots: confirmed by design
+
+`SsmStatePool` sized by `max_batch_size`; `SsmSnapshotPool` sized by `ssm_cache_slots`.
+`--ssm-cache-slots 0` zeros only the snapshot pool. For single-stream serving,
+`--max-batch-size 1` reduces the active state pool from ~1206 MB to ~151 MB.
+
+### Summary
+
+One new bug found and fixed in `mla_prefill_paged_320.cu` (live hot-path kernel, CUDA
+warp-mask UB at partial last Q-len tiles). Fix is identical to the dormant-kernel fix
+from commit `0b89988`. No regressions to other paths. All prior fixes confirmed correct.
