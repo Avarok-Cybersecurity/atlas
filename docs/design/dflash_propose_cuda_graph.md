@@ -1406,6 +1406,49 @@ For the drafter, **start with BF16 × FP8** because (a) it isolates the risk to 
 
 Phase G is the bridge that makes DFlash a perf story instead of a structural story. After G lands, fusion (Phase H candidate) is the last incremental lever before the next wall.
 
+### 16.11 Phase G live status + resume plan (2026-05-28 EOD)
+
+**Where we landed**: per-layer FP8 (q/k/v/o/gate/up/down) live and shipping. Bench: 44.9% → 45.1% accept exact, 8.70 → 9.77 tok/s (**+12.3%**). Branch `dflash-phaseG`, commits G.1 (f465de2), G.2 (739ddce), G.3 (30692ad). The custom `fp8_gemm_t_row_scaled` kernel is in `kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu` and consumed by `forward_block_layer_pre_attn` + `_post_attn`.
+
+**The lm_head detour and where it left us**: lm_head is the largest GEMM in the drafter (γ × vocab = 16 × 248320). Two attempts to swap it to FP8:
+
+1. **Used the existing `fp8_gemm_t_row_scaled`** (M_TILE=64). At M=γ=16 the kernel wastes 48 of 64 M_TILE rows per CTA. GPU utilization crashed from ~95% to ~6-30%; build had to be killed before the bench finished cleanly. Functionally produced output but at unusable speed.
+2. **GEMV loop** (16 × `dense_gemv_fp8w`). GPU util recovered to ~95% but launch overhead from 16 kernel launches per propose was a net loss: 8.70 → 7.51 tok/s. Reverted.
+3. **Wrote a small-M FP8 GEMM** (`fp8_gemm_t_row_scaled_m16`, M_TILE=16, 1 warp per CTA, 32 threads). **Produced garbage output — 0% accept rate, 7.01 tok/s.** Reverted the call site; kernel + Rust op (`ops::fp8_gemm_n128_row_scaled_m16`) + handle (`DflashKernels::fp8_gemm_n128_row_scaled_m16`) all kept in tree for debugging.
+
+**The bug in `fp8_gemm_t_row_scaled_m16`** (NOT YET FIXED — investigate when we resume):
+
+The smem_A load pattern is the most likely culprit. The M_TILE=64 parent kernel splits A loading across 128 threads (each thread loads 8 BF16 = 16 bytes via `cp_async_pred_16`); my M_TILE=16 variant tried to compress that to 32 threads, each thread loads 1 row × 32 cols (or rather, row=t/2, col_offset=(t%2)*16) via a single `cp_async_pred_16` per thread. The mapping of A elements to MMA fragment lanes is sensitive to the smem layout — the original `bf16x4_to_e4m3x4(&sA[fr0 * a_stride + tid * 4])` pattern assumes the M_TILE=64 layout where group_id (0..7) indexes into rows 0..7, warp_m_offset adds warp×16 to that. My M_TILE=16 kernel dropped warp_m_offset (since 1 warp = 1 M-tile) but the row mapping `fr0 = group_id, fr1 = fr0 + 8` may not match the smem layout I'm writing.
+
+**Specific things to check first when we resume**:
+- The smem_A write pattern: `smem_A[buf][threadIdx.x >> 1][col]`. Thread t=0 writes row 0, t=1 writes row 0 with col offset 16, t=2 writes row 1, etc. So rows 0..15 get written by threads 0..31 in pairs.
+- The MMA fragment read: `sA[fr0 * a_stride + tid * 4]` where fr0 = group_id (0..7) and tid = lane_id & 3 (0..3). Lane 0 reads row 0 cols 0..3, lane 1 reads row 0 cols 4..7, etc. group_id 0..7 selects M rows 0..7 of the m16n8k32 MMA's A tile.
+- **Hypothesis**: the M_TILE=64 parent uses `warp_m_offset = warp_id × 16` to offset which 16-row block of M_TILE=64 a warp reads. M_TILE=16 only has rows 0..15. Without warp_m_offset, group_id 0..7 maps to rows 0..7 (the m16n8k32 instruction's first 8 A rows) and `fr1 = fr0 + 8` should map to rows 8..15. So far so good. But the smem_A buffer is declared `__shared__ __nv_bfloat16 smem_A[2][16][K_STEP_T + PAD_T]`. The load pattern writes `smem_A[buf][row][a_col]` for row=0..15. The MMA reads `sA[row * a_stride + tid*4]` where sA is `unsigned short *` — same stride as bf16. Should be aligned. But: cp_async fills 16 bytes (8 BF16 values), and the macro writes both `a_col=0` and `a_col=16` halves — but at M_TILE=16 with my mapping, each thread only does ONE write. So columns 8..15 of each row might be **uninitialized**.
+
+**That's almost certainly the bug**: the M_TILE=64 kernel issues 2 cp_async_pred_16 per thread per iteration (because it has 64 rows × 32 cols ÷ 128 threads = 16 bytes/thread but K_STEP_T=32 cols = 64 bytes/row, needing two loads per row). My M_TILE=16 version cuts to 1 cp_async per thread, halving the cols loaded. The smem_A K dimension is 32 cols (K_STEP_T) but only 16 cols got written per row. The MMA reads `sA[row * a_stride + 16 + tid * 4]` for the second half of K which is garbage.
+
+**The fix**: in `FP8_LOADS_M16` make each thread do TWO cp_async_pred_16 loads — one for cols 0..15 and one for cols 16..31. With 32 threads and 16 rows, each row gets 2 threads (16 bytes each), so each thread covers one (row, col_half) pair. Need to map: thread t handles row = t & 15, col_half = (t >> 4). Then both halves of all 16 rows are loaded.
+
+Alternative cleaner fix: 32 threads × 16 rows = 2 threads per row. Thread 2*r writes cols 0..15 of row r, thread 2*r+1 writes cols 16..31. So row = t >> 1 and col_offset = (t & 1) << 4 — but that's what I have. The problem is that with K_STEP_T=32, each thread loading 16 bytes (8 BF16) covers cols 0..7 OR 16..23. **Cols 8..15 and 24..31 are uninitialized.**
+
+**Real fix**: 32 threads × 32 K cols × 16 rows = 512 BF16 = 1024 bytes. cp_async loads 16 bytes (8 BF16) per call. Need 1024/16 = 64 cp_async issues. With 32 threads that's 2 issues per thread. Mapping: each thread does 2 issues. Thread t: issue 0 = row t/2, col (t&1)*8. Issue 1 = same row, col 16 + (t&1)*8. That fully covers all 16 rows × 32 cols.
+
+**Pragmatic alternative**: just keep M_TILE=16 layout but use the parent kernel's 2-warp split. Or simpler: skip the small-M kernel entirely, use the existing `dense_gemm` (BF16) for lm_head, since the +12% drafter MLP gain is already shipping and lm_head FP8 is incremental.
+
+**Phase G ship status**: per-layer GEMMs are GOOD. lm_head is BF16 (reverted). Branch ready to merge. **Pre-commit step before merging**: rebuild + bench cleanly (kernel count should be 91 since the m16 variant is in tree but unused), confirm 9.77 tok/s holds.
+
+### 16.12 Next steps after resume
+
+1. **Fix or abandon `fp8_gemm_t_row_scaled_m16`.** The 2-load fix described in §16.11 is ~10 lines of CUDA. Test with a tiny smoke (compare M=16 N=128 K=32 output against the M_TILE=64 kernel result on the same inputs). If correct, ship lm_head FP8. Expected additional gain: 5-10% tok/s (lm_head is the biggest single GEMM).
+
+2. **Kernel fusion (Phase I candidate).** With FP8 weights live, the per-layer subgraph has 7 GEMMs + 5-7 cheap kernels (norms, residuals, rope). Fusing the QKV norm rope cache pipeline into a single kernel collapses ~7 launches into 1. Predicted gain: 10-20% tok/s on top of FP8. Files to touch: `kernels/gb10/qwen3.6-27b/nvfp4/` — write `fused_qkv_norm_rope_cache.cu`. Replaces ops::dense_gemm × 3 + rms_norm × 2 + rope_yarn + reshape_and_cache in `forward_block_layer_pre_attn`. The piecewise capture boundaries DON'T move; we just emit fewer kernels inside the pre_attn subgraph.
+
+3. **MLP fusion**: gate + up + silu_mul + down can fuse into a single launch using the existing `moe_silu_mul` pattern as reference (`crates/spark-model/src/layers/moe/`). ~5-10% gain.
+
+4. **Re-bench plain model without our optimizations** to quantify the total gain from Phase E → G. Use the F.2 tag `wip/dflash-phase-F-complete` as the baseline.
+
+**Resume here**: read §16.11 first for the kernel bug, §16.12 for the queue. Branch `dflash-phaseG` (tip 30692ad as of EOD May 28). The uncommitted state is reverted lm_head + the broken-but-in-tree `fp8_gemm_t_row_scaled_m16` kernel. Commit before resuming.
+
 ---
 
 ## 17. Phase H — Main-model FP8 audit (mirror vLLM's FP8 footprint)

@@ -175,6 +175,15 @@ impl BlockDiffusionDraftHead {
             // kernel `fp8_gemm_t_row_scaled` appended to w4a16_gemm.cu
             // for Phase G (module namespace "w4a16").
             fp8_gemm_n128_row_scaled: gpu.kernel("w4a16", "fp8_gemm_t_row_scaled")?,
+            // Phase G — Row-scaled BF16 × FP8 → BF16 GEMV (M=1). Used
+            // by the lm_head GEMM swap in a γ-loop, since the
+            // fp8_gemm_n128 GEMM kernel wastes 75% of its M_TILE at
+            // M=γ=16 against vocab=248320.
+            dense_gemv_fp8w: gpu.kernel("gemv_fp8w", "dense_gemv_fp8w")?,
+            // Phase G — Small-M (M≤16) row-scaled FP8 GEMM for lm_head.
+            // Single warp per CTA, no M_TILE waste. Custom kernel in
+            // w4a16_gemm.cu, module namespace "w4a16".
+            fp8_gemm_n128_row_scaled_m16: gpu.kernel("w4a16", "fp8_gemm_t_row_scaled_m16")?,
         };
 
         // Per-step scratch buffers. BF16 = 2 bytes/element.
@@ -403,6 +412,7 @@ impl BlockDiffusionDraftHead {
 
             embed_tokens_shared,
             lm_head_shared,
+            lm_head_shared_fp8: None,
             hidden_norm: weights.hidden_norm,
             norm: weights.norm,
             fc: weights.fc,
@@ -537,6 +547,26 @@ impl BlockDiffusionDraftHead {
                 );
                 tracing::debug!("DFlash Phase G: layer {} quantized", layer_idx);
             }
+            // Phase G — also quantize the shared lm_head weight. It's the
+            // largest GEMM in the drafter (vocab × hidden = 248320 × 5120 ≈
+            // 1.27B weights, ~14× any per-layer GEMM). We allocate a SEPARATE
+            // FP8 buffer so we don't mutate the target model's BF16 lm_head
+            // (the BF16 ptr stays valid for the BF16 path).
+            tracing::info!(
+                "DFlash Phase G: quantizing shared lm_head [{} × {}]",
+                head.vocab_size,
+                head.hidden_size
+            );
+            let lm_head_bf16 = crate::weight_map::DenseWeight {
+                weight: head.lm_head_shared,
+            };
+            head.lm_head_shared_fp8 = Some(lm_head_bf16.quantize_to_fp8(
+                gpu,
+                quant_k,
+                head.vocab_size,
+                head.hidden_size,
+                stream,
+            )?);
             head.quant = DflashQuantization::Fp8Weights;
             tracing::info!(
                 "DFlash Phase G: drafter weights ready as FP8 (quant = Fp8Weights). \
