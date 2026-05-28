@@ -2316,3 +2316,100 @@ This is correct behavior; the documentation in prior passes stands.
 No new bugs found. All seven Mistral MLA fixes, all four Nemotron tool-call fixes, and the
 SSM two-pool design are confirmed correct at HEAD `ebe5b36`. Branch is ready for hardware
 re-test on GB10 Spark.
+
+---
+
+## 2026-05-28 Seventeenth-pass investigation (spec_ssm HEAD `b2b51f9`)
+
+Full independent re-audit against current branch HEAD `b2b51f9`. Files read directly from
+disk (not from prior pass notes). No new bugs found. All fixes re-verified correct.
+
+### P1 — Mistral Small 4: all seven fixes confirmed at HEAD
+
+Files audited: `cache_skip_mla.rs`, `mla_fused_prefill.cu`, `mla_prefill_attn.cu`,
+`mla_prefill_paged_320.cu`, `yarn.rs`, `kv_dtypes.rs`, `buffers/sizes.rs`,
+`serve_phases/kv_cache.rs`.
+
+**Fix 1 — `mla_fused_prefill` kernel dispatch + `anyhow::ensure!` guard**
+`cache_skip_mla.rs:268-273`: `ensure!(self.mla_fused_prefill_k.0 != 0, ...)` prevents
+silent fall-through to the broken `inferspark_prefill_64` kernel (HDIM=256 is wrong for
+MLA hd=128). Kernel is called at line 274 via `ops::mla_fused_prefill`.
+
+**Fix 2 — `inv_sqrt_d_absorbed = 1/sqrt(320)` (was `1/sqrt(128)`)**
+`cache_skip_mla.rs:267`: `let inv_sqrt_d_absorbed = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt();`
+Correctly uses absorbed dimension (kv_lora=256 + rope=64 = 320), not head_dim=128.
+Comment at lines 262-263 explains the 0.63× over-sharpening that the old formula caused.
+
+**Fix 3 — BF16 KV dtype across all paths**
+`serve_phases/kv_cache.rs:231-238`: `"auto"` → `kv_hp_layers=2`. `kv_dtypes.rs:20-22`:
+`if kv_dtype == KvCacheDtype::Bf16 { return vec![Bf16; N]; }` — early-returns `vec![BF16;36]`
+regardless of hp_layers. With `--kv-cache-dtype bf16`, all 36 MLA layers use BF16.
+
+**Fix 4 — `mla_prefill_paged_320` absorbed paged kernel for multi-chunk**
+`mla_prefill_paged_320.cu`: Correct absorbed-form (HDIM=320) paged attention for
+`seq_len_start > 0` chunks. `causal_kv_end = min(q_global + 1, kv_len)` is correct.
+
+**Fix 5 — `smem_dot[8]` at function scope (prevent NVCC smem aliasing)**
+`mla_fused_prefill.cu:115`: `__shared__ float smem_dot[8]` declared at kernel function
+scope alongside `smem_q[320]` and `smem_latent[256]`. Comment at lines 113-114 explains
+the NVCC lifetime-based aliasing risk that prompted this placement. Total smem: 2336 B.
+
+**Fix 6 — `kv_write_start` respected in cache-skip MLA KV write**
+`cache_skip_mla.rs:237-257`: `write_count = n.saturating_sub(kv_write_start)` plus
+`cache_elem_offset = kv_write_start * mla_cache_dim` and `slot_byte_offset =
+kv_write_start * 8`. Only tokens `kv_write_start..n` are written to the paged cache,
+skipping tokens already present from a prefix-cache hit. Commit `e7de0f4`.
+
+**Fix 7 — Half-warp masks in paged and dormant MLA prefill kernels**
+`mla_prefill_paged_320.cu:89`: `lane_mask = (warp_lane < 16) ? 0x0000FFFFu : 0xFFFF0000u`
+declared before the thread-specific early-return at line 91. Used at lines 126 and 130.
+Eliminates CUDA UB §B.15 at partial last Q-len tiles. Commit `ebe5b36`.
+`mla_prefill_attn.cu:71`: same half-warp mask, commit `0b89988`.
+
+**`mla_fused_prefill.cu` warp-sync audit (no UB)**:
+Grid `(nq, seq_len, 1)`, block `(256, 1, 1)`. The only early-return guard (line 50) is
+block-level (`head >= nq || q_pos >= seq_len`); all 256 threads in any block that passes
+it remain active through every `__syncthreads()` and `__shfl_down_sync(0xFFFFFFFF, ...)`.
+Full-warp mask is correct here. Compare with `mla_prefill_attn.cu` where `q_row = tid/16`
+causes thread-specific exits — hence the half-warp mask fix.
+
+**YaRN confirmed correct (non-issue)**:
+`yarn.rs:58-84`: `find_correction_dim` in dimension-index space. Mistral params: theta=1e7,
+rope_dim=64, factor=128, beta_fast=32, beta_slow=1, original_max_pos=8192. Computes
+`low≈7`, `high≈15`. Ramp `(j - low) / (high - low)` clamped to [0,1] blends interpolated
+and extrapolated inv_freq correctly for all 32 pairs.
+
+**Buffer sizing confirmed sufficient**:
+`buffers/sizes.rs:139-211`: all buffers scale with `m = max_batch_tokens`. MLA-specific:
+`attn_output` sized for `max(nq*hd, nq*(kv_lora+rope))` → accommodates absorbed output.
+`ssm_conv_out_f32` holds q_rope contiguous buffer `nq*rope_dim`. All intermediate buffers
+(expert_gate_out for kv_latent, expert_up/down_out for k/v cache assembly) scale with
+`max_batch_tokens` and are sufficient for any single prefill chunk.
+
+### P2 — Nemotron Super 120B tool calling: confirmed fixed
+
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` confirmed at HEAD:
+
+```toml
+thinking_in_tools    = false   # skip <think> when tools active
+disable_tool_steering = true   # suppress <tool_call>\n prefix → no emission loop
+tool_call_parser     = "bare_json"  # model's native distribution
+skip_template_tools  = true    # block conflicting XML from nemotron_h.jinja
+```
+
+Two independent protection layers: (1) MODEL.toml flags; (2) `BareJsonParser::
+suppresses_jinja_tools() → true` causes `template.rs` to pass `jinja_tools = None`
+regardless of config. Net result: only the bare-JSON system prompt reaches the model.
+
+### P3 — SSM cache slots: two-pool design confirmed
+
+`SsmStatePool` (active inference states) — sized by `max_batch_size`, always allocated.
+`SsmSnapshotPool` (prefix-cache snapshots) — sized by `--ssm-cache-slots`, zero when 0.
+CLI propagation chain `cli.rs → build.rs:71 → factory:373 → TransformerModel::new →
+SsmSnapshotPool::new(ssm_cache_slots)` verified end-to-end. Correct behavior by design.
+
+### Summary
+
+No new bugs found. All seven Mistral MLA fixes, all four Nemotron MODEL.toml flags, and
+the SSM two-pool design are confirmed correct at HEAD `b2b51f9`. The branch is clean and
+ready for hardware re-test on GB10 Spark.
