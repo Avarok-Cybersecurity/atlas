@@ -1403,3 +1403,102 @@ For the drafter, **start with BF16 × FP8** because (a) it isolates the risk to 
 - ✓ `ATLAS_DFLASH_DRAFTER_FP8=0` (default) is bit-identical to F.2 baseline — opt-in only until we trust it.
 
 Phase G is the bridge that makes DFlash a perf story instead of a structural story. After G lands, fusion (Phase H candidate) is the last incremental lever before the next wall.
+
+---
+
+## 17. Phase H — Main-model FP8 audit (mirror vLLM's FP8 footprint)
+
+**Status**: design + reconnaissance (not implemented). Captured 2026-05-28 after a side-quest discovered that Atlas's drafter perf wall is `dense_gemm_bf16` precisely *because* the main model is already aggressively quantized (NVFP4 weights + FP8 KV when flagged). The drafter sticks out as the BF16 island.
+
+This section exists because of a real-time miscommunication during Phase G planning: the user assumed "FP8" meant mirroring vLLM's FP8 footprint on the main model, not the drafter. Phase G stays scoped to the drafter. Phase H scopes the main-model audit separately so we can decide whether to invest there next.
+
+### 17.1 vLLM's FP8 surface area (the reference)
+
+vLLM uses FP8 on the main model across three surfaces, all of which independently matter for tok/s:
+
+1. **FP8 weight storage + GEMM.** Either loaded pre-quantized (via the llm-compressor recipe) or runtime-quantized at model load. The GEMM consumes FP8 weights with either BF16 or FP8 activations.
+2. **FP8 KV cache.** K/V values are quantized to FP8 E4M3 (or E5M2) before write to the paged cache, dequantized on read. Halves KV bandwidth and capacity.
+3. **FP8 activations.** Pre-quantize hidden states to FP8 before feeding into FP8×FP8 GEMMs. Maximum bandwidth savings on the activation side.
+
+What vLLM does **not** do: quantize the drafter. Drafters run at the parent model's dtype because the drafter is small and the perf juice isn't worth the accuracy risk. This is the gap Phase G targets.
+
+### 17.2 Atlas's main-model FP8 footprint today
+
+The reconnaissance side-quest produced a complete inventory. Atlas is **ahead of vLLM in many places** — NVFP4 is more aggressive than FP8 — and has parity or near-parity on the rest.
+
+**Weights**: NVFP4 (4-bit, group-scaled). Stored as `QuantizedWeight` (`[N, K/2]` packed + `[N, K/GROUP_SIZE]` scale + tensor scale2). The on-disk format for the canonical Qwen3.6-27B-AEON-NVFP4 model is NVFP4 directly. **More aggressive than vLLM's FP8 weights** — half the bytes, and Blackwell's NVFP4 tensor cores get a comparable speedup to FP8 tensor cores. No gap.
+
+**KV cache**: configurable via `--kv-cache-dtype`. Supported: `bf16`, `fp8`, `nvfp4`, `turbo3`, `turbo4`, `turbo8`. The canonical bench script uses `--kv-cache-dtype nvfp4` (more aggressive than vLLM's FP8 KV). `fp8` is also fully wired with online calibration: `fp8_kv_calibration_tokens` config tracks per-tensor max|K|/|V| during a warm-up window, then locks scales. Kernels in tree: `reshape_and_cache_fp8.cu`, `paged_decode_attn_fp8.cu`, `inferspark_prefill_paged_fp8.cu`. **No gap.**
+
+**Activations (the actually-interesting bit)**: the qwen3_attention prefill path **already pre-quantizes activations to FP8** before FP8×FP8 GEMMs.
+- `crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip.rs:75` runs `ops::bf16_to_fp8` on the normed hidden state.
+- `crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip_qkv.rs:153,165` calls `fp8_fp8_gemm_n128_m128` / `fp8_fp8_gemm_n128` on the quantized activations.
+- Kernel handles in `qwen3_attention/types.rs:245-248`: `fp8_fp8_gemm_k`, `fp8_fp8_gemm_t_m128_k`.
+
+So the QKV projections on the attention prefill path are already FP8×FP8. This is the same pattern vLLM uses.
+
+**Where vLLM still has work Atlas doesn't yet do** (preliminary list — needs verification before committing to a plan):
+
+- **MoE expert GEMMs**. `moe_w4a16_grouped_gemm.cu` exists and `moe_fp8_grouped_gemm.cu` exists in `kernels/gb10/common/`. Need to check whether the canonical Qwen3.6-27B-AEON-NVFP4 path routes through the FP8 grouped GEMM or the W4A16 path. If W4A16, the activation side of MoE expert routing is still BF16.
+- **Dense FFN GEMMs on non-attention layers**. NVFP4 weights, but activations might still be BF16 for the FFN GEMMs depending on which call site. Audit needed.
+- **Attention output projection**. `paged_oproj.rs:59,71` uses `fp8_gemm_n128_m128` (BF16 × FP8) — not FP8×FP8. Could move to fp8_fp8 with activation prequant.
+- **Decode-path GEMMs**. Most existing FP8 wiring is on the prefill path. Decode uses `dense_gemv_fp8w` (BF16 × FP8 GEMV) but not FP8×FP8 GEMV. At batch=1 the savings here are bandwidth-bound and could be real.
+
+### 17.3 Realistic perf headroom on the main model
+
+**Honest framing** (correcting an over-optimistic earlier read):
+
+The main model's GPU time at the current configuration is dominated by:
+- W4A16 GEMVs (NVFP4 weights, BF16 activations) — `w4a16_gemv`, `w4a16_gemv_dual`, `w4a16_gemv_silu_input` collectively 32.7% of GPU time in the F.2 nsys (sum of rows 3-5 in §15.8). These are decode-path GEMVs, M=1.
+- `gated_delta_rule_*` SSM kernels — ~1.5% combined.
+- `inferspark_prefill_paged_indirect` (DFlash drafter attention) — 0.2%.
+- Various small kernels (rms_norm, residual_add, rope, embed) — single percent each.
+
+The main-model GEMVs at decode are bandwidth-bound. Moving them from BF16 activations to FP8 activations halves activation bandwidth but the *activations are tiny* at M=1 (5120 BF16 = 10KB per layer). The weights dominate — and they're already 4-bit. **Realistic uplift from main-model FP8 activations at decode: ~5-10% tok/s, not 40-50%.**
+
+The prefill path is different — there activations are large enough to matter, and the existing fp8_fp8 wiring proves the pattern works. But prefill is a smaller fraction of bench wall time at our typical workload.
+
+**The drafter (Phase G) is genuinely where the bigger relative win lives**, because its weights are *still BF16* — it's the only path that hasn't been quantized at all. The drafter just happens to have a small absolute footprint.
+
+### 17.4 Sub-phase scoping (audit-first, code-second)
+
+**H.1 — Main-model FP8 audit.** 4 hours. Pure investigation, no code changes.
+- Enumerate every GEMM/GEMV call site in the main-model decode and prefill paths.
+- For each, tag: weight dtype, activation dtype, output dtype, kernel used.
+- Cross-reference against the kernel inventory in `kernels/gb10/common/`.
+- Identify call sites where (weight FP8/NVFP4 + activation BF16) could trivially become (weight FP8/NVFP4 + activation FP8) by inserting `ops::bf16_to_fp8` + swapping the GEMM kernel.
+- Output: an audit table in `docs/design/main_model_fp8_audit.md` listing every BF16-activation GEMM with its kernel handle, call site, and conversion cost estimate.
+
+**H.2 — Bench instrumentation for FP8-relevant kernels.** 2 hours.
+- Add an nsys helper that filters GPU kernel time by (BF16 activation) vs (FP8 activation) for each GEMM family.
+- Establish the baseline: how much GPU time is spent in BF16-activation GEMMs across the canonical bench? This is the upper bound on what main-model FP8 activation prequant can buy.
+- **Gate**: if the audit shows < 10% of GPU time is in BF16-activation GEMMs that could move to FP8, the project doesn't ship. The drafter Phase G is a better use of time.
+
+**H.3 — Decision point.** Based on H.1 + H.2 output, decide whether to:
+- (a) Pursue main-model FP8 activations as a Phase H.4 implementation (estimated 1-2 weeks).
+- (b) Defer indefinitely and let Phase G drafter work + future kernel fusion be the perf path.
+- (c) Cherry-pick: identify the 2-3 highest-payoff call sites and do those only (estimated 2-3 days).
+
+**Total to decision: 6 hours.** No commitment to implementation until the audit numbers justify it.
+
+### 17.5 What Phase H is NOT
+
+- **Not a vLLM port.** The infrastructure exists in Atlas; this is an *audit* to find under-utilized FP8 surfaces, not a port project.
+- **Not blocking Phase G.** Phase G ships on its own merits. H informs the *next* perf phase after G.
+- **Not a quantization research project.** If H.1 shows that all the big GEMMs are already optimally configured, the answer is "no main-model FP8 work needed" and we move on.
+- **Not native FP8 propose / FlashAttention-3.** That was the older Phase H roadmap in §13 — the §17 Phase H reuses the letter only because we renumbered after Phase F.2 landed. The FA3 work is its own thing; see §13 for the (still-deferred) plan.
+
+### 17.6 Acceptance criteria for shipping H.4 (if we get there)
+
+- ✓ Audit (H.1) identifies ≥ 10% of bench GPU time in BF16-activation GEMMs that can move to FP8 activations without a new kernel write.
+- ✓ Each cherry-picked call site has a documented accuracy guard (exact-match Volvo prefix or equivalent regression bench).
+- ✓ Tok/s improvement ≥ 5% per call site converted, or the conversion is reverted.
+- ✓ Env-var gated (`ATLAS_MAIN_FP8_ACTIVATIONS=1`) and bit-identical to the current path when OFF.
+
+### 17.7 Honest take
+
+**The user is right** that vLLM's proven FP8 progress lives on the main model, not the drafter. We should run the audit (H.1 + H.2) before sinking more time into Phase G if there's any chance the main-model headroom is larger than the drafter headroom.
+
+**Friday's read on the data**: based on the F.2 nsys, the BF16-activation main-model GEMMs aren't a dominant chunk of GPU time at decode. The big main-model kernels are `w4a16_gemv*` which are already optimally configured (4-bit weight, GEMV is fundamentally weight-bandwidth-bound, FP8 activations don't help much at M=1). The audit should confirm this in 4 hours, and if it does, Phase G drafter work is the right next step. If it surprises us — great, we'll know.
+
+**Recommended order**: run H.1 + H.2 as a half-day reconnaissance side-quest *before* starting Phase G implementation. If the audit says "no headroom," start Phase G. If it says "real headroom on N call sites," do H.3 cherry-pick first.
