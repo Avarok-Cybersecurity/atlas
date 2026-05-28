@@ -72,11 +72,14 @@ pub struct DflashKernels {
     /// (q/k/v/o/gate/up/down) when `ATLAS_DFLASH_DRAFTER_FP8=1`. Never
     /// on the hot path.
     pub quantize_bf16_to_fp8: KernelHandle,
-    /// Phase G — BF16 × FP8 → BF16 GEMM. Replaces `dense_gemm_bf16` on
-    /// the seven dense-GEMM call sites in `forward_block_layer_pre_attn`
-    /// and `_post_attn` when `self.quant == Fp8Weights`. Wraps
-    /// `kernels/gb10/common/dense_gemm_tc.cu fp8_gemm_n128`.
-    pub fp8_gemm_n128: KernelHandle,
+    /// Phase G — Row-scaled BF16 × FP8 → BF16 GEMM. Consumes the
+    /// `Fp8DenseWeight` (FP8 weight + per-row f32 scale) produced at
+    /// load time by `quantize_bf16_to_fp8`. Wraps
+    /// `kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu fp8_gemm_t_row_scaled`.
+    /// Replaces `dense_gemm_bf16` on the seven dense-GEMM call sites in
+    /// `forward_block_layer_pre_attn` / `_post_attn` when
+    /// `self.quant == DflashQuantization::Fp8Weights`.
+    pub fp8_gemm_n128_row_scaled: KernelHandle,
 }
 
 /// Per-step scratch buffers for the γ-block forward.
