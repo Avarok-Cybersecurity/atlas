@@ -88,22 +88,32 @@ impl TransformerModel {
             // caller's `stream` (often 0) would land it on a different CUDA
             // stream than the writing GEMV — the copy could read stale logits.
             // Match the stream decode() actually uses.
+            //
+            // We iterate seqs in reverse so seq 0 is decoded LAST. self.decode()
+            // always writes lm_head output to row 0 of the logits buffer; the
+            // d2d copy below stages each non-zero row into its target position.
+            // Reverse order means seq 0's logits land at row 0 in the final
+            // self.decode() call with no copy needed. For i > 0, the copy
+            // logits[0] -> logits[i] runs immediately after the seq's decode
+            // (still on default_stream so cuda ordering protects against the
+            // next iter's overwrite). Stays on device — no PCIe round-trip.
             let work_stream = self.gpu.default_stream();
             let logits = self.decode_logits_ptr();
             let v = self.config.vocab_size;
             let elem = if self.decode_logits_fp32() { 4 } else { 2 };
             let row_bytes = v * elem;
-            let mut staged = vec![0u8; n * row_bytes];
-            for i in 0..n {
+            for i in (0..n).rev() {
                 self.ep_broadcast_cmd_for_seq(seqs[i].slot_idx as u32, tokens[i])?;
                 self.decode(tokens[i], seqs[i], work_stream)?;
-                self.gpu.copy_d2h_on_stream(
-                    logits,
-                    &mut staged[i * row_bytes..(i + 1) * row_bytes],
-                    work_stream,
-                )?;
+                if i > 0 {
+                    self.gpu.copy_d2d_async(
+                        logits,
+                        logits.offset(i * row_bytes),
+                        row_bytes,
+                        work_stream,
+                    )?;
+                }
             }
-            self.gpu.copy_h2d_async(&staged, logits, work_stream)?;
             self.gpu.synchronize(work_stream)?;
             return Ok(logits);
         }
