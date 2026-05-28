@@ -1408,7 +1408,9 @@ Phase G is the bridge that makes DFlash a perf story instead of a structural sto
 
 ## 17. Phase H — Main-model FP8 audit (mirror vLLM's FP8 footprint)
 
-**Status**: design + reconnaissance (not implemented). Captured 2026-05-28 after a side-quest discovered that Atlas's drafter perf wall is `dense_gemm_bf16` precisely *because* the main model is already aggressively quantized (NVFP4 weights + FP8 KV when flagged). The drafter sticks out as the BF16 island.
+> **🚫 OUT OF SCOPE (2026-05-28).** Avarok's DFlash deliverable is scoped to the drafter / speculative-decode path only. Main-model FP8 work — even if it shows perf headroom — falls outside the engagement. This section is preserved for two reasons: (1) it documents the reconnaissance findings that landed Phase G's scope correctly (drafter, not main model), and (2) if Avarok later expands the scope to include main-model perf, the audit plan here is a starting point. Until then, **do not implement** any of H.1–H.4.
+
+**Status**: design + reconnaissance, **marked out of scope** (not implemented, not planned). Captured 2026-05-28 after a side-quest discovered that Atlas's drafter perf wall is `dense_gemm_bf16` precisely *because* the main model is already aggressively quantized (NVFP4 weights + FP8 KV when flagged). The drafter sticks out as the BF16 island.
 
 This section exists because of a real-time miscommunication during Phase G planning: the user assumed "FP8" meant mirroring vLLM's FP8 footprint on the main model, not the drafter. Phase G stays scoped to the drafter. Phase H scopes the main-model audit separately so we can decide whether to invest there next.
 
