@@ -965,3 +965,237 @@ E.1 alone should reclaim the Phase C regression (8.67 → ~10.5). E.2 is where t
 If E.1+E.2 still don't beat 13.86 no-spec, the floor is somewhere else (drafter dense_gemm_bf16, currently 61% of GPU time) and the next investigation is the drafter's MLP math itself, not the host-side orchestration. nsys will tell us.
 
 **Phase E succeeds when Atlas DFlash beats Atlas no-spec on the canonical Volvo bench.** Anything less and the architecture doesn't ship.
+
+### 14.7 Phase E results (May 26 2026)
+
+- **E.1 landed.** Replaced `gpu.synchronize(stream); gpu.copy_d2h(...)` with `gpu.copy_d2h_on_stream(stream)` in `forward_block.rs:589`. Build clean. Bench: 44.9% accept (exact), 8.64 tok/s (Δ ≈ -0.03 from Phase D, run-to-run noise). nsys: `cuStreamSynchronize` 29.7% (down from 63.2%), `cuMemcpyDtoHAsync_v2` 63.9% (up from 31.3%). **The accounting shifted, not the wall time** — the redundant sync was already a no-op against the captured graph; the wait was always inside the D2H copy itself.
+- **E.2 landed.** Added `event_synchronize` to `GpuBackend` trait + CUDA impl. Added `draft_tokens_host_pinned: AtomicPtr<u8>` (γ×4 bytes via `cuMemAllocHost_v2`) and `draft_tokens_event: u64` (created via `cuEventCreate`) to `DflashScratch`. Swapped the post-graph D2H to `copy_d2h_on_stream` into the pinned buffer, `record_event`, then `event_synchronize` before host reads. Build clean. Bench: 44.9% accept (exact), 8.48 tok/s. nsys: `cuStreamSynchronize` 62.9%, `cuMemcpyDtoHAsync_v2` 31.8% — back to roughly pre-E.1 shape because `cuEventSynchronize` aggregates into the same nsys bucket as `cuStreamSynchronize`.
+
+The E.1+E.2 hypothesis was: the post-graph sync was the floor, kill it and we reclaim 1-2 tok/s. **The hypothesis was wrong.** What actually happens: `forward_block` returns `Vec<u32>` to `propose_drafts`, which immediately returns to the scheduler, which immediately consumes `drafts[0]` to build `tokens_k2`. There is no host work to overlap with. Whether we wait via `cuStreamSynchronize`, `cuEventSynchronize`, or a busy-poll loop, we're waiting on the same physical D2H to complete. The pinned destination *should* speed the D2H itself (DMA fast path vs bounce-buffer), but the bench doesn't show it because the floor isn't the D2H either — **it's the drafter kernel work itself**.
+
+GPU kernel time post-E.2 (`cuda_gpu_kern_sum.csv`):
+
+| Kernel              | % GPU time | Instances |
+|---------------------|------------|-----------|
+| `dense_gemm_bf16`   | 60.7%      | 484       |
+| `w4a16_gemv_dual`   | 14.9%      | 5280      |
+| `w4a16_gemv`        | 9.0%       | 7459      |
+| `w4a16_gemv_silu_input` | 8.3%   | 4224      |
+| `w4a16_gemm`        | 3.8%       | 256       |
+
+`dense_gemm_bf16` is the drafter's BF16 MLP. 60% of GPU time, ~15ms average per instance × 484 instances = 7.3s on a 43s bench. That's the floor. Host-side orchestration tweaks can't move it.
+
+### 14.8 E.3 / E.4 SKIPPED — rationale
+
+- **E.3 (lift H2D into capture).** nsys shows `cuMemcpyHtoDAsync_v2` at 0.0% of API time post-E.2 (1908 calls, 11ms total). Even if we moved all of them inside capture, the absolute time saved is bounded at single-digit milliseconds. Not worth the 4-hour refactor + capture-pointer-stability risk.
+- **E.4 (split capture in two).** Architectural cleanup, not a perf win. The motivation was making the tail (lm_head/argmax) eager-able if a debug flag toggled. We don't need that today; we'd be doing work on speculation.
+
+Both stay in the design doc as future references. Neither is on the v1 path.
+
+### 14.9 The wall
+
+E.1+E.2 didn't move the bench because the wall is `dense_gemm_bf16`, not the host-side orchestration we've been chiseling at. Three real levers from here:
+
+1. **Piecewise graphs at the attention boundary** (Phase F, next). Validated by vLLM as the production pattern for drafters that aren't FA3-ready. Structural, not a perf win on its own — but it's the prerequisite for the kind of fusion that *would* move dense_gemm_bf16.
+2. **FP8 weights for the drafter MLP.** Cuts the GEMM work roughly in half. Atlas already has FP8 GEMM kernels in the runtime (the target model uses them). Real lever, real risk: drafter FP8 acceptance-rate collapse on SM12.x was the original reason `DflashQuantization::Bf16` is the only variant.
+3. **Kernel fusion** (RMSNorm + Q/K/V projections, silu+mul, residual paths). Real lever, real work — each fused kernel is custom CUDA.
+
+Phase F next. FP8 after. Fusion last.
+
+---
+
+## 15. Phase F — Piecewise graph capture at attention boundaries
+
+**Status**: design (not implemented). Based on vLLM's production drafter pattern and Atlas's existing `forward_block_layer_paged` structure.
+
+### 15.1 Why piecewise, why now
+
+vLLM v1 ships piecewise CUDA graphs for the drafter, not full graphs. Their [`CompilationConfig._attention_ops`](https://github.com/vllm-project/vllm/blob/main/vllm/config/compilation.py) lists `vllm::unified_attention_with_output` and 12 similar ops as the **mandatory split points**. The graph splits at every attention call; everything between is one captured subgraph. Their [`split_graph`](https://github.com/vllm-project/vllm/blob/main/vllm/compilation/backends.py) function in `vllm/compilation/backends.py:548` is the canonical reference.
+
+The endorsement chain from issue #23261 (Cascade attention RFC): "*Cascade attention requires piecewise cudagraphs. Some attention backends don't always support cudagraph_mode=FULL.*" — the entire vLLM compilation pipeline is built around this assumption. Only FlashAttention-3 supports `FULL` graphs cleanly; everything else (FlashInfer, FlashMLA, our `inferspark_prefill_paged_indirect`) goes piecewise.
+
+Atlas DFlash today has **one** captured region — the full layer loop + final norm + lm_head + argmax. Phase D proved this works; Phase E proved the floor isn't host-side. Phase F changes the *structure* of the capture so we can introduce per-layer fusion (or per-layer FP8 swap-in) later without breaking the graph.
+
+### 15.2 Where Atlas cuts
+
+In our terms (one DFlash drafter, 5 layers, BF16, paged):
+
+```
+forward_block:
+  ── pre-graph (eager) ───────────────────────────────────
+  | H2D writes: position_ids, draft_tokens, indirect args |
+  | slot mapping kernel                                   |
+  ── per-layer loop (×5) ─────────────────────────────────
+  │ ┌─ SUBGRAPH N (captured) ────────────────────────────┐│
+  │ │  input_layernorm → q_proj/k_proj/v_proj → q_norm   ││
+  │ │  k_norm → rope (Q+K) → reshape_and_cache           ││
+  │ └────────────────────────────────────────────────────┘│
+  │ ┌─ ATTENTION (eager) ────────────────────────────────┐│
+  │ │  prefill_attention_paged_dflash_bf16_indirect      ││
+  │ └────────────────────────────────────────────────────┘│
+  │ ┌─ SUBGRAPH N+1 (captured) ──────────────────────────┐│
+  │ │  o_proj → residual_add → post_attention_layernorm  ││
+  │ │  → gate_proj/up_proj → silu_mul → down_proj        ││
+  │ │  → residual_add                                    ││
+  │ └────────────────────────────────────────────────────┘│
+  ── post-layer-loop (one final subgraph, captured) ──────
+  | final RMSNorm → lm_head GEMM → γ argmax              |
+  ── post-graph (eager) ──────────────────────────────────
+  | async D2H + event_synchronize (per Phase E.2)        |
+```
+
+**Subgraph count:** 11 per propose (5 pre-attention × 5 layers + 5 post-attention × 5 layers + 1 tail). Each is captured once on the first eligible propose post-warmup, replayed thereafter.
+
+**Why this cut, specifically:**
+
+- vLLM does it. The pattern is production-validated across every attention backend that doesn't support FULL graphs.
+- Attention is the kernel where dynamic state (KV cache pointers, kv_len, q_offset) lives. Even with our indirect-args kernel, the attention call is the *natural* sync barrier between drafter steps.
+- The pre-attention and post-attention subgraphs each contain only dense_gemm_bf16 + rms_norm + silu_mul + reshape_and_cache + residual_add. All of these are pure compute, no per-call state changes. They graph cleanly.
+- This is the structure that *lets* us introduce future fusion. Today the pre-attention subgraph is 5-7 kernels; a fused `qkv_proj_norm_rope_cache` kernel would collapse it to 1. The capture boundary doesn't have to move.
+
+### 15.3 Atlas-specific implementation
+
+**Files affected:**
+
+- `crates/spark-model/src/layers/dflash_head.rs`: replace `propose_graph: Mutex<Option<GraphHandle>>` with `Mutex<Option<Vec<GraphHandle>>>` (one per subgraph slot). Replace `propose_warmup_count` with a per-subgraph variant (or keep it global — global is simpler, all subgraphs warm together).
+- `crates/spark-model/src/layers/dflash_head/forward_block.rs`: rewrite the layer loop. Instead of one outer `gpu.begin_capture(stream)`...`gpu.end_capture(stream)` around the whole loop, wrap each pre-attention and post-attention block in its own capture region.
+- `crates/spark-model/src/layers/dflash_head/forward_block_layer_paged.rs`: split `forward_block_layer_paged` into `forward_block_layer_pre_attn` and `forward_block_layer_post_attn`. Attention call lives in `forward_block.rs` directly between the two.
+
+**Capture/replay loop sketch (paged path only):**
+
+```rust
+fn forward_block(...) -> Result<Vec<u32>> {
+    // ── pre-graph (eager) ───
+    self.write_dynamic_inputs(...)?;
+    self.fill_gamma_slot_mapping(...)?;
+    self.write_indirect_args(...)?;
+
+    let graphs = self.propose_graphs.lock();  // Mutex<Option<Vec<GraphHandle>>>
+    let warmed = self.propose_warmup_count.load(Relaxed);
+    let use_replay = graphs.is_some() && warmed >= warmup_target;
+
+    let mut new_graphs: Vec<GraphHandle> = if !use_replay { Vec::with_capacity(11) } else { Vec::new() };
+
+    for layer_idx in 0..self.num_layers {
+        // Pre-attention subgraph
+        self.run_or_capture_subgraph(
+            &graphs, &mut new_graphs, layer_idx * 2,
+            use_replay, stream,
+            || self.forward_block_layer_pre_attn(layer, &args, ctx),
+        )?;
+
+        // Attention — eager, NEVER captured (vLLM convention)
+        ops::prefill_attention_paged_dflash_bf16_indirect(
+            gpu, self.kernels.prefill_attn_dflash_bf16_indirect, ...
+        )?;
+
+        // Post-attention subgraph
+        self.run_or_capture_subgraph(
+            &graphs, &mut new_graphs, layer_idx * 2 + 1,
+            use_replay, stream,
+            || self.forward_block_layer_post_attn(layer, &args, ctx),
+        )?;
+    }
+
+    // Tail subgraph: final norm + lm_head + argmax
+    self.run_or_capture_subgraph(
+        &graphs, &mut new_graphs, self.num_layers * 2,
+        use_replay, stream,
+        || self.run_lm_head_tail(...),
+    )?;
+
+    if !use_replay && warmed >= warmup_target {
+        *graphs = Some(new_graphs);
+    } else if warmed < warmup_target {
+        self.propose_warmup_count.fetch_add(1, Relaxed);
+    }
+
+    // ── post-graph (eager, per Phase E.2) ───
+    self.async_d2h_drafts(stream)?;
+    self.event_synchronize_drafts()?;
+    self.read_drafts_pinned()
+}
+
+fn run_or_capture_subgraph<F>(
+    &self,
+    cached: &Option<Vec<GraphHandle>>,
+    new: &mut Vec<GraphHandle>,
+    slot: usize,
+    use_replay: bool,
+    stream: u64,
+    body: F,
+) -> Result<()>
+where F: FnOnce() -> Result<()>,
+{
+    if use_replay {
+        let graph = cached.as_ref().unwrap()[slot];
+        if graph.0 != 0 { self.gpu.launch_graph(graph, stream)?; }
+        else { body()?; }
+    } else if /* capturing */ {
+        self.gpu.begin_capture(stream)?;
+        body()?;
+        let graph = self.gpu.end_capture(stream)?;
+        new.push(graph);
+        if graph.0 != 0 { self.gpu.launch_graph(graph, stream)?; }
+    } else {
+        // warm-up: eager only, no capture
+        body()?;
+    }
+    Ok(())
+}
+```
+
+**Eligibility gate:** identical to Phase D — `option_b_on && !suppress_graphs && !debug_dump && env-var gauntlet`. Same 10 env vars disable graphs across the board.
+
+### 15.4 What Phase F buys us
+
+**Not perf, by itself.** The total captured compute is identical; we've just put it in 11 small graphs instead of 1 big one. The 408 → ~4500 graph launches per bench will add some overhead — `cuGraphLaunch` is 213µs avg, so 4500 × 213µs = 960ms over a 43s bench, ~2% slower. **Expected: 44.9% accept (exact), 8.3-8.5 tok/s.**
+
+What Phase F **enables**:
+
+1. **Per-layer kernel fusion.** Fused `qkv_proj_norm_rope_cache` slots into the pre-attention subgraph; the capture boundary doesn't care about kernel count, only kernel state.
+2. **Per-layer FP8.** If we land FP8 weights on layers 1-4 (keeping layer 0 BF16 for accuracy) and the FP8 GEMM kernel has different launch shape than BF16, the per-layer subgraph keeps each layer self-contained.
+3. **Cascade attention support** (future). Today's paged attention is single-stream; cascade attention requires multiple. Piecewise structure is the prerequisite.
+4. **Debug eligibility per-layer.** If `ATLAS_DFLASH_DEBUG_DUMP` is on for one specific layer, only that layer's subgraphs fall to eager; others keep replaying.
+
+### 15.5 Risk + acceptance
+
+**Risks:**
+
+- **Graph instantiation cost × 11.** Phase D measured 2 calls to `cuGraphInstantiateWithFlags` at 3.6ms each. Phase F multiplies that by 11 = 40ms one-shot at warmup-end. Negligible against a 43s bench.
+- **Launch overhead increase.** 11 launches/propose vs 1. Already accounted for in the 2% estimate above.
+- **Capture pointer stability.** Same as Phase D: the per-call dynamic data must come from device pointers that don't move. The pre-attention and post-attention bodies use only scratch buffers + layer weights — all stable. No new risk.
+
+**Acceptance:**
+
+- 44.9% accept exact match.
+- 11 capture-success log lines after warmup (one per subgraph).
+- Tok/s within ±0.3 of Phase E.2 baseline (8.48). Anything significantly slower means a capture/launch dispatching bug.
+- `cuGraphLaunch` count rises ~10× in nsys; total wall time roughly flat.
+
+### 15.6 What Phase F is NOT
+
+- Not a perf win. Pure structural cleanup.
+- Not the place to add fusion. Fusion goes in **after** F lands and the per-subgraph structure is proven.
+- Not FP8. FP8 is the next perf lever and gets its own phase.
+
+### 15.7 Execution plan
+
+**F.1 — split forward_block_layer_paged into pre_attn + post_attn (no graphs yet).** 2 hours.
+- Extract pre-attention work (input_layernorm through reshape_and_cache) into `forward_block_layer_pre_attn`.
+- Extract post-attention work (o_proj through final residual_add) into `forward_block_layer_post_attn`.
+- `forward_block.rs` calls them in sequence around the existing attention call.
+- Bench: 44.9% accept exact, tok/s within ±0.05 of E.2 (8.48). No graph changes.
+
+**F.2 — replace single-graph capture with per-subgraph capture.** 3 hours.
+- Change `propose_graph: Mutex<Option<GraphHandle>>` to `propose_graphs: Mutex<Option<Vec<GraphHandle>>>`.
+- Add the `run_or_capture_subgraph` helper.
+- Wrap each pre-attn / post-attn / tail block in a capture region.
+- Bench: 44.9% accept exact, tok/s within ±0.3 of E.2.
+
+**F.3 — verify per-subgraph nsys profile.** 1 hour.
+- Confirm 11 distinct cuGraphLaunch traces per propose in nsight UI.
+- Confirm attention kernel runs eager between captured subgraphs (no graph node).
+- Document the new structure in this file with a profile snippet.
+
+Total: 6 hours. Phase F is the bridge to fusion + FP8.
