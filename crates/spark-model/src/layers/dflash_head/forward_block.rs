@@ -449,7 +449,10 @@ impl BlockDiffusionDraftHead {
             .and_then(|s| s.parse().ok())
             .unwrap_or(2);
 
-        // Helper closure: run the captured region (layer loop + norm + lm_head + argmax) eagerly.
+        // Helper closures: run each piecewise subgraph eagerly. Phase F.2
+        // splits the old monolithic captured region into per-layer halves
+        // (pre_attn + post_attn) plus a tail (final norm + lm_head +
+        // argmax). The attention call between pre and post stays eager.
         let bf16_local = bf16;
         let inv_sqrt_d_local = inv_sqrt_d;
         let h_local = h;
@@ -462,41 +465,51 @@ impl BlockDiffusionDraftHead {
         let stream_noise_local = self.scratch.stream_buf.offset(noise_byte_offset_local);
         let norm_noise_local = self.scratch.norm_buf.offset(noise_byte_offset_local);
 
-        let run_captured_region = || -> Result<()> {
-            for (layer_idx, layer) in self.layers.iter().enumerate() {
-                if option_b_on {
-                    let bt = option_b_block_table.unwrap();
-                    let slot_mapping = slot_mapping_gamma_opt.unwrap();
-                    let args = super::forward_block_layer_paged::PagedLayerArgs {
-                        layer_idx,
-                        ctx_count: option_b_ctx_count,
-                        h: h_local,
-                        q_dim: q_dim_local,
-                        kv_dim: kv_dim_local,
-                        inter: inter_local,
-                        inv_sqrt_d: inv_sqrt_d_local,
-                        slot_mapping_gamma: slot_mapping,
-                        block_table_dev: bt,
-                        stream,
-                    };
-                    self.forward_block_layer_paged(layer, &args, ctx)?;
-                } else {
-                    let args = super::forward_block_layer::LayerArgs {
-                        layer_idx,
-                        n_attn: n_attn_local,
-                        eff_ctx: eff_ctx_local,
-                        h: h_local,
-                        q_dim: q_dim_local,
-                        kv_dim: kv_dim_local,
-                        inter: inter_local,
-                        bf16: bf16_local,
-                        inv_sqrt_d: inv_sqrt_d_local,
-                        stream,
-                    };
-                    self.forward_block_layer(layer, &args, ctx, debug_dump)?;
+        // Build PagedLayerArgs once per layer — same args for pre_attn,
+        // attention, and post_attn (the kernel only reads what it needs).
+        let make_paged_args =
+            |layer_idx: usize| -> Option<super::forward_block_layer_paged::PagedLayerArgs> {
+                if !option_b_on {
+                    return None;
                 }
-            }
+                let bt = option_b_block_table?;
+                let slot_mapping = slot_mapping_gamma_opt?;
+                Some(super::forward_block_layer_paged::PagedLayerArgs {
+                    layer_idx,
+                    ctx_count: option_b_ctx_count,
+                    h: h_local,
+                    q_dim: q_dim_local,
+                    kv_dim: kv_dim_local,
+                    inter: inter_local,
+                    inv_sqrt_d: inv_sqrt_d_local,
+                    slot_mapping_gamma: slot_mapping,
+                    block_table_dev: bt,
+                    stream,
+                })
+            };
 
+        // Legacy (non-paged, n_attn rows) per-layer body — kept whole
+        // because the legacy path is debug-only and not graph-capture
+        // ready. Runs all of 3a–3k inline.
+        let run_legacy_layer = |layer_idx: usize, layer: &super::DflashLayer| -> Result<()> {
+            let args = super::forward_block_layer::LayerArgs {
+                layer_idx,
+                n_attn: n_attn_local,
+                eff_ctx: eff_ctx_local,
+                h: h_local,
+                q_dim: q_dim_local,
+                kv_dim: kv_dim_local,
+                inter: inter_local,
+                bf16: bf16_local,
+                inv_sqrt_d: inv_sqrt_d_local,
+                stream,
+            };
+            self.forward_block_layer(layer, &args, ctx, debug_dump)
+        };
+
+        // Tail: final norm + lm_head + argmax over γ rows. Captured as
+        // the last piecewise subgraph (slot index = num_layers * 2).
+        let run_tail = || -> Result<()> {
             ops::rms_norm(
                 gpu,
                 self.kernels.rms_norm,
@@ -536,52 +549,163 @@ impl BlockDiffusionDraftHead {
             Ok(())
         };
 
-        if graph_eligible {
-            let mut g = self.propose_graph.lock();
-            match *g {
-                Some(graph) if graph.0 != 0 => {
-                    // Hot path: replay the captured graph. No host work, no
-                    // per-kernel launch overhead, just one driver call to
-                    // schedule ~83 kernels.
-                    gpu.launch_graph(graph, stream)?;
+        // Run all subgraphs eagerly, no capture — used for warm-up and
+        // for the non-graph-eligible path.
+        let run_all_eager = || -> Result<()> {
+            for (layer_idx, layer) in self.layers.iter().enumerate() {
+                if option_b_on {
+                    let args = make_paged_args(layer_idx).expect("option_b args available");
+                    let (k_pool, v_pool) = self.forward_block_layer_pre_attn(layer, &args, ctx)?;
+                    self.forward_block_layer_attention(&args, ctx, k_pool, v_pool)?;
+                    self.forward_block_layer_post_attn(layer, &args, ctx)?;
+                } else {
+                    run_legacy_layer(layer_idx, layer)?;
                 }
-                _ => {
-                    let warmed = self
-                        .propose_warmup_count
-                        .load(std::sync::atomic::Ordering::Relaxed);
-                    if warmed < warmup_target {
-                        // Warm-up pass: eager. Don't capture yet — let the
-                        // driver JIT-pick steady-state SASS variants first.
-                        self.propose_warmup_count
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        run_captured_region()?;
+            }
+            run_tail()
+        };
+
+        // Phase F.2: piecewise capture/replay path. Only enabled for
+        // option_b (paged) — legacy path stays single-shot eager since
+        // it's not graph-ready and exists only for ablation.
+        if graph_eligible && option_b_on {
+            // Subgraph slot layout: [pre_0, post_0, ..., pre_{N-1}, post_{N-1}, tail].
+            // 2 × num_layers + 1 slots total.
+            let num_layers = self.layers.len();
+            let total_slots = num_layers * 2 + 1;
+            let tail_slot = num_layers * 2;
+
+            let mut g = self.propose_graphs.lock();
+            let cached_ready = matches!(*g, Some(ref v) if v.len() == total_slots);
+
+            if cached_ready {
+                // Hot replay path: launch each cached subgraph in order,
+                // running attention eagerly between pre and post.
+                let graphs = g.as_ref().unwrap();
+                for (layer_idx, layer) in self.layers.iter().enumerate() {
+                    let args = make_paged_args(layer_idx).expect("option_b args available");
+
+                    let pre_handle = graphs[layer_idx * 2];
+                    if pre_handle.0 != 0 {
+                        gpu.launch_graph(pre_handle, stream)?;
                     } else {
-                        // Warmed — capture now. End-cap returns a sentinel
-                        // GraphHandle(0) if the capture was empty; in that
-                        // case fall back to eager forever (don't cache zero).
-                        tracing::info!(
-                            "DFlash CUDA graph capture: starting (warmup_count={}, target={})",
-                            warmed,
-                            warmup_target
-                        );
+                        // Empty-capture sentinel: this slot fell back to
+                        // eager at capture time. Replay eager forever.
+                        self.forward_block_layer_pre_attn(layer, &args, ctx)?;
+                    }
+
+                    // Attention is always eager — but we need k_pool/v_pool
+                    // for the call. Re-lock the cache here (the captured
+                    // pre_attn already holds the pointers internally; this
+                    // is just for the attention boundary).
+                    let (k_pool, v_pool) = {
+                        let cache = self.kv_cache.lock();
+                        (cache.k_pool_ptr(layer_idx), cache.v_pool_ptr(layer_idx))
+                    };
+                    self.forward_block_layer_attention(&args, ctx, k_pool, v_pool)?;
+
+                    let post_handle = graphs[layer_idx * 2 + 1];
+                    if post_handle.0 != 0 {
+                        gpu.launch_graph(post_handle, stream)?;
+                    } else {
+                        self.forward_block_layer_post_attn(layer, &args, ctx)?;
+                    }
+                }
+
+                let tail_handle = graphs[tail_slot];
+                if tail_handle.0 != 0 {
+                    gpu.launch_graph(tail_handle, stream)?;
+                } else {
+                    run_tail()?;
+                }
+            } else {
+                let warmed = self
+                    .propose_warmup_count
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                if warmed < warmup_target {
+                    // Warm-up: eager only, no capture.
+                    self.propose_warmup_count
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    run_all_eager()?;
+                } else {
+                    // Capture pass: build all subgraphs in one propose
+                    // call, then immediately replay them via the launches
+                    // below. End-cap returns GraphHandle(0) as the
+                    // empty-capture sentinel; we store the zero so the
+                    // replay path falls back to eager for that slot.
+                    tracing::info!(
+                        "DFlash piecewise capture: starting (warmup_count={}, target={}, slots={})",
+                        warmed,
+                        warmup_target,
+                        total_slots
+                    );
+                    let mut new_graphs: Vec<spark_runtime::gpu::GraphHandle> =
+                        Vec::with_capacity(total_slots);
+
+                    for (layer_idx, layer) in self.layers.iter().enumerate() {
+                        let args = make_paged_args(layer_idx).expect("option_b args available");
+
+                        // pre_attn subgraph
                         gpu.begin_capture(stream)?;
-                        run_captured_region()?;
-                        let graph = gpu.end_capture(stream)?;
-                        if graph.0 != 0 {
-                            tracing::info!("DFlash CUDA graph capture: success handle={}", graph.0);
-                            *g = Some(graph);
-                            gpu.launch_graph(graph, stream)?;
+                        let _captured = self.forward_block_layer_pre_attn(layer, &args, ctx)?;
+                        let pre_graph = gpu.end_capture(stream)?;
+                        new_graphs.push(pre_graph);
+                        if pre_graph.0 != 0 {
+                            gpu.launch_graph(pre_graph, stream)?;
                         } else {
                             tracing::warn!(
-                                "DFlash CUDA graph capture: empty graph, eager fallback"
+                                "DFlash piecewise: pre_attn layer {} empty capture — eager fallback",
+                                layer_idx
                             );
-                            run_captured_region()?;
+                            self.forward_block_layer_pre_attn(layer, &args, ctx)?;
+                        }
+
+                        // attention — eager, never captured
+                        let (k_pool, v_pool) = {
+                            let cache = self.kv_cache.lock();
+                            (cache.k_pool_ptr(layer_idx), cache.v_pool_ptr(layer_idx))
+                        };
+                        self.forward_block_layer_attention(&args, ctx, k_pool, v_pool)?;
+
+                        // post_attn subgraph
+                        gpu.begin_capture(stream)?;
+                        self.forward_block_layer_post_attn(layer, &args, ctx)?;
+                        let post_graph = gpu.end_capture(stream)?;
+                        new_graphs.push(post_graph);
+                        if post_graph.0 != 0 {
+                            gpu.launch_graph(post_graph, stream)?;
+                        } else {
+                            tracing::warn!(
+                                "DFlash piecewise: post_attn layer {} empty capture — eager fallback",
+                                layer_idx
+                            );
+                            self.forward_block_layer_post_attn(layer, &args, ctx)?;
                         }
                     }
+
+                    // tail subgraph
+                    gpu.begin_capture(stream)?;
+                    run_tail()?;
+                    let tail_graph = gpu.end_capture(stream)?;
+                    new_graphs.push(tail_graph);
+                    if tail_graph.0 != 0 {
+                        gpu.launch_graph(tail_graph, stream)?;
+                    } else {
+                        tracing::warn!("DFlash piecewise: tail empty capture — eager fallback");
+                        run_tail()?;
+                    }
+
+                    let success_count = new_graphs.iter().filter(|g| g.0 != 0).count();
+                    tracing::info!(
+                        "DFlash piecewise capture: complete ({}/{} subgraphs captured)",
+                        success_count,
+                        total_slots
+                    );
+                    *g = Some(new_graphs);
                 }
             }
         } else {
-            run_captured_region()?;
+            run_all_eager()?;
         }
 
         // ── Step 6: D2H γ × 4 bytes ──

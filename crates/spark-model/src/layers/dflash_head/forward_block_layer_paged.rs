@@ -76,6 +76,14 @@ impl BlockDiffusionDraftHead {
     /// wrap each half in its own CUDA graph capture (mirroring vLLM's
     /// piecewise pattern — attention stays eager, everything else
     /// captures).
+    ///
+    /// **Phase F.2**: this method is no longer on the hot path —
+    /// `forward_block` now calls `forward_block_layer_pre_attn`,
+    /// `forward_block_layer_attention`, and `forward_block_layer_post_attn`
+    /// directly so it can wrap each in its own capture region. Kept
+    /// available so future ablation paths (and tests) can run the
+    /// monolithic body without rebuilding the call site.
+    #[allow(dead_code)]
     pub(super) fn forward_block_layer_paged(
         &self,
         layer: &DflashLayer,
