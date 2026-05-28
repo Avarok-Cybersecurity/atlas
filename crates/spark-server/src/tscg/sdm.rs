@@ -78,7 +78,13 @@ pub fn densify(text: &str) -> String {
     // become one line (the TSCG block is line-structured).
     let mut s: String = text
         .chars()
-        .map(|c| if c == '\n' || c == '\t' || c == '\r' { ' ' } else { c })
+        .map(|c| {
+            if c == '\n' || c == '\t' || c == '\r' {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
 
     // Filler removal — lower-cased scan, splice on the original string
@@ -128,7 +134,10 @@ mod tests {
 
     #[test]
     fn collapses_multiline() {
-        assert_eq!(densify("line one\n  line two\n\tline three"), "line one line two line three");
+        assert_eq!(
+            densify("line one\n  line two\n\tline three"),
+            "line one line two line three"
+        );
     }
 
     #[test]
@@ -140,6 +149,9 @@ mod tests {
     #[test]
     fn preserves_meaningful_casing() {
         // "Bash" must survive — only the filler prefix is removed.
-        assert_eq!(densify("Use this to run Bash commands"), "run Bash commands");
+        assert_eq!(
+            densify("Use this to run Bash commands"),
+            "run Bash commands"
+        );
     }
 }
