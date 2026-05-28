@@ -1245,3 +1245,161 @@ The piecewise structure is the prerequisite for:
 2. **Kernel fusion** (Phase H candidate). Fused `qkv_proj_norm_rope_cache` collapses ~7 kernels in the pre_attn subgraph to 1. The subgraph boundary doesn't move; fewer launches inside the capture buys L2 reuse + launch-overhead reduction. Predicted gain: 10-20% tok/s.
 
 FP8 first (bigger lever, fits the per-layer subgraph cleanly). Fusion after.
+
+---
+
+## 16. Phase G — Drafter MLP FP8 (detailed plan)
+
+**Status**: design (not implemented). Builds on Phase F.2's per-layer
+subgraph structure. Captured 2026-05-28 after Phase F.3 landed.
+
+### 16.1 The opportunity
+
+Post-Phase F.2 nsys (§15.8) confirms `dense_gemm_bf16` is 58.8% of
+GPU time. The drafter has **seven dense BF16 GEMMs per layer** — three
+for QKV projection, one for o_proj, three for the MLP (gate, up, down)
+— running over γ=16 rows, five layers, ~200 propose calls per bench.
+Total: ~7,000 BF16 GEMM kernel invocations per bench.
+
+FP8 E4M3 weights cut weight bandwidth in half (1 byte/weight vs 2)
+and let the GEMM use Blackwell's FP8 tensor cores (sm_121f). On the
+target model Atlas already gets ~2× speedup from FP8 GEMM at moderate
+M (gemm_quant.rs:46-72 docstring claims "~2× speedup on out_proj at
+ISL≥128"). At γ=16, M=16 — small, but the per-call kernel time is
+also tiny, so the relative win should still be substantial.
+
+**Predicted gain: 40-50% drafter tok/s uplift if accuracy holds.**
+
+### 16.2 What Atlas already has (massive head-start)
+
+Inventory of in-tree FP8 infrastructure that Phase G consumes:
+
+**FP8 GEMM kernels** (`kernels/gb10/common/`):
+- `fp8_gemm_n128`: BF16 × FP8 → BF16, grid `(ceil(N/128), ceil(M/64), 1)`. Used by qwen3_attention and qwen3_ssm prefill paths.
+- `fp8_gemm_n128_m128`: BF16 × FP8 → BF16, M≥128 variant with ~2× speedup at long ISL. Used by paged_oproj.
+- `fp8_fp8_gemm_n128_m128`: FP8 × FP8 → BF16, requires pre-quantized activations. Maximum bandwidth savings, used by qwen3_attention QKV when activations are pre-quantized.
+- `bf16_to_fp8`: BF16 activation → FP8 E4M3 (no scale, just truncation). 256 thread blocks.
+
+**Weight conversion kernels**:
+- `predequant_nvfp4_to_fp8`: NVFP4 packed [N, K/2] + scale → FP8 [N, K]. **Source is NVFP4 only — does not handle BF16 source.** This is the gap we'll have to fill.
+- `quantize_bf16_to_fp8`: Referenced in `mtp_head/new.rs:28`. Need to verify what scale layout this uses — likely the kernel we want.
+
+**Rust ops surfaces** (`crates/spark-model/src/layers/ops/gemm_dense.rs`, `gemm_quant.rs`):
+- `ops::fp8_gemm_n128`, `ops::fp8_gemm_n128_m128`, `ops::fp8_fp8_gemm_n128_m128` — all already wrapped and used by 13+ call sites across qwen3_ssm, qwen3_attention, moe, and mtp_head.
+- `weight_map::Fp8DenseWeight` — `{weight: DevicePtr, row_scale: DevicePtr}` — runtime-quantized from BF16 with per-row scale. **Exact shape we need for drafter weights** (drafter is BF16 on disk; this struct represents BF16→FP8 quantized at load time).
+- `DenseWeight::predequant_to_fp8` — exists only for the `QuantizedWeight` (NVFP4) source path. **No equivalent for the BF16 source path.** Will need a sibling method.
+
+**Verification**: vLLM's `v1/spec_decode/dflash.py` and `v1/spec_decode/eagle.py` have zero FP8 references. Upstream DFlash runs the drafter at the parent model's dtype. **We're not behind upstream — we're ahead.** The "FP8 acceptance collapse" claim in the codebase is Atlas-specific.
+
+### 16.3 The acceptance-collapse claim — corrected
+
+`crates/spark-model/src/layers/dflash_head.rs:131-136` says drafter FP8 collapses acceptance on SM12.x. This needs disambiguation:
+
+- **Drafter FP8 KV cache** — `Phase H` in §13 calls out this specifically: "drafter FP8 KV collapses acceptance on SM12.x ... dynamic range loss on the K side breaks the bidirectional γ-block attention math." Real concern. Anecdotal (§13: "currently anecdotal from earlier runs").
+- **Drafter FP8 weights** — different thing entirely. Not what the collapse comment is about. Weight FP8 doesn't touch the bidirectional attention math because the FP8 GEMM output is BF16; only the *multiplication* is FP8 × FP8.
+
+The DflashQuantization::Bf16 enum comment lumps both together, but the operative risk is KV cache, not weights. **Phase G targets weight FP8 only. KV cache stays BF16.**
+
+If weight FP8 *does* tank acceptance, the failure mode is dynamic-range loss on the MLP intermediate activations (gate_proj output flows into silu_mul → down_proj). This is mitigatable with per-row scales (Fp8DenseWeight already has these) and falls outside the K-side bidirectional attention concern.
+
+### 16.4 What we still have to write
+
+**One new kernel: `quantize_bf16_to_fp8_per_row`** (CUDA, ~60 lines).
+
+```
+Input:  bf16_weight [N, K] device buffer
+Output: fp8_weight  [N, K] device buffer
+        row_scale   [N]    f32 device buffer
+
+Per-row algorithm:
+  1. Each CTA owns one row (or 8 rows for occupancy at N=5120).
+  2. Warp-cooperative absmax reduction over K BF16 elements.
+  3. row_scale[row] = absmax / 448.0  (FP8 E4M3 max).
+  4. Cast bf16_weight[row, k] / row_scale[row] → FP8 E4M3, store.
+
+Grid: (ceil(N/8), 1, 1)  Block: (256, 1, 1) — 8 rows per CTA, 32 threads/row.
+```
+
+This is mechanically identical to the activation `bf16_to_fp8` kernel except (a) operates on a 2-D weight matrix instead of a 1-D activation, (b) emits a per-row scale, (c) one-shot at model load.
+
+**One new Rust op**: `ops::quantize_bf16_to_fp8_per_row(...)` in `gemm_dense.rs`, wrapping the kernel.
+
+**One new DenseWeight method**: `DenseWeight::quantize_to_fp8(...)` in `weight_map/quantized.rs`, mirroring `QuantizedWeight::predequant_to_fp8` but for BF16 source. Returns an `Fp8DenseWeight`.
+
+That's it. **Everything else is wiring.**
+
+### 16.5 Per-layer subgraph integration
+
+The per-layer subgraph structure from Phase F.2 makes the integration trivial. Each pre_attn subgraph captures three dense GEMMs (q_proj, k_proj, v_proj); each post_attn captures four (o_proj, gate_proj, up_proj, down_proj). If we swap any of those from `dense_gemm` (BF16 × BF16) to `fp8_gemm_n128` (BF16 × FP8), only that subgraph's launch sequence changes — capture boundaries don't move, replay logic unchanged.
+
+**Layer-level gating** (the original §15.4 motivation): we can ship FP8 on layers 1-4 and keep layer 0 BF16 for accuracy if needed. Per-layer subgraphs make this a one-line conditional in the layer loop. If FP8 tanks acceptance on layer 0 specifically (the closest to the target model's hidden state), we shed it and keep the gains on the rest.
+
+### 16.6 Activation pre-quantization decision
+
+Two FP8 GEMM tiers in Atlas:
+
+1. **BF16 × FP8 → BF16** (`fp8_gemm_n128`). Cheap to deploy: only weights are FP8, activations stay BF16. Predicted ~30-40% of full FP8 gain.
+2. **FP8 × FP8 → BF16** (`fp8_fp8_gemm_n128_m128`). Maximum bandwidth savings, but needs `bf16_to_fp8` activation prequant before each GEMM. Used by qwen3_attention QKV in tree.
+
+For the drafter, **start with BF16 × FP8** because (a) it isolates the risk to weight quant only, (b) doesn't add `bf16_to_fp8` kernel launches inside the capture, (c) lets us A/B accuracy cleanly. If accuracy holds and the perf gain is short of target, then layer the activation prequant in as G.2.
+
+### 16.7 Execution plan
+
+**G.1 — write the `quantize_bf16_to_fp8_per_row` kernel + Rust op + DenseWeight method.** 3 hours.
+- Kernel in `kernels/gb10/common/quantize_bf16_to_fp8_per_row.cu`. Register in `kernels/gb10/common/KERNEL.toml`.
+- Rust op `ops::quantize_bf16_to_fp8_per_row` in `gemm_dense.rs`.
+- `DenseWeight::quantize_to_fp8` in `weight_map/quantized.rs`.
+- Smoke test: round-trip a known BF16 weight, check dequant matches within FP8 precision (~3 sig figs).
+
+**G.2 — gate Phase G via env var + scratch FP8 buffers.** 1 hour.
+- Add `ATLAS_DFLASH_DRAFTER_FP8` env var (default OFF).
+- Extend `DflashQuantization` with `Fp8Weights` variant.
+- In `dflash_head/from_weights.rs`, if env var is set, call `quantize_to_fp8` on each layer's q/k/v/o_proj + gate/up/down_proj, store the resulting `Fp8DenseWeight` in a new optional field on `DflashLayer`.
+- Predequant happens once at model load (zero hot-path cost), runtime stream sync between predequant batches.
+
+**G.3 — swap GEMM call sites in `forward_block_layer_pre_attn` + `_post_attn`.** 2 hours.
+- Both methods get a runtime check on `self.quant`. BF16 path: existing `ops::dense_gemm`. FP8 path: `ops::fp8_gemm_n128` with the matching `Fp8DenseWeight`.
+- Re-run Phase F.2 capture pass after the change — capture should succeed with FP8 kernels (they're stateless on host).
+
+**G.4 — accept-rate guard + bench.** 1 hour.
+- Bench with `ATLAS_DFLASH_DRAFTER_FP8=1`. Acceptance criteria:
+  - **Hard fail**: accept rate < 42% (was 44.9%). Pull the patch.
+  - **Acceptable**: accept rate ≥ 43% AND tok/s ≥ 11.0 (vs 8.70 F.2 baseline) — call it a win.
+  - **Marginal**: accept rate 42-43% — investigate per-layer (skip layer 0 FP8 and re-test).
+- If hard-fail, run a layer-by-layer ablation: enable FP8 on layers 4, 3, 2, 1, 0 incrementally. The first layer that breaks acceptance is the diagnostic.
+
+**G.5 — nsys verification.** 30 min.
+- Re-run `~/atlas-code-atlas-bench-nsys.sh`. Expected GPU kernel summary changes:
+  - `dense_gemm_bf16` GPU time drops from 58.8% to ~30%.
+  - `fp8_gemm_n128` appears with ~7000 instances (7 GEMMs × 5 layers × ~200 propose calls).
+  - `cuMemcpyDtoHAsync_v2` and `cuStreamSynchronize` unchanged — host orchestration didn't move.
+
+**Total: 7.5 hours.** Realistically 1-2 days with debug.
+
+### 16.8 Risk register
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| FP8 weight quant tanks acceptance globally | Medium | High | Layer-level gating (G.4). Skip layer 0 FP8 first. If still bad, run with row_scale at higher precision (f32 instead of bf16 — already the case). |
+| FP8 GEMM kernels untested at M=16 | Low | Medium | All existing call sites are M=128+. M=16 might trigger an unhandled tile shape. Easy to validate at G.1 smoke test (run kernel with γ=16 sized input, compare against BF16 reference). |
+| Per-row scale storage overhead | Low | Low | 35 GEMMs × (5120 or 17408) rows × 4 bytes = ~400 KB. Trivial. |
+| Predequant adds load-time latency | Low | Low | One-shot at model load. 7 GEMMs × 5 layers × ~5ms/kernel = ~175ms. Buried in 20s drafter load. |
+| Capture region invalidated by new kernel | Very low | High | Capture is stateless wrt kernel identity; replays work as long as the launch sequence matches what was captured. Risk is zero unless we conditionally swap kernels mid-graph, which we don't. |
+| KV cache stays BF16 but Phase H eventually wants FP8 KV | N/A | Future | Phase G is orthogonal to Phase H. KV cache concern lives elsewhere. |
+
+### 16.9 What Phase G is NOT
+
+- **Not FP8 KV cache.** That's Phase H; different risk profile (bidirectional attention math).
+- **Not FP8 activations.** That's a G.2 follow-on if accuracy holds and we want more perf.
+- **Not native FP8 propose.** That's the §13 Phase H roadmap (FlashAttention-3-style native FP8 attention), and it depends on KV cache changes.
+- **Not per-layer quantization research.** Layer-level gating in G.4 is a kill-switch, not a quantization-aware training step. If accuracy needs layer-specific tuning beyond all-on/all-off/skip-0, we stop and reconsider.
+
+### 16.10 Acceptance criteria for Phase G ship
+
+- ✓ Accept rate ≥ 43% (within 1.9pp of BF16 baseline).
+- ✓ Tok/s ≥ 11.0 (≥ 26% improvement over 8.70 F.2 baseline).
+- ✓ Bench produces exact-match output as BF16 for the canonical Volvo prompt (the 200-char prefix at minimum).
+- ✓ nsys shows fp8_gemm_n128 displacing dense_gemm_bf16 as the top kernel.
+- ✓ `ATLAS_DFLASH_DRAFTER_FP8=0` (default) is bit-identical to F.2 baseline — opt-in only until we trust it.
+
+Phase G is the bridge that makes DFlash a perf story instead of a structural story. After G lands, fusion (Phase H candidate) is the last incremental lever before the next wall.
