@@ -171,9 +171,10 @@ impl BlockDiffusionDraftHead {
             // dense_gemv_fp8w.cu:36 under namespace "gemv_fp8w". Used at
             // load time only.
             quantize_bf16_to_fp8: gpu.kernel("gemv_fp8w", "quantize_bf16_to_fp8")?,
-            // Phase G — BF16 × FP8 → BF16 GEMM. Namespace "w4a16" matches
-            // the existing qwen3_attention init pattern.
-            fp8_gemm_n128: gpu.kernel("w4a16", "fp8_gemm_t")?,
+            // Phase G — Row-scaled BF16 × FP8 → BF16 GEMM. Atlas custom
+            // kernel `fp8_gemm_t_row_scaled` appended to w4a16_gemm.cu
+            // for Phase G (module namespace "w4a16").
+            fp8_gemm_n128_row_scaled: gpu.kernel("w4a16", "fp8_gemm_t_row_scaled")?,
         };
 
         // Per-step scratch buffers. BF16 = 2 bytes/element.

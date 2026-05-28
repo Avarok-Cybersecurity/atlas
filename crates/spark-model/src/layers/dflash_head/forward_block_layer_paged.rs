@@ -146,38 +146,71 @@ impl BlockDiffusionDraftHead {
         )?;
 
         // 3b. q/k/v projections — γ rows.
-        ops::dense_gemm(
-            gpu,
-            self.kernels.dense_gemm,
-            self.scratch.norm_buf,
+        //
+        // Phase G: when self.quant == Fp8Weights, swap each dense_gemm
+        // for fp8_gemm_n128_row_scaled against the FP8 mirror weight.
+        // Per-row f32 scales (built at load time by quantize_bf16_to_fp8)
+        // are applied inside the GEMM at write-out. Fp8 mirror None →
+        // fall back to BF16 (defensive, shouldn't fire if G.2 ran).
+        let use_fp8 = matches!(self.quant, super::DflashQuantization::Fp8Weights);
+        let gemm_swap = |w_bf16: &crate::weight_map::DenseWeight,
+                         w_fp8: &Option<crate::weight_map::Fp8DenseWeight>,
+                         src: spark_runtime::gpu::DevicePtr,
+                         dst: spark_runtime::gpu::DevicePtr,
+                         n_out: u32,
+                         k_in: u32|
+         -> Result<()> {
+            if use_fp8 {
+                if let Some(fp8) = w_fp8 {
+                    return ops::fp8_gemm_n128_row_scaled(
+                        gpu,
+                        self.kernels.fp8_gemm_n128_row_scaled,
+                        src,
+                        fp8,
+                        dst,
+                        g,
+                        n_out,
+                        k_in,
+                        stream,
+                    );
+                }
+            }
+            ops::dense_gemm(
+                gpu,
+                self.kernels.dense_gemm,
+                src,
+                w_bf16,
+                dst,
+                g,
+                n_out,
+                k_in,
+                stream,
+            )
+        };
+
+        gemm_swap(
             &layer.q_proj,
+            &layer.q_proj_fp8,
+            self.scratch.norm_buf,
             self.scratch.q_buf,
-            g,
             q_dim,
             h,
-            stream,
         )?;
-        ops::dense_gemm(
-            gpu,
-            self.kernels.dense_gemm,
-            self.scratch.norm_buf,
+        gemm_swap(
             &layer.k_proj,
-            self.scratch.k_buf,
-            g,
-            kv_dim,
-            h,
-            stream,
-        )?;
-        ops::dense_gemm(
-            gpu,
-            self.kernels.dense_gemm,
+            &layer.k_proj_fp8,
             self.scratch.norm_buf,
-            &layer.v_proj,
-            self.scratch.v_buf,
-            g,
+            self.scratch.k_buf,
             kv_dim,
             h,
-            stream,
+        )?;
+        gemm_swap(
+            &layer.v_proj,
+            &layer.v_proj_fp8,
+            self.scratch.norm_buf,
+            self.scratch.v_buf,
+            kv_dim,
+            h,
         )?;
 
         // 3c. q_norm / k_norm — per-head RMS over head_dim.
@@ -421,17 +454,53 @@ impl BlockDiffusionDraftHead {
         let gpu = ctx.gpu;
         let g = self.gamma as u32;
 
-        // 3g. o_proj — γ rows.
-        ops::dense_gemm(
-            gpu,
-            self.kernels.dense_gemm,
-            self.scratch.attn_out,
+        // Phase G — same swap helper as pre_attn (q/k/v). Single call
+        // site per logical GEMM; the row-scaled FP8 GEMM kernel applies
+        // the per-row scale internally at write-out.
+        let use_fp8 = matches!(self.quant, super::DflashQuantization::Fp8Weights);
+        let gemm_swap = |w_bf16: &crate::weight_map::DenseWeight,
+                         w_fp8: &Option<crate::weight_map::Fp8DenseWeight>,
+                         src: spark_runtime::gpu::DevicePtr,
+                         dst: spark_runtime::gpu::DevicePtr,
+                         n_out: u32,
+                         k_in: u32|
+         -> Result<()> {
+            if use_fp8 {
+                if let Some(fp8) = w_fp8 {
+                    return ops::fp8_gemm_n128_row_scaled(
+                        gpu,
+                        self.kernels.fp8_gemm_n128_row_scaled,
+                        src,
+                        fp8,
+                        dst,
+                        g,
+                        n_out,
+                        k_in,
+                        stream,
+                    );
+                }
+            }
+            ops::dense_gemm(
+                gpu,
+                self.kernels.dense_gemm,
+                src,
+                w_bf16,
+                dst,
+                g,
+                n_out,
+                k_in,
+                stream,
+            )
+        };
+
+        // 3g. o_proj — γ rows. [h, q_dim]
+        gemm_swap(
             &layer.o_proj,
+            &layer.o_proj_fp8,
+            self.scratch.attn_out,
             self.scratch.stream_acc,
-            g,
             h,
             q_dim,
-            stream,
         )?;
 
         // 3h. residual: stream_buf += stream_acc (γ rows).
@@ -458,27 +527,21 @@ impl BlockDiffusionDraftHead {
         )?;
 
         // 3j. MLP gate + up + silu_mul + down — γ rows.
-        ops::dense_gemm(
-            gpu,
-            self.kernels.dense_gemm,
-            self.scratch.norm_buf,
+        gemm_swap(
             &layer.gate_proj,
-            self.scratch.mlp_intermediate,
-            g,
-            inter,
-            h,
-            stream,
-        )?;
-        ops::dense_gemm(
-            gpu,
-            self.kernels.dense_gemm,
+            &layer.gate_proj_fp8,
             self.scratch.norm_buf,
-            &layer.up_proj,
-            self.scratch.mlp_up,
-            g,
+            self.scratch.mlp_intermediate,
             inter,
             h,
-            stream,
+        )?;
+        gemm_swap(
+            &layer.up_proj,
+            &layer.up_proj_fp8,
+            self.scratch.norm_buf,
+            self.scratch.mlp_up,
+            inter,
+            h,
         )?;
         ops::silu_mul(
             gpu,
@@ -489,16 +552,13 @@ impl BlockDiffusionDraftHead {
             g * inter,
             stream,
         )?;
-        ops::dense_gemm(
-            gpu,
-            self.kernels.dense_gemm,
-            self.scratch.mlp_intermediate,
+        gemm_swap(
             &layer.down_proj,
+            &layer.down_proj_fp8,
+            self.scratch.mlp_intermediate,
             self.scratch.stream_acc,
-            g,
             h,
             inter,
-            stream,
         )?;
 
         // 3k. residual.
