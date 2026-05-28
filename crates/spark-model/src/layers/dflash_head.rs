@@ -67,6 +67,16 @@ pub struct DflashKernels {
     /// Non-paged prefill attention (used for the γ-block self-attention
     /// when there's no persistent K/V cache to walk).
     pub prefill_attn: KernelHandle,
+    /// Phase G — BF16 → FP8 E4M3 per-row weight quantization. Used at
+    /// model load time to convert the seven dense-GEMM drafter weights
+    /// (q/k/v/o/gate/up/down) when `ATLAS_DFLASH_DRAFTER_FP8=1`. Never
+    /// on the hot path.
+    pub quantize_bf16_to_fp8: KernelHandle,
+    /// Phase G — BF16 × FP8 → BF16 GEMM. Replaces `dense_gemm_bf16` on
+    /// the seven dense-GEMM call sites in `forward_block_layer_pre_attn`
+    /// and `_post_attn` when `self.quant == Fp8Weights`. Wraps
+    /// `kernels/gb10/common/dense_gemm_tc.cu fp8_gemm_n128`.
+    pub fp8_gemm_n128: KernelHandle,
 }
 
 /// Per-step scratch buffers for the γ-block forward.
@@ -128,16 +138,26 @@ pub struct DflashScratch {
     pub position_ids: DevicePtr,
 }
 
-/// Drafter-side weight precision. Defaults to BF16 because community
-/// reports an FP8 acceptance-rate collapse on SM12.x; `--mtp-quantization fp8`
-/// is intentionally not honored for the DFlash drafter (warned at build time).
+/// Drafter-side weight precision. Defaults to BF16. **Phase G (2026-05-28)**
+/// adds `Fp8Weights`, gated by env var `ATLAS_DFLASH_DRAFTER_FP8`. The
+/// historical SM12.x acceptance collapse note applied to drafter FP8 KV
+/// cache (different concern — bidirectional attention math); Phase G
+/// targets weight FP8 only, so the risk surface is dynamic-range loss
+/// in MLP intermediate activations, which per-row scales mitigate.
+/// `--mtp-quantization fp8` is still not honored for the DFlash drafter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DflashQuantization {
     Bf16,
+    /// Weight-only FP8: q/k/v/o/gate/up/down BF16 → FP8 E4M3 with per-row
+    /// f32 scales at model load. Activations stay BF16; KV cache stays
+    /// BF16. GEMMs use `fp8_gemm_n128` (BF16 × FP8 → BF16).
+    Fp8Weights,
 }
 
-/// Per-drafter-layer Qwen3-style weights. Phase 1 is BF16-only; FP8/NVFP4
-/// drafter quantization is deferred (see `DflashQuantization`).
+/// Per-drafter-layer Qwen3-style weights. Phase 1 is BF16-only; **Phase G**
+/// (2026-05-28) adds optional FP8 weight fields populated at model load
+/// when `ATLAS_DFLASH_DRAFTER_FP8=1`. The BF16 fields are always present
+/// (Fp8 path falls back to them for any GEMM whose Fp8 weight is None).
 #[allow(dead_code)]
 pub struct DflashLayer {
     // Norms
@@ -154,6 +174,18 @@ pub struct DflashLayer {
     pub gate_proj: DenseWeight,
     pub up_proj: DenseWeight,
     pub down_proj: DenseWeight,
+
+    // Phase G — optional FP8 mirrors of the seven dense-GEMM weights.
+    // Populated at load time when `ATLAS_DFLASH_DRAFTER_FP8=1`, consumed
+    // by forward_block_layer_pre_attn / _post_attn when self.quant ==
+    // DflashQuantization::Fp8Weights. None when BF16 path is active.
+    pub q_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+    pub k_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+    pub v_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+    pub o_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+    pub gate_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+    pub up_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+    pub down_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
 }
 
 /// Per-sequence DFlash drafter state. One paged KV cache per drafter layer

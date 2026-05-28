@@ -167,6 +167,13 @@ impl BlockDiffusionDraftHead {
                          .cu file there."
                     )
                 })?,
+            // Phase G — BF16→FP8 weight quant kernel. Already in tree via
+            // dense_gemv_fp8w.cu:36 under namespace "gemv_fp8w". Used at
+            // load time only.
+            quantize_bf16_to_fp8: gpu.kernel("gemv_fp8w", "quantize_bf16_to_fp8")?,
+            // Phase G — BF16 × FP8 → BF16 GEMM. Namespace "w4a16" matches
+            // the existing qwen3_attention init pattern.
+            fp8_gemm_n128: gpu.kernel("w4a16", "fp8_gemm_t")?,
         };
 
         // Per-step scratch buffers. BF16 = 2 bytes/element.
@@ -378,7 +385,7 @@ impl BlockDiffusionDraftHead {
             num_layers,
         );
 
-        let head = Self {
+        let mut head = Self {
             num_layers,
             hidden_size,
             intermediate_size,
@@ -414,6 +421,14 @@ impl BlockDiffusionDraftHead {
                     gate_proj: l.gate_proj,
                     up_proj: l.up_proj,
                     down_proj: l.down_proj,
+                    // Phase G — populated below if ATLAS_DFLASH_DRAFTER_FP8=1.
+                    q_proj_fp8: None,
+                    k_proj_fp8: None,
+                    v_proj_fp8: None,
+                    o_proj_fp8: None,
+                    gate_proj_fp8: None,
+                    up_proj_fp8: None,
+                    down_proj_fp8: None,
                 })
                 .collect(),
             // Phase 2 stage 2: fused KV weight built above by copy_d2d
@@ -451,6 +466,82 @@ impl BlockDiffusionDraftHead {
             head.mask_token_id,
             head.target_layer_ids,
         );
+
+        // Phase G — opt-in drafter MLP FP8. Quantize the seven dense-GEMM
+        // weights per layer (q/k/v/o/gate/up/down) BF16 → FP8 E4M3 with
+        // per-row f32 scales. One-shot at model load; runtime hot path
+        // consumes the Fp8DenseWeight via fp8_gemm_n128 in pre/post_attn
+        // (wired in G.3). Default OFF — bit-identical to F.2 baseline.
+        //
+        // Acceptance gate (G.4 design doc §16.7): bench must hold
+        // ≥43% accept (vs 44.9% BF16) AND ≥11.0 tok/s (vs 8.70). If hard
+        // fail, layer-by-layer ablation; skip layer 0 first.
+        if std::env::var("ATLAS_DFLASH_DRAFTER_FP8").ok().as_deref() == Some("1") {
+            tracing::info!(
+                "DFlash Phase G: quantizing drafter weights to FP8 E4M3 ({} layers × 7 GEMMs)",
+                head.num_layers
+            );
+            let stream = 0u64; // default stream — load-time, no concurrency
+            let q_dim_local = q_dim;
+            let kv_dim_local = kv_dim;
+            let h = head.hidden_size;
+            let inter = head.intermediate_size;
+            let quant_k = head.kernels.quantize_bf16_to_fp8;
+            for (layer_idx, layer) in head.layers.iter_mut().enumerate() {
+                // Q proj: [q_dim, h]
+                layer.q_proj_fp8 =
+                    Some(
+                        layer
+                            .q_proj
+                            .quantize_to_fp8(gpu, quant_k, q_dim_local, h, stream)?,
+                    );
+                // K proj: [kv_dim, h]
+                layer.k_proj_fp8 =
+                    Some(
+                        layer
+                            .k_proj
+                            .quantize_to_fp8(gpu, quant_k, kv_dim_local, h, stream)?,
+                    );
+                // V proj: [kv_dim, h]
+                layer.v_proj_fp8 =
+                    Some(
+                        layer
+                            .v_proj
+                            .quantize_to_fp8(gpu, quant_k, kv_dim_local, h, stream)?,
+                    );
+                // O proj: [h, q_dim]
+                layer.o_proj_fp8 =
+                    Some(
+                        layer
+                            .o_proj
+                            .quantize_to_fp8(gpu, quant_k, h, q_dim_local, stream)?,
+                    );
+                // Gate proj: [inter, h]
+                layer.gate_proj_fp8 = Some(
+                    layer
+                        .gate_proj
+                        .quantize_to_fp8(gpu, quant_k, inter, h, stream)?,
+                );
+                // Up proj: [inter, h]
+                layer.up_proj_fp8 = Some(
+                    layer
+                        .up_proj
+                        .quantize_to_fp8(gpu, quant_k, inter, h, stream)?,
+                );
+                // Down proj: [h, inter]
+                layer.down_proj_fp8 = Some(
+                    layer
+                        .down_proj
+                        .quantize_to_fp8(gpu, quant_k, h, inter, stream)?,
+                );
+                tracing::debug!("DFlash Phase G: layer {} quantized", layer_idx);
+            }
+            head.quant = DflashQuantization::Fp8Weights;
+            tracing::info!(
+                "DFlash Phase G: drafter weights ready as FP8 (quant = Fp8Weights). \
+                 Set ATLAS_DFLASH_DRAFTER_FP8=0 to revert to BF16."
+            );
+        }
 
         Ok(head)
     }
