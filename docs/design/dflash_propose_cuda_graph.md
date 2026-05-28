@@ -1199,3 +1199,49 @@ What Phase F **enables**:
 - Document the new structure in this file with a profile snippet.
 
 Total: 6 hours. Phase F is the bridge to fusion + FP8.
+
+### 15.8 Phase F results (2026-05-28)
+
+All three F sub-phases landed on branch `dflash-cuda-graph-phaseF` (commits `a6df463` F.1 + `7570c9f` F.2).
+
+**F.1 (split forward_block_layer_paged into pre_attn / attention / post_attn).** Pure refactor. Bench: 44.9% accept exact, 8.69 tok/s (Δ +0.21 from E.2 baseline, within noise).
+
+**F.2 (per-subgraph capture, 11 slots).** New propose_graphs field replaces single propose_graph. Capture pass builds `[pre_0, post_0, ..., pre_4, post_4, tail]` in one propose call after the standard 2-pass warmup. Server log confirms:
+
+```
+DFlash piecewise capture: starting (warmup_count=2, target=2, slots=11)
+DFlash piecewise capture: complete (11/11 subgraphs captured)
+```
+
+Bench: 44.9% accept exact, 8.70 tok/s (Δ +0.22 from E.2 baseline, within noise; identical to F.1 — the structural change cost nothing measurable).
+
+**F.3 (nsys verification).** Ran the canonical Volvo bench under `nsys profile --trace=cuda,nvtx,osrt`. Bench under profiling: 44.9% accept exact, 8.49 tok/s (nsys overhead minimal at this scale). All three acceptance criteria from §15.5 confirmed:
+
+| Criterion | Expected | Observed | ✓ |
+|---|---|---|---|
+| Accept rate | 44.9% exact | 44.9% (92/205) | ✓ |
+| `cuGraphLaunch` count rises ~10× | Yes | 2,306 calls (vs 408 in Phase D for same propose count) — 5.65× rise per propose ≈ 11 slots × N propose cycles | ✓ |
+| Attention runs eager | Yes | `inferspark_prefill_paged_indirect` at 970 GPU kernel instances, not folded into `cuGraphLaunch` | ✓ |
+| `cuGraphInstantiateWithFlags` count | ~11 one-shot | 12 (11 slots + 1 reuse of a prior instantiation, ~3.6ms each — negligible against 43s bench) | ✓ |
+| Begin/end capture pairs | 11 each | `cuStreamBeginCapture` = 12, `cuStreamEndCapture` = 12 | ✓ |
+
+**Post-F.2 nsys API-time breakdown** (matches §14.7 post-E.2 shape, confirming F.2 didn't introduce host-side regressions):
+
+| API call | % API time | Calls | Avg |
+|---|---|---|---|
+| `cuStreamSynchronize` | 62.7% | 246,104 | 101 µs |
+| `cuMemcpyDtoHAsync_v2` | 31.3% | 523 | 23.9 ms |
+| `cuMemcpyDtoDAsync_v2` | 3.9% | 281,789 | 5.5 µs |
+| `cuLaunchKernel` | 0.8% | 58,259 | 5.3 µs |
+| `cuGraphLaunch` | 0.3% | 2,306 | 46.5 µs |
+
+GPU-side, `dense_gemm_bf16` is still the wall at 58.8% of GPU time (was 60.7% post-E.2, same kernel work). **Phase F bought structure, not perf — exactly as designed.**
+
+### 15.9 What lands next
+
+The piecewise structure is the prerequisite for:
+
+1. **Drafter MLP FP8** (Phase G candidate). Cuts `dense_gemm_bf16` work roughly in half. Real lever, real risk: drafter FP8 acceptance-rate collapse on SM12.x was the original reason `DflashQuantization::Bf16` is the only variant today. Per-layer FP8 (keeping layer 0 BF16, FP8 on 1-4) slots naturally into the per-layer subgraph: if FP8 GEMM has a different launch shape than BF16, each layer's pre/post subgraph captures it independently. Predicted gain: 40-50% tok/s if acceptance holds.
+2. **Kernel fusion** (Phase H candidate). Fused `qkv_proj_norm_rope_cache` collapses ~7 kernels in the pre_attn subgraph to 1. The subgraph boundary doesn't move; fewer launches inside the capture buys L2 reuse + launch-overhead reduction. Predicted gain: 10-20% tok/s.
+
+FP8 first (bigger lever, fits the per-layer subgraph cleanly). Fusion after.
