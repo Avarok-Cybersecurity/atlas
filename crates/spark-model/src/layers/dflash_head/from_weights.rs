@@ -228,6 +228,17 @@ impl BlockDiffusionDraftHead {
             // paged-attention kernel reads at entry. Host writes via H2D
             // BEFORE entering the captured region.
             option_b_indirect_args_dev: gpu.alloc(8)?,
+            // Phase E.2: pinned host buffer + event for the per-propose
+            // drafter D2H. Pinned memory lets cuMemcpyDtoHAsync issue a
+            // true async DMA on the caller's stream (vs. the synchronous
+            // staging fallback the driver picks for pageable destinations).
+            // The event lets us wait on the *copy*, not the whole stream,
+            // so target-model verify work issued on the same stream can
+            // proceed in parallel.
+            draft_tokens_host_pinned: std::sync::atomic::AtomicPtr::new(
+                gpu.alloc_host_pinned(gamma_val * 4)?,
+            ),
+            draft_tokens_event: gpu.create_event()?,
             logits: gpu.alloc(n_attn * vocab_size * bf16)?,
             draft_tokens_dev: gpu.alloc(n_attn * 4)?,
             position_ids: gpu.alloc(n_attn * 4)?,

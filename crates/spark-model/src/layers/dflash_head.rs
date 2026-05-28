@@ -105,6 +105,21 @@ pub struct DflashScratch {
     /// kernel reads at entry. Host writes via `copy_h2d` BEFORE entering the
     /// captured region so the graph itself sees a stable device pointer.
     pub option_b_indirect_args_dev: DevicePtr,
+    /// Phase E.2: pinned host buffer (`γ × 4` bytes) for the per-propose
+    /// draft-token D2H copy. Allocated once at construction via
+    /// `gpu.alloc_host_pinned`; the async D2H lands here without touching
+    /// the system pageable allocator each call.
+    ///
+    /// Wrapped in `AtomicPtr` to keep `DflashScratch: Send + Sync` (the
+    /// proposer is stored as `Arc<dyn DraftProposer>` which requires both
+    /// auto-traits). Reads via `Ordering::Relaxed` are safe: the pointer
+    /// itself never changes after construction; we only need atomic
+    /// access for the Send/Sync bound, not for any actual concurrency.
+    pub draft_tokens_host_pinned: std::sync::atomic::AtomicPtr<u8>,
+    /// Phase E.2: CUDA event recorded against the draft-tokens D2H so the
+    /// host can block on completion just before reading the pinned buffer,
+    /// without a full `cuStreamSynchronize`. Created once at construction.
+    pub draft_tokens_event: u64,
     pub logits: DevicePtr,
     pub draft_tokens_dev: DevicePtr,
     /// `[ctx_window + γ]` i32 positions. First ctx_window are

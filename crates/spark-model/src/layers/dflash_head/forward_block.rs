@@ -429,7 +429,9 @@ impl BlockDiffusionDraftHead {
         // ramp, and L2 warming all happen eagerly before capture freezes
         // a steady-state SASS pick.
         let graph_eligible = option_b_on
-            && !self.suppress_graphs.load(std::sync::atomic::Ordering::Relaxed)
+            && !self
+                .suppress_graphs
+                .load(std::sync::atomic::Ordering::Relaxed)
             && !debug_dump
             && std::env::var("ATLAS_DFLASH_PROPOSE_NO_GRAPH").is_err()
             && std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL").is_err()
@@ -544,8 +546,9 @@ impl BlockDiffusionDraftHead {
                     gpu.launch_graph(graph, stream)?;
                 }
                 _ => {
-                    let warmed =
-                        self.propose_warmup_count.load(std::sync::atomic::Ordering::Relaxed);
+                    let warmed = self
+                        .propose_warmup_count
+                        .load(std::sync::atomic::Ordering::Relaxed);
                     if warmed < warmup_target {
                         // Warm-up pass: eager. Don't capture yet — let the
                         // driver JIT-pick steady-state SASS variants first.
@@ -565,10 +568,7 @@ impl BlockDiffusionDraftHead {
                         run_captured_region()?;
                         let graph = gpu.end_capture(stream)?;
                         if graph.0 != 0 {
-                            tracing::info!(
-                                "DFlash CUDA graph capture: success handle={}",
-                                graph.0
-                            );
+                            tracing::info!("DFlash CUDA graph capture: success handle={}", graph.0);
                             *g = Some(graph);
                             gpu.launch_graph(graph, stream)?;
                         } else {
@@ -585,9 +585,32 @@ impl BlockDiffusionDraftHead {
         }
 
         // ── Step 6: D2H γ × 4 bytes ──
-        let mut host_buf = vec![0u8; self.gamma * 4];
-        gpu.synchronize(stream)?;
-        gpu.copy_d2h(self.scratch.draft_tokens_dev, &mut host_buf)?;
+        //
+        // Phase E.2: async D2H to a pinned host buffer, recorded against a
+        // dedicated event. The host blocks on the event (not the stream)
+        // just before reading the bytes, so any verify-side work the
+        // scheduler queues on the same stream after this point can be
+        // issued concurrently with the copy completing.
+        //
+        // Why pinned: cuMemcpyDtoHAsync against a pageable destination
+        // silently falls back to a synchronous bounce-buffer copy; the
+        // async DMA fast path requires page-locked host memory. nsys
+        // confirmed cuMemcpyDtoHAsync_v2 was 64% of API time post-E.1 —
+        // pinned memory lets the copy actually pipeline.
+        //
+        // Why event vs stream sync: cuStreamSynchronize waits for ALL
+        // work on the stream; cuEventSynchronize waits only for work
+        // recorded up to the event. After Phase E.4 lifts more work
+        // into capture, the gap matters.
+        let pinned_ptr = self
+            .scratch
+            .draft_tokens_host_pinned
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let host_buf: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(pinned_ptr, self.gamma * 4) };
+        gpu.copy_d2h_on_stream(self.scratch.draft_tokens_dev, host_buf, stream)?;
+        gpu.record_event(self.scratch.draft_tokens_event, stream)?;
+        gpu.event_synchronize(self.scratch.draft_tokens_event)?;
         let drafts: Vec<u32> = host_buf
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
