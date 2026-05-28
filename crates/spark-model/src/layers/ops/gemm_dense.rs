@@ -351,3 +351,38 @@ pub fn bf16_to_fp8(
         .arg_u32(total_elements)
         .launch(stream)
 }
+
+/// Quantize a BF16 weight matrix `[N, K]` to FP8 E4M3 `[N, K]` with per-row
+/// f32 scales `[N]`. One CTA per row, 256 threads — parallel absmax
+/// reduction over K, then per-element saturating cast to E4M3.
+///
+/// Called **once at model load time**, never on the decode hot path.
+///
+/// Phase G (DFlash drafter FP8): converts each BF16 q/k/v/o/gate/up/down
+/// weight at load time. Decode path then consumes the resulting
+/// `Fp8DenseWeight` via `fp8_gemm_n128`.
+///
+/// Kernel: `quantize_bf16_to_fp8(input, output, row_scales, N, K)` —
+/// `kernels/gb10/common/dense_gemv_fp8w.cu:36`.
+/// Grid: (N, 1, 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn quantize_bf16_to_fp8(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    output: DevicePtr,
+    row_scales: DevicePtr,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([n, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(output)
+        .arg_ptr(row_scales)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}
