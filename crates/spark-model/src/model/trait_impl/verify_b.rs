@@ -358,7 +358,9 @@ impl TransformerModel {
                         (i as u32, f)
                     })
                     .collect();
-                scored.select_nth_unstable_by(5, |a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                scored.select_nth_unstable_by(5, |a, b| {
+                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                });
                 let mut top5: Vec<(u32, f32)> = scored.into_iter().take(8).collect();
                 top5.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                 top5.truncate(5);
