@@ -172,6 +172,41 @@ impl TransformerModel {
         Ok(min_val)
     }
 
+    /// Broadcast a `(seq_id, cmd)` pair from rank 0 to all ranks.
+    ///
+    /// When `v2` is true, this fires a `seq_id` broadcast immediately before
+    /// the existing `cmd` broadcast. Workers reading the stream pick up the
+    /// preamble via [`Self::ep_recv_seq_and_cmd`] and route the command to
+    /// the matching `SequenceState` slot.
+    ///
+    /// When `v2` is false, the preamble is skipped and the wire shape is
+    /// byte-identical to the legacy single-sequence protocol — head and
+    /// worker built before this change continue to interoperate.
+    ///
+    /// Both ranks must agree on `v2` at startup (e.g. via the same env
+    /// var). Disagreement causes the worker to misread the next u32 as a
+    /// command code and is the kind of misconfiguration we want to fail
+    /// loudly in development — there's no graceful fallback.
+    pub(super) fn ep_broadcast_seq_and_cmd(&self, seq_id: u32, cmd: u32, v2: bool) -> Result<()> {
+        if v2 {
+            self.ep_broadcast_u32(seq_id)?;
+        }
+        self.ep_broadcast_u32(cmd)?;
+        Ok(())
+    }
+
+    /// Receive a `(seq_id, cmd)` pair from rank 0. Worker-side counterpart
+    /// of [`Self::ep_broadcast_seq_and_cmd`].
+    ///
+    /// With `v2` enabled the returned `seq_id` is the slot the head wants
+    /// the worker to dispatch the command into; with `v2` disabled the
+    /// returned `seq_id` is always 0 (the legacy singleton slot).
+    pub(super) fn ep_recv_seq_and_cmd(&self, v2: bool) -> Result<(u32, u32)> {
+        let seq_id = if v2 { self.ep_broadcast_u32(0)? } else { 0 };
+        let cmd = self.ep_broadcast_u32(0)?;
+        Ok((seq_id, cmd))
+    }
+
     /// Broadcast a u32 command from rank 0 to all ranks.
     /// Rank 0 writes `val` to GPU buffer and broadcasts.
     /// Other ranks receive the value and return it.
