@@ -2413,3 +2413,49 @@ SsmSnapshotPool::new(ssm_cache_slots)` verified end-to-end. Correct behavior by 
 No new bugs found. All seven Mistral MLA fixes, all four Nemotron MODEL.toml flags, and
 the SSM two-pool design are confirmed correct at HEAD `b2b51f9`. The branch is clean and
 ready for hardware re-test on GB10 Spark.
+
+---
+
+## 2026-05-28 Eighteenth-pass investigation (spec_ssm HEAD `1885142`)
+
+Independent re-audit after context resumption. Files re-read directly from disk in this
+session: `kv_dtypes.rs`, `cache_skip_mla.rs`, `phase_assemble.rs`, `main.rs`.
+No regressions detected. All fixes confirmed intact at HEAD `1885142`.
+
+### P1 — Mistral Small 4: spot-check of three highest-risk fix sites
+
+**`kv_dtypes.rs` (BF16 dtype path — Fix 3)**
+`build_layer_kv_dtypes` line 20-22: early-returns `vec![Bf16; num_attention_layers]` when
+`kv_dtype == KvCacheDtype::Bf16`. The old empty-vec return that caused `unwrap_or(Fp8)`
+fallback in `phase_assemble.rs` is gone. Comment at lines 6-10 documents the invariant.
+
+**`phase_assemble.rs` (BF16 fallback — companion to Fix 3)**
+Line 124: `layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Bf16)`.
+Defensive fallback is now BF16, not FP8. The comment at lines 119-123 explains that
+`build_layer_kv_dtypes` returns `vec![BF16;N]` for BF16 dtype so `get(i)` always hits;
+the `unwrap_or` is a safety net for the non-BF16 + `high_precision_layers=0` case.
+
+**`cache_skip_mla.rs` (Fixes 1, 2, 6 — core prefill path)**
+- Line 267: `inv_sqrt_d_absorbed = 1.0 / sqrt(kv_lora + mla_rope)` = 1/√320. Correct.
+- Lines 268-273: `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0, ...)` hard-errors if
+  the absorbed kernel is absent, preventing silent fallback to the broken HDIM=256 path.
+- Lines 237-257: `write_count = n.saturating_sub(kv_write_start)`. Cache writes are offset
+  by `kv_write_start * mla_cache_dim` (element) and `kv_write_start * 8` (slot bytes).
+  Prefix-cache hits correctly skip already-populated slots.
+
+### P2 — Nemotron: MODEL.toml confirmed unchanged
+
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` unchanged since prior passes:
+`disable_tool_steering=true`, `tool_call_parser="bare_json"`, `skip_template_tools=true`,
+`thinking_in_tools=false`. No regressions.
+
+### P3 — SSM pool design: unchanged
+
+`SsmStatePool` (decode states, `max_batch_size`) and `SsmSnapshotPool` (prefix cache,
+`ssm_cache_slots`) remain two separate allocations. `--ssm-cache-slots 0` zeros the
+snapshot pool only; use `--max-batch-size 1` to reduce the state pool. No regressions.
+
+### Summary
+
+No new bugs found. All previously identified fixes are confirmed correct at HEAD `1885142`.
+The branch remains ready for hardware re-test on GB10 Spark.
