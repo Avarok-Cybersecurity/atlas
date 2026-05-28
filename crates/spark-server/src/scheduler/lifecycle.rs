@@ -74,7 +74,7 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
         tracing::error!("free_sequence: {e:#}");
     }
     // EP: signal worker to free+realloc its mirrored sequence.
-    if let Err(e) = model.ep_broadcast_cmd(0xFFFFFFF1) {
+    if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, 0xFFFFFFF1) {
         tracing::error!("EP broadcast free+realloc: {e:#}");
     }
 }
@@ -98,7 +98,7 @@ pub fn send_error(model: &dyn Model, a: &mut ActiveSeq, msg: &str) {
     if let Err(e) = model.free_sequence(&mut a.seq) {
         tracing::error!("send_error: free_sequence: {e:#}");
     }
-    if let Err(e) = model.ep_broadcast_cmd(0xFFFFFFF1) {
+    if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, 0xFFFFFFF1) {
         tracing::error!("send_error: ep_broadcast free+realloc: {e:#}");
     }
 }
@@ -155,8 +155,9 @@ pub fn swap_out_sequence(
     let tokens = a.seq.tokens.clone();
 
     // Free GPU resources (KV blocks + SSM slot).
+    let slot_idx = a.seq.slot_idx as u32;
     model.free_sequence(&mut a.seq)?;
-    let _ = model.ep_broadcast_cmd(0xFFFFFFF1);
+    let _ = model.ep_broadcast_cmd_for_seq(slot_idx, 0xFFFFFFF1);
 
     Ok(SwappedSeq {
         tokens,

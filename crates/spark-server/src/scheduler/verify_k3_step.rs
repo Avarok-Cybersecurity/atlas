@@ -14,7 +14,7 @@ pub fn step_verify_k3(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
 
     // EP: broadcast verify K=3 command + 3 tokens so worker runs decode_verify_graphed_k3 in lockstep.
     let tokens_k3 = [a.last_token, drafts[0], drafts[1]];
-    if let Err(e) = model.ep_broadcast_cmd(0xFFFFFFF3) {
+    if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, 0xFFFFFFF3) {
         tracing::error!("EP broadcast verify_k3 cmd: {e:#}");
         a.finished = true;
         return;

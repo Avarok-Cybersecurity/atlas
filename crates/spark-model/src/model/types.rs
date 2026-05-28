@@ -129,6 +129,13 @@ pub struct TransformerModel {
     pub(super) comm: Option<std::sync::Arc<dyn spark_comm::CommBackend>>,
     /// Small GPU buffer for EP token broadcast (4 bytes).
     pub(super) ep_cmd_buf: DevicePtr,
+    /// EP wire-protocol version. When true, the seq_id-preamble protocol
+    /// extension from atlas#99 is active — every command broadcast is
+    /// preceded by a `seq_id` broadcast so the worker can dispatch
+    /// slot-bound work into the right `SequenceState` slot. When false,
+    /// the legacy single-sequence protocol is used. Set at construction
+    /// from `ATLAS_EP_PROTOCOL` env var; both ranks must agree.
+    pub(super) ep_protocol_v2: bool,
     /// Self-speculative decoding mode: draft via layer-skipping (no MTP weights needed).
     pub(super) self_speculative: bool,
     /// Last token index passed to save_hidden_for_mtp (for EP broadcast to rank 1).

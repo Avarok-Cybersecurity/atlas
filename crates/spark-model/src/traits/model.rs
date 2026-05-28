@@ -505,6 +505,28 @@ pub trait Model: Send + Sync {
         Ok(()) // no-op for non-EP models
     }
 
+    /// EP broadcast: send a `(seq_id, cmd)` pair to all worker ranks.
+    ///
+    /// Use this at the *first* broadcast of a logical command sequence
+    /// (e.g. the K=2 verify marker, prefill start, decode token, etc.).
+    /// Follow-up broadcasts within the same command (chunk metadata, more
+    /// tokens, accept/reject result) keep using [`Self::ep_broadcast_cmd`]
+    /// — the worker consumes the preamble once per command and routes
+    /// subsequent reads through the slot it identified.
+    ///
+    /// When [`Self::ep_protocol_v2`] returns false (the default), the
+    /// `seq_id` is ignored on the wire and behaviour matches the legacy
+    /// single-sequence broadcast.
+    fn ep_broadcast_cmd_for_seq(&self, _seq_id: u32, _cmd: u32) -> Result<()> {
+        Ok(()) // no-op for non-EP models
+    }
+
+    /// Returns true if this model's EP comm path is using the v2 protocol
+    /// (slot-aware seq_id preamble). Default false — pre-PR behaviour.
+    fn ep_protocol_v2(&self) -> bool {
+        false
+    }
+
     /// EP bulk broadcast: send an array of u32 tokens to all worker ranks.
     /// Uses a single NCCL broadcast instead of per-token broadcasts.
     fn ep_broadcast_tokens(&self, _tokens: &[u32]) -> Result<Vec<u32>> {
