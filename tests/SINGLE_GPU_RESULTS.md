@@ -2228,3 +2228,91 @@ path checks `parser_suppresses` mirroring `template.rs`. No format-instruction c
 One new bug found and fixed in `mla_prefill_paged_320.cu` (live hot-path kernel, CUDA
 warp-mask UB at partial last Q-len tiles). Fix is identical to the dormant-kernel fix
 from commit `0b89988`. No regressions to other paths. All prior fixes confirmed correct.
+
+---
+
+## 2026-05-28 Sixteenth-pass investigation (spec_ssm HEAD `ebe5b36`)
+
+Full independent re-audit of all three priorities at branch HEAD `ebe5b36`. No new bugs
+found. All prior fixes re-verified correct. This pass constitutes a clean-state
+confirmation that the branch is ready for hardware re-test.
+
+### P1 — Mistral Small 4: all seven fixes confirmed
+
+All seven Mistral MLA fixes verified present and correct at HEAD `ebe5b36`:
+
+| # | Fix | File | Commit |
+|---|-----|------|--------|
+| 1 | `mla_fused_prefill` kernel + `anyhow::ensure!` guard | `cache_skip_mla.rs` | prior |
+| 2 | `inv_sqrt_d_absorbed = 1/sqrt(320)` (was `1/sqrt(128)`) | all three MLA paths | prior |
+| 3 | `unwrap_or(Bf16)` + `vec![BF16; N]` early-return | `phase_assemble.rs`, `kv_dtypes.rs` | prior |
+| 4 | `mla_prefill_paged_320` absorbed paged kernel for multi-chunk | `paged_mla.rs` | prior |
+| 5 | `smem_dot[8]` moved to function scope (avoid smem aliasing) | `mla_fused_prefill.cu` | prior |
+| 6 | `kv_write_start` respected in cache-skip MLA KV write | `cache_skip_mla.rs` | `e7de0f4` |
+| 7 | Half-warp masks in paged and dormant MLA prefill kernels | `mla_prefill_paged_320.cu`, `mla_prefill_attn.cu` | `ebe5b36`, `0b89988` |
+
+#### Additional verifications
+
+**`mla_fused_prefill.cu` kernel audit**: The single-chunk cache-skip path (all 256 threads
+always active, grid `(nq, seq_len, 1)`) has no warp-sync UB. Full-warp mask `0xFFFFFFFF`
+is correct here because no thread exits early within a block. Causal masking
+(`kv_end = min(q_pos + 1, seq_len)`) is correct. Shared memory layout: `smem_q[320]`
+(1280 B) + `smem_dot[8]` (32 B, at function scope) + `smem_latent[256]` (1024 B) = 2336 B
+total, within limits.
+
+**`--kv-high-precision-layers auto` + `--kv-cache-dtype bf16` interaction**: Verified no
+FP8/BF16 mixing. `build_layer_kv_dtypes(BF16, N, 2)` fires the early-return at line 20–22
+of `kv_dtypes.rs` → returns `vec![BF16; N]` for all 36 MLA layers. `"auto"` → `kv_hp_layers=2`
+is a no-op when the base dtype is already BF16.
+
+**Dead kernel note**: `prefill_attn_mla320_k` (→ `mla_prefill_attn_320`) is loaded by
+`init.rs` but never dispatched by any Rust caller; the live single-chunk path uses
+`mla_fused_prefill_k` and the live multi-chunk path uses `mla_prefill_paged_k`. The dormant
+kernel received the half-warp-mask fix in `0b89988` for correctness hygiene.
+
+**YaRN confirmed non-issue**: `yarn.rs` was audited and confirmed correct throughout.
+`find_correction_dim` operates in dimension-index space (pairs 0–31 for Mistral's
+rope_dim=64). For beta_fast=32, beta_slow=1, original_max_pos=8192, theta=1e7: low≈7,
+high≈15. Ramp `(j - low) / (high - low)` blends interpolated and extrapolated freqs
+correctly. The original YaRN misdiagnosis in the first-pass entry is superseded by
+subsequent passes.
+
+### P2 — Nemotron Super 120B tool calling: confirmed fixed
+
+All four MODEL.toml flags at `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` confirmed
+present:
+
+```toml
+thinking_in_tools    = false   # skip <think> block when tools active
+disable_tool_steering = true   # suppress <tool_call> prefix (caused emission loop)
+tool_call_parser     = "bare_json"  # model's trained distribution
+skip_template_tools  = true    # prevent contradictory XML from jinja template
+```
+
+`BareJsonParser::suppresses_jinja_tools() → true` provides parser-level protection
+independently of MODEL.toml: `template.rs` passes `jinja_tools = None` for bare-json models
+regardless of config. `count_tokens` Anthropic path mirrors `template.rs` (commit `2993894`
+fixed the prior asymmetry). No format-instruction conflict remains.
+
+### P3 — SSM cache slots: two-pool design confirmed
+
+Two independent GPU memory pools:
+
+- **`SsmStatePool`** — active inference states, sized by `--max-batch-size` (default 8).
+  Allocates `num_ssm_layers × (max_batch_size + 1)` slots. For Qwen3.5-122B: ≈1206 MB.
+  `--ssm-cache-slots 0` has **no effect** on this pool.
+- **`SsmSnapshotPool`** — prefix-cache snapshots, sized by `--ssm-cache-slots`.
+  `--ssm-cache-slots 0` correctly allocates zero GPU memory.
+
+CLI propagation chain re-verified end-to-end:
+`cli.rs` → `serve_phases/build.rs:71` → `factory/build.rs:41,373` →
+`TransformerModel::new(ssm_cache_slots)` → `SsmSnapshotPool::new(ssm_cache_slots)`.
+
+To reduce `SsmStatePool` memory, use `--max-batch-size 1` (reduces to ≈151 MB).
+This is correct behavior; the documentation in prior passes stands.
+
+### Summary
+
+No new bugs found. All seven Mistral MLA fixes, all four Nemotron tool-call fixes, and the
+SSM two-pool design are confirmed correct at HEAD `ebe5b36`. Branch is ready for hardware
+re-test on GB10 Spark.
