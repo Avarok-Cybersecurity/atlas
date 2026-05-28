@@ -521,6 +521,13 @@ impl BlockDiffusionDraftHead {
                 self.rms_norm_eps,
                 stream,
             )?;
+            // Phase G: lm_head GEMM. Largest GEMM in the drafter
+            // (γ × vocab=248320). The small-M FP8 kernel attempt
+            // (fp8_gemm_t_row_scaled_m16) produced garbage output — 0%
+            // accept rate. Bug is in the kernel, not the swap. Reverting
+            // to BF16 dense_gemm for lm_head; the per-layer FP8 GEMMs
+            // still ship and buy ~12% tok/s. See design doc §16.11 for
+            // the kernel debugging plan when we resume.
             ops::dense_gemm(
                 gpu,
                 self.kernels.dense_gemm,

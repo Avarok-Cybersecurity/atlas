@@ -80,6 +80,14 @@ pub struct DflashKernels {
     /// `forward_block_layer_pre_attn` / `_post_attn` when
     /// `self.quant == DflashQuantization::Fp8Weights`.
     pub fp8_gemm_n128_row_scaled: KernelHandle,
+    /// Phase G — Row-scaled BF16 × FP8 → BF16 GEMV (M=1) for the
+    /// lm_head fall-back. At γ=16 vs vocab=248320 the row-scaled GEMM
+    /// wastes 75% of its M_TILE; the GEMV in a γ-loop is faster.
+    pub dense_gemv_fp8w: KernelHandle,
+    /// Phase G — Small-M (M≤16) row-scaled FP8 GEMM. Drop-in replacement
+    /// for `fp8_gemm_n128_row_scaled` when M=γ=16. Single warp per CTA,
+    /// no wasted M_TILE rows. Used by the lm_head GEMM.
+    pub fp8_gemm_n128_row_scaled_m16: KernelHandle,
 }
 
 /// Per-step scratch buffers for the γ-block forward.
@@ -294,6 +302,13 @@ pub struct BlockDiffusionDraftHead {
     /// Target's lm_head GPU pointer. Used for the drafter's per-position
     /// argmax over `[γ, vocab]` logits.
     pub lm_head_shared: DevicePtr,
+    /// Phase G — optional FP8 mirror of the shared lm_head weight,
+    /// `[vocab_size, hidden_size]` FP8 E4M3 + per-row f32 scales.
+    /// Built at model load when `ATLAS_DFLASH_DRAFTER_FP8=1`. Owned by
+    /// the drafter (separate allocation from the shared BF16 ptr) since
+    /// it must not mutate the target model's lm_head. `None` on the
+    /// BF16 path.
+    pub lm_head_shared_fp8: Option<crate::weight_map::Fp8DenseWeight>,
 
     // === Weights from the drafter checkpoint ===
     /// Hidden-norm applied to the projected target context before mixing
