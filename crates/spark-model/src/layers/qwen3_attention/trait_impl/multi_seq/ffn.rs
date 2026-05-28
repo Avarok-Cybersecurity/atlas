@@ -109,30 +109,42 @@ impl Qwen3AttentionLayer {
             } else {
                 2usize
             };
+            // Phase A: per-token residual_add + post-attention RMS norm.
+            // Lays out `norm_output[0..n]` as a contiguous [N, h] MoE input.
             for i in 0..n {
                 let hidden_i = hidden.offset(i * h * residual_elem);
                 let o_out_i = o_out.offset(i * h * bf16); // BF16 attn output
                 let residual_i = residual.offset(i * h * residual_elem);
-                let normed2 = fwd.buffers.norm_output().offset(i * h * bf16);
+                let normed2_i = fwd.buffers.norm_output().offset(i * h * bf16);
                 ops::residual_add_rms_norm(
                     fwd.gpu,
                     self.residual_add_rms_norm_k,
                     hidden_i,
                     o_out_i,
                     &self.post_attn_norm,
-                    normed2,
+                    normed2_i,
                     residual_i,
                     1,
                     h as u32,
                     eps,
                     stream,
                 )?;
-                let moe_out = self.ffn.forward(normed2, fwd, stream)?;
+            }
+            // Phase B: BATCHED MoE via grouped-GEMM (forward_prefill path).
+            // See trait_decode_multi_seq.rs for the rationale — single
+            // grouped-GEMM per MoE sublayer instead of N × top_k per-token
+            // GEMVs.
+            let normed_base = fwd.buffers.norm_output();
+            self.ffn.forward_prefill(normed_base, n, fwd, stream)?;
+            // Phase C: per-token residual_add. `hidden[i] += moe_output[i]`.
+            for i in 0..n {
+                let hidden_i = hidden.offset(i * h * residual_elem);
+                let moe_out_i = fwd.buffers.moe_output().offset(i * h * bf16);
                 ops::residual_add(
                     fwd.gpu,
                     self.residual_add_k,
                     hidden_i,
-                    moe_out,
+                    moe_out_i,
                     h as u32,
                     stream,
                 )?;

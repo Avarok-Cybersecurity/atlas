@@ -336,30 +336,55 @@ impl Qwen3SsmLayer {
         } else {
             2usize
         };
+        // Phase A: per-token residual_add + post-attention RMS norm. Each
+        // iteration writes `norm_output[i]` from `hidden[i]` + `ssm_out_safe[i]`
+        // + residual[i]. After the loop, `norm_output[0..n]` holds the N MoE
+        // inputs as a contiguous [N, h] BF16 tensor.
         for i in 0..n {
             let hidden_i = hidden.offset(i * h * residual_elem);
             let ssm_out_i = ssm_out_safe.offset(i * h * bf16);
             let residual_i = residual.offset(i * h * residual_elem);
-            let normed2 = ctx.buffers.norm_output().offset(i * h * bf16);
+            let normed2_i = ctx.buffers.norm_output().offset(i * h * bf16);
             ops::residual_add_rms_norm(
                 ctx.gpu,
                 self.residual_add_rms_norm_k,
                 hidden_i,
                 ssm_out_i,
                 &self.post_attn_norm,
-                normed2,
+                normed2_i,
                 residual_i,
                 1,
                 h as u32,
                 eps,
                 stream,
             )?;
-            let moe_out = self.ffn.forward(normed2, ctx, stream)?;
+        }
+
+        // Phase B: BATCHED MoE via the grouped-GEMM path (same code the
+        // prefill scheduler uses). `forward_prefill` reads `norm_output`
+        // as [N, h] and writes `moe_output` as [N, h] — one gate GEMM,
+        // one batched topK, one sort, two grouped GEMMs, one unpermute,
+        // vs N × (per-token gate_t + top_k expert GEMVs) in the original
+        // per-token loop. Bandwidth-bound at low N (still per-token-ish
+        // when most experts handle ≤1 token), but kernel-launch count
+        // drops from O(N × top_k) GEMVs to O(1) grouped GEMM per MoE
+        // sublayer.
+        //
+        // Bug-#6 invariant is preserved: SSM outputs were copied to
+        // `ssm_out_safe` before Phase A so MoE clobbering `moe_output`
+        // is safe.
+        let normed_base = ctx.buffers.norm_output();
+        self.ffn.forward_prefill(normed_base, n, ctx, stream)?;
+
+        // Phase C: per-token residual_add. `hidden[i] += moe_output[i]`.
+        for i in 0..n {
+            let hidden_i = hidden.offset(i * h * residual_elem);
+            let moe_out_i = ctx.buffers.moe_output().offset(i * h * bf16);
             ops::residual_add(
                 ctx.gpu,
                 self.residual_add_k,
                 hidden_i,
-                moe_out,
+                moe_out_i,
                 h as u32,
                 stream,
             )?;

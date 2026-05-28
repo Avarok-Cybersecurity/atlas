@@ -195,6 +195,51 @@ impl TransformerModel {
         Ok(())
     }
 
+    /// Wire-protocol shape for v2 batched decode (`0xFFFFFFE0`):
+    ///
+    /// ```text
+    /// preamble seq_id = 0  (ignored — cmd routes the whole batch)
+    /// cmd = 0xFFFFFFE0
+    /// N (u32)
+    /// seq_ids[N]  (one bulk broadcast)
+    /// tokens[N]   (one bulk broadcast)
+    /// ```
+    ///
+    /// The matched receive on the worker is `ep_worker_decode_batch` in
+    /// `ep_worker_step_impl`'s dispatch. Both ranks then call the
+    /// `decode_batch_compute_main` path which runs the existing batched
+    /// `decode_multi_seq` per-layer with N tokens — same per-layer NCCL
+    /// allreduce sequence on both ranks, comm-stream order matches.
+    ///
+    /// Caller must hold `self.comm.is_some()` (no-op on world_size=1) and
+    /// `self.ep_protocol_v2 == true` (without the preamble, the worker
+    /// would mis-parse the seq_id u32 as a cmd code). Both conditions are
+    /// guaranteed at the only caller — `decode_batch_dispatch`'s EP
+    /// branch — but asserted defensively here.
+    pub(super) fn ep_broadcast_decode_batch_dispatch(
+        &self,
+        seq_ids: &[u32],
+        tokens: &[u32],
+    ) -> Result<()> {
+        if !(self.comm.is_some() && self.config.ep_world_size > 1) {
+            return Ok(());
+        }
+        debug_assert!(
+            self.ep_protocol_v2,
+            "ep_broadcast_decode_batch_dispatch called without ATLAS_EP_PROTOCOL=v2"
+        );
+        debug_assert_eq!(
+            seq_ids.len(),
+            tokens.len(),
+            "seq_ids and tokens length mismatch"
+        );
+        self.ep_broadcast_seq_and_cmd(0, 0xFFFFFFE0, true)?;
+        self.ep_broadcast_u32(seq_ids.len() as u32)?;
+        self.ep_broadcast_tokens(seq_ids)?;
+        self.ep_broadcast_tokens(tokens)?;
+        Ok(())
+    }
+
     /// Receive a `(seq_id, cmd)` pair from rank 0. Worker-side counterpart
     /// of [`Self::ep_broadcast_seq_and_cmd`].
     ///
@@ -253,6 +298,14 @@ impl TransformerModel {
         // Shutdown applies to the whole worker — seq_id is ignored.
         if cmd == 0xFFFFFFFF {
             return Ok(false);
+        }
+
+        // Batched-decode (`0xFFFFFFE0`): the preamble seq_id is sentinel-0;
+        // the real per-token routing lives in the seq_ids[N] payload that
+        // follows. Hand off to the batched handler which reads N + seq_ids
+        // + tokens off the wire and dispatches the matched compute.
+        if cmd == 0xFFFFFFE0 {
+            return self.ep_worker_decode_batch(slots);
         }
 
         let slot_idx = seq_id as usize;
@@ -412,6 +465,71 @@ impl TransformerModel {
             }
         }
 
+        Ok(true)
+    }
+
+    /// Worker-side handler for the batched-decode protocol (`0xFFFFFFE0`).
+    ///
+    /// Reads `N` (u32), `seq_ids[N]` (bulk broadcast), and `tokens[N]`
+    /// (bulk broadcast) off the wire — matching what the head wrote in
+    /// `ep_broadcast_decode_batch_dispatch`. Then builds an in-order
+    /// `Vec<&mut SequenceState>` from the addressed slots and hands off
+    /// to the shared compute path. The compute does the same per-layer
+    /// `decode_multi_seq` the non-EP main batched path runs, with the
+    /// NCCL allreduces inside each layer matching the head's submission
+    /// order on the comm.
+    ///
+    /// Validates seq_ids up-front (bounds + duplicates) so a malformed
+    /// payload from a buggy head fails before touching slot state.
+    fn ep_worker_decode_batch(&self, slots: &mut [Option<SequenceState>]) -> Result<bool> {
+        let n = self.ep_broadcast_u32(0)? as usize;
+        let seq_ids = self.ep_broadcast_tokens(&vec![0u32; n])?;
+        let tokens = self.ep_broadcast_tokens(&vec![0u32; n])?;
+
+        // Validate up front so we fail before touching slot state.
+        let mut seen = std::collections::HashSet::new();
+        for &id in &seq_ids {
+            let idx = id as usize;
+            if idx >= slots.len() {
+                anyhow::bail!(
+                    "ep_worker_decode_batch: seq_id {} exceeds slot capacity {}",
+                    id,
+                    slots.len(),
+                );
+            }
+            if !seen.insert(id) {
+                anyhow::bail!("ep_worker_decode_batch: duplicate seq_id {} in batch", id);
+            }
+        }
+
+        // Drain populated slots into a (idx, ref) Vec we can index by
+        // position with `swap_remove`. The borrow checker won't let us
+        // index `slots[seq_ids[i]]` in a loop because each `&mut` is
+        // distinct but the indexer can't prove non-overlap.
+        let mut slot_refs: Vec<(usize, &mut SequenceState)> = slots
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(i, opt)| opt.as_mut().map(|s| (i, s)))
+            .collect();
+
+        // Order the refs to match the head's seq_ids order so the
+        // compute path processes tokens in the same batch index as the
+        // head — critical for KV-cache row alignment per slot.
+        let mut refs: Vec<&mut SequenceState> = Vec::with_capacity(n);
+        for &id in &seq_ids {
+            let idx = id as usize;
+            let pos = slot_refs
+                .iter()
+                .position(|(i, _)| *i == idx)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("ep_worker_decode_batch: slot {} not allocated", idx)
+                })?;
+            let (_, seq) = slot_refs.swap_remove(pos);
+            refs.push(seq);
+        }
+
+        let stream = self.gpu.default_stream();
+        self.decode_batch_compute_main(&tokens, &mut refs, stream)?;
         Ok(true)
     }
 }

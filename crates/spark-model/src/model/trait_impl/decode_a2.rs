@@ -43,79 +43,29 @@ impl TransformerModel {
             return Ok(self.decode_logits_ptr());
         }
 
-        // EP mode: interleave per-seq broadcast + decode + logits stage.
+        // EP mode + n > 1: one batched forward pass per rank.
         //
-        // Two things have to be true at once for multi-seq EP to work:
+        // Both ranks must call the same `decode_multi_seq` per-layer with
+        // the same N tokens so the per-token NCCL all_reduces inside the
+        // MoE forward match in shape and submission order across ranks.
+        // The head announces the batch up-front via the `0xFFFFFFE0`
+        // protocol primitive (seq_ids[N] + tokens[N] in one shot), then
+        // both ranks run `decode_batch_compute_main` — the worker reaches
+        // it via the matching handler in `ep_worker_step_impl`.
         //
-        // 1. The per-layer NCCL all_reduces inside decode()'s forward pass
-        //    must align in size and ordering with the worker's matching
-        //    all_reduces. The worker runs one decode() per slot in its
-        //    ep_worker_step loop, so the head must also run one decode()
-        //    per seq — never a batched decode_multi_seq under EP. Same
-        //    `h * elem` allreduce shape per layer per seq.
+        // Comm-stream op order on both ranks per step:
+        //   B(0) B(0xFFFFFFE0) B(N) B*N(seq_ids) B*N(tokens)
+        //   then per layer: per-token AR*N (forward_batched's inner loop)
         //
-        // 2. The order of ops submitted to the NCCL comm must match
-        //    between ranks. Worker submits per seq: broadcast(preamble),
-        //    then N_layer × all_reduce(decode forward). If the head
-        //    broadcasts all N preambles up-front and then runs N decode()s,
-        //    head's comm-stream op order is [B,B,B,B,AR,AR,...,AR] while
-        //    worker's is [B,AR,...,AR,B,AR,...,AR,...]. NCCL collectives
-        //    match by submission position; mismatched op types at the
-        //    same position deadlock the comm (observed empirically as
-        //    "NCCL broadcast took 51.1s" on the worker followed by
-        //    "seq_id N exceeds slot capacity" reading stale comm data).
-        //
-        // So we broadcast (slot_idx, token) immediately before each
-        // self.decode() inside this loop. Both ranks now submit
-        // [B,AR,...,AR,B,AR,...,AR,...] in the same order.
-        //
-        // The "naive form" (just loop self.decode without staging) also
-        // overwrites the single-row logits buffer on every iteration —
-        // process_decode_logits would sample N rows of the last seq's
-        // logits. Stage each seq's row to host immediately after its
-        // decode() (the buffer is consumed within the scope of one
-        // decode()), then upload the assembled [n, vocab] back before
-        // returning. Same pattern as the MLA per-seq fallback below.
-        //
-        // No suppress_graphs dance: decode_dispatch already disables CUDA
-        // graphs under EP (`use_graphs = self.comm.is_none() && ...` at
-        // decode_a.rs:122), so each iteration runs eagerly and the per-slot
-        // graph cache is never touched in this branch.
+        // Single batched forward amortises weight loads + kernel launches
+        // across N tokens. Per-token all_reduces (forward.rs:445,
+        // forward_batched.rs:269) remain at shape `h * elem` per call —
+        // batching the comm shape would need new MoE kernel work and is
+        // deliberately out of scope here.
         if self.comm.is_some() {
-            // Use the model's own default_stream throughout. decode_dispatch
-            // ignores the caller's `stream` and uses `self.gpu.default_stream()`
-            // for its forward-pass kernels, so issuing the per-seq copy on the
-            // caller's `stream` (often 0) would land it on a different CUDA
-            // stream than the writing GEMV — the copy could read stale logits.
-            // Match the stream decode() actually uses.
-            //
-            // We iterate seqs in reverse so seq 0 is decoded LAST. self.decode()
-            // always writes lm_head output to row 0 of the logits buffer; the
-            // d2d copy below stages each non-zero row into its target position.
-            // Reverse order means seq 0's logits land at row 0 in the final
-            // self.decode() call with no copy needed. For i > 0, the copy
-            // logits[0] -> logits[i] runs immediately after the seq's decode
-            // (still on default_stream so cuda ordering protects against the
-            // next iter's overwrite). Stays on device — no PCIe round-trip.
-            let work_stream = self.gpu.default_stream();
-            let logits = self.decode_logits_ptr();
-            let v = self.config.vocab_size;
-            let elem = if self.decode_logits_fp32() { 4 } else { 2 };
-            let row_bytes = v * elem;
-            for i in (0..n).rev() {
-                self.ep_broadcast_cmd_for_seq(seqs[i].slot_idx as u32, tokens[i])?;
-                self.decode(tokens[i], seqs[i], work_stream)?;
-                if i > 0 {
-                    self.gpu.copy_d2d_async(
-                        logits,
-                        logits.offset(i * row_bytes),
-                        row_bytes,
-                        work_stream,
-                    )?;
-                }
-            }
-            self.gpu.synchronize(work_stream)?;
-            return Ok(logits);
+            let seq_ids: Vec<u32> = seqs.iter().map(|s| s.slot_idx as u32).collect();
+            self.ep_broadcast_decode_batch_dispatch(&seq_ids, tokens)?;
+            return self.decode_batch_compute_main(tokens, seqs, stream);
         }
 
         // MLA models: as of issue #84 the batched `decode_multi_seq` path
@@ -172,6 +122,25 @@ impl TransformerModel {
             return Ok(logits);
         }
 
+        self.decode_batch_compute_main(tokens, seqs, stream)
+    }
+
+    /// Shared batched-compute path used by both the head's EP branch and
+    /// the worker's `0xFFFFFFE0` handler. Contains the per-step embed +
+    /// KV-block alloc + metadata upload + per-layer `decode_multi_seq` +
+    /// final norm + per-row LM-head GEMV pipeline. No EP broadcasts here
+    /// — the head emits the protocol primitive before calling this; the
+    /// worker reads the matching payload and dispatches into this from
+    /// `ep_worker_decode_batch`. Both ranks then submit identical
+    /// per-token `comm.all_reduce(h * elem)` ops on every MoE layer in
+    /// the same order.
+    pub(crate) fn decode_batch_compute_main(
+        &self,
+        tokens: &[u32],
+        seqs: &mut [&mut SequenceState],
+        _stream: u64,
+    ) -> Result<DevicePtr> {
+        let n = tokens.len();
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;
