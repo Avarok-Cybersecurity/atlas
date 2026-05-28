@@ -1304,29 +1304,31 @@ If weight FP8 *does* tank acceptance, the failure mode is dynamic-range loss on 
 
 ### 16.4 What we still have to write
 
-**One new kernel: `quantize_bf16_to_fp8_per_row`** (CUDA, ~60 lines).
+**Update 2026-05-28**: a kernel sweep found that **`quantize_bf16_to_fp8` already exists in tree** at `kernels/gb10/common/dense_gemv_fp8w.cu:36`. It does exactly what Phase G needs: BF16 `[N, K]` → FP8 E4M3 `[N, K]` with per-row f32 scales, called once at model load. Comments even say "Called once at model load time (not on the decode hot path)." Registered as kernel `("gemv_fp8w", "quantize_bf16_to_fp8")` and already used by `mtp_head/new.rs:28`.
+
+**No new kernel needed.** The G.1 effort drops from 3 hours to ~1 hour. Remaining work:
+
+**One new Rust op**: `ops::quantize_bf16_to_fp8(...)` in `gemm_dense.rs`, wrapping the existing kernel. ~20 lines, mirrors the `bf16_to_fp8` op pattern.
+
+**One new DenseWeight method**: `DenseWeight::quantize_to_fp8(...)` in `weight_map/quantized.rs`, mirroring `QuantizedWeight::predequant_to_fp8` but for the BF16 source path. Allocates the FP8 buffer + per-row scale buffer, calls the op, returns an `Fp8DenseWeight`.
+
+That's it. **Everything else is wiring.**
+
+For reference, the kernel's actual algorithm (matches the spec we'd have written from scratch):
 
 ```
 Input:  bf16_weight [N, K] device buffer
 Output: fp8_weight  [N, K] device buffer
         row_scale   [N]    f32 device buffer
 
-Per-row algorithm:
-  1. Each CTA owns one row (or 8 rows for occupancy at N=5120).
-  2. Warp-cooperative absmax reduction over K BF16 elements.
-  3. row_scale[row] = absmax / 448.0  (FP8 E4M3 max).
-  4. Cast bf16_weight[row, k] / row_scale[row] → FP8 E4M3, store.
+Per-row algorithm (one CTA per row, 256 threads):
+  1. Parallel absmax reduction over K BF16 elements (warp shuffle + smem).
+  2. row_scale[row] = absmax / 448.0  (FP8 E4M3 max).
+  3. inv_scale broadcast via shared memory.
+  4. Each thread quantizes K/256 elements: clamp to [-448, 448], cast to E4M3, store.
 
-Grid: (ceil(N/8), 1, 1)  Block: (256, 1, 1) — 8 rows per CTA, 32 threads/row.
+Grid: (N, 1, 1)  Block: (256, 1, 1) — one row per CTA.
 ```
-
-This is mechanically identical to the activation `bf16_to_fp8` kernel except (a) operates on a 2-D weight matrix instead of a 1-D activation, (b) emits a per-row scale, (c) one-shot at model load.
-
-**One new Rust op**: `ops::quantize_bf16_to_fp8_per_row(...)` in `gemm_dense.rs`, wrapping the kernel.
-
-**One new DenseWeight method**: `DenseWeight::quantize_to_fp8(...)` in `weight_map/quantized.rs`, mirroring `QuantizedWeight::predequant_to_fp8` but for BF16 source. Returns an `Fp8DenseWeight`.
-
-That's it. **Everything else is wiring.**
 
 ### 16.5 Per-layer subgraph integration
 
@@ -1345,11 +1347,11 @@ For the drafter, **start with BF16 × FP8** because (a) it isolates the risk to 
 
 ### 16.7 Execution plan
 
-**G.1 — write the `quantize_bf16_to_fp8_per_row` kernel + Rust op + DenseWeight method.** 3 hours.
-- Kernel in `kernels/gb10/common/quantize_bf16_to_fp8_per_row.cu`. Register in `kernels/gb10/common/KERNEL.toml`.
-- Rust op `ops::quantize_bf16_to_fp8_per_row` in `gemm_dense.rs`.
-- `DenseWeight::quantize_to_fp8` in `weight_map/quantized.rs`.
-- Smoke test: round-trip a known BF16 weight, check dequant matches within FP8 precision (~3 sig figs).
+**G.1 — write the Rust op + DenseWeight method.** 1 hour.
+- The CUDA kernel already exists: `kernels/gb10/common/dense_gemv_fp8w.cu:36 quantize_bf16_to_fp8`. Registered as `("gemv_fp8w", "quantize_bf16_to_fp8")`. No new CUDA work.
+- Rust op `ops::quantize_bf16_to_fp8` in `gemm_dense.rs` (~20 lines, mirrors `bf16_to_fp8`).
+- `DenseWeight::quantize_to_fp8` in `weight_map/quantized.rs` (mirrors `QuantizedWeight::predequant_to_fp8` shape).
+- Smoke test: round-trip a known BF16 weight via the new path, check dequant matches within FP8 precision (~3 sig figs).
 
 **G.2 — gate Phase G via env var + scratch FP8 buffers.** 1 hour.
 - Add `ATLAS_DFLASH_DRAFTER_FP8` env var (default OFF).
@@ -1374,7 +1376,7 @@ For the drafter, **start with BF16 × FP8** because (a) it isolates the risk to 
   - `fp8_gemm_n128` appears with ~7000 instances (7 GEMMs × 5 layers × ~200 propose calls).
   - `cuMemcpyDtoHAsync_v2` and `cuStreamSynchronize` unchanged — host orchestration didn't move.
 
-**Total: 7.5 hours.** Realistically 1-2 days with debug.
+**Total: 5.5 hours.** Realistically 1 day with debug (down from 7.5 — the kernel already exists in tree).
 
 ### 16.8 Risk register
 
