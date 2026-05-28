@@ -25,6 +25,15 @@
 //! `n_attn`-dependent rows become γ. Saves ~17 launches × 5 layers =
 //! ~85 launches per propose, plus the per-layer MLP runs over γ rows
 //! instead of γ+ctx (~3x fewer FLOPs at ctx=32).
+//!
+//! **Phase F.1 split** (2026-05-28): the monolithic body is now split
+//! into three pieces — `forward_block_layer_pre_attn` (3a–3e),
+//! `forward_block_layer_attention` (3f), and
+//! `forward_block_layer_post_attn` (3g–3k). The legacy
+//! `forward_block_layer_paged` is preserved as a thin orchestrator that
+//! calls all three in sequence; behaviour is identical. F.2 will wrap
+//! the pre and post halves in their own CUDA graph captures, leaving
+//! attention eager (vLLM piecewise pattern).
 
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
@@ -59,12 +68,45 @@ pub(super) struct PagedLayerArgs {
 
 impl BlockDiffusionDraftHead {
     /// γ-only paged-attention per-layer body. See module docstring.
+    ///
+    /// **Phase F.1**: this is now a thin orchestrator that calls the three
+    /// split halves — `forward_block_layer_pre_attn`, the attention kernel
+    /// itself, and `forward_block_layer_post_attn`. Behaviour is identical
+    /// to the pre-F.1 monolithic body; the split exists so Phase F.2 can
+    /// wrap each half in its own CUDA graph capture (mirroring vLLM's
+    /// piecewise pattern — attention stays eager, everything else
+    /// captures).
     pub(super) fn forward_block_layer_paged(
         &self,
         layer: &DflashLayer,
         args: &PagedLayerArgs,
         ctx: &ForwardContext,
     ) -> Result<()> {
+        let (k_pool, v_pool) = self.forward_block_layer_pre_attn(layer, args, ctx)?;
+        self.forward_block_layer_attention(args, ctx, k_pool, v_pool)?;
+        self.forward_block_layer_post_attn(layer, args, ctx)?;
+        Ok(())
+    }
+
+    /// Phase F pre-attention half: input_layernorm → q/k/v_proj →
+    /// q_norm/k_norm → rope → reshape_and_cache (steps 3a–3e).
+    ///
+    /// Returns `(k_pool, v_pool)` so the caller can invoke attention
+    /// without re-locking the KV cache.
+    ///
+    /// **Capture eligibility**: this body is a pure sequence of compute
+    /// kernels reading from stable scratch pointers + the locked
+    /// (k_pool, v_pool) pointers. Safe to capture as a CUDA graph
+    /// EXCEPT when the layer-0 `ATLAS_DFLASH_OPTION_B_DIAG=1` debug
+    /// block runs — that path injects D2H + sync, but it's gated by an
+    /// env var that already disables graph eligibility upstream
+    /// (`forward_block.rs:438`).
+    pub(super) fn forward_block_layer_pre_attn(
+        &self,
+        layer: &DflashLayer,
+        args: &PagedLayerArgs,
+        ctx: &ForwardContext,
+    ) -> Result<(DevicePtr, DevicePtr)> {
         use crate::layers::ops;
 
         let PagedLayerArgs {
@@ -73,16 +115,14 @@ impl BlockDiffusionDraftHead {
             h,
             q_dim,
             kv_dim,
-            inter,
-            inv_sqrt_d,
             slot_mapping_gamma,
             block_table_dev,
             stream,
+            ..
         } = *args;
         let gpu = ctx.gpu;
         let g = self.gamma as u32;
         let kv_len = ctx_count + g;
-        let _ = layer_idx; // reserved for future per-layer debug branches
 
         // 3a. input_layernorm — γ rows.
         ops::rms_norm(
@@ -288,6 +328,35 @@ impl BlockDiffusionDraftHead {
                 }
             }
         }
+        // Suppress unused-var warnings: kv_len is computed for diagnostics
+        // above; the indirect kernel reads it from device memory at entry.
+        let _ = kv_len;
+
+        Ok((k_pool, v_pool))
+    }
+
+    /// Phase F attention boundary: γ-rows paged attention call. Always
+    /// eager (vLLM convention — attention is the natural sync barrier
+    /// between captured subgraphs). `k_pool`/`v_pool` are passed in
+    /// from `forward_block_layer_pre_attn` so we don't re-lock the KV
+    /// cache.
+    pub(super) fn forward_block_layer_attention(
+        &self,
+        args: &PagedLayerArgs,
+        ctx: &ForwardContext,
+        k_pool: DevicePtr,
+        v_pool: DevicePtr,
+    ) -> Result<()> {
+        use crate::layers::ops;
+
+        let PagedLayerArgs {
+            block_table_dev,
+            stream,
+            inv_sqrt_d,
+            ..
+        } = *args;
+        let gpu = ctx.gpu;
+        let g = self.gamma as u32;
 
         // 3f. paged attention — q_len=γ, kv_len=ctx_count+γ.
         //
@@ -314,10 +383,35 @@ impl BlockDiffusionDraftHead {
             inv_sqrt_d,
             stream,
         )?;
-        // Suppress unused-var warning: kv_len and ctx_count are still
-        // computed for slot-mapping and slot-position arithmetic above;
-        // the indirect kernel pulls them from device memory at entry.
-        let _ = (kv_len, ctx_count);
+
+        Ok(())
+    }
+
+    /// Phase F post-attention half: o_proj → residual_add →
+    /// post_attention_layernorm → gate/up_proj → silu_mul → down_proj
+    /// → residual_add (steps 3g–3k).
+    ///
+    /// **Capture eligibility**: pure compute over stable scratch
+    /// pointers + layer weights. No D2H, no sync, no env-var
+    /// branches. Safe to capture unconditionally when the upstream
+    /// `graph_eligible` gate is set.
+    pub(super) fn forward_block_layer_post_attn(
+        &self,
+        layer: &DflashLayer,
+        args: &PagedLayerArgs,
+        ctx: &ForwardContext,
+    ) -> Result<()> {
+        use crate::layers::ops;
+
+        let PagedLayerArgs {
+            h,
+            q_dim,
+            inter,
+            stream,
+            ..
+        } = *args;
+        let gpu = ctx.gpu;
+        let g = self.gamma as u32;
 
         // 3g. o_proj — γ rows.
         ops::dense_gemm(
