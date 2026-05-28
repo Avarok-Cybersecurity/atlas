@@ -429,8 +429,9 @@ impl BlockDiffusionDraftHead {
             rotary_dim,
             rms_norm_eps: 1e-6,
             ctx_window,
-            // Phase D: graph state — empty until the first capture lands.
-            propose_graph: parking_lot::Mutex::new(None),
+            // Phase F: per-subgraph graph state — empty until the first
+            // capture pass lands. Layout: [pre_0, post_0, ..., tail].
+            propose_graphs: parking_lot::Mutex::new(None),
             suppress_graphs: std::sync::atomic::AtomicBool::new(false),
             propose_warmup_count: std::sync::atomic::AtomicUsize::new(0),
             quant: DflashQuantization::Bf16,

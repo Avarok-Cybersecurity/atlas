@@ -333,12 +333,21 @@ pub struct BlockDiffusionDraftHead {
     /// (degraded quality, ablation only).
     pub ctx_window: usize,
 
-    // === Phase D (CUDA graph capture) ===
-    /// Single captured forward_block graph. `None` until warm-up completes
-    /// and the first capture lands. Mutex guards both lookup and capture so
-    /// concurrent propose calls can't race a half-built graph. `GraphHandle(0)`
-    /// is the "empty capture" sentinel and is treated as a fallback to eager.
-    pub propose_graph: Mutex<Option<spark_runtime::gpu::GraphHandle>>,
+    // === Phase D (CUDA graph capture) → Phase F (piecewise) ===
+    /// Per-subgraph captured handles. `None` until warm-up completes and
+    /// the first capture pass lands; on the capture pass we fill this
+    /// `Vec` with `2 × num_layers + 1` handles laid out as
+    /// `[pre_0, post_0, pre_1, post_1, ..., pre_{N-1}, post_{N-1}, tail]`.
+    /// Slot index = `layer_idx * 2 + half` for the layer halves
+    /// (half = 0 for pre_attn, 1 for post_attn) and `num_layers * 2` for
+    /// the tail (final norm + lm_head + argmax). `GraphHandle(0)` is the
+    /// "empty capture" sentinel and means that slot replays eager.
+    ///
+    /// Phase F.2 (2026-05-28): replaces the single full-region capture
+    /// with one capture per subgraph. Attention is NEVER captured —
+    /// it's the natural sync barrier between captured subgraphs
+    /// (vLLM piecewise convention). See design doc §15.
+    pub propose_graphs: Mutex<Option<Vec<spark_runtime::gpu::GraphHandle>>>,
     /// When set, all `forward_block` calls run eagerly. Mirrors target-model
     /// `TransformerModel::suppress_graphs` so external code can disable
     /// graphs at runtime (e.g. while calibrating FP8 KV).
@@ -347,7 +356,9 @@ pub struct BlockDiffusionDraftHead {
     /// Default warmup target is 2 (override via `ATLAS_DFLASH_PROPOSE_WARMUP_N`).
     /// Two eager passes warm the PTX→SASS cache, ramp GB10 clocks to steady
     /// state, and bring hot weight tiles into L2 before the capture freezes
-    /// SASS variants the driver picks.
+    /// SASS variants the driver picks. Shared across all subgraphs — every
+    /// subgraph captures on the same propose call after the warmup target
+    /// is hit.
     pub propose_warmup_count: std::sync::atomic::AtomicUsize,
 
     // Quantization mode (BF16 only for Phase 1).
