@@ -212,18 +212,28 @@ pub(crate) fn maybe_run_ep_worker(
             }
         }
         // Slots vec sized to match the head's scheduler `max_batch_size`.
-        // Pre-allocate slot 0 so v1 (legacy single-sequence) protocol — which
-        // doesn't issue an explicit alloc command before its first decode —
-        // keeps working without changes on the head side. v2 alloc commands
-        // for any slot (including 0) will free + re-alloc through the
-        // ep_worker_step dispatch.
+        // Pre-allocate every slot. The head only emits `0xFFFFFFF1`
+        // (free+realloc) on lifecycle events — sequence finish/error —
+        // not on first use, so a fresh `prefill_a_step` for slot N
+        // arrives as `0xFFFFFFF0` with no prior alloc broadcast. Under v1
+        // (max_batch_size=1) this is just slot 0, matching the legacy
+        // behavior. Under v2 (max_batch_size>1) every slot must be
+        // populated up front for the same reason.
+        //
+        // Both ranks' SSM pools start with the same free-list ordering
+        // (see ssm_pool.rs: `(0..max_slots).rev().collect()` + `pop()`),
+        // so pre-allocating in `0..max_batch_size` order on the worker
+        // means `slots[i].slot_idx == i` — matching the slot ids the
+        // head's `alloc_sequence` returns for its Nth claim.
         let mut slots: Vec<Option<spark_model::traits::SequenceState>> =
             (0..max_batch_size).map(|_| None).collect();
-        slots[0] = Some(
-            model_owned
-                .alloc_sequence()
-                .expect("Failed to allocate EP worker sequence"),
-        );
+        for slot in slots.iter_mut() {
+            *slot = Some(
+                model_owned
+                    .alloc_sequence()
+                    .expect("Failed to allocate EP worker sequence"),
+            );
+        }
         tracing::info!(
             "EP worker ready (rank {rank}, {} slots), waiting for commands",
             slots.len()
