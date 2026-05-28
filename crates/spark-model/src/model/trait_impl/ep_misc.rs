@@ -28,8 +28,11 @@ use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
 impl TransformerModel {
-    pub(super) fn ep_worker_step_dispatch(&self, seq: &mut SequenceState) -> Result<bool> {
-        self.ep_worker_step_impl(seq)
+    pub(super) fn ep_worker_step_dispatch(
+        &self,
+        slots: &mut [Option<SequenceState>],
+    ) -> Result<bool> {
+        self.ep_worker_step_impl(slots)
     }
 
     pub(super) fn is_ep_dispatch(&self) -> bool {

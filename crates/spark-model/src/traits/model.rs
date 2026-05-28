@@ -444,11 +444,16 @@ pub trait Model: Send + Sync {
         Ok(())
     }
 
-    /// EP worker step: receive a command from rank 0 and execute it.
+    /// EP worker step: receive a (seq_id, cmd) preamble from rank 0 and
+    /// execute the command in the addressed slot.
     ///
     /// Returns false when the worker should shut down.
     /// Only valid on rank > 0 with EP enabled.
-    fn ep_worker_step(&self, _seq: &mut SequenceState) -> Result<bool> {
+    ///
+    /// `slots` must be sized to `args.max_batch_size` (same as the head's
+    /// scheduler `active` capacity); commands with `seq_id >= slots.len()`
+    /// fail loudly rather than corrupt unrelated state.
+    fn ep_worker_step(&self, _slots: &mut [Option<SequenceState>]) -> Result<bool> {
         Ok(true) // no-op for non-EP models
     }
 

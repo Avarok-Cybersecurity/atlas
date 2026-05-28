@@ -341,8 +341,8 @@ impl Model for TransformerModel {
     ) -> Result<()> {
         self.commit_verify_state_async_dispatch(seq, num_accepted, k)
     }
-    fn ep_worker_step(&self, seq: &mut SequenceState) -> Result<bool> {
-        self.ep_worker_step_dispatch(seq)
+    fn ep_worker_step(&self, slots: &mut [Option<SequenceState>]) -> Result<bool> {
+        self.ep_worker_step_dispatch(slots)
     }
     fn is_ep(&self) -> bool {
         self.is_ep_dispatch()

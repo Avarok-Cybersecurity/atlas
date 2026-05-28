@@ -229,28 +229,86 @@ impl TransformerModel {
         }
     }
 
-    /// EP worker step: receive a command from rank 0 and execute it.
+    /// EP worker step: receive a (seq_id, cmd) preamble from rank 0 and
+    /// execute the command in the addressed slot.
     ///
     /// Returns false when the worker should shut down.
-    /// Protocol: rank 0 broadcasts u32 commands before each model operation:
-    /// - 0..0xFFFFFFF0: token ID → decode
-    /// - 0xFFFFFFF0: prefill start → next broadcast = length, then length tokens
-    /// - 0xFFFFFFF1: free+realloc sequence
-    /// - 0xFFFFFFF2: verify K=2 → next 2 broadcasts = tokens, then accept/reject
-    /// - 0xFFFFFFF3: verify K=3 → next 3 broadcasts = tokens, then num_accepted
-    /// - 0xFFFFFFF4: verify K=4 → next 4 broadcasts = tokens, then num_accepted
-    /// - 0xFFFFFFFF: shutdown
-    pub(super) fn ep_worker_step_impl(&self, seq: &mut SequenceState) -> Result<bool> {
-        let cmd = self.ep_broadcast_u32(0)?;
+    ///
+    /// Protocol (`ATLAS_EP_PROTOCOL=v2`): rank 0 broadcasts the slot
+    /// identifier first (worker uses it to pick the right `SequenceState`
+    /// from `slots`), then the command code, then any per-command follow-on
+    /// data. With v1 (the default) the preamble is skipped and every
+    /// command targets slot 0 — equivalent to the singleton path this
+    /// function originally implemented.
+    ///
+    /// Command codes:
+    /// - 0..0xFFFFFFEF: token ID → decode in the addressed slot
+    /// - 0xFFFFFFF0: prefill start → chunk_len, chunk_start, full_len, then full_len tokens
+    /// - 0xFFFFFFF1: alloc slot (frees any prior occupant first, then re-allocates)
+    /// - 0xFFFFFFF2/3/4: verify K=2/3/4 → K tokens, then accept/num_accepted
+    /// - 0xFFFFFFFF: shutdown (seq_id is ignored; applies to the whole worker)
+    pub(super) fn ep_worker_step_impl(&self, slots: &mut [Option<SequenceState>]) -> Result<bool> {
+        let (seq_id, cmd) = self.ep_recv_seq_and_cmd(self.ep_protocol_v2)?;
+
+        // Shutdown applies to the whole worker — seq_id is ignored.
+        if cmd == 0xFFFFFFFF {
+            return Ok(false);
+        }
+
+        let slot_idx = seq_id as usize;
+        if slot_idx >= slots.len() {
+            anyhow::bail!(
+                "ep_worker_step: seq_id {} exceeds slot capacity {} \
+                 (head and worker likely disagree on max_batch_size)",
+                seq_id,
+                slots.len(),
+            );
+        }
+
+        // `alloc-slot` (0xFFFFFFF1): replace the slot's sequence wholesale.
+        // Frees the prior occupant if any, then allocates a fresh one. The
+        // SSM-pool slot the new sequence claims may or may not equal
+        // slot_idx — head and worker stay aligned because both ranks call
+        // `claim_slot()` from a free-list pop in matched order. Defensive
+        // bail if they ever diverge so we fail fast rather than corrupt KV.
+        if cmd == 0xFFFFFFF1 {
+            if let Some(mut old) = slots[slot_idx].take() {
+                self.free_sequence(&mut old)?;
+            }
+            let new_seq = self.alloc_sequence()?;
+            if self.ep_protocol_v2 && new_seq.slot_idx != slot_idx {
+                anyhow::bail!(
+                    "ep_worker_step: SSM-pool slot {} doesn't match head's seq_id {} \
+                     after alloc — claim_slot ordering invariant violated",
+                    new_seq.slot_idx,
+                    slot_idx,
+                );
+            }
+            slots[slot_idx] = Some(new_seq);
+            return Ok(true);
+        }
+
+        // All other commands operate on an already-allocated slot.
+        let seq = slots[slot_idx].as_mut().ok_or_else(|| {
+            anyhow::anyhow!(
+                "ep_worker_step: cmd {:#x} arrived for unallocated slot {} \
+                 — head dispatched without a prior alloc",
+                cmd,
+                slot_idx,
+            )
+        })?;
+
+        self.ep_worker_dispatch_cmd(cmd, seq)
+    }
+
+    /// Per-command dispatch for [`Self::ep_worker_step_impl`]. The
+    /// (seq_id, cmd) preamble + slot lookup + shutdown + alloc are already
+    /// handled by the caller; this routine assumes `seq` is the right
+    /// slot's allocated `SequenceState`.
+    fn ep_worker_dispatch_cmd(&self, cmd: u32, seq: &mut SequenceState) -> Result<bool> {
         let stream = self.gpu.default_stream();
 
         match cmd {
-            0xFFFFFFFF => return Ok(false), // shutdown
-            0xFFFFFFF1 => {
-                // Free and realloc sequence
-                self.free_sequence(seq)?;
-                *seq = self.alloc_sequence()?;
-            }
             0xFFFFFFF0 => {
                 // Prefill chunk: receive chunk_len, chunk_start, full prompt length,
                 // then ALL prompt tokens via bulk broadcast (single NCCL op).
