@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5); 2026-05-26 (ninth-pass: cross-branch main-vs-spec_ssm audit, all fixes confirmed); 2026-05-27 (eleventh-pass: warp-reduction correctness proof for mla_prefill_paged_320.cu, all fixes confirmed); 2026-05-27 (twelfth-pass: full P1/P2/P3 deep audit + kv_write_start MLA cache bug fixed); 2026-05-29 (twentieth-pass: all P1/P2/P3 fixes re-verified at 617bc6e); 2026-05-29 (twenty-first-pass: independent cold-start re-investigation, all P1/P2/P3 fixes confirmed); 2026-05-29 (twenty-third-pass: independent cold-start re-investigation, all P1/P2/P3 fixes confirmed at 2d6e810); 2026-05-29 (twenty-fourth-pass: git-history-traced root-cause audit, P1 root cause corrected to BF16 dispatch bug)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5); 2026-05-26 (ninth-pass: cross-branch main-vs-spec_ssm audit, all fixes confirmed); 2026-05-27 (eleventh-pass: warp-reduction correctness proof for mla_prefill_paged_320.cu, all fixes confirmed); 2026-05-27 (twelfth-pass: full P1/P2/P3 deep audit + kv_write_start MLA cache bug fixed); 2026-05-29 (twentieth-pass: all P1/P2/P3 fixes re-verified at 617bc6e); 2026-05-29 (twenty-first-pass: independent cold-start re-investigation, all P1/P2/P3 fixes confirmed); 2026-05-29 (twenty-third-pass: independent cold-start re-investigation, all P1/P2/P3 fixes confirmed at 2d6e810); 2026-05-29 (twenty-fourth-pass: git-history-traced root-cause audit, P1 root cause corrected to BF16 dispatch bug); 2026-05-29 (twenty-fifth-pass: full independent re-investigation of all three priority bugs, all fixes confirmed at HEAD)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -2909,3 +2909,87 @@ BF16 KV dtype, `kv_write_start` prefix-cache correctness, NVCC `smem_dot` scope,
 half-warp warp-sync masks), two Nemotron tool-call fixes (`skip_template_tools` +
 `BareJsonParser::suppresses_jinja_tools`), and the SSM two-pool design are confirmed correct
 at HEAD `2d6e810` (spec_ssm, 2026-05-29). Branch is ready for hardware re-test on GB10 Spark.
+
+---
+
+## 2026-05-29 Twenty-fifth-pass — Fresh Independent Investigation
+
+Cold-start investigation of all three priority bugs against spec_ssm HEAD.
+All previously filed fixes verified present; no new bugs found.
+
+### P1 — Mistral Small 4 MLA Prefill (confirmed fixed, root cause traced)
+
+Verified by direct code inspection of the six files in the critical path:
+
+**`cache_skip_mla.rs` (non-paged single-chunk path)**:
+- Calls `ops::mla_fused_prefill` with `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)`.
+  An `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0, ...)` guard hard-blocks any fallback to
+  the broken `inferspark_prefill_64` (HDIM=256) kernel for MLA models.
+- `kv_write_start` is correctly propagated via `CacheSkipMlaArgs` and applied to both the
+  `cache_elem_offset` and `slot_byte_offset` for the `write_kv_cache` call — prefix-cache
+  correctness fix (commit `e7de0f4`).
+
+**`mla_fused_prefill.cu` kernel**:
+- Grid `(num_heads, seq_len, 1)`, block `(256, 1, 1)` = 8 full warps. `0xFFFFFFFF` mask is
+  correct (all 32 lanes active in every warp throughout the kernel body; the only early-return
+  `if (head >= nq || q_pos >= seq_len) return` exits the CTA entirely, before any warp sync).
+- Online softmax (`kv_end = min(q_pos + 1, seq_len)`) correct for all sequence lengths.
+- `__shared__ float smem_dot[8]` declared at function scope (before the `kv_pos` loop),
+  preventing NVCC from aliasing it with `smem_q[320]` across loop iterations.
+- No seq_len limit or shared-memory overflow: smem_q(1280B) + smem_dot(32B) + smem_latent(1024B)
+  = 2336 bytes per CTA.
+
+**`mla_prefill_attn.cu` / `mla_prefill_paged_320.cu` (paged multi-chunk path)**:
+- Both fixed with half-warp masks (`0x0000FFFF` / `0xFFFF0000` per CTA row) to eliminate
+  CUDA warp-sync UB when `q_len % tile_height != 0` (commits `0b89988`, `ebe5b36`).
+
+**`phase_assemble.rs` (BF16 dispatch — primary root cause for >1000-token gibberish)**:
+- `let kv_dtype = layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Bf16)` — the
+  `Bf16` fallback (changed from the original `Fp8`) ensures MLA layers never silently receive
+  FP8 KV cache. MLA compressed latent KV vectors have dynamic range far exceeding FP8's ±448
+  E4M3 limit; clipping on every cache write corrupted the KV latents and caused gibberish.
+
+**`kv_dtypes.rs` (hardening layer)**:
+- `if kv_dtype == KvCacheDtype::Bf16 { return vec![KvCacheDtype::Bf16; num_attention_layers]; }`
+  early-return ensures callers always receive a fully populated `vec![Bf16; N]` (never an empty
+  vec) when `--kv-cache-dtype bf16` is used. Eliminates the hazard at the source.
+
+**`yarn.rs`**:
+- Correctly implements the YaRN dimension-index-space formula with `find_correction_dim`,
+  `beta_fast=32`, `beta_slow=1`, `factor=128`, `original_max_pos=8192`. The original test
+  report's attribution to a YaRN inv_freq bug was a misdiagnosis — `yarn.rs` was always
+  correct. The actual gibberish threshold was driven by the FP8 KV latent corruption and
+  the HDIM=256 kernel cross-contamination.
+
+**Root-cause summary for >1000-token gibberish (confirmed via git history)**:
+
+| Commit | Root cause | Effect |
+|--------|-----------|--------|
+| `f6161c1` | `phase_assemble.rs`: `unwrap_or(Fp8)` → all MLA layers silently got FP8 KV cache | KV latents clipped; attention corrupted at ALL lengths but compounds with token count |
+| `427104f` | `kv_dtypes.rs` returned `[]` for `kv_dtype == Bf16` → misleading but factory filled `vec![Bf16;N]` | No direct effect once factory fallback was also BF16; hardening prevents future regressions |
+| `13009b6` + `7ce0a27`/`3f673d4`/`1d07183` | `inferspark_prefill_64` (HDIM=256) called for head_dim=128 attention; reads 128 garbage dims beyond valid K stride | Attention contaminated at ALL lengths; error accumulates across 36 layers → gibberish threshold ~1000 tokens |
+
+Both root causes are independently sufficient to produce the observed symptom. Both are fixed.
+
+### P2 — Nemotron Super 120B Tool Calling (confirmed fixed)
+
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` (current spec_ssm HEAD) has all four flags:
+- `disable_tool_steering = true` — prevents `<tool_call>` emission loop at generation prompt
+- `tool_call_parser = "bare_json"` — uses model's native trained distribution
+- `skip_template_tools = true` (added in spec_ssm, not in main) — prevents `nemotron_h.jinja`
+  from injecting contradictory XML `<function>` blocks and "emit `<tool_call>` XML" instructions
+- `thinking_in_tools = false` — prevents reasoning trace from obscuring tool-call JSON
+
+`template.rs` line 89: `if tools_active && !state.behavior.skip_template_tools && !parser_suppresses`
+— dual-path suppression: `skip_template_tools = true` (MODEL.toml) OR
+`BareJsonParser::suppresses_jinja_tools()` (returns `true`) both prevent Jinja tool injection.
+With both conditions true for Nemotron Super, no XML tool format instructions can reach the model.
+
+### P3 — SSM Cache Slots / Pool Memory (confirmed, no code change)
+
+`SsmStatePool::new` in `impl_a1.rs:134` takes `max_batch_size` as slot count (not `ssm_cache_slots`).
+`SsmSnapshotPool::new` at line 143 takes `ssm_cache_slots`. Propagation chain is intact:
+CLI (`ssm_cache_slots=0`) → `serve_phases/build.rs:71` → `TransformerModel::new` → `SsmSnapshotPool::new(0, …)`
+→ empty pool, zero GPU allocation. The 1206 MB active state pool is by design.
+
+**No new bugs found. All fixes confirmed at spec_ssm HEAD.**
