@@ -2993,3 +2993,66 @@ CLI (`ssm_cache_slots=0`) → `serve_phases/build.rs:71` → `TransformerModel::
 → empty pool, zero GPU allocation. The 1206 MB active state pool is by design.
 
 **No new bugs found. All fixes confirmed at spec_ssm HEAD.**
+
+---
+
+## 2026-05-29 Twenty-sixth-pass verification (spec_ssm HEAD `3d675ee`)
+
+Fresh independent audit of all four files listed per priority in the original task description.
+No new bugs found; all prior fixes confirmed correct and complete.
+
+### P1 — Mistral Small 4 MLA prefill (all fixes confirmed)
+
+**`crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip_mla.rs`** (non-paged
+single-chunk path):
+- `inv_sqrt_d_absorbed = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` = 1/√320 ✓
+- `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0)` hard-blocks any HDIM=256 fallback ✓
+- `write_kv_cache` only covers tokens `kv_write_start..n` with correct slot offset ✓
+
+**`kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu`** (CUDA batched GEMV + assembly):
+- `mla_fused_prefill.cu`: `smem_dot[8]` declared at function scope (line 115, before loop at
+  line 126); `smem_q[320]` (line 75) and `smem_latent[256]` (line 190) are distinct static
+  allocations — total 2336 bytes. No aliasing risk, no seq_len overflow.
+- Causal mask `kv_end = min(q_pos + 1, seq_len)` correct at all lengths up to 65 535 ✓
+- All pointer arithmetic uses `(unsigned long long)` casts — no 32-bit overflow ✓
+- `mla_prefill_paged_320.cu` (multi-chunk): half-warp masks (`0x0000FFFF` / `0xFFFF0000`)
+  eliminate warp-sync UB introduced by the 16-lane-per-row layout ✓
+
+**`crates/spark-server/src/main.rs` / `kv_dtypes.rs` (`--kv-high-precision-layers auto`)**:
+- `build_layer_kv_dtypes(BF16, 36, 2)` hits the early-return at line 20–22 and returns
+  `vec![BF16; 36]` — the `auto` → `hp=2` branch is never entered when base dtype is BF16.
+  All 36 MLA layers are uniformly BF16; no FP8/BF16 mixing is possible for Mistral ✓
+- `phase_assemble.rs`: `unwrap_or(KvCacheDtype::Bf16)` is the belt-and-suspenders fallback ✓
+
+**`crates/spark-model/src/layers/qwen3_attention/decode/attention_forward_mla.rs`** (decode):
+- Scale: `1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` = 1/√320 — matches all prefill paths ✓
+- KV cache assembled as `[kv_latent | k_rope]` / `[kv_latent | zeros]` with `mla_cache_dim`
+  strides — identical layout to what both prefill paths write ✓
+
+### P2 — Nemotron Super 120B tool calling (confirmed fixed)
+
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` current content verified:
+- `disable_tool_steering = true` — prevents `<tool_call>\n` emission loop ✓
+- `tool_call_parser = "bare_json"` — model's native trained distribution ✓
+- `skip_template_tools = true` — prevents contradictory XML `<function>` blocks from Jinja ✓
+- `thinking_in_tools = false` — xgrammar-constrained decoding from token 1 ✓
+- `BareJsonParser::suppresses_jinja_tools() → true` provides parser-level protection
+  independently of MODEL.toml; either condition alone is sufficient ✓
+
+`nemotron_h.jinja` line 204 `{%- if tools and not disable_tool_steering %}` confirms the
+steering prefix is gated off. Generation falls through to `<|im_start|>assistant\n<think>\n`.
+
+### P3 — SSM cache slots / pool memory (confirmed, no code change)
+
+- `cli.rs` line 279: `ssm_cache_slots: usize` (default 16) ✓
+- `impl_a1.rs:134`: `SsmStatePool::new(&config, max_batch_size, …)` — uses `max_batch_size`,
+  NOT `ssm_cache_slots`. The 1206 MB active-state pool is by design (8 concurrent sequences
+  × 36 SSM layers); reduce with `--max-batch-size 1` for single-stream serving (~151 MB) ✓
+- `impl_a1.rs:143`: `SsmSnapshotPool::new(ssm_cache_slots, …)` — `--ssm-cache-slots 0`
+  correctly zeros only the prefix-cache snapshot pool ✓
+- Propagation chain intact: CLI → `serve_phases/build.rs:71` → `TransformerModel::new` →
+  `SsmSnapshotPool::new(ssm_cache_slots)` ✓
+- Pure-attention models (Mistral: 0 SSM layers) allocate zero SSM memory regardless ✓
+
+**No new bugs found (twenty-sixth independent pass). Branch `spec_ssm` is correct and
+ready for hardware re-test against the fully fixed build.**
