@@ -47,8 +47,11 @@ impl BlockDiffusionDraftHead {
     /// `start_slot`: first ctx slot to project (inclusive).
     /// `new_ctx_count`: number of contiguous ctx slots starting at
     ///   `start_slot` to feed through.
-    /// `absolute_start_pos`: logical sequence position of `start_slot`
-    ///   (used as the RoPE position for the first new K row).
+    /// `slot_positions`: `&[i32]` of length `new_ctx_count` — the TRUE
+    ///   fixed RoPE position of each row being computed (stamped at append
+    ///   time, vLLM convention). Replaces the old sliding
+    ///   `absolute_start_pos + i` so committed slots never drift when a
+    ///   later accept moves the live decode position.
     /// `slot_mapping_dev`: device pointer to an `i32[new_ctx_count]`
     ///   array of paged-cache slot indices, pre-filled by the caller
     ///   via `ops::fill_slots_from_block_table` against the drafter's
@@ -59,7 +62,7 @@ impl BlockDiffusionDraftHead {
         ctx_base_ptr: DevicePtr,
         start_slot: usize,
         new_ctx_count: usize,
-        absolute_start_pos: usize,
+        slot_positions: &[i32],
         slot_mapping_dev: DevicePtr,
         ctx: &ForwardContext,
         stream: u64,
@@ -184,12 +187,19 @@ impl BlockDiffusionDraftHead {
         let kv_slab_bytes = (kv_dim as usize) * bf16;
 
         // ── Step 4: positions buffer for RoPE-on-K ───────────────
-        // Reuse scratch.position_ids (i32[ctx_window+γ]); first n
-        // entries are the absolute positions of the new ctx rows.
-        let pos_host: Vec<i32> = (0..new_ctx_count)
-            .map(|i| (absolute_start_pos + i) as i32)
+        // Phase I (v2): each ctx slot ropes at its TRUE fixed position,
+        // stamped at append time (vLLM convention — see dflash_option_b.md
+        // §"Context K rows are RoPE-rotated at positions ... when they
+        // enter the cache"). `slot_positions` holds the fixed positions for
+        // the rows being computed now (the tail [start_slot..+new_count)).
+        // This replaces the old sliding `absolute_start_pos + i`, which
+        // drifted committed slots out of phase whenever a later accept moved
+        // the live base.
+        debug_assert_eq!(slot_positions.len(), new_ctx_count);
+        let pos_bytes: Vec<u8> = slot_positions
+            .iter()
+            .flat_map(|p| p.to_le_bytes())
             .collect();
-        let pos_bytes: Vec<u8> = pos_host.iter().flat_map(|p| p.to_le_bytes()).collect();
         gpu.copy_h2d(&pos_bytes, self.scratch.position_ids)?;
 
         // ── Step 5: per-layer k_norm + RoPE + reshape_and_cache ──

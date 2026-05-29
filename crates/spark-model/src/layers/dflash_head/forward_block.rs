@@ -116,6 +116,12 @@ impl BlockDiffusionDraftHead {
                 if eff_ctx > 0 {
                     let start_slot = ctx_total.saturating_sub(eff_ctx);
                     let abs_start = position.saturating_sub(eff_ctx);
+                    // Dump-only diagnostic path: reconstruct the legacy
+                    // sliding positions (abs_start + i) as a slice. The
+                    // production path (propose.rs) uses per-slot fixed
+                    // positions from ctx_positions instead.
+                    let slot_positions: Vec<i32> =
+                        (0..eff_ctx).map(|i| (abs_start + i) as i32).collect();
                     // slot_mapping unused in dump-only mode; pass the
                     // scratch buffer so reshape_and_cache has a valid
                     // pointer if ATLAS_DFLASH_PRECOMPUTE_COMMIT=1.
@@ -123,7 +129,7 @@ impl BlockDiffusionDraftHead {
                         base,
                         start_slot,
                         eff_ctx,
-                        abs_start,
+                        &slot_positions,
                         self.scratch.slot_mapping_dev,
                         ctx,
                         stream,
