@@ -253,6 +253,23 @@ pub struct DflashProposerState {
     pub ctx_count_drafter: usize,
     /// Cap for `ctx_count_drafter`. Mirrors `block_table.len() * block_size`.
     pub max_ctx_count_drafter: usize,
+    /// Phase I — incremental ctx precompute watermark. Number of ctx slots
+    /// `[0..ctx_committed)` whose K/V is already valid in the paged cache
+    /// from a prior propose. Each step we only precompute the new tail
+    /// `[ctx_committed..ctx_len)` instead of rebuilding the whole prefix
+    /// (the old O(ctx_len²) waste — see design doc §18). Reset to the
+    /// current `ctx_len` on any rewind so stale slots can't be read.
+    /// `0` forces a full rebuild (first propose, or the debug escape hatch).
+    pub ctx_committed: usize,
+    /// Phase I (v2) — per-slot TRUE absolute decoded position, stamped once
+    /// when a ctx slot is appended and never recomputed. Indexed by ctx
+    /// slot (parallel to `ctx_hidden_acc` slots, len == `ctx_len`). This is
+    /// the vLLM convention: a cached token's rope position is fixed at
+    /// insert time, so committed slots never go stale when later accepts
+    /// shift the live `position`. Replaces the sliding `absolute_start_pos
+    /// + i` formula in `precompute_ctx_kv`. Prefill positions are seeded
+    /// `0..prompt_len` in `update_dflash_ctx_len_after_prefill`.
+    pub ctx_positions: Vec<i32>,
 }
 
 impl ProposerState for DflashProposerState {
@@ -450,6 +467,8 @@ impl DraftProposer for BlockDiffusionDraftHead {
             block_table_dev: None,
             ctx_count_drafter: 0,
             max_ctx_count_drafter: 0,
+            ctx_committed: 0,
+            ctx_positions: Vec::new(),
         }))
     }
 
@@ -493,6 +512,15 @@ impl DraftProposer for BlockDiffusionDraftHead {
         // Phase 1: no real KV trim because `propose()` is a stub. Phase 2
         // adds the rollback that drops `(last_num_drafted - num_accepted)`
         // tokens from each layer's paged cache.
+        //
+        // Phase I invariant: `ctx_committed` is the watermark of ctx slots
+        // already precomputed into the paged cache. It is monotonic only as
+        // long as `ctx_len` is monotonic (today it is — ctx is append-only
+        // and never rewound here). IF a future rollback ever shrinks the
+        // committed ctx (rewinds `ctx_len`), it MUST also reset
+        // `dstate.ctx_committed = dstate.ctx_len` so the next propose
+        // recomputes the rolled-back tail instead of reading stale K/V.
+        // The `.min(ctx_len)` clamp in propose() is the defensive backstop.
         let _ = num_accepted;
         dstate.last_num_drafted = 0;
         Ok(())

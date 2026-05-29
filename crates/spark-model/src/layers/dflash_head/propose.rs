@@ -229,6 +229,14 @@ impl BlockDiffusionDraftHead {
                 dstate.ctx_slot_bytes,
                 _stream,
             )?;
+            // Phase I (v2): stamp this slot's TRUE absolute position, fixed
+            // forever. The just-decoded token sits at `position - 1` (the
+            // full-rebuild formula assigns slot ctx_len the position
+            // (position - (ctx_len+1)) + ctx_len == position - 1). Keeping
+            // ctx_positions parallel to ctx_len lets precompute rope each
+            // slot by its own fixed position instead of a sliding base.
+            debug_assert_eq!(dstate.ctx_positions.len(), dstate.ctx_len);
+            dstate.ctx_positions.push(position.saturating_sub(1) as i32);
             dstate.ctx_len += 1;
         }
 
@@ -276,20 +284,38 @@ impl BlockDiffusionDraftHead {
                     dstate.max_ctx_count_drafter
                 );
             }
-            // Precompute over the full accumulated ctx into paged cache
-            // slots [0..ctx_len). This is wasteful (rebuilds every step)
-            // but keeps stage-4 correctness simple — incremental append
-            // is a later optimization.
-            if dstate.ctx_len > 0 {
-                // Build slot_mapping for the ctx slots [0..ctx_len).
+            // Phase I (v2) — incremental ctx precompute (design doc §18).
+            // Only the new tail [ctx_committed..ctx_len) needs its K/V
+            // computed; slots [0..ctx_committed) are already valid in the
+            // paged cache and — because each slot ropes at its OWN fixed
+            // position (stamped at append, see ctx_positions) — they never
+            // go stale when later accepts move the live `position`. The old
+            // path rebuilt the whole prefix every step (O(ctx_len²)).
+            //
+            // Escape hatch: ATLAS_DFLASH_DEBUG_FULL_PRECOMPUTE=1 forces a
+            // full recompute (committed=0) for A/B accept-rate parity.
+            let force_full = std::env::var("ATLAS_DFLASH_DEBUG_FULL_PRECOMPUTE")
+                .ok()
+                .as_deref()
+                == Some("1");
+            // Clamp watermark defensively: a rewind should have reset it,
+            // but never start past ctx_len.
+            let committed = if force_full {
+                0
+            } else {
+                dstate.ctx_committed.min(dstate.ctx_len)
+            };
+            let new_count = dstate.ctx_len - committed;
+            if dstate.ctx_len > 0 && new_count > 0 {
+                // Build slot_mapping for the new tail [committed..ctx_len).
                 let slot_mapping = &self.scratch.slot_mapping_dev;
                 crate::layers::ops::fill_slots_from_block_table(
                     ctx.gpu,
                     self.kernels.fill_slots,
                     *slot_mapping,
                     dstate.block_table_dev.unwrap(),
-                    0,
-                    dstate.ctx_len as u32,
+                    committed as u32,
+                    new_count as u32,
                     BLOCK_SIZE as u32,
                     _stream,
                 )?;
@@ -304,12 +330,14 @@ impl BlockDiffusionDraftHead {
                 unsafe {
                     std::env::set_var("ATLAS_DFLASH_PRECOMPUTE_COMMIT", "1");
                 }
-                let abs_start = position.saturating_sub(dstate.ctx_len);
+                // The fixed positions for exactly the tail rows we're
+                // computing. ctx_positions is parallel to ctx slots.
+                let slot_positions = &dstate.ctx_positions[committed..dstate.ctx_len];
                 let precompute_res = self.precompute_ctx_kv(
                     dstate.ctx_hidden_acc,
-                    0,
-                    dstate.ctx_len,
-                    abs_start,
+                    committed,
+                    new_count,
+                    slot_positions,
                     *slot_mapping,
                     ctx,
                     _stream,
@@ -322,6 +350,9 @@ impl BlockDiffusionDraftHead {
                     None => unsafe { std::env::remove_var("ATLAS_DFLASH_PRECOMPUTE_COMMIT") },
                 }
                 precompute_res?;
+                // Tail is now committed in the paged cache. Committed slots
+                // hold fixed-position rope, so no base re-stamp is needed.
+                dstate.ctx_committed = dstate.ctx_len;
             }
             dstate.ctx_count_drafter = dstate.ctx_len;
             // Ablation: ATLAS_DFLASH_OPTION_B_NO_CTX=1 forces ctx_count=0
