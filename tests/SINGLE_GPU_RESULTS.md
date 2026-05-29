@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5); 2026-05-26 (ninth-pass: cross-branch main-vs-spec_ssm audit, all fixes confirmed); 2026-05-27 (eleventh-pass: warp-reduction correctness proof for mla_prefill_paged_320.cu, all fixes confirmed); 2026-05-27 (twelfth-pass: full P1/P2/P3 deep audit + kv_write_start MLA cache bug fixed)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5); 2026-05-26 (ninth-pass: cross-branch main-vs-spec_ssm audit, all fixes confirmed); 2026-05-27 (eleventh-pass: warp-reduction correctness proof for mla_prefill_paged_320.cu, all fixes confirmed); 2026-05-27 (twelfth-pass: full P1/P2/P3 deep audit + kv_write_start MLA cache bug fixed); 2026-05-29 (twentieth-pass: all P1/P2/P3 fixes re-verified at 617bc6e)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -2537,3 +2537,81 @@ KV dtype fallback, kv_dtypes hardening, kv_write_start, smem_dot scope), two Nem
 tool-call fixes (skip_template_tools + BareJsonParser::suppresses_jinja_tools), and the
 SSM two-pool design are confirmed correct at HEAD `2664d14` (spec_ssm branch, 2026-05-29).
 The branch remains ready for hardware re-test on GB10 Spark.
+
+---
+
+## 2026-05-29 Twentieth-pass investigation (spec_ssm HEAD `617bc6e`)
+
+Independent audit from scratch. All source files named in the three priority descriptions
+read directly from disk. No new bugs found; all prior fixes confirmed correct and complete.
+
+### P1 — Mistral Small 4 MLA prefill: full audit of all four files
+
+**`prefill/cache_skip_mla.rs`** (non-paged, single-chunk path — the "MLA direct flash
+attention path"):
+- Line 267: `inv_sqrt_d_absorbed = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` = `1/sqrt(320)`. Correct absorbed-space scale.
+- Lines 268-273: `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0, "MLA cache-skip prefill requires mla_fused_prefill kernel (inferspark_prefill HDIM=256 is broken for MLA hd=128 ...)")` — hard startup failure if kernel absent; no silent HDIM=256 fallback.
+- Lines 237-256: `write_count = (n as usize).saturating_sub(kv_write_start)` with `cache_elem_offset = kv_write_start * mla_cache_dim` and `slot_byte_offset = kv_write_start * 8` — prefix-cache tokens correctly skipped.
+- Buffer aliasing (`ssm_ba()` for `q_latent` then `k_rope_buf`): safe; `qg_out` (wq_b output) is consumed before `k_rope_buf` is written.
+
+**`kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu`** (fused Q-absorption + attention + V-extraction):
+- Line 75: `__shared__ float smem_q[320]`; line 115: `__shared__ float smem_dot[8]` (before loop at line 126); line 190: `__shared__ float smem_latent[256]`. Three distinct static allocations (2336 bytes), non-overlapping lifetimes — NVCC aliasing hazard eliminated.
+- Line 125: `kv_end = min(q_pos + 1, seq_len)` — correct causal masking at all seq_len.
+- Grid `(nq, seq_len, 1)` grows linearly; no structural limit at >1K tokens.
+- Pointer offsets use `(unsigned long long)` casts throughout — no 32-bit overflow.
+
+**`kernels/gb10/mistral-small-4/nvfp4/mla_prefill_paged_320.cu`** (multi-chunk paged path):
+- Half-warp masks (`lane_mask = warp_lane < 16 ? 0x0000FFFFu : 0xFFFF0000u`) used for all `__shfl_down_sync` and `__shfl_sync` calls — warp-sync UB eliminated.
+- Causal masking: `causal_kv_end = min(q_global + 1, kv_len)` where `q_global = q_offset + q_local` and `q_offset = seq_len_start` — full historical context visible at all chunk boundaries.
+- `paged_kv_ptr_mla` uses `(unsigned long long)` for all pointer arithmetic — no overflow.
+
+**`crates/spark-server/src/main_modules/kv_dtypes.rs`** (`--kv-high-precision-layers auto`):
+- Lines 20-22: `if kv_dtype == KvCacheDtype::Bf16 { return vec![KvCacheDtype::Bf16; num_attention_layers]; }` — early-return fires before the `hp` path. For Mistral (`--kv-cache-dtype bf16`): all 36 MLA attention layers uniformly BF16 regardless of `auto` flag. No FP8/BF16 mixing structurally possible.
+- `phase_assemble.rs` line 124: `unwrap_or(KvCacheDtype::Bf16)` — belt-and-suspenders fallback.
+
+**`decode/attention_forward_mla.rs`** (decode vs prefill consistency):
+- Line 377: `let inv_sqrt_d = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` — identical formula to both prefill paths.
+- KV format `[kv_latent|k_rope]` / `[kv_latent|zeros]` with `mla_cache_dim` strides — decode reads exactly what prefill writes.
+
+**`mistral_loader/loader_impl/yarn.rs`**: `find_correction_dim` implements the correct
+Hugging Face dimension-index-space formula; `low=7`, `high=15` for Mistral parameters.
+The original task brief's "YaRN inv_freq bug" diagnosis was a misdiagnosis — yarn.rs was
+always correct; the five MLA code bugs were the actual root causes.
+
+**`kernels/gb10/mistral-small-4/nvfp4/KERNEL.toml`**: `extra_nvcc_flags = ["--fmad=false", "-DHDIM=128"]`; `mla_fused_prefill = "mla_fused_prefill"` and `mla_prefill_paged_320 = "mla_prefill_paged"` both registered — all kernels compile and load at HDIM=128.
+
+**`prefill/paged_mla.rs`** (paged path):
+- First-chunk (`seq_len_start == 0`): `ensure!(hd > 128 || prefill_attn_128_k.0 != 0)` + routes to `prefill_attn_128_k`. No HDIM=256 kernel used for MLA.
+- Multi-chunk (`seq_len_start > 0`): `inv_sqrt_d = 1/sqrt(mla_cache_dim=320)` + `mla_prefill_paged_320` reads `kv_len = seq_len_start + num_tokens` tokens from the compressed paged cache — full context visible.
+
+### P2 — Nemotron Super 120B tool calling
+
+**`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`**: all four required flags confirmed:
+- `disable_tool_steering = true` — suppresses `<tool_call>\n` steering prefix
+- `tool_call_parser = "bare_json"` — model's trained distribution
+- `skip_template_tools = true` — blocks contradictory XML `<function>` blocks from jinja template
+- `thinking_in_tools = false` — skips think block when tools active; grammar-constrained decoding from token 1
+
+**`crates/spark-server/src/tool_parser/bare_json.rs`**: `suppresses_jinja_tools() → true` (line 52) — parser-level guarantee; `template.rs` passes `jinja_tools = None` for any bare-json model independently of MODEL.toml. Either condition alone is sufficient.
+
+**`crates/spark-server/src/tool_parser.rs`**: `suppresses_jinja_tools()` trait method defined with default `false` (line 278). `BareJsonParser`'s override to `true` is the only active override.
+
+Dual-layer protection: (1) MODEL.toml `skip_template_tools = true` + (2) `BareJsonParser::suppresses_jinja_tools() → true`. Either independently prevents XML format-instruction conflict.
+
+### P3 — SSM cache slots: two-pool design
+
+**`crates/spark-model/src/model/impl_a1.rs`**:
+- Line 134: `SsmStatePool::new(gpu, &config, max_batch_size, ...)` — active decode states, sized by `--max-batch-size` (default 8). Required for concurrent decode; unaffected by `--ssm-cache-slots`.
+- Line 143: `SsmSnapshotPool::new(ssm_cache_slots, ...)` — prefix-cache snapshots only. `--ssm-cache-slots 0` zeroes this pool with no GPU allocation.
+
+For Qwen3.5-122B (36 SSM layers, `max_batch_size=8`): ~1206 MB active pool. Use `--max-batch-size 1` for single-stream to reduce to ~151 MB. Mistral Small 4 (0 SSM layers): both pools zero regardless of any flag.
+
+### Summary
+
+No new bugs found. All seven Mistral MLA fixes (kernel guard, absorbed-space scale ×3,
+KV dtype fallback via `kv_dtypes.rs` hardening and `phase_assemble.rs`, `kv_write_start`
+prefix-cache correctness, NVCC `smem_dot` scope, CUDA warp-sync half-warp masks in
+`mla_prefill_paged_320.cu`), two Nemotron tool-call fixes (`skip_template_tools` +
+`BareJsonParser::suppresses_jinja_tools`), and the SSM two-pool design are all confirmed
+correct at HEAD `617bc6e` (spec_ssm branch, 2026-05-29). Branch is ready for hardware
+re-test on GB10 Spark.
