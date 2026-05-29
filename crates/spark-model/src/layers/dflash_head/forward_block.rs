@@ -522,25 +522,56 @@ impl BlockDiffusionDraftHead {
                 stream,
             )?;
             // Phase G: lm_head GEMM. Largest GEMM in the drafter
-            // (γ × vocab=248320). The small-M FP8 kernel attempt
-            // (fp8_gemm_t_row_scaled_m16) produced garbage output — 0%
-            // accept rate. Bug is in the kernel, not the swap. Reverting
-            // to BF16 dense_gemm for lm_head; the per-layer FP8 GEMMs
-            // still ship and buy ~12% tok/s. See design doc §16.11 for
-            // the kernel debugging plan when we resume.
-            ops::dense_gemm(
-                gpu,
-                self.kernels.dense_gemm,
-                norm_noise_local,
-                &crate::weight_map::DenseWeight {
-                    weight: self.lm_head_shared,
-                },
-                self.scratch.logits,
-                self.gamma as u32,
-                self.vocab_size as u32,
-                h_local,
-                stream,
-            )?;
+            // (γ × vocab=248320). FP8 path uses the small-M kernel
+            // fp8_gemm_t_row_scaled_m16 (M_TILE=16, 1 warp/CTA) against
+            // the FP8 mirror of the shared lm_head weight. The earlier
+            // 0%-accept bug was a half-loaded smem_A K-tile in that
+            // kernel (fixed: 2-round A-load covers all 32 K-cols).
+            // BF16 path (default, or Fp8 mirror missing) unchanged.
+            let lm_head_fp8 = matches!(self.quant, super::DflashQuantization::Fp8Weights);
+            if lm_head_fp8 {
+                if let Some(fp8) = self.lm_head_shared_fp8.as_ref() {
+                    ops::fp8_gemm_n128_row_scaled_m16(
+                        gpu,
+                        self.kernels.fp8_gemm_n128_row_scaled_m16,
+                        norm_noise_local,
+                        fp8,
+                        self.scratch.logits,
+                        self.gamma as u32,
+                        self.vocab_size as u32,
+                        h_local,
+                        stream,
+                    )?;
+                } else {
+                    ops::dense_gemm(
+                        gpu,
+                        self.kernels.dense_gemm,
+                        norm_noise_local,
+                        &crate::weight_map::DenseWeight {
+                            weight: self.lm_head_shared,
+                        },
+                        self.scratch.logits,
+                        self.gamma as u32,
+                        self.vocab_size as u32,
+                        h_local,
+                        stream,
+                    )?;
+                }
+            } else {
+                ops::dense_gemm(
+                    gpu,
+                    self.kernels.dense_gemm,
+                    norm_noise_local,
+                    &crate::weight_map::DenseWeight {
+                        weight: self.lm_head_shared,
+                    },
+                    self.scratch.logits,
+                    self.gamma as u32,
+                    self.vocab_size as u32,
+                    h_local,
+                    stream,
+                )?;
+            }
             for i in 0..self.gamma {
                 let logits_row = self.scratch.logits.offset(i * self.vocab_size * bf16_local);
                 let token_slot = self.scratch.draft_tokens_dev.offset(i * 4);

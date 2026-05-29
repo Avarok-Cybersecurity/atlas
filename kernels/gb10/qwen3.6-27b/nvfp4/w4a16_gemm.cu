@@ -1575,12 +1575,17 @@ extern "C" __global__ void fp8_gemm_t_row_scaled_m16(
     const unsigned int a_stride = K_STEP_T + PAD_T;
 
     // Load A: 16 rows × 32 cols BF16 = 1024 bytes total.
-    // 32 threads, each grabs 32 bytes (16 BF16 values). One round.
-    // Thread t loads row=t/2, col_offset=(t%2)*16.
+    // cp_async_pred_16 copies 16 BYTES = 8 BF16 values, so one copy only
+    // covers 8 of the 32 K-cols. 32 threads × 8 cols = 256 cells = HALF
+    // the 16×32 tile. Need 2 rounds so every (row, kcol) is written;
+    // omitting the 2nd round leaves cols 8..15 and 24..31 uninitialised
+    // (the Phase G EOD bug: garbage MMA inputs → 0% accept).
+    // Round r: thread t -> row=t/2, a_col=((t&1)<<4) + r*8  (0,8,16,24).
     #define FP8_LOADS_M16(buf, kb) do { \
-        { \
+        _Pragma("unroll") \
+        for (int ar = 0; ar < 2; ar++) { \
             unsigned int row = threadIdx.x >> 1; \
-            unsigned int a_col = (threadIdx.x & 1) << 4; \
+            unsigned int a_col = ((threadIdx.x & 1) << 4) + ar * 8; \
             unsigned int gc = (kb) + a_col; \
             unsigned int gr = row; \
             cp_async_pred_16(&smem_A[(buf)][row][a_col], \
