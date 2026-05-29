@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5); 2026-05-26 (ninth-pass: cross-branch main-vs-spec_ssm audit, all fixes confirmed); 2026-05-27 (eleventh-pass: warp-reduction correctness proof for mla_prefill_paged_320.cu, all fixes confirmed); 2026-05-27 (twelfth-pass: full P1/P2/P3 deep audit + kv_write_start MLA cache bug fixed); 2026-05-29 (twentieth-pass: all P1/P2/P3 fixes re-verified at 617bc6e)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5); 2026-05-26 (ninth-pass: cross-branch main-vs-spec_ssm audit, all fixes confirmed); 2026-05-27 (eleventh-pass: warp-reduction correctness proof for mla_prefill_paged_320.cu, all fixes confirmed); 2026-05-27 (twelfth-pass: full P1/P2/P3 deep audit + kv_write_start MLA cache bug fixed); 2026-05-29 (twentieth-pass: all P1/P2/P3 fixes re-verified at 617bc6e); 2026-05-29 (twenty-first-pass: independent cold-start re-investigation, all P1/P2/P3 fixes confirmed)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -2615,3 +2615,60 @@ prefix-cache correctness, NVCC `smem_dot` scope, CUDA warp-sync half-warp masks 
 `BareJsonParser::suppresses_jinja_tools`), and the SSM two-pool design are all confirmed
 correct at HEAD `617bc6e` (spec_ssm branch, 2026-05-29). Branch is ready for hardware
 re-test on GB10 Spark.
+
+---
+
+## 2026-05-29 Twenty-first-pass investigation (spec_ssm HEAD `bda98c5`)
+
+Independent cold-start re-investigation from scratch against all priority file paths.
+No new bugs found; all prior fixes confirmed correct.
+
+### P1 — Mistral Small 4 MLA prefill
+
+Read all four priority files independently. Key findings:
+
+**`prefill/cache_skip_mla.rs`**: Uses `mla_fused_prefill` (absorbed-space, HDIM=320). Line
+259-272 confirms the hard `anyhow::ensure!` guard that prevents any silent fallback to
+`inferspark_prefill*` HDIM=256 kernels. `inv_sqrt_d = 1/sqrt(kv_lora+rope=320)` correct.
+The `kv_write_start` prefix-cache skip is correctly implemented at lines 237-256.
+
+**`kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu`**: Only defines GEMV kernels
+(`mla_batched_gemv`, `mla_q_rope_scatter/writeback`, `mla_cache_assemble*`). No
+seq_len limits, no HDIM=256 exposure — correctly isolated to per-token/per-head
+operations. No issue here.
+
+**`main_modules/kv_dtypes.rs`** (`--kv-high-precision-layers auto`): Early-return at
+BF16 dtype means Mistral-Small-4 (launched with `--kv-cache-dtype bf16`) gets all 36
+attention layers as uniform BF16. The `auto` flag is structurally inert for that model.
+No FP8/BF16 mixing possible.
+
+**`decode/attention_forward_mla.rs`**: Uses `paged_decode_mla` + `mla_batched_gemv`,
+no `inferspark_prefill*` calls. Decode path unaffected by the prefill kernel fix.
+`inv_sqrt_d = 1/sqrt(320)` matches prefill.
+
+Independently confirmed the HDIM mismatch root cause: `inferspark_prefill_64` in
+`inferspark_prefill.cu` compiles with `#define HDIM 256` and runs 32 cp.async chunks
+per row (256 elements) regardless of the runtime `head_dim` argument. For MLA with
+`head_dim=128` and `kv_seq_stride=128`, col≥128 reads cross token boundaries in K/V.
+The `mla_fused_prefill` fix avoids this entirely by staying in absorbed 320-dim space.
+
+### P2 — Nemotron Super 120B
+
+`MODEL.toml` confirmed: `disable_tool_steering = true`, `tool_call_parser = "bare_json"`,
+`skip_template_tools = true`, `thinking_in_tools = false`. `bare_json.rs` has
+`suppresses_jinja_tools() → true`. Dual-layer protection intact.
+
+### P3 — SSM cache slots
+
+`SsmStatePool::new` called with `max_batch_size` (line 134 in `impl_a1.rs`), not
+`ssm_cache_slots`. `SsmSnapshotPool::new` called with `ssm_cache_slots` (line 149).
+Two-pool design correctly separates active decode state from prefix-cache snapshots.
+`--ssm-cache-slots 0` only zeroes the snapshot pool; the 1206 MB active pool for
+Qwen3.5-122B (8 slots × 36 SSM layers) is correct and required.
+
+### Summary
+
+All P1/P2/P3 fixes confirmed correct and complete at HEAD `bda98c5`. No new bugs. The
+independent investigation confirmed the HDIM=256 vs head_dim=128 root cause and
+verified the `mla_fused_prefill` absorbed-space fix addresses it correctly. Ready for
+hardware re-test on GB10 Spark.
