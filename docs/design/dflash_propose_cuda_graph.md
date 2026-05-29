@@ -1437,6 +1437,20 @@ Alternative cleaner fix: 32 threads × 16 rows = 2 threads per row. Thread 2*r w
 
 **Phase G ship status**: per-layer GEMMs are GOOD. lm_head is BF16 (reverted). Branch ready to merge. **Pre-commit step before merging**: rebuild + bench cleanly (kernel count should be 91 since the m16 variant is in tree but unused), confirm 9.77 tok/s holds.
 
+> **UPDATE 2026-05-29 (G.4 — SHIPPED, supersedes the above):** The
+> `fp8_gemm_t_row_scaled_m16` bug was exactly the uninitialised-K-cols
+> hypothesis in §16.11. The single A-load round only covered 8 of every
+> 32 K-cols (cp_async_pred_16 copies 16 bytes = 8 BF16, not 16 BF16 as
+> the original comment claimed); cols 8..15 and 24..31 were garbage.
+> Verified numerically: the one-round load wrote 256 of 512 smem_A
+> cells. **Fix:** 2-round A-load (`for ar in 0..2`, `a_col =
+> ((t&1)<<4) + ar*8`) → 512/512 cells, no dupes. lm_head call site in
+> `forward_block.rs` wired to branch on `self.quant`: Fp8Weights path
+> calls `fp8_gemm_n128_row_scaled_m16` against `lm_head_shared_fp8`,
+> BF16 path unchanged. **Bench (G.4, commit 6bc398c):** 45.1% → 50.3%
+> accept, 9.77 → 11.07 tok/s (**+13.3%** on top of G.3, +27% over the
+> F.2 baseline). Default OFF still bit-identical. lm_head FP8 is live.
+
 ### 16.12 Next steps after resume
 
 1. **Fix or abandon `fp8_gemm_t_row_scaled_m16`.** The 2-load fix described in §16.11 is ~10 lines of CUDA. Test with a tiny smoke (compare M=16 N=128 K=32 output against the M_TILE=64 kernel result on the same inputs). If correct, ship lm_head FP8. Expected additional gain: 5-10% tok/s (lm_head is the biggest single GEMM).
@@ -1549,3 +1563,113 @@ The prefill path is different — there activations are large enough to matter, 
 **Friday's read on the data**: based on the F.2 nsys, the BF16-activation main-model GEMMs aren't a dominant chunk of GPU time at decode. The big main-model kernels are `w4a16_gemv*` which are already optimally configured (4-bit weight, GEMV is fundamentally weight-bandwidth-bound, FP8 activations don't help much at M=1). The audit should confirm this in 4 hours, and if it does, Phase G drafter work is the right next step. If it surprises us — great, we'll know.
 
 **Recommended order**: run H.1 + H.2 as a half-day reconnaissance side-quest *before* starting Phase G implementation. If the audit says "no headroom," start Phase G. If it says "real headroom on N call sites," do H.3 cherry-pick first.
+
+---
+
+## 18. Phase I — Incremental ctx precompute (drafter, in-scope)
+
+> **Status 2026-05-29:** Designed, not yet implemented. Identified from
+> the G.4 nsys (`atlas-code-atlas-bench-nsys-20260529-094353`). This is
+> the next *in-scope* drafter optimization after lm_head FP8 shipped.
+
+### 18.1 The waste
+
+`propose.rs:279-282` re-runs the **full** ctx precompute into paged
+cache slots `[0..ctx_len)` on every propose step:
+
+```
+// Precompute over the full accumulated ctx into paged cache
+// slots [0..ctx_len). This is wasteful (rebuilds every step)
+// but keeps stage-4 correctness simple — incremental append
+// is a later optimization.
+```
+
+Each step the ctx grows by the number of tokens the main model just
+committed (typically 1 + accepted drafts), yet we recompute the K/V for
+the **entire** accumulated ctx, not just the new tail. The cost scales
+O(ctx_len) per step → O(ctx_len²) over a generation.
+
+The work being repeated lives in `precompute_ctx_kv.rs`:
+- Step 1: batched `fc` projection `[new_ctx, L_t·h_t] × fc^T → [new_ctx, h]` (`dense_gemm`).
+- Step 2: `hidden_norm` RMS over fc_proj.
+- Step 3: fused KV GEMM across all drafter layers `[n, h] × [h, L·2·kv_dim]`.
+
+Today `n = ctx_len` (full rebuild). Incremental makes `n = new_tokens`.
+
+### 18.2 nsys evidence (G.4 profile)
+
+The gemv family dominates GPU time and the precompute GEMMs feed it:
+
+| kernel | launches | GPU ms | % |
+|---|---|---|---|
+| `w4a16_gemv` | 18019 | 3936 | 37.2% |
+| `w4a16_gemv_dual` | 5280 | 1751 | 16.5% |
+| `w4a16_gemv_silu_input` | 4224 | 958 | 9.1% |
+
+Caveat: the kernel summary can't cleanly separate precompute-rebuild
+launches from legitimate per-step drafter + main-model work. The
+rebuild touches the largest bucket, so the win is real but **must be
+instrumented per-call-site before claiming a number**. Estimate:
+high-single to low-double-digit tok/s, growing with prompt length.
+
+### 18.3 Approach (mirrors vLLM chunked-prefill / `num_computed_tokens`)
+
+vLLM never recomputes KV for tokens already in the paged cache: it
+tracks `num_computed_tokens` per sequence and only runs attention/KV
+projection over the *new* chunk, reusing prior block-table slots. The
+Atlas drafter ctx cache is already paged (Option B `block_table_dev`),
+so the same pattern applies:
+
+1. **Track a `ctx_committed` watermark** on `DflashDecodeState` —
+   how many ctx slots already have valid K/V in the paged cache.
+2. **Append only the new tail.** In `propose.rs`, compute
+   `new_start = ctx_committed`, `new_count = ctx_len - ctx_committed`.
+   Call `fill_slots_from_block_table` for `[new_start, ctx_len)` only,
+   and run `precompute_ctx_kv` over `new_count` rows (`n = new_count`).
+3. **Reuse prior slots.** Earlier slots `[0, new_start)` keep their
+   committed K/V — the paged-attention read already indexes the full
+   block table, so no read-side change is needed.
+4. **Advance the watermark** to `ctx_len` after a successful append.
+5. **Invalidate on divergence.** If the committed ctx is ever rewound
+   (rejection rolls back position), reset `ctx_committed` to the new
+   `ctx_len`. The append path must handle shrink, not just grow.
+
+### 18.4 Files to touch
+
+- `dflash_head.rs` — add `ctx_committed: usize` to the decode state.
+- `propose.rs:279-310` — replace the full-ctx fill + precompute with the
+  tail-only path; keep a `ATLAS_DFLASH_DEBUG_FULL_PRECOMPUTE=1` escape
+  hatch that forces the old full rebuild for A/B correctness checks.
+- `precompute_ctx_kv.rs` — already parameterized on `n`/`new_ctx_count`;
+  confirm `start_slot` / `abs_start` offsets are honoured for a non-zero
+  start (they look correct but need a read-through).
+- No CUDA changes — the kernels already accept arbitrary `n` and slot
+  offsets. This is plumbing + a watermark, not a kernel write.
+
+### 18.5 Risk + acceptance
+
+- **Risk: stale K/V on rewind.** The rejection path must reset the
+  watermark or attention reads garbage for rolled-back positions. This
+  is the one correctness trap; gate it behind the debug full-rebuild
+  flag during bring-up and diff against it.
+- **Risk: the win is smaller than the bucket implies.** Instrument the
+  precompute call site (wall-time + launch count) before and after; if
+  it's <5% tok/s, don't ship the added state-machine complexity.
+- ✓ Accept: accept rate exact-matches the full-rebuild path (50.3% on
+  the Volvo bench), tok/s improves ≥ 5%, `DEBUG_FULL_PRECOMPUTE=1`
+  reproduces the old numbers bit-for-bit.
+
+### 18.6 Effort
+
+~1 to 1.5 days. The kernels exist; the work is the watermark, the
+shrink-on-rewind handling, and proving accept-rate parity against the
+full-rebuild reference. Kernel ownership stays with Azeez if any kernel
+turns out to need a slot-offset fix.
+
+### 18.7 What Phase I is NOT
+
+- Not a kernel project — zero new CUDA expected.
+- Not main-model — this is purely the drafter ctx cache, squarely
+  in-scope for the Avarok engagement.
+- Not blocking the G.4 handoff — G.4 ships on its own; I is the next
+  drafter perf phase.
