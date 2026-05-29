@@ -2458,4 +2458,82 @@ snapshot pool only; use `--max-batch-size 1` to reduce the state pool. No regres
 ### Summary
 
 No new bugs found. All previously identified fixes are confirmed correct at HEAD `1885142`.
+
+---
+
+## 2026-05-29 Nineteenth-pass investigation (spec_ssm HEAD `2664d14`)
+
+Fresh independent audit from scratch. All four P1 target files, both P2 components, and
+the P3 propagation chain re-read directly from disk.
+
+### P1 — Mistral Small 4: full 4-file audit
+
+**`prefill/cache_skip_mla.rs`** (single-chunk non-paged MLA path):
+- `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0, ...)` at line 268 hard-blocks any
+  fallback to the old HDIM=256 `inferspark_prefill` kernel at server startup.
+- `inv_sqrt_d_absorbed = 1.0 / sqrt(kv_lora + mla_rope) = 1/sqrt(320)` at line 267.
+  Correct absorbed-space scale; wrong scale was 1/sqrt(128) in the pre-fix code.
+- `write_count = n.saturating_sub(kv_write_start)` (line 237); KV cache write offset by
+  `kv_write_start * mla_cache_dim` (elements) and `kv_write_start * 8` (slot bytes).
+  Prefix-cache-hit tokens correctly skipped.
+- Buffer aliasing `ssm_ba()` for `q_latent` then `k_rope_buf` is safe: `qg_out` receives
+  the `wq_b` GEMM output before `k_rope_buf` is populated.
+
+**`mla_fused_prefill.cu`** (fused Q-absorption + online-softmax attention + V-extraction):
+- Grid `[nq, seq_len, 1]`, block `[256, 1, 1]` — scales correctly to any seq_len ≤ 65536.
+- `__shared__ float smem_q[320]` (line 75), `smem_dot[8]` (line 115, before loop),
+  `smem_latent[256]` (line 190) — three non-overlapping static allocations, 2336 bytes
+  total. No NVCC aliasing risk.
+- Causal mask: `kv_end = min(q_pos + 1, seq_len)` — correct for all seq_len values.
+- Online softmax update is numerically stable (FP32 accumulators, Milakov-Norouzi).
+- All pointer offsets use `unsigned long long` casts — no 32-bit overflow at seq_len ≤ 65536.
+
+**`main.rs` / `kv_cache.rs` / `kv_dtypes.rs`** (`--kv-high-precision-layers auto`):
+- `kv_high_precision_layers = "auto"` maps to `kv_hp_layers = 2` in `kv_cache.rs`.
+- `build_layer_kv_dtypes(BF16, 36, 2)` hits the early-return at lines 20-22 and returns
+  `vec![BF16; 36]`. The per-layer-HP path is never entered when `kv_dtype == BF16`.
+  All 36 MLA attention layers uniformly `KvCacheDtype::Bf16`. No FP8/BF16 mixing.
+
+**`decode/attention_forward_mla.rs`** (decode vs prefill consistency):
+- Scale: `1.0 / ((kv_lora + mla_rope) as f32).sqrt()` at line 377 — matches both prefill
+  paths (`cache_skip_mla.rs` and `paged_mla.rs`).
+- KV format: `[kv_latent | k_rope]` / `[kv_latent | zeros]` via `mla_cache_assemble`,
+  strides `mla_cache_dim` — identical to both prefill paths; decode reads what prefill wrote.
+
+**`mistral_loader/loader_impl/yarn.rs`**:
+- Correct dimension-index-space YaRN formula; `find_correction_dim` computes `low=7`,
+  `high=15` for Mistral params. The original "YaRN inv_freq bug" attribution was a
+  misdiagnosis — yarn.rs was always correct; the actual bugs were the 7 MLA code issues
+  documented in the Action Items table.
+
+### P2 — Nemotron Super 120B: tool calling confirmed
+
+`MODEL.toml` confirmed at HEAD:
+- `disable_tool_steering = true` — suppresses `<tool_call>\n` steering prefix from jinja
+- `tool_call_parser = "bare_json"` — model's trained distribution
+- `skip_template_tools = true` — blocks contradictory XML `<function>` blocks from template
+- `thinking_in_tools = false` — skips think block when tools are active
+
+`nemotron_h.jinja` line 204: `{%- if tools and not disable_tool_steering %}` gates off the
+steering prefix. Generation prompt falls through to `<|im_start|>assistant\n<think>\n`.
+
+`BareJsonParser::suppresses_jinja_tools() → true` — parser-level guarantee that `template.rs`
+passes `jinja_tools = None` regardless of MODEL.toml. Dual-layer protection: either the
+MODEL.toml flag or the parser override is independently sufficient.
+
+### P3 — SSM cache slots: two-pool design confirmed
+
+`SsmStatePool` (active decode states, sized by `--max-batch-size` default 8) and
+`SsmSnapshotPool` (prefix-cache snapshots, sized by `--ssm-cache-slots` default 16) are
+independent allocations in `impl_a1.rs:134` and `impl_a1.rs:143`. Propagation chain
+`cli.rs → serve_phases/build.rs:71 → TransformerModel::new → SsmSnapshotPool::new`
+verified end-to-end. `--ssm-cache-slots 0` correctly zeroes only the snapshot pool;
+`--max-batch-size 1` reduces the active decode pool to ~151 MB.
+
+### Summary
+
+No new bugs found. All seven Mistral MLA fixes (kernel guard, absorbed-space scale ×3,
+KV dtype fallback, kv_dtypes hardening, kv_write_start, smem_dot scope), two Nemotron
+tool-call fixes (skip_template_tools + BareJsonParser::suppresses_jinja_tools), and the
+SSM two-pool design are confirmed correct at HEAD `2664d14` (spec_ssm branch, 2026-05-29).
 The branch remains ready for hardware re-test on GB10 Spark.
