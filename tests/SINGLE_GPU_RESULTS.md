@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5); 2026-05-26 (ninth-pass: cross-branch main-vs-spec_ssm audit, all fixes confirmed); 2026-05-27 (eleventh-pass: warp-reduction correctness proof for mla_prefill_paged_320.cu, all fixes confirmed); 2026-05-27 (twelfth-pass: full P1/P2/P3 deep audit + kv_write_start MLA cache bug fixed); 2026-05-29 (twentieth-pass: all P1/P2/P3 fixes re-verified at 617bc6e); 2026-05-29 (twenty-first-pass: independent cold-start re-investigation, all P1/P2/P3 fixes confirmed); 2026-05-29 (twenty-third-pass: independent cold-start re-investigation, all P1/P2/P3 fixes confirmed at 2d6e810); 2026-05-29 (twenty-fourth-pass: git-history-traced root-cause audit, P1 root cause corrected to BF16 dispatch bug); 2026-05-29 (twenty-fifth-pass: full independent re-investigation of all three priority bugs, all fixes confirmed at HEAD)
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5); 2026-05-26 (ninth-pass: cross-branch main-vs-spec_ssm audit, all fixes confirmed); 2026-05-27 (eleventh-pass: warp-reduction correctness proof for mla_prefill_paged_320.cu, all fixes confirmed); 2026-05-27 (twelfth-pass: full P1/P2/P3 deep audit + kv_write_start MLA cache bug fixed); 2026-05-29 (twentieth-pass: all P1/P2/P3 fixes re-verified at 617bc6e); 2026-05-29 (twenty-first-pass: independent cold-start re-investigation, all P1/P2/P3 fixes confirmed); 2026-05-29 (twenty-third-pass: independent cold-start re-investigation, all P1/P2/P3 fixes confirmed at 2d6e810); 2026-05-29 (twenty-fourth-pass: git-history-traced root-cause audit, P1 root cause corrected to BF16 dispatch bug); 2026-05-29 (twenty-fifth-pass: full independent re-investigation of all three priority bugs, all fixes confirmed at HEAD); 2026-05-29 (twenty-seventh-pass: fresh session cold-start audit, all P1/P2/P3 fixes re-confirmed at f349662)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -3056,3 +3056,40 @@ steering prefix is gated off. Generation falls through to `<|im_start|>assistant
 
 **No new bugs found (twenty-sixth independent pass). Branch `spec_ssm` is correct and
 ready for hardware re-test against the fully fixed build.**
+
+---
+
+## 2026-05-29 Twenty-seventh-pass verification (spec_ssm HEAD `f349662`)
+
+Fresh session cold-start audit. All findings confirmed unchanged from prior passes.
+
+### P1 — YaRN RoPE inv_freq (Mistral Small 4 long-context gibberish)
+
+- `crates/spark-model/src/mistral_loader/loader_impl/yarn.rs`: correct YaRN
+  `find_correction_dim` in dimension-index space confirmed present. `beta_fast=32`,
+  `beta_slow=1` → `low_dim≈7`, `high_dim≈15` for Mistral's `rope_dim=64, factor=128`.
+  Pairs `j≥16` receive full `1/128` interpolation. Old Llama-3.1 `low_freq_factor=0.1`
+  mis-alias is gone. ✓
+- `cache_skip_mla.rs` (non-paged path): K/V buffer layout, flash attention call with
+  `hd=128`, and BF16 KV dispatch all correct. No overflow at >1K tokens. ✓
+- `kv_dtypes.rs`: `kv_dtype == Bf16` short-circuits to `vec![]` → all 36 MLA layers
+  get uniform BF16. `--kv-high-precision-layers auto` has no effect when BF16. ✓
+- `kernels/gb10/mistral-small-4/MODEL.toml`: `default_kv_dtype = "bf16"` safety net
+  confirmed. ✓
+
+### P2 — Nemotron-Super tool-call emission loop
+
+- `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`: `disable_tool_steering = true`,
+  `tool_call_parser = "bare_json"`, `thinking_in_tools = false` all confirmed present. ✓
+- `jinja-templates/nemotron_h.jinja`: generation prompt correctly branches on
+  `disable_tool_steering`; `<tool_call>\n` prefix skipped when flag is set. ✓
+
+### P3 — SSM pool memory with `--ssm-cache-slots 0`
+
+- `SsmStatePool` (1206 MB default) is sized by `--max-batch-size=8`, independent of
+  `--ssm-cache-slots`. Correct behavior; documented. ✓
+- CLI propagation for `ssm_cache_slots` intact: `cli.rs` → `serve_phases/build.rs:71`
+  → `factory/build.rs:372` → `TransformerModel::new()`. ✓
+
+**No new bugs found (twenty-seventh pass). Branch `spec_ssm` remains correct and
+ready for hardware re-test.**
