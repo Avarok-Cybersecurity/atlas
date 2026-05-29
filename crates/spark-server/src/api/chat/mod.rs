@@ -26,6 +26,7 @@ mod loop_detect;
 mod msg_entry;
 pub(super) mod repair_json;
 mod sampling_setup;
+mod sampling_tool_mode;
 mod template;
 mod thinking;
 
@@ -240,6 +241,7 @@ pub(crate) async fn chat_completions_inner(
         max_tokens,
         stop_tokens,
         tool_choice_required,
+        suppress_tool_call,
         grammar_spec,
         timeout_at,
         top_logprobs,

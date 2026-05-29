@@ -127,13 +127,10 @@ pub fn process_seq_logits(
     }
 
     // Suppress <tool_call> during thinking (prevents KV cache contamination
-    // from think-leak bug) AND when tool call loop detected (≥4 identical
-    // calls — see api.rs:548). For the loop case, use a STRONG NEGATIVE
-    // BIAS (−12.0) instead of `-inf` so the model can still escape if its
-    // evidence for a tool call is overwhelming (e.g. user explicitly says
-    // "actually run the tests"). For thinking, hard-mask remains: tool
-    // calls inside <think> are unparsable per the (canonical) qwen3_coder
-    // dialect, so they must be physically blocked.
+    // from think-leak bug) AND when tool-call loop recovery disables tools
+    // for a single free-text turn. Explicit `tool_choice="required"` /
+    // specific-function requests are filtered out before this flag reaches
+    // the scheduler, so the loop recovery path can hard-mask the opener.
     if a.inside_thinking {
         if let Some(tc_start) = tool_call_start_token {
             let idx = tc_start as usize;
@@ -146,7 +143,7 @@ pub fn process_seq_logits(
     {
         let idx = tc_start as usize;
         if idx < f32_logits.len() {
-            f32_logits[idx] -= 12.0;
+            f32_logits[idx] = f32::NEG_INFINITY;
         }
     }
 

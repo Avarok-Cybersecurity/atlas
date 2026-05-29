@@ -16,6 +16,7 @@ use crate::tool_parser;
 use super::super::compact::openai_error_response;
 use super::super::inference_impl::tokenize_stop_sequences;
 use super::super::inference_types::GrammarSpec;
+use super::sampling_tool_mode::resolve_tool_mode;
 
 pub(super) struct SamplingSetup {
     pub(super) temperature: f32,
@@ -34,6 +35,7 @@ pub(super) struct SamplingSetup {
     pub(super) max_tokens: usize,
     pub(super) stop_tokens: Vec<u32>,
     pub(super) tool_choice_required: bool,
+    pub(super) suppress_tool_call: bool,
     pub(super) grammar_spec: Option<GrammarSpec>,
     pub(super) timeout_at: Option<std::time::Instant>,
     pub(super) top_logprobs: Option<u8>,
@@ -69,6 +71,13 @@ pub(super) fn build_sampling(
     let dry_base = preset.dry_base;
     let dry_allowed_length = preset.dry_allowed_length;
     let lz_penalty = preset.lz_penalty;
+    let tool_mode = resolve_tool_mode(
+        tools_active,
+        req.tool_choice.as_ref(),
+        state.tool_call_parser.as_ref().map(|p| p.name()),
+        suppress_tool_call,
+    );
+    let suppress_tool_call = tool_mode.suppressed_for_turn;
 
     // OpenAI-style penalty range validation.
     if !(-2.0..=2.0).contains(&presence_penalty) {
@@ -91,14 +100,15 @@ pub(super) fn build_sampling(
             .collect()
     });
 
-    // Exponential `<tool_call>` bias decay.
+    // Exponential `<tool_call>` bias decay. Positive bias is only valid when a
+    // tool call is required; auto mode must let the model choose free text.
     if tools_active
         && !suppress_tool_call
         && let Some(tc_id) = state.tool_call_start_token_id
     {
         let bias = match tool_call_repeat_count {
-            0 | 1 => 3.0,
-            2 => 0.0,
+            0 | 1 if tool_mode.required => 3.0,
+            0..=2 => 0.0,
             3 => -5.0,
             _ => -10.0,
         };
@@ -133,20 +143,7 @@ pub(super) fn build_sampling(
     }
 
     // Tool-choice + parser-driven required mode.
-    let parser_is_minimax_xml = state
-        .tool_call_parser
-        .as_ref()
-        .is_some_and(|p| p.name() == "minimax_xml");
-    let parser_is_bare_json = state
-        .tool_call_parser
-        .as_ref()
-        .is_some_and(|p| p.name() == "bare_json");
-    let tool_choice_required = tools_active
-        && (req.tool_choice.as_ref().is_some_and(|tc| {
-            matches!(tc, tool_parser::ToolChoice::Mode(m) if m == "required")
-                || matches!(tc, tool_parser::ToolChoice::Specific { .. })
-        }) || parser_is_minimax_xml
-            || parser_is_bare_json);
+    let tool_choice_required = tool_mode.required;
 
     // response_format + tools coexistence.
     //
@@ -154,7 +151,8 @@ pub(super) fn build_sampling(
     // routinely set both (the model emits a tool call on turn N, then a
     // schema-shaped final answer on turn N+1). XGrammar's structural-tag
     // grammar enforces *one* shape per request, so we pick which one wins:
-    //   * `tool_choice="none"` → tools won't be called, enforce response_format
+    //   * `tool_choice="none"` or loop suppression → tools won't be called,
+    //     enforce response_format
     //   * any other tool_choice → enforce tool-call grammar; the schema text
     //     is conventionally embedded in the user/system message by the
     //     caller, and capable models (Qwen3.6, etc.) follow it without
@@ -167,7 +165,8 @@ pub(super) fn build_sampling(
         .tool_choice
         .as_ref()
         .is_some_and(|tc| matches!(tc, tool_parser::ToolChoice::Mode(m) if m == "none"));
-    let response_format_only = has_response_format && (!tools_active || tool_choice_none);
+    let response_format_only =
+        has_response_format && (!tools_active || tool_choice_none || suppress_tool_call);
 
     // Grammar spec (XGrammar structural-tag enforcement).
     let use_triggers = !tool_choice_required;
@@ -186,6 +185,9 @@ pub(super) fn build_sampling(
         // model tool-calls more reliably unconstrained. Tool calls are
         // still parsed from the output — just not grammar-enforced.
         tracing::info!("MODEL.toml [behavior].disable_tool_grammar=true — tool-call grammar OFF");
+        None
+    } else if tools_active && suppress_tool_call {
+        tracing::info!("Tool loop suppression active — tool-call grammar OFF for one turn");
         None
     } else if tools_active {
         if has_response_format {
@@ -237,6 +239,7 @@ pub(super) fn build_sampling(
         max_tokens,
         stop_tokens,
         tool_choice_required,
+        suppress_tool_call,
         grammar_spec,
         timeout_at,
         top_logprobs,
