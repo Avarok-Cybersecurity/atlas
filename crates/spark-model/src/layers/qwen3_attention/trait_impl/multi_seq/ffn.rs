@@ -130,21 +130,28 @@ impl Qwen3AttentionLayer {
                     stream,
                 )?;
             }
-            // Phase B: BATCHED MoE via grouped-GEMM (forward_prefill path).
-            // See trait_decode_multi_seq.rs for the rationale — single
-            // grouped-GEMM per MoE sublayer instead of N × top_k per-token
-            // GEMVs.
+            // Phase B+C: per-token MoE + residual. The generic grouped-GEMM
+            // (forward_prefill) is a NET LOSS for this 256-expert MoE at
+            // small batch — per-expert M ~1 and the sort/permute/ptr-table
+            // overhead dominates (measured: attention block ~40ms vs ~20ms
+            // per-token at N=4 on GB10). N=2/3 already take the fused
+            // forward_k2/k3 branches above; this `else` only sees N>=4 (or
+            // MLA, which must avoid the batched-MoE kernels anyway), so the
+            // per-token path — identical to decode()'s MoE — is fastest here
+            // until a true batched-EP MoE kernel exists. Mirrors the SSM
+            // dispatch in qwen3_ssm/trait_decode_multi_seq.rs. Each forward()
+            // writes moe_output[0]; consume it immediately before the next
+            // iteration overwrites it.
             let normed_base = fwd.buffers.norm_output();
-            self.ffn.forward_prefill(normed_base, n, fwd, stream)?;
-            // Phase C: per-token residual_add. `hidden[i] += moe_output[i]`.
             for i in 0..n {
                 let hidden_i = hidden.offset(i * h * residual_elem);
-                let moe_out_i = fwd.buffers.moe_output().offset(i * h * bf16);
+                let normed2_i = normed_base.offset(i * h * bf16);
+                let moe_out = self.ffn.forward(normed2_i, fwd, stream)?;
                 ops::residual_add(
                     fwd.gpu,
                     self.residual_add_k,
                     hidden_i,
-                    moe_out_i,
+                    moe_out,
                     h as u32,
                     stream,
                 )?;
