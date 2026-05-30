@@ -3227,3 +3227,52 @@ pool only. Use `--max-batch-size 1` to reduce active pool to ~151 MB for single-
 
 **No new bugs found (twenty-ninth independent pass). Branch `spec_ssm` is correct and
 ready for hardware re-test.**
+
+---
+
+## 2026-05-30 Thirtieth-pass investigation (spec_ssm HEAD `4597624`)
+
+Fresh independent audit from a resumed context window. All source files named in the
+three priority descriptions read directly from disk against branch HEAD `4597624`
+(docs-only commit atop `d4d222e`). No new bugs found. All prior fixes confirmed correct.
+
+### P1 — Mistral Small 4 MLA prefill: all seven fixes confirmed
+
+| Fix | Location | Status |
+|-----|----------|--------|
+| Absorbed prefill kernel (`mla_fused_prefill`) + `ensure!` guard | `cache_skip_mla.rs:268-273` | ✓ |
+| Absorbed-space scale `1/sqrt(kv_lora+rope=320)` (×3 paths) | `cache_skip_mla.rs:267`, `paged_mla.rs`, `attention_forward_mla.rs:377` | ✓ |
+| BF16 KV dtype: `vec![BF16; N]` early-return | `kv_dtypes.rs:20-22` | ✓ |
+| BF16 fallback per-site | `phase_assemble.rs:124` `unwrap_or(KvCacheDtype::Bf16)` | ✓ |
+| Multi-chunk paged path: `mla_prefill_paged_320` attends to all `kv_len` tokens | `paged_mla.rs` `seq_len_start>0` branch | ✓ |
+| NVCC smem aliasing: `smem_dot[8]` at function scope before `kv_pos` loop | `mla_fused_prefill.cu:115` | ✓ |
+| CUDA warp-sync UB: half-warp masks (`0x0000FFFF`/`0xFFFF0000`) | `mla_prefill_paged_320.cu:89`, `mla_prefill_attn.cu:71` | ✓ |
+| `kv_write_start` respected in cache-skip MLA KV write | `cache_skip_mla.rs:237-256` | ✓ |
+
+Key file-read confirmations this session:
+- `mla_fused_prefill.cu`: `smem_q[320]` (line 75), `smem_dot[8]` (line 115, before loop at
+  line 126), `smem_latent[256]` (line 190) — three distinct static allocations, 2336 bytes.
+  Grid `(nq, seq_len, 1)` scales linearly; causal mask `kv_end = min(q_pos+1, seq_len)`.
+  Full-warp `0xFFFFFFFF` mask correct: no per-thread early-exit within a block.
+- `kv_dtypes.rs`: `--kv-high-precision-layers auto` → `hp=2`, but the `kv_dtype==BF16`
+  early-return at lines 20-22 fires first → all 36 MLA layers uniformly BF16.
+- `yarn.rs`: `find_correction_dim` correct dimension-index-space formula; `low≈7, high≈15`
+  for Mistral. YaRN was never the bug; the actual root causes were the HDIM/scale/dtype bugs.
+
+### P2 — Nemotron Super 120B tool calling: confirmed fixed
+
+`MODEL.toml`: `disable_tool_steering=true`, `tool_call_parser="bare_json"`,
+`skip_template_tools=true`, `thinking_in_tools=false` — all four flags confirmed.
+`BareJsonParser::suppresses_jinja_tools()→true` provides independent parser-level protection.
+`count_tokens` Anthropic endpoint checks `parser_suppresses` consistently with `template.rs`.
+Triple-layer protection intact; no format-instruction conflict possible.
+
+### P3 — SSM cache slots: two-pool design confirmed
+
+`SsmStatePool::new(&config, max_batch_size, …)` at `impl_a1.rs:134` — sized by
+`--max-batch-size` (default 8, ~1206 MB for Qwen3.5-122B). Independent of `--ssm-cache-slots`.
+`SsmSnapshotPool::new(ssm_cache_slots, …)` at `impl_a1.rs:143` — `--ssm-cache-slots 0`
+zeroes snapshot pool only. Use `--max-batch-size 1` (~151 MB) for single-stream serving.
+
+**No new bugs found (thirtieth independent pass). Branch `spec_ssm` is correct and
+ready for hardware re-test.**
