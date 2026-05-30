@@ -3276,3 +3276,57 @@ zeroes snapshot pool only. Use `--max-batch-size 1` (~151 MB) for single-stream 
 
 **No new bugs found (thirtieth independent pass). Branch `spec_ssm` is correct and
 ready for hardware re-test.**
+
+---
+
+## 2026-05-30 Thirty-first-pass investigation (spec_ssm HEAD `eb54c20`)
+
+Fresh independent cold-start audit. Began on `main` branch (to replicate the original bug
+conditions), then reset to `origin/spec_ssm` after confirming the remote had the correct
+fixes. All seven P1 fixes verified by direct file read at HEAD `eb54c20`.
+
+### Cross-branch comparison: main vs spec_ssm
+
+The most important difference found by reading `cache_skip_mla.rs` on both branches:
+
+| | `main` branch | `spec_ssm` branch |
+|-|--------------|------------------|
+| Attention kernel | `prefill_attention_64` (`inferspark_prefill_64`, HDIM=256) | `mla_fused_prefill` (absorbed MLA, HDIM=320) |
+| KV preparation | Expand K/V via `wkv_b` to `[N, nkv*(nope+v_dim)]` | Latent K/V directly to `mla_fused_prefill` |
+| Attention scale | `1/sqrt(hd=128)` | `1/sqrt(kv_lora+rope=320)` |
+| `kv_write_start` | All N tokens written (ignores cache prefix) | Only `n-kv_write_start` new tokens written |
+
+The `inferspark_prefill_64` kernel has compile-time `#define HDIM 256`. MLA's KV stride is
+`nkv*hd = 1*128 = 128` elements per token, not 256. With HDIM=256, the kernel reads K columns
+128–255 from the **next** token's K row — silently aliasing memory. This produces correct-looking
+output for short contexts (where the cross-token contamination is small relative to the signal)
+but degrades rapidly above ~1000 tokens as the aliased values dominate.
+
+### P1 — all seven fixes re-confirmed at HEAD `eb54c20`
+
+- `cache_skip_mla.rs:259-296`: `mla_fused_prefill` call with `inv_sqrt_d_absorbed = 1/sqrt(320)`,
+  guarded by `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0, …)`.
+- `cache_skip_mla.rs:237-257`: `kv_write_start` offset applied to both cache-assembled
+  buffers and the `meta.slot` pointer.
+- `mla_fused_prefill.cu:115`: `__shared__ float smem_dot[8]` declared at function scope
+  (before the `kv_pos` loop at line 126) — NVCC cannot alias with `smem_q`.
+- `kv_dtypes.rs:17`: `kv_dtype == KvCacheDtype::Bf16 → return vec![]` fires before the
+  BF16-HP-layers logic, so `--kv-high-precision-layers auto` is a true no-op for Mistral.
+- `yarn.rs` uses the correct YaRN dimension-index-space formula (low≈7, high≈15 for Mistral).
+  Independently confirmed: YaRN was never the P1 root cause.
+
+### P2 — Nemotron Super MODEL.toml: confirmed
+
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` (read directly):
+`disable_tool_steering=true`, `tool_call_parser="bare_json"`, `thinking_in_tools=false`.
+All three steering-prevention flags present.
+
+### P3 — SSM pool: two-pool design confirmed
+
+`impl_a1.rs:134`: `SsmStatePool::new(&config, max_batch_size, …)` — 9 slots (8+1 dummy) ×
+36 SSM layers ≈ 1206 MB for Qwen3.5-122B. Independent of `--ssm-cache-slots`.
+`impl_a1.rs:154`: `SsmSnapshotPool::new(ssm_cache_slots, …)` — `--ssm-cache-slots 0`
+correctly zeros snapshot pool. Use `--max-batch-size 1` to reduce active pool to ~151 MB.
+
+**No new bugs found (thirty-first independent pass). Branch `spec_ssm` is correct and
+ready for hardware re-test.**
