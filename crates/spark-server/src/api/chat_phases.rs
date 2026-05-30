@@ -136,9 +136,10 @@ pub(super) fn apply_failure_guards(req: &mut ChatCompletionRequest) -> F23Progre
         );
     }
 
-    // F32: duplicate failed tool_result at conversation tail.
+    // F32: surface the most recent failed tool_result without creating
+    // an orphan role=tool message that vendor templates reject.
     if f32_reposition_failed_tool_result(&mut req.messages) {
-        tracing::info!("F32: duplicated most-recent failed tool_result at conversation tail");
+        tracing::info!("F32: surfaced most-recent failed tool_result in a runtime reminder");
     }
 
     // F39: cross-turn permanent-failure circuit breaker.

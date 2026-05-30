@@ -5,10 +5,91 @@
 //! `circuit.rs` stays under the 500-LoC file-size-cap.
 
 use super::circuit::{
-    F39PermanentFailureMatch, f39_build_circuit_breaker_banner, f39_class_label,
-    f39_extract_binary_name,
+    F39PermanentFailureMatch, f32_reposition_failed_tool_result, f39_build_circuit_breaker_banner,
+    f39_class_label, f39_extract_binary_name,
 };
 use super::classification::F37FailureClass;
+
+fn msg(role: &str, text: &str) -> crate::openai::IncomingMessage {
+    crate::openai::IncomingMessage {
+        role: role.to_string(),
+        content: crate::openai::ParsedContent {
+            text: text.to_string(),
+            images: Vec::new(),
+        },
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+    }
+}
+
+fn assistant_tool_call(id: &str) -> crate::openai::IncomingMessage {
+    crate::openai::IncomingMessage {
+        role: "assistant".to_string(),
+        content: crate::openai::ParsedContent::default(),
+        tool_calls: Some(vec![crate::tool_parser::IncomingToolCall {
+            id: Some(id.to_string()),
+            function: crate::tool_parser::IncomingFunction {
+                name: "Bash".to_string(),
+                arguments: r#"{"command":"cargo"}"#.to_string(),
+            },
+        }]),
+        tool_call_id: None,
+        name: None,
+    }
+}
+
+fn tool_result(id: &str, text: &str) -> crate::openai::IncomingMessage {
+    crate::openai::IncomingMessage {
+        role: "tool".to_string(),
+        content: crate::openai::ParsedContent {
+            text: text.to_string(),
+            images: Vec::new(),
+        },
+        tool_calls: None,
+        tool_call_id: Some(id.to_string()),
+        name: None,
+    }
+}
+
+// ── f32_reposition_failed_tool_result ────────────────────────────
+
+#[test]
+fn f32_surfaces_error_without_orphan_tool_message() {
+    let mut messages = vec![
+        msg("user", "do it"),
+        assistant_tool_call("toolu_1"),
+        tool_result("toolu_1", "[tool error]\ncargo: command not found"),
+        msg("user", "intervening 1"),
+        msg("user", "intervening 2"),
+    ];
+    let before = messages.len();
+
+    assert!(f32_reposition_failed_tool_result(&mut messages));
+
+    assert_eq!(messages.len(), before);
+    let last = messages.last().unwrap();
+    assert_eq!(last.role, "user");
+    assert!(last.content.text.contains("<failed_tool_result>"));
+    assert!(
+        last.content
+            .text
+            .contains("[tool error]\ncargo: command not found")
+    );
+}
+
+#[test]
+fn f32_no_op_when_failed_tool_is_already_fresh() {
+    let mut messages = vec![
+        msg("user", "do it"),
+        assistant_tool_call("toolu_1"),
+        tool_result("toolu_1", "[tool error]\ncargo: command not found"),
+    ];
+    let before = messages.len();
+
+    assert!(!f32_reposition_failed_tool_result(&mut messages));
+    assert_eq!(messages.len(), before);
+}
 
 // ── f39_extract_binary_name ───────────────────────────────────────
 
