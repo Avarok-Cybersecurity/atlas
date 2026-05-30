@@ -3171,3 +3171,59 @@ prefix correctly gated off for Super 120B ✓
 
 **No new bugs found (twenty-eighth independent pass). Branch `spec_ssm` is correct and
 ready for hardware re-test.**
+
+---
+
+## 2026-05-30 Twenty-ninth-pass verification (spec_ssm HEAD `d4d222e`)
+
+Independent cold-start audit of all files named in the three task priorities.
+No new bugs found. All prior fixes confirmed present and correct.
+
+### P1 — Mistral Small 4 MLA prefill: all seven fixes confirmed
+
+All paths verified end-to-end:
+
+| Fix | Location | Status |
+|-----|----------|--------|
+| BF16 KV dispatch | `kv_dtypes.rs` lines 20-22: returns `vec![BF16; N]` (not `[]`) when `kv_dtype==BF16` | ✓ |
+| BF16 per-site | `phase_assemble.rs` line 124: `unwrap_or(KvCacheDtype::Bf16)` | ✓ |
+| Absorbed prefill kernel | `cache_skip_mla.rs`: `mla_fused_prefill_k` with `ensure!` guard, `inv_sqrt_d=1/√320` | ✓ |
+| HDIM=128 first-chunk | `paged_mla.rs` first-chunk: `ensure!(hd>128 \|\| prefill_attn_128_k.0!=0)`, routes to `prefill_attn_128_k` | ✓ |
+| Multi-chunk paged path | `paged_mla.rs` `seq_len_start>0`: `mla_prefill_paged_320` attends to all `kv_len` tokens | ✓ |
+| CUDA smem aliasing | `mla_fused_prefill.cu` line 115: `smem_dot[8]` at function scope before `kv_pos` loop | ✓ |
+| CUDA warp-sync UB | `mla_prefill_attn.cu` + `mla_prefill_paged_320.cu`: half-warp masks `0x0000FFFF/0xFFFF0000` | ✓ |
+| `kv_write_start` in cache-skip | `cache_skip_mla.rs`: `write_count=n.saturating_sub(kv_write_start)`, slot offset `kv_write_start*8` | ✓ |
+
+Additional verification — `mla_fused_prefill.cu` warp reduction uses `0xFFFFFFFF`: correct
+because all 256 threads are active throughout the reduction (no thread diverges before the
+`__shfl_down_sync` calls; `if (tid < kv_lora/rope_dim)` affects only the accumulator value,
+not thread participation). Full-warp mask is appropriate here.
+
+`--kv-high-precision-layers auto` interaction: `build_layer_kv_dtypes(BF16, 36, 2)` hits the
+`kv_dtype==BF16` early-return and returns `vec![BF16; 36]`. The `hp=2` path is never entered.
+All 36 MLA layers get uniform BF16; no FP8/BF16 mixing is possible for Mistral regardless of
+this flag.
+
+Decode path (`attention_forward_mla.rs` line 377): `1.0f32 / ((kv_lora + mla_rope) as f32).sqrt() = 1/√320` — consistent with all prefill paths.
+
+YaRN note: `yarn.rs` `find_correction_dim` was always correct on both branches; it was never
+the bug. The gibberish threshold (~600–1000 tokens) was caused by the FP8 KV cache dispatch
+bug and the HDIM=256 kernel mismatch.
+
+### P2 — Nemotron Super 120B tool calling: all four flags confirmed
+
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`: `disable_tool_steering=true`,
+`tool_call_parser="bare_json"`, `skip_template_tools=true`, `thinking_in_tools=false` — all
+present. `BareJsonParser::suppresses_jinja_tools()→true` provides independent parser-level
+protection. `count_tokens` endpoint checks `parser_suppresses` consistently with `template.rs`
+(commit `2993894`). Triple-layer protection; no format-instruction conflict possible.
+
+### P3 — SSM pool: correct by design
+
+`SsmStatePool::new(config, max_batch_size, …)` at `impl_a1.rs:134` — 1206 MB for 8+1 slots ×
+36 SSM layers on Qwen3.5-122B. Independent of `--ssm-cache-slots`. `SsmSnapshotPool::new
+(ssm_cache_slots, …)` at `impl_a1.rs:143` — `--ssm-cache-slots 0` correctly zeros snapshot
+pool only. Use `--max-batch-size 1` to reduce active pool to ~151 MB for single-stream use.
+
+**No new bugs found (twenty-ninth independent pass). Branch `spec_ssm` is correct and
+ready for hardware re-test.**
