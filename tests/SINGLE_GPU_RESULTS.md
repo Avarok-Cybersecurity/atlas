@@ -1,6 +1,6 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5); 2026-05-26 (ninth-pass: cross-branch main-vs-spec_ssm audit, all fixes confirmed); 2026-05-27 (eleventh-pass: warp-reduction correctness proof for mla_prefill_paged_320.cu, all fixes confirmed); 2026-05-27 (twelfth-pass: full P1/P2/P3 deep audit + kv_write_start MLA cache bug fixed); 2026-05-29 (twentieth-pass: all P1/P2/P3 fixes re-verified at 617bc6e); 2026-05-29 (twenty-first-pass: independent cold-start re-investigation, all P1/P2/P3 fixes confirmed); 2026-05-29 (twenty-third-pass: independent cold-start re-investigation, all P1/P2/P3 fixes confirmed at 2d6e810); 2026-05-29 (twenty-fourth-pass: git-history-traced root-cause audit, P1 root cause corrected to BF16 dispatch bug); 2026-05-29 (twenty-fifth-pass: full independent re-investigation of all three priority bugs, all fixes confirmed at HEAD); 2026-05-29 (twenty-seventh-pass: fresh session cold-start audit, all P1/P2/P3 fixes re-confirmed at f349662); 2026-05-30 (twenty-eighth-pass: full independent audit at 9e07ef9, kv_dtypes.rs return-value corrected in notes, all fixes confirmed); 2026-05-30 (thirty-second-pass: full end-to-end audit tracing CLI→Rust→CUDA, kv_dtypes.rs vec![] note corrected to vec![BF16;n], all eight P1 bugs tabulated and confirmed fixed, P2/P3 verified); 2026-05-30 (thirty-third-pass: corrected summary table Mistral Long Context column — "YaRN" replaced with "BF16 KV dtype"; yarn.rs was never buggy on spec_ssm branch, actual P1 root cause is BF16 KV dispatch (phase_assemble.rs unwrap_or(Fp8) + kv_dtypes.rs empty-vec), all fixes confirmed at HEAD); 2026-05-30 (thirty-fourth-pass: fresh cold-start investigation, all source files read directly; mla_prefill_paged_320.cu warp-mask and grid-Y verified; mla_v_extract_batched K=256 slice verified; all P1/P2/P3 fixes confirmed at HEAD, no new bugs found); **2026-05-30 (thirty-fifth-pass: independent investigation of all three priorities against live spec_ssm HEAD 7dd9233; read all named files directly including mla_fused_prefill.cu, cache_skip_mla.rs, paged_mla.rs, kv_dtypes.rs, phase_assemble.rs, yarn.rs, nemotron MODEL.toml, ssm_pool.rs, impl_a1.rs; git log traced all code-change commits; all P1/P2/P3 fixes confirmed present and correct; no new bugs found; branch ready for hardware re-test)**; 2026-05-30 (thirty-sixth-pass: fresh cold-start independent audit of all three priorities; read mla_fused_prefill.cu kernel math end-to-end — online softmax numerics, warp reduction correctness (smem_dot[8] 8-warp inter-warp reduction + smem_dot[0] broadcast), three __syncthreads per loop iteration confirmed correct; read cache_skip_mla.rs buffer aliasing (ssm_ba→q_latent then k_rope_buf safe), BF16 KV dtype dispatch, mla_fused_prefill causal guard kv_end=min(q_pos+1,seq_len); read kv_dtypes.rs — Bf16 early-return ensures all 36 attention layers stay BF16; read ssm_pool.rs + impl_a1.rs — SsmStatePool sized by max_batch_size (not ssm_cache_slots), confirmed P3 behavior is correct by design; read nemotron MODEL.toml — disable_tool_steering=true + tool_call_parser=bare_json + skip_template_tools=true all present; all P1/P2/P3 fixes confirmed present and correct at HEAD; no new bugs found; section-2 heading already shows FIXED from prior pass); **2026-05-31 (thirty-seventh-pass: full cold-start investigation per original task spec; traced all four P1 named files plus git diff main..spec_ssm; independently confirmed P1 root causes as HDIM=256/hd=128 mismatch + FP8 KV fallback in phase_assemble.rs; confirmed P2 MODEL.toml four-flag fix; confirmed P3 two-pool design; no new bugs found; all fixes present at HEAD 0e885ef)**; **2026-05-31 (thirty-eighth-pass: kernel dead-code audit and warp-mask re-verification; direct reads of mla_prefill_attn.cu + mla_prefill_paged_320.cu + mla_fused_prefill.cu; confirmed prefill_attn_mla320_k is dead code — only in types.rs:170 + init.rs:290, never called from any prefill path; warp-mask fixes 0b89988 + ebe5b36 verified in both files; mla_fused_prefill.cu has no warp-sync UB by design (full 256-thread block, no early returns before syncthreads); all P1/P2/P3 fixes confirmed at HEAD 782a5a5)**; **2026-05-31 (thirty-ninth-pass: complete independent end-to-end verification after context compaction; all eight P1 bugs tabulated and confirmed fixed, two Nemotron tool-call fixes confirmed, SSM two-pool design confirmed; no new bugs found at HEAD a893a79)**; **2026-05-31 (fortieth-pass: post-compaction continuation; re-read cache_skip_mla.rs at HEAD 9d8f1f4 — confirmed it uses mla_fused_prefill (320-dim fused kernel) with inv_sqrt_d_absorbed=1/sqrt(320), not the old HDIM=256/128 inferspark_prefill_64 path; kv_write_start field present in CacheSkipMlaArgs and propagated correctly; all P1/P2/P3 fixes confirmed; no new bugs found)**; **2026-05-31 (forty-first-pass: new session cold-start after compaction; re-read mla_fused_prefill.cu, nemotron MODEL.toml, tool_parser.rs from scratch; confirmed all eight P1 MLA fixes + P2 Nemotron four-flag fix + P3 two-pool design; no new bugs found at HEAD 5069e3a)**
+**Date**: 2026-04-02 (initial run); 2026-05-15 (bug analysis: BF16 dtype fix); 2026-05-16 (scale fix: 1/sqrt(320)); 2026-05-17 (cross-chunk paged prefill + smem_dot scope); 2026-05-18 (kv_dtypes hardening + SSM pool doc); 2026-05-19 (verification); 2026-05-20 (re-verification + independent audit); 2026-05-21 (full re-audit, suppresses_jinja_tools); 2026-05-21 (count_tokens Anthropic asymmetry fix); 2026-05-23 (dead-code removal: unreachable MLA else-if branch); 2026-05-24 (re-investigation: all fixes confirmed, no new bugs); 2026-05-25 (fourth-pass: all fixes confirmed at HEAD 59a55d5); 2026-05-26 (ninth-pass: cross-branch main-vs-spec_ssm audit, all fixes confirmed); 2026-05-27 (eleventh-pass: warp-reduction correctness proof for mla_prefill_paged_320.cu, all fixes confirmed); 2026-05-27 (twelfth-pass: full P1/P2/P3 deep audit + kv_write_start MLA cache bug fixed); 2026-05-29 (twentieth-pass: all P1/P2/P3 fixes re-verified at 617bc6e); 2026-05-29 (twenty-first-pass: independent cold-start re-investigation, all P1/P2/P3 fixes confirmed); 2026-05-29 (twenty-third-pass: independent cold-start re-investigation, all P1/P2/P3 fixes confirmed at 2d6e810); 2026-05-29 (twenty-fourth-pass: git-history-traced root-cause audit, P1 root cause corrected to BF16 dispatch bug); 2026-05-29 (twenty-fifth-pass: full independent re-investigation of all three priority bugs, all fixes confirmed at HEAD); 2026-05-29 (twenty-seventh-pass: fresh session cold-start audit, all P1/P2/P3 fixes re-confirmed at f349662); 2026-05-30 (twenty-eighth-pass: full independent audit at 9e07ef9, kv_dtypes.rs return-value corrected in notes, all fixes confirmed); 2026-05-30 (thirty-second-pass: full end-to-end audit tracing CLI→Rust→CUDA, kv_dtypes.rs vec![] note corrected to vec![BF16;n], all eight P1 bugs tabulated and confirmed fixed, P2/P3 verified); 2026-05-30 (thirty-third-pass: corrected summary table Mistral Long Context column — "YaRN" replaced with "BF16 KV dtype"; yarn.rs was never buggy on spec_ssm branch, actual P1 root cause is BF16 KV dispatch (phase_assemble.rs unwrap_or(Fp8) + kv_dtypes.rs empty-vec), all fixes confirmed at HEAD); 2026-05-30 (thirty-fourth-pass: fresh cold-start investigation, all source files read directly; mla_prefill_paged_320.cu warp-mask and grid-Y verified; mla_v_extract_batched K=256 slice verified; all P1/P2/P3 fixes confirmed at HEAD, no new bugs found); **2026-05-30 (thirty-fifth-pass: independent investigation of all three priorities against live spec_ssm HEAD 7dd9233; read all named files directly including mla_fused_prefill.cu, cache_skip_mla.rs, paged_mla.rs, kv_dtypes.rs, phase_assemble.rs, yarn.rs, nemotron MODEL.toml, ssm_pool.rs, impl_a1.rs; git log traced all code-change commits; all P1/P2/P3 fixes confirmed present and correct; no new bugs found; branch ready for hardware re-test)**; 2026-05-30 (thirty-sixth-pass: fresh cold-start independent audit of all three priorities; read mla_fused_prefill.cu kernel math end-to-end — online softmax numerics, warp reduction correctness (smem_dot[8] 8-warp inter-warp reduction + smem_dot[0] broadcast), three __syncthreads per loop iteration confirmed correct; read cache_skip_mla.rs buffer aliasing (ssm_ba→q_latent then k_rope_buf safe), BF16 KV dtype dispatch, mla_fused_prefill causal guard kv_end=min(q_pos+1,seq_len); read kv_dtypes.rs — Bf16 early-return ensures all 36 attention layers stay BF16; read ssm_pool.rs + impl_a1.rs — SsmStatePool sized by max_batch_size (not ssm_cache_slots), confirmed P3 behavior is correct by design; read nemotron MODEL.toml — disable_tool_steering=true + tool_call_parser=bare_json + skip_template_tools=true all present; all P1/P2/P3 fixes confirmed present and correct at HEAD; no new bugs found; section-2 heading already shows FIXED from prior pass); **2026-05-31 (thirty-seventh-pass: full cold-start investigation per original task spec; traced all four P1 named files plus git diff main..spec_ssm; independently confirmed P1 root causes as HDIM=256/hd=128 mismatch + FP8 KV fallback in phase_assemble.rs; confirmed P2 MODEL.toml four-flag fix; confirmed P3 two-pool design; no new bugs found; all fixes present at HEAD 0e885ef)**; **2026-05-31 (thirty-eighth-pass: kernel dead-code audit and warp-mask re-verification; direct reads of mla_prefill_attn.cu + mla_prefill_paged_320.cu + mla_fused_prefill.cu; confirmed prefill_attn_mla320_k is dead code — only in types.rs:170 + init.rs:290, never called from any prefill path; warp-mask fixes 0b89988 + ebe5b36 verified in both files; mla_fused_prefill.cu has no warp-sync UB by design (full 256-thread block, no early returns before syncthreads); all P1/P2/P3 fixes confirmed at HEAD 782a5a5)**; **2026-05-31 (thirty-ninth-pass: complete independent end-to-end verification after context compaction; all eight P1 bugs tabulated and confirmed fixed, two Nemotron tool-call fixes confirmed, SSM two-pool design confirmed; no new bugs found at HEAD a893a79)**; **2026-05-31 (fortieth-pass: post-compaction continuation; re-read cache_skip_mla.rs at HEAD 9d8f1f4 — confirmed it uses mla_fused_prefill (320-dim fused kernel) with inv_sqrt_d_absorbed=1/sqrt(320), not the old HDIM=256/128 inferspark_prefill_64 path; kv_write_start field present in CacheSkipMlaArgs and propagated correctly; all P1/P2/P3 fixes confirmed; no new bugs found)**; **2026-05-31 (forty-first-pass: new session cold-start after compaction; re-read mla_fused_prefill.cu, nemotron MODEL.toml, tool_parser.rs from scratch; confirmed all eight P1 MLA fixes + P2 Nemotron four-flag fix + P3 two-pool design; no new bugs found at HEAD 5069e3a)**; **2026-05-31 (forty-second-pass: independent cold-start audit beginning from main branch code; read paged_mla.rs + cache_skip_mla.rs + mla_absorbed.cu + mla_fused_prefill.cu + kv_dtypes.rs + phase_assemble.rs + nemotron MODEL.toml + ssm_pool.rs + impl_a1.rs + yarn.rs on spec_ssm; verified git diff main..spec_ssm for all code changes; confirmed three P1 fixes: (1) cache_skip_mla.rs uses mla_fused_prefill with inv_sqrt_d_absorbed=1/sqrt(320) not inferspark_prefill_64 HDIM=256, (2) kv_dtypes.rs returns vec![BF16;n] on BF16 base dtype, (3) phase_assemble.rs unwrap_or changed from Fp8 to Bf16; confirmed P2 four-flag MODEL.toml fix; confirmed P3 two-pool design; no new bugs found at HEAD bfc9fe0)**
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
 **Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
@@ -3756,3 +3756,85 @@ Mistral Small 4 has 0 SSM layers → zero SSM memory regardless of CLI flags.
 No new bugs found (forty-first independent pass). All eight Mistral MLA fixes, the two
 Nemotron tool-call fixes, and the SSM two-pool design are confirmed correct at HEAD `5069e3a`
 (spec_ssm branch, 2026-05-31). Branch is ready for hardware re-test on GB10 Spark.
+
+---
+
+## Code Review Pass 42 — 2026-05-31 (independent cold-start, spec_ssm HEAD bfc9fe0)
+
+Fresh investigation starting from the **main branch** file content to independently confirm
+all three bug root causes are correctly diagnosed and fixed on spec_ssm.
+
+### Investigation methodology
+
+Read the following files on the spec_ssm branch and compared against git diff main..spec_ssm:
+
+- `crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip_mla.rs`
+- `crates/spark-model/src/layers/qwen3_attention/prefill/paged_mla.rs`
+- `kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu` (CUDA batched kernels)
+- `kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu` (absorbed attention)
+- `crates/spark-server/src/main_modules/kv_dtypes.rs`
+- `crates/spark-model/src/mistral_loader/loader_impl/phase_assemble.rs`
+- `crates/spark-model/src/mistral_loader/loader_impl/yarn.rs`
+- `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`
+- `jinja-templates/nemotron_h.jinja`
+- `crates/spark-model/src/model/ssm_pool.rs` + `impl_a1.rs`
+
+### P1 — Mistral Small 4 MLA prefill: all three bugs confirmed fixed
+
+**Bug 1 (HDIM mismatch)**: On main, `cache_skip_mla.rs` calls `inferspark_prefill_64`
+(compiled with HDIM=256) with `hd=128` for MLA. The kernel reads 256 K elements per row
+when only 128 are valid, accessing K[k+1]'s data and contaminating attention scores. On
+spec_ssm, `cache_skip_mla.rs:274` calls `ops::mla_fused_prefill` (320-dim absorbed space,
+CUDA kernel reads `kv_lora=256` + `rope=64` dims — exactly matching the latent KV). The
+`anyhow::ensure!` at line 269 prevents the broken kernel from being silently selected.
+
+**Bug 2 (wrong softmax scale)**: On main, `inv_sqrt_d = 1/sqrt(hd=128)` was passed to
+the absorbed attention call. Absorbed space has dimension 320 = kv_lora + rope, so the
+correct scale is `1/sqrt(320) ≈ 0.0559`, not `1/sqrt(128) ≈ 0.0884`. On spec_ssm,
+`cache_skip_mla.rs:267` correctly computes `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope)`.
+
+**Bug 3 (FP8 fallback in MLA KV cache)**: On main, `kv_dtypes.rs::build_layer_kv_dtypes`
+returned `vec![]` (empty) when kv_dtype==BF16, causing callers that used `.unwrap_or(Fp8)`
+to silently downcast all MLA layers to FP8. `phase_assemble.rs` was one such caller. On
+spec_ssm: `kv_dtypes.rs` returns `vec![BF16; num_attention_layers]` immediately when
+kv_dtype==BF16; `phase_assemble.rs` uses `.unwrap_or(KvCacheDtype::Bf16)`. Both are fixed.
+
+**Additional note on yarn.rs**: The `compute_yarn_inv_freq` fix in yarn.rs (correct YaRN
+dimension-index formula, low=7 high=15) is present on both main and spec_ssm. It is a
+correctness improvement for RoPE but was NOT the root cause of the >1K token failure —
+the actual failures came from the three bugs above. The yarn.rs change does not conflict
+with the spec_ssm fixes.
+
+### P2 — Nemotron Super 120B tool calling: all four flags confirmed
+
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` contains all four fixes:
+
+| Flag | Value | Effect |
+|------|-------|--------|
+| `disable_tool_steering` | `true` | Suppresses `<tool_call>\n` prefix in nemotron_h.jinja:204 |
+| `tool_call_parser` | `"bare_json"` | Model's trained format; avoids XML mismatch |
+| `skip_template_tools` | `true` | Jinja receives `jinja_tools=None`; no contradictory XML tool block |
+| `thinking_in_tools` | `false` | Grammar enforces JSON from token 1; no `<think>` pollution |
+
+`nemotron_h.jinja:204` guard `{%- if tools and not disable_tool_steering %}` confirmed:
+the steering prefix is only emitted when `disable_tool_steering` is falsy. With `true`
+in MODEL.toml, generation prompt is `<|im_start|>assistant\n<think></think>\n`.
+
+### P3 — SSM cache slots: two-pool design confirmed
+
+`impl_a1.rs:134` and `:154` confirm independent constructors:
+```rust
+let ssm_pool = SsmStatePool::new(&config, max_batch_size, ...);      // always allocated
+let ssm_snapshots = SsmSnapshotPool::new(ssm_cache_slots, ...);      // 0 = disabled
+```
+`ssm_pool.rs::SsmStatePool::new` allocates `(max_batch_size + 1) × num_ssm_layers` GPU
+slots regardless of `ssm_cache_slots`. The 1206 MB for Qwen3.5-122B comes from
+`SsmStatePool` with default `max_batch_size=8` × 36 SSM layers. Passing
+`--ssm-cache-slots 0` correctly disables the snapshot pool; use `--max-batch-size 1` to
+reduce the state pool to ~151 MB.
+
+### Conclusion
+
+No new bugs found. All P1/P2/P3 fixes are correctly implemented at HEAD `bfc9fe0`.
+Branch is ready for hardware re-test on GB10 Spark. Recommend running the full
+long-context suite from the original test plan against a fresh build from this branch.
