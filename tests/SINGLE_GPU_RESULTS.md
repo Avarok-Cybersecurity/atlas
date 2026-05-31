@@ -3838,3 +3838,51 @@ reduce the state pool to ~151 MB.
 No new bugs found. All P1/P2/P3 fixes are correctly implemented at HEAD `bfc9fe0`.
 Branch is ready for hardware re-test on GB10 Spark. Recommend running the full
 long-context suite from the original test plan against a fresh build from this branch.
+
+---
+
+## Code Review Pass 43 — 2026-05-31 (independent cold-start, spec_ssm HEAD 162f9a3)
+
+Independent investigation starting from first principles (read main-branch code, then
+spec_ssm diffs). Findings match all prior passes.
+
+### Methodology
+
+Read the four P1 files listed in the task spec (`prefill/cache_skip_mla.rs`,
+`mla_absorbed.cu`, `crates/spark-server/src/main.rs`, `decode.rs`), plus
+`paged_mla.rs`, `kv_dtypes.rs`, `phase_assemble.rs`, `yarn.rs`, `factory/build.rs`,
+`nemotron MODEL.toml`, `ssm_pool.rs`, `impl_a1.rs`.
+
+### Key independent findings
+
+1. **P1 root-cause confirmed independently**: The main-branch RESULTS.md (section 2) claims
+   the root cause was a YaRN inv_freq bug in `yarn.rs`. Independent re-investigation of the
+   code paths finds that `yarn.rs` was NEVER wrong on spec_ssm; the actual P1 root causes
+   are the three spec_ssm-documented bugs (HDIM mismatch, wrong softmax scale, FP8 fallback).
+   The `yarn.rs` change (correct YaRN formula, low=7/high=15) exists on both branches as a
+   correctness improvement but did not control the >1K token failure threshold.
+
+2. **`phase_assemble.rs` defensive fix confirmed independently**: I independently identified
+   that `layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Fp8)` was the wrong default
+   for MLA (FP8 destroys compressed latents). The spec_ssm branch already has the correct fix
+   (`unwrap_or(Bf16)` with explanatory comment). The factory `build.rs` expansion
+   (`vec![kv_dtype; n]` when `layer_dtypes.is_empty()`) prevents this from triggering in
+   production, but the defensive default matters for direct-call test paths.
+
+3. **`kv_high_precision_layers auto` + `--kv-cache-dtype bf16` path traced end-to-end**:
+   `resolve_kv_cache_config` → `build_layer_kv_dtypes(Bf16, 36, 2)` → `[]` → `factory/build.rs`
+   expands to `vec![Bf16; 36]` → all 36 Mistral attention layers get `KvCacheDtype::Bf16`.
+   No FP8 mixing occurs on this path regardless of `phase_assemble.rs` default.
+
+4. **`mla_fused_prefill` dead-code status confirmed**: The kernel is loaded at init
+   (`init.rs:305`) but `mla_fused_prefill_k` is used ONLY in `cache_skip_mla.rs`
+   (the active P1 fix path) — not called from paged_mla.rs. The CUDA kernel's
+   `smem_dot[8]` scope-inside-loop pattern is an alias of a single static allocation;
+   the three `__syncthreads()` per iteration are correct (no divergence since `kv_end`
+   is uniform across all threads in a block).
+
+5. **P2/P3 confirmed**: Nemotron MODEL.toml has all four flags; SSM two-pool design
+   (`SsmStatePool` sized by `max_batch_size`, `SsmSnapshotPool` by `ssm_cache_slots`) is
+   correct behavior.
+
+No new bugs found. All P1/P2/P3 fixes confirmed present at HEAD `162f9a3`.
