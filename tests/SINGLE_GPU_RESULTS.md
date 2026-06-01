@@ -1,9 +1,9 @@
 # Single-GPU Test Results — 3 Large Models on DGX Spark
 
-**Date**: 2026-04-02 (initial run) → 2026-05-27 (all P0/P1 fixes applied; action items 1-12) → 2026-06-01 (50th-pass cold-start audit)
+**Date**: 2026-04-02 (initial run) → 2026-05-27 (all P0/P1 fixes applied; action items 1-12) → 2026-06-01 (50th-pass cold-start audit; all fixes committed, branch ready for hardware re-validation)
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
-**Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
+**Image**: atlas-test:latest (built from spec_ssm HEAD; all fixes committed, no pending uncommitted changes)
 
 ---
 
@@ -4336,3 +4336,24 @@ All four behavior flags are confirmed present in the current MODEL.toml.
 `--ssm-cache-slots` controls `SsmSnapshotPool` only. `SsmStatePool` is sized by
 `--max-batch-size` and is not affected by `--ssm-cache-slots 0`. Behavior is correct
 by design; no code change needed.
+
+---
+
+## 2026-06-01 Final Session Verification
+
+Cross-checked all claimed fixes against the actual spec_ssm source tree. All code changes
+are committed; `git status` is clean. Summary of committed code fixes (not docs):
+
+| Commit | Fix |
+|--------|-----|
+| `3f673d4` | `cache_skip_mla.rs`: replace HDIM=256 `inferspark_prefill_64` with `mla_fused_prefill` in absorbed 320-dim space |
+| `eed6190` | All three MLA paths: `inv_sqrt_d = 1/sqrt(kv_lora+rope) = 1/sqrt(320)`, not `1/sqrt(hd=128)` |
+| `b274150` | `paged_mla.rs`: new `seq_len_start > 0` branch with `mla_prefill_paged_320` + `mla_v_extract_batched` |
+| `345c3b2` | `mla_fused_prefill.cu`: `smem_dot[8]` moved from inside `kv_pos` loop to function scope |
+| `427104f` | `phase_assemble.rs`: `unwrap_or(Fp8)` → `unwrap_or(Bf16)`; `kv_dtypes.rs`: returns `vec![Bf16; N]` |
+| `f892f58` | `MODEL.toml` (Nemotron): `skip_template_tools = true` prevents contradictory XML tool injection |
+| `e7de0f4` | `cache_skip_mla.rs`: propagate `kv_write_start` to MLA KV cache write (prefix-cache correctness) |
+| `0b89988` | `mla_prefill_attn.cu`: half-warp masks eliminate warp-sync UB |
+| `ebe5b36` | `mla_prefill_paged_320.cu`: half-warp masks eliminate warp-sync UB |
+
+Header note corrected: no uncommitted fixes remain on the spec_ssm branch.
