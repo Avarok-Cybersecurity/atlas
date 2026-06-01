@@ -221,6 +221,11 @@ for (const file of files) {
   const topology = inferTopology(stem, top);
   const vendor = vendorOf(fam);
 
+  // sparkrun requires --hosts (it errors "No hosts specified" otherwise).
+  // Single-node recipes target one Spark -> localhost. EP=2/TP=2 recipes
+  // span two nodes, so show a two-host placeholder the user fills in.
+  const hostsArg =
+    topology === 'single' ? '--hosts localhost' : '--hosts <spark-1>,<spark-2>';
   const recipe = {
     displayName: recipeDisplay(stem),
     hfId: top.model || '',
@@ -228,7 +233,7 @@ for (const file of files) {
     quant: metadata.quantization || '',
     topology,
     recipeStem: stem,
-    command: `sparkrun run @atlas/${stem}`
+    command: `sparkrun run @atlas/${stem} ${hostsArg}`
   };
 
   if (!vendorMap.has(vendor)) vendorMap.set(vendor, new Map());

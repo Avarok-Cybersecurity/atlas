@@ -16,7 +16,12 @@ set -eu
 
 # The recipe to launch. Keep in lockstep with the site copy + atlas-recipes
 # SSOT (https://github.com/Avarok-Cybersecurity/atlas-recipes).
-RECIPE="qwen3.6-35b-a3b-fp8-mtp-atlas"
+RECIPE="qwen3.6-35b-a3b-fp8-mtp"
+
+# sparkrun requires a target host list (it errors "No hosts specified"
+# otherwise). Default to the local Spark; override with ATLAS_HOSTS for a
+# remote or multi-node target, e.g. ATLAS_HOSTS=10.0.0.1,10.0.0.2.
+HOSTS="${ATLAS_HOSTS:-localhost}"
 
 log() { printf '\033[1;36m[atlas]\033[0m %s\n' "$1" >&2; }
 err() { printf '\033[1;31m[atlas]\033[0m %s\n' "$1" >&2; }
@@ -33,5 +38,5 @@ else
   uvx sparkrun setup install
 fi
 
-log "Running @atlas/${RECIPE} ..."
-exec sparkrun run "@atlas/${RECIPE}"
+log "Running @atlas/${RECIPE} on ${HOSTS} ..."
+exec sparkrun run "@atlas/${RECIPE}" --hosts "${HOSTS}"
