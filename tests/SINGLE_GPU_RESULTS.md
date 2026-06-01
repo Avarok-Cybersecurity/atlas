@@ -4435,3 +4435,101 @@ Key findings:
   on single-stream workloads.
 
 **No new bugs found. All fixes verified correct against spec_ssm HEAD `3b8a01a`.**
+
+---
+
+## 2026-06-01 Independent Cold-Start Investigation (fifty-third pass)
+
+Fresh top-down audit from HEAD `dd3894d`. Investigated every file named in the original
+bug reports, tracing data flow end-to-end across all three priority issues.
+
+### P1 — Mistral Small 4 MLA Prefill (verified FIXED)
+
+Files audited (in order specified by original report):
+
+**`prefill/cache_skip_mla.rs`** — non-paged single-chunk path:
+- `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0, …)` at line 254 hard-blocks any
+  fallback to the HDIM=256 `inferspark_prefill` kernel. Server fails at load time if
+  the kernel is missing rather than silently corrupting attention.
+- `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope)` = `1/sqrt(320)` — correct absorbed
+  dimension. Old code used `1/sqrt(hd=128)`, over-sharpening softmax by √(128/320) ≈ 0.63.
+- `kv_write_start` field propagated from `CacheSkipMlaArgs`; KV write covers only tokens
+  `kv_write_start..n` with correct `slot.offset(kv_write_start * 8)` alignment.
+- Buffer reuse of `ssm_ba()` for `q_latent` then `k_rope_buf` is safe: `qg_out` written by
+  `wq_b` GEMM completes before the reassignment.
+
+**`kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu`** — no seq_len overflow hazards:
+- All index calculations cast to `unsigned long long` before multiply — safe for
+  `seq_len ≤ 65536`, `nq=32`, `kv_lora=256`, `v_dim=128`.
+- `mla_v_extract_batched` (multi-chunk V extraction): uses `blockIdx.z` for the token
+  dimension with correct `tok_in_off` and `tok_out_off` strides. No K4 remainder issue:
+  `kv_lora=256`, `K4=64`, threads_per_out=64 — all K4 elements covered with no remainder loop.
+- `mla_cache_assemble_batched`: assembles `[kv_latent | k_rope]` / `[kv_latent | zeros]`
+  correctly; `blockDim.x` loop covers all `mla_cache_dim=320` elements per token.
+- `mla_q_final_assemble_batched`: assembles `[Q_absorbed | Q_rope]` per head per token for
+  the multi-chunk paged path; indexing correct.
+
+**`crates/spark-server/src/main.rs` / `kv_dtypes.rs`** — `--kv-high-precision-layers auto`:
+- `--kv-high-precision-layers auto` maps to `kv_hp_layers=2`.
+- `build_layer_kv_dtypes(BF16, 36, 2)` hits the early-return at line 20-22 and returns
+  `vec![BF16; 36]`. The `hp=2` path is never entered when `kv_dtype == BF16`.
+- All 36 Mistral MLA layers are uniformly BF16 regardless of `--kv-high-precision-layers`.
+  No FP8/BF16 mixing for Mistral. Confirmed no interaction between the flag and MLA dtype.
+
+**`decode/attention_forward_mla.rs`** — decode vs prefill consistency:
+- Decode scale at line 377: `1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` = `1/sqrt(320)`.
+  Matches both prefill paths (cache-skip and paged). No divergence.
+- KV cache format `[latent|rope]` / `[latent|zeros]` with `mla_cache_dim` strides — written
+  by both prefill paths, read by decode, consistent throughout.
+- Q assembly uses same `W_UK_T` weight as prefill. Layout matches paged cache format.
+
+**Additional file: `kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu`**:
+- `smem_dot[8]` declared at line 115, before `kv_pos` loop at line 126. Distinct from
+  `smem_q[320]` (line 75) and `smem_latent[256]` (line 190). No NVCC aliasing hazard.
+- `kv_end = min(q_pos + 1, seq_len)` — correct causal mask at all seq_len values.
+- Online softmax (Milakov-Norouzi) numerically stable in FP32 at all sequence lengths.
+- Shared memory total: 320×4 + 8×4 + 256×4 = 2336 bytes — well within GB10 smem limits.
+
+**Root-cause note**: The original task description attributed the bug to YaRN inv_freq
+corruption, and an earlier spec_ssm session also cited YaRN. `yarn.rs` was already correct
+(correct dimension-index-space formula with `low=7, high=15` for Mistral's parameters).
+The actual root causes were five separate code bugs all now fixed: HDIM kernel mismatch,
+wrong inv_sqrt_d scale, FP8 KV dtype fallback, multi-chunk context blindness, and
+cache-skip `kv_write_start` ignored.
+
+### P2 — Nemotron Super 120B Tool Calling (verified FIXED)
+
+Files audited: `jinja-templates/nemotron_h.jinja`, `crates/spark-server/src/tool_parser.rs`,
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`.
+
+- `MODEL.toml` contains all four required settings: `tool_call_parser = "bare_json"`,
+  `disable_tool_steering = true`, `skip_template_tools = true`, `thinking_in_tools = false`.
+- `nemotron_h.jinja`: steering prefix gated by `not disable_tool_steering` — skipped.
+  With `skip_template_tools=true`, `jinja_tools=None` so `tools` is falsy anyway.
+- `BareJsonParser::suppresses_jinja_tools()` returns `true` (trait impl in `bare_json.rs`) —
+  parser-level guarantee independent of MODEL.toml that `jinja_tools=None`.
+- Triple-redundant protection: any one of `skip_template_tools`, `suppresses_jinja_tools()`,
+  or `disable_tool_steering` alone prevents the contradictory format instruction conflict.
+- `template.rs` and `anthropic/handlers.rs` both check `!state.behavior.skip_template_tools
+  && !parser_suppresses` before passing `jinja_tools`. Count-tokens endpoint fixed to mirror
+  the same condition (no token-count inflation from phantom XML `<function>` blocks).
+
+### P3 — SSM Cache Slots / Pool Allocation (verified — by design)
+
+Files audited: `crates/spark-server/src/cli.rs`, `crates/spark-model/src/model/ssm_pool.rs`,
+`crates/spark-model/src/model/impl_a1.rs`.
+
+- `cli.rs` line 279: `ssm_cache_slots` field (default 16). `--ssm-cache-slots 0` sets it to 0.
+- Propagation: `cli.rs → serve_phases/build.rs:71 → factory/build.rs:41 →
+  TransformerModel::new(ssm_cache_slots) → SsmSnapshotPool::new(ssm_cache_slots)`.
+  Value correctly reaches `SsmSnapshotPool::new`. Setting to 0 triggers early-return with
+  zero GPU allocation.
+- `SsmStatePool::new` at `impl_a1.rs:134` takes `max_batch_size` (default 8), not
+  `ssm_cache_slots`. For Qwen3.5-122B: 9 slots × 36 layers × per-layer bytes ≈ 1206 MB.
+  This is the active decode pool — required for correct SSM recurrence, not a bug.
+- Mistral Small 4 has zero SSM layers (`config.num_ssm_layers() = 0`) — both pools
+  allocate zero GPU memory regardless of any flag. SSM memory is a Qwen/Nemotron concern only.
+- Mitigation documented: `--max-batch-size 1` reduces active pool from ~1206 MB to ~151 MB.
+
+**All three priority issues confirmed fully fixed. No new bugs found in this session.
+Branch spec_ssm HEAD `dd3894d` is correct and ready for hardware re-validation.**
