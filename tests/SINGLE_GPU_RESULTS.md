@@ -4357,3 +4357,81 @@ are committed; `git status` is clean. Summary of committed code fixes (not docs)
 | `ebe5b36` | `mla_prefill_paged_320.cu`: half-warp masks eliminate warp-sync UB |
 
 Header note corrected: no uncommitted fixes remain on the spec_ssm branch.
+
+---
+
+## 2026-06-01 Re-investigation (spec_ssm HEAD `3b8a01a`)
+
+Independent audit of all files listed in the task description. No new bugs found.
+All prior fixes confirmed correct and present.
+
+### P1 — Mistral Small 4 MLA prefill
+
+Files read: `prefill/cache_skip_mla.rs`, `prefill/paged_mla.rs`,
+`decode/attention_forward_mla.rs`, `mla_fused_prefill.cu`, `mla_absorbed.cu`,
+`kv_dtypes.rs`, `main_modules/kv_dtypes.rs`, `yarn.rs`.
+
+Key findings:
+- **`cache_skip_mla.rs`**: `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0)` hard-blocks the
+  broken HDIM=256 path. `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)`.
+  `kv_write_start` propagated correctly to `CacheSkipMlaArgs` — KV write only covers new tokens.
+- **`paged_mla.rs` first-chunk path** (`seq_len_start == 0`): uses unabsorbed K/V via
+  `mla_kv_assemble_batched`, then `prefill_attn_128_k` (HDIM=128 kernel). Guard at line 273
+  rejects HDIM=256. Correct `inv_sqrt_d = effective_attn_scale(hd=128) = 1/sqrt(128)` for the
+  unabsorbed form (standard attention, not absorbed-space). `prefill_attention` batch=1.
+- **`paged_mla.rs` multi-chunk path** (`seq_len_start > 0`): absorbed Q_absorbed + Q_rope →
+  `mla_prefill_paged_320` with full `kv_len = seq_len_start + n`. `inv_sqrt_d = 1/sqrt(320)`.
+  Buffer aliasing safe: `ssm_deinterleaved` for Q_absorbed, then reused for `attn_out` (q_absorbed consumed before overwrite).
+- **`mla_fused_prefill.cu`**: `smem_dot[8]` at function scope (line 115), before loop (line 126).
+  `kv_end = min(q_pos + 1, seq_len)` correct at all seq_len. No overflow: pointer offsets
+  use `unsigned long long`. Grid `(nq=32, seq_len, 1)` — within CUDA limits to seq_len=65535.
+- **`mla_absorbed.cu`**: `mla_v_extract_batched` — batched V extraction for N-token prefill.
+  `mla_kv_assemble_batched` — assembles K=[nope|rope] and extracts V from kv_expanded correctly.
+  `mla_cache_assemble_batched` — compressed cache assembly `[latent|rope]` / `[latent|zeros]`.
+- **`kv_dtypes.rs`**: `build_layer_kv_dtypes(BF16, N, hp)` returns `vec![BF16; N]` via
+  early-return at line 20-22. `--kv-high-precision-layers auto` → `hp=2` has no effect when
+  `kv_dtype==BF16`. All 36 Mistral MLA layers are uniformly BF16. No FP8/BF16 mixing possible.
+- **`attention_forward_mla.rs` decode**: `1/sqrt(kv_lora + mla_rope = 320)` at line 377.
+  KV cache `[latent|rope]` / `[latent|zeros]` with `mla_cache_dim` strides — consistent with
+  all prefill paths.
+- **`yarn.rs`**: correct YaRN `find_correction_dim` in dimension-index space. For Mistral
+  (`rope_dim=64, beta_fast=32, beta_slow=1, original_max_pos=8192, rope_theta=1e7`):
+  `low=7, high=15`. YaRN was never the bug; the original main-branch diagnosis was incorrect.
+
+### P2 — Nemotron Super 120B tool calling
+
+Files read: `jinja-templates/nemotron_h.jinja`, `tool_parser.rs`, `bare_json.rs`,
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`.
+
+Key findings:
+- `MODEL.toml`: all four flags present — `tool_call_parser = "bare_json"` (line 67),
+  `disable_tool_steering = true` (line 58), `skip_template_tools = true` (line 80),
+  `thinking_in_tools = false` (line 51).
+- `nemotron_h.jinja` line 204: `{%- if tools and not disable_tool_steering %}` — steering
+  prefix is gated off. With `skip_template_tools=true`, `jinja_tools=None` so `tools` is
+  falsy anyway; both conditions independently prevent the `<tool_call>` prefix loop.
+- `BareJsonParser::suppresses_jinja_tools()` returns `true` — parser-level guarantee that
+  `jinja_tools=None` for any bare-json model regardless of MODEL.toml. Triple-layer protection:
+  (1) `skip_template_tools=true`, (2) `suppresses_jinja_tools()=true`, (3) `disable_tool_steering=true`.
+- `BareJsonParser::system_prompt()` is the sole source of tool schema (bare-JSON format).
+  xgrammar enforces `{"name":"...","arguments":{...}}` from token 1.
+- No conflicting format instructions reach the model. Tool calling expected to work correctly
+  on re-test.
+
+### P3 — SSM cache slots
+
+Files read: `cli.rs`, `ssm_pool.rs`, `ssm_snapshot.rs`, `impl_a1.rs`.
+
+Key findings:
+- `--ssm-cache-slots 0` propagates cleanly: `cli.rs:279` → `build.rs:71` → `factory/build.rs:41`
+  → `impl_a1.rs:144` → `SsmSnapshotPool::new(num_slots=0)` → early-return at line 55 with no
+  GPU allocation. Zero memory allocated for snapshot pool.
+- `SsmStatePool::new` at `impl_a1.rs:134` uses `max_batch_size` (default 8). For Qwen3.5-122B
+  with 36 SSM layers: 9 slots × per-layer alloc ≈ 1206 MB. Independent of `--ssm-cache-slots`.
+  Required for correct SSM recurrence across concurrent decode sequences.
+- For pure-attention models (Mistral): `config.num_ssm_layers() = 0` → zero GPU memory from
+  both pools regardless of flag values.
+- By-design behavior. Use `--max-batch-size 1` to reduce active pool from ~1206 MB to ~151 MB
+  on single-stream workloads.
+
+**No new bugs found. All fixes verified correct against spec_ssm HEAD `3b8a01a`.**
