@@ -337,9 +337,10 @@ single-chunk path, grid `[nq, seq_len, 1]`) confirmed the algorithm is correct:
   correctly implements `V_out = attn_latent @ W_UV`.
 - **Buffer aliasing**: `ssm_ba()` is reused for both `q_latent` and `k_rope_buf` — safe because
   `q_latent`'s consumers (`wq_b` GEMM output) complete before `k_rope_buf` is populated.
-- **`--kv-high-precision-layers auto` interaction**: `build_layer_kv_dtypes()` returns `[]`
-  (no per-layer override) when the base `kv_dtype` is already BF16; `kv_hp_layers=2` has no
-  effect. No FP8/BF16 mixing for Mistral.
+- **`--kv-high-precision-layers auto` interaction**: `build_layer_kv_dtypes()` returns
+  `vec![BF16; N]` (explicit all-BF16 vec, not `[]`) when `kv_dtype == BF16` — the BF16
+  early-return path fires before `kv_hp_layers=2` is applied. All 36 MLA layers are
+  uniformly BF16. No FP8/BF16 mixing for Mistral.
 
 **One code-quality fix applied** (`mla_fused_prefill.cu`):
 `__shared__ float smem_dot[8]` was declared inside the `kv_pos` loop body. CUDA compilers
@@ -4107,4 +4108,83 @@ correct and expected behavior. `--max-batch-size 1` reduces to ~151 MB for singl
 ### Conclusion
 
 No new bugs found. All P1/P2/P3 fixes confirmed present and correct at HEAD `91bae54`.
+
+---
+
+## 2026-06-01 Independent Investigation (forty-eighth pass)
+
+Fresh cold-start read of all files named in the original task spec, in order. All four P1 named
+files read directly from spec_ssm HEAD (`591fd0e`):
+
+### P1 — Mistral Small 4 MLA prefill (all fixes confirmed)
+
+**`prefill/cache_skip_mla.rs`** (non-paged single-chunk path): Routes through
+`ops::mla_fused_prefill` with `inv_sqrt_d_absorbed = 1/sqrt(kv_lora+mla_rope=320)`.
+`anyhow::ensure!(self.mla_fused_prefill_k.0 != 0, ...)` guards against silently falling
+back to the old HDIM=256 `inferspark_prefill_64` kernel. `CacheSkipMlaArgs` carries
+`kv_write_start`; write is scoped to `kv_write_start..n` with slot offset applied.
+
+**`mla_absorbed.cu`** CUDA kernel audit: All token-indexed pointer offsets use
+`(unsigned long long)t * ...` casts, preventing 32-bit overflow at any sequence length up
+to 65 K. No shared memory sizing dependent on `seq_len`. No tile-loop bounds that could
+overflow at >1 K tokens. The file is a helper for absorbed MLA (decode + multi-chunk
+prefill V extraction); no path through it is the single-chunk bug site.
+
+**`main.rs` / `kv_cache.rs`** — `--kv-high-precision-layers auto` maps to `kv_hp_layers=2`
+in `resolve_kv_cache_config`. With `kv_dtype=BF16`, `build_layer_kv_dtypes` fires the BF16
+early-return (`vec![BF16; 36]`) before `kv_hp_layers` is applied — no FP8/BF16 mixing, all
+36 MLA attention layers uniformly BF16. The `--kv-high-precision-layers auto` flag is a
+no-op for BF16-KV models but harmless.
+
+**`decode/attention_forward_mla.rs`** (MLA decode path): Uses
+`inv_sqrt_d = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` (1/√320). The decode path
+was independently fixed (commit `eed6190`) alongside the prefill paths. No inconsistency
+between prefill and decode.
+
+**`mla_fused_prefill.cu`** kernel math confirmed correct:
+- `smem_dot[8]` declared at function scope (line 115), before the `kv_pos` loop — no NVCC
+  aliasing hazard with `smem_q[320]` or `smem_latent[256]`.
+- Causal mask: `kv_end = min(q_pos + 1, seq_len)` — correct for all seq_len.
+- Online softmax: standard Milakov-Norouzi (FP32), numerically stable.
+- 8-warp cross-warp reduction via `smem_dot[warp_id]` → tid==0 sums → broadcasts.
+- V extraction: `smem_latent[256]` stores attention-weighted latent; each of the first
+  `v_dim=128` threads computes one output element via dot product with W_UV row.
+- `acc_latent[1]` is dead code (never read); harmless.
+
+**Doc inaccuracy corrected** (this pass): The KERNEL AUDIT section previously stated
+`build_layer_kv_dtypes()` "returns `[]`" for BF16 base dtype. After the BF16-hardening
+fix (commit `427104f`), it returns `vec![BF16; N]`. The behavioral outcome (all layers
+BF16) was always correct, but the implementation detail was wrong — corrected above.
+
+### P2 — Nemotron Super 120B tool calling (confirmed fixed)
+
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` has all four required flags:
+`disable_tool_steering = true`, `tool_call_parser = "bare_json"`,
+`skip_template_tools = true`, `thinking_in_tools = false`.
+
+`nemotron_h.jinja` generation-prompt block: `{%- if tools and not disable_tool_steering %}`
+correctly suppresses the `<tool_call>\n` steering prefix for Super. The jinja template
+comments confirm the intended behavior for Nano vs Super variants.
+
+`tool_parser/bare_json.rs` (via `suppresses_jinja_tools()`) causes `template.rs` to pass
+`jinja_tools = None`, preventing the XML `<function>` blocks from being injected alongside
+the bare-JSON schema from `BareJsonParser::system_prompt()`. No format-instruction conflict.
+
+### P3 — SSM cache slots / pool allocation (confirmed by design)
+
+CLI `--ssm-cache-slots` (default 16) propagates as: `cli.rs:279` → `build.rs:71` →
+`factory/build.rs` → `impl_a1.rs:143` → `SsmSnapshotPool::new(ssm_cache_slots, ...)`.
+Setting `--ssm-cache-slots 0` zeroes the Marconi snapshot pool only.
+
+`SsmStatePool::new` (impl_a1.rs:134) is sized by `max_batch_size` (default 8), independent
+of `ssm_cache_slots`. For Qwen3.5-122B (36 SSM layers, max_batch_size=8):
+`(8+1) slots × 36 layers × (h_bytes + conv_bytes) ≈ 1206 MB` is expected and correct.
+The +1 is the reserved dummy slot used for decode-batch padding. `--max-batch-size 1`
+reduces this to ~151 MB for single-stream serving.
+
+### Conclusion
+
+No new bugs found. One documentation inaccuracy corrected (KERNEL AUDIT: `kv_dtypes.rs`
+returns `vec![BF16; N]`, not `[]`, for BF16 base dtype). All P1/P2/P3 fixes confirmed
+present and correct at HEAD `591fd0e`.
 Branch `spec_ssm` is ready for hardware re-validation.
