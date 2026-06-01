@@ -3961,3 +3961,45 @@ Behavior is correct by design. Use `--max-batch-size 1` to reduce the state pool
 ### Conclusion
 
 No new bugs found. All P1/P2/P3 fixes are present and correct at HEAD `5f2c7b0`.
+
+---
+
+## Code Review Pass 46 — 2026-06-01 (independent cold-start audit, spec_ssm HEAD 1b63a0c)
+
+Independent session-start investigation per original task spec. All four P1-named files read
+in specified order plus P2/P3 targets. `git diff main..spec_ssm` reviewed to confirm the exact
+set of code changes that comprise the fixes.
+
+### P1 — Mistral MLA prefill: root cause confirmed, all three fixes present
+
+**Root cause clarification** (yarn.rs is NOT a root cause):
+`yarn.rs` is identical on `main` and `spec_ssm` (`git diff main..spec_ssm -- yarn.rs` is empty).
+The actual root causes, all fixed on `spec_ssm`, are:
+
+| # | Root Cause | Fix |
+|---|-----------|-----|
+| 1 | `cache_skip_mla.rs` used `inferspark_prefill_64` (HDIM=256 kernel) for hd=128 MLA | Replaced with `mla_fused_prefill` in 320-dim absorbed space |
+| 2 | Wrong attention scale `1/sqrt(128)` instead of `1/sqrt(320)` | `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope)` |
+| 3 | `kv_dtypes.rs` returned empty vec on BF16 base dtype, enabling FP8 fallback in `phase_assemble.rs` | Early-return `vec![BF16; n]` + `unwrap_or(Bf16)` floor |
+
+**Kernel verification** (`mla_fused_prefill.cu`): Causal mask `kv_end = min(q_pos+1, seq_len)`,
+8-warp inter-warp reduction via `smem_dot[8]`, online softmax with three `__syncthreads()` per
+KV iteration, V-extraction via `smem_latent[256]` — all correct. No seq_len limit.
+
+**`--kv-high-precision-layers auto` + `--kv-cache-dtype bf16`**: Safe; `build_layer_kv_dtypes`
+early-returns `vec![BF16; 36]` before hp_layers fires, preventing any FP8 mixing.
+
+### P2 — Nemotron tool calling: four-flag MODEL.toml fix confirmed
+
+`disable_tool_steering = true`, `tool_call_parser = "bare_json"`, `skip_template_tools = true`,
+`thinking_in_tools = false` all present. `BareJsonParser.suppresses_jinja_tools() = true`.
+`nemotron_h.jinja` L204 guard correctly prevents `<tool_call>\n` prefix when `disable_tool_steering`.
+
+### P3 — SSM pool allocation: two-pool design confirmed
+
+`SsmStatePool` sized by `max_batch_size` (1206 MB at default 8); `SsmSnapshotPool` correctly
+suppressed when `ssm_cache_slots=0`. Correct behavior by design; no fix needed.
+
+### Conclusion
+
+No new bugs found. All P1/P2/P3 fixes confirmed present and correct at HEAD `1b63a0c`.
