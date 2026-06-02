@@ -4690,3 +4690,101 @@ The `--ssm-cache-slots 0` flag only zeros the snapshot pool.
 
 No new bugs found. All fixes confirmed present in HEAD `286a9f2`. Branch `spec_ssm`
 is clean and correct. Ready for hardware re-validation on the DGX Spark node.
+
+---
+
+## 2026-06-02 Independent Audit (spec_ssm HEAD `ec8c377`)
+
+Fresh cold-start investigation against spec_ssm HEAD. All four P1 source files, both P2
+components, and the P3 propagation chain read directly from disk. No new bugs found; all
+prior fixes confirmed correct and complete.
+
+### P1 — Mistral Small 4 MLA prefill: all eight fixes confirmed
+
+**`prefill/cache_skip_mla.rs`** (non-paged, single-chunk path):
+- `inv_sqrt_d_absorbed = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` = `1/sqrt(320)` ✓
+- `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0, "MLA cache-skip prefill requires
+  mla_fused_prefill kernel (inferspark_prefill HDIM=256 is broken for MLA hd=128)")` —
+  hard startup failure prevents any silent HDIM=256 fallback ✓
+- `write_count = n.saturating_sub(kv_write_start)` with `cache_elem_offset` and
+  `slot_byte_offset` both correctly offset by `kv_write_start` — prefix-cache tokens
+  not redundantly overwritten (commit `e7de0f4`) ✓
+- Buffer aliasing `ssm_ba()` for `q_latent` then `k_rope_buf` is safe: `qg_out` (wq_b
+  GEMM output) is consumed before `k_rope_buf` is written ✓
+
+**`mla_fused_prefill.cu`** (single-chunk CUDA kernel in absorbed 320-dim space):
+- `__shared__ float smem_q[320]` (line 75), `smem_dot[8]` (line 115, at function scope
+  before the `kv_pos` loop at line 126), `smem_latent[256]` (line 190) — three
+  non-overlapping static allocations, 2336 bytes, NVCC smem aliasing hazard eliminated ✓
+- Causal mask `kv_end = min(q_pos + 1, seq_len)` correct for all seq_len ≤ 65535 ✓
+- Grid `(nq=32, seq_len, 1)` / block `(256, 1, 1)`: all 256 threads are uniform within
+  each CTA; `0xFFFFFFFF` warp masks are valid (no thread-specific early returns) ✓
+- All pointer offsets use `(unsigned long long)` — no 32-bit overflow ✓
+
+**`main_modules/kv_dtypes.rs`** (`--kv-high-precision-layers auto` interaction):
+- `build_layer_kv_dtypes(BF16, 36, 2)` hits early-return at line 20-22 (`kv_dtype == BF16`)
+  and returns `vec![BF16; 36]`. The `auto` → `hp=2` branch is never entered when base dtype
+  is BF16. All 36 MLA attention layers uniformly BF16; no FP8/BF16 mixing possible ✓
+- `phase_assemble.rs` `unwrap_or(KvCacheDtype::Bf16)` — belt-and-suspenders fallback ✓
+
+**`decode/attention_forward_mla.rs`** (decode vs prefill consistency):
+- Scale: `1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` = `1/sqrt(320)` — matches both
+  prefill paths ✓
+- KV cache format `[kv_latent|k_rope]` / `[kv_latent|zeros]` with `mla_cache_dim` strides —
+  decode reads exactly what prefill writes ✓
+
+**`mistral_loader/loader_impl/yarn.rs`**: `find_correction_dim` implements the correct HF
+dimension-index-space formula; `low=7`, `high=15` for Mistral parameters. YaRN was never
+the bug; the original task-brief diagnosis was a misdiagnosis.
+
+**`prefill/paged_mla.rs`**: first-chunk (`seq_len_start == 0`) routes to `prefill_attn_128_k`
+(HDIM=128 guard); multi-chunk (`seq_len_start > 0`) uses `mla_prefill_paged_320` with
+`kv_len = seq_len_start + n` and `inv_sqrt_d = 1/sqrt(320)` — full historical context,
+correct scale, half-warp masks in the CUDA kernel ✓
+
+All eight fixes from the commit history verified present and correct:
+
+| Fix | File | Commit |
+|-----|------|--------|
+| `unwrap_or(Fp8)` → `unwrap_or(Bf16)` | `phase_assemble.rs` | `f6161c1` |
+| `build_layer_kv_dtypes` returns full BF16 vec | `kv_dtypes.rs` | `427104f` |
+| `smem_dot` moved outside `kv_pos` loop | `mla_fused_prefill.cu` | `345c3b2` |
+| `inv_sqrt_d` = 1/sqrt(320) (was 1/sqrt(128)) | all three MLA paths | `3f673d4` |
+| `cache_skip_mla` uses fused kernel; `kv_write_start` propagated | `cache_skip_mla.rs` | `e7de0f4` |
+| First-chunk HDIM=128 guard; multi-chunk `mla_prefill_paged_320` | `paged_mla.rs` | (multiple) |
+| Half-warp masks for `__shfl_*` at partial last tiles | `mla_prefill_paged_320.cu` | `ebe5b36` |
+| `causal_kv_end` uses `q_global` not `q_local` | `mla_prefill_paged_320.cu` | `b274150` |
+
+### P2 — Nemotron Super 120B tool calling: confirmed fixed
+
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` — all four required flags confirmed:
+- `disable_tool_steering = true` — prevents `<tool_call>\n` steering prefix emission loop ✓
+- `tool_call_parser = "bare_json"` — model's native trained distribution ✓
+- `skip_template_tools = true` — blocks contradictory XML `<function>` blocks from Jinja ✓
+- `thinking_in_tools = false` — grammar-constrained decoding from token 1 on tool requests ✓
+
+`BareJsonParser::suppresses_jinja_tools() → true` (parser-level guarantee) confirmed in
+`bare_json.rs`. `nemotron_h.jinja` line 204 `{%- if tools and not disable_tool_steering %}`
+gates off the steering prefix — either MODEL.toml flag or parser override is independently
+sufficient. `count_tokens` Anthropic path checks `parser_suppresses` mirroring `template.rs`
+(asymmetry fixed in commit `2993894`). Triple-layer protection intact.
+
+### P3 — SSM cache slots: two-pool design confirmed
+
+`impl_a1.rs:134` — `SsmStatePool::new(max_batch_size, ...)`: active decode recurrence state,
+sized by `--max-batch-size` (default 8). Cannot be zeroed; required for concurrent inference.
+`impl_a1.rs:143` — `SsmSnapshotPool::new(ssm_cache_slots, ...)`: prefix-cache snapshots only.
+
+CLI propagation chain `cli.rs → serve_phases/build.rs:71 → TransformerModel::new →
+SsmSnapshotPool::new(ssm_cache_slots)` verified end-to-end. `--ssm-cache-slots 0` correctly
+allocates zero GPU memory for the snapshot pool while leaving the active state pool unaffected.
+
+For Qwen3.5-122B (36 SSM layers, `max_batch_size=8`): ~1206 MB active pool — correct by design.
+Use `--max-batch-size 1` to reduce to ~151 MB for single-stream workloads. Mistral Small 4
+(0 SSM layers): both pools allocate zero GPU memory regardless of flag values.
+
+### Conclusion
+
+No new bugs found. All eight Mistral MLA fixes, all four Nemotron tool-call flags, and the
+SSM two-pool design are confirmed correct at HEAD `ec8c377` (spec_ssm, 2026-06-02).
+Branch is ready for hardware re-validation on the DGX Spark node.
