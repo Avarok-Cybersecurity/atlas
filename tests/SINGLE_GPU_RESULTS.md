@@ -4533,3 +4533,65 @@ Files audited: `crates/spark-server/src/cli.rs`, `crates/spark-model/src/model/s
 
 **All three priority issues confirmed fully fixed. No new bugs found in this session.
 Branch spec_ssm HEAD `dd3894d` is correct and ready for hardware re-validation.**
+
+---
+
+## Session 54 — 2026-06-02 — P1/P2/P3 audit; YaRN misattribution corrected
+
+**Branch HEAD at session start**: `bed92bf` (fifty-third-pass docs commit)
+
+### What was investigated
+
+Full cold-start audit of the three priorities, re-reading all relevant source files
+from scratch to verify the branch state matches the documented fixes.
+
+### P1 — Mistral Small 4 gibberish at >1000 tokens
+
+**Primary root cause (confirmed)**: `phase_assemble.rs` used
+`layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Fp8)`. When
+`build_layer_kv_dtypes` returned an empty Vec (the early-return path before commit
+427104f), all 36 MLA layers silently received FP8 KV cache instead of the
+required BF16. NVFP4 compressed latents stored in FP8 lose too much precision for
+coherent attention at long sequence lengths.
+
+**Secondary root cause corrected**: Early sessions in this file attributed the bug
+to `yarn.rs` inv_freq calculation. This was a misdiagnosis. `yarn.rs` was correct
+in this branch from the start — the YaRN `find_correction_dim` formula, `beta_fast`,
+`beta_slow`, and `factor` values were never wrong. The attribution is explicitly
+retracted at line 391 of this file.
+
+**All eight MLA fixes verified present in HEAD**:
+
+| Fix | File | Commit |
+|-----|------|--------|
+| `unwrap_or(Fp8)` → `unwrap_or(Bf16)` | `phase_assemble.rs` | f6161c1 |
+| `build_layer_kv_dtypes` returns full BF16 vec | `kv_dtypes.rs` | 427104f |
+| `mla_fused_prefill`: `smem_dot` moved outside KV loop | `mla_fused_prefill.cu` | 345c3b2 |
+| `mla_fused_prefill`: `inv_sqrt_d` = 1/sqrt(320) | `mla_fused_prefill.cu` | 3f673d4 |
+| `cache_skip_mla`: requires HDIM=256 kernel; `kv_write_start` propagated | `cache_skip_mla.rs` | e7de0f4 |
+| `paged_mla`: first-chunk uses HDIM=128 kernel; multi-chunk uses 320 | `paged_mla.rs` | (multiple) |
+| `mla_prefill_paged_320`: half-warp masks for `__shfl_*` | `mla_prefill_paged_320.cu` | ebe5b36 |
+| `mla_prefill_paged_320`: causal_kv_end uses q_global not q_local | `mla_prefill_paged_320.cu` | b274150 |
+
+### P2 — Nemotron Super 120B tool calls (confirmed fixed)
+
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` verified to contain:
+- `disable_tool_steering = true` — no `<tool_call>` steering prefix loop
+- `tool_call_parser = "bare_json"` — matches training format
+- `skip_template_tools = true` — suppresses Jinja XML format injection
+- `thinking_in_tools = false` — prevents reasoning traces obscuring tool output
+
+`bare_json` parser confirmed implemented in `tool_parser.rs`.
+
+### P3 — SSM pool allocation with `--ssm-cache-slots 0` (confirmed by design)
+
+`SsmSnapshotPool` correctly receives 0 and allocates zero GPU memory.
+`SsmStatePool` is intentionally sized by `max_batch_size` (not `ssm_cache_slots`)
+because it holds active recurrence state for in-flight decode requests.
+The 1206 MB figure for Qwen3.5-122B is correct expected behavior.
+`--max-batch-size 1` reduces it to ~151 MB if memory pressure requires it.
+
+### Conclusion
+
+No new bugs found. All fixes confirmed present. Branch `spec_ssm` HEAD `bed92bf`
+is clean, correct, and ready for hardware re-validation on the DGX Spark node.
