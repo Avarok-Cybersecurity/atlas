@@ -4999,3 +4999,94 @@ intact: CLI `ssm_cache_slots` → `serve_phases/build.rs:71` → `factory/build.
 
 **Branch status**: all P0/P1 bugs fixed, P2 closed by design. Item 10 (multi-chunk
 perf) remains open as a future optimization. Ready for hardware re-validation.
+
+---
+
+## 2026-06-02 Independent Investigation (HEAD `47ca5b9`)
+
+Fresh cold-start audit of all three priorities against actual source files.
+
+### P1 — Mistral Small 4 MLA Prefill: all fixes confirmed
+
+Investigated all four files listed in the original bug report plus the CUDA kernels.
+
+**`kv_dtypes.rs` (line 20-22)**: `if kv_dtype == Bf16 { return vec![Bf16; N] }` fires before
+the `high_precision_layers == 0` guard. `build_layer_kv_dtypes(Bf16, 36, 2)` always returns
+`vec![Bf16; 36]` regardless of `--kv-high-precision-layers auto` → no FP8/BF16 mixing for
+Mistral. `test_build_layer_kv_dtypes_bf16_all_layers` asserts this. ✓
+
+**`phase_assemble.rs` (line 124)**: `layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Bf16)`.
+The comment explicitly explains the empty-slice semantics. No FP8 fallback possible. ✓
+
+**`paged_mla.rs`**: 
+- First-chunk (seq_len_start == 0): `anyhow::ensure!(hd > 128 || self.prefill_attn_128_k.0 != 0)`
+  hard-blocks the HDIM=256 `inferspark_prefill` kernel for MLA head_dim=128. Kernel dispatch
+  selects `prefill_attn_128_k` when `hd <= 128`. `inv_sqrt_d = effective_attn_scale(hd)` is
+  used for the *unabsorbed* expanded attention over 128-dim assembled K/V — correct here.
+- Multi-chunk (seq_len_start > 0): full absorbed-form path with `inv_sqrt_d = 1/sqrt(mla_cache_dim
+  = 320)`. Calls `ops::mla_prefill_paged_320` with `kv_len = seq_len_start + n` (full context
+  window) and correct causal masking. `mla_v_extract_batched` extracts V from the 320-dim absorbed
+  output. Kernel handles `mla_prefill_paged_k` and `mla_v_extract_batched_k` confirmed loaded in
+  `init.rs` lines 310-319. ✓
+
+**`cache_skip_mla.rs`**: `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0)` hard-fails at startup
+if the fused kernel binary is absent — no silent fallback to HDIM=256 path. `inv_sqrt_d_absorbed =
+1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)`. `kv_write_start` propagated: `write_count =
+n.saturating_sub(kv_write_start)` guards the `write_kv_cache` call so only new tokens are written
+(prefix-cache correctness). ✓
+
+**`attention_forward_mla.rs` (line 377)**: `inv_sqrt_d = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()`
+= 1/√320. Consistent with both prefill paths. KV cache assembled as `[kv_latent | k_rope]` /
+`[kv_latent | zeros]` at `mla_cache_dim` stride — matches what the prefill writes. ✓
+
+**`mla_fused_prefill.cu` (line 115)**: `__shared__ float smem_dot[8]` declared at function scope,
+before the `kv_pos` loop at line 126. Separate from `smem_q[320]` (line 75) and `smem_latent[256]`
+(line 190). Non-overlapping live ranges, no NVCC aliasing hazard. Causal bound `kv_end = min(q_pos
++ 1, seq_len)` is correct. ✓
+
+**`mla_prefill_paged_320.cu` (line 89)**: `lane_mask = (warp_lane < 16) ? 0x0000FFFFu : 0xFFFF0000u`
+computed before the early-return guard at line 91 — all named warp threads execute the same
+instruction, satisfying CUDA §B.15. Applied to both `__shfl_down_sync` and `__shfl_sync` calls.
+Same fix confirmed in `mla_prefill_attn.cu` (line 71). ✓
+
+**`--kv-high-precision-layers auto` interaction**: `auto` maps to `kv_hp_layers = 2`, but
+`build_layer_kv_dtypes(Bf16, 36, 2)` returns early at line 20 with `vec![Bf16; 36]`. The
+`hp` path is never entered for BF16 base dtype. All 36 MLA layers uniformly BF16. ✓
+
+**Note on original P1 diagnosis**: The task description attributes this to a "YaRN inv_freq Bug."
+`yarn.rs` uses the correct dimension-index-space formula and was not the root cause. The actual
+bugs were the 5 MLA code issues (items 1–5) plus the `kv_write_start` fix (item 12) and the
+warp-mask UB (item 13). All confirmed fixed.
+
+### P2 — Nemotron Super 120B Tool Calling: confirmed fixed
+
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` has all four required behavior flags:
+`thinking_in_tools = false`, `disable_tool_steering = true`, `tool_call_parser = "bare_json"`,
+`skip_template_tools = true`.
+
+`nemotron_h.jinja` (line 204): generation-prompt branch `{%- if tools and not disable_tool_steering
+%}` is false → no `<tool_call>\n` prefix injected. Model generates tool calls on its trained
+bare-JSON distribution.
+
+`crates/spark-server/src/tool_parser/bare_json.rs` (line 52): `suppresses_jinja_tools() -> true`
+provides a second independent guarantee — even without `skip_template_tools` in MODEL.toml, the
+bare_json parser blocks the Jinja XML `<function>` blocks from reaching the model.
+
+`template.rs` (line 89) and `anthropic/handlers.rs` (line 335): both check `skip_template_tools`
+before passing `jinja_tools` to the template. No format-instruction conflict. ✓
+
+### P3 — SSM Cache Slots: confirmed by design
+
+`--ssm-cache-slots 0` correctly zeroes `SsmSnapshotPool` (Marconi prefix-cache SSM snapshots) via
+the fast-path in `ssm_snapshot.rs`. The 1206 MB "SSM state pool" is `SsmStatePool` (active decode
+recurrent state), sized by `--max-batch-size`. CLI propagation intact: `cli.rs` → `build.rs:71` →
+`factory/build.rs:373` → `TransformerModel::new:52` → `SsmSnapshotPool::new:144`. No code change
+needed. Use `--max-batch-size 1` to reduce active pool to ~151 MB on single-stream workloads.
+
+Mistral Small 4 and Nemotron attention layers have `num_ssm_layers() == 0` → both pools allocate
+zero GPU memory regardless of any flag. ✓
+
+### Summary
+
+No new bugs found. All 13 action items are either FIXED or CLOSED-BY-DESIGN. Branch `spec_ssm`
+at HEAD `47ca5b9` is correct and ready for hardware re-validation on the DGX Spark node.
