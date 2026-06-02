@@ -4787,4 +4787,105 @@ Use `--max-batch-size 1` to reduce to ~151 MB for single-stream workloads. Mistr
 
 No new bugs found. All eight Mistral MLA fixes, all four Nemotron tool-call flags, and the
 SSM two-pool design are confirmed correct at HEAD `ec8c377` (spec_ssm, 2026-06-02).
+
+---
+
+## 2026-06-02 Independent Audit (spec_ssm HEAD `a634442`)
+
+Fresh cold-start investigation. All P1 source files read directly (`prefill/cache_skip_mla.rs`,
+`mla_fused_prefill.cu`, `mla_prefill_paged_320.cu`, `mla_prefill_attn.cu`, `paged_mla.rs`,
+`decode/attention_forward_mla.rs`, `kv_dtypes.rs`, `yarn.rs`), P2 files (`nemotron_h.jinja`,
+`tool_parser/bare_json.rs`, `MODEL.toml`), and P3 propagation chain (`ssm_pool.rs`,
+`ssm_snapshot.rs`, `serve_phases/build.rs`). No new bugs found.
+
+### P1 — Mistral Small 4 MLA prefill: all fixes confirmed at current HEAD
+
+**Root cause summary**: The gibberish-at->1000-tokens failure had three concurrent causes, all
+fixed in spec_ssm: (1) `build_layer_kv_dtypes` returned `vec![]` for BF16 base dtype, causing
+`unwrap_or(Fp8)` callers to silently downgrade MLA KV latents from BF16 → FP8; (2) the
+cache-skip path used the HDIM=256 `inferspark_prefill_64` kernel whose `kv_stride=nkv*hd=128`
+aliased K[k+1][0..127] for dim ≥ 128 — corrupting attention scores at any seq_len > 1 token;
+(3) `inv_sqrt_d = 1/sqrt(hd=128)` over-sharpened softmax by √(128/320) ≈ 0.63× on all MLA
+paths. The YaRN `yarn.rs` formula is correct throughout the branch and was never the root cause.
+
+**`main_modules/kv_dtypes.rs`**: `kv_dtype == BF16` guard now returns `vec![BF16; n]` before the
+`high_precision_layers == 0` guard. For `--kv-cache-dtype bf16`: all 36 MLA attention layers
+uniformly BF16; impossible for any layer to fall back to FP8. Unit test updated in `tests.rs`. ✓
+
+**`prefill/cache_skip_mla.rs`** (non-paged single-chunk path):
+- `mla_fused_prefill` kernel used (HDIM=320 absorbed space); `ensure!(mla_fused_prefill_k.0 != 0)`
+  hard-fails at startup if kernel is absent — no silent HDIM=256 fallback ✓
+- `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)` ✓
+- `kv_write_start` correctly propagated: `write_count = n.saturating_sub(kv_write_start)`; both
+  `cache_elem_offset` and `slot_byte_offset` offset by `kv_write_start` ✓
+
+**`kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu`**:
+- `smem_dot[8]` declared at function scope before the `kv_pos` loop (commit `345c3b2`) — prevents
+  NVCC lifetime-based shared memory aliasing with `smem_q` across iterations ✓
+- Three non-overlapping `__shared__` allocations: `smem_q[320]` (1280 B), `smem_dot[8]` (32 B),
+  `smem_latent[256]` (1024 B) = 2336 B total, well within SM shared memory limits ✓
+- All 256 threads reach every `__syncthreads()` (no thread-specific early return inside the loop);
+  `0xFFFFFFFF` warp masks are correct ✓
+- Causal: `kv_end = min(q_pos + 1, seq_len)` correct for all seq_len ≤ 65535 ✓
+- Grid `(nq=32, seq_len, 1)` / block `(256, 1, 1)` — CUDA block dimension limit not exceeded ✓
+
+**`prefill/paged_mla.rs`** (paged-cache path):
+- First-chunk (`seq_len_start == 0`): unabsorbed form; `ensure!(hd > 128 || prefill_attn_128_k.0 != 0)`
+  prevents HDIM=256 kernel use for hd=128; `prefill_attn_128_k` dispatched; scale `1/sqrt(hd=128)`
+  correct for this path (K has hd=128 dims) ✓
+- Multi-chunk (`seq_len_start > 0`): absorbed form; `mla_prefill_paged_320` with
+  `kv_len = seq_len_start + num_tokens` (full historical context); `inv_sqrt_d = 1/sqrt(320)` ✓
+
+**`kernels/gb10/mistral-small-4/nvfp4/mla_prefill_paged_320.cu`** (commit `ebe5b36`):
+- Half-warp masks: `lane_mask = (warp_lane < 16) ? 0x0000FFFF : 0xFFFF0000` — eliminates
+  CUDA UB from partial last-tile early returns naming non-executing threads in `__shfl_*` ✓
+- `q_global = q_offset + q_local`; `causal_kv_end = min(q_global + 1, kv_len)` — correct causal
+  masking against full history, not just the current chunk ✓
+
+**`kernels/gb10/mistral-small-4/nvfp4/mla_prefill_attn.cu`** (commit `0b89988`):
+- Same half-warp mask pattern: `lane_mask = (warp_lane < 16) ? 0x0000FFFF : 0xFFFF0000` ✓
+- Used for the cache-skip path when attending over contiguous KV buffers ✓
+
+**`decode/attention_forward_mla.rs`**: `inv_sqrt_d = 1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)`;
+decode reads `[kv_latent|k_rope]` / `[kv_latent|zeros]` with `mla_cache_dim` strides —
+matches exactly what prefill writes; KV format contract intact ✓
+
+### P2 — Nemotron Super 120B tool calling: confirmed fixed
+
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` — all four behavior flags present:
+- `disable_tool_steering = true` — prevents `<tool_call>\n` generation-prompt prefix loop ✓
+- `tool_call_parser = "bare_json"` — model's native trained distribution (not `qwen3_coder`) ✓
+- `skip_template_tools = true` — blocks Jinja XML `# Tools` / `<function>` blocks from
+  contradicting the bare-JSON parser's format instructions ✓
+- `thinking_in_tools = false` — grammar-constrained decoding active from token 1 on tool requests ✓
+
+`nemotron_h.jinja` line 204: `{%- if tools and not disable_tool_steering %}` — steering prefix
+gated off by MODEL.toml flag; generation prompt falls through to clean `<|im_start|>assistant\n<think>\n`. ✓
+
+`crates/spark-server/src/tool_parser/bare_json.rs`: `suppresses_jinja_tools() → true` (line 52)
+— parser-level guarantee: even without MODEL.toml `skip_template_tools`, the Jinja template
+receives `jinja_tools = None` and never emits the conflicting XML tool block. ✓
+
+### P3 — SSM pool allocation with `--ssm-cache-slots 0`: confirmed by design
+
+`crates/spark-model/src/model/ssm_pool.rs` — `SsmStatePool::new(config, max_slots=max_batch_size, ...)`:
+active decode recurrent state pool, sized by concurrent sequence capacity. Must persist across
+all steps; cannot be reduced by `--ssm-cache-slots`.
+
+`crates/spark-model/src/model/ssm_snapshot.rs` — `SsmSnapshotPool::new(num_slots=ssm_cache_slots, ...)`:
+early-returns an empty struct (zero GPU memory) when `num_slots == 0 || num_ssm_layers == 0`. ✓
+
+CLI propagation verified: `cli.rs (ssm_cache_slots)` → `serve_phases/build.rs:71` →
+`TransformerModel::new` → `SsmSnapshotPool::new(ssm_cache_slots)`. The `--ssm-cache-slots 0`
+flag correctly zeros the snapshot pool. The ~1206 MB for Qwen3.5-122B is the active state pool
+(9 slots × 36 SSM layers); reduce with `--max-batch-size 1` → ~151 MB.
+
+Mistral Small 4 (0 SSM layers): `num_ssm_layers() == 0` → both pools allocate zero GPU memory
+regardless of `--ssm-cache-slots` value. ✓
+
+### Conclusion
+
+No new bugs found. All eight MLA prefill fixes, four Nemotron tool-call flags, and the SSM
+two-pool architecture are confirmed correct at HEAD `a634442` (spec_ssm, 2026-06-02). Branch
+is clean and ready for hardware re-validation on the DGX Spark node.
 Branch is ready for hardware re-validation on the DGX Spark node.
