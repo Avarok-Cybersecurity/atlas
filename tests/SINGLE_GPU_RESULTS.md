@@ -353,7 +353,7 @@ explicit and preventing any possible aliasing.
 
 ---
 
-## Action Items (updated 2026-05-27)
+## Action Items (updated 2026-06-02)
 
 | # | Priority | Status | Item |
 |---|----------|--------|------|
@@ -369,6 +369,7 @@ explicit and preventing any possible aliasing.
 | 10 | P2 | **OPEN** | Mistral multi-chunk performance: `mla_prefill_paged_320` iterates all kv_len positions sequentially (O(kv_len)). For kv_len > 10K, add shared-memory KV tiling to amortize page-table overhead. |
 | 11 | P1 | **FIXED** | `kv_dtypes.rs` hardening test: `test_build_layer_kv_dtypes_bf16_noop` asserted `is_empty()` — the OLD broken behavior. After the item-3 hardening (`kv_dtype==BF16` → return full BF16 vec), this test became a failing regression trap. Fixed: test renamed `test_build_layer_kv_dtypes_bf16_all_layers` and updated to assert all 12 layers are BF16, confirming the hardened path is exercised. |
 | 12 | P0 | **FIXED (2026-05-27)** | **MLA cache-skip path ignores `kv_write_start`**: `cache_skip_mla.rs` always wrote all `n` tokens to the paged KV cache regardless of `kv_write_start`. `CacheSkipMlaArgs` did not carry the field, so the function used `meta.slot[0..n]` and wrote `k/v_cache[0..n]` even when some prefix tokens were already cached (`kv_write_start > 0`). Latent bug: harmless when prefix caching is disabled (the default; `kv_write_start=0` always in single-GPU tests), but incorrect with `--enable-prefix-caching`: writes would overwrite already-valid cache entries and might use wrong slot indices for prefix positions. Fix: `kv_write_start` added to `CacheSkipMlaArgs`; propagated from `cache_skip.rs`; write_kv_cache now only covers tokens `kv_write_start..n` with the same `slot.offset(kv_write_start * 8)` pattern used by the non-MLA path. |
+| 13 | P0 | **FIXED (2026-05-28)** | **CUDA warp-sync UB in `mla_prefill_paged_320.cu`** (hot-path multi-chunk kernel): `__shfl_down_sync(0xFFFFFFFF, ...)` and `__shfl_sync(0xFFFFFFFF, ...)` named all 32 warp threads but threads for out-of-bounds Q rows return early at partial last tiles. CUDA §B.15 requires all threads named in the mask to be executing the same instruction; using 0xFFFFFFFF after some threads return is undefined behavior. Fix: compute `lane_mask = (warp_lane < 16) ? 0x0000FFFFu : 0xFFFF0000u` before the early-return guard and use it in both shuffle calls, restricting sync to the 16-thread half-warp group that shares the same Q row. Same fix applied proactively to dormant `mla_prefill_attn.cu` (commit `0b89988`). |
 
 ---
 
@@ -4952,3 +4953,49 @@ either pool. ✓
 
 No new bugs found. All fixes are correct and stable at spec_ssm HEAD `266b333`
 (2026-06-02). Branch ready for hardware re-validation.
+
+
+---
+
+## 2026-06-02 Final Audit (spec_ssm HEAD)
+
+Independent investigation of P1/P2/P3 against source files and full git history.
+
+**Key finding**: The task description attributes P1 (Mistral long-context gibberish) to a
+"YaRN inv_freq Bug." The git history and source code tell a different story: `yarn.rs` was
+correct throughout this branch. The actual root causes were 7 independent MLA code bugs
+(items 1-5, 12-13 above), primarily the FP8 KV cache dtype fallback (item 3).
+
+### P1 — Mistral Small 4: all 7 fixes confirmed at HEAD
+
+Source files audited:
+
+- `kv_dtypes.rs:20-22` — BF16 early-return returns `vec![Bf16; N]`, never empty ✓
+- `phase_assemble.rs:124` — `unwrap_or(KvCacheDtype::Bf16)`, never Fp8 ✓
+- `paged_mla.rs:273-284` — `anyhow::ensure!` blocks HDIM=256 for hd≤128; fused kernel dispatched; `inv_sqrt_d_absorbed = 1/sqrt(320)` ✓
+- `cache_skip_mla.rs:253-296` — `anyhow::ensure!` on `mla_fused_prefill_k`; `inv_sqrt_d_absorbed = 1/sqrt(320)`; `kv_write_start` propagated correctly ✓
+- `attention_forward_mla.rs:375-377` — `inv_sqrt_d = 1/sqrt(kv_lora + mla_rope = 320)` ✓
+- `mla_fused_prefill.cu:115` — `smem_dot[8]` at function scope before `kv_pos` loop ✓
+- `mla_prefill_paged_320.cu:89` — `lane_mask = (warp_lane < 16) ? 0x0000FFFFu : 0xFFFF0000u` ✓
+- `tests.rs:86-95` — `test_build_layer_kv_dtypes_bf16_all_layers` asserts all 12 layers BF16 ✓
+
+`--kv-high-precision-layers auto` interaction: `build_layer_kv_dtypes(BF16, 36, 2)` hits the
+`kv_dtype == BF16` early-return at line 20 and returns `vec![BF16; 36]` — the `hp=2` logic
+is never entered. All 36 MLA layers uniformly BF16. No FP8/BF16 mixing.
+
+### P2 — Nemotron Super 120B: confirmed fixed
+
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`: `thinking_in_tools = false`,
+`disable_tool_steering = true`, `tool_call_parser = "bare_json"`, `skip_template_tools = true`.
+`nemotron_h.jinja:204`: steering prefix gated on `not disable_tool_steering` — skipped. ✓
+
+### P3 — SSM cache slots: confirmed by design
+
+`--ssm-cache-slots 0` → `SsmSnapshotPool::new(0, ...)` → zero-allocation fast-path (line 55
+of `ssm_snapshot.rs`). `SsmStatePool` uses `max_batch_size`, not `ssm_cache_slots` — correct
+because each in-flight sequence needs its own persistent SSM state buffer. Propagation chain
+intact: CLI `ssm_cache_slots` → `serve_phases/build.rs:71` → `factory/build.rs:373` →
+`TransformerModel::new:52` → `SsmSnapshotPool::new:144`. No code change needed.
+
+**Branch status**: all P0/P1 bugs fixed, P2 closed by design. Item 10 (multi-chunk
+perf) remains open as a future optimization. Ready for hardware re-validation.
