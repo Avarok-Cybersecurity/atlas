@@ -4888,4 +4888,67 @@ regardless of `--ssm-cache-slots` value. ✓
 No new bugs found. All eight MLA prefill fixes, four Nemotron tool-call flags, and the SSM
 two-pool architecture are confirmed correct at HEAD `a634442` (spec_ssm, 2026-06-02). Branch
 is clean and ready for hardware re-validation on the DGX Spark node.
-Branch is ready for hardware re-validation on the DGX Spark node.
+
+---
+
+## Fifty-seventh-pass verification (2026-06-02)
+
+Independent cold-start re-audit of all three priorities against spec_ssm HEAD (`266b333`).
+No new bugs found. All fixes confirmed present and correct.
+
+### P1 — Mistral Small 4 MLA prefill: re-confirmed at current HEAD
+
+**`kv_dtypes.rs` BF16 early-return** (line 20-22): `if kv_dtype == Bf16 { return
+vec![Bf16; n_attn_layers] }` appears before the `high_precision_layers == 0` guard,
+ensuring all MLA attention layers uniformly use BF16 KV cache. The old empty-vec path
+that caused `unwrap_or(Fp8)` callers to silently fall back to FP8 is gone. ✓
+
+**`cache_skip_mla.rs` fused kernel** (lines 267-296): `inv_sqrt_d_absorbed = 1/sqrt(kv_lora
++ mla_rope) = 1/sqrt(320)` computed from live config values. `anyhow::ensure!` hard-fails
+at startup if `mla_fused_prefill_k` is absent — no silent fallback to the broken HDIM=256
+path. `kv_write_start` propagated: `write_count = n.saturating_sub(kv_write_start)`. ✓
+
+**`decode/attention_forward_mla.rs`** (diff vs main, +2 lines): `inv_sqrt_d = 1.0f32 /
+((kv_lora + mla_rope) as f32).sqrt()` replaces `self.effective_attn_scale(hd)`. Decode
+scale now matches prefill (1/sqrt(320)) so softmax sharpness is consistent across all
+steps. ✓
+
+**`mla_fused_prefill.cu`** (full re-read): `smem_dot[8]` declared at function scope outside
+the `kv_pos` loop — prevents NVCC lifetime-based shared memory aliasing. Three independent
+`__shared__` allocations: `smem_q[320]` (1280 B) + `smem_dot[8]` (32 B) + `smem_latent[256]`
+(1024 B) = 2336 B, well within Blackwell SM shared memory limits. Causal bound `kv_end =
+min(q_pos+1, seq_len)` correct. Grid `(nq=32, seq_len, 1)` → `gridDim.y = seq_len`; CUDA
+caps `gridDim.y ≤ 65535`, valid for all chunked-prefill paths where `seq_len ≤
+max_prefill_tokens ≤ 8192`. (Edge note: `--max-prefill-tokens 0` + `max_seq_len=65536`
+would yield `seq_len=65536 > 65535`; not a concern for the documented launch configs.) ✓
+
+**`mla_prefill_attn.cu`**: half-warp mask `lane_mask = (warp_lane < 16) ? 0x0000FFFFu :
+0xFFFF0000u` prevents CUDA UB from `__shfl_*` calls naming non-executing threads after
+partial-last-tile early returns. ✓
+
+### P2 — Nemotron Super 120B tool calling: re-confirmed
+
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` — all four flags present in order:
+`thinking_in_tools = false`, `disable_tool_steering = true`, `tool_call_parser =
+"bare_json"`, `skip_template_tools = true`. ✓
+
+`nemotron_h.jinja:204`: generation-prompt branch `{%- if tools and not disable_tool_steering
+%}` correctly gated off; falls through to `<|im_start|>assistant\n<think>\n` which respects
+`enable_thinking` (false when tools active → `<think></think>\n`). ✓
+
+### P3 — SSM pool: re-confirmed
+
+`ssm_pool.rs`: `total_slots = max_batch_size + 1` (dummy slot); 9 × 36 SSM layers ≈ 1206 MB
+for Qwen3.5-122B at default `--max-batch-size 8`. Unaffected by `--ssm-cache-slots`. ✓
+
+`ssm_snapshot.rs`: `SsmSnapshotPool::new` early-returns zero-allocation struct when
+`num_slots == 0 || num_ssm_layers == 0`. `--ssm-cache-slots 0` correctly eliminates the
+Marconi prefix-cache region. Small decode-rollback ring still allocated for SSM models
+(`ROLLBACK_RESTEER_CAP+1` × `max_batch_size` slots) regardless of flag — this is correct
+behavior. Pure-attention models (Mistral, Nemotron attention layers) allocate nothing in
+either pool. ✓
+
+### Conclusion
+
+No new bugs found. All fixes are correct and stable at spec_ssm HEAD `266b333`
+(2026-06-02). Branch ready for hardware re-validation.
