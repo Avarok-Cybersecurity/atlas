@@ -4595,3 +4595,98 @@ The 1206 MB figure for Qwen3.5-122B is correct expected behavior.
 
 No new bugs found. All fixes confirmed present. Branch `spec_ssm` HEAD `bed92bf`
 is clean, correct, and ready for hardware re-validation on the DGX Spark node.
+
+## Session 55 — 2026-06-02 — Independent cold-start audit; all P1/P2/P3 fixes re-confirmed
+
+**Branch HEAD at session start**: `286a9f2` (fifty-fourth-pass docs commit)
+
+### What was investigated
+
+Fresh context-window audit of all three priorities. Every relevant source file
+was read directly from disk; no cached results from prior sessions were used.
+
+### P1 — Mistral Small 4 gibberish at >1000 tokens
+
+All eight MLA fixes verified present. Key findings per file:
+
+**`crates/spark-server/src/main_modules/kv_dtypes.rs`**
+`build_layer_kv_dtypes` early-returns `vec![KvCacheDtype::Bf16; num_attention_layers]`
+when `kv_dtype == BF16`, before any `high_precision_layers == 0` check. The former
+early-return on `kv_dtype == BF16` (which returned an empty vec) is gone.
+
+**`crates/spark-model/src/mistral_loader/loader_impl/phase_assemble.rs`**
+`layer_kv_dtypes.get(i).copied().unwrap_or(KvCacheDtype::Bf16)` — fallback is BF16,
+not FP8. All 36 MLA layers receive the correct BF16 dtype.
+
+**`kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu`**
+- `__shared__ float smem_dot[8]` declared at function scope (line 115), before the
+  `kv_pos` loop — NVCC cannot alias it with `smem_q` across loop iterations.
+- `inv_sqrt_d` parameter passed as `1/sqrt(kv_lora + rope_dim) = 1/sqrt(320)` by caller.
+- Causal mask: `kv_end = min(q_pos + 1, seq_len)`.
+- All pointer arithmetic uses `(unsigned long long)` casts — no 32-bit overflow.
+
+**`kernels/gb10/mistral-small-4/nvfp4/mla_prefill_attn.cu`**
+Half-warp mask: `const unsigned int lane_mask = (warp_lane < 16) ? 0x0000FFFFu : 0xFFFF0000u;`
+declared before any early-return guard (CUDA §B.15 compliant).
+
+**`crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip_mla.rs`**
+- Routes through `ops::mla_fused_prefill` with hard `anyhow::ensure!` guard blocking
+  HDIM=256 kernel use.
+- `inv_sqrt_d_absorbed = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` — 1/sqrt(320).
+- `kv_write_start` field present in `CacheSkipMlaArgs` and propagated to kernel.
+
+**`crates/spark-model/src/layers/qwen3_attention/prefill/paged_mla.rs`**
+- First chunk (`seq_len_start == 0`): `prefill_attn_128_k` kernel with guard.
+- Multi-chunk (`seq_len_start > 0`): `mla_prefill_paged_320` kernel; `kv_len = seq_len_start + num_tokens`; `inv_sqrt_d = 1/sqrt(320)`.
+
+**`crates/spark-model/src/mistral_loader/loader_impl/yarn.rs`**
+Confirmed correct throughout the branch. `find_correction_dim` uses the proper
+dimension-index formula. Not the bug; the YaRN misattribution in earlier sessions
+is retracted (first noted Session 53, reiterated Session 54).
+
+**`kernels/gb10/mistral-small-4/nvfp4/KERNEL.toml`**
+Both kernels registered: `mla_fused_prefill = "mla_fused_prefill"` and
+`mla_prefill_paged_320 = "mla_prefill_paged"`.
+
+**All eight MLA fixes confirmed present in HEAD**:
+
+| Fix | File | Commit |
+|-----|------|--------|
+| `unwrap_or(Fp8)` → `unwrap_or(Bf16)` | `phase_assemble.rs` | f6161c1 |
+| `build_layer_kv_dtypes` returns full BF16 vec | `kv_dtypes.rs` | 427104f |
+| `mla_fused_prefill`: `smem_dot` moved outside KV loop | `mla_fused_prefill.cu` | 345c3b2 |
+| `mla_fused_prefill`: `inv_sqrt_d` = 1/sqrt(320) | `mla_fused_prefill.cu` | 3f673d4 |
+| `cache_skip_mla`: uses fused kernel; `kv_write_start` propagated | `cache_skip_mla.rs` | e7de0f4 |
+| `paged_mla`: first-chunk uses HDIM=128 kernel; multi-chunk uses 320 | `paged_mla.rs` | (multiple) |
+| `mla_prefill_paged_320`: half-warp masks for `__shfl_*` | `mla_prefill_paged_320.cu` | ebe5b36 |
+| `mla_prefill_paged_320`: causal_kv_end uses q_global not q_local | `mla_prefill_paged_320.cu` | b274150 |
+
+### P2 — Nemotron Super 120B tool calls (confirmed fixed)
+
+`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` contains all four required entries:
+- `disable_tool_steering = true` — prevents `<tool_call>\n` steering prefix loop
+- `tool_call_parser = "bare_json"` — matches model's native training format
+- `skip_template_tools = true` — suppresses Jinja XML `# Tools` block that
+  would contradict the bare-JSON parser's format instructions
+- `thinking_in_tools = false` — grammar decoding active from token 1
+
+`BareJsonParser::suppresses_jinja_tools() → true` confirmed in `bare_json.rs` (line 52).
+`nemotron_h.jinja` gates the steering prefix on `not disable_tool_steering`, so with
+the MODEL.toml flag set the template falls through to a clean `<|im_start|>assistant\n<think>\n`.
+
+### P3 — SSM pool allocation with `--ssm-cache-slots 0` (confirmed by design)
+
+`impl_a1.rs` constructs two distinct pools:
+- `SsmStatePool::new(..., max_batch_size, ...)` — active decode recurrence state;
+  must be sized by concurrency, not cache depth. Cannot be zeroed.
+- `SsmSnapshotPool::new(ssm_cache_slots, ...)` — prefix-caching snapshots;
+  correctly receives `ssm_cache_slots=0` and allocates zero memory.
+
+The 1206 MB for Qwen3.5-122B is correct expected behavior (9 slots × 36 SSM layers
+× ~4 MB/slot). Users needing lower memory can pass `--max-batch-size 1` (~151 MB).
+The `--ssm-cache-slots 0` flag only zeros the snapshot pool.
+
+### Conclusion
+
+No new bugs found. All fixes confirmed present in HEAD `286a9f2`. Branch `spec_ssm`
+is clean and correct. Ready for hardware re-validation on the DGX Spark node.
