@@ -290,3 +290,23 @@ SsmStatePool::new(&config, max_batch_size, has_mtp, num_intermediates, gpu.as_re
 The two pools are independent. `--ssm-cache-slots 0` correctly disables `SsmSnapshotPool`
 (prefix-cache SSM state snapshots) without affecting the 1206 MB `SsmStatePool` (active
 recurrent states for up to `max_batch_size` in-flight sequences). No code change needed.
+
+---
+
+## Code Fix (2026-06-03, spec_ssm branch)
+
+### `mla_fused_prefill.cu` CUDA gridDim.y overflow — FIXED
+
+The `mla_fused_prefill` kernel (fused Q-absorption + attention + V-extraction) previously used
+`grid=(nq, seq_len, 1)` with `head=blockIdx.x; q_pos=blockIdx.y`. CUDA's maximum `gridDim.y`
+is 65535; Mistral Small 4's `max_seq_len=65536` would exceed this limit, causing a silent
+kernel launch failure for any full-length sequence.
+
+Fixed in both the kernel and its Rust dispatch wrapper:
+- `kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu`: switched to flat 1D grid
+  `grid=(nq*seq_len, 1, 1)` with `head = blockIdx.x / seq_len; q_pos = blockIdx.x % seq_len`.
+- `crates/spark-model/src/layers/ops/prefill_attn_a.rs`: updated to `.grid([nq * seq_len, 1, 1])`.
+
+This kernel is compiled and loaded via `try_kernel` but currently has no active call site (it
+represents a future optimization path for absorbed-MLA prefill). No runtime regression was
+possible from this bug. The fix is pre-emptive, ensuring correctness when a call site is added.

@@ -9,7 +9,7 @@
 //   3. Online softmax attention over all KV tokens
 //   4. V_out[128] = attn_latent[256] @ W_UV[128,256]^T
 //
-// Grid: (num_heads, num_q_tokens, 1)
+// Grid: (num_heads * num_q_tokens, 1, 1)  [flat; avoids gridDim.y≤65535 limit]
 // Block: (256, 1, 1)
 //
 // Memory: W_UK and W_UV read from global (L2 cached per head, 32KB + 64KB).
@@ -43,8 +43,9 @@ extern "C" __global__ void mla_fused_prefill(
     unsigned int hd,            // nope + rope = 128
     float inv_sqrt_d            // 1/sqrt(320)
 ) {
-    const unsigned int head = blockIdx.x;
-    const unsigned int q_pos = blockIdx.y;
+    // Flat 1-D grid: blockIdx.x encodes (head, q_pos) to avoid gridDim.y ≤ 65535.
+    const unsigned int head  = blockIdx.x / seq_len;
+    const unsigned int q_pos = blockIdx.x % seq_len;
     const unsigned int tid = threadIdx.x;  // 0..255
 
     if (head >= nq || q_pos >= seq_len) return;
