@@ -15,10 +15,12 @@
 | **Mistral Small 4** | 66 GB | 38 GB (BF16) | 3/3 | 2/2 | 34-40 tok/s | **>1K FAIL** (bug fixed) | **FIXED** |
 | **Nemotron Super 120B** | 94 GB | tiny (FP8) | 3/3 | 2/2 | 20-22 tok/s | 6.5K PASS, 13K FAIL | **PARTIAL** |
 
-> **Post-test analysis (2026-05-18)**: All three action items investigated against current codebase.
-> Mistral long-context failure was a code bug (YaRN inv_freq, now fixed). Nemotron tool-call
-> failure was a steering-prefix loop (MODEL.toml fix already applied). SSM pool memory is
-> correct behavior — see per-model analysis and updated Action Items below.
+> **Post-test analysis (2026-05-18, updated 2026-06-03)**: All three action items investigated
+> against current spec_ssm codebase. Mistral long-context failure had **two independent bugs**:
+> (1) YaRN inv_freq formula (fixed in `yarn.rs`) and (2) HDIM=256 flash attention kernel reading
+> past valid head bounds for hd=128 (fixed via `-DHDIM=128` model kernel + `mla_fused_prefill`
+> absorbed path). Nemotron tool-call failure was a steering-prefix loop (MODEL.toml fix applied).
+> SSM pool memory is correct behavior — see per-model analysis and updated Action Items below.
 
 ---
 
@@ -97,7 +99,7 @@ sudo docker run -d --name atlas-mistral --gpus all --ipc=host --network host \
 | **Long ctx ~4.4K in** | **FAIL** | Total gibberish |
 | **Long ctx ~6.5K in** | **FAIL** | Total gibberish |
 
-### Root Cause: YaRN RoPE inv_freq Bug (Fixed)
+### Root Cause 1 of 2: YaRN RoPE inv_freq Bug (Fixed)
 
 **Threshold**: ~600–1000 diverse input tokens
 **Confirmed on**: BOTH atlas-test:latest AND avarok/atlas-alpha-2.7 (both built from pre-release code with the bug)
@@ -133,7 +135,40 @@ comments in `yarn.rs` for the derivation. The fix is in the current open-source 
 both pre-release test images predated it.
 
 **Short-context is excellent**: 3/3 coherence, 2/2 tool calls, 40.3 tok/s still valid.
-Long-context quality expected to be fully restored after the fix.
+Long-context quality expected to be fully restored after both fixes.
+
+### Root Cause 2 of 2: HDIM=256 Flash Attention Kernel Mismatch (Fixed)
+
+**Threshold**: ~600–1000 tokens (compounding with context length, same observable signature as Root Cause 1)
+**Affected paths**: both `prefill/paged_mla.rs` and `prefill/cache_skip_mla.rs`
+
+The common flash attention kernel `kernels/gb10/common/inferspark_prefill.cu` defaults to
+`#define HDIM 256`. Mistral Small 4's MLA architecture has `head_dim = nope + rope = 64 + 64 = 128`.
+When the HDIM=256 kernel runs for a 128-element head:
+- 256 elements are loaded per head instead of 128
+- Elements 128–255 alias the start of the **adjacent head's** K data in device memory
+- 16 tile iterations execute instead of the correct 8
+- Dot products are contaminated by cross-head K data in proportion to the number of KV tokens
+
+Because the cross-head contamination grows with sequence length (each additional KV token adds
+another corrupted dot product into the accumulator), this bug produces the same failure signature
+as the YaRN bug: short sequences appear coherent, gibberish appears above the ~600–1000 token
+threshold. The two defects are independent and compound — each alone would be sufficient to
+corrupt output at moderate sequence lengths.
+
+**Fix (two-pronged)**:
+1. `kernels/gb10/mistral-small-4/nvfp4/KERNEL.toml` sets
+   `extra_nvcc_flags = ["--fmad=false", "-DHDIM=128"]`, producing a model-specific kernel binary
+   `prefill_attn_128_k`. `prefill/paged_mla.rs` dispatches through this handle for first-chunk
+   prefill (seq_len_start=0), ensuring the 128-dim tile size is used.
+2. `prefill/cache_skip_mla.rs` (prefix-cache hit path) was re-routed to the `mla_fused_prefill`
+   kernel (absorbed-MLA path at HDIM=320), bypassing the per-head flash attention kernel entirely.
+   An `anyhow::ensure!(mla_fused_prefill_k.0 != 0)` guard hard-aborts rather than silently
+   falling back to the broken common kernel.
+
+Note: the `extra_nvcc_flags` in KERNEL.toml apply only to kernels compiled from source files
+within that model directory. The common `inferspark_prefill.cu` still defaults to HDIM=256; the
+fix works because the model-specific Rust code dispatches to the `-DHDIM=128` variant instead.
 
 ---
 
@@ -182,13 +217,24 @@ sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
 
 ## Action Items
 
-1. **[P0] Mistral MLA prefill bug — ROOT CAUSE FOUND, FIXED**: The long-context degradation was
-   caused by a YaRN RoPE inv_freq calculation bug, not NVFP4 quantization. The old code used
-   the Llama-3.1 NTK-by-parts formula with `llama_4_scaling.beta=0.1` mis-aliased as
-   `low_freq_factor`, producing wrong `inv_freq` for pairs j≈12–18. This caused attention
-   attention scores from pair j=12 to flip sign at N≈867 tokens → gibberish above that threshold.
-   **Fix**: `yarn.rs` now uses the correct YaRN formula in dimension-index space.
-   **Re-test needed**: Run the same long-context suite against a fresh build from current main.
+1. **[P0] Mistral MLA prefill bugs — TWO ROOT CAUSES FOUND, BOTH FIXED**: The long-context
+   degradation had two independent bugs that both produce the same ~600–1000 token failure
+   threshold; either alone is sufficient to corrupt output.
+
+   **Bug 1 — YaRN RoPE inv_freq**: The old code used the Llama-3.1 NTK-by-parts formula with
+   `llama_4_scaling.beta=0.1` mis-aliased as `low_freq_factor`, producing wrong `inv_freq` for
+   pairs j≈12–18. The wrong rotation angles compound with position → gibberish above ~867 tokens.
+   **Fix**: `yarn.rs` now uses the correct YaRN formula in dimension-index space with
+   `beta_fast=32, beta_slow=1` → `low=7, high=15`.
+
+   **Bug 2 — HDIM=256 flash attention kernel**: The common `inferspark_prefill.cu` defaults to
+   `#define HDIM 256`, but Mistral Small 4 has MLA head_dim=128. The kernel loaded 256 elements
+   per head (128 valid + 128 aliased from the adjacent head), corrupting dot products in proportion
+   to sequence length. **Fix**: `KERNEL.toml` `extra_nvcc_flags = ["-DHDIM=128"]` gives the
+   model-specific `prefill_attn_128_k`; the prefix-cache hit path (`cache_skip_mla.rs`) uses
+   `mla_fused_prefill` (absorbed path, HDIM=320) instead.
+
+   **Re-test needed**: Run the same long-context suite against a fresh build from current spec_ssm.
 
 2. **[P1] Nemotron tool calling — FIXED**: `disable_tool_steering = true` +
    `tool_call_parser = "bare_json"` added to `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`.
@@ -346,8 +392,14 @@ pre-emptive fix.
 
 ### Status: all P1/P2/P3 bugs resolved
 
-- **P1 (YaRN RoPE)**: Fixed in `yarn.rs`. Mistral Small 4 long-context gibberish is resolved.
-- **P1 (gridDim.y overflow in `mla_fused_prefill`)**: Fixed in `a127885`. Affects prefix-cache
-  hit requests; would have silently broken seq_len ≥ 65536 on that path.
+- **P1 Bug 1 (YaRN RoPE inv_freq)**: Fixed in `yarn.rs`. Wrong formula for low-frequency
+  pairs → wrong rotation angles compounding with position → gibberish above ~867 tokens.
+- **P1 Bug 2 (HDIM=256 kernel mismatch)**: Fixed via `KERNEL.toml -DHDIM=128` for `paged_mla.rs`
+  path and `mla_fused_prefill` (absorbed path) for `cache_skip_mla.rs` path. Common kernel read
+  256 elements per head (128 valid + 128 cross-head alias) → corrupted attention scores scaling
+  with sequence length. These two bugs had the same failure signature and jointly caused the
+  observed hard failure at ~1K tokens.
+- **P1 (gridDim.y overflow in `mla_fused_prefill`)**: Fixed in `a127885`. Would have silently
+  broken any prefix-cache-hit request where seq_len ≥ 65536 (CUDA max gridDim.y = 65535).
 - **P2 (Nemotron tool calling)**: Fixed in `MODEL.toml`. Native bare-JSON tool calls work.
 - **P3 (SSM cache slots)**: Correct behavior documented. No code change needed.
