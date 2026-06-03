@@ -427,7 +427,7 @@ mod parsers;
 mod tests;
 
 pub use dispatch::parse_config;
-pub(crate) use parsers::{parse_gemma4_params, parse_minimax_m2, parse_vision_config};
+pub(crate) use parsers::{parse_gemma4_params, parse_minimax_m2, parse_step3p7, parse_vision_config};
 pub use parsers::{parse_mistral_params, parse_quantization_config};
 
 pub(crate) fn finalize_config(config: &mut ModelConfig, raw: &serde_json::Value) -> Result<()> {
