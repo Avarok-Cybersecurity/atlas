@@ -139,7 +139,8 @@ pub fn mla_cache_assemble_batched(
 }
 
 /// Fused MLA prefill: Q_absorption + attention + V_extraction in one kernel.
-/// Grid: (num_heads, seq_len, 1)  Block: (256, 1, 1)
+/// Grid: (num_heads * seq_len, 1, 1)  Block: (256, 1, 1)
+/// Flat 1D grid avoids the CUDA gridDim.y ≤ 65535 limit at large seq_len.
 #[allow(clippy::too_many_arguments)]
 pub fn mla_fused_prefill(
     gpu: &dyn GpuBackend,
@@ -164,7 +165,7 @@ pub fn mla_fused_prefill(
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([nq, seq_len, 1])
+        .grid([nq * seq_len, 1, 1])
         .block([256, 1, 1])
         .arg_ptr(q_full)
         .arg_ptr(q_rope)
