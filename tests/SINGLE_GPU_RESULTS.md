@@ -210,12 +210,12 @@ sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
 
 ---
 
-## Code Re-investigation (2026-06-02, spec_ssm branch)
+## Code Verification (2026-06-03, spec_ssm branch)
 
-All three previously documented fixes were confirmed present and correct in the codebase.
-No additional bugs were found. Detailed notes below for each investigation area.
+All three previously documented fixes confirmed present and correct. Additional findings from
+second-pass review noted below.
 
-### P1: Mistral MLA prefill — all code paths verified
+### P1 — Mistral MLA prefill: all fixes verified
 
 **`yarn.rs`** (`crates/spark-model/src/mistral_loader/loader_impl/yarn.rs`):
 Implements the correct YaRN NTK-by-parts formula in dimension-index space using
@@ -224,7 +224,16 @@ The ramp is `clamp((j - low) / (high - low), 0, 1)`. For Mistral params (theta=1
 original_max_pos=8192, factor=128): j<7 → extrapolation (original inv_freq), j>15 → full
 interpolation (1/128 scale), j∈[7,15] → linear blend. Verified correct.
 
-**`prefill/paged_mla.rs`** (the main single-chunk path, no prefix cache):
+**`is_mla()` single-chunk guard** (new finding, added post-test):
+`crates/spark-model/src/model/trait_impl/ep_misc.rs`: `is_mla_dispatch()` returns
+`self.config.kv_lora_rank > 0`, true for Mistral Small 4 (kv_lora_rank=256). The scheduler
+(`run_standard.rs:51`, `run_batched_prefill.rs:44`, `run_batched_mixed.rs:51`) sets
+`effective_max = remaining` when `model.is_mla()` is true, forcing the entire prompt into a
+single chunk regardless of `--max-prefill-tokens`. This prevents multi-chunk MLA corruption
+(the "no paged-MLA prefill kernel" issue seen in the 2026-05-01 sweep: 8K → "The\nThe…").
+Together with the YaRN fix, Mistral Small 4 is now correct at all sequence lengths.
+
+**`prefill/paged_mla.rs`** (main path — fresh prompts, no prefix cache):
 - Expands KV via `wkv_b`: `kv_expanded[N, nkv*(nope+v_dim)]`
 - K_rope via `wkv_a_rope` then YaRN RoPE applied to both Q_rope and K_rope
 - Assembles contiguous K=[nope|rope] and V via `mla_kv_assemble_batched`
@@ -236,26 +245,28 @@ interpolation (1/128 scale), j∈[7,15] → linear blend. Verified correct.
 **`prefill/cache_skip_mla.rs`** (prefix-cache hit path):
 - Same Q/K/V assembly as paged_mla.rs
 - Flash attention via `prefill_attn_64_k` (`inferspark_prefill_64`, also compiled with
-  `-DHDIM=128`)
-- KV cache write uses `expert_up_out` (K) and `expert_down_out` (V) as separate buffers,
-  both BF16 — correct for MLA
+  `-DHDIM=128`; "64" refers to query tile size BR=64, not head dim)
+- KV cache write uses `expert_up_out` (K) and `expert_down_out` (V), both BF16 — correct
+- **Latent issue**: hardcodes `sliding_window=0` while `paged_mla.rs` passes
+  `self.sliding_window.unwrap_or(0)`. No impact for Mistral Small 4 (no sliding window), but
+  a future MLA model with sliding-window attention on a prefix-cache hit path would silently
+  ignore the window constraint. Track but no action needed for current models.
 
 **`kernels/gb10/mistral-small-4/nvfp4/KERNEL.toml`**:
-The `extra_nvcc_flags = ["--fmad=false", "-DHDIM=128"]` correctly overrides the `#ifndef HDIM`
-guard in `common/inferspark_prefill.cu` and `common/inferspark_prefill_fp8kv.cu`, ensuring
-the flash attention kernels use 128-dim shared memory tiles (not 256-dim).
+`extra_nvcc_flags = ["--fmad=false", "-DHDIM=128"]` ensures flash attention kernels use
+128-dim tiles (not the default 256-dim). Correct for MLA hd=nope+rope=64+64=128.
 
-**`--kv-high-precision-layers auto` with MLA**:
-With `--kv-cache-dtype bf16`, `build_layer_kv_dtypes` returns `vec![]` (early exit when
-`kv_dtype == BF16`). All layers use BF16 KV cache. No mixed-precision issue.
+**`--kv-high-precision-layers auto` with BF16 KV**:
+With `--kv-cache-dtype bf16`, `build_layer_kv_dtypes` returns a uniform BF16 vector.
+`auto` resolves to 2 boundary layers but has no effect since all are already BF16. No
+mixed-precision issue.
 
 **`mla_fused_prefill_k`**:
-The `mla_fused_prefill.cu` kernel (fused Q-absorption + attention + V-extraction in one pass)
-is compiled and the handle is loaded via `try_kernel`, but the handle field is never read by
-any prefill dispatch code. The fused path is dead code. Not a bug (the unabsorbed path works
-correctly), but the kernel represents future optimization potential.
+The `mla_fused_prefill.cu` kernel (fused Q-absorption + attention + V-extraction) is compiled
+and loaded via `try_kernel`, but never invoked by any prefill dispatch. It is dead code — not
+a bug, but represents future optimization potential for the absorbed-MLA prefill path.
 
-### P2: Nemotron tool calling — confirmed fixed
+### P2 — Nemotron tool calling: verified fixed
 
 `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` contains:
 ```toml
@@ -263,17 +274,19 @@ disable_tool_steering = true
 tool_call_parser = "bare_json"
 thinking_in_tools = false
 ```
-The `jinja-templates/nemotron_h.jinja` tool steering prefix is suppressed, and the model uses
-its native top-level JSON format. The tool_parser.rs `BareJson` variant enforces the
-`{"name":"...","arguments":{...}}` schema via grammar-constrained decoding.
+`jinja-templates/nemotron_h.jinja` line 204 gates the steering prefix on
+`{%- if tools and not disable_tool_steering %}`. With `disable_tool_steering=true`, the
+generation prompt emits `<|im_start|>assistant\n<think>\n` (standard thinking) rather than
+`<|im_start|>assistant\n<think></think>\n<tool_call>\n` (the prefix that caused the loop).
+`tool_parser.rs` `BareJson` enforces `{"name":"...","arguments":{...}}` schema via grammar.
 
-### P3: SSM cache slots — confirmed correct behavior
+### P3 — SSM cache propagation: verified correct
 
-`impl_a1.rs` constructs `SsmStatePool` with `max_batch_size` (not `ssm_cache_slots`):
+`build.rs:71`: `args.ssm_cache_slots` is passed directly to the model constructor.
+`SsmStatePool` is constructed with `max_batch_size` (not `ssm_cache_slots`):
 ```rust
-let ssm_pool = SsmStatePool::new(&config, max_batch_size, has_mtp, num_intermediates, gpu.as_ref())?;
+SsmStatePool::new(&config, max_batch_size, has_mtp, num_intermediates, gpu.as_ref())?
 ```
-`SsmSnapshotPool` is constructed separately using `ssm_cache_slots`; passing `0` disables it.
-The two allocations are independent. For Qwen3.5-122B (36 SSM layers, default max_batch_size=8):
-`SsmStatePool` = 1206 MB regardless of `--ssm-cache-slots`. Pass `--max-batch-size 1` to
-reduce to ~151 MB. No code change needed.
+The two pools are independent. `--ssm-cache-slots 0` correctly disables `SsmSnapshotPool`
+(prefix-cache SSM state snapshots) without affecting the 1206 MB `SsmStatePool` (active
+recurrent states for up to `max_batch_size` in-flight sequences). No code change needed.
