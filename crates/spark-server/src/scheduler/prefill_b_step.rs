@@ -57,13 +57,15 @@ pub fn prefill_request(
     let req_timeout_at = req.timeout_at();
     let grammar_spec = req.take_grammar_spec();
     let grammar_state = compile_grammar_state(grammar_engine, &grammar_spec);
-    let (prompt_tokens, max_tokens, mut sink, image_pixels, temperature) = match req {
+    let (prompt_tokens, max_tokens, mut sink, image_pixels, temperature, cancel_flag) = match req
+    {
         InferenceRequest::Streaming {
             prompt_tokens,
             max_tokens,
             temperature,
             token_tx,
             image_pixels,
+            cancel_flag,
             ..
         } => (
             prompt_tokens,
@@ -71,6 +73,7 @@ pub fn prefill_request(
             ResponseSink::Streaming(token_tx),
             image_pixels,
             temperature,
+            Some(cancel_flag),
         ),
         InferenceRequest::Blocking {
             prompt_tokens,
@@ -85,6 +88,7 @@ pub fn prefill_request(
             ResponseSink::Blocking(Some(response_tx)),
             image_pixels,
             temperature,
+            None,
         ),
     };
 
@@ -115,7 +119,7 @@ pub fn prefill_request(
         }
 
         // EP: broadcast prefill command + tokens to worker (bulk, single NCCL op).
-        model.ep_broadcast_cmd(0xFFFFFFF0)?;
+        model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF0)?;
         model.ep_broadcast_cmd(prompt_tokens.len() as u32)?;
         model.ep_broadcast_cmd(0)?; // chunk_start = 0 (non-chunked)
         model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
@@ -135,7 +139,8 @@ pub fn prefill_request(
                     "prefill_b_step: free_sequence (after prefill error): {free_err:#}"
                 );
             }
-            if let Err(bcast_err) = model.ep_broadcast_cmd(0xFFFFFFF1) {
+            if let Err(bcast_err) = model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF1)
+            {
                 tracing::error!(
                     "prefill_b_step: ep_broadcast (after prefill error): {bcast_err:#}"
                 );
@@ -178,6 +183,7 @@ pub fn prefill_request(
             eos_tokens: eos_tokens.to_vec(),
             finished: true,
             sink,
+            cancel_flag: cancel_flag.clone(),
             temperature,
             top_k,
             top_p,
@@ -245,6 +251,7 @@ pub fn prefill_request(
         eos_tokens: eos_tokens.to_vec(),
         finished: false,
         sink,
+        cancel_flag,
         temperature,
         top_k,
         top_p,

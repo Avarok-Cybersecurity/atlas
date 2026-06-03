@@ -384,8 +384,9 @@ pub fn run(
     for p in prefilling {
         let mut seq = p.seq;
         let _ = model.free_sequence(&mut seq);
-        let _ = model.ep_broadcast_cmd(0xFFFFFFF1);
+        let _ = model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF1);
     }
-    let _ = model.ep_broadcast_cmd(0xFFFFFFFF);
+    // Shutdown applies to every slot the worker has; seq_id is ignored.
+    let _ = model.ep_broadcast_cmd_for_seq(0, 0xFFFFFFFF);
     tracing::info!("Scheduler stopped");
 }

@@ -105,6 +105,40 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn render_minimax_openai_template(
+        messages: &[serde_json::Value],
+        tools: Option<&[serde_json::Value]>,
+        enable_thinking: bool,
+    ) -> String {
+        let template_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../jinja-templates/openai/minimax_m2.jinja"
+        );
+        let raw = std::fs::read_to_string(template_path)
+            .expect("bundled MiniMax OpenAI template must be present in the repo");
+        let converted = super::jinja_helpers::convert_python_jinja_to_minijinja(&raw);
+        let env = super::jinja_helpers::build_jinja_env(&converted).expect("template compiles");
+        let tmpl = env.get_template("chat").unwrap();
+        let messages_for_render = normalize_tool_call_arguments(messages);
+        let messages_val = minijinja::Value::from_serialize(&messages_for_render);
+        let tools_val = tools.map(minijinja::Value::from_serialize);
+        let reasoning_effort: minijinja::Value = if enable_thinking {
+            "high".into()
+        } else {
+            "none".into()
+        };
+        let ctx = minijinja::context! {
+            messages => messages_val,
+            tools => tools_val.unwrap_or(minijinja::Value::UNDEFINED),
+            add_generation_prompt => true,
+            enable_thinking => enable_thinking,
+            reasoning_effort => reasoning_effort,
+            disable_tool_steering => false,
+            add_vision_id => false,
+        };
+        tmpl.render(ctx).expect("template renders")
+    }
+
     #[test]
     fn normalize_tool_call_arguments_parses_string_to_dict() {
         // The shape opencode sends back on the second turn: assistant
@@ -214,6 +248,66 @@ mod tests {
         assert!(
             rendered.contains("ls -la /tmp"),
             "expected the parsed command value in render: {rendered}"
+        );
+    }
+
+    #[test]
+    fn render_minimax_openai_template_closes_think_prompt_when_disabled() {
+        let messages = vec![json!({"role": "user", "content": "Reply with exactly: OK"})];
+        let rendered = render_minimax_openai_template(&messages, None, false);
+        assert!(
+            rendered.ends_with("]~b]ai\n<think>\n\n</think>\n\n"),
+            "expected closed-thinking assistant generation prompt: {rendered}"
+        );
+        let generation_tail = rendered
+            .rsplit_once("]~b]ai\n")
+            .map(|(_, tail)| tail)
+            .expect("assistant generation prompt is present");
+        assert_eq!(
+            generation_tail, "<think>\n\n</think>\n\n",
+            "disabled thinking must not leave the model inside <think>: {rendered}"
+        );
+    }
+
+    #[test]
+    fn render_minimax_openai_template_opens_think_prompt_when_enabled() {
+        let messages = vec![json!({"role": "user", "content": "Think before answering"})];
+        let rendered = render_minimax_openai_template(&messages, None, true);
+        assert!(
+            rendered.ends_with("]~b]ai\n<think>\n"),
+            "expected thinking assistant generation prompt: {rendered}"
+        );
+    }
+
+    #[test]
+    fn render_minimax_openai_template_omits_think_prompt_with_tools_when_disabled() {
+        let messages = vec![json!({"role": "user", "content": "List the current directory"})];
+        let tools = vec![json!({
+            "type": "function",
+            "function": {
+                "name": "shell",
+                "description": "Run a shell command",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string"}
+                    },
+                    "required": ["command"]
+                }
+            }
+        })];
+        let rendered = render_minimax_openai_template(&messages, Some(&tools), false);
+        assert!(
+            rendered.contains("<tools>"),
+            "expected tool schema block in render: {rendered}"
+        );
+        assert!(
+            rendered.contains("<minimax:tool_call>"),
+            "expected MiniMax tool-call instructions in render: {rendered}"
+        );
+        assert!(
+            rendered.ends_with("]~b]ai\n<think>\n\n</think>\n\n"),
+            "tool-active disabled-thinking requests must use a closed-thinking assistant prompt: {rendered}"
         );
     }
 

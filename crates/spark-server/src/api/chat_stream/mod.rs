@@ -98,6 +98,13 @@ pub(crate) async fn chat_completions_stream(
     // round-trips in the steady state.
     let (token_tx, token_rx) = tokio::sync::mpsc::channel::<StreamEvent>(1024);
     let prompt_len = prompt_tokens.len();
+    // Cooperative cancellation flag shared with the scheduler. Flipped
+    // by stream-side loop guards (Bug-2 name-run cap, F11/F44 dedup,
+    // loop-watchdog) so the scheduler stops generating instead of just
+    // having its output suppressed — without it a degenerate-loop
+    // response keeps generating until max_tokens (or hangs on a
+    // channel-full blocking_send) while the client waits for `[DONE]`.
+    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Scheduler tracks thinking only when the template actually opens it.
     // When enable_thinking=false, the template inserts closed
@@ -134,6 +141,7 @@ pub(crate) async fn chat_completions_stream(
         top_logprobs,
         timeout_at,
         token_tx,
+        cancel_flag: cancel_flag.clone(),
     };
 
     state.request_tx.send(request).await.map_err(|_| {
@@ -196,7 +204,7 @@ pub(crate) async fn chat_completions_stream(
         f44_cache_active,
     };
 
-    let mut stream_state = StreamState::new(tools_active, enable_thinking);
+    let mut stream_state = StreamState::new(tools_active, enable_thinking, cancel_flag.clone());
 
     let token_stream = ReceiverStream::new(token_rx).flat_map(move |event| {
         let events = match event {

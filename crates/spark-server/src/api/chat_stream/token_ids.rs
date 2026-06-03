@@ -28,7 +28,11 @@ mod tests {
 
     #[test]
     fn take_ids_if_drains_only_when_on() {
-        let mut st = StreamState::new(false, false);
+        let mut st = StreamState::new(
+            false,
+            false,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
         st.pending_token_ids = vec![7, 8, 9];
 
         // Opted out: returns empty, buffer untouched (no token loss).

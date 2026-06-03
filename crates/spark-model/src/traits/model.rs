@@ -444,11 +444,16 @@ pub trait Model: Send + Sync {
         Ok(())
     }
 
-    /// EP worker step: receive a command from rank 0 and execute it.
+    /// EP worker step: receive a (seq_id, cmd) preamble from rank 0 and
+    /// execute the command in the addressed slot.
     ///
     /// Returns false when the worker should shut down.
     /// Only valid on rank > 0 with EP enabled.
-    fn ep_worker_step(&self, _seq: &mut SequenceState) -> Result<bool> {
+    ///
+    /// `slots` must be sized to `args.max_batch_size` (same as the head's
+    /// scheduler `active` capacity); commands with `seq_id >= slots.len()`
+    /// fail loudly rather than corrupt unrelated state.
+    fn ep_worker_step(&self, _slots: &mut [Option<SequenceState>]) -> Result<bool> {
         Ok(true) // no-op for non-EP models
     }
 
@@ -503,6 +508,28 @@ pub trait Model: Send + Sync {
     /// Only valid when EP is enabled.
     fn ep_broadcast_cmd(&self, _cmd: u32) -> Result<()> {
         Ok(()) // no-op for non-EP models
+    }
+
+    /// EP broadcast: send a `(seq_id, cmd)` pair to all worker ranks.
+    ///
+    /// Use this at the *first* broadcast of a logical command sequence
+    /// (e.g. the K=2 verify marker, prefill start, decode token, etc.).
+    /// Follow-up broadcasts within the same command (chunk metadata, more
+    /// tokens, accept/reject result) keep using [`Self::ep_broadcast_cmd`]
+    /// — the worker consumes the preamble once per command and routes
+    /// subsequent reads through the slot it identified.
+    ///
+    /// When [`Self::ep_protocol_v2`] returns false (the default), the
+    /// `seq_id` is ignored on the wire and behaviour matches the legacy
+    /// single-sequence broadcast.
+    fn ep_broadcast_cmd_for_seq(&self, _seq_id: u32, _cmd: u32) -> Result<()> {
+        Ok(()) // no-op for non-EP models
+    }
+
+    /// Returns true if this model's EP comm path is using the v2 protocol
+    /// (slot-aware seq_id preamble). Default false — pre-PR behaviour.
+    fn ep_protocol_v2(&self) -> bool {
+        false
     }
 
     /// EP bulk broadcast: send an array of u32 tokens to all worker ranks.

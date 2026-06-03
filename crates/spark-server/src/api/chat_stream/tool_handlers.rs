@@ -65,6 +65,9 @@ pub(super) fn handle_complete_tool_call(
         );
         state.stop_string_triggered = true;
         state.tool_loop_capped = true;
+        state
+            .cancel_flag
+            .store(true, std::sync::atomic::Ordering::Release);
     } else {
         // Bug-2 name-run cap (mirrors handle_tool_call_end): catches
         // runaway loops in the complete-tool-call path that

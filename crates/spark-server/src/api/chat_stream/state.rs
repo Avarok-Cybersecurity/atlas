@@ -94,6 +94,13 @@ pub(super) struct StreamState {
     /// "response was forcibly truncated" and gives every agent a
     /// clean hook to break its outer retry loop.
     pub(super) tool_loop_capped: bool,
+    /// Cooperative cancellation flag shared with the scheduler. Flipped
+    /// true on any forced-stop condition (`tool_loop_capped`, loop-
+    /// watchdog fire, …); the scheduler reads it in
+    /// `emit_step::emit_token` and finalises the sequence. Without
+    /// this, `stop_string_triggered` only suppresses output and the
+    /// scheduler keeps generating until natural EOS / max_tokens.
+    pub(super) cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Streaming tool-call detector (`Some` iff `tools_active`).
     pub(super) detector: Option<tool_parser::StreamingToolDetector>,
     /// True iff the reasoning/`<think>` phase has finished. Starts
@@ -110,7 +117,11 @@ pub(super) struct StreamState {
 }
 
 impl StreamState {
-    pub(super) fn new(tools_active: bool, enable_thinking: bool) -> Self {
+    pub(super) fn new(
+        tools_active: bool,
+        enable_thinking: bool,
+        cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
         Self {
             all_toks: Vec::new(),
             emitted: 0,
@@ -135,6 +146,7 @@ impl StreamState {
             tool_calls_emitted_count: 0,
             name_run: None,
             tool_loop_capped: false,
+            cancel_flag,
             detector: if tools_active {
                 Some(tool_parser::StreamingToolDetector::new())
             } else {

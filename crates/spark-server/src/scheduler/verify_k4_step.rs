@@ -16,7 +16,7 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
     let tokens_k4 = [a.last_token, drafts[0], drafts[1], drafts[2]];
 
     // EP: broadcast verify K=4 command + 4 tokens.
-    if let Err(e) = model.ep_broadcast_cmd(0xFFFFFFF4) {
+    if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, 0xFFFFFFF4) {
         tracing::error!("EP broadcast verify_k4 cmd: {e:#}");
         a.finished = true;
         return;

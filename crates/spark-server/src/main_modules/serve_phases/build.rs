@@ -183,6 +183,9 @@ pub(crate) fn maybe_run_ep_worker(
         );
     }
     let worker_hss_cfg = early_high_speed_swap_cfg.clone();
+    // Copy primitives out of `args` so the worker thread (which is
+    // `'static`) doesn't capture the function-scoped `&ServeArgs` ref.
+    let max_batch_size = args.max_batch_size;
     let handle = std::thread::spawn(move || {
         model_owned
             .bind_gpu_to_thread()
@@ -208,12 +211,35 @@ pub(crate) fn maybe_run_ep_worker(
                 }
             }
         }
-        let mut seq = model_owned
-            .alloc_sequence()
-            .expect("Failed to allocate EP worker sequence");
-        tracing::info!("EP worker ready (rank {rank}), waiting for commands");
+        // Slots vec sized to match the head's scheduler `max_batch_size`.
+        // Pre-allocate every slot. The head only emits `0xFFFFFFF1`
+        // (free+realloc) on lifecycle events — sequence finish/error —
+        // not on first use, so a fresh `prefill_a_step` for slot N
+        // arrives as `0xFFFFFFF0` with no prior alloc broadcast. Under v1
+        // (max_batch_size=1) this is just slot 0, matching the legacy
+        // behavior. Under v2 (max_batch_size>1) every slot must be
+        // populated up front for the same reason.
+        //
+        // Both ranks' SSM pools start with the same free-list ordering
+        // (see ssm_pool.rs: `(0..max_slots).rev().collect()` + `pop()`),
+        // so pre-allocating in `0..max_batch_size` order on the worker
+        // means `slots[i].slot_idx == i` — matching the slot ids the
+        // head's `alloc_sequence` returns for its Nth claim.
+        let mut slots: Vec<Option<spark_model::traits::SequenceState>> =
+            (0..max_batch_size).map(|_| None).collect();
+        for slot in slots.iter_mut() {
+            *slot = Some(
+                model_owned
+                    .alloc_sequence()
+                    .expect("Failed to allocate EP worker sequence"),
+            );
+        }
+        tracing::info!(
+            "EP worker ready (rank {rank}, {} slots), waiting for commands",
+            slots.len()
+        );
         loop {
-            match model_owned.ep_worker_step(&mut seq) {
+            match model_owned.ep_worker_step(&mut slots) {
                 Ok(true) => {}
                 Ok(false) => break,
                 Err(e) => {
@@ -222,7 +248,11 @@ pub(crate) fn maybe_run_ep_worker(
                 }
             }
         }
-        let _ = model_owned.free_sequence(&mut seq);
+        for slot in slots.iter_mut() {
+            if let Some(seq) = slot.as_mut() {
+                let _ = model_owned.free_sequence(seq);
+            }
+        }
         tracing::info!("EP worker stopped (rank {rank})");
     });
     handle.join().expect("EP worker thread panicked");

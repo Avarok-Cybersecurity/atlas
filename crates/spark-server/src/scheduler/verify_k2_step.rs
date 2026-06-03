@@ -17,7 +17,7 @@ pub fn step_verify_k2(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
     // EP: broadcast verify K=2 command + tokens so worker runs decode_verify_graphed in lockstep.
     let t_ep = Instant::now();
     let tokens_k2 = [a.last_token, drafts[0]];
-    if let Err(e) = model.ep_broadcast_cmd(0xFFFFFFF2) {
+    if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, 0xFFFFFFF2) {
         tracing::error!("EP broadcast verify_k2 cmd: {e:#}");
         a.finished = true;
         return;

@@ -55,20 +55,15 @@ top_p = 0.95
 top_k = 20
 
 [behavior]
-# MiniMax M2's chat_template.jinja appends `<think>\n` unconditionally
-# at `add_generation_prompt` (line 164). With `thinking_in_tools=false`
-# the reasoning parser strips `<think>...</think>` from `content`, but
-# the model still spends tokens inside `<think>` before emitting either
-# (a) a tool call (`<minimax:tool_call>...`) or (b) free-form code/text.
-# `max_thinking_budget` caps that spontaneous-thinking phase: when the
-# scheduler detects `<think>` without an explicit per-request budget,
-# it uses this number as the cap. Hit the cap → `</think>` is force-
-# emitted → real content begins. 1024 tokens at ~17 tok/s ≈ 60 s of
-# reasoning headroom: long enough for fib's chain-of-thought trace,
-# short enough that Search emits its tool call inside the test timeout.
+# MiniMax M2's native HF chat_template.jinja appends `<think>\n`
+# unconditionally at `add_generation_prompt`. Atlas uses an OpenAI-
+# variant template that gates this generation prompt on the resolved
+# per-request thinking setting. `max_thinking_budget` still caps explicit
+# or spontaneous thinking: when the scheduler detects `<think>` without
+# an explicit per-request budget, it uses this number as the cap. Hit
+# the cap -> `</think>` is force-emitted -> real content begins.
 # `thinking_default = false` makes the OpenAI-style API treat
-# `extra_body.thinking.budget_tokens` as opt-in (matches MiniMax's
-# `thinking_in_tools=false` story for tool-active requests).
+# `extra_body.thinking.budget_tokens` as opt-in.
 thinking_in_tools = false
 max_thinking_budget = 1024
 thinking_default = false

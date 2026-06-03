@@ -38,6 +38,9 @@ pub(super) struct PrefillInProgress {
     pub min_tokens: usize,
     pub eos_tokens: Vec<u32>,
     pub sink: ResponseSink,
+    /// Cooperative cancellation flag — see ActiveSeq for the contract.
+    /// Propagated to ActiveSeq when this PrefillInProgress promotes.
+    pub cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub request_start: Instant,
     pub temperature: f32,
     pub top_k: u32,
@@ -84,6 +87,14 @@ pub(super) struct ActiveSeq {
     pub eos_tokens: Vec<u32>,
     pub finished: bool,
     pub sink: ResponseSink,
+    /// Cooperative cancellation flag from the streaming pipeline.
+    /// `Some` for streaming requests with the flag wired through;
+    /// `None` for blocking requests. `emit_step::emit_token` reads
+    /// it on every token and finalises the sequence when set —
+    /// equivalent to receiving an EOS. Set by `chat_stream` guards
+    /// (tool-call loop cap, loop-watchdog) so the scheduler stops
+    /// generating instead of just having its output suppressed.
+    pub cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub temperature: f32,
     pub top_k: u32,
     pub top_p: f32,

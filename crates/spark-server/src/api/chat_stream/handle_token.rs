@@ -357,6 +357,9 @@ fn process_detector_content(
         }
         state.loop_watchdog_triggered = true;
         state.stop_string_triggered = true;
+        state
+            .cancel_flag
+            .store(true, std::sync::atomic::Ordering::Release);
 
         let salvaged =
             crate::tool_salvage::salvage(&state.loop_scan_buf, &ctx.tool_defs_for_backfill);

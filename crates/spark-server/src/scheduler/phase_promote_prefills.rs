@@ -30,7 +30,7 @@ pub(super) fn promote_completed_prefills(
             if let Err(e) = model.free_sequence(&mut seq) {
                 tracing::error!("phase_promote_prefills: free_sequence (error path): {e:#}");
             }
-            if let Err(e) = model.ep_broadcast_cmd(0xFFFFFFF1) {
+            if let Err(e) = model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF1) {
                 tracing::error!(
                     "phase_promote_prefills: ep_broadcast free+realloc (error path): {e:#}"
                 );
@@ -116,6 +116,7 @@ fn build_active_seq_from_prefill(
         eos_tokens: p.eos_tokens,
         finished: immediate_finish,
         sink: p.sink,
+        cancel_flag: p.cancel_flag,
         temperature: p.temperature,
         top_k: p.top_k,
         top_p: p.top_p,
