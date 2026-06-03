@@ -124,6 +124,17 @@ pub fn start_chunked_prefill(
         // Vision: encode images and store embeddings for chunk 0 token overwrite.
         if !image_pixels.is_empty() {
             model.prepare_vision_embed(&image_pixels)?;
+            // prepare_vision_embed() runs the vision encoder asynchronously on
+            // the default stream, writing this request's patch embeddings into
+            // the encoder's buf_out. The chunk-0 embedding injection inside
+            // prefill_chunk() runs on prefill_stream and reads buf_out. Without
+            // ordering between the two streams, the injection reads buf_out
+            // BEFORE this request's encode lands and overlays the PREVIOUS
+            // request's image embeddings — lag-by-one cross-image contamination
+            // (and torn reads / illegal access under interleaved load). Make
+            // prefill_stream wait for the encode to complete before injecting.
+            model.record_event(prefill_event, model.default_stream())?;
+            model.stream_wait_event(prefill_stream, prefill_event)?;
         }
 
         // EP: broadcast chunk 0 tokens to worker.
