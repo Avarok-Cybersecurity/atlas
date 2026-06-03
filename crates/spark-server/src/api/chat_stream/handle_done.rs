@@ -49,7 +49,8 @@ pub(super) fn handle_done(
                     );
                     if !sanitized.is_empty() {
                         let chunk =
-                            ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized);
+                            ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized)
+                                .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
                         sse_events.push(Ok(Event::default()
                             .data(serde_json::to_string(&chunk).unwrap_or_default())));
                     }
@@ -84,7 +85,8 @@ pub(super) fn handle_done(
         if state.refusal_scan_buf.len() < 16_384 {
             state.refusal_scan_buf.push_str(&tail);
         }
-        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, tail);
+        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, tail)
+            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
         sse_events.push(Ok(
             Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
         ));
@@ -186,11 +188,16 @@ pub(super) fn handle_done(
         let usage_chunk = ChatCompletionChunk::usage_only_chunk(&ctx.model, &ctx.id, usage.clone());
         let json = serde_json::to_string(&usage_chunk).unwrap_or_default();
         sse_events.push(Ok(Event::default().data(json)));
-        let final_chunk = ChatCompletionChunk::final_chunk_no_usage(&ctx.model, &ctx.id, fr);
+        // Residual: tokens whose decoded text was buffered/suppressed
+        // and never rode a content chunk. Stamping them here keeps
+        // Σ token_ids == completion_tokens exactly.
+        let final_chunk = ChatCompletionChunk::final_chunk_no_usage(&ctx.model, &ctx.id, fr)
+            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
         let json = serde_json::to_string(&final_chunk).unwrap_or_default();
         sse_events.push(Ok(Event::default().data(json)));
     } else {
-        let chunk = ChatCompletionChunk::done_chunk(&ctx.model, &ctx.id, fr, usage);
+        let chunk = ChatCompletionChunk::done_chunk(&ctx.model, &ctx.id, fr, usage)
+            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
         let json = serde_json::to_string(&chunk).unwrap_or_default();
         sse_events.push(Ok(Event::default().data(json)));
     }

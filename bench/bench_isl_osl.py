@@ -68,6 +68,14 @@ def send_request(url: str, model: str, prompt: str, max_tokens: int) -> dict:
         "max_tokens": max_tokens,
         "temperature": 0.0,
         "stream": True,
+        # Authoritative output-token accounting. The server reports the
+        # exact sampled-token count in usage.completion_tokens and (with
+        # return_token_ids) the IDs on each chunk. Counting SSE chunks or
+        # re-tokenizing decoded text both mis-measure, because one chunk
+        # is not one token and BPE is not homomorphic over fragment
+        # concatenation. We read usage and assert it equals Σ token_ids.
+        "stream_options": {"include_usage": True},
+        "return_token_ids": True,
     }).encode()
 
     req = Request(
@@ -79,7 +87,10 @@ def send_request(url: str, model: str, prompt: str, max_tokens: int) -> dict:
     t_start = time.perf_counter()
     t_first = None
     t_last = None
-    token_count = 0
+    chunk_count = 0          # content-bearing chunks (decode-window timing)
+    sum_token_ids = 0        # Σ len(choices[0].token_ids) — exact, server-sent
+    usage_completion = None  # usage.completion_tokens — authoritative
+    server_tok_s = None      # server-measured decode rate (cross-check)
 
     try:
         resp = urlopen(req, timeout=600)
@@ -98,22 +109,67 @@ def send_request(url: str, model: str, prompt: str, max_tokens: int) -> dict:
         except json.JSONDecodeError:
             continue
 
-        delta = chunk.get("choices", [{}])[0].get("delta", {})
-        if delta.get("content"):
+        choices = chunk.get("choices") or []
+        choice0 = choices[0] if choices else {}
+
+        # Exact count: server-provided token IDs (no re-tokenization).
+        tids = choice0.get("token_ids")
+        if isinstance(tids, list):
+            sum_token_ids += len(tids)
+
+        # Decode-window timing latches on content deltas only.
+        if choice0.get("delta", {}).get("content"):
             t_now = time.perf_counter()
             if t_first is None:
                 t_first = t_now
             t_last = t_now
-            token_count += 1
+            chunk_count += 1
+
+        # usage sidecar (stream_options.include_usage).
+        usage = chunk.get("usage")
+        if isinstance(usage, dict):
+            usage_completion = usage.get("completion_tokens", usage_completion)
+            server_tok_s = usage.get("response_token/s", server_tok_s)
 
     t_end = time.perf_counter()
     total = t_end - t_start
     ttft = (t_first - t_start) if t_first else total
     decode_time = (t_last - t_first) if (t_first and t_last and t_last > t_first) else 0
 
-    if token_count > 1 and decode_time > 0:
-        tpot = decode_time / (token_count - 1)
-        decode_tok_s = (token_count - 1) / decode_time
+    # Authoritative output-token count, in priority order:
+    #   1. usage.completion_tokens (server's own sampled-token count)
+    #   2. Σ token_ids (exact, server-sent — must equal #1)
+    #   3. content-chunk count (legacy fallback; approximate)
+    if usage_completion is not None:
+        tokens = usage_completion
+        count_source = "usage"
+    elif sum_token_ids > 0:
+        tokens = sum_token_ids
+        count_source = "token_ids"
+    else:
+        tokens = chunk_count
+        count_source = "chunk_count(fallback)"
+
+    # Self-validation: the two exact sources must agree. A mismatch
+    # means the server's per-chunk IDs and usage diverged — a real bug
+    # worth surfacing, not silencing.
+    ids_match_usage = (
+        usage_completion is not None
+        and sum_token_ids > 0
+        and usage_completion == sum_token_ids
+    )
+    if (
+        usage_completion is not None
+        and sum_token_ids > 0
+        and usage_completion != sum_token_ids
+    ):
+        print(f"  ⚠ token accounting mismatch: usage={usage_completion} "
+              f"Σtoken_ids={sum_token_ids} (chunks={chunk_count})",
+              file=sys.stderr)
+
+    if tokens > 1 and decode_time > 0:
+        tpot = decode_time / (tokens - 1)
+        decode_tok_s = (tokens - 1) / decode_time
     else:
         tpot = 0.0
         decode_tok_s = 0.0
@@ -122,7 +178,12 @@ def send_request(url: str, model: str, prompt: str, max_tokens: int) -> dict:
         "ttft_ms": ttft * 1000,
         "tpot_ms": tpot * 1000,
         "decode_tok_s": decode_tok_s,
-        "tokens": token_count,
+        "tokens": tokens,
+        "count_source": count_source,
+        "tokens_via_usage": usage_completion,
+        "tokens_via_ids": sum_token_ids,
+        "ids_match_usage": ids_match_usage,
+        "server_tok_s": server_tok_s,
         "total_s": total,
     }
 
@@ -196,7 +257,7 @@ def main():
                   f"TTFT={r['ttft_ms']:.1f}ms  "
                   f"TPOT={r['tpot_ms']:.2f}ms  "
                   f"tok/s={r['decode_tok_s']:.1f}  "
-                  f"tokens={r['tokens']}")
+                  f"tokens={r['tokens']} ({r['count_source']})")
 
         if not ttfts:
             results.append({

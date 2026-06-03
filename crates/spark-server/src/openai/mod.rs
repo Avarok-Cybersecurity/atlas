@@ -9,6 +9,7 @@ mod chat_response;
 mod completions;
 mod responses;
 mod responses_lowering;
+mod stream_chunk;
 
 #[cfg(test)]
 mod tests;
@@ -20,6 +21,7 @@ pub use chat_response::*;
 pub use completions::*;
 pub use responses::*;
 pub use responses_lowering::*;
+pub use stream_chunk::*;
 
 /// Generate a new completion ID for SSE streaming.
 pub fn new_completion_id() -> String {

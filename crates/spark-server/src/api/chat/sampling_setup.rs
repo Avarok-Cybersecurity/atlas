@@ -39,6 +39,24 @@ pub(super) struct SamplingSetup {
     pub(super) top_logprobs: Option<u8>,
 }
 
+fn tool_choice_required_for_parser(
+    tools_active: bool,
+    tool_choice: Option<&tool_parser::ToolChoice>,
+    parser_name: Option<&str>,
+) -> bool {
+    if !tools_active {
+        return false;
+    }
+
+    let explicit_required = tool_choice.is_some_and(|tc| {
+        matches!(tc, tool_parser::ToolChoice::Mode(m) if m == "required")
+            || matches!(tc, tool_parser::ToolChoice::Specific { .. })
+    });
+    let parser_required = matches!(parser_name, Some("minimax_xml"));
+
+    explicit_required || parser_required
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::result_large_err)]
 pub(super) fn build_sampling(
@@ -133,20 +151,11 @@ pub(super) fn build_sampling(
     }
 
     // Tool-choice + parser-driven required mode.
-    let parser_is_minimax_xml = state
-        .tool_call_parser
-        .as_ref()
-        .is_some_and(|p| p.name() == "minimax_xml");
-    let parser_is_bare_json = state
-        .tool_call_parser
-        .as_ref()
-        .is_some_and(|p| p.name() == "bare_json");
-    let tool_choice_required = tools_active
-        && (req.tool_choice.as_ref().is_some_and(|tc| {
-            matches!(tc, tool_parser::ToolChoice::Mode(m) if m == "required")
-                || matches!(tc, tool_parser::ToolChoice::Specific { .. })
-        }) || parser_is_minimax_xml
-            || parser_is_bare_json);
+    let tool_choice_required = tool_choice_required_for_parser(
+        tools_active,
+        req.tool_choice.as_ref(),
+        state.tool_call_parser.as_ref().map(|p| p.name()),
+    );
 
     // response_format + tools coexistence.
     //
@@ -241,4 +250,63 @@ pub(super) fn build_sampling(
         timeout_at,
         top_logprobs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_choice_required_for_parser;
+    use crate::tool_parser::{ToolChoice, ToolChoiceFunction};
+
+    #[test]
+    fn bare_json_auto_uses_triggered_grammar() {
+        assert!(!tool_choice_required_for_parser(
+            true,
+            None,
+            Some("bare_json")
+        ));
+    }
+
+    #[test]
+    fn bare_json_required_mode_enforces_from_first_token() {
+        let choice = ToolChoice::Mode("required".to_string());
+
+        assert!(tool_choice_required_for_parser(
+            true,
+            Some(&choice),
+            Some("bare_json")
+        ));
+    }
+
+    #[test]
+    fn specific_function_enforces_from_first_token() {
+        let choice = ToolChoice::Specific {
+            function: ToolChoiceFunction {
+                name: "memory".to_string(),
+            },
+        };
+
+        assert!(tool_choice_required_for_parser(
+            true,
+            Some(&choice),
+            Some("bare_json")
+        ));
+    }
+
+    #[test]
+    fn minimax_xml_remains_parser_required() {
+        assert!(tool_choice_required_for_parser(
+            true,
+            None,
+            Some("minimax_xml")
+        ));
+    }
+
+    #[test]
+    fn inactive_tools_are_not_required() {
+        assert!(!tool_choice_required_for_parser(
+            false,
+            None,
+            Some("bare_json")
+        ));
+    }
 }

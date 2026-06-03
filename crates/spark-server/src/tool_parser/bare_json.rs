@@ -11,9 +11,9 @@ use super::*;
 /// continuation distribution (token 131071 / Chinese-character loops have
 /// been observed). Bare JSON keeps the model on its trained distribution.
 ///
-/// Always paired with `tool_choice="required"` semantics so xgrammar enforces
-/// the schema from token 1; without that the model would hallucinate field
-/// names like `"tool"` instead of `"name"`.
+/// In `tool_choice="auto"` mode, xgrammar waits for the bare JSON trigger so
+/// the model can still answer with normal text. Explicit required/specific
+/// choices enforce the schema from token 1.
 pub struct BareJsonParser;
 
 impl ToolCallParser for BareJsonParser {

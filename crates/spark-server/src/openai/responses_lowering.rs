@@ -160,6 +160,9 @@ pub fn lower_responses_to_chat(
         frequency_penalty: None,
         logit_bias: None,
         stream: r.stream,
+        // Responses API has no token-IDs knob; lowered requests keep
+        // the default off (PCND — no implicit behavior change).
+        return_token_ids: false,
         enable_thinking: false,
         thinking: None,
         thinking_token_budget: None,

@@ -70,6 +70,67 @@ fn qwen3_coder_grammar_accepts_canonical() {
     );
 }
 
+/// Regression test for issue #88 (Qwen3.6-27B-FP8, DGX Spark): when the
+/// registered tools have shared name prefixes — the natural
+/// `mcp_{server}_{tool}` MCP pattern where `mcp_scrapling_get` is a
+/// textual prefix of `mcp_scrapling_get_prompt` — the per-tool auto-mode
+/// triggers must stay prefix-free (closing `>` included) so xgrammar's
+/// triggered-tags converter does NOT reject the whole grammar with "One
+/// tag matches multiple triggers". Before the fix this hard-disabled
+/// constrained decoding and the model concatenated/hallucinated tool
+/// names (`skills_listskills_list`).
+#[test]
+fn qwen3_coder_grammar_compiles_with_shared_tool_name_prefixes() {
+    fn mcp_tool(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            tool_type: "function".to_string(),
+            function: crate::tool_parser::FunctionDefinition {
+                name: name.to_string(),
+                description: Some(format!("MCP tool {name}")),
+                parameters: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": { "query": {"type": "string"} }
+                })),
+            },
+        }
+    }
+
+    // `get` ⊂ `get_prompt` and `fetch` shares the `bulk_fetch` server
+    // prefix — exactly the conflicting set reported in issue #88.
+    let tools = vec![
+        mcp_tool("mcp_scrapling_get"),
+        mcp_tool("mcp_scrapling_get_prompt"),
+        mcp_tool("mcp_scrapling_fetch"),
+        mcp_tool("mcp_scrapling_bulk_fetch"),
+    ];
+
+    let vocab = test_vocab();
+    let stop_ids = vec![130i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+
+    // AUTO mode (use_triggers=true) is the path that builds per-tool
+    // triggers. Pre-fix this returned Err (both the qwen_xml_parameter
+    // attempt and the json_schema fallback reuse the colliding triggers).
+    let compiled = engine
+        .compile_qwen3_coder_tool_grammar(&tools, true)
+        .expect("grammar with shared-prefix tool names must compile (issue #88)");
+
+    // The longer, prefix-colliding tool must be reachable — not shadowed
+    // by the shorter `mcp_scrapling_get` trigger.
+    let long_call = "<tool_call>\n<function=mcp_scrapling_get_prompt>\n<parameter=query>\nhi\n</parameter>\n</function>\n</tool_call>";
+    assert!(
+        grammar_accepts(&compiled, long_call),
+        "longer prefix-colliding tool must be accepted; input: {long_call:?}"
+    );
+
+    // The shorter tool is still reachable too.
+    let short_call = "<tool_call>\n<function=mcp_scrapling_get>\n<parameter=query>\nhi\n</parameter>\n</function>\n</tool_call>";
+    assert!(
+        grammar_accepts(&compiled, short_call),
+        "shorter tool must remain accepted; input: {short_call:?}"
+    );
+}
+
 /// Regression test for issue #40 / OpenClaw: when the schema declares
 /// `required: ["command"]`, the grammar must REJECT a tool call body
 /// with zero `<parameter=>` blocks.

@@ -211,6 +211,42 @@ fn responses_in_progress_event_name() {
     assert_eq!(responses_event_name(&ev), "response.in_progress");
 }
 
+// ── return_token_ids wire format ────────────────────────────────────
+
+#[test]
+fn token_ids_absent_by_default_keeps_wire_byte_identical() {
+    // PCND: a client that did not opt in must see no `token_ids` key.
+    let chunk = ChatCompletionChunk::content_chunk("m", "id", "hi".into());
+    let json = serde_json::to_string(&chunk).unwrap();
+    assert!(!json.contains("token_ids"), "default wire changed: {json}");
+    // Empty `with_token_ids` is a no-op (still absent).
+    let chunk =
+        ChatCompletionChunk::content_chunk("m", "id", "hi".into()).with_token_ids(Vec::new());
+    let json = serde_json::to_string(&chunk).unwrap();
+    assert!(!json.contains("token_ids"));
+}
+
+#[test]
+fn with_token_ids_stamps_first_choice() {
+    let chunk =
+        ChatCompletionChunk::content_chunk("m", "id", "hi".into()).with_token_ids(vec![10, 20, 30]);
+    assert_eq!(chunk.choices[0].token_ids, vec![10, 20, 30]);
+    let json = serde_json::to_string(&chunk).unwrap();
+    assert!(json.contains("\"token_ids\":[10,20,30]"), "{json}");
+    // No choices (usage-only chunk) → no panic, no-op.
+    let usage = Usage {
+        prompt_tokens: 1,
+        completion_tokens: 1,
+        total_tokens: 2,
+        prompt_tokens_details: None,
+        completion_tokens_details: None,
+        time_to_first_token_ms: 0.0,
+        response_tokens_per_second: 0.0,
+    };
+    let chunk = ChatCompletionChunk::usage_only_chunk("m", "id", usage).with_token_ids(vec![1, 2]);
+    assert!(chunk.choices.is_empty());
+}
+
 // ── ChatTemplateKwargs ────────────────────────────────────────────
 
 #[test]

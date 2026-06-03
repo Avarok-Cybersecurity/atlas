@@ -225,12 +225,26 @@ impl GrammarEngine {
         // Trigger selection depends on `use_triggers` (i.e. tool_choice mode):
         //
         // * tool_choice="auto" (use_triggers=true): per-tool LATE triggers
-        //   `<tool_call>\n<function=NAME`. The model is free to emit a
+        //   `<tool_call>\n<function=NAME>`. The model is free to emit a
         //   `<tool_call>` token and then *not* commit (e.g. by emitting
         //   plain prose afterwards), which is the ergonomic behaviour
         //   most pass-not-fail scenarios depend on (TC-11 mental math,
         //   TC-39 restraint, TC-43 ask-for-missing-arg, TC-48 multi-turn
         //   email composition). Late triggers preserve that freedom.
+        //
+        //   The closing `>` is part of the trigger so the trigger set is
+        //   prefix-free. Issue #88: when one tool name is a textual prefix
+        //   of another (`mcp_scrapling_get` vs `mcp_scrapling_get_prompt`
+        //   — the natural `mcp_{server}_{tool}` MCP pattern), a trigger
+        //   without the `>` (`…=mcp_scrapling_get`) is a prefix of the
+        //   longer tool's tag begin (`…=mcp_scrapling_get_prompt>\n`), so
+        //   that tag matches TWO triggers and xgrammar's triggered-tags
+        //   converter rejects the entire grammar ("One tag matches
+        //   multiple triggers"), silently disabling constrained decoding
+        //   and letting the model concatenate/hallucinate tool names. The
+        //   `>` terminator cannot appear inside a tool name, so `NAME>` is
+        //   never a prefix of another tool's `NAME2>` — each tag matches
+        //   exactly its own trigger.
         //
         // * tool_choice="required"/specific (use_triggers=false): SHORT
         //   shared trigger `<tool_call>`. Without it, the model can — and
@@ -246,9 +260,16 @@ impl GrammarEngine {
         //   construction. Mirrors compile_minimax_xml_tool_grammar's F67
         //   fix for the same xgrammar behaviour pattern.
         let triggers: Vec<String> = if use_triggers {
+            // Dedup defensively: two tools sharing a name would otherwise
+            // produce duplicate triggers, which the converter also rejects
+            // as "multiple triggers" (the OpenAI/MCP contract requires
+            // unique names, but a malformed tool list must not hard-disable
+            // the grammar).
+            let mut seen = HashMap::<String, bool>::new();
             sanitized_tools
                 .iter()
-                .map(|st| format!("<tool_call>\n<function={}", st.name))
+                .map(|st| format!("<tool_call>\n<function={}>", st.name))
+                .filter(|trigger| seen.insert(trigger.clone(), true).is_none())
                 .collect()
         } else {
             vec!["<tool_call>".to_string()]

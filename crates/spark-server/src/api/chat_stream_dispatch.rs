@@ -68,6 +68,7 @@ pub(super) async fn dispatch_streaming(
     let mut stop_strings = req.stop.clone();
     stop_strings.sort_by_key(|s| std::cmp::Reverse(s.len()));
     let stream_include_usage = req.stream_options.map(|o| o.include_usage).unwrap_or(false);
+    let req_return_token_ids = req.return_token_ids;
     let req_service_tier = req.service_tier.clone();
     let req_metadata = req.metadata.clone();
     let ctx_for_stream = req_ctx.as_ref().map(|e| e.0.clone());
@@ -109,6 +110,7 @@ pub(super) async fn dispatch_streaming(
         timeout_at,
         stop_strings,
         stream_include_usage,
+        req_return_token_ids,
         req_service_tier,
         req_metadata,
         ctx_for_stream,
