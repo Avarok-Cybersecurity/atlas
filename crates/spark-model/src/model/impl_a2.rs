@@ -188,6 +188,17 @@ impl TransformerModel {
     /// command code and is the kind of misconfiguration we want to fail
     /// loudly in development — there's no graceful fallback.
     pub(super) fn ep_broadcast_seq_and_cmd(&self, seq_id: u32, cmd: u32, v2: bool) -> Result<()> {
+        // No-op unless EP is actually active. The per-seq broadcast helpers
+        // (`ep_broadcast_cmd_for_seq`) are called unconditionally from the
+        // head's prefill / decode / mtp / lifecycle paths, exactly like the
+        // original `ep_broadcast_cmd` which no-ops here via
+        // `ep_broadcast_cmd_dispatch`. Without this guard `ep_broadcast_u32`
+        // panics ("ep_broadcast_u32 without comm") on every single-GPU
+        // generation, since `self.comm` is `None`. (Regression from the EP=2
+        // slot-mux work, which only exercised the 2-rank path.)
+        if !(self.comm.is_some() && self.config.ep_world_size > 1) {
+            return Ok(());
+        }
         if v2 {
             self.ep_broadcast_u32(seq_id)?;
         }
