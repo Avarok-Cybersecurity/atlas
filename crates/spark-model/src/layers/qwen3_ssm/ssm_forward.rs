@@ -19,7 +19,10 @@ impl Qwen3SsmLayer {
         let nv = ctx.config.linear_num_value_heads;
         let vd = ctx.config.linear_value_head_dim;
         let vpg = nv / nk; // vheads_per_group = 2
-        let debug = tracing::enabled!(tracing::Level::DEBUG);
+        // Suppress debug synchronize+dump while capturing a CUDA graph:
+        // cuStreamSynchronize during capture is illegal (CUDA 900) and
+        // bricks the context (issue #106).
+        let debug = tracing::enabled!(tracing::Level::DEBUG) && !ctx.graph_capture;
         let profile = ctx.profile;
 
         macro_rules! prof {

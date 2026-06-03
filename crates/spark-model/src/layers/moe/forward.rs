@@ -148,7 +148,7 @@ impl MoeLayer {
             })?;
         }
 
-        if tracing::enabled!(tracing::Level::DEBUG) {
+        if tracing::enabled!(tracing::Level::DEBUG) && !ctx.graph_capture {
             ctx.gpu.synchronize(stream)?;
             // Read expert indices (u32[top_k]) and weights (f32[top_k])
             let k = top_k as usize;
@@ -310,7 +310,7 @@ impl MoeLayer {
                 )
             })?;
 
-            if tracing::enabled!(tracing::Level::DEBUG) {
+            if tracing::enabled!(tracing::Level::DEBUG) && !ctx.graph_capture {
                 ctx.gpu.synchronize(stream)?;
                 // Dump gate/up outputs for expert slot 0
                 let mut gate_buf = vec![0u8; 16];
@@ -376,7 +376,7 @@ impl MoeLayer {
             })?;
         }
 
-        if tracing::enabled!(tracing::Level::DEBUG) {
+        if tracing::enabled!(tracing::Level::DEBUG) && !ctx.graph_capture {
             ctx.gpu.synchronize(stream)?;
             // Dump down outputs for expert slot 0
             let mut down_buf = vec![0u8; 16];
@@ -472,7 +472,7 @@ impl MoeLayer {
             }
         }
 
-        if tracing::enabled!(tracing::Level::DEBUG) {
+        if tracing::enabled!(tracing::Level::DEBUG) && !ctx.graph_capture {
             ctx.gpu.synchronize(stream)?;
             let mut buf = vec![0u8; 8];
             ctx.gpu.copy_d2h(output, &mut buf)?;
