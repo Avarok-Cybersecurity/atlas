@@ -243,9 +243,12 @@ Together with the YaRN fix, Mistral Small 4 is now correct at all sequence lengt
 - Buffer offsets, strides, and dtype dispatch are all correct
 
 **`prefill/cache_skip_mla.rs`** (prefix-cache hit path):
-- Same Q/K/V assembly as paged_mla.rs
-- Flash attention via `prefill_attn_64_k` (`inferspark_prefill_64`, also compiled with
-  `-DHDIM=128`; "64" refers to query tile size BR=64, not head dim)
+- Same Q latent, KV latent, and RoPE assembly as paged_mla.rs
+- Flash attention via `mla_fused_prefill` (NOT `prefill_attn_64_k`): the fused absorbed kernel
+  in `kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu`. This kernel does Q absorption
+  (Q_nope @ W_UK^T), builds Q_final=[Q_absorbed|Q_rope], online softmax attention, and V
+  extraction (attn_latent @ W_UV^T) — all in a single CUDA launch. An `anyhow::ensure!` at
+  the call site aborts if `mla_fused_prefill_k.0 == 0` (kernel not loaded).
 - KV cache write uses `expert_up_out` (K) and `expert_down_out` (V), both BF16 — correct
 - **Latent issue**: hardcodes `sliding_window=0` while `paged_mla.rs` passes
   `self.sliding_window.unwrap_or(0)`. No impact for Mistral Small 4 (no sliding window), but
@@ -262,9 +265,11 @@ With `--kv-cache-dtype bf16`, `build_layer_kv_dtypes` returns a uniform BF16 vec
 mixed-precision issue.
 
 **`mla_fused_prefill_k`**:
-The `mla_fused_prefill.cu` kernel (fused Q-absorption + attention + V-extraction) is compiled
-and loaded via `try_kernel`, but never invoked by any prefill dispatch. It is dead code — not
-a bug, but represents future optimization potential for the absorbed-MLA prefill path.
+The `mla_fused_prefill.cu` kernel (fused Q-absorption + attention + V-extraction) IS invoked
+by `prefill/cache_skip_mla.rs` (the prefix-cache hit path). The gridDim.y overflow fix in
+commit `a127885` was therefore fixing a real latent bug: on any prefix-cache hit request with
+seq_len > 65535 the OLD grid `(nq, seq_len, 1)` would have silently failed to launch (CUDA
+returns an error but the engine may not have surfaced it). The fix is correct and necessary.
 
 ### P2 — Nemotron tool calling: verified fixed
 
@@ -307,6 +312,42 @@ Fixed in both the kernel and its Rust dispatch wrapper:
   `grid=(nq*seq_len, 1, 1)` with `head = blockIdx.x / seq_len; q_pos = blockIdx.x % seq_len`.
 - `crates/spark-model/src/layers/ops/prefill_attn_a.rs`: updated to `.grid([nq * seq_len, 1, 1])`.
 
-This kernel is compiled and loaded via `try_kernel` but currently has no active call site (it
-represents a future optimization path for absorbed-MLA prefill). No runtime regression was
-possible from this bug. The fix is pre-emptive, ensuring correctness when a call site is added.
+This kernel IS invoked by `prefill/cache_skip_mla.rs` (the prefix-cache hit path, when a prior
+request's KV entries are reused). The fix was not merely pre-emptive: the gridDim.y overflow
+would have silently broken any prefix-cache-hit request where the sequence (including the cached
+prefix) exceeded 65535 tokens. At `max_seq_len=65536`, the last token of a maximum-length cached
+prefix would already trigger the overflow. The new flat grid `(nq*seq_len, 1, 1)` is correct
+for all realistic sequence lengths (CUDA gridDim.x limit ~2^31 >> max needed ~2M at 32 heads).
+
+---
+
+## Fresh Investigation (2026-06-03, this session)
+
+### Files read and verified
+
+| File | Finding |
+|------|---------|
+| `yarn.rs` | Correct YaRN NTK-by-parts: `find_correction_dim` in dim-index space, `beta_fast=32, beta_slow=1`, `low=7, high=15` for Mistral params. Fix confirmed. |
+| `prefill/paged_mla.rs` | First-chunk path (seq_len_start=0): standard flash attention via `prefill_attn_128_k` (inferspark_prefill -DHDIM=128). Scale = 1/sqrt(128). No bugs found. Multi-chunk path (seq_len_start>0): absorbed form, `mla_prefill_paged_320` kernel, scale = 1/sqrt(320). No bugs found. |
+| `prefill/cache_skip_mla.rs` | Uses `mla_fused_prefill` kernel (NOT `prefill_attn_64_k` as previously documented). Active call site at line 274 with mandatory `ensure!`. |
+| `mla_fused_prefill.cu` | Fixed (a127885): flat grid avoids gridDim.y overflow. Kernel logic verified correct: shared memory 2.3 KB/block (well within limits), online softmax reduction via `smem_dot[8]`, V extraction via `smem_latent[256]`. |
+| `mla_absorbed.cu` | Helper kernels (mla_batched_gemv, mla_cache_assemble_batched, etc.). All use 1-D or token-indexed grids — no seq_len overflow risk. |
+| `mla_prefill_paged_320.cu` | Grid `(32, ceil(q_len/16), 1)` — for q_len≤65536: gridDim.y=4096, fine. Half-warp mask 0x0000FFFF / 0xFFFF0000 correctly handles divergent last tiles. |
+| `kv_dtypes.rs` | With `--kv-cache-dtype bf16`: early return `vec![Bf16; num_layers]`. `--kv-high-precision-layers auto` is a no-op. No FP8/BF16 mixing for Mistral Small 4. |
+| `nemotron-super-120b-a12b/MODEL.toml` | `disable_tool_steering=true`, `tool_call_parser="bare_json"`, `skip_template_tools=true`, `thinking_in_tools=false`. All P2 fixes confirmed present. |
+| `impl_a1.rs` | `SsmStatePool::new(..., max_batch_size, ...)` and `SsmSnapshotPool::new(ssm_cache_slots, ...)`. Propagation correct; `--ssm-cache-slots 0` → zero snapshot slots. |
+
+### Corrections to prior documentation
+
+Prior passes incorrectly described `prefill/cache_skip_mla.rs` as using `prefill_attn_64_k` and
+incorrectly described `mla_fused_prefill_k` as dead code. Both have been corrected above. The
+gridDim.y fix (a127885) addresses a real latent bug in the prefix-cache-hit path, not merely a
+pre-emptive fix.
+
+### Status: all P1/P2/P3 bugs resolved
+
+- **P1 (YaRN RoPE)**: Fixed in `yarn.rs`. Mistral Small 4 long-context gibberish is resolved.
+- **P1 (gridDim.y overflow in `mla_fused_prefill`)**: Fixed in `a127885`. Affects prefix-cache
+  hit requests; would have silently broken seq_len ≥ 65536 on that path.
+- **P2 (Nemotron tool calling)**: Fixed in `MODEL.toml`. Native bare-JSON tool calls work.
+- **P3 (SSM cache slots)**: Correct behavior documented. No code change needed.
