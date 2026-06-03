@@ -37,18 +37,23 @@ pub(crate) fn load_ssm_qwen35(
     store: &WeightStore,
     layer_prefix: &str,
     gpu: &dyn GpuBackend,
-    variant: Nvfp4Variant,
+    // Kept for loader-dispatch signature parity; `dense_auto` now routes by
+    // the projection's actual on-disk dtype rather than the model-wide variant.
+    _variant: Nvfp4Variant,
 ) -> Result<SsmWeightsQwen35> {
     let p = format!("{layer_prefix}.linear_attn");
 
     // For FP8 models: in_proj_qkv, in_proj_z, out_proj are FP8 block-scaled.
     // conv1d, in_proj_a, in_proj_b are BF16 (in modules_to_not_convert).
-    let load_proj = |name: &str| -> Result<DenseWeight> {
-        match variant {
-            Nvfp4Variant::Fp8Dequanted => dense_auto(store, name, gpu),
-            _ => dense(store, name),
-        }
-    };
+    // `dense_auto` routes by the projection's actual on-disk dtype: BF16 is a
+    // passthrough (RedHatAI/Sehyo keep linear_attn BF16), FP8 is dequanted to
+    // BF16 by whichever scale convention is present. nvidia/Qwen3.6-35B-A3B
+    // ships algo=MIXED_PRECISION with the linear_attn projections as FP8 +
+    // per-tensor `weight_scale`; the old `_ => dense()` arm handed the SSM
+    // kernels a 1-byte FP8 buffer where they expect 2-byte BF16 and the
+    // downstream assembly D2D copy overran it (cuMemcpyDtoDAsync status 1,
+    // issue #107). The same fix in `dense_auto` covers the self_attn path.
+    let load_proj = |name: &str| -> Result<DenseWeight> { dense_auto(store, name, gpu) };
 
     Ok(SsmWeightsQwen35 {
         in_proj_qkv: load_proj(&format!("{p}.in_proj_qkv.weight"))?,

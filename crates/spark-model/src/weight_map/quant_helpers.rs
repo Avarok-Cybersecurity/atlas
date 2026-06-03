@@ -220,7 +220,17 @@ pub(crate) fn dense_auto(
             let prefix = name
                 .strip_suffix(".weight")
                 .ok_or_else(|| anyhow::anyhow!("FP8 tensor {name} doesn't end with .weight"))?;
-            dequant_fp8_blockscaled_to_bf16(store, prefix, gpu)
+            // Two FP8 scale conventions: block-scaled (DeepSeek / Qwen native
+            // FP8) ships `weight_scale_inv` (2D), while per-tensor FP8 (nvidia
+            // MIXED_PRECISION checkpoints, e.g. Qwen3.6-35B-A3B-NVFP4's attn +
+            // linear_attn projections) ships a scalar `weight_scale`. Pick by
+            // which one is present so MIXED_PRECISION loads instead of erroring
+            // on the absent `weight_scale_inv` (issue #107).
+            if store.contains(&format!("{prefix}.weight_scale_inv")) {
+                dequant_fp8_blockscaled_to_bf16(store, prefix, gpu)
+            } else {
+                dequant_fp8_to_bf16(store, prefix, gpu)
+            }
         }
         other => anyhow::bail!("dense_auto: unsupported dtype {:?} for {name}", other),
     }
