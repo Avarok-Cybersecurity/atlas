@@ -90,8 +90,14 @@ pub fn f32_reposition_failed_tool_result(
     {
         return false;
     }
-    let dup = messages[idx].clone();
-    messages.push(dup);
+    let failed_tool_result = messages[idx].content.text.trim();
+    let reminder = format!(
+        "\n\n<system-reminder>\nThe most recent failed tool result is still relevant. \
+         Treat it as an observed tool failure and do not retry the same call unless \
+         the approach materially changes.\n<failed_tool_result>\n{failed_tool_result}\n\
+         </failed_tool_result>\n</system-reminder>"
+    );
+    append_f7_reminder_to_last_user(messages, &reminder);
     true
 }
 

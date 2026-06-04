@@ -13,6 +13,20 @@ use super::*;
 /// When `logprobs` is Some, the logprobs data is accumulated for blocking
 /// responses and sent via `StreamEvent::TokenWithLogprobs` for streaming.
 pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::TokenLogprobs>) {
+    // Cooperative cancellation from the streaming pipeline. The
+    // stream-side loop guards (Bug-2 name-run cap, F11 within-dedup,
+    // F44 perm-fail, loop-watchdog) flip this flag when they decide
+    // the response should end. Treat it like an EOS: finalise now so
+    // `handle_done` runs with the proper `tool_loop_capped` /
+    // `finish_reason="length"` machinery, instead of letting the
+    // model keep emitting tokens that just get suppressed.
+    if let Some(ref f) = a.cancel_flag
+        && f.load(std::sync::atomic::Ordering::Acquire)
+    {
+        a.finished = true;
+        return;
+    }
+
     // ChatML role-boundary HARD stop (`<|im_start|>`).
     //
     // Handled BEFORE grammar advance / EOS suppression: if the model

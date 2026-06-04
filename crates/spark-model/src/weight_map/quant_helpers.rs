@@ -426,52 +426,38 @@ pub(super) fn bf16_bytes_to_f32(bytes: [u8; 2]) -> f32 {
     f32::from_bits((bits as u32) << 16)
 }
 
-/// Load a dense weight, auto-detecting FP8 block-scaled vs BF16.
+/// Load a dense weight, auto-detecting FP8 block-scaled vs BF16/FP32.
 ///
 /// If the tensor is FP8E4M3 and a `{name_without_.weight}.weight_scale_inv` key exists,
-/// performs block-scaled dequantization to BF16. Otherwise returns the raw pointer (BF16).
+/// performs block-scaled dequantization to BF16. FP32 dense tensors are converted
+/// to BF16 because Atlas dense kernels consume BF16.
 pub(crate) fn dense_auto(
     store: &WeightStore,
     name: &str,
     gpu: &dyn GpuBackend,
 ) -> Result<DenseWeight> {
     let w = store.get(name)?;
-    if w.dtype == WeightDtype::FP8E4M3 {
-        // Derive prefix: "foo.q_proj.weight" → "foo.q_proj"
-        let prefix = name
-            .strip_suffix(".weight")
-            .ok_or_else(|| anyhow::anyhow!("FP8 tensor {name} doesn't end with .weight"))?;
-        // Determine which scale key exists and whether it is 2-D block-scaled
-        // or 1-D per-tensor / per-row / per-column.
-        let scale_key = if store.contains(&format!("{prefix}.weight_scale_inv")) {
-            Some("weight_scale_inv")
-        } else if store.contains(&format!("{prefix}.scale")) {
-            Some("scale")
-        } else if store.contains(&format!("{prefix}.weight_scale")) {
-            Some("weight_scale")
-        } else {
-            None
-        };
-        let is_block_scaled = scale_key.map_or(false, |sk| {
-            // 2-D scale shape ⇒ block-scaled; 1-D ⇒ per-tensor/row/col.
-            store
-                .get(&format!("{prefix}.{sk}"))
-                .map(|t| t.shape.len() == 2)
-                .unwrap_or(false)
-        });
-        if scale_key.is_some() && is_block_scaled {
-            // Block-scaled FP8 (`.weight_scale_inv` BF16/FP32, `.weight_scale` BF16/FP32,
-            // or `.scale` F8_E8M0)
-            dequant_fp8_blockscaled_to_bf16(store, prefix, gpu)
-        } else if scale_key == Some("weight_scale") {
-            dequant_fp8_per_tensor_to_bf16(store, prefix, gpu)
-        } else {
-            bail!(
-                "FP8 tensor {name}: no .weight_scale_inv, .scale, or .weight_scale found for dequant"
-            )
+    match w.dtype {
+        WeightDtype::BF16 => Ok(DenseWeight { weight: w.ptr }),
+        WeightDtype::FP32 => dense_f32_safe(store, name, gpu),
+        WeightDtype::FP8E4M3 => {
+            // Derive prefix: "foo.q_proj.weight" -> "foo.q_proj".
+            let prefix = name
+                .strip_suffix(".weight")
+                .ok_or_else(|| anyhow::anyhow!("FP8 tensor {name} doesn't end with .weight"))?;
+            // Two FP8 scale conventions: block-scaled (DeepSeek / Qwen native
+            // FP8) ships `weight_scale_inv` (2D), while per-tensor FP8 (nvidia
+            // MIXED_PRECISION checkpoints, e.g. Qwen3.6-35B-A3B-NVFP4's attn +
+            // linear_attn projections) ships a scalar `weight_scale`. Pick by
+            // which one is present so MIXED_PRECISION loads instead of erroring
+            // on the absent `weight_scale_inv` (issue #107).
+            if store.contains(&format!("{prefix}.weight_scale_inv")) {
+                dequant_fp8_blockscaled_to_bf16(store, prefix, gpu)
+            } else {
+                dequant_fp8_to_bf16(store, prefix, gpu)
+            }
         }
-    } else {
-        Ok(DenseWeight { weight: w.ptr })
+        other => anyhow::bail!("dense_auto: unsupported dtype {:?} for {name}", other),
     }
 }
 

@@ -20,7 +20,12 @@ impl Qwen3SsmLayer {
     ) -> Result<()> {
         let h = ctx.config.hidden_size;
         let eps = ctx.config.rms_norm_eps as f32;
-        let debug = tracing::enabled!(tracing::Level::DEBUG);
+        // Never synchronize while a CUDA graph is being captured: a
+        // cuStreamSynchronize during capture is illegal (CUDA error 900,
+        // STREAM_CAPTURE_UNSUPPORTED) and bricks the context. The debug
+        // dumps below are diagnostic-only, so suppress them under capture
+        // (issue #106: RUST_LOG=trace + --speculative crashed here).
+        let debug = tracing::enabled!(tracing::Level::DEBUG) && !ctx.graph_capture;
         let trace = false;
 
         let ssm_state = state

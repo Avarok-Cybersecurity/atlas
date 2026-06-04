@@ -182,6 +182,19 @@ pub enum InferenceRequest {
         /// Request timeout as absolute deadline. None = no timeout.
         timeout_at: Option<std::time::Instant>,
         token_tx: tokio::sync::mpsc::Sender<StreamEvent>,
+        /// Cooperative cancellation flag, shared with the streaming
+        /// pipeline. Set true by chat_stream guards (tool-call loop
+        /// cap, watchdog, etc.) to ask the scheduler to terminate
+        /// the sequence at the next decode boundary. The scheduler
+        /// reads it in `emit_step::emit_token`; flipping it true is
+        /// equivalent to receiving an EOS — `a.finished = true`, the
+        /// usual finalize path runs, and `handle_done` emits the
+        /// proper final-chunk (`finish_reason="length"` via the
+        /// `tool_loop_capped` override) plus `[DONE]`. Without this,
+        /// `stop_string_triggered` only suppresses *output*; the
+        /// scheduler keeps generating until natural EOS / max_tokens,
+        /// which on a degenerate-loop response can hang.
+        cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     },
 }
 

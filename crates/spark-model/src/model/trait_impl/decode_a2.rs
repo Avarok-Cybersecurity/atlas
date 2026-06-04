@@ -33,19 +33,39 @@ impl TransformerModel {
         // Single-sequence: delegate to decode() which uses CUDA graphs.
         // decode_batch disables graphs for n≥2 (SSM state pointer staleness),
         // but n=1 is safe and benefits from graph replay (2x throughput).
+        //
+        // Broadcast the seq_id preamble + cmd here (rather than in the
+        // scheduler) so the EP n>1 branch below can interleave broadcasts
+        // with decode() calls — see that branch for the rationale.
         if n == 1 {
+            self.ep_broadcast_cmd_for_seq(seqs[0].slot_idx as u32, tokens[0])?;
             self.decode(tokens[0], seqs[0], stream)?;
             return Ok(self.decode_logits_ptr());
         }
 
-        // EP mode: use per-sequence decode() to match the worker's batch size.
-        // EP workers run one sequence at a time, so the single-row logits
-        // buffer is consumed before the next call — no row scatter needed.
+        // EP mode + n > 1: one batched forward pass per rank.
+        //
+        // Both ranks must call the same `decode_multi_seq` per-layer with
+        // the same N tokens so the per-token NCCL all_reduces inside the
+        // MoE forward match in shape and submission order across ranks.
+        // The head announces the batch up-front via the `0xFFFFFFE0`
+        // protocol primitive (seq_ids[N] + tokens[N] in one shot), then
+        // both ranks run `decode_batch_compute_main` — the worker reaches
+        // it via the matching handler in `ep_worker_step_impl`.
+        //
+        // Comm-stream op order on both ranks per step:
+        //   B(0) B(0xFFFFFFE0) B(N) B*N(seq_ids) B*N(tokens)
+        //   then per layer: per-token AR*N (forward_batched's inner loop)
+        //
+        // Single batched forward amortises weight loads + kernel launches
+        // across N tokens. Per-token all_reduces (forward.rs:445,
+        // forward_batched.rs:269) remain at shape `h * elem` per call —
+        // batching the comm shape would need new MoE kernel work and is
+        // deliberately out of scope here.
         if self.comm.is_some() {
-            for i in 0..n {
-                self.decode(tokens[i], seqs[i], stream)?;
-            }
-            return Ok(self.decode_logits_ptr());
+            let seq_ids: Vec<u32> = seqs.iter().map(|s| s.slot_idx as u32).collect();
+            self.ep_broadcast_decode_batch_dispatch(&seq_ids, tokens)?;
+            return self.decode_batch_compute_main(tokens, seqs, stream);
         }
 
         // MLA models: as of issue #84 the batched `decode_multi_seq` path
@@ -102,6 +122,25 @@ impl TransformerModel {
             return Ok(logits);
         }
 
+        self.decode_batch_compute_main(tokens, seqs, stream)
+    }
+
+    /// Shared batched-compute path used by both the head's EP branch and
+    /// the worker's `0xFFFFFFE0` handler. Contains the per-step embed +
+    /// KV-block alloc + metadata upload + per-layer `decode_multi_seq` +
+    /// final norm + per-row LM-head GEMV pipeline. No EP broadcasts here
+    /// — the head emits the protocol primitive before calling this; the
+    /// worker reads the matching payload and dispatches into this from
+    /// `ep_worker_decode_batch`. Both ranks then submit identical
+    /// per-token `comm.all_reduce(h * elem)` ops on every MoE layer in
+    /// the same order.
+    pub(crate) fn decode_batch_compute_main(
+        &self,
+        tokens: &[u32],
+        seqs: &mut [&mut SequenceState],
+        _stream: u64,
+    ) -> Result<DevicePtr> {
+        let n = tokens.len();
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;

@@ -64,7 +64,10 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     pub thinking: Option<ThinkingConfig>,
     /// vLLM PR-style thinking budget (top-level integer).
-    #[serde(default)]
+    /// `max_thinking_tokens` is accepted as an alias — it's the intuitive
+    /// name several clients send, and silently dropping it left the budget
+    /// unenforced (reasoning ran unbounded). See community report 2026-06.
+    #[serde(default, alias = "max_thinking_tokens")]
     pub thinking_token_budget: Option<u32>,
     /// OpenAI-style reasoning effort: `{"reasoning": {"effort": "low"}}`
     #[serde(default)]
@@ -405,5 +408,32 @@ where
         RawStop::Str(s) => Ok(vec![s]),
         RawStop::Arr(v) => Ok(v),
         RawStop::Null(()) => Ok(Vec::new()),
+    }
+}
+
+#[cfg(test)]
+mod alias_tests {
+    use super::ChatCompletionRequest;
+
+    fn base(extra: &str) -> String {
+        format!(
+            r#"{{"model":"m","messages":[{{"role":"user","content":"hi"}}],"max_tokens":16{extra}}}"#
+        )
+    }
+
+    #[test]
+    fn max_thinking_tokens_aliases_thinking_token_budget() {
+        // Several clients send `max_thinking_tokens`; it must map to the
+        // budget instead of being silently dropped (community report 2026-06).
+        let req: ChatCompletionRequest =
+            serde_json::from_str(&base(r#","max_thinking_tokens":128"#)).unwrap();
+        assert_eq!(req.thinking_token_budget, Some(128));
+    }
+
+    #[test]
+    fn canonical_thinking_token_budget_still_works() {
+        let req: ChatCompletionRequest =
+            serde_json::from_str(&base(r#","thinking_token_budget":256"#)).unwrap();
+        assert_eq!(req.thinking_token_budget, Some(256));
     }
 }

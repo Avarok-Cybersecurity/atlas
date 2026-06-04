@@ -305,6 +305,10 @@ pub(super) async fn completions_stream(
         top_logprobs: None,
         timeout_at: None,
         token_tx,
+        // /v1/completions has no guard pipeline yet — the flag is
+        // created so the scheduler's emit_step type-checks cleanly,
+        // but never flipped.
+        cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     state.request_tx.send(request).await.map_err(|_| {

@@ -37,7 +37,7 @@
           href={discordUrl}
           style="color: var(--cyan); text-decoration: none; font-weight: 600; font-size: 0.88rem; display: inline-block; margin-top: 0.5rem;"
         >
-          discord.gg/DwF3brBMpw
+          {discordUrl.replace('https://', '')}
         </a>
       </div>
       <div class="card">

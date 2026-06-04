@@ -341,8 +341,8 @@ impl Model for TransformerModel {
     ) -> Result<()> {
         self.commit_verify_state_async_dispatch(seq, num_accepted, k)
     }
-    fn ep_worker_step(&self, seq: &mut SequenceState) -> Result<bool> {
-        self.ep_worker_step_dispatch(seq)
+    fn ep_worker_step(&self, slots: &mut [Option<SequenceState>]) -> Result<bool> {
+        self.ep_worker_step_dispatch(slots)
     }
     fn is_ep(&self) -> bool {
         self.is_ep_dispatch()
@@ -358,6 +358,14 @@ impl Model for TransformerModel {
     }
     fn ep_broadcast_cmd(&self, cmd: u32) -> Result<()> {
         self.ep_broadcast_cmd_dispatch(cmd)
+    }
+    fn ep_broadcast_cmd_for_seq(&self, seq_id: u32, cmd: u32) -> Result<()> {
+        // Routes to the helper added in 21e2130. Behaviour depends on the
+        // ep_protocol_v2 field set at construction from ATLAS_EP_PROTOCOL.
+        self.ep_broadcast_seq_and_cmd(seq_id, cmd, self.ep_protocol_v2)
+    }
+    fn ep_protocol_v2(&self) -> bool {
+        self.ep_protocol_v2
     }
     fn ep_broadcast_tokens(&self, tokens: &[u32]) -> Result<Vec<u32>> {
         self.ep_broadcast_tokens_dispatch(tokens)
