@@ -41,7 +41,8 @@ pub struct Step3p7WeightLoader;
 
 /// Slice a fused NVFP4 tensor into per-expert QuantizedWeight entries.
 ///
-/// Step 3.7 stores all experts in one contiguous tensor per projection:
+/// Step 3.7's original checkpoint stores all experts in one contiguous
+/// tensor per projection:
 ///   weight: [num_experts * n, k] packed NVFP4 (0.5 bytes/element)
 ///   weight_scale: [num_experts * n, k/group_size] FP8 per-group scales
 ///   input_scale: [num_experts * n] (optional, activation quantization)
@@ -77,6 +78,15 @@ fn slice_fused_experts(
             },
         })
         .collect()
+}
+
+/// Detect whether this checkpoint uses per-expert tensor format
+/// (preprocessed by `scripts/preprocess_step3p7_experts.py`) or
+/// the original fused format.
+fn has_per_expert_tensors(store: &WeightStore, layer_prefix: &str) -> bool {
+    // Probe for expert 0's gate_proj — if it exists, tensors are split.
+    let probe = format!("{layer_prefix}.moe.experts.0.gate_proj.weight");
+    store.contains(&probe)
 }
 
 /// Load a fused NVFP4 tensor from the store (Standard ModelOpt format).
@@ -167,23 +177,76 @@ impl ModelWeightLoader for Step3p7WeightLoader {
                     None
                 };
 
-                // Load fused expert tensors and slice per-expert
+                // Load expert weights — supports two formats:
+                //   1. Per-expert tensors (preprocessed): .moe.experts.N.gate_proj.weight
+                //      Works with EP filtering. Required for EP mode.
+                //   2. Fused tensors (original): .moe.gate_proj.weight [288, ...]
+                //      Only works for single-GPU (all experts on one device).
                 let moe_p = format!("{lp}.moe");
-                let (gp_w, gp_s, gp_is, gp_s2) = load_fused_nvfp4(store, &format!("{moe_p}.gate_proj"), gpu)?;
-                let (up_w, up_s, up_is, up_s2) = load_fused_nvfp4(store, &format!("{moe_p}.up_proj"), gpu)?;
-                let (dp_w, dp_s, dp_is, dp_s2) = load_fused_nvfp4(store, &format!("{moe_p}.down_proj"), gpu)?;
+                let use_per_expert = has_per_expert_tensors(store, &lp);
 
-                let gate_projs = slice_fused_experts(gp_w, gp_s, gp_is, gp_s2, config.num_experts, inter, h);
-                let up_projs = slice_fused_experts(up_w, up_s, up_is, up_s2, config.num_experts, inter, h);
-                let down_projs = slice_fused_experts(dp_w, dp_s, dp_is, dp_s2, config.num_experts, h, inter);
+                let experts: Vec<ExpertWeight> = if use_per_expert {
+                    // Per-expert format: each expert is a separate tensor.
+                    // In EP mode, remote experts were already skipped by the
+                    // loader's parse_expert_index filter — only local experts
+                    // are present in the store.
+                    tracing::debug!("step3p7: layer {i} using per-expert tensor format");
+                    (0..config.num_experts)
+                        .filter_map(|e| {
+                            let ep = format!("{moe_p}.experts.{e}");
+                            let gp_key = format!("{ep}.gate_proj.weight");
+                            if !store.contains(&gp_key) {
+                                // Expert not on this rank (EP filtered)
+                                return None;
+                            }
+                            let load_expert_proj = |proj: &str| -> Result<QuantizedWeight> {
+                                let pp = format!("{ep}.{proj}");
+                                let weight = store.get(&format!("{pp}.weight"))?.ptr;
+                                let weight_scale = store.get(&format!("{pp}.weight_scale"))?.ptr;
+                                let ws2_key = format!("{pp}.weight_scale_2");
+                                let ws2_ptr = store.get(&ws2_key)?.ptr;
+                                let mut ws2_buf = [0u8; 4];
+                                gpu.copy_d2h(ws2_ptr, &mut ws2_buf).ok();
+                                let weight_scale_2 = f32::from_le_bytes(ws2_buf);
+                                let is_key = format!("{pp}.input_scale");
+                                let input_scale = if store.contains(&is_key) {
+                                    store.get(&is_key).ok().map(|t| t.ptr).unwrap_or(DevicePtr::NULL)
+                                } else {
+                                    DevicePtr::NULL
+                                };
+                                Ok(QuantizedWeight {
+                                    weight,
+                                    weight_scale,
+                                    weight_scale_2,
+                                    input_scale,
+                                })
+                            };
+                            let gate_proj = load_expert_proj("gate_proj").ok()?;
+                            let up_proj = load_expert_proj("up_proj").ok()?;
+                            let down_proj = load_expert_proj("down_proj").ok()?;
+                            Some(ExpertWeight { gate_proj, up_proj, down_proj })
+                        })
+                        .collect()
+                } else {
+                    // Fused format: single tensor per projection, all experts
+                    // concatenated along dim 0. Requires all experts in GPU memory.
+                    tracing::debug!("step3p7: layer {i} using fused tensor format");
+                    let (gp_w, gp_s, gp_is, gp_s2) = load_fused_nvfp4(store, &format!("{moe_p}.gate_proj"), gpu)?;
+                    let (up_w, up_s, up_is, up_s2) = load_fused_nvfp4(store, &format!("{moe_p}.up_proj"), gpu)?;
+                    let (dp_w, dp_s, dp_is, dp_s2) = load_fused_nvfp4(store, &format!("{moe_p}.down_proj"), gpu)?;
 
-                let experts: Vec<ExpertWeight> = (0..config.num_experts)
-                    .map(|e| ExpertWeight {
-                        gate_proj: gate_projs[e],
-                        up_proj: up_projs[e],
-                        down_proj: down_projs[e],
-                    })
-                    .collect();
+                    let gate_projs = slice_fused_experts(gp_w, gp_s, gp_is, gp_s2, config.num_experts, inter, h);
+                    let up_projs = slice_fused_experts(up_w, up_s, up_is, up_s2, config.num_experts, inter, h);
+                    let down_projs = slice_fused_experts(dp_w, dp_s, dp_is, dp_s2, config.num_experts, h, inter);
+
+                    (0..config.num_experts)
+                        .map(|e| ExpertWeight {
+                            gate_proj: gate_projs[e],
+                            up_proj: up_projs[e],
+                            down_proj: down_projs[e],
+                        })
+                        .collect()
+                };
 
                 // Shared expert (BF16, needs runtime quantization to NVFP4)
                 let se_p = format!("{lp}.share_expert");
