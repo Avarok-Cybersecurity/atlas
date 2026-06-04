@@ -294,7 +294,25 @@ pub(crate) fn dequant_fp8_to_bf16(
     let n_bytes = w.num_elements();
     let mut fp8_buf = vec![0u8; n_bytes];
     gpu.copy_d2h(w.ptr, &mut fp8_buf)?;
-    let scale = scalar_f32(store, &format!("{prefix}.weight_scale"), gpu)?;
+
+    // RedHatAI re-quant checkpoints store per-tensor scale as BF16,
+    // not FP32. Handle both dtypes.
+    let scale_key = format!("{prefix}.weight_scale");
+    let s = store.get(&scale_key)?;
+    let scale = if s.dtype == WeightDtype::FP32 {
+        ensure!(s.num_elements() == 1, "Expected scalar for {scale_key}, got {} elements", s.num_elements());
+        let mut buf = [0u8; 4];
+        gpu.copy_d2h(s.ptr, &mut buf)?;
+        f32::from_le_bytes(buf)
+    } else if s.dtype == WeightDtype::BF16 {
+        ensure!(s.num_elements() == 1, "Expected scalar for {scale_key}, got {} elements", s.num_elements());
+        let mut buf = [0u8; 2];
+        gpu.copy_d2h(s.ptr, &mut buf)?;
+        bf16_bytes_to_f32(buf)
+    } else {
+        bail!("Expected FP32 or BF16 for {scale_key}, got {:?}", s.dtype);
+    };
+
     let bf16_buf = dequant_fp8_bytes_to_bf16(&fp8_buf, scale);
     let ptr = gpu.alloc(bf16_buf.len())?;
     gpu.copy_h2d(&bf16_buf, ptr)?;
@@ -316,7 +334,23 @@ pub(crate) fn dequant_fp8_to_bf16_into(
     let n_bytes = w.num_elements();
     let mut fp8_buf = vec![0u8; n_bytes];
     gpu.copy_d2h(w.ptr, &mut fp8_buf)?;
-    let scale = scalar_f32(store, &format!("{prefix}.weight_scale"), gpu)?;
+
+    let scale_key = format!("{prefix}.weight_scale");
+    let s = store.get(&scale_key)?;
+    let scale = if s.dtype == WeightDtype::FP32 {
+        ensure!(s.num_elements() == 1, "Expected scalar for {scale_key}, got {} elements", s.num_elements());
+        let mut buf = [0u8; 4];
+        gpu.copy_d2h(s.ptr, &mut buf)?;
+        f32::from_le_bytes(buf)
+    } else if s.dtype == WeightDtype::BF16 {
+        ensure!(s.num_elements() == 1, "Expected scalar for {scale_key}, got {} elements", s.num_elements());
+        let mut buf = [0u8; 2];
+        gpu.copy_d2h(s.ptr, &mut buf)?;
+        bf16_bytes_to_f32(buf)
+    } else {
+        bail!("Expected FP32 or BF16 for {scale_key}, got {:?}", s.dtype);
+    };
+
     let bf16_buf = dequant_fp8_bytes_to_bf16(&fp8_buf, scale);
     gpu.copy_h2d(&bf16_buf, dest)?;
     Ok(DenseWeight { weight: dest })
