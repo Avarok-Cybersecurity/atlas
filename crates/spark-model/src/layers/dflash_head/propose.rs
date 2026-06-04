@@ -392,23 +392,19 @@ impl BlockDiffusionDraftHead {
                 tracing::warn!("DFlash forward_block failed, falling back to no-spec: {e:#}");
                 e
             })?;
-        // Phase 2.5e scaffolding: K=γ verify path is implemented in model.rs
-        // (decode_verify_graphed_kgamma) and dispatched via step_verify_dflash
-        // when drafts.len()>=4. However, per-step output corruption (output
-        // starts correct then degenerates to gibberish at K=5) indicates an
-        // SSM state-management mismatch between the generic K=γ path and the
-        // hand-tuned K=2/3/4 specializations: the K=N!=2/3/4 fallback writes
-        // intermediates differently from the WY-chunkwise kernels, causing
-        // partial-accept rollback to land on stale state.
-        //
-        // Until the SSM intermediate semantics are reconciled (kernel work),
-        // cap drafts at 1 → forces scheduler to use step_verify_k2 which
-        // produces correct output. Set ATLAS_DFLASH_DRAFT_CAP=N to override
-        // (N=γ to test the K=γ path; N=1 is the safe default).
+        // Default cap = γ. The nologik spec_ssm merge provides the WY-chunkwise
+        // GDN kernels (gdn_decode_wy17 for K=17, wy2/wy3/wy4 for smaller K)
+        // that snapshot per-position h/conv intermediates into the SSM pool.
+        // commit_verify_state_async (verify_dflash_step.rs) reads those
+        // intermediates to roll back to the accepted prefix on partial reject.
+        // SSM pool is pre-allocated for num_intermediates=17 (impl_a1.rs:129)
+        // and the WY17 strided layout (inter_stride_floats = h_bytes/4) maps
+        // 1:1 to ssm_pool.h_intermediate(layer, slot, i). Override with
+        // ATLAS_DFLASH_DRAFT_CAP=N (N=1 to force K=2 path for ablation).
         let cap: usize = std::env::var("ATLAS_DFLASH_DRAFT_CAP")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(1);
+            .unwrap_or(self.gamma);
 
         // ATLAS_DFLASH_VERIFY_TRACE=1: log all γ drafts BEFORE the cap so we
         // can see whether the drafter echoes only at position 0 or across

@@ -305,6 +305,9 @@ impl Model for MockModel {
     ) -> Result<()> {
         Ok(())
     }
+    fn save_dflash_hidden_for_propose(&self, _token_idx: usize, _stream: u64) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[test]
