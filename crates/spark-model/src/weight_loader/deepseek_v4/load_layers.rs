@@ -79,8 +79,8 @@ pub fn load_all_layers(
             let (w_uk_block_diag, w_uv_block_diag) =
                 super::compute::build_block_diagonals(&w_uk_host, &w_uv, config, gpu)?;
             (
-                null, o_dense, wkv_b_w, Some(w_uk_t), Some(w_uv), Some(wq_b_rope),
-                Some(w_qk_absorbed), Some(w_uk_block_diag), Some(w_uv_block_diag),
+                null, o_dense, wkv_b_w, w_uk_t, w_uv, wq_b_rope,
+                w_qk_absorbed, w_uk_block_diag, w_uv_block_diag,
             )
         };
         yarn_inv_freq = super::compute::ensure_yarn_inv_freq(&mut yarn_inv_freq, config, gpu)?;
@@ -100,12 +100,12 @@ pub fn load_all_layers(
             kv_a_norm,
             wo_b,
             None, // o_nvfp4
-            w_uk_t.unwrap_or(DenseWeight { weight: DevicePtr::NULL }),
-            w_uv.unwrap_or(DenseWeight { weight: DevicePtr::NULL }),
-            wq_b_rope.unwrap_or(DenseWeight { weight: DevicePtr::NULL }),
-            w_qk_absorbed.unwrap_or(DenseWeight { weight: DevicePtr::NULL }),
-            w_uk_block_diag.unwrap_or(DenseWeight { weight: DevicePtr::NULL }),
-            w_uv_block_diag.unwrap_or(DenseWeight { weight: DevicePtr::NULL }),
+            w_uk_t,
+            w_uv,
+            wq_b_rope,
+            w_qk_absorbed,
+            w_uk_block_diag,
+            w_uv_block_diag,
             yarn_inv_freq,
             wo_a,
             store,

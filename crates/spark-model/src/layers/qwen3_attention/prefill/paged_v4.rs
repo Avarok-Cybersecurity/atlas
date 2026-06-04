@@ -87,7 +87,7 @@ impl Qwen3AttentionLayer {
 
         // ── 2. Direct KV projection ──
         let k_contiguous = ctx.buffers.ssm_qkvz();
-        let v_contiguous = k_contiguous.offset((num_tokens * (nkv * hd) as usize * bf16) as u64);
+        let v_contiguous = k_contiguous.offset(num_tokens * (nkv * hd) as usize * bf16);
         ops::dense_gemm(
             ctx.gpu,
             self.dense_gemm_k,
@@ -102,7 +102,7 @@ impl Qwen3AttentionLayer {
         ctx.gpu.copy_d2d_async(
             k_contiguous,
             v_contiguous,
-            (num_tokens * (nkv * hd) as usize) * bf16,
+            num_tokens * (nkv * hd) as usize * bf16,
             stream,
         )?;
 
@@ -158,7 +158,7 @@ impl Qwen3AttentionLayer {
             nq,
             nkv,
             hd,
-            bs,
+            bs: bs as usize,
             bf16,
             inv_sqrt_d,
             kv_len,
