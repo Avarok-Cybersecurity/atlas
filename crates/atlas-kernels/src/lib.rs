@@ -163,19 +163,36 @@ pub struct ModelBehavior {
     /// JSON arrays of similar objects, multiplication tables). Enable only
     /// when the model has been observed to need it.
     pub enable_loop_watchdog: bool,
-    /// When true, do not pass tool definitions to the Jinja chat template
-    /// (`jinja_tools` stays `None`). Use this for models where the tool-call
-    /// parser already injects a complete system-prompt with tool schemas and
-    /// format instructions, and the template's own XML tool rendering would
-    /// produce contradictory instructions.
-    ///
-    /// Example: Nemotron-Super-120B uses `bare_json` grammar (parser emits
-    /// JSON-schema + bare-JSON instructions) while the `nemotron_h.jinja`
-    /// template would additionally render XML `<function>` blocks and tell
-    /// the model to output `<tool_call>` XML — the opposite format. Setting
-    /// `skip_template_tools = true` suppresses the template rendering and
-    /// leaves the parser's instructions as the sole tool-format signal.
     pub skip_template_tools: bool,
+    /// Thinking-loop watchdog: substring-occurrence count that trips a
+    /// forced `</think>`. Default 3 (historical `THINK_LOOP_MIN_REPEATS`).
+    pub think_loop_min_repeats: u32,
+    /// Thinking-loop watchdog: trailing-token scan window. Default 160.
+    pub think_loop_scan_window: u32,
+    /// F2 confidence-run early-stop enabled. Default `true`. Set false
+    /// for models whose deterministic code drafting trips the heuristic.
+    pub confidence_early_stop: bool,
+    /// F2 confidence run length before arming forced `</think>`.
+    /// Default 30.
+    pub confidence_run_length: u32,
+    /// Fuzzy-repetition detector Hamming tolerance divisor: a
+    /// `pattern_len`-token window tolerates `pattern_len / div`
+    /// mismatches. Default 12 (~8%).
+    pub fuzzy_repeat_tolerance_div: u32,
+    /// Cap on free-text tokens between successive `<tool_call>` opens in
+    /// `tool_choice=auto`. Default 384. Agentic coding may want larger.
+    pub max_inter_tool_prose: u32,
+    /// TSCG (Tool-Schema Compilation) enabled — compile tool JSON
+    /// schemas to compact function signatures before prompting.
+    /// Default `false`; the TAS operator is tokenizer-specific so
+    /// enable + verify per model. arXiv:2605.04107.
+    pub tscg: bool,
+    /// Disable XGrammar tool-call constrained decoding for this model.
+    /// Default `false`. Escape hatch for the "structure snowballing"
+    /// alignment tax (arXiv:2604.06066) — a few models tool-call more
+    /// reliably unconstrained. When `true`, tool calls are parsed but
+    /// not grammar-enforced.
+    pub disable_tool_grammar: bool,
 }
 
 impl Default for ModelBehavior {
@@ -191,6 +208,14 @@ impl Default for ModelBehavior {
             tool_call_parser: "",
             enable_loop_watchdog: false,
             skip_template_tools: false,
+            think_loop_min_repeats: 3,
+            think_loop_scan_window: 160,
+            confidence_early_stop: true,
+            confidence_run_length: 30,
+            fuzzy_repeat_tolerance_div: 12,
+            max_inter_tool_prose: 384,
+            tscg: false,
+            disable_tool_grammar: false,
         }
     }
 }

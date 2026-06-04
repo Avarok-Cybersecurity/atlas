@@ -42,8 +42,10 @@ use decode_step::*;
 use emit_step::*;
 pub use helpers::set_enable_loop_watchdog;
 pub use helpers::set_im_start_hard_stop;
+pub use helpers::set_numeric_token_mask;
 use helpers::*;
 pub use helpers::{CONTENT_LOOP_PERIOD_MAX, CONTENT_LOOP_PERIOD_MIN};
+pub use helpers::{WatchdogParams, set_watchdog_params};
 use lifecycle::*;
 use logprobs::*;
 use mod_helpers::*;
@@ -99,6 +101,7 @@ pub fn run(
     block_size: usize,
     think_end_token: Option<u32>,
     think_start_token: Option<u32>,
+    code_fence_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     reflection_suppress_ids: Vec<u32>,
@@ -260,6 +263,7 @@ pub fn run(
             use_ngram_speculative,
             think_end_token,
             think_start_token,
+            code_fence_token,
             tool_call_start_token,
             tool_call_end_token,
             &reflection_suppress_ids,
@@ -308,6 +312,7 @@ pub fn run(
                     &mut active,
                     think_end_token,
                     think_start_token,
+                    code_fence_token,
                     tool_call_start_token,
                     tool_call_end_token,
                     &reflection_suppress_ids,

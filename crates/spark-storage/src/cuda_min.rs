@@ -23,9 +23,23 @@ unsafe extern "C" {
     fn cuMemFreeHost(p: *mut c_void) -> i32;
     fn cuMemcpyHtoDAsync_v2(dst: u64, src: *const c_void, bytes: usize, stream: u64) -> i32;
     fn cuMemcpyDtoHAsync_v2(dst: *mut c_void, src: u64, bytes: usize, stream: u64) -> i32;
+    fn cuMemGetInfo_v2(free: *mut usize, total: *mut usize) -> i32;
     fn cuStreamCreate(phStream: *mut u64, flags: u32) -> i32;
     fn cuStreamDestroy_v2(stream: u64) -> i32;
     fn cuStreamSynchronize(stream: u64) -> i32;
+}
+
+/// Query the current context's free/total HBM in bytes. Used by HSS install
+/// preflight to fail fast with an actionable error before a multi-GB
+/// `cuMemAlloc` blows up cryptically. Phase-7 follow-up to PR #47.
+pub fn mem_info() -> Result<(usize, usize)> {
+    let mut free = 0usize;
+    let mut total = 0usize;
+    let s = unsafe { cuMemGetInfo_v2(&mut free, &mut total) };
+    if s != 0 {
+        bail!("cuMemGetInfo_v2 failed: {s}");
+    }
+    Ok((free, total))
 }
 
 pub struct CudaCtx {

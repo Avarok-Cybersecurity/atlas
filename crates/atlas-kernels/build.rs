@@ -75,6 +75,14 @@ struct Target {
     behavior_tool_call_parser: String,
     behavior_enable_loop_watchdog: bool,
     behavior_skip_template_tools: bool,
+    behavior_think_loop_min_repeats: u32,
+    behavior_think_loop_scan_window: u32,
+    behavior_confidence_early_stop: bool,
+    behavior_confidence_run_length: u32,
+    behavior_fuzzy_repeat_tolerance_div: u32,
+    behavior_max_inter_tool_prose: u32,
+    behavior_tscg: bool,
+    behavior_disable_tool_grammar: bool,
     /// Which `(model_type, hidden_size)` pairs this kernel target supports.
     /// Parsed from `[[model_types]]` in MODEL.toml.
     model_type_matches: Vec<ModelTypeMatch>,
@@ -353,18 +361,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
 
             // Parse sampling presets, behavior, and model_types from MODEL.toml
             let (s_tt, s_tc, s_nt, s_tools) = parse_sampling_presets(&model_dir);
-            let (
-                b_thinking_in_tools,
-                b_max_thinking_budget,
-                b_thinking_default,
-                b_fp8_kv_cal,
-                b_default_kv_dtype,
-                b_default_num_drafts,
-                b_disable_tool_steering,
-                b_tool_call_parser,
-                b_enable_loop_watchdog,
-                b_skip_template_tools,
-            ) = parse_behavior(&model_dir);
+            let pb = parse_behavior(&model_dir);
             let model_type_matches = parse_model_types(&model_dir);
             let dflash = parse_dflash(&model_dir);
 
@@ -385,16 +382,24 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 sampling_thinking_coding: s_tc,
                 sampling_non_thinking: s_nt,
                 sampling_tools: s_tools,
-                behavior_thinking_in_tools: b_thinking_in_tools,
-                behavior_max_thinking_budget: b_max_thinking_budget,
-                behavior_thinking_default: b_thinking_default,
-                behavior_fp8_kv_calibration_tokens: b_fp8_kv_cal,
-                behavior_default_kv_dtype: b_default_kv_dtype,
-                behavior_default_num_drafts: b_default_num_drafts,
-                behavior_disable_tool_steering: b_disable_tool_steering,
-                behavior_tool_call_parser: b_tool_call_parser,
-                behavior_enable_loop_watchdog: b_enable_loop_watchdog,
-                behavior_skip_template_tools: b_skip_template_tools,
+                behavior_thinking_in_tools: pb.thinking_in_tools,
+                behavior_max_thinking_budget: pb.max_thinking_budget,
+                behavior_thinking_default: pb.thinking_default,
+                behavior_fp8_kv_calibration_tokens: pb.fp8_kv_calibration_tokens,
+                behavior_default_kv_dtype: pb.default_kv_dtype,
+                behavior_default_num_drafts: pb.default_num_drafts,
+                behavior_disable_tool_steering: pb.disable_tool_steering,
+                behavior_tool_call_parser: pb.tool_call_parser,
+                behavior_enable_loop_watchdog: pb.enable_loop_watchdog,
+                behavior_skip_template_tools: pb.skip_template_tools,
+                behavior_think_loop_min_repeats: pb.think_loop_min_repeats,
+                behavior_think_loop_scan_window: pb.think_loop_scan_window,
+                behavior_confidence_early_stop: pb.confidence_early_stop,
+                behavior_confidence_run_length: pb.confidence_run_length,
+                behavior_fuzzy_repeat_tolerance_div: pb.fuzzy_repeat_tolerance_div,
+                behavior_max_inter_tool_prose: pb.max_inter_tool_prose,
+                behavior_tscg: pb.tscg,
+                behavior_disable_tool_grammar: pb.disable_tool_grammar,
                 model_type_matches,
                 dflash,
             });

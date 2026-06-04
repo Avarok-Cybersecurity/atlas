@@ -81,12 +81,22 @@ pub(super) fn render_template(
     // producing contradictory instructions (e.g. bare_json says "emit JSON, no
     // tags"; nemotron_h.jinja says "NEVER emit JSON, use <tool_call> XML").
     // Either flag independently suppresses jinja tool rendering.
+    //
+    // Additionally, when TSCG is enabled the parser's `system_prompt()` has
+    // already placed the compact tool signatures into messages[0]; passing
+    // `tools` to Jinja as well would re-render the full JSON schema and defeat
+    // the compaction. Pass `None` in that case so the template's `{% if tools %}`
+    // branch falls through.
     let parser_suppresses = state
         .tool_call_parser
         .as_ref()
         .is_some_and(|p| p.suppresses_jinja_tools());
     let jinja_tools: Option<Vec<serde_json::Value>> =
-        if tools_active && !state.behavior.skip_template_tools && !parser_suppresses {
+        if tools_active
+            && !state.behavior.skip_template_tools
+            && !parser_suppresses
+            && !crate::tscg::tscg_enabled()
+        {
             req.tools.as_ref().map(|ts| {
                 ts.iter()
                     .map(|t| serde_json::to_value(t).unwrap_or_default())

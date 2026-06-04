@@ -13,6 +13,12 @@ use super::BlockDiffusionDraftHead;
 use crate::layer::ForwardContext;
 
 impl BlockDiffusionDraftHead {
+    /// `option_b`: when `Some((block_table_dev, ctx_count))`, run the
+    /// Phase 2 γ-only paged-attention path. ctx K/V is precomputed into
+    /// the drafter's paged cache from `ctx_buffer` at slots
+    /// `[0..ctx_count)`, γ K/V is written by the layer body at slots
+    /// `[ctx_count..ctx_count+γ)`, attention reads all of
+    /// `kv_len = ctx_count + γ` from the cache.
     pub(super) fn forward_block(
         &self,
         last_token: u32,
@@ -20,6 +26,7 @@ impl BlockDiffusionDraftHead {
         ctx: &ForwardContext,
         stream: u64,
         ctx_buffer: Option<(DevicePtr, usize)>,
+        option_b: Option<(DevicePtr, u32)>,
     ) -> Result<Vec<u32>> {
         use crate::layers::ops;
 
@@ -53,6 +60,20 @@ impl BlockDiffusionDraftHead {
             }
             None => (None, 0, 0),
         };
+
+        // Phase 2 Option B: ctx K/V already lives in the paged cache
+        // (precompute_ctx_kv ran in propose.rs before forward_block).
+        // Force eff_ctx=0 to disable the in-layer ctx K/V recomputation
+        // and the ctx-side of the stream_buf / position_ids / fc_proj
+        // paths. The layer body runs over γ rows only and reads ctx
+        // K/V from the cache via the paged-attention dispatcher.
+        let (option_b_block_table, option_b_ctx_count) = match option_b {
+            Some((bt, cc)) => (Some(bt), cc),
+            None => (None, 0),
+        };
+        let option_b_on = option_b_block_table.is_some();
+        let eff_ctx = if option_b_on { 0 } else { eff_ctx };
+        let _ = ctx_base_ptr; // Option B doesn't read ctx from this path
         let n_attn = (eff_ctx + self.gamma) as u32;
         let target_hidden_dim = self.target_layer_ids.len() * self.target_hidden_size;
         let ctx_slot_bytes = target_hidden_dim * bf16;
@@ -78,6 +99,44 @@ impl BlockDiffusionDraftHead {
             tracing::info!("DFLASH DUMP {label} [{n}]: {:?}", &vals);
             Ok(())
         };
+
+        // ── Phase 2 Option B precompute (stage 3 — dump-only) ──────
+        // When ATLAS_DFLASH_PRECOMPUTE=1, run the new precompute_ctx_kv
+        // path in parallel to (not replacing) the existing fc gemv loop
+        // below. The precompute writes BF16 dump files to /tmp for the
+        // pyref diff harness; it does NOT yet feed the layer body's
+        // attention. Stage 4 will swap the layer body to read from the
+        // paged cache and remove the per-row gemv path entirely.
+        //
+        // Requires ATLAS_DFLASH_PRECOMPUTE_DUMP=1 to actually emit
+        // dump files; otherwise the kernel chain runs and discards
+        // intermediates (useful for perf-only A/B).
+        if std::env::var("ATLAS_DFLASH_PRECOMPUTE").ok().as_deref() == Some("1") {
+            if let Some(base) = ctx_base_ptr {
+                if eff_ctx > 0 {
+                    let start_slot = ctx_total.saturating_sub(eff_ctx);
+                    let abs_start = position.saturating_sub(eff_ctx);
+                    // Dump-only diagnostic path: reconstruct the legacy
+                    // sliding positions (abs_start + i) as a slice. The
+                    // production path (propose.rs) uses per-slot fixed
+                    // positions from ctx_positions instead.
+                    let slot_positions: Vec<i32> =
+                        (0..eff_ctx).map(|i| (abs_start + i) as i32).collect();
+                    // slot_mapping unused in dump-only mode; pass the
+                    // scratch buffer so reshape_and_cache has a valid
+                    // pointer if ATLAS_DFLASH_PRECOMPUTE_COMMIT=1.
+                    self.precompute_ctx_kv(
+                        base,
+                        start_slot,
+                        eff_ctx,
+                        &slot_positions,
+                        self.scratch.slot_mapping_dev,
+                        ctx,
+                        stream,
+                    )?;
+                }
+            }
+        }
 
         // ── Step 0: fc projection of captured target hiddens ──
         // For each of the `eff_ctx` most-recent ctx positions, run a GEMV
@@ -156,6 +215,33 @@ impl BlockDiffusionDraftHead {
                     );
                 }
                 FULL_DUMP_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
+
+                // Write companion meta JSON for the pyref diff harness.
+                // Shapes/strides Atlas knows but the Python side can't
+                // infer from the .bin alone. Written once alongside the
+                // target_hidden dump so harness runs read a consistent
+                // snapshot.
+                let meta = format!(
+                    "{{\n  \"last_token\": {},\n  \"position\": {},\n  \"eff_ctx\": {},\n  \"n_layers_captured\": {},\n  \"target_hidden_size\": {},\n  \"gamma\": {},\n  \"hidden_size\": {},\n  \"num_kv_heads\": {},\n  \"head_dim\": {},\n  \"num_drafter_layers\": {},\n  \"rope_theta\": {}\n}}\n",
+                    last_token,
+                    position,
+                    eff_ctx,
+                    self.target_layer_ids.len(),
+                    self.target_hidden_size,
+                    self.gamma,
+                    self.hidden_size,
+                    self.num_kv_heads,
+                    self.head_dim,
+                    self.num_layers,
+                    self.rope_theta,
+                );
+                if let Err(e) = std::fs::write("/tmp/atlas_dflash_meta.json", &meta) {
+                    tracing::warn!("DFLASH DUMP_FULL: meta JSON write failed: {e}");
+                } else {
+                    tracing::info!(
+                        "DFLASH DUMP_FULL: wrote /tmp/atlas_dflash_meta.json companion to target_hidden"
+                    );
+                }
             }
             for i in 0..eff_ctx {
                 let src_slot = base.offset((start_slot + i) * ctx_slot_bytes);
@@ -297,84 +383,402 @@ impl BlockDiffusionDraftHead {
         // [eff_ctx..n_attn] are NOISE (full Q/K/V from embeddings).
         // Per-layer flow follows `dflash.py:Qwen3DFlashDecoderLayer.forward`.
         // Body extracted to `forward_block_layer.rs` for the 500-LoC budget.
-        for (layer_idx, layer) in self.layers.iter().enumerate() {
-            let args = super::forward_block_layer::LayerArgs {
-                layer_idx,
-                n_attn,
-                eff_ctx,
-                h,
-                q_dim,
-                kv_dim,
-                inter,
-                bf16,
-                inv_sqrt_d,
-                stream,
-            };
-            self.forward_block_layer(layer, &args, ctx, debug_dump)?;
-        }
-        // Drop the original inline loop body — extracted to helper.
-
-        // ── Step 4: final RMSNorm + LM head on noise rows only ──
-        // Skip ctx slots [0..eff_ctx] (their stream_buf is garbage from
-        // layer accumulation). Read from offset `eff_ctx * h * bf16`.
-        let noise_byte_offset = eff_ctx * self.hidden_size * bf16;
-        let stream_noise = self.scratch.stream_buf.offset(noise_byte_offset);
-        let norm_noise = self.scratch.norm_buf.offset(noise_byte_offset);
-        ops::rms_norm(
-            gpu,
-            self.kernels.rms_norm,
-            stream_noise,
-            &self.norm,
-            norm_noise,
-            self.gamma as u32,
-            h,
-            self.rms_norm_eps,
-            stream,
-        )?;
-        ops::dense_gemm(
-            gpu,
-            self.kernels.dense_gemm,
-            norm_noise,
-            &crate::weight_map::DenseWeight {
-                weight: self.lm_head_shared,
-            },
-            self.scratch.logits,
-            self.gamma as u32,
-            self.vocab_size as u32,
-            h,
-            stream,
-        )?;
-
-        // Optional full-stream dump after final norm (debug; before lm_head).
-        if debug_dump {
-            dump_bf16("final.norm_buf[noise0]", norm_noise, 10)?;
-            // Sanity-check: dump first 10 BF16 values of target's lm_head_shared.
-            // If this returns zeros or garbage, the BF16 lm_head was freed by
-            // factory.rs's NVFP4 quantization step.
-            dump_bf16("final.lm_head_shared[0..10]", self.lm_head_shared, 10)?;
-        }
-
-        // ── Step 5: argmax per row → γ token ids ──
-        for i in 0..self.gamma {
-            let logits_row = self.scratch.logits.offset(i * self.vocab_size * bf16);
-            let token_slot = self.scratch.draft_tokens_dev.offset(i * 4);
-            ops::argmax_bf16(
+        //
+        // Option B: layer body runs over γ rows only, reads ctx K/V from
+        // the paged cache. Slot mapping for the γ K/V writes is built
+        // once and reused across all drafter layers.
+        let slot_mapping_gamma_opt = if option_b_on {
+            let bt = option_b_block_table.unwrap();
+            // Build γ slot indices starting at logical position ctx_count.
+            ops::fill_slots_from_block_table(
                 gpu,
-                self.kernels.argmax,
-                logits_row,
-                token_slot,
-                self.vocab_size as u32,
+                self.kernels.fill_slots,
+                self.scratch.slot_mapping_dev,
+                bt,
+                option_b_ctx_count,
+                self.gamma as u32,
+                16,
                 stream,
             )?;
-        }
-        if debug_dump {
-            dump_bf16("final.logits[noise0]", self.scratch.logits, 10)?;
+            // Phase 5 (CUDA graph) pre-graph write: stash the per-propose
+            // dynamic `[kv_len, q_offset]` pair into the indirect-args
+            // buffer. The graph-captured paged-attention launch reads from
+            // this pointer at kernel entry, so a single graph instance can
+            // be replayed across propose calls with new values written here.
+            // Phase C uses it eagerly (no graph yet) to gate correctness.
+            let kv_len = option_b_ctx_count + self.gamma as u32;
+            let q_offset = option_b_ctx_count;
+            let indirect_bytes: [u8; 8] = {
+                let mut b = [0u8; 8];
+                b[0..4].copy_from_slice(&kv_len.to_ne_bytes());
+                b[4..8].copy_from_slice(&q_offset.to_ne_bytes());
+                b
+            };
+            gpu.copy_h2d(&indirect_bytes, self.scratch.option_b_indirect_args_dev)?;
+            Some(self.scratch.slot_mapping_dev)
+        } else {
+            None
+        };
+
+        // ── Phase D: CUDA graph capture/replay wraps the layer loop +
+        // post-norm + lm_head + argmax (all the per-propose compute). The
+        // pre-graph H2D writes above stash dynamic values into stable
+        // device pointers; the captured graph reads from those pointers
+        // every replay, so a single graph instance is reused across all
+        // propose calls.
+        //
+        // Eligibility: option_b path only (legacy non-paged path isn't
+        // graph-ready), suppress_graphs not set, none of the debug dumps
+        // enabled (those inject D2H/sync into the region and would taint
+        // the graph). Default warm-up N=2 (override
+        // `ATLAS_DFLASH_PROPOSE_WARMUP_N`) so PTX→SASS JIT, GB10 clock
+        // ramp, and L2 warming all happen eagerly before capture freezes
+        // a steady-state SASS pick.
+        let graph_eligible = option_b_on
+            && !self
+                .suppress_graphs
+                .load(std::sync::atomic::Ordering::Relaxed)
+            && !debug_dump
+            && std::env::var("ATLAS_DFLASH_PROPOSE_NO_GRAPH").is_err()
+            && std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL").is_err()
+            && std::env::var("ATLAS_DFLASH_OPTION_B_DIAG").is_err()
+            && std::env::var("ATLAS_DFLASH_PRECOMPUTE_DUMP").is_err()
+            && std::env::var("ATLAS_DFLASH_VERIFY_TRACE").is_err()
+            && std::env::var("ATLAS_DFLASH_LOG_DRAFTS").is_err()
+            && std::env::var("ATLAS_DFLASH_DEBUG_FORCE_PATTERN").is_err()
+            && std::env::var("ATLAS_DFLASH_DEBUG_FORCE_NOISE_PATTERN").is_err()
+            && std::env::var("ATLAS_DFLASH_DEBUG_CTX_OFF").is_err()
+            && std::env::var("ATLAS_DFLASH_DEBUG_CTX_USED").is_err();
+
+        let warmup_target: usize = std::env::var("ATLAS_DFLASH_PROPOSE_WARMUP_N")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(2);
+
+        // Helper closures: run each piecewise subgraph eagerly. Phase F.2
+        // splits the old monolithic captured region into per-layer halves
+        // (pre_attn + post_attn) plus a tail (final norm + lm_head +
+        // argmax). The attention call between pre and post stays eager.
+        let bf16_local = bf16;
+        let inv_sqrt_d_local = inv_sqrt_d;
+        let h_local = h;
+        let n_attn_local = n_attn;
+        let q_dim_local = q_dim;
+        let kv_dim_local = kv_dim;
+        let inter_local = inter;
+        let eff_ctx_local = eff_ctx;
+        let noise_byte_offset_local = eff_ctx * self.hidden_size * bf16;
+        let stream_noise_local = self.scratch.stream_buf.offset(noise_byte_offset_local);
+        let norm_noise_local = self.scratch.norm_buf.offset(noise_byte_offset_local);
+
+        // Build PagedLayerArgs once per layer — same args for pre_attn,
+        // attention, and post_attn (the kernel only reads what it needs).
+        let make_paged_args =
+            |layer_idx: usize| -> Option<super::forward_block_layer_paged::PagedLayerArgs> {
+                if !option_b_on {
+                    return None;
+                }
+                let bt = option_b_block_table?;
+                let slot_mapping = slot_mapping_gamma_opt?;
+                Some(super::forward_block_layer_paged::PagedLayerArgs {
+                    layer_idx,
+                    ctx_count: option_b_ctx_count,
+                    h: h_local,
+                    q_dim: q_dim_local,
+                    kv_dim: kv_dim_local,
+                    inter: inter_local,
+                    inv_sqrt_d: inv_sqrt_d_local,
+                    slot_mapping_gamma: slot_mapping,
+                    block_table_dev: bt,
+                    stream,
+                })
+            };
+
+        // Legacy (non-paged, n_attn rows) per-layer body — kept whole
+        // because the legacy path is debug-only and not graph-capture
+        // ready. Runs all of 3a–3k inline.
+        let run_legacy_layer = |layer_idx: usize, layer: &super::DflashLayer| -> Result<()> {
+            let args = super::forward_block_layer::LayerArgs {
+                layer_idx,
+                n_attn: n_attn_local,
+                eff_ctx: eff_ctx_local,
+                h: h_local,
+                q_dim: q_dim_local,
+                kv_dim: kv_dim_local,
+                inter: inter_local,
+                bf16: bf16_local,
+                inv_sqrt_d: inv_sqrt_d_local,
+                stream,
+            };
+            self.forward_block_layer(layer, &args, ctx, debug_dump)
+        };
+
+        // Tail: final norm + lm_head + argmax over γ rows. Captured as
+        // the last piecewise subgraph (slot index = num_layers * 2).
+        let run_tail = || -> Result<()> {
+            ops::rms_norm(
+                gpu,
+                self.kernels.rms_norm,
+                stream_noise_local,
+                &self.norm,
+                norm_noise_local,
+                self.gamma as u32,
+                h_local,
+                self.rms_norm_eps,
+                stream,
+            )?;
+            // Phase G: lm_head GEMM. Largest GEMM in the drafter
+            // (γ × vocab=248320). FP8 path uses the small-M kernel
+            // fp8_gemm_t_row_scaled_m16 (M_TILE=16, 1 warp/CTA) against
+            // the FP8 mirror of the shared lm_head weight. The earlier
+            // 0%-accept bug was a half-loaded smem_A K-tile in that
+            // kernel (fixed: 2-round A-load covers all 32 K-cols).
+            // BF16 path (default, or Fp8 mirror missing) unchanged.
+            let lm_head_fp8 = matches!(self.quant, super::DflashQuantization::Fp8Weights);
+            if lm_head_fp8 {
+                if let Some(fp8) = self.lm_head_shared_fp8.as_ref() {
+                    ops::fp8_gemm_n128_row_scaled_m16(
+                        gpu,
+                        self.kernels.fp8_gemm_n128_row_scaled_m16,
+                        norm_noise_local,
+                        fp8,
+                        self.scratch.logits,
+                        self.gamma as u32,
+                        self.vocab_size as u32,
+                        h_local,
+                        stream,
+                    )?;
+                } else {
+                    ops::dense_gemm(
+                        gpu,
+                        self.kernels.dense_gemm,
+                        norm_noise_local,
+                        &crate::weight_map::DenseWeight {
+                            weight: self.lm_head_shared,
+                        },
+                        self.scratch.logits,
+                        self.gamma as u32,
+                        self.vocab_size as u32,
+                        h_local,
+                        stream,
+                    )?;
+                }
+            } else {
+                ops::dense_gemm(
+                    gpu,
+                    self.kernels.dense_gemm,
+                    norm_noise_local,
+                    &crate::weight_map::DenseWeight {
+                        weight: self.lm_head_shared,
+                    },
+                    self.scratch.logits,
+                    self.gamma as u32,
+                    self.vocab_size as u32,
+                    h_local,
+                    stream,
+                )?;
+            }
+            for i in 0..self.gamma {
+                let logits_row = self.scratch.logits.offset(i * self.vocab_size * bf16_local);
+                let token_slot = self.scratch.draft_tokens_dev.offset(i * 4);
+                ops::argmax_bf16(
+                    gpu,
+                    self.kernels.argmax,
+                    logits_row,
+                    token_slot,
+                    self.vocab_size as u32,
+                    stream,
+                )?;
+            }
+            Ok(())
+        };
+
+        // Run all subgraphs eagerly, no capture — used for warm-up and
+        // for the non-graph-eligible path.
+        let run_all_eager = || -> Result<()> {
+            for (layer_idx, layer) in self.layers.iter().enumerate() {
+                if option_b_on {
+                    let args = make_paged_args(layer_idx).expect("option_b args available");
+                    let (k_pool, v_pool) = self.forward_block_layer_pre_attn(layer, &args, ctx)?;
+                    self.forward_block_layer_attention(&args, ctx, k_pool, v_pool)?;
+                    self.forward_block_layer_post_attn(layer, &args, ctx)?;
+                } else {
+                    run_legacy_layer(layer_idx, layer)?;
+                }
+            }
+            run_tail()
+        };
+
+        // Phase F.2: piecewise capture/replay path. Only enabled for
+        // option_b (paged) — legacy path stays single-shot eager since
+        // it's not graph-ready and exists only for ablation.
+        if graph_eligible && option_b_on {
+            // Subgraph slot layout: [pre_0, post_0, ..., pre_{N-1}, post_{N-1}, tail].
+            // 2 × num_layers + 1 slots total.
+            let num_layers = self.layers.len();
+            let total_slots = num_layers * 2 + 1;
+            let tail_slot = num_layers * 2;
+
+            let mut g = self.propose_graphs.lock();
+            let cached_ready = matches!(*g, Some(ref v) if v.len() == total_slots);
+
+            if cached_ready {
+                // Hot replay path: launch each cached subgraph in order,
+                // running attention eagerly between pre and post.
+                let graphs = g.as_ref().unwrap();
+                for (layer_idx, layer) in self.layers.iter().enumerate() {
+                    let args = make_paged_args(layer_idx).expect("option_b args available");
+
+                    let pre_handle = graphs[layer_idx * 2];
+                    if pre_handle.0 != 0 {
+                        gpu.launch_graph(pre_handle, stream)?;
+                    } else {
+                        // Empty-capture sentinel: this slot fell back to
+                        // eager at capture time. Replay eager forever.
+                        self.forward_block_layer_pre_attn(layer, &args, ctx)?;
+                    }
+
+                    // Attention is always eager — but we need k_pool/v_pool
+                    // for the call. Re-lock the cache here (the captured
+                    // pre_attn already holds the pointers internally; this
+                    // is just for the attention boundary).
+                    let (k_pool, v_pool) = {
+                        let cache = self.kv_cache.lock();
+                        (cache.k_pool_ptr(layer_idx), cache.v_pool_ptr(layer_idx))
+                    };
+                    self.forward_block_layer_attention(&args, ctx, k_pool, v_pool)?;
+
+                    let post_handle = graphs[layer_idx * 2 + 1];
+                    if post_handle.0 != 0 {
+                        gpu.launch_graph(post_handle, stream)?;
+                    } else {
+                        self.forward_block_layer_post_attn(layer, &args, ctx)?;
+                    }
+                }
+
+                let tail_handle = graphs[tail_slot];
+                if tail_handle.0 != 0 {
+                    gpu.launch_graph(tail_handle, stream)?;
+                } else {
+                    run_tail()?;
+                }
+            } else {
+                let warmed = self
+                    .propose_warmup_count
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                if warmed < warmup_target {
+                    // Warm-up: eager only, no capture.
+                    self.propose_warmup_count
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    run_all_eager()?;
+                } else {
+                    // Capture pass: build all subgraphs in one propose
+                    // call, then immediately replay them via the launches
+                    // below. End-cap returns GraphHandle(0) as the
+                    // empty-capture sentinel; we store the zero so the
+                    // replay path falls back to eager for that slot.
+                    tracing::info!(
+                        "DFlash piecewise capture: starting (warmup_count={}, target={}, slots={})",
+                        warmed,
+                        warmup_target,
+                        total_slots
+                    );
+                    let mut new_graphs: Vec<spark_runtime::gpu::GraphHandle> =
+                        Vec::with_capacity(total_slots);
+
+                    for (layer_idx, layer) in self.layers.iter().enumerate() {
+                        let args = make_paged_args(layer_idx).expect("option_b args available");
+
+                        // pre_attn subgraph
+                        gpu.begin_capture(stream)?;
+                        let _captured = self.forward_block_layer_pre_attn(layer, &args, ctx)?;
+                        let pre_graph = gpu.end_capture(stream)?;
+                        new_graphs.push(pre_graph);
+                        if pre_graph.0 != 0 {
+                            gpu.launch_graph(pre_graph, stream)?;
+                        } else {
+                            tracing::warn!(
+                                "DFlash piecewise: pre_attn layer {} empty capture — eager fallback",
+                                layer_idx
+                            );
+                            self.forward_block_layer_pre_attn(layer, &args, ctx)?;
+                        }
+
+                        // attention — eager, never captured
+                        let (k_pool, v_pool) = {
+                            let cache = self.kv_cache.lock();
+                            (cache.k_pool_ptr(layer_idx), cache.v_pool_ptr(layer_idx))
+                        };
+                        self.forward_block_layer_attention(&args, ctx, k_pool, v_pool)?;
+
+                        // post_attn subgraph
+                        gpu.begin_capture(stream)?;
+                        self.forward_block_layer_post_attn(layer, &args, ctx)?;
+                        let post_graph = gpu.end_capture(stream)?;
+                        new_graphs.push(post_graph);
+                        if post_graph.0 != 0 {
+                            gpu.launch_graph(post_graph, stream)?;
+                        } else {
+                            tracing::warn!(
+                                "DFlash piecewise: post_attn layer {} empty capture — eager fallback",
+                                layer_idx
+                            );
+                            self.forward_block_layer_post_attn(layer, &args, ctx)?;
+                        }
+                    }
+
+                    // tail subgraph
+                    gpu.begin_capture(stream)?;
+                    run_tail()?;
+                    let tail_graph = gpu.end_capture(stream)?;
+                    new_graphs.push(tail_graph);
+                    if tail_graph.0 != 0 {
+                        gpu.launch_graph(tail_graph, stream)?;
+                    } else {
+                        tracing::warn!("DFlash piecewise: tail empty capture — eager fallback");
+                        run_tail()?;
+                    }
+
+                    let success_count = new_graphs.iter().filter(|g| g.0 != 0).count();
+                    tracing::info!(
+                        "DFlash piecewise capture: complete ({}/{} subgraphs captured)",
+                        success_count,
+                        total_slots
+                    );
+                    *g = Some(new_graphs);
+                }
+            }
+        } else {
+            run_all_eager()?;
         }
 
         // ── Step 6: D2H γ × 4 bytes ──
-        let mut host_buf = vec![0u8; self.gamma * 4];
-        gpu.synchronize(stream)?;
-        gpu.copy_d2h(self.scratch.draft_tokens_dev, &mut host_buf)?;
+        //
+        // Phase E.2: async D2H to a pinned host buffer, recorded against a
+        // dedicated event. The host blocks on the event (not the stream)
+        // just before reading the bytes, so any verify-side work the
+        // scheduler queues on the same stream after this point can be
+        // issued concurrently with the copy completing.
+        //
+        // Why pinned: cuMemcpyDtoHAsync against a pageable destination
+        // silently falls back to a synchronous bounce-buffer copy; the
+        // async DMA fast path requires page-locked host memory. nsys
+        // confirmed cuMemcpyDtoHAsync_v2 was 64% of API time post-E.1 —
+        // pinned memory lets the copy actually pipeline.
+        //
+        // Why event vs stream sync: cuStreamSynchronize waits for ALL
+        // work on the stream; cuEventSynchronize waits only for work
+        // recorded up to the event. After Phase E.4 lifts more work
+        // into capture, the gap matters.
+        let pinned_ptr = self
+            .scratch
+            .draft_tokens_host_pinned
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let host_buf: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(pinned_ptr, self.gamma * 4) };
+        gpu.copy_d2h_on_stream(self.scratch.draft_tokens_dev, host_buf, stream)?;
+        gpu.record_event(self.scratch.draft_tokens_event, stream)?;
+        gpu.event_synchronize(self.scratch.draft_tokens_event)?;
         let drafts: Vec<u32> = host_buf
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -385,10 +789,11 @@ impl BlockDiffusionDraftHead {
         static DRAFTS_DUMP_DONE: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
         if !DRAFTS_DUMP_DONE.load(std::sync::atomic::Ordering::Relaxed)
-            && std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
+            && (std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
                 .ok()
                 .as_deref()
                 == Some("1")
+                || std::env::var("ATLAS_DFLASH_LOG_DRAFTS").ok().as_deref() == Some("1"))
         {
             tracing::info!(
                 "DFLASH DUMP_FULL drafts (γ={}, last_token={}, position={}, eff_ctx={}): {:?}",

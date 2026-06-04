@@ -157,10 +157,12 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 8)]
     pub max_batch_size: usize,
 
-    /// MTP head weight precision: bf16 (highest accuracy, most memory —
-    /// the default), fp8 (balanced but slower due to D2H sync in MoE),
-    /// nvfp4 (fastest — uses fused device-side expert dispatch; opt in
-    /// explicitly when throughput matters more than accuracy).
+    /// MTP head weight precision: bf16 (default, highest acceptance rate
+    /// = highest end-to-end throughput; the MTP head is small so the memory
+    /// cost is modest), fp8 (1 byte/weight, balanced; slower draft due to
+    /// a D2H sync in MoE dispatch), nvfp4 (0.5 byte/weight, fastest draft
+    /// forward but lossier projections → lower acceptance rate, so end-to-
+    /// end throughput is usually worse than bf16).
     #[arg(long, default_value = "bf16")]
     pub mtp_quantization: String,
 

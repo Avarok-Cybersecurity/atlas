@@ -53,7 +53,7 @@ thinking_in_tools = true
 # `thinking.budget_tokens` still wins below this; CLI
 # `--max-thinking-budget` overrides this entirely.
 max_thinking_budget = 4096
-thinking_default = false
+thinking_default = true  # Sweep 2026-05-20: thinking on by default for all Qwen reasoning-tier models.
 # Benchmarked 2026-04-11: K=2 (1 draft) is the sweet spot for the
 # 80B-A3B MoE — verify overhead at K=3 wipes out acceptance gains.
 default_num_drafts = 1

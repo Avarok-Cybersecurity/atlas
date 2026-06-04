@@ -24,7 +24,8 @@ pub fn detect_fuzzy_repetition(tokens: &[u32]) -> Option<(usize, usize, usize)> 
             continue;
         }
         let base = len - pattern_len * 3;
-        let max_mismatches = (pattern_len / 12).max(1);
+        let max_mismatches =
+            (pattern_len / super::helpers::watchdog_params().fuzzy_repeat_tolerance_div).max(1);
         let mut mis_a = 0usize;
         let mut mis_b = 0usize;
         for i in 0..pattern_len {

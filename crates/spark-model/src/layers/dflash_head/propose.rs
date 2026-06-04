@@ -229,8 +229,149 @@ impl BlockDiffusionDraftHead {
                 dstate.ctx_slot_bytes,
                 _stream,
             )?;
+            // Phase I (v2): stamp this slot's TRUE absolute position, fixed
+            // forever. The just-decoded token sits at `position - 1` (the
+            // full-rebuild formula assigns slot ctx_len the position
+            // (position - (ctx_len+1)) + ctx_len == position - 1). Keeping
+            // ctx_positions parallel to ctx_len lets precompute rope each
+            // slot by its own fixed position instead of a sliding base.
+            debug_assert_eq!(dstate.ctx_positions.len(), dstate.ctx_len);
+            dstate.ctx_positions.push(position.saturating_sub(1) as i32);
             dstate.ctx_len += 1;
         }
+
+        // ── Phase 2 Option B: lazy block_table allocation ─────────────
+        // When ATLAS_DFLASH_OPTION_B=1 and the proposer hasn't yet
+        // allocated paged blocks, do it now. We allocate enough blocks
+        // to cover the full ctx_hidden_acc plus a safety margin for γ.
+        // Block_size matches from_weights.rs:68 (=16).
+        let option_b_enabled = std::env::var("ATLAS_DFLASH_OPTION_B").ok().as_deref() == Some("1");
+        let option_b_arg: Option<(DevicePtr, u32)> = if option_b_enabled {
+            // Lazy block table init. ctx slots come from precompute over the
+            // accumulated target hiddens; γ slots come from the layer body.
+            // We need ceil((max_ctx_len + γ) / block_size) blocks.
+            const BLOCK_SIZE: usize = 16;
+            let blocks_needed = (dstate.max_ctx_len + self.gamma + 1).div_ceil(BLOCK_SIZE);
+            if dstate.block_table_dev.is_none() {
+                let mut cache = self.kv_cache.lock();
+                dstate.block_table.clear();
+                for _ in 0..blocks_needed {
+                    match cache.try_alloc_block() {
+                        Some(b) => dstate.block_table.push(b),
+                        None => {
+                            anyhow::bail!(
+                                "DFlash Option B: paged KV cache exhausted at block {}/{}",
+                                dstate.block_table.len(),
+                                blocks_needed
+                            );
+                        }
+                    }
+                }
+                drop(cache);
+                // Copy block_table to device.
+                let bt_bytes: Vec<u8> = dstate
+                    .block_table
+                    .iter()
+                    .flat_map(|b| b.to_le_bytes())
+                    .collect();
+                let bt_dev = ctx.gpu.alloc(bt_bytes.len())?;
+                ctx.gpu.copy_h2d(&bt_bytes, bt_dev)?;
+                dstate.block_table_dev = Some(bt_dev);
+                dstate.max_ctx_count_drafter = blocks_needed * BLOCK_SIZE;
+                tracing::info!(
+                    "DFlash Option B: allocated {} blocks ({} slots) for drafter paged cache",
+                    blocks_needed,
+                    dstate.max_ctx_count_drafter
+                );
+            }
+            // Phase I (v2) — incremental ctx precompute (design doc §18).
+            // Only the new tail [ctx_committed..ctx_len) needs its K/V
+            // computed; slots [0..ctx_committed) are already valid in the
+            // paged cache and — because each slot ropes at its OWN fixed
+            // position (stamped at append, see ctx_positions) — they never
+            // go stale when later accepts move the live `position`. The old
+            // path rebuilt the whole prefix every step (O(ctx_len²)).
+            //
+            // Escape hatch: ATLAS_DFLASH_DEBUG_FULL_PRECOMPUTE=1 forces a
+            // full recompute (committed=0) for A/B accept-rate parity.
+            let force_full = std::env::var("ATLAS_DFLASH_DEBUG_FULL_PRECOMPUTE")
+                .ok()
+                .as_deref()
+                == Some("1");
+            // Clamp watermark defensively: a rewind should have reset it,
+            // but never start past ctx_len.
+            let committed = if force_full {
+                0
+            } else {
+                dstate.ctx_committed.min(dstate.ctx_len)
+            };
+            let new_count = dstate.ctx_len - committed;
+            if dstate.ctx_len > 0 && new_count > 0 {
+                // Build slot_mapping for the new tail [committed..ctx_len).
+                let slot_mapping = &self.scratch.slot_mapping_dev;
+                crate::layers::ops::fill_slots_from_block_table(
+                    ctx.gpu,
+                    self.kernels.fill_slots,
+                    *slot_mapping,
+                    dstate.block_table_dev.unwrap(),
+                    committed as u32,
+                    new_count as u32,
+                    BLOCK_SIZE as u32,
+                    _stream,
+                )?;
+                // Run precompute with COMMIT path. Caller of precompute
+                // gates commit on ATLAS_DFLASH_PRECOMPUTE_COMMIT — we
+                // force-set it here since Option B requires committed K/V.
+                // SAFETY: setting env var process-wide; OK since the
+                // server is single-purpose during Option B benches.
+                let prev_commit = std::env::var("ATLAS_DFLASH_PRECOMPUTE_COMMIT").ok();
+                // SAFETY: env mutation here is single-threaded per process
+                // for the DFlash bench; we restore the prior value after.
+                unsafe {
+                    std::env::set_var("ATLAS_DFLASH_PRECOMPUTE_COMMIT", "1");
+                }
+                // The fixed positions for exactly the tail rows we're
+                // computing. ctx_positions is parallel to ctx slots.
+                let slot_positions = &dstate.ctx_positions[committed..dstate.ctx_len];
+                let precompute_res = self.precompute_ctx_kv(
+                    dstate.ctx_hidden_acc,
+                    committed,
+                    new_count,
+                    slot_positions,
+                    *slot_mapping,
+                    ctx,
+                    _stream,
+                );
+                // Restore env var.
+                match prev_commit {
+                    Some(v) => unsafe {
+                        std::env::set_var("ATLAS_DFLASH_PRECOMPUTE_COMMIT", v);
+                    },
+                    None => unsafe { std::env::remove_var("ATLAS_DFLASH_PRECOMPUTE_COMMIT") },
+                }
+                precompute_res?;
+                // Tail is now committed in the paged cache. Committed slots
+                // hold fixed-position rope, so no base re-stamp is needed.
+                dstate.ctx_committed = dstate.ctx_len;
+            }
+            dstate.ctx_count_drafter = dstate.ctx_len;
+            // Ablation: ATLAS_DFLASH_OPTION_B_NO_CTX=1 forces ctx_count=0
+            // in the layer body so paged attention only sees the γ K/V
+            // we write in-layer. If accept rate is bad even here, the
+            // bug is in the cache write/read path, not in precompute.
+            let ablate_no_ctx = std::env::var("ATLAS_DFLASH_OPTION_B_NO_CTX")
+                .ok()
+                .as_deref()
+                == Some("1");
+            let effective_ctx_count = if ablate_no_ctx {
+                0
+            } else {
+                dstate.ctx_count_drafter as u32
+            };
+            Some((dstate.block_table_dev.unwrap(), effective_ctx_count))
+        } else {
+            None
+        };
 
         let drafts = self
             .forward_block(
@@ -245,6 +386,7 @@ impl BlockDiffusionDraftHead {
                 } else {
                     None
                 },
+                option_b_arg,
             )
             .map_err(|e| {
                 tracing::warn!("DFlash forward_block failed, falling back to no-spec: {e:#}");
@@ -267,6 +409,37 @@ impl BlockDiffusionDraftHead {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1);
+
+        // ATLAS_DFLASH_VERIFY_TRACE=1: log all γ drafts BEFORE the cap so we
+        // can see whether the drafter echoes only at position 0 or across
+        // every noise row. Pairs with K2 TRACE in the scheduler.
+        if std::env::var("ATLAS_DFLASH_VERIFY_TRACE").ok().as_deref() == Some("1") {
+            tracing::info!(
+                "DFLASH TRACE drafts: token_in={} position={} γ={} drafts_pre_cap={:?}",
+                last_token,
+                position,
+                drafts.len(),
+                drafts,
+            );
+        }
+
+        // Block-diffusion drafter convention: noise_row[0]'s input is
+        // `last_token`, and the drafter denoises it trivially back to
+        // itself — that's the "bonus" position. The first USEFUL draft
+        // lives at noise_row[1] (input = mask, predicts position+1).
+        // vLLM ignores row 0 via `token_indices_to_sample`. Atlas was
+        // reading row 0 as draft[0], giving 0% K=2 accept on z-lab
+        // DFlash drafters; dropping it lifts accept to ~80%.
+        //
+        // Gated on `mask_token_id` presence in the drafter config —
+        // that's the diffusion-drafter signal. Autoregressive drafters
+        // (e.g. EAGLE) have no mask token and should keep row 0.
+        let drafts = if self.mask_token_id != 0 && drafts.len() > 1 {
+            drafts[1..].to_vec()
+        } else {
+            drafts
+        };
+
         let drafts = drafts.into_iter().take(cap).collect::<Vec<_>>();
         dstate.last_num_drafted = drafts.len();
         Ok(drafts)

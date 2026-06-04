@@ -175,6 +175,27 @@ pub(super) fn build_msg_entries(
         }
     }
 
+    // Neutralize a content-free leading system message. Clients (notably
+    // Open WebUI's empty RAG/context template) inject a system message
+    // carrying NO instruction — e.g. `"User Context:\n\n"` (trims to the
+    // bare label `User Context:`). Models react to a content-free system
+    // directive by producing terse / prematurely-terminated output
+    // (isolated 2026-05-17: removing it 3x'd generation length on the
+    // 3D-chess prompt). We can't fix the client, so Atlas adapts: treat
+    // such a message as absent so a degenerate client prompt can't poison
+    // generation. Conservative — only an empty body or a single short
+    // bare `Label:` line qualifies; any substantive prompt is untouched.
+    if messages
+        .first()
+        .is_some_and(|m| m.role == "system" && is_vacuous_system_content(&m.content))
+    {
+        let removed = messages.remove(0);
+        tracing::info!(
+            dropped = %removed.content.trim(),
+            "Dropped content-free client system message (would bias the model toward terse output)"
+        );
+    }
+
     // Preprocess images if a vision config is available.
     let mut image_pixels: Vec<(Vec<f32>, usize, usize)> = Vec::new();
     if !all_images.is_empty()
@@ -209,4 +230,63 @@ pub(super) fn build_msg_entries(
         image_pad_counts,
         consecutive_tool_errors,
     })
+}
+
+/// True when a system message carries no actual instruction and should
+/// be treated as absent. Conservative by design — a substantive prompt
+/// must never be stripped:
+///   * empty / whitespace-only body, OR
+///   * a single short bare label line ending in ':' with nothing after
+///     it (e.g. `User Context:`, `Context:`, `System:`) — the residue
+///     of an empty client template (Open WebUI's RAG/context block).
+/// Anything multi-line, or with any text past the colon, is a real
+/// prompt and returns false.
+fn is_vacuous_system_content(content: &str) -> bool {
+    let t = content.trim();
+    if t.is_empty() {
+        return true;
+    }
+    if !t.contains('\n') && t.len() <= 32 && t.ends_with(':') {
+        let label = &t[..t.len() - 1];
+        return !label.is_empty()
+            && label
+                .chars()
+                .all(|c| c.is_ascii_alphabetic() || c == ' ' || c == '_' || c == '-');
+    }
+    false
+}
+
+#[cfg(test)]
+mod vacuous_system_tests {
+    use super::is_vacuous_system_content;
+
+    #[test]
+    fn empty_or_whitespace_is_vacuous() {
+        assert!(is_vacuous_system_content(""));
+        assert!(is_vacuous_system_content("   \n\t  "));
+    }
+
+    #[test]
+    fn open_webui_empty_context_residue_is_vacuous() {
+        // The exact 2026-05-17 field artifact.
+        assert!(is_vacuous_system_content("User Context:\n\n"));
+        assert!(is_vacuous_system_content("Context:"));
+        assert!(is_vacuous_system_content("  System:  "));
+    }
+
+    #[test]
+    fn substantive_prompt_is_not_vacuous() {
+        assert!(!is_vacuous_system_content(
+            "User Context:\nThe user is a senior Rust engineer."
+        ));
+        assert!(!is_vacuous_system_content("You are a helpful assistant."));
+        assert!(!is_vacuous_system_content("Always answer in French."));
+        // Label-like but with a real payload after the colon.
+        assert!(!is_vacuous_system_content("Role: expert chess coach"));
+        // Long single line ending in ':' is unusual prose, not a bare
+        // header — keep it (avoid false-strip).
+        assert!(!is_vacuous_system_content(
+            "Summarize the following transcript and then ask the user this:"
+        ));
+    }
 }

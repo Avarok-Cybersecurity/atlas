@@ -110,6 +110,18 @@ pub const CONTENT_LOOP_PERIOD_MIN: usize = 8;
 pub const CONTENT_LOOP_PERIOD_MAX: usize = 64;
 pub const CONTENT_LOOP_MIN_REPEATS: usize = 3;
 pub const CONTENT_LOOP_SCAN_WINDOW: usize = 280;
+/// Min repeats for the digit-normalized content-loop path. Stricter
+/// than `CONTENT_LOOP_MIN_REPEATS` (3) because numeric normalization
+/// collapses more sequences to a common period — requiring 4 keeps a
+/// legitimate 3-item numbered list (`- item 1\n- item 2\n- item 3`)
+/// from tripping the hard stop.
+pub const CONTENT_LOOP_NORM_MIN_REPEATS: usize = 4;
+/// Sentinel substituted for every numeric token in the normalized
+/// scan-window tail. `u32::MAX` can never collide with a real vocab id
+/// (Qwen3.6 vocab ≤ ~152k), and the `(t as usize) < mask.len()` bound
+/// in the classifier means a stray real `u32::MAX` would degrade to
+/// "structural", never a false numeric — safe either way.
+pub const NUMERIC_SENTINEL: u32 = u32::MAX;
 
 static ENABLE_LOOP_WATCHDOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
@@ -126,6 +138,84 @@ pub fn enable_loop_watchdog() -> bool {
     *ENABLE_LOOP_WATCHDOG.get().unwrap_or(&false)
 }
 
+/// Per-model tunables for the always-on decode-time watchdogs. Sourced
+/// from MODEL.toml `[behavior]`; the field defaults reproduce the
+/// historical hardcoded constants exactly, so a model that sets nothing
+/// behaves byte-identically to before parameterization.
+#[derive(Debug, Clone, Copy)]
+pub struct WatchdogParams {
+    /// Thinking-loop watchdog: substring-occurrence count that trips a
+    /// forced `</think>`. Default 3 (`THINK_LOOP_MIN_REPEATS`).
+    pub think_loop_min_repeats: usize,
+    /// Thinking-loop watchdog: trailing-token scan window. Default 160
+    /// (`THINK_LOOP_SCAN_WINDOW`).
+    pub think_loop_scan_window: usize,
+    /// F2 confidence-run early-stop enabled. Default `true`. Set false in
+    /// MODEL.toml for models whose deterministic code drafting trips the
+    /// heuristic.
+    pub confidence_early_stop: bool,
+    /// F2 confidence run length before arming forced `</think>`.
+    /// Default 30 (`CONFIDENCE_RUN_LIMIT`).
+    pub confidence_run_length: u32,
+    /// Fuzzy-repetition detector Hamming tolerance divisor: a
+    /// `pattern_len`-token window tolerates `pattern_len / div`
+    /// mismatches. Default 12 (~8%).
+    pub fuzzy_repeat_tolerance_div: usize,
+    /// Cap on free-text tokens between successive `<tool_call>` opens in
+    /// `tool_choice=auto`. Default 384 (`MAX_INTER_TOOL_PROSE`).
+    pub max_inter_tool_prose: u32,
+}
+
+/// Historical-default watchdog tunables — the single source of truth.
+/// Each field equals the constant the watchdog used before
+/// parameterization, so an unset MODEL.toml `[behavior]` is byte-exact.
+const DEFAULT_WATCHDOG_PARAMS: WatchdogParams = WatchdogParams {
+    think_loop_min_repeats: THINK_LOOP_MIN_REPEATS,
+    think_loop_scan_window: THINK_LOOP_SCAN_WINDOW,
+    confidence_early_stop: true,
+    confidence_run_length: CONFIDENCE_RUN_LIMIT,
+    fuzzy_repeat_tolerance_div: 12,
+    max_inter_tool_prose: MAX_INTER_TOOL_PROSE,
+};
+
+impl Default for WatchdogParams {
+    fn default() -> Self {
+        DEFAULT_WATCHDOG_PARAMS
+    }
+}
+
+static WATCHDOG_PARAMS: std::sync::OnceLock<WatchdogParams> = std::sync::OnceLock::new();
+
+/// Set once at startup from the resolved `ModelBehavior`. Idempotent.
+pub fn set_watchdog_params(p: WatchdogParams) {
+    let _ = WATCHDOG_PARAMS.set(p);
+}
+
+/// Read the per-model watchdog tunables. Returns the historical-default
+/// `WatchdogParams` until `set_watchdog_params` runs — so unit tests and
+/// any pre-boot caller see exactly the old hardcoded constants.
+pub fn watchdog_params() -> WatchdogParams {
+    *WATCHDOG_PARAMS.get().unwrap_or(&DEFAULT_WATCHDOG_PARAMS)
+}
+
+/// `mask[id] == true` iff token `id` decodes to a pure ASCII-digit run
+/// (optionally one leading space). Built once at startup from the
+/// tokenizer; drives the digit-normalized content-loop path. Fail-open:
+/// never set (or build failed) → normalized path inert, the exact
+/// detector is unaffected.
+static NUMERIC_TOKEN_MASK: std::sync::OnceLock<std::sync::Arc<[bool]>> = std::sync::OnceLock::new();
+
+/// Set once at startup from the resolved tokenizer. Idempotent.
+pub fn set_numeric_token_mask(mask: std::sync::Arc<[bool]>) {
+    let _ = NUMERIC_TOKEN_MASK.set(mask);
+}
+
+/// Read the numeric-token mask. `None` until `set_numeric_token_mask`
+/// runs — callers must treat `None` as "normalized path disabled".
+pub fn numeric_token_mask() -> Option<std::sync::Arc<[bool]>> {
+    NUMERIC_TOKEN_MASK.get().cloned()
+}
+
 /// F2 (2026-04-26): cap on free-text tokens between successive
 /// `<tool_call>` opens when `tool_choice="auto"`. The grammar FSM
 /// in `auto` mode (grammar.rs:461-462) sets `at_least_one=false`
@@ -137,64 +227,6 @@ pub fn enable_loop_watchdog() -> bool {
 /// rather than executing it). Counted across non-thinking,
 /// non-tool-body tokens only.
 pub const MAX_INTER_TOOL_PROSE: u32 = 384;
-
-/// F26 (2026-04-26): kernel-level entropy-collapse guard.
-///
-/// Disabled (`STREAK_K = 0`). Field experience: F26's pure-entropy
-/// threshold can't distinguish wedged sampling from legitimate
-/// high-confidence output (confident prose, code, JSON arrays). The
-/// content-loop watchdog (`detect_content_token_loop`) gated on
-/// per-model `enable_loop_watchdog` is the correct detector for actual
-/// attractor states.
-///
-/// Constants kept so the call site at `decode_logits_seq.rs:285` still
-/// type-checks; with `STREAK_K = 0` the gate is a no-op.
-pub const ENTROPY_COLLAPSE_THRESHOLD_NATS: f32 = 0.5;
-pub const ENTROPY_COLLAPSE_STREAK_K: u32 = 0;
-pub const ENTROPY_COLLAPSE_WARMUP_TOKENS: usize = 32;
-
-/// F27 (2026-04-26): logit-space attractor fingerprint.
-///
-/// Hash the f32_logits at 64 strided positions (~vocab/64 spacing).
-/// Two tokens with near-identical logit distributions produce the
-/// same fingerprint. If the same fingerprint repeats across recent
-/// samples WHILE tokens varied (different sampled token each step),
-/// the model is in an attractor where its decision space is stable
-/// but it samples differently each time — exactly the
-/// "different-tokens, same-internal-state" pattern hidden-state
-/// cosine catches but at logit level (~1 µs/token, no kernel work).
-///
-/// `F27_RING_CAP`: ring buffer of recent fingerprints.
-/// `F27_STREAK_K`: consecutive matches before tripping.
-/// Same warmup + guard semantics as F26.
-pub const F27_RING_CAP: usize = 16;
-pub const F27_STREAK_K: u32 = 6;
-pub const F27_FINGERPRINT_SAMPLES: usize = 64;
-pub const F27_FINGERPRINT_QUANT: f32 = 2.0; // ~0.5 nat resolution
-
-/// Compute a strided 64-bit fingerprint of the logit distribution.
-/// Quantises each sampled value to ~0.5 nat resolution before
-/// hashing so tiny FP-noise differences don't change the hash.
-pub fn fingerprint_logits_strided(logits: &[f32]) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::Hasher;
-    let mut h = DefaultHasher::new();
-    let stride = (logits.len() / F27_FINGERPRINT_SAMPLES).max(1);
-    let mut taken = 0;
-    let mut i = 0;
-    while i < logits.len() && taken < F27_FINGERPRINT_SAMPLES {
-        let v = logits[i];
-        let q: i32 = if v.is_finite() {
-            (v * F27_FINGERPRINT_QUANT).round() as i32
-        } else {
-            i32::MIN
-        };
-        h.write_i32(q);
-        i += stride;
-        taken += 1;
-    }
-    h.finish()
-}
 
 /// Return `true` iff some contiguous subsequence of length
 /// `p ∈ [THINK_LOOP_PERIOD_MIN, THINK_LOOP_PERIOD_MAX]` appears
@@ -208,13 +240,14 @@ pub fn fingerprint_logits_strided(logits: &[f32]) -> u64 {
 /// periodic repeat" detector misses these; a substring-occurrence
 /// counter catches them.
 pub fn detect_thinking_token_loop(tokens: &[u32]) -> bool {
+    let wp = watchdog_params();
     detect_token_loop(
         tokens,
         THINK_LOOP_MIN_TOKENS as usize,
         THINK_LOOP_PERIOD_MIN,
         THINK_LOOP_PERIOD_MAX,
-        THINK_LOOP_MIN_REPEATS,
-        THINK_LOOP_SCAN_WINDOW,
+        wp.think_loop_min_repeats,
+        wp.think_loop_scan_window,
     )
 }
 
@@ -228,6 +261,56 @@ pub fn detect_content_token_loop(tokens: &[u32]) -> bool {
         CONTENT_LOOP_PERIOD_MIN,
         CONTENT_LOOP_PERIOD_MAX,
         CONTENT_LOOP_MIN_REPEATS,
+        CONTENT_LOOP_SCAN_WINDOW,
+    )
+}
+
+/// Digit-normalized content-loop detector. Maps every numeric token in
+/// the scan-window TAIL to [`NUMERIC_SENTINEL`], then period-matches —
+/// catching the Qwen3.6-27B greedy degeneration where the line template
+/// is fixed (`- B(46) = N\n`) but the integer payload varies each line,
+/// so the exact [`detect_content_token_loop`] never fires.
+///
+/// Allocates only the ≤ `CONTENT_LOOP_SCAN_WINDOW` tail copy; the full
+/// history is never normalized. FP mitigation: stricter
+/// `CONTENT_LOOP_NORM_MIN_REPEATS`, and the matched period must contain
+/// BOTH a sentinel (numeric) and a non-sentinel (structural) token —
+/// pure-number columns and pure-prose loops are left to the exact path.
+pub fn detect_content_token_loop_normalized(tokens: &[u32], mask: &[bool]) -> bool {
+    let n = tokens.len();
+    if n < CONTENT_LOOP_MIN_TOKENS as usize {
+        return false;
+    }
+    let tail_start = n.saturating_sub(CONTENT_LOOP_SCAN_WINDOW);
+    let is_numeric = |t: u32| (t as usize) < mask.len() && mask[t as usize];
+    // Map numeric tokens to the sentinel AND run-length-collapse
+    // consecutive sentinels to ONE. Qwen3.6 is digit-level
+    // (`104509868777` → 12 single-digit tokens, `273508641` → 9), so a
+    // bare 1:1 map would leave variable-length sentinel runs and the
+    // period would still vary line to line. Collapsing makes
+    // `- B(<digits>) = <digits>\n` identical regardless of digit count.
+    let mut norm: Vec<u32> = Vec::with_capacity(CONTENT_LOOP_SCAN_WINDOW);
+    for &t in &tokens[tail_start..] {
+        if is_numeric(t) {
+            if norm.last() != Some(&NUMERIC_SENTINEL) {
+                norm.push(NUMERIC_SENTINEL);
+            }
+        } else {
+            norm.push(t);
+        }
+    }
+    // No qualifying period can exist without both kinds of token —
+    // cheap early-out before the O(period·window) scan.
+    let has_sentinel = norm.contains(&NUMERIC_SENTINEL);
+    let has_struct = norm.iter().any(|&t| t != NUMERIC_SENTINEL);
+    if !has_sentinel || !has_struct {
+        return false;
+    }
+    detect_token_loop_with_period(
+        &norm,
+        CONTENT_LOOP_PERIOD_MIN,
+        CONTENT_LOOP_PERIOD_MAX,
+        CONTENT_LOOP_NORM_MIN_REPEATS,
         CONTENT_LOOP_SCAN_WINDOW,
     )
 }
@@ -271,135 +354,127 @@ pub fn detect_token_loop(
     }
     false
 }
-#[cfg(test)]
-mod thinking_loop_tests {
-    use super::*;
 
-    #[test]
-    fn detects_period_8_triple_repeat() {
-        let pat: Vec<u32> = (1..=8).collect();
-        let mut tokens: Vec<u32> = (0..40).collect();
-        tokens.extend(pat.iter()); // r1
-        tokens.extend(pat.iter()); // r2
-        tokens.extend(pat.iter()); // r3
-        assert!(detect_thinking_token_loop(&tokens));
-    }
-
-    #[test]
-    fn rejects_two_repeats() {
-        // Even with >= MIN_TOKENS tokens total, only two copies of a
-        // period-5 block must not trigger (noise + double is not a
-        // degenerate loop).
-        let pat: Vec<u32> = (100..=104).collect();
-        let mut tokens: Vec<u32> = (0u32..50).collect();
-        tokens.extend(pat.iter()); // r1
-        tokens.extend(pat.iter()); // r2 only
-        assert!(!detect_thinking_token_loop(&tokens));
-    }
-
-    #[test]
-    fn rejects_numbered_list_reasoning() {
-        // Legitimate thinking content: 80 distinct tokens, no repeat.
-        let tokens: Vec<u32> = (0u32..80).collect();
-        assert!(!detect_thinking_token_loop(&tokens));
-    }
-
-    #[test]
-    fn detects_short_period_fence_loop() {
-        // Simulates `Running ``` bash cd X && cargo test ``` ` as a
-        // 10-token repeat. Need at least THINK_LOOP_MIN_TOKENS=48
-        // total tokens for the detector to even evaluate, so pad
-        // with unique prefix tokens first.
-        let pat: Vec<u32> = vec![7, 6, 5, 4, 3, 2, 1, 0, 9, 8];
-        let mut tokens: Vec<u32> = (100u32..150).collect(); // prefix pad
-        for _ in 0..4 {
-            tokens.extend(pat.iter());
+/// Like [`detect_token_loop`] but only accepts a periodic match whose
+/// `needle` (the period-length window) contains BOTH a
+/// [`NUMERIC_SENTINEL`] and a non-sentinel token. Used exclusively by
+/// the digit-normalized path so a pure-number column or a pure-prose
+/// repeat does not trip here (those remain the exact detector's job).
+/// The `< min_tokens` guard is the caller's `CONTENT_LOOP_MIN_TOKENS`
+/// check, so this takes only the tail/period rules.
+///
+/// ~20 lines duplicate `detect_token_loop`'s scan: the per-period
+/// needle predicate needs the matched window, which `detect_token_loop`
+/// (`-> bool`) hides. Duplicating is lower-risk than adding a closure
+/// param to a function with 13 existing tests + the exact call site;
+/// the exact detector stays byte-identical (regression-tested).
+fn detect_token_loop_with_period(
+    tokens: &[u32],
+    period_min: usize,
+    period_max: usize,
+    min_repeats: usize,
+    scan_window: usize,
+) -> bool {
+    let n = tokens.len();
+    let tail_start = n.saturating_sub(scan_window);
+    let tail = &tokens[tail_start..];
+    for period in period_min..=period_max {
+        if tail.len() < period * min_repeats {
+            continue;
         }
-        assert!(detect_thinking_token_loop(&tokens));
-    }
-
-    #[test]
-    fn detects_fence_body_with_varying_prefixes() {
-        // The real attractor: fence body (tokens 100..110) is stable
-        // but connective prefixes (Running vs Executing) differ
-        // between iterations. A strict contiguous-period detector
-        // misses this; the substring-repeat detector must catch it.
-        let fence: Vec<u32> = vec![100, 101, 102, 103, 104, 105, 106, 107, 108, 109];
-        let prefixes: [&[u32]; 4] = [
-            &[200, 201],      // "Running:"
-            &[202, 203],      // "Executing:"
-            &[204, 205, 206], // "I need to run:"
-            &[207],           // "Run:"
-        ];
-        let mut tokens: Vec<u32> = (0..30).collect();
-        for pre in prefixes.iter() {
-            tokens.extend(pre.iter());
-            tokens.extend(fence.iter());
+        let needle = &tail[tail.len() - period..];
+        let needle_ok =
+            needle.contains(&NUMERIC_SENTINEL) && needle.iter().any(|&t| t != NUMERIC_SENTINEL);
+        if !needle_ok {
+            continue;
         }
-        assert!(
-            detect_thinking_token_loop(&tokens),
-            "stable fence body across varying prefixes must be detected"
-        );
+        let mut count = 0usize;
+        let mut pos = 0usize;
+        while pos + period <= tail.len() {
+            if &tail[pos..pos + period] == needle {
+                count += 1;
+                if count >= min_repeats {
+                    return true;
+                }
+                pos += period; // non-overlapping
+            } else {
+                pos += 1;
+            }
+        }
     }
+    false
+}
 
-    // ── Content-phase loop detector tests (Claude Code 2026-04-26 fix) ──
-
-    #[test]
-    fn content_loop_detects_sentence_triple_repeat() {
-        // Simulates "I see I've been creating Cargo.toml files but the
-        // user hasn't given me a task. Let me wait for their
-        // instructions." as a 22-token sentence repeating 3× — exactly
-        // the Claude Code 2026-04-26 degeneration. Must fire.
-        let sentence: Vec<u32> = (1000..1022).collect();
-        let mut tokens: Vec<u32> = (0..100).collect(); // prior content
-        tokens.extend(sentence.iter()); // r1
-        tokens.extend(sentence.iter()); // r2
-        tokens.extend(sentence.iter()); // r3
-        assert!(
-            detect_content_token_loop(&tokens),
-            "22-token sentence repeating 3× must trigger content-loop watchdog"
-        );
-    }
-
-    #[test]
-    fn content_loop_rejects_short_responses() {
-        // Below CONTENT_LOOP_MIN_TOKENS — must not fire even on a
-        // visible repeat. The watchdog should give short responses
-        // breathing room.
-        let pat: Vec<u32> = (1..=10).collect();
-        let mut tokens: Vec<u32> = (50..80).collect();
-        tokens.extend(pat.iter());
-        tokens.extend(pat.iter());
-        tokens.extend(pat.iter());
-        assert!(
-            !detect_content_token_loop(&tokens),
-            "responses under {} tokens must not trigger watchdog",
-            CONTENT_LOOP_MIN_TOKENS
-        );
-    }
-
-    #[test]
-    fn content_loop_rejects_legitimate_prose() {
-        // 200 distinct tokens of prose — no repeat. Must not fire.
-        let tokens: Vec<u32> = (0u32..200).collect();
-        assert!(
-            !detect_content_token_loop(&tokens),
-            "legitimate prose with no repeat must not trigger watchdog"
-        );
-    }
-
-    #[test]
-    fn content_loop_rejects_two_repeats() {
-        // Two copies of a 30-token block with prior context — common
-        // in legitimate "the user said X. The user said X again."
-        // exposition. Should NOT fire (need 3+ repeats).
-        let sentence: Vec<u32> = (500..530).collect();
-        let mut tokens: Vec<u32> = (0..100).collect();
-        tokens.extend(sentence.iter());
-        tokens.extend(sentence.iter()); // r2 only
-        assert!(
-            !detect_content_token_loop(&tokens),
-            "two repeats in content must not trigger (need 3)"
-        );
+/// Flip `in_fence` when the just-sampled token `tok` is the model's
+/// atomic ``` code-fence token. `fence_tok == None` (tokenizer has no
+/// single fence token) disables the guard: the fence state can never
+/// become `true`, so F2 keeps its prior behaviour (fail-open, PCND —
+/// no implicit default, the absence is explicit and inert).
+///
+/// Pure parity function — the single source of truth for fence
+/// tracking, called from the decode token-accept path and unit-tested
+/// directly (no ActiveSeq / logits mocking required).
+pub fn toggle_code_fence(in_fence: bool, tok: u32, fence_tok: Option<u32>) -> bool {
+    match fence_tok {
+        Some(f) if f == tok => !in_fence,
+        _ => in_fence,
     }
 }
+
+/// F2 confidence-run accumulator. Given whether the current token is
+/// high-confidence (top-1 softmax ≥ 0.95) and the prior consecutive
+/// run length, return `(new_run, should_arm_force_end)`.
+///
+/// Pure accumulator — runs the SAME inside and outside a ``` fence.
+/// We deliberately keep *detecting* inside code: a model that drafts
+/// an unbounded code block in its reasoning still needs braking. What
+/// must NOT happen is the forced `</think>` landing mid-statement —
+/// that boundary decision is `should_inject_think_end` below, which
+/// defers the injection until the fence closes (a safe boundary).
+///
+/// `CONFIDENCE_RUN_LIMIT` (30) is the historical default; the live limit
+/// is `watchdog_params().confidence_run_length` (MODEL.toml-tunable).
+pub const CONFIDENCE_RUN_LIMIT: u32 = 30;
+
+pub fn confidence_run_step(confident: bool, prev_run: u32) -> (u32, bool) {
+    if confident {
+        let run = prev_run + 1;
+        (run, run >= watchdog_params().confidence_run_length)
+    } else {
+        (0, false)
+    }
+}
+
+/// Boundary gate for the forced `</think>` injection. F2 / the
+/// thinking-budget cap may *arm* `force_end_thinking` while the model
+/// is mid-code-block; injecting `</think>` there would split a
+/// statement (the 2026-05-17 thinkbrake bug) and corrupt the answer.
+/// Defer the injection until the ``` fence closes — code blocks in
+/// reasoning are finite, so the brake then fires cleanly at the
+/// block boundary (right after the closing ```), never mid-statement.
+/// Outside a fence it fires immediately, exactly as before.
+/// In-fence deferral is BOUNDED: if thinking has overrun its budget by
+/// this factor while still in a ``` fence, inject `</think>` anyway.
+/// Without this, a model that writes its entire deliverable as a code
+/// block inside `<think>` keeps `in_code_fence=true` forever, the
+/// budget/F2 brake is deferred indefinitely, and the real answer is
+/// trapped in reasoning_content with an empty content (observed
+/// 2026-05-17: 3D-chess prompt → 3025 reasoning tokens vs 256 budget,
+/// 499-char content stub). 3× budget tolerates a legit in-think code
+/// block; beyond that a hard cut beats dumping the whole answer.
+pub const THINK_DEFER_BUDGET_FACTOR: u32 = 3;
+/// Absolute in-fence deferral ceiling when no thinking budget is set
+/// (F2/THINK_LOOP armed force_end with `thinking_budget=None`).
+pub const THINK_DEFER_ABS_CEILING: u32 = 2048;
+
+pub fn should_inject_think_end(
+    force_end_thinking: bool,
+    in_code_fence: bool,
+    hard_override: bool,
+) -> bool {
+    force_end_thinking && (!in_code_fence || hard_override)
+}
+
+#[cfg(test)]
+#[path = "helpers_tests.rs"]
+mod thinking_loop_tests;

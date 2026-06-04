@@ -37,14 +37,57 @@ pub struct DflashKernels {
     pub dense_gemm: KernelHandle,
     pub rope_qwen3: KernelHandle,
     pub reshape_cache_fp8: KernelHandle,
+    /// BF16 KV cache writeback. Used by Phase 2 `precompute_ctx_kv` and
+    /// the per-layer γ-block `reshape_and_cache` call to populate the
+    /// drafter's BF16 paged cache before each `prefill_attention_paged_dflash`.
+    pub reshape_cache_bf16: KernelHandle,
     pub prefill_attn_dflash_fp8: KernelHandle,
+    /// BF16 paged-attention dispatcher for the DFlash γ-block.
+    /// Calls `inferspark_prefill_paged` with `causal_mask_enabled=0`,
+    /// reading BF16 K/V from the per-layer paged cache pool. Phase 2
+    /// (Option B) drafter attention runs through this kernel; the FP8
+    /// variant above is retained for a future quality-validated FP8 KV
+    /// path. See `ops::prefill_attention_paged_dflash`.
+    pub prefill_attn_dflash_bf16: KernelHandle,
+    /// Phase 5 (CUDA graph) variant of `prefill_attn_dflash_bf16` that reads
+    /// `kv_len` and `q_offset` from device pointers instead of taking them as
+    /// kernel scalar args. Used by the graph-captured forward_block path so a
+    /// single graph instance can be replayed across steps with different
+    /// dynamic values written to the indirect-args buffer pre-launch.
+    /// Resolves to kernel `inferspark_prefill_paged_indirect`.
+    pub prefill_attn_dflash_bf16_indirect: KernelHandle,
     pub silu_mul: KernelHandle,
     pub residual_add: KernelHandle,
     pub argmax: KernelHandle,
     pub batched_embed: KernelHandle,
+    /// Phase 2 Option B: builds `[count]` i32 slot indices on-device
+    /// from a host-provided block_table. Used by propose.rs to populate
+    /// the slot_mapping passed to reshape_and_cache and precompute_ctx_kv.
+    pub fill_slots: KernelHandle,
     /// Non-paged prefill attention (used for the γ-block self-attention
     /// when there's no persistent K/V cache to walk).
     pub prefill_attn: KernelHandle,
+    /// Phase G — BF16 → FP8 E4M3 per-row weight quantization. Used at
+    /// model load time to convert the seven dense-GEMM drafter weights
+    /// (q/k/v/o/gate/up/down) when `ATLAS_DFLASH_DRAFTER_FP8=1`. Never
+    /// on the hot path.
+    pub quantize_bf16_to_fp8: KernelHandle,
+    /// Phase G — Row-scaled BF16 × FP8 → BF16 GEMM. Consumes the
+    /// `Fp8DenseWeight` (FP8 weight + per-row f32 scale) produced at
+    /// load time by `quantize_bf16_to_fp8`. Wraps
+    /// `kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu fp8_gemm_t_row_scaled`.
+    /// Replaces `dense_gemm_bf16` on the seven dense-GEMM call sites in
+    /// `forward_block_layer_pre_attn` / `_post_attn` when
+    /// `self.quant == DflashQuantization::Fp8Weights`.
+    pub fp8_gemm_n128_row_scaled: KernelHandle,
+    /// Phase G — Row-scaled BF16 × FP8 → BF16 GEMV (M=1) for the
+    /// lm_head fall-back. At γ=16 vs vocab=248320 the row-scaled GEMM
+    /// wastes 75% of its M_TILE; the GEMV in a γ-loop is faster.
+    pub dense_gemv_fp8w: KernelHandle,
+    /// Phase G — Small-M (M≤16) row-scaled FP8 GEMM. Drop-in replacement
+    /// for `fp8_gemm_n128_row_scaled` when M=γ=16. Single warp per CTA,
+    /// no wasted M_TILE rows. Used by the lm_head GEMM.
+    pub fp8_gemm_n128_row_scaled_m16: KernelHandle,
 }
 
 /// Per-step scratch buffers for the γ-block forward.
@@ -70,6 +113,34 @@ pub struct DflashScratch {
     /// `[ctx_window, draft_hidden]` BF16 — fc-projected + hidden_norm'd
     /// ctx for the most recent `ctx_window` target positions.
     pub fc_proj: DevicePtr,
+    /// Phase 2 (Option B) scratch for `precompute_ctx_kv`: fused KV
+    /// GEMM output, shape `[max_new_ctx, L * 2 * kv_dim]` BF16.
+    /// `max_new_ctx` = `ctx_window` (worst case: first propose runs
+    /// precompute over the entire prefix).
+    pub fused_kv_out: DevicePtr,
+    /// Phase 2 scratch: i32 slot mapping for the per-layer
+    /// `reshape_and_cache` calls. Sized `[ctx_window]`.
+    pub slot_mapping_dev: DevicePtr,
+    /// Phase 5 (CUDA graph) scratch: 8 bytes (`[u32 kv_len, u32 q_offset]`)
+    /// holding the per-call dynamic values that the indirect paged-attention
+    /// kernel reads at entry. Host writes via `copy_h2d` BEFORE entering the
+    /// captured region so the graph itself sees a stable device pointer.
+    pub option_b_indirect_args_dev: DevicePtr,
+    /// Phase E.2: pinned host buffer (`γ × 4` bytes) for the per-propose
+    /// draft-token D2H copy. Allocated once at construction via
+    /// `gpu.alloc_host_pinned`; the async D2H lands here without touching
+    /// the system pageable allocator each call.
+    ///
+    /// Wrapped in `AtomicPtr` to keep `DflashScratch: Send + Sync` (the
+    /// proposer is stored as `Arc<dyn DraftProposer>` which requires both
+    /// auto-traits). Reads via `Ordering::Relaxed` are safe: the pointer
+    /// itself never changes after construction; we only need atomic
+    /// access for the Send/Sync bound, not for any actual concurrency.
+    pub draft_tokens_host_pinned: std::sync::atomic::AtomicPtr<u8>,
+    /// Phase E.2: CUDA event recorded against the draft-tokens D2H so the
+    /// host can block on completion just before reading the pinned buffer,
+    /// without a full `cuStreamSynchronize`. Created once at construction.
+    pub draft_tokens_event: u64,
     pub logits: DevicePtr,
     pub draft_tokens_dev: DevicePtr,
     /// `[ctx_window + γ]` i32 positions. First ctx_window are
@@ -78,16 +149,26 @@ pub struct DflashScratch {
     pub position_ids: DevicePtr,
 }
 
-/// Drafter-side weight precision. Defaults to BF16 because community
-/// reports an FP8 acceptance-rate collapse on SM12.x; `--mtp-quantization fp8`
-/// is intentionally not honored for the DFlash drafter (warned at build time).
+/// Drafter-side weight precision. Defaults to BF16. **Phase G (2026-05-28)**
+/// adds `Fp8Weights`, gated by env var `ATLAS_DFLASH_DRAFTER_FP8`. The
+/// historical SM12.x acceptance collapse note applied to drafter FP8 KV
+/// cache (different concern — bidirectional attention math); Phase G
+/// targets weight FP8 only, so the risk surface is dynamic-range loss
+/// in MLP intermediate activations, which per-row scales mitigate.
+/// `--mtp-quantization fp8` is still not honored for the DFlash drafter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DflashQuantization {
     Bf16,
+    /// Weight-only FP8: q/k/v/o/gate/up/down BF16 → FP8 E4M3 with per-row
+    /// f32 scales at model load. Activations stay BF16; KV cache stays
+    /// BF16. GEMMs use `fp8_gemm_n128` (BF16 × FP8 → BF16).
+    Fp8Weights,
 }
 
-/// Per-drafter-layer Qwen3-style weights. Phase 1 is BF16-only; FP8/NVFP4
-/// drafter quantization is deferred (see `DflashQuantization`).
+/// Per-drafter-layer Qwen3-style weights. Phase 1 is BF16-only; **Phase G**
+/// (2026-05-28) adds optional FP8 weight fields populated at model load
+/// when `ATLAS_DFLASH_DRAFTER_FP8=1`. The BF16 fields are always present
+/// (Fp8 path falls back to them for any GEMM whose Fp8 weight is None).
 #[allow(dead_code)]
 pub struct DflashLayer {
     // Norms
@@ -104,6 +185,18 @@ pub struct DflashLayer {
     pub gate_proj: DenseWeight,
     pub up_proj: DenseWeight,
     pub down_proj: DenseWeight,
+
+    // Phase G — optional FP8 mirrors of the seven dense-GEMM weights.
+    // Populated at load time when `ATLAS_DFLASH_DRAFTER_FP8=1`, consumed
+    // by forward_block_layer_pre_attn / _post_attn when self.quant ==
+    // DflashQuantization::Fp8Weights. None when BF16 path is active.
+    pub q_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+    pub k_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+    pub v_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+    pub o_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+    pub gate_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+    pub up_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+    pub down_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
 }
 
 /// Per-sequence DFlash drafter state. One paged KV cache per drafter layer
@@ -143,6 +236,40 @@ pub struct DflashProposerState {
     /// Width (bytes) of one `ctx_hidden_acc` slot — `5 * target_hidden * bf16`.
     /// Stored to avoid re-deriving on every append.
     pub ctx_slot_bytes: usize,
+
+    // ─── Phase 2 Option B fields (paged KV cache for ctx) ───────────────
+    /// Device-side block table for the drafter's paged KV cache. Allocated
+    /// once at first propose with enough u32 slots to cover `max_seq_len`
+    /// at block_size=16. Read by `prefill_attention_paged_dflash` to map
+    /// logical block indices to physical pool block indices. Mirrors the
+    /// host-side `block_table` Vec, copied to GPU after each `alloc_block`.
+    pub block_table_dev: Option<DevicePtr>,
+    /// Number of paged-cache slots populated with ctx K/V for this sequence.
+    /// Distinct from `ctx_len` (which counts target_hidden_acc slots). The
+    /// drafter writes one ctx K/V slot per accepted target token; the
+    /// γ-block then attends over `[0..ctx_count_drafter+γ)`. Bumped by γ
+    /// per propose (γ slots written for the noise rows) and trimmed in
+    /// `after_verify` by `(γ - num_accepted)`.
+    pub ctx_count_drafter: usize,
+    /// Cap for `ctx_count_drafter`. Mirrors `block_table.len() * block_size`.
+    pub max_ctx_count_drafter: usize,
+    /// Phase I — incremental ctx precompute watermark. Number of ctx slots
+    /// `[0..ctx_committed)` whose K/V is already valid in the paged cache
+    /// from a prior propose. Each step we only precompute the new tail
+    /// `[ctx_committed..ctx_len)` instead of rebuilding the whole prefix
+    /// (the old O(ctx_len²) waste — see design doc §18). Reset to the
+    /// current `ctx_len` on any rewind so stale slots can't be read.
+    /// `0` forces a full rebuild (first propose, or the debug escape hatch).
+    pub ctx_committed: usize,
+    /// Phase I (v2) — per-slot TRUE absolute decoded position, stamped once
+    /// when a ctx slot is appended and never recomputed. Indexed by ctx
+    /// slot (parallel to `ctx_hidden_acc` slots, len == `ctx_len`). This is
+    /// the vLLM convention: a cached token's rope position is fixed at
+    /// insert time, so committed slots never go stale when later accepts
+    /// shift the live `position`. Replaces the sliding `absolute_start_pos
+    /// + i` formula in `precompute_ctx_kv`. Prefill positions are seeded
+    /// `0..prompt_len` in `update_dflash_ctx_len_after_prefill`.
+    pub ctx_positions: Vec<i32>,
 }
 
 impl ProposerState for DflashProposerState {
@@ -192,6 +319,13 @@ pub struct BlockDiffusionDraftHead {
     /// Target's lm_head GPU pointer. Used for the drafter's per-position
     /// argmax over `[γ, vocab]` logits.
     pub lm_head_shared: DevicePtr,
+    /// Phase G — optional FP8 mirror of the shared lm_head weight,
+    /// `[vocab_size, hidden_size]` FP8 E4M3 + per-row f32 scales.
+    /// Built at model load when `ATLAS_DFLASH_DRAFTER_FP8=1`. Owned by
+    /// the drafter (separate allocation from the shared BF16 ptr) since
+    /// it must not mutate the target model's lm_head. `None` on the
+    /// BF16 path.
+    pub lm_head_shared_fp8: Option<crate::weight_map::Fp8DenseWeight>,
 
     // === Weights from the drafter checkpoint ===
     /// Hidden-norm applied to the projected target context before mixing
@@ -211,6 +345,20 @@ pub struct BlockDiffusionDraftHead {
     pub draft_id_to_target_id: Option<DevicePtr>,
     /// Drafter transformer layers (8 for Qwen3.6-35B-A3B-DFlash).
     pub layers: Vec<DflashLayer>,
+
+    /// Phase 2 (Option B) fused K/V projection across all L drafter layers.
+    /// Shape: `[L × 2 × kv_dim, h]` BF16 — concatenated `[K0; V0; K1; V1; …]`
+    /// (per-layer K then V interleaved). Built once at construction by
+    /// `copy_d2d`-stitching the per-layer `k_proj.weight` and `v_proj.weight`
+    /// pointers from `layers[i]`. Lets `precompute_ctx_kv` derive every
+    /// drafter layer's ctx K/V via a single `dense_gemm` of shape
+    /// `[new_ctx_count, h] × [h, L·2·kv_dim]` instead of 2·L per-layer GEMMs.
+    ///
+    /// `None` until Phase 2 lands the build (stage 1: kernel/dispatcher
+    /// scaffolding; stage 2: this allocation + the precompute_ctx_kv module;
+    /// stage 3: pyref bit-exact diff). Layout (K then V per layer) chosen
+    /// to match vLLM's `_fused_kv_weight` in `qwen3_dflash.py:381-389`.
+    pub fused_kv_weight: Option<DevicePtr>,
 
     /// Paged FP8 KV cache. One cache holding all `num_layers` drafter layers,
     /// laid out the same way the target's KV cache is — block-table-keyed,
@@ -252,13 +400,43 @@ pub struct BlockDiffusionDraftHead {
     /// (degraded quality, ablation only).
     pub ctx_window: usize,
 
+    // === Phase D (CUDA graph capture) → Phase F (piecewise) ===
+    /// Per-subgraph captured handles. `None` until warm-up completes and
+    /// the first capture pass lands; on the capture pass we fill this
+    /// `Vec` with `2 × num_layers + 1` handles laid out as
+    /// `[pre_0, post_0, pre_1, post_1, ..., pre_{N-1}, post_{N-1}, tail]`.
+    /// Slot index = `layer_idx * 2 + half` for the layer halves
+    /// (half = 0 for pre_attn, 1 for post_attn) and `num_layers * 2` for
+    /// the tail (final norm + lm_head + argmax). `GraphHandle(0)` is the
+    /// "empty capture" sentinel and means that slot replays eager.
+    ///
+    /// Phase F.2 (2026-05-28): replaces the single full-region capture
+    /// with one capture per subgraph. Attention is NEVER captured —
+    /// it's the natural sync barrier between captured subgraphs
+    /// (vLLM piecewise convention). See design doc §15.
+    pub propose_graphs: Mutex<Option<Vec<spark_runtime::gpu::GraphHandle>>>,
+    /// When set, all `forward_block` calls run eagerly. Mirrors target-model
+    /// `TransformerModel::suppress_graphs` so external code can disable
+    /// graphs at runtime (e.g. while calibrating FP8 KV).
+    pub suppress_graphs: std::sync::atomic::AtomicBool,
+    /// How many eager warm-up calls we've executed against the graph path.
+    /// Default warmup target is 2 (override via `ATLAS_DFLASH_PROPOSE_WARMUP_N`).
+    /// Two eager passes warm the PTX→SASS cache, ramp GB10 clocks to steady
+    /// state, and bring hot weight tiles into L2 before the capture freezes
+    /// SASS variants the driver picks. Shared across all subgraphs — every
+    /// subgraph captures on the same propose call after the warmup target
+    /// is hit.
+    pub propose_warmup_count: std::sync::atomic::AtomicUsize,
+
     // Quantization mode (BF16 only for Phase 1).
     pub quant: DflashQuantization,
 }
 
 mod forward_block;
 mod forward_block_layer;
+mod forward_block_layer_paged;
 mod from_weights;
+mod precompute_ctx_kv;
 mod propose;
 
 impl DraftProposer for BlockDiffusionDraftHead {
@@ -283,6 +461,14 @@ impl DraftProposer for BlockDiffusionDraftHead {
             ctx_len: 0,
             max_ctx_len: self.max_seq_len,
             ctx_slot_bytes,
+            // Phase 2 Option B: lazily allocated on first propose when
+            // ATLAS_DFLASH_OPTION_B=1. None until then to keep alloc_state
+            // cheap for sequences that never use Option B.
+            block_table_dev: None,
+            ctx_count_drafter: 0,
+            max_ctx_count_drafter: 0,
+            ctx_committed: 0,
+            ctx_positions: Vec::new(),
         }))
     }
 
@@ -326,6 +512,15 @@ impl DraftProposer for BlockDiffusionDraftHead {
         // Phase 1: no real KV trim because `propose()` is a stub. Phase 2
         // adds the rollback that drops `(last_num_drafted - num_accepted)`
         // tokens from each layer's paged cache.
+        //
+        // Phase I invariant: `ctx_committed` is the watermark of ctx slots
+        // already precomputed into the paged cache. It is monotonic only as
+        // long as `ctx_len` is monotonic (today it is — ctx is append-only
+        // and never rewound here). IF a future rollback ever shrinks the
+        // committed ctx (rewinds `ctx_len`), it MUST also reset
+        // `dstate.ctx_committed = dstate.ctx_len` so the next propose
+        // recomputes the rolled-back tail instead of reading stale K/V.
+        // The `.min(ctx_len)` clamp in propose() is the defensive backstop.
         let _ = num_accepted;
         dstate.last_num_drafted = 0;
         Ok(())
