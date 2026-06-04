@@ -22,6 +22,33 @@
 > absorbed path). Nemotron tool-call failure was a steering-prefix loop (MODEL.toml fix applied).
 > SSM pool memory is correct behavior — see per-model analysis and updated Action Items below.
 
+> **Deep-dive verification (2026-06-04)**: Full code path audit against current `spec_ssm` branch.
+>
+> **Priority 1 — Mistral YaRN fix (confirmed correct)**:
+> `yarn.rs` implements the correct YaRN `find_correction_dim` in dimension-index space using
+> `beta_fast=32, beta_slow=1` from `params.json::yarn.beta/alpha`. Linear ramp runs from
+> dim-index `low=7` to `high=15`; pairs above `high` receive full 1/128 interpolation. No
+> secondary bugs remain.
+>
+> **Priority 1 — `cache_skip_mla.rs` (absorbed MLA form, no bugs)**:
+> Single-chunk prefill (`seq_len_start=0`) routes through `cache_skip_mla.rs`, which calls
+> `mla_fused_prefill` (absorbed path, HDIM=320) — NOT `prefill_attn_64_k`. An `ensure!` guard
+> at the call site hard-aborts if the kernel is unloaded. `mla_absorbed.cu` helper kernels all
+> use grid-stride or 1D patterns with no seq_len overflow risk.
+> `--kv-high-precision-layers auto` with `--kv-cache-dtype bf16` short-circuits in
+> `build_layer_kv_dtypes` (returns early with uniform BF16): no FP8/BF16 mixing occurs.
+>
+> **Priority 2 — Nemotron MODEL.toml (confirmed)**:
+> `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` has both `disable_tool_steering = true`
+> and `tool_call_parser = "bare_json"`. Fix is present; re-test is the remaining step.
+>
+> **Priority 3 — SSM pool propagation (confirmed correct)**:
+> `--ssm-cache-slots N` flows: CLI → `factory/build.rs` → `TransformerModel::new` →
+> `SsmSnapshotPool::new(N, ...)`. With N=0, `marconi_enabled=false` → early return, zero
+> allocation. The 1206 MB "SSM state pool" is `SsmStatePool` (pre-allocated active recurrent
+> states for in-flight sequences), sized independently by `--max-batch-size` (default 8).
+> The two pools are fully independent; `--ssm-cache-slots 0` does not affect `SsmStatePool`.
+
 ---
 
 ## 1. Sehyo/Qwen3.5-122B-A10B-NVFP4 — PASS
