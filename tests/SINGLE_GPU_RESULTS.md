@@ -537,3 +537,46 @@ standard Q/K/V models through the shared chunked-prefill tail.
 
 All conclusions from the 2026-06-03 and earlier 2026-06-04 passes remain correct. No new bugs
 found. The paged.rs V buffer fix is already present; no code change required.
+
+---
+
+## Fourth Independent Audit (2026-06-04, this session)
+
+### New latent defect: MLA decode ignores `kv_dtype` when calling paged attention
+
+**File**: `crates/spark-model/src/layers/qwen3_attention/decode/attention_forward_mla.rs:379`
+
+```rust
+ops::paged_decode_attn_bf16(   // ← always BF16, no kv_dtype branch
+    ctx.gpu, self.paged_decode_mla_k, ...
+```
+
+The MLA decode path calls `paged_decode_attn_bf16()` unconditionally, without inspecting
+`self.kv_dtype`. This contrasts with the standard paged decode path in
+`prefill/paged_mla.rs` and `decode/run_paged_decode.rs`, which exhaustively match on
+`self.kv_dtype` and dispatch to `paged_decode_attn_fp8()` / `paged_decode_attn_nvfp4()` / etc.
+
+**Current risk**: Benign — Mistral Small 4 is the only MLA model currently served, and it
+requires BF16 KV cache. The hardcoded call is therefore correct for all deployed configs.
+
+**Future risk**: If a future MLA model uses FP8 KV cache (e.g., a quantized Mistral-Small-4
+variant), this path would silently read BF16 cache slots as if they contained FP8 data,
+producing incorrect attention scores without any error or warning. The failure would be
+indistinguishable from the original long-context gibberish.
+
+**Recommended fix**: Add a `match self.kv_dtype` branch parallel to `run_paged_decode.rs`:
+
+```rust
+match self.kv_dtype {
+    KvCacheDtype::Bf16 => ops::paged_decode_attn_bf16(ctx.gpu, self.paged_decode_mla_k, ...),
+    _ => ops::paged_decode_attn_fp8(ctx.gpu, self.paged_decode_mla_fp8_k, ...),
+}
+```
+
+No code change applied in this session — the defect is benign given the current model set and
+the fix requires a new `paged_decode_mla_fp8_k` kernel handle that does not yet exist.
+Documenting here for the next MLA model onboarding pass.
+
+### P1/P2/P3 status unchanged
+
+All prior conclusions confirmed. No new bugs found beyond the latent defect above.
