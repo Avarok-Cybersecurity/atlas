@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! DeepSeek-V4-Flash prefill path. Reuses low-rank Q projection
-//! (wq_a→norm→wq_b) from the MLA path, but uses direct KV projection
-//! (no absorption) and grouped low-rank O projection (wo_a→wo_b).
+//! DeepSeek-V4-Flash prefill path using mla_fused_prefill kernel.
+//! Isolated to V4-Flash (o_lora_rank > 0); no other models reach this code.
 
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
@@ -13,7 +12,6 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 
 impl Qwen3AttentionLayer {
-    /// Run the DeepSeek-V4-Flash prefill chain. Returns the output pointer.
     pub(super) fn prefill_attention_cache_skip_v4(
         &self,
         kv_cache: &mut PagedKvCache,
@@ -22,31 +20,33 @@ impl Qwen3AttentionLayer {
     ) -> Result<DevicePtr> {
         let super::cache_skip_mla::CacheSkipMlaArgs {
             normed,
-            num_tokens,
+            num_tokens: _,
             n,
             h,
             nq,
-            nkv,
-            hd,
+            nkv: _,
+            hd: _,
             kv_dim: _,
             eps,
-            bf16,
+            bf16: _,
             stream,
         } = *args;
-        let mla = self
-            .mla
-            .as_ref()
-            .expect("prefill_attention_cache_skip_v4 called without MLA config");
+        let mla = self.mla.as_ref().expect("V4-Flash prefill requires MLA");
         let meta = ctx
             .attn_metadata
             .expect("V4-Flash prefill requires metadata");
 
+        let nope = mla.nope as u32;
+        let rope = mla.rope as u32;
+        let kv_lora = mla.kv_lora_rank as u32;
+        let v_dim = mla.v_dim as u32;
         let q_lora = mla.q_lora_rank as u32;
-        let mla_rope = mla.rope as u32;
         let o_lora = mla.o_lora_rank as u32;
+        let mla_cache_dim = kv_lora + rope;
+        let hd_mla = nope + rope;
         let use_tc = self.dense_gemm_tc_k.0 != 0;
 
-        // ── 1. Q: latent → norm → expand ──
+        // ── 1. Q latent → norm → expand ──
         let q_latent = ctx.buffers.ssm_ba();
         if use_tc {
             ops::dense_gemm_tc(
@@ -84,167 +84,174 @@ impl Qwen3AttentionLayer {
             eps,
             stream,
         )?;
-        let qg_out = ctx.buffers.qkv_output();
+        let q_full = ctx.buffers.qkv_output();
         ops::dense_gemm(
             ctx.gpu,
             self.dense_gemm_k,
             q_latent,
             &mla.wq_b,
-            qg_out,
+            q_full,
             n,
-            nq * hd,
+            nq * hd_mla,
             q_lora,
             stream,
         )?;
 
-        // ── 2. Direct KV projection ──
-        let k_contiguous = ctx.buffers.ssm_qkvz();
-        let v_contiguous = k_contiguous.offset(num_tokens * (nkv * hd) as usize * bf16);
-        ops::dense_gemm(
+        // ── 2. Extract Q_rope ──
+        let q_rope_tmp = ctx.buffers.ssm_conv_out_f32();
+        ops::mla_q_rope_extract_batched(
             ctx.gpu,
-            self.dense_gemm_k,
-            normed,
-            &mla.wkv_a,
-            k_contiguous,
+            self.mla_q_rope_extract_batched_k,
+            q_full,
+            q_rope_tmp,
             n,
-            nkv * hd,
-            h,
-            stream,
-        )?;
-        // K=V: copy K to V
-        ctx.gpu.copy_d2d_async(
-            k_contiguous,
-            v_contiguous,
-            (num_tokens * (nkv * hd) as usize) * bf16,
+            nq,
+            hd_mla,
+            nope,
+            rope,
+            nq * hd_mla,
             stream,
         )?;
 
-        // ── 3. RoPE ──
+        // ── 3. RoPE on Q_rope and K_rope ──
         ops::rope_yarn(
             ctx.gpu,
             self.rope_yarn_k,
-            qg_out,
-            k_contiguous,
+            q_rope_tmp,
+            q_rope_tmp,
             meta.positions,
             n,
             nq,
-            nkv,
-            hd,
-            mla_rope,
+            1,
+            rope,
+            rope,
             mla.yarn_inv_freq,
             ctx.config.rope_theta as f32,
             stream,
         )?;
 
-        // ── 4. Write K/V to paged cache ──
-        let write_start = 0usize;
-        let write_count = num_tokens;
-        if write_count > 0 {
-            let k_offset = write_start * (nkv * hd) as usize * bf16;
-            let v_offset = write_start * (nkv * hd) as usize * bf16;
-            let slot_offset = write_start * 8;
-            self.write_kv_cache(
-                ctx.gpu,
-                k_contiguous.offset(k_offset),
-                v_contiguous.offset(v_offset),
-                kv_cache,
-                meta.slot.offset(slot_offset),
-                write_count as u32,
-                nkv,
-                hd,
-                kv_cache.block_size() as u32,
-                nkv * hd,
-                nkv * hd,
-                stream,
-                ctx.graph_capture,
-            )?;
-        }
+        let k_rope_buf = ctx.buffers.ssm_ba();
+        ops::dense_gemm(
+            ctx.gpu,
+            self.dense_gemm_k,
+            normed,
+            &mla.wkv_a_rope,
+            k_rope_buf,
+            n,
+            rope,
+            h,
+            stream,
+        )?;
+        ops::rope_yarn(
+            ctx.gpu,
+            self.rope_yarn_k,
+            q_rope_tmp,
+            k_rope_buf,
+            meta.positions,
+            n,
+            nq,
+            1,
+            rope,
+            rope,
+            mla.yarn_inv_freq,
+            ctx.config.rope_theta as f32,
+            stream,
+        )?;
 
-        // ── 5. Flash Attention ──
-        let attn_out = ctx.buffers.attn_output();
-        let inv_sqrt_d = self.effective_attn_scale(hd);
-        if hd > 256 && self.prefill_attn_512_k.0 != 0 {
-            ops::prefill_attention(
-                ctx.gpu,
-                self.prefill_attn_512_k,
-                qg_out,
-                k_contiguous,
-                v_contiguous,
-                attn_out,
-                n,
-                1,
-                nq,
-                nkv,
-                hd,
-                inv_sqrt_d,
-                true,
-                self.sliding_window.unwrap_or(0),
-                stream,
-            )
-            .map_err(|e| anyhow::anyhow!("V4-Flash flash_attn_512: {e}"))?;
-        } else if hd > 256 {
-            // No contiguous hd=512 kernel (inferspark_prefill_512 is not built
-            // for this target).  K/V were just written to the paged cache,
-            // so read them back via the paged 512 kernel.
-            if self.prefill_attn_paged_512_k.0 == 0 {
-                anyhow::bail!(
-                    "V4-Flash HDIM=512 prefill needs prefill_attn_paged_512_k, \
-                     but kernel is not loaded. Rebuild required."
-                );
-            }
-            ops::prefill_attention_paged_512(
-                ctx.gpu,
-                self.prefill_attn_paged_512_k,
-                qg_out,
-                kv_cache.k_pool_ptr(self.attn_layer_idx),
-                kv_cache.v_pool_ptr(self.attn_layer_idx),
-                attn_out,
-                meta.block_table,
-                n,
-                n, // kv_len == num_tokens for first chunk
-                0, // q_offset == 0 for first chunk
-                nq,
-                nkv,
-                hd,
-                kv_cache.block_size() as u32,
-                self.sliding_window.unwrap_or(0),
-                inv_sqrt_d,
-                stream,
-            )
-            .map_err(|e| anyhow::anyhow!("V4-Flash flash_attn_paged_512: {e}"))?;
-        } else {
-            ops::prefill_attention(
-                ctx.gpu,
-                self.prefill_attn_k,
-                qg_out,
-                k_contiguous,
-                v_contiguous,
-                attn_out,
-                n,
-                1,
-                nq,
-                nkv,
-                hd,
-                inv_sqrt_d,
-                true,
-                self.sliding_window.unwrap_or(0),
-                stream,
-            )
-            .map_err(|e| anyhow::anyhow!("V4-Flash flash_attn: {e}"))?;
-        }
+        // ── 4. KV latent ──
+        let kv_latent = ctx.buffers.expert_gate_out();
+        ops::dense_gemm(
+            ctx.gpu,
+            self.dense_gemm_k,
+            normed,
+            &mla.wkv_a,
+            kv_latent,
+            n,
+            kv_lora,
+            h,
+            stream,
+        )?;
+        ops::rms_norm(
+            ctx.gpu,
+            self.rms_norm_k,
+            kv_latent,
+            &mla.kv_a_norm,
+            kv_latent,
+            n,
+            kv_lora,
+            eps,
+            stream,
+        )?;
 
-        // ── 6. Grouped low-rank O projection (wo_a → wo_b) ──
+        // ── 5. Fused MLA prefill ──
+        let v_out = ctx.buffers.attn_output();
+        ops::mla_fused_prefill(
+            ctx.gpu,
+            self.mla_fused_prefill_k,
+            q_full,
+            q_rope_tmp,
+            kv_latent,
+            k_rope_buf,
+            mla.w_uk_t.weight,
+            mla.w_uv.weight,
+            v_out,
+            DevicePtr::NULL,
+            DevicePtr::NULL,
+            n,
+            nq,
+            nope,
+            rope,
+            kv_lora,
+            v_dim,
+            hd_mla,
+            1.0f32 / (mla_cache_dim as f32).sqrt(),
+            stream,
+        )?;
+
+        // ── 6. Write KV cache ──
+        let k_cache = ctx.buffers.expert_up_out();
+        let v_cache = ctx.buffers.expert_down_out();
+        ops::mla_cache_assemble_batched(
+            ctx.gpu,
+            self.mla_cache_assemble_batched_k,
+            kv_latent,
+            k_rope_buf,
+            k_cache,
+            v_cache,
+            n,
+            kv_lora,
+            rope,
+            mla_cache_dim,
+            stream,
+        )?;
+        self.write_kv_cache(
+            ctx.gpu,
+            k_cache,
+            v_cache,
+            kv_cache,
+            meta.slot,
+            n,
+            1,
+            mla_cache_dim,
+            kv_cache.block_size() as u32,
+            mla_cache_dim,
+            mla_cache_dim,
+            stream,
+            ctx.graph_capture,
+        )?;
+
+        // ── 7. Grouped low-rank O projection ──
         let o_latent = ctx.buffers.norm_output();
         let o_out = ctx.buffers.qkv_output();
         ops::dense_gemm(
             ctx.gpu,
             self.dense_gemm_k,
-            attn_out,
+            v_out,
             &mla.wo_a,
             o_latent,
             n,
             o_lora,
-            nq * hd,
+            nq * v_dim,
             stream,
         )?;
         ops::dense_gemm(
