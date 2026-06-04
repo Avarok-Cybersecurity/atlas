@@ -148,8 +148,11 @@ pub fn step_verify_dflash(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], 
         return;
     }
 
-    // Save the latest hidden for the NEXT propose() call. Mirrors the
-    // K=2 verify path's `save_hidden_for_mtp(1, 0)` after accept.
+    // DFlash hidden is captured per-layer inside the verify graph
+    // (verify_d.rs try_dflash_capture at position k-1), mirroring verify_b.rs.
+    // No post-loop save needed; calling save_dflash_hidden_for_propose here
+    // would overwrite the correct per-layer intermediates with a repeated
+    // final-layer hidden, collapsing all 5 slots to the same value.
     let bonus_token_idx = total_accepted.saturating_sub(1);
     if let Err(e) = model.save_hidden_for_mtp(bonus_token_idx, 0) {
         tracing::error!("save_hidden_for_mtp (dflash): {e:#}");

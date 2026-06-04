@@ -347,6 +347,11 @@ pub trait Model: Send + Sync {
     /// overwrites shared buffers including `norm_output`.
     fn save_hidden_for_mtp(&self, token_idx: usize, stream: u64) -> Result<()>;
 
+    /// Capture `hidden_states[token_idx]` from every DFlash capture layer
+    /// into `dflash_hidden_save`. Called after gamma verify Phase 3 D2H
+    /// sync (bonus position known). No-op when DFlash is disabled.
+    fn save_dflash_hidden_for_propose(&self, token_idx: usize, stream: u64) -> Result<()>;
+
     /// Run the MTP proposer for one draft token off the saved hidden state.
     /// `None` when no proposer is wired.
     fn run_mtp_propose(

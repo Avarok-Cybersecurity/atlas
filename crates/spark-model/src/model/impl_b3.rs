@@ -278,4 +278,19 @@ impl TransformerModel {
         self.gpu.copy_d2d_async(src, dst_slot, h * bf16, stream)?;
         Ok(())
     }
+
+    /// Capture `hidden_states[token_idx]` for every DFlash capture layer into
+    /// `dflash_hidden_save`. Called from `verify_dflash_step` after the Phase 3
+    /// D2H sync, so `token_idx` is the confirmed bonus position. Runs outside
+    /// the CUDA graph so the correct accept-prefix position can be used.
+    pub(super) fn save_dflash_hidden_dispatch(
+        &self,
+        token_idx: usize,
+        stream: u64,
+    ) -> Result<()> {
+        for &layer_idx in &self.dflash_capture_layers {
+            self.try_dflash_capture(layer_idx, token_idx, stream)?;
+        }
+        Ok(())
+    }
 }
