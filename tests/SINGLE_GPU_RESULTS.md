@@ -509,3 +509,31 @@ Additional detail: `cli.rs:278` sets `default_value_t = 16` for `ssm_cache_slots
 slots by default). The test launch commands pass `--ssm-cache-slots 0` explicitly, which
 correctly zeros out `SsmSnapshotPool`. The 1206 MB `SsmStatePool` is orthogonal — sized by
 `--max-batch-size` (default 8). All propagation confirmed correct.
+
+---
+
+## Third Independent Audit (2026-06-04, this session)
+
+### Additional finding: V buffer stale-pointer in non-MLA chunked prefill (already fixed)
+
+`crates/spark-model/src/layers/qwen3_attention/prefill/paged.rs:86-94` contains a fix
+not previously documented in this file (prior audit passes focused on `paged_mla.rs` and
+`cache_skip_mla.rs` only). The code comment at lines 87-91 reads:
+
+> `v_contiguous` must point at where the V GEMM actually wrote (`k_contiguous + kv_dim*n`).
+> The previous binding to `attn_output()` was a stale-buffer bug that corrupted V on chunk-1+
+> prefill for every model that took this path (root cause of long-context gibberish at 8k+ contexts).
+
+**Scope**: This path is gated by `if self.mla.is_none()` (line 80) and is reached only by
+**non-MLA** models (Qwen3.5-122B and similar). MLA models (Mistral Small 4) take an early
+`return` at line 76 via `prefill_attention_paged_mla` and never reach lines 86-94. The fix
+was already in place at test time (Qwen3.5-122B PASSED at 26K context).
+
+**Why not visible in earlier passes**: prior investigations started from `paged_mla.rs` and
+`cache_skip_mla.rs` (the MLA-specific entry points) and did not follow the code path for
+standard Q/K/V models through the shared chunked-prefill tail.
+
+### P1/P2/P3 status unchanged
+
+All conclusions from the 2026-06-03 and earlier 2026-06-04 passes remain correct. No new bugs
+found. The paged.rs V buffer fix is already present; no code change required.
