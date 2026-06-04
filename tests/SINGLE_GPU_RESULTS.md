@@ -21,33 +21,10 @@
 > past valid head bounds for hd=128 (fixed via `-DHDIM=128` model kernel + `mla_fused_prefill`
 > absorbed path). Nemotron tool-call failure was a steering-prefix loop (MODEL.toml fix applied).
 > SSM pool memory is correct behavior — see per-model analysis and updated Action Items below.
-
-> **Deep-dive verification (2026-06-04)**: Full code path audit against current `spec_ssm` branch.
 >
-> **Priority 1 — Mistral YaRN fix (confirmed correct)**:
-> `yarn.rs` implements the correct YaRN `find_correction_dim` in dimension-index space using
-> `beta_fast=32, beta_slow=1` from `params.json::yarn.beta/alpha`. Linear ramp runs from
-> dim-index `low=7` to `high=15`; pairs above `high` receive full 1/128 interpolation. No
-> secondary bugs remain.
->
-> **Priority 1 — `cache_skip_mla.rs` (absorbed MLA form, no bugs)**:
-> Single-chunk prefill (`seq_len_start=0`) routes through `cache_skip_mla.rs`, which calls
-> `mla_fused_prefill` (absorbed path, HDIM=320) — NOT `prefill_attn_64_k`. An `ensure!` guard
-> at the call site hard-aborts if the kernel is unloaded. `mla_absorbed.cu` helper kernels all
-> use grid-stride or 1D patterns with no seq_len overflow risk.
-> `--kv-high-precision-layers auto` with `--kv-cache-dtype bf16` short-circuits in
-> `build_layer_kv_dtypes` (returns early with uniform BF16): no FP8/BF16 mixing occurs.
->
-> **Priority 2 — Nemotron MODEL.toml (confirmed)**:
-> `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` has both `disable_tool_steering = true`
-> and `tool_call_parser = "bare_json"`. Fix is present; re-test is the remaining step.
->
-> **Priority 3 — SSM pool propagation (confirmed correct)**:
-> `--ssm-cache-slots N` flows: CLI → `factory/build.rs` → `TransformerModel::new` →
-> `SsmSnapshotPool::new(N, ...)`. With N=0, `marconi_enabled=false` → early return, zero
-> allocation. The 1206 MB "SSM state pool" is `SsmStatePool` (pre-allocated active recurrent
-> states for in-flight sequences), sized independently by `--max-batch-size` (default 8).
-> The two pools are fully independent; `--ssm-cache-slots 0` does not affect `SsmStatePool`.
+> **Code audit (2026-06-04)**: Re-verified all spec_ssm fixes against current branch. Both Mistral
+> bugs confirmed fixed (yarn.rs + HDIM fix). Nemotron MODEL.toml confirmed. SSM pool propagation
+> confirmed correct. Full dispatch-chain details added to Action Items below.
 
 ---
 
@@ -261,14 +238,30 @@ sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
    model-specific `prefill_attn_128_k`; the prefix-cache hit path (`cache_skip_mla.rs`) uses
    `mla_fused_prefill` (absorbed path, HDIM=320) instead.
 
+   **2026-06-04 audit**: Both fixes confirmed. `yarn.rs` computes correct `low=7, high=15` for
+   Mistral params. `cache_skip_mla.rs` has a mandatory `anyhow::ensure!(mla_fused_prefill_k.0 != 0)`
+   guard and correctly dispatches to the absorbed kernel. KERNEL.toml `-DHDIM=128` confirmed.
+   BF16 KV write strides are correct (reshape_and_cache_flash computes its own stride from the
+   passed `num_kv_heads * head_dim`; MLA config sets `num_kv_heads=1, head_dim=320`). ✓
+
    **Re-test needed**: Run the same long-context suite against a fresh build from current spec_ssm.
 
-2. **[P1] Nemotron tool calling — FIXED**: `disable_tool_steering = true` +
-   `tool_call_parser = "bare_json"` added to `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`.
-   Model generates native top-level JSON tool calls without the steering-prefix loop.
-   **Re-test needed**: Re-run the 2/2 tool call suite with updated MODEL.toml.
+2. **[P1] Nemotron tool calling — FIXED, CONFIRMED**: `disable_tool_steering = true` +
+   `tool_call_parser = "bare_json"` confirmed present in
+   `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`. Model generates native top-level JSON
+   tool calls without the steering-prefix loop.
+   **2026-06-04 audit**: Full dispatch chain verified:
+   - `nemotron_h.jinja` gates `<tool_call>\n` prefix on `disable_tool_steering`: when true the
+     branch is skipped, model opens `<tool_call>` naturally after `</think>`. ✓
+   - `bare_json` parser generates a JSON-schema system prompt (no `<tool_call>` wrapper) and
+     compiles an XGrammar JSON-constrained grammar. ✓
+   - `api/chat/mod.rs` prepends the tool system prompt to the existing system message without
+     conflicting with the jinja template's tool instructions. ✓
+   - `api/chat/template.rs` correctly reads `state.behavior.disable_tool_steering` and passes
+     it to `apply_chat_template_openai`. ✓
+   **Re-test status**: Fix confirmed in codebase. Re-run 2/2 tool call suite to close loop.
 
-3. **[P2] 122B SSM pool memory — DOCUMENTED (no code change needed)**:
+3. **[P2] 122B SSM pool memory — DOCUMENTED, CONFIRMED (no code change needed)**:
    `--ssm-cache-slots 0` controls `SsmSnapshotPool` (prefix-cache SSM state snapshots).
    The 1206 MB "SSM state pool" is `SsmStatePool` — pre-allocated GPU memory for the active
    SSM recurrent states of all in-flight sequences. It is sized by `--max-batch-size` (default 8):
@@ -276,6 +269,15 @@ sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
    **To reduce**: pass `--max-batch-size 1` for single-user serving (reduces to ~151 MB).
    The two allocations are independent; `--ssm-cache-slots 0 --max-batch-size 1` gives
    minimum SSM footprint (~151 MB total), recovering ~1055 MB for the KV cache.
+   **2026-06-04 audit**: CLI propagation traced end-to-end:
+   - `cli.rs`: `ssm_cache_slots: usize` (default 16) accepts 0 without special handling. ✓
+   - `model/impl_a1.rs`: `SsmStatePool::new(&config, max_batch_size, ...)` sizes the active-state
+     pool from `max_batch_size`, completely independent of `ssm_cache_slots`. ✓
+   - `SsmSnapshotPool::new(ssm_cache_slots=0, ...)`: returns early with empty allocation for
+     the Marconi prefix-cache region. Decode-rollback ring (a few slots per batch member) is
+     still allocated for SSM models but is tiny (<1 MB). ✓
+   - The 1206 MB at `--ssm-cache-slots 0` is therefore `SsmStatePool` not `SsmSnapshotPool`.
+     This is not a bug; it is required for correct SSM recurrent-state management.
 
 4. **[P2] Nemotron long context — ARCHITECTURAL LIMIT**: SSM state saturation at >8K tokens
    is inherent to Mamba-2 recurrent architectures (fixed-size hidden state). No fix possible.
