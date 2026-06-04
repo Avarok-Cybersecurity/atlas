@@ -163,29 +163,75 @@ impl Qwen3AttentionLayer {
         // ── 5. Flash Attention ──
         let attn_out = ctx.buffers.attn_output();
         let inv_sqrt_d = self.effective_attn_scale(hd);
-        let prefill_k = if hd > 256 && self.prefill_attn_512_k.0 != 0 {
-            self.prefill_attn_512_k
+        if hd > 256 && self.prefill_attn_512_k.0 != 0 {
+            ops::prefill_attention(
+                ctx.gpu,
+                self.prefill_attn_512_k,
+                qg_out,
+                k_contiguous,
+                v_contiguous,
+                attn_out,
+                n,
+                1,
+                nq,
+                nkv,
+                hd,
+                inv_sqrt_d,
+                true,
+                self.sliding_window.unwrap_or(0),
+                stream,
+            )
+            .map_err(|e| anyhow::anyhow!("V4-Flash flash_attn_512: {e}"))?;
+        } else if hd > 256 {
+            // No contiguous hd=512 kernel (inferspark_prefill_512 is not built
+            // for this target).  K/V were just written to the paged cache,
+            // so read them back via the paged 512 kernel.
+            if self.prefill_attn_paged_512_k.0 == 0 {
+                anyhow::bail!(
+                    "V4-Flash HDIM=512 prefill needs prefill_attn_paged_512_k, \
+                     but kernel is not loaded. Rebuild required."
+                );
+            }
+            ops::prefill_attention_paged_512(
+                ctx.gpu,
+                self.prefill_attn_paged_512_k,
+                qg_out,
+                kv_cache.k_pool_ptr(self.attn_layer_idx),
+                kv_cache.v_pool_ptr(self.attn_layer_idx),
+                attn_out,
+                meta.block_table,
+                n,
+                n, // kv_len == num_tokens for first chunk
+                0, // q_offset == 0 for first chunk
+                nq,
+                nkv,
+                hd,
+                kv_cache.block_size() as u32,
+                self.sliding_window.unwrap_or(0),
+                inv_sqrt_d,
+                stream,
+            )
+            .map_err(|e| anyhow::anyhow!("V4-Flash flash_attn_paged_512: {e}"))?;
         } else {
-            self.prefill_attn_k
-        };
-        ops::prefill_attention(
-            ctx.gpu,
-            prefill_k,
-            qg_out,
-            k_contiguous,
-            v_contiguous,
-            attn_out,
-            n,
-            1,
-            nq,
-            nkv,
-            hd,
-            inv_sqrt_d,
-            true,
-            self.sliding_window.unwrap_or(0),
-            stream,
-        )
-        .map_err(|e| anyhow::anyhow!("V4-Flash flash_attn: {e}"))?;
+            ops::prefill_attention(
+                ctx.gpu,
+                self.prefill_attn_k,
+                qg_out,
+                k_contiguous,
+                v_contiguous,
+                attn_out,
+                n,
+                1,
+                nq,
+                nkv,
+                hd,
+                inv_sqrt_d,
+                true,
+                self.sliding_window.unwrap_or(0),
+                stream,
+            )
+            .map_err(|e| anyhow::anyhow!("V4-Flash flash_attn: {e}"))?;
+        }
 
         // ── 6. Grouped low-rank O projection (wo_a → wo_b) ──
         let o_latent = ctx.buffers.norm_output();
