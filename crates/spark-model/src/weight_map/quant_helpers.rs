@@ -286,6 +286,7 @@ pub(crate) fn dequant_fp8_blockscaled_to_bf16(
 /// Used by RedHatAI re-quant checkpoints where only `.weight_scale`
 /// (single scalar or per-row 1-D) is present, not the 2-D
 /// `.weight_scale_inv` block scales.
+#[allow(dead_code)]
 pub(crate) fn dequant_fp8_per_tensor_to_bf16(
     store: &WeightStore,
     prefix: &str,
