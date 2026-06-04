@@ -163,9 +163,14 @@ impl Qwen3AttentionLayer {
         // ── 5. Flash Attention ──
         let attn_out = ctx.buffers.attn_output();
         let inv_sqrt_d = self.effective_attn_scale(hd);
-        ops::prefill_attention_64(
+        let prefill_k = if hd > 256 && self.prefill_attn_512_k.0 != 0 {
+            self.prefill_attn_512_k
+        } else {
+            self.prefill_attn_k
+        };
+        ops::prefill_attention(
             ctx.gpu,
-            self.prefill_attn_64_k,
+            prefill_k,
             qg_out,
             k_contiguous,
             v_contiguous,
@@ -177,10 +182,10 @@ impl Qwen3AttentionLayer {
             hd,
             inv_sqrt_d,
             true,
-            0,
+            self.sliding_window.unwrap_or(0),
             stream,
         )
-        .map_err(|e| anyhow::anyhow!("V4-Flash flash_attn_64: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("V4-Flash flash_attn: {e}"))?;
 
         // ── 6. Grouped low-rank O projection (wo_a → wo_b) ──
         let o_latent = ctx.buffers.norm_output();
