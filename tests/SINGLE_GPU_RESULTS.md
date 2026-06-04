@@ -403,3 +403,23 @@ pre-emptive fix.
   broken any prefix-cache-hit request where seq_len ≥ 65536 (CUDA max gridDim.y = 65535).
 - **P2 (Nemotron tool calling)**: Fixed in `MODEL.toml`. Native bare-JSON tool calls work.
 - **P3 (SSM cache slots)**: Correct behavior documented. No code change needed.
+
+---
+
+## Independent Audit (2026-06-04)
+
+Verified the 2026-06-03 findings above by independently reading each referenced file on the
+`spec_ssm` branch HEAD (`7c656d5`). All conclusions confirmed accurate.
+
+Key confirmation points:
+- `yarn.rs`: correct `find_correction_dim` formula; `low≈7, high≈15` for Mistral params.
+- `paged_mla.rs` (line 274–284): `prefill_attn_128_k` selected for `hd <= 128`; explicit
+  `ensure!` guard rejects HDIM=256 kernel. Scale = 1/sqrt(mla_cache_dim=320) on absorbed path.
+- `cache_skip_mla.rs` (line 268–296): `mla_fused_prefill_k` is the live call site, not dead
+  code. `ensure!` aborts if kernel is unloaded.
+- `mla_fused_prefill.cu` (line 46–48): flat grid `blockIdx.x / seq_len` confirms gridDim.y
+  overflow fix is in place.
+- `MODEL.toml` (nemotron): `disable_tool_steering = true` at line 58; `tool_call_parser =
+  "bare_json"` at line 67.
+- `impl_a1.rs`: `SsmStatePool` takes `max_batch_size`; `SsmSnapshotPool` takes `ssm_cache_slots`.
+  Propagation is correct.
