@@ -11,11 +11,9 @@ use super::{LayerType, ModelConfig};
 impl ModelConfig {
     /// GQA ratio: number of Q heads per KV head.
     pub fn gqa_ratio(&self) -> usize {
-        if self.num_key_value_heads == 0 {
-            1
-        } else {
-            self.num_attention_heads / self.num_key_value_heads
-        }
+        self.num_attention_heads
+            .checked_div(self.num_key_value_heads)
+            .unwrap_or(1)
     }
 
     /// Layer type for a given layer index.
@@ -42,10 +40,10 @@ impl ModelConfig {
                 .iter()
                 .filter(|t| **t == LayerType::FullAttention)
                 .count()
-        } else if self.full_attention_interval == 0 {
-            self.num_hidden_layers
         } else {
-            self.num_hidden_layers / self.full_attention_interval
+            self.num_hidden_layers
+                .checked_div(self.full_attention_interval)
+                .unwrap_or(self.num_hidden_layers)
         }
     }
 

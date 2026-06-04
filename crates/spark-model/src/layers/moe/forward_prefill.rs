@@ -123,6 +123,7 @@ impl MoeLayer {
 
         // Gemma-4 router pre-norm (no-op for other models).
         let router_in = self.router_input(input, n, h, ctx, stream)?;
+        super::dump::dump_gate_input(ctx.gpu, stream, router_in, n, h)?;
         // 1. Gate GEMM: [N, H] × [H, num_experts] → [N, num_experts]
         let gate_logits = ctx.buffers.gate_logits();
         if let Some(fp8) = self.gate_fp8 {
@@ -162,6 +163,7 @@ impl MoeLayer {
                 stream,
             )?;
         }
+        super::dump::dump_gate_logits(ctx.gpu, stream, gate_logits, n, num_experts)?;
         prof_step!("gate_gemm");
 
         // 2. Batched topK dispatch. DeepSeek-V3 / MiniMax-M2 use sigmoid
@@ -200,6 +202,7 @@ impl MoeLayer {
                 stream,
             )?;
         }
+        super::dump::dump_expert_ids(ctx.gpu, stream, indices_dev, weights_dev, n, top_k)?;
         prof_step!("topk");
 
         // 3. Sort tokens by expert → L2-optimized ordering.
@@ -249,20 +252,46 @@ impl MoeLayer {
         };
         prof_step!("pre_expert_norm");
 
-        // 4. Upper-bound max_m_tiles — avoids D2H sync + pipeline stall.
-        // Safety factor 2x: covers 99.9999% of real routing distributions (2x avg >> 3σ of
-        // Poisson(avg)). Factor 4x was over-cautious: for avg=30 it gave max_m_tiles=2
-        // (launching 4096 blocks, 21 waves) when ceil(30/64)=1 (2048 blocks, 10.7 waves).
+        // 4. Upper-bound max_m_tiles — sized for the absolute worst case
+        // (one expert eats all tokens) so the kernel never silently truncates
+        // a heavily-loaded expert's rows. The previous `avg*2` heuristic was
+        // wrong: real learned MoE routers concentrate experts ~7× the average
+        // (observed on Qwen3.6-35B-A3B at chunk=4097: avg=129, max=929 for
+        // expert 227 → kernel covered 320 rows but needed 929 → 609 rows
+        // silently dropped → systematic ~-14% under-count in routed-MoE
+        // output). The Poisson(avg) assumption in the old comment doesn't
+        // hold for trained routers — they're sparse + concentrated.
+        //
+        // Cost: extra empty tiles for under-utilized experts; each early-
+        // exits on `m_idx >= M_expert` so overhead is low vs the correctness
+        // bug.
+        //
+        // Mirrors the FP8 path (see forward_prefill_fp8.rs).
         let avg_per_expert = (num_tokens * top_k as usize).div_ceil(ne);
-        let max_m_tiles = (avg_per_expert * 2).div_ceil(64).max(1) as u32;
+        let max_m_tiles = (num_tokens * top_k as usize).div_ceil(64).max(1) as u32;
+        super::dump::dump_expert_load(
+            ctx.gpu,
+            stream,
+            expert_offsets,
+            ne,
+            num_tokens,
+            avg_per_expert,
+            max_m_tiles,
+        );
         prof_step!("grid_setup");
 
         // 5. Grouped gate+up GEMM — cp.async pipelined FP8-MMA K64 (transposed).
         let expert_gate_out = ctx.buffers.expert_gate_out();
         let expert_up_out = ctx.buffers.expert_up_out();
-        // EP: zero expert buffers so remote-expert positions (NULL ptr → kernel skip)
-        // don't carry stale data from previous requests into the weighted sum.
-        if ctx.comm.is_some() {
+        // Zero expert buffers unconditionally before the grouped GEMMs.
+        // Even with worst-case `max_m_tiles` (above), some kernel paths only
+        // write rows where `m_idx < M_expert` per expert — rows past the
+        // expert's actual count keep stale data from the previous prefill
+        // (or uninit memory on first prefill), which then propagates
+        // through unpermute_reduce as spurious contributions. Previously
+        // guarded by `ctx.comm.is_some()` (EP only), now unconditional.
+        // Mirrors the FP8 path fix (commit 34626d3).
+        {
             let gate_bytes = total_expanded as usize * inter as usize * 2;
             let up_bytes = gate_bytes;
             let down_bytes = total_expanded as usize * h as usize * 2;
@@ -436,6 +465,16 @@ impl MoeLayer {
             if use_overlap {
                 ctx.gpu.stream_wait_event(stream, self.event_b)?;
             }
+            super::dump::dump_routed_only(ctx.gpu, stream, output, n, h)?;
+            super::dump::dump_shared_out(ctx.gpu, stream, shared_down_out, n, h)?;
+            super::dump::dump_shared_gate(
+                ctx.gpu,
+                stream,
+                input,
+                self.weights.shared_expert_gate.weight,
+                n,
+                h,
+            )?;
             ops::moe_batched_blend(
                 ctx.gpu,
                 self.moe_batched_blend,
@@ -448,6 +487,7 @@ impl MoeLayer {
                 stream,
             )?;
         }
+        super::dump::dump_moe_out(ctx.gpu, stream, output, n, h)?;
         prof_step!("unpermute_blend");
 
         // EP all-reduce

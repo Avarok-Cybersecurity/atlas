@@ -17,6 +17,24 @@ pub fn step_verify_k2(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
     // EP: broadcast verify K=2 command + tokens so worker runs decode_verify_graphed in lockstep.
     let t_ep = Instant::now();
     let tokens_k2 = [a.last_token, drafts[0]];
+
+    // ATLAS_DFLASH_VERIFY_TRACE=1: per-call snapshot of K=2 verify inputs.
+    // Pairs with the v0/v1 log emitted below to reconstruct exactly what
+    // the target saw vs what it predicted. Zero overhead when unset.
+    let verify_trace = std::env::var("ATLAS_DFLASH_VERIFY_TRACE").ok().as_deref() == Some("1");
+    if verify_trace {
+        let n = a.seq.tokens.len();
+        let tail: Vec<u32> = a.seq.tokens.iter().rev().take(4).rev().copied().collect();
+        tracing::info!(
+            "K2 TRACE pre: seq_len={} tokens.len={} last_token={} draft0={} tokens_tail4={:?}",
+            a.seq.seq_len,
+            n,
+            a.last_token,
+            drafts[0],
+            tail,
+        );
+    }
+
     if let Err(e) = model.ep_broadcast_cmd(0xFFFFFFF2) {
         tracing::error!("EP broadcast verify_k2 cmd: {e:#}");
         a.finished = true;
@@ -50,6 +68,18 @@ pub fn step_verify_k2(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
     // TODO: implement GPU-side temperature sampling to avoid D2H penalty.
     let v0 = v0_argmax;
     let v1 = v1_argmax;
+
+    if verify_trace {
+        tracing::info!(
+            "K2 TRACE post: v0={} v1={} draft0={} accepted={} v0_echoes_last={}",
+            v0,
+            v1,
+            drafts[0],
+            drafts[0] == v0,
+            v0 == a.last_token,
+        );
+    }
+
     let accepted = drafts[0] == v0;
 
     // Extract logprobs from verify logits buffer (K=2 positions) when requested.
@@ -116,12 +146,10 @@ pub fn step_verify_k2(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             }
         }
         let propose_us = t_propose.elapsed().as_micros();
-        if a.seq.seq_len.is_multiple_of(50) {
-            tracing::info!(
-                "K2 ACCEPT: ep={ep_us}μs sync={sync_us}μs verify={verify_us}μs propose={propose_us}μs seq_len={}",
-                a.seq.seq_len
-            );
-        }
+        tracing::info!(
+            "K2 ACCEPT: ep={ep_us}μs sync={sync_us}μs verify={verify_us}μs propose={propose_us}μs seq_len={}",
+            a.seq.seq_len
+        );
     } else {
         // ── REJECTED ──
         a.seq.seq_len -= 1;

@@ -53,10 +53,16 @@ impl ToolCallParser for MinimaxXmlParser {
         // invocation format.
         let mut prompt =
             String::from("# Tools\n\nYou have access to the following functions:\n\n<tools>\n");
-        for tool in tools {
-            let json = serde_json::to_string(tool).unwrap_or_default();
-            prompt.push_str(&format!("<tool>{json}</tool>\n"));
-        }
+        let body = tool_list_body(tools, || {
+            let mut s = String::new();
+            for tool in tools {
+                let json = serde_json::to_string(tool).unwrap_or_default();
+                s.push_str(&format!("<tool>{json}</tool>\n"));
+            }
+            s
+        });
+        prompt.push_str(body.trim_end());
+        prompt.push('\n');
         prompt.push_str(
             "</tools>\n\n\
              When making tool calls, use XML format to invoke tools and pass parameters:\n\

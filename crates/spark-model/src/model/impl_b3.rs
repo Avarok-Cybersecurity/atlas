@@ -220,6 +220,11 @@ impl TransformerModel {
                 .downcast_mut::<crate::layers::DflashProposerState>()
         {
             let new_len = (chunk_start + proc_count).min(dstate.max_ctx_len);
+            // Phase I (v2): seed per-slot fixed positions for the prompt
+            // captures. Prefill slot i holds prompt position i, so the
+            // fixed rope position is simply its index. Keep parallel to
+            // ctx_len. Re-seed idempotently across prefill chunks.
+            dstate.ctx_positions = (0..new_len).map(|i| i as i32).collect();
             dstate.ctx_len = new_len;
         }
         Ok(())

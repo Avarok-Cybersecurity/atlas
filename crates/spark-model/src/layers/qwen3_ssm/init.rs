@@ -208,6 +208,25 @@ impl Qwen3SsmLayer {
         self.out_proj_fp8w = out_proj;
     }
 
+    /// Set raw FP8 DevicePtrs for the prefill GEMM path ONLY (no decode GEMV
+    /// scale fields). Used by the Qwen3.6-27B-FP8 native-FP8 SSM prefill path:
+    /// the FP8 buffer here is a single-scale FP8 (BF16 → FP8 truncation; values
+    /// already in FP8 range) suitable for `fp8_gemm_n128`. Decode falls back to
+    /// the NVFP4/BF16 paths via the existing `qkvz_nvfp4*` fields. PCND:
+    /// caller decides whether to install — never set implicitly.
+    pub fn set_fp8_prefill_only_weights(
+        &mut self,
+        qkvz_fp8: Option<DevicePtr>,
+        out_proj_fp8: Option<DevicePtr>,
+    ) {
+        if qkvz_fp8.is_some() {
+            self.qkvz_fp8 = qkvz_fp8;
+        }
+        if out_proj_fp8.is_some() {
+            self.out_proj_fp8 = out_proj_fp8;
+        }
+    }
+
     /// Pre-dequant NVFP4 → FP8 for QKVZ and out_proj transposed weights.
     /// Eliminates per-inference dequant overhead in prefill GEMMs.
     pub fn predequant_for_prefill(

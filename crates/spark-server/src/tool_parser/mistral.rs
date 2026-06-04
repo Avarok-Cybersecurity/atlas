@@ -24,7 +24,9 @@ impl ToolCallParser for MistralNativeParser {
         // [AVAILABLE_TOOLS] block. We still provide a system prompt so the
         // model knows the expected output format when the template pathway
         // is not active (e.g. OpenAI-compatible clients bypass the template).
-        let tools_json = serde_json::to_string(tools).unwrap_or_else(|_| "[]".into());
+        let tools_json = tool_list_body(tools, || {
+            serde_json::to_string(tools).unwrap_or_else(|_| "[]".into())
+        });
         let mut prompt = format!(
             "You have access to the following tools:\n<tools>\n{tools_json}\n</tools>\n\n\
              When you need to call a tool, respond in Mistral native format:\n\
