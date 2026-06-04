@@ -423,3 +423,60 @@ Key confirmation points:
   "bare_json"` at line 67.
 - `impl_a1.rs`: `SsmStatePool` takes `max_batch_size`; `SsmSnapshotPool` takes `ssm_cache_slots`.
   Propagation is correct.
+
+---
+
+## Second Independent Audit (2026-06-04, this session)
+
+Fresh investigation of all three priorities against spec_ssm HEAD (`47ba575`). No new bugs found.
+
+### P1 — Mistral MLA prefill: all previously documented fixes confirmed
+
+Additional verification beyond the 2026-06-03 pass:
+
+**`kv_dtypes.rs` BF16 early return** (line 20):
+`build_layer_kv_dtypes` has an explicit `if kv_dtype == KvCacheDtype::Bf16 { return
+vec![Bf16; num_attention_layers]; }` at the top. This means `--kv-high-precision-layers auto`
+(which resolves to 2 boundary layers) is a true no-op when `--kv-cache-dtype bf16` is passed:
+the function returns before reaching the boundary-layer logic. No FP8/BF16 mixing is possible
+for Mistral Small 4. The code comment confirms: "When `kv_dtype` is BF16, every attention layer
+must use BF16 — returning an empty vec would cause callers that fall back to `unwrap_or(Fp8)`
+to silently use FP8 instead."
+
+**`is_mla()` single-chunk enforcement in all three schedulers**:
+`run_standard.rs:50`, `run_batched_prefill.rs:44`, `run_batched_mixed.rs:50` all read:
+```rust
+let effective_max = if model.is_mla() { remaining } else { max_prefill_tokens };
+```
+This forces the entire prompt into one chunk when `model.is_mla()` is true (Mistral Small 4,
+`kv_lora_rank=256`). Comment: "the existing MLA prefill at qwen3_attention/prefill.rs only
+attends over the current chunk's K/V, so multi-chunk prefill silently corrupts attention output."
+
+**`mla_absorbed.cu` — no seq_len overflow risk for Mistral Small 4**:
+The `mla_batched_gemv_token` kernel (line 364) uses `blockIdx.z` for the token dimension, which
+has a CUDA limit of 65535. However, this kernel is only invoked from the multi-chunk MLA prefill
+path (`seq_len_start > 0`). The `is_mla()` single-chunk check above makes this path unreachable
+for all current MLA models. Other kernels in `mla_absorbed.cu` (copy loops at lines 199/223/297)
+use 1D stride patterns safe for any token count.
+
+**Decode path** (`attention_forward_mla.rs`):
+Single-token GEMV chain for absorbed MLA decode — uses `mla_batched_gemv` (not the `_token`
+batched variant) with `blockIdx.y` for head. No seq_len dimension at all (decode processes one
+token at a time). No issues found.
+
+### P2 — Nemotron tool calling: verified fixed
+
+Additional verification:
+- `jinja-templates/nemotron_h.jinja` line 204: `{%- if tools and not disable_tool_steering %}`
+  gates the `<tool_call>\n` steering prefix. With `disable_tool_steering=true`, the generation
+  prompt emits `<|im_start|>assistant\n<think>\n` (standard), not the pre-opened tool_call block.
+- `tool_parser.rs`: `"bare_json"` maps to `BareJsonParser` at line 311/328. The parser provides
+  a `system_prompt()` with native bare-JSON schema instructions; `skip_template_tools=true` in
+  MODEL.toml prevents the jinja template's XML `<function>` blocks from also appearing.
+
+### P3 — SSM cache slots: verified correct
+
+Additional detail: `cli.rs:278` sets `default_value_t = 16` for `ssm_cache_slots` (16 snapshot
+slots by default). The test launch commands pass `--ssm-cache-slots 0` explicitly, which
+correctly zeros out `SsmSnapshotPool`. The 1206 MB `SsmStatePool` is orthogonal — sized by
+`--max-batch-size` (default 8). All propagation confirmed correct.
