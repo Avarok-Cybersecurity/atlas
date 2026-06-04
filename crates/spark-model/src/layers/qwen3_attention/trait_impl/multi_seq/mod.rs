@@ -26,6 +26,7 @@ mod ffn;
 mod mla;
 mod mla_gemv;
 mod qkv;
+mod v4;
 
 impl Qwen3AttentionLayer {
     #[allow(clippy::too_many_arguments)]
@@ -67,8 +68,12 @@ impl Qwen3AttentionLayer {
         // MLA models (Mistral-Small-4) take the dedicated absorbed-MLA
         // batched path (issue #84). The standard `ms_phase_qkv` reads
         // `attn.q_proj`, a NULL stub for MLA loaders — see `mla.rs`.
-        let o_out = if self.mla.is_some() {
-            self.ms_mla_decode(&c, kv_cache, meta)?
+        let o_out = if let Some(ref mla) = self.mla {
+            if mla.o_lora_rank > 0 {
+                self.ms_v4_decode(&c, kv_cache, meta)?
+            } else {
+                self.ms_mla_decode(&c, kv_cache, meta)?
+            }
         } else {
             // ── Phase 2: QKV projections (batch3 / batch2 / sequential) ──
             self.ms_phase_qkv(&c)?;

@@ -46,18 +46,18 @@ impl Qwen3AttentionLayer {
         let q_proj_dim = if self.gated { q_dim * 2 } else { q_dim };
         let kv_dim = (nkv * hd) as usize;
 
-        // Q12 Path B: batched mode does not support MLA layers (separate
+        // Q12 Path B: batched mode does not support MLA/V4-Flash layers (separate
         // KV layout). Caller must gate this out at the outer dispatch.
         if batched_meta.is_some() && self.mla.is_some() {
             anyhow::bail!(
-                "prefill_attention_paged: batched_meta with MLA layer is not supported \
-                 (layer {}). Caller must route MLA layers to per-stream.",
+                "prefill_attention_paged: batched_meta with MLA/V4-Flash layer is not supported \
+                 (layer {}). Caller must route these layers to per-stream.",
                 self.attn_layer_idx
             );
         }
 
         // ── MLA 2-step prefill (reference: HuggingFace modeling_mistral4.py) ──
-        if self.mla.is_some() {
+        if let Some(ref mla) = self.mla {
             let args = super::paged_mla::MlaPrefillArgs {
                 normed,
                 num_tokens,
@@ -72,6 +72,9 @@ impl Qwen3AttentionLayer {
                 bs: bs as u32,
                 stream,
             };
+            if mla.o_lora_rank > 0 {
+                return self.prefill_attention_paged_v4(kv_cache, ctx, &args, seq_len_start);
+            }
             return self.prefill_attention_paged_mla(kv_cache, ctx, &args);
         }
 

@@ -30,6 +30,12 @@ pub struct MlaWeights {
     pub wkv_a_merged: DenseWeight,
     pub wo: DenseWeight, // [h, n_heads*v_dim] — O projection BF16 (for prefill accuracy)
     pub wo_nvfp4: Option<QuantizedWeight>, // O projection NVFP4 (for fast decode GEMV)
+    /// Grouped low-rank O down-projection (wo_a → wo_b) for DeepSeek-V4-Flash.
+    /// When `o_lora_rank > 0`, the decode/prefill paths use wo_a→wo_b instead of `wo`.
+    pub wo_a: DenseWeight, // [o_lora_rank, n_heads*v_dim]
+    pub wo_a_nvfp4: Option<QuantizedWeight>,
+    pub wo_b: DenseWeight, // [h, o_lora_rank]
+    pub wo_b_nvfp4: Option<QuantizedWeight>,
     /// Absorbed MLA weights for decode (avoid full K/V expansion, preserve precision).
     /// W_UK_T: [n_heads, nope, kv_lora] — Q_nope absorption: Q_absorbed = Q_nope @ W_UK_T
     pub w_uk_t: DenseWeight,
@@ -53,6 +59,7 @@ pub struct MlaWeights {
     pub yarn_inv_freq: spark_runtime::gpu::DevicePtr,
     pub q_lora_rank: usize,
     pub kv_lora_rank: usize,
+    pub o_lora_rank: usize,
     pub nope: usize,
     pub rope: usize,
     pub v_dim: usize,

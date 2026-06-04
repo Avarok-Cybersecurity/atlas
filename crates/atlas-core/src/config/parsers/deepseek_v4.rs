@@ -65,9 +65,9 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
         config.head_dim = config.hidden_size / config.num_attention_heads;
     }
 
-    // q_lora_rank may be absent; DeepSeek-V3 uses 1536 for q_a latent dim
+    // q_lora_rank may be absent; DeepSeek-V4-Flash uses 1024 for q_a latent dim
     if config.q_lora_rank == 0 {
-        config.q_lora_rank = 1536;
+        config.q_lora_rank = 1024;
     }
 
     // qk_nope_head_dim is not in V4 config; compute from head_dim - qk_rope_head_dim

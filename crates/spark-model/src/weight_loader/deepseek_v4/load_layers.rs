@@ -7,7 +7,7 @@ use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
 
 use crate::layer::TransformerLayer;
-use crate::weight_map::{dense, dense_auto};
+use crate::weight_map::{DenseWeight, dense, dense_auto};
 
 pub fn load_all_layers(
     store: &WeightStore,
@@ -41,19 +41,48 @@ pub fn load_all_layers(
         let q_a_norm = dense(store, &format!("{ap}.q_norm.weight"))?;
 
         let wkv_a = dense_auto(store, &format!("{ap}.wkv.weight"), gpu)?;
-        // RedHatAI re-quant: wo_a = kv_b_proj, wo_b = o_proj
-        let wkv_b = dense_auto(store, &format!("{ap}.wo_a.weight"), gpu)?;
-        let wkv_b_shape = store.get(&format!("{ap}.wo_a.weight"))?.shape.clone();
         let kv_a_norm = dense(store, &format!("{ap}.kv_norm.weight"))?;
 
-        let o_dense = dense_auto(store, &format!("{ap}.wo_b.weight"), gpu)?;
+        let is_v4_flash = config.o_lora_rank > 0;
+        let null = DenseWeight {
+            weight: DevicePtr::NULL,
+        };
 
-        let wq_b_shape = store.get(&format!("{ap}.wq_b.weight"))?.shape.clone();
-        let (w_uk_t, w_uv, wq_b_rope, w_uk_host) =
-            super::compute::build_per_head_views(&wkv_b, &wkv_b_shape, &wq_b, &wq_b_shape, config, gpu)?;
-        let w_qk_absorbed = super::compute::build_w_qk_absorbed(&wq_b, &wq_b_shape, &w_uk_t, config, gpu)?;
-        let (w_uk_block_diag, w_uv_block_diag) =
-            super::compute::build_block_diagonals(&w_uk_host, &w_uv, config, gpu)?;
+        // V4-Flash uses direct KV projection + grouped low-rank O projection (wo_a → wo_b).
+        // V3-style absorption tensors (w_uk_t, w_uv, w_qk_absorbed, etc.) are not needed.
+        let (
+            wo_a,
+            wo_b,
+            wkv_b,
+            w_uk_t,
+            w_uv,
+            wq_b_rope,
+            w_qk_absorbed,
+            w_uk_block_diag,
+            w_uv_block_diag,
+        ) = if is_v4_flash {
+            let wo_a_w = dense_auto(store, &format!("{ap}.wo_a.weight"), gpu)?;
+            let wo_b_w = dense_auto(store, &format!("{ap}.wo_b.weight"), gpu)?;
+            (
+                wo_a_w, wo_b_w, null, null, null, null, null, null, null,
+            )
+        } else {
+            // V3 fallback: wo_a is kv_b_proj, wo_b is o_proj
+            let wkv_b_w = dense_auto(store, &format!("{ap}.wo_a.weight"), gpu)?;
+            let wkv_b_shape = store.get(&format!("{ap}.wo_a.weight"))?.shape.clone();
+            let o_dense = dense_auto(store, &format!("{ap}.wo_b.weight"), gpu)?;
+            let wq_b_shape = store.get(&format!("{ap}.wq_b.weight"))?.shape.clone();
+            let (w_uk_t, w_uv, wq_b_rope, w_uk_host) =
+                super::compute::build_per_head_views(&wkv_b_w, &wkv_b_shape, &wq_b, &wq_b_shape, config, gpu)?;
+            let w_qk_absorbed =
+                super::compute::build_w_qk_absorbed(&wq_b, &wq_b_shape, &w_uk_t, config, gpu)?;
+            let (w_uk_block_diag, w_uv_block_diag) =
+                super::compute::build_block_diagonals(&w_uk_host, &w_uv, config, gpu)?;
+            (
+                null, o_dense, wkv_b_w, Some(w_uk_t), Some(w_uv), Some(wq_b_rope),
+                Some(w_qk_absorbed), Some(w_uk_block_diag), Some(w_uv_block_diag),
+            )
+        };
         yarn_inv_freq = super::compute::ensure_yarn_inv_freq(&mut yarn_inv_freq, config, gpu)?;
 
         let layer = super::assemble::assemble_layer(
@@ -69,15 +98,16 @@ pub fn load_all_layers(
             None, // wkv_a_nvfp4
             wkv_b,
             kv_a_norm,
-            o_dense,
+            wo_b,
             None, // o_nvfp4
-            w_uk_t,
-            w_uv,
-            wq_b_rope,
-            w_qk_absorbed,
-            w_uk_block_diag,
-            w_uv_block_diag,
+            w_uk_t.unwrap_or(DenseWeight { weight: DevicePtr::NULL }),
+            w_uv.unwrap_or(DenseWeight { weight: DevicePtr::NULL }),
+            wq_b_rope.unwrap_or(DenseWeight { weight: DevicePtr::NULL }),
+            w_qk_absorbed.unwrap_or(DenseWeight { weight: DevicePtr::NULL }),
+            w_uk_block_diag.unwrap_or(DenseWeight { weight: DevicePtr::NULL }),
+            w_uv_block_diag.unwrap_or(DenseWeight { weight: DevicePtr::NULL }),
             yarn_inv_freq,
+            wo_a,
             store,
             config,
             gpu,
