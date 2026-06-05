@@ -872,3 +872,82 @@ This is correct behavior, not a bug. To reduce `SsmStatePool`, pass `--max-batch
 | P2 Nemotron tool calling | **CONFIRMED FIXED** | MODEL.toml + bare_json parser + suppresses_jinja_tools() — end-to-end chain verified |
 | P3 SSM cache slots | **CONFIRMED CORRECT** | --ssm-cache-slots 0 controls SsmSnapshotPool only; SsmStatePool is independent and required |
 - No new bugs found. All P1/P2/P3 conclusions from prior audits stand.
+
+---
+
+## Tenth Investigation (2026-06-05, this session)
+
+Independent cold-start read of all files named in the task spec against spec_ssm HEAD.
+No new functional bugs found. One dead-code observation recorded.
+
+### P1 — Mistral Small 4 MLA prefill: all fixes confirmed
+
+**Files read**: `yarn.rs`, `mla_fused_prefill.cu`, `mla_absorbed.cu`, `mla_prefill_attn.cu`,
+`prefill/cache_skip_mla.rs`, `prefill/cache_skip.rs` (dispatch), `ops/prefill_attn_a.rs`,
+`kv_dtypes.rs`, `decode/attention_forward_mla.rs`, `buffers/sizes.rs`.
+
+**`yarn.rs`**: `find_correction_dim` formula verified. For Mistral params (theta=1e7, dim=64,
+max_pos=8192, factor=128, beta_fast=32, beta_slow=1): `low = floor(7.36) = 7`,
+`high = ceil(14.24) = 15`. Linear ramp `clamp((j-low)/(high-low), 0, 1)`. Correct. ✓
+
+**`mla_fused_prefill.cu`**: Complete per-instruction audit of the online-softmax loop.
+- Flat 1D grid `(nq*seq_len, 1, 1)` at Rust launch site; kernel decodes `head = blockIdx.x /
+  seq_len`, `q_pos = blockIdx.x % seq_len`. No gridDim overflow up to `seq_len=65536`. ✓
+- Shared memory: `smem_q[320]` + `smem_dot[8]` + `smem_latent[256]` = 2,336 bytes/block
+  (well within GB10 228 KB shared mem limit). No bank-conflict risk. ✓
+- Causal mask: `kv_end = min(q_pos + 1, seq_len)`. Correct for all positions. ✓
+- Dot product: threads 0–255 contribute latent dim `tid`; threads 0–63 additionally contribute
+  rope dim `tid`. Full 320-dim dot product assembled via 8-warp reduction through `smem_dot[8]`,
+  broadcast to all threads via thread-0 write + `__syncthreads()`. ✓
+- `smem_dot` declared outside KV loop — prevents NVCC from aliasing its shared-memory region
+  with `smem_q` across loop iterations. ✓
+- `acc_latent` is a scalar register (dead `[1]` element removed in commit 84b0d8d). ✓
+- V extraction: `W_UV[head] @ smem_latent[0..255]` → `v_out[q_pos, head, 0..127]`. ✓
+
+**`cache_skip_mla.rs`**: Buffer lifetime analysis.
+- `q_latent = ssm_ba` and `k_rope_buf = ssm_ba` reuse the same buffer, but sequentially:
+  `q_latent` is fully consumed by the `wq_b` GEMM before `k_rope_buf` is written. Safe. ✓
+- `q_rope_tmp = ssm_conv_out_f32` sized for `[m, nq*rope]` BF16 — buffer arena accounts for
+  this in `sizes.rs:199-204` (`m * q_heads * qk_rope_head_dim * bf16`). ✓
+- `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)`. Correct absorbed-space
+  attention scale. ✓
+
+**`kv_dtypes.rs`**: With `--kv-cache-dtype bf16`, function returns `vec![Bf16; 36]` via early
+return at line 20 — `--kv-high-precision-layers auto` (resolves to 2) is a true no-op. ✓
+
+**New observation — dead kernel handle `prefill_attn_mla320_k`**:
+`types.rs:170` declares `pub(super) prefill_attn_mla320_k: KernelHandle`, loaded in `init.rs:290`
+from `mla_prefill_attn.cu:mla_prefill_attn_320`. Searching the entire Rust codebase finds zero
+call sites that use this handle after `init.rs` sets it. `mla_prefill_attn.cu` contains a
+tiled BR=16/BC=16 flash-attention kernel for HDIM=320 that predates `mla_fused_prefill`; it was
+apparently superseded but the handle was not removed. Consequence: the kernel is JIT-compiled at
+startup and the handle occupies a struct field, but it has no effect on runtime behavior.
+**No fix applied** — dead code, not a correctness issue. Document for future cleanup.
+
+### P2 — Nemotron tool calling: confirmed fixed
+
+**Files read**: `nemotron-super-120b-a12b/MODEL.toml`, `jinja-templates/nemotron_h.jinja`,
+`tool_parser.rs`, `bare_json.rs`, `api/chat/mod.rs`.
+
+All previously documented settings and code paths verified present and correct.
+`disable_tool_steering=true`, `tool_call_parser="bare_json"`, `skip_template_tools=true`,
+`thinking_in_tools=false` confirmed in MODEL.toml. Jinja gate at line 204 confirmed. ✓
+
+### P3 — SSM cache slots: confirmed correct
+
+**Files read**: `cli.rs`, `impl_a1.rs`, `ssm_pool.rs`, `ssm_snapshot.rs`.
+
+`SsmStatePool::new(max_batch_size, ...)` at `impl_a1.rs:134` — active recurrent state
+pool, independent of `ssm_cache_slots`. `SsmSnapshotPool::new(ssm_cache_slots=0, ...)`
+at `impl_a1.rs:143` — prefix-cache snapshot pool, correctly zero-allocated. ✓
+
+### Summary
+
+| Priority | Status | Finding |
+|----------|--------|---------|
+| P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** | All three prior fixes verified: YaRN `yarn.rs`, flat-grid `mla_fused_prefill.cu`, `cache_skip_mla.rs` dispatch. Buffer reuse in `cache_skip_mla.rs` confirmed safe. |
+| P2 Nemotron tool calling | **CONFIRMED FIXED** | MODEL.toml + jinja gate + bare_json parser chain verified end-to-end. |
+| P3 SSM cache slots | **CONFIRMED CORRECT** | Two-pool design confirmed; `--ssm-cache-slots 0` correctly disables only `SsmSnapshotPool`. |
+
+New dead-code observation: `prefill_attn_mla320_k` handle loaded but never called (superseded
+by `mla_fused_prefill`). Not a bug; cleanup deferred.
