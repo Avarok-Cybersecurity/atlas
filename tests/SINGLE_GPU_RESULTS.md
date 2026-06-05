@@ -583,6 +583,51 @@ All prior conclusions confirmed. No new bugs found beyond the latent defect abov
 
 ---
 
+## Sixth Investigation (2026-06-05, this session) — Final Audit + Stale Comment Fix
+
+### Code change: stale scheduler comments corrected
+
+**Files**: `crates/spark-server/src/scheduler/phase_continue_prefills/run_standard.rs:44-49`
+and `run_batched_prefill.rs:41-43`.
+
+Both files had the comment:
+> "Atlas has no `prefill_attention_paged_mla_*` kernel; the existing MLA prefill … only attends
+> over the current chunk's K/V, so multi-chunk prefill silently corrupts attention output."
+
+Both claims are factually wrong:
+1. `mla_prefill_paged_320` exists (`kernels/gb10/mistral-small-4/nvfp4/mla_prefill_paged_320.cu`
+   registered in `KERNEL.toml`) and is invoked from `paged_mla.rs::seq_len_start > 0`.
+2. The multi-chunk path in `paged_mla.rs` (`seq_len_start > 0`) attends to the full context
+   (`kv_len = seq_len_start + num_tokens`) via paged attention — not just the current chunk.
+
+The actual reason for single-chunk enforcement: all MLA prompts route through
+`cache_skip_mla.rs` → `mla_fused_prefill` (fused absorbed Q+attention+V, production-validated).
+Enabling multi-chunk would route chunk-1+ through `paged_mla.rs` → `mla_prefill_paged_320`,
+which is structurally correct but has not been end-to-end validated for production. The gate is
+intentionally conservative; it can be removed once `paged_mla.rs` is validated.
+
+**Fix applied**: both comments now accurately describe the gate's purpose.
+
+### P1/P2/P3 final status — all confirmed resolved
+
+Full read of all referenced source files verified:
+
+| File | Finding |
+|------|---------|
+| `yarn.rs` | Correct `find_correction_dim` in dim-index space; `low≈7, high≈15`. ✓ |
+| `cache_skip_mla.rs` | Live MLA prefill path for chunk-0 (all MLA prompts). `mla_fused_prefill` with mandatory `ensure!` guard. Grid `(nq*seq_len, 1, 1)` — no gridDim.y overflow. ✓ |
+| `paged_mla.rs` | Dead code for current MLA models (single-chunk gate). Structurally correct; not a bug. ✓ |
+| `mla_fused_prefill.cu` | Flat 1D grid confirmed at line 47: `head = blockIdx.x / seq_len`. Shared memory: `(320+8+256)*4 = 2.3 KB`. Causal mask: `kv_end = min(q_pos+1, seq_len)`. No bugs. ✓ |
+| `ops/prefill_attn_a.rs` | `mla_fused_prefill` wrapper: `.grid([nq * seq_len, 1, 1])`. ✓ |
+| `run_standard.rs:50` | `is_mla()` → `effective_max = remaining`. ✓ |
+| `ep_misc.rs:39` | `is_mla_dispatch()` → `config.kv_lora_rank > 0`. Correct for Mistral Small 4. ✓ |
+| `MODEL.toml` (nemotron) | `disable_tool_steering=true`, `tool_call_parser="bare_json"`, `skip_template_tools=true`. ✓ |
+| `attention_forward_mla.rs:379` | `paged_decode_attn_bf16()` unconditional — benign for Mistral Small 4 (BF16 KV required). Latent risk documented; no fix applied (needs new `paged_decode_mla_fp8_k` kernel). |
+
+**No new bugs found. One stale comment fixed (committed). All P1/P2/P3 bugs remain resolved.**
+
+---
+
 ## Fifth Investigation (2026-06-05, this session) — MLA Dispatch Chain Correction
 
 ### Critical routing clarification: path labels in Code Verification were reversed

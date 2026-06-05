@@ -38,9 +38,9 @@ pub(super) fn run_batched_prefill_step(
     let mut is_last_flags: Vec<bool> = Vec::with_capacity(n);
     for p in prefilling.iter() {
         let remaining = p.prompt_tokens.len() - p.chunk_offset;
-        // Same MLA correctness gate as `run_standard_chunk_loop` — MLA
-        // models lack a paged-MLA prefill kernel so multi-chunk prefill
-        // silently corrupts attention. Force single-chunk for MLA.
+        // Same MLA single-chunk gate as `run_standard_chunk_loop` — see
+        // that comment. Force single-chunk for MLA until paged_mla.rs
+        // is validated.
         let effective_max = if model.is_mla() {
             remaining
         } else {

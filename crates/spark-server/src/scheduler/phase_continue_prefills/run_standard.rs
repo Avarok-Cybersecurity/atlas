@@ -41,12 +41,13 @@ pub(super) fn run_standard_chunk_loop(
     // requests (Q12: avoids back-to-back chunked prefill monopolising
     // the scheduler).
     let remaining = p.prompt_tokens.len() - p.chunk_offset;
-    // MLA correctness gate: Atlas has no `prefill_attention_paged_mla_*`
-    // kernel; the existing MLA prefill at qwen3_attention/prefill.rs:1723
-    // only attends over the current chunk's K/V, so multi-chunk prefill
-    // silently corrupts attention output. Force single-chunk until a
-    // paged-MLA prefill kernel lands. Hurts cold TTFT on long MLA
-    // prompts but preserves correctness.
+    // MLA single-chunk gate: all MLA prompts are forced into one chunk
+    // (chunk-0) regardless of --max-prefill-tokens. This routes them
+    // through cache_skip_mla.rs → mla_fused_prefill (fused absorbed
+    // Q+attention+V, production-validated). Enabling multi-chunk would
+    // route chunk-1+ through paged_mla.rs → mla_prefill_paged_320, which
+    // exists and is correct but has not yet been end-to-end validated.
+    // Remove this gate when paged_mla.rs has been validated.
     let effective_max = if model.is_mla() {
         remaining
     } else {
