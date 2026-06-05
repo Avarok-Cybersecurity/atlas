@@ -690,3 +690,50 @@ documented in the Fourth Independent Audit (2026-06-04) remains the only open it
 `attention_forward_mla.rs:379` unconditionally calls `paged_decode_attn_bf16()` — benign for
 Mistral Small 4 (BF16 KV required) but would silently misread a future FP8-KV MLA model.
 No fix applied; fix requires a new `paged_decode_mla_fp8_k` kernel handle.
+
+---
+
+## Seventh Investigation (2026-06-05, this session) — Full Audit + Dead-Code Cleanup
+
+Fresh cold-start read of all files named in the task spec. No new functional bugs found.
+One dead-code / misleading-comment issue fixed in the hot CUDA kernel.
+
+### Code change: `acc_latent[2]` dead array element removed in `mla_fused_prefill.cu`
+
+**File**: `kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu`
+
+The accumulator for the online-softmax attention-weighted KV latent was declared as:
+```c
+float acc_latent[2] = {0.0f, 0.0f};  // each thread accumulates 1-2 latent dims
+```
+Only `acc_latent[0]` was ever read or written. `acc_latent[1]` was dead register space, a
+leftover from an earlier design where each thread was intended to handle two latent dimensions
+(dims `tid` and `tid+256`) for potential future kv_lora > 256. With `kv_lora=256` and
+`blockDim.x=256`, `tid+256 >= kv_lora` is always true, so no thread ever needed the second
+element. The accompanying comment ("1-2 latent dims", "Thread tid handles latent dims: tid,
+tid+256 if < kv_lora") was also inaccurate for current parameters.
+
+**Fix**: collapsed to a scalar `float acc_latent = 0.0f` and updated the comment. All three
+use sites updated: accumulation loop, normalization, and `smem_latent` write. No functional
+change — NVCC generates the same register usage for `arr[0]` and a scalar.
+
+### Full verification table (spec_ssm HEAD)
+
+| File | Finding |
+|------|---------|
+| `yarn.rs` | Correct `find_correction_dim` in dim-index space; `low≈7, high≈15` for Mistral params. ✓ |
+| `mla_fused_prefill.cu` | Flat 1D grid `(nq*seq_len,1,1)`. Online softmax correct. `smem_dot` outside loop (no NVCC alias). `acc_latent` now scalar (dead `[1]` removed). ✓ |
+| `cache_skip_mla.rs` | All MLA prompts (chunk-0): `mla_fused_prefill` with mandatory `ensure!`. `kv_write_start` correctly skips cached prefix. `inv_sqrt_d = 1/sqrt(320)`. ✓ |
+| `paged_mla.rs` | Dead code for current MLA models (single-chunk gate). Correct for future use. ✓ |
+| `mla_prefill_paged_320.cu` | Half-warp masks correct. Causal mask via `causal_kv_end = min(q_global+1, kv_len)`. ✓ |
+| `KERNEL.toml` (mistral) | `extra_nvcc_flags = ["--fmad=false", "-DHDIM=128"]`. Defensive guard for paged path. ✓ |
+| `kv_dtypes.rs` | BF16 early-return at line 20: uniform BF16 for all layers when `--kv-cache-dtype bf16`. `--kv-high-precision-layers auto` is a no-op. ✓ |
+| `run_standard.rs:51` | `is_mla()` → `effective_max = remaining`. Updated comment accurate. ✓ |
+| `attention_forward_mla.rs:379` | `paged_decode_attn_bf16()` unconditional — benign (Mistral Small 4 requires BF16 KV). `paged_decode_attn_fp8_mla.cu` exists but unregistered (future FP8 MLA model would need dispatch). Latent only. |
+| `nemotron MODEL.toml` | `disable_tool_steering=true`, `tool_call_parser="bare_json"`, `skip_template_tools=true`, `thinking_in_tools=false`. ✓ |
+| `nemotron_h.jinja:204` | Gate `{%- if tools and not disable_tool_steering %}` skips `<tool_call>\n` prefix when `disable_tool_steering=true`. ✓ |
+| `tool_parser.rs` / `bare_json.rs` | `BareJsonParser::suppresses_jinja_tools()` returns `true`. System prompt instructs bare-JSON format. ✓ |
+| `impl_a1.rs` | `SsmStatePool::new(max_batch_size, ...)` independent of `ssm_cache_slots`. `SsmSnapshotPool::new(ssm_cache_slots=0, ...)` returns empty pool. ✓ |
+| `build.rs:71` | `args.ssm_cache_slots` propagated correctly to model constructor. ✓ |
+
+### Status: P1/P2/P3 all confirmed resolved. One dead-code cleanup committed.

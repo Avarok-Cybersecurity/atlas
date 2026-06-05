@@ -117,11 +117,9 @@ extern "C" __global__ void mla_fused_prefill(
 
     float m_prev = -FLT_MAX;
     float l_prev = 0.0f;
-    // Accumulate weighted KV latent (only first 256 dims for V extraction)
-    float acc_latent[2] = {0.0f, 0.0f};  // each thread accumulates 1-2 latent dims
-    // Thread tid handles latent dims: tid, tid+256 (if < kv_lora)
-    // But we need to map threads to latent dims for V extraction accumulation.
-    // Simple: tid < 256, each thread accumulates latent[tid] weighted by attention.
+    // Accumulate weighted KV latent: each thread (tid < kv_lora) holds one
+    // latent dim (latent[tid]) weighted by the online-softmax attention scores.
+    float acc_latent = 0.0f;
 
     unsigned int kv_end = min(q_pos + 1, seq_len); // causal
     for (unsigned int kv_pos = 0; kv_pos < kv_end; kv_pos++) {
@@ -168,9 +166,8 @@ extern "C" __global__ void mla_fused_prefill(
         float p = expf(score - m_new);
         float l_new = alpha * l_prev + p;
 
-        // Update latent accumulator: acc_latent = alpha * acc_latent + p * kv_latent[kv_pos]
         if (tid < kv_lora) {
-            acc_latent[0] = alpha * acc_latent[0] + p * __bfloat162float(kv_lat_row[tid]);
+            acc_latent = alpha * acc_latent + p * __bfloat162float(kv_lat_row[tid]);
         }
 
         m_prev = m_new;
@@ -181,7 +178,7 @@ extern "C" __global__ void mla_fused_prefill(
     // Normalize by softmax denominator
     float inv_l = (l_prev > 0.0f) ? (1.0f / l_prev) : 0.0f;
     if (tid < kv_lora) {
-        acc_latent[0] *= inv_l;
+        acc_latent *= inv_l;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -190,7 +187,7 @@ extern "C" __global__ void mla_fused_prefill(
     // Store attn_latent to shared memory for all threads to read
     __shared__ float smem_latent[256];
     if (tid < kv_lora) {
-        smem_latent[tid] = acc_latent[0];
+        smem_latent[tid] = acc_latent;
     }
     __syncthreads();
 
