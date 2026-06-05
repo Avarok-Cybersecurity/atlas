@@ -443,6 +443,96 @@ pub fn moe_fp8_grouped_gemm_v3(
         .launch(stream)
 }
 
+/// Build the compacted (expert, m_tile, n_tile) work-list for the v5
+/// persistent grouped-GEMM grid. Single-block, thread-0 serial — mirrors the
+/// `moe_sort_by_expert` launch style (grid `[1,1,1]`, block `[256,1,1]`).
+///
+/// `n_tiles = div_ceil(N, 64)` (PM4_N_TILE) and `m_tile = 128` (PM4_M_TILE).
+/// Writes `worklist[*total_tiles * 2]` (word0=expert, word1=(m_tile<<6)|n_tile)
+/// and `total_tiles[0]`.
+///
+/// SAME-STREAM INVARIANT: the caller MUST launch `moe_fp8_grouped_gemm_v5` on
+/// the SAME `stream` so the v5 read of `total_tiles`/`worklist` happens-after
+/// this write (no cross-stream event is inserted).
+#[allow(clippy::too_many_arguments)]
+pub fn moe_build_tile_worklist(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    expert_offsets: DevicePtr, // [num_experts + 1]
+    weight_ptrs: DevicePtr,    // [num_experts] → [N, K] FP8 (0 = remote)
+    worklist: DevicePtr,       // [worst_case_tiles * 2] u32 (out)
+    total_tiles: DevicePtr,    // [1] i32 (out)
+    num_experts: u32,
+    n_tiles: u32, // div_ceil(N, 64) — PM4_N_TILE
+    m_tile: u32,  // PM4_M_TILE = 128
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([1, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(expert_offsets)
+        .arg_ptr(weight_ptrs)
+        .arg_ptr(worklist)
+        .arg_ptr(total_tiles)
+        .arg_u32(num_experts)
+        .arg_u32(n_tiles)
+        .arg_u32(m_tile)
+        .launch(stream)
+}
+
+/// FP8 grouped GEMM v5 — grid-compaction over a persistent 96-CTA grid.
+///
+/// Byte-identical per-tile math to v4 (`moe_fp8_grouped_gemm_v4`); the only
+/// difference is the launch geometry: a fixed `PM5_PERSIST_CTAS=96` 1D grid
+/// strides over the COMPACTED work-list built by `moe_build_tile_worklist`,
+/// instead of the dense `[ceil(N/64), max_m_tiles, num_experts]` 3D grid that
+/// early-exits on 99.5% of its CTAs. There is therefore NO `max_m_tiles`
+/// argument — the work-item count is read from `total_tiles` on the device.
+///
+/// `PM5_PERSIST_CTAS = 96` here is the SSOT mirror of the `#define
+/// PM5_PERSIST_CTAS 96` in `moe_fp8_grouped_gemm.cu`; the two MUST match or the
+/// device-side stride and the launched CTA count diverge.
+///
+/// SAME-STREAM INVARIANT: MUST be launched on the SAME `stream` as the
+/// preceding `moe_build_tile_worklist` (read-after-write of `total_tiles`).
+///
+/// Grid: (PM5_PERSIST_CTAS=96, 1, 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn moe_fp8_grouped_gemm_v5(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,            // [total_tokens, K] BF16
+    weight_ptrs: DevicePtr,      // [num_experts] → [N, K] FP8
+    scale_ptrs: DevicePtr,       // [num_experts] → [N/128, K/128] FP32
+    output: DevicePtr,           // [total_expanded, N] BF16
+    expert_offsets: DevicePtr,   // [num_experts + 1]
+    sorted_token_ids: DevicePtr, // [total_expanded] or NULL
+    num_experts: u32,
+    n: u32,
+    k: u32,
+    worklist: DevicePtr,    // [*total_tiles * 2] u32 (built on the same stream)
+    total_tiles: DevicePtr, // [1] i32 (built on the same stream)
+    stream: u64,
+) -> Result<()> {
+    // SSOT: must equal `#define PM5_PERSIST_CTAS 96` in moe_fp8_grouped_gemm.cu.
+    const PM5_PERSIST_CTAS: u32 = 96;
+    KernelLaunch::new(gpu, kernel)
+        .grid([PM5_PERSIST_CTAS, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight_ptrs)
+        .arg_ptr(scale_ptrs)
+        .arg_ptr(output)
+        .arg_ptr(expert_offsets)
+        .arg_ptr(sorted_token_ids)
+        .arg_u32(num_experts)
+        .arg_u32(n)
+        .arg_u32(k)
+        .arg_ptr(worklist)
+        .arg_ptr(total_tiles)
+        .launch(stream)
+}
+
 /// W8A8 + FP32 epilogue grouped MoE GEMM (vLLM-equivalent).
 ///
 /// A_fp8 must be pre-quantized via `per_token_group_quant_fp8`. Both

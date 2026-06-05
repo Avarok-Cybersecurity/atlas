@@ -240,6 +240,19 @@ pub struct MoeLayer {
     moe_fp8_grouped_gemm_v3_k: KernelHandle,
     // Resolved once per layer from ATLAS_MOE_V3 env var.
     fp8_moe_v3_enabled: bool,
+    // v5 grid-compaction grouped GEMM: byte-identical per-tile math to v4, but a
+    // persistent 96-CTA grid strides over a COMPACTED (expert, m_tile, n_tile)
+    // work-list (collapses the v4 dense-grid launch overhead, the #1 prefill
+    // bottleneck). Handle may be 0 on images that don't ship the kernel. Gated
+    // ON only when ATLAS_MOE_V5=1 (default OFF — v1/v2/v4 dispatch byte-
+    // unchanged). PCND: explicit flag, no implicit default.
+    moe_fp8_grouped_gemm_v5_k: KernelHandle,
+    // Builds the v5 work-list (moe_build_tile_worklist, module "moe"). Launched
+    // on the SAME stream as the v5 kernel (read-after-write of total_tiles).
+    // Handle may be 0 on older images.
+    moe_build_tile_worklist_k: KernelHandle,
+    // Resolved once per layer from ATLAS_MOE_V5 env var.
+    fp8_moe_v5_enabled: bool,
     // BF16 grouped GEMM — for FP8-source models dequanted to BF16 at load.
     // Activates the high-precision MoE path that closes the per-layer
     // 0.989 FP8 cosine ceiling. Handle may be 0 on images that don't ship

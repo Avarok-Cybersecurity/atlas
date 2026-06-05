@@ -101,6 +101,21 @@ impl MoeLayer {
                 "moe_fp8_grouped_gemm",
                 "moe_fp8_grouped_gemm_v4",
             ),
+            // v5 grid-compaction grouped GEMM (persistent 96-CTA grid over a
+            // compacted work-list; byte-identical per-tile math to v4). Opt-in
+            // via ATLAS_MOE_V5=1 (default OFF). Handle may be 0 on older images.
+            moe_fp8_grouped_gemm_v5_k: super::super::try_kernel(
+                gpu,
+                "moe_fp8_grouped_gemm",
+                "moe_fp8_grouped_gemm_v5",
+            ),
+            // v5 work-list builder (module "moe" = moe_permute.cu). Launched on
+            // the SAME stream as the v5 kernel (read-after-write of total_tiles).
+            moe_build_tile_worklist_k: super::super::try_kernel(
+                gpu,
+                "moe",
+                "moe_build_tile_worklist",
+            ),
             moe_w8a8_grouped_gemm_k: super::super::try_kernel(
                 gpu,
                 "moe_w8a8_grouped_gemm",
@@ -145,6 +160,10 @@ impl MoeLayer {
             // so production dispatch is byte-unchanged; opt-in via
             // ATLAS_MOE_V3=1. PCND: explicit, no implicit default.
             fp8_moe_v3_enabled: std::env::var("ATLAS_MOE_V3").as_deref() == Ok("1"),
+            // v5 grid-compaction grouped GEMM. Default OFF so production
+            // dispatch is byte-unchanged; opt-in via ATLAS_MOE_V5=1. PCND:
+            // explicit flag, no implicit default.
+            fp8_moe_v5_enabled: std::env::var("ATLAS_MOE_V5").as_deref() == Ok("1"),
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemm_pipelined_k: super::super::try_kernel(gpu, "w8a16_gemm_pipelined", "w8a16_gemm_pipelined"),
             moe_gate_topk_fused_k: super::super::try_kernel(

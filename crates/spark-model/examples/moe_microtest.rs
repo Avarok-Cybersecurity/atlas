@@ -16,8 +16,18 @@
 //!
 //! Usage:
 //!   cargo run --release -p spark-model --example moe_microtest \
-//!       -- [kernel] [num_experts] [tokens_per_expert] [N] [K] [seed]
+//!       -- [kernel] [num_experts] [tokens_per_expert] [N] [K] [seed] [mode]
 //! Defaults: moe_fp8_grouped_gemm_v2 4 20 256 256 0x9E3
+//!
+//! [kernel] may be moe_fp8_grouped_gemm{,_v2,_v3,_v4,_v5}. [mode] (arg 7):
+//!   perf      — skip the CPU reference (representative-size perf sweeps).
+//!   skew      — non-uniform expert load (one expert 7× the average), to
+//!               exercise the v5 work-list under static-tail imbalance + the
+//!               multi-m-tile-per-expert path.
+//!   compare   — STAGE-2 bit-exact gate: run kernel='..._v5' AND v4 on the same
+//!               inputs and assert v5 == v4 (cosine==1.0 AND max_abs_diff==0).
+//! v5 builds the (expert,m_tile,n_tile) work-list on the HOST (mirroring the
+//! device `moe_build_tile_worklist`) and launches the persistent 96-CTA grid.
 //!
 //! NOTE (SSOT): the number-format + RNG + upload helpers are duplicated from
 //! w8a16_microtest.rs ONLY because a shared example-module would require
@@ -116,10 +126,20 @@ fn main() -> Result<()> {
     let n: usize = args.get(4).map_or(256, |s| s.parse().unwrap());
     let k: usize = args.get(5).map_or(256, |s| s.parse().unwrap());
     let seed: u64 = args.get(6).map_or(0x9E3, |s| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(0x9E3));
-    // PERF-ONLY mode (arg 7 = "perf"): skip the O(experts*tok*N*K) CPU
-    // reference so a representative-size perf sweep (e.g. 8x256x2048x2048)
-    // runs in milliseconds. Correctness is gated separately on small configs.
-    let perf_only = args.get(7).map(|s| s == "perf" || s == "--perf").unwrap_or(false);
+    // arg 7 modes (mutually exclusive flags, any subset of the recognized words):
+    //   "perf"/"--perf"   : skip the O(experts*tok*N*K) CPU reference so a
+    //                       representative-size perf sweep runs in milliseconds.
+    //   "skew"/"--skew"   : non-uniform expert load — one expert gets 7× the
+    //                       average token count, the rest share the remainder.
+    //                       Exercises the v5 work-list under static-tail
+    //                       imbalance (R4) + the multi-m-tile path per expert.
+    //   "--compare"/"compare" : run v4 AND v5 on the SAME inputs and assert
+    //                       v5 == v4 byte-for-byte (cosine==1.0 AND
+    //                       max_abs_diff==0). This is the STAGE-2 bit-exact gate.
+    let mode = args.get(7).map(|s| s.as_str()).unwrap_or("");
+    let perf_only = mode == "perf" || mode == "--perf";
+    let skew = mode == "skew" || mode == "--skew";
+    let compare = mode == "compare" || mode == "--compare";
 
     if k % FP8_BLOCK != 0 {
         bail!("K ({k}) must be a multiple of {FP8_BLOCK}");
@@ -127,14 +147,47 @@ fn main() -> Result<()> {
     let total = num_experts * tpe; // total_expanded; tokens are 1:1 (identity sort)
     let k_blocks = k / FP8_BLOCK;
     let n_blocks = n.div_ceil(FP8_BLOCK);
-    println!("=== moe microtest: kernel='{kernel}' experts={num_experts} tok/expert={tpe} N={n} K={k} seed=0x{seed:X} ===");
+    println!(
+        "=== moe microtest: kernel='{kernel}' experts={num_experts} tok/expert={tpe} N={n} K={k} \
+         seed=0x{seed:X} mode='{mode}' ==="
+    );
 
     // ── inputs ──
     let mut rng = Rng(seed);
     // A[total, K] BF16 (each sorted row is its own token; identity sorted_token_ids)
     let a_bf16: Vec<u16> = (0..total * k).map(|_| f32_to_bf16_bits(rng.uniform(-1.0, 1.0))).collect();
-    // expert_offsets[num_experts+1] = [0, tpe, 2*tpe, ...]; sorted_token_ids = identity
-    let expert_offsets: Vec<i32> = (0..=num_experts).map(|e| (e * tpe) as i32).collect();
+    // Per-expert token counts → expert_offsets prefix sum. Uniform by default;
+    // `skew` mode loads expert 0 with 7× the average (clamped to `total`) and
+    // spreads the remainder across the rest. `total` is unchanged so the A
+    // buffer + identity sorted_token_ids stay valid.
+    let counts: Vec<usize> = if skew {
+        let mut c = vec![0usize; num_experts];
+        let heavy = (7 * tpe).min(total);
+        c[0] = heavy;
+        let mut rem = total - heavy;
+        let mut e = 1usize;
+        while rem > 0 && num_experts > 1 {
+            c[e] += 1;
+            rem -= 1;
+            e += 1;
+            if e >= num_experts {
+                e = 1;
+            }
+        }
+        c
+    } else {
+        vec![tpe; num_experts]
+    };
+    let expert_offsets: Vec<i32> = {
+        let mut o = Vec::with_capacity(num_experts + 1);
+        let mut acc = 0i32;
+        o.push(0);
+        for &c in &counts {
+            acc += c as i32;
+            o.push(acc);
+        }
+        o
+    };
     let sorted_token_ids: Vec<i32> = (0..total as i32).collect();
     // per-expert weights [N,K] FP8 (exp<=7) + scales [ceil(N/128), K/128] FP32
     let mut weights: Vec<Vec<u8>> = Vec::with_capacity(num_experts);
@@ -173,44 +226,127 @@ fn main() -> Result<()> {
     // C[total, N] BF16, zero-initialized (matches production memset)
     let c_ptr = upload_bytes(gpu, &vec![0u8; total * n * 2])?;
 
+    // ── v5 work-list (built on the HOST, mirroring moe_build_tile_worklist) ──
+    // PM4 geometry SSOT mirror: M_TILE=128, N_TILE=64. The device builder packs
+    // (m_tile<<6)|n_tile and skips experts with M_e<=0 (weights are never NULL
+    // here). The persistent v5 grid is fixed at PM5_PERSIST_CTAS=96.
+    const PM4_M_TILE: usize = 128;
+    const PM4_N_TILE: usize = 64;
+    const PM5_PERSIST_CTAS: u32 = 96;
+    let n_tiles = n.div_ceil(PM4_N_TILE);
+    let mut worklist: Vec<u32> = Vec::new();
+    for (e, &cnt) in counts.iter().enumerate() {
+        if cnt == 0 {
+            continue; // mirror device M_e<=0 skip
+        }
+        let mt_e = cnt.div_ceil(PM4_M_TILE);
+        for mt in 0..mt_e {
+            for nt in 0..n_tiles {
+                assert!(mt < (1 << 26) && nt < 64, "v5 work-list packing overflow");
+                worklist.push(e as u32);
+                worklist.push(((mt as u32) << 6) | nt as u32);
+            }
+        }
+    }
+    let host_total_tiles = (worklist.len() / 2) as i32;
+    let wl_ptr = upload_bytes(gpu, &worklist.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())?;
+    let tt_ptr = upload_bytes(gpu, &i32s_le(&[host_total_tiles]))?;
+
+    // Heaviest expert's m-tile count — the v3/v4 dense grid Y-dim must cover it
+    // (under `skew` one expert holds 7× the average, so `tpe.div_ceil(128)`
+    // would truncate it).
+    let max_count = counts.iter().copied().max().unwrap_or(0);
+
     // Per-kernel launch geometry. v1/v2 use a 64×64 tile, 128-thread block;
-    // v3 (Fix-B occupancy + cp.async rewrite) uses a 128×64 tile, 256-thread
-    // block. The M-tile count is the worst-case across experts at the kernel's
-    // M_TILE=128 granularity (here all experts have `tpe` tokens).
+    // v3/v4 use a 128×64 tile, 256-thread block over a dense 3D grid; v5 uses a
+    // persistent 1D grid of PM5_PERSIST_CTAS CTAs over the compacted work-list.
     let grid_block = |name: &str| -> ([u32; 3], [u32; 3]) {
         match name {
+            // v5 persistent grid-compaction: fixed 96-CTA 1D grid, 256 threads.
+            "moe_fp8_grouped_gemm_v5" => ([PM5_PERSIST_CTAS, 1, 1], [256, 1, 1]),
             // v3 and v4 share a 128×64 (M×N) tile, 256-thread block.
             "moe_fp8_grouped_gemm_v3" | "moe_fp8_grouped_gemm_v4" => (
-                [(n as u32).div_ceil(64), (tpe.div_ceil(128)) as u32, num_experts as u32],
+                [(n as u32).div_ceil(64), (max_count.div_ceil(128)) as u32, num_experts as u32],
                 [256, 1, 1],
             ),
             // v1 / v2 default.
             _ => (
-                [(n as u32).div_ceil(64), (tpe.div_ceil(64)) as u32, num_experts as u32],
+                [(n as u32).div_ceil(64), (max_count.div_ceil(64)) as u32, num_experts as u32],
                 [128, 1, 1],
             ),
         }
     };
-    let (grid, block) = grid_block(&kernel);
-    let do_launch = |stream: u64, sync: bool| -> Result<()> {
-        let handle = gpu.kernel("moe_fp8_grouped_gemm", &kernel)?;
-        KernelLaunch::new(gpu, handle)
+    // Launch a NAMED kernel into `out_ptr`. v5 appends the work-list + total
+    // pointers after the v4 arg list; everything else shares the v1..v4 args.
+    let launch_named = |name: &str, out_ptr: DevicePtr, stream: u64, sync: bool| -> Result<()> {
+        let handle = gpu.kernel("moe_fp8_grouped_gemm", name)?;
+        let (grid, block) = grid_block(name);
+        let mut kl = KernelLaunch::new(gpu, handle)
             .grid(grid)
             .block(block)
             .arg_ptr(a_ptr)
             .arg_ptr(w_tbl)
             .arg_ptr(s_tbl)
-            .arg_ptr(c_ptr)
+            .arg_ptr(out_ptr)
             .arg_ptr(off_ptr)
             .arg_ptr(sid_ptr)
             .arg_u32(num_experts as u32)
             .arg_u32(n as u32)
-            .arg_u32(k as u32)
-            .launch(stream)?;
+            .arg_u32(k as u32);
+        if name == "moe_fp8_grouped_gemm_v5" {
+            kl = kl.arg_ptr(wl_ptr).arg_ptr(tt_ptr);
+        }
+        kl.launch(stream)?;
         if sync { gpu.synchronize(stream) } else { Ok(()) }
     };
+    let do_launch =
+        |stream: u64, sync: bool| -> Result<()> { launch_named(&kernel, c_ptr, stream, sync) };
     let launch = |stream: u64| -> Result<()> { do_launch(stream, true) };
     launch(stream)?;
+
+    // ── STAGE-2 bit-exact gate (`--compare`): v5 MUST equal v4 byte-for-byte ──
+    if compare {
+        if kernel != "moe_fp8_grouped_gemm_v5" {
+            bail!("--compare requires kernel='moe_fp8_grouped_gemm_v5' (got '{kernel}')");
+        }
+        // `c_ptr` already holds the v5 result from the launch above. Run v4 into
+        // a fresh zeroed buffer and assert identical bytes.
+        let c_v4 = upload_bytes(gpu, &vec![0u8; total * n * 2])?;
+        launch_named("moe_fp8_grouped_gemm_v4", c_v4, stream, true)?;
+        let mut v5_raw = vec![0u8; total * n * 2];
+        let mut v4_raw = vec![0u8; total * n * 2];
+        gpu.copy_d2h(c_ptr, &mut v5_raw)?;
+        gpu.copy_d2h(c_v4, &mut v4_raw)?;
+        let v5: Vec<u16> = v5_raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        let v4: Vec<u16> = v4_raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        let (mut dot, mut n5, mut n4, mut max_abs_diff) = (0f64, 0f64, 0f64, 0f64);
+        let mut mismatches = 0usize;
+        for i in 0..total * n {
+            let a = bf16_bits_to_f32(v5[i]) as f64;
+            let b = bf16_bits_to_f32(v4[i]) as f64;
+            dot += a * b;
+            n5 += a * a;
+            n4 += b * b;
+            let d = (a - b).abs();
+            max_abs_diff = max_abs_diff.max(d);
+            if v5[i] != v4[i] {
+                mismatches += 1;
+            }
+        }
+        let cos = if n5 > 0.0 && n4 > 0.0 { dot / (n5.sqrt() * n4.sqrt()) } else { 1.0 };
+        println!(
+            "compare v5 vs v4: cosine={cos:.8}  max_abs_diff={max_abs_diff:.3e}  \
+             bit_mismatches={mismatches}/{}  total_tiles={host_total_tiles}",
+            total * n
+        );
+        if mismatches == 0 && max_abs_diff == 0.0 && (cos - 1.0).abs() < 1e-12 {
+            println!("RESULT: PASS (v5 == v4 bit-exact)");
+            return Ok(());
+        } else {
+            eprintln!("RESULT: FAIL (v5 != v4 — grid-compaction changed numerics)");
+            std::process::exit(1);
+        }
+    }
 
     // ── correctness vs CPU reference (skipped in PERF-ONLY mode) ──
     let cosine = if perf_only {

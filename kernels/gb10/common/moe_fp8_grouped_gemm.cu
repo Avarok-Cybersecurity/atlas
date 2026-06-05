@@ -1208,3 +1208,280 @@ extern "C" __global__ void __launch_bounds__(PM4_THREADS, 2) moe_fp8_grouped_gem
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// v5 — grid-compaction: persistent 96-CTA grid over a COMPACTED work-list.
+// ═══════════════════════════════════════════════════════════════════
+//
+// Same math + number formats as v1/v2/v3/v4 (BF16 acts × FP8 E4M3 block-scaled
+// weights, grouped per-expert dispatch, two-level FP32 accumulation PRESERVED
+// EXACTLY, shared-memory E4M3 LUT, K_STEP=32 + K-contiguous smem_B). The
+// PER-TILE compute is BYTE-FOR-BYTE IDENTICAL to v4 — it reuses pm4_mma_kstep
+// and v4's exact warp/lane setup, accumulator init, prefetch+dequant lambdas,
+// pipelined K-loop, two-level fold, and store guard.
+//
+// The ONLY change vs v4: instead of deriving (expert, m_tile, n_tile) from
+// blockIdx.{z,y,x} on a dense 3D grid `[ceil(N/64), max_m_tiles=1300,
+// num_experts]` (≈16M CTAs/layer of which 99.5% early-exit because most
+// (m_tile, expert) pairs are out of range), v5 launches a PERSISTENT 1D grid of
+// PM5_PERSIST_CTAS=96 CTAs that stride over a COMPACTED work-list built by
+// `moe_build_tile_worklist` (moe_permute.cu). Each work-item is exactly one
+// tile v4 would NOT have early-exited on:
+//   worklist[wid*2 + 0] = expert_id
+//   worklist[wid*2 + 1] = (m_tile << 6) | n_tile
+//   *total_tiles        = number of real tiles
+// This collapses the launch overhead (the v4 dense grid was LAUNCH-bound at
+// 1.7% of peak on the MoE FFN prefill) while keeping the inner GEMM unchanged.
+//
+// SAME-STREAM INVARIANT (R3): the builder + this kernel MUST be enqueued on the
+// SAME stream so the read of *total_tiles / worklist[] here happens-after the
+// builder's write. The Rust launcher enforces this (no cross-stream event).
+//
+// RISK #1 (smem reuse across work-items): a single CTA now processes MANY tiles
+// in its persistent loop, all reusing the SAME smem_A/smem_B/smem_Braw staging
+// buffers. A `__syncthreads()` at the TOP of each iteration fences the prior
+// tile's last pipeline stage (still being read by stragglers in the final MMA
+// reuse-sync) before this iteration re-primes the cp.async pipeline — otherwise
+// a stale stage could be overwritten while still in use. The smem LUT (lut_s)
+// is resident across the whole loop and filled ONCE before it.
+//
+// Grid: (PM5_PERSIST_CTAS=96, 1, 1)  Block: (PM4_THREADS=256, 1, 1)
+#define PM5_PERSIST_CTAS 96   // 48 SMs × 2 CTAs/SM. SSOT — mirrored in the Rust
+                              // launch wrapper ops::moe_fp8_grouped_gemm_v5.
+
+extern "C" __global__ void __launch_bounds__(PM4_THREADS, 2) moe_fp8_grouped_gemm_v5(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned long long* __restrict__ B_weight_ptrs,
+    const unsigned long long* __restrict__ B_scale_ptrs,
+    __nv_bfloat16* __restrict__ C,
+    const int* __restrict__ expert_offsets,
+    const int* __restrict__ sorted_token_ids,
+    unsigned int num_experts,
+    unsigned int N,
+    unsigned int K,
+    const unsigned int* __restrict__ worklist,   // [*total_tiles * 2] (expert, packed m/n)
+    const int* __restrict__ total_tiles          // [1] (read-after-write on same stream)
+) {
+    // E4M3 LUT staged into shared memory (same rationale + byte-identical values
+    // as v4 — data-dependent divergent lookups serialize in __constant__ memory).
+    // RISK #1 / Step-3: filled ONCE before the persistent loop, resident across
+    // all work-items (NOT re-filled per iteration).
+    __shared__ float lut_s[256];
+    #pragma unroll
+    for (unsigned int i = threadIdx.x; i < 256; i += PM4_THREADS) {
+        lut_s[i] = E4M3_LUT_GMOE[i];
+    }
+
+    // Pipelined smem — identical layout/budget to v4. Shared across all
+    // work-items this CTA processes (see RISK #1 fence at the loop top).
+    __shared__ __align__(16) __nv_bfloat16 smem_A[PM4_STAGES][PM4_M_TILE][PM4_A_STRIDE];
+    __shared__ __nv_bfloat16 smem_B[PM4_STAGES][PM4_N_TILE][PM4_K_STEP + PM4_PAD];
+    __shared__ __align__(16) unsigned char smem_Braw[PM4_STAGES][PM4_N_TILE][PM4_K_STEP];
+
+    // Warp/lane setup — IDENTICAL to v4 (CTA-uniform, hoisted out of the loop).
+    const unsigned int warp_id = threadIdx.x / 32;
+    const unsigned int lane_id = threadIdx.x % 32;
+    const unsigned int warp_m_offset = warp_id * 16;           // 8 warps × 16 = 128 M-rows
+    const unsigned int group_id = lane_id >> 2;
+    const unsigned int tid = lane_id & 3;
+
+    const int total = *total_tiles;
+
+    // Persistent loop: stride PM5_PERSIST_CTAS over the compacted work-list.
+    for (int wid = blockIdx.x; wid < total; wid += PM5_PERSIST_CTAS) {
+        __syncthreads();   // RISK #1 fix: fence smem reuse before re-priming pipeline
+
+        // ── Coords from the work-list instead of blockIdx.{z,y,x} ──
+        // Named mt/nt (not m_tile/n_tile) so they do NOT shadow the store
+        // loop's `n_tile` MMA index below — keeping the store body byte-
+        // identical to v4.
+        unsigned int expert_id = worklist[wid * 2 + 0];
+        unsigned int packed    = worklist[wid * 2 + 1];
+        unsigned int mt = packed >> 6;
+        unsigned int nt = packed & 0x3F;
+
+        const int m_start = expert_offsets[expert_id];
+        const int M_expert = expert_offsets[expert_id + 1] - m_start;
+
+        const unsigned char* B_exp = (const unsigned char*)B_weight_ptrs[expert_id];
+        const float* S_exp = (const float*)B_scale_ptrs[expert_id];
+        if (B_exp == 0) continue;   // NULL → remote expert under EP (builder skips these too)
+
+        const unsigned int cta_m_local = mt * PM4_M_TILE;   // expert-relative M base
+        const unsigned int cta_n = nt * PM4_N_TILE;
+
+        // ── v4 BODY VERBATIM from accumulator-init onward ──
+        // Two-level FP32 accumulation — PRESERVED EXACTLY (inner over a 128-K block,
+        // outer += inner * block_scale at the boundary; scale never per-element).
+        // Step-4: RE-ZEROED at the top of each work-item (per-tile accumulators).
+        float inner_acc[PM4_N_TILES_PER_WARP][4];
+        float outer_acc[PM4_N_TILES_PER_WARP][4];
+        #pragma unroll
+        for (int i = 0; i < PM4_N_TILES_PER_WARP; i++) {
+            inner_acc[i][0] = 0.0f; inner_acc[i][1] = 0.0f;
+            inner_acc[i][2] = 0.0f; inner_acc[i][3] = 0.0f;
+            outer_acc[i][0] = 0.0f; outer_acc[i][1] = 0.0f;
+            outer_acc[i][2] = 0.0f; outer_acc[i][3] = 0.0f;
+        }
+
+        const unsigned int k_blocks = (K + FP8_BLOCK - 1) / FP8_BLOCK;
+        const unsigned int k_steps_per_block = FP8_BLOCK / PM4_K_STEP;   // 4 at K_STEP=32
+        const unsigned int n_block = cta_n / FP8_BLOCK;
+        const unsigned int n_steps = (K + PM4_K_STEP - 1) / PM4_K_STEP;
+
+        // A-tile cp.async: 128 rows × PM4_K_STEP K-cols BF16. Each 16-B chunk = 8
+        // BF16. At K_STEP=32: 128×32/8 = 512 chunks → 2 chunks/thread (256 threads).
+        // Each A row is GATHERED through sorted_token_ids; the 16-B K-run within a
+        // row is still contiguous (one coalesced transaction).
+        const unsigned int a_chunks = (PM4_M_TILE * PM4_K_STEP) / 8;     // 512
+
+        auto prefetch = [&](unsigned int step, unsigned int stage) {
+            unsigned int k_base = step * PM4_K_STEP;
+
+            // ── A: contiguous 16-B (8 BF16) chunks along K, gathered per row ──
+            #pragma unroll
+            for (unsigned int c = threadIdx.x; c < a_chunks; c += PM4_THREADS) {
+                unsigned int row = (c * 8) / PM4_K_STEP;          // 0..127
+                unsigned int col = (c * 8) % PM4_K_STEP;          // 0, 8, 16, 24
+                unsigned int m_global = cta_m_local + row;        // expert-relative
+                unsigned int gc = k_base + col;
+                __nv_bfloat16* dst = &smem_A[stage][row][col];
+                if (m_global < (unsigned int)M_expert && gc + 8 <= K) {
+                    int sorted_idx = m_start + (int)m_global;
+                    int token_id = sorted_token_ids ? sorted_token_ids[sorted_idx] : sorted_idx;
+                    pm4_cp_async_cg_16(dst, &A[(unsigned long long)token_id * K + gc]);
+                } else {
+                    #pragma unroll
+                    for (unsigned int e = 0; e < 8; e++) {
+                        unsigned int gcol = gc + e;
+                        if (m_global < (unsigned int)M_expert && gcol < K) {
+                            int sorted_idx = m_start + (int)m_global;
+                            int token_id = sorted_token_ids ? sorted_token_ids[sorted_idx] : sorted_idx;
+                            dst[e] = A[(unsigned long long)token_id * K + gcol];
+                        } else {
+                            dst[e] = __float2bfloat16(0.0f);
+                        }
+                    }
+                }
+            }
+
+            // ── B raw: contiguous 16-B (16 FP8-byte) chunks of K per N-row ──
+            // smem_Braw[stage][n][k] mirrors global B[n, k_base + k] contiguously.
+            // At K_STEP=32 each N-row is 32 bytes = two 16-B chunks.
+            const unsigned int b_chunks = (PM4_N_TILE * PM4_K_STEP) / 16;   // 128 at K_STEP=32
+            #pragma unroll
+            for (unsigned int c = threadIdx.x; c < b_chunks; c += PM4_THREADS) {
+                unsigned int nrow = (c * 16) / PM4_K_STEP;        // 0..PM4_N_TILE-1
+                unsigned int kcol = (c * 16) % PM4_K_STEP;        // 0 or 16
+                unsigned int gn = cta_n + nrow;
+                unsigned int gk = k_base + kcol;
+                unsigned char* dst = &smem_Braw[stage][nrow][kcol];
+                if (gn < N && gk + 16 <= K) {
+                    pm4_cp_async_cg_16(dst, &B_exp[(unsigned long long)gn * K + gk]);
+                } else {
+                    #pragma unroll
+                    for (unsigned int e = 0; e < 16; e++) {
+                        unsigned int gke = gk + e;
+                        dst[e] = (gn < N && gke < K) ? B_exp[(unsigned long long)gn * K + gke] : 0;
+                    }
+                }
+            }
+            pm4_cp_async_commit();
+        };
+
+        // LUT-dequant just-arrived raw B for `stage` into the MMA-ready BF16 buffer.
+        // smem_B is [n][k] K-contiguous, matching smem_Braw, so this is a same-layout
+        // element-wise dequant (no transpose). NO scale (folded post-MMA at the
+        // block boundary). Cooperative across all 256 threads (each weight converted
+        // once, reused by all 8 warps).
+        auto dequant_B = [&](unsigned int stage) {
+            #pragma unroll
+            for (unsigned int idx = threadIdx.x; idx < PM4_K_STEP * PM4_N_TILE; idx += PM4_THREADS) {
+                unsigned int n = idx / PM4_K_STEP;     // 0..PM4_N_TILE-1
+                unsigned int k = idx % PM4_K_STEP;     // 0..PM4_K_STEP-1
+                unsigned char wb = smem_Braw[stage][n][k];
+                smem_B[stage][n][k] = __float2bfloat16(lut_s[wb]);
+            }
+        };
+
+        // ── Software-pipelined main loop (PM4_STAGES-deep cp.async) ──
+        #pragma unroll
+        for (unsigned int p = 0; p < PM4_STAGES - 1; p++) {
+            if (p < n_steps) {
+                prefetch(p, p % PM4_STAGES);
+            }
+        }
+        unsigned int k_step_in_block = 0;
+
+        for (unsigned int step = 0; step < n_steps; step++) {
+            unsigned int cur = step % PM4_STAGES;
+
+            unsigned int ahead = step + (PM4_STAGES - 1);
+            if (ahead < n_steps) {
+                prefetch(ahead, ahead % PM4_STAGES);
+            }
+            unsigned int committed = min(n_steps, PM4_STAGES + step);
+            unsigned int target = committed - (step + 1);
+            pm4_cp_async_wait_le(target);
+            __syncthreads();   // raw B for `cur` resident for all threads
+
+            dequant_B(cur);
+            __syncthreads();   // smem_B[cur] fully written before MMA reads it
+
+            pm4_mma_kstep(&smem_A[cur][0][0], &smem_B[cur][0][0],
+                          inner_acc, warp_m_offset, group_id, tid);
+            __syncthreads();   // done reading smem_*[cur]; safe for reuse
+
+            // K_BLOCK boundary: fold scaled inner into outer, reset inner.
+            k_step_in_block++;
+            if (k_step_in_block == k_steps_per_block) {
+                const unsigned int k_block = (step * PM4_K_STEP) / FP8_BLOCK;
+                const float scale = S_exp[n_block * k_blocks + k_block];
+                #pragma unroll
+                for (int i = 0; i < PM4_N_TILES_PER_WARP; i++) {
+                    outer_acc[i][0] += inner_acc[i][0] * scale;
+                    outer_acc[i][1] += inner_acc[i][1] * scale;
+                    outer_acc[i][2] += inner_acc[i][2] * scale;
+                    outer_acc[i][3] += inner_acc[i][3] * scale;
+                    inner_acc[i][0] = 0.0f; inner_acc[i][1] = 0.0f;
+                    inner_acc[i][2] = 0.0f; inner_acc[i][3] = 0.0f;
+                }
+                k_step_in_block = 0;
+            }
+        }
+
+        // Fold any incomplete trailing K_BLOCK (only when K % FP8_BLOCK != 0).
+        if (k_step_in_block != 0) {
+            const unsigned int k_block = (K - 1) / FP8_BLOCK;
+            const float scale = S_exp[n_block * k_blocks + k_block];
+            #pragma unroll
+            for (int i = 0; i < PM4_N_TILES_PER_WARP; i++) {
+                outer_acc[i][0] += inner_acc[i][0] * scale;
+                outer_acc[i][1] += inner_acc[i][1] * scale;
+                outer_acc[i][2] += inner_acc[i][2] * scale;
+                outer_acc[i][3] += inner_acc[i][3] * scale;
+            }
+        }
+
+        // ── Store C tile: f32 outer accumulators → BF16, sorted output position ──
+        #pragma unroll
+        for (int n_tile = 0; n_tile < PM4_N_TILES_PER_WARP; n_tile++) {
+            unsigned int base_n = cta_n + n_tile * 8;
+            unsigned int col0 = base_n + (tid * 2);
+            unsigned int col1 = col0 + 1;
+            unsigned int row0 = cta_m_local + warp_m_offset + group_id;   // expert-relative
+            unsigned int row1 = row0 + 8;
+
+            if (row0 < (unsigned int)M_expert) {
+                unsigned int out_row = m_start + row0;
+                if (col0 < N) C[(unsigned long long)out_row * N + col0] = __float2bfloat16(outer_acc[n_tile][0]);
+                if (col1 < N) C[(unsigned long long)out_row * N + col1] = __float2bfloat16(outer_acc[n_tile][1]);
+            }
+            if (row1 < (unsigned int)M_expert) {
+                unsigned int out_row = m_start + row1;
+                if (col0 < N) C[(unsigned long long)out_row * N + col0] = __float2bfloat16(outer_acc[n_tile][2]);
+                if (col1 < N) C[(unsigned long long)out_row * N + col1] = __float2bfloat16(outer_acc[n_tile][3]);
+            }
+        }
+    }
+}
