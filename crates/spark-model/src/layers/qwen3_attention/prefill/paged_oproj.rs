@@ -72,37 +72,20 @@ impl Qwen3AttentionLayer {
             ctx.gpu.free(a_fp8_buf)?;
             ctx.gpu.free(a_scale_buf)?;
         } else if let Some(ref fp8t) = self.o_fp8w_t {
-            // ATLAS_W8A16_PIPELINED=1: o_proj via the pipelined transposed kernel
-            // (~4.2x, byte-identical math). PCND: explicit flag, default OFF.
-            let use_pipe = std::env::var("ATLAS_W8A16_PIPELINED").as_deref() == Ok("1")
-                && self.w8a16_gemm_t_pipelined_k.0 != 0;
-            if use_pipe {
-                ops::w8a16_gemm_t_pipelined(
-                    ctx.gpu,
-                    self.w8a16_gemm_t_pipelined_k,
-                    attn_out,
-                    fp8t.weight_t,
-                    fp8t.scale_t,
-                    o_out,
-                    n,
-                    h,
-                    nq * hd,
-                    stream,
-                )?;
-            } else {
-                ops::w8a16_gemm_t(
-                    ctx.gpu,
-                    self.w8a16_gemm_t_k,
-                    attn_out,
-                    fp8t.weight_t,
-                    fp8t.scale_t,
-                    o_out,
-                    n,
-                    h,
-                    nq * hd,
-                    stream,
-                )?;
-            }
+            // o_proj always via the byte-identical ~4.2× faster pipelined
+            // transposed tensor-core kernel.
+            ops::w8a16_gemm_t_pipelined(
+                ctx.gpu,
+                self.w8a16_gemm_t_pipelined_k,
+                attn_out,
+                fp8t.weight_t,
+                fp8t.scale_t,
+                o_out,
+                n,
+                h,
+                nq * hd,
+                stream,
+            )?;
         } else if self.o_weight.as_ref().and_then(|w| w.as_fp8()).is_some()
             && self.w8a16_gemm_k.0 != 0
         {

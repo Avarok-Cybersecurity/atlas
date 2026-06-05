@@ -32,38 +32,20 @@ impl Qwen3SsmLayer {
         );
         if let Some(ref dense_out) = self.out_proj_dense {
             // SSM out_proj is kept BF16 dense for accuracy (decode uses FP8
-            // block-scaled, but prefill stays BF16). dense_gemm_bf16 is the #1
-            // prefill cost (~35%, ~1.4 TFLOP/s scalar). ATLAS_DENSE_BF16_PIPELINED=1
-            // routes it through the tensor-core dense_gemm_bf16_pipelined kernel
-            // (~40x, identical BF16 math, cosine=1.0). PCND: explicit, default OFF.
-            let use_dense_pipe = std::env::var("ATLAS_DENSE_BF16_PIPELINED").as_deref()
-                == Ok("1")
-                && self.dense_gemm_pipelined_k.0 != 0;
-            if use_dense_pipe {
-                ops::dense_gemm_bf16_pipelined(
-                    ctx.gpu,
-                    self.dense_gemm_pipelined_k,
-                    normed_out_buf,
-                    dense_out,
-                    out_proj_buf,
-                    k,
-                    h as u32,
-                    value_dim as u32,
-                    stream,
-                )
-            } else {
-                ops::dense_gemm(
-                    ctx.gpu,
-                    self.dense_gemm_k,
-                    normed_out_buf,
-                    dense_out,
-                    out_proj_buf,
-                    k,
-                    h as u32,
-                    value_dim as u32,
-                    stream,
-                )
-            }
+            // block-scaled, prefill stays BF16). Always routed through the
+            // tensor-core dense_gemm_bf16_pipelined kernel (~40× vs the old
+            // scalar dense_gemm, identical BF16 math, cosine=1.0).
+            ops::dense_gemm_bf16_pipelined(
+                ctx.gpu,
+                self.dense_gemm_pipelined_k,
+                normed_out_buf,
+                dense_out,
+                out_proj_buf,
+                k,
+                h as u32,
+                value_dim as u32,
+                stream,
+            )
         } else if force_w8a8
             && let Some(ref fp8w) = self.out_proj_fp8w
             && self.per_token_group_quant_fp8_k.0 != 0

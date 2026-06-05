@@ -161,37 +161,20 @@ impl Qwen3AttentionLayer {
             )?;
         } else if weight_opt.and_then(|w| w.as_fp8()).is_some() && self.w8a16_gemm_k.0 != 0 {
             let fp8w = weight_opt.and_then(|w| w.as_fp8()).unwrap();
-            // ATLAS_W8A16_PIPELINED=1: attn QKV via the pipelined kernel (same
-            // [N,K] + block-scale weight, ~4.6x faster, cosine=1.0). PCND: explicit, default OFF.
-            if std::env::var("ATLAS_W8A16_PIPELINED").as_deref() == Ok("1")
-                && self.w8a16_gemm_pipelined_k.0 != 0
-            {
-                ops::w8a16_gemm_pipelined(
-                    ctx.gpu,
-                    self.w8a16_gemm_pipelined_k,
-                    normed,
-                    fp8w.weight,
-                    fp8w.row_scale,
-                    out,
-                    n,
-                    out_dim,
-                    h,
-                    stream,
-                )?;
-            } else {
-                ops::w8a16_gemm(
-                    ctx.gpu,
-                    self.w8a16_gemm_k,
-                    normed,
-                    fp8w.weight,
-                    fp8w.row_scale,
-                    out,
-                    n,
-                    out_dim,
-                    h,
-                    stream,
-                )?;
-            }
+            // attn QKV always via the bit-identical (cosine=1.0) ~4.6× faster
+            // tensor-core w8a16_gemm_pipelined kernel.
+            ops::w8a16_gemm_pipelined(
+                ctx.gpu,
+                self.w8a16_gemm_pipelined_k,
+                normed,
+                fp8w.weight,
+                fp8w.row_scale,
+                out,
+                n,
+                out_dim,
+                h,
+                stream,
+            )?;
         } else if weight_opt.and_then(|w| w.as_fp8()).is_some() {
             anyhow::bail!("w8a16_gemm kernel not loaded — cannot prefill with FP8 weights");
         } else if let Some(fp8p) = fp8 {

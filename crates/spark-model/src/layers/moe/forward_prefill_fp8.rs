@@ -144,17 +144,10 @@ impl MoeLayer {
         } else if has_shared {
             let shared_gate_out = ctx.buffers.ssm_deinterleaved();
             let shared_up_out = ctx.buffers.ssm_qkvz();
-            // ATLAS_W8A16_PIPELINED: shared-expert dense GEMMs (gate/up/down, every
-            // token) via the pipelined kernel — same [N,K]+block-scale weights,
-            // ~4.6x faster, cosine=1.0. PCND: explicit flag, default OFF.
-            let use_sh_pipe = std::env::var("ATLAS_W8A16_PIPELINED").as_deref() == Ok("1")
-                && self.w8a16_gemm_pipelined_k.0 != 0;
+            // Shared-expert dense GEMMs (gate/up/down, every token) always via
+            // the bit-identical (cosine=1.0) ~4.6× faster pipelined kernel.
             let sh_gemm = |inp, w, sc, outp, mm, nn, kk| -> anyhow::Result<()> {
-                if use_sh_pipe {
-                    ops::w8a16_gemm_pipelined(ctx.gpu, self.w8a16_gemm_pipelined_k, inp, w, sc, outp, mm, nn, kk, stream)
-                } else {
-                    ops::w8a16_gemm(ctx.gpu, self.w8a16_gemm_k, inp, w, sc, outp, mm, nn, kk, stream)
-                }
+                ops::w8a16_gemm_pipelined(ctx.gpu, self.w8a16_gemm_pipelined_k, inp, w, sc, outp, mm, nn, kk, stream)
             };
             // FP8 GEMM for shared expert (M=num_tokens, single kernel each)
             sh_gemm(input, sh.gate_proj.weight, sh.gate_proj.row_scale, shared_gate_out, n, shared_inter, h)?;
