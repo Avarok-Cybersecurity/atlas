@@ -253,15 +253,30 @@ fn parse_forced_token_fastpath(env: Option<&str>) -> bool {
     }
 }
 
-/// Fix A (2026-06-05, kill-switch default OFF): lift EOS suppression after a
-/// completed tool call in auto mode (is_terminated() never becomes true there).
-pub fn tool_eos_escape_enabled() -> bool {
-    std::env::var("ATLAS_TOOL_EOS_ESCAPE").as_deref() == Ok("1")
+/// Resolve a "default-ON, explicit-disable" env flag. `None` (unset) → ON.
+/// A falsy value (`"0"` / `"false"`, case-insensitive, trimmed) → OFF.
+/// Everything else (`"1"`, `"true"`, junk) → ON. Mirrors the disable-idiom
+/// of [`parse_forced_token_fastpath`].
+fn env_flag_default_on(name: &str) -> bool {
+    match std::env::var(name).ok().as_deref().map(str::trim) {
+        Some(v) => !(v == "0" || v.eq_ignore_ascii_case("false")),
+        None => true,
+    }
 }
-/// Fix B (2026-06-05, kill-switch default OFF): hard-stop on the <tool_response>
-/// control token (a token the model must never generate).
+
+/// Fix A (2026-06-05, baked default ON): lift EOS suppression after a
+/// completed tool call in auto mode (is_terminated() never becomes true there).
+/// This is the verified root-cause fix for the post-think cap-burn that drove
+/// the webserver_ok 10/10 + Σwall win; default ON so the win is not env-dependent.
+/// Kill-switch preserved: `ATLAS_TOOL_EOS_ESCAPE=0`/`false` disables.
+pub fn tool_eos_escape_enabled() -> bool {
+    env_flag_default_on("ATLAS_TOOL_EOS_ESCAPE")
+}
+/// Fix B (2026-06-05, baked default ON): hard-stop on the <tool_response>
+/// control token (a token the model must never generate). Default ON for the
+/// same reason as Fix A. Kill-switch: `ATLAS_TOOL_RESPONSE_STOP=0`/`false`.
 pub fn tool_response_stop_enabled() -> bool {
-    std::env::var("ATLAS_TOOL_RESPONSE_STOP").as_deref() == Ok("1")
+    env_flag_default_on("ATLAS_TOOL_RESPONSE_STOP")
 }
 
 /// Whether the grammar forced-token fast-path is enabled (default
