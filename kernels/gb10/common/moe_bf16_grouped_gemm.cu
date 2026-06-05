@@ -4,8 +4,8 @@
 //
 // C[M_expert,N] = A[M_expert,K] (BF16) @ B_expert[N,K] (BF16)
 //
-// Same tile/MMA layout and thread mapping as `moe_fp8_grouped_gemm_v2` (the
-// coalesced FP8 variant). The only difference is the B tile staging:
+// Same tile/MMA layout and thread mapping as the FP8 grouped-GEMM variant. The
+// only difference is the B tile staging:
 //   - FP8 variant: loads `unsigned char` weight bytes, runs them through
 //     `E4M3_LUT[byte]` and `__float2bfloat16`, then uses two-level FP32
 //     accumulation with a per-K-block scale factor.

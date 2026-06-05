@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 #include <cuda_bf16.h>
-#include <assert.h>   // device-side assert() for the v5 work-list packing guard
+#include <assert.h>   // device-side assert() for the work-list packing guard
 
 // Atlas MoE token permutation kernels.
 //
@@ -246,14 +246,14 @@ extern "C" __global__ void moe_sort_by_expert(
     }
 }
 
-// Build the COMPACTED (expert, m_tile, n_tile) work-list for the v5 persistent
-// grouped-GEMM grid (moe_fp8_grouped_gemm_v5). Replaces the dense 3D launch
+// Build the COMPACTED (expert, m_tile, n_tile) work-list for the persistent
+// grouped-GEMM grid (moe_fp8_grouped_gemm). Replaces a dense 3D launch
 // `[ceil(N/64), max_m_tiles, num_experts]` (≈16M CTAs/layer, 99.5% early-exit)
 // with exactly one work-item per (expert, m_tile, n_tile) that actually has
 // tokens, so the persistent 96-CTA grid never spawns a tile that would
 // early-exit.
 //
-// Output packing (matches the v5 kernel decode):
+// Output packing (matches the grouped-GEMM kernel decode):
 //   worklist[w*2 + 0] = expert_id
 //   worklist[w*2 + 1] = (m_tile << 6) | n_tile      (n_tile < 64, 6 bits)
 //   total_tiles[0]    = number of emitted work-items
@@ -261,13 +261,13 @@ extern "C" __global__ void moe_sort_by_expert(
 // Single block, thread-0 serial loop — mirrors moe_sort_by_expert Phase-2's
 // serial prefix-sum so the same expert-ordering invariant holds. Experts with
 // no tokens (M_e <= 0) OR a NULL weight pointer (remote expert under EP) are
-// skipped, exactly like the v4 per-CTA `if (M_expert <= 0) return;` /
-// `if (B_exp == 0) return;` guards — so the emitted work-list is the set of
-// tiles v4 would NOT have early-exited on.
+// skipped, exactly like the grouped-GEMM per-tile `if (M_expert <= 0)` /
+// `if (B_exp == 0) continue;` guards — so the emitted work-list is the set of
+// tiles the dense grid would NOT have early-exited on.
 //
-// SAME-STREAM INVARIANT (R3): the launcher MUST enqueue the v5 kernel on the
-// SAME stream as this builder so the read of total_tiles/worklist happens-after
-// this write. No cross-stream event is inserted.
+// SAME-STREAM INVARIANT (R3): the launcher MUST enqueue moe_fp8_grouped_gemm on
+// the SAME stream as this builder so the read of total_tiles/worklist
+// happens-after this write. No cross-stream event is inserted.
 //
 // Grid: (1, 1, 1)  Block: (256, 1, 1)
 extern "C" __global__ void moe_build_tile_worklist(
@@ -285,7 +285,7 @@ extern "C" __global__ void moe_build_tile_worklist(
     for (unsigned int e = 0; e < num_experts; e++) {
         int m_start = expert_offsets[e];
         int M_e = expert_offsets[e + 1] - m_start;
-        if (M_e <= 0 || B_weight_ptrs[e] == 0) continue;   // mirror v4 early-exit guards
+        if (M_e <= 0 || B_weight_ptrs[e] == 0) continue;   // mirror grouped-GEMM early-exit guards
 
         unsigned int mt_e = ((unsigned int)M_e + m_tile - 1) / m_tile;
         for (unsigned int mt = 0; mt < mt_e; mt++) {

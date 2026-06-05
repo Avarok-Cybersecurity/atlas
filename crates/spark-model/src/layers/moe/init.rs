@@ -83,34 +83,16 @@ impl MoeLayer {
                 "moe_w4a16_fused_gate_up_t_k64_m128",
             ),
             moe_fp8_grouped_gemm_t: gpu.kernel("moe_w4a16", "moe_fp8_grouped_gemm_ptrtable_t")?,
+            // THE routed-expert FP8 prefill kernel: grid-compaction (persistent
+            // 96-CTA grid over a compacted work-list). Handle may be 0 on older
+            // images that don't ship it.
             moe_fp8_grouped_gemm_k: super::super::try_kernel(
                 gpu,
                 "moe_fp8_grouped_gemm",
                 "moe_fp8_grouped_gemm",
             ),
-            moe_fp8_grouped_gemm_v2_k: super::super::try_kernel(
-                gpu,
-                "moe_fp8_grouped_gemm",
-                "moe_fp8_grouped_gemm_v2",
-            ),
-            // ATLAS_MOE_V3 dispatch now loads v4 (K_STEP32 + K-contiguous smem_B +
-            // no-spill, +33% over v3, byte-identical numerics). Same grid/block/args
-            // as v3 so the ops::moe_fp8_grouped_gemm_v3 launch fn is reused unchanged.
-            moe_fp8_grouped_gemm_v3_k: super::super::try_kernel(
-                gpu,
-                "moe_fp8_grouped_gemm",
-                "moe_fp8_grouped_gemm_v4",
-            ),
-            // v5 grid-compaction grouped GEMM (persistent 96-CTA grid over a
-            // compacted work-list; byte-identical per-tile math to v4). Opt-in
-            // via ATLAS_MOE_V5=1 (default OFF). Handle may be 0 on older images.
-            moe_fp8_grouped_gemm_v5_k: super::super::try_kernel(
-                gpu,
-                "moe_fp8_grouped_gemm",
-                "moe_fp8_grouped_gemm_v5",
-            ),
-            // v5 work-list builder (module "moe" = moe_permute.cu). Launched on
-            // the SAME stream as the v5 kernel (read-after-write of total_tiles).
+            // Work-list builder (module "moe" = moe_permute.cu). Launched on the
+            // SAME stream as the grouped GEMM (read-after-write of total_tiles).
             moe_build_tile_worklist_k: super::super::try_kernel(
                 gpu,
                 "moe",
@@ -146,24 +128,6 @@ impl MoeLayer {
                 "moe_shared_expert_fused_bf16",
                 "moe_expert_silu_down_shared_bf16",
             ),
-            // 2026-05-20: default-ON. v1 had documented coalescing-perf bug;
-            // verified that v1 also has *numerical* bug for some
-            // (token, expert) tile combinations — chunk-4 last-token
-            // expert-200 up_proj output 2.4× too large vs v2 on
-            // Qwen3.6-35B-A3B-FP8 (matches HF reference). Drives long-context
-            // residual amplification at the prefill-chunk-4 boundary.
-            // Override via ATLAS_FP8_MOE_COALESCED=0 to restore v1.
-            fp8_moe_coalesced_enabled: std::env::var("ATLAS_FP8_MOE_COALESCED")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(true),
-            // v3 cp.async grouped GEMM (cosine=1.0, ~5× faster). Default OFF
-            // so production dispatch is byte-unchanged; opt-in via
-            // ATLAS_MOE_V3=1. PCND: explicit, no implicit default.
-            fp8_moe_v3_enabled: std::env::var("ATLAS_MOE_V3").as_deref() == Ok("1"),
-            // v5 grid-compaction grouped GEMM. Default OFF so production
-            // dispatch is byte-unchanged; opt-in via ATLAS_MOE_V5=1. PCND:
-            // explicit flag, no implicit default.
-            fp8_moe_v5_enabled: std::env::var("ATLAS_MOE_V5").as_deref() == Ok("1"),
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemm_pipelined_k: super::super::try_kernel(gpu, "w8a16_gemm_pipelined", "w8a16_gemm_pipelined"),
             moe_gate_topk_fused_k: super::super::try_kernel(

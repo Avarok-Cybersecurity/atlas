@@ -220,39 +220,21 @@ pub struct MoeLayer {
     moe_expert_gate_up_shared_fp8_batch3: KernelHandle,
     moe_expert_silu_down_shared_fp8_batch3: KernelHandle,
     moe_weighted_sum_blend_fp8_batch3: KernelHandle,
-    // FP8 grouped GEMM for sorted MoE prefill
+    // THE routed-expert FP8 grouped GEMM for sorted MoE prefill: grid-compaction
+    // (persistent 96-CTA grid over a COMPACTED (expert, m_tile, n_tile) work-list
+    // built by `moe_build_tile_worklist`). Handle may be 0 on images that don't
+    // ship the kernel.
     moe_fp8_grouped_gemm_k: KernelHandle,
+    // Builds the grouped-GEMM work-list (moe_build_tile_worklist, module "moe").
+    // Launched on the SAME stream as the grouped GEMM (read-after-write of
+    // total_tiles). Handle may be 0 on older images.
+    moe_build_tile_worklist_k: KernelHandle,
     // W8A8 + FP32 epilogue MoE GEMM (vLLM-equivalent). Opt-in via
     // ATLAS_FP8_W8A8=1. Requires per-token-quanted A_fp8 + a_scale.
     moe_w8a8_grouped_gemm_k: KernelHandle,
     per_token_group_quant_fp8_k: KernelHandle,
     // Dense W8A8 (same kernel used by attention QKV/O proj) for shared-expert path.
     fp8_gemm_t_blockscaled_k: KernelHandle,
-    // FP8 grouped GEMM v2 — coalesced B/A load thread-remap. Opt-in via
-    // ATLAS_FP8_MOE_COALESCED=1 env var. Kernel handle may be 0 on older
-    // images (then dispatch falls back to v1). Same signature as v1.
-    moe_fp8_grouped_gemm_v2_k: KernelHandle,
-    // v3 grouped GEMM: cp.async occupancy-tuned rewrite, cosine=1.0 vs v1/v2,
-    // ~5× faster. 128×64 (M×N) tile (M_TILE=128) — needs a distinct
-    // div_ceil(total_expanded, 128) max_m_tiles. Handle may be 0 on older
-    // images. Gated ON only when ATLAS_MOE_V3=1 (default OFF — production
-    // dispatch unchanged). PCND: explicit flag, no implicit default.
-    moe_fp8_grouped_gemm_v3_k: KernelHandle,
-    // Resolved once per layer from ATLAS_MOE_V3 env var.
-    fp8_moe_v3_enabled: bool,
-    // v5 grid-compaction grouped GEMM: byte-identical per-tile math to v4, but a
-    // persistent 96-CTA grid strides over a COMPACTED (expert, m_tile, n_tile)
-    // work-list (collapses the v4 dense-grid launch overhead, the #1 prefill
-    // bottleneck). Handle may be 0 on images that don't ship the kernel. Gated
-    // ON only when ATLAS_MOE_V5=1 (default OFF — v1/v2/v4 dispatch byte-
-    // unchanged). PCND: explicit flag, no implicit default.
-    moe_fp8_grouped_gemm_v5_k: KernelHandle,
-    // Builds the v5 work-list (moe_build_tile_worklist, module "moe"). Launched
-    // on the SAME stream as the v5 kernel (read-after-write of total_tiles).
-    // Handle may be 0 on older images.
-    moe_build_tile_worklist_k: KernelHandle,
-    // Resolved once per layer from ATLAS_MOE_V5 env var.
-    fp8_moe_v5_enabled: bool,
     // BF16 grouped GEMM — for FP8-source models dequanted to BF16 at load.
     // Activates the high-precision MoE path that closes the per-layer
     // 0.989 FP8 cosine ceiling. Handle may be 0 on images that don't ship
@@ -261,8 +243,6 @@ pub struct MoeLayer {
     // Fused BF16 decode kernels (mirror moe_expert_*_shared_fp8 layout).
     moe_expert_gate_up_shared_bf16_k: KernelHandle,
     moe_expert_silu_down_shared_bf16_k: KernelHandle,
-    // Resolved once per layer from ATLAS_FP8_MOE_COALESCED env var.
-    fp8_moe_coalesced_enabled: bool,
     w8a16_gemm_k: KernelHandle, // for shared expert FP8 prefill
     w8a16_gemm_pipelined_k: KernelHandle, // ATLAS_W8A16_PIPELINED shared-expert variant
     // Fused gate GEMV + topK softmax (saves 1 kernel launch per layer)

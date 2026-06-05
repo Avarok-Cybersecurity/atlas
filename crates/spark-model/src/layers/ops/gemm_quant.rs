@@ -367,83 +367,7 @@ pub fn moe_gate_topk_fused(
         .launch(stream)
 }
 
-/// FP8 grouped GEMM for sorted MoE prefill.
-///
-/// BF16 activations × FP8 E4M3 block-scaled expert weights via pointer table.
-/// Grid: (ceil(N/64), max_m_tiles, num_experts)  Block: (128, 1, 1)
-#[allow(clippy::too_many_arguments)]
-pub fn moe_fp8_grouped_gemm(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    input: DevicePtr,            // [total_tokens, K] BF16
-    weight_ptrs: DevicePtr,      // [num_experts] → [N, K] FP8
-    scale_ptrs: DevicePtr,       // [num_experts] → [N/128, K/128] BF16
-    output: DevicePtr,           // [total_expanded, N] BF16
-    expert_offsets: DevicePtr,   // [num_experts + 1]
-    sorted_token_ids: DevicePtr, // [total_expanded]
-    num_experts: u32,
-    n: u32,
-    k: u32,
-    max_m_tiles: u32,
-    stream: u64,
-) -> Result<()> {
-    KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 64), max_m_tiles, num_experts])
-        .block([128, 1, 1])
-        .arg_ptr(input)
-        .arg_ptr(weight_ptrs)
-        .arg_ptr(scale_ptrs)
-        .arg_ptr(output)
-        .arg_ptr(expert_offsets)
-        .arg_ptr(sorted_token_ids)
-        .arg_u32(num_experts)
-        .arg_u32(n)
-        .arg_u32(k)
-        .launch(stream)
-}
-
-/// FP8 grouped GEMM v3 — occupancy + cp.async pipelined rewrite of
-/// `moe_fp8_grouped_gemm` (cosine=1.0, ~5× faster on GB10/sm_121). Same args.
-///
-/// Uses a 128×64 tile (M×N), 256-thread block (8 warps). The M-tile
-/// granularity is PM3_M_TILE=128 (vs 64 for v1/v2), so `max_m_tiles` must be
-/// computed as `div_ceil(total_expanded, 128)` — distinct from the v1/v2
-/// `div_ceil(., 64)`. Geometry mirrors the validated `moe_microtest`
-/// `"moe_fp8_grouped_gemm_v3"` arm.
-///
-/// Grid: (ceil(N/64), max_m_tiles, num_experts)  Block: (256, 1, 1)
-#[allow(clippy::too_many_arguments)]
-pub fn moe_fp8_grouped_gemm_v3(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    input: DevicePtr,            // [total_tokens, K] BF16
-    weight_ptrs: DevicePtr,      // [num_experts] → [N, K] FP8
-    scale_ptrs: DevicePtr,       // [num_experts] → [N/128, K/128] BF16
-    output: DevicePtr,           // [total_expanded, N] BF16
-    expert_offsets: DevicePtr,   // [num_experts + 1]
-    sorted_token_ids: DevicePtr, // [total_expanded]
-    num_experts: u32,
-    n: u32,
-    k: u32,
-    max_m_tiles: u32, // div_ceil(total_expanded, 128) — PM3_M_TILE=128
-    stream: u64,
-) -> Result<()> {
-    KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 64), max_m_tiles, num_experts])
-        .block([256, 1, 1])
-        .arg_ptr(input)
-        .arg_ptr(weight_ptrs)
-        .arg_ptr(scale_ptrs)
-        .arg_ptr(output)
-        .arg_ptr(expert_offsets)
-        .arg_ptr(sorted_token_ids)
-        .arg_u32(num_experts)
-        .arg_u32(n)
-        .arg_u32(k)
-        .launch(stream)
-}
-
-/// Build the compacted (expert, m_tile, n_tile) work-list for the v5
+/// Build the compacted (expert, m_tile, n_tile) work-list for the
 /// persistent grouped-GEMM grid. Single-block, thread-0 serial — mirrors the
 /// `moe_sort_by_expert` launch style (grid `[1,1,1]`, block `[256,1,1]`).
 ///
@@ -451,9 +375,9 @@ pub fn moe_fp8_grouped_gemm_v3(
 /// Writes `worklist[*total_tiles * 2]` (word0=expert, word1=(m_tile<<6)|n_tile)
 /// and `total_tiles[0]`.
 ///
-/// SAME-STREAM INVARIANT: the caller MUST launch `moe_fp8_grouped_gemm_v5` on
-/// the SAME `stream` so the v5 read of `total_tiles`/`worklist` happens-after
-/// this write (no cross-stream event is inserted).
+/// SAME-STREAM INVARIANT: the caller MUST launch `moe_fp8_grouped_gemm` on
+/// the SAME `stream` so the kernel's read of `total_tiles`/`worklist`
+/// happens-after this write (no cross-stream event is inserted).
 #[allow(clippy::too_many_arguments)]
 pub fn moe_build_tile_worklist(
     gpu: &dyn GpuBackend,
@@ -480,14 +404,12 @@ pub fn moe_build_tile_worklist(
         .launch(stream)
 }
 
-/// FP8 grouped GEMM v5 — grid-compaction over a persistent 96-CTA grid.
+/// FP8 grouped GEMM for sorted MoE prefill — grid-compaction over a persistent
+/// 96-CTA grid. THE routed-expert FP8 prefill kernel.
 ///
-/// Byte-identical per-tile math to v4 (`moe_fp8_grouped_gemm_v4`); the only
-/// difference is the launch geometry: a fixed `PM5_PERSIST_CTAS=96` 1D grid
-/// strides over the COMPACTED work-list built by `moe_build_tile_worklist`,
-/// instead of the dense `[ceil(N/64), max_m_tiles, num_experts]` 3D grid that
-/// early-exits on 99.5% of its CTAs. There is therefore NO `max_m_tiles`
-/// argument — the work-item count is read from `total_tiles` on the device.
+/// A fixed `PM5_PERSIST_CTAS=96` 1D grid strides over the COMPACTED work-list
+/// built by `moe_build_tile_worklist`. There is NO `max_m_tiles` argument — the
+/// work-item count is read from `total_tiles` on the device.
 ///
 /// `PM5_PERSIST_CTAS = 96` here is the SSOT mirror of the `#define
 /// PM5_PERSIST_CTAS 96` in `moe_fp8_grouped_gemm.cu`; the two MUST match or the
@@ -498,7 +420,7 @@ pub fn moe_build_tile_worklist(
 ///
 /// Grid: (PM5_PERSIST_CTAS=96, 1, 1)  Block: (256, 1, 1)
 #[allow(clippy::too_many_arguments)]
-pub fn moe_fp8_grouped_gemm_v5(
+pub fn moe_fp8_grouped_gemm(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
     input: DevicePtr,            // [total_tokens, K] BF16
