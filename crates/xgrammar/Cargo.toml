@@ -30,7 +30,7 @@ thiserror = "2"
 [dev-dependencies]
 # Micro-benchmark harness for the Tier-1 perf work — measures
 # `GrammarCompiler::compile_*` and `GrammarMatcher::fill_next_token_bitmask`.
-criterion = "0.5"
+criterion = "0.8"
 
 [[bench]]
 name = "grammar_bench"

@@ -373,3 +373,38 @@ fn test_ssm_snapshot_overwrite_returns_displaced() {
     assert_eq!(m.ssm_snapshot_tokens, 16);
     tree.release(&tokens, 16);
 }
+
+/// Issue #58: the prefix-cache key is derived from token IDs only, so two
+/// vision requests that differ ONLY in image pixel content but share the same
+/// text prompt and image-pad placeholder run produce a byte-identical token
+/// stream, and therefore collide on the same cache entry. This pins the
+/// image-blind-key invariant the model-layer vision-pad gate depends on: if a
+/// vision prefill were admitted here, the next page's identical token stream
+/// would reuse the previous page's KV/snapshot and return the wrong page's
+/// answer (the "returns the previous picture" report).
+#[test]
+fn test_vision_pad_tokens_are_image_blind_collision() {
+    let tree = RadixTree::new();
+    const IMAGE_PAD: u32 = 151655; // <|image_pad|>
+
+    // Page A: 3 prompt tokens followed by a run of image-pad placeholders.
+    let page_a: Vec<u32> = [1u32, 2, 3]
+        .into_iter()
+        .chain(std::iter::repeat(IMAGE_PAD).take(29))
+        .collect(); // 32 tokens == 2 blocks of 16
+    // Page B is a DIFFERENT image but the same prompt and same pad count, so
+    // pixels never enter the token IDs: the stream is identical to page A.
+    let page_b = page_a.clone();
+
+    // Admitting page A's blocks would let page B match them in full.
+    tree.insert(&page_a, &[10, 20], &[], 16, 0);
+    let m = tree.lookup(&page_b, 16, 0);
+
+    assert_eq!(
+        m.matched_tokens, 32,
+        "distinct images with identical prompt+pad token streams collide on \
+         the same prefix-cache key (issue #58); the model layer must not admit \
+         vision prefills into the radix cache"
+    );
+    assert_eq!(m.matched_blocks, vec![10, 20]);
+}

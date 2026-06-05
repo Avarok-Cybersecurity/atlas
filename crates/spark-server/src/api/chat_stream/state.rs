@@ -142,6 +142,14 @@ pub(super) struct StreamState {
     /// Dead after the tool-call retry stack was removed; never set now that
     /// `tool_retry_enabled` is constant `false`.
     pub(super) pending_retry: Option<PendingRetry>,
+    /// `return_token_ids`: sampled token IDs not yet attached to an
+    /// emitted chunk. One ID is pushed per `handle_token` call (== one
+    /// sampled token == one increment of `usage.completion_tokens`),
+    /// then drained onto the next client-visible chunk. The sum of all
+    /// drained IDs across the stream therefore equals
+    /// `completion_tokens` exactly. Stays empty unless the request
+    /// opted in, so it costs nothing on the default path.
+    pub(super) pending_token_ids: Vec<u32>,
 }
 
 /// Carrier for the (now-removed) tool-call retry path. Never constructed
@@ -194,6 +202,7 @@ impl StreamState {
             thinking_done: !enable_thinking,
             buffered_tool_chunks: HashMap::new(),
             pending_retry: None,
+            pending_token_ids: Vec::new(),
         }
     }
 }

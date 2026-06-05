@@ -131,7 +131,7 @@ pub fn start_chunked_prefill(
         // identical Marconi prefix-cache lookups (bug #33 fix).
         // Uses bulk broadcast (single NCCL op) instead of per-token broadcast
         // which caused NCCL timeouts on long prompts (6K+ tokens = 6K+ broadcasts).
-        model.ep_broadcast_cmd(0xFFFFFFF0)?;
+        model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF0)?;
         model.ep_broadcast_cmd(chunk_len as u32)?;
         model.ep_broadcast_cmd(0)?; // chunk_start
         model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
@@ -157,7 +157,8 @@ pub fn start_chunked_prefill(
                     "prefill_a_step: free_sequence (after prefill error): {free_err:#}"
                 );
             }
-            if let Err(bcast_err) = model.ep_broadcast_cmd(0xFFFFFFF1) {
+            if let Err(bcast_err) = model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF1)
+            {
                 tracing::error!(
                     "prefill_a_step: ep_broadcast (after prefill error): {bcast_err:#}"
                 );
@@ -190,7 +191,9 @@ pub fn start_chunked_prefill(
                         "prefill_a_step: free_sequence (after sample error): {free_err:#}"
                     );
                 }
-                if let Err(bcast_err) = model.ep_broadcast_cmd(0xFFFFFFF1) {
+                if let Err(bcast_err) =
+                    model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF1)
+                {
                     tracing::error!(
                         "prefill_a_step: ep_broadcast (after sample error): {bcast_err:#}"
                     );

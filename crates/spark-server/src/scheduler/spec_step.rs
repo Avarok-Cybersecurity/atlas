@@ -20,7 +20,7 @@ pub fn step_self_spec(
     let a = &mut active[0];
 
     // 1. Full-model decode to get token_0
-    if let Err(e) = model.ep_broadcast_cmd(a.last_token) {
+    if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, a.last_token) {
         tracing::error!("EP broadcast self-spec token: {e:#}");
         a.finished = true;
         return;
@@ -187,7 +187,7 @@ pub fn step_ngram(
         step_ngram_verify(model, a, &drafts, proposer, verify_ctx);
     } else {
         // ── Phase A: Bootstrap decode + N-gram propose ──
-        if let Err(e) = model.ep_broadcast_cmd(a.last_token) {
+        if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, a.last_token) {
             tracing::error!("EP broadcast ngram bootstrap: {e:#}");
             a.finished = true;
             return;
@@ -249,7 +249,7 @@ pub fn step_ngram_verify(
 
     // EP: broadcast verify K=2 command + tokens
     let tokens_k2 = [a.last_token, drafts[0]];
-    if let Err(e) = model.ep_broadcast_cmd(0xFFFFFFF2) {
+    if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, 0xFFFFFFF2) {
         tracing::error!("EP broadcast ngram verify cmd: {e:#}");
         a.finished = true;
         return;

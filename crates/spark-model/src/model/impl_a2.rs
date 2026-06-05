@@ -172,6 +172,97 @@ impl TransformerModel {
         Ok(min_val)
     }
 
+    /// Broadcast a `(seq_id, cmd)` pair from rank 0 to all ranks.
+    ///
+    /// When `v2` is true, this fires a `seq_id` broadcast immediately before
+    /// the existing `cmd` broadcast. Workers reading the stream pick up the
+    /// preamble via [`Self::ep_recv_seq_and_cmd`] and route the command to
+    /// the matching `SequenceState` slot.
+    ///
+    /// When `v2` is false, the preamble is skipped and the wire shape is
+    /// byte-identical to the legacy single-sequence protocol — head and
+    /// worker built before this change continue to interoperate.
+    ///
+    /// Both ranks must agree on `v2` at startup (e.g. via the same env
+    /// var). Disagreement causes the worker to misread the next u32 as a
+    /// command code and is the kind of misconfiguration we want to fail
+    /// loudly in development — there's no graceful fallback.
+    pub(super) fn ep_broadcast_seq_and_cmd(&self, seq_id: u32, cmd: u32, v2: bool) -> Result<()> {
+        // No-op unless EP is actually active. The per-seq broadcast helpers
+        // (`ep_broadcast_cmd_for_seq`) are called unconditionally from the
+        // head's prefill / decode / mtp / lifecycle paths, exactly like the
+        // original `ep_broadcast_cmd` which no-ops here via
+        // `ep_broadcast_cmd_dispatch`. Without this guard `ep_broadcast_u32`
+        // panics ("ep_broadcast_u32 without comm") on every single-GPU
+        // generation, since `self.comm` is `None`. (Regression from the EP=2
+        // slot-mux work, which only exercised the 2-rank path.)
+        if !(self.comm.is_some() && self.config.ep_world_size > 1) {
+            return Ok(());
+        }
+        if v2 {
+            self.ep_broadcast_u32(seq_id)?;
+        }
+        self.ep_broadcast_u32(cmd)?;
+        Ok(())
+    }
+
+    /// Wire-protocol shape for v2 batched decode (`0xFFFFFFE0`):
+    ///
+    /// ```text
+    /// preamble seq_id = 0  (ignored — cmd routes the whole batch)
+    /// cmd = 0xFFFFFFE0
+    /// N (u32)
+    /// seq_ids[N]  (one bulk broadcast)
+    /// tokens[N]   (one bulk broadcast)
+    /// ```
+    ///
+    /// The matched receive on the worker is `ep_worker_decode_batch` in
+    /// `ep_worker_step_impl`'s dispatch. Both ranks then call the
+    /// `decode_batch_compute_main` path which runs the existing batched
+    /// `decode_multi_seq` per-layer with N tokens — same per-layer NCCL
+    /// allreduce sequence on both ranks, comm-stream order matches.
+    ///
+    /// Caller must hold `self.comm.is_some()` (no-op on world_size=1) and
+    /// `self.ep_protocol_v2 == true` (without the preamble, the worker
+    /// would mis-parse the seq_id u32 as a cmd code). Both conditions are
+    /// guaranteed at the only caller — `decode_batch_dispatch`'s EP
+    /// branch — but asserted defensively here.
+    pub(super) fn ep_broadcast_decode_batch_dispatch(
+        &self,
+        seq_ids: &[u32],
+        tokens: &[u32],
+    ) -> Result<()> {
+        if !(self.comm.is_some() && self.config.ep_world_size > 1) {
+            return Ok(());
+        }
+        debug_assert!(
+            self.ep_protocol_v2,
+            "ep_broadcast_decode_batch_dispatch called without ATLAS_EP_PROTOCOL=v2"
+        );
+        debug_assert_eq!(
+            seq_ids.len(),
+            tokens.len(),
+            "seq_ids and tokens length mismatch"
+        );
+        self.ep_broadcast_seq_and_cmd(0, 0xFFFFFFE0, true)?;
+        self.ep_broadcast_u32(seq_ids.len() as u32)?;
+        self.ep_broadcast_tokens(seq_ids)?;
+        self.ep_broadcast_tokens(tokens)?;
+        Ok(())
+    }
+
+    /// Receive a `(seq_id, cmd)` pair from rank 0. Worker-side counterpart
+    /// of [`Self::ep_broadcast_seq_and_cmd`].
+    ///
+    /// With `v2` enabled the returned `seq_id` is the slot the head wants
+    /// the worker to dispatch the command into; with `v2` disabled the
+    /// returned `seq_id` is always 0 (the legacy singleton slot).
+    pub(super) fn ep_recv_seq_and_cmd(&self, v2: bool) -> Result<(u32, u32)> {
+        let seq_id = if v2 { self.ep_broadcast_u32(0)? } else { 0 };
+        let cmd = self.ep_broadcast_u32(0)?;
+        Ok((seq_id, cmd))
+    }
+
     /// Broadcast a u32 command from rank 0 to all ranks.
     /// Rank 0 writes `val` to GPU buffer and broadcasts.
     /// Other ranks receive the value and return it.
@@ -194,28 +285,94 @@ impl TransformerModel {
         }
     }
 
-    /// EP worker step: receive a command from rank 0 and execute it.
+    /// EP worker step: receive a (seq_id, cmd) preamble from rank 0 and
+    /// execute the command in the addressed slot.
     ///
     /// Returns false when the worker should shut down.
-    /// Protocol: rank 0 broadcasts u32 commands before each model operation:
-    /// - 0..0xFFFFFFF0: token ID → decode
-    /// - 0xFFFFFFF0: prefill start → next broadcast = length, then length tokens
-    /// - 0xFFFFFFF1: free+realloc sequence
-    /// - 0xFFFFFFF2: verify K=2 → next 2 broadcasts = tokens, then accept/reject
-    /// - 0xFFFFFFF3: verify K=3 → next 3 broadcasts = tokens, then num_accepted
-    /// - 0xFFFFFFF4: verify K=4 → next 4 broadcasts = tokens, then num_accepted
-    /// - 0xFFFFFFFF: shutdown
-    pub(super) fn ep_worker_step_impl(&self, seq: &mut SequenceState) -> Result<bool> {
-        let cmd = self.ep_broadcast_u32(0)?;
+    ///
+    /// Protocol (`ATLAS_EP_PROTOCOL=v2`): rank 0 broadcasts the slot
+    /// identifier first (worker uses it to pick the right `SequenceState`
+    /// from `slots`), then the command code, then any per-command follow-on
+    /// data. With v1 (the default) the preamble is skipped and every
+    /// command targets slot 0 — equivalent to the singleton path this
+    /// function originally implemented.
+    ///
+    /// Command codes:
+    /// - 0..0xFFFFFFEF: token ID → decode in the addressed slot
+    /// - 0xFFFFFFF0: prefill start → chunk_len, chunk_start, full_len, then full_len tokens
+    /// - 0xFFFFFFF1: alloc slot (frees any prior occupant first, then re-allocates)
+    /// - 0xFFFFFFF2/3/4: verify K=2/3/4 → K tokens, then accept/num_accepted
+    /// - 0xFFFFFFFF: shutdown (seq_id is ignored; applies to the whole worker)
+    pub(super) fn ep_worker_step_impl(&self, slots: &mut [Option<SequenceState>]) -> Result<bool> {
+        let (seq_id, cmd) = self.ep_recv_seq_and_cmd(self.ep_protocol_v2)?;
+
+        // Shutdown applies to the whole worker — seq_id is ignored.
+        if cmd == 0xFFFFFFFF {
+            return Ok(false);
+        }
+
+        // Batched-decode (`0xFFFFFFE0`): the preamble seq_id is sentinel-0;
+        // the real per-token routing lives in the seq_ids[N] payload that
+        // follows. Hand off to the batched handler which reads N + seq_ids
+        // + tokens off the wire and dispatches the matched compute.
+        if cmd == 0xFFFFFFE0 {
+            return self.ep_worker_decode_batch(slots);
+        }
+
+        let slot_idx = seq_id as usize;
+        if slot_idx >= slots.len() {
+            anyhow::bail!(
+                "ep_worker_step: seq_id {} exceeds slot capacity {} \
+                 (head and worker likely disagree on max_batch_size)",
+                seq_id,
+                slots.len(),
+            );
+        }
+
+        // `alloc-slot` (0xFFFFFFF1): replace the slot's sequence wholesale.
+        // Frees the prior occupant if any, then allocates a fresh one. The
+        // SSM-pool slot the new sequence claims may or may not equal
+        // slot_idx — head and worker stay aligned because both ranks call
+        // `claim_slot()` from a free-list pop in matched order. Defensive
+        // bail if they ever diverge so we fail fast rather than corrupt KV.
+        if cmd == 0xFFFFFFF1 {
+            if let Some(mut old) = slots[slot_idx].take() {
+                self.free_sequence(&mut old)?;
+            }
+            let new_seq = self.alloc_sequence()?;
+            if self.ep_protocol_v2 && new_seq.slot_idx != slot_idx {
+                anyhow::bail!(
+                    "ep_worker_step: SSM-pool slot {} doesn't match head's seq_id {} \
+                     after alloc — claim_slot ordering invariant violated",
+                    new_seq.slot_idx,
+                    slot_idx,
+                );
+            }
+            slots[slot_idx] = Some(new_seq);
+            return Ok(true);
+        }
+
+        // All other commands operate on an already-allocated slot.
+        let seq = slots[slot_idx].as_mut().ok_or_else(|| {
+            anyhow::anyhow!(
+                "ep_worker_step: cmd {:#x} arrived for unallocated slot {} \
+                 — head dispatched without a prior alloc",
+                cmd,
+                slot_idx,
+            )
+        })?;
+
+        self.ep_worker_dispatch_cmd(cmd, seq)
+    }
+
+    /// Per-command dispatch for [`Self::ep_worker_step_impl`]. The
+    /// (seq_id, cmd) preamble + slot lookup + shutdown + alloc are already
+    /// handled by the caller; this routine assumes `seq` is the right
+    /// slot's allocated `SequenceState`.
+    fn ep_worker_dispatch_cmd(&self, cmd: u32, seq: &mut SequenceState) -> Result<bool> {
         let stream = self.gpu.default_stream();
 
         match cmd {
-            0xFFFFFFFF => return Ok(false), // shutdown
-            0xFFFFFFF1 => {
-                // Free and realloc sequence
-                self.free_sequence(seq)?;
-                *seq = self.alloc_sequence()?;
-            }
             0xFFFFFFF0 => {
                 // Prefill chunk: receive chunk_len, chunk_start, full prompt length,
                 // then ALL prompt tokens via bulk broadcast (single NCCL op).
@@ -319,6 +476,71 @@ impl TransformerModel {
             }
         }
 
+        Ok(true)
+    }
+
+    /// Worker-side handler for the batched-decode protocol (`0xFFFFFFE0`).
+    ///
+    /// Reads `N` (u32), `seq_ids[N]` (bulk broadcast), and `tokens[N]`
+    /// (bulk broadcast) off the wire — matching what the head wrote in
+    /// `ep_broadcast_decode_batch_dispatch`. Then builds an in-order
+    /// `Vec<&mut SequenceState>` from the addressed slots and hands off
+    /// to the shared compute path. The compute does the same per-layer
+    /// `decode_multi_seq` the non-EP main batched path runs, with the
+    /// NCCL allreduces inside each layer matching the head's submission
+    /// order on the comm.
+    ///
+    /// Validates seq_ids up-front (bounds + duplicates) so a malformed
+    /// payload from a buggy head fails before touching slot state.
+    fn ep_worker_decode_batch(&self, slots: &mut [Option<SequenceState>]) -> Result<bool> {
+        let n = self.ep_broadcast_u32(0)? as usize;
+        let seq_ids = self.ep_broadcast_tokens(&vec![0u32; n])?;
+        let tokens = self.ep_broadcast_tokens(&vec![0u32; n])?;
+
+        // Validate up front so we fail before touching slot state.
+        let mut seen = std::collections::HashSet::new();
+        for &id in &seq_ids {
+            let idx = id as usize;
+            if idx >= slots.len() {
+                anyhow::bail!(
+                    "ep_worker_decode_batch: seq_id {} exceeds slot capacity {}",
+                    id,
+                    slots.len(),
+                );
+            }
+            if !seen.insert(id) {
+                anyhow::bail!("ep_worker_decode_batch: duplicate seq_id {} in batch", id);
+            }
+        }
+
+        // Drain populated slots into a (idx, ref) Vec we can index by
+        // position with `swap_remove`. The borrow checker won't let us
+        // index `slots[seq_ids[i]]` in a loop because each `&mut` is
+        // distinct but the indexer can't prove non-overlap.
+        let mut slot_refs: Vec<(usize, &mut SequenceState)> = slots
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(i, opt)| opt.as_mut().map(|s| (i, s)))
+            .collect();
+
+        // Order the refs to match the head's seq_ids order so the
+        // compute path processes tokens in the same batch index as the
+        // head — critical for KV-cache row alignment per slot.
+        let mut refs: Vec<&mut SequenceState> = Vec::with_capacity(n);
+        for &id in &seq_ids {
+            let idx = id as usize;
+            let pos = slot_refs
+                .iter()
+                .position(|(i, _)| *i == idx)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("ep_worker_decode_batch: slot {} not allocated", idx)
+                })?;
+            let (_, seq) = slot_refs.swap_remove(pos);
+            refs.push(seq);
+        }
+
+        let stream = self.gpu.default_stream();
+        self.decode_batch_compute_main(&tokens, &mut refs, stream)?;
         Ok(true)
     }
 }

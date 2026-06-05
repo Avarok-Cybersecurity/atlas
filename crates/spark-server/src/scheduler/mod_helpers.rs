@@ -130,12 +130,26 @@ pub(super) fn drain_pending_requests(
 /// slots [0..N)).
 ///
 /// CRITICAL: compact_sequence MUST run BEFORE finish_sequence (BUG #35).
+///
+/// Under v2 EP (`ep_protocol_v2`) the worker pre-allocates every slot at
+/// startup and the head-worker mirror is keyed by `slot_idx`, not by the
+/// active-set position. Moving SSM states on the head only would leave
+/// the worker's mirror at the original slot — the next op against that
+/// seq would address different physical memory on each rank. The retired
+/// seq also can't be tagged with `usize::MAX` because that sentinel
+/// becomes `0xFFFFFFFF` when cast to a u32 seq_id and trips the worker's
+/// bounds check on the next `0xFFFFFFF1` broadcast. So v2 skips both
+/// the compaction and the sentinel and lets the active vec be
+/// non-contiguous w.r.t. `slot_idx` — pre-allocated slots stay valid
+/// in place across the swap_remove, and the per-slot CUDA graph cache
+/// stays warm because the seq never moved.
 pub(super) fn retire_finished_sequences(model: &dyn Model, active: &mut Vec<ActiveSeq>) {
+    let skip_compaction = model.ep_protocol_v2();
     let mut i = 0;
     while i < active.len() {
         if active[i].finished {
             let mut a = active.swap_remove(i);
-            if i < active.len() && active[i].seq.slot_idx != i {
+            if !skip_compaction && i < active.len() && active[i].seq.slot_idx != i {
                 // Compact the swapped-in sequence to reuse the retired
                 // seq's slot. Mark the retired seq's slot as reused so
                 // free_sequence doesn't double-release it.

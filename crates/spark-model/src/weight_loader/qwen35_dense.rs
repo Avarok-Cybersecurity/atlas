@@ -171,15 +171,25 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                                 (q_dense, q_nvfp4),
                                 (k_dense, k_nvfp4),
                                 (v_dense, v_nvfp4),
-                                (_o_dense, o_nvfp4),
+                                (o_dense, o_nvfp4),
                             ] = load_qkvo_tp(config, load_bf16_then_nvfp4)?;
 
                             let (k_scale, v_scale) = load_kv_scales(store, &p, gpu);
 
+                            // The BF16 q/k/v/o dense tensors are only the intermediate
+                            // fed to the GPU quantize_to_nvfp4 above. Prefill AND decode
+                            // always dispatch the NVFP4 weights, so the BF16 copies are
+                            // dead once quantized. Free them instead of retaining a full
+                            // second copy of every projection (Atlas issue #A1).
+                            gpu.free(q_dense.weight)?;
+                            gpu.free(k_dense.weight)?;
+                            gpu.free(v_dense.weight)?;
+                            gpu.free(o_dense.weight)?;
+
                             let attn = AttentionWeights {
-                                q_proj: q_dense,
-                                k_proj: k_dense,
-                                v_proj: v_dense,
+                                q_proj: DenseWeight { weight: spark_runtime::gpu::DevicePtr::NULL },
+                                k_proj: DenseWeight { weight: spark_runtime::gpu::DevicePtr::NULL },
+                                v_proj: DenseWeight { weight: spark_runtime::gpu::DevicePtr::NULL },
                                 o_proj: o_nvfp4,
                                 q_norm: dense(store, &format!("{p}.q_norm.weight"))?,
                                 k_norm: dense(store, &format!("{p}.k_norm.weight"))?,
@@ -270,6 +280,10 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
 
                     let qkvz_dense =
                         gpu_concat_rows(&qkv_dense, qkv_rows, &z_dense, z_rows, h, gpu)?;
+                    // qkv/z BF16 are only inputs to the concat above; free them now
+                    // rather than leaking them for the layer's lifetime (Atlas issue #A1).
+                    gpu.free(qkv_dense.weight)?;
+                    gpu.free(z_dense.weight)?;
 
                     let ba_dense = interleave_ba(&in_proj_a, &in_proj_b, nv, nk, h, gpu)?;
 
@@ -334,8 +348,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             (None, None)
                         };
 
+                    // SSM prefill/decode always dispatch qkvz_nvfp4/_t and the NVFP4
+                    // out_proj; the BF16 qkvz_dense / out_proj_dense were only quantize
+                    // inputs. Free them rather than keep a third full-precision copy of
+                    // the largest SSM tensor across every layer (Atlas issue #A1).
+                    gpu.free(qkvz_dense.weight)?;
+                    gpu.free(out_proj_dense.weight)?;
+
                     let ssm = SsmWeights {
-                        in_proj_qkvz: qkvz_dense,
+                        in_proj_qkvz: DenseWeight { weight: spark_runtime::gpu::DevicePtr::NULL },
                         in_proj_ba: ba_dense,
                         conv1d,
                         a_log,

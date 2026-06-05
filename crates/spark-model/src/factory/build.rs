@@ -141,9 +141,34 @@ pub fn build_model(
     let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
     let quantize_k = gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?;
     let stream = gpu.default_stream();
+    // nvidia/Qwen3.6-35B-A3B-NVFP4 (algo=MIXED_PRECISION) ships an already
+    // NVFP4-packed lm_head (U8 `weight` + `weight_scale` + `weight_scale_2`).
+    // `load_lm_head` dense-loads those packed bytes, and re-quantizing them as
+    // if they were BF16 reads 2x the buffer and faults
+    // (CUDA_ERROR_ILLEGAL_ADDRESS, issue #107). Detect the packed lm_head and
+    // load it directly as NVFP4 instead of dequant->requantize.
+    let lm_head_key = [
+        "lm_head.weight",
+        "language_model.lm_head.weight",
+        "model.lm_head.weight",
+    ]
+    .into_iter()
+    .find(|k| store.contains(k));
+    let lm_head_prepacked_nvfp4 = lm_head_key
+        .and_then(|k| store.get(k).ok())
+        .is_some_and(|w| w.dtype == spark_runtime::weights::WeightDtype::UInt8);
+
     let lm_head_nvfp4 = if config.skip_lm_head_quantization() {
         tracing::info!("LM head kept as BF16 (skip NVFP4 quantization per model config)");
         None
+    } else if lm_head_prepacked_nvfp4 {
+        let prefix = lm_head_key.unwrap().strip_suffix(".weight").unwrap();
+        let q = crate::weight_map::quantized(store, prefix, gpu.as_ref())?;
+        tracing::info!(
+            "LM head loaded as pre-packed NVFP4 (vocab={}, skipped requantize)",
+            config.vocab_size
+        );
+        Some(q)
     } else {
         let q = quantize_to_nvfp4(
             &lm_head,

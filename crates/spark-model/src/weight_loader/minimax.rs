@@ -160,13 +160,12 @@ impl ModelWeightLoader for MinimaxM2WeightLoader {
              -> Result<(DenseWeight, QuantizedWeight)> {
                 let wkey = format!("{p}.{name}.weight");
                 let scale_key = format!("{p}.{name}.weight_scale_inv");
-                let (src_ptr, src_is_fp8) = {
+                let (src_ptr, src_dtype) = {
                     let t = store.get(&wkey)?;
-                    (
-                        t.ptr,
-                        t.dtype == spark_runtime::weights::WeightDtype::FP8E4M3,
-                    )
+                    (t.ptr, t.dtype)
                 };
+                let src_is_fp8 = src_dtype == spark_runtime::weights::WeightDtype::FP8E4M3;
+                let src_is_f32 = src_dtype == spark_runtime::weights::WeightDtype::FP32;
                 let scale_ptr = if src_is_fp8 && store.contains(&scale_key) {
                     Some(store.get(&scale_key)?.ptr)
                 } else {
@@ -202,15 +201,14 @@ impl ModelWeightLoader for MinimaxM2WeightLoader {
                     }
                 } else {
                     // M2.7-NVFP4 path: source is BF16 and dense_auto
-                    // returned the raw mmap'd store ptr (no dequant
-                    // alloc). After NVFP4 quantization the BF16 source
-                    // is no longer needed. Free it to recover ~22 GB
-                    // per rank (4 projections × 62 layers × ~88 MB),
-                    // which is the headroom needed for the MoE prefill
-                    // transpose to fit on a 122 GB GB10. WeightStore
-                    // retains a stale ptr — safe because nothing reads
-                    // attention weights by name after load_layers
-                    // returns.
+                    // or FP32. For FP32, dense_auto allocated a BF16
+                    // conversion buffer that is no longer needed once
+                    // NVFP4 is built. The original dense source can also
+                    // be released because attention forward only reads
+                    // q/k/v/o_nvfp4 after load_layers returns.
+                    if src_is_f32 {
+                        gpu.free(dense_w.weight)?;
+                    }
                     gpu.free(src_ptr)?;
                 }
                 Ok((

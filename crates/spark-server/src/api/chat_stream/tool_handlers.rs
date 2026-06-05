@@ -72,7 +72,8 @@ pub(super) fn handle_complete_tool_call(
         &ctx.leak_markers,
     );
     if !pre_tool_tail.is_empty() {
-        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, pre_tool_tail);
+        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, pre_tool_tail)
+            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
         sse_events.push(Ok(
             Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
         ));
@@ -98,7 +99,8 @@ pub(super) fn handle_complete_tool_call(
             "tool call validation error (hard): {e}; replacing with content and ending"
         );
         let msg = format!("[atlas] Tool call rejected: {e}");
-        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, msg);
+        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, msg)
+            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
         sse_events.push(Ok(
             Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
         ));
@@ -216,7 +218,8 @@ pub(super) fn handle_tool_call_start(
         &ctx.leak_markers,
     );
     if !pre_tool_tail.is_empty() {
-        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, pre_tool_tail);
+        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, pre_tool_tail)
+            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
         sse_events.push(Ok(
             Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
         ));

@@ -119,7 +119,7 @@ pub fn prefill_request(
         }
 
         // EP: broadcast prefill command + tokens to worker (bulk, single NCCL op).
-        model.ep_broadcast_cmd(0xFFFFFFF0)?;
+        model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF0)?;
         model.ep_broadcast_cmd(prompt_tokens.len() as u32)?;
         model.ep_broadcast_cmd(0)?; // chunk_start = 0 (non-chunked)
         model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
@@ -139,7 +139,8 @@ pub fn prefill_request(
                     "prefill_b_step: free_sequence (after prefill error): {free_err:#}"
                 );
             }
-            if let Err(bcast_err) = model.ep_broadcast_cmd(0xFFFFFFF1) {
+            if let Err(bcast_err) = model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF1)
+            {
                 tracing::error!(
                     "prefill_b_step: ep_broadcast (after prefill error): {bcast_err:#}"
                 );

@@ -31,7 +31,6 @@ WORKDIR /build
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/
-COPY vendor/ vendor/
 COPY kernels/ kernels/
 COPY jinja-templates/ jinja-templates/
 
