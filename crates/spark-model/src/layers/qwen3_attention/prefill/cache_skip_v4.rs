@@ -24,7 +24,7 @@ impl Qwen3AttentionLayer {
             n,
             h,
             nq,
-            nkv: _,
+            nkv,
             hd: _,
             kv_dim: _,
             eps,
@@ -204,6 +204,7 @@ impl Qwen3AttentionLayer {
             kv_lora,
             v_dim,
             hd_mla,
+            nkv,
             1.0f32 / (mla_cache_dim as f32).sqrt(),
             stream,
         )?;

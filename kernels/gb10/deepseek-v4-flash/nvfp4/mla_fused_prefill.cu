@@ -41,6 +41,7 @@ extern "C" __global__ void mla_fused_prefill(
     unsigned int kv_lora,       // 512
     unsigned int v_dim,         // 512
     unsigned int hd,            // nope + rope = 512
+    unsigned int num_kv_heads,  // 1 (GQA ratio = nq / nkv)
     float inv_sqrt_d            // 1/sqrt(576)
 ) {
     const unsigned int head = blockIdx.x;
@@ -50,6 +51,8 @@ extern "C" __global__ void mla_fused_prefill(
     if (head >= nq || q_pos >= seq_len) return;
 
     const unsigned int mla_cache_dim = kv_lora + rope_dim; // 576
+    const unsigned int gqa_ratio = nq / max(num_kv_heads, 1u);
+    const unsigned int kv_head = head / gqa_ratio;
 
     // ═══════════════════════════════════════════════════════════════
     // Step 1: Q absorption — Q_absorbed[512] = Q_nope[448] @ W_UK^T
@@ -58,8 +61,8 @@ extern "C" __global__ void mla_fused_prefill(
 
     // Load Q_nope[448] into registers (shared across all threads via L1)
     const __nv_bfloat16* q_nope_ptr = q_full + (unsigned long long)q_pos * nq * hd + head * hd;
-    // W_UK for this head: [kv_lora, nope] at offset head * kv_lora * nope
-    const __nv_bfloat16* w_uk_head = w_uk + (unsigned long long)head * kv_lora * nope;
+    // W_UK for this KV head: [kv_lora, nope] at offset kv_head * kv_lora * nope
+    const __nv_bfloat16* w_uk_head = w_uk + (unsigned long long)kv_head * kv_lora * nope;
 
     __shared__ float smem_q[576];  // Q_final = [Q_absorbed(512) | Q_rope(64)]
 
@@ -195,8 +198,8 @@ extern "C" __global__ void mla_fused_prefill(
     }
     __syncthreads();
 
-    // W_UV for this head: [v_dim, kv_lora] at offset head * v_dim * kv_lora
-    const __nv_bfloat16* w_uv_head = w_uv + (unsigned long long)head * v_dim * kv_lora;
+    // W_UV for this KV head: [v_dim, kv_lora] at offset kv_head * v_dim * kv_lora
+    const __nv_bfloat16* w_uv_head = w_uv + (unsigned long long)kv_head * v_dim * kv_lora;
 
     for (unsigned int idx = tid; idx < v_dim; idx += blockDim.x) {
         // Dot product: W_UV[idx, :] · attn_latent[:]

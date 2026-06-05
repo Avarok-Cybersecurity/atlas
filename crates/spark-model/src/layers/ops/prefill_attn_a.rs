@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
-use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
+use spark_runtime::kernel_args::{div_ceil, KernelLaunch};
 
 use crate::layers::moe;
 use crate::weight_map::{DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight};
@@ -160,6 +160,7 @@ pub fn mla_fused_prefill(
     kv_lora: u32,
     v_dim: u32,
     hd: u32,
+    num_kv_heads: u32,
     inv_sqrt_d: f32,
     stream: u64,
 ) -> Result<()> {
@@ -182,6 +183,7 @@ pub fn mla_fused_prefill(
         .arg_u32(kv_lora)
         .arg_u32(v_dim)
         .arg_u32(hd)
+        .arg_u32(num_kv_heads)
         .arg_f32(inv_sqrt_d)
         .launch(stream)
 }
