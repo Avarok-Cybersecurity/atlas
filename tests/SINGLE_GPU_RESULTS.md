@@ -737,3 +737,32 @@ change — NVCC generates the same register usage for `arr[0]` and a scalar.
 | `build.rs:71` | `args.ssm_cache_slots` propagated correctly to model constructor. ✓ |
 
 ### Status: P1/P2/P3 all confirmed resolved. One dead-code cleanup committed.
+
+---
+
+## Eighth Investigation (2026-06-05, session 017rr3GNr4Ax5HRuLnspG7ay)
+
+Independent cold-start audit. Started from the task spec without reading prior investigation
+notes. Initial read was against the **main** branch checkout; then discovered the spec_ssm branch
+has substantial code fixes not on main (primarily `cache_skip_mla.rs`).
+
+### Key discovery: spec_ssm diverges significantly from main on MLA prefill
+
+The main branch `cache_skip_mla.rs` still calls `prefill_attention_64` (HDIM=256 kernel) to run
+flash attention over the full expanded K/V (`nkv=8` heads × `hd=128` per head). The spec_ssm
+branch replaced this with `mla_fused_prefill` (absorbed HDIM=320 path), which is the active fix
+for the long-context gibberish.
+
+### Independent confirmations (spec_ssm HEAD)
+
+- `yarn.rs` correct YaRN formula: `low≈7, high≈15` for Mistral-Small-4 params. ✓
+- `mla_fused_prefill.cu` `acc_latent` is now a scalar (dead `[1]` element removed by 84b0d8d). ✓
+- `cache_skip_mla.rs` dispatches to `mla_fused_prefill` via `ensure!(mla_fused_prefill_k.0 != 0)`
+  guard; `kv_write_start` correctly skips prefix-cached tokens on write. ✓
+- `--kv-high-precision-layers auto` with `--kv-cache-dtype bf16`: confirmed safe — `kv_dtypes.rs`
+  returns empty vec (uniform BF16) when base dtype is already BF16. ✓
+- `nemotron MODEL.toml`: `disable_tool_steering = true`, `tool_call_parser = "bare_json"`. ✓
+- `impl_a1.rs`: `SsmStatePool` sized by `max_batch_size`; `SsmSnapshotPool` sized by
+  `ssm_cache_slots`. Independent allocations — `--ssm-cache-slots 0` disables only the snapshot
+  pool, not the active state pool. ✓
+- No new bugs found. All P1/P2/P3 conclusions from prior audits stand.
