@@ -12,8 +12,8 @@ use crate::layers::FfnComponent;
 use crate::layers::MoeLayer;
 use crate::layers::qwen3_attention::{MlaWeights, Qwen3AttentionLayer};
 use crate::weight_map::{
-    AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight,
-    dense, quantize_to_nvfp4, quantized_v2,
+    AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense,
+    quantize_to_nvfp4, quantized_v2,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -77,7 +77,11 @@ pub fn assemble_layer(
                 .with_context(|| format!("DeepSeek-V4 expert {e}: w3"))?;
             let down_proj = quantized_v2(store, &format!("{ep}.w2"), gpu)
                 .with_context(|| format!("DeepSeek-V4 expert {e}: w2"))?;
-            experts.push(ExpertWeight { gate_proj, up_proj, down_proj });
+            experts.push(ExpertWeight {
+                gate_proj,
+                up_proj,
+                down_proj,
+            });
         } else {
             experts.push(ExpertWeight::null());
         }
@@ -103,7 +107,9 @@ pub fn assemble_layer(
     let moe_weights = MoeWeights {
         gate,
         shared_expert,
-        shared_expert_gate: DenseWeight { weight: DevicePtr::NULL },
+        shared_expert_gate: DenseWeight {
+            weight: DevicePtr::NULL,
+        },
         experts,
         router_pre_norm: None,
         correction_bias: None,

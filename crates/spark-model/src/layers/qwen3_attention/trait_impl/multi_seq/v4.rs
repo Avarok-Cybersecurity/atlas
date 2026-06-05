@@ -59,24 +59,8 @@ impl Qwen3AttentionLayer {
             };
             let o_out_i = o_out.offset(i * c.h * bf16);
             self.ms_v4_decode_one(
-                c,
-                kv_cache,
-                &meta_i,
-                normed_i,
-                o_out_i,
-                mla,
-                stream,
-                h,
-                nq,
-                hd,
-                q_lora,
-                mla_rope,
-                o_lora,
-                q_dim,
-                nkv,
-                eps,
-                bs,
-                inv_sqrt_d,
+                c, kv_cache, &meta_i, normed_i, o_out_i, mla, stream, h, nq, hd, q_lora, mla_rope,
+                o_lora, q_dim, nkv, eps, bs, inv_sqrt_d,
             )?;
         }
         Ok(o_out)

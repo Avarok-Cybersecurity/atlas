@@ -92,10 +92,13 @@ fn check_embedding_and_head(store: &WeightStore) -> Result<()> {
     // spelling only need to appear as a new suffix here — no enumerated
     // prefix list to maintain.
     const EMBED_SUFFIXES: &[&str] = &[".embed_tokens.weight", ".embeddings.weight"];
-    const EMBED_EXACTS: &[&str] = &["tok_embeddings.weight", "embed_tokens.weight", "embed.weight"];
+    const EMBED_EXACTS: &[&str] = &[
+        "tok_embeddings.weight",
+        "embed_tokens.weight",
+        "embed.weight",
+    ];
     let has_embed = store.names().any(|n| {
-        EMBED_EXACTS.iter().any(|&e| n == e)
-            || EMBED_SUFFIXES.iter().any(|s| n.ends_with(s))
+        EMBED_EXACTS.iter().any(|&e| n == e) || EMBED_SUFFIXES.iter().any(|s| n.ends_with(s))
     });
     if !has_embed {
         let sample: Vec<_> = store.names().take(20).collect();

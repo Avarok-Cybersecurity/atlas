@@ -81,7 +81,10 @@ impl ModelWeightLoader for DeepSeekV4WeightLoader {
             return dense(store, "head.weight");
         }
         // Tied embeddings: either config says so, or no separate head exists
-        if config.tie_word_embeddings || store.contains("embed.weight") || store.contains("model.embed_tokens.weight") {
+        if config.tie_word_embeddings
+            || store.contains("embed.weight")
+            || store.contains("model.embed_tokens.weight")
+        {
             return self.load_embedding(store, config);
         }
         anyhow::bail!(

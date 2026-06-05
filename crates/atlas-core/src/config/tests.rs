@@ -522,8 +522,5 @@ fn test_parse_deepseek_v4_config() {
     assert!(caps.has_moe_layers);
     assert!(!caps.has_ssm_layers);
     assert!(caps.has_mtp);
-    assert_eq!(
-        caps.attention_type,
-        crate::capabilities::AttentionType::Mla
-    );
+    assert_eq!(caps.attention_type, crate::capabilities::AttentionType::Mla);
 }

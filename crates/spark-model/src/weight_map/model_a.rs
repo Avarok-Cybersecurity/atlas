@@ -300,12 +300,20 @@ pub(crate) fn dequant_fp8_to_bf16(
     let scale_key = format!("{prefix}.weight_scale");
     let s = store.get(&scale_key)?;
     let scale = if s.dtype == WeightDtype::FP32 {
-        ensure!(s.num_elements() == 1, "Expected scalar for {scale_key}, got {} elements", s.num_elements());
+        ensure!(
+            s.num_elements() == 1,
+            "Expected scalar for {scale_key}, got {} elements",
+            s.num_elements()
+        );
         let mut buf = [0u8; 4];
         gpu.copy_d2h(s.ptr, &mut buf)?;
         f32::from_le_bytes(buf)
     } else if s.dtype == WeightDtype::BF16 {
-        ensure!(s.num_elements() == 1, "Expected scalar for {scale_key}, got {} elements", s.num_elements());
+        ensure!(
+            s.num_elements() == 1,
+            "Expected scalar for {scale_key}, got {} elements",
+            s.num_elements()
+        );
         let mut buf = [0u8; 2];
         gpu.copy_d2h(s.ptr, &mut buf)?;
         bf16_bytes_to_f32(buf)
@@ -338,12 +346,20 @@ pub(crate) fn dequant_fp8_to_bf16_into(
     let scale_key = format!("{prefix}.weight_scale");
     let s = store.get(&scale_key)?;
     let scale = if s.dtype == WeightDtype::FP32 {
-        ensure!(s.num_elements() == 1, "Expected scalar for {scale_key}, got {} elements", s.num_elements());
+        ensure!(
+            s.num_elements() == 1,
+            "Expected scalar for {scale_key}, got {} elements",
+            s.num_elements()
+        );
         let mut buf = [0u8; 4];
         gpu.copy_d2h(s.ptr, &mut buf)?;
         f32::from_le_bytes(buf)
     } else if s.dtype == WeightDtype::BF16 {
-        ensure!(s.num_elements() == 1, "Expected scalar for {scale_key}, got {} elements", s.num_elements());
+        ensure!(
+            s.num_elements() == 1,
+            "Expected scalar for {scale_key}, got {} elements",
+            s.num_elements()
+        );
         let mut buf = [0u8; 2];
         gpu.copy_d2h(s.ptr, &mut buf)?;
         bf16_bytes_to_f32(buf)

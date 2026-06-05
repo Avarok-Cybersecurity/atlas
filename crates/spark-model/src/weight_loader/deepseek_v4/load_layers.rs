@@ -63,24 +63,35 @@ pub fn load_all_layers(
         ) = if is_v4_flash {
             let wo_a_w = dense_auto(store, &format!("{ap}.wo_a.weight"), gpu)?;
             let wo_b_w = dense_auto(store, &format!("{ap}.wo_b.weight"), gpu)?;
-            (
-                wo_a_w, wo_b_w, null, null, null, null, null, null, null,
-            )
+            (wo_a_w, wo_b_w, null, null, null, null, null, null, null)
         } else {
             // V3 fallback: wo_a is kv_b_proj, wo_b is o_proj
             let wkv_b_w = dense_auto(store, &format!("{ap}.wo_a.weight"), gpu)?;
             let wkv_b_shape = store.get(&format!("{ap}.wo_a.weight"))?.shape.clone();
             let o_dense = dense_auto(store, &format!("{ap}.wo_b.weight"), gpu)?;
             let wq_b_shape = store.get(&format!("{ap}.wq_b.weight"))?.shape.clone();
-            let (w_uk_t, w_uv, wq_b_rope, w_uk_host) =
-                super::compute::build_per_head_views(&wkv_b_w, &wkv_b_shape, &wq_b, &wq_b_shape, config, gpu)?;
+            let (w_uk_t, w_uv, wq_b_rope, w_uk_host) = super::compute::build_per_head_views(
+                &wkv_b_w,
+                &wkv_b_shape,
+                &wq_b,
+                &wq_b_shape,
+                config,
+                gpu,
+            )?;
             let w_qk_absorbed =
                 super::compute::build_w_qk_absorbed(&wq_b, &wq_b_shape, &w_uk_t, config, gpu)?;
             let (w_uk_block_diag, w_uv_block_diag) =
                 super::compute::build_block_diagonals(&w_uk_host, &w_uv, config, gpu)?;
             (
-                null, o_dense, wkv_b_w, w_uk_t, w_uv, wq_b_rope,
-                w_qk_absorbed, w_uk_block_diag, w_uv_block_diag,
+                null,
+                o_dense,
+                wkv_b_w,
+                w_uk_t,
+                w_uv,
+                wq_b_rope,
+                w_qk_absorbed,
+                w_uk_block_diag,
+                w_uv_block_diag,
             )
         };
         yarn_inv_freq = super::compute::ensure_yarn_inv_freq(&mut yarn_inv_freq, config, gpu)?;

@@ -107,23 +107,7 @@ impl Qwen3AttentionLayer {
             stream,
         )?;
 
-        // ── 3. RoPE on Q_rope and K_rope ──
-        ops::rope_yarn(
-            ctx.gpu,
-            self.rope_yarn_k,
-            q_rope_tmp,
-            q_rope_tmp,
-            meta.positions,
-            n,
-            nq,
-            1,
-            rope,
-            rope,
-            mla.yarn_inv_freq,
-            ctx.config.rope_theta as f32,
-            stream,
-        )?;
-
+        // ── 3. K_rope projection ──
         let k_rope_buf = ctx.buffers.ssm_ba();
         ops::dense_gemm(
             ctx.gpu,

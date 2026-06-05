@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
-use spark_runtime::kernel_args::{div_ceil, KernelLaunch};
+use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
 use crate::layers::moe;
 use crate::weight_map::{DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight};

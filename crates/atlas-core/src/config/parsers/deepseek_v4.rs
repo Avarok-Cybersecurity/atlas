@@ -34,7 +34,8 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
     }
 
     // DeepSeek-V4 ships a flat config.json (no nested text_config).
-    let json_fixed = serde_json::to_string(&raw).context("Failed to re-serialize DeepSeek-V4 config")?;
+    let json_fixed =
+        serde_json::to_string(&raw).context("Failed to re-serialize DeepSeek-V4 config")?;
     let mut config: ModelConfig =
         serde_json::from_str(&json_fixed).context("Failed to parse deepseek_v4 config.json")?;
 
