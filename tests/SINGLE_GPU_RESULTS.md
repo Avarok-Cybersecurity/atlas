@@ -580,3 +580,68 @@ Documenting here for the next MLA model onboarding pass.
 ### P1/P2/P3 status unchanged
 
 All prior conclusions confirmed. No new bugs found beyond the latent defect above.
+
+---
+
+## Fifth Investigation (2026-06-05, this session) — MLA Dispatch Chain Correction
+
+### Critical routing clarification: path labels in Code Verification were reversed
+
+The "Code Verification (2026-06-03)" section labelled `paged_mla.rs` as the "main path — fresh
+prompts, no prefix cache" and `cache_skip_mla.rs` as the "prefix-cache hit path". Both labels
+are **incorrect**. The actual dispatch is determined by `prefill_inner.rs:91`:
+
+```rust
+let attn_out = if seq_len_start == 0 {
+    // Chunk 0 (or non-chunked): Flash Attention on contiguous Q/K/V.
+    self.prefill_attention_with_cache_skip(normed, num_tokens, kv_write_start, ...)
+} else {
+    // Chunk 1+: GEMM-batched Q/K/V + per-token paged decode attention.
+    self.prefill_attention_paged(normed, num_tokens, seq_len_start, ...)
+};
+```
+
+The correct path labels are:
+
+| Path | Condition | MLA sub-path | Kernel |
+|------|-----------|-------------|--------|
+| `cache_skip.rs` → `cache_skip_mla.rs` | `seq_len_start == 0` (first chunk) | `mla_fused_prefill` | absorbed Q+attention+V, HDIM=320 |
+| `paged.rs` → `paged_mla.rs` | `seq_len_start > 0` (chunk 1+) | `inferspark_prefill_hd128` | flash attention, HDIM=128 |
+
+`kv_write_start` (how many KV positions are already cached from a prefix) is orthogonal to
+`seq_len_start` (chunk index within this request's prefill). `cache_skip_mla.rs` handles ALL
+first-chunk prefill — fresh prompts AND prefix-cache hits alike.
+
+### Implication: `paged_mla.rs` and `inferspark_prefill_hd128` are dead code for MLA models
+
+All three schedulers enforce single-chunk for MLA models:
+```rust
+let effective_max = if model.is_mla() { remaining } else { max_prefill_tokens };
+```
+(`run_standard.rs:50`, `run_batched_prefill.rs:44`, `run_batched_mixed.rs:50`)
+
+With `is_mla()` true, the entire prompt is forced into chunk 0 (`seq_len_start = 0`). The
+`seq_len_start > 0` branch in `prefill_inner.rs` — and therefore `paged_mla.rs` and its
+`inferspark_prefill_hd128` kernel — is **never reached** for Mistral Small 4 or any other
+current MLA model.
+
+### Implication for P1 Bug 2 (HDIM=256 kernel mismatch)
+
+The prior documentation described the HDIM=256 fix as "two-pronged":
+1. `-DHDIM=128` in KERNEL.toml → `prefill_attn_128_k` for fresh prompts via `paged_mla.rs`
+2. `mla_fused_prefill` for prefix-cache hit path via `cache_skip_mla.rs`
+
+The correct picture is that fix (1) defends a code path that is never taken. The **only active
+fix** for MLA prefill is `mla_fused_prefill`: since all MLA prompts go through `cache_skip_mla.rs`
+regardless of prefix-cache state, the absorbed kernel (which doesn't have a per-head HDIM loop
+at all) is what actually runs. The `-DHDIM=128` fix in KERNEL.toml is still correct to have as
+a safety net for any future code path that does reach `paged_mla.rs`, but it contributes nothing
+to the fix for the current deployed model.
+
+### Status: P1/P2/P3 all confirmed resolved
+
+No new bugs discovered. Path labels corrected above. The latent MLA decode kv_dtype defect
+documented in the Fourth Independent Audit (2026-06-04) remains the only open item:
+`attention_forward_mla.rs:379` unconditionally calls `paged_decode_attn_bf16()` — benign for
+Mistral Small 4 (BF16 KV required) but would silently misread a future FP8-KV MLA model.
+No fix applied; fix requires a new `paged_decode_mla_fp8_k` kernel handle.
