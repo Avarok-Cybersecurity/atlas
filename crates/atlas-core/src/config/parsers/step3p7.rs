@@ -46,23 +46,28 @@ pub(crate) fn parse_step3p7(raw: &serde_json::Value) -> Result<ModelConfig> {
     let mut tc_value = text_config.clone();
     if let Some(obj) = tc_value.as_object_mut() {
         // Fix array-typed fields that serde expects as scalars
-        // eos_token_id: [1, 2, 128007] → 1
+        // eos_token_id: [1, 2, 128007] → 128007 (last = special stop token)
+        // Step 3.7 lists multiple EOS tokens; the last is typically the
+        // meaningful generation-stopping special token (<|end|> etc.).
         if let Some(eos) = obj.get("eos_token_id").cloned() {
             if eos.is_array() {
-                let first = eos.as_array()
-                    .and_then(|a| a.first())
+                let last = eos.as_array()
+                    .and_then(|a| a.last())
                     .and_then(Value::as_u64)
                     .unwrap_or(1);
-                obj.insert("eos_token_id".to_string(), Value::from(first));
+                obj.insert("eos_token_id".to_string(), Value::from(last));
             }
         }
-        // rope_theta: [5000000.0, 10000.0, 10000.0] → 500000.0 (first element)
+        // rope_theta: per-layer array [5e6, 1e4, 1e4, 1e4, ...] → 5000000.0
+        // KNOWN LIMITATION: collapsing per-layer theta to scalar. Full-attention
+        // layers use θ=5e6, sliding layers use θ=1e4. We take the full-attention
+        // value (first element). See RoPE section below for documentation.
         if let Some(rt) = obj.get("rope_theta").cloned() {
             if rt.is_array() {
                 let first = rt.as_array()
                     .and_then(|a| a.first())
                     .and_then(Value::as_f64)
-                    .unwrap_or(500000.0);
+                    .unwrap_or(5000000.0);
                 obj.insert("rope_theta".to_string(), Value::from(first));
             }
         }
@@ -163,6 +168,23 @@ pub(crate) fn parse_step3p7(raw: &serde_json::Value) -> Result<ModelConfig> {
     }
 
     // ── RoPE configuration ──────────────────────────────────────────────
+    // KNOWN LIMITATION: Step 3.7 uses per-layer rope_theta and
+    // partial_rotary_factors arrays (theta=5e6 for full-attention layers,
+    // theta=1e4 for sliding layers; prf=0.5 for full, 1.0 for sliding).
+    // Atlas ModelConfig currently supports only a single scalar for each.
+    // We take the first element (full-attention value). This means sliding
+    // layers will use incorrect RoPE parameters — acceptable for initial
+    // bring-up but will need per-layer support for correct output.
+    if let Some(rt) = text_config.get("rope_theta") {
+        if let Some(theta) = rt.as_f64() {
+            config.rope_theta = theta;
+        } else if let Some(arr) = rt.as_array() {
+            // Per-layer array — take first (full-attention) value
+            if let Some(theta) = arr.first().and_then(Value::as_f64) {
+                config.rope_theta = theta;
+            }
+        }
+    }
     if let Some(rope_params) = text_config.get("rope_scaling")
         .or_else(|| text_config.get("rope_parameters"))
     {
@@ -211,8 +233,11 @@ pub(crate) fn parse_step3p7(raw: &serde_json::Value) -> Result<ModelConfig> {
         .unwrap_or(true);
 
     // ── Layer types ─────────────────────────────────────────────────────
-    // Step 3.7 specifies layer_types as strings: "full_attention" / "sliding_attention"
-    // Atlas treats both as FullAttention (sliding window is a property, not a layer type)
+    // KNOWN LIMITATION: Step 3.7 has mixed attention (12 full + 33 sliding
+    // in 45 hidden layers). Atlas currently maps both to FullAttention.
+    // The sliding_window value (512) is set globally but not applied
+    // per-layer. For correct behaviour, Atlas would need per-layer
+    // attention type dispatch. Acceptable for initial bring-up.
     if config.layer_types.is_empty() {
         if let Some(list) = text_config.get("layer_types").and_then(Value::as_array) {
             config.layer_types = list

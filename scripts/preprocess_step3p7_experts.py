@@ -29,6 +29,7 @@ import json
 import math
 import os
 import re
+import shutil
 import struct
 import sys
 from pathlib import Path
@@ -146,6 +147,7 @@ def process_checkpoint(model_dir: Path, output_dir: Path, max_shard_bytes: int =
     weight_map = {}
     fused_split = 0
     passed_through = 0
+    total_bytes = 0
     total_experts = None
 
     def flush_shard():
@@ -192,6 +194,7 @@ def process_checkpoint(model_dir: Path, output_dir: Path, max_shard_bytes: int =
                         expert_data = data[e * bytes_per_expert : (e + 1) * bytes_per_expert]
                         current_shard.append((expert_name, expert_data, expert_shape, dtype))
                         current_bytes += bytes_per_expert
+                        total_bytes += bytes_per_expert
 
                         if current_bytes >= max_shard_bytes:
                             flush_shard()
@@ -203,6 +206,7 @@ def process_checkpoint(model_dir: Path, output_dir: Path, max_shard_bytes: int =
                     # Pass through unchanged
                     current_shard.append((name, data, shape, dtype))
                     current_bytes += nbytes
+                    total_bytes += nbytes
                     passed_through += 1
 
                     if current_bytes >= max_shard_bytes:
@@ -228,7 +232,7 @@ def process_checkpoint(model_dir: Path, output_dir: Path, max_shard_bytes: int =
     # Write index
     index = {
         "metadata": {
-            "total_size": sum(len(v) for k, v in [(n, d) for n, d, s, t in []] ),
+            "total_size": total_bytes,
             "format": "step3p7-nvfp4-split-experts",
             "original_format": "step3p7-nvfp4-fused-experts",
             "num_experts": total_experts or 0,
@@ -244,7 +248,6 @@ def process_checkpoint(model_dir: Path, output_dir: Path, max_shard_bytes: int =
                    "special_tokens_map.json", "generation_config.json"]:
         src = model_dir / fname
         if src.exists():
-            import shutil
             shutil.copy2(src, output_dir / fname)
             print(f"Copied {fname}")
 

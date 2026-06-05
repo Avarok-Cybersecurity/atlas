@@ -2,10 +2,9 @@
 
 // Atlas Fused MoE Expert+Shared GEMV — K=2 multi-token batch variant.
 //
-// 122B-optimized: BLOCK_SIZE=256 (vs 128 in parent), giving 64 threads per
-// output (2 warps) with cross-warp shared memory reduction. This doubles
-// memory-level parallelism per output, improving LPDDR5X bandwidth utilization
-// for the 122B's larger dimensions (K=3072, N=1024).
+// Step 3.7 variant: BLOCK_SIZE=256, giving 64 threads per output (2 warps)
+// with cross-warp shared memory reduction. Adapted from 122B kernel with
+// Step 3.7 dimensions: moe_intermediate=1280, hidden=4096.
 //
 // Token layout in blockIdx.y:
 //   y ∈ [0, 2*top_k)         → routed experts (token = y/top_k, slot = y%top_k)
@@ -257,7 +256,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_batch2(
     const unsigned int K8 = K / 8;
 
     __shared__ float s_lut[16];
-    __shared__ float s_act[1024]; // SiLU(gate)*up precomputed for reuse across outputs
+    __shared__ float s_act[1280]; // SiLU(gate)*up precomputed — must be >= moe_intermediate_size (1280 for Step 3.7)
     __shared__ float smem_reduce[N_PER_BLOCK * 4];
 
     if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT_BATCH2[threadIdx.x];

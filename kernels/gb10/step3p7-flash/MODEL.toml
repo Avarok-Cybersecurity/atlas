@@ -26,8 +26,9 @@ architecture = "Full Attention + Sliding Attention + 288-expert Sigmoid-Routed M
 
 layers_total = 45
 layers_linear_attention = 0
-layers_full_attention = 45
-layer_pattern = "all attention (12 full + 36 sliding, 4:1 full:sliding ratio)"
+layers_full_attention = 12
+layers_sliding_attention = 33
+layer_pattern = "mixed attention (12 full + 33 sliding in 45 hidden layers, 1:3 full:sliding ratio + 3 sliding MTP = 48 total)"
 
 moe_experts = 288
 moe_topk = 8

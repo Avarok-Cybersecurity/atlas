@@ -203,8 +203,19 @@ impl ModelWeightLoader for Step3p7WeightLoader {
                                 let pp = format!("{ep}.{proj}");
                                 let weight = store.get(&format!("{pp}.weight"))?.ptr;
                                 let weight_scale = store.get(&format!("{pp}.weight_scale"))?.ptr;
+                                // weight_scale_2: try per-expert first, fall back to
+                                // global (unsplit) tensor. ModelOpt NVFP4 often stores
+                                // weight_scale_2 as a single per-tensor scalar that the
+                                // preprocessing script won't split.
                                 let ws2_key = format!("{pp}.weight_scale_2");
-                                let ws2_ptr = store.get(&ws2_key)?.ptr;
+                                let global_ws2_key = format!("{moe_p}.{proj}.weight_scale_2");
+                                let ws2_ptr = if store.contains(&ws2_key) {
+                                    store.get(&ws2_key)?.ptr
+                                } else if store.contains(&global_ws2_key) {
+                                    store.get(&global_ws2_key)?.ptr
+                                } else {
+                                    anyhow::bail!("weight_scale_2 not found for {pp} (tried per-expert and global)");
+                                };
                                 let mut ws2_buf = [0u8; 4];
                                 gpu.copy_d2h(ws2_ptr, &mut ws2_buf).ok();
                                 let weight_scale_2 = f32::from_le_bytes(ws2_buf);
