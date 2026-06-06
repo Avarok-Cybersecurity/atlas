@@ -1,5 +1,32 @@
 # CLAUDE HANDOFF — DFlash Option-B paged-γ propose: drafter emits degenerate drafts (~0% accept)
 
+> ## ⚠️ READ THIS FIRST — TOKEN BUDGET (you have ~100K, no memory across sessions)
+> This assignment **fits in ~55-70K tokens** if you obey the read-ranges below.
+> You do NOT need to read every file whole. The orientation you MUST read is just
+> this doc (~4K) + the checkpoint (~2K). Everything else is read-on-demand by the
+> line-ranges given in the Files section.
+>
+> **THE ONE LANDMINE THAT WILL BUST YOUR BUDGET:**
+> `docs/design/dflash_propose_cuda_graph.md` is **120KB ≈ 30,000 tokens**. NEVER
+> read it whole. `grep` it for a symbol if you must; otherwise skip it entirely.
+> Reading it once eats a third of your budget and tells you almost nothing you need.
+>
+> **Other budget rules:** Do NOT re-read a file you already read this session
+> (hold it in context). Do NOT re-diff vLLM (already done, see DEAD list). Do NOT
+> read the IGNORE-listed docs. Stay inside the line-ranges in the Files section.
+
+> ## ▶️ START HERE — execute in THIS order, do not wander
+> 1. Read this doc fully (~4K tok) + `~/dflash-session-checkpoint-20260605.md` (~2K). Stop. You now have the full picture.
+> 2. Read the PROVEN + DEAD lists below. These are closed. Never re-open them.
+> 3. Read PRIME suspect file `forward_block_layer_paged.rs` :240-282 and :384-429 only.
+> 4. Hand Ronald the A/B commands (Procedure step 1). He runs builds/benches; you read the log lines he pastes back.
+> 5. Run DIAG (Procedure step 2) — expect PASS, it's a confirm. If src≠cached, you're done (slot-mapping bug).
+> 6. If DIAG passes, probe the paged attention (Procedure step 3, Suspect 1) — copy the probe template from `impl_b3.rs` ~:94. ONE probe, ONE rebuild, read the number.
+> 7. Smallest edit. Re-bench. Stop when row-0 echoes + accept climbs.
+> Anything not on this list is scope creep — don't do it without asking Ronald.
+
+---
+
 **Date:** 2026-06-06
 **Author:** Friday (architect) → Claude Code (implementer)
 **Branch/tree:** `~/code/atlas`, branch `dflash-on-ssm`, HEAD `0fda11d`
