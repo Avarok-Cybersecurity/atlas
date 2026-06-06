@@ -1061,3 +1061,104 @@ the `SsmSnapshotPool`. Together they give minimum SSM footprint (~151 MB total).
 | P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** | YaRN `yarn.rs` + flat-grid `mla_fused_prefill.cu` + BF16 dispatch coverage — all three fixes re-verified. CUDA kernel bounds scale safely to 65K tokens. |
 | P2 Nemotron tool calling | **CONFIRMED FIXED** | b5f6836 jinja XML gate (`{%- if not disable_tool_steering %}`) verified correct and verified as defense-in-depth alongside existing `skip_template_tools=true` / `suppresses_jinja_tools()` mechanism. |
 | P3 SSM cache slots | **CONFIRMED CORRECT** | Two-pool architecture confirmed; `--ssm-cache-slots 0` correctly zeros only `SsmSnapshotPool`; 1206 MB is `SsmStatePool` (sized by `--max-batch-size`). |
+
+---
+
+## Twelfth Investigation (2026-06-06, independent audit)
+
+Fresh end-to-end audit of all three priorities against spec_ssm HEAD. No new bugs found.
+All previously applied fixes verified correct. Key findings per priority below.
+
+### P1 — Mistral Small 4 MLA prefill: dispatch chain and kernel verified
+
+**Files audited**: `prefill/cache_skip.rs`, `prefill/cache_skip_mla.rs`,
+`kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu`,
+`kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu`,
+`main_modules/kv_dtypes.rs`, `main_modules/serve_phases/kv_cache.rs`,
+`decode/attention_forward_mla.rs`, `scheduler/run_standard.rs`.
+
+**Dispatch chain** (`cache_skip.rs:89-100`): When `self.mla.is_some()`, the function
+immediately delegates to `prefill_attention_cache_skip_mla()` and returns — the standard
+Q/K/V projection path at line 104 is only reached by non-MLA models. ✓
+
+**Scheduler single-chunk gate** (`run_standard.rs:51-55`): `effective_max = remaining` for
+MLA models forces all tokens into one chunk regardless of `--max-prefill-tokens`. This routes
+every MLA prefill through `cache_skip_mla.rs`, never `paged_mla.rs`. ✓
+
+**`mla_fused_prefill` flat grid** (`mla_fused_prefill.cu:46-48`, `prefill_attn_a.rs:166`):
+Grid is `(nq * seq_len, 1, 1)`. For seq_len=65536 and nq=32: gridDim.x = 2,097,152, well
+within CUDA's 2^31 limit. The old `(nq, seq_len, 1)` layout would have overflowed gridDim.y
+at seq_len > 65535; the flat grid fix (a127885) eliminates that hazard. ✓
+
+**Kernel causal loop** (`mla_fused_prefill.cu:124-176`): `kv_end = min(q_pos + 1, seq_len)`;
+loop runs from 0 to q_pos inclusive. All index arithmetic uses `unsigned long long`. For
+q_pos=999, kv_lora=256: maximum offset = 999 * 256 = 255,744 elements; no overflow. ✓
+
+**Online softmax accumulator** (`mla_fused_prefill.cu:119-175`): Single `acc_latent` float
+register per thread (tid < kv_lora=256). Cross-warp reduction uses 8-slot `smem_dot` array
+(one slot per warp, 256 threads / 32 = 8 warps). Two `__syncthreads()` calls per KV iteration
+ensure correctness. After commit 84b0d8d the dead `acc_latent[2]` array is removed; no stale
+accumulator aliasing. ✓
+
+**Buffer reuse in `cache_skip_mla.rs`**: `ssm_ba()` is used first as `q_latent` (Q path),
+then re-used as `k_rope_buf` (K rope path). Safe because `q_latent` is fully consumed
+before `k_rope_buf` is written. `qkv_output()` is used as both `qg_out` (input to
+`mla_fused_prefill`) and `o_out` (output of wo projection); safe because these are
+sequential CUDA ops on the same stream. ✓
+
+**BF16 KV cache** (`kv_dtypes.rs:20-21`): `if kv_dtype == Bf16 { return vec![Bf16; N] }`
+fires before the `kv_high_precision_layers` logic. With `--kv-cache-dtype bf16
+--kv-high-precision-layers auto` (auto → 2 in `kv_cache.rs:233`), the early return
+ensures all 36 attention layers use BF16, regardless of the `auto` value. ✓
+
+**No new bugs found in P1.**
+
+### P2 — Nemotron Super 120B tool calling: full integration chain verified
+
+**Files audited**: `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`,
+`jinja-templates/nemotron_h.jinja`, `tool_parser.rs`, `tool_parser/bare_json.rs`,
+`api/chat/template.rs`.
+
+**MODEL.toml** (`[behavior]`): `disable_tool_steering=true`, `tool_call_parser="bare_json"`,
+`skip_template_tools=true`, `thinking_in_tools=false`. All four flags present. ✓
+
+**Jinja XML format instructions gate** (`nemotron_h.jinja:93-95`): The paragraph beginning
+"If you choose to call a function ONLY reply in the following format..." is wrapped in
+`{%- if not disable_tool_steering %}...{%- endif %}`. When Atlas passes
+`disable_tool_steering=true` to the jinja context, neither the XML format paragraph nor the
+`<tool_call>\n` steering prefix at line 214 are emitted. ✓
+
+**Jinja tools block gate**: `template.rs:84-97` sets `jinja_tools = None` when
+`state.behavior.skip_template_tools || parser_suppresses`. Both conditions are true for
+Nemotron: `skip_template_tools=true` (MODEL.toml) and `BareJsonParser::suppresses_jinja_tools()
+= true` (bare_json.rs:52). The `{%- if tools is iterable and tools | length > 0 %}` block
+in the jinja template does not fire. ✓
+
+**Bare-JSON system prompt**: `BareJsonParser::system_prompt()` emits the complete tool
+schema as JSON with "emit a single top-level JSON object" instructions. XGrammar grammar
+constrains token 1+ to the schema via `compile_bare_json_tool_grammar`. ✓
+
+**No new bugs found in P2.**
+
+### P3 — SSM cache slots: propagation verified
+
+**Files audited**: `cli.rs:279`, `main_modules/serve_phases/build.rs:71`,
+`factory/build.rs:41`, `model/impl_a1.rs:134-155`.
+
+**`SsmStatePool` (1206 MB)**: constructed at `impl_a1.rs:134` with `max_batch_size` — the
+`ssm_cache_slots` argument is NOT passed here. The pool holds live recurrent states for
+all in-flight sequences; 8 slots × 36 SSM layers × state_bytes ≈ 1206 MB. ✓
+
+**`SsmSnapshotPool` (Marconi prefix cache)**: constructed at `impl_a1.rs:143` with
+`ssm_cache_slots`. When `--ssm-cache-slots 0` is passed, `SsmSnapshotPool::new(0, ...)`
+creates a zero-slot pool (effectively disabled). ✓
+
+**No bugs. `--ssm-cache-slots 0` does not suppress `SsmStatePool`; this is correct.**
+
+### Summary
+
+| Priority | Status | Finding |
+|----------|--------|---------|
+| P1 MLA prefill | **CONFIRMED FIXED** | Dispatch chain, flat-grid kernel, causal loop bounds, BF16 early-return all verified. No seq_len limit at >1K tokens. |
+| P2 Nemotron tool calling | **CONFIRMED FIXED** | MODEL.toml flags, jinja gates, BareJsonParser chain verified end-to-end. |
+| P3 SSM cache slots | **CONFIRMED CORRECT** | Two-pool design; `--ssm-cache-slots 0` suppresses only `SsmSnapshotPool`. |
