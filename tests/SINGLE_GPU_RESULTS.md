@@ -1243,3 +1243,50 @@ Nemotron MODEL.toml fixes and SSM pool behavior match all prior investigations. 
 No new bugs found. Build system trace provides explicit confirmation that `-DHDIM=128` reaches
 the common `inferspark_prefill.cu`, closing the only remaining open "inferred but not traced"
 point in the prior documentation.
+
+---
+
+## Fifteenth Investigation (2026-06-06, independent trace from task spec)
+
+Independent investigation starting from the task description, reading each file cold without
+relying on prior investigation notes.
+
+### Key paths traced end-to-end
+
+**P1 — Mistral MLA prefill dispatch (new angle: main vs spec_ssm divergence)**
+
+Starting from `main`, `cache_skip_mla.rs` still uses the old `prefill_attention_64` kernel
+(unabsorbed path, wrong HDIM, wrong attention scale `1/sqrt(128)` instead of `1/sqrt(320)`).
+The spec_ssm rewrite of `cache_skip_mla.rs` is the critical P1 fix: it switches to
+`mla_fused_prefill` (absorbed-space attention, BR=16 scalar kernel, correct `1/sqrt(320)` scale
+with mandatory `ensure!`). This is the sole live MLA single-chunk prefill path
+(`prefill_inner.rs:91-100`: `seq_len_start == 0` → `prefill_attention_with_cache_skip`).
+
+Additional confirmations:
+- `ops::prefill_attention_mla128` added in spec_ssm_fix was a parallel dead-end; spec_ssm
+  uses the absorbed path instead (HDIM mismatch becomes irrelevant when you never call the
+  unabsorbed kernel).
+- `rope_yarn` in `cache_skip_mla.rs` (spec_ssm version line 198) still uses `mla.yarn_inv_freq`
+  for Q/K_rope rotation. The fixed `yarn.rs` formula feeds this correctly. Both fixes — YaRN
+  and absorbed attention — are needed simultaneously.
+- `kv-high-precision-layers auto` with `--kv-cache-dtype bf16`: "auto" → `kv_hp_layers=2`
+  (`kv_cache.rs:233`), then `build_layer_kv_dtypes(Bf16, 36, 2)` early-returns `vec![]`
+  (`kv_dtypes.rs:17`). No per-layer dtype differentiation; all 36 attention layers get BF16.
+  No FP8/BF16 mixing risk. ✓
+
+**P2 — Nemotron tool calling: b5f6836 jinja gate (new angle)**
+
+The `b5f6836` commit on spec_ssm adds an explicit gate: jinja template XML tool instructions
+are suppressed when `disable_tool_steering = true`. This prevents the `nemotron_h.jinja`
+`<tools>` block from injecting a second set of tool schema that could conflict with the
+bare-JSON system prompt from `BareJsonParser`. Without this gate the model receives
+contradictory tool-format instructions (XML from jinja + JSON from parser). With the gate
+only the JSON instructions reach the context. ✓
+
+**P3 — SSM pool: impl_a1.rs line 134 vs 154 confirmed**
+
+`SsmStatePool::new(&config, max_batch_size, ...)` at line 134 — sized by `--max-batch-size`.
+`SsmSnapshotPool::new(ssm_cache_slots, ...)` at line 154 — sized by `--ssm-cache-slots`.
+The two are independent; passing `--ssm-cache-slots 0` has zero effect on the 1206 MB pool. ✓
+
+### No new bugs found. All P1/P2/P3 fixes confirmed on spec_ssm HEAD.
