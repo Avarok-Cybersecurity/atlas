@@ -631,6 +631,26 @@ extern "C" __global__ void gated_delta_rule_decode(
         smem_q[tid] = q_ptr[tid];
     }
     __syncthreads();
+    // Per-head q/k L2 normalization (USE_QK_L2NORM_IN_KERNEL / prefill
+    // conv1d_update_l2norm parity). Without it raw |k| ~= 4.5 feeds the
+    // recurrence and H compounds to ~1e22 in a 16-token verify chunk -> NaN.
+    __shared__ float s_krnorm;
+    __shared__ float s_qrnorm;
+    if (tid == 0) {
+        float ksq = 0.0f, qsq = 0.0f;
+        for (unsigned int j = 0; j < k_dim; ++j) {
+            ksq += smem_k[j] * smem_k[j];
+            qsq += smem_q[j] * smem_q[j];
+        }
+        s_krnorm = rsqrtf(ksq + 1e-6f);
+        s_qrnorm = rsqrtf(qsq + 1e-6f);
+    }
+    __syncthreads();
+    if (tid < k_dim) {
+        smem_k[tid] *= s_krnorm;
+        smem_q[tid] *= s_qrnorm;
+    }
+    __syncthreads();
     if (tid < v_dim) {
         float v_i = v_ptr[tid];
         float hk_dot = 0.0f;

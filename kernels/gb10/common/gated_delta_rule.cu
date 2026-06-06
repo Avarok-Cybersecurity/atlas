@@ -111,6 +111,48 @@ extern "C" __global__ void gated_delta_rule_decode(
     }
     __syncthreads();
 
+    // Per-head L2 normalization of q and k (matches the reference
+    // USE_QK_L2NORM_IN_KERNEL / prefill conv1d_update_l2norm path). Without
+    // this, raw |k| ~= 4.5 feeds the recurrence and the H-state magnitude
+    // compounds to ~1e22 within a 16-token verify chunk -> FP32 overflow ->
+    // Inf/NaN on the highest-magnitude v-heads. L2-norm keeps |k|=1 so the
+    // state stays bounded (~25). Computed by thread 0 over k_dim elements.
+    __shared__ float s_k_rnorm;
+    __shared__ float s_q_rnorm;
+    if (tid == 0) {
+        float ksq = 0.0f, qsq = 0.0f;
+        for (unsigned int j = 0; j < k_dim; ++j) {
+            ksq += smem_k[j] * smem_k[j];
+            qsq += smem_q[j] * smem_q[j];
+        }
+        s_k_rnorm = rsqrtf(ksq + 1e-6f);
+        s_q_rnorm = rsqrtf(qsq + 1e-6f);
+    }
+    __syncthreads();
+    if (tid < k_dim) {
+        smem_k[tid] *= s_k_rnorm;
+        smem_q[tid] *= s_q_rnorm;
+    }
+    __syncthreads();
+
+    // GDN_PROBE (one-shot, thread0, head vh==24 b==0): dump post-norm |k|2,
+    // |q|2, gate, beta and max|H| to settle which term explodes on the verify
+    // path. |k|2 MUST read ~1.0 if the norm landed on the buffer gdn_decode
+    // consumes; ~2-21 means the norm is not hitting this buffer = the bug.
+    if (tid == 0 && vh == 24 && b == 0) {
+        float ksq = 0.0f, qsq = 0.0f, hmax = 0.0f;
+        for (unsigned int j = 0; j < k_dim; ++j) {
+            ksq += smem_k[j] * smem_k[j];
+            qsq += smem_q[j] * smem_q[j];
+        }
+        for (unsigned int j = 0; j < k_dim * v_dim; ++j) {
+            float h = fabsf(H[j]);
+            if (h > hmax) hmax = h;
+        }
+        printf("GDN_PROBE vh=%d b=%d |k|2=%.4f |q|2=%.4f g=%.6f bt=%.6f maxH=%.6g\n",
+               vh, b, ksq, qsq, g, bt, hmax);
+    }
+
     // Each thread handles one v_dim element (column of transposed H).
     // H[j][tid] for all j in k_dim — reads are coalesced across threads.
     if (tid < v_dim) {
