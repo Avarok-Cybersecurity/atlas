@@ -87,6 +87,71 @@ impl TransformerModel {
             comm: None,
             graph_capture: false,
         };
+        // SEED PROBE (gated on ATLAS_DFLASH_SEED_DUMP): dump the hidden buffer
+        // the drafter conditions on at step0. Answers: is the seed zero/stale
+        // (=> seed-population bug) or non-zero varied (=> look at cross-attn
+        // context path instead, do NOT resize buffers). Read-only; hot path is
+        // untouched unless the env var is set.
+        if std::env::var("ATLAS_DFLASH_SEED_DUMP")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .is_some()
+        {
+            if let Some(seed_ptr) = self.dflash_hidden_save {
+                let n_cap = self.config.dflash_capture_layers.len().max(1);
+                let n_elem = n_cap * self.config.hidden_size;
+                let mut bytes = vec![0u8; n_elem * 2];
+                if let Err(e) = self.gpu.as_ref().copy_d2h(seed_ptr, &mut bytes) {
+                    tracing::warn!("DFLASH SEED_DUMP: copy_d2h failed: {e}");
+                } else {
+                    // bf16 -> f32: u16 << 16 reinterpreted as f32.
+                    let mut sumsq = 0.0f64;
+                    let mut vmin = f32::INFINITY;
+                    let mut vmax = f32::NEG_INFINITY;
+                    let mut n_zero = 0usize;
+                    let mut n_nan = 0usize;
+                    let mut head = [0f32; 8];
+                    for i in 0..n_elem {
+                        let raw = u16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
+                        let f = f32::from_bits((raw as u32) << 16);
+                        if i < 8 {
+                            head[i] = f;
+                        }
+                        if f == 0.0 {
+                            n_zero += 1;
+                        }
+                        if f.is_nan() {
+                            n_nan += 1;
+                        } else {
+                            sumsq += (f as f64) * (f as f64);
+                            if f < vmin {
+                                vmin = f;
+                            }
+                            if f > vmax {
+                                vmax = f;
+                            }
+                        }
+                    }
+                    tracing::info!(
+                        "DFLASH SEED_DUMP pos={} n_cap={} n_elem={} L2sq={:.4} min={:.5} max={:.5} \
+                         zeros={}/{} nan={} head={:?}",
+                        position,
+                        n_cap,
+                        n_elem,
+                        sumsq,
+                        vmin,
+                        vmax,
+                        n_zero,
+                        n_elem,
+                        n_nan,
+                        head
+                    );
+                }
+            } else {
+                tracing::info!("DFLASH SEED_DUMP: dflash_hidden_save is None (no capture layers)");
+            }
+        }
+
         let prop_state = seq
             .proposer_state
             .as_mut()
