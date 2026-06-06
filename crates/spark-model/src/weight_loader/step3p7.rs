@@ -83,10 +83,16 @@ fn slice_fused_experts(
 /// Detect whether this checkpoint uses per-expert tensor format
 /// (preprocessed by `scripts/preprocess_step3p7_experts.py`) or
 /// the original fused format.
+///
+/// In EP mode, expert 0 may not be on this rank. Scan the store
+/// for ANY per-expert tensor name instead of probing expert 0.
 fn has_per_expert_tensors(store: &WeightStore, layer_prefix: &str) -> bool {
-    // Probe for expert 0's gate_proj — if it exists, tensors are split.
-    let probe = format!("{layer_prefix}.moe.experts.0.gate_proj.weight");
-    store.contains(&probe)
+    let pattern = format!("{layer_prefix}.moe.experts.");
+    let found = store.names().any(|k| k.starts_with(&pattern));
+    tracing::debug!(
+        "has_per_expert_tensors('{layer_prefix}'): pattern='{pattern}', found={found}"
+    );
+    found
 }
 
 /// Load a fused NVFP4 tensor from the store (Standard ModelOpt format).
@@ -272,10 +278,14 @@ impl ModelWeightLoader for Step3p7WeightLoader {
 
                 // Step 3.7 doesn't have an explicit shared_expert_gate sigmoid
                 // weight — the shared expert is always active (unconditional addition).
-                // Create a dummy shared_expert_gate with a single 1.0 BF16 value.
-                let dummy_seg_buf = [0x80u8, 0x3F]; // 1.0 in BF16
-                let seg_ptr = gpu.alloc(2)?;
-                gpu.copy_h2d(&dummy_seg_buf, seg_ptr)?;
+                // The blend kernel always reads gate_weight as a [hidden_size] vector,
+                // so we must allocate a full-sized buffer. Zeros give sigmoid(0)=0.5
+                // in the fused blend path, but in EP mode the shared expert is excluded
+                // from blend (zeroed buffer) and added directly via residual_add after
+                // all-reduce, so the gate value doesn't affect the EP output.
+                let seg_size = h * 2; // hidden_size * sizeof(BF16)
+                let seg_ptr = gpu.alloc(seg_size)?;
+                gpu.memset(seg_ptr, 0, seg_size)?;
                 let shared_expert_gate = DenseWeight { weight: seg_ptr };
 
                 // Quantize router gate for prefill
@@ -329,8 +339,15 @@ impl ModelWeightLoader for Step3p7WeightLoader {
             let v_proj = dense_auto(store, &format!("{p}.v_proj.weight"), gpu)?;
             let o_proj_w = dense_auto(store, &format!("{p}.o_proj.weight"), gpu)?;
 
-            let q_proj_n = config.num_attention_heads * config.head_dim;
+            // Step 3.7 has per-layer-type attention head counts:
+            //   Full attention layers: 64 Q heads (from config.num_attention_heads)
+            //   Sliding attention layers: 96 Q heads (from attention_other_setting)
+            // Detect actual Q head count from the on-disk q_proj weight shape.
+            let q_proj_shape = store.get(&format!("{p}.q_proj.weight"))?.shape.clone();
+            let q_proj_n = q_proj_shape[0]; // [q_dim, hidden_size]
             let kv_proj_n = config.num_key_value_heads * config.head_dim;
+            let actual_q_heads = q_proj_n / config.head_dim;
+            tracing::info!("step3p7: layer {i} attention: q_proj_n={q_proj_n} ({actual_q_heads} Q heads), kv_proj_n={kv_proj_n}");
             let q_nvfp4 = quantize_to_nvfp4(&q_proj, q_proj_n, h, gpu, absmax_k, quantize_k, stream)?;
             let k_nvfp4 = quantize_to_nvfp4(&k_proj, kv_proj_n, h, gpu, absmax_k, quantize_k, stream)?;
             let v_nvfp4 = quantize_to_nvfp4(&v_proj, kv_proj_n, h, gpu, absmax_k, quantize_k, stream)?;
@@ -369,6 +386,27 @@ impl ModelWeightLoader for Step3p7WeightLoader {
                 config.fp8_kv_calibration_tokens,
                 config,
             )?;
+
+            // Per-layer dimension overrides: Step 3.7 has heterogeneous
+            // attention — full layers have 64 Q heads, sliding layers have 96.
+            layer.set_dimension_overrides(config.head_dim, actual_q_heads, config.num_key_value_heads);
+
+            // Per-layer sliding window: only sliding-attention layers use it.
+            // The original layer_types were pre-processed to all be FullAttention,
+            // but we can detect sliding layers by their Q head count (96 vs 64).
+            let is_sliding = actual_q_heads != config.num_attention_heads;
+            if is_sliding && config.sliding_window > 0 {
+                layer.set_sliding_window(Some(config.sliding_window));
+            } else {
+                layer.set_sliding_window(None);
+            }
+
+            // Per-layer rope_theta: full layers use 5M, sliding layers use 10K.
+            // The per-layer array is in config, but ModelConfig only stores a scalar.
+            // Use the head count as proxy: sliding (96 heads) → theta=10000.
+            if is_sliding {
+                layer.set_rope_overrides(10000.0, config.rotary_dim as u32);
+            }
 
             // Transpose attention NVFP4 for prefill
             let qt = q_nvfp4.transpose_for_gemm(gpu, q_proj_n, h)?;

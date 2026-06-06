@@ -206,6 +206,12 @@ pub(crate) fn parse_step3p7(raw: &serde_json::Value) -> Result<ModelConfig> {
         }
     }
 
+    // Compute rotary_dim from partial_rotary_factor if not set explicitly.
+    // Step 3.7: partial_rotary_factor=0.5, head_dim=128 → rotary_dim=64.
+    if config.rotary_dim == 0 && config.partial_rotary_factor < 1.0 {
+        config.rotary_dim = (config.head_dim as f64 * config.partial_rotary_factor) as usize;
+    }
+
     // ── Routing configuration ───────────────────────────────────────────
     // Step 3.7: `moe_router_activation: "sigmoid"` → `scoring_func: "sigmoid"`
     let router_activation = text_config
@@ -264,13 +270,34 @@ pub(crate) fn parse_step3p7(raw: &serde_json::Value) -> Result<ModelConfig> {
         config.sliding_window = sw as u32;
     }
 
+    // ── Per-layer-type attention head count ─────────────────────────────
+    // Step 3.7 has heterogeneous attention: full-attention layers use 64 Q heads,
+    // sliding-attention layers use 96 Q heads (from attention_other_setting).
+    // Set num_attention_heads to the MAX so buffer sizing accommodates all layers.
+    if let Some(other) = text_config.get("attention_other_setting") {
+        if let Some(other_heads) = other.get("num_attention_heads").and_then(Value::as_u64) {
+            let other_heads = other_heads as usize;
+            if other_heads > config.num_attention_heads {
+                config.num_attention_heads = other_heads;
+            }
+        }
+    }
+
     // ── Attention gate ──────────────────────────────────────────────────
-    // Step 3.7: `use_head_wise_attn_gate: true` means attention output is gated (g_proj)
-    let use_attn_gate = text_config
-        .get("use_head_wise_attn_gate")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    config.attn_gated = use_attn_gate;
+    // Step 3.7 has `use_head_wise_attn_gate: true` with a separate `g_proj`
+    // weight [num_q_heads, hidden_size]. This is a PER-HEAD gate (one scalar
+    // per head), unlike Qwen 3.5's interleaved Q+G pattern where the gate
+    // has the same dimension as Q.
+    //
+    // Atlas's gated attention pipeline assumes Q+G are interleaved in a
+    // single [2*q_dim, hidden] weight, and the deinterleave+sigmoid_gate_mul
+    // kernels work element-wise. Step 3.7's per-head gate would require a
+    // different kernel (broadcast over head_dim) or weight tiling.
+    //
+    // For now: disable gating. The model will produce slightly different
+    // output without the attention gate, but should still be coherent.
+    // TODO: Implement per-head g_proj gating for Step 3.7.
+    config.attn_gated = false;
 
     // ── MTP (Multi-Token Prediction) ────────────────────────────────────
     // Step 3.7: `num_nextn_predict_layers: 3` = 3 MTP draft modules
