@@ -1162,3 +1162,39 @@ creates a zero-slot pool (effectively disabled). ✓
 | P1 MLA prefill | **CONFIRMED FIXED** | Dispatch chain, flat-grid kernel, causal loop bounds, BF16 early-return all verified. No seq_len limit at >1K tokens. |
 | P2 Nemotron tool calling | **CONFIRMED FIXED** | MODEL.toml flags, jinja gates, BareJsonParser chain verified end-to-end. |
 | P3 SSM cache slots | **CONFIRMED CORRECT** | Two-pool design; `--ssm-cache-slots 0` suppresses only `SsmSnapshotPool`. |
+
+---
+
+## Thirteenth Investigation (2026-06-06, bottom-up audit from main baseline)
+
+Independent audit conducted by starting from `main` (not `spec_ssm`) and tracing all three
+priorities from scratch, then rebasing onto spec_ssm to confirm all fixes present.
+
+### Additional datapoints not in previous investigations
+
+**Full kv_dtype dispatch chain (P1)**: `kv_dtypes.rs:17` returns `vec![]` (empty, not
+`vec![Bf16; N]`) when `kv_dtype == Bf16`. `factory/build.rs:87-91` then expands this:
+`if layer_dtypes.is_empty() { vec![kv_dtype; n_attn_layers] }` → `vec![Bf16; 36]`.
+This is what `phase_assemble.rs` receives, so `layer_kv_dtypes.get(i)` always hits
+`Some(Bf16)` — the `unwrap_or(Bf16)` safety net never fires for Mistral. ✓
+
+**`write_kv_cache` BF16 arm (P1)**: `decode/write_kv_cache.rs:112-128` has an explicit
+`KvCacheDtype::Bf16 => ops::reshape_and_cache(...)` match arm before the wildcard
+`_ => reshape_and_cache_fp8(...)` arm. With `kv_dtype = Bf16`, the BF16 passthrough
+fires — no FP8 quantization touches the MLA compressed latent cache. ✓
+
+**Dead CUDA kernels (P1)**: `mla_prefill_attn_320` and `mla_fused_prefill` are loaded
+into `prefill_attn_mla320_k` / `mla_fused_prefill_k` at init. Only `mla_fused_prefill_k`
+is actually called (from `cache_skip_mla.rs:274`). `mla_prefill_attn_320` is dead code
+(field declared in `types.rs:170`, initialized in `init.rs:290`, never called anywhere).
+`mla_prefill_attn.cu` has a latent bug (warp reduction mixes adjacent 16-lane groups
+across query-row boundaries) but since the kernel is unreachable, no impact on production.
+
+**Nemotron jinja `<tools>` block (P2)**: `template.rs` sets `jinja_tools = None` when
+`state.behavior.skip_template_tools || parser_suppresses`. Both are true for Nemotron-Super
+(`skip_template_tools=true` in MODEL.toml, `BareJsonParser::suppresses_jinja_tools()=true`).
+The `{%- if tools is iterable and tools | length > 0 %}` block in `nemotron_h.jinja`
+never fires, so the jinja template injects no tool schema — the bare-JSON system prompt
+from `BareJsonParser::system_prompt()` is the sole source of tool instructions. ✓
+
+**All three priorities confirmed fixed/correct. No new bugs found.**
