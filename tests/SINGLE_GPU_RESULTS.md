@@ -966,3 +966,95 @@ at `impl_a1.rs:143` — prefix-cache snapshot pool, correctly zero-allocated. �
 
 New dead-code observation: `prefill_attn_mla320_k` handle loaded but never called (superseded
 by `mla_fused_prefill`). Not a bug; cleanup deferred.
+
+---
+
+## Eleventh Investigation (2026-06-06, this session)
+
+Independent audit of spec_ssm HEAD (b5f6836) covering all files named in the task spec.
+No new bugs found. One P2 fix (jinja XML gate from b5f6836) verified for the first time.
+
+### P1 — Mistral Small 4 MLA prefill: all fixes confirmed
+
+**Files read**: `yarn.rs`, `prefill/cache_skip_mla.rs`, `prefill/paged_mla.rs`,
+`mla_absorbed.cu`, `mla_fused_prefill.cu`, `decode/attention_forward_mla.rs`,
+`prefill/paged_attn.rs` (BF16 dispatch arms).
+
+**`yarn.rs`**: `beta_slow` defaults to `1.0` (not 0.1). `find_correction_dim` computes
+`(dim * ln(max_pos / (num_rot * 2π))) / (2 * ln(theta))` — dimension-index space, matching HF
+transformers. For Mistral (theta=1e7, dim=64, max_pos=8192, factor=128, beta_fast=32, beta_slow=1):
+`low=7`, `high=15`. Linear ramp `clamp((j-low)/(high-low), 0, 1)`. Fix verified correct. ✓
+
+**MLA prefill dispatch**: The paged MLA path (`prefill/paged_mla.rs`) is dead code for MLA
+models — the scheduler routes single-chunk prefill through `cache_skip_mla.rs`, which calls
+`mla_fused_prefill.cu` (the absorbed, flat-grid kernel). Both the YaRN fix and the flat-grid
+`mla_fused_prefill` fix are present and the dispatch chain is correct. ✓
+
+**BF16 KV cache dispatch (`prefill/paged_attn.rs`)**: Both `(KvCacheDtype::Bf16, use_br64=true)`
+→ `prefill_attention_paged_64` and `(KvCacheDtype::Bf16, use_br64=false)` → `prefill_attention_paged`
+arms are present. No missing dispatch cases. ✓
+
+**CUDA kernel bounds (`mla_absorbed.cu`, `mla_fused_prefill.cu`)**: Grid dimensions for
+`mla_batched_gemv`, `mla_q_rope_extract_batched`, `mla_kv_assemble_batched`, and
+`mla_fused_prefill` all scale linearly with `num_tokens` without saturation at >1K tokens.
+Shared memory per block is O(head_dim) — negligible for GB10. ✓
+
+**Decode vs prefill consistency**: Both paths pass the same `yarn_inv_freq` table to the RoPE
+kernel (`rope_yarn`). GEMM (prefill) vs GEMV (decode) are the only structural differences. ✓
+
+**No new bugs found in P1.**
+
+### P2 — Nemotron tool calling: jinja XML gate fix verified
+
+**Files read**: `nemotron-super-120b-a12b/MODEL.toml`, `jinja-templates/nemotron_h.jinja`,
+`tool_parser.rs`, `bare_json.rs`, `api/chat/mod.rs`, `api/chat/template.rs`.
+
+**MODEL.toml**: `disable_tool_steering=true`, `tool_call_parser="bare_json"`,
+`skip_template_tools=true`, `thinking_in_tools=false` all confirmed present. ✓
+
+**Jinja gate (b5f6836, new this session)**: The XML format instructions block
+(`"If you choose to call a function ONLY reply in the following format..."`) is now gated on
+`{%- if not disable_tool_steering %}`. This prevents the bare_json system prompt
+("emit top-level JSON, no tags") from conflicting with XML format instructions that would
+still render even with `skip_template_tools=true` (which suppresses the `<tools>` list but
+not the format paragraph). Gate verified correct. ✓
+
+**`BareJsonParser::suppresses_jinja_tools()`** returns `true` at `bare_json.rs:52`, causing
+`apply_chat_template_openai` to pass `tools=None` to jinja regardless of request payload.
+This means the jinja `{%- if tools %}` outer gate also fires, making the XML instructions gate
+redundant for Nemotron-Super — but the gate is correct defense-in-depth for future models. ✓
+
+**Integration chain**: `build_parse.rs` parses MODEL.toml → `runtime.rs` resolves
+`"bare_json"` to `BareJsonParser` → `api/chat/mod.rs` injects bare_json system prompt →
+`template.rs` passes `disable_tool_steering=true` to jinja context → jinja skips both the
+`<tools>` block and the XML format instructions. End-to-end correct. ✓
+
+**No new bugs found in P2.**
+
+### P3 — SSM cache slots: two-pool architecture confirmed
+
+**Files read**: `cli.rs`, `impl_a1.rs`, `ssm_pool.rs`, `ssm_snapshot.rs`,
+`factory/build.rs`, `serve_phases/build.rs`, `serve_phases/preflight.rs`.
+
+**`cli.rs`**: `ssm_cache_slots: usize` (default 16). No special-casing; accepts 0 via clap. ✓
+
+**Propagation chain**: `cli.rs → serve_phases/build.rs:71 (args.ssm_cache_slots) →
+factory/build.rs:41 (ssm_cache_slots param) → impl_a1.rs:155 (SsmSnapshotPool::new(ssm_cache_slots, ...))`.
+Only `SsmSnapshotPool` (Marconi prefix-cache snapshots) is gated on this value. ✓
+
+**`SsmStatePool`**: constructed at `impl_a1.rs:134` with `max_batch_size` — completely
+independent of `ssm_cache_slots`. The 1206 MB allocation observed in tests is
+`8 (max_batch_size) × num_ssm_layers × (h_bytes + conv_bytes)`. Correct. ✓
+
+**`--max-batch-size 1`** reduces `SsmStatePool` to ~151 MB; `--ssm-cache-slots 0` eliminates
+the `SsmSnapshotPool`. Together they give minimum SSM footprint (~151 MB total). ✓
+
+**No bugs. Behavior matches documentation.**
+
+### Summary
+
+| Priority | Status | Finding |
+|----------|--------|---------|
+| P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** | YaRN `yarn.rs` + flat-grid `mla_fused_prefill.cu` + BF16 dispatch coverage — all three fixes re-verified. CUDA kernel bounds scale safely to 65K tokens. |
+| P2 Nemotron tool calling | **CONFIRMED FIXED** | b5f6836 jinja XML gate (`{%- if not disable_tool_steering %}`) verified correct and verified as defense-in-depth alongside existing `skip_template_tools=true` / `suppresses_jinja_tools()` mechanism. |
+| P3 SSM cache slots | **CONFIRMED CORRECT** | Two-pool architecture confirmed; `--ssm-cache-slots 0` correctly zeros only `SsmSnapshotPool`; 1206 MB is `SsmStatePool` (sized by `--max-batch-size`). |
