@@ -37,6 +37,59 @@ fn resolve_schema_type(schema: &serde_json::Value) -> Option<&str> {
     None
 }
 
+/// Extract agent-type names from a delegation tool's prose description.
+///
+/// Matches lines shaped like `- <name>: …` — the convention both opencode
+/// and Claude Code use under an "Available agent types" heading. `<name>`
+/// is the token before the first `:` and must be a single bare identifier
+/// (alphanumeric + `-`/`_`), which excludes prose bullets such as
+/// `- If you want to read a file, use Read instead`.
+fn parse_agent_types(description: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in description.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("- ") else {
+            continue;
+        };
+        let Some((name, _)) = rest.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.is_empty()
+            && name.len() <= 64
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// Choose a valid `subagent_type` for a delegation tool (opencode / Claude
+/// Code `task`).
+///
+/// `subagent_type` is a REQUIRED free-form string whose legal values are
+/// listed only as prose in the tool description — there is no JSON-Schema
+/// `enum`, so the model frequently omits it. The missing-required backfill
+/// below would otherwise insert `""`, which the client rejects with an
+/// opaque `Unknown agent type:  is not a valid agent type` that the model
+/// cannot self-correct. Filling a VALID agent name instead lets delegation
+/// actually succeed.
+///
+/// Prefers a general-purpose agent (`general`, `general-purpose`), else the
+/// first agent listed, with a final fallback of `"general"` (opencode's
+/// built-in general agent).
+fn infer_default_subagent_type(description: Option<&str>) -> String {
+    let candidates = description.map(parse_agent_types).unwrap_or_default();
+    candidates
+        .iter()
+        .find(|c| c.to_ascii_lowercase().contains("general"))
+        .or_else(|| candidates.first())
+        .cloned()
+        .unwrap_or_else(|| "general".to_string())
+}
+
 pub fn backfill_required_params(calls: &mut [ToolCall], tools: &[ToolDefinition]) {
     for call in calls.iter_mut() {
         let Some(tool_def) = tools.iter().find(|t| t.function.name == call.function.name) else {
@@ -163,6 +216,15 @@ pub fn backfill_required_params(calls: &mut [ToolCall], tools: &[ToolDefinition]
                     "oldString" | "old_string" => {
                         // Can't guess what to replace — leave empty
                         continue;
+                    }
+                    // Delegation tools (opencode / Claude Code `task`) require a
+                    // free-form `subagent_type` whose legal values live only in
+                    // the description prose (no JSON-Schema enum). An empty value
+                    // is rejected downstream with an opaque "Unknown agent type:
+                    // …" the model can't self-correct, so fill a VALID agent name
+                    // parsed from the description instead of "".
+                    "subagent_type" | "subagentType" => {
+                        infer_default_subagent_type(tool_def.function.description.as_deref())
                     }
                     _ => continue,
                 };
