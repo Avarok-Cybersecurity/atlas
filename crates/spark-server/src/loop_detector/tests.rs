@@ -76,6 +76,31 @@ fn different_tool_args_with_same_name_do_not_fire() {
 }
 
 #[test]
+fn distinct_file_reads_are_not_a_loop() {
+    // opencode silent-death repro (PR: spinning-detector fix). A run of
+    // short `read` calls on DIFFERENT files is agentic exploration, not
+    // a loop. The content-similarity detector must NOT escalate distinct
+    // reads to `Suppress` — that hard-masks <tool_call> and strands the
+    // model. `Hint`/`None` are fine; `Suppress` is the bug.
+    let paths = [
+        "/home/u/src/atlas/crates/spark-server/src/tool_parser/streaming_impl.rs",
+        "/home/u/src/atlas/crates/spark-server/src/scheduler/decode_logits_seq.rs",
+        "/home/u/src/atlas/crates/spark-server/src/grammar/compile_tools.rs",
+        "/home/u/src/atlas/README.md",
+        "/home/u/src/atlas/crates/xgrammar/src/lib.rs",
+    ];
+    let recent: Vec<Signature> = paths
+        .iter()
+        .map(|p| sig_with_tool("", "read", &format!(r#"{{"filePath":"{p}"}}"#)))
+        .collect();
+    let v = detect(&recent);
+    assert!(
+        !matches!(v, LoopState::Suppress { .. }),
+        "distinct file reads must not be suppressed (legitimate exploration): {v:?}"
+    );
+}
+
+#[test]
 fn slightly_varied_intros_still_fire() {
     // The model often paraphrases its intro slightly — must
     // catch this too.
