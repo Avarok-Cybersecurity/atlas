@@ -1198,3 +1198,48 @@ never fires, so the jinja template injects no tool schema — the bare-JSON syst
 from `BareJsonParser::system_prompt()` is the sole source of tool instructions. ✓
 
 **All three priorities confirmed fixed/correct. No new bugs found.**
+
+---
+
+## Fourteenth Investigation (2026-06-06, this session)
+
+Full re-investigation of all three priorities against spec_ssm HEAD (a24e8e1). Files traced
+end-to-end from task spec, build system audited for the first time.
+
+### New verification: build system applies model KERNEL.toml flags to ALL kernels
+
+**File read**: `crates/atlas-kernels/build.rs:177-228`.
+
+`collect_cu_files(common_kernel_dir, model_kernel_dir)` gathers `.cu` files from BOTH
+the common directory (`kernels/gb10/common/`) and the model-specific directory
+(`kernels/gb10/mistral-small-4/nvfp4/`). The subsequent `compute_target.compile(cu_file,
+..., &target.extra_flags)` call applies `extra_flags` from the model's KERNEL.toml to every
+`.cu` file regardless of which directory it came from.
+
+Consequence: `kernels/gb10/common/inferspark_prefill.cu` (which contains both
+`inferspark_prefill` and `inferspark_prefill_64`) IS compiled with `-DHDIM=128` when building
+for Mistral Small 4. This was previously inferred from the presence of the flag in KERNEL.toml
+but not explicitly traced through the build system. Now confirmed: `#ifndef HDIM #define HDIM
+256 #endif` in `inferspark_prefill.cu` is overridden to 128 for Mistral. The kernel handles
+`head_dim=128` correctly for the `paged_mla.rs` dead-code path that uses it. ✓
+
+### P1 — Mistral Small 4 MLA prefill: all fixes confirmed
+
+Same conclusions as all prior investigations.
+
+- `yarn.rs`: correct YaRN formula (`low=7, high=15`). ✓
+- `cache_skip_mla.rs` (the sole live MLA prefill path): `mla_fused_prefill` with mandatory
+  `ensure!` guard. `inv_sqrt_d_absorbed = 1/sqrt(320)` — correct absorbed-space scale (NOT
+  `effective_attn_scale(hd=128)`, which would give `1/sqrt(128)` and over-sharpen by ×0.63). ✓
+- `paged_mla.rs`: dead code for MLA models (single-chunk gate in all three schedulers). ✓
+- `KERNEL.toml -DHDIM=128`: confirmed via build.rs to apply to common `inferspark_prefill.cu`. ✓
+
+### P2, P3 — confirmed unchanged
+
+Nemotron MODEL.toml fixes and SSM pool behavior match all prior investigations. No new bugs.
+
+### Summary
+
+No new bugs found. Build system trace provides explicit confirmation that `-DHDIM=128` reaches
+the common `inferspark_prefill.cu`, closing the only remaining open "inferred but not traced"
+point in the prior documentation.
