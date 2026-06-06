@@ -185,8 +185,12 @@ sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
   atlas-test:latest serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 \
     --port 8888 --kv-cache-dtype fp8 --kv-high-precision-layers auto \
     --gpu-memory-utilization 0.92 --scheduling-policy slai \
-    --max-seq-len 65536 --tool-call-parser qwen3_coder --ssm-cache-slots 0
+    --max-seq-len 65536 --ssm-cache-slots 0
 ```
+> **Note (2026-06-06)**: Original test used `--tool-call-parser qwen3_coder`. Omit this flag
+> so MODEL.toml's `tool_call_parser = "bare_json"` takes effect. Resolver precedence is
+> CLI > MODEL.toml — keeping the flag silently overrides the MODEL.toml fix and reactivates
+> the qwen3_coder grammar that causes token-131071 loops on this model.
 
 ### Memory Budget
 - Weights: ~94 GB (17 shards)
@@ -247,7 +251,7 @@ sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
    **Re-test needed**: Run the same long-context suite against a fresh build from current spec_ssm.
 
 2. **[P1] Nemotron tool calling — FIXED, CONFIRMED**: `disable_tool_steering = true` +
-   `tool_call_parser = "bare_json"` confirmed present in
+   `tool_call_parser = "bare_json"` + `skip_template_tools = true` in
    `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`. Model generates native top-level JSON
    tool calls without the steering-prefix loop.
    **2026-06-04 audit**: Full dispatch chain verified:
@@ -255,11 +259,22 @@ sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
      branch is skipped, model opens `<tool_call>` naturally after `</think>`. ✓
    - `bare_json` parser generates a JSON-schema system prompt (no `<tool_call>` wrapper) and
      compiles an XGrammar JSON-constrained grammar. ✓
-   - `api/chat/mod.rs` prepends the tool system prompt to the existing system message without
-     conflicting with the jinja template's tool instructions. ✓
+   - `skip_template_tools = true` in MODEL.toml + `BareJsonParser::suppresses_jinja_tools() = true`
+     both prevent tool definitions (and conflicting XML format instructions) from being passed to
+     the jinja template. `api/chat/template.rs` sets `jinja_tools = None` when either flag is set. ✓
    - `api/chat/template.rs` correctly reads `state.behavior.disable_tool_steering` and passes
      it to `apply_chat_template_openai`. ✓
-   **Re-test status**: Fix confirmed in codebase. Re-run 2/2 tool call suite to close loop.
+   **⚠ Launch command caveat (2026-06-06)**: The original test command included
+   `--tool-call-parser qwen3_coder`. Resolver precedence is CLI > MODEL.toml: that flag
+   overrides `tool_call_parser = "bare_json"` in MODEL.toml, activates the qwen3_coder grammar,
+   and recreates the token-131071 loop. The corrected launch command (above in section 3)
+   omits `--tool-call-parser`. Re-test must use the corrected command.
+   **Additional defense (2026-06-06)**: `nemotron_h.jinja` XML format instructions (line 93)
+   now also gated on `{%- if not disable_tool_steering %}`. This is redundant given
+   `skip_template_tools` already prevents tools reaching jinja, but eliminates the conflict
+   for hypothetical future models that set `disable_tool_steering=true` without `skip_template_tools`.
+   **Re-test status**: Fix confirmed in codebase. Re-run 2/2 tool call suite with corrected
+   launch command (no `--tool-call-parser` flag) to close loop.
 
 3. **[P2] 122B SSM pool memory — DOCUMENTED, CONFIRMED (no code change needed)**:
    `--ssm-cache-slots 0` controls `SsmSnapshotPool` (prefix-cache SSM state snapshots).
