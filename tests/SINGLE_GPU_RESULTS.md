@@ -26,6 +26,9 @@
 > bugs confirmed fixed (yarn.rs + HDIM fix). Nemotron MODEL.toml confirmed. SSM pool propagation
 > confirmed correct. Full dispatch-chain details added to Action Items below.
 
+> **Verification (2026-06-06)**: All three fixes independently verified present and correct in
+> the `spec_ssm` branch. See "Code Verification (2026-06-03)" section at the bottom for full details.
+
 ---
 
 ## 1. Sehyo/Qwen3.5-122B-A10B-NVFP4 — PASS
