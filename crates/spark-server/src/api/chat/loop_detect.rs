@@ -185,22 +185,50 @@ pub(super) fn check_loops(
         );
     }
 
-    // Single hint, used for both Suppress and Hint verdicts.
+    // Inject a soft hint for the loop verdict OR the spinning signal —
+    // but the two diagnoses are DIFFERENT, so the wording must be too.
+    // The content-similarity verdict means the model is *repeating*
+    // itself; spinning means short, *distinct* low-progress turns
+    // (reading files one at a time) that aren't converging. Telling a
+    // legitimately-exploring model its "output is very similar to
+    // earlier turns" is false and misleading, so spinning gets its own
+    // convergence-oriented copy that does NOT discourage tool use.
     let loop_active = !matches!(verdict, crate::loop_detector::LoopState::None);
-    let inject_hint = loop_active || spinning;
-    if inject_hint {
-        let hint = "\n\n<IMPORTANT>\nYour recent turns have produced \
-                    output very similar to earlier turns. Before \
-                    continuing: (1) inspect the CURRENT state with \
-                    read-only tools so you can see what is already \
-                    done; (2) if the user's request is already \
-                    satisfied, summarise and stop; (3) otherwise \
-                    identify the SPECIFIC remaining gap and address \
-                    only that — do not retry the same approach or \
-                    regenerate work that already exists.\n</IMPORTANT>";
-        if let Some(last) = messages.last_mut() {
-            last.content.push_str(hint);
-        }
+    let hint = if loop_active {
+        // Repetition verdict (Suppress or Hint): break the loop.
+        Some(
+            "\n\n<IMPORTANT>\nYour recent turns have produced \
+             output very similar to earlier turns. Before \
+             continuing: (1) inspect the CURRENT state with \
+             read-only tools so you can see what is already \
+             done; (2) if the user's request is already \
+             satisfied, summarise and stop; (3) otherwise \
+             identify the SPECIFIC remaining gap and address \
+             only that — do not retry the same approach or \
+             regenerate work that already exists.\n</IMPORTANT>",
+        )
+    } else if spinning {
+        // Spinning only (no repetition): many short distinct steps,
+        // not converging. Nudge toward consolidating and acting —
+        // never imply repetition, never discourage tool calls.
+        Some(
+            "\n\n<IMPORTANT>\nYour recent turns have each made only \
+             small steps (short reads/searches) without converging. \
+             Before continuing: (1) consolidate what you have already \
+             learned from those steps; (2) if you now have enough to \
+             act, stop gathering and take the substantive next step \
+             (edit, answer, or run a command); (3) otherwise make your \
+             next tool call count — gather the remaining information \
+             in as few, targeted calls as possible rather than one \
+             file at a time.\n</IMPORTANT>",
+        )
+    } else {
+        None
+    };
+    if let Some(hint) = hint
+        && let Some(last) = messages.last_mut()
+    {
+        last.content.push_str(hint);
     }
 
     // Goal re-anchor (P1.3 + #4 per-turn spread).
