@@ -254,19 +254,27 @@ mod spinning_tests {
         // The opencode failure shape (dump line 21): five short, distinct
         // read/glob turns, then a substantial `task` turn ends the run.
         // Items are (content_len, tool_args_len), newest-first.
-        let turns: [(usize, usize); 6] =
-            [(2, 98), (2, 89), (0, 79), (123, 45), (2, 47), (2, 1607)];
+        let turns: [(usize, usize); 6] = [(2, 98), (2, 89), (0, 79), (123, 45), (2, 47), (2, 1607)];
         let run = leading_short_turn_run(turns);
-        assert_eq!(run, 5, "five leading short turns before the substantial task");
+        assert_eq!(
+            run, 5,
+            "five leading short turns before the substantial task"
+        );
         assert!(run >= SPINNING_RUN_THRESHOLD);
     }
 
     #[test]
     fn substantial_turn_stops_the_run() {
         // A long prose answer (>= content bound) ends the run...
-        assert_eq!(leading_short_turn_run([(2usize, 98usize), (600, 0), (2, 1)]), 1);
+        assert_eq!(
+            leading_short_turn_run([(2usize, 98usize), (600, 0), (2, 1)]),
+            1
+        );
         // ...as does a large tool-call payload (>= args bound).
-        assert_eq!(leading_short_turn_run([(2usize, 98usize), (0, 100), (2, 1)]), 1);
+        assert_eq!(
+            leading_short_turn_run([(2usize, 98usize), (0, 100), (2, 1)]),
+            1
+        );
     }
 
     #[test]
