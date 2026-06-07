@@ -1502,3 +1502,116 @@ is computed once at load time and shared uniformly across all three call sites. 
 | P1 MLA prefill | **CONFIRMED FIXED** | `mla_absorbed.cu` explicitly audited; main-branch HDIM-mismatch defect characterised; decode-path yarn_inv_freq sharing confirmed |
 | P2 Nemotron tool calling | **CONFIRMED FIXED** | None beyond seventeenth investigation |
 | P3 SSM cache slots | **CONFIRMED CORRECT** | None beyond seventeenth investigation |
+
+---
+
+## Nineteenth Investigation (2026-06-07)
+
+Full cold-read of all files named in the task spec against spec_ssm HEAD. No new functional bugs
+found. Two documentation errors in prior investigation notes corrected below.
+
+### P1 — Mistral Small 4 MLA prefill: all fixes confirmed
+
+**Files read**: `yarn.rs`, `prefill/cache_skip_mla.rs`, `kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu`,
+`kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu`, `kernels/gb10/mistral-small-4/nvfp4/mla_prefill_attn.cu`,
+`crates/spark-server/src/main_modules/kv_dtypes.rs`, `crates/spark-server/src/main_modules/serve_phases/kv_cache.rs`,
+`crates/spark-model/src/layers/ops/prefill_attn_a.rs`.
+
+**`yarn.rs`**: `find_correction_dim` in dimension-index space; `beta_fast=32, beta_slow=1`;
+`low=floor(7.36)=7`, `high=ceil(14.24)=15` for Mistral params (theta=1e7, dim=64, max_pos=8192,
+factor=128). Linear ramp `clamp((j-low)/(high-low), 0, 1)`. Fix confirmed correct. ✓
+
+**`cache_skip_mla.rs`** (sole live MLA prefill path — `prefill_inner.rs` routes all
+`seq_len_start==0` calls here, which includes ALL MLA prompts due to the single-chunk scheduler
+gate):
+- `mla_fused_prefill` dispatched with mandatory `ensure!(mla_fused_prefill_k.0 != 0)`.
+- `inv_sqrt_d_absorbed = 1.0 / sqrt(kv_lora + mla_rope) = 1/sqrt(320)` — correct absorbed-space
+  scale. ✓
+- Buffer reuse: `ssm_ba()` aliased as `q_latent` then `k_rope_buf` — safe (q_latent fully consumed
+  before k_rope_buf written). ✓
+
+**`mla_fused_prefill.cu`**: Complete per-instruction audit.
+- Flat 1-D grid `(nq*seq_len, 1, 1)` confirmed at kernel line 47 and Rust dispatch line 168
+  (`prefill_attn_a.rs`). For nq=32, seq_len=65536: gridDim.x=2,097,152 << 2^31. ✓
+- Shared memory: `smem_q[320]` + `smem_dot[8]` + `smem_latent[256]` = 2,336 bytes/block. ✓
+- Causal mask: `kv_end = min(q_pos + 1, seq_len)`. ✓
+- Online softmax: three `__syncthreads()` per KV iteration. The third sync (after acc updates)
+  is necessary to prevent a race between smem_dot writes in the next iteration (line 149) and
+  smem_dot reads from the current iteration (line 161). All syncs verified correct. ✓
+- `acc_latent` is a scalar `float` register; dead `acc_latent[1]` element removed in 84b0d8d. ✓
+- `smem_dot` declared outside the KV loop — prevents NVCC from aliasing its shared-memory region
+  with `smem_q` across loop iterations. ✓
+
+**`kv_dtypes.rs`** — documentation correction (affects several prior investigation notes):
+Several prior sessions stated the function "returns `vec![]` (empty)" when `kv_dtype == Bf16`.
+The actual code (line 20–21) is:
+```rust
+if kv_dtype == KvCacheDtype::Bf16 {
+    return vec![KvCacheDtype::Bf16; num_attention_layers];
+}
+```
+It returns a **populated** `vec![Bf16; N]`, not an empty vec. The code comment explains why an
+empty vec would be dangerous (callers that `unwrap_or(Fp8)` would silently revert to FP8). The
+end result is the same — all 36 attention layers use BF16 for Mistral Small 4 — but prior
+investigations incorrectly described the implementation. ✓
+
+**`paged_mla.rs`** — documentation correction for attention scale:
+Several prior sessions claimed `paged_mla.rs` line 270 uses `effective_attn_scale(hd)` which
+gives `1/sqrt(128)`, described as "wrong for absorbed attention." This is imprecise: the
+first-chunk path (line 270) uses the **unabsorbed** form (expanding KV via `wkv_b` to full
+head dimensions nope+rope=128). For unabsorbed attention, `1/sqrt(hd=128)` is **correct**.
+The multi-chunk path (line 472) uses the absorbed form and correctly computes `1/sqrt(mla_cache_dim=320)`.
+Both sub-paths use the correct scale. The path is dead code for current MLA models (single-chunk
+scheduler gate), but it is not architecturally incorrect. ✓
+
+**`mla_prefill_attn.cu`** (dead kernel): Handles HDIM=320, MLA_BR=16, MLA_BC=16.
+Half-warp lane_mask = `(warp_lane<16) ? 0x0000FFFFu : 0xFFFF0000u` correctly restricts warp
+shuffles to 16-thread sub-groups. The warp reduction with offsets 8,4,2,1 is correct: at each
+step, only lanes 0–7 (for mask=0x0000FFFF) read from lanes that are within the mask; lanes 8–15
+have UB at intermediate steps but those values are not used in the final reduction at lane 0.
+Kernel is unreachable (superseded by `mla_fused_prefill`); no production impact.
+
+**No new bugs found in P1.**
+
+### P2 — Nemotron Super 120B tool calling: confirmed fixed
+
+**Files read**: `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`, `jinja-templates/nemotron_h.jinja`.
+
+`MODEL.toml`: `disable_tool_steering=true`, `tool_call_parser="bare_json"`,
+`skip_template_tools=true`, `thinking_in_tools=false`. ✓
+
+`nemotron_h.jinja` generation-prompt block (lines 203–218): three branches. For Nemotron-Super
+on a tool-active turn: branch 1 (`tools and not disable_tool_steering`) = false (skipped);
+branch 2 (`elif enable_thinking`) = false because `thinking_in_tools=false` → `enable_thinking=false`;
+branch 3 (`else`) emits `<|im_start|>assistant\n<think></think>\n`. Model receives a pre-closed
+think block and generates bare-JSON immediately — no `<tool_call>` steering prefix. ✓
+
+XML format instructions gated on `{%- if not disable_tool_steering %}` (line 93). With
+`disable_tool_steering=true`, no XML format instructions reach the context even if the jinja
+tools block were active. ✓
+
+**No new bugs found in P2.**
+
+### P3 — SSM cache slots: confirmed correct
+
+**Files read**: `crates/spark-server/src/cli.rs`, `crates/spark-model/src/model/impl_a1.rs`,
+`crates/spark-model/src/model/ssm_pool.rs`.
+
+`SsmStatePool::new(&config, max_batch_size, ...)` at `impl_a1.rs:134` — live recurrent states,
+always allocated, sized by `--max-batch-size` (default 8 → 1206 MB). Independent of
+`ssm_cache_slots`. ✓
+
+`SsmSnapshotPool::new(ssm_cache_slots, ...)` at `impl_a1.rs:143` — Marconi prefix-cache
+snapshots. When `--ssm-cache-slots 0`, `num_slots=0` → zero Marconi allocation. A small
+Phase-C decode-rollback ring (<1 MB) is still allocated for SSM models regardless. ✓
+
+`--ssm-cache-slots 0` does NOT affect the 1206 MB `SsmStatePool`. To reduce SSM footprint,
+pass `--max-batch-size 1` (reduces to ~151 MB). Correct behavior, no code change needed. ✓
+
+### Summary
+
+| Priority | Status | New in this session |
+|----------|--------|---------------------|
+| P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** | Two documentation errors corrected: (1) `kv_dtypes.rs` returns `vec![Bf16; N]` not `vec![]`; (2) `paged_mla.rs` attention scale `1/sqrt(128)` is correct for its unabsorbed path. `mla_fused_prefill.cu` sync analysis confirmed. Dead kernel `mla_prefill_attn.cu` warp-reduction verified correct (but unreachable). |
+| P2 Nemotron tool calling | **CONFIRMED FIXED** | Jinja 3-branch flow confirmed: `else` branch (pre-closed think) fires for tool-active turns. |
+| P3 SSM cache slots | **CONFIRMED CORRECT** | No changes from prior sessions. |
