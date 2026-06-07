@@ -241,6 +241,10 @@ impl TransformerModel {
                         stream,
                     )?;
                 }
+                // DFlash hidden capture: mirrors verify_b.rs:287. Must be
+                // inside the graph region so per-layer intermediates land in
+                // dflash_hidden_save before the next propose() runs.
+                self.try_dflash_capture(layer_idx, k - 1, stream)?;
             }
 
             // Final norm [4, H]
