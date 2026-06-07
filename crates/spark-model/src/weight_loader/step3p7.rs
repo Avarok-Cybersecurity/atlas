@@ -195,15 +195,17 @@ impl ModelWeightLoader for Step3p7WeightLoader {
                     // Per-expert format: each expert is a separate tensor.
                     // In EP mode, remote experts were already skipped by the
                     // loader's parse_expert_index filter — only local experts
-                    // are present in the store.
+                    // are present in the store. We MUST push NULL entries for
+                    // remote experts so the pointer table has num_experts
+                    // entries (the kernel grid uses num_experts as blockIdx.z).
                     tracing::debug!("step3p7: layer {i} using per-expert tensor format");
                     (0..config.num_experts)
-                        .filter_map(|e| {
+                        .map(|e| {
                             let ep = format!("{moe_p}.experts.{e}");
                             let gp_key = format!("{ep}.gate_proj.weight");
                             if !store.contains(&gp_key) {
-                                // Expert not on this rank (EP filtered)
-                                return None;
+                                // Expert not on this rank (EP filtered) — push NULL
+                                return Ok(ExpertWeight::null());
                             }
                             let load_expert_proj = |proj: &str| -> Result<QuantizedWeight> {
                                 let pp = format!("{ep}.{proj}");
@@ -238,12 +240,13 @@ impl ModelWeightLoader for Step3p7WeightLoader {
                                     input_scale,
                                 })
                             };
-                            let gate_proj = load_expert_proj("gate_proj").ok()?;
-                            let up_proj = load_expert_proj("up_proj").ok()?;
-                            let down_proj = load_expert_proj("down_proj").ok()?;
-                            Some(ExpertWeight { gate_proj, up_proj, down_proj })
+                            let gate_proj = load_expert_proj("gate_proj")?;
+                            let up_proj = load_expert_proj("up_proj")?;
+                            let down_proj = load_expert_proj("down_proj")?;
+                            Ok(ExpertWeight { gate_proj, up_proj, down_proj })
                         })
-                        .collect()
+                        .collect::<Result<Vec<_>>>()?
+
                 } else {
                     // Fused format: single tensor per projection, all experts
                     // concatenated along dim 0. Requires all experts in GPU memory.
@@ -372,7 +375,7 @@ impl ModelWeightLoader for Step3p7WeightLoader {
                 v_scale,
             };
 
-            let mut layer = Qwen3AttentionLayer::new(
+            let mut layer = Qwen3AttentionLayer::new_ungated(
                 input_norm,
                 attn,
                 post_attn_norm,
@@ -392,9 +395,10 @@ impl ModelWeightLoader for Step3p7WeightLoader {
             layer.set_dimension_overrides(config.head_dim, actual_q_heads, config.num_key_value_heads);
 
             // Per-layer sliding window: only sliding-attention layers use it.
-            // The original layer_types were pre-processed to all be FullAttention,
-            // but we can detect sliding layers by their Q head count (96 vs 64).
-            let is_sliding = actual_q_heads != config.num_attention_heads;
+            // Sliding layers have 96 Q heads, full-attention layers have 64.
+            // Detect by comparing against the base count from text_config
+            // (64), not the MAX-adjusted config.num_attention_heads (96).
+            let is_sliding = actual_q_heads > 64;
             if is_sliding && config.sliding_window > 0 {
                 layer.set_sliding_window(Some(config.sliding_window));
             } else {
