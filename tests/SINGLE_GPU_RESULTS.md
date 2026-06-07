@@ -1290,3 +1290,69 @@ only the JSON instructions reach the context. ✓
 The two are independent; passing `--ssm-cache-slots 0` has zero effect on the 1206 MB pool. ✓
 
 ### No new bugs found. All P1/P2/P3 fixes confirmed on spec_ssm HEAD.
+
+---
+
+## Sixteenth Investigation (2026-06-07)
+
+Independent cold-read of all files named in the task spec.
+
+### P1 — Mistral MLA prefill: full trace of both branches
+
+**`yarn.rs` (both branches):** `find_correction_dim` formula verified correct on spec_ssm.
+`beta_fast=32, beta_slow=1` read from model config (defaults matching Mistral params.json);
+`low=7, high=15` for `rope_dim=64, theta=1e7, orig_ctx=8192`. No `low_freq_factor` residue.
+The comment block at lines 19–31 explicitly records the old Llama-3.1 formula that was
+removed. ✓
+
+**`cache_skip_mla.rs` — main vs spec_ssm divergence (root cause of >1K gibberish):**
+
+`main` branch `cache_skip_mla.rs` calls `ops::prefill_attention_64` (unabsorbed MHA path,
+compile-time `HDIM=256`) with `1.0f32 / (hd as f32).sqrt()` hardcoded. Two defects:
+1. HDIM mismatch: `prefill_attention_64` is compiled with `HDIM=256`; MLA kv_stride is
+   `nkv × hd = 128`, so column indices ≥ 128 alias into the next KV pair's memory —
+   corrupts attention scores in a way that scales with sequence length.
+2. Wrong attention scale: the unabsorbed path needs `1/sqrt(hd=128)`, but it also hardcodes
+   this literally instead of going through `effective_attn_scale(hd)`, silently ignoring
+   any `attn_scale_override`.
+
+`spec_ssm` rewrites `cache_skip_mla.rs` to use `ops::mla_fused_prefill` — the absorbed-space
+kernel (`HDIM=320`). The attention scale becomes `1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)`,
+correct in absorbed space. An `anyhow::ensure!` guard fails loudly at startup if
+`mla_fused_prefill_k` is not loaded, preventing silent fallback to the broken path.
+
+**`effective_attn_scale` consistency on spec_ssm:** `helpers.rs:152–155` —
+`self.attn_scale_override.unwrap_or_else(|| 1.0 / (head_dim as f32).sqrt())`. All decode
+and prefill paths on spec_ssm call this method. `cache_skip_mla.rs` on spec_ssm bypasses
+it intentionally (uses `1/sqrt(320)` absorbed scale rather than `1/sqrt(hd=128)`); this is
+correct, not an oversight. The `main` branch hardcoded `1/sqrt(hd)` instead of calling the
+method AND used the wrong absorbed dimension — spec_ssm fixes both.
+
+**`paged_mla.rs`:** dead code for single-chunk MLA models; `prefill_inner.rs` routes all
+`seq_len_start == 0` calls to `prefill_attention_with_cache_skip` (→ `cache_skip_mla.rs`).
+Uses `effective_attn_scale(hd)` (line 257) — would give `1/sqrt(128)`, wrong for absorbed
+attention; but this path is never reached for Mistral. ✓ (dead code caveat documented)
+
+**`kv_dtypes.rs:17`:** `if kv_dtype == Bf16 { return vec![] }` — no per-layer FP8 mixing
+when base dtype is BF16. `--kv-high-precision-layers auto` is a no-op for Mistral. ✓
+
+**CUDA kernels (`kernels/gb10/mistral-small-4/nvfp4/`):** `mla_fused_prefill.cu` —
+shared memory is fixed-size (smem_q[320], smem_latent[256], smem_dot[8]); no seq_len-scaled
+allocations; causal loop iterates over all `kv_pos < q_pos + 1` without artificial cap. ✓
+
+### P2 — Nemotron tool calling (confirmed)
+
+`MODEL.toml`: `disable_tool_steering = true`, `tool_call_parser = "bare_json"`,
+`thinking_in_tools = false` — all present. `nemotron_h.jinja` generation-prompt block gates
+the `<tool_call>\n` steering prefix on `tools and not disable_tool_steering` (line 204).
+`BareJsonParser::system_prompt()` injects a non-conflicting JSON-format instruction; no XML
+tool schema reaches the context when `disable_tool_steering = true`. ✓
+
+### P3 — SSM pool (confirmed)
+
+`SsmStatePool::new(&config, max_batch_size, ...)` — live recurrent states, always allocated,
+sized by `--max-batch-size` (default 8 → 1206 MB). `SsmSnapshotPool::new(ssm_cache_slots, ...)`
+— prefix-cache snapshots, `num_slots=0` → Marconi LRU region not allocated. The two pools are
+independent. `--ssm-cache-slots 0 --max-batch-size 1` minimises SSM footprint (~151 MB). ✓
+
+### No new bugs found. All P1/P2/P3 fixes confirmed.
