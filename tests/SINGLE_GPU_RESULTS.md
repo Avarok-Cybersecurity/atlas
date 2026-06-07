@@ -1743,3 +1743,42 @@ relevant to tool calling. Both have `disable_tool_steering=true`, `tool_call_par
 Propagation chain confirmed via spec_ssm code. ✓
 
 **No new bugs found in P3. No code changes in this session.**
+
+---
+
+## Investigation #22 — 2026-06-07
+
+Independent end-to-end audit of all three priorities against spec_ssm HEAD.
+
+### P1 — Mistral Small 4 MLA prefill: all fixes verified
+
+Read every referenced file directly. All four fixes confirmed in place:
+
+| Fix | File | Verification |
+|-----|------|-------------|
+| YaRN inv_freq | `mistral_loader/.../yarn.rs` | `find_correction_dim` in dim-index space; `low=7, high=15` for Mistral params (theta=1e7, dim=64, factor=128, max_pos=8192). Ramp direction correct: j<7 → extrapolation, j>15 → full 1/128 interpolation. ✓ |
+| HDIM=128 kernel | `mistral-small-4/nvfp4/KERNEL.toml` | `extra_nvcc_flags = ["--fmad=false", "-DHDIM=128"]` present. `init.rs:404` loads `prefill_attn_128_k`; `paged_mla.rs:273–284` `ensure!` guard requires it when `hd<=128`, dispatches it at line 281. ✓ |
+| Absorbed cache-skip path | `prefill/cache_skip_mla.rs:259–296` | `mla_fused_prefill_k` is the live call site with `anyhow::ensure!` guard. Scale = `1/sqrt(kv_lora+rope=320)`. Old `prefill_attn_64_k` path fully removed. ✓ |
+| BF16 dtype guard | `spark-server/.../kv_dtypes.rs:20–22` | `if kv_dtype == Bf16 { return vec![Bf16; N]; }` — explicit BF16 vec prevents any `unwrap_or(Fp8)` fallback. Distinct from main branch which returned `vec![]`. ✓ |
+
+Additional findings confirmed:
+- `mla_fused_prefill.cu:46–48`: flat grid `(nq*seq_len, 1, 1)` prevents gridDim.y overflow at max_seq_len=65536. ✓
+- `is_mla()` single-chunk gate in all three schedulers (`run_standard.rs:50`, `run_batched_prefill.rs:44`): forces entire prompt into one chunk for all MLA models, routing through the validated `cache_skip_mla.rs` path. ✓
+- O projection dimension: `cache_skip_mla.rs` correctly uses `nq * mla_v_dim` (not `nq * hd`); for Mistral v_dim=hd=128 so both are numerically equal, but the semantic fix is correct. ✓
+
+**No new bugs found in P1.**
+
+### P2 — Nemotron Super 120B tool calling: confirmed fixed
+
+- `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`: `disable_tool_steering=true` (line 58), `tool_call_parser="bare_json"` (line 67), `thinking_in_tools=false` (line 51). ✓
+- `jinja-templates/nemotron_h.jinja:204`: `{%- if tools and not disable_tool_steering %}` gates the `<tool_call>\n` steering prefix. Skipped when `disable_tool_steering=true`. ✓
+- `nemotron_h.jinja:92–94`: XML format instruction block gated on `{%- if not disable_tool_steering %}`, eliminating conflicting qwen3_coder-style instructions for Nemotron Super. ✓
+- Launch command in section 3 omits `--tool-call-parser qwen3_coder` (CLI flag would override MODEL.toml and reactivate the qwen3_coder grammar causing token-131071 loops). ✓
+
+**No new bugs found in P2.**
+
+### P3 — SSM cache slots: confirmed correct
+
+`cli.rs:281` → `build.rs` → `factory/build.rs:41` → `impl_a1.rs:52–162`: `SsmSnapshotPool` receives `ssm_cache_slots`; `SsmStatePool` receives `max_batch_size`. The two pools are independent. `--ssm-cache-slots 0` zeros snapshot slots; the 1206 MB active-state pool is unaffected. Correct behavior. ✓
+
+**No new bugs found in P3. No code changes in this session.**
