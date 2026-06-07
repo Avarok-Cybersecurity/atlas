@@ -1615,3 +1615,52 @@ pass `--max-batch-size 1` (reduces to ~151 MB). Correct behavior, no code change
 | P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** | Two documentation errors corrected: (1) `kv_dtypes.rs` returns `vec![Bf16; N]` not `vec![]`; (2) `paged_mla.rs` attention scale `1/sqrt(128)` is correct for its unabsorbed path. `mla_fused_prefill.cu` sync analysis confirmed. Dead kernel `mla_prefill_attn.cu` warp-reduction verified correct (but unreachable). |
 | P2 Nemotron tool calling | **CONFIRMED FIXED** | Jinja 3-branch flow confirmed: `else` branch (pre-closed think) fires for tool-active turns. |
 | P3 SSM cache slots | **CONFIRMED CORRECT** | No changes from prior sessions. |
+
+---
+
+## Investigation #20 — 2026-06-07 (independent full audit)
+
+### P1 — Mistral Small 4 MLA prefill: all code paths re-verified
+
+**Files read**: `yarn.rs`, `paged_mla.rs`, `cache_skip_mla.rs`, `kv_dtypes.rs`,
+`mla_fused_prefill.cu`, `prefill_attn_a.rs`, `MODEL.toml`.
+
+YaRN fix confirmed: `low=7`, `high=15` in dimension-index space. Linear ramp correctly
+implemented. Matches reference formula. ✓
+
+`kv_dtypes.rs` (spec_ssm version): returns `vec![Bf16; num_attention_layers]` when base dtype
+is BF16, preventing silent FP8 fallback in `unwrap_or(Fp8)` callers. ✓
+
+`paged_mla.rs` unabsorbed path (line 270): `effective_attn_scale(hd=128)` = `1/sqrt(128)`. ✓
+`paged_mla.rs` absorbed multi-chunk path (line 472): `1/sqrt(mla_cache_dim=320)` — consistent
+with the absorbed Q·K dot product being over 320 dims, and consistent with the scale used in
+`mla_fused_prefill.cu`. Both paths are dead for current MLA scheduler (single-chunk gate). ✓
+
+`mla_fused_prefill.cu`: dead kernel confirmed — `ops::mla_fused_prefill` wrapper at
+`prefill_attn_a.rs:144` has zero call sites; `self.mla_fused_prefill_k` handle is initialized
+but never dispatched. Code in the kernel is correct: `acc_latent` is a scalar (fixed in 84b0d8d),
+`inv_sqrt_d // 1/sqrt(320)` annotation consistent with absorbed-form scale. ✓
+
+`cache_skip_mla.rs` (line 320): unabsorbed prefill attention via `prefill_attention_64` with
+`1/sqrt(hd=128)`. KV cache assembly via `mla_cache_assemble_batched` writes compressed
+`[latent|rope]=320` for decode. No correctness gap. ✓
+
+**No new bugs found in P1.**
+
+### P2 — Nemotron Super 120B tool calling: confirmed fixed
+
+`MODEL.toml` on spec_ssm branch: `disable_tool_steering=true`, `tool_call_parser="bare_json"`,
+`thinking_in_tools=false` all present and consistent with 19th-session analysis. ✓
+
+`nemotron_h.jinja`: generation-prompt for tool-active turns takes `else` branch (pre-closed
+`<think></think>`), model generates bare JSON immediately. ✓
+
+**No new bugs found in P2.**
+
+### P3 — SSM cache slots: confirmed correct
+
+CLI propagation trace: `cli.rs:281` → `build.rs:71` → `factory/build.rs:41` → `impl_a1.rs:52`
+→ `SsmSnapshotPool::new(ssm_cache_slots, ...)`. With `--ssm-cache-slots 0`, snapshot pool is
+zeroed; `SsmStatePool` (sized by `--max-batch-size`, default → 1206 MB) is unaffected. ✓
+
+**No new bugs found in P3. No code changes in this session.**
