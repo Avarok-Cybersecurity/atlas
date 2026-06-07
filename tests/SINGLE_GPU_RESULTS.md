@@ -1664,3 +1664,82 @@ CLI propagation trace: `cli.rs:281` → `build.rs:71` → `factory/build.rs:41` 
 zeroed; `SsmStatePool` (sized by `--max-batch-size`, default → 1206 MB) is unaffected. ✓
 
 **No new bugs found in P3. No code changes in this session.**
+
+---
+
+## Investigation #21 — 2026-06-07
+
+### Context
+
+This investigation read the `spec_ssm` branch versions of all files (the prior main-branch
+baseline in investigation #18 covered `main`). Two non-trivial branch divergences noted below.
+
+### P1 — Mistral Small 4 MLA prefill
+
+**`kv_dtypes.rs` on spec_ssm vs main**
+
+The `main` branch returns `vec![]` when `kv_dtype == BF16`, relying on callers to use the
+server-default dtype (BF16). The `spec_ssm` branch changed this to an explicit
+`vec![KvCacheDtype::Bf16; num_attention_layers]` (early-return at line 20–22):
+
+```rust
+if kv_dtype == KvCacheDtype::Bf16 {
+    return vec![KvCacheDtype::Bf16; num_attention_layers];
+}
+```
+
+This is more defensive: any caller that uses `unwrap_or(Fp8)` on an absent entry will now see
+an explicit BF16 rather than silently falling through to FP8, which would corrupt MLA latent
+values. The spec_ssm version is strictly safer. ✓
+
+**`paged_mla.rs` absorbed multi-chunk path (spec_ssm only)**
+
+The spec_ssm branch adds `seq_len_start` to `MlaPrefillArgs` and branches:
+- `seq_len_start == 0`: unabsorbed form → unchanged from main, verified correct. ✓
+- `seq_len_start > 0`: **new absorbed form** using `w_qk_absorbed` (fused wq_b_nope·W_UK^T),
+  `mla_q_final_assemble_batched`, `mla_prefill_paged_320`, and `mla_v_extract_batched`.
+  Scale: `1/sqrt(mla_cache_dim=320)`. This path is dead for prompts ≤ max_prefill_tokens (8K).
+
+The absorbed multi-chunk path has not yet been exercised by live tests (the scheduler takes
+`cache_skip_mla` for first-chunk, and prompts longer than 8K tokens on single GPU are rare
+for Mistral). Logic review finds no correctness issue, but live validation is pending.
+
+**`mla_absorbed.cu` CUDA kernels — seq_len overflow audit**
+
+Traced all batched kernels for fixed tile/sharedmem limits at >1K tokens:
+- `mla_q_rope_extract_batched`: `gridDim.x = ceil(N*nq*rope / 256)` — scales with N, no limit.
+- `mla_kv_assemble_batched`: `gridDim.x = N` (one block per token) — no limit.
+- `mla_cache_assemble_batched`: same pattern — no limit.
+- `mla_batched_gemv`: grid over heads only; shared mem `float[N_PER_BLOCK*2][2]` = 64 bytes
+  (fixed, independent of seq_len). ✓
+
+None overflow at >1K tokens. The YaRN inv_freq fix (yarn.rs) was the sole root cause.
+
+**`prefill_attn_mla320_k` (mla_prefill_attn.cu) — loaded, never called**
+
+`init.rs:290` loads `mla_prefill_attn_320` into `prefill_attn_mla320_k`. Searched all .rs files
+under `crates/spark-model/src/layers/` — zero dispatch sites found for this handle. Dead code.
+The kernel itself (BR=16, BC=16, no seq_len-dependent shmem, online softmax) is mathematically
+correct; just unreachable in the current scheduler. ✓
+
+**YaRN fix confirmed correct on spec_ssm**
+
+`yarn.rs` on spec_ssm is identical to `main`: `low=7`, `high=15`, correct ramp direction
+(j < 7 → extrapolation, j > 15 → interpolation per YaRN paper). ✓
+
+**No new bugs found in P1.**
+
+### P2 — Nemotron Super 120B tool calling
+
+No branch divergence between `main` and `spec_ssm` for `MODEL.toml` or `nemotron_h.jinja`
+relevant to tool calling. Both have `disable_tool_steering=true`, `tool_call_parser="bare_json"`,
+`thinking_in_tools=false`. ✓
+
+**No new bugs found in P2.**
+
+### P3 — SSM cache slots
+
+`cli.rs:281`: `ssm_cache_slots` default is 16; `--ssm-cache-slots 0` produces value 0.
+Propagation chain confirmed via spec_ssm code. ✓
+
+**No new bugs found in P3. No code changes in this session.**
