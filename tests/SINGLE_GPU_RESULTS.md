@@ -1356,3 +1356,86 @@ sized by `--max-batch-size` (default 8 → 1206 MB). `SsmSnapshotPool::new(ssm_c
 independent. `--ssm-cache-slots 0 --max-batch-size 1` minimises SSM footprint (~151 MB). ✓
 
 ### No new bugs found. All P1/P2/P3 fixes confirmed.
+
+---
+
+## Seventeenth Investigation (2026-06-07)
+
+Independent cold-read of all files named in the task spec. No new bugs found. One factual
+correction to prior investigation notes on the Jinja template branch taken for Nemotron.
+
+### P1 — Mistral MLA prefill: confirmed fixed (consistent with all prior sessions)
+
+- `yarn.rs`: correct `find_correction_dim` in dim-index space; `low=7, high=15` for Mistral
+  params. No `low_freq_factor` / `llama_4_scaling.beta=0.1` residue. ✓
+- `cache_skip_mla.rs` (the sole live MLA prefill path): dispatches to `mla_fused_prefill`
+  (absorbed HDIM=320) with mandatory `ensure!`; `inv_sqrt_d_absorbed = 1/sqrt(320)`. ✓
+- `kv_dtypes.rs`: returns `vec![]` (not `vec![Bf16; N]`) when `kv_dtype == Bf16`; factory
+  expands to `vec![Bf16; 36]`. `--kv-high-precision-layers auto` is a true no-op. ✓
+- `MODEL.toml` (mistral-small-4): `default_kv_dtype = "bf16"`. Model-side safeguard. ✓
+
+### P2 — Nemotron tool calling: Jinja branch correction
+
+**Correction to Ninth Investigation (and several later sessions)**: those sessions stated that
+with `disable_tool_steering = true` the model "falls through to the `enable_thinking` branch."
+This is wrong for Nemotron-Super in tool-active requests.
+
+The generation-prompt block in `nemotron_h.jinja` (lines 203-218) has **three** branches:
+
+```jinja
+{%- if tools and not disable_tool_steering %}
+    {{- '<|im_start|>assistant\n<think></think>\n<tool_call>\n' }}
+{%- elif enable_thinking %}
+    {{- '<|im_start|>assistant\n<think>\n' }}
+{%- else %}
+    {{- '<|im_start|>assistant\n<think></think>\n' }}
+{%- endif %}
+```
+
+For Nemotron-Super on a tool-active turn:
+- `tools and not disable_tool_steering` → `true and false` = **false** (branch 1 skipped)
+- `elif enable_thinking` — `thinking_in_tools = false` in MODEL.toml causes `resolve_thinking()`
+  in `api/chat/thinking.rs` to set `enable_thinking = false` when tools are active and
+  thinking is not explicitly requested → **false** (branch 2 skipped)
+- `else` → **taken**: emits `<|im_start|>assistant\n<think></think>\n`
+
+The model receives a pre-closed empty `<think>` block and generates bare-JSON immediately.
+The `elif enable_thinking` branch (open `<think>`) is only taken on non-tool turns where
+`thinking_default = true` keeps thinking enabled. The practical effect is the same as
+prior sessions described (no `<tool_call>` steering prefix, model generates JSON) but via
+the `else` branch, not `elif enable_thinking`.
+
+All other P2 facts confirmed unchanged:
+- `MODEL.toml`: `disable_tool_steering=true`, `tool_call_parser="bare_json"`,
+  `skip_template_tools=true`, `thinking_in_tools=false`. ✓
+- `BareJsonParser::suppresses_jinja_tools()` → `true`; jinja receives `tools=None`. ✓
+- `BareJsonParser::system_prompt()` injects bare-JSON format instructions; XGrammar
+  (`compile_bare_json_tool_grammar`) constrains token 1+ to the schema. ✓
+- XML format instructions gate `{%- if not disable_tool_steering %}` (b5f6836) redundant
+  but correct defense-in-depth since tools=None makes the outer `{%- if tools %}` block
+  also inactive. ✓
+
+### P3 — SSM cache slots: Phase-C rollback ring detail
+
+Additional detail not captured in prior sessions: `SsmSnapshotPool` contains **two**
+independent GPU sub-regions:
+
+| Sub-region | Sizing | Allocated when |
+|------------|--------|----------------|
+| Marconi prefix-cache snapshots | `ssm_cache_slots × num_layers × state_bytes` | `ssm_cache_slots > 0` |
+| Phase-C decode-rollback ring | `max_batch_size × (ROLLBACK_RESTEER_CAP+1) × num_layers × state_bytes` | SSM model present |
+
+`SsmSnapshotPool::new` returns an empty struct if both regions are disabled. When
+`--ssm-cache-slots 0`, the Marconi region is skipped (`marconi_enabled = false`) but the
+Phase-C ring is still allocated for SSM models — it is small (<1 MB) and was already noted
+in the 2026-06-04 audit. The 1206 MB observed with `--ssm-cache-slots 0` is entirely
+`SsmStatePool` (active recurrent states, always allocated, sized by `--max-batch-size`).
+Preflight correctly accounts for all three allocations independently. ✓
+
+### Summary
+
+| Priority | Status | New in this session |
+|----------|--------|---------------------|
+| P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** | None — consistent with all 16 prior sessions |
+| P2 Nemotron tool calling | **CONFIRMED FIXED** | Jinja 3-branch structure documented; `else` branch (pre-closed think) is what fires for tool-active turns, not `elif enable_thinking` |
+| P3 SSM cache slots | **CONFIRMED CORRECT** | Phase-C decode-rollback ring sub-region explicitly documented with sizing formula |
