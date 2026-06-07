@@ -1439,3 +1439,66 @@ Preflight correctly accounts for all three allocations independently. ✓
 | P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** | None — consistent with all 16 prior sessions |
 | P2 Nemotron tool calling | **CONFIRMED FIXED** | Jinja 3-branch structure documented; `else` branch (pre-closed think) is what fires for tool-active turns, not `elif enable_thinking` |
 | P3 SSM cache slots | **CONFIRMED CORRECT** | Phase-C decode-rollback ring sub-region explicitly documented with sizing formula |
+
+---
+
+## Eighteenth Investigation (2026-06-07)
+
+Independent cold-read starting from `main` branch state, then switching to spec_ssm HEAD
+(`dd9b57f`). Provides a cross-branch baseline and covers `mla_absorbed.cu` explicitly
+(not audited in prior sessions).
+
+### Main-branch baseline (why the P1 bug persists there)
+
+Reading `cache_skip_mla.rs` on `main`:
+- Calls `ops::prefill_attention_64` (compile-time `HDIM=256`) with scale `1.0/sqrt(hd=128)`
+- Two independent defects: (a) HDIM mismatch (`kv_stride=nkv×hd=128`; columns ≥128 alias
+  into the next KV pair's memory, corrupting attention scores in a seq_len-proportional way),
+  (b) wrong absorbed scale (`1/sqrt(128)` vs the correct `1/sqrt(320)`)
+- `yarn.rs` YaRN fix IS present on `main` — but the absorbed-attention defect remains
+
+The >1 K gibberish threshold on `main` reflects the compounding of BOTH the YaRN error
+(position-dependent angle error, threshold ~600–1000 tokens) AND the HDIM aliasing (score
+corruption that grows with seq_len). The spec_ssm fixes both simultaneously.
+
+### spec_ssm state (confirmed fixes)
+
+**P1 — `cache_skip_mla.rs`** (sole live MLA prefill path on spec_ssm):
+- Rewrites to `ops::mla_fused_prefill` (absorbed HDIM=320, fused Q-absorb+attention+V-extract)
+- `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)` — correct absorbed scale
+- `anyhow::ensure!(mla_fused_prefill_k.0 != 0)` — fails loudly if kernel not loaded
+- `kv_write_start` guard skips writing prefix-cached tokens (mirror of non-MLA cache_skip logic)
+
+**P1 — `mla_fused_prefill.cu` kernel (new audit)**:
+- Fixed shared memory: `smem_q[320]`, `smem_dot[8]`, `smem_latent[256]` — none of these
+  scale with seq_len; all are per-CTA constants
+- Online softmax loop: `for kv_pos in 0..kv_end` (kv_end = min(q_pos+1, seq_len)), unbounded
+  — handles any practical seq_len without shared-memory overflow or integer truncation
+- Flat 1-D grid `(nq × seq_len, 1, 1)` avoids the gridDim.y ≤ 65535 CUDA limit
+- `acc_latent` is a single `float` register (not an array); the dead `acc_latent[2]` array
+  from an earlier revision was removed in `84b0d8d`
+
+**P1 — `mla_absorbed.cu` kernel (first explicit audit)**:
+- Contains batched prefill helpers used UPSTREAM of the fused kernel:
+  `mla_q_rope_extract_batched`, `mla_q_rope_writeback_batched`, `mla_kv_assemble_batched`,
+  `mla_cache_assemble_batched`, and the single-token decode helpers
+- All offsets use `unsigned long long` arithmetic — no 32-bit truncation at >1K tokens
+- Grid dims scale with `num_tokens` (x-dim) or are flat 1-D; no shared-memory allocation
+  that depends on seq_len
+- `mla_kv_assemble_batched`: grid is `(num_tokens, 2, 1)` — blockIdx.y selects K-assembly
+  vs V-extraction; for N=65536 tokens, x-dim=65536, well within CUDA limit (2³¹-1)
+- **No seq_len-dependent bugs found.**
+
+**P1 — Decode path consistency**: `attention_forward_mla.rs` uses the same `mla.yarn_inv_freq`
+pointer as both prefill paths (`cache_skip_mla.rs`, `paged_mla.rs`). The fixed `yarn.rs` table
+is computed once at load time and shared uniformly across all three call sites. ✓
+
+**P2 and P3** — confirmed unchanged from seventeenth investigation. ✓
+
+### Summary
+
+| Priority | Status | New in this session |
+|----------|--------|---------------------|
+| P1 MLA prefill | **CONFIRMED FIXED** | `mla_absorbed.cu` explicitly audited; main-branch HDIM-mismatch defect characterised; decode-path yarn_inv_freq sharing confirmed |
+| P2 Nemotron tool calling | **CONFIRMED FIXED** | None beyond seventeenth investigation |
+| P3 SSM cache slots | **CONFIRMED CORRECT** | None beyond seventeenth investigation |
