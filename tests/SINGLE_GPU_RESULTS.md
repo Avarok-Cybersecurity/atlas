@@ -207,3 +207,77 @@ sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
 4. **[P2] Nemotron long context — ARCHITECTURAL LIMIT**: SSM state saturation at >8K tokens
    is inherent to Mamba-2 recurrent architectures (fixed-size hidden state). No fix possible.
    Documented as known constraint; recommend use cases with inputs ≤8K tokens.
+
+---
+
+## Codebase Verification — 2026-06-07
+
+Full code-level audit of all three action items against the current `spec_ssm` branch.
+No new bugs found; all previously-noted fixes are correctly in place.
+
+### P0 — Mistral long-context (YaRN inv_freq)
+
+**Verified**: `crates/spark-model/src/mistral_loader/loader_impl/yarn.rs` implements the
+correct YaRN `find_correction_dim` formula in dimension-index space:
+
+```
+low  = floor(find_correction_dim(beta_fast=32, rope_dim=64, theta=1e7, orig_ctx=8192)) = 7
+high = ceil (find_correction_dim(beta_slow=1,  rope_dim=64, theta=1e7, orig_ctx=8192)) = 15
+```
+
+Pairs j < 7 receive no scaling (full extrapolation); j 7–15 receive a linear ramp; j > 15
+receive full 1/128 interpolation. This matches the reference YaRN paper formula exactly.
+
+Additional MLA prefill code paths also verified clean:
+- `crates/spark-model/src/layers/qwen3_attention/prefill/paged_mla.rs`: K/V stride uses
+  `v_dim=128` as the stride element (not `mla_cache_dim=320`); attention scale is
+  `1/sqrt(hd=128)` — correct for both absorbed and unabsorbed forms because
+  `Q_absorbed·K_latent = Q_expanded·K_expanded` algebraically.
+- `crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip_mla.rs`: same scale,
+  uses `prefill_attention_64` (BR=64 tile) instead of `prefill_attention`; no correctness gap.
+- `crates/spark-server/src/main_modules/kv_dtypes.rs`: `build_layer_kv_dtypes(BF16, ...)` returns
+  an empty vec → all layers remain uniform BF16. `--kv-high-precision-layers auto` has no effect
+  when the base dtype is already BF16; no accidental FP8 mixing occurs.
+- `kernels/gb10/mistral-small-4/MODEL.toml`: `default_kv_dtype = "bf16"` provides a model-side
+  safety guard that overrides the server default of fp8.
+
+**Status**: fix confirmed in codebase; re-test on live hardware will close this item.
+
+### P1 — Nemotron Super tool calling
+
+**Verified**: `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` contains:
+- `disable_tool_steering = true` — skips the `<tool_call>\n` steering prefix
+- `tool_call_parser = "bare_json"` — uses the model's native top-level JSON format
+- `thinking_in_tools = false` — prevents reasoning trace from burying the JSON payload
+
+**Verified**: `jinja-templates/nemotron_h.jinja` generation-prompt block correctly gates the
+steering prefix on `not disable_tool_steering`:
+```
+{%- if tools and not disable_tool_steering %}
+    {{- '<|im_start|>assistant\n<think></think>\n<tool_call>\n' }}
+{%- elif enable_thinking %}
+    ...
+```
+With `disable_tool_steering = true` the model instead enters the `enable_thinking` branch and
+opens `<think>` naturally, then closes it and emits the bare-JSON tool call on its own.
+
+**Status**: fix confirmed in codebase; re-test on live hardware will close this item.
+
+### P2 — 122B SSM pool memory
+
+**Verified**: two independent pool types exist in `crates/spark-model/src/model/`:
+
+| Pool | Constructor | Sizing parameter | CLI flag |
+|------|-------------|-----------------|----------|
+| `SsmStatePool` | `SsmStatePool::new(&config, max_batch_size, ...)` | `max_batch_size` | `--max-batch-size` |
+| `SsmSnapshotPool` | `SsmSnapshotPool::new(ssm_cache_slots, ...)` | `ssm_cache_slots` | `--ssm-cache-slots` |
+
+`SsmStatePool` holds the live recurrent hidden states for all in-flight decode sequences.
+It must always be pre-allocated; its size is `(max_batch_size + 1) × num_ssm_layers × h_bytes`.
+`--ssm-cache-slots 0` only zeroes the prefix-cache snapshot budget and does not affect this pool.
+
+`crates/spark-server/src/main_modules/serve_phases/preflight.rs` correctly projects both
+budgets independently for memory-check purposes.
+
+**Status**: correct behavior, no code change needed. To minimize SSM footprint for single-user
+serving use `--max-batch-size 1` (reduces `SsmStatePool` from ~1206 MB to ~151 MB).
