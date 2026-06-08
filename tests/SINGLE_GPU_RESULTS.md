@@ -1945,3 +1945,54 @@ commit ancestry rather than just reading HEAD.
 | P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** | Commit ancestry traced: `427104f` (BF16 dtype), `a127885` (flat grid), `84b0d8d` (acc_latent scalar), `cache_skip_mla.rs` rewrite. Four independent fixes jointly eliminate the >1K gibberish. |
 | P2 Nemotron tool calling | **CONFIRMED FIXED** | `b5f6836` jinja XML gate confirmed. Three-branch generation prompt verified: `else` branch (pre-closed think) fires for tool-active turns. |
 | P3 SSM cache slots | **CONFIRMED CORRECT** | Two-pool independence re-verified. Phase-C decode-rollback ring noted as small, intentional, independent of both `ssm_cache_slots` and `max_batch_size`. |
+
+---
+
+## Investigation #25 — 2026-06-08
+
+Independent re-audit using parallel multi-agent code search. All findings from investigation #24
+confirmed; no new bugs or regressions found.
+
+### Method
+
+Three parallel agents searched the codebase independently: one covering the Mistral MLA/YaRN
+stack, one covering the Nemotron tool-calling path, and one covering SSM pool propagation. Each
+agent returned exact file paths, line numbers, and code excerpts without access to prior sessions.
+
+### P1 — Mistral Small 4 MLA prefill
+
+- `yarn.rs`: `find_correction_dim` closure confirmed; `beta_fast=32.0`, `beta_slow=1.0` (as
+  `alpha`) defaults correct. Bug comment references `llama_4_scaling.beta=0.1` mis-alias. ✓
+- `kv_dtypes.rs`: `build_layer_kv_dtypes(BF16, …)` returns `vec![Bf16; N]` (not empty vec).
+  No silent FP8 fallback in `phase_assemble.rs`. ✓
+- `cache_skip_mla.rs`: `mla_fused_prefill` (HDIM=320, `inv_sqrt_d_absorbed=1/√320`) dispatched
+  with `ensure!` guard. Old `prefill_attention_64` path absent. ✓
+- `MODEL.toml` (`mistral-small-4`): `default_kv_dtype = "bf16"` confirmed (line 49). ✓
+
+### P2 — Nemotron Super 120B tool calling
+
+- `MODEL.toml` (`nemotron-super-120b-a12b`): `thinking_in_tools=false` (51), `disable_tool_steering=true` (58),
+  `tool_call_parser="bare_json"` (67). ✓
+- `nemotron_h.jinja`: `{%- if tools and not disable_tool_steering %}` gates the XML steering
+  prefix; `else` branch emits pre-closed `<think></think>` so model generates bare JSON. ✓
+- End-to-end flag propagation traced: `api/chat/mod.rs` → `template.rs` →
+  `tokenizer/chat_impl.rs` → Jinja context. `disable_tool_steering` passed verbatim. ✓
+- `tool_parser.rs` `BareJsonParser::suppresses_jinja_tools()` = `true` → `jinja_tools=None`
+  in `template.rs`; XGrammar enforces JSON schema. ✓
+
+### P3 — SSM cache slots
+
+- `cli.rs:279`: `--ssm-cache-slots` default 16, `0` documented as valid. ✓
+- `impl_a1.rs:134–162`: `SsmStatePool::new(max_batch_size)` and `SsmSnapshotPool::new(ssm_cache_slots)`
+  are separate allocations with no shared parameters. ✓
+- `ssm_snapshot.rs:93`: `marconi_enabled = num_ssm_layers > 0 && num_slots > 0`. With
+  `ssm_cache_slots=0` → `num_slots=0` → zero Marconi allocation. ✓
+- `build.rs:71`: `args.ssm_cache_slots` passed directly to `build_model`; no transformation. ✓
+
+### Summary
+
+| Priority | Status |
+|----------|--------|
+| P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** — all four fixes present; no new bugs |
+| P2 Nemotron tool calling | **CONFIRMED FIXED** — four MODEL.toml flags + jinja gate verified |
+| P3 SSM cache slots | **CONFIRMED CORRECT** — two-pool independence verified end-to-end |
