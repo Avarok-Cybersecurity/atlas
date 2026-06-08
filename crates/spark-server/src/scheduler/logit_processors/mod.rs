@@ -111,11 +111,7 @@ pub trait LogitsProcessor: Send + Sync {
 /// path label (this is the MTP/verify entry point). The non-MTP decode
 /// path uses [`run_pipeline_with_path`] with `"decode"` so its
 /// `ATLAS_ADADEC_DIAGNOSTIC` records keep their pre-unification label.
-pub fn run_pipeline(
-    logits: &mut [f32],
-    seq: &mut ActiveSeq,
-    ctx: &LogitsContext,
-) -> Option<u32> {
+pub fn run_pipeline(logits: &mut [f32], seq: &mut ActiveSeq, ctx: &LogitsContext) -> Option<u32> {
     run_pipeline_with_path(logits, seq, ctx, "verify")
 }
 

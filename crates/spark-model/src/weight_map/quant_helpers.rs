@@ -81,7 +81,10 @@ pub(crate) fn dequant_fp8_blockscaled_to_bf16(
     // GPU dequant: bf16_out[n,k] = E4M3_LUT[fp8[n,k]] * scale_inv[n/block_n, k/block_k].
     // Block (64, 4, 1) → each thread does one element; grid covers [K, N].
     let stream = gpu.default_stream();
-    let kernel = gpu.kernel("dequant_fp8_blockscaled_bf16", "dequant_fp8_blockscaled_bf16")?;
+    let kernel = gpu.kernel(
+        "dequant_fp8_blockscaled_bf16",
+        "dequant_fp8_blockscaled_bf16",
+    )?;
     KernelLaunch::new(gpu, kernel)
         .grid([div_ceil(k as u32, 64), div_ceil(n as u32, 4), 1])
         .block([64, 4, 1])

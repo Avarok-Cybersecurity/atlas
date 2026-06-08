@@ -82,4 +82,3 @@ pub(super) fn validate_input(req: &ChatCompletionRequest) -> Result<(), Response
     }
     Ok(())
 }
-

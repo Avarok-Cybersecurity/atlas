@@ -62,9 +62,7 @@ pub(super) fn handle_done(
                             );
                             if !sanitized.is_empty() {
                                 let chunk = ChatCompletionChunk::content_chunk(
-                                    &ctx.model,
-                                    &ctx.id,
-                                    sanitized,
+                                    &ctx.model, &ctx.id, sanitized,
                                 );
                                 sse_events.push(Ok(Event::default()
                                     .data(serde_json::to_string(&chunk).unwrap_or_default())));
@@ -100,11 +98,10 @@ pub(super) fn handle_done(
                     if state.refusal_scan_buf.len() < 16_384 {
                         state.refusal_scan_buf.push_str(&sanitized);
                     }
-                    let chunk =
-                        ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized);
-                    sse_events.push(Ok(
-                        Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
-                    ));
+                    let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized);
+                    sse_events
+                        .push(Ok(Event::default()
+                            .data(serde_json::to_string(&chunk).unwrap_or_default())));
                 }
             }
         }

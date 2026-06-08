@@ -475,7 +475,11 @@ mod tests {
         assert_eq!(convert(0x3F80_0800), 0x3F80, "1.0 + below-half-ULP -> 1.0");
         // (2) Exactly half-ULP, LSB=0: tie -> round to EVEN (down).
         //     Both truncation and RNE produce 0x3F80; doesn't distinguish.
-        assert_eq!(convert(0x3F80_8000), 0x3F80, "1.0 + exact-half-ULP, LSB=0 -> 1.0 (even)");
+        assert_eq!(
+            convert(0x3F80_8000),
+            0x3F80,
+            "1.0 + exact-half-ULP, LSB=0 -> 1.0 (even)"
+        );
         // (3) Above half-ULP: round UP. Truncation would FAIL (gives 0x3F80).
         assert_eq!(
             convert(0x3F80_8001),
@@ -501,7 +505,11 @@ mod tests {
         assert_eq!(convert(0xFF80_0000), 0xFF80, "-inf");
         // (9) Max-finite f32 rounds UP to +inf bf16 (closest representable).
         //     PyTorch does the same.
-        assert_eq!(convert(0x7F7F_FFFF), 0x7F80, "max-finite f32 rounds to +inf bf16");
+        assert_eq!(
+            convert(0x7F7F_FFFF),
+            0x7F80,
+            "max-finite f32 rounds to +inf bf16"
+        );
         // (10) NaN -> canonical quiet NaN, sign preserved.
         assert_eq!(convert(0x7FC0_0000), 0x7FC0, "qnan +");
         assert_eq!(convert(0xFFC0_0000), 0xFFC0, "qnan -");
@@ -521,7 +529,11 @@ mod tests {
             (0x4000_0000, 0x4000, "2.0"),
             (0xC000_0000, 0xC000, "-2.0"),
             (0x3FC0_0000, 0x3FC0, "1.5"),
-            (0x3DCC_CCCD, 0x3DCD, "0.1 -> RNE rounds UP to 0x3DCD (trunc=0x3DCC)"),
+            (
+                0x3DCC_CCCD,
+                0x3DCD,
+                "0.1 -> RNE rounds UP to 0x3DCD (trunc=0x3DCC)",
+            ),
             (0x3F4C_CCCD, 0x3F4D, "0.8 -> RNE rounds UP to 0x3F4D"),
             (0x40C9_0FDB, 0x40C9, "pi -> truncates (next bit < half)"),
             (0x402D_F854, 0x402E, "e -> RNE rounds UP (next bit > half)"),

@@ -189,10 +189,7 @@ pub fn handle_content_token(a: &mut ActiveSeq, model: &dyn Model) {
     // the prior gate then went inert and the prose budget never fired,
     // letting a disengaged tool turn wander to `max_tokens`.
     // `tool_request` is set at prefill and survives disengage.
-    if !crate::scheduler::helpers::disable_watchdogs()
-        && !a.inside_tool_body
-        && a.tool_request
-    {
+    if !crate::scheduler::helpers::disable_watchdogs() && !a.inside_tool_body && a.tool_request {
         a.prose_tokens_since_last_tool = a.prose_tokens_since_last_tool.saturating_add(1);
         let max_prose = watchdog_params().max_inter_tool_prose;
         if a.prose_tokens_since_last_tool > max_prose {

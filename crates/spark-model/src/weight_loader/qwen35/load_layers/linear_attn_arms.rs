@@ -52,7 +52,9 @@ pub(super) fn build_linear_attention_fp8(
     ffn: FfnComponent,
 ) -> Result<Box<dyn TransformerLayer>> {
     let p = format!("{lp}.linear_attn");
-    tracing::info!("Layer {layer_idx}: loading SSM FP8 native (block-scaled decode + single-scale prefill)");
+    tracing::info!(
+        "Layer {layer_idx}: loading SSM FP8 native (block-scaled decode + single-scale prefill)"
+    );
 
     // ── 1. Load block-scaled FP8 from disk (aliases the WeightStore
     //       device pointers — no extra GPU memory beyond the alloc'd

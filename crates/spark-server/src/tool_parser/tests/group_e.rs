@@ -327,7 +327,10 @@ fn repair_empty_key_in_nested_array_item() {
     coerce_all(&mut calls, &tools);
     let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
     let item = &args["allowedPrompts"][0];
-    assert_eq!(item["tool"], "Bash", "empty key should be repaired to `tool`");
+    assert_eq!(
+        item["tool"], "Bash",
+        "empty key should be repaired to `tool`"
+    );
     assert_eq!(item["prompt"], "run cargo");
     assert!(item.get("").is_none(), "empty key must be removed");
 }

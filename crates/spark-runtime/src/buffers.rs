@@ -245,7 +245,11 @@ impl BufferArena {
                 "ATLAS_BUF_CKSUM[{tag}] {name} bytes={bytes} sum={sum:.6} ssq={ssq:.6} sabs={sabs:.6}"
             );
         };
-        probe("hidden_states", self.hidden_states, self.sizes.hidden_states);
+        probe(
+            "hidden_states",
+            self.hidden_states,
+            self.sizes.hidden_states,
+        );
         probe("residual", self.residual, self.sizes.residual);
         probe("norm_output", self.norm_output, self.sizes.norm_output);
         probe("qkv_output", self.qkv_output, self.sizes.qkv_output);
@@ -270,7 +274,11 @@ impl BufferArena {
             self.expert_gate_out,
             self.sizes.expert_gate_out,
         );
-        probe("expert_up_out", self.expert_up_out, self.sizes.expert_up_out);
+        probe(
+            "expert_up_out",
+            self.expert_up_out,
+            self.sizes.expert_up_out,
+        );
         probe(
             "expert_down_out",
             self.expert_down_out,

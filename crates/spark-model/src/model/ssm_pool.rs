@@ -487,7 +487,11 @@ mod slot_guard_tests {
             assert_eq!(claimed, 0);
             assert_eq!(free_count(&pool), 1);
         } // guard dropped (abort/panic surrogate) → slot returned
-        assert_eq!(free_count(&pool), 2, "drop must return the slot exactly once");
+        assert_eq!(
+            free_count(&pool),
+            2,
+            "drop must return the slot exactly once"
+        );
         // The released slot is back in the free list (no phantom indices).
         assert!(pool.free_slots.lock().contains(&claimed));
     }

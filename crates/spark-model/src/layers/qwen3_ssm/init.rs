@@ -86,7 +86,11 @@ impl Qwen3SsmLayer {
             dense_gemm_k: gpu.kernel("gemm", "dense_gemm_bf16")?,
             // try_kernel: 0-handle if absent (gated at dispatch); the pipelined
             // BF16 GEMM lives in the same `gemm` module as dense_gemm_bf16.
-            dense_gemm_pipelined_k: super::super::try_kernel(gpu, "gemm", "dense_gemm_bf16_pipelined"),
+            dense_gemm_pipelined_k: super::super::try_kernel(
+                gpu,
+                "gemm",
+                "dense_gemm_bf16_pipelined",
+            ),
             gdn_prefill_k: gpu.kernel("gated_delta_rule", "gated_delta_rule_prefill")?,
             gdn_prefill_split_k: gpu
                 .kernel("gated_delta_rule", "gated_delta_rule_prefill_split")?,

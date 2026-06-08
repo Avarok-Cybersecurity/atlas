@@ -62,8 +62,11 @@ fn top_k(logits: &[f32], k: usize) -> Vec<(u32, f32)> {
             .partial_cmp(&logits[a as usize])
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    let mut top: Vec<(u32, f32)> =
-        idx.into_iter().take(kk).map(|i| (i, logits[i as usize])).collect();
+    let mut top: Vec<(u32, f32)> = idx
+        .into_iter()
+        .take(kk)
+        .map(|i| (i, logits[i as usize]))
+        .collect();
     top.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     top
 }

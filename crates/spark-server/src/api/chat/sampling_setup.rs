@@ -142,10 +142,18 @@ pub(super) fn build_sampling(
     } else {
         temperature
     };
-    let dry_multiplier = if force_temp_zero { 0.0 } else { preset.dry_multiplier };
+    let dry_multiplier = if force_temp_zero {
+        0.0
+    } else {
+        preset.dry_multiplier
+    };
     let dry_base = preset.dry_base;
     let dry_allowed_length = preset.dry_allowed_length;
-    let lz_penalty = if force_temp_zero { 0.0 } else { preset.lz_penalty };
+    let lz_penalty = if force_temp_zero {
+        0.0
+    } else {
+        preset.lz_penalty
+    };
 
     // OpenAI-style penalty range validation.
     if !(-2.0..=2.0).contains(&presence_penalty) {

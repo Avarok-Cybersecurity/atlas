@@ -137,11 +137,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
                 // Whitespace-only tail can be a real trailing `\n   ` indent
                 // — emit anything non-empty so byte boundaries align.
                 if !tail.is_empty() {
-                    let chunk = ChatCompletionChunk::reasoning_chunk(
-                        &ctx.model,
-                        &ctx.id,
-                        tail,
-                    );
+                    let chunk = ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, tail);
                     let json = serde_json::to_string(&chunk).unwrap_or_default();
                     sse_events.push(Ok(axum::response::sse::Event::default().data(json)));
                 }

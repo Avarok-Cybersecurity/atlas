@@ -84,8 +84,11 @@ pub fn render_kernel_table(embedded: &[(&str, &str)], set_hash: &str) -> String 
 
     // Explicit MISSING list: (module, func) requested but never resolved →
     // silent slower-fallback dispatch. The actionable debug signal.
-    let missing: Vec<&(String, String)> =
-        resolved.iter().filter(|(_, ok)| !**ok).map(|(k, _)| k).collect();
+    let missing: Vec<&(String, String)> = resolved
+        .iter()
+        .filter(|(_, ok)| !**ok)
+        .map(|(k, _)| k)
+        .collect();
     if !missing.is_empty() {
         out.push_str(&format!(
             "\n⚠ {} kernel lookup(s) MISSING — slower fallback dispatch in use:\n",

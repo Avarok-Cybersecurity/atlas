@@ -276,10 +276,7 @@ pub fn process_decode_logits(
                     && !a.force_end_thinking
                     && a.thinking_tokens >= THINK_LOOP_MIN_TOKENS
                     && a.thinking_tokens.is_multiple_of(THINK_LOOP_CHECK_STRIDE)
-                    && detect_thinking_token_loop_with(
-                        &a.output_tokens,
-                        a.repetition_detection,
-                    )
+                    && detect_thinking_token_loop_with(&a.output_tokens, a.repetition_detection)
                 {
                     a.force_end_thinking = true;
                     a.sentence_defer_count = 0;

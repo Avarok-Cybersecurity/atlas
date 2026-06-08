@@ -97,7 +97,12 @@ impl TransformerModel {
                         &seq.block_table[lo..hi],
                         self.gpu.as_ref(),
                         stream,
-                        &format!("abswin@{}/skip{}/lo{}", tokens.len(), seq.marconi_skip_to, lo),
+                        &format!(
+                            "abswin@{}/skip{}/lo{}",
+                            tokens.len(),
+                            seq.marconi_skip_to,
+                            lo
+                        ),
                     );
                 }
             }

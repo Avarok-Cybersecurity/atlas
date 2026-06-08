@@ -118,12 +118,17 @@ fn u64s_le(v: &[u64]) -> Vec<u8> {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let kernel = args.get(1).cloned().unwrap_or_else(|| "moe_fp8_grouped_gemm".to_string());
+    let kernel = args
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| "moe_fp8_grouped_gemm".to_string());
     let num_experts: usize = args.get(2).map_or(4, |s| s.parse().unwrap());
     let tpe: usize = args.get(3).map_or(20, |s| s.parse().unwrap()); // tokens per expert
     let n: usize = args.get(4).map_or(256, |s| s.parse().unwrap());
     let k: usize = args.get(5).map_or(256, |s| s.parse().unwrap());
-    let seed: u64 = args.get(6).map_or(0x9E3, |s| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(0x9E3));
+    let seed: u64 = args.get(6).map_or(0x9E3, |s| {
+        u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(0x9E3)
+    });
     // arg 7 modes (mutually exclusive flags, any subset of the recognized words):
     //   "perf"/"--perf"   : skip the O(experts*tok*N*K) CPU reference so a
     //                       representative-size perf sweep runs in milliseconds.
@@ -149,7 +154,9 @@ fn main() -> Result<()> {
     // ── inputs ──
     let mut rng = Rng(seed);
     // A[total, K] BF16 (each sorted row is its own token; identity sorted_token_ids)
-    let a_bf16: Vec<u16> = (0..total * k).map(|_| f32_to_bf16_bits(rng.uniform(-1.0, 1.0))).collect();
+    let a_bf16: Vec<u16> = (0..total * k)
+        .map(|_| f32_to_bf16_bits(rng.uniform(-1.0, 1.0)))
+        .collect();
     // Per-expert token counts → expert_offsets prefix sum. Uniform by default;
     // `skew` mode loads expert 0 with 7× the average (clamped to `total`) and
     // spreads the remainder across the rest. `total` is unchanged so the A
@@ -195,7 +202,9 @@ fn main() -> Result<()> {
                 (s << 7) | (e << 3) | m
             })
             .collect();
-        let sc: Vec<f32> = (0..n_blocks * k_blocks).map(|_| rng.uniform(0.5, 1.5)).collect();
+        let sc: Vec<f32> = (0..n_blocks * k_blocks)
+            .map(|_| rng.uniform(0.5, 1.5))
+            .collect();
         weights.push(w);
         scales.push(sc);
     }
@@ -243,7 +252,13 @@ fn main() -> Result<()> {
         }
     }
     let host_total_tiles = (worklist.len() / 2) as i32;
-    let wl_ptr = upload_bytes(gpu, &worklist.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())?;
+    let wl_ptr = upload_bytes(
+        gpu,
+        &worklist
+            .iter()
+            .flat_map(|x| x.to_le_bytes())
+            .collect::<Vec<u8>>(),
+    )?;
     let tt_ptr = upload_bytes(gpu, &i32s_le(&[host_total_tiles]))?;
 
     // Launch geometry: a persistent 1D grid of PM5_PERSIST_CTAS CTAs (256
@@ -269,7 +284,11 @@ fn main() -> Result<()> {
             .arg_ptr(wl_ptr)
             .arg_ptr(tt_ptr)
             .launch(stream)?;
-        if sync { gpu.synchronize(stream) } else { Ok(()) }
+        if sync {
+            gpu.synchronize(stream)
+        } else {
+            Ok(())
+        }
     };
     let do_launch =
         |stream: u64, sync: bool| -> Result<()> { launch_named(&kernel, c_ptr, stream, sync) };
@@ -282,7 +301,10 @@ fn main() -> Result<()> {
     } else {
         let mut c_raw = vec![0u8; total * n * 2];
         gpu.copy_d2h(c_ptr, &mut c_raw)?;
-        let c_gpu: Vec<u16> = c_raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        let c_gpu: Vec<u16> = c_raw
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
 
         // CPU reference (per expert; two-level FP32 block-scale accumulation).
         let mut c_cpu = vec![0u16; total * n];
@@ -337,30 +359,48 @@ fn main() -> Result<()> {
     }
     let per_iter = t0.elapsed().as_secs_f64() / iters as f64;
     let tflops = (2.0 * total as f64 * n as f64 * k as f64) / per_iter / 1e12;
-    println!("perf: {:.3} ms/iter  ~{tflops:.2} TFLOP/s (wall-clock incl. launch)", per_iter * 1e3);
+    println!(
+        "perf: {:.3} ms/iter  ~{tflops:.2} TFLOP/s (wall-clock incl. launch)",
+        per_iter * 1e3
+    );
 
     // ── kernel-only throughput (CUDA events on the launch stream) ──
     // Brackets `iters` back-to-back launches (no intervening host sync) with two
     // events; cuEventElapsedTime gives total GPU time for the batch, excluding
     // per-launch host overhead — the trustworthy signal for per-lever deltas.
     let (mut ev_start, mut ev_end): (u64, u64) = (0, 0);
-    if unsafe { cuEventCreate(&mut ev_start, 0) } != 0 { bail!("cuEventCreate(start) failed"); }
-    if unsafe { cuEventCreate(&mut ev_end, 0) } != 0 { bail!("cuEventCreate(end) failed"); }
-    if unsafe { cuEventRecord(ev_start, stream) } != 0 { bail!("cuEventRecord(start) failed"); }
+    if unsafe { cuEventCreate(&mut ev_start, 0) } != 0 {
+        bail!("cuEventCreate(start) failed");
+    }
+    if unsafe { cuEventCreate(&mut ev_end, 0) } != 0 {
+        bail!("cuEventCreate(end) failed");
+    }
+    if unsafe { cuEventRecord(ev_start, stream) } != 0 {
+        bail!("cuEventRecord(start) failed");
+    }
     for _ in 0..iters {
         do_launch(stream, false)?;
     }
-    if unsafe { cuEventRecord(ev_end, stream) } != 0 { bail!("cuEventRecord(end) failed"); }
-    if unsafe { cuEventSynchronize(ev_end) } != 0 { bail!("cuEventSynchronize(end) failed"); }
+    if unsafe { cuEventRecord(ev_end, stream) } != 0 {
+        bail!("cuEventRecord(end) failed");
+    }
+    if unsafe { cuEventSynchronize(ev_end) } != 0 {
+        bail!("cuEventSynchronize(end) failed");
+    }
     let mut elapsed_ms: f32 = 0.0;
-    if unsafe { cuEventElapsedTime(&mut elapsed_ms, ev_start, ev_end) } != 0 { bail!("cuEventElapsedTime failed"); }
+    if unsafe { cuEventElapsedTime(&mut elapsed_ms, ev_start, ev_end) } != 0 {
+        bail!("cuEventElapsedTime failed");
+    }
     unsafe {
         cuEventDestroy_v2(ev_start);
         cuEventDestroy_v2(ev_end);
     }
     let kernel_s = (elapsed_ms as f64 / 1e3) / iters as f64;
     let kernel_tflops = (2.0 * total as f64 * n as f64 * k as f64) / kernel_s / 1e12;
-    println!("kernel-only: {:.4} ms/iter  ~{kernel_tflops:.2} TFLOP/s (CUDA events)", kernel_s * 1e3);
+    println!(
+        "kernel-only: {:.4} ms/iter  ~{kernel_tflops:.2} TFLOP/s (CUDA events)",
+        kernel_s * 1e3
+    );
 
     if perf_only {
         println!("RESULT: PERF-ONLY (no correctness check)");
@@ -369,7 +409,9 @@ fn main() -> Result<()> {
         println!("RESULT: PASS (cosine {cosine:.6} >= {COSINE_GATE})");
         Ok(())
     } else {
-        eprintln!("RESULT: FAIL (cosine {cosine:.6} < {COSINE_GATE}) — routing/layout/dequant/accum mismatch");
+        eprintln!(
+            "RESULT: FAIL (cosine {cosine:.6} < {COSINE_GATE}) — routing/layout/dequant/accum mismatch"
+        );
         std::process::exit(1);
     }
 }

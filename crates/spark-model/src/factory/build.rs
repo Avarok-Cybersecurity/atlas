@@ -222,9 +222,7 @@ pub fn build_model(
     // When the main head is NVFP4 (`lm_head_nvfp4.is_some()`), this stays
     // `None` and the proposer falls back to the main NVFP4 head — byte-for-byte
     // unchanged from the pre-decouple behavior.
-    let mtp_lm_head_nvfp4 = if lm_head_nvfp4.is_none()
-        && use_speculative
-        && !mtp_weights.is_empty()
+    let mtp_lm_head_nvfp4 = if lm_head_nvfp4.is_none() && use_speculative && !mtp_weights.is_empty()
     {
         let q = quantize_to_nvfp4(
             &lm_head,

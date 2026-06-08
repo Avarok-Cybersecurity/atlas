@@ -142,7 +142,10 @@ fn main() {
             pub fn metallib_modules() -> Vec<(&'static str, &'static [u8])> { Vec::new() }\n\
             pub fn all_ptx_sets() -> Vec<TargetPtxSet> { Vec::new() }\n";
         std::fs::write(out_dir.join("target_ptx.rs"), stub).expect("write skip stub target_ptx.rs");
-        println!("cargo:rustc-env=ATLAS_KERNEL_SET_HASH={}", content_hash(stub));
+        println!(
+            "cargo:rustc-env=ATLAS_KERNEL_SET_HASH={}",
+            content_hash(stub)
+        );
         println!("cargo:rustc-env=ATLAS_PTX_DIR={}", out_dir.display());
         return;
     }
@@ -321,9 +324,12 @@ fn main() {
                             break;
                         }
                         let job = &compile_jobs[i];
-                        if let Err(e) =
-                            compute.compile(&job.cu_file, &job.out_file, &job.arch, &job.extra_flags)
-                        {
+                        if let Err(e) = compute.compile(
+                            &job.cu_file,
+                            &job.out_file,
+                            &job.arch,
+                            &job.extra_flags,
+                        ) {
                             errors_mutex.lock().unwrap().push(e);
                         }
                     }

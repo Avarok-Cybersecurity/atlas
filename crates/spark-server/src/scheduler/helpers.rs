@@ -196,8 +196,9 @@ fn parse_disable_watchdogs(env: Option<&str>) -> bool {
 /// Whether all auto-watchdogs are disabled at runtime. `false` by
 /// default; flipped only when `ATLAS_DISABLE_WATCHDOGS=1`/`true`.
 pub fn disable_watchdogs() -> bool {
-    *DISABLE_WATCHDOGS
-        .get_or_init(|| parse_disable_watchdogs(std::env::var("ATLAS_DISABLE_WATCHDOGS").ok().as_deref()))
+    *DISABLE_WATCHDOGS.get_or_init(|| {
+        parse_disable_watchdogs(std::env::var("ATLAS_DISABLE_WATCHDOGS").ok().as_deref())
+    })
 }
 
 static ENABLE_LOOP_WATCHDOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -679,11 +680,7 @@ pub fn detect_token_loop(
 ///
 /// Caller MUST ensure `len(tokens) >= pattern_len * min_repeats`.
 #[inline]
-fn has_repeating_pattern_anchored(
-    tokens: &[u32],
-    pattern_len: usize,
-    min_repeats: usize,
-) -> bool {
+fn has_repeating_pattern_anchored(tokens: &[u32], pattern_len: usize, min_repeats: usize) -> bool {
     let n = tokens.len();
     for offset_in_window in 1..=pattern_len {
         let target = tokens[n - offset_in_window];

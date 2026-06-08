@@ -281,13 +281,12 @@ pub fn step_ngram_verify(
     // tokens escape mid-word / forced-think-end / pin-to-tool-call /
     // grammar masks — see `verify_pipeline_helper` for the root-
     // cause analysis.
-    let processed =
-        crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
-            model,
-            &[v0_argmax, v1_argmax],
-            a,
-            verify_ctx,
-        );
+    let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+        model,
+        &[v0_argmax, v1_argmax],
+        a,
+        verify_ctx,
+    );
     let v0 = processed.first().copied().unwrap_or(v0_argmax);
     let v1 = processed.get(1).copied().unwrap_or(v1_argmax);
     let accepted = drafts[0] == v0;

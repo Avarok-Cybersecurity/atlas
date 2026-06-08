@@ -371,7 +371,11 @@ pub fn apply_dry_penalty(
 /// and `logit_bias` is empty — every branch below is individually gated on
 /// its parameter being non-neutral, so the NVFP4 / Gemma / Mistral presets
 /// (which use those neutral values) are byte-for-byte unchanged.
-pub fn apply_penalties_and_bias(logits: &mut [f32], params: &SamplingParams, token_history: &[u32]) {
+pub fn apply_penalties_and_bias(
+    logits: &mut [f32],
+    params: &SamplingParams,
+    token_history: &[u32],
+) {
     let n = logits.len();
 
     // ── 0. Windowed repetition penalty: penalize recently seen tokens ──

@@ -171,20 +171,27 @@ fn launch(
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let kernel = args.get(1).cloned().unwrap_or_else(|| "dense_gemm_bf16".to_string());
+    let kernel = args
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| "dense_gemm_bf16".to_string());
     let m: usize = args.get(2).map_or(1024, |s| s.parse().unwrap());
     let n: usize = args.get(3).map_or(2048, |s| s.parse().unwrap());
     let k: usize = args.get(4).map_or(4096, |s| s.parse().unwrap());
-    let seed: u64 = args
-        .get(5)
-        .map_or(0x51A7, |s| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(0x51A7));
+    let seed: u64 = args.get(5).map_or(0x51A7, |s| {
+        u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(0x51A7)
+    });
 
     println!("=== dense_gemm microtest: kernel='{kernel}' M={m} N={n} K={k} seed=0x{seed:X} ===");
 
     // ── generate inputs (small magnitudes — realistic post-norm activations) ──
     let mut rng = Rng(seed);
-    let a_bf16: Vec<u16> = (0..m * k).map(|_| f32_to_bf16_bits(rng.uniform(-1.0, 1.0))).collect();
-    let b_bf16: Vec<u16> = (0..n * k).map(|_| f32_to_bf16_bits(rng.uniform(-1.0, 1.0))).collect();
+    let a_bf16: Vec<u16> = (0..m * k)
+        .map(|_| f32_to_bf16_bits(rng.uniform(-1.0, 1.0)))
+        .collect();
+    let b_bf16: Vec<u16> = (0..n * k)
+        .map(|_| f32_to_bf16_bits(rng.uniform(-1.0, 1.0)))
+        .collect();
 
     // ── GPU ──
     let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
@@ -196,10 +203,15 @@ fn main() -> Result<()> {
     let c_ptr = gpu.alloc(m * n * 2)?;
     let ptrs = [a_ptr, b_ptr, c_ptr];
 
-    launch(gpu, &kernel, ptrs, m as u32, n as u32, k as u32, stream, true)?;
+    launch(
+        gpu, &kernel, ptrs, m as u32, n as u32, k as u32, stream, true,
+    )?;
     let mut c_raw = vec![0u8; m * n * 2];
     gpu.copy_d2h(c_ptr, &mut c_raw)?;
-    let c_gpu: Vec<u16> = c_raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let c_gpu: Vec<u16> = c_raw
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
 
     // ── CPU reference ──
     let c_cpu = cpu_reference(&a_bf16, &b_bf16, m, n, k);
@@ -222,11 +234,15 @@ fn main() -> Result<()> {
     // ── rough throughput (wall-clock, includes launch overhead; relative A/B) ──
     let iters = 50;
     for _ in 0..5 {
-        launch(gpu, &kernel, ptrs, m as u32, n as u32, k as u32, stream, true)?;
+        launch(
+            gpu, &kernel, ptrs, m as u32, n as u32, k as u32, stream, true,
+        )?;
     }
     let t0 = Instant::now();
     for _ in 0..iters {
-        launch(gpu, &kernel, ptrs, m as u32, n as u32, k as u32, stream, true)?;
+        launch(
+            gpu, &kernel, ptrs, m as u32, n as u32, k as u32, stream, true,
+        )?;
     }
     let per_iter_s = t0.elapsed().as_secs_f64() / iters as f64;
     let tflops = (2.0 * m as f64 * n as f64 * k as f64) / per_iter_s / 1e12;
@@ -246,7 +262,9 @@ fn main() -> Result<()> {
         bail!("cuEventRecord(start) failed: status {rc}");
     }
     for _ in 0..iters {
-        launch(gpu, &kernel, ptrs, m as u32, n as u32, k as u32, stream, false)?;
+        launch(
+            gpu, &kernel, ptrs, m as u32, n as u32, k as u32, stream, false,
+        )?;
     }
     let rc = unsafe { cuEventRecord(ev_end, stream) };
     if rc != 0 {
@@ -273,14 +291,22 @@ fn main() -> Result<()> {
     }
 
     println!("cosine={cosine:.6}  mean_rel={mean_rel:.2e}  max_rel={max_rel:.2e}");
-    println!("perf: {:.3} ms/iter  ~{tflops:.2} TFLOP/s (wall-clock incl. launch)", per_iter_s * 1e3);
-    println!("kernel-only: {:.4} ms/iter  ~{kernel_tflops:.2} TFLOP/s (CUDA events)", kernel_s * 1e3);
+    println!(
+        "perf: {:.3} ms/iter  ~{tflops:.2} TFLOP/s (wall-clock incl. launch)",
+        per_iter_s * 1e3
+    );
+    println!(
+        "kernel-only: {:.4} ms/iter  ~{kernel_tflops:.2} TFLOP/s (CUDA events)",
+        kernel_s * 1e3
+    );
 
     if cosine >= COSINE_GATE && cosine.is_finite() {
         println!("RESULT: PASS (cosine {cosine:.6} >= {COSINE_GATE})");
         Ok(())
     } else {
-        eprintln!("RESULT: FAIL (cosine {cosine:.6} < {COSINE_GATE}) — layout/accumulation mismatch");
+        eprintln!(
+            "RESULT: FAIL (cosine {cosine:.6} < {COSINE_GATE}) — layout/accumulation mismatch"
+        );
         std::process::exit(1);
     }
 }

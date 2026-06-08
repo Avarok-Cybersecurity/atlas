@@ -44,10 +44,7 @@ impl Qwen3SsmLayer {
             std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(),
             Some("1")
         );
-        let force_w8a8 = matches!(
-            std::env::var("ATLAS_FP8_W8A8").ok().as_deref(),
-            Some("1")
-        );
+        let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
         if force_bf16 {
             ops::dense_gemm(
                 ctx.gpu,

@@ -47,10 +47,8 @@ impl MoeLayer {
         // fp8_gemm_t_blockscaled with both scales in the FP32 epilogue.
         // The shared expert is dense (every token), so we reuse the same
         // dense W8A8 GEMM that attention QKV/O proj already use.
-        let force_w8a8_sh = matches!(
-            std::env::var("ATLAS_FP8_W8A8").ok().as_deref(),
-            Some("1")
-        ) && self.fp8_gemm_t_blockscaled_k.0 != 0
+        let force_w8a8_sh = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"))
+            && self.fp8_gemm_t_blockscaled_k.0 != 0
             && self.per_token_group_quant_fp8_k.0 != 0;
         let has_shared = shared_inter > 0;
         if has_shared && force_w8a8_sh {
@@ -147,11 +145,38 @@ impl MoeLayer {
             // Shared-expert dense GEMMs (gate/up/down, every token) always via
             // the bit-identical (cosine=1.0) ~4.6× faster pipelined kernel.
             let sh_gemm = |inp, w, sc, outp, mm, nn, kk| -> anyhow::Result<()> {
-                ops::w8a16_gemm_pipelined(ctx.gpu, self.w8a16_gemm_pipelined_k, inp, w, sc, outp, mm, nn, kk, stream)
+                ops::w8a16_gemm_pipelined(
+                    ctx.gpu,
+                    self.w8a16_gemm_pipelined_k,
+                    inp,
+                    w,
+                    sc,
+                    outp,
+                    mm,
+                    nn,
+                    kk,
+                    stream,
+                )
             };
             // FP8 GEMM for shared expert (M=num_tokens, single kernel each)
-            sh_gemm(input, sh.gate_proj.weight, sh.gate_proj.row_scale, shared_gate_out, n, shared_inter, h)?;
-            sh_gemm(input, sh.up_proj.weight, sh.up_proj.row_scale, shared_up_out, n, shared_inter, h)?;
+            sh_gemm(
+                input,
+                sh.gate_proj.weight,
+                sh.gate_proj.row_scale,
+                shared_gate_out,
+                n,
+                shared_inter,
+                h,
+            )?;
+            sh_gemm(
+                input,
+                sh.up_proj.weight,
+                sh.up_proj.row_scale,
+                shared_up_out,
+                n,
+                shared_inter,
+                h,
+            )?;
             // Activation + down for shared expert (SiLU or GeGLU)
             ops::silu_mul(
                 ctx.gpu,
@@ -163,7 +188,15 @@ impl MoeLayer {
                 stream,
             )?;
             let shared_down_out = ctx.buffers.attn_output();
-            sh_gemm(shared_gate_out, sh.down_proj.weight, sh.down_proj.row_scale, shared_down_out, n, h, shared_inter)?;
+            sh_gemm(
+                shared_gate_out,
+                sh.down_proj.weight,
+                sh.down_proj.row_scale,
+                shared_down_out,
+                n,
+                h,
+                shared_inter,
+            )?;
         }
 
         // ── Routed expert path ──
@@ -309,10 +342,8 @@ impl MoeLayer {
         }
         // ATLAS_FP8_W8A8: pre-quant input/intermediate to FP8 with per-token-
         // per-128 FP32 scale, use new W8A8 grouped GEMM (vLLM-equivalent).
-        let force_w8a8 = matches!(
-            std::env::var("ATLAS_FP8_W8A8").ok().as_deref(),
-            Some("1")
-        ) && self.moe_w8a8_grouped_gemm_k.0 != 0
+        let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"))
+            && self.moe_w8a8_grouped_gemm_k.0 != 0
             && self.per_token_group_quant_fp8_k.0 != 0;
 
         if force_w8a8 && max_m_tiles > 0 {
@@ -380,8 +411,7 @@ impl MoeLayer {
             // (te.div_ceil(128) m-tiles) plus a +ne+1 slack term covering
             // per-expert m-tile rounding when tokens are spread across all
             // experts. ×n_tiles n-tiles, ×2 words/item, ×4 bytes/word.
-            let wl_cap_items = (te.div_ceil(PM4_M_TILE as usize) + ne + 1)
-                * n_tiles_gu as usize;
+            let wl_cap_items = (te.div_ceil(PM4_M_TILE as usize) + ne + 1) * n_tiles_gu as usize;
             let wl_gu = ctx.gpu.alloc(wl_cap_items * 2 * 4)?;
             let tt_gu = ctx.gpu.alloc(4)?;
             ops::moe_build_tile_worklist(
@@ -496,8 +526,7 @@ impl MoeLayer {
             // direct-index A-prefetch branch (R6). Builder + grouped GEMM on the
             // SAME `stream`. Down-proj uses dp.weight_ptrs for NULL-skip.
             let n_tiles_dn = h.div_ceil(PM4_N_TILE);
-            let wl_cap_items = (te.div_ceil(PM4_M_TILE as usize) + ne + 1)
-                * n_tiles_dn as usize;
+            let wl_cap_items = (te.div_ceil(PM4_M_TILE as usize) + ne + 1) * n_tiles_dn as usize;
             let wl_dn = ctx.gpu.alloc(wl_cap_items * 2 * 4)?;
             let tt_dn = ctx.gpu.alloc(4)?;
             ops::moe_build_tile_worklist(

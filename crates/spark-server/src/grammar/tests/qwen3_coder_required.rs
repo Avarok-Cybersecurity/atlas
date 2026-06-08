@@ -72,8 +72,7 @@ fn qwen3_coder_grammar_accepts_canonical_xml_body() {
         .compile_qwen3_coder_tool_grammar(&tools, true, "</parameter>")
         .expect("compile must succeed");
 
-    let canonical_xml =
-        "<tool_call>\n<function=exec>\n<parameter=command>ls /tmp</parameter>\n</function>\n</tool_call>";
+    let canonical_xml = "<tool_call>\n<function=exec>\n<parameter=command>ls /tmp</parameter>\n</function>\n</tool_call>";
     assert!(
         grammar_accepts(&compiled, canonical_xml),
         "canonical native-XML qwen3_coder body must be accepted; input: {canonical_xml:?}"
@@ -249,8 +248,7 @@ fn qwen3_coder_grammar_rejects_whitespace_only_parameter_body() {
         .compile_qwen3_coder_tool_grammar(&tools, true, "</parameter>")
         .expect("compile must succeed");
 
-    let whitespace_body =
-        "<tool_call>\n<function=exec>\n<parameter=command>   \n  </parameter>\n</function>\n</tool_call>";
+    let whitespace_body = "<tool_call>\n<function=exec>\n<parameter=command>   \n  </parameter>\n</function>\n</tool_call>";
     assert!(
         !grammar_accepts(&compiled, whitespace_body),
         "whitespace-only parameter body must be REJECTED. Input: {whitespace_body:?}"
@@ -273,8 +271,7 @@ fn qwen3_coder_grammar_accepts_leading_newline_content() {
         .compile_qwen3_coder_tool_grammar(&tools, true, "</parameter>")
         .expect("compile must succeed");
 
-    let leading_nl =
-        "<tool_call>\n<function=exec>\n<parameter=command>\nls /tmp</parameter>\n</function>\n</tool_call>";
+    let leading_nl = "<tool_call>\n<function=exec>\n<parameter=command>\nls /tmp</parameter>\n</function>\n</tool_call>";
     assert!(
         grammar_accepts(&compiled, leading_nl),
         "a leading newline before real content must be ACCEPTED. Input: {leading_nl:?}"
@@ -298,8 +295,7 @@ fn qwen3_coder_grammar_rejects_eq_value_start() {
         .compile_qwen3_coder_tool_grammar(&tools, true, "</parameter>")
         .expect("compile must succeed");
 
-    let eq_start =
-        "<tool_call>\n<function=exec>\n<parameter=command>=ls /tmp</parameter>\n</function>\n</tool_call>";
+    let eq_start = "<tool_call>\n<function=exec>\n<parameter=command>=ls /tmp</parameter>\n</function>\n</tool_call>";
     assert!(
         !grammar_accepts(&compiled, eq_start),
         "a value starting with `=` (the `>=`-merge artifact) must be REJECTED. Input: {eq_start:?}"

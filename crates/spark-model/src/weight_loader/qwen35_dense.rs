@@ -187,9 +187,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             gpu.free(o_dense.weight)?;
 
                             let attn = AttentionWeights {
-                                q_proj: DenseWeight { weight: spark_runtime::gpu::DevicePtr::NULL },
-                                k_proj: DenseWeight { weight: spark_runtime::gpu::DevicePtr::NULL },
-                                v_proj: DenseWeight { weight: spark_runtime::gpu::DevicePtr::NULL },
+                                q_proj: DenseWeight {
+                                    weight: spark_runtime::gpu::DevicePtr::NULL,
+                                },
+                                k_proj: DenseWeight {
+                                    weight: spark_runtime::gpu::DevicePtr::NULL,
+                                },
+                                v_proj: DenseWeight {
+                                    weight: spark_runtime::gpu::DevicePtr::NULL,
+                                },
                                 o_proj: o_nvfp4,
                                 q_norm: dense(store, &format!("{p}.q_norm.weight"))?,
                                 k_norm: dense(store, &format!("{p}.k_norm.weight"))?,
@@ -356,7 +362,9 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     gpu.free(out_proj_dense.weight)?;
 
                     let ssm = SsmWeights {
-                        in_proj_qkvz: DenseWeight { weight: spark_runtime::gpu::DevicePtr::NULL },
+                        in_proj_qkvz: DenseWeight {
+                            weight: spark_runtime::gpu::DevicePtr::NULL,
+                        },
                         in_proj_ba: ba_dense,
                         conv1d,
                         a_log,

@@ -193,12 +193,20 @@ impl Qwen3AttentionLayer {
             v_fp8w_t: None,
             o_fp8w_t: None,
             w8a16_gemm_t_k: super::super::try_kernel(gpu, "w8a16_gemm_t", "w8a16_gemm_t"),
-            w8a16_gemm_t_pipelined_k: super::super::try_kernel(gpu, "w8a16_gemm_t", "w8a16_gemm_t_pipelined"),
+            w8a16_gemm_t_pipelined_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemm_t",
+                "w8a16_gemm_t_pipelined",
+            ),
             per_token_group_quant_fp8_k: super::super::try_kernel(
-                gpu, "per_token_group_quant_fp8", "per_token_group_quant_fp8",
+                gpu,
+                "per_token_group_quant_fp8",
+                "per_token_group_quant_fp8",
             ),
             fp8_gemm_t_blockscaled_k: super::super::try_kernel(
-                gpu, "fp8_gemm_t_blockscaled", "fp8_gemm_t_blockscaled",
+                gpu,
+                "fp8_gemm_t_blockscaled",
+                "fp8_gemm_t_blockscaled",
             ),
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
             rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
@@ -206,7 +214,11 @@ impl Qwen3AttentionLayer {
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w8a16_gemv_k: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
-            w8a16_gemm_pipelined_k: super::super::try_kernel(gpu, "w8a16_gemm_pipelined", "w8a16_gemm_pipelined"),
+            w8a16_gemm_pipelined_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemm_pipelined",
+                "w8a16_gemm_pipelined",
+            ),
             w4a16_gemv_dual_k: gpu.kernel("w4a16_gemv_fused", "w4a16_gemv_dual")?,
             rope_k: gpu.kernel("rope", "rope_forward")?,
             rope_mrope_interleaved_k: super::super::try_kernel(
