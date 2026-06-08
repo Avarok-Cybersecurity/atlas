@@ -2249,3 +2249,94 @@ in `params.json`, propagated to `nkv=1` in `cache_skip_mla.rs`. Flash attention 
 The YaRN `inv_freq` bug (fixed in `yarn.rs`) remains the sole root cause of >1000-token
 gibberish. No kernel-level, buffer-sizing, or GQA-ratio issues exist. Awaiting live hardware
 re-test to close P1.
+
+---
+
+## Investigation #29 — 2026-06-08 (direct source audit + #28 error correction)
+
+Full independent read of all source files named in the task spec against spec_ssm HEAD.
+No new bugs found. One factual error in Investigation #28 corrected below.
+
+### P1 — Mistral Small 4 MLA prefill: all fixes confirmed (files read directly)
+
+**Files read**: `prefill/cache_skip.rs`, `prefill/cache_skip_mla.rs`,
+`prefill/paged_mla.rs`, `mistral_loader/loader_impl/yarn.rs`,
+`kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu`,
+`kernels/gb10/mistral-small-4/nvfp4/KERNEL.toml`,
+`main_modules/kv_dtypes.rs`, `decode/attention_forward_mla.rs`,
+`decode/run_paged_decode.rs`.
+
+**Correction to Investigation #28**: That session stated:
+> "`prefill_attn_64_k` … loads the BR=64 variant from `inferspark_prefill.cu`, compiled with
+> `-DHDIM=128`. **This is the correct kernel for the single-chunk MLA prefill.**"
+
+This is factually wrong. `prefill_attn_64_k` is loaded by `init.rs:403` from
+`inferspark_prefill_64`, but it has **zero call sites** in any MLA prefill code path.
+The actual single-chunk MLA prefill dispatch is:
+
+```
+cache_skip.rs:89-100 — if self.mla.is_some() { return self.prefill_attention_cache_skip_mla(...) }
+cache_skip_mla.rs:268-296 — ensure!(mla_fused_prefill_k.0 != 0); ops::mla_fused_prefill(...)
+```
+
+The live kernel is `mla_fused_prefill_k` (absorbed HDIM=320), not `prefill_attn_64_k`.
+`paged_mla.rs` (dead code for all MLA models) uses `prefill_attn_128_k` for its
+first-chunk path — again not `prefill_attn_64_k`.
+
+**`prefill_attn_64_k` is the BR=64 standard flash-attention kernel for non-MLA models.
+It is never dispatched on the Mistral Small 4 code path.**
+
+Additionally, Investigation #28's conclusion that "the YaRN inv_freq bug remains the
+sole root cause" understates the fix: the rewrite of `cache_skip_mla.rs` to use
+`mla_fused_prefill` is equally necessary. On `main`, `cache_skip_mla.rs` still calls
+`prefill_attention_64` (HDIM=256 kernel, wrong scale `1/sqrt(128)` vs correct `1/sqrt(320)`)
+— this alone produces >1K gibberish even with the YaRN fix applied.
+
+**Verified findings (spec_ssm HEAD)**:
+
+| File | Result |
+|------|--------|
+| `yarn.rs` | `find_correction_dim` in dim-index space; `low=7, high=15`; `beta_slow=1.0`. ✓ |
+| `cache_skip.rs:89` | `if self.mla.is_some()` routes all MLA prompts to `cache_skip_mla.rs`. ✓ |
+| `cache_skip_mla.rs:268-296` | `ensure!(mla_fused_prefill_k.0 != 0)`; dispatches `mla_fused_prefill`; `inv_sqrt_d_absorbed=1/√320`. ✓ |
+| `mla_fused_prefill.cu` | Flat 1D grid `(nq*seq_len,1,1)`; 3 `__syncthreads()` per KV iteration; scalar `acc_latent`; causal loop `min(q_pos+1,seq_len)`. ✓ |
+| `KERNEL.toml` | `extra_nvcc_flags=["--fmad=false","-DHDIM=128"]`; `mla_fused_prefill="mla_fused_prefill"` module. ✓ |
+| `kv_dtypes.rs:20-21` | `if kv_dtype==Bf16 { return vec![Bf16;N]; }` — explicit BF16 vec. ✓ |
+| `paged_mla.rs:273-281` | Dead code; uses `prefill_attn_128_k` (not `64_k`); `ensure!(hd>128 \|\| prefill_attn_128_k.0!=0)`. ✓ |
+| `attention_forward_mla.rs:377` | Decode: `inv_sqrt_d=1/√(kv_lora+rope=320)`; `paged_decode_attn_bf16` correct for BF16 KV. ✓ |
+
+**No new bugs found in P1.**
+
+### P2 — Nemotron Super 120B tool calling: confirmed fixed
+
+**Files read**: `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`,
+`jinja-templates/nemotron_h.jinja`.
+
+`MODEL.toml [behavior]`: `thinking_in_tools=false`, `disable_tool_steering=true`,
+`tool_call_parser="bare_json"`, `skip_template_tools=true` — all four flags present. ✓
+
+`nemotron_h.jinja` generation-prompt for tool-active turns: three-branch block. Branch 1
+(`tools and not disable_tool_steering`) = false; branch 2 (`elif enable_thinking`) = false
+(because `thinking_in_tools=false`); branch 3 (`else`) emits
+`<|im_start|>assistant\n<think></think>\n`. No `<tool_call>` steering prefix. ✓
+
+XML format instructions (`{%- if not disable_tool_steering %}`) suppressed when
+`disable_tool_steering=true`. No conflicting tool format in context. ✓
+
+**No new bugs found in P2.**
+
+### P3 — SSM cache slots: confirmed correct
+
+`SsmStatePool::new(&config, max_batch_size, ...)` at `impl_a1.rs:134` — active recurrent
+states, sized by `--max-batch-size`. `SsmSnapshotPool::new(ssm_cache_slots, ...)` at
+`impl_a1.rs:143` — Marconi prefix-cache snapshots, zeroed when `--ssm-cache-slots 0`.
+Two independent allocations; the 1206 MB reported with `--ssm-cache-slots 0` is
+`SsmStatePool`, not a bug. ✓
+
+### Final status
+
+| Priority | Status | All fixes present in code |
+|----------|--------|--------------------------|
+| P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** | YaRN `yarn.rs`; `cache_skip_mla.rs` → `mla_fused_prefill` (absorbed HDIM=320); explicit BF16 vec in `kv_dtypes.rs`; flat-grid `mla_fused_prefill.cu`. #28 documentation error corrected above. |
+| P2 Nemotron tool calling | **CONFIRMED FIXED** | Four `MODEL.toml` flags; jinja `else` branch (pre-closed think) for tool-active turns; `skip_template_tools=true` + XML format gate. |
+| P3 SSM cache slots | **CONFIRMED CORRECT** | `--ssm-cache-slots 0` disables only `SsmSnapshotPool`; 1206 MB `SsmStatePool` is independent, correct behavior. |
