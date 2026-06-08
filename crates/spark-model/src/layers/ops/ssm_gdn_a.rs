@@ -326,6 +326,7 @@ pub fn gdn_prefill_persistent_smem(
 ///      uc_out (bf16); updates h_state in-place.
 ///   3. chunk_fwd_o   (grid [num_chunks, nv, batch], 128 thr): O = Q̃·S_c +
 ///      tril(decay·Q̃·Kᵀ)·uc → output (bf16, same layout as wy4).
+///
 /// W_out/U_out/S_out/uc_out are the caller's pre-sized scratch (BufferArena
 /// `gdn_fla_scratch`, sub-divided). Strides match the packed conv layout
 /// (qk_stride=v_stride=conv_dim, gb_stride=2*nv) exactly like the wy4/chunk64 path.

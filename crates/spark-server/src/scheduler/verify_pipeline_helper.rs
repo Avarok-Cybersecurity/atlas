@@ -216,26 +216,30 @@ pub fn verify_pick_all_with_pipeline(
         let before = a.grammar_state.as_ref().map(|gs| gs.num_history_steps());
         let mut fast: Vec<u32> = Vec::with_capacity(k);
         let mut all_allowed = true;
-        for (i, &tok) in argmax_ids.iter().enumerate() {
-            let gs = a
-                .grammar_state
-                .as_mut()
-                .expect("grammar_state present (gated above)");
-            let allowed = if gs.is_terminated() {
-                true // no further constraint past grammar completion
-            } else {
-                gs.fill_bitmask();
-                gs.is_token_allowed(tok)
+        // Scoped block so `gs`'s mutable borrow ends before the post-loop
+        // rollback re-borrows `a.grammar_state`. let-else (not `.expect()`)
+        // keeps clippy happy — `is_some()` is gated in the `if` condition above.
+        {
+            let Some(gs) = a.grammar_state.as_mut() else {
+                unreachable!("grammar_state present (gated by is_some above)")
             };
-            if !allowed {
-                all_allowed = false;
-                break;
-            }
-            fast.push(tok);
-            // Speculatively advance so position i+1's bitmask reflects the
-            // post-emit state (mirrors the slow path). Skip after the last.
-            if i + 1 < k && !gs.is_terminated() {
-                let _ = gs.accept_token(tok);
+            for (i, &tok) in argmax_ids.iter().enumerate() {
+                let allowed = if gs.is_terminated() {
+                    true // no further constraint past grammar completion
+                } else {
+                    gs.fill_bitmask();
+                    gs.is_token_allowed(tok)
+                };
+                if !allowed {
+                    all_allowed = false;
+                    break;
+                }
+                fast.push(tok);
+                // Speculatively advance so position i+1's bitmask reflects the
+                // post-emit state (mirrors the slow path). Skip after the last.
+                if i + 1 < k && !gs.is_terminated() {
+                    let _ = gs.accept_token(tok);
+                }
             }
         }
         // Roll back the speculative advances to the exact pre-call state

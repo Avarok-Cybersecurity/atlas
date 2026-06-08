@@ -45,11 +45,11 @@ fn coerce_number_float() {
         "fn",
         serde_json::json!({ "score": { "type": "number" } }),
     )];
-    let mut calls = vec![make_call("fn", r#"{"score":"3.14"}"#)];
+    let mut calls = vec![make_call("fn", r#"{"score":"3.5"}"#)];
     coerce_all(&mut calls, &tools);
     let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
     let got = args["score"].as_f64().unwrap();
-    assert!((got - 3.14).abs() < 1e-9, "expected 3.14, got {got}");
+    assert!((got - 3.5).abs() < 1e-9, "expected 3.5, got {got}");
 }
 
 #[test]

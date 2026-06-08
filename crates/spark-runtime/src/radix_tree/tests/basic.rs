@@ -390,7 +390,7 @@ fn test_vision_pad_tokens_are_image_blind_collision() {
     // Page A: 3 prompt tokens followed by a run of image-pad placeholders.
     let page_a: Vec<u32> = [1u32, 2, 3]
         .into_iter()
-        .chain(std::iter::repeat(IMAGE_PAD).take(29))
+        .chain(std::iter::repeat_n(IMAGE_PAD, 29))
         .collect(); // 32 tokens == 2 blocks of 16
     // Page B is a DIFFERENT image but the same prompt and same pad count, so
     // pixels never enter the token IDs: the stream is identical to page A.

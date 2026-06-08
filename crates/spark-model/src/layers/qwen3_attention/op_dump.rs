@@ -8,13 +8,13 @@
 //! table study (`bench/fp8_dgx2_drift/`).
 //!
 //! Activation:
-//!     ATLAS_OP_DUMP=<dir>                       (required to enable; no-op when unset)
+//!     `ATLAS_OP_DUMP=<dir>`                     (required to enable; no-op when unset)
 //!     ATLAS_OP_DUMP_LAYERS=0,7,11,15,19,23,...  (csv of absolute layer
 //!                                                indices; default = all)
 //!     ATLAS_OP_DUMP_OPS=q_proj,k_proj,...       (csv of op names; default = all)
 //!
 //! Filename convention:
-//!     <ATLAS_OP_DUMP>/atlas_op_L{abs_layer}_{op}.bin
+//!     `<ATLAS_OP_DUMP>/atlas_op_L{abs_layer}_{op}.bin`
 //! Format: headerless little-endian f32, last-token slice of `n_elements`.
 //! BF16 source tensors are widened to f32 on the host before write so
 //! the Python comparator can load them with a single np.fromfile call.

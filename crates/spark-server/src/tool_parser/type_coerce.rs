@@ -38,10 +38,8 @@ fn coerce_call_args(call: &mut ToolCall, tool_def: Option<&ToolDefinition>) {
     let mut changed = repair_empty_keys(&mut args, schema);
 
     let Some(obj) = args.as_object_mut() else {
-        if changed {
-            if let Ok(s) = serde_json::to_string(&args) {
-                call.function.arguments = s;
-            }
+        if changed && let Ok(s) = serde_json::to_string(&args) {
+            call.function.arguments = s;
         }
         return;
     };
@@ -61,22 +59,21 @@ fn coerce_call_args(call: &mut ToolCall, tool_def: Option<&ToolDefinition>) {
                     if let Ok(n) = s.parse::<i64>() {
                         *val = serde_json::Value::Number(n.into());
                         changed = true;
-                    } else if let Ok(f) = s.parse::<f64>() {
-                        if let Some(num) = serde_json::Number::from_f64(f) {
-                            *val = serde_json::Value::Number(num);
-                            changed = true;
-                        }
+                    } else if let Ok(f) = s.parse::<f64>()
+                        && let Some(num) = serde_json::Number::from_f64(f)
+                    {
+                        *val = serde_json::Value::Number(num);
+                        changed = true;
                     }
                 }
             }
             "number" => {
-                if let serde_json::Value::String(s) = val {
-                    if let Ok(n) = s.parse::<f64>() {
-                        if let Some(num) = serde_json::Number::from_f64(n) {
-                            *val = serde_json::Value::Number(num);
-                            changed = true;
-                        }
-                    }
+                if let serde_json::Value::String(s) = val
+                    && let Ok(n) = s.parse::<f64>()
+                    && let Some(num) = serde_json::Number::from_f64(n)
+                {
+                    *val = serde_json::Value::Number(num);
+                    changed = true;
                 }
             }
             "boolean" => {
@@ -95,11 +92,11 @@ fn coerce_call_args(call: &mut ToolCall, tool_def: Option<&ToolDefinition>) {
                 }
             }
             "array" | "object" => {
-                if let serde_json::Value::String(s) = val {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s) {
-                        *val = parsed;
-                        changed = true;
-                    }
+                if let serde_json::Value::String(s) = val
+                    && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s)
+                {
+                    *val = parsed;
+                    changed = true;
                 }
             }
             "null" => {
@@ -112,10 +109,8 @@ fn coerce_call_args(call: &mut ToolCall, tool_def: Option<&ToolDefinition>) {
         }
     }
 
-    if changed {
-        if let Ok(s) = serde_json::to_string(&args) {
-            call.function.arguments = s;
-        }
+    if changed && let Ok(s) = serde_json::to_string(&args) {
+        call.function.arguments = s;
     }
 }
 
@@ -187,10 +182,10 @@ fn value_matches_schema(val: &serde_json::Value, prop_schema: Option<&serde_json
     let Some(ps) = prop_schema else {
         return true;
     };
-    if let Some(en) = ps.get("enum").and_then(|e| e.as_array()) {
-        if !en.iter().any(|e| e == val) {
-            return false;
-        }
+    if let Some(en) = ps.get("enum").and_then(|e| e.as_array())
+        && !en.iter().any(|e| e == val)
+    {
+        return false;
     }
     if let Some(ty) = ps.get("type").and_then(|t| t.as_str()) {
         let ok = match ty {

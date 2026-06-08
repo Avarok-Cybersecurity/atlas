@@ -483,37 +483,37 @@ pub enum StartPrefillResult {
     Finished,
 }
 
-/// Tool-body / parameter-body state machine, hoisted out of
-/// `emit_token` (SM1, 2026-05-26).
-///
-/// Both speculative-decoding paths (`verify_k2_step`, `verify_k4_step`,
-/// `verify_dflash_step`, `spec_step`) and the regular non-spec decode
-/// path (`decode_logits_step::process_decode_logits`) call this on
-/// every emitted token so the state machine stays in sync with
-/// `a.output_tokens`. The previous inline version was unreachable
-/// from the non-spec path, leaving the close-tag mask, AM1 attractor
-/// suppression, B1 margin detector, and A1 penalty toggle all silently
-/// dead.
-///
-/// **Slice semantics**: this function does NOT assume `tok` has been
-/// pushed onto `a.output_tokens` or that it has not. It auto-detects
-/// from `a.output_tokens.last()` and slices accordingly:
-///  - `emit_token` calls this BEFORE pushing → `last()` is the prior
-///    token, lookback uses the full slice.
-///  - `decode_logits_step::process_decode_logits` calls this AFTER
-///    pushing → `last()` is `tok`, lookback excludes the trailing
-///    entry so the search for `<parameter=KEY>` ending at the current
-///    `>` is correct in both cases.
-///
-/// State mutations:
-///  - `a.inside_tool_body`         set on `<tool_call>`, cleared on `</tool_call>`
-///  - `a.tool_body_streak_tokens`  ++ per body token, reset on enter/exit
-///  - `a.inside_parameter_body`    set on `<parameter=KEY>` close `>`, cleared on `</`
-///  - `a.param_body_chars_emitted` ++ per non-close body token
-///  - `a.finished`                 forced when stuck >MAX_TOOL_BODY_TOKENS
-///
-/// Token IDs are Qwen3.6 byte-level BPE (verified via /tokenize 2026-05-25):
-///   27 = `<`, 28 = `=`, 29 = `>`, 510 = `</`, 15704 = `parameter`.
+// Tool-body / parameter-body state machine, hoisted out of
+// `emit_token` (SM1, 2026-05-26).
+//
+// Both speculative-decoding paths (`verify_k2_step`, `verify_k4_step`,
+// `verify_dflash_step`, `spec_step`) and the regular non-spec decode
+// path (`decode_logits_step::process_decode_logits`) call this on
+// every emitted token so the state machine stays in sync with
+// `a.output_tokens`. The previous inline version was unreachable
+// from the non-spec path, leaving the close-tag mask, AM1 attractor
+// suppression, B1 margin detector, and A1 penalty toggle all silently
+// dead.
+//
+// **Slice semantics**: this function does NOT assume `tok` has been
+// pushed onto `a.output_tokens` or that it has not. It auto-detects
+// from `a.output_tokens.last()` and slices accordingly:
+//  - `emit_token` calls this BEFORE pushing → `last()` is the prior
+//    token, lookback uses the full slice.
+//  - `decode_logits_step::process_decode_logits` calls this AFTER
+//    pushing → `last()` is `tok`, lookback excludes the trailing
+//    entry so the search for `<parameter=KEY>` ending at the current
+//    `>` is correct in both cases.
+//
+// State mutations:
+//  - `a.inside_tool_body`         set on `<tool_call>`, cleared on `</tool_call>`
+//  - `a.tool_body_streak_tokens`  ++ per body token, reset on enter/exit
+//  - `a.inside_parameter_body`    set on `<parameter=KEY>` close `>`, cleared on `</`
+//  - `a.param_body_chars_emitted` ++ per non-close body token
+//  - `a.finished`                 forced when stuck >MAX_TOOL_BODY_TOKENS
+//
+// Token IDs are Qwen3.6 byte-level BPE (verified via /tokenize 2026-05-25):
+//   27 = `<`, 28 = `=`, 29 = `>`, 510 = `</`, 15704 = `parameter`.
 
 /// Cap on tool-call ENVELOPE tokens (everything inside `<tool_call>…</tool_call>`
 /// that is NOT a parameter-value body). Catches a model that opens `<tool_call>`

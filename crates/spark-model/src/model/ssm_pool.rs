@@ -212,6 +212,7 @@ impl SsmStatePool {
     ///   - `sum`   (signed sum — catches gross errors / sign flips)
     ///   - `ssq`   (sum of squares — magnitude-weighted, cancellation-free)
     ///   - `sabs`  (sum of absolute values — cancellation-free L1)
+    ///
     /// A global `(sum, ssq, sabs)` triple is also logged for a quick gate.
     pub(super) fn debug_state_checksum(
         &self,

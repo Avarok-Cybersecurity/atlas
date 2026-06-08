@@ -250,7 +250,7 @@ pub struct ModelBehavior {
     /// retry produces valid tool calls, they replace the failed call
     /// before the response leaves the server. Default `true` — the
     /// blocking-path canonical-probe trace shows a write-→bash recovery
-    /// path that's strictly better than the previous "[atlas] Tool call
+    /// path that's strictly better than the previous "`[atlas]` Tool call
     /// rejected" content fallback. Set `false` per-model when a
     /// specific model is known to ALWAYS get tool args right on the
     /// first attempt (extra inference round-trip cost is wasted there).
