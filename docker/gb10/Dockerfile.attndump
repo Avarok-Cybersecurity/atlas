@@ -1,2 +1,0 @@
-FROM atlas-gb10:w8a8-parserfix
-COPY spark-fastbin /usr/local/bin/spark
