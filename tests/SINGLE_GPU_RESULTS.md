@@ -1996,3 +1996,83 @@ agent returned exact file paths, line numbers, and code excerpts without access 
 | P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** — all four fixes present; no new bugs |
 | P2 Nemotron tool calling | **CONFIRMED FIXED** — four MODEL.toml flags + jinja gate verified |
 | P3 SSM cache slots | **CONFIRMED CORRECT** — two-pool independence verified end-to-end |
+
+---
+
+## Investigation #26 — 2026-06-08
+
+Fresh independent audit of all three priorities against spec_ssm HEAD. All findings from
+investigations #1–#25 confirmed. No new bugs found. No code changes required.
+
+### Method
+
+Read every file named in the task spec directly from `spec_ssm` HEAD without consulting prior
+session notes first. Also read `mla_fused_prefill.cu` and `kv_dtypes.rs` in full to verify
+kernel logic and dtype dispatch.
+
+### P1 — Mistral Small 4 MLA prefill: all fixes confirmed
+
+**Files read**: `yarn.rs`, `prefill/paged_mla.rs`, `prefill/cache_skip_mla.rs`,
+`mla_fused_prefill.cu`, `kv_dtypes.rs`, `KERNEL.toml`.
+
+- **`yarn.rs`**: `find_correction_dim` in dimension-index space. For Mistral params (theta=1e7,
+  dim=64, max_pos=8192, factor=128, beta_fast=32, beta_slow=1): `low=floor(7.36)=7`,
+  `high=ceil(14.24)=15`. Linear ramp `clamp((j-low)/(high-low), 0, 1)`. Fix confirmed. ✓
+
+- **`cache_skip_mla.rs`** (sole live MLA prefill path — all prompts via scheduler single-chunk
+  gate): dispatches `mla_fused_prefill` with mandatory `anyhow::ensure!(mla_fused_prefill_k.0 != 0)`.
+  `inv_sqrt_d_absorbed = 1/sqrt(kv_lora + mla_rope) = 1/sqrt(320)`. Buffer reuse safe. ✓
+
+- **`mla_fused_prefill.cu`** (full read): flat 1D grid `(nq*seq_len, 1, 1)` at lines 47-48
+  (`head = blockIdx.x / seq_len`, `q_pos = blockIdx.x % seq_len`). Shared memory: `smem_q[320]` +
+  `smem_dot[8]` + `smem_latent[256]` = 2,336 bytes/block (constant, not seq_len-dependent). Causal
+  mask `kv_end = min(q_pos+1, seq_len)`. Three `__syncthreads()` per KV iteration (correct).
+  `acc_latent` is a scalar `float` register (dead `[1]` removed in commit 84b0d8d). ✓
+  KV cache write block (`head==0 && k_cache_out != 0`) is dead code for current call pattern —
+  `cache_skip_mla.rs` passes `DevicePtr::NULL` for both cache output pointers; cache is written
+  by the separate `mla_cache_assemble_batched` call above the kernel invocation. ✓
+
+- **`kv_dtypes.rs`**: `if kv_dtype == KvCacheDtype::Bf16 { return vec![Bf16; N]; }` at line 20.
+  Returns explicit BF16 vec (not empty vec); `--kv-high-precision-layers auto` is a no-op for
+  Mistral Small 4. No FP8/BF16 mixing possible. ✓
+
+- **`KERNEL.toml`**: `extra_nvcc_flags = ["--fmad=false", "-DHDIM=128"]` overrides common
+  `inferspark_prefill.cu`'s `#ifndef HDIM #define HDIM 256` default to 128. ✓
+
+- **`paged_mla.rs`**: dead code for current MLA models (scheduler single-chunk gate). First-chunk
+  unabsorbed path uses `effective_attn_scale(hd=128)` = `1/sqrt(128)` — correct for unabsorbed form.
+  Multi-chunk absorbed path uses `1/sqrt(mla_cache_dim=320)` — also correct. Both unreachable. ✓
+
+**No new bugs found in P1.**
+
+### P2 — Nemotron Super 120B tool calling: confirmed fixed
+
+- `MODEL.toml`: `thinking_in_tools=false` (line 51), `disable_tool_steering=true` (line 58),
+  `tool_call_parser="bare_json"` (line 67), `skip_template_tools=true` (see `[behavior]` block). ✓
+- Jinja generation-prompt for tool-active turns: branch 1 (`tools and not disable_tool_steering`) →
+  false; branch 2 (`elif enable_thinking`) → false (`thinking_in_tools=false`); branch 3 (`else`)
+  → emits `<|im_start|>assistant\n<think></think>\n`. Model generates bare JSON immediately. ✓
+- `BareJsonParser::suppresses_jinja_tools()` = `true` → `jinja_tools=None` → `{%- if tools %}`
+  outer gate inactive; XML format instructions gate `{%- if not disable_tool_steering %}` also
+  inactive. No conflicting tool format instructions reach the context. ✓
+
+**No new bugs found in P2.**
+
+### P3 — SSM cache slots: confirmed correct
+
+- `SsmStatePool::new(&config, max_batch_size, ...)` at `impl_a1.rs:134` — live recurrent states.
+  Sized by `--max-batch-size` (default 8 → 1206 MB), completely independent of `ssm_cache_slots`. ✓
+- `SsmSnapshotPool::new(ssm_cache_slots, ...)` at `impl_a1.rs:143` — Marconi prefix-cache
+  snapshots. `--ssm-cache-slots 0` zeros this allocation. Phase-C decode-rollback ring (<1 MB)
+  is still allocated for SSM models; intentional. ✓
+- `cli.rs:279`: `--ssm-cache-slots` default 16, accepts 0 without special-casing. ✓
+
+**No bugs. Behavior is correct.**
+
+### Summary
+
+| Priority | Status | Finding |
+|----------|--------|---------|
+| P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** | YaRN `yarn.rs` + `mla_fused_prefill` absorbed path + flat grid + explicit BF16 vec in `kv_dtypes.rs` — all four fixes verified on spec_ssm HEAD. CUDA kernel read in full; no bugs at >1K tokens. |
+| P2 Nemotron tool calling | **CONFIRMED FIXED** | Four MODEL.toml flags + jinja 3-branch generation prompt + BareJsonParser chain confirmed end-to-end. |
+| P3 SSM cache slots | **CONFIRMED CORRECT** | `--ssm-cache-slots 0` correctly disables only `SsmSnapshotPool`; 1206 MB `SsmStatePool` is independent, sized by `--max-batch-size`. |
