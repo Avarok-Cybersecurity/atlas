@@ -103,12 +103,24 @@ def seed(target: pathlib.Path):
     subprocess.run(["chmod", "-R", "777", str(target)])
 
 
+def kill_opencode():
+    # Reap leaked opencode (Bun) instances before+after every run — a leaked
+    # instance hangs the next run. `-x opencode` (exact name) so we don't kill
+    # this script via a cmdline self-match. pkill exit 1 (no match) is fine.
+    subprocess.run(["pkill", "-9", "-x", "opencode"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def run_opencode(target):
-    return run(["timeout", str(AGENT_TIMEOUT), "opencode", "run",
-                "--dangerously-skip-permissions", "--dir", str(target),
-                "--format", "json", PROMPT],
-               timeout=AGENT_TIMEOUT + 20,
-               env={"CARGO_TARGET_DIR": SHARED_TARGET})
+    kill_opencode()
+    try:
+        return run(["timeout", "-k", "10", str(AGENT_TIMEOUT), "opencode", "run",
+                    "--dangerously-skip-permissions", "--dir", str(target),
+                    "--format", "json", PROMPT],
+                   timeout=AGENT_TIMEOUT + 20,
+                   env={"CARGO_TARGET_DIR": SHARED_TARGET})
+    finally:
+        kill_opencode()
 
 
 def run_claude(target):

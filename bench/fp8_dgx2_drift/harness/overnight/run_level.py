@@ -67,13 +67,31 @@ def run(cmd, cwd=None, timeout=None, stdin=None, env=None):
         return 125, "", f"[launch error: {e}]"
 
 
+def kill_opencode() -> None:
+    """Kill every lingering opencode process. opencode (a Bun binary) leaks
+    multi-threaded instances when a `run` is SIGTERM'd or hangs; a leaked
+    instance makes the NEXT run hang (shared-state contention under the box's
+    tight unified-memory budget — the 35B model holds ~114/121 GB). So we reap
+    before AND after every run. Use `-x opencode` (EXACT process name): `-f
+    opencode` would match this script's own cmdline and kill the caller.
+    `pkill` exit 1 (no match) is fine; never raise."""
+    subprocess.run(["pkill", "-9", "-x", "opencode"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def run_opencode(prompt: str, target: pathlib.Path) -> None:
-    run(
-        ["timeout", str(AGENT_TIMEOUT), "opencode", "run",
-         "--dangerously-skip-permissions", "--dir", str(target), "--format", "json", prompt],
-        timeout=AGENT_TIMEOUT + 20,
-        env={"ATLAS_HARNESS_PORT": ATLAS_PORT, "CARGO_TARGET_DIR": SHARED_TARGET},
-    )
+    kill_opencode()                      # clear leaks from any prior run
+    try:
+        run(
+            # timeout -k 10: escalate to SIGKILL 10s after SIGTERM so a wedged
+            # opencode is actually killed on expiry, not left hanging.
+            ["timeout", "-k", "10", str(AGENT_TIMEOUT), "opencode", "run",
+             "--dangerously-skip-permissions", "--dir", str(target), "--format", "json", prompt],
+            timeout=AGENT_TIMEOUT + 20,
+            env={"ATLAS_HARNESS_PORT": ATLAS_PORT, "CARGO_TARGET_DIR": SHARED_TARGET},
+        )
+    finally:
+        kill_opencode()                  # reap leaked instances on done/timeout
 
 
 def run_claude(prompt: str, target: pathlib.Path) -> None:

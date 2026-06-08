@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# oc — leak-safe opencode wrapper for MANUAL Atlas tests.
+#
+# Why: opencode (a Bun binary) leaks multi-threaded instances when a `run` is
+# SIGTERM'd or hangs. A leaked instance makes the NEXT run hang (shared-state
+# contention under the box's tight unified memory — the 35B model holds
+# ~114/121 GB). So we KILL every lingering opencode BEFORE start and AFTER
+# done/timeout. Uses `pkill -x opencode` (EXACT process name) — `-f opencode`
+# would self-match this script's own cmdline and kill the caller.
+#
+# Usage:
+#   oc "<prompt>"                      # runs in a fresh /tmp/oc-manual dir
+#   oc --dir /path/to/project "<prompt>"
+#   OC_TIMEOUT=600 oc "<prompt>"       # override the 300s default
+#
+# Atlas must be up at localhost:8888 (the opencode config points there).
+set -uo pipefail
+
+TIMEOUT="${OC_TIMEOUT:-300}"
+DIR=""
+if [[ "${1:-}" == "--dir" ]]; then DIR="$2"; shift 2; fi
+PROMPT="${*:-}"
+if [[ -z "$PROMPT" ]]; then echo "usage: oc [--dir PATH] \"<prompt>\"" >&2; exit 2; fi
+if [[ -z "$DIR" ]]; then DIR="/tmp/oc-manual-$$"; mkdir -p "$DIR"; fi
+
+kill_oc(){ pkill -9 -x opencode 2>/dev/null || true; }
+
+# Always reap on exit (normal, Ctrl-C, or timeout) so nothing leaks.
+trap 'kill_oc' EXIT INT TERM
+
+echo "[oc] reaping stale opencode…"; kill_oc; sleep 1
+echo "[oc] dir=$DIR timeout=${TIMEOUT}s — running"
+# timeout -k 10: SIGTERM at deadline, SIGKILL 10s later if still alive.
+timeout -k 10 "$TIMEOUT" opencode run --dangerously-skip-permissions --dir "$DIR" "$PROMPT"
+rc=$?
+echo "[oc] exit=$rc (reaping)"
+exit $rc
