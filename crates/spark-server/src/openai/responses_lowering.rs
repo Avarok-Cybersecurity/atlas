@@ -78,7 +78,11 @@ pub fn lower_responses_to_chat(
     let tools: Option<Vec<crate::tool_parser::ToolDefinition>> = match r.tools {
         None => None,
         Some(list) => {
-            let mut parsed = Vec::with_capacity(list.len());
+            // Clamp the pre-allocation: `list.len()` is a client-controlled
+            // count from the request body. Cap the reserved capacity so a
+            // malicious `tools` array can't drive an oversized allocation
+            // (CWE-789); the Vec still grows past the cap if genuinely needed.
+            let mut parsed = Vec::with_capacity(list.len().min(64));
             for raw in list {
                 let ty = raw.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 match ty {
