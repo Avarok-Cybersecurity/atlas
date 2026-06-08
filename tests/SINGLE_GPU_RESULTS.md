@@ -2076,3 +2076,114 @@ kernel logic and dtype dispatch.
 | P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** | YaRN `yarn.rs` + `mla_fused_prefill` absorbed path + flat grid + explicit BF16 vec in `kv_dtypes.rs` — all four fixes verified on spec_ssm HEAD. CUDA kernel read in full; no bugs at >1K tokens. |
 | P2 Nemotron tool calling | **CONFIRMED FIXED** | Four MODEL.toml flags + jinja 3-branch generation prompt + BareJsonParser chain confirmed end-to-end. |
 | P3 SSM cache slots | **CONFIRMED CORRECT** | `--ssm-cache-slots 0` correctly disables only `SsmSnapshotPool`; 1206 MB `SsmStatePool` is independent, sized by `--max-batch-size`. |
+
+---
+
+## Investigation #27 — 2026-06-08
+
+Fresh independent audit of all three priorities against spec_ssm HEAD. All source files named
+in the task spec read directly. No new bugs found. No code changes required.
+
+### Method
+
+Checked out `spec_ssm` branch (remote `origin/spec_ssm`, tip `f65f1b6`). Read each file
+independently without consulting prior investigation notes first. Also read the full
+`mla_fused_prefill.cu` kernel and `kv_dtypes.rs` to verify their implementation details.
+
+### P1 — Mistral Small 4 MLA prefill: all four fixes confirmed
+
+**`crates/spark-model/src/mistral_loader/loader_impl/yarn.rs`** (read in full):
+`find_correction_dim(num_rot) = (dim * ln(max_pos / (num_rot * 2π))) / (2 * ln(theta))`.
+For Mistral params (theta=1e7, rope_dim=64, max_pos=8192, beta_fast=32, beta_slow=1):
+`low = floor(7.36) = 7`, `high = ceil(14.24) = 15`. Linear ramp `clamp((j-low)/(high-low), 0, 1)`.
+j < 7 → extrapolation (no scaling); j > 15 → full 1/128 interpolation; j 7–15 → blend.
+The `beta_slow` default is `1.0` (not the buggy `0.1`). Fix confirmed correct. ✓
+
+**`crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip_mla.rs`** (read in full):
+The sole live MLA prefill path (all prompts forced single-chunk by the scheduler's `is_mla()`
+gate). The old `prefill_attention_64` call is fully absent; the file dispatches to:
+```rust
+anyhow::ensure!(self.mla_fused_prefill_k.0 != 0, "MLA cache-skip prefill requires mla_fused_prefill kernel ...");
+ops::mla_fused_prefill(ctx.gpu, self.mla_fused_prefill_k, qg_out, q_rope_tmp,
+    kv_latent, k_rope_buf, mla.w_uk_t.weight, mla.w_uv.weight, attn_out_fb,
+    DevicePtr::NULL, DevicePtr::NULL, n, nq, mla_nope, mla_rope, kv_lora,
+    mla_v_dim, hd, inv_sqrt_d_absorbed, stream)?;
+```
+`inv_sqrt_d_absorbed = 1.0 / sqrt(kv_lora + mla_rope) = 1/sqrt(320)` — correct absorbed-space
+scale. Cache write uses `kv_write_start` guard to skip prefix-cached tokens. ✓
+
+**`kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu`** (read in full, 207 lines):
+- Flat 1D grid `(nq * seq_len, 1, 1)` decoded as `head = blockIdx.x / seq_len`,
+  `q_pos = blockIdx.x % seq_len`. At nq=32, seq_len=65536: gridDim.x = 2,097,152 << 2^31. ✓
+- Shared memory: `smem_q[320]` + `smem_dot[8]` + `smem_latent[256]` = 2,336 bytes/block
+  (constant; not seq_len-dependent). ✓
+- Causal loop: `kv_end = min(q_pos + 1, seq_len)` — correct for all positions. ✓
+- Online softmax: warp reduction through `smem_dot[8]`; three `__syncthreads()` per KV
+  iteration (before score broadcast, after acc update). Correct ordering. ✓
+- `acc_latent` is a scalar `float` register (dead `acc_latent[2]` array removed in 84b0d8d). ✓
+- KV cache write block (`head == 0 && k_cache_out != 0`) is dead for current call pattern:
+  `cache_skip_mla.rs` passes `DevicePtr::NULL` for both cache output pointers; the cache is
+  populated by the preceding `mla_cache_assemble_batched` call instead. No bug — just dead code. ✓
+
+**`crates/spark-server/src/main_modules/kv_dtypes.rs`** (read in full):
+```rust
+if kv_dtype == KvCacheDtype::Bf16 {
+    return vec![KvCacheDtype::Bf16; num_attention_layers];
+}
+```
+Returns an explicit `vec![Bf16; 36]` (not the empty vec on `main`). Prevents callers with
+`unwrap_or(Fp8)` from silently quantizing MLA latents to FP8. `--kv-high-precision-layers auto`
+resolves to 2 boundary layers but is a no-op here — the early return fires first. ✓
+
+**No new bugs found in P1. All four independent fixes confirmed.**
+
+### P2 — Nemotron Super 120B tool calling: confirmed fixed
+
+**`kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`** (read in full):
+- `thinking_in_tools = false` (line 51)
+- `disable_tool_steering = true` (line 58)
+- `tool_call_parser = "bare_json"` (line 67)
+- `skip_template_tools = true` (line 80)
+
+All four flags present and correct, with accurate comments explaining each decision. ✓
+
+**`jinja-templates/nemotron_h.jinja`** generation-prompt block (three branches):
+- Branch 1: `{%- if tools and not disable_tool_steering %}` → false (skipped)
+- Branch 2: `{%- elif enable_thinking %}` → false (`thinking_in_tools=false` causes
+  `enable_thinking=false` on tool-active turns)
+- Branch 3: `{%- else %}` → emits `<|im_start|>assistant\n<think></think>\n`
+
+Model receives a pre-closed empty think block and generates bare JSON immediately.
+No `<tool_call>` steering prefix → no token-131071 emission loop. ✓
+
+XML format instructions block (`{%- if not disable_tool_steering %}` gate at line 93):
+With `disable_tool_steering=true`, the XML paragraph is suppressed — no conflicting
+format instructions alongside the bare-JSON system prompt. ✓
+
+**No new bugs found in P2. Fix confirmed end-to-end.**
+
+### P3 — SSM cache slots: confirmed correct
+
+`SsmStatePool::new(&config, max_batch_size, ...)` — live recurrent hidden states for all
+in-flight decode sequences. Sized by `--max-batch-size` (default 8 → 1206 MB for a model
+with 36 SSM layers). Completely independent of `ssm_cache_slots`. ✓
+
+`SsmSnapshotPool::new(ssm_cache_slots, ...)` — Marconi prefix-cache SSM state snapshots.
+`--ssm-cache-slots 0` → `marconi_enabled = false` → zero Marconi allocation. A small
+Phase-C decode-rollback ring (<1 MB) is still allocated for SSM models; this is intentional
+and correct. ✓
+
+`cli.rs:279` → `build.rs:71` → `factory/build.rs:41` → `impl_a1.rs:143`: direct pass-through,
+no transformation. The 1206 MB allocation observed with `--ssm-cache-slots 0` is entirely
+`SsmStatePool`, not `SsmSnapshotPool`. To minimize SSM footprint, pass `--max-batch-size 1`
+(`SsmStatePool` reduces to ~151 MB). ✓
+
+**No bugs. `--ssm-cache-slots 0` disables only `SsmSnapshotPool`. Behavior is correct.**
+
+### Summary
+
+| Priority | Status | Finding |
+|----------|--------|---------|
+| P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** | All four fixes verified: YaRN `yarn.rs` (`low=7, high=15`), `cache_skip_mla.rs` → `mla_fused_prefill` absorbed path with `ensure!`, flat-grid `mla_fused_prefill.cu` (2,336 bytes shmem, scalar `acc_latent`, causal loop), `kv_dtypes.rs` explicit `vec![Bf16;N]`. No bugs at >1K tokens. |
+| P2 Nemotron tool calling | **CONFIRMED FIXED** | All four MODEL.toml flags present; jinja `else` branch fires for tool-active turns (pre-closed think → bare JSON); XML format instructions gate suppresses conflicting instructions. |
+| P3 SSM cache slots | **CONFIRMED CORRECT** | Two independent pools: `SsmStatePool` (max_batch_size, 1206 MB, always allocated) and `SsmSnapshotPool` (ssm_cache_slots, 0 when flag=0). `--ssm-cache-slots 0` is not a bug. |
