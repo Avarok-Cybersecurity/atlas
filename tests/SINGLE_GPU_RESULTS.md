@@ -377,13 +377,35 @@ Re-confirmed all settings from 2026-06-07 audit. Added jinja template trace:
 
 ### P3 — Qwen3.5-122B SSM pool memory
 
-Re-confirmed from 2026-06-07 audit. No change.
+Re-confirmed from 2026-06-07 audit, with one correction to the pool description.
 
-`--ssm-cache-slots 0` controls `SsmSnapshotPool` (Marconi prefix-cache) only.
-The 1206 MB "SSM state pool" is `SsmStatePool`, sized by `--max-batch-size` (default 8).
-Both pools are correctly projected independently in `preflight.rs`.
+**Correction**: `SsmSnapshotPool` contains **two independent allocation regions**, not one.
+The 2026-06-07 table implied `ssm_cache_slots` fully controls `SsmSnapshotPool`; it does not:
 
-**Status**: correct behavior, documented. Use `--max-batch-size 1` to reduce to ~151 MB.
+| Region within `SsmSnapshotPool` | Sized by | CLI flag |
+|---------------------------------|----------|----------|
+| Marconi prefix-caching slots | `ssm_cache_slots` | `--ssm-cache-slots` |
+| Phase-C decode-rollback ring | `decode_ring_slots × max_batch_size` | `--max-batch-size` |
+
+`preflight.rs` budgets both together in one expression:
+```rust
+let ssm_snapshot_bytes = (args.ssm_cache_slots + decode_ring_slots * args.max_batch_size)
+    * config.num_ssm_layers() * (h_state_bytes + conv_state_bytes);
+```
+
+With `--ssm-cache-slots 0`: the Marconi term becomes 0 (confirmed — `SsmSnapshotPool::new()`
+guards on `marconi_enabled = num_ssm_layers > 0 && num_slots > 0`). The Phase-C decode-rollback
+ring allocation proceeds independently and is unaffected by this flag.
+
+The ~151 MB figure for `--max-batch-size 1` is `SsmStatePool` alone. The minimum combined SSM
+footprint with `--ssm-cache-slots 0 --max-batch-size 1` is:
+```
+~151 MB (SsmStatePool)  +  decode_ring_slots × 151/8 MB (Phase-C ring)
+```
+`decode_ring_slots` is a compile-time constant (small, typically 2–4); the Phase-C ring adds
+a proportionally small amount on top of the 151 MB baseline.
+
+**Status**: correct behavior. No code change needed. Documentation updated with decode-ring detail.
 
 ---
 
