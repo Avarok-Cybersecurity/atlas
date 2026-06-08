@@ -48,24 +48,24 @@ temperature = 0.6
 top_p = 0.95
 top_k = 64
 presence_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; Google ships penalty-free — band-aid removed (was PASS 6/6, keep gentle)
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [sampling.thinking_coding]
 temperature = 0.6
 top_p = 0.95
 top_k = 64
 presence_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; Google ships penalty-free — band-aid removed (was PASS 6/6, keep gentle)
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [sampling.non_thinking]
 temperature = 0.7
 top_p = 0.95
 top_k = 64
 presence_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; Google ships penalty-free — band-aid removed (was PASS 6/6, keep gentle)
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [sampling.tools]
 temperature = 0.6
@@ -73,8 +73,8 @@ top_p = 0.95
 top_k = 64
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; Google ships penalty-free — band-aid removed (was PASS 6/6, keep gentle)
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [behavior]
 thinking_in_tools = true

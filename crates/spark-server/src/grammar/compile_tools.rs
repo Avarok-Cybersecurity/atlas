@@ -570,8 +570,6 @@ impl GrammarEngine {
         }
 
         let mut tag_entries = Vec::with_capacity(tools.len());
-        let mut triggers = Vec::new();
-        let mut seen_triggers = HashMap::<String, bool>::new();
 
         for tool in tools {
             let name = &tool.function.name;
@@ -605,17 +603,26 @@ impl GrammarEngine {
                 "content": {"type": "json_schema", "json_schema": schema},
                 "end": end,
             }));
-
-            let trigger = "<|tool_call>call:".to_string();
-            if !seen_triggers.contains_key(&trigger) {
-                seen_triggers.insert(trigger.clone(), true);
-                triggers.push(trigger);
-            }
         }
 
         if tag_entries.is_empty() {
             return Err(GrammarError::NoTools);
         }
+
+        // Trigger selection mirrors compile_qwen3_coder_tool_grammar's use_triggers branch:
+        // AUTO (use_triggers=true) triggers on the shared `<|tool_call>call:` prefix so the
+        // model can freely choose prose vs a tool call. REQUIRED (use_triggers=false) triggers
+        // on the SHORT opening sentinel `<|tool_call>` — a single BPE token. The long
+        // multi-byte `<|tool_call>call:` prefix spans BPE merges that misalign with the tag
+        // boundary; under at_least_one that dead-ended xgrammar's token FSM (HTTP 5xx /
+        // truncated "read_fil" at tool_choice=required). The short single-token trigger is a
+        // clean tag prefix and avoids the dead-end. (Triggers must be non-empty — xgrammar's
+        // triggered_tags rejects an empty trigger set even with at_least_one.)
+        let triggers = if use_triggers {
+            vec!["<|tool_call>call:".to_string()]
+        } else {
+            vec!["<|tool_call>".to_string()]
+        };
 
         let at_least_one = !use_triggers;
         let stop_after_first = !use_triggers;

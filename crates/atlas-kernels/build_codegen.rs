@@ -168,6 +168,8 @@ pub(super) fn generate_target_ptx_rs(
              \x20               disable_tool_steering: {},\n\
              \x20               tool_call_parser: \"{}\",\n\
              \x20               enable_loop_watchdog: {},\n\
+             \x20               min_p_floor: {:?},\n\
+             \x20               temperature_max: {:?},\n\
              \x20               think_loop_min_repeats: {},\n\
              \x20               think_loop_scan_window: {},\n\
              \x20               confidence_early_stop: {},\n\
@@ -198,6 +200,8 @@ pub(super) fn generate_target_ptx_rs(
             target.behavior_disable_tool_steering,
             target.behavior_tool_call_parser,
             target.behavior_enable_loop_watchdog,
+            target.behavior_min_p_floor,
+            target.behavior_temperature_max,
             target.behavior_think_loop_min_repeats,
             target.behavior_think_loop_scan_window,
             target.behavior_confidence_early_stop,

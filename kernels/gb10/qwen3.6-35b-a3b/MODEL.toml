@@ -155,6 +155,17 @@ dry_multiplier = 0.0
 # attractors. The watchdog catches and rolls back to a sentence
 # boundary, breaking the loop.
 enable_loop_watchdog = true
+# Server-side sampling SAFETY FLOOR/CEILING — binds even when the client
+# omits/lowers these, so stability does not depend on the client. The FP8
+# weights + NVFP4 lm-head are drift-prone: with min_p=0 the degenerate tail is
+# sampled into repetition loops + argmax-flip garbling on long agentic gen.
+# opencode stayed clean only because it hard-codes temperature=0.3; Claude Code
+# (preset temp 0.6, no min_p) looped hard. MEASURED 2026-06-07 (nvfp4-head@64k,
+# Claude Code): min_p 0.05 → loop-watchdog fires collapse 4 → 0. temperature_max
+# is a defense-in-depth ceiling (catches a client sending e.g. 1.0); opencode's
+# proven-good 0.3 passes through unchanged. 0.0 = disabled.
+min_p_floor = 0.05
+temperature_max = 0.7
 # Thinking on by default — Qwen3.6 35B-A3B is a reasoning-tier MoE; CoT
 # materially improves coherence on multi-step prompts. Per-request override
 # via chat_template_kwargs.enable_thinking still wins; CLI --disable-thinking

@@ -6,6 +6,7 @@ use super::*;
 use crate::tool_parser::ToolDefinition;
 
 mod engine_state;
+mod gemma4_required;
 mod minimax;
 mod misc;
 mod qwen3_coder_required;

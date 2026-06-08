@@ -46,24 +46,24 @@ temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0, align with qwen3.6-35b 10/10 campaign + Qwen vendor
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0, campaign temp=0 finding
 
 [sampling.thinking_coding]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0, align with qwen3.6-35b 10/10 campaign + Qwen vendor
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0, campaign temp=0 finding
 
 [sampling.non_thinking]
 temperature = 0.7
 top_p = 0.8
 top_k = 20
 presence_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0, align with qwen3.6-35b 10/10 campaign + Qwen vendor
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0, campaign temp=0 finding
 
 [behavior]
 # Content-loop watchdog disabled: 2026-05-05 chess-game stress sweep

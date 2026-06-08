@@ -47,6 +47,8 @@ impl ModelConfig {
             bos_token_id: 151643,
             eos_token_id: 151645,
             tie_word_embeddings: false,
+            lm_head_bf16_override: None,
+            lm_head_fp8: false,
             model_type: "qwen3_next".to_string(),
             mtp_num_hidden_layers: 1,
             weight_prefix: String::new(),

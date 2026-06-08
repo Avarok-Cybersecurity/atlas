@@ -36,6 +36,30 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // 1. Load model config (supports HF config.json and Mistral params.json)
     let (mut config, config_json) = serve_phases::load_model_config(&model_dir)?;
 
+    // CLI `--lm-head-dtype` override (replaces ATLAS_LMHEAD_BF16). Validate eagerly (PCND).
+    // Sets both `lm_head_bf16_override` (skip/keep-quantized signal consumed by
+    // `skip_lm_head_quantization()`) and `lm_head_fp8` (when quantizing, pick FP8 w8a16
+    // over NVFP4). `fp8` reuses `Some(false)` ("force quantized lm_head") and additionally
+    // routes that quantization to FP8 — additive, leaves nvfp4/bf16/default byte-identical.
+    let (lm_head_bf16_override, lm_head_fp8) = match args.lm_head_dtype.as_str() {
+        "default" => (None, false),
+        "bf16" => (Some(true), false),
+        // `Some(false)` = force the model's NVFP4-packed lm_head (skip_lm_head_quantization
+        // returns false). BF16-out fast path (w4a16_gemv) — NOT use_fp32_logits, which would
+        // force host-side sampling (~6 tok/s). Decode-speed lever; quality-gate for argmax flips.
+        "nvfp4" => (Some(false), false),
+        // FP8: force a quantized lm_head, but use runtime FP8 (E4M3, per-row scales,
+        // w8a16_gemv decode) instead of NVFP4. Mirrors the NVFP4 path's structure.
+        "fp8" => (Some(false), true),
+        other => {
+            anyhow::bail!(
+                "--lm-head-dtype must be 'default', 'bf16', 'nvfp4', or 'fp8', got '{other}'"
+            )
+        }
+    };
+    config.lm_head_bf16_override = lm_head_bf16_override;
+    config.lm_head_fp8 = lm_head_fp8;
+
     // ModelOpt-exported checkpoints drop a sibling `hf_quant_config.json`
     // whose TOP LEVEL is already the quantization block.
     serve_phases::merge_sidecar_quant_config(&model_dir, &mut config);
@@ -597,7 +621,18 @@ fn canonicalize_model_quant(config: &atlas_core::config::ModelConfig) -> String 
     let fmt = qc.format.to_ascii_lowercase();
     // NVFP4 detection — explicit algo OR a format string containing "nvfp4"
     // (compressed-tensors: "nvfp4-pack-quantized" et al).
-    if algo == "nvfp4" || fmt.contains("nvfp4") {
+    //
+    // ModelOpt "MIXED_PRECISION" (e.g. Nemotron-Super-120B-A12B-NVFP4,
+    // Qwen3.6-35B-A3B-NVFP4) canonicalizes to "nvfp4": it is nvfp4-base
+    // plus a few FP8 modules. Dispatch is per-MODULE and tensor-aware, NOT
+    // by this string — the loader probes `*.weight_scale` presence and
+    // dequants FP8→BF16 (weight_loader/nemotron.rs:78-108, quant_helpers.rs
+    // dense_auto), and the lm_head MIXED_PRECISION path is already handled
+    // (factory/build.rs:144). The nvfp4 kernel bundle also carries native
+    // FP8/BF16 paths (see quant_pair_compatible: nvfp4↔fp8, nvfp4↔bf16).
+    // So routing MIXED_PRECISION to the nvfp4 bundle is correct and cannot
+    // silently mis-route an FP8 module (it would fault at load, not corrupt).
+    if algo == "nvfp4" || algo == "mixed_precision" || fmt.contains("nvfp4") {
         return "nvfp4".into();
     }
     // FP8 detection — explicit algo OR method/format containing "fp8".

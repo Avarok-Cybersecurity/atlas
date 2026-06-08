@@ -33,6 +33,9 @@ METRICS = [
     ("filesystem.files_count", "files_written", "count"),
     ("cargo.cargo_toml_valid", "cargo_toml_valid", "rate"),
     ("cargo.cargo_toml_present", "cargo_toml_present", "rate"),
+    ("webserver.webserver_ok", "webserver_ok", "rate"),
+    ("followed_directions.followed_directions", "followed_directions", "rate"),
+    ("followed_directions.steps_completed", "fd_steps_completed", "count"),
     ("tool_calls.total", "tool_calls_total", "count"),
     ("drift.write_calls", "write_calls", "count"),
     ("drift.write_empty_path", "drift_empty_path", "count"),
@@ -140,6 +143,12 @@ def aggregate_tier(runs_dir: pathlib.Path, tier: str) -> dict[str, Any]:
     # webserver.webserver_ok is not truthy (missing/None counts as a failure).
     cargo_failures = sum(1 for r in runs if not jpath(r, "cargo.cargo_toml_valid"))
     webserver_failures = sum(1 for r in runs if not jpath(r, "webserver.webserver_ok"))
+    # Process-fidelity (informational — NOT part of the pass/fail exit code).
+    # Counts only runs that carry the metric; absent (older, un-backfilled) runs
+    # are excluded from both numerator and denominator so the rate isn't diluted.
+    fd_runs = [r for r in runs if isinstance(jpath(r, "followed_directions"), dict)
+               and jpath(r, "followed_directions.followed_directions") is not None]
+    fd_followed = sum(1 for r in fd_runs if jpath(r, "followed_directions.followed_directions"))
     return {
         "tier": tier,
         "n": len(runs),
@@ -147,6 +156,8 @@ def aggregate_tier(runs_dir: pathlib.Path, tier: str) -> dict[str, Any]:
         "runs": [r.get("run") for r in runs],
         "cargo_failures": cargo_failures,
         "webserver_failures": webserver_failures,
+        "followed_directions_scored": len(fd_runs),
+        "followed_directions_followed": fd_followed,
     }
 
 
@@ -218,8 +229,11 @@ def main() -> int:
         cf = report.get("cargo_failures", 0)
         wf = report.get("webserver_failures", 0)
         total_failures += cf + wf
+        fds = report.get("followed_directions_scored", 0)
+        fdf = report.get("followed_directions_followed", 0)
+        fd_str = f" followed_dirs={fdf}/{fds}" if fds else ""
         print(
-            f"  tier={tier} n={report['n']} cargo_fail={cf} webserver_fail={wf} "
+            f"  tier={tier} n={report['n']} cargo_fail={cf} webserver_fail={wf}{fd_str} "
             f"-> {args.reports_dir}/{tier}.{{csv,md}}",
             file=sys.stderr,
         )

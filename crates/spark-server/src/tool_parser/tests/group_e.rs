@@ -191,8 +191,12 @@ fn qwen3_xml_wants_typed() {
 }
 
 #[test]
-fn qwen3_coder_not_typed() {
-    assert!(!Qwen3CoderParser.wants_typed_arguments());
+fn qwen3_coder_wants_typed() {
+    // Tier-0 typed-args (2026-05-25): qwen3_coder now opts into schema-driven
+    // coercion (integer/number/boolean/array/object) — see
+    // Qwen3CoderParser::wants_typed_arguments. (Was `!`-asserted when the
+    // parser kept every value a raw string; updated when group_e was re-wired.)
+    assert!(Qwen3CoderParser.wants_typed_arguments());
 }
 
 #[test]
@@ -279,4 +283,85 @@ fn coerce_invalid_arguments_json_is_noop() {
 fn tool_call_format_from_str_qwen3_xml() {
     let fmt = "qwen3_xml".parse::<ToolCallFormat>().unwrap();
     assert_eq!(fmt.name(), "qwen3_xml");
+}
+
+// ── empty-key repair (CC plan-mode ExitPlanMode loop fix, 2026-06-07) ──
+
+fn exitplanmode_tool() -> ToolDefinition {
+    // Mirrors Claude Code's ExitPlanMode allowedPrompts schema: array of
+    // objects requiring {tool (enum), prompt}.
+    ToolDefinition {
+        tool_type: "function".to_string(),
+        function: FunctionDefinition {
+            name: "ExitPlanMode".to_string(),
+            description: None,
+            parameters: Some(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "plan": { "type": "string" },
+                    "allowedPrompts": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tool": { "type": "string", "enum": ["Bash"] },
+                                "prompt": { "type": "string" }
+                            },
+                            "required": ["tool", "prompt"]
+                        }
+                    }
+                },
+                "required": ["plan"]
+            })),
+        },
+    }
+}
+
+#[test]
+fn repair_empty_key_in_nested_array_item() {
+    let tools = vec![exitplanmode_tool()];
+    let mut calls = vec![make_call(
+        "ExitPlanMode",
+        r#"{"plan":"build","allowedPrompts":[{"":"Bash","prompt":"run cargo"}]}"#,
+    )];
+    coerce_all(&mut calls, &tools);
+    let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+    let item = &args["allowedPrompts"][0];
+    assert_eq!(item["tool"], "Bash", "empty key should be repaired to `tool`");
+    assert_eq!(item["prompt"], "run cargo");
+    assert!(item.get("").is_none(), "empty key must be removed");
+}
+
+#[test]
+fn repair_empty_key_skips_when_value_not_in_enum() {
+    // Orphan value "Python" is NOT in the tool enum ["Bash"] → ambiguous,
+    // leave untouched (validator will report it, as before).
+    let tools = vec![exitplanmode_tool()];
+    let mut calls = vec![make_call(
+        "ExitPlanMode",
+        r#"{"plan":"build","allowedPrompts":[{"":"Python","prompt":"x"}]}"#,
+    )];
+    coerce_all(&mut calls, &tools);
+    let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+    assert!(
+        args["allowedPrompts"][0].get("tool").is_none(),
+        "must NOT repair when orphan value fails the enum"
+    );
+}
+
+#[test]
+fn repair_empty_key_skips_when_multiple_required_missing() {
+    // Both `tool` and `prompt` absent → cannot disambiguate which slot the
+    // empty key fills → leave untouched.
+    let tools = vec![exitplanmode_tool()];
+    let mut calls = vec![make_call(
+        "ExitPlanMode",
+        r#"{"plan":"build","allowedPrompts":[{"":"Bash"}]}"#,
+    )];
+    coerce_all(&mut calls, &tools);
+    let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+    assert!(
+        args["allowedPrompts"][0].get("tool").is_none(),
+        "must NOT repair when >1 required prop is missing (ambiguous)"
+    );
 }

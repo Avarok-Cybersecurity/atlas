@@ -133,6 +133,8 @@ pub(super) struct ParsedBehavior {
     pub disable_tool_steering: bool,
     pub tool_call_parser: String,
     pub enable_loop_watchdog: bool,
+    pub min_p_floor: f32,
+    pub temperature_max: f32,
     pub think_loop_min_repeats: u32,
     pub think_loop_scan_window: u32,
     pub confidence_early_stop: bool,
@@ -159,6 +161,8 @@ impl Default for ParsedBehavior {
             disable_tool_steering: false,
             tool_call_parser: String::new(),
             enable_loop_watchdog: false,
+            min_p_floor: 0.0,
+            temperature_max: 0.0,
             think_loop_min_repeats: 3,
             think_loop_scan_window: 160,
             confidence_early_stop: true,
@@ -229,6 +233,16 @@ pub(super) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .and_then(|v| v.get("enable_loop_watchdog"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    // Server-side sampling safety floor/ceiling (0.0 = disabled). See
+    // ModelBehavior::{min_p_floor,temperature_max} for rationale.
+    let min_p_floor = b
+        .and_then(|v| v.get("min_p_floor"))
+        .and_then(|v| v.as_float())
+        .unwrap_or(0.0) as f32;
+    let temperature_max = b
+        .and_then(|v| v.get("temperature_max"))
+        .and_then(|v| v.as_float())
+        .unwrap_or(0.0) as f32;
     let think_loop_min_repeats = b
         .and_then(|v| v.get("think_loop_min_repeats"))
         .and_then(|v| v.as_integer())
@@ -294,6 +308,8 @@ pub(super) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         disable_tool_steering,
         tool_call_parser,
         enable_loop_watchdog,
+        min_p_floor,
+        temperature_max,
         think_loop_min_repeats,
         think_loop_scan_window,
         confidence_early_stop,

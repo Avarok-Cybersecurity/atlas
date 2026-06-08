@@ -1,0 +1,101 @@
+{
+  "tier": "bf16head_fp8moe_kv",
+  "run": 5,
+  "wall_time_s": 600.0824780464172,
+  "opencode": {
+    "events_total": 137,
+    "stderr_bytes": 0
+  },
+  "filesystem": {
+    "files_written": [
+      ".gitignore",
+      "Cargo.lock",
+      "Cargo.toml",
+      "gen_main.py",
+      "src/main.rs",
+      "src/main.rsEOF",
+      "test_rust.rsEOF",
+      "test_write.txt"
+    ],
+    "files_count": 8
+  },
+  "cargo": {
+    "cargo_toml_present": true,
+    "cargo_toml_valid": true,
+    "cargo_toml_error": "",
+    "cargo_toml_has_package_name": true
+  },
+  "webserver": {
+    "webserver_ok": false,
+    "build_ok": false,
+    "build_error": "   Compiling itoa v1.0.18\n   Compiling proc-macro2 v1.0.106\n   Compiling pin-project-lite v0.2.17\n   Compiling libc v0.2.186\n   Compiling unicode-ident v1.0.24\n   Compiling quote v1.0.45\n   Compiling bytes v1.11.1\n   Compiling futures-core v0.3.32\n   Compiling serde_core v1.0.228\n   Compiling httparse v1.10.1\n   Compiling once_cell v1.21.4\n   Compiling tower-service v0.3.3\n   Compiling serde v1.0.228\n   Compiling tower-layer v0.3.3\n   Compiling zmij v1.0.21\n   Compiling log v0.4.30\n   Compiling futures-task v0.3.32\n   Compiling slab v0.4.12\n   Compiling sync_wrapper v1.0.2\n   Compiling atomic-",
+    "bind_ok": false,
+    "ping_ok": false,
+    "ping_response": "",
+    "port_used": 40327,
+    "server_stderr": ""
+  },
+  "tool_calls": {
+    "total": 34,
+    "by_tool": {
+      "bash": 13,
+      "write": 9,
+      "read": 12
+    },
+    "tool_calls_per_turn": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "turns_observed": 34
+  },
+  "drift": {
+    "write_calls": 9,
+    "write_empty_path": 0,
+    "write_path_drift_from_target": 0,
+    "write_path_has_literal_space": 1,
+    "write_content_starts_with_lean": 0,
+    "write_content_is_bash_command": 0,
+    "write_content_xml_attr_leak": 0,
+    "write_content_newlines_collapsed_toml": 3
+  },
+  "atlas": {
+    "ws1_mask_active_fires": 2,
+    "b1_drift_gauge_fires": 1,
+    "tier_5c_retries": 1,
+    "a2_fuzzy_repair_fires": 0,
+    "doom_loop_trips": 0,
+    "tool_call_lines": 32
+  }
+}

@@ -174,6 +174,19 @@ pub struct ModelBehavior {
     /// JSON arrays of similar objects, multiplication tables). Enable only
     /// when the model has been observed to need it.
     pub enable_loop_watchdog: bool,
+    /// Server-side min-p FLOOR (0.0 = disabled). Applied as `min_p.max(floor)`
+    /// AFTER request/preset resolution, so it binds even when a client sends
+    /// `min_p = 0` (or omits it on a server without `--default-min-p`). On
+    /// drift-prone quantized models (FP8 / NVFP4 lm-head) an unfloored tail
+    /// lets the degenerate low-probability tail be sampled into repetition
+    /// loops + argmax-flip garbling on long generation — the Claude-Code
+    /// failure mode. MEASURED 2026-06-07 (nvfp4-head@64k): 0.05 turned 4 loop-
+    /// watchdog fires → 0. Set in MODEL.toml `[behavior]`.
+    pub min_p_floor: f32,
+    /// Server-side temperature CEILING (0.0 = disabled). `temperature.min(max)`
+    /// AFTER resolution — defense-in-depth net against a client sending a high
+    /// temperature; min_p_floor is the dominant lever. Set in MODEL.toml.
+    pub temperature_max: f32,
     /// Thinking-loop watchdog: substring-occurrence count that trips a
     /// forced `</think>`. Default 3 (historical `THINK_LOOP_MIN_REPEATS`).
     pub think_loop_min_repeats: u32,
@@ -250,6 +263,19 @@ pub struct ModelBehavior {
 /// — without this a degenerate sequence could rollback indefinitely.
 pub const ROLLBACK_RESTEER_CAP: u32 = 2;
 
+/// Phase-C: number of boundary SSM-state snapshots retained per sequence in
+/// the decode-rollback ring (hybrid GDN/Mamba models). DECOUPLED from
+/// [`ROLLBACK_RESTEER_CAP`]: the cap bounds how many times we re-steer, but
+/// the ring must retain enough *boundary* snapshots that a clean PRE-loop
+/// boundary survives long enough to roll back to. Sizing it at the old
+/// `CAP + 1 = 3` meant a loop spanning ≥3 sentence/newline boundaries evicted
+/// the clean boundary before the fuzzy detector (3 repeats) fired, forcing a
+/// `NoSsmSnapshot` decline → hard-stop (observed: Claude-Code @ nvfp4-head,
+/// 2026-06-07). 8 covers the 3-repeat detector with margin at modest cost
+/// (8 × max_batch × per-layer GDN state, allocated once). Pure-attention
+/// models ignore this (their ring is 0; they roll back to any boundary).
+pub const DECODE_ROLLBACK_RING_SLOTS: usize = 8;
+
 impl Default for ModelBehavior {
     fn default() -> Self {
         Self {
@@ -262,6 +288,8 @@ impl Default for ModelBehavior {
             disable_tool_steering: false,
             tool_call_parser: "",
             enable_loop_watchdog: false,
+            min_p_floor: 0.0,
+            temperature_max: 0.0,
             think_loop_min_repeats: 3,
             think_loop_scan_window: 160,
             confidence_early_stop: true,

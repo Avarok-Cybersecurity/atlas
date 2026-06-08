@@ -125,6 +125,23 @@ pub(super) fn build_sampling(
     } else {
         req.frequency_penalty.unwrap_or(preset.frequency_penalty)
     };
+    // Per-model server-side sampling SAFETY FLOOR/CEILING (MODEL.toml
+    // [behavior]). Binds AFTER request/preset resolution so model stability
+    // does NOT depend on the client volunteering safe params — the Claude-Code
+    // loop fix (an unfloored min_p let the FP8/NVFP4 degenerate tail be sampled
+    // into repetition loops; measured 2026-06-07: 0.05 → 4 watchdog fires
+    // become 0). 0.0 = disabled (no-op). Skipped under force_temp_zero (that
+    // diagnostic override deliberately drives greedy).
+    let min_p = if !force_temp_zero && state.behavior.min_p_floor > 0.0 {
+        min_p.max(state.behavior.min_p_floor)
+    } else {
+        min_p
+    };
+    let temperature = if !force_temp_zero && state.behavior.temperature_max > 0.0 {
+        temperature.min(state.behavior.temperature_max)
+    } else {
+        temperature
+    };
     let dry_multiplier = if force_temp_zero { 0.0 } else { preset.dry_multiplier };
     let dry_base = preset.dry_base;
     let dry_allowed_length = preset.dry_allowed_length;

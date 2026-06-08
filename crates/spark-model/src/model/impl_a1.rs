@@ -34,6 +34,9 @@ impl TransformerModel {
         final_norm: DenseWeight,
         lm_head_weight: DenseWeight,
         lm_head_nvfp4: Option<QuantizedWeight>,
+        // Runtime FP8 LM head (`--lm-head-dtype fp8`). Mutually exclusive with
+        // `lm_head_nvfp4`; `None` for the NVFP4/BF16/default paths (byte-identical).
+        lm_head_fp8: Option<crate::weight_map::Fp8DenseWeight>,
         // Separate NVFP4 head used ONLY by the MTP draft proposer when the
         // main head is kept BF16 (`skip_lm_head_quantization()`). `None` for
         // the NVFP4-main default, in which case the proposer falls back to
@@ -70,6 +73,10 @@ impl TransformerModel {
         let w4a16_gemv_logits_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_logits")?;
         let w4a16_gemm_kernel = gpu.kernel("w4a16", "w4a16_gemm")?;
         let w4a16_gemv_batch2_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?;
+        // FP8 E4M3 LUT GEMV for the `--lm-head-dtype fp8` head. Loaded
+        // unconditionally (a handle is cheap); only invoked when `lm_head_fp8`
+        // is set, so the NVFP4/BF16 paths never touch it.
+        let dense_gemv_fp8w_kernel = gpu.kernel("gemv_fp8w", "dense_gemv_fp8w")?;
         let dense_gemm_kernel = gpu.kernel("gemm", "dense_gemm_bf16")?;
         let argmax_kernel = gpu.kernel("argmax", "argmax_bf16")?;
         let argmax_logits_kernel = gpu.kernel("argmax", "argmax_fp32")?;
@@ -138,12 +145,14 @@ impl TransformerModel {
         // SSM snapshot pool: Marconi prefix-cache slots + Phase-C
         // decode-rollback ring. The decode-rollback region is only sized
         // for SSM models — `num_ssm_layers == 0` makes both regions
-        // collapse to empty. Per sequence the watchdog needs
-        // `ROLLBACK_RESTEER_CAP + 1` snapshots (one per allowed rollback,
-        // plus the current boundary); the region is sized for every
+        // collapse to empty. The ring retains DECODE_ROLLBACK_RING_SLOTS
+        // boundary snapshots per sequence (DECOUPLED from ROLLBACK_RESTEER_CAP:
+        // the cap bounds re-steer attempts, the ring must retain enough
+        // boundaries that a clean PRE-loop one survives — `CAP+1=3` was too
+        // small and forced NoSsmSnapshot declines). Sized for every
         // active-sequence pool slot (`max_batch_size`).
         let decode_ring_slots = if ssm_pool.num_ssm_layers > 0 {
-            (atlas_kernels::ROLLBACK_RESTEER_CAP as usize) + 1
+            atlas_kernels::DECODE_ROLLBACK_RING_SLOTS
         } else {
             0
         };
@@ -403,6 +412,7 @@ impl TransformerModel {
             final_norm,
             lm_head_weight,
             lm_head_nvfp4,
+            lm_head_fp8,
             layers,
             buffers,
             kv_cache: Mutex::new(kv_cache),
@@ -415,6 +425,7 @@ impl TransformerModel {
             w4a16_gemv_logits_kernel,
             w4a16_gemm_kernel,
             w4a16_gemv_batch2_kernel,
+            dense_gemv_fp8w_kernel,
             dense_gemm_kernel,
             argmax_kernel,
             argmax_logits_kernel,

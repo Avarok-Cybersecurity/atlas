@@ -1,9 +1,9 @@
 {
   "tier": "ssmfix",
   "run": 2,
-  "wall_time_s": 57.466665267944336,
+  "wall_time_s": 334.6279902458191,
   "opencode": {
-    "events_total": 5,
+    "events_total": 64,
     "stderr_bytes": 0
   },
   "filesystem": {
@@ -25,14 +25,28 @@
     "ping_response": ""
   },
   "tool_calls": {
-    "total": 1,
+    "total": 17,
     "by_tool": {
-      "skill": 1
+      "bash": 17
     },
     "tool_calls_per_turn": [
+      2,
+      2,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
       1
     ],
-    "turns_observed": 1
+    "turns_observed": 15
   },
   "drift": {
     "write_calls": 0,
@@ -50,6 +64,6 @@
     "tier_5c_retries": 0,
     "a2_fuzzy_repair_fires": 0,
     "doom_loop_trips": 0,
-    "tool_call_lines": 1
+    "tool_call_lines": 16
   }
 }

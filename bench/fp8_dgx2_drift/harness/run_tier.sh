@@ -41,6 +41,15 @@ REMOTE_API="http://localhost:8889/v1"
 COSINE_MODE=0
 SKIP_WARMUP=0
 BAIL=0
+# --claude-code: drive Claude Code (the `claude` CLI) against Atlas instead of
+# opencode, via `sudo -u claude env ANTHROPIC_BASE_URL=... claude -p ...`.
+# Reproduces the non-opencode-client looping/garbling failure. Defaults to
+# plan mode (CC_PERMISSION_MODE), the regime in which the failure was reported.
+CLAUDE_CODE=0
+# --prompt-file PATH: read the agent task PROMPT from a file instead of the
+# built-in Axum ping/pong default (overrides PROMPT). `--prompt-file -` reads
+# stdin. Lets the graduated-difficulty ladder feed prompts via the CLI.
+PROMPT_FILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --container) CONTAINER="$2"; shift 2 ;;
@@ -49,6 +58,8 @@ while [[ $# -gt 0 ]]; do
     --cosine-mode) COSINE_MODE=1; shift ;;
     --skip-warmup) SKIP_WARMUP=1; shift ;;
     --bail) BAIL=1; shift ;;
+    --claude-code) CLAUDE_CODE=1; shift ;;
+    --prompt-file) PROMPT_FILE="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -120,6 +131,18 @@ fi
 # A/B comparison between tiers.
 PROMPT='Please create a pure rust Axum project here in the current working directory. Just have a ping/pong endpoint. The server MUST bind to the port from the ATLAS_HARNESS_PORT env var (default 3001) — use `let port: u16 = std::env::var("ATLAS_HARNESS_PORT").unwrap_or_else(|_| "3001".to_string()).parse().unwrap();` then bind to `0.0.0.0:port`. Add tests, run them and prove all tests pass, then run the server and use curl to prove it works. Finally, tear down the server.'
 
+# CLI prompt override: --prompt-file PATH (or `-` for stdin). Enables the
+# graduated-difficulty ladder to drive the harness via piped/file input.
+if [[ -n "${PROMPT_FILE}" ]]; then
+  if [[ "${PROMPT_FILE}" == "-" ]]; then
+    PROMPT="$(cat)"
+  else
+    [[ -r "${PROMPT_FILE}" ]] || { echo "FATAL: --prompt-file '${PROMPT_FILE}' not readable" >&2; exit 2; }
+    PROMPT="$(cat "${PROMPT_FILE}")"
+  fi
+  [[ -n "${PROMPT}" ]] || { echo "FATAL: prompt from '${PROMPT_FILE}' is empty" >&2; exit 2; }
+fi
+
 # ── Per-iteration runner ───────────────────────────────────────────
 run_one() {
   local i="$1"
@@ -151,10 +174,38 @@ run_one() {
   # to write port-reading Rust) AND to score_run.py (so it can curl the right port).
   # --dir sets opencode's working directory; the model sees only "current
   # working directory" in the prompt, never the absolute path.
-  ATLAS_HARNESS_PORT=3001 \
-  ${extra_env} \
-    timeout "${OC_TIMEOUT:-360}" opencode run --dangerously-skip-permissions --dir "${TARGET}" --format json \
-    "${PROMPT}" > "${OC_JSON}" 2> "${OC_ERR}" || true
+  if [[ "${CLAUDE_CODE}" == "1" ]]; then
+    # Drive Claude Code against Atlas. Runs as user `claude` with its real
+    # ~/.claude config (model=claude-opus-4-8, alwaysThinking, effort=high) so
+    # this faithfully reproduces the reported failure regime. ANTHROPIC_BASE_URL
+    # routes to Atlas; cwd is the target dir (claude has no --dir flag). Default
+    # plan mode (CC_PERMISSION_MODE) — the regime in which the loop was reported.
+    # Prompt is piped via stdin (NOT a positional): claude's `--add-dir` is
+    # variadic and would otherwise swallow a trailing prompt arg. cwd is the
+    # target dir, so claude already has write access there (no --add-dir needed).
+    # `timeout` runs INSIDE sudo (as user claude) so it directly parents the
+    # claude process and reliably kills it on expiry — with `timeout` OUTSIDE
+    # sudo, the SIGTERM hits sudo and the grandchild claude survives as an
+    # orphan past the deadline (-k 10 sends SIGKILL 10s after SIGTERM).
+    ( cd "${TARGET}" && \
+      printf '%s' "${PROMPT}" | sudo -n -u claude \
+        timeout -k 10 "${OC_TIMEOUT:-360}" \
+        env \
+          ANTHROPIC_BASE_URL=http://localhost:8888 \
+          ANTHROPIC_AUTH_TOKEN=dummy \
+          ATLAS_HARNESS_PORT=${HPORT:-3001} \
+          /workspace/.local/bin/claude -p \
+            --output-format stream-json --verbose \
+            --permission-mode "${CC_PERMISSION_MODE:-plan}" \
+        ) > "${OC_JSON}" 2> "${OC_ERR}" || true
+  else
+    # opencode: --dir sets opencode's working directory; the model sees only
+    # "current working directory" in the prompt, never the absolute path.
+    ATLAS_HARNESS_PORT=${HPORT:-3001} \
+    ${extra_env} \
+      timeout "${OC_TIMEOUT:-360}" opencode run --dangerously-skip-permissions --dir "${TARGET}" --format json \
+      "${PROMPT}" > "${OC_JSON}" 2> "${OC_ERR}" || true
+  fi
   END_TS=$(date +%s.%N)
 
   # Reap any server the agent backgrounded (e.g. `cargo run &` to self-test its
@@ -181,7 +232,7 @@ run_one() {
     sudo docker logs "${CONTAINER}" --since "${START_TS_INT}" 2>&1 > "${ATLAS_LOG}" || true
   fi
 
-  ATLAS_HARNESS_PORT=3001 \
+  ATLAS_HARNESS_PORT=${HPORT:-3001} \
     python3 "${HARNESS_DIR}/score_run.py" \
     --tier "${TIER}" \
     --run "${i}" \
@@ -191,7 +242,7 @@ run_one() {
     --atlas-log-window "${ATLAS_LOG}" \
     --probe-start-ts "${START_TS}" \
     --probe-end-ts "${END_TS}" \
-    --webserver-port 3001 \
+    --webserver-port ${HPORT:-3001} \
     --out "${OUT_JSON}"
 
   local files_count cargo_ok drift_lean drift_empty drift_pathdrift wall webserver_ok
@@ -203,6 +254,47 @@ run_one() {
   wall=$(jq -r '.wall_time_s' "${OUT_JSON}")
   webserver_ok=$(jq -r '.webserver.webserver_ok // false' "${OUT_JSON}")
   echo "    files=${files_count} cargo_valid=${cargo_ok} webserver_ok=${webserver_ok} lean=${drift_lean} empty_path=${drift_empty} path_drift=${drift_pathdrift} wall=${wall}s" >&2
+
+  # Claude-Code confirm signal: plan mode writes no files, so the cargo/webserver
+  # line is not the loop signal. Report (a) longest run of repeated lines in the
+  # captured assistant text (degeneration fingerprint) and (b) Atlas-side
+  # loop/repetition watchdog fires during this run's window.
+  if [[ "${CLAUDE_CODE}" == "1" ]]; then
+    local cc_rep cc_wd
+    cc_rep=$(python3 - "${OC_JSON}" <<'PY' 2>/dev/null || echo "parse_error"
+import json, sys, re
+txt = []
+for ln in open(sys.argv[1], errors="replace"):
+    ln = ln.strip()
+    if not ln:
+        continue
+    try:
+        e = json.loads(ln)
+    except Exception:
+        continue
+    # stream-json: assistant message events carry content blocks
+    msg = e.get("message") if isinstance(e, dict) else None
+    if isinstance(msg, dict):
+        for blk in msg.get("content", []) or []:
+            if isinstance(blk, dict) and isinstance(blk.get("text"), str):
+                txt.append(blk["text"])
+    if isinstance(e, dict) and isinstance(e.get("result"), str):
+        txt.append(e["result"])
+blob = "\n".join(txt)
+lines = [l.strip() for l in blob.splitlines() if len(l.strip()) > 12]
+# longest run of an identical (non-trivial) line repeating consecutively
+best = 1; cur = 1
+for a, b in zip(lines, lines[1:]):
+    cur = cur + 1 if a == b else 1
+    best = max(best, cur)
+# also count total distinct vs duplicate lines (paraphrase loops collapse this)
+dup = len(lines) - len(set(lines))
+print(f"chars={len(blob)} lines={len(lines)} max_consecutive_repeat={best} dup_lines={dup}")
+PY
+)
+    cc_wd=$(grep -ciE 'loop|repeat|watchdog|stuck|NoSsmSnapshot|fuzzy|simhash|attractor|degener' "${ATLAS_LOG}" 2>/dev/null || echo 0)
+    echo "    [claude-code] ${cc_rep} | atlas_watchdog_hits=${cc_wd}  (raw: ${OC_JSON}, atlas-log: ${ATLAS_LOG})" >&2
+  fi
 
   # --bail: exit immediately on the first failure (cargo_valid != true OR webserver_ok != true).
   if [[ "${BAIL}" == "1" ]] && { [[ "${cargo_ok}" != "true" ]] || [[ "${webserver_ok}" != "true" ]]; }; then

@@ -8,6 +8,10 @@ active_parameters = "3.5B"
 
 [[model_types]]
 model_type = "nemotron_h"
+# 2026-06-06: pin hidden_size so this stays an EXACT match. Without it this is a "nemotron_h"
+# wildcard; since nemotron-super pins hidden_size=4096, any future nemotron_h whose hidden_size
+# isn't 4096 would silently route to THIS (nano's) kernels. Pinning 2688 removes the catch-all.
+hidden_size = 2688
 
 # Nemotron-H uses ChatML format. No official sampling recommendations.
 # Conservative defaults to prevent repetition in hybrid SSM architecture.
@@ -20,24 +24,24 @@ temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; NVIDIA ships penalty-free (greedy example) — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; if loop reappears use targeted dry on tools only
 
 [sampling.thinking_coding]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; NVIDIA ships penalty-free (greedy example) — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; if loop reappears use targeted dry on tools only
 
 [sampling.non_thinking]
 temperature = 0.7
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; NVIDIA ships penalty-free (greedy example) — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; if loop reappears use targeted dry on tools only
 
 [sampling.tools]
 temperature = 0.6
@@ -45,8 +49,8 @@ top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; NVIDIA ships penalty-free (greedy example) — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; if loop reappears use targeted dry on tools only
 
 [behavior]
 # 2026-05-23 sweep: false → true. Project-wide default flipped to true

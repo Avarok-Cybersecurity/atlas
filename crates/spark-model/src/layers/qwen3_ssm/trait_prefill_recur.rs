@@ -12,14 +12,9 @@ use super::*;
 impl Qwen3SsmLayer {
     /// GDN prefill recurrence via the WY4-persistent kernel.
     ///
-    /// Processes 4 tokens per iteration with WY algebraic correction,
-    /// keeping H state in shared memory for the entire sequence. Falls
-    /// back to single-token persistent (256..=4096), then split4 for
-    /// unsupported configurations.
-    ///
-    /// Env overrides:
-    /// - `ATLAS_DISABLE_WY4=1` — skip WY4-persistent.
-    /// - `ATLAS_FORCE_PERSISTENT=1` — force single-token persistent at any `k`.
+    /// Dispatch: FLA chunked prefill (baked default, 128-dim linear heads) →
+    /// WY4-persistent (4 tokens/iter, H in shared memory) → single-token persistent
+    /// (256..=4096) → split4 for unsupported configurations.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn prefill_gdn_recurrence(
         &self,
@@ -41,43 +36,18 @@ impl Qwen3SsmLayer {
         let fp32 = 4usize;
         let gb_stride = (nv * 2) as u32;
 
-        // Env overrides for kernel investigation:
-        //   ATLAS_DISABLE_WY4=1       — skip WY4-persistent, fall through to
-        //                               single-token persistent (256..=4096)
-        //                               or split4.
-        //   ATLAS_FORCE_PERSISTENT=1  — force the single-token persistent
-        //                               kernel at any k (lifts the 4096 cap).
-        //                               Mathematically correct per-token
-        //                               sequential recurrence with FP32 SMEM
-        //                               H state — useful for isolating WY
-        //                               chunkwise reduction noise.
-        let wy4_disabled = matches!(
-            std::env::var("ATLAS_DISABLE_WY4").ok().as_deref(),
-            Some("1")
-        );
-        let force_persistent = matches!(
-            std::env::var("ATLAS_FORCE_PERSISTENT").ok().as_deref(),
-            Some("1")
-        );
-        // ATLAS_GDN_CHUNK64=1 — chunked-scan prefill (GATE-C precision experiment):
-        // kk/kq Gram matmuls on tensor cores; H-recurrence scalar (bf16-H). Takes
-        // priority over wy4 when set. smem = sk_bf+sq_bf(bf16) + kk+kq(f32) + gc.
-        let chunk64_on = matches!(
-            std::env::var("ATLAS_GDN_CHUNK64").ok().as_deref(),
-            Some("1")
-        );
-        // ATLAS_GDN_FLA=1 — FLA multi-kernel chunked prefill (recompute_wu →
-        // chunk_delta_h_ksplit → chunk_fwd_o). 1.75x vs wy4 @16k, token-equal
-        // (cos=1.0 vs scalar). HIGHEST priority when set + 128-dim linear heads +
-        // kernels & scratch present. Scratch = BufferArena.gdn_fla_scratch, carved
-        // W|U|S|uc by the runtime chunk count (≤ the max_batch_tokens it was sized for).
-        let fla_on = matches!(
-            std::env::var("ATLAS_GDN_FLA").ok().as_deref(),
-            Some("1")
-        );
+        // 2026-06-06: removed the concluded GDN-prefill experiment env flags
+        // (ATLAS_GDN_CHUNK64 / ATLAS_FORCE_PERSISTENT / ATLAS_DISABLE_WY4) and their
+        // dispatch branches. FLA is the baked default for 128-dim linear heads; the
+        // WY4-persistent kernel is the unconditional fallback below.
+        // FLA multi-kernel chunked prefill (recompute_wu → chunk_delta_h_ksplit →
+        // chunk_fwd_o): 1.75x vs wy4 @16k, token-equal (cos=1.0 vs scalar). BAKED
+        // DEFAULT 2026-06-06 (was gated behind ATLAS_GDN_FLA=1 — the env var is gone):
+        // always taken for 128-dim linear-head GDN models when the FLA kernels & scratch
+        // are present (scratch is allocated for exactly those models, sizes.rs). The wy4
+        // branch below remains the fallback for other head dims / a guard miss.
         let fla_scratch = ctx.buffers.gdn_fla_scratch();
-        if fla_on
-            && kd == 128
+        if kd == 128
             && vd == 128
             && fla_scratch.0 != 0
             && self.gdn_prefill_fla_recompute_wu_k.0 != 0
@@ -89,7 +59,7 @@ impl Qwen3SsmLayer {
             static FLA_LOG: std::sync::Once = std::sync::Once::new();
             FLA_LOG.call_once(|| {
                 tracing::info!(
-                    "GDN prefill: ATLAS_GDN_FLA path ACTIVE (recompute_wu → chunk_delta_h_ksplit → chunk_fwd_o)"
+                    "GDN prefill: FLA chunked path ACTIVE (baked default: recompute_wu → chunk_delta_h_ksplit → chunk_fwd_o)"
                 );
             });
             let num_chunks = k.div_ceil(64);
@@ -126,54 +96,7 @@ impl Qwen3SsmLayer {
                 gb_stride,
                 stream,
             )?;
-        } else if chunk64_on && self.gdn_prefill_chunk64_k.0 != 0 {
-            let smem64 = (3 * 64 * kd * 2 + 2 * 64 * 64 * 4 + 2 * 64 * 64 * 2 + 64 * 4) as u32;
-            ops::gdn_prefill_persistent_smem(
-                ctx.gpu,
-                self.gdn_prefill_chunk64_k,
-                h_state,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gates_buf,
-                gates_buf.offset(nv * fp32),
-                gdn_out_buf,
-                1,
-                k,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                gb_stride,
-                smem64,
-                stream,
-            )?;
-        } else if force_persistent && self.gdn_prefill_persistent_k.0 != 0 {
-            // Forced per-token persistent at ANY k.
-            ops::gdn_prefill_persistent(
-                ctx.gpu,
-                self.gdn_prefill_persistent_k,
-                h_state,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gates_buf,
-                gates_buf.offset(nv * fp32),
-                gdn_out_buf,
-                1,
-                k,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                gb_stride,
-                stream,
-            )?;
-        } else if !wy4_disabled && self.gdn_prefill_persistent_wy4_k.0 != 0 {
+        } else if self.gdn_prefill_persistent_wy4_k.0 != 0 {
             // WY4-persistent: H in shared memory, 4 tokens per iteration
             // smem = H[K_DIM*V_DIM] + 8*k/q buffers + warp sums + WY scalars
             let smem = (kd * vd * 4 + 8 * kd * 4 + 56) as u32;

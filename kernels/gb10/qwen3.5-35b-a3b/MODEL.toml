@@ -56,8 +56,8 @@ top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0 — matches this file's own L100 principle + qwen3.6-35b campaign
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0 — campaign temp=0 finding (DRY+rep_pen mangled output)
 
 [sampling.thinking_coding]
 temperature = 0.6
@@ -65,8 +65,8 @@ top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0 — matches this file's own L100 principle + qwen3.6-35b campaign
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0 — campaign temp=0 finding (DRY+rep_pen mangled output)
 
 [sampling.non_thinking]
 temperature = 0.7
@@ -74,8 +74,8 @@ top_p = 0.8
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0 — matches this file's own L100 principle + qwen3.6-35b campaign
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0 — campaign temp=0 finding (DRY+rep_pen mangled output)
 
 # Tool-calling preset. Sourced from the Qwen/Qwen3.5-35B-A3B HF model
 # card. (temperature, top_p, top_k) track the Thinking/Coding row

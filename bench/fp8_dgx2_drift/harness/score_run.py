@@ -28,6 +28,16 @@ import subprocess
 import sys
 from typing import Any
 
+# followed_directions (process-fidelity metric) — additive + fully guarded so a
+# missing/broken module can never disturb the existing scoring path.
+try:
+    _hd = str(pathlib.Path(__file__).resolve().parent)
+    if _hd not in sys.path:
+        sys.path.insert(0, _hd)
+    from followed_directions import compute_followed_directions as _compute_followed
+except Exception:  # pragma: no cover — defensive: never break scoring
+    _compute_followed = None
+
 
 def load_events(path: pathlib.Path) -> list[dict[str, Any]]:
     if not path.exists():
@@ -401,6 +411,16 @@ def main() -> int:
     cargo = cargo_check(args.target)
     drift = count_drift_events(events, args.target)
     tools = count_tool_calls(events)
+    # Process-fidelity: did the AGENT itself build/test/run/curl/teardown as the
+    # prompt instructed? Orthogonal to webserver_ok (outcome). Fully guarded.
+    try:
+        followed = (
+            _compute_followed(events, args.target)
+            if _compute_followed is not None
+            else {"followed_directions": None, "error": "module-unavailable"}
+        )
+    except Exception as _e:  # pragma: no cover — never break scoring
+        followed = {"followed_directions": None, "error": f"compute-error: {_e}"}
     atlas_log_text = (
         args.atlas_log_window.read_text(errors="replace") if args.atlas_log_window.exists() else ""
     )
@@ -434,6 +454,7 @@ def main() -> int:
         },
         "cargo": cargo,
         "webserver": ws,
+        "followed_directions": followed,
         "tool_calls": tools,
         "drift": drift,
         "atlas": atlas,
