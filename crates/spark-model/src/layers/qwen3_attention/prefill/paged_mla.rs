@@ -267,7 +267,14 @@ impl Qwen3AttentionLayer {
             )?;
 
             let attn_out = ctx.buffers.attn_output();
-            let inv_sqrt_d = self.effective_attn_scale(hd);
+            // MLA absorbed scale: 1/sqrt(kv_lora+rope=320), NOT 1/sqrt(hd=128).
+            // Using 1/sqrt(hd=128) over-sharpens softmax by sqrt(128/320)≈0.63 vs
+            // the absorbed decode/cache-skip paths — see cache_skip_mla.rs and
+            // attention_forward_mla.rs which both use 1/sqrt(kv_lora+rope) explicitly.
+            // Even though this path runs the unabsorbed HDIM=128 kernel, the dot-product
+            // numerics are Q_nope·K_nope+Q_rope·K_rope = Q_absorbed·K_latent+Q_rope·K_rope,
+            // so the same training scale (1/sqrt(320)) must be applied for consistency.
+            let inv_sqrt_d = 1.0f32 / (mla_cache_dim as f32).sqrt();
             // For MLA unabsorbed path hd=128; HDIM=256 kernel reads K[k+1][0..127]
             // for d>=128, contaminating scores. Require the correct HDIM=128 kernel.
             anyhow::ensure!(

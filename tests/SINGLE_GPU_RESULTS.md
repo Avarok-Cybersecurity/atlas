@@ -345,11 +345,9 @@ They remain available for future optimization to the absorbed form.
 
 **Decode path comparison** (`decode/attention_forward_mla.rs`):
 - Uses absorbed form: Q_absorbed [nq, 320] via batched GEMV on W_UK_T
-- Paged decode via `paged_decode_mla_k` (HDIM=320), scale=`effective_attn_scale(hd=128)` = 1/sqrt(128)
-- Prefill also uses `effective_attn_scale(hd=128)` = 1/sqrt(128) ← **scales are consistent**
-- Note: prefill uses unabsorbed HDIM=128 attn; decode uses absorbed HDIM=320 attn;
-  `Q_original · K_original = Q_absorbed · K_latent` algebraically, so scale 1/sqrt(128) is
-  correct in both cases.
+- Paged decode via `paged_decode_mla_k` (HDIM=320), scale = `1/sqrt(kv_lora+rope=320)`
+  *(prior audit incorrectly stated `effective_attn_scale(hd=128)` = 1/sqrt(128) — the actual
+  code at `attention_forward_mla.rs:377` uses `1/sqrt(kv_lora+mla_rope)` explicitly)*
 
 **`--kv-high-precision-layers auto` with BF16 KV cache** — confirmed no FP8 mixing:
 - `serve_phases/kv_cache.rs`: "auto" → `kv_hp_layers=2`
@@ -357,8 +355,7 @@ They remain available for future optimization to the absorbed form.
   `if high_precision_layers == 0 || kv_dtype == KvCacheDtype::Bf16 { return vec![]; }`)
 - All 36 attention layers remain uniform BF16; no accidental FP8 injection
 
-**Status**: fix confirmed; all MLA kernel paths verified bug-free for any seq_len.
-Re-test on live hardware recommended to confirm end-to-end long-context quality.
+**⚠ Scale bug found and fixed (see 2026-06-08 addendum below).**
 
 ### P2 — Nemotron Super tool calling
 
@@ -387,3 +384,59 @@ The 1206 MB "SSM state pool" is `SsmStatePool`, sized by `--max-batch-size` (def
 Both pools are correctly projected independently in `preflight.rs`.
 
 **Status**: correct behavior, documented. Use `--max-batch-size 1` to reduce to ~151 MB.
+
+---
+
+## Bug Fix — 2026-06-08 (addendum to Codebase Verification)
+
+Fresh independent audit revealed one new bug in the Mistral Small 4 MLA prefill path.
+
+### MLA first-chunk paged prefill — wrong attention scale (FIXED)
+
+**File**: `crates/spark-model/src/layers/qwen3_attention/prefill/paged_mla.rs`
+
+**Bug**: The first-chunk paged prefill path (fired when `seq_len_start == 0`, i.e., all
+single-chunk and first-chunk multi-chunk prefills) used `self.effective_attn_scale(hd=128)`
+= `1/sqrt(128) ≈ 0.0884` as the attention scale. Every other MLA attention path uses
+`1/sqrt(kv_lora+rope=320) ≈ 0.0559`:
+
+| Path | File | Scale used |
+|------|------|-----------|
+| First-chunk paged prefill (old) | `paged_mla.rs:270` | `1/sqrt(128)` ← **wrong** |
+| Multi-chunk paged prefill | `paged_mla.rs:472` | `1/sqrt(320)` |
+| Cache-skip MLA prefill | `cache_skip_mla.rs:267` | `1/sqrt(320)` |
+| Decode | `attention_forward_mla.rs:377` | `1/sqrt(320)` |
+
+The `1/sqrt(128)` scale is `sqrt(320/128) ≈ 1.58×` larger than the correct `1/sqrt(320)`,
+producing softmax distributions ~1.58× sharper than all other phases. Comments in both
+`cache_skip_mla.rs` and `attention_forward_mla.rs` explicitly state that `1/sqrt(hd=128)`
+"over-sharpens softmax by sqrt(128/320) ≈ 0.63" relative to the correct absorbed scale.
+
+**Why it manifests at long context**: Although the scale mismatch is present for all single-chunk
+lengths, it compounds with the YaRN inv_freq bug (now fixed): wrong RoPE angles push attention
+scores out of range, and the over-sharp scale amplifies the corruption, lowering the threshold
+at which attention becomes degenerate. After the YaRN fix the scale mismatch also needs
+correction for consistent prefill-to-decode behavior.
+
+**Prior audit error**: The 2026-06-08 verification section incorrectly claimed decode used
+`effective_attn_scale(hd=128)` = `1/sqrt(128)` and that "scales are consistent." The actual
+decode code (`attention_forward_mla.rs:377`) has always used `1/sqrt(kv_lora+mla_rope)` =
+`1/sqrt(320)`. The first-chunk path was the outlier.
+
+**Fix applied** (`paged_mla.rs:270`, commit on `spec_ssm`):
+```rust
+// Before:
+let inv_sqrt_d = self.effective_attn_scale(hd);
+
+// After:
+let inv_sqrt_d = 1.0f32 / (mla_cache_dim as f32).sqrt();
+```
+`mla_cache_dim = kv_lora + mla_rope = 320`. All four MLA attention paths now use `1/sqrt(320)`.
+
+**Algebraic note**: the unabsorbed (HDIM=128) kernel computes
+`(Q_nope · K_nope + Q_rope · K_rope)`, which equals `(Q_absorbed · KV_latent + Q_rope · K_rope)`
+algebraically. The scale must match the training convention (absorbed form = `1/sqrt(320)`),
+not the kernel's internal dimension, because the dot-product magnitudes are identical in both
+representations.
+
+**Status**: fixed in `spec_ssm`. Re-test of long-context suite recommended after rebuild.
