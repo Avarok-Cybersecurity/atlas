@@ -1782,3 +1782,61 @@ Additional findings confirmed:
 `cli.rs:281` → `build.rs` → `factory/build.rs:41` → `impl_a1.rs:52–162`: `SsmSnapshotPool` receives `ssm_cache_slots`; `SsmStatePool` receives `max_batch_size`. The two pools are independent. `--ssm-cache-slots 0` zeros snapshot slots; the 1206 MB active-state pool is unaffected. Correct behavior. ✓
 
 **No new bugs found in P3. No code changes in this session.**
+
+---
+
+## Investigation #23 — 2026-06-08
+
+Full independent audit against spec_ssm HEAD. All findings from prior investigations confirmed.
+Additional coverage in this session:
+
+### P1 — Mistral Small 4 MLA prefill: extended CUDA + decode audit
+
+**`mla_fused_prefill.cu` absorbed kernel (extended)**:
+- Attention scale: `1/sqrt(kv_lora_rank=256 + qk_nope=64 = 320)` for the absorbed form. Distinct
+  from expanded-form scale `1/sqrt(hd=128)` in paged/cache_skip paths. Both are algebraically
+  consistent with their respective Q·K dot-product dimensionalities — no mismatch. ✓
+- Online softmax: `acc_latent[0]` accumulation verified correct; final V extraction via GEMV
+  with W_UV^T at lines 196–204. ✓
+
+**`mla_prefill_attn.cu` generic kernel** (dispatch-reachable via `prefill_attn_mla320_k`):
+- Grid `(num_q_heads=32, ceil(seq_len/BR=16), batch)` — linear in seq_len, no hardcoded cap.
+- Online softmax denominates correctly with `l_prev`. ✓
+- Dead code status (never dispatched from current scheduler) unchanged from #22. ✓
+
+**`decode.rs` comparison**:
+- MLA decode uses the same BF16 KV cache pointers and reads `inv_freq` from the shared rope
+  table — same YaRN-scaled values as prefill. Pre-fix, both decode and prefill were identically
+  broken above the threshold; post-fix, both are correct. Confirms YaRN inv_freq was the sole
+  root cause (not a prefill-specific dispatch bug). ✓
+
+### P2 — Nemotron Super 120B tool calling: system-prompt path audited
+
+**`crates/spark-server/src/tool_parser/bare_json.rs`**:
+- `BareJsonParser::system_prompt()` emits a JSON-only instruction block; no XML wrapper text,
+  no `<tool_call>` tags in the system prompt itself. No conflict with the jinja template's
+  static XML format documentation block, which is informational and gated on
+  `{%- if not disable_tool_steering %}`. ✓
+
+**`crates/spark-server/src/api/chat/mod.rs`**:
+- Parser system prompt is prepended to (not replacing) the user's system message. The model
+  sees bare-JSON instructions alongside any user-provided context. ✓
+
+**`--kv-high-precision-layers auto` + BF16 guard (kv_dtypes.rs)**:
+- `build_layer_kv_dtypes(BF16, ...)` on spec_ssm branch returns `vec![Bf16; N]` (explicit BF16
+  vec, preventing any FP8 fallback) — one-line difference from main branch (`vec![]`), but
+  functionally equivalent in that all layers remain uniform BF16. Unit test
+  `test_build_layer_kv_dtypes_bf16_noop` verifies this invariant. ✓
+- `"auto"` resolves to 2 high-precision layers (`serve_phases/kv_cache.rs` match arm), but this
+  is irrelevant for Mistral since all layers are already BF16. ✓
+
+### P3 — SSM cache slots: decode-rollback detail
+
+**`crates/spark-model/src/model/ssm_snapshot.rs`**:
+- `SsmSnapshotPool` holds two independent regions: (a) Marconi prefix-cache sized by
+  `ssm_cache_slots` (zeroed when flag = 0), and (b) decode-rollback ring sized by
+  `decode_ring_slots × max_batch_size` — always allocated when SSM layers > 0.
+- The decode-rollback allocation is small and intentional (needed for speculative re-steer
+  correctness). The 1206 MB figure in section 1 is `SsmStatePool`, not `SsmSnapshotPool`. ✓
+
+**No new bugs found. No code changes in this session.**
