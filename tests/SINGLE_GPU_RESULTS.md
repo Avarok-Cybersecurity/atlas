@@ -2187,3 +2187,65 @@ no transformation. The 1206 MB allocation observed with `--ssm-cache-slots 0` is
 | P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** | All four fixes verified: YaRN `yarn.rs` (`low=7, high=15`), `cache_skip_mla.rs` → `mla_fused_prefill` absorbed path with `ensure!`, flat-grid `mla_fused_prefill.cu` (2,336 bytes shmem, scalar `acc_latent`, causal loop), `kv_dtypes.rs` explicit `vec![Bf16;N]`. No bugs at >1K tokens. |
 | P2 Nemotron tool calling | **CONFIRMED FIXED** | All four MODEL.toml flags present; jinja `else` branch fires for tool-active turns (pre-closed think → bare JSON); XML format instructions gate suppresses conflicting instructions. |
 | P3 SSM cache slots | **CONFIRMED CORRECT** | Two independent pools: `SsmStatePool` (max_batch_size, 1206 MB, always allocated) and `SsmSnapshotPool` (ssm_cache_slots, 0 when flag=0). `--ssm-cache-slots 0` is not a bug. |
+
+---
+
+## Investigation #28 — 2026-06-08: `inferspark_prefill_64` kernel-level audit
+
+Deep CUDA kernel audit of the `inferspark_prefill_64` Flash Attention path used by the MLA
+single-chunk prefill for sequences >1000 tokens. No new bugs found.
+
+### `init.rs` kernel-handle verification (lines 225–424)
+
+All MLA-related kernel handles correctly loaded:
+- `prefill_attn_64_k`: `gpu.kernel("inferspark_prefill", "inferspark_prefill_64")` — loads the
+  BR=64 variant from `inferspark_prefill.cu`, compiled with `-DHDIM=128` (per
+  `kernels/gb10/mistral-small-4/nvfp4/KERNEL.toml`). This is the correct kernel for the
+  single-chunk MLA prefill (Q [n,32,128], K [n,1,128], V [n,1,128]). ✓
+- All `mla_*_k` handles (extract, writeback, kv_assemble, cache_assemble, fused_prefill) load
+  from the `mla_absorbed` module, which maps to `mla_absorbed.cu`. ✓
+
+### `inferspark_prefill_64` correctness at >1000 tokens
+
+Kernel: `kernels/gb10/common/inferspark_prefill.cu:inferspark_prefill_64`. 256 threads, 8 warps.
+
+**Causal mask and `num_kv_blocks`**: `min(ceil(seq_len/BC), (q_end-1)/BC + 1)`. At `seq_len=1000`,
+the final Q-tile (q_start=960) processes `num_kv_blocks=32` (K positions 0..999). The causal
+comparisons use unsigned arithmetic; no underflow risk since `kv_start + col` is always ≥ 0 and
+`qr0 = q_start + row0` is always < 2^31. ✓
+
+**Double-buffered K tiles**: `smem_K64[buf]` / `smem_K64[1-buf]` pingpong via `buf = kv_block & 1`.
+Initial load of block 0 outside the loop, preload of block k+1 within each iteration overlapping
+PV GEMM. Correct for any `num_kv_blocks ≥ 1`. ✓
+
+**Warp split (HDIM=128)**: `N_TILES_PER_WARP = (128/8)/2 = 8`. Warps 0-3 compute QK^T + softmax
+and accumulate N-columns 0–63; warps 4-7 accumulate N-columns 64–127. `smem_ml64` written by
+warps 0-3 at lines 792–794, then read by warps 4-7 at lines 806–808. A `__syncthreads()` at
+line 800 (after async V wait) ensures all 64 rows' `m_r`/`l_r` values are visible to warps 4-7
+before rescaling. ✓
+
+**V tile loading**: `v_row = kv_start + row` with `if (v_row < seq_len)` guard — correct for
+partial final KV blocks. ✓
+
+**Final normalisation and store**: warps 0-3 use register `l_r0/l_r1`; warps 4-7 read from
+`smem_ml64[row0/1][1]`. Bounds checks `gr0 < seq_len && row0 < q_len` prevent writes for
+padded Q rows in the final block. ✓
+
+### Buffer-sizing verification (MLA, `nkv=1, hd=128`)
+
+- `ssm_qkvz ≥ m×512 bytes` → K+V at any `n ≤ m` (need 512n). ✓
+- `ssm_ba ≥ m×512 bytes` → q_latent [n×512] and k_rope_buf [n×128] (sequential reuse). ✓
+- `ssm_conv_out_f32 ≥ m×4096 bytes` → q_rope_tmp [n×32×64×2]. ✓
+- `ssm_deinterleaved ≥ m×8192 bytes` → kv_expanded [n×1×192×2]. ✓
+
+### MLA GQA ratio
+
+`mla_prefill_attn.cu` comment confirms "GQA 32:1" for Mistral Small 4. `num_key_value_heads=1`
+in `params.json`, propagated to `nkv=1` in `cache_skip_mla.rs`. Flash attention call:
+`nq=32, nkv=1, gqa_ratio=32` — all 32 Q heads share the single expanded KV head. ✓
+
+### Conclusion
+
+The YaRN `inv_freq` bug (fixed in `yarn.rs`) remains the sole root cause of >1000-token
+gibberish. No kernel-level, buffer-sizing, or GQA-ratio issues exist. Awaiting live hardware
+re-test to close P1.
