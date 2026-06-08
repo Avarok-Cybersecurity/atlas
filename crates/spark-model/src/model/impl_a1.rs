@@ -34,6 +34,12 @@ impl TransformerModel {
         final_norm: DenseWeight,
         lm_head_weight: DenseWeight,
         lm_head_nvfp4: Option<QuantizedWeight>,
+        // Runtime FP8 LM head (`--lm-head-dtype fp8`); `None` on NVFP4/BF16 paths.
+        lm_head_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+        // Draft-only NVFP4 head for MTP when the main head is BF16; `None`
+        // otherwise (the proposer then falls back to `lm_head_nvfp4`). Drafts
+        // are verified by the main head, so it never affects an accepted token.
+        mtp_lm_head_nvfp4: Option<QuantizedWeight>,
         layers: Vec<Box<dyn TransformerLayer>>,
         buffers: BufferArena,
         kv_cache: PagedKvCache,
@@ -80,6 +86,8 @@ impl TransformerModel {
         let w4a16_gemv_logits_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_logits")?;
         let w4a16_gemm_kernel = gpu.kernel("w4a16", "w4a16_gemm")?;
         let w4a16_gemv_batch2_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?;
+        // FP8 E4M3 LUT GEMV for the `--lm-head-dtype fp8` head (cheap handle; only used when set).
+        let dense_gemv_fp8w_kernel = gpu.kernel("gemv_fp8w", "dense_gemv_fp8w")?;
         let dense_gemm_kernel = gpu.kernel("gemm", "dense_gemm_bf16")?;
         let argmax_kernel = gpu.kernel("argmax", "argmax_bf16")?;
         let argmax_logits_kernel = gpu.kernel("argmax", "argmax_fp32")?;
@@ -123,8 +131,12 @@ impl TransformerModel {
         // or lm_head quantization — its K=γ verify path checkpoints SSM state
         // for partial-accept rollback. Force `has_mtp` on whenever DFlash is
         // active so the checkpoint pools exist.
+        // The MTP proposer needs an NVFP4 vocab head for drafting: either the
+        // main head (NVFP4 default) or the draft-only head built when the main
+        // head is BF16. `draft_lm_head_nvfp4` resolves to whichever is present.
+        let draft_lm_head_nvfp4 = mtp_lm_head_nvfp4.or(lm_head_nvfp4);
         let has_mtp = self_speculative
-            || (use_speculative && !mtp_weights.is_empty() && lm_head_nvfp4.is_some())
+            || (use_speculative && !mtp_weights.is_empty() && draft_lm_head_nvfp4.is_some())
             || dflash_kgamma > 0;
         let num_intermediates = if has_mtp {
             (num_drafts + 1).max(dflash_kgamma)
@@ -187,7 +199,7 @@ impl TransformerModel {
             use_speculative,
             mtp_weights,
             embed_tokens,
-            lm_head_nvfp4,
+            draft_lm_head_nvfp4,
             &config,
             gpu.as_ref(),
             mtp_quant,
@@ -411,6 +423,7 @@ impl TransformerModel {
             final_norm,
             lm_head_weight,
             lm_head_nvfp4,
+            lm_head_fp8,
             layers,
             buffers,
             kv_cache: Mutex::new(kv_cache),
@@ -423,6 +436,7 @@ impl TransformerModel {
             w4a16_gemv_logits_kernel,
             w4a16_gemm_kernel,
             w4a16_gemv_batch2_kernel,
+            dense_gemv_fp8w_kernel,
             dense_gemm_kernel,
             argmax_kernel,
             argmax_logits_kernel,

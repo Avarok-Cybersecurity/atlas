@@ -20,7 +20,7 @@ use crate::layer::{
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
-use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
+use crate::weight_map::{DenseWeight, Fp8DenseWeight, MtpWeights, QuantizedWeight};
 
 /// Architecture-agnostic transformer model.
 ///
@@ -34,6 +34,11 @@ pub struct TransformerModel {
     pub(super) final_norm: DenseWeight,
     pub(super) lm_head_weight: DenseWeight,
     pub(super) lm_head_nvfp4: Option<QuantizedWeight>,
+    /// Runtime FP8 E4M3 LM head (per-row scales), decoded via `w8a16_gemv`.
+    /// `Some` only when `--lm-head-dtype fp8` was requested; mutually exclusive
+    /// with `lm_head_nvfp4` (that stays `None` on the FP8 path). Additive: when
+    /// `None`, the NVFP4/BF16 LM-head dispatch is byte-identical to before.
+    pub(super) lm_head_fp8: Option<Fp8DenseWeight>,
     pub(super) layers: Vec<Box<dyn TransformerLayer>>,
     pub(super) buffers: BufferArena,
     pub(super) kv_cache: Mutex<PagedKvCache>,
@@ -52,6 +57,10 @@ pub struct TransformerModel {
     pub(super) w4a16_gemv_logits_kernel: KernelHandle, // FP32 output for LM head
     pub(super) w4a16_gemm_kernel: KernelHandle,
     pub(super) w4a16_gemv_batch2_kernel: KernelHandle,
+    /// FP8 E4M3 LUT GEMV (M=1) for the FP8 LM head. Only used when
+    /// `lm_head_fp8.is_some()`; loaded unconditionally (cheap handle) so the
+    /// dispatch in `lm_head` / batched-decode / verify can reference it.
+    pub(super) dense_gemv_fp8w_kernel: KernelHandle,
     pub(super) dense_gemm_kernel: KernelHandle,
     pub(super) argmax_kernel: KernelHandle,
     pub(super) argmax_logits_kernel: KernelHandle, // FP32 argmax for logits

@@ -216,6 +216,14 @@ impl ModelConfig {
     /// FP32 lm_head path (gated by `ATLAS_GEMMA4_FP32_LMHEAD=1`) can
     /// then act on full-precision weights without the NVFP4 floor.
     pub fn skip_lm_head_quantization(&self) -> bool {
+        // CLI override (`--lm-head-dtype`, set into `lm_head_bf16_override` at serve
+        // time) wins. `bf16` keeps the LM head in BF16 instead of runtime-quantizing it
+        // to NVFP4 — the 4-bit floor on the final vocab projection is a prime suspect for
+        // argmax flips in long structured generation; vLLM keeps lm_head at checkpoint
+        // precision. (Replaces the former ATLAS_LMHEAD_BF16 env var; PCND: explicit arg.)
+        if let Some(force_bf16) = self.lm_head_bf16_override {
+            return force_bf16;
+        }
         if self.kv_lora_rank > 0 {
             return true;
         }

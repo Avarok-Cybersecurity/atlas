@@ -18,7 +18,7 @@ use crate::layers::MtpQuantization;
 use crate::model::TransformerModel;
 use crate::traits::Model;
 use crate::weight_loader::load_dflash_weights;
-use crate::weight_map::quantize_to_nvfp4;
+use crate::weight_map::{Fp8DenseWeight, quantize_to_fp8, quantize_to_nvfp4};
 
 pub fn build_model(
     mut config: ModelConfig,
@@ -158,8 +158,32 @@ pub fn build_model(
         .and_then(|k| store.get(k).ok())
         .is_some_and(|w| w.dtype == spark_runtime::weights::WeightDtype::UInt8);
 
+    // FP8 lm_head signal (`--lm-head-dtype fp8`): when we are NOT skipping
+    // quantization, route the runtime LM-head quantization to FP8 (E4M3,
+    // per-row scales, w8a16_gemv decode) instead of NVFP4. Additive: when
+    // `config.lm_head_fp8` is false the NVFP4/BF16 paths below are unchanged.
+    let mut lm_head_fp8: Option<Fp8DenseWeight> = None;
     let lm_head_nvfp4 = if config.skip_lm_head_quantization() {
         tracing::info!("LM head kept as BF16 (skip NVFP4 quantization per model config)");
+        None
+    } else if config.lm_head_fp8 {
+        // Runtime FP8 head. `quantize_bf16_to_fp8` (module `gemv_fp8w`) writes
+        // FP8 E4M3 bytes + per-row f32 scales, consumed by `w8a16_gemv` at
+        // decode. The NVFP4 head stays `None` on this path.
+        let quantize_fp8_k = gpu.kernel("gemv_fp8w", "quantize_bf16_to_fp8")?;
+        let q = quantize_to_fp8(
+            &lm_head,
+            config.vocab_size,
+            config.hidden_size,
+            gpu.as_ref(),
+            quantize_fp8_k,
+            stream,
+        )?;
+        tracing::info!(
+            "LM head quantized to FP8 (w8a16, vocab={})",
+            config.vocab_size
+        );
+        lm_head_fp8 = Some(q);
         None
     } else if lm_head_prepacked_nvfp4 {
         let prefix = lm_head_key.unwrap().strip_suffix(".weight").unwrap();
@@ -181,6 +205,41 @@ pub fn build_model(
         )?;
         tracing::info!("LM head quantized to NVFP4 (vocab={})", config.vocab_size);
         Some(q)
+    };
+
+    // ── Step 3a: Separate NVFP4 draft head (BF16-main + MTP decouple) ──
+    //
+    // When the main LM head is kept BF16 for argmax precision
+    // (`skip_lm_head_quantization()`), the MTP draft proposer still needs an
+    // NVFP4 vocab projection: `MtpHead::forward_one` hard-wires the final
+    // hidden→vocab projection to `w4a16_gemv` over a `QuantizedWeight`. Build
+    // a SEPARATE NVFP4 copy used ONLY for drafting. This is correctness-safe
+    // because every draft is VERIFIED by the main BF16 `lm_head_batched`
+    // (verify_*.rs) — an approximate draft head only affects acceptance rate,
+    // never an emitted/accepted token. Only built when speculative decoding is
+    // actually active and the checkpoint ships an MTP head; otherwise `None`.
+    //
+    // When the main head is NVFP4 (`lm_head_nvfp4.is_some()`), this stays
+    // `None` and the proposer falls back to the main NVFP4 head — byte-for-byte
+    // unchanged from the pre-decouple behavior.
+    let mtp_lm_head_nvfp4 = if lm_head_nvfp4.is_none() && use_speculative && !mtp_weights.is_empty()
+    {
+        let q = quantize_to_nvfp4(
+            &lm_head,
+            config.vocab_size,
+            config.hidden_size,
+            gpu.as_ref(),
+            absmax_k,
+            quantize_k,
+            stream,
+        )?;
+        tracing::info!(
+            "Draft-only NVFP4 LM head built for MTP (main head stays BF16, vocab={})",
+            config.vocab_size,
+        );
+        Some(q)
+    } else {
+        None
     };
 
     // ── Step 3b: Post-load MoE prefill transpose (MiniMax EP=2 TTFT fix) ──
@@ -380,6 +439,8 @@ pub fn build_model(
         final_norm,
         lm_head,
         lm_head_nvfp4,
+        lm_head_fp8,
+        mtp_lm_head_nvfp4,
         layers,
         buffers,
         kv_cache,

@@ -62,6 +62,27 @@ pub struct ServeArgs {
     #[arg(long, default_value = "fp8")]
     pub kv_cache_dtype: String,
 
+    /// LM-head precision: `default` (model-config-driven), `bf16` (final vocab projection
+    /// in BF16 — the SAFE DEFAULT, matches vLLM checkpoint precision), `nvfp4` (force the
+    /// model's NVFP4-packed lm_head), or `fp8` (runtime-quantize the lm_head to FP8 E4M3
+    /// per-row, w8a16_gemv decode). The big vocab projection (~1.78 GB/token BF16 at a
+    /// 248K vocab) is the single largest per-token weight read; `fp8` halves it and `nvfp4`
+    /// quarters it for a real decode speedup (measured Qwen3.6-35B-A3B: bf16 72 → fp8 86
+    /// (+20%) → nvfp4 97 (+35%) tok/s).
+    ///
+    /// ⚠️  WARNING — reducing lm-head precision below BF16 can be CATASTROPHIC on some
+    /// models. Low-margin argmax flips in the final vocab projection COMPOUND over LONG
+    /// structured generation and derail the output entirely, even when SHORT responses look
+    /// perfectly clean. MEASURED on Qwen3.6-35B-A3B (webserver_ok agentic harness, N=10):
+    /// bf16 = 10/10; BOTH fp8 and nvfp4 COLLAPSE (cargo-invalid output, 360s timeouts)
+    /// despite clean short-prompt coherence. ALWAYS quality-gate per-model with a
+    /// long-generation harness before enabling nvfp4/fp8 — do not trust a short smoke.
+    /// (An FP32-accumulate logits path would cut the flips but forces host-side sampling
+    /// → ~6 tok/s; making nvfp4/fp8 both fast AND safe needs a GPU-side FP32 sampler.)
+    /// Replaces the former ATLAS_LMHEAD_BF16 env var.
+    #[arg(long, default_value = "default")]
+    pub lm_head_dtype: String,
+
     /// Boundary attention layers to keep at BF16 KV cache precision (first N + last N).
     /// Protects attention sink tokens (early layers) and output quality (final layers)
     /// from quantization error while saving memory on middle layers.

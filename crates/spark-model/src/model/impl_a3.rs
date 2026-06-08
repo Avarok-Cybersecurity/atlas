@@ -132,7 +132,24 @@ impl TransformerModel {
         let h = self.config.hidden_size as u32;
         let v = self.config.vocab_size as u32;
         let logits = self.buffers.logits();
-        if num_tokens == 2 {
+        if let Some(ref fp8) = self.lm_head_fp8 {
+            // FP8 E4M3 LM head. `w8a16_gemv` is M=1 only (no batch2/GEMM
+            // variant), so loop one GEMV per token. hidden is BF16 [K,H]
+            // (stride h*2 bytes); logits is BF16 [K,V] (stride v*2 bytes).
+            let bf16 = 2usize;
+            for i in 0..num_tokens as usize {
+                ops::dense_gemv_fp8w(
+                    self.gpu.as_ref(),
+                    self.dense_gemv_fp8w_kernel,
+                    hidden.offset(i * h as usize * bf16),
+                    fp8,
+                    logits.offset(i * v as usize * bf16),
+                    v,
+                    h,
+                    stream,
+                )?;
+            }
+        } else if num_tokens == 2 {
             // Double-GEMV: reads weights once, computes 2 outputs.
             // GEMM M=2 with 64×64 tiles wastes 97% of M-dimension → ~3× slower.
             if let Some(ref nvfp4) = self.lm_head_nvfp4 {
@@ -218,7 +235,22 @@ impl TransformerModel {
         } else {
             (self.buffers.logits(), false)
         };
-        if let Some(ref nvfp4) = self.lm_head_nvfp4 {
+        if let Some(ref fp8) = self.lm_head_fp8 {
+            // FP8 E4M3 LM head (`--lm-head-dtype fp8`). `w8a16_gemv` has no
+            // FP32-output variant — it writes to whichever buffer is passed.
+            // `use_fp32_logits` is false in production, so `logits` is the
+            // shared BF16 buffer; the FP32-logits path is unused here.
+            ops::dense_gemv_fp8w(
+                self.gpu.as_ref(),
+                self.dense_gemv_fp8w_kernel,
+                hidden,
+                fp8,
+                logits,
+                v,
+                h,
+                stream,
+            )?;
+        } else if let Some(ref nvfp4) = self.lm_head_nvfp4 {
             // Pick FP32-output variant when the FP32 logits buffer is the
             // destination. Same packed-NVFP4 weights, same activation, but the
             // accumulator is NOT downcast to BF16 — closes the 0.125-logit

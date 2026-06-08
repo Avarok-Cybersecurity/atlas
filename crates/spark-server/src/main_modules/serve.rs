@@ -36,6 +36,30 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // 1. Load model config (supports HF config.json and Mistral params.json)
     let (mut config, config_json) = serve_phases::load_model_config(&model_dir)?;
 
+    // CLI `--lm-head-dtype` override (replaces ATLAS_LMHEAD_BF16). Validate eagerly (PCND).
+    // Sets both `lm_head_bf16_override` (skip/keep-quantized signal consumed by
+    // `skip_lm_head_quantization()`) and `lm_head_fp8` (when quantizing, pick FP8 w8a16
+    // over NVFP4). `fp8` reuses `Some(false)` ("force quantized lm_head") and additionally
+    // routes that quantization to FP8 — additive, leaves nvfp4/bf16/default byte-identical.
+    let (lm_head_bf16_override, lm_head_fp8) = match args.lm_head_dtype.as_str() {
+        "default" => (None, false),
+        "bf16" => (Some(true), false),
+        // `Some(false)` = force the model's NVFP4-packed lm_head (skip_lm_head_quantization
+        // returns false). BF16-out fast path (w4a16_gemv) — NOT use_fp32_logits, which would
+        // force host-side sampling (~6 tok/s). Decode-speed lever; quality-gate for argmax flips.
+        "nvfp4" => (Some(false), false),
+        // FP8: force a quantized lm_head, but use runtime FP8 (E4M3, per-row scales,
+        // w8a16_gemv decode) instead of NVFP4. Mirrors the NVFP4 path's structure.
+        "fp8" => (Some(false), true),
+        other => {
+            anyhow::bail!(
+                "--lm-head-dtype must be 'default', 'bf16', 'nvfp4', or 'fp8', got '{other}'"
+            )
+        }
+    };
+    config.lm_head_bf16_override = lm_head_bf16_override;
+    config.lm_head_fp8 = lm_head_fp8;
+
     // ModelOpt-exported checkpoints drop a sibling `hf_quant_config.json`
     // whose TOP LEVEL is already the quantization block.
     serve_phases::merge_sidecar_quant_config(&model_dir, &mut config);
