@@ -117,8 +117,8 @@ impl MoeLayer {
                     //   indices  = topk(scores + bias)
                     //   weights  = scores[indices] / sum(scores[indices])
                     // Kernel does all three steps; norm_topk_prob toggles
-                    // the final divide, scaling_factor = 1.0 (MiniMax has
-                    // no routed_scaling_factor, unlike Nemotron-H's 2.5).
+                    // the final divide. scaling_factor comes from the model
+                    // config (e.g., Step 3.7 = 3.0, MiniMax M2 = 1.0).
                     ops::moe_topk_sigmoid(
                         ctx.gpu,
                         self.moe_topk_sigmoid_k,
@@ -129,7 +129,7 @@ impl MoeLayer {
                         num_experts,
                         top_k,
                         ctx.config.norm_topk_prob,
-                        1.0,
+                        ctx.config.routed_scaling_factor as f32,
                         stream,
                     )
                 } else {

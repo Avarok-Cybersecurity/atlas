@@ -279,17 +279,11 @@ impl ModelWeightLoader for Step3p7WeightLoader {
                     down_proj: quantize_to_nvfp4(&se_down, h, shared_inter, gpu, absmax_k, quantize_k, stream)?,
                 };
 
-                // Step 3.7 doesn't have an explicit shared_expert_gate sigmoid
-                // weight — the shared expert is always active (unconditional addition).
-                // The blend kernel always reads gate_weight as a [hidden_size] vector,
-                // so we must allocate a full-sized buffer. Zeros give sigmoid(0)=0.5
-                // in the fused blend path, but in EP mode the shared expert is excluded
-                // from blend (zeroed buffer) and added directly via residual_add after
-                // all-reduce, so the gate value doesn't affect the EP output.
-                let seg_size = h * 2; // hidden_size * sizeof(BF16)
-                let seg_ptr = gpu.alloc(seg_size)?;
-                gpu.memset(seg_ptr, 0, seg_size)?;
-                let shared_expert_gate = DenseWeight { weight: seg_ptr };
+                // Step 3.7 doesn't have a shared_expert_gate sigmoid weight —
+                // the shared expert is always active (unconditional full-strength
+                // addition). Use a NULL weight so the forward path takes the
+                // `residual_add` branch (weight.0 == 0 → no sigmoid, full 1.0).
+                let shared_expert_gate = DenseWeight { weight: DevicePtr::NULL };
 
                 // Quantize router gate for prefill
                 let gate_nvfp4 = quantize_to_nvfp4(
