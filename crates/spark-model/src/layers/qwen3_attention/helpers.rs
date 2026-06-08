@@ -35,6 +35,12 @@ impl Qwen3AttentionLayer {
         self.sliding_window = window;
     }
 
+    /// Set per-head attention gate weight (Step 3.7 g_proj).
+    /// The weight is BF16 shape [num_q_heads, hidden_size].
+    pub fn set_head_gate_weight(&mut self, w: DenseWeight) {
+        self.head_gate_weight = Some(w);
+    }
+
     /// Set per-layer RoPE overrides (theta, rotary_dim) for dual-RoPE
     /// models (Gemma-4).
     pub fn set_rope_overrides(&mut self, theta: f32, rotary_dim: u32) {

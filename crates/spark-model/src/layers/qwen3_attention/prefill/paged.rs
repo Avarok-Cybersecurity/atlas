@@ -442,6 +442,33 @@ impl Qwen3AttentionLayer {
             )?;
         }
 
+        // ── 9b. Per-head attention gate (Step 3.7 g_proj) ──
+        if let Some(ref g_proj) = self.head_gate_weight {
+            let gate_buf = q_contiguous; // Q buffer free after attention
+            ops::dense_gemm_tc(
+                ctx.gpu,
+                self.dense_gemm_tc_k,
+                normed,
+                g_proj,
+                gate_buf,
+                n,
+                nq,
+                h,
+                stream,
+            )?;
+            ops::sigmoid_gate_mul_head_broadcast(
+                ctx.gpu,
+                self.sigmoid_gate_head_broadcast_k,
+                attn_out,
+                gate_buf,
+                attn_out,
+                nq,
+                hd,
+                n,
+                stream,
+            )?;
+        }
+
         // ── 10. O projection GEMM ── (extracted to paged_oproj.rs)
         let o_out = self.prefill_attention_paged_oproj(attn_out, n, h, nq, hd, ctx, stream)?;
 

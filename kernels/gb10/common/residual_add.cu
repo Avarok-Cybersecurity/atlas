@@ -158,6 +158,37 @@ extern "C" __global__ void bf16_concat(
 //
 // Eliminates the D2H + CPU sigmoid for shared expert gate.
 // Each block reads the single BF16 scalar and computes sigmoid in shared mem.
+// Per-head sigmoid gate multiply with broadcast over head_dim.
+// Step 3.7 attention gate: g_proj produces one scalar per head,
+// which is sigmoid-gated and broadcast-multiplied across head_dim.
+//
+// input/output: [num_tokens, nq * hd] contiguous BF16
+// gate: [num_tokens, nq] contiguous BF16 (one value per head)
+//
+// output[t, h, d] = input[t, h, d] * sigmoid(gate[t, h])
+//
+// Grid: (ceil(total_elements / 256), 1, 1)  Block: (256, 1, 1)
+extern "C" __global__ void sigmoid_gate_mul_head_broadcast(
+    const __nv_bfloat16* __restrict__ input,   // [num_tokens, nq * hd]
+    const __nv_bfloat16* __restrict__ gate,    // [num_tokens, nq]
+    __nv_bfloat16* __restrict__ output,        // [num_tokens, nq * hd]
+    unsigned int nq,
+    unsigned int hd,
+    unsigned int total_elements               // num_tokens * nq * hd
+) {
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < total_elements) {
+        unsigned int dim = nq * hd;
+        unsigned int t = i / dim;
+        unsigned int within_token = i % dim;
+        unsigned int head_idx = within_token / hd;
+        float x = __bfloat162float(input[i]);
+        float g = __bfloat162float(gate[t * nq + head_idx]);
+        float sigmoid_g = 1.0f / (1.0f + expf(-g));
+        output[i] = __float2bfloat16(x * sigmoid_g);
+    }
+}
+
 extern "C" __global__ void bf16_sigmoid_blend_device(
     __nv_bfloat16* __restrict__ output,             // [n] — routed output, modified in-place
     const __nv_bfloat16* __restrict__ src,          // [n] — shared expert output

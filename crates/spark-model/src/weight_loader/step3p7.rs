@@ -356,6 +356,17 @@ impl ModelWeightLoader for Step3p7WeightLoader {
             let v_nvfp4 = quantize_to_nvfp4(&v_proj, kv_proj_n, h, gpu, absmax_k, quantize_k, stream)?;
             let o_nvfp4 = quantize_to_nvfp4(&o_proj_w, h, q_proj_n, gpu, absmax_k, quantize_k, stream)?;
 
+            // Per-head attention gate (g_proj) — Step 3.7 specific.
+            // Shape: [num_q_heads, hidden_size] BF16. Tiny weight, no quantization needed.
+            let g_proj_key = format!("{p}.g_proj.weight");
+            let g_proj_weight = if store.contains(&g_proj_key) {
+                let w = dense_auto(store, &g_proj_key, gpu)?;
+                tracing::info!("step3p7: layer {i} loaded g_proj gate [{actual_q_heads}, {h}]");
+                Some(w)
+            } else {
+                None
+            };
+
             // Per-head q_norm / k_norm
             let q_norm = dense(store, &format!("{p}.q_norm.weight"))?;
             let k_norm = dense(store, &format!("{p}.k_norm.weight"))?;
@@ -406,10 +417,17 @@ impl ModelWeightLoader for Step3p7WeightLoader {
             }
 
             // Per-layer rope_theta: full layers use 5M, sliding layers use 10K.
-            // The per-layer array is in config, but ModelConfig only stores a scalar.
-            // Use the head count as proxy: sliding (96 heads) → theta=10000.
+            // Per-layer rotary_dim: full layers use partial_rotary_factor=0.5 → 64,
+            // sliding layers use partial_rotary_factor=1.0 → 128 (full head rotation).
+            // config.rotary_dim is computed from the first prf (0.5) → only correct
+            // for full-attention layers. Sliding layers need head_dim directly.
             if is_sliding {
-                layer.set_rope_overrides(10000.0, config.rotary_dim as u32);
+                layer.set_rope_overrides(10000.0, config.head_dim as u32);
+            }
+
+            // Per-head attention gate
+            if let Some(gw) = g_proj_weight {
+                layer.set_head_gate_weight(gw);
             }
 
             // Transpose attention NVFP4 for prefill
