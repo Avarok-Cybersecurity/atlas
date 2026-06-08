@@ -1,0 +1,66 @@
+{
+  "tier": "pathrec",
+  "run": 8,
+  "wall_time_s": 207.84830594062805,
+  "opencode": {
+    "events_total": 33,
+    "stderr_bytes": 0
+  },
+  "filesystem": {
+    "files_written": [
+      "Cargo.toml",
+      "src/main.rs"
+    ],
+    "files_count": 2
+  },
+  "cargo": {
+    "cargo_toml_present": true,
+    "cargo_toml_valid": true,
+    "cargo_toml_error": "",
+    "cargo_toml_has_package_name": true
+  },
+  "webserver": {
+    "webserver_ok": false,
+    "build_ok": false,
+    "build_error": "    Updating crates.io index\nerror: failed to select a version for the requirement `axum = \"^1.3\"`\ncandidate versions found which didn't match: 0.8.9, 0.8.8, 0.8.7, ...\nlocation searched: crates.io index\nrequired by package `atlas-harness v0.1.0 (/tmp/harness-pathrec-r8)`\nhelp: if you are looking for the prerelease package it needs to be specified explicitly\n    axum = { version = \"0.8.0-rc.1\" }\n",
+    "bind_ok": false,
+    "ping_ok": false,
+    "ping_response": ""
+  },
+  "tool_calls": {
+    "total": 8,
+    "by_tool": {
+      "bash": 5,
+      "write": 3
+    },
+    "tool_calls_per_turn": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "turns_observed": 8
+  },
+  "drift": {
+    "write_calls": 3,
+    "write_empty_path": 0,
+    "write_path_drift_from_target": 0,
+    "write_path_has_literal_space": 0,
+    "write_content_starts_with_lean": 0,
+    "write_content_is_bash_command": 0,
+    "write_content_xml_attr_leak": 0,
+    "write_content_newlines_collapsed_toml": 0
+  },
+  "atlas": {
+    "ws1_mask_active_fires": 4,
+    "b1_drift_gauge_fires": 1,
+    "tier_5c_retries": 0,
+    "a2_fuzzy_repair_fires": 0,
+    "doom_loop_trips": 0,
+    "tool_call_lines": 8
+  }
+}

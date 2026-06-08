@@ -1,0 +1,7 @@
+# Harness aggregate — tier `bf16sel` (N=0)
+
+Generated from `bench/fp8_dgx2_drift/harness/runs/run_bf16sel_*.json`.
+Runs: []
+
+| metric | kind | n | mean ± std | p50 | p90 | 95% CI | non-zero runs |
+|---|---|---|---|---|---|---|---|

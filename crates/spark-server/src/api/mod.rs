@@ -13,8 +13,6 @@
 //! - `completions`        — legacy `/v1/completions` + list/get models +
 //!                          embeddings stub + cross-handler helpers
 //! - `sanitizer`          — `<parameter=…>` leak suppression + bash bucketing
-//! - `failures/`          — F-feature failure-recovery sub-systems
-//!                          (stall, classification, circuit, duplicate)
 //! - `stubs`              — batches/files/audio/images/moderations stubs
 //! - `responses`,
 //!   `responses_stream`,
@@ -37,7 +35,6 @@ pub mod chat_stream_dispatch;
 pub mod compact;
 pub mod completions;
 pub mod conversations;
-pub mod failures;
 pub mod inference_impl;
 pub mod inference_types;
 pub mod misc_handlers;
@@ -47,6 +44,7 @@ pub mod responses_stream_finalize;
 pub mod responses_translate;
 pub mod sanitizer;
 pub mod stored;
+pub mod stream_guards;
 pub mod strip;
 pub mod stubs;
 

@@ -9,6 +9,22 @@ use super::{MtpHead, MtpProposerState, MtpQuantization, ProjectionWeight};
 use crate::layer::ForwardContext;
 use crate::layers::ops;
 
+/// MTP-debug (ATLAS_MTP_DEBUG_NORMS=1): L2 norm of a BF16 GPU buffer, for
+/// localizing where the MTP forward produces NaN/0. NaN reads back as NaN.
+fn mtp_dbg_l2(gpu: &dyn spark_runtime::gpu::GpuBackend, p: DevicePtr, n: usize) -> f64 {
+    let mut b = vec![0u8; n * 2];
+    if gpu.copy_d2h(p, &mut b).is_err() {
+        return f64::NAN;
+    }
+    b.chunks_exact(2)
+        .map(|c| {
+            let f = f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16) as f64;
+            f * f
+        })
+        .sum::<f64>()
+        .sqrt()
+}
+
 impl MtpHead {
     /// MTP forward pass for a single token.
     ///
@@ -59,6 +75,7 @@ impl MtpHead {
             stream,
         )?;
 
+        // The saved hidden is always BF16 (the residual stream is BF16).
         let normed_hidden = ctx.buffers.ssm_gates();
         ops::rms_norm(
             ctx.gpu,
@@ -84,9 +101,27 @@ impl MtpHead {
             stream,
         )?;
 
+        if std::env::var("ATLAS_MTP_DEBUG_NORMS").as_deref() == Ok("1") {
+            ctx.gpu.synchronize(stream).ok();
+            tracing::warn!(
+                "MTP_DBG s1-embed ||={:.4} s2-n_embed ||={:.4} s2-n_hidden ||={:.4} s3-concat ||={:.4}",
+                mtp_dbg_l2(ctx.gpu, embed_out, h as usize),
+                mtp_dbg_l2(ctx.gpu, normed_embed, h as usize),
+                mtp_dbg_l2(ctx.gpu, normed_hidden, h as usize),
+                mtp_dbg_l2(ctx.gpu, concat_out, (h * 2) as usize),
+            );
+        }
+
         // 4. FC projection: [2*h] → [h]
         let hidden = ctx.buffers.hidden_states();
         self.gemv(ctx.gpu, concat_out, &self.fc, hidden, h, h * 2, stream)?;
+        if std::env::var("ATLAS_MTP_DEBUG_NORMS").as_deref() == Ok("1") {
+            ctx.gpu.synchronize(stream).ok();
+            tracing::warn!(
+                "MTP_DBG s4-fc_hidden ||={:.4}",
+                mtp_dbg_l2(ctx.gpu, hidden, h as usize)
+            );
+        }
 
         // 5. Copy hidden to residual for residual stream
         let residual = ctx.buffers.residual();
@@ -247,53 +282,102 @@ impl MtpHead {
             stream,
         )?;
 
-        // Reshape + cache (FP8)
+        // Reshape + cache + paged decode. BF16 KV (self.kv_bf16) matches the
+        // main model; the FP8 path's hard-coded unit scales (1.0,1.0) collapse
+        // the MTP attention to a constant on Qwen3.6-A3B → constant draft 0.
         let kv_stride = nkv * hd;
-        ops::reshape_and_cache_fp8(
-            ctx.gpu,
-            self.reshape_cache_k,
-            k_out,
-            v_out,
-            kv_cache.k_pool_ptr(self.attn_layer_idx),
-            kv_cache.v_pool_ptr(self.attn_layer_idx),
-            meta_base.offset(8), // slot
-            1,
-            nkv,
-            hd,
-            bs as u32,
-            1.0,
-            1.0, // k_scale, v_scale (no pre-computed scales for MTP)
-            kv_stride,
-            kv_stride,
-            kv_cache.cache_stride() as u64,
-            stream,
-        )?;
-
-        // Paged decode attention
         let attn_out = ctx.buffers.attn_output();
         let inv_sqrt_d = 1.0f32 / (hd as f32).sqrt();
-        ops::paged_decode_attn_fp8(
-            ctx.gpu,
-            self.paged_decode_k,
-            q_out,
-            kv_cache.k_pool_ptr(self.attn_layer_idx),
-            kv_cache.v_pool_ptr(self.attn_layer_idx),
-            attn_out,
-            meta_base.offset(256), // block_table
-            meta_base.offset(16),  // seq_len
-            max_blocks,
-            1,
-            nq,
-            nkv,
-            hd,
-            bs as u32,
-            inv_sqrt_d,
-            1.0,
-            1.0, // k_scale, v_scale
-            nq * hd,
-            kv_cache.cache_stride() as u64,
-            stream,
-        )?;
+        if self.kv_bf16 {
+            ops::reshape_and_cache(
+                ctx.gpu,
+                self.reshape_cache_k,
+                k_out,
+                v_out,
+                kv_cache.k_pool_ptr(self.attn_layer_idx),
+                kv_cache.v_pool_ptr(self.attn_layer_idx),
+                meta_base.offset(8), // slot
+                1,                   // num_tokens
+                nkv,
+                hd,
+                bs as u32, // block_size
+                kv_stride,
+                kv_stride,
+                kv_cache.cache_stride() as u64,
+                stream,
+            )?;
+            ops::paged_decode_attn_bf16(
+                ctx.gpu,
+                self.paged_decode_k,
+                q_out,
+                kv_cache.k_pool_ptr(self.attn_layer_idx),
+                kv_cache.v_pool_ptr(self.attn_layer_idx),
+                attn_out,
+                meta_base.offset(256), // block_table
+                meta_base.offset(16),  // seq_len
+                max_blocks,
+                1, // num_seqs
+                nq,
+                nkv,
+                hd,
+                bs as u32, // block_size
+                inv_sqrt_d,
+                nq * hd, // q_stride
+                0,       // sliding_window (full attention)
+                stream,
+            )?;
+        } else {
+            ops::reshape_and_cache_fp8(
+                ctx.gpu,
+                self.reshape_cache_k,
+                k_out,
+                v_out,
+                kv_cache.k_pool_ptr(self.attn_layer_idx),
+                kv_cache.v_pool_ptr(self.attn_layer_idx),
+                meta_base.offset(8), // slot
+                1,
+                nkv,
+                hd,
+                bs as u32,
+                1.0,
+                1.0, // k_scale, v_scale (no pre-computed scales for MTP)
+                kv_stride,
+                kv_stride,
+                kv_cache.cache_stride() as u64,
+                stream,
+            )?;
+            ops::paged_decode_attn_fp8(
+                ctx.gpu,
+                self.paged_decode_k,
+                q_out,
+                kv_cache.k_pool_ptr(self.attn_layer_idx),
+                kv_cache.v_pool_ptr(self.attn_layer_idx),
+                attn_out,
+                meta_base.offset(256), // block_table
+                meta_base.offset(16),  // seq_len
+                max_blocks,
+                1,
+                nq,
+                nkv,
+                hd,
+                bs as u32,
+                inv_sqrt_d,
+                1.0,
+                1.0, // k_scale, v_scale
+                nq * hd,
+                kv_cache.cache_stride() as u64,
+                stream,
+            )?;
+        }
+
+        if std::env::var("ATLAS_MTP_DEBUG_NORMS").as_deref() == Ok("1") {
+            ctx.gpu.synchronize(stream).ok();
+            tracing::warn!(
+                "MTP_DBG s7-attn_out(pre-gate) ||={:.4}  gate ||={:.4}",
+                mtp_dbg_l2(ctx.gpu, attn_out, (nq * hd) as usize),
+                mtp_dbg_l2(ctx.gpu, gate_ptr, (nq * hd) as usize)
+            );
+        }
 
         // Sigmoid gate: attn_out = attn_out * sigmoid(gate)
         ops::sigmoid_gate_mul(
@@ -375,6 +459,36 @@ impl MtpHead {
             h,
             stream,
         )?;
+
+        // MTP-debug (ATLAS_MTP_DEBUG_NORMS=1): localize the constant-0 draft.
+        // A true zero reads as 0.0 regardless of dtype, so these L2 norms
+        // pinpoint the first stage to zero out: input_hidden (save bug) →
+        // final_normed (forward bug) → logits (lm_head bug).
+        if std::env::var("ATLAS_MTP_DEBUG_NORMS").as_deref() == Ok("1") {
+            ctx.gpu.synchronize(stream).ok();
+            let bf16_norm = |p: DevicePtr, n: usize| -> f64 {
+                let mut b = vec![0u8; n * 2];
+                if ctx.gpu.copy_d2h(p, &mut b).is_err() {
+                    return -1.0;
+                }
+                b.chunks_exact(2)
+                    .map(|c| {
+                        let f =
+                            f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16) as f64;
+                        f * f
+                    })
+                    .sum::<f64>()
+                    .sqrt()
+            };
+            // The residual stream is always BF16, so the saved hidden is BF16.
+            let hin = bf16_norm(target_hidden, h as usize);
+            tracing::warn!(
+                "MTP_DEBUG_NORMS: ||input_hidden||={:.4} ||final_normed||={:.4} ||logits||={:.4}",
+                hin,
+                bf16_norm(final_normed, h as usize),
+                bf16_norm(logits, v as usize)
+            );
+        }
 
         // 13. Argmax
         let out_ptr = ctx.buffers.scratch();

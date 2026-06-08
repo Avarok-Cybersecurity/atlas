@@ -1,0 +1,68 @@
+{
+  "tier": "lmbf16",
+  "run": 4,
+  "wall_time_s": 137.33689403533936,
+  "opencode": {
+    "events_total": 29,
+    "stderr_bytes": 0
+  },
+  "filesystem": {
+    "files_written": [
+      ".gitignore",
+      "Cargo.toml",
+      "src/main.rs"
+    ],
+    "files_count": 3
+  },
+  "cargo": {
+    "cargo_toml_present": true,
+    "cargo_toml_valid": true,
+    "cargo_toml_error": "",
+    "cargo_toml_has_package_name": true
+  },
+  "webserver": {
+    "webserver_ok": false,
+    "build_ok": false,
+    "build_error": "   Compiling atlas-harness v0.1.0 (/tmp/harness-lmbf16-r4)\nerror[E0601]: `main` function not found in crate `atlas_harness`\n  |\n  = note: consider adding a `main` function to `src/main.rs`\n\nFor more information about this error, try `rustc --explain E0601`.\nerror: could not compile `atlas-harness` (bin \"atlas-harness\") due to 1 previous error\n",
+    "bind_ok": false,
+    "ping_ok": false,
+    "ping_response": ""
+  },
+  "tool_calls": {
+    "total": 7,
+    "by_tool": {
+      "skill": 1,
+      "bash": 1,
+      "write": 3,
+      "read": 2
+    },
+    "tool_calls_per_turn": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "turns_observed": 7
+  },
+  "drift": {
+    "write_calls": 3,
+    "write_empty_path": 2,
+    "write_path_drift_from_target": 0,
+    "write_path_has_literal_space": 0,
+    "write_content_starts_with_lean": 0,
+    "write_content_is_bash_command": 0,
+    "write_content_xml_attr_leak": 0,
+    "write_content_newlines_collapsed_toml": 0
+  },
+  "atlas": {
+    "ws1_mask_active_fires": 4,
+    "b1_drift_gauge_fires": 0,
+    "tier_5c_retries": 0,
+    "a2_fuzzy_repair_fires": 0,
+    "doom_loop_trips": 0,
+    "tool_call_lines": 7
+  }
+}

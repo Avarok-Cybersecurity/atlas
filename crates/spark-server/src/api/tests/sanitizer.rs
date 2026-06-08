@@ -224,10 +224,9 @@ mod sanitizer_tests {
         assert_eq!(out, "");
     }
 
-    // Note: bash-fence salvage tests have moved to
-    // `crate::tool_salvage::tests` and now exercise the generic
-    // schema-driven extractor (which handles bash fences as one
-    // of several shapes). See `tool_salvage.rs` for coverage.
+    // Note: the bash-fence tool-call salvage stack was removed (the
+    // model now emits clean tool calls via the grammar fix), so its
+    // tests no longer exist.
 
     #[test]
     fn strip_leaks_removes_mirror_block_from_real_dump_msg4() {
@@ -339,9 +338,9 @@ mod sanitizer_tests {
         assert_eq!(out, content);
     }
 
-    // Note: bare-XML tool-call salvage tests have moved to
-    // `crate::tool_salvage::tests` and now exercise the generic
-    // schema-driven extractor. See `tool_salvage.rs` for coverage.
+    // Note: the bare-XML tool-call salvage stack was removed (the model
+    // now emits clean tool calls via the grammar fix), so its tests no
+    // longer exist.
 
     #[test]
     fn flush_before_tool_boundary_recovers_from_stuck_suppression() {
@@ -387,10 +386,9 @@ mod sanitizer_tests {
         assert!(!suppress, "no new orphan, must stay out of suppression");
     }
 
-    // Note: prose→Write salvage tests have moved to
-    // `crate::tool_salvage::tests` and now exercise the generic
-    // schema-driven extractor (header+body shape). See
-    // `tool_salvage.rs` for coverage.
+    // Note: the prose→Write tool-call salvage stack was removed (the
+    // model now emits clean tool calls via the grammar fix), so its
+    // tests no longer exist.
     //
     // Note: cross-turn prose-prefix Layer 4 was deleted along with
     // its `normalise_text_prefix` helper; the unified loop detector

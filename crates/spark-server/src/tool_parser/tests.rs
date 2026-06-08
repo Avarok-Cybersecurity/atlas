@@ -8,3 +8,5 @@
 mod group_b;
 mod group_c;
 mod group_d;
+mod group_e;
+mod streaming_frag;

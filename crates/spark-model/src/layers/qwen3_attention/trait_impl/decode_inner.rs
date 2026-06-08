@@ -9,7 +9,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::PagedKvCache;
 
 use super::super::Qwen3AttentionLayer;
-use super::{diag_norm, diag_norm_f32, gemma4_diag_enabled};
+use super::{diag_norm, gemma4_diag_enabled};
 use crate::layer::{ForwardContext, LayerState};
 use crate::layers::ops;
 
@@ -33,17 +33,10 @@ impl Qwen3AttentionLayer {
         // copy + sync which invalidates stream capture (status 901).
         let gemma4_diag =
             ctx.config.model_type == "gemma4" && gemma4_diag_enabled() && !ctx.graph_capture;
-        // When Gemma-4 FP32 residual is active, `hidden` is a FP32 buffer;
-        // use the FP32 diag reader so we don't alias 4-byte floats as two
-        // 2-byte BF16s (producing bogus NaNs in the print).
-        let hidden_is_fp32 = ctx.config.use_fp32_residual();
+        // The residual stream is always BF16, so `hidden` is a BF16 buffer.
         let diag_hidden =
             |gpu: &dyn GpuBackend, ptr: DevicePtr, n: usize, stream: u64, label: &str| {
-                if hidden_is_fp32 {
-                    diag_norm_f32(gpu, ptr, n, stream, label);
-                } else {
-                    diag_norm(gpu, ptr, n, stream, label);
-                }
+                diag_norm(gpu, ptr, n, stream, label);
             };
 
         let normed = ctx.buffers.norm_output();
@@ -198,14 +191,7 @@ impl Qwen3AttentionLayer {
             )?;
             // Gemma-4: hidden *= layer_scalar at end of layer
             if let Some(scalar) = self.layer_scalar {
-                self.apply_layer_scalar(
-                    ctx.gpu,
-                    hidden,
-                    h,
-                    scalar,
-                    stream,
-                    ctx.config.use_fp32_residual(),
-                )?;
+                self.apply_layer_scalar(ctx.gpu, hidden, h, scalar, stream)?;
             }
             return Ok(());
         }
@@ -370,14 +356,7 @@ impl Qwen3AttentionLayer {
 
         // Gemma-4: hidden *= layer_scalar at end of layer
         if let Some(scalar) = self.layer_scalar {
-            self.apply_layer_scalar(
-                ctx.gpu,
-                hidden,
-                h,
-                scalar,
-                stream,
-                ctx.config.use_fp32_residual(),
-            )?;
+            self.apply_layer_scalar(ctx.gpu, hidden, h, scalar, stream)?;
             if gemma4_diag {
                 diag_hidden(
                     ctx.gpu,

@@ -74,15 +74,20 @@ struct Target {
     behavior_disable_tool_steering: bool,
     behavior_tool_call_parser: String,
     behavior_enable_loop_watchdog: bool,
-    behavior_skip_template_tools: bool,
+    behavior_min_p_floor: f32,
+    behavior_temperature_max: f32,
     behavior_think_loop_min_repeats: u32,
     behavior_think_loop_scan_window: u32,
     behavior_confidence_early_stop: bool,
     behavior_confidence_run_length: u32,
     behavior_fuzzy_repeat_tolerance_div: u32,
     behavior_max_inter_tool_prose: u32,
+    behavior_max_post_think_content_tokens: u32,
     behavior_tscg: bool,
     behavior_disable_tool_grammar: bool,
+    behavior_rollback_resteer: bool,
+    behavior_rom_head: String,
+    behavior_tool_retry: bool,
     /// Which `(model_type, hidden_size)` pairs this kernel target supports.
     /// Parsed from `[[model_types]]` in MODEL.toml.
     model_type_matches: Vec<ModelTypeMatch>,
@@ -112,6 +117,11 @@ fn main() {
     println!("cargo:rerun-if-env-changed=ATLAS_TARGET_HW");
     println!("cargo:rerun-if-env-changed=ATLAS_TARGET_MODEL");
     println!("cargo:rerun-if-env-changed=ATLAS_TARGET_QUANT");
+    // ATLAS_EXTRA_NVCC_FLAGS — global nvcc-flag override read by
+    // `build_target::NvidiaTarget::compile`. Used for kernel bisection
+    // tests (e.g. `-DATLAS_FAST_SOFTMAX_EXP=1` to flip the softmax
+    // polynomial vs `__expf` `#ifdef` choice).
+    println!("cargo:rerun-if-env-changed=ATLAS_EXTRA_NVCC_FLAGS");
     // Auto-skip the kernel build on macOS unless an explicit Apple Metal
     // target was selected. The default `gb10` target is NVIDIA-only and
     // cannot find nvcc on a Mac. Phase 2 onwards will populate
@@ -132,6 +142,7 @@ fn main() {
             pub fn metallib_modules() -> Vec<(&'static str, &'static [u8])> { Vec::new() }\n\
             pub fn all_ptx_sets() -> Vec<TargetPtxSet> { Vec::new() }\n";
         std::fs::write(out_dir.join("target_ptx.rs"), stub).expect("write skip stub target_ptx.rs");
+        println!("cargo:rustc-env=ATLAS_KERNEL_SET_HASH={}", content_hash(stub));
         println!("cargo:rustc-env=ATLAS_PTX_DIR={}", out_dir.display());
         return;
     }
@@ -172,6 +183,32 @@ fn main() {
     // Per-target: (target_idx, vec of (stem, module_name))
     let mut all_target_modules: Vec<Vec<(String, String)>> = Vec::new();
 
+    // 2026-05-24 dedup+parallel: pre-walk every (target, cu_file) pair
+    // and split into two queues:
+    //   - `compile_jobs`: unique (source, arch, sorted_flags) tuples
+    //     that need nvcc — run in parallel via thread::scope.
+    //   - `copy_jobs`: cache-hits where another target already produced
+    //     this exact binary — run sequentially after compile (microsec
+    //     each, no point parallelising).
+    //
+    // Pre-dedup baseline on 13 model targets × ~85 shared kernels
+    // = ~1100 sequential nvcc invocations. After dedup: ~85 × 2
+    // flag-variants = ~170 compiles, ~930 file copies. After parallel:
+    // 170 / N_CORES nvcc batches. Net ~30-50× wall-clock improvement on
+    // a 16-core build host.
+    struct CompileJob {
+        cu_file: std::path::PathBuf,
+        arch: String,
+        extra_flags: Vec<String>,
+        out_file: std::path::PathBuf,
+    }
+    let mut compile_jobs: Vec<CompileJob> = Vec::new();
+    let mut copy_jobs: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+    let mut compile_cache: std::collections::HashMap<
+        (std::path::PathBuf, String, Vec<String>),
+        std::path::PathBuf,
+    > = std::collections::HashMap::new();
+
     let source_ext = compute_target.source_extension();
     for (idx, target) in targets.iter().enumerate() {
         let cu_files = collect_cu_files(
@@ -188,21 +225,29 @@ fn main() {
             target.quant,
         );
 
-        // Compile all kernel source files via the ComputeTarget abstraction.
-        // The NvidiaTarget uses nvcc; future targets (AMD, Apple, Intel) would
-        // use their respective compilers.
-        let mut errors = Vec::new();
+        // Gather work for this target (no compilation yet — that runs
+        // in parallel after the full work plan is built).
         for cu_file in &cu_files {
             let stem = cu_file.file_stem().unwrap().to_str().unwrap().to_string();
             let out_file = out_dir.join(format!("t{idx}__{stem}.{output_ext}"));
-            if let Err(e) =
-                compute_target.compile(cu_file, &out_file, &target.arch, &target.extra_flags)
-            {
-                errors.push(e);
+
+            // Dedup key: same (source, arch, sorted-flags) → identical
+            // binary output. Sort flags so flag-order doesn't bust the cache.
+            let mut sorted_flags = target.extra_flags.clone();
+            sorted_flags.sort();
+            let key = (cu_file.clone(), target.arch.clone(), sorted_flags);
+
+            if let Some(existing) = compile_cache.get(&key) {
+                copy_jobs.push((existing.clone(), out_file));
+            } else {
+                compile_jobs.push(CompileJob {
+                    cu_file: cu_file.clone(),
+                    arch: target.arch.clone(),
+                    extra_flags: target.extra_flags.clone(),
+                    out_file: out_file.clone(),
+                });
+                compile_cache.insert(key, out_file);
             }
-        }
-        if !errors.is_empty() {
-            panic!("Kernel compilation failed:\n{}", errors.join("\n"));
         }
 
         for cu_file in &cu_files {
@@ -249,6 +294,69 @@ fn main() {
         );
     }
 
+    // ── Parallel compile of unique jobs ──
+    let nvcc_invocations = compile_jobs.len();
+    let cache_hits = copy_jobs.len();
+    let total = nvcc_invocations + cache_hits;
+
+    let n_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8)
+        .min(nvcc_invocations.max(1));
+
+    if nvcc_invocations > 0 {
+        let compute = &*compute_target;
+        let errors_mutex: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let next_idx = std::sync::atomic::AtomicUsize::new(0);
+
+        std::thread::scope(|s| {
+            for _ in 0..n_threads {
+                let next_idx = &next_idx;
+                let compile_jobs = &compile_jobs;
+                let errors_mutex = &errors_mutex;
+                s.spawn(move || {
+                    loop {
+                        let i = next_idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if i >= compile_jobs.len() {
+                            break;
+                        }
+                        let job = &compile_jobs[i];
+                        if let Err(e) =
+                            compute.compile(&job.cu_file, &job.out_file, &job.arch, &job.extra_flags)
+                        {
+                            errors_mutex.lock().unwrap().push(e);
+                        }
+                    }
+                });
+            }
+        });
+
+        let errors = errors_mutex.into_inner().unwrap();
+        if !errors.is_empty() {
+            panic!("Kernel compilation failed:\n{}", errors.join("\n"));
+        }
+    }
+
+    // ── Sequential copy for cache-hits (microseconds each, no point parallelising) ──
+    for (src, dst) in &copy_jobs {
+        std::fs::copy(src, dst).unwrap_or_else(|e| {
+            panic!(
+                "Failed to copy cached {} → {}: {e}",
+                src.display(),
+                dst.display(),
+            )
+        });
+    }
+
+    // Dedup+parallel summary.
+    if total > 0 {
+        println!(
+            "cargo:warning=atlas-kernels: dedup+parallel: {nvcc_invocations}/{total} unique nvcc \
+             invocations ({cache_hits} cache hits, {:.1}× dedup), {n_threads} parallel workers",
+            total as f64 / nvcc_invocations.max(1) as f64,
+        );
+    }
+
     // ── Generate target_ptx.rs ──
     let generated =
         generate_target_ptx_rs(&targets, &all_target_modules, output_ext, output_is_text);
@@ -256,7 +364,29 @@ fn main() {
     std::fs::write(&gen_path, &generated)
         .unwrap_or_else(|e| panic!("Failed to write {}: {e}", gen_path.display()));
 
+    // Force atlas-kernels lib recompilation whenever the generated kernel set
+    // changes. cargo does NOT track this build-script-generated `include!`d
+    // file as a recompile trigger, so without this the lib can embed a STALE
+    // module set (the 2026-06-04 98-vs-99 / dropped-pipelined-GEMM bug). The
+    // content hash is surfaced as a rustc-env that lib.rs references via env!;
+    // a changed hash invalidates the crate's fingerprint → fresh rebuild.
+    println!(
+        "cargo:rustc-env=ATLAS_KERNEL_SET_HASH={}",
+        content_hash(&generated)
+    );
     println!("cargo:rustc-env=ATLAS_PTX_DIR={}", out_dir.display());
+}
+
+/// FNV-1a 64-bit content fingerprint → 12 hex chars. Deterministic, no deps.
+/// Used to force atlas-kernels recompilation when the generated kernel set
+/// changes (cargo doesn't track build-script-generated `include!` files).
+fn content_hash(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in s.as_bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{:012x}", h & 0xffff_ffff_ffff)
 }
 
 /// Resolve all compilation targets from env vars, expanding wildcards.
@@ -290,17 +420,6 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
         .unwrap_or("nvidia")
         .to_string();
     println!("cargo:rerun-if-changed={}", hw_toml_path.display());
-
-    // Propagate hardware config flags to Rust code via compile-time env vars
-    if let Some(fp32_res) = hw_toml["hardware"]
-        .get("use_fp32_residual")
-        .and_then(|v| v.as_bool())
-    {
-        println!(
-            "cargo:rustc-env=ATLAS_HW_FP32_RESIDUAL={}",
-            if fp32_res { "true" } else { "false" }
-        );
-    }
 
     // Expand model wildcard (exclude the `common/` shared-kernel dir,
     // which has no MODEL.toml).
@@ -391,15 +510,20 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 behavior_disable_tool_steering: pb.disable_tool_steering,
                 behavior_tool_call_parser: pb.tool_call_parser,
                 behavior_enable_loop_watchdog: pb.enable_loop_watchdog,
-                behavior_skip_template_tools: pb.skip_template_tools,
+                behavior_min_p_floor: pb.min_p_floor,
+                behavior_temperature_max: pb.temperature_max,
                 behavior_think_loop_min_repeats: pb.think_loop_min_repeats,
                 behavior_think_loop_scan_window: pb.think_loop_scan_window,
                 behavior_confidence_early_stop: pb.confidence_early_stop,
                 behavior_confidence_run_length: pb.confidence_run_length,
                 behavior_fuzzy_repeat_tolerance_div: pb.fuzzy_repeat_tolerance_div,
                 behavior_max_inter_tool_prose: pb.max_inter_tool_prose,
+                behavior_max_post_think_content_tokens: pb.max_post_think_content_tokens,
                 behavior_tscg: pb.tscg,
                 behavior_disable_tool_grammar: pb.disable_tool_grammar,
+                behavior_rollback_resteer: pb.rollback_resteer,
+                behavior_rom_head: pb.rom_head,
+                behavior_tool_retry: pb.tool_retry,
                 model_type_matches,
                 dflash,
             });

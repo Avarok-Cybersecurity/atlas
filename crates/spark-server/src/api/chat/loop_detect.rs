@@ -10,8 +10,6 @@
 
 use crate::openai::ChatCompletionRequest;
 
-use super::msg_entry::MsgEntry;
-
 pub(super) struct LoopDetectOut {
     /// True when the verdict was Suppress OR spinning detection
     /// fired. Caller flips the `<tool_call>` token bias to avoid
@@ -22,10 +20,21 @@ pub(super) struct LoopDetectOut {
     pub(super) tool_call_repeat_count: usize,
 }
 
+/// BW1/SPINFIX relaxation (Iter 52, 2026-06-02): the loop detector hard-masks
+/// the `<tool_call>` token (Suppress verdict + spinning) after only ~3 similar
+/// turns. During legitimate agentic coding the agent repeats commands
+/// (`ls`/`cargo check`/`cargo run` while iterating), trips this at turns>=3,
+/// and gets its next tool call BLOCKED — forcing a content/`<response>`
+/// fast-fail. vLLM applies no such mask. With `ATLAS_LOOP_NO_SUPPRESS=1` the
+/// verdict is still detected, logged, and metered, but the `<tool_call>`
+/// hard-mask is NOT applied (the benign Hint path is unaffected). Default OFF
+/// ⇒ byte-identical to today; additive, model-agnostic.
+fn loop_suppress_disabled() -> bool {
+    std::env::var("ATLAS_LOOP_NO_SUPPRESS").as_deref() == Ok("1")
+}
+
 pub(super) fn check_loops(
     req: &ChatCompletionRequest,
-    messages: &mut [MsgEntry],
-    consecutive_tool_errors: u32,
     tools_active: bool,
 ) -> LoopDetectOut {
     let mut suppress_tool_call = false;
@@ -68,7 +77,22 @@ pub(super) fn check_loops(
         let tool_args_len: usize = m.tool_calls.as_ref().map_or(0, |tcs| {
             tcs.iter().map(|tc| tc.function.arguments.len()).sum()
         });
-        let is_substantial = m.content.text.len() >= 500 || tool_args_len >= 100;
+        // A turn that issued ANY tool call is taking an action (progress) — it
+        // is NOT spinning, even when the args are short. In an agentic coding
+        // loop the verify cycle (`bash cargo build`, `bash cargo run`,
+        // `bash curl`, `read`, small `edit`) is a run of legitimately
+        // short-arg tool calls; counting those as "short" tripped the
+        // recent_short>=5 spinning suppressor and hard-masked the NEXT
+        // tool_call, killing the build→error→fix→rebuild loop after ~5 turns
+        // (Atlas capped at ~4-5 turns vs vLLM's 12-17 on the same task).
+        // Genuine repeated-tool-call loops are caught separately by
+        // `loop_detector::detect` (the Suppress verdict above); spinning here
+        // should only fire on consecutive short PURE-TEXT turns (no action).
+        let made_tool_call = m
+            .tool_calls
+            .as_ref()
+            .is_some_and(|tcs| !tcs.is_empty());
+        let is_substantial = made_tool_call || m.content.text.len() >= 500 || tool_args_len >= 100;
         if is_substantial {
             break;
         }
@@ -91,7 +115,7 @@ pub(super) fn check_loops(
                 channel = channel.name(),
                 "Loop detector → SUPPRESS: hard-mask <tool_call> for one turn"
             );
-            suppress_tool_call = true;
+            suppress_tool_call = !loop_suppress_disabled();
             tool_call_repeat_count = *run_length;
             crate::metrics::LOOP_DETECTOR_VERDICTS
                 .with_label_values(&["suppress", channel.name(), if spinning { "1" } else { "0" }])
@@ -124,61 +148,7 @@ pub(super) fn check_loops(
             recent_short,
             "Spinning detection fired — suppressing <tool_call>"
         );
-        suppress_tool_call = true;
-    }
-
-    // Single hint, used for both Suppress and Hint verdicts.
-    let loop_active = !matches!(verdict, crate::loop_detector::LoopState::None);
-    let inject_hint = loop_active || spinning;
-    if inject_hint {
-        let hint = "\n\n<IMPORTANT>\nYour recent turns have produced \
-                    output very similar to earlier turns. Before \
-                    continuing: (1) inspect the CURRENT state with \
-                    read-only tools so you can see what is already \
-                    done; (2) if the user's request is already \
-                    satisfied, summarise and stop; (3) otherwise \
-                    identify the SPECIFIC remaining gap and address \
-                    only that — do not retry the same approach or \
-                    regenerate work that already exists.\n</IMPORTANT>";
-        if let Some(last) = messages.last_mut() {
-            last.content.push_str(hint);
-        }
-    }
-
-    // Goal re-anchor (P1.3 + #4 per-turn spread).
-    if crate::task_pin::should_inject(loop_active || spinning, consecutive_tool_errors)
-        && let Some(goal) = crate::task_pin::extract_original_goal(&req.messages, |m| {
-            (m.role.as_str(), m.content.text.as_str())
-        })
-    {
-        let n_failures = consecutive_tool_errors as usize + tool_call_repeat_count;
-        let reminder = crate::task_pin::build_reminder(goal, n_failures.max(1));
-        // Find indices of the last two tool/user messages.
-        let mut anchor_idxs: Vec<usize> = Vec::with_capacity(2);
-        for (i, m) in messages.iter().enumerate().rev() {
-            if m.role == "tool" || m.role == "user" {
-                anchor_idxs.push(i);
-                if anchor_idxs.len() >= 2 {
-                    break;
-                }
-            }
-        }
-        let anchored_count = anchor_idxs.len();
-        for idx in anchor_idxs {
-            messages[idx].content.push_str(&reminder);
-        }
-        // Fallback: still anchor on the last message.
-        if anchored_count == 0
-            && let Some(last) = messages.last_mut()
-        {
-            last.content.push_str(&reminder);
-        }
-        tracing::info!(
-            n_failures,
-            anchored_count = anchored_count.max(1),
-            "task_pin: injected verbatim-goal reminder"
-        );
-        crate::metrics::TASK_PIN_INJECTIONS.inc();
+        suppress_tool_call = !loop_suppress_disabled();
     }
 
     LoopDetectOut {

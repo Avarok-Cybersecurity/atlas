@@ -11,33 +11,51 @@ model_type = "mistral"
 
 # Mistral uses [INST] format, not ChatML.
 # No official sampling recommendations yet.
+# 2026-05-24 empirical band-aid. Mistral docs only call out temp=0.7;
+# kept that for thinking/non_thinking, lowered tools to 0.6 (agentic
+# coding pattern). Added rep_pen=1.1 + dry=0.5 (Mistral historically
+# recommends NO rep penalty but Atlas-team empirical testing on the
+# Qwen3.6 sibling shows light penalty + DRY breaks agentic loops
+# cleanly without hurting quality).
 [sampling.thinking_text]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; Mistral ships penalty-free — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [sampling.thinking_coding]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; Mistral ships penalty-free — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [sampling.non_thinking]
 temperature = 0.7
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; Mistral ships penalty-free — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [sampling.tools]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; Mistral ships penalty-free — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [behavior]
 thinking_in_tools = true
-max_thinking_budget = 256
+# 2026-05-23 sweep: 256 → 2048. Mistral Small 4 is a thinking-first
+# model — the old 256 cap was force-injecting </think> well before the
+# reasoning chain completed.
+max_thinking_budget = 2048
 # Mistral Small 4 is a thinking-first model — the HF jinja template sets
 # `reasoning_effort: high` by default and the model was trained to reason
 # before answering. Honor that intent when the client sends no reasoning

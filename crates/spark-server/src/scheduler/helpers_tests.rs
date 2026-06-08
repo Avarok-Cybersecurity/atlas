@@ -51,11 +51,16 @@ fn detects_short_period_fence_loop() {
 }
 
 #[test]
-fn detects_fence_body_with_varying_prefixes() {
-    // The real attractor: fence body (tokens 100..110) is stable
-    // but connective prefixes (Running vs Executing) differ
-    // between iterations. A strict contiguous-period detector
-    // misses this; the substring-repeat detector must catch it.
+fn rejects_fence_body_with_varying_prefixes() {
+    // 2026-05-24: this case was previously detected by Atlas's
+    // scan-anywhere substring-repeat detector. After the switch to
+    // vLLM's end-anchored algorithm, the detector intentionally
+    // does NOT fire here — the varying connective prefixes mean
+    // no fixed period repeats at the buffer's END. This case is
+    // now caught one layer up by the rollback-to-boundary +
+    // re-steer machinery once a tighter end-anchored period
+    // forms after the boundary rewind. Keeping the test as a
+    // negative assertion to pin the contract.
     let fence: Vec<u32> = vec![100, 101, 102, 103, 104, 105, 106, 107, 108, 109];
     let prefixes: [&[u32]; 4] = [
         &[200, 201],      // "Running:"
@@ -69,8 +74,8 @@ fn detects_fence_body_with_varying_prefixes() {
         tokens.extend(fence.iter());
     }
     assert!(
-        detect_thinking_token_loop(&tokens),
-        "stable fence body across varying prefixes must be detected"
+        !detect_thinking_token_loop(&tokens),
+        "end-anchored detector intentionally does not fire on varying-prefix patterns"
     );
 }
 
@@ -97,12 +102,23 @@ fn content_loop_detects_sentence_triple_repeat() {
 fn content_loop_rejects_short_responses() {
     // Below CONTENT_LOOP_MIN_TOKENS — must not fire even on a
     // visible repeat. The watchdog should give short responses
-    // breathing room.
+    // breathing room. Constants threshold-tracked via the named
+    // constant so the test stays valid across the 2026-05-23
+    // sweep (MIN_TOKENS 96→48).
     let pat: Vec<u32> = (1..=10).collect();
-    let mut tokens: Vec<u32> = (50..80).collect();
+    // Build a response of (MIN_TOKENS - 4) total so we're below
+    // the floor even after 3× repeats.
+    let prior_len = (CONTENT_LOOP_MIN_TOKENS as usize).saturating_sub(3 * pat.len() + 4);
+    let mut tokens: Vec<u32> = (50u32..50 + prior_len as u32).collect();
     tokens.extend(pat.iter());
     tokens.extend(pat.iter());
     tokens.extend(pat.iter());
+    assert!(
+        tokens.len() < CONTENT_LOOP_MIN_TOKENS as usize,
+        "test setup error: tokens.len()={} exceeds MIN_TOKENS={}",
+        tokens.len(),
+        CONTENT_LOOP_MIN_TOKENS,
+    );
     assert!(
         !detect_content_token_loop(&tokens),
         "responses under {} tokens must not trigger watchdog",
@@ -121,124 +137,62 @@ fn content_loop_rejects_legitimate_prose() {
 }
 
 #[test]
-fn content_loop_rejects_two_repeats() {
-    // Two copies of a 30-token block with prior context — common
-    // in legitimate "the user said X. The user said X again."
-    // exposition. Should NOT fire (need 3+ repeats).
+fn content_loop_accepts_three_repeats() {
+    // 2026-05-24 sweep #2: CONTENT_LOOP_MIN_REPEATS bumped 2 → 3 to
+    // match vLLM's `RepetitionDetectionParams.min_count` default.
+    // The 2-repeat firing was too aggressive — fired on legitimate
+    // JSON tool-body period-2 punctuation (`","`/`":"`) and ended
+    // responses mid-emission (opencode-phaseAB.jsonl 2026-05-24
+    // 18:13:18: watchdog matched period=2 repeats=2 at
+    // content_tokens=48, prematurely ending a bash tool call).
+    // Three byte-exact repeats of a 30-token block remain a
+    // genuine sentence-attractor and MUST trigger.
     let sentence: Vec<u32> = (500..530).collect();
     let mut tokens: Vec<u32> = (0..100).collect();
-    tokens.extend(sentence.iter());
+    tokens.extend(sentence.iter()); // r1
+    tokens.extend(sentence.iter()); // r2
+    tokens.extend(sentence.iter()); // r3
+    assert!(
+        detect_content_token_loop(&tokens),
+        "three byte-exact 30-token repeats must trigger watchdog at MIN_REPEATS={}",
+        CONTENT_LOOP_MIN_REPEATS,
+    );
+}
+
+#[test]
+fn content_loop_rejects_two_repeats() {
+    // Companion to `accepts_three_repeats`: at the new MIN_REPEATS=3
+    // default, two byte-exact copies are NOT enough evidence — a
+    // legitimate "I said X. I said X again." pattern (or JSON
+    // structural punctuation tokens repeating once) is below the
+    // firing bar. The fuzzy / DRY / LZ samplers cover that band.
+    let sentence: Vec<u32> = (500..530).collect();
+    let mut tokens: Vec<u32> = (0..100).collect();
+    tokens.extend(sentence.iter()); // r1
     tokens.extend(sentence.iter()); // r2 only
     assert!(
         !detect_content_token_loop(&tokens),
-        "two repeats in content must not trigger (need 3)"
+        "two byte-exact 30-token repeats must NOT trigger at MIN_REPEATS={}",
+        CONTENT_LOOP_MIN_REPEATS,
     );
 }
 
-// ── Code-fence guard for the F2 confidence early-stop ──────────────
-// Regression coverage for the 2026-05-17 thinkbrake bug: the model
-// drafting a ```python block inside <think> produced 30+ consecutive
-// ≥0.95 tokens, tripping F2 and force-injecting </think> mid-line.
-
-const FENCE: u32 = 71093; // Qwen3.x atomic ``` token
-
 #[test]
-fn fence_toggles_on_fence_token() {
+fn content_loop_rejects_single_occurrence() {
+    // Single occurrence of any pattern (no repeats) must NOT
+    // trigger. Replaces the prior `two_repeats` rejection test
+    // which was invalidated when MIN_REPEATS was lowered to 2.
+    let sentence: Vec<u32> = (500..530).collect();
+    let mut tokens: Vec<u32> = (0..100).collect();
+    tokens.extend(sentence.iter()); // 1 occurrence — must not trigger
     assert!(
-        toggle_code_fence(false, FENCE, Some(FENCE)),
-        "``` opens fence"
-    );
-    assert!(
-        !toggle_code_fence(true, FENCE, Some(FENCE)),
-        "``` closes fence"
+        !detect_content_token_loop(&tokens),
+        "single occurrence (no repeat) must not trigger watchdog"
     );
 }
 
-#[test]
-fn fence_unchanged_by_non_fence_token() {
-    assert!(!toggle_code_fence(false, 42, Some(FENCE)));
-    assert!(toggle_code_fence(true, 42, Some(FENCE)));
-}
-
-#[test]
-fn fence_guard_disabled_when_no_fence_token() {
-    // Tokenizer split ``` → guard inert, never enters a fence.
-    assert!(!toggle_code_fence(false, FENCE, None));
-}
-
-#[test]
-fn f2_arms_after_30_confident_tokens() {
-    // Pure accumulator: 30 consecutive confident tokens arm the brake.
-    let mut run = 0;
-    let mut fired = false;
-    for _ in 0..CONFIDENCE_RUN_LIMIT {
-        let (next, fire) = confidence_run_step(true, run);
-        run = next;
-        fired |= fire;
-    }
-    assert_eq!(run, CONFIDENCE_RUN_LIMIT);
-    assert!(fired, "30 consecutive confident tokens must arm F2");
-}
-
-#[test]
-fn f2_run_breaks_on_non_confident_token() {
-    let (run, fire) = confidence_run_step(false, 25);
-    assert_eq!(run, 0);
-    assert!(!fire);
-}
-
-#[test]
-fn f2_accumulates_inside_code_too() {
-    // Detection runs everywhere — code is finite and must still be
-    // brakeable. (Mid-statement safety is the *injection* gate's job,
-    // see `defer_*` tests below — NOT suppression of detection.)
-    let (run, fire) = confidence_run_step(true, 29);
-    assert_eq!(run, 30);
-    assert!(
-        fire,
-        "F2 arms even inside a fence; injection is what defers"
-    );
-}
-
-// ── should_inject_think_end: the safe-boundary defer gate ─────────
-// This is the core of the 2026-05-17 fix: the forced </think> may be
-// armed mid-code-block, but it must not be *injected* there.
-
-#[test]
-fn defer_injection_while_in_code_fence() {
-    assert!(
-        !should_inject_think_end(true, true, false),
-        "armed brake must NOT inject </think> mid-code-fence (would split a statement)"
-    );
-}
-
-#[test]
-fn inject_once_fence_closes() {
-    assert!(
-        should_inject_think_end(true, false, false),
-        "armed brake fires cleanly once the ``` fence has closed"
-    );
-}
-
-#[test]
-fn hard_override_breaks_unbounded_in_fence_defer() {
-    // The 2026-05-17 chess regression: model writes its whole
-    // answer as a ```block inside <think>, fence never closes,
-    // budget brake deferred forever. hard_override must force the
-    // injection even mid-fence.
-    assert!(
-        should_inject_think_end(true, true, true),
-        "armed + in-fence + budget massively overrun must HARD-inject </think>"
-    );
-    // Not armed → still nothing, even with override.
-    assert!(!should_inject_think_end(false, true, true));
-}
-
-#[test]
-fn no_injection_when_not_armed() {
-    assert!(!should_inject_think_end(false, false, false));
-    assert!(!should_inject_think_end(false, true, false));
-}
+// F2 confidence-run + code-fence tests moved to `confidence_tests.rs`
+// alongside the helpers themselves (`confidence.rs`).
 
 // ── Digit-normalized content-loop watchdog ───────────────────────
 // Regression for the 2026-05-17 Qwen3.6-27B greedy degeneration:
@@ -370,4 +324,113 @@ fn norm_inert_with_empty_mask() {
         !detect_content_token_loop_normalized(&t, &[]),
         "empty mask must make the normalized path inert (fail-open)"
     );
+}
+
+// ── Per-request RepetitionDetectionParams override tests ─────────────
+
+#[test]
+fn override_loosens_content_loop_threshold() {
+    // Three contiguous copies of a 22-token sentence — passes the
+    // boot-default `CONTENT_LOOP_MIN_REPEATS=3` so the default
+    // detector fires. With a stricter `min_count=4` override, the
+    // detector must NOT fire on the same input. This proves the
+    // override actually wins over the boot default.
+    let sentence: Vec<u32> = (1000..1022).collect();
+    let mut tokens: Vec<u32> = (0..100).collect(); // prior content
+    tokens.extend(sentence.iter()); // r1
+    tokens.extend(sentence.iter()); // r2
+    tokens.extend(sentence.iter()); // r3
+
+    // Default path: 3 repeats at period 22, MIN_REPEATS=3 ⇒ fires.
+    assert!(
+        detect_content_token_loop_with(&tokens, None),
+        "default thresholds must still fire on 22-token × 3 repeat"
+    );
+
+    // Override path: min_count=4 ⇒ 3 repeats are insufficient.
+    let strict = crate::openai::RepetitionDetectionParams {
+        min_pattern_size: 2,
+        max_pattern_size: 64,
+        min_count: 4,
+    };
+    assert!(
+        !detect_content_token_loop_with(&tokens, Some(strict)),
+        "stricter min_count=4 override must suppress 3-repeat firing"
+    );
+}
+
+#[test]
+fn override_tightens_content_loop_threshold() {
+    // Five contiguous copies of a 5-token block. Below the boot-default
+    // CONTENT_LOOP_MIN_TOKENS the detector won't even consider firing,
+    // so pad with prior content first. With period_min=5 .. period_max=5
+    // + min_count=3 the override fires on (5 × 5 = 25) end-anchored
+    // tokens — covered by the 5-repeat tail.
+    let pat: Vec<u32> = vec![42, 43, 44, 45, 46];
+    let mut tokens: Vec<u32> = (0u32..50).collect();
+    for _ in 0..5 {
+        tokens.extend(pat.iter());
+    }
+    let permissive = crate::openai::RepetitionDetectionParams {
+        min_pattern_size: 5,
+        max_pattern_size: 5,
+        min_count: 3,
+    };
+    assert!(
+        detect_content_token_loop_with(&tokens, Some(permissive)),
+        "override (period=5, min_count=3) must catch 5×period-5 tail"
+    );
+}
+
+#[test]
+fn override_applies_to_thinking_loop() {
+    // 4× period-10 fence loop — fires under boot default
+    // THINK_LOOP_MIN_REPEATS=3.
+    let pat: Vec<u32> = vec![7, 6, 5, 4, 3, 2, 1, 0, 9, 8];
+    let mut tokens: Vec<u32> = (100u32..150).collect();
+    for _ in 0..4 {
+        tokens.extend(pat.iter());
+    }
+    assert!(
+        detect_thinking_token_loop_with(&tokens, None),
+        "default thinking-loop thresholds must still fire on 4× period-10"
+    );
+    // Override demanding 6 repeats ⇒ 4 is insufficient ⇒ must not fire.
+    let strict = crate::openai::RepetitionDetectionParams {
+        min_pattern_size: 4,
+        max_pattern_size: 20,
+        min_count: 6,
+    };
+    assert!(
+        !detect_thinking_token_loop_with(&tokens, Some(strict)),
+        "stricter min_count=6 override must suppress 4-repeat firing"
+    );
+}
+
+// ── Forced-token fast-path kill-switch parsing ──────────────────────────────
+
+#[test]
+fn forced_token_fastpath_default_enabled() {
+    // Env unset → fast-path on (the default; output is bit-identical to
+    // the sampled path so there is no reason to ship it off).
+    assert!(parse_forced_token_fastpath(None));
+}
+
+#[test]
+fn forced_token_fastpath_disabled_by_truthy() {
+    // Explicit truthy values disable the fast-path (the kill-switch).
+    assert!(!parse_forced_token_fastpath(Some("1")));
+    assert!(!parse_forced_token_fastpath(Some("true")));
+    assert!(!parse_forced_token_fastpath(Some("TRUE")));
+    assert!(!parse_forced_token_fastpath(Some("  true  ")));
+}
+
+#[test]
+fn forced_token_fastpath_enabled_by_falsy_or_junk() {
+    // Anything that is not an explicit truthy value keeps it enabled —
+    // `0`, `false`, empty, and junk all mean "do not disable".
+    assert!(parse_forced_token_fastpath(Some("0")));
+    assert!(parse_forced_token_fastpath(Some("false")));
+    assert!(parse_forced_token_fastpath(Some("")));
+    assert!(parse_forced_token_fastpath(Some("yes")));
 }

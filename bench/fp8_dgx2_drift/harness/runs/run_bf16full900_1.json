@@ -1,0 +1,82 @@
+{
+  "tier": "bf16full900",
+  "run": 1,
+  "wall_time_s": 294.39314460754395,
+  "opencode": {
+    "events_total": 34,
+    "stderr_bytes": 0
+  },
+  "filesystem": {
+    "files_written": [
+      ".gitignore",
+      "Cargo.lock",
+      "Cargo.toml",
+      "src/main.rs",
+      "target/.rustc_info.json",
+      "target/CACHEDIR.TAG",
+      "target/release/.cargo-artifact-lock",
+      "target/release/.cargo-build-lock",
+      "target/release/.cargo-lock",
+      "target/release/.fingerprint/atlas-harness-e83b68f19572014e/bin-atlas-harness",
+      "target/release/.fingerprint/atlas-harness-e83b68f19572014e/bin-atlas-harness.json",
+      "target/release/.fingerprint/atlas-harness-e83b68f19572014e/dep-bin-atlas-harness",
+      "target/release/.fingerprint/atlas-harness-e83b68f19572014e/invoked.timestamp",
+      "target/release/atlas-harness",
+      "target/release/atlas-harness.d",
+      "target/release/deps/atlas_harness-e83b68f19572014e",
+      "target/release/deps/atlas_harness-e83b68f19572014e.d"
+    ],
+    "files_count": 17
+  },
+  "cargo": {
+    "cargo_toml_present": true,
+    "cargo_toml_valid": true,
+    "cargo_toml_error": "",
+    "cargo_toml_has_package_name": true
+  },
+  "webserver": {
+    "webserver_ok": false,
+    "build_ok": true,
+    "build_error": "",
+    "bind_ok": false,
+    "ping_ok": false,
+    "ping_response": "timeout: curl: (7) Failed to connect to 127.0.0.1 port 3001 after 0 ms: Couldn't connect to server\n"
+  },
+  "tool_calls": {
+    "total": 8,
+    "by_tool": {
+      "bash": 3,
+      "write": 4,
+      "glob": 1
+    },
+    "tool_calls_per_turn": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "turns_observed": 8
+  },
+  "drift": {
+    "write_calls": 4,
+    "write_empty_path": 0,
+    "write_path_drift_from_target": 0,
+    "write_path_has_literal_space": 0,
+    "write_content_starts_with_lean": 0,
+    "write_content_is_bash_command": 0,
+    "write_content_xml_attr_leak": 0,
+    "write_content_newlines_collapsed_toml": 0
+  },
+  "atlas": {
+    "ws1_mask_active_fires": 2,
+    "b1_drift_gauge_fires": 0,
+    "tier_5c_retries": 0,
+    "a2_fuzzy_repair_fires": 0,
+    "doom_loop_trips": 0,
+    "tool_call_lines": 8
+  }
+}

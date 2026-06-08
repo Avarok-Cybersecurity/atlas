@@ -1,0 +1,74 @@
+{
+  "tier": "bw1_sel",
+  "run": 10,
+  "wall_time_s": 360.0757043361664,
+  "opencode": {
+    "events_total": 50,
+    "stderr_bytes": 0
+  },
+  "filesystem": {
+    "files_written": [
+      ".gitignore",
+      "Cargo.toml",
+      "src/main.rs"
+    ],
+    "files_count": 3
+  },
+  "cargo": {
+    "cargo_toml_present": true,
+    "cargo_toml_valid": true,
+    "cargo_toml_error": "",
+    "cargo_toml_has_package_name": false
+  },
+  "webserver": {
+    "webserver_ok": false,
+    "build_ok": false,
+    "build_error": "error: failed to parse manifest at `/tmp/harness-bw1_sel-r10/Cargo.toml`\n\nCaused by:\n  this virtual manifest specifies a `dependencies` section, which is not allowed\n",
+    "bind_ok": false,
+    "ping_ok": false,
+    "ping_response": ""
+  },
+  "tool_calls": {
+    "total": 13,
+    "by_tool": {
+      "bash": 6,
+      "write": 3,
+      "skill": 1,
+      "read": 2,
+      "glob": 1
+    },
+    "tool_calls_per_turn": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      2,
+      1
+    ],
+    "turns_observed": 12
+  },
+  "drift": {
+    "write_calls": 3,
+    "write_empty_path": 0,
+    "write_path_drift_from_target": 0,
+    "write_path_has_literal_space": 0,
+    "write_content_starts_with_lean": 0,
+    "write_content_is_bash_command": 0,
+    "write_content_xml_attr_leak": 0,
+    "write_content_newlines_collapsed_toml": 0
+  },
+  "atlas": {
+    "ws1_mask_active_fires": 3,
+    "b1_drift_gauge_fires": 0,
+    "tier_5c_retries": 0,
+    "a2_fuzzy_repair_fires": 0,
+    "doom_loop_trips": 0,
+    "tool_call_lines": 11
+  }
+}

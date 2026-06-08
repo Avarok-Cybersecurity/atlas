@@ -42,15 +42,22 @@ vision = true
 # calling despite 256K positional budget.
 effective_context = 24576
 
-# Recommended sampling defaults per category (from Qwen3.5 model card).
-# Used when the client doesn't send explicit values.
-# Categories: thinking_text, thinking_coding, non_thinking, tools
+# Recommended sampling defaults per category.
+#
+# 2026-05-24 EMPIRICAL REVERT: same lesson as Qwen3.6-35B-A3B —
+# Qwen card's pres=1.5 / temp=1.0 caused max_tokens-overrun wandering
+# and tool-call regressions on agentic clients. Reverted to the
+# band-aid pattern that produced a clean opencode session. The
+# elaborate `[sampling.tools]` LZ+DRY stack below was already
+# well-tuned by Atlas team prior — kept verbatim.
 [sampling.thinking_text]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0 — matches this file's own L100 principle + qwen3.6-35b campaign
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0 — campaign temp=0 finding (DRY+rep_pen mangled output)
 
 [sampling.thinking_coding]
 temperature = 0.6
@@ -58,6 +65,8 @@ top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0 — matches this file's own L100 principle + qwen3.6-35b campaign
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0 — campaign temp=0 finding (DRY+rep_pen mangled output)
 
 [sampling.non_thinking]
 temperature = 0.7
@@ -65,6 +74,8 @@ top_p = 0.8
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0 — matches this file's own L100 principle + qwen3.6-35b campaign
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0 — campaign temp=0 finding (DRY+rep_pen mangled output)
 
 # Tool-calling preset. Sourced from the Qwen/Qwen3.5-35B-A3B HF model
 # card. (temperature, top_p, top_k) track the Thinking/Coding row
@@ -133,19 +144,19 @@ dry_allowed_length = 4
 enable_loop_watchdog = false
 # Thinking on by default for all Qwen reasoning-tier models (sweep 2026-05-20).
 thinking_default = true
-# Disable thinking when tools are active. Qwen3.5 suffers from "Think-Satisfy":
-# model reasons about tool calls in <think>, convinces itself the task is done,
-# then narrates instead of calling tools.
-thinking_in_tools = false
-# Maximum thinking budget (tokens). Prevents overthinking.
-# Client-specified budget takes precedence if lower.
-# F54 (2026-04-27): lowered 512 → 256. opencode-fix36 showed
-# the model thinking 201.2s on a single turn → BPE state
-# corruption (`version="021"` instead of `"0.1.0"`) and raw
-# `<tool_call>` XML reaching content channel after the budget-
-# forced `</think>`. Halving the budget halves the time the
-# model spends in the corruption-prone state.
-max_thinking_budget = 256
+# 2026-05-23 sweep: false → true. Project-wide default flipped after F1
+# reflection-penalty removal (the documented cause of the Qwen3.6-35B
+# <tool_call>-inside-<think> attractor that motivated the original
+# "Think-Satisfy" disablement). Qwen3.5-35B-A3B shares the same family
+# distribution so the fix likely transfers; revert here per-model if
+# Think-Satisfy re-emerges in practice.
+thinking_in_tools = true
+# 2026-05-23 sweep: 256 → 2048. F54 lowered to 256 to avoid the long-
+# thinking BPE state corruption observed in opencode-fix36; that
+# corruption was traced to the same XML-leak path F1 was masking, now
+# fixed by the F1 deletion in Qwen3.6 work. Raise back to the project-
+# wide reasoning headroom default.
+max_thinking_budget = 2048
 # Default num_drafts for speculative decoding (K = num_drafts + 1).
 # Benchmarked 2026-04-10 on GB10: K=2 (1 draft) yields 117.8 tok/s vs
 # K=3 (2 drafts) at 82.4 tok/s — 43% faster. The MoE verify overhead

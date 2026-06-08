@@ -247,7 +247,7 @@ fn test_qwen3_grammar_empty_properties() {
         },
     }];
     // Must not crash.
-    let _result = engine.compile_qwen3_coder_tool_grammar(&tools, false);
+    let _result = engine.compile_qwen3_coder_tool_grammar(&tools, false, "</parameter>");
 }
 
 #[test]

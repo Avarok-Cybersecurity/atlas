@@ -130,6 +130,10 @@ pub struct Qwen3AttentionLayer {
     pub(super) v_fp8w_t: Option<crate::weight_map::Fp8WeightTransposed>,
     pub(super) o_fp8w_t: Option<crate::weight_map::Fp8WeightTransposed>,
     pub(super) w8a16_gemm_t_k: KernelHandle,
+    pub(super) w8a16_gemm_t_pipelined_k: KernelHandle,
+    // W8A8 + FP32 epilogue (vLLM-equivalent) — gated by ATLAS_FP8_W8A8=1.
+    pub(super) per_token_group_quant_fp8_k: KernelHandle,
+    pub(super) fp8_gemm_t_blockscaled_k: KernelHandle,
     // Kernels — decode (GEMV M=1)
     pub(super) rms_norm_k: KernelHandle,
     pub(super) rms_norm_residual_k: KernelHandle,
@@ -139,6 +143,7 @@ pub struct Qwen3AttentionLayer {
     pub(super) w4a16_gemv_k: KernelHandle,
     pub(super) w8a16_gemv_k: KernelHandle,
     pub(super) w8a16_gemm_k: KernelHandle,
+    pub(super) w8a16_gemm_pipelined_k: KernelHandle,
     pub(super) w4a16_gemv_dual_k: KernelHandle,
     pub(super) rope_k: KernelHandle,
     /// MRoPE-interleaved kernel.
@@ -148,6 +153,17 @@ pub struct Qwen3AttentionLayer {
     /// Proportional RoPE kernel (Gemma-4 full-attention layers).
     pub(super) rope_proportional_k: KernelHandle,
     pub(super) reshape_cache_k: KernelHandle,
+    /// Fused k_norm + RoPE + paged BF16 cache write — eliminates two
+    /// intermediate BF16 rounding steps that cause the documented L35-L39
+    /// cliff in chunked-prefill BF16 KV mode (memory:
+    /// `project_qwen36_phase2b_softmax_expf.md`).
+    pub(super) fused_k_norm_rope_cache_write_bf16_k: KernelHandle,
+    /// MRoPE-interleaved variant of the above. Same precision regime.
+    /// Dispatched when `mrope_interleaved` is true.
+    pub(super) fused_k_norm_rope_mrope_cache_write_bf16_k: KernelHandle,
+    /// V-only paged cache write. Used alongside the fused K-path so the
+    /// K side of the cache stays single-rounded.
+    pub(super) reshape_and_cache_flash_v_only_k: KernelHandle,
     /// WHT kernel for turbo KV cache.
     pub(super) wht_bf16_k: KernelHandle,
     pub(super) paged_decode_k: KernelHandle,

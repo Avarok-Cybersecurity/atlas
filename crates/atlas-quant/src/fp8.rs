@@ -78,10 +78,38 @@ pub fn fp8_e4m3_to_f32(bits: u8) -> f32 {
     FP8_E4M3_LUT[bits as usize]
 }
 
-/// Convert f32 to BF16 (truncation, no rounding).
+/// Convert f32 to BF16 with IEEE-754 round-to-nearest-even.
+///
+/// SSOT for the FP32 -> BF16 rounding used by all FP8 dequant paths
+/// (`dequant_fp8_pertensor_to_bf16`, `dequant_fp8_block_to_bf16`, and
+/// transitively `quant_helpers::dequant_fp8_blockscaled_to_bf16`). The
+/// CUDA-side mirror is `__float2bfloat16_rn` in
+/// `kernels/gb10/common/moe_fp8_grouped_gemm.cu`.
+///
+/// Phase 2b (Atlas FP8 dequant audit, 2026-05-24): replaced truncation
+/// `(bits >> 16) as u16` with proper ties-to-even rounding. The
+/// truncation bias accumulated to ~3% per-layer cosine loss over the
+/// 31k+ block-scaled tensors in Qwen3.6-35B-FP8 (Phase 2a measurement
+/// C mean = 0.969); RNE matches PyTorch's `float32 -> bfloat16` cast
+/// byte-exact.
+///
+/// NaN is mapped to the canonical quiet-NaN bit pattern preserving the
+/// sign, matching PyTorch's `torch.float32 -> torch.bfloat16` behavior
+/// (Phase 2a's dequanted reference snapshot was produced this way).
 #[inline(always)]
 fn f32_to_bf16(val: f32) -> u16 {
-    (val.to_bits() >> 16) as u16
+    // Phase 2c day-2 bisect: ATLAS_DISABLE_RNE=1 reverts to truncation.
+    if std::env::var("ATLAS_DISABLE_RNE").is_ok() {
+        return (val.to_bits() >> 16) as u16;
+    }
+    let bits = val.to_bits();
+    if val.is_nan() {
+        let sign = ((bits >> 16) & 0x8000) as u16;
+        return sign | 0x7FC0;
+    }
+    let lsb = (bits >> 16) & 1;
+    let rounding_bias = 0x7FFFu32 + lsb;
+    (bits.wrapping_add(rounding_bias) >> 16) as u16
 }
 
 /// Convert BF16 bytes (little-endian) to f32.
@@ -428,6 +456,83 @@ mod tests {
             assert!(
                 (val - 0.5).abs() < 0.01,
                 "element {i}: expected 0.5, got {val}"
+            );
+        }
+    }
+
+    /// Phase 2b RNE byte-exact regression: cases that distinguish
+    /// round-to-nearest-even from truncation-toward-zero.
+    /// Truncation would FAIL all "round up" assertions below.
+    #[test]
+    fn test_f32_to_bf16_rne_byte_exact() {
+        // Helper: invoke the private converter via the public dequant path
+        // with scale=1.0; same arithmetic, byte-identical output.
+        fn convert(bits: u32) -> u16 {
+            super::f32_to_bf16(f32::from_bits(bits))
+        }
+
+        // (1) Below half-ULP: round DOWN. Truncation also rounds down.
+        assert_eq!(convert(0x3F80_0800), 0x3F80, "1.0 + below-half-ULP -> 1.0");
+        // (2) Exactly half-ULP, LSB=0: tie -> round to EVEN (down).
+        //     Both truncation and RNE produce 0x3F80; doesn't distinguish.
+        assert_eq!(convert(0x3F80_8000), 0x3F80, "1.0 + exact-half-ULP, LSB=0 -> 1.0 (even)");
+        // (3) Above half-ULP: round UP. Truncation would FAIL (gives 0x3F80).
+        assert_eq!(
+            convert(0x3F80_8001),
+            0x3F81,
+            "1.0 + above-half-ULP -> next bf16 (truncation would give 0x3F80)"
+        );
+        // (4) Exactly half-ULP, LSB=1: tie -> round to EVEN (up).
+        //     Truncation would FAIL (gives 0x3F81, RNE gives 0x3F82).
+        assert_eq!(
+            convert(0x3F81_8000),
+            0x3F82,
+            "1.0078125 + exact-half-ULP, LSB=1 -> 1.015625 (truncation would give 0x3F81)"
+        );
+        // (5) Negative parity: -1.0 + (-above-half-ULP) -> bigger magnitude.
+        assert_eq!(convert(0xBF80_8001), 0xBF81, "negative round up");
+        // (6) Zero: exact, no rounding.
+        assert_eq!(convert(0x0000_0000), 0x0000, "+0.0");
+        assert_eq!(convert(0x8000_0000), 0x8000, "-0.0");
+        // (7) Smallest subnormal f32 (2^-149) -> nearest bf16 = 0 (LSB=0 tie).
+        assert_eq!(convert(0x0000_0001), 0x0000, "tiny subnormal -> 0");
+        // (8) f32 +inf preserves +inf.
+        assert_eq!(convert(0x7F80_0000), 0x7F80, "+inf");
+        assert_eq!(convert(0xFF80_0000), 0xFF80, "-inf");
+        // (9) Max-finite f32 rounds UP to +inf bf16 (closest representable).
+        //     PyTorch does the same.
+        assert_eq!(convert(0x7F7F_FFFF), 0x7F80, "max-finite f32 rounds to +inf bf16");
+        // (10) NaN -> canonical quiet NaN, sign preserved.
+        assert_eq!(convert(0x7FC0_0000), 0x7FC0, "qnan +");
+        assert_eq!(convert(0xFFC0_0000), 0xFFC0, "qnan -");
+        assert_eq!(convert(0x7F80_0001), 0x7FC0, "snan + -> qnan +");
+    }
+
+    /// Phase 2b: byte-exact match against the canonical reference values
+    /// PyTorch's `torch.float32 -> torch.bfloat16` cast produces. The
+    /// (f32_bits, bf16_bits) pairs below were captured directly from
+    /// PyTorch 2.9 via `torch.tensor([x], dtype=torch.float32).bfloat16()`.
+    /// If this test fails after a math change, the converter has drifted
+    /// from PyTorch's RNE and the FP8 dequant ceiling work is broken.
+    #[test]
+    fn test_f32_to_bf16_pytorch_parity() {
+        let cases: &[(u32, u16, &str)] = &[
+            (0x3F80_0000, 0x3F80, "1.0"),
+            (0x4000_0000, 0x4000, "2.0"),
+            (0xC000_0000, 0xC000, "-2.0"),
+            (0x3FC0_0000, 0x3FC0, "1.5"),
+            (0x3DCC_CCCD, 0x3DCD, "0.1 -> RNE rounds UP to 0x3DCD (trunc=0x3DCC)"),
+            (0x3F4C_CCCD, 0x3F4D, "0.8 -> RNE rounds UP to 0x3F4D"),
+            (0x40C9_0FDB, 0x40C9, "pi -> truncates (next bit < half)"),
+            (0x402D_F854, 0x402E, "e -> RNE rounds UP (next bit > half)"),
+            (0x4490_0000, 0x4490, "1152.0"),
+            (0x3727_C5AC, 0x3728, "1e-5 -> RNE rounds UP"),
+        ];
+        for (f32_bits, want, desc) in cases {
+            let got = super::f32_to_bf16(f32::from_bits(*f32_bits));
+            assert_eq!(
+                got, *want,
+                "f32={f32_bits:#010x} ({desc}): want bf16={want:#06x}, got {got:#06x}"
             );
         }
     }

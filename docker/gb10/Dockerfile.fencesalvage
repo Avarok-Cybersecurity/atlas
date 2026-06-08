@@ -1,0 +1,12 @@
+# Narrate-then-tool fence salvage — layer the rebuilt spark binary onto
+# the current SOTA image (atlas-gb10:pathrec) so ONLY the binary changes
+# and the runtime/model layers stay byte-identical.
+#
+# Build (host must have target/release/spark built + staged as spark-fastbin):
+#   cargo build --release -p spark-server --bin spark
+#   cp target/release/spark spark-fastbin
+#   docker build -f docker/gb10/Dockerfile.fencesalvage -t atlas-gb10:fencesalvage .
+FROM atlas-gb10:pathrec
+
+COPY spark-fastbin /usr/local/bin/spark
+COPY jinja-templates/ /jinja-templates/

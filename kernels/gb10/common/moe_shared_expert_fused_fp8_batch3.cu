@@ -4,7 +4,7 @@
 //
 // Processes 3 tokens through MoE in single kernel launches by expanding
 // blockIdx.y to accommodate 3 sets of (top_k routed + 1 shared) experts.
-// FP8 weight format: 1 byte per weight + BF16 per-128x128-block scale.
+// FP8 weight format: 1 byte per weight + FP32 per-128x128-block scale (widened at load).
 //
 // Token layout in blockIdx.y:
 //   y in [0, 3*top_k)         -> routed experts (token = y/top_k, slot = y%top_k)
@@ -106,10 +106,10 @@ extern "C" __global__ void moe_expert_gate_up_shared_fp8_batch3(
     const unsigned int* __restrict__ expert_indices,  // [3*top_k] u32
     // Shared expert direct pointers
     const unsigned char* __restrict__ sh_gate_weight,
-    const __nv_bfloat16* __restrict__ sh_gate_block_scale,
+    const float* __restrict__ sh_gate_block_scale,
     __nv_bfloat16* __restrict__ sh_gate_out,   // [3, inter] BF16
     const unsigned char* __restrict__ sh_up_weight,
-    const __nv_bfloat16* __restrict__ sh_up_block_scale,
+    const float* __restrict__ sh_up_block_scale,
     __nv_bfloat16* __restrict__ sh_up_out,     // [3, inter] BF16
     unsigned int N, unsigned int K, unsigned int top_k
 ) {
@@ -130,7 +130,7 @@ extern "C" __global__ void moe_expert_gate_up_shared_fp8_batch3(
     const __nv_bfloat16* A_token = A + (unsigned long long)token * K;
 
     const unsigned char* B_weight;
-    const __nv_bfloat16* B_block_scale;
+    const float* B_block_scale;
     __nv_bfloat16* C;
 
     if (is_shared) {
@@ -146,11 +146,11 @@ extern "C" __global__ void moe_expert_gate_up_shared_fp8_batch3(
         const unsigned int flat_slot = token * top_k + expert_slot;
         if (proj == 0) {
             B_weight = (const unsigned char*)gate_weight_ptrs[expert_id];
-            B_block_scale = (const __nv_bfloat16*)gate_block_scale_ptrs[expert_id];
+            B_block_scale = (const float*)gate_block_scale_ptrs[expert_id];
             C = gate_out + (unsigned long long)flat_slot * N;
         } else {
             B_weight = (const unsigned char*)up_weight_ptrs[expert_id];
-            B_block_scale = (const __nv_bfloat16*)up_block_scale_ptrs[expert_id];
+            B_block_scale = (const float*)up_block_scale_ptrs[expert_id];
             C = up_out + (unsigned long long)flat_slot * N;
         }
         // EP: NULL pointer means remote expert — write zero output and return
@@ -192,8 +192,8 @@ extern "C" __global__ void moe_expert_gate_up_shared_fp8_batch3(
 
         // Block scale for this K chunk
         const unsigned int k_block = base_k / FP8_BLOCK;
-        float sc1 = __bfloat162float(B_block_scale[n1_block * k_blocks + k_block]);
-        float sc2 = have_n2 ? __bfloat162float(B_block_scale[n2_block * k_blocks + k_block]) : 0.0f;
+        float sc1 = B_block_scale[n1_block * k_blocks + k_block];
+        float sc2 = have_n2 ? B_block_scale[n2_block * k_blocks + k_block] : 0.0f;
 
         // Load 8 FP8 weights for n1
         unsigned int w4_1a = *(const unsigned int*)(B_weight + (unsigned long long)n1 * K + k8 * 8);
@@ -262,7 +262,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_fp8_batch3(
     const __nv_bfloat16* __restrict__ sh_gate_in,  // [3, inter] BF16
     const __nv_bfloat16* __restrict__ sh_up_in,    // [3, inter] BF16
     const unsigned char* __restrict__ sh_down_weight,
-    const __nv_bfloat16* __restrict__ sh_down_block_scale,
+    const float* __restrict__ sh_down_block_scale,
     __nv_bfloat16* __restrict__ sh_down_out,       // [3, H] BF16
     unsigned int N, unsigned int K, unsigned int top_k
 ) {
@@ -280,7 +280,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_fp8_batch3(
     }
 
     const unsigned char* B_weight;
-    const __nv_bfloat16* B_block_scale;
+    const float* B_block_scale;
 
     const __nv_bfloat16* g_ptr;
     const __nv_bfloat16* u_ptr;
@@ -293,7 +293,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_fp8_batch3(
         const unsigned int expert_id = expert_indices[token * top_k + expert_slot];
         const unsigned int flat_slot = token * top_k + expert_slot;
         B_weight = (const unsigned char*)weight_ptrs[expert_id];
-        B_block_scale = (const __nv_bfloat16*)block_scale_ptrs[expert_id];
+        B_block_scale = (const float*)block_scale_ptrs[expert_id];
         g_ptr = gate_out + (unsigned long long)flat_slot * K;
         u_ptr = up_out + (unsigned long long)flat_slot * K;
         // EP: NULL pointer means remote expert — write zero output and return
@@ -343,8 +343,8 @@ extern "C" __global__ void moe_expert_silu_down_shared_fp8_batch3(
 
         // Block scale for this K chunk
         const unsigned int k_block = base_k / FP8_BLOCK;
-        float sc1 = __bfloat162float(B_block_scale[n1_block * k_blocks + k_block]);
-        float sc2 = have_n2 ? __bfloat162float(B_block_scale[n2_block * k_blocks + k_block]) : 0.0f;
+        float sc1 = B_block_scale[n1_block * k_blocks + k_block];
+        float sc2 = have_n2 ? B_block_scale[n2_block * k_blocks + k_block] : 0.0f;
 
         // Load 8 FP8 weights for n1
         unsigned int w4_1a = *(const unsigned int*)(B_weight + (unsigned long long)n1 * K + k8 * 8);

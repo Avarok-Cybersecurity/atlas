@@ -94,11 +94,7 @@ impl TransformerModel {
         };
         let h = self.config.hidden_size;
         let _bf16 = 2usize;
-        let fp32 = if self.config.use_fp32_residual() {
-            4usize
-        } else {
-            2usize
-        };
+        let fp32 = 2usize;
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
@@ -197,8 +193,19 @@ impl TransformerModel {
                     "Marconi two-phase: restored SSM snapshot at token {snap_tok} \
                          ({matched} KV blocks cached)",
                 );
-                // Exact match: snapshot covers all tokens
-                let skip = if matched >= total_len {
+                // Snapshot covers the entire matched prefix only when
+                // snap_tok == matched. When an *intermediate* checkpoint
+                // matched at full prompt length (snap_tok < matched >=
+                // total_len — e.g. the leaf snapshot was evicted from the
+                // pool, leaving only a block-aligned checkpoint), the
+                // restored recurrent SSM state is at token `snap_tok`, NOT
+                // `total_len`. Skipping to `matched` here would leave the
+                // SSM h_state/conv_state stale while positions/KV advance to
+                // the prompt end → first decoded token reads a misaligned
+                // recurrent state → garbage / immediate stop. Skip only to
+                // `snap_tok` so suffix-prefill recomputes SSM over
+                // [snap_tok, total_len). (Mirrors the prefill_b warm-hit fix.)
+                let skip = if matched >= total_len && snap_tok >= matched {
                     matched
                 } else {
                     snap_tok

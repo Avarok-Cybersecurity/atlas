@@ -74,7 +74,7 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
         tracing::error!("free_sequence: {e:#}");
     }
     // EP: signal worker to free+realloc its mirrored sequence.
-    if let Err(e) = model.ep_broadcast_cmd(0xFFFFFFF1) {
+    if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, 0xFFFFFFF1) {
         tracing::error!("EP broadcast free+realloc: {e:#}");
     }
 }
@@ -98,7 +98,7 @@ pub fn send_error(model: &dyn Model, a: &mut ActiveSeq, msg: &str) {
     if let Err(e) = model.free_sequence(&mut a.seq) {
         tracing::error!("send_error: free_sequence: {e:#}");
     }
-    if let Err(e) = model.ep_broadcast_cmd(0xFFFFFFF1) {
+    if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, 0xFFFFFFF1) {
         tracing::error!("send_error: ep_broadcast free+realloc: {e:#}");
     }
 }
@@ -142,7 +142,11 @@ pub fn swap_out_sequence(
     // Compact the swapped-in sequence (same logic as retire path).
     if victim_idx < active.len() && active[victim_idx].seq.slot_idx != victim_idx {
         model.compact_sequence(&mut active[victim_idx].seq, victim_idx)?;
-        a.seq.slot_idx = usize::MAX; // sentinel: slot reused by compact
+        // Disown the victim's migrated slot BEFORE the fallible save below: sets
+        // the reuse sentinel AND neutralizes the RAII guard so a `?`-early-
+        // return (create_file/save_sequence_state error) that drops `a` cannot
+        // double-release the slot now owned by the swapped-in sequence.
+        model.detach_slot_for_reuse(&mut a.seq);
     }
 
     let (swap_id, mut writer) = spill.create_file()?;
@@ -155,8 +159,9 @@ pub fn swap_out_sequence(
     let tokens = a.seq.tokens.clone();
 
     // Free GPU resources (KV blocks + SSM slot).
+    let slot_idx = a.seq.slot_idx as u32;
     model.free_sequence(&mut a.seq)?;
-    let _ = model.ep_broadcast_cmd(0xFFFFFFF1);
+    let _ = model.ep_broadcast_cmd_for_seq(slot_idx, 0xFFFFFFF1);
 
     Ok(SwappedSeq {
         tokens,
@@ -187,9 +192,11 @@ pub fn swap_out_sequence(
         inside_thinking: a.inside_thinking,
         enable_thinking: a.enable_thinking,
         thinking_budget: a.thinking_budget,
+        repetition_detection: a.repetition_detection,
         spontaneous_think_budget: a.spontaneous_think_budget,
         thinking_tokens: a.thinking_tokens,
         force_end_thinking: a.force_end_thinking,
+        sentence_defer_count: a.sentence_defer_count,
         consecutive_confident: a.consecutive_confident,
         in_code_fence: a.in_code_fence,
         think_end_token: a.think_end_token,
@@ -198,12 +205,14 @@ pub fn swap_out_sequence(
         think_just_ended: a.think_just_ended,
         think_skip_count: a.think_skip_count,
         require_tool_call: a.require_tool_call,
+        tool_request: a.tool_request,
         suppress_tool_call: a.suppress_tool_call,
         disable_mtp: a.disable_mtp,
         content_started: a.content_started,
         content_tokens: a.content_tokens,
         prose_tokens_since_last_tool: a.prose_tokens_since_last_tool,
         think_watchdog_fires: a.think_watchdog_fires,
+        rollback_count: a.rollback_count,
         tool_call_start_token: a.tool_call_start_token,
         tool_call_opened: a.tool_call_opened,
         tool_call_end_token: a.tool_call_end_token,
@@ -247,6 +256,10 @@ pub fn resume_swapped_seq(
         eos_tokens: s.eos_tokens,
         finished: false,
         sink: s.sink,
+        // cancel_flag isn't preserved across spill/restore — the
+        // original stream is long gone by the time a swapped-out seq
+        // resumes from disk, so the live guards don't apply here.
+        cancel_flag: None,
         temperature: s.temperature,
         top_k: s.top_k,
         top_p: s.top_p,
@@ -265,9 +278,11 @@ pub fn resume_swapped_seq(
         inside_thinking: s.inside_thinking,
         enable_thinking: s.enable_thinking,
         thinking_budget: s.thinking_budget,
+        repetition_detection: s.repetition_detection,
         spontaneous_think_budget: s.spontaneous_think_budget,
         thinking_tokens: s.thinking_tokens,
         force_end_thinking: s.force_end_thinking,
+        sentence_defer_count: s.sentence_defer_count,
         consecutive_confident: s.consecutive_confident,
         in_code_fence: s.in_code_fence,
         think_end_token: s.think_end_token,
@@ -276,18 +291,30 @@ pub fn resume_swapped_seq(
         think_just_ended: s.think_just_ended,
         think_skip_count: s.think_skip_count,
         require_tool_call: s.require_tool_call,
+        tool_request: s.tool_request,
         suppress_tool_call: s.suppress_tool_call,
         disable_mtp: s.disable_mtp,
         content_started: false,
         content_tokens: 0,
         prose_tokens_since_last_tool: 0,
         think_watchdog_fires: s.think_watchdog_fires,
+        rollback_count: s.rollback_count,
+        // Decode-rollback SSM snapshots are GPU-resident and not part of
+        // the disk swap image — a resumed sequence starts with an empty
+        // ring. New boundary snapshots accrue as it decodes again; until
+        // one exists, a hybrid-model rollback declines to the hard stop
+        // (correct: there is no live snapshot to restore).
+        ssm_rollback_ring: SsmDecodeRing::new(model.decode_rollback_ring_slots()),
         tool_call_start_token: s.tool_call_start_token,
         tool_call_opened: s.tool_call_opened,
         // Resumed sequences re-enter outside any tool body — even if
         // the snapshot was mid-tool-call, the sample path needs a
         // safe default. Cleared at next emit if we re-cross a marker.
         inside_tool_body: false,
+        tool_call_completed: false,
+        tool_body_streak_tokens: 0,
+        inside_parameter_body: false,
+        param_body_chars_emitted: 0,
         tool_call_end_token: s.tool_call_end_token,
         // Grammar state is not serializable; resumed sequences use legacy fallback.
         grammar_state: None,

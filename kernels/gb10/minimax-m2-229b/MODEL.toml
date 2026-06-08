@@ -44,33 +44,65 @@ vision = false
 # Sampling defaults lifted from the MiniMax M2 model card recommendations
 # (tuned for agentic / coding workloads). Adjust after M4 bring-up if
 # community reports divergent preferences.
-[sampling.default]
-temperature = 1.0
+# 2026-05-24 empirical band-aid. MiniMax-M2's temp=1.0 recipe risked
+# max_tokens wandering on agentic clients (lesson from Qwen3.6).
+# Lowered temp=0.6 thinking, 0.7 non-thinking, kept temp=0.4 coding/tools
+# (MiniMax's own benchmark value). Kept top_k=40 (MiniMax convention).
+# Renamed from `[sampling.default]`/`[coding]` to Atlas-standard
+# {thinking_text, thinking_coding, non_thinking, tools} so the parser
+# actually picks up these values.
+[sampling.thinking_text]
+temperature = 0.6
 top_p = 0.95
 top_k = 40
+presence_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.5
 
-[sampling.coding]
+[sampling.thinking_coding]
 temperature = 0.4
 top_p = 0.95
 top_k = 20
+presence_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.5
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.95
+top_k = 40
+presence_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.5
+
+[sampling.tools]
+temperature = 0.4
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.5
 
 [behavior]
-# MiniMax M2's chat_template.jinja appends `<think>\n` unconditionally
-# at `add_generation_prompt` (line 164). With `thinking_in_tools=false`
-# the reasoning parser strips `<think>...</think>` from `content`, but
-# the model still spends tokens inside `<think>` before emitting either
-# (a) a tool call (`<minimax:tool_call>...`) or (b) free-form code/text.
-# `max_thinking_budget` caps that spontaneous-thinking phase: when the
-# scheduler detects `<think>` without an explicit per-request budget,
-# it uses this number as the cap. Hit the cap → `</think>` is force-
-# emitted → real content begins. 1024 tokens at ~17 tok/s ≈ 60 s of
-# reasoning headroom: long enough for fib's chain-of-thought trace,
-# short enough that Search emits its tool call inside the test timeout.
+# MiniMax M2's native HF chat_template.jinja appends `<think>\n`
+# unconditionally at `add_generation_prompt`. Atlas uses an OpenAI-
+# variant template that gates this generation prompt on the resolved
+# per-request thinking setting. `max_thinking_budget` still caps explicit
+# or spontaneous thinking: when the scheduler detects `<think>` without
+# an explicit per-request budget, it uses this number as the cap. Hit
+# the cap -> `</think>` is force-emitted -> real content begins.
 # `thinking_default = false` makes the OpenAI-style API treat
 # `extra_body.thinking.budget_tokens` as opt-in (matches MiniMax's
 # `thinking_in_tools=false` story for tool-active requests).
-thinking_in_tools = false
-max_thinking_budget = 1024
+# 2026-05-23 sweep: false → true. With thinking_default=false the model
+# only thinks when client explicitly asks for it (chat_template_kwargs);
+# allowing thinking during tool-active turns is consistent with the
+# project-wide default. Existing MiniMax-M2 "spontaneous-thinking phase"
+# behavior is unchanged because thinking_default stays false.
+thinking_in_tools = true
+# 2026-05-23 sweep: 1024 → 2048 (project-wide reasoning headroom bump).
+max_thinking_budget = 2048
 thinking_default = false
 
 [[model_types]]

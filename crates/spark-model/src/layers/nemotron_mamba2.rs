@@ -83,23 +83,13 @@ impl NemotronMamba2Layer {
             out_proj_fp8: None,
             in_proj_t: None,
             out_proj_t: None,
-            rms_norm_residual_k: if config.use_fp32_residual() {
-                gpu.kernel("norm", "rms_norm_residual_f32")
-                    .or_else(|_| gpu.kernel("norm", "rms_norm_residual"))?
-            } else {
-                gpu.kernel("norm", "rms_norm_residual")?
-            },
+            rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w8a16_gemv_k: super::try_kernel(gpu, "w8a16_gemv", "w8a16_gemv"),
             conv1d_update_k: gpu.kernel("causal_conv1d", "causal_conv1d_update")?,
             mamba2_ssm_k: gpu.kernel("mamba2_ssm", "mamba2_ssm_decode")?,
             gated_rms_norm_k: gpu.kernel("norm", "gated_rms_norm")?,
-            residual_add_k: if config.use_fp32_residual() {
-                gpu.kernel("norm", "f32_residual_add")
-                    .or_else(|_| gpu.kernel("residual_add", "bf16_residual_add"))?
-            } else {
-                gpu.kernel("residual_add", "bf16_residual_add")?
-            },
+            residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             w4a16_gemm_k: gpu.kernel("w4a16", "w4a16_gemm")?,
             w4a16_gemm_t_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t"),
             w4a16_gemm_t_m128_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128"),

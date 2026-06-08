@@ -15,6 +15,7 @@ members = [
     "crates/atlas-spark-bench",
     "crates/cufile-sys",
     "crates/spark-storage",
+    "crates/xgrammar",
 ]
 
 [workspace.package]
@@ -36,7 +37,12 @@ cudarc = { version = "0.19", features = ["driver", "nvrtc", "cuda-version-from-b
 
 # Serialization (HF config.json)
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order`: keep JSON object keys in insertion/declaration order
+# (IndexMap, not BTreeMap). Required so `serde_json::to_value(ToolDefinition)`
+# and the nested `parameters` JSON-schema Value match transformers'
+# `tojson` (= `json.dumps(sort_keys=False)`) key order in the `<tools>`
+# prompt block. See crates/spark-server/src/tokenizer/jinja_helpers.rs.
+serde_json = { version = "1", features = ["preserve_order"] }
 
 # Error handling
 thiserror = "2"
@@ -60,8 +66,10 @@ atlas-embed = { path = "crates/atlas-embed" }
 atlas-reduce = { path = "crates/atlas-reduce" }
 atlas-kernels = { path = "crates/atlas-kernels" }
 
-[patch.crates-io]
-xgrammar-rs = { path = "vendor/xgrammar-rs" }
+# W7: the `[patch.crates-io] xgrammar-rs` entry was removed — Atlas now
+# depends on the pure-Rust `crates/xgrammar` crate directly (no FFI,
+# no C++ toolchain). The vendored C++ `vendor/xgrammar-rs/` tree has
+# been deleted; the grammar stack is 100% Rust.
 
 # Workspace-wide lint policy. Each crate also adds `#![deny(warnings)]` /
 # `#![deny(clippy::all)]` to its `lib.rs`/`main.rs`; this section extends

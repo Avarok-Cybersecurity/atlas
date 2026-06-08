@@ -25,8 +25,17 @@ use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 ///     build `MultiModuleMtpHead` with N heads
 ///
 /// Returns `None` when speculative decoding is off, when no MTP weights
-/// are available, or when the LM head is not NVFP4 (MTP heads need the
-/// NVFP4 LM head for shared output projection).
+/// are available, or when no NVFP4 draft head is available.
+///
+/// `lm_head_nvfp4` here is the resolved *draft* head: the main NVFP4 head
+/// (NVFP4-main default) or a separate draft-only NVFP4 head built when the
+/// main head is kept BF16 (`skip_lm_head_quantization()`). The MTP head's
+/// final hidden→vocab projection (`forward_one`) is hard-wired to
+/// `w4a16_gemv` over a `QuantizedWeight`, so an NVFP4 head is required for
+/// drafting. Correctness is unaffected: every draft is re-verified by the
+/// main `lm_head_batched` (BF16 when the main head is BF16), so an
+/// approximate draft head only changes acceptance rate, never an accepted
+/// token.
 pub(super) fn build_mtp_proposer(
     use_speculative: bool,
     mtp_weights: Vec<MtpWeights>,

@@ -23,6 +23,28 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
+/// DIAGNOSTIC (ATLAS_KV_POISON=1): fill freshly-allocated KV blocks with a NaN
+/// bit-pattern instead of zero. Validated discriminator for the "unwritten
+/// fresh tail block read" hypothesis — see `PagedKvCache::poison_block`.
+static KV_POISON: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("ATLAS_KV_POISON").as_deref() == Ok("1"));
+
+/// Fill a freshly-allocated block: NaN-poison under the diagnostic flag,
+/// otherwise the production zero-fill (stale-KV leak guard).
+#[inline]
+fn fill_fresh_block(
+    kv_cache: &PagedKvCache,
+    blk: u32,
+    gpu: &dyn GpuBackend,
+    stream: u64,
+) -> Result<()> {
+    if *KV_POISON {
+        kv_cache.poison_block(blk, gpu, stream)
+    } else {
+        kv_cache.zero_block(blk, gpu, stream)
+    }
+}
+
 /// Apply an `EvictedBlocks` result to the production cache and the HSS
 /// orchestrator. Physical blocks return to the free list; disk-block IDs get
 /// `dec_disk_ref`'d (Phase 6.1.e). When HSS isn't engaged the disk vec is
@@ -266,7 +288,7 @@ pub(crate) fn ensure_blocks_through_decode(
                 })?
             }
         };
-        kv_cache.zero_block(blk, gpu, stream)?;
+        fill_fresh_block(kv_cache, blk, gpu, stream)?;
         seq.block_table.push(blk);
         alloc_count += 1;
         if cap.is_some() {
@@ -346,7 +368,7 @@ pub(crate) fn ensure_blocks_through_prefill(
                 kv_cache.alloc_block()?
             }
         };
-        kv_cache.zero_block(blk, gpu, stream)?;
+        fill_fresh_block(kv_cache, blk, gpu, stream)?;
         seq.block_table.push(blk);
         if cap.is_some() {
             let id = spark_storage::with_local(|hss| {

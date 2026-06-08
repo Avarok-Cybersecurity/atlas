@@ -1,0 +1,47 @@
+{
+  "tier": "sm1_a2ao_sc1_steps",
+  "run": 1,
+  "wall_time_s": 181.01876497268677,
+  "opencode": {
+    "events_total": 36,
+    "stderr_bytes": 0
+  },
+  "filesystem": {
+    "files_written": [
+      "Cargo.toml"
+    ],
+    "files_count": 1
+  },
+  "cargo": {
+    "cargo_toml_present": true,
+    "cargo_toml_valid": true,
+    "cargo_toml_error": "",
+    "cargo_toml_has_package_name": false
+  },
+  "tool_calls": {
+    "total": 8,
+    "by_tool": {
+      "bash": 5,
+      "write": 2,
+      "read": 1
+    }
+  },
+  "drift": {
+    "write_calls": 2,
+    "write_empty_path": 0,
+    "write_path_drift_from_target": 1,
+    "write_path_has_literal_space": 0,
+    "write_content_starts_with_lean": 0,
+    "write_content_is_bash_command": 0,
+    "write_content_xml_attr_leak": 0,
+    "write_content_newlines_collapsed_toml": 1
+  },
+  "atlas": {
+    "ws1_mask_active_fires": 19,
+    "b1_drift_gauge_fires": 2,
+    "tier_5c_retries": 1,
+    "a2_fuzzy_repair_fires": 0,
+    "doom_loop_trips": 0,
+    "tool_call_lines": 7
+  }
+}

@@ -35,7 +35,16 @@
 
 #include <cuda_bf16.h>
 
+// Phase 2b precision fix (2026-05-24): the degree-3 Taylor polynomial
+// here has up to 0.5% relative error at tf~1 (verified numerically vs
+// torch.exp). For HDIM=512 (Gemma-4 long-attn), each softmax row spans
+// hundreds of K-tile chunks, compounding the per-call error into
+// measurable cosine drift. See sister fix in
+// `prefill_paged_compute.cuh::sw_exp` for the Qwen3.6 HDIM=256 path.
+// Default to accurate `__expf` (~2 ULP); polynomial available via
+// `ATLAS_FAST_SOFTMAX_EXP` opt-in.
 __device__ __forceinline__ float sw_exp_512(float x) {
+#ifdef ATLAS_FAST_SOFTMAX_EXP
     float t = x * 1.4426950408889634f;
     float ti = floorf(t);
     float tf = t - ti;
@@ -43,6 +52,9 @@ __device__ __forceinline__ float sw_exp_512(float x) {
               tf * (0.2402265069591007f +
               tf * 0.05550410866482158f));
     return ldexpf(p, (int)ti);
+#else
+    return __expf(x);
+#endif
 }
 
 #define BR_512   32

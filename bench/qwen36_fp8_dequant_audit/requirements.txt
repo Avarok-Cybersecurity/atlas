@@ -1,0 +1,4 @@
+compressed-tensors==0.13.0
+safetensors>=0.4.5
+torch>=2.4.0
+transformers>=5.5.0

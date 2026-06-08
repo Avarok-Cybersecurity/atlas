@@ -304,6 +304,7 @@ pub(super) async fn finalize_responses_stream(
                 },
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             });
         }
         store_ref.insert(crate::response_store::StoredEntry {

@@ -1,0 +1,31 @@
+FROM nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d AS builder
+RUN apt-get update -qq && apt-get install -y -qq curl build-essential pkg-config git cmake libclang-dev && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+ENV CUDA_HOME=/usr/local/cuda
+ENV RUSTUP_TOOLCHAIN=stable
+WORKDIR /build
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates/ crates/
+COPY vendor/ vendor/
+COPY kernels/ kernels/
+COPY jinja-templates/ jinja-templates/
+ENV ATLAS_TARGET_HW=gb10
+ENV ATLAS_TARGET_MODEL=*
+ENV ATLAS_TARGET_QUANT=*
+# THE BISECT KNOB:
+ENV ATLAS_EXTRA_NVCC_FLAGS="-DATLAS_DISABLE_FP16_PV=1"
+RUN cargo build --release -p spark-server
+
+FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04@sha256:95318efecfd68ab3d109da5277863257b06137c84f34a87f38de970d5cd035d3
+LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends --allow-change-held-packages \
+      libnccl2 libibverbs1 librdmacm1 ibverbs-providers \
+      libnl-3-200 libnl-route-3-200 && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/target/release/spark /usr/local/bin/spark
+COPY --from=builder /build/jinja-templates/ /jinja-templates/
+ENV RUST_LOG=info
+EXPOSE 8888
+ENTRYPOINT ["spark"]

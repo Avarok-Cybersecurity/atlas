@@ -1,7 +1,7 @@
 // Central data source for all site content.
 // Any copy changes land here. Components are just presentation.
 
-export const discordUrl = 'https://discord.gg/DwF3brBMpw';
+export const discordUrl = 'https://discord.gg/6vDbKaKrKD';
 // The post that started it all.
 export const firstPostUrl = 'https://www.reddit.com/r/LocalLLaMA/comments/1rkefjw/solved_the_dgx_spark_102_stable_toks_qwen3535ba3b/';
 // Second Atlas post; testimonial comments came from this thread.
@@ -166,7 +166,7 @@ export const quickInstall = `uvx sparkrun setup install`;
 export const runCommand = 'curl -fsSL https://atlasinference.io/quickstart.sh | sh';
 // What the script does, spelled out (not shown in the terminal card).
 export const runCommandRaw =
-  'uvx sparkrun setup install && sparkrun run @atlas/qwen3.6-35b-a3b-fp8-mtp-atlas';
+  'uvx sparkrun setup install && sparkrun run @atlas/qwen3.6-35b-a3b-fp8-mtp --hosts localhost';
 
 // X / Twitter handle for Atlas.
 export const xHandle = '@atlasinference';

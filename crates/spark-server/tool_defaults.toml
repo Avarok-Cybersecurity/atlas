@@ -22,15 +22,21 @@ minimax_m2  = "minimax_xml"    # MiniMax M2 — <minimax:tool_call><invoke name=
 # Override at runtime with --reasoning-parser <format>.
 #
 # Supported formats:
-#   qwen    — <think>...</think> (Qwen3.5, Nemotron, DeepSeek-R1)
-#   mistral — [THINK]...[/THINK]
+#   qwen        — <think>...</think>, Qwen3 family
+#   deepseek_r1 — <think>...</think>, DeepSeek-R1 / NVIDIA Nemotron (nano_v3)
+#   minimax     — <think>...</think>, MiniMax M2 / M2.7
+#   mistral     — [THINK]...[/THINK]
+#   gemma4      — <|channel>thought ... <channel|> ... (Gemma 4 channel format)
+#
+# qwen / deepseek_r1 / minimax share one <think>-tag implementation but
+# keep distinct identities so a model is parsed under its own contract.
 
 [reasoning]
 qwen3_5_moe = "qwen"
 qwen3_5     = "qwen"
 qwen3_6_moe = "qwen"
-nemotron_h  = "qwen"
+nemotron_h  = "deepseek_r1"    # Nemotron-H ships the nano_v3 (DeepSeek-R1) parser
 qwen3_next  = "qwen"
 qwen3_vl_moe = "qwen"
 mistral     = "mistral"
-minimax_m2  = "qwen"           # MiniMax uses <think>...</think> via chat_template
+minimax_m2  = "minimax"        # MiniMax M2/M2.7 — <think>...</think>, own identity

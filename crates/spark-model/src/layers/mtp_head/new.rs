@@ -202,13 +202,23 @@ impl MtpHead {
             }
         };
 
-        // MTP KV cache: 1 attention layer
+        // MTP KV cache: 1 attention layer. Honor BF16 KV for the bf16-quant
+        // MTP head — the FP8 path hard-coded k_scale=v_scale=1.0, which on
+        // Qwen3.6-A3B (large deep-layer K/V magnitudes) collapsed the single
+        // MTP attention layer's output to a constant → constant draft token 0
+        // → 0% acceptance. FP8/NVFP4 MTP keep FP8 (backward-compat). The MTP
+        // KV is one tiny layer, so BF16 cost is negligible.
+        let kv_bf16 = matches!(quant, MtpQuantization::Bf16);
         let kv_config = KvCacheConfig {
             block_size: 16,
             num_kv_heads: nkv,
             head_dim: hd,
             num_layers: 1,
-            dtype: KvCacheDtype::Fp8, // MTP always uses FP8 for now
+            dtype: if kv_bf16 {
+                KvCacheDtype::Bf16
+            } else {
+                KvCacheDtype::Fp8
+            },
             layer_dtypes: vec![],
             layer_dims: vec![],
             cache_blocks_per_seq: None,
@@ -300,30 +310,24 @@ impl MtpHead {
             kv_cache: Mutex::new(kv_cache),
             attn_layer_idx: 0,
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
-            rms_norm_residual_k: if config.use_fp32_residual() {
-                gpu.kernel("norm", "rms_norm_residual_f32")
-                    .or_else(|_| gpu.kernel("norm", "rms_norm_residual"))?
-            } else {
-                gpu.kernel("norm", "rms_norm_residual")?
-            },
+            rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w4a16_gemv_qg_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qg")?,
             w4a16_gemv_dual_k: gpu.kernel("w4a16_gemv_fused", "w4a16_gemv_dual")?,
             rope_k: gpu.kernel("rope", "rope_forward")?,
-            reshape_cache_k: gpu.kernel("reshape_and_cache", "reshape_and_cache_flash_fp8")?,
-            paged_decode_k: gpu.kernel("paged_decode_fp8", "paged_decode_attn_fp8")?,
-            residual_add_k: if config.use_fp32_residual() {
-                gpu.kernel("norm", "f32_residual_add")
-                    .or_else(|_| gpu.kernel("residual_add", "bf16_residual_add"))?
+            reshape_cache_k: if kv_bf16 {
+                gpu.kernel("reshape_and_cache", "reshape_and_cache_flash")?
             } else {
-                gpu.kernel("residual_add", "bf16_residual_add")?
+                gpu.kernel("reshape_and_cache", "reshape_and_cache_flash_fp8")?
             },
-            residual_add_rms_norm_k: if config.use_fp32_residual() {
-                gpu.kernel("norm", "residual_add_rms_norm_f32")
-                    .or_else(|_| gpu.kernel("norm", "residual_add_rms_norm"))?
+            paged_decode_k: if kv_bf16 {
+                gpu.kernel("paged_decode", "paged_decode_attn")?
             } else {
-                gpu.kernel("norm", "residual_add_rms_norm")?
+                gpu.kernel("paged_decode_fp8", "paged_decode_attn_fp8")?
             },
+            kv_bf16,
+            residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
+            residual_add_rms_norm_k: gpu.kernel("norm", "residual_add_rms_norm")?,
             sigmoid_gate_mul_k: gpu.kernel("residual_add", "sigmoid_gate_mul")?,
             bf16_concat_k: gpu.kernel("residual_add", "bf16_concat")?,
             argmax_k: gpu.kernel("argmax", "argmax_bf16")?,

@@ -1,0 +1,3 @@
+FROM atlas-gb10:fix
+COPY spark-fastbin /usr/local/bin/spark
+COPY jinja-templates/ /jinja-templates/

@@ -37,8 +37,18 @@ pub(crate) fn preflight_reserve(
     } else {
         1
     };
+    // B4 (chunked-prefill BF16 KV cliff): the prior `.min(8192)` cap forced
+    // every prompt > 8 k to chunk, which compounds K-side BF16 rounding noise
+    // at chunk boundaries (per the 4-agent audit 2026-05-27). When the user
+    // explicitly passes `--max-prefill-tokens N` (anything other than the
+    // default 8192), respect it — no hard cap. Otherwise default to 8192 to
+    // bound GDN persistent-buffer reservation for unbounded `max_seq_len`.
     let ssm_prefill_chunk: usize = if config.num_ssm_layers() > 0 {
-        args.max_seq_len.min(8192)
+        if args.max_prefill_tokens != 8192 && args.max_prefill_tokens > 0 {
+            args.max_seq_len.min(args.max_prefill_tokens)
+        } else {
+            args.max_seq_len.min(8192)
+        }
     } else {
         0
     };
@@ -79,8 +89,18 @@ pub(crate) fn preflight_reserve(
         args.block_size,
     )
     .total_bytes();
-    let ssm_snapshot_bytes =
-        args.ssm_cache_slots * config.num_ssm_layers() * (h_state_bytes + conv_state_bytes);
+    // SSM snapshot pool = Marconi prefix-cache region + Phase-C
+    // decode-rollback ring. The decode ring is sized per active
+    // sequence (`ROLLBACK_RESTEER_CAP + 1` slots × `max_batch_size`),
+    // and only allocated for SSM models. Mirrors `SsmSnapshotPool::new`.
+    let decode_ring_slots = if config.num_ssm_layers() > 0 {
+        (atlas_kernels::ROLLBACK_RESTEER_CAP as usize) + 1
+    } else {
+        0
+    };
+    let ssm_snapshot_bytes = (args.ssm_cache_slots + decode_ring_slots * args.max_batch_size)
+        * config.num_ssm_layers()
+        * (h_state_bytes + conv_state_bytes);
     let cuda_headroom: usize =
         if args.speculative || args.self_speculative || args.ngram_speculative {
             4 * 1024 * 1024 * 1024

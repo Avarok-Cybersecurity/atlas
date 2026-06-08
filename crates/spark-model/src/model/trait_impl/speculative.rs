@@ -98,12 +98,8 @@ impl TransformerModel {
     ) -> Result<()> {
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
-        let _bf16 = 2usize;
-        let fp32 = if self.config.use_fp32_residual() {
-            4usize
-        } else {
-            2usize
-        };
+        // Residual stream is always BF16, so the saved hidden is BF16.
+        let fp32 = 2usize;
         // Save the RAW hidden state (before final_norm), not norm_output.
         // The MTP head applies its own pre_fc_norm_hidden — passing norm_output
         // would double-normalize and degrade prediction accuracy.

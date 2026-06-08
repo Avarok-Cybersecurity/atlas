@@ -14,7 +14,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::AppState;
 use crate::openai::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, CompletionChunk,
-    CompletionRequest, CompletionResponse, ModelInfo, ModelListResponse, Usage,
+    CompletionRequest, CompletionResponse, ModelInfo, ModelListResponse, PromptInput, Usage,
 };
 use crate::tool_parser;
 
@@ -23,21 +23,6 @@ use crate::tool_parser;
 // granted via single-module visibility.
 use super::chat::chat_completions_inner;
 use super::compact::{compact_messages, openai_error_response, openai_error_response_with_param};
-use super::failures::{
-    F23ProgressMetrics, F29EnvironmentFact, F37FailureClass, F39FailureCache,
-    F39PermanentFailureMatch, F49DuplicateWrite, append_f7_reminder_to_last_user,
-    build_f7_stall_reminder, bump_f12_tool_call_count, check_loop_watchdog,
-    collect_f7_stall_buckets, f23_build_reminder, f23_normalize_and_hash, f23_refuse_threshold,
-    f23_score_progress, f23_warn_threshold, f28_text_looks_like_error,
-    f29_extract_binary_from_error_line, f29_extract_environment_facts,
-    f29_inject_environment_facts, f31_inject_hard_refusal, f32_reposition_failed_tool_result,
-    f37_classify_failure, f39_build_circuit_breaker_banner, f39_build_failure_cache,
-    f39_class_label, f39_detect_recent_retries, f39_extract_binary_name,
-    f44_check_permanent_failure, f49_build_banner, f49_detect_duplicate_writes,
-    f49_extract_write_path_and_content, f50_append_original_error, f60_disable_mtp_for_request,
-    flush_content_sanitizer, prepend_reminder_to_system, recent_message_is_tool_error,
-    strip_xml_leaks_from_assistant_content,
-};
 use super::inference_impl::{extract_thinking, strip_stop_sequences, tokenize_stop_sequences};
 use super::inference_types::{
     GrammarSpec, InferenceRequest, InferenceResponse, StreamEvent, TokenLogprobs,
@@ -49,9 +34,71 @@ use super::sanitizer::{
 use super::strip::strip_thinking_tags;
 
 // Re-export sibling helpers via crate::api::* for short paths.
-use super::failures::*;
 use super::inference_types::*;
 use super::sanitizer::*;
+
+/// Resolve an OpenAI-compatible `prompt` field into the concrete prompt
+/// token sequence consumed by the scheduler.
+///
+/// Text forms (`Text` / `TextArray`) are tokenized via the same
+/// `tokenizer.encode` path used historically — `encode` calls the HF
+/// tokenizer with `add_special_tokens=false` (see
+/// `tokenizer/chat_impl.rs:74`), so **no BOS / special token is
+/// prepended**. The token-ID forms (`TokenIds` / `TokenIdBatch`) are fed
+/// to the scheduler verbatim and likewise prepend nothing — the caller
+/// supplies the exact IDs. Both paths therefore converge on the same
+/// `Vec<u32>` with identical framing, which is required for exact
+/// cross-engine cosine comparison (any spurious BOS would corrupt it).
+///
+/// Token-ID inputs are range-checked against the tokenizer vocabulary;
+/// an out-of-range ID fails fast with a 400 rather than indexing out of
+/// bounds into the embedding table.
+fn resolve_prompt_tokens(
+    state: &AppState,
+    prompt: &PromptInput,
+) -> Result<Vec<u32>, (StatusCode, String)> {
+    match prompt {
+        PromptInput::Text(s) => state
+            .tokenizer
+            .encode(s)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("Tokenization error: {e}"))),
+        PromptInput::TextArray(parts) => {
+            // Join with no separator, matching the prior `Vec<String>`
+            // behavior (`v.join("")`), then tokenize once.
+            let joined = parts.concat();
+            state
+                .tokenizer
+                .encode(&joined)
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("Tokenization error: {e}")))
+        }
+        PromptInput::TokenIds(ids) => {
+            validate_token_ids(state, ids)?;
+            Ok(ids.clone())
+        }
+        PromptInput::TokenIdBatch(batch) => {
+            // The legacy single-prompt handler flattens a batch into one
+            // sequence (concatenation), matching how `TextArray` joins
+            // multiple string prompts into one.
+            let flat: Vec<u32> = batch.iter().flatten().copied().collect();
+            validate_token_ids(state, &flat)?;
+            Ok(flat)
+        }
+    }
+}
+
+/// Fail-fast validation that every supplied token ID is within the model
+/// vocabulary. The tokenizer is the authoritative source of vocab size
+/// (SSOT); an OOB ID would index past the embedding table.
+fn validate_token_ids(state: &AppState, ids: &[u32]) -> Result<(), (StatusCode, String)> {
+    let vocab_size = state.tokenizer.inner().get_vocab_size(true) as u32;
+    if let Some(&bad) = ids.iter().find(|&&id| id >= vocab_size) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("Token ID {bad} out of range: vocab_size is {vocab_size}"),
+        ));
+    }
+    Ok(())
+}
 
 pub async fn completions(
     State(state): State<Arc<AppState>>,
@@ -66,24 +113,9 @@ pub async fn completions(
             );
         }
     };
-    // For thinking models, prepend <think></think>\n\n to suppress think-tag
-    // leakage in raw completions mode (the model expects this prefix after
-    // training). Users who construct their own think tokens can include them
-    // in the prompt — we only add the prefix if the prompt doesn't already
-    // contain a </think> token.
-    let raw_prompt = if state.tokenizer.supports_thinking() && !req.prompt.contains("</think>") {
-        format!("<think></think>\n\n{}", req.prompt)
-    } else {
-        req.prompt.clone()
-    };
-    let prompt_tokens = match state.tokenizer.encode(&raw_prompt) {
+    let prompt_tokens = match resolve_prompt_tokens(&state, &req.prompt) {
         Ok(t) => t,
-        Err(e) => {
-            return openai_error_response(
-                StatusCode::BAD_REQUEST,
-                format!("Tokenization error: {e}"),
-            );
-        }
+        Err((status, msg)) => return openai_error_response(status, msg),
     };
 
     let prompt_len = prompt_tokens.len();
@@ -131,6 +163,7 @@ pub async fn completions(
             logit_bias.clone(),
             stop_tokens,
             req.seed,
+            req.repetition_detection,
         )
         .await
         {
@@ -143,7 +176,7 @@ pub async fn completions(
     let (tx, rx) = tokio::sync::oneshot::channel();
     let session_hash = crate::session_manager::compute_session_hash(&prompt_tokens);
     let request = InferenceRequest::Blocking {
-        prompt_tokens,
+        prompt_tokens: std::sync::Arc::new(prompt_tokens),
         session_hash,
         image_pixels: Vec::new(),
         max_tokens: req.max_tokens,
@@ -167,6 +200,7 @@ pub async fn completions(
         stop_tokens,
         enable_thinking: false,
         thinking_budget: None,
+        repetition_detection: req.repetition_detection,
         require_tool_call: false,
         suppress_tool_call: false,
         disable_mtp: false,
@@ -268,6 +302,7 @@ pub(super) async fn completions_stream(
     logit_bias: Vec<(u32, f32)>,
     stop_tokens: Vec<u32>,
     seed: Option<u64>,
+    repetition_detection: Option<crate::openai::RepetitionDetectionParams>,
 ) -> Result<Response, (StatusCode, String)> {
     // Match chat_stream/mod.rs sizing; see comment there.
     let (token_tx, token_rx) = tokio::sync::mpsc::channel::<StreamEvent>(1024);
@@ -275,7 +310,7 @@ pub(super) async fn completions_stream(
 
     let session_hash = crate::session_manager::compute_session_hash(&prompt_tokens);
     let request = InferenceRequest::Streaming {
-        prompt_tokens,
+        prompt_tokens: std::sync::Arc::new(prompt_tokens),
         session_hash,
         image_pixels: Vec::new(),
         max_tokens,
@@ -297,6 +332,7 @@ pub(super) async fn completions_stream(
         stop_tokens,
         enable_thinking: false,
         thinking_budget: None,
+        repetition_detection,
         require_tool_call: false,
         suppress_tool_call: false,
         disable_mtp: false,
@@ -305,6 +341,10 @@ pub(super) async fn completions_stream(
         top_logprobs: None,
         timeout_at: None,
         token_tx,
+        // /v1/completions has no guard pipeline yet — the flag is
+        // created so the scheduler's emit_step type-checks cleanly,
+        // but never flipped.
+        cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     state.request_tx.send(request).await.map_err(|_| {

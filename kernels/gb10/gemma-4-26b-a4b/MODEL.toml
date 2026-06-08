@@ -41,24 +41,47 @@ mtp_layers = 0
 
 effective_context = 16384
 
+# 2026-05-24 empirical band-aid (same as Gemma-4-31B sibling).
+# Kept Google's top_k=64. Lowered temp to 0.6/0.7. rep_pen=1.1 + dry=0.5.
 [sampling.thinking_text]
 temperature = 0.6
 top_p = 0.95
-top_k = 20
+top_k = 64
+presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; Google ships penalty-free — band-aid removed (was PASS 6/6, keep gentle)
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 64
+presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; Google ships penalty-free — band-aid removed (was PASS 6/6, keep gentle)
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [sampling.non_thinking]
 temperature = 0.7
 top_p = 0.95
-top_k = 20
+top_k = 64
+presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; Google ships penalty-free — band-aid removed (was PASS 6/6, keep gentle)
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [sampling.tools]
 temperature = 0.6
 top_p = 0.95
-top_k = 20
+top_k = 64
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; Google ships penalty-free — band-aid removed (was PASS 6/6, keep gentle)
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [behavior]
 thinking_in_tools = true
-max_thinking_budget = 512
+# 2026-05-23 sweep: 512 → 2048. Matches Qwen3.6-35B-A3B after F1
+# removal; chain-of-thought reasoning needs the headroom and the
+# safety cap in api/chat/thinking.rs caps content side anyway.
+max_thinking_budget = 2048
 # BF16 KV cache default — large final norm weights (mean=29, max=588) produce
 # K/V values exceeding FP8 E4M3 range (±448). Even with calibration, FP8
 # precision is insufficient for this model. vLLM also uses BF16 for Gemma 4.

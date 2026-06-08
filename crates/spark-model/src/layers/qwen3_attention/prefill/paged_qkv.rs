@@ -49,12 +49,44 @@ impl Qwen3AttentionLayer {
             ctx,
             stream,
         )?;
+        // ATLAS_OP_DUMP hook: q_proj output (last token, BF16 → f32).
+        // For gated Qwen3.6, q_proj_dim = 2*q_dim (Q+Gate interleaved).
+        // We dump the FULL Q+Gate buffer; the HF reference will only
+        // contain the deinterleaved Q so partial cosine on first half
+        // is the comparable metric.
+        super::super::op_dump::dump_bf16(
+            ctx.gpu,
+            qg_out,
+            (num_tokens - 1) * q_proj_dim * bf16,
+            q_proj_dim,
+            self.attn_layer_idx,
+            "q_proj_full",
+            stream,
+        )?;
 
         let k_contiguous = ctx.buffers.ssm_qkvz();
         self.prefill_one_proj(Proj::K, normed, k_contiguous, n, nkv * hd, h, ctx, stream)?;
+        super::super::op_dump::dump_bf16(
+            ctx.gpu,
+            k_contiguous,
+            (num_tokens - 1) * kv_dim * bf16,
+            kv_dim,
+            self.attn_layer_idx,
+            "k_proj",
+            stream,
+        )?;
 
         let v_contiguous = k_contiguous.offset(num_tokens * kv_dim * bf16);
         self.prefill_one_proj(Proj::V, normed, v_contiguous, n, nkv * hd, h, ctx, stream)?;
+        super::super::op_dump::dump_bf16(
+            ctx.gpu,
+            v_contiguous,
+            (num_tokens - 1) * kv_dim * bf16,
+            kv_dim,
+            self.attn_layer_idx,
+            "v_proj",
+            stream,
+        )?;
         Ok(())
     }
 
@@ -94,7 +126,51 @@ impl Qwen3AttentionLayer {
             ),
         };
 
-        if let Some(fp8t) = fp8w_t {
+        let force_w8a8 = matches!(
+            std::env::var("ATLAS_FP8_W8A8").ok().as_deref(),
+            Some("1")
+        );
+        // W8A8 + FP32 epilogue: requires NON-transposed FP8 weights with
+        // block scales (matches the kernel signature). The attn layer stores
+        // those via set_fp8_weights — accessible via weight_opt.as_fp8().
+        if force_w8a8
+            && let Some(fp8w) = weight_opt.and_then(|w| w.as_fp8())
+            && self.per_token_group_quant_fp8_k.0 != 0
+            && self.fp8_gemm_t_blockscaled_k.0 != 0
+        {
+            let m = n as usize;
+            let k_dim = h as usize;
+            let a_fp8_bytes = m * k_dim;
+            let a_scale_bytes = m * (k_dim / 128) * 4;
+            let a_fp8_buf = ctx.gpu.alloc(a_fp8_bytes)?;
+            let a_scale_buf = ctx.gpu.alloc(a_scale_bytes)?;
+            ops::per_token_group_quant_fp8(
+                ctx.gpu,
+                self.per_token_group_quant_fp8_k,
+                normed,
+                a_fp8_buf,
+                a_scale_buf,
+                n,
+                h,
+                stream,
+            )?;
+            ops::fp8_gemm_t_blockscaled(
+                ctx.gpu,
+                self.fp8_gemm_t_blockscaled_k,
+                a_fp8_buf,
+                a_scale_buf,
+                fp8w.weight,
+                fp8w.row_scale,
+                out,
+                n,
+                out_dim,
+                h,
+                stream,
+            )?;
+            ctx.gpu.synchronize(stream)?;
+            ctx.gpu.free(a_fp8_buf)?;
+            ctx.gpu.free(a_scale_buf)?;
+        } else if let Some(fp8t) = fp8w_t {
             ops::w8a16_gemm_t(
                 ctx.gpu,
                 self.w8a16_gemm_t_k,
@@ -178,6 +254,10 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         } else {
+            // BF16 dense fallback. For native-FP8 models with
+            // ATLAS_FP8_DEQUANT_ATTN_TO_BF16=1, `dense` (= attn.{q,k,v}_proj)
+            // holds the FP8→BF16 dequanted weight; otherwise it is the
+            // model's native dense weight.
             ops::dense_gemm(
                 ctx.gpu,
                 self.dense_gemm_k,

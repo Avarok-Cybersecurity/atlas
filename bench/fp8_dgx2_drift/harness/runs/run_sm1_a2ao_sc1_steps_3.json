@@ -1,0 +1,49 @@
+{
+  "tier": "sm1_a2ao_sc1_steps",
+  "run": 3,
+  "wall_time_s": 360.06728863716125,
+  "opencode": {
+    "events_total": 73,
+    "stderr_bytes": 0
+  },
+  "filesystem": {
+    "files_written": [
+      "Cargo.toml",
+      "Cargo.tomlEOF[package]name = \"axum-pingpong\"version = \"0.1.0\"edition = \"2024\"[dependencies]axum ={ version =\" 7\", features=[\"json\"] }serde={ version =\" 8\", features=[\"derive\"]}tokio={ version=\" 8\",features=[\"full\"]}EOFcat",
+      "Cargo.tomlEOF[package]name=\"axum-pingpong\"version=\"0.1.0\"edition=\"2024\"[dependencies]axum ={version=\"7\",features=[\"json\"]}serde={version=\"8\",features=[\"derive\"]}tokio={version=\"8\",features=[\"full\"]}EOFcat"
+    ],
+    "files_count": 3
+  },
+  "cargo": {
+    "cargo_toml_present": true,
+    "cargo_toml_valid": false,
+    "cargo_toml_error": "Expected newline or end of document after a statement (at line 8, column 45)",
+    "cargo_toml_has_package_name": false
+  },
+  "tool_calls": {
+    "total": 18,
+    "by_tool": {
+      "bash": 16,
+      "write": 1,
+      "read": 1
+    }
+  },
+  "drift": {
+    "write_calls": 1,
+    "write_empty_path": 0,
+    "write_path_drift_from_target": 0,
+    "write_path_has_literal_space": 0,
+    "write_content_starts_with_lean": 0,
+    "write_content_is_bash_command": 0,
+    "write_content_xml_attr_leak": 0,
+    "write_content_newlines_collapsed_toml": 1
+  },
+  "atlas": {
+    "ws1_mask_active_fires": 28,
+    "b1_drift_gauge_fires": 2,
+    "tier_5c_retries": 0,
+    "a2_fuzzy_repair_fires": 0,
+    "doom_loop_trips": 0,
+    "tool_call_lines": 18
+  }
+}

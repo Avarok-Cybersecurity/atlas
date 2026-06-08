@@ -139,9 +139,41 @@ pub(super) fn fp8_e4m3_to_f32(bits: u8) -> f32 {
     FP8_E4M3_LUT[bits as usize]
 }
 
-/// Convert f32 to BF16 (truncation, no rounding).
+/// Convert f32 to BF16 with IEEE-754 round-to-nearest-even.
+///
+/// SSOT-paired with `atlas_quant::fp8::f32_to_bf16`: both implement the
+/// same RNE algorithm and must stay byte-identical to PyTorch's
+/// `torch.float32 -> torch.bfloat16` cast. The CUDA-side mirror is
+/// `__float2bfloat16_rn` in
+/// `kernels/gb10/common/moe_fp8_grouped_gemm.cu`.
+///
+/// Phase 2b (Atlas FP8 dequant audit, 2026-05-24): replaced the
+/// truncation `(bits >> 16) as u16` with proper ties-to-even rounding.
+/// Phase 2a measurement showed Atlas-vs-canonical-dequant mean cos =
+/// 0.969 driven primarily by this rounding bias accumulating across
+/// 31745 dequanted tensors of Qwen3.6-35B-FP8.
+///
+/// Called by `dequant_fp8_blockscaled_to_bf16` (load-time shared-expert
+/// dequant) AND `dequant_nvfp4_to_bf16` (NVFP4 -> BF16 path), so the
+/// fix applies uniformly across all quantization formats that route
+/// through this helper.
+#[inline(always)]
 pub(super) fn f32_to_bf16(val: f32) -> u16 {
-    (val.to_bits() >> 16) as u16
+    // Phase 2c day-2 bisect: ATLAS_DISABLE_RNE=1 reverts the Phase 2b
+    // round-to-nearest-even patch back to truncation. Used to isolate
+    // whether RNE accounts for the observed cosine regression vs the
+    // May 23 rne baseline.
+    if std::env::var("ATLAS_DISABLE_RNE").is_ok() {
+        return (val.to_bits() >> 16) as u16;
+    }
+    let bits = val.to_bits();
+    if val.is_nan() {
+        let sign = ((bits >> 16) & 0x8000) as u16;
+        return sign | 0x7FC0;
+    }
+    let lsb = (bits >> 16) & 1;
+    let rounding_bias = 0x7FFFu32 + lsb;
+    (bits.wrapping_add(rounding_bias) >> 16) as u16
 }
 
 /// Load dense FFN weights (gate_proj, up_proj, down_proj) as NVFP4.

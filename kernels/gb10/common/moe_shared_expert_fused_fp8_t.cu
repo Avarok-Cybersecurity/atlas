@@ -2,7 +2,7 @@
 //
 // Transposed-layout decode MoE — FP8 (single-token) variant. Companion
 // to moe_shared_expert_fused_t.cu but with native FP8 expert weights
-// (1 byte per element, no NVFP4 nibble packing) + BF16 block scales.
+// (1 byte per element, no NVFP4 nibble packing) + FP32 block scales (widened at load).
 //
 // Weight layout `[K, N]` FP8 (transposed from `[N, K]`).
 // Scale layout `[K/FP8_BLOCK, N/FP8_BLOCK]` BF16
@@ -24,10 +24,10 @@ extern "C" __global__ void moe_expert_gate_up_shared_fp8_t(
     __nv_bfloat16* __restrict__ up_out,
     const unsigned int* __restrict__ expert_indices,
     const unsigned char* __restrict__ sh_gate_t_weight,
-    const __nv_bfloat16* __restrict__ sh_gate_t_block_scale,
+    const float* __restrict__ sh_gate_t_block_scale,
     __nv_bfloat16* __restrict__ sh_gate_out,
     const unsigned char* __restrict__ sh_up_t_weight,
-    const __nv_bfloat16* __restrict__ sh_up_t_block_scale,
+    const float* __restrict__ sh_up_t_block_scale,
     __nv_bfloat16* __restrict__ sh_up_out,
     unsigned int N, unsigned int K, unsigned int top_k
 ) {
@@ -36,7 +36,7 @@ extern "C" __global__ void moe_expert_gate_up_shared_fp8_t(
     const bool is_shared = (expert_slot == top_k);
 
     const unsigned char* B_weight;
-    const __nv_bfloat16* B_block_scale;
+    const float* B_block_scale;
     __nv_bfloat16* C;
 
     if (is_shared) {
@@ -49,11 +49,11 @@ extern "C" __global__ void moe_expert_gate_up_shared_fp8_t(
         const unsigned int expert_id = expert_indices[expert_slot];
         if (proj == 0) {
             B_weight = (const unsigned char*)gate_weight_t_ptrs[expert_id];
-            B_block_scale = (const __nv_bfloat16*)gate_block_scale_t_ptrs[expert_id];
+            B_block_scale = (const float*)gate_block_scale_t_ptrs[expert_id];
             C = gate_out;
         } else {
             B_weight = (const unsigned char*)up_weight_t_ptrs[expert_id];
-            B_block_scale = (const __nv_bfloat16*)up_block_scale_t_ptrs[expert_id];
+            B_block_scale = (const float*)up_block_scale_t_ptrs[expert_id];
             C = up_out;
         }
         if (B_weight == 0) {
@@ -74,7 +74,7 @@ extern "C" __global__ void moe_expert_gate_up_shared_fp8_t(
 
     for (unsigned int k_block = 0; k_block < k_blocks; k_block++) {
         // Transposed scale layout: [k_blocks, n_blocks]
-        float sc = __bfloat162float(B_block_scale[(unsigned long long)k_block * n_blocks + n_block]);
+        float sc = B_block_scale[(unsigned long long)k_block * n_blocks + n_block];
         const unsigned int k_start = k_block * FP8_BLOCK;
         const unsigned int k_end = (k_start + FP8_BLOCK) < K ? (k_start + FP8_BLOCK) : K;
         #pragma unroll 8
@@ -104,7 +104,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_fp8_t(
     const __nv_bfloat16* __restrict__ sh_gate_in,
     const __nv_bfloat16* __restrict__ sh_up_in,
     const unsigned char* __restrict__ sh_down_t_weight,
-    const __nv_bfloat16* __restrict__ sh_down_t_block_scale,
+    const float* __restrict__ sh_down_t_block_scale,
     __nv_bfloat16* __restrict__ sh_down_out,
     unsigned int N, unsigned int K, unsigned int top_k
 ) {
@@ -112,7 +112,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_fp8_t(
     const bool is_shared = (expert_slot == top_k);
 
     const unsigned char* B_weight;
-    const __nv_bfloat16* B_block_scale;
+    const float* B_block_scale;
     const __nv_bfloat16* g_ptr;
     const __nv_bfloat16* u_ptr;
     if (is_shared) {
@@ -121,7 +121,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_fp8_t(
     } else {
         const unsigned int expert_id = expert_indices[expert_slot];
         B_weight = (const unsigned char*)weight_t_ptrs[expert_id];
-        B_block_scale = (const __nv_bfloat16*)block_scale_t_ptrs[expert_id];
+        B_block_scale = (const float*)block_scale_t_ptrs[expert_id];
         g_ptr = gate_out + (unsigned long long)expert_slot * K;
         u_ptr = up_out + (unsigned long long)expert_slot * K;
         if (B_weight == 0) {
@@ -149,7 +149,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_fp8_t(
     float acc = 0.0f;
 
     for (unsigned int k_block = 0; k_block < k_blocks; k_block++) {
-        float sc = __bfloat162float(B_block_scale[(unsigned long long)k_block * n_blocks + n_block]);
+        float sc = B_block_scale[(unsigned long long)k_block * n_blocks + n_block];
         const unsigned int k_start = k_block * FP8_BLOCK;
         const unsigned int k_end = (k_start + FP8_BLOCK) < K ? (k_start + FP8_BLOCK) : K;
         #pragma unroll 8

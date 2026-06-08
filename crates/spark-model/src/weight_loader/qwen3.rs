@@ -108,19 +108,32 @@ impl ModelWeightLoader for Qwen3WeightLoader {
             } else {
                 load_moe(store, &lp, config.num_experts, gpu, config, variant, qctx)?
             };
-            let gate_nvfp4 = quantize_to_nvfp4(
-                &moe_weights.gate,
-                config.num_experts,
-                h,
-                gpu,
-                absmax_k,
-                quantize_k,
-                stream,
-            )?;
+            // ATLAS_BF16_ROUTER=1: keep the MoE router/gate in BF16 (skip the
+            // NVFP4 quant) so expert SELECTION is decided by full-precision gate
+            // logits. The bf16moe experiment showed dequanting EXPERTS to BF16
+            // eliminates the empty_path tool-call drift (FP8 flips were the seed)
+            // but halves decode throughput. The router is a tiny num_experts×h
+            // GEMM, so making ONLY it high-precision targets the expert-selection
+            // flips at ~zero throughput cost (experts stay FP8). The forward
+            // (dense_gemv/dense_gemm) already falls back to weights.gate (BF16)
+            // when gate_nvfp4 is None. Explicit opt-in (PCND); default unchanged.
+            let gate_nvfp4 = if std::env::var("ATLAS_BF16_ROUTER").as_deref() == Ok("1") {
+                None
+            } else {
+                Some(quantize_to_nvfp4(
+                    &moe_weights.gate,
+                    config.num_experts,
+                    h,
+                    gpu,
+                    absmax_k,
+                    quantize_k,
+                    stream,
+                )?)
+            };
             let mut moe_layer = MoeLayer::new(
                 moe_weights,
                 config.num_experts,
-                Some(gate_nvfp4),
+                gate_nvfp4,
                 gpu,
                 config,
             )?;
@@ -144,6 +157,12 @@ impl ModelWeightLoader for Qwen3WeightLoader {
                     row_scale: DevicePtr::NULL,
                     n: 0,
                     k: 0,
+                    // Placeholder for absent shared-expert tensor: the
+                    // calling site checks `weight == NULL` before
+                    // launching any kernel, so the tag is conventional.
+                    // Match the block-scaled FP8 loader the other
+                    // arms use so the format is consistent.
+                    scale_format: crate::weight_map::WeightQuantFormat::Fp8BlockScaled,
                 };
                 let sh_gate =
                     load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.gate_proj"), gpu);

@@ -1,0 +1,74 @@
+{
+  "tier": "pfxfix",
+  "run": 1,
+  "wall_time_s": 360.0689902305603,
+  "opencode": {
+    "events_total": 61,
+    "stderr_bytes": 0
+  },
+  "filesystem": {
+    "files_written": [
+      "Cargo.toml",
+      "src/main.rs"
+    ],
+    "files_count": 2
+  },
+  "cargo": {
+    "cargo_toml_present": true,
+    "cargo_toml_valid": true,
+    "cargo_toml_error": "",
+    "cargo_toml_has_package_name": true
+  },
+  "webserver": {
+    "webserver_ok": false,
+    "build_ok": false,
+    "build_error": "    Updating crates.io index\n     Locking 61 packages to latest compatible versions\n      Adding matchit v0.8.4 (available: v0.8.6)\n   Compiling libc v0.2.186\n   Compiling proc-macro2 v1.0.106\n   Compiling itoa v1.0.18\n   Compiling pin-project-lite v0.2.17\n   Compiling unicode-ident v1.0.24\n   Compiling bytes v1.11.1\n   Compiling quote v1.0.45\n   Compiling futures-core v0.3.32\n   Compiling parking_lot_core v0.9.12\n   Compiling cfg-if v1.0.4\n   Compiling smallvec v1.15.1\n   Compiling scopeguard v1.2.0\n   Compiling serde_core v1.0.228\n   Compiling once_cell v1.21.4\n   Compiling httparse v1.10.1\n",
+    "bind_ok": false,
+    "ping_ok": false,
+    "ping_response": ""
+  },
+  "tool_calls": {
+    "total": 15,
+    "by_tool": {
+      "write": 11,
+      "bash": 2,
+      "read": 2
+    },
+    "tool_calls_per_turn": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "turns_observed": 15
+  },
+  "drift": {
+    "write_calls": 11,
+    "write_empty_path": 0,
+    "write_path_drift_from_target": 0,
+    "write_path_has_literal_space": 0,
+    "write_content_starts_with_lean": 0,
+    "write_content_is_bash_command": 0,
+    "write_content_xml_attr_leak": 0,
+    "write_content_newlines_collapsed_toml": 1
+  },
+  "atlas": {
+    "ws1_mask_active_fires": 6,
+    "b1_drift_gauge_fires": 2,
+    "tier_5c_retries": 1,
+    "a2_fuzzy_repair_fires": 0,
+    "doom_loop_trips": 0,
+    "tool_call_lines": 14
+  }
+}

@@ -1,0 +1,4 @@
+# Phase C + SSM-rollback build over the atlas-gb10:fix runtime layers.
+FROM atlas-gb10:fix
+COPY spark-fastbin /usr/local/bin/spark
+COPY jinja-templates/ /jinja-templates/

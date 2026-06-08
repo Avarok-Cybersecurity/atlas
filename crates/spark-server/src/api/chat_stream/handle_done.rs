@@ -8,8 +8,8 @@ use axum::response::sse::Event;
 use crate::openai::{ChatCompletionChunk, Usage};
 use crate::tool_parser;
 
-use super::super::failures::{bump_f12_tool_call_count, flush_content_sanitizer};
 use super::super::sanitizer::sanitize_content_chunk;
+use super::super::stream_guards::flush_content_sanitizer;
 use super::ctx::StreamCtx;
 use super::state::StreamState;
 use super::tool_handlers::{
@@ -31,6 +31,85 @@ pub(super) fn handle_done(
 ) -> SseVec {
     let mut sse_events: SseVec = Vec::new();
 
+    // ── Stop-string hold-back flush ─────────────────────────────────
+    // vLLM's `IncrementalDetokenizer` releases any bytes still in the
+    // hold-back window when the stream finalises (see
+    // `vllm/v1/engine/detokenizer.py`). Mirror that here: if a match
+    // never triggered (`stop_string_triggered == false`) the tail
+    // bytes are legitimate output and must be forwarded. Route them
+    // through the active detector / sanitizer so the same envelope
+    // and leak-marker rules apply — without this, a sub-stop-string
+    // suffix that happens to contain a tool-call fragment would
+    // bypass the live pipeline.
+    if !ctx.stop_strings.is_empty()
+        && !state.stop_string_triggered
+        && state.stop_string_emitted_len < state.accumulated_content.len()
+    {
+        let tail = state.accumulated_content[state.stop_string_emitted_len..].to_string();
+        state.stop_string_emitted_len = state.accumulated_content.len();
+        if !tail.is_empty() {
+            if let Some(det) = state.detector.as_mut() {
+                let outputs = det.process(&tail);
+                for output in outputs {
+                    match output {
+                        tool_parser::DetectorOutput::Content(text) => {
+                            let sanitized = sanitize_content_chunk(
+                                &text,
+                                &mut state.tag_scan_buf,
+                                &mut state.suppressing_param_leak,
+                                &mut state.inside_envelope,
+                                &ctx.leak_markers,
+                            );
+                            if !sanitized.is_empty() {
+                                let chunk = ChatCompletionChunk::content_chunk(
+                                    &ctx.model,
+                                    &ctx.id,
+                                    sanitized,
+                                );
+                                sse_events.push(Ok(Event::default()
+                                    .data(serde_json::to_string(&chunk).unwrap_or_default())));
+                            }
+                        }
+                        tool_parser::DetectorOutput::ToolCall(mut tc, tc_idx) => {
+                            handle_complete_tool_call(state, ctx, &mut tc, tc_idx, &mut sse_events);
+                        }
+                        tool_parser::DetectorOutput::ToolCallStart {
+                            id: tc_id,
+                            name,
+                            idx,
+                        } => {
+                            handle_tool_call_start(state, ctx, tc_id, name, idx, &mut sse_events);
+                        }
+                        tool_parser::DetectorOutput::ToolCallDelta { args, idx } => {
+                            handle_tool_call_delta(state, ctx, args, idx, &mut sse_events);
+                        }
+                        tool_parser::DetectorOutput::ToolCallEnd { idx } => {
+                            handle_tool_call_end(state, ctx, idx);
+                        }
+                    }
+                }
+            } else {
+                let sanitized = sanitize_content_chunk(
+                    &tail,
+                    &mut state.tag_scan_buf,
+                    &mut state.suppressing_param_leak,
+                    &mut state.inside_envelope,
+                    &ctx.leak_markers,
+                );
+                if !sanitized.is_empty() {
+                    if state.refusal_scan_buf.len() < 16_384 {
+                        state.refusal_scan_buf.push_str(&sanitized);
+                    }
+                    let chunk =
+                        ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized);
+                    sse_events.push(Ok(
+                        Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
+                    ));
+                }
+            }
+        }
+    }
+
     // ── Detector flush ──────────────────────────────────────────────
     if state.detector.is_some() {
         let outputs = {
@@ -49,7 +128,8 @@ pub(super) fn handle_done(
                     );
                     if !sanitized.is_empty() {
                         let chunk =
-                            ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized);
+                            ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized)
+                                .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
                         sse_events.push(Ok(Event::default()
                             .data(serde_json::to_string(&chunk).unwrap_or_default())));
                     }
@@ -84,7 +164,8 @@ pub(super) fn handle_done(
         if state.refusal_scan_buf.len() < 16_384 {
             state.refusal_scan_buf.push_str(&tail);
         }
-        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, tail);
+        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, tail)
+            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
         sse_events.push(Ok(
             Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
         ));
@@ -114,41 +195,18 @@ pub(super) fn handle_done(
         response_tokens_per_second: tps,
     };
 
-    // ── Last-resort tool salvage ────────────────────────────────────
-    if !state.salvaged_tool_call && !state.detector.as_ref().is_some_and(|d| d.has_tool_calls()) {
-        let salvaged =
-            crate::tool_salvage::salvage(&state.refusal_scan_buf, &ctx.tool_defs_for_backfill);
-        for (idx, tc) in salvaged.iter().enumerate() {
-            tracing::warn!(
-                tool = %tc.function.name,
-                block_index = idx,
-                "tool_salvage: emitting synthetic tool_call from prose",
-            );
-            bump_f12_tool_call_count(
-                &mut state.tool_calls_emitted_count,
-                ctx.max_tool_calls_per_response,
-                &mut state.stop_string_triggered,
-            );
-            let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, idx);
-            sse_events.push(Ok(
-                Event::default().data(serde_json::to_string(&start).unwrap_or_default())
-            ));
-            let frag = ChatCompletionChunk::tool_call_args_fragment(
-                &ctx.model,
-                &ctx.id,
-                idx,
-                &tc.function.arguments,
-            );
-            sse_events.push(Ok(
-                Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
-            ));
-        }
-        if !salvaged.is_empty() {
-            state.salvaged_tool_call = true;
-        }
-    }
-
-    let fr = if state.detector.as_ref().is_some_and(|d| d.has_tool_calls())
+    let fr = if state.tool_loop_capped {
+        // A tool-call loop guard (Bug-2 name-run cap, F11 within-dedup,
+        // F5 cross-flush dedup, or F44 perm-fail) forcibly ended the
+        // response. Signal "length" — OpenAI's slot for a truncated
+        // response — so agent clients can break their outer retry
+        // loop. Without this override the response otherwise looks like
+        // a normal "tool_calls" completion (tool calls *were* emitted)
+        // and agents (opencode, etc.) cheerfully run the tools and ask
+        // the model to continue, perpetuating the loop one round at a
+        // time.
+        "length"
+    } else if state.detector.as_ref().is_some_and(|d| d.has_tool_calls())
         || state.salvaged_tool_call
     {
         "tool_calls"
@@ -175,11 +233,16 @@ pub(super) fn handle_done(
         let usage_chunk = ChatCompletionChunk::usage_only_chunk(&ctx.model, &ctx.id, usage.clone());
         let json = serde_json::to_string(&usage_chunk).unwrap_or_default();
         sse_events.push(Ok(Event::default().data(json)));
-        let final_chunk = ChatCompletionChunk::final_chunk_no_usage(&ctx.model, &ctx.id, fr);
+        // Residual: tokens whose decoded text was buffered/suppressed
+        // and never rode a content chunk. Stamping them here keeps
+        // Σ token_ids == completion_tokens exactly.
+        let final_chunk = ChatCompletionChunk::final_chunk_no_usage(&ctx.model, &ctx.id, fr)
+            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
         let json = serde_json::to_string(&final_chunk).unwrap_or_default();
         sse_events.push(Ok(Event::default().data(json)));
     } else {
-        let chunk = ChatCompletionChunk::done_chunk(&ctx.model, &ctx.id, fr, usage);
+        let chunk = ChatCompletionChunk::done_chunk(&ctx.model, &ctx.id, fr, usage)
+            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
         let json = serde_json::to_string(&chunk).unwrap_or_default();
         sse_events.push(Ok(Event::default().data(json)));
     }
@@ -212,6 +275,7 @@ pub(super) fn handle_done(
             "usage": usage_for_dump,
             "stop_string_triggered": state.stop_string_triggered,
             "loop_watchdog_triggered": state.loop_watchdog_triggered,
+            "tool_loop_capped": state.tool_loop_capped,
             "_note": "Synthesized from post-sanitizer accumulators; \
                       per-chunk capture is a follow-up.",
         });

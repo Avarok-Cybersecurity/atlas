@@ -122,14 +122,24 @@ pub enum Nvfp4Variant {
     /// Sehyo/compressed-tensors: weight_packed, weight_global_scale, input_global_scale.
     /// Attention/SSM projections are NVFP4 quantized.
     CompressedTensors,
-    /// FP8 block-scaled (e.g. Qwen/Qwen3.5-35B-A3B-FP8):
+    /// FP8 block-scaled (e.g. Qwen/Qwen3.5-35B-A3B-FP8, Qwen/Qwen3.6-35B-A3B-FP8):
     /// weight (float8_e4m3fn) + weight_scale_inv (BF16 per-`[128,128]`-block).
-    /// All quantized weights get dequanted to BF16 at load time, then runtime-quantized to NVFP4.
+    ///
+    /// Loaded **NATIVELY as FP8** in Qwen3 and Qwen3.5/3.6 model families.
+    /// Attention uses `w8a16_gemv` (decode) + `w8a16_gemm` (prefill).
+    /// MoE uses the FP8 fused grouped-GEMM batch1/2/3 path.
+    /// SSM uses `w8a16_gemv` decode + `fp8_gemm_n128` prefill (single-scale).
+    /// No silent FP8→BF16→NVFP4 triple-conversion.
+    ///
+    /// Historical note: the variant name retains "Dequanted" because the
+    /// `Bf16Raw` cousin and the pre-2026-05-24 NVFP4 detour did dequant on
+    /// load. The dispatch tables in `qwen35/load_layers.rs` (`LayerType::
+    /// FullAttention if native_fp8`) and `qwen3.rs` (line 176) now branch
+    /// to native FP8 paths when `quant_format == QuantFormat::Fp8`.
     Fp8Dequanted,
     /// Raw BF16/FP16 fine-tunes (e.g. samuelcardillo/Carnice-MoE-35B-A3B):
     /// only `.weight` tensors exist (no quantization metadata). Runtime-quantize
-    /// from BF16 to NVFP4 at load time, like Fp8Dequanted but without the FP8
-    /// dequant step. Quality is suboptimal vs. a pre-calibrated NVFP4 release —
-    /// the user gets a warning at startup.
+    /// from BF16 to NVFP4 at load time. Quality is suboptimal vs. a
+    /// pre-calibrated NVFP4 release — the user gets a warning at startup.
     Bf16Raw,
 }

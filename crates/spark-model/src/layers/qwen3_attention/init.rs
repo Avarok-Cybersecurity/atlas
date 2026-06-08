@@ -193,22 +193,20 @@ impl Qwen3AttentionLayer {
             v_fp8w_t: None,
             o_fp8w_t: None,
             w8a16_gemm_t_k: super::super::try_kernel(gpu, "w8a16_gemm_t", "w8a16_gemm_t"),
+            w8a16_gemm_t_pipelined_k: super::super::try_kernel(gpu, "w8a16_gemm_t", "w8a16_gemm_t_pipelined"),
+            per_token_group_quant_fp8_k: super::super::try_kernel(
+                gpu, "per_token_group_quant_fp8", "per_token_group_quant_fp8",
+            ),
+            fp8_gemm_t_blockscaled_k: super::super::try_kernel(
+                gpu, "fp8_gemm_t_blockscaled", "fp8_gemm_t_blockscaled",
+            ),
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
-            rms_norm_residual_k: if config.use_fp32_residual() {
-                if config.model_type == "gemma4" {
-                    gpu.kernel("norm", "rms_norm_residual_f32_abs")
-                        .or_else(|_| gpu.kernel("norm", "rms_norm_residual"))?
-                } else {
-                    gpu.kernel("norm", "rms_norm_residual_f32")
-                        .or_else(|_| gpu.kernel("norm", "rms_norm_residual"))?
-                }
-            } else {
-                gpu.kernel("norm", "rms_norm_residual")?
-            },
+            rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w8a16_gemv_k: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
+            w8a16_gemm_pipelined_k: super::super::try_kernel(gpu, "w8a16_gemm_pipelined", "w8a16_gemm_pipelined"),
             w4a16_gemv_dual_k: gpu.kernel("w4a16_gemv_fused", "w4a16_gemv_dual")?,
             rope_k: gpu.kernel("rope", "rope_forward")?,
             rope_mrope_interleaved_k: super::super::try_kernel(
@@ -219,6 +217,21 @@ impl Qwen3AttentionLayer {
             rope_yarn_k: super::super::try_kernel(gpu, "rope", "rope_forward_yarn"),
             rope_proportional_k: super::super::try_kernel(gpu, "rope", "rope_forward_proportional"),
             reshape_cache_k: gpu.kernel(reshape_mod, reshape_fn)?,
+            fused_k_norm_rope_cache_write_bf16_k: super::super::try_kernel(
+                gpu,
+                "fused_k_norm_rope_cache",
+                "fused_k_norm_rope_cache_write_bf16",
+            ),
+            fused_k_norm_rope_mrope_cache_write_bf16_k: super::super::try_kernel(
+                gpu,
+                "fused_k_norm_rope_cache",
+                "fused_k_norm_rope_mrope_cache_write_bf16",
+            ),
+            reshape_and_cache_flash_v_only_k: super::super::try_kernel(
+                gpu,
+                "reshape_and_cache",
+                "reshape_and_cache_flash_v_only",
+            ),
             wht_bf16_k: super::super::try_kernel(gpu, "wht_bf16", "wht_bf16_inplace"),
             paged_decode_k: gpu.kernel(decode_mod, decode_fn)?,
             paged_decode_512_k: match kv_dtype {
@@ -342,32 +355,13 @@ impl Qwen3AttentionLayer {
                 KvCacheDtype::Turbo3 | KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8 => None,
                 _ => Some(gpu.kernel("paged_decode_fp8", "paged_decode_attn_reduce_fp8")?),
             },
-            residual_add_k: if config.use_fp32_residual() {
-                gpu.kernel("norm", "f32_residual_add")
-                    .or_else(|_| gpu.kernel("residual_add", "bf16_residual_add"))?
-            } else {
-                gpu.kernel("residual_add", "bf16_residual_add")?
-            },
+            residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             // Gemma-4 rms-norm uses the absolute formula `out = x * rms * w`.
-            rms_norm_f32_in_k: if config.use_fp32_residual() && config.model_type == "gemma4" {
-                super::super::try_kernel(gpu, "norm", "rms_norm_f32_in_abs")
-            } else {
-                KernelHandle(0)
-            },
+            rms_norm_f32_in_k: KernelHandle(0),
             sigmoid_gate_mul_k: gpu.kernel("residual_add", "sigmoid_gate_mul")?,
             deinterleave_qg_k: gpu.kernel("ssm_preprocess", "deinterleave_qg")?,
             w4a16_gemv_qg_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qg")?,
-            residual_add_rms_norm_k: if config.use_fp32_residual() {
-                if config.model_type == "gemma4" {
-                    gpu.kernel("norm", "residual_add_rms_norm_f32_abs")
-                        .or_else(|_| gpu.kernel("norm", "residual_add_rms_norm"))?
-                } else {
-                    gpu.kernel("norm", "residual_add_rms_norm_f32")
-                        .or_else(|_| gpu.kernel("norm", "residual_add_rms_norm"))?
-                }
-            } else {
-                gpu.kernel("norm", "residual_add_rms_norm")?
-            },
+            residual_add_rms_norm_k: gpu.kernel("norm", "residual_add_rms_norm")?,
             w4a16_gemv_qg_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qg_batch2")?,
             w4a16_gemv_dual_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_dual_batch2")?,
             w4a16_gemv_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,

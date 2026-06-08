@@ -4,9 +4,51 @@
 
 use super::*;
 
+// Periodic accept-distribution summary (P4, 2026-05-24). Mirrors K=3.
+const K4_SUMMARY_PERIOD: u64 = 100;
+static K4_ACCEPT_3: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static K4_ACCEPT_2: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static K4_ACCEPT_1: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static K4_ACCEPT_0: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[inline]
+fn k4_record_outcome(num_accepted: usize, seq_len: usize) {
+    let counter = match num_accepted {
+        3 => &K4_ACCEPT_3,
+        2 => &K4_ACCEPT_2,
+        1 => &K4_ACCEPT_1,
+        _ => &K4_ACCEPT_0,
+    };
+    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let total = K4_ACCEPT_3.load(std::sync::atomic::Ordering::Relaxed)
+        + K4_ACCEPT_2.load(std::sync::atomic::Ordering::Relaxed)
+        + K4_ACCEPT_1.load(std::sync::atomic::Ordering::Relaxed)
+        + K4_ACCEPT_0.load(std::sync::atomic::Ordering::Relaxed);
+    if total >= K4_SUMMARY_PERIOD {
+        let a3 = K4_ACCEPT_3.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let a2 = K4_ACCEPT_2.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let a1 = K4_ACCEPT_1.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let a0 = K4_ACCEPT_0.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let total = (a3 + a2 + a1 + a0).max(1);
+        let mean = (3 * a3 + 2 * a2 + a1) as f64 / total as f64;
+        tracing::info!(
+            "K4 summary: {a3} accept-3 / {a2} accept-2 / {a1} accept-1 / {a0} reject in last {total} steps (mean accepted={mean:.2}) seq_len={seq_len}"
+        );
+    }
+}
+
 /// K=4 verify: [last_token, draft1, draft2, draft3] → [v0, v1, v2, v3].
 /// Four outcomes: accept 0, 1, 2, or 3 drafts.
-pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_drafts: usize) {
+///
+/// `verify_ctx` plumbs special-token IDs to the pre-sample pipeline.
+/// See K=2 docstring + `verify_pipeline_helper`.
+pub fn step_verify_k4(
+    model: &dyn Model,
+    a: &mut ActiveSeq,
+    drafts: &[u32],
+    num_drafts: usize,
+    verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+) {
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
         a.finished = true;
@@ -16,7 +58,7 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
     let tokens_k4 = [a.last_token, drafts[0], drafts[1], drafts[2]];
 
     // EP: broadcast verify K=4 command + 4 tokens.
-    if let Err(e) = model.ep_broadcast_cmd(0xFFFFFFF4) {
+    if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, 0xFFFFFFF4) {
         tracing::error!("EP broadcast verify_k4 cmd: {e:#}");
         a.finished = true;
         return;
@@ -42,11 +84,19 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
     a.last_token_time = Instant::now();
     let [v0_argmax, v1_argmax, v2_argmax, v3_argmax] = result;
 
-    // Use argmax for speculative acceptance (see K=2 comment).
-    let v0 = v0_argmax;
-    let v1 = v1_argmax;
-    let v2 = v2_argmax;
-    let v3 = v3_argmax;
+    // Phase C-2 (2026-05-24): pre-sample pipeline per verify
+    // position. See K=2 docstring + `verify_pipeline_helper`.
+    let processed =
+        crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+            model,
+            &[v0_argmax, v1_argmax, v2_argmax, v3_argmax],
+            a,
+            verify_ctx,
+        );
+    let v0 = processed.first().copied().unwrap_or(v0_argmax);
+    let v1 = processed.get(1).copied().unwrap_or(v1_argmax);
+    let v2 = processed.get(2).copied().unwrap_or(v2_argmax);
+    let v3 = processed.get(3).copied().unwrap_or(v3_argmax);
 
     let num_accepted = if drafts[0] != v0 {
         0
@@ -132,10 +182,11 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             }
         }
         let propose_us = t_propose.elapsed().as_micros();
-        tracing::info!(
+        tracing::debug!(
             "K4 ACCEPT-3: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
+        k4_record_outcome(3, a.seq.seq_len);
     } else if num_accepted == 2 {
         a.seq.seq_len -= 1;
         a.seq.tokens.pop();
@@ -180,10 +231,11 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             }
         }
         let propose_us = t_propose.elapsed().as_micros();
-        tracing::info!(
+        tracing::debug!(
             "K4 ACCEPT-2: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
+        k4_record_outcome(2, a.seq.seq_len);
     } else if num_accepted == 1 {
         a.seq.seq_len -= 2;
         a.seq.tokens.pop();
@@ -226,10 +278,11 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             }
         }
         let propose_us = t_propose.elapsed().as_micros();
-        tracing::info!(
+        tracing::debug!(
             "K4 ACCEPT-1: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
+        k4_record_outcome(1, a.seq.seq_len);
     } else {
         a.seq.seq_len -= 3;
         a.seq.tokens.pop();
@@ -270,9 +323,10 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             }
         }
         let propose_us = t_propose.elapsed().as_micros();
-        tracing::info!(
+        tracing::debug!(
             "K4 REJECT: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
+        k4_record_outcome(0, a.seq.seq_len);
     }
 }

@@ -11,7 +11,9 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 use crate::layer::ForwardContext;
 use crate::layers::ops;
-use crate::weight_map::{ExpertWeight, Fp8ExpertWeight, Fp8Weight, MoeWeights, QuantizedWeight};
+use crate::weight_map::{
+    DenseWeight, ExpertWeight, Fp8ExpertWeight, Fp8Weight, MoeWeights, QuantizedWeight,
+};
 
 /// Device-side pointer table for one projection across all experts.
 ///
@@ -218,21 +220,50 @@ pub struct MoeLayer {
     moe_expert_gate_up_shared_fp8_batch3: KernelHandle,
     moe_expert_silu_down_shared_fp8_batch3: KernelHandle,
     moe_weighted_sum_blend_fp8_batch3: KernelHandle,
-    // FP8 grouped GEMM for sorted MoE prefill
+    // THE routed-expert FP8 grouped GEMM for sorted MoE prefill: grid-compaction
+    // (persistent 96-CTA grid over a COMPACTED (expert, m_tile, n_tile) work-list
+    // built by `moe_build_tile_worklist`). Handle may be 0 on images that don't
+    // ship the kernel.
     moe_fp8_grouped_gemm_k: KernelHandle,
-    // FP8 grouped GEMM v2 — coalesced B/A load thread-remap. Opt-in via
-    // ATLAS_FP8_MOE_COALESCED=1 env var. Kernel handle may be 0 on older
-    // images (then dispatch falls back to v1). Same signature as v1.
-    moe_fp8_grouped_gemm_v2_k: KernelHandle,
-    // Resolved once per layer from ATLAS_FP8_MOE_COALESCED env var.
-    fp8_moe_coalesced_enabled: bool,
+    // Builds the grouped-GEMM work-list (moe_build_tile_worklist, module "moe").
+    // Launched on the SAME stream as the grouped GEMM (read-after-write of
+    // total_tiles). Handle may be 0 on older images.
+    moe_build_tile_worklist_k: KernelHandle,
+    // W8A8 + FP32 epilogue MoE GEMM (vLLM-equivalent). Opt-in via
+    // ATLAS_FP8_W8A8=1. Requires per-token-quanted A_fp8 + a_scale.
+    moe_w8a8_grouped_gemm_k: KernelHandle,
+    per_token_group_quant_fp8_k: KernelHandle,
+    // Dense W8A8 (same kernel used by attention QKV/O proj) for shared-expert path.
+    fp8_gemm_t_blockscaled_k: KernelHandle,
+    // BF16 grouped GEMM — for FP8-source models dequanted to BF16 at load.
+    // Activates the high-precision MoE path that closes the per-layer
+    // 0.989 FP8 cosine ceiling. Handle may be 0 on images that don't ship
+    // the kernel; dispatch site is gated on Some(bf16_*_weight_ptrs).
+    moe_bf16_grouped_gemm_k: KernelHandle,
+    // Fused BF16 decode kernels (mirror moe_expert_*_shared_fp8 layout).
+    moe_expert_gate_up_shared_bf16_k: KernelHandle,
+    moe_expert_silu_down_shared_bf16_k: KernelHandle,
     w8a16_gemm_k: KernelHandle, // for shared expert FP8 prefill
+    w8a16_gemm_pipelined_k: KernelHandle, // ATLAS_W8A16_PIPELINED shared-expert variant
     // Fused gate GEMV + topK softmax (saves 1 kernel launch per layer)
     moe_gate_topk_fused_k: KernelHandle,
     // FP8 expert pointer tables (None when experts are NVFP4)
     fp8_gate_weight_ptrs: Option<Fp8ExpertPtrTable>,
     fp8_up_weight_ptrs: Option<Fp8ExpertPtrTable>,
     fp8_down_weight_ptrs: Option<Fp8ExpertPtrTable>,
+    // BF16 expert pointer tables — populated by the FP8-dequant-on-load
+    // path. When Some, the routed-expert dispatch in `forward_prefill_fp8`
+    // routes through `moe_bf16_grouped_gemm` instead of the FP8 grouped
+    // GEMM, eliminating the per-layer FP8 quantization ceiling.
+    bf16_gate_weight_ptrs: Option<DevicePtr>,
+    bf16_up_weight_ptrs: Option<DevicePtr>,
+    bf16_down_weight_ptrs: Option<DevicePtr>,
+    // BF16 shared expert weights — direct device pointers for the
+    // fused-decode dispatch. Mirrors `fp8_shared_expert` but with raw
+    // BF16 pointers (no scale).
+    bf16_shared_gate: Option<DevicePtr>,
+    bf16_shared_up: Option<DevicePtr>,
+    bf16_shared_down: Option<DevicePtr>,
     // FP8 shared expert weights (None when shared expert is NVFP4)
     fp8_shared_expert: Option<Fp8ExpertWeight>,
     // Phase 2.7 Tier C — Frankenstein dispatch flag.
@@ -255,8 +286,10 @@ mod forward_k2;
 mod forward_k3;
 mod forward_phase;
 mod forward_prefill;
+mod forward_prefill_bf16;
 mod forward_prefill_fp8;
 mod forward_prefill_phase;
+mod forward_prefill_routed;
 mod helpers_a;
 mod helpers_b;
 mod helpers_c;
@@ -338,6 +371,23 @@ fn build_ptr_table(
 ///
 /// FP8 experts store 2 arrays (weight + block_scale) per projection,
 /// vs NVFP4's 3 (packed + scale + scale2).
+/// Build a device-side BF16 pointer table for one projection across all
+/// experts. Used by the FP8-dequant-to-BF16 MoE path; one device pointer
+/// per expert pointing at that expert's `[N, K]` BF16 weight buffer.
+pub(crate) fn build_bf16_ptr_table(
+    experts: &[DenseWeight],
+    gpu: &dyn GpuBackend,
+) -> Result<DevicePtr> {
+    let n = experts.len();
+    let weight_bytes: Vec<u8> = experts
+        .iter()
+        .flat_map(|e| e.weight.0.to_le_bytes())
+        .collect();
+    let ptrs = gpu.alloc(n * 8)?;
+    gpu.copy_h2d(&weight_bytes, ptrs)?;
+    Ok(ptrs)
+}
+
 fn build_fp8_ptr_table(
     experts: &[Fp8ExpertWeight],
     proj: impl Fn(&Fp8ExpertWeight) -> &Fp8Weight,

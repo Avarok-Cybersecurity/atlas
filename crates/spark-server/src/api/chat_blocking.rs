@@ -18,7 +18,6 @@ use crate::openai::{ChatCompletionRequest, ChatCompletionResponse, Usage};
 use crate::tool_parser;
 
 use super::compact::openai_error_response;
-use super::failures::f60_disable_mtp_for_request;
 use super::inference_impl::{extract_thinking, strip_stop_sequences};
 use super::inference_types::{GrammarSpec, InferenceRequest};
 
@@ -101,6 +100,11 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
     let mut total_reasoning_tokens = 0u32;
     let mut total_cached_prompt_tokens = 0u32;
 
+    // Arc-wrap the prompt tokens ONCE. Per-choice scheduler requests
+    // and the Tier 5c retry path all share the same Arc — no Vec<u32>
+    // deep clones (~40 KB on a typical long-context opencode prompt).
+    let prompt_tokens = std::sync::Arc::new(prompt_tokens);
+
     for choice_idx in 0..n {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let request = InferenceRequest::Blocking {
@@ -129,9 +133,10 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
             stop_tokens: stop_tokens.clone(),
             enable_thinking,
             thinking_budget,
+            repetition_detection: req.repetition_detection(),
             require_tool_call: tool_choice_required,
             suppress_tool_call,
-            disable_mtp: f60_disable_mtp_for_request(tools_active),
+            disable_mtp: false,
             grammar_spec: grammar_spec.clone(),
             seed: req.seed.map(|s| s.wrapping_add(choice_idx as u64)),
             top_logprobs,
@@ -180,8 +185,6 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         let (reasoning_content_i, output_text_i) =
             decode_response_text(&state, &response, enable_thinking);
         let output_text_i = strip_stop_sequences(output_text_i, &req.stop);
-        let output_text_i =
-            super::chat::repair_json::repair_json_object_prefix(&req, output_text_i);
 
         let (message, finish_reason_i) = build_choice_message(
             &state,
@@ -192,7 +195,8 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
             tools_active,
             cwd_hint.as_deref(),
             choice_idx,
-        );
+        )
+        .await;
 
         all_choices.push(crate::openai::ChatChoice {
             index: choice_idx,
@@ -272,8 +276,9 @@ fn decode_response_text(
 /// Build the assistant message + finish_reason for one choice. Tool
 /// parsing, validation, content-strip + refusal-classifier all live
 /// here.
-fn build_choice_message(
-    _state: &AppState,
+#[allow(clippy::too_many_arguments)]
+async fn build_choice_message(
+    state: &AppState,
     req: &ChatCompletionRequest,
     response: &super::inference_types::InferenceResponse,
     reasoning_content_i: Option<String>,
@@ -301,10 +306,43 @@ fn build_choice_message(
                 "raw pre-parse output (tools_active, choice {choice_idx}): {output_text_i:?}"
             );
         }
-        let (content, mut tool_calls_i) = tool_parser::parse_tool_calls(&output_text_i);
+        // F7 (2026-05-26): also scan `reasoning_content_i` for tool calls.
+        // When the model emits a `<tool_call>...</tool_call>` block INSIDE
+        // its `<think>...</think>` reasoning, `decode_response_text` splits
+        // at `</think>` and routes the tool call into reasoning_content,
+        // hiding it from the post-`</think>` parser below — the tool call
+        // is silently dropped (matches vLLM #39055 pattern). When found in
+        // reasoning, hoist the calls back into the assistant message and
+        // scrub the residual XML from the reasoning trace so it isn't
+        // double-emitted to the client.
+        let (hoisted_reasoning, hoisted_tool_calls): (Option<String>, Vec<_>) =
+            if let Some(ref rc) = message.reasoning_content {
+                let (scrubbed, tcs) = tool_parser::parse_tool_calls(rc);
+                (scrubbed, tcs)
+            } else {
+                (None, Vec::new())
+            };
+        if !hoisted_tool_calls.is_empty() {
+            tracing::info!(
+                "F7: hoisted {} tool-call(s) from inside <think> block (would have been silently dropped)",
+                hoisted_tool_calls.len()
+            );
+            message.reasoning_content = hoisted_reasoning.clone();
+            message.reasoning = hoisted_reasoning;
+        }
+        let (content, parsed_tool_calls) = tool_parser::parse_tool_calls(&output_text_i);
+        let mut tool_calls_i = hoisted_tool_calls;
+        tool_calls_i.extend(parsed_tool_calls);
         if !tool_calls_i.is_empty() {
             let tools_ref = req.tools.as_ref().cloned().unwrap_or_default();
             tool_parser::backfill_required_params(&mut tool_calls_i, &tools_ref);
+            if state
+                .tool_call_parser
+                .as_ref()
+                .is_some_and(|p| p.wants_typed_arguments())
+            {
+                tool_parser::coerce_all(&mut tool_calls_i, &tools_ref);
+            }
             if let Some(cwd) = cwd_hint {
                 tool_parser::normalize_paths(&mut tool_calls_i, cwd);
             }

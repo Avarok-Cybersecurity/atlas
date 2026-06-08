@@ -94,6 +94,15 @@ impl TransformerModel {
         let (kv_write_start, marconi_skip) =
             self.prefill_b_prefix_lookup(tokens, seq, chunk_start, total, &mut kv_cache, stream)?;
 
+        if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+            self.ssm_pool.debug_state_checksum(
+                seq.slot_idx,
+                self.gpu.as_ref(),
+                stream,
+                &format!("chunk_entry start={chunk_start} len={chunk_len} kvws={kv_write_start}"),
+            );
+        }
+
         // Allocate blocks needed through end of this chunk.
         let bs = kv_cache.block_size();
         let end_pos = chunk_start + chunk_len;

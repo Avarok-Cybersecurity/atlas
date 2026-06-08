@@ -461,11 +461,7 @@ impl Qwen3SsmLayer {
             // Per-token MoE fallback for K!=2.
             // CONCURRENT-DECODE BUG (sibling of decode_multi_seq fix at line 1102):
             // hardcoded `t * h * 4` over-strides for BF16 hidden (GB10 default).
-            let residual_elem = if ctx.config.use_fp32_residual() {
-                4usize
-            } else {
-                2usize
-            };
+            let residual_elem = 2usize;
             for t in 0..(num_tokens as u32) {
                 let normed2 = normed2_base.offset(t as usize * h * bf16);
                 let moe_out = self.ffn.forward(normed2, ctx, stream)?;

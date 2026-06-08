@@ -6,7 +6,19 @@ use super::*;
 
 /// MTP-aware step: bootstrap sequences without drafts, then verify via CUDA graph.
 /// Supports K=2 (num_drafts=1) and K=3 (num_drafts=2).
-pub fn step_mtp(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: usize) {
+///
+/// `verify_ctx` carries the tokenizer special-token IDs the verify
+/// pipeline needs (`<think>` / `</think>` / `<tool_call>` /
+/// `</tool_call>`). Threaded down to every verify call site so the
+/// 8-stage [`crate::scheduler::logit_processors`] pipeline can run on
+/// each verify-position's logits — the fix for MTP-emitted tokens
+/// bypassing all pre-sample masks. See `verify_pipeline_helper`.
+pub fn step_mtp(
+    model: &dyn Model,
+    active: &mut [ActiveSeq],
+    num_drafts: usize,
+    verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+) {
     let mut bootstrap_idxs: Vec<usize> = Vec::new();
     let mut verify_idxs: Vec<usize> = Vec::new();
     for (i, a) in active.iter().enumerate() {
@@ -21,7 +33,7 @@ pub fn step_mtp(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: usize) 
     for &idx in &bootstrap_idxs {
         let a = &mut active[idx];
         // EP: broadcast token to worker before decode (worker runs decode in lockstep).
-        if let Err(e) = model.ep_broadcast_cmd(a.last_token) {
+        if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, a.last_token) {
             tracing::error!("EP broadcast bootstrap token: {e:#}");
             a.finished = true;
             continue;
@@ -34,6 +46,19 @@ pub fn step_mtp(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: usize) 
                 continue;
             }
         };
+        // Build the seq's configured penalties (rep/presence/frequency/LZ/DRY)
+        // so the MTP bootstrap token sees the SAME penalties+history the
+        // non-MTP path applies — the root-cause fix for repetition_penalty /
+        // dry_multiplier never reaching MTP-emitted tokens. Cloned before the
+        // mutable `grammar_state` borrow to satisfy the borrow checker.
+        let penalties = crate::scheduler::sample_step::penalty_params_for(
+            a,
+            crate::scheduler::sample_step::PositionKind::Verify,
+            0.0,
+            None,
+            Vec::new(),
+        );
+        let history = a.output_tokens.clone();
         let tok = match sample_token_with_grammar(
             model,
             logits,
@@ -42,6 +67,8 @@ pub fn step_mtp(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: usize) 
             a.top_p,
             &[],
             a.grammar_state.as_mut(),
+            &penalties,
+            &history,
         ) {
             Ok(t) => t,
             Err(e) => {
@@ -69,10 +96,19 @@ pub fn step_mtp(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: usize) 
             continue;
         }
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
+        // BUG#4 (2026-06-02): when a grammar is active, generate only ONE draft.
+        // run_mtp_propose_multi (mtp_multi.rs) masks only draft[0] with the
+        // position-0 bitmask and leaves draft[1..] UNMASKED, so multi-draft +
+        // grammar desyncs — a draft[1] token can violate its true per-position
+        // mask, get verified+accepted, then be refused by the matcher later
+        // (→ truncation). A single draft uses its own up-to-date mask and is
+        // sound; drafts.len()==1 routes verify to the K=2 path. Mask is a no-op
+        // when grammar is inactive, so NVFP4/non-tool paths keep full K.
+        let effective_num_drafts = if a.grammar_state.is_some() { 1 } else { num_drafts };
         match model.run_mtp_propose_multi(
             tok,
             a.seq.seq_len,
-            num_drafts,
+            effective_num_drafts,
             &mut a.seq,
             0,
             _mtp_grammar_mask.as_deref(),
@@ -125,13 +161,13 @@ pub fn step_mtp(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: usize) 
         // MTP keeps using the existing graphed paths; this dispatch is purely
         // additive.
         if drafts.len() >= 4 {
-            step_verify_dflash(model, a, &drafts, num_drafts);
+            step_verify_dflash(model, a, &drafts, num_drafts, verify_ctx);
         } else if num_drafts >= 3 && drafts.len() >= 3 {
-            step_verify_k4(model, a, &drafts, num_drafts);
+            step_verify_k4(model, a, &drafts, num_drafts, verify_ctx);
         } else if num_drafts >= 2 && drafts.len() >= 2 {
-            step_verify_k3(model, a, &drafts, num_drafts);
+            step_verify_k3(model, a, &drafts, num_drafts, verify_ctx);
         } else {
-            step_verify_k2(model, a, &drafts, num_drafts);
+            step_verify_k2(model, a, &drafts, num_drafts, verify_ctx);
         }
     }
 }

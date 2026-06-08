@@ -1,0 +1,4 @@
+FROM atlas-gb10:tierA
+
+COPY spark-fastbin /usr/local/bin/spark
+COPY jinja-templates/ /jinja-templates/

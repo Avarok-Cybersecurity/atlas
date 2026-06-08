@@ -16,7 +16,7 @@ use super::build_codegen::find_cuda_dir;
 /// compiler and output format so the same build.rs works for NVIDIA
 /// (nvcc → PTX text), Apple (xcrun → metallib binary), AMD (hipcc →
 /// HSACO binary), or Intel (icpx → SPIR-V binary).
-pub(super) trait ComputeTarget {
+pub(super) trait ComputeTarget: Send + Sync {
     fn source_extension(&self) -> &str;
     fn output_extension(&self) -> &str;
     /// Whether the compiled output is human-readable text (PTX) or an
@@ -56,6 +56,17 @@ impl ComputeTarget for NvidiaTarget {
     ) -> Result<(), String> {
         let mut args = vec!["--ptx".into(), format!("-arch={arch}"), "-O3".into()];
         args.extend(extra_flags.iter().cloned());
+        // ATLAS_EXTRA_NVCC_FLAGS — global override for kernel bisection
+        // tests. Whitespace-separated list of additional nvcc args
+        // (typically `-D<MACRO>=1` to flip `#ifdef`-gated kernel paths).
+        // Phase 2c day 2: used with `-DATLAS_FAST_SOFTMAX_EXP=1` to
+        // re-enable the pre-Phase-2b sw_exp polynomial and bench the
+        // `__expf` regression hypothesis.
+        if let Ok(s) = std::env::var("ATLAS_EXTRA_NVCC_FLAGS") {
+            for tok in s.split_whitespace() {
+                args.push(tok.to_string());
+            }
+        }
         args.push(source.to_str().unwrap().into());
         args.push("-o".into());
         args.push(output.to_str().unwrap().into());

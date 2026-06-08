@@ -122,11 +122,7 @@ impl TransformerModel {
         let chunk_len = streams[0].chunk_len;
         let is_last_chunk = streams[0].is_last_chunk;
         let h = self.config.hidden_size;
-        let dtype_bytes = if self.config.use_fp32_residual() {
-            4usize
-        } else {
-            2usize
-        };
+        let dtype_bytes = 2usize;
 
         // EP active → NCCL needs the default stream.
         let stream = if self.comm.is_some() && self.config.ep_world_size > 1 {

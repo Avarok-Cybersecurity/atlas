@@ -1,0 +1,47 @@
+{
+  "tier": "fp8cal256",
+  "run": 3,
+  "wall_time_s": 155.25763249397278,
+  "opencode": {
+    "events_total": 29,
+    "stderr_bytes": 0
+  },
+  "filesystem": {
+    "files_written": [
+      "Cargo.toml",
+      "Cargo.toml.bak"
+    ],
+    "files_count": 2
+  },
+  "cargo": {
+    "cargo_toml_present": true,
+    "cargo_toml_valid": false,
+    "cargo_toml_error": "Expected newline or end of document after a statement (at line 1, column 18)",
+    "cargo_toml_has_package_name": false
+  },
+  "tool_calls": {
+    "total": 7,
+    "by_tool": {
+      "write": 2,
+      "bash": 5
+    }
+  },
+  "drift": {
+    "write_calls": 2,
+    "write_empty_path": 0,
+    "write_path_drift_from_target": 0,
+    "write_path_has_literal_space": 0,
+    "write_content_starts_with_lean": 0,
+    "write_content_is_bash_command": 0,
+    "write_content_xml_attr_leak": 0,
+    "write_content_newlines_collapsed_toml": 2
+  },
+  "atlas": {
+    "ws1_mask_active_fires": 14,
+    "b1_drift_gauge_fires": 3,
+    "tier_5c_retries": 0,
+    "a2_fuzzy_repair_fires": 0,
+    "doom_loop_trips": 0,
+    "tool_call_lines": 7
+  }
+}

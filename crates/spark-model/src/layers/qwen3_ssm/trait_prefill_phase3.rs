@@ -50,6 +50,10 @@ impl Qwen3SsmLayer {
 
         // ── 10. Output projection GEMM: [N, 4096] × [4096, 2048] → [N, 2048] ──
         let out_proj_buf = ctx.buffers.moe_output();
+        let force_w8a8_op = matches!(
+            std::env::var("ATLAS_FP8_W8A8").ok().as_deref(),
+            Some("1")
+        );
         if let Some(ref dense_out) = self.out_proj_dense {
             ops::dense_gemm(
                 ctx.gpu,
@@ -62,6 +66,44 @@ impl Qwen3SsmLayer {
                 value_dim as u32,
                 stream,
             )
+        } else if force_w8a8_op
+            && let Some(ref fp8w) = self.out_proj_fp8w
+            && self.per_token_group_quant_fp8_k.0 != 0
+            && self.fp8_gemm_t_blockscaled_k.0 != 0
+        {
+            let m = k as usize;
+            let k_dim = h;
+            let a_fp8_bytes = m * k_dim;
+            let a_scale_bytes = m * (k_dim / 128) * 4;
+            let a_fp8_buf = ctx.gpu.alloc(a_fp8_bytes)?;
+            let a_scale_buf = ctx.gpu.alloc(a_scale_bytes)?;
+            ops::per_token_group_quant_fp8(
+                ctx.gpu,
+                self.per_token_group_quant_fp8_k,
+                normed_out_buf,
+                a_fp8_buf,
+                a_scale_buf,
+                k,
+                k_dim as u32,
+                stream,
+            )?;
+            ops::fp8_gemm_t_blockscaled(
+                ctx.gpu,
+                self.fp8_gemm_t_blockscaled_k,
+                a_fp8_buf,
+                a_scale_buf,
+                fp8w.weight,
+                fp8w.row_scale,
+                out_proj_buf,
+                k,
+                value_dim as u32,
+                h as u32,
+                stream,
+            )?;
+            ctx.gpu.synchronize(stream)?;
+            ctx.gpu.free(a_fp8_buf)?;
+            ctx.gpu.free(a_scale_buf)?;
+            Ok(())
         } else if let Some(fp8) = self.out_proj_fp8 {
             if k > 128 {
                 ops::fp8_gemm_n128_m128(

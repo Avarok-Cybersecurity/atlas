@@ -19,7 +19,10 @@ impl Qwen3SsmLayer {
         let nv = ctx.config.linear_num_value_heads;
         let vd = ctx.config.linear_value_head_dim;
         let vpg = nv / nk; // vheads_per_group = 2
-        let debug = tracing::enabled!(tracing::Level::DEBUG);
+        // Suppress debug synchronize+dump while capturing a CUDA graph:
+        // cuStreamSynchronize during capture is illegal (CUDA 900) and
+        // bricks the context (issue #106).
+        let debug = tracing::enabled!(tracing::Level::DEBUG) && !ctx.graph_capture;
         let profile = ctx.profile;
 
         macro_rules! prof {
@@ -41,7 +44,15 @@ impl Qwen3SsmLayer {
         let qkvz_size = ctx.config.ssm_qkvz_size() as u32;
         prof!("qkvz", {
             if let Some(ref fp8) = self.qkvz_fp8w {
-                // FP8 native: w8a16_gemv + deinterleave (no fused QKVZ variant yet)
+                // FP8 native: w8a16_gemv + deinterleave (no fused QKVZ variant yet).
+                // `w8a16_gemv` consumes `[N/BS,K/BS] BF16` block scales
+                // (see `kernels/gb10/common/w8a16_gemv.cu` line 5).
+                // Asserting catches any silent leak of per-row F32 or
+                // single-scale FP8 into this code path.
+                fp8.scale_format.expect(
+                    crate::weight_map::WeightQuantFormat::Fp8BlockScaled,
+                    "ssm_forward::qkvz_fp8w → w8a16_gemv",
+                );
                 if self.sequential_qkvz {
                     ops::w8a16_gemv(
                         ctx.gpu,
@@ -343,6 +354,12 @@ impl Qwen3SsmLayer {
         // ── 8. Output projection: [value_dim → hidden_size] ──
         let out = ctx.buffers.moe_output();
         if let Some(ref fp8) = self.out_proj_fp8w {
+            // `w8a16_gemv` consumes `[N/BS,K/BS] BF16` block scales —
+            // the canonical Qwen FP8 release format.
+            fp8.scale_format.expect(
+                crate::weight_map::WeightQuantFormat::Fp8BlockScaled,
+                "ssm_forward::out_proj_fp8w → w8a16_gemv",
+            );
             ops::w8a16_gemv(
                 ctx.gpu,
                 self.w8a16_gemv_k,

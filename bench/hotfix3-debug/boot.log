@@ -1,0 +1,100 @@
+[2m2026-05-24T19:37:09.482435Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Atlas Spark starting...
+[2m2026-05-24T19:37:09.482526Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Licensed under AGPL-3.0-only — see /LICENSE in this container
+[2m2026-05-24T19:37:09.482798Z[0m [32m INFO[0m [2mspark::model_resolver[0m[2m:[0m Model: Qwen/Qwen3.6-35B-A3B-FP8 (resolved to /root/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B-FP8/snapshots/95a723d08a9490559dae23d0cff1d9466213d989)
+[2m2026-05-24T19:37:09.482802Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Port: 8888
+[2m2026-05-24T19:37:09.482803Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m SSM decode dtype: f32 (full precision)
+[2m2026-05-24T19:37:09.483402Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Quantization config: method="fp8", algo="", format="", 0 module(s) in ignore list
+[2m2026-05-24T19:37:09.483406Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Model config: 40 layers, 10 attention, 30 SSM, 256 experts, rope_theta=10000000, head_dim=256, rotary_dim=64
+[2m2026-05-24T19:37:09.483493Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Selected kernel target: (sm_121, qwen3.6-35b-a3b, nvfp4) (90 modules)
+[2m2026-05-24T19:37:17.163039Z[0m [32m INFO[0m [2mspark_runtime::cuda_backend[0m[2m:[0m AtlasCudaBackend initialized on GPU 0 with 90 PTX modules
+[2m2026-05-24T19:37:17.163141Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::preflight[0m[2m:[0m GPU 0: 121.7 GB total, 116.2 GB free
+[2m2026-05-24T19:37:17.163228Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::preflight[0m[2m:[0m Preflight reserve: inference=8815 MB, buffer_arena=763 MB (pre-load free: 116.2 GB)
+[2m2026-05-24T19:37:17.163300Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m OOM watchdog started (threshold: 2 GB, interval: 2s)
+[2m2026-05-24T19:37:17.163301Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m OOM guard reserve: 4096 MB
+[2m2026-05-24T19:37:17.163303Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::weights[0m[2m:[0m Using fast weight loader (O_DIRECT + pipelined read/copy)
+[2m2026-05-24T19:37:17.328001Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-load pre-flight: 34.88 GB on-disk, 1.1x overhead = 36.63 GB peak, 116.21 GB free, 4.0 GB reserve (FP8: true)
+[2m2026-05-24T19:37:17.328559Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 1/42: layers-0.safetensors (1558 tensors)
+[2m2026-05-24T19:37:17.954113Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 1/42 done — GPU memory: 0.84 GB used, 115.37 GB free
+[2m2026-05-24T19:37:17.954736Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 2/42: layers-1.safetensors (1558 tensors)
+[2m2026-05-24T19:37:18.480409Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 2/42 done — GPU memory: 1.66 GB used, 114.55 GB free
+[2m2026-05-24T19:37:18.481408Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 3/42: layers-10.safetensors (1558 tensors)
+[2m2026-05-24T19:37:18.941110Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 3/42 done — GPU memory: 2.47 GB used, 113.74 GB free
+[2m2026-05-24T19:37:18.942080Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 4/42: layers-11.safetensors (1556 tensors)
+[2m2026-05-24T19:37:19.620857Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 4/42 done — GPU memory: 3.28 GB used, 112.93 GB free
+[2m2026-05-24T19:37:19.622774Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 5/42: layers-12.safetensors (1558 tensors)
+[2m2026-05-24T19:37:20.148000Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 5/42 done — GPU memory: 4.06 GB used, 112.15 GB free
+[2m2026-05-24T19:37:20.149880Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 6/42: layers-13.safetensors (1558 tensors)
+[2m2026-05-24T19:37:20.653009Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 6/42 done — GPU memory: 4.89 GB used, 111.33 GB free
+[2m2026-05-24T19:37:20.654829Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 7/42: layers-14.safetensors (1558 tensors)
+[2m2026-05-24T19:37:21.089352Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 7/42 done — GPU memory: 5.70 GB used, 110.51 GB free
+[2m2026-05-24T19:37:21.091206Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 8/42: layers-15.safetensors (1556 tensors)
+[2m2026-05-24T19:37:21.613546Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 8/42 done — GPU memory: 6.49 GB used, 109.72 GB free
+[2m2026-05-24T19:37:21.615456Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 9/42: layers-16.safetensors (1558 tensors)
+[2m2026-05-24T19:37:22.083114Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 9/42 done — GPU memory: 7.30 GB used, 108.91 GB free
+[2m2026-05-24T19:37:22.084987Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 10/42: layers-17.safetensors (1558 tensors)
+[2m2026-05-24T19:37:22.514183Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 10/42 done — GPU memory: 8.11 GB used, 108.10 GB free
+[2m2026-05-24T19:37:22.516106Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 11/42: layers-18.safetensors (1558 tensors)
+[2m2026-05-24T19:37:22.984831Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 11/42 done — GPU memory: 8.90 GB used, 107.31 GB free
+[2m2026-05-24T19:37:22.986629Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 12/42: layers-19.safetensors (1556 tensors)
+[2m2026-05-24T19:37:23.446173Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 12/42 done — GPU memory: 9.70 GB used, 106.51 GB free
+[2m2026-05-24T19:37:23.447411Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 13/42: layers-2.safetensors (1558 tensors)
+[2m2026-05-24T19:37:23.928840Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 13/42 done — GPU memory: 10.54 GB used, 105.68 GB free
+[2m2026-05-24T19:37:23.930657Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 14/42: layers-20.safetensors (1558 tensors)
+[2m2026-05-24T19:37:24.405522Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 14/42 done — GPU memory: 11.35 GB used, 104.86 GB free
+[2m2026-05-24T19:37:24.407397Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 15/42: layers-21.safetensors (1558 tensors)
+[2m2026-05-24T19:37:24.848259Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 15/42 done — GPU memory: 12.13 GB used, 104.08 GB free
+[2m2026-05-24T19:37:24.850107Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 16/42: layers-22.safetensors (1558 tensors)
+[2m2026-05-24T19:37:25.327973Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 16/42 done — GPU memory: 12.97 GB used, 103.24 GB free
+[2m2026-05-24T19:37:25.329811Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 17/42: layers-23.safetensors (1556 tensors)
+[2m2026-05-24T19:37:25.857535Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 17/42 done — GPU memory: 13.78 GB used, 102.43 GB free
+[2m2026-05-24T19:37:25.859386Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 18/42: layers-24.safetensors (1558 tensors)
+[2m2026-05-24T19:37:26.356697Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 18/42 done — GPU memory: 14.59 GB used, 101.62 GB free
+[2m2026-05-24T19:37:26.357744Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 19/42: layers-25.safetensors (1558 tensors)
+[2m2026-05-24T19:37:26.846506Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 19/42 done — GPU memory: 15.41 GB used, 100.80 GB free
+[2m2026-05-24T19:37:26.847581Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 20/42: layers-26.safetensors (1558 tensors)
+[2m2026-05-24T19:37:27.455231Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 20/42 done — GPU memory: 16.19 GB used, 100.02 GB free
+[2m2026-05-24T19:37:27.457146Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 21/42: layers-27.safetensors (1556 tensors)
+[2m2026-05-24T19:37:27.962352Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 21/42 done — GPU memory: 17.00 GB used, 99.21 GB free
+[2m2026-05-24T19:37:27.963407Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 22/42: layers-28.safetensors (1558 tensors)
+[2m2026-05-24T19:37:28.441536Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 22/42 done — GPU memory: 17.83 GB used, 98.38 GB free
+[2m2026-05-24T19:37:28.443455Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 23/42: layers-29.safetensors (1558 tensors)
+[2m2026-05-24T19:37:28.913914Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 23/42 done — GPU memory: 18.63 GB used, 97.58 GB free
+[2m2026-05-24T19:37:28.915174Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 24/42: layers-3.safetensors (1556 tensors)
+[2m2026-05-24T19:37:29.430495Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 24/42 done — GPU memory: 19.42 GB used, 96.79 GB free
+[2m2026-05-24T19:37:29.432367Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 25/42: layers-30.safetensors (1558 tensors)
+[2m2026-05-24T19:37:29.844348Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 25/42 done — GPU memory: 20.21 GB used, 96.00 GB free
+[2m2026-05-24T19:37:29.846272Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 26/42: layers-31.safetensors (1556 tensors)
+[2m2026-05-24T19:37:30.450957Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 26/42 done — GPU memory: 21.03 GB used, 95.18 GB free
+[2m2026-05-24T19:37:30.452802Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 27/42: layers-32.safetensors (1558 tensors)
+[2m2026-05-24T19:37:31.048703Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 27/42 done — GPU memory: 21.85 GB used, 94.36 GB free
+[2m2026-05-24T19:37:31.050560Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 28/42: layers-33.safetensors (1558 tensors)
+[2m2026-05-24T19:37:31.641927Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 28/42 done — GPU memory: 22.66 GB used, 93.55 GB free
+[2m2026-05-24T19:37:31.642964Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 29/42: layers-34.safetensors (1558 tensors)
+[2m2026-05-24T19:37:32.241992Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 29/42 done — GPU memory: 23.45 GB used, 92.76 GB free
+[2m2026-05-24T19:37:32.243899Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 30/42: layers-35.safetensors (1556 tensors)
+[2m2026-05-24T19:37:32.857284Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 30/42 done — GPU memory: 24.28 GB used, 91.93 GB free
+[2m2026-05-24T19:37:32.859200Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 31/42: layers-36.safetensors (1558 tensors)
+[2m2026-05-24T19:37:33.459350Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 31/42 done — GPU memory: 25.11 GB used, 91.10 GB free
+[2m2026-05-24T19:37:33.461233Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 32/42: layers-37.safetensors (1558 tensors)
+[2m2026-05-24T19:37:34.016039Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 32/42 done — GPU memory: 25.93 GB used, 90.28 GB free
+[2m2026-05-24T19:37:34.017929Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 33/42: layers-38.safetensors (1558 tensors)
+[2m2026-05-24T19:37:34.587295Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 33/42 done — GPU memory: 26.70 GB used, 89.51 GB free
+[2m2026-05-24T19:37:34.588378Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 34/42: layers-39.safetensors (1556 tensors)
+[2m2026-05-24T19:37:35.173866Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 34/42 done — GPU memory: 27.51 GB used, 88.70 GB free
+[2m2026-05-24T19:37:35.175103Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 35/42: layers-4.safetensors (1558 tensors)
+[2m2026-05-24T19:37:35.695070Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 35/42 done — GPU memory: 28.33 GB used, 87.88 GB free
+[2m2026-05-24T19:37:35.695787Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 36/42: layers-5.safetensors (1558 tensors)
+[2m2026-05-24T19:37:36.253253Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 36/42 done — GPU memory: 29.15 GB used, 87.07 GB free
+[2m2026-05-24T19:37:36.253933Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 37/42: layers-6.safetensors (1558 tensors)
+[2m2026-05-24T19:37:36.843050Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 37/42 done — GPU memory: 29.92 GB used, 86.29 GB free
+[2m2026-05-24T19:37:36.843775Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 38/42: layers-7.safetensors (1556 tensors)
+[2m2026-05-24T19:37:37.425274Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 38/42 done — GPU memory: 30.74 GB used, 85.48 GB free
+[2m2026-05-24T19:37:37.425965Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 39/42: layers-8.safetensors (1558 tensors)
+[2m2026-05-24T19:37:37.999448Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 39/42 done — GPU memory: 31.57 GB used, 84.64 GB free
+[2m2026-05-24T19:37:38.000162Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 40/42: layers-9.safetensors (1558 tensors)
+[2m2026-05-24T19:37:38.506754Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 40/42 done — GPU memory: 32.38 GB used, 83.83 GB free
+[2m2026-05-24T19:37:38.507228Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 41/42: mtp.safetensors (1560 tensors)
+[2m2026-05-24T19:37:39.201590Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 41/42 done — GPU memory: 33.20 GB used, 83.01 GB free
+[2m2026-05-24T19:37:39.201998Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 42/42: outside.safetensors (336 tensors)
+[2m2026-05-24T19:37:40.206900Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 42/42 done — GPU memory: 36.07 GB used, 80.14 GB free
+[2m2026-05-24T19:37:40.206958Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loaded 64196 weight tensors

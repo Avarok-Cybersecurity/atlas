@@ -39,6 +39,24 @@ pub(super) struct SamplingSetup {
     pub(super) top_logprobs: Option<u8>,
 }
 
+fn tool_choice_required_for_parser(
+    tools_active: bool,
+    tool_choice: Option<&tool_parser::ToolChoice>,
+    parser_name: Option<&str>,
+) -> bool {
+    if !tools_active {
+        return false;
+    }
+
+    let explicit_required = tool_choice.is_some_and(|tc| {
+        matches!(tc, tool_parser::ToolChoice::Mode(m) if m == "required")
+            || matches!(tc, tool_parser::ToolChoice::Specific { .. })
+    });
+    let parser_required = matches!(parser_name, Some("minimax_xml"));
+
+    explicit_required || parser_required
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::result_large_err)]
 pub(super) fn build_sampling(
@@ -57,18 +75,77 @@ pub(super) fn build_sampling(
     } else {
         &state.sampling_presets.non_thinking
     };
-    let temperature = req.temperature.unwrap_or(preset.temperature);
-    let top_k = req.top_k.unwrap_or(preset.top_k);
-    let top_p = req.top_p.unwrap_or(preset.top_p);
-    let top_n_sigma = req.top_n_sigma.unwrap_or(state.default_top_n_sigma);
-    let min_p = req.min_p.unwrap_or(state.default_min_p);
-    let repetition_penalty = req.repetition_penalty.unwrap_or(preset.repetition_penalty);
-    let presence_penalty = req.presence_penalty.unwrap_or(preset.presence_penalty);
-    let frequency_penalty = req.frequency_penalty.unwrap_or(preset.frequency_penalty);
-    let dry_multiplier = preset.dry_multiplier;
+    // ATLAS_FORCE_TEMP_ZERO=1 — diagnostic override that forces fully greedy
+    // deterministic decoding, ignoring client params AND MODEL.toml presets.
+    // Used for layer-by-layer cosine comparison against vLLM (same env-var
+    // contract on the vLLM side, VLLM_FORCE_TEMP_ZERO). At T=0 with identical
+    // weights+tokens, two engines should produce bit-identical token streams;
+    // any divergence localises a numerical bug.
+    let force_temp_zero = std::env::var("ATLAS_FORCE_TEMP_ZERO")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    let temperature = if force_temp_zero {
+        0.0
+    } else {
+        req.temperature.unwrap_or(preset.temperature)
+    };
+    let top_k = if force_temp_zero {
+        0
+    } else {
+        req.top_k.unwrap_or(preset.top_k)
+    };
+    let top_p = if force_temp_zero {
+        1.0
+    } else {
+        req.top_p.unwrap_or(preset.top_p)
+    };
+    let top_n_sigma = if force_temp_zero {
+        0.0
+    } else {
+        req.top_n_sigma.unwrap_or(state.default_top_n_sigma)
+    };
+    let min_p = if force_temp_zero {
+        0.0
+    } else {
+        req.min_p.unwrap_or(state.default_min_p)
+    };
+    let repetition_penalty = if force_temp_zero {
+        1.0
+    } else {
+        req.repetition_penalty.unwrap_or(preset.repetition_penalty)
+    };
+    let presence_penalty = if force_temp_zero {
+        0.0
+    } else {
+        req.presence_penalty.unwrap_or(preset.presence_penalty)
+    };
+    let frequency_penalty = if force_temp_zero {
+        0.0
+    } else {
+        req.frequency_penalty.unwrap_or(preset.frequency_penalty)
+    };
+    // Per-model server-side sampling SAFETY FLOOR/CEILING (MODEL.toml
+    // [behavior]). Binds AFTER request/preset resolution so model stability
+    // does NOT depend on the client volunteering safe params — the Claude-Code
+    // loop fix (an unfloored min_p let the FP8/NVFP4 degenerate tail be sampled
+    // into repetition loops; measured 2026-06-07: 0.05 → 4 watchdog fires
+    // become 0). 0.0 = disabled (no-op). Skipped under force_temp_zero (that
+    // diagnostic override deliberately drives greedy).
+    let min_p = if !force_temp_zero && state.behavior.min_p_floor > 0.0 {
+        min_p.max(state.behavior.min_p_floor)
+    } else {
+        min_p
+    };
+    let temperature = if !force_temp_zero && state.behavior.temperature_max > 0.0 {
+        temperature.min(state.behavior.temperature_max)
+    } else {
+        temperature
+    };
+    let dry_multiplier = if force_temp_zero { 0.0 } else { preset.dry_multiplier };
     let dry_base = preset.dry_base;
     let dry_allowed_length = preset.dry_allowed_length;
-    let lz_penalty = preset.lz_penalty;
+    let lz_penalty = if force_temp_zero { 0.0 } else { preset.lz_penalty };
 
     // OpenAI-style penalty range validation.
     if !(-2.0..=2.0).contains(&presence_penalty) {
@@ -85,14 +162,20 @@ pub(super) fn build_sampling(
     }
 
     // Logit bias from OpenAI (string keys) → Vec<(u32, f32)>.
-    let mut logit_bias: Vec<(u32, f32)> = req.logit_bias.as_ref().map_or(Vec::new(), |map| {
-        map.iter()
-            .filter_map(|(k, &v)| k.parse::<u32>().ok().map(|id| (id, v)))
-            .collect()
-    });
+    let mut logit_bias: Vec<(u32, f32)> = if force_temp_zero {
+        Vec::new()
+    } else {
+        req.logit_bias.as_ref().map_or(Vec::new(), |map| {
+            map.iter()
+                .filter_map(|(k, &v)| k.parse::<u32>().ok().map(|id| (id, v)))
+                .collect()
+        })
+    };
 
-    // Exponential `<tool_call>` bias decay.
-    if tools_active
+    // Exponential `<tool_call>` bias decay. Skipped under ATLAS_FORCE_TEMP_ZERO
+    // so the argmax is determined purely by raw logits (matches vLLM's path).
+    if !force_temp_zero
+        && tools_active
         && !suppress_tool_call
         && let Some(tc_id) = state.tool_call_start_token_id
     {
@@ -133,20 +216,11 @@ pub(super) fn build_sampling(
     }
 
     // Tool-choice + parser-driven required mode.
-    let parser_is_minimax_xml = state
-        .tool_call_parser
-        .as_ref()
-        .is_some_and(|p| p.name() == "minimax_xml");
-    let parser_is_bare_json = state
-        .tool_call_parser
-        .as_ref()
-        .is_some_and(|p| p.name() == "bare_json");
-    let tool_choice_required = tools_active
-        && (req.tool_choice.as_ref().is_some_and(|tc| {
-            matches!(tc, tool_parser::ToolChoice::Mode(m) if m == "required")
-                || matches!(tc, tool_parser::ToolChoice::Specific { .. })
-        }) || parser_is_minimax_xml
-            || parser_is_bare_json);
+    let tool_choice_required = tool_choice_required_for_parser(
+        tools_active,
+        req.tool_choice.as_ref(),
+        state.tool_call_parser.as_ref().map(|p| p.name()),
+    );
 
     // response_format + tools coexistence.
     //
@@ -241,4 +315,63 @@ pub(super) fn build_sampling(
         timeout_at,
         top_logprobs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_choice_required_for_parser;
+    use crate::tool_parser::{ToolChoice, ToolChoiceFunction};
+
+    #[test]
+    fn bare_json_auto_uses_triggered_grammar() {
+        assert!(!tool_choice_required_for_parser(
+            true,
+            None,
+            Some("bare_json")
+        ));
+    }
+
+    #[test]
+    fn bare_json_required_mode_enforces_from_first_token() {
+        let choice = ToolChoice::Mode("required".to_string());
+
+        assert!(tool_choice_required_for_parser(
+            true,
+            Some(&choice),
+            Some("bare_json")
+        ));
+    }
+
+    #[test]
+    fn specific_function_enforces_from_first_token() {
+        let choice = ToolChoice::Specific {
+            function: ToolChoiceFunction {
+                name: "memory".to_string(),
+            },
+        };
+
+        assert!(tool_choice_required_for_parser(
+            true,
+            Some(&choice),
+            Some("bare_json")
+        ));
+    }
+
+    #[test]
+    fn minimax_xml_remains_parser_required() {
+        assert!(tool_choice_required_for_parser(
+            true,
+            None,
+            Some("minimax_xml")
+        ));
+    }
+
+    #[test]
+    fn inactive_tools_are_not_required() {
+        assert!(!tool_choice_required_for_parser(
+            false,
+            None,
+            Some("bare_json")
+        ));
+    }
 }

@@ -271,6 +271,86 @@ pub fn looks_like_error(text: &str) -> bool {
     injectors.iter().any(|i| i.is_relevant(&ctx))
 }
 
+// ─── BW1: bash-wandering / content-completeness watchdog ─────────────
+//
+// FP8 agentic failure mode (gap #9): the model explores (bash ls/cat/find,
+// read, glob) or narrates across many turns but never writes the deliverable
+// file(s) — the run finishes with a valid Cargo.toml but no real src/main.rs,
+// so webserver_ok never fires. This steering nudge fires when the agent has
+// made many tool calls with NO productive file output yet, redirecting it to
+// write + verify. Env-gated (PCND): ATLAS_BASH_WANDER_WATCHDOG=1.
+
+/// One-time read of the watchdog flag.
+fn bash_wander_enabled() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("ATLAS_BASH_WANDER_WATCHDOG").as_deref() == Ok("1"))
+}
+
+/// Classify a tool call as PRODUCTIVE (produces/verifies a deliverable) vs
+/// exploratory. `write`/`edit`/`create` tools are productive; a `bash` call is
+/// productive only when its command writes a file or builds/runs
+/// (`cat >`/`tee`/`>`/`cargo build`/`cargo run`/`rustc`/`go build`/`npm run`).
+/// Everything else (ls/cat/find/grep/read/glob/pwd/echo) is exploration.
+pub fn tool_call_is_productive(name: &str, args: &serde_json::Value) -> bool {
+    let n = name.to_ascii_lowercase();
+    if n.contains("write") || n.contains("edit") || n == "create" || n == "patch" {
+        return true;
+    }
+    if n.contains("bash") || n == "shell" || n == "run" || n.contains("exec") {
+        let cmd = args
+            .get("command")
+            .or_else(|| args.get("cmd"))
+            .or_else(|| args.get("script"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        const WRITE_VERBS: &[&str] = &[
+            "cat >", "cat>", "tee ", ">>", " > ", "cargo build", "cargo run", "cargo test",
+            "rustc ", "go build", "go run", "npm run", "npm install", "make ", "python ",
+            "node ", "touch ",
+        ];
+        return WRITE_VERBS.iter().any(|v| cmd.contains(v));
+    }
+    false
+}
+
+/// BW1 steering hint. Returns `Some(hint)` to append to the most recent tool
+/// response when the agent appears to be wandering: ≥ `MIN_CALLS` tool calls
+/// with zero productive (file-writing/building) calls so far. Escalates with
+/// call count. `None` when disabled, below threshold, or progress was made.
+pub fn bash_wander_hint(total_tool_calls: usize, productive_calls: usize) -> Option<String> {
+    if !bash_wander_enabled() {
+        return None;
+    }
+    bash_wander_hint_inner(total_tool_calls, productive_calls)
+}
+
+/// Pure threshold/escalation logic for [`bash_wander_hint`], split out so it
+/// is testable without the env gate.
+fn bash_wander_hint_inner(total_tool_calls: usize, productive_calls: usize) -> Option<String> {
+    const MIN_CALLS: usize = 5;
+    if productive_calls > 0 || total_tool_calls < MIN_CALLS {
+        return None;
+    }
+    let n = total_tool_calls;
+    let body = if n >= 9 {
+        format!(
+            "<CRITICAL PROGRESS WATCHDOG>\n\
+             You have run {n} tool calls and have NOT written or edited a single file. \
+             Exploration will not complete the task. In your next message, call the write \
+             tool to create the required source file(s), then build and run to verify. \
+             Do not run any more read-only commands.\n</CRITICAL PROGRESS WATCHDOG>"
+        )
+    } else {
+        format!(
+            "<PROGRESS WATCHDOG>\n\
+             You have run {n} tool calls without writing or editing any file yet. If the \
+             task asks you to create or modify files, do that now with the write/edit tool \
+             instead of more exploration, then verify by building/running.\n</PROGRESS WATCHDOG>"
+        )
+    };
+    Some(format!("\n\n{body}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,5 +420,42 @@ mod tests {
         let mut text = "Error: old_string not found in file".to_string();
         inject_hints(&mut text, 1);
         assert!(text.contains("Read the file first"));
+    }
+
+    #[test]
+    fn bw1_classify_productive_vs_explore() {
+        use serde_json::json;
+        // write/edit tools → productive
+        assert!(tool_call_is_productive(
+            "write",
+            &json!({"filePath":"src/main.rs","content":"fn main(){}"})
+        ));
+        assert!(tool_call_is_productive("Edit", &json!({})));
+        // bash that writes/builds/runs → productive
+        assert!(tool_call_is_productive("bash", &json!({"command":"cargo run --release"})));
+        assert!(tool_call_is_productive(
+            "bash",
+            &json!({"command":"cat > src/main.rs << 'EOF'"})
+        ));
+        // bash exploration → NOT productive
+        assert!(!tool_call_is_productive("bash", &json!({"command":"ls -la /tmp"})));
+        assert!(!tool_call_is_productive("bash", &json!({"command":"cat Cargo.toml"})));
+        // read/glob → NOT productive
+        assert!(!tool_call_is_productive("read", &json!({"filePath":"x"})));
+        assert!(!tool_call_is_productive("glob", &json!({"pattern":"**/*"})));
+    }
+
+    #[test]
+    fn bw1_hint_threshold_and_escalation() {
+        // Below threshold or any productive call → no hint.
+        assert!(bash_wander_hint_inner(4, 0).is_none());
+        assert!(bash_wander_hint_inner(20, 1).is_none());
+        // At/over threshold with zero productive → standard nudge.
+        let h = bash_wander_hint_inner(5, 0).expect("should fire");
+        assert!(h.contains("PROGRESS WATCHDOG"));
+        assert!(h.contains("write"));
+        // High count → critical escalation.
+        let c = bash_wander_hint_inner(10, 0).expect("should fire");
+        assert!(c.contains("CRITICAL"));
     }
 }

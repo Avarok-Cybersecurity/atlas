@@ -248,6 +248,56 @@ pub trait Model: Send + Sync {
     /// Rollback SSM states after partial acceptance.
     fn rollback_ssm_states(&self, seq: &mut SequenceState, num_accepted: usize) -> Result<()>;
 
+    /// True when this model has recurrent SSM / Mamba layers whose
+    /// `h_state` + `conv_state` are advanced in-place every decoded
+    /// token.
+    ///
+    /// Pure-attention models return `false` (the default): their only
+    /// per-token state is the paged KV cache, which the Phase-C
+    /// boundary rollback rewinds by lowering `seq_len`. Hybrid models
+    /// (Qwen3.6-A3B, MiniMax, Nemotron-nano) return `true` — for those
+    /// the scheduler MUST also restore the SSM state from a decode-time
+    /// snapshot, because the recurrent state cannot be undone by
+    /// lowering a cursor.
+    fn has_ssm_layers(&self) -> bool {
+        false
+    }
+
+    /// Number of decode-rollback SSM snapshot slots reserved **per
+    /// active sequence** (Phase-C). The scheduler's per-sequence
+    /// snapshot ring is sized from this. `0` (the default) means the
+    /// model keeps no decode-rollback snapshots — appropriate for
+    /// pure-attention models and for SSM models when the snapshot pool
+    /// has no capacity reserved. SSM models with a populated pool
+    /// override to `ROLLBACK_RESTEER_CAP + 1`.
+    fn decode_rollback_ring_slots(&self) -> usize {
+        0
+    }
+
+    /// Save `seq`'s live SSM `h_state` + `conv_state` (all SSM layers)
+    /// into the decode-rollback snapshot slot `ring_slot`.
+    ///
+    /// `ring_slot` is a per-sequence ring index in
+    /// `[0, decode_rollback_ring_slots())`; the model maps it to a
+    /// concrete snapshot-pool slot keyed by `seq.slot_idx`. Reuses the
+    /// same `SsmSnapshotPool` D2D copy primitive as Marconi prefix
+    /// caching and MTP verify (SSOT — one snapshot mechanism).
+    ///
+    /// Default: no-op `Ok(())` for pure-attention models, which have no
+    /// SSM state to snapshot.
+    fn save_decode_ssm_snapshot(&self, _seq: &SequenceState, _ring_slot: usize) -> Result<()> {
+        Ok(())
+    }
+
+    /// Restore `seq`'s SSM `h_state` + `conv_state` (all SSM layers)
+    /// from the decode-rollback snapshot slot `ring_slot` previously
+    /// written by [`Self::save_decode_ssm_snapshot`].
+    ///
+    /// Default: no-op `Ok(())` for pure-attention models.
+    fn restore_decode_ssm_snapshot(&self, _seq: &SequenceState, _ring_slot: usize) -> Result<()> {
+        Ok(())
+    }
+
     /// Speculative decoding via the model's internal MTP proposer; falls
     /// back to regular decode when no proposer is wired up.
     fn generate_speculative(
@@ -284,6 +334,17 @@ pub trait Model: Send + Sync {
     /// slot to `new_slot`. Used by the scheduler for slot compaction after
     /// swap_remove to keep active sequences at contiguous slots [0..N).
     fn compact_sequence(&self, seq: &mut SequenceState, new_slot: usize) -> Result<()>;
+
+    /// Disown a retired sequence's SSM pool slot after `compact_sequence`
+    /// migrated it to a surviving sequence.
+    ///
+    /// Sets the `slot_idx` reuse sentinel AND neutralizes the sequence's
+    /// internal slot-release guard so the migrated slot is NOT released when
+    /// this sequence is later freed or dropped (the surviving sequence now owns
+    /// it). The scheduler MUST call this — instead of mutating `slot_idx`
+    /// directly — immediately after a `compact_sequence` that reuses this
+    /// sequence's slot, so a subsequent early-return/drop cannot double-release.
+    fn detach_slot_for_reuse(&self, seq: &mut SequenceState);
 
     /// CUDA-graphed K=2 verify: 2 tokens, capture-then-replay. Returns
     /// `[verified_0, verified_1]` argmax IDs. SSM intermediates saved for
@@ -399,11 +460,16 @@ pub trait Model: Send + Sync {
         Ok(())
     }
 
-    /// EP worker step: receive a command from rank 0 and execute it.
+    /// EP worker step: receive a (seq_id, cmd) preamble from rank 0 and
+    /// execute the command in the addressed slot.
     ///
     /// Returns false when the worker should shut down.
     /// Only valid on rank > 0 with EP enabled.
-    fn ep_worker_step(&self, _seq: &mut SequenceState) -> Result<bool> {
+    ///
+    /// `slots` must be sized to `args.max_batch_size` (same as the head's
+    /// scheduler `active` capacity); commands with `seq_id >= slots.len()`
+    /// fail loudly rather than corrupt unrelated state.
+    fn ep_worker_step(&self, _slots: &mut [Option<SequenceState>]) -> Result<bool> {
         Ok(true) // no-op for non-EP models
     }
 
@@ -458,6 +524,28 @@ pub trait Model: Send + Sync {
     /// Only valid when EP is enabled.
     fn ep_broadcast_cmd(&self, _cmd: u32) -> Result<()> {
         Ok(()) // no-op for non-EP models
+    }
+
+    /// EP broadcast: send a `(seq_id, cmd)` pair to all worker ranks.
+    ///
+    /// Use this at the *first* broadcast of a logical command sequence
+    /// (e.g. the K=2 verify marker, prefill start, decode token, etc.).
+    /// Follow-up broadcasts within the same command (chunk metadata, more
+    /// tokens, accept/reject result) keep using [`Self::ep_broadcast_cmd`]
+    /// — the worker consumes the preamble once per command and routes
+    /// subsequent reads through the slot it identified.
+    ///
+    /// When [`Self::ep_protocol_v2`] returns false (the default), the
+    /// `seq_id` is ignored on the wire and behaviour matches the legacy
+    /// single-sequence broadcast.
+    fn ep_broadcast_cmd_for_seq(&self, _seq_id: u32, _cmd: u32) -> Result<()> {
+        Ok(()) // no-op for non-EP models
+    }
+
+    /// Returns true if this model's EP comm path is using the v2 protocol
+    /// (slot-aware seq_id preamble). Default false — pre-PR behaviour.
+    fn ep_protocol_v2(&self) -> bool {
+        false
     }
 
     /// EP bulk broadcast: send an array of u32 tokens to all worker ranks.

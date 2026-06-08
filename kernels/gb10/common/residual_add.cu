@@ -49,7 +49,7 @@ extern "C" __global__ void silu_mul_separate(
         float g = __bfloat162float(gate[i]);
         float u = __bfloat162float(up[i]);
         // SiLU(x) = x * sigmoid(x)
-        float silu_g = g / (1.0f + __expf(-g));
+        float silu_g = g / (1.0f + expf(-g));
         output[i] = __float2bfloat16(silu_g * u);
     }
 }
@@ -167,7 +167,7 @@ extern "C" __global__ void bf16_sigmoid_blend_device(
     __shared__ float sigmoid_val;
     if (threadIdx.x == 0) {
         float g = __bfloat162float(*gate_ptr);
-        sigmoid_val = 1.0f / (1.0f + __expf(-g));
+        sigmoid_val = 1.0f / (1.0f + expf(-g));
     }
     __syncthreads();
 

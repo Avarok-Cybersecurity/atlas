@@ -173,15 +173,43 @@ impl<'a> KernelLaunch<'a> {
                 args.push(KernelArg::Bytes(bytes));
             }
         }
-        self.gpu.launch_typed(
+        let r = self.gpu.launch_typed(
             self.kernel,
             self.grid,
             self.block,
             self.shared_mem,
             stream,
             &args,
-        )
+        );
+        // ATLAS_DEBUG_SYNC_KERNELS (PCND, default-off): synchronize after
+        // each launch so an async CUDA fault surfaces AT the culprit launch
+        // (with grid/block) instead of at a later, unrelated sync point.
+        // Diagnostic only — leave unset in production (one stream sync per
+        // launch is a large slowdown). With RUST_BACKTRACE=1 the propagated
+        // error pinpoints the calling op.
+        if r.is_ok() && debug_sync_kernels() {
+            self.gpu.synchronize(stream).map_err(|e| {
+                let bt = std::backtrace::Backtrace::force_capture();
+                anyhow::anyhow!(
+                    "ATLAS_DEBUG_SYNC_KERNELS: async GPU fault immediately after kernel launch \
+                     grid={:?} block={:?} shared_mem={}: {e}\nLAUNCH BACKTRACE:\n{bt}",
+                    self.grid,
+                    self.block,
+                    self.shared_mem
+                )
+            })?;
+        }
+        r
     }
+}
+
+/// One-time read of `ATLAS_DEBUG_SYNC_KERNELS` (PCND opt-in). When `1`,
+/// `KernelLaunch::launch` synchronizes the stream after every launch so an
+/// asynchronous illegal-address fault is reported at the exact kernel that
+/// caused it (rather than surfacing at a later sync). Default-off.
+fn debug_sync_kernels() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("ATLAS_DEBUG_SYNC_KERNELS").as_deref() == Ok("1"))
 }
 
 /// Convenience: divide and round up.

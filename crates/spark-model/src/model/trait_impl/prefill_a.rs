@@ -89,11 +89,7 @@ impl TransformerModel {
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let _bf16 = 2usize;
-        let fp32 = if self.config.use_fp32_residual() {
-            4usize
-        } else {
-            2usize
-        };
+        let fp32 = 2usize;
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 

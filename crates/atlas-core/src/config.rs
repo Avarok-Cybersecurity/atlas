@@ -120,6 +120,18 @@ pub struct ModelConfig {
     pub eos_token_id: u32,
     #[serde(default)]
     pub tie_word_embeddings: bool,
+    /// CLI override (`--lm-head-dtype`) for LM-head quantization, set at serve time
+    /// (not from config.json). `Some(true)` = force BF16 lm_head; `Some(false)` = force
+    /// the model's quantized lm_head; `None` = use the model-config-driven default.
+    /// Consumed by `skip_lm_head_quantization()`. Replaces the ATLAS_LMHEAD_BF16 env var.
+    #[serde(default)]
+    pub lm_head_bf16_override: Option<bool>,
+    /// When `skip_lm_head_quantization()` == false, quantize the LM head to FP8
+    /// (E4M3, per-row scales, decoded via `w8a16_gemv`) instead of NVFP4.
+    /// Set by `--lm-head-dtype fp8`. Additive: leaves the NVFP4/BF16 paths
+    /// byte-identical when false.
+    #[serde(default)]
+    pub lm_head_fp8: bool,
 
     // ── Model type ──
     #[serde(default)]

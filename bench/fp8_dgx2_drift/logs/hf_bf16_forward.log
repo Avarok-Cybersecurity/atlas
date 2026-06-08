@@ -1,0 +1,53 @@
+[14:29:39] loading tokens from /tmp/atlas_tokens_dgx2.json
+  prompt_len=10382, last prompt tok=198
+[14:29:39] loading BF16 model from /workspace/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0
+`torch_dtype` is deprecated! Use `dtype` instead!
+The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
+Loading weights:   0%|          | 0/693 [00:00<?, ?it/s]Loading weights:  37%|███▋      | 258/693 [00:00<00:00, 2571.98it/s]Loading weights:  87%|████████▋ | 602/693 [00:00<00:00, 3081.72it/s]Loading weights: 100%|██████████| 693/693 [00:00<00:00, 3144.37it/s]
+  model loaded in 0.6s
+[14:29:39] registering hooks on 40 layers
+[14:29:39] forward pass — 10382 tokens
+  forward done in 720.1s (14.4 tok/s)
+[14:41:39] writing per-layer dumps to /workspace/atlas-dumps/fp8native_dgx2
+  wrote hf_bf16_L0.bin                      n=   2048  L0 hidden[last_tok]
+  wrote hf_bf16_L1.bin                      n=   2048  L1 hidden[last_tok]
+  wrote hf_bf16_L2.bin                      n=   2048  L2 hidden[last_tok]
+  wrote hf_bf16_L3.bin                      n=   2048  L3 hidden[last_tok]
+  wrote hf_bf16_L4.bin                      n=   2048  L4 hidden[last_tok]
+  wrote hf_bf16_L5.bin                      n=   2048  L5 hidden[last_tok]
+  wrote hf_bf16_L6.bin                      n=   2048  L6 hidden[last_tok]
+  wrote hf_bf16_L7.bin                      n=   2048  L7 hidden[last_tok]
+  wrote hf_bf16_L8.bin                      n=   2048  L8 hidden[last_tok]
+  wrote hf_bf16_L9.bin                      n=   2048  L9 hidden[last_tok]
+  wrote hf_bf16_L10.bin                     n=   2048  L10 hidden[last_tok]
+  wrote hf_bf16_L11.bin                     n=   2048  L11 hidden[last_tok]
+  wrote hf_bf16_L12.bin                     n=   2048  L12 hidden[last_tok]
+  wrote hf_bf16_L13.bin                     n=   2048  L13 hidden[last_tok]
+  wrote hf_bf16_L14.bin                     n=   2048  L14 hidden[last_tok]
+  wrote hf_bf16_L15.bin                     n=   2048  L15 hidden[last_tok]
+  wrote hf_bf16_L16.bin                     n=   2048  L16 hidden[last_tok]
+  wrote hf_bf16_L17.bin                     n=   2048  L17 hidden[last_tok]
+  wrote hf_bf16_L18.bin                     n=   2048  L18 hidden[last_tok]
+  wrote hf_bf16_L19.bin                     n=   2048  L19 hidden[last_tok]
+  wrote hf_bf16_L20.bin                     n=   2048  L20 hidden[last_tok]
+  wrote hf_bf16_L21.bin                     n=   2048  L21 hidden[last_tok]
+  wrote hf_bf16_L22.bin                     n=   2048  L22 hidden[last_tok]
+  wrote hf_bf16_L23.bin                     n=   2048  L23 hidden[last_tok]
+  wrote hf_bf16_L24.bin                     n=   2048  L24 hidden[last_tok]
+  wrote hf_bf16_L25.bin                     n=   2048  L25 hidden[last_tok]
+  wrote hf_bf16_L26.bin                     n=   2048  L26 hidden[last_tok]
+  wrote hf_bf16_L27.bin                     n=   2048  L27 hidden[last_tok]
+  wrote hf_bf16_L28.bin                     n=   2048  L28 hidden[last_tok]
+  wrote hf_bf16_L29.bin                     n=   2048  L29 hidden[last_tok]
+  wrote hf_bf16_L30.bin                     n=   2048  L30 hidden[last_tok]
+  wrote hf_bf16_L31.bin                     n=   2048  L31 hidden[last_tok]
+  wrote hf_bf16_L32.bin                     n=   2048  L32 hidden[last_tok]
+  wrote hf_bf16_L33.bin                     n=   2048  L33 hidden[last_tok]
+  wrote hf_bf16_L34.bin                     n=   2048  L34 hidden[last_tok]
+  wrote hf_bf16_L35.bin                     n=   2048  L35 hidden[last_tok]
+  wrote hf_bf16_L36.bin                     n=   2048  L36 hidden[last_tok]
+  wrote hf_bf16_L37.bin                     n=   2048  L37 hidden[last_tok]
+  wrote hf_bf16_L38.bin                     n=   2048  L38 hidden[last_tok]
+  wrote hf_bf16_L39.bin                     n=   2048  L39 hidden[last_tok]
+  HF[BF16-unquant] top-10 logits: [(6820, 20.25), (14773, 19.0), (9764, 18.375), (760, 18.375), (13784, 17.75), (3793, 17.25), (40, 17.25), (77264, 16.125), (50821, 15.8125), (69060, 15.6875)]
+[14:41:40] DONE

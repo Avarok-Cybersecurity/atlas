@@ -26,7 +26,13 @@ use super::*;
 ///     accepted bonus token (the next propose() needs the latest hidden).
 ///   * Sliding-window state rollback for sliding-attention layers
 ///     (Gemma-4-style; not used by Qwen3.6 targets).
-pub fn step_verify_dflash(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_drafts: usize) {
+pub fn step_verify_dflash(
+    model: &dyn Model,
+    a: &mut ActiveSeq,
+    drafts: &[u32],
+    num_drafts: usize,
+    verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+) {
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
         a.finished = true;
@@ -38,7 +44,7 @@ pub fn step_verify_dflash(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], 
     tokens.push(a.last_token);
     tokens.extend_from_slice(drafts);
 
-    let verified = match model.decode_verify_dflash(&tokens, &mut a.seq, 0) {
+    let verified_argmax = match model.decode_verify_dflash(&tokens, &mut a.seq, 0) {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("decode_verify_dflash: {e:#}");
@@ -47,6 +53,20 @@ pub fn step_verify_dflash(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], 
         }
     };
     a.last_token_time = Instant::now();
+
+    // Phase C-2 (2026-05-24): apply the full pre-sample
+    // logits-processor pipeline at each verify position before the
+    // accept-prefix comparison. `decode_verify_dflash` writes
+    // `[tokens.len(), vocab]` BF16 into `logits_buffer`; the helper
+    // reads it back, dequant + 8-stage pipeline + argmax per slot.
+    // Fail-safe falls back to the raw GPU argmax on D2H failure.
+    let verified =
+        crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+            model,
+            &verified_argmax,
+            a,
+            verify_ctx,
+        );
 
     // `decode_verify` already advanced `seq.seq_len` by `tokens.len()` and
     // pushed all γ+1 tokens into `seq.tokens`. The accept-prefix logic below

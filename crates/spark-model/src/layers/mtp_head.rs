@@ -135,6 +135,12 @@ pub struct MtpHead {
     rope_k: KernelHandle,
     reshape_cache_k: KernelHandle,
     paged_decode_k: KernelHandle,
+    /// MTP KV cache dtype: true = BF16 (matches the main model), false = FP8.
+    /// The FP8 path hard-passed k_scale=v_scale=1.0 which collapsed the MTP
+    /// attention output to a constant on Qwen3.6-A3B (large deep-layer K/V
+    /// magnitudes) → constant draft token 0 → 0% acceptance. BF16 KV (this
+    /// head is a single tiny attention layer) fixes it. Gated by mtp_quant.
+    kv_bf16: bool,
     residual_add_k: KernelHandle,
     residual_add_rms_norm_k: KernelHandle,
     sigmoid_gate_mul_k: KernelHandle,

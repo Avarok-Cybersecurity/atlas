@@ -316,6 +316,124 @@ pub fn gdn_prefill_persistent_smem(
         .launch(stream)
 }
 
+/// FLA multi-kernel chunked GDN prefill (`ATLAS_GDN_FLA=1`).
+///
+/// Three sequential launches on `stream` (CPU-serialized → no GPU sync needed):
+///   1. recompute_wu  (grid [num_chunks, nv, batch], 128 thr): solve (I+L)U=βV,
+///      (I+L)W=β·exp(gc)·K → W_out, U_out (bf16).
+///   2. chunk_delta_h_ksplit (grid [nv, batch], 256 thr): serial state spine,
+///      2 threads/v-column for occupancy → S_out (per-chunk entry states f32),
+///      uc_out (bf16); updates h_state in-place.
+///   3. chunk_fwd_o   (grid [num_chunks, nv, batch], 128 thr): O = Q̃·S_c +
+///      tril(decay·Q̃·Kᵀ)·uc → output (bf16, same layout as wy4).
+/// W_out/U_out/S_out/uc_out are the caller's pre-sized scratch (BufferArena
+/// `gdn_fla_scratch`, sub-divided). Strides match the packed conv layout
+/// (qk_stride=v_stride=conv_dim, gb_stride=2*nv) exactly like the wy4/chunk64 path.
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_prefill_fla(
+    gpu: &dyn GpuBackend,
+    k_recompute_wu: KernelHandle,
+    k_chunk_delta_h: KernelHandle,
+    k_chunk_fwd_o: KernelHandle,
+    h_state: DevicePtr,
+    query: DevicePtr,
+    key: DevicePtr,
+    value: DevicePtr,
+    gate: DevicePtr,
+    beta: DevicePtr,
+    output: DevicePtr,
+    w_out: DevicePtr,
+    u_out: DevicePtr,
+    s_out: DevicePtr,
+    uc_out: DevicePtr,
+    batch_size: u32,
+    seq_len: u32,
+    num_chunks: u32,
+    num_k_heads: u32,
+    num_v_heads: u32,
+    k_dim: u32,
+    v_dim: u32,
+    qk_stride: u32,
+    v_stride: u32,
+    gb_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    const C: u32 = 64; // CHUNK (kernel constant)
+    let (kd, vd) = (k_dim, v_dim);
+    // smem byte sizes — identical formulas to the GATE-B example (validated).
+    let smem_wu = C * kd * 2 + C * C * 4 + C * C * 4 + C * 4;
+    let smem_dh = 2 * (C * (2 * kd + vd) * 2) + 2 * C * 4;
+    let smem_fo = C * kd * 2 + C * kd * 2 + C * C * 4 + C * vd * 2 + kd * vd * 2 + C * 4;
+
+    // Kernel 1: recompute_wu.
+    KernelLaunch::new(gpu, k_recompute_wu)
+        .grid([num_chunks, num_v_heads, batch_size])
+        .block([128, 1, 1])
+        .shared_mem(smem_wu)
+        .arg_ptr(key)
+        .arg_ptr(value)
+        .arg_ptr(gate)
+        .arg_ptr(beta)
+        .arg_ptr(w_out)
+        .arg_ptr(u_out)
+        .arg_u32(batch_size)
+        .arg_u32(seq_len)
+        .arg_u32(num_chunks)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(kd)
+        .arg_u32(vd)
+        .arg_u32(qk_stride)
+        .arg_u32(v_stride)
+        .arg_u32(gb_stride)
+        .launch(stream)?;
+
+    // Kernel 2: chunk_delta_h_ksplit (256-thread block = 2 threads / v-column).
+    KernelLaunch::new(gpu, k_chunk_delta_h)
+        .grid([num_v_heads, batch_size, 1])
+        .block([256, 1, 1])
+        .shared_mem(smem_dh)
+        .arg_ptr(h_state)
+        .arg_ptr(w_out)
+        .arg_ptr(u_out)
+        .arg_ptr(key)
+        .arg_ptr(gate)
+        .arg_ptr(s_out)
+        .arg_ptr(uc_out)
+        .arg_u32(batch_size)
+        .arg_u32(seq_len)
+        .arg_u32(num_chunks)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(kd)
+        .arg_u32(vd)
+        .arg_u32(qk_stride)
+        .arg_u32(gb_stride)
+        .launch(stream)?;
+
+    // Kernel 3: chunk_fwd_o.
+    KernelLaunch::new(gpu, k_chunk_fwd_o)
+        .grid([num_chunks, num_v_heads, batch_size])
+        .block([128, 1, 1])
+        .shared_mem(smem_fo)
+        .arg_ptr(query)
+        .arg_ptr(key)
+        .arg_ptr(gate)
+        .arg_ptr(s_out)
+        .arg_ptr(uc_out)
+        .arg_ptr(output)
+        .arg_u32(batch_size)
+        .arg_u32(seq_len)
+        .arg_u32(num_chunks)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(kd)
+        .arg_u32(vd)
+        .arg_u32(qk_stride)
+        .arg_u32(gb_stride)
+        .launch(stream)
+}
+
 /// Fused 2-token GDN decode (speculative verification).
 ///
 /// Processes exactly 2 tokens through GDN in a single kernel launch.

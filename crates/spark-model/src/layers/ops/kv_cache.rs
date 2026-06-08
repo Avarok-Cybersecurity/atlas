@@ -86,6 +86,162 @@ pub fn reshape_and_cache(
         .launch(stream)
 }
 
+/// V-only paged cache write — companion to the fused K-path so the
+/// K side of the cache stays exclusively owned by
+/// `fused_k_norm_rope_cache_write_*`. Use this when the fused K kernel
+/// is active to avoid the existing `reshape_and_cache` overwriting
+/// the correct K values with a double-rounded copy.
+#[allow(clippy::too_many_arguments)]
+pub fn reshape_and_cache_flash_v_only(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    value: DevicePtr,
+    v_cache: DevicePtr,
+    slot_mapping: DevicePtr,
+    num_tokens: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    block_size: u32,
+    value_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_tokens, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(value)
+        .arg_ptr(v_cache)
+        .arg_ptr(slot_mapping)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(block_size)
+        .arg_u32(value_stride)
+        .launch(stream)
+}
+
+/// Fused K-path: rms_norm → RoPE → BF16 paged cache write in one kernel.
+///
+/// Replaces the chained `ops::rms_norm + ops::rope + ops::reshape_and_cache`
+/// sequence for the K projection. Keeps K in FP32 between the three
+/// operations and BF16-rounds ONLY at cache write — vLLM-equivalent
+/// precision regime. Eliminates the two intermediate BF16 rounding steps
+/// that previously compounded at deep attention layers (L35-L39) where K
+/// magnitudes peak ~18× vs L0, causing the documented BF16-KV cliff.
+#[allow(clippy::too_many_arguments)]
+pub fn fused_k_norm_rope_cache_write_bf16(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    k_in: DevicePtr,
+    k_norm_weight: DevicePtr,
+    positions: DevicePtr,
+    k_cache: DevicePtr,
+    slot_mapping: DevicePtr,
+    num_tokens: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    rotary_dim: u32,
+    block_size: u32,
+    rms_eps: f32,
+    theta: f32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_tokens, num_kv_heads, 1])
+        .block([head_dim, 1, 1])
+        .arg_ptr(k_in)
+        .arg_ptr(k_norm_weight)
+        .arg_ptr(positions)
+        .arg_ptr(k_cache)
+        .arg_ptr(slot_mapping)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(rotary_dim)
+        .arg_u32(block_size)
+        .arg_f32(rms_eps)
+        .arg_f32(theta)
+        .launch(stream)
+}
+
+/// MRoPE-interleaved variant — selects abs position from pos_t/pos_h/pos_w
+/// based on `pair_idx % 3`. For text-only inputs (pos_h == pos_w == pos_t)
+/// the result is bit-identical to the scalar-position variant.
+#[allow(clippy::too_many_arguments)]
+pub fn fused_k_norm_rope_cache_write_bf16_mrope(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    k_in: DevicePtr,
+    k_norm_weight: DevicePtr,
+    pos_t: DevicePtr,
+    pos_h: DevicePtr,
+    pos_w: DevicePtr,
+    k_cache: DevicePtr,
+    slot_mapping: DevicePtr,
+    num_tokens: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    rotary_dim: u32,
+    block_size: u32,
+    rms_eps: f32,
+    theta: f32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_tokens, num_kv_heads, 1])
+        .block([head_dim, 1, 1])
+        .arg_ptr(k_in)
+        .arg_ptr(k_norm_weight)
+        .arg_ptr(pos_t)
+        .arg_ptr(pos_h)
+        .arg_ptr(pos_w)
+        .arg_ptr(k_cache)
+        .arg_ptr(slot_mapping)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(rotary_dim)
+        .arg_u32(block_size)
+        .arg_f32(rms_eps)
+        .arg_f32(theta)
+        .launch(stream)
+}
+
+/// FP8-output sibling of [`fused_k_norm_rope_cache_write_bf16`]. Same
+/// semantics; one fewer BF16 round before the saturating FP8 cast.
+#[allow(clippy::too_many_arguments)]
+pub fn fused_k_norm_rope_cache_write_fp8(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    k_in: DevicePtr,
+    k_norm_weight: DevicePtr,
+    positions: DevicePtr,
+    k_cache_fp8: DevicePtr,
+    slot_mapping: DevicePtr,
+    num_tokens: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    rotary_dim: u32,
+    block_size: u32,
+    rms_eps: f32,
+    theta: f32,
+    inv_scale: f32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_tokens, num_kv_heads, 1])
+        .block([head_dim, 1, 1])
+        .arg_ptr(k_in)
+        .arg_ptr(k_norm_weight)
+        .arg_ptr(positions)
+        .arg_ptr(k_cache_fp8)
+        .arg_ptr(slot_mapping)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(rotary_dim)
+        .arg_u32(block_size)
+        .arg_f32(rms_eps)
+        .arg_f32(theta)
+        .arg_f32(inv_scale)
+        .launch(stream)
+}
+
 /// `k_cache`/`v_cache` are the full pool base pointers.
 /// `cache_stride` is in elements (block_size * num_kv_heads * head_dim).
 pub fn reshape_and_cache_fp8(

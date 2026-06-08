@@ -39,6 +39,24 @@ impl TransformerModel {
         let h = self.config.hidden_size;
         let hidden = self.buffers.hidden_states();
 
+        // Stale-V prefix-cache fix: track the contiguous prefix (from token 0)
+        // whose paged K/V is guaranteed fully written for this sequence.
+        //   • At chunk 0 the reused prefix-cache match (`kv_write_start` tokens
+        //     when `marconi_skip`) is the only pre-validated KV; reset the
+        //     accumulator to it (0 on a cold prefill).
+        //   • Each chunk that runs the real prefill path writes KV for
+        //     `[effective_seq_len_start, effective_seq_len_start + proc_count)`,
+        //     extending the contiguous valid prefix to its end.
+        //   • The `proc_count == 1` last-chunk decode shortcut writes only the
+        //     single re-embedded last token and therefore does NOT extend the
+        //     contiguous valid prefix past `kv_write_start` — any trailing
+        //     complete blocks it "treats as cached" but never wrote must not be
+        //     inserted into the prefix cache (handled by the insert-side cap in
+        //     `finalize_last`/`save_checkpoint`).
+        if chunk_start == 0 {
+            seq.kv_valid_tokens = if marconi_skip { kv_write_start } else { 0 };
+        }
+
         if marconi_skip && kv_write_start > chunk_start {
             // Skip cached tokens within this chunk
             let skip_in_chunk = (kv_write_start - chunk_start).min(chunk_len);
@@ -100,6 +118,8 @@ impl TransformerModel {
                     stream,
                 )?;
                 self.scale_embeddings(hidden, uncached_count, stream)?;
+                // Real prefill path: KV written for [uncached_start, end).
+                seq.kv_valid_tokens = seq.kv_valid_tokens.max(uncached_start + uncached_count);
                 Ok(ProcRange::Compute {
                     proc_start: uncached_start,
                     proc_count: uncached_count,
@@ -107,6 +127,8 @@ impl TransformerModel {
                 })
             }
         } else {
+            // Full-chunk prefill path: KV written for [chunk_start, end).
+            seq.kv_valid_tokens = seq.kv_valid_tokens.max(chunk_start + chunk_len);
             Ok(ProcRange::Compute {
                 proc_start: chunk_start,
                 proc_count: chunk_len,

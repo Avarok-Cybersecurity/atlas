@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-
 //! Decode phase B — batched multi-sequence decode.
 //!
 //! Same POD-array-to-byte-slice `unsafe` pattern as `verify_c.rs`; see
@@ -54,9 +53,17 @@ impl TransformerModel {
             .find(|&s| s >= n_decode)
             .unwrap_or(n_decode);
 
-        // Guard: fall back to default (sequential) for EP, oversized, or no decode.
+        // Guard: fall back to default (sequential) for EP, oversized, no decode,
+        // or MLA. MLA models route the decode portion through `decode_batch`,
+        // whose `decode_batch_dispatch` dispatches the batched MLA branch
+        // (`ms_mla_decode`, issue #84). The fused `decode_multi_seq` body
+        // inlined below is NOT used for MLA here — it shares a single layer
+        // loop with the prefill chunk and that interleaving has not been
+        // validated for the absorbed-MLA path — so MLA stays on the
+        // dedicated `decode_batch` route.
         // Use padded_n (not n_decode) because padding slots consume hidden buffer space.
         if self.comm.is_some()
+            || self.is_mla_dispatch()
             || (padded_n_guard + n_prefill) > self.buffers.max_batch_tokens()
             || n_decode == 0
         {
@@ -93,11 +100,7 @@ impl TransformerModel {
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;
-        let fp32 = if self.config.use_fp32_residual() {
-            4usize
-        } else {
-            2usize
-        };
+        let fp32 = 2usize;
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 

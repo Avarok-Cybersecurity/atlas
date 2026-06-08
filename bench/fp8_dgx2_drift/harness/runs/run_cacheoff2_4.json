@@ -1,0 +1,72 @@
+{
+  "tier": "cacheoff2",
+  "run": 4,
+  "wall_time_s": 360.0486373901367,
+  "opencode": {
+    "events_total": 37,
+    "stderr_bytes": 0
+  },
+  "filesystem": {
+    "files_written": [
+      ".gitignore",
+      "Cargo.toml",
+      "src/main.rs"
+    ],
+    "files_count": 3
+  },
+  "cargo": {
+    "cargo_toml_present": true,
+    "cargo_toml_valid": true,
+    "cargo_toml_error": "",
+    "cargo_toml_has_package_name": true
+  },
+  "webserver": {
+    "webserver_ok": false,
+    "build_ok": false,
+    "build_error": "    Updating crates.io index\nerror: failed to select a version for `axum`.\n    ... required by package `atlas-harness-server v0.1.0 (/tmp/harness-cacheoff2-r4)`\nversions that meet the requirements `^0.8` are: 0.8.9, 0.8.8, 0.8.7, 0.8.6, 0.8.5, 0.8.4, 0.8.3, 0.8.1, 0.8.0\n\npackage `atlas-harness-server` depends on `axum` with feature `test` but `axum` does not have that feature.\nhelp: there is a feature `ws` with a similar name\n\n\nall possible versions conflict with previously selected packages\n\n  previously selected package `axum v0.8.0`\n    ... which satisfies dependency `axum = \"^0.8\"` of pack",
+    "bind_ok": false,
+    "ping_ok": false,
+    "ping_response": ""
+  },
+  "tool_calls": {
+    "total": 9,
+    "by_tool": {
+      "glob": 1,
+      "skill": 1,
+      "bash": 1,
+      "write": 3,
+      "read": 2,
+      "edit": 1
+    },
+    "tool_calls_per_turn": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "turns_observed": 9
+  },
+  "drift": {
+    "write_calls": 3,
+    "write_empty_path": 0,
+    "write_path_drift_from_target": 0,
+    "write_path_has_literal_space": 0,
+    "write_content_starts_with_lean": 0,
+    "write_content_is_bash_command": 0,
+    "write_content_xml_attr_leak": 0,
+    "write_content_newlines_collapsed_toml": 0
+  },
+  "atlas": {
+    "ws1_mask_active_fires": 1,
+    "b1_drift_gauge_fires": 0,
+    "tier_5c_retries": 0,
+    "a2_fuzzy_repair_fires": 0,
+    "doom_loop_trips": 0,
+    "tool_call_lines": 9
+  }
+}

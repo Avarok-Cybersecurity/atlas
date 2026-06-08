@@ -42,11 +42,7 @@ impl TransformerModel {
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;
-        let fp32 = if self.config.use_fp32_residual() {
-            4usize
-        } else {
-            2usize
-        };
+        let fp32 = 2usize;
         let k = 4usize;
 
         // F62 (2026-04-27): SpecMamba dual-buffer pre-verify copy.

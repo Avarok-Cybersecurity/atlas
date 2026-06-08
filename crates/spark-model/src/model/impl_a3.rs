@@ -54,27 +54,15 @@ impl TransformerModel {
         }
     }
 
-    /// Scale in-place embeddings by config.embed_scale. Picks the kernel
-    /// matching `data`'s actual dtype:
-    ///   - when `use_fp32_residual()` is true, `hidden` is FP32 and we
-    ///     dispatch `embed_scale::f32_scale_inplace`
-    ///   - otherwise (`hidden` is BF16) we dispatch the usual
-    ///     `embed_scale::bf16_scale_inplace`
-    ///
-    /// For the rare case of scaling a BF16 buffer while FP32 residual is
-    /// ALSO active (e.g. the decode embed() scratch which is deliberately
-    /// BF16 before a bf16_to_f32 cast), use `scale_embeddings_bf16`.
+    /// Scale in-place embeddings by config.embed_scale. The residual stream
+    /// is always BF16, so this dispatches `embed_scale::bf16_scale_inplace`.
     pub(super) fn scale_embeddings(
         &self,
         data: DevicePtr,
         num_tokens: usize,
         stream: u64,
     ) -> Result<()> {
-        if self.config.use_fp32_residual() {
-            self.scale_embeddings_fp32(data, num_tokens, stream)
-        } else {
-            self.scale_embeddings_bf16(data, num_tokens, stream)
-        }
+        self.scale_embeddings_bf16(data, num_tokens, stream)
     }
 
     pub(super) fn scale_embeddings_bf16(
@@ -97,31 +85,6 @@ impl TransformerModel {
             .launch(stream)
     }
 
-    pub(super) fn scale_embeddings_fp32(
-        &self,
-        data: DevicePtr,
-        num_tokens: usize,
-        stream: u64,
-    ) -> Result<()> {
-        // Symmetric with scale_embeddings_bf16: models without embedding
-        // scaling (non-Gemma, e.g. qwen3.6-27b) have no embed_scale kernel
-        // registered (handle == 0). Without this guard the FP8 fp32-residual
-        // path hard-fails ("Module 'embed_scale' not loaded").
-        if self.embed_scale_kernel.0 == 0 {
-            return Ok(());
-        }
-        use spark_runtime::kernel_args::KernelLaunch;
-        let kernel = self.gpu.kernel("embed_scale", "f32_scale_inplace")?;
-        let n = (num_tokens * self.config.hidden_size) as u32;
-        KernelLaunch::new(self.gpu.as_ref(), kernel)
-            .grid([n.div_ceil(256), 1, 1])
-            .block([256, 1, 1])
-            .arg_ptr(data)
-            .arg_u32(n)
-            .arg_f32(self.config.embed_scale)
-            .launch(stream)
-    }
-
     /// LM head for K tokens: hidden[K, H] → logits[K, V].
     pub(super) fn lm_head_batched(
         &self,
@@ -132,7 +95,24 @@ impl TransformerModel {
         let h = self.config.hidden_size as u32;
         let v = self.config.vocab_size as u32;
         let logits = self.buffers.logits();
-        if num_tokens == 2 {
+        if let Some(ref fp8) = self.lm_head_fp8 {
+            // FP8 E4M3 LM head. `w8a16_gemv` is M=1 only (no batch2/GEMM
+            // variant), so loop one GEMV per token. hidden is BF16 [K,H]
+            // (stride h*2 bytes); logits is BF16 [K,V] (stride v*2 bytes).
+            let bf16 = 2usize;
+            for i in 0..num_tokens as usize {
+                ops::dense_gemv_fp8w(
+                    self.gpu.as_ref(),
+                    self.dense_gemv_fp8w_kernel,
+                    hidden.offset(i * h as usize * bf16),
+                    fp8,
+                    logits.offset(i * v as usize * bf16),
+                    v,
+                    h,
+                    stream,
+                )?;
+            }
+        } else if num_tokens == 2 {
             // Double-GEMV: reads weights once, computes 2 outputs.
             // GEMM M=2 with 64×64 tiles wastes 97% of M-dimension → ~3× slower.
             if let Some(ref nvfp4) = self.lm_head_nvfp4 {
@@ -218,7 +198,22 @@ impl TransformerModel {
         } else {
             (self.buffers.logits(), false)
         };
-        if let Some(ref nvfp4) = self.lm_head_nvfp4 {
+        if let Some(ref fp8) = self.lm_head_fp8 {
+            // FP8 E4M3 LM head (`--lm-head-dtype fp8`). `w8a16_gemv` has no
+            // FP32-output variant — it writes to whichever buffer is passed.
+            // `use_fp32_logits` is false in production, so `logits` is the
+            // shared BF16 buffer; the FP32-logits path is unused here.
+            ops::dense_gemv_fp8w(
+                self.gpu.as_ref(),
+                self.dense_gemv_fp8w_kernel,
+                hidden,
+                fp8,
+                logits,
+                v,
+                h,
+                stream,
+            )?;
+        } else if let Some(ref nvfp4) = self.lm_head_nvfp4 {
             // Pick FP32-output variant when the FP32 logits buffer is the
             // destination. Same packed-NVFP4 weights, same activation, but the
             // accumulator is NOT downcast to BF16 — closes the 0.125-logit

@@ -138,8 +138,8 @@ pub fn shard_quantized_nvfp4(
 }
 
 /// Shard an FP8 block-scaled weight. `weight` is `[N, K]` FP8 bytes;
-/// `row_scale` is `[N/block_size, K/block_size]` BF16. Both slice on
-/// the same axis at block granularity.
+/// `row_scale` is `[N/block_size, K/block_size]` FP32 (widened at load).
+/// Both slice on the same axis at block granularity.
 pub fn shard_fp8_block_scaled(
     src: &Fp8Weight,
     kind: TpShardKind,
@@ -163,7 +163,8 @@ pub fn shard_fp8_block_scaled(
     );
     let scale_n = n / block_size;
     let scale_k = k / block_size;
-    let bf16 = 2usize;
+    // Block scale is FP32 (widened from the checkpoint at load); 4 bytes/elem.
+    let scale_elem_bytes = 4usize;
     match kind {
         TpShardKind::Replicated => unreachable!("handled above"),
         TpShardKind::ColumnParallel => {
@@ -188,7 +189,7 @@ pub fn shard_fp8_block_scaled(
                 w_local_bytes,
             )?;
             // Scale: [scale_n, scale_k] BF16 → slice top local_scale_n rows.
-            let s_row_bytes = scale_k * bf16;
+            let s_row_bytes = scale_k * scale_elem_bytes;
             let s_local_bytes = local_scale_n * s_row_bytes;
             let s_dst = gpu.alloc(s_local_bytes)?;
             let s_offset = tp_rank * local_scale_n * s_row_bytes;
@@ -202,6 +203,7 @@ pub fn shard_fp8_block_scaled(
                 row_scale: s_dst,
                 n: local_n as u32,
                 k: src.k,
+                scale_format: src.scale_format,
             })
         }
         TpShardKind::RowParallel => {
@@ -229,8 +231,8 @@ pub fn shard_fp8_block_scaled(
                 )?;
             }
             // Scale: per-row strided on scale_k.
-            let s_local_row_bytes = local_scale_k * bf16;
-            let s_src_row_bytes = scale_k * bf16;
+            let s_local_row_bytes = local_scale_k * scale_elem_bytes;
+            let s_src_row_bytes = scale_k * scale_elem_bytes;
             let s_local_bytes = scale_n * s_local_row_bytes;
             let s_dst = gpu.alloc(s_local_bytes)?;
             let s_col_offset = tp_rank * s_local_row_bytes;
@@ -246,6 +248,7 @@ pub fn shard_fp8_block_scaled(
                 row_scale: s_dst,
                 n: src.n,
                 k: local_k as u32,
+                scale_format: src.scale_format,
             })
         }
     }

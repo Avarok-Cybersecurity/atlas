@@ -25,6 +25,9 @@ pub struct BufferSizes {
     pub expert_up_out: usize,
     pub expert_down_out: usize,
     pub splitk_workspace: usize,
+    /// GDN FLA chunked-prefill scratch (single buffer, sub-divided W|U|S|uc).
+    /// 0 unless the model is a 128-dim-linear-head GDN model (ATLAS_GDN_FLA path).
+    pub gdn_fla_scratch: usize,
 }
 
 impl BufferSizes {
@@ -131,9 +134,32 @@ impl BufferSizes {
         // Total slots = num_seqs * num_splits ≤ NUM_SMS, so this is constant ~48 KB.
         let splitk_workspace = 48 * (hd + 2) * 4;
 
-        // Residual dtype controlled by config.use_fp32_residual().
-        // FP32 prevents BF16 truncation across 48 layers but costs 2x bandwidth.
-        let residual_elem = if config.use_fp32_residual() { 4 } else { bf16 };
+        // The residual stream is always BF16.
+        let residual_elem = bf16;
+
+        // GDN FLA chunked-prefill scratch — ONE buffer holding W|U|S|uc back-to-back,
+        // sized for the chunked-prefill arena (nt = ceil(max_batch_tokens / CHUNK)).
+        // Only the 128-dim-linear-head GDN path uses it (the FLA kernels are compiled
+        // for K_DIM=V_DIM=128); 0 otherwise so BufferArena allocs NULL and the
+        // ATLAS_GDN_FLA dispatch stays disabled. Layout per region:
+        //   W  [nt*nv][CHUNK][kd] bf16 ; U,uc [nt*nv][CHUNK][vd] bf16 ; S [nt*nv][kd][vd] f32.
+        const FLA_CHUNK: usize = 64;
+        let gdn_fla_scratch = if config.linear_num_value_heads > 0
+            && config.linear_key_head_dim == 128
+            && config.linear_value_head_dim == 128
+        {
+            let nt = m.div_ceil(FLA_CHUNK);
+            let nv = config.linear_num_value_heads;
+            let kd = config.linear_key_head_dim;
+            let vd = config.linear_value_head_dim;
+            let w = nt * nv * FLA_CHUNK * kd * bf16;
+            let u = nt * nv * FLA_CHUNK * vd * bf16;
+            let s = nt * nv * kd * vd * 4;
+            let uc = nt * nv * FLA_CHUNK * vd * bf16;
+            w + u + s + uc
+        } else {
+            0
+        };
 
         Self {
             hidden_states: m * h * residual_elem,
@@ -207,6 +233,7 @@ impl BufferSizes {
             expert_up_out,
             expert_down_out,
             splitk_workspace,
+            gdn_fla_scratch,
         }
     }
 
@@ -230,5 +257,6 @@ impl BufferSizes {
             + self.expert_up_out
             + self.expert_down_out
             + self.splitk_workspace
+            + self.gdn_fla_scratch
     }
 }

@@ -116,5 +116,9 @@ pub fn load_fp8_weight(store: &WeightStore, name: &str, gpu: &dyn GpuBackend) ->
         row_scale: row_scale_ptr,
         n: n as u32,
         k: k as u32,
+        // `load_fp8_weight` reads `.weight_scale` which is shape `[N]` f32.
+        // That's the per-row F32 layout, consumed by `w8a16_gemv` /
+        // `w8a16_gemm`. Tag accordingly so kernel asserts don't panic.
+        scale_format: WeightQuantFormat::Fp8PerRow,
     })
 }

@@ -14,16 +14,25 @@ use super::*;
 ///
 /// The FP8 checkpoint stores:
 ///   - `{prefix}.weight`: FP8E4M3 tensor [N, K]
-///   - `{prefix}.weight_scale_inv`: BF16 tensor [N/block, K/block]
+///   - `{prefix}.weight_scale_inv`: BF16 (Qwen/DeepSeek) or FP32 (MiniMax)
+///     tensor [N/block, K/block]
 ///
 /// The `w8a16_gemv` kernel uses 2D block scales directly:
 ///   `dequant[i,j] = E4M3_LUT[fp8[i,j]] * block_scale[i/BS, j/BS]`
 /// No per-row max reduction needed — the kernel loads the correct block
 /// scale for each 128-element K chunk.
+///
+/// **Scale precision (block-FP8 numerics):** the block scale is *widened to a
+/// genuine FP32 device buffer here, once*, so it is applied in full FP32 in the
+/// W8A8/W8A16 GEMM epilogues — matching vLLM / DeepGEMM / HF block-FP8 (which
+/// also accumulate the scale in FP32). The checkpoint may store the scale as
+/// BF16 (lossless widen) or FP32 (straight copy); either way `row_scale` ends
+/// up an FP32 `[N/BS, K/BS]` buffer. Every FP8 block-scale kernel reads
+/// `const float*` — see `kernels/gb10/common/w8a16_gemv.cu` et al.
 pub fn load_fp8_block_scaled_as_fp8weight(
     store: &WeightStore,
     prefix: &str,
-    _gpu: &dyn GpuBackend,
+    gpu: &dyn GpuBackend,
 ) -> Result<Fp8Weight> {
     let w = store.get(&format!("{prefix}.weight"))?;
     ensure!(
@@ -40,7 +49,7 @@ pub fn load_fp8_block_scaled_as_fp8weight(
     let k = w.shape[1];
     let weight_ptr = w.ptr;
 
-    // Load block scale_inv: BF16 [N/BS, K/BS] — already on GPU from safetensors
+    // Load block scale_inv [N/BS, K/BS] — already on GPU from safetensors.
     let scale_key = format!("{prefix}.weight_scale_inv");
     let s = store.get(&scale_key)?;
     ensure!(
@@ -48,19 +57,44 @@ pub fn load_fp8_block_scaled_as_fp8weight(
         "Expected 2D shape for {scale_key}, got {:?}",
         s.shape,
     );
-
-    tracing::debug!(
-        "FP8 block scales: {prefix} [{n},{k}] scale=[{},{}]",
-        s.shape[0],
-        s.shape[1],
+    ensure!(
+        s.dtype == WeightDtype::BF16 || s.dtype == WeightDtype::FP32,
+        "Expected BF16 or FP32 for {scale_key}, got {:?}",
+        s.dtype,
     );
 
-    // Pass block scales directly — the w8a16_gemv kernel handles 2D indexing
+    tracing::debug!(
+        "FP8 block scales: {prefix} [{n},{k}] scale=[{},{}] dtype={:?} → FP32",
+        s.shape[0],
+        s.shape[1],
+        s.dtype,
+    );
+
+    // Widen the block scale to a genuine FP32 device buffer (lossless from
+    // BF16, straight copy from FP32). The W8A8/W8A16 kernels apply this scale
+    // in FP32; reading the checkpoint BF16 directly would clamp it to BF16
+    // precision (and an FP32-scale checkpoint would be misread as BF16).
+    let scale_total = s.shape[0] * s.shape[1];
+    let row_scale = gpu.alloc(scale_total * 4)?;
+    let kernel = gpu.kernel("widen_block_scale_f32", "widen_block_scale_f32")?;
+    let stream = gpu.default_stream();
+    crate::layers::ops::widen_block_scale_f32(
+        gpu,
+        kernel,
+        s.ptr,
+        row_scale,
+        scale_total as u32,
+        s.dtype == WeightDtype::FP32,
+        stream,
+    )?;
+    gpu.synchronize(stream)?;
+
     Ok(Fp8Weight {
         weight: weight_ptr,
-        row_scale: s.ptr, // BF16 [N/BS, K/BS] block scales on GPU
+        row_scale, // FP32 [N/BS, K/BS] block scales on GPU
         n: n as u32,
         k: k as u32,
+        scale_format: WeightQuantFormat::Fp8BlockScaled,
     })
 }
 

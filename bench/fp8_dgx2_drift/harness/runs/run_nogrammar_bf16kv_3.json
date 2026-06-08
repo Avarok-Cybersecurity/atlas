@@ -1,0 +1,66 @@
+{
+  "tier": "nogrammar_bf16kv",
+  "run": 3,
+  "wall_time_s": 360.0458633899689,
+  "opencode": {
+    "events_total": 29,
+    "stderr_bytes": 0
+  },
+  "filesystem": {
+    "files_written": [
+      ".gitignore",
+      "Cargo.toml",
+      "src/main.rs"
+    ],
+    "files_count": 3
+  },
+  "cargo": {
+    "cargo_toml_present": true,
+    "cargo_toml_valid": true,
+    "cargo_toml_error": "",
+    "cargo_toml_has_package_name": false
+  },
+  "webserver": {
+    "webserver_ok": false,
+    "build_ok": false,
+    "build_error": "error: failed to parse manifest at `/tmp/harness-nogrammar_bf16kv-r3/Cargo.toml`\n\nCaused by:\n  manifest is missing either a `[package]` or a `[workspace]`\n",
+    "bind_ok": false,
+    "ping_ok": false,
+    "ping_response": ""
+  },
+  "tool_calls": {
+    "total": 7,
+    "by_tool": {
+      "bash": 4,
+      "write": 3
+    },
+    "tool_calls_per_turn": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "turns_observed": 7
+  },
+  "drift": {
+    "write_calls": 3,
+    "write_empty_path": 2,
+    "write_path_drift_from_target": 0,
+    "write_path_has_literal_space": 0,
+    "write_content_starts_with_lean": 0,
+    "write_content_is_bash_command": 0,
+    "write_content_xml_attr_leak": 0,
+    "write_content_newlines_collapsed_toml": 0
+  },
+  "atlas": {
+    "ws1_mask_active_fires": 17,
+    "b1_drift_gauge_fires": 3,
+    "tier_5c_retries": 0,
+    "a2_fuzzy_repair_fires": 0,
+    "doom_loop_trips": 0,
+    "tool_call_lines": 7
+  }
+}

@@ -1,9 +1,18 @@
 # Build artifacts
 target/
 **/target/
+# Out-of-tree cargo target dirs used for parallel/experiment builds
+# (target-final, target-fu, target-i84, target-phc, target-rc, ...).
+target-*/
 *.o
 *.ptx
 *.bak
+# Local docker build input: release binary copied in before `docker build`.
+# Regenerated from `target/release/spark`; never tracked.
+docker/gb10/spark-fastbin
+
+# tool-eval-bench run reports — local benchmark output, not source
+/runs/
 # Vendored crate's `Cargo.toml.orig` from upstream merge — regenerated
 # on every `cargo vendor`, shouldn't be tracked.
 **/Cargo.toml.orig

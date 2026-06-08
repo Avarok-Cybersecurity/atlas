@@ -18,10 +18,10 @@ extern "C" __global__ void moe_expert_gate_up_shared_fp8_batch3_t(
     __nv_bfloat16* __restrict__ up_out,
     const unsigned int* __restrict__ expert_indices,
     const unsigned char* __restrict__ sh_gate_t_weight,
-    const __nv_bfloat16* __restrict__ sh_gate_t_block_scale,
+    const float* __restrict__ sh_gate_t_block_scale,
     __nv_bfloat16* __restrict__ sh_gate_out,
     const unsigned char* __restrict__ sh_up_t_weight,
-    const __nv_bfloat16* __restrict__ sh_up_t_block_scale,
+    const float* __restrict__ sh_up_t_block_scale,
     __nv_bfloat16* __restrict__ sh_up_out,
     unsigned int N, unsigned int K, unsigned int top_k
 ) {
@@ -35,7 +35,7 @@ extern "C" __global__ void moe_expert_gate_up_shared_fp8_batch3_t(
 
     const __nv_bfloat16* A_token = A + (unsigned long long)token * K;
     const unsigned char* B_weight;
-    const __nv_bfloat16* B_block_scale;
+    const float* B_block_scale;
     __nv_bfloat16* C;
     unsigned long long c_offset = 0;
 
@@ -52,11 +52,11 @@ extern "C" __global__ void moe_expert_gate_up_shared_fp8_batch3_t(
         const unsigned int flat_slot = token * top_k + expert_slot;
         if (proj == 0) {
             B_weight = (const unsigned char*)gate_weight_t_ptrs[expert_id];
-            B_block_scale = (const __nv_bfloat16*)gate_block_scale_t_ptrs[expert_id];
+            B_block_scale = (const float*)gate_block_scale_t_ptrs[expert_id];
             C = gate_out;
         } else {
             B_weight = (const unsigned char*)up_weight_t_ptrs[expert_id];
-            B_block_scale = (const __nv_bfloat16*)up_block_scale_t_ptrs[expert_id];
+            B_block_scale = (const float*)up_block_scale_t_ptrs[expert_id];
             C = up_out;
         }
         c_offset = (unsigned long long)flat_slot * N;
@@ -74,7 +74,7 @@ extern "C" __global__ void moe_expert_gate_up_shared_fp8_batch3_t(
     const unsigned int k_blocks = (K + FP8_BLOCK - 1) / FP8_BLOCK;
     float acc = 0.0f;
     for (unsigned int kb = 0; kb < k_blocks; kb++) {
-        float sc = __bfloat162float(B_block_scale[(unsigned long long)kb * n_blocks + n_block]);
+        float sc = B_block_scale[(unsigned long long)kb * n_blocks + n_block];
         const unsigned int k_start = kb * FP8_BLOCK;
         const unsigned int k_end = (k_start + FP8_BLOCK) < K ? (k_start + FP8_BLOCK) : K;
         #pragma unroll 8
@@ -97,7 +97,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_fp8_batch3_t(
     const __nv_bfloat16* __restrict__ sh_gate_in,
     const __nv_bfloat16* __restrict__ sh_up_in,
     const unsigned char* __restrict__ sh_down_t_weight,
-    const __nv_bfloat16* __restrict__ sh_down_t_block_scale,
+    const float* __restrict__ sh_down_t_block_scale,
     __nv_bfloat16* __restrict__ sh_down_out,
     unsigned int N, unsigned int K, unsigned int top_k
 ) {
@@ -109,7 +109,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_fp8_batch3_t(
     else { token = y / top_k; expert_slot = y % top_k; }
 
     const unsigned char* B_weight;
-    const __nv_bfloat16* B_block_scale;
+    const float* B_block_scale;
     const __nv_bfloat16* g_ptr;
     const __nv_bfloat16* u_ptr;
     unsigned long long c_offset;
@@ -123,7 +123,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_fp8_batch3_t(
         const unsigned int expert_id = expert_indices[token * top_k + expert_slot];
         const unsigned int flat_slot = token * top_k + expert_slot;
         B_weight = (const unsigned char*)weight_t_ptrs[expert_id];
-        B_block_scale = (const __nv_bfloat16*)block_scale_t_ptrs[expert_id];
+        B_block_scale = (const float*)block_scale_t_ptrs[expert_id];
         g_ptr = gate_out + (unsigned long long)flat_slot * K;
         u_ptr = up_out + (unsigned long long)flat_slot * K;
         c_offset = (unsigned long long)flat_slot * N;
@@ -151,7 +151,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_fp8_batch3_t(
     const unsigned int k_blocks = (K + FP8_BLOCK - 1) / FP8_BLOCK;
     float acc = 0.0f;
     for (unsigned int kb = 0; kb < k_blocks; kb++) {
-        float sc = __bfloat162float(B_block_scale[(unsigned long long)kb * n_blocks + n_block]);
+        float sc = B_block_scale[(unsigned long long)kb * n_blocks + n_block];
         const unsigned int k_start = kb * FP8_BLOCK;
         const unsigned int k_end = (k_start + FP8_BLOCK) < K ? (k_start + FP8_BLOCK) : K;
         #pragma unroll 8

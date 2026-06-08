@@ -229,10 +229,13 @@ pub(crate) fn quantized_any(
             qctx.stream,
         ),
         Nvfp4Variant::Bf16Raw => {
-            // Raw BF16/FP16 fine-tune: load the dense weight then runtime-quantize.
-            let w = store.get(&format!("{prefix}.weight"))?;
-            let bf16 = DenseWeight { weight: w.ptr };
-            quantize_to_nvfp4(
+            // Raw BF16/FP32 fine-tune: load the dense weight then runtime-quantize.
+            let weight_key = format!("{prefix}.weight");
+            let source = store.get(&weight_key)?;
+            let source_dtype = source.dtype;
+            let source_ptr = source.ptr;
+            let bf16 = dense_auto(store, &weight_key, gpu)?;
+            let result = quantize_to_nvfp4(
                 &bf16,
                 n,
                 k,
@@ -240,7 +243,12 @@ pub(crate) fn quantized_any(
                 qctx.absmax_k,
                 qctx.quantize_k,
                 qctx.stream,
-            )
+            )?;
+            if source_dtype != WeightDtype::BF16 {
+                gpu.free(bf16.weight)?;
+                gpu.free(source_ptr)?;
+            }
+            Ok(result)
         }
     }
 }

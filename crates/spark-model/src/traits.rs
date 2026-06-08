@@ -82,12 +82,28 @@ pub struct SequenceState {
     /// Per-sequence state for speculative decoding proposer (None if no proposer).
     pub proposer_state: Option<Box<dyn ProposerState>>,
     /// SSM state pool slot index. Used for CUDA graph stability — all sequences
-    /// at the same slot_idx use the same fixed GPU addresses.
+    /// at the same slot_idx use the same fixed GPU addresses. Derived from
+    /// `ssm_slot` at claim time (the guard is the authority on release
+    /// responsibility; this index is the authority on pool-offset math).
     pub slot_idx: usize,
+    /// RAII guard that returns `slot_idx` to the SSM pool's free list on drop.
+    /// Guarantees the slot is released on EVERY sequence-exit path — including
+    /// abort/cancel, decode error, swap-out failure, and panic/unwind — not
+    /// just the explicit `free_sequence`/`compact_sequence` sites, which
+    /// `take()`/`migrate()` the guard so the release happens EXACTLY once.
+    /// `None` for models without an SSM pool (e.g. the unit-test mock).
+    pub(crate) ssm_slot: Option<crate::model::ssm_pool::SlotGuard>,
     /// Marconi: token position up to which SSM state is valid from a snapshot.
     /// Set on chunk 0's prefix cache lookup, read by subsequent chunks to skip
     /// computation for tokens already covered by the snapshot + KV cache.
     pub marconi_skip_to: usize,
+    /// Marconi exact-hit: snapshot slot when the *entire* prompt matched a
+    /// leaf snapshot (`matched == total`). On this path the last prompt
+    /// token is re-run for logits, which double-advances the SSM recurrent
+    /// state; `finalize_last` uses this to re-restore the pristine state@N
+    /// and emit the first token's logits from the snapshot's stashed hidden
+    /// instead. `None` for all other paths.
+    pub marconi_exact_snap: Option<usize>,
     /// Session hash for SSM snapshot isolation. Set by the scheduler before
     /// prefill. The model uses this to tag saved snapshots and verify ownership
     /// before restoring. 0 = no session tracking (legacy behavior).
@@ -100,6 +116,18 @@ pub struct SequenceState {
     /// the scheduler to populate `usage.prompt_tokens_details.cached_tokens`.
     /// 0 when prefix caching is disabled or the prompt had no cache match.
     pub cached_prefix_tokens: usize,
+    /// Contiguous prefix length (in tokens, from position 0) whose paged KV is
+    /// guaranteed fully written for THIS sequence — either reused from a valid
+    /// prefix-cache match or written by a real prefill pass this turn. Updated
+    /// per chunk in `prefill_b_proc_range`. The prefix-cache insert path caps
+    /// the cached complete-block count to `kv_valid_tokens / block_size` so a
+    /// block whose K/V was never written (e.g. the `proc_count==1` decode
+    /// shortcut skips an entire trailing chunk) is NEVER inserted with stale V.
+    /// Without this cap, stale (donor/zeroed) V in trailing complete blocks
+    /// gets cached and read by the next turn's full-attention layers, making
+    /// cache-ON decode nondeterministic at temperature 0 (see fix/in-think-
+    /// tool-call-leak prefix-cache stale-V diagnosis).
+    pub kv_valid_tokens: usize,
     /// Original prompt token count, set at the first prefill and never
     /// mutated by decode. Used by `cache_sequence` to split seq.tokens into
     /// prompt (already inserted + ref-bumped by prefill) vs generated

@@ -184,6 +184,22 @@ impl Model for TransformerModel {
     fn rollback_ssm_states(&self, seq: &mut SequenceState, num_accepted: usize) -> Result<()> {
         self.rollback_ssm_states_dispatch(seq, num_accepted)
     }
+    fn has_ssm_layers(&self) -> bool {
+        self.ssm_pool.num_ssm_layers > 0
+    }
+    fn decode_rollback_ring_slots(&self) -> usize {
+        if self.ssm_snapshots.decode_rollback_enabled() {
+            self.ssm_snapshots.decode_ring_slots
+        } else {
+            0
+        }
+    }
+    fn save_decode_ssm_snapshot(&self, seq: &SequenceState, ring_slot: usize) -> Result<()> {
+        self.save_decode_ssm_snapshot_dispatch(seq, ring_slot)
+    }
+    fn restore_decode_ssm_snapshot(&self, seq: &SequenceState, ring_slot: usize) -> Result<()> {
+        self.restore_decode_ssm_snapshot_dispatch(seq, ring_slot)
+    }
     fn generate_speculative(
         &self,
         prompt_tokens: &[u32],
@@ -286,6 +302,9 @@ impl Model for TransformerModel {
     fn compact_sequence(&self, seq: &mut SequenceState, new_slot: usize) -> Result<()> {
         self.compact_sequence_dispatch(seq, new_slot)
     }
+    fn detach_slot_for_reuse(&self, seq: &mut SequenceState) {
+        self.detach_slot_for_reuse_dispatch(seq)
+    }
     fn save_sequence_state(
         &self,
         seq: &SequenceState,
@@ -328,8 +347,8 @@ impl Model for TransformerModel {
     ) -> Result<()> {
         self.commit_verify_state_async_dispatch(seq, num_accepted, k)
     }
-    fn ep_worker_step(&self, seq: &mut SequenceState) -> Result<bool> {
-        self.ep_worker_step_dispatch(seq)
+    fn ep_worker_step(&self, slots: &mut [Option<SequenceState>]) -> Result<bool> {
+        self.ep_worker_step_dispatch(slots)
     }
     fn is_ep(&self) -> bool {
         self.is_ep_dispatch()
@@ -345,6 +364,14 @@ impl Model for TransformerModel {
     }
     fn ep_broadcast_cmd(&self, cmd: u32) -> Result<()> {
         self.ep_broadcast_cmd_dispatch(cmd)
+    }
+    fn ep_broadcast_cmd_for_seq(&self, seq_id: u32, cmd: u32) -> Result<()> {
+        // Routes to the helper added in 21e2130. Behaviour depends on the
+        // ep_protocol_v2 field set at construction from ATLAS_EP_PROTOCOL.
+        self.ep_broadcast_seq_and_cmd(seq_id, cmd, self.ep_protocol_v2)
+    }
+    fn ep_protocol_v2(&self) -> bool {
+        self.ep_protocol_v2
     }
     fn ep_broadcast_tokens(&self, tokens: &[u32]) -> Result<Vec<u32>> {
         self.ep_broadcast_tokens_dispatch(tokens)

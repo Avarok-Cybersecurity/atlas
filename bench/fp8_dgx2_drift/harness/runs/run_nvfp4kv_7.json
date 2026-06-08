@@ -1,0 +1,46 @@
+{
+  "tier": "nvfp4kv",
+  "run": 7,
+  "wall_time_s": 80.52359080314636,
+  "opencode": {
+    "events_total": 21,
+    "stderr_bytes": 0
+  },
+  "filesystem": {
+    "files_written": [
+      "Cargo.toml"
+    ],
+    "files_count": 1
+  },
+  "cargo": {
+    "cargo_toml_present": true,
+    "cargo_toml_valid": false,
+    "cargo_toml_error": "Expected newline or end of document after a statement (at line 1, column 24)",
+    "cargo_toml_has_package_name": false
+  },
+  "tool_calls": {
+    "total": 5,
+    "by_tool": {
+      "bash": 1,
+      "write": 4
+    }
+  },
+  "drift": {
+    "write_calls": 4,
+    "write_empty_path": 0,
+    "write_path_drift_from_target": 0,
+    "write_path_has_literal_space": 0,
+    "write_content_starts_with_lean": 0,
+    "write_content_is_bash_command": 0,
+    "write_content_xml_attr_leak": 0,
+    "write_content_newlines_collapsed_toml": 4
+  },
+  "atlas": {
+    "ws1_mask_active_fires": 7,
+    "b1_drift_gauge_fires": 0,
+    "tier_5c_retries": 0,
+    "a2_fuzzy_repair_fires": 0,
+    "doom_loop_trips": 0,
+    "tool_call_lines": 5
+  }
+}

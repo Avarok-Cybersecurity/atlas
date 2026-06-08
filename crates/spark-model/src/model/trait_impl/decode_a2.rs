@@ -33,27 +33,118 @@ impl TransformerModel {
         // Single-sequence: delegate to decode() which uses CUDA graphs.
         // decode_batch disables graphs for n≥2 (SSM state pointer staleness),
         // but n=1 is safe and benefits from graph replay (2x throughput).
+        //
+        // Broadcast the seq_id preamble + cmd here (rather than in the
+        // scheduler) so the EP n>1 branch below can interleave broadcasts
+        // with decode() calls — see that branch for the rationale.
         if n == 1 {
+            self.ep_broadcast_cmd_for_seq(seqs[0].slot_idx as u32, tokens[0])?;
             self.decode(tokens[0], seqs[0], stream)?;
             return Ok(self.decode_logits_ptr());
         }
 
-        // EP mode: use per-sequence decode() to match the worker's batch size.
+        // EP mode + n > 1: one batched forward pass per rank.
+        //
+        // Both ranks must call the same `decode_multi_seq` per-layer with
+        // the same N tokens so the per-token NCCL all_reduces inside the
+        // MoE forward match in shape and submission order across ranks.
+        // The head announces the batch up-front via the `0xFFFFFFE0`
+        // protocol primitive (seq_ids[N] + tokens[N] in one shot), then
+        // both ranks run `decode_batch_compute_main` — the worker reaches
+        // it via the matching handler in `ep_worker_step_impl`.
+        //
+        // Comm-stream op order on both ranks per step:
+        //   B(0) B(0xFFFFFFE0) B(N) B*N(seq_ids) B*N(tokens)
+        //   then per layer: per-token AR*N (forward_batched's inner loop)
+        //
+        // Single batched forward amortises weight loads + kernel launches
+        // across N tokens. Per-token all_reduces (forward.rs:445,
+        // forward_batched.rs:269) remain at shape `h * elem` per call —
+        // batching the comm shape would need new MoE kernel work and is
+        // deliberately out of scope here.
         if self.comm.is_some() {
-            for i in 0..n {
-                self.decode(tokens[i], seqs[i], stream)?;
-            }
-            return Ok(self.decode_logits_ptr());
+            let seq_ids: Vec<u32> = seqs.iter().map(|s| s.slot_idx as u32).collect();
+            self.ep_broadcast_decode_batch_dispatch(&seq_ids, tokens)?;
+            return self.decode_batch_compute_main(tokens, seqs, stream);
         }
 
+        // MLA models: as of issue #84 the batched `decode_multi_seq` path
+        // HAS a genuine MLA branch (`ms_mla_decode` in
+        // `qwen3_attention/trait_impl/multi_seq/mla.rs`) — the batched
+        // analogue of `attention_forward_mla`. It reads `self.mla`'s
+        // projections (not the NULL `attn.q_proj` stub the Mistral loader
+        // installs) and isolates each sequence's compressed latent-KV via
+        // per-sequence metadata. Concurrent MLA decode therefore takes the
+        // normal batched path below — no host round-trip, no cross-seq
+        // contamination.
+        //
+        // The legacy per-sequence `decode()` fallback (host-staged logits +
+        // CUDA-graph suppression) is retained ONLY behind the
+        // `ATLAS_MLA_PERSEQ_FALLBACK` escape hatch, as a guarded safety net
+        // should a regression surface in the batched MLA path. It does NOT
+        // fully isolate concurrent sequences (each `decode()`'s
+        // `Buffers::zero_all` wipes the shared `logits` buffer), so it is
+        // not the default.
+        let mla_perseq_fallback = self.is_mla_dispatch()
+            && std::env::var("ATLAS_MLA_PERSEQ_FALLBACK").is_ok_and(|v| v == "1" || v == "true");
+        if mla_perseq_fallback {
+            use std::sync::atomic::Ordering;
+            let logits = self.decode_logits_ptr();
+            let v = self.config.vocab_size;
+            let elem = if self.decode_logits_fp32() { 4 } else { 2 };
+            let row_bytes = v * elem;
+            // Suppress CUDA graphs for the loop: `decode()`'s graph cache is
+            // slot-keyed; capturing a graph for one slot inside the same
+            // stream-capture window as another slot's replay corrupts both.
+            let prev_suppress = self.suppress_graphs.swap(true, Ordering::Relaxed);
+            let result = (|| -> Result<()> {
+                let mut staged = vec![0u8; n * row_bytes];
+                for i in 0..n {
+                    self.decode(tokens[i], seqs[i], stream)?;
+                    // `decode()` wrote this sequence's logits to row 0.
+                    // Pull them to the host before the next `decode()`'s
+                    // `zero_all` wipes the buffer. `copy_d2h_on_stream`
+                    // syncs `stream` first, so the eager lm_head GEMV has
+                    // fully landed before the copy reads it.
+                    self.gpu.copy_d2h_on_stream(
+                        logits,
+                        &mut staged[i * row_bytes..(i + 1) * row_bytes],
+                        stream,
+                    )?;
+                }
+                // Upload the assembled [n, vocab] batch back to the device.
+                self.gpu.copy_h2d_async(&staged, logits, stream)?;
+                self.gpu.synchronize(stream)?;
+                Ok(())
+            })();
+            self.suppress_graphs.store(prev_suppress, Ordering::Relaxed);
+            result?;
+            return Ok(logits);
+        }
+
+        self.decode_batch_compute_main(tokens, seqs, stream)
+    }
+
+    /// Shared batched-compute path used by both the head's EP branch and
+    /// the worker's `0xFFFFFFE0` handler. Contains the per-step embed +
+    /// KV-block alloc + metadata upload + per-layer `decode_multi_seq` +
+    /// final norm + per-row LM-head GEMV pipeline. No EP broadcasts here
+    /// — the head emits the protocol primitive before calling this; the
+    /// worker reads the matching payload and dispatches into this from
+    /// `ep_worker_decode_batch`. Both ranks then submit identical
+    /// per-token `comm.all_reduce(h * elem)` ops on every MoE layer in
+    /// the same order.
+    pub(crate) fn decode_batch_compute_main(
+        &self,
+        tokens: &[u32],
+        seqs: &mut [&mut SequenceState],
+        _stream: u64,
+    ) -> Result<DevicePtr> {
+        let n = tokens.len();
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;
-        let fp32 = if self.config.use_fp32_residual() {
-            4usize
-        } else {
-            2usize
-        };
+        let fp32 = 2usize;
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
@@ -255,7 +346,18 @@ impl TransformerModel {
             for i in 0..padded_n {
                 let normed_i = normed.offset(i * h * bf16);
                 let logits_i = logits.offset(i * v * bf16);
-                if let Some(ref nvfp4) = self.lm_head_nvfp4 {
+                if let Some(ref fp8) = self.lm_head_fp8 {
+                    ops::dense_gemv_fp8w(
+                        self.gpu.as_ref(),
+                        self.dense_gemv_fp8w_kernel,
+                        normed_i,
+                        fp8,
+                        logits_i,
+                        v as u32,
+                        h as u32,
+                        stream,
+                    )?;
+                } else if let Some(ref nvfp4) = self.lm_head_nvfp4 {
                     ops::w4a16_gemv(
                         self.gpu.as_ref(),
                         self.w4a16_gemv_kernel,

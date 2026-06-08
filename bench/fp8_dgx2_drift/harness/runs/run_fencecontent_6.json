@@ -1,0 +1,66 @@
+{
+  "tier": "fencecontent",
+  "run": 6,
+  "wall_time_s": 197.47664427757263,
+  "opencode": {
+    "events_total": 33,
+    "stderr_bytes": 0
+  },
+  "filesystem": {
+    "files_written": [
+      "Cargo.toml",
+      "src/main.rs"
+    ],
+    "files_count": 2
+  },
+  "cargo": {
+    "cargo_toml_present": true,
+    "cargo_toml_valid": true,
+    "cargo_toml_error": "",
+    "cargo_toml_has_package_name": true
+  },
+  "webserver": {
+    "webserver_ok": true,
+    "build_ok": true,
+    "build_error": "",
+    "bind_ok": true,
+    "ping_ok": true,
+    "ping_response": "pong"
+  },
+  "tool_calls": {
+    "total": 8,
+    "by_tool": {
+      "bash": 2,
+      "write": 6
+    },
+    "tool_calls_per_turn": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "turns_observed": 8
+  },
+  "drift": {
+    "write_calls": 6,
+    "write_empty_path": 0,
+    "write_path_drift_from_target": 0,
+    "write_path_has_literal_space": 0,
+    "write_content_starts_with_lean": 0,
+    "write_content_is_bash_command": 0,
+    "write_content_xml_attr_leak": 0,
+    "write_content_newlines_collapsed_toml": 0
+  },
+  "atlas": {
+    "ws1_mask_active_fires": 2,
+    "b1_drift_gauge_fires": 0,
+    "tier_5c_retries": 0,
+    "a2_fuzzy_repair_fires": 0,
+    "doom_loop_trips": 0,
+    "tool_call_lines": 8
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "tier": "tierA",
+  "run": 10,
+  "wall_time_s": 98.1890025138855,
+  "opencode": {
+    "events_total": 33,
+    "stderr_bytes": 0
+  },
+  "filesystem": {
+    "files_written": [
+      "Cargo.toml",
+      "src/main.rs' | bash -c \"cat > /tmp/harness-tierA-r10/Cargo.toml\" && cat /tmp/harness-tierA-r1 2>/dev/null || echo \"FAILED\" && ls -la /tmp/ | grep harness* || true' | bash -c \"echo done\"' 2>&1; echo \"---\"; ls -laR /tmp/ 2>/dev/null | head --color=no --no-grouping --quoting-style=literal --show-control-chars '--group-directories-first' '/harness*' 2>&1 || true"
+    ],
+    "files_count": 2
+  },
+  "cargo": {
+    "cargo_toml_present": true,
+    "cargo_toml_valid": false,
+    "cargo_toml_error": "Expected '=' after a key in a key/value pair (at line 1, column 5)",
+    "cargo_toml_has_package_name": false
+  },
+  "tool_calls": {
+    "total": 8,
+    "by_tool": {
+      "bash": 4,
+      "write": 3,
+      "read": 1
+    }
+  },
+  "drift": {
+    "write_calls": 3,
+    "write_empty_path": 1,
+    "write_path_drift_from_target": 0,
+    "write_path_has_literal_space": 1,
+    "write_content_starts_with_lean": 0,
+    "write_content_is_bash_command": 3,
+    "write_content_xml_attr_leak": 0,
+    "write_content_newlines_collapsed_toml": 0
+  },
+  "atlas": {
+    "ws1_mask_active_fires": 0,
+    "b1_drift_gauge_fires": 0,
+    "tier_5c_retries": 0,
+    "a2_fuzzy_repair_fires": 0,
+    "doom_loop_trips": 0,
+    "tool_call_lines": 8
+  }
+}

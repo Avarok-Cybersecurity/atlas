@@ -37,6 +37,44 @@ fn test_accept_token_after_termination_short_circuits() {
 }
 
 #[test]
+fn test_stop_token_exempt_from_grammar_refusal() {
+    // Regression (2026-06-02): the model's stop/EOS token (e.g. <|im_end|>,
+    // 248046) must be ACCEPTED even when the matcher is mid-structure
+    // (non-accepting). Before the fix, emit_step fed it to the xgrammar
+    // matcher, which refused it ("accept_token returned false"), and the
+    // caller force-ended the response ("Ending response to prevent cascading
+    // grammar-mask corruption") — truncating agentic turns mid-task. That was
+    // the dominant cause of Atlas's opencode webserver_ok gap vs vLLM (which
+    // never constrains the stop token). `with_stop_tokens` exempts it.
+    let vocab = test_vocab();
+    let mut engine = GrammarEngine::new(&vocab, &[130i32]).unwrap();
+    let compiled = engine.compile_json_grammar().unwrap();
+    let invalid = b'Z' as u32; // not a valid JSON continuation after '{'
+
+    // Control: a token the grammar refuses mid-object stays refused.
+    let mut bare = GrammarState::new(&compiled, engine.vocab_size()).unwrap();
+    assert!(bare.accept_token(b'{' as u32), "accept '{{'");
+    assert!(!bare.is_terminated(), "matcher is mid-structure after '{{'");
+    assert!(
+        !bare.accept_token(invalid),
+        "baseline: matcher refuses a non-grammar token mid-object"
+    );
+
+    // Same token + same mid-structure state, but registered as a stop token:
+    // accept_token must now exempt it and return true (does NOT depend on the
+    // matcher being terminated).
+    let mut exempt = GrammarState::new(&compiled, engine.vocab_size())
+        .unwrap()
+        .with_stop_tokens(&[invalid]);
+    assert!(exempt.accept_token(b'{' as u32), "accept '{{'");
+    assert!(!exempt.is_terminated(), "still mid-structure before stop");
+    assert!(
+        exempt.accept_token(invalid),
+        "stop/EOS token must be accepted unconditionally, exempt from grammar refusal"
+    );
+}
+
+#[test]
 fn test_fill_bitmask_after_stop_token() {
     let vocab = test_vocab();
     let stop_ids = vec![130i32]; // <eos>

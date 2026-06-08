@@ -1,0 +1,108 @@
+{
+  "tier": "atlas_sampler",
+  "run": 4,
+  "wall_time_s": 360.11009430885315,
+  "opencode": {
+    "events_total": 29,
+    "stderr_bytes": 0
+  },
+  "filesystem": {
+    "files_written": [
+      ".gitignore",
+      "Cargo.lock",
+      "Cargo.toml",
+      "src/main.rs",
+      "target/.rustc_info.json",
+      "target/CACHEDIR.TAG",
+      "target/debug/.cargo-lock",
+      "target/debug/.fingerprint/atlas-sampler-8c291dd38d0cbd93/dep-test-bin-atlas-sampler",
+      "target/debug/.fingerprint/atlas-sampler-8c291dd38d0cbd93/invoked.timestamp",
+      "target/debug/.fingerprint/atlas-sampler-8c291dd38d0cbd93/output-test-bin-atlas-sampler",
+      "target/debug/.fingerprint/atlas-sampler-8c291dd38d0cbd93/test-bin-atlas-sampler",
+      "target/debug/.fingerprint/atlas-sampler-8c291dd38d0cbd93/test-bin-atlas-sampler.json",
+      "target/debug/deps/atlas_sampler-8c291dd38d0cbd93",
+      "target/debug/deps/atlas_sampler-8c291dd38d0cbd93.d",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44rrcb6h-0gbffmk-5r8hiajg10vblv3m9dxbcqp3p/1m008wez0h88n1h6zsszjr01z.o",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44rrcb6h-0gbffmk-5r8hiajg10vblv3m9dxbcqp3p/1wbjkzko0faqy1286dcl38uxn.o",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44rrcb6h-0gbffmk-5r8hiajg10vblv3m9dxbcqp3p/3q55soz4i0z71fpzckef477df.o",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44rrcb6h-0gbffmk-5r8hiajg10vblv3m9dxbcqp3p/cqthlqxv0q2k888ni9itnpbsx.o",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44rrcb6h-0gbffmk-5r8hiajg10vblv3m9dxbcqp3p/dep-graph.bin",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44rrcb6h-0gbffmk-5r8hiajg10vblv3m9dxbcqp3p/ef41xf8p2korrkxx28d5mydtc.o",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44rrcb6h-0gbffmk-5r8hiajg10vblv3m9dxbcqp3p/query-cache.bin",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44rrcb6h-0gbffmk-5r8hiajg10vblv3m9dxbcqp3p/work-products.bin",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44rrcb6h-0gbffmk.lock",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44txneot-05h9dn4-working/1m008wez0h88n1h6zsszjr01z.o",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44txneot-05h9dn4-working/1wbjkzko0faqy1286dcl38uxn.o",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44txneot-05h9dn4-working/3q55soz4i0z71fpzckef477df.o",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44txneot-05h9dn4-working/cqthlqxv0q2k888ni9itnpbsx.o",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44txneot-05h9dn4-working/dep-graph.bin",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44txneot-05h9dn4-working/dep-graph.part.bin",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44txneot-05h9dn4-working/ef41xf8p2korrkxx28d5mydtc.o",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44txneot-05h9dn4-working/query-cache.bin",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44txneot-05h9dn4-working/work-products.bin",
+      "target/debug/incremental/atlas_sampler-2xrtehd36v3n2/s-hj44txneot-05h9dn4.lock",
+      "target/release/.cargo-lock",
+      "target/release/.fingerprint/atlas-sampler-1ca21c8aca2567c8/bin-atlas-sampler",
+      "target/release/.fingerprint/atlas-sampler-1ca21c8aca2567c8/bin-atlas-sampler.json",
+      "target/release/.fingerprint/atlas-sampler-1ca21c8aca2567c8/dep-bin-atlas-sampler",
+      "target/release/.fingerprint/atlas-sampler-1ca21c8aca2567c8/invoked.timestamp",
+      "target/release/atlas-sampler",
+      "target/release/atlas-sampler.d",
+      "target/release/deps/atlas_sampler-1ca21c8aca2567c8",
+      "target/release/deps/atlas_sampler-1ca21c8aca2567c8.d",
+      "tmp/harness-atlas_sampler-r4/src/main.rs"
+    ],
+    "files_count": 43
+  },
+  "cargo": {
+    "cargo_toml_present": true,
+    "cargo_toml_valid": true,
+    "cargo_toml_error": "",
+    "cargo_toml_has_package_name": true
+  },
+  "webserver": {
+    "webserver_ok": false,
+    "build_ok": false,
+    "build_error": "   Compiling atlas-sampler v0.1.0 (/tmp/harness-atlas_sampler-r4)\nerror[E0433]: failed to resolve: use of unresolved module or unlinked crate `axum`\n --> src/main.rs:3:5\n  |\n3 | use axum::{routing::get, Router};\n  |     ^^^^ use of unresolved module or unlinked crate `axum`\n  |\n  = help: if you wanted to use a crate named `axum`, use `cargo add axum` to add it to your `Cargo.toml`\n\nerror[E0432]: unresolved import `axum`\n --> src/main.rs:3:5\n  |\n3 | use axum::{routing::get, Router};\n  |     ^^^^ use of unresolved module or unlinked crate `axum`\n  |\n  = help: if you wanted to use a crate named `",
+    "bind_ok": false,
+    "ping_ok": false,
+    "ping_response": "",
+    "port_used": 37175,
+    "server_stderr": ""
+  },
+  "tool_calls": {
+    "total": 7,
+    "by_tool": {
+      "bash": 4,
+      "write": 3
+    },
+    "tool_calls_per_turn": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "turns_observed": 7
+  },
+  "drift": {
+    "write_calls": 3,
+    "write_empty_path": 1,
+    "write_path_drift_from_target": 0,
+    "write_path_has_literal_space": 0,
+    "write_content_starts_with_lean": 0,
+    "write_content_is_bash_command": 0,
+    "write_content_xml_attr_leak": 0,
+    "write_content_newlines_collapsed_toml": 0
+  },
+  "atlas": {
+    "ws1_mask_active_fires": 3,
+    "b1_drift_gauge_fires": 0,
+    "tier_5c_retries": 1,
+    "a2_fuzzy_repair_fires": 0,
+    "doom_loop_trips": 0,
+    "tool_call_lines": 6
+  }
+}

@@ -56,13 +56,67 @@ impl TransformerModel {
         stream: u64,
     ) -> Result<DevicePtr> {
         let h = self.config.hidden_size;
-        let fp32 = if self.config.use_fp32_residual() {
-            4usize
-        } else {
-            2usize
-        };
+        let fp32 = 2usize;
         let hidden = self.buffers.hidden_states();
         let bs = kv_cache.block_size();
+
+        if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+            self.ssm_pool.debug_state_checksum(
+                seq.slot_idx,
+                self.gpu.as_ref(),
+                stream,
+                &format!("final_state@{}", tokens.len()),
+            );
+            // PER-LAYER KV fingerprint over the WHOLE block table, split at the
+            // reused-prefix / recomputed-suffix boundary (`marconi_skip_to`
+            // tokens → `/bs` blocks). On cache-OFF, `marconi_skip_to==0` so all
+            // blocks are "suffix" (cold recompute). On cache-ON chained,
+            // `[0, boundary)` are reused-prefix blocks carried from a prior turn
+            // and `[boundary, end)` are recomputed. Compare cold-vs-chained
+            // per (layer, region) to localize the first divergent K/V.
+            let boundary_idx = seq.marconi_skip_to / bs;
+            kv_cache.debug_kv_checksum_per_layer(
+                &seq.block_table,
+                boundary_idx,
+                self.gpu.as_ref(),
+                stream,
+                &format!("final@{}/skip{}", tokens.len(), seq.marconi_skip_to),
+            );
+            // Per-LOGICAL-BLOCK fingerprint of a FIXED ABSOLUTE window
+            // (logical blocks 250..266 — straddles the 4097/bs=256 restore
+            // boundary) for L0 AND L9 so OFF and ON dump the SAME logical
+            // positions and a per-position aliasing bug (identical region SUM
+            // but wrong block→position mapping) is directly comparable.
+            let _ = boundary_idx;
+            let lo = 250usize.min(seq.block_table.len());
+            let hi = 266usize.min(seq.block_table.len());
+            if hi > lo {
+                for layer_idx in [0usize, 9usize] {
+                    kv_cache.debug_kv_per_block(
+                        layer_idx,
+                        &seq.block_table[lo..hi],
+                        self.gpu.as_ref(),
+                        stream,
+                        &format!("abswin@{}/skip{}/lo{}", tokens.len(), seq.marconi_skip_to, lo),
+                    );
+                }
+            }
+            let tail_lo = seq.block_table.len().saturating_sub(3);
+            kv_cache.debug_kv_per_block(
+                0,
+                &seq.block_table[tail_lo..],
+                self.gpu.as_ref(),
+                stream,
+                &format!("tail@{}/lo{}", tokens.len(), tail_lo),
+            );
+            tracing::warn!(
+                "ATLAS_BTBL[final@{}/skip{}] nblk={} bt={:?}",
+                tokens.len(),
+                seq.marconi_skip_to,
+                seq.block_table.len(),
+                seq.block_table,
+            );
+        }
 
         // ── 6. Final norm on LAST token only ──
         let last_token_offset = hidden_stream_offset_tokens + proc_count - 1;
@@ -93,8 +147,80 @@ impl TransformerModel {
             );
         }
 
+        // Per-layer divergence dump: final-norm output (input to lm_head).
+        if let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP")
+            && !dir.is_empty()
+        {
+            self.gpu.synchronize(stream)?;
+            let (vals, _) = self.readback_bf16(normed, h)?;
+            let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+            std::fs::create_dir_all(&dir).ok();
+            std::fs::write(
+                std::path::Path::new(&dir).join("atlas_final_norm.bin"),
+                &bytes,
+            )
+            .ok();
+        }
+
+        // ── 6b. Marconi exact-hit fixup ──
+        // On an exact full-prompt leaf hit the last prompt token was re-run
+        // for logits (proc_range Compute{N-1, 1}). For SSM layers that re-run
+        // applies the last token's recurrent update a second time on top of
+        // the restored state@N → double-advance, corrupting both the logits
+        // computed above and the pool state decode will read. Undo it:
+        //   (1) re-restore the pristine SSM state@N from the snapshot, and
+        //   (2) overwrite `normed` with the snapshot's stashed last-token
+        //       post-norm hidden so `lm_head` emits the correct first token.
+        // The redundant 1-token forward is otherwise harmless (its KV write
+        // duplicates already-cached values).
+        if let Some(snap_id) = seq.marconi_exact_snap {
+            self.ssm_snapshots.restore(
+                snap_id,
+                seq.slot_idx,
+                &self.ssm_pool,
+                self.gpu.as_ref(),
+                stream,
+            )?;
+            if self.ssm_snapshots.has_hidden(snap_id) {
+                self.ssm_snapshots
+                    .restore_hidden(snap_id, normed, self.gpu.as_ref(), stream)?;
+            } else {
+                // Leaf snapshots always stash the hidden; absence means a
+                // non-leaf snapshot was matched at full length. Fail loud
+                // rather than silently emit double-advanced logits.
+                tracing::warn!(
+                    "Marconi exact hit on snapshot {snap_id} without stashed hidden — \
+                     first-token logits may be degraded (SSM state restored)"
+                );
+            }
+        }
+
         // ── 7. LM head on last token → logits ──
         self.lm_head(normed, stream)?;
+
+        // Per-layer divergence dump: full logits vector + top-10 token IDs.
+        if let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP")
+            && !dir.is_empty()
+        {
+            self.gpu.synchronize(stream)?;
+            let n_logits = self.config.vocab_size;
+            let mut buf = vec![0u8; n_logits * 2];
+            self.gpu.copy_d2h(self.buffers.logits(), &mut buf)?;
+            let logit_vals: Vec<f32> = buf
+                .chunks_exact(2)
+                .map(|c| {
+                    let bits = u16::from_le_bytes([c[0], c[1]]);
+                    f32::from_bits((bits as u32) << 16)
+                })
+                .collect();
+            let lbytes: Vec<u8> = logit_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+            std::fs::create_dir_all(&dir).ok();
+            std::fs::write(std::path::Path::new(&dir).join("atlas_logits.bin"), &lbytes).ok();
+            let mut idx: Vec<usize> = (0..logit_vals.len()).collect();
+            idx.sort_by(|&a, &b| logit_vals[b].partial_cmp(&logit_vals[a]).unwrap());
+            let top: Vec<(usize, f32)> = idx.iter().take(10).map(|&i| (i, logit_vals[i])).collect();
+            tracing::info!("ATLAS_NEMO_DUMP: top-10 logits = {top:?}");
+        }
 
         // Diagnostic: logits stats
         if (chunk_start + chunk_len) > 16384
@@ -129,7 +255,72 @@ impl TransformerModel {
         }
 
         // ── 8. Insert into prefix cache + Marconi snapshot ──
-        if self.ssm_snapshots.is_enabled() {
+        //
+        // Stale-V cap: only COMPLETE blocks whose K/V was fully written this
+        // (or a prior valid) prefill may be cached. `seq.kv_valid_tokens` is
+        // the contiguous prefix length with guaranteed-written KV; any trailing
+        // complete block past it (e.g. left stale by the `proc_count == 1`
+        // last-chunk decode shortcut) is excluded so a future turn never reads
+        // donor/zeroed V from it. When the whole prompt's complete blocks are
+        // valid we keep the full token range (preserving the partial-suffix
+        // sub-block TTFT optimization); otherwise we truncate to the
+        // block-aligned valid prefix AND drop the SSM snapshot attach (the
+        // snapshot, keyed at full prompt length, would be unreachable through
+        // the shortened tree and would only orphan a pool slot).
+        let full_blocks = tokens.len() / bs;
+        let valid_blocks = seq.kv_valid_tokens / bs;
+        let cache_blocks = full_blocks.min(valid_blocks);
+        let cap_applied = cache_blocks < full_blocks;
+        let cache_tokens_len = if cap_applied {
+            cache_blocks * bs
+        } else {
+            tokens.len()
+        };
+        let cache_tokens = &tokens[..cache_tokens_len];
+        let cache_block_table = &seq.block_table[..cache_blocks.min(seq.block_table.len())];
+        let cache_disk_block_ids = if seq.disk_block_ids.is_empty() {
+            &seq.disk_block_ids[..]
+        } else {
+            &seq.disk_block_ids[..cache_blocks.min(seq.disk_block_ids.len())]
+        };
+        if cap_applied {
+            tracing::warn!(
+                "Prefix-cache stale-V cap: caching {} of {} complete blocks \
+                 (kv_valid_tokens={} < prompt_len={}); trailing blocks had \
+                 unwritten K/V and are excluded",
+                cache_blocks,
+                full_blocks,
+                seq.kv_valid_tokens,
+                tokens.len(),
+            );
+        }
+
+        if seq.marconi_exact_snap.is_some() {
+            // nothing to save (handled in the exact-hit fixup above)
+        } else if cache_blocks == 0 {
+            // Nothing safe to cache (no complete block has fully-written KV).
+        } else if cap_applied {
+            // Cap forced — never attach the full-length snapshot to a
+            // truncated tree (would be unreachable + leak a pool slot).
+            if !self.tokens_have_vision_pad(cache_tokens) {
+                let acquired = self.prefix_cache.insert(
+                    cache_tokens,
+                    cache_block_table,
+                    cache_disk_block_ids,
+                    bs,
+                    seq.cached_prefix_tokens.min(cache_tokens_len),
+                );
+                super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+            }
+        } else if self.ssm_snapshots.is_enabled() {
+            if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+                self.ssm_pool.debug_state_checksum(
+                    seq.slot_idx,
+                    self.gpu.as_ref(),
+                    stream,
+                    &format!("leaf_save@{}", tokens.len()),
+                );
+            }
             let snap_result = match self.ssm_snapshots.save(
                 seq.slot_idx,
                 seq.session_hash,
@@ -174,6 +365,13 @@ impl TransformerModel {
                         tokens.len(),
                         seq.block_table.len(),
                     );
+                    // Stash the last-token post-norm hidden so a future exact
+                    // full-prompt hit can emit the first token's logits without
+                    // re-running the last token through the SSM layers. `normed`
+                    // still holds the post-final-norm last-token hidden here
+                    // (lm_head reads it without mutating).
+                    self.ssm_snapshots
+                        .save_hidden(snap_id, normed, self.gpu.as_ref(), stream)?;
                     let (displaced, acquired) = self.prefix_cache.insert_with_snapshot(
                         tokens,
                         &seq.block_table,

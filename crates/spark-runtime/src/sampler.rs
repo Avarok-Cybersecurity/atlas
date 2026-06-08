@@ -352,6 +352,102 @@ pub fn apply_dry_penalty(
     }
 }
 
+/// Apply repetition / presence / frequency / LZ / DRY penalties and
+/// per-token logit bias to `logits` IN PLACE, using `token_history`.
+///
+/// SSOT for the pre-filter logit-modification block. Extracted verbatim
+/// from `sample_with_params_seeded` (the non-MTP sampling path) so the
+/// MTP verify path (`verify_pick_with_pipeline`) and bootstrap path
+/// (`sample_token_with_grammar`) apply the *same* penalties+bias the
+/// non-MTP path does — previously those two paths emitted tokens with no
+/// penalties (hardcoded `repetition_penalty=1.0`, empty history), so the
+/// configured `repetition_penalty`/`dry_multiplier` from MODEL.toml never
+/// reached MTP-emitted tokens and the model degenerated into repeated
+/// tool-call argument junk.
+///
+/// BACKWARD-COMPATIBLE / ADDITIVE: a mathematical no-op when
+/// `repetition_penalty == 1.0`, `presence_penalty == 0.0`,
+/// `frequency_penalty == 0.0`, `lz_penalty <= 0.0`, `dry_multiplier <= 0.0`
+/// and `logit_bias` is empty — every branch below is individually gated on
+/// its parameter being non-neutral, so the NVFP4 / Gemma / Mistral presets
+/// (which use those neutral values) are byte-for-byte unchanged.
+pub fn apply_penalties_and_bias(logits: &mut [f32], params: &SamplingParams, token_history: &[u32]) {
+    let n = logits.len();
+
+    // ── 0. Windowed repetition penalty: penalize recently seen tokens ──
+    // Window=0 uses full history; window>0 uses only the last N tokens.
+    // Skip when rep_penalty <= 0.0 — the divide at the next branch would
+    // produce inf for positive logits and 0 for negative, poisoning the
+    // distribution. (Caller intent for 0.0 is unclear; treat as no-op.)
+    let rep_penalty = params.repetition_penalty;
+    if rep_penalty != 1.0 && rep_penalty > 0.0 && !token_history.is_empty() {
+        let window = params.repetition_penalty_window as usize;
+        let effective = if window > 0 && window < token_history.len() {
+            &token_history[token_history.len() - window..]
+        } else {
+            token_history
+        };
+        for &tid in effective {
+            if (tid as usize) < n {
+                let logit = &mut logits[tid as usize];
+                if *logit > 0.0 {
+                    *logit /= rep_penalty;
+                } else {
+                    *logit *= rep_penalty;
+                }
+            }
+        }
+    }
+
+    // ── 0b. OpenAI-style additive penalties (presence + frequency) ──
+    // Presence: z'ⱼ = zⱼ − β (flat, if token appeared at all)
+    // Frequency: z'ⱼ = zⱼ − α · cⱼ (proportional to occurrence count)
+    let freq_pen = params.frequency_penalty;
+    let pres_pen = params.presence_penalty;
+    if (freq_pen != 0.0 || pres_pen != 0.0) && !token_history.is_empty() {
+        let window = params.repetition_penalty_window as usize;
+        let effective = if window > 0 && window < token_history.len() {
+            &token_history[token_history.len() - window..]
+        } else {
+            token_history
+        };
+        // Count occurrences per token
+        let mut counts = std::collections::HashMap::<u32, u32>::new();
+        for &tid in effective {
+            *counts.entry(tid).or_insert(0) += 1;
+        }
+        for (&tid, &count) in &counts {
+            if (tid as usize) < n {
+                logits[tid as usize] -= freq_pen * count as f32 + pres_pen;
+            }
+        }
+    }
+
+    // ── 0c. LZ penalty: penalize tokens that extend repeated n-gram patterns ──
+    if params.lz_penalty > 0.0 && token_history.len() >= 4 {
+        apply_lz_penalty(logits, token_history, params.lz_penalty);
+    }
+
+    // ── 0d. DRY penalty: exponential penalty for extending repeated sequences ──
+    if params.dry_multiplier > 0.0 && token_history.len() >= 3 {
+        apply_dry_penalty(
+            logits,
+            token_history,
+            params.dry_multiplier,
+            params.dry_base,
+            params.dry_allowed_length,
+            &params.dry_sequence_breakers,
+        );
+    }
+
+    // ── 0e. Logit bias: additive per-token bias ──
+    for &(tid, bias) in &params.logit_bias {
+        if (tid as usize) < n {
+            logits[tid as usize] += bias;
+        }
+    }
+}
+
 mod sample_impl;
 pub use sample_impl::{sample_with_params_history, sample_with_params_seeded};
 

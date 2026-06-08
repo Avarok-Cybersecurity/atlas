@@ -831,10 +831,10 @@ extern "C" __global__ void gated_rms_norm(
         unpack_bf16x2((unsigned int)gv, g0, g1);
         unpack_bf16x2((unsigned int)(gv >> 32), g2, g3);
 
-        float s0 = g0 / (1.0f + __expf(-g0));  // SiLU
-        float s1 = g1 / (1.0f + __expf(-g1));  // SiLU
-        float s2 = g2 / (1.0f + __expf(-g2));  // SiLU
-        float s3 = g3 / (1.0f + __expf(-g3));  // SiLU
+        float s0 = g0 / (1.0f + expf(-g0));  // SiLU
+        float s1 = g1 / (1.0f + expf(-g1));  // SiLU
+        float s2 = g2 / (1.0f + expf(-g2));  // SiLU
+        float s3 = g3 / (1.0f + expf(-g3));  // SiLU
 
         unsigned int lo = pack_bf16x2(f0 * rms * w0 * s0, f1 * rms * w1 * s1);
         unsigned int hi = pack_bf16x2(f2 * rms * w2 * s2, f3 * rms * w3 * s3);
@@ -908,10 +908,10 @@ extern "C" __global__ void gated_rms_norm_f32_input(
         unpack_bf16x2((unsigned int)gv, g0, g1);
         unpack_bf16x2((unsigned int)(gv >> 32), g2, g3);
 
-        float s0 = g0 / (1.0f + __expf(-g0));
-        float s1 = g1 / (1.0f + __expf(-g1));
-        float s2 = g2 / (1.0f + __expf(-g2));
-        float s3 = g3 / (1.0f + __expf(-g3));
+        float s0 = g0 / (1.0f + expf(-g0));
+        float s1 = g1 / (1.0f + expf(-g1));
+        float s2 = g2 / (1.0f + expf(-g2));
+        float s3 = g3 / (1.0f + expf(-g3));
 
         unsigned int lo = pack_bf16x2(f0 * rms * w0 * s0, f1 * rms * w1 * s1);
         unsigned int hi = pack_bf16x2(f2 * rms * w2 * s2, f3 * rms * w3 * s3);
@@ -1002,10 +1002,10 @@ extern "C" __global__ void gated_rms_norm_prefill(
         unpack_bf16x2((unsigned int)gv, g0, g1);
         unpack_bf16x2((unsigned int)(gv >> 32), g2, g3);
 
-        float s0 = g0 / (1.0f + __expf(-g0));
-        float s1 = g1 / (1.0f + __expf(-g1));
-        float s2 = g2 / (1.0f + __expf(-g2));
-        float s3 = g3 / (1.0f + __expf(-g3));
+        float s0 = g0 / (1.0f + expf(-g0));
+        float s1 = g1 / (1.0f + expf(-g1));
+        float s2 = g2 / (1.0f + expf(-g2));
+        float s3 = g3 / (1.0f + expf(-g3));
 
         unsigned int lo = pack_bf16x2(f0 * rms * w0 * s0, f1 * rms * w1 * s1);
         unsigned int hi = pack_bf16x2(f2 * rms * w2 * s2, f3 * rms * w3 * s3);

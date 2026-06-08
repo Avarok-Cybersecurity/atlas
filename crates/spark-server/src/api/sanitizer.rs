@@ -24,21 +24,6 @@ use crate::tool_parser;
 use super::chat::chat_completions_inner;
 use super::compact::{compact_messages, openai_error_response, openai_error_response_with_param};
 use super::completions::not_supported;
-use super::failures::{
-    F23ProgressMetrics, F29EnvironmentFact, F37FailureClass, F39FailureCache,
-    F39PermanentFailureMatch, F49DuplicateWrite, append_f7_reminder_to_last_user,
-    build_f7_stall_reminder, bump_f12_tool_call_count, check_loop_watchdog,
-    collect_f7_stall_buckets, f23_build_reminder, f23_normalize_and_hash, f23_refuse_threshold,
-    f23_score_progress, f23_warn_threshold, f28_text_looks_like_error,
-    f29_extract_binary_from_error_line, f29_extract_environment_facts,
-    f29_inject_environment_facts, f31_inject_hard_refusal, f32_reposition_failed_tool_result,
-    f37_classify_failure, f39_build_circuit_breaker_banner, f39_build_failure_cache,
-    f39_class_label, f39_detect_recent_retries, f39_extract_binary_name,
-    f44_check_permanent_failure, f49_build_banner, f49_detect_duplicate_writes,
-    f49_extract_write_path_and_content, f50_append_original_error, f60_disable_mtp_for_request,
-    flush_content_sanitizer, prepend_reminder_to_system, recent_message_is_tool_error,
-    strip_xml_leaks_from_assistant_content,
-};
 use super::inference_impl::{extract_thinking, strip_stop_sequences, tokenize_stop_sequences};
 use super::inference_types::{
     GrammarSpec, InferenceRequest, InferenceResponse, StreamEvent, TokenLogprobs,

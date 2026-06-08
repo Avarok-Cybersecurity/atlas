@@ -84,24 +84,14 @@ impl NemotronMoeLayer {
             weights,
             input_norm,
             moe_latent_size: config.moe_latent_size,
-            rms_norm_residual_k: if config.use_fp32_residual() {
-                gpu.kernel("norm", "rms_norm_residual_f32")
-                    .or_else(|_| gpu.kernel("norm", "rms_norm_residual"))?
-            } else {
-                gpu.kernel("norm", "rms_norm_residual")?
-            },
+            rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             topk_sigmoid_k: gpu.kernel("moe_topk_sig", "moe_topk_sigmoid")?,
             moe_expert_gemv_k: gpu.kernel("moe_expert_gemv", "moe_expert_gemv")?,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             relu2_down_shared_k: gpu.kernel("moe_relu2_fused", "moe_expert_relu2_down_shared")?,
             weighted_sum_scale_k: gpu.kernel("relu2", "moe_weighted_sum_scale")?,
-            residual_add_k: if config.use_fp32_residual() {
-                gpu.kernel("norm", "f32_residual_add")
-                    .or_else(|_| gpu.kernel("residual_add", "bf16_residual_add"))?
-            } else {
-                gpu.kernel("residual_add", "bf16_residual_add")?
-            },
+            residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             dense_gemm_k: gpu.kernel("gemm", "dense_gemm_bf16")?,
             w4a16_gemm_k: gpu.kernel("w4a16", "w4a16_gemm")?,
             topk_sigmoid_batched_k: super::try_kernel(

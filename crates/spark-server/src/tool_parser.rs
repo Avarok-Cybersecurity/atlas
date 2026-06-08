@@ -251,31 +251,32 @@ pub trait ToolCallParser: Send + Sync {
         false
     }
 
-    /// F71 (2026-04-29): "broken opener" stop strings — patterns that,
-    /// if they appear in the model's content stream, indicate the
-    /// model has fallen into a known BPE-merge attractor that produces
-    /// a *corrupted* tool-call envelope. No parser currently overrides;
-    /// F73's envelope-aware sanitizer (and `parse_tool_calls`'s
-    /// `<minimax:_call>` → `<tool_call>` normalisation) recover the
-    /// broken-envelope case at the streaming + parser layer instead.
+    /// The literal delimiter that closes a free-text parameter VALUE region in
+    /// this format's tool-call grammar — e.g. qwen3_coder `</parameter>`.
+    ///
+    /// BUG#2 (2026-06-02): this is the SSOT seam that drives the value-content
+    /// grammar rule. The grammar builder feeds it to
+    /// `grammar::ebnf_until_close_ladder` so a parameter VALUE accepts ARBITRARY
+    /// bytes (including `<`/`>`/`</X` code — Rust generics, `</div>`, comparisons)
+    /// up to the literal close, uniformly across every format that declares one
+    /// — NOT a per-model hard-coded ladder. A grammar that refuses such content
+    /// truncates agentic turns (the dominant opencode webserver_ok gap).
+    ///
+    /// Default `None`: formats whose argument content is structured (JSON:
+    /// Hermes/BareJson/Gemma4) or already unconstrained (MiniMax `any_text`)
+    /// have no `<…>VALUE<close>` region and need no value-content ladder.
+    fn param_value_close_delim(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// F71 (2026-04-29): "broken opener" stop strings.
     fn broken_opener_stop_strings(&self) -> &'static [&'static str] {
         &[]
     }
 
-    /// When `true`, the Jinja chat template should receive `jinja_tools = None`
-    /// because this parser's `system_prompt()` already provides the complete
-    /// tool schema and output-format instructions. Passing tools to the template
-    /// on top of that causes it to emit a conflicting format section (e.g.
-    /// `nemotron_h.jinja`'s XML `# Tools` block directly contradicts the
-    /// `bare_json` parser's "emit JSON, do not wrap in tags" instruction).
-    ///
-    /// Complementary to `ModelBehavior::skip_template_tools` (MODEL.toml):
-    /// either flag independently suppresses jinja tool rendering. The parser-
-    /// level default ensures future bare_json models stay correct without
-    /// requiring an explicit MODEL.toml entry.
-    ///
-    /// Default `false` — templates render tool definitions normally.
-    fn suppresses_jinja_tools(&self) -> bool {
+    /// Whether this parser wants schema-driven type coercion applied to
+    /// parsed arguments (string → integer/boolean/array/object).
+    fn wants_typed_arguments(&self) -> bool {
         false
     }
 }
@@ -293,6 +294,7 @@ impl std::fmt::Display for dyn ToolCallParser {
 pub enum ToolCallFormat {
     Hermes,
     Qwen3Coder,
+    Qwen3Xml,
     Gemma4,
     Mistral,
     MinimaxXml,
@@ -305,12 +307,13 @@ impl std::str::FromStr for ToolCallFormat {
         match s {
             "hermes" => Ok(Self::Hermes),
             "qwen3_coder" => Ok(Self::Qwen3Coder),
+            "qwen3_xml" => Ok(Self::Qwen3Xml),
             "gemma4" => Ok(Self::Gemma4),
             "mistral" => Ok(Self::Mistral),
             "minimax_xml" => Ok(Self::MinimaxXml),
             "bare_json" => Ok(Self::BareJson),
             other => Err(format!(
-                "Unknown tool call parser '{other}'. Supported: hermes, qwen3_coder, gemma4, mistral, minimax_xml, bare_json",
+                "Unknown tool call parser '{other}'. Supported: hermes, qwen3_coder, qwen3_xml, gemma4, mistral, minimax_xml, bare_json",
             )),
         }
     }
@@ -322,6 +325,7 @@ impl ToolCallFormat {
         match self {
             Self::Hermes => Box::new(HermesParser),
             Self::Qwen3Coder => Box::new(Qwen3CoderParser),
+            Self::Qwen3Xml => Box::new(Qwen3XmlParser),
             Self::Gemma4 => Box::new(Gemma4Parser),
             Self::Mistral => Box::new(MistralNativeParser),
             Self::MinimaxXml => Box::new(MinimaxXmlParser),
@@ -347,6 +351,7 @@ impl ToolCallFormat {
         match self {
             Self::Hermes => "hermes",
             Self::Qwen3Coder => "qwen3_coder",
+            Self::Qwen3Xml => "qwen3_xml",
             Self::Gemma4 => "gemma4",
             Self::Mistral => "mistral",
             Self::MinimaxXml => "minimax_xml",
@@ -373,9 +378,11 @@ mod parse_tools_tag;
 mod pipeline;
 mod pipeline_helpers;
 mod qwen3_coder;
+mod qwen3_xml;
 mod streaming;
 mod streaming_impl;
-mod validation;
+mod type_coerce;
+pub(crate) mod validation;
 
 pub use bare_json::*;
 pub use gemma4::*;
@@ -391,6 +398,8 @@ use parse_tools_tag::*;
 pub use pipeline::*;
 use pipeline_helpers::*;
 pub use qwen3_coder::*;
+pub use qwen3_xml::*;
+pub use type_coerce::coerce_all;
 pub use streaming::*;
 pub use validation::*;
 

@@ -18,6 +18,11 @@ use crate::openai::{
 };
 use crate::tool_parser;
 
+// Re-export so scheduler / chat-stream code can refer to it via
+// `crate::api::RepetitionDetectionParams` without depending directly on
+// the `openai` module. Matches how `GrammarSpec` is plumbed.
+pub use crate::openai::RepetitionDetectionParams;
+
 /// Grammar specification for constrained decoding.
 ///
 /// Either tool-call grammar (Hermes/Qwen3-Coder format) or response-format
@@ -49,7 +54,11 @@ pub enum GrammarSpec {
 pub enum InferenceRequest {
     /// Blocking: waits for full response.
     Blocking {
-        prompt_tokens: Vec<u32>,
+        /// Prompt token slice. `Arc`-wrapped so the scheduler request,
+        /// the streaming context, and the Tier 5c retry path can share
+        /// the read-only data without cloning ~40 KB for a typical
+        /// long-context opencode prompt.
+        prompt_tokens: std::sync::Arc<Vec<u32>>,
         /// Session hash for SSM snapshot isolation (hash of first 64 prompt tokens).
         session_hash: u64,
         /// Preprocessed image data: (pixels `[P,1536]` f32, grid_h, grid_w) per image.
@@ -91,6 +100,9 @@ pub enum InferenceRequest {
         enable_thinking: bool,
         /// Max thinking tokens before forcing `</think>`. None = unlimited.
         thinking_budget: Option<u32>,
+        /// Per-request override for the vLLM-anchored token-loop detector.
+        /// `None` = use the boot-global watchdog parameters.
+        repetition_detection: Option<RepetitionDetectionParams>,
         /// Whether a tool call is required (tool_choice="required").
         require_tool_call: bool,
         /// Suppress `<tool_call>` token when tool call loop detected (≥3 identical).
@@ -119,7 +131,11 @@ pub enum InferenceRequest {
     },
     /// Streaming: sends tokens as they're generated.
     Streaming {
-        prompt_tokens: Vec<u32>,
+        /// Prompt token slice. `Arc`-wrapped so the scheduler request,
+        /// the streaming context, and the Tier 5c retry path can share
+        /// the read-only data without cloning ~40 KB for a typical
+        /// long-context opencode prompt.
+        prompt_tokens: std::sync::Arc<Vec<u32>>,
         /// Session hash for SSM snapshot isolation (hash of first 64 prompt tokens).
         session_hash: u64,
         /// Preprocessed image data: (pixels `[P,1536]` f32, grid_h, grid_w) per image.
@@ -157,6 +173,9 @@ pub enum InferenceRequest {
         enable_thinking: bool,
         /// Max thinking tokens before forcing `</think>`. None = unlimited.
         thinking_budget: Option<u32>,
+        /// Per-request override for the vLLM-anchored token-loop detector.
+        /// `None` = use the boot-global watchdog parameters.
+        repetition_detection: Option<RepetitionDetectionParams>,
         /// Whether a tool call is required (tool_choice="required").
         require_tool_call: bool,
         /// Suppress `<tool_call>` token when tool call loop detected (≥3 identical).
@@ -182,6 +201,19 @@ pub enum InferenceRequest {
         /// Request timeout as absolute deadline. None = no timeout.
         timeout_at: Option<std::time::Instant>,
         token_tx: tokio::sync::mpsc::Sender<StreamEvent>,
+        /// Cooperative cancellation flag, shared with the streaming
+        /// pipeline. Set true by chat_stream guards (tool-call loop
+        /// cap, watchdog, etc.) to ask the scheduler to terminate
+        /// the sequence at the next decode boundary. The scheduler
+        /// reads it in `emit_step::emit_token`; flipping it true is
+        /// equivalent to receiving an EOS — `a.finished = true`, the
+        /// usual finalize path runs, and `handle_done` emits the
+        /// proper final-chunk (`finish_reason="length"` via the
+        /// `tool_loop_capped` override) plus `[DONE]`. Without this,
+        /// `stop_string_triggered` only suppresses *output*; the
+        /// scheduler keeps generating until natural EOS / max_tokens,
+        /// which on a degenerate-loop response can hang.
+        cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     },
 }
 

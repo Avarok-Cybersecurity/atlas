@@ -13,12 +13,16 @@
 //! When busy: drains pending queue (mutex lock) after each decode step.
 
 // ── Submodules (split for ≤500 LoC files) ──────────────────────────────────
+mod confidence;
+mod decode_logits_content;
 mod decode_logits_seq;
 mod decode_logits_step;
 mod decode_step;
 mod emit_step;
 mod helpers;
 mod lifecycle;
+mod logit_dump;
+mod logit_processors;
 mod logprobs;
 mod mod_helpers;
 mod mtp_step;
@@ -28,20 +32,29 @@ mod phase_start_prefills;
 mod prefill_a_step;
 mod prefill_b_step;
 mod repetition;
+mod rollback;
 mod sample_step;
 mod spec_step;
+mod ssm_decode_ring;
 mod types;
 mod verify_dflash_step;
 mod verify_k2_step;
 mod verify_k3_step;
 mod verify_k4_step;
+mod verify_pipeline_helper;
 
+use confidence::*;
+use decode_logits_content::*;
 use decode_logits_seq::*;
 use decode_logits_step::*;
 use decode_step::*;
 use emit_step::*;
+pub use helpers::disable_watchdogs;
+pub use helpers::set_boundary_token_mask;
 pub use helpers::set_enable_loop_watchdog;
 pub use helpers::set_im_start_hard_stop;
+pub use helpers::set_mid_word_token_mask;
+pub use helpers::set_tool_response_hard_stop;
 pub use helpers::set_numeric_token_mask;
 use helpers::*;
 pub use helpers::{CONTENT_LOOP_PERIOD_MAX, CONTENT_LOOP_PERIOD_MIN};
@@ -55,13 +68,18 @@ use phase_start_prefills::start_new_requests;
 use prefill_a_step::*;
 use prefill_b_step::*;
 use repetition::*;
+use rollback::{RollbackOutcome, rollback_to_boundary};
 use sample_step::*;
 use spec_step::*;
+use ssm_decode_ring::SsmDecodeRing;
 use types::*;
 use verify_dflash_step::*;
 use verify_k2_step::*;
 use verify_k3_step::*;
 use verify_k4_step::*;
+// verify_pipeline_helper is referenced via fully-qualified
+// `crate::scheduler::verify_pipeline_helper::...` from sibling step
+// files (verify_k2/k3/k4/dflash + spec_step), so no `use` import.
 
 // Re-exports threaded through `use super::*;` in sibling step files —
 // keep these imports here even though `run` itself doesn't reference all
@@ -71,7 +89,9 @@ use parking_lot::{Condvar, Mutex};
 use spark_model::traits::{Model, SequenceState};
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::kv_spill::KvSpillManager;
-use spark_runtime::sampler::{SamplingParams, sample_with_params, sample_with_params_history};
+use spark_runtime::sampler::{
+    SamplingParams, apply_penalties_and_bias, sample_with_params, sample_with_params_history,
+};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -104,7 +124,6 @@ pub fn run(
     code_fence_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
-    reflection_suppress_ids: Vec<u32>,
     mut grammar_engine: Option<GrammarEngine>,
     adaptive_sampling: bool,
     mut session_manager: crate::session_manager::SessionSsmManager,
@@ -266,7 +285,6 @@ pub fn run(
             code_fence_token,
             tool_call_start_token,
             tool_call_end_token,
-            &reflection_suppress_ids,
             adaptive_sampling,
         );
 
@@ -283,15 +301,28 @@ pub fn run(
                 let _ = model.stream_wait_event(model.default_stream(), prefill_event);
             }
 
+            // Build the verify-time LogitsContext once per step: the
+            // tokenizer special-token IDs the verify pipeline needs to
+            // run the same 8-stage logits processors the non-MTP path
+            // applies (mid-word/post-close/tool-during-think/forced-
+            // think-end/pin-tool-call/forced-token/grammar). Without
+            // this context the MTP/spec verify path emits unmasked
+            // GPU-argmax tokens (Phase C-2 root cause, 2026-05-24).
+            let verify_ctx = crate::scheduler::logit_processors::LogitsContext {
+                think_end_token,
+                think_start_token,
+                tool_call_start_token,
+                tool_call_end_token,
+            };
             if use_ngram_speculative && active.len() == 1 && active[0].grammar_state.is_none() {
                 // N-gram speculative: CPU proposer + CUDA-graphed K=2 verify.
                 if let Some(ref mut proposer) = ngram_proposer {
-                    step_ngram(&*model, &mut active, proposer);
+                    step_ngram(&*model, &mut active, proposer, &verify_ctx);
                 }
             } else if use_self_speculative && active.len() == 1 && active[0].grammar_state.is_none()
             {
                 // Self-speculative: draft via layer-skipping, verify with full model.
-                step_self_spec(&*model, &mut active, num_drafts);
+                step_self_spec(&*model, &mut active, num_drafts, &verify_ctx);
             } else if use_mtp
                 && active.len() == 1
                 && !active[0].inside_thinking
@@ -299,7 +330,7 @@ pub fn run(
                 && !active[0].disable_mtp
             {
                 // MTP speculative decode: beneficial at all context lengths.
-                step_mtp(&*model, &mut active, num_drafts);
+                step_mtp(&*model, &mut active, num_drafts, &verify_ctx);
             } else {
                 // Batch decode (no MTP). Clear stale drafts when transitioning out of MTP mode.
                 if use_mtp {
@@ -315,7 +346,6 @@ pub fn run(
                     code_fence_token,
                     tool_call_start_token,
                     tool_call_end_token,
-                    &reflection_suppress_ids,
                     adaptive_sampling,
                 );
             }
@@ -375,8 +405,9 @@ pub fn run(
     for p in prefilling {
         let mut seq = p.seq;
         let _ = model.free_sequence(&mut seq);
-        let _ = model.ep_broadcast_cmd(0xFFFFFFF1);
+        let _ = model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF1);
     }
-    let _ = model.ep_broadcast_cmd(0xFFFFFFFF);
+    // Shutdown applies to every slot the worker has; seq_id is ignored.
+    let _ = model.ep_broadcast_cmd_for_seq(0, 0xFFFFFFFF);
     tracing::info!("Scheduler stopped");
 }

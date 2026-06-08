@@ -61,38 +61,37 @@ effective_context = 24576
 # precision loop-breaking that presence (single-token) can't; the
 # digit-normalized content-loop watchdog is the hard-stop safety net.
 # tools stays 0.0 (grammar-constrained).
+# 2026-05-24: empirical band-aid pattern (same as Qwen3.6-35B-A3B).
+# temp=0.6 thinking, rep_pen=1.1 + dry_mult=0.5 to break agentic loops
+# without the language-mixing/wandering side-effects of Qwen's
+# presence_penalty=1.5 (validated on Qwen3.6-35B-A3B opencode session
+# 2026-05-24). Top_p/top_k tracked from official model card.
 [sampling.thinking_text]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
-presence_penalty = 1.0
+presence_penalty = 0.0
 frequency_penalty = 0.0
-lz_penalty = 0.2
-dry_multiplier = 0.8
-dry_base = 1.75
-dry_allowed_length = 2
+repetition_penalty = 1.1
+dry_multiplier = 0.5
 
 [sampling.thinking_coding]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
-presence_penalty = 1.0
+presence_penalty = 0.0
 frequency_penalty = 0.0
-lz_penalty = 0.2
-dry_multiplier = 0.8
-dry_base = 1.75
-dry_allowed_length = 2
+repetition_penalty = 1.1
+dry_multiplier = 0.5
 
 [sampling.non_thinking]
 temperature = 0.7
 top_p = 0.8
 top_k = 20
-presence_penalty = 1.0
+presence_penalty = 0.0
 frequency_penalty = 0.0
-lz_penalty = 0.2
-dry_multiplier = 0.8
-dry_base = 1.75
-dry_allowed_length = 2
+repetition_penalty = 1.1
+dry_multiplier = 0.5
 
 [sampling.tools]
 temperature = 0.6
@@ -100,6 +99,8 @@ top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.5
 
 [behavior]
 # Content-loop watchdog enabled: dense Qwen3.6-27B has a known
@@ -114,8 +115,10 @@ enable_loop_watchdog = true
 # `<think>\n\n</think>` (thinking-off marker) so reasoning_content is
 # always empty. An explicit per-request enable_thinking=false still wins.
 thinking_default = true
-thinking_in_tools = false
-max_thinking_budget = 512
+# 2026-05-23 sweep: false → true (project-wide default after F1 removal).
+thinking_in_tools = true
+# 2026-05-23 sweep: 512 → 2048 (project-wide reasoning headroom bump).
+max_thinking_budget = 2048
 default_num_drafts = 1
 
 # Upstream Qwen/Qwen3.6-27B reports `model_type = "qwen3_5"` in config.json.

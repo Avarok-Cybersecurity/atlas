@@ -1,0 +1,43 @@
+{
+  "tier": "nvfp4moe",
+  "run": 2,
+  "wall_time_s": 102.97545051574707,
+  "opencode": {
+    "events_total": 22,
+    "stderr_bytes": 0
+  },
+  "filesystem": {
+    "files_written": [],
+    "files_count": 0
+  },
+  "cargo": {
+    "cargo_toml_present": false,
+    "cargo_toml_valid": false,
+    "cargo_toml_error": "",
+    "cargo_toml_has_package_name": false
+  },
+  "tool_calls": {
+    "total": 5,
+    "by_tool": {
+      "bash": 5
+    }
+  },
+  "drift": {
+    "write_calls": 0,
+    "write_empty_path": 0,
+    "write_path_drift_from_target": 0,
+    "write_path_has_literal_space": 0,
+    "write_content_starts_with_lean": 0,
+    "write_content_is_bash_command": 0,
+    "write_content_xml_attr_leak": 0,
+    "write_content_newlines_collapsed_toml": 0
+  },
+  "atlas": {
+    "ws1_mask_active_fires": 10,
+    "b1_drift_gauge_fires": 0,
+    "tier_5c_retries": 0,
+    "a2_fuzzy_repair_fires": 0,
+    "doom_loop_trips": 0,
+    "tool_call_lines": 5
+  }
+}

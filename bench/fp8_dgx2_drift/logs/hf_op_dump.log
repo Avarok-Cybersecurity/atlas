@@ -1,0 +1,18 @@
+[15:19:10] loading tokens from /workspace/atlas-mtp/bench/fp8_dgx2_drift/atlas_tokens_dgx2.json
+  prompt_len=10382
+[15:19:10] loading BF16 model from /workspace/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0
+`torch_dtype` is deprecated! Use `dtype` instead!
+The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
+Loading weights:   0%|          | 0/693 [00:00<?, ?it/s]Loading weights: 100%|██████████| 693/693 [00:00<00:00, 11675.32it/s]
+  model loaded in 0.3s
+  found 40 decoder layers
+  full-attn layers (10): [3, 7, 11, 15, 19]...[31, 35, 39]
+  ssm  layers (30): [0, 1, 2, 4, 5]...[36, 37, 38]
+[15:19:10] registering hooks
+  registered 430 hooks across 40 layers
+[15:19:10] forward pass — 10382 tokens
+  forward done in 671.5s (15.5 tok/s)
+[15:30:22] wrote 430 dump files to /workspace/atlas-dumps/op_drift
+  full-attn L3 ops: ['hf_op_L3_input_norm_in.bin', 'hf_op_L3_input_norm_out.bin', 'hf_op_L3_k_after_norm.bin', 'hf_op_L3_k_proj.bin', 'hf_op_L3_layer_out.bin', 'hf_op_L3_moe_out.bin', 'hf_op_L3_o_proj.bin', 'hf_op_L3_post_attn_norm_out.bin', 'hf_op_L3_q_after_norm.bin', 'hf_op_L3_q_proj_full.bin', 'hf_op_L3_router_gate.bin', 'hf_op_L3_shared_expert.bin', 'hf_op_L3_v_proj.bin']
+  ssm L0   ops: ['hf_op_L0_input_norm_in.bin', 'hf_op_L0_input_norm_out.bin', 'hf_op_L0_layer_out.bin', 'hf_op_L0_moe_out.bin', 'hf_op_L0_post_attn_norm_out.bin', 'hf_op_L0_router_gate.bin', 'hf_op_L0_shared_expert.bin', 'hf_op_L0_ssm_conv1d.bin', 'hf_op_L0_ssm_norm.bin', 'hf_op_L0_ssm_out_proj.bin']
+[15:30:22] DONE (total 672.3s)

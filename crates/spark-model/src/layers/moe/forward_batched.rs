@@ -103,7 +103,51 @@ impl MoeLayer {
             }
 
             let shared_out = ctx.buffers.attn_output();
-            if let (Some(gp), Some(up), Some(dp), Some(sh)) = (
+            if let (Some(gp), Some(up), Some(dp), Some(sg), Some(su), Some(sd)) = (
+                self.bf16_gate_weight_ptrs,
+                self.bf16_up_weight_ptrs,
+                self.bf16_down_weight_ptrs,
+                self.bf16_shared_gate,
+                self.bf16_shared_up,
+                self.bf16_shared_down,
+            ) {
+                // BF16 path (FP8-dequant-on-load): same fused kernels as decode.
+                ops::moe_expert_gate_up_shared_bf16(
+                    ctx.gpu,
+                    self.moe_expert_gate_up_shared_bf16_k,
+                    input_t,
+                    gp,
+                    expert_gate_out,
+                    up,
+                    expert_up_out,
+                    indices_dev,
+                    sg,
+                    shared_gate_scratch,
+                    su,
+                    shared_up_scratch,
+                    inter,
+                    h,
+                    top_k,
+                    stream,
+                )?;
+                ops::moe_expert_silu_down_shared_bf16(
+                    ctx.gpu,
+                    self.moe_expert_silu_down_shared_bf16_k,
+                    expert_gate_out,
+                    expert_up_out,
+                    dp,
+                    expert_down_out,
+                    indices_dev,
+                    shared_gate_scratch,
+                    shared_up_scratch,
+                    sd,
+                    shared_out,
+                    h,
+                    inter,
+                    top_k,
+                    stream,
+                )?;
+            } else if let (Some(gp), Some(up), Some(dp), Some(sh)) = (
                 &self.fp8_gate_weight_ptrs,
                 &self.fp8_up_weight_ptrs,
                 &self.fp8_down_weight_ptrs,

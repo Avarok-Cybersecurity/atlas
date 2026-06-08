@@ -210,10 +210,18 @@ impl GpuBackend for AtlasCudaBackend {
         // called at model init time. Layers store the returned KernelHandle.
         let cache: OnceLock<RawCudaFunc> = OnceLock::new();
         let registry = AtlasRegistry::get();
-        let raw = registry
-            .raw_function_cached(&cache, module, func_name)
-            .map_err(|e| anyhow::anyhow!("Kernel lookup {module}::{func_name}: {e}"))?;
-        Ok(KernelHandle(raw.0 as u64))
+        match registry.raw_function_cached(&cache, module, func_name) {
+            Ok(raw) => {
+                crate::kernel_audit::record(module, func_name, true);
+                Ok(KernelHandle(raw.0 as u64))
+            }
+            Err(e) => {
+                // Optional kernels (try_kernel) land here and fall back silently;
+                // the audit makes that visible in the startup kernel table.
+                crate::kernel_audit::record(module, func_name, false);
+                Err(anyhow::anyhow!("Kernel lookup {module}::{func_name}: {e}"))
+            }
+        }
     }
 
     fn copy_h2d_async(&self, src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {

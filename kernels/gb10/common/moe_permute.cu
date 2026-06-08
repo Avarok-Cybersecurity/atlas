@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 #include <cuda_bf16.h>
+#include <assert.h>   // device-side assert() for the work-list packing guard
 
 // Atlas MoE token permutation kernels.
 //
@@ -243,4 +244,60 @@ extern "C" __global__ void moe_sort_by_expert(
         sorted_expert_ids[pos] = (int)expert_id;
         token_to_perm[i] = (int)pos;
     }
+}
+
+// Build the COMPACTED (expert, m_tile, n_tile) work-list for the persistent
+// grouped-GEMM grid (moe_fp8_grouped_gemm). Replaces a dense 3D launch
+// `[ceil(N/64), max_m_tiles, num_experts]` (≈16M CTAs/layer, 99.5% early-exit)
+// with exactly one work-item per (expert, m_tile, n_tile) that actually has
+// tokens, so the persistent 96-CTA grid never spawns a tile that would
+// early-exit.
+//
+// Output packing (matches the grouped-GEMM kernel decode):
+//   worklist[w*2 + 0] = expert_id
+//   worklist[w*2 + 1] = (m_tile << 6) | n_tile      (n_tile < 64, 6 bits)
+//   total_tiles[0]    = number of emitted work-items
+//
+// Single block, thread-0 serial loop — mirrors moe_sort_by_expert Phase-2's
+// serial prefix-sum so the same expert-ordering invariant holds. Experts with
+// no tokens (M_e <= 0) OR a NULL weight pointer (remote expert under EP) are
+// skipped, exactly like the grouped-GEMM per-tile `if (M_expert <= 0)` /
+// `if (B_exp == 0) continue;` guards — so the emitted work-list is the set of
+// tiles the dense grid would NOT have early-exited on.
+//
+// SAME-STREAM INVARIANT (R3): the launcher MUST enqueue moe_fp8_grouped_gemm on
+// the SAME stream as this builder so the read of total_tiles/worklist
+// happens-after this write. No cross-stream event is inserted.
+//
+// Grid: (1, 1, 1)  Block: (256, 1, 1)
+extern "C" __global__ void moe_build_tile_worklist(
+    const int* __restrict__ expert_offsets,                 // [num_experts + 1]
+    const unsigned long long* __restrict__ B_weight_ptrs,    // [num_experts] → [N, K] FP8 (0 = remote)
+    unsigned int* __restrict__ worklist,                     // [worst_case_tiles * 2]
+    int* __restrict__ total_tiles,                           // [1]
+    unsigned int num_experts,
+    unsigned int n_tiles,                                    // ceil(N / PM4_N_TILE)
+    unsigned int m_tile                                      // PM4_M_TILE (=128)
+) {
+    if (threadIdx.x != 0) return;
+
+    unsigned int w = 0;
+    for (unsigned int e = 0; e < num_experts; e++) {
+        int m_start = expert_offsets[e];
+        int M_e = expert_offsets[e + 1] - m_start;
+        if (M_e <= 0 || B_weight_ptrs[e] == 0) continue;   // mirror grouped-GEMM early-exit guards
+
+        unsigned int mt_e = ((unsigned int)M_e + m_tile - 1) / m_tile;
+        for (unsigned int mt = 0; mt < mt_e; mt++) {
+            for (unsigned int nt = 0; nt < n_tiles; nt++) {
+                // R2: packing overflow guard. n_tile must fit in 6 bits and
+                // m_tile in the remaining 26 bits of a 32-bit word.
+                assert(mt < (1u << 26) && nt < 64u);
+                worklist[w * 2 + 0] = e;
+                worklist[w * 2 + 1] = (mt << 6) | nt;
+                w++;
+            }
+        }
+    }
+    total_tiles[0] = (int)w;
 }

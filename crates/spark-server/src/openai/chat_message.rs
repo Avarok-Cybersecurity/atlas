@@ -16,6 +16,16 @@ pub struct IncomingMessage {
     /// Function name for tool response messages.
     #[serde(default)]
     pub name: Option<String>,
+    /// Historical reasoning trace from a prior assistant turn (Qwen3
+    /// `<think>...</think>` body). Clients (vLLM/SGLang/opencode) round-trip
+    /// this field so the chat template can rehydrate the historical
+    /// `<think>` block. Without it the template emits empty
+    /// `<think>\n\n</think>\n\n` wrappers for every historical assistant
+    /// turn → empty-think poisoning → premature `<|im_end|>` abort.
+    /// Accepts both `reasoning_content` (DeepSeek/vLLM/LiteLLM standard)
+    /// and the shorter `reasoning` alias used by some OpenAI SDK versions.
+    #[serde(default, alias = "reasoning")]
+    pub reasoning_content: Option<String>,
 }
 
 /// Content extracted from a message — text and any base64-encoded images.
@@ -39,6 +49,7 @@ impl IncomingMessage {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }
     }
 
@@ -54,6 +65,7 @@ impl IncomingMessage {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }
     }
 
@@ -101,6 +113,7 @@ impl IncomingMessage {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 })
             }
             // Replay of a prior assistant function_call in the input chain.
@@ -130,6 +143,7 @@ impl IncomingMessage {
                     }]),
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 })
             }
             // Tool-execution result the client sends back so the model
@@ -161,6 +175,7 @@ impl IncomingMessage {
                     tool_calls: None,
                     tool_call_id: Some(call_id),
                     name: if name.is_empty() { None } else { Some(name) },
+                    reasoning_content: None,
                 })
             }
             // Reasoning items (Responses-API `type:"reasoning"`) are

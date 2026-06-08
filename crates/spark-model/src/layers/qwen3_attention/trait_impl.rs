@@ -46,33 +46,6 @@ pub(super) fn diag_norm(
     tracing::info!("DIAG {label}: norm={norm:.4} max={max_abs:.4} first4={f4} n={n_elements}");
 }
 
-/// Debug: read back FP32 GPU tensor and compute L2 norm + first 4 values.
-pub fn diag_norm_f32(
-    gpu: &dyn GpuBackend,
-    ptr: DevicePtr,
-    n_elements: usize,
-    stream: u64,
-    label: &str,
-) {
-    let _ = gpu.synchronize(stream);
-    let mut buf = vec![0f32; n_elements];
-    let bytes =
-        unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, n_elements * 4) };
-    if gpu.copy_d2h(ptr, bytes).is_err() {
-        return;
-    }
-    let norm: f32 = buf.iter().map(|v| v * v).sum::<f32>().sqrt();
-    let max_abs: f32 = buf.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
-    let f4 = if buf.len() >= 4 {
-        format!("[{:.4},{:.4},{:.4},{:.4}]", buf[0], buf[1], buf[2], buf[3])
-    } else {
-        format!("{:?}", &buf[..buf.len().min(4)])
-    };
-    tracing::info!(
-        "DIAG {label}: norm={norm:.4} max={max_abs:.4} first4={f4} n={n_elements} (FP32)"
-    );
-}
-
 /// Gemma-4 diagnostic gate. Set ATLAS_DIAG_GEMMA4=1 to enable per-layer
 /// hidden-state norm dumps in the decode path. Heavy (one d2h copy per
 pub(super) fn gemma4_diag_enabled() -> bool {

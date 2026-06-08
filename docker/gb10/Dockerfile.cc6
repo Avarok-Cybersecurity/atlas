@@ -1,0 +1,9 @@
+# CC6 fast-path: layer the CC6-fixed spark binary on the cc-keyrepair runtime.
+# CC6 = tool-body truncation fix (advance_envelope_streak !inside_parameter_body
+# + MODEL.toml max_post_think_content_tokens 8192). Built via:
+#   cargo build --release -p spark-server  (forced atlas-kernels rebuild to re-bake MODEL.toml)
+#   cp target/release/spark spark-fastbin
+#   docker build -f docker/gb10/Dockerfile.cc6 -t atlas-gb10:cc-toolbody .
+FROM atlas-gb10:cc-keyrepair
+COPY spark-fastbin /usr/local/bin/spark
+COPY jinja-templates/ /jinja-templates/

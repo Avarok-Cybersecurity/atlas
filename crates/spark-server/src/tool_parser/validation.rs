@@ -244,6 +244,43 @@ pub fn normalize_paths(calls: &mut [ToolCall], cwd: &str) {
         let mut changed = false;
         for key in PATH_KEYS {
             if let Some(serde_json::Value::String(path)) = args.get(*key) {
+                // Long-context FP8 drift mode (2026-05-28): the model
+                // sometimes emits the value with XML-attribute-style
+                // framing — `="/tmp/x/main.rs"` instead of `/tmp/x/main.rs`.
+                // The qwen3_coder grammar accepts the literal `=` and quotes
+                // as part of the parameter body. Strip them here so the
+                // downstream path-shape check and write dispatch see a
+                // clean path. vLLM's tool_parser does similar leniency.
+                let trimmed = path.trim();
+                let mut sanitized: &str = trimmed;
+                if let Some(rest) = sanitized.strip_prefix('=') {
+                    sanitized = rest.trim_start();
+                }
+                // FP8 drift (2026-05-29, fencecontent run 1): the model
+                // sometimes leaks a JSON-fragment-shaped value like
+                // `"/tmp/x/Cargo.toml",` — the path wrapped in quotes with a
+                // trailing comma. Drop trailing commas/whitespace first so the
+                // surrounding-quote strip below sees a clean `"…"`; otherwise
+                // the file is created with the quotes+comma literally in its
+                // name and the project never builds.
+                sanitized = sanitized.trim_end_matches([',', ' ', '\t']);
+                if sanitized.len() >= 2
+                    && sanitized.starts_with('"')
+                    && sanitized.ends_with('"')
+                {
+                    sanitized = &sanitized[1..sanitized.len() - 1];
+                }
+                if sanitized != path.as_str() {
+                    args.insert(
+                        key.to_string(),
+                        serde_json::Value::String(sanitized.to_string()),
+                    );
+                    changed = true;
+                }
+                // Re-read after possible sanitization
+                let Some(serde_json::Value::String(path)) = args.get(*key) else {
+                    continue;
+                };
                 if !path.starts_with('/') {
                     continue; // Already relative — leave it
                 }
@@ -393,13 +430,95 @@ pub fn validate_single_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> R
     ];
     if WRITE_FAMILY.contains(&name.as_str()) {
         for key in PATH_KEYS {
-            if let Some(serde_json::Value::String(path)) = args.get(*key)
-                && path.trim().is_empty()
+            if let Some(serde_json::Value::String(path)) = args.get(*key) {
+                let trimmed = path.trim();
+                if trimmed.is_empty() {
+                    // #211 option-B diagnostic (env-gated): pinpoint the
+                    // empty_path drift — generation vs parse. Logs the full
+                    // post-parse arg shape (keys + per-value lengths). An
+                    // empty filePath alongside a large `content` is the
+                    // self-truncation generation pattern (F78); filePath
+                    // absent ⇒ omission; a path under an unexpected key ⇒
+                    // parser. Inert unless ATLAS_TOOLCALL_DEBUG=1.
+                    if std::env::var("ATLAS_TOOLCALL_DEBUG").as_deref() == Ok("1") {
+                        let shape: Vec<String> = args
+                            .iter()
+                            .map(|(k, v)| match v {
+                                serde_json::Value::String(s) => {
+                                    format!("{k}=str(len={})", s.len())
+                                }
+                                other => format!("{k}={}", other),
+                            })
+                            .collect();
+                        tracing::warn!(
+                            tool = %name, empty_key = %key,
+                            "ATLAS_TOOLCALL_DEBUG empty-path arg shape: [{}]",
+                            shape.join(", ")
+                        );
+                    }
+                    return Err(format!(
+                        "Error: {name} requires a non-empty '{key}'. \
+                             Got empty string — provide an absolute path \
+                             like '/tmp/calc-test75/Cargo.toml'."
+                    ));
+                }
+                // Long-context FP8 drift mode: model occasionally emits
+                // the value with XML-attribute-style framing — e.g.
+                // `<parameter=filePath>="/tmp/x/main.rs"</parameter>`
+                // — leaking the `="..."` shape into the value. Strip a
+                // leading `=` and a single pair of surrounding ASCII
+                // double-quotes before the path-shape check so these
+                // drifted-but-recoverable calls still resolve. vLLM's
+                // tool_parser does similar leniency.
+                // opencode resolves write paths against the agent cwd
+                // (`--dir`), so bare RELATIVE filenames like `Cargo.toml`
+                // or `src/main.rs` are legitimate — vLLM accepts them and
+                // the model emits them constantly. The previous rule
+                // required a `/`, `./`, or `../` prefix and rejected
+                // `Cargo.toml`, which made opencode loop on rejections and
+                // abandon the task. Accept any non-empty path EXCEPT ones
+                // carrying shell metacharacters / whitespace, which signal
+                // a leaked command (e.g. `created && ls -R`) rather than a
+                // real path — those we still reject (also closes CWE-78
+                // command-leak-as-path).
+                const SHELL_META: &[char] =
+                    &[' ', '\t', '\n', '\r', '&', '|', ';', '`', '$', '<', '>', '(', ')', '*', '?'];
+                let looks_like_command = trimmed.contains(SHELL_META);
+                if looks_like_command || trimmed.len() < 3 {
+                    return Err(format!(
+                        "Error: {name} '{key}' must be a filesystem path (absolute or relative \
+                         to the working directory), at least 3 chars, with no shell \
+                         metacharacters or whitespace. Got {path:?}."
+                    ));
+                }
+            }
+        }
+    }
+    // Shell-execution tools must have a non-empty command. Mirrors F78
+    // for the Write family. Without this, the `any_text` qwen3_coder
+    // body grammar (2026-05-25) accepts an immediately-closed parameter
+    // `<parameter=command></parameter>`; opencode's bash handler then
+    // returns "The argument 'file' cannot be empty. Received ''" and
+    // the model burns to max_tokens retrying the same empty call.
+    // Previously the `json_schema` body grammar combined with
+    // `enforce_min_length_on_required_strings` (`grammar/schema.rs`)
+    // enforced min_length 1 at the FSM level; lifting that check to
+    // the validator post-parse keeps the same invariant while letting
+    // the grammar body be `any_text` (native XML wire format).
+    const SHELL_FAMILY: &[&str] = &[
+        "bash", "Bash", "shell", "Shell", "exec", "Exec", "run", "Run",
+        "execute", "Execute", "terminal", "Terminal",
+    ];
+    const CMD_KEYS: &[&str] = &["command", "cmd", "script", "code"];
+    if SHELL_FAMILY.contains(&name.as_str()) {
+        for key in CMD_KEYS {
+            if let Some(serde_json::Value::String(cmd)) = args.get(*key)
+                && (cmd.trim().is_empty() || cmd.trim().len() < 2)
             {
                 return Err(format!(
                     "Error: {name} requires a non-empty '{key}'. \
-                         Got empty string — provide an absolute path \
-                         like '/tmp/calc-test75/Cargo.toml'."
+                         Got empty string — provide the shell command \
+                         to execute, e.g. 'ls /tmp'."
                 ));
             }
         }
@@ -434,4 +553,32 @@ pub fn validate_single_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> R
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod path_sanitizer_tests {
+    #[test]
+    fn malformed_quoted_comma_filepath_sanitized() {
+        // FP8 drift: filePath value leaked as a JSON fragment `"…/Cargo.toml",`
+        // (surrounding quotes + trailing comma). The unconditional path
+        // sanitizer must clean it to a cwd-relative `Cargo.toml` so the file
+        // lands with a usable name.
+        use crate::tool_parser::{FunctionCall, ToolCall};
+        let mut calls = vec![ToolCall {
+            id: "x".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "write".into(),
+                arguments: serde_json::json!({
+                    "filePath": "\"/tmp/proj/Cargo.toml\",",
+                    "content": "[package]\nname = \"x\"\n"
+                })
+                .to_string(),
+            },
+        }];
+        super::normalize_paths(&mut calls, "/tmp/proj");
+        let args: serde_json::Value =
+            serde_json::from_str(&calls[0].function.arguments).unwrap();
+        assert_eq!(args["filePath"], "Cargo.toml");
+    }
 }

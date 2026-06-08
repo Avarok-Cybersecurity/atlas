@@ -132,129 +132,22 @@ impl Qwen3SsmLayer {
         };
 
         // ── 2+3. QKVZ GEMM (+ deinterleave if needed) ──
+        // Dispatch hoisted to trait_prefill_proj.rs to keep this file under
+        // the 500 LoC cap; behavior identical.
         let deinterleaved = ctx.buffers.ssm_deinterleaved();
-        let proj_dst = if self.sequential_qkvz {
-            deinterleaved
-        } else {
-            ctx.buffers.ssm_qkvz()
-        };
-        // Env override: ATLAS_GDN_BF16_WEIGHTS=1 forces the BF16 dense
-        // GEMM path for QKVZ — bypassing both FP8 and NVFP4 weight-quant
-        // paths. Tests whether weight-quantization noise on qkvz (esp.
-        // the W_z slice that feeds gnorm's silu gate) is the dominant
-        // source of long-context layer-1+ drift.
-        let force_bf16 = matches!(
-            std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(),
-            Some("1")
-        );
-        if force_bf16 {
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                normed,
-                &self.ssm.in_proj_qkvz,
-                proj_dst,
-                k,
-                qkvz_size as u32,
-                h as u32,
-                stream,
-            )
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "ssm prefill: QKVZ BF16 dense GEMM failed (M={k}, N={qkvz_size}): {e}"
-                )
-            })?;
-        } else if let Some(fp8) = self.qkvz_fp8 {
-            ops::fp8_gemm_n128(
-                ctx.gpu,
-                self.fp8_gemm_k,
-                normed,
-                fp8,
-                proj_dst,
-                k,
-                qkvz_size as u32,
-                h as u32,
-                stream,
-            )
-            .map_err(|e| {
-                anyhow::anyhow!("ssm prefill: QKVZ FP8 GEMM failed (M={k}, N={qkvz_size}): {e}")
-            })?;
-        } else if let Some(ref nvfp4_t) = self.qkvz_nvfp4_t {
-            if k > 128 {
-                ops::w4a16_gemm_n128_m128(
-                    ctx.gpu,
-                    self.w4a16_gemm_t_m128_k,
-                    normed,
-                    nvfp4_t,
-                    proj_dst,
-                    k,
-                    qkvz_size as u32,
-                    h as u32,
-                    stream,
-                )
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "ssm prefill: QKVZ m128 GEMM failed (M={k}, N={qkvz_size}): {e}"
-                    )
-                })?;
-            } else {
-                ops::w4a16_gemm_n128(
-                    ctx.gpu,
-                    self.w4a16_gemm_t_k,
-                    normed,
-                    nvfp4_t,
-                    proj_dst,
-                    k,
-                    qkvz_size as u32,
-                    h as u32,
-                    stream,
-                )
-                .map_err(|e| {
-                    anyhow::anyhow!("ssm prefill: QKVZ GEMM failed (M={k}, N={qkvz_size}): {e}")
-                })?;
-            }
-        } else if let Some(ref nvfp4) = self.qkvz_nvfp4 {
-            ops::w4a16_gemm(
-                ctx.gpu,
-                self.w4a16_gemm_k,
-                normed,
-                nvfp4,
-                proj_dst,
-                k,
-                qkvz_size as u32,
-                h as u32,
-                stream,
-            )
-            .map_err(|e| {
-                anyhow::anyhow!("ssm prefill: QKVZ GEMM failed (M={k}, N={qkvz_size}): {e}")
-            })?;
-        } else {
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                normed,
-                &self.ssm.in_proj_qkvz,
-                proj_dst,
-                k,
-                qkvz_size as u32,
-                h as u32,
-                stream,
-            )?;
-        }
-        if !self.sequential_qkvz {
-            ops::deinterleave_qkvz(
-                ctx.gpu,
-                self.deinterleave_k,
-                proj_dst,
-                deinterleaved,
-                k,
-                nk as u32,
-                kd as u32,
-                vpg as u32,
-                vd as u32,
-                stream,
-            )?;
-        }
+        self.prefill_qkvz_proj(
+            normed,
+            deinterleaved,
+            k,
+            qkvz_size,
+            h,
+            nk,
+            kd,
+            vpg,
+            vd,
+            ctx,
+            stream,
+        )?;
         // ATLAS_GDN_DUMP hook #0c: post-qkvz GEMM (deinterleaved input
         // to conv1d). qkvz_size = key_dim*2 + value_dim*2 = 12288 for A3B
         // (Q+K+V+Z, head-major within each segment). Compare against HF's
@@ -398,120 +291,25 @@ impl Qwen3SsmLayer {
         let q_ptr = conv_out_buf;
         let k_ptr = conv_out_buf.offset(key_dim * bf16);
         let v_ptr = conv_out_buf.offset(key_dim * 2 * bf16);
-        let gb_stride = (nv * 2) as u32;
 
-        // Env overrides for kernel investigation:
-        //   ATLAS_DISABLE_WY4=1       — skip WY4-persistent, fall through to
-        //                               single-token persistent (256..=4096)
-        //                               or split4.
-        //   ATLAS_FORCE_PERSISTENT=1  — force the single-token persistent
-        //                               kernel at any k (lifts the 4096 cap).
-        //                               Mathematically correct per-token
-        //                               sequential recurrence with FP32 SMEM
-        //                               H state — useful for isolating WY
-        //                               chunkwise reduction noise.
-        let wy4_disabled = matches!(
-            std::env::var("ATLAS_DISABLE_WY4").ok().as_deref(),
-            Some("1")
-        );
-        let force_persistent = matches!(
-            std::env::var("ATLAS_FORCE_PERSISTENT").ok().as_deref(),
-            Some("1")
-        );
-        if force_persistent && self.gdn_prefill_persistent_k.0 != 0 {
-            // Forced per-token persistent at ANY k.
-            ops::gdn_prefill_persistent(
-                ctx.gpu,
-                self.gdn_prefill_persistent_k,
-                ssm_state.h_state,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gates_buf,
-                gates_buf.offset(nv * fp32),
-                gdn_out_buf,
-                1,
-                k,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                gb_stride,
-                stream,
-            )?;
-        } else if !wy4_disabled && self.gdn_prefill_persistent_wy4_k.0 != 0 {
-            // WY4-persistent: H in shared memory, 4 tokens per iteration
-            // smem = H[K_DIM*V_DIM] + 8*k/q buffers + warp sums + WY scalars
-            let smem = (kd * vd * 4 + 8 * kd * 4 + 56) as u32;
-            ops::gdn_prefill_persistent_smem(
-                ctx.gpu,
-                self.gdn_prefill_persistent_wy4_k,
-                ssm_state.h_state,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gates_buf,
-                gates_buf.offset(nv * fp32),
-                gdn_out_buf,
-                1,
-                k,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                gb_stride,
-                smem,
-                stream,
-            )?;
-        } else if (256..=4096).contains(&k) && self.gdn_prefill_persistent_k.0 != 0 {
-            ops::gdn_prefill_persistent(
-                ctx.gpu,
-                self.gdn_prefill_persistent_k,
-                ssm_state.h_state,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gates_buf,
-                gates_buf.offset(nv * fp32),
-                gdn_out_buf,
-                1,
-                k,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                gb_stride,
-                stream,
-            )?;
-        } else {
-            ops::gdn_prefill_split4(
-                ctx.gpu,
-                self.gdn_prefill_split4_k,
-                ssm_state.h_state,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gates_buf,
-                gates_buf.offset(nv * fp32),
-                gdn_out_buf,
-                1,
-                k,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                gb_stride,
-                stream,
-            )?;
-        }
+        // Recurrence kernel dispatch hoisted to trait_prefill_recur.rs to
+        // keep this file under the 500 LoC cap; behavior identical.
+        self.prefill_gdn_recurrence(
+            ssm_state.h_state,
+            q_ptr,
+            k_ptr,
+            v_ptr,
+            gates_buf,
+            gdn_out_buf,
+            k,
+            nk,
+            nv,
+            kd,
+            vd,
+            conv_dim,
+            ctx,
+            stream,
+        )?;
 
         // ATLAS_GDN_DUMP hook #3: post-GDN recurrence (pre-gnorm,
         // value-space). gdn_out_buf is [num_tokens, value_dim] bf16

@@ -148,7 +148,7 @@ impl MoeLayer {
             })?;
         }
 
-        if tracing::enabled!(tracing::Level::DEBUG) {
+        if tracing::enabled!(tracing::Level::DEBUG) && !ctx.graph_capture {
             ctx.gpu.synchronize(stream)?;
             // Read expert indices (u32[top_k]) and weights (f32[top_k])
             let k = top_k as usize;
@@ -214,7 +214,56 @@ impl MoeLayer {
         let shared_up_scratch = ctx.buffers.ssm_qkvz();
         let shared_out = ctx.buffers.attn_output();
 
-        if let (Some(gp), Some(up), Some(dp), Some(sh)) = (
+        if let (Some(gp), Some(up), Some(dp), Some(sg), Some(su), Some(sd)) = (
+            self.bf16_gate_weight_ptrs,
+            self.bf16_up_weight_ptrs,
+            self.bf16_down_weight_ptrs,
+            self.bf16_shared_gate,
+            self.bf16_shared_up,
+            self.bf16_shared_down,
+        ) {
+            // BF16 path: FP8-dequant-on-load. Eliminates the per-layer 0.989
+            // FP8 cosine ceiling by serving experts as BF16 end-to-end.
+            prof!("exp_gate_up_bf16", {
+                ops::moe_expert_gate_up_shared_bf16(
+                    ctx.gpu,
+                    self.moe_expert_gate_up_shared_bf16_k,
+                    expert_input,
+                    gp,
+                    expert_gate_out,
+                    up,
+                    expert_up_out,
+                    indices_dev,
+                    sg,
+                    shared_gate_scratch,
+                    su,
+                    shared_up_scratch,
+                    inter,
+                    h,
+                    top_k,
+                    stream,
+                )
+            })?;
+            prof!("exp_silu_down_bf16", {
+                ops::moe_expert_silu_down_shared_bf16(
+                    ctx.gpu,
+                    self.moe_expert_silu_down_shared_bf16_k,
+                    expert_gate_out,
+                    expert_up_out,
+                    dp,
+                    expert_down_out,
+                    indices_dev,
+                    shared_gate_scratch,
+                    shared_up_scratch,
+                    sd,
+                    shared_out,
+                    h,
+                    inter,
+                    top_k,
+                    stream,
+                )
+            })?;
+        } else if let (Some(gp), Some(up), Some(dp), Some(sh)) = (
             &self.fp8_gate_weight_ptrs,
             &self.fp8_up_weight_ptrs,
             &self.fp8_down_weight_ptrs,
@@ -310,7 +359,7 @@ impl MoeLayer {
                 )
             })?;
 
-            if tracing::enabled!(tracing::Level::DEBUG) {
+            if tracing::enabled!(tracing::Level::DEBUG) && !ctx.graph_capture {
                 ctx.gpu.synchronize(stream)?;
                 // Dump gate/up outputs for expert slot 0
                 let mut gate_buf = vec![0u8; 16];
@@ -376,7 +425,7 @@ impl MoeLayer {
             })?;
         }
 
-        if tracing::enabled!(tracing::Level::DEBUG) {
+        if tracing::enabled!(tracing::Level::DEBUG) && !ctx.graph_capture {
             ctx.gpu.synchronize(stream)?;
             // Dump down outputs for expert slot 0
             let mut down_buf = vec![0u8; 16];
@@ -472,7 +521,7 @@ impl MoeLayer {
             }
         }
 
-        if tracing::enabled!(tracing::Level::DEBUG) {
+        if tracing::enabled!(tracing::Level::DEBUG) && !ctx.graph_capture {
             ctx.gpu.synchronize(stream)?;
             let mut buf = vec![0u8; 8];
             ctx.gpu.copy_d2h(output, &mut buf)?;

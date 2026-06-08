@@ -223,6 +223,110 @@ pub fn w8a16_gemm(
         .launch(stream)
 }
 
+/// W8A16 GEMM pipelined (M>1): bit-identical (cosine=1.0) faster rewrite of
+/// `w8a16_gemm` — same args, same numerics, ~4.6× faster on GB10/sm_121.
+///
+/// Fix-A occupancy + cp.async pipelined kernel: 128×32 tile (M×N), 256-thread
+/// block (8 warps). Geometry mirrors the validated `w8a16_microtest`
+/// `"w8a16_gemm_pipelined"` arm (PM_M_TILE=128, PM_N_TILE=32).
+///
+/// Grid: (ceil(N/32), ceil(M/128), 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn w8a16_gemm_pipelined(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: DevicePtr,
+    block_scale: DevicePtr,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 32), div_ceil(m, 128), 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight)
+        .arg_ptr(block_scale)
+        .arg_ptr(output)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}
+
+/// Per-token-per-128-K-group FP8 activation quantization. Output: A_fp8
+/// [M, K] FP8 E4M3 + a_scale [M, K/128] FP32. Matches vLLM's
+/// `per_token_group_quant_fp8`.
+///
+/// Grid: (K/128, M, 1)  Block: (128, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn per_token_group_quant_fp8(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input_bf16: DevicePtr,
+    output_fp8: DevicePtr,
+    a_scale: DevicePtr,
+    m: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    // Grid: (M, K/128, 1). Putting M on grid X (max 2^31-1) avoids the
+    // 65535 limit on grid Y for large MoE total_expanded counts.
+    KernelLaunch::new(gpu, kernel)
+        .grid([m, k / 128, 1])
+        .block([128, 1, 1])
+        .arg_ptr(input_bf16)
+        .arg_ptr(output_fp8)
+        .arg_ptr(a_scale)
+        .arg_u32(m)
+        .arg_u32(k)
+        .launch(stream)
+}
+
+/// W8A8 + FP32 epilogue GEMM with per-token activation scales and
+/// per-block weight scales — vLLM-equivalent FP8 numerics.
+///
+///   C[M, N] = bf16( Σ_g (FP8 MMA over K-group g) × a_scale[M, g] × b_scale[N/128, g] )
+///
+/// Inputs:
+///   - `a_fp8`     [M, K] FP8 E4M3
+///   - `a_scale`   [M, K/128] FP32 (from per_token_group_quant_fp8)
+///   - `b_fp8`     [N, K] FP8 E4M3
+///   - `b_scale`   [N/128, K/128] BF16 (existing checkpoint layout)
+///   - `output`    [M, N] BF16
+///
+/// Grid: (ceil(N/128), ceil(M/64), 1)  Block: (128, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn fp8_gemm_t_blockscaled(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    a_fp8: DevicePtr,
+    a_scale: DevicePtr,
+    b_fp8: DevicePtr,
+    b_scale: DevicePtr,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 128), div_ceil(m, 64), 1])
+        .block([128, 1, 1])
+        .arg_ptr(a_fp8)
+        .arg_ptr(a_scale)
+        .arg_ptr(b_fp8)
+        .arg_ptr(b_scale)
+        .arg_ptr(output)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}
+
 /// Fused gate GEMV + topK softmax for M=1 decode.
 ///
 /// Single kernel that computes `gate[num_experts] = A[K] @ B_gate[num_experts, K]`
@@ -263,20 +367,149 @@ pub fn moe_gate_topk_fused(
         .launch(stream)
 }
 
-/// FP8 grouped GEMM for sorted MoE prefill.
+/// Build the compacted (expert, m_tile, n_tile) work-list for the
+/// persistent grouped-GEMM grid. Single-block, thread-0 serial — mirrors the
+/// `moe_sort_by_expert` launch style (grid `[1,1,1]`, block `[256,1,1]`).
 ///
-/// BF16 activations × FP8 E4M3 block-scaled expert weights via pointer table.
-/// Grid: (ceil(N/64), max_m_tiles, num_experts)  Block: (128, 1, 1)
+/// `n_tiles = div_ceil(N, 64)` (PM4_N_TILE) and `m_tile = 128` (PM4_M_TILE).
+/// Writes `worklist[*total_tiles * 2]` (word0=expert, word1=(m_tile<<6)|n_tile)
+/// and `total_tiles[0]`.
+///
+/// SAME-STREAM INVARIANT: the caller MUST launch `moe_fp8_grouped_gemm` on
+/// the SAME `stream` so the kernel's read of `total_tiles`/`worklist`
+/// happens-after this write (no cross-stream event is inserted).
+#[allow(clippy::too_many_arguments)]
+pub fn moe_build_tile_worklist(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    expert_offsets: DevicePtr, // [num_experts + 1]
+    weight_ptrs: DevicePtr,    // [num_experts] → [N, K] FP8 (0 = remote)
+    worklist: DevicePtr,       // [worst_case_tiles * 2] u32 (out)
+    total_tiles: DevicePtr,    // [1] i32 (out)
+    num_experts: u32,
+    n_tiles: u32, // div_ceil(N, 64) — PM4_N_TILE
+    m_tile: u32,  // PM4_M_TILE = 128
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([1, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(expert_offsets)
+        .arg_ptr(weight_ptrs)
+        .arg_ptr(worklist)
+        .arg_ptr(total_tiles)
+        .arg_u32(num_experts)
+        .arg_u32(n_tiles)
+        .arg_u32(m_tile)
+        .launch(stream)
+}
+
+/// FP8 grouped GEMM for sorted MoE prefill — grid-compaction over a persistent
+/// 96-CTA grid. THE routed-expert FP8 prefill kernel.
+///
+/// A fixed `PM5_PERSIST_CTAS=96` 1D grid strides over the COMPACTED work-list
+/// built by `moe_build_tile_worklist`. There is NO `max_m_tiles` argument — the
+/// work-item count is read from `total_tiles` on the device.
+///
+/// `PM5_PERSIST_CTAS = 96` here is the SSOT mirror of the `#define
+/// PM5_PERSIST_CTAS 96` in `moe_fp8_grouped_gemm.cu`; the two MUST match or the
+/// device-side stride and the launched CTA count diverge.
+///
+/// SAME-STREAM INVARIANT: MUST be launched on the SAME `stream` as the
+/// preceding `moe_build_tile_worklist` (read-after-write of `total_tiles`).
+///
+/// Grid: (PM5_PERSIST_CTAS=96, 1, 1)  Block: (256, 1, 1)
 #[allow(clippy::too_many_arguments)]
 pub fn moe_fp8_grouped_gemm(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
     input: DevicePtr,            // [total_tokens, K] BF16
     weight_ptrs: DevicePtr,      // [num_experts] → [N, K] FP8
-    scale_ptrs: DevicePtr,       // [num_experts] → [N/128, K/128] BF16
+    scale_ptrs: DevicePtr,       // [num_experts] → [N/128, K/128] FP32
     output: DevicePtr,           // [total_expanded, N] BF16
     expert_offsets: DevicePtr,   // [num_experts + 1]
-    sorted_token_ids: DevicePtr, // [total_expanded]
+    sorted_token_ids: DevicePtr, // [total_expanded] or NULL
+    num_experts: u32,
+    n: u32,
+    k: u32,
+    worklist: DevicePtr,    // [*total_tiles * 2] u32 (built on the same stream)
+    total_tiles: DevicePtr, // [1] i32 (built on the same stream)
+    stream: u64,
+) -> Result<()> {
+    // SSOT: must equal `#define PM5_PERSIST_CTAS 96` in moe_fp8_grouped_gemm.cu.
+    const PM5_PERSIST_CTAS: u32 = 96;
+    KernelLaunch::new(gpu, kernel)
+        .grid([PM5_PERSIST_CTAS, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight_ptrs)
+        .arg_ptr(scale_ptrs)
+        .arg_ptr(output)
+        .arg_ptr(expert_offsets)
+        .arg_ptr(sorted_token_ids)
+        .arg_u32(num_experts)
+        .arg_u32(n)
+        .arg_u32(k)
+        .arg_ptr(worklist)
+        .arg_ptr(total_tiles)
+        .launch(stream)
+}
+
+/// W8A8 + FP32 epilogue grouped MoE GEMM (vLLM-equivalent).
+///
+/// A_fp8 must be pre-quantized via `per_token_group_quant_fp8`. Both
+/// `a_scale` (per-token, FP32) and `b_scale` (per-block, BF16) are applied
+/// in the FP32 epilogue per K=128 block.
+#[allow(clippy::too_many_arguments)]
+pub fn moe_w8a8_grouped_gemm(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    a_fp8: DevicePtr,             // [total_tokens, K] FP8 E4M3
+    a_scale: DevicePtr,           // [total_tokens, K/128] FP32
+    weight_ptrs: DevicePtr,       // [num_experts] → [N, K] FP8
+    scale_ptrs: DevicePtr,        // [num_experts] → [N/128, K/128] BF16
+    output: DevicePtr,            // [total_expanded, N] BF16
+    expert_offsets: DevicePtr,    // [num_experts + 1]
+    sorted_token_ids: DevicePtr,  // [total_expanded] or NULL
+    num_experts: u32,
+    n: u32,
+    k: u32,
+    max_m_tiles: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 64), max_m_tiles, num_experts])
+        .block([128, 1, 1])
+        .arg_ptr(a_fp8)
+        .arg_ptr(a_scale)
+        .arg_ptr(weight_ptrs)
+        .arg_ptr(scale_ptrs)
+        .arg_ptr(output)
+        .arg_ptr(expert_offsets)
+        .arg_ptr(sorted_token_ids)
+        .arg_u32(num_experts)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}
+
+/// BF16 grouped GEMM for sorted MoE prefill (FP8-dequant-on-load path).
+///
+/// BF16 activations × BF16 expert weights via pointer table. No scale.
+/// Used when expert weights have been dequanted from FP8 to BF16 at load
+/// time (ATLAS_FP8_DEQUANT_MOE_TO_BF16=1). Eliminates the per-layer 0.989
+/// cosine ceiling that comes from FP8 quantization itself.
+///
+/// Grid: (ceil(N/64), max_m_tiles, num_experts)  Block: (128, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn moe_bf16_grouped_gemm(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,            // [total_tokens, K] BF16
+    weight_ptrs: DevicePtr,      // [num_experts] → [N, K] BF16
+    output: DevicePtr,           // [total_expanded, N] BF16
+    expert_offsets: DevicePtr,   // [num_experts + 1]
+    sorted_token_ids: DevicePtr, // [total_expanded] or NULL
     num_experts: u32,
     n: u32,
     k: u32,
@@ -288,7 +521,6 @@ pub fn moe_fp8_grouped_gemm(
         .block([128, 1, 1])
         .arg_ptr(input)
         .arg_ptr(weight_ptrs)
-        .arg_ptr(scale_ptrs)
         .arg_ptr(output)
         .arg_ptr(expert_offsets)
         .arg_ptr(sorted_token_ids)
@@ -329,6 +561,36 @@ pub fn w8a16_gemm_t(
         .launch(stream)
 }
 
+/// Pipelined transposed W8A16 GEMM (kernel `w8a16_gemm_t_pipelined`): same
+/// transposed args as `w8a16_gemm_t`, ~4.2x via smem-LUT + K_STEP32 +
+/// K-contiguous smem_B + 128x32 occupancy tile.
+/// Grid: (ceil(N/32), ceil(M/128), 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn w8a16_gemm_t_pipelined(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight_t: DevicePtr,
+    block_scale_t: DevicePtr,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 32), div_ceil(m, 128), 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight_t)
+        .arg_ptr(block_scale_t)
+        .arg_ptr(output)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}
+
 /// Transpose FP8 weight matrix on GPU: `B[N,K]` → `B_t[K,N]`.
 /// Grid: (ceil(N*K/256), 1, 1)  Block: (256, 1, 1)
 pub fn transpose_fp8(
@@ -348,6 +610,31 @@ pub fn transpose_fp8(
         .arg_ptr(dst)
         .arg_u32(n)
         .arg_u32(k)
+        .launch(stream)
+}
+
+/// Widen an FP8 block-scale tensor to FP32 on the GPU.
+///
+/// `src` is `[total]` BF16 (`in_is_fp32 == false`) or FP32 (`in_is_fp32 ==
+/// true`); `dst` is `[total]` FP32. Lossless BF16→FP32 widen / straight copy.
+/// Run once at load so downstream FP8 block-scale kernels read `const float*`.
+/// Grid: (ceil(total/256), 1, 1)  Block: (256, 1, 1)
+pub fn widen_block_scale_f32(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    src: DevicePtr,
+    dst: DevicePtr,
+    total: u32,
+    in_is_fp32: bool,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(total, 256), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(src)
+        .arg_ptr(dst)
+        .arg_u32(total)
+        .arg_u32(in_is_fp32 as u32)
         .launch(stream)
 }
 

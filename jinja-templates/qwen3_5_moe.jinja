@@ -97,7 +97,9 @@
             {%- endif %}
         {%- endif %}
         {%- set reasoning_content = reasoning_content|trim %}
-        {%- if loop.index0 > ns.last_query_index %}
+        {#- F6 (2026-05-26): skip wrapper when reasoning_content is empty
+            (empty-think poisoning fix — see openai variant for context). -#}
+        {%- if loop.index0 > ns.last_query_index and reasoning_content %}
             {{- '<|im_start|>' + message.role + '\n<think>\n' + reasoning_content + '\n</think>\n\n' + content }}
         {%- else %}
             {{- '<|im_start|>' + message.role + '\n' + content }}

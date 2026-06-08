@@ -9,14 +9,6 @@ on:
 jobs:
   CLAAssistant:
     runs-on: ubuntu-latest
-    # contributor-assistant/github-action stores signatures in
-    # `signatures/version1/cla.json` on the configured branch and
-    # comments on the PR; both need write access. The default
-    # `secrets.GITHUB_TOKEN` only grants `contents: read` on
-    # `pull_request_target`, which produced "Could not retrieve
-    # repository contents. Status: 404" on the first run after the
-    # repo went public. Granting the action the minimum permissions
-    # it actually needs.
     permissions:
       contents: write
       pull-requests: write
@@ -24,14 +16,49 @@ jobs:
       statuses: write
       actions: write
     steps:
-      - name: "CLA Assistant"
+      - name: "Prepare Dynamic Signature Match"
         if: (contains(github.event.comment.body, 'recheck') || contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA')) || github.event_name == 'pull_request_target'
-        # Alpha Release
+        env:
+          # Required for the gh CLI to query the API
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          # Dynamically grab the PR number depending on the event type
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          DELIMITER=$(openssl rand -hex 8)
+          TARGET_STRING="I have read the CLA Document and I hereby sign the CLA"
+          
+          # 1. If it's a new comment dropping right now, use it immediately
+          if [[ "${{ github.event_name }}" == "issue_comment" && "$COMMENT_BODY" == *"$TARGET_STRING"* ]]; then
+            echo "SIGNATURE_TEXT<<$DELIMITER" >> $GITHUB_ENV
+            echo "$COMMENT_BODY" >> $GITHUB_ENV
+            echo "$DELIMITER" >> $GITHUB_ENV
+            exit 0
+          fi
+          
+          # 2. If it's a push/sync event, scan the PR's comment history
+          if [[ -n "$PR_NUMBER" ]]; then
+            # Query the API for all comments, filter for the target string, and grab the most recent match
+            MATCHING_COMMENT=$(gh api repos/${{ github.repository }}/issues/$PR_NUMBER/comments \
+              --jq "map(select(.body | contains(\"$TARGET_STRING\"))) | .[-1].body")
+            
+            # If a match was found (jq returns "null" if nothing matches)
+            if [[ "$MATCHING_COMMENT" != "null" && -n "$MATCHING_COMMENT" ]]; then
+              echo "SIGNATURE_TEXT<<$DELIMITER" >> $GITHUB_ENV
+              echo "$MATCHING_COMMENT" >> $GITHUB_ENV
+              echo "$DELIMITER" >> $GITHUB_ENV
+              exit 0
+            fi
+          fi
+          
+          # 3. Fallback (if no signature exists anywhere, default to the strict string so the bot fails gracefully)
+          echo "SIGNATURE_TEXT=$TARGET_STRING" >> $GITHUB_ENV
+
+      - name: "CLA Assistant"
+        if: env.SIGNATURE_TEXT != ''
         uses: contributor-assistant/github-action@v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # To store signatures in a private repository, uncomment and use a PAT
-          # PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         with:
           path-to-signatures: 'signatures/version1/cla.json'
           path-to-document: 'https://github.com/${{ github.repository }}/blob/main/CLA.md'
@@ -39,10 +66,10 @@ jobs:
           allowlist: dependabot[bot],renovate[bot],google-labs-jules[bot],claude[bot],google-labs-jules,claude
           lock-pullrequest-aftermerge: false
           create-file-commit-message: 'chore: setup CLA signatures file'
-          signed-commit-message: 'chore: $username CLA signature added'
+          signed-commit-message: 'chore: $contributorName signed the CLA in PR #$pullRequestNo'
           custom-notsigned-prcomment: |
             Thanks for the contribution. Before we can merge, please sign our [Contributor License Agreement](https://github.com/${{ github.repository }}/blob/main/CLA.md) by replying to this comment with exactly:
 
             `I have read the CLA Document and I hereby sign the CLA`
-          custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
+          custom-pr-sign-comment: ${{ env.SIGNATURE_TEXT }}
           custom-allsigned-prcomment: 'All contributors have signed the CLA. Thank you!'
