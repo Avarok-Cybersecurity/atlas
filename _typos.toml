@@ -57,6 +57,14 @@ fo = "fo"
 # `tpe` — "tokens per expert" loop variable in the MoE microtest example.
 # Not a typo of `type`.
 tpe = "tpe"
+# `thr` — "threads" abbreviation in CUDA kernel launch-config docs
+# (e.g. `grid [..], 128 thr`). Not a typo of `the`.
+thr = "thr"
+# `RECAL` — "recalibration" log/state token in fp8_calibration. Not `RECALL`.
+RECAL = "RECAL"
+# `unparseable` — valid English spelling variant used in the tool-call parser
+# (the typos default prefers `unparsable`). Keep the existing spelling.
+unparseable = "unparseable"
 
 [default.extend-identifiers]
 # Pattern compounds the checker doesn't handle via the default list.
