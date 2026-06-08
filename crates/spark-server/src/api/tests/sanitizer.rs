@@ -11,11 +11,7 @@
 
 mod sanitizer_tests {
     use super::super::super::*;
-    use crate::tool_parser::{
-    LeakMarkers,
-    Qwen3CoderParser,
-    ToolCallParser,
-};
+    use crate::tool_parser::{LeakMarkers, Qwen3CoderParser, ToolCallParser};
 
     /// F73 (2026-04-29): test wrapper that defaults the new
     /// `inside_envelope: &mut bool` parameter. Tests in this module
@@ -53,9 +49,7 @@ mod sanitizer_tests {
         // tracks what the parser actually exports.
         let markers = crate::tool_parser::MinimaxXmlParser.leak_markers();
 
-        for envelope_open in
-            &["<minimax:tool_call>", "<minimax:_call>", "<tool_call>"]
-        {
+        for envelope_open in &["<minimax:tool_call>", "<minimax:_call>", "<tool_call>"] {
             let envelope_close = match *envelope_open {
                 "<minimax:tool_call>" => "</minimax:tool_call>",
                 "<minimax:_call>" => "</minimax:_call>",
@@ -67,9 +61,8 @@ mod sanitizer_tests {
             let mut buf = String::new();
             let mut suppress = false;
             let mut env = false;
-            let out = super::sanitize_content_chunk(
-                &body, &mut buf, &mut suppress, &mut env, &markers,
-            );
+            let out =
+                super::sanitize_content_chunk(&body, &mut buf, &mut suppress, &mut env, &markers);
             // Inner content + envelope tags survive — the parser
             // downstream extracts the tool call from this stream.
             assert!(
@@ -111,10 +104,11 @@ mod sanitizer_tests {
         let mut buf = String::new();
         let mut suppress = false;
         let mut env = false;
-        let out = super::sanitize_content_chunk(
-            body, &mut buf, &mut suppress, &mut env, &markers,
+        let out = super::sanitize_content_chunk(body, &mut buf, &mut suppress, &mut env, &markers);
+        assert!(
+            out.starts_with("prefix"),
+            "non-orphan prefix emits: {out:?}"
         );
-        assert!(out.starts_with("prefix"), "non-orphan prefix emits: {out:?}");
         assert!(
             !out.contains("<invoke"),
             "stray <invoke> must still be suppressed: {out:?}"
@@ -195,9 +189,18 @@ mod sanitizer_tests {
         // Fusion: `<parameter=x>` found in the combined buffer.
         // "abc" prefix emits; body suppressed; `</parameter>` ends
         // suppression; "tail" stays buffered (too short to flush).
-        assert!(out2.starts_with("abc"), "prefix emits after fusion: {out2:?}");
-        assert!(!out2.contains("body"), "suppressed body must not leak: {out2:?}");
-        assert!(!out2.contains("<parameter="), "orphan open must not leak: {out2:?}");
+        assert!(
+            out2.starts_with("abc"),
+            "prefix emits after fusion: {out2:?}"
+        );
+        assert!(
+            !out2.contains("body"),
+            "suppressed body must not leak: {out2:?}"
+        );
+        assert!(
+            !out2.contains("<parameter="),
+            "orphan open must not leak: {out2:?}"
+        );
         assert!(!suppress, "close tag exits suppression state");
     }
 
@@ -253,12 +256,22 @@ mod sanitizer_tests {
         ];
         let content = "\n\nLet me create the Rust calculator module with the source files first.\n\n<read>\n<filePath>\n/tmp/calc-test40/src/lib.rs\n</filePath>\n<offset>\n1\n</offset>\n<limit>\n100\n</limit>\n</read>";
         let out = strip_xml_leaks_from_assistant_content(content, &tool_defs);
-        assert!(out.contains("Let me create the Rust calculator module"),
-            "prose must survive: {out:?}");
-        assert!(!out.contains("<read>"), "read leak must be stripped: {out:?}");
-        assert!(!out.contains("<filePath>"), "inner tags must be stripped: {out:?}");
-        assert!(!out.contains("/tmp/calc-test40/src/lib.rs"),
-            "leaked path must be removed: {out:?}");
+        assert!(
+            out.contains("Let me create the Rust calculator module"),
+            "prose must survive: {out:?}"
+        );
+        assert!(
+            !out.contains("<read>"),
+            "read leak must be stripped: {out:?}"
+        );
+        assert!(
+            !out.contains("<filePath>"),
+            "inner tags must be stripped: {out:?}"
+        );
+        assert!(
+            !out.contains("/tmp/calc-test40/src/lib.rs"),
+            "leaked path must be removed: {out:?}"
+        );
     }
 
     #[test]
@@ -314,12 +327,15 @@ mod sanitizer_tests {
                 },
             },
         ];
-        let content = "A <read><filePath>/a</filePath></read> B <write><filePath>/b</filePath></write> C";
+        let content =
+            "A <read><filePath>/a</filePath></read> B <write><filePath>/b</filePath></write> C";
         let out = strip_xml_leaks_from_assistant_content(content, &tool_defs);
         assert!(!out.contains("<read>"));
         assert!(!out.contains("<write>"));
-        assert!(out.contains('A') && out.contains('B') && out.contains('C'),
-            "prose between blocks must survive: {out:?}");
+        assert!(
+            out.contains('A') && out.contains('B') && out.contains('C'),
+            "prose between blocks must survive: {out:?}"
+        );
     }
 
     #[test]

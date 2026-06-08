@@ -24,7 +24,9 @@ mod watchdog_f7_tests {
         // Five copies of phrase + ~1500 chars of unique filler each =
         // ~7.5 KB total — fits in the 8 KB window but would have
         // rolled out of the previous 3 KB.
-        let filler: String = (0..1500).map(|i| (b'a' + ((i % 26) as u8)) as char).collect();
+        let filler: String = (0..1500)
+            .map(|i| (b'a' + ((i % 26) as u8)) as char)
+            .collect();
         let mut feed = String::new();
         for _ in 0..5 {
             feed.push_str(phrase);
@@ -80,18 +82,9 @@ mod watchdog_f7_tests {
 
     // ── F7 (2026-04-26): cross-turn tool-arg-path stall guard tests ──
 
-    fn make_assistant_tool_call(
-        name: &str,
-        args_json: &str,
-    ) -> crate::openai::IncomingMessage {
-        use crate::openai::{
-    IncomingMessage,
-    ParsedContent,
-};
-        use crate::tool_parser::{
-    IncomingFunction,
-    IncomingToolCall,
-};
+    fn make_assistant_tool_call(name: &str, args_json: &str) -> crate::openai::IncomingMessage {
+        use crate::openai::{IncomingMessage, ParsedContent};
+        use crate::tool_parser::{IncomingFunction, IncomingToolCall};
         IncomingMessage {
             role: "assistant".to_string(),
             content: ParsedContent::default(),
@@ -108,10 +101,7 @@ mod watchdog_f7_tests {
     }
 
     fn make_user(text: &str) -> crate::openai::IncomingMessage {
-        use crate::openai::{
-    IncomingMessage,
-    ParsedContent,
-};
+        use crate::openai::{IncomingMessage, ParsedContent};
         IncomingMessage {
             role: "user".to_string(),
             content: ParsedContent {
@@ -166,7 +156,12 @@ mod watchdog_f7_tests {
         assert!(!reminder.contains("Do NOT call any tool"));
         append_f7_reminder_to_last_user(&mut msgs, &reminder);
         let last_user = msgs.iter().rev().find(|m| m.role == "user").unwrap();
-        assert!(last_user.content.text.contains("Write(/tmp/x/Cargo.toml) × 4"));
+        assert!(
+            last_user
+                .content
+                .text
+                .contains("Write(/tmp/x/Cargo.toml) × 4")
+        );
         assert!(last_user.content.text.starts_with("now what?"));
     }
 
@@ -188,10 +183,7 @@ mod watchdog_f7_tests {
             .map(|i| {
                 make_assistant_tool_call(
                     "Write",
-                    &format!(
-                        r#"{{"file_path":"/tmp/x/Cargo.toml","content":"v{}"}}"#,
-                        i
-                    ),
+                    &format!(r#"{{"file_path":"/tmp/x/Cargo.toml","content":"v{}"}}"#, i),
                 )
             })
             .collect();
@@ -217,22 +209,10 @@ mod watchdog_f7_tests {
         // BASH_COMMAND_PREFIX_LEN. Four identical (post-F14
         // threshold of 4) trips the warn level.
         let msgs = vec![
-            make_assistant_tool_call(
-                "Bash",
-                r#"{"command":"cd /tmp/x && cargo init --name a"}"#,
-            ),
-            make_assistant_tool_call(
-                "Bash",
-                r#"{"command":"cd /tmp/x && cargo init --name a"}"#,
-            ),
-            make_assistant_tool_call(
-                "Bash",
-                r#"{"command":"cd /tmp/x && cargo init --name a"}"#,
-            ),
-            make_assistant_tool_call(
-                "Bash",
-                r#"{"command":"cd /tmp/x && cargo init --name a"}"#,
-            ),
+            make_assistant_tool_call("Bash", r#"{"command":"cd /tmp/x && cargo init --name a"}"#),
+            make_assistant_tool_call("Bash", r#"{"command":"cd /tmp/x && cargo init --name a"}"#),
+            make_assistant_tool_call("Bash", r#"{"command":"cd /tmp/x && cargo init --name a"}"#),
+            make_assistant_tool_call("Bash", r#"{"command":"cd /tmp/x && cargo init --name a"}"#),
         ];
         let buckets = collect_f7_stall_buckets(&msgs);
         assert_eq!(

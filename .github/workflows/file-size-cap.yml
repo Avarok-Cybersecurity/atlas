@@ -82,6 +82,17 @@ jobs:
             # the launch-day allow-list pending a free-function
             # `ops/{alloc,copy,launch,events}.rs` extraction.
             "crates/spark-runtime/src/metal_backend.rs"
+            # 546 LoC — single-token decode forward (`impl_a2`). Pre-existing
+            # carry-over (already over-cap on main): a compute-heavy linear
+            # kernel-launch + buffer ping-pong sequence whose order is critical
+            # for CUDA-graph capture; splitting fragments the launch order.
+            # Tracked for a later `decode/{prefill,sample}.rs` extraction.
+            "crates/spark-model/src/model/impl_a2.rs"
+            # 510 LoC — grammar tool-call compiler. Pre-existing carry-over
+            # (already over-cap on main): one cohesive XGrammar schema->GBNF
+            # compile path; marginally over and awaiting a clean rule-emitter
+            # split. Tracked under the launch-day allow-list.
+            "crates/spark-server/src/grammar/compile_tools.rs"
           )
 
           violations=0

@@ -9,11 +9,7 @@
 
 mod f28_f32_tests {
     use super::super::super::*;
-    use super::super::common::{
-    mk_assistant_with_tool_call,
-    mk_msg,
-    mk_tool_msg,
-};
+    use super::super::common::{mk_assistant_with_tool_call, mk_msg, mk_tool_msg};
 
     // ── F28-F32 tests (tool-error-forgetfulness fixes) ──
     // (mk_msg / mk_tool_msg / mk_assistant_with_tool_call hoisted to
@@ -80,9 +76,7 @@ mod f28_f32_tests {
     fn f29_extract_facts_filters_below_threshold() {
         // F36 (2026-04-26): threshold is now 2; one occurrence should
         // NOT yield a fact (transient, could be a typo or path issue).
-        let msgs = vec![
-            mk_tool_msg("c1", "[tool error]\ncargo: command not found"),
-        ];
+        let msgs = vec![mk_tool_msg("c1", "[tool error]\ncargo: command not found")];
         let facts = f29_extract_environment_facts(&msgs);
         assert!(facts.is_empty(), "got {facts:?}");
     }
@@ -146,7 +140,11 @@ mod f28_f32_tests {
         let mut msgs = vec![mk_msg("system", "you are helpful"), mk_msg("user", "hi")];
         prepend_reminder_to_system(&mut msgs, "first reminder");
         prepend_reminder_to_system(&mut msgs, "second reminder");
-        let count = msgs[0].content.text.matches("<atlas_runtime_notice>").count();
+        let count = msgs[0]
+            .content
+            .text
+            .matches("<atlas_runtime_notice>")
+            .count();
         assert_eq!(count, 1);
         assert!(msgs[0].content.text.contains("second reminder"));
         assert!(!msgs[0].content.text.contains("first reminder"));
@@ -156,7 +154,10 @@ mod f28_f32_tests {
     #[test]
     fn f31_no_anchor_no_inject() {
         let mut msgs = vec![mk_msg("user", "hi")];
-        let metrics = F23ProgressMetrics { score: -3, attempts: 10 };
+        let metrics = F23ProgressMetrics {
+            score: -3,
+            attempts: 10,
+        };
         assert!(!f31_inject_hard_refusal(&mut msgs, metrics));
     }
 
@@ -167,7 +168,10 @@ mod f28_f32_tests {
             mk_assistant_with_tool_call("toolu_1", "Bash", "{\"command\":\"x\"}"),
             mk_tool_msg("toolu_1", "[tool error]\ncargo: command not found"),
         ];
-        let metrics = F23ProgressMetrics { score: -1, attempts: 3 };
+        let metrics = F23ProgressMetrics {
+            score: -1,
+            attempts: 3,
+        };
         assert!(!f31_inject_hard_refusal(&mut msgs, metrics));
     }
 
@@ -178,7 +182,10 @@ mod f28_f32_tests {
             mk_assistant_with_tool_call("toolu_1", "Bash", "{\"command\":\"x\"}"),
             mk_tool_msg("toolu_1", "[tool error]\ncargo: command not found"),
         ];
-        let metrics = F23ProgressMetrics { score: -3, attempts: 10 };
+        let metrics = F23ProgressMetrics {
+            score: -3,
+            attempts: 10,
+        };
         assert!(f31_inject_hard_refusal(&mut msgs, metrics));
         let last = msgs.last().unwrap();
         assert_eq!(last.role, "tool");
@@ -193,14 +200,19 @@ mod f28_f32_tests {
             mk_assistant_with_tool_call("toolu_1", "Bash", "{\"command\":\"x\"}"),
             mk_tool_msg("toolu_1", "[tool error]\ncargo: command not found"),
         ];
-        let metrics = F23ProgressMetrics { score: -3, attempts: 10 };
+        let metrics = F23ProgressMetrics {
+            score: -3,
+            attempts: 10,
+        };
         assert!(f31_inject_hard_refusal(&mut msgs, metrics));
         assert!(!f31_inject_hard_refusal(&mut msgs, metrics));
         let count = msgs
             .iter()
             .filter(|m| {
                 m.role == "tool"
-                    && m.content.text.starts_with("[tool error]\n[atlas-stall-guard]")
+                    && m.content
+                        .text
+                        .starts_with("[tool error]\n[atlas-stall-guard]")
             })
             .count();
         assert_eq!(count, 1);
@@ -262,7 +274,9 @@ mod f28_f32_tests {
     #[test]
     fn f37_classify_invalid_arg() {
         assert_eq!(
-            f37_classify_failure("Error: You must read file /tmp/f.toml before overwriting it. Use the Read tool first"),
+            f37_classify_failure(
+                "Error: You must read file /tmp/f.toml before overwriting it. Use the Read tool first"
+            ),
             Some(F37FailureClass::InvalidArgument)
         );
         assert_eq!(
