@@ -2340,3 +2340,61 @@ Two independent allocations; the 1206 MB reported with `--ssm-cache-slots 0` is
 | P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** | YaRN `yarn.rs`; `cache_skip_mla.rs` → `mla_fused_prefill` (absorbed HDIM=320); explicit BF16 vec in `kv_dtypes.rs`; flat-grid `mla_fused_prefill.cu`. #28 documentation error corrected above. |
 | P2 Nemotron tool calling | **CONFIRMED FIXED** | Four `MODEL.toml` flags; jinja `else` branch (pre-closed think) for tool-active turns; `skip_template_tools=true` + XML format gate. |
 | P3 SSM cache slots | **CONFIRMED CORRECT** | `--ssm-cache-slots 0` disables only `SsmSnapshotPool`; 1206 MB `SsmStatePool` is independent, correct behavior. |
+
+---
+
+## Investigation #30 — 2026-06-08 (independent audit of spec_ssm HEAD)
+
+Direct read of all files named in the investigation spec against `spec_ssm` HEAD.
+No new bugs found. All three fixes confirmed present and correct.
+
+### P1 — Mistral Small 4 MLA prefill
+
+**Files read**: `cache_skip_mla.rs`, `paged_mla.rs`, `yarn.rs`, `mla_absorbed.cu`,
+`kv_dtypes.rs`, `decode.rs` (dispatch stub), `mistral-small-4/MODEL.toml`.
+
+| Check | Result |
+|-------|--------|
+| `yarn.rs`: `find_correction_dim` in dim-index space with `beta_fast=32`, `beta_slow=1` | ✓ `low=7, high=15`; linear ramp; `inv_freq = interp*ramp + extrap*(1-ramp)` |
+| `cache_skip_mla.rs:267`: `inv_sqrt_d_absorbed = 1/√(kv_lora+mla_rope=320)` | ✓ correct absorbed scale; `prefill_attention_64` removed |
+| `cache_skip_mla.rs:274`: dispatches `mla_fused_prefill_k` with `ensure!` guard | ✓ hard error if kernel not loaded |
+| `mla_absorbed.cu` GEMV kernels: `mla_batched_gemv`, `mla_cache_assemble_batched` | ✓ grid scales with `num_tokens`/`num_heads`; no fixed seq_len limit |
+| `kv_dtypes.rs`: `if kv_dtype==Bf16 { return vec![] }` short-circuits to uniform BF16 | ✓ `--kv-high-precision-layers auto` has no effect when base dtype is BF16 |
+| `MODEL.toml`: `default_kv_dtype = "bf16"` model-side guard | ✓ overrides FP8 server default |
+
+**Root causes for >1K gibberish on original `main`** (both now fixed on `spec_ssm`):
+1. YaRN `inv_freq` corruption (wrong formula for pairs j≈7–15) → corrupted RoPE angles.
+2. `cache_skip_mla.rs` used `prefill_attention_64` (HDIM=256 compile-time, stride 128 aliased `K[k+1]`) with scale `1/√128` instead of `1/√320` → wrong attention scores at all lengths, catastrophic above ~1K.
+
+### P2 — Nemotron Super 120B tool calling
+
+**Files read**: `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`, `nemotron_h.jinja`,
+`tool_parser.rs`.
+
+`MODEL.toml [behavior]`: `thinking_in_tools=false` (line 51), `disable_tool_steering=true`
+(line 58), `tool_call_parser="bare_json"` (line 67), `skip_template_tools=true` (line 80).
+All four flags confirmed present. ✓
+
+`nemotron_h.jinja` generation-prompt block: `tools and not disable_tool_steering` is false
+→ falls through to `elif enable_thinking` which is also false (because `thinking_in_tools=false`
+suppresses it for tool turns) → `else` branch emits `<|im_start|>assistant\n<think></think>\n`.
+No `<tool_call>` steering prefix. ✓
+
+`tool_parser.rs`: `bare_json` parser expects top-level JSON `{"name":...,"arguments":{...}}`;
+does not prepend a steering prefix; compatible with the `else`-branch template output. ✓
+
+### P3 — SSM cache slots
+
+`build.rs:71` passes `args.ssm_cache_slots` to `factory::build_model`. `impl_a1.rs:134`
+constructs `SsmStatePool::new(&config, max_batch_size, ...)` — independent of `ssm_cache_slots`.
+`impl_a1.rs:143` constructs `SsmSnapshotPool::new(ssm_cache_slots, ...)` — zero disables
+Marconi LRU snapshots. The 1206 MB `SsmStatePool` is sized by `--max-batch-size` (default 8).
+Correct behavior; no code change needed. ✓
+
+### Summary
+
+| Priority | Status |
+|----------|--------|
+| P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** — two independent fixes: YaRN `yarn.rs` + `cache_skip_mla.rs` → `mla_fused_prefill` (absorbed HDIM=320, scale `1/√320`) |
+| P2 Nemotron tool calling | **CONFIRMED FIXED** — four `MODEL.toml` flags; jinja `else`-branch (no steering prefix); `bare_json` parser |
+| P3 SSM cache slots | **CONFIRMED CORRECT** — `--ssm-cache-slots 0` disables only `SsmSnapshotPool`; use `--max-batch-size 1` to reduce `SsmStatePool` |
