@@ -1840,3 +1840,108 @@ Additional coverage in this session:
   correctness). The 1206 MB figure in section 1 is `SsmStatePool`, not `SsmSnapshotPool`. ✓
 
 **No new bugs found. No code changes in this session.**
+
+---
+
+## Investigation #24 — 2026-06-08
+
+Full independent audit of all three priorities against spec_ssm HEAD, including direct git
+commit-history trace. All findings from prior investigations confirmed. No new bugs found.
+
+### Method
+
+Read every source file named in the task spec from scratch; cross-checked against `git log`
+to trace when each fix was introduced. This session is the first to explicitly verify the
+commit ancestry rather than just reading HEAD.
+
+### P1 — Mistral Small 4 MLA prefill: all four fixes traced to their commits
+
+**Commit provenance** (oldest to newest on spec_ssm):
+
+| Commit | Change |
+|--------|--------|
+| (pre-history) | `yarn.rs`: correct YaRN `find_correction_dim` in dimension-index space |
+| `427104f` | `kv_dtypes.rs`: return `vec![Bf16; N]` (not `vec![]`) when base dtype is BF16 |
+| `a127885` | `mla_fused_prefill.cu` + `prefill_attn_a.rs`: flat `(nq*seq_len,1,1)` grid |
+| `84b0d8d` | `mla_fused_prefill.cu`: remove dead `acc_latent[2]` array; collapse to scalar |
+| (pre-history) | `cache_skip_mla.rs`: rewrite to `mla_fused_prefill` absorbed path (was `prefill_attention_64`) |
+
+**Files read and verified**:
+
+- `yarn.rs`: `find_correction_dim(beta_fast=32) → low=7`, `find_correction_dim(beta_slow=1) → high=15`
+  for Mistral params (theta=1e7, dim=64, factor=128, max_pos=8192). Linear ramp `clamp((j-low)/
+  (high-low), 0, 1)`. Matches YaRN paper formula exactly. ✓
+
+- `kv_dtypes.rs` (line 20–22): `if kv_dtype == KvCacheDtype::Bf16 { return vec![Bf16; N]; }`.
+  Commit `427104f` introduced this fix because the old code (`if high_precision_layers == 0 ||
+  kv_dtype == Bf16 { return vec![]; }`) returned an empty vec that caused callers with
+  `unwrap_or(Fp8)` (e.g. `phase_assemble.rs`) to silently FP8-quantize every MLA KV latent.
+  FP8 quantization of the 320-dim compressed latent accumulated error above ~600 tokens → gibberish.
+  The spec_ssm fix explicitly returns `vec![Bf16; num_attention_layers]`. ✓
+
+- `cache_skip_mla.rs`: `mla_fused_prefill` (absorbed HDIM=320) dispatched with mandatory
+  `anyhow::ensure!(mla_fused_prefill_k.0 != 0)`. `inv_sqrt_d_absorbed = 1/sqrt(320)`. Old
+  `prefill_attention_64` (HDIM=256, wrong scale `1/sqrt(128)`) fully removed. ✓
+
+- `mla_fused_prefill.cu`: flat grid `(nq*seq_len, 1, 1)`. Kernel decodes
+  `head = blockIdx.x / seq_len`, `q_pos = blockIdx.x % seq_len`. For nq=32, seq_len=65536:
+  gridDim.x = 2,097,152 << 2^31. Causal mask `kv_end = min(q_pos+1, seq_len)` correct.
+  `smem_q[320]` + `smem_dot[8]` + `smem_latent[256]` = 2,336 bytes/block. `acc_latent` is a
+  scalar float register. Online softmax with three `__syncthreads()` per KV iteration. ✓
+
+- `paged_mla.rs`: dead code for current MLA models (scheduler single-chunk gate). First-chunk
+  path correctly uses `effective_attn_scale(hd=128)` = `1/sqrt(128)` for unabsorbed form; absorbed
+  multi-chunk path at line 472 uses `1/sqrt(mla_cache_dim=320)`. Neither path is reachable. ✓
+
+- `mla_absorbed.cu`: all helper kernels use `unsigned long long` offsets; grid dims scale linearly
+  with `num_tokens`. No fixed tile limits or shared-memory overflow at >1K tokens. ✓
+
+- `mla_prefill_attn.cu` (`mla_prefill_attn_320`): loaded into `prefill_attn_mla320_k` at init
+  but has zero call sites in the codebase. Dead kernel; no production impact. ✓
+
+**No new bugs found in P1.**
+
+### P2 — Nemotron Super 120B tool calling: commit b5f6836 verified
+
+- `nemotron-super-120b-a12b/MODEL.toml`: `disable_tool_steering=true` (line 58),
+  `tool_call_parser="bare_json"` (line 67), `skip_template_tools=true` (line 80),
+  `thinking_in_tools=false` (line 51). All four flags confirmed present. ✓
+
+- `nemotron_h.jinja` (line 93–95): `{%- if not disable_tool_steering %}` gates the
+  XML format instructions block. With `disable_tool_steering=true`, the XML paragraph
+  ("If you choose to call a function ONLY reply in the following format...") is not emitted.
+  Commit `b5f6836` introduced this gate. ✓
+
+- `nemotron_h.jinja` (lines 203–218): three-branch generation prompt for tool-active turns:
+  branch 1 (`tools and not disable_tool_steering`) → false (skipped); branch 2
+  (`elif enable_thinking`) → false because `thinking_in_tools=false`; branch 3 (`else`) →
+  emits `<|im_start|>assistant\n<think></think>\n`. Model generates bare JSON immediately. ✓
+
+- `tool_parser.rs`: `"bare_json"` → `BareJsonParser`. `suppresses_jinja_tools()` returns `true`,
+  causing `template.rs` to pass `jinja_tools=None`. XGrammar enforces `{"name":...,"arguments":{...}}`
+  schema from token 1. ✓
+
+**No new bugs found in P2.**
+
+### P3 — SSM cache slots: two-pool independence confirmed
+
+- `SsmStatePool::new(&config, max_batch_size, ...)` at `impl_a1.rs:134`: live recurrent states.
+  Sized by `--max-batch-size` (default 8 → 1206 MB for Qwen3.5-122B's 36 SSM layers). Completely
+  independent of `ssm_cache_slots`. ✓
+
+- `SsmSnapshotPool::new(ssm_cache_slots, ...)` at `impl_a1.rs:143`: Marconi prefix-cache
+  snapshots. When `--ssm-cache-slots 0`, zero snapshot slots are allocated. Small Phase-C
+  decode-rollback ring (<1 MB) is still allocated for SSM models; this is intentional. ✓
+
+- Propagation chain: `cli.rs:279` → `build.rs:71` → `factory/build.rs:41` →
+  `impl_a1.rs:143`. Direct pass-through; no intermediate transformation. ✓
+
+**No bugs. `--ssm-cache-slots 0` disables only `SsmSnapshotPool`. Behavior is correct.**
+
+### Summary
+
+| Priority | Status | This session's new contribution |
+|----------|--------|---------------------------------|
+| P1 MLA prefill (Mistral Small 4) | **CONFIRMED FIXED** | Commit ancestry traced: `427104f` (BF16 dtype), `a127885` (flat grid), `84b0d8d` (acc_latent scalar), `cache_skip_mla.rs` rewrite. Four independent fixes jointly eliminate the >1K gibberish. |
+| P2 Nemotron tool calling | **CONFIRMED FIXED** | `b5f6836` jinja XML gate confirmed. Three-branch generation prompt verified: `else` branch (pre-closed think) fires for tool-active turns. |
+| P3 SSM cache slots | **CONFIRMED CORRECT** | Two-pool independence re-verified. Phase-C decode-rollback ring noted as small, intentional, independent of both `ssm_cache_slots` and `max_batch_size`. |
