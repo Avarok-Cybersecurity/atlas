@@ -514,8 +514,29 @@ pub enum StartPrefillResult {
 ///
 /// Token IDs are Qwen3.6 byte-level BPE (verified via /tokenize 2026-05-25):
 ///   27 = `<`, 28 = `=`, 29 = `>`, 510 = `</`, 15704 = `parameter`.
+
+/// Cap on tool-call ENVELOPE tokens (everything inside `<tool_call>…</tool_call>`
+/// that is NOT a parameter-value body). Catches a model that opens `<tool_call>`
+/// and never reaches `</tool_call>` — it would otherwise burn to max_tokens.
+const MAX_TOOL_BODY_TOKENS: u32 = 1024;
+
+/// Pure decision core for the envelope-stuck guard (CC6, 2026-06-07).
+/// Tokens of a parameter VALUE (`inside_parameter_body`) are exempt — a
+/// legitimately large single-file Write must stream without tripping the cap.
+/// Only envelope tokens (`<parameter=KEY>` openers, inter-parameter junk, any
+/// non-value token) advance the streak. Pure over scalars so it is unit-tested
+/// directly, mirroring `rollback_tests.rs`'s pure-core approach (no `ActiveSeq`
+/// fixture needed). Returns `(new_streak, exceeded_cap)`.
+fn advance_envelope_streak(inside_parameter_body: bool, streak: u32) -> (u32, bool) {
+    if inside_parameter_body {
+        (streak, false)
+    } else {
+        let s = streak.saturating_add(1);
+        (s, s > MAX_TOOL_BODY_TOKENS)
+    }
+}
+
 pub fn update_tool_param_state(a: &mut ActiveSeq, tok: u32) {
-    const MAX_TOOL_BODY_TOKENS: u32 = 1024;
     if a.inside_thinking {
         return;
     }
@@ -534,11 +555,20 @@ pub fn update_tool_param_state(a: &mut ActiveSeq, tok: u32) {
     if !a.inside_tool_body {
         return;
     }
-    a.tool_body_streak_tokens = a.tool_body_streak_tokens.saturating_add(1);
-    if a.tool_body_streak_tokens > MAX_TOOL_BODY_TOKENS {
+    // CC6 (2026-06-07): count ONLY envelope tokens — tokens of a
+    // `<parameter=…>` VALUE (the file content of a `write` call) are exempt,
+    // so a legitimately large single-file Write streams without tripping the
+    // cap. The never-closing-envelope runaway still accumulates here (openers,
+    // inter-parameter junk, any token emitted while `inside_parameter_body ==
+    // false` still counts). Resets on tool open/close (above) and `</parameter>`
+    // exit (below) are unchanged.
+    let (streak, exceeded) =
+        advance_envelope_streak(a.inside_parameter_body, a.tool_body_streak_tokens);
+    a.tool_body_streak_tokens = streak;
+    if exceeded {
         tracing::warn!(
             streak = a.tool_body_streak_tokens,
-            "Stuck in tool body for {MAX_TOOL_BODY_TOKENS}+ tokens with no </tool_call>; ending response (model never closed the envelope — would otherwise burn to max_tokens). Sanitizer will salvage what it can."
+            "Stuck in tool-call ENVELOPE for {MAX_TOOL_BODY_TOKENS}+ tokens with no </tool_call> (excludes parameter-value content); ending response (model never closed the envelope — would otherwise burn to max_tokens). Sanitizer will salvage what it can."
         );
         a.finished = true;
     }
@@ -612,3 +642,55 @@ pub fn update_tool_param_state(a: &mut ActiveSeq, tok: u32) {
 // constructor; building a test instance requires more boilerplate
 // than the state machine itself. Live-verification post-deploy is via
 // the A1 rep-penalty toggle / B1 margin-detector behaviour.
+
+#[cfg(test)]
+mod cc6_envelope_streak_tests {
+    //! CC6 (2026-06-07): the envelope-stuck guard must NOT truncate a large
+    //! legitimate file write (parameter-value content), while STILL catching a
+    //! `<tool_call>` that never closes. Tested on the pure `advance_envelope_streak`
+    //! core (mirrors `rollback_tests.rs` — no `ActiveSeq` fixture required).
+    use super::{MAX_TOOL_BODY_TOKENS, advance_envelope_streak};
+
+    #[test]
+    fn parameter_value_content_is_exempt_at_any_size() {
+        // Simulate a ~6000-token file content streaming inside <parameter=content>.
+        let mut streak = 0u32;
+        for _ in 0..6000 {
+            let (s, exceeded) = advance_envelope_streak(true, streak);
+            streak = s;
+            assert!(!exceeded, "parameter-value content must never trip the envelope cap");
+        }
+        assert_eq!(streak, 0, "value content must not advance the envelope streak");
+    }
+
+    #[test]
+    fn never_closing_envelope_still_trips_cap() {
+        // True runaway: envelope tokens (NOT inside a parameter value) past the cap.
+        let mut streak = 0u32;
+        let mut tripped = false;
+        for _ in 0..(MAX_TOOL_BODY_TOKENS + 5) {
+            let (s, exceeded) = advance_envelope_streak(false, streak);
+            streak = s;
+            if exceeded {
+                tripped = true;
+                break;
+            }
+        }
+        assert!(tripped, "a never-closing envelope emitting >cap non-value tokens must trip");
+        assert_eq!(streak, MAX_TOOL_BODY_TOKENS + 1, "fires exactly one token past the cap");
+    }
+
+    #[test]
+    fn exact_cap_boundary() {
+        assert_eq!(advance_envelope_streak(false, MAX_TOOL_BODY_TOKENS - 1), (MAX_TOOL_BODY_TOKENS, false));
+        assert_eq!(advance_envelope_streak(false, MAX_TOOL_BODY_TOKENS), (MAX_TOOL_BODY_TOKENS + 1, true));
+    }
+
+    #[test]
+    fn saturates_without_panic() {
+        // Envelope streak at u32::MAX must not panic (saturating_add) and stays tripped.
+        let (s, exceeded) = advance_envelope_streak(false, u32::MAX);
+        assert_eq!(s, u32::MAX);
+        assert!(exceeded);
+    }
+}

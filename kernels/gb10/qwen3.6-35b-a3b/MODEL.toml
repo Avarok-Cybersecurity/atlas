@@ -263,10 +263,20 @@ max_inter_tool_prose = 1024
 # tool-active requests. Backstops the grammar-legal-but-never-closing
 # tool-value runaway (a garbled/merged BPE `</parameter>` close leaves
 # the value rule unterminated → burns to max_tokens → 360s opencode
-# timeout). 1536 ends any runaway at ~50s instead of ~257s, returning
-# the turn budget to the agent. Never caps plain chat (runtime gate also
-# requires an attached grammar). In-code default is 100_000 (no-op).
-max_post_think_content_tokens = 1536
+# timeout). Ends any runaway well before max_tokens, returning the turn
+# budget to the agent. Never caps plain chat (runtime gate also requires
+# an attached grammar). In-code default is 100_000 (no-op).
+#
+# CC6 (2026-06-07): raised 1536 → 8192. This counter increments for EVERY
+# post-`</think>` token including a `<parameter=content>` VALUE, and is
+# cumulative across the whole turn — so 1536 truncated Claude Code's single
+# large file writes (a whole src/main.rs + #[tokio::test] blocks in one Write
+# ≈ 2000-6000 content tokens) mid-statement, breaking the build. 8192 gives a
+# ~6000-token file plus surrounding agentic narrative room in one turn. A true
+# runaway is still bounded: the tool-call ENVELOPE streak (MAX_TOOL_BODY_TOKENS),
+# the content-loop / fuzzy-repeat / inter-tool-prose watchdogs (fire OUTSIDE the
+# tool body), and the ultimate a.remaining==0 / max_tokens stop all remain active.
+max_post_think_content_tokens = 8192
 # Default num_drafts for speculative decoding (K = num_drafts + 1).
 # Benchmarked 2026-04-10 on GB10: K=2 (1 draft) yields 117.8 tok/s vs
 # K=3 (2 drafts) at 82.4 tok/s — 43% faster. The MoE verify overhead
