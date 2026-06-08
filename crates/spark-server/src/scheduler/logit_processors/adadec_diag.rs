@@ -121,7 +121,7 @@ fn top_k(logits: &[f32], k: usize) -> Vec<(u32, f32)> {
 
 /// Public entry point usable from the main decode path
 /// (`decode_logits_seq::process_seq_logits`) which applies its stages
-/// INLINE rather than via [`run_pipeline`]. No-op when the env var is
+/// INLINE rather than via `run_pipeline`. No-op when the env var is
 /// unset; otherwise writes one JSONL record per call.
 pub fn log_step(logits: &[f32], seq: &ActiveSeq, path: &'static str) {
     let Some(mtx) = appender() else {

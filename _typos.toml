@@ -51,6 +51,12 @@ mis = "mis"
 # `abd` — a test-pattern token in the xgrammar FSM tests (`"abc|abd"`,
 # upstream test_fsm.cc FunctionTest7 alternation). Not a typo.
 abd = "abd"
+# `fo` — "forward-output" kernel-handle abbreviation in the GDN FLA example
+# (`k_fo` = gated_delta_rule_chunk_fwd_o handle). Not a typo of `for`/`of`.
+fo = "fo"
+# `tpe` — "tokens per expert" loop variable in the MoE microtest example.
+# Not a typo of `type`.
+tpe = "tpe"
 
 [default.extend-identifiers]
 # Pattern compounds the checker doesn't handle via the default list.
@@ -65,4 +71,7 @@ extend-exclude = [
     "target/",
     "book/output/",
     "tests/all_models_results*/",
+    # Local dev/benchmark scripts (not shipped); abbreviated local var names
+    # like `ND` (numdrift path) read as typos but aren't user-facing.
+    "bench/",
 ]

@@ -9,7 +9,7 @@
 //! it into eight per-stage [`LogitsProcessor`] impls plus a thin
 //! pipeline driver. Stage order matches the pre-refactor monolith;
 //! semantics are byte-identical (verified via the integration tests
-//! in [`pipeline_tests`]).
+//! in `pipeline_tests`).
 //!
 //! ## Stage order
 //!
@@ -109,7 +109,7 @@ pub trait LogitsProcessor: Send + Sync {
 ///
 /// The post-pipeline AdaDec diagnostic is logged with the `"verify"`
 /// path label (this is the MTP/verify entry point). The non-MTP decode
-/// path uses [`run_pipeline_with_path`] with `"decode"` so its
+/// path uses `run_pipeline_with_path` with `"decode"` so its
 /// `ATLAS_ADADEC_DIAGNOSTIC` records keep their pre-unification label.
 pub fn run_pipeline(logits: &mut [f32], seq: &mut ActiveSeq, ctx: &LogitsContext) -> Option<u32> {
     run_pipeline_with_path(logits, seq, ctx, "verify")

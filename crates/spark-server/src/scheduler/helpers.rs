@@ -633,7 +633,7 @@ pub fn detect_content_token_loop_normalized_with(
 /// in the last 280 tokens — including OLD patterns the model has
 /// already moved past. Manifests as false-positive cutoffs on
 /// numbered lists ("Step 1: Step 2: Step 3: Verify Cargo.toml" has
-/// period-2 in the [Step,N] tail BEFORE the prose continuation, so
+/// period-2 in the `[Step,N]` tail BEFORE the prose continuation, so
 /// Atlas would fire even though the model is no longer looping).
 ///
 /// **vLLM's algorithm**: take the LAST `pattern_len` tokens as a fixed
