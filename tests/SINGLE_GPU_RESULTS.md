@@ -536,3 +536,73 @@ The 320-dim absorbed kernel is not reachable from the single-sequence prefill pa
 no seq_len limit or tile-boundary issue applies there.
 
 **Status**: all fixes verified at kernel source level; no new issues found.
+
+---
+
+## Codebase Verification — 2026-06-09 (fresh independent investigation)
+
+Full independent source audit of all three priorities against the current `spec_ssm` branch
+(`0da1d94`). All prior fixes confirmed in place. One important **documentation correction**
+identified: all June 7–9 audit entries incorrectly described `kv_dtypes.rs` as "returns empty
+vec → uniform BF16." The code (since commit `427104f`, 2026-05-18) has never returned empty vec
+for the BF16 case; that audit note was wrong. Details below.
+
+### P1 — Mistral Small 4 MLA prefill (seq_len > 1000)
+
+All fixes verified by direct source read:
+
+| File | Finding |
+|------|---------|
+| `yarn.rs` | `find_correction_dim` in dimension-index space; `low≈7`, `high≈15`; correct YaRN ramp |
+| `paged_mla.rs:277` | `1.0f32 / (mla_cache_dim as f32).sqrt()` = `1/sqrt(320)` — scale bug fixed |
+| `cache_skip_mla.rs:267` | `1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` = `1/sqrt(320)` — correct |
+| `attention_forward_mla.rs:377` | `1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` = `1/sqrt(320)` — consistent |
+| `MODEL.toml:49` | `default_kv_dtype = "bf16"` — model-side BF16 guard present |
+| `main.rs` | No MLA-specific logic; KV dtype handling is entirely in `serve_phases/kv_cache.rs` |
+| `mla_absorbed.cu` | All kernels use stride loops over `num_tokens`; no hard seq_len limit |
+
+**kv_dtypes.rs documentation correction**: Every prior audit in this document (June 7–9) stated
+"`build_layer_kv_dtypes(BF16, …)` returns empty vec → uniform BF16." This was incorrect.
+Commit `427104f` (2026-05-18) changed the function to return
+`vec![KvCacheDtype::Bf16; num_attention_layers]` when `kv_dtype == Bf16`, with the explicit
+comment: *"returning an empty vec would cause callers that fall back to `unwrap_or(Fp8)` to
+silently use FP8 instead."* The old empty-vec behavior was the actual root-cause mechanism
+for FP8 injection into MLA KV latents — the new full-BF16-vector return is the real fix.
+`test_build_layer_kv_dtypes_bf16_all_layers` (added in the same commit) verifies this.
+
+**`--kv-high-precision-layers auto` with BF16 KV cache** — trace through current code:
+- `serve_phases/kv_cache.rs:233`: `"auto" => 2` → `kv_hp_layers = 2`
+- `build_layer_kv_dtypes(Bf16, 36, 2)`: BF16 guard at line 20 fires first →
+  returns `vec![Bf16; 36]` regardless of `kv_hp_layers`
+- All 36 attention layers receive explicit BF16; no FP8 injection possible
+
+**All four MLA attention paths now use `1/sqrt(320)`.** Prefill/decode scale mismatch
+(the bug fixed in `67f9616`) is confirmed resolved. No remaining scale inconsistencies.
+
+### P2 — Nemotron Super 120B tool calling
+
+Re-confirmed:
+- `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`: `disable_tool_steering = true`,
+  `tool_call_parser = "bare_json"`, `thinking_in_tools = false` — all present
+- `nemotron_h.jinja:206`: `{%- if tools and not disable_tool_steering %}` gates the
+  `<tool_call>\n` steering prefix; with flag set, model enters `enable_thinking` branch
+- `tool_parser.rs`: `ToolCallFormat::BareJson` → `BareJsonParser` dispatched correctly;
+  `suppresses_jinja_tools()` returns `true` to prevent conflicting template-side JSON blocks
+
+No new issues.
+
+### P3 — Qwen3.5-122B SSM cache slots
+
+Re-confirmed:
+- `cli.rs:272`: `--ssm-cache-slots` default `16`; `ssm_cache_slots: usize`
+- `impl_a1.rs:134`: `SsmStatePool::new(&config, max_batch_size, …)` — sized by batch
+- `impl_a1.rs:143`: `SsmSnapshotPool::new(ssm_cache_slots, …)` — sized by CLI flag
+- CLI propagation: `cli.rs` → `build.rs:71` → `factory/build.rs:398` → `TransformerModel::new`
+  → `impl_a1.rs` → `SsmSnapshotPool::new(ssm_cache_slots)` ✓
+- `SsmStatePool` (1206 MB at default batch=8) is separate; sized by `max_batch_size`, not
+  `ssm_cache_slots`. `--ssm-cache-slots 0` zeros only the Marconi snapshot budget. Correct.
+
+No new issues.
+
+**Overall status**: codebase is clean. All documented fixes are in place. The only change
+from prior audit entries is the documentation correction for `kv_dtypes.rs` above.
