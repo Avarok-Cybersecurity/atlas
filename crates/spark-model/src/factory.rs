@@ -89,6 +89,7 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
 }
 
 mod build;
+mod lm_head_setup;
 mod m2_setup;
 
 pub use build::build_model;

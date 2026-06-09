@@ -126,18 +126,18 @@ impl PagedKvCache {
         stream: u64,
     ) -> anyhow::Result<()> {
         for layer in &self.layers {
-            let k_offset = block_idx as usize * layer.block_stride;
-            let v_offset = block_idx as usize * layer.block_stride;
+            let k_offset = block_idx as usize * layer.k_block_stride;
+            let v_offset = block_idx as usize * layer.v_block_stride;
             gpu.memset_async(
                 layer.k_pool.offset(k_offset),
                 0xFF,
-                layer.block_stride,
+                layer.k_block_stride,
                 stream,
             )?;
             gpu.memset_async(
                 layer.v_pool.offset(v_offset),
                 0xFF,
-                layer.block_stride,
+                layer.v_block_stride,
                 stream,
             )?;
         }
@@ -270,7 +270,8 @@ impl PagedKvCache {
                 }
                 continue;
             }
-            let nbytes = layer.block_stride;
+            // BF16-only probe: K and V strides are equal for symmetric dtypes.
+            let nbytes = layer.k_block_stride;
             for (rname, rblocks) in &regions {
                 let (mut k_sum, mut k_ssq, mut k_sabs) = (0f64, 0f64, 0f64);
                 let (mut v_sum, mut v_ssq, mut v_sabs) = (0f64, 0f64, 0f64);
@@ -319,7 +320,8 @@ impl PagedKvCache {
         if layer.dtype != super::KvCacheDtype::Bf16 {
             return;
         }
-        let nbytes = layer.block_stride;
+        // BF16-only probe: K and V strides are equal for symmetric dtypes.
+        let nbytes = layer.k_block_stride;
         for (li, &blk) in blocks.iter().enumerate() {
             let mut kb = vec![0u8; nbytes];
             let mut vb = vec![0u8; nbytes];
