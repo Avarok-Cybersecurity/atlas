@@ -377,3 +377,76 @@ pub fn sample_token_with_grammar(
         },
     ))
 }
+
+/// Sample the FIRST generated token after prefill, applying the grammar
+/// constraint when one is active.
+///
+/// `#131`: the very first decode token is produced from the prefill's final
+/// logits in [`crate::scheduler::prefill_b_step`], OUTSIDE the per-step
+/// `process_seq_logits` / `emit_step` decode loop. The plain [`sample_token`]
+/// used there does NOT mask against the grammar, so the model's first token is
+/// free — under a `json_schema` (or any) grammar it emits a leading prose token
+/// (e.g. `Here` / the schema `name`) BEFORE the grammar's opening `{`, which
+/// breaks strict parsing and bleeds prose into the first string value. The
+/// per-step `accept_token` in `emit_step` also only covers tokens `2..N`, so
+/// the matcher would still sit at its start state when token 2 decodes.
+///
+/// This helper closes both gaps for the first token: it masks the logits with
+/// the grammar bitmask (forcing a grammar-legal first token — leading
+/// whitespace or `{`) and then advances the matcher with the accepted token,
+/// exactly mirroring the mask-then-`accept_token` order the decode loop uses
+/// for every subsequent token. With no grammar it is byte-identical to
+/// [`sample_token`] (PCND: no behavior change on the non-grammar path).
+///
+/// Penalties are neutral here (empty history on the first token makes every
+/// penalty a no-op), matching the existing non-grammar first-token contract.
+pub fn sample_first_token(
+    model: &dyn Model,
+    logits: DevicePtr,
+    temperature: f32,
+    top_k: u32,
+    top_p: f32,
+    suppress_ids: &[u32],
+    grammar_state: Option<&mut GrammarState>,
+) -> Result<u32> {
+    let Some(gs) = grammar_state else {
+        return sample_token(model, logits, temperature, top_k, top_p, suppress_ids);
+    };
+    let neutral = SamplingParams {
+        temperature,
+        top_k,
+        top_p,
+        top_n_sigma: 0.0,
+        min_p: 0.0,
+        logit_bias: Vec::new(),
+        repetition_penalty: 1.0,
+        presence_penalty: 0.0,
+        frequency_penalty: 0.0,
+        repetition_penalty_window: 0,
+        lz_penalty: 0.0,
+        dry_multiplier: 0.0,
+        dry_base: DEFAULT_DRY_BASE,
+        dry_allowed_length: DEFAULT_DRY_ALLOWED_LENGTH,
+        dry_sequence_breakers: Vec::new(),
+        max_tokens: 0,
+        stop_token_ids: Vec::new(),
+        seed: None,
+    };
+    let tok = sample_token_with_grammar(
+        model,
+        logits,
+        temperature,
+        top_k,
+        top_p,
+        suppress_ids,
+        Some(gs),
+        &neutral,
+        &[],
+    )?;
+    // Advance the matcher past the first token (the emit_step accept_token
+    // only runs for tokens 2..N). A grammar-disallowed first token here would
+    // indicate the mask was not applied — keep going rather than abort; the
+    // emit_step disengage path handles any later desync gracefully.
+    gs.accept_token(tok);
+    Ok(tok)
+}

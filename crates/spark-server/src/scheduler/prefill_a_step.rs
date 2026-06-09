@@ -59,7 +59,7 @@ pub fn start_chunked_prefill(
     let req_top_logprobs = req.top_logprobs();
     let req_timeout_at = req.timeout_at();
     let grammar_spec = req.take_grammar_spec();
-    let grammar_state = compile_grammar_state(grammar_engine, &grammar_spec, eos_tokens);
+    let mut grammar_state = compile_grammar_state(grammar_engine, &grammar_spec, eos_tokens);
     let (prompt_tokens, max_tokens, mut sink, image_pixels, temperature, cancel_flag) = match req {
         InferenceRequest::Streaming {
             prompt_tokens,
@@ -178,7 +178,17 @@ pub fn start_chunked_prefill(
 
     if is_last {
         // Single chunk covered the entire prompt — get first token.
-        let first = match sample_token(model, logits, temperature, top_k, top_p, eos_tokens) {
+        // #131: constrain the FIRST token with the grammar (and advance the
+        // matcher). Mirrors prefill_b_step; no-op when no grammar is active.
+        let first = match sample_first_token(
+            model,
+            logits,
+            temperature,
+            top_k,
+            top_p,
+            eos_tokens,
+            grammar_state.as_mut(),
+        ) {
             Ok(t) => {
                 tracing::info!("Prefill first token: {t}");
                 t

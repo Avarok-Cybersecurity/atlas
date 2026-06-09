@@ -17,7 +17,7 @@ use spark_runtime::gpu::DevicePtr;
 use std::time::Instant;
 
 use super::super::decode_logits_step::process_decode_logits;
-use super::super::sample_token;
+use super::super::sample_first_token;
 use super::super::types::{ActiveSeq, PrefillInProgress};
 
 #[allow(clippy::too_many_arguments)]
@@ -121,13 +121,16 @@ pub(super) fn run_batched_mixed_step(
             completed_indices.push((i, None));
             continue;
         }
-        match sample_token(
+        // #131: grammar-constrain the FIRST token (and advance the matcher);
+        // no-op without a grammar.
+        match sample_first_token(
             model,
             logits,
             p.temperature,
             p.top_k,
             p.top_p,
             &p.eos_tokens,
+            p.grammar_state.as_mut(),
         ) {
             Ok(first) => {
                 tracing::info!(
