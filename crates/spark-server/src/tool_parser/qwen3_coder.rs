@@ -98,7 +98,7 @@ Example:\n\
 - If there is no function call available, answer the question with your current knowledge and do not tell the user about function calls.\n\
 </IMPORTANT>",
         );
-        append_tool_choice_instruction(&mut prompt, tool_choice);
+        append_tool_choice_instruction(&mut prompt, tool_choice, "<tool_call> block");
         prompt
     }
 

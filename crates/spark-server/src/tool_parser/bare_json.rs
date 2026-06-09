@@ -45,7 +45,7 @@ impl ToolCallParser for BareJsonParser {
              after the JSON object.\n\n\
              Example: {{\"name\": \"<tool-name>\", \"arguments\": {{...}}}}"
         );
-        append_tool_choice_instruction(&mut prompt, tool_choice);
+        append_tool_choice_instruction(&mut prompt, tool_choice, "JSON object");
         prompt
     }
 

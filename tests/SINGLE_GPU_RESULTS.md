@@ -606,3 +606,59 @@ No new issues.
 
 **Overall status**: codebase is clean. All documented fixes are in place. The only change
 from prior audit entries is the documentation correction for `kv_dtypes.rs` above.
+
+---
+
+## Codebase Verification — 2026-06-09 (session_01PhuctLnFF9aP8DaEZ9q1MT)
+
+Targeted deep-dive into all three original priorities. Prior fixes (YaRN inv_freq, MLA scale,
+Nemotron MODEL.toml) confirmed correct. One new latent bug found and fixed.
+
+### P1 — Mistral Small 4 MLA prefill
+
+All MLA code paths re-verified clean:
+- `yarn.rs`: correct YaRN `find_correction_dim` formula, `low=7 high=15`, confirmed
+- `paged_mla.rs`: attention scale is now `1/sqrt(kv_lora+rope=320)` (fixed in `67f9616`)
+- `cache_skip_mla.rs`: hardcoded `1.0f32 / (hd as f32).sqrt()` with `hd=320` — matches
+- `kv_dtypes.rs`: returns empty vec when base dtype is BF16 → no accidental FP8 mixing
+- `MODEL.toml`: `default_kv_dtype = "bf16"` provides model-side guard
+
+No new issues.
+
+### P2 — Nemotron Super 120B tool calling (NEW BUG FOUND + FIXED)
+
+**Bug in `append_tool_choice_instruction`** (`helpers_b.rs:165`):
+
+The shared helper always appended `"respond ONLY with a <tool_call> block"` regardless of
+which parser was active. For `bare_json` (Nemotron) this directly contradicted the parser's
+own system prompt ("Do not wrap it in any tags") whenever `tool_choice="required"` or a
+specific function was forced. The `auto` default hits `_ => {}` and appends nothing, so the
+bug was invisible in the original 2/2 test run.
+
+Affected parsers:
+
+| Parser | Actual format | Old enforcement text | Conflict |
+|--------|--------------|----------------------|---------|
+| `qwen3_coder` | `<tool_call>` XML | `<tool_call> block` | No |
+| `hermes` | `<tool_call>` XML | `<tool_call> block` | No |
+| `minimax_xml` | `<minimax:tool_call>` XML | `<tool_call> block` | Wrong tag |
+| `mistral` | `[TOOL_CALLS]` tokens | `<tool_call> block` | Wrong format |
+| **`bare_json`** | **plain JSON object** | **`<tool_call> block`** | **Direct contradiction** |
+
+**Fix**: added `call_format: &str` parameter to `append_tool_choice_instruction`; each
+caller passes its correct format noun phrase. The `required` enforcement for `bare_json`
+now reads: "respond ONLY with a JSON object" — consistent with the rest of its system prompt.
+
+Files changed:
+- `crates/spark-server/src/tool_parser/helpers_b.rs`
+- `crates/spark-server/src/tool_parser/bare_json.rs` — `"JSON object"`
+- `crates/spark-server/src/tool_parser/mistral.rs` — `"[TOOL_CALLS] invocation"`
+- `crates/spark-server/src/tool_parser/minimax_xml.rs` — `"<minimax:tool_call> block"`
+- `crates/spark-server/src/tool_parser/hermes.rs` — `"<tool_call> block"` (no behaviour change)
+- `crates/spark-server/src/tool_parser/qwen3_coder.rs` — `"<tool_call> block"` (no behaviour change)
+
+### P3 — Qwen3.5-122B SSM cache slots
+
+Re-confirmed: `--ssm-cache-slots 0` correctly zeros `SsmSnapshotPool` (Marconi prefix cache).
+`SsmStatePool` (1206 MB active-sequence state) is sized by `--max-batch-size`, independent of
+the snapshot flag. No code change needed.

@@ -68,7 +68,7 @@ impl ToolCallParser for MinimaxXmlParser {
              </invoke>\n\
              </minimax:tool_call>\n",
         );
-        append_tool_choice_instruction(&mut prompt, tool_choice);
+        append_tool_choice_instruction(&mut prompt, tool_choice, "<minimax:tool_call> block");
         prompt
     }
 

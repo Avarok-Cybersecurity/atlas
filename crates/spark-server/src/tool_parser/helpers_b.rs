@@ -162,18 +162,27 @@ pub(super) fn gemma4_to_json(native: &str) -> String {
 }
 
 /// Shared tool_choice instruction appended to all system prompts.
-pub(super) fn append_tool_choice_instruction(prompt: &mut String, tool_choice: &ToolChoice) {
+///
+/// `call_format` is a short noun phrase describing the expected output
+/// form for this parser (e.g. `"<tool_call> block"`, `"JSON object"`,
+/// `"[TOOL_CALLS] invocation"`). It is embedded directly into the
+/// enforcement text so the model sees a format-consistent instruction.
+pub(super) fn append_tool_choice_instruction(
+    prompt: &mut String,
+    tool_choice: &ToolChoice,
+    call_format: &str,
+) {
     match tool_choice {
         ToolChoice::Mode(s) if s == "required" => {
-            prompt.push_str(
+            prompt.push_str(&format!(
                 "\n\n<IMPORTANT>\nYou MUST call at least one function. \
-                 Do NOT respond with text — respond ONLY with a <tool_call> block.\n</IMPORTANT>",
-            );
+                 Do NOT respond with text — respond ONLY with a {call_format}.\n</IMPORTANT>",
+            ));
         }
         ToolChoice::Specific { function } => {
             prompt.push_str(&format!(
                 "\n\n<IMPORTANT>\nYou MUST call the '{}' function. \
-                 Do NOT respond with text — respond ONLY with a <tool_call> block \
+                 Do NOT respond with text — respond ONLY with a {call_format} \
                  calling '{}'.\n</IMPORTANT>",
                 function.name, function.name,
             ));

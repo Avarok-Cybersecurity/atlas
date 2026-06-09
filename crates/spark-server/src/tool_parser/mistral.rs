@@ -32,7 +32,7 @@ impl ToolCallParser for MistralNativeParser {
              Use JSON for arguments. To call multiple tools, chain them:\n\
              [TOOL_CALLS]f1[ARGS]{{...}}[TOOL_CALLS]f2[ARGS]{{...}}"
         );
-        append_tool_choice_instruction(&mut prompt, tool_choice);
+        append_tool_choice_instruction(&mut prompt, tool_choice, "[TOOL_CALLS] invocation");
         prompt
     }
 

@@ -37,7 +37,7 @@ impl ToolCallParser for HermesParser {
              <tool_call></tool_call> XML tags:\n<tool_call>\n\
              {{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call>"
         );
-        append_tool_choice_instruction(&mut prompt, tool_choice);
+        append_tool_choice_instruction(&mut prompt, tool_choice, "<tool_call> block");
         prompt
     }
 
