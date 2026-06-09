@@ -462,3 +462,43 @@ not the kernel's internal dimension, because the dot-product magnitudes are iden
 representations.
 
 **Status**: fixed in `spec_ssm`. Re-test of long-context suite recommended after rebuild.
+
+---
+
+## Codebase Verification — 2026-06-09
+
+Independent re-audit of the `spec_ssm` branch. All prior fixes confirmed in place; no new
+bugs found.
+
+### P0 — Mistral long-context
+
+Files read directly: `yarn.rs`, `paged_mla.rs`, `cache_skip_mla.rs`, `kv_dtypes.rs`,
+`kernels/gb10/mistral-small-4/MODEL.toml`.
+
+- `yarn.rs`: correct `find_correction_dim` in dimension-index space; defaults `beta_fast=32`,
+  `beta_slow=1`; computed `low_dim≈7`, `high_dim≈15` match the expected values.
+- `paged_mla.rs` first-chunk path (line 277): `1.0f32 / (mla_cache_dim as f32).sqrt()`
+  = `1/sqrt(320)` — scale bug from prior audit is fixed.
+- `cache_skip_mla.rs` (line 267): `1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()`
+  = `1/sqrt(320)` — also correct; both prefill paths now match decode.
+- `kv_dtypes.rs`: `build_layer_kv_dtypes(BF16, …)` returns empty vec → uniform BF16, no
+  accidental FP8 mixing on `--kv-high-precision-layers auto`.
+- `MODEL.toml`: `default_kv_dtype = "bf16"` present as model-side safety guard.
+
+### P1 — Nemotron Super tool calling
+
+- `MODEL.toml` `[behavior]`: `disable_tool_steering = true`, `tool_call_parser = "bare_json"`,
+  `thinking_in_tools = false`, `thinking_default = true` — all correct.
+- `nemotron_h.jinja`: generation-prompt block gates on `tools and not disable_tool_steering`
+  before emitting the `<tool_call>\n` steering prefix; with the flag set, Super enters the
+  `enable_thinking` branch naturally.
+
+### P2 — SSM cache slots
+
+- CLI `--ssm-cache-slots` (default 16) propagates: `cli.rs` → `build.rs:71` →
+  `factory/build.rs:398` → `TransformerModel::new` → `SsmSnapshotPool::new(ssm_cache_slots)`.
+- `SsmStatePool::new` receives `max_batch_size` (not `ssm_cache_slots`) — correct; it holds
+  live decode hidden states, one slot per in-flight sequence.
+- Mistral Small 4 has 0 SSM layers → `SsmStatePool` allocates 0 MB for that model.
+
+**Status**: all clean.
