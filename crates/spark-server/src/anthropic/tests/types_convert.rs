@@ -24,9 +24,7 @@ fn test_convert_tool_choice() {
         choice_type: "auto".to_string(),
         name: None,
     };
-    assert!(
-        matches!(convert_tool_choice(&auto), tool_parser::ToolChoice::Mode(s) if s == "auto")
-    );
+    assert!(matches!(convert_tool_choice(&auto), tool_parser::ToolChoice::Mode(s) if s == "auto"));
 
     let specific = AnthropicToolChoice {
         choice_type: "tool".to_string(),

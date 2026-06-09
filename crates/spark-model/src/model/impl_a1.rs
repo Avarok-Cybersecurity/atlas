@@ -121,7 +121,6 @@ impl TransformerModel {
         // or lm_head quantization — its K=γ verify path checkpoints SSM state
         // for partial-accept rollback. Force `has_mtp` on whenever DFlash is
         // active so the checkpoint pools exist.
-        //
         // The MTP proposer needs an NVFP4 vocab head for drafting: either the
         // main head (NVFP4 default) or the draft-only head built when the main
         // head is BF16. `draft_lm_head_nvfp4` resolves to whichever is present.
