@@ -40,6 +40,7 @@ SPLIT_DGX=0
 REMOTE_API="http://localhost:8889/v1"
 COSINE_MODE=0
 SKIP_WARMUP=0
+REMOTE_ONLY=0
 BAIL=0
 # --claude-code: drive Claude Code (the `claude` CLI) against Atlas instead of
 # opencode, via `sudo -u claude env ANTHROPIC_BASE_URL=... claude -p ...`.
@@ -57,6 +58,7 @@ while [[ $# -gt 0 ]]; do
     --remote-api) REMOTE_API="$2"; shift 2 ;;
     --cosine-mode) COSINE_MODE=1; shift ;;
     --skip-warmup) SKIP_WARMUP=1; shift ;;
+    --remote-only) REMOTE_ONLY=1; shift ;;
     --bail) BAIL=1; shift ;;
     --claude-code) CLAUDE_CODE=1; shift ;;
     --prompt-file) PROMPT_FILE="$2"; shift 2 ;;
@@ -202,7 +204,7 @@ run_one() {
     # opencode: --dir sets opencode's working directory; the model sees only
     # "current working directory" in the prompt, never the absolute path.
     ATLAS_HARNESS_PORT=${HPORT:-3001} \
-    ${extra_env} \
+      env ${extra_env} \
       timeout "${OC_TIMEOUT:-360}" opencode run --dangerously-skip-permissions --dir "${TARGET}" --format json \
       "${PROMPT}" > "${OC_JSON}" 2> "${OC_ERR}" || true
   fi
@@ -331,6 +333,11 @@ if [[ "${SPLIT_DGX}" == "1" ]]; then
   REMOTE_PID=$!
 
   wait "${LOCAL_PID}" "${REMOTE_PID}"
+elif [[ "${REMOTE_ONLY}" == "1" ]]; then
+  echo "remote-only: all ${N} runs against ${REMOTE_API}" >&2
+  for i in $(seq 1 "${N}"); do
+    run_one "${i}" "${REMOTE_API}" "XDG_CONFIG_HOME=${XDG_CONFIG_HOME_OVERRIDE:-/tmp/oc-tunnel-config}" "remote"
+  done
 else
   for i in $(seq 1 "${N}"); do
     run_one "${i}" "${LOCAL_API}" "" "local"
