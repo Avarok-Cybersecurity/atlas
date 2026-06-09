@@ -62,9 +62,8 @@ extern "C" __global__ void dense_gemm_tc(
         // Cooperative load: 128 threads load A[16][16] + B[16][64]
         // A: 16*16 = 256 elements, 128 threads → 2 elements per thread
         {
-            unsigned int idx = tid;
-            // Load A tile
-            if (idx < TC_TM * TC_TK) {
+            // Load A tile (loop needed: 256 elements, 128 threads)
+            for (unsigned int idx = tid; idx < TC_TM * TC_TK; idx += TC_BLOCK) {
                 unsigned int r = idx / TC_TK;
                 unsigned int c = idx % TC_TK;
                 unsigned int gr = m_block + r;
