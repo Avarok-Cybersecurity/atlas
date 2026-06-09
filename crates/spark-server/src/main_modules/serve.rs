@@ -466,6 +466,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     )?;
 
     let adaptive_sampling = args.adaptive_sampling;
+    let dflash_verify_raw_argmax = args.dflash;
     let session_manager = session_manager::SessionSsmManager::new(600); // 10 min TTL
     // Spontaneous-thinking budget: when the model emits `<think>` without
     // the request having explicitly enabled thinking, this caps how many
@@ -483,6 +484,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             scheduler_eos,
             max_batch_size,
             use_speculative,
+            dflash_verify_raw_argmax,
             num_drafts,
             policy,
             max_prefill_tokens,

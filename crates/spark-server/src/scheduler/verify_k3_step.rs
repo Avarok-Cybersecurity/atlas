@@ -46,6 +46,7 @@ pub fn step_verify_k3(
     drafts: &[u32],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+    dflash_verify_raw_argmax: bool,
 ) {
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
@@ -81,18 +82,21 @@ pub fn step_verify_k3(
     a.last_token_time = Instant::now();
     let [v0_argmax, v1_argmax, v2_argmax] = result;
 
-    // Phase C-2 (2026-05-24): pre-sample pipeline per verify
-    // position. See K=2 docstring + `verify_pipeline_helper`.
-    let processed =
-        crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
-            model,
-            &[v0_argmax, v1_argmax, v2_argmax],
-            a,
-            verify_ctx,
+    let (v0, v1, v2) = if dflash_verify_raw_argmax {
+        // DFlash drafter proposes on raw argmax; verify on the SAME (GOLD)
+        // basis so verifier/drafter judge identically. No rep_pen/DRY here.
+        (v0_argmax, v1_argmax, v2_argmax)
+    } else {
+        // MTP path: full pre-sample pipeline (rep_pen + DRY) unchanged.
+        let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+            model, &[v0_argmax, v1_argmax, v2_argmax], a, verify_ctx,
         );
-    let v0 = processed.first().copied().unwrap_or(v0_argmax);
-    let v1 = processed.get(1).copied().unwrap_or(v1_argmax);
-    let v2 = processed.get(2).copied().unwrap_or(v2_argmax);
+        (
+            processed.first().copied().unwrap_or(v0_argmax),
+            processed.get(1).copied().unwrap_or(v1_argmax),
+            processed.get(2).copied().unwrap_or(v2_argmax),
+        )
+    };
 
     let num_accepted = if drafts[0] != v0 {
         0

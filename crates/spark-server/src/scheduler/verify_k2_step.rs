@@ -62,6 +62,7 @@ pub fn step_verify_k2(
     drafts: &[u32],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+    dflash_verify_raw_argmax: bool,
 ) {
     let t_sync = Instant::now();
     if let Err(e) = model.sync_secondary() {
@@ -102,23 +103,24 @@ pub fn step_verify_k2(
     a.last_token_time = Instant::now();
     let [v0_argmax, v1_argmax] = result;
 
-    // Phase C-2 (2026-05-24): apply the full pre-sample logits-
-    // processor pipeline to each verify position. Without this,
-    // MTP-emitted tokens escape every mask the non-MTP path applies
-    // (grammar desync + mid-word `</think>` cuts + stray `<think>`
-    // re-entry + malformed tool calls). The D2H copy is one-shot
-    // (~0.8ms for 256k vocab × K=2); not graph-captured. Acceptance
-    // is decided against the *processed* argmax, not the raw GPU
-    // argmax — the pipeline is what would have run if MTP were off.
-    let processed =
-        crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+    let (v0, v1) = if dflash_verify_raw_argmax {
+        // DFlash drafter proposes on raw argmax; verify on the SAME (GOLD) basis.
+        (v0_argmax, v1_argmax)
+    } else {
+        // MTP path: full pre-sample pipeline (rep_pen + DRY) unchanged.
+        // Phase C-2 (2026-05-24): apply the logits-processor pipeline to each
+        // verify position so MTP-emitted tokens see the same masks as non-MTP.
+        let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
             model,
             &[v0_argmax, v1_argmax],
             a,
             verify_ctx,
         );
-    let v0 = processed.first().copied().unwrap_or(v0_argmax);
-    let v1 = processed.get(1).copied().unwrap_or(v1_argmax);
+        (
+            processed.first().copied().unwrap_or(v0_argmax),
+            processed.get(1).copied().unwrap_or(v1_argmax),
+        )
+    };
     let accepted = drafts[0] == v0;
 
     // Extract logprobs from verify logits buffer (K=2 positions) when requested.

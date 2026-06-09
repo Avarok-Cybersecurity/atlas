@@ -110,6 +110,7 @@ pub fn run(
     eos_tokens: Vec<u32>,
     max_batch_size: usize,
     use_speculative: bool,
+    dflash_verify_raw_argmax: bool,
     num_drafts: usize,
     policy: Box<dyn SchedulingPolicy>,
     max_prefill_tokens: usize,
@@ -330,7 +331,7 @@ pub fn run(
                 && !active[0].disable_mtp
             {
                 // MTP speculative decode: beneficial at all context lengths.
-                step_mtp(&*model, &mut active, num_drafts, &verify_ctx);
+                step_mtp(&*model, &mut active, num_drafts, &verify_ctx, dflash_verify_raw_argmax);
             } else {
                 // Batch decode (no MTP). Clear stale drafts when transitioning out of MTP mode.
                 if use_mtp {
