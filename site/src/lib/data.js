@@ -79,13 +79,14 @@ export const benchmarks = [
 
 export const models = [
   { name: 'Qwen3.6-35B-A3B', badges: ['MTP', 'FP8'], params: '35B (3B active)', quant: 'FP8', arch: 'GDN + Attention + MoE (Vision)', tps: '~71 tok/s' },
+  { name: 'Qwen3.6-27B', badges: ['MTP', 'FP8'], params: '27B (dense)', quant: 'FP8', arch: 'GDN + Attention (Dense)', tps: '~15 tok/s' },
   { name: 'Qwen3.5-35B-A3B', badges: ['MTP', 'FP8'], params: '35B (3B active)', quant: 'NVFP4 / FP8', arch: 'GDN + Attention + MoE', tps: '~130 tok/s' },
   { name: 'Qwen3.5-122B-A10B', badges: ['MTP', 'EP2'], params: '122B (10B active)', quant: 'NVFP4', arch: 'GDN + Attention + MoE', tps: '~38 tok/s' },
-  { name: 'MiniMax M2.7', badges: ['EP2'], params: '229B (10B active)', quant: 'NVFP4', arch: 'Attention + MoE', tps: '~15 tok/s' },
   { name: 'Qwen3.5-27B', badges: [], params: '27B (dense)', quant: 'NVFP4', arch: 'GDN + Attention (Dense)', tps: '~15 tok/s' },
   { name: 'Qwen3-Next-80B-A3B', badges: ['MTP'], params: '80B (3B active)', quant: 'NVFP4', arch: 'SSM + Attention + MoE', tps: '~87 tok/s' },
   { name: 'Qwen3-Coder-Next', badges: ['FP8'], params: '80B (3B active)', quant: 'FP8', arch: 'SSM + Attention + MoE', tps: '~45 tok/s' },
   { name: 'Qwen3-VL-30B', badges: [], params: '30B (3B active)', quant: 'NVFP4', arch: 'Attention + MoE (Vision)', tps: '~68 tok/s' },
+  { name: 'MiniMax M2.7', badges: ['EP2'], params: '229B (10B active)', quant: 'NVFP4', arch: 'Attention + MoE', tps: '~15 tok/s' },
   { name: 'Gemma 4 31B', badges: [], params: '31B (dense)', quant: 'NVFP4', arch: 'Dense Transformer', tps: '~11 tok/s' },
   { name: 'Gemma 4 26B', badges: [], params: '26B (3.8B active)', quant: 'NVFP4', arch: 'MoE (128 experts, top-8)', tps: '~73 tok/s' },
   { name: 'Nemotron-3 Super 120B', badges: ['FP8'], params: '120B (12B active)', quant: 'NVFP4 / FP8', arch: 'Mamba-2 + MoE', tps: '~27 tok/s' },
