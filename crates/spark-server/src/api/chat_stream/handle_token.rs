@@ -21,7 +21,8 @@ use super::strip::{
     maybe_log_decode_trace, strip_all_preserving_boundary, strip_preserving_boundary,
 };
 use super::tool_handlers::{
-    handle_complete_tool_call, handle_tool_call_delta, handle_tool_call_end, handle_tool_call_start,
+    handle_complete_tool_call, handle_tool_call_args_fragment, handle_tool_call_delta,
+    handle_tool_call_end, handle_tool_call_start,
 };
 
 type SseVec = Vec<Result<Event, std::convert::Infallible>>;
@@ -441,6 +442,9 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
                 }
                 tool_parser::DetectorOutput::ToolCallDelta { args, idx } => {
                     handle_tool_call_delta(state, ctx, args, idx, &mut sse_events);
+                }
+                tool_parser::DetectorOutput::ToolCallArgsFragment { fragment, idx } => {
+                    handle_tool_call_args_fragment(state, ctx, fragment, idx, &mut sse_events);
                 }
                 tool_parser::DetectorOutput::ToolCallEnd { idx } => {
                     handle_tool_call_end(state, ctx, idx);

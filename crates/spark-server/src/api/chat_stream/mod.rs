@@ -225,7 +225,12 @@ pub(crate) async fn chat_completions_stream(
         timeout_at,
     };
 
-    let mut stream_state = StreamState::new(tools_active, enable_thinking, cancel_flag.clone());
+    let mut stream_state = StreamState::new(
+        tools_active,
+        enable_thinking,
+        cancel_flag.clone(),
+        ctx.tool_defs_for_backfill.clone(),
+    );
 
     let token_stream = ReceiverStream::new(token_rx).flat_map(move |event| {
         use futures::StreamExt;

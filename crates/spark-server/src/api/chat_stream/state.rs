@@ -164,6 +164,7 @@ impl StreamState {
         tools_active: bool,
         enable_thinking: bool,
         cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        tool_defs: Vec<tool_parser::ToolDefinition>,
     ) -> Self {
         Self {
             all_toks: Vec::new(),
@@ -195,7 +196,9 @@ impl StreamState {
             reasoning_xml_scan_buf: String::new(),
             reasoning_xml_leak_detected: false,
             detector: if tools_active {
-                Some(tool_parser::StreamingToolDetector::new())
+                Some(tool_parser::StreamingToolDetector::new_with_tools(
+                    tool_defs,
+                ))
             } else {
                 None
             },

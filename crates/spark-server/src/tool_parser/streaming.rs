@@ -19,8 +19,30 @@ pub struct StreamingToolDetector {
     pub(super) current_tc_name: Option<String>,
     /// For incremental streaming: ID of the current in-progress tool call.
     pub(super) current_tc_id: Option<String>,
-    /// Bytes already emitted as ToolCallDelta for current tool call.
+    /// Bytes of the in-progress tool call's body already consumed for
+    /// incremental emission. For XML formats this is a byte offset into
+    /// `buffer` past the last `</parameter>` already streamed; for JSON
+    /// formats it is the number of argument-object bytes already streamed.
     pub(super) current_tc_emitted: usize,
+    /// Tool schemas for per-parameter coercion (`coerce_all`) during live
+    /// argument streaming. Empty when the detector was built without
+    /// schemas (e.g. unit tests) — coercion is then a no-op and values
+    /// stream as raw strings.
+    pub(super) tools: Vec<ToolDefinition>,
+    /// When true, restore the legacy buffer-until-`</tool_call>` behaviour
+    /// (a single `ToolCallDelta` with the full args at close). Set from the
+    /// `ATLAS_BUFFER_TOOL_ARGS` env kill-switch. Default false = live stream.
+    pub(super) buffer_args: bool,
+    /// Live-streaming per-call state: whether the opening `{` of the current
+    /// XML tool call's argument object has been emitted yet.
+    pub(super) args_open: bool,
+    /// Live-streaming per-call state: parameter keys already streamed for the
+    /// current XML tool call (so close-time backfill doesn't duplicate them).
+    pub(super) emitted_keys: Vec<String>,
+    /// True once any incremental `ToolCallArgsFragment` has been emitted for
+    /// the current call — tells the close branch to emit only the residual
+    /// (closing `}` / backfill / JSON tail) instead of the full args.
+    pub(super) incremental_emitted: bool,
 }
 
 pub enum DetectorOutput {
@@ -34,8 +56,17 @@ pub enum DetectorOutput {
         name: String,
         idx: usize,
     },
-    /// Incremental: argument fragment. Emitted per-token as arguments arrive.
+    /// Incremental: argument fragment. The detector emits this for the
+    /// legacy/buffered/fallback paths carrying the FULL canonical args once
+    /// at close — the handler runs backfill+coerce+validate on it.
     ToolCallDelta { args: String, idx: usize },
+    /// Live-streaming: a ready-to-forward slice of `function.arguments`.
+    /// The detector has already coerced (XML) or sliced (JSON) it, so the
+    /// handler appends it verbatim to the accumulated args and emits it as
+    /// an OpenAI `tool_calls[idx].function.arguments` fragment WITHOUT any
+    /// further coercion/validation. Concatenating all fragments for a given
+    /// `idx` yields the complete JSON arguments object.
+    ToolCallArgsFragment { fragment: String, idx: usize },
     /// Incremental: tool call complete. `</tool_call>` seen.
     ToolCallEnd { idx: usize },
 }
@@ -100,7 +131,7 @@ pub(super) fn extract_streaming_name(buffer: &str) -> Option<String> {
 
 /// Find where arguments start in the buffer, after the name header.
 /// Returns byte offset into buffer where argument content begins.
-fn find_args_start(buffer: &str) -> usize {
+pub(super) fn find_args_start(buffer: &str) -> usize {
     // Qwen3-Coder: after <function=NAME>\n
     if let Some(pos) = buffer.find("<function=")
         && let Some(gt) = buffer[pos..].find('>')

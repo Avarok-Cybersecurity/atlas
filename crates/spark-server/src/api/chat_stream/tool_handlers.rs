@@ -380,6 +380,30 @@ pub(super) fn handle_tool_call_delta(
     }
 }
 
+/// `DetectorOutput::ToolCallArgsFragment` — live-streaming: a ready-to-forward
+/// slice of `function.arguments` the detector already coerced (XML) or sliced
+/// (JSON). Append it verbatim to the accumulated args and emit it directly as an
+/// OpenAI `tool_calls[idx].function.arguments` fragment — NO coercion or
+/// validation (the detector did that per-field). If no prior `ToolCallStart`
+/// created the accumulator entry for `idx`, the fragment is dropped (the header
+/// must precede its arguments).
+pub(super) fn handle_tool_call_args_fragment(
+    state: &mut StreamState,
+    ctx: &StreamCtx,
+    fragment: String,
+    idx: usize,
+    sse_events: &mut SseVec,
+) {
+    let Some(entry) = state.streaming_tool_args.get_mut(&idx) else {
+        return;
+    };
+    entry.1.push_str(&fragment);
+    let frag = ChatCompletionChunk::tool_call_args_fragment(&ctx.model, &ctx.id, idx, &fragment);
+    sse_events.push(Ok(
+        Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
+    ));
+}
+
 /// `DetectorOutput::ToolCallEnd` — F11 within-response dedup +
 /// F44 cross-turn permanent-failure check + Bug-2 name-run cap.
 ///

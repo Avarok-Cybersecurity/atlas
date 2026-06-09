@@ -57,24 +57,33 @@ fn flush_after_incremental_start_does_not_double_emit() {
         "flush() must not emit ToolCall (which carries a fresh id) — emit Delta+End instead"
     );
 
-    // Must include the args delta + end so the client gets the complete call.
-    let has_delta = flushed
-        .iter()
-        .any(|o| matches!(o, DetectorOutput::ToolCallDelta { .. }));
+    // Must close the call with ToolCallEnd. In the default live-streaming
+    // mode the args arrive as ToolCallArgsFragment events (split across the
+    // mid-stream process() and the flush() residual); the legacy buffered
+    // mode would emit a single ToolCallDelta. Accept either shape.
+    let has_args = flushed.iter().chain(pre_flush.iter()).any(|o| {
+        matches!(
+            o,
+            DetectorOutput::ToolCallDelta { .. } | DetectorOutput::ToolCallArgsFragment { .. }
+        )
+    });
     let has_end = flushed
         .iter()
         .any(|o| matches!(o, DetectorOutput::ToolCallEnd { .. }));
-    assert!(has_delta, "flush() must emit ToolCallDelta with the args");
+    assert!(has_args, "must emit the args (Delta or Fragment)");
     assert!(has_end, "flush() must emit ToolCallEnd to close the call");
 
-    // The args delta should carry the parsed arguments (JSON), not empty.
-    let args = flushed
+    // The args should carry the parsed arguments (JSON), not empty. Gather
+    // every args payload across both process() and flush().
+    let args: String = flushed
         .iter()
-        .find_map(|o| match o {
+        .chain(pre_flush.iter())
+        .filter_map(|o| match o {
             DetectorOutput::ToolCallDelta { args, .. } => Some(args.clone()),
+            DetectorOutput::ToolCallArgsFragment { fragment, .. } => Some(fragment.clone()),
             _ => None,
         })
-        .unwrap();
+        .collect();
     assert!(
         args.contains("meeting"),
         "args should contain 'meeting'; got: {args}"

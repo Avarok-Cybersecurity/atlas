@@ -37,6 +37,40 @@ fn resolve_schema_type(schema: &serde_json::Value) -> Option<&str> {
     None
 }
 
+/// Map a model-emitted parameter `key` to its canonical schema property name
+/// for the tool `call_name`. SSOT for the camelCase↔snake_case repair used by
+/// both `backfill_required_params` (post-parse) and live argument streaming
+/// (`streaming_impl::coerce_kv`). Returns `key` unchanged when the tool is
+/// unknown, has no `properties`, `key` is already a schema property, or no
+/// case-insensitive/underscore-insensitive match exists.
+pub(crate) fn normalize_param_name(tools: &[ToolDefinition], call_name: &str, key: &str) -> String {
+    let Some(tool_def) = tools.iter().find(|t| t.function.name == call_name) else {
+        return key.to_string();
+    };
+    let Some(props) = tool_def
+        .function
+        .parameters
+        .as_ref()
+        .and_then(|p| p.get("properties"))
+        .and_then(|p| p.as_object())
+    else {
+        return key.to_string();
+    };
+    if props.contains_key(key) {
+        return key.to_string();
+    }
+    // Build case-insensitive lookup: "filepath" → "file_path" (schema name).
+    let schema_normalized: std::collections::HashMap<String, &str> = props
+        .keys()
+        .map(|k| (k.to_lowercase().replace('_', ""), k.as_str()))
+        .collect();
+    let norm = key.to_lowercase().replace('_', "");
+    schema_normalized
+        .get(&norm)
+        .map(|schema_key| schema_key.to_string())
+        .unwrap_or_else(|| key.to_string())
+}
+
 pub fn backfill_required_params(calls: &mut [ToolCall], tools: &[ToolDefinition]) {
     for call in calls.iter_mut() {
         let Some(tool_def) = tools.iter().find(|t| t.function.name == call.function.name) else {
@@ -93,23 +127,19 @@ pub fn backfill_required_params(calls: &mut [ToolCall], tools: &[ToolDefinition]
         // 2. Normalize parameter names to match the schema.
         // The model sometimes emits camelCase (filePath) when the schema
         // defines snake_case (file_path), or vice versa. This is a known
-        // Qwen3-Coder issue (vLLM #35347, llama.cpp #19382).
-        if let Some(props) = properties {
-            // Build case-insensitive lookup: "filepath" → "file_path" (schema name)
-            let schema_normalized: std::collections::HashMap<String, &str> = props
-                .keys()
-                .map(|k| (k.to_lowercase().replace('_', ""), k.as_str()))
-                .collect();
-
+        // Qwen3-Coder issue (vLLM #35347, llama.cpp #19382). Delegated to the
+        // shared `normalize_param_name` SSOT helper so live argument streaming
+        // (`streaming_impl::coerce_kv`) applies the identical mapping.
+        if properties.is_some() {
             let keys_to_fix: Vec<(String, String)> = args
                 .keys()
-                .filter(|k| !props.contains_key(*k))
-                .filter_map(|k| {
-                    let norm = k.to_lowercase().replace('_', "");
-                    schema_normalized
-                        .get(&norm)
-                        .map(|schema_key| (k.clone(), schema_key.to_string()))
+                .map(|k| {
+                    (
+                        k.clone(),
+                        normalize_param_name(tools, &call.function.name, k),
+                    )
                 })
+                .filter(|(orig, mapped)| orig != mapped)
                 .collect();
 
             for (wrong_key, right_key) in keys_to_fix {
