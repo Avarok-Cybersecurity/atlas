@@ -698,3 +698,35 @@ unabsorbed, which over-reads K pages for hd≤128) to `mla_fused_prefill` (HDIM=
 clean as documented in prior audit entries.
 
 **Status: `spec_ssm` is ready for hardware re-test. No code changes this session.**
+
+---
+
+## Codebase Verification — 2026-06-09 (session_012g2QpT7ndcNrkj8A9tk112)
+
+Independent audit starting from `main` HEAD (`ce63e5d`), then rebased to `spec_ssm` HEAD
+(`6f30744`) for final verification. All prior fixes confirmed in place.
+
+### Files read directly this session
+
+| File | Finding |
+|------|---------|
+| `yarn.rs` | YaRN fix confirmed: `find_correction_dim` in dimension-index space; `low≈7.0`, `high≈15.0` for Mistral params; correct linear ramp and blending. |
+| `paged_mla.rs` (main) | Scale bug observed first-hand: `effective_attn_scale(hd=128)` = `1/sqrt(128)` — fix is on spec_ssm (`67f9616`), absent on main. |
+| `cache_skip_mla.rs` (main) | Uses `prefill_attention_64` with hardcoded `1.0f32/(hd as f32).sqrt()` = `1/sqrt(128)` — both scale and kernel replaced on spec_ssm (`3f673d4`). |
+| `helpers.rs` | `effective_attn_scale` confirmed: `attn_scale_override.unwrap_or(1/sqrt(head_dim))` — no override on Mistral, defaults to `1/sqrt(hd)`. |
+| `nemotron_h.jinja` | `{%- if tools and not disable_tool_steering %}` guard present at generation-prompt block; steering prefix skipped with flag set. |
+| `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` | `disable_tool_steering = true`, `tool_call_parser = "bare_json"`, `thinking_in_tools = false` all present. |
+| `crates/spark-server/src/tool_parser/bare_json.rs` | `BareJsonParser` fully implemented; `has_tool_grammar()` returns `true`; grammar-constrained decoding enforces `{"name":…, "arguments":{…}}`. |
+| `cli.rs`, `impl_a1.rs` | SSM pool architecture confirmed: `SsmStatePool` keyed on `max_batch_size`; `SsmSnapshotPool` keyed on `ssm_cache_slots`. `--ssm-cache-slots 0` disables only Marconi prefix cache. |
+
+### Independent confirmation of spec_ssm fix set
+
+All four commits documented in the prior `session_01RobJVmWy4vNe5dQfkjJhAg` entry were
+cross-verified by reading the on-disk source after rebasing to `spec_ssm`:
+
+- `67f9616` (`paged_mla.rs`): first-chunk scale now `1.0f32 / (mla_cache_dim as f32).sqrt()` ✓
+- `3f673d4` (`cache_skip_mla.rs`): `mla_fused_prefill` kernel + `1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` ✓
+- `427104f` (`kv_dtypes.rs`): BF16 guard returns `vec![Bf16; N]` (not empty vec) ✓
+- `df07318` (`helpers_b.rs`): format-specific `call_format` parameter per parser ✓
+
+**Status: no new code changes. All four fixes confirmed present on `spec_ssm`.**
