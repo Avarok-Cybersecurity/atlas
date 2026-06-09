@@ -502,3 +502,37 @@ Files read directly: `yarn.rs`, `paged_mla.rs`, `cache_skip_mla.rs`, `kv_dtypes.
 - Mistral Small 4 has 0 SSM layers → `SsmStatePool` allocates 0 MB for that model.
 
 **Status**: all clean.
+
+---
+
+## Codebase Verification — 2026-06-09 (kernel-level buffer-layout audit)
+
+Third-party audit focused on MLA buffer layout at the CUDA kernel source level; no new bugs
+found. This pass explicitly traces `mla_kv_assemble_batched` output dimensions from source
+to rule out any V-buffer aliasing.
+
+### MLA V-buffer offset — confirmed clean
+
+**Source**: `kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu` (`mla_kv_assemble_batched`)
+and `kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu` (dimension annotations).
+
+Kernel output layout for `mla_kv_assemble_batched`:
+- K out: `[N, nkv * hd]` where `hd = nope + rope` (comment line 243: "where hd = nope + rope")
+- V out: `[N, nkv * v_dim]`
+
+Confirmed Mistral Small 4 dimensions (from `mla_fused_prefill.cu` comment block):
+- `nope = 64`, `rope_dim = 64`, `kv_lora = 256`, `v_dim = 128`, `hd = nope + rope = 128`
+
+So K occupies `N × nkv × 128` BF16 elements; V follows immediately.
+The Rust offset `k_contiguous.offset(num_tokens * kv_dim * bf16)` where
+`kv_dim = nkv * hd = nkv * 128` equals exactly the K region size. No overlap, no gap.
+
+### `mla_prefill_attn_320` kernel — not in single-seq dispatch path
+
+`KERNEL.toml` registers `mla_prefill_attn = "mla_prefill_attn"` (loaded as
+`prefill_attn_mla320_k`). However, `prefill_attention_paged_mla` dispatches
+`prefill_attn_k` (the standard HDIM=128 `inferspark_prefill_hd128` kernel) for hd≤128.
+The 320-dim absorbed kernel is not reachable from the single-sequence prefill path;
+no seq_len limit or tile-boundary issue applies there.
+
+**Status**: all fixes verified at kernel source level; no new issues found.
