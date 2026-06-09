@@ -730,3 +730,103 @@ cross-verified by reading the on-disk source after rebasing to `spec_ssm`:
 - `df07318` (`helpers_b.rs`): format-specific `call_format` parameter per parser ✓
 
 **Status: no new code changes. All four fixes confirmed present on `spec_ssm`.**
+
+---
+
+## Codebase Verification — 2026-06-09 (session_01DsbAsjtieU4wZFNdqLLVsi)
+
+Fresh independent audit of the `spec_ssm` branch, following the three-priority investigation
+brief exactly. All prior fixes confirmed in place. No new bugs found.
+
+### Approach
+
+Files read from source directly, with no reliance on any prior session's conclusions:
+`paged_mla.rs`, `cache_skip_mla.rs`, `attention_forward_mla.rs`, `mla_absorbed.cu`,
+`mla_fused_prefill.cu`, `mla_prefill_paged_320.cu`, `yarn.rs`, `kv_dtypes.rs`,
+`kv_cache.rs`, `prefill_inner.rs` (dispatch logic), `nemotron_h.jinja`,
+`MODEL.toml` (Nemotron), `helpers_b.rs`, `bare_json.rs`, `cli.rs`, `impl_a1.rs`,
+`factory/build.rs`.
+
+### P1 — Mistral Small 4 MLA prefill (seq_len > 1000)
+
+**Dispatch verified**: `prefill_inner.rs` routes `seq_len_start == 0` (single-chunk /
+non-paged) to `prefill_attention_with_cache_skip` → `cache_skip_mla.rs` →
+`mla_fused_prefill` (HDIM=320 absorbed). `seq_len_start > 0` (chunks 2+) goes to
+`prefill_attention_paged` → `paged_mla.rs`.
+
+**Scale — all four paths confirmed `1/sqrt(320)`:**
+
+| Path | File | Line | Expression |
+|------|------|------|------------|
+| Single-chunk (cache-skip) | `cache_skip_mla.rs` | 267 | `1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` |
+| First-chunk paged | `paged_mla.rs` | 277 | `1.0f32 / (mla_cache_dim as f32).sqrt()` |
+| Multi-chunk paged | `paged_mla.rs` | 479 | `1.0f32 / (mla_cache_dim as f32).sqrt()` |
+| Decode | `attention_forward_mla.rs` | 377 | `1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` |
+
+All evaluate to `1/sqrt(kv_lora + rope) = 1/sqrt(256 + 64) = 1/sqrt(320)`. ✓
+
+**BF16 dispatch — no FP8 leakage confirmed:**
+- `kv_dtypes.rs:20`: `if kv_dtype == Bf16 { return vec![Bf16; N] }` — early return with
+  explicit BF16 vector; no empty-vec fallback to FP8 possible.
+- `factory/build.rs:87-91`: non-empty `layer_dtypes` used directly, so all 36 attention
+  layers receive explicit BF16. With `--kv-cache-dtype bf16`, `kv_hp_layers` (from
+  `--kv-high-precision-layers auto` → 2) is irrelevant — the BF16 guard fires first.
+- `MODEL.toml` (`kernels/gb10/mistral-small-4/MODEL.toml`): `default_kv_dtype = "bf16"`
+  overrides the server CLI default of `fp8` when the user omits `--kv-cache-dtype`.
+
+**YaRN inv_freq — `yarn.rs` confirmed correct:**
+- `find_correction_dim` in dimension-index space, not wavelength space
+- `beta_fast=32`, `beta_slow=1`, `factor=128`, `orig_max_pos=8192`, `rope_dim=64`
+- `low = floor(find_correction_dim(32)) ≈ 7.0`, `high = ceil(find_correction_dim(1)) ≈ 15.0`
+- Linear ramp: `ramp = clamp((j - low) / (high - low), 0, 1)` per pair j
+- `inv_freq[j] = interp * ramp + extrap * (1 - ramp)` — correct blending direction
+
+**CUDA kernels — no seq_len limits:**
+- `mla_fused_prefill.cu`: flat 1D grid `(nq * seq_len, 1, 1)` = max 32 × 65536 = 2M blocks,
+  well within CUDA gridDim.x = 2^31-1. Online softmax loop `kv_pos = 0..q_pos+1` has no
+  hard limit. Shared memory: `smem_q[320] + smem_dot[8] + smem_latent[256]` = 2336 bytes.
+- `mla_absorbed.cu`: all batched kernels use `idx += gridDim.x * blockDim.x` stride loops.
+- `mla_prefill_paged_320.cu`: grid `(num_q_heads, ceil(q_len/BR), 1)`, per-KV-token loop
+  over paged cache with no bound other than `causal_kv_end = min(q_global+1, kv_len)`.
+
+**No new bugs found.** All known bugs (YaRN inv_freq, MLA scale mismatch, BF16 FP8 leakage)
+are confirmed fixed and absent from `spec_ssm`.
+
+### P2 — Nemotron Super 120B tool calling
+
+All settings re-verified by direct source read:
+
+- `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml`: `disable_tool_steering = true`,
+  `tool_call_parser = "bare_json"`, `thinking_in_tools = false`, `skip_template_tools = true`,
+  `thinking_default = true` — all present and correct.
+- `nemotron_h.jinja:206`: generation-prompt block: `{%- if tools and not disable_tool_steering %}`
+  skips the `<tool_call>\n` steering prefix when `disable_tool_steering=true`; falls through
+  to `{%- elif enable_thinking %}` which emits `<think>\n` naturally.
+- `helpers_b.rs:170`: `append_tool_choice_instruction(prompt, tool_choice, call_format)` takes
+  `call_format` as a parameter — no hardcoded `<tool_call>` text.
+- `bare_json.rs:48`: calls `append_tool_choice_instruction(&mut prompt, tool_choice, "JSON object")`.
+  `tool_choice="required"` yields: *"respond ONLY with a JSON object"* — consistent with the
+  "Do not wrap it in any tags" instruction in the system prompt body.
+
+**No new bugs found.**
+
+### P3 — Qwen3.5-122B SSM cache slots
+
+CLI propagation chain verified end-to-end:
+
+```
+cli.rs:279  (--ssm-cache-slots, default 16)
+  → serve_phases/build.rs:71    (args.ssm_cache_slots passed to model builder)
+  → factory/build.rs:373        (ssm_cache_slots field threaded through)
+  → impl_a1.rs:143-149          (SsmSnapshotPool::new(ssm_cache_slots, ...))
+```
+
+`SsmStatePool::new(&config, max_batch_size, ...)` (impl_a1.rs:134) is keyed on
+`max_batch_size` only; `--ssm-cache-slots 0` has no effect on its size. At default
+`max_batch_size=8`, `SsmStatePool` ≈ 1206 MB for 36 SSM layers. This is correct behavior.
+
+**Summary**: `--ssm-cache-slots 0` zeroes only the Marconi prefix-cache snapshot budget.
+The active-sequence state pool (`SsmStatePool`, 1206 MB) is independent. To reduce total
+SSM footprint use `--max-batch-size 1` (`SsmStatePool` ≈ 151 MB).
+
+**No code changes. All three priorities confirmed clean on `spec_ssm`.**
