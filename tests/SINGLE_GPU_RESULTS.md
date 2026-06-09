@@ -662,3 +662,39 @@ Files changed:
 Re-confirmed: `--ssm-cache-slots 0` correctly zeros `SsmSnapshotPool` (Marconi prefix cache).
 `SsmStatePool` (1206 MB active-sequence state) is sized by `--max-batch-size`, independent of
 the snapshot flag. No code change needed.
+
+---
+
+## Codebase Verification — 2026-06-09 (session_01RobJVmWy4vNe5dQfkjJhAg)
+
+Independent audit of `spec_ssm` HEAD (`df07318`). All prior fixes confirmed. No new bugs.
+
+### Corrects prior documentation inaccuracy — `cache_skip_mla.rs` scale variable
+
+The June 8–9 audit entries (lines 429, 483, 622) describe `cache_skip_mla.rs` as using
+`1/sqrt(hd=128)` or `hd=320`. The current source (after `3f673d4`) uses neither:
+
+```rust
+// cache_skip_mla.rs:267
+let inv_sqrt_d_absorbed = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt();
+```
+
+`kv_lora=256`, `mla_rope=64` → `inv_sqrt_d_absorbed = 1/sqrt(320)`. The variable `hd` is
+still 128 (nope+rope) and is passed only to the fused kernel as the expanded head stride —
+it is NOT used for the scale. The path also changed from `prefill_attention_64` (HDIM=128
+unabsorbed, which over-reads K pages for hd≤128) to `mla_fused_prefill` (HDIM=320 absorbed).
+
+### Summary of verified fixes (all on `spec_ssm`, absent on `main`)
+
+| Commit | File | Fix |
+|--------|------|-----|
+| `67f9616` | `paged_mla.rs:277` | First-chunk scale: `effective_attn_scale(128)` → `1/sqrt(320)` |
+| `3f673d4` | `cache_skip_mla.rs:267` | Switch to `mla_fused_prefill`; explicit `1/sqrt(kv_lora+rope=320)` |
+| `427104f` | `kv_dtypes.rs:20-22` | BF16 guard: empty-vec → `vec![BF16; N]` (prevents silent FP8 fallback) |
+| `df07318` | `helpers_b.rs:170-191` | `call_format` param: format-specific enforcement text per parser |
+
+`yarn.rs` (YaRN inv_freq), `MODEL.toml` flags (`disable_tool_steering`, `bare_json`,
+`thinking_in_tools`), and the `--ssm-cache-slots` CLI propagation chain are all verified
+clean as documented in prior audit entries.
+
+**Status: `spec_ssm` is ready for hardware re-test. No code changes this session.**
