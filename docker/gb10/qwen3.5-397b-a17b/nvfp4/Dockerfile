@@ -62,6 +62,7 @@ RUN apt-get update -qq && \
 
 COPY --from=builder /build/target/release/spark /usr/local/bin/spark
 COPY LICENSE /LICENSE
+COPY README.md /README.md
 
 ENV RUST_LOG=info
 EXPOSE 8888

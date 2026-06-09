@@ -1,12 +1,19 @@
-# Atlas Spark — NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 on GB10
+# Atlas Spark — Qwen3.6-35B-A3B-FP8 (Dense Hybrid SSM+Attn) on GB10
 #
 # Build from repo root:
-#   docker build -f docker/gb10/nemotron-super-120b-a12b/nvfp4/Dockerfile -t atlas-super-120b .
+#   docker build -f docker/gb10/qwen3.6-35b-a3b/nvfp4/Dockerfile -t atlas-gb10:qwen3.6-35b-a3b .
 #
-# Run:
+# Run (target only, no DFlash):
 #   docker run --gpus all --ipc=host -p 8888:8888 \
 #     -v ~/.cache/huggingface:/root/.cache/huggingface \
-#     atlas-super-120b serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+#     atlas-gb10:qwen3.6-35b-a3b serve Qwen/Qwen3.6-35B-A3B-FP8 \
+#       --max-seq-len 16384
+#
+# Run (with DFlash drafter pairing):
+#   docker run --gpus all --ipc=host -p 8888:8888 \
+#     -v ~/.cache/huggingface:/root/.cache/huggingface \
+#     atlas-gb10:qwen3.6-35b-a3b serve Qwen/Qwen3.6-35B-A3B-FP8 \
+#       --dflash --draft-model z-lab/Qwen3.6-35B-A3B-DFlash --max-seq-len 16384
 
 # ── Build stage ──────────────────────────────────────────────────
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS builder
@@ -24,10 +31,9 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/
 COPY kernels/ kernels/
-COPY jinja-templates/ jinja-templates/
 
 ENV ATLAS_TARGET_HW=gb10
-ENV ATLAS_TARGET_MODEL=nemotron-super-120b-a12b
+ENV ATLAS_TARGET_MODEL=qwen3.6-35b-a3b
 ENV ATLAS_TARGET_QUANT=nvfp4
 
 RUN cargo build --release -p spark-server
@@ -49,7 +55,6 @@ RUN apt-get update -qq && \
       (echo "ERROR: NCCL $NCCL_VER < 2.28 — symmetric memory APIs unavailable" && exit 1)
 
 COPY --from=builder /build/target/release/spark /usr/local/bin/spark
-COPY --from=builder /build/jinja-templates/ /jinja-templates/
 COPY LICENSE /LICENSE
 COPY README.md /README.md
 
