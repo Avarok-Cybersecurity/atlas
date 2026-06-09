@@ -594,6 +594,9 @@ pub(super) fn load_layers(
                 };
                 layers.push(layer);
             }
+            LayerType::SlidingAttention => {
+                unreachable!("unexpected SlidingAttention in this loader")
+            }
             LayerType::Moe => unreachable!("Qwen3.5 has no standalone MoE layers"),
         }
 

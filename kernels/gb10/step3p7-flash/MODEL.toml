@@ -1,0 +1,81 @@
+# Atlas kernel target: stepfun-ai/Step-3.7-Flash-NVFP4 — GB10 / NVFP4.
+#
+# Step 3.7 Flash is a 196B MoE (11B active per token) with:
+#   * 45 hidden layers: 3 dense FFN (layers 0-2) + 42 MoE (layers 3-44)
+#   * Mixed attention: 12 full_attention + 36 sliding_attention (window=512)
+#   * 288 experts top-8, sigmoid routing + correction bias
+#   * Shared expert per MoE layer (dim=1280)
+#   * Partial RoPE (0.5) — rotary on first 64 of 128 head dims
+#   * Head-wise attention gate (g_proj)
+#   * 3 MTP draft modules (num_nextn_predict_layers=3)
+#
+# Architecture is a hybrid of:
+#   * MiniMax M2 patterns: sigmoid routing, partial RoPE 0.5, 3 MTP, HDIM=128
+#   * Qwen 3.5 patterns: shared expert, attention gate, mixed attention types
+#
+# Kernel sources: reuses common/ kernels with -DHDIM=128 (same as MiniMax M2).
+# The sigmoid routing kernel (moe_topk_sigmoid) supports up to 512 experts;
+# Step 3.7 uses 288 — well within range.
+
+[model]
+name = "step3p7-flash"
+hf_id = "stepfun-ai/Step-3.7-Flash-NVFP4"
+params = "196B"
+active_params = "~11B"
+architecture = "Full Attention + Sliding Attention + 288-expert Sigmoid-Routed MoE + Shared Expert + MTP K=3"
+
+layers_total = 45
+layers_linear_attention = 0
+layers_full_attention = 12
+layers_sliding_attention = 33
+layer_pattern = "mixed attention (12 full + 33 sliding in 45 hidden layers, 1:3 full:sliding ratio + 3 sliding MTP = 48 total)"
+
+moe_experts = 288
+moe_topk = 8
+moe_intermediate = 1280
+shared_expert_intermediate = 1280
+moe_scoring_func = "sigmoid"
+moe_routing_bias = true
+
+hidden_dim = 4096
+head_dim = 128
+q_heads = 64
+kv_heads = 8
+
+# Partial RoPE — only first 64 of 128 head dims are rotated (same as MiniMax M2).
+rotary_dim = 64
+rope_theta = 500000
+partial_rotary_factor = 0.5
+
+# Per-head q_norm / k_norm
+qk_norm_type = "per_head"
+
+vocab_size = 128896
+max_position_embeddings = 262144
+attn_output_gate = true
+sliding_window = 512
+
+# MTP: 3 draft modules, each a full transformer layer with dense FFN.
+mtp_layers = 3
+mtp_transformer_layers = 1
+mtp_type = "full_attention"
+
+vision = true
+
+[sampling.default]
+temperature = 0.7
+top_p = 0.95
+top_k = 20
+
+[behavior]
+thinking_default = true
+thinking_in_tools = false
+max_thinking_budget = 2048
+
+[[model_types]]
+model_type = "step3p7"
+hidden_size = 4096
+
+[kernel]
+# hidden_dim(4096) * sizeof(bf16) = 8192
+moe_gate_shmem_bytes = 8192

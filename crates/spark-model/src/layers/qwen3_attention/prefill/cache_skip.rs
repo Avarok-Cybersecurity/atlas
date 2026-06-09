@@ -551,6 +551,39 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         }
+
+        // ── 9b. Per-head attention gate (Step 3.7 g_proj) ──
+        // g_proj produces one scalar per head from the normed hidden states.
+        // Applied as: attn_out = attn_out * sigmoid(gate).broadcast_over(hd)
+        if let Some(ref g_proj) = self.head_gate_weight {
+            // Reuse q_contiguous as scratch for gate output [n, nq] BF16.
+            // Q buffer is no longer needed after flash attention.
+            let gate_buf = q_contiguous;
+            // GEMM: normed [n, H] × g_proj^T [H, nq] → gate_buf [n, nq]
+            ops::dense_gemm_tc(
+                ctx.gpu,
+                self.dense_gemm_tc_k,
+                normed,
+                g_proj,
+                gate_buf,
+                n,
+                nq,
+                h,
+                stream,
+            )?;
+            // Sigmoid + broadcast multiply: attn_out[t,h,d] *= sigmoid(gate[t,h])
+            ops::sigmoid_gate_mul_head_broadcast(
+                ctx.gpu,
+                self.sigmoid_gate_head_broadcast_k,
+                attn_out,
+                gate_buf,
+                attn_out,
+                nq,
+                hd,
+                n,
+                stream,
+            )?;
+        }
         aprof!("sigmoid_gate", t0);
         t0 = if ctx.profile {
             ctx.gpu.synchronize(stream)?;

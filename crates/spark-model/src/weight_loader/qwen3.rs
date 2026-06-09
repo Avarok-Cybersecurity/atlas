@@ -401,6 +401,9 @@ impl ModelWeightLoader for Qwen3WeightLoader {
                         gpu,
                     )?));
                 }
+                LayerType::SlidingAttention => {
+                    unreachable!("unexpected SlidingAttention in this loader")
+                }
                 LayerType::Moe => unreachable!("Qwen3 has no standalone MoE layers"),
             }
 

@@ -111,6 +111,9 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                         norm, ssm, config, gpu, i,
                     )?));
                 }
+                atlas_core::config::LayerType::SlidingAttention => {
+                    unreachable!("unexpected SlidingAttention in this loader")
+                }
                 atlas_core::config::LayerType::Moe => {
                     // Standalone MoE FFN layer
                     let moe = load_nemotron_moe(

@@ -80,6 +80,9 @@ impl ModelWeights {
                         moe,
                     });
                 }
+                atlas_core::config::LayerType::SlidingAttention => {
+                    unreachable!("unexpected SlidingAttention in this loader")
+                }
                 atlas_core::config::LayerType::Moe => {
                     unreachable!("Qwen3 has no standalone MoE layers")
                 }

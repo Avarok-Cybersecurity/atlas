@@ -75,7 +75,7 @@ impl MoeLayer {
                 num_experts,
                 top_k,
                 ctx.config.norm_topk_prob,
-                1.0,
+                ctx.config.routed_scaling_factor as f32,
                 3,
                 stream,
             )?;

@@ -15,7 +15,7 @@ pub(super) fn maybe_run_minimax_m2_moe_transpose(
     gpu: &dyn GpuBackend,
     layers: &mut [Box<dyn TransformerLayer>],
 ) -> Result<()> {
-    if config.model_type != "minimax_m2" {
+    if config.model_type != "minimax_m2" && config.model_type != "step3p7" {
         return Ok(());
     }
     let unified_layout = std::env::var("ATLAS_UNIFIED_MOE_LAYOUT")
@@ -32,7 +32,11 @@ pub(super) fn maybe_run_minimax_m2_moe_transpose(
     let per_expert_one: usize = config.moe_intermediate_size * config.hidden_size * 9 / 16;
     let cost_full: usize = local_experts * 3 * per_expert_one * config.num_hidden_layers;
     let cost_gate_up: usize = local_experts * 2 * per_expert_one * config.num_hidden_layers;
-    let safety: usize = 2 * 1024 * 1024 * 1024; // 2 GB
+    let safety: usize = std::env::var("ATLAS_MOE_TRANSPOSE_SAFETY_MB")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .map(|mb| mb * 1024 * 1024)
+        .unwrap_or(2 * 1024 * 1024 * 1024); // 2 GB default, override via ATLAS_MOE_TRANSPOSE_SAFETY_MB
     let free = gpu.free_memory()?;
     let gb = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
     // Hybrid mode pre-flight: Block C Path 2 needs ~2× the cost_full

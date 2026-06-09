@@ -34,7 +34,11 @@ impl TransformerModel {
         stream: u64,
     ) -> Result<()> {
         let h = self.config.hidden_size;
-        let fp32 = 2usize;
+        let fp32 = if self.config.use_fp32_residual {
+            4usize
+        } else {
+            2usize
+        };
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
@@ -192,7 +196,11 @@ impl TransformerModel {
             {
                 self.gpu.synchronize(stream)?;
                 let last_start = (proc_count - 1) * h;
-                let (vals, _) = self.readback_bf16(hidden.offset(last_start * fp32), h)?;
+                let (vals, _) = if self.config.use_fp32_residual {
+                    self.readback_f32(hidden.offset(last_start * fp32), h)?
+                } else {
+                    self.readback_bf16(hidden.offset(last_start * fp32), h)?
+                };
                 let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
                 std::fs::create_dir_all(&dir).ok();
                 let path = std::path::Path::new(&dir).join(format!("atlas_L{i}.bin"));

@@ -9,10 +9,11 @@ fn nullable_u32<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<u
 }
 
 /// Layer type in a hybrid transformer model.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LayerType {
     FullAttention,
+    SlidingAttention,
     LinearAttention,
     /// Standalone MoE FFN layer (Nemotron-H: no mixer, just expert routing + FFN).
     Moe,
@@ -328,6 +329,12 @@ pub struct ModelConfig {
     /// present for byte-exact rope dim.
     #[serde(default)]
     pub rotary_dim: usize,
+    /// FP32 residual accumulation (Step 3.7). When true, residual
+    /// add/sub kernels operate in FP32 instead of BF16 to preserve
+    /// precision across 81 layers.
+    #[serde(skip)]
+    pub use_fp32_residual: bool,
+
     /// Target-model layer indices to capture intermediate hidden states from
     /// for DFlash speculative decoding. Sourced from the drafter's
     /// `dflash_config.target_layer_ids` (e.g., `[1, 10, 19, 28, 37]` for
@@ -439,7 +446,9 @@ mod parsers;
 mod tests;
 
 pub use dispatch::parse_config;
-pub(crate) use parsers::{parse_gemma4_params, parse_minimax_m2, parse_vision_config};
+pub(crate) use parsers::{
+    parse_gemma4_params, parse_minimax_m2, parse_step3p7, parse_vision_config,
+};
 pub use parsers::{parse_mistral_params, parse_quantization_config};
 
 pub(crate) fn finalize_config(config: &mut ModelConfig, raw: &serde_json::Value) -> Result<()> {

@@ -573,16 +573,29 @@ impl Qwen3AttentionLayer {
             )?;
         }
 
-        // ATLAS_OP_DUMP: attn_out AFTER sigmoid gate (input to o_proj linear).
-        if num_tokens > 0 {
-            let nq_hd = (nq * hd) as usize;
-            super::super::op_dump::dump_bf16(
+        // ── 9b. Per-head attention gate (Step 3.7 g_proj) ──
+        if let Some(ref g_proj) = self.head_gate_weight {
+            let gate_buf = q_contiguous; // Q buffer free after attention
+            ops::dense_gemm_tc(
                 ctx.gpu,
+                self.dense_gemm_tc_k,
+                normed,
+                g_proj,
+                gate_buf,
+                n,
+                nq,
+                h,
+                stream,
+            )?;
+            ops::sigmoid_gate_mul_head_broadcast(
+                ctx.gpu,
+                self.sigmoid_gate_head_broadcast_k,
                 attn_out,
-                (num_tokens - 1) * nq_hd * bf16,
-                nq_hd,
-                self.attn_layer_idx,
-                "attn_out_post_gate",
+                gate_buf,
+                attn_out,
+                nq,
+                hd,
+                n,
                 stream,
             )?;
         }

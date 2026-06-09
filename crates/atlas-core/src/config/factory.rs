@@ -97,6 +97,7 @@ impl ModelConfig {
             num_mtp_modules: 0,
             mtp_transformer_layers: 0,
             rotary_dim: 0,
+            use_fp32_residual: false,
             dflash_capture_layers: Vec::new(),
         }
     }
