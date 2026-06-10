@@ -25,8 +25,7 @@
 use anyhow::{Context, Result, bail};
 use safetensors::SafeTensors;
 use spark_model::forward::qwen3_5::{
-    self, FullAttentionScratch, LayerKvCache, LinearAttentionScratch, LinearAttentionState,
-    Qwen35ForwardConfig, Qwen35Kernels,
+    self, LayerKvCache, LinearAttentionState, Qwen35ForwardConfig, Qwen35Kernels,
 };
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelArg};
 use spark_runtime::metal_backend::MetalGpuBackend;
@@ -34,71 +33,18 @@ use spark_runtime::weights::mlx_int8::MlxInt8Weight;
 use std::time::Instant;
 use tokenizers::Tokenizer;
 
+mod alloc;
+mod eval_io;
 mod full_attention;
 mod linear_attention;
 
+use alloc::{
+    alloc_full_attention_scratch, alloc_linear_attention_scratch, alloc_linear_attention_state,
+};
 use full_attention::FullAttentionLayer;
 use linear_attention::LinearAttentionLayer;
 
-const CFG: Qwen35ForwardConfig = Qwen35ForwardConfig::qwen3_5_4b_mlx_int8();
-
-fn alloc_full_attention_scratch(backend: &MetalGpuBackend) -> Result<FullAttentionScratch> {
-    let alloc_bf16 = |n: u32| -> Result<DevicePtr> { Ok(backend.alloc(n as usize * 2)?) };
-    Ok(FullAttentionScratch {
-        x_norm: alloc_bf16(CFG.hidden)?,
-        q_full: alloc_bf16(CFG.q_total())?,
-        q_split: alloc_bf16(CFG.q_only())?,
-        gate_split: alloc_bf16(CFG.q_only())?,
-        k: alloc_bf16(CFG.kv_dim())?,
-        v: alloc_bf16(CFG.kv_dim())?,
-        q_norm_out: alloc_bf16(CFG.q_only())?,
-        k_norm_out: alloc_bf16(CFG.kv_dim())?,
-        attn_out: alloc_bf16(CFG.q_only())?,
-        gated_attn: alloc_bf16(CFG.q_only())?,
-        o: alloc_bf16(CFG.hidden)?,
-        x_resid: alloc_bf16(CFG.hidden)?,
-        x_norm2: alloc_bf16(CFG.hidden)?,
-        gate_act: alloc_bf16(CFG.intermediate)?,
-        up_act: alloc_bf16(CFG.intermediate)?,
-        x_out: alloc_bf16(CFG.hidden)?,
-    })
-}
-
-fn alloc_linear_attention_scratch(backend: &MetalGpuBackend) -> Result<LinearAttentionScratch> {
-    let alloc_bf16 = |n: u32| -> Result<DevicePtr> { Ok(backend.alloc(n as usize * 2)?) };
-    let alloc_f32 = |n: u32| -> Result<DevicePtr> { Ok(backend.alloc(n as usize * 4)?) };
-    Ok(LinearAttentionScratch {
-        x_norm: alloc_bf16(CFG.hidden)?,
-        dt_raw: alloc_bf16(CFG.num_state_heads())?,
-        b_raw: alloc_bf16(CFG.num_state_heads())?,
-        qkv: alloc_bf16(CFG.qkv_total_lin())?,
-        qkv_smooth: alloc_bf16(CFG.qkv_total_lin())?,
-        z: alloc_bf16(CFG.z_dim_lin())?,
-        gate: alloc_f32(CFG.num_state_heads())?,
-        beta: alloc_f32(CFG.num_state_heads())?,
-        y: alloc_bf16(CFG.z_dim_lin())?,
-        y_norm: alloc_bf16(CFG.z_dim_lin())?,
-        out: alloc_bf16(CFG.hidden)?,
-        x_resid: alloc_bf16(CFG.hidden)?,
-        x_norm2: alloc_bf16(CFG.hidden)?,
-        gate_act: alloc_bf16(CFG.intermediate)?,
-        up_act: alloc_bf16(CFG.intermediate)?,
-        x_final: alloc_bf16(CFG.hidden)?,
-    })
-}
-
-fn alloc_linear_attention_state(backend: &MetalGpuBackend) -> Result<LinearAttentionState> {
-    let conv_state_bytes = (CFG.qkv_total_lin() * CFG.conv_kernel_size) as usize * 4;
-    let gdn_state_floats = (CFG.num_v_heads_lin * CFG.k_head_dim_lin * CFG.v_head_dim_lin) as usize;
-    let conv1d_state = backend.alloc(conv_state_bytes)?;
-    let gdn_state = backend.alloc(gdn_state_floats * 4)?;
-    backend.memset(conv1d_state, 0, conv_state_bytes)?;
-    backend.memset(gdn_state, 0, gdn_state_floats * 4)?;
-    Ok(LinearAttentionState {
-        conv1d_state,
-        gdn_state,
-    })
-}
+pub const CFG: Qwen35ForwardConfig = Qwen35ForwardConfig::qwen3_5_4b_mlx_int8();
 
 fn main() -> Result<()> {
     let prompt =
@@ -362,14 +308,7 @@ fn main() -> Result<()> {
     let x_final = backend.alloc(CFG.hidden as usize * 2)?;
     let logits = backend.alloc(CFG.vocab as usize * 2)?;
     let result_buf = backend.alloc(4)?;
-    // ATLAS_LOGITS_OUT=path dumps the bf16 logits of every sampled
-    // position (raw little-endian, [n_steps, vocab]) for offline KLD /
-    // top-k agreement comparison across kv dtypes.
-    let logits_out = std::env::var("ATLAS_LOGITS_OUT").ok().map(|p| {
-        std::cell::RefCell::new(std::io::BufWriter::new(
-            std::fs::File::create(p).expect("create ATLAS_LOGITS_OUT"),
-        ))
-    });
+    let logits_out = eval_io::logits_writer();
     let sample_next = |x_in: DevicePtr| -> Result<u32> {
         backend.launch_typed(
             kernels.rms,
@@ -451,23 +390,7 @@ fn main() -> Result<()> {
     let mut current_token = next_token_id;
     let mut cur_pos = prompt_len;
 
-    // Teacher forcing: ATLAS_FORCE_TOKENS_FILE points at a
-    // newline-separated token-id list (one per decode step, position 0 =
-    // the token fed in place of the first sampled one). The model's own
-    // argmax is still recorded in `generated_ids` and its logits still
-    // dumped — but the FED token comes from the file, so two runs with
-    // the same file share an identical context at every position and
-    // their logit dumps are KLD-comparable end to end (no greedy-path
-    // divergence). Generate the file from a baseline run with
-    // ATLAS_DUMP_TOKENS=path.
-    let forced_tokens: Option<Vec<u32>> = std::env::var("ATLAS_FORCE_TOKENS_FILE").ok().map(|p| {
-        std::fs::read_to_string(&p)
-            .unwrap_or_else(|e| panic!("read ATLAS_FORCE_TOKENS_FILE {p}: {e}"))
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| l.trim().parse().expect("token id"))
-            .collect()
-    });
+    let forced_tokens = eval_io::forced_tokens();
     if let Some(f) = &forced_tokens {
         println!("  (teacher forcing {} tokens)", f.len());
         if let Some(&t0) = f.first() {
@@ -506,13 +429,7 @@ fn main() -> Result<()> {
             break;
         }
     }
-    // ATLAS_DUMP_TOKENS: write the argmax sequence (one id per line) for
-    // use as a teacher-forcing list in comparison runs.
-    if let Ok(path) = std::env::var("ATLAS_DUMP_TOKENS") {
-        let body: String = generated_ids.iter().map(|t| format!("{t}\n")).collect();
-        std::fs::write(&path, body)?;
-        println!("  (dumped {} token ids to {path})", generated_ids.len());
-    }
+    eval_io::maybe_dump_tokens(&generated_ids)?;
     let dec_ms = t_dec.elapsed().as_secs_f64() * 1000.0;
 
     let full_text = tokenizer
