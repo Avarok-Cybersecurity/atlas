@@ -419,7 +419,8 @@ impl Qwen3AttentionLayer {
                 k_contiguous.offset(wf * kv_dim * bf16),
                 v_contiguous.offset(wf * kv_dim * bf16),
                 kv_cache,
-                bmeta_slot.offset(wf * 4),
+                // slot_mapping entries are int64 (8 bytes each)
+                bmeta_slot.offset(wf * 8),
                 n - wf as u32,
                 nkv,
                 hd,
@@ -445,11 +446,12 @@ impl Qwen3AttentionLayer {
                         self.fused_k_norm_rope_mrope_cache_write_bf16_k,
                         raw_k.offset(wf * kv_dim * bf16),
                         self.attn.k_norm.weight,
+                        // positions are u32 (4 bytes), slots int64 (8 bytes)
                         bmeta_positions.offset(wf * 4),
                         bmeta_positions_h.offset(wf * 4),
                         bmeta_positions_w.offset(wf * 4),
                         kv_cache.k_pool_ptr(self.attn_layer_idx),
-                        bmeta_slot.offset(wf * 4),
+                        bmeta_slot.offset(wf * 8),
                         n - wf as u32,
                         nkv,
                         hd,
