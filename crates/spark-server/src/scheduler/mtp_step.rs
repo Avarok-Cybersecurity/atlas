@@ -33,6 +33,57 @@ pub fn step_mtp(
     // ── Phase A: Bootstrap decode for sequences without a draft ──
     for &idx in &bootstrap_idxs {
         let a = &mut active[idx];
+
+        // DFlash path: skip the standalone M=1 decode. The fused pass already
+        // computes every position's logit in one weight sweep, so the "next
+        // decoded token" is the bonus token at result[num_accepted] — the logit
+        // at the position immediately after the accepted prefix (§8 vLLM
+        // bonus-token pattern). Propose initial drafts using the DFlash hidden
+        // already captured at row 0 by the previous step's fused pass (or
+        // prefill), then route through step_verify_k3/k2 which handles the
+        // fused forward, accept/reject, bonus-token emit, and re-propose for
+        // the next step. This replaces the two-sweep sequence (M=1 decode here
+        // + M=1+k fused in Phase B) with a single M=1+k fused sweep.
+        if dflash_verify_raw_argmax {
+            let eff = if a.grammar_state.is_some() { 1 } else { num_drafts };
+            let _gmask = mtp_grammar_mask_for(a);
+            match model.run_mtp_propose_multi(
+                a.last_token,
+                a.seq.seq_len,
+                eff,
+                &mut a.seq,
+                0,
+                _gmask.as_deref(),
+            ) {
+                Ok(init) if !init.is_empty() => {
+                    if eff >= 2 && init.len() >= 2 {
+                        step_verify_k3(
+                            model, a, &init, num_drafts, verify_ctx,
+                            dflash_verify_raw_argmax,
+                        );
+                    } else {
+                        step_verify_k2(
+                            model, a, &init, num_drafts, verify_ctx,
+                            dflash_verify_raw_argmax,
+                        );
+                    }
+                    continue;
+                }
+                Ok(_) => {
+                    tracing::warn!(
+                        "DFlash bootstrap propose returned empty; falling back to standalone decode"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("DFlash bootstrap propose: {e:#}");
+                }
+            }
+            // Rare fallback: propose failed or returned empty (e.g. drafter not
+            // yet primed). Fall through to the standalone decode below so the
+            // sequence emits its next token rather than stalling.
+        }
+
+        // Non-DFlash path (or DFlash-propose fallback): EP broadcast + standalone decode.
         // EP: broadcast token to worker before decode (worker runs decode in lockstep).
         if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, a.last_token) {
             tracing::error!("EP broadcast bootstrap token: {e:#}");

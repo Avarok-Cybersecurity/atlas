@@ -35,6 +35,7 @@ mod verify_b;
 mod verify_c;
 mod verify_c2;
 mod verify_d;
+mod verify_fused;
 
 impl Model for TransformerModel {
     fn prepare_vision_embed(&self, images: &[(Vec<f32>, usize, usize)]) -> Result<()> {
@@ -254,6 +255,14 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<Vec<u32>> {
         self.decode_verify_graphed_kgamma_dispatch(tokens, seq, _stream)
+    }
+    fn decode_and_verify_fused(
+        &self,
+        tokens: &[u32],
+        seq: &mut SequenceState,
+        _stream: u64,
+    ) -> Result<Vec<u32>> {
+        self.decode_and_verify_fused_dispatch(tokens, seq, _stream)
     }
     fn save_hidden_for_mtp(&self, token_idx: usize, _stream: u64) -> Result<()> {
         self.save_hidden_for_mtp_dispatch(token_idx, _stream)

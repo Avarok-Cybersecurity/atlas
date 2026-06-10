@@ -70,17 +70,29 @@ pub fn step_verify_k3(
     }
 
     let t_verify = Instant::now();
-    let result = match model.decode_verify_graphed_k3(&tokens_k3, &mut a.seq, 0) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!("decode_verify_graphed_k3: {e:#}");
-            a.finished = true;
-            return;
+    let result_vec: Vec<u32> = if dflash_verify_raw_argmax {
+        // Fused path: single M=3 forward, DFlash hidden captured at row 0.
+        match model.decode_and_verify_fused(&tokens_k3, &mut a.seq, 0) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("decode_and_verify_fused (k3): {e:#}");
+                a.finished = true;
+                return;
+            }
+        }
+    } else {
+        match model.decode_verify_graphed_k3(&tokens_k3, &mut a.seq, 0) {
+            Ok(r) => r.to_vec(),
+            Err(e) => {
+                tracing::error!("decode_verify_graphed_k3: {e:#}");
+                a.finished = true;
+                return;
+            }
         }
     };
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
-    let [v0_argmax, v1_argmax, v2_argmax] = result;
+    let (v0_argmax, v1_argmax, v2_argmax) = (result_vec[0], result_vec[1], result_vec[2]);
 
     let (v0, v1, v2) = if dflash_verify_raw_argmax {
         // DFlash drafter proposes on raw argmax; verify on the SAME (GOLD)

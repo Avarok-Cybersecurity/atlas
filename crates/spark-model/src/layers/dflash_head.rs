@@ -526,9 +526,32 @@ impl DraftProposer for BlockDiffusionDraftHead {
         Ok(())
     }
 
-    fn free_state(&self, _state: &mut dyn ProposerState) -> Result<()> {
-        // Phase 1: nothing to free (no allocated KV blocks yet). Phase 2
-        // reclaims paged blocks across all drafter layers.
+    fn free_state(&self, state: &mut dyn ProposerState) -> Result<()> {
+        // Phase 2 (Option B) reclaim: return the drafter's lazily-allocated
+        // paged KV blocks to the pool on request completion. Without this the
+        // ~257-block Option-B drafter cache (allocated in propose.rs when
+        // block_table_dev.is_none()) is never freed, so the SECOND request to
+        // a long-lived server starts with zero free drafter blocks and floods
+        // "DFlash Option B: paged KV cache exhausted". Mirrors MtpHead::free_state.
+        let dstate = match state.as_any_mut().downcast_mut::<DflashProposerState>() {
+            Some(s) => s,
+            // Phase 1 / non-DFlash proposer state: nothing allocated, nothing to free.
+            None => return Ok(()),
+        };
+        if !dstate.block_table.is_empty() {
+            self.kv_cache.lock().free_blocks(&dstate.block_table);
+            dstate.block_table.clear();
+        }
+        // Reset the lazy-alloc guard + watermarks so the NEXT request's first
+        // propose re-allocates fresh blocks and re-precomputes ctx from a clean
+        // slate (propose.rs gates alloc on block_table_dev.is_none()). The small
+        // device block-table buffer is re-allocated there; its prior handle is
+        // not freed here because free_state has no gpu handle (negligible ~1KB
+        // vs the reclaimed KV blocks — tracked as a follow-up if it matters).
+        dstate.block_table_dev = None;
+        dstate.max_ctx_count_drafter = 0;
+        dstate.ctx_committed = 0;
+        dstate.last_num_drafted = 0;
         Ok(())
     }
 }

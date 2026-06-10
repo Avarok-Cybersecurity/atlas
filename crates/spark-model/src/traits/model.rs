@@ -403,6 +403,26 @@ pub trait Model: Send + Sync {
         self.decode_verify_graphed_kgamma(tokens, seq, stream)
     }
 
+    /// DFlash fused decode+verify: one M=(1+k) forward replacing separate
+    /// M=1 decode + M=k verify on the DFlash path.
+    ///
+    /// `tokens[0]` = accepted/decode token; `tokens[1..]` = draft block.
+    /// `try_dflash_capture` fires at row 0 so the DFlash drafter conditions
+    /// on the confirmed-accepted token's per-layer hidden, never on a
+    /// potentially-rejected draft's hidden.
+    ///
+    /// CUDA-graph cache keyed by `(slot_idx, tokens.len())`. Default falls
+    /// back to `decode_verify_graphed_kgamma` (which itself falls back to
+    /// eager `decode_verify`) for models that don't override.
+    fn decode_and_verify_fused(
+        &self,
+        tokens: &[u32],
+        seq: &mut SequenceState,
+        stream: u64,
+    ) -> Result<Vec<u32>> {
+        self.decode_verify_graphed_kgamma(tokens, seq, stream)
+    }
+
     /// Save the post-norm hidden state at `token_idx` (0 or 1) to a
     /// dedicated MTP input buffer. Must precede `run_mtp_propose` — MTP
     /// overwrites shared buffers including `norm_output`.

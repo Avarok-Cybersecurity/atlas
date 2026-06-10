@@ -461,6 +461,7 @@ impl TransformerModel {
             verify3_graph: Mutex::new(std::collections::HashMap::new()),
             verify4_graph: Mutex::new(std::collections::HashMap::new()),
             verify_kgamma_graph: Mutex::new(std::collections::HashMap::new()),
+            fused_graph: Mutex::new(std::collections::HashMap::new()),
             prefix_cache,
             secondary_stream,
             secondary_event,
