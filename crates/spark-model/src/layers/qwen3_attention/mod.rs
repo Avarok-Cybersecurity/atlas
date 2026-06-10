@@ -18,6 +18,7 @@ mod decode;
 mod helpers;
 mod init;
 mod init_kernel_dispatch;
+mod kernel_requirements;
 mod op_dump;
 // `innerq_driver` calls the CUDA Driver API directly via `atlas_core::registry`,
 // which is itself gated on the `cuda` feature. Mirror that gate here so the
@@ -37,13 +38,13 @@ pub use types::{MlaWeights, Qwen3AttentionLayer};
 /// Startup fail-fast for `--kv-cache-dtype`: resolve every kernel handle the
 /// dtype's dispatch arms require (chunked-prefill kernel, WHT bookends) and
 /// error with the full missing list — BEFORE the multi-minute weight load,
-/// instead of at first dispatch. See `init_kernel_dispatch.rs`.
+/// instead of at first dispatch. See `kernel_requirements.rs`.
 pub fn validate_required_kv_kernels(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
     kv_dtype: spark_runtime::kv_cache::KvCacheDtype,
     head_dim: usize,
 ) -> anyhow::Result<()> {
-    init_kernel_dispatch::validate_required_kernels(gpu, kv_dtype, head_dim)
+    kernel_requirements::validate_required_kernels(gpu, kv_dtype, head_dim)
 }
 
 #[cfg(feature = "cuda")]
