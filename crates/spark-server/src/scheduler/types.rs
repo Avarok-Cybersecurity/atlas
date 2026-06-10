@@ -303,7 +303,6 @@ pub(super) fn consume_budget(remaining: &mut usize) -> bool {
     true
 }
 
-
 /// A sequence that has been swapped out to disk (KV + SSM state saved to file).
 pub(super) struct SwappedSeq {
     pub tokens: Vec<u32>,
@@ -400,4 +399,3 @@ mod budget_tests {
         assert_eq!(r, 0);
     }
 }
-
