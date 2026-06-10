@@ -266,6 +266,44 @@ pub(super) struct ActiveSeq {
     pub cached_prompt_tokens: u32,
 }
 
+impl ActiveSeq {
+    /// Consume one token of generation budget (SSOT for the two decode
+    /// paths: MTP `emit_step::emit_token` and non-MTP
+    /// `decode_logits_content::handle_content_token`).
+    ///
+    /// `remaining` reaching 0 must finish the sequence at the next
+    /// `remaining == 0` check. A second decrement at 0 means a budget
+    /// desync (e.g. a token processed after the length stop should have
+    /// fired): in release builds the old bare `-= 1` wrapped to
+    /// usize::MAX, unbounding generation entirely (issue #94's
+    /// never-terminating ngram loop; debug builds panicked with
+    /// 'attempt to subtract with overflow'). Saturate, log, and finish
+    /// instead — never wrap, never hide the desync.
+    pub fn consume_generation_budget(&mut self) {
+        if !consume_budget(&mut self.remaining) {
+            tracing::warn!(
+                output_tokens = self.output_tokens.len(),
+                "generation budget decremented at 0 (token processed after \
+                 length stop should have fired) — finishing sequence instead \
+                 of wrapping"
+            );
+            self.finished = true;
+        }
+    }
+}
+
+/// Decrement `remaining` by one. Returns false (without touching
+/// `remaining`) when it is already 0 — the caller must finish the
+/// sequence rather than wrap.
+pub(super) fn consume_budget(remaining: &mut usize) -> bool {
+    if *remaining == 0 {
+        return false;
+    }
+    *remaining -= 1;
+    true
+}
+
+
 /// A sequence that has been swapped out to disk (KV + SSM state saved to file).
 pub(super) struct SwappedSeq {
     pub tokens: Vec<u32>,
@@ -338,3 +376,28 @@ pub(super) struct SwappedSeq {
     pub timeout_at: Option<Instant>,
     pub swap_id: u64,
 }
+
+#[cfg(test)]
+mod budget_tests {
+    use super::consume_budget;
+
+    #[test]
+    fn consume_budget_decrements_to_zero() {
+        let mut r = 2usize;
+        assert!(consume_budget(&mut r));
+        assert_eq!(r, 1);
+        assert!(consume_budget(&mut r));
+        assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn consume_budget_at_zero_signals_finish_and_never_wraps() {
+        // Regression: a bare `remaining -= 1` at 0 wrapped to usize::MAX in
+        // release builds, unbounding generation (issue #94 ngram runaway),
+        // and panicked in debug builds.
+        let mut r = 0usize;
+        assert!(!consume_budget(&mut r));
+        assert_eq!(r, 0);
+    }
+}
+

@@ -64,7 +64,7 @@ fn describe_content_token_loop(tokens: &[u32]) -> Option<(usize, usize)> {
 /// SSM recurrent state on hybrid models (see
 /// [`super::rollback::rollback_to_boundary`]).
 pub fn handle_content_token(a: &mut ActiveSeq, model: &dyn Model) {
-    a.remaining -= 1;
+    a.consume_generation_budget();
     a.content_started = true;
     a.content_tokens = a.content_tokens.saturating_add(1);
     // F1 (2026-06-02): unconditional per-generation post-think content

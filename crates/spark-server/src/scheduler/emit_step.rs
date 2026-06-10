@@ -206,7 +206,7 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
             }
         }
     } else {
-        a.remaining -= 1;
+        a.consume_generation_budget();
         // Clear think_just_ended one-shot now that we've consumed the
         // token after </think>.
         a.think_just_ended = false;
