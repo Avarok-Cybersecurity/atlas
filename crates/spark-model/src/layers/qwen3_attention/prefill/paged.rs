@@ -600,6 +600,20 @@ impl Qwen3AttentionLayer {
             )?;
         }
 
+        // ATLAS_OP_DUMP: attn_out AFTER sigmoid gate (input to o_proj linear).
+        if num_tokens > 0 {
+            let nq_hd = (nq * hd) as usize;
+            super::super::op_dump::dump_bf16(
+                ctx.gpu,
+                attn_out,
+                (num_tokens - 1) * nq_hd * bf16,
+                nq_hd,
+                self.attn_layer_idx,
+                "attn_out_post_gate",
+                stream,
+            )?;
+        }
+
         // ── 10. O projection GEMM ── (extracted to paged_oproj.rs)
         let o_out = self.prefill_attention_paged_oproj(attn_out, n, h, nq, hd, ctx, stream)?;
 
