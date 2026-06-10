@@ -249,6 +249,15 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             "dflash: --enable-prefix-caching has a community-reported correctness regression on SM12.x with DFlash; outputs may be wrong on multi-turn cache hits. Run a greedy diff-test against a non-DFlash baseline before relying on outputs."
         );
     }
+    if args.speculative && args.enable_prefix_caching && config.num_ssm_layers() > 0 {
+        tracing::warn!(
+            "--enable-prefix-caching with --speculative on a hybrid (SSM) model has a KNOWN residual \
+             corruption on warm Marconi restores under agentic multi-turn traffic (~1 in 3 runs emit \
+             duplicated tool-argument fragments). Each feature is verified clean alone (2026-06-10 \
+             N=10 gates). Until the interaction fix lands, drop one of the two flags for production \
+             agentic serving."
+        );
+    }
     let prefix_cache = serve_phases::build_prefix_cache(&args);
     let comm = serve_phases::init_nccl_comm(&args, gpu.as_ref(), world_size)?;
     if args.profile {
