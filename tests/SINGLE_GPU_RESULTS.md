@@ -830,3 +830,33 @@ The active-sequence state pool (`SsmStatePool`, 1206 MB) is independent. To redu
 SSM footprint use `--max-batch-size 1` (`SsmStatePool` ≈ 151 MB).
 
 **No code changes. All three priorities confirmed clean on `spec_ssm`.**
+
+---
+
+## Codebase Verification — 2026-06-10
+
+Fresh audit of `spec_ssm` HEAD (`05996f3`). All prior fixes confirmed present. No new bugs.
+
+This session initially read files from `main` (which shows the unfixed state, useful as a
+cross-check), then switched to `spec_ssm` and re-verified. The differences between branches
+confirm that all four spec_ssm-only fixes are absent from main:
+
+| File | main state | spec_ssm state |
+|------|-----------|---------------|
+| `paged_mla.rs:277` | `effective_attn_scale(hd=128)` = `1/sqrt(128)` | `1.0f32 / (mla_cache_dim as f32).sqrt()` = `1/sqrt(320)` ✓ |
+| `cache_skip_mla.rs` | `prefill_attention_64` + `1/sqrt(128)` | `mla_fused_prefill` + `1.0f32/((kv_lora+mla_rope) as f32).sqrt()` ✓ |
+| `kv_dtypes.rs:17-21` | `if hp==0 \|\| BF16 { return vec![] }` (FP8 leakage risk) | `if BF16 { return vec![Bf16;N] }` (explicit BF16 vector) ✓ |
+| `helpers_b.rs` | hardcoded `<tool_call> block` for all parsers | `call_format: &str` param; `bare_json` passes `"JSON object"` ✓ |
+
+Additionally, `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` differs between branches:
+- `spec_ssm`: `thinking_in_tools = false` (grammar-constrained bare_json path; think block
+  suppressed during tool calls to prevent JSON landing inside `<think>`)
+- `main`: `thinking_in_tools = true` (2026-05-23 project-wide flip; per-model rollback noted
+  in comment). This divergence is expected and intentional — spec_ssm preserves the tested
+  `false` value for this model.
+
+All other verified items (YaRN `yarn.rs`, `mistral-small-4/MODEL.toml` BF16 guard,
+nemotron `disable_tool_steering`, `tool_call_parser = "bare_json"`, SSM pool propagation)
+are identical between branches and confirmed clean.
+
+**No code changes this session. `spec_ssm` remains ready for hardware re-test.**
