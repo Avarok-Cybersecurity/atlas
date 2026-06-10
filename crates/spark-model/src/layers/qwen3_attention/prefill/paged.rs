@@ -26,6 +26,10 @@ impl Qwen3AttentionLayer {
         // same struct. When None, the function behaves single-stream
         // (reading from ctx.attn_metadata as before).
         batched_meta: Option<&BatchedAttnMetadata>,
+        // First `kv_write_floor` processed tokens skip the paged-cache K/V
+        // write (Marconi warm-hit replay over already-cached positions —
+        // see the section-7 comment). 0 on cold prefills.
+        kv_write_floor: usize,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<DevicePtr> {
@@ -397,14 +401,26 @@ impl Qwen3AttentionLayer {
         // ── 7. Write all K/V to paged cache ──
         // MLA models write compressed cache inside the MLA block above (1 head × 320 dims).
         // Standard models write expanded cache here (nkv heads × hd dims).
-        if self.mla.is_none() {
+        //
+        // Warm-hit replay write floor: the first `kv_write_floor` processed
+        // tokens are a Marconi SSM-replay over positions whose K/V already
+        // sit in SHARED refcounted prefix-cache blocks (written by the pass
+        // that originally produced them). The recompute is NOT bit-exact to
+        // those originals (FLA-vs-WY4 chunk grids, batched-GEMM-vs-decode-
+        // GEMV accumulation order), so rewriting would replace good cached
+        // values with drifted ones and the drift ratchets across agentic
+        // turns (2026-06-10 warm-hit token-stutter). Skip the write for the
+        // floor region — section 8's paged attention reads the original
+        // cached K/V at those positions, which is exactly what we want.
+        let wf = kv_write_floor.min(num_tokens);
+        if self.mla.is_none() && wf < num_tokens {
             self.write_kv_cache(
                 ctx.gpu,
-                k_contiguous,
-                v_contiguous,
+                k_contiguous.offset(wf * kv_dim * bf16),
+                v_contiguous.offset(wf * kv_dim * bf16),
                 kv_cache,
-                bmeta_slot,
-                n,
+                bmeta_slot.offset(wf * 4),
+                n - wf as u32,
                 nkv,
                 hd,
                 bs as u32,
@@ -427,14 +443,14 @@ impl Qwen3AttentionLayer {
                     ops::fused_k_norm_rope_cache_write_bf16_mrope(
                         ctx.gpu,
                         self.fused_k_norm_rope_mrope_cache_write_bf16_k,
-                        raw_k,
+                        raw_k.offset(wf * kv_dim * bf16),
                         self.attn.k_norm.weight,
-                        bmeta_positions,
-                        bmeta_positions_h,
-                        bmeta_positions_w,
+                        bmeta_positions.offset(wf * 4),
+                        bmeta_positions_h.offset(wf * 4),
+                        bmeta_positions_w.offset(wf * 4),
                         kv_cache.k_pool_ptr(self.attn_layer_idx),
-                        bmeta_slot,
-                        n,
+                        bmeta_slot.offset(wf * 4),
+                        n - wf as u32,
                         nkv,
                         hd,
                         self.rotary_dim_override

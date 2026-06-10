@@ -375,9 +375,20 @@ impl TransformerModel {
         // ── 4. Forward through all layers ──
         // When Marconi skip is active, seq_len_start > 0 triggers paged attention
         // in attention layers. SSM layers process only proc_count tokens using
-        // restored h_state + conv_state. kv_write_start=0 because ALL tokens in
-        // the batch are uncached (cached ones were skipped entirely).
-        let layer_kv_write_start = if marconi_skip { 0 } else { kv_write_start };
+        // restored h_state + conv_state. On a Marconi *intermediate* hit the
+        // processed batch starts at snap_tok and its first (matched -
+        // snap_tok) tokens replay positions whose K/V already live in shared
+        // prefix-cache blocks — pass that count as the layer write floor so
+        // attention does not rewrite them with non-bit-exact recomputed
+        // values (see prefill_b/forward_layers.rs). On a leaf hit the floor
+        // is 0 (everything processed is genuinely new).
+        let layer_kv_write_start = if marconi_skip {
+            seq.cached_prefix_tokens
+                .saturating_sub(seq_len_start)
+                .min(proc_count)
+        } else {
+            kv_write_start
+        };
         let diag_prefill = self.profile && proc_count > 1; // Only with --profile
         for (i, layer) in self.layers.iter().enumerate() {
             layer

@@ -137,6 +137,7 @@ impl Qwen3AttentionLayer {
                 disk_block_ids,
                 disk_last_offloaded_per_layer,
                 batched_meta,
+                kv_write_start,
                 ctx,
                 stream,
             )?

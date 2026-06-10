@@ -416,7 +416,17 @@ impl TransformerModel {
         };
 
         // ── 4. Per-layer forward: SSM uses three-phase, attention uses standard ──
-        let layer_kv_write_start = if marconi_skip { 0 } else { kv_write_start };
+        // Marconi intermediate hit: the first (matched - proc_start) processed
+        // tokens replay already-cached positions — write-floor them so the
+        // shared prefix-cache blocks are not rewritten with non-bit-exact
+        // recomputed K/V (see prefill_b/forward_layers.rs).
+        let layer_kv_write_start = if marconi_skip {
+            seq.cached_prefix_tokens
+                .saturating_sub(proc_start)
+                .min(proc_count)
+        } else {
+            kv_write_start
+        };
         let gdn_bufs = GdnPrefillBuffers {
             qkv: self.gdn_buf_qkv,
             gate_beta: self.gdn_buf_gate_beta,
