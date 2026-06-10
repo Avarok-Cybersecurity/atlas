@@ -113,3 +113,6 @@ docker/gb10/Dockerfile.ffnbf16
 docker/gb10/Dockerfile.fp32res
 docker/gb10/Dockerfile.hangdiag
 docker/gb10/Dockerfile.zeropen
+
+# Internal Friday/Claude handoff + scratch docs — never commit
+docs/design/
