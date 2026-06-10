@@ -1,11 +1,11 @@
 name: Security Audit
 
 on:
+  # No path filter on pull_request: cargo deny is a required check, and a
+  # path-filtered required check never reports on PRs outside its paths
+  # (kernel-only diffs), leaving them permanently "expected" and unmergeable.
+  # The job itself takes well under a minute.
   pull_request:
-    paths:
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
-      - 'deny.toml'
   push:
     branches: [main]
     paths:
