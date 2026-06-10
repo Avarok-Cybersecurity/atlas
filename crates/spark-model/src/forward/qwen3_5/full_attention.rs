@@ -144,13 +144,20 @@ pub fn forward_full_attention<Q: QuantWeights>(
 
     // KV-cache append uses the post-RoPE k_norm_out.
     let scale: f32 = 1.0 / (cfg.head_dim as f32).sqrt();
-    if let Some((k_scales, v_scales)) = kv.turbo8_scales {
-        // ── Turbo8 path ──
+    if let Some((k_scales, v_scales)) = kv.scales {
+        // ── Turbo path (Turbo8 / Turbo4) ──
         // The cache stores WHT-rotated values: rotate K and V in place
         // before the quantizing append (mirrors the CUDA write-path
         // bookend), rotate Q to match (<WHT(Q), WHT(K)> = <Q, K>), run
         // the dequantizing attention, then rotate the output back out
         // of the rotated-V basis.
+        let (kvap_turbo, attn_turbo) = match kv.dtype {
+            super::MetalKvDtype::Turbo8 => (k.kvap_turbo8, k.attn_turbo8),
+            super::MetalKvDtype::Turbo4 => (k.kvap_turbo4, k.attn_turbo4),
+            super::MetalKvDtype::Bf16 => {
+                anyhow::bail!("LayerKvCache: Bf16 dtype with scales buffers")
+            }
+        };
         let hd_bytes = cfg.head_dim.to_le_bytes();
         for buf in [scratch.k_norm_out, scratch.v] {
             gpu.launch_typed(
@@ -164,7 +171,7 @@ pub fn forward_full_attention<Q: QuantWeights>(
         }
         let num_groups = cfg.kv_dim() / 16;
         gpu.launch_typed(
-            k.kvap_turbo8,
+            kvap_turbo,
             [num_groups.div_ceil(64), 1, 1],
             [64, 1, 1],
             0,
@@ -193,7 +200,7 @@ pub fn forward_full_attention<Q: QuantWeights>(
             ],
         )?;
         gpu.launch_typed(
-            k.attn_turbo8,
+            attn_turbo,
             [cfg.num_heads, 1, 1],
             [32, 1, 1],
             0,

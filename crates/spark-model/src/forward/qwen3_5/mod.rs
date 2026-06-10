@@ -143,12 +143,14 @@ pub struct Qwen35Kernels {
     pub gdn_gate: KernelHandle,
     pub sigmoid: KernelHandle,
     pub gdn_dec: KernelHandle,
-    /// TurboQuant Turbo8 KV cache path: quantizing append, dequantizing
-    /// decode attention, and the WHT rotation bookends. Resolved
-    /// unconditionally (the kernels live in the common set) so a Turbo8
-    /// cache can never silently fall back to the bf16 kernels.
+    /// TurboQuant KV cache paths (Turbo8 / Turbo4): quantizing appends,
+    /// dequantizing decode attentions, and the WHT rotation bookends.
+    /// Resolved unconditionally (the kernels live in the common set) so
+    /// a turbo cache can never silently fall back to the bf16 kernels.
     pub kvap_turbo8: KernelHandle,
     pub attn_turbo8: KernelHandle,
+    pub kvap_turbo4: KernelHandle,
+    pub attn_turbo4: KernelHandle,
     pub wht: KernelHandle,
     pub wht_inv: KernelHandle,
 }
@@ -172,56 +174,96 @@ impl Qwen35Kernels {
             gdn_dec: gpu.kernel("gated_delta_rule_decode", "gated_delta_rule_decode")?,
             kvap_turbo8: gpu.kernel("kv_cache_append_turbo8", "kv_cache_append_turbo8")?,
             attn_turbo8: gpu.kernel("attention_decode_turbo8", "attention_decode_turbo8")?,
+            kvap_turbo4: gpu.kernel("kv_cache_append_turbo4", "kv_cache_append_turbo4")?,
+            attn_turbo4: gpu.kernel("attention_decode_turbo4", "attention_decode_turbo4")?,
             wht: gpu.kernel("wht_bf16", "wht_bf16_inplace")?,
             wht_inv: gpu.kernel("wht_bf16", "wht_bf16_inplace_inv")?,
         })
     }
 }
 
+/// KV cache storage format for the Metal contiguous cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetalKvDtype {
+    /// Raw bfloat, 2 bytes/elem.
+    Bf16,
+    /// FP8 E4M3 data + bf16 group-of-16 scales, WHT-rotated basis.
+    /// 2.13× smaller than bf16.
+    Turbo8,
+    /// 4-bit Lloyd-Max codebook indices + FP8 group-of-16 scales
+    /// (matched-norm L2), WHT-rotated basis. 3.56× smaller than bf16.
+    Turbo4,
+}
+
+impl std::str::FromStr for MetalKvDtype {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "bf16" => Ok(Self::Bf16),
+            "turbo8" => Ok(Self::Turbo8),
+            "turbo4" => Ok(Self::Turbo4),
+            other => {
+                anyhow::bail!("kv dtype {other:?} not supported on metal (bf16 | turbo8 | turbo4)")
+            }
+        }
+    }
+}
+
 /// Per-layer KV cache for a full-attention layer (single-batch).
 ///
-/// Two storage modes:
-/// - **Bf16** (`turbo8_scales == None`): `k`/`v` hold raw bfloat
-///   `[capacity, KV_DIM]`.
-/// - **Turbo8** (`turbo8_scales == Some(..)`): `k`/`v` hold FP8 E4M3
-///   bytes `[capacity, KV_DIM]` in the WHT-rotated basis; the scales
-///   buffers hold bfloat per-16-element group scales
-///   `[capacity, KV_DIM / 16]`. The forward routes appends and
-///   attention through the turbo kernels with WHT(Q)/iWHT(out)
-///   bookends.
+/// `dtype` selects the storage format; for the turbo formats `k`/`v`
+/// hold packed quantized data in the WHT-rotated basis and `scales`
+/// holds the per-16-element group scales (bf16 for Turbo8, FP8 E4M3
+/// bytes for Turbo4). The forward routes appends and attention through
+/// the matching kernels with WHT(Q)/iWHT(out) bookends.
 pub struct LayerKvCache {
     pub k: DevicePtr,
     pub v: DevicePtr,
     /// Capacity in tokens — caller pre-allocates `max_seq_len * KV_DIM`.
     #[allow(dead_code)]
     pub capacity: u32,
-    /// `Some((k_scales, v_scales))` switches this layer to Turbo8.
-    pub turbo8_scales: Option<(DevicePtr, DevicePtr)>,
+    pub dtype: MetalKvDtype,
+    /// `(k_scales, v_scales)` for the turbo dtypes; unused for Bf16.
+    pub scales: Option<(DevicePtr, DevicePtr)>,
 }
 
 impl LayerKvCache {
-    /// Allocate a raw-bf16 cache (`max_seq * kv_dim` bfloat per side).
-    pub fn alloc_bf16(gpu: &dyn GpuBackend, max_seq: u32, kv_dim: u32) -> Result<Self> {
-        let bytes = (max_seq * kv_dim) as usize * 2;
-        Ok(Self {
-            k: gpu.alloc(bytes)?,
-            v: gpu.alloc(bytes)?,
-            capacity: max_seq,
-            turbo8_scales: None,
-        })
-    }
-
-    /// Allocate a Turbo8 cache: 1 byte/elem data + bf16 group scales
-    /// (group of 16) per side — 2.13× smaller than the bf16 cache.
-    pub fn alloc_turbo8(gpu: &dyn GpuBackend, max_seq: u32, kv_dim: u32) -> Result<Self> {
-        assert!(kv_dim % 16 == 0, "Turbo8 needs KV_DIM divisible by 16");
-        let data_bytes = (max_seq * kv_dim) as usize;
-        let scale_bytes = (max_seq * kv_dim / 16) as usize * 2;
+    /// Allocate a cache in the given storage format.
+    pub fn alloc(
+        gpu: &dyn GpuBackend,
+        dtype: MetalKvDtype,
+        max_seq: u32,
+        kv_dim: u32,
+    ) -> Result<Self> {
+        let (data_bytes, scale_bytes) = match dtype {
+            MetalKvDtype::Bf16 => ((max_seq * kv_dim) as usize * 2, 0),
+            MetalKvDtype::Turbo8 => {
+                assert!(kv_dim % 16 == 0, "Turbo8 needs KV_DIM divisible by 16");
+                // 1 byte/elem + bf16 scale per group of 16.
+                (
+                    (max_seq * kv_dim) as usize,
+                    (max_seq * kv_dim / 16) as usize * 2,
+                )
+            }
+            MetalKvDtype::Turbo4 => {
+                assert!(kv_dim % 16 == 0, "Turbo4 needs KV_DIM divisible by 16");
+                // 2 elems/byte + 1-byte E4M3 scale per group of 16.
+                (
+                    (max_seq * kv_dim / 2) as usize,
+                    (max_seq * kv_dim / 16) as usize,
+                )
+            }
+        };
         Ok(Self {
             k: gpu.alloc(data_bytes)?,
             v: gpu.alloc(data_bytes)?,
             capacity: max_seq,
-            turbo8_scales: Some((gpu.alloc(scale_bytes)?, gpu.alloc(scale_bytes)?)),
+            dtype,
+            scales: if scale_bytes > 0 {
+                Some((gpu.alloc(scale_bytes)?, gpu.alloc(scale_bytes)?))
+            } else {
+                None
+            },
         })
     }
 }

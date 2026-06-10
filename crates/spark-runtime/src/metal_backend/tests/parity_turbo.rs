@@ -39,49 +39,7 @@ fn cpu_wht(x: &mut [f32]) {
     }
 }
 
-/// float → FP8 E4M3 byte. Mirrors `f32_to_e4m3` in
-/// `kv_cache_append_turbo8.metal` exactly (saturating, round-half-away
-/// on the mantissa).
-fn cpu_f32_to_e4m3(f: f32) -> u8 {
-    let sign: u8 = if f < 0.0 { 0x80 } else { 0x00 };
-    let a = f.abs();
-    if a >= 448.0 {
-        return sign | 0x7E;
-    }
-    if a < 0.001953125 {
-        let m = (a * 512.0).round() as u32;
-        return sign | m as u8;
-    }
-    let mut e = a.log2().floor() as i32;
-    if e < -6 {
-        e = -6;
-    }
-    let man = a / (e as f32).exp2();
-    let mut m3 = ((man - 1.0) * 8.0).round() as u32;
-    if m3 == 8 {
-        e += 1;
-        m3 = 0;
-    }
-    sign | (((e + 7) as u8) << 3) | m3 as u8
-}
-
-/// FP8 E4M3 byte → float. Mirrors `e4m3_to_f32` in
-/// `attention_decode_turbo8.metal`.
-fn cpu_e4m3_to_f32(b: u8) -> f32 {
-    let sign = if b & 0x80 != 0 { -1.0f32 } else { 1.0 };
-    let e = (b >> 3) & 0xF;
-    let m = b & 7;
-    if e == 0 {
-        return sign * m as f32 * 0.001953125;
-    }
-    sign * (1.0 + m as f32 * 0.125) * ((e as i32 - 7) as f32).exp2()
-}
-
-/// Deterministic pseudo-random bf16-representable test value in ~[-2, 2].
-fn test_val(i: usize) -> f32 {
-    let raw = ((i * 2654435761) >> 7) % 4001;
-    f32::from(half::bf16::from_f32(raw as f32 / 1000.0 - 2.0))
-}
+// (E4M3 + test_val helpers shared with parity_turbo4.rs live in helpers.rs)
 
 // ── Tests ────────────────────────────────────────────────────
 

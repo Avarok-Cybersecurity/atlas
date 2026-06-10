@@ -15,6 +15,7 @@ mod parity_gdn;
 mod parity_norms;
 mod parity_quant;
 mod parity_turbo;
+mod parity_turbo4;
 mod parity_vision;
 
 mod real_model_attention;
