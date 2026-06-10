@@ -313,7 +313,7 @@ impl LayerKvCache {
         kv_dim: u32,
     ) -> Result<Self> {
         assert!(
-            dtype == MetalKvDtype::Bf16 || kv_dim % 16 == 0,
+            dtype == MetalKvDtype::Bf16 || kv_dim.is_multiple_of(16),
             "turbo dtypes need KV_DIM divisible by 16"
         );
         let n = (max_seq * kv_dim) as usize;
