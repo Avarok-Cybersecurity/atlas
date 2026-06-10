@@ -20,14 +20,6 @@ head_dim = 256
 q_heads = 16
 kv_heads = 2
 
-# FP8 KV-cache calibration (Option B, #211): the FP8 checkpoint ships no
-# k_proj.k_scale/v_proj.v_scale, so the FP8 KV path defaults to scale=1.0 and
-# silently saturates BF16 K/V into E4M3 [-448,448], destroying dynamic range
-# on deep layers where |K|,|V| grow (cos drift L31-L39). Fit per-tensor
-# k/v scales from the first 256 observed tokens' amax (scale=running_max/448),
-# matching the calibrated-FP8 practice mistral-small-4 / gemma-4-26b already use.
-fp8_kv_calibration_tokens = 256
-
 linear_attn_key_heads = 16
 linear_attn_key_dim = 128
 linear_attn_value_heads = 32
@@ -145,6 +137,17 @@ dry_multiplier = 0.0
 # compensate for model quirks. Defaults are sane for most models; override
 # here when a model family has known failure modes.
 [behavior]
+# FP8 KV-cache calibration (Option B, #211): the FP8 checkpoint ships no
+# k_proj.k_scale/v_proj.v_scale, so the FP8 KV path defaults to scale=1.0 and
+# silently saturates BF16 K/V into E4M3 [-448,448], destroying dynamic range
+# on deep layers where |K|,|V| grow (cos drift L31-L39). Fit per-tensor
+# k/v scales from the first 256 observed tokens' amax (scale=running_max/448),
+# matching the calibrated-FP8 practice mistral-small-4 / gemma-4-26b already use.
+# NOTE: must live under [behavior] — parse_behavior() only reads this table
+# (it sat under [model] until 2026-06-10 and was silently parsed as 0 =
+# calibration disabled).
+fp8_kv_calibration_tokens = 256
+
 # Content-loop watchdog ENABLED (2026-05-23 numerical-drift sweep):
 # the 2026-05-05 chess-game pass was too short to expose the late-
 # layer divergence — 18920-token opencode prompts produce ~7%

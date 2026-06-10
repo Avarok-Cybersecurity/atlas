@@ -128,6 +128,7 @@ impl TransformerModel {
                         profile: false,
                         comm: self.comm_ref(),
                         graph_capture: false,
+                        gdn_exact_replay: false,
                     };
 
                     let h_t = hidden.offset(t * h * fp32);
@@ -155,6 +156,7 @@ impl TransformerModel {
                     profile: false,
                     comm: self.comm_ref(),
                     graph_capture: false,
+                    gdn_exact_replay: false,
                 };
 
                 layer.decode_batched(

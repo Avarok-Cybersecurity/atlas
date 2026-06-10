@@ -199,6 +199,15 @@ pub struct ForwardContext<'a> {
     /// True when inside CUDA graph capture (between begin_capture/end_capture).
     /// MoE layers use sync all_reduce (capturable) instead of async (event-based).
     pub graph_capture: bool,
+    /// True when this prefill pass continues from a restored Marconi SSM
+    /// snapshot (warm prefix-cache hit). GDN layers must then take the
+    /// bit-faithful WY4 recurrence instead of the FLA chunked kernel: FLA's
+    /// chunk grid is anchored at the (arbitrary) snapshot offset and its
+    /// bf16 intermediates drift vs the pass that originally produced the
+    /// cached K/V, and the replay range [snap_tok, matched) is rewritten
+    /// into SHARED prefix-cache blocks — non-exact recompute poisons them
+    /// and the drift ratchets across turns (2026-06-10 warm-hit stutter).
+    pub gdn_exact_replay: bool,
 }
 
 /// A single transformer layer performing the full per-layer computation.

@@ -86,6 +86,7 @@ impl TransformerModel {
             profile: false,
             comm: None,
             graph_capture: false,
+            gdn_exact_replay: false,
         };
         let prop_state = seq
             .proposer_state

@@ -202,13 +202,15 @@ impl MtpHead {
             }
         };
 
-        // MTP KV cache: 1 attention layer. Honor BF16 KV for the bf16-quant
-        // MTP head — the FP8 path hard-coded k_scale=v_scale=1.0, which on
-        // Qwen3.6-A3B (large deep-layer K/V magnitudes) collapsed the single
-        // MTP attention layer's output to a constant → constant draft token 0
-        // → 0% acceptance. FP8/NVFP4 MTP keep FP8 (backward-compat). The MTP
-        // KV is one tiny layer, so BF16 cost is negligible.
-        let kv_bf16 = matches!(quant, MtpQuantization::Bf16);
+        // MTP KV cache: 1 attention layer. The FP8 KV path hard-codes
+        // k_scale=v_scale=1.0, which on Qwen3.6-A3B (large deep-layer K/V
+        // magnitudes) collapsed the single MTP attention layer's output to a
+        // constant → constant draft token 0 → ~0% acceptance, making
+        // --mtp-quantization fp8 a net slowdown. Use BF16 KV for both bf16
+        // and fp8 MTP heads — the MTP KV is one tiny layer, so BF16 cost is
+        // negligible. NVFP4 MTP keeps FP8 KV (measured-good acceptance;
+        // FP8-path changes must stay additive for NVFP4).
+        let kv_bf16 = matches!(quant, MtpQuantization::Bf16 | MtpQuantization::Fp8);
         let kv_config = KvCacheConfig {
             block_size: 16,
             num_kv_heads: nkv,

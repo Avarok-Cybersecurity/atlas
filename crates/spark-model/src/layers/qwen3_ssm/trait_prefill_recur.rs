@@ -46,8 +46,20 @@ impl Qwen3SsmLayer {
         // always taken for 128-dim linear-head GDN models when the FLA kernels & scratch
         // are present (scratch is allocated for exactly those models, sizes.rs). The wy4
         // branch below remains the fallback for other head dims / a guard miss.
+        // Warm-hit replay (Marconi SSM snapshot restored): force the WY4
+        // recurrence. FLA's chunked algebra is only token-equal when its
+        // 64-token grid matches the pass that originally produced the cached
+        // K/V; a replay anchored at an arbitrary snapshot offset regroups the
+        // recurrence and its bf16 W/U/uc/S_c intermediates drift. The replay
+        // range is rewritten into SHARED prefix-cache blocks, so non-exact
+        // recompute poisons them and the drift ratchets across agentic turns
+        // (token-stutter corruption, 2026-06-10). WY4 keeps H in FP32 SMEM
+        // token-sequentially — same family as the decode kernel — and is the
+        // path the clean pre-FLA baseline used. Replay segments are short
+        // (suffix after a ≥10k skipped prefix), so the FLA speed loss is nil.
         let fla_scratch = ctx.buffers.gdn_fla_scratch();
-        if kd == 128
+        if !ctx.gdn_exact_replay
+            && kd == 128
             && vd == 128
             && fla_scratch.0 != 0
             && self.gdn_prefill_fla_recompute_wu_k.0 != 0

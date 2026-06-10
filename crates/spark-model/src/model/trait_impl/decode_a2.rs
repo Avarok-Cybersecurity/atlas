@@ -198,6 +198,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+            gdn_exact_replay: false,
         };
 
         // ── Phase 2: CUDA graph lookup / capture ──

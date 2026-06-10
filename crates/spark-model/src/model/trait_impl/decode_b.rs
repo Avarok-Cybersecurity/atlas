@@ -411,6 +411,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: false,
+            gdn_exact_replay: false,
         };
 
         let prefill_ctx = ForwardContext {
@@ -421,6 +422,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: false,
+            gdn_exact_replay: false,
         };
 
         for (layer_idx, layer) in self.layers.iter().enumerate() {

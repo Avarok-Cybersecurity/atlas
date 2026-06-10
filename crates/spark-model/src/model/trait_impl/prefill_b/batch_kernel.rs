@@ -393,6 +393,7 @@ impl TransformerModel {
             profile: self.profile,
             comm: self.comm_ref(),
             graph_capture: false,
+            gdn_exact_replay: false,
         };
 
         // h_state_ptrs scratch slot offset (used JIT per SSM layer).
