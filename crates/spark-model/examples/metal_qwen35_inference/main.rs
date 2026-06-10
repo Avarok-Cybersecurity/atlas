@@ -451,7 +451,31 @@ fn main() -> Result<()> {
     let mut current_token = next_token_id;
     let mut cur_pos = prompt_len;
 
-    for _ in 0..n_decode {
+    // Teacher forcing: ATLAS_FORCE_TOKENS_FILE points at a
+    // newline-separated token-id list (one per decode step, position 0 =
+    // the token fed in place of the first sampled one). The model's own
+    // argmax is still recorded in `generated_ids` and its logits still
+    // dumped — but the FED token comes from the file, so two runs with
+    // the same file share an identical context at every position and
+    // their logit dumps are KLD-comparable end to end (no greedy-path
+    // divergence). Generate the file from a baseline run with
+    // ATLAS_DUMP_TOKENS=path.
+    let forced_tokens: Option<Vec<u32>> = std::env::var("ATLAS_FORCE_TOKENS_FILE").ok().map(|p| {
+        std::fs::read_to_string(&p)
+            .unwrap_or_else(|e| panic!("read ATLAS_FORCE_TOKENS_FILE {p}: {e}"))
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.trim().parse().expect("token id"))
+            .collect()
+    });
+    if let Some(f) = &forced_tokens {
+        println!("  (teacher forcing {} tokens)", f.len());
+        if let Some(&t0) = f.first() {
+            current_token = t0;
+        }
+    }
+
+    for step in 0..n_decode {
         if cur_pos >= max_seq_len {
             println!("  (reached pre-allocated KV capacity {max_seq_len}, stopping)");
             break;
@@ -460,15 +484,34 @@ fn main() -> Result<()> {
         backend.copy_h2d(&cur_pos.to_le_bytes(), positions_ptr)?;
         run_layer_chain(cur_pos)?;
 
-        current_token = sample_next(x_buf)?;
-        generated_ids.push(current_token);
+        let sampled = sample_next(x_buf)?;
+        generated_ids.push(sampled);
         cur_pos += 1;
 
+        current_token = match &forced_tokens {
+            Some(f) => match f.get(step + 1) {
+                Some(&t) => t,
+                None => {
+                    println!("  (teacher-forcing list exhausted)");
+                    break;
+                }
+            },
+            None => sampled,
+        };
+
         // <|im_end|> per tokenizer_config.json — bail to avoid runaway.
-        if current_token == 248044 {
+        // Teacher-forced runs ignore EOS so every run covers the full list.
+        if forced_tokens.is_none() && current_token == 248044 {
             println!("  (hit <|im_end|>)");
             break;
         }
+    }
+    // ATLAS_DUMP_TOKENS: write the argmax sequence (one id per line) for
+    // use as a teacher-forcing list in comparison runs.
+    if let Ok(path) = std::env::var("ATLAS_DUMP_TOKENS") {
+        let body: String = generated_ids.iter().map(|t| format!("{t}\n")).collect();
+        std::fs::write(&path, body)?;
+        println!("  (dumped {} token ids to {path})", generated_ids.len());
     }
     let dec_ms = t_dec.elapsed().as_secs_f64() * 1000.0;
 

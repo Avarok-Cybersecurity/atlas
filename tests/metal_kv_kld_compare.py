@@ -37,6 +37,13 @@ def main() -> None:
     ap.add_argument("reference")
     ap.add_argument("candidate")
     ap.add_argument("--vocab", type=int, default=248_320)
+    ap.add_argument(
+        "--teacher-forced",
+        action="store_true",
+        help="both runs fed the same token list (ATLAS_FORCE_TOKENS_FILE): "
+        "contexts match at every position, so do not trim at the first "
+        "argmax divergence",
+    )
     args = ap.parse_args()
 
     ref = load_bf16(args.reference, args.vocab)
@@ -47,9 +54,14 @@ def main() -> None:
     ref_top1 = ref.argmax(axis=-1)
     cand_top1 = cand.argmax(axis=-1)
 
-    # Greedy context stays shared until the first argmax divergence.
+    # Greedy context stays shared until the first argmax divergence;
+    # teacher-forced runs share context everywhere.
     diverge = np.flatnonzero(ref_top1 != cand_top1)
-    valid = int(diverge[0]) + 1 if diverge.size else steps
+    valid = (
+        steps
+        if args.teacher_forced
+        else (int(diverge[0]) + 1 if diverge.size else steps)
+    )
 
     ref_lp = log_softmax(ref[:valid])
     cand_lp = log_softmax(cand[:valid])
@@ -60,7 +72,7 @@ def main() -> None:
     print(f"mean_kld:       {kld.mean():.6f}")
     print(f"max_kld:        {kld.max():.6f}")
     print(f"top1_agree:     {agree:.3f}")
-    if diverge.size:
+    if diverge.size and not args.teacher_forced:
         print(f"first_divergence_at_step: {int(diverge[0])}")
     per = " ".join(f"{v:.4f}" for v in kld[: min(valid, 32)])
     print(f"per_step_kld:   {per}")
