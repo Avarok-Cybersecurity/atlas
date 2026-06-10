@@ -9,14 +9,11 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/docs.yml'
+  # No path filter on pull_request: this check is in the required set, and a
+  # path-filtered required check never reports on PRs outside its paths
+  # (kernel-only diffs), leaving them permanently "expected" and unmergeable.
   pull_request:
     branches: [main, master]
-    paths:
-      - 'book/**'
-      - 'crates/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/docs.yml'
 
 concurrency:
   group: docs-${{ github.ref }}
