@@ -1016,3 +1016,83 @@ present. `nemotron_h.jinja` line 204 guard still correct. No regressions.
 CLI value correctly reaches only `SsmSnapshotPool`. No regressions.
 
 **No code changes. Spec_ssm is clean and ready for hardware re-test.**
+
+---
+
+## Codebase Verification — 2026-06-10 (session_01Ds8tMviynS2FbCdizxtnan)
+
+Fresh independent audit of `spec_ssm` HEAD (`06ee1e4`). Files read directly from source,
+in priority order. All prior fixes confirmed. No new bugs found.
+
+### Files read this session (direct source, not summary-derived)
+
+| File | Lines read |
+|------|-----------|
+| `kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu` | Full (207 lines) |
+| `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` | Full (89 lines) |
+| `jinja-templates/nemotron_h.jinja` | Full (221 lines) |
+
+### P1 — Mistral Small 4 MLA prefill (>1000 tokens)
+
+`mla_fused_prefill.cu` audited in full. All aspects correct:
+
+- **Grid encoding** (`line 47-48`): flat 1D `(nq * seq_len, 1, 1)`, decoded as
+  `head = blockIdx.x / seq_len`, `q_pos = blockIdx.x % seq_len`. Avoids gridDim.y ≤ 65535
+  limit; supports up to `32 × 65536 = 2M` blocks against CUDA's 2^31−1 limit. ✓
+- **Online softmax** (`line 125`): `kv_pos = 0..min(q_pos+1, seq_len)` — causal, no hard
+  seq_len cap. The three `__syncthreads()` placements (after warp writes, after score
+  broadcast, end-of-loop) are correct and prevent iteration-overlap races. ✓
+- **Shared memory** (`lines 76, 116, 188`): `smem_q[320]` + `smem_dot[8]` + `smem_latent[256]`
+  = 2336 bytes. Far below the 48 KB occupancy limit. ✓
+- **NULL pointer guard** (`line 93`): `if (head == 0 && k_cache_out != 0)` — safe when
+  `cache_skip_mla.rs` passes `DevicePtr::NULL` (cache already written via `write_kv_cache`). ✓
+- **Scale**: `inv_sqrt_d` received from Rust caller as `1/sqrt(320)`; used at `line 157` to
+  scale the raw attention score before online-softmax. ✓
+- **V extraction** (`lines 195-204`): reads `smem_latent[256]` (the normalized attention-
+  weighted latent), dots against `W_UV[tid, :]` for `tid < v_dim=128`. Correct output
+  address: `q_pos * nq * v_dim + head * v_dim + tid`. ✓
+
+All four MLA paths use `1/sqrt(320)` and correct kernels (confirmed via prior-session table;
+not re-read this session as no changes exist since `06ee1e4`).
+
+### P2 — Nemotron Super 120B tool calling
+
+`MODEL.toml` and `nemotron_h.jinja` re-read in full. All settings confirmed present:
+
+**MODEL.toml `[behavior]` block** (lines 41–88):
+- `thinking_in_tools = false` — grammar-constrained bare_json; suppresses thinking block
+  during tool calls to prevent JSON landing inside `<think>...</think>`.
+- `disable_tool_steering = true` — skips `<tool_call>\n` prefix that caused emission loop
+  on Super 120B (model not trained on qwen3_coder XML format).
+- `tool_call_parser = "bare_json"` — parser emits `{"name":"…","arguments":{…}}` directly;
+  grammar-constrained decoding enforces schema from token 1.
+- `skip_template_tools = true` — prevents `nemotron_h.jinja` from rendering XML `<function>`
+  schema blocks that conflict with the bare-JSON system prompt.
+- `thinking_default = true` — model is thinking-first trained; must produce `<think>` trace.
+- `max_thinking_budget = 2048` — 256 was too tight (pass-8 showed reasoning leaked past
+  forced `</think>`); 1024+ gives full CoT headroom.
+
+**`nemotron_h.jinja` generation prompt** (`lines 205–220`):
+```jinja
+{%- if tools and not disable_tool_steering %}
+    {{- '<|im_start|>assistant\n<think></think>\n<tool_call>\n' }}
+{%- elif enable_thinking %}
+    {{- '<|im_start|>assistant\n<think>\n' }}
+{%- else %}
+    {{- '<|im_start|>assistant\n<think></think>\n' }}
+{%- endif %}
+```
+With `disable_tool_steering=true` and `enable_thinking=true` (default), the first branch is
+skipped and the model opens `<think>\n` naturally — then emits bare JSON after `</think>`.
+The `<tool_call>\n` prefix that caused the emission loop is never produced. ✓
+
+`helpers_b.rs` `call_format` parameter and `bare_json.rs` `"JSON object"` text confirmed
+present (unchanged from `df07318` per prior sessions; not re-read this session).
+
+### P3 — Qwen3.5-122B SSM cache slots
+
+`SsmStatePool` / `SsmSnapshotPool` independence confirmed in prior sessions and unchanged.
+`--ssm-cache-slots 0` zeroes only `SsmSnapshotPool`; `SsmStatePool` (1206 MB at
+`max_batch_size=8`) is sized by `--max-batch-size`. No code change needed or made.
+
+**No code changes. All four spec_ssm fixes confirmed present. `spec_ssm` ready for hardware re-test.**
