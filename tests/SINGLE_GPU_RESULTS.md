@@ -229,15 +229,16 @@ Pairs j < 7 receive no scaling (full extrapolation); j 7–15 receive a linear r
 receive full 1/128 interpolation. This matches the reference YaRN paper formula exactly.
 
 Additional MLA prefill code paths also verified clean:
-- `crates/spark-model/src/layers/qwen3_attention/prefill/paged_mla.rs`: K/V stride uses
-  `v_dim=128` as the stride element (not `mla_cache_dim=320`); attention scale is
-  `1/sqrt(hd=128)` — correct for both absorbed and unabsorbed forms because
-  `Q_absorbed·K_latent = Q_expanded·K_expanded` algebraically.
-- `crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip_mla.rs`: same scale,
-  uses `prefill_attention_64` (BR=64 tile) instead of `prefill_attention`; no correctness gap.
+- `crates/spark-model/src/layers/qwen3_attention/prefill/paged_mla.rs`: first-chunk path
+  (seq_len_start==0) has `anyhow::ensure!(hd > 128 || prefill_attn_128_k != 0, ...)` guard
+  preventing silent HDIM=256 over-read. Scale is `1/sqrt(mla_cache_dim=320)`, NOT `1/sqrt(hd=128)`
+  (matching the absorbed-form training scale).
+- `crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip_mla.rs`: uses
+  `mla_fused_prefill` kernel (NOT `prefill_attention_64`); scale is `1/sqrt(kv_lora+rope=320)`.
+  Guard `anyhow::ensure!(mla_fused_prefill_k.0 != 0, ...)` prevents silent fallback.
 - `crates/spark-server/src/main_modules/kv_dtypes.rs`: `build_layer_kv_dtypes(BF16, ...)` returns
-  an empty vec → all layers remain uniform BF16. `--kv-high-precision-layers auto` has no effect
-  when the base dtype is already BF16; no accidental FP8 mixing occurs.
+  `vec![Bf16; num_attention_layers]` (all-BF16 vector). `--kv-high-precision-layers auto` has no
+  effect when base dtype is already BF16; no accidental FP8 mixing occurs.
 - `kernels/gb10/mistral-small-4/MODEL.toml`: `default_kv_dtype = "bf16"` provides a model-side
   safety guard that overrides the server default of fp8.
 
@@ -245,10 +246,11 @@ Additional MLA prefill code paths also verified clean:
 
 ### P1 — Nemotron Super tool calling
 
-**Verified**: `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` contains:
+**Verified**: `kernels/gb10/nemotron-super-120b-a12b/MODEL.toml` contains all four required flags:
 - `disable_tool_steering = true` — skips the `<tool_call>\n` steering prefix
 - `tool_call_parser = "bare_json"` — uses the model's native top-level JSON format
 - `thinking_in_tools = false` — prevents reasoning trace from burying the JSON payload
+- `skip_template_tools = true` — prevents jinja XML tool instructions from conflicting with bare_json
 
 **Verified**: `jinja-templates/nemotron_h.jinja` generation-prompt block correctly gates the
 steering prefix on `not disable_tool_steering`:
@@ -258,10 +260,18 @@ steering prefix on `not disable_tool_steering`:
 {%- elif enable_thinking %}
     ...
 ```
-With `disable_tool_steering = true` the model instead enters the `enable_thinking` branch and
+With `disable_tool_steering = true` the model enters the `enable_thinking` branch and
 opens `<think>` naturally, then closes it and emits the bare-JSON tool call on its own.
 
-**Status**: fix confirmed in codebase; re-test on live hardware will close this item.
+**Code fix (df07318)**: `append_tool_choice_instruction()` now passes a format-specific
+`call_format` string through each parser. Previously it always instructed the model to "respond
+ONLY with a `<tool_call>` block", which directly contradicted the `bare_json` system prompt
+("Do not wrap it in any tags") when `tool_choice="required"` or a specific function was forced.
+Fix maps: `bare_json` → "JSON object", `mistral` → "[TOOL_CALLS] invocation",
+`minimax_xml` → "<minimax:tool_call> block", `hermes`/`qwen3_coder` → "<tool_call> block" (no
+behavior change for those parsers).
+
+**Status**: MODEL.toml fix + code fix both confirmed in codebase; re-test on live hardware will close this item.
 
 ### P2 — 122B SSM pool memory
 
@@ -1096,3 +1106,73 @@ present (unchanged from `df07318` per prior sessions; not re-read this session).
 `max_batch_size=8`) is sized by `--max-batch-size`. No code change needed or made.
 
 **No code changes. All four spec_ssm fixes confirmed present. `spec_ssm` ready for hardware re-test.**
+
+---
+
+## Codebase Verification — 2026-06-10 (fresh end-to-end audit)
+
+Full independent investigation following the three-priority brief. All specified files read
+directly from source. Corrections to earlier audit entries noted below.
+
+### P1 — Mistral Small 4 MLA prefill (>1000 tokens)
+
+**Dispatch chain traced through `prefill_inner.rs`**:
+
+```
+prefill_inner:91 → if seq_len_start == 0:
+    prefill_attention_with_cache_skip (cache_skip.rs)
+        cache_skip.rs:89 → if self.mla.is_some():
+            prefill_attention_cache_skip_mla (cache_skip_mla.rs) ← ALL single-chunk MLA prefill
+    else: prefill_attention_paged (paged.rs)
+        paged_mla.rs → only reached when seq_len_start > 0
+            paged_mla.rs:seq_len_start > 0 → multi-chunk path (mla_prefill_paged_320)
+```
+
+The `paged_mla.rs` first-chunk branch (seq_len_start == 0) is unreachable from the normal
+dispatch — `prefill_inner.rs` sends all seq_len_start==0 paths to `cache_skip_mla.rs`. The
+`anyhow::ensure!` guard there is a safety net for any future code that might call
+`prefill_attention_paged_mla` with seq_len_start==0 directly.
+
+**Correction to 2026-06-10 independent re-audit entry** (decode path description): that entry
+states `attention_forward_mla.rs:377` uses `self.effective_attn_scale(hd)` with
+`hd=mla_cache_dim=320` set via `attn_scale_override`. The actual code is:
+```rust
+let inv_sqrt_d = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt();
+```
+Direct computation, not via `effective_attn_scale`. Net result is identical (`1/sqrt(320)`);
+the description of `attn_scale_override` is not how this path works.
+
+**All four MLA paths confirmed using `1/sqrt(320)`** (read directly this session):
+- `cache_skip_mla.rs:267`: `1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` ✓
+- `paged_mla.rs:277`: `1.0f32 / (mla_cache_dim as f32).sqrt()` ✓
+- `paged_mla.rs:479`: `1.0f32 / (mla_cache_dim as f32).sqrt()` ✓
+- `attention_forward_mla.rs:377`: `1.0f32 / ((kv_lora + mla_rope) as f32).sqrt()` ✓
+
+**YaRN `yarn.rs`**: `find_correction_dim` in dimension-index space with `beta_fast=32`,
+`beta_slow=1`; `low≈7.0`, `high≈15.0` confirmed. Correct interpolation direction. ✓
+
+**`kv_dtypes.rs:20-21`**: returns `vec![KvCacheDtype::Bf16; num_attention_layers]` for BF16
+base dtype — explicit BF16 vector, no empty-vec FP8 fallback risk. ✓
+
+**`mla_fused_prefill.cu`** (read in full): flat 1D grid, correct causal mask, 2336 bytes shared
+memory, NULL pointer guard, `inv_sqrt_d` received from Rust as `1/sqrt(320)`. ✓
+
+**KERNEL.toml** (`mistral-small-4/nvfp4`): `mla_fused_prefill = "mla_fused_prefill"` confirms
+the module is compiled; `init.rs:305-309` loads it as `self.mla_fused_prefill_k`. ✓
+
+### P2 — Nemotron Super 120B tool calling
+
+**All four MODEL.toml flags confirmed present** (read in full this session):
+`disable_tool_steering = true`, `tool_call_parser = "bare_json"`, `skip_template_tools = true`,
+`thinking_in_tools = false`. Jinja template gate at line 206 confirmed. `df07318` code fix
+(`call_format: &str`) prevents `<tool_call>` text from appearing in `bare_json` enforcement
+when `tool_choice="required"`. No conflicts between template, system prompt, or parser. ✓
+
+### P3 — Qwen3.5-122B SSM cache slots
+
+`impl_a1.rs` read directly: `SsmStatePool::new(max_batch_size)` at line 134,
+`SsmSnapshotPool::new(ssm_cache_slots)` at line 143. CLI value traced: `cli.rs:279` →
+`factory/build.rs:373` → `impl_a1.rs:143`. `--ssm-cache-slots 0` zeroes only the snapshot
+pool. `SsmStatePool` (1206 MB at `max_batch_size=8`, 36 SSM layers) is independent. ✓
+
+**No new bugs found. No code changes this session. All four spec_ssm fixes confirmed correct.**
