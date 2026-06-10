@@ -474,15 +474,31 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 common_kernel_dir.display(),
             );
 
-            // KERNEL.toml: prefer model-specific, fall back to common
-            let toml_dir = if has_model_dir && model_kernel_dir.join("KERNEL.toml").exists() {
-                &model_kernel_dir
-            } else if has_common_dir {
-                &common_kernel_dir
-            } else {
-                &model_kernel_dir
-            };
-            let (extra_flags, module_overrides) = parse_kernel_toml(toml_dir, &target_vendor);
+            // KERNEL.toml: MERGE common + model-specific. The old
+            // prefer-model-else-common selection meant a model toml fully
+            // SHADOWED common — silently dropping common's build flags
+            // (gb10 model targets lost -DTQ_PLUS_SIGNS; the metal per-quant
+            // toml lost -ffast-math) and common's [modules] overrides (the
+            // chunk>=2 prefill misdispatch class, previously worked around
+            // by propagating mappings into all 13 model tomls). Semantics
+            // now: common parses first as the base; the model toml appends
+            // flags (deduped, model last) and wins per-key on [modules].
+            let mut extra_flags: Vec<String> = Vec::new();
+            let mut module_overrides: HashMap<String, String> = HashMap::new();
+            if has_common_dir && common_kernel_dir.join("KERNEL.toml").exists() {
+                let (f, m) = parse_kernel_toml(&common_kernel_dir, &target_vendor);
+                extra_flags.extend(f);
+                module_overrides.extend(m);
+            }
+            if has_model_dir && model_kernel_dir.join("KERNEL.toml").exists() {
+                let (f, m) = parse_kernel_toml(&model_kernel_dir, &target_vendor);
+                for flag in f {
+                    if !extra_flags.contains(&flag) {
+                        extra_flags.push(flag);
+                    }
+                }
+                module_overrides.extend(m);
+            }
 
             // Parse sampling presets, behavior, and model_types from MODEL.toml
             let (s_tt, s_tc, s_nt, s_tools) = parse_sampling_presets(&model_dir);
