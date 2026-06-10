@@ -239,6 +239,12 @@ impl TransformerModel {
             }
             self.gpu
                 .record_event(self.secondary_event, self.secondary_stream)?;
+            // The live restore above must be visible to the next default-
+            // stream consumer (decode/draft) even when the scheduler takes a
+            // non-verify path that never calls sync_secondary. Order it here,
+            // at the commit point: GPU-side wait, zero CPU cost.
+            self.gpu
+                .stream_wait_event(self.gpu.default_stream(), self.secondary_event)?;
             return Ok(());
         }
 
@@ -302,6 +308,14 @@ impl TransformerModel {
         }
 
         self.gpu.record_event(self.secondary_event, stream)?;
+        // Order the live-state restore (partial-accept branch) ahead of any
+        // default-stream successor. The non-verify scheduler paths (gate
+        // flip, bootstrap, decode-only) read ssm.h_state/conv_state on the
+        // default stream without calling sync_secondary — without this wait
+        // the restore races the next decode (observed as single-char path
+        // corruption under concurrent agentic traffic, tq10 run 1).
+        self.gpu
+            .stream_wait_event(self.gpu.default_stream(), self.secondary_event)?;
         Ok(())
     }
 }
