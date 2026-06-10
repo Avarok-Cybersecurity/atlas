@@ -155,6 +155,12 @@ pub struct Qwen35Kernels {
     pub attn_turbo3: KernelHandle,
     pub kvap_turbo2: KernelHandle,
     pub attn_turbo2: KernelHandle,
+    pub kvap_bf16k_turbo4v: KernelHandle,
+    pub attn_bf16k_turbo4v: KernelHandle,
+    pub kvap_bf16k_turbo3v: KernelHandle,
+    pub attn_bf16k_turbo3v: KernelHandle,
+    pub kvap_bf16k_turbo2v: KernelHandle,
+    pub attn_bf16k_turbo2v: KernelHandle,
     pub wht: KernelHandle,
     pub wht_inv: KernelHandle,
 }
@@ -184,6 +190,30 @@ impl Qwen35Kernels {
             attn_turbo3: gpu.kernel("attention_decode_turbo3", "attention_decode_turbo3")?,
             kvap_turbo2: gpu.kernel("kv_cache_append_turbo2", "kv_cache_append_turbo2")?,
             attn_turbo2: gpu.kernel("attention_decode_turbo2", "attention_decode_turbo2")?,
+            kvap_bf16k_turbo4v: gpu.kernel(
+                "kv_cache_append_bf16k_turbov",
+                "kv_cache_append_bf16k_turbo4v",
+            )?,
+            attn_bf16k_turbo4v: gpu.kernel(
+                "attention_decode_bf16k_turbov",
+                "attention_decode_bf16k_turbo4v",
+            )?,
+            kvap_bf16k_turbo3v: gpu.kernel(
+                "kv_cache_append_bf16k_turbov",
+                "kv_cache_append_bf16k_turbo3v",
+            )?,
+            attn_bf16k_turbo3v: gpu.kernel(
+                "attention_decode_bf16k_turbov",
+                "attention_decode_bf16k_turbo3v",
+            )?,
+            kvap_bf16k_turbo2v: gpu.kernel(
+                "kv_cache_append_bf16k_turbov",
+                "kv_cache_append_bf16k_turbo2v",
+            )?,
+            attn_bf16k_turbo2v: gpu.kernel(
+                "attention_decode_bf16k_turbov",
+                "attention_decode_bf16k_turbo2v",
+            )?,
             wht: gpu.kernel("wht_bf16", "wht_bf16_inplace")?,
             wht_inv: gpu.kernel("wht_bf16", "wht_bf16_inplace_inv")?,
         })
@@ -207,6 +237,29 @@ pub enum MetalKvDtype {
     /// 2-bit Lloyd-Max (4 elems/byte) + FP8 group scales.
     /// 6.4× smaller than bf16.
     Turbo2,
+    /// Safer-asym: K raw bf16 (un-rotated), V Turbo4. Production-
+    /// recommended frontier — K precision dominates retrieval quality.
+    Bf16KTurbo4V,
+    /// Safer-asym: K raw bf16, V Turbo3.
+    Bf16KTurbo3V,
+    /// Safer-asym: K raw bf16, V Turbo2.
+    Bf16KTurbo2V,
+}
+
+impl MetalKvDtype {
+    /// K side stored in the WHT-rotated basis (gates K rotation at
+    /// append and the WHT(Q) decode bookend).
+    pub fn k_is_rotated(self) -> bool {
+        matches!(
+            self,
+            Self::Turbo8 | Self::Turbo4 | Self::Turbo3 | Self::Turbo2
+        )
+    }
+    /// V side stored in the WHT-rotated basis (gates V rotation at
+    /// append and the iWHT(out) decode bookend).
+    pub fn v_is_rotated(self) -> bool {
+        self != Self::Bf16
+    }
 }
 
 impl std::str::FromStr for MetalKvDtype {
@@ -218,9 +271,12 @@ impl std::str::FromStr for MetalKvDtype {
             "turbo4" => Ok(Self::Turbo4),
             "turbo3" => Ok(Self::Turbo3),
             "turbo2" => Ok(Self::Turbo2),
+            "bf16k_turbo4v" => Ok(Self::Bf16KTurbo4V),
+            "bf16k_turbo3v" => Ok(Self::Bf16KTurbo3V),
+            "bf16k_turbo2v" => Ok(Self::Bf16KTurbo2V),
             other => {
                 anyhow::bail!(
-                    "kv dtype {other:?} not supported on metal (bf16 | turbo8 | turbo4 | turbo3 | turbo2)"
+                    "kv dtype {other:?} not supported on metal (bf16 | turbo8 | turbo4 | turbo3 | turbo2 | bf16k_turbo4v/3v/2v)"
                 )
             }
         }
@@ -241,8 +297,11 @@ pub struct LayerKvCache {
     #[allow(dead_code)]
     pub capacity: u32,
     pub dtype: MetalKvDtype,
-    /// `(k_scales, v_scales)` for the turbo dtypes; unused for Bf16.
-    pub scales: Option<(DevicePtr, DevicePtr)>,
+    /// Per-side group-scale buffers — `Some` only for quantized sides
+    /// (both for symmetric turbo dtypes, V-only for the safer-asym
+    /// Bf16K+TurboNV family, neither for Bf16).
+    pub k_scales: Option<DevicePtr>,
+    pub v_scales: Option<DevicePtr>,
 }
 
 impl LayerKvCache {
@@ -253,51 +312,42 @@ impl LayerKvCache {
         max_seq: u32,
         kv_dim: u32,
     ) -> Result<Self> {
-        let (data_bytes, scale_bytes) = match dtype {
-            MetalKvDtype::Bf16 => ((max_seq * kv_dim) as usize * 2, 0),
-            MetalKvDtype::Turbo8 => {
-                assert!(kv_dim % 16 == 0, "Turbo8 needs KV_DIM divisible by 16");
-                // 1 byte/elem + bf16 scale per group of 16.
-                (
-                    (max_seq * kv_dim) as usize,
-                    (max_seq * kv_dim / 16) as usize * 2,
-                )
-            }
-            MetalKvDtype::Turbo4 => {
-                assert!(kv_dim % 16 == 0, "Turbo4 needs KV_DIM divisible by 16");
-                // 2 elems/byte + 1-byte E4M3 scale per group of 16.
-                (
-                    (max_seq * kv_dim / 2) as usize,
-                    (max_seq * kv_dim / 16) as usize,
-                )
-            }
-            MetalKvDtype::Turbo3 => {
-                assert!(kv_dim % 16 == 0, "Turbo3 needs KV_DIM divisible by 16");
-                // 8 values → 3 bytes + 1-byte E4M3 scale per group of 16.
-                (
-                    (max_seq * kv_dim * 3 / 8) as usize,
-                    (max_seq * kv_dim / 16) as usize,
-                )
-            }
-            MetalKvDtype::Turbo2 => {
-                assert!(kv_dim % 16 == 0, "Turbo2 needs KV_DIM divisible by 16");
-                // 4 elems/byte + 1-byte E4M3 scale per group of 16.
-                (
-                    (max_seq * kv_dim / 4) as usize,
-                    (max_seq * kv_dim / 16) as usize,
-                )
-            }
+        assert!(
+            dtype == MetalKvDtype::Bf16 || kv_dim % 16 == 0,
+            "turbo dtypes need KV_DIM divisible by 16"
+        );
+        let n = (max_seq * kv_dim) as usize;
+        let scale_bytes_e4m3 = (max_seq * kv_dim / 16) as usize;
+        // (k_bytes, v_bytes, k_scale_bytes, v_scale_bytes)
+        let (kb, vb, ksb, vsb) = match dtype {
+            MetalKvDtype::Bf16 => (n * 2, n * 2, 0, 0),
+            // 1 byte/elem + bf16 scales (2 bytes per group of 16).
+            MetalKvDtype::Turbo8 => (n, n, scale_bytes_e4m3 * 2, scale_bytes_e4m3 * 2),
+            // 2 elems/byte + E4M3 scales.
+            MetalKvDtype::Turbo4 => (n / 2, n / 2, scale_bytes_e4m3, scale_bytes_e4m3),
+            // 8 values -> 3 bytes + E4M3 scales.
+            MetalKvDtype::Turbo3 => (n * 3 / 8, n * 3 / 8, scale_bytes_e4m3, scale_bytes_e4m3),
+            // 4 elems/byte + E4M3 scales.
+            MetalKvDtype::Turbo2 => (n / 4, n / 4, scale_bytes_e4m3, scale_bytes_e4m3),
+            // Safer-asym: K raw bf16, V packed + E4M3 scales.
+            MetalKvDtype::Bf16KTurbo4V => (n * 2, n / 2, 0, scale_bytes_e4m3),
+            MetalKvDtype::Bf16KTurbo3V => (n * 2, n * 3 / 8, 0, scale_bytes_e4m3),
+            MetalKvDtype::Bf16KTurbo2V => (n * 2, n / 4, 0, scale_bytes_e4m3),
         };
-        Ok(Self {
-            k: gpu.alloc(data_bytes)?,
-            v: gpu.alloc(data_bytes)?,
-            capacity: max_seq,
-            dtype,
-            scales: if scale_bytes > 0 {
-                Some((gpu.alloc(scale_bytes)?, gpu.alloc(scale_bytes)?))
+        let alloc_opt = |bytes: usize| -> Result<Option<DevicePtr>> {
+            Ok(if bytes > 0 {
+                Some(gpu.alloc(bytes)?)
             } else {
                 None
-            },
+            })
+        };
+        Ok(Self {
+            k: gpu.alloc(kb)?,
+            v: gpu.alloc(vb)?,
+            capacity: max_seq,
+            dtype,
+            k_scales: alloc_opt(ksb)?,
+            v_scales: alloc_opt(vsb)?,
         })
     }
 }

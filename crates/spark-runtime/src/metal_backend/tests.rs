@@ -8,6 +8,7 @@
 
 mod helpers;
 
+mod parity_asym;
 mod parity_attention;
 mod parity_attention_full;
 mod parity_basic;
