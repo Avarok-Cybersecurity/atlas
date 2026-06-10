@@ -113,6 +113,12 @@ impl Qwen3AttentionLayer {
             attn_scale_override: None,
             k_eq_v: false,
             v_norm_weight: None,
+            head_gate_weight: None,
+            sigmoid_gate_head_broadcast_k: super::super::try_kernel(
+                gpu,
+                "residual_add",
+                "sigmoid_gate_mul_head_broadcast",
+            ),
             post_attn_out_norm: None,
             post_ffn_out_norm: None,
             layer_scalar: None,

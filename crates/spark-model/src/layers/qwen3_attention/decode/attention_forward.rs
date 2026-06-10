@@ -528,6 +528,35 @@ impl Qwen3AttentionLayer {
             )?;
         }
 
+        // Per-head attention gate (Step 3.7 g_proj) — decode path.
+        // Same logic as prefill: gate[h] = g_proj(normed), apply sigmoid broadcast.
+        if let Some(ref g_proj) = self.head_gate_weight {
+            // For decode, n=1 (single token). Reuse q_out scratch for gate [1, nq].
+            let gate_buf = q_out;
+            ops::dense_gemm_tc(
+                ctx.gpu,
+                self.dense_gemm_tc_k,
+                normed,
+                g_proj,
+                gate_buf,
+                1, // decode: single token
+                nq,
+                h,
+                stream,
+            )?;
+            ops::sigmoid_gate_mul_head_broadcast(
+                ctx.gpu,
+                self.sigmoid_gate_head_broadcast_k,
+                attn_out,
+                gate_buf,
+                attn_out,
+                nq,
+                hd,
+                1, // decode: single token
+                stream,
+            )?;
+        }
+
         // O projection ── (extracted to attention_forward_oproj.rs)
         let o_out = self.attention_forward_oproj(attn_out, nq, hd, h, ctx, stream)?;
 

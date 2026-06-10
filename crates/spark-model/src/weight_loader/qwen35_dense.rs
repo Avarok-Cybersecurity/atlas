@@ -396,6 +396,9 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     }
                     layers.push(Box::new(layer));
                 }
+                LayerType::SlidingAttention => {
+                    unreachable!("unexpected SlidingAttention in this loader")
+                }
                 LayerType::Moe => unreachable!("Qwen3.5 dense has no standalone MoE layers"),
             }
 

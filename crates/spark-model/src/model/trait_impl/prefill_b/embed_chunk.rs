@@ -37,7 +37,11 @@ impl TransformerModel {
         stream: u64,
     ) -> Result<()> {
         let h = self.config.hidden_size;
-        let fp32 = 2usize;
+        let fp32 = if self.config.use_fp32_residual {
+            4usize
+        } else {
+            2usize
+        };
 
         // ── 1. Embed chunk tokens → [chunk_len, H] contiguous at hidden_dst ──
         // Upload token IDs to device and do a single batched embed kernel launch
