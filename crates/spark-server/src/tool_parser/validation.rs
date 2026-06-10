@@ -69,6 +69,8 @@ pub(crate) fn normalize_param_name(tools: &[ToolDefinition], call_name: &str, ke
         .get(&norm)
         .map(|schema_key| schema_key.to_string())
         .unwrap_or_else(|| key.to_string())
+}
+
 /// Extract agent-type names from a delegation tool's prose description.
 ///
 /// Matches lines shaped like `- <name>: …` — the convention both opencode
