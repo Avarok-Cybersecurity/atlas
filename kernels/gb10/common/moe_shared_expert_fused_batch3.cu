@@ -246,7 +246,11 @@ extern "C" __global__ void moe_expert_silu_down_shared_batch3(
     const unsigned int K8 = K / 8;
 
     __shared__ float s_lut[16];
-    __shared__ float s_act[1024];
+    // Dynamic: K floats, sized by the launcher (issue #85 -- the old
+    // static s_act[1024] overflowed for expert inter dims > 1024,
+    // e.g. Mistral-Small-4's expert_hidden_dim=2048, illegal-addressing
+    // the batched FFN; matches the extern pattern the _t variant uses).
+    extern __shared__ float s_act[];
 
     if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT_BATCH3[threadIdx.x];
 
