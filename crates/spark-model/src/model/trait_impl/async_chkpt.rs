@@ -239,12 +239,11 @@ impl TransformerModel {
             }
             self.gpu
                 .record_event(self.secondary_event, self.secondary_stream)?;
-            // The live restore above must be visible to the next default-
-            // stream consumer (decode/draft) even when the scheduler takes a
-            // non-verify path that never calls sync_secondary. Order it here,
-            // at the commit point: GPU-side wait, zero CPU cost.
-            self.gpu
-                .stream_wait_event(self.gpu.default_stream(), self.secondary_event)?;
+            // Ordering: the verify path syncs at entry (verify_*_step
+            // sync_secondary); the non-verify successors (gate flip,
+            // bootstrap) sync at THEIR entry — see scheduler/mod.rs and
+            // mtp_step.rs. No wait here: a commit-side wait would serialize
+            // this copy against the next draft and cost ~25% decode wall.
             return Ok(());
         }
 
@@ -308,14 +307,12 @@ impl TransformerModel {
         }
 
         self.gpu.record_event(self.secondary_event, stream)?;
-        // Order the live-state restore (partial-accept branch) ahead of any
-        // default-stream successor. The non-verify scheduler paths (gate
-        // flip, bootstrap, decode-only) read ssm.h_state/conv_state on the
-        // default stream without calling sync_secondary — without this wait
-        // the restore races the next decode (observed as single-char path
-        // corruption under concurrent agentic traffic, tq10 run 1).
-        self.gpu
-            .stream_wait_event(self.gpu.default_stream(), self.secondary_event)?;
+        // Ordering: verify_*_step calls sync_secondary at entry; the
+        // non-verify successors that read the live state (MTP gate flip →
+        // step_decode_only, bootstrap decode) call sync_secondary at THEIR
+        // entry (scheduler/mod.rs, mtp_step.rs). A commit-side wait here
+        // would serialize this 250MB copy against the next draft kernels
+        // that used to overlap it (~25% decode wall, tq11 360s cap-riders).
         Ok(())
     }
 }

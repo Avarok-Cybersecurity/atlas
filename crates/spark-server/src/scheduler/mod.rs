@@ -337,6 +337,13 @@ pub fn run(
                     for a in active.iter_mut() {
                         a.pending_drafts.clear();
                     }
+                    // MTP→decode-only transition: the last verify commit's
+                    // live-state restore runs async on the secondary stream;
+                    // order it before this decode reads h_state/conv_state
+                    // (GPU-side event wait, zero CPU cost).
+                    if let Err(e) = model.sync_secondary() {
+                        tracing::error!("mtp→decode sync_secondary: {e:#}");
+                    }
                 }
                 step_decode_only(
                     &*model,

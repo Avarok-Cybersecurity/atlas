@@ -30,6 +30,15 @@ pub fn step_mtp(
     }
 
     // ── Phase A: Bootstrap decode for sequences without a draft ──
+    if !bootstrap_idxs.is_empty() {
+        // The previous verify commit's live-state restore runs async on the
+        // secondary stream; order it before the bootstrap decode reads
+        // h_state/conv_state (and before start_checkpoint_async snapshots
+        // the live state). GPU-side event wait, zero CPU cost.
+        if let Err(e) = model.sync_secondary() {
+            tracing::error!("bootstrap sync_secondary: {e:#}");
+        }
+    }
     for &idx in &bootstrap_idxs {
         let a = &mut active[idx];
         // EP: broadcast token to worker before decode (worker runs decode in lockstep).
