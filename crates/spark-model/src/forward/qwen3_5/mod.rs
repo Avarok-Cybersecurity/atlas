@@ -143,6 +143,14 @@ pub struct Qwen35Kernels {
     pub gdn_gate: KernelHandle,
     pub sigmoid: KernelHandle,
     pub gdn_dec: KernelHandle,
+    /// TurboQuant Turbo8 KV cache path: quantizing append, dequantizing
+    /// decode attention, and the WHT rotation bookends. Resolved
+    /// unconditionally (the kernels live in the common set) so a Turbo8
+    /// cache can never silently fall back to the bf16 kernels.
+    pub kvap_turbo8: KernelHandle,
+    pub attn_turbo8: KernelHandle,
+    pub wht: KernelHandle,
+    pub wht_inv: KernelHandle,
 }
 
 impl Qwen35Kernels {
@@ -162,17 +170,60 @@ impl Qwen35Kernels {
             gdn_gate: gpu.kernel("gdn_helpers", "gdn_compute_gate")?,
             sigmoid: gpu.kernel("gdn_helpers", "sigmoid_bf16_to_f32")?,
             gdn_dec: gpu.kernel("gated_delta_rule_decode", "gated_delta_rule_decode")?,
+            kvap_turbo8: gpu.kernel("kv_cache_append_turbo8", "kv_cache_append_turbo8")?,
+            attn_turbo8: gpu.kernel("attention_decode_turbo8", "attention_decode_turbo8")?,
+            wht: gpu.kernel("wht_bf16", "wht_bf16_inplace")?,
+            wht_inv: gpu.kernel("wht_bf16", "wht_bf16_inplace_inv")?,
         })
     }
 }
 
 /// Per-layer KV cache for a full-attention layer (single-batch).
+///
+/// Two storage modes:
+/// - **Bf16** (`turbo8_scales == None`): `k`/`v` hold raw bfloat
+///   `[capacity, KV_DIM]`.
+/// - **Turbo8** (`turbo8_scales == Some(..)`): `k`/`v` hold FP8 E4M3
+///   bytes `[capacity, KV_DIM]` in the WHT-rotated basis; the scales
+///   buffers hold bfloat per-16-element group scales
+///   `[capacity, KV_DIM / 16]`. The forward routes appends and
+///   attention through the turbo kernels with WHT(Q)/iWHT(out)
+///   bookends.
 pub struct LayerKvCache {
     pub k: DevicePtr,
     pub v: DevicePtr,
     /// Capacity in tokens — caller pre-allocates `max_seq_len * KV_DIM`.
     #[allow(dead_code)]
     pub capacity: u32,
+    /// `Some((k_scales, v_scales))` switches this layer to Turbo8.
+    pub turbo8_scales: Option<(DevicePtr, DevicePtr)>,
+}
+
+impl LayerKvCache {
+    /// Allocate a raw-bf16 cache (`max_seq * kv_dim` bfloat per side).
+    pub fn alloc_bf16(gpu: &dyn GpuBackend, max_seq: u32, kv_dim: u32) -> Result<Self> {
+        let bytes = (max_seq * kv_dim) as usize * 2;
+        Ok(Self {
+            k: gpu.alloc(bytes)?,
+            v: gpu.alloc(bytes)?,
+            capacity: max_seq,
+            turbo8_scales: None,
+        })
+    }
+
+    /// Allocate a Turbo8 cache: 1 byte/elem data + bf16 group scales
+    /// (group of 16) per side — 2.13× smaller than the bf16 cache.
+    pub fn alloc_turbo8(gpu: &dyn GpuBackend, max_seq: u32, kv_dim: u32) -> Result<Self> {
+        assert!(kv_dim % 16 == 0, "Turbo8 needs KV_DIM divisible by 16");
+        let data_bytes = (max_seq * kv_dim) as usize;
+        let scale_bytes = (max_seq * kv_dim / 16) as usize * 2;
+        Ok(Self {
+            k: gpu.alloc(data_bytes)?,
+            v: gpu.alloc(data_bytes)?,
+            capacity: max_seq,
+            turbo8_scales: Some((gpu.alloc(scale_bytes)?, gpu.alloc(scale_bytes)?)),
+        })
+    }
 }
 
 /// Full-attention layer weights, parameterised over the backend's

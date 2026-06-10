@@ -143,43 +143,124 @@ pub fn forward_full_attention<Q: QuantWeights>(
     )?;
 
     // KV-cache append uses the post-RoPE k_norm_out.
-    gpu.launch_typed(
-        k.kvap,
-        [cfg.head_dim, cfg.num_kv_heads, 1],
-        [1, 1, 1],
-        0,
-        stream,
-        &[
-            KernelArg::Bytes(&cfg.num_kv_heads.to_le_bytes()),
-            KernelArg::Bytes(&cfg.head_dim.to_le_bytes()),
-            KernelArg::Bytes(&cache_pos.to_le_bytes()),
-            KernelArg::Buffer(scratch.k_norm_out),
-            KernelArg::Buffer(scratch.v),
-            KernelArg::Buffer(kv.k),
-            KernelArg::Buffer(kv.v),
-        ],
-    )?;
-
-    // attention_decode with seq_len = seq_len_attn.
     let scale: f32 = 1.0 / (cfg.head_dim as f32).sqrt();
-    gpu.launch_typed(
-        k.attn,
-        [cfg.num_heads, 1, 1],
-        [32, 1, 1],
-        0,
-        stream,
-        &[
-            KernelArg::Bytes(&seq_len_attn.to_le_bytes()),
-            KernelArg::Bytes(&cfg.num_heads.to_le_bytes()),
-            KernelArg::Bytes(&cfg.num_kv_heads.to_le_bytes()),
-            KernelArg::Bytes(&cfg.head_dim.to_le_bytes()),
-            KernelArg::Bytes(&scale.to_le_bytes()),
-            KernelArg::Buffer(scratch.q_norm_out),
-            KernelArg::Buffer(kv.k),
-            KernelArg::Buffer(kv.v),
-            KernelArg::Buffer(scratch.attn_out),
-        ],
-    )?;
+    if let Some((k_scales, v_scales)) = kv.turbo8_scales {
+        // ── Turbo8 path ──
+        // The cache stores WHT-rotated values: rotate K and V in place
+        // before the quantizing append (mirrors the CUDA write-path
+        // bookend), rotate Q to match (<WHT(Q), WHT(K)> = <Q, K>), run
+        // the dequantizing attention, then rotate the output back out
+        // of the rotated-V basis.
+        let hd_bytes = cfg.head_dim.to_le_bytes();
+        for buf in [scratch.k_norm_out, scratch.v] {
+            gpu.launch_typed(
+                k.wht,
+                [cfg.num_kv_heads, 1, 1],
+                [32, 1, 1],
+                0,
+                stream,
+                &[KernelArg::Bytes(&hd_bytes), KernelArg::Buffer(buf)],
+            )?;
+        }
+        let num_groups = cfg.kv_dim() / 16;
+        gpu.launch_typed(
+            k.kvap_turbo8,
+            [num_groups.div_ceil(64), 1, 1],
+            [64, 1, 1],
+            0,
+            stream,
+            &[
+                KernelArg::Bytes(&cfg.num_kv_heads.to_le_bytes()),
+                KernelArg::Bytes(&cfg.head_dim.to_le_bytes()),
+                KernelArg::Bytes(&cache_pos.to_le_bytes()),
+                KernelArg::Buffer(scratch.k_norm_out),
+                KernelArg::Buffer(scratch.v),
+                KernelArg::Buffer(kv.k),
+                KernelArg::Buffer(kv.v),
+                KernelArg::Buffer(k_scales),
+                KernelArg::Buffer(v_scales),
+            ],
+        )?;
+        gpu.launch_typed(
+            k.wht,
+            [cfg.num_heads, 1, 1],
+            [32, 1, 1],
+            0,
+            stream,
+            &[
+                KernelArg::Bytes(&hd_bytes),
+                KernelArg::Buffer(scratch.q_norm_out),
+            ],
+        )?;
+        gpu.launch_typed(
+            k.attn_turbo8,
+            [cfg.num_heads, 1, 1],
+            [32, 1, 1],
+            0,
+            stream,
+            &[
+                KernelArg::Bytes(&seq_len_attn.to_le_bytes()),
+                KernelArg::Bytes(&cfg.num_heads.to_le_bytes()),
+                KernelArg::Bytes(&cfg.num_kv_heads.to_le_bytes()),
+                KernelArg::Bytes(&cfg.head_dim.to_le_bytes()),
+                KernelArg::Bytes(&scale.to_le_bytes()),
+                KernelArg::Buffer(scratch.q_norm_out),
+                KernelArg::Buffer(kv.k),
+                KernelArg::Buffer(kv.v),
+                KernelArg::Buffer(k_scales),
+                KernelArg::Buffer(v_scales),
+                KernelArg::Buffer(scratch.attn_out),
+            ],
+        )?;
+        gpu.launch_typed(
+            k.wht_inv,
+            [cfg.num_heads, 1, 1],
+            [32, 1, 1],
+            0,
+            stream,
+            &[
+                KernelArg::Bytes(&hd_bytes),
+                KernelArg::Buffer(scratch.attn_out),
+            ],
+        )?;
+    } else {
+        gpu.launch_typed(
+            k.kvap,
+            [cfg.head_dim, cfg.num_kv_heads, 1],
+            [1, 1, 1],
+            0,
+            stream,
+            &[
+                KernelArg::Bytes(&cfg.num_kv_heads.to_le_bytes()),
+                KernelArg::Bytes(&cfg.head_dim.to_le_bytes()),
+                KernelArg::Bytes(&cache_pos.to_le_bytes()),
+                KernelArg::Buffer(scratch.k_norm_out),
+                KernelArg::Buffer(scratch.v),
+                KernelArg::Buffer(kv.k),
+                KernelArg::Buffer(kv.v),
+            ],
+        )?;
+
+        // attention_decode with seq_len = seq_len_attn.
+        gpu.launch_typed(
+            k.attn,
+            [cfg.num_heads, 1, 1],
+            [32, 1, 1],
+            0,
+            stream,
+            &[
+                KernelArg::Bytes(&seq_len_attn.to_le_bytes()),
+                KernelArg::Bytes(&cfg.num_heads.to_le_bytes()),
+                KernelArg::Bytes(&cfg.num_kv_heads.to_le_bytes()),
+                KernelArg::Bytes(&cfg.head_dim.to_le_bytes()),
+                KernelArg::Bytes(&scale.to_le_bytes()),
+                KernelArg::Buffer(scratch.q_norm_out),
+                KernelArg::Buffer(kv.k),
+                KernelArg::Buffer(kv.v),
+                KernelArg::Buffer(scratch.attn_out),
+            ],
+        )?;
+    }
 
     // sigmoid_gate(attn_gate, attn_out)
     let q_only = cfg.q_only();

@@ -222,13 +222,19 @@ fn main() -> Result<()> {
     let max_seq_len = prompt_len + n_decode_budget + 4;
     let scratch = alloc_full_attention_scratch(&backend)?;
     let lin_scratch = alloc_linear_attention_scratch(&backend)?;
+    // ATLAS_KV_DTYPE=turbo8 switches the full-attention KV caches to the
+    // TurboQuant Turbo8 format (FP8 E4M3 + bf16 group scales, WHT-rotated;
+    // 2.13× smaller). Default stays raw bf16.
+    let kv_dtype = std::env::var("ATLAS_KV_DTYPE").unwrap_or_else(|_| "bf16".into());
     let kv_caches: Vec<LayerKvCache> = (0..full_attn_count)
         .map(|_| -> Result<LayerKvCache> {
-            Ok(LayerKvCache {
-                k: backend.alloc((max_seq_len * CFG.kv_dim()) as usize * 2)?,
-                v: backend.alloc((max_seq_len * CFG.kv_dim()) as usize * 2)?,
-                capacity: max_seq_len,
-            })
+            match kv_dtype.as_str() {
+                "turbo8" => LayerKvCache::alloc_turbo8(&backend, max_seq_len, CFG.kv_dim()),
+                "bf16" => LayerKvCache::alloc_bf16(&backend, max_seq_len, CFG.kv_dim()),
+                other => {
+                    anyhow::bail!("ATLAS_KV_DTYPE={other} not supported on metal (bf16 | turbo8)")
+                }
+            }
         })
         .collect::<Result<_>>()?;
     let lin_states: Vec<LinearAttentionState> = (0..lin_attn_count)
