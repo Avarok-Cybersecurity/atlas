@@ -8,12 +8,16 @@
 
 mod helpers;
 
+mod parity_asym;
 mod parity_attention;
 mod parity_attention_full;
 mod parity_basic;
 mod parity_gdn;
 mod parity_norms;
 mod parity_quant;
+mod parity_turbo;
+mod parity_turbo23;
+mod parity_turbo4;
 mod parity_vision;
 
 mod real_model_attention;

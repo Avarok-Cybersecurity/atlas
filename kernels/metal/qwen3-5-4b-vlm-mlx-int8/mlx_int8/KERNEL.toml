@@ -1,6 +1,9 @@
 [build]
-# Per-quant overrides: empty for now. Vision-tower kernels will live next
-# to this file (Phase 6).
-extra_metal_flags = []
+# NOTE: this list fully SHADOWS the common KERNEL.toml's flags (no
+# merge) — keep -ffast-math in sync with kernels/metal/common.
+# -DTQ_PLUS_SIGNS enables the two-sided Rademacher rotation in
+# wht_bf16.metal (canonical TurboQuant form; the Lloyd-Max codebooks
+# assume Gaussianized post-rotation coordinates).
+extra_metal_flags = ["-ffast-math", "-DTQ_PLUS_SIGNS"]
 
 [modules]

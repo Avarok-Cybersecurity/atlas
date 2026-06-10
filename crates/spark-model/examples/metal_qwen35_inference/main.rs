@@ -222,14 +222,14 @@ fn main() -> Result<()> {
     let max_seq_len = prompt_len + n_decode_budget + 4;
     let scratch = alloc_full_attention_scratch(&backend)?;
     let lin_scratch = alloc_linear_attention_scratch(&backend)?;
+    // ATLAS_KV_DTYPE={turbo8,turbo4} switches the full-attention KV
+    // caches to a TurboQuant format (WHT-rotated; 2.13× / 3.56× smaller
+    // than bf16). Default stays raw bf16.
+    let kv_dtype: qwen3_5::MetalKvDtype = std::env::var("ATLAS_KV_DTYPE")
+        .unwrap_or_else(|_| "bf16".into())
+        .parse()?;
     let kv_caches: Vec<LayerKvCache> = (0..full_attn_count)
-        .map(|_| -> Result<LayerKvCache> {
-            Ok(LayerKvCache {
-                k: backend.alloc((max_seq_len * CFG.kv_dim()) as usize * 2)?,
-                v: backend.alloc((max_seq_len * CFG.kv_dim()) as usize * 2)?,
-                capacity: max_seq_len,
-            })
-        })
+        .map(|_| LayerKvCache::alloc(&backend, kv_dtype, max_seq_len, CFG.kv_dim()))
         .collect::<Result<_>>()?;
     let lin_states: Vec<LinearAttentionState> = (0..lin_attn_count)
         .map(|_| alloc_linear_attention_state(&backend))
@@ -362,6 +362,14 @@ fn main() -> Result<()> {
     let x_final = backend.alloc(CFG.hidden as usize * 2)?;
     let logits = backend.alloc(CFG.vocab as usize * 2)?;
     let result_buf = backend.alloc(4)?;
+    // ATLAS_LOGITS_OUT=path dumps the bf16 logits of every sampled
+    // position (raw little-endian, [n_steps, vocab]) for offline KLD /
+    // top-k agreement comparison across kv dtypes.
+    let logits_out = std::env::var("ATLAS_LOGITS_OUT").ok().map(|p| {
+        std::cell::RefCell::new(std::io::BufWriter::new(
+            std::fs::File::create(p).expect("create ATLAS_LOGITS_OUT"),
+        ))
+    });
     let sample_next = |x_in: DevicePtr| -> Result<u32> {
         backend.launch_typed(
             kernels.rms,
@@ -391,6 +399,12 @@ fn main() -> Result<()> {
             ],
         )?;
         backend.synchronize(stream)?;
+        if let Some(w) = &logits_out {
+            use std::io::Write;
+            let mut raw = vec![0u8; CFG.vocab as usize * 2];
+            backend.copy_d2h(logits, &mut raw)?;
+            w.borrow_mut().write_all(&raw)?;
+        }
         let mut buf = [0u8; 4];
         backend.copy_d2h(result_buf, &mut buf)?;
         Ok(u32::from_le_bytes(buf))

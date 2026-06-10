@@ -78,8 +78,53 @@ layer_norm          dense_gemv_bf16     dense_gemm_bf16
 attention_full      gelu                conv3d_patch_embed
 ```
 
+TurboQuant KV cache (WHT-rotated, contiguous cache):
+```
+wht_bf16                  kv_cache_append_turbo8    attention_decode_turbo8
+kv_cache_append_turbo4    attention_decode_turbo4
+kv_cache_append_turbo3    attention_decode_turbo3
+kv_cache_append_turbo2    attention_decode_turbo2
+```
+
 Every kernel has an FP32 CPU-reference parity test
 (`metal_<name>_matches_reference`) within ≤2 BF16 ULPs.
+
+## TurboQuant KV cache
+
+The Metal contiguous cache supports the TurboQuant dtypes from the
+CUDA backend's `--kv-cache-dtype` family, selected per `LayerKvCache`
+via `MetalKvDtype` (the `metal_qwen35_inference` example exposes it as
+`ATLAS_KV_DTYPE={bf16,turbo8,turbo4,turbo3,turbo2}`):
+
+| dtype  | storage                                   | vs bf16 |
+|--------|-------------------------------------------|---------|
+| turbo8 | FP8 E4M3 + bf16 group-of-16 scales        | 2.13×   |
+| turbo4 | 4-bit Lloyd-Max + FP8 scales (matched-L2) | 3.56×   |
+| turbo3 | 3-bit Lloyd-Max (8 vals → 3 B) + FP8      | 4.57×   |
+| turbo2 | 2-bit Lloyd-Max + FP8 scales              | 6.4×    |
+
+Mechanics, mirroring the CUDA write path and decode bookends:
+
+- `wht_bf16.metal` applies the canonical two-sided Rademacher rotation
+  S2·H·S1 per head (`-DTQ_PLUS_SIGNS`, seed-42 tables byte-identical
+  to `tq_plus_signs.cuh`; head_dim 128/256). The cache stores rotated
+  values; the forward rotates Q before turbo attention and applies the
+  inverse to the output.
+- Quantizing appends use per-16-element groups; turbo4/3/2 store the
+  matched-norm L2 scale (`||original|| / ||centroid_vec||`) in FP8.
+- Decode attention dequantizes inline and applies the **sparse-V
+  gate**: positions with unnormalized softmax weight ≤ 1e-3 skip the
+  V dequant + accumulation entirely (attention-gated value
+  dequantization — the benefit grows with context length).
+- `Qwen35Kernels::resolve` hard-requires all turbo kernel handles, so
+  a turbo cache can never silently fall back to the bf16 kernels.
+- ⚠ Per-quant `KERNEL.toml` `extra_metal_flags` fully SHADOWS the
+  common list — keep `-ffast-math` and `-DTQ_PLUS_SIGNS` in sync when
+  adding model targets.
+
+Quality eval: `ATLAS_LOGITS_OUT=path` dumps per-step bf16 logits;
+`tests/metal_kv_kld_compare.py` reports KLD + top-1 agreement between
+two runs.
 
 ## Real-model integration tests
 

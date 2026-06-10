@@ -71,13 +71,9 @@ pub(crate) fn parse_step3p7(raw: &serde_json::Value) -> Result<ModelConfig> {
         obj.remove("architectures");
         // moe_layers_enum is a comma-separated string, remove it (we detect MoE by probing)
         obj.remove("moe_layers_enum");
-        // Convert layer_types: "sliding_attention" → "full_attention" for serde
-        // (Atlas treats both as FullAttention; sliding window is a separate config property)
-        // layer_types: serde handles "full_attention" and "sliding_attention"
-        // natively via the LayerType enum, so no pre-processing needed.
-        // We just remove the field here to avoid serde errors from unknown
-        // variants ("moe" layers are detected by probing, not from this array).
-        // The actual layer_types are populated below from text_config.
+        // Remove layer_types from serde input — the array may contain
+        // "moe" or other variants that serde can't deserialize into
+        // LayerType. We populate layer_types manually below from text_config.
         obj.remove("layer_types");
         // Also handle moe_num_experts → num_experts for serde (Step 3.7 uses non-standard field names)
         if let Some(mne) = obj.get("moe_num_experts").cloned() {
