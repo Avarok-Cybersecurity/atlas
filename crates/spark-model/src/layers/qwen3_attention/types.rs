@@ -246,6 +246,7 @@ pub struct Qwen3AttentionLayer {
     pub(super) prefill_attn_paged_turbo2_64_k: KernelHandle,
     pub(super) prefill_attn_paged_turbo3_64_k: KernelHandle,
     pub(super) prefill_attn_paged_turbo4_64_k: KernelHandle,
+    pub(super) prefill_attn_paged_turbo8_64_k: KernelHandle,
     // ── TurboQuant+ asymmetric BR=64 prefill kernels ──
     // Combined-dtype kernels that read K and V with different on-disk layouts.
     // Currently: Bf16K + Turbo3V (safer-asym variant — K kept at bf16 precision,

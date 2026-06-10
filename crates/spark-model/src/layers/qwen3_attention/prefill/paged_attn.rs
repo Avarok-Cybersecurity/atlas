@@ -320,49 +320,53 @@ impl Qwen3AttentionLayer {
                     fp8_k_scale,
                     stream,
                 )?,
-                (KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8, true) => {
-                    let data_bytes = match self.kv_dtype {
-                        KvCacheDtype::Turbo3 | KvCacheDtype::Turbo3KTurbo8V => {
-                            kv_cache.turbo3_data_bytes() as u64
-                        }
-                        KvCacheDtype::Turbo2 => kv_cache.turbo2_data_bytes() as u64,
-                        KvCacheDtype::Turbo8 => kv_cache.turbo8_data_bytes() as u64,
-                        _ => kv_cache.turbo4_data_bytes() as u64,
+                (KvCacheDtype::Turbo8, _)
+                | (KvCacheDtype::Turbo4, _)
+                | (KvCacheDtype::Turbo3, _)
+                | (KvCacheDtype::Turbo2, _) => {
+                    // Symmetric TurboQuant prefill. Each dtype has a dedicated
+                    // kernel whose LOAD_KV_TILE matches its write layout
+                    // (reshape_and_cache_turbo.cu). turbo8/turbo4 previously
+                    // routed through the NVFP4 kernel (FP8 rows read at 4-bit
+                    // stride / BF16 scales read as E4M3 / E2M1 LUT instead of
+                    // the Lloyd-Max codebook) and turbo3/turbo2 fell into the
+                    // FP8 catch-all with a ~2.3x-overshooting block stride —
+                    // both corrupted every chunk>=2 history read of a chunked
+                    // prefill. Only BR=64 entries exist (turbo2: BR=32); short
+                    // chunks use them too, mirroring the asym variants.
+                    let (kernel, data_bytes) = match self.kv_dtype {
+                        KvCacheDtype::Turbo8 => (
+                            self.prefill_attn_paged_turbo8_64_k,
+                            kv_cache.turbo8_data_bytes() as u64,
+                        ),
+                        KvCacheDtype::Turbo4 => (
+                            self.prefill_attn_paged_turbo4_64_k,
+                            kv_cache.turbo4_data_bytes() as u64,
+                        ),
+                        KvCacheDtype::Turbo3 => (
+                            self.prefill_attn_paged_turbo3_64_k,
+                            kv_cache.turbo3_data_bytes() as u64,
+                        ),
+                        _ => (
+                            self.prefill_attn_paged_turbo2_64_k,
+                            kv_cache.turbo2_data_bytes() as u64,
+                        ),
                     };
-                    ops::prefill_attention_paged_nvfp4_64(
-                        ctx.gpu,
-                        self.prefill_attn_paged_nvfp4_64_k,
-                        q_contiguous,
-                        kv_cache.k_pool_ptr(self.attn_layer_idx),
-                        kv_cache.v_pool_ptr(self.attn_layer_idx),
-                        attn_out,
-                        meta.block_table,
-                        n,
-                        kv_len,
-                        seq_len_start as u32,
-                        nq,
-                        nkv,
-                        hd,
-                        bs_u,
-                        self.sliding_window.unwrap_or(0),
-                        inv_sqrt_d,
-                        kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
-                        data_bytes,
-                        stream,
-                    )?
-                }
-                (KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8, false) => {
-                    let data_bytes = match self.kv_dtype {
-                        KvCacheDtype::Turbo3 | KvCacheDtype::Turbo3KTurbo8V => {
-                            kv_cache.turbo3_data_bytes() as u64
-                        }
-                        KvCacheDtype::Turbo2 => kv_cache.turbo2_data_bytes() as u64,
-                        KvCacheDtype::Turbo8 => kv_cache.turbo8_data_bytes() as u64,
-                        _ => kv_cache.turbo4_data_bytes() as u64,
+                    if kernel.0 == 0 {
+                        anyhow::bail!(
+                            "{:?} prefill paged-attention kernel not loaded (layer {});                              rebuild kernels.",
+                            self.kv_dtype,
+                            self.attn_layer_idx
+                        );
+                    }
+                    let launch = if self.kv_dtype == KvCacheDtype::Turbo2 {
+                        ops::prefill_attention_paged_turbo2_64
+                    } else {
+                        ops::prefill_attention_paged_turbo_64
                     };
-                    ops::prefill_attention_paged_nvfp4(
+                    launch(
                         ctx.gpu,
-                        self.prefill_attn_paged_nvfp4_k,
+                        kernel,
                         q_contiguous,
                         kv_cache.k_pool_ptr(self.attn_layer_idx),
                         kv_cache.v_pool_ptr(self.attn_layer_idx),
@@ -441,35 +445,6 @@ impl Qwen3AttentionLayer {
                     inv_sqrt_d,
                     stream,
                 )?,
-                (KvCacheDtype::Turbo2, _) => {
-                    if self.prefill_attn_paged_turbo2_64_k.0 == 0 {
-                        anyhow::bail!(
-                            "Turbo2 prefill kernel not loaded (layer {}); rebuild kernels.",
-                            self.attn_layer_idx
-                        );
-                    }
-                    ops::prefill_attention_paged_turbo2_64(
-                        ctx.gpu,
-                        self.prefill_attn_paged_turbo2_64_k,
-                        q_contiguous,
-                        kv_cache.k_pool_ptr(self.attn_layer_idx),
-                        kv_cache.v_pool_ptr(self.attn_layer_idx),
-                        attn_out,
-                        meta.block_table,
-                        n,
-                        kv_len,
-                        seq_len_start as u32,
-                        nq,
-                        nkv,
-                        hd,
-                        bs_u,
-                        self.sliding_window.unwrap_or(0),
-                        inv_sqrt_d,
-                        kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
-                        kv_cache.turbo2_data_bytes() as u64,
-                        stream,
-                    )?
-                }
                 (_, true) => ops::prefill_attention_paged_fp8_64(
                     ctx.gpu,
                     self.prefill_attn_paged_fp8_64_k,

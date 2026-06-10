@@ -208,9 +208,12 @@ pub fn prefill_attention_paged_fp8_64(
         .launch(stream)
 }
 
-/// Paged prefill Flash Attention — Turbo3 KV cache (3-bit packed), BR=64.
+/// Paged prefill Flash Attention — symmetric TurboQuant KV cache, BR=64.
+/// Shared launch wrapper for the turbo8 / turbo4 / turbo3 `_64` kernel
+/// entries: identical ABI, the caller selects the dtype via `kernel` and
+/// passes that pool's block stride + data-section offset.
 #[allow(clippy::too_many_arguments)]
-pub fn prefill_attention_paged_turbo3_64(
+pub fn prefill_attention_paged_turbo_64(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
     q: DevicePtr,
@@ -277,9 +280,11 @@ pub fn prefill_attention_paged_turbo2_64(
     stream: u64,
 ) -> Result<()> {
     let br = 32u32; // try BR=32 entry first while debugging BR=64 OOB
+    // BR=32 entry is sized for 128 threads (4 warps); 256 threads makes
+    // warps 4-7 read past smem_V (OOB shared reads, results discarded).
     KernelLaunch::new(gpu, kernel)
         .grid([num_q_heads, div_ceil(q_len, br), 1])
-        .block([256, 1, 1])
+        .block([128, 1, 1])
         .arg_ptr(q)
         .arg_ptr(k_cache)
         .arg_ptr(v_cache)

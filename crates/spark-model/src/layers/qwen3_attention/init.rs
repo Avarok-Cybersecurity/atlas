@@ -406,6 +406,11 @@ impl Qwen3AttentionLayer {
                 "prefill_paged_turbo4",
                 "inferspark_prefill_paged_turbo4_64",
             ),
+            prefill_attn_paged_turbo8_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_turbo8",
+                "inferspark_prefill_paged_turbo8_64",
+            ),
             // TurboQuant+ safer-asym Bf16K + Turbo3V BR=64 prefill kernel.
             // Compiled from inferspark_prefill_paged_bf16k_turbo3v.cu which
             // forks prefill_paged_compute_asym.cuh (LOAD_K_TILE = bf16,

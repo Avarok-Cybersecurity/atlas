@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
-use spark_runtime::kv_cache::PagedKvCache;
+use spark_runtime::kv_cache::{KvCacheDtype, PagedKvCache};
 
 use super::super::Qwen3AttentionLayer;
 use crate::layer::{BatchedAttnMetadata, ForwardContext};
@@ -453,6 +453,38 @@ impl Qwen3AttentionLayer {
         let attn_out = ctx.buffers.attn_output();
         let inv_sqrt_d = self.effective_attn_scale(hd);
         let kv_len = (seq_len_start + num_tokens) as u32;
+
+        // TurboQuant WHT bookends (mirrors decode/attention_forward.rs).
+        // write_kv_cache (section 7) WHT-rotated K/V in place before caching,
+        // so both the contiguous buffers and the paged pools hold WHT(K)/
+        // WHT(V). By Parseval, <WHT(Q), WHT(K)> = <Q, K>: rotate Q before
+        // attention when the K side is turbo, and rotate the output back
+        // (WHT is self-inverse) when the V side is turbo. Without these the
+        // chunk≥2 history read scores raw Q against rotated K and leaves the
+        // output in the rotated-V basis — the multi-chunk agentic collapse.
+        let (wht_k_dtype, wht_v_dtype) = self.kv_dtype.kv_pair();
+        let k_is_turbo = matches!(
+            wht_k_dtype,
+            KvCacheDtype::Turbo3 | KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8
+        );
+        let v_is_turbo = matches!(
+            wht_v_dtype,
+            KvCacheDtype::Turbo3 | KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8
+        );
+        let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let wht_runtime_active =
+            !weight_pre_rotated && (hd == 128 || hd == 256 || hd == 512);
+        if k_is_turbo && wht_runtime_active && self.wht_bf16_k.0 != 0 {
+            use spark_runtime::kernel_args::KernelLaunch;
+            KernelLaunch::new(ctx.gpu, self.wht_bf16_k)
+                .grid([n * nq, 1, 1]) // one warp per (token, q_head)
+                .block([32, 1, 1])
+                .arg_ptr(q_contiguous)
+                .arg_u32(hd)
+                .launch(stream)?;
+        }
         if let Some(bmeta) = batched_meta {
             // Q12 Path B: batched paged-prefill attention. The kernel reads
             // Q/O at per-batch offsets internally via blockIdx.z and uses
@@ -500,6 +532,18 @@ impl Qwen3AttentionLayer {
                 super::paged_attn::PagedAttnOutcome::EarlyReturn(out) => return Ok(out),
                 super::paged_attn::PagedAttnOutcome::Continue => {}
             }
+        }
+
+        // TurboQuant WHT bookend (output side): attention output is
+        // sum(softmax * WHT(V)) — rotate back to the real basis.
+        if v_is_turbo && wht_runtime_active && self.wht_bf16_k_inv.0 != 0 {
+            use spark_runtime::kernel_args::KernelLaunch;
+            KernelLaunch::new(ctx.gpu, self.wht_bf16_k_inv)
+                .grid([n * nq, 1, 1])
+                .block([32, 1, 1])
+                .arg_ptr(attn_out)
+                .arg_u32(hd)
+                .launch(stream)?;
         }
 
         // ATLAS_OP_DUMP: attn_out BEFORE sigmoid gate (raw attention-kernel output).
