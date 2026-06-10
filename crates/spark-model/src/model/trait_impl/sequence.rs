@@ -55,13 +55,82 @@ impl TransformerModel {
                 && !self.tokens_have_vision_pad(&seq.tokens)
                 && seq.hss_window_start() == 0
             {
-                let acquired = self.prefix_cache.insert(
-                    &seq.tokens,
-                    &seq.block_table,
-                    &seq.disk_block_ids,
-                    bs,
-                    seq.prompt_len,
-                );
+                // #155: save an SSM leaf snapshot at FULL length (prompt +
+                // generated) so the next warm hit restores at this turn's
+                // END and replays ~nothing. End-of-prefill-only leaves made
+                // every warm turn replay this turn's decode tokens through
+                // the prefill recurrence (different kernel) — drift ratcheted
+                // into FP8 argmax flips. Live state is canonical here (runs
+                // before free_sequence; MTP commit keeps live==canonical).
+                // No hidden stashed; exact-hit shortcut skips hiddenless
+                // snapshots (prefix_lookup.rs).
+                let finish_snap = if self.config.num_ssm_layers() > 0 && seq.slot_idx != usize::MAX
+                {
+                    let stream = self.gpu.default_stream();
+                    let saved = match self.ssm_snapshots.save(
+                        seq.slot_idx,
+                        seq.session_hash,
+                        &self.ssm_pool,
+                        self.gpu.as_ref(),
+                        stream,
+                    ) {
+                        Ok(Some(id)) => Some(id),
+                        Ok(None) => {
+                            if self.ssm_snapshots.reclaim_from_cache(
+                                self.prefix_cache.as_ref(),
+                                &mut self.kv_cache.lock(),
+                            ) {
+                                let retry = self.ssm_snapshots.save(
+                                    seq.slot_idx,
+                                    seq.session_hash,
+                                    &self.ssm_pool,
+                                    self.gpu.as_ref(),
+                                    stream,
+                                );
+                                retry.ok().flatten()
+                            } else {
+                                None
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("finish-leaf SSM snapshot save error: {e}");
+                            None
+                        }
+                    };
+                    if let Some(id) = saved {
+                        tracing::info!(
+                            "Saved finish-leaf SSM snapshot {} for {} tokens",
+                            id,
+                            seq.tokens.len(),
+                        );
+                    }
+                    saved
+                } else {
+                    None
+                };
+                let acquired = if let Some(snap_id) = finish_snap {
+                    let (displaced, acquired) = self.prefix_cache.insert_with_snapshot(
+                        &seq.tokens,
+                        &seq.block_table,
+                        &seq.disk_block_ids,
+                        bs,
+                        snap_id,
+                        seq.session_hash,
+                        seq.prompt_len,
+                    );
+                    if let Some(old) = displaced {
+                        self.ssm_snapshots.free(old);
+                    }
+                    acquired
+                } else {
+                    self.prefix_cache.insert(
+                        &seq.tokens,
+                        &seq.block_table,
+                        &seq.disk_block_ids,
+                        bs,
+                        seq.prompt_len,
+                    )
+                };
                 super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
                 // Bump KV block ref_counts so the prefix cache "owns" a reference.
                 // This keeps blocks alive after free_sequence drops the sequence's ref.

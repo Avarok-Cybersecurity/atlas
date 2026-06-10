@@ -109,8 +109,17 @@ impl TransformerModel {
             // SSM state propagation.
             let mut skip = if let Some(snap_id) = prefix_match.ssm_snapshot {
                 let snap_tok = prefix_match.ssm_snapshot_tokens;
+                // Exact full-prompt hit on a hiddenless snapshot (finish
+                // leaves never stash a hidden): the exact-snap fixup cannot
+                // produce the first token's logits, so fall through to the
+                // no-snapshot full-recompute path. Only affects identical
+                // retried prompts; multi-turn warm hits have matched < total.
+                let exact_without_hidden = snap_tok == matched
+                    && matched == total
+                    && !self.ssm_snapshots.has_hidden(snap_id);
                 if snap_tok > 0
                     && matched <= total
+                    && !exact_without_hidden
                     && self
                         .ssm_snapshots
                         .session_matches(snap_id, seq.session_hash)
