@@ -474,8 +474,7 @@ impl Qwen3AttentionLayer {
         let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-        let wht_runtime_active =
-            !weight_pre_rotated && (hd == 128 || hd == 256 || hd == 512);
+        let wht_runtime_active = !weight_pre_rotated && (hd == 128 || hd == 256 || hd == 512);
         if k_is_turbo && wht_runtime_active && self.wht_bf16_k.0 != 0 {
             use spark_runtime::kernel_args::KernelLaunch;
             KernelLaunch::new(ctx.gpu, self.wht_bf16_k)
