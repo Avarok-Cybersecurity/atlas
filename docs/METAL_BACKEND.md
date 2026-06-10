@@ -118,9 +118,10 @@ Mechanics, mirroring the CUDA write path and decode bookends:
   dequantization — the benefit grows with context length).
 - `Qwen35Kernels::resolve` hard-requires all turbo kernel handles, so
   a turbo cache can never silently fall back to the bf16 kernels.
-- ⚠ Per-quant `KERNEL.toml` `extra_metal_flags` fully SHADOWS the
-  common list — keep `-ffast-math` and `-DTQ_PLUS_SIGNS` in sync when
-  adding model targets.
+- Per-quant `KERNEL.toml` `[build]` flags and `[modules]` entries are
+  MERGED onto the common KERNEL.toml's (common first, model additions
+  appended/winning per key) — model targets inherit `-ffast-math` and
+  `-DTQ_PLUS_SIGNS` automatically.
 
 Quality eval: `ATLAS_LOGITS_OUT=path` dumps per-step bf16 logits;
 `tests/metal_kv_kld_compare.py` reports KLD + top-1 agreement between

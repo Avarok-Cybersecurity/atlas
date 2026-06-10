@@ -1,9 +1,7 @@
 [build]
-# NOTE: this list fully SHADOWS the common KERNEL.toml's flags (no
-# merge) — keep -ffast-math in sync with kernels/metal/common.
-# -DTQ_PLUS_SIGNS enables the two-sided Rademacher rotation in
-# wht_bf16.metal (canonical TurboQuant form; the Lloyd-Max codebooks
-# assume Gaussianized post-rotation coordinates).
-extra_metal_flags = ["-ffast-math", "-DTQ_PLUS_SIGNS"]
+# Per-quant ADDITIONS to the common KERNEL.toml's flags (build.rs merges
+# common first, then this list, deduped). Empty = inherit common
+# (-ffast-math, -DTQ_PLUS_SIGNS).
+extra_metal_flags = []
 
 [modules]
