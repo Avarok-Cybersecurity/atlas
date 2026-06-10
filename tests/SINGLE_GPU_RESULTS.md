@@ -959,3 +959,60 @@ For Mistral Small 4 (0 SSM layers): `SsmStatePool` allocates 0 MB regardless of 
 
 **No new bugs found. All four documented fixes (`67f9616`, `3f673d4`, `427104f`, `df07318`)
 confirmed present and correct on `spec_ssm`. No code changes this session.**
+
+---
+
+## Codebase Verification — 2026-06-10 (independent re-audit, spec_ssm live files)
+
+Fresh read of every file named in the investigation brief against the actual spec_ssm
+source tree (not main). All prior sessions' findings confirmed. Key spec_ssm vs main
+deltas re-verified by direct file read:
+
+### P1 — Mistral MLA prefill fixes confirmed on spec_ssm
+
+**`cache_skip_mla.rs:267`** (spec_ssm):
+```rust
+let inv_sqrt_d_absorbed = 1.0f32 / ((kv_lora + mla_rope) as f32).sqrt(); // 1/sqrt(320)
+// ...
+anyhow::ensure!(self.mla_fused_prefill_k.0 != 0, "MLA cache-skip prefill requires …");
+ops::mla_fused_prefill(ctx.gpu, self.mla_fused_prefill_k, …, inv_sqrt_d_absorbed, stream)?;
+```
+Correct absorbed scale; uses `mla_fused_prefill` (HDIM=320); runtime guard prevents silent
+fallback to the broken HDIM=256 kernel. O-projection multiplied by `nq * mla_v_dim` (not
+`nq * hd`): correct output dimension for V-extracted result.
+
+**`paged_mla.rs:277`** (spec_ssm):
+```rust
+let inv_sqrt_d = 1.0f32 / (mla_cache_dim as f32).sqrt(); // 1/sqrt(320)
+anyhow::ensure!(hd > 128 || self.prefill_attn_128_k.0 != 0, "…requires inferspark_prefill_hd128…");
+let prefill_k = if hd <= 128 { self.prefill_attn_128_k } else { … };
+```
+Correct scale + runtime guard selecting the HDIM=128-safe kernel for MLA's hd=128.
+
+**`kv_dtypes.rs:20-22`** (spec_ssm):
+```rust
+if kv_dtype == KvCacheDtype::Bf16 {
+    return vec![KvCacheDtype::Bf16; num_attention_layers]; // explicit BF16 for all layers
+}
+```
+Prevents callers with `layer_dtypes.get(i).unwrap_or(&base_dtype)` from returning base_dtype
+(which could be FP8 via a default) for any layer. Main branch returned `vec![]` here, making
+the safety guarantee depend on every caller correctly implementing the fallback.
+
+**Decode path (`attention_forward_mla.rs:375-377`)** — confirmed scale matches prefill:
+```rust
+let inv_sqrt_d = self.effective_attn_scale(hd);  // hd=mla_cache_dim=320 for MLA layers
+```
+MLA layers have `attn_scale_override = Some(1/sqrt(320))` set at construction time by the
+loader, so `effective_attn_scale` returns the correct absorbed scale. All four prefill and
+decode paths use a consistent `1/sqrt(320)`.
+
+### P2 — Nemotron tool-calling: confirmed unchanged from prior audit
+All four MODEL.toml flags and the `helpers_b.rs:170` `call_format` parameter confirmed
+present. `nemotron_h.jinja` line 204 guard still correct. No regressions.
+
+### P3 — SSM pool propagation: confirmed unchanged
+`SsmStatePool::new` at `ssm_pool.rs:57` takes `max_batch_size`, not `ssm_cache_slots`.
+CLI value correctly reaches only `SsmSnapshotPool`. No regressions.
+
+**No code changes. Spec_ssm is clean and ready for hardware re-test.**
