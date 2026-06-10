@@ -53,7 +53,25 @@ pub(super) fn setup_lm_heads(
     // per-row scales, w8a16_gemv decode) instead of NVFP4. Additive: when
     // `config.lm_head_fp8` is false the NVFP4/BF16 paths below are unchanged.
     let mut lm_head_fp8: Option<Fp8DenseWeight> = None;
-    let lm_head_nvfp4 = if config.skip_lm_head_quantization() {
+    let lm_head_nvfp4 = if lm_head_prepacked_nvfp4 {
+        // Checkpoint constraint, not a preference: there is NO BF16 lm_head
+        // tensor on disk, so neither the BF16-skip path (reads vocab*hidden
+        // BF16 from a half-size packed buffer) nor a runtime FP8/NVFP4
+        // requantize can be honored. Load the packed head directly; warn if
+        // the user asked for something else.
+        if config.skip_lm_head_quantization() || config.lm_head_fp8 {
+            tracing::warn!(
+                "--lm-head-dtype override ignored: this checkpoint ships lm_head                  pre-packed as NVFP4 (no BF16 tensor exists to keep or requantize);                  using the packed NVFP4 head"
+            );
+        }
+        let prefix = lm_head_key.unwrap().strip_suffix(".weight").unwrap();
+        let q = crate::weight_map::quantized(store, prefix, gpu)?;
+        tracing::info!(
+            "LM head loaded as pre-packed NVFP4 (vocab={}, skipped requantize)",
+            config.vocab_size
+        );
+        Some(q)
+    } else if config.skip_lm_head_quantization() {
         tracing::info!("LM head kept as BF16 (skip NVFP4 quantization per model config)");
         None
     } else if config.lm_head_fp8 {
@@ -75,14 +93,6 @@ pub(super) fn setup_lm_heads(
         );
         lm_head_fp8 = Some(q);
         None
-    } else if lm_head_prepacked_nvfp4 {
-        let prefix = lm_head_key.unwrap().strip_suffix(".weight").unwrap();
-        let q = crate::weight_map::quantized(store, prefix, gpu)?;
-        tracing::info!(
-            "LM head loaded as pre-packed NVFP4 (vocab={}, skipped requantize)",
-            config.vocab_size
-        );
-        Some(q)
     } else {
         let q = quantize_to_nvfp4(
             lm_head,
