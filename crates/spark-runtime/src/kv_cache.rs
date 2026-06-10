@@ -26,11 +26,11 @@ pub enum KvCacheDtype {
     /// 3-bit WHT + Lloyd-Max (8 levels). 22% smaller than turbo4.
     Turbo3,
     /// 2-bit WHT + Lloyd-Max (4 levels). 6.4x compression vs bf16 (3 bits/elem
-    /// total: 2 b data + 0.5 b scale + 0.5 b layout overhead). Currently has
-    /// reshape_and_cache_flash_turbo2 write kernel but no
-    /// paged_decode_attn_turbo2 — decoder kernel is the remaining port; in
-    /// this build Turbo2 dispatch routes to turbo3 decode and will produce
-    /// garbage at runtime (use only to verify the write side compiles).
+    /// total: 2 b data + 0.5 b scale + 0.5 b layout overhead). Full write +
+    /// paged-decode + chunked-prefill kernel coverage. 2-bit keys cannot
+    /// sustain tool-grammar constrained decoding with the standard boundary
+    /// policy; requires the higher auto high-precision-layer default (see
+    /// `auto_high_precision_layers`) validated on the GB10 flagship.
     Turbo2,
     /// WHT + FP8 E4M3. Same memory as FP8 but with outlier suppression.
     /// Enables FP8-level memory for models with large RMS norm weights.

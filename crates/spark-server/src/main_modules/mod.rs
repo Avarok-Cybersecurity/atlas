@@ -13,5 +13,5 @@ pub(crate) mod serve_router;
 mod tests;
 
 pub(crate) use app_state::AppState;
-pub(crate) use kv_dtypes::build_layer_kv_dtypes;
+pub(crate) use kv_dtypes::{auto_high_precision_layers, build_layer_kv_dtypes};
 pub(crate) use serve::serve;

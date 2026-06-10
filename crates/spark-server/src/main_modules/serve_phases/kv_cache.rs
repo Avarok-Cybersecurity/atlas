@@ -236,34 +236,22 @@ pub(crate) fn resolve_kv_cache_config(
             0
         }),
     };
-    let kv_hp_layers = if kv_hp_layers == 0
-        && matches!(
-            kv_dtype,
-            spark_runtime::kv_cache::KvCacheDtype::Turbo3
-                | spark_runtime::kv_cache::KvCacheDtype::Turbo4
-                | spark_runtime::kv_cache::KvCacheDtype::Turbo8
-                | spark_runtime::kv_cache::KvCacheDtype::Turbo4KTurbo3V
-                | spark_runtime::kv_cache::KvCacheDtype::Turbo4KTurbo8V
-                | spark_runtime::kv_cache::KvCacheDtype::Turbo3KTurbo8V
-                | spark_runtime::kv_cache::KvCacheDtype::Bf16KTurbo4V
-                | spark_runtime::kv_cache::KvCacheDtype::Bf16KTurbo3V
-                | spark_runtime::kv_cache::KvCacheDtype::Fp8KTurbo4V
-                | spark_runtime::kv_cache::KvCacheDtype::Fp8KTurbo3V
-                | spark_runtime::kv_cache::KvCacheDtype::Bf16KTurbo2V
-                | spark_runtime::kv_cache::KvCacheDtype::Fp8KTurbo2V
-        ) {
-        let auto_hp = ((num_attn_layers as f32 / 3.0).ceil() as usize).max(2);
-        tracing::info!(
-            "Auto-enabling --kv-high-precision-layers {} for {} ({}/{} attn layers BF16; \
-             scaled with attn-layer count to keep accumulated turbo quant error tractable)",
-            auto_hp,
-            effective_kv_dtype_str,
-            (auto_hp * 2).min(num_attn_layers),
-            num_attn_layers,
-        );
-        auto_hp
-    } else {
-        kv_hp_layers
+    let kv_hp_layers = match (
+        kv_hp_layers,
+        crate::main_modules::auto_high_precision_layers(kv_dtype, num_attn_layers),
+    ) {
+        (0, Some(auto_hp)) => {
+            tracing::info!(
+                "Auto-enabling --kv-high-precision-layers {} for {} ({}/{} attn layers BF16; \
+                 scaled with attn-layer count to keep accumulated turbo quant error tractable)",
+                auto_hp,
+                effective_kv_dtype_str,
+                (auto_hp * 2).min(num_attn_layers),
+                num_attn_layers,
+            );
+            auto_hp
+        }
+        _ => kv_hp_layers,
     };
     if kv_hp_layers == 0 && kv_dtype != spark_runtime::kv_cache::KvCacheDtype::Bf16 {
         tracing::warn!(

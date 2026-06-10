@@ -151,6 +151,73 @@ fn test_build_layer_kv_dtypes_single_layer() {
 }
 
 #[test]
+fn test_auto_high_precision_layers_non_turbo_none() {
+    use spark_runtime::kv_cache::KvCacheDtype;
+    for d in [KvCacheDtype::Bf16, KvCacheDtype::Fp8, KvCacheDtype::Nvfp4] {
+        assert_eq!(crate::main_modules::auto_high_precision_layers(d, 10), None);
+    }
+}
+
+#[test]
+fn test_auto_high_precision_layers_baseline_formula() {
+    use spark_runtime::kv_cache::KvCacheDtype;
+    // ceil(n/3), floor 2 — flagship (10 attn layers) lands on 4
+    assert_eq!(
+        crate::main_modules::auto_high_precision_layers(KvCacheDtype::Turbo8, 10),
+        Some(4),
+    );
+    assert_eq!(
+        crate::main_modules::auto_high_precision_layers(KvCacheDtype::Turbo4KTurbo8V, 3),
+        Some(2),
+    );
+}
+
+#[test]
+fn test_auto_high_precision_layers_weak_dtypes_stronger_default() {
+    use spark_runtime::kv_cache::KvCacheDtype;
+    // turbo2 + bf16k_turbo3v: 0/5-0/10 agentic at hp=4, 5/5 at hp=8 on the
+    // 10-attn-layer flagship; ceil(4n/5) floor 4 reproduces the validated 8.
+    for d in [KvCacheDtype::Turbo2, KvCacheDtype::Bf16KTurbo3V] {
+        assert_eq!(
+            crate::main_modules::auto_high_precision_layers(d, 10),
+            Some(8)
+        );
+        assert_eq!(
+            crate::main_modules::auto_high_precision_layers(d, 2),
+            Some(4)
+        );
+    }
+}
+
+#[test]
+fn test_auto_high_precision_layers_every_turbo_dtype_covered() {
+    use spark_runtime::kv_cache::KvCacheDtype;
+    // Every turbo dtype must auto-enable boundary layers; only the three
+    // non-rotated baseline dtypes opt out. Enum-walk so a future variant
+    // cannot silently fall through to hp=0.
+    for d in [
+        KvCacheDtype::Turbo2,
+        KvCacheDtype::Turbo3,
+        KvCacheDtype::Turbo4,
+        KvCacheDtype::Turbo8,
+        KvCacheDtype::Turbo4KTurbo3V,
+        KvCacheDtype::Turbo4KTurbo8V,
+        KvCacheDtype::Turbo3KTurbo8V,
+        KvCacheDtype::Bf16KTurbo4V,
+        KvCacheDtype::Bf16KTurbo3V,
+        KvCacheDtype::Fp8KTurbo4V,
+        KvCacheDtype::Fp8KTurbo3V,
+        KvCacheDtype::Bf16KTurbo2V,
+        KvCacheDtype::Fp8KTurbo2V,
+    ] {
+        assert!(
+            crate::main_modules::auto_high_precision_layers(d, 10).unwrap_or(0) >= 2,
+            "{d:?} must auto-enable high-precision boundary layers",
+        );
+    }
+}
+
+#[test]
 fn test_cli_parse_kv_high_precision_layers() {
     let cli = Cli::try_parse_from([
         "spark",
