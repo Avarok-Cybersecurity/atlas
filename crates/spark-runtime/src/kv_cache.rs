@@ -114,6 +114,22 @@ impl KvCacheDtype {
         }
     }
 
+    /// True for the symmetric turbo dtypes whose cache contents are stored
+    /// in the WHT-rotated basis (the write path applies `wht_bf16_inplace`
+    /// before quantizing). Gates the WHT(Q) / iWHT(out) attention bookends —
+    /// call on the K or V side of `kv_pair()`, not on the combined variant.
+    /// Turbo2 is rotated by the write path like the rest; omitting it here
+    /// is what desynced the decode bookends from the write path.
+    pub fn is_wht_rotated(self) -> bool {
+        matches!(
+            self,
+            KvCacheDtype::Turbo2
+                | KvCacheDtype::Turbo3
+                | KvCacheDtype::Turbo4
+                | KvCacheDtype::Turbo8
+        )
+    }
+
     /// True if K and V use different storage layouts.
     pub fn is_asymmetric(self) -> bool {
         matches!(

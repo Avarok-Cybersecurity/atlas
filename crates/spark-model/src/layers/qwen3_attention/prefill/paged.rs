@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
-use spark_runtime::kv_cache::{KvCacheDtype, PagedKvCache};
+use spark_runtime::kv_cache::PagedKvCache;
 
 use super::super::Qwen3AttentionLayer;
 use crate::layer::{BatchedAttnMetadata, ForwardContext};
@@ -463,14 +463,8 @@ impl Qwen3AttentionLayer {
         // chunk≥2 history read scores raw Q against rotated K and leaves the
         // output in the rotated-V basis — the multi-chunk agentic collapse.
         let (wht_k_dtype, wht_v_dtype) = self.kv_dtype.kv_pair();
-        let k_is_turbo = matches!(
-            wht_k_dtype,
-            KvCacheDtype::Turbo3 | KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8
-        );
-        let v_is_turbo = matches!(
-            wht_v_dtype,
-            KvCacheDtype::Turbo3 | KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8
-        );
+        let k_is_turbo = wht_k_dtype.is_wht_rotated();
+        let v_is_turbo = wht_v_dtype.is_wht_rotated();
         let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);

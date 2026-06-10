@@ -395,14 +395,8 @@ impl Qwen3AttentionLayer {
         // turbo type (we're dotting against rotated K); iWHT(out) below
         // fires only when V is a turbo type (output is in rotated-V basis).
         let (k_dtype, v_dtype) = self.kv_dtype.kv_pair();
-        let k_is_turbo = matches!(
-            k_dtype,
-            KvCacheDtype::Turbo3 | KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8
-        );
-        let v_is_turbo = matches!(
-            v_dtype,
-            KvCacheDtype::Turbo3 | KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8
-        );
+        let k_is_turbo = k_dtype.is_wht_rotated();
+        let v_is_turbo = v_dtype.is_wht_rotated();
         // InnerQ pre-WHT scale_inv on Q (no-op when d_innerq_active=0 on device).
         // Bypass runtime WHT(Q) when weights are pre-rotated at load (TQ_PLUS_WEIGHT_ROTATION=1).
         let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")

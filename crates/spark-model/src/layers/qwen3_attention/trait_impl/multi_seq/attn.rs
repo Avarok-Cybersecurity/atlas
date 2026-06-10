@@ -131,6 +131,37 @@ impl Qwen3AttentionLayer {
         }
         let attn_out = fwd.buffers.attn_output();
         let inv_sqrt_d = self.effective_attn_scale(hd);
+
+        // TurboQuant WHT bookends (mirrors decode/attention_forward.rs).
+        // The cache holds WHT(K)/WHT(V) for turbo dtypes: rotate the batched
+        // Q rows before the paged decode and rotate the output back after —
+        // without these the multi-seq batched decode scores raw Q against
+        // rotated K and returns output in the rotated-V basis.
+        let (wht_k_dtype, wht_v_dtype) = self.kv_dtype.kv_pair();
+        let k_is_turbo = wht_k_dtype.is_wht_rotated();
+        let v_is_turbo = wht_v_dtype.is_wht_rotated();
+        let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let wht_runtime_active = !weight_pre_rotated && (hd == 128 || hd == 256 || hd == 512);
+        if k_is_turbo && self.innerq_apply_q_k.0 != 0 && hd == 128 {
+            use spark_runtime::kernel_args::KernelLaunch;
+            KernelLaunch::new(fwd.gpu, self.innerq_apply_q_k)
+                .grid([n as u32 * nq, 1, 1])
+                .block([32, 1, 1])
+                .arg_ptr(q_contiguous)
+                .arg_u32(hd)
+                .launch(stream)?;
+        }
+        if k_is_turbo && wht_runtime_active && self.wht_bf16_k.0 != 0 {
+            use spark_runtime::kernel_args::KernelLaunch;
+            KernelLaunch::new(fwd.gpu, self.wht_bf16_k)
+                .grid([n as u32 * nq, 1, 1]) // one warp per (seq, q_head)
+                .block([32, 1, 1])
+                .arg_ptr(q_contiguous)
+                .arg_u32(hd)
+                .launch(stream)?;
+        }
         self.run_paged_decode(
             fwd.gpu,
             q_contiguous,
@@ -149,6 +180,15 @@ impl Qwen3AttentionLayer {
             fwd.buffers.splitk_workspace(),
             stream,
         )?;
+        if v_is_turbo && wht_runtime_active && self.wht_bf16_k_inv.0 != 0 {
+            use spark_runtime::kernel_args::KernelLaunch;
+            KernelLaunch::new(fwd.gpu, self.wht_bf16_k_inv)
+                .grid([n as u32 * nq, 1, 1])
+                .block([32, 1, 1])
+                .arg_ptr(attn_out)
+                .arg_u32(hd)
+                .launch(stream)?;
+        }
         Ok(attn_out)
     }
 

@@ -409,6 +409,53 @@ impl Qwen3AttentionLayer {
         // ── 8. Flash Attention on contiguous Q/K/V (BR=64 for long sequences) ──
         let attn_out = ctx.buffers.attn_output();
         let inv_sqrt_d = self.effective_attn_scale(hd);
+
+        // TurboQuant WHT bookends (mirrors prefill/paged.rs). For turbo
+        // dtypes, write_kv_cache (section 7) WHT-rotated the written
+        // [kv_write_start..] range of k/v_contiguous IN PLACE before
+        // quantizing it into the cache — so the contiguous buffers this FA
+        // reads already hold WHT(K)/WHT(V) for that range. Bring the rest of
+        // the inputs into the same basis: rotate the unwritten prefix
+        // [0..kv_write_start) (prefix-cache hits skip the write, so the
+        // write-path bookend never touched those rows), rotate Q
+        // (<WHT(Q), WHT(K)> = <Q, K>), and rotate the output back after the
+        // attention (it sits in the rotated-V basis).
+        let (wht_k_dtype, wht_v_dtype) = self.kv_dtype.kv_pair();
+        let k_is_turbo = wht_k_dtype.is_wht_rotated();
+        let v_is_turbo = wht_v_dtype.is_wht_rotated();
+        let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let wht_runtime_active = !weight_pre_rotated && (hd == 128 || hd == 256 || hd == 512);
+        if wht_runtime_active && kv_write_start > 0 && self.wht_bf16_k.0 != 0 {
+            use spark_runtime::kernel_args::KernelLaunch;
+            let prefix_heads = kv_write_start as u32 * nkv;
+            if k_is_turbo {
+                KernelLaunch::new(ctx.gpu, self.wht_bf16_k)
+                    .grid([prefix_heads, 1, 1]) // one warp per (token, kv_head)
+                    .block([32, 1, 1])
+                    .arg_ptr(k_contiguous)
+                    .arg_u32(hd)
+                    .launch(stream)?;
+            }
+            if v_is_turbo {
+                KernelLaunch::new(ctx.gpu, self.wht_bf16_k)
+                    .grid([prefix_heads, 1, 1])
+                    .block([32, 1, 1])
+                    .arg_ptr(v_contiguous)
+                    .arg_u32(hd)
+                    .launch(stream)?;
+            }
+        }
+        if k_is_turbo && wht_runtime_active && self.wht_bf16_k.0 != 0 {
+            use spark_runtime::kernel_args::KernelLaunch;
+            KernelLaunch::new(ctx.gpu, self.wht_bf16_k)
+                .grid([n * nq, 1, 1]) // one warp per (token, q_head)
+                .block([32, 1, 1])
+                .arg_ptr(q_contiguous)
+                .arg_u32(hd)
+                .launch(stream)?;
+        }
         if hd > 256 && self.prefill_attn_512_k.0 != 0 {
             // HDIM=512: use scalar reference kernel (BR=16, correct for any head_dim)
             // Full-attention layers (this path) always pass sliding_window=0.
@@ -453,6 +500,18 @@ impl Qwen3AttentionLayer {
             .map_err(|e| {
                 anyhow::anyhow!("flash_attn_64 failed: n={n} nq={nq} nkv={nkv} hd={hd}: {e}")
             })?;
+        }
+
+        // TurboQuant WHT bookend (output side): attention output is
+        // sum(softmax * WHT(V)) — rotate back to the real basis.
+        if v_is_turbo && wht_runtime_active && self.wht_bf16_k_inv.0 != 0 {
+            use spark_runtime::kernel_args::KernelLaunch;
+            KernelLaunch::new(ctx.gpu, self.wht_bf16_k_inv)
+                .grid([n * nq, 1, 1])
+                .block([32, 1, 1])
+                .arg_ptr(attn_out)
+                .arg_u32(hd)
+                .launch(stream)?;
         }
         aprof!("flash_attn_64", t0);
         t0 = if ctx.profile {

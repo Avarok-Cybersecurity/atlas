@@ -264,6 +264,28 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         layer_dtypes,
         hss_cache_blocks_per_seq,
     } = serve_phases::resolve_kv_cache_config(&args, &config, ptx_set.behavior.default_kv_dtype)?;
+
+    // Fail-fast: every kernel handle the selected --kv-cache-dtype's dispatch
+    // arms need must resolve NOW — not at first dispatch after a multi-minute
+    // weight load (or, worse, via a silent wrong-kernel fall-through).
+    // Validates each distinct per-layer dtype (high-precision / boundary
+    // layers can differ from the base dtype).
+    {
+        let mut distinct: Vec<spark_runtime::kv_cache::KvCacheDtype> = vec![kv_dtype];
+        for d in &layer_dtypes {
+            if !distinct.contains(d) {
+                distinct.push(*d);
+            }
+        }
+        for d in distinct {
+            spark_model::layers::qwen3_attention::validate_required_kv_kernels(
+                gpu.as_ref(),
+                d,
+                config.head_dim,
+            )
+            .context("kv-cache kernel preflight failed")?;
+        }
+    }
     let dflash_drafter_state = serve_phases::load_dflash_drafter(&args, &ptx_set, gpu.as_ref())?;
     let dflash_args =
         dflash_drafter_state
