@@ -196,10 +196,47 @@ impl TransformerModel {
     ) -> Result<()> {
         use crate::layer::SsmLayerState;
 
+        // Live-state invariant (2026-06-10 MTP×warm stutter fix): the live
+        // h_state/conv_state MUST be canonical after every commit, not just
+        // the checkpoint. Leaving live dirty (holding the rejected draft)
+        // was safe only when the next op was guaranteed to be another verify
+        // (pre_verify copies checkpoint→live). Three real paths run a plain
+        // decode() on the live buffer with no restore — spontaneous <think>
+        // flipping the scheduler MTP gate, a second concurrent request, and
+        // the MTP bootstrap after empty drafts (which then BAKES the dirty
+        // live state into the checkpoint via start_checkpoint_async). The
+        // phantom rejected token in the GDN memory garbles subsequent
+        // decode (token-stutter), and with prefix caching the poisoned
+        // decode-KV is immortalized in shared blocks across agentic turns.
+        // Cost: one extra D2D pair per SSM layer per reject — same as the
+        // pre-verify copy.
         if num_accepted == 0 {
-            // Full reject: canonical state untouched — no commit needed.
-            // Still record the event so sync_secondary has something to wait
-            // on (defensive: ensures pre-verify ordering on next iteration).
+            // Full reject: canonical state untouched; restore live from the
+            // checkpoint so any non-verify successor reads canonical state.
+            let stream = self.secondary_stream;
+            for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
+                if self.config.layer_type(i) == LayerType::LinearAttention {
+                    let ssm = layer_state
+                        .as_any_mut()
+                        .downcast_mut::<SsmLayerState>()
+                        .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
+                    let (Some(h_ckpt), Some(conv_ckpt)) =
+                        (ssm.h_state_checkpoint, ssm.conv_state_checkpoint)
+                    else {
+                        continue;
+                    };
+                    let nv = self.config.linear_num_value_heads;
+                    let vd = self.config.linear_value_head_dim;
+                    let nk = self.config.linear_num_key_heads;
+                    let kd = self.config.linear_key_head_dim;
+                    let h_bytes = nv * vd * kd * 4;
+                    let conv_bytes = (nk * kd * 2 + nv * vd) * self.config.linear_conv_kernel_dim * 4;
+                    self.gpu
+                        .copy_d2d_async(h_ckpt, ssm.h_state, h_bytes, stream)?;
+                    self.gpu
+                        .copy_d2d_async(conv_ckpt, ssm.conv_state, conv_bytes, stream)?;
+                }
+            }
             self.gpu
                 .record_event(self.secondary_event, self.secondary_stream)?;
             return Ok(());
@@ -240,7 +277,11 @@ impl TransformerModel {
                     self.gpu
                         .copy_d2d_async(ssm.conv_state, conv_ckpt, conv_bytes, stream)?;
                 } else {
-                    // Partial accept: intermediate[num_accepted-1] → live.
+                    // Partial accept: intermediate[num_accepted-1] → checkpoint
+                    // AND → live. The live buffer holds state through ALL k
+                    // verify tokens (including the rejected draft); restoring
+                    // it here keeps live canonical for any non-verify
+                    // successor (see the live-state invariant note above).
                     let slot = seq.slot_idx;
                     let inter_idx = num_accepted - 1;
                     let h_inter = self.ssm_pool.h_intermediate(ssm_layer_idx, slot, inter_idx);
@@ -250,6 +291,10 @@ impl TransformerModel {
                     self.gpu.copy_d2d_async(h_inter, h_ckpt, h_bytes, stream)?;
                     self.gpu
                         .copy_d2d_async(conv_inter, conv_ckpt, conv_bytes, stream)?;
+                    self.gpu
+                        .copy_d2d_async(h_inter, ssm.h_state, h_bytes, stream)?;
+                    self.gpu
+                        .copy_d2d_async(conv_inter, ssm.conv_state, conv_bytes, stream)?;
                 }
 
                 ssm_layer_idx += 1;
