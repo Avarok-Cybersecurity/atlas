@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-
 #![allow(unused_imports, dead_code)]
 
 use parking_lot::Mutex;

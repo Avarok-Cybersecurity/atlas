@@ -230,7 +230,8 @@ impl TransformerModel {
                     let nk = self.config.linear_num_key_heads;
                     let kd = self.config.linear_key_head_dim;
                     let h_bytes = nv * vd * kd * 4;
-                    let conv_bytes = (nk * kd * 2 + nv * vd) * self.config.linear_conv_kernel_dim * 4;
+                    let conv_bytes =
+                        (nk * kd * 2 + nv * vd) * self.config.linear_conv_kernel_dim * 4;
                     self.gpu
                         .copy_d2d_async(h_ckpt, ssm.h_state, h_bytes, stream)?;
                     self.gpu
