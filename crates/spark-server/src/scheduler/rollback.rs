@@ -72,6 +72,15 @@ pub enum RollbackOutcome {
 pub enum RollbackFallback {
     /// `[behavior].rollback_resteer = false`.
     Disabled,
+    /// Streaming request: the tokens a re-steer would drop have already
+    /// been flushed to the client as SSE deltas (content AND live
+    /// tool-call argument fragments since #90), so the client keeps the
+    /// dropped text and then receives the regeneration — duplicated /
+    /// blended output (the 2026-06-10 tool-arg "stutter": paths like
+    /// `tq133-pro-prose-r22`). The server cannot retract SSE; decline
+    /// and let the caller hard-stop (truncation is stream-safe — the
+    /// pre-#141 behavior, when SSM rollbacks always declined).
+    StreamUnsafe,
     /// The per-sequence rollback cap was already reached.
     CapReached,
     /// No well-formed boundary was found in the generated tail.
@@ -198,6 +207,12 @@ pub fn rollback_to_boundary(
 ) -> RollbackOutcome {
     if !watchdog_params().rollback_resteer {
         return RollbackOutcome::Fallback(RollbackFallback::Disabled);
+    }
+    // Streaming requests flush every token to the client as it is
+    // sampled — a re-steer cannot retract them (see StreamUnsafe doc).
+    // `cancel_flag` is Some exactly for streaming requests.
+    if a.cancel_flag.is_some() {
+        return RollbackOutcome::Fallback(RollbackFallback::StreamUnsafe);
     }
     if a.rollback_count >= atlas_kernels::ROLLBACK_RESTEER_CAP {
         return RollbackOutcome::Fallback(RollbackFallback::CapReached);
