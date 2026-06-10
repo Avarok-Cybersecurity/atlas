@@ -860,3 +860,102 @@ nemotron `disable_tool_steering`, `tool_call_parser = "bare_json"`, SSM pool pro
 are identical between branches and confirmed clean.
 
 **No code changes this session. `spec_ssm` remains ready for hardware re-test.**
+
+---
+
+## Codebase Verification — 2026-06-10 (fresh priority-ordered investigation)
+
+Fresh full-source investigation following the three-priority brief exactly. Files read in the
+order specified: `cache_skip_mla.rs`, `paged_mla.rs`, `mla_absorbed.cu`, `kv_dtypes.rs`,
+`main.rs`, `attention_forward_mla.rs` (decode), `nemotron_h.jinja`, `tool_parser.rs`,
+`bare_json.rs`, `helpers_b.rs`, `cli.rs`, `ssm_pool.rs`, `impl_a1.rs`, `build.rs`.
+Additionally: `mla_fused_prefill.cu`, `mla_prefill_paged_320.cu`, `KERNEL.toml`, `MODEL.toml`
+(both models), `init.rs` kernel-handle loading.
+
+All prior fixes confirmed in place. No new bugs found.
+
+### P1 — Mistral Small 4 MLA prefill (>1000 tokens)
+
+**Root cause history**: Two compounding bugs caused the threshold failure:
+1. YaRN `inv_freq` (yarn.rs) — wrong `low_freq_factor` placed interpolation boundary at wrong
+   frequencies; fixed in an earlier commit.
+2. MLA attention scale — first-chunk path used `1/sqrt(hd=128)` instead of `1/sqrt(320)`;
+   additionally used `inferspark_prefill_hd128` (HDIM=128 unabsorbed) instead of the absorbed
+   `mla_fused_prefill` kernel. Both issues fixed in `67f9616` and `3f673d4`.
+
+**Current state of all four MLA attention paths (all correct):**
+
+| Path | File | Line | Scale | Kernel |
+|------|------|------|-------|--------|
+| Single-chunk (cache-skip) | `cache_skip_mla.rs` | 267 | `1/sqrt(kv_lora+rope=320)` | `mla_fused_prefill` (HDIM=320 absorbed) |
+| First-chunk paged | `paged_mla.rs` | 277 | `1/sqrt(mla_cache_dim=320)` | `prefill_attn_128_k` (HDIM=128, guarded) |
+| Multi-chunk paged | `paged_mla.rs` | 479 | `1/sqrt(mla_cache_dim=320)` | `mla_prefill_paged_320` (HDIM=320 paged) |
+| Decode | `attention_forward_mla.rs` | 377 | `1/sqrt(kv_lora+mla_rope=320)` | `paged_decode_mla_k` |
+
+**BF16 KV cache — no FP8 leakage:**
+- `kv_dtypes.rs:20-21`: `if kv_dtype == Bf16 { return vec![Bf16; num_attention_layers]; }` —
+  explicit BF16 vector, no empty-vec FP8 fallback. All 36 attention layers are uniform BF16.
+- `MODEL.toml` (`mistral-small-4/MODEL.toml`): `default_kv_dtype = "bf16"` model-side guard.
+- `--kv-high-precision-layers auto` → `kv_hp_layers=2`, but the BF16 guard fires first and
+  returns the full BF16 vec; `kv_hp_layers` value is irrelevant when base dtype is BF16.
+
+**CUDA kernel deep-dive (new this session):**
+
+`mla_fused_prefill.cu` (cache-skip path):
+- Grid: flat 1D `(nq * seq_len, 1, 1)` — comment explicitly notes this avoids gridDim.y ≤
+  65535 limit. At 65536 tokens with 32 heads: gridDim.x = 32 × 65536 = 2M < 2^31-1. ✓
+- Online softmax over `kv_pos = 0..q_pos+1` (causal); no hard seq_len limit. ✓
+- Three `__syncthreads()` per KV iteration: (1) after warp partial writes to `smem_dot`,
+  (2) after thread-0 broadcasts score, (3) end-of-loop to prevent iteration overlap. Correct. ✓
+- NULL cache pointer check: `if (head == 0 && k_cache_out != 0)` — safe when
+  `cache_skip_mla.rs` passes `DevicePtr::NULL` (already wrote cache via `write_kv_cache`). ✓
+- Shared memory: `smem_q[320] + smem_dot[8] + smem_latent[256]` = 2336 bytes. Well within
+  48 KB limit. ✓
+
+`mla_prefill_paged_320.cu` (multi-chunk path):
+- Grid: `(num_q_heads, ceil(q_len/MLA_BR=16), 1)` — no limit issues. ✓
+- Causal masking: `causal_kv_end = min(q_global + 1, kv_len)` — correct. ✓
+- Half-warp lane mask `0x0000FFFF / 0xFFFF0000` prevents CUDA UB when the last tile has
+  fewer than MLA_BR active rows (some threads return early). ✓
+- No `__syncthreads()` in main loop (all data in registers); no shared-memory race. ✓
+
+**Kernel registration verified** (`KERNEL.toml` + `init.rs`):
+- `mla_fused_prefill` module → loaded as `self.mla_fused_prefill_k`
+- `mla_prefill_paged_320` module → loaded as `self.mla_prefill_paged_k`
+- `cache_skip_mla.rs:268-272`: `anyhow::ensure!(self.mla_fused_prefill_k.0 != 0, ...)` guards
+  at runtime against missing kernel — would fail at first prefill with a clear error. ✓
+
+### P2 — Nemotron Super 120B tool calling
+
+All fixes re-verified by direct source read:
+
+| File | Setting | Value | Effect |
+|------|---------|-------|--------|
+| `MODEL.toml` | `disable_tool_steering` | `true` | Skips `<tool_call>\n` steering prefix in jinja |
+| `MODEL.toml` | `tool_call_parser` | `"bare_json"` | Parser uses `{"name":…,"arguments":{…}}` |
+| `MODEL.toml` | `thinking_in_tools` | `false` | Template emits `<think></think>\n` before tool call |
+| `MODEL.toml` | `skip_template_tools` | `true` | Jinja tool schema block suppressed (avoids duplicate) |
+| `nemotron_h.jinja:206` | generation prompt | `if tools and not disable_tool_steering` | With flag=true, falls to `enable_thinking` branch |
+| `helpers_b.rs:170` | `call_format: &str` | format-specific | `bare_json` gets "JSON object", not `<tool_call>` |
+| `bare_json.rs:48` | `append_tool_choice_instruction` | `"JSON object"` | Required-tool instruction matches format |
+
+**No conflicts between template, system prompt, or enforcement text.** All four bugs
+(steering prefix loop, `<tool_call>` contradiction, missing grammar, thinking-buried-JSON)
+are resolved by the combination of MODEL.toml flags + `df07318` helpers_b.rs fix.
+
+### P3 — Qwen3.5-122B SSM cache slots
+
+CLI propagation chain traced end-to-end:
+```
+cli.rs:279   --ssm-cache-slots (default 16)  →  args.ssm_cache_slots: usize
+build.rs:71  args.ssm_cache_slots            →  factory::build_model(..., ssm_cache_slots, ...)
+impl_a1.rs:134  SsmStatePool::new(&config, max_batch_size, ...)  ← sized by batch, NOT slots
+impl_a1.rs:143  SsmSnapshotPool::new(ssm_cache_slots, ...)       ← sized by CLI flag
+```
+
+`--ssm-cache-slots 0` zeros only `SsmSnapshotPool` (Marconi prefix-cache snapshots).
+`SsmStatePool` (1206 MB at default `max_batch_size=8`, 36 SSM layers) is independent.
+For Mistral Small 4 (0 SSM layers): `SsmStatePool` allocates 0 MB regardless of flag values.
+
+**No new bugs found. All four documented fixes (`67f9616`, `3f673d4`, `427104f`, `df07318`)
+confirmed present and correct on `spec_ssm`. No code changes this session.**
