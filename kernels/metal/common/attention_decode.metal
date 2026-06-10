@@ -48,11 +48,15 @@ kernel void attention_decode(
     if (h >= num_heads) {
         return;
     }
+    // The score vector lives in threadgroup memory: positions past the
+    // cap would read/write out of bounds in stages 2-5, so clamp hard.
+    // Long-context decode belongs to a future paged variant.
+    uint seq = min(seq_len, MAX_SEQ_DECODE);
     uint group = num_heads / num_kv_heads;
     uint kv_h  = h / group;
 
     // Stage 1: scores[s] = (Q[h] · K[s, kv_h]) * scale.
-    for (uint s = tid; s < seq_len && s < MAX_SEQ_DECODE; s += tg_size) {
+    for (uint s = tid; s < seq; s += tg_size) {
         float dot = 0.0f;
         for (uint d = 0; d < head_dim; ++d) {
             float qv = float(q[h * head_dim + d]);
@@ -68,7 +72,7 @@ kernel void attention_decode(
     // serial sweep doesn't dominate).
     if (tid == 0) {
         float m = -INFINITY;
-        for (uint s = 0; s < seq_len; ++s) {
+        for (uint s = 0; s < seq; ++s) {
             if (scores[s] > m) {
                 m = scores[s];
             }
@@ -78,7 +82,7 @@ kernel void attention_decode(
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // Stage 3: exp(score - max) in parallel.
-    for (uint s = tid; s < seq_len; s += tg_size) {
+    for (uint s = tid; s < seq; s += tg_size) {
         scores[s] = exp(scores[s] - max_score);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -86,7 +90,7 @@ kernel void attention_decode(
     // Stage 4: sum reduction.
     if (tid == 0) {
         float sum = 0.0f;
-        for (uint s = 0; s < seq_len; ++s) {
+        for (uint s = 0; s < seq; ++s) {
             sum += scores[s];
         }
         sum_exp = sum;
@@ -98,7 +102,7 @@ kernel void attention_decode(
     float inv_sum = 1.0f / sum_exp;
     for (uint d = tid; d < head_dim; d += tg_size) {
         float acc = 0.0f;
-        for (uint s = 0; s < seq_len; ++s) {
+        for (uint s = 0; s < seq; ++s) {
             float vv = float(v[(s * num_kv_heads + kv_h) * head_dim + d]);
             acc += scores[s] * inv_sum * vv;
         }

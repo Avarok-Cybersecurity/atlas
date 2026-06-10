@@ -201,6 +201,12 @@ pub fn forward_full_attention<Q: QuantWeights>(
                 KernelArg::Buffer(scratch.q_norm_out),
             ],
         )?;
+        // Sparse-V gate threshold (0.0 disables). ATLAS_SPARSE_V_THRESHOLD
+        // overrides the default 1e-3 from the attention-gated dequant work.
+        let sparse_v: f32 = std::env::var("ATLAS_SPARSE_V_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1e-3);
         gpu.launch_typed(
             attn_turbo,
             [cfg.num_heads, 1, 1],
@@ -213,6 +219,7 @@ pub fn forward_full_attention<Q: QuantWeights>(
                 KernelArg::Bytes(&cfg.num_kv_heads.to_le_bytes()),
                 KernelArg::Bytes(&cfg.head_dim.to_le_bytes()),
                 KernelArg::Bytes(&scale.to_le_bytes()),
+                KernelArg::Bytes(&sparse_v.to_le_bytes()),
                 KernelArg::Buffer(scratch.q_norm_out),
                 KernelArg::Buffer(kv.k),
                 KernelArg::Buffer(kv.v),

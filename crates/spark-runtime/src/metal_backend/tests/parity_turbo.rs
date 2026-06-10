@@ -370,6 +370,7 @@ fn metal_attention_decode_turbo8_matches_reference() {
                 KernelArg::Bytes(&num_kv_heads.to_le_bytes()),
                 KernelArg::Bytes(&head_dim.to_le_bytes()),
                 KernelArg::Bytes(&scale.to_le_bytes()),
+                KernelArg::Bytes(&1e-3f32.to_le_bytes()),
                 KernelArg::Buffer(q_buf),
                 KernelArg::Buffer(k_data),
                 KernelArg::Buffer(v_data),
