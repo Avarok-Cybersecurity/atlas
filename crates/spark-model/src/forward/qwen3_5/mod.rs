@@ -143,7 +143,7 @@ pub struct Qwen35Kernels {
     pub gdn_gate: KernelHandle,
     pub sigmoid: KernelHandle,
     pub gdn_dec: KernelHandle,
-    /// TurboQuant KV cache paths (Turbo8 / Turbo4): quantizing appends,
+    /// TurboQuant KV cache paths (Turbo8/4/3/2): quantizing appends,
     /// dequantizing decode attentions, and the WHT rotation bookends.
     /// Resolved unconditionally (the kernels live in the common set) so
     /// a turbo cache can never silently fall back to the bf16 kernels.
@@ -151,6 +151,10 @@ pub struct Qwen35Kernels {
     pub attn_turbo8: KernelHandle,
     pub kvap_turbo4: KernelHandle,
     pub attn_turbo4: KernelHandle,
+    pub kvap_turbo3: KernelHandle,
+    pub attn_turbo3: KernelHandle,
+    pub kvap_turbo2: KernelHandle,
+    pub attn_turbo2: KernelHandle,
     pub wht: KernelHandle,
     pub wht_inv: KernelHandle,
 }
@@ -176,6 +180,10 @@ impl Qwen35Kernels {
             attn_turbo8: gpu.kernel("attention_decode_turbo8", "attention_decode_turbo8")?,
             kvap_turbo4: gpu.kernel("kv_cache_append_turbo4", "kv_cache_append_turbo4")?,
             attn_turbo4: gpu.kernel("attention_decode_turbo4", "attention_decode_turbo4")?,
+            kvap_turbo3: gpu.kernel("kv_cache_append_turbo3", "kv_cache_append_turbo3")?,
+            attn_turbo3: gpu.kernel("attention_decode_turbo3", "attention_decode_turbo3")?,
+            kvap_turbo2: gpu.kernel("kv_cache_append_turbo2", "kv_cache_append_turbo2")?,
+            attn_turbo2: gpu.kernel("attention_decode_turbo2", "attention_decode_turbo2")?,
             wht: gpu.kernel("wht_bf16", "wht_bf16_inplace")?,
             wht_inv: gpu.kernel("wht_bf16", "wht_bf16_inplace_inv")?,
         })
@@ -193,6 +201,12 @@ pub enum MetalKvDtype {
     /// 4-bit Lloyd-Max codebook indices + FP8 group-of-16 scales
     /// (matched-norm L2), WHT-rotated basis. 3.56× smaller than bf16.
     Turbo4,
+    /// 3-bit Lloyd-Max (8 values → 3 bytes) + FP8 group scales.
+    /// 4.57× smaller than bf16.
+    Turbo3,
+    /// 2-bit Lloyd-Max (4 elems/byte) + FP8 group scales.
+    /// 6.4× smaller than bf16.
+    Turbo2,
 }
 
 impl std::str::FromStr for MetalKvDtype {
@@ -202,8 +216,12 @@ impl std::str::FromStr for MetalKvDtype {
             "bf16" => Ok(Self::Bf16),
             "turbo8" => Ok(Self::Turbo8),
             "turbo4" => Ok(Self::Turbo4),
+            "turbo3" => Ok(Self::Turbo3),
+            "turbo2" => Ok(Self::Turbo2),
             other => {
-                anyhow::bail!("kv dtype {other:?} not supported on metal (bf16 | turbo8 | turbo4)")
+                anyhow::bail!(
+                    "kv dtype {other:?} not supported on metal (bf16 | turbo8 | turbo4 | turbo3 | turbo2)"
+                )
             }
         }
     }
@@ -250,6 +268,22 @@ impl LayerKvCache {
                 // 2 elems/byte + 1-byte E4M3 scale per group of 16.
                 (
                     (max_seq * kv_dim / 2) as usize,
+                    (max_seq * kv_dim / 16) as usize,
+                )
+            }
+            MetalKvDtype::Turbo3 => {
+                assert!(kv_dim % 16 == 0, "Turbo3 needs KV_DIM divisible by 16");
+                // 8 values → 3 bytes + 1-byte E4M3 scale per group of 16.
+                (
+                    (max_seq * kv_dim * 3 / 8) as usize,
+                    (max_seq * kv_dim / 16) as usize,
+                )
+            }
+            MetalKvDtype::Turbo2 => {
+                assert!(kv_dim % 16 == 0, "Turbo2 needs KV_DIM divisible by 16");
+                // 4 elems/byte + 1-byte E4M3 scale per group of 16.
+                (
+                    (max_seq * kv_dim / 4) as usize,
                     (max_seq * kv_dim / 16) as usize,
                 )
             }

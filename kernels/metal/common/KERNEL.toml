@@ -1,7 +1,7 @@
 [build]
 # Flags forwarded to `xcrun -sdk macosx metal`. `-ffast-math` enables the
 # same fast-FP latitude that the cuda kernels rely on (-use_fast_math).
-extra_metal_flags = ["-ffast-math"]
+extra_metal_flags = ["-ffast-math", "-DTQ_PLUS_SIGNS"]
 
 # File stem → module name overrides. Any .metal file not listed here uses
 # its file stem as the module name.

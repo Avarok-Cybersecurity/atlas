@@ -23,6 +23,11 @@ using namespace metal;
 
 constant uint MAX_SEQ_DECODE_TQ8 = 4096;
 constant uint TQ8_GROUP_SIZE = 16;
+// Sparse-V gate: skip V dequant + accumulation for positions whose
+// unnormalized softmax weight exp(score - max) is below this. The
+// attention distribution is known before V is touched; at long context
+// most weights are negligible (attention-gated value dequantization).
+constant float SPARSE_V_THRESHOLD = 1e-3f;
 
 // FP8 E4M3 byte → float (bias 7, subnormals at exp field 0).
 static inline float e4m3_to_f32(uchar b) {
@@ -108,12 +113,16 @@ kernel void attention_decode_turbo8(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Stage 5: out[h, d] = sum_s(softmax_s * dequant(V[s, kv_h, d])).
+    // Stage 5: out[h, d] = sum_s(softmax_s * dequant(V[s, kv_h, d])),
+    // skipping rows below the sparse-V threshold.
     float inv_sum = 1.0f / sum_exp;
     for (uint d = tid; d < head_dim; d += tg_size) {
         uint sg = (kv_h * head_dim + d) / TQ8_GROUP_SIZE;
         float acc = 0.0f;
         for (uint s = 0; s < seq_len; ++s) {
+            if (scores[s] <= SPARSE_V_THRESHOLD) {
+                continue;
+            }
             float vv = e4m3_to_f32(v_data[(ulong)s * n_elems + kv_h * head_dim + d])
                 * float(v_scales[(ulong)s * num_groups + sg]);
             acc += scores[s] * inv_sum * vv;

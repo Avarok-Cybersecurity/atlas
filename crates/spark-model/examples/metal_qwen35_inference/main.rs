@@ -362,6 +362,14 @@ fn main() -> Result<()> {
     let x_final = backend.alloc(CFG.hidden as usize * 2)?;
     let logits = backend.alloc(CFG.vocab as usize * 2)?;
     let result_buf = backend.alloc(4)?;
+    // ATLAS_LOGITS_OUT=path dumps the bf16 logits of every sampled
+    // position (raw little-endian, [n_steps, vocab]) for offline KLD /
+    // top-k agreement comparison across kv dtypes.
+    let logits_out = std::env::var("ATLAS_LOGITS_OUT").ok().map(|p| {
+        std::cell::RefCell::new(std::io::BufWriter::new(
+            std::fs::File::create(p).expect("create ATLAS_LOGITS_OUT"),
+        ))
+    });
     let sample_next = |x_in: DevicePtr| -> Result<u32> {
         backend.launch_typed(
             kernels.rms,
@@ -391,6 +399,12 @@ fn main() -> Result<()> {
             ],
         )?;
         backend.synchronize(stream)?;
+        if let Some(w) = &logits_out {
+            use std::io::Write;
+            let mut raw = vec![0u8; CFG.vocab as usize * 2];
+            backend.copy_d2h(logits, &mut raw)?;
+            w.borrow_mut().write_all(&raw)?;
+        }
         let mut buf = [0u8; 4];
         backend.copy_d2h(result_buf, &mut buf)?;
         Ok(u32::from_le_bytes(buf))

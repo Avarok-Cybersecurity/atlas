@@ -287,6 +287,11 @@ fn metal_attention_decode_turbo4_matches_reference() {
         for d in 0..head_dim as usize {
             let mut acc = 0.0f32;
             for s in 0..seq_len as usize {
+                // Mirror the kernel's sparse-V gate: rows with
+                // exp(score - max) <= 1e-3 contribute nothing.
+                if exps[s] <= 1e-3 {
+                    continue;
+                }
                 acc += exps[s] / sum * v_deq[s * n_elems + kv_h * head_dim as usize + d];
             }
             let got = f32::from(gpu_out[h * head_dim as usize + d]);

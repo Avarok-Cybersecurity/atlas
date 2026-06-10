@@ -154,6 +154,8 @@ pub fn forward_full_attention<Q: QuantWeights>(
         let (kvap_turbo, attn_turbo) = match kv.dtype {
             super::MetalKvDtype::Turbo8 => (k.kvap_turbo8, k.attn_turbo8),
             super::MetalKvDtype::Turbo4 => (k.kvap_turbo4, k.attn_turbo4),
+            super::MetalKvDtype::Turbo3 => (k.kvap_turbo3, k.attn_turbo3),
+            super::MetalKvDtype::Turbo2 => (k.kvap_turbo2, k.attn_turbo2),
             super::MetalKvDtype::Bf16 => {
                 anyhow::bail!("LayerKvCache: Bf16 dtype with scales buffers")
             }

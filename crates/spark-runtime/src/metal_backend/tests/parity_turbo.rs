@@ -3,10 +3,10 @@
 //! append (`kv_cache_append_turbo8`), and Turbo8 decode attention
 //! (`attention_decode_turbo8`) against FP32 CPU references.
 //!
-//! The metal common build does not define `TQ_PLUS_SIGNS`, so the CPU
-//! WHT reference here is the plain (sign-free, self-inverse) transform
-//! — mirroring the production GB10 model targets, whose KERNEL.tomls
-//! also omit the define.
+//! The metal build defines `TQ_PLUS_SIGNS`, so the CPU WHT reference
+//! is the two-sided Rademacher rotation S2·H·S1 (sign tables vendored
+//! in helpers.rs) and the inverse-roundtrip test pins that the inverse
+//! kernel reverses the sign order.
 
 #[allow(unused_imports)]
 use super::helpers::*;
@@ -15,9 +15,8 @@ use crate::gpu::{GpuBackend, KernelArg};
 
 // ── CPU references ───────────────────────────────────────────
 
-/// Plain in-place WHT over one head of `n` f32 values + 1/sqrt(n)
-/// normalization. Self-inverse.
-fn cpu_wht(x: &mut [f32]) {
+/// In-place butterfly WHT over `n` f32 values + 1/sqrt(n) normalization.
+fn cpu_fwht(x: &mut [f32]) {
     let n = x.len();
     let mut stride = 1;
     while stride < n {
@@ -36,6 +35,23 @@ fn cpu_wht(x: &mut [f32]) {
     let norm = 1.0f32 / (n as f32).sqrt();
     for v in x.iter_mut() {
         *v *= norm;
+    }
+}
+
+/// Forward rotation matching `wht_bf16_inplace` with TQ_PLUS_SIGNS:
+/// signs1 → FWHT → signs2.
+fn cpu_wht(x: &mut [f32]) {
+    let (s1, s2): (&[f32], &[f32]) = if x.len() == 256 {
+        (&TQP_SIGNS1_256, &TQP_SIGNS2_256)
+    } else {
+        (&TQP_SIGNS1_128, &TQP_SIGNS2_128)
+    };
+    for (v, s) in x.iter_mut().zip(s1) {
+        *v *= s;
+    }
+    cpu_fwht(x);
+    for (v, s) in x.iter_mut().zip(s2) {
+        *v *= s;
     }
 }
 
@@ -387,6 +403,11 @@ fn metal_attention_decode_turbo8_matches_reference() {
         for d in 0..head_dim as usize {
             let mut acc = 0.0f32;
             for s in 0..seq_len as usize {
+                // Mirror the kernel's sparse-V gate: rows with
+                // exp(score - max) <= 1e-3 contribute nothing.
+                if exps[s] <= 1e-3 {
+                    continue;
+                }
                 acc += exps[s] / sum * v_deq[s * n_elems + kv_h * head_dim as usize + d];
             }
             let got = f32::from(gpu_out[h * head_dim as usize + d]);

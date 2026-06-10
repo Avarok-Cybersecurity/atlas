@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// Decode-path scaled-dot-product attention against a contiguous
-// Turbo4 KV cache (4-bit Lloyd-Max codebook indices + FP8 E4M3 group
-// scales, WHT-rotated basis). Same threadgroup shape and softmax
-// staging as the bf16 `attention_decode` kernel; K/V loads dequantize
-// inline via the codebook.
+// Decode-path SDPA against a contiguous Turbo2 KV cache (2-bit
+// Lloyd-Max indices, 4 elems/byte + FP8 E4M3 group scales,
+// WHT-rotated basis). Caller bookends: WHT(Q) before, iWHT(out) after.
 //
-// Caller bookends: WHT(Q) before, iWHT(out) after — identical to the
-// Turbo8 contract.
+// Stage 5 applies the sparse-V gate: V dequant + accumulation are
+// skipped for positions whose unnormalized softmax weight
+// exp(score - max) falls below 1e-3 — the attention distribution is
+// known before V is touched, and at long context most weights are
+// negligible (see docs: attention-gated value dequantization).
 //
 // Layout:
 //   q        : bfloat [num_heads, head_dim]       (one token, rotated)
-//   k_data   : uchar  [seq_len, num_kv_heads * head_dim / 2]
-//   v_data   : uchar  [seq_len, num_kv_heads * head_dim / 2]
+//   k_data   : uchar  [seq_len, num_kv_heads * head_dim / 4]
+//   v_data   : uchar  [seq_len, num_kv_heads * head_dim / 4]
 //   k_scales : uchar  [seq_len, num_kv_heads * head_dim / 16]  (E4M3)
 //   v_scales : uchar  [seq_len, num_kv_heads * head_dim / 16]  (E4M3)
 //   out      : bfloat [num_heads, head_dim]       (rotated-V basis)
@@ -20,15 +21,11 @@
 #include <metal_stdlib>
 using namespace metal;
 
-constant uint MAX_SEQ_DECODE_TQ4 = 4096;
-constant uint TQ4_GROUP_SIZE = 16;
-// Sparse-V gate (see attention_decode_turbo8.metal).
+constant uint MAX_SEQ_DECODE_TQ2 = 4096;
+constant uint TQ2_GROUP_SIZE = 16;
 constant float SPARSE_V_THRESHOLD = 1e-3f;
 
-constant float TURBO4_CODEBOOK[16] = {
-    -2.7326f, -2.0690f, -1.6180f, -1.2562f, -0.9423f, -0.6568f, -0.3880f, -0.1284f,
-     0.1284f,  0.3880f,  0.6568f,  0.9423f,  1.2562f,  1.6180f,  2.0690f,  2.7326f
-};
+constant float TURBO2_CODEBOOK[4] = { -1.5104f, -0.4528f, 0.4528f, 1.5104f };
 
 static inline float e4m3_to_f32(uchar b) {
     float sign = (b & 0x80) ? -1.0f : 1.0f;
@@ -40,7 +37,7 @@ static inline float e4m3_to_f32(uchar b) {
     return sign * (1.0f + float(m) * 0.125f) * exp2(float(int(e) - 7));
 }
 
-kernel void attention_decode_turbo4(
+kernel void attention_decode_turbo2(
     constant uint  &seq_len      [[buffer(0)]],
     constant uint  &num_heads    [[buffer(1)]],
     constant uint  &num_kv_heads [[buffer(2)]],
@@ -56,7 +53,7 @@ kernel void attention_decode_turbo4(
     uint tid     [[thread_position_in_threadgroup]],
     uint tg_size [[threads_per_threadgroup]])
 {
-    threadgroup float scores[MAX_SEQ_DECODE_TQ4];
+    threadgroup float scores[MAX_SEQ_DECODE_TQ2];
     threadgroup float max_score;
     threadgroup float sum_exp;
 
@@ -66,23 +63,23 @@ kernel void attention_decode_turbo4(
     uint group = num_heads / num_kv_heads;
     uint kv_h  = h / group;
     uint n_elems = num_kv_heads * head_dim;
-    uint row_bytes = n_elems / 2;
-    uint num_groups = n_elems / TQ4_GROUP_SIZE;
+    uint row_bytes = n_elems / 4;
+    uint num_groups = n_elems / TQ2_GROUP_SIZE;
 
     // Stage 1: scores[s] = (Q[h] · dequant(K[s, kv_h])) * scale.
-    for (uint s = tid; s < seq_len && s < MAX_SEQ_DECODE_TQ4; s += tg_size) {
-        device const uchar *k_row = k_data + (ulong)s * row_bytes + kv_h * head_dim / 2;
+    for (uint s = tid; s < seq_len && s < MAX_SEQ_DECODE_TQ2; s += tg_size) {
+        device const uchar *k_row = k_data + (ulong)s * row_bytes + kv_h * head_dim / 4;
         device const uchar *k_srow =
-            k_scales + (ulong)s * num_groups + kv_h * head_dim / TQ4_GROUP_SIZE;
+            k_scales + (ulong)s * num_groups + kv_h * head_dim / TQ2_GROUP_SIZE;
         float dot = 0.0f;
-        for (uint d = 0; d < head_dim; d += TQ4_GROUP_SIZE) {
-            float gs = e4m3_to_f32(k_srow[d / TQ4_GROUP_SIZE]);
-            for (uint i = 0; i < TQ4_GROUP_SIZE; i += 2) {
-                uchar packed = k_row[(d + i) / 2];
-                float qv0 = float(q[h * head_dim + d + i]);
-                float qv1 = float(q[h * head_dim + d + i + 1]);
-                dot += qv0 * TURBO4_CODEBOOK[packed & 0xF] * gs;
-                dot += qv1 * TURBO4_CODEBOOK[packed >> 4] * gs;
+        for (uint d = 0; d < head_dim; d += TQ2_GROUP_SIZE) {
+            float gs = e4m3_to_f32(k_srow[d / TQ2_GROUP_SIZE]);
+            for (uint i = 0; i < TQ2_GROUP_SIZE; i += 4) {
+                uchar packed = k_row[(d + i) / 4];
+                for (uint j = 0; j < 4; ++j) {
+                    float qv = float(q[h * head_dim + d + i + j]);
+                    dot += qv * TURBO2_CODEBOOK[(packed >> (2 * j)) & 3] * gs;
+                }
             }
         }
         scores[s] = dot * scale;
@@ -121,17 +118,16 @@ kernel void attention_decode_turbo4(
     // skipping rows below the sparse-V threshold.
     float inv_sum = 1.0f / sum_exp;
     for (uint d = tid; d < head_dim; d += tg_size) {
-        uint sg = (kv_h * head_dim + d) / TQ4_GROUP_SIZE;
-        uint byte_idx = (kv_h * head_dim + d) / 2;
-        bool high = (d & 1) != 0;
+        uint sg = (kv_h * head_dim + d) / TQ2_GROUP_SIZE;
+        uint byte_idx = (kv_h * head_dim + d) / 4;
+        uint shift = 2 * (d & 3);
         float acc = 0.0f;
         for (uint s = 0; s < seq_len; ++s) {
             if (scores[s] <= SPARSE_V_THRESHOLD) {
                 continue;
             }
             uchar packed = v_data[(ulong)s * row_bytes + byte_idx];
-            uchar idx = high ? (packed >> 4) : (packed & 0xF);
-            float vv = TURBO4_CODEBOOK[idx]
+            float vv = TURBO2_CODEBOOK[(packed >> shift) & 3]
                 * e4m3_to_f32(v_scales[(ulong)s * num_groups + sg]);
             acc += scores[s] * inv_sum * vv;
         }
