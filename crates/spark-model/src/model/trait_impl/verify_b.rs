@@ -94,7 +94,17 @@ impl TransformerModel {
             let pos = seq.seq_len + t;
             let block_idx = pos / bs;
             let block_offset = pos % bs;
-            let physical_block = seq.physical_block_for(block_idx).unwrap_or(0);
+            // Fall back to the dummy scratch block, NOT block 0: physical
+            // block 0 is a live (likely shared prefix-cache) block, and a
+            // silent write there corrupts cached KV for every reader.
+            let physical_block = seq.physical_block_for(block_idx).unwrap_or_else(|| {
+                tracing::error!(
+                    "verify_k2: no physical block for pos {pos} (block_table len {}); \
+                     writing KV to dummy block",
+                    seq.block_table.len(),
+                );
+                self.dummy_kv_block
+            });
             slots[t] = (physical_block as i64) * (bs as i64) + (block_offset as i64);
         }
         let slot_bytes = unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, 16) };

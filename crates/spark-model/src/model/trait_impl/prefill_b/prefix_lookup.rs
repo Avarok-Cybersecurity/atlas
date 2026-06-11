@@ -104,9 +104,11 @@ impl TransformerModel {
             // Marconi: restore SSM snapshot if available.
             // With intermediate checkpoints, ssm_snapshot_tokens may be less than
             // matched_tokens. We skip SSM computation only up to ssm_snapshot_tokens
-            // and recompute SSM (+ overwrite KV) for tokens between the checkpoint
-            // and matched_tokens. This trades some redundant KV writes for correct
-            // SSM state propagation.
+            // and recompute SSM for tokens between the checkpoint and
+            // matched_tokens. KV for that replay window is NOT rewritten — the
+            // layer_kv_write_start floor (forward_layers.rs) skips writes below
+            // cached_prefix_tokens, so the shared prefix-cache blocks keep the
+            // original values (a non-bit-equal rewrite would poison them).
             let mut skip = if let Some(snap_id) = prefix_match.ssm_snapshot {
                 let snap_tok = prefix_match.ssm_snapshot_tokens;
                 // Exact full-prompt hit on a hiddenless snapshot (finish

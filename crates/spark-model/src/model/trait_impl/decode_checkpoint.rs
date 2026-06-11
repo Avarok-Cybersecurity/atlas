@@ -136,6 +136,81 @@ impl TransformerModel {
         if let Some(old) = displaced {
             self.ssm_snapshots.free(old);
         }
+        tracing::info!(
+            "decode-ckpt SAVE: end_token={end_token} end_block={end_block} snap_id={snap_id} \
+             tokens_len={} block_table_len={}",
+            seq.tokens.len(),
+            seq.block_table.len(),
+        );
         seq.last_decode_ckpt_block = end_block;
+    }
+
+    /// #155: save the finish-leaf SSM snapshot at sequence retire (called by
+    /// `cache_sequence_dispatch` before the radix insert). End-of-prefill-only
+    /// leaves made every warm turn replay this turn's decode tokens through
+    /// the prefill recurrence (different kernel) — drift ratcheted into FP8
+    /// argmax flips. No hidden stashed; the exact-hit shortcut skips
+    /// hiddenless snapshots (prefix_lookup.rs).
+    pub(super) fn finish_leaf_snapshot(&self, seq: &SequenceState) -> Option<usize> {
+        if self.config.num_ssm_layers() == 0 || seq.slot_idx == usize::MAX {
+            return None;
+        }
+        // #155 ROOT CAUSE of the MTP×warm-restore token-stutter: on a turn
+        // ending in a K2 REJECT, the canonical-state restore (intermediate[0]
+        // → live h/conv) is still in flight on the SECONDARY stream — the
+        // commit records an event instead of waiting (async_chkpt.rs; a
+        // commit-side wait costs ~25% decode wall). Without this ordering,
+        // the default-stream snapshot copies below raced that commit and
+        // could capture the pre-commit live state — the GDN recurrent memory
+        // still holding the REJECTED draft token — poisoning the leaf the
+        // next warm turn restores. Same guard the decode checkpoint uses.
+        let _ = self.sync_secondary_dispatch();
+        let stream = self.gpu.default_stream();
+        let saved = match self.ssm_snapshots.save(
+            seq.slot_idx,
+            seq.session_hash,
+            &self.ssm_pool,
+            self.gpu.as_ref(),
+            stream,
+        ) {
+            Ok(Some(id)) => Some(id),
+            Ok(None) => {
+                if self
+                    .ssm_snapshots
+                    .reclaim_from_cache(self.prefix_cache.as_ref(), &mut self.kv_cache.lock())
+                {
+                    let retry = self.ssm_snapshots.save(
+                        seq.slot_idx,
+                        seq.session_hash,
+                        &self.ssm_pool,
+                        self.gpu.as_ref(),
+                        stream,
+                    );
+                    retry.ok().flatten()
+                } else {
+                    None
+                }
+            }
+            Err(e) => {
+                tracing::warn!("finish-leaf SSM snapshot save error: {e}");
+                None
+            }
+        };
+        if let Some(id) = saved {
+            tracing::info!(
+                "Saved finish-leaf SSM snapshot {} for {} tokens",
+                id,
+                seq.tokens.len(),
+            );
+            if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+                self.ssm_pool.debug_state_checksum(
+                    seq.slot_idx,
+                    self.gpu.as_ref(),
+                    stream,
+                    &format!("finish_leaf_save snap={id} tok={}", seq.tokens.len()),
+                );
+            }
+        }
+        saved
     }
 }

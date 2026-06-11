@@ -55,59 +55,11 @@ impl TransformerModel {
                 && !self.tokens_have_vision_pad(&seq.tokens)
                 && seq.hss_window_start() == 0
             {
-                // #155: save an SSM leaf snapshot at FULL length (prompt +
-                // generated) so the next warm hit restores at this turn's
-                // END and replays ~nothing. End-of-prefill-only leaves made
-                // every warm turn replay this turn's decode tokens through
-                // the prefill recurrence (different kernel) — drift ratcheted
-                // into FP8 argmax flips. Live state is canonical here (runs
-                // before free_sequence; MTP commit keeps live==canonical).
-                // No hidden stashed; exact-hit shortcut skips hiddenless
-                // snapshots (prefix_lookup.rs).
-                let finish_snap = if self.config.num_ssm_layers() > 0 && seq.slot_idx != usize::MAX
-                {
-                    let stream = self.gpu.default_stream();
-                    let saved = match self.ssm_snapshots.save(
-                        seq.slot_idx,
-                        seq.session_hash,
-                        &self.ssm_pool,
-                        self.gpu.as_ref(),
-                        stream,
-                    ) {
-                        Ok(Some(id)) => Some(id),
-                        Ok(None) => {
-                            if self.ssm_snapshots.reclaim_from_cache(
-                                self.prefix_cache.as_ref(),
-                                &mut self.kv_cache.lock(),
-                            ) {
-                                let retry = self.ssm_snapshots.save(
-                                    seq.slot_idx,
-                                    seq.session_hash,
-                                    &self.ssm_pool,
-                                    self.gpu.as_ref(),
-                                    stream,
-                                );
-                                retry.ok().flatten()
-                            } else {
-                                None
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("finish-leaf SSM snapshot save error: {e}");
-                            None
-                        }
-                    };
-                    if let Some(id) = saved {
-                        tracing::info!(
-                            "Saved finish-leaf SSM snapshot {} for {} tokens",
-                            id,
-                            seq.tokens.len(),
-                        );
-                    }
-                    saved
-                } else {
-                    None
-                };
+                // #155: leaf snapshot at FULL length (prompt + generated) so
+                // the next warm hit restores at this turn's END and replays
+                // ~nothing. Save logic + the secondary-stream ordering guard
+                // live in decode_checkpoint.rs (finish_leaf_snapshot).
+                let finish_snap = self.finish_leaf_snapshot(seq);
                 let acquired = if let Some(snap_id) = finish_snap {
                     let (displaced, acquired) = self.prefix_cache.insert_with_snapshot(
                         &seq.tokens,
