@@ -483,6 +483,9 @@ pub fn process_decode_logits(
             // `rollback::snapshot_boundary_if_ssm`).
             if !a.inside_thinking {
                 rollback::snapshot_boundary_if_ssm(a, model);
+                // #155 iter3: block-aligned Marconi checkpoint on the
+                // non-MTP decode path (live SSM state is canonical here).
+                model.decode_marconi_checkpoint(&mut a.seq);
             }
             // OPENCODE FIX: when the model spontaneously emits `<think>` even
             // though the request didn't ask for thinking (`enable_thinking=false`),

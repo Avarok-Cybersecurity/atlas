@@ -194,6 +194,9 @@ pub fn step_verify_k2(
             a.seq.seq_len
         );
         k2_record_outcome(true, a.seq.seq_len);
+        // #155 iter3: block-aligned Marconi checkpoint (live SSM state is
+        // canonical post-commit). Fires only at interval boundaries.
+        model.decode_marconi_checkpoint(&mut a.seq);
     } else {
         // ── REJECTED ──
         a.seq.seq_len -= 1;
@@ -252,5 +255,8 @@ pub fn step_verify_k2(
             new_draft,
         );
         k2_record_outcome(false, a.seq.seq_len);
+        // #155 iter3: block-aligned Marconi checkpoint (live SSM state is
+        // canonical post-commit). Fires only at interval boundaries.
+        model.decode_marconi_checkpoint(&mut a.seq);
     }
 }

@@ -22,6 +22,7 @@ mod decode_a;
 mod decode_a2;
 mod decode_b;
 mod decode_b2;
+mod decode_checkpoint;
 mod ep_misc;
 mod meta;
 mod prefill_a;
@@ -219,6 +220,9 @@ impl Model for TransformerModel {
     }
     fn cache_sequence(&self, seq: &SequenceState) {
         self.cache_sequence_dispatch(seq)
+    }
+    fn decode_marconi_checkpoint(&self, seq: &mut SequenceState) {
+        self.decode_marconi_checkpoint_dispatch(seq)
     }
     fn free_sequence(&self, seq: &mut SequenceState) -> Result<()> {
         self.free_sequence_dispatch(seq)

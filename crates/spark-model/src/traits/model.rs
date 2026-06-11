@@ -322,6 +322,15 @@ pub trait Model: Send + Sync {
     /// valid). Benefits multi-turn agentic sessions that resend full history.
     fn cache_sequence(&self, seq: &SequenceState);
 
+    /// #155 iter3: during decode, save a block-aligned Marconi SSM snapshot
+    /// at checkpoint-interval boundaries so the NEXT turn's warm prefix-cache
+    /// hit restores from decode-produced state near the conversation's end —
+    /// instead of replaying decode-produced tokens through the prefill kernel
+    /// (the warm-hit drift ratchet, issue #155). Called from the scheduler
+    /// after each decode step's live SSM state is canonical (post-commit on
+    /// the MTP path). Default no-op (non-hybrid models / caching disabled).
+    fn decode_marconi_checkpoint(&self, _seq: &mut SequenceState) {}
+
     /// Free all GPU resources associated with a sequence.
     ///
     /// Releases KV cache blocks and returns SSM state pool slot.

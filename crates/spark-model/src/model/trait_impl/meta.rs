@@ -187,6 +187,7 @@ impl TransformerModel {
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
             kv_valid_tokens: 0,
+            last_decode_ckpt_block: 0,
             prompt_len: 0,
             disk_block_ids: Vec::new(),
             disk_last_offloaded_per_layer: vec![0; num_attn_layers],

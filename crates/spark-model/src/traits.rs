@@ -128,6 +128,10 @@ pub struct SequenceState {
     /// cache-ON decode nondeterministic at temperature 0 (see fix/in-think-
     /// tool-call-leak prefix-cache stale-V diagnosis).
     pub kv_valid_tokens: usize,
+    /// #155 iter3: block index (`seq_len / block_size`) of the most recent
+    /// decode-time Marconi checkpoint. Dedups re-saving the same boundary
+    /// across consecutive decode steps. 0 until the first decode checkpoint.
+    pub last_decode_ckpt_block: usize,
     /// Original prompt token count, set at the first prefill and never
     /// mutated by decode. Used by `cache_sequence` to split seq.tokens into
     /// prompt (already inserted + ref-bumped by prefill) vs generated
