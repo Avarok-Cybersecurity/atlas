@@ -65,8 +65,13 @@ impl TransformerModel {
         {
             return;
         }
-        // Only checkpoint a block whose K/V is fully written + cacheable.
-        if seq.kv_valid_tokens / bs < end_block || end_block > seq.block_table.len() {
+        // Only checkpoint blocks that physically exist. NOTE: the prefill-era
+        // `kv_valid_tokens` guard does NOT apply here — that field tracks the
+        // contiguous KV-written prefix during PREFILL and is never advanced by
+        // decode, so it would wrongly veto every decode checkpoint past the
+        // prompt length. During decode each token writes its KV inline, so all
+        // `end_block` complete blocks (= tokens.len()/bs) are fully written.
+        if end_block > seq.block_table.len() {
             return;
         }
         let end_token = end_block * bs;
