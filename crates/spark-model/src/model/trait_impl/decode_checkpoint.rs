@@ -54,7 +54,11 @@ impl TransformerModel {
             .unwrap_or(4);
         let mut kv = self.kv_cache.lock();
         let bs = kv.block_size();
-        let end_block = seq.seq_len / bs;
+        // Derive the block count from tokens.len() (what we slice + cache),
+        // NOT seq_len: under MTP seq_len can transiently exceed tokens.len()
+        // (verify bonus position), which would overrun the token slice.
+        let complete_blocks = seq.tokens.len() / bs;
+        let end_block = complete_blocks;
         if end_block == 0
             || !end_block.is_multiple_of(interval)
             || end_block == seq.last_decode_ckpt_block
