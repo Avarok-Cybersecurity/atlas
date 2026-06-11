@@ -261,6 +261,13 @@ impl TransformerModel {
                     effective_seq_len_start,
                 } => (proc_start, proc_count, effective_seq_len_start),
                 ProcRange::EarlyReturn(ptr) => {
+                    // #155: fully-cached chunks must still record their
+                    // tokens — see the single-seq path (prefill_b.rs) for
+                    // the phantom-snapshot/radix-pollution root cause.
+                    seq.tokens
+                        .extend_from_slice(&tokens[chunk_start..chunk_start + chunk_len]);
+                    seq.seq_len = chunk_start + chunk_len;
+                    seq.last_decode_ckpt_block = seq.tokens.len() / bs;
                     logits_out.push(ptr);
                     continue;
                 }
@@ -326,6 +333,8 @@ impl TransformerModel {
             seq.tokens
                 .extend_from_slice(&tokens[chunk_start..chunk_start + chunk_len]);
             seq.seq_len = chunk_start + chunk_len;
+            // #155: prime the decode-checkpoint cadence gate (see prefill_a).
+            seq.last_decode_ckpt_block = seq.tokens.len() / bs;
 
             let logits = if is_last_chunk {
                 self.prefill_b_finalize_last(

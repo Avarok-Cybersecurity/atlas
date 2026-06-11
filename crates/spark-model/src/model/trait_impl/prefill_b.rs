@@ -132,7 +132,24 @@ impl TransformerModel {
                 proc_count,
                 effective_seq_len_start,
             } => (proc_start, proc_count, effective_seq_len_start),
-            proc_range::ProcRange::EarlyReturn(ptr) => return Ok(ptr),
+            proc_range::ProcRange::EarlyReturn(ptr) => {
+                // #155 ROOT CAUSE (warm-turn phantom snapshots): fully-cached
+                // chunks skipped compute but ALSO skipped the Phase-5 token
+                // append, leaving seq.tokens a SUFFIX (short by k*4096) on
+                // every warm turn. Every consumer keyed on seq.tokens —
+                // decode-ckpt/finish-leaf registration (hashed over a
+                // mid-conversation window → unreachable phantom entries that
+                // flood the snapshot pool), the radix insert at retire
+                // (suffix tokens paired with the full block_table → polluted
+                // token→block branches + refcount leaks), and rep-penalty
+                // context — operated on the wrong sequence. Cached chunks
+                // must record their tokens like any other chunk.
+                seq.tokens
+                    .extend_from_slice(&tokens[chunk_start..chunk_start + chunk_len]);
+                seq.seq_len = chunk_start + chunk_len;
+                seq.last_decode_ckpt_block = seq.tokens.len() / bs;
+                return Ok(ptr);
+            }
         };
 
         // ── Phase 3: upload positions + MRoPE + slot metadata ──
@@ -201,6 +218,9 @@ impl TransformerModel {
         seq.tokens
             .extend_from_slice(&tokens[chunk_start..chunk_start + chunk_len]);
         seq.seq_len = chunk_start + chunk_len;
+        // #155: prime the decode-checkpoint cadence gate; the last chunk
+        // leaves it at the prompt's complete-block count (see prefill_a).
+        seq.last_decode_ckpt_block = seq.tokens.len() / bs;
 
         if is_last_chunk {
             // ── Phase 6+7+8: final norm, lm_head, prefix-cache + snapshot save ──

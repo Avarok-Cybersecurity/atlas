@@ -504,6 +504,8 @@ impl TransformerModel {
         // ── 5. Update sequence state ──
         seq.tokens.extend_from_slice(tokens);
         seq.seq_len = total_len;
+        // #155: prime the decode-checkpoint cadence gate (see prefill_a).
+        seq.last_decode_ckpt_block = seq.tokens.len() / bs;
 
         // ── 6. Final norm on LAST token only ──
         let last_hidden = hidden.offset((proc_count - 1) * h * fp32);

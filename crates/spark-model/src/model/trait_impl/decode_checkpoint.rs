@@ -74,8 +74,11 @@ impl TransformerModel {
         if end_block > seq.block_table.len() {
             return;
         }
+        // Cadence/log only — NOT the registered coverage (see snap_tokens below).
         let end_token = end_block * bs;
-        if self.tokens_have_vision_pad(&seq.tokens[..end_token.min(seq.tokens.len())]) {
+        // The registered prefix is the FULL token slice, so vision-pad must be
+        // checked over the full slice too.
+        if self.tokens_have_vision_pad(&seq.tokens) {
             return;
         }
         // Order the default stream after any in-flight secondary-stream commit
@@ -117,7 +120,20 @@ impl TransformerModel {
             }
         };
         drop(kv);
-        let boundary_tokens = &seq.tokens[..end_token];
+        // #155 MTP×cache root cause: the live state just saved (post
+        // sync_secondary, post-commit) is canonical at exactly
+        // seq.tokens.len() tokens — under MTP K=2 the verify stride (+2 on
+        // accept) can step OVER the interval boundary, so tokens.len() may
+        // exceed end_token by 1..=bs+2. Registering at the floored end_token
+        // mislabeled state@(N+k) as @N; a warm-turn restore then replayed the
+        // already-incorporated token(s) through the non-idempotent GDN delta
+        // rule, corrupting h_state. Register at the TRUE coverage instead:
+        // the snapshot index and the warm-restore replay path support
+        // arbitrary non-block-aligned token counts (leaf snapshots already
+        // are). On the non-MTP +1 stride tokens.len() == end_token at every
+        // fire, so this is bit-identical to the old block-floored slice.
+        let snap_tokens = seq.tokens.len();
+        let boundary_tokens = &seq.tokens[..snap_tokens];
         let boundary_blocks = &seq.block_table[..end_block];
         let boundary_disk: &[u32] = if seq.disk_block_ids.len() >= end_block {
             &seq.disk_block_ids[..end_block]
@@ -131,17 +147,25 @@ impl TransformerModel {
             bs,
             snap_id,
             seq.session_hash,
-            end_token,
+            snap_tokens,
         );
         if let Some(old) = displaced {
             self.ssm_snapshots.free(old);
         }
         tracing::info!(
-            "decode-ckpt SAVE: end_token={end_token} end_block={end_block} snap_id={snap_id} \
-             tokens_len={} block_table_len={}",
-            seq.tokens.len(),
+            "decode-ckpt SAVE: snap_tokens={snap_tokens} end_block={end_block} snap_id={snap_id} \
+             block_table_len={} straddle={}",
             seq.block_table.len(),
+            snap_tokens - end_token,
         );
+        if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+            self.ssm_pool.debug_state_checksum(
+                seq.slot_idx,
+                self.gpu.as_ref(),
+                stream,
+                &format!("decode_ckpt_save snap={snap_id} tok={snap_tokens}"),
+            );
+        }
         seq.last_decode_ckpt_block = end_block;
     }
 

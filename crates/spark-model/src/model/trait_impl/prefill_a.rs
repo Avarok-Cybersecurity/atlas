@@ -93,16 +93,11 @@ impl TransformerModel {
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
-        // EP=1: zero only essential buffers (hidden + residual + MoE routing).
-        // EP=2: zero ALL buffers — the NCCL all-reduce path reads buffers that
-        // may carry stale data from prior requests with different token counts.
-        // The EP=2 CUDA 700 was from the 4MB recv buffer overflow (fixed in 1ae4883),
-        // but we keep zero_all for EP=2 as defense-in-depth.
-        if self.comm.is_some() {
-            self.buffers.zero_all(self.gpu.as_ref(), stream)?;
-        } else {
-            self.buffers.zero_all(self.gpu.as_ref(), stream)?;
-        }
+        // Zero ALL buffers (EP=1 and EP=2) — the NCCL all-reduce path reads
+        // buffers that may carry stale data from prior requests with different
+        // token counts. The EP=2 CUDA 700 was from the 4MB recv buffer overflow
+        // (fixed in 1ae4883); zero_all kept everywhere as defense-in-depth.
+        self.buffers.zero_all(self.gpu.as_ref(), stream)?;
 
         let mut kv_cache = self.kv_cache.lock();
 
@@ -487,6 +482,10 @@ impl TransformerModel {
         // ── 7. Update sequence state ──
         seq.tokens.extend_from_slice(tokens);
         seq.seq_len = n;
+        // #155: prime the decode-checkpoint cadence gate so the first decode
+        // checkpoint never fires on a block boundary the prompt already
+        // crossed (would snapshot 1-2 tokens past the prompt edge).
+        seq.last_decode_ckpt_block = seq.tokens.len() / bs;
 
         // ── 8. Insert into prefix cache + save SSM snapshot for Marconi ──
         self.prefill_save_snapshot_with_vision_gate(tokens, seq, &mut kv_cache, bs, stream);
