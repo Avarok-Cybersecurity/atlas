@@ -209,7 +209,8 @@ impl TransformerModel {
             if self.comm.is_some() {
                 self.buffers.zero_all(self.gpu.as_ref(), stream)?;
             } else if chunk_start == 0 {
-                self.buffers.zero_all(self.gpu.as_ref(), stream)?;
+                self.buffers
+                    .zero_prefill_essentials(self.gpu.as_ref(), stream)?;
             }
 
             // Phase 1+1b: embed at the shared hidden-buffer offset 0.

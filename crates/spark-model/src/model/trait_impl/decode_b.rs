@@ -218,7 +218,10 @@ impl TransformerModel {
         let proc_count = n_prefill;
         let effective_seq_len_start = prefill_chunk_start;
         let moe_scratch_bytes = proc_count * self.config.num_experts_per_tok * 4 * 2;
-        let meta_offset = (moe_scratch_bytes + 7) & !7;
+        // Safety margin: batched decode MoE (forward_k2) uses up to 2*top_k*4*2 = 128 bytes
+        // of scratch for indices+weights, which can exceed the prefill scratch when
+        // proc_count is small and overwrite prefill metadata. 256 bytes covers all models.
+        let meta_offset = (moe_scratch_bytes + 256 + 7) & !7;
         let prefill_meta_base = self.buffers.scratch().offset(meta_offset);
         let slot_offset = (proc_count * 4 + 7) & !7;
         let needs_paged = effective_seq_len_start > 0;
