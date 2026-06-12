@@ -392,4 +392,7 @@ impl Model for TransformerModel {
     fn stream_wait_event(&self, stream: u64, event: u64) -> Result<()> {
         self.stream_wait_event_dispatch(stream, event)
     }
+    fn synchronize(&self, stream: u64) -> Result<()> {
+        self.synchronize_dispatch(stream)
+    }
 }

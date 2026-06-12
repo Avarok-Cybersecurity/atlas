@@ -10,7 +10,7 @@ use anyhow::Result;
 use atlas_core::config::ModelConfig;
 
 mod sizes;
-pub use sizes::BufferSizes;
+pub use sizes::{BufferSizes, Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
 
 /// Pre-allocated GPU buffers for a single forward pass.
 ///
@@ -188,6 +188,11 @@ impl BufferArena {
     /// Scratch buffer for MoE routing + kernel metadata uploads.
     pub fn scratch(&self) -> DevicePtr {
         self.scratch
+    }
+    /// Allocated byte size of the scratch buffer (#110: bounds-check
+    /// batched metadata-staging uploads against this).
+    pub fn scratch_bytes(&self) -> usize {
+        self.sizes.scratch
     }
     /// Batched expert gate projection output.
     pub fn expert_gate_out(&self) -> DevicePtr {

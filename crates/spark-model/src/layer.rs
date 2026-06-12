@@ -151,6 +151,13 @@ pub struct BatchedAttnMetadata {
     /// bounds checking; per-stream block_table reads via the pointer
     /// array dereference).
     pub max_blocks_per_seq: u32,
+    /// Exact byte footprint of this metadata block within the scratch
+    /// buffer (from `scratch_offset_bytes` to the end of `seq_len_ptrs`).
+    /// SSOT for the caller's scratch-cursor advance — the per-SSM-layer
+    /// `h_state_ptrs` slot is placed at `scratch_cursor + staged_bytes`, so
+    /// an under-estimate here would overwrite the live `slot_stacked` array
+    /// with device pointers and produce wild KV-cache slots (#110 bug #2).
+    pub staged_bytes: usize,
 }
 
 /// Device pointers to full-sequence GDN input/output buffers.

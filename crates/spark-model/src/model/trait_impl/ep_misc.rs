@@ -88,4 +88,8 @@ impl TransformerModel {
     pub(super) fn stream_wait_event_dispatch(&self, stream: u64, event: u64) -> Result<()> {
         self.gpu.stream_wait_event(stream, event)
     }
+
+    pub(super) fn synchronize_dispatch(&self, stream: u64) -> Result<()> {
+        self.gpu.synchronize(stream)
+    }
 }

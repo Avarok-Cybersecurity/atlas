@@ -154,7 +154,21 @@ pub trait Model: Send + Sync {
     ) -> Result<MixedBatchResult> {
         // Default: serial execution.
         let decode_logits = if !decode_tokens.is_empty() {
-            self.decode_batch(decode_tokens, decode_seqs, stream)?
+            let lg = self.decode_batch(decode_tokens, decode_seqs, stream)?;
+            // #110: decode_batch runs its whole forward on the DEFAULT stream
+            // — both `decode_batch_compute_main` (n>=2) and the n==1 graph path
+            // ignore the `stream` arg and hardcode `gpu.default_stream()`. The
+            // batched prefill below reuses the SAME shared arena buffers
+            // (hidden_states/residual/scratch/gdn) but submits on `stream`
+            // (prefill_stream). With no barrier the two sub-passes execute
+            // concurrently on two different streams and race over those
+            // buffers — corrupting the batched prefill's slot table into wild
+            // KV-cache indices and faulting with a CUDA illegal access
+            // (status 700). Synchronize the decode stream so its buffer use is
+            // fully retired before prefill overwrites them. This runs once per
+            // mixed step (active+prefilling), never in the hot decode loop.
+            self.synchronize(self.default_stream())?;
+            lg
         } else {
             spark_runtime::gpu::DevicePtr::NULL
         };
@@ -678,6 +692,14 @@ pub trait Model: Send + Sync {
 
     /// Make a stream wait for an event (GPU-side sync, CPU does not block).
     fn stream_wait_event(&self, _stream: u64, _event: u64) -> Result<()> {
+        Ok(())
+    }
+
+    /// Block the host until all work submitted to `stream` has completed.
+    /// Used by `mixed_forward_batch` to retire the decode pass (which runs on
+    /// the default stream) before the batched prefill reuses the shared arena
+    /// buffers on another stream (#110). Default no-op for non-CUDA mocks.
+    fn synchronize(&self, _stream: u64) -> Result<()> {
         Ok(())
     }
 }

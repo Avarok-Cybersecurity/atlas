@@ -113,3 +113,7 @@ required-features = ["cuda", "gpu-examples"]
 [[example]]
 name = "gdn_recompute_wu_gateb"
 required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_batched_repro"
+required-features = ["cuda", "gpu-examples"]

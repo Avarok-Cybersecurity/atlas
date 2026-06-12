@@ -4,6 +4,39 @@
 
 use atlas_core::config::ModelConfig;
 
+/// Streams assumed when provisioning scratch for the Q12 kernel-batched
+/// prefill path. The per-stream metadata region scales with N, so the
+/// scratch buffer must be sized for a realistic max concurrent batched
+/// streams. Beyond this, `check_kernel_batched_eligible` falls the dispatch
+/// back to the per-stream path (which respects the same arena cap), so this
+/// bound only governs how often the fast path is available — never safety.
+pub const Q12_SIZING_STREAMS: usize = 8;
+
+/// Exact scratch footprint (bytes) of the Q12 kernel-batched prefill staging
+/// for `n` streams of `chunk_len` tokens each. SSOT for both scratch sizing
+/// (`BufferSizes::from_config`) and the pre-flight eligibility check
+/// (`check_kernel_batched_eligible`), so the two can never disagree about
+/// whether a batch fits. Mirrors the staging layout in `batch_kernel.rs`
+/// (MoE topk area + N per-stream meta blocks) and `stage_batched.rs`
+/// (stacked positions ×(3 if MRoPE) + slots + block/seq_len pointer arrays)
+/// plus the per-SSM-layer `h_state_ptrs` JIT slot.
+pub fn q12_batched_scratch_bytes(n: usize, chunk_len: usize, top_k: usize, mrope: bool) -> usize {
+    let total = n * chunk_len;
+    // MoE topk staging (indices+weights, both ×n streams), 64-byte aligned.
+    let moe = ((total * top_k * 4 * 2) + 63) & !63;
+    // Per-stream meta block — same formula as batch_kernel.rs.
+    let per_stream_meta = ((chunk_len * 16) + 64).max(4096);
+    // Stacked BatchedAttnMetadata (stage_batched.rs layout).
+    let pos = (total * 4 + 7) & !7;
+    let pos_streams = if mrope { 3 } else { 1 };
+    let slot = (total * 8 + 7) & !7;
+    let ptrs = ((n * std::mem::size_of::<u64>()) + 7) & !7;
+    let stage_meta = pos_streams * pos + slot + 2 * ptrs;
+    // h_state_ptrs JIT slot consumed per SSM layer (N device pointers).
+    let h_state_ptrs = n * std::mem::size_of::<u64>();
+    moe + n * per_stream_meta + stage_meta + h_state_ptrs
+}
+
 /// Byte sizes of each buffer, derived from ModelConfig.
 #[derive(Debug, Clone)]
 pub struct BufferSizes {
@@ -98,7 +131,24 @@ impl BufferSizes {
         let bt_rows = 32usize; // headroom for K=γ DFlash verify (typical γ=16, K=17)
         let bt_meta = 32768 + 768 + bt_rows * max_blocks * 4;
         let scratch_min = 64 * 1024;
-        let scratch = scratch_min.max(moe_scratch + prefill_meta).max(bt_meta);
+        // Q12 kernel-batched prefill stages N per-stream meta blocks plus a
+        // stacked BatchedAttnMetadata block — a strictly larger footprint than
+        // the single-stream `prefill_meta`. Provision for `Q12_SIZING_STREAMS`
+        // streams splitting the full token arena so the fast path stays
+        // available for deep-context concurrent prefills without overrunning
+        // scratch (#110: the unprovisioned N-stream multiplication overran the
+        // buffer, producing an out-of-range HtoD → sticky CUDA-700).
+        let q12_chunk = m.div_ceil(Q12_SIZING_STREAMS).max(1);
+        let q12_batched = q12_batched_scratch_bytes(
+            Q12_SIZING_STREAMS,
+            q12_chunk,
+            top_k,
+            config.mrope_interleaved,
+        );
+        let scratch = scratch_min
+            .max(moe_scratch + prefill_meta)
+            .max(bt_meta)
+            .max(q12_batched);
 
         // Batched expert output buffers for MoE (or dense FFN).
         // Sized for max(K=3 verify, prefill chunk) × top_k experts.

@@ -23,7 +23,7 @@
 //!   - No MLA / HDIM=512 / HSS-engaged layer in the model
 //!   - All batched kernel handles loaded
 //!
-//! Validation status: compile-only. Hardware validation pending.
+//! Validation: hardware-validated (#110 — conc repro 80/80, sanitizer-clean).
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
@@ -53,6 +53,9 @@ impl TransformerModel {
             self.buffers.max_batch_tokens(),
             &self.config.model_type,
             self.config.head_dim,
+            self.buffers.scratch_bytes(),
+            self.config.num_experts_per_tok,
+            self.config.mrope_interleaved,
         )
     }
 }
@@ -60,12 +63,16 @@ impl TransformerModel {
 /// Pure-data predicate extracted from [`TransformerModel::kernel_batched_eligible`]
 /// so the gating rules are unit-testable without a real `TransformerModel`.
 /// Caller materialises per-stream tuples `(chunk_len, chunk_start, is_last_chunk)`.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::model) fn check_kernel_batched_eligible<I>(
     streams: I,
     n: usize,
     arena_cap: usize,
     model_type: &str,
     head_dim: usize,
+    scratch_cap: usize,
+    top_k: usize,
+    mrope: bool,
 ) -> bool
 where
     I: IntoIterator<Item = (usize, usize, bool)>,
@@ -102,8 +109,16 @@ where
         }
         total += chunk_len;
     }
-    // Total stacked tokens fit in arena.
-    total <= arena_cap
+    // Total stacked tokens fit in the token arena (hidden_states buffer).
+    if total > arena_cap {
+        return false;
+    }
+    // #110: the kernel-batched staging footprint must fit in scratch. PURE
+    // pre-flight — runs before any stream mutation, so a false routes to the
+    // per-stream path from a clean state (a mid-dispatch overrun would leave
+    // streams dirty and the fallback would re-run setup → corruption).
+    let chunk_len = first.map(|(cl, _, _)| cl).unwrap_or(0);
+    spark_runtime::buffers::q12_batched_scratch_bytes(n, chunk_len, top_k, mrope) <= scratch_cap
 }
 
 impl TransformerModel {
@@ -349,18 +364,15 @@ impl TransformerModel {
             scratch_cursor,
             stream,
         )?;
-        // Advance cursor past the staged BatchedAttnMetadata. Generous
-        // upper bound for the staging size: positions(MRoPE ×3) + slots
-        // + pointer arrays.
-        let stage_size = (proc_count * n * 16) + (n * 32) + 256;
+        // Advance cursor by the EXACT staged footprint (#110): the prior
+        // heuristic under-estimated it, placing h_state_ptrs_off inside the
+        // live slot_stacked array → corrupted KV slots → CUDA-700.
+        // `staged_bytes` is the SSOT matching `q12_batched_scratch_bytes`.
+        let stage_size = meta.staged_bytes;
         scratch_cursor += stage_size;
 
-        // Q12 safety: assert scratch headroom before consuming the
-        // h_state_ptrs JIT slot per SSM layer. h_state_ptrs is N*8 bytes.
-        // The scratch budget for batched dispatch is dominated by the
-        // per-stream meta blocks + stacked BatchedAttnMetadata; bail if
-        // we'd exceed scratch capacity rather than overrun into another
-        // buffer.
+        // Q12 safety: bail if the h_state_ptrs JIT slot (N*8 B) would exceed
+        // scratch rather than overrun into another buffer.
         let scratch_bytes = self.buffers.sizes().scratch;
         let projected_usage = scratch_cursor + (n * std::mem::size_of::<u64>());
         if projected_usage > scratch_bytes {

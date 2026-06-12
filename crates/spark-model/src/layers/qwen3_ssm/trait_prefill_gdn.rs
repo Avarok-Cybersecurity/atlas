@@ -51,7 +51,14 @@ impl Qwen3SsmLayer {
             self.gdn_prefill_split4_k.0 != 0
         );
         if self.gdn_prefill_wy32_k.0 != 0 && total > 32 {
-            let smem = (kd * vd * 4 + 32 * kd * 2 + 32 * kd * 2 + 32 * 32 * 4 + 256) as u32;
+            // #110: dynamic smem must cover the FULL kernel layout (H + smem_k +
+            // smem_q + smem_warp[4] + smem_kd[C*C] + smem_g[C] + smem_bt[C], C=32).
+            // The old `+256` slack under-counted the smem_warp(16)+smem_g(128)+
+            // smem_bt(128)=272 trailer by 16 B, so the kernel's smem_bt tail wrote
+            // past the requested allocation → CUDA illegal access under live
+            // occupancy (compute-sanitizer: Invalid __shared__ write at +0xce0).
+            let smem =
+                (kd * vd * 4 + 32 * kd * 2 + 32 * kd * 2 + 32 * 32 * 4 + (4 + 32 + 32) * 4) as u32;
             ops::gdn_prefill_persistent_smem(
                 ctx.gpu,
                 self.gdn_prefill_wy32_k,
@@ -248,7 +255,14 @@ impl Qwen3SsmLayer {
         // is `chunk_len`; the kernel internally processes `batch_size` such
         // streams (grid dim Y).
         if self.gdn_prefill_wy32_batched_k.0 != 0 && chunk_len > 32 {
-            let smem = (kd * vd * 4 + 32 * kd * 2 + 32 * kd * 2 + 32 * 32 * 4 + 256) as u32;
+            // #110: dynamic smem must cover the FULL kernel layout (H + smem_k +
+            // smem_q + smem_warp[4] + smem_kd[C*C] + smem_g[C] + smem_bt[C], C=32).
+            // The old `+256` slack under-counted the smem_warp(16)+smem_g(128)+
+            // smem_bt(128)=272 trailer by 16 B, so the kernel's smem_bt tail wrote
+            // past the requested allocation → CUDA illegal access under live
+            // occupancy (compute-sanitizer: Invalid __shared__ write at +0xce0).
+            let smem =
+                (kd * vd * 4 + 32 * kd * 2 + 32 * kd * 2 + 32 * 32 * 4 + (4 + 32 + 32) * 4) as u32;
             ops::gdn_prefill_persistent_smem_batched(
                 ctx.gpu,
                 self.gdn_prefill_wy32_batched_k,
