@@ -101,6 +101,8 @@ impl MoeLayer {
                     stream,
                 )?;
             }
+            ctx.gpu.synchronize(stream)
+                .map_err(|e| anyhow::anyhow!("token {t}: moe_topk failed: {e}"))?;
 
             let shared_out = ctx.buffers.attn_output();
             if let (Some(gp), Some(up), Some(dp), Some(sh)) = (
@@ -130,6 +132,8 @@ impl MoeLayer {
                     top_k,
                     stream,
                 )?;
+                ctx.gpu.synchronize(stream)
+                    .map_err(|e| anyhow::anyhow!("token {t}: moe_expert_gate_up_shared_fp8 failed: {e}"))?;
                 ops::moe_expert_silu_down_shared_fp8(
                     ctx.gpu,
                     self.moe_expert_silu_down_shared_fp8,
@@ -148,6 +152,8 @@ impl MoeLayer {
                     top_k,
                     stream,
                 )?;
+                ctx.gpu.synchronize(stream)
+                    .map_err(|e| anyhow::anyhow!("token {t}: moe_expert_silu_down_shared_fp8 failed: {e}"))?;
             } else if self.use_t_layout_for_prefill() {
                 // Phase 8a unified-layout NVFP4 batched prefill — transposed
                 // kernels coalesce well at large N. Hybrid mode lands here too.
@@ -186,6 +192,8 @@ impl MoeLayer {
                     top_k,
                     stream,
                 )?;
+                ctx.gpu.synchronize(stream)
+                    .map_err(|e| anyhow::anyhow!("token {t}: moe_expert_gate_up_shared_t failed: {e}"))?;
                 ops::moe_expert_silu_down_shared_t(
                     ctx.gpu,
                     self.moe_expert_silu_down_shared_t_k,
@@ -205,6 +213,8 @@ impl MoeLayer {
                     top_k,
                     stream,
                 )?;
+                ctx.gpu.synchronize(stream)
+                    .map_err(|e| anyhow::anyhow!("token {t}: moe_expert_silu_down_shared_t failed: {e}"))?;
             } else {
                 // NVFP4 path
                 ops::moe_expert_gate_up_shared(
@@ -229,6 +239,8 @@ impl MoeLayer {
                     top_k,
                     stream,
                 )?;
+                ctx.gpu.synchronize(stream)
+                    .map_err(|e| anyhow::anyhow!("token {t}: moe_expert_gate_up_shared failed: {e}"))?;
                 ops::moe_expert_silu_down_shared(
                     ctx.gpu,
                     self.moe_expert_silu_down_shared,
@@ -248,6 +260,8 @@ impl MoeLayer {
                     top_k,
                     stream,
                 )?;
+                ctx.gpu.synchronize(stream)
+                    .map_err(|e| anyhow::anyhow!("token {t}: moe_expert_silu_down_shared failed: {e}"))?;
             }
 
             ops::moe_weighted_sum_blend(
@@ -264,6 +278,8 @@ impl MoeLayer {
                 h,
                 stream,
             )?;
+            ctx.gpu.synchronize(stream)
+                .map_err(|e| anyhow::anyhow!("token {t}: moe_weighted_sum_blend failed: {e}"))?;
 
             // EP all-reduce per-token partial output
             if let Some(comm) = ctx.comm
@@ -274,6 +290,8 @@ impl MoeLayer {
                 } else {
                     comm.all_reduce_async(output_t.0, h as usize * 2, stream)?;
                 }
+                ctx.gpu.synchronize(stream)
+                    .map_err(|e| anyhow::anyhow!("token {t}: comm.all_reduce_async failed: {e}"))?;
             }
         }
 

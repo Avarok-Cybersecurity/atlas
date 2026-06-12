@@ -244,9 +244,12 @@ impl Qwen3AttentionLayer {
         )
         .map_err(|e| anyhow::anyhow!("residual_add_rms_norm failed: n={n} h={h}: {e}"))?;
 
+        tracing::info!("prefill_inner L{}: entering ffn.forward_prefill N={num_tokens}", self.attn_layer_idx);
         self.ffn
             .forward_prefill(ctx.buffers.norm_output(), num_tokens, ctx, stream)
             .map_err(|e| anyhow::anyhow!("ffn.forward_prefill failed: {e}"))?;
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("prefill_inner L{}: ffn sync failed: {e}", self.attn_layer_idx))?;
 
         let dense_out = ctx.buffers.moe_output();
 
