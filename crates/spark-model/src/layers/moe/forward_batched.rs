@@ -65,6 +65,11 @@ impl MoeLayer {
         let shared_gate_scratch = ctx.buffers.logits();
         let shared_up_scratch = ctx.buffers.ssm_qkvz();
 
+        // Catch any sticky CUDA error from the attention phase before
+        // running MoE kernels (helps isolate attention vs FFN failures).
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("forward_batched: pre-loop sync (attention sticky error): {e}"))?;
+
         for t in 0..num_tokens {
             let input_t = input.offset(t * h_usize * bf16);
             let gate_t = gate_logits.offset(t * num_experts as usize * bf16);
