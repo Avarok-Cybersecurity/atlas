@@ -52,6 +52,8 @@ impl MoeLayer {
                 stream,
             )?;
         }
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("forward_batched: gate_gemm sync failed: {e}"))?;
 
         // Per-token: topK routing + expert dispatch + weighted sum
         let h_usize = h as usize;
@@ -299,6 +301,9 @@ impl MoeLayer {
                     .map_err(|e| anyhow::anyhow!("token {t}: comm.all_reduce_async failed: {e}"))?;
             }
         }
+
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("forward_batched: post-loop sync failed: {e}"))?;
 
         Ok(())
     }
