@@ -104,17 +104,6 @@ impl Qwen3AttentionLayer {
             h,
             stream,
         )?;
-        ops::rms_norm(
-            ctx.gpu,
-            self.rms_norm_k,
-            kv_latent,
-            &mla.kv_a_norm,
-            kv_latent,
-            n,
-            kv_lora,
-            eps,
-            stream,
-        )?;
 
         // ── 3. RoPE on Q and K/V ──
         ops::rope_yarn(
@@ -135,9 +124,14 @@ impl Qwen3AttentionLayer {
 
         // ── 4. Standard GQA FlashAttention (current chunk only) ──
         let attn_out = ctx.buffers.attn_output();
-        ops::prefill_attention_64(
+        let prefill_k = if hd_mla > 256 && self.prefill_attn_512_k.0 != 0 {
+            self.prefill_attn_512_k
+        } else {
+            self.prefill_attn_64_k
+        };
+        ops::prefill_attention(
             ctx.gpu,
-            self.prefill_attn_64_k,
+            prefill_k,
             q_full,
             kv_latent,
             kv_latent,
@@ -152,7 +146,7 @@ impl Qwen3AttentionLayer {
             0,
             stream,
         )
-        .map_err(|e| anyhow::anyhow!("V4 paged: prefill_attention_64 failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("V4 paged: prefill_attention failed: {e}"))?;
 
         // ── 5. Write KV cache (V4-Flash: direct K/V, no assembly) ──
         self.write_kv_cache(

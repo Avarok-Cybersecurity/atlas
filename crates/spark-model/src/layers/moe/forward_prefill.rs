@@ -41,8 +41,9 @@ impl MoeLayer {
         if r.is_err() {
             return r;
         }
-        ctx.gpu.synchronize(stream)
-            .map_err(|e| anyhow::anyhow!("forward_prefill: forward_batched post-sync failed: {e}"))?;
+        ctx.gpu.synchronize(stream).map_err(|e| {
+            anyhow::anyhow!("forward_prefill: forward_batched post-sync failed: {e}")
+        })?;
         return r;
 
         // Lazy down_proj transpose: synchronous on the compute stream.

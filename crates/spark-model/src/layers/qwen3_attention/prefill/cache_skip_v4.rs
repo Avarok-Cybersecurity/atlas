@@ -73,7 +73,8 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         }
-        ctx.gpu.synchronize(stream)
+        ctx.gpu
+            .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: q_latent gemm sync failed: {e}"))?;
         ops::rms_norm(
             ctx.gpu,
@@ -86,7 +87,8 @@ impl Qwen3AttentionLayer {
             eps,
             stream,
         )?;
-        ctx.gpu.synchronize(stream)
+        ctx.gpu
+            .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: q_a_norm sync failed: {e}"))?;
         let q_full = ctx.buffers.qkv_output();
         ops::dense_gemm(
@@ -100,7 +102,8 @@ impl Qwen3AttentionLayer {
             q_lora,
             stream,
         )?;
-        ctx.gpu.synchronize(stream)
+        ctx.gpu
+            .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: q_full gemm sync failed: {e}"))?;
 
         // ── 2. Direct KV projection (V4-Flash: K=V, no absorption) ──
@@ -130,21 +133,9 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         }
-        ctx.gpu.synchronize(stream)
+        ctx.gpu
+            .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: kv_latent gemm sync failed: {e}"))?;
-        ops::rms_norm(
-            ctx.gpu,
-            self.rms_norm_k,
-            kv_latent,
-            &mla.kv_a_norm,
-            kv_latent,
-            n,
-            kv_lora,
-            eps,
-            stream,
-        )?;
-        ctx.gpu.synchronize(stream)
-            .map_err(|e| anyhow::anyhow!("V4 attn: kv_a_norm sync failed: {e}"))?;
 
         // ── 3. RoPE on Q and K/V ──
         ops::rope_yarn(
@@ -162,14 +153,20 @@ impl Qwen3AttentionLayer {
             ctx.config.rope_theta as f32,
             stream,
         )?;
-        ctx.gpu.synchronize(stream)
+        ctx.gpu
+            .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: rope_yarn sync failed: {e}"))?;
 
         // ── 4. Standard GQA FlashAttention (intra-chunk) ──
         let attn_out = ctx.buffers.attn_output();
-        ops::prefill_attention_64(
+        let prefill_k = if hd_mla > 256 && self.prefill_attn_512_k.0 != 0 {
+            self.prefill_attn_512_k
+        } else {
+            self.prefill_attn_64_k
+        };
+        ops::prefill_attention(
             ctx.gpu,
-            self.prefill_attn_64_k,
+            prefill_k,
             q_full,
             kv_latent,
             kv_latent,
@@ -184,9 +181,10 @@ impl Qwen3AttentionLayer {
             0,
             stream,
         )
-        .map_err(|e| anyhow::anyhow!("V4 attn: prefill_attention_64 failed: {e}"))?;
-        ctx.gpu.synchronize(stream)
-            .map_err(|e| anyhow::anyhow!("V4 attn: prefill_attention_64 sync failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("V4 attn: prefill_attention failed: {e}"))?;
+        ctx.gpu
+            .synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("V4 attn: prefill_attention sync failed: {e}"))?;
 
         // ── 5. Write KV cache (V4-Flash: direct K/V, no assembly) ──
         self.write_kv_cache(
@@ -204,7 +202,8 @@ impl Qwen3AttentionLayer {
             stream,
             ctx.graph_capture,
         )?;
-        ctx.gpu.synchronize(stream)
+        ctx.gpu
+            .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: write_kv_cache sync failed: {e}"))?;
 
         // ── 6. Grouped low-rank O projection ──
@@ -221,7 +220,8 @@ impl Qwen3AttentionLayer {
             nq * hd_mla,
             stream,
         )?;
-        ctx.gpu.synchronize(stream)
+        ctx.gpu
+            .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: wo_a gemm sync failed: {e}"))?;
         ops::dense_gemm(
             ctx.gpu,
@@ -234,7 +234,8 @@ impl Qwen3AttentionLayer {
             o_lora,
             stream,
         )?;
-        ctx.gpu.synchronize(stream)
+        ctx.gpu
+            .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: wo_b gemm sync failed: {e}"))?;
 
         Ok(o_out)

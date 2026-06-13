@@ -191,8 +191,12 @@ impl Qwen3AttentionLayer {
         }
 
         // DIAGNOSTIC: sync trap after attention to isolate attention vs FFN errors
-        ctx.gpu.synchronize(stream)
-            .map_err(|e| anyhow::anyhow!("prefill_inner L{}: post-attention sync failed: {e}", self.attn_layer_idx))?;
+        ctx.gpu.synchronize(stream).map_err(|e| {
+            anyhow::anyhow!(
+                "prefill_inner L{}: post-attention sync failed: {e}",
+                self.attn_layer_idx
+            )
+        })?;
 
         // DIAGNOSTIC: attention output for L0 and L35
         if is_mistral_diag {
@@ -249,16 +253,29 @@ impl Qwen3AttentionLayer {
         .map_err(|e| anyhow::anyhow!("residual_add_rms_norm failed: n={n} h={h}: {e}"))?;
 
         // DIAGNOSTIC: sync trap after residual+norm to isolate pre-FFN errors
-        ctx.gpu.synchronize(stream)
-            .map_err(|e| anyhow::anyhow!("prefill_inner L{}: post-residual_norm sync failed: {e}", self.attn_layer_idx))?;
+        ctx.gpu.synchronize(stream).map_err(|e| {
+            anyhow::anyhow!(
+                "prefill_inner L{}: post-residual_norm sync failed: {e}",
+                self.attn_layer_idx
+            )
+        })?;
 
-        tracing::info!("prefill_inner L{}: entering ffn.forward_prefill N={num_tokens}", self.attn_layer_idx);
-        let ffn_result = self.ffn.forward_prefill(ctx.buffers.norm_output(), num_tokens, ctx, stream);
+        tracing::info!(
+            "prefill_inner L{}: entering ffn.forward_prefill N={num_tokens}",
+            self.attn_layer_idx
+        );
+        let ffn_result =
+            self.ffn
+                .forward_prefill(ctx.buffers.norm_output(), num_tokens, ctx, stream);
         if let Err(ref e) = ffn_result {
             return Err(anyhow::anyhow!("ffn.forward_prefill failed: {e}"));
         }
-        ctx.gpu.synchronize(stream)
-            .map_err(|e| anyhow::anyhow!("prefill_inner L{}: ffn post-sync failed: {e}", self.attn_layer_idx))?;
+        ctx.gpu.synchronize(stream).map_err(|e| {
+            anyhow::anyhow!(
+                "prefill_inner L{}: ffn post-sync failed: {e}",
+                self.attn_layer_idx
+            )
+        })?;
 
         let dense_out = ctx.buffers.moe_output();
 
