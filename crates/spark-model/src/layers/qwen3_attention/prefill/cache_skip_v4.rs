@@ -73,6 +73,8 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         }
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("V4 attn: q_latent gemm sync failed: {e}"))?;
         ops::rms_norm(
             ctx.gpu,
             self.rms_norm_k,
@@ -84,6 +86,8 @@ impl Qwen3AttentionLayer {
             eps,
             stream,
         )?;
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("V4 attn: q_a_norm sync failed: {e}"))?;
         let q_full = ctx.buffers.qkv_output();
         ops::dense_gemm(
             ctx.gpu,
@@ -96,6 +100,8 @@ impl Qwen3AttentionLayer {
             q_lora,
             stream,
         )?;
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("V4 attn: q_full gemm sync failed: {e}"))?;
 
         // ── 2. Extract Q_rope ──
         let q_rope_tmp = ctx.buffers.ssm_conv_out_f32();
@@ -112,6 +118,8 @@ impl Qwen3AttentionLayer {
             nq * hd_mla,
             stream,
         )?;
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("V4 attn: q_rope_extract sync failed: {e}"))?;
 
         // ── 3. K_rope projection ──
         let k_rope_buf = ctx.buffers.ssm_ba();
@@ -126,6 +134,8 @@ impl Qwen3AttentionLayer {
             h,
             stream,
         )?;
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("V4 attn: k_rope gemm sync failed: {e}"))?;
         ops::rope_yarn(
             ctx.gpu,
             self.rope_yarn_k,
@@ -141,6 +151,8 @@ impl Qwen3AttentionLayer {
             ctx.config.rope_theta as f32,
             stream,
         )?;
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("V4 attn: rope_yarn sync failed: {e}"))?;
 
         // ── 4. KV latent ──
         let kv_latent = ctx.buffers.expert_gate_out();
@@ -155,6 +167,8 @@ impl Qwen3AttentionLayer {
             h,
             stream,
         )?;
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("V4 attn: kv_latent gemm sync failed: {e}"))?;
         ops::rms_norm(
             ctx.gpu,
             self.rms_norm_k,
@@ -166,6 +180,8 @@ impl Qwen3AttentionLayer {
             eps,
             stream,
         )?;
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("V4 attn: kv_a_norm sync failed: {e}"))?;
 
         // ── 5. Fused MLA prefill ──
         let v_out = ctx.buffers.attn_output();
@@ -192,6 +208,8 @@ impl Qwen3AttentionLayer {
             1.0f32 / (mla_cache_dim as f32).sqrt(),
             stream,
         )?;
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("V4 attn: mla_fused_prefill sync failed: {e}"))?;
 
         // ── 6. Write KV cache ──
         let k_cache = ctx.buffers.expert_up_out();
@@ -209,6 +227,8 @@ impl Qwen3AttentionLayer {
             mla_cache_dim,
             stream,
         )?;
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("V4 attn: cache_assemble sync failed: {e}"))?;
         self.write_kv_cache(
             ctx.gpu,
             k_cache,
@@ -224,6 +244,8 @@ impl Qwen3AttentionLayer {
             stream,
             ctx.graph_capture,
         )?;
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("V4 attn: write_kv_cache sync failed: {e}"))?;
 
         // ── 7. Grouped low-rank O projection ──
         let o_latent = ctx.buffers.norm_output();
@@ -239,6 +261,8 @@ impl Qwen3AttentionLayer {
             nq * v_dim,
             stream,
         )?;
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("V4 attn: wo_a gemm sync failed: {e}"))?;
         ops::dense_gemm(
             ctx.gpu,
             self.dense_gemm_k,
@@ -250,6 +274,8 @@ impl Qwen3AttentionLayer {
             o_lora,
             stream,
         )?;
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("V4 attn: wo_b gemm sync failed: {e}"))?;
 
         Ok(o_out)
     }
