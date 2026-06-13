@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! DeepSeek-V4-Flash prefill path using mla_fused_prefill kernel.
+//! DeepSeek-V4-Flash prefill path using standard GQA FlashAttention.
 //! Isolated to V4-Flash (o_lora_rank > 0); no other models reach this code.
 
 use anyhow::Result;
@@ -39,10 +39,10 @@ impl Qwen3AttentionLayer {
         let nope = mla.nope as u32;
         let rope = mla.rope as u32;
         let kv_lora = mla.kv_lora_rank as u32;
-        let v_dim = mla.v_dim as u32;
+        let _v_dim = mla.v_dim as u32;
         let q_lora = mla.q_lora_rank as u32;
         let o_lora = mla.o_lora_rank as u32;
-        let mla_cache_dim = kv_lora + rope;
+        let _mla_cache_dim = kv_lora + rope;
         let hd_mla = nope + rope;
         let use_tc = self.dense_gemm_tc_k.0 != 0;
 
@@ -103,70 +103,33 @@ impl Qwen3AttentionLayer {
         ctx.gpu.synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: q_full gemm sync failed: {e}"))?;
 
-        // ── 2. Extract Q_rope ──
-        let q_rope_tmp = ctx.buffers.ssm_conv_out_f32();
-        ops::mla_q_rope_extract_batched(
-            ctx.gpu,
-            self.mla_q_rope_extract_batched_k,
-            q_full,
-            q_rope_tmp,
-            n,
-            nq,
-            hd_mla,
-            nope,
-            rope,
-            nq * hd_mla,
-            stream,
-        )?;
-        ctx.gpu.synchronize(stream)
-            .map_err(|e| anyhow::anyhow!("V4 attn: q_rope_extract sync failed: {e}"))?;
-
-        // ── 3. K_rope projection ──
-        let k_rope_buf = ctx.buffers.ssm_ba();
-        ops::dense_gemm(
-            ctx.gpu,
-            self.dense_gemm_k,
-            normed,
-            &mla.wkv_a_rope,
-            k_rope_buf,
-            n,
-            rope,
-            h,
-            stream,
-        )?;
-        ctx.gpu.synchronize(stream)
-            .map_err(|e| anyhow::anyhow!("V4 attn: k_rope gemm sync failed: {e}"))?;
-        ops::rope_yarn(
-            ctx.gpu,
-            self.rope_yarn_k,
-            q_rope_tmp,
-            k_rope_buf,
-            meta.positions,
-            n,
-            nq,
-            1,
-            rope,
-            rope,
-            mla.yarn_inv_freq,
-            ctx.config.rope_theta as f32,
-            stream,
-        )?;
-        ctx.gpu.synchronize(stream)
-            .map_err(|e| anyhow::anyhow!("V4 attn: rope_yarn sync failed: {e}"))?;
-
-        // ── 4. KV latent ──
+        // ── 2. Direct KV projection (V4-Flash: K=V, no absorption) ──
         let kv_latent = ctx.buffers.expert_gate_out();
-        ops::dense_gemm(
-            ctx.gpu,
-            self.dense_gemm_k,
-            normed,
-            &mla.wkv_a,
-            kv_latent,
-            n,
-            kv_lora,
-            h,
-            stream,
-        )?;
+        if use_tc {
+            ops::dense_gemm_tc(
+                ctx.gpu,
+                self.dense_gemm_tc_k,
+                normed,
+                &mla.wkv_a,
+                kv_latent,
+                n,
+                kv_lora,
+                h,
+                stream,
+            )?;
+        } else {
+            ops::dense_gemm(
+                ctx.gpu,
+                self.dense_gemm_k,
+                normed,
+                &mla.wkv_a,
+                kv_latent,
+                n,
+                kv_lora,
+                h,
+                stream,
+            )?;
+        }
         ctx.gpu.synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: kv_latent gemm sync failed: {e}"))?;
         ops::rms_norm(
@@ -183,82 +146,79 @@ impl Qwen3AttentionLayer {
         ctx.gpu.synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: kv_a_norm sync failed: {e}"))?;
 
-        // ── 5. Fused MLA prefill ──
-        let v_out = ctx.buffers.attn_output();
-        ops::mla_fused_prefill(
+        // ── 3. RoPE on Q and K/V ──
+        ops::rope_yarn(
             ctx.gpu,
-            self.mla_fused_prefill_k,
+            self.rope_yarn_k,
             q_full,
-            q_rope_tmp,
             kv_latent,
-            k_rope_buf,
-            mla.w_uk_t.weight,
-            mla.w_uv.weight,
-            v_out,
-            DevicePtr::NULL,
-            DevicePtr::NULL,
+            meta.positions,
             n,
             nq,
-            nope,
-            rope,
-            kv_lora,
-            v_dim,
-            hd_mla,
             nkv,
-            1.0f32 / (mla_cache_dim as f32).sqrt(),
-            stream,
-        )?;
-        ctx.gpu.synchronize(stream)
-            .map_err(|e| anyhow::anyhow!("V4 attn: mla_fused_prefill sync failed: {e}"))?;
-
-        // ── 6. Write KV cache ──
-        let k_cache = ctx.buffers.expert_up_out();
-        let v_cache = ctx.buffers.expert_down_out();
-        ops::mla_cache_assemble_batched(
-            ctx.gpu,
-            self.mla_cache_assemble_batched_k,
-            kv_latent,
-            k_rope_buf,
-            k_cache,
-            v_cache,
-            n,
-            kv_lora,
+            hd_mla,
             rope,
-            mla_cache_dim,
+            mla.yarn_inv_freq,
+            ctx.config.rope_theta as f32,
             stream,
         )?;
         ctx.gpu.synchronize(stream)
-            .map_err(|e| anyhow::anyhow!("V4 attn: cache_assemble sync failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("V4 attn: rope_yarn sync failed: {e}"))?;
+
+        // ── 4. Standard GQA FlashAttention (intra-chunk) ──
+        let attn_out = ctx.buffers.attn_output();
+        ops::prefill_attention_64(
+            ctx.gpu,
+            self.prefill_attn_64_k,
+            q_full,
+            kv_latent,
+            kv_latent,
+            attn_out,
+            n,
+            1,
+            nq,
+            nkv,
+            hd_mla,
+            1.0f32 / (hd_mla as f32).sqrt(),
+            true,
+            0,
+            stream,
+        )
+        .map_err(|e| anyhow::anyhow!("V4 attn: prefill_attention_64 failed: {e}"))?;
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("V4 attn: prefill_attention_64 sync failed: {e}"))?;
+
+        // ── 5. Write KV cache (V4-Flash: direct K/V, no assembly) ──
         self.write_kv_cache(
             ctx.gpu,
-            k_cache,
-            v_cache,
+            kv_latent,
+            kv_latent,
             kv_cache,
             meta.slot,
             n,
             1,
-            mla_cache_dim,
+            hd_mla,
             kv_cache.block_size() as u32,
-            mla_cache_dim,
-            mla_cache_dim,
+            hd_mla,
+            hd_mla,
             stream,
             ctx.graph_capture,
         )?;
         ctx.gpu.synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: write_kv_cache sync failed: {e}"))?;
 
-        // ── 7. Grouped low-rank O projection ──
+        // ── 6. Grouped low-rank O projection ──
         let o_latent = ctx.buffers.norm_output();
         let o_out = ctx.buffers.qkv_output();
         ops::dense_gemm(
             ctx.gpu,
             self.dense_gemm_k,
-            v_out,
+            attn_out,
             &mla.wo_a,
             o_latent,
             n,
             o_lora,
-            nq * v_dim,
+            nq * hd_mla,
             stream,
         )?;
         ctx.gpu.synchronize(stream)
