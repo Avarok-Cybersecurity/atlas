@@ -25,6 +25,8 @@ impl MoeLayer {
 
         // Gemma-4 router pre-norm (no-op for other models).
         let router_in = self.router_input(input, n, h, ctx, stream)?;
+        ctx.gpu.synchronize(stream)
+            .map_err(|e| anyhow::anyhow!("forward_batched: router_input sync failed: {e}"))?;
         // Gate GEMM: [N, H] × [H, num_experts] → [N, num_experts]
         let gate_logits = ctx.buffers.gate_logits(); // [N, 512] BF16
         // DIAGNOSTIC: temporarily force dense path to test if w4a16_gemm is the culprit.
