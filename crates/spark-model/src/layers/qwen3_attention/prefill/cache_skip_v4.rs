@@ -107,14 +107,18 @@ impl Qwen3AttentionLayer {
             .map_err(|e| anyhow::anyhow!("V4 attn: q_full gemm sync failed: {e}"))?;
 
         // ── 2. Direct KV projection (V4-Flash: K=V, no absorption) ──
-        let kv_latent = ctx.buffers.expert_gate_out();
+        // Layout in qkv_output: [Q | K | V]  (mirrors decode path)
+        let q_dim = nq * hd_mla;
+        let kv_dim = nkv * hd_mla;
+        let k_out = q_full.offset((n * q_dim) as usize * 2);
+        let v_out = k_out.offset((n * kv_dim) as usize * 2);
         if use_tc {
             ops::dense_gemm_tc(
                 ctx.gpu,
                 self.dense_gemm_tc_k,
                 normed,
                 &mla.wkv_a,
-                kv_latent,
+                k_out,
                 n,
                 kv_lora,
                 h,
@@ -126,7 +130,7 @@ impl Qwen3AttentionLayer {
                 self.dense_gemm_k,
                 normed,
                 &mla.wkv_a,
-                kv_latent,
+                k_out,
                 n,
                 kv_lora,
                 h,
@@ -135,14 +139,17 @@ impl Qwen3AttentionLayer {
         }
         ctx.gpu
             .synchronize(stream)
-            .map_err(|e| anyhow::anyhow!("V4 attn: kv_latent gemm sync failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("V4 attn: k_out gemm sync failed: {e}"))?;
+        // Copy K → V (V4-Flash: K and V share the same projection output)
+        ctx.gpu
+            .copy_d2d_async(k_out, v_out, (n * kv_dim) as usize * 2, stream)?;
 
-        // ── 3. RoPE on Q and K/V ──
+        // ── 3. RoPE on Q and K (V is NOT RoPE'd) ──
         ops::rope_yarn(
             ctx.gpu,
             self.rope_yarn_k,
             q_full,
-            kv_latent,
+            k_out,
             meta.positions,
             n,
             nq,
@@ -168,8 +175,8 @@ impl Qwen3AttentionLayer {
             ctx.gpu,
             prefill_k,
             q_full,
-            kv_latent,
-            kv_latent,
+            k_out,
+            v_out,
             attn_out,
             n,
             1,
@@ -189,16 +196,16 @@ impl Qwen3AttentionLayer {
         // ── 5. Write KV cache (V4-Flash: direct K/V, no assembly) ──
         self.write_kv_cache(
             ctx.gpu,
-            kv_latent,
-            kv_latent,
+            k_out,
+            v_out,
             kv_cache,
             meta.slot,
             n,
             1,
             hd_mla,
             kv_cache.block_size() as u32,
-            hd_mla,
-            hd_mla,
+            kv_dim,
+            kv_dim,
             stream,
             ctx.graph_capture,
         )?;
