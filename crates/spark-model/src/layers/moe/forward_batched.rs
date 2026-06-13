@@ -27,42 +27,26 @@ impl MoeLayer {
         let router_in = self.router_input(input, n, h, ctx, stream)?;
         // Gate GEMM: [N, H] × [H, num_experts] → [N, num_experts]
         let gate_logits = ctx.buffers.gate_logits(); // [N, 512] BF16
-        if let Some(ref nvfp4) = self.gate_nvfp4 {
-            tracing::info!(
-                "gate_gemm w4a16: router_in={:?} gate_logits={:?} n={} num_experts={} h={} \
-                 w_ptr={:?} w_scale={:?} w_scale2={}",
-                router_in, gate_logits, n, num_experts, h,
-                nvfp4.weight, nvfp4.weight_scale, nvfp4.weight_scale_2
-            );
-            ops::w4a16_gemm(
-                ctx.gpu,
-                self.w4a16_gemm,
-                router_in,
-                nvfp4,
-                gate_logits,
-                n,
-                num_experts,
-                h,
-                stream,
-            )?;
-        } else {
-            tracing::info!(
-                "gate_gemm dense: router_in={:?} gate_logits={:?} n={} num_experts={} h={} \
-                 gate_ptr={:?}",
-                router_in, gate_logits, n, num_experts, h, self.weights.gate.weight
-            );
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm,
-                router_in,
-                &self.weights.gate,
-                gate_logits,
-                n,
-                num_experts,
-                h,
-                stream,
-            )?;
-        }
+        // DIAGNOSTIC: temporarily force dense path to test if w4a16_gemm is the culprit.
+        // if let Some(ref nvfp4) = self.gate_nvfp4 {
+        //     ...
+        // }
+        tracing::info!(
+            "gate_gemm dense (forced): router_in={:?} gate_logits={:?} n={} num_experts={} h={} \
+             gate_ptr={:?}",
+            router_in, gate_logits, n, num_experts, h, self.weights.gate.weight
+        );
+        ops::dense_gemm(
+            ctx.gpu,
+            self.dense_gemm,
+            router_in,
+            &self.weights.gate,
+            gate_logits,
+            n,
+            num_experts,
+            h,
+            stream,
+        )?;
         ctx.gpu.synchronize(stream)
             .map_err(|e| anyhow::anyhow!("forward_batched: gate_gemm sync failed: {e}"))?;
 
