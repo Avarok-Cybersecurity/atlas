@@ -33,6 +33,10 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/
 COPY kernels/ kernels/
 COPY jinja-templates/ jinja-templates/
+# Vendored cudarc (patched via [patch.crates-io] in Cargo.toml for the
+# AMD/SCALE/HIP port; on gb10 it is a no-op but must be present to resolve
+# the path dependency at build time).
+COPY vendor/ vendor/
 
 ENV ATLAS_TARGET_HW=gb10
 ENV ATLAS_TARGET_MODEL=*
