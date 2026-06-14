@@ -46,6 +46,12 @@ impl Qwen3AttentionLayer {
                 } else {
                     NUM_SMS / current_ctas
                 };
+                tracing::info!(
+                    "V4-Flash decode: NVFP4 paged_decode_k.handle={}, head_dim={}, num_splits={}",
+                    self.paged_decode_k.0,
+                    head_dim,
+                    num_splits
+                );
 
                 if num_splits > 1 {
                     let splitk_k = self

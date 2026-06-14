@@ -167,8 +167,17 @@ impl Qwen3AttentionLayer {
         // ── 4. Standard GQA FlashAttention (intra-chunk) ──
         let attn_out = ctx.buffers.attn_output();
         let prefill_k = if hd_mla > 256 && self.prefill_attn_512_k.0 != 0 {
+            tracing::info!(
+                "V4-Flash prefill: using prefill_attn_512_k (hd_mla={})",
+                hd_mla
+            );
             self.prefill_attn_512_k
         } else {
+            tracing::info!(
+                "V4-Flash prefill: using prefill_attn_64_k fallback (hd_mla={}, 512_k loaded={})",
+                hd_mla,
+                self.prefill_attn_512_k.0 != 0
+            );
             self.prefill_attn_64_k
         };
         ops::prefill_attention(
