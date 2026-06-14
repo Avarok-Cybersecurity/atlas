@@ -57,9 +57,12 @@ features = [
     "cutensor",
 ]
 
+# Atlas-vendored trim: only the `driver` + `nvrtc` backends remain. The
+# upstream cublas/cublaslt/cudnn/cufft/cufile/cupti/curand/cusolver/cusolvermg/
+# cusparse/cutensor/nccl/nvtx/runtime feature gates (and their modules) were
+# removed — Atlas never uses them, and keeping them would re-introduce ~190k
+# lines of generated `sys/mod.rs` FFI bindings.
 [features]
-cublas = ["driver"]
-cublaslt = ["driver"]
 cuda-11040 = []
 cuda-11050 = []
 cuda-11060 = []
@@ -77,30 +80,9 @@ cuda-12090 = []
 cuda-13000 = []
 cuda-13010 = []
 cuda-version-from-build-system = []
-cudnn = ["driver"]
-cufft = ["driver"]
-cufile = ["driver"]
-cupti = [
-    "runtime",
-    "driver",
-]
-curand = ["driver"]
-cusolver = [
-    "driver",
-    "cublas",
-    "cublaslt",
-    "cusparse",
-]
-cusolvermg = ["cusolver"]
-cusparse = ["driver"]
-cutensor = ["driver"]
 default = [
     "std",
-    "cublas",
-    "cublaslt",
-    "curand",
     "driver",
-    "runtime",
     "nvrtc",
     "fallback-dynamic-loading",
 ]
@@ -112,11 +94,8 @@ f4 = ["dep:float4"]
 f8 = ["dep:float8"]
 fallback-dynamic-loading = []
 fallback-latest = []
-nccl = ["driver"]
 no-std = ["no-std-compat/std"]
 nvrtc = []
-nvtx = ["driver"]
-runtime = ["driver"]
 static-linking = []
 std = []
 

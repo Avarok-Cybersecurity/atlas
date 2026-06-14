@@ -4,28 +4,16 @@
 //! | --- | --- | --- | --- |
 //! | [CUDA driver](https://docs.nvidia.com/cuda/cuda-driver-api/index.html) | ✅ | ✅ | ❌ |
 //! | [NVRTC](https://docs.nvidia.com/cuda/nvrtc/index.html) | ✅ | ✅ | ✅ |
-//! | [cuRAND](https://docs.nvidia.com/cuda/curand/index.html) | ✅ | ✅ | ✅ |
-//! | [cuBLAS](https://docs.nvidia.com/cuda/cublas/index.html) | ✅ | ✅ | ✅ |
-//! | [cuBLASLt](https://docs.nvidia.com/cuda/cublas/#using-the-cublaslt-api) | ✅ | ✅ | ✅ |
-//! | [NCCL](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/) | ✅ | ✅ | ✅ |
-//! | [cuDNN](https://docs.nvidia.com/deeplearning/cudnn/backend/latest/api/overview.html) | ✅ | ✅ | ✅ |
-//! | [cuSPARSE](https://docs.nvidia.com/cuda/cusparse/) | ✅ | ✅ | ✅ |
-//! | [cuSOLVER](https://docs.nvidia.com/cuda/cusolver/) | ✅ | ✅ | ❌ |
-//! | [cuFILE](https://docs.nvidia.com/gpudirect-storage/api-reference-guide/index.html#introduction) | ✅ | ✅ | ✅ |
-//! | [CUPTI](https://docs.nvidia.com/cupti/) | ✅ | ✅ | ✅ |
-//! | [nvtx](https://nvidia.github.io/NVTX/) | ✅ | ✅ | ❌ |
-//! | [cuTENSOR](https://docs.nvidia.com/cuda/cutensor/index.html) | ✅ | ✅ | ❌ |
+//!
+//! NOTE: This is the Atlas-vendored copy of cudarc, trimmed to the only two
+//! backends Atlas uses (`driver` + `nvrtc`). The upstream crate also wraps
+//! cuRAND, cuBLAS, cuBLASLt, NCCL, cuDNN, cuSPARSE, cuSOLVER, cuFILE, CUPTI,
+//! nvtx, cuTENSOR and the CUDA runtime; those modules have been removed here.
 //!
 //! CUDA Versions supported
 //! - 11.4-11.8
 //! - 12.0-12.9
 //! - 13.0
-//!
-//! CUDNN versions supported:
-//! - 9.12.0
-//!
-//! NCCL versions supported:
-//! - 2.28.3
 //!
 //! # Configuring CUDA version
 //!
@@ -73,18 +61,6 @@
 //! [`nvrtc::compile_ptx()`] outputs a [`nvrtc::Ptx`], which can
 //! be loaded into a device with [`driver::CudaContext::load_module()`].
 //!
-//! ## cublas
-//!
-//! [cublas::CudaBlas] can perform gemm operations using [`cublas::Gemm<T>`],
-//! and [`cublas::Gemv<T>`]. Both of these traits can generically accept memory
-//! allocated by the driver in the form of: [`driver::CudaSlice<T>`],
-//! [`driver::CudaView<T>`], and [`driver::CudaViewMut<T>`].
-//!
-//! ## curand
-//!
-//! [curand::CudaRng] can fill a [`driver::CudaSlice<T>`] with random data, based on
-//! one of its available distributions.
-//!
 //! # Combining safe/result/sys
 //!
 //! The result and sys levels are very inter-changeable for each API. However,
@@ -104,17 +80,7 @@
 //! | API | Safe | Result | Sys |
 //! | --- | --- | --- | --- |
 //! | driver | [driver::safe] | [driver::result] | [driver::sys] |
-//! | cublas | [cublas::safe] | [cublas::result] | [cublas::sys] |
-//! | cublaslt | [cublaslt::safe] | [cublaslt::result] | [cublaslt::sys] |
 //! | nvrtc | [nvrtc::safe] | [nvrtc::result] | [nvrtc::sys] |
-//! | curand | [curand::safe] | [curand::result] | [curand::sys] |
-//! | cudnn | [cudnn::safe] | [cudnn::result] | [cudnn::sys] |
-//! | cusparse | - | [cusparse::result] | [cusparse::sys] |
-//! | cusolver | [cusolver::safe] | [cusolver::result] | [cusolver::sys] |
-//! | cusolvermg | [cusolvermg::safe] | [cusolvermg::result] | [cusolvermg::sys] |
-//! | cupti | - | [cupti::result] | [cupti::sys] |
-//! | nvtx | [nvtx::safe] | [nvtx::result] | [nvtx::sys] |
-//! | cutensor | [cutensor::safe] | [cutensor::result] | [cutensor::sys] |
 
 #![cfg_attr(feature = "no-std", no_std)]
 
@@ -123,56 +89,14 @@ extern crate alloc;
 #[cfg(feature = "no-std")]
 extern crate no_std_compat as std;
 
-#[cfg(feature = "cublas")]
-pub mod cublas;
-#[cfg(feature = "cublaslt")]
-pub mod cublaslt;
-#[cfg(feature = "cudnn")]
-pub mod cudnn;
-#[cfg(all(
-    feature = "cufft",
-    not(any(
-        feature = "cuda-11040",
-        feature = "cuda-11050",
-        feature = "cuda-11060",
-        feature = "cuda-11070",
-        feature = "cuda-11080",
-    ))
-))]
-pub mod cufft;
-#[cfg(feature = "cufile")]
-pub mod cufile;
-#[cfg(feature = "cupti")]
-pub mod cupti;
-#[cfg(feature = "curand")]
-pub mod curand;
-#[cfg(feature = "cusolver")]
-pub mod cusolver;
-#[cfg(feature = "cusolvermg")]
-pub mod cusolvermg;
-#[cfg(feature = "cusparse")]
-pub mod cusparse;
-#[cfg(all(
-    feature = "cutensor",
-    not(any(
-        feature = "cuda-11040",
-        feature = "cuda-11050",
-        feature = "cuda-11060",
-        feature = "cuda-11070",
-        feature = "cuda-11080",
-    ))
-))]
-pub mod cutensor;
+// Atlas-vendored trim: only the `driver` and `nvrtc` backends are kept. The
+// upstream cublas/cublaslt/cudnn/cufft/cufile/cupti/curand/cusolver/cusolvermg/
+// cusparse/cutensor/nccl/nvtx/runtime modules (and their generated `sys/mod.rs`
+// FFI bindings) have been removed — Atlas never references them.
 #[cfg(feature = "driver")]
 pub mod driver;
-#[cfg(feature = "nccl")]
-pub mod nccl;
 #[cfg(feature = "nvrtc")]
 pub mod nvrtc;
-#[cfg(feature = "nvtx")]
-pub mod nvtx;
-#[cfg(feature = "runtime")]
-pub mod runtime;
 
 pub mod types;
 

@@ -144,39 +144,11 @@ fn dynamic_linking(major: usize, minor: usize) {
         println!("cargo:rustc-link-search=native={}", path.display());
     }
 
+    // Atlas-vendored trim: only `driver` + `nvrtc` backends remain.
     #[cfg(feature = "driver")]
     println!("cargo:rustc-link-lib=dylib=cuda");
-    #[cfg(feature = "nccl")]
-    println!("cargo:rustc-link-lib=dylib=nccl");
     #[cfg(feature = "nvrtc")]
     println!("cargo:rustc-link-lib=dylib=nvrtc");
-    #[cfg(feature = "curand")]
-    println!("cargo:rustc-link-lib=dylib=curand");
-    #[cfg(feature = "cublas")]
-    println!("cargo:rustc-link-lib=dylib=cublas");
-    #[cfg(any(feature = "cublas", feature = "cublaslt"))]
-    println!("cargo:rustc-link-lib=dylib=cublasLt");
-    #[cfg(feature = "cupti")]
-    println!("cargo:rustc-link-lib=dylib=cupti");
-    #[cfg(feature = "cusparse")]
-    println!("cargo:rustc-link-lib=dylib=cusparse");
-    #[cfg(feature = "cusolver")]
-    println!("cargo:rustc-link-lib=dylib=cusolver");
-    #[cfg(feature = "cusolvermg")]
-    println!("cargo:rustc-link-lib=dylib=cusolverMg");
-    #[cfg(feature = "cudnn")]
-    println!("cargo:rustc-link-lib=dylib=cudnn");
-    #[cfg(feature = "runtime")]
-    println!("cargo:rustc-link-lib=dylib=cudart");
-    #[cfg(feature = "cufile")]
-    {
-        println!("cargo:rustc-link-lib=dylib=cufile");
-        println!("cargo:rustc-link-lib=dylib=cufile_rdma");
-    }
-    #[cfg(feature = "nvtx")]
-    println!("cargo:rustc-link-lib=dylib=nvToolsExt");
-    #[cfg(feature = "cutensor")]
-    println!("cargo:rustc-link-lib=dylib=cutensor");
 }
 
 #[allow(unused)]
@@ -186,56 +158,18 @@ fn static_linking(major: usize, minor: usize) {
     }
 
     println!("cargo:rustc-link-lib=static:+whole-archive=stdc++");
-    #[cfg(any(feature = "driver", feature = "runtime"))]
+    // Atlas-vendored trim: only `driver` + `nvrtc` backends remain.
+    #[cfg(feature = "driver")]
     {
         println!("cargo:rustc-link-lib=dylib=cuda");
         println!("cargo:rustc-link-lib=static:+whole-archive=cudart_static");
     }
-    #[cfg(feature = "nccl")]
-    println!("cargo:rustc-link-lib=static:+whole-archive=nccl_static");
     #[cfg(feature = "nvrtc")]
     {
         println!("cargo:rustc-link-lib=static:+whole-archive=nvrtc_static");
         println!("cargo:rustc-link-lib=static:+whole-archive=nvptxcompiler_static");
         println!("cargo:rustc-link-lib=static:+whole-archive=nvrtc-builtins_static");
     }
-    #[cfg(any(
-        feature = "curand",
-        feature = "cublas",
-        feature = "cublaslt",
-        feature = "cusparse",
-        feature = "cusolver"
-    ))]
-    println!("cargo:rustc-link-lib=static:+whole-archive=culibos");
-    #[cfg(feature = "curand")]
-    println!("cargo:rustc-link-lib=static:+whole-archive=curand_static");
-    #[cfg(feature = "cublas")]
-    println!("cargo:rustc-link-lib=static:+whole-archive=cublas_static");
-    #[cfg(any(feature = "cublas", feature = "cublaslt"))]
-    println!("cargo:rustc-link-lib=static:+whole-archive=cublasLt_static");
-    #[cfg(feature = "cupti")]
-    println!("cargo:rustc-link-lib=static:+whole-archive=cupti_static");
-    #[cfg(feature = "cusparse")]
-    println!("cargo:rustc-link-lib=static:+whole-archive=cusparse_static");
-    #[cfg(feature = "cusolver")]
-    {
-        println!("cargo:rustc-link-lib=static:+whole-archive=cusolver_static");
-        println!("cargo:rustc-link-lib=static:+whole-archive=cusolver_lapack_static");
-        println!("cargo:rustc-link-lib=static:+whole-archive=cusolver_metis_static");
-    }
-    #[cfg(feature = "cusolvermg")]
-    println!("cargo:rustc-link-lib=dylib=cusolverMg");
-    #[cfg(feature = "cudnn")]
-    println!("cargo:rustc-link-lib=static:+whole-archive=cudnn");
-    #[cfg(feature = "cufile")]
-    {
-        println!("cargo:rustc-link-lib=static:+whole-archive=cufile_static");
-        println!("cargo:rustc-link-lib=static:+whole-archive=cufile_rdma_static");
-    }
-    #[cfg(feature = "nvtx")]
-    println!("cargo:rustc-link-lib=dylib=nvToolsExt");
-    #[cfg(feature = "cutensor")]
-    println!("cargo:rustc-link-lib=static:+whole-archive=cutensor_static");
 }
 
 #[allow(unused)]
