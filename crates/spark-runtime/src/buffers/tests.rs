@@ -41,10 +41,10 @@ fn test_buffer_arena_alloc() {
     assert!(!arena.hidden_states().is_null());
     assert!(!arena.logits().is_null());
     assert_eq!(arena.max_batch_tokens(), 128);
-    // 19 allocations for 19 buffers (12 data + 1 scratch + 3 expert + 2 splitk
-    // + 1 gdn_fla_scratch). Bump from 18 reflects the GDN FLA chunked-prefill
-    // scratch buffer added when ATLAS_GDN_FLA was wired into the arena.
-    assert_eq!(gpu.alloc_count(), 19);
+    // 21 allocations: the prior 19 (12 data + 1 scratch + 3 expert + 2 splitk
+    // + 1 gdn_fla_scratch) plus the 2 FP32-routing buffers (gate_logits_f32 +
+    // moe_router_in_f32) added for the ATLAS_FP32_GATE/ROUTING path.
+    assert_eq!(gpu.alloc_count(), 21);
 }
 
 #[test]

@@ -13,6 +13,107 @@
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 
+// HIP/gfx1151 (hipcc, __HIP_PLATFORM_AMD__): no `__nv_*` FP8 intrinsics and no
+// `cvt.rn.satfinite.e4m3x2.f32` PTX codegen, so E4M3 encode goes through this
+// pure-bit-math helper (standard 1-4-3 bias-7 SATFINITE, matching the quantizer
+// and the port's strix-hip-real scl_fp8/scl_enc_fp8). NVIDIA/SCALE never see it.
+#if defined(__HIP_PLATFORM_AMD__)
+__device__ __forceinline__ unsigned char scl_enc_fp8(float v) {
+    if (v != v) return 0x7F;
+    unsigned int bb = __float_as_uint(v); unsigned int sign = (bb >> 31) & 1u;
+    int e = (int)((bb >> 23) & 0xFF) - 127; unsigned int man = bb & 0x7FFFFFu;
+    int ee = e + 7; unsigned int em;
+    if (ee < 1) { ee = 0; em = 0; if (e >= -10) { float a = v < 0 ? -v : v; em = (unsigned int)(a / 0.001953125f + 0.5f); if (em > 7u) em = 7u; } }
+    else if (ee > 15) { ee = 15; em = 6; }
+    else { em = (man + (1u << 19)) >> 20; if (em > 7u) { em = 0; ee++; if (ee > 15) { ee = 15; em = 6; } } }
+    return (unsigned char)((sign << 7) | ((unsigned)ee << 3) | em);
+}
+#endif
+
+// SCALE/gfx1151: the `cvt.rn.satfinite.e4m3x2.f32` inline PTX has no codegen
+// (SCALE lacks the internal __nv_cvt_floatraw_to_fp8 lowering helper).
+// __nv_cvt_float_to_fp8 is NVIDIA's own documented intrinsic with identical
+// SATFINITE+E4M3 semantics — numerically exact, not an approximation. The
+// #else branch is the verbatim original PTX, so with __forceinline__ at -O3
+// the NVIDIA codegen is byte-identical (zero NVFP4/FP8 regression). SCALE
+// defines __SCALE__ (not __HIP_PLATFORM_AMD__) in the device pass.
+// PTX `cvt.e4m3x2.f32 d,a,b`: d hi-byte = e4m3(a), lo-byte = e4m3(b).
+__device__ __forceinline__ unsigned short atlas_cvt_e4m3x2_f32(float a_hi, float b_lo) {
+#if defined(__SCALE__)
+    unsigned a8 = (unsigned)__nv_cvt_float_to_fp8(a_hi, __NV_SATFINITE, __NV_E4M3);
+    unsigned b8 = (unsigned)__nv_cvt_float_to_fp8(b_lo, __NV_SATFINITE, __NV_E4M3);
+    return (unsigned short)((a8 << 8) | (b8 & 0xFFu));
+#elif defined(__HIP_PLATFORM_AMD__)
+    unsigned a8 = (unsigned)scl_enc_fp8(a_hi);
+    unsigned b8 = (unsigned)scl_enc_fp8(b_lo);
+    return (unsigned short)((a8 << 8) | (b8 & 0xFFu));
+#else
+    unsigned short d;
+    asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" : "=h"(d) : "f"(a_hi), "f"(b_lo));
+    return d;
+#endif
+}
+
+// SCALE/gfx1151 has no codegen for mma.sync.m16n8k32.e4m3. Proven
+// bit-exact replacement (scripts/scale-probe/e4m3_mma_helper_equiv.cu,
+// GB10: max|ref-cand|=0.0000): intra-warp-group __shfl repack of the
+// e4m3 m16n8k32 fragments -> dequant -> 2x mma.m16n8k16.bf16 (K split
+// 0..15 / 16..31). #else verbatim e4m3 PTX (NVIDIA byte-identical).
+// NOTE: this kernel is COMPILE-ONLY for FP8 serving (FP8 dispatches
+// moe_fp8_grouped_gemm); the proof still guarantees correctness if the
+// NVFP4 grouped path is ever used.
+//
+// HIP/gfx1151 NOTE: no __HIP_PLATFORM_AMD__ branch here — same reason as
+// w4a16_gemm.cu. The AMD WMMA port (port branch
+// kernels/strix-hip-real/qwen3.6-27b/nvfp4/moe_w4a16_grouped_gemm.cu) rewrites
+// the grouped-GEMM bodies into n16 WMMA + synchronous copies (BF16-only path,
+// no FP8 round-trip), which cannot be expressed at this n8 helper without
+// disturbing the NVIDIA kernel bodies. This .cu HIP-compiles via the
+// strix-hip-real symlink in the follow-up stage, not this shared gb10 source.
+#if defined(__SCALE__)
+__device__ __forceinline__ float atlas_e4m3_to_f32(unsigned char b) {
+    return __half2float(__nv_cvt_fp8_to_halfraw((__nv_fp8_storage_t)b, __NV_E4M3));
+}
+__device__ __forceinline__ unsigned atlas_bf2(float lo, float hi) {
+    unsigned short l = __bfloat16_as_ushort(__float2bfloat16(lo));
+    unsigned short h = __bfloat16_as_ushort(__float2bfloat16(hi));
+    return ((unsigned)h << 16) | l;
+}
+#endif
+__device__ __forceinline__ void atlas_mma_e4m3(float* acc,
+    unsigned a0, unsigned a1, unsigned a2, unsigned a3,
+    unsigned b0, unsigned b1) {
+#if defined(__SCALE__)
+    unsigned lane = threadIdx.x & 31u, tig = lane & 3u, base = lane & ~3u;
+    #pragma unroll
+    for (int half = 0; half < 2; half++) {
+        unsigned A_g = half ? a2 : a0, A_g8 = half ? a3 : a1, B_g = half ? b1 : b0;
+        #define ATLAS_GA(reg, j) atlas_e4m3_to_f32((unsigned char)( \
+            __shfl_sync(0xffffffffu, (reg), base + ((unsigned)(j) >> 2)) \
+            >> (8 * ((j) & 3))))
+        int j0 = 2 * (int)tig, j1 = 8 + 2 * (int)tig;
+        unsigned A0 = atlas_bf2(ATLAS_GA(A_g, j0),  ATLAS_GA(A_g, j0 + 1));
+        unsigned A1 = atlas_bf2(ATLAS_GA(A_g8, j0), ATLAS_GA(A_g8, j0 + 1));
+        unsigned A2 = atlas_bf2(ATLAS_GA(A_g, j1),  ATLAS_GA(A_g, j1 + 1));
+        unsigned A3 = atlas_bf2(ATLAS_GA(A_g8, j1), ATLAS_GA(A_g8, j1 + 1));
+        unsigned B0 = atlas_bf2(ATLAS_GA(B_g, j0),  ATLAS_GA(B_g, j0 + 1));
+        unsigned B1 = atlas_bf2(ATLAS_GA(B_g, j1),  ATLAS_GA(B_g, j1 + 1));
+        #undef ATLAS_GA
+        asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+            "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
+            : "=f"(acc[0]), "=f"(acc[1]), "=f"(acc[2]), "=f"(acc[3])
+            : "r"(A0), "r"(A1), "r"(A2), "r"(A3), "r"(B0), "r"(B1),
+              "f"(acc[0]), "f"(acc[1]), "f"(acc[2]), "f"(acc[3]));
+    }
+#else
+    asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 "
+        "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
+        : "=f"(acc[0]), "=f"(acc[1]), "=f"(acc[2]), "=f"(acc[3])
+        : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1),
+          "f"(acc[0]), "f"(acc[1]), "f"(acc[2]), "f"(acc[3]));
+#endif
+}
+
 #define M_TILE 64
 #define N_TILE_SM 64
 #define N_TILE_LG 128
@@ -214,8 +315,8 @@ __device__ __forceinline__ unsigned int moe_bf16x4_to_e4m3x4(const unsigned shor
     asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(f2) : "h"(bf2));
     asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(f3) : "h"(bf3));
     unsigned short h0, h1;
-    asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" : "=h"(h0) : "f"(f1), "f"(f0));
-    asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" : "=h"(h1) : "f"(f3), "f"(f2));
+    h0 = atlas_cvt_e4m3x2_f32(f1, f0);
+    h1 = atlas_cvt_e4m3x2_f32(f3, f2);
     return ((unsigned int)h1 << 16) | (unsigned int)h0;
 }
 
@@ -337,8 +438,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
             float lo = smem_LUT[packed & 0xF] * sv0; \
             float hi = smem_LUT[packed >> 4] * sv0; \
             unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
+            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -347,8 +447,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
             float lo = smem_LUT[packed & 0xF] * sv1; \
             float hi = smem_LUT[packed >> 4] * sv1; \
             unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
+            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8[my_n][kp * 2] = fp8_pair; \
         } \
     } while(0)
@@ -366,15 +465,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B_fp8[nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B_fp8[nc][16 + 4 * tid]; \
-            asm volatile( \
-                "mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 " \
-                "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
-                :"=f"(acc[nt][0]),"=f"(acc[nt][1]), \
-                 "=f"(acc[nt][2]),"=f"(acc[nt][3]) \
-                :"r"(a0),"r"(a1),"r"(a2),"r"(a3), \
-                 "r"(b0),"r"(b1), \
-                 "f"(acc[nt][0]),"f"(acc[nt][1]), \
-                 "f"(acc[nt][2]),"f"(acc[nt][3])); \
+            atlas_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
         } \
     } while(0)
 
@@ -570,8 +661,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64(
             float lo = smem_LUT_k64[packed & 0xF] * sv0; \
             float hi = smem_LUT_k64[packed >> 4] * sv0; \
             unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
+            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_k64[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -580,8 +670,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64(
             float lo = smem_LUT_k64[packed & 0xF] * sv1; \
             float hi = smem_LUT_k64[packed >> 4] * sv1; \
             unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
+            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_k64[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -590,8 +679,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64(
             float lo = smem_LUT_k64[packed & 0xF] * sv2; \
             float hi = smem_LUT_k64[packed >> 4] * sv2; \
             unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
+            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_k64[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -600,8 +688,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64(
             float lo = smem_LUT_k64[packed & 0xF] * sv3; \
             float hi = smem_LUT_k64[packed >> 4] * sv3; \
             unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
+            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_k64[my_n][kp * 2] = fp8_pair; \
         } \
     } while(0)
@@ -621,12 +708,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B_fp8_k64[nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B_fp8_k64[nc][16 + 4 * tid]; \
-            asm volatile( \
-                "mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 " \
-                "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
-                :"=f"(acc[nt][0]),"=f"(acc[nt][1]),"=f"(acc[nt][2]),"=f"(acc[nt][3]) \
-                :"r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1), \
-                 "f"(acc[nt][0]),"f"(acc[nt][1]),"f"(acc[nt][2]),"f"(acc[nt][3])); \
+            atlas_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
         } \
         unsigned int a4 = moe_bf16x4_to_e4m3x4(&sA[fr0 * ast64 + 32 + tid * 4]); \
         unsigned int a5 = moe_bf16x4_to_e4m3x4(&sA[fr1 * ast64 + 32 + tid * 4]); \
@@ -637,12 +719,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B_fp8_k64[nc][32 + 4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B_fp8_k64[nc][48 + 4 * tid]; \
-            asm volatile( \
-                "mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 " \
-                "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
-                :"=f"(acc[nt][0]),"=f"(acc[nt][1]),"=f"(acc[nt][2]),"=f"(acc[nt][3]) \
-                :"r"(a4),"r"(a5),"r"(a6),"r"(a7),"r"(b0),"r"(b1), \
-                 "f"(acc[nt][0]),"f"(acc[nt][1]),"f"(acc[nt][2]),"f"(acc[nt][3])); \
+            atlas_mma_e4m3(acc[nt], a4,a5,a6,a7, b0, b1); \
         } \
     } while(0)
 
@@ -828,8 +905,7 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
             float lo = smem_LUT_fgu64[packed & 0xF] * sv0; \
             float hi = smem_LUT_fgu64[packed >> 4] * sv0; \
             unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
+            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_fgu64[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -838,8 +914,7 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
             float lo = smem_LUT_fgu64[packed & 0xF] * sv1; \
             float hi = smem_LUT_fgu64[packed >> 4] * sv1; \
             unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
+            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_fgu64[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -848,8 +923,7 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
             float lo = smem_LUT_fgu64[packed & 0xF] * sv2; \
             float hi = smem_LUT_fgu64[packed >> 4] * sv2; \
             unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
+            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_fgu64[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -858,8 +932,7 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
             float lo = smem_LUT_fgu64[packed & 0xF] * sv3; \
             float hi = smem_LUT_fgu64[packed >> 4] * sv3; \
             unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
+            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_fgu64[my_n][kp * 2] = fp8_pair; \
         } \
     } while(0)
@@ -876,12 +949,7 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B_fp8_fgu64[nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B_fp8_fgu64[nc][16 + 4 * tid]; \
-            asm volatile( \
-                "mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 " \
-                "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
-                :"=f"(acc[nt][0]),"=f"(acc[nt][1]),"=f"(acc[nt][2]),"=f"(acc[nt][3]) \
-                :"r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1), \
-                 "f"(acc[nt][0]),"f"(acc[nt][1]),"f"(acc[nt][2]),"f"(acc[nt][3])); \
+            atlas_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
         } \
         unsigned int a4 = moe_bf16x4_to_e4m3x4(&sA[fr0 * ast_fgu64 + 32 + tid * 4]); \
         unsigned int a5 = moe_bf16x4_to_e4m3x4(&sA[fr1 * ast_fgu64 + 32 + tid * 4]); \
@@ -892,12 +960,7 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B_fp8_fgu64[nc][32 + 4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B_fp8_fgu64[nc][48 + 4 * tid]; \
-            asm volatile( \
-                "mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 " \
-                "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
-                :"=f"(acc[nt][0]),"=f"(acc[nt][1]),"=f"(acc[nt][2]),"=f"(acc[nt][3]) \
-                :"r"(a4),"r"(a5),"r"(a6),"r"(a7),"r"(b0),"r"(b1), \
-                 "f"(acc[nt][0]),"f"(acc[nt][1]),"f"(acc[nt][2]),"f"(acc[nt][3])); \
+            atlas_mma_e4m3(acc[nt], a4,a5,a6,a7, b0, b1); \
         } \
     } while(0)
 
@@ -1090,8 +1153,7 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t(
             float lo = smem_LUT[packed & 0xF] * sv0; \
             float hi = smem_LUT[packed >> 4] * sv0; \
             unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
+            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -1100,8 +1162,7 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t(
             float lo = smem_LUT[packed & 0xF] * sv1; \
             float hi = smem_LUT[packed >> 4] * sv1; \
             unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
+            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8[my_n][kp * 2] = fp8_pair; \
         } \
     } while(0)
@@ -1118,15 +1179,7 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B_fp8[nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B_fp8[nc][16 + 4 * tid]; \
-            asm volatile( \
-                "mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 " \
-                "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
-                :"=f"(acc[nt][0]),"=f"(acc[nt][1]), \
-                 "=f"(acc[nt][2]),"=f"(acc[nt][3]) \
-                :"r"(a0),"r"(a1),"r"(a2),"r"(a3), \
-                 "r"(b0),"r"(b1), \
-                 "f"(acc[nt][0]),"f"(acc[nt][1]), \
-                 "f"(acc[nt][2]),"f"(acc[nt][3])); \
+            atlas_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
         } \
     } while(0)
 
@@ -1289,8 +1342,7 @@ extern "C" __global__ void moe_fp8_grouped_gemm_ptrtable_t(
             float lo = smem_LUT2[packed & 0xF] * sv0; \
             float hi = smem_LUT2[packed >> 4] * sv0; \
             unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
+            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B2_fp8[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -1299,8 +1351,7 @@ extern "C" __global__ void moe_fp8_grouped_gemm_ptrtable_t(
             float lo = smem_LUT2[packed & 0xF] * sv1; \
             float hi = smem_LUT2[packed >> 4] * sv1; \
             unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
+            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B2_fp8[my_n][kp * 2] = fp8_pair; \
         } \
     } while(0)
@@ -1316,15 +1367,7 @@ extern "C" __global__ void moe_fp8_grouped_gemm_ptrtable_t(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B2_fp8[nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B2_fp8[nc][16 + 4 * tid]; \
-            asm volatile( \
-                "mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 " \
-                "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
-                :"=f"(acc[nt][0]),"=f"(acc[nt][1]), \
-                 "=f"(acc[nt][2]),"=f"(acc[nt][3]) \
-                :"r"(a0),"r"(a1),"r"(a2),"r"(a3), \
-                 "r"(b0),"r"(b1), \
-                 "f"(acc[nt][0]),"f"(acc[nt][1]), \
-                 "f"(acc[nt][2]),"f"(acc[nt][3])); \
+            atlas_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
         } \
     } while(0)
 

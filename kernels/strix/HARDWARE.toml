@@ -1,0 +1,33 @@
+[hardware]
+name = "strix"
+vendor = "amd"
+# AMD Strix Halo / Ryzen AI Max+ 395 — RDNA 3.5 iGPU (Radeon 8060S).
+# Compiled via SCALE (scale-lang.com): the unmodified CUDA .cu sources
+# are recompiled for this AMD target. `arch` selects the per-arch SCALE
+# toolchain dir (targets/gfx1151/bin/nvcc).
+arch = "gfx1151"
+compute_capability = "11.5.1"
+# LPDDR5X-8000, 256-bit unified bus → ~256 GB/s theoretical (APU,
+# bandwidth-limited like GB10 — keep BF16 residual for 2x effective BW).
+memory_bandwidth_gbps = 256
+memory_type = "LPDDR5X"
+# Physical unified RAM on the 64 GB SKU. NOTE: under ROCm-on-WSL the
+# GPU-visible pool is the dedicated-VRAM carveout (<<64 GB) — model
+# sizing for the WSL bring-up must account for that, not this number.
+memory_gb = 64
+# RDNA3.5 has a hard 64 KB/workgroup LDS cap. The BR64=64 large-chunk
+# prefill kernel's __shared__ (smem_Q64[64]) overflows it even after
+# single-buffering K. Force the BR=32 prefill path on this target: the
+# BR=32 kernel is LDS-fixed, correct for all chunk sizes, and the _64
+# kernels become compile-only (never dispatched). Perf-only tradeoff
+# (large prefill chunks tile in 32 rows instead of 64). NVIDIA targets
+# omit this key → option_env! None → unchanged behaviour.
+force_br32_prefill = true
+
+# RDNA3.5 has no cp.async PTX, so the coherence native-FP8 SSM prefill
+# GEMM (`fp8_gemm_n128`, cp.async-based) cannot be built/dispatched here
+# under SCALE either. Keep the NVFP4 SSM in_proj/out_proj path (the proven
+# dispatch for the Fp8Dequanted variant on this target). Without this gate
+# the binary would allocate the ~5.3 GB native-FP8 prefill buffers and risk
+# OOM on the bandwidth-limited APU. NVIDIA/GB10 omits this key → unchanged.
+disable_fp8_ssm_prefill = true

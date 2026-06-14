@@ -37,11 +37,8 @@ impl TransformerModel {
         stream: u64,
     ) -> Result<()> {
         let h = self.config.hidden_size;
-        let fp32 = if self.config.use_fp32_residual {
-            4usize
-        } else {
-            2usize
-        };
+        // BF16 residual is the shipping config (2 bytes/element).
+        let elem_bytes = 2usize;
 
         // ── 1. Embed chunk tokens → [chunk_len, H] contiguous at hidden_dst ──
         // Upload token IDs to device and do a single batched embed kernel launch
@@ -127,7 +124,7 @@ impl TransformerModel {
                 for (i, &tok) in chunk_tokens.iter().enumerate() {
                     if tok == pad_id {
                         let src = ve.buf_out.offset(img_idx * ve.out_hidden_size * 2);
-                        let dst = hidden_dst.offset(i * h * fp32);
+                        let dst = hidden_dst.offset(i * h * elem_bytes);
                         self.gpu
                             .copy_d2d_async(src, dst, ve.out_hidden_size * 2, stream)?;
                         img_idx += 1;

@@ -50,7 +50,38 @@ impl Qwen3SsmLayer {
             self.gdn_prefill_persistent_k.0 != 0,
             self.gdn_prefill_split4_k.0 != 0
         );
-        if self.gdn_prefill_wy32_k.0 != 0 && total > 32 {
+        // gfx1151/SCALE (atlas_scale): every H-in-shared-memory GDN prefill
+        // kernel exceeds RDNA3.5's hard 64KB LDS cap — WY32 ~84KB, WY4 =69688,
+        // persistent =67584 (cuFuncSetAttribute(MAX_DYNAMIC_SHARED) →
+        // CUDA_ERROR_INVALID_VALUE). Only split4 keeps the kd*vd H-state in
+        // global memory (~2KB smem) and handles arbitrary length, so route
+        // there for all sizes. Correctness-equivalent, lower throughput; the
+        // smem-H fast paths are a Blackwell-only optimization. NVIDIA (cfg
+        // unset) takes the full ladder below unchanged.
+        if cfg!(atlas_scale) {
+            return ops::gdn_prefill_split4(
+                ctx.gpu,
+                self.gdn_prefill_split4_k,
+                ssm_state.h_state,
+                q_ptr,
+                k_ptr,
+                v_ptr,
+                gate_ptr,
+                beta_ptr,
+                gdn_bufs.output,
+                1,
+                total,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32,
+                conv_dim as u32,
+                gb_stride,
+                stream,
+            );
+        }
+        if self.gdn_prefill_wy32_k.0 != 0 && total > 32 && !cfg!(atlas_scale) {
             // #110: dynamic smem must cover the FULL kernel layout (H + smem_k +
             // smem_q + smem_warp[4] + smem_kd[C*C] + smem_g[C] + smem_bt[C], C=32).
             // The old `+256` slack under-counted the smem_warp(16)+smem_g(128)+
@@ -141,7 +172,7 @@ impl Qwen3SsmLayer {
                 }
                 offset += chunk;
             }
-        } else if self.gdn_prefill_persistent_wy4_k.0 != 0 {
+        } else if self.gdn_prefill_persistent_wy4_k.0 != 0 && !cfg!(atlas_scale) {
             let smem = (kd * vd * 4 + 8 * kd * 4 + 56) as u32;
             ops::gdn_prefill_persistent_smem(
                 ctx.gpu,

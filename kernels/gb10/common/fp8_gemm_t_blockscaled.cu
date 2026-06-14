@@ -51,6 +51,65 @@ __device__ __forceinline__ void cp_async_wait_all() {
     asm volatile("cp.async.wait_group 0;");
 }
 
+// --- gfx1151/SCALE FP8-MMA software path (SSOT: w4a16_gemm.cu:24-132) ---
+// SCALE/gfx1151 has no codegen for mma.sync.m16n8k32.e4m3. Replace it with two
+// m16n8k16.bf16 MMAs (K split 0..15 / 16..31), decoding each E4M3 byte via the
+// standard scl_fp8 (SCALE's __NV_E4M3 cast is non-standard). The #else is the
+// verbatim e4m3 PTX, so NVIDIA codegen is byte-identical. Helpers duplicated
+// per-module (same convention as scl_fp8 across the decode GEMVs / E4M3_LUT).
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+__device__ __forceinline__ float scl_fp8(unsigned char b) {
+    unsigned int s = (b >> 7) & 1u, e = (b >> 3) & 0xFu, m = b & 0x7u; float v;
+    if (e == 0u)               v = (float)m * 0.001953125f;            // subnormal m*2^-9
+    else if (e == 15u && m == 7u) v = 0.0f;                            // NaN -> 0
+    else                       v = __uint_as_float(((e + 120u) << 23) | (m << 20)); // 2^(e-7)*(1+m/8)
+    return s ? -v : v;
+}
+#endif
+#if defined(__SCALE__)
+__device__ __forceinline__ float atlas_e4m3_to_f32(unsigned char b) {
+    return scl_fp8(b);  // standard E4M3, matches per_token_group_quant_fp8 scl_enc_fp8
+}
+__device__ __forceinline__ unsigned atlas_bf2(float lo, float hi) {
+    unsigned short l = __bfloat16_as_ushort(__float2bfloat16(lo));
+    unsigned short h = __bfloat16_as_ushort(__float2bfloat16(hi));
+    return ((unsigned)h << 16) | l;
+}
+#endif
+__device__ __forceinline__ void atlas_mma_e4m3(float* acc,
+    unsigned a0, unsigned a1, unsigned a2, unsigned a3,
+    unsigned b0, unsigned b1) {
+#if defined(__SCALE__)
+    unsigned lane = threadIdx.x & 31u, tig = lane & 3u, base = lane & ~3u;
+    #pragma unroll
+    for (int half = 0; half < 2; half++) {
+        unsigned A_g = half ? a2 : a0, A_g8 = half ? a3 : a1, B_g = half ? b1 : b0;
+        #define ATLAS_GA(reg, j) atlas_e4m3_to_f32((unsigned char)( \
+            __shfl_sync(0xffffffffu, (reg), base + ((unsigned)(j) >> 2)) \
+            >> (8 * ((j) & 3))))
+        int j0 = 2 * (int)tig, j1 = 8 + 2 * (int)tig;
+        unsigned A0 = atlas_bf2(ATLAS_GA(A_g, j0),  ATLAS_GA(A_g, j0 + 1));
+        unsigned A1 = atlas_bf2(ATLAS_GA(A_g8, j0), ATLAS_GA(A_g8, j0 + 1));
+        unsigned A2 = atlas_bf2(ATLAS_GA(A_g, j1),  ATLAS_GA(A_g, j1 + 1));
+        unsigned A3 = atlas_bf2(ATLAS_GA(A_g8, j1), ATLAS_GA(A_g8, j1 + 1));
+        unsigned B0 = atlas_bf2(ATLAS_GA(B_g, j0),  ATLAS_GA(B_g, j0 + 1));
+        unsigned B1 = atlas_bf2(ATLAS_GA(B_g, j1),  ATLAS_GA(B_g, j1 + 1));
+        #undef ATLAS_GA
+        asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+            "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
+            : "=f"(acc[0]), "=f"(acc[1]), "=f"(acc[2]), "=f"(acc[3])
+            : "r"(A0), "r"(A1), "r"(A2), "r"(A3), "r"(B0), "r"(B1),
+              "f"(acc[0]), "f"(acc[1]), "f"(acc[2]), "f"(acc[3]));
+    }
+#else
+    asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 "
+        "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
+        : "=f"(acc[0]), "=f"(acc[1]), "=f"(acc[2]), "=f"(acc[3])
+        : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1),
+          "f"(acc[0]), "f"(acc[1]), "f"(acc[2]), "f"(acc[3]));
+#endif
+}
+
 extern "C" __global__ void fp8_gemm_t_blockscaled(
     const unsigned char* __restrict__ A_fp8,    // [M, K] FP8 E4M3
     const float* __restrict__ a_scale,          // [M, K/128] FP32
@@ -128,14 +187,7 @@ extern "C" __global__ void fp8_gemm_t_blockscaled(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_Bf[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_Bf[(b_buf)][nc][16 + 4 * tid]; \
-            asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 " \
-                "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
-                :"=f"(inner_acc[nt][0]),"=f"(inner_acc[nt][1]), \
-                 "=f"(inner_acc[nt][2]),"=f"(inner_acc[nt][3]) \
-                :"r"(a0),"r"(a1),"r"(a2),"r"(a3), \
-                 "r"(b0),"r"(b1), \
-                 "f"(inner_acc[nt][0]),"f"(inner_acc[nt][1]), \
-                 "f"(inner_acc[nt][2]),"f"(inner_acc[nt][3])); \
+            atlas_mma_e4m3(inner_acc[nt], a0, a1, a2, a3, b0, b1); \
         } \
     } while(0)
 

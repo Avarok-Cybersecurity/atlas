@@ -47,8 +47,8 @@ impl TransformerModel {
     }
 
     pub(super) fn decode_logits_fp32_dispatch(&self) -> bool {
-        // Forward to the inherent method. Active when
-        // ATLAS_GEMMA4_FP32_LMHEAD=1 + Gemma-4 dense + FP32 residual.
+        // Forward to the inherent method. Gated on `use_fp32_logits`, which is
+        // hardcoded false in production (Gemma-4 FP32 lm_head bisection scaffold).
         TransformerModel::decode_logits_fp32(self)
     }
 

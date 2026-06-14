@@ -197,19 +197,38 @@ impl Qwen3AttentionLayer {
         }
 
         let normed2 = ctx.buffers.norm_output();
-        ops::residual_add_rms_norm(
-            ctx.gpu,
-            self.residual_add_rms_norm_k,
-            hidden,
-            attn_out,
-            &self.post_attn_norm,
-            normed2,
-            residual,
-            1,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        // ATLAS_FP32_ROUTING: attention layers also have an MoE FFN — emit the
+        // MoE-input norm in FP32 so their gates route at full precision too.
+        if self.ffn.fp32_routing_active() && self.residual_add_rms_norm_gatef32_k.0 != 0 {
+            ops::residual_add_rms_norm_gatef32(
+                ctx.gpu,
+                self.residual_add_rms_norm_gatef32_k,
+                hidden,
+                attn_out,
+                &self.post_attn_norm,
+                normed2,
+                ctx.buffers.moe_router_in_f32(),
+                residual,
+                1,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        } else {
+            ops::residual_add_rms_norm(
+                ctx.gpu,
+                self.residual_add_rms_norm_k,
+                hidden,
+                attn_out,
+                &self.post_attn_norm,
+                normed2,
+                residual,
+                1,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        }
 
         // Gemma-4 26B MoE dual FFN: run MoE FIRST (before dense FFN result is used)
         // to avoid buffer conflicts (MoE fused kernel uses attn_output internally).

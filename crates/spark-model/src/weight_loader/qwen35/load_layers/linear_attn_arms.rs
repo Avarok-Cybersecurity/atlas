@@ -366,14 +366,21 @@ pub(super) fn build_linear_attention_nvfp4(
         config,
         gpu,
     )?;
-    layer.predequant_for_prefill(gpu, config, stream)?;
-    // Install native FP8 prefill weights AFTER `predequant_for_prefill`
-    // (which sets `out_proj_fp8` from NVFP4 + scale2). The FP8 path
-    // overrides both pointers when active, routing prefill through
-    // `fp8_gemm_n128` instead of `w4a16_gemm_t`. Decode batch paths
-    // retain their NVFP4 fallback via the `qkvz_nvfp4*` fields above.
-    if qkvz_fp8_prefill.is_some() || out_proj_fp8_prefill.is_some() {
-        layer.set_fp8_prefill_only_weights(qkvz_fp8_prefill, out_proj_fp8_prefill);
+    // Native-HIP (atlas_hip) lacks the FP8 *prefill* GEMM kernels
+    // (fp8_gemm_n128 / fp8_gemm_t_blockscaled are inline-PTX, not yet
+    // WMMA-ported). Skip the FP8→FP8 predequant AND the native-FP8 prefill
+    // install so SSM qkvz/out_proj prefill falls to the NVFP4 w4a16 WMMA path
+    // (qkvz_nvfp4* / out_proj_nvfp4_t fallbacks). SCALE/NVIDIA keep FP8 prefill.
+    if !cfg!(atlas_hip) {
+        layer.predequant_for_prefill(gpu, config, stream)?;
+        // Install native FP8 prefill weights AFTER `predequant_for_prefill`
+        // (which sets `out_proj_fp8` from NVFP4 + scale2). The FP8 path
+        // overrides both pointers when active, routing prefill through
+        // `fp8_gemm_n128` instead of `w4a16_gemm_t`. Decode batch paths
+        // retain their NVFP4 fallback via the `qkvz_nvfp4*` fields above.
+        if qkvz_fp8_prefill.is_some() || out_proj_fp8_prefill.is_some() {
+            layer.set_fp8_prefill_only_weights(qkvz_fp8_prefill, out_proj_fp8_prefill);
+        }
     }
     // ATLAS_GDN_BF16_WEIGHTS=1 extension: also install BF16 out_proj so
     // the prefill dispatcher takes the dense_gemm BF16 path (highest

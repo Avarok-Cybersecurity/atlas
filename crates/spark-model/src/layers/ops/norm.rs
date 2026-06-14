@@ -106,6 +106,44 @@ pub fn residual_add_rms_norm(
         .launch(stream)
 }
 
+/// Dual-output fused residual add + RMS norm (ATLAS_FP32_ROUTING).
+///
+/// Same as `residual_add_rms_norm` (bf16 hidden/residual/output unchanged) but
+/// ALSO writes the normed output in FP32 to `output_f32` for the MoE router GEMM,
+/// removing the norm's bf16-store rounding from the routing-critical path.
+///
+/// Kernel: `residual_add_rms_norm_gatef32(hidden, src, weight, output,
+///          output_f32, residual, hidden_size, eps)`
+/// Grid: (num_tokens, 1, 1)  Block: (min(hidden_size, 1024), 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn residual_add_rms_norm_gatef32(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    hidden: DevicePtr,
+    src: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    output_f32: DevicePtr,
+    residual: DevicePtr,
+    num_tokens: u32,
+    hidden_size: u32,
+    eps: f32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_tokens, 1, 1])
+        .block([hidden_size.min(1024), 1, 1])
+        .arg_ptr(hidden)
+        .arg_ptr(src)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_ptr(output_f32)
+        .arg_ptr(residual)
+        .arg_u32(hidden_size)
+        .arg_f32(eps)
+        .launch(stream)
+}
+
 /// Gated RMS norm (norm_before_gate=False, per-group):
 ///   output = rms_norm_per_group(input * silu(gate), weight, group_size)
 ///

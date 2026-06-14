@@ -18,6 +18,14 @@ members = [
     "crates/xgrammar",
 ]
 
+# AMD/SCALE + native-HIP: the vendored cudarc 0.19.2 is byte-identical to
+# crates.io except its driver `Lib` loader resolves CUDA-driver symbols that
+# don't exist on SCALE/gfx1151 (e.g. cuArrayGetMemoryRequirements) to a
+# `__atlas_missing_cuda_sym` stub instead of panicking at init. On NVIDIA all
+# symbols resolve normally, so the patch is a no-op there (same version).
+[patch.crates-io]
+cudarc = { path = "vendor/cudarc" }
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
@@ -32,8 +40,20 @@ keywords = ["llm", "inference", "cuda", "blackwell", "gpu"]
 categories = ["science", "command-line-utilities"]
 
 [workspace.dependencies]
-# CUDA FFI
-cudarc = { version = "0.19", features = ["driver", "nvrtc", "cuda-version-from-build-system"] }
+# CUDA FFI.
+# Atlas only ever touches the `driver` + `nvrtc` backends (the vendored crate
+# also keeps `runtime` available for completeness). default-features=false drops
+# cudarc's default cublas/cublaslt/curand/runtime/etc. so the never-compiled
+# backends carry no weight; their generated `sys/mod.rs` FFI bindings have been
+# removed from `vendor/cudarc` entirely. `fallback-dynamic-loading` is required:
+# cudarc's build.rs derives the `dynamic-loading` cfg from it.
+cudarc = { version = "0.19", default-features = false, features = [
+    "std",
+    "driver",
+    "nvrtc",
+    "fallback-dynamic-loading",
+    "cuda-version-from-build-system",
+] }
 
 # Serialization (HF config.json)
 serde = { version = "1", features = ["derive"] }

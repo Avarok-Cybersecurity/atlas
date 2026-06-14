@@ -19,6 +19,23 @@
 #define FP8_GROUP_K 128
 #define FP8_E4M3_MAX 448.0f
 
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+// gfx1151/SCALE: __nv_cvt_float_to_fp8 (__NV_E4M3) is non-standard — software
+// SATFINITE E4M3 encode, byte-identical to the quantizer used by the decode
+// kernels (scl_fp8 in w4a16_gemm.cu / fp8_gemm_t_blockscaled.cu). Must pair
+// with that decode so encode/decode agree on gfx1151.
+__device__ __forceinline__ unsigned char scl_enc_fp8(float v) {
+    if (v != v) return 0x7F;
+    unsigned int bb = __float_as_uint(v); unsigned int sign = (bb >> 31) & 1u;
+    int e = (int)((bb >> 23) & 0xFF) - 127; unsigned int man = bb & 0x7FFFFFu;
+    int ee = e + 7; unsigned int em;
+    if (ee < 1) { ee = 0; em = 0; if (e >= -10) { float a = v < 0 ? -v : v; em = (unsigned int)(a / 0.001953125f + 0.5f); if (em > 7u) em = 7u; } }
+    else if (ee > 15) { ee = 15; em = 6; }
+    else { em = (man + (1u << 19)) >> 20; if (em > 7u) { em = 0; ee++; if (ee > 15) { ee = 15; em = 6; } } }
+    return (unsigned char)((sign << 7) | ((unsigned)ee << 3) | em);
+}
+#endif
+
 extern "C" __global__ void per_token_group_quant_fp8(
     const __nv_bfloat16* __restrict__ A,   // [M, K] BF16 activations
     unsigned char* __restrict__ A_fp8,     // [M, K] FP8 E4M3
@@ -69,7 +86,11 @@ extern "C" __global__ void per_token_group_quant_fp8(
         float v = __bfloat162float(A[m * K + k_start + tid]) / smem_scale;
         // Saturating clamp + E4M3 round-to-nearest.
         v = fmaxf(fminf(v, FP8_E4M3_MAX), -FP8_E4M3_MAX);
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+        A_fp8[m * K + k_start + tid] = scl_enc_fp8(v);
+#else
         __nv_fp8_storage_t fp8_v = __nv_cvt_float_to_fp8(v, __NV_SATFINITE, __NV_E4M3);
         A_fp8[m * K + k_start + tid] = (unsigned char)fp8_v;
+#endif
     }
 }

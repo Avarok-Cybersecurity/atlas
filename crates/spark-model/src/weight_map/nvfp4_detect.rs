@@ -270,6 +270,23 @@ pub(crate) fn quantized_from_fp8(
     let result = quantize_to_nvfp4(&bf16, n, k, gpu, absmax_k, quantize_k, stream)?;
     // Free the BF16 intermediate — only the NVFP4 result is needed.
     gpu.free(bf16.weight)?;
+    // strix/APU (atlas_scale): free the FP8 source for this weight now that it
+    // has been requantized to NVFP4. `quantized_from_fp8` serves only read-once
+    // FFN / MoE-expert weights (never the dual-read SSM in_proj path), so the
+    // source is never touched again. This recovers the ~27 GB FP8 checkpoint
+    // that would otherwise sit co-resident with the NVFP4 result on the ~60 GB
+    // unified GTT pool (measured: the OOM cause for both dense 27B and MoE 35B).
+    // `WeightStore` has no Drop that frees pointers — this is the sole owner, so
+    // there is no double-free; the now-stale map entry is never re-read. NVIDIA
+    // (atlas_scale unset) keeps the source resident, byte-for-byte unchanged.
+    #[cfg(atlas_scale)]
+    for suffix in ["weight", "weight_scale_inv"] {
+        if let Ok(t) = store.get(&format!("{prefix}.{suffix}")) {
+            if let Err(e) = gpu.free(t.ptr) {
+                tracing::debug!("evict {prefix}.{suffix} fp8 source: {e}");
+            }
+        }
+    }
     Ok(result)
 }
 

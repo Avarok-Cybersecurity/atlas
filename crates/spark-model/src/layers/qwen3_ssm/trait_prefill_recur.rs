@@ -36,6 +36,37 @@ impl Qwen3SsmLayer {
         let fp32 = 4usize;
         let gb_stride = (nv * 2) as u32;
 
+        // gfx1151/SCALE (atlas_scale): every H-in-shared-memory GDN prefill
+        // kernel exceeds RDNA3.5's 64KB LDS cap — FLA (C=64) ≈96KB, WY4 =69688,
+        // persistent =67584. Only split4 keeps the kd*vd H-state in global
+        // memory (~2KB smem) and handles arbitrary length, so route there for
+        // all sizes. Correctness-equivalent, lower throughput; the smem-H fast
+        // paths (and a future C=32 FLA variant) are Blackwell-only. NVIDIA
+        // (cfg unset) takes the full FLA/WY ladder below unchanged.
+        if cfg!(atlas_scale) {
+            return ops::gdn_prefill_split4(
+                ctx.gpu,
+                self.gdn_prefill_split4_k,
+                h_state,
+                q_ptr,
+                k_ptr,
+                v_ptr,
+                gates_buf,
+                gates_buf.offset(nv * fp32),
+                gdn_out_buf,
+                1,
+                k,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32,
+                conv_dim as u32,
+                gb_stride,
+                stream,
+            );
+        }
+
         // 2026-06-06: removed the concluded GDN-prefill experiment env flags
         // (ATLAS_GDN_CHUNK64 / ATLAS_FORCE_PERSISTENT / ATLAS_DISABLE_WY4) and their
         // dispatch branches. FLA is the baked default for 128-dim linear heads; the

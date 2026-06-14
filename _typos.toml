@@ -41,6 +41,11 @@ wht = "wht"
 # `wkv_a_ba`). Domain abbreviation, not the English preposition.
 BA = "BA"
 ba = "ba"
+# `HSA` / `hsa` — AMD ROCm Heterogeneous System Architecture runtime
+# (`libhsa-runtime64`, `hsa_queue_create`, `rocr::HSA`). Appears throughout
+# the SCALE/HIP Strix-Halo porting docs. Not a typo of `HAS`/`has`.
+HSA = "HSA"
+hsa = "hsa"
 # Output-tokens loop variable in Python benchmark scripts (`for ot in ...`).
 ot = "ot"
 # Steps-per-second shorthand in concurrency benchmark output.

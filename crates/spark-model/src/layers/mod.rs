@@ -61,6 +61,14 @@ impl FfnComponent {
         matches!(self, Self::None)
     }
 
+    /// ATLAS_FP32_ROUTING active for this FFN (MoE only; false otherwise).
+    pub fn fp32_routing_active(&self) -> bool {
+        match self {
+            Self::Moe(m) => m.fp32_routing_active(),
+            _ => false,
+        }
+    }
+
     pub fn forward(
         &self,
         input: DevicePtr,

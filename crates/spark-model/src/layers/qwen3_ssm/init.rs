@@ -77,6 +77,11 @@ impl Qwen3SsmLayer {
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             l2_norm_k: gpu.kernel("norm", "l2_norm_bf16")?,
             residual_add_rms_norm_k: gpu.kernel("norm", "residual_add_rms_norm")?,
+            residual_add_rms_norm_gatef32_k: crate::layers::try_kernel(
+                gpu,
+                "norm",
+                "residual_add_rms_norm_gatef32",
+            ),
             gated_rms_norm_prefill_k: gpu.kernel("norm", "gated_rms_norm_prefill")?,
             w4a16_gemm_k: gpu.kernel("w4a16", "w4a16_gemm")?,
             w4a16_gemm_t_k: gpu.kernel("w4a16", "w4a16_gemm_t")?,

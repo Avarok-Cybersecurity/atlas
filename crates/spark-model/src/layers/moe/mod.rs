@@ -78,6 +78,13 @@ pub struct MoeLayer {
     w4a16_gemv: KernelHandle,
     w4a16_gemm: KernelHandle,
     dense_gemm: KernelHandle,
+    /// FP32-output router GEMM + FP32-input top-K for the ATLAS_FP32_GATE path.
+    /// Zero (unresolved) when the kernels are absent; dispatch falls back to BF16.
+    dense_gemm_f32out: KernelHandle,
+    /// FP32-in/FP32-out router GEMM for ATLAS_FP32_ROUTING (reads the FP32
+    /// router_in from residual_add_rms_norm_gatef32). Zero if absent.
+    dense_gemm_f32in: KernelHandle,
+    moe_topk_f32: KernelHandle,
     moe_expert_gate_up_shared: KernelHandle,
     moe_expert_silu_down_shared: KernelHandle,
     moe_topk: KernelHandle,

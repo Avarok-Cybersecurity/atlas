@@ -134,8 +134,21 @@ fn grid_block(name: &str, m: u32, n: u32) -> Result<([u32; 3], [u32; 3])> {
                 .unwrap_or(128);
             ([n.div_ceil(n_tile), m.div_ceil(128), 1], [256u32, 1, 1])
         }
+        // BF16 tensor-core (AMD WMMA 16x16x16 / NVIDIA m16n8k16): 16M×64N tile,
+        // 4 warps. Validates the WMMA fragment layout shared by the FP8/NVFP4
+        // GEMMs. Grid (ceil(N/64), ceil(M/16), 1), Block (128,1,1).
+        "dense_gemm_tc" => ([n.div_ceil(64), m.div_ceil(16), 1], [128u32, 1, 1]),
         other => bail!("no launch geometry registered for kernel '{other}' — add an arm"),
     })
+}
+
+/// PTX module a kernel resolves in. Most share the `gemm` TU (dense_gemm_bf16.cu);
+/// dense_gemm_tc.cu is its own TU → module = file stem.
+fn module_for(name: &str) -> &'static str {
+    match name {
+        "dense_gemm_tc" => "dense_gemm_tc",
+        _ => "gemm",
+    }
 }
 
 fn launch(
@@ -151,7 +164,7 @@ fn launch(
     let [a, b, c] = ptrs;
     // Module name is "gemm" for the dense_gemm_bf16.cu translation unit; the
     // function symbol is the kernel name.
-    let handle = gpu.kernel("gemm", name)?;
+    let handle = gpu.kernel(module_for(name), name)?;
     let (grid, block) = grid_block(name, m, n)?;
     KernelLaunch::new(gpu, handle)
         .grid(grid)

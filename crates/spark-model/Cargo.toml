@@ -99,6 +99,38 @@ name = "dense_gemm_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "fp8gemm_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "inferspark_attn_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "moe_shared_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "moe_silu_down_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "moe_blend_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "moe_topk_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_split4_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "rope_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "kernel_probe"
 required-features = ["cuda", "gpu-examples"]
 

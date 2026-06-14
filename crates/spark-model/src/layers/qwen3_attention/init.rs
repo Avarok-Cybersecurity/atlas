@@ -349,6 +349,11 @@ impl Qwen3AttentionLayer {
             deinterleave_qg_k: gpu.kernel("ssm_preprocess", "deinterleave_qg")?,
             w4a16_gemv_qg_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qg")?,
             residual_add_rms_norm_k: gpu.kernel("norm", "residual_add_rms_norm")?,
+            residual_add_rms_norm_gatef32_k: crate::layers::try_kernel(
+                gpu,
+                "norm",
+                "residual_add_rms_norm_gatef32",
+            ),
             w4a16_gemv_qg_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qg_batch2")?,
             w4a16_gemv_dual_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_dual_batch2")?,
             w4a16_gemv_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,

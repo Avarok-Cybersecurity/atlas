@@ -319,9 +319,6 @@ pub(crate) fn parse_step3p7(raw: &serde_json::Value) -> Result<ModelConfig> {
         config.vision = parse_vision_config(raw);
     }
 
-    // Step 3.7 uses FP32 residual accumulation for precision across 81 layers.
-    config.use_fp32_residual = true;
-
     finalize_config(&mut config, raw)?;
     Ok(config)
 }

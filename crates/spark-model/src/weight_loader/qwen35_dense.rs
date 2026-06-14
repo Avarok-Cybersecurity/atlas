@@ -85,7 +85,21 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             None
         };
 
+        // ATLAS_MEM_PROFILE: per-phase GPU-free trace to pin the strix/APU
+        // load-time footprint (FP8-source persistence vs NVFP4 steady-state vs
+        // BF16 requant transients). Gated env so it's a no-op in production.
+        let mem_profile = std::env::var("ATLAS_MEM_PROFILE").is_ok();
+        let log_free = |tag: &str| {
+            if mem_profile && let Ok(free) = gpu.free_memory() {
+                tracing::info!("MEM_PROFILE[{tag}]: {:.2} GB GPU-free", free as f64 / 1e9);
+            }
+        };
+        log_free("dense-load-start");
+
         for (i, lt) in layer_types.iter().enumerate() {
+            if i % 8 == 0 {
+                log_free(&format!("layer-{i}"));
+            }
             let lp = config.layer_prefix(i);
             let input_norm = dense(store, &format!("{lp}.input_layernorm.weight"))?;
             let post_attn_norm = dense(store, &format!("{lp}.post_attention_layernorm.weight"))?;

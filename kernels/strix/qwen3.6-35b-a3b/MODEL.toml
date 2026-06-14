@@ -1,0 +1,315 @@
+[model]
+name = "qwen3.6-35b-a3b"
+hf_id = "Qwen/Qwen3.6-35B-A3B-FP8"
+params = "35B"
+active_params = "3B"
+architecture = "Gated DeltaNet + Full Attention + MoE + MRoPE"
+
+layers_total = 40
+layers_linear_attention = 30
+layers_full_attention = 10
+layer_pattern = "3:1 (linear, linear, linear, full)"
+
+moe_experts = 256
+moe_topk = 8
+moe_intermediate = 512
+shared_expert_intermediate = 512
+
+hidden_dim = 2048
+head_dim = 256
+q_heads = 16
+kv_heads = 2
+
+linear_attn_key_heads = 16
+linear_attn_key_dim = 128
+linear_attn_value_heads = 32
+linear_attn_value_dim = 128
+linear_conv_kernel = 4
+
+vocab_size = 248320
+max_position_embeddings = 262144
+rope_theta = 10000000
+partial_rotary_factor = 0.25
+attn_output_gate = true
+
+# MRoPE (multi-modal rotary position embedding). Qwen3.6's full-attention
+# layers use interleaved 3-axis rope. Text-only serving keeps H and W
+# position IDs at zero (generation is temporal only), but the rope kernel
+# still needs the interleaved channel layout.
+mrope_interleaved = true
+mrope_section = [11, 11, 10]
+
+mtp_layers = 1
+mtp_type = "full_attention"
+# Vision tower loaded from checkpoint (27 blocks, first 4 BF16, rest FP8).
+vision = true
+
+# Effective context for agentic tasks (tokens). Server-side compaction
+# triggers when prompt exceeds 50% of this value. The 35B hybrid SSM
+# (30 GDN + 10 attention layers) has ~16-24K effective context for tool
+# calling despite 256K positional budget.
+effective_context = 24576
+
+# Recommended sampling defaults per category.
+#
+# 2026-05-24 EMPIRICAL REVERT: I tried to "correct" these to the Qwen
+# Best Practices block values (temp=1.0, presence_penalty=1.5 for
+# thinking-general). Manual opencode testing showed it materially
+# regressed:
+#   - 2 runs hit max_tokens=8192 (finish_reason=length) — model
+#     wandering endlessly because presence_penalty=1.5 kills logits
+#     for every common reasoning token after a few hundred tokens
+#     ("language mixing and slight decrease in performance" — direct
+#     Qwen card warning).
+#   - Thinking cutoffs returned (high-pres pushes model into rare-token
+#     paths where </think> wins at low margin).
+#   - Tool-call regressions returned (lost the rep_pen=1.1 + dry=0.5
+#     that was breaking JSON-body repetition).
+#
+# So: trust the empirical numbers, not Qwen's general-purpose card.
+# These are the values that produced the clean opencode session
+# (see opencode-p2c-fp16p.jsonl 2026-05-24):
+#   temperature=0.6 (balanced for agentic coding — not too greedy, not too high)
+#   presence_penalty=0.0 (Qwen's 1.5 is a recipe for non-agentic chat)
+#   repetition_penalty=1.1 (industry-norm light penalty)
+#   dry_multiplier=0.5 (SGLang default; catches verbatim loops)
+# 2026-05-25 evening: REVERTED removal of rep_penalty / dry_multiplier
+# from prose categories. The Phase-2c day-4 removal was based on a
+# synthetic short-prompt A/B (T3 axum endpoint) that doesn't match the
+# live opencode workload. With rep_pen=0 the model emits filename
+# garbage like `Cargo.toml.new.tmp.bak1.tmp.newnewnew.tmp.oldoldold` in
+# tool arguments — runaway repetition attractor that DRY catches.
+# Phase-1's MODEL.toml had these penalties across the board and shipped
+# clean opencode sessions; matching that exactly.
+# 2026-06-03: dry_multiplier 0.5->0.0 in ALL presets. With rep_penalty
+# now 1.0 (not 0) the filename-runaway DRY guarded against may no longer
+# occur; zeroing dry ALSO unlocks the on-GPU fast-greedy path (gated on
+# rep==1.0 && dry==0.0), removing the per-verify-token blocking D2H + host
+# argmax. PENDING VALIDATION: confirm the verbatim filename-runaway
+# (`Cargo.toml.new.tmp...`) does NOT return at rep=1.0 before shipping.
+[sampling.thinking_text]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+# 2026-06-03: rep_penalty 1.1->1.0. At temp=0 (opencode) the 1.1 freq-penalty over a
+# 256-tok window suppresses the MOST recurrent code tokens (newline id198, `::` id476)
+# and FLIPS low-margin greedy picks -> collapsed-newline/`::`-split/wander/runaway.
+# Proven temp=0 A/B: 1.1=mangled TOML finish=length; 1.0=clean newlined code finish=stop.
+# vLLM serves penalty-free greedy. dry_multiplier 0.5->0.0 2026-06-03 (was kept to catch
+# verbatim filename runaway; re-validating at rep=1.0 — see top-of-section note). Atlas-vs-BF16
+# cosine 0.995 > vLLM 0.985 => NOT a precision floor.
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+# Tool-calling preset: Qwen team recommends temperature=0.6 for coding tasks.
+# Greedy (0.0) causes self-reinforcement repetition loops at long context.
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+# 2026-06-03: rep_penalty 1.1->1.0 + dry_multiplier 0.5->0.0 (see [sampling.thinking_coding] note).
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+# Model-specific behavior overrides. These control server-side hacks that
+# compensate for model quirks. Defaults are sane for most models; override
+# here when a model family has known failure modes.
+[behavior]
+# FP8 KV-cache calibration (Option B, #211): the FP8 checkpoint ships no
+# k_proj.k_scale/v_proj.v_scale, so the FP8 KV path defaults to scale=1.0 and
+# silently saturates BF16 K/V into E4M3 [-448,448], destroying dynamic range
+# on deep layers where |K|,|V| grow (cos drift L31-L39). Fit per-tensor
+# k/v scales from the first 256 observed tokens' amax (scale=running_max/448),
+# matching the calibrated-FP8 practice mistral-small-4 / gemma-4-26b already use.
+# NOTE: must live under [behavior] — parse_behavior() only reads this table
+# (it sat under [model] until 2026-06-10 and was silently parsed as 0 =
+# calibration disabled).
+fp8_kv_calibration_tokens = 256
+
+# Content-loop watchdog ENABLED (2026-05-23 numerical-drift sweep):
+# the 2026-05-05 chess-game pass was too short to expose the late-
+# layer divergence — 18920-token opencode prompts produce ~7%
+# accumulated cosine drift vs HF BF16 reference (mean cos 0.967, see
+# project_qwen36_numerical_drift_2026_05_23.md). When the late-layer
+# distribution drifts enough to flip MoE expert selection (3/8
+# overlap at L38), the model occasionally lands in sentence-repeat
+# attractors. The watchdog catches and rolls back to a sentence
+# boundary, breaking the loop.
+enable_loop_watchdog = true
+# Server-side sampling SAFETY FLOOR/CEILING — binds even when the client
+# omits/lowers these, so stability does not depend on the client. The FP8
+# weights + NVFP4 lm-head are drift-prone: with min_p=0 the degenerate tail is
+# sampled into repetition loops + argmax-flip garbling on long agentic gen.
+# opencode stayed clean only because it hard-codes temperature=0.3; Claude Code
+# (preset temp 0.6, no min_p) looped hard. MEASURED 2026-06-07 (nvfp4-head@64k,
+# Claude Code): min_p 0.05 → loop-watchdog fires collapse 4 → 0. temperature_max
+# is a defense-in-depth ceiling (catches a client sending e.g. 1.0); opencode's
+# proven-good 0.3 passes through unchanged. 0.0 = disabled.
+min_p_floor = 0.05
+temperature_max = 0.7
+# Thinking on by default — Qwen3.6 35B-A3B is a reasoning-tier MoE; CoT
+# materially improves coherence on multi-step prompts. Per-request override
+# via chat_template_kwargs.enable_thinking still wins; CLI --disable-thinking
+# is the kill-switch.
+thinking_default = true
+# Thinking DURING TOOL-ACTIVE turns — toggle history:
+#
+# 2026-05-23: false (initial hotfix for `<tool_call>`-inside-`<think>` leak)
+# 2026-05-23 evening: true (F1 reflection-penalty deleted; Phase-1 test
+#   suite 13/14 paths clean with thinking-in-tools=true)
+# 2026-05-25 morning: false (live opencode A/B against Phase-1 image
+#   showed thinking-in-tools=true produced chat-template artefacts in
+#   reasoning + single tool call; false produced clean reasoning +
+#   2 parallel tool calls in the synthetic test)
+# 2026-05-25 noon: true (REVERTED back. opencode session
+#   `ses_1a0e59bc7ffeFKSvtvWqoswsll` with thinking=false produced
+#   CATASTROPHIC tool-body repetition: filename garbage extending
+#   5000+ tokens with dictionary-dump content, after the model
+#   couldn't pre-plan the tool args. The synthetic A/B was misleading
+#   — short prompts work fine without thinking, but real agentic
+#   coding tool args degenerate. Pair this with the native FP8 SSM
+#   dispatch revert (load_layers.rs LinearAttention arm) to restore
+#   the Phase-1 path that empirically generated clean opencode
+#   sessions. The chat-template `<|im_start|>assistant\n<think>\n`
+#   prefix isn't free, but the cost of unplanned tool-arg emission
+#   on FP8 is worse than the cost of a CoT preamble.)
+# 2026-05-25 afternoon: false (kept). Phase-1's clean opencode runs used
+#   `thinking_in_tools=false` AND the NVFP4-SSM detour. My broken sessions
+#   used `thinking_in_tools=false` AND the native FP8 SSM dispatch. The
+#   variable that actually matters is the SSM dispatch, not thinking.
+#   Reverting SSM to NVFP4 (load_layers.rs LinearAttention arm) restores
+#   the Phase-1 path. Keep thinking_in_tools=false to match Phase-1
+#   exactly — adding thinking pre-planning was a workaround for a SSM
+#   issue that's now fixed at the root.
+# 2026-05-25 evening: true. User observation: with thinking_in_tools=false,
+#   opencode shows ZERO thinking blocks — chat template skips `<think>\n`
+#   prefix on tool-active turns so the model goes straight to content. With
+#   complex agentic tasks (write file content) the model needs planning
+#   room. Combined with PR 73's qwen3_xml parser, the model can think then
+#   emit clean typed args.
+thinking_in_tools = true
+# PR 73 qwen3_xml REVERTED 2026-05-25 PM. Live opencode v40 test:
+# under thinking_in_tools=true + qwen3_xml, the model emitted COMPLETELY
+# garbled tool args — `command: '/tmp/test-rust-axum-v40'` (path as
+# command), `command: 'description'` (field name as value),
+# `command: ': No such file or directory'` (error message echoed back as
+# command). The qwen3_xml type-coercion path interacted poorly with
+# the FP8 model's reasoning under the long opencode system prompt.
+# Default qwen3_coder is the proven path for our "MUCH better" state
+# (the user's recall: thinking + tool-calling working nicely, didn't
+# completely finish the job).
+# tool_call_parser = "qwen3_xml"  # disabled
+# Maximum thinking budget (tokens). Prevents overthinking.
+# Client-specified budget takes precedence if lower.
+#
+# 2026-05-23: 512 → 2048 after F1 reflection-penalty removal — model
+# needed room for ~600-1500 token reasoning chains.
+# 2026-05-24 (phaseAB sweep #2): 2048 → 768. Live opencode session
+# (opencode-phaseAB.jsonl) showed two failure modes traced to the
+# 2048 budget:
+#   - seq=1 (title-gen, 3 msgs, 0 tools): model burned 2068 thinking
+#     tokens to produce a 7-token title. The default-thinking-on
+#     stance is correct, but 2k tokens to title a chat is absurd.
+#   - seq=8 (turn 9 of agentic flow): model thought for the full
+#     2048 budget, was force-closed via `</think>` injection, then
+#     emitted EOS with zero content tokens. 33s of stall for nothing.
+# 768 still lets Qwen3.6 reason through multi-step plans (typical
+# agentic thinking is 200-500 tokens) while bounding the worst-case
+# burn at ~30s. Clients that need more can pass `thinking_token_budget`
+# in the request body (vLLM-PR shape, supported since Phase B-2).
+max_thinking_budget = 768
+# Inter-tool prose budget — max tokens of free CONTENT (not thinking,
+# not tool body) the model can emit between successive tool calls
+# before Atlas truncates with finish_reason=length.
+#
+# 2026-05-24: bumped 384 → 2048. The default 384 was killing
+# opencode-style agentic sessions where the model legitimately needs
+# to write a longer explanation/plan between tool calls (post-Phase-2c
+# precision improvements let it reason for ~1000+ token explanations
+# without degenerating). Observed in opencode-vllm-detect.jsonl:
+# content-loop watchdog correctly rolled back from a real loop, model
+# re-steered cleanly, but then emitted 385 tokens of legitimate
+# explanation prose and was killed by the 384 budget.
+#
+# 2048 gives Qwen3.6 agentic ample room. Real degeneration still
+# tripped by content-loop watchdog (vLLM-anchored, fires within 4
+# tokens of a tight loop) and thinking-loop watchdog.
+#
+# F5 (2026-06-02): lowered 2048 → 1024. F1's post-think content cap is
+# the dominant runaway bound. 2026-06-10: restored to 384 — the 1024
+# budget (raised in #90) let temp-0.3 paraphrase loops run ~2.7x longer
+# per inter-tool gap on long warm-cache contexts (SimHash fires HINT-only
+# on paraphrase repeats; the period matcher misses them), turning
+# agentic runs into 360s cap-riders (tq12 gate 0/2). 384 is the value
+# the 2026-06-07 10/10 series and the CC2-CC6 Claude-Code validation
+# actually ran with.
+max_inter_tool_prose = 384
+# F1 (2026-06-02): unconditional post-`</think>` content-token cap for
+# tool-active requests. Backstops the grammar-legal-but-never-closing
+# tool-value runaway (a garbled/merged BPE `</parameter>` close leaves
+# the value rule unterminated → burns to max_tokens → 360s opencode
+# timeout). Ends any runaway well before max_tokens, returning the turn
+# budget to the agent. Never caps plain chat (runtime gate also requires
+# an attached grammar). In-code default is 100_000 (no-op).
+#
+# CC6 (2026-06-07): raised 1536 → 8192. This counter increments for EVERY
+# post-`</think>` token including a `<parameter=content>` VALUE, and is
+# cumulative across the whole turn — so 1536 truncated Claude Code's single
+# large file writes (a whole src/main.rs + #[tokio::test] blocks in one Write
+# ≈ 2000-6000 content tokens) mid-statement, breaking the build. 8192 gives a
+# ~6000-token file plus surrounding agentic narrative room in one turn. A true
+# runaway is still bounded: the tool-call ENVELOPE streak (MAX_TOOL_BODY_TOKENS),
+# the content-loop / fuzzy-repeat / inter-tool-prose watchdogs (fire OUTSIDE the
+# tool body), and the ultimate a.remaining==0 / max_tokens stop all remain active.
+max_post_think_content_tokens = 8192
+# Default num_drafts for speculative decoding (K = num_drafts + 1).
+# Benchmarked 2026-04-10 on GB10: K=2 (1 draft) yields 117.8 tok/s vs
+# K=3 (2 drafts) at 82.4 tok/s — 43% faster. The MoE verify overhead
+# dominates any acceptance-rate gain at K=3 for this 35B-A3B model.
+default_num_drafts = 1
+
+[[model_types]]
+model_type = "qwen3_6_moe"
+hidden_size = 2048
+
+[kernel]
+moe_gate_shmem_bytes = 4096   # hidden_dim(2048) * sizeof(bf16)
+
+# DFlash block-diffusion speculative decoding (Z Lab, arXiv 2602.06036).
+# When the user passes `--dflash` without an explicit `--draft-model`,
+# this drafter is loaded alongside the target. Drafter dimensions
+# (8 layers, hidden=2048, GQA 32:4, vocab=248320) come from
+# `z-lab/Qwen3.6-35B-A3B-DFlash/config.json`. `target_layer_ids` lists
+# the 5 target-side layer indices whose post-residual hidden states the
+# drafter consumes via its `fc` projection (shallow→deep order matters).
+# `mask_token_id` fills γ "to-be-predicted" positions in block diffusion.
+# `window_size` enables sliding-window attention in the drafter at long
+# context — community-tested 4096 is the upstream sglang/vLLM default.
+[dflash]
+draft_model = "z-lab/Qwen3.6-35B-A3B-DFlash"
+gamma = 16
+window_size = 4096
+mask_token_id = 248070
+target_layer_ids = [1, 10, 19, 28, 37]

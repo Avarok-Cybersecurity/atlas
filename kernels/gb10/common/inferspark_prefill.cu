@@ -43,6 +43,18 @@
 // Number of 16-byte (8-element) chunks per tile: 32 rows * (256/8) = 32*32 = 1024
 #define TILE_CHUNKS (BR * (HDIM / 8))
 
+// SCALE/gfx1151: RDNA3.5 hard 64 KB/workgroup LDS cap. This file is
+// COMPILE-ONLY on AMD (non-paged contiguous prefill — not dispatched for
+// FP8 chunked serving). Single-buffer smem_K/smem_K64 (+ BR64=32 below)
+// only need to fit LDS so the binary builds. NVIDIA #else verbatim.
+#if defined(__SCALE__)
+#define ATLAS_KBUFN 1
+#define ATLAS_KB(x) 0u
+#else
+#define ATLAS_KBUFN 2
+#define ATLAS_KB(x) (x)
+#endif
+
 extern "C" __global__ void inferspark_prefill(
     const __nv_bfloat16* __restrict__ Q,
     const __nv_bfloat16* __restrict__ K,
@@ -83,7 +95,7 @@ extern "C" __global__ void inferspark_prefill(
 
     // Shared memory — double-buffered K + separate V for full async overlap
     __shared__ __nv_bfloat16 smem_Q[BR][HDIM_PAD];
-    __shared__ __nv_bfloat16 smem_K[2][BC][HDIM_PAD];  // double-buffered
+    __shared__ __nv_bfloat16 smem_K[ATLAS_KBUFN][BC][HDIM_PAD];  // double-buffered
     __shared__ __nv_bfloat16 smem_V[BC][HDIM_PAD];
     __shared__ __nv_bfloat16 smem_P[BR][BC + PAD_P];
     __shared__ float smem_ml[BR][2]; // [row][0]=m, [row][1]=l
@@ -187,7 +199,7 @@ extern "C" __global__ void inferspark_prefill(
             asm volatile("cp.async.commit_group;");  // V tile loading in background
         }
 
-        // K[kv_block] already in smem_K[buf] (preloaded or from prev iteration)
+        // K[kv_block] already in smem_K[ATLAS_KB(buf)] (preloaded or from prev iteration)
 
         // === QK^T (warps 0-1, register-based) ===
         float acc_s[4][4];  // [n_tile][{row0_c0, row0_c1, row1_c0, row1_c1}]
@@ -217,7 +229,7 @@ extern "C" __global__ void inferspark_prefill(
                 // B fragments: iterate over 4 N-tiles of K^T
                 // SM121 workaround: manual B-operand register loading
                 // (ldmatrix.trans produces incorrect results on GB10)
-                const unsigned short* sK_u16 = (const unsigned short*)smem_K[buf];
+                const unsigned short* sK_u16 = (const unsigned short*)smem_K[ATLAS_KB(buf)];
                 #pragma unroll
                 for (int nt = 0; nt < 4; nt++) {
                     unsigned int n_col = nt * 8 + group_id;
@@ -375,13 +387,13 @@ extern "C" __global__ void inferspark_prefill(
                 unsigned int chunk = idx % chunks_per_row_k;
                 unsigned int col = chunk * 8;
                 unsigned int k_row = next_kv_start + row;
-                unsigned int smem_addr = __cvta_generic_to_shared(&smem_K[1 - buf][row][col]);
+                unsigned int smem_addr = __cvta_generic_to_shared(&smem_K[ATLAS_KB(1 - buf)][row][col]);
 
                 if (k_row < seq_len) {
                     const void* gmem = (const void*)&K_batch[k_row * kv_seq_stride + kv_head * head_dim + col];
                     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(smem_addr), "l"(gmem));
                 } else {
-                    *((uint4*)&smem_K[1 - buf][row][col]) = make_uint4(0, 0, 0, 0);
+                    *((uint4*)&smem_K[ATLAS_KB(1 - buf)][row][col]) = make_uint4(0, 0, 0, 0);
                 }
             }
             asm volatile("cp.async.commit_group;");  // K[i+1] loading in background
@@ -502,7 +514,11 @@ extern "C" __global__ void inferspark_prefill(
 //   m/l: [64][2]   =  0.5 KB
 // ============================================================================
 
+#if defined(__SCALE__)
+#define BR64 32
+#else
 #define BR64 64
+#endif
 #define TILE_CHUNKS_Q64 (BR64 * (HDIM / 8))  // 2048
 #define TILE_CHUNKS_KV  (BC * (HDIM / 8))     // 1024
 
@@ -545,7 +561,7 @@ extern "C" __global__ void inferspark_prefill_64(
     __nv_bfloat16* O_batch = O + batch * seq_len * q_seq_stride;
 
     __shared__ __nv_bfloat16 smem_Q[BR64][HDIM_PAD];
-    __shared__ __nv_bfloat16 smem_K64[2][BC][HDIM_PAD];
+    __shared__ __nv_bfloat16 smem_K64[ATLAS_KBUFN][BC][HDIM_PAD];
     __shared__ __nv_bfloat16 smem_V64[BC][HDIM_PAD];
     __shared__ __nv_bfloat16 smem_P64[BR64][BC + PAD_P];
     __shared__ float smem_ml64[BR64][2];
@@ -657,7 +673,7 @@ extern "C" __global__ void inferspark_prefill_64(
             }
 
             const unsigned short* sQ = (const unsigned short*)smem_Q;
-            const unsigned short* sK = (const unsigned short*)smem_K64[buf];
+            const unsigned short* sK = (const unsigned short*)smem_K64[ATLAS_KB(buf)];
 
             #pragma unroll
             for (unsigned int ks = 0; ks < (HDIM / 16); ks++) {
@@ -824,13 +840,13 @@ extern "C" __global__ void inferspark_prefill_64(
                 unsigned int chunk = idx % chunks_per_row_k;
                 unsigned int col = chunk * 8;
                 unsigned int k_row = next_kv_start + row;
-                unsigned int smem_addr = __cvta_generic_to_shared(&smem_K64[1 - buf][row][col]);
+                unsigned int smem_addr = __cvta_generic_to_shared(&smem_K64[ATLAS_KB(1 - buf)][row][col]);
 
                 if (k_row < seq_len) {
                     const void* gmem = (const void*)&K_batch[k_row * kv_seq_stride + kv_head * head_dim + col];
                     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(smem_addr), "l"(gmem));
                 } else {
-                    *((uint4*)&smem_K64[1 - buf][row][col]) = make_uint4(0, 0, 0, 0);
+                    *((uint4*)&smem_K64[ATLAS_KB(1 - buf)][row][col]) = make_uint4(0, 0, 0, 0);
                 }
             }
             asm volatile("cp.async.commit_group;");

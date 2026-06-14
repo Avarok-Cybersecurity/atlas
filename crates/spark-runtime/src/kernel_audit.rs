@@ -41,7 +41,7 @@ fn ptx_hash(bytes: &[u8]) -> String {
 /// Render the embedded kernel set (`embedded` = the binary's `ptx_modules()`,
 /// passed in since spark-runtime doesn't depend on atlas-kernels) plus the
 /// runtime resolution overlay. `set_hash` is `atlas_kernels::KERNEL_SET_HASH`.
-pub fn render_kernel_table(embedded: &[(&str, &str)], set_hash: &str) -> String {
+pub fn render_kernel_table(embedded: &[(&str, &[u8])], set_hash: &str) -> String {
     // Dedup resolution audit: (module, func) → loaded (true if ever true).
     let mut resolved: BTreeMap<(String, String), bool> = BTreeMap::new();
     if let Ok(v) = AUDIT.lock() {
@@ -69,10 +69,12 @@ pub fn render_kernel_table(embedded: &[(&str, &str)], set_hash: &str) -> String 
         "MODULE (operation)", "PTX-HASH", "RESOLUTION"
     ));
     out.push_str(&format!("│ {}\n", "─".repeat(74)));
-    let mut sorted: Vec<&(&str, &str)> = embedded.iter().collect();
+    let mut sorted: Vec<&(&str, &[u8])> = embedded.iter().collect();
     sorted.sort_by_key(|(m, _)| *m);
-    for (m, ptx) in sorted {
-        let h = ptx_hash(ptx.as_bytes());
+    for (m, blob) in sorted {
+        // Blob is the raw kernel bytes (PTX text or AMD/Metal binary);
+        // FNV-1a over the bytes directly — matches build.rs's set hash.
+        let h = ptx_hash(blob);
         let res = match mod_resolved.get(m) {
             Some((_req, true)) => "used",
             Some((_req, false)) => "** lookup FAILED **",

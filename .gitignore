@@ -53,7 +53,9 @@ __pycache__/
 *.qdrep
 *.sqlite
 perf.data*
-core.*
+# Core dumps (PID-suffixed, e.g. core.12345) — NOT source files like
+# vendor/cudarc/src/driver/safe/core.rs, which the bare `core.*` glob swallowed.
+core.[0-9]*
 
 # Environment / secrets
 .env

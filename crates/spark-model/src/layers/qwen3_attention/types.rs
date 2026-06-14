@@ -218,6 +218,8 @@ pub struct Qwen3AttentionLayer {
     pub(super) deinterleave_qg_k: KernelHandle,
     pub(super) w4a16_gemv_qg_k: KernelHandle,
     pub(super) residual_add_rms_norm_k: KernelHandle,
+    /// Dual-output (bf16 + f32) MoE-input norm for ATLAS_FP32_ROUTING. Zero if absent.
+    pub(super) residual_add_rms_norm_gatef32_k: KernelHandle,
     // Kernels — batch2 (K=2 verify)
     pub(super) w4a16_gemv_qg_batch2_k: KernelHandle,
     pub(super) w4a16_gemv_dual_batch2_k: KernelHandle,

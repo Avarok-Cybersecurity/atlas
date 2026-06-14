@@ -177,6 +177,135 @@ extern "C" __global__ void moe_topk_softmax(
     }
 }
 
+// FP32-input variant of moe_topk_softmax (single token).
+//
+// Identical algorithm to moe_topk_softmax, but reads gate_logits as f32
+// instead of BF16. Used by the ATLAS_FP32_GATE routing path: the router GEMM
+// keeps its FP32 accumulator (no BF16 store), so two experts whose logits
+// differ by less than a BF16 ULP no longer flip top-K selection. The bf16
+// entry point above is left byte-identical so the NVIDIA codegen is unchanged.
+//
+// Grid: (1, 1, 1)   Block: (256, 1, 1)
+extern "C" __global__ void moe_topk_softmax_f32(
+    const float* __restrict__ gate_logits,           // [num_experts] f32
+    unsigned int* __restrict__ expert_indices,       // [top_k] output
+    float* __restrict__ expert_weights,              // [top_k] output
+    unsigned int num_experts,
+    unsigned int top_k,
+    unsigned int normalize
+) {
+    __shared__ float s_vals[MAX_EXPERTS];
+    __shared__ float s_top_vals[MAX_TOP_K];
+    __shared__ unsigned int s_top_idxs[MAX_TOP_K];
+    __shared__ float s_warp_val[8];
+    __shared__ unsigned int s_warp_idx[8];
+
+    const unsigned int tid = threadIdx.x;
+    const unsigned int warp_id = tid / 32;
+    const unsigned int lane = tid % 32;
+    const unsigned int num_warps = BLOCK_SIZE / 32;
+
+    // Phase 1: Load gate logits (already f32) — 2 elements per thread for 512 experts
+    unsigned int actual_n = num_experts < MAX_EXPERTS ? num_experts : MAX_EXPERTS;
+    for (unsigned int i = tid; i < actual_n; i += BLOCK_SIZE) {
+        s_vals[i] = gate_logits[i];
+    }
+    for (unsigned int i = actual_n + tid; i < MAX_EXPERTS; i += BLOCK_SIZE) {
+        s_vals[i] = -1e30f;
+    }
+    __syncthreads();
+
+    // Phase 2: Parallel top-K via iterative warp-shuffle max reduction
+    for (unsigned int t = 0; t < top_k && t < actual_n; t++) {
+        float local_max = -1e30f;
+        unsigned int local_idx = 0;
+        for (unsigned int i = tid; i < actual_n; i += BLOCK_SIZE) {
+            float v = s_vals[i];
+            if (v > local_max) {
+                local_max = v;
+                local_idx = i;
+            }
+        }
+        // Deterministic tie-break: lower-index-wins on ties (matches bf16 path / vLLM).
+        #pragma unroll
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            float other_val = __shfl_down_sync(0xFFFFFFFF, local_max, offset);
+            unsigned int other_idx = __shfl_down_sync(0xFFFFFFFF, local_idx, offset);
+            if (other_val > local_max || (other_val == local_max && other_idx < local_idx)) {
+                local_max = other_val;
+                local_idx = other_idx;
+            }
+        }
+        if (lane == 0) {
+            s_warp_val[warp_id] = local_max;
+            s_warp_idx[warp_id] = local_idx;
+        }
+        __syncthreads();
+        if (tid == 0) {
+            float best_val = s_warp_val[0];
+            unsigned int best_idx = s_warp_idx[0];
+            for (unsigned int w = 1; w < num_warps; w++) {
+                if (s_warp_val[w] > best_val || (s_warp_val[w] == best_val && s_warp_idx[w] < best_idx)) {
+                    best_val = s_warp_val[w];
+                    best_idx = s_warp_idx[w];
+                }
+            }
+            s_top_vals[t] = best_val;
+            s_top_idxs[t] = best_idx;
+            s_vals[best_idx] = -1e30f;
+        }
+        __syncthreads();
+    }
+
+    // Phase 3: full softmax over all experts, extract top-K weights.
+    float global_max = s_top_vals[0];
+    {
+        float local_sum = 0.0f;
+        for (unsigned int i = tid; i < actual_n; i += BLOCK_SIZE) {
+            local_sum += __expf(s_vals[i] - global_max);
+        }
+        #pragma unroll
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            local_sum += __shfl_down_sync(0xFFFFFFFF, local_sum, offset);
+        }
+        if (lane == 0) s_warp_val[warp_id] = local_sum;
+        __syncthreads();
+        if (tid == 0) {
+            float total = 0.0f;
+            for (unsigned int w = 0; w < num_warps; w++) {
+                total += s_warp_val[w];
+            }
+            for (unsigned int t = 0; t < top_k && t < actual_n; t++) {
+                total += __expf(s_top_vals[t] - global_max);
+            }
+            s_warp_val[0] = total;
+        }
+        __syncthreads();
+    }
+
+    float exp_sum = s_warp_val[0];
+    if (tid == 0) {
+        for (unsigned int t = 0; t < top_k && t < actual_n; t++) {
+            expert_indices[t] = s_top_idxs[t];
+            float softmax_weight = __expf(s_top_vals[t] - global_max) / exp_sum;
+            if (normalize) {
+                s_top_vals[t] = softmax_weight;
+            } else {
+                expert_weights[t] = softmax_weight;
+            }
+        }
+        if (normalize) {
+            float topk_sum = 0.0f;
+            for (unsigned int t = 0; t < top_k && t < actual_n; t++) {
+                topk_sum += s_top_vals[t];
+            }
+            for (unsigned int t = 0; t < top_k && t < actual_n; t++) {
+                expert_weights[t] = s_top_vals[t] / topk_sum;
+            }
+        }
+    }
+}
+
 // Batched variant: process N tokens in parallel, one block per token.
 //
 // Grid: (N, 1, 1)   Block: (256, 1, 1)

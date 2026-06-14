@@ -329,11 +329,6 @@ pub struct ModelConfig {
     /// present for byte-exact rope dim.
     #[serde(default)]
     pub rotary_dim: usize,
-    /// FP32 residual accumulation (Step 3.7). When true, residual
-    /// add/sub kernels operate in FP32 instead of BF16 to preserve
-    /// precision across 81 layers.
-    #[serde(skip)]
-    pub use_fp32_residual: bool,
 
     /// Target-model layer indices to capture intermediate hidden states from
     /// for DFlash speculative decoding. Sourced from the drafter's

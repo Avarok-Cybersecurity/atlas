@@ -224,7 +224,7 @@ impl TransformerModel {
         Ok((vals, norm))
     }
 
-    /// Read FP32 values from GPU memory (for FP32 residual stream diagnostics).
+    /// Read FP32 values from GPU memory (diagnostics).
     pub(super) fn readback_f32(&self, ptr: DevicePtr, n: usize) -> Result<(Vec<f32>, f32)> {
         let bytes = n * 4;
         let mut buf = vec![0u8; bytes];

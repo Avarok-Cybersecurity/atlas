@@ -2,6 +2,23 @@
 
 fn main() {
     println!("cargo:rerun-if-env-changed=ATLAS_SKIP_BUILD");
+    println!("cargo:rerun-if-env-changed=ATLAS_TARGET_HW");
+    // Register the `atlas_scale` cfg so `#[cfg(atlas_scale)]` does not trip
+    // the `unexpected_cfgs` lint. `atlas_scale` selects SCALE/AMD (gfx1151)
+    // codepaths over NVIDIA ones where the CUDA driver ABI differs — e.g.
+    // SCALE's libcuda exports `cuGraphInstantiate` (not the NVIDIA-only
+    // `cuGraphInstantiateWithFlags`). Driven by the same `ATLAS_TARGET_HW`
+    // signal the atlas-kernels build uses; covers both the SCALE (`strix`)
+    // and native-HIP (`strix-hip`) AMD targets.
+    println!("cargo:rustc-check-cfg=cfg(atlas_scale)");
+    if std::env::var("ATLAS_TARGET_HW")
+        .as_deref()
+        .map(|hw| hw.starts_with("strix"))
+        .unwrap_or(false)
+    {
+        println!("cargo:rustc-cfg=atlas_scale");
+    }
+
     if matches!(
         std::env::var("ATLAS_SKIP_BUILD").as_deref(),
         Ok("1") | Ok("true")

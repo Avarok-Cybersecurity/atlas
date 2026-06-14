@@ -32,26 +32,9 @@ impl TransformerModel {
         let h = self.config.hidden_size;
         let row_bytes = h * 2; // BF16 embedding row
         let src = self.embed_tokens.weight.offset(token as usize * row_bytes);
-        if self.bf16_to_f32_kernel.0 != 0 {
-            // FP32 residual: embed BF16 to scratch, convert to FP32 output.
-            // The scratch buffer is norm_output which is BF16 regardless of
-            // residual dtype — use the BF16 scaler explicitly.
-            let scratch = self.buffers.norm_output();
-            self.gpu.copy_d2d_async(src, scratch, row_bytes, stream)?;
-            self.scale_embeddings_bf16(scratch, 1, stream)?;
-            crate::layers::ops::bf16_to_f32(
-                self.gpu.as_ref(),
-                self.bf16_to_f32_kernel,
-                scratch,
-                output,
-                h as u32,
-                stream,
-            )
-        } else {
-            self.gpu.copy_d2d_async(src, output, row_bytes, stream)?;
-            // Scale embeddings (Gemma-4: sqrt(hidden_size))
-            self.scale_embeddings(output, 1, stream)
-        }
+        self.gpu.copy_d2d_async(src, output, row_bytes, stream)?;
+        // Scale embeddings (Gemma-4: sqrt(hidden_size))
+        self.scale_embeddings(output, 1, stream)
     }
 
     /// Scale in-place embeddings by config.embed_scale. The residual stream

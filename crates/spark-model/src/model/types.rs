@@ -44,7 +44,6 @@ pub struct TransformerModel {
     pub(super) kv_cache: Mutex<PagedKvCache>,
     pub(super) gpu: Box<dyn GpuBackend>,
     pub(super) rms_norm_kernel: KernelHandle,
-    pub(super) bf16_to_f32_kernel: KernelHandle,
     pub(super) dense_gemv_kernel: KernelHandle,
     /// FP32-output variant of dense_gemv_bf16. Used by the LM head when
     /// `use_fp32_logits` is true, so the FP32 accumulator is preserved across

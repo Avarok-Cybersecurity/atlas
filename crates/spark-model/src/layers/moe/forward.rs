@@ -5,6 +5,19 @@
 use super::*;
 
 impl MoeLayer {
+    /// True when the ATLAS_FP32_ROUTING path is active: the SSM-side MoE-input
+    /// norm should emit an FP32 `router_in` (residual_add_rms_norm_gatef32) which
+    /// the gate GEMM then consumes at full precision. Requires the f32 kernels to
+    /// be present and the softmax-routed dense-gate config (NVFP4 gate / sigmoid+bias
+    /// stay BF16). Default off → BF16 routing unchanged.
+    pub fn fp32_routing_active(&self) -> bool {
+        self.gate_nvfp4.is_none()
+            && self.correction_bias_dev.is_none()
+            && self.dense_gemm_f32in.0 != 0
+            && self.moe_topk_f32.0 != 0
+            && std::env::var("ATLAS_FP32_ROUTING").as_deref() == Ok("1")
+    }
+
     /// Forward pass: gate → top-K routing → batched expert FFN → blend.
     ///
     /// All expert dispatch stays on device — zero D2H synchronization.

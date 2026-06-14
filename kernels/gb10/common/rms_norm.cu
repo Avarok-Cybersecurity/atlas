@@ -343,6 +343,96 @@ extern "C" __global__ void residual_add_rms_norm(
     }
 }
 
+// Dual-output variant of residual_add_rms_norm for the ATLAS_FP32_ROUTING path.
+// Identical math to residual_add_rms_norm (bf16 hidden/residual stream UNCHANGED),
+// but ALSO writes the normed output in FP32 (`output_f32`) for the MoE router GEMM,
+// so the gate logits are computed from an unrounded normed value — removing the
+// norm's bf16-store rounding from the routing-critical path on gfx1151. The bf16
+// `output` (expert input) and bf16 `residual` are byte-identical to the bf16 kernel.
+//
+// Grid: (num_tokens, 1, 1)   Block: (min(hidden_size, 1024), 1, 1)
+extern "C" __global__ void residual_add_rms_norm_gatef32(
+    __nv_bfloat16* __restrict__ hidden,       // [num_tokens, hidden_size] in/out (hidden += src)
+    const __nv_bfloat16* __restrict__ src,     // [num_tokens, hidden_size] added to hidden
+    const __nv_bfloat16* __restrict__ weight,  // [hidden_size]
+    __nv_bfloat16* __restrict__ output,        // [num_tokens, hidden_size] normed (BF16, experts)
+    float* __restrict__ output_f32,            // [num_tokens, hidden_size] normed (FP32, gate)
+    __nv_bfloat16* __restrict__ residual,      // [num_tokens, hidden_size] raw updated hidden (BF16)
+    unsigned int hidden_size,
+    float eps
+) {
+    unsigned int token = blockIdx.x;
+    unsigned int tid = threadIdx.x;
+
+    __nv_bfloat16* h = hidden + token * hidden_size;
+    const __nv_bfloat16* s = src + token * hidden_size;
+    __nv_bfloat16* out = output + token * hidden_size;
+    float* outf = output_f32 + token * hidden_size;
+    __nv_bfloat16* res = residual + token * hidden_size;
+
+    float sum_sq = 0.0f;
+    const unsigned int half_size = hidden_size / 2;
+    unsigned int* h32 = (unsigned int*)h;
+    const unsigned int* s32 = (const unsigned int*)s;
+
+    for (unsigned int i = tid; i < half_size; i += blockDim.x) {
+        float hv0, hv1, sv0, sv1;
+        unpack_bf16x2(h32[i], hv0, hv1);
+        unpack_bf16x2(s32[i], sv0, sv1);
+        float new0 = hv0 + sv0;
+        float new1 = hv1 + sv1;
+        h32[i] = pack_bf16x2(new0, new1);
+        sum_sq += new0 * new0 + new1 * new1;
+    }
+    if ((hidden_size & 1) && tid == 0) {
+        float hv = __bfloat162float(h[hidden_size - 1]);
+        float sv = __bfloat162float(s[hidden_size - 1]);
+        float nv = hv + sv;
+        h[hidden_size - 1] = __float2bfloat16(nv);
+        sum_sq += nv * nv;
+    }
+
+    sum_sq = warp_reduce_sum(sum_sq);
+    __shared__ float warp_sums[32];
+    unsigned int warp_id = tid / 32;
+    unsigned int lane_id = tid % 32;
+    if (lane_id == 0) warp_sums[warp_id] = sum_sq;
+    __syncthreads();
+    if (warp_id == 0) {
+        float val = (lane_id < (blockDim.x + 31) / 32) ? warp_sums[lane_id] : 0.0f;
+        val = warp_reduce_sum(val);
+        if (lane_id == 0) warp_sums[0] = val;
+    }
+    __syncthreads();
+
+    float rms = rsqrtf(warp_sums[0] / (float)hidden_size + eps);
+
+    const unsigned int* w32 = (const unsigned int*)weight;
+    unsigned int* out32 = (unsigned int*)out;
+    unsigned int* res32 = (unsigned int*)res;
+
+    for (unsigned int i = tid; i < half_size; i += blockDim.x) {
+        unsigned int h_packed = h32[i];
+        float xv0, xv1, wv0, wv1;
+        unpack_bf16x2(h_packed, xv0, xv1);
+        unpack_bf16x2(w32[i], wv0, wv1);
+        float n0 = xv0 * rms * (1.0f + wv0);
+        float n1 = xv1 * rms * (1.0f + wv1);
+        out32[i] = pack_bf16x2(n0, n1);   // BF16 normed (experts)
+        outf[i * 2]     = n0;             // FP32 normed (gate)
+        outf[i * 2 + 1] = n1;
+        res32[i] = h_packed;              // BF16 residual (unchanged)
+    }
+    if ((hidden_size & 1) && tid == 0) {
+        float val = __bfloat162float(h[hidden_size - 1]);
+        float w = __bfloat162float(weight[hidden_size - 1]);
+        float n = val * rms * (1.0f + w);
+        out[hidden_size - 1] = __float2bfloat16(n);
+        outf[hidden_size - 1] = n;
+        res[hidden_size - 1] = h[hidden_size - 1];
+    }
+}
+
 // FP32-residual variant of rms_norm_residual: eliminates BF16 truncation in the
 // residual stream across 48 transformer layers.
 //

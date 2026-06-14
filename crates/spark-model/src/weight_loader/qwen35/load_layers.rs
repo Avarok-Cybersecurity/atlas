@@ -126,7 +126,16 @@ pub(super) fn load_layers(
         // bug (L0 moe_out 3.3x too large vs HF). Keeps NVFP4 experts loaded
         // AND skips set_fp8_experts so forward dispatch falls through to the
         // NVFP4 path.
-        let force_nvfp4_moe = std::env::var("ATLAS_FORCE_NVFP4_MOE").ok().as_deref() == Some("1");
+        // ATLAS_FORCE_NVFP4_ALL (lever-b, gfx1151 coherence): route an FP8
+        // checkpoint fully through the NVFP4 path — attention + MoE (+ SSM where
+        // wired) requant FP8→BF16→NVFP4 at load and run on real RDNA3.5 4-bit
+        // WMMA (the path the dense 27B is coherent on), sidestepping the HIP
+        // FP8 bf16-emulation divergence. Implies force_nvfp4_moe. Default off →
+        // FP8 paths byte-unchanged. `variant` is already Fp8Dequanted for an FP8
+        // checkpoint, so the NVFP4 attention branch requants from FP8 directly.
+        let force_nvfp4_all = std::env::var("ATLAS_FORCE_NVFP4_ALL").ok().as_deref() == Some("1");
+        let force_nvfp4_moe =
+            force_nvfp4_all || std::env::var("ATLAS_FORCE_NVFP4_MOE").ok().as_deref() == Some("1");
         let skip_nvfp4_experts = native_fp8 && !force_nvfp4_moe;
         if skip_nvfp4_experts {
             tracing::info!(
@@ -371,7 +380,7 @@ pub(super) fn load_layers(
         let ffn = FfnComponent::Moe(moe_layer);
 
         match lt {
-            LayerType::FullAttention if native_fp8 && dequant_attn_to_bf16 => {
+            LayerType::FullAttention if native_fp8 && dequant_attn_to_bf16 && !force_nvfp4_all => {
                 // ── BF16-dequant attention (diagnostic, TP=1) ──
                 // Dequant FP8 Q/K/V/O → BF16 on GPU, store as dense weights,
                 // and leave q/k/v/o quant-weights None so both prefill and
@@ -425,7 +434,7 @@ pub(super) fn load_layers(
                 layers.push(Box::new(layer));
                 attn_idx += 1;
             }
-            LayerType::FullAttention if native_fp8 => {
+            LayerType::FullAttention if native_fp8 && !force_nvfp4_all => {
                 // ── Native FP8 path: FP8 for both decode AND prefill ──
                 // NO NVFP4 dequant — saves ~30 GB peak memory on 122B EP=2.
                 // Decode uses w8a16_gemv, prefill uses w8a16_gemm (both with
@@ -564,19 +573,23 @@ pub(super) fn load_layers(
             // existing NVFP4-quantized decode path.
             LayerType::LinearAttention => {
                 let layer = match variant {
-                    Nvfp4Variant::Fp8Dequanted => linear_attn_arms::build_linear_attention_fp8(
-                        i,
-                        store,
-                        &lp,
-                        gpu,
-                        variant,
-                        config,
-                        h,
-                        stream,
-                        input_norm,
-                        post_attn_norm,
-                        ffn,
-                    )?,
+                    // force_nvfp4_all routes the FP8 SSM through the NVFP4 builder
+                    // (Fp8Dequanted requant) instead of the native-FP8 build.
+                    Nvfp4Variant::Fp8Dequanted if !force_nvfp4_all => {
+                        linear_attn_arms::build_linear_attention_fp8(
+                            i,
+                            store,
+                            &lp,
+                            gpu,
+                            variant,
+                            config,
+                            h,
+                            stream,
+                            input_norm,
+                            post_attn_norm,
+                            ffn,
+                        )?
+                    }
                     _ => linear_attn_arms::build_linear_attention_nvfp4(
                         store,
                         &lp,

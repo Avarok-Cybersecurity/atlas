@@ -62,8 +62,6 @@ impl TransformerModel {
         ssm_checkpoint_interval: usize,
     ) -> Result<Self> {
         let rms_norm_kernel = gpu.kernel("norm", "rms_norm")?;
-        // Residual stream is always BF16 — no BF16→FP32 conversion needed.
-        let bf16_to_f32_kernel = KernelHandle(0);
         let dense_gemv_kernel = gpu.kernel("gemv", "dense_gemv_bf16")?;
         // FP32-output dense GEMV — the FP32 logits path required an FP32
         // residual stream, which no longer exists, so this stays
@@ -408,7 +406,6 @@ impl TransformerModel {
             kv_cache: Mutex::new(kv_cache),
             gpu,
             rms_norm_kernel,
-            bf16_to_f32_kernel,
             dense_gemv_kernel,
             dense_gemv_fp32out_kernel,
             w4a16_gemv_kernel,

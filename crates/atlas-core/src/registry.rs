@@ -125,9 +125,9 @@ impl AtlasRegistry {
     /// Subsequent calls return the cached registry instantly.
     pub fn get_or_init(
         ordinal: usize,
-        ptx_sources: &[(&'static str, &str)],
+        kernel_blobs: &[(&'static str, &'static [u8])],
     ) -> Result<&'static Self> {
-        let result = REGISTRY.get_or_init(|| match Self::init(ordinal, ptx_sources) {
+        let result = REGISTRY.get_or_init(|| match Self::init(ordinal, kernel_blobs) {
             Ok(reg) => Ok(reg),
             Err(e) => Err(format!("{e}")),
         });
@@ -137,26 +137,49 @@ impl AtlasRegistry {
         }
     }
 
-    fn init(ordinal: usize, ptx_sources: &[(&'static str, &str)]) -> Result<AtlasRegistry> {
+    fn init(
+        ordinal: usize,
+        kernel_blobs: &[(&'static str, &'static [u8])],
+    ) -> Result<AtlasRegistry> {
         let ctx = CudaContext::new(ordinal).map_err(AtlasError::CudaDriver)?;
         let stream = ctx.new_stream().map_err(AtlasError::CudaDriver)?;
 
         let mut modules = HashMap::new();
         let mut raw_modules = HashMap::new();
-        for &(name, src) in ptx_sources {
-            // Load via cudarc (safe API, for backward compat)
-            let ptx = Ptx::from_src(src);
+        for &(name, blob) in kernel_blobs {
+            // NVIDIA emits PTX (ASCII text); SCALE/AMD (gfx1151) and HIP
+            // emit a binary code object (ELF / clang offload bundle).
+            // `cuModuleLoadData` accepts either, but PTX must arrive
+            // NUL-terminated (the driver JIT parses it as a C string)
+            // while a binary object is self-describing. Sniff per blob.
+            let is_binary = blob.starts_with(b"\x7fELF")
+                || blob.starts_with(b"__CLANG_OFFLOAD_BUNDLE__")
+                || std::str::from_utf8(&blob[..blob.len().min(64)]).is_err();
+
+            // Load via cudarc (safe API) — backs `function()` lookups.
+            let ptx = if is_binary {
+                Ptx::from_binary(blob.to_vec())
+            } else {
+                let src = std::str::from_utf8(blob).map_err(|e| {
+                    AtlasError::ModuleLoad(format!("{name}: PTX not valid UTF-8: {e}"))
+                })?;
+                Ptx::from_src(src)
+            };
             let module = ctx
                 .load_module(ptx)
                 .map_err(|e| AtlasError::ModuleLoad(format!("{name}: {e}")))?;
             modules.insert(name, module);
 
             // Load via raw CUDA API (for launch_on_stream — avoids cudarc layout issues)
-            let src_nul = CString::new(src)
-                .map_err(|e| AtlasError::ModuleLoad(format!("{name}: CString: {e}")))?;
             let mut raw_mod: *mut c_void = std::ptr::null_mut();
-            let status =
-                unsafe { cuModuleLoadData(&mut raw_mod, src_nul.as_ptr() as *const c_void) };
+            let status = if is_binary {
+                // Self-describing binary object: pass the bytes directly.
+                unsafe { cuModuleLoadData(&mut raw_mod, blob.as_ptr() as *const c_void) }
+            } else {
+                let src_nul = CString::new(blob)
+                    .map_err(|e| AtlasError::ModuleLoad(format!("{name}: CString: {e}")))?;
+                unsafe { cuModuleLoadData(&mut raw_mod, src_nul.as_ptr() as *const c_void) }
+            };
             if status != 0 {
                 return Err(AtlasError::ModuleLoad(format!(
                     "{name}: cuModuleLoadData failed: {}",
