@@ -322,6 +322,10 @@ fn load_dense_ffn(
         gate_proj: gate_q,
         up_proj: up_q,
         down_proj: down_q,
+        // Transposed copies for the fast w4a16_gemm_t_m128 prefill kernel.
+        gate_proj_t: Some(gate_q.transpose_for_gemm(gpu, intermediate_size, h)?),
+        up_proj_t: Some(up_q.transpose_for_gemm(gpu, intermediate_size, h)?),
+        down_proj_t: Some(down_q.transpose_for_gemm(gpu, h, intermediate_size)?),
     };
     Ok(FfnComponent::Dense(DenseFfnLayer::new(dense_weights, gpu)?))
 }
