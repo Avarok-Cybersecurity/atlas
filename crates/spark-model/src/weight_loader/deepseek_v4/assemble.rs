@@ -104,20 +104,32 @@ pub fn assemble_layer(
             .with_context(|| "DeepSeek-V4 shared expert: w2")?,
     };
 
-    // ── MoE routing correction bias (noaux_tc loss-free balancing) ──
-    // DeepSeek-V4 uses sigmoid scoring + per-expert correction bias for
-    // top-k selection (`topk(sigmoid(logits) + bias)`). Without the bias,
-    // the MoE layer falls back to softmax routing (MoeLayer::new keys the
-    // sigmoid path off `correction_bias`), selecting the wrong experts and
-    // producing gibberish. The kernel consumes F32 bias, so convert BF16.
+    // ── Shared-expert gate ──
+    // DeepSeek-V4-Flash ships `ffn.shared_expert_gate.weight`: the shared
+    // expert is sigmoid-gated (`output += sigmoid(gate·x) * shared`), NOT
+    // ungated. Leaving it NULL makes `moe_weighted_sum_blend` treat the gate
+    // as 1.0, over-adding the shared expert every layer.
+    let shared_expert_gate = match store.get(&format!("{p}.ffn.shared_expert_gate.weight")) {
+        Ok(t) => DenseWeight { weight: t.ptr },
+        Err(_) => DenseWeight {
+            weight: DevicePtr::NULL,
+        },
+    };
+
+    // ── MoE routing (noaux_tc, sigmoid scoring) ──
+    // DeepSeek-V4 scores experts with `sigmoid(logits)` and normalizes the
+    // top-k gate weights as `σ(l_i)/Σσ(l_j)` — NOT softmax. The MoE layer
+    // keys the sigmoid path off `correction_bias` being `Some`, so we must
+    // supply a bias even though V4-Flash ships none: a zero `[num_experts]`
+    // buffer gives `topk(sigmoid(logits) + 0)` with correct weight
+    // normalization. (Falling back to softmax selects right experts but
+    // wrong blend weights → degraded output.)
     let correction_bias = load_correction_bias(store, &lp, config.num_experts, gpu)?;
 
     let moe_weights = MoeWeights {
         gate,
         shared_expert,
-        shared_expert_gate: DenseWeight {
-            weight: DevicePtr::NULL,
-        },
+        shared_expert_gate,
         experts,
         router_pre_norm: None,
         correction_bias,
@@ -229,11 +241,14 @@ fn load_correction_bias(
         format!("{layer_prefix}.mlp.gate.e_score_correction_bias"),
     ];
     let Some(bias_t) = candidates.iter().find_map(|k| store.get(k).ok()) else {
-        tracing::warn!(
-            "DeepSeek-V4 {layer_prefix}: no e_score_correction_bias found — \
-             MoE will fall back to softmax routing (output will be degraded)"
-        );
-        return Ok(None);
+        // V4-Flash ships no correction bias (noaux_tc with bias=0). Supply a
+        // zeroed F32 buffer so the MoE still routes via sigmoid scoring
+        // (`σ(l_i)/Σσ(l_j)` weights) rather than softmax — `MoeLayer::new`
+        // keys the sigmoid path off `correction_bias` being `Some`.
+        let bytes = num_experts * 4;
+        let ptr = gpu.alloc(bytes)?;
+        gpu.memset(ptr, 0, bytes)?;
+        return Ok(Some(DenseWeight { weight: ptr }));
     };
     let n = bias_t.num_elements();
     anyhow::ensure!(
