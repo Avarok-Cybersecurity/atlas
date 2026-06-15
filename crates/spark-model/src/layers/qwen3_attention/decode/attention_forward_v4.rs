@@ -184,20 +184,84 @@ impl Qwen3AttentionLayer {
         }
 
         // ── Step 3: RoPE for Q and K ──
+        // V4-Flash: rope dims are at offset `nope` per head (matching MLA layout),
+        // not at the beginning. Extract → RoPE → writeback.
+        let q_rope_tmp = ctx.buffers.ssm_conv_out_f32();
+        let k_rope_tmp = q_latent; // reuse after wq_b is done
+        prof!("rope_extract", {
+            ops::mla_q_rope_extract_batched(
+                ctx.gpu,
+                self.mla_q_rope_extract_batched_k,
+                q_out,
+                q_rope_tmp,
+                1,
+                nq,
+                hd,
+                mla.nope as u32,
+                mla_rope,
+                nq * hd,
+                stream,
+            )
+        })?;
+        prof!("k_rope_extract", {
+            ops::mla_q_rope_extract_batched(
+                ctx.gpu,
+                self.mla_q_rope_extract_batched_k,
+                k_out,
+                k_rope_tmp,
+                1,
+                1,
+                hd,
+                mla.nope as u32,
+                mla_rope,
+                hd,
+                stream,
+            )
+        })?;
         prof!("rope", {
             ops::rope_yarn(
                 ctx.gpu,
                 self.rope_yarn_k,
-                q_out,
-                k_out,
+                q_rope_tmp,
+                k_rope_tmp,
                 meta.positions,
                 1,
                 nq,
                 1,
-                hd,
+                mla_rope,
                 mla_rope,
                 mla.yarn_inv_freq,
                 ctx.config.rope_theta as f32,
+                stream,
+            )
+        })?;
+        prof!("rope_writeback", {
+            ops::mla_q_rope_writeback_batched(
+                ctx.gpu,
+                self.mla_q_rope_writeback_batched_k,
+                q_rope_tmp,
+                q_out,
+                1,
+                nq,
+                hd,
+                mla.nope as u32,
+                mla_rope,
+                nq * hd,
+                stream,
+            )
+        })?;
+        prof!("k_rope_writeback", {
+            ops::mla_q_rope_writeback_batched(
+                ctx.gpu,
+                self.mla_q_rope_writeback_batched_k,
+                k_rope_tmp,
+                k_out,
+                1,
+                1,
+                hd,
+                mla.nope as u32,
+                mla_rope,
+                hd,
                 stream,
             )
         })?;

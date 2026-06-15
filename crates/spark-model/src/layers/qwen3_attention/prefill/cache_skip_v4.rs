@@ -172,19 +172,75 @@ impl Qwen3AttentionLayer {
         }
 
         // ── 3. RoPE on Q and K (V is NOT RoPE'd) ──
+        // V4-Flash: rope dims are at offset `nope` per head (matching MLA layout),
+        // not at the beginning. Extract → RoPE → writeback.
+        let q_rope_tmp = ctx.buffers.ssm_conv_out_f32();
+        let k_rope_tmp = q_latent; // reuse after wq_b is done
+        ops::mla_q_rope_extract_batched(
+            ctx.gpu,
+            self.mla_q_rope_extract_batched_k,
+            q_full,
+            q_rope_tmp,
+            n,
+            nq,
+            hd_mla,
+            nope,
+            rope,
+            nq * hd_mla,
+            stream,
+        )?;
+        ops::mla_q_rope_extract_batched(
+            ctx.gpu,
+            self.mla_q_rope_extract_batched_k,
+            k_out,
+            k_rope_tmp,
+            n,
+            nkv,
+            hd_mla,
+            nope,
+            rope,
+            nkv * hd_mla,
+            stream,
+        )?;
         ops::rope_yarn(
             ctx.gpu,
             self.rope_yarn_k,
-            q_full,
-            k_out,
+            q_rope_tmp,
+            k_rope_tmp,
             meta.positions,
             n,
             nq,
             nkv,
-            hd_mla,
+            rope,
             rope,
             mla.yarn_inv_freq,
             ctx.config.rope_theta as f32,
+            stream,
+        )?;
+        ops::mla_q_rope_writeback_batched(
+            ctx.gpu,
+            self.mla_q_rope_writeback_batched_k,
+            q_rope_tmp,
+            q_full,
+            n,
+            nq,
+            hd_mla,
+            nope,
+            rope,
+            nq * hd_mla,
+            stream,
+        )?;
+        ops::mla_q_rope_writeback_batched(
+            ctx.gpu,
+            self.mla_q_rope_writeback_batched_k,
+            k_rope_tmp,
+            k_out,
+            n,
+            nkv,
+            hd_mla,
+            nope,
+            rope,
+            nkv * hd_mla,
             stream,
         )?;
         ctx.gpu
