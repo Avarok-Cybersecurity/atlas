@@ -380,11 +380,18 @@ impl Qwen3AttentionLayer {
             ),
             dense_gemm_k: gpu.kernel("gemm", "dense_gemm_bf16")?,
             prefill_attn_k: gpu.kernel("inferspark_prefill", "inferspark_prefill")?,
-            prefill_attn_512_k: super::super::try_kernel(
-                gpu,
-                "inferspark_prefill_512",
-                "inferspark_prefill_512",
-            ),
+            prefill_attn_512_k: {
+                let k = super::super::try_kernel(
+                    gpu,
+                    "inferspark_prefill_512",
+                    "inferspark_prefill_512",
+                );
+                tracing::info!(
+                    "Qwen3AttentionLayer init: prefill_attn_512_k handle={}",
+                    k.0
+                );
+                k
+            },
             prefill_attn_paged_512_k: super::super::try_kernel(
                 gpu,
                 "inferspark_prefill_paged_512",
