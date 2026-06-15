@@ -126,6 +126,15 @@ impl Qwen3AttentionLayer {
                 )
             }
         })?;
+        if self.attn_layer_idx == 0 {
+            super::super::trait_impl::diag_norm(
+                ctx.gpu,
+                q_out,
+                q_dim as usize,
+                stream,
+                "V4-decode L0 Q after proj",
+            );
+        }
 
         // ── Step 2: Direct KV projection ──
         let kv_dim = nkv * hd;
@@ -157,6 +166,22 @@ impl Qwen3AttentionLayer {
         // K=V for V4-Flash direct KV projection
         ctx.gpu
             .copy_d2d_async(k_out, v_out, (kv_dim as usize) * 2, stream)?;
+        if self.attn_layer_idx == 0 {
+            super::super::trait_impl::diag_norm(
+                ctx.gpu,
+                k_out,
+                kv_dim as usize,
+                stream,
+                "V4-decode L0 K after proj",
+            );
+            super::super::trait_impl::diag_norm(
+                ctx.gpu,
+                v_out,
+                kv_dim as usize,
+                stream,
+                "V4-decode L0 V after copy",
+            );
+        }
 
         // ── Step 3: RoPE for Q and K ──
         prof!("rope", {
@@ -176,6 +201,15 @@ impl Qwen3AttentionLayer {
                 stream,
             )
         })?;
+        if self.attn_layer_idx == 0 {
+            super::super::trait_impl::diag_norm(
+                ctx.gpu,
+                k_out,
+                kv_dim as usize,
+                stream,
+                "V4-decode L0 K after RoPE",
+            );
+        }
 
         // ── Step 4: Write K/V to paged cache ──
         let kv_stride = kv_dim;
@@ -220,6 +254,15 @@ impl Qwen3AttentionLayer {
                 stream,
             )
         })?;
+        if self.attn_layer_idx == 0 {
+            super::super::trait_impl::diag_norm(
+                ctx.gpu,
+                attn_out,
+                (nq * hd) as usize,
+                stream,
+                "V4-decode L0 attn_out",
+            );
+        }
 
         // ── Step 6: Grouped low-rank O projection (wo_a → wo_b) ──
         let o_latent = ctx.buffers.norm_output();
@@ -248,6 +291,15 @@ impl Qwen3AttentionLayer {
                 stream,
             )
         })?;
+        if self.attn_layer_idx == 0 {
+            super::super::trait_impl::diag_norm(
+                ctx.gpu,
+                o_out,
+                h as usize,
+                stream,
+                "V4-decode L0 o_out",
+            );
+        }
 
         Ok(o_out)
     }
