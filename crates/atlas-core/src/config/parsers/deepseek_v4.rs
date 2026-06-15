@@ -65,6 +65,17 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
     if config.head_dim == 0 && config.hidden_size > 0 && config.num_attention_heads > 0 {
         config.head_dim = config.hidden_size / config.num_attention_heads;
     }
+    // DeepSeek-V4 uses MLA with head_dim=512, NOT hidden_size/num_attention_heads.
+    // If the checkpoint lacks head_dim, the computed fallback (4096/64=64) breaks
+    // qk_nope_head_dim, kv_dim, and all attention kernels. Force the correct value.
+    if config.head_dim == 64
+        && config.hidden_size == 4096
+        && config.num_attention_heads == 64
+        && config.kv_lora_rank > 0
+        && config.q_lora_rank > 0
+    {
+        config.head_dim = 512;
+    }
 
     // q_lora_rank may be absent; DeepSeek-V4-Flash uses 1024 for q_a latent dim
     if config.q_lora_rank == 0 {
