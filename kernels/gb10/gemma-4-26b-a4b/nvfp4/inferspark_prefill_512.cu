@@ -30,7 +30,7 @@ extern "C" __global__ void inferspark_prefill_512(
     if (q_head >= num_q_heads) return;
 
     const unsigned int q_row = q_block * BR + (tid / 8);  // 128 threads / 8 = 16 rows
-    if (q_row >= seq_len) return;
+    const bool valid = q_row < seq_len;
 
     const unsigned int dim_lane = tid % 8;  // 8 threads per row, each handles 64 dims
     const unsigned int dim_start = dim_lane * 64;
@@ -69,8 +69,10 @@ extern "C" __global__ void inferspark_prefill_512(
 
         // Dot product Q[q_row] · K[kv_pos] — partial across dim_lane
         float dot = 0.0f;
-        for (unsigned int d = dim_start; d < dim_end; d++) {
-            dot += __bfloat162float(Q_row[d]) * __bfloat162float(K_row[d]);
+        if (valid) {
+            for (unsigned int d = dim_start; d < dim_end; d++) {
+                dot += __bfloat162float(Q_row[d]) * __bfloat162float(K_row[d]);
+            }
         }
 
         // Reduce across 8 dim-lanes (within the 8-thread group for this row)
@@ -105,11 +107,13 @@ extern "C" __global__ void inferspark_prefill_512(
     }
 
     // Normalize and write output
-    float inv_l = (l > 0.0f) ? (1.0f / l) : 0.0f;
-    __nv_bfloat16* O_row = O + (unsigned long long)batch * seq_len * q_stride
-                              + (unsigned long long)q_row * q_stride
-                              + (unsigned long long)q_head * head_dim;
-    for (unsigned int d = 0; d < 64 && dim_start + d < head_dim; d++) {
-        O_row[dim_start + d] = __float2bfloat16(o_acc[d] * inv_l);
+    if (valid) {
+        float inv_l = (l > 0.0f) ? (1.0f / l) : 0.0f;
+        __nv_bfloat16* O_row = O + (unsigned long long)batch * seq_len * q_stride
+                                  + (unsigned long long)q_row * q_stride
+                                  + (unsigned long long)q_head * head_dim;
+        for (unsigned int d = 0; d < 64 && dim_start + d < head_dim; d++) {
+            O_row[dim_start + d] = __float2bfloat16(o_acc[d] * inv_l);
+        }
     }
 }
