@@ -207,6 +207,15 @@ pub struct ModelConfig {
     /// (`yarn.original_max_position_embeddings`).
     #[serde(default)]
     pub yarn_original_max_position_embeddings: usize,
+    /// YaRN attention-temperature `mscale` (`rope_scaling.mscale`). HF default
+    /// is 1.0 when absent. DeepSeek folds `_mscale` into the rope cos/sin.
+    #[serde(default)]
+    pub yarn_mscale: f32,
+    /// YaRN attention-temperature `mscale_all_dim` (`rope_scaling.mscale_all_dim`).
+    /// HF default is 0.0 when absent. Used in the `_mscale` ratio that scales
+    /// the rope cos/sin (and, when non-zero, the softmax scale).
+    #[serde(default)]
+    pub yarn_mscale_all_dim: f32,
     /// llama_4_scaling Q temperature beta (`llama_4_scaling.beta`).
     /// Q is multiplied by `1 + beta * log(1 + floor(pos / original_max_pos))`
     /// after RoPE. 0.0 = disabled. Mistral Small 4 uses 0.1.

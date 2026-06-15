@@ -104,6 +104,14 @@ pub fn assemble_layer(
             .with_context(|| "DeepSeek-V4 shared expert: w2")?,
     };
 
+    // ── MoE routing correction bias (noaux_tc loss-free balancing) ──
+    // DeepSeek-V4 uses sigmoid scoring + per-expert correction bias for
+    // top-k selection (`topk(sigmoid(logits) + bias)`). Without the bias,
+    // the MoE layer falls back to softmax routing (MoeLayer::new keys the
+    // sigmoid path off `correction_bias`), selecting the wrong experts and
+    // producing gibberish. The kernel consumes F32 bias, so convert BF16.
+    let correction_bias = load_correction_bias(store, &lp, config.num_experts, gpu)?;
+
     let moe_weights = MoeWeights {
         gate,
         shared_expert,
@@ -112,7 +120,7 @@ pub fn assemble_layer(
         },
         experts,
         router_pre_norm: None,
-        correction_bias: None,
+        correction_bias,
     };
     let moe = MoeLayer::new(moe_weights, config.num_experts, gate_nvfp4, gpu, config)?;
 
@@ -202,4 +210,50 @@ pub fn assemble_layer(
     )?;
     layer.set_mla_weights(mla);
     Ok(Box::new(layer))
+}
+
+/// Load the DeepSeek-V4 MoE `e_score_correction_bias` (noaux_tc loss-free
+/// balancing bias) as an F32 `[num_experts]` tensor. The RedHatAI re-quant
+/// flattens layer keys to `layers.N.ffn.gate.*`. Returns `None` (softmax
+/// routing) only if the checkpoint genuinely lacks the tensor.
+fn load_correction_bias(
+    store: &WeightStore,
+    layer_prefix: &str,
+    num_experts: usize,
+    gpu: &dyn GpuBackend,
+) -> Result<Option<DenseWeight>> {
+    use spark_runtime::weights::WeightDtype;
+    let candidates = [
+        format!("{layer_prefix}.ffn.gate.e_score_correction_bias"),
+        format!("{layer_prefix}.ffn.gate.correction_bias"),
+        format!("{layer_prefix}.mlp.gate.e_score_correction_bias"),
+    ];
+    let Some(bias_t) = candidates.iter().find_map(|k| store.get(k).ok()) else {
+        tracing::warn!(
+            "DeepSeek-V4 {layer_prefix}: no e_score_correction_bias found — \
+             MoE will fall back to softmax routing (output will be degraded)"
+        );
+        return Ok(None);
+    };
+    let n = bias_t.num_elements();
+    anyhow::ensure!(
+        n == num_experts,
+        "DeepSeek-V4 correction_bias length {n} != num_experts {num_experts}"
+    );
+    // The moe_topk_sigmoid kernel consumes an F32 bias. F32 tensors pass
+    // through unchanged; BF16 must be widened (zero-extend mantissa).
+    if bias_t.dtype == WeightDtype::BF16 {
+        let mut bf16_buf = vec![0u8; n * 2];
+        gpu.copy_d2h(bias_t.ptr, &mut bf16_buf)?;
+        let mut f32_buf = vec![0u8; n * 4];
+        for i in 0..n {
+            f32_buf[i * 4 + 2] = bf16_buf[i * 2];
+            f32_buf[i * 4 + 3] = bf16_buf[i * 2 + 1];
+        }
+        let ptr = gpu.alloc(f32_buf.len())?;
+        gpu.copy_h2d(&f32_buf, ptr)?;
+        Ok(Some(DenseWeight { weight: ptr }))
+    } else {
+        Ok(Some(DenseWeight { weight: bias_t.ptr }))
+    }
 }

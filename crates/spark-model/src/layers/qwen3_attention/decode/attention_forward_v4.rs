@@ -231,7 +231,7 @@ impl Qwen3AttentionLayer {
                 mla_rope,
                 mla_rope,
                 mla.yarn_inv_freq,
-                ctx.config.rope_theta as f32,
+                super::super::helpers::yarn_rope_mscale(ctx.config),
                 stream,
             )
         })?;

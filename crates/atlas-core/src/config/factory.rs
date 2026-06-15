@@ -85,6 +85,8 @@ impl ModelConfig {
             yarn_beta_slow: 0.0,
             yarn_beta_fast: 0.0,
             yarn_original_max_position_embeddings: 0,
+            yarn_mscale: 1.0,
+            yarn_mscale_all_dim: 0.0,
             llama_4_scaling_beta: 0.0,
             llama_4_scaling_original_max_position_embeddings: 0,
             fp8_kv_calibration_tokens: 0,

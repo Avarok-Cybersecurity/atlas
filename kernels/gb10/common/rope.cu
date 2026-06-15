@@ -298,10 +298,8 @@ extern "C" __global__ void rope_forward_yarn_interleaved(
     const unsigned int head_dim,
     const unsigned int rotary_dim,
     const float* __restrict__ inv_freq,       // [rotary_dim/2] pre-computed frequencies
-    const float theta                          // unused (kept for API compat)
+    const float mscale                         // YaRN attention-temperature _mscale (folded into cos/sin)
 ) {
-    (void)theta;
-
     const unsigned int head_idx = blockIdx.x;
     const unsigned int seq_block = blockIdx.y;
     const unsigned int batch = blockIdx.z;
@@ -327,8 +325,9 @@ extern "C" __global__ void rope_forward_yarn_interleaved(
 
     const float freq = inv_freq[pair_idx];
     const float angle = (float)abs_pos * freq;
-    const float cos_val = cosf(angle);
-    const float sin_val = sinf(angle);
+    // DeepSeek YaRN folds _mscale into cos/sin: cos_cached = cos(angle)*_mscale.
+    const float cos_val = cosf(angle) * mscale;
+    const float sin_val = sinf(angle) * mscale;
 
     __nv_bfloat16* ptr;
     if (is_q) {
