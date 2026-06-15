@@ -254,6 +254,13 @@ impl Qwen3AttentionLayer {
                 stream,
                 "V4 L0 K after RoPE token0",
             );
+            super::super::trait_impl::diag_norm(
+                ctx.gpu,
+                k_out.offset((nope * 2) as usize),
+                (kv_dim - nope) as usize,
+                stream,
+                "V4 L0 K rope after RoPE token0",
+            );
             let last_k_offset = ((n - 1) * kv_dim * 2) as usize;
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
@@ -261,6 +268,13 @@ impl Qwen3AttentionLayer {
                 kv_dim as usize,
                 stream,
                 "V4 L0 K after RoPE last",
+            );
+            super::super::trait_impl::diag_norm(
+                ctx.gpu,
+                k_out.offset(last_k_offset + (nope * 2) as usize),
+                (kv_dim - nope) as usize,
+                stream,
+                "V4 L0 K rope after RoPE last",
             );
         }
 

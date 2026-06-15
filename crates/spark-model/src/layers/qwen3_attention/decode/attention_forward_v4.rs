@@ -273,6 +273,22 @@ impl Qwen3AttentionLayer {
                 stream,
                 "V4-decode L0 K after RoPE",
             );
+            // Diagnostic: rope region of K (offset nope=448)
+            super::super::trait_impl::diag_norm(
+                ctx.gpu,
+                k_out.offset((mla.nope * 2) as usize),
+                (kv_dim - mla.nope as u32) as usize,
+                stream,
+                "V4-decode L0 K rope after RoPE",
+            );
+            // Diagnostic: rope region of Q head 0 (offset nope=448)
+            super::super::trait_impl::diag_norm(
+                ctx.gpu,
+                q_out.offset((mla.nope * 2) as usize),
+                (hd - mla.nope as u32) as usize,
+                stream,
+                "V4-decode L0 Q rope after RoPE",
+            );
         }
 
         // ── Step 4: Write K/V to paged cache ──
