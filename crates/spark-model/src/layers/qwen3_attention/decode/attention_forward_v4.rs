@@ -221,7 +221,7 @@ impl Qwen3AttentionLayer {
         prof!("rope", {
             ops::rope_yarn(
                 ctx.gpu,
-                self.rope_yarn_k,
+                self.rope_yarn_interleaved_k,
                 q_rope_tmp,
                 k_rope_tmp,
                 meta.positions,

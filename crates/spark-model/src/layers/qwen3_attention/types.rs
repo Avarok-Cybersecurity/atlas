@@ -152,6 +152,8 @@ pub struct Qwen3AttentionLayer {
     pub(super) rope_mrope_interleaved_k: KernelHandle,
     /// YaRN RoPE kernel using pre-computed inv_freq table (Mistral, etc.)
     pub(super) rope_yarn_k: KernelHandle,
+    /// Interleaved (GPT-J / is_neox_style=False) YaRN RoPE kernel — DeepSeek MLA.
+    pub(super) rope_yarn_interleaved_k: KernelHandle,
     /// Proportional RoPE kernel (Gemma-4 full-attention layers).
     pub(super) rope_proportional_k: KernelHandle,
     pub(super) reshape_cache_k: KernelHandle,

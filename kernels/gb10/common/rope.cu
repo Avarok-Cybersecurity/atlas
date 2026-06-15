@@ -272,3 +272,84 @@ extern "C" __global__ void rope_forward_yarn(
     ptr[d0] = __float2bfloat16(y0);
     ptr[d1] = __float2bfloat16(y1);
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// rope_forward_yarn_interleaved — GPT-J / is_neox_style=False variant.
+//
+// DeepSeek MLA (V2/V3/V4) stores the rope channels in INTERLEAVED layout:
+// the rotation pairs are adjacent elements (2i, 2i+1), not (i, i+half).
+// The HF reference de-interleaves via `q.view(d//2, 2).transpose(...)`
+// before applying the standard rotate_half; rotating adjacent pairs in
+// place is the algebraic equivalent on the original stored layout.
+//
+// Frequency mapping is identical to rope_forward_yarn: pair `pair_idx`
+// uses inv_freq[pair_idx]. Only the channel pairing differs.
+//
+// Grid: (num_q_heads + num_kv_heads, seq_blocks, batch)
+// Block: (128, 1, 1) — same as rope_forward_yarn
+// ═══════════════════════════════════════════════════════════════════
+extern "C" __global__ void rope_forward_yarn_interleaved(
+    __nv_bfloat16* __restrict__ Q,
+    __nv_bfloat16* __restrict__ K,
+    const unsigned int* __restrict__ positions,
+    const unsigned int seq_len,
+    const unsigned int num_q_heads,
+    const unsigned int num_kv_heads,
+    const unsigned int head_dim,
+    const unsigned int rotary_dim,
+    const float* __restrict__ inv_freq,       // [rotary_dim/2] pre-computed frequencies
+    const float theta                          // unused (kept for API compat)
+) {
+    (void)theta;
+
+    const unsigned int head_idx = blockIdx.x;
+    const unsigned int seq_block = blockIdx.y;
+    const unsigned int batch = blockIdx.z;
+    const unsigned int tid = threadIdx.x;
+
+    const bool is_q = (head_idx < num_q_heads);
+    const unsigned int head = is_q ? head_idx : (head_idx - num_q_heads);
+    const unsigned int num_heads = is_q ? num_q_heads : num_kv_heads;
+    (void)num_heads;
+
+    if (!is_q && head >= num_kv_heads) return;
+
+    const unsigned int pairs_per_pos = rotary_dim / 2;
+    const unsigned int pos_per_block = 128 / pairs_per_pos;
+
+    const unsigned int local_pos = tid / pairs_per_pos;
+    const unsigned int pair_idx = tid % pairs_per_pos;
+
+    const unsigned int seq_pos = seq_block * pos_per_block + local_pos;
+    if (seq_pos >= seq_len) return;
+
+    const unsigned int abs_pos = positions[batch * seq_len + seq_pos];
+
+    const float freq = inv_freq[pair_idx];
+    const float angle = (float)abs_pos * freq;
+    const float cos_val = cosf(angle);
+    const float sin_val = sinf(angle);
+
+    __nv_bfloat16* ptr;
+    if (is_q) {
+        ptr = Q + batch * seq_len * (num_q_heads * head_dim)
+                + seq_pos * (num_q_heads * head_dim)
+                + head * head_dim;
+    } else {
+        ptr = K + batch * seq_len * (num_kv_heads * head_dim)
+                + seq_pos * (num_kv_heads * head_dim)
+                + head * head_dim;
+    }
+
+    // Interleaved pairing: adjacent elements (2*pair_idx, 2*pair_idx + 1).
+    const unsigned int d0 = 2 * pair_idx;
+    const unsigned int d1 = 2 * pair_idx + 1;
+    float x0 = (float)ptr[d0];
+    float x1 = (float)ptr[d1];
+
+    float y0 = x0 * cos_val - x1 * sin_val;
+    float y1 = x1 * cos_val + x0 * sin_val;
+
+    ptr[d0] = __float2bfloat16(y0);
+    ptr[d1] = __float2bfloat16(y1);
+}
