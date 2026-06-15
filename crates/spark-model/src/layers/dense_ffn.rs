@@ -455,17 +455,9 @@ impl DenseFfnLayer {
                         $k,
                         stream,
                     )?,
-                    _ => ops::w4a16_gemm(
-                        ctx.gpu,
-                        self.w4a16_gemm,
-                        $in,
-                        $w,
-                        $out,
-                        m,
-                        $n,
-                        $k,
-                        stream,
-                    )?,
+                    _ => {
+                        ops::w4a16_gemm(ctx.gpu, self.w4a16_gemm, $in, $w, $out, m, $n, $k, stream)?
+                    }
                 }
             };
         }
