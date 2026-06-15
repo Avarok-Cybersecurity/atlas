@@ -15,14 +15,14 @@ use super::*;
 pub(super) fn parse_mistral_native_call(segment: &str) -> Option<ToolCall> {
     let segment = segment.trim_start();
     let (name, json_slice) = if let Some(args_pos) = segment.find(MISTRAL_ARGS_TAG) {
-        let name = segment[..args_pos].trim().to_string();
+        let name = normalize_tool_name(&segment[..args_pos]);
         let after_args = &segment[args_pos + MISTRAL_ARGS_TAG.len()..];
         let raw_args = after_args.trim();
         let json_start = raw_args.find('{').unwrap_or(0);
         (name, &raw_args[json_start..])
     } else if let Some(brace_pos) = segment.find('{') {
         // Tolerant path: `name{json}` with no [ARGS] delimiter.
-        let name = segment[..brace_pos].trim().to_string();
+        let name = normalize_tool_name(&segment[..brace_pos]);
         (name, &segment[brace_pos..])
     } else {
         return None;
@@ -31,11 +31,8 @@ pub(super) fn parse_mistral_native_call(segment: &str) -> Option<ToolCall> {
         return None;
     }
     // Reject obvious non-identifier "names" (e.g. "Hello, world" before the
-    // first `{`) — accept only alphanumeric + underscore, no whitespace.
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
-    {
+    // first `{`) — accept only normalized tool-name characters, no whitespace.
+    if !name.chars().all(is_tool_name_or_namespace_char) {
         return None;
     }
     // Try to parse the complete JSON. If it doesn't parse (max_tokens cut the
@@ -163,7 +160,7 @@ pub(super) fn parse_bare_identifier_json_calls(text: &str) -> (Option<String>, V
             let mut start = i;
             while start > 0 {
                 let b = bytes[start - 1];
-                if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.' {
+                if (b as char).is_ascii() && is_tool_name_or_namespace_char(b as char) {
                     start -= 1;
                 } else {
                     break;
@@ -197,7 +194,8 @@ pub(super) fn parse_bare_identifier_json_calls(text: &str) -> (Option<String>, V
                     if let Some(v) = parsed {
                         // Must be an object (not just any balanced {...}).
                         if v.is_object() {
-                            let name = std::str::from_utf8(name_bytes).unwrap_or("").to_string();
+                            let raw_name = std::str::from_utf8(name_bytes).unwrap_or("");
+                            let name = normalize_tool_name(raw_name);
                             let args = serde_json::to_string(&v).unwrap_or_else(|_| "{}".into());
                             // Capture any content between last_end and `start`.
                             if start > last_end {

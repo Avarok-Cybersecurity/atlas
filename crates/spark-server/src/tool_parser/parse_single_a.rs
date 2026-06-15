@@ -12,7 +12,7 @@ pub(super) fn parse_one_call(text: &str, idx: u32) -> Option<ToolCall> {
     }
     // Try JSON (hermes format) — complete JSON first
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
-        let name = v.get("name")?.as_str()?.to_string();
+        let name = normalize_tool_name(v.get("name")?.as_str()?);
         let args = v
             .get("arguments")
             .map(|a| {
@@ -40,6 +40,7 @@ pub(super) fn parse_one_call(text: &str, idx: u32) -> Option<ToolCall> {
         // Extract name via simple string search (avoid regex dependency)
         let name = extract_json_string(text, "name");
         if let Some(name) = name {
+            let name = normalize_tool_name(&name);
             // Try to extract arguments — may be truncated JSON
             let args = if let Some(args_start) = text.find("\"arguments\"") {
                 let after = &text[args_start + "\"arguments\"".len()..];
@@ -107,7 +108,7 @@ fn parse_minimax_xml_call(text: &str, idx: u32) -> Option<ToolCall> {
     let name_end = after[name_start..]
         .find(quote as char)
         .map(|p| p + name_start)?;
-    let func_name = after[name_start..name_end].trim().to_string();
+    let func_name = normalize_tool_name(&after[name_start..name_end]);
     if func_name.is_empty() {
         return None;
     }

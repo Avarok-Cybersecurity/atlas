@@ -22,6 +22,60 @@ fn next_tool_call_id() -> String {
     format!("call_{id:016x}")
 }
 
+/// Characters accepted in model-emitted tool names before normalization.
+///
+/// OpenAI function names themselves are intentionally narrow, but models often
+/// leak a routing namespace into the emitted call name (for example
+/// `google:google_search{...}` or `<function=browser:search>`). Accept the
+/// namespace separator at the parser boundary, then normalize before returning
+/// the OpenAI-compatible `function.name` to the client.
+fn is_tool_name_or_namespace_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':')
+}
+
+fn is_tool_name_component(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+/// Normalize a model-emitted function name to the client-visible tool name.
+///
+/// This keeps existing parser salvage behaviour (`Bash=Bash` -> `Bash`,
+/// `name="Write"` -> `Write`) and adds namespace stripping for colon-prefixed
+/// names (`namespace:tool` -> `tool`). Dot characters are preserved because
+/// some callers use them in actual tool names; only `:` is treated as the
+/// namespace delimiter.
+fn normalize_tool_name(raw: &str) -> String {
+    let mut name = raw.trim().trim_matches('"').trim_matches('\'').to_string();
+
+    if name.starts_with("name=") || name.starts_with("name =") {
+        name = name
+            .trim_start_matches("name")
+            .trim_start_matches('=')
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
+    }
+
+    if let Some(eq_pos) = name.find('=') {
+        name = name[..eq_pos].trim().to_string();
+    }
+
+    if let Some(colon) = name.rfind(':') {
+        let head = &name[..colon];
+        let tail = &name[colon + 1..];
+        let head_is_namespace =
+            !head.is_empty() && head.chars().all(is_tool_name_or_namespace_char);
+        if head_is_namespace && is_tool_name_component(tail) {
+            name = tail.to_string();
+        }
+    }
+
+    name
+}
+
 // ── Request types (from OpenAI-compatible clients) ──
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -149,7 +149,7 @@ pub(super) fn parse_json_fallback_calls(text: &str) -> Vec<ToolCall> {
                     id: next_tool_call_id(),
                     call_type: "function".to_string(),
                     function: FunctionCall {
-                        name: name.to_string(),
+                        name: normalize_tool_name(name),
                         arguments: args,
                     },
                 });
@@ -165,7 +165,7 @@ pub(super) fn parse_json_fallback_calls(text: &str) -> Vec<ToolCall> {
                     id: next_tool_call_id(),
                     call_type: "function".to_string(),
                     function: FunctionCall {
-                        name: name.to_string(),
+                        name: normalize_tool_name(name),
                         arguments: serde_json::to_string(&arr[1]).unwrap_or_default(),
                     },
                 });
@@ -188,7 +188,7 @@ pub(super) fn parse_json_fallback_calls(text: &str) -> Vec<ToolCall> {
                 id: next_tool_call_id(),
                 call_type: "function".to_string(),
                 function: FunctionCall {
-                    name: name.to_string(),
+                    name: normalize_tool_name(name),
                     arguments: args,
                 },
             });

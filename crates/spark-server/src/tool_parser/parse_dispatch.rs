@@ -138,40 +138,15 @@ pub fn parse_tool_calls(text: &str) -> (Option<String>, Vec<ToolCall>) {
     // the balanced `}` is discarded (model often spews garbage tokens after
     // the call).
     if calls.is_empty() {
-        let mut trimmed = text.trim_start();
-        // Strip leading `namespace:` prefixes like `google:google_search{...}`
-        // that Gemma-4-26B-A4B NVFP4A16 produces when its weakened
-        // instruction-following lets pretraining priors ("google search"
-        // canonical phrase) override the declared tool name. The trailing
-        // identifier after the colon is the part that should match a tool
-        // name (exactly or fuzzily via downstream logic).
-        if let Some(colon) = trimmed.find(':') {
-            let head = &trimmed[..colon];
-            let is_ident = !head.is_empty()
-                && head
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.');
-            if is_ident && !head.starts_with("call") && !head.starts_with("_call") {
-                // Only strip when there's another identifier followed by `{`
-                // after the colon — keeps things like `call:fn{...}` for
-                // the existing Gemma-4 native-format path untouched.
-                let rest = &trimmed[colon + 1..];
-                let rest_id_end = rest
-                    .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
-                    .unwrap_or(rest.len());
-                if rest_id_end >= 2 && rest.as_bytes().get(rest_id_end) == Some(&b'{') {
-                    trimmed = rest;
-                }
-            }
-        }
+        let trimmed = text.trim_start();
         let id_end = trimmed
-            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
+            .find(|c: char| !is_tool_name_or_namespace_char(c))
             .unwrap_or(trimmed.len());
         if id_end >= 2
             && trimmed.as_bytes().get(id_end) == Some(&b'{')
             && trimmed.as_bytes()[0].is_ascii_alphabetic()
         {
-            let name = trimmed[..id_end].to_string();
+            let name = normalize_tool_name(&trimmed[..id_end]);
             let args_part = &trimmed[id_end..];
             if let Some(end_rel) = find_balanced_json_end(args_part) {
                 let json_slice = &args_part[..end_rel];

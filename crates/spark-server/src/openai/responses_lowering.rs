@@ -86,7 +86,7 @@ pub fn lower_responses_to_chat(
             for raw in list {
                 let ty = raw.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 match ty {
-                    "function" | "" => {
+                    "function" | "" | "namespace" => {
                         // Responses API uses a flat `{type, name, description,
                         // parameters, strict}` shape for function tools, while
                         // chat-completions wraps the function fields inside a

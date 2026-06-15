@@ -26,25 +26,7 @@ pub(super) fn parse_qwen3_coder_call(text: &str, _idx: u32) -> Option<ToolCall> 
         + text[name_start..]
             .find(['>', '\n', '<'])
             .unwrap_or(text[name_start..].len());
-    let mut func_name = text[name_start..name_end].trim().to_string();
-    // Handle XML attribute-style: <function name="write"> → "write"
-    // The model sometimes generates standard XML attributes instead of Qwen3 = syntax.
-    if func_name.starts_with("name=") || func_name.starts_with("name =") {
-        func_name = func_name
-            .trim_start_matches("name")
-            .trim_start_matches('=')
-            .trim()
-            .trim_matches('"')
-            .trim_matches('\'')
-            .to_string();
-    }
-    // Strip any surrounding quotes
-    func_name = func_name.trim_matches('"').trim_matches('\'').to_string();
-    // Sanitize: at long context the model may generate "Bash=Bash" or "write=write".
-    // Take only the part before the first '=' if it looks like a duplicate.
-    if let Some(eq_pos) = func_name.find('=') {
-        func_name = func_name[..eq_pos].trim().to_string();
-    }
+    let func_name = normalize_tool_name(&text[name_start..name_end]);
     if func_name.is_empty() {
         return None;
     }
@@ -179,11 +161,11 @@ pub(super) fn parse_tag_style_call(text: &str, _idx: u32) -> Option<ToolCall> {
 
     // If the name region contains nested tags, extract <name> from within
     let func_name = if raw_name.contains('<') {
-        extract_tag_value(raw_name, "name")?
+        normalize_tool_name(&extract_tag_value(raw_name, "name")?)
     } else if raw_name.is_empty() {
         return None;
     } else {
-        raw_name.to_string()
+        normalize_tool_name(raw_name)
     };
 
     let mut args = serde_json::Map::new();

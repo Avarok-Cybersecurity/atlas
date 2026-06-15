@@ -379,6 +379,60 @@ fn parse_qwen3_coder_json_args_grammar_mode() {
     assert_eq!(args["command"], "which cargo");
 }
 
+#[test]
+fn parse_qwen3_coder_namespaced_function_name() {
+    let input = "<tool_call>\n\
+            <function=browser:search>\n\
+            <parameter=query>\nrust namespace parser\n</parameter>\n\
+            </function>\n\
+            </tool_call>";
+    let (_, calls) = parse_tool_calls(input);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].function.name, "search");
+}
+
+#[test]
+fn parse_hermes_namespaced_function_name() {
+    let input = r#"<tool_call>{"name":"browser:search","arguments":{"query":"rust"}}</tool_call>"#;
+    let (_, calls) = parse_tool_calls(input);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].function.name, "search");
+    let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+    assert_eq!(args["query"], "rust");
+}
+
+#[test]
+fn parse_mistral_namespaced_function_name() {
+    let input = r#"[TOOL_CALLS]browser:search[ARGS]{"query":"rust"}"#;
+    let (_, calls) = parse_tool_calls(input);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].function.name, "search");
+}
+
+#[test]
+fn parse_bare_mistral_namespaced_function_name() {
+    let input = r#"browser:search{"query":"rust"}"#;
+    let (_, calls) = parse_tool_calls(input);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].function.name, "search");
+}
+
+#[test]
+fn parse_gemma4_namespaced_function_name() {
+    let input = "<|tool_call>call:browser:search{query:<|\"|>rust<|\"|>}<tool_call|>";
+    let (_, calls) = parse_tool_calls(input);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].function.name, "search");
+}
+
+#[test]
+fn parse_minimax_namespaced_function_name() {
+    let input = r#"<tool_call><invoke name="browser:search"><parameter name="query">rust</parameter></invoke></tool_call>"#;
+    let (_, calls) = parse_tool_calls(input);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].function.name, "search");
+}
+
 // ── Mistral native format ──
 
 #[test]
