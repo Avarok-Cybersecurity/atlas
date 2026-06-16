@@ -108,7 +108,7 @@ __device__ __constant__ float E4M3_LUT[256] = {
 extern "C" __global__ void w8a16_gemv(
     const __nv_bfloat16* __restrict__ A,            // [1, K]
     const unsigned char* __restrict__ B,             // [N, K] FP8 E4M3
-    const __nv_bfloat16* __restrict__ block_scale,   // [N/BS, K/BS] BF16
+    const float* __restrict__ block_scale,   // [N/BS, K/BS] BF16
     __nv_bfloat16* __restrict__ C,                   // [1, N]
     unsigned int N,
     unsigned int K
@@ -138,7 +138,7 @@ extern "C" __global__ void w8a16_gemv(
 
         // Determine which K-block this chunk falls in and load its scale
         const unsigned int k_block = base_k / FP8_BLOCK;
-        float scale = __bfloat162float(block_scale[n_block * k_blocks + k_block]);
+        float scale = block_scale[n_block * k_blocks + k_block];
 
         // Load 16 FP8 weights as uint4
         uint4 b_data = ((const uint4*)(B + (unsigned long long)n * K))[k16];

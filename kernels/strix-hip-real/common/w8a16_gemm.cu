@@ -139,7 +139,7 @@ __device__ __forceinline__ void w8a16_wmma_store(
 extern "C" __global__ void w8a16_gemm(
     const __nv_bfloat16* __restrict__ A,            // [M, K] BF16 activations
     const unsigned char* __restrict__ B,             // [N, K] FP8 E4M3
-    const __nv_bfloat16* __restrict__ block_scale,   // [N/128, K/128] BF16
+    const float* __restrict__ block_scale,   // [N/128, K/128] BF16
     __nv_bfloat16* __restrict__ C,                   // [M, N] BF16 output
     unsigned int M,
     unsigned int N,
@@ -190,7 +190,7 @@ extern "C" __global__ void w8a16_gemm(
 
                     unsigned int n_block = gn / FP8_BLOCK;
                     unsigned int k_block = gk / FP8_BLOCK;
-                    float scale = __bfloat162float(block_scale[n_block * k_blocks + k_block]);
+                    float scale = block_scale[n_block * k_blocks + k_block];
 
                     float dequant_val = E4M3_LUT[weight_byte] * scale;
                     smem_B[k][n] = __float2bfloat16(dequant_val);
@@ -212,7 +212,7 @@ extern "C" __global__ void w8a16_gemm(
 /// Each thread handles one FP8 byte → 1 BF16 output.
 extern "C" __global__ void w8a16_dequant(
     const unsigned char* __restrict__ B,             // [N, K] FP8 E4M3
-    const __nv_bfloat16* __restrict__ block_scale,   // [N/128, K/128] BF16
+    const float* __restrict__ block_scale,   // [N/128, K/128] BF16
     __nv_bfloat16* __restrict__ B_bf16,              // [N, K] BF16 output
     unsigned int K,
     unsigned int N
@@ -229,7 +229,7 @@ extern "C" __global__ void w8a16_dequant(
     unsigned int k_blocks = K / FP8_BLOCK;
     unsigned int n_block = n / FP8_BLOCK;
     unsigned int k_block = k / FP8_BLOCK;
-    float scale = __bfloat162float(block_scale[n_block * k_blocks + k_block]);
+    float scale = block_scale[n_block * k_blocks + k_block];
 
     float val = E4M3_LUT[weight_byte] * scale;
     B_bf16[idx] = __float2bfloat16(val);
