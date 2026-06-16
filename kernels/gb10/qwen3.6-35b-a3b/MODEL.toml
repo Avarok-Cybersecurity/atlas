@@ -209,7 +209,20 @@ thinking_default = true
 #   complex agentic tasks (write file content) the model needs planning
 #   room. Combined with PR 73's qwen3_xml parser, the model can think then
 #   emit clean typed args.
-thinking_in_tools = true
+# 2026-06-16: false. Deterministic repro (temp=0, 3/3) on the NVFP4 build:
+#   with thinking_in_tools=true, a multi-turn tool turn narrates ("Let me
+#   read the file") then emits the WRONG tool dialect — `<parameter
+#   name="read_file">` instead of `<tool_call><function=read_file>
+#   <parameter=path>` — skipping the `<tool_call>` opener so the
+#   trigger-grammar never engages, then hallucinates `<tool_response>`.
+#   finish=length, no tool call. With thinking_in_tools=false the SAME
+#   context yields a clean `read_file({"path":...})`, and a full 8-turn
+#   agentic loop (list→read→write→build→test) runs with every tool call
+#   valid and zero loops. The post-`</think>` content transition is where
+#   this model loses the tool format on NVFP4 weights; skipping it fixes
+#   agentic tool calling. Plain-chat CoT is unaffected (this gates only
+#   tool-active turns).
+thinking_in_tools = false
 # PR 73 qwen3_xml REVERTED 2026-05-25 PM. Live opencode v40 test:
 # under thinking_in_tools=true + qwen3_xml, the model emitted COMPLETELY
 # garbled tool args — `command: '/tmp/test-rust-axum-v40'` (path as
