@@ -280,7 +280,14 @@ impl Qwen3AttentionLayer {
 
         // ── 4. Standard GQA FlashAttention (intra-chunk) ──
         let attn_out = ctx.buffers.attn_output();
-        let prefill_k = if hd_mla > 256 && self.prefill_attn_512_k.0 != 0 {
+        let prefill_k = if hd_mla > 256 {
+            if self.prefill_attn_512_k.0 == 0 {
+                anyhow::bail!(
+                    "V4-Flash prefill: hd_mla={} > 256 but prefill_attn_512_k is not loaded (handle=0). \
+                     The inferspark_prefill_512 kernel must be present in the PTX.",
+                    hd_mla
+                );
+            }
             tracing::info!(
                 "V4-Flash prefill: using prefill_attn_512_k (hd_mla={})",
                 hd_mla
@@ -288,9 +295,8 @@ impl Qwen3AttentionLayer {
             self.prefill_attn_512_k
         } else {
             tracing::info!(
-                "V4-Flash prefill: using prefill_attn_64_k fallback (hd_mla={}, 512_k loaded={})",
-                hd_mla,
-                self.prefill_attn_512_k.0 != 0
+                "V4-Flash prefill: using prefill_attn_64_k (hd_mla={})",
+                hd_mla
             );
             self.prefill_attn_64_k
         };

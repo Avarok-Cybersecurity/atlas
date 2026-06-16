@@ -8,12 +8,12 @@ use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
 
 use crate::layer::TransformerLayer;
+use crate::layers::qwen3_attention::{MlaWeights, Qwen3AttentionLayer};
 use crate::layers::FfnComponent;
 use crate::layers::MoeLayer;
-use crate::layers::qwen3_attention::{MlaWeights, Qwen3AttentionLayer};
 use crate::weight_map::{
-    AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense,
-    quantize_to_nvfp4, quantized_v2,
+    dense, quantize_to_nvfp4, quantized_v2, AttentionWeights, DenseWeight, ExpertWeight,
+    MoeWeights, QuantizedWeight,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -105,11 +105,15 @@ pub fn assemble_layer(
     };
 
     // ── Shared-expert gate ──
-    // DeepSeek-V4-Flash ships `ffn.shared_expert_gate.weight`: the shared
-    // expert is sigmoid-gated (`output += sigmoid(gate·x) * shared`), NOT
-    // ungated. Leaving it NULL makes `moe_weighted_sum_blend` treat the gate
-    // as 1.0, over-adding the shared expert every layer.
-    let shared_expert_gate = match store.get(&format!("{p}.ffn.shared_expert_gate.weight")) {
+    // DeepSeek-V4-Flash ships `ffn.shared_expert_gate.weight` (RedHatAI
+    // re-quant) or `mlp.shared_expert_gate.weight` (original HF checkpoint).
+    // The shared expert is sigmoid-gated (`output += sigmoid(gate·x) * shared`),
+    // NOT ungated. Leaving it NULL makes `moe_weighted_sum_blend` treat the
+    // gate as 1.0, over-adding the shared expert every layer.
+    let shared_expert_gate = match store
+        .get(&format!("{p}.ffn.shared_expert_gate.weight"))
+        .or_else(|_| store.get(&format!("{p}.mlp.shared_expert_gate.weight")))
+    {
         Ok(t) => DenseWeight { weight: t.ptr },
         Err(_) => DenseWeight {
             weight: DevicePtr::NULL,
