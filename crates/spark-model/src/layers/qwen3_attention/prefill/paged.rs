@@ -299,100 +299,22 @@ impl Qwen3AttentionLayer {
             .map(|m| m.slot_stacked)
             .or(meta_for_single.map(|m| m.slot))
             .unwrap();
-        if self.mla.is_some() {
-            // MLA: RoPE already applied inside the MLA block to rope portions only.
-        } else if let Some(ref mla) = self.mla {
-            // unreachable but keeps the else chain valid
-            if !mla.yarn_inv_freq.is_null() {
-                ops::rope_yarn(
-                    ctx.gpu,
-                    self.rope_yarn_k,
-                    q_contiguous,
-                    k_contiguous,
-                    bmeta_positions,
-                    n,
-                    nq,
-                    nkv,
-                    hd,
-                    ctx.config.rotary_dim() as u32,
-                    mla.yarn_inv_freq,
-                    ctx.config.rope_theta as f32,
-                    stream,
-                )?;
-            } else {
-                ops::rope(
-                    ctx.gpu,
-                    self.rope_k,
-                    q_contiguous,
-                    k_contiguous,
-                    bmeta_positions,
-                    n,
-                    nq,
-                    nkv,
-                    hd,
-                    self.rotary_dim_override
-                        .unwrap_or(ctx.config.rotary_dim() as u32),
-                    self.rope_theta_override
-                        .unwrap_or(ctx.config.rope_theta as f32),
-                    stream,
-                )?;
-            }
-        } else if self.rope_proportional && self.rope_proportional_k.0 != 0 {
-            let rope_angles = self
-                .rotary_dim_override
-                .unwrap_or(ctx.config.rotary_dim() as u32);
-            ops::rope_proportional(
-                ctx.gpu,
-                self.rope_proportional_k,
+        // RoPE dispatch (extracted to paged_rope.rs — order unchanged).
+        self.prefill_attention_paged_rope(
+            ctx,
+            &super::paged_rope::PagedRopeArgs {
                 q_contiguous,
                 k_contiguous,
-                bmeta_positions,
+                positions: bmeta_positions,
+                positions_h: bmeta_positions_h,
+                positions_w: bmeta_positions_w,
                 n,
                 nq,
                 nkv,
                 hd,
-                rope_angles,
-                self.rope_theta_override
-                    .unwrap_or(ctx.config.rope_theta as f32),
                 stream,
-            )?;
-        } else if self.mrope_interleaved && self.rope_mrope_interleaved_k.0 != 0 {
-            ops::rope_mrope_interleaved(
-                ctx.gpu,
-                self.rope_mrope_interleaved_k,
-                q_contiguous,
-                k_contiguous,
-                bmeta_positions,
-                bmeta_positions_h,
-                bmeta_positions_w,
-                n,
-                nq,
-                nkv,
-                hd,
-                self.rotary_dim_override
-                    .unwrap_or(ctx.config.rotary_dim() as u32),
-                self.rope_theta_override
-                    .unwrap_or(ctx.config.rope_theta as f32),
-                stream,
-            )?;
-        } else {
-            ops::rope(
-                ctx.gpu,
-                self.rope_k,
-                q_contiguous,
-                k_contiguous,
-                bmeta_positions,
-                n,
-                nq,
-                nkv,
-                hd,
-                self.rotary_dim_override
-                    .unwrap_or(ctx.config.rotary_dim() as u32),
-                self.rope_theta_override
-                    .unwrap_or(ctx.config.rope_theta as f32),
-                stream,
-            )?;
-        }
+            },
+        )?;
 
         // ── 7. Write all K/V to paged cache ──
         // MLA models write compressed cache inside the MLA block above (1 head × 320 dims).

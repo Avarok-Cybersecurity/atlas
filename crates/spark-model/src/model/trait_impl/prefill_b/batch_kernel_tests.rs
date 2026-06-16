@@ -4,7 +4,7 @@
 //! `batch_kernel.rs`. Kept in a sibling file to keep `batch_kernel.rs`
 //! itself under the 500-LoC file-size-cap.
 
-use super::batch_kernel::check_kernel_batched_eligible;
+use super::batch_kernel_eligible::check_kernel_batched_eligible;
 
 /// (chunk_len, chunk_start, is_last_chunk)
 fn s(chunk_len: usize, chunk_start: usize, is_last: bool) -> (usize, usize, bool) {

@@ -26,6 +26,7 @@ use crate::traits::{Model, SequenceState};
 
 mod batch;
 mod batch_kernel;
+mod batch_kernel_eligible;
 #[cfg(test)]
 mod batch_kernel_tests;
 mod batched_layer;

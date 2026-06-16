@@ -406,54 +406,22 @@ impl Qwen3AttentionLayer {
             );
         }
 
-        // ── 8. Flash Attention on contiguous Q/K/V (BR=64 for long sequences) ──
+        // ── 8. Flash Attention on contiguous Q/K/V ── (extracted to cache_skip_attn.rs)
         let attn_out = ctx.buffers.attn_output();
-        let inv_sqrt_d = self.effective_attn_scale(hd);
-        if hd > 256 && self.prefill_attn_512_k.0 != 0 {
-            // HDIM=512: use scalar reference kernel (BR=16, correct for any head_dim)
-            // Full-attention layers (this path) always pass sliding_window=0.
-            ops::prefill_attention(
-                ctx.gpu,
-                self.prefill_attn_512_k,
+        self.prefill_attention_cache_skip_attn(
+            ctx,
+            &super::cache_skip_attn::CacheSkipAttnArgs {
                 q_contiguous,
                 k_contiguous,
                 v_contiguous,
                 attn_out,
                 n,
-                1,
                 nq,
                 nkv,
                 hd,
-                inv_sqrt_d,
-                true,
-                0,
                 stream,
-            )
-            .map_err(|e| {
-                anyhow::anyhow!("prefill_512 failed: n={n} nq={nq} nkv={nkv} hd={hd}: {e}")
-            })?;
-        } else {
-            ops::prefill_attention_64(
-                ctx.gpu,
-                self.prefill_attn_64_k,
-                q_contiguous,
-                k_contiguous,
-                v_contiguous,
-                attn_out,
-                n,
-                1,
-                nq,
-                nkv,
-                hd,
-                inv_sqrt_d,
-                true,
-                self.sliding_window.unwrap_or(0),
-                stream,
-            )
-            .map_err(|e| {
-                anyhow::anyhow!("flash_attn_64 failed: n={n} nq={nq} nkv={nkv} hd={hd}: {e}")
-            })?;
-        }
+            },
+        )?;
         aprof!("flash_attn_64", t0);
         t0 = if ctx.profile {
             ctx.gpu.synchronize(stream)?;
