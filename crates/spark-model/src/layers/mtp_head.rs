@@ -241,6 +241,8 @@ impl MtpHead {
 }
 
 mod forward;
+mod forward_argmax;
+mod forward_dbg;
 mod moe_forward;
 mod new;
 

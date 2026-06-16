@@ -279,6 +279,7 @@ pub struct MoeLayer {
 mod dump;
 mod forward;
 mod forward_batched;
+mod forward_dump;
 mod forward_ep;
 mod forward_k2;
 mod forward_k3;
@@ -286,6 +287,7 @@ mod forward_phase;
 mod forward_prefill;
 mod forward_prefill_bf16;
 mod forward_prefill_fp8;
+mod forward_prefill_fp8_w8a8;
 mod forward_prefill_phase;
 mod forward_prefill_routed;
 mod helpers_a;

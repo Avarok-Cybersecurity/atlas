@@ -25,10 +25,14 @@ mod fp8_moe_batch_b;
 mod gemm_dense;
 #[path = "ops/gemm_quant.rs"]
 mod gemm_quant;
+#[path = "ops/gemm_quant_b.rs"]
+mod gemm_quant_b;
 #[path = "ops/kv_cache.rs"]
 mod kv_cache;
 #[path = "ops/moe_expert.rs"]
 mod moe_expert;
+#[path = "ops/moe_expert_b.rs"]
+mod moe_expert_b;
 #[path = "ops/moe_expert_more.rs"]
 mod moe_expert_more;
 #[path = "ops/moe_gate.rs"]
@@ -73,8 +77,10 @@ pub use fp8_moe_batch_a::*;
 pub use fp8_moe_batch_b::*;
 pub use gemm_dense::*;
 pub use gemm_quant::*;
+pub use gemm_quant_b::*;
 pub use kv_cache::*;
 pub use moe_expert::*;
+pub use moe_expert_b::*;
 pub use moe_expert_more::*;
 pub use moe_gate::*;
 pub use moe_grouped_a::*;

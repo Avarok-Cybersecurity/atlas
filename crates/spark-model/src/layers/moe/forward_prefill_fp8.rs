@@ -52,93 +52,7 @@ impl MoeLayer {
             && self.per_token_group_quant_fp8_k.0 != 0;
         let has_shared = shared_inter > 0;
         if has_shared && force_w8a8_sh {
-            let shared_gate_out = ctx.buffers.ssm_deinterleaved();
-            let shared_up_out = ctx.buffers.ssm_qkvz();
-            let m_us: usize = n as usize;
-            let a_fp8_bytes: usize = m_us * h as usize;
-            let a_scale_bytes: usize = m_us * (h as usize / 128) * 4;
-            let input_fp8 = ctx.gpu.alloc(a_fp8_bytes)?;
-            let input_scale = ctx.gpu.alloc(a_scale_bytes)?;
-            ops::per_token_group_quant_fp8(
-                ctx.gpu,
-                self.per_token_group_quant_fp8_k,
-                input,
-                input_fp8,
-                input_scale,
-                n,
-                h,
-                stream,
-            )?;
-            ops::fp8_gemm_t_blockscaled(
-                ctx.gpu,
-                self.fp8_gemm_t_blockscaled_k,
-                input_fp8,
-                input_scale,
-                sh.gate_proj.weight,
-                sh.gate_proj.row_scale,
-                shared_gate_out,
-                n,
-                shared_inter,
-                h,
-                stream,
-            )?;
-            ops::fp8_gemm_t_blockscaled(
-                ctx.gpu,
-                self.fp8_gemm_t_blockscaled_k,
-                input_fp8,
-                input_scale,
-                sh.up_proj.weight,
-                sh.up_proj.row_scale,
-                shared_up_out,
-                n,
-                shared_inter,
-                h,
-                stream,
-            )?;
-            ctx.gpu.synchronize(stream)?;
-            ctx.gpu.free(input_fp8)?;
-            ctx.gpu.free(input_scale)?;
-            ops::silu_mul(
-                ctx.gpu,
-                self.moe_act_mul,
-                shared_gate_out,
-                shared_up_out,
-                shared_gate_out,
-                n * shared_inter,
-                stream,
-            )?;
-            let shared_down_out = ctx.buffers.attn_output();
-            // Quant the post-silu intermediate (K=shared_inter)
-            let a2_bytes: usize = m_us * shared_inter as usize;
-            let a2_scale_bytes: usize = m_us * (shared_inter as usize / 128) * 4;
-            let down_in_fp8 = ctx.gpu.alloc(a2_bytes)?;
-            let down_in_scale = ctx.gpu.alloc(a2_scale_bytes)?;
-            ops::per_token_group_quant_fp8(
-                ctx.gpu,
-                self.per_token_group_quant_fp8_k,
-                shared_gate_out,
-                down_in_fp8,
-                down_in_scale,
-                n,
-                shared_inter,
-                stream,
-            )?;
-            ops::fp8_gemm_t_blockscaled(
-                ctx.gpu,
-                self.fp8_gemm_t_blockscaled_k,
-                down_in_fp8,
-                down_in_scale,
-                sh.down_proj.weight,
-                sh.down_proj.row_scale,
-                shared_down_out,
-                n,
-                h,
-                shared_inter,
-                stream,
-            )?;
-            ctx.gpu.synchronize(stream)?;
-            ctx.gpu.free(down_in_fp8)?;
-            ctx.gpu.free(down_in_scale)?;
+            self.w8a8_shared_expert(input, sh, n, h, shared_inter, ctx, stream)?;
         } else if has_shared {
             let shared_gate_out = ctx.buffers.ssm_deinterleaved();
             let shared_up_out = ctx.buffers.ssm_qkvz();
@@ -336,58 +250,22 @@ impl MoeLayer {
             && self.per_token_group_quant_fp8_k.0 != 0;
 
         if force_w8a8 && max_m_tiles > 0 {
-            // Quant input [num_tokens, h] → input_fp8 + input_a_scale ONCE,
-            // reuse for both gate and up.
-            let m = num_tokens;
-            let a_fp8_bytes = m * h as usize;
-            let a_scale_bytes = m * (h as usize / 128) * 4;
-            let input_fp8 = ctx.gpu.alloc(a_fp8_bytes)?;
-            let input_a_scale = ctx.gpu.alloc(a_scale_bytes)?;
-            ops::per_token_group_quant_fp8(
-                ctx.gpu,
-                self.per_token_group_quant_fp8_k,
+            self.w8a8_routed_gate_up(
                 input,
-                input_fp8,
-                input_a_scale,
-                m as u32,
-                h,
-                stream,
-            )?;
-            ops::moe_w8a8_grouped_gemm(
-                ctx.gpu,
-                self.moe_w8a8_grouped_gemm_k,
-                input_fp8,
-                input_a_scale,
-                gp.weight_ptrs,
-                gp.scale_ptrs,
+                gp,
+                up,
                 expert_gate_out,
-                expert_offsets,
-                sorted_token_ids,
-                num_experts,
-                inter,
-                h,
-                max_m_tiles,
-                stream,
-            )?;
-            ops::moe_w8a8_grouped_gemm(
-                ctx.gpu,
-                self.moe_w8a8_grouped_gemm_k,
-                input_fp8,
-                input_a_scale,
-                up.weight_ptrs,
-                up.scale_ptrs,
                 expert_up_out,
                 expert_offsets,
                 sorted_token_ids,
+                num_tokens,
                 num_experts,
                 inter,
                 h,
                 max_m_tiles,
+                ctx,
                 stream,
             )?;
-            ctx.gpu.synchronize(stream)?;
-            ctx.gpu.free(input_fp8)?;
-            ctx.gpu.free(input_a_scale)?;
         } else if max_m_tiles > 0 {
             ops::moe_fp8_grouped_gemm(
                 ctx.gpu,
@@ -425,51 +303,20 @@ impl MoeLayer {
         // 6. Activation+mul + down GEMM
         let expert_down_out = ctx.buffers.expert_down_out();
         if force_w8a8 && max_m_tiles > 0 {
-            ops::silu_mul(
-                ctx.gpu,
-                self.moe_act_mul,
+            self.w8a8_routed_down(
                 expert_gate_out,
                 expert_up_out,
-                expert_gate_out,
-                total_expanded * inter,
-                stream,
-            )?;
-            // Quant the permuted post-silu intermediate. Length is
-            // total_expanded, K is `inter` (down_proj input dim).
-            let m: usize = total_expanded as usize;
-            let a_fp8_bytes: usize = m * inter as usize;
-            let a_scale_bytes: usize = m * (inter as usize / 128) * 4;
-            let down_in_fp8 = ctx.gpu.alloc(a_fp8_bytes)?;
-            let down_in_scale = ctx.gpu.alloc(a_scale_bytes)?;
-            ops::per_token_group_quant_fp8(
-                ctx.gpu,
-                self.per_token_group_quant_fp8_k,
-                expert_gate_out,
-                down_in_fp8,
-                down_in_scale,
-                m as u32,
-                inter,
-                stream,
-            )?;
-            ops::moe_w8a8_grouped_gemm(
-                ctx.gpu,
-                self.moe_w8a8_grouped_gemm_k,
-                down_in_fp8,
-                down_in_scale,
-                dp.weight_ptrs,
-                dp.scale_ptrs,
                 expert_down_out,
+                dp,
                 expert_offsets,
-                spark_runtime::gpu::DevicePtr(0),
+                total_expanded,
                 num_experts,
-                h,
                 inter,
+                h,
                 max_m_tiles,
+                ctx,
                 stream,
             )?;
-            ctx.gpu.synchronize(stream)?;
-            ctx.gpu.free(down_in_fp8)?;
-            ctx.gpu.free(down_in_scale)?;
         } else if max_m_tiles > 0 {
             ops::silu_mul(
                 ctx.gpu,

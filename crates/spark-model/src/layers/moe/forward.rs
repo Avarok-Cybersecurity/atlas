@@ -148,36 +148,7 @@ impl MoeLayer {
             })?;
         }
 
-        if tracing::enabled!(tracing::Level::DEBUG) {
-            ctx.gpu.synchronize(stream)?;
-            // Read expert indices (u32[top_k]) and weights (f32[top_k])
-            let k = top_k as usize;
-            let mut idx_buf = vec![0u8; k * 4];
-            let mut wt_buf = vec![0u8; k * 4];
-            ctx.gpu.copy_d2h(indices_dev, &mut idx_buf)?;
-            ctx.gpu.copy_d2h(weights_dev, &mut wt_buf)?;
-            let indices: Vec<u32> = (0..k)
-                .map(|i| {
-                    u32::from_le_bytes([
-                        idx_buf[i * 4],
-                        idx_buf[i * 4 + 1],
-                        idx_buf[i * 4 + 2],
-                        idx_buf[i * 4 + 3],
-                    ])
-                })
-                .collect();
-            let weights: Vec<f32> = (0..k)
-                .map(|i| {
-                    f32::from_le_bytes([
-                        wt_buf[i * 4],
-                        wt_buf[i * 4 + 1],
-                        wt_buf[i * 4 + 2],
-                        wt_buf[i * 4 + 3],
-                    ])
-                })
-                .collect();
-            tracing::info!("  MoE experts: {:?}, weights: {:.4?}", indices, weights);
-        }
+        super::forward_dump::dump_routing(ctx.gpu, indices_dev, weights_dev, top_k, stream)?;
 
         // Apply pre-expert norm AFTER routing, BEFORE expert dispatch (Gemma-4 26B).
         // Write to scratch buffer to preserve original `input` (= residual in caller).
@@ -359,47 +330,14 @@ impl MoeLayer {
                 )
             })?;
 
-            if tracing::enabled!(tracing::Level::DEBUG) {
-                ctx.gpu.synchronize(stream)?;
-                // Dump gate/up outputs for expert slot 0
-                let mut gate_buf = vec![0u8; 16];
-                ctx.gpu.copy_d2h(expert_gate_out, &mut gate_buf)?;
-                let gate_vals: Vec<f32> = (0..8)
-                    .map(|i| {
-                        let bits = u16::from_le_bytes([gate_buf[i * 2], gate_buf[i * 2 + 1]]);
-                        f32::from_bits((bits as u32) << 16)
-                    })
-                    .collect();
-                tracing::info!("  MoE gate_out[slot0,0..8]: {:?}", gate_vals);
-                let mut up_buf = vec![0u8; 16];
-                ctx.gpu.copy_d2h(expert_up_out, &mut up_buf)?;
-                let up_vals: Vec<f32> = (0..8)
-                    .map(|i| {
-                        let bits = u16::from_le_bytes([up_buf[i * 2], up_buf[i * 2 + 1]]);
-                        f32::from_bits((bits as u32) << 16)
-                    })
-                    .collect();
-                tracing::info!("  MoE up_out[slot0,0..8]: {:?}", up_vals);
-                // Shared expert gate/up scratch outputs
-                let mut sg_buf = vec![0u8; 16];
-                ctx.gpu.copy_d2h(shared_gate_scratch, &mut sg_buf)?;
-                let sg_vals: Vec<f32> = (0..8)
-                    .map(|i| {
-                        let bits = u16::from_le_bytes([sg_buf[i * 2], sg_buf[i * 2 + 1]]);
-                        f32::from_bits((bits as u32) << 16)
-                    })
-                    .collect();
-                tracing::info!("  MoE shared_gate_scratch[0..8]: {:?}", sg_vals);
-                let mut su_buf = vec![0u8; 16];
-                ctx.gpu.copy_d2h(shared_up_scratch, &mut su_buf)?;
-                let su_vals: Vec<f32> = (0..8)
-                    .map(|i| {
-                        let bits = u16::from_le_bytes([su_buf[i * 2], su_buf[i * 2 + 1]]);
-                        f32::from_bits((bits as u32) << 16)
-                    })
-                    .collect();
-                tracing::info!("  MoE shared_up_scratch[0..8]: {:?}", su_vals);
-            }
+            super::forward_dump::dump_gate_up(
+                ctx.gpu,
+                expert_gate_out,
+                expert_up_out,
+                shared_gate_scratch,
+                shared_up_scratch,
+                stream,
+            )?;
 
             // NVFP4 path: fused routed+shared silu+down
             prof!("exp_silu_down", {
@@ -425,29 +363,7 @@ impl MoeLayer {
             })?;
         }
 
-        if tracing::enabled!(tracing::Level::DEBUG) {
-            ctx.gpu.synchronize(stream)?;
-            // Dump down outputs for expert slot 0
-            let mut down_buf = vec![0u8; 16];
-            ctx.gpu.copy_d2h(expert_down_out, &mut down_buf)?;
-            let down_vals: Vec<f32> = (0..8)
-                .map(|i| {
-                    let bits = u16::from_le_bytes([down_buf[i * 2], down_buf[i * 2 + 1]]);
-                    f32::from_bits((bits as u32) << 16)
-                })
-                .collect();
-            tracing::info!("  MoE down_out[slot0,0..8]: {:?}", down_vals);
-            // Shared out
-            let mut sh_buf = vec![0u8; 16];
-            ctx.gpu.copy_d2h(shared_out, &mut sh_buf)?;
-            let sh_vals: Vec<f32> = (0..8)
-                .map(|i| {
-                    let bits = u16::from_le_bytes([sh_buf[i * 2], sh_buf[i * 2 + 1]]);
-                    f32::from_bits((bits as u32) << 16)
-                })
-                .collect();
-            tracing::info!("  MoE shared_out[0..8]: {:?}", sh_vals);
-        }
+        super::forward_dump::dump_down(ctx.gpu, expert_down_out, shared_out, stream)?;
 
         // Fused wsum+blend+gate: routed expert weighted sum + sigmoid(gate)*shared
         // Gate scalar GEMV is computed inline by each block (redundant but negligible).
@@ -521,19 +437,7 @@ impl MoeLayer {
             }
         }
 
-        if tracing::enabled!(tracing::Level::DEBUG) {
-            ctx.gpu.synchronize(stream)?;
-            let mut buf = vec![0u8; 8];
-            ctx.gpu.copy_d2h(output, &mut buf)?;
-            let vals: Vec<f32> = (0..4)
-                .map(|i| {
-                    let lo = buf[i * 2];
-                    let hi = buf[i * 2 + 1];
-                    f32::from_bits(((lo as u32) | ((hi as u32) << 8)) << 16)
-                })
-                .collect();
-            tracing::info!("  MoE output: {:?}", vals);
-        }
+        super::forward_dump::dump_output(ctx.gpu, output, stream)?;
 
         Ok(output)
     }
