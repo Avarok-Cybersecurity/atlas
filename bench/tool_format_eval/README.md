@@ -85,8 +85,22 @@ python3 bench/tool_format_eval/compare_endpoints.py \
   `<think>` in content, `<|think_off|>` markers, developer role, no-user-query),
   and Atlas already normalizes string→dict tool args. ⇒ **template eliminated**.
 
-**Verdict so far:** not parsing, not Atlas's bias processors, not parser choice,
-not the chat template.
+- **Layer 4 — Atlas-NVFP4 vs vLLM-FP8, same harness (vLLM via the user's
+  spark-vllm-docker recipe, single-GPU `-tp 1`, qwen3_xml + fixed template +
+  DFlash):** thinking ON — Atlas 43/50 (t=2), 29/50 (t=4); **vLLM 30/30, 30/30**.
+  vLLM is 120/120 across all cells. SAME model, SAME contexts, thinking on ⇒
+  vLLM has NO degradation, Atlas does. Proves the model can do thinking+tools at
+  100%; the defect is **Atlas's forward pass**. (vLLM reasoning is in the
+  `reasoning` field, not `reasoning_content` — it IS thinking, and still 100%.)
+
+**VERDICT:** not parsing, not Atlas's bias processors, not parser choice, not the
+chat template, not "the model just does this." It is an **Atlas inference/
+forward-pass divergence** (NVFP4 here; user reports the Atlas FP8 path degrades
+too ⇒ likely the quant-GEMM / MoE-routing / KV numerics, not weight precision
+alone). Consistent with the MODEL.toml's documented NVFP4 late-layer cosine drift
+flipping MoE expert selection. Durable user-facing fix: `thinking_in_tools=false`
+(matches vLLM's reliability). Next: layer-level hidden-state diff Atlas-vs-HF/vLLM
+to localize the divergent kernel.
 The malformed tokens are the model's OWN raw-logit argmax under Atlas's forward
 pass (it prefers narration + JSON/attr-XML over qwen3_coder XML when thinking).
 The single OPEN question is whether that distribution is faithful to the true
