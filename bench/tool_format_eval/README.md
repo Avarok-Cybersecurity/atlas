@@ -14,7 +14,8 @@ question with statistics instead of N=10 guesswork:
 | 1 — behavioral rate | `harness.py` | Atlas only | failure **rate** + Wilson 95% CI across configs |
 | 2 — failure classifier | `harness.py` | Atlas only | per-turn **parsing vs generation** bin (from raw text) |
 | 3a — logit decision probe | `logit_probe.py` | Atlas only | does Atlas's own next-token dist **rank** `<tool_call>` at the decision point? |
-| 3b / 4 — dump localization & vLLM diff | `dump_analyze.py` | `ATLAS_LOGIT_DUMP` (+ vLLM for diff) | **model** vs **Atlas-processor** vs **sampler** vs **parsing** |
+| 3b — dump localization | `dump_analyze.py` | `ATLAS_LOGIT_DUMP` | **model** vs **Atlas-processor** vs **sampler** (within Atlas) |
+| 4 — Atlas↔vLLM diff | `compare_endpoints.py` | a running vLLM endpoint | **Atlas inference faithful** vs **forward-pass/quant divergence** |
 
 Layers 1–3a run on this box with no extra deps (stdlib `urllib`). Layer 4 needs a
 vLLM reference dump (this box has no torch/transformers).
@@ -33,11 +34,12 @@ ATLAS_LOGIT_DUMP=/tmp/atlas.jsonl ./target/release/spark serve <model> --tool-ca
 #   then send exactly ONE failing tool-turn request, stop the server, then:
 python3 bench/tool_format_eval/dump_analyze.py single /tmp/atlas.jsonl
 
-# Layer 4 — definitive: Atlas vs vLLM forward-pass divergence
-#   vLLM side: run the SAME teacher-forced prefix with prompt_logprobs (or the
-#   patched sampler that writes raw_topk+sampled, see logit_dump.rs), emit JSONL
-#   with the same record shape, then:
-python3 bench/tool_format_eval/dump_analyze.py diff /tmp/atlas.jsonl /tmp/vllm.jsonl
+# Layer 4 — definitive: Atlas vs vLLM forward-pass divergence (just needs a vLLM
+#   OpenAI endpoint; greedy top_logprobs diff, no dumps / no token-id alignment)
+python3 bench/tool_format_eval/compare_endpoints.py \
+    --atlas-url http://localhost:8888 --atlas-model nvidia/Qwen3.6-35B-A3B-NVFP4 \
+    --vllm-url http://<host>:8000 --vllm-model Qwen/Qwen3.6-35B-A3B-FP8 \
+    --thinking on --top 8
 ```
 
 ## How to read it
@@ -70,9 +72,14 @@ python3 bench/tool_format_eval/dump_analyze.py diff /tmp/atlas.jsonl /tmp/vllm.j
   **Atlas additive-processor stack exonerated**. 215/229 picks are the model's own
   raw argmax; 14 are sampler (min_p/penalty, ~15% noisy 2nd-order effect).
 
-**Verdict so far:** not parsing, not Atlas's bias processors. The malformed tokens
-are the model's OWN raw-logit argmax under Atlas's forward pass (it prefers
-narration + JSON/attr-XML over qwen3_coder XML when thinking). The single OPEN
-question is whether that `raw_topk` distribution is faithful to the true model or
-a forward-pass/quant divergence — **Layer 4 (Atlas vs vLLM raw_topk diff)**, which
-needs a vLLM reference dump.
+- **Parser swap (hermes vs qwen3_coder, N=30/50):** thinking-ON validity is
+  comparable and still flaky (hermes 21/30, 24/30; qwen3_coder 43/50, 29/50;
+  CIs overlap), thinking-OFF 100% for both. Parser choice does NOT fix it ⇒
+  further confirms the defect is not parsing.
+
+**Verdict so far:** not parsing, not Atlas's bias processors, not parser choice.
+The malformed tokens are the model's OWN raw-logit argmax under Atlas's forward
+pass (it prefers narration + JSON/attr-XML over qwen3_coder XML when thinking).
+The single OPEN question is whether that distribution is faithful to the true
+model or a forward-pass/quant divergence — **Layer 4 (`compare_endpoints.py`)**,
+which needs a running vLLM endpoint.
