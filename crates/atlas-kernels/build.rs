@@ -1,108 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 
-/// Per-category sampling defaults parsed from MODEL.toml `[sampling.*]`.
-#[derive(Debug, Clone)]
-struct SamplingCat {
-    temperature: f32,
-    top_p: f32,
-    top_k: u32,
-    presence_penalty: f32,
-    frequency_penalty: f32,
-    repetition_penalty: f32,
-    // DRY sampler params (see SamplingCategory in atlas-kernels/src/lib.rs
-    // for full rationale). Defaults disable DRY; individual MODEL.toml
-    // `[sampling.*]` tables opt in when needed.
-    dry_multiplier: f32,
-    dry_base: f32,
-    dry_allowed_length: u32,
-    // LZ penalty (arXiv:2504.20131). Frequency-weighted n-gram penalty
-    // over the recent token window. 0.0 = disabled. 0.2 is the SGLang
-    // reference value; lossless on AIME/GPQA at that strength.
-    lz_penalty: f32,
-}
-
-impl Default for SamplingCat {
-    fn default() -> Self {
-        Self {
-            temperature: 0.7,
-            top_p: 0.95,
-            top_k: 20,
-            presence_penalty: 0.0,
-            frequency_penalty: 0.0,
-            repetition_penalty: 1.0,
-            dry_multiplier: 0.0,
-            dry_base: 1.75,
-            dry_allowed_length: 2,
-            lz_penalty: 0.0,
-        }
-    }
-}
-
-/// A `(model_type, optional hidden_size)` pair declaring which models a kernel target supports.
-#[derive(Debug, Clone)]
-struct ModelTypeMatch {
-    model_type: String,
-    hidden_size: Option<usize>,
-}
-
-/// A resolved (hw, model, quant) compilation target.
-struct Target {
-    hw: String,
-    model: String,
-    quant: String,
-    arch: String,
-    /// Per-model quant dir (for KERNEL.toml and optional override .cu files).
-    model_kernel_dir: PathBuf,
-    /// Common quant dir (hw_dir/quant/) with shared .cu files.
-    common_kernel_dir: Option<PathBuf>,
-    extra_flags: Vec<String>,
-    module_overrides: HashMap<String, String>,
-    sampling_thinking_text: SamplingCat,
-    sampling_thinking_coding: SamplingCat,
-    sampling_non_thinking: SamplingCat,
-    sampling_tools: SamplingCat,
-    behavior_thinking_in_tools: bool,
-    behavior_max_thinking_budget: u32,
-    behavior_thinking_default: bool,
-    behavior_fp8_kv_calibration_tokens: usize,
-    behavior_default_kv_dtype: String,
-    behavior_default_num_drafts: u32,
-    behavior_disable_tool_steering: bool,
-    behavior_tool_call_parser: String,
-    behavior_enable_loop_watchdog: bool,
-    behavior_think_loop_min_repeats: u32,
-    behavior_think_loop_scan_window: u32,
-    behavior_confidence_early_stop: bool,
-    behavior_confidence_run_length: u32,
-    behavior_fuzzy_repeat_tolerance_div: u32,
-    behavior_max_inter_tool_prose: u32,
-    behavior_max_post_think_content_tokens: u32,
-    behavior_tscg: bool,
-    behavior_disable_tool_grammar: bool,
-    behavior_rollback_resteer: bool,
-    behavior_rom_head: String,
-    behavior_tool_retry: bool,
-    /// Which `(model_type, hidden_size)` pairs this kernel target supports.
-    /// Parsed from `[[model_types]]` in MODEL.toml.
-    model_type_matches: Vec<ModelTypeMatch>,
-    /// `[dflash]` section if present in MODEL.toml — drafter pairing for
-    /// block-diffusion speculative decoding. `None` when the model has no
-    /// associated DFlash drafter checkpoint.
-    dflash: Option<DflashRaw>,
-}
-
-#[derive(Default, Clone)]
-struct DflashRaw {
-    draft_model: String,
-    gamma: usize,
-    window_size: usize,
-    mask_token_id: u32,
-    target_layer_ids: Vec<usize>,
-}
+#[path = "build_types.rs"]
+mod build_types;
+use build_types::{DflashRaw, ModelTypeMatch, SamplingCat, Target};
 
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -546,76 +449,15 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
     targets
 }
 
-/// List subdirectory names (not files) in a directory, sorted.
-fn list_subdirs(dir: &std::path::Path) -> Vec<String> {
-    let mut dirs: Vec<String> = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            if entry.file_type().ok()?.is_dir() {
-                Some(entry.file_name().to_string_lossy().to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
-    dirs.sort();
-    dirs
-}
-
 #[path = "build_parse.rs"]
 mod build_parse;
 use build_parse::{
     parse_behavior, parse_dflash, parse_kernel_toml, parse_model_types, parse_sampling_presets,
 };
 
-/// Collect kernel-source files with shadowing: common dir provides the
-/// base set, model-specific dir can override individual files by matching
-/// filename. `source_ext` is the per-vendor extension (e.g. "cu" for
-/// NVIDIA, "metal" for Apple).
-fn collect_cu_files(
-    common_dir: Option<&std::path::Path>,
-    model_dir: &std::path::Path,
-    source_ext: &str,
-) -> Vec<PathBuf> {
-    let mut files: HashMap<String, PathBuf> = HashMap::new();
-
-    // Base layer: common kernels
-    if let Some(common) = common_dir {
-        for f in find_cu_files(common, source_ext) {
-            let stem = f.file_stem().unwrap().to_str().unwrap().to_string();
-            files.insert(stem, f);
-        }
-    }
-
-    // Override layer: model-specific kernel files shadow common ones
-    for f in find_cu_files(model_dir, source_ext) {
-        let stem = f.file_stem().unwrap().to_str().unwrap().to_string();
-        files.insert(stem, f);
-    }
-
-    let mut result: Vec<PathBuf> = files.into_values().collect();
-    result.sort();
-    result
-}
-
-/// Find all kernel-source files (extension `source_ext`) in a directory.
-/// Returns empty vec if dir doesn't exist.
-fn find_cu_files(kernel_dir: &std::path::Path, source_ext: &str) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(kernel_dir) else {
-        return Vec::new();
-    };
-    entries
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            if path.extension().and_then(|e| e.to_str()) == Some(source_ext) {
-                Some(path)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
+#[path = "build_files.rs"]
+mod build_files;
+use build_files::{collect_cu_files, find_cu_files, list_subdirs};
 
 #[path = "build_codegen.rs"]
 mod build_codegen;
