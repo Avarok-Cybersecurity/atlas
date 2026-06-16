@@ -96,7 +96,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::api::{GrammarSpec, InferenceRequest, InferenceResponse, StreamEvent};
+use crate::api::{InferenceRequest, InferenceResponse, StreamEvent};
 use crate::grammar::{GrammarEngine, GrammarState};
 use crate::ngram::NgramProposer;
 use crate::scheduling_policy::SchedulingPolicy;
