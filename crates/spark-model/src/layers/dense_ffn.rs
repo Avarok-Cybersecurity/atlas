@@ -16,6 +16,12 @@ pub struct DenseFfnWeights {
     pub gate_proj: QuantizedWeight,
     pub up_proj: QuantizedWeight,
     pub down_proj: QuantizedWeight,
+    /// Transposed ([K/2, N]) copies for the fast `w4a16_gemm_t_m128` prefill
+    /// kernel. `None` → prefill falls back to the slow M64xN64 base kernel.
+    /// The non-transposed copies above are kept for the decode gemv path.
+    pub gate_proj_t: Option<QuantizedWeight>,
+    pub up_proj_t: Option<QuantizedWeight>,
+    pub down_proj_t: Option<QuantizedWeight>,
 }
 
 /// BF16 dense MLP weights — alternative to NVFP4 for precision-sensitive
@@ -48,6 +54,14 @@ pub struct DenseFfnLayer {
     w4a16_gemv_batch2: KernelHandle,
     w4a16_gemv_batch3: KernelHandle,
     w4a16_gemm: KernelHandle,
+    // 128x128 2-stage cp.async pipelined w4a16 GEMM — the fast prefill kernel
+    // attention/SSM already use. The base `w4a16_gemm` (M64xN64) only hits
+    // ~10 TFLOPS at M=8k and was the flat ~155 tok/s dense-FFN prefill
+    // bottleneck on Qwen3.6-27B. KernelHandle(0) on miss → scalar-tile fallback.
+    w4a16_gemm_t_m128_k: KernelHandle,
+    // v2: 8-warp (256-thread) variant of t_m128 — parallel chunk MMAs, 3 CTAs/SM.
+    // Preferred over t_m128 for dense-FFN prefill when present. KernelHandle(0) → use t_m128.
+    w4a16_gemm_t_m128_v2_k: KernelHandle,
     /// SiLU(gate)*up or GELU(gate)*up depending on activation.
     act_mul: KernelHandle,
     /// BF16 dense MLP weights — when `Some`, all forward paths use the
@@ -59,6 +73,12 @@ pub struct DenseFfnLayer {
     bf16_weights: Option<DenseFfnWeightsBf16>,
     dense_gemv_bf16_k: KernelHandle,
     dense_gemm_bf16_k: KernelHandle,
+    // Tensor-core BF16 GEMM (m16n8k16 MMA) for the dense-FFN PREFILL path.
+    // The scalar `dense_gemm_bf16` is ~10x too slow on long prefills (it was
+    // the flat ~155 tok/s prefill bottleneck on Qwen3.6-27B dense NVFP4).
+    // KernelHandle(0) on miss → forward_prefill falls back to the scalar path.
+    // Decode (gemv, M=1) is untouched, so TPOT is unaffected.
+    dense_gemm_tc_k: KernelHandle,
 }
 
 impl DenseFfnLayer {
@@ -83,6 +103,7 @@ impl DenseFfnLayer {
         //   `dense_gemv_bf16 = "gemv"`, `dense_gemm_bf16 = "gemm"`.
         let dense_gemv_bf16_k = super::try_kernel(gpu, "gemv", "dense_gemv_bf16");
         let dense_gemm_bf16_k = super::try_kernel(gpu, "gemm", "dense_gemm_bf16");
+        let dense_gemm_tc_k = super::try_kernel(gpu, "gemm_tc", "dense_gemm_tc");
 
         Ok(Self {
             weights,
@@ -95,10 +116,13 @@ impl DenseFfnLayer {
             w4a16_gemv_batch2: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
             w4a16_gemv_batch3: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch3")?,
             w4a16_gemm: gpu.kernel("w4a16", "w4a16_gemm")?,
+            w4a16_gemm_t_m128_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128"),
+            w4a16_gemm_t_m128_v2_k: super::try_kernel(gpu, "w4a16_v2", "w4a16_gemm_t_m128_v2"),
             act_mul,
             bf16_weights: None,
             dense_gemv_bf16_k,
             dense_gemm_bf16_k,
+            dense_gemm_tc_k,
         })
     }
 
@@ -344,30 +368,46 @@ impl DenseFfnLayer {
         let gate_out = ctx.buffers.expert_gate_out();
         let up_out = ctx.buffers.expert_up_out();
 
-        // BF16 prefill dispatch: dense_gemm_bf16 for all three projections.
+        // BF16 prefill dispatch. Prefer the tensor-core m16n8k16 MMA kernel
+        // (`dense_gemm_tc`, 3-5x+ over scalar) — the scalar `dense_gemm_bf16`
+        // was the flat ~155 tok/s prefill bottleneck on Qwen3.6-27B dense
+        // NVFP4 (FFN = ~83% of prefill). Falls back to scalar if the TC
+        // kernel isn't loaded for this target. Decode (gemv, M=1) is a
+        // separate path, so TPOT is unaffected; BF16 MMA preserves coherence.
         if let Some(ref bf16w) = self.bf16_weights {
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_bf16_k,
-                input,
-                &bf16w.gate_proj,
-                gate_out,
-                m,
-                inter,
-                h,
-                stream,
-            )?;
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_bf16_k,
-                input,
-                &bf16w.up_proj,
-                up_out,
-                m,
-                inter,
-                h,
-                stream,
-            )?;
+            let tc = self.dense_gemm_tc_k.0 != 0;
+            // helper: tensor-core GEMM when available, else scalar
+            macro_rules! ffn_gemm {
+                ($a:expr, $b:expr, $c:expr, $n:expr, $k:expr) => {
+                    if tc {
+                        ops::dense_gemm_tc(
+                            ctx.gpu,
+                            self.dense_gemm_tc_k,
+                            $a,
+                            $b,
+                            $c,
+                            m,
+                            $n,
+                            $k,
+                            stream,
+                        )?;
+                    } else {
+                        ops::dense_gemm(
+                            ctx.gpu,
+                            self.dense_gemm_bf16_k,
+                            $a,
+                            $b,
+                            $c,
+                            m,
+                            $n,
+                            $k,
+                            stream,
+                        )?;
+                    }
+                };
+            }
+            ffn_gemm!(input, &bf16w.gate_proj, gate_out, inter, h);
+            ffn_gemm!(input, &bf16w.up_proj, up_out, inter, h);
             ops::silu_mul(
                 ctx.gpu,
                 self.act_mul,
@@ -378,45 +418,68 @@ impl DenseFfnLayer {
                 stream,
             )?;
             let output = ctx.buffers.moe_output();
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_bf16_k,
-                gate_out,
-                &bf16w.down_proj,
-                output,
-                m,
-                h,
-                inter,
-                stream,
-            )?;
+            ffn_gemm!(gate_out, &bf16w.down_proj, output, h, inter);
             return Ok(());
         }
 
-        // gate_proj GEMM: [M, H] → [M, inter]
-        ops::w4a16_gemm(
-            ctx.gpu,
-            self.w4a16_gemm,
-            input,
-            &self.weights.gate_proj,
-            gate_out,
-            m,
-            inter,
-            h,
-            stream,
-        )?;
+        // Prefill: prefer the 128x128 cp.async-pipelined `w4a16_gemm_t_m128`
+        // (the kernel attention/SSM use) over the M64xN64 base `w4a16_gemm`
+        // (~10 TFLOPS, the flat ~155 tok/s bottleneck). That kernel needs the
+        // TRANSPOSED weight layout, so we use the `*_proj_t` copies built at
+        // load (decode keeps the non-transposed weights via gemv → TPOT/
+        // coherence unaffected). Falls back to base when no transposed copy /
+        // kernel is present.
+        macro_rules! w4_gemm {
+            ($w:expr, $wt:expr, $in:expr, $out:expr, $n:expr, $k:expr) => {
+                match $wt {
+                    // Prefer v2 (8-warp) > t_m128 (4-warp) > scalar-tile base.
+                    Some(wt) if self.w4a16_gemm_t_m128_v2_k.0 != 0 => ops::w4a16_gemm_n128_m128_v2(
+                        ctx.gpu,
+                        self.w4a16_gemm_t_m128_v2_k,
+                        $in,
+                        &wt,
+                        $out,
+                        m,
+                        $n,
+                        $k,
+                        stream,
+                    )?,
+                    Some(wt) if self.w4a16_gemm_t_m128_k.0 != 0 => ops::w4a16_gemm_n128_m128(
+                        ctx.gpu,
+                        self.w4a16_gemm_t_m128_k,
+                        $in,
+                        &wt,
+                        $out,
+                        m,
+                        $n,
+                        $k,
+                        stream,
+                    )?,
+                    _ => {
+                        ops::w4a16_gemm(ctx.gpu, self.w4a16_gemm, $in, $w, $out, m, $n, $k, stream)?
+                    }
+                }
+            };
+        }
 
-        // up_proj GEMM: [M, H] → [M, inter]
-        ops::w4a16_gemm(
-            ctx.gpu,
-            self.w4a16_gemm,
+        // gate_proj GEMM: [M, H] → [M, inter]
+        w4_gemm!(
+            &self.weights.gate_proj,
+            self.weights.gate_proj_t,
             input,
-            &self.weights.up_proj,
-            up_out,
-            m,
+            gate_out,
             inter,
-            h,
-            stream,
-        )?;
+            h
+        );
+        // up_proj GEMM: [M, H] → [M, inter]
+        w4_gemm!(
+            &self.weights.up_proj,
+            self.weights.up_proj_t,
+            input,
+            up_out,
+            inter,
+            h
+        );
 
         // activation(gate) * up for all M tokens (SiLU or GELU)
         ops::silu_mul(
@@ -431,17 +494,14 @@ impl DenseFfnLayer {
 
         // down_proj GEMM: [M, inter] → [M, H]
         let output = ctx.buffers.moe_output();
-        ops::w4a16_gemm(
-            ctx.gpu,
-            self.w4a16_gemm,
-            gate_out,
+        w4_gemm!(
             &self.weights.down_proj,
+            self.weights.down_proj_t,
+            gate_out,
             output,
-            m,
             h,
-            inter,
-            stream,
-        )?;
+            inter
+        );
 
         Ok(())
     }

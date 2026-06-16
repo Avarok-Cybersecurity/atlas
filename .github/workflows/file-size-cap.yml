@@ -146,6 +146,13 @@ jobs:
             "crates/spark-server/src/scheduler/emit_step.rs"
             "crates/spark-server/src/scheduler/helpers.rs"
             "crates/spark-server/src/tool_parser/validation.rs"
+            # ── PR #169 (perf/qwen36-dense-ffn-tc-prefill) carry-over ──
+            # 519 LoC — dense-FFN forward. The tensor-core w4a16 prefill path
+            # adds transposed gate/up/down handles + a per-(dtype,phase) kernel
+            # dispatch macro; like the other kernel-dispatch files above, the
+            # launch sequence reads top-to-bottom and splitting fragments it.
+            # Clean split tracked as follow-up.
+            "crates/spark-model/src/layers/dense_ffn.rs"
           )
 
           violations=0
