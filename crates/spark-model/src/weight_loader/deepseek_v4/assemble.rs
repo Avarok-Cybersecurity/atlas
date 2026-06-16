@@ -8,7 +8,7 @@ use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
 
 use crate::layer::TransformerLayer;
-use crate::layers::qwen3_attention::{MlaWeights, Qwen3AttentionLayer};
+use crate::layers::qwen3_attention::{HcHeadWeights, HcSiteWeights, HcWeights, MlaWeights, Qwen3AttentionLayer};
 use crate::layers::FfnComponent;
 use crate::layers::MoeLayer;
 use crate::weight_map::{
@@ -40,6 +40,7 @@ pub fn assemble_layer(
     w_uv_block_diag: DenseWeight,
     yarn_inv_freq: DevicePtr,
     wo_a: DenseWeight,
+    hc_head: Option<HcHeadWeights>,
     store: &WeightStore,
     config: &ModelConfig,
     gpu: &dyn GpuBackend,
@@ -225,7 +226,109 @@ pub fn assemble_layer(
         config,
     )?;
     layer.set_mla_weights(mla);
+
+    // ── Manifold-Constrained Hyper-Connections (mHC) ──
+    // Every block keeps `hc_mult` residual streams mixed by a per-block
+    // Sinkhorn matrix. Load-bearing: skipping it diverges the residual flow.
+    if config.hc_mult > 0 {
+        let attn = load_hc_site(store, &lp, "attn", config, gpu)?;
+        let ffn = load_hc_site(store, &lp, "ffn", config, gpu)?;
+        layer.set_hc_weights(HcWeights {
+            attn,
+            ffn,
+            head: hc_head.clone(),
+            hc_mult: config.hc_mult,
+            sinkhorn_iters: config.hc_sinkhorn_iters,
+            hc_eps: config.hc_eps,
+        });
+    }
+
     Ok(Box::new(layer))
+}
+
+/// Load one HC site (`attn` or `ffn`) for a block as float32 device buffers.
+/// Tries the flat `hc_<site>_*` (DeepSeek reference / RedHatAI re-quant) and
+/// the HF `<site>_hc.*` naming. Fails fast if a tensor is missing — HC is
+/// load-bearing, so a silent skip would produce gibberish.
+fn load_hc_site(
+    store: &WeightStore,
+    layer_prefix: &str,
+    site: &str,
+    config: &ModelConfig,
+    gpu: &dyn GpuBackend,
+) -> Result<HcSiteWeights> {
+    let hc = config.hc_mult;
+    let mix_hc = (2 + hc) * hc;
+    let hc_dim = hc * config.hidden_size;
+    let hc_fn = load_hc_f32(
+        store,
+        &[
+            format!("{layer_prefix}.hc_{site}_fn"),
+            format!("{layer_prefix}.{site}_hc.fn"),
+        ],
+        mix_hc * hc_dim,
+        gpu,
+    )
+    .with_context(|| format!("DeepSeek-V4 HC {site} fn ({layer_prefix})"))?;
+    let hc_base = load_hc_f32(
+        store,
+        &[
+            format!("{layer_prefix}.hc_{site}_base"),
+            format!("{layer_prefix}.{site}_hc.base"),
+        ],
+        mix_hc,
+        gpu,
+    )
+    .with_context(|| format!("DeepSeek-V4 HC {site} base ({layer_prefix})"))?;
+    let hc_scale = load_hc_f32(
+        store,
+        &[
+            format!("{layer_prefix}.hc_{site}_scale"),
+            format!("{layer_prefix}.{site}_hc.scale"),
+        ],
+        3,
+        gpu,
+    )
+    .with_context(|| format!("DeepSeek-V4 HC {site} scale ({layer_prefix})"))?;
+    Ok(HcSiteWeights {
+        hc_fn,
+        hc_base,
+        hc_scale,
+    })
+}
+
+/// Resolve the first existing tensor among `candidates`, returning an F32
+/// device pointer (BF16 tensors are widened). Errors if none exist or the
+/// element count mismatches `expect_n`.
+pub fn load_hc_f32(
+    store: &WeightStore,
+    candidates: &[String],
+    expect_n: usize,
+    gpu: &dyn GpuBackend,
+) -> Result<DevicePtr> {
+    use spark_runtime::weights::WeightDtype;
+    let Some(t) = candidates.iter().find_map(|k| store.get(k).ok()) else {
+        anyhow::bail!("HC tensor not found; tried {candidates:?}");
+    };
+    let n = t.num_elements();
+    anyhow::ensure!(
+        n == expect_n,
+        "HC tensor length {n} != expected {expect_n} (tried {candidates:?})"
+    );
+    if t.dtype == WeightDtype::BF16 {
+        let mut bf16_buf = vec![0u8; n * 2];
+        gpu.copy_d2h(t.ptr, &mut bf16_buf)?;
+        let mut f32_buf = vec![0u8; n * 4];
+        for i in 0..n {
+            f32_buf[i * 4 + 2] = bf16_buf[i * 2];
+            f32_buf[i * 4 + 3] = bf16_buf[i * 2 + 1];
+        }
+        let ptr = gpu.alloc(f32_buf.len())?;
+        gpu.copy_h2d(&f32_buf, ptr)?;
+        Ok(ptr)
+    } else {
+        Ok(t.ptr)
+    }
 }
 
 /// Load the DeepSeek-V4 MoE `e_score_correction_bias` (noaux_tc loss-free

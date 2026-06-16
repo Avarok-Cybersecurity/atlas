@@ -23,6 +23,8 @@ mod fp8_moe_batch_a;
 mod fp8_moe_batch_b;
 #[path = "ops/gemm_dense.rs"]
 mod gemm_dense;
+#[path = "ops/hyper_connection.rs"]
+mod hyper_connection;
 #[path = "ops/gemm_quant.rs"]
 mod gemm_quant;
 #[path = "ops/kv_cache.rs"]
@@ -73,6 +75,7 @@ pub use fp8_moe_batch_a::*;
 pub use fp8_moe_batch_b::*;
 pub use gemm_dense::*;
 pub use gemm_quant::*;
+pub use hyper_connection::*;
 pub use kv_cache::*;
 pub use moe_expert::*;
 pub use moe_expert_more::*;

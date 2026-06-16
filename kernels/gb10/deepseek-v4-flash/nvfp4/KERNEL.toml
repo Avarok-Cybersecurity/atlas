@@ -51,3 +51,5 @@ paged_decode_attn_turbo4_128 = "paged_decode_turbo4_128"
 paged_decode_attn_turbo8_128 = "paged_decode_turbo8_128"
 inferspark_prefill_512 = "inferspark_prefill_512"
 paged_decode_attn_512 = "paged_decode_attn_512"
+# Manifold-Constrained Hyper-Connections (mHC): hc_pre/hc_post/hc_head.
+hyper_connection = "hyper_connection"

@@ -3,7 +3,7 @@
 //! `Qwen3AttentionLayer` setters and small per-layer compute helpers
 //! (`apply_layer_scalar`, `effective_attn_scale`).
 
-use super::types::{MlaWeights, Qwen3AttentionLayer};
+use super::types::{HcWeights, MlaWeights, Qwen3AttentionLayer};
 use crate::layers::FfnComponent;
 use crate::weight_map::DenseWeight;
 
@@ -36,6 +36,13 @@ impl Qwen3AttentionLayer {
     /// latent→norm→expand instead of single-step GEMV.
     pub fn set_mla_weights(&mut self, mla: MlaWeights) {
         self.mla = Some(mla);
+    }
+
+    /// Set per-block Manifold-Constrained Hyper-Connection weights
+    /// (DeepSeek-V4). When set, the attn/ffn residual sites route through
+    /// `hc_pre`/`hc_post` against the model-level `hc_streams` buffer.
+    pub fn set_hc_weights(&mut self, hc: HcWeights) {
+        self.hc = Some(hc);
     }
 
     /// Set per-layer dimension overrides for heterogeneous models (Gemma-4).

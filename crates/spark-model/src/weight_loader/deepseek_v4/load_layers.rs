@@ -7,6 +7,7 @@ use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
 
 use crate::layer::TransformerLayer;
+use crate::layers::qwen3_attention::HcHeadWeights;
 use crate::weight_map::{DenseWeight, dense, dense_auto};
 
 pub fn load_all_layers(
@@ -19,6 +20,60 @@ pub fn load_all_layers(
 
     let mut layers = Vec::with_capacity(n);
     let mut yarn_inv_freq = DevicePtr::NULL;
+
+    // Load model-level HC head weights once (replicated to every layer).
+    let hc_head = if config.hc_mult > 0 {
+        let hc = config.hc_mult;
+        let hc_dim = hc * config.hidden_size;
+        let head_fn = super::assemble::load_hc_f32(
+            store,
+            &[
+                "hc_head_fn".to_string(),
+                "model.hc_head.fn".to_string(),
+            ],
+            hc * hc_dim,
+            gpu,
+        )
+        .ok();
+        let head_base = super::assemble::load_hc_f32(
+            store,
+            &[
+                "hc_head_base".to_string(),
+                "model.hc_head.base".to_string(),
+            ],
+            hc,
+            gpu,
+        )
+        .ok();
+        let head_scale = super::assemble::load_hc_f32(
+            store,
+            &[
+                "hc_head_scale".to_string(),
+                "model.hc_head.scale".to_string(),
+            ],
+            1,
+            gpu,
+        )
+        .ok();
+        match (head_fn, head_base, head_scale) {
+            (Some(fn_ptr), Some(base_ptr), Some(scale_ptr)) => Some(HcHeadWeights {
+                hc_fn: fn_ptr,
+                hc_base: base_ptr,
+                hc_scale: scale_ptr,
+            }),
+            (fn_ok, base_ok, scale_ok) => {
+                anyhow::bail!(
+                    "DeepSeek-V4: hc_head weights missing (fn={} base={} scale={}); \
+                     tried hc_head_*, model.hc_head.*, head_hc.*",
+                    if fn_ok.is_some() { "ok" } else { "MISSING" },
+                    if base_ok.is_some() { "ok" } else { "MISSING" },
+                    if scale_ok.is_some() { "ok" } else { "MISSING" },
+                );
+            }
+        }
+    } else {
+        None
+    };
 
     for i in 0..n {
         // RedHatAI re-quant uses flattened naming: layers.N.* instead of model.layers.N.*
@@ -119,6 +174,7 @@ pub fn load_all_layers(
             w_uv_block_diag,
             yarn_inv_freq,
             wo_a,
+            hc_head.clone(),
             store,
             config,
             gpu,

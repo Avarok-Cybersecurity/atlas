@@ -63,6 +63,12 @@ pub struct BufferArena {
     expert_down_out: DevicePtr,
     /// Split-K decode attention workspace: partials from split CTAs (F32).
     splitk_workspace: DevicePtr,
+    /// HC residual streams: [M, hc_mult, hidden] BF16 (DeepSeek-V4 mHC).
+    hc_streams: DevicePtr,
+    /// HC `post` mixing weights: [M, hc_mult] F32.
+    hc_post: DevicePtr,
+    /// HC `comb` Sinkhorn matrix: [M, hc_mult, hc_mult] F32.
+    hc_comb: DevicePtr,
     /// Maximum batch tokens this arena was sized for.
     max_batch_tokens: usize,
     /// Sizes in bytes for each buffer (for debug/logging).
@@ -98,6 +104,9 @@ impl BufferArena {
         let expert_up_out = gpu.alloc(sizes.expert_up_out)?;
         let expert_down_out = gpu.alloc(sizes.expert_down_out)?;
         let splitk_workspace = gpu.alloc(sizes.splitk_workspace)?;
+        let hc_streams = gpu.alloc(sizes.hc_streams)?;
+        let hc_post = gpu.alloc(sizes.hc_post)?;
+        let hc_comb = gpu.alloc(sizes.hc_comb)?;
 
         tracing::info!(
             "Buffer arena: {} tokens × {:.1} MB total (attn_out={:.1}MB, ssm_deint={:.1}MB, kv_lora_rank={})",
@@ -127,6 +136,9 @@ impl BufferArena {
             expert_up_out,
             expert_down_out,
             splitk_workspace,
+            hc_streams,
+            hc_post,
+            hc_comb,
             max_batch_tokens,
             sizes,
         })
@@ -193,6 +205,18 @@ impl BufferArena {
     /// Split-K decode attention workspace (F32 partials).
     pub fn splitk_workspace(&self) -> DevicePtr {
         self.splitk_workspace
+    }
+    /// HC residual streams [M, hc_mult, hidden] BF16 (DeepSeek-V4 mHC).
+    pub fn hc_streams(&self) -> DevicePtr {
+        self.hc_streams
+    }
+    /// HC `post` mixing weights [M, hc_mult] F32.
+    pub fn hc_post(&self) -> DevicePtr {
+        self.hc_post
+    }
+    /// HC `comb` Sinkhorn matrix [M, hc_mult, hc_mult] F32.
+    pub fn hc_comb(&self) -> DevicePtr {
+        self.hc_comb
     }
     pub fn max_batch_tokens(&self) -> usize {
         self.max_batch_tokens

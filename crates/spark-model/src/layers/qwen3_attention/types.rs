@@ -65,6 +65,44 @@ pub struct MlaWeights {
     pub v_dim: usize,
 }
 
+/// Per-block Manifold-Constrained Hyper-Connection (mHC) parameters for one
+/// site (attention or FFN). All buffers are float32 device pointers, matching
+/// the checkpoint dtype. See `ops::hc_pre` / `ops::hc_post`.
+pub struct HcSiteWeights {
+    /// Mix projection `fn`: `[mix_hc, hc_mult*hidden]` f32, where
+    /// `mix_hc = (2 + hc_mult) * hc_mult`.
+    pub hc_fn: DevicePtr,
+    /// Mix bias `base`: `[mix_hc]` f32.
+    pub hc_base: DevicePtr,
+    /// Mix scale: `[3]` f32 (pre / post / comb scalars).
+    pub hc_scale: DevicePtr,
+}
+
+/// Both HC sites for a DeepSeek-V4 block: the attention site runs before/after
+/// attention, the FFN site before/after the MoE FFN.
+/// Model-level HC head parameters (final collapse before LM head).
+/// Loaded once, attached to every layer, but only used by the last layer.
+#[derive(Clone)]
+pub struct HcHeadWeights {
+    /// Mix projection `head_fn`: `[hc_mult, hc_mult*hidden]` f32.
+    pub hc_fn: DevicePtr,
+    /// Mix bias `head_base`: `[hc_mult]` f32.
+    pub hc_base: DevicePtr,
+    /// Mix scale: `[1]` f32.
+    pub hc_scale: DevicePtr,
+}
+
+pub struct HcWeights {
+    pub attn: HcSiteWeights,
+    pub ffn: HcSiteWeights,
+    /// Model-level head weights. `Some` on all layers (replicated pointer),
+    /// consumed only by the last layer's `hc_head` call.
+    pub head: Option<HcHeadWeights>,
+    pub hc_mult: usize,
+    pub sinkhorn_iters: usize,
+    pub hc_eps: f32,
+}
+
 /// Qwen3-Next full attention layer (12 of 48 layers).
 #[allow(dead_code)]
 pub struct Qwen3AttentionLayer {
@@ -127,6 +165,19 @@ pub struct Qwen3AttentionLayer {
     pub(super) o_dense_bf16: Option<DenseWeight>,
     // ── MLA (Multi-head Latent Attention) — 2-step decode ──
     pub(crate) mla: Option<MlaWeights>,
+    // ── Manifold-Constrained Hyper-Connections (mHC) — DeepSeek-V4 ──
+    /// Per-block HC parameters. `Some` only for DeepSeek-V4 (`hc_mult > 0`),
+    /// in which case the attn/ffn residual sites use `hc_pre`/`hc_post`
+    /// against the `hc_streams` buffer instead of the standard residual add.
+    pub(crate) hc: Option<HcWeights>,
+    /// HC `hc_pre` kernel handle (NULL when HC disabled).
+    pub(super) hc_pre_k: KernelHandle,
+    /// HC `hc_post` kernel handle (NULL when HC disabled).
+    pub(super) hc_post_k: KernelHandle,
+    /// HC `hc_expand` kernel handle (NULL when HC disabled).
+    pub(super) hc_expand_k: KernelHandle,
+    /// HC `hc_head` kernel handle (NULL when HC disabled).
+    pub(super) hc_head_k: KernelHandle,
     // ── Transposed weights for prefill GEMM ──
     pub(super) q_nvfp4_t: Option<QuantizedWeight>,
     pub(super) k_nvfp4_t: Option<QuantizedWeight>,

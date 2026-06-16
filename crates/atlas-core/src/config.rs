@@ -225,6 +225,20 @@ pub struct ModelConfig {
     #[serde(default)]
     pub llama_4_scaling_original_max_position_embeddings: usize,
 
+    // ── Manifold-Constrained Hyper-Connections (mHC, DeepSeek-V4) ──
+    /// Number of hyper-connection residual streams per block (`hc_mult`).
+    /// 0 = disabled (every model except DeepSeek-V4). DeepSeek-V4 uses 4.
+    #[serde(default)]
+    pub hc_mult: usize,
+    /// Number of Sinkhorn normalization iterations for the HC mixing matrix
+    /// (`hc_sinkhorn_iters`). DeepSeek-V4 default is 20.
+    #[serde(default)]
+    pub hc_sinkhorn_iters: usize,
+    /// Numerical-stability epsilon for HC sigmoid/softmax/Sinkhorn
+    /// (`hc_eps`). DeepSeek-V4 default is 1e-6.
+    #[serde(default)]
+    pub hc_eps: f32,
+
     // ── Vision (Qwen3-VL only) ──
     /// Vision encoder configuration parsed from `vision_config` in config.json.
     /// None for text-only models.

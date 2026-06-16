@@ -41,9 +41,9 @@ fn test_buffer_arena_alloc() {
     assert!(!arena.hidden_states().is_null());
     assert!(!arena.logits().is_null());
     assert_eq!(arena.max_batch_tokens(), 128);
-    // 18 allocations for 18 buffers (12 data + 1 scratch + 3 expert + 2 splitk).
-    // Bump from 17 reflects an added split-K accumulator buffer.
-    assert_eq!(gpu.alloc_count(), 18);
+    // 21 allocations: 12 data + 1 scratch + 3 expert + 1 splitk + 3 HC
+    // (hc_streams/hc_post/hc_comb, placeholder-sized when hc_mult == 0).
+    assert_eq!(gpu.alloc_count(), 21);
 }
 
 #[test]

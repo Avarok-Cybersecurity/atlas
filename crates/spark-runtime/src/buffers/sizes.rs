@@ -25,6 +25,13 @@ pub struct BufferSizes {
     pub expert_up_out: usize,
     pub expert_down_out: usize,
     pub splitk_workspace: usize,
+    /// HC residual streams: `[M, hc_mult, hidden]` BF16 (DeepSeek-V4 mHC).
+    /// 256 (placeholder) when `hc_mult == 0`.
+    pub hc_streams: usize,
+    /// HC `post` mixing weights: `[M, hc_mult]` F32.
+    pub hc_post: usize,
+    /// HC `comb` Sinkhorn matrix: `[M, hc_mult, hc_mult]` F32.
+    pub hc_comb: usize,
 }
 
 impl BufferSizes {
@@ -207,6 +214,22 @@ impl BufferSizes {
             expert_up_out,
             expert_down_out,
             splitk_workspace,
+            // HC buffers: only allocated for DeepSeek-V4 (hc_mult > 0).
+            hc_streams: if config.hc_mult > 0 {
+                m * config.hc_mult * h * bf16
+            } else {
+                256
+            },
+            hc_post: if config.hc_mult > 0 {
+                (m * config.hc_mult * 4).max(256)
+            } else {
+                256
+            },
+            hc_comb: if config.hc_mult > 0 {
+                (m * config.hc_mult * config.hc_mult * 4).max(256)
+            } else {
+                256
+            },
         }
     }
 
@@ -230,5 +253,8 @@ impl BufferSizes {
             + self.expert_up_out
             + self.expert_down_out
             + self.splitk_workspace
+            + self.hc_streams
+            + self.hc_post
+            + self.hc_comb
     }
 }
