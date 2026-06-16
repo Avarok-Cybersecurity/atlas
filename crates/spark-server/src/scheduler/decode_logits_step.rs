@@ -443,8 +443,16 @@ pub fn process_decode_logits(
         const POST_THINK_MIN_CONTENT: u32 = 16;
         let post_think_content_tokens =
             (a.output_tokens.len() as u32).saturating_sub(a.thinking_tokens);
-        let post_think_suppresses_eos =
-            a.think_ended && post_think_content_tokens < POST_THINK_MIN_CONTENT;
+        // Scope the guard to tool-call-eligible turns (see comment above): the
+        // `&& (require_tool_call || tool_request)` clause was lost in the
+        // open-source squash, leaving the guard firing UNCONDITIONALLY for
+        // every short post-`</think>` answer — the model emits a valid answer
+        // + `<|im_end|>`, the guard suppresses it, and generation collapses
+        // into `\nuser\nassistant\n` scaffold (and short-answer repetition
+        // loops). `tool_request` is the sticky per-seq tools-armed flag.
+        let post_think_suppresses_eos = a.think_ended
+            && post_think_content_tokens < POST_THINK_MIN_CONTENT
+            && (a.require_tool_call || a.tool_request);
         let suppress_eos = grammar_suppresses_eos
             || legacy_suppresses_eos
             || min_tokens_suppresses
