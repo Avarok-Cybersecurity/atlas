@@ -49,11 +49,7 @@ unsafe extern "C" {
         flags: u64,
     ) -> i32;
     #[cfg(atlas_scale)]
-    pub(super) fn cuGraphInstantiate(
-        phGraphExec: *mut u64,
-        hGraph: u64,
-        flags: u64,
-    ) -> i32;
+    pub(super) fn cuGraphInstantiate(phGraphExec: *mut u64, hGraph: u64, flags: u64) -> i32;
     pub(super) fn cuGraphLaunch(hGraphExec: u64, hStream: u64) -> i32;
     pub(super) fn cuGraphExecDestroy(hGraphExec: u64) -> i32;
     pub(super) fn cuGraphDestroy(hGraph: u64) -> i32;

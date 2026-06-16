@@ -60,13 +60,12 @@ pub fn step_verify_dflash(
     // `[tokens.len(), vocab]` BF16 into `logits_buffer`; the helper
     // reads it back, dequant + 8-stage pipeline + argmax per slot.
     // Fail-safe falls back to the raw GPU argmax on D2H failure.
-    let verified =
-        crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
-            model,
-            &verified_argmax,
-            a,
-            verify_ctx,
-        );
+    let verified = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+        model,
+        &verified_argmax,
+        a,
+        verify_ctx,
+    );
 
     // `decode_verify` already advanced `seq.seq_len` by `tokens.len()` and
     // pushed all γ+1 tokens into `seq.tokens`. The accept-prefix logic below

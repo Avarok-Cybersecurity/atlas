@@ -44,10 +44,7 @@ impl Qwen3SsmLayer {
             std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(),
             Some("1")
         );
-        let force_w8a8 = matches!(
-            std::env::var("ATLAS_FP8_W8A8").ok().as_deref(),
-            Some("1")
-        );
+        let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
         if force_bf16 {
             ops::dense_gemm(
                 ctx.gpu,
@@ -115,7 +112,9 @@ impl Qwen3SsmLayer {
         } else if let Some(ref fp8w) = self.qkvz_fp8w
             && self.w8a16_gemm_k.0 != 0
         {
-            tracing::info!("ssm prefill: dispatching QKVZ via w8a16_gemm (block-scaled, vLLM-parity)");
+            tracing::info!(
+                "ssm prefill: dispatching QKVZ via w8a16_gemm (block-scaled, vLLM-parity)"
+            );
             // Block-scaled W8A16 prefill: matches vLLM's per-128-block FP32
             // scale precision (vs the single-scale fp8_gemm_n128 below
             // which bakes ALL per-block scales into one global scale,

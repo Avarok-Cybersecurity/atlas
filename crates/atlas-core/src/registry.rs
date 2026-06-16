@@ -139,7 +139,9 @@ impl AtlasRegistry {
             // binary ELF code object. `cuModuleLoadData` accepts either,
             // but PTX must arrive NUL-terminated (the driver JIT parses it
             // as a C string) while a binary object is self-describing.
-            let is_binary = blob.starts_with(b"\x7fELF") || blob.starts_with(b"__CLANG_OFFLOAD_BUNDLE__") || std::str::from_utf8(&blob[..blob.len().min(64)]).is_err();
+            let is_binary = blob.starts_with(b"\x7fELF")
+                || blob.starts_with(b"__CLANG_OFFLOAD_BUNDLE__")
+                || std::str::from_utf8(&blob[..blob.len().min(64)]).is_err();
 
             // Load via cudarc (safe API) — backs `function()` lookups.
             let ptx = if is_binary {

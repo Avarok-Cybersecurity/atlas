@@ -180,13 +180,8 @@ pub(super) fn load_layers(
                 stream,
             )?)
         };
-        let mut moe_layer = MoeLayer::new(
-            moe_weights,
-            config.num_experts,
-            gate_nvfp4,
-            gpu,
-            config,
-        )?;
+        let mut moe_layer =
+            MoeLayer::new(moe_weights, config.num_experts, gate_nvfp4, gpu, config)?;
         // Phase 2.7 Tier C: flag DFlash capture layers so the MoE forward
         // can dispatch the Frankenstein kernel route (env-var-gated). The
         // capture-layer indices are already offset-adjusted in factory.rs
@@ -214,13 +209,19 @@ pub(super) fn load_layers(
         // timeouts (the bit-perfect speed wall, task #231).
         let layer_sel = layer_dequant_selected(i);
         let dequant_moe_to_bf16 = native_fp8
-            && std::env::var("ATLAS_FP8_DEQUANT_MOE_TO_BF16").ok().as_deref() == Some("1")
+            && std::env::var("ATLAS_FP8_DEQUANT_MOE_TO_BF16")
+                .ok()
+                .as_deref()
+                == Some("1")
             && layer_sel;
         // Diagnostic: dequant attention Q/K/V/O FP8→BF16 at load and run them
         // through dense BF16 GEMM (isolates the FP8-attention contribution to
         // the Atlas↔vLLM cosine floor). TP=1 only.
         let dequant_attn_to_bf16 = native_fp8
-            && std::env::var("ATLAS_FP8_DEQUANT_ATTN_TO_BF16").ok().as_deref() == Some("1")
+            && std::env::var("ATLAS_FP8_DEQUANT_ATTN_TO_BF16")
+                .ok()
+                .as_deref()
+                == Some("1")
             && layer_sel;
 
         if dequant_moe_to_bf16 {
@@ -287,12 +288,15 @@ pub(super) fn load_layers(
             if sh_d.is_some() {
                 free_src(&sh_down_key);
             }
-            let sh_g_ptr =
-                sh_g.map(|w| w.weight).unwrap_or(spark_runtime::gpu::DevicePtr::NULL);
-            let sh_u_ptr =
-                sh_u.map(|w| w.weight).unwrap_or(spark_runtime::gpu::DevicePtr::NULL);
-            let sh_d_ptr =
-                sh_d.map(|w| w.weight).unwrap_or(spark_runtime::gpu::DevicePtr::NULL);
+            let sh_g_ptr = sh_g
+                .map(|w| w.weight)
+                .unwrap_or(spark_runtime::gpu::DevicePtr::NULL);
+            let sh_u_ptr = sh_u
+                .map(|w| w.weight)
+                .unwrap_or(spark_runtime::gpu::DevicePtr::NULL);
+            let sh_d_ptr = sh_d
+                .map(|w| w.weight)
+                .unwrap_or(spark_runtime::gpu::DevicePtr::NULL);
             match load_err {
                 Some(e) => {
                     tracing::error!("Layer {i}: dequant-to-BF16 MoE load failed: {e:#}");

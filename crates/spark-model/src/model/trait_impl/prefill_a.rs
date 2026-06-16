@@ -402,17 +402,26 @@ impl TransformerModel {
                 if fp32 == 4 {
                     for c in hb.chunks_exact(4) {
                         let x = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-                        if !x.is_finite() { nonfinite = true; }
+                        if !x.is_finite() {
+                            nonfinite = true;
+                        }
                         ss += (x as f64) * (x as f64);
                     }
                 } else {
                     for c in hb.chunks_exact(2) {
                         let x = f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16);
-                        if !x.is_finite() { nonfinite = true; }
+                        if !x.is_finite() {
+                            nonfinite = true;
+                        }
                         ss += (x as f64) * (x as f64);
                     }
                 }
-                eprintln!("[layer-norm] L{i} ssm={} hidden_norm={:.4} nonfinite={}", layer.is_ssm_layer(), ss.sqrt(), nonfinite);
+                eprintln!(
+                    "[layer-norm] L{i} ssm={} hidden_norm={:.4} nonfinite={}",
+                    layer.is_ssm_layer(),
+                    ss.sqrt(),
+                    nonfinite
+                );
             }
             // DFlash prefill capture: writes layer i's hidden output for
             // all `proc_count` tokens into the seq's accumulator at slots

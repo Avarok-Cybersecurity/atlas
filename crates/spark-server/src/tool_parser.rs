@@ -399,8 +399,8 @@ pub use pipeline::*;
 use pipeline_helpers::*;
 pub use qwen3_coder::*;
 pub use qwen3_xml::*;
-pub use type_coerce::coerce_all;
 pub use streaming::*;
+pub use type_coerce::coerce_all;
 pub use validation::*;
 
 #[cfg(test)]

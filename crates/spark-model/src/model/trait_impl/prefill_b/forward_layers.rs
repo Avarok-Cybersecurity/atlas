@@ -182,7 +182,10 @@ impl TransformerModel {
                 let _lo = (proc_count - 1) * h * 2;
                 let (vals, norm) = self.readback_bf16(hidden.offset(_lo), 8)?;
                 let lt = self.config.layer_type(i);
-                tracing::info!("L{i} ({lt:?}) LASTnorm={norm:.4} v={:.4?}", &vals[..4.min(vals.len())]);
+                tracing::info!(
+                    "L{i} ({lt:?}) LASTnorm={norm:.4} v={:.4?}",
+                    &vals[..4.min(vals.len())]
+                );
             }
             // Per-layer numerical-divergence dump (env-gated, zero overhead when
             // unset). `ATLAS_NEMO_DUMP=<dir>` writes the LAST token's full

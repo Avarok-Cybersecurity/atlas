@@ -222,8 +222,8 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         // retains rollback via `handle_content_token`.
         use crate::scheduler::helpers::{
             CONTENT_LOOP_CHECK_STRIDE, CONTENT_LOOP_MIN_TOKENS, CONTENT_LOOP_PERIOD_MAX,
-            CONTENT_LOOP_PERIOD_MIN, detect_content_token_loop_with,
-            detect_content_token_loop_normalized_with, disable_watchdogs, enable_loop_watchdog,
+            CONTENT_LOOP_PERIOD_MIN, detect_content_token_loop_normalized_with,
+            detect_content_token_loop_with, disable_watchdogs, enable_loop_watchdog,
             numeric_token_mask,
         };
         a.content_tokens = a.content_tokens.saturating_add(1);
@@ -528,8 +528,7 @@ pub fn update_tool_param_state(a: &mut ActiveSeq, tok: u32) {
             // position-0 mask in `decode_logits_seq.rs` (close-tag +
             // AM1 attractor) fires only while this counter is 0, so it
             // deactivates after the first emitted body token.
-            a.param_body_chars_emitted =
-                a.param_body_chars_emitted.saturating_add(1);
+            a.param_body_chars_emitted = a.param_body_chars_emitted.saturating_add(1);
         }
         return;
     }
@@ -557,10 +556,7 @@ pub fn update_tool_param_state(a: &mut ActiveSeq, tok: u32) {
     let window = &a.output_tokens[start..n_for_lookback];
     let mut sig_idx: Option<usize> = None;
     for i in 0..window.len().saturating_sub(2) {
-        if window[i] == TOK_LT
-            && window[i + 1] == TOK_PARAMETER
-            && window[i + 2] == TOK_EQ
-        {
+        if window[i] == TOK_LT && window[i + 1] == TOK_PARAMETER && window[i + 2] == TOK_EQ {
             sig_idx = Some(i + 3);
         }
     }

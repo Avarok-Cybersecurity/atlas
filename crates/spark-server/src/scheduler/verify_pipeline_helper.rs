@@ -217,7 +217,9 @@ pub fn verify_pick_all_with_pipeline(
         let mut fast: Vec<u32> = Vec::with_capacity(k);
         let mut all_allowed = true;
         for (i, &tok) in argmax_ids.iter().enumerate() {
-            let gs = a.grammar_state.as_mut().expect("grammar_state present (gated above)");
+            let Some(gs) = a.grammar_state.as_mut() else {
+                break; // gated above: grammar_state is Some
+            };
             let allowed = if gs.is_terminated() {
                 true // no further constraint past grammar completion
             } else {

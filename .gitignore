@@ -53,7 +53,7 @@ __pycache__/
 *.qdrep
 *.sqlite
 perf.data*
-core.*
+/core.*
 
 # Environment / secrets
 .env

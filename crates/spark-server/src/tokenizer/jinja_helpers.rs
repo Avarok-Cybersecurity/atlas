@@ -135,29 +135,29 @@ pub(super) fn build_jinja_env(chat_template: &str) -> Result<minijinja::Environm
     // vLLM/transformers at the first `:`. This filter restores byte
     // parity. (Key order is preserved via the `preserve_order` feature
     // on both serde_json and minijinja — see the Cargo.toml notes.)
-    env.add_filter("tojson", |value: minijinja::Value| -> Result<
-        minijinja::Value,
-        minijinja::Error,
-    > {
-        let mut buf = Vec::new();
-        let mut ser = serde_json::Serializer::with_formatter(&mut buf, PythonJsonFormatter);
-        serde::Serialize::serialize(&value, &mut ser).map_err(|e| {
-            minijinja::Error::new(
-                minijinja::ErrorKind::InvalidOperation,
-                format!("tojson serialization failed: {e}"),
-            )
-        })?;
-        // serde_json writes valid UTF-8; ensure_ascii=False means we keep
-        // multi-byte characters verbatim (no \uXXXX escaping), which
-        // serde_json already does by default.
-        let s = String::from_utf8(buf).map_err(|e| {
-            minijinja::Error::new(
-                minijinja::ErrorKind::InvalidOperation,
-                format!("tojson produced invalid UTF-8: {e}"),
-            )
-        })?;
-        Ok(minijinja::Value::from_safe_string(s))
-    });
+    env.add_filter(
+        "tojson",
+        |value: minijinja::Value| -> Result<minijinja::Value, minijinja::Error> {
+            let mut buf = Vec::new();
+            let mut ser = serde_json::Serializer::with_formatter(&mut buf, PythonJsonFormatter);
+            serde::Serialize::serialize(&value, &mut ser).map_err(|e| {
+                minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidOperation,
+                    format!("tojson serialization failed: {e}"),
+                )
+            })?;
+            // serde_json writes valid UTF-8; ensure_ascii=False means we keep
+            // multi-byte characters verbatim (no \uXXXX escaping), which
+            // serde_json already does by default.
+            let s = String::from_utf8(buf).map_err(|e| {
+                minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidOperation,
+                    format!("tojson produced invalid UTF-8: {e}"),
+                )
+            })?;
+            Ok(minijinja::Value::from_safe_string(s))
+        },
+    );
 
     env.add_template("chat", template_static)
         .context("Failed to compile Jinja chat template")?;

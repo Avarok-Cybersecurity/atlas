@@ -111,8 +111,18 @@ impl PagedKvCache {
         for layer in &self.layers {
             let k_offset = block_idx as usize * layer.block_stride;
             let v_offset = block_idx as usize * layer.block_stride;
-            gpu.memset_async(layer.k_pool.offset(k_offset), 0xFF, layer.block_stride, stream)?;
-            gpu.memset_async(layer.v_pool.offset(v_offset), 0xFF, layer.block_stride, stream)?;
+            gpu.memset_async(
+                layer.k_pool.offset(k_offset),
+                0xFF,
+                layer.block_stride,
+                stream,
+            )?;
+            gpu.memset_async(
+                layer.v_pool.offset(v_offset),
+                0xFF,
+                layer.block_stride,
+                stream,
+            )?;
         }
         Ok(())
     }
@@ -224,8 +234,10 @@ impl PagedKvCache {
     ) {
         gpu.synchronize(stream).ok();
         let boundary = boundary_idx.min(blocks.len());
-        let regions: [(&str, &[u32]); 2] =
-            [("prefix", &blocks[..boundary]), ("suffix", &blocks[boundary..])];
+        let regions: [(&str, &[u32]); 2] = [
+            ("prefix", &blocks[..boundary]),
+            ("suffix", &blocks[boundary..]),
+        ];
         for (li, layer) in self.layers.iter().enumerate() {
             if layer.dtype != super::KvCacheDtype::Bf16 {
                 if li == 0 {
@@ -290,8 +302,12 @@ impl PagedKvCache {
         for (li, &blk) in blocks.iter().enumerate() {
             let mut kb = vec![0u8; nbytes];
             let mut vb = vec![0u8; nbytes];
-            if gpu.copy_d2h(self.k_cache_ptr(layer_idx, blk), &mut kb).is_err()
-                || gpu.copy_d2h(self.v_cache_ptr(layer_idx, blk), &mut vb).is_err()
+            if gpu
+                .copy_d2h(self.k_cache_ptr(layer_idx, blk), &mut kb)
+                .is_err()
+                || gpu
+                    .copy_d2h(self.v_cache_ptr(layer_idx, blk), &mut vb)
+                    .is_err()
             {
                 continue;
             }

@@ -104,7 +104,11 @@ pub fn step_mtp(
         // (→ truncation). A single draft uses its own up-to-date mask and is
         // sound; drafts.len()==1 routes verify to the K=2 path. Mask is a no-op
         // when grammar is inactive, so NVFP4/non-tool paths keep full K.
-        let effective_num_drafts = if a.grammar_state.is_some() { 1 } else { num_drafts };
+        let effective_num_drafts = if a.grammar_state.is_some() {
+            1
+        } else {
+            num_drafts
+        };
         match model.run_mtp_propose_multi(
             tok,
             a.seq.seq_len,

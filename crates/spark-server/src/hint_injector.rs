@@ -304,9 +304,23 @@ pub fn tool_call_is_productive(name: &str, args: &serde_json::Value) -> bool {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         const WRITE_VERBS: &[&str] = &[
-            "cat >", "cat>", "tee ", ">>", " > ", "cargo build", "cargo run", "cargo test",
-            "rustc ", "go build", "go run", "npm run", "npm install", "make ", "python ",
-            "node ", "touch ",
+            "cat >",
+            "cat>",
+            "tee ",
+            ">>",
+            " > ",
+            "cargo build",
+            "cargo run",
+            "cargo test",
+            "rustc ",
+            "go build",
+            "go run",
+            "npm run",
+            "npm install",
+            "make ",
+            "python ",
+            "node ",
+            "touch ",
         ];
         return WRITE_VERBS.iter().any(|v| cmd.contains(v));
     }
@@ -432,14 +446,23 @@ mod tests {
         ));
         assert!(tool_call_is_productive("Edit", &json!({})));
         // bash that writes/builds/runs → productive
-        assert!(tool_call_is_productive("bash", &json!({"command":"cargo run --release"})));
+        assert!(tool_call_is_productive(
+            "bash",
+            &json!({"command":"cargo run --release"})
+        ));
         assert!(tool_call_is_productive(
             "bash",
             &json!({"command":"cat > src/main.rs << 'EOF'"})
         ));
         // bash exploration → NOT productive
-        assert!(!tool_call_is_productive("bash", &json!({"command":"ls -la /tmp"})));
-        assert!(!tool_call_is_productive("bash", &json!({"command":"cat Cargo.toml"})));
+        assert!(!tool_call_is_productive(
+            "bash",
+            &json!({"command":"ls -la /tmp"})
+        ));
+        assert!(!tool_call_is_productive(
+            "bash",
+            &json!({"command":"cat Cargo.toml"})
+        ));
         // read/glob → NOT productive
         assert!(!tool_call_is_productive("read", &json!({"filePath":"x"})));
         assert!(!tool_call_is_productive("glob", &json!({"pattern":"**/*"})));

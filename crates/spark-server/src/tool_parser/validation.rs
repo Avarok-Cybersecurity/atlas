@@ -264,10 +264,7 @@ pub fn normalize_paths(calls: &mut [ToolCall], cwd: &str) {
                 // the file is created with the quotes+comma literally in its
                 // name and the project never builds.
                 sanitized = sanitized.trim_end_matches([',', ' ', '\t']);
-                if sanitized.len() >= 2
-                    && sanitized.starts_with('"')
-                    && sanitized.ends_with('"')
-                {
+                if sanitized.len() >= 2 && sanitized.starts_with('"') && sanitized.ends_with('"') {
                     sanitized = &sanitized[1..sanitized.len() - 1];
                 }
                 if sanitized != path.as_str() {
@@ -481,8 +478,9 @@ pub fn validate_single_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> R
                 // a leaked command (e.g. `created && ls -R`) rather than a
                 // real path — those we still reject (also closes CWE-78
                 // command-leak-as-path).
-                const SHELL_META: &[char] =
-                    &[' ', '\t', '\n', '\r', '&', '|', ';', '`', '$', '<', '>', '(', ')', '*', '?'];
+                const SHELL_META: &[char] = &[
+                    ' ', '\t', '\n', '\r', '&', '|', ';', '`', '$', '<', '>', '(', ')', '*', '?',
+                ];
                 let looks_like_command = trimmed.contains(SHELL_META);
                 if looks_like_command || trimmed.len() < 3 {
                     return Err(format!(
@@ -506,8 +504,8 @@ pub fn validate_single_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> R
     // the validator post-parse keeps the same invariant while letting
     // the grammar body be `any_text` (native XML wire format).
     const SHELL_FAMILY: &[&str] = &[
-        "bash", "Bash", "shell", "Shell", "exec", "Exec", "run", "Run",
-        "execute", "Execute", "terminal", "Terminal",
+        "bash", "Bash", "shell", "Shell", "exec", "Exec", "run", "Run", "execute", "Execute",
+        "terminal", "Terminal",
     ];
     const CMD_KEYS: &[&str] = &["command", "cmd", "script", "code"];
     if SHELL_FAMILY.contains(&name.as_str()) {
@@ -577,8 +575,7 @@ mod path_sanitizer_tests {
             },
         }];
         super::normalize_paths(&mut calls, "/tmp/proj");
-        let args: serde_json::Value =
-            serde_json::from_str(&calls[0].function.arguments).unwrap();
+        let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
         assert_eq!(args["filePath"], "Cargo.toml");
     }
 }

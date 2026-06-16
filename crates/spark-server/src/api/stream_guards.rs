@@ -216,6 +216,10 @@ mod tests {
         check_loop_watchdog(&big, &mut buf, false);
         check_loop_watchdog(&big, &mut buf, false);
         check_loop_watchdog(&big, &mut buf, false);
-        assert!(buf.len() <= 10_240, "buffer should self-trim, got {}", buf.len());
+        assert!(
+            buf.len() <= 10_240,
+            "buffer should self-trim, got {}",
+            buf.len()
+        );
     }
 }

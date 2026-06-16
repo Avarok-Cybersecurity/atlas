@@ -26,10 +26,7 @@ impl Qwen3SsmLayer {
         value_dim: usize,
         stream: u64,
     ) -> Result<()> {
-        let force_w8a8 = matches!(
-            std::env::var("ATLAS_FP8_W8A8").ok().as_deref(),
-            Some("1")
-        );
+        let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
         if let Some(ref dense_out) = self.out_proj_dense {
             ops::dense_gemm(
                 ctx.gpu,

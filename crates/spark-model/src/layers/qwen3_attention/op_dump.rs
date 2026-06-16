@@ -40,11 +40,7 @@ fn parse_csv(env: &str) -> Vec<String> {
 fn parse_csv_usize(env: &str) -> Vec<usize> {
     std::env::var(env)
         .ok()
-        .map(|s| {
-            s.split(',')
-                .filter_map(|p| p.trim().parse().ok())
-                .collect()
-        })
+        .map(|s| s.split(',').filter_map(|p| p.trim().parse().ok()).collect())
         .unwrap_or_default()
 }
 

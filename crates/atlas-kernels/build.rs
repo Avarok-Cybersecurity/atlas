@@ -320,9 +320,12 @@ fn main() {
                             break;
                         }
                         let job = &compile_jobs[i];
-                        if let Err(e) =
-                            compute.compile(&job.cu_file, &job.out_file, &job.arch, &job.extra_flags)
-                        {
+                        if let Err(e) = compute.compile(
+                            &job.cu_file,
+                            &job.out_file,
+                            &job.arch,
+                            &job.extra_flags,
+                        ) {
                             errors_mutex.lock().unwrap().push(e);
                         }
                     }
@@ -357,8 +360,7 @@ fn main() {
     }
 
     // ── Generate target_ptx.rs ──
-    let generated =
-        generate_target_ptx_rs(&targets, &all_target_modules, output_ext, cuda_api);
+    let generated = generate_target_ptx_rs(&targets, &all_target_modules, output_ext, cuda_api);
     let gen_path = out_dir.join("target_ptx.rs");
     std::fs::write(&gen_path, &generated)
         .unwrap_or_else(|e| panic!("Failed to write {}: {e}", gen_path.display()));

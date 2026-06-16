@@ -218,8 +218,7 @@ impl TransformerModel {
             && std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok();
         let k1_timing = crate::layers::verify_timing::enabled();
         for (i, layer) in self.layers.iter().enumerate() {
-            let is_attn =
-                self.config.layer_type(i) == atlas_core::config::LayerType::FullAttention;
+            let is_attn = self.config.layer_type(i) == atlas_core::config::LayerType::FullAttention;
             let k1_t0 = if k1_timing {
                 Some(std::time::Instant::now())
             } else {
@@ -244,10 +243,7 @@ impl TransformerModel {
                 } else {
                     &crate::layers::verify_timing::K1_SSM_TOTAL_NS
                 };
-                crate::layers::verify_timing::add(
-                    acc,
-                    t0.elapsed().as_nanos() as u64,
-                );
+                crate::layers::verify_timing::add(acc, t0.elapsed().as_nanos() as u64);
             }
             // CBD per-layer hidden fingerprint at decode step 0 (eager only).
             // Localizes the FIRST layer whose post-layer hidden diverges

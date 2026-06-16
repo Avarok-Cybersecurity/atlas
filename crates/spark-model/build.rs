@@ -49,7 +49,10 @@ fn main() {
         Err(e) => {
             // atlas-kernels build.rs panics on bad TOML; here we stay quiet
             // (it will fail there) but surface a warning for diagnosability.
-            println!("cargo:warning=spark-model: ignoring unparseable {}: {e}", hw_toml_path.display());
+            println!(
+                "cargo:warning=spark-model: ignoring unparseable {}: {e}",
+                hw_toml_path.display()
+            );
             return;
         }
     };
@@ -60,11 +63,18 @@ fn main() {
     // List of (TOML key, emitted env var). Additive: each is emitted only
     // when present-and-true. Keep in sync with the option_env! read sites.
     const FLAGS: &[(&str, &str)] = &[
-        ("disable_fp8_ssm_prefill", "ATLAS_HW_DISABLE_FP8_SSM_PREFILL"),
+        (
+            "disable_fp8_ssm_prefill",
+            "ATLAS_HW_DISABLE_FP8_SSM_PREFILL",
+        ),
         ("force_br32_prefill", "ATLAS_HW_FORCE_BR32"),
     ];
     for (key, env_name) in FLAGS {
-        if hardware.get(*key).and_then(|v| v.as_bool()).unwrap_or(false) {
+        if hardware
+            .get(*key)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             println!("cargo:rustc-env={env_name}=true");
         }
     }

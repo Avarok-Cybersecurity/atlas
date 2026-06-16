@@ -377,13 +377,13 @@ pub fn moe_fp8_grouped_gemm(
 pub fn moe_w8a8_grouped_gemm(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
-    a_fp8: DevicePtr,             // [total_tokens, K] FP8 E4M3
-    a_scale: DevicePtr,           // [total_tokens, K/128] FP32
-    weight_ptrs: DevicePtr,       // [num_experts] → [N, K] FP8
-    scale_ptrs: DevicePtr,        // [num_experts] → [N/128, K/128] BF16
-    output: DevicePtr,            // [total_expanded, N] BF16
-    expert_offsets: DevicePtr,    // [num_experts + 1]
-    sorted_token_ids: DevicePtr,  // [total_expanded] or NULL
+    a_fp8: DevicePtr,            // [total_tokens, K] FP8 E4M3
+    a_scale: DevicePtr,          // [total_tokens, K/128] FP32
+    weight_ptrs: DevicePtr,      // [num_experts] → [N, K] FP8
+    scale_ptrs: DevicePtr,       // [num_experts] → [N/128, K/128] BF16
+    output: DevicePtr,           // [total_expanded, N] BF16
+    expert_offsets: DevicePtr,   // [num_experts + 1]
+    sorted_token_ids: DevicePtr, // [total_expanded] or NULL
     num_experts: u32,
     n: u32,
     k: u32,

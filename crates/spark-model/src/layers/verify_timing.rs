@@ -88,7 +88,17 @@ pub fn dump_and_reset(head_ms: f64) {
         "VERIFY_TIMING step total={:.2}ms | attn={:.2} ssm={:.2} head={:.2} || \
          ssm[rmsnorm={:.2} qkvz={:.2} ba_gates={:.2} conv_gdn={:.2} gatedrms={:.2} \
          outproj={:.2} moe={:.2}]",
-        total, attn, ssm, head_ms, rms, qkvz, ba, convgdn, grms, outp, moe
+        total,
+        attn,
+        ssm,
+        head_ms,
+        rms,
+        qkvz,
+        ba,
+        convgdn,
+        grms,
+        outp,
+        moe
     );
 }
 
@@ -105,6 +115,9 @@ pub fn dump_and_reset_k1() {
     tracing::info!(
         "VERIFY_TIMING_K1 step | k1_attn={:.2} k1_ssm_total={:.2} \
          (k1_ssm_qkvz={:.2} k1_ssm_moe={:.2})",
-        attn, ssm, qkvz, moe
+        attn,
+        ssm,
+        qkvz,
+        moe
     );
 }

@@ -130,13 +130,8 @@ impl ModelWeightLoader for Qwen3WeightLoader {
                     stream,
                 )?)
             };
-            let mut moe_layer = MoeLayer::new(
-                moe_weights,
-                config.num_experts,
-                gate_nvfp4,
-                gpu,
-                config,
-            )?;
+            let mut moe_layer =
+                MoeLayer::new(moe_weights, config.num_experts, gate_nvfp4, gpu, config)?;
             if !native_fp8 && !skip_moe_transpose {
                 moe_layer.transpose_for_prefill(gpu, config)?;
             }

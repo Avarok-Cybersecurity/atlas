@@ -212,6 +212,7 @@ impl SsmStatePool {
     ///   - `sum`   (signed sum — catches gross errors / sign flips)
     ///   - `ssq`   (sum of squares — magnitude-weighted, cancellation-free)
     ///   - `sabs`  (sum of absolute values — cancellation-free L1)
+    ///
     /// A global `(sum, ssq, sabs)` triple is also logged for a quick gate.
     pub(super) fn debug_state_checksum(
         &self,
@@ -487,7 +488,11 @@ mod slot_guard_tests {
             assert_eq!(claimed, 0);
             assert_eq!(free_count(&pool), 1);
         } // guard dropped (abort/panic surrogate) → slot returned
-        assert_eq!(free_count(&pool), 2, "drop must return the slot exactly once");
+        assert_eq!(
+            free_count(&pool),
+            2,
+            "drop must return the slot exactly once"
+        );
         // The released slot is back in the free list (no phantom indices).
         assert!(pool.free_slots.lock().contains(&claimed));
     }

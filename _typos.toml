@@ -52,6 +52,25 @@ mis = "mis"
 # upstream test_fsm.cc FunctionTest7 alternation). Not a typo.
 abd = "abd"
 
+# ROCm Heterogeneous System Architecture (HSA); the HIP/SCALE port and
+# its docs use it throughout. Not a typo of `HAS`.
+HSA = "HSA"
+hsa = "hsa"
+# UE4M3 / UE8M0 FP8 block-scale formats; `UE`/`ue` is the format prefix.
+UE = "UE"
+ue = "ue"
+# `unparseable` is an accepted spelling variant (tool-parser error paths).
+unparseable = "unparseable"
+# `RECAL` / recalibration token in the FP8 KV-cache calibration path.
+RECAL = "RECAL"
+recal = "recal"
+# `nothink` reasoning-off test/label token (no-think mode).
+nothink = "nothink"
+# numpy `np.arange` in benchmark scripts.
+arange = "arange"
+# `byt(v,j)` byte-extract helper in the scale-probe equivalence harness.
+byt = "byt"
+
 [default.extend-identifiers]
 # Pattern compounds the checker doesn't handle via the default list.
 wht_bf16 = "wht_bf16"
@@ -61,6 +80,7 @@ wht_stride = "wht_stride"
 [files]
 extend-exclude = [
     "test_data/",
+    "bench/",
     "vendor/",
     "target/",
     "book/output/",

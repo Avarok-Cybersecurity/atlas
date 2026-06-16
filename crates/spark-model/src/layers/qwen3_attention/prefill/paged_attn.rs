@@ -164,8 +164,7 @@ impl Qwen3AttentionLayer {
             // the LDS-fixed BR=32 kernel (correct for any n; perf-only
             // tradeoff). Absent on NVIDIA → unchanged.
             let use_br64 = n >= 256
-                && !option_env!("ATLAS_HW_FORCE_BR32")
-                    .map_or(false, |v| v == "1" || v == "true");
+                && !option_env!("ATLAS_HW_FORCE_BR32").map_or(false, |v| v == "1" || v == "true");
             let (fp8_k_scale, fp8_v_scale) = self.effective_fp8_scales();
             match (self.kv_dtype, use_br64) {
                 (KvCacheDtype::Nvfp4, true) => ops::prefill_attention_paged_nvfp4_64(

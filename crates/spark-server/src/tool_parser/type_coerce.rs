@@ -40,13 +40,12 @@ fn coerce_call_args(call: &mut ToolCall, tool_def: Option<&ToolDefinition>) {
         };
         match ty {
             "integer" | "number" => {
-                if let serde_json::Value::String(s) = val {
-                    if let Ok(n) = s.parse::<f64>() {
-                        if let Some(num) = serde_json::Number::from_f64(n) {
-                            *val = serde_json::Value::Number(num);
-                            changed = true;
-                        }
-                    }
+                if let serde_json::Value::String(s) = val
+                    && let Ok(n) = s.parse::<f64>()
+                    && let Some(num) = serde_json::Number::from_f64(n)
+                {
+                    *val = serde_json::Value::Number(num);
+                    changed = true;
                 }
             }
             "boolean" => {
@@ -65,11 +64,11 @@ fn coerce_call_args(call: &mut ToolCall, tool_def: Option<&ToolDefinition>) {
                 }
             }
             "array" | "object" => {
-                if let serde_json::Value::String(s) = val {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s) {
-                        *val = parsed;
-                        changed = true;
-                    }
+                if let serde_json::Value::String(s) = val
+                    && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s)
+                {
+                    *val = parsed;
+                    changed = true;
                 }
             }
             "null" => {
@@ -82,9 +81,7 @@ fn coerce_call_args(call: &mut ToolCall, tool_def: Option<&ToolDefinition>) {
         }
     }
 
-    if changed {
-        if let Ok(s) = serde_json::to_string(&args) {
-            call.function.arguments = s;
-        }
+    if changed && let Ok(s) = serde_json::to_string(&args) {
+        call.function.arguments = s;
     }
 }

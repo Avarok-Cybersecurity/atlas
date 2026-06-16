@@ -102,7 +102,8 @@ impl Qwen3AttentionLayer {
         // path this produced nondeterministic turn-3 output (zero-V positions
         // contribute nothing to attention; combined with the partial boundary
         // block the result diverged run-to-run).
-        ctx.gpu.memset_async(v_contiguous, 0, num_tokens * kv_dim * bf16, stream)?;
+        ctx.gpu
+            .memset_async(v_contiguous, 0, num_tokens * kv_dim * bf16, stream)?;
 
         // ── Standard Q/K/V projection (non-MLA models) ──
         if self.mla.is_none() {
@@ -129,12 +130,8 @@ impl Qwen3AttentionLayer {
             && std::env::var("ATLAS_FUSED_KV").ok().as_deref() == Some("1");
         let raw_k_scratch = if fused_kv_enabled {
             let scratch = ctx.buffers.attn_output();
-            ctx.gpu.copy_d2d_async(
-                k_contiguous,
-                scratch,
-                num_tokens * kv_dim * bf16,
-                stream,
-            )?;
+            ctx.gpu
+                .copy_d2d_async(k_contiguous, scratch, num_tokens * kv_dim * bf16, stream)?;
             Some(scratch)
         } else {
             None

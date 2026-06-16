@@ -97,7 +97,8 @@ impl ToolCallParser for Qwen3CoderParser {
         // an imitation trap for pattern-completion models). One
         // positive-shot example + a single declarative-logic
         // sentence replace the prior 50+ lines of WRONG examples.
-        prompt.push_str("\
+        prompt.push_str(
+            "\
 </tools>\n\n\
 If you choose to call a function ONLY reply in the following format with NO suffix:\n\n\
 <tool_call>\n\
@@ -112,7 +113,8 @@ multiple lines\n\
 </parameter>\n\
 </function>\n\
 </tool_call>\n\n\
-");
+",
+        );
         // #211 option-B A/B (off-policy hypothesis): Qwen3.6 was RL-tuned
         // against the SHORT official <IMPORTANT> reminder (chat_template.jinja
         // line 53). Atlas's expanded IMMEDIATE_TOOL_USE + 10-bullet IMPORTANT

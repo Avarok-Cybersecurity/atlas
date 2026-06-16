@@ -54,7 +54,11 @@ fn ebnf_until_close_ladder(close: &str) -> String {
         if k == 0 {
             alts.push(format!("[^{neg}]"));
         } else {
-            let prefix: String = chars[..k].iter().copied().map(ebnf_literal_escape).collect();
+            let prefix: String = chars[..k]
+                .iter()
+                .copied()
+                .map(ebnf_literal_escape)
+                .collect();
             alts.push(format!("\"{prefix}\" [^{neg}]"));
         }
     }

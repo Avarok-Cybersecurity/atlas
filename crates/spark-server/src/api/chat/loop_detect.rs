@@ -33,10 +33,7 @@ fn loop_suppress_disabled() -> bool {
     std::env::var("ATLAS_LOOP_NO_SUPPRESS").as_deref() == Ok("1")
 }
 
-pub(super) fn check_loops(
-    req: &ChatCompletionRequest,
-    tools_active: bool,
-) -> LoopDetectOut {
+pub(super) fn check_loops(req: &ChatCompletionRequest, tools_active: bool) -> LoopDetectOut {
     let mut suppress_tool_call = false;
     let mut tool_call_repeat_count: usize = 0;
 
@@ -88,10 +85,7 @@ pub(super) fn check_loops(
         // Genuine repeated-tool-call loops are caught separately by
         // `loop_detector::detect` (the Suppress verdict above); spinning here
         // should only fire on consecutive short PURE-TEXT turns (no action).
-        let made_tool_call = m
-            .tool_calls
-            .as_ref()
-            .is_some_and(|tcs| !tcs.is_empty());
+        let made_tool_call = m.tool_calls.as_ref().is_some_and(|tcs| !tcs.is_empty());
         let is_substantial = made_tool_call || m.content.text.len() >= 500 || tool_args_len >= 100;
         if is_substantial {
             break;

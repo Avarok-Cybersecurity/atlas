@@ -95,13 +95,61 @@ impl Qwen3SsmLayer {
                 .kernel("gated_delta_rule", "gated_delta_rule_prefill_split")?,
             gdn_prefill_split4_k: gpu
                 .kernel("gated_delta_rule", "gated_delta_rule_prefill_split4")?,
-            gdn_prefill_persistent_k: if force_global_gdn { KernelHandle(0) } else { super::super::try_kernel(gpu, "gated_delta_rule_persistent", "gated_delta_rule_prefill_persistent") },
-            gdn_prefill_persistent_wy4_k: if force_global_gdn { KernelHandle(0) } else { super::super::try_kernel(gpu, "gated_delta_rule_persistent", "gated_delta_rule_prefill_persistent_wy4") },
-            gdn_prefill_wy32_k: if force_global_gdn { KernelHandle(0) } else { super::super::try_kernel(gpu, "gated_delta_rule_wy64_prefill", "gated_delta_rule_prefill_wy64") },
+            gdn_prefill_persistent_k: if force_global_gdn {
+                KernelHandle(0)
+            } else {
+                super::super::try_kernel(
+                    gpu,
+                    "gated_delta_rule_persistent",
+                    "gated_delta_rule_prefill_persistent",
+                )
+            },
+            gdn_prefill_persistent_wy4_k: if force_global_gdn {
+                KernelHandle(0)
+            } else {
+                super::super::try_kernel(
+                    gpu,
+                    "gated_delta_rule_persistent",
+                    "gated_delta_rule_prefill_persistent_wy4",
+                )
+            },
+            gdn_prefill_wy32_k: if force_global_gdn {
+                KernelHandle(0)
+            } else {
+                super::super::try_kernel(
+                    gpu,
+                    "gated_delta_rule_wy64_prefill",
+                    "gated_delta_rule_prefill_wy64",
+                )
+            },
             // ── Q12 Phase 2b: batched GDN kernel handles ──
-            gdn_prefill_wy32_batched_k: if force_global_gdn { KernelHandle(0) } else { super::super::try_kernel(gpu, "gated_delta_rule_wy64_prefill", "gated_delta_rule_prefill_wy64_batched") },
-            gdn_prefill_persistent_batched_k: if force_global_gdn { KernelHandle(0) } else { super::super::try_kernel(gpu, "gated_delta_rule_persistent", "gated_delta_rule_prefill_persistent_batched") },
-            gdn_prefill_persistent_wy4_batched_k: if force_global_gdn { KernelHandle(0) } else { super::super::try_kernel(gpu, "gated_delta_rule_persistent", "gated_delta_rule_prefill_persistent_wy4_batched") },
+            gdn_prefill_wy32_batched_k: if force_global_gdn {
+                KernelHandle(0)
+            } else {
+                super::super::try_kernel(
+                    gpu,
+                    "gated_delta_rule_wy64_prefill",
+                    "gated_delta_rule_prefill_wy64_batched",
+                )
+            },
+            gdn_prefill_persistent_batched_k: if force_global_gdn {
+                KernelHandle(0)
+            } else {
+                super::super::try_kernel(
+                    gpu,
+                    "gated_delta_rule_persistent",
+                    "gated_delta_rule_prefill_persistent_batched",
+                )
+            },
+            gdn_prefill_persistent_wy4_batched_k: if force_global_gdn {
+                KernelHandle(0)
+            } else {
+                super::super::try_kernel(
+                    gpu,
+                    "gated_delta_rule_persistent",
+                    "gated_delta_rule_prefill_persistent_wy4_batched",
+                )
+            },
             gdn_prefill_split4_batched_k: super::super::try_kernel(
                 gpu,
                 "gated_delta_rule",
@@ -174,7 +222,11 @@ impl Qwen3SsmLayer {
         // ATLAS_W4A16_NOPIPE: drop the transposed weight so the qkvz GEMM
         // routes to the non-pipelined base w4a16_gemm kernel (debug: isolate
         // the cp.async-pipelined m128 GEMM as the gfx1151 scale bug).
-        layer.qkvz_nvfp4_t = if std::env::var("ATLAS_W4A16_NOPIPE").is_ok() { None } else { qkvz_nvfp4_t };
+        layer.qkvz_nvfp4_t = if std::env::var("ATLAS_W4A16_NOPIPE").is_ok() {
+            None
+        } else {
+            qkvz_nvfp4_t
+        };
         layer.out_proj_nvfp4_t = out_proj_nvfp4_t;
         Ok(layer)
     }
@@ -240,7 +292,9 @@ impl Qwen3SsmLayer {
     ) -> Result<()> {
         // gfx1151/SCALE: the NVFP4->FP8 predequant feeds fp8_gemm_t, whose float->E4M3
         // encode is broken on SCALE. Skip it so out_proj uses the BF16 w4a16_gemm_t path.
-        if std::env::var("ATLAS_NO_FP8_PREDEQUANT").is_ok() { return Ok(()); }
+        if std::env::var("ATLAS_NO_FP8_PREDEQUANT").is_ok() {
+            return Ok(());
+        }
         let predequant_k = gpu.kernel("w4a16", "predequant_nvfp4_to_fp8")?;
         let h = config.hidden_size;
         let qkvz_size = config.ssm_qkvz_size();

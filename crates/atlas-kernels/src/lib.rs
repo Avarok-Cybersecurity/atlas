@@ -367,7 +367,7 @@ mod tests {
                 "PTX module '{name}' is empty — nvcc compilation may have failed"
             );
             assert!(
-                ptx.contains(".version"),
+                ptx.windows(8).any(|w| w == b".version"),
                 "PTX module '{name}' doesn't contain .version directive"
             );
         }

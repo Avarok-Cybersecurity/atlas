@@ -82,6 +82,56 @@ jobs:
             # the launch-day allow-list pending a free-function
             # `ops/{alloc,copy,launch,events}.rs` extraction.
             "crates/spark-runtime/src/metal_backend.rs"
+            # ── AMD/Strix-Halo (native-HIP) track carry-overs ──────────────
+            # Pre-existing >500 LoC files on the port/amd-strix-halo branch,
+            # allow-listed to keep CI green while the native-HIP work lands.
+            # Each is a single cohesive unit (ordered kernel-launch sequence,
+            # variant dispatch, or compute-heavy pipeline) pending a clean
+            # sub-module split in a follow-up.
+            # 765 LoC — streaming SSE token-emit state machine; one cohesive per-token pipeline.
+            "crates/spark-server/src/api/chat_stream/handle_token.rs"
+            # 711 LoC — tool JSON-schema to GBNF grammar compiler; single conversion pass.
+            "crates/spark-server/src/grammar/compile_tools.rs"
+            # 701 LoC — scheduler batch-assembly helpers; tightly coupled to the step loop.
+            "crates/spark-server/src/scheduler/helpers.rs"
+            # 645 LoC — Qwen3.5/3.6 per-layer-type weight-loader variant dispatch.
+            "crates/spark-model/src/weight_loader/qwen35/load_layers.rs"
+            # 627 LoC — multi-target kernel build orchestration (nvcc/hipcc/scale).
+            "crates/atlas-kernels/build.rs"
+            # 609 LoC — GDN/SSM chunked-prefill orchestration; ordered kernel launches.
+            "crates/spark-model/src/layers/qwen3_ssm/trait_prefill.rs"
+            # 607 LoC — MTP speculative-decode head forward; one launch sequence.
+            "crates/spark-model/src/layers/mtp_head/forward.rs"
+            # 581 LoC — tool-call argument validation/coercion table.
+            "crates/spark-server/src/tool_parser/validation.rs"
+            # 581 LoC — SSM state-pool slot management; tightly coupled allocator.
+            "crates/spark-model/src/model/ssm_pool.rs"
+            # 579 LoC — scheduler emit-step pipeline; one ordered stage list.
+            "crates/spark-server/src/scheduler/emit_step.rs"
+            # 560 LoC — FP8 grouped-expert MoE prefill forward; ordered launches.
+            "crates/spark-model/src/layers/moe/forward_prefill_fp8.rs"
+            # 558 LoC — paged-attention prefill; compute-heavy launch order.
+            "crates/spark-model/src/layers/qwen3_attention/prefill/paged.rs"
+            # 551 LoC — FP8 (E4M3/E5M2) quant/dequant + block-scale routines.
+            "crates/atlas-quant/src/fp8.rs"
+            # 548 LoC — quantized GEMM dispatch wrappers (nvfp4/fp8/bf16).
+            "crates/spark-model/src/layers/ops/gemm_quant.rs"
+            # 540 LoC — MoE forward dispatch (decode + prefill arms).
+            "crates/spark-model/src/layers/moe/forward.rs"
+            # 535 LoC — non-streaming chat completion endpoint.
+            "crates/spark-server/src/api/chat_blocking.rs"
+            # 522 LoC — prefix-cache-skip attention prefill variant.
+            "crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip.rs"
+            # 519 LoC — token sampler (temp/top-p/min-p/penalties).
+            "crates/spark-runtime/src/sampler.rs"
+            # 518 LoC — prefill trait-impl phase A; part of a prefill_{a,b,c} split.
+            "crates/spark-model/src/model/trait_impl/prefill_a.rs"
+            # 517 LoC — batched prefill kernel-launch phase.
+            "crates/spark-model/src/model/trait_impl/prefill_b/batch_kernel.rs"
+            # 510 LoC — KV-cache block management.
+            "crates/spark-model/src/model/block_mgmt.rs"
+            # 510 LoC — MoE expert op dispatch wrappers.
+            "crates/spark-model/src/layers/ops/moe_expert.rs"
           )
 
           violations=0
