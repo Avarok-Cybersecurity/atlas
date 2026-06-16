@@ -77,7 +77,16 @@ python3 bench/tool_format_eval/compare_endpoints.py \
   CIs overlap), thinking-OFF 100% for both. Parser choice does NOT fix it ⇒
   further confirms the defect is not parsing.
 
-**Verdict so far:** not parsing, not Atlas's bias processors, not parser choice.
+- **Chat template (vs the vLLM `fix-qwen3.6-chat-template` mod):** Atlas uses the
+  stock tokenizer_config template (model_type rewritten to `qwen3_6_moe`, no
+  `qwen3_6_moe.jinja` override exists). Rendering the stock vs vLLM-fixed template
+  on realistic 2- and 3-turn agentic contexts (prior assistant thinking + tool
+  calls) is **byte-identical**; the patch only changes edge cases (unclosed
+  `<think>` in content, `<|think_off|>` markers, developer role, no-user-query),
+  and Atlas already normalizes string→dict tool args. ⇒ **template eliminated**.
+
+**Verdict so far:** not parsing, not Atlas's bias processors, not parser choice,
+not the chat template.
 The malformed tokens are the model's OWN raw-logit argmax under Atlas's forward
 pass (it prefers narration + JSON/attr-XML over qwen3_coder XML when thinking).
 The single OPEN question is whether that distribution is faithful to the true
