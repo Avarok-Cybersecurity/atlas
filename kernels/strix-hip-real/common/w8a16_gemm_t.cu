@@ -119,7 +119,7 @@ __device__ __forceinline__ void w8a16_wmma_compute_t(
 extern "C" __global__ void w8a16_gemm_t(
     const __nv_bfloat16* __restrict__ A,               // [M, K] BF16
     const unsigned char* __restrict__ B_t,              // [K, N] FP8 E4M3 transposed
-    const __nv_bfloat16* __restrict__ block_scale_t,   // [K/128, N/128] BF16
+    const float* __restrict__ block_scale_t,   // [K/128, N/128] BF16
     __nv_bfloat16* __restrict__ C,                     // [M, N] BF16
     unsigned int M,
     unsigned int N,
@@ -168,7 +168,7 @@ extern "C" __global__ void w8a16_gemm_t(
                     unsigned char weight_byte = B_t[(unsigned long long)gk * N + gn];
                     unsigned int k_block = gk / FP8_BLOCK;
                     unsigned int n_block = gn / FP8_BLOCK;
-                    float scale = __bfloat162float(block_scale_t[k_block * n_scale_blocks + n_block]);
+                    float scale = block_scale_t[k_block * n_scale_blocks + n_block];
                     float dequant_val = E4M3_LUT_T[weight_byte] * scale;
                     smem_B[k][n] = __float2bfloat16(dequant_val);
                 } else {
@@ -211,8 +211,8 @@ extern "C" __global__ void transpose_fp8(
 
 /// Transpose block scales: scale[N/128, K/128] → scale_t[K/128, N/128]
 extern "C" __global__ void transpose_block_scale(
-    const __nv_bfloat16* __restrict__ scale,        // [N/128, K/128]
-    __nv_bfloat16* __restrict__ scale_t,            // [K/128, N/128]
+    const float* __restrict__ scale,        // [N/128, K/128]
+    float* __restrict__ scale_t,            // [K/128, N/128]
     unsigned int N_blocks,    // N/128
     unsigned int K_blocks     // K/128
 ) {
