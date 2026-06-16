@@ -93,14 +93,27 @@ python3 bench/tool_format_eval/compare_endpoints.py \
   100%; the defect is **Atlas's forward pass**. (vLLM reasoning is in the
   `reasoning` field, not `reasoning_content` — it IS thinking, and still 100%.)
 
-**VERDICT:** not parsing, not Atlas's bias processors, not parser choice, not the
-chat template, not "the model just does this." It is an **Atlas inference/
-forward-pass divergence** (NVFP4 here; user reports the Atlas FP8 path degrades
-too ⇒ likely the quant-GEMM / MoE-routing / KV numerics, not weight precision
-alone). Consistent with the MODEL.toml's documented NVFP4 late-layer cosine drift
-flipping MoE expert selection. Durable user-facing fix: `thinking_in_tools=false`
-(matches vLLM's reliability). Next: layer-level hidden-state diff Atlas-vs-HF/vLLM
-to localize the divergent kernel.
+- **Engine vs quant decomposition (4 tools, thinking ON):** Atlas-NVFP4 58%;
+  Atlas-FP8 45/60 = **75% [63,84]** (N=60); vLLM-FP8 **100% [89,100]**. Atlas-FP8
+  serves the SAME checkpoint vLLM uses (`quant compat: kernel=nvfp4 model=fp8 OK`,
+  FP8 prefill kernels). Two independent, separable contributions:
+    * **NVFP4 quant** — 58%→75% switching NVFP4→FP8 weights on the same engine.
+    * **Atlas engine forward pass** — 75%→100% on IDENTICAL FP8 weights, CIs
+      non-overlapping ⇒ a real engine numerical divergence independent of weights.
+
+**VERDICT:** not parsing / processors / parser / template. It is **Atlas
+inference forward-pass**, with two parts: NVFP4 weight quant AND an engine-level
+numerical divergence present even at FP8 (the same weights vLLM runs at 100%).
+Durable fix: `thinking_in_tools=false` (both Atlas precisions → ~100%). FP8
+weights are also notably more thinking-robust than NVFP4 on Atlas (75% vs 58%).
+
+**Next — localize the divergent kernel (layer-diff):** Atlas dumps per-layer
+residual hidden states via `ATLAS_OP_DUMP=<dir> ATLAS_OP_DUMP_LAYERS=… OPS=…`;
+compare against a same-weights reference (vLLM-FP8 hidden states from inside the
+container, or an HF/BF16 oracle) with the `bench/nemotron_layer_diff.py` cosine/L2
+comparator to flag the first divergent layer → names the kernel (attn / MoE gate /
+norm / KV). Cleanest target is Atlas-FP8 vs vLLM-FP8 (no quant confound); the
+risky part is extracting matching per-layer hidden states from vLLM internals.
 The malformed tokens are the model's OWN raw-logit argmax under Atlas's forward
 pass (it prefers narration + JSON/attr-XML over qwen3_coder XML when thinking).
 The single OPEN question is whether that distribution is faithful to the true
