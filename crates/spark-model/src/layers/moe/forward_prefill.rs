@@ -38,9 +38,7 @@ impl MoeLayer {
         // TODO: revert once the grouped GEMM kernel is fixed.
         tracing::info!("MoE forward_prefill: entering forward_batched fallback N={num_tokens}");
         let r = self.forward_batched(input, num_tokens, ctx, stream);
-        if r.is_err() {
-            return r;
-        }
+        r.as_ref()?;
         ctx.gpu.synchronize(stream).map_err(|e| {
             anyhow::anyhow!("forward_prefill: forward_batched post-sync failed: {e}")
         })?;

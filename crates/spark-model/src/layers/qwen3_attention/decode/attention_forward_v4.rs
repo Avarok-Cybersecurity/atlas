@@ -276,7 +276,7 @@ impl Qwen3AttentionLayer {
             // Diagnostic: rope region of K (offset nope=448)
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
-                k_out.offset((mla.nope * 2) as usize),
+                k_out.offset(mla.nope * 2),
                 (kv_dim - mla.nope as u32) as usize,
                 stream,
                 "V4-decode L0 K rope after RoPE",
@@ -284,7 +284,7 @@ impl Qwen3AttentionLayer {
             // Diagnostic: rope region of Q head 0 (offset nope=448)
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
-                q_out.offset((mla.nope * 2) as usize),
+                q_out.offset(mla.nope * 2),
                 (hd - mla.nope as u32) as usize,
                 stream,
                 "V4-decode L0 Q rope after RoPE",
