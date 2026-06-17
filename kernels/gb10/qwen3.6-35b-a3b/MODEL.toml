@@ -167,17 +167,7 @@ enable_loop_watchdog = true
 # Claude Code): min_p 0.05 → loop-watchdog fires collapse 4 → 0. temperature_max
 # is a defense-in-depth ceiling (catches a client sending e.g. 1.0); opencode's
 # proven-good 0.3 passes through unchanged. 0.0 = disabled.
-# 2026-06-17: floors disabled, sampling defers to generation_config.json
-# (temperature=1.0) via sampling_setup.rs when the client omits temperature.
-# 2026-06-17 (later): temperature_max re-enabled at 0.7 as a ceiling. With the
-# FP8 block-scaled prefill fix landed, the dominant precision cause of
-# long-context tool-arg degeneration is gone (B1 drift ~1400 → ~100), but a
-# residual thin-margin regime remains at high context; at temp 1.0 those thin
-# margins still sample into argmax flips. A 0.7 ceiling sharpens the
-# distribution enough to suppress the residual flips without greedy collapse.
-# This is no longer masking a bug (the bugs are fixed) — it's tuning for the
-# precision floor FP8 legitimately leaves. min_p floor stays off (vLLM parity).
-min_p_floor = 0.0
+min_p_floor = 0.05
 temperature_max = 0.7
 # Thinking on by default — Qwen3.6 35B-A3B is a reasoning-tier MoE; CoT
 # materially improves coherence on multi-step prompts. Per-request override
@@ -219,22 +209,6 @@ thinking_default = true
 #   complex agentic tasks (write file content) the model needs planning
 #   room. Combined with PR 73's qwen3_xml parser, the model can think then
 #   emit clean typed args.
-# 2026-06-16: false. Deterministic repro (temp=0, 3/3) on the NVFP4 build:
-#   with thinking_in_tools=true, a multi-turn tool turn narrates ("Let me
-#   read the file") then emits the WRONG tool dialect — `<parameter
-#   name="read_file">` instead of `<tool_call><function=read_file>
-#   <parameter=path>` — skipping the `<tool_call>` opener so the
-#   trigger-grammar never engages, then hallucinates `<tool_response>`.
-#   finish=length, no tool call. With thinking_in_tools=false the SAME
-#   context yields a clean `read_file({"path":...})`, and a full 8-turn
-#   agentic loop (list→read→write→build→test) runs with every tool call
-#   valid and zero loops. The post-`</think>` content transition is where
-#   this model loses the tool format on NVFP4 weights; skipping it fixes
-#   agentic tool calling. Plain-chat CoT is unaffected (this gates only
-#   tool-active turns).
-# 2026-06-17: set back to true to test FP8's natural thinking-on behavior
-# (BF16-truth comparison showed FP8's forward pass is faithful even at high
-# context, so disabling thinking was masking, not fixing).
 thinking_in_tools = true
 # PR 73 qwen3_xml REVERTED 2026-05-25 PM. Live opencode v40 test:
 # under thinking_in_tools=true + qwen3_xml, the model emitted COMPLETELY

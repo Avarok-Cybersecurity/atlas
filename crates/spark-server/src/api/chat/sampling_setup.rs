@@ -85,28 +85,20 @@ pub(super) fn build_sampling(
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
 
-    // When the client omits temperature/top_k/top_p, fall back to the model's
-    // generation_config.json defaults (state.default_*), NOT the MODEL.toml
-    // preset. This matches vLLM (which honors generation_config) and the
-    // /v1/completions path (completions.rs). The hardcoded preset temperature
-    // (e.g. 0.6 for tools) was overriding the model's intended 1.0 and making
-    // agentic clients — which send temp=None — sample greedily into malformed/
-    // looping tool calls. min_p/top_n_sigma/penalties are unaffected (already
-    // resolved from state defaults / preset below).
     let temperature = if force_temp_zero {
         0.0
     } else {
-        req.temperature.unwrap_or(state.default_temperature)
+        req.temperature.unwrap_or(preset.temperature)
     };
     let top_k = if force_temp_zero {
         0
     } else {
-        req.top_k.unwrap_or(state.default_top_k)
+        req.top_k.unwrap_or(preset.top_k)
     };
     let top_p = if force_temp_zero {
         1.0
     } else {
-        req.top_p.unwrap_or(state.default_top_p)
+        req.top_p.unwrap_or(preset.top_p)
     };
     let top_n_sigma = if force_temp_zero {
         0.0
@@ -309,18 +301,6 @@ pub(super) fn build_sampling(
 
     // top_logprobs (OpenAI spec: 0-20).
     let top_logprobs = req.top_logprobs.map(|n| n.min(20));
-
-    // Resolved per-request sampling (after request/generation_config/preset
-    // resolution and any floor/ceiling). Logs the values ACTUALLY applied so we
-    // can verify e.g. a client sending temperature=None gets generation_config's
-    // value, not the preset, and whether anything downstream overrides it.
-    tracing::info!(
-        "Resolved sampling: temperature={temperature}, top_p={top_p}, top_k={top_k}, \
-         min_p={min_p}, top_n_sigma={top_n_sigma}, rep_pen={repetition_penalty}, \
-         presence_pen={presence_penalty}, freq_pen={frequency_penalty}, lz_pen={lz_penalty}, \
-         tools_active={tools_active}, thinking={enable_thinking}, client_temp={:?}",
-        req.temperature
-    );
 
     Ok(SamplingSetup {
         temperature,
