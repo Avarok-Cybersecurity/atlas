@@ -45,24 +45,44 @@
 //   lut_s[256] f32          = 1024 B
 //   total ~= 14464 B  (well under 64 KB).
 //
-// Grid: (~tile_count CTAs, sized by the launcher, 1, 1)  Block: (PM4_THREADS=256, 1, 1)
+// Grid: (~tile_count CTAs, sized by the launcher, 1, 1)  Block: (PM4_THREADS=512, 1, 1)
 
 #include <cuda_bf16.h>
 
 typedef __bf16 v16bf __attribute__((ext_vector_type(16)));
 typedef float  v8f   __attribute__((ext_vector_type(8)));
-
+// ── Tile geometry ──────────────────────────────────────────────────────────
+// A CTA computes a PM4_M_TILE×PM4_N_TILE output block. The warps form a 2-D
+// (PM4_WARPS_M × PM4_WARPS_N) grid: PM4_WARPS_M warps tile the M dimension (each
+// owns 16 token rows) and PM4_WARPS_N warps tile N (each owns
+// PM4_SUBTILES_PER_WARP of the PM4_N_SUBTILES 16-wide WMMA n-sub-tiles).
+//
+// WHY 2-D (vs the GB10 1-D M-only warp grid): the GB10 geometry is 8 warps that
+// all tile M (PM4_M_TILE=128), so adding warps means growing M — wasteful here
+// because routed-expert tiles are SKINNY (top-8/256 routing -> ~47 tokens/expert
+// average, far under 128). The long-K gate/up GEMM (K=2048, ~128 K-steps) is
+// instead latency-bound and starved at 8 warps. The 2-D grid keeps the 128x64
+// tile (work-list packing UNCHANGED) but splits the PM4_N_SUBTILES n-sub-tiles
+// across PM4_WARPS_N warp-columns, so PM4_WARPS_M(=8) x PM4_WARPS_N(=2) = 16
+// warps / 512 threads hide the K-reduction latency WITHOUT enlarging the tile.
+// Measured (gfx1151, 256 experts, ~47 tok/expert): gate/up 2.25 -> 2.80 TFLOP/s
+// (+24%), down ~flat, served 35B-A3B-FP8 TTFT (1710 tok) 3.08 -> 2.87 s (~7%).
+// A 32-warp (PM4_WARPS_N=4) variant regressed gate/up (over-subscription) and
+// a smaller PM4_M_TILE=64 helped only the short-K down GEMM, so 128x64/16-warp
+// is the best single geometry for the 2x gate/up + 1x down per-layer mix.
 #define FP8_BLOCK 128
 
 #define PM4_M_TILE 128
 #define PM4_N_TILE 64
 #define PM4_K_STEP 16
 #define PM4_PAD 2
-#define PM4_WARPS 8
-#define PM4_THREADS (PM4_WARPS * 32)             // 256
-#define PM4_N_SUBTILES (PM4_N_TILE / 16)         // 4 WMMA n-sub-tiles
+#define PM4_WARPS_M (PM4_M_TILE / 16)            // warp-rows over M
+#define PM4_WARPS_N 2                            // warp-cols over N
+#define PM4_WARPS (PM4_WARPS_M * PM4_WARPS_N)
+#define PM4_THREADS (PM4_WARPS * 32)
+#define PM4_N_SUBTILES (PM4_N_TILE / 16)         // total WMMA n-sub-tiles
+#define PM4_SUBTILES_PER_WARP (PM4_N_SUBTILES / PM4_WARPS_N)
 
-// E4M3 LUT: 256-entry byte -> FP32 (SSOT with w8a16_gemm.cu / GB10 E4M3_LUT_GMOE).
 __device__ __constant__ float E4M3_LUT_GMOE[256] = {
     0.0f, 0.001953125f, 0.00390625f, 0.005859375f,
     0.0078125f, 0.009765625f, 0.01171875f, 0.013671875f,
@@ -130,10 +150,10 @@ __device__ __constant__ float E4M3_LUT_GMOE[256] = {
     -384.0f, -416.0f, -448.0f, -0.0f,
 };
 
-// Per-thread prefetch register staging. A: (128*16)/256 = 8 elems/thread.
-// B raw FP8: (16*64)/256 = 4 bytes/thread (dequant -> BF16 on commit, no scale).
-#define PM4_A_EPT 8
-#define PM4_B_EPT 4
+// Per-thread prefetch register staging.
+//   A: (M_TILE*K_STEP)/THREADS elems/thread.   B raw FP8: (K_STEP*N_TILE)/THREADS bytes/thread.
+#define PM4_A_EPT ((PM4_M_TILE * PM4_K_STEP) / PM4_THREADS)
+#define PM4_B_EPT ((PM4_K_STEP * PM4_N_TILE) / PM4_THREADS)
 
 // A prefetch: gather token rows through sorted_token_ids, contiguous K.
 __device__ __forceinline__ void load_A_regs(
@@ -146,8 +166,8 @@ __device__ __forceinline__ void load_A_regs(
     #pragma unroll
     for (unsigned int i = 0; i < PM4_A_EPT; i++) {
         unsigned int idx = threadIdx.x * PM4_A_EPT + i;
-        unsigned int row = idx / PM4_K_STEP;   // 0..127
-        unsigned int col = idx % PM4_K_STEP;   // 0..15
+        unsigned int row = idx / PM4_K_STEP;
+        unsigned int col = idx % PM4_K_STEP;
         unsigned int m_global = cta_m_local + row;
         unsigned int gc = k_base + col;
         if (m_global < M_expert && gc < K) {
@@ -184,8 +204,8 @@ __device__ __forceinline__ void load_B_regs(
     #pragma unroll
     for (unsigned int i = 0; i < PM4_B_EPT; i++) {
         unsigned int idx = threadIdx.x * PM4_B_EPT + i;
-        unsigned int k = idx / PM4_N_TILE;     // 0..K_STEP-1
-        unsigned int n = idx % PM4_N_TILE;     // 0..N_TILE-1
+        unsigned int k = idx / PM4_N_TILE;
+        unsigned int n = idx % PM4_N_TILE;
         unsigned int gk = k_base + k;
         unsigned int gn = cta_n + n;
         reg_B[i] = (gk < K && gn < N) ? B_exp[(unsigned long long)gn * K + gk] : 0;
@@ -205,22 +225,24 @@ __device__ __forceinline__ void store_B_regs(
     }
 }
 
-// WMMA over one resident K_STEP (16) into inner[PM4_N_SUBTILES] v8f accumulators.
+// WMMA over one resident K_STEP (16) into this warp's PM4_SUBTILES_PER_WARP v8f
+// accumulators. The warp owns the N-sub-tiles [n_sub_base, n_sub_base+SPW).
 __device__ __forceinline__ void mma_kstep(
     const __nv_bfloat16 smem_A[][PM4_K_STEP + PM4_PAD],
     const __nv_bfloat16 smem_B[][PM4_N_TILE + PM4_PAD],
-    v8f inner[PM4_N_SUBTILES],
-    unsigned int warp_m_offset, unsigned int lane
+    v8f inner[PM4_SUBTILES_PER_WARP],
+    unsigned int warp_m_offset, unsigned int n_sub_base, unsigned int lane
 ) {
     v16bf a;
     #pragma unroll
     for (int i = 0; i < 16; i++) a[i] = (__bf16)smem_A[warp_m_offset + (lane & 15)][i];
     #pragma unroll
-    for (int nb = 0; nb < PM4_N_SUBTILES; nb++) {
+    for (int j = 0; j < PM4_SUBTILES_PER_WARP; j++) {
+        unsigned int nb = n_sub_base + j;
         v16bf b;
         #pragma unroll
         for (int k = 0; k < 16; k++) b[k] = (__bf16)smem_B[k][nb * 16 + (lane & 15)];
-        inner[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, inner[nb]);
+        inner[j] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, inner[j]);
     }
 }
 
@@ -239,7 +261,6 @@ extern "C" __global__ void __launch_bounds__(PM4_THREADS, 2) moe_fp8_grouped_gem
 ) {
     (void)num_experts;
 
-    // E4M3 LUT staged into shared memory (resident across the persistent loop).
     __shared__ float lut_s[256];
     #pragma unroll
     for (unsigned int i = threadIdx.x; i < 256; i += PM4_THREADS) {
@@ -253,16 +274,12 @@ extern "C" __global__ void __launch_bounds__(PM4_THREADS, 2) moe_fp8_grouped_gem
 
     const unsigned int warp_id = threadIdx.x / 32;
     const unsigned int lane_id = threadIdx.x % 32;
-    const unsigned int warp_m_offset = warp_id * 16;   // 8 warps x 16 = 128 M-rows
+    // 2-D warp grid: row owns 16 M-rows, col owns PM4_SUBTILES_PER_WARP n-tiles.
+    const unsigned int warp_m_offset = (warp_id / PM4_WARPS_N) * 16;
+    const unsigned int n_sub_base    = (warp_id % PM4_WARPS_N) * PM4_SUBTILES_PER_WARP;
 
     const int total = *total_tiles;
 
-    // Grid-stride over the worklist. The stride is gridDim.x (NOT a fixed
-    // #define) so the launcher can size the grid to the worklist's tile-count
-    // upper bound — covering the work in ~one pass instead of serializing many
-    // tiles per CTA. The persistent loop still handles grid < total_tiles
-    // correctly (each CTA loops), so oversubscription is safe and undersizing
-    // is merely slower, never wrong.
     for (int wid = blockIdx.x; wid < total; wid += (int)gridDim.x) {
         __syncthreads();   // fence smem reuse before re-priming the pipeline
 
@@ -278,21 +295,22 @@ extern "C" __global__ void __launch_bounds__(PM4_THREADS, 2) moe_fp8_grouped_gem
         const float* S_exp = (const float*)B_scale_ptrs[expert_id];
         if (B_exp == 0) continue;   // NULL -> remote expert under EP
 
-        const unsigned int cta_m_local = mt * PM4_M_TILE;   // expert-relative M base
+        const unsigned int cta_m_local = mt * PM4_M_TILE;
         const unsigned int cta_n = nt * PM4_N_TILE;
 
         // Two-level FP32 accumulation: inner over a 128-K block, fold
         // inner*block_scale into outer at the boundary; scale never per-element.
-        v8f inner_acc[PM4_N_SUBTILES];
-        v8f outer_acc[PM4_N_SUBTILES];
+        // Each warp holds only its PM4_SUBTILES_PER_WARP n-sub-tiles.
+        v8f inner_acc[PM4_SUBTILES_PER_WARP];
+        v8f outer_acc[PM4_SUBTILES_PER_WARP];
         #pragma unroll
-        for (int i = 0; i < PM4_N_SUBTILES; i++) {
+        for (int i = 0; i < PM4_SUBTILES_PER_WARP; i++) {
             inner_acc[i] = v8f{0, 0, 0, 0, 0, 0, 0, 0};
             outer_acc[i] = v8f{0, 0, 0, 0, 0, 0, 0, 0};
         }
 
         const unsigned int k_blocks = (K + FP8_BLOCK - 1) / FP8_BLOCK;
-        const unsigned int k_steps_per_block = FP8_BLOCK / PM4_K_STEP;       // 8
+        const unsigned int k_steps_per_block = FP8_BLOCK / PM4_K_STEP;
         const unsigned int n_block = cta_n / FP8_BLOCK;
         const unsigned int n_steps = (K + PM4_K_STEP - 1) / PM4_K_STEP;
 
@@ -307,6 +325,10 @@ extern "C" __global__ void __launch_bounds__(PM4_THREADS, 2) moe_fp8_grouped_gem
 
         unsigned int k_step_in_block = 0;
 
+        // Single barrier per K-step: the ping-pong double-buffer's publish
+        // barrier (e) at the end of iteration `step` already fences every warp's
+        // read of buf[step&1] in (b) before iteration step+1 overwrites that same
+        // buffer in its own (e). The separate post-compute barrier is redundant.
         for (unsigned int step = 0; step < n_steps; step++) {
             const unsigned int cur = step & 1;
 
@@ -317,7 +339,7 @@ extern "C" __global__ void __launch_bounds__(PM4_THREADS, 2) moe_fp8_grouped_gem
                 load_B_regs(B_exp, reg_B, cta_n, k_next, N, K);
             }
             // (b) compute the already-resident current tile
-            mma_kstep(smem_A[cur], smem_B[cur], inner_acc, warp_m_offset, lane_id);
+            mma_kstep(smem_A[cur], smem_B[cur], inner_acc, warp_m_offset, n_sub_base, lane_id);
 
             // (c) K_BLOCK boundary: fold scaled inner into outer, reset inner.
             k_step_in_block++;
@@ -325,45 +347,42 @@ extern "C" __global__ void __launch_bounds__(PM4_THREADS, 2) moe_fp8_grouped_gem
                 const unsigned int k_block = (step * PM4_K_STEP) / FP8_BLOCK;
                 const float scale = S_exp[n_block * k_blocks + k_block];
                 #pragma unroll
-                for (int i = 0; i < PM4_N_SUBTILES; i++) {
+                for (int i = 0; i < PM4_SUBTILES_PER_WARP; i++) {
                     outer_acc[i] += inner_acc[i] * scale;
                     inner_acc[i] = v8f{0, 0, 0, 0, 0, 0, 0, 0};
                 }
                 k_step_in_block = 0;
             }
 
-            // (d) make sure all warps done reading smem[cur] before reuse
-            __syncthreads();
-            // (e) commit prefetched registers into the other buffer
+            // (d) commit prefetched registers into the other buffer, then publish.
             if (step + 1 < n_steps) {
                 store_A_regs(smem_A[(step + 1) & 1], reg_A);
                 store_B_regs(smem_B[(step + 1) & 1], reg_B, lut_s);
-                __syncthreads();   // publish next tile to all warps
+                __syncthreads();   // publish next tile + fence this iter's reads
             }
         }
 
-        // Fold any incomplete trailing K_BLOCK (only when K % FP8_BLOCK != 0).
         if (k_step_in_block != 0) {
             const unsigned int k_block = (K - 1) / FP8_BLOCK;
             const float scale = S_exp[n_block * k_blocks + k_block];
             #pragma unroll
-            for (int i = 0; i < PM4_N_SUBTILES; i++) {
+            for (int i = 0; i < PM4_SUBTILES_PER_WARP; i++) {
                 outer_acc[i] += inner_acc[i] * scale;
             }
         }
 
-        // Store C tile: f32 outer -> BF16, sorted output position.
+        // Store C tile: f32 outer -> BF16, sorted output position. Each warp
+        // writes only its own n-sub-tiles [n_sub_base, n_sub_base+SPW).
         #pragma unroll
-        for (int nb = 0; nb < PM4_N_SUBTILES; nb++) {
+        for (int j = 0; j < PM4_SUBTILES_PER_WARP; j++) {
+            unsigned int nb = n_sub_base + j;
             #pragma unroll
             for (int e = 0; e < 8; e++) {
-                // Expert-relative output row: include the m-tile base so the
-                // mt>=1 tiles (experts with >128 tokens) write the right rows.
                 unsigned int row_local = cta_m_local + warp_m_offset + 2 * e + (lane_id >> 4);
                 unsigned int col = cta_n + nb * 16 + (lane_id & 15);
                 if (row_local < M_expert && col < N) {
                     unsigned int out_row = (unsigned int)m_start + row_local;
-                    C[(unsigned long long)out_row * N + col] = __float2bfloat16(outer_acc[nb][e]);
+                    C[(unsigned long long)out_row * N + col] = __float2bfloat16(outer_acc[j][e]);
                 }
             }
         }

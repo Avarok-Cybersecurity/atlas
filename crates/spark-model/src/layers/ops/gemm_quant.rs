@@ -456,9 +456,22 @@ pub fn moe_fp8_grouped_gemm(
     // tile-count upper bound. Clamp to MAX_GRID_CTAS to bound the launch.
     const MAX_GRID_CTAS: u32 = 16384;
     let grid_ctas = max_tiles.clamp(1, MAX_GRID_CTAS);
+    // Block size is target-specific because the kernel SOURCE differs. The
+    // native-HIP (gfx1151) kernel is a 16-warp / 512-thread block with a 2-D
+    // (8 warp-rows x 2 warp-cols) warp grid: it keeps the 128x64 tile geometry
+    // (so the work-list packing is unchanged) but splits the 4 WMMA n-sub-tiles
+    // across 2 warp-columns, doubling warp occupancy for latency hiding on the
+    // long-K gate/up GEMM (kernels/strix-hip/common/moe_fp8_grouped_gemm.cu).
+    // Every other target keeps the 8-warp / 256-thread M-only kernel
+    // (kernels/gb10/common/moe_fp8_grouped_gemm.cu). Keep this in lockstep with
+    // that .cu PM4_THREADS.
+    #[cfg(atlas_hip)]
+    let block = [512u32, 1, 1];
+    #[cfg(not(atlas_hip))]
+    let block = [256u32, 1, 1];
     KernelLaunch::new(gpu, kernel)
         .grid([grid_ctas, 1, 1])
-        .block([256, 1, 1])
+        .block(block)
         .arg_ptr(input)
         .arg_ptr(weight_ptrs)
         .arg_ptr(scale_ptrs)
