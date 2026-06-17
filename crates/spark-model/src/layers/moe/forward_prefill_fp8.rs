@@ -461,6 +461,7 @@ impl MoeLayer {
                 h,
                 wl_gu,
                 tt_gu,
+                wl_cap_items as u32,
                 stream,
             )?;
             ops::moe_fp8_grouped_gemm(
@@ -477,6 +478,7 @@ impl MoeLayer {
                 h,
                 wl_gu,
                 tt_gu,
+                wl_cap_items as u32,
                 stream,
             )?;
             ctx.gpu.synchronize(stream)?;
@@ -576,6 +578,7 @@ impl MoeLayer {
                 inter,
                 wl_dn,
                 tt_dn,
+                wl_cap_items as u32,
                 stream,
             )?;
             ctx.gpu.synchronize(stream)?;

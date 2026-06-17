@@ -404,21 +404,25 @@ pub fn moe_build_tile_worklist(
         .launch(stream)
 }
 
-/// FP8 grouped GEMM for sorted MoE prefill — grid-compaction over a persistent
-/// 96-CTA grid. THE routed-expert FP8 prefill kernel.
+/// FP8 grouped GEMM for sorted MoE prefill — grid-compaction over the COMPACTED
+/// work-list built by `moe_build_tile_worklist`. THE routed-expert FP8 prefill
+/// kernel.
 ///
-/// A fixed `PM5_PERSIST_CTAS=96` 1D grid strides over the COMPACTED work-list
-/// built by `moe_build_tile_worklist`. There is NO `max_m_tiles` argument — the
-/// work-item count is read from `total_tiles` on the device.
+/// The kernel grid-strides by `gridDim.x`, so the launch is sized to
+/// `max_tiles` — the caller's exact upper bound on the work-item (tile) count
+/// (`wl_cap_items`). This covers the whole work-list in ~one pass instead of
+/// serializing dozens of tiles per CTA behind sync barriers (the old fixed
+/// 96-CTA persistent grid left the GPU >90% idle: ~0.2% occupancy / ~16%
+/// MemUnitBusy, measured on gfx1151). Oversubscription is safe (extra CTAs
+/// exit the loop immediately); undersizing is merely slower, never wrong.
 ///
-/// `PM5_PERSIST_CTAS = 96` here is the SSOT mirror of the `#define
-/// PM5_PERSIST_CTAS 96` in `moe_fp8_grouped_gemm.cu`; the two MUST match or the
-/// device-side stride and the launched CTA count diverge.
+/// `max_tiles` is clamped to `MAX_GRID_CTAS` so a pathological worklist bound
+/// cannot request an unbounded grid.
 ///
 /// SAME-STREAM INVARIANT: MUST be launched on the SAME `stream` as the
 /// preceding `moe_build_tile_worklist` (read-after-write of `total_tiles`).
 ///
-/// Grid: (PM5_PERSIST_CTAS=96, 1, 1)  Block: (256, 1, 1)
+/// Grid: (max_tiles.clamp(1, MAX_GRID_CTAS), 1, 1)  Block: (256, 1, 1)
 #[allow(clippy::too_many_arguments)]
 pub fn moe_fp8_grouped_gemm(
     gpu: &dyn GpuBackend,
@@ -434,12 +438,15 @@ pub fn moe_fp8_grouped_gemm(
     k: u32,
     worklist: DevicePtr,    // [*total_tiles * 2] u32 (built on the same stream)
     total_tiles: DevicePtr, // [1] i32 (built on the same stream)
+    max_tiles: u32,         // caller's upper bound on tile count (wl_cap_items)
     stream: u64,
 ) -> Result<()> {
-    // SSOT: must equal `#define PM5_PERSIST_CTAS 96` in moe_fp8_grouped_gemm.cu.
-    const PM5_PERSIST_CTAS: u32 = 96;
+    // The kernel strides by gridDim.x, so the grid is sized to the work-list's
+    // tile-count upper bound. Clamp to MAX_GRID_CTAS to bound the launch.
+    const MAX_GRID_CTAS: u32 = 16384;
+    let grid_ctas = max_tiles.clamp(1, MAX_GRID_CTAS);
     KernelLaunch::new(gpu, kernel)
-        .grid([PM5_PERSIST_CTAS, 1, 1])
+        .grid([grid_ctas, 1, 1])
         .block([256, 1, 1])
         .arg_ptr(input)
         .arg_ptr(weight_ptrs)

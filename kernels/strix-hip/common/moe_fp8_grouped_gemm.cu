@@ -6,7 +6,7 @@
 //   C[M_expert, N] = A[M_expert, K] (BF16 acts) @ dequant(B_expert[N, K] (FP8 E4M3))
 //
 // THE routed-expert FP8 grouped-GEMM kernel for prefill. A persistent
-// PM5_PERSIST_CTAS=96 1D grid strides over a COMPACTED (expert, m_tile, n_tile)
+// A grid-strided (stride = gridDim.x) launch over a COMPACTED (expert, m_tile, n_tile)
 // work-list built by `moe_build_tile_worklist` (moe_permute.cu) so each
 // work-item is exactly one real (non-early-exit) tile. Tokens are pre-sorted by
 // expert (contiguous per expert); each expert's FP8 weight is loaded ONCE per
@@ -29,7 +29,8 @@
 //     cp.async / global_load_lds, so VMEM reads for tile k+1 are issued into
 //     VGPRs and stay in-flight across tile-k WMMA, then committed into the other
 //     smem buffer.
-//   * Persistent 96-CTA worklist grid kept VERBATIM (matches the Rust launcher
+//   * Grid-strided worklist launch (stride gridDim.x); the launcher sizes the
+//     grid to the work-list tile-count bound (matches the Rust launcher
 //     + moe_build_tile_worklist packing: (m_tile<<6)|n_tile, M_TILE=128, N_TILE=64).
 //
 // WMMA fragment layout (validated bit-exact in w8a16_gemm.cu / moe_w4a16):
@@ -44,7 +45,7 @@
 //   lut_s[256] f32          = 1024 B
 //   total ~= 14464 B  (well under 64 KB).
 //
-// Grid: (PM5_PERSIST_CTAS=96, 1, 1)  Block: (PM4_THREADS=256, 1, 1)
+// Grid: (~tile_count CTAs, sized by the launcher, 1, 1)  Block: (PM4_THREADS=256, 1, 1)
 
 #include <cuda_bf16.h>
 
@@ -60,7 +61,6 @@ typedef float  v8f   __attribute__((ext_vector_type(8)));
 #define PM4_WARPS 8
 #define PM4_THREADS (PM4_WARPS * 32)             // 256
 #define PM4_N_SUBTILES (PM4_N_TILE / 16)         // 4 WMMA n-sub-tiles
-#define PM5_PERSIST_CTAS 96                       // SSOT — mirrored in ops::moe_fp8_grouped_gemm
 
 // E4M3 LUT: 256-entry byte -> FP32 (SSOT with w8a16_gemm.cu / GB10 E4M3_LUT_GMOE).
 __device__ __constant__ float E4M3_LUT_GMOE[256] = {
@@ -257,7 +257,13 @@ extern "C" __global__ void __launch_bounds__(PM4_THREADS, 2) moe_fp8_grouped_gem
 
     const int total = *total_tiles;
 
-    for (int wid = blockIdx.x; wid < total; wid += PM5_PERSIST_CTAS) {
+    // Grid-stride over the worklist. The stride is gridDim.x (NOT a fixed
+    // #define) so the launcher can size the grid to the worklist's tile-count
+    // upper bound — covering the work in ~one pass instead of serializing many
+    // tiles per CTA. The persistent loop still handles grid < total_tiles
+    // correctly (each CTA loops), so oversubscription is safe and undersizing
+    // is merely slower, never wrong.
+    for (int wid = blockIdx.x; wid < total; wid += (int)gridDim.x) {
         __syncthreads();   // fence smem reuse before re-priming the pipeline
 
         unsigned int expert_id = worklist[wid * 2 + 0];
