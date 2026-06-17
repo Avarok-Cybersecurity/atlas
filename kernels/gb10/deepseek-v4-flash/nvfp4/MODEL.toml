@@ -1,12 +1,12 @@
 [model]
 name = "deepseek-v4-flash"
 hf_id = "RedHatAI/DeepSeek-V4-Flash-NVFP4-FP8"
-params = "160B"
-active_params = "160B"
+params = "284B"
+active_params = "13B"
 architecture = "MLA + MoE + mHC + Hybrid Attention (CSA/HCA)"
 
-layers_total = 28
-layers_full_attention = 28
+layers_total = 43
+layers_full_attention = 43
 
 hidden_dim = 4096
 head_dim = 512
@@ -28,7 +28,7 @@ qk_rope_head_dim = 128
 qk_nope_head_dim = 384
 
 # MoE
-num_experts = 160
+num_experts = 256
 num_shared_experts = 1
 moe_intermediate_size = 12288
 top_k = 6
