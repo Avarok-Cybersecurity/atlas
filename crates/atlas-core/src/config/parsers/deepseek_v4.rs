@@ -92,17 +92,31 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
         config.v_head_dim = config.head_dim;
     }
 
-    // CRITICAL FIX: DeepSeek V4 Flash RoPE parameters are wrong in HF config.json
-    // HF config has rope_theta=10000, but MODEL.tomL specifies rope_theta=1000000 (100x larger)
-    // HF config has qk_rope_head_dim=64, but MODEL.tomL specifies partial_rotary_factor=0.25
-    // which gives qk_rope_head_dim = 512 * 0.25 = 128 (2x larger)
-    // These wrong values cause complete corruption of position encoding → gibberish output
+    // CRITICAL FIX: DeepSeek V4 Flash RoPE parameters
+    // The HF config.json has the correct values. Use them directly instead of hardcoding.
+    // Previous hardcoded values were WRONG and caused complete corruption of position encoding → gibberish output.
     //
-    // Hardcode correct values for DeepSeek V4 Flash (detected via o_lora_rank > 0)
+    // HF config.json values (correct):
+    // - rope_theta: 160000
+    // - qk_rope_head_dim: 64
+    // - qk_nope_head_dim: 448
+    //
+    // Previous hardcoded values (WRONG):
+    // - rope_theta: 1000000
+    // - qk_rope_head_dim: 128
+    // - qk_nope_head_dim: 384
+    //
+    // Read from HF config if present (for DeepSeek V4 Flash detected via o_lora_rank > 0)
     if config.o_lora_rank > 0 {
-        config.rope_theta = 1_000_000.0;
-        config.qk_rope_head_dim = 128; // = head_dim * partial_rotary_factor = 512 * 0.25
-        config.qk_nope_head_dim = config.head_dim - config.qk_rope_head_dim; // 512 - 128 = 384
+        if let Some(theta) = raw.get("rope_theta").and_then(|v| v.as_f64()) {
+            config.rope_theta = theta;
+        }
+        if let Some(rope_dim) = raw.get("qk_rope_head_dim").and_then(|v| v.as_u64()) {
+            config.qk_rope_head_dim = rope_dim as usize;
+        }
+        if let Some(nope_dim) = raw.get("qk_nope_head_dim").and_then(|v| v.as_u64()) {
+            config.qk_nope_head_dim = nope_dim as usize;
+        }
     }
 
     // partial_rotary_factor for MLA: only the rope portion gets rotated
