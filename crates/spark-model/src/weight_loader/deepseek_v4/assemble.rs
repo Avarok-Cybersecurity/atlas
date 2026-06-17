@@ -315,19 +315,25 @@ pub fn load_hc_f32(
         n == expect_n,
         "HC tensor length {n} != expected {expect_n} (tried {candidates:?})"
     );
-    if t.dtype == WeightDtype::BF16 {
-        let mut bf16_buf = vec![0u8; n * 2];
-        gpu.copy_d2h(t.ptr, &mut bf16_buf)?;
-        let mut f32_buf = vec![0u8; n * 4];
-        for i in 0..n {
-            f32_buf[i * 4 + 2] = bf16_buf[i * 2];
-            f32_buf[i * 4 + 3] = bf16_buf[i * 2 + 1];
+    match t.dtype {
+        WeightDtype::BF16 => {
+            let mut bf16_buf = vec![0u8; n * 2];
+            gpu.copy_d2h(t.ptr, &mut bf16_buf)?;
+            let mut f32_buf = vec![0u8; n * 4];
+            for i in 0..n {
+                f32_buf[i * 4 + 2] = bf16_buf[i * 2];
+                f32_buf[i * 4 + 3] = bf16_buf[i * 2 + 1];
+            }
+            let ptr = gpu.alloc(f32_buf.len())?;
+            gpu.copy_h2d(&f32_buf, ptr)?;
+            Ok(ptr)
         }
-        let ptr = gpu.alloc(f32_buf.len())?;
-        gpu.copy_h2d(&f32_buf, ptr)?;
-        Ok(ptr)
-    } else {
-        Ok(t.ptr)
+        WeightDtype::FP32 => Ok(t.ptr),
+        other => anyhow::bail!(
+            "load_hc_f32: unsupported dtype {:?} for HC weight (tried {candidates:?}). \
+             HC kernels expect F32; BF16 is auto-widened. FP8/E8M0 weights need dequant support.",
+            other
+        ),
     }
 }
 

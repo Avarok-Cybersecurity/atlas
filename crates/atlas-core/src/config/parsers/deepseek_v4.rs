@@ -151,18 +151,19 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
     // `hc_mult` residual streams mixed by a per-block Sinkhorn matrix. These
     // are load-bearing: a single-stream residual flow diverges from the
     // trained model. Defaults match DeepSeek-V4 (hc_mult=4, iters=20).
-    config.hc_mult = raw
-        .get("hc_mult")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(4) as usize;
-    config.hc_sinkhorn_iters = raw
-        .get("hc_sinkhorn_iters")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(20) as usize;
-    config.hc_eps = raw
-        .get("hc_eps")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(1e-6) as f32;
+    //
+    // NOTE: the null→0 sanitization above breaks `unwrap_or` because a null
+    // `hc_mult` becomes `Some(0)` instead of `None`. We therefore fall back
+    // when the *parsed* value is 0, not when the key is missing.
+    if config.hc_mult == 0 {
+        config.hc_mult = 4;
+    }
+    if config.hc_sinkhorn_iters == 0 {
+        config.hc_sinkhorn_iters = 20;
+    }
+    if config.hc_eps == 0.0 {
+        config.hc_eps = 1e-6;
+    }
 
     // YaRN rope scaling. DeepSeek-V4 checkpoints use the `rope_scaling` key
     // (HF transformers naming); some pre-release configs used `rope_parameters`.

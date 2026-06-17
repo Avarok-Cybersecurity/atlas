@@ -17,6 +17,12 @@ pub fn load_all_layers(
     layer_kv_dtypes: &[KvCacheDtype],
 ) -> Result<Vec<Box<dyn TransformerLayer>>> {
     let n = config.num_hidden_layers;
+    tracing::info!(
+        "DeepSeek-V4 load_layers: hc_mult={}, hc_sinkhorn_iters={}, hc_eps={}",
+        config.hc_mult,
+        config.hc_sinkhorn_iters,
+        config.hc_eps,
+    );
 
     let mut layers = Vec::with_capacity(n);
     let mut yarn_inv_freq = DevicePtr::NULL;
