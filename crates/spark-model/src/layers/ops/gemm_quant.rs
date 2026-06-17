@@ -210,9 +210,20 @@ pub fn w8a16_gemm(
     k: u32,
     stream: u64,
 ) -> Result<()> {
+    // Launch geometry is target-specific because the `w8a16_gemm` kernel SOURCE
+    // differs per target. The native-HIP (gfx1151) kernel is a 256×128 M×N
+    // tile / 512-thread (16-warp) block (kernels/strix-hip/common/w8a16_gemm.cu)
+    // — it raises warp occupancy and per-CTA M-reuse for prefill GEMM. Every
+    // other target keeps the original 64×64 / 128-thread kernel
+    // (kernels/gb10/common/w8a16_gemm.cu). Keep these two in lockstep with their
+    // `.cu` `M_TILE`/`N_TILE`/`THREADS`.
+    #[cfg(atlas_hip)]
+    let (grid, block) = ([div_ceil(n, 128), div_ceil(m, 256), 1], [512, 1, 1]);
+    #[cfg(not(atlas_hip))]
+    let (grid, block) = ([div_ceil(n, 64), div_ceil(m, 64), 1], [128, 1, 1]);
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 64), div_ceil(m, 64), 1])
-        .block([128, 1, 1])
+        .grid(grid)
+        .block(block)
         .arg_ptr(input)
         .arg_ptr(weight)
         .arg_ptr(block_scale)

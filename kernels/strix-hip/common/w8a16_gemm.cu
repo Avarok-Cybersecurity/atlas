@@ -22,11 +22,19 @@
 typedef __bf16 v16bf __attribute__((ext_vector_type(16)));
 typedef float  v8f   __attribute__((ext_vector_type(8)));
 
-#define M_TILE 64
-#define N_TILE 64
+// Tile geometry. A CTA computes a M_TILE×N_TILE output block with a
+// THREADS-thread workgroup (THREADS/32 warps, each owning 16 M-rows).
+// 256×128 / 512-thread (16-warp) tile: large M reuse + 8 WMMA n-sub-tiles per
+// loaded A row gives the best gfx1151 occupancy/intensity for prefill GEMM.
+#define M_TILE 256
+#define N_TILE 128
 #define K_STEP 16
 #define PAD 2
 #define FP8_BLOCK 128
+#define THREADS 512
+#define N_SUBTILES (N_TILE / 16)        // 8 WMMA 16×16 n-sub-tiles
+#define A_ELEMS_PER_THREAD ((M_TILE * K_STEP) / THREADS)  // 8
+#define B_ELEMS_PER_THREAD ((K_STEP * N_TILE) / THREADS)  // 4
 
 // E4M3 lookup table: 256-entry byte → FP32 value.
 // Copied from w8a16_gemv.cu (SSOT: same LUT used for both GEMV and GEMM).
@@ -100,18 +108,18 @@ __device__ __constant__ float E4M3_LUT[256] = {
 };
 
 // WMMA compute — operates on already-loaded smem_A/smem_B BF16 tiles.
-// acc[4] holds 4 WMMA n-sub-tiles (4 × 16 = 64 N).
+// acc[N_SUBTILES] holds the WMMA n-sub-tiles (N_SUBTILES × 16 = N_TILE).
 __device__ __forceinline__ void w8a16_wmma_compute(
     __nv_bfloat16 smem_A[][K_STEP + PAD],
     __nv_bfloat16 smem_B[][N_TILE + PAD],
-    v8f acc[4],
+    v8f acc[N_SUBTILES],
     unsigned int warp_m_offset, unsigned int lane
 ) {
     v16bf a;
     #pragma unroll
     for (int i = 0; i < 16; i++) a[i] = (__bf16)smem_A[warp_m_offset + (lane & 15)][i];
     #pragma unroll
-    for (int nb = 0; nb < 4; nb++) {
+    for (int nb = 0; nb < N_SUBTILES; nb++) {
         v16bf b;
         #pragma unroll
         for (int k = 0; k < 16; k++) b[k] = (__bf16)smem_B[k][nb * 16 + (lane & 15)];
@@ -120,12 +128,12 @@ __device__ __forceinline__ void w8a16_wmma_compute(
 }
 
 __device__ __forceinline__ void w8a16_wmma_store(
-    __nv_bfloat16* __restrict__ C, v8f acc[4],
+    __nv_bfloat16* __restrict__ C, v8f acc[N_SUBTILES],
     unsigned int cta_m, unsigned int cta_n, unsigned int warp_m_offset,
     unsigned int lane, unsigned int M, unsigned int N
 ) {
     #pragma unroll
-    for (int nb = 0; nb < 4; nb++) {
+    for (int nb = 0; nb < N_SUBTILES; nb++) {
         #pragma unroll
         for (int e = 0; e < 8; e++) {
             unsigned int row = cta_m + warp_m_offset + 2 * e + (lane >> 4);
@@ -145,22 +153,21 @@ __device__ __forceinline__ void w8a16_wmma_store(
 // then commit those registers into the *other* smem buffer.
 //
 // LDS budget (gfx1151 cap = 64 KB/workgroup):
-//   smem_A[2][64][18] bf16 = 2 * 64 * 18 * 2 = 4608 B
-//   smem_B[2][16][66] bf16 = 2 * 16 * 66 * 2 = 4224 B
-//   total = 8832 B  (well under 64 KB; both operands double-buffered).
+//   smem_A[2][256][18] bf16 = 2 * 256 * 18 * 2 = 18432 B
+//   smem_B[2][16][130] bf16 = 2 * 16 * 130 * 2 =  8320 B
+//   total = 26752 B  (well under 64 KB; both operands double-buffered).
 //
-// Per-thread prefetch registers: each of the 128 threads stages 8 A elements
-// and 8 dequantized B elements per K-tile (matches the original
-// elems_per_thread for A and the 8-wide B dequant loop).
+// Per-thread prefetch registers: each of the THREADS=512 threads stages
+// A_ELEMS_PER_THREAD (8) A elements and B_ELEMS_PER_THREAD (4) dequantized B
+// elements per K-tile, covering the full M_TILE×K_STEP and K_STEP×N_TILE tiles.
 __device__ __forceinline__ void w8a16_load_A_regs(
     const __nv_bfloat16* __restrict__ A,
-    __nv_bfloat16 reg_A[8],
+    __nv_bfloat16 reg_A[A_ELEMS_PER_THREAD],
     unsigned int cta_m, unsigned int k_base, unsigned int M, unsigned int K
 ) {
-    // elems_per_thread = (M_TILE * K_STEP) / 128 = 8
     #pragma unroll
-    for (unsigned int i = 0; i < 8; i++) {
-        unsigned int idx = threadIdx.x * 8 + i;
+    for (unsigned int i = 0; i < A_ELEMS_PER_THREAD; i++) {
+        unsigned int idx = threadIdx.x * A_ELEMS_PER_THREAD + i;
         unsigned int row = idx / K_STEP;
         unsigned int col = idx % K_STEP;
         unsigned int gr = cta_m + row;
@@ -172,13 +179,13 @@ __device__ __forceinline__ void w8a16_load_A_regs(
 __device__ __forceinline__ void w8a16_load_B_regs(
     const unsigned char* __restrict__ B,
     const float* __restrict__ block_scale,
-    __nv_bfloat16 reg_B[8],
+    __nv_bfloat16 reg_B[B_ELEMS_PER_THREAD],
     unsigned int cta_n, unsigned int k_base,
     unsigned int N, unsigned int K, unsigned int k_blocks
 ) {
     #pragma unroll
-    for (unsigned int i = 0; i < 8; i++) {
-        unsigned int idx = threadIdx.x * 8 + i;
+    for (unsigned int i = 0; i < B_ELEMS_PER_THREAD; i++) {
+        unsigned int idx = threadIdx.x * B_ELEMS_PER_THREAD + i;
         unsigned int k = idx / N_TILE;
         unsigned int n = idx % N_TILE;
         unsigned int gk = k_base + k;
@@ -197,11 +204,11 @@ __device__ __forceinline__ void w8a16_load_B_regs(
 }
 
 __device__ __forceinline__ void w8a16_store_A_regs(
-    __nv_bfloat16 smem_A[][K_STEP + PAD], const __nv_bfloat16 reg_A[8]
+    __nv_bfloat16 smem_A[][K_STEP + PAD], const __nv_bfloat16 reg_A[A_ELEMS_PER_THREAD]
 ) {
     #pragma unroll
-    for (unsigned int i = 0; i < 8; i++) {
-        unsigned int idx = threadIdx.x * 8 + i;
+    for (unsigned int i = 0; i < A_ELEMS_PER_THREAD; i++) {
+        unsigned int idx = threadIdx.x * A_ELEMS_PER_THREAD + i;
         unsigned int row = idx / K_STEP;
         unsigned int col = idx % K_STEP;
         smem_A[row][col] = reg_A[i];
@@ -209,11 +216,11 @@ __device__ __forceinline__ void w8a16_store_A_regs(
 }
 
 __device__ __forceinline__ void w8a16_store_B_regs(
-    __nv_bfloat16 smem_B[][N_TILE + PAD], const __nv_bfloat16 reg_B[8]
+    __nv_bfloat16 smem_B[][N_TILE + PAD], const __nv_bfloat16 reg_B[B_ELEMS_PER_THREAD]
 ) {
     #pragma unroll
-    for (unsigned int i = 0; i < 8; i++) {
-        unsigned int idx = threadIdx.x * 8 + i;
+    for (unsigned int i = 0; i < B_ELEMS_PER_THREAD; i++) {
+        unsigned int idx = threadIdx.x * B_ELEMS_PER_THREAD + i;
         unsigned int k = idx / N_TILE;
         unsigned int n = idx % N_TILE;
         smem_B[k][n] = reg_B[i];
@@ -240,16 +247,16 @@ extern "C" __global__ void w8a16_gemm(
     __shared__ __nv_bfloat16 smem_A[2][M_TILE][K_STEP + PAD];
     __shared__ __nv_bfloat16 smem_B[2][K_STEP][N_TILE + PAD];
 
-    v8f acc[4];
+    v8f acc[N_SUBTILES];
     #pragma unroll
-    for (int i = 0; i < 4; i++) acc[i] = v8f{0, 0, 0, 0, 0, 0, 0, 0};
+    for (int i = 0; i < N_SUBTILES; i++) acc[i] = v8f{0, 0, 0, 0, 0, 0, 0, 0};
 
     const unsigned int k_blocks = K / FP8_BLOCK;
     const unsigned int num_tiles = (K + K_STEP - 1) / K_STEP;
 
     // ── Prologue: load tile 0 (global → regs → smem[0]) ──
-    __nv_bfloat16 reg_A[8];
-    __nv_bfloat16 reg_B[8];
+    __nv_bfloat16 reg_A[A_ELEMS_PER_THREAD];
+    __nv_bfloat16 reg_B[B_ELEMS_PER_THREAD];
     w8a16_load_A_regs(A, reg_A, cta_m, 0, M, K);
     w8a16_load_B_regs(B, block_scale, reg_B, cta_n, 0, N, K, k_blocks);
     w8a16_store_A_regs(smem_A[0], reg_A);
@@ -257,6 +264,12 @@ extern "C" __global__ void w8a16_gemm(
     __syncthreads();
 
     // ── Steady state: prefetch tile k into regs while computing tile k-1 ──
+    //
+    // Single barrier per K-step: the ping-pong double-buffer makes a
+    // post-compute barrier redundant. The publish barrier below, executed at
+    // the end of iteration kt-1, already guarantees every warp finished reading
+    // buf[(kt-1)&1] before iteration kt overwrites the *other* buffer buf[kt&1]
+    // (whose previous reader was kt-1's compute, fenced by that same barrier).
     for (unsigned int kt = 1; kt < num_tiles; kt++) {
         const unsigned int k_base = kt * K_STEP;
         // (a) issue global reads for tile kt into registers (no wait)
@@ -264,12 +277,11 @@ extern "C" __global__ void w8a16_gemm(
         w8a16_load_B_regs(B, block_scale, reg_B, cta_n, k_base, N, K, k_blocks);
         // (b) compute the already-resident previous tile
         w8a16_wmma_compute(smem_A[(kt - 1) & 1], smem_B[(kt - 1) & 1], acc, warp_m_offset, lane_id);
-        // (c) make sure all warps are done reading smem[(kt-1)&1] before reuse
-        __syncthreads();
-        // (d) commit prefetched registers into the other buffer
+        // (c) commit prefetched registers into the other buffer
         w8a16_store_A_regs(smem_A[kt & 1], reg_A);
         w8a16_store_B_regs(smem_B[kt & 1], reg_B);
-        // (e) publish smem[kt&1] to all warps
+        // (d) publish smem[kt&1] (also fences this iter's compute-read of the
+        //     buffer the *next* iteration will overwrite)
         __syncthreads();
     }
 
