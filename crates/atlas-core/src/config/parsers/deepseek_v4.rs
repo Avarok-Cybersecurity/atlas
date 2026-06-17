@@ -229,6 +229,17 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0) as f32;
     }
+    
+    // DEBUG: Log YaRN parameters to verify they're being read correctly
+    tracing::info!(
+        "DeepSeek-V4 YaRN parameters: factor={:?}, beta_fast={:?}, beta_slow={:?}, original_max_pos={:?}, mscale={:?}, mscale_all_dim={:?}",
+        config.yarn_factor,
+        config.yarn_beta_fast,
+        config.yarn_beta_slow,
+        config.yarn_original_max_position_embeddings,
+        config.yarn_mscale,
+        config.yarn_mscale_all_dim,
+    );
 
     finalize_config(&mut config, &raw)?;
     Ok(config)
