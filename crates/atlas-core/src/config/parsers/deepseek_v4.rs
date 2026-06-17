@@ -93,11 +93,14 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
     }
 
     // CRITICAL FIX: DeepSeek V4 Flash RoPE parameters
-    // The HF config.json has the correct values. Use them directly instead of hardcoding.
+    // The HF config.json has TWO rope_theta values:
+    // - rope_theta: 10000 (WRONG - at top level)
+    // - compress_rope_theta: 160000 (CORRECT - this is what we need)
+    //
     // Previous hardcoded values were WRONG and caused complete corruption of position encoding → gibberish output.
     //
     // HF config.json values (correct):
-    // - rope_theta: 160000
+    // - compress_rope_theta: 160000 (NOT rope_theta which is 10000)
     // - qk_rope_head_dim: 64
     // - qk_nope_head_dim: 448
     //
@@ -107,8 +110,10 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
     // - qk_nope_head_dim: 384
     //
     // Read from HF config if present (for DeepSeek V4 Flash detected via o_lora_rank > 0)
+    // NOTE: Must read compress_rope_theta, NOT rope_theta!
     if config.o_lora_rank > 0 {
-        if let Some(theta) = raw.get("rope_theta").and_then(|v| v.as_f64()) {
+        // Read compress_rope_theta (160000) instead of rope_theta (10000)
+        if let Some(theta) = raw.get("compress_rope_theta").and_then(|v| v.as_f64()) {
             config.rope_theta = theta;
         }
         if let Some(rope_dim) = raw.get("qk_rope_head_dim").and_then(|v| v.as_u64()) {
