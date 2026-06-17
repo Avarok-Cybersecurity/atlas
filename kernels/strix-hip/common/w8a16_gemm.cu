@@ -136,6 +136,90 @@ __device__ __forceinline__ void w8a16_wmma_store(
 }
 
 /// W8A16 GEMM: B[N, K] row-major FP8 E4M3 with 2D block scales.
+//
+// Register-prefetch software pipelining (double-buffered, ping-pong smem).
+// gfx1151 has NO cp.async / global_load_lds (target feature
+// `vmem-to-lds-load-insts` is absent), so the only way to overlap global
+// loads with WMMA compute is to issue the VMEM reads for tile k+1 into VGPRs
+// (reg_A / reg_B below), let them stay in-flight across the WMMA of tile k,
+// then commit those registers into the *other* smem buffer.
+//
+// LDS budget (gfx1151 cap = 64 KB/workgroup):
+//   smem_A[2][64][18] bf16 = 2 * 64 * 18 * 2 = 4608 B
+//   smem_B[2][16][66] bf16 = 2 * 16 * 66 * 2 = 4224 B
+//   total = 8832 B  (well under 64 KB; both operands double-buffered).
+//
+// Per-thread prefetch registers: each of the 128 threads stages 8 A elements
+// and 8 dequantized B elements per K-tile (matches the original
+// elems_per_thread for A and the 8-wide B dequant loop).
+__device__ __forceinline__ void w8a16_load_A_regs(
+    const __nv_bfloat16* __restrict__ A,
+    __nv_bfloat16 reg_A[8],
+    unsigned int cta_m, unsigned int k_base, unsigned int M, unsigned int K
+) {
+    // elems_per_thread = (M_TILE * K_STEP) / 128 = 8
+    #pragma unroll
+    for (unsigned int i = 0; i < 8; i++) {
+        unsigned int idx = threadIdx.x * 8 + i;
+        unsigned int row = idx / K_STEP;
+        unsigned int col = idx % K_STEP;
+        unsigned int gr = cta_m + row;
+        unsigned int gc = k_base + col;
+        reg_A[i] = (gr < M && gc < K) ? A[gr * K + gc] : __float2bfloat16(0.0f);
+    }
+}
+
+__device__ __forceinline__ void w8a16_load_B_regs(
+    const unsigned char* __restrict__ B,
+    const float* __restrict__ block_scale,
+    __nv_bfloat16 reg_B[8],
+    unsigned int cta_n, unsigned int k_base,
+    unsigned int N, unsigned int K, unsigned int k_blocks
+) {
+    #pragma unroll
+    for (unsigned int i = 0; i < 8; i++) {
+        unsigned int idx = threadIdx.x * 8 + i;
+        unsigned int k = idx / N_TILE;
+        unsigned int n = idx % N_TILE;
+        unsigned int gk = k_base + k;
+        unsigned int gn = cta_n + n;
+        if (gk < K && gn < N) {
+            unsigned char weight_byte = B[(unsigned long long)gn * K + gk];
+            unsigned int n_block = gn / FP8_BLOCK;
+            unsigned int k_block = gk / FP8_BLOCK;
+            float scale = block_scale[n_block * k_blocks + k_block];
+            float dequant_val = E4M3_LUT[weight_byte] * scale;
+            reg_B[i] = __float2bfloat16(dequant_val);
+        } else {
+            reg_B[i] = __float2bfloat16(0.0f);
+        }
+    }
+}
+
+__device__ __forceinline__ void w8a16_store_A_regs(
+    __nv_bfloat16 smem_A[][K_STEP + PAD], const __nv_bfloat16 reg_A[8]
+) {
+    #pragma unroll
+    for (unsigned int i = 0; i < 8; i++) {
+        unsigned int idx = threadIdx.x * 8 + i;
+        unsigned int row = idx / K_STEP;
+        unsigned int col = idx % K_STEP;
+        smem_A[row][col] = reg_A[i];
+    }
+}
+
+__device__ __forceinline__ void w8a16_store_B_regs(
+    __nv_bfloat16 smem_B[][N_TILE + PAD], const __nv_bfloat16 reg_B[8]
+) {
+    #pragma unroll
+    for (unsigned int i = 0; i < 8; i++) {
+        unsigned int idx = threadIdx.x * 8 + i;
+        unsigned int k = idx / N_TILE;
+        unsigned int n = idx % N_TILE;
+        smem_B[k][n] = reg_B[i];
+    }
+}
+
 extern "C" __global__ void w8a16_gemm(
     const __nv_bfloat16* __restrict__ A,            // [M, K] BF16 activations
     const unsigned char* __restrict__ B,             // [N, K] FP8 E4M3
@@ -151,59 +235,46 @@ extern "C" __global__ void w8a16_gemm(
     const unsigned int lane_id = threadIdx.x % 32;
     const unsigned int warp_m_offset = warp_id * 16;
 
-    __shared__ __nv_bfloat16 smem_A[M_TILE][K_STEP + PAD];
-    __shared__ __nv_bfloat16 smem_B[K_STEP][N_TILE + PAD];
+    // Double-buffered (ping-pong) smem — overlaps tile-(k+1) global loads,
+    // staged in VGPRs, with tile-k WMMA compute.
+    __shared__ __nv_bfloat16 smem_A[2][M_TILE][K_STEP + PAD];
+    __shared__ __nv_bfloat16 smem_B[2][K_STEP][N_TILE + PAD];
 
     v8f acc[4];
     #pragma unroll
     for (int i = 0; i < 4; i++) acc[i] = v8f{0, 0, 0, 0, 0, 0, 0, 0};
 
     const unsigned int k_blocks = K / FP8_BLOCK;
+    const unsigned int num_tiles = (K + K_STEP - 1) / K_STEP;
 
-    for (unsigned int k_base = 0; k_base < K; k_base += K_STEP) {
-        // === Load A tile: [M_TILE, K_STEP] BF16 from global → smem ===
-        {
-            const unsigned int elems_per_thread = (M_TILE * K_STEP) / 128;
-            #pragma unroll
-            for (unsigned int i = 0; i < elems_per_thread; i++) {
-                unsigned int idx = threadIdx.x * elems_per_thread + i;
-                unsigned int row = idx / K_STEP;
-                unsigned int col = idx % K_STEP;
-                unsigned int gr = cta_m + row;
-                unsigned int gc = k_base + col;
-                smem_A[row][col] = (gr < M && gc < K) ? A[gr * K + gc] : __float2bfloat16(0.0f);
-            }
-        }
+    // ── Prologue: load tile 0 (global → regs → smem[0]) ──
+    __nv_bfloat16 reg_A[8];
+    __nv_bfloat16 reg_B[8];
+    w8a16_load_A_regs(A, reg_A, cta_m, 0, M, K);
+    w8a16_load_B_regs(B, block_scale, reg_B, cta_n, 0, N, K, k_blocks);
+    w8a16_store_A_regs(smem_A[0], reg_A);
+    w8a16_store_B_regs(smem_B[0], reg_B);
+    __syncthreads();
 
-        // === Dequant B: FP8 E4M3 → BF16 via LUT × block_scale ===
-        {
-            #pragma unroll
-            for (unsigned int i = 0; i < 8; i++) {
-                unsigned int idx = threadIdx.x * 8 + i;
-                unsigned int k = idx / N_TILE;
-                unsigned int n = idx % N_TILE;
-                unsigned int gk = k_base + k;
-                unsigned int gn = cta_n + n;
-
-                if (gk < K && gn < N) {
-                    unsigned char weight_byte = B[(unsigned long long)gn * K + gk];
-
-                    unsigned int n_block = gn / FP8_BLOCK;
-                    unsigned int k_block = gk / FP8_BLOCK;
-                    float scale = block_scale[n_block * k_blocks + k_block];
-
-                    float dequant_val = E4M3_LUT[weight_byte] * scale;
-                    smem_B[k][n] = __float2bfloat16(dequant_val);
-                } else {
-                    smem_B[k][n] = __float2bfloat16(0.0f);
-                }
-            }
-        }
-
+    // ── Steady state: prefetch tile k into regs while computing tile k-1 ──
+    for (unsigned int kt = 1; kt < num_tiles; kt++) {
+        const unsigned int k_base = kt * K_STEP;
+        // (a) issue global reads for tile kt into registers (no wait)
+        w8a16_load_A_regs(A, reg_A, cta_m, k_base, M, K);
+        w8a16_load_B_regs(B, block_scale, reg_B, cta_n, k_base, N, K, k_blocks);
+        // (b) compute the already-resident previous tile
+        w8a16_wmma_compute(smem_A[(kt - 1) & 1], smem_B[(kt - 1) & 1], acc, warp_m_offset, lane_id);
+        // (c) make sure all warps are done reading smem[(kt-1)&1] before reuse
         __syncthreads();
-        w8a16_wmma_compute(smem_A, smem_B, acc, warp_m_offset, lane_id);
+        // (d) commit prefetched registers into the other buffer
+        w8a16_store_A_regs(smem_A[kt & 1], reg_A);
+        w8a16_store_B_regs(smem_B[kt & 1], reg_B);
+        // (e) publish smem[kt&1] to all warps
         __syncthreads();
     }
+
+    // ── Epilogue: compute the last tile ──
+    w8a16_wmma_compute(smem_A[(num_tiles - 1) & 1], smem_B[(num_tiles - 1) & 1], acc, warp_m_offset, lane_id);
 
     w8a16_wmma_store(C, acc, cta_m, cta_n, warp_m_offset, lane_id, M, N);
 }
