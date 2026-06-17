@@ -235,20 +235,33 @@ pub(crate) fn load_dense_ffn(
                 quantize_k,
                 stream,
             )?;
+            // Transposed copies for the fast w4a16_gemm_t_m128 prefill kernel.
             Ok(DenseFfnWeights {
                 gate_proj: gate,
                 up_proj: up,
                 down_proj: down,
+                gate_proj_t: Some(gate.transpose_for_gemm(gpu, inter, h)?),
+                up_proj_t: Some(up.transpose_for_gemm(gpu, inter, h)?),
+                down_proj_t: Some(down.transpose_for_gemm(gpu, h, inter)?),
             })
         }
         _ => {
             let gate = quantized_auto(store, &format!("{prefix}.mlp.gate_proj"), gpu, variant)?;
             let up = quantized_auto(store, &format!("{prefix}.mlp.up_proj"), gpu, variant)?;
             let down = quantized_auto(store, &format!("{prefix}.mlp.down_proj"), gpu, variant)?;
+            let inter = if config.intermediate_size > 0 {
+                config.intermediate_size
+            } else {
+                config.moe_intermediate_size
+            };
+            let h = config.hidden_size;
             Ok(DenseFfnWeights {
                 gate_proj: gate,
                 up_proj: up,
                 down_proj: down,
+                gate_proj_t: Some(gate.transpose_for_gemm(gpu, inter, h)?),
+                up_proj_t: Some(up.transpose_for_gemm(gpu, inter, h)?),
+                down_proj_t: Some(down.transpose_for_gemm(gpu, h, inter)?),
             })
         }
     }

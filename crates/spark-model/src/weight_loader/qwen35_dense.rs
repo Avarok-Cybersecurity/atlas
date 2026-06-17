@@ -13,8 +13,7 @@ use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_dense_bf16, shard_quantiz
 use crate::weight_map::{
     AttentionWeights, DenseWeight, MtpWeights, Nvfp4Variant, SsmWeights, dense, dense_auto,
     dense_f32_safe, dense_keep_f32, dequant_nvfp4_to_bf16, detect_nvfp4_variant, gpu_concat_rows,
-    interleave_ba, load_dense_ffn, load_kv_scales, load_mtp, load_ssm_qwen35, quantize_to_nvfp4,
-    quantized_auto,
+    interleave_ba, load_dense_ffn, load_kv_scales, load_mtp, quantize_to_nvfp4, quantized_auto,
 };
 
 pub struct Qwen35DenseWeightLoader;
@@ -246,37 +245,26 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     let value_dim = nv * config.linear_value_head_dim;
                     let la = format!("{lp}.linear_attn");
 
-                    // SSM projections may be BF16 or NVFP4 depending on quantizer.
-                    // If NVFP4 (weight_packed exists), dequant to BF16 for concat pipeline.
-                    let ssm_quantized = store.contains(&format!("{la}.in_proj_qkv.weight_packed"));
-
-                    let (qkv_dense, z_dense, out_proj_dense) = if ssm_quantized {
-                        let qkv = dequant_nvfp4_to_bf16(
-                            store,
-                            &format!("{la}.in_proj_qkv"),
-                            qkv_rows,
-                            h,
-                            gpu,
-                        )?;
-                        let z = dequant_nvfp4_to_bf16(
-                            store,
-                            &format!("{la}.in_proj_z"),
-                            z_rows,
-                            h,
-                            gpu,
-                        )?;
-                        let out = dequant_nvfp4_to_bf16(
-                            store,
-                            &format!("{la}.out_proj"),
-                            h,
-                            value_dim,
-                            gpu,
-                        )?;
-                        (qkv, z, out)
-                    } else {
-                        let ssm35 = load_ssm_qwen35(store, &lp, gpu, variant)?;
-                        (ssm35.in_proj_qkv, ssm35.in_proj_z, ssm35.out_proj)
-                    };
+                    // SSM projections are loaded per-projection by on-disk dtype:
+                    // each of in_proj_qkv / in_proj_z / out_proj may independently
+                    // be NVFP4-packed (`weight_packed`) or plain (`weight`, routed
+                    // by `dense_auto` → BF16/FP32/FP8). The unsloth NVFP4 re-quant
+                    // of Qwen3.6-27B quantizes ONLY out_proj while keeping the
+                    // in_proj_* in BF16; the old all-or-nothing gate (keyed on
+                    // in_proj_qkv.weight_packed) then looked for a non-existent
+                    // out_proj.weight and failed to build. `dense_auto` is dequant-
+                    // to-BF16 for the concat pipeline regardless of source dtype.
+                    let load_ssm_proj =
+                        |name: &str, rows: usize, cols: usize| -> Result<DenseWeight> {
+                            if store.contains(&format!("{name}.weight_packed")) {
+                                dequant_nvfp4_to_bf16(store, name, rows, cols, gpu)
+                            } else {
+                                dense_auto(store, &format!("{name}.weight"), gpu)
+                            }
+                        };
+                    let qkv_dense = load_ssm_proj(&format!("{la}.in_proj_qkv"), qkv_rows, h)?;
+                    let z_dense = load_ssm_proj(&format!("{la}.in_proj_z"), z_rows, h)?;
+                    let out_proj_dense = load_ssm_proj(&format!("{la}.out_proj"), h, value_dim)?;
 
                     // A, B are always BF16
                     let in_proj_a = dense(store, &format!("{la}.in_proj_a.weight"))?;

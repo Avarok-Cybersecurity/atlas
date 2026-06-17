@@ -71,6 +71,15 @@ top_k = 20
 thinking_default = true
 thinking_in_tools = false
 max_thinking_budget = 2048
+# BF16 KV cache default — Step 3.7's large final-norm weights push K/V values
+# beyond the FP8 E4M3 range (±448). With no scales configured the cache falls
+# through to the static default=1.0 scale, which silently clips BF16 values and
+# destroys dynamic range, producing a degenerate repetition runaway. Mirrors the
+# gemma-4-26b-a4b fix; fp8_kv_calibration_tokens feeds the turbo8 (online
+# per-group BF16 scale) path when that dtype is selected instead.
+# Scope: FP8-KV-scale path only — not the separate </think> parser artifacts.
+default_kv_dtype = "bf16"
+fp8_kv_calibration_tokens = 256
 
 [[model_types]]
 model_type = "step3p7"
