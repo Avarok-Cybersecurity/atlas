@@ -22,4 +22,4 @@ mod prefill_weights;
 mod trait_impl;
 mod types;
 
-pub use types::{HcSiteWeights, HcWeights, MlaWeights, Qwen3AttentionLayer};
+pub use types::{HcHeadWeights, HcSiteWeights, HcWeights, MlaWeights, Qwen3AttentionLayer};
