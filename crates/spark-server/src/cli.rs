@@ -138,6 +138,17 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = false)]
     pub speculative: bool,
 
+    /// Force MTP speculative decoding ON even when the weight-quant gate would
+    /// auto-disable it. Atlas measures MTP (K=2 verify) as net-NEGATIVE on FP8
+    /// weights for hybrid SSM models (~-20% decode: the verify pass re-runs the
+    /// full layer/MoE/lm_head stack and acceptance is ~30-41%, below the
+    /// ~60-70% break-even), but net-POSITIVE on NVFP4 weights. So when
+    /// `--speculative` is set on an FP8 checkpoint, MTP is auto-gated OFF by
+    /// default. Pass `--force-speculative` to override that gate and keep MTP
+    /// on regardless of weight quant format.
+    #[arg(long, default_value_t = false)]
+    pub force_speculative: bool,
+
     /// Enable self-speculative decoding: draft via layer-skipping (no MTP weights needed).
     /// Skips SSM layers during drafting for cheap predictions, then verifies with full model.
     #[arg(long, default_value_t = false)]
