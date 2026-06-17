@@ -37,12 +37,10 @@ impl MoeLayer {
         // dimensions (illegal address in moe_w4a16_grouped_gemm_ptrtable).
         // TODO: revert once the grouped GEMM kernel is fixed.
         tracing::info!("MoE forward_prefill: entering forward_batched fallback N={num_tokens}");
-        let r = self.forward_batched(input, num_tokens, ctx, stream);
-        r.as_ref()?;
+        self.forward_batched(input, num_tokens, ctx, stream)?;
         ctx.gpu.synchronize(stream).map_err(|e| {
             anyhow::anyhow!("forward_prefill: forward_batched post-sync failed: {e}")
         })?;
-        return r;
 
         // Lazy down_proj transpose: synchronous on the compute stream.
         // (See `kick_off_lazy_transpose` for an attempted overlap path
