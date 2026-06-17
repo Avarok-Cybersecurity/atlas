@@ -44,7 +44,7 @@ impl Qwen3SsmLayer {
             std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(),
             Some("1")
         );
-        let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
+        let force_w8a8 = ops::fp8_blockscaled_prefill_enabled();
         if force_bf16 {
             ops::dense_gemm(
                 ctx.gpu,
@@ -67,8 +67,8 @@ impl Qwen3SsmLayer {
             && self.per_token_group_quant_fp8_k.0 != 0
             && self.fp8_gemm_t_blockscaled_k.0 != 0
         {
-            tracing::info!(
-                "ssm prefill: QKVZ via W8A8+FP32-epilogue (vLLM-equivalent, M={k} K={h} N={qkvz_size})"
+            tracing::debug!(
+                "ssm prefill: QKVZ via block-scaled FP8 (W8A8+FP32-epilogue, M={k} K={h} N={qkvz_size})"
             );
             let m = k as usize;
             let k_dim = h;
@@ -76,10 +76,8 @@ impl Qwen3SsmLayer {
             let a_scale_bytes = m * (k_dim / 128) * 4;
             let a_fp8_buf = ctx.gpu.alloc(a_fp8_bytes)?;
             let a_scale_buf = ctx.gpu.alloc(a_scale_bytes)?;
-            // BISECT TEST 1: quant kernel only — call it then fall through
-            // to w8a16_gemm (which we know works) for the actual GEMM.
-            // If this still crashes, the bug is in per_token_group_quant_fp8.
-            // If it works, the bug is in fp8_gemm_t_blockscaled.
+            // Per-token block FP8 quant of the activation, then block-scaled
+            // FP8×FP8 GEMM folding both per-128 scales in an FP32 epilogue.
             ops::per_token_group_quant_fp8(
                 ctx.gpu,
                 self.per_token_group_quant_fp8_k,
@@ -90,9 +88,6 @@ impl Qwen3SsmLayer {
                 k_dim as u32,
                 stream,
             )?;
-            // BISECT TEST 2: now call the GEMM with no-fold variant. If
-            // this crashes, the bug is in the MMA loop itself.
-            tracing::info!("ssm prefill: calling fp8_gemm_t_blockscaled (no-fold bisect)");
             ops::fp8_gemm_t_blockscaled(
                 ctx.gpu,
                 self.fp8_gemm_t_blockscaled_k,

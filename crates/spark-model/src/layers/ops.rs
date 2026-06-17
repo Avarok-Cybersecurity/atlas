@@ -106,3 +106,22 @@ pub use ssm_gdn_b::*;
 pub use ssm_gdn_batched::*;
 pub use ssm_mamba::*;
 pub use ssm_preproc::*;
+
+/// Whether block-scaled FP8 prefill (per-128-block weight scales + per-token
+/// activation scales via `fp8_gemm_t_blockscaled` / `moe_w8a8_grouped_gemm`)
+/// is enabled. This is the DEFAULT for block-scaled FP8 checkpoints as of
+/// 2026-06-17: it matches vLLM's per-block precision and avoids the
+/// single-scale `fp8_gemm_n128` path, whose collapse of per-block dynamic
+/// range pushed long-context tool-arg decode into the FP8 argmax-flip regime
+/// (B1 drift gauge ~1400 → ~100 once block-scaled prefill is on).
+///
+/// Opt out with `ATLAS_FP8_SINGLE_SCALE=1` to restore the old single-scale
+/// prefill (diagnostic / fallback only). Call sites still guard on the
+/// presence of block-scaled weights + kernel handles, so builds/models
+/// without those fall back automatically regardless of this flag.
+pub fn fp8_blockscaled_prefill_enabled() -> bool {
+    !matches!(
+        std::env::var("ATLAS_FP8_SINGLE_SCALE").ok().as_deref(),
+        Some("1")
+    )
+}

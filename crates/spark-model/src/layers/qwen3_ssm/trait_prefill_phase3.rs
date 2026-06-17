@@ -50,7 +50,7 @@ impl Qwen3SsmLayer {
 
         // ── 10. Output projection GEMM: [N, 4096] × [4096, 2048] → [N, 2048] ──
         let out_proj_buf = ctx.buffers.moe_output();
-        let force_w8a8_op = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
+        let force_w8a8_op = ops::fp8_blockscaled_prefill_enabled();
         if let Some(ref dense_out) = self.out_proj_dense {
             ops::dense_gemm(
                 ctx.gpu,
