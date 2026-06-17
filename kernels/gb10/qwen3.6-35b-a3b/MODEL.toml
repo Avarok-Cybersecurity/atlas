@@ -167,14 +167,18 @@ enable_loop_watchdog = true
 # Claude Code): min_p 0.05 → loop-watchdog fires collapse 4 → 0. temperature_max
 # is a defense-in-depth ceiling (catches a client sending e.g. 1.0); opencode's
 # proven-good 0.3 passes through unchanged. 0.0 = disabled.
-# 2026-06-17: floors disabled. The real fix is in sampling_setup.rs — chat
-# requests now fall back to generation_config.json (temperature=1.0) when the
-# client omits temperature, instead of the preset 0.6. temperature_max must NOT
-# re-clamp that 1.0 (the old 0.7 ceiling was clamping the model's intended temp
-# and making agentic clients sample greedily into malformed/looping tool calls);
-# generation_config has no min_p, so the floor stays off to match vLLM.
+# 2026-06-17: floors disabled, sampling defers to generation_config.json
+# (temperature=1.0) via sampling_setup.rs when the client omits temperature.
+# 2026-06-17 (later): temperature_max re-enabled at 0.7 as a ceiling. With the
+# FP8 block-scaled prefill fix landed, the dominant precision cause of
+# long-context tool-arg degeneration is gone (B1 drift ~1400 → ~100), but a
+# residual thin-margin regime remains at high context; at temp 1.0 those thin
+# margins still sample into argmax flips. A 0.7 ceiling sharpens the
+# distribution enough to suppress the residual flips without greedy collapse.
+# This is no longer masking a bug (the bugs are fixed) — it's tuning for the
+# precision floor FP8 legitimately leaves. min_p floor stays off (vLLM parity).
 min_p_floor = 0.0
-temperature_max = 0.0
+temperature_max = 0.7
 # Thinking on by default — Qwen3.6 35B-A3B is a reasoning-tier MoE; CoT
 # materially improves coherence on multi-step prompts. Per-request override
 # via chat_template_kwargs.enable_thinking still wins; CLI --disable-thinking
