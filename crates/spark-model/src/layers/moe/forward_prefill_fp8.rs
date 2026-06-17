@@ -142,21 +142,42 @@ impl MoeLayer {
         } else if has_shared {
             let shared_gate_out = ctx.buffers.ssm_deinterleaved();
             let shared_up_out = ctx.buffers.ssm_qkvz();
-            // Shared-expert dense GEMMs (gate/up/down, every token) always via
-            // the bit-identical (cosine=1.0) ~4.6× faster pipelined kernel.
+            // Shared-expert dense GEMMs (gate/up/down, every token). The
+            // bit-identical (cosine=1.0) ~4.6× faster pipelined kernel is the
+            // default; on targets that do not ship it (native-HIP/gfx1151 — the
+            // pipelined `w8a16_gemm` is not ported, so the handle is null) fall
+            // back to the byte-exact non-pipelined `w8a16_gemm`. Same args, same
+            // numerics — without this the routed FP8 grouped prefill path would
+            // launch a null kernel handle (hipErrorInvalidHandle).
+            let use_pipelined = self.w8a16_gemm_pipelined_k.0 != 0;
             let sh_gemm = |inp, w, sc, outp, mm, nn, kk| -> anyhow::Result<()> {
-                ops::w8a16_gemm_pipelined(
-                    ctx.gpu,
-                    self.w8a16_gemm_pipelined_k,
-                    inp,
-                    w,
-                    sc,
-                    outp,
-                    mm,
-                    nn,
-                    kk,
-                    stream,
-                )
+                if use_pipelined {
+                    ops::w8a16_gemm_pipelined(
+                        ctx.gpu,
+                        self.w8a16_gemm_pipelined_k,
+                        inp,
+                        w,
+                        sc,
+                        outp,
+                        mm,
+                        nn,
+                        kk,
+                        stream,
+                    )
+                } else {
+                    ops::w8a16_gemm(
+                        ctx.gpu,
+                        self.w8a16_gemm_k,
+                        inp,
+                        w,
+                        sc,
+                        outp,
+                        mm,
+                        nn,
+                        kk,
+                        stream,
+                    )
+                }
             };
             // FP8 GEMM for shared expert (M=num_tokens, single kernel each)
             sh_gemm(
