@@ -231,7 +231,7 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
     }
     
     // DEBUG: Log YaRN parameters to verify they're being read correctly
-    tracing::info!(
+    println!(
         "DeepSeek-V4 YaRN parameters: factor={:?}, beta_fast={:?}, beta_slow={:?}, original_max_pos={:?}, mscale={:?}, mscale_all_dim={:?}",
         config.yarn_factor,
         config.yarn_beta_fast,
