@@ -18,10 +18,31 @@ pub fn load_all_layers(
 ) -> Result<Vec<Box<dyn TransformerLayer>>> {
     let n = config.num_hidden_layers;
     tracing::info!(
-        "DeepSeek-V4 load_layers: hc_mult={}, hc_sinkhorn_iters={}, hc_eps={}",
+        "DeepSeek-V4 load_layers: num_layers={}, hc_mult={}, hc_sinkhorn_iters={}, hc_eps={}",
+        n,
         config.hc_mult,
         config.hc_sinkhorn_iters,
         config.hc_eps,
+    );
+    tracing::info!(
+        "DeepSeek-V4 architecture: hidden_size={}, num_experts={}, q_lora_rank={}, kv_lora_rank={}, o_lora_rank={}, head_dim={}",
+        config.hidden_size,
+        config.num_experts,
+        config.q_lora_rank,
+        config.kv_lora_rank,
+        config.o_lora_rank,
+        config.head_dim,
+    );
+    tracing::info!(
+        "DeepSeek-V4 attention: q_heads={}, kv_heads={}, qk_rope_head_dim={}, qk_nope_head_dim={}",
+        config.num_attention_heads,
+        config.num_key_value_heads,
+        config.qk_rope_head_dim,
+        config.qk_nope_head_dim,
+    );
+    tracing::info!(
+        "DeepSeek-V4 KV cache dtype: {:?}",
+        layer_kv_dtypes.get(0).copied().unwrap_or(KvCacheDtype::Bf16),
     );
 
     let mut layers = Vec::with_capacity(n);

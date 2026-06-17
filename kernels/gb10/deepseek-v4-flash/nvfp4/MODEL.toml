@@ -78,9 +78,3 @@ presence_penalty = 0.0
 enable_loop_watchdog = true
 # Thinking is controlled by template; V4 supports reasoning traces.
 thinking_default = false
-
-# KV cache dtype: FP8 matches Hugging Face reference (vLLM/SGLang use --kv-cache-dtype=fp8)
-# The checkpoint is FP8/NVFP4 quantized; BF16 KV cache causes dtype mismatch and garbage output.
-# This is the critical fix for the gibberish output issue.
-default_kv_dtype = "fp8"
-fp8_kv_calibration_tokens = 256
