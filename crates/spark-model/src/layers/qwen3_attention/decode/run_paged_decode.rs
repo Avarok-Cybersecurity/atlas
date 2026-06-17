@@ -40,82 +40,118 @@ impl Qwen3AttentionLayer {
 
         match self.kv_dtype {
             KvCacheDtype::Nvfp4 => {
-                let current_ctas = num_q_heads * num_seqs;
-                let num_splits = if current_ctas >= NUM_SMS {
-                    1u32
+                // V4-Flash uses MLA with compressed KV cache (576 dims: 512 latent + 64 rope)
+                let is_v4_flash = self.mla.as_ref().map(|m| m.o_lora_rank > 0).unwrap_or(false);
+                
+                if is_v4_flash {
+                    // Use MLA decode kernel for V4-Flash
+                    let kv_cache_dim = (self.mla.as_ref().unwrap().kv_lora_rank 
+                        + self.mla.as_ref().unwrap().rope) as u32; // 512 + 64 = 576
+                    tracing::info!(
+                        "V4-Flash MLA decode: using MLA kernel, q_head_dim={}, kv_cache_dim={}",
+                        head_dim,
+                        kv_cache_dim
+                    );
+                    ops::mla_paged_decode_nvfp4(
+                        gpu,
+                        self.mla_paged_decode_k,
+                        q,
+                        kv_cache.k_pool_ptr(self.attn_layer_idx),
+                        kv_cache.v_pool_ptr(self.attn_layer_idx),
+                        output,
+                        block_table,
+                        seq_lens,
+                        max_blocks_per_seq,
+                        num_q_heads,
+                        num_kv_heads,
+                        head_dim,
+                        kv_cache_dim,
+                        block_size,
+                        inv_sqrt_d,
+                        kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                        kv_cache.nvfp4_data_bytes() as u64,
+                        num_seqs,
+                        stream,
+                    )
                 } else {
-                    NUM_SMS / current_ctas
-                };
-                tracing::info!(
-                    "V4-Flash decode: NVFP4 paged_decode_k.handle={}, head_dim={}, num_splits={}",
-                    self.paged_decode_k.0,
-                    head_dim,
-                    num_splits
-                );
+                    // Standard MLA (V3) or full attention
+                    let current_ctas = num_q_heads * num_seqs;
+                    let num_splits = if current_ctas >= NUM_SMS {
+                        1u32
+                    } else {
+                        NUM_SMS / current_ctas
+                    };
+                    tracing::info!(
+                        "V3 MLA decode: NVFP4 paged_decode_k.handle={}, head_dim={}, num_splits={}",
+                        self.paged_decode_k.0,
+                        head_dim,
+                        num_splits
+                    );
 
-                if num_splits > 1 {
-                    let splitk_k = self
-                        .paged_decode_splitk_k
-                        .expect("split-K kernel required for NVFP4");
-                    let reduce_k = self
-                        .paged_decode_reduce_k
-                        .expect("reduce kernel required for NVFP4");
-                    ops::paged_decode_attn_splitk_nvfp4(
-                        gpu,
-                        splitk_k,
-                        q,
-                        kv_cache.k_pool_ptr(self.attn_layer_idx),
-                        kv_cache.v_pool_ptr(self.attn_layer_idx),
-                        workspace,
-                        block_table,
-                        seq_lens,
-                        max_blocks_per_seq,
-                        num_q_heads,
-                        num_kv_heads,
-                        head_dim,
-                        block_size,
-                        inv_sqrt_d,
-                        num_splits,
-                        q_stride,
-                        kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
-                        kv_cache.nvfp4_data_bytes() as u64,
-                        num_seqs,
-                        stream,
-                    )?;
-                    ops::paged_decode_attn_reduce_nvfp4(
-                        gpu,
-                        reduce_k,
-                        workspace,
-                        output,
-                        seq_lens,
-                        num_q_heads,
-                        head_dim,
-                        num_splits,
-                        num_seqs,
-                        stream,
-                    )
-                } else {
-                    ops::paged_decode_attn_nvfp4(
-                        gpu,
-                        self.paged_decode_k,
-                        q,
-                        kv_cache.k_pool_ptr(self.attn_layer_idx),
-                        kv_cache.v_pool_ptr(self.attn_layer_idx),
-                        output,
-                        block_table,
-                        seq_lens,
-                        max_blocks_per_seq,
-                        num_seqs,
-                        num_q_heads,
-                        num_kv_heads,
-                        head_dim,
-                        block_size,
-                        inv_sqrt_d,
-                        q_stride,
-                        kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
-                        kv_cache.nvfp4_data_bytes() as u64,
-                        stream,
-                    )
+                    if num_splits > 1 {
+                        let splitk_k = self
+                            .paged_decode_splitk_k
+                            .expect("split-K kernel required for NVFP4");
+                        let reduce_k = self
+                            .paged_decode_reduce_k
+                            .expect("reduce kernel required for NVFP4");
+                        ops::paged_decode_attn_splitk_nvfp4(
+                            gpu,
+                            splitk_k,
+                            q,
+                            kv_cache.k_pool_ptr(self.attn_layer_idx),
+                            kv_cache.v_pool_ptr(self.attn_layer_idx),
+                            workspace,
+                            block_table,
+                            seq_lens,
+                            max_blocks_per_seq,
+                            num_q_heads,
+                            num_kv_heads,
+                            head_dim,
+                            block_size,
+                            inv_sqrt_d,
+                            num_splits,
+                            q_stride,
+                            kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                            kv_cache.nvfp4_data_bytes() as u64,
+                            num_seqs,
+                            stream,
+                        )?;
+                        ops::paged_decode_attn_reduce_nvfp4(
+                            gpu,
+                            reduce_k,
+                            workspace,
+                            output,
+                            seq_lens,
+                            num_q_heads,
+                            head_dim,
+                            num_splits,
+                            num_seqs,
+                            stream,
+                        )
+                    } else {
+                        ops::paged_decode_attn_nvfp4(
+                            gpu,
+                            self.paged_decode_k,
+                            q,
+                            kv_cache.k_pool_ptr(self.attn_layer_idx),
+                            kv_cache.v_pool_ptr(self.attn_layer_idx),
+                            output,
+                            block_table,
+                            seq_lens,
+                            max_blocks_per_seq,
+                            num_seqs,
+                            num_q_heads,
+                            num_kv_heads,
+                            head_dim,
+                            block_size,
+                            inv_sqrt_d,
+                            q_stride,
+                            kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                            kv_cache.nvfp4_data_bytes() as u64,
+                            stream,
+                        )
+                    }
                 }
             }
             // Turbo4/3: same 4-bit interface as NVFP4 (block_stride + data_section layout).

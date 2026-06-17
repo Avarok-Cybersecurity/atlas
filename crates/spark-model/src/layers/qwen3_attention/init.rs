@@ -261,6 +261,11 @@ impl Qwen3AttentionLayer {
                 "paged_decode_mla",
                 "paged_decode_attn",
             ),
+            mla_paged_decode_k: super::super::try_kernel(
+                gpu,
+                "mla_paged_decode",
+                "mla_paged_decode_nvfp4",
+            ),
             mla_batched_gemv_k: super::super::try_kernel(gpu, "mla_absorbed", "mla_batched_gemv"),
             mla_q_rope_scatter_k: super::super::try_kernel(
                 gpu,
