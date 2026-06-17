@@ -367,8 +367,13 @@ impl ChatCompletionRequest {
             if let Some(budget) = tc.budget_tokens {
                 return (true, Some(budget));
             }
-            // thinking object present with no budget → enable with default
-            return (true, Some(DEFAULT_THINKING_BUDGET));
+            // Anthropic "adaptive" / thinking object with no explicit budget
+            // means "think as long as needed" — defer to the per-model
+            // `max_thinking_budget` (None), NOT the conservative 256-token
+            // DEFAULT_THINKING_BUDGET. A hard 256 cut force-injects </think>
+            // mid-reasoning on agentic turns and wrecks tool selection.
+            // Mirrors the step-5 enable_thinking path below.
+            return (true, None);
         }
 
         // 2. vLLM PR: thinking_token_budget
