@@ -41,7 +41,8 @@ impl Qwen3AttentionLayer {
         match self.kv_dtype {
             KvCacheDtype::Nvfp4 => {
                 // V4-Flash uses MLA with compressed KV cache (576 dims: 512 latent + 64 rope)
-                let is_v4_flash = self.mla.as_ref().map(|m| m.o_lora_rank > 0).unwrap_or(false);
+                // Detection: V4-Flash has rope > 0 (64 dims), V3 has rope = 0
+                let is_v4_flash = self.mla.as_ref().map(|m| m.rope > 0).unwrap_or(false);
                 
                 if is_v4_flash {
                     // Use MLA decode kernel for V4-Flash
