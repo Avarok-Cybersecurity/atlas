@@ -1,3 +1,10 @@
+{%- set bos_token = "<｜begin▁of▁sentence｜>" -%}
+{%- set eos_token = "<｜end▁of▁sentence｜>" -%}
+{%- set thinking_start_token = "" -%}
+{%- set thinking_end_token = "" -%}
+{%- set user_token = "<｜User｜>" -%}
+{%- set assistant_token = "<｜Assistant｜>" -%}
+
 {%- if not messages %}
     {{- raise_exception('No messages provided.') }}
 {%- endif %}
@@ -22,33 +29,39 @@
     {%- endif %}
 {%- endmacro %}
 
+{%- set first_message = true -%}
 {%- for message in messages %}
-    {%- set content = render_content(message.content)|trim %}
+    {%- set content = render_content(message.content) -%}
     {%- if message.role == "system" %}
-        {{- '<|im_start|>system\n' + content + '<|im_end|>\n' }}
+        {%- if first_message %}
+            {{- bos_token }}
+        {%- endif %}
+        {{- content }}
     {%- elif message.role == "user" %}
-        {{- '<|im_start|>user\n' + content + '<|im_end|>\n' }}
+        {%- if first_message %}
+            {{- bos_token }}
+        {%- endif %}
+        {{- user_token + content + assistant_token }}
     {%- elif message.role == "assistant" %}
-        {%- set reasoning_content = '' %}
+        {%- set reasoning_content = '' -%}
         {%- if message.reasoning_content is string %}
-            {%- set reasoning_content = message.reasoning_content %}
+            {%- set reasoning_content = message.reasoning_content -%}
         {%- endif %}
-        {%- set reasoning_content = reasoning_content|trim %}
+        {%- set reasoning_content = reasoning_content | trim -%}
         {%- if reasoning_content %}
-            {{- '<|im_start|>assistant\n<think>\n' + reasoning_content + '\n</think>\n\n' + content + '<|im_end|>\n' }}
-        {%- else %}
-            {{- '<|im_start|>assistant\n' + content + '<|im_end|>\n' }}
+            {{- thinking_start_token + reasoning_content + thinking_end_token }}
         {%- endif %}
+        {{- content + eos_token }}
     {%- else %}
         {{- raise_exception('Unexpected message role.') }}
     {%- endif %}
+    {%- set first_message = false -%}
 {%- endfor %}
 
 {%- if add_generation_prompt %}
-    {{- '<|im_start|>assistant\n' }}
-    {%- if enable_thinking is defined and enable_thinking is false %}
-        {{- '<think>\n</think>\n\n' }}
+    {%- if enable_thinking is defined and enable_thinking == false %}
+        {{- thinking_end_token }}
     {%- else %}
-        {{- '<think>\n' }}
+        {{- thinking_start_token }}
     {%- endif %}
 {%- endif %}
