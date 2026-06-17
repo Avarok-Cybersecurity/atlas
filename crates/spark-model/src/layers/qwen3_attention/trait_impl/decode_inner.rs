@@ -533,24 +533,22 @@ impl Qwen3AttentionLayer {
                 hc_mult,
                 stream,
             )?;
-            if is_last_layer {
-                if let Some(ref head) = hc.head {
-                    ops::hc_head(
-                        ctx.gpu,
-                        self.hc_head_k,
-                        hc_streams,
-                        head.hc_fn,
-                        head.hc_scale,
-                        head.hc_base,
-                        hidden,
-                        1,
-                        h as u32,
-                        hc_mult,
-                        eps,
-                        hc.hc_eps,
-                        stream,
-                    )?;
-                }
+            if is_last_layer && let Some(ref head) = hc.head {
+                ops::hc_head(
+                    ctx.gpu,
+                    self.hc_head_k,
+                    hc_streams,
+                    head.hc_fn,
+                    head.hc_scale,
+                    head.hc_base,
+                    hidden,
+                    1,
+                    h as u32,
+                    hc_mult,
+                    eps,
+                    hc.hc_eps,
+                    stream,
+                )?;
             }
             return Ok(());
         }
@@ -644,24 +642,22 @@ impl Qwen3AttentionLayer {
             stream,
         )?;
 
-        if is_last_layer {
-            if let Some(ref head) = hc.head {
-                ops::hc_head(
-                    ctx.gpu,
-                    self.hc_head_k,
-                    hc_streams,
-                    head.hc_fn,
-                    head.hc_scale,
-                    head.hc_base,
-                    hidden,
-                    1,
-                    h as u32,
-                    hc_mult,
-                    eps,
-                    hc.hc_eps,
-                    stream,
-                )?;
-            }
+        if is_last_layer && let Some(ref head) = hc.head {
+            ops::hc_head(
+                ctx.gpu,
+                self.hc_head_k,
+                hc_streams,
+                head.hc_fn,
+                head.hc_scale,
+                head.hc_base,
+                hidden,
+                1,
+                h as u32,
+                hc_mult,
+                eps,
+                hc.hc_eps,
+                stream,
+            )?;
         }
 
         Ok(())
