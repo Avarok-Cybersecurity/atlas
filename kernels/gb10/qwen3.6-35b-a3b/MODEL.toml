@@ -167,8 +167,14 @@ enable_loop_watchdog = true
 # Claude Code): min_p 0.05 → loop-watchdog fires collapse 4 → 0. temperature_max
 # is a defense-in-depth ceiling (catches a client sending e.g. 1.0); opencode's
 # proven-good 0.3 passes through unchanged. 0.0 = disabled.
-min_p_floor = 0.05
-temperature_max = 0.7
+# 2026-06-17: floors disabled. The real fix is in sampling_setup.rs — chat
+# requests now fall back to generation_config.json (temperature=1.0) when the
+# client omits temperature, instead of the preset 0.6. temperature_max must NOT
+# re-clamp that 1.0 (the old 0.7 ceiling was clamping the model's intended temp
+# and making agentic clients sample greedily into malformed/looping tool calls);
+# generation_config has no min_p, so the floor stays off to match vLLM.
+min_p_floor = 0.0
+temperature_max = 0.0
 # Thinking on by default — Qwen3.6 35B-A3B is a reasoning-tier MoE; CoT
 # materially improves coherence on multi-step prompts. Per-request override
 # via chat_template_kwargs.enable_thinking still wins; CLI --disable-thinking
@@ -222,7 +228,10 @@ thinking_default = true
 #   this model loses the tool format on NVFP4 weights; skipping it fixes
 #   agentic tool calling. Plain-chat CoT is unaffected (this gates only
 #   tool-active turns).
-thinking_in_tools = false
+# 2026-06-17: set back to true to test FP8's natural thinking-on behavior
+# (BF16-truth comparison showed FP8's forward pass is faithful even at high
+# context, so disabling thinking was masking, not fixing).
+thinking_in_tools = true
 # PR 73 qwen3_xml REVERTED 2026-05-25 PM. Live opencode v40 test:
 # under thinking_in_tools=true + qwen3_xml, the model emitted COMPLETELY
 # garbled tool args — `command: '/tmp/test-rust-axum-v40'` (path as
