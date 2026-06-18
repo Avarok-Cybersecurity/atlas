@@ -101,7 +101,9 @@ fn u16s_to_le(v: &[u16]) -> Vec<u8> {
 /// transposed). No scale, no dequant — both operands raw BF16.
 fn cpu_reference(a_bf16: &[u16], b_bf16: &[u16], m: usize, n: usize, k: usize) -> Vec<u16> {
     // Multi-threaded over row blocks (std::thread; explicit thread count — PCND).
-    let nthreads = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(8);
+    let nthreads = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(8);
     let mut out = vec![0u16; m * n];
     let rows_per = m.div_ceil(nthreads);
     std::thread::scope(|sc| {
