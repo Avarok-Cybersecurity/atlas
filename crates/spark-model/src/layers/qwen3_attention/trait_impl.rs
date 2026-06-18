@@ -15,7 +15,7 @@ mod multi_seq;
 mod prefill_inner;
 
 /// Debug: read back BF16 GPU tensor and compute L2 norm + first 4 values.
-pub(super) fn diag_norm(
+pub fn diag_norm(
     gpu: &dyn GpuBackend,
     ptr: DevicePtr,
     n_elements: usize,

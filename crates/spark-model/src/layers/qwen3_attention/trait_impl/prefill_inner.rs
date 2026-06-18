@@ -466,6 +466,9 @@ impl Qwen3AttentionLayer {
         let hc_streams = ctx.buffers.hc_streams();
         let post = ctx.buffers.hc_post();
         let comb = ctx.buffers.hc_comb();
+        let diag_all =
+            std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
+        let diag_this = self.attn_layer_idx == 0 || diag_all;
 
         if is_first_layer {
             ops::hc_expand(
@@ -499,6 +502,15 @@ impl Qwen3AttentionLayer {
             hc.hc_eps,
             stream,
         )?;
+        if diag_this {
+            super::diag_norm(
+                ctx.gpu,
+                hidden,
+                h as usize,
+                stream,
+                &format!("V4-prefill L{} hc_pre-attn", self.attn_layer_idx),
+            );
+        }
 
         let normed = ctx.buffers.norm_output();
         ops::rms_norm(
@@ -637,6 +649,15 @@ impl Qwen3AttentionLayer {
             hc_mult,
             stream,
         )?;
+        if diag_this {
+            super::diag_norm(
+                ctx.gpu,
+                hc_streams,
+                h as usize,
+                stream,
+                &format!("V4-prefill L{} hc_post-attn", self.attn_layer_idx),
+            );
+        }
 
         // ── FFN sublayer ──
         ops::hc_pre(
@@ -657,6 +678,15 @@ impl Qwen3AttentionLayer {
             hc.hc_eps,
             stream,
         )?;
+        if diag_this {
+            super::diag_norm(
+                ctx.gpu,
+                hidden,
+                h as usize,
+                stream,
+                &format!("V4-prefill L{} hc_pre-ffn", self.attn_layer_idx),
+            );
+        }
 
         let normed2 = ctx.buffers.norm_output();
         ops::rms_norm(
@@ -704,6 +734,15 @@ impl Qwen3AttentionLayer {
             hc_mult,
             stream,
         )?;
+        if diag_this {
+            super::diag_norm(
+                ctx.gpu,
+                hc_streams,
+                h as usize,
+                stream,
+                &format!("V4-prefill L{} hc_post-ffn", self.attn_layer_idx),
+            );
+        }
 
         if is_last_layer && let Some(ref head) = hc.head {
             ops::hc_head(

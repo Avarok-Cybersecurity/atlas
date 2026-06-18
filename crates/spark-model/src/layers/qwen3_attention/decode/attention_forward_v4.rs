@@ -47,6 +47,9 @@ impl Qwen3AttentionLayer {
         let o_lora = mla.o_lora_rank as u32;
         let nkv = ctx.config.num_key_value_heads as u32;
         let profile = ctx.profile;
+        let diag_all =
+            std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
+        let diag_this = self.attn_layer_idx == 0 || diag_all;
         macro_rules! prof {
             ($label:expr, $body:expr) => {{
                 if profile {
@@ -126,13 +129,13 @@ impl Qwen3AttentionLayer {
                 )
             }
         })?;
-        if self.attn_layer_idx == 0 {
+        if diag_this {
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 q_out,
                 q_dim as usize,
                 stream,
-                "V4-decode L0 Q after proj",
+                &format!("V4-decode L{} Q after proj", self.attn_layer_idx),
             );
         }
 
@@ -166,20 +169,20 @@ impl Qwen3AttentionLayer {
         // K=V for V4-Flash direct KV projection
         ctx.gpu
             .copy_d2d_async(k_out, v_out, (kv_dim as usize) * 2, stream)?;
-        if self.attn_layer_idx == 0 {
+        if diag_this {
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 k_out,
                 kv_dim as usize,
                 stream,
-                "V4-decode L0 K after proj",
+                &format!("V4-decode L{} K after proj", self.attn_layer_idx),
             );
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 v_out,
                 kv_dim as usize,
                 stream,
-                "V4-decode L0 V after copy",
+                &format!("V4-decode L{} V after copy", self.attn_layer_idx),
             );
         }
 
@@ -250,29 +253,27 @@ impl Qwen3AttentionLayer {
                 stream,
             )
         })?;
-        if self.attn_layer_idx == 0 {
+        if diag_this {
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 k_out,
                 kv_dim as usize,
                 stream,
-                "V4-decode L0 K after RoPE",
+                &format!("V4-decode L{} K after RoPE", self.attn_layer_idx),
             );
-            // Diagnostic: rope region of K (offset nope=448)
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 k_out.offset(mla.nope * 2),
                 (kv_dim - mla.nope as u32) as usize,
                 stream,
-                "V4-decode L0 K rope after RoPE",
+                &format!("V4-decode L{} K rope after RoPE", self.attn_layer_idx),
             );
-            // Diagnostic: rope region of Q head 0 (offset nope=448)
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 q_out.offset(mla.nope * 2),
                 (hd - mla.nope as u32) as usize,
                 stream,
-                "V4-decode L0 Q rope after RoPE",
+                &format!("V4-decode L{} Q rope after RoPE", self.attn_layer_idx),
             );
         }
 
@@ -341,13 +342,13 @@ impl Qwen3AttentionLayer {
                 stream,
             )
         })?;
-        if self.attn_layer_idx == 0 {
+        if diag_this {
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 attn_out,
                 (nq * hd) as usize,
                 stream,
-                "V4-decode L0 attn_out",
+                &format!("V4-decode L{} attn_out", self.attn_layer_idx),
             );
         }
 
@@ -378,13 +379,13 @@ impl Qwen3AttentionLayer {
                 stream,
             )
         })?;
-        if self.attn_layer_idx == 0 {
+        if diag_this {
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 o_out,
                 h as usize,
                 stream,
-                "V4-decode L0 o_out",
+                &format!("V4-decode L{} o_out", self.attn_layer_idx),
             );
         }
 

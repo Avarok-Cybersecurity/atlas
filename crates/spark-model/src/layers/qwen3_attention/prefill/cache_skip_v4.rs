@@ -45,6 +45,9 @@ impl Qwen3AttentionLayer {
         let mla_cache_dim = kv_lora + rope;
         let hd_mla = nope + rope;
         let use_tc = self.dense_gemm_tc_k.0 != 0;
+        let diag_all =
+            std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
+        let diag_this = self.attn_layer_idx == 0 || diag_all;
 
         // ── 1. Q latent → norm → expand ──
         let q_latent = ctx.buffers.ssm_ba();
@@ -105,13 +108,13 @@ impl Qwen3AttentionLayer {
         ctx.gpu
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: q_full gemm sync failed: {e}"))?;
-        if self.attn_layer_idx == 0 {
+        if diag_this {
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 q_full,
                 (nq * hd_mla) as usize,
                 stream,
-                "V4 L0 Q after proj",
+                &format!("V4-prefill L{} Q after proj", self.attn_layer_idx),
             );
         }
 
@@ -153,25 +156,25 @@ impl Qwen3AttentionLayer {
         ctx.gpu
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: k_out gemm sync failed: {e}"))?;
-        if self.attn_layer_idx == 0 {
+        if diag_this {
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 k_out,
                 kv_dim as usize,
                 stream,
-                "V4 L0 K after proj",
+                &format!("V4-prefill L{} K after proj", self.attn_layer_idx),
             );
         }
         // Copy K → V (V4-Flash: K and V share the same projection output)
         ctx.gpu
             .copy_d2d_async(k_out, v_out, (n * kv_dim) as usize * 2, stream)?;
-        if self.attn_layer_idx == 0 {
+        if diag_this {
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 v_out,
                 kv_dim as usize,
                 stream,
-                "V4 L0 V after copy",
+                &format!("V4-prefill L{} V after copy", self.attn_layer_idx),
             );
         }
 
@@ -250,20 +253,23 @@ impl Qwen3AttentionLayer {
         ctx.gpu
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: rope_yarn sync failed: {e}"))?;
-        if self.attn_layer_idx == 0 {
+        if diag_this {
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 k_out,
                 kv_dim as usize,
                 stream,
-                "V4 L0 K after RoPE token0",
+                &format!("V4-prefill L{} K after RoPE token0", self.attn_layer_idx),
             );
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 k_out.offset((nope * 2) as usize),
                 (kv_dim - nope) as usize,
                 stream,
-                "V4 L0 K rope after RoPE token0",
+                &format!(
+                    "V4-prefill L{} K rope after RoPE token0",
+                    self.attn_layer_idx
+                ),
             );
             let last_k_offset = ((n - 1) * kv_dim * 2) as usize;
             super::super::trait_impl::diag_norm(
@@ -271,14 +277,14 @@ impl Qwen3AttentionLayer {
                 k_out.offset(last_k_offset),
                 kv_dim as usize,
                 stream,
-                "V4 L0 K after RoPE last",
+                &format!("V4-prefill L{} K after RoPE last", self.attn_layer_idx),
             );
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 k_out.offset(last_k_offset + (nope * 2) as usize),
                 (kv_dim - nope) as usize,
                 stream,
-                "V4 L0 K rope after RoPE last",
+                &format!("V4-prefill L{} K rope after RoPE last", self.attn_layer_idx),
             );
         }
 
@@ -325,13 +331,13 @@ impl Qwen3AttentionLayer {
         ctx.gpu
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: prefill_attention sync failed: {e}"))?;
-        if self.attn_layer_idx == 0 {
+        if diag_this {
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 attn_out,
                 (nq * hd_mla) as usize,
                 stream,
-                "V4 L0 attn_out token0",
+                &format!("V4-prefill L{} attn_out token0", self.attn_layer_idx),
             );
             let last_token_offset = ((n - 1) * nq * hd_mla * 2) as usize;
             super::super::trait_impl::diag_norm(
@@ -339,7 +345,7 @@ impl Qwen3AttentionLayer {
                 attn_out.offset(last_token_offset),
                 (nq * hd_mla) as usize,
                 stream,
-                "V4 L0 attn_out last",
+                &format!("V4-prefill L{} attn_out last", self.attn_layer_idx),
             );
         }
 
@@ -411,13 +417,13 @@ impl Qwen3AttentionLayer {
         ctx.gpu
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: wo_b gemm sync failed: {e}"))?;
-        if self.attn_layer_idx == 0 {
+        if diag_this {
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 o_out,
                 h as usize,
                 stream,
-                "V4 L0 o_out token0",
+                &format!("V4-prefill L{} o_out token0", self.attn_layer_idx),
             );
             let last_token_offset = ((n - 1) * h * 2) as usize;
             super::super::trait_impl::diag_norm(
@@ -425,7 +431,7 @@ impl Qwen3AttentionLayer {
                 o_out.offset(last_token_offset),
                 h as usize,
                 stream,
-                "V4 L0 o_out last",
+                &format!("V4-prefill L{} o_out last", self.attn_layer_idx),
             );
         }
 
