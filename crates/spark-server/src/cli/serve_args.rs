@@ -81,7 +81,10 @@ pub struct ServeArgs {
     #[arg(long, default_value = "0")]
     pub kv_high_precision_layers: String,
 
-    /// GPU memory utilization (0.0-1.0).
+    /// Fraction of total GPU memory this process may consume (0.0-1.0).
+    /// Weights, buffers, KV cache, and reserves all count against this cap.
+    /// Matches vLLM / sparkrun semantics: 0.50 on a 120 GB device means
+    /// Atlas will use at most ~60 GB in total.
     #[arg(long, default_value_t = 0.90)]
     pub gpu_memory_utilization: f64,
 
