@@ -75,6 +75,14 @@ impl TransformerModel {
         // unconditionally (a handle is cheap); only invoked when `lm_head_fp8`
         // is set, so the NVFP4/BF16 paths never touch it.
         let dense_gemv_fp8w_kernel = gpu.kernel("gemv_fp8w", "dense_gemv_fp8w")?;
+        // FP8 dual-GEMV (batch=2): present on images that ship the kernel;
+        // try_kernel keeps the handle 0 on older sets so dispatch falls back
+        // to the per-token loop.
+        let dense_gemv_fp8w_batch2_kernel = crate::layers::try_kernel(
+            gpu.as_ref(),
+            "dense_gemv_fp8w_batch2",
+            "dense_gemv_fp8w_batch2",
+        );
         let dense_gemm_kernel = gpu.kernel("gemm", "dense_gemm_bf16")?;
         let argmax_kernel = gpu.kernel("argmax", "argmax_bf16")?;
         let argmax_logits_kernel = gpu.kernel("argmax", "argmax_fp32")?;
@@ -425,6 +433,7 @@ impl TransformerModel {
             w4a16_gemm_kernel,
             w4a16_gemv_batch2_kernel,
             dense_gemv_fp8w_kernel,
+            dense_gemv_fp8w_batch2_kernel,
             dense_gemm_kernel,
             argmax_kernel,
             argmax_logits_kernel,

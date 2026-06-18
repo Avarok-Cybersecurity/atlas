@@ -79,21 +79,35 @@ impl TransformerModel {
         let v = self.config.vocab_size as u32;
         let logits = self.buffers.logits();
         if let Some(ref fp8) = self.lm_head_fp8 {
-            // FP8 E4M3 LM head. `w8a16_gemv` is M=1 only (no batch2/GEMM
-            // variant), so loop one GEMV per token. hidden is BF16 [K,H]
-            // (stride h*2 bytes); logits is BF16 [K,V] (stride v*2 bytes).
+            // FP8 E4M3 LM head. The dual-GEMV (batch=2) reads the FP8 weight
+            // once for both K=2 verify tokens — bit-identical to two M=1 GEMVs
+            // but halves the full-vocab weight bandwidth. Falls back to the
+            // per-token loop for K!=2 or when the kernel is absent.
             let bf16 = 2usize;
-            for i in 0..num_tokens as usize {
-                ops::dense_gemv_fp8w(
+            if num_tokens == 2 && self.dense_gemv_fp8w_batch2_kernel.0 != 0 {
+                ops::dense_gemv_fp8w_batch2(
                     self.gpu.as_ref(),
-                    self.dense_gemv_fp8w_kernel,
-                    hidden.offset(i * h as usize * bf16),
+                    self.dense_gemv_fp8w_batch2_kernel,
+                    hidden,
                     fp8,
-                    logits.offset(i * v as usize * bf16),
+                    logits,
                     v,
                     h,
                     stream,
                 )?;
+            } else {
+                for i in 0..num_tokens as usize {
+                    ops::dense_gemv_fp8w(
+                        self.gpu.as_ref(),
+                        self.dense_gemv_fp8w_kernel,
+                        hidden.offset(i * h as usize * bf16),
+                        fp8,
+                        logits.offset(i * v as usize * bf16),
+                        v,
+                        h,
+                        stream,
+                    )?;
+                }
             }
         } else if num_tokens == 2 {
             // Double-GEMV: reads weights once, computes 2 outputs.

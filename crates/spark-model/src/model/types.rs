@@ -60,6 +60,10 @@ pub struct TransformerModel {
     /// `lm_head_fp8.is_some()`; loaded unconditionally (cheap handle) so the
     /// dispatch in `lm_head` / batched-decode / verify can reference it.
     pub(super) dense_gemv_fp8w_kernel: KernelHandle,
+    /// FP8-weight dual-GEMV (batch=2): reads the FP8 weight once for both K=2
+    /// verify tokens. Bit-identical to two `dense_gemv_fp8w` calls; halves the
+    /// FP8 weight bandwidth for the lm_head on the MTP verify path.
+    pub(super) dense_gemv_fp8w_batch2_kernel: KernelHandle,
     pub(super) dense_gemm_kernel: KernelHandle,
     pub(super) argmax_kernel: KernelHandle,
     pub(super) argmax_logits_kernel: KernelHandle, // FP32 argmax for logits
