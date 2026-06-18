@@ -235,7 +235,6 @@ impl Qwen3AttentionLayer {
                 stream,
             )
         })?;
-        prof!("k_rope_writeback", {
             ops::mla_q_rope_writeback_batched(
                 ctx.gpu,
                 self.mla_q_rope_writeback_batched_k,
@@ -256,15 +255,12 @@ impl Qwen3AttentionLayer {
                 k_out,
                 kv_dim as usize,
                 stream,
-                "V4-decode L0 K after RoPE",
             );
             // Diagnostic: rope region of K (offset nope=448)
-            super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 k_out.offset(mla.nope * 2),
                 (kv_dim - mla.nope as u32) as usize,
                 stream,
-                "V4-decode L0 K rope after RoPE",
             );
             // Diagnostic: rope region of Q head 0 (offset nope=448)
             super::super::trait_impl::diag_norm(
@@ -272,7 +268,6 @@ impl Qwen3AttentionLayer {
                 q_out.offset(mla.nope * 2),
                 (hd - mla.nope as u32) as usize,
                 stream,
-                "V4-decode L0 Q rope after RoPE",
             );
         }
 
@@ -302,30 +297,6 @@ impl Qwen3AttentionLayer {
         // ── Step 3.5: Assemble KV cache (V4-Flash: requires latent+rope assembly) ──
         // Cache needs 576-dim (512 latent + 64 rope), but k_out/v_out are 512-dim.
         // Extract RoPE from Q (which has correct [nope|rope] structure) and reuse for K cache.
-        let k_cache_assembled = ctx.buffers.ssm_deinterleaved();
-        let v_cache_assembled = ctx.buffers.ssm_qkvz();
-        let kv_lora = mla.kv_lora_rank as u32;
-        let mla_cache_dim = kv_lora + mla_rope;
-        prof!("cache_assemble", {
-            ops::mla_cache_assemble_batched(
-                ctx.gpu,
-                self.mla_cache_assemble_batched_k,
-                k_out,           // 512-dim latent K
-                q_rope_tmp,      // 64-dim RoPE from Q
-                k_cache_assembled,
-                v_cache_assembled,
-                1,
-                kv_lora,
-                mla_rope,
-                mla_cache_dim,
-                stream,
-            )
-        })?;
-
-        // ── Step 4: Write K/V to paged cache ──
-        prof!("kv_write", {
-            self.write_kv_cache(
-                ctx.gpu,
                 k_cache_assembled,
                 v_cache_assembled,
                 kv_cache,
