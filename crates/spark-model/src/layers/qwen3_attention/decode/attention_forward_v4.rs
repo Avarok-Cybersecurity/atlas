@@ -323,7 +323,6 @@ impl Qwen3AttentionLayer {
         })?;
 
         // ── Step 4: Write K/V to paged cache ──
-        let kv_stride = kv_dim;
         prof!("kv_write", {
             self.write_kv_cache(
                 ctx.gpu,
