@@ -166,8 +166,9 @@ fn launch(
     let [a, b, scale, c] = ptrs;
     let handle = gpu.kernel(name, name)?;
     let (grid, block) = match name {
-        // Current production kernel: 64×64 tile, 128-thread block.
-        "w8a16_gemm" => ([n.div_ceil(64), m.div_ceil(64), 1], [128u32, 1, 1]),
+        // 256×128 M×N tile, 512-thread (16-warp) block — matches the
+        // w8a16_gemm.cu production geometry.
+        "w8a16_gemm" => ([n.div_ceil(128), m.div_ceil(256), 1], [512u32, 1, 1]),
         // Fix-A pipelined rewrite: 128×64 tile (M×N), 256-thread block (8 warps).
         "w8a16_gemm_pipelined" => ([n.div_ceil(32), m.div_ceil(128), 1], [256u32, 1, 1]),
         other => bail!("no launch geometry registered for kernel '{other}' — add an arm"),
@@ -203,7 +204,9 @@ fn launch_no_sync(
     let [a, b, scale, c] = ptrs;
     let handle = gpu.kernel(name, name)?;
     let (grid, block) = match name {
-        "w8a16_gemm" => ([n.div_ceil(64), m.div_ceil(64), 1], [128u32, 1, 1]),
+        // 256×128 M×N tile, 512-thread (16-warp) block — matches the
+        // w8a16_gemm.cu production geometry.
+        "w8a16_gemm" => ([n.div_ceil(128), m.div_ceil(256), 1], [512u32, 1, 1]),
         "w8a16_gemm_pipelined" => ([n.div_ceil(32), m.div_ceil(128), 1], [256u32, 1, 1]),
         other => bail!("no launch geometry registered for kernel '{other}' — add an arm"),
     };

@@ -159,13 +159,31 @@ impl Qwen3AttentionLayer {
                 h,
                 stream,
             )?;
-        } else if weight_opt.and_then(|w| w.as_fp8()).is_some() && self.w8a16_gemm_k.0 != 0 {
+        } else if weight_opt.and_then(|w| w.as_fp8()).is_some()
+            && self.w8a16_gemm_pipelined_k.0 != 0
+        {
             let fp8w = weight_opt.and_then(|w| w.as_fp8()).unwrap();
-            // attn QKV always via the bit-identical (cosine=1.0) ~4.6× faster
-            // tensor-core w8a16_gemm_pipelined kernel.
+            // attn QKV via the bit-identical (cosine=1.0) ~4.6x faster tensor-core
+            // w8a16_gemm_pipelined kernel where available (NVIDIA). gfx1151/HIP has
+            // no cp.async -> pipelined absent -> non-pipelined w8a16_gemm fallback.
             ops::w8a16_gemm_pipelined(
                 ctx.gpu,
                 self.w8a16_gemm_pipelined_k,
+                normed,
+                fp8w.weight,
+                fp8w.row_scale,
+                out,
+                n,
+                out_dim,
+                h,
+                stream,
+            )?;
+        } else if weight_opt.and_then(|w| w.as_fp8()).is_some() && self.w8a16_gemm_k.0 != 0 {
+            let fp8w = weight_opt.and_then(|w| w.as_fp8()).unwrap();
+            // cp.async-free fallback (gfx1151/HIP): non-pipelined block-scaled W8A16.
+            ops::w8a16_gemm(
+                ctx.gpu,
+                self.w8a16_gemm_k,
                 normed,
                 fp8w.weight,
                 fp8w.row_scale,

@@ -210,9 +210,20 @@ pub fn w8a16_gemm(
     k: u32,
     stream: u64,
 ) -> Result<()> {
+    // Launch geometry is target-specific because the `w8a16_gemm` kernel SOURCE
+    // differs per target. The native-HIP (gfx1151) kernel is a 256×128 M×N
+    // tile / 512-thread (16-warp) block (kernels/strix-hip/common/w8a16_gemm.cu)
+    // — it raises warp occupancy and per-CTA M-reuse for prefill GEMM. Every
+    // other target keeps the original 64×64 / 128-thread kernel
+    // (kernels/gb10/common/w8a16_gemm.cu). Keep these two in lockstep with their
+    // `.cu` `M_TILE`/`N_TILE`/`THREADS`.
+    #[cfg(atlas_hip)]
+    let (grid, block) = ([div_ceil(n, 128), div_ceil(m, 256), 1], [512, 1, 1]);
+    #[cfg(not(atlas_hip))]
+    let (grid, block) = ([div_ceil(n, 64), div_ceil(m, 64), 1], [128, 1, 1]);
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 64), div_ceil(m, 64), 1])
-        .block([128, 1, 1])
+        .grid(grid)
+        .block(block)
         .arg_ptr(input)
         .arg_ptr(weight)
         .arg_ptr(block_scale)
@@ -404,21 +415,25 @@ pub fn moe_build_tile_worklist(
         .launch(stream)
 }
 
-/// FP8 grouped GEMM for sorted MoE prefill — grid-compaction over a persistent
-/// 96-CTA grid. THE routed-expert FP8 prefill kernel.
+/// FP8 grouped GEMM for sorted MoE prefill — grid-compaction over the COMPACTED
+/// work-list built by `moe_build_tile_worklist`. THE routed-expert FP8 prefill
+/// kernel.
 ///
-/// A fixed `PM5_PERSIST_CTAS=96` 1D grid strides over the COMPACTED work-list
-/// built by `moe_build_tile_worklist`. There is NO `max_m_tiles` argument — the
-/// work-item count is read from `total_tiles` on the device.
+/// The kernel grid-strides by `gridDim.x`, so the launch is sized to
+/// `max_tiles` — the caller's exact upper bound on the work-item (tile) count
+/// (`wl_cap_items`). This covers the whole work-list in ~one pass instead of
+/// serializing dozens of tiles per CTA behind sync barriers (the old fixed
+/// 96-CTA persistent grid left the GPU >90% idle: ~0.2% occupancy / ~16%
+/// MemUnitBusy, measured on gfx1151). Oversubscription is safe (extra CTAs
+/// exit the loop immediately); undersizing is merely slower, never wrong.
 ///
-/// `PM5_PERSIST_CTAS = 96` here is the SSOT mirror of the `#define
-/// PM5_PERSIST_CTAS 96` in `moe_fp8_grouped_gemm.cu`; the two MUST match or the
-/// device-side stride and the launched CTA count diverge.
+/// `max_tiles` is clamped to `MAX_GRID_CTAS` so a pathological worklist bound
+/// cannot request an unbounded grid.
 ///
 /// SAME-STREAM INVARIANT: MUST be launched on the SAME `stream` as the
 /// preceding `moe_build_tile_worklist` (read-after-write of `total_tiles`).
 ///
-/// Grid: (PM5_PERSIST_CTAS=96, 1, 1)  Block: (256, 1, 1)
+/// Grid: (max_tiles.clamp(1, MAX_GRID_CTAS), 1, 1)  Block: (256, 1, 1)
 #[allow(clippy::too_many_arguments)]
 pub fn moe_fp8_grouped_gemm(
     gpu: &dyn GpuBackend,
@@ -434,13 +449,29 @@ pub fn moe_fp8_grouped_gemm(
     k: u32,
     worklist: DevicePtr,    // [*total_tiles * 2] u32 (built on the same stream)
     total_tiles: DevicePtr, // [1] i32 (built on the same stream)
+    max_tiles: u32,         // caller's upper bound on tile count (wl_cap_items)
     stream: u64,
 ) -> Result<()> {
-    // SSOT: must equal `#define PM5_PERSIST_CTAS 96` in moe_fp8_grouped_gemm.cu.
-    const PM5_PERSIST_CTAS: u32 = 96;
+    // The kernel strides by gridDim.x, so the grid is sized to the work-list's
+    // tile-count upper bound. Clamp to MAX_GRID_CTAS to bound the launch.
+    const MAX_GRID_CTAS: u32 = 16384;
+    let grid_ctas = max_tiles.clamp(1, MAX_GRID_CTAS);
+    // Block size is target-specific because the kernel SOURCE differs. The
+    // native-HIP (gfx1151) kernel is a 16-warp / 512-thread block with a 2-D
+    // (8 warp-rows x 2 warp-cols) warp grid: it keeps the 128x64 tile geometry
+    // (so the work-list packing is unchanged) but splits the 4 WMMA n-sub-tiles
+    // across 2 warp-columns, doubling warp occupancy for latency hiding on the
+    // long-K gate/up GEMM (kernels/strix-hip/common/moe_fp8_grouped_gemm.cu).
+    // Every other target keeps the 8-warp / 256-thread M-only kernel
+    // (kernels/gb10/common/moe_fp8_grouped_gemm.cu). Keep this in lockstep with
+    // that .cu PM4_THREADS.
+    #[cfg(atlas_hip)]
+    let block = [512u32, 1, 1];
+    #[cfg(not(atlas_hip))]
+    let block = [256u32, 1, 1];
     KernelLaunch::new(gpu, kernel)
-        .grid([PM5_PERSIST_CTAS, 1, 1])
-        .block([256, 1, 1])
+        .grid([grid_ctas, 1, 1])
+        .block(block)
         .arg_ptr(input)
         .arg_ptr(weight_ptrs)
         .arg_ptr(scale_ptrs)

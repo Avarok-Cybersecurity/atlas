@@ -110,7 +110,7 @@ impl Qwen3SsmLayer {
             ctx.gpu.free(a_fp8_buf)?;
             ctx.gpu.free(a_scale_buf)?;
         } else if let Some(ref fp8w) = self.qkvz_fp8w
-            && self.w8a16_gemm_k.0 != 0
+            && self.w8a16_gemm_pipelined_k.0 != 0
         {
             // Block-scaled W8A16 prefill: matches vLLM's per-128-block FP32
             // scale precision (vs the single-scale fp8_gemm_n128 below
@@ -118,8 +118,11 @@ impl Qwen3SsmLayer {
             // dropping per-block dynamic range). This is the SSM-side of
             // the W8A8+FP32-epilogue fix shipped for the attention layer.
             //
-            // Block-scaled W8A16 QKVZ always routed through the bit-identical
-            // (cosine=1.0) ~4.6× faster tensor-core w8a16_gemm_pipelined kernel.
+            // Block-scaled W8A16 QKVZ routed through the bit-identical
+            // (cosine=1.0) ~4.6× faster tensor-core w8a16_gemm_pipelined kernel
+            // where available (NVIDIA). gfx1151/HIP has no cp.async, so that
+            // kernel is absent there â fall through to the cp.async-free
+            // non-pipelined w8a16_gemm branch below.
             ops::w8a16_gemm_pipelined(
                 ctx.gpu,
                 self.w8a16_gemm_pipelined_k,
@@ -135,6 +138,29 @@ impl Qwen3SsmLayer {
             .map_err(|e| {
                 anyhow::anyhow!(
                     "ssm prefill: QKVZ w8a16_gemm_pipelined failed (M={k}, N={qkvz_size}): {e}"
+                )
+            })?;
+        } else if let Some(ref fp8w) = self.qkvz_fp8w
+            && self.w8a16_gemm_k.0 != 0
+        {
+            // cp.async-free fallback (gfx1151/HIP): non-pipelined block-scaled
+            // W8A16 GEMM. Same per-128-block FP32-scale math as the pipelined
+            // kernel, without the sm_80+ cp.async multistage prefetch.
+            ops::w8a16_gemm(
+                ctx.gpu,
+                self.w8a16_gemm_k,
+                normed,
+                fp8w.weight,
+                fp8w.row_scale,
+                proj_dst,
+                k,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "ssm prefill: QKVZ w8a16_gemm (block-scaled) failed (M={k}, N={qkvz_size}): {e}"
                 )
             })?;
         } else if let Some(fp8) = self.qkvz_fp8 {
