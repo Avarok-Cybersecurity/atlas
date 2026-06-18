@@ -138,13 +138,6 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
     config.nested_config = false;
     config.weight_prefix = "model".to_string();
 
-    // Routing: sqrtsoftplus is not yet supported in Atlas MoE kernels.
-    // Fallback to sigmoid (closest existing routing function) with a
-    // warning that quantitative output will differ from the trained model.
-    if config.scoring_func == "sqrtsoftplus" {
-        config.scoring_func = "sigmoid".to_string();
-    }
-
     // Loss-free balancing (noaux_tc) implies correction bias
     let topk_method = raw
         .get("topk_method")

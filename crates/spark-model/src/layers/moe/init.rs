@@ -252,6 +252,18 @@ impl MoeLayer {
                 "moe_topk_sig",
                 "moe_topk_sigmoid_batched",
             ),
+            // sqrtsoftplus kernels: lazy-loaded via try_kernel so models
+            // that don't register them (all except DeepSeek-V4) start fine.
+            moe_topk_sqrtsoftplus_k: super::super::try_kernel(
+                gpu,
+                "moe_topk_sqrt",
+                "moe_topk_sqrtsoftplus",
+            ),
+            moe_topk_sqrtsoftplus_batched_k: super::super::try_kernel(
+                gpu,
+                "moe_topk_sqrt",
+                "moe_topk_sqrtsoftplus_batched",
+            ),
         })
     }
 }

@@ -495,7 +495,7 @@ fn test_parse_deepseek_v4_config() {
     assert_eq!(cfg.moe_intermediate_size, 2048);
     assert_eq!(cfg.shared_expert_intermediate_size, 2048);
     assert!(cfg.norm_topk_prob);
-    assert_eq!(cfg.scoring_func, "sigmoid"); // sqrtsoftplus → sigmoid fallback
+    assert_eq!(cfg.scoring_func, "sqrtsoftplus"); // preserved, no fallback
     assert!(cfg.use_routing_bias);
     assert_eq!(cfg.num_mtp_modules, 1);
     assert_eq!(cfg.mtp_transformer_layers, 1);

@@ -111,27 +111,45 @@ impl MoeLayer {
             })?;
 
             prof!("topk", {
+                let scaling_factor = ctx.config.routed_scaling_factor as f32;
                 if let Some(bias) = self.correction_bias_dev {
-                    // DeepSeek-V3 / MiniMax-M2 sigmoid + correction bias:
-                    //   scores   = sigmoid(gate_logits)
-                    //   indices  = topk(scores + bias)
-                    //   weights  = scores[indices] / sum(scores[indices])
-                    // Kernel does all three steps; norm_topk_prob toggles
-                    // the final divide, scaling_factor = 1.0 (MiniMax has
-                    // no routed_scaling_factor, unlike Nemotron-H's 2.5).
-                    ops::moe_topk_sigmoid(
-                        ctx.gpu,
-                        self.moe_topk_sigmoid_k,
-                        gate_logits,
-                        bias,
-                        indices_dev,
-                        weights_dev,
-                        num_experts,
-                        top_k,
-                        ctx.config.norm_topk_prob,
-                        1.0,
-                        stream,
-                    )
+                    if ctx.config.scoring_func == "sqrtsoftplus" {
+                        // DeepSeek-V4 sqrtsoftplus + correction bias:
+                        //   scores   = sqrtsoftplus(gate_logits)
+                        //   indices  = topk(scores + bias)
+                        //   weights  = scores[indices] / sum(scores[indices])
+                        ops::moe_topk_sqrtsoftplus(
+                            ctx.gpu,
+                            self.moe_topk_sqrtsoftplus_k,
+                            gate_logits,
+                            bias,
+                            indices_dev,
+                            weights_dev,
+                            num_experts,
+                            top_k,
+                            ctx.config.norm_topk_prob,
+                            scaling_factor,
+                            stream,
+                        )
+                    } else {
+                        // DeepSeek-V3 / MiniMax-M2 sigmoid + correction bias:
+                        //   scores   = sigmoid(gate_logits)
+                        //   indices  = topk(scores + bias)
+                        //   weights  = scores[indices] / sum(scores[indices])
+                        ops::moe_topk_sigmoid(
+                            ctx.gpu,
+                            self.moe_topk_sigmoid_k,
+                            gate_logits,
+                            bias,
+                            indices_dev,
+                            weights_dev,
+                            num_experts,
+                            top_k,
+                            ctx.config.norm_topk_prob,
+                            scaling_factor,
+                            stream,
+                        )
+                    }
                 } else {
                     ops::moe_topk_softmax(
                         ctx.gpu,

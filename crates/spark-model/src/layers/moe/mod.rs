@@ -208,6 +208,9 @@ pub struct MoeLayer {
     /// Never dispatched on those paths because `correction_bias_dev` is
     /// `None` there.
     moe_topk_sigmoid_batched_k: KernelHandle,
+    // ── sqrtsoftplus routing (DeepSeek-V4 style) ──
+    moe_topk_sqrtsoftplus_k: KernelHandle,
+    moe_topk_sqrtsoftplus_batched_k: KernelHandle,
     // FP8 fused MoE kernels (used when experts are FP8)
     moe_expert_gate_up_shared_fp8: KernelHandle,
     moe_expert_silu_down_shared_fp8: KernelHandle,

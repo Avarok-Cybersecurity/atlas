@@ -86,20 +86,37 @@ impl MoeLayer {
             let indices_dev = scratch;
             let weights_dev = scratch.offset(top_k as usize * 4);
 
+            let scaling_factor = ctx.config.routed_scaling_factor as f32;
             if let Some(bias) = self.correction_bias_dev {
-                ops::moe_topk_sigmoid(
-                    ctx.gpu,
-                    self.moe_topk_sigmoid_k,
-                    gate_t,
-                    bias,
-                    indices_dev,
-                    weights_dev,
-                    num_experts,
-                    top_k,
-                    ctx.config.norm_topk_prob,
-                    1.0,
-                    stream,
-                )?;
+                if ctx.config.scoring_func == "sqrtsoftplus" {
+                    ops::moe_topk_sqrtsoftplus(
+                        ctx.gpu,
+                        self.moe_topk_sqrtsoftplus_k,
+                        gate_t,
+                        bias,
+                        indices_dev,
+                        weights_dev,
+                        num_experts,
+                        top_k,
+                        ctx.config.norm_topk_prob,
+                        scaling_factor,
+                        stream,
+                    )?;
+                } else {
+                    ops::moe_topk_sigmoid(
+                        ctx.gpu,
+                        self.moe_topk_sigmoid_k,
+                        gate_t,
+                        bias,
+                        indices_dev,
+                        weights_dev,
+                        num_experts,
+                        top_k,
+                        ctx.config.norm_topk_prob,
+                        scaling_factor,
+                        stream,
+                    )?;
+                }
             } else {
                 ops::moe_topk_softmax(
                     ctx.gpu,
