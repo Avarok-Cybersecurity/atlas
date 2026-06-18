@@ -230,7 +230,6 @@ pub struct Qwen3AttentionLayer {
     pub(super) mla_q_rope_writeback_batched_k: KernelHandle,
     pub(super) mla_kv_assemble_batched_k: KernelHandle,
     pub(super) mla_cache_assemble_batched_k: KernelHandle,
-    pub(super) mla_cache_assemble_fp8_batched_k: KernelHandle,
     /// MLA absorbed prefill flash attention (HDIM=320, GQA 32:1)
     pub(super) prefill_attn_mla320_k: KernelHandle,
     /// Grouped GEMM for MLA Q absorption + V extraction.

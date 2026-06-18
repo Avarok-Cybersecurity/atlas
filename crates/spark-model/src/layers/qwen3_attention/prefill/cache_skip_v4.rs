@@ -342,24 +342,38 @@ impl Qwen3AttentionLayer {
             );
         }
 
-        // ── 5. Assemble and write KV cache to FP8 paged cache (V4-Flash) ──
-        // k_out and v_out are already complete BF16 K/V buffers with RoPE applied.
-        // The FP8 assembly kernel quantizes them to FP8 and writes directly to paged cache.
-        ops::mla_cache_assemble_fp8_batched(
+        // ── 5. Assemble KV cache (V4-Flash: requires latent+rope assembly) ──
+        // NOTE: k_out is 512-dim (complete K), but cache needs 576-dim (512 latent + 64 rope).
+        // We need to extract the latent portion (first 512 dims), reassemble with rope, then write.
+        let k_cache_assembled = ctx.buffers.expert_up_out();
+        let v_cache_assembled = ctx.buffers.expert_down_out();
+        ops::mla_cache_assemble_batched(
             ctx.gpu,
-            self.mla_cache_assemble_fp8_batched_k,
-            k_out,
-            v_out,
-            kv_cache.k_cache(),
-            kv_cache.v_cache(),
+            self.mla_cache_assemble_batched_k,
+            kv_latent,  // 512-dim latent (reused from step 2)
+            k_rope_tmp,  // 64-dim RoPE (reused from step 3)
+            k_cache_assembled,
+            v_cache_assembled,
             n,
-            nkv,
             kv_lora,
             rope,
             mla_cache_dim,
-            kv_cache.k_scale(),
-            kv_cache.v_scale(),
             stream,
+        )?;
+        self.write_kv_cache(
+            ctx.gpu,
+            k_cache_assembled,
+            v_cache_assembled,
+            kv_cache,
+            meta.slot,
+            n,
+            1,
+            mla_cache_dim,
+            kv_cache.block_size() as u32,
+            mla_cache_dim,
+            mla_cache_dim,
+            stream,
+            ctx.graph_capture,
         )?;
         ctx.gpu
             .synchronize(stream)

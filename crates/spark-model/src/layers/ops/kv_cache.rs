@@ -355,47 +355,4 @@ pub fn mla_paged_decode_fp8(
         .launch(stream)
 }
 
-/// MLA cache assembly with FP8 quantization — DeepSeek-V4-Flash prefill path.
-///
-/// Kernel: `mla_cache_assemble_fp8_batched(k_bf16, v_bf16, k_cache_fp8, v_cache_fp8,
-///          num_tokens, nkv, kv_lora, rope, mla_cache_dim, k_scale, v_scale)`
-/// Grid: (num_tokens, 1, 1)  Block: (BLOCK_SIZE, 1, 1) where BLOCK_SIZE=256
-///
-/// Takes BF16 K/V (already RoPE'd), quantizes to FP8, and assembles into compressed cache.
-/// Output layout: [num_tokens, nkv, mla_cache_dim] in FP8 format.
-#[allow(clippy::too_many_arguments)]
-pub fn mla_cache_assemble_fp8_batched(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    k_bf16: DevicePtr,
-    v_bf16: DevicePtr,
-    k_cache_fp8: DevicePtr,
-    v_cache_fp8: DevicePtr,
-    num_tokens: u32,
-    nkv: u32,
-    kv_lora: u32,
-    rope: u32,
-    mla_cache_dim: u32,
-    k_scale: f32,
-    v_scale: f32,
-    stream: u64,
-) -> Result<()> {
-    let block_size = 256u32;
-    KernelLaunch::new(gpu, kernel)
-        .grid([num_tokens, 1, 1])
-        .block([block_size, 1, 1])
-        .arg_ptr(k_bf16)
-        .arg_ptr(v_bf16)
-        .arg_ptr(k_cache_fp8)
-        .arg_ptr(v_cache_fp8)
-        .arg_u32(num_tokens)
-        .arg_u32(nkv)
-        .arg_u32(kv_lora)
-        .arg_u32(rope)
-        .arg_u32(mla_cache_dim)
-        .arg_f32(k_scale)
-        .arg_f32(v_scale)
-        .launch(stream)
-}
-
 // ── Batched prefill variants (N tokens) ──
