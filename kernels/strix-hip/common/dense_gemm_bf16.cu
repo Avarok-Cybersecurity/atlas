@@ -172,94 +172,147 @@ extern "C" __global__ void dense_gemm_f32in_f32out(
 // inline PTX construct, so this target supplies a same-contract kernel: same
 // name, same (A,B,C,M,N,K) signature, and the SAME launch geometry the op
 // wrapper in gemm_dense.rs uses — Grid (ceil(N/128), ceil(M/128), 1),
-// Block (256,1,1) — so the dispatch is unchanged. The math is bit-equivalent
-// to the gb10 kernel (FP32 accumulation of the same BF16 products → the same
-// cosine=1.0 the gb10 path documents); only the GEMM micro-architecture
-// differs (synchronous smem staging + register-blocked scalar FMA in place of
-// async-copy + tensor cores). RDNA3.5 WMMA acceleration is a perf follow-up
-// (shares the fragment-layout work tracked for the HIP FP8 attention kernels);
-// correctness here is independent of that optimization.
+// Block (256,1,1). The math is FP32 accumulation of the same BF16 products
+// (cosine=1.0 vs the gb10 path); only the GEMM micro-architecture differs.
 //
-// 256 threads cover a 128×128 output tile as a 16×16 grid of threads, each
-// owning a contiguous 8×8 micro-tile. smem: 2 × 128×16 BF16 = 8192 B/CTA.
+// AMD WMMA port: replaces the scalar 8×8 register-FMA inner loop with
+// __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32 tensor cores + a register-
+// prefetch double-buffered software pipeline (gfx1151 has no cp.async, so
+// tile-(k+1) global reads are staged in VGPRs across tile-k WMMA, then
+// committed to the other smem buffer; single barrier per K-step). Adapts the
+// +131% w8a16_gemm recipe (597ef2f) to plain BF16×BF16.
+//
+//   256 threads = 8 warps; warp w owns M-rows [w*16, w*16+16) of the 128×128
+//   tile and all 8 WMMA n-sub-tiles (8×16 = 128 N). K stepped 16 at a time.
+//   LDS: smem_A[2][128][16+2] + smem_B[2][16][128+2] bf16
+//      = 2*128*18*2 + 2*16*130*2 = 9216 + 8320 = 17536 B/CTA (well < 64 KB).
+//   Per-thread prefetch regs: A 8 elems, B 8 elems (128*16/256 = 8 each).
 #define DP_M_TILE 128
 #define DP_N_TILE 128
 #define DP_K_STEP 16
 #define DP_THREADS 256
-extern "C" __global__ void dense_gemm_bf16_pipelined(
+#define DP_PAD 2
+#define DP_NSUB (DP_N_TILE / 16)                         // 8
+#define DP_A_EPT ((DP_M_TILE * DP_K_STEP) / DP_THREADS)  // 8
+#define DP_B_EPT ((DP_K_STEP * DP_N_TILE) / DP_THREADS)  // 8
+
+typedef __bf16 dp_v16bf __attribute__((ext_vector_type(16)));
+typedef float  dp_v8f   __attribute__((ext_vector_type(8)));
+
+__device__ __forceinline__ void dp_load_A_regs(
+    const __nv_bfloat16* __restrict__ A, __nv_bfloat16 reg_A[DP_A_EPT],
+    unsigned int cta_m, unsigned int k_base, unsigned int M, unsigned int K
+) {
+    #pragma unroll
+    for (unsigned int i = 0; i < DP_A_EPT; i++) {
+        unsigned int idx = threadIdx.x * DP_A_EPT + i;
+        unsigned int row = idx / DP_K_STEP, col = idx % DP_K_STEP;
+        unsigned int gr = cta_m + row, gc = k_base + col;
+        reg_A[i] = (gr < M && gc < K) ? A[(unsigned long long)gr * K + gc] : __float2bfloat16(0.0f);
+    }
+}
+
+__device__ __forceinline__ void dp_load_B_regs(
+    const __nv_bfloat16* __restrict__ B, __nv_bfloat16 reg_B[DP_B_EPT],
+    unsigned int cta_n, unsigned int k_base, unsigned int N, unsigned int K
+) {
+    // smem_B is [K_STEP][N_TILE]: element (k, n). B is [N, K] row-major.
+    #pragma unroll
+    for (unsigned int i = 0; i < DP_B_EPT; i++) {
+        unsigned int idx = threadIdx.x * DP_B_EPT + i;
+        unsigned int k = idx / DP_N_TILE, n = idx % DP_N_TILE;
+        unsigned int gk = k_base + k, gn = cta_n + n;
+        reg_B[i] = (gk < K && gn < N) ? B[(unsigned long long)gn * K + gk] : __float2bfloat16(0.0f);
+    }
+}
+
+__device__ __forceinline__ void dp_store_A_regs(
+    __nv_bfloat16 smem_A[][DP_K_STEP + DP_PAD], const __nv_bfloat16 reg_A[DP_A_EPT]
+) {
+    #pragma unroll
+    for (unsigned int i = 0; i < DP_A_EPT; i++) {
+        unsigned int idx = threadIdx.x * DP_A_EPT + i;
+        smem_A[idx / DP_K_STEP][idx % DP_K_STEP] = reg_A[i];
+    }
+}
+
+__device__ __forceinline__ void dp_store_B_regs(
+    __nv_bfloat16 smem_B[][DP_N_TILE + DP_PAD], const __nv_bfloat16 reg_B[DP_B_EPT]
+) {
+    #pragma unroll
+    for (unsigned int i = 0; i < DP_B_EPT; i++) {
+        unsigned int idx = threadIdx.x * DP_B_EPT + i;
+        smem_B[idx / DP_N_TILE][idx % DP_N_TILE] = reg_B[i];
+    }
+}
+
+__device__ __forceinline__ void dp_wmma_compute(
+    __nv_bfloat16 smem_A[][DP_K_STEP + DP_PAD],
+    __nv_bfloat16 smem_B[][DP_N_TILE + DP_PAD],
+    dp_v8f acc[DP_NSUB], unsigned int warp_m_offset, unsigned int lane
+) {
+    dp_v16bf a;
+    #pragma unroll
+    for (int i = 0; i < 16; i++) a[i] = (__bf16)smem_A[warp_m_offset + (lane & 15)][i];
+    #pragma unroll
+    for (int nb = 0; nb < DP_NSUB; nb++) {
+        dp_v16bf b;
+        #pragma unroll
+        for (int k = 0; k < 16; k++) b[k] = (__bf16)smem_B[k][nb * 16 + (lane & 15)];
+        acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]);
+    }
+}
+
+extern "C" __global__
+__launch_bounds__(256, 2)
+void dense_gemm_bf16_pipelined(
     const __nv_bfloat16* __restrict__ A,   // [M, K] BF16 activations
     const __nv_bfloat16* __restrict__ B,   // [N, K] BF16 weights (read transposed)
     __nv_bfloat16* __restrict__ C,          // [M, N] BF16 output
-    unsigned int M,
-    unsigned int N,
-    unsigned int K
+    unsigned int M, unsigned int N, unsigned int K
 ) {
     const unsigned int cta_m = blockIdx.y * DP_M_TILE;
     const unsigned int cta_n = blockIdx.x * DP_N_TILE;
-    // 16×16 thread grid; thread (tx,ty) owns rows [ty*8, ty*8+8), cols
-    // [tx*8, tx*8+8) of the CTA's 128×128 output tile.
-    const unsigned int tx = threadIdx.x & 15;          // [0,16) → N
-    const unsigned int ty = threadIdx.x >> 4;          // [0,16) → M
+    const unsigned int warp_id = threadIdx.x / 32;
+    const unsigned int lane_id = threadIdx.x % 32;
+    const unsigned int warp_m_offset = warp_id * 16;
 
-    __shared__ __nv_bfloat16 sA[DP_M_TILE][DP_K_STEP];  // A[m, k]
-    __shared__ __nv_bfloat16 sB[DP_N_TILE][DP_K_STEP];  // B[n, k] (K-contiguous)
+    __shared__ __nv_bfloat16 smem_A[2][DP_M_TILE][DP_K_STEP + DP_PAD];
+    __shared__ __nv_bfloat16 smem_B[2][DP_K_STEP][DP_N_TILE + DP_PAD];
 
-    float acc[8][8];
+    dp_v8f acc[DP_NSUB];
     #pragma unroll
-    for (int i = 0; i < 8; i++)
-        #pragma unroll
-        for (int j = 0; j < 8; j++) acc[i][j] = 0.0f;
+    for (int i = 0; i < DP_NSUB; i++) acc[i] = dp_v8f{0, 0, 0, 0, 0, 0, 0, 0};
 
-    const __nv_bfloat16 zero = __float2bfloat16(0.0f);
+    const unsigned int num_tiles = (K + DP_K_STEP - 1) / DP_K_STEP;
 
-    for (unsigned int k_base = 0; k_base < K; k_base += DP_K_STEP) {
-        // Cooperative load: 128×16 = 2048 elems / 256 threads = 8 each.
-        #pragma unroll
-        for (unsigned int e = threadIdx.x; e < DP_M_TILE * DP_K_STEP; e += DP_THREADS) {
-            unsigned int row = e / DP_K_STEP;
-            unsigned int col = e % DP_K_STEP;
-            unsigned int gr = cta_m + row;
-            unsigned int gc = k_base + col;
-            sA[row][col] = (gr < M && gc < K)
-                ? A[(unsigned long long)gr * K + gc] : zero;
-        }
-        #pragma unroll
-        for (unsigned int e = threadIdx.x; e < DP_N_TILE * DP_K_STEP; e += DP_THREADS) {
-            unsigned int nrow = e / DP_K_STEP;
-            unsigned int kcol = e % DP_K_STEP;
-            unsigned int gn = cta_n + nrow;
-            unsigned int gk = k_base + kcol;
-            sB[nrow][kcol] = (gn < N && gk < K)
-                ? B[(unsigned long long)gn * K + gk] : zero;
-        }
-        __syncthreads();
+    __nv_bfloat16 reg_A[DP_A_EPT];
+    __nv_bfloat16 reg_B[DP_B_EPT];
+    dp_load_A_regs(A, reg_A, cta_m, 0, M, K);
+    dp_load_B_regs(B, reg_B, cta_n, 0, N, K);
+    dp_store_A_regs(smem_A[0], reg_A);
+    dp_store_B_regs(smem_B[0], reg_B);
+    __syncthreads();
 
-        #pragma unroll
-        for (unsigned int kk = 0; kk < DP_K_STEP; kk++) {
-            float a_reg[8];
-            float b_reg[8];
-            #pragma unroll
-            for (int i = 0; i < 8; i++) a_reg[i] = __bfloat162float(sA[ty * 8 + i][kk]);
-            #pragma unroll
-            for (int j = 0; j < 8; j++) b_reg[j] = __bfloat162float(sB[tx * 8 + j][kk]);
-            #pragma unroll
-            for (int i = 0; i < 8; i++)
-                #pragma unroll
-                for (int j = 0; j < 8; j++) acc[i][j] += a_reg[i] * b_reg[j];
-        }
+    for (unsigned int kt = 1; kt < num_tiles; kt++) {
+        const unsigned int k_base = kt * DP_K_STEP;
+        dp_load_A_regs(A, reg_A, cta_m, k_base, M, K);
+        dp_load_B_regs(B, reg_B, cta_n, k_base, N, K);
+        dp_wmma_compute(smem_A[(kt - 1) & 1], smem_B[(kt - 1) & 1], acc, warp_m_offset, lane_id);
+        dp_store_A_regs(smem_A[kt & 1], reg_A);
+        dp_store_B_regs(smem_B[kt & 1], reg_B);
         __syncthreads();
     }
+    dp_wmma_compute(smem_A[(num_tiles - 1) & 1], smem_B[(num_tiles - 1) & 1], acc, warp_m_offset, lane_id);
 
     #pragma unroll
-    for (int i = 0; i < 8; i++) {
-        unsigned int r = cta_m + ty * 8 + i;
-        if (r >= M) continue;
+    for (int nb = 0; nb < DP_NSUB; nb++)
         #pragma unroll
-        for (int j = 0; j < 8; j++) {
-            unsigned int c = cta_n + tx * 8 + j;
-            if (c < N) C[(unsigned long long)r * N + c] = __float2bfloat16(acc[i][j]);
+        for (int e = 0; e < 8; e++) {
+            unsigned int r = cta_m + warp_m_offset + 2 * e + (lane_id >> 4);
+            unsigned int c = cta_n + nb * 16 + (lane_id & 15);
+            if (r < M && c < N) C[(unsigned long long)r * N + c] = __float2bfloat16(acc[nb][e]);
         }
-    }
 }
 
 // Fused SiLU(gate) * up activation — vectorized 2-wide BF16 loads/stores.
