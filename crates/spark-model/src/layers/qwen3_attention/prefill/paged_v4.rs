@@ -145,7 +145,7 @@ impl Qwen3AttentionLayer {
         )?;
         ops::rope_yarn(
             ctx.gpu,
-            self.rope_yarn_interleaved_k,
+            self.rope_yarn_k,
             q_rope_tmp,
             k_rope_tmp,
             meta.positions,
@@ -226,24 +226,44 @@ impl Qwen3AttentionLayer {
         )
         .map_err(|e| anyhow::anyhow!("V4 paged: prefill_attention failed: {e}"))?;
 
-        // ── 5. Write KV cache (V4-Flash: direct K/V, no assembly) ──
+        // ── 5. Assemble KV cache (V4-Flash: latent+rope = 576-dim MLA) ──
+        // v_out holds the original latent K (512-dim, before RoPE writeback).
+        // k_rope_tmp (q_latent reuse) holds the rotated RoPE values.
+        let k_cache_assembled = ctx.buffers.expert_up_out();
+        let v_cache_assembled = ctx.buffers.expert_down_out();
+        let mla_cache_dim = kv_lora + rope;
+        ops::mla_cache_assemble_batched(
+            ctx.gpu,
+            self.mla_cache_assemble_batched_k,
+            v_out,           // 512-dim latent K (V copy, unmodified)
+            k_rope_tmp,      // 64-dim RoPE from K extraction+rotation
+            k_cache_assembled,
+            v_cache_assembled,
+            n,
+            kv_lora,
+            rope,
+            mla_cache_dim,
+            stream,
+        )?;
+
+        // ── 6. Write assembled K/V to paged cache ──
         self.write_kv_cache(
             ctx.gpu,
-            k_out,
-            v_out,
+            k_cache_assembled,
+            v_cache_assembled,
             kv_cache,
             meta.slot,
             n,
             1,
-            hd_mla,
+            mla_cache_dim,
             bs,
-            kv_dim,
-            kv_dim,
+            mla_cache_dim,
+            mla_cache_dim,
             stream,
             ctx.graph_capture,
         )?;
 
-        // ── 6. Grouped low-rank O projection ──
+        // ── 7. Grouped low-rank O projection ──
         let o_latent = ctx.buffers.norm_output();
         let o_out = ctx.buffers.qkv_output();
         ops::dense_gemm(

@@ -15,7 +15,7 @@
 //!   - `trait_impl`: `TransformerLayer` trait implementation
 
 mod decode;
-mod helpers;
+pub(crate) mod helpers;
 mod init;
 mod prefill;
 mod prefill_weights;

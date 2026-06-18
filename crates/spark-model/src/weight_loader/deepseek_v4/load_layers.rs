@@ -42,7 +42,7 @@ pub fn load_all_layers(
     );
     tracing::info!(
         "DeepSeek-V4 KV cache dtype: {:?}",
-        layer_kv_dtypes.get(0).copied().unwrap_or(KvCacheDtype::Bf16),
+        layer_kv_dtypes.first().copied().unwrap_or(KvCacheDtype::Bf16),
     );
 
     let mut layers = Vec::with_capacity(n);

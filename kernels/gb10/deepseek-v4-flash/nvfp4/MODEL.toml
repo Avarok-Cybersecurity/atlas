@@ -16,16 +16,16 @@ intermediate_size = 12288
 
 vocab_size = 152064
 max_position_embeddings = 131072
-rope_theta = 1000000
-partial_rotary_factor = 0.25
+rope_theta = 160000
+partial_rotary_factor = 0.125
 
 # MLA-specific
 kv_lora_rank = 512
 q_lora_rank = 1024
 o_lora_rank = 1024
 v_head_dim = 512
-qk_rope_head_dim = 128
-qk_nope_head_dim = 384
+qk_rope_head_dim = 64
+qk_nope_head_dim = 448
 
 # MoE
 num_experts = 256
@@ -56,15 +56,15 @@ model_type = "deepseek_v4"
 
 # Recommended sampling (DeepSeek V4 family defaults).
 [sampling.thinking]
-temperature = 0.6
-top_p = 0.95
-top_k = 20
+temperature = 1.0
+top_p = 1.0
+top_k = 0
 presence_penalty = 0.0
 
 [sampling.coding]
-temperature = 0.3
-top_p = 0.95
-top_k = 20
+temperature = 1.0
+top_p = 1.0
+top_k = 0
 presence_penalty = 0.0
 
 [sampling.general]

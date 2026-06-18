@@ -270,6 +270,19 @@ pub fn ensure_yarn_inv_freq(
     let dim_f = rope as f32;
     let theta_f = config.rope_theta as f32;
     let n_pairs = rope / 2;
+    let mscale = crate::layers::qwen3_attention::helpers::yarn_rope_mscale(config);
+    tracing::info!(
+        "YaRN inv_freq: factor={:.1}, beta_fast={:.1}, beta_slow={:.1}, \
+         original_max_pos={:.0}, theta={:.0}, rope_dim={}, n_pairs={}, mscale={:.6}",
+        factor,
+        beta_fast,
+        beta_slow,
+        original_max_pos,
+        theta_f,
+        rope,
+        n_pairs,
+        mscale,
+    );
 
     let find_correction_dim = |num_rot: f32| -> f32 {
         (dim_f * (original_max_pos / (num_rot * 2.0 * std::f32::consts::PI)).ln())
