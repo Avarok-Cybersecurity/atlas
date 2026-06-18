@@ -121,13 +121,14 @@ impl Qwen3AttentionLayer {
         let kv_dim = nkv * hd_mla;
         let k_out = q_full.offset((n * q_dim) as usize * 2);
         let v_out = k_out.offset((n * kv_dim) as usize * 2);
+        let kv_latent = ctx.buffers.expert_gate_out();  // Capture latent for cache assembly
         if use_tc {
             ops::dense_gemm_tc(
                 ctx.gpu,
                 self.dense_gemm_tc_k,
                 normed,
                 &mla.wkv_a,
-                k_out,
+                kv_latent,  // Write to kv_latent for cache assembly
                 n,
                 kv_lora,
                 h,
@@ -139,13 +140,15 @@ impl Qwen3AttentionLayer {
                 self.dense_gemm_k,
                 normed,
                 &mla.wkv_a,
-                k_out,
+                kv_latent,  // Write to kv_latent for cache assembly
                 n,
                 kv_lora,
                 h,
                 stream,
             )?;
         }
+        // Copy kv_latent → k_out (for attention computation)
+        ctx.gpu.copy_d2d_async(kv_latent, k_out, (n * kv_lora as usize) * 2, stream)?;
         ctx.gpu
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: k_out gemm sync failed: {e}"))?;
@@ -339,19 +342,36 @@ impl Qwen3AttentionLayer {
             );
         }
 
-        // ── 5. Write KV cache (V4-Flash: direct K/V, no assembly) ──
+        // ── 5. Assemble KV cache (V4-Flash: requires latent+rope assembly) ──
+        // CRITICAL: K_out is 512-dim (latent with RoPE applied), but cache needs 576-dim.
+        // We need to extract latent portion, reassemble with RoPE, then write to cache.
+        let k_cache_assembled = ctx.buffers.expert_up_out();
+        let v_cache_assembled = ctx.buffers.expert_down_out();
+        ops::mla_cache_assemble_batched(
+            ctx.gpu,
+            self.mla_cache_assemble_batched_k,
+            kv_latent,  // 512-dim latent (reused from step 2)
+            k_rope_tmp,  // 64-dim RoPE (reused from step 3)
+            k_cache_assembled,
+            v_cache_assembled,
+            n,
+            kv_lora,
+            rope,
+            mla_cache_dim,
+            stream,
+        )?;
         self.write_kv_cache(
             ctx.gpu,
-            k_out,
-            v_out,
+            k_cache_assembled,
+            v_cache_assembled,
             kv_cache,
             meta.slot,
             n,
             1,
-            hd_mla,
+            mla_cache_dim,
             kv_cache.block_size() as u32,
-            kv_dim,
-            kv_dim,
+            mla_cache_dim,
+            mla_cache_dim,
             stream,
             ctx.graph_capture,
         )?;
