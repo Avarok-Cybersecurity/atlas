@@ -21,8 +21,14 @@
 
 // ---- Helpers ----------------------------------------------------------------
 
+// Convert FP8 E4M3 storage type to float
 __device__ __forceinline__ float fp8e4m3_to_f32(__nv_fp8_storage_t b) {
     return __half2float(__nv_cvt_fp8_to_halfraw(b, __NV_E4M3));
+}
+
+// Convert __nv_fp8_e4m3 to float by casting to storage type first
+__device__ __forceinline__ float fp8e4m3_to_f32_typed(__nv_fp8_e4m3 x) {
+    return fp8e4m3_to_f32(__nv_fp8_as_storage(x));
 }
 
 // ============================================================================
@@ -31,8 +37,8 @@ __device__ __forceinline__ float fp8e4m3_to_f32(__nv_fp8_storage_t b) {
 
 extern "C" __global__ void mla_paged_decode_fp8(
     const __nv_bfloat16* __restrict__ Q,            // [1, nq * q_dim] = [1, 32768]
-    const __nv_fp8_e4m3* __restrict__ K_cache,     // FP8 compressed KV cache
-    const __nv_fp8_e4m3* __restrict__ V_cache,     // FP8 compressed KV cache
+    const unsigned char* __restrict__ K_cache,     // FP8 compressed KV cache (bytes)
+    const unsigned char* __restrict__ V_cache,     // FP8 compressed KV cache (bytes)
     __nv_bfloat16* __restrict__ O,                  // [1, nq * q_dim] = [1, 32768]
     const int* __restrict__ block_tables,
     const int* __restrict__ seq_lens,
@@ -124,7 +130,7 @@ extern "C" __global__ void mla_paged_decode_fp8(
                 const __nv_fp8_e4m3* k_latent = k_block + p * token_stride + kv_latent_offset;
                 #pragma unroll
                 for (int i = 0; i < VEC_BF16; i++) {
-                    k_vals[b][i] = fp8e4m3_to_f32(k_latent[i]) * k_scale;
+                    k_vals[b][i] = fp8e4m3_to_f32_typed(k_latent[i]) * k_scale;
                 }
                 
                 // Load K rope portion (64 dims) - only first 16 threads participate
@@ -132,7 +138,7 @@ extern "C" __global__ void mla_paged_decode_fp8(
                     const __nv_fp8_e4m3* k_rope = k_block + p * token_stride + kv_latent_dim + kv_rope_offset;
                     #pragma unroll
                     for (int i = 0; i < 4; i++) {
-                        k_vals[b][i] = fp8e4m3_to_f32(k_rope[i]) * k_scale;
+                        k_vals[b][i] = fp8e4m3_to_f32_typed(k_rope[i]) * k_scale;
                     }
                 }
             }
@@ -163,7 +169,7 @@ extern "C" __global__ void mla_paged_decode_fp8(
                 const __nv_fp8_e4m3* v_latent = v_block + p * token_stride + kv_latent_offset;
                 #pragma unroll
                 for (int i = 0; i < VEC_BF16; i++) {
-                    v_vals[b][i] = fp8e4m3_to_f32(v_latent[i]) * v_scale;
+                    v_vals[b][i] = fp8e4m3_to_f32_typed(v_latent[i]) * v_scale;
                 }
             }
 
@@ -204,14 +210,14 @@ extern "C" __global__ void mla_paged_decode_fp8(
             const __nv_fp8_e4m3* k_latent = k_block + p * token_stride + kv_latent_offset;
             #pragma unroll
             for (int i = 0; i < VEC_BF16; i++) {
-                k_tmp[i] = fp8e4m3_to_f32(k_latent[i]) * k_scale;
+                k_tmp[i] = fp8e4m3_to_f32_typed(k_latent[i]) * k_scale;
             }
             
             if (lane_id < 16) {
                 const __nv_fp8_e4m3* k_rope = k_block + p * token_stride + kv_latent_dim + kv_rope_offset;
                 #pragma unroll
                 for (int i = 0; i < 4; i++) {
-                    k_tmp[i] = fp8e4m3_to_f32(k_rope[i]) * k_scale;
+                    k_tmp[i] = fp8e4m3_to_f32_typed(k_rope[i]) * k_scale;
                 }
             }
 
@@ -235,7 +241,7 @@ extern "C" __global__ void mla_paged_decode_fp8(
             const __nv_fp8_e4m3* v_latent = v_block + p * token_stride + kv_latent_offset;
             #pragma unroll
             for (int i = 0; i < VEC_BF16; i++) {
-                v_tmp[i] = fp8e4m3_to_f32(v_latent[i]) * v_scale;
+                v_tmp[i] = fp8e4m3_to_f32_typed(v_latent[i]) * v_scale;
             }
 
             #pragma unroll
