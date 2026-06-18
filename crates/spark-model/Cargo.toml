@@ -127,6 +127,10 @@ name = "gdn_split4_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "gdn_wy_verify_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "rope_microtest"
 required-features = ["cuda", "gpu-examples"]
 
