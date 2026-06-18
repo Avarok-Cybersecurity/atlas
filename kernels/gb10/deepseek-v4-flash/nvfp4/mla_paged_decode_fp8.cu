@@ -69,9 +69,8 @@ extern "C" __global__ void mla_paged_decode_fp8(
     // Token stride in cache (576 dims per token, 1 byte per FP8 element)
     const unsigned int token_stride = num_kv_heads * kv_cache_dim;
     
-    // Offsets for latent and rope portions (in elements for thread-local indexing)
+    // Offset for latent portion (in elements for thread-local indexing)
     const unsigned int kv_latent_offset = lane_id * VEC_BF16;
-    const unsigned int kv_rope_offset = lane_id * 4;  // 4 elements for rope (first 16 threads)
 
     const int* my_block_table = block_tables + seq_idx * max_blocks_per_seq;
 
@@ -126,12 +125,14 @@ extern "C" __global__ void mla_paged_decode_fp8(
                     k_vals[b][i] = fp8e4m3_to_f32((__nv_fp8_storage_t)k_latent[i]) * k_scale;
                 }
                 
-                // Load K rope portion (64 dims) - only first 16 threads participate
-                // Rope values are stored separately at offset kv_latent_dim (512)
-                if (lane_id < 16) {
-                    const unsigned char* k_rope = k_block + p * token_stride + kv_latent_dim + lane_id * 4;
+                // Load K rope portion (64 dims) into tail positions 448-511.
+                // Q_rope is in q_reg[448:511] (threads 28-31). Match K_rope there
+                // so dot product = dot(Q[0:447],K_latent[0:447]) + dot(Q[448:511],K_rope[0:63]).
+                if (lane_id >= 28) {
+                    const unsigned int rope_offset = (lane_id - 28) * VEC_BF16;
+                    const unsigned char* k_rope = k_block + p * token_stride + kv_latent_dim + rope_offset;
                     #pragma unroll
-                    for (int i = 0; i < 4; i++) {
+                    for (int i = 0; i < VEC_BF16; i++) {
                         k_vals[b][i] = fp8e4m3_to_f32((__nv_fp8_storage_t)k_rope[i]) * k_scale;
                     }
                 }
@@ -207,10 +208,12 @@ extern "C" __global__ void mla_paged_decode_fp8(
                 k_tmp[i] = fp8e4m3_to_f32((__nv_fp8_storage_t)k_latent[i]) * k_scale;
             }
             
-            if (lane_id < 16) {
-                const unsigned char* k_rope = k_block + p * token_stride + kv_latent_dim + lane_id * 4;
+            // Load K rope into tail positions 448-511 to match Q_rope.
+            if (lane_id >= 28) {
+                const unsigned int rope_offset = (lane_id - 28) * VEC_BF16;
+                const unsigned char* k_rope = k_block + p * token_stride + kv_latent_dim + rope_offset;
                 #pragma unroll
-                for (int i = 0; i < 4; i++) {
+                for (int i = 0; i < VEC_BF16; i++) {
                     k_tmp[i] = fp8e4m3_to_f32((__nv_fp8_storage_t)k_rope[i]) * k_scale;
                 }
             }
