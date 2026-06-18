@@ -26,11 +26,6 @@ __device__ __forceinline__ float fp8e4m3_to_f32(__nv_fp8_storage_t b) {
     return __half2float(__nv_cvt_fp8_to_halfraw(b, __NV_E4M3));
 }
 
-// Convert __nv_fp8_e4m3 to float by casting to storage type first
-__device__ __forceinline__ float fp8e4m3_to_f32_typed(__nv_fp8_e4m3 x) {
-    return fp8e4m3_to_f32(__nv_fp8_as_storage(x));
-}
-
 // ============================================================================
 // MLA Paged Decode Attention (FP8)
 // ============================================================================
@@ -114,8 +109,8 @@ extern "C" __global__ void mla_paged_decode_fp8(
         unsigned int batch_count = remaining_in_block < remaining_total ? remaining_in_block : remaining_total;
 
         unsigned int physical_block = (unsigned int)my_block_table[logical_block];
-        const __nv_fp8_e4m3* k_block = K_cache + (unsigned long long)physical_block * cache_stride_bytes / sizeof(__nv_fp8_e4m3);
-        const __nv_fp8_e4m3* v_block = V_cache + (unsigned long long)physical_block * cache_stride_bytes / sizeof(__nv_fp8_e4m3);
+        const unsigned char* k_block = K_cache + (unsigned long long)physical_block * cache_stride_bytes;
+        const unsigned char* v_block = V_cache + (unsigned long long)physical_block * cache_stride_bytes;
 
         unsigned int processed = 0;
         unsigned int aligned_count = (batch_count / BC) * BC;
@@ -127,18 +122,18 @@ extern "C" __global__ void mla_paged_decode_fp8(
                 unsigned int p = block_offset + processed + b;
                 
                 // Load K latent portion (512 dims) from FP8
-                const __nv_fp8_e4m3* k_latent = k_block + p * token_stride + kv_latent_offset;
+                const unsigned char* k_latent = k_block + p * token_stride + kv_latent_offset;
                 #pragma unroll
                 for (int i = 0; i < VEC_BF16; i++) {
-                    k_vals[b][i] = fp8e4m3_to_f32_typed(k_latent[i]) * k_scale;
+                    k_vals[b][i] = fp8e4m3_to_f32((__nv_fp8_storage_t)k_latent[i]) * k_scale;
                 }
                 
                 // Load K rope portion (64 dims) - only first 16 threads participate
                 if (lane_id < 16) {
-                    const __nv_fp8_e4m3* k_rope = k_block + p * token_stride + kv_latent_dim + kv_rope_offset;
+                    const unsigned char* k_rope = k_block + p * token_stride + kv_latent_dim + kv_rope_offset;
                     #pragma unroll
                     for (int i = 0; i < 4; i++) {
-                        k_vals[b][i] = fp8e4m3_to_f32_typed(k_rope[i]) * k_scale;
+                        k_vals[b][i] = fp8e4m3_to_f32((__nv_fp8_storage_t)k_rope[i]) * k_scale;
                     }
                 }
             }
@@ -166,10 +161,10 @@ extern "C" __global__ void mla_paged_decode_fp8(
                 unsigned int p = block_offset + processed + b;
                 
                 // Load V (only latent portion, no rope) from FP8
-                const __nv_fp8_e4m3* v_latent = v_block + p * token_stride + kv_latent_offset;
+                const unsigned char* v_latent = v_block + p * token_stride + kv_latent_offset;
                 #pragma unroll
                 for (int i = 0; i < VEC_BF16; i++) {
-                    v_vals[b][i] = fp8e4m3_to_f32_typed(v_latent[i]) * v_scale;
+                    v_vals[b][i] = fp8e4m3_to_f32((__nv_fp8_storage_t)v_latent[i]) * v_scale;
                 }
             }
 
@@ -207,17 +202,17 @@ extern "C" __global__ void mla_paged_decode_fp8(
             
             // Load K from FP8
             float k_tmp[VEC_BF16];
-            const __nv_fp8_e4m3* k_latent = k_block + p * token_stride + kv_latent_offset;
+            const unsigned char* k_latent = k_block + p * token_stride + kv_latent_offset;
             #pragma unroll
             for (int i = 0; i < VEC_BF16; i++) {
-                k_tmp[i] = fp8e4m3_to_f32_typed(k_latent[i]) * k_scale;
+                k_tmp[i] = fp8e4m3_to_f32((__nv_fp8_storage_t)k_latent[i]) * k_scale;
             }
             
             if (lane_id < 16) {
-                const __nv_fp8_e4m3* k_rope = k_block + p * token_stride + kv_latent_dim + kv_rope_offset;
+                const unsigned char* k_rope = k_block + p * token_stride + kv_latent_dim + kv_rope_offset;
                 #pragma unroll
                 for (int i = 0; i < 4; i++) {
-                    k_tmp[i] = fp8e4m3_to_f32_typed(k_rope[i]) * k_scale;
+                    k_tmp[i] = fp8e4m3_to_f32((__nv_fp8_storage_t)k_rope[i]) * k_scale;
                 }
             }
 
@@ -238,10 +233,10 @@ extern "C" __global__ void mla_paged_decode_fp8(
 
             // Load V from FP8
             float v_tmp[VEC_BF16];
-            const __nv_fp8_e4m3* v_latent = v_block + p * token_stride + kv_latent_offset;
+            const unsigned char* v_latent = v_block + p * token_stride + kv_latent_offset;
             #pragma unroll
             for (int i = 0; i < VEC_BF16; i++) {
-                v_tmp[i] = fp8e4m3_to_f32_typed(v_latent[i]) * v_scale;
+                v_tmp[i] = fp8e4m3_to_f32((__nv_fp8_storage_t)v_latent[i]) * v_scale;
             }
 
             #pragma unroll
