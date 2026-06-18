@@ -356,9 +356,6 @@ impl Model for TransformerModel {
     ) -> Result<()> {
         self.commit_accepted_prefix_dispatch(seq, num_accepted, k)
     }
-    fn ssm_inplace_verify(&self) -> bool {
-        *async_chkpt::SSM_INPLACE_VERIFY
-    }
     fn ep_worker_step(&self, slots: &mut [Option<SequenceState>]) -> Result<bool> {
         self.ep_worker_step_dispatch(slots)
     }

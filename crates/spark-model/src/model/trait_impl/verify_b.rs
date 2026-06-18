@@ -48,20 +48,14 @@ impl TransformerModel {
         let fp32 = 2usize;
         let k = 2usize;
 
-        // F62 (2026-04-27): SpecMamba dual-buffer pre-verify copy.
-        // Copy canonical SSM state (h_state_checkpoint) → scratch (h_state)
-        // BEFORE the kernel runs. The kernel mutates the scratch; the
-        // canonical is preserved across verify until commit.
-        //
-        // Item #2 (Stage 2): with the STree-style in-place commit active,
-        // `h_state` IS canonical — the verify kernel reads/writes it
-        // directly and the commit rewinds it in place on reject. There is
-        // no scratch/canonical split to seed, so the pre-verify copy is
-        // skipped entirely (its ~60 MB h_state + conv D2D per K=2 step was
-        // the dominant cost the in-place change removes).
-        if !*super::async_chkpt::SSM_INPLACE_VERIFY {
-            self.pre_verify_copy_async(seq)?;
-        }
+        // Item #2 (STree-style in-place K=2 verify): `h_state` IS canonical
+        // — the verify kernel reads/writes it directly and the commit
+        // (`commit_accepted_prefix`) rewinds it in place on reject. There is
+        // no scratch/canonical split to seed, so the legacy SpecMamba
+        // dual-buffer pre-verify copy (~60 MB h_state + conv D2D per K=2
+        // step) is gone. The CUDA-graph capture below is unaffected: the
+        // captured nodes take the same `h_state` pointer, which never moves.
+        // (K=3/K=4/DFlash verify still run pre_verify_copy_async.)
 
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();

@@ -27,14 +27,6 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
-/// Opt-in flag for the STree-style in-place SSM verify commit (item #2).
-/// When set, `commit_verify_state_async` routes through
-/// `commit_accepted_prefix` (in-place index-select, no dual-buffer copy
-/// dance). Read once at process start. Default OFF preserves the legacy
-/// dual-buffer commit until Stage 3 flips the default.
-pub(super) static SSM_INPLACE_VERIFY: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var("ATLAS_SSM_INPLACE_VERIFY").as_deref() == Ok("1"));
-
 impl TransformerModel {
     pub(super) fn start_checkpoint_async_dispatch(&self, seq: &mut SequenceState) -> Result<()> {
         use crate::layer::SsmLayerState;
@@ -225,12 +217,13 @@ impl TransformerModel {
     ///   `h_state_intermediates[num_accepted - 1]` (state after the last
     ///   accepted token) → `h_state` (+ conv intermediate).
     ///
-    /// The verify path runs the kernel directly on the canonical `h_state`
-    /// (the `pre_verify_copy_async` scratch-seed is skipped under the flag),
-    /// so on a full accept the live state is already committed and on a
-    /// partial accept the single index-select below leaves `h_state`
-    /// canonical for every successor (bootstrap decode, gate-flip decode,
-    /// concurrent request). No `*_checkpoint` write is needed.
+    /// The K=2 verify path runs the kernel directly on the canonical
+    /// `h_state` (no `pre_verify_copy_async` scratch-seed), so on a full
+    /// accept the live state is already committed and on a partial accept
+    /// the single index-select below leaves `h_state` canonical for every
+    /// successor (bootstrap decode, gate-flip decode, concurrent request).
+    /// No `*_checkpoint` write is needed. (K=3/K=4/DFlash verify still use
+    /// the legacy dual-buffer `commit_verify_state_async`.)
     ///
     /// Runs on `secondary_stream`; pair with `sync_secondary`.
     pub(super) fn commit_accepted_prefix_dispatch(
