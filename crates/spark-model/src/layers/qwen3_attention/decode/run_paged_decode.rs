@@ -217,7 +217,131 @@ impl Qwen3AttentionLayer {
                     stream,
                 )
             }
+            KvCacheDtype::Fp8 => {
+                // V4-Flash uses MLA with compressed KV cache (576 dims: 512 latent + 64 rope)
+                // Detection: V4-Flash has rope > 0 (64 dims), V3 has rope = 0
+                let is_v4_flash = self.mla.as_ref().map(|m| m.rope > 0).unwrap_or(false);
+                
+                if is_v4_flash {
+                    // Use MLA decode kernel for V4-Flash with FP8 KV cache
+                    let kv_cache_dim = (self.mla.as_ref().unwrap().kv_lora_rank 
+                        + self.mla.as_ref().unwrap().rope) as u32; // 512 + 64 = 576
+                    tracing::info!(
+                        "V4-Flash MLA decode (FP8): using MLA kernel, q_head_dim={}, kv_cache_dim={}",
+                        head_dim,
+                        kv_cache_dim
+                    );
+                    let (k_scale, v_scale) = self.effective_fp8_scales();
+                    ops::mla_paged_decode_fp8(
+                        gpu,
+                        self.mla_paged_decode_fp8_k,
+  +++++++ REPLACE
+                        q,
+                        kv_cache.k_pool_ptr(self.attn_layer_idx),
+                        kv_cache.v_pool_ptr(self.attn_layer_idx),
+                        output,
+                        block_table,
+                        seq_lens,
+                        max_blocks_per_seq,
+                        num_q_heads,
+                        num_kv_heads,
+                        head_dim,
+                        kv_cache_dim,
+                        block_size,
+                        inv_sqrt_d,
+                        k_scale,
+                        v_scale,
+                        kv_cache.cache_stride() as u64,
+                        num_seqs,
+                        stream,
+                    )
+                } else {
+                    // Standard FP8 decode (V3 or full attention)
+                    let current_ctas = num_q_heads * num_seqs;
+                    let num_splits = if current_ctas >= NUM_SMS {
+                        1u32
+                    } else {
+                        NUM_SMS / current_ctas
+                    };
+
+                    let (k_scale, v_scale) = self.effective_fp8_scales();
+
+                    if num_splits > 1 {
+                        let splitk_k = self
+                            .paged_decode_splitk_k
+                            .expect("split-K kernel required for FP8");
+                        let reduce_k = self
+                            .paged_decode_reduce_k
+                            .expect("reduce kernel required for FP8");
+                        ops::paged_decode_attn_splitk_fp8(
+                            gpu,
+                            splitk_k,
+                            q,
+                            kv_cache.k_pool_ptr(self.attn_layer_idx),
+                            kv_cache.v_pool_ptr(self.attn_layer_idx),
+                            workspace,
+                            block_table,
+                            seq_lens,
+                            max_blocks_per_seq,
+                            num_q_heads,
+                            num_kv_heads,
+                            head_dim,
+                            block_size,
+                            inv_sqrt_d,
+                            num_splits,
+                            k_scale,
+                            v_scale,
+                            q_stride,
+                            kv_cache.cache_stride() as u64,
+                            num_seqs,
+                            stream,
+                        )?;
+                        ops::paged_decode_attn_reduce_fp8(
+                            gpu,
+                            reduce_k,
+                            workspace,
+                            output,
+                            seq_lens,
+                            num_q_heads,
+                            head_dim,
+                            num_splits,
+                            num_seqs,
+                            stream,
+                        )
+                    } else {
+                        // Use HDIM=512 kernel for Gemma-4 full-attention layers
+                        let fp8_kernel = if head_dim > 256 && self.paged_decode_512_k.0 != 0 {
+                            self.paged_decode_512_k
+                        } else {
+                            self.paged_decode_k
+                        };
+                        ops::paged_decode_attn_fp8(
+                            gpu,
+                            fp8_kernel,
+                            q,
+                            kv_cache.k_pool_ptr(self.attn_layer_idx),
+                            kv_cache.v_pool_ptr(self.attn_layer_idx),
+                            output,
+                            block_table,
+                            seq_lens,
+                            max_blocks_per_seq,
+                            num_seqs,
+                            num_q_heads,
+                            num_kv_heads,
+                            head_dim,
+                            block_size,
+                            inv_sqrt_d,
+                            k_scale,
+                            v_scale,
+                            q_stride,
+                            kv_cache.cache_stride() as u64,
+                            stream,
+                        )
+                    }
+                }
+            }
             KvCacheDtype::Bf16 => {
+  +++++++ REPLACE
                 // BF16 paged decode — no Split-K (not implemented for BF16 yet)
                 // Use HDIM=512 kernel for Gemma-4 full-attention layers (head_dim > 256)
                 let kernel = if head_dim > 256 && self.paged_decode_512_k.0 != 0 {

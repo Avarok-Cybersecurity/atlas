@@ -217,7 +217,10 @@ pub struct Qwen3AttentionLayer {
     pub(super) paged_decode_mla_k: KernelHandle,
     /// MLA paged decode kernel for DeepSeek-V4-Flash (compressed KV cache: 576 dims)
     pub(super) mla_paged_decode_k: KernelHandle,
+    /// MLA paged decode kernel for DeepSeek-V4-Flash with FP8 KV cache
+    pub(super) mla_paged_decode_fp8_k: KernelHandle,
     /// MLA batched GEMV for Q absorption and V extraction.
+  +++++++ REPLACE
     pub(super) mla_batched_gemv_k: KernelHandle,
     /// MLA fused kernels — decode.
     pub(super) mla_q_rope_scatter_k: KernelHandle,
