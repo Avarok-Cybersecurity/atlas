@@ -148,7 +148,7 @@ impl Qwen3AttentionLayer {
             )?;
         }
         // Copy kv_latent → k_out (for attention computation)
-        ctx.gpu.copy_d2d_async(kv_latent, k_out, (n as usize * kv_lora as usize * 2), stream)?;
+        ctx.gpu.copy_d2d_async(kv_latent, k_out, n as usize * kv_lora as usize * 2, stream)?;
         ctx.gpu
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: k_out gemm sync failed: {e}"))?;
