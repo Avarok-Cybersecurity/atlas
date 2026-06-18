@@ -287,8 +287,8 @@ impl Qwen3AttentionLayer {
             ops::mla_cache_assemble_batched(
                 ctx.gpu,
                 self.mla_cache_assemble_batched_k,
-                k_out,           // 512-dim latent K
-                q_rope_tmp,      // 64-dim RoPE from Q
+                v_out,           // 512-dim latent K (unmodified copy before RoPE writeback)
+                k_rope_tmp,      // 64-dim RoPE from K
                 k_cache_assembled,
                 v_cache_assembled,
                 1,
