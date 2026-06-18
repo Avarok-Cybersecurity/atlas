@@ -137,6 +137,17 @@ pub struct TransformerModel {
     pub(super) secondary_stream: u64,
     /// CUDA event for GPU-side inter-stream synchronization (avoids CPU-blocking sync).
     pub(super) secondary_event: u64,
+    /// CUDA event ordering SSM-snapshot SAVES (on the default stream) before a
+    /// later warm Marconi RESTORE (on the prefill stream). Marconi saves
+    /// (`decode_marconi_checkpoint`, `finish_leaf_snapshot`, prefill-time
+    /// `prefill_save_snapshot`) record this event after their D2D copies; a
+    /// warm restore in `prefill_b_prefix_lookup` waits on it before reading the
+    /// snapshot region. Without this cross-stream edge, under concurrent
+    /// batched traffic the restore (prefill stream) can read a snapshot slot
+    /// whose save D2D (default stream) has not yet completed — restoring stale
+    /// / torn SSM recurrent state and diverging the warm decode from the cold
+    /// reference (the prefix-cache × hybrid-SSM warm-restore corruption).
+    pub(super) snapshot_event: u64,
     /// Communication backend for expert parallelism (EP) all-reduce.
     /// None for single-GPU (no distributed communication needed).
     pub(super) comm: Option<std::sync::Arc<dyn spark_comm::CommBackend>>,

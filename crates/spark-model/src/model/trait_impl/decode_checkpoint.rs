@@ -119,6 +119,10 @@ impl TransformerModel {
                 return;
             }
         };
+        // Order any later warm restore (prefill stream) after this save's D2D.
+        if let Err(e) = self.record_snapshot_save_dispatch(stream) {
+            tracing::warn!("decode Marconi checkpoint: record snapshot event: {e}");
+        }
         drop(kv);
         // #155 MTP×cache root cause: the live state just saved (post
         // sync_secondary, post-commit) is canonical at exactly
@@ -221,6 +225,10 @@ impl TransformerModel {
             }
         };
         if let Some(id) = saved {
+            // Order any later warm restore (prefill stream) after this save.
+            if let Err(e) = self.record_snapshot_save_dispatch(stream) {
+                tracing::warn!("finish-leaf snapshot: record snapshot event: {e}");
+            }
             tracing::info!(
                 "Saved finish-leaf SSM snapshot {} for {} tokens",
                 id,

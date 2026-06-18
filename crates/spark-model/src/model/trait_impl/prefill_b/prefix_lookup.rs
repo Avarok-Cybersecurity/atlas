@@ -126,6 +126,15 @@ impl TransformerModel {
                         .ssm_snapshots
                         .session_matches(snap_id, seq.session_hash)
                 {
+                    // Cross-stream ordering: the snapshot we are about to read
+                    // was SAVED on the default stream (decode_marconi_checkpoint
+                    // / finish_leaf_snapshot / prefill_save_snapshot), but this
+                    // RESTORE runs on the prefill stream. Under concurrent
+                    // batched traffic the save's D2D can still be in flight when
+                    // this restore reads the slot — yielding torn/stale SSM
+                    // recurrent state and diverging the warm decode. Wait for
+                    // all snapshot saves recorded so far before reading.
+                    self.wait_snapshot_saves_dispatch(stream)?;
                     self.ssm_snapshots.restore(
                         snap_id,
                         seq.slot_idx,

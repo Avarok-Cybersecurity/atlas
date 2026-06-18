@@ -232,6 +232,9 @@ impl TransformerModel {
         // Secondary stream + event for pipelining checkpoint D2D with MTP propose.
         let secondary_stream = gpu.create_stream()?;
         let secondary_event = gpu.create_event()?;
+        // Event ordering SSM-snapshot saves (default stream) before a warm
+        // Marconi restore (prefill stream). See `snapshot_event` doc in types.rs.
+        let snapshot_event = gpu.create_event()?;
 
         // EP: register moe_output buffer with NCCL and provide bf16_add kernel.
         if let Some(ref comm) = comm
@@ -460,6 +463,7 @@ impl TransformerModel {
             prefix_cache,
             secondary_stream,
             secondary_event,
+            snapshot_event,
             comm,
             ep_cmd_buf,
             ep_protocol_v2: matches!(std::env::var("ATLAS_EP_PROTOCOL").as_deref(), Ok("v2")),

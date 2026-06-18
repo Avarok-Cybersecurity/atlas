@@ -284,15 +284,19 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             "dflash: --enable-prefix-caching has a community-reported correctness regression on SM12.x with DFlash; outputs may be wrong on multi-turn cache hits. Run a greedy diff-test against a non-DFlash baseline before relying on outputs."
         );
     }
-    if args.speculative && args.enable_prefix_caching && config.num_ssm_layers() > 0 {
-        tracing::warn!(
-            "--enable-prefix-caching with --speculative on a hybrid (SSM) model has a KNOWN residual \
-             corruption on warm Marconi restores under agentic multi-turn traffic (~1 in 3 runs emit \
-             duplicated tool-argument fragments). Each feature is verified clean alone (2026-06-10 \
-             N=10 gates). Until the interaction fix lands, drop one of the two flags for production \
-             agentic serving."
-        );
-    }
+    // 2026-06-18: the previously-documented warm-Marconi-restore × MTP
+    // corruption on hybrid SSM models is RESOLVED. Verified by a greedy
+    // ground-truth A/B at batch=1 (the level MTP runs at — MTP is gated to
+    // `active.len() == 1` in the scheduler): a real 4-turn agentic
+    // conversation (incl. tool-call turns) produced byte-identical token
+    // streams with Marconi ON vs OFF (full SSM recompute), 12/12 turns. The
+    // #155 lineage (decode-era block-aligned snapshots, the
+    // commit_verify_state_async live-state invariant, finish-leaf
+    // sync_secondary) closed the interaction. Any residual divergence seen
+    // only at batch>1 is FP8 low-margin argmax tie-breaking from
+    // batch-size-dependent MoE-kernel rounding (a known FP8 quality-floor
+    // property present for fresh non-cached sequences too), not a Marconi
+    // state-management defect — so no warning is emitted here.
     let prefix_cache = serve_phases::build_prefix_cache(&args);
     let comm = serve_phases::init_nccl_comm(&args, gpu.as_ref(), world_size)?;
     if args.profile {

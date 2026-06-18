@@ -150,6 +150,24 @@ impl TransformerModel {
             .stream_wait_event(self.gpu.default_stream(), self.secondary_event)
     }
 
+    /// Record the snapshot-ordering event on `save_stream` AFTER an SSM-snapshot
+    /// save's D2D copies have been enqueued. A later warm Marconi restore on the
+    /// prefill stream waits on this event ([`Self::wait_snapshot_saves_dispatch`])
+    /// so it never reads a snapshot slot whose save copy is still in flight on
+    /// another stream. See the `snapshot_event` doc (types.rs) for the race.
+    pub(super) fn record_snapshot_save_dispatch(&self, save_stream: u64) -> Result<()> {
+        self.gpu.record_event(self.snapshot_event, save_stream)
+    }
+
+    /// Order `restore_stream` after all SSM-snapshot saves recorded so far:
+    /// make it wait on the snapshot-ordering event before reading the snapshot
+    /// region. GPU-side, zero CPU cost. No-op if no save has been recorded yet
+    /// (the event is empty → wait returns immediately).
+    pub(super) fn wait_snapshot_saves_dispatch(&self, restore_stream: u64) -> Result<()> {
+        self.gpu
+            .stream_wait_event(restore_stream, self.snapshot_event)
+    }
+
     pub(super) fn pre_verify_copy_async_dispatch(&self, seq: &mut SequenceState) -> Result<()> {
         use crate::layer::SsmLayerState;
 
