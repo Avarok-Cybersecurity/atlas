@@ -68,12 +68,31 @@ impl Qwen3AttentionLayer {
             ctx.gpu.synchronize(stream)?;
             ctx.gpu.free(a_fp8_buf)?;
             ctx.gpu.free(a_scale_buf)?;
-        } else if let Some(ref fp8t) = self.o_fp8w_t {
-            // o_proj always via the byte-identical ~4.2× faster pipelined
-            // transposed tensor-core kernel.
+        } else if let Some(ref fp8t) = self.o_fp8w_t
+            && self.w8a16_gemm_t_pipelined_k.0 != 0
+        {
+            // o_proj via the byte-identical ~4.2x faster pipelined transposed
+            // tensor-core kernel where available (NVIDIA). gfx1151/HIP has no
+            // cp.async -> pipelined absent -> non-pipelined w8a16_gemm_t below.
             ops::w8a16_gemm_t_pipelined(
                 ctx.gpu,
                 self.w8a16_gemm_t_pipelined_k,
+                attn_out,
+                fp8t.weight_t,
+                fp8t.scale_t,
+                o_out,
+                n,
+                h,
+                nq * hd,
+                stream,
+            )?;
+        } else if let Some(ref fp8t) = self.o_fp8w_t
+            && self.w8a16_gemm_t_k.0 != 0
+        {
+            // cp.async-free fallback (gfx1151/HIP): non-pipelined transposed W8A16.
+            ops::w8a16_gemm_t(
+                ctx.gpu,
+                self.w8a16_gemm_t_k,
                 attn_out,
                 fp8t.weight_t,
                 fp8t.scale_t,

@@ -232,7 +232,9 @@ fn main() -> Result<()> {
     // ── v5 work-list (built on the HOST, mirroring moe_build_tile_worklist) ──
     // PM4 geometry SSOT mirror: M_TILE=128, N_TILE=64. The device builder packs
     // (m_tile<<6)|n_tile and skips experts with M_e<=0 (weights are never NULL
-    // here). The persistent grid is fixed at PM5_PERSIST_CTAS=96.
+    // here). The grid is sized to the work-list tile count (mirrors the
+    // production launcher); PM5_PERSIST_CTAS is only a floor for tiny lists.
+    // SSOT mirror of kernels/strix-hip/common/moe_fp8_grouped_gemm.cu geometry.
     const PM4_M_TILE: usize = 128;
     const PM4_N_TILE: usize = 64;
     const PM5_PERSIST_CTAS: u32 = 96;
@@ -263,7 +265,12 @@ fn main() -> Result<()> {
 
     // Launch geometry: a persistent 1D grid of PM5_PERSIST_CTAS CTAs (256
     // threads) striding over the compacted work-list.
-    let grid_block = || -> ([u32; 3], [u32; 3]) { ([PM5_PERSIST_CTAS, 1, 1], [256, 1, 1]) };
+    // Size the grid to the work-list tile count (mirrors the production
+    // launcher, which sizes from wl_cap_items). The kernel grid-strides by
+    // gridDim.x; PM5_PERSIST_CTAS is only a floor for tiny work-lists.
+    let grid_ctas = (host_total_tiles as u32).max(PM5_PERSIST_CTAS).min(16384);
+    let pm4_threads: u32 = 512;
+    let grid_block = || -> ([u32; 3], [u32; 3]) { ([grid_ctas, 1, 1], [pm4_threads, 1, 1]) };
     // Launch the canonical grouped-GEMM into `out_ptr`. The work-list + total
     // pointers are appended after the base arg list.
     let launch_named = |name: &str, out_ptr: DevicePtr, stream: u64, sync: bool| -> Result<()> {

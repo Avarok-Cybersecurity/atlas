@@ -25,6 +25,9 @@ extend-ignore-identifiers-re = [
 ]
 
 [default.extend-words]
+# "subtiles" = sub-tiles: WMMA n-sub-tile partitioning in the strix-hip
+# MoE/dense GEMM kernels (PM4_SUBTILES_PER_WARP). Not a typo of "subtitles".
+subtiles = "subtiles"
 # CUDA device-attribute constant token. Not a typo of `OPTION`.
 OPTIN = "OPTIN"
 # `image_grid_thw` is the HuggingFace tensor name for vision-input
