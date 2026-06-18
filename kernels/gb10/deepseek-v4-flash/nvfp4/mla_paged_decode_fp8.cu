@@ -46,9 +46,7 @@ extern "C" __global__ void mla_paged_decode_fp8(
     const float inv_sqrt_d,                          // 1/sqrt(576)
     const float k_scale,                             // FP8 scale for K
     const float v_scale,                             // FP8 scale for V
-    const unsigned long long cache_stride_bytes,
-    const unsigned int num_seqs,
-    const unsigned long long stream
+    const unsigned long long cache_stride_bytes
 ) {
     const unsigned int q_head = blockIdx.x;
     const unsigned int seq_idx = blockIdx.y;
