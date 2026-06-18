@@ -235,7 +235,6 @@ impl Qwen3AttentionLayer {
                     ops::mla_paged_decode_fp8(
                         gpu,
                         self.mla_paged_decode_fp8_k,
-  +++++++ REPLACE
                         q,
                         kv_cache.k_pool_ptr(self.attn_layer_idx),
                         kv_cache.v_pool_ptr(self.attn_layer_idx),
@@ -341,7 +340,6 @@ impl Qwen3AttentionLayer {
                 }
             }
             KvCacheDtype::Bf16 => {
-  +++++++ REPLACE
                 // BF16 paged decode — no Split-K (not implemented for BF16 yet)
                 // Use HDIM=512 kernel for Gemma-4 full-attention layers (head_dim > 256)
                 let kernel = if head_dim > 256 && self.paged_decode_512_k.0 != 0 {

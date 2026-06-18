@@ -272,7 +272,6 @@ impl Qwen3AttentionLayer {
                 "mla_paged_decode_fp8",
             ),
             mla_batched_gemv_k: super::super::try_kernel(gpu, "mla_absorbed", "mla_batched_gemv"),
-  +++++++ REPLACE
             mla_q_rope_scatter_k: super::super::try_kernel(
                 gpu,
                 "mla_absorbed",
