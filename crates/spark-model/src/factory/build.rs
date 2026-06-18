@@ -250,9 +250,26 @@ pub fn build_model(
             summary.join(" + ")
         );
     }
+    // ── gpu_memory_utilization as fraction of TOTAL GPU memory ──
+    //
+    // User-facing contract (matches vLLM / sparkrun convention):
+    //   total_memory × gpu_memory_utilization = hard ceiling on everything
+    //   this process consumes (weights + buffers + KV cache + reserves).
+    //
+    // KV cache gets whatever remains inside that ceiling after deducting
+    // prior allocations (model weights, buffer arena, CUDA context/driver)
+    // and the inference reserve (SSM state pools, CUDA headroom).  A safety
+    // clamp ensures we never exceed what the device can physically provide
+    // right now (handles external memory pressure on shared-memory /
+    // unified-memory systems like GB10).
+    let total_mem = gpu.total_memory()?;
     let actual_free = gpu.free_memory()?;
-    let allocatable = actual_free.saturating_sub(inference_reserve);
-    let kv_budget = (allocatable as f64 * gpu_memory_utilization) as usize;
+    let used_so_far = total_mem.saturating_sub(actual_free);
+    let total_budget = (total_mem as f64 * gpu_memory_utilization) as usize;
+    let kv_budget = total_budget
+        .saturating_sub(used_so_far)
+        .saturating_sub(inference_reserve)
+        .min(actual_free.saturating_sub(inference_reserve));
     // Phase 6.1.f: when HBM-shrink is active, size the production cache to
     // `max_batch_size × cache_blocks_per_seq` rather than the unbounded
     // budget-driven sum. This is the *whole point* of the HBM-shrink
@@ -294,13 +311,33 @@ pub fn build_model(
             n
         }
         None => {
+            if kv_budget == 0 {
+                anyhow::bail!(
+                    "No memory left for KV cache: total GPU = {:.1} GB, \
+                     --gpu-memory-utilization {:.0}% → budget {:.1} GB, \
+                     but {:.1} GB already consumed + {:.1} GB inference reserve \
+                     = {:.1} GB committed.  Raise --gpu-memory-utilization or \
+                     use a smaller model.",
+                    total_mem as f64 / (1024.0 * 1024.0 * 1024.0),
+                    gpu_memory_utilization * 100.0,
+                    total_budget as f64 / (1024.0 * 1024.0 * 1024.0),
+                    used_so_far as f64 / (1024.0 * 1024.0 * 1024.0),
+                    inference_reserve as f64 / (1024.0 * 1024.0 * 1024.0),
+                    (used_so_far + inference_reserve) as f64 / (1024.0 * 1024.0 * 1024.0),
+                );
+            }
             let n = PagedKvCache::compute_num_blocks(&kv_config, kv_budget)?;
             let max_kv_tokens = n * kv_block_size;
             tracing::info!(
-                "KV cache (post-construction): {:.1} GB free, {:.1} GB allocatable, \
-                 {} blocks × {} tok/block = {} max tokens",
-                actual_free as f64 / (1024.0 * 1024.0 * 1024.0),
-                allocatable as f64 / (1024.0 * 1024.0 * 1024.0),
+                "KV cache: {:.1} GB total × {:.0}% util = {:.1} GB budget; \
+                 {:.1} GB pre-KV + {:.1} GB reserve → {:.1} GB for KV \
+                 → {} blocks × {} tok/block = {} max KV tokens",
+                total_mem as f64 / (1024.0 * 1024.0 * 1024.0),
+                gpu_memory_utilization * 100.0,
+                total_budget as f64 / (1024.0 * 1024.0 * 1024.0),
+                used_so_far as f64 / (1024.0 * 1024.0 * 1024.0),
+                inference_reserve as f64 / (1024.0 * 1024.0 * 1024.0),
+                kv_budget as f64 / (1024.0 * 1024.0 * 1024.0),
                 n,
                 kv_block_size,
                 max_kv_tokens,

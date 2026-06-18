@@ -100,18 +100,32 @@ fn u16s_to_le(v: &[u16]) -> Vec<u8> {
 /// with FP32 accumulation. A is [M,K] row-major, B is [N,K] row-major (read
 /// transposed). No scale, no dequant — both operands raw BF16.
 fn cpu_reference(a_bf16: &[u16], b_bf16: &[u16], m: usize, n: usize, k: usize) -> Vec<u16> {
+    // Multi-threaded over row blocks (std::thread; explicit thread count — PCND).
+    let nthreads = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(8);
     let mut out = vec![0u16; m * n];
-    for row in 0..m {
-        for col in 0..n {
-            let mut acc = 0.0f32;
-            for kk in 0..k {
-                let a = bf16_bits_to_f32(a_bf16[row * k + kk]);
-                let b = bf16_bits_to_f32(b_bf16[col * k + kk]);
-                acc += a * b;
-            }
-            out[row * n + col] = f32_to_bf16_bits(acc);
+    let rows_per = m.div_ceil(nthreads);
+    std::thread::scope(|sc| {
+        for (t, chunk) in out.chunks_mut(rows_per * n).enumerate() {
+            let row0 = t * rows_per;
+            sc.spawn(move || {
+                let rows = chunk.len() / n;
+                for rr in 0..rows {
+                    let row = row0 + rr;
+                    for col in 0..n {
+                        let mut acc = 0.0f32;
+                        for kk in 0..k {
+                            let a = bf16_bits_to_f32(a_bf16[row * k + kk]);
+                            let b = bf16_bits_to_f32(b_bf16[col * k + kk]);
+                            acc += a * b;
+                        }
+                        chunk[rr * n + col] = f32_to_bf16_bits(acc);
+                    }
+                }
+            });
         }
-    }
+    });
     out
 }
 
