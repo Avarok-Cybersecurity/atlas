@@ -40,6 +40,22 @@ pub(super) struct ConvGdnArgs {
 }
 
 impl Qwen3SsmLayer {
+    /// STAGE 1: whether the fused K=2 MTP-verify epilogue (single-launch
+    /// conv1d+L2norm and gated-RMS-norm for both draft positions) should run.
+    ///
+    /// Opt-in via `ATLAS_GDN_FUSED_VERIFY=1` (default OFF — the per-token path
+    /// runs unchanged) AND only when the fused kernels are present in this
+    /// target's PTX module set (NULL handle on non-gb10 targets). Bit-identical
+    /// to the per-token path (gdn_verify_fused_microtest, cos == 1.0).
+    pub(super) fn fused_verify_k2_enabled(&self) -> bool {
+        self.gdn_verify_fused_conv_k2_k.0 != 0
+            && self.gdn_verify_fused_norm_k2_k.0 != 0
+            && matches!(
+                std::env::var("ATLAS_GDN_FUSED_VERIFY").ok().as_deref(),
+                Some("1")
+            )
+    }
+
     /// Run conv1d_update_l2norm + GDN over `num_tokens` (multi-token decode
     /// / MTP verify). Picks the K=2/3/4/17 fused WY path if available,
     /// otherwise falls back to the sequential per-token gdn_decode loop.
@@ -186,53 +202,85 @@ impl Qwen3SsmLayer {
             )?;
         } else if num_tokens == 2 {
             // ── K=2 fused path: conv1d sequential, L2 norm sequential, GDN chunk2 ──
-            let qkv_0 = deinterleaved;
-            let conv_out_0 = conv_out_buf;
-            ops::conv1d_update_l2norm(
-                ctx.gpu,
-                self.conv1d_l2norm_k,
-                ssm_state.conv_state,
-                qkv_0,
-                &self.ssm.conv1d,
-                conv_out_0,
-                conv_dim as u32,
-                d_conv as u32,
-                1,
-                qk_ch,
-                kd as u32,
-                1e-6,
-                stream,
-            )?;
-            ctx.gpu.copy_d2d_async(
-                ssm_state.conv_state,
-                ssm_state.conv_state_intermediates[0],
-                conv_bytes,
-                stream,
-            )?;
+            if self.fused_verify_k2_enabled() {
+                // STAGE 1: single-launch conv1d+L2norm for BOTH positions.
+                // Writes conv_out[0..1] and the position-0 rollback snapshot
+                // (intermediates[0]) inline — saving one conv launch + one
+                // copy_d2d vs the per-token path. The committed (post-t1)
+                // window is left in conv_state; copy it to intermediates[1]
+                // for the full-accept rollback restore.
+                ops::gdn_verify_fused_conv_k2(
+                    ctx.gpu,
+                    self.gdn_verify_fused_conv_k2_k,
+                    ssm_state.conv_state,
+                    deinterleaved,
+                    &self.ssm.conv1d,
+                    conv_out_buf,
+                    ssm_state.conv_state_intermediates[0],
+                    conv_dim as u32,
+                    d_conv as u32,
+                    qk_ch,
+                    kd as u32,
+                    qkvz_size as u32, // input stride (BF16 elems between positions)
+                    conv_dim as u32,  // output stride (BF16 elems between positions)
+                    1e-6,
+                    stream,
+                )?;
+                ctx.gpu.copy_d2d_async(
+                    ssm_state.conv_state,
+                    ssm_state.conv_state_intermediates[1],
+                    conv_bytes,
+                    stream,
+                )?;
+            } else {
+                let qkv_0 = deinterleaved;
+                let conv_out_0 = conv_out_buf;
+                ops::conv1d_update_l2norm(
+                    ctx.gpu,
+                    self.conv1d_l2norm_k,
+                    ssm_state.conv_state,
+                    qkv_0,
+                    &self.ssm.conv1d,
+                    conv_out_0,
+                    conv_dim as u32,
+                    d_conv as u32,
+                    1,
+                    qk_ch,
+                    kd as u32,
+                    1e-6,
+                    stream,
+                )?;
+                ctx.gpu.copy_d2d_async(
+                    ssm_state.conv_state,
+                    ssm_state.conv_state_intermediates[0],
+                    conv_bytes,
+                    stream,
+                )?;
 
-            let qkv_1 = deinterleaved.offset(qkvz_size * bf16);
-            let conv_out_1 = conv_out_buf.offset(conv_dim * bf16);
-            ops::conv1d_update_l2norm(
-                ctx.gpu,
-                self.conv1d_l2norm_k,
-                ssm_state.conv_state,
-                qkv_1,
-                &self.ssm.conv1d,
-                conv_out_1,
-                conv_dim as u32,
-                d_conv as u32,
-                1,
-                qk_ch,
-                kd as u32,
-                1e-6,
-                stream,
-            )?;
-            ctx.gpu.copy_d2d_async(
-                ssm_state.conv_state,
-                ssm_state.conv_state_intermediates[1],
-                conv_bytes,
-                stream,
-            )?;
+                let qkv_1 = deinterleaved.offset(qkvz_size * bf16);
+                let conv_out_1 = conv_out_buf.offset(conv_dim * bf16);
+                ops::conv1d_update_l2norm(
+                    ctx.gpu,
+                    self.conv1d_l2norm_k,
+                    ssm_state.conv_state,
+                    qkv_1,
+                    &self.ssm.conv1d,
+                    conv_out_1,
+                    conv_dim as u32,
+                    d_conv as u32,
+                    1,
+                    qk_ch,
+                    kd as u32,
+                    1e-6,
+                    stream,
+                )?;
+                ctx.gpu.copy_d2d_async(
+                    ssm_state.conv_state,
+                    ssm_state.conv_state_intermediates[1],
+                    conv_bytes,
+                    stream,
+                )?;
+            }
 
             let q_ptr = conv_out_buf;
             let k_ptr = conv_out_buf.offset(key_dim * bf16);

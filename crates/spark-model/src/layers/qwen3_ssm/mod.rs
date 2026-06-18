@@ -116,6 +116,12 @@ pub struct Qwen3SsmLayer {
     gdn_wy2_k: KernelHandle,
     gdn_wy3_k: KernelHandle,
     gdn_wy4_k: KernelHandle,
+    /// STAGE 1 fused K=2 MTP-verify epilogue: conv1d+L2norm ×2 and
+    /// gated-RMS-norm ×2 each folded into a single launch. Dispatched only
+    /// when the `ATLAS_GDN_FUSED_VERIFY` env flag is set (default OFF); the
+    /// per-token path runs unchanged otherwise. Bit-identical (cos == 1.0).
+    gdn_verify_fused_conv_k2_k: KernelHandle,
+    gdn_verify_fused_norm_k2_k: KernelHandle,
     /// WY-Chunkwise K=17 GDN verify (DFlash γ+1). Only present in
     /// qwen3.6-35b-a3b's PTX module set; NULL handle for other targets,
     /// in which case decode_batched(K=17) falls through to the sequential

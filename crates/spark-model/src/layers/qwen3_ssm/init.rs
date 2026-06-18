@@ -162,6 +162,20 @@ impl Qwen3SsmLayer {
             gdn_wy2_k: gpu.kernel("gated_delta_rule_wy", "gated_delta_rule_wy2")?,
             gdn_wy3_k: gpu.kernel("gated_delta_rule_wy3", "gated_delta_rule_wy3")?,
             gdn_wy4_k: gpu.kernel("gated_delta_rule_wy4", "gated_delta_rule_wy4")?,
+            // STAGE 1 fused K=2 verify epilogue. Only present in the gb10
+            // common PTX module set; NULL on targets lacking the .cu, in which
+            // case the num_tokens==2 arm keeps the per-token path even when
+            // ATLAS_GDN_FUSED_VERIFY is set.
+            gdn_verify_fused_conv_k2_k: super::super::try_kernel(
+                gpu,
+                "gdn_verify_fused_k2",
+                "gdn_verify_fused_conv_k2",
+            ),
+            gdn_verify_fused_norm_k2_k: super::super::try_kernel(
+                gpu,
+                "gdn_verify_fused_k2",
+                "gdn_verify_fused_norm_k2",
+            ),
             // wy17 only present in qwen3.6-35b-a3b's PTX module set; NULL on other targets.
             // decode_batched(K=17) checks for non-NULL before dispatching the fused path.
             gdn_wy17_k: super::super::try_kernel(

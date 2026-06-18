@@ -1,22 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Golden oracle for the fused K=2 GDN verify kernel (STAGE 0).
+//! Golden oracle (STAGE 0) + fused conv+norm equivalence (STAGE 1) for the
+//! fused K=2 GDN verify kernel (`gdn_verify_fused_k2`).
 //!
 //! ## Why
 //! K=2 MTP verify runs the projection epilogue (conv1d+L2norm, GDN gates,
 //! gated-RMS-norm) as PER-TOKEN loops — each launched/computed TWICE instead
 //! of once-fused like the single-token decode path. The fused
-//! activation-replay kernel (added in later stages) folds those scalar GDN
-//! epilogue ops into a single launch. This oracle is the losslessness
-//! foundation:
+//! activation-replay kernel folds those scalar GDN epilogue ops into a single
+//! launch. This oracle is the losslessness foundation:
 //!
-//!   STAGE 0 (this file): run the CURRENT K=2 path op-for-op — the
+//!   STAGE 0 (golden): run the CURRENT K=2 path op-for-op — the
 //!     `causal_conv1d_update_l2norm` ×2 + `gated_delta_rule_wy2` +
 //!     `gated_rms_norm` ×2 sequence exactly as `decode_batched_conv_gdn`
 //!     calls them today — and capture the golden per-token gated-norm
 //!     outputs, the committed H (after token 1), the rollback H_inter (after
-//!     token 0), and the committed / intermediate conv-state. GATE: the
-//!     capture is deterministic (byte-identical across two runs of the same
-//!     seed), so later stages can diff fused kernels against it.
+//!     token 0), and the committed / intermediate conv-state. Deterministic
+//!     across two runs of the same seed.
+//!
+//!   STAGE 1 (fused conv+norm): run `gdn_verify_fused_k2`, which fuses ONLY
+//!     the conv1d+L2norm and the gated-RMS-norm for BOTH K=2 positions into
+//!     one launch each (BA-projection/gates and the WY2 recurrence stay as
+//!     their existing separate launches — Stage 2 folds BA in). GATE: fused
+//!     per-token gated-norm output cos ≥ 0.99999 vs golden AND any conv-state
+//!     it touches (committed + position-0 rollback) cos ≥ 0.99999.
 //!
 //!   cargo run -p spark-model --release --example gdn_verify_fused_microtest \
 //!       --features cuda,gpu-examples
@@ -42,6 +48,7 @@ const QKVZ_SIZE: usize = CONV_DIM + VALUE_DIM; // 12288 (Q|K|V|Z)
 
 const L2_EPS: f32 = 1e-6;
 const RMS_EPS: f32 = 1e-6;
+const PASS_COS: f64 = 0.99999;
 
 struct Lcg(u64);
 impl Lcg {
@@ -82,6 +89,15 @@ fn dn_f32(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Result<Vec<f32>> {
     Ok(b.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
+}
+fn cos(a: &[f32], b: &[f32]) -> f64 {
+    let (mut dot, mut na, mut nb) = (0f64, 0f64, 0f64);
+    for (x, y) in a.iter().zip(b) {
+        dot += (*x as f64) * (*y as f64);
+        na += (*x as f64).powi(2);
+        nb += (*y as f64).powi(2);
+    }
+    dot / (na.sqrt() * nb.sqrt() + 1e-12)
 }
 
 /// Random K=2 layer inputs. Mirrors the production `decode_batched` layout:
@@ -341,14 +357,142 @@ fn main() -> Result<()> {
             a.h_committed[0],
             a.conv_inter[0],
         );
+
+        // STAGE 1: fused conv+norm kernel vs golden.
+        let fused = run_fused_stage1(g, &ins)?;
+        let mut min_out = 1.0f64;
+        for t in 0..2 {
+            let fa = &fused.norm_out[t * VALUE_DIM..(t + 1) * VALUE_DIM];
+            let ga = &a.norm_out[t * VALUE_DIM..(t + 1) * VALUE_DIM];
+            min_out = min_out.min(cos(fa, ga));
+        }
+        let conv_committed_cos = cos(&fused.conv_committed, &a.conv_committed);
+        let conv_inter_cos = cos(&fused.conv_inter, &a.conv_inter);
+        let state_cos = conv_committed_cos.min(conv_inter_cos);
+        let ok = min_out >= PASS_COS && state_cos >= PASS_COS;
+        all_ok &= ok;
+        eprintln!(
+            "STAGE1 layer={layer}  norm_out_cos={min_out:.7} \
+             conv_committed_cos={conv_committed_cos:.7} \
+             conv_inter_cos={conv_inter_cos:.7}  {}",
+            if ok { "PASS" } else { "FAIL" }
+        );
     }
 
     eprintln!(
-        "\nSTAGE0 golden-oracle GATE: {}",
+        "\nFused-verify GATE (STAGE0 repro + STAGE1 cos≥{PASS_COS}): {}",
         if all_ok { "PASS" } else { "FAIL" }
     );
     if !all_ok {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Captured outputs from the Stage-1 fused conv+norm kernel.
+struct FusedStage1 {
+    norm_out: Vec<f32>,       // K*VALUE_DIM
+    conv_committed: Vec<f32>, // CONV_DIM*D_CONV (after token 1)
+    conv_inter: Vec<f32>,     // CONV_DIM*D_CONV (after token 0)
+}
+
+/// STAGE 1 — fused conv1d+L2norm ×2 in one launch, then WY2 (existing
+/// separate launch), then fused gated-RMS-norm ×2 in one launch.
+///
+/// Drives `gdn_verify_fused_k2` the same way `decode_batched_conv_gdn` does
+/// under `ATLAS_GDN_FUSED_VERIFY`: the conv phase advances state 0→1 in
+/// registers and writes the position-0 conv-state snapshot once; WY2 consumes
+/// its conv output (unchanged); the norm phase produces the gated-norm output.
+fn run_fused_stage1(g: &dyn GpuBackend, ins: &Inputs) -> Result<FusedStage1> {
+    let conv_k = g.kernel("gdn_verify_fused_k2", "gdn_verify_fused_conv_k2")?;
+    let norm_k = g.kernel("gdn_verify_fused_k2", "gdn_verify_fused_norm_k2")?;
+    let wy2_k = g.kernel("gated_delta_rule_wy", "gated_delta_rule_wy2")?;
+
+    let conv_state = up_f32(g, &ins.conv_state0)?;
+    let conv_weight = up_bf16(g, &ins.conv_weight)?;
+    let deint = up_bf16(g, &ins.deinterleaved)?;
+    let h_state = up_f32(g, &ins.h0)?;
+    let h_inter = g.alloc(NV * KD * VD * 4)?;
+    let gates = up_f32(g, &ins.gates)?;
+    let norm_w = up_bf16(g, &ins.norm_weight)?;
+
+    let conv_out = g.alloc(2 * CONV_DIM * 2)?;
+    let gdn_out = g.alloc(2 * VALUE_DIM * 2)?;
+    let norm_out = g.alloc(2 * VALUE_DIM * 2)?;
+    let conv_inter = g.alloc(CONV_DIM * D_CONV * 4)?;
+
+    // ── Fused conv phase: both positions, one launch ──
+    KernelLaunch::new(g, conv_k)
+        .grid([CONV_DIM as u32 / 256, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(conv_state)
+        .arg_ptr(deint)
+        .arg_ptr(conv_weight)
+        .arg_ptr(conv_out)
+        .arg_ptr(conv_inter)
+        .arg_u32(CONV_DIM as u32)
+        .arg_u32(D_CONV as u32)
+        .arg_u32(QK_CH as u32)
+        .arg_u32(KD as u32)
+        .arg_u32(QKVZ_SIZE as u32) // input stride (BF16 elems between positions)
+        .arg_u32(CONV_DIM as u32) // output stride
+        .arg_f32(L2_EPS)
+        .launch(0)?;
+
+    // ── WY2 GDN (unchanged separate launch) ──
+    let q_ptr = conv_out;
+    let k_ptr = conv_out.offset(KEY_DIM * 2);
+    let v_ptr = conv_out.offset(KEY_DIM * 2 * 2);
+    launch_wy2(
+        g,
+        wy2_k,
+        h_state,
+        q_ptr,
+        k_ptr,
+        v_ptr,
+        gates,
+        gates.offset(NV * 4),
+        gdn_out,
+        h_inter,
+    )?;
+
+    // ── Fused norm phase: both positions, one launch ──
+    KernelLaunch::new(g, norm_k)
+        .grid([NV as u32, 2, 1])
+        .block([VD as u32, 1, 1])
+        .arg_ptr(gdn_out)
+        .arg_ptr(deint)
+        .arg_ptr(norm_w)
+        .arg_ptr(norm_out)
+        .arg_u32(VD as u32) // hidden_size (per-head group)
+        .arg_f32(RMS_EPS)
+        .arg_u32(QKVZ_SIZE as u32) // deint position stride (BF16 elems)
+        .arg_u32(CONV_DIM as u32) // z offset within a position
+        .arg_u32(VALUE_DIM as u32) // gdn/out position stride
+        .launch(0)?;
+
+    g.synchronize(0)?;
+
+    let out = FusedStage1 {
+        norm_out: dn_bf16(g, norm_out, 2 * VALUE_DIM)?,
+        conv_committed: dn_f32(g, conv_state, CONV_DIM * D_CONV)?,
+        conv_inter: dn_f32(g, conv_inter, CONV_DIM * D_CONV)?,
+    };
+
+    for p in [
+        conv_state,
+        conv_weight,
+        deint,
+        h_state,
+        h_inter,
+        gates,
+        norm_w,
+        conv_out,
+        gdn_out,
+        norm_out,
+        conv_inter,
+    ] {
+        let _ = g.free(p);
+    }
+    Ok(out)
 }

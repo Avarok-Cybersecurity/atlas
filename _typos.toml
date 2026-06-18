@@ -25,6 +25,9 @@ extend-ignore-identifiers-re = [
 ]
 
 [default.extend-words]
+# `deint` — short form of "deinterleaved" used as the Q|K|V|Z input
+# pointer name in the fused K=2 GDN verify kernel/ops. Not a typo.
+deint = "deint"
 # "subtiles" = sub-tiles: WMMA n-sub-tile partitioning in the strix-hip
 # MoE/dense GEMM kernels (PM4_SUBTILES_PER_WARP). Not a typo of "subtitles".
 subtiles = "subtiles"
