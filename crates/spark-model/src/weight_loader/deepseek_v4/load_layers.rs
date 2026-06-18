@@ -42,7 +42,10 @@ pub fn load_all_layers(
     );
     tracing::info!(
         "DeepSeek-V4 KV cache dtype: {:?}",
-        layer_kv_dtypes.first().copied().unwrap_or(KvCacheDtype::Bf16),
+        layer_kv_dtypes
+            .first()
+            .copied()
+            .unwrap_or(KvCacheDtype::Bf16),
     );
 
     let mut layers = Vec::with_capacity(n);
@@ -54,20 +57,14 @@ pub fn load_all_layers(
         let hc_dim = hc * config.hidden_size;
         let head_fn = super::assemble::load_hc_f32(
             store,
-            &[
-                "hc_head_fn".to_string(),
-                "model.hc_head.fn".to_string(),
-            ],
+            &["hc_head_fn".to_string(), "model.hc_head.fn".to_string()],
             hc * hc_dim,
             gpu,
         )
         .ok();
         let head_base = super::assemble::load_hc_f32(
             store,
-            &[
-                "hc_head_base".to_string(),
-                "model.hc_head.base".to_string(),
-            ],
+            &["hc_head_base".to_string(), "model.hc_head.base".to_string()],
             hc,
             gpu,
         )

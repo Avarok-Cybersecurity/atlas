@@ -43,11 +43,12 @@ impl Qwen3AttentionLayer {
                 // V4-Flash uses MLA with compressed KV cache (576 dims: 512 latent + 64 rope)
                 // Detection: V4-Flash has rope > 0 (64 dims), V3 has rope = 0
                 let is_v4_flash = self.mla.as_ref().map(|m| m.rope > 0).unwrap_or(false);
-                
+
                 if is_v4_flash {
                     // Use MLA decode kernel for V4-Flash
-                    let kv_cache_dim = (self.mla.as_ref().unwrap().kv_lora_rank 
-                        + self.mla.as_ref().unwrap().rope) as u32; // 512 + 64 = 576
+                    let kv_cache_dim = (self.mla.as_ref().unwrap().kv_lora_rank
+                        + self.mla.as_ref().unwrap().rope)
+                        as u32; // 512 + 64 = 576
                     tracing::info!(
                         "V4-Flash MLA decode: using MLA kernel, q_head_dim={}, kv_cache_dim={}",
                         head_dim,
@@ -221,11 +222,12 @@ impl Qwen3AttentionLayer {
                 // V4-Flash uses MLA with compressed KV cache (576 dims: 512 latent + 64 rope)
                 // Detection: V4-Flash has rope > 0 (64 dims), V3 has rope = 0
                 let is_v4_flash = self.mla.as_ref().map(|m| m.rope > 0).unwrap_or(false);
-                
+
                 if is_v4_flash {
                     // Use MLA decode kernel for V4-Flash with FP8 KV cache
-                    let kv_cache_dim = (self.mla.as_ref().unwrap().kv_lora_rank 
-                        + self.mla.as_ref().unwrap().rope) as u32; // 512 + 64 = 576
+                    let kv_cache_dim = (self.mla.as_ref().unwrap().kv_lora_rank
+                        + self.mla.as_ref().unwrap().rope)
+                        as u32; // 512 + 64 = 576
                     tracing::info!(
                         "V4-Flash MLA decode (FP8): using MLA kernel, q_head_dim={}, kv_cache_dim={}",
                         head_dim,

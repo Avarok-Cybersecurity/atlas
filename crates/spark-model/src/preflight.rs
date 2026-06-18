@@ -97,9 +97,9 @@ fn check_embedding_and_head(store: &WeightStore) -> Result<()> {
         "embed_tokens.weight",
         "embed.weight",
     ];
-    let has_embed = store.names().any(|n| {
-        EMBED_EXACTS.contains(&n) || EMBED_SUFFIXES.iter().any(|s| n.ends_with(s))
-    });
+    let has_embed = store
+        .names()
+        .any(|n| EMBED_EXACTS.contains(&n) || EMBED_SUFFIXES.iter().any(|s| n.ends_with(s)));
     if !has_embed {
         let sample: Vec<_> = store.names().take(20).collect();
         bail!(

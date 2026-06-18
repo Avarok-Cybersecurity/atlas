@@ -23,10 +23,10 @@ mod fp8_moe_batch_a;
 mod fp8_moe_batch_b;
 #[path = "ops/gemm_dense.rs"]
 mod gemm_dense;
-#[path = "ops/hyper_connection.rs"]
-mod hyper_connection;
 #[path = "ops/gemm_quant.rs"]
 mod gemm_quant;
+#[path = "ops/hyper_connection.rs"]
+mod hyper_connection;
 #[path = "ops/kv_cache.rs"]
 mod kv_cache;
 #[path = "ops/moe_expert.rs"]

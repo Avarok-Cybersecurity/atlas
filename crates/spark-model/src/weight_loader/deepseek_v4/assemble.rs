@@ -8,12 +8,14 @@ use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
 
 use crate::layer::TransformerLayer;
-use crate::layers::qwen3_attention::{HcHeadWeights, HcSiteWeights, HcWeights, MlaWeights, Qwen3AttentionLayer};
 use crate::layers::FfnComponent;
 use crate::layers::MoeLayer;
+use crate::layers::qwen3_attention::{
+    HcHeadWeights, HcSiteWeights, HcWeights, MlaWeights, Qwen3AttentionLayer,
+};
 use crate::weight_map::{
-    dense, quantize_to_nvfp4, quantized_v2, AttentionWeights, DenseWeight, ExpertWeight,
-    MoeWeights, QuantizedWeight,
+    AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense,
+    quantize_to_nvfp4, quantized_v2,
 };
 
 #[allow(clippy::too_many_arguments)]

@@ -121,14 +121,14 @@ impl Qwen3AttentionLayer {
         let kv_dim = nkv * hd_mla;
         let k_out = q_full.offset((n * q_dim) as usize * 2);
         let v_out = k_out.offset((n * kv_dim) as usize * 2);
-        let kv_latent = ctx.buffers.expert_gate_out();  // Capture latent for cache assembly
+        let kv_latent = ctx.buffers.expert_gate_out(); // Capture latent for cache assembly
         if use_tc {
             ops::dense_gemm_tc(
                 ctx.gpu,
                 self.dense_gemm_tc_k,
                 normed,
                 &mla.wkv_a,
-                kv_latent,  // Write to kv_latent for cache assembly
+                kv_latent, // Write to kv_latent for cache assembly
                 n,
                 kv_lora,
                 h,
@@ -140,7 +140,7 @@ impl Qwen3AttentionLayer {
                 self.dense_gemm_k,
                 normed,
                 &mla.wkv_a,
-                kv_latent,  // Write to kv_latent for cache assembly
+                kv_latent, // Write to kv_latent for cache assembly
                 n,
                 kv_lora,
                 h,
@@ -148,7 +148,8 @@ impl Qwen3AttentionLayer {
             )?;
         }
         // Copy kv_latent → k_out (for attention computation)
-        ctx.gpu.copy_d2d_async(kv_latent, k_out, n as usize * kv_lora as usize * 2, stream)?;
+        ctx.gpu
+            .copy_d2d_async(kv_latent, k_out, n as usize * kv_lora as usize * 2, stream)?;
         ctx.gpu
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: k_out gemm sync failed: {e}"))?;
@@ -351,7 +352,7 @@ impl Qwen3AttentionLayer {
             ctx.gpu,
             self.mla_cache_assemble_batched_k,
             kv_latent,  // 512-dim latent (reused from step 2)
-            q_rope_tmp,  // 64-dim RoPE (reused from step 3)
+            q_rope_tmp, // 64-dim RoPE (reused from step 3)
             k_cache_assembled,
             v_cache_assembled,
             n,

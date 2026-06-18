@@ -194,7 +194,10 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
     // (HF transformers naming); some pre-release configs used `rope_parameters`.
     // Accept either so the YaRN params are actually populated (SSOT: the
     // config, not compute.rs defaults).
-    if let Some(rp) = raw.get("rope_scaling").or_else(|| raw.get("rope_parameters")) {
+    if let Some(rp) = raw
+        .get("rope_scaling")
+        .or_else(|| raw.get("rope_parameters"))
+    {
         if let Some(f) = rp.get("factor").and_then(|v| v.as_f64()) {
             config.yarn_factor = f as f32;
         }
@@ -213,16 +216,13 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
         // Attention-temperature mscale. HF defaults: mscale=1.0, mscale_all_dim=0.0
         // when absent. `_mscale = get_mscale(factor, mscale) / get_mscale(factor,
         // mscale_all_dim)` is folded into the rope cos/sin (see the V4 forward).
-        config.yarn_mscale = rp
-            .get("mscale")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1.0) as f32;
+        config.yarn_mscale = rp.get("mscale").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
         config.yarn_mscale_all_dim = rp
             .get("mscale_all_dim")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0) as f32;
     }
-    
+
     // DEBUG: Log YaRN parameters to verify they're being read correctly
     println!(
         "DeepSeek-V4 YaRN parameters: factor={:?}, beta_fast={:?}, beta_slow={:?}, original_max_pos={:?}, mscale={:?}, mscale_all_dim={:?}",
