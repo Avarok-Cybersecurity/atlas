@@ -14,9 +14,10 @@
 
 #define BLOCK_SIZE 256
 
+
 // Convert BF16 to FP8 E4M3
-__device__ __forceinline__ __nv_fp8_storage_t bf16_to_fp8(__nv_bfloat16 b) {
-    return __nv_cvt_halfraw_to_fp8(__bfloat16_as_halfraw(b), __NV_E4M3);
+__device__ __forceinline__ unsigned char bf16_to_fp8(__nv_bfloat16 b) {
+    return __nv_cvt_float_to_fp8(__bfloat162float(b), __NV_SATFINITE);
 }
 
 // Batched MLA cache assembly + FP8 quantization for N tokens.
@@ -63,8 +64,8 @@ extern "C" __global__ void mla_cache_assemble_fp8_batched(
                 float k_val = __bfloat162float(k_bf16[k_idx]);
                 float v_val = __bfloat162float(v_bf16[v_idx]);
 
-                k_cache_fp8[k_cache_idx] = __nv_cvt_float_to_fp8(k_val * k_scale, __NV_E4M3);
-                v_cache_fp8[v_cache_idx] = __nv_cvt_float_to_fp8(v_val * v_scale, __NV_E4M3);
+                k_cache_fp8[k_cache_idx] = __nv_cvt_float_to_fp8(k_val * k_scale, __NV_SATFINITE);
+                v_cache_fp8[v_cache_idx] = __nv_cvt_float_to_fp8(v_val * v_scale, __NV_SATFINITE);
             }
         } else if (d < kv_lora + rope) {
             // RoPE portion: copy from K, zero V
@@ -76,10 +77,10 @@ extern "C" __global__ void mla_cache_assemble_fp8_batched(
 
                 // Load K RoPE value, quantize to FP8
                 float k_val = __bfloat162float(k_bf16[k_idx]);
-                k_cache_fp8[k_cache_idx] = __nv_cvt_float_to_fp8(k_val * k_scale, __NV_E4M3);
+                k_cache_fp8[k_cache_idx] = __nv_cvt_float_to_fp8(k_val * k_scale, __NV_SATFINITE);
 
                 // V RoPE padding = 0
-                v_cache_fp8[v_cache_idx] = __nv_cvt_float_to_fp8(0.0f, __NV_E4M3);
+                v_cache_fp8[v_cache_idx] = __nv_cvt_float_to_fp8(0.0f, __NV_SATFINITE);
             }
         }
     }
