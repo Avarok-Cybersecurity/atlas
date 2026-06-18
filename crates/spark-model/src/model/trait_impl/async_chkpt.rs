@@ -225,12 +225,12 @@ impl TransformerModel {
     ///   `h_state_intermediates[num_accepted - 1]` (state after the last
     ///   accepted token) → `h_state` (+ conv intermediate).
     ///
-    /// Stage 1 keeps the legacy dual-buffer `pre_verify_copy_async` active,
-    /// so this also mirrors the committed state into `*_checkpoint`. That
-    /// keeps the next `pre_verify_copy_async` (`checkpoint → h_state`) a
-    /// byte-identical copy, i.e. a harmless no-op, so the flag is fully
-    /// isolatable and lossless vs the legacy commit. Stage 2 removes both
-    /// the pre-verify copy and this checkpoint mirror.
+    /// The verify path runs the kernel directly on the canonical `h_state`
+    /// (the `pre_verify_copy_async` scratch-seed is skipped under the flag),
+    /// so on a full accept the live state is already committed and on a
+    /// partial accept the single index-select below leaves `h_state`
+    /// canonical for every successor (bootstrap decode, gate-flip decode,
+    /// concurrent request). No `*_checkpoint` write is needed.
     ///
     /// Runs on `secondary_stream`; pair with `sync_secondary`.
     pub(super) fn commit_accepted_prefix_dispatch(
@@ -240,6 +240,12 @@ impl TransformerModel {
         k: usize,
     ) -> Result<()> {
         use crate::layer::SsmLayerState;
+
+        // Full accept: the verify kernel's final h_state/conv_state is
+        // already the canonical committed state — nothing to do.
+        if num_accepted == k {
+            return Ok(());
+        }
 
         let stream = self.secondary_stream;
         let mut ssm_layer_idx = 0usize;
@@ -259,32 +265,18 @@ impl TransformerModel {
             let h_bytes = nv * vd * kd * 4;
             let conv_bytes = (nk * kd * 2 + nv * vd) * self.config.linear_conv_kernel_dim * 4;
 
-            if num_accepted < k {
-                // Partial accept: rewind live state to the last accepted
-                // token's intermediate (state after token `num_accepted-1`).
-                let slot = seq.slot_idx;
-                let inter_idx = num_accepted - 1;
-                let h_inter = self.ssm_pool.h_intermediate(ssm_layer_idx, slot, inter_idx);
-                let conv_inter = self
-                    .ssm_pool
-                    .conv_intermediate(ssm_layer_idx, slot, inter_idx);
-                self.gpu
-                    .copy_d2d_async(h_inter, ssm.h_state, h_bytes, stream)?;
-                self.gpu
-                    .copy_d2d_async(conv_inter, ssm.conv_state, conv_bytes, stream)?;
-            }
-            // else full accept: kernel's final h_state is already canonical.
-
-            // Stage 1 only: keep `*_checkpoint` mirrored to the committed
-            // live state so the still-present pre_verify copy is a no-op.
-            if let Some(h_ckpt) = ssm.h_state_checkpoint {
-                self.gpu
-                    .copy_d2d_async(ssm.h_state, h_ckpt, h_bytes, stream)?;
-            }
-            if let Some(conv_ckpt) = ssm.conv_state_checkpoint {
-                self.gpu
-                    .copy_d2d_async(ssm.conv_state, conv_ckpt, conv_bytes, stream)?;
-            }
+            // Partial accept: rewind live state to the last accepted token's
+            // intermediate (state after token `num_accepted-1`).
+            let slot = seq.slot_idx;
+            let inter_idx = num_accepted - 1;
+            let h_inter = self.ssm_pool.h_intermediate(ssm_layer_idx, slot, inter_idx);
+            let conv_inter = self
+                .ssm_pool
+                .conv_intermediate(ssm_layer_idx, slot, inter_idx);
+            self.gpu
+                .copy_d2d_async(h_inter, ssm.h_state, h_bytes, stream)?;
+            self.gpu
+                .copy_d2d_async(conv_inter, ssm.conv_state, conv_bytes, stream)?;
 
             ssm_layer_idx += 1;
         }
