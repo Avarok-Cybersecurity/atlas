@@ -155,9 +155,16 @@ pub fn step_verify_k2(
         a.last_token = v1;
 
         // F62 (2026-04-27): SpecMamba commit. Full accept (num_accepted=k=2):
-        // copy verify scratch → canonical state.
-        if let Err(e) = model.commit_verify_state_async(&mut a.seq, 2, 2) {
-            tracing::error!("commit_verify_state_async (accept): {e:#}");
+        // copy verify scratch → canonical state. Item #2: when the
+        // STree-style in-place commit is active, the kernel already wrote
+        // the canonical h_state, so the commit is an index-select / no-op.
+        let commit = if model.ssm_inplace_verify() {
+            model.commit_accepted_prefix(&mut a.seq, 2, 2)
+        } else {
+            model.commit_verify_state_async(&mut a.seq, 2, 2)
+        };
+        if let Err(e) = commit {
+            tracing::error!("commit verify state (accept): {e:#}");
             return;
         }
         if let Err(e) = model.save_hidden_for_mtp(1, 0) {
@@ -208,8 +215,14 @@ pub fn step_verify_k2(
         // F62 (2026-04-27): SpecMamba commit. K=2 reject means
         // num_accepted=1 (last_token is always accepted): copy
         // intermediate[0] → canonical. Verify scratch is discarded.
-        if let Err(e) = model.commit_verify_state_async(&mut a.seq, 1, 2) {
-            tracing::error!("commit_verify_state_async (reject): {e:#}");
+        // Item #2: in-place commit rewinds live h_state to intermediate[0].
+        let commit = if model.ssm_inplace_verify() {
+            model.commit_accepted_prefix(&mut a.seq, 1, 2)
+        } else {
+            model.commit_verify_state_async(&mut a.seq, 1, 2)
+        };
+        if let Err(e) = commit {
+            tracing::error!("commit verify state (reject): {e:#}");
             a.finished = true;
             return;
         }
