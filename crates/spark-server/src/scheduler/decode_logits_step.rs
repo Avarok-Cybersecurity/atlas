@@ -443,8 +443,20 @@ pub fn process_decode_logits(
         const POST_THINK_MIN_CONTENT: u32 = 16;
         let post_think_content_tokens =
             (a.output_tokens.len() as u32).saturating_sub(a.thinking_tokens);
+        // Tools-armed scoping (the narrowing the 2026-05-24 comment above
+        // describes but was never coded into this branch): the post-think guard
+        // exists to give the model room to OPEN a `<tool_call>` after the
+        // watchdog force-closes `</think>` mid-narration. That is only relevant
+        // when tools are armed for this turn. On a plain (no-tool) thinking turn
+        // a short post-`</think>` answer ("2+2"→"4", "say hello"→"Hello") plus
+        // its `<|im_end|>`/`<|endoftext|>` IS the expected output, so the guard
+        // must NOT fire — otherwise the legitimate EOS is discarded and the
+        // model runs on into chat-template scaffold (`\nuser\nassistant`). The
+        // MTP-verify emit path (`emit_step.rs`) has no such guard, which is why
+        // MTP-on stopped here while MTP-off leaked; this restores parity.
+        let tools_armed = a.require_tool_call || a.tool_request;
         let post_think_suppresses_eos =
-            a.think_ended && post_think_content_tokens < POST_THINK_MIN_CONTENT;
+            tools_armed && a.think_ended && post_think_content_tokens < POST_THINK_MIN_CONTENT;
         let suppress_eos = grammar_suppresses_eos
             || legacy_suppresses_eos
             || min_tokens_suppresses
