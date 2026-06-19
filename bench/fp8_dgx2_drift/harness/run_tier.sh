@@ -203,10 +203,39 @@ run_one() {
   else
     # opencode: --dir sets opencode's working directory; the model sees only
     # "current working directory" in the prompt, never the absolute path.
-    ATLAS_HARNESS_PORT=${HPORT:-3001} \
-      env ${extra_env} \
-      timeout "${OC_TIMEOUT:-360}" opencode run --dangerously-skip-permissions --dir "${TARGET}" --format json \
-      "${PROMPT}" > "${OC_JSON}" 2> "${OC_ERR}" || true
+    #
+    # Empty-session retry: opencode occasionally returns a transient empty
+    # session (zero tool_use events, zero files written) — a client-side glitch
+    # that has nothing to do with model quality. Scoring such a session as a
+    # model failure is wrong, so detect it (no write tool_use AND no files on
+    # disk) and re-run the opencode invocation up to OC_EMPTY_RETRIES times.
+    # A real model run always emits at least the write that creates Cargo.toml.
+    local _attempt=0
+    local _max_empty="${OC_EMPTY_RETRIES:-2}"
+    while :; do
+      rm -rf "${TARGET}"; mkdir -p "${TARGET}"
+      ATLAS_HARNESS_PORT=${HPORT:-3001} \
+        env ${extra_env} \
+        timeout "${OC_TIMEOUT:-360}" opencode run --dangerously-skip-permissions --dir "${TARGET}" --format json \
+        "${PROMPT}" > "${OC_JSON}" 2> "${OC_ERR}" || true
+      # An empty session = no tool_use events AND no real files on disk.
+      # `grep -c` exits 1 with "0" on no-match; piping through `tr -d` and
+      # defaulting keeps _tool_uses a single clean integer for the -gt test.
+      local _tool_uses _real_files
+      _tool_uses=$(grep -c '"type":"tool_use"' "${OC_JSON}" 2>/dev/null | tr -d '[:space:]')
+      _tool_uses="${_tool_uses:-0}"
+      _real_files=$(find "${TARGET}" -type f -not -path '*/.git/*' 2>/dev/null | wc -l | tr -d '[:space:]')
+      _real_files="${_real_files:-0}"
+      if [[ "${_tool_uses}" -gt 0 || "${_real_files}" -gt 0 ]]; then
+        break
+      fi
+      _attempt=$(( _attempt + 1 ))
+      if [[ "${_attempt}" -gt "${_max_empty}" ]]; then
+        echo "    [empty-session] run ${i}: still empty after ${_max_empty} retries — scoring as-is" >&2
+        break
+      fi
+      echo "    [empty-session] run ${i}: 0 tool_calls + 0 files (transient opencode glitch) — retry ${_attempt}/${_max_empty}" >&2
+    done
   fi
   END_TS=$(date +%s.%N)
 
