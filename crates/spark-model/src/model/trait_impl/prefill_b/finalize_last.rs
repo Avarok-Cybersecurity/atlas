@@ -93,6 +93,20 @@ impl TransformerModel {
             );
         }
 
+        if std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true") {
+            self.gpu.synchronize(stream)?;
+            let (vals, norm) = self.readback_bf16(normed, h)?;
+            let max_abs = vals.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+            tracing::info!(
+                "DIAG V4-prefill final_norm: norm={norm:.4} max={max_abs:.4} first4=[{:.4},{:.4},{:.4},{:.4}] n={}",
+                vals[0],
+                vals[1],
+                vals[2],
+                vals[3],
+                vals.len()
+            );
+        }
+
         // Per-layer divergence dump: final-norm output (input to lm_head).
         if let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP")
             && !dir.is_empty()
@@ -110,6 +124,28 @@ impl TransformerModel {
 
         // ── 7. LM head on last token → logits ──
         self.lm_head(normed, stream)?;
+
+        if std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true") {
+            self.gpu.synchronize(stream)?;
+            let n_logits = self.config.vocab_size;
+            let mut buf = vec![0u8; n_logits * 2];
+            if self.gpu.copy_d2h(self.buffers.logits(), &mut buf).is_ok() {
+                let vals: Vec<f32> = buf
+                    .chunks_exact(2)
+                    .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+                    .collect();
+                let norm: f32 = vals.iter().map(|v| v * v).sum::<f32>().sqrt();
+                let max_abs: f32 = vals.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+                tracing::info!(
+                    "DIAG V4-prefill lm_head: norm={norm:.4} max={max_abs:.4} first4=[{:.4},{:.4},{:.4},{:.4}] n={}",
+                    vals[0],
+                    vals[1],
+                    vals[2],
+                    vals[3],
+                    vals.len()
+                );
+            }
+        }
 
         // Per-layer divergence dump: full logits vector + top-10 token IDs.
         if let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP")

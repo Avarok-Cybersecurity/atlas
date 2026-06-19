@@ -510,6 +510,20 @@ impl Qwen3AttentionLayer {
                 stream,
                 &format!("V4-prefill L{} hc_pre-attn", self.attn_layer_idx),
             );
+            super::diag_norm_f32(
+                ctx.gpu,
+                post,
+                (n as usize) * (hc_mult as usize),
+                stream,
+                &format!("V4-prefill L{} post-attn", self.attn_layer_idx),
+            );
+            super::diag_norm_f32(
+                ctx.gpu,
+                comb,
+                (n as usize) * (hc_mult as usize) * (hc_mult as usize),
+                stream,
+                &format!("V4-prefill L{} comb-attn", self.attn_layer_idx),
+            );
         }
 
         let normed = ctx.buffers.norm_output();
@@ -657,6 +671,16 @@ impl Qwen3AttentionLayer {
                 stream,
                 &format!("V4-prefill L{} hc_post-attn", self.attn_layer_idx),
             );
+            super::diag_norm(
+                ctx.gpu,
+                hc_streams,
+                (n as usize) * (hc_mult as usize) * (h as usize),
+                stream,
+                &format!(
+                    "V4-prefill L{} hc_post-attn ALL_STREAMS",
+                    self.attn_layer_idx
+                ),
+            );
         }
 
         // ── FFN sublayer ──
@@ -685,6 +709,20 @@ impl Qwen3AttentionLayer {
                 h as usize,
                 stream,
                 &format!("V4-prefill L{} hc_pre-ffn", self.attn_layer_idx),
+            );
+            super::diag_norm_f32(
+                ctx.gpu,
+                post,
+                (n as usize) * (hc_mult as usize),
+                stream,
+                &format!("V4-prefill L{} post-ffn", self.attn_layer_idx),
+            );
+            super::diag_norm_f32(
+                ctx.gpu,
+                comb,
+                (n as usize) * (hc_mult as usize) * (hc_mult as usize),
+                stream,
+                &format!("V4-prefill L{} comb-ffn", self.attn_layer_idx),
             );
         }
 
@@ -742,6 +780,16 @@ impl Qwen3AttentionLayer {
                 stream,
                 &format!("V4-prefill L{} hc_post-ffn", self.attn_layer_idx),
             );
+            super::diag_norm(
+                ctx.gpu,
+                hc_streams,
+                (n as usize) * (hc_mult as usize) * (h as usize),
+                stream,
+                &format!(
+                    "V4-prefill L{} hc_post-ffn ALL_STREAMS",
+                    self.attn_layer_idx
+                ),
+            );
         }
 
         if is_last_layer && let Some(ref head) = hc.head {
@@ -760,6 +808,20 @@ impl Qwen3AttentionLayer {
                 hc.hc_eps,
                 stream,
             )?;
+            if diag_this {
+                super::diag_norm(
+                    ctx.gpu,
+                    hidden,
+                    (n as usize) * (h as usize),
+                    stream,
+                    &format!("V4-prefill L{} hc_head", self.attn_layer_idx),
+                );
+            }
+        } else if is_last_layer {
+            tracing::warn!(
+                "V4-prefill L{}: hc_head SKIPPED (no head weights)",
+                self.attn_layer_idx
+            );
         }
 
         Ok(())

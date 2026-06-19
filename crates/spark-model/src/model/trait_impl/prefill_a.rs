@@ -474,8 +474,52 @@ impl TransformerModel {
             stream,
         )?;
 
+        if std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true") {
+            let _ = self.gpu.synchronize(stream);
+            let hsize = self.config.hidden_size;
+            let mut buf = vec![0u8; hsize * 2];
+            if self.gpu.copy_d2h(normed, &mut buf).is_ok() {
+                let vals: Vec<f32> = buf
+                    .chunks_exact(2)
+                    .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+                    .collect();
+                let norm: f32 = vals.iter().map(|v| v * v).sum::<f32>().sqrt();
+                let max_abs: f32 = vals.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+                tracing::info!(
+                    "DIAG V4-prefillA final_norm: norm={norm:.4} max={max_abs:.4} first4=[{:.4},{:.4},{:.4},{:.4}] n={}",
+                    vals[0],
+                    vals[1],
+                    vals[2],
+                    vals[3],
+                    vals.len()
+                );
+            }
+        }
+
         // ── 6. LM head on last token → logits ──
         self.lm_head(normed, stream)?;
+
+        if std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true") {
+            let _ = self.gpu.synchronize(stream);
+            let n_logits = self.config.vocab_size;
+            let mut buf = vec![0u8; n_logits * 2];
+            if self.gpu.copy_d2h(self.buffers.logits(), &mut buf).is_ok() {
+                let vals: Vec<f32> = buf
+                    .chunks_exact(2)
+                    .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+                    .collect();
+                let norm: f32 = vals.iter().map(|v| v * v).sum::<f32>().sqrt();
+                let max_abs: f32 = vals.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+                tracing::info!(
+                    "DIAG V4-prefillA lm_head: norm={norm:.4} max={max_abs:.4} first4=[{:.4},{:.4},{:.4},{:.4}] n={}",
+                    vals[0],
+                    vals[1],
+                    vals[2],
+                    vals[3],
+                    vals.len()
+                );
+            }
+        }
 
         // ── 7. Update sequence state ──
         seq.tokens.extend_from_slice(tokens);

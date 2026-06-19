@@ -131,6 +131,8 @@ impl Qwen3AttentionLayer {
         let hc_streams = ctx.buffers.hc_streams();
         let post = ctx.buffers.hc_post();
         let comb = ctx.buffers.hc_comb();
+        let diag_this =
+            std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
 
         if is_first_layer {
             ops::hc_expand(
@@ -164,6 +166,29 @@ impl Qwen3AttentionLayer {
             hc.hc_eps,
             stream,
         )?;
+        if diag_this {
+            super::diag_norm(
+                ctx.gpu,
+                c.hidden,
+                (n as usize) * (h as usize),
+                stream,
+                &format!("V4-msdecode L{} hc_pre-attn", self.attn_layer_idx),
+            );
+            super::diag_norm_f32(
+                ctx.gpu,
+                post,
+                (n as usize) * (hc_mult as usize),
+                stream,
+                &format!("V4-msdecode L{} post-attn", self.attn_layer_idx),
+            );
+            super::diag_norm_f32(
+                ctx.gpu,
+                comb,
+                (n as usize) * (hc_mult as usize) * (hc_mult as usize),
+                stream,
+                &format!("V4-msdecode L{} comb-attn", self.attn_layer_idx),
+            );
+        }
         ops::rms_norm(
             ctx.gpu,
             self.rms_norm_k,
@@ -212,6 +237,25 @@ impl Qwen3AttentionLayer {
             hc_mult,
             stream,
         )?;
+        if diag_this {
+            super::diag_norm(
+                ctx.gpu,
+                hc_streams,
+                h as usize,
+                stream,
+                &format!("V4-msdecode L{} hc_post-attn", self.attn_layer_idx),
+            );
+            super::diag_norm(
+                ctx.gpu,
+                hc_streams,
+                (n as usize) * (hc_mult as usize) * (h as usize),
+                stream,
+                &format!(
+                    "V4-msdecode L{} hc_post-attn ALL_STREAMS",
+                    self.attn_layer_idx
+                ),
+            );
+        }
 
         // Standalone attention (no FFN)
         if self.ffn.is_none() {
@@ -231,6 +275,20 @@ impl Qwen3AttentionLayer {
                     hc.hc_eps,
                     stream,
                 )?;
+                if diag_this {
+                    super::diag_norm(
+                        ctx.gpu,
+                        c.hidden,
+                        (n as usize) * (h as usize),
+                        stream,
+                        &format!("V4-msdecode L{} hc_head", self.attn_layer_idx),
+                    );
+                }
+            } else if is_last_layer {
+                tracing::warn!(
+                    "V4-msdecode L{}: hc_head SKIPPED (no head weights)",
+                    self.attn_layer_idx
+                );
             }
             return Ok(());
         }
@@ -254,6 +312,29 @@ impl Qwen3AttentionLayer {
             hc.hc_eps,
             stream,
         )?;
+        if diag_this {
+            super::diag_norm(
+                ctx.gpu,
+                c.hidden,
+                (n as usize) * (h as usize),
+                stream,
+                &format!("V4-msdecode L{} hc_pre-ffn", self.attn_layer_idx),
+            );
+            super::diag_norm_f32(
+                ctx.gpu,
+                post,
+                (n as usize) * (hc_mult as usize),
+                stream,
+                &format!("V4-msdecode L{} post-ffn", self.attn_layer_idx),
+            );
+            super::diag_norm_f32(
+                ctx.gpu,
+                comb,
+                (n as usize) * (hc_mult as usize) * (hc_mult as usize),
+                stream,
+                &format!("V4-msdecode L{} comb-ffn", self.attn_layer_idx),
+            );
+        }
         ops::rms_norm(
             ctx.gpu,
             self.rms_norm_k,
@@ -287,6 +368,25 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         }
+        if diag_this {
+            super::diag_norm(
+                ctx.gpu,
+                hc_streams,
+                h as usize,
+                stream,
+                &format!("V4-msdecode L{} hc_post-ffn", self.attn_layer_idx),
+            );
+            super::diag_norm(
+                ctx.gpu,
+                hc_streams,
+                (n as usize) * (hc_mult as usize) * (h as usize),
+                stream,
+                &format!(
+                    "V4-msdecode L{} hc_post-ffn ALL_STREAMS",
+                    self.attn_layer_idx
+                ),
+            );
+        }
 
         if is_last_layer && let Some(ref head) = hc.head {
             ops::hc_head(
@@ -304,6 +404,20 @@ impl Qwen3AttentionLayer {
                 hc.hc_eps,
                 stream,
             )?;
+            if diag_this {
+                super::diag_norm(
+                    ctx.gpu,
+                    c.hidden,
+                    (n as usize) * (h as usize),
+                    stream,
+                    &format!("V4-msdecode L{} hc_head", self.attn_layer_idx),
+                );
+            }
+        } else if is_last_layer {
+            tracing::warn!(
+                "V4-msdecode L{}: hc_head SKIPPED (no head weights)",
+                self.attn_layer_idx
+            );
         }
 
         Ok(())
