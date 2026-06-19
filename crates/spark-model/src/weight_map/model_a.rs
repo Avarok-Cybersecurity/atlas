@@ -123,6 +123,40 @@ pub(crate) fn dense(store: &WeightStore, name: &str) -> Result<DenseWeight> {
     Ok(DenseWeight { weight: w.ptr })
 }
 
+/// Load a BF16 norm weight and subtract 1.0 from every element.
+///
+/// Atlas's `rms_norm` kernel uses the Qwen3-Next "offset-from-1" convention
+/// (`out = x * (1 + weight)`). Models with STANDARD RMSNorm (`out = x * weight`,
+/// e.g. DeepSeek-V4: `DeepseekV4RMSNorm` = T5LayerNorm) must pre-subtract 1.0 so
+/// the kernel computes `1 + (w - 1) = w`. Without this, every norm is scaled
+/// wrong (e.g. kv_norm 2.6x, attn_norm ~30x too large) → attention overflow.
+pub(crate) fn dense_minus_one(
+    store: &WeightStore,
+    name: &str,
+    gpu: &dyn GpuBackend,
+) -> Result<DenseWeight> {
+    let w = store.get(name)?;
+    let n = w.num_elements();
+    let mut bf16_buf = vec![0u8; n * 2];
+    gpu.copy_d2h(w.ptr, &mut bf16_buf)?;
+    let adjusted: Vec<u8> = bf16_buf
+        .chunks_exact(2)
+        .flat_map(|c| {
+            let bits = u16::from_le_bytes([c[0], c[1]]);
+            let v = f32::from_bits((bits as u32) << 16) - 1.0;
+            // round-to-nearest-even bf16 truncation
+            let u = v.to_bits();
+            let round_bit = (u >> 15) & 1;
+            let sticky = (u & 0x7FFF != 0) as u32;
+            let bf = ((u >> 16) as u16).wrapping_add((round_bit & (sticky | ((u >> 16) & 1))) as u16);
+            bf.to_le_bytes()
+        })
+        .collect();
+    let ptr = gpu.alloc(adjusted.len())?;
+    gpu.copy_h2d(&adjusted, ptr)?;
+    Ok(DenseWeight { weight: ptr })
+}
+
 /// Load a weight, auto-dequanting FP8 block-scaled to BF16 when needed.
 ///
 /// Used for models with mixed-precision layers — Qwen3.6's ViT, for

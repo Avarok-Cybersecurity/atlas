@@ -122,6 +122,11 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
         if let Some(nope_dim) = raw.get("qk_nope_head_dim").and_then(|v| v.as_u64()) {
             config.qk_nope_head_dim = nope_dim as usize;
         }
+        // Block-diagonal grouped O projection: n_heads*head_dim split into
+        // `o_groups` independent groups (see ModelConfig::o_groups).
+        if let Some(g) = raw.get("o_groups").and_then(|v| v.as_u64()) {
+            config.o_groups = g as usize;
+        }
     }
 
     // partial_rotary_factor for MLA: only the rope portion gets rotated

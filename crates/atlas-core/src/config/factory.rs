@@ -76,6 +76,7 @@ impl ModelConfig {
             kv_layer_dims: Vec::new(),
             q_lora_rank: 0,
             o_lora_rank: 0,
+            o_groups: 0,
             qk_nope_head_dim: 0,
             qk_rope_head_dim: 0,
             v_head_dim: 0,

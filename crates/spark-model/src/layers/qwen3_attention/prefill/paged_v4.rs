@@ -90,6 +90,19 @@ impl Qwen3AttentionLayer {
             q_lora,
             stream,
         )?;
+        // q_b_norm: per-head unweighted RMSNorm over head_dim (DeepSeek-V4),
+        // each of the n*nq head vectors renormalized to unit RMS before rope.
+        ops::rms_norm(
+            ctx.gpu,
+            self.rms_norm_k,
+            q_full,
+            &crate::weight_map::DenseWeight { weight: ctx.buffers.norm_unit_w() },
+            q_full,
+            n * nq,
+            hd_mla,
+            eps,
+            stream,
+        )?;
 
         // ── 2. Direct KV projection (V4-Flash: K=V, no absorption) ──
         // Layout in qkv_output: [Q | K | V]  (mirrors decode path)
@@ -106,6 +119,19 @@ impl Qwen3AttentionLayer {
             n,
             kv_lora,
             h,
+            stream,
+        )?;
+        // kv_norm: weighted RMSNorm over each token's kv latent BEFORE rope
+        // (DeepSeek-V4: kv = kv_norm(kv_proj(h))). n*nkv rows of kv_lora dims.
+        ops::rms_norm(
+            ctx.gpu,
+            self.rms_norm_k,
+            k_out,
+            &mla.kv_a_norm,
+            k_out,
+            n * nkv,
+            kv_lora,
+            eps,
             stream,
         )?;
         // Copy K → V (V4-Flash: K and V share the same projection output)
@@ -145,7 +171,9 @@ impl Qwen3AttentionLayer {
         )?;
         ops::rope_yarn(
             ctx.gpu,
-            self.rope_yarn_k,
+            // DeepSeek-V4 INTERLEAVED RoPE (rope_interleave=True): adjacent pairs
+            // (2i, 2i+1), matching the HF reference. See attention_forward_v4.rs.
+            self.rope_yarn_interleaved_k,
             q_rope_tmp,
             k_rope_tmp,
             meta.positions,
@@ -263,20 +291,38 @@ impl Qwen3AttentionLayer {
             ctx.graph_capture,
         )?;
 
-        // ── 7. Grouped low-rank O projection ──
-        let o_latent = ctx.buffers.norm_output();
+        // ── 7. Grouped low-rank O projection (block-diagonal wo_a → wo_b) ──
+        // wo_a is block-diagonal over o_groups (DeepseekV4GroupedLinear): each
+        // group_in slice of the attention output projects independently to o_lora,
+        // giving an o_groups*o_lora latent that wo_b mixes back to hidden_size.
+        // Per-token×group GEMVs avoid the strided-input limitation of dense_gemm;
+        // wo_b stays a single GEMM since o_latent is contiguous [n, latent_dim].
+        let o_groups = ctx.config.o_groups.max(1) as u32;
+        let group_in = (nq * hd_mla) / o_groups;
+        let latent_dim = o_groups * o_lora;
+        let o_latent = ctx.buffers.o_latent();
         let o_out = ctx.buffers.qkv_output();
-        ops::dense_gemm(
-            ctx.gpu,
-            self.dense_gemm_k,
-            attn_out,
-            &mla.wo_a,
-            o_latent,
-            n,
-            o_lora,
-            nq * hd_mla,
-            stream,
-        )?;
+        for t in 0..n {
+            for g in 0..o_groups {
+                let in_g = attn_out.offset(((t * nq * hd_mla) + g * group_in) as usize * 2);
+                let w_g = crate::weight_map::DenseWeight {
+                    weight: mla.wo_a.weight.offset(
+                        (g as usize) * (o_lora as usize) * (group_in as usize) * 2,
+                    ),
+                };
+                let out_g = o_latent.offset(((t * latent_dim) + g * o_lora) as usize * 2);
+                ops::dense_gemv(
+                    ctx.gpu,
+                    self.dense_gemv_k,
+                    in_g,
+                    &w_g,
+                    out_g,
+                    o_lora,
+                    group_in,
+                    stream,
+                )?;
+            }
+        }
         ops::dense_gemm(
             ctx.gpu,
             self.dense_gemm_k,
@@ -285,7 +331,7 @@ impl Qwen3AttentionLayer {
             o_out,
             n,
             h,
-            o_lora,
+            latent_dim,
             stream,
         )?;
 

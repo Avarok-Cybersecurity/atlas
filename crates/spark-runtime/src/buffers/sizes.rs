@@ -25,6 +25,12 @@ pub struct BufferSizes {
     pub expert_up_out: usize,
     pub expert_down_out: usize,
     pub splitk_workspace: usize,
+    /// Grouped O-projection latent: `[M, o_groups*o_lora_rank]` BF16 (V4-Flash).
+    /// 256 (placeholder) when `o_groups == 0`.
+    pub o_latent: usize,
+    /// Zero-filled BF16 weight (length max_dim) for unweighted RMSNorm under the
+    /// offset-from-1 kernel convention (scale = 1+weight → 1.0). DeepSeek-V4 q_b_norm.
+    pub norm_unit_w: usize,
     /// HC residual streams: `[M, hc_mult, hidden]` BF16 (DeepSeek-V4 mHC).
     /// 256 (placeholder) when `hc_mult == 0`.
     pub hc_streams: usize,
@@ -214,6 +220,10 @@ impl BufferSizes {
             expert_up_out,
             expert_down_out,
             splitk_workspace,
+            // Grouped O-projection latent (V4-Flash): [M, o_groups*o_lora_rank].
+            o_latent: (m * config.o_groups * config.o_lora_rank * bf16).max(256),
+            // Zero-filled weight for unweighted RMSNorm (q_b_norm).
+            norm_unit_w: max_dim * bf16,
             // HC buffers: only allocated for DeepSeek-V4 (hc_mult > 0).
             hc_streams: if config.hc_mult > 0 {
                 m * config.hc_mult * h * bf16

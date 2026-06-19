@@ -63,6 +63,11 @@ pub struct BufferArena {
     expert_down_out: DevicePtr,
     /// Split-K decode attention workspace: partials from split CTAs (F32).
     splitk_workspace: DevicePtr,
+    /// Grouped O-projection latent: [M, o_groups*o_lora_rank] BF16 (V4-Flash).
+    o_latent: DevicePtr,
+    /// Zero-filled BF16 weight (max_dim) for unweighted RMSNorm under the
+    /// offset-from-1 kernel convention (scale = 1+weight → 1.0). Used by q_b_norm.
+    norm_unit_w: DevicePtr,
     /// HC residual streams: [M, hc_mult, hidden] BF16 (DeepSeek-V4 mHC).
     hc_streams: DevicePtr,
     /// HC `post` mixing weights: [M, hc_mult] F32.
@@ -104,6 +109,12 @@ impl BufferArena {
         let expert_up_out = gpu.alloc(sizes.expert_up_out)?;
         let expert_down_out = gpu.alloc(sizes.expert_down_out)?;
         let splitk_workspace = gpu.alloc(sizes.splitk_workspace)?;
+        let o_latent = gpu.alloc(sizes.o_latent)?;
+        // Zero-filled "weight" for unweighted RMSNorm under the offset-from-1
+        // convention used by the rms_norm kernel (scale = 1 + weight). Weight = 0
+        // → scale = 1.0, i.e. a pure normalize (DeepSeek-V4 q_b_norm).
+        let norm_unit_w = gpu.alloc(sizes.norm_unit_w)?;
+        gpu.memset(norm_unit_w, 0, sizes.norm_unit_w)?;
         let hc_streams = gpu.alloc(sizes.hc_streams)?;
         let hc_post = gpu.alloc(sizes.hc_post)?;
         let hc_comb = gpu.alloc(sizes.hc_comb)?;
@@ -136,6 +147,8 @@ impl BufferArena {
             expert_up_out,
             expert_down_out,
             splitk_workspace,
+            o_latent,
+            norm_unit_w,
             hc_streams,
             hc_post,
             hc_comb,
@@ -205,6 +218,14 @@ impl BufferArena {
     /// Split-K decode attention workspace (F32 partials).
     pub fn splitk_workspace(&self) -> DevicePtr {
         self.splitk_workspace
+    }
+    /// Grouped O-projection latent [M, o_groups*o_lora_rank] BF16 (V4-Flash).
+    pub fn o_latent(&self) -> DevicePtr {
+        self.o_latent
+    }
+    /// All-ones BF16 vector (max_dim) — weight for unweighted RMSNorm (q_b_norm).
+    pub fn norm_unit_w(&self) -> DevicePtr {
+        self.norm_unit_w
     }
     /// HC residual streams [M, hc_mult, hidden] BF16 (DeepSeek-V4 mHC).
     pub fn hc_streams(&self) -> DevicePtr {

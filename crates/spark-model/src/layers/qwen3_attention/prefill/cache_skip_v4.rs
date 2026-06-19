@@ -49,6 +49,33 @@ impl Qwen3AttentionLayer {
             std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
         let diag_this = self.attn_layer_idx == 0 || diag_all;
 
+        // Per-token NaN scan of `normed` (post hc_pre + input_norm) — localizes
+        // whether the K-FULL NaN originates upstream (hc_pre) or in the kv proj.
+        if diag_this {
+            let _ = ctx.gpu.synchronize(stream);
+            let hh = h as usize;
+            let mut buf = vec![0u8; (n as usize) * hh * 2];
+            if ctx.gpu.copy_d2h(normed, &mut buf).is_ok() {
+                let mut bad_tok = -1i64;
+                for t in 0..n as usize {
+                    let off = t * hh * 2;
+                    if (0..hh).any(|i| {
+                        let c = &buf[off + i * 2..off + i * 2 + 2];
+                        let v = f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16);
+                        !v.is_finite()
+                    }) {
+                        bad_tok = t as i64;
+                        break;
+                    }
+                }
+                tracing::info!(
+                    "DIAG V4-prefill L{} NORMED first non-finite (nan/inf) token = {}",
+                    self.attn_layer_idx,
+                    bad_tok
+                );
+            }
+        }
+
         // ── 1. Q latent → norm → expand ──
         let q_latent = ctx.buffers.ssm_ba();
         if use_tc {
@@ -108,13 +135,34 @@ impl Qwen3AttentionLayer {
         ctx.gpu
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: q_full gemm sync failed: {e}"))?;
+        // q_b_norm: per-head unweighted RMSNorm over head_dim (DeepSeek-V4),
+        // each of the n*nq head vectors renormalized to unit RMS before rope.
+        ops::rms_norm(
+            ctx.gpu,
+            self.rms_norm_k,
+            q_full,
+            &crate::weight_map::DenseWeight { weight: ctx.buffers.norm_unit_w() },
+            q_full,
+            n * nq,
+            hd_mla,
+            eps,
+            stream,
+        )?;
         if diag_this {
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 q_full,
                 (nq * hd_mla) as usize,
                 stream,
-                &format!("V4-prefill L{} Q after proj", self.attn_layer_idx),
+                &format!("V4-prefill L{} Q after q_b_norm token0", self.attn_layer_idx),
+            );
+            let q_last_off = ((n - 1) * nq * hd_mla * 2) as usize;
+            super::super::trait_impl::diag_norm(
+                ctx.gpu,
+                q_full.offset(q_last_off),
+                (nq * hd_mla) as usize,
+                stream,
+                &format!("V4-prefill L{} Q after q_b_norm last", self.attn_layer_idx),
             );
         }
 
@@ -125,7 +173,13 @@ impl Qwen3AttentionLayer {
         let k_out = q_full.offset((n * q_dim) as usize * 2);
         let v_out = k_out.offset((n * kv_dim) as usize * 2);
         let kv_latent = ctx.buffers.expert_gate_out(); // Capture latent for cache assembly
-        if use_tc {
+        // NOTE: dense_gemm_tc produces NON-DETERMINISTIC NaN for the wkv projection
+        // here (varying token position across identical runs) — a latent TC-kernel
+        // bug exposed once the upstream norms were corrected. Use the scalar
+        // dense_gemm path for wkv until the TC kernel is fixed. wq_a above is
+        // unaffected (TC output is correct there).
+        #[allow(clippy::overly_complex_bool_expr)]
+        if false && use_tc {
             ops::dense_gemm_tc(
                 ctx.gpu,
                 self.dense_gemm_tc_k,
@@ -150,6 +204,49 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         }
+        if diag_this {
+            let _ = ctx.gpu.synchronize(stream);
+            let kl = kv_lora as usize;
+            let mut wbuf = vec![0u8; kl * 2];
+            let _ = ctx.gpu.copy_d2h(mla.kv_a_norm.weight, &mut wbuf);
+            let wnan = (0..kl).any(|i| {
+                let c = &wbuf[i * 2..i * 2 + 2];
+                f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16).is_nan()
+            });
+            let mut lbuf = vec![0u8; (n as usize) * kl * 2];
+            let mut lnan = -1i64;
+            if ctx.gpu.copy_d2h(kv_latent, &mut lbuf).is_ok() {
+                for t in 0..n as usize {
+                    if (0..kl).any(|i| {
+                        let c = &lbuf[t * kl * 2 + i * 2..t * kl * 2 + i * 2 + 2];
+                        f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16).is_nan()
+                    }) {
+                        lnan = t as i64;
+                        break;
+                    }
+                }
+            }
+            tracing::info!(
+                "DIAG V4-prefill L{} PRE-kvnorm: kv_a_norm has NaN={}, kv_latent first NaN token={}",
+                self.attn_layer_idx,
+                wnan,
+                lnan
+            );
+        }
+        // kv_norm: weighted RMSNorm over each token's kv latent BEFORE rope and
+        // before cache assembly (DeepSeek-V4: kv = kv_norm(kv_proj(h))). Applied to
+        // kv_latent so the cached latent, k_out and v_out are all normalized.
+        ops::rms_norm(
+            ctx.gpu,
+            self.rms_norm_k,
+            kv_latent,
+            &mla.kv_a_norm,
+            kv_latent,
+            n * nkv,
+            kv_lora,
+            eps,
+            stream,
+        )?;
         // Copy kv_latent → k_out (for attention computation)
         ctx.gpu
             .copy_d2d_async(kv_latent, k_out, n as usize * kv_lora as usize * 2, stream)?;
@@ -157,6 +254,14 @@ impl Qwen3AttentionLayer {
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: k_out gemm sync failed: {e}"))?;
         if diag_this {
+            // Full-buffer K NaN/inf check across ALL n tokens (locates a bad token).
+            super::super::trait_impl::diag_norm(
+                ctx.gpu,
+                k_out,
+                (n * kv_lora) as usize,
+                stream,
+                &format!("V4-prefill L{} K FULL ({} tokens)", self.attn_layer_idx, n),
+            );
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 k_out,
@@ -211,7 +316,9 @@ impl Qwen3AttentionLayer {
         )?;
         ops::rope_yarn(
             ctx.gpu,
-            self.rope_yarn_k,
+            // DeepSeek-V4 INTERLEAVED RoPE (rope_interleave=True): adjacent pairs
+            // (2i, 2i+1), matching the HF reference. See attention_forward_v4.rs.
+            self.rope_yarn_interleaved_k,
             q_rope_tmp,
             k_rope_tmp,
             meta.positions,
@@ -386,23 +493,39 @@ impl Qwen3AttentionLayer {
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: write_kv_cache sync failed: {e}"))?;
 
-        // ── 6. Grouped low-rank O projection ──
-        let o_latent = ctx.buffers.norm_output();
+        // ── 6. Grouped low-rank O projection (block-diagonal wo_a → wo_b) ──
+        // wo_a is block-diagonal over o_groups (DeepseekV4GroupedLinear); see
+        // decode/attention_forward_v4.rs. Per-token×group GEMVs avoid the
+        // strided-input limitation of dense_gemm; wo_b stays one GEMM.
+        let o_groups = ctx.config.o_groups.max(1) as u32;
+        let group_in = (nq * hd_mla) / o_groups;
+        let latent_dim = o_groups * o_lora;
+        let o_latent = ctx.buffers.o_latent();
         let o_out = ctx.buffers.qkv_output();
-        ops::dense_gemm(
-            ctx.gpu,
-            self.dense_gemm_k,
-            attn_out,
-            &mla.wo_a,
-            o_latent,
-            n,
-            o_lora,
-            nq * hd_mla,
-            stream,
-        )?;
+        for t in 0..n {
+            for g in 0..o_groups {
+                let in_g = attn_out.offset(((t * nq * hd_mla) + g * group_in) as usize * 2);
+                let w_g = crate::weight_map::DenseWeight {
+                    weight: mla.wo_a.weight.offset(
+                        (g as usize) * (o_lora as usize) * (group_in as usize) * 2,
+                    ),
+                };
+                let out_g = o_latent.offset(((t * latent_dim) + g * o_lora) as usize * 2);
+                ops::dense_gemv(
+                    ctx.gpu,
+                    self.dense_gemv_k,
+                    in_g,
+                    &w_g,
+                    out_g,
+                    o_lora,
+                    group_in,
+                    stream,
+                )?;
+            }
+        }
         ctx.gpu
             .synchronize(stream)
-            .map_err(|e| anyhow::anyhow!("V4 attn: wo_a gemm sync failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("V4 attn: wo_a grouped gemv sync failed: {e}"))?;
         ops::dense_gemm(
             ctx.gpu,
             self.dense_gemm_k,
@@ -411,7 +534,7 @@ impl Qwen3AttentionLayer {
             o_out,
             n,
             h,
-            o_lora,
+            latent_dim,
             stream,
         )?;
         ctx.gpu

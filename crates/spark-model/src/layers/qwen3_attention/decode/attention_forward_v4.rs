@@ -129,13 +129,28 @@ impl Qwen3AttentionLayer {
                 )
             }
         })?;
+        // q_b_norm: per-head unweighted RMSNorm over head_dim (DeepSeek-V4).
+        // Reference (DeepseekV4UnweightedRMSNorm) renormalizes each of nq heads'
+        // hd-dim Q vector to unit RMS BEFORE rope. Missing this makes Q ~sqrt(hd)x
+        // too small → near-flat softmax → incoherent output. Weight = all-ones.
+        ops::rms_norm(
+            ctx.gpu,
+            self.rms_norm_k,
+            q_out,
+            &crate::weight_map::DenseWeight { weight: ctx.buffers.norm_unit_w() },
+            q_out,
+            nq,
+            hd,
+            eps,
+            stream,
+        )?;
         if diag_this {
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
                 q_out,
                 q_dim as usize,
                 stream,
-                &format!("V4-decode L{} Q after proj", self.attn_layer_idx),
+                &format!("V4-decode L{} Q after q_b_norm", self.attn_layer_idx),
             );
         }
 
@@ -166,6 +181,20 @@ impl Qwen3AttentionLayer {
                 )
             }
         })?;
+        // kv_norm: weighted RMSNorm over the kv latent BEFORE rope (DeepSeek-V4
+        // reference: kv = kv_norm(kv_proj(h))). Missing this left K ~8x too large
+        // → attention score overflow → NaN. nkv heads × (kv_dim/nkv) each.
+        ops::rms_norm(
+            ctx.gpu,
+            self.rms_norm_k,
+            k_out,
+            &mla.kv_a_norm,
+            k_out,
+            nkv,
+            kv_dim / nkv,
+            eps,
+            stream,
+        )?;
         // K=V for V4-Flash direct KV projection
         ctx.gpu
             .copy_d2d_async(k_out, v_out, (kv_dim as usize) * 2, stream)?;
@@ -209,7 +238,11 @@ impl Qwen3AttentionLayer {
         prof!("rope", {
             ops::rope_yarn(
                 ctx.gpu,
-                self.rope_yarn_k,
+                // DeepSeek-V4 uses INTERLEAVED RoPE (rope_interleave=True): adjacent
+                // channel pairs (2i, 2i+1), matching the HF reference's rotate_half
+                // over cos.repeat_interleave(2). The non-interleaved (NeoX, i/i+half)
+                // kernel scrambles positions -> incoherent output.
+                self.rope_yarn_interleaved_k,
                 q_rope_tmp,
                 k_rope_tmp,
                 meta.positions,
@@ -353,19 +386,37 @@ impl Qwen3AttentionLayer {
         }
 
         // ── Step 6: Grouped low-rank O projection (wo_a → wo_b) ──
-        let o_latent = ctx.buffers.norm_output();
+        // wo_a is BLOCK-DIAGONAL (DeepseekV4GroupedLinear): the n_heads*head_dim
+        // attention output is split into `o_groups` independent groups, each
+        // projected group_in -> o_lora. Weight layout [o_groups*o_lora, group_in].
+        // A single dense GEMV would mix across groups and (with o_lora<latent_dim)
+        // read only 1/o_groups of wo_b — producing garbage every layer.
+        let o_groups = ctx.config.o_groups.max(1) as u32;
+        let group_in = (nq * hd) / o_groups; // 4096 = (64*512)/8
+        let latent_dim = o_groups * o_lora; // 8192 = 8*1024
+        let o_latent = ctx.buffers.o_latent();
         let o_out = ctx.buffers.qkv_output();
-        prof!("wo_a", {
-            ops::dense_gemv(
-                ctx.gpu,
-                self.dense_gemv_k,
-                attn_out,
-                &mla.wo_a,
-                o_latent,
-                o_lora,
-                nq * hd,
-                stream,
-            )
+        prof!("wo_a_grouped", {
+            for g in 0..o_groups {
+                let in_g = attn_out.offset((g * group_in) as usize * 2);
+                let w_g = crate::weight_map::DenseWeight {
+                    weight: mla.wo_a.weight.offset(
+                        (g as usize) * (o_lora as usize) * (group_in as usize) * 2,
+                    ),
+                };
+                let out_g = o_latent.offset((g * o_lora) as usize * 2);
+                ops::dense_gemv(
+                    ctx.gpu,
+                    self.dense_gemv_k,
+                    in_g,
+                    &w_g,
+                    out_g,
+                    o_lora,
+                    group_in,
+                    stream,
+                )?;
+            }
+            Ok::<(), anyhow::Error>(())
         })?;
         prof!("wo_b", {
             ops::dense_gemv(
@@ -375,7 +426,7 @@ impl Qwen3AttentionLayer {
                 &mla.wo_b,
                 o_out,
                 h,
-                o_lora,
+                latent_dim,
                 stream,
             )
         })?;

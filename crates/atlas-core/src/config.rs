@@ -181,6 +181,13 @@ pub struct ModelConfig {
     /// 0 = standard O (no low-rank compression).
     #[serde(default)]
     pub o_lora_rank: usize,
+    /// Number of block-diagonal groups for the grouped O projection (wo_a).
+    /// DeepSeek-V4-Flash splits the n_heads*head_dim attention output into
+    /// `o_groups` independent groups, each projected to `o_lora_rank` before the
+    /// follow-up wo_b mixes the `o_groups*o_lora_rank` vector back to hidden_size.
+    /// 0 = ungrouped (dense O).
+    #[serde(default)]
+    pub o_groups: usize,
     /// Non-rotary portion of Q/K per head (NoPE component).
     #[serde(default)]
     pub qk_nope_head_dim: usize,

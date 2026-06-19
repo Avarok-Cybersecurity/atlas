@@ -64,26 +64,34 @@ impl TransformerModel {
                 h as u32,
                 stream,
             )?;
-            if std::env::var("ATLAS_DUMP_EMBED").ok().as_deref() == Some("1") {
+            if std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true") {
                 self.gpu.synchronize(stream)?;
-                let offset = (chunk_len - 1) * h * 2;
-                let mut buf = vec![0u8; h * 2];
-                let _ = self.gpu.copy_d2h(hidden_dst.offset(offset), &mut buf);
-                let v: Vec<f32> = buf
-                    .chunks_exact(2)
-                    .map(|c| {
-                        let bits = u16::from_le_bytes([c[0], c[1]]);
-                        f32::from_bits((bits as u32) << 16)
-                    })
-                    .collect();
-                let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-                tracing::info!(
-                    "ATLAS_EMBED post-batched_embed (chunk_start={}, last_tok_id={}): |x|={:.4} first5={:?}",
-                    chunk_start,
-                    tokens[chunk_start + chunk_len - 1],
-                    n,
-                    &v[..5]
-                );
+                let mut buf = vec![0u8; chunk_len * h * 2];
+                if self.gpu.copy_d2h(hidden_dst, &mut buf).is_ok() {
+                    let mut nan_tok = -1i64;
+                    for t in 0..chunk_len {
+                        let off = t * h * 2;
+                        let any_nan = (0..h).any(|i| {
+                            let c = &buf[off + i * 2..off + i * 2 + 2];
+                            f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)
+                                .is_nan()
+                        });
+                        if any_nan {
+                            nan_tok = t as i64;
+                            break;
+                        }
+                    }
+                    tracing::info!(
+                        "DIAG V4-EMBED: chunk_len={}, first NaN token idx={} (id={})",
+                        chunk_len,
+                        nan_tok,
+                        if nan_tok >= 0 {
+                            tokens[chunk_start + nan_tok as usize] as i64
+                        } else {
+                            -1
+                        }
+                    );
+                }
             }
             self.scale_embeddings(hidden_dst, chunk_len, stream)?;
             if std::env::var("ATLAS_DUMP_EMBED").ok().as_deref() == Some("1") {

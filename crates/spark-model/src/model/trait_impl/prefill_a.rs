@@ -278,6 +278,35 @@ impl TransformerModel {
             )?;
             self.scale_embeddings(hidden, proc_count, stream)?;
         }
+        if std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true") {
+            let _ = self.gpu.synchronize(stream);
+            let nbytes = proc_count * h * 2; // BF16 hidden
+            let mut buf = vec![0u8; nbytes];
+            if self.gpu.copy_d2h(hidden, &mut buf).is_ok() {
+                let mut nan_tok = -1i64;
+                for t in 0..proc_count {
+                    let off = t * h * 2;
+                    let any_nan = (0..h).any(|i| {
+                        let c = &buf[off + i * 2..off + i * 2 + 2];
+                        f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16).is_nan()
+                    });
+                    if any_nan {
+                        nan_tok = t as i64;
+                        break;
+                    }
+                }
+                tracing::info!(
+                    "DIAG V4-prefill EMBED: {} tokens, first NaN token = {} (token_id={})",
+                    proc_count,
+                    nan_tok,
+                    if nan_tok >= 0 {
+                        proc_tokens[nan_tok as usize] as i64
+                    } else {
+                        -1
+                    }
+                );
+            }
+        }
 
         // ── 3. Upload attention metadata via pinned staging (one H2D copy) ──
         let moe_scratch_bytes = proc_count * self.config.num_experts_per_tok * 4 * 2;
