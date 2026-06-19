@@ -5,7 +5,7 @@
 // C[M_expert,N] = A[M_expert,K] (BF16) @ dequant(B_expert[N,K] (FP8 E4M3))
 //
 // THE routed-expert FP8 grouped-GEMM kernel for prefill (grid-compaction). A
-// persistent PM5_PERSIST_CTAS=96 1D grid strides over a COMPACTED
+// worklist-sized 1D grid strides by gridDim.x over a COMPACTED
 // (expert, m_tile, n_tile) work-list built by `moe_build_tile_worklist`
 // (moe_permute.cu) — collapsing the launch overhead that dominated the earlier
 // dense `[ceil(N/64), max_m_tiles, num_experts]` 3D grid (99.5% early-exit CTAs)
@@ -25,7 +25,7 @@
 // dequant agrees byte-exact with the shared-expert load-time dequant
 // AND with PyTorch's `torch.float32 -> torch.bfloat16` reference.
 //
-// Grid: (PM5_PERSIST_CTAS=96, 1, 1)  Block: (PM4_THREADS=256, 1, 1)
+// Grid: (wl_cap_items.clamp(1, MAX_GRID_CTAS), 1, 1)  Block: (PM4_THREADS=256, 1, 1)
 
 #include <cuda_bf16.h>
 
@@ -250,8 +250,9 @@ __device__ __forceinline__ void pm4_mma_kstep(
 // Launch geometry: instead of deriving (expert, m_tile, n_tile) from
 // blockIdx.{z,y,x} on a dense 3D grid `[ceil(N/64), max_m_tiles=1300,
 // num_experts]` (≈16M CTAs/layer of which 99.5% early-exit because most
-// (m_tile, expert) pairs are out of range), this kernel launches a PERSISTENT
-// 1D grid of PM5_PERSIST_CTAS=96 CTAs that stride over a COMPACTED work-list
+// (m_tile, expert) pairs are out of range), this kernel launches a
+// worklist-sized 1D grid (gridDim.x = wl_cap_items, clamped to MAX_GRID_CTAS in
+// the Rust launcher) that strides by gridDim.x over a COMPACTED work-list
 // built by `moe_build_tile_worklist` (moe_permute.cu). Each work-item is exactly
 // one real (non-early-exit) tile:
 //   worklist[wid*2 + 0] = expert_id
@@ -264,17 +265,18 @@ __device__ __forceinline__ void pm4_mma_kstep(
 // SAME stream so the read of *total_tiles / worklist[] here happens-after the
 // builder's write. The Rust launcher enforces this (no cross-stream event).
 //
-// RISK #1 (smem reuse across work-items): a single CTA processes MANY tiles in
-// its persistent loop, all reusing the SAME smem_A/smem_B/smem_Braw staging
+// RISK #1 (smem reuse across work-items): a single CTA may process MANY tiles in
+// its grid-stride loop (when the worklist exceeds the launched grid), all reusing
+// the SAME smem_A/smem_B/smem_Braw staging
 // buffers. A `__syncthreads()` at the TOP of each iteration fences the prior
 // tile's last pipeline stage (still being read by stragglers in the final MMA
 // reuse-sync) before this iteration re-primes the cp.async pipeline — otherwise
 // a stale stage could be overwritten while still in use. The smem LUT (lut_s)
 // is resident across the whole loop and filled ONCE before it.
 //
-// Grid: (PM5_PERSIST_CTAS=96, 1, 1)  Block: (PM4_THREADS=256, 1, 1)
-#define PM5_PERSIST_CTAS 96   // 48 SMs × 2 CTAs/SM. SSOT — mirrored in the Rust
-                              // launch wrapper ops::moe_fp8_grouped_gemm.
+// Grid: (wl_cap_items.clamp(1, MAX_GRID_CTAS), 1, 1)  Block: (PM4_THREADS=256, 1, 1)
+// The grid is sized by the Rust launcher (ops::moe_fp8_grouped_gemm) from the
+// work-list tile-count upper bound; this kernel strides by gridDim.x to consume it.
 
 extern "C" __global__ void __launch_bounds__(PM4_THREADS, 2) moe_fp8_grouped_gemm(
     const __nv_bfloat16* __restrict__ A,
@@ -315,8 +317,16 @@ extern "C" __global__ void __launch_bounds__(PM4_THREADS, 2) moe_fp8_grouped_gem
 
     const int total = *total_tiles;
 
-    // Persistent loop: stride PM5_PERSIST_CTAS over the compacted work-list.
-    for (int wid = blockIdx.x; wid < total; wid += PM5_PERSIST_CTAS) {
+    // Grid-strided loop over the compacted work-list. The Rust launcher sizes
+    // the grid to the work-list tile-count upper bound (`wl_cap_items`, clamped
+    // to MAX_GRID_CTAS), so striding by gridDim.x covers the whole list in ~one
+    // pass — one CTA per real tile, no redundant recompute. Oversubscription is
+    // safe (extra CTAs exit immediately); undersizing is merely slower, never
+    // wrong. NOTE: must stride by gridDim.x, NOT a fixed constant — a fixed
+    // stride below gridDim.x makes CTAs >= stride redundantly recompute tiles
+    // already owned by lower CTAs (the #176 regression: launcher moved to a
+    // worklist-sized grid but this stride stayed pinned at 96).
+    for (int wid = blockIdx.x; wid < total; wid += (int)gridDim.x) {
         __syncthreads();   // RISK #1 fix: fence smem reuse before re-priming pipeline
 
         // ── Coords from the work-list instead of blockIdx.{z,y,x} ──
