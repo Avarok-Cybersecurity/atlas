@@ -225,40 +225,15 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         },
     );
 
-    // MTP weight-quant gate (SSOT = the just-detected `quant_format`).
-    //
-    // Atlas benchmarks measure K=2 MTP speculative decode as net-NEGATIVE on
-    // FP8 weights for this hybrid SSM model (~-20% decode throughput: the
-    // verify pass re-runs the full 40-layer / MoE / lm_head stack and draft
-    // acceptance is only ~30-41%, below the ~60-70% break-even), but
-    // net-POSITIVE on NVFP4 weights (4-bit weight traffic makes the verify
-    // forward cheap; ~+1.6x). MTP is enabled solely by `--speculative`, so a
-    // single launch command tuned for NVFP4 silently regresses decode when it
-    // is pointed at an FP8 checkpoint. Derive the safe default from the loaded
-    // weight quant format: on FP8, downgrade `--speculative` to off unless the
-    // user explicitly forces it with `--force-speculative`. NVFP4 (and every
-    // other variant) is left byte-identical — this is additive and only
-    // narrows the default for the measured-negative FP8 case. The per-request
-    // `disable_mtp` override and `--force-speculative` both still win.
-    if quant_format.base_variant() == spark_model::weight_map::Nvfp4Variant::Fp8Dequanted {
-        if args.speculative && !args.force_speculative {
-            args.speculative = false;
-            tracing::info!(
-                "MTP auto-gated OFF: FP8 weights detected and --speculative set without \
-                 --force-speculative; K=2 verify is measured net-negative (~-20% decode) \
-                 on FP8 hybrid SSM models. Pass --force-speculative to override."
-            );
-        } else if args.speculative && args.force_speculative {
-            tracing::info!(
-                "MTP kept ON: FP8 weights detected but --force-speculative set; honoring \
-                 explicit user override of the weight-quant gate."
-            );
-        }
-    } else if args.speculative {
-        tracing::info!(
-            "MTP enabled: NVFP4 (or non-FP8) weights — speculative decode is net-positive."
-        );
-    }
+    // MTP throughput-aware gate is applied at RUNTIME, not here. The earlier
+    // static "FP8 ⇒ MTP off" weight-quant heuristic was removed: hardcoding the
+    // decision against the weight format wrongly bars a future FP8 checkpoint
+    // where MTP would help, and it conflated weight format (a proxy) with the
+    // thing that actually decides MTP economics — the per-config verify-step
+    // cost relative to a plain decode step. The scheduler now MEASURES that
+    // ratio over the first decode steps of serving and auto-disables MTP only
+    // when it is provably net-negative (verify multiplier ≥ 1 + num_drafts).
+    // See `scheduler::mtp_gate`.
 
     // 4. Post-load OOM check + audit log.
     serve_phases::post_load_memory_audit(
