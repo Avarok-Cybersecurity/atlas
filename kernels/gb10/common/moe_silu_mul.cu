@@ -22,6 +22,10 @@ extern "C" __global__ void moe_silu_mul(
 
     float g = __bfloat162float(gate[idx]);
     float u = __bfloat162float(up[idx]);
+    // DeepSeek-V4 swiglu_limit=10: clamp gate (max) and up ([-limit,limit]) before
+    // the activation. Benign for models with |act| < 10 (clamp never triggers).
+    g = fminf(g, 10.0f);
+    u = fmaxf(-10.0f, fminf(u, 10.0f));
     float sigmoid_g = 1.0f / (1.0f + __expf(-g));
     float result = g * sigmoid_g * u;
     output[idx] = __float2bfloat16(result);
