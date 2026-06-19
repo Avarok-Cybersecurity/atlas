@@ -63,6 +63,34 @@ pub struct MlaWeights {
     pub nope: usize,
     pub rope: usize,
     pub v_dim: usize,
+    /// DeepSeek Sparse Attention compressor (CSA ratio-4 / HCA ratio-128).
+    /// `None` for full-attention layers (compress_ratios[L] == 0).
+    pub compressor: Option<CompressorWeights>,
+    /// Per-head attention sink logit [num_q_heads] BF16 (DeepSeek-V4 s_aux).
+    /// NULL if the checkpoint has no attn_sink for this layer.
+    pub attn_sink: spark_runtime::gpu::DevicePtr,
+}
+
+/// DeepSeek-V4 compressed-attention compressor weights (one per compressed layer).
+/// Produces `n_win = usable/ratio` compressed KV entries that are concatenated to
+/// the raw sliding-window KV before core attention. CSA (ratio 4) uses a 2×ratio
+/// overlap window (Ca/Cb); HCA (ratio 128) uses a single non-overlapping window.
+#[derive(Debug, Clone, Copy)]
+pub struct CompressorWeights {
+    /// kv_proj: [proj_dim, hidden]. proj_dim = 2*head_dim (CSA) or head_dim (HCA).
+    pub wkv: DenseWeight,
+    /// gate_proj: same shape as wkv.
+    pub wgate: DenseWeight,
+    /// kv_norm weight [head_dim] — STANDARD RMSNorm (loaded via dense_minus_one).
+    pub norm: DenseWeight,
+    /// position_bias / ape: [ratio, proj_dim] BF16, added to the gate before softmax.
+    pub ape: spark_runtime::gpu::DevicePtr,
+    /// compress_rate for this layer (4 = CSA, 128 = HCA).
+    pub ratio: usize,
+    /// proj_dim of wkv/wgate output (2*head_dim for CSA, head_dim for HCA).
+    pub proj_dim: usize,
+    /// true = CSA (2×ratio overlap window); false = HCA (single window).
+    pub is_csa: bool,
 }
 
 /// Per-block Manifold-Constrained Hyper-Connection (mHC) parameters for one
@@ -271,6 +299,10 @@ pub struct Qwen3AttentionLayer {
     pub(super) prefill_attn_k: KernelHandle,
     /// HDIM=512 contiguous prefill for Gemma-4 full-attention layers
     pub(super) prefill_attn_512_k: KernelHandle,
+    /// DeepSeek-V4 CSA compressor: window softmax-gated KV compression.
+    pub(super) csa_compress_k: KernelHandle,
+    /// DeepSeek-V4 CSA prefill attention over [raw | compressed] KV + sink.
+    pub(super) prefill_attn_compressed_k: KernelHandle,
     /// HDIM=512 paged prefill (BF16 KV) for Gemma-4 chunked long-context prefill
     pub(super) prefill_attn_paged_512_k: KernelHandle,
     pub(super) prefill_attn_64_k: KernelHandle,

@@ -395,46 +395,135 @@ impl Qwen3AttentionLayer {
             );
         }
 
-        // ── 4. Standard GQA FlashAttention (intra-chunk) ──
+        // ── 4. Core attention ──
+        // CSA layers (compress_ratios[L]=4): attend over [raw causal KV | compressed
+        // windowed KV] + per-head sink (DeepSeek Sparse Attention). For short prompts
+        // the indexer is a no-op so only the compressor concat matters. Full-attention
+        // (layers 0-1) and HCA-short layers fall back to plain prefill attention.
+        use spark_runtime::kernel_args::KernelLaunch;
         let attn_out = ctx.buffers.attn_output();
-        let prefill_k = if hd_mla > 256 {
-            if self.prefill_attn_512_k.0 == 0 {
-                anyhow::bail!(
-                    "V4-Flash prefill: hd_mla={} > 256 but prefill_attn_512_k is not loaded (handle=0). \
-                     The inferspark_prefill_512 kernel must be present in the PTX.",
-                    hd_mla
-                );
-            }
-            tracing::info!(
-                "V4-Flash prefill: using prefill_attn_512_k (hd_mla={})",
-                hd_mla
-            );
-            self.prefill_attn_512_k
-        } else {
-            tracing::info!(
-                "V4-Flash prefill: using prefill_attn_64_k (hd_mla={})",
-                hd_mla
-            );
-            self.prefill_attn_64_k
+        let csa = match mla.compressor {
+            Some(c) if c.is_csa && self.csa_compress_k.0 != 0 && (n / c.ratio as u32) > 0 => Some(c),
+            _ => None,
         };
-        ops::prefill_attention(
-            ctx.gpu,
-            prefill_k,
-            q_full,
-            k_out,
-            v_out,
-            attn_out,
-            n,
-            1,
-            nq,
-            nkv,
-            hd_mla,
-            1.0f32 / (hd_mla as f32).sqrt(),
-            true,
-            0,
-            stream,
-        )
-        .map_err(|e| anyhow::anyhow!("V4 attn: prefill_attention failed: {e}"))?;
+        let did_csa = if let Some(comp) = csa {
+            let ratio = comp.ratio as u32;
+            let proj_dim = comp.proj_dim as u32;
+            let n_win = n / ratio;
+            // compressor projections kv/gate = W·normed [n, proj_dim]
+            let kv_comp = ctx.buffers.expert_up_out();
+            let gate_comp = ctx.buffers.expert_down_out();
+            ops::dense_gemm(
+                ctx.gpu, self.dense_gemm_k, normed, &comp.wkv, kv_comp, n, proj_dim, h, stream,
+            )?;
+            ops::dense_gemm(
+                ctx.gpu, self.dense_gemm_k, normed, &comp.wgate, gate_comp, n, proj_dim, h, stream,
+            )?;
+            // window softmax-gated compression → compressed [n_win, hd_mla]
+            let compressed = ctx.buffers.moe_output();
+            KernelLaunch::new(ctx.gpu, self.csa_compress_k)
+                .grid([n_win, 1, 1])
+                .block([256, 1, 1])
+                .arg_ptr(kv_comp)
+                .arg_ptr(gate_comp)
+                .arg_ptr(comp.ape)
+                .arg_ptr(compressed)
+                .arg_u32(n)
+                .arg_u32(ratio)
+                .arg_u32(hd_mla)
+                .arg_u32(proj_dim)
+                .arg_u32(1)
+                .launch(stream)?;
+            ops::rms_norm(
+                ctx.gpu, self.rms_norm_k, compressed, &comp.norm, compressed, n_win, hd_mla, eps,
+                stream,
+            )?;
+            // compressed = V (pre-rope latent); comp_k = rope(compressed) for scores.
+            // RoPE the trailing `rope` dims at the window position w*ratio (compress
+            // theta = mla.yarn_inv_freq), interleaved — mirrors the raw K rope.
+            let comp_v = compressed;
+            let comp_k = compressed.offset((n_win * hd_mla) as usize * 2);
+            ctx.gpu
+                .copy_d2d_async(comp_v, comp_k, (n_win * hd_mla) as usize * 2, stream)?;
+            let comp_pos: Vec<u8> = (0..n_win).flat_map(|w| (w * ratio).to_le_bytes()).collect();
+            let comp_positions = ctx.buffers.ssm_ba();
+            ctx.gpu.copy_h2d_async(&comp_pos, comp_positions, stream)?;
+            let comp_rope_tmp = ctx.buffers.ssm_conv_out_f32();
+            ops::mla_q_rope_extract_batched(
+                ctx.gpu,
+                self.mla_q_rope_extract_batched_k,
+                comp_k,
+                comp_rope_tmp,
+                n_win,
+                1,
+                hd_mla,
+                nope,
+                rope,
+                hd_mla,
+                stream,
+            )?;
+            ops::rope_yarn(
+                ctx.gpu,
+                self.rope_yarn_interleaved_k,
+                comp_rope_tmp,
+                comp_rope_tmp,
+                comp_positions,
+                n_win,
+                0,
+                1,
+                rope,
+                rope,
+                mla.yarn_inv_freq,
+                super::super::helpers::yarn_rope_mscale(ctx.config),
+                stream,
+            )?;
+            ops::mla_q_rope_writeback_batched(
+                ctx.gpu,
+                self.mla_q_rope_writeback_batched_k,
+                comp_rope_tmp,
+                comp_k,
+                n_win,
+                1,
+                hd_mla,
+                nope,
+                rope,
+                hd_mla,
+                stream,
+            )?;
+            KernelLaunch::new(ctx.gpu, self.prefill_attn_compressed_k)
+                .grid([nq, n.div_ceil(16), 1])
+                .block([128, 1, 1])
+                .arg_ptr(q_full)
+                .arg_ptr(k_out)
+                .arg_ptr(v_out)
+                .arg_ptr(comp_k)
+                .arg_ptr(comp_v)
+                .arg_ptr(mla.attn_sink)
+                .arg_ptr(attn_out)
+                .arg_u32(n)
+                .arg_u32(nq)
+                .arg_u32(nkv)
+                .arg_u32(hd_mla)
+                .arg_u32(n_win)
+                .arg_u32(ratio)
+                .arg_f32(1.0f32 / (hd_mla as f32).sqrt())
+                .launch(stream)?;
+            true
+        } else {
+            false
+        };
+        if !did_csa {
+            let prefill_k = if hd_mla > 256 {
+                self.prefill_attn_512_k
+            } else {
+                self.prefill_attn_64_k
+            };
+            ops::prefill_attention(
+                ctx.gpu, prefill_k, q_full, k_out, v_out, attn_out, n, 1, nq, nkv, hd_mla,
+                1.0f32 / (hd_mla as f32).sqrt(), true, 0, stream,
+            )
+            .map_err(|e| anyhow::anyhow!("V4 attn: prefill_attention failed: {e}"))?;
+        }
         ctx.gpu
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: prefill_attention sync failed: {e}"))?;

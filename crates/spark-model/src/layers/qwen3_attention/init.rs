@@ -412,6 +412,12 @@ impl Qwen3AttentionLayer {
                 );
                 k
             },
+            csa_compress_k: super::super::try_kernel(gpu, "csa_compress", "csa_compress"),
+            prefill_attn_compressed_k: super::super::try_kernel(
+                gpu,
+                "prefill_attn_compressed",
+                "prefill_attn_compressed",
+            ),
             prefill_attn_paged_512_k: super::super::try_kernel(
                 gpu,
                 "inferspark_prefill_paged_512",

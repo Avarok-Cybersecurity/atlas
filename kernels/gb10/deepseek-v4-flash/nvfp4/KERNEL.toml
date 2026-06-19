@@ -57,3 +57,7 @@ inferspark_prefill_512 = "inferspark_prefill_512"
 paged_decode_attn_512 = "paged_decode_attn_512"
 # Manifold-Constrained Hyper-Connections (mHC): hc_pre/hc_post/hc_head.
 hyper_connection = "hyper_connection"
+# DeepSeek Sparse Attention compressor (CSA/HCA window KV compression).
+csa_compress = "csa_compress"
+# CSA prefill attention over [raw causal | compressed windowed] KV + sink.
+prefill_attn_compressed = "prefill_attn_compressed"

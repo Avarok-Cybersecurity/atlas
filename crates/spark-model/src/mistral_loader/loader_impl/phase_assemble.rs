@@ -117,6 +117,8 @@ pub(super) fn assemble_layer(
         nope,
         rope,
         v_dim,
+        compressor: None,
+        attn_sink: spark_runtime::gpu::DevicePtr::NULL,
     };
 
     let input_norm = dense(ctx.store, &format!("{prefix}.attention_norm.weight"))?;

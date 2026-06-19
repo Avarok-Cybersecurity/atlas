@@ -11,11 +11,11 @@ use crate::layer::TransformerLayer;
 use crate::layers::FfnComponent;
 use crate::layers::MoeLayer;
 use crate::layers::qwen3_attention::{
-    HcHeadWeights, HcSiteWeights, HcWeights, MlaWeights, Qwen3AttentionLayer,
+    CompressorWeights, HcHeadWeights, HcSiteWeights, HcWeights, MlaWeights, Qwen3AttentionLayer,
 };
 use crate::weight_map::{
     AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense,
-    quantize_to_nvfp4, quantized_v2,
+    dense_minus_one, quantize_to_nvfp4, quantized_v2,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -155,6 +155,41 @@ pub fn assemble_layer(
         DenseWeight { weight: rope_ptr }
     };
 
+    // ── DeepSeek Sparse Attention compressor (compressed layers only) ──
+    // compress_ratios[L]: 0 = full attention (no compressor); 4 = CSA (2*hd proj,
+    // overlap window, + indexer); 128 = HCA (hd proj, single window).
+    let compressor = {
+        let ratio = config.compress_ratios.get(layer_idx).copied().unwrap_or(0);
+        if ratio > 0 {
+            let cp = format!("{lp}.attn.compressor");
+            let is_csa = ratio < 128; // 4 = CSA; 128 = HCA
+            let hd = config.head_dim;
+            let proj_dim = if is_csa { 2 * hd } else { hd };
+            let wkv = dense(store, &format!("{cp}.wkv.weight"))?;
+            let wgate = dense(store, &format!("{cp}.wgate.weight"))?;
+            // compressor.norm is a STANDARD RMSNorm → subtract 1 for the offset kernel.
+            let norm = dense_minus_one(store, &format!("{cp}.norm.weight"), gpu)?;
+            let ape = store.get(&format!("{cp}.ape"))?.ptr;
+            Some(CompressorWeights {
+                wkv,
+                wgate,
+                norm,
+                ape,
+                ratio,
+                proj_dim,
+                is_csa,
+            })
+        } else {
+            None
+        }
+    };
+
+    // Per-head attention sink logit (s_aux); present on all V4 attention layers.
+    let attn_sink = store
+        .get(&format!("{lp}.attn.attn_sink"))
+        .map(|w| w.ptr)
+        .unwrap_or(DevicePtr::NULL);
+
     let mla = MlaWeights {
         wq_a,
         wq_a_nvfp4,
@@ -188,6 +223,8 @@ pub fn assemble_layer(
         nope: config.qk_nope_head_dim,
         rope: config.qk_rope_head_dim,
         v_dim: config.v_head_dim,
+        compressor,
+        attn_sink,
     };
 
     // ── Attention dummy + layer ──
