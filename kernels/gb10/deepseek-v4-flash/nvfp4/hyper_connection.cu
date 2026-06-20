@@ -116,33 +116,26 @@ extern "C" __global__ void hc_pre(
         for (unsigned int i = 0; i < hc; ++i) {
             float pr = s_mix[i] * hc_scale[0] + hc_base[i];
             s_pre[i] = 1.f / (1.f + expf(-pr)) + hc_eps;
+            // post = sigmoid(mix*post_scale + base) + eps  (reference line 873).
             float po = s_mix[hc + i] * hc_scale[1] + hc_base[hc + i];
-            post_out[(size_t)t * hc + i] = 2.f * (1.f / (1.f + expf(-po)));
+            post_out[(size_t)t * hc + i] = 1.f / (1.f + expf(-po)) + hc_eps;
         }
+        // comb = sigmoid(mix*comb_scale + base) + eps  — ELEMENTWISE sigmoid,
+        // NOT a row softmax (reference lines 874-879).
         for (unsigned int i = 0; i < hc; ++i)
-            for (unsigned int j = 0; j < hc; ++j)
-                comb[i * hc + j] =
-                    s_mix[2 * hc + i * hc + j] * hc_scale[2] + hc_base[2 * hc + i * hc + j];
-        // softmax over j (dim=-1) + eps
-        for (unsigned int i = 0; i < hc; ++i) {
-            float mx = -1e30f;
-            for (unsigned int j = 0; j < hc; ++j) mx = fmaxf(mx, comb[i * hc + j]);
-            float sum = 0.f;
             for (unsigned int j = 0; j < hc; ++j) {
-                float e = expf(comb[i * hc + j] - mx);
-                comb[i * hc + j] = e;
-                sum += e;
+                float cl = s_mix[2 * hc + i * hc + j] * hc_scale[2]
+                    + hc_base[2 * hc + i * hc + j];
+                comb[i * hc + j] = 1.f / (1.f + expf(-cl)) + hc_eps;
             }
-            for (unsigned int j = 0; j < hc; ++j) comb[i * hc + j] = comb[i * hc + j] / sum + hc_eps;
-        }
-        // col-norm first (dim=-2, over i)
-        for (unsigned int j = 0; j < hc; ++j) {
-            float c = hc_eps;
-            for (unsigned int i = 0; i < hc; ++i) c += comb[i * hc + j];
-            for (unsigned int i = 0; i < hc; ++i) comb[i * hc + j] /= c;
-        }
-        // Sinkhorn: (iters - 1) alternating row/col passes
-        for (unsigned int it = 0; it + 1 < sinkhorn_iters; ++it) {
+        // Sinkhorn-Knopp projection onto the doubly-stochastic manifold:
+        // `sinkhorn_iters` iterations, each ROW-normalize (dim=-1, over j) THEN
+        // column-normalize (dim=-2, over i), each divisor + hc_eps. This matches
+        // the reference exactly (modeling_deepseek_v4.py:880-882) — same axis
+        // order, same iteration count, same eps. (No col-first pre-pass and no
+        // extra exact projection: those diverged from the reference and, with
+        // the wrong softmax/transpose below, made the map expansive.)
+        for (unsigned int it = 0; it < sinkhorn_iters; ++it) {
             for (unsigned int i = 0; i < hc; ++i) {
                 float r = hc_eps;
                 for (unsigned int j = 0; j < hc; ++j) r += comb[i * hc + j];
@@ -153,23 +146,6 @@ extern "C" __global__ void hc_pre(
                 for (unsigned int i = 0; i < hc; ++i) c += comb[i * hc + j];
                 for (unsigned int i = 0; i < hc; ++i) comb[i * hc + j] /= c;
             }
-        }
-        // Final EXACT column projection onto the doubly-stochastic manifold.
-        // hc_post mixes streams as out[j] = sum_i comb[i][j] * res[i], so the
-        // residual-mixing operator is column-indexed: its spectral radius equals
-        // max_j (sum_i comb[i][j]). The Sinkhorn passes above divide by
-        // (sum + hc_eps), which leaves each column summing to sum/(sum+eps) — a
-        // value that is < 1 but whose denominator carries the eps of EVERY prior
-        // pass, so the realized column sums drift off exactly 1 in fp32. Pin the
-        // columns to sum exactly to 1 here (no eps), guaranteeing the mixing map
-        // is non-expansive (eigenvalue == 1) regardless of logit magnitude — the
-        // manifold constraint the kernel's name promises. Matches the reference,
-        // which likewise ends its Sinkhorn on a column normalization.
-        for (unsigned int j = 0; j < hc; ++j) {
-            float c = 0.f;
-            for (unsigned int i = 0; i < hc; ++i) c += comb[i * hc + j];
-            float inv = (c > 0.f) ? (1.f / c) : 0.f;
-            for (unsigned int i = 0; i < hc; ++i) comb[i * hc + j] *= inv;
         }
         for (unsigned int i = 0; i < hc; ++i)
             for (unsigned int j = 0; j < hc; ++j)
@@ -186,7 +162,9 @@ extern "C" __global__ void hc_pre(
 }
 
 // ── hc_post ──
-// out[t,j,d] = post[t,j]*block_out[t,d] + sum_i comb[t,i,j]*residual[t,i,d].
+// out[t,i,d] = post[t,i]*block_out[t,d] + sum_j comb[t,i,j]*residual[t,j,d].
+// (Reference: hidden = post.unsqueeze(-1)*out.unsqueeze(-2) + matmul(comb, hidden);
+//  matmul contracts comb's LAST index, so the new stream i sums comb[i,j]*old[j].)
 // `out` may alias `residual` (all hc residual values are read before write).
 // Grid: (T,1,1)  Block: (256,1,1).
 extern "C" __global__ void hc_post(
@@ -213,10 +191,11 @@ extern "C" __global__ void hc_post(
         float xd = (float)x[d];
         float rv[HC_MAX_MULT];
         for (unsigned int i = 0; i < hc; ++i) rv[i] = res[i * H + d];
-        for (unsigned int j = 0; j < hc; ++j) {
-            float acc = p[j] * xd;
-            for (unsigned int i = 0; i < hc; ++i) acc += c[i * hc + j] * rv[i];
-            o[j * H + d] = acc;
+        // new stream i = post[i]*block_out + sum_j comb[i,j]*old_stream[j].
+        for (unsigned int i = 0; i < hc; ++i) {
+            float acc = p[i] * xd;
+            for (unsigned int j = 0; j < hc; ++j) acc += c[i * hc + j] * rv[j];
+            o[i * H + d] = acc;
         }
     }
 }
