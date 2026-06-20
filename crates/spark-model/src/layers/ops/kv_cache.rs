@@ -770,6 +770,7 @@ pub fn mla_paged_decode_fp8(
     v_scale: f32,
     cache_stride: u64,
     num_seqs: u32,
+    sinks: DevicePtr,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
@@ -791,6 +792,7 @@ pub fn mla_paged_decode_fp8(
         .arg_f32(k_scale)
         .arg_f32(v_scale)
         .arg_u64(cache_stride)
+        .arg_ptr(sinks)
         .launch(stream)
 }
 

@@ -46,7 +46,8 @@ extern "C" __global__ void mla_paged_decode_fp8(
     const float inv_sqrt_d,                          // 1/sqrt(576)
     const float k_scale,                             // FP8 scale for K
     const float v_scale,                             // FP8 scale for V
-    const unsigned long long cache_stride_bytes
+    const unsigned long long cache_stride_bytes,
+    const __nv_bfloat16* __restrict__ sinks          // [num_q_heads] per-head attn sink (s_aux); may be NULL
 ) {
     const unsigned int q_head = blockIdx.x;
     const unsigned int seq_idx = blockIdx.y;
@@ -293,6 +294,13 @@ extern "C" __global__ void mla_paged_decode_fp8(
     // Write output (BF16, flattened [nq * q_dim])
     if (warp_id == 0) {
         float final_l = smem_l[0];
+        // Per-head attention sink (s_aux): an extra softmax logit per head that is
+        // dropped from the numerator but kept in the denominator (reference
+        // eager_attention_forward concats `sinks`, softmaxes, then slices off the
+        // sink column). Online-softmax: add exp(sink - running_max) to the sum.
+        if (sinks != nullptr) {
+            final_l += __expf((float)sinks[q_head] - smem_m[0]);
+        }
         float inv_l = (final_l > 0.0f) ? (1.0f / final_l) : 0.0f;
         unsigned int* o32 = (unsigned int*)(O + (unsigned long long)q_head * q_head_dim + vec_offset_bf16);
         #pragma unroll
