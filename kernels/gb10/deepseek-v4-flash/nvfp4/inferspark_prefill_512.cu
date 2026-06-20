@@ -20,7 +20,8 @@ extern "C" __global__ void inferspark_prefill_512(
     const unsigned int head_dim,
     const float inv_sqrt_d,
     const unsigned int causal,
-    const unsigned int sliding_window   // Always 0 for full-attention 512-hd layers; param added for signature consistency
+    const unsigned int sliding_window,  // Always 0 for full-attention 512-hd layers; param added for signature consistency
+    const __nv_bfloat16* __restrict__ sinks  // [num_q_heads] per-head sink logit (denominator only); nullptr = no sink
 ) {
     const unsigned int q_head = blockIdx.x;
     const unsigned int q_block = blockIdx.y;
@@ -104,6 +105,23 @@ extern "C" __global__ void inferspark_prefill_512(
         for (unsigned int d = 0; d < 64 && dim_start + d < head_dim; d++) {
             o_acc[d] += exp_new * __bfloat162float(V_row[dim_start + d]);
         }
+    }
+
+    // ── Per-head attention sink (DeepSeek-V4): a learned logit that enters the
+    // softmax denominator only (no value). The reference applies it on EVERY
+    // attention layer (eager_attention_forward s_aux=self.sinks); the full-
+    // attention (non-CSA) prefill layers were missing it, so prefill diverged
+    // from the sink-applying decode path and corrupted the prompt's hidden/KV.
+    if (sinks != nullptr) {
+        float sg = __bfloat162float(sinks[q_head]);
+        float m_new = fmaxf(m, sg);
+        float exp_old = __expf(m - m_new);
+        float exp_sink = __expf(sg - m_new);
+        for (unsigned int d = 0; d < 64 && dim_start + d < head_dim; d++) {
+            o_acc[d] *= exp_old;
+        }
+        l = l * exp_old + exp_sink;  // sink adds to denominator, contributes no value
+        m = m_new;
     }
 
     // Normalize and write output

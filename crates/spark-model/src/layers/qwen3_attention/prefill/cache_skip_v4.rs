@@ -514,17 +514,15 @@ impl Qwen3AttentionLayer {
             false
         };
         if !did_csa {
-            let prefill_k = if hd_mla > 256 {
-                self.prefill_attn_512_k
-            } else {
-                self.prefill_attn_64_k
-            };
+            // V4 full-attention (non-CSA) is always HDIM=512 → the 512 kernel.
             // MLA: V==K (k_out carries the rope tail; v_out is the plain latent).
-            ops::prefill_attention(
-                ctx.gpu, prefill_k, q_full, k_out, k_out, attn_out, n, 1, nq, nkv, hd_mla,
-                1.0f32 / (hd_mla as f32).sqrt(), true, 0, stream,
+            // Pass the per-head attention sink so the softmax denominator matches
+            // the decode path (the reference applies the sink on EVERY layer).
+            ops::prefill_attention_512_sink(
+                ctx.gpu, self.prefill_attn_512_k, q_full, k_out, k_out, attn_out, n, 1, nq, nkv,
+                hd_mla, 1.0f32 / (hd_mla as f32).sqrt(), true, 0, mla.attn_sink, stream,
             )
-            .map_err(|e| anyhow::anyhow!("V4 attn: prefill_attention failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("V4 attn: prefill_attention_512_sink failed: {e}"))?;
         }
         ctx.gpu
             .synchronize(stream)

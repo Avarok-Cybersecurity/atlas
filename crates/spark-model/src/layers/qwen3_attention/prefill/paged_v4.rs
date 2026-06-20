@@ -237,8 +237,9 @@ impl Qwen3AttentionLayer {
         };
         // MLA passes kv as BOTH key and value (K==V). `k_out` carries the rotated
         // rope in its tail; `v_out` is the plain latent (kept for the cache
-        // assembly below). Attention must use K==k_out for V too.
-        ops::prefill_attention(
+        // assembly below). Attention must use K==k_out for V too. The per-head
+        // sink keeps the softmax denominator consistent with the decode path.
+        ops::prefill_attention_512_sink(
             ctx.gpu,
             prefill_k,
             q_full,
@@ -253,6 +254,7 @@ impl Qwen3AttentionLayer {
             1.0f32 / (hd_mla as f32).sqrt(),
             true,
             0,
+            mla.attn_sink,
             stream,
         )
         .map_err(|e| anyhow::anyhow!("V4 paged: prefill_attention failed: {e}"))?;
