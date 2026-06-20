@@ -51,6 +51,11 @@ impl TransformerModel {
             let token_ids_dev = self.buffers.scratch(); // temporary, overwritten by MoE later
             self.gpu
                 .copy_h2d_async(token_ids_bytes, token_ids_dev, stream)?;
+            // Also stage this chunk's token IDs into the STABLE token_ids buffer
+            // (scratch is reused by MoE routing). DeepSeek-V4 hash-MoE reads
+            // `tid2eid[token_id]` per token in this same chunk order.
+            self.gpu
+                .copy_h2d_async(token_ids_bytes, self.buffers.token_ids(), stream)?;
             ops::batched_embed(
                 self.gpu.as_ref(),
                 self.batched_embed_kernel,
