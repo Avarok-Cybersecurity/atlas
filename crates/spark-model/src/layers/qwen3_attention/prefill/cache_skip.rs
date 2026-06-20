@@ -86,7 +86,7 @@ impl Qwen3AttentionLayer {
         };
 
         // ── MLA 2-step prefill ── (extracted to cache_skip_mla.rs)
-        if self.mla.is_some() {
+        if let Some(ref mla) = self.mla {
             let args = super::cache_skip_mla::CacheSkipMlaArgs {
                 normed,
                 num_tokens,
@@ -100,6 +100,10 @@ impl Qwen3AttentionLayer {
                 bf16,
                 stream,
             };
+            // DeepSeek-V4: output LoRA (o_lora_rank > 0) uses a dedicated prefill path.
+            if mla.o_lora_rank > 0 {
+                return self.prefill_attention_cache_skip_v4(kv_cache, ctx, &args);
+            }
             return self.prefill_attention_cache_skip_mla(kv_cache, ctx, &args);
         }
 

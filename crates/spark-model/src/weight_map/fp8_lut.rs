@@ -139,6 +139,33 @@ pub(super) fn fp8_e4m3_to_f32(bits: u8) -> f32 {
     FP8_E4M3_LUT[bits as usize]
 }
 
+/// FP8 E8M0 → f32 lookup table (256 entries).
+///
+/// E8M0 format: unsigned 8-bit exponent, 0 mantissa, bias=127.
+/// Value = 2^(exp - 127). exp=0 → 0, exp=255 → NaN (stored as 0.0).
+static FP8_E8M0_LUT: [f32; 256] = {
+    let mut table = [0.0f32; 256];
+    let mut i: u32 = 0;
+    while i < 256 {
+        let exp = i as u8;
+        table[i as usize] = if exp == 0 {
+            0.0f32
+        } else if exp == 255 {
+            0.0f32 // NaN weight-scales should not appear in practice
+        } else {
+            f32::from_bits((exp as u32) << 23)
+        };
+        i += 1;
+    }
+    table
+};
+
+/// Convert FP8 E8M0 byte to f32 via LUT (branchless, single array lookup).
+#[inline(always)]
+pub(super) fn fp8_e8m0_to_f32(bits: u8) -> f32 {
+    FP8_E8M0_LUT[bits as usize]
+}
+
 /// Convert f32 to BF16 with IEEE-754 round-to-nearest-even.
 ///
 /// SSOT-paired with `atlas_quant::fp8::f32_to_bf16`: both implement the
