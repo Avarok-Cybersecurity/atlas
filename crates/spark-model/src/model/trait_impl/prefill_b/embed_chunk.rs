@@ -37,11 +37,8 @@ impl TransformerModel {
         stream: u64,
     ) -> Result<()> {
         let h = self.config.hidden_size;
-        let fp32 = if self.config.use_fp32_residual() {
-            4usize
-        } else {
-            2usize
-        };
+        // BF16 residual is the shipping config (2 bytes/element).
+        let elem_bytes = 2usize;
 
         // ── 1. Embed chunk tokens → [chunk_len, H] contiguous at hidden_dst ──
         // Upload token IDs to device and do a single batched embed kernel launch
@@ -64,7 +61,47 @@ impl TransformerModel {
                 h as u32,
                 stream,
             )?;
+            if std::env::var("ATLAS_DUMP_EMBED").ok().as_deref() == Some("1") {
+                self.gpu.synchronize(stream)?;
+                let offset = (chunk_len - 1) * h * 2;
+                let mut buf = vec![0u8; h * 2];
+                let _ = self.gpu.copy_d2h(hidden_dst.offset(offset), &mut buf);
+                let v: Vec<f32> = buf
+                    .chunks_exact(2)
+                    .map(|c| {
+                        let bits = u16::from_le_bytes([c[0], c[1]]);
+                        f32::from_bits((bits as u32) << 16)
+                    })
+                    .collect();
+                let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                tracing::info!(
+                    "ATLAS_EMBED post-batched_embed (chunk_start={}, last_tok_id={}): |x|={:.4} first5={:?}",
+                    chunk_start,
+                    tokens[chunk_start + chunk_len - 1],
+                    n,
+                    &v[..5]
+                );
+            }
             self.scale_embeddings(hidden_dst, chunk_len, stream)?;
+            if std::env::var("ATLAS_DUMP_EMBED").ok().as_deref() == Some("1") {
+                self.gpu.synchronize(stream)?;
+                let offset = (chunk_len - 1) * h * 2;
+                let mut buf = vec![0u8; h * 2];
+                let _ = self.gpu.copy_d2h(hidden_dst.offset(offset), &mut buf);
+                let v: Vec<f32> = buf
+                    .chunks_exact(2)
+                    .map(|c| {
+                        let bits = u16::from_le_bytes([c[0], c[1]]);
+                        f32::from_bits((bits as u32) << 16)
+                    })
+                    .collect();
+                let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                tracing::info!(
+                    "ATLAS_EMBED post-scale_embeddings: |x|={:.4} first5={:?}",
+                    n,
+                    &v[..5]
+                );
+            }
         }
 
         // ── 1b. Overwrite image_pad token positions with vision encoder embeddings ──
@@ -87,7 +124,7 @@ impl TransformerModel {
                 for (i, &tok) in chunk_tokens.iter().enumerate() {
                     if tok == pad_id {
                         let src = ve.buf_out.offset(img_idx * ve.out_hidden_size * 2);
-                        let dst = hidden_dst.offset(i * h * fp32);
+                        let dst = hidden_dst.offset(i * h * elem_bytes);
                         self.gpu
                             .copy_d2d_async(src, dst, ve.out_hidden_size * 2, stream)?;
                         img_idx += 1;
