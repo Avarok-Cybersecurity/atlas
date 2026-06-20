@@ -235,12 +235,15 @@ impl Qwen3AttentionLayer {
             );
             self.prefill_attn_64_k
         };
+        // MLA passes kv as BOTH key and value (K==V). `k_out` carries the rotated
+        // rope in its tail; `v_out` is the plain latent (kept for the cache
+        // assembly below). Attention must use K==k_out for V too.
         ops::prefill_attention(
             ctx.gpu,
             prefill_k,
             q_full,
             k_out,
-            v_out,
+            k_out,
             attn_out,
             n,
             1,
@@ -253,6 +256,55 @@ impl Qwen3AttentionLayer {
             stream,
         )
         .map_err(|e| anyhow::anyhow!("V4 paged: prefill_attention failed: {e}"))?;
+
+        // DeepSeek-V4 eq.26: de-rotate the attention output by each query
+        // position (inverse interleaved YaRN RoPE on the trailing rope dims)
+        // before the grouped o_proj, so each value's contribution is
+        // relative-distance.
+        {
+            let o_rope_tmp = ctx.buffers.ssm_conv_out_f32();
+            ops::mla_q_rope_extract_batched(
+                ctx.gpu,
+                self.mla_q_rope_extract_batched_k,
+                attn_out,
+                o_rope_tmp,
+                n,
+                nq,
+                hd_mla,
+                nope,
+                rope,
+                nq * hd_mla,
+                stream,
+            )?;
+            ops::rope_yarn(
+                ctx.gpu,
+                self.rope_yarn_interleaved_inv_k,
+                o_rope_tmp,
+                o_rope_tmp,
+                meta.positions,
+                n,
+                nq,
+                0,
+                rope,
+                rope,
+                mla.yarn_inv_freq,
+                super::super::helpers::yarn_rope_mscale(ctx.config),
+                stream,
+            )?;
+            ops::mla_q_rope_writeback_batched(
+                ctx.gpu,
+                self.mla_q_rope_writeback_batched_k,
+                o_rope_tmp,
+                attn_out,
+                n,
+                nq,
+                hd_mla,
+                nope,
+                rope,
+                nq * hd_mla,
+                stream,
+            )?;
+        }
 
         // ── 5. Assemble KV cache (V4-Flash: latent+rope = 576-dim MLA) ──
         // v_out holds the original latent K (512-dim, before RoPE writeback).

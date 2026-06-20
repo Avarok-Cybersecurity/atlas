@@ -495,9 +495,10 @@ impl Qwen3AttentionLayer {
                 .block([128, 1, 1])
                 .arg_ptr(q_full)
                 .arg_ptr(k_out)
-                .arg_ptr(v_out)
+                // MLA: V==K (rope in the tail), for both the raw and compressed KV.
+                .arg_ptr(k_out)
                 .arg_ptr(comp_k)
-                .arg_ptr(comp_v)
+                .arg_ptr(comp_k)
                 .arg_ptr(mla.attn_sink)
                 .arg_ptr(attn_out)
                 .arg_u32(n)
@@ -518,8 +519,9 @@ impl Qwen3AttentionLayer {
             } else {
                 self.prefill_attn_64_k
             };
+            // MLA: V==K (k_out carries the rope tail; v_out is the plain latent).
             ops::prefill_attention(
-                ctx.gpu, prefill_k, q_full, k_out, v_out, attn_out, n, 1, nq, nkv, hd_mla,
+                ctx.gpu, prefill_k, q_full, k_out, k_out, attn_out, n, 1, nq, nkv, hd_mla,
                 1.0f32 / (hd_mla as f32).sqrt(), true, 0, stream,
             )
             .map_err(|e| anyhow::anyhow!("V4 attn: prefill_attention failed: {e}"))?;
@@ -527,6 +529,53 @@ impl Qwen3AttentionLayer {
         ctx.gpu
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: prefill_attention sync failed: {e}"))?;
+
+        // DeepSeek-V4 eq.26: de-rotate the attention output by each query position
+        // (inverse interleaved YaRN RoPE on the trailing rope dims) before o_proj.
+        {
+            let o_rope_tmp = ctx.buffers.ssm_conv_out_f32();
+            ops::mla_q_rope_extract_batched(
+                ctx.gpu,
+                self.mla_q_rope_extract_batched_k,
+                attn_out,
+                o_rope_tmp,
+                n,
+                nq,
+                hd_mla,
+                nope,
+                rope,
+                nq * hd_mla,
+                stream,
+            )?;
+            ops::rope_yarn(
+                ctx.gpu,
+                self.rope_yarn_interleaved_inv_k,
+                o_rope_tmp,
+                o_rope_tmp,
+                meta.positions,
+                n,
+                nq,
+                0,
+                rope,
+                rope,
+                mla.yarn_inv_freq,
+                super::super::helpers::yarn_rope_mscale(ctx.config),
+                stream,
+            )?;
+            ops::mla_q_rope_writeback_batched(
+                ctx.gpu,
+                self.mla_q_rope_writeback_batched_k,
+                o_rope_tmp,
+                attn_out,
+                n,
+                nq,
+                hd_mla,
+                nope,
+                rope,
+                nq * hd_mla,
+                stream,
+            )?;
+        }
         if diag_this {
             super::super::trait_impl::diag_norm(
                 ctx.gpu,
