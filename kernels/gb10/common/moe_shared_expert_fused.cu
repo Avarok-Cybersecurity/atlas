@@ -264,10 +264,19 @@ extern "C" __global__ void moe_expert_silu_down_shared(
 
     if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT_SHARED[threadIdx.x];
 
-    // Phase 1: Cooperatively precompute SiLU(gate)*up into shared memory
+    // Phase 1: Cooperatively precompute SiLU(gate)*up into shared memory.
+    // DeepSeek-V4 clamps the ROUTED expert swiglu inputs to ±swiglu_limit
+    // (gate<=limit, up in [-limit,limit]); the shared expert (DeepseekV4MLP)
+    // is NOT clamped. swiglu_limit = 10.0 (config; hardcoded here pending a
+    // config-threaded kernel arg).
+    const float SWIGLU_LIMIT = 10.0f;
     for (unsigned int i = threadIdx.x; i < K; i += BLOCK_SIZE) {
         float gf = __bfloat162float(g_ptr[i]);
         float uf = __bfloat162float(u_ptr[i]);
+        if (!is_shared) {
+            gf = fminf(gf, SWIGLU_LIMIT);
+            uf = fminf(fmaxf(uf, -SWIGLU_LIMIT), SWIGLU_LIMIT);
+        }
         s_act[i] = (gf / (1.0f + __expf(-gf))) * uf;
     }
     __syncthreads();
