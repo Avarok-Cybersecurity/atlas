@@ -385,6 +385,57 @@ impl Qwen3AttentionLayer {
             );
         }
 
+        // ── Step 5.5: Attention-output de-rotation (DeepSeek-V4 eq.26) ──
+        // The reference de-rotates the attention output by the query position
+        // (apply_rotary(attn_out, cos, -sin)) so each value's contribution is
+        // relative-distance. Since V==K carries the rotated rope in its trailing
+        // `mla_rope` dims, undo that rotation on the output before o_proj. Reuse
+        // the Q rope extract/writeback with the conjugate (negated-sin) kernel.
+        {
+            let o_rope_tmp = ctx.buffers.ssm_conv_out_f32();
+            ops::mla_q_rope_extract_batched(
+                ctx.gpu,
+                self.mla_q_rope_extract_batched_k,
+                attn_out,
+                o_rope_tmp,
+                1,
+                nq,
+                hd,
+                mla.nope as u32,
+                mla_rope,
+                nq * hd,
+                stream,
+            )?;
+            ops::rope_yarn(
+                ctx.gpu,
+                self.rope_yarn_interleaved_inv_k,
+                o_rope_tmp,
+                o_rope_tmp,
+                meta.positions,
+                1,
+                nq,
+                0, // no KV heads — de-rotate the query/output heads only
+                mla_rope,
+                mla_rope,
+                mla.yarn_inv_freq,
+                super::super::helpers::yarn_rope_mscale(ctx.config),
+                stream,
+            )?;
+            ops::mla_q_rope_writeback_batched(
+                ctx.gpu,
+                self.mla_q_rope_writeback_batched_k,
+                o_rope_tmp,
+                attn_out,
+                1,
+                nq,
+                hd,
+                mla.nope as u32,
+                mla_rope,
+                nq * hd,
+                stream,
+            )?;
+        }
+
         // ── Step 6: Grouped low-rank O projection (wo_a → wo_b) ──
         // wo_a is BLOCK-DIAGONAL (DeepseekV4GroupedLinear): the n_heads*head_dim
         // attention output is split into `o_groups` independent groups, each

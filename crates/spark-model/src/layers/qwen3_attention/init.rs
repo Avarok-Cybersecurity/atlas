@@ -192,6 +192,11 @@ impl Qwen3AttentionLayer {
                 "rope",
                 "rope_forward_yarn_interleaved",
             ),
+            rope_yarn_interleaved_inv_k: super::super::try_kernel(
+                gpu,
+                "rope",
+                "rope_forward_yarn_interleaved_inv",
+            ),
             rope_proportional_k: super::super::try_kernel(gpu, "rope", "rope_forward_proportional"),
             reshape_cache_k: gpu.kernel(reshape_mod, reshape_fn)?,
             fused_k_norm_rope_cache_write_bf16_k: super::super::try_kernel(

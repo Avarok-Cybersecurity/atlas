@@ -160,12 +160,21 @@ extern "C" __global__ void mla_paged_decode_fp8(
             #pragma unroll
             for (int b = 0; b < BC; b++) {
                 unsigned int p = block_offset + processed + b;
-                
-                // Load V (only latent portion, no rope) from FP8
+
+                // Load V from FP8. K==V in MLA: V's tail 448-511 is the rotated
+                // rope (mirror the K rope overwrite), not the latent.
                 const unsigned char* v_latent = v_block + p * token_stride + kv_latent_offset;
                 #pragma unroll
                 for (int i = 0; i < VEC_BF16; i++) {
                     v_vals[b][i] = fp8e4m3_to_f32((__nv_fp8_storage_t)v_latent[i]) * v_scale;
+                }
+                if (lane_id >= 28) {
+                    const unsigned int rope_offset = (lane_id - 28) * VEC_BF16;
+                    const unsigned char* v_rope = v_block + p * token_stride + kv_latent_dim + rope_offset;
+                    #pragma unroll
+                    for (int i = 0; i < VEC_BF16; i++) {
+                        v_vals[b][i] = fp8e4m3_to_f32((__nv_fp8_storage_t)v_rope[i]) * v_scale;
+                    }
                 }
             }
 
@@ -234,12 +243,23 @@ extern "C" __global__ void mla_paged_decode_fp8(
             float exp_new = __expf(score - m_new);
             l = l * exp_old + exp_new;
 
-            // Load V from FP8
+            // Load V from FP8. MLA passes kv as BOTH key and value (K==V), so V's
+            // tail dims 448-511 are the ROTATED rope, not the latent — mirror the
+            // K rope overwrite so the attention output carries the rope (then the
+            // dispatch de-rotates it per eq.26).
             float v_tmp[VEC_BF16];
             const unsigned char* v_latent = v_block + p * token_stride + kv_latent_offset;
             #pragma unroll
             for (int i = 0; i < VEC_BF16; i++) {
                 v_tmp[i] = fp8e4m3_to_f32((__nv_fp8_storage_t)v_latent[i]) * v_scale;
+            }
+            if (lane_id >= 28) {
+                const unsigned int rope_offset = (lane_id - 28) * VEC_BF16;
+                const unsigned char* v_rope = v_block + p * token_stride + kv_latent_dim + rope_offset;
+                #pragma unroll
+                for (int i = 0; i < VEC_BF16; i++) {
+                    v_tmp[i] = fp8e4m3_to_f32((__nv_fp8_storage_t)v_rope[i]) * v_scale;
+                }
             }
 
             #pragma unroll
