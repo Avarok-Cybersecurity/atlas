@@ -118,6 +118,12 @@ impl TransformerModel {
         self.gpu
             .copy_h2d_async(bt_bytes, meta_base.offset(256), stream)?;
 
+        // Upload the decode token ID into the STABLE token_ids buffer (uploaded
+        // every step, BEFORE any CUDA-graph replay, so DeepSeek-V4 hash-MoE
+        // layers read the correct `tid2eid[token_id]`). Single token at offset 0.
+        self.gpu
+            .copy_h2d_async(&token.to_le_bytes(), self.buffers.token_ids(), stream)?;
+
         let attn_metadata = AttnMetadataDev {
             positions: meta_base,
             positions_h: meta_base,
@@ -170,6 +176,9 @@ impl TransformerModel {
             comm: self.comm_ref(),
             graph_capture: use_graphs,
             gdn_exact_replay: false,
+            // Hash-MoE: the single decode token ID (uploaded above every step
+            // before graph replay). MoE reads it at offset 0.
+            token_ids: Some(self.buffers.token_ids()),
         };
 
         // Profile mode: use per-layer sync decode for timing breakdown.

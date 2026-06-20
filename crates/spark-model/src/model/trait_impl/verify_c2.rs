@@ -154,6 +154,7 @@ impl TransformerModel {
             comm: self.comm_ref(),
             graph_capture: use_graphs,
             gdn_exact_replay: false,
+            token_ids: None,
         };
 
         // ── Phase 2: CUDA graph capture / replay ──

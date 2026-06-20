@@ -82,6 +82,7 @@ impl TransformerModel {
             // Marconi warm hit: GDN layers replay from a restored SSM state
             // and must use the bit-faithful WY4 recurrence (see layer.rs).
             gdn_exact_replay: marconi_skip,
+            token_ids: None,
         };
 
         // When proc_count == 1 (warm prefix cache hit), use the decode layer path

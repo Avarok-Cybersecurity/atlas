@@ -81,6 +81,10 @@ pub struct BufferSizes {
     pub hc_post: usize,
     /// HC `comb` Sinkhorn matrix: `[M, hc_mult, hc_mult]` F32.
     pub hc_comb: usize,
+    /// Token IDs `[M]` u32 for the current pass — stable across the layer loop
+    /// so DeepSeek-V4 hash-MoE layers can read `tid2eid[token_id]`. Always
+    /// allocated (small); unused by models without hash routing.
+    pub token_ids: usize,
 }
 
 impl BufferSizes {
@@ -338,6 +342,8 @@ impl BufferSizes {
             } else {
                 256
             },
+            // Token IDs [M] u32 (stable across the layer loop for hash-MoE).
+            token_ids: (m * 4).max(256),
         }
     }
 
@@ -367,5 +373,6 @@ impl BufferSizes {
             + self.hc_streams
             + self.hc_post
             + self.hc_comb
+            + self.token_ids
     }
 }

@@ -138,7 +138,39 @@ pub fn assemble_layer(
         router_pre_norm: None,
         correction_bias,
     };
-    let moe = MoeLayer::new(moe_weights, config.num_experts, gate_nvfp4, gpu, config)?;
+    // ── Hash-MoE routing (DeepSeek-V4 paper §2.1) ──
+    // The first `num_hash_layers` MoE layers select experts via a static
+    // `tid2eid[token_id]` table ([vocab_size, top_k] i64) instead of top-K of
+    // the gate scores. The learned gate still supplies the sqrtsoftplus scores
+    // that weight the selected experts. `Some(table)` here is the SSOT marking
+    // this as a hash-routed layer.
+    let tid2eid_dev = if layer_idx < config.num_hash_layers {
+        let t = store.get(&format!("{lp}.ffn.gate.tid2eid")).with_context(|| {
+            format!(
+                "DeepSeek-V4 hash layer {layer_idx}: missing ffn.gate.tid2eid \
+                 (num_hash_layers={})",
+                config.num_hash_layers
+            )
+        })?;
+        let expected = config.vocab_size * config.num_experts_per_tok;
+        anyhow::ensure!(
+            t.num_elements() == expected,
+            "DeepSeek-V4 tid2eid layer {layer_idx}: {} elements != vocab_size*top_k ({})",
+            t.num_elements(),
+            expected
+        );
+        Some(t.ptr)
+    } else {
+        None
+    };
+    let moe = MoeLayer::new_with_hash(
+        moe_weights,
+        config.num_experts,
+        gate_nvfp4,
+        tid2eid_dev,
+        gpu,
+        config,
+    )?;
 
     // ── MLA weights ──
     // RedHatAI checkpoint: wkv_a may only contain kv_lora_rank rows (no rope).

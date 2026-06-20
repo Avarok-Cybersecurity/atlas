@@ -122,7 +122,31 @@ impl MoeLayer {
             let indices_dev = scratch;
             let weights_dev = scratch.offset(top_k as usize * 4);
 
-            if let Some(bias) = self.correction_bias_dev {
+            if let Some(tid2eid) = self.tid2eid_dev {
+                // DeepSeek-V4 hash routing: expert selection is static
+                // `tid2eid[token_id]`; the learned gate weights the selection.
+                // token IDs are uploaded [num_tokens] u32 in the SAME order as
+                // this loop, so token t lives at offset t.
+                let token_ids = ctx.token_ids.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "DeepSeek-V4 hash-MoE layer requires ForwardContext.token_ids (prefill)"
+                    )
+                })?;
+                ops::moe_hash_route(
+                    ctx.gpu,
+                    self.moe_hash_route_k,
+                    gate_t,
+                    tid2eid,
+                    token_ids.offset(t * 4),
+                    indices_dev,
+                    weights_dev,
+                    num_experts,
+                    top_k,
+                    ctx.config.norm_topk_prob,
+                    ctx.config.routed_scaling_factor as f32,
+                    stream,
+                )?;
+            } else if let Some(bias) = self.correction_bias_dev {
                 // DeepSeek-V4: sqrt-softplus expert scoring (replaces sigmoid).
                 if ctx.config.scoring_func == "sqrtsoftplus" {
                     ops::moe_topk_sqrtsoftplus(

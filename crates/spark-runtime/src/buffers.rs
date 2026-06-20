@@ -81,6 +81,9 @@ pub struct BufferArena {
     /// GDN FLA chunked-prefill scratch (W|U|S|uc sub-divided). NULL unless the
     /// model is a 128-dim-linear-head GDN model (ATLAS_GDN_FLA path).
     gdn_fla_scratch: DevicePtr,
+    /// Token IDs `[M]` u32 — stable across the layer loop so DeepSeek-V4
+    /// hash-MoE layers can read `tid2eid[token_id]`.
+    token_ids: DevicePtr,
     /// Maximum batch tokens this arena was sized for.
     max_batch_tokens: usize,
     /// Sizes in bytes for each buffer (for debug/logging).
@@ -134,6 +137,7 @@ impl BufferArena {
         } else {
             DevicePtr::NULL
         };
+        let token_ids = gpu.alloc(sizes.token_ids)?;
 
         tracing::info!(
             "Buffer arena: {} tokens × {:.1} MB total (attn_out={:.1}MB, ssm_deint={:.1}MB, kv_lora_rank={})",
@@ -171,6 +175,7 @@ impl BufferArena {
             hc_post,
             hc_comb,
             gdn_fla_scratch,
+            token_ids,
             max_batch_tokens,
             sizes,
         })
@@ -227,6 +232,12 @@ impl BufferArena {
     /// Scratch buffer for MoE routing + kernel metadata uploads.
     pub fn scratch(&self) -> DevicePtr {
         self.scratch
+    }
+    /// Token IDs `[M]` u32 — stable across the layer loop (DeepSeek-V4 hash-MoE
+    /// reads `tid2eid[token_id]`). Upload the pass's token IDs here before the
+    /// layer loop; under CUDA-graph decode upload before each replay.
+    pub fn token_ids(&self) -> DevicePtr {
+        self.token_ids
     }
     /// Allocated byte size of the scratch buffer (#110: bounds-check
     /// batched metadata-staging uploads against this).

@@ -272,6 +272,7 @@ impl TransformerModel {
                 comm: ctx.comm,
                 graph_capture: ctx.graph_capture,
                 gdn_exact_replay: false,
+                token_ids: None,
             }
         };
 
@@ -454,6 +455,7 @@ impl TransformerModel {
             comm: self.comm_ref(),
             graph_capture: false, // Eager mode — no CUDA graph
             gdn_exact_replay: false,
+            token_ids: None,
         };
 
         // Eager layer loop: skip SSM layers, run attention layers only

@@ -256,6 +256,11 @@ impl TransformerModel {
             let token_ids_dev = self.buffers.scratch();
             self.gpu
                 .copy_h2d_async(token_ids_bytes, token_ids_dev, stream)?;
+            // Also stage token IDs into the STABLE token_ids buffer (scratch is
+            // reused for MoE routing during the layer loop). DeepSeek-V4 hash-MoE
+            // layers read `tid2eid[token_id]` per token, in this same order.
+            self.gpu
+                .copy_h2d_async(token_ids_bytes, self.buffers.token_ids(), stream)?;
             ops::batched_embed(
                 self.gpu.as_ref(),
                 self.batched_embed_kernel,
@@ -365,6 +370,9 @@ impl TransformerModel {
             // Marconi warm hit: GDN layers replay from a restored SSM state
             // and must use the bit-faithful WY4 recurrence (see layer.rs).
             gdn_exact_replay: marconi_skip,
+            // Hash-MoE: token IDs for the `proc_count` tokens processed this
+            // pass, in MoE-loop order (uploaded above to the stable buffer).
+            token_ids: Some(self.buffers.token_ids()),
         };
 
         // ── 4. Forward through all layers ──

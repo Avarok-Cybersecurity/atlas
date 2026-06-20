@@ -124,7 +124,30 @@ impl MoeLayer {
             })?;
 
             prof!("topk", {
-                if let Some(bias) = self.correction_bias_dev {
+                if let Some(tid2eid) = self.tid2eid_dev {
+                    // DeepSeek-V4 hash routing (hash_moe layer): expert SELECTION
+                    // is the static `tid2eid[token_id]` table; the learned gate
+                    // still supplies the sqrtsoftplus scores that weight them.
+                    let token_ids = ctx.token_ids.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "DeepSeek-V4 hash-MoE layer requires ForwardContext.token_ids (decode)"
+                        )
+                    })?;
+                    ops::moe_hash_route(
+                        ctx.gpu,
+                        self.moe_hash_route_k,
+                        gate_logits,
+                        tid2eid,
+                        token_ids, // decode: single token at offset 0
+                        indices_dev,
+                        weights_dev,
+                        num_experts,
+                        top_k,
+                        ctx.config.norm_topk_prob,
+                        ctx.config.routed_scaling_factor as f32,
+                        stream,
+                    )
+                } else if let Some(bias) = self.correction_bias_dev {
                     if ctx.config.scoring_func == "sqrtsoftplus" {
                         // DeepSeek-V4 sqrtsoftplus + correction bias:
                         //   scores   = sqrtsoftplus(gate_logits)
