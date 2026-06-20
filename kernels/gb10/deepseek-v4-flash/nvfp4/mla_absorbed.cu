@@ -306,8 +306,15 @@ extern "C" __global__ void mla_cache_assemble_batched(
             v_cache[k_off + idx] = val;
         } else {
             unsigned int r = idx - kv_lora;
-            k_cache[k_off + idx] = k_rope[rope_off + r];
-            v_cache[k_off + idx] = __float2bfloat16(0.0f);
+            // DeepSeek-V4 MLA: V == K (the kv latent is the key AND the value),
+            // so V's rope tail carries the SAME rotated rope as K. Writing zeros
+            // here made the paged decode read V with a zeroed rope tail while the
+            // prefill inline attention used V with the real rope (k_out) — so
+            // decode attention diverged from prefill at every layer and
+            // generation derailed. Store V's rope = K's rope.
+            __nv_bfloat16 rope_val = k_rope[rope_off + r];
+            k_cache[k_off + idx] = rope_val;
+            v_cache[k_off + idx] = rope_val;
         }
     }
 }

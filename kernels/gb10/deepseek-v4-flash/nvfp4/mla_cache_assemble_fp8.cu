@@ -68,19 +68,23 @@ extern "C" __global__ void mla_cache_assemble_fp8_batched(
                 v_cache_fp8[v_cache_idx] = __nv_cvt_float_to_fp8(v_val * v_scale, __NV_SATFINITE, __NV_E4M3);
             }
         } else if (d < kv_lora + rope) {
-            // RoPE portion: copy from K, zero V
+            // RoPE portion. DeepSeek-V4 MLA: V == K (the kv latent is passed as
+            // BOTH key and value), so V carries the SAME rotated rope in its tail
+            // as K. The decode kernel reconstructs V's rope tail from this cache;
+            // writing zeros here (the old behaviour) made decode's V differ from
+            // the prefill inline V (which uses k_out with rope), so decode
+            // attention diverged from prefill and generation derailed.
             unsigned int r = d - kv_lora;
+            (void)r;
             for (unsigned int head = 0; head < nkv; head++) {
                 unsigned long long k_idx = k_bf16_offset + head * mla_cache_dim + d;
                 unsigned long long k_cache_idx = k_cache_offset + head * mla_cache_dim + d;
                 unsigned long long v_cache_idx = v_cache_offset + head * mla_cache_dim + d;
 
-                // Load K RoPE value, quantize to FP8
+                // Load K RoPE value, quantize to FP8 for both K and V caches (V==K).
                 float k_val = __bfloat162float(k_bf16[k_idx]);
                 k_cache_fp8[k_cache_idx] = __nv_cvt_float_to_fp8(k_val * k_scale, __NV_SATFINITE, __NV_E4M3);
-
-                // V RoPE padding = 0
-                v_cache_fp8[v_cache_idx] = __nv_cvt_float_to_fp8(0.0f, __NV_SATFINITE, __NV_E4M3);
+                v_cache_fp8[v_cache_idx] = __nv_cvt_float_to_fp8(k_val * v_scale, __NV_SATFINITE, __NV_E4M3);
             }
         }
     }
