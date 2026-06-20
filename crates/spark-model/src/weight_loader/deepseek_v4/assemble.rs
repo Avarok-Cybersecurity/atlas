@@ -15,7 +15,7 @@ use crate::layers::qwen3_attention::{
 };
 use crate::weight_map::{
     AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense,
-    dense_minus_one, quantize_to_nvfp4, quantized_v2,
+    dense_minus_one, quantized_v2,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -60,15 +60,12 @@ pub fn assemble_layer(
     // RedHatAI re-quant uses ffn.gate.weight and ffn.experts.E.w1/w2/w3 naming.
     let p = &lp;
     let gate = dense(store, &format!("{p}.ffn.gate.weight"))?;
-    let gate_nvfp4 = Some(quantize_to_nvfp4(
-        &gate,
-        config.num_experts,
-        config.hidden_size,
-        gpu,
-        gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?,
-        gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?,
-        gpu.default_stream(),
-    )?);
+    // ROUTER GATE MUST STAY HIGH-PRECISION. The checkpoint ships `ffn.gate.weight`
+    // in BF16 (the quant recipes deliberately exclude the router from NVFP4). A
+    // 4-bit router flips the low-margin top-6 expert selection on essentially
+    // every token -> incoherent "token salad" output. Route through the BF16
+    // `dense_gemv` path (gate_nvfp4 = None) instead of re-quantizing to NVFP4.
+    let gate_nvfp4 = None;
 
     let mut experts = Vec::with_capacity(config.num_experts);
     for e in 0..config.num_experts {
