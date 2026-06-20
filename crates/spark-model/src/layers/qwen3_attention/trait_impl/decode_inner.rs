@@ -684,14 +684,7 @@ impl Qwen3AttentionLayer {
         }
 
         if let Some(scalar) = self.layer_scalar {
-            self.apply_layer_scalar(
-                ctx.gpu,
-                ffn_out,
-                h,
-                scalar,
-                stream,
-                ctx.config.use_fp32_residual(),
-            )?;
+            self.apply_layer_scalar(ctx.gpu, ffn_out, h, scalar, stream)?;
         }
 
         ops::hc_post(
