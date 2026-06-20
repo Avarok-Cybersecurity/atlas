@@ -35,6 +35,9 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/
 COPY kernels/ kernels/
+# Vendored cudarc 0.19.2 is a `path = "vendor/cudarc"` workspace dependency
+# (see root Cargo.toml); the build cannot resolve it without this COPY.
+COPY vendor/ vendor/
 
 ENV ATLAS_TARGET_HW=gb10
 ENV ATLAS_TARGET_MODEL=deepseek-v4-flash
