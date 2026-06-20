@@ -101,6 +101,7 @@ sudo docker run -d \
   $RDMA_FLAGS \
   $NCCL_ENV \
   -e RUST_LOG=info \
+  -e ATLAS_DIAG_V4_ALL_LAYERS=${ATLAS_DIAG:-0} \
   $VOL_HEAD \
   "$IMAGE" serve \
     --model-from-path "$MODEL_PATH" \
@@ -130,6 +131,7 @@ ssh "$WORKER_IP" "sudo docker run -d \
   $RDMA_FLAGS \
   $NCCL_ENV \
   -e RUST_LOG=info \
+  -e ATLAS_DIAG_V4_ALL_LAYERS=${ATLAS_DIAG:-0} \
   $VOL_WORKER \
   $IMAGE serve \
     --model-from-path $MODEL_PATH \

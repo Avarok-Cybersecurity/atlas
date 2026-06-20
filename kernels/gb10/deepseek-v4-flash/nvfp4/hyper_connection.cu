@@ -37,7 +37,7 @@ __device__ __forceinline__ float hc_block_reduce(float* red, unsigned int tid) {
 // streams[t, i, d] = hidden[t, d].  Grid: (T,1,1)  Block: (256,1,1).
 extern "C" __global__ void hc_expand(
     const __nv_bfloat16* __restrict__ hidden, // [T, H]
-    __nv_bfloat16* __restrict__ streams,      // [T, hc, H]
+    float* __restrict__ streams,              // [T, hc, H] FP32 highway (mHC)
     const unsigned int hidden_size,
     const unsigned int hc_mult
 ) {
@@ -45,9 +45,9 @@ extern "C" __global__ void hc_expand(
     const unsigned int tid = threadIdx.x;
     const unsigned int H = hidden_size;
     const __nv_bfloat16* x = hidden + (size_t)t * H;
-    __nv_bfloat16* s = streams + (size_t)t * hc_mult * H;
+    float* s = streams + (size_t)t * hc_mult * H;
     for (unsigned int d = tid; d < H; d += HC_BLOCK) {
-        __nv_bfloat16 v = x[d];
+        float v = (float)x[d];
         for (unsigned int i = 0; i < hc_mult; ++i) s[i * H + d] = v;
     }
 }
@@ -56,7 +56,7 @@ extern "C" __global__ void hc_expand(
 // streams [T, hc, H] -> y_out [T, H] (collapsed), post_out [T, hc],
 // comb_out [T, hc, hc].  Grid: (T,1,1)  Block: (256,1,1).
 extern "C" __global__ void hc_pre(
-    const __nv_bfloat16* __restrict__ streams,
+    const float* __restrict__ streams,  // [T, hc, H] FP32 highway (mHC)
     const float* __restrict__ hc_fn,    // [mix_hc, hc*H]
     const float* __restrict__ hc_scale, // [3]
     const float* __restrict__ hc_base,  // [mix_hc]
@@ -76,7 +76,7 @@ extern "C" __global__ void hc_pre(
     const unsigned int hc_dim = hc * H;
     const unsigned int mix_hc = (2 + hc) * hc;
 
-    const __nv_bfloat16* x = streams + (size_t)t * hc_dim;
+    const float* x = streams + (size_t)t * hc_dim;
 
     __shared__ float red[HC_BLOCK];
     __shared__ float s_rsqrt;
@@ -154,6 +154,23 @@ extern "C" __global__ void hc_pre(
                 for (unsigned int i = 0; i < hc; ++i) comb[i * hc + j] /= c;
             }
         }
+        // Final EXACT column projection onto the doubly-stochastic manifold.
+        // hc_post mixes streams as out[j] = sum_i comb[i][j] * res[i], so the
+        // residual-mixing operator is column-indexed: its spectral radius equals
+        // max_j (sum_i comb[i][j]). The Sinkhorn passes above divide by
+        // (sum + hc_eps), which leaves each column summing to sum/(sum+eps) — a
+        // value that is < 1 but whose denominator carries the eps of EVERY prior
+        // pass, so the realized column sums drift off exactly 1 in fp32. Pin the
+        // columns to sum exactly to 1 here (no eps), guaranteeing the mixing map
+        // is non-expansive (eigenvalue == 1) regardless of logit magnitude — the
+        // manifold constraint the kernel's name promises. Matches the reference,
+        // which likewise ends its Sinkhorn on a column normalization.
+        for (unsigned int j = 0; j < hc; ++j) {
+            float c = 0.f;
+            for (unsigned int i = 0; i < hc; ++i) c += comb[i * hc + j];
+            float inv = (c > 0.f) ? (1.f / c) : 0.f;
+            for (unsigned int i = 0; i < hc; ++i) comb[i * hc + j] *= inv;
+        }
         for (unsigned int i = 0; i < hc; ++i)
             for (unsigned int j = 0; j < hc; ++j)
                 comb_out[(size_t)t * hc * hc + i * hc + j] = comb[i * hc + j];
@@ -174,10 +191,10 @@ extern "C" __global__ void hc_pre(
 // Grid: (T,1,1)  Block: (256,1,1).
 extern "C" __global__ void hc_post(
     const __nv_bfloat16* __restrict__ block_out, // [T, H]
-    const __nv_bfloat16* __restrict__ residual,  // [T, hc, H]
+    const float* __restrict__ residual,          // [T, hc, H] FP32 highway (mHC)
     const float* __restrict__ post,              // [T, hc]
     const float* __restrict__ comb,              // [T, hc, hc]
-    __nv_bfloat16* __restrict__ out,             // [T, hc, H]
+    float* __restrict__ out,                     // [T, hc, H] FP32 highway (mHC)
     const unsigned int hidden_size,
     const unsigned int hc_mult
 ) {
@@ -187,19 +204,19 @@ extern "C" __global__ void hc_post(
     const unsigned int hc = hc_mult;
 
     const __nv_bfloat16* x = block_out + (size_t)t * H;
-    const __nv_bfloat16* res = residual + (size_t)t * hc * H;
+    const float* res = residual + (size_t)t * hc * H;
     const float* p = post + (size_t)t * hc;
     const float* c = comb + (size_t)t * hc * hc;
-    __nv_bfloat16* o = out + (size_t)t * hc * H;
+    float* o = out + (size_t)t * hc * H;
 
     for (unsigned int d = tid; d < H; d += HC_BLOCK) {
         float xd = (float)x[d];
         float rv[HC_MAX_MULT];
-        for (unsigned int i = 0; i < hc; ++i) rv[i] = (float)res[i * H + d];
+        for (unsigned int i = 0; i < hc; ++i) rv[i] = res[i * H + d];
         for (unsigned int j = 0; j < hc; ++j) {
             float acc = p[j] * xd;
             for (unsigned int i = 0; i < hc; ++i) acc += c[i * hc + j] * rv[i];
-            o[j * H + d] = __float2bfloat16(acc);
+            o[j * H + d] = acc;
         }
     }
 }
@@ -208,7 +225,7 @@ extern "C" __global__ void hc_post(
 // Final collapse: streams [T, hc, H] -> y_out [T, H] via a single learned
 // sigmoid-weighted sum.  Grid: (T,1,1)  Block: (256,1,1).
 extern "C" __global__ void hc_head(
-    const __nv_bfloat16* __restrict__ streams,
+    const float* __restrict__ streams,    // [T, hc, H] FP32 highway (mHC)
     const float* __restrict__ head_fn,    // [hc, hc*H]
     const float* __restrict__ head_scale, // [1]
     const float* __restrict__ head_base,  // [hc]
@@ -224,7 +241,7 @@ extern "C" __global__ void hc_head(
     const unsigned int hc = hc_mult;
     const unsigned int hc_dim = hc * H;
 
-    const __nv_bfloat16* x = streams + (size_t)t * hc_dim;
+    const float* x = streams + (size_t)t * hc_dim;
 
     __shared__ float red[HC_BLOCK];
     __shared__ float s_rsqrt;

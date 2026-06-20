@@ -320,7 +320,11 @@ impl BufferSizes {
             norm_unit_w: max_dim * bf16,
             // HC buffers: only allocated for DeepSeek-V4 (hc_mult > 0).
             hc_streams: if config.hc_mult > 0 {
-                m * config.hc_mult * h * bf16
+                // FP32 mHC highway: the residual streams grow large across the
+                // blocks (the manifold-mixing is norm-preserving, eigenvalue 1),
+                // so BF16 storage swamps the small per-layer signal at scale and
+                // collapses generation. Store the streams in FP32 (4 bytes).
+                m * config.hc_mult * h * 4
             } else {
                 256
             },
