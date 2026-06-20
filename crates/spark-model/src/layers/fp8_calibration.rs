@@ -176,11 +176,26 @@ impl Fp8KvCalibration {
             inner.k_scale = (inner.k_running_max / FP8_E4M3_MAX).max(MIN_SCALE);
             inner.v_scale = (inner.v_running_max / FP8_E4M3_MAX).max(MIN_SCALE);
             inner.frozen = true;
-        } else if inner.frozen && inner.tokens_seen % 128 < num_tokens as usize {
-            // Periodic recalibration: blend new observations with existing scales.
-            // Adaptive EMA: use α=0.3 when distribution shifts >20%, else α=0.1.
-            // This responds faster to multi-turn topic switches without oscillating
-            // on stable distributions.
+        } else if inner.frozen
+            && inner.tokens_seen % 128 < num_tokens as usize
+            && std::env::var("ATLAS_FP8_KV_EMA_RECAL")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+        {
+            // F5 (2026-05-26): Periodic EMA recalibration is now OPT-IN
+            // via `ATLAS_FP8_KV_EMA_RECAL=1`, default OFF. Rationale:
+            // changing `k_scale` / `v_scale` after `frozen=true` makes
+            // previously-written KV cache entries (quantized with the
+            // OLD scales) stale relative to the NEW scales — every
+            // attention read after a recalibration sees the historical
+            // cache through a shifted quantization basis. The comment
+            // "responds faster to multi-turn topic switches" was correct
+            // about the calibration signal but missed that retroactively
+            // rescaling the cache corrupts already-stored multi-turn
+            // context. The forensic study of the canonical opencode
+            // probe shows reasoning-channel collapse + drift-to-phantom-
+            // path patterns whose timing is consistent with deep-layer
+            // KV reading through a rescaled basis.
             let new_k = (k_max / FP8_E4M3_MAX).max(MIN_SCALE);
             let new_v = (v_max / FP8_E4M3_MAX).max(MIN_SCALE);
             let k_shift = (new_k - inner.k_scale).abs() / inner.k_scale.max(MIN_SCALE);

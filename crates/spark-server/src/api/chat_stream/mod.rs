@@ -24,6 +24,7 @@ mod handle_done;
 mod handle_error;
 mod handle_token;
 mod state;
+mod strip;
 mod token_ids;
 mod tool_handlers;
 
@@ -38,7 +39,6 @@ use crate::AppState;
 use crate::openai::ChatCompletionChunk;
 use crate::tool_parser;
 
-use super::failures::{F39FailureCache, f60_disable_mtp_for_request};
 use super::inference_types::{GrammarSpec, InferenceRequest, StreamEvent};
 
 use ctx::StreamCtx;
@@ -67,6 +67,7 @@ pub(crate) async fn chat_completions_stream(
     logit_bias: Vec<(u32, f32)>,
     enable_thinking: bool,
     thinking_budget: Option<u32>,
+    repetition_detection: Option<crate::openai::RepetitionDetectionParams>,
     tools_active: bool,
     tool_choice_required: bool,
     suppress_tool_call: bool,
@@ -84,7 +85,6 @@ pub(crate) async fn chat_completions_stream(
     req_metadata: Option<std::collections::HashMap<String, String>>,
     req_ctx: Option<crate::rate_limiter::RequestContext>,
     dump_seq: Option<u64>,
-    f44_cache: F39FailureCache,
 ) -> Result<Response, (StatusCode, String)> {
     // service_tier + metadata are request echoes only; the chat-completion-
     // chunk schema doesn't carry them, but we surface them via the final
@@ -111,6 +111,12 @@ pub(crate) async fn chat_completions_stream(
     // `<think>\n\n</think>\n\n` and the model generates no thinking tokens —
     // no need for scheduler tracking.
     let scheduler_thinking = enable_thinking;
+    // Wrap prompt tokens in Arc ONCE — the scheduler request, the
+    // streaming context, and the Tier 5c retry path all share the
+    // same Arc. No deep clones of the ~40 KB Vec<u32>.
+    let prompt_tokens = std::sync::Arc::new(prompt_tokens);
+    let prompt_tokens_for_retry = prompt_tokens.clone();
+    let grammar_spec_for_retry = grammar_spec.clone();
     let request = InferenceRequest::Streaming {
         prompt_tokens,
         session_hash,
@@ -133,9 +139,10 @@ pub(crate) async fn chat_completions_stream(
         stop_tokens,
         enable_thinking: scheduler_thinking,
         thinking_budget,
+        repetition_detection,
         require_tool_call: tool_choice_required,
         suppress_tool_call,
-        disable_mtp: f60_disable_mtp_for_request(tools_active),
+        disable_mtp: false,
         grammar_spec,
         seed,
         top_logprobs,
@@ -173,17 +180,22 @@ pub(crate) async fn chat_completions_stream(
         .and_then(|s| s.parse().ok())
         .unwrap_or(12);
 
-    // F44/F55: log cache state at stream entry.
-    let f44_cache_active =
-        !f44_cache.direct.is_empty() || !f44_cache.missing_bins_by_tool.is_empty();
-    if f44_cache_active {
-        tracing::info!(
-            direct_entries = f44_cache.direct.len(),
-            missing_bin_tools = f44_cache.missing_bins_by_tool.len(),
-            sample_direct = ?f44_cache.direct.keys().take(3).collect::<Vec<_>>(),
-            "F44/F55: streaming closure entered with non-empty failure cache"
-        );
-    }
+    // Cache the hold-back window length once. vLLM's
+    // `IncrementalDetokenizer.update` uses
+    // `max(len(s) for s in stop_strings) - 1` so a stop string that
+    // straddles two decoded chunks cannot leak its prefix to the
+    // client before the suffix arrives. Zero when no stop strings are
+    // configured (preserves the existing pass-through behaviour for
+    // requests without `stop`).
+    let stop_string_buffer_len: usize = stop_strings
+        .iter()
+        .map(|s| s.len())
+        .max()
+        .map(|m| m.saturating_sub(1))
+        .unwrap_or(0);
+
+    let prompt_vocab: Arc<std::collections::HashSet<String>> =
+        Arc::new(std::collections::HashSet::new());
 
     let ctx = StreamCtx {
         state: state.clone(),
@@ -194,19 +206,34 @@ pub(crate) async fn chat_completions_stream(
         tool_defs_for_backfill: tool_defs,
         cwd_for_normalize: cwd_hint,
         stop_strings,
+        stop_string_buffer_len,
         leak_markers,
+        wants_typed_arguments: state
+            .tool_call_parser
+            .as_ref()
+            .is_some_and(|p| p.wants_typed_arguments()),
         max_tool_calls_per_response,
         req_stream_include_usage,
         req_return_token_ids,
         req_ctx,
         dump_seq,
-        f44_cache,
-        f44_cache_active,
+        tool_retry_enabled: false,
+        prompt_tokens: prompt_tokens_for_retry,
+        prompt_vocab,
+        grammar_spec: grammar_spec_for_retry,
+        max_tokens,
+        timeout_at,
     };
 
-    let mut stream_state = StreamState::new(tools_active, enable_thinking, cancel_flag.clone());
+    let mut stream_state = StreamState::new(
+        tools_active,
+        enable_thinking,
+        cancel_flag.clone(),
+        ctx.tool_defs_for_backfill.clone(),
+    );
 
     let token_stream = ReceiverStream::new(token_rx).flat_map(move |event| {
+        use futures::StreamExt;
         let events = match event {
             StreamEvent::Token(tok) | StreamEvent::TokenWithLogprobs(tok, _) => {
                 handle_token::handle_token(&mut stream_state, &ctx, tok)
@@ -231,7 +258,8 @@ pub(crate) async fn chat_completions_stream(
             ),
             StreamEvent::Error(msg) => handle_error::handle_error(&ctx, msg),
         };
-        futures::stream::iter(events)
+
+        futures::stream::iter(events).boxed()
     });
 
     // Prepend role chunk, append [DONE] sentinel

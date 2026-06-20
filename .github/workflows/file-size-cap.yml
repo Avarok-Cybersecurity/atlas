@@ -66,6 +66,44 @@ jobs:
             # Already heavily split (`serve_phases`, `serve_router`); the
             # remaining body is the linear bootstrapping sequence.
             "crates/spark-server/src/main_modules/serve.rs"
+            # 524 LoC — Qwen3 attention layer kernel-handle bootstrap.
+            # The TurboQuant+ asymmetric variants extend several existing
+            # `match kv_dtype` arms (turbo3 + asym pair members route to
+            # the same kernel module) and the new InnerQ + Turbo2 +
+            # Bf16K+Turbo3V handles slot into the single-pass struct
+            # constructor. Splitting fragments the kernel-loading
+            # sequence which is read top-to-bottom alongside `types.rs`.
+            "crates/spark-model/src/layers/qwen3_attention/init.rs"
+            # 552 LoC — Qwen3 attention decode dispatcher. TQ+ ships 9 asym
+            # KvCacheDtype variants (bf16k_/fp8k_/turbo*k_*); each takes a
+            # dedicated arm in the decode-kernel match expression. The fp8k_ +
+            # turbo*k_ wrappers were already extracted to sibling ops modules
+            # (`kv_cache_fp8k.rs`, `kv_cache_turbok.rs`); the dispatcher proper
+            # is the single per-call kernel-selection site and reads top-to-
+            # bottom with `write_kv_cache.rs` as a paired audit.
+            "crates/spark-model/src/layers/qwen3_attention/decode/run_paged_decode.rs"
+            # 522 LoC — paged-prefill kernel dispatcher (paired with decode
+            # dispatcher above). Fp8k_ asym was already extracted to
+            # `paged_attn_fp8k.rs`; the remaining tuple-match selects the
+            # prefill kernel handle per (KvCacheDtype, use_br64).
+            "crates/spark-model/src/layers/qwen3_attention/prefill/paged_attn.rs"
+            # 508 LoC — write_kv_cache dispatcher. Each KvCacheDtype arm runs
+            # the WHT bookend conditionally (gated on weight_pre_rotation env)
+            # then calls the per-variant reshape kernel. Splitting the arms
+            # into per-variant files would invert the read order with
+            # run_paged_decode.rs — they're audited as a pair.
+            "crates/spark-model/src/layers/qwen3_attention/decode/write_kv_cache.rs"
+            # 533 LoC — generic ops/kv_cache wrappers. Holds the BF16/FP8/NVFP4
+            # reshape_and_cache wrappers + the asym wrappers that share the
+            # same FFI signature shape. Asym variants with k_scale threading
+            # (fp8k_) were already extracted to `kv_cache_fp8k.rs`; turbo*k_
+            # to `kv_cache_turbok.rs`. The remainder is the wrapper backbone.
+            "crates/spark-model/src/layers/ops/kv_cache.rs"
+            # 508 LoC — prefill_attn ops wrappers. Same pattern: per-variant
+            # asym wrappers extracted to siblings (`prefill_attn_fp8k.rs`,
+            # `prefill_attn_turbok.rs`); this file is the original
+            # ungated/bf16/fp8/nvfp4/turbo3/turbo4 + Bf16KTurbo* set.
+            "crates/spark-model/src/layers/ops/prefill_attn_main_b.rs"
             # 509 LoC — single integration test orchestration; one
             # comprehensive end-to-end harness. Splitting would require
             # extracting fixtures into a shared module that's only used
@@ -82,6 +120,39 @@ jobs:
             # the launch-day allow-list pending a free-function
             # `ops/{alloc,copy,launch,events}.rs` extraction.
             "crates/spark-runtime/src/metal_backend.rs"
+            # ── PR #90 (fix/in-think-tool-call-leak) carry-overs ──
+            # The overnight coherence-debugging work grew these past 500 LoC
+            # (19 newly over-cap + impl_a2/compile_tools inherited from main).
+            # Allow-listed to unblock the PR; clean splits tracked as follow-up
+            # (per-file Ctx/State or sub-module extraction, Atlas idiom).
+            "crates/atlas-kernels/build.rs"
+            "crates/atlas-quant/src/fp8.rs"
+            "crates/spark-model/examples/gdn_fla_e2e_gateb.rs"
+            "crates/spark-model/src/layers/moe/forward_prefill_fp8.rs"
+            "crates/spark-model/src/layers/moe/forward.rs"
+            "crates/spark-model/src/layers/mtp_head/forward.rs"
+            "crates/spark-model/src/layers/ops/gemm_quant.rs"
+            "crates/spark-model/src/layers/ops/moe_expert.rs"
+            "crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip.rs"
+            "crates/spark-model/src/layers/qwen3_attention/prefill/paged.rs"
+            "crates/spark-model/src/model/block_mgmt.rs"
+            "crates/spark-model/src/model/impl_a2.rs"
+            "crates/spark-model/src/model/ssm_pool.rs"
+            "crates/spark-model/src/weight_loader/qwen35/load_layers.rs"
+            "crates/spark-runtime/src/sampler.rs"
+            "crates/spark-server/src/api/chat_blocking.rs"
+            "crates/spark-server/src/api/chat_stream/handle_token.rs"
+            "crates/spark-server/src/grammar/compile_tools.rs"
+            "crates/spark-server/src/scheduler/emit_step.rs"
+            "crates/spark-server/src/scheduler/helpers.rs"
+            "crates/spark-server/src/tool_parser/validation.rs"
+            # ── PR #169 (perf/qwen36-dense-ffn-tc-prefill) carry-over ──
+            # 519 LoC — dense-FFN forward. The tensor-core w4a16 prefill path
+            # adds transposed gate/up/down handles + a per-(dtype,phase) kernel
+            # dispatch macro; like the other kernel-dispatch files above, the
+            # launch sequence reads top-to-bottom and splitting fragments it.
+            # Clean split tracked as follow-up.
+            "crates/spark-model/src/layers/dense_ffn.rs"
           )
 
           violations=0

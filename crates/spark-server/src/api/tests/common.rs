@@ -17,6 +17,7 @@ pub(super) fn mk_msg(role: &str, text: &str) -> crate::openai::IncomingMessage {
         tool_calls: None,
         tool_call_id: None,
         name: None,
+        reasoning_content: None,
     }
 }
 
@@ -30,6 +31,7 @@ pub(super) fn mk_tool_msg(call_id: &str, text: &str) -> crate::openai::IncomingM
         tool_calls: None,
         tool_call_id: Some(call_id.to_string()),
         name: None,
+        reasoning_content: None,
     }
 }
 
@@ -50,5 +52,6 @@ pub(super) fn mk_assistant_with_tool_call(
         }]),
         tool_call_id: None,
         name: None,
+        reasoning_content: None,
     }
 }

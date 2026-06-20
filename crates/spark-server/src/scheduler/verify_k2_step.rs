@@ -4,8 +4,65 @@
 
 use super::*;
 
+// Periodic ACCEPT/REJECT summary counters (P4, 2026-05-24).
+// Replaces the earlier `is_multiple_of(50)` per-step gate which hid
+// accept events behind seq_len happenstance. We now log a single
+// summary line every K2_SUMMARY_PERIOD verify steps and reset.
+// Atomics are fine: scheduler runs on a single thread today, but
+// future multi-scheduler builds remain race-free.
+const K2_SUMMARY_PERIOD: u64 = 100;
+static K2_ACCEPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static K2_REJECTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[inline]
+fn k2_record_outcome(accepted: bool, seq_len: usize) {
+    let counter = if accepted { &K2_ACCEPTS } else { &K2_REJECTS };
+    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let total = K2_ACCEPTS.load(std::sync::atomic::Ordering::Relaxed)
+        + K2_REJECTS.load(std::sync::atomic::Ordering::Relaxed);
+    if total >= K2_SUMMARY_PERIOD {
+        let accepts = K2_ACCEPTS.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let rejects = K2_REJECTS.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let total = (accepts + rejects).max(1);
+        let pct = 100.0 * (accepts as f64) / (total as f64);
+        // A6 (2026-05-26): MTP K=2 acceptance rate as a free drift
+        // gauge. The HF z-lab/Qwen3.6-27B-DFlash#2 report and our own
+        // research3_spec_verify finding show that FP8 Qwen3.6 with
+        // sustained <30% MTP accept indicates the target model's
+        // logits have entered the "confidently wrong" attractor — the
+        // exact failure mode driving the opencode multi-turn drift.
+        // For now we just WARN to surface the signal in production
+        // logs; a future Tier-B refinement adds per-sequence state +
+        // `finish_reason="drift_detected"` to actually terminate the
+        // response when the gauge trips.
+        const DRIFT_THRESHOLD_PCT: f64 = 30.0;
+        if pct < DRIFT_THRESHOLD_PCT && total >= K2_SUMMARY_PERIOD {
+            tracing::warn!(
+                "K2 drift gauge: accept rate {pct:.1}% < {DRIFT_THRESHOLD_PCT}% over last {total} steps (seq_len={seq_len}). Model logits likely in 'confidently wrong' attractor."
+            );
+        } else {
+            tracing::info!(
+                "K2 summary: {accepts} accept / {rejects} reject in last {total} steps ({pct:.1}% accept) seq_len={seq_len}"
+            );
+        }
+    }
+}
+
 /// K=2 verify: [last_token, draft] → [v0, v1]. Two outcomes: ACCEPT or REJECT.
-pub fn step_verify_k2(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_drafts: usize) {
+///
+/// `verify_ctx` carries tokenizer special-token IDs the pre-sample
+/// pipeline needs. Each verify position's logits are now copied D2H
+/// and run through the same 8-stage processor pipeline used by the
+/// non-MTP path — the fix for MTP-emitted tokens bypassing mid-word
+/// defer, post-close mask, forced think-end, grammar bitmask, etc.
+/// See `verify_pipeline_helper` for the root-cause writeup.
+pub fn step_verify_k2(
+    model: &dyn Model,
+    a: &mut ActiveSeq,
+    drafts: &[u32],
+    num_drafts: usize,
+    verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+) {
     let t_sync = Instant::now();
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
@@ -45,11 +102,22 @@ pub fn step_verify_k2(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
     a.last_token_time = Instant::now();
     let [v0_argmax, v1_argmax] = result;
 
-    // Use argmax for speculative acceptance. Temperature-aware resampling
-    // (verify_resample) requires blocking D2H copy (~0.8ms/step overhead).
-    // TODO: implement GPU-side temperature sampling to avoid D2H penalty.
-    let v0 = v0_argmax;
-    let v1 = v1_argmax;
+    // Phase C-2 (2026-05-24): apply the full pre-sample logits-
+    // processor pipeline to each verify position. Without this,
+    // MTP-emitted tokens escape every mask the non-MTP path applies
+    // (grammar desync + mid-word `</think>` cuts + stray `<think>`
+    // re-entry + malformed tool calls). The D2H copy is one-shot
+    // (~0.8ms for 256k vocab × K=2); not graph-captured. Acceptance
+    // is decided against the *processed* argmax, not the raw GPU
+    // argmax — the pipeline is what would have run if MTP were off.
+    let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+        model,
+        &[v0_argmax, v1_argmax],
+        a,
+        verify_ctx,
+    );
+    let v0 = processed.first().copied().unwrap_or(v0_argmax);
+    let v1 = processed.get(1).copied().unwrap_or(v1_argmax);
     let accepted = drafts[0] == v0;
 
     // Extract logprobs from verify logits buffer (K=2 positions) when requested.
@@ -86,10 +154,11 @@ pub fn step_verify_k2(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
         }
         a.last_token = v1;
 
-        // F62 (2026-04-27): SpecMamba commit. Full accept (num_accepted=k=2):
-        // copy verify scratch → canonical state.
-        if let Err(e) = model.commit_verify_state_async(&mut a.seq, 2, 2) {
-            tracing::error!("commit_verify_state_async (accept): {e:#}");
+        // Item #2 (STree-style in-place K=2 verify commit). Full accept
+        // (num_accepted=k=2): the verify kernel already wrote the canonical
+        // h_state, so the commit is a no-op.
+        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 2, 2) {
+            tracing::error!("commit_accepted_prefix (accept): {e:#}");
             return;
         }
         if let Err(e) = model.save_hidden_for_mtp(1, 0) {
@@ -116,12 +185,19 @@ pub fn step_verify_k2(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             }
         }
         let propose_us = t_propose.elapsed().as_micros();
-        if a.seq.seq_len.is_multiple_of(50) {
-            tracing::info!(
-                "K2 ACCEPT: ep={ep_us}μs sync={sync_us}μs verify={verify_us}μs propose={propose_us}μs seq_len={}",
-                a.seq.seq_len
-            );
-        }
+        // Per-step ACCEPT trace at debug — fires every step during
+        // spec-decode. Power-user diagnostics:
+        // `RUST_LOG=spark::scheduler::verify_k2_step=debug`. The
+        // summary line emitted by `k2_record_outcome` is the
+        // production signal.
+        tracing::debug!(
+            "K2 ACCEPT: ep={ep_us}μs sync={sync_us}μs verify={verify_us}μs propose={propose_us}μs seq_len={}",
+            a.seq.seq_len
+        );
+        k2_record_outcome(true, a.seq.seq_len);
+        // #155 iter3: block-aligned Marconi checkpoint (live SSM state is
+        // canonical post-commit). Fires only at interval boundaries.
+        model.decode_marconi_checkpoint(&mut a.seq);
     } else {
         // ── REJECTED ──
         a.seq.seq_len -= 1;
@@ -130,11 +206,12 @@ pub fn step_verify_k2(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 0, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
-        // F62 (2026-04-27): SpecMamba commit. K=2 reject means
-        // num_accepted=1 (last_token is always accepted): copy
-        // intermediate[0] → canonical. Verify scratch is discarded.
-        if let Err(e) = model.commit_verify_state_async(&mut a.seq, 1, 2) {
-            tracing::error!("commit_verify_state_async (reject): {e:#}");
+        // Item #2 (STree-style in-place K=2 verify commit). K=2 reject means
+        // num_accepted=1 (last_token is always accepted): the in-place
+        // commit rewinds live h_state to intermediate[0] (state after the
+        // accepted token). Verify draft state is discarded.
+        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 1, 2) {
+            tracing::error!("commit_accepted_prefix (reject): {e:#}");
             a.finished = true;
             return;
         }
@@ -167,7 +244,11 @@ pub fn step_verify_k2(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
         }
         let propose_us = t_propose.elapsed().as_micros();
         let new_draft = a.pending_drafts.first().copied().unwrap_or(0);
-        tracing::info!(
+        // REJECT log demoted from `info!` to `debug!` to match the
+        // ACCEPT path. Rejection is informative when investigating
+        // draft quality but spams Docker logs at production load.
+        // Periodic accept-rate summary lives in `k2_record_outcome`.
+        tracing::debug!(
             "K2 REJECT: ep={ep_us}μs sync={sync_us}μs verify={verify_us}μs propose={propose_us}μs seq_len={} last_tok={} prev_draft={} v0_verified={} new_draft={}",
             a.seq.seq_len,
             a.last_token,
@@ -175,5 +256,9 @@ pub fn step_verify_k2(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             v0,
             new_draft,
         );
+        k2_record_outcome(false, a.seq.seq_len);
+        // #155 iter3: block-aligned Marconi checkpoint (live SSM state is
+        // canonical post-commit). Fires only at interval boundaries.
+        model.decode_marconi_checkpoint(&mut a.seq);
     }
 }

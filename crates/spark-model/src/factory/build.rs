@@ -18,7 +18,6 @@ use crate::layers::MtpQuantization;
 use crate::model::TransformerModel;
 use crate::traits::Model;
 use crate::weight_loader::load_dflash_weights;
-use crate::weight_map::quantize_to_nvfp4;
 
 pub fn build_model(
     mut config: ModelConfig,
@@ -137,51 +136,17 @@ pub fn build_model(
         mtp_quant
     };
 
-    // ── Step 3: Quantize LM head to NVFP4 for fast decode ──
-    let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
-    let quantize_k = gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?;
-    let stream = gpu.default_stream();
-    // nvidia/Qwen3.6-35B-A3B-NVFP4 (algo=MIXED_PRECISION) ships an already
-    // NVFP4-packed lm_head (U8 `weight` + `weight_scale` + `weight_scale_2`).
-    // `load_lm_head` dense-loads those packed bytes, and re-quantizing them as
-    // if they were BF16 reads 2x the buffer and faults
-    // (CUDA_ERROR_ILLEGAL_ADDRESS, issue #107). Detect the packed lm_head and
-    // load it directly as NVFP4 instead of dequant->requantize.
-    let lm_head_key = [
-        "lm_head.weight",
-        "language_model.lm_head.weight",
-        "model.lm_head.weight",
-    ]
-    .into_iter()
-    .find(|k| store.contains(k));
-    let lm_head_prepacked_nvfp4 = lm_head_key
-        .and_then(|k| store.get(k).ok())
-        .is_some_and(|w| w.dtype == spark_runtime::weights::WeightDtype::UInt8);
-
-    let lm_head_nvfp4 = if config.skip_lm_head_quantization() {
-        tracing::info!("LM head kept as BF16 (skip NVFP4 quantization per model config)");
-        None
-    } else if lm_head_prepacked_nvfp4 {
-        let prefix = lm_head_key.unwrap().strip_suffix(".weight").unwrap();
-        let q = crate::weight_map::quantized(store, prefix, gpu.as_ref())?;
-        tracing::info!(
-            "LM head loaded as pre-packed NVFP4 (vocab={}, skipped requantize)",
-            config.vocab_size
-        );
-        Some(q)
-    } else {
-        let q = quantize_to_nvfp4(
-            &lm_head,
-            config.vocab_size,
-            config.hidden_size,
-            gpu.as_ref(),
-            absmax_k,
-            quantize_k,
-            stream,
-        )?;
-        tracing::info!("LM head quantized to NVFP4 (vocab={})", config.vocab_size);
-        Some(q)
-    };
+    // ── Step 3: LM-head quantization (NVFP4 / FP8 / BF16-skip) + the
+    // draft-only NVFP4 head for MTP — extracted to lm_head_setup.rs
+    // (file-size cap; pure code move).
+    let (lm_head_nvfp4, lm_head_fp8, mtp_lm_head_nvfp4) = super::lm_head_setup::setup_lm_heads(
+        store,
+        &lm_head,
+        &config,
+        gpu.as_ref(),
+        use_speculative,
+        !mtp_weights.is_empty(),
+    )?;
 
     // ── Step 3b: Post-load MoE prefill transpose (MiniMax EP=2 TTFT fix) ──
     //
@@ -246,11 +211,19 @@ pub fn build_model(
     //               Predictor LRU.
     fn dtype_label(dt: KvCacheDtype) -> &'static str {
         match dt {
-            KvCacheDtype::Bf16 => "BF16",
-            KvCacheDtype::Fp8 => "FP8",
+            KvCacheDtype::Bf16
+            | KvCacheDtype::Bf16KTurbo4V
+            | KvCacheDtype::Bf16KTurbo3V
+            | KvCacheDtype::Bf16KTurbo2V => "BF16",
+            KvCacheDtype::Fp8
+            | KvCacheDtype::Fp8KTurbo4V
+            | KvCacheDtype::Fp8KTurbo3V
+            | KvCacheDtype::Fp8KTurbo2V => "FP8",
             KvCacheDtype::Nvfp4 => "NVFP4",
-            KvCacheDtype::Turbo3 => "Turbo3",
-            KvCacheDtype::Turbo4 => "Turbo4",
+            KvCacheDtype::Turbo3 | KvCacheDtype::Turbo3KTurbo8V | KvCacheDtype::Turbo2 => "Turbo3",
+            KvCacheDtype::Turbo4 | KvCacheDtype::Turbo4KTurbo3V | KvCacheDtype::Turbo4KTurbo8V => {
+                "Turbo4"
+            }
             KvCacheDtype::Turbo8 => "Turbo8",
         }
     }
@@ -277,9 +250,26 @@ pub fn build_model(
             summary.join(" + ")
         );
     }
+    // ── gpu_memory_utilization as fraction of TOTAL GPU memory ──
+    //
+    // User-facing contract (matches vLLM / sparkrun convention):
+    //   total_memory × gpu_memory_utilization = hard ceiling on everything
+    //   this process consumes (weights + buffers + KV cache + reserves).
+    //
+    // KV cache gets whatever remains inside that ceiling after deducting
+    // prior allocations (model weights, buffer arena, CUDA context/driver)
+    // and the inference reserve (SSM state pools, CUDA headroom).  A safety
+    // clamp ensures we never exceed what the device can physically provide
+    // right now (handles external memory pressure on shared-memory /
+    // unified-memory systems like GB10).
+    let total_mem = gpu.total_memory()?;
     let actual_free = gpu.free_memory()?;
-    let allocatable = actual_free.saturating_sub(inference_reserve);
-    let kv_budget = (allocatable as f64 * gpu_memory_utilization) as usize;
+    let used_so_far = total_mem.saturating_sub(actual_free);
+    let total_budget = (total_mem as f64 * gpu_memory_utilization) as usize;
+    let kv_budget = total_budget
+        .saturating_sub(used_so_far)
+        .saturating_sub(inference_reserve)
+        .min(actual_free.saturating_sub(inference_reserve));
     // Phase 6.1.f: when HBM-shrink is active, size the production cache to
     // `max_batch_size × cache_blocks_per_seq` rather than the unbounded
     // budget-driven sum. This is the *whole point* of the HBM-shrink
@@ -321,13 +311,33 @@ pub fn build_model(
             n
         }
         None => {
+            if kv_budget == 0 {
+                anyhow::bail!(
+                    "No memory left for KV cache: total GPU = {:.1} GB, \
+                     --gpu-memory-utilization {:.0}% → budget {:.1} GB, \
+                     but {:.1} GB already consumed + {:.1} GB inference reserve \
+                     = {:.1} GB committed.  Raise --gpu-memory-utilization or \
+                     use a smaller model.",
+                    total_mem as f64 / (1024.0 * 1024.0 * 1024.0),
+                    gpu_memory_utilization * 100.0,
+                    total_budget as f64 / (1024.0 * 1024.0 * 1024.0),
+                    used_so_far as f64 / (1024.0 * 1024.0 * 1024.0),
+                    inference_reserve as f64 / (1024.0 * 1024.0 * 1024.0),
+                    (used_so_far + inference_reserve) as f64 / (1024.0 * 1024.0 * 1024.0),
+                );
+            }
             let n = PagedKvCache::compute_num_blocks(&kv_config, kv_budget)?;
             let max_kv_tokens = n * kv_block_size;
             tracing::info!(
-                "KV cache (post-construction): {:.1} GB free, {:.1} GB allocatable, \
-                 {} blocks × {} tok/block = {} max tokens",
-                actual_free as f64 / (1024.0 * 1024.0 * 1024.0),
-                allocatable as f64 / (1024.0 * 1024.0 * 1024.0),
+                "KV cache: {:.1} GB total × {:.0}% util = {:.1} GB budget; \
+                 {:.1} GB pre-KV + {:.1} GB reserve → {:.1} GB for KV \
+                 → {} blocks × {} tok/block = {} max KV tokens",
+                total_mem as f64 / (1024.0 * 1024.0 * 1024.0),
+                gpu_memory_utilization * 100.0,
+                total_budget as f64 / (1024.0 * 1024.0 * 1024.0),
+                used_so_far as f64 / (1024.0 * 1024.0 * 1024.0),
+                inference_reserve as f64 / (1024.0 * 1024.0 * 1024.0),
+                kv_budget as f64 / (1024.0 * 1024.0 * 1024.0),
                 n,
                 kv_block_size,
                 max_kv_tokens,
@@ -380,6 +390,8 @@ pub fn build_model(
         final_norm,
         lm_head,
         lm_head_nvfp4,
+        lm_head_fp8,
+        mtp_lm_head_nvfp4,
         layers,
         buffers,
         kv_cache,

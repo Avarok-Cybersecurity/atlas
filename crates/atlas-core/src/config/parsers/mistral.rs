@@ -83,7 +83,8 @@ pub fn parse_mistral_params(json: &str) -> Result<ModelConfig> {
     let mut config = ModelConfig::qwen3_next_80b_nvfp4();
     // Reset all fields to zero/empty before populating from params.json.
     // CRITICAL: must reset ALL SSM fields inherited from the Qwen3 template,
-    // otherwise linear_num_key_heads > 0 triggers FP32 residual → BF16 kernel mismatch.
+    // otherwise linear_num_key_heads > 0 misroutes this dense model onto the
+    // SSM/linear-attention dispatch path.
     config.num_hidden_layers = 0;
     config.intermediate_size = 0;
     config.vocab_size = 0;

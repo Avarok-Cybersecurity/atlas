@@ -28,23 +28,32 @@ vision = true
 
 # Qwen3-VL — vision model, no official thinking mode.
 # VL tasks use lower temperature per Qwen3.5 guidance.
+# 2026-05-24 empirical band-aid (same lesson as Qwen3.6 sibling).
+# temp=0.6 thinking (Qwen GitHub says temp=1.0 risks Chinese-char
+# leakage). pres_pen=0.0 + rep_pen=1.1 + dry=0.5 instead of pres=1.5.
 [sampling.thinking_text]
-temperature = 0.7
-top_p = 0.80
+temperature = 0.6
+top_p = 0.95
 top_k = 20
-presence_penalty = 1.5
+presence_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.5
 
 [sampling.thinking_coding]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.5
 
 [sampling.non_thinking]
 temperature = 0.7
-top_p = 0.80
+top_p = 0.8
 top_k = 20
-presence_penalty = 1.5
+presence_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.5
 
 [[model_types]]
 model_type = "qwen3_vl_moe"
@@ -59,3 +68,7 @@ moe_gate_shmem_bytes = 4096   # hidden_dim(2048) * sizeof(bf16)
 enable_loop_watchdog = false
 # Thinking on by default for all Qwen reasoning-tier models (sweep 2026-05-20).
 thinking_default = true
+# 2026-05-23 sweep: project-wide default flipped to true.
+thinking_in_tools = true
+# 2026-05-23 sweep: explicit 2048 (was unset → 256 default).
+max_thinking_budget = 2048

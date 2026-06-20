@@ -275,9 +275,8 @@ pub(super) fn load_claude_code_tools() -> serde_json::Value {
         env!("CARGO_MANIFEST_DIR"),
         "/../../scripts/fixtures/claude_code_tools.json"
     );
-    let raw = std::fs::read_to_string(path).unwrap_or_else(|e| {
-        panic!("claude_code_tools.json fixture missing at {path}: {e}")
-    });
+    let raw = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("claude_code_tools.json fixture missing at {path}: {e}"));
     serde_json::from_str(&raw).expect("claude_code_tools.json must be valid JSON")
 }
 
@@ -296,11 +295,7 @@ fn fixture_load_smoke_test() {
     );
     let tools = load_claude_code_tools();
     let arr = tools.as_array().expect("tools is a JSON array");
-    assert_eq!(
-        arr.len(),
-        70,
-        "real Claude Code session declares 70 tools"
-    );
+    assert_eq!(arr.len(), 70, "real Claude Code session declares 70 tools");
 }
 
 #[test]

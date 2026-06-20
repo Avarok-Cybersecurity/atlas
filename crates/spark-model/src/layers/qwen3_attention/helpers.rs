@@ -66,6 +66,12 @@ impl Qwen3AttentionLayer {
         self.sliding_window = window;
     }
 
+    /// Set per-head attention gate weight (Step 3.7 g_proj).
+    /// The weight is BF16 shape [num_q_heads, hidden_size].
+    pub fn set_head_gate_weight(&mut self, w: DenseWeight) {
+        self.head_gate_weight = Some(w);
+    }
+
     /// Set per-layer RoPE overrides (theta, rotary_dim) for dual-RoPE
     /// models (Gemma-4).
     pub fn set_rope_overrides(&mut self, theta: f32, rotary_dim: u32) {
@@ -148,11 +154,7 @@ impl Qwen3AttentionLayer {
     }
 
     /// Apply layer_scalar in-place: `hidden *= scalar`. Uses
-    /// `bf16_scale_inplace` for BF16 buffers, or `f32_scale_inplace`
-    /// when the FP32 residual path is active (Gemma-4). Gemma-4's
-    /// layer_scalar values are small (L0=0.09, L1=0.065) so the BF16
-    /// variant compounds underflow across layers — the FP32 path is a
-    /// correctness requirement for 31B.
+    /// `bf16_scale_inplace` for the (always BF16) residual stream.
     pub(crate) fn apply_layer_scalar(
         &self,
         gpu: &dyn spark_runtime::gpu::GpuBackend,
@@ -160,14 +162,9 @@ impl Qwen3AttentionLayer {
         hidden_size: usize,
         scalar: f32,
         stream: u64,
-        fp32_residual: bool,
     ) -> anyhow::Result<()> {
         use spark_runtime::kernel_args::KernelLaunch;
-        let scale_k = if fp32_residual {
-            gpu.kernel("embed_scale", "f32_scale_inplace")?
-        } else {
-            gpu.kernel("embed_scale", "bf16_scale_inplace")?
-        };
+        let scale_k = gpu.kernel("embed_scale", "bf16_scale_inplace")?;
         let n = hidden_size as u32;
         KernelLaunch::new(gpu, scale_k)
             .grid([n.div_ceil(256), 1, 1])

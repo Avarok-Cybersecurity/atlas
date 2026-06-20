@@ -89,6 +89,38 @@ pub fn sigmoid_gate_mul(
         .launch(stream)
 }
 
+/// Per-head sigmoid gate multiply with broadcast over head_dim.
+///
+/// Step 3.7 attention gate: `g_proj` produces one BF16 scalar per head.
+/// This kernel applies `output[t,h,d] = input[t,h,d] * sigmoid(gate[t,h])`
+/// where the sigmoid gate is broadcast across all `hd` dimensions of each head.
+///
+/// Kernel: `sigmoid_gate_mul_head_broadcast(input, gate, output, nq, hd, total)`
+/// Grid: (ceil(total/256), 1, 1)  Block: (256, 1, 1)
+pub fn sigmoid_gate_mul_head_broadcast(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    gate: DevicePtr,
+    output: DevicePtr,
+    nq: u32,
+    hd: u32,
+    num_tokens: u32,
+    stream: u64,
+) -> Result<()> {
+    let total = num_tokens * nq * hd;
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(total, 256), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(gate)
+        .arg_ptr(output)
+        .arg_u32(nq)
+        .arg_u32(hd)
+        .arg_u32(total)
+        .launch(stream)
+}
+
 /// BF16 residual add: `residual[i] += src[i]` (in-place).
 ///
 /// Kernel: `bf16_residual_add(residual, src, n)`
@@ -106,27 +138,6 @@ pub fn residual_add(
         .block([256, 1, 1])
         .arg_ptr(residual)
         .arg_ptr(src)
-        .arg_u32(num_elements)
-        .launch(stream)
-}
-
-/// BF16 → FP32 conversion: `dst[i] = (float)src[i]`.
-///
-/// Kernel: `bf16_to_f32(src, dst, n)`
-/// Grid: (ceil(n/256), 1, 1)  Block: (256, 1, 1)
-pub fn bf16_to_f32(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    src: DevicePtr,
-    dst: DevicePtr,
-    num_elements: u32,
-    stream: u64,
-) -> Result<()> {
-    KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(num_elements, 256), 1, 1])
-        .block([256, 1, 1])
-        .arg_ptr(src)
-        .arg_ptr(dst)
         .arg_u32(num_elements)
         .launch(stream)
 }

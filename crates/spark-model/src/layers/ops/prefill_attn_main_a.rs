@@ -81,7 +81,15 @@ pub fn prefill_attention_64(
     sliding_window: u32,
     stream: u64,
 ) -> Result<()> {
-    let br = 64u32;
+    // BR64 = query rows processed per CTA. The kernel clamps this to 32 on the
+    // AMD targets (gfx1151 64 KB LDS cap: inferspark_prefill.cu's
+    // `#if __SCALE__ || __HIP_PLATFORM_AMD__ #define BR64 32`). The grid stride
+    // MUST match the kernel's BR64, else CTAs are spaced 64 rows apart while each
+    // writes only 32 → query rows 32..63 of every 64-row band are silently left
+    // unwritten (gross attention corruption for any prompt >32 tokens). cfg!
+    // (atlas_scale) is set for both `strix` and `strix-hip`; NVIDIA keeps 64
+    // (byte-identical). See the @human-review note in inferspark_prefill.cu.
+    let br = if cfg!(atlas_scale) { 32u32 } else { 64u32 };
     KernelLaunch::new(gpu, kernel)
         .grid([num_q_heads, div_ceil(seq_len, br), batch])
         .block([256, 1, 1])

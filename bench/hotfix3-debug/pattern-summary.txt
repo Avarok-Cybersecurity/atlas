@@ -1,0 +1,28 @@
+Total events: 44 (22 req, 22 res)
+
+Tool name distribution: {'bash': 89, 'write': 56, 'edit': 25, 'read': 13}
+Empty arg tool_calls: 12
+Short arg tool_calls (<20 chars): 0
+
+  [ 1] seq=0 fin=?          ct=    5 rt=    0 tps= 67.2
+  [ 4] seq=2 fin=tool_calls ct=  372 rt=  310 tps= 27.0
+  [ 6] seq=3 fin=tool_calls ct=  128 rt=   58 tps= 25.6
+  [ 8] seq=1 fin=stop       ct=  785 rt=  768 tps= 19.2
+  [ 9] seq=4 fin=tool_calls ct=  467 rt=  300 tps= 32.4
+  [11] seq=5 fin=tool_calls ct=  893 rt=    9 tps= 39.3
+  [13] seq=6 fin=tool_calls ct=  979 rt=   66 tps= 38.9
+  [15] seq=7 fin=tool_calls ct=   93 rt=    8 tps= 40.0
+  [17] seq=8 fin=tool_calls ct=  139 rt=   58 tps= 48.9
+  [19] seq=9 fin=tool_calls ct=  119 rt=   18 tps= 42.1
+  [21] seq=10 fin=tool_calls ct=  140 rt=   26 tps= 41.3
+  [23] seq=11 fin=tool_calls ct=   94 rt=   12 tps= 37.9
+  [25] seq=12 fin=tool_calls ct=  111 rt=   25 tps= 49.8
+  [27] seq=13 fin=tool_calls ct=  184 rt=   22 tps= 40.1
+  [29] seq=14 fin=tool_calls ct=   88 rt=   22 tps= 54.1
+  [31] seq=15 fin=tool_calls ct=   90 rt=   17 tps= 39.8
+  [33] seq=16 fin=tool_calls ct=   93 rt=   30 tps= 55.2
+  [35] seq=17 fin=tool_calls ct=   78 rt=   28 tps= 55.6
+  [37] seq=18 fin=tool_calls ct=   86 rt=   36 tps= 49.1
+  [39] seq=19 fin=tool_calls ct=  109 rt=   20 tps= 62.4
+  [41] seq=20 fin=tool_calls ct=   92 rt=   27 tps= 46.7
+  [43] seq=21 fin=stop       ct=   66 rt=   21 tps= 47.0

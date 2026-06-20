@@ -14,13 +14,40 @@ impl ToolCallParser for Qwen3CoderParser {
         "qwen3_coder"
     }
 
+    /// Tier-0 typed-args (2026-05-25 evening): qwen3_coder's XML wire
+    /// format keeps every `<parameter=KEY>VALUE</parameter>` body as a
+    /// raw string (see `parse_single_b.rs:118-123`). When the tool
+    /// schema declares a parameter as `integer`/`number`/`boolean`,
+    /// opencode rejects the string with `SchemaError(Expected number,
+    /// got "30")` and the model burns the turn retrying. Apply the
+    /// same schema-driven coercion the qwen3_xml parser uses
+    /// (`tool_parser/type_coerce.rs::coerce_all`) so e.g. the bash
+    /// tool's `timeout` field gets converted from "30" → 30 before
+    /// the call hits opencode. Coercion is conservative: never drops
+    /// fields, never panics, leaves unparseable values as-is.
+    fn wants_typed_arguments(&self) -> bool {
+        true
+    }
+
+    /// qwen3_coder terminates each `<parameter=NAME>VALUE` with `</parameter>`.
+    /// This is the SSOT delimiter consumed by the value-content ladder (BUG#2)
+    /// — see [`ToolCallParser::param_value_close_delim`].
+    fn param_value_close_delim(&self) -> Option<&'static str> {
+        Some("</parameter>")
+    }
+
     fn compile_tool_grammar(
         &self,
         engine: &mut GrammarEngine,
         tools: &[ToolDefinition],
         use_triggers: bool,
     ) -> Option<Result<CompiledGrammar, GrammarError>> {
-        Some(engine.compile_qwen3_coder_tool_grammar(tools, use_triggers))
+        // Pass the format's value-close delimiter (SSOT) into the builder so the
+        // value-content rule is dynamically dispatched, not hard-coded.
+        let value_close = self
+            .param_value_close_delim()
+            .expect("qwen3_coder declares a parameter-value close delimiter");
+        Some(engine.compile_qwen3_coder_tool_grammar(tools, use_triggers, value_close))
     }
 
     fn has_tool_grammar(&self) -> bool {
@@ -70,7 +97,8 @@ impl ToolCallParser for Qwen3CoderParser {
         // an imitation trap for pattern-completion models). One
         // positive-shot example + a single declarative-logic
         // sentence replace the prior 50+ lines of WRONG examples.
-        prompt.push_str("\
+        prompt.push_str(
+            "\
 </tools>\n\n\
 If you choose to call a function ONLY reply in the following format with NO suffix:\n\n\
 <tool_call>\n\
@@ -85,6 +113,26 @@ multiple lines\n\
 </parameter>\n\
 </function>\n\
 </tool_call>\n\n\
+",
+        );
+        // #211 option-B A/B (off-policy hypothesis): Qwen3.6 was RL-tuned
+        // against the SHORT official <IMPORTANT> reminder (chat_template.jinja
+        // line 53). Atlas's expanded IMMEDIATE_TOOL_USE + 10-bullet IMPORTANT
+        // diverges from that trained distribution and correlates with
+        // malformed tool calls (empty {filePath,content} scaffolds, mixed
+        // <function_calls> tags). ATLAS_OFFICIAL_TOOL_PROMPT=1 swaps in the
+        // verbatim official 4-bullet reminder. Default = current Atlas block.
+        if std::env::var("ATLAS_OFFICIAL_TOOL_PROMPT").as_deref() == Ok("1") {
+            prompt.push_str("\
+<IMPORTANT>\n\
+Reminder:\n\
+- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n\
+- Required parameters MUST be specified\n\
+- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n\
+- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n\
+</IMPORTANT>");
+        } else {
+            prompt.push_str("\
 <IMMEDIATE_TOOL_USE>\n\
 Tools are IMMEDIATELY EXECUTABLE. When you decide to use a tool, emit the <tool_call> directly. The tool_call's parameter values are the ONLY place file content, commands, or other tool inputs should appear — do NOT pre-render that content as prose or in markdown fences before the call.\n\
 For 'bash'/'Bash' tools specifically: do NOT stage the command in a ```bash``` fence and do NOT prefix with phrases like \"Let me run this command:\" or \"Let me execute:\". The next emission after deciding to run a shell command must be the <tool_call> — the command goes inside <parameter=command>, not in markdown.\n\
@@ -107,8 +155,8 @@ Example:\n\
 - Tool names like 'write', 'read', 'edit', 'bash' are ONLY valid inside the `<function=NAME>` line of a `<tool_call>` block. NEVER emit bare tags like `<write>`, `<filePath>`, or `<command>` at the top level of your content.\n\
 - You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after.\n\
 - If there is no function call available, answer the question with your current knowledge and do not tell the user about function calls.\n\
-</IMPORTANT>",
-        );
+</IMPORTANT>");
+        }
         append_tool_choice_instruction(&mut prompt, tool_choice);
         prompt
     }
@@ -204,6 +252,13 @@ Example:\n\
                 // worth the legitimate-call regression risk.
                 "<>",
                 "<param=",
+                // L3 (2026-06-02): empirically-observed hallucinated
+                // pseudo-tool-exchange openers — suppressed/recovered
+                // exactly like the existing orphan openers above.
+                "<response>",
+                "<_call>",
+                "<_output>",
+                "<_use_error>",
             ],
             close: &[
                 "</parameter>",
@@ -213,6 +268,12 @@ Example:\n\
                 "</function_results>",
                 "</result>",
                 "</tool_use>",
+                // L3 (2026-06-02): closers for the hallucinated markers added
+                // to `orphan_open` above.
+                "</response>",
+                "</_call>",
+                "</_output>",
+                "</_use_error>",
             ],
             envelope_open: &[],
             envelope_close: &[],

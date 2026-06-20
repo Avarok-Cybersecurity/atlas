@@ -6,7 +6,17 @@ use super::*;
 
 /// Self-speculative step: draft via layer-skipping, verify with full model.
 /// Combines bootstrap + verify in one step (no pipeline).
-pub fn step_self_spec(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: usize) {
+///
+/// `verify_ctx` is plumbed into the verify-time argmax replacement so
+/// each verify position runs through the full 8-stage pre-sample
+/// pipeline instead of falling through unmasked. See
+/// `verify_pipeline_helper` for the rationale.
+pub fn step_self_spec(
+    model: &dyn Model,
+    active: &mut [ActiveSeq],
+    num_drafts: usize,
+    verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+) {
     let a = &mut active[0];
 
     // 1. Full-model decode to get token_0
@@ -81,7 +91,7 @@ pub fn step_self_spec(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: u
     let mut verify_tokens = vec![token_0];
     verify_tokens.extend_from_slice(&draft_tokens);
 
-    let verified = match model.decode_verify(&verify_tokens, &mut a.seq, 0) {
+    let verified_argmax = match model.decode_verify(&verify_tokens, &mut a.seq, 0) {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("self-spec verify error: {e:#}");
@@ -89,6 +99,19 @@ pub fn step_self_spec(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: u
             return;
         }
     };
+
+    // Phase C-2 (2026-05-24): replay the pre-sample
+    // logits-processor pipeline per verify position. `decode_verify`
+    // wrote `[verify_tokens.len(), vocab]` BF16 into `logits_buffer`;
+    // the helper copies it D2H and applies the same 8-stage pipeline
+    // used in the non-MTP path. Falls back to the raw argmax on D2H
+    // failure (see helper).
+    let verified = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+        model,
+        &verified_argmax,
+        a,
+        verify_ctx,
+    );
 
     // 6. Compare draft vs verified, count acceptances
     let n_drafts = draft_tokens.len();
@@ -150,13 +173,18 @@ pub fn step_self_spec(model: &dyn Model, active: &mut [ActiveSeq], num_drafts: u
 /// Two-phase pipeline (same as MTP but with N-gram proposer instead):
 /// 1. Bootstrap: regular decode → argmax → N-gram propose → pending_drafts
 /// 2. Verify: decode_verify_graphed(K=2) → accept/reject → SSM rollback
-pub fn step_ngram(model: &dyn Model, active: &mut [ActiveSeq], proposer: &mut NgramProposer) {
+pub fn step_ngram(
+    model: &dyn Model,
+    active: &mut [ActiveSeq],
+    proposer: &mut NgramProposer,
+    verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+) {
     let a = &mut active[0];
 
     if !a.pending_drafts.is_empty() {
         // ── Phase B: Verify pending draft ──
         let drafts: Vec<u32> = std::mem::take(&mut a.pending_drafts);
-        step_ngram_verify(model, a, &drafts, proposer);
+        step_ngram_verify(model, a, &drafts, proposer, verify_ctx);
     } else {
         // ── Phase A: Bootstrap decode + N-gram propose ──
         if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, a.last_token) {
@@ -209,6 +237,7 @@ pub fn step_ngram_verify(
     a: &mut ActiveSeq,
     drafts: &[u32],
     proposer: &mut NgramProposer,
+    verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
 ) {
     let t_sync = Instant::now();
     if let Err(e) = model.sync_secondary() {
@@ -244,7 +273,22 @@ pub fn step_ngram_verify(
     };
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
-    let [v0, v1] = result;
+    let [v0_argmax, v1_argmax] = result;
+
+    // Phase C-2 (2026-05-24): apply the full pre-sample
+    // logits-processor pipeline to each verify position before
+    // computing the accept/reject argmax. Without this, ngram-verify
+    // tokens escape mid-word / forced-think-end / pin-to-tool-call /
+    // grammar masks — see `verify_pipeline_helper` for the root-
+    // cause analysis.
+    let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+        model,
+        &[v0_argmax, v1_argmax],
+        a,
+        verify_ctx,
+    );
+    let v0 = processed.first().copied().unwrap_or(v0_argmax);
+    let v1 = processed.get(1).copied().unwrap_or(v1_argmax);
     let accepted = drafts[0] == v0;
 
     // EP: broadcast accept/reject to worker
@@ -383,6 +427,12 @@ pub fn truncate_drafts_at_grammar_boundary(gs: &mut GrammarState, drafts: &[u32]
     if drafts.len() < 2 || gs.is_terminated() {
         return drafts.len();
     }
+    // BUG#3 (2026-06-02): roll back ACTUAL matcher advances (history delta), not
+    // the `accepted` tally. `accept_token` returns true for stop/EOS tokens and
+    // in the terminated state WITHOUT advancing the matcher; counting rollback
+    // from `accepted` over-rewinds when such a token is in the draft span
+    // (corrupt state / rollback panic). `accepted` still drives truncation.
+    let steps_before = gs.num_history_steps();
     let mut accepted = 0usize;
     for &tok in drafts {
         if !gs.accept_token(tok) {
@@ -390,8 +440,9 @@ pub fn truncate_drafts_at_grammar_boundary(gs: &mut GrammarState, drafts: &[u32]
         }
         accepted += 1;
     }
-    if accepted > 0 {
-        gs.rollback(accepted);
+    let advanced = gs.num_history_steps().saturating_sub(steps_before);
+    if advanced > 0 {
+        gs.rollback(advanced);
     }
     if accepted < drafts.len() {
         tracing::warn!(

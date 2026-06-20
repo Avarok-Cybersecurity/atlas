@@ -142,7 +142,11 @@ pub fn swap_out_sequence(
     // Compact the swapped-in sequence (same logic as retire path).
     if victim_idx < active.len() && active[victim_idx].seq.slot_idx != victim_idx {
         model.compact_sequence(&mut active[victim_idx].seq, victim_idx)?;
-        a.seq.slot_idx = usize::MAX; // sentinel: slot reused by compact
+        // Disown the victim's migrated slot BEFORE the fallible save below: sets
+        // the reuse sentinel AND neutralizes the RAII guard so a `?`-early-
+        // return (create_file/save_sequence_state error) that drops `a` cannot
+        // double-release the slot now owned by the swapped-in sequence.
+        model.detach_slot_for_reuse(&mut a.seq);
     }
 
     let (swap_id, mut writer) = spill.create_file()?;
@@ -188,9 +192,11 @@ pub fn swap_out_sequence(
         inside_thinking: a.inside_thinking,
         enable_thinking: a.enable_thinking,
         thinking_budget: a.thinking_budget,
+        repetition_detection: a.repetition_detection,
         spontaneous_think_budget: a.spontaneous_think_budget,
         thinking_tokens: a.thinking_tokens,
         force_end_thinking: a.force_end_thinking,
+        sentence_defer_count: a.sentence_defer_count,
         consecutive_confident: a.consecutive_confident,
         in_code_fence: a.in_code_fence,
         think_end_token: a.think_end_token,
@@ -199,6 +205,7 @@ pub fn swap_out_sequence(
         think_just_ended: a.think_just_ended,
         think_skip_count: a.think_skip_count,
         require_tool_call: a.require_tool_call,
+        tool_request: a.tool_request,
         suppress_tool_call: a.suppress_tool_call,
         disable_mtp: a.disable_mtp,
         content_started: a.content_started,
@@ -271,9 +278,11 @@ pub fn resume_swapped_seq(
         inside_thinking: s.inside_thinking,
         enable_thinking: s.enable_thinking,
         thinking_budget: s.thinking_budget,
+        repetition_detection: s.repetition_detection,
         spontaneous_think_budget: s.spontaneous_think_budget,
         thinking_tokens: s.thinking_tokens,
         force_end_thinking: s.force_end_thinking,
+        sentence_defer_count: s.sentence_defer_count,
         consecutive_confident: s.consecutive_confident,
         in_code_fence: s.in_code_fence,
         think_end_token: s.think_end_token,
@@ -282,6 +291,7 @@ pub fn resume_swapped_seq(
         think_just_ended: s.think_just_ended,
         think_skip_count: s.think_skip_count,
         require_tool_call: s.require_tool_call,
+        tool_request: s.tool_request,
         suppress_tool_call: s.suppress_tool_call,
         disable_mtp: s.disable_mtp,
         content_started: false,
@@ -301,6 +311,11 @@ pub fn resume_swapped_seq(
         // the snapshot was mid-tool-call, the sample path needs a
         // safe default. Cleared at next emit if we re-cross a marker.
         inside_tool_body: false,
+        tool_call_completed: false,
+        post_completion_tool_opens: 0,
+        tool_body_streak_tokens: 0,
+        inside_parameter_body: false,
+        param_body_chars_emitted: 0,
         tool_call_end_token: s.tool_call_end_token,
         // Grammar state is not serializable; resumed sequences use legacy fallback.
         grammar_state: None,

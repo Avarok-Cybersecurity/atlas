@@ -38,6 +38,17 @@ impl GrammarEngine {
 
     // ── JSON schema grammar ──
 
+    /// Cap on consecutive inter-token whitespace characters in
+    /// response_format json_schema grammars. Unlimited whitespace
+    /// (`None`) gives a degenerating model a grammar-legal runway:
+    /// measured on the FP8 flagship (issue #131, N=8 strict json_schema
+    /// at temp 0), 5/8 requests padded hundreds of \n/\t between JSON
+    /// tokens until max_tokens, leaving unterminated JSON. 8 permits
+    /// normal pretty-printing (newline + indent) while making runaway
+    /// whitespace grammar-illegal, so the matcher forces a structural
+    /// token instead.
+    const MAX_JSON_SCHEMA_WHITESPACE: i32 = 8;
+
     /// Compile a grammar that enforces a JSON schema.
     pub fn compile_json_schema(&mut self, schema: &str) -> Result<CompiledGrammar, GrammarError> {
         self.compiler
@@ -47,7 +58,7 @@ impl GrammarEngine {
                 None,                 // indent
                 None::<(&str, &str)>, // separators
                 true,                 // strict_mode
-                None,                 // max_whitespace_cnt
+                Some(Self::MAX_JSON_SCHEMA_WHITESPACE),
             )
             .map_err(GrammarError::Compilation)
     }

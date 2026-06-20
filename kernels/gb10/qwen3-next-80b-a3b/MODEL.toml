@@ -12,24 +12,33 @@ head_dim = 256
 q_heads = 16
 kv_heads = 2
 
-# Qwen3-Next — older architecture, no official thinking mode.
+# Qwen3-Next — older architecture, no official thinking mode. Instruct-only model.
+# 2026-06-06: aligned rep_pen 1.1->1.0 + dry 0.5->0.0 with the qwen3.6-35b 10/10 campaign
+# finding ("temp=0 A/B: 1.1=mangled finish=length; 1.0=clean finish=stop"). Qwen vendor also
+# deprecates repetition_penalty>1.0. Keep Qwen instruct top_p=0.8.
 [sampling.thinking_text]
 temperature = 0.7
-top_p = 0.95
+top_p = 0.8
 top_k = 20
 presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
 
 [sampling.thinking_coding]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
 
 [sampling.non_thinking]
 temperature = 0.7
-top_p = 0.95
+top_p = 0.8
 top_k = 20
 presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
 
 [[model_types]]
 model_type = "qwen3_next"
@@ -39,11 +48,10 @@ model_type = "qwen3_next"
 # (max_thinking_budget=256), which is too low for users running
 # extended reasoning prompts on Qwen3-Next-80B.
 [behavior]
-# Content-loop watchdog disabled: 2026-05-05 chess-game stress
-# sweep showed Qwen3-Next-80B (hybrid attention + Mamba MoE A3B)
-# finishes cleanly on long-code prompts. Only the dense Qwen 27B
-# variants need the watchdog.
-enable_loop_watchdog = false
+# Content-loop watchdog ENABLED 2026-06-06: robust-coherence probe showed Qwen3-Next-80B
+# answers correctly then RUNS ON into fabricated "Human:/assistant" turns (fails to emit
+# <|im_end|>). The watchdog rolls back run-on/loop attractors to a clean boundary.
+enable_loop_watchdog = true
 # Qwen3-Next-80B does not have an official thinking-mode template,
 # but supports `enable_thinking=true` via the chat-template kwargs.
 # When tools are active, leave thinking on — the model uses it
@@ -53,7 +61,10 @@ thinking_in_tools = true
 # `thinking.budget_tokens` still wins below this; CLI
 # `--max-thinking-budget` overrides this entirely.
 max_thinking_budget = 4096
-thinking_default = true  # Sweep 2026-05-20: thinking on by default for all Qwen reasoning-tier models.
+# 2026-06-06: thinking_default FALSE — Qwen3-Next-80B is the Instruct (non-thinking) variant with
+# no official thinking-mode template (see header). Forcing thinking_default=true made the reasoning
+# parser mis-capture output as 885-token "reasoning" and never stop. thinking_in_tools stays true.
+thinking_default = false
 # Benchmarked 2026-04-11: K=2 (1 draft) is the sweet spot for the
 # 80B-A3B MoE — verify overhead at K=3 wipes out acceptance gains.
 default_num_drafts = 1

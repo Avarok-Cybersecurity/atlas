@@ -94,19 +94,39 @@ impl Qwen3SsmLayer {
         }
 
         let normed2 = ctx.buffers.norm_output();
-        ops::residual_add_rms_norm(
-            ctx.gpu,
-            self.residual_add_rms_norm_k,
-            hidden,
-            ssm_out,
-            &self.post_attn_norm,
-            normed2,
-            residual,
-            1,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        // ATLAS_FP32_ROUTING: emit the MoE-input norm in FP32 (router_in) so the
+        // gate GEMM runs at full precision — removes the bf16-store rounding that
+        // flips experts on gfx1151. bf16 normed2 + residual are unchanged.
+        if self.ffn.fp32_routing_active() && self.residual_add_rms_norm_gatef32_k.0 != 0 {
+            ops::residual_add_rms_norm_gatef32(
+                ctx.gpu,
+                self.residual_add_rms_norm_gatef32_k,
+                hidden,
+                ssm_out,
+                &self.post_attn_norm,
+                normed2,
+                ctx.buffers.moe_router_in_f32(),
+                residual,
+                1,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        } else {
+            ops::residual_add_rms_norm(
+                ctx.gpu,
+                self.residual_add_rms_norm_k,
+                hidden,
+                ssm_out,
+                &self.post_attn_norm,
+                normed2,
+                residual,
+                1,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        }
         if debug {
             ctx.gpu.synchronize(stream)?;
             Self::debug_bf16(ctx.gpu, "post-ssm-residual", residual, 4);

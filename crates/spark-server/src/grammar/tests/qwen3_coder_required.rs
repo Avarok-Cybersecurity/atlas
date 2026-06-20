@@ -1,21 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Regression tests for the qwen3_coder grammar's `required`-parameter
-//! enforcement. Pinned by issue #40 (iromu, 2026-05-08) and the
-//! OpenClaw multi-tool repro: Qwen3-Coder models constrained by the
-//! qwen_xml_parameter grammar still emit `<tool_call>\n<function=NAME>\n
-//! </function>\n</tool_call>` (zero `<parameter=>` blocks) even when
-//! the JSON schema declares `required: [...]`.
+//! Regression tests for the qwen3_coder grammar's envelope shape.
 //!
-//! The bug lives upstream in `mlc-ai/xgrammar`'s
-//! `cpp/json_schema_converter.cc::GetPartialRuleForProperties` — Case-1
-//! (`min=0, max=-1`) emits `first_sep_rule | (property)*` when
-//! `spec.min_properties == 0`, ignoring `spec.required`. The fix bumps
-//! `min_properties` to `required.size()` when required is non-empty.
+//! As of the body-format fix (2026-05-25): the grammar uses
+//! `any_text` for the body inside `<tool_call>\n<function=NAME>\n…
+//! \n</function>\n</tool_call>` to match the model's native XML
+//! `<parameter=KEY>VALUE</parameter>` wire format. The body is
+//! intentionally unconstrained at the grammar level — required-
+//! parameter enforcement now happens host-side via
+//! `validate_single_tool_call` and `backfill_required_params`
+//! after `parse_one_call` extracts the XML/JSON args. See
+//! `compile_tools.rs::compile_qwen3_coder_tool_grammar` and
+//! `tool_handlers.rs:46` for the layered validation path.
 //!
-//! These tests fail against `xgrammar v0.1.32` (the current pin) and
-//! pass once the fork-with-fix is wired up via xgrammar-pins.toml.
-//! See `.claude/plans/your-pr-for-issue-lexical-patterson.md`.
+//! These tests pin the **envelope-shape** properties:
+//! - Canonical bodies (XML or JSON) are ACCEPTED.
+//! - Malformed envelopes (missing open/close tag) are REJECTED.
+//!
+//! The previous tests in this file asserted that the grammar
+//! itself rejected empty-body tool calls — a property of the
+//! prior `json_schema` body content type. Required-field
+//! rejection is now the validator's responsibility, covered by
+//! validator-side tests in `tool_parser/tests/`.
 
 use super::*;
 use xgrammar::{CompiledGrammar, GrammarMatcher};
@@ -49,24 +55,27 @@ fn grammar_accepts(compiled: &CompiledGrammar, input: &str) -> bool {
     matcher.is_terminated()
 }
 
-/// Positive baseline: the grammar must accept a properly-populated
-/// `<tool_call>...<parameter=command>...</parameter>...</tool_call>`.
-/// This pins the canonical happy path so a too-aggressive upstream fix
-/// (e.g. one that breaks legitimate empty-string values) gets caught.
+/// Positive baseline: the grammar must accept the canonical native
+/// qwen3_coder XML body — the format the model is actually trained
+/// to emit. Pins the wire-format envelope so a future grammar
+/// rework cannot regress to forcing JSON-shape output (the exact
+/// regression that caused interior-byte corruption and JSON
+/// delimiter cascades against opencode multi-turn sessions in
+/// 2026-05-25 sessions).
 #[test]
-fn qwen3_coder_grammar_accepts_canonical() {
+fn qwen3_coder_grammar_accepts_canonical_xml_body() {
     let vocab = test_vocab();
     let stop_ids = vec![130i32];
     let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
     let tools = exec_tool_def();
     let compiled = engine
-        .compile_qwen3_coder_tool_grammar(&tools, true)
+        .compile_qwen3_coder_tool_grammar(&tools, true, "</parameter>")
         .expect("compile must succeed");
 
-    let canonical = "<tool_call>\n<function=exec>\n<parameter=command>\nls /tmp\n</parameter>\n</function>\n</tool_call>";
+    let canonical_xml = "<tool_call>\n<function=exec>\n<parameter=command>ls /tmp</parameter>\n</function>\n</tool_call>";
     assert!(
-        grammar_accepts(&compiled, canonical),
-        "canonical exec invocation must be accepted; input: {canonical:?}"
+        grammar_accepts(&compiled, canonical_xml),
+        "canonical native-XML qwen3_coder body must be accepted; input: {canonical_xml:?}"
     );
 }
 
@@ -112,7 +121,7 @@ fn qwen3_coder_grammar_compiles_with_shared_tool_name_prefixes() {
     // triggers. Pre-fix this returned Err (both the qwen_xml_parameter
     // attempt and the json_schema fallback reuse the colliding triggers).
     let compiled = engine
-        .compile_qwen3_coder_tool_grammar(&tools, true)
+        .compile_qwen3_coder_tool_grammar(&tools, true, "</parameter>")
         .expect("grammar with shared-prefix tool names must compile (issue #88)");
 
     // The longer, prefix-colliding tool must be reachable — not shadowed
@@ -131,48 +140,57 @@ fn qwen3_coder_grammar_compiles_with_shared_tool_name_prefixes() {
     );
 }
 
-/// Regression test for issue #40 / OpenClaw: when the schema declares
-/// `required: ["command"]`, the grammar must REJECT a tool call body
-/// with zero `<parameter=>` blocks.
+/// 2026-06-03: the qwen3_coder grammar intentionally enforces NATIVE XML
+/// `<parameter=KEY>VALUE</parameter>` bodies and REJECTS a JSON-shaped body
+/// (`<function=exec>{...}</function>`). The 2026-06-02 change
+/// (compile_tools.rs:407) reverted an `any_text`/loose-body trial back to
+/// the strict value EBNF *precisely because* the loose body let the model
+/// freelance/ramble to finish=length — the runaway we are fighting.
+/// Qwen3.6 emits native XML; MiniMax has its own grammar
+/// (`compile_minimax_xml_tool_grammar`, also XML `<parameter name=>`, not
+/// JSON). The JSON-shaped body remains supported by the PARSER fallback
+/// (`parse_single_b.rs`) only when the grammar is disabled
+/// (`--disable-tool-grammar`) — never by this grammar. (Was previously
+/// `qwen3_coder_grammar_accepts_legacy_json_body`, an obsolete "supports
+/// both shapes" contract superseded by the freelance fix.)
 #[test]
-fn qwen3_coder_grammar_rejects_empty_required_param() {
+fn qwen3_coder_grammar_rejects_json_body_enforces_xml() {
     let vocab = test_vocab();
     let stop_ids = vec![130i32];
     let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
     let tools = exec_tool_def();
     let compiled = engine
-        .compile_qwen3_coder_tool_grammar(&tools, true)
+        .compile_qwen3_coder_tool_grammar(&tools, true, "</parameter>")
         .expect("compile must succeed");
 
-    let empty_body = "<tool_call>\n<function=exec>\n</function>\n</tool_call>";
+    let json_body =
+        "<tool_call>\n<function=exec>\n{\"command\": \"ls /tmp\"}\n</function>\n</tool_call>";
     assert!(
-        !grammar_accepts(&compiled, empty_body),
-        "qwen3_coder grammar with required=['command'] must REJECT empty body. \
-         Input: {empty_body:?}"
+        !grammar_accepts(&compiled, json_body),
+        "grammar must enforce native XML <parameter=>; the JSON body is parser-fallback \
+         (grammar-off) only. input: {json_body:?}"
     );
 }
 
-/// Multi-property variant: schema declares one required field plus
-/// several optional fields. Mirrors OpenClaw's `exec` tool shape
-/// (command required; env/cwd/timeout optional). The model is free
-/// to emit ANY permutation of fields, but must always include the
-/// required one.
+/// Multi-parameter native-XML body — pins that consecutive
+/// `<parameter=KEY>VALUE</parameter>` blocks are accepted without
+/// the FSM clipping the closing `</parameter>` boundary (the exact
+/// pruning failure that the 2026-05-23 sweep originally tried to
+/// dodge by switching to JSON body).
 #[test]
-fn qwen3_coder_grammar_rejects_empty_with_optional_fields_present() {
+fn qwen3_coder_grammar_accepts_multi_xml_params() {
     let tools = vec![ToolDefinition {
         tool_type: "function".to_string(),
         function: crate::tool_parser::FunctionDefinition {
-            name: "exec".to_string(),
-            description: Some("Run a shell command".to_string()),
+            name: "write".to_string(),
+            description: Some("Write to a file".to_string()),
             parameters: Some(serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string"},
-                    "env": {"type": "string"},
-                    "cwd": {"type": "string"},
-                    "timeout_seconds": {"type": "integer"}
+                    "filePath": {"type": "string"},
+                    "content": {"type": "string"}
                 },
-                "required": ["command"]
+                "required": ["filePath", "content"]
             })),
         },
     }];
@@ -181,35 +199,105 @@ fn qwen3_coder_grammar_rejects_empty_with_optional_fields_present() {
     let stop_ids = vec![130i32];
     let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
     let compiled = engine
-        .compile_qwen3_coder_tool_grammar(&tools, true)
+        .compile_qwen3_coder_tool_grammar(&tools, true, "</parameter>")
         .expect("compile must succeed");
 
-    let empty_body = "<tool_call>\n<function=exec>\n</function>\n</tool_call>";
+    let multi_param = "<tool_call>\n<function=write>\n<parameter=filePath>/tmp/test-rust-axum-v42/Cargo.toml</parameter>\n<parameter=content>[package]\nname = \"test-rust-axum-v42\"</parameter>\n</function>\n</tool_call>";
+    assert!(
+        grammar_accepts(&compiled, multi_param),
+        "multi-param native XML body must be accepted with full byte fidelity \
+         (path tokens like `axum-v42` and content tokens with newlines/quotes). \
+         Input: {multi_param:?}"
+    );
+}
+
+/// Tier-0 non-empty enforcement (2026-05-25 evening): the qwen3_coder
+/// grammar's regex content type must REJECT a parameter body that is
+/// empty or whitespace-only. This is the Atlas-internal version of
+/// llama.cpp#20164's "empty-parameter under long context" failure mode.
+/// Without this, the model's in-tool sampler (which intentionally zeros
+/// rep/DRY/freq/presence penalties because XGrammar usually shapes the
+/// output) can pick `</parameter>` as its very next token after the
+/// opener — burning opencode tool-call turns on empty bash commands and
+/// empty file paths.
+#[test]
+fn qwen3_coder_grammar_rejects_empty_parameter_body() {
+    let vocab = test_vocab();
+    let stop_ids = vec![130i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+    let tools = exec_tool_def();
+    let compiled = engine
+        .compile_qwen3_coder_tool_grammar(&tools, true, "</parameter>")
+        .expect("compile must succeed");
+
+    let empty_body =
+        "<tool_call>\n<function=exec>\n<parameter=command></parameter>\n</function>\n</tool_call>";
     assert!(
         !grammar_accepts(&compiled, empty_body),
-        "qwen3_coder grammar with required=['command'] + 3 optional fields \
-         must STILL reject empty body. Input: {empty_body:?}"
+        "empty parameter body must be REJECTED by Tier-0 regex. Input: {empty_body:?}"
     );
+}
 
-    // Just an optional, no required → still rejected
-    let only_optional = "<tool_call>\n<function=exec>\n<parameter=cwd>\n/tmp\n</parameter>\n</function>\n</tool_call>";
+#[test]
+fn qwen3_coder_grammar_rejects_whitespace_only_parameter_body() {
+    let vocab = test_vocab();
+    let stop_ids = vec![130i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+    let tools = exec_tool_def();
+    let compiled = engine
+        .compile_qwen3_coder_tool_grammar(&tools, true, "</parameter>")
+        .expect("compile must succeed");
+
+    let whitespace_body = "<tool_call>\n<function=exec>\n<parameter=command>   \n  </parameter>\n</function>\n</tool_call>";
     assert!(
-        !grammar_accepts(&compiled, only_optional),
-        "qwen3_coder grammar must reject body with only an OPTIONAL parameter \
-         when 'command' is required. Input: {only_optional:?}"
+        !grammar_accepts(&compiled, whitespace_body),
+        "whitespace-only parameter body must be REJECTED. Input: {whitespace_body:?}"
     );
+}
 
-    // Required-only is fine
-    let only_required = "<tool_call>\n<function=exec>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>";
+/// 2026-06-03: the content-start rule now ACCEPTS a leading newline before
+/// real content (the model's genuine top-1 at the start of a write body).
+/// The prior `first_char ::= [^ \t\r\n<]` masked `\n`, forcing the argmax
+/// onto a drift runner-up (`lean`/`cargo`) under FP8 long-context. The
+/// `leading_ws* first_content rest` rule permits the newline while still
+/// requiring at least one real (non-ws) char (see the two reject tests).
+#[test]
+fn qwen3_coder_grammar_accepts_leading_newline_content() {
+    let vocab = test_vocab();
+    let stop_ids = vec![130i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+    let tools = exec_tool_def();
+    let compiled = engine
+        .compile_qwen3_coder_tool_grammar(&tools, true, "</parameter>")
+        .expect("compile must succeed");
+
+    let leading_nl = "<tool_call>\n<function=exec>\n<parameter=command>\nls /tmp</parameter>\n</function>\n</tool_call>";
     assert!(
-        grammar_accepts(&compiled, only_required),
-        "required-only body must be accepted. Input: {only_required:?}"
+        grammar_accepts(&compiled, leading_nl),
+        "a leading newline before real content must be ACCEPTED. Input: {leading_nl:?}"
     );
+}
 
-    // Required + optional is fine (any order)
-    let both_in_order = "<tool_call>\n<function=exec>\n<parameter=command>\nls\n</parameter>\n<parameter=cwd>\n/tmp\n</parameter>\n</function>\n</tool_call>";
+/// 2026-06-03 (diag agent acb6cb1): the param key closes with `>` and the
+/// tokenizer fuses it with the value's first byte into a single `>X` merge
+/// token (`>=`=id 9628). At the boundary the model can emit `>=`, depositing
+/// a phantom `=` as the value's first char (`=axum::serve(...)`) — which
+/// broke `edit` oldString matches and stalled the agent. `first_content`
+/// now excludes `=`/`>`, so a value STARTING with `=` (the `>=`-merge
+/// symptom) must be REJECTED by the grammar, forcing a clean `>`+content.
+#[test]
+fn qwen3_coder_grammar_rejects_eq_value_start() {
+    let vocab = test_vocab();
+    let stop_ids = vec![130i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+    let tools = exec_tool_def();
+    let compiled = engine
+        .compile_qwen3_coder_tool_grammar(&tools, true, "</parameter>")
+        .expect("compile must succeed");
+
+    let eq_start = "<tool_call>\n<function=exec>\n<parameter=command>=ls /tmp</parameter>\n</function>\n</tool_call>";
     assert!(
-        grammar_accepts(&compiled, both_in_order),
-        "required+optional in declaration order must be accepted. Input: {both_in_order:?}"
+        !grammar_accepts(&compiled, eq_start),
+        "a value starting with `=` (the `>=`-merge artifact) must be REJECTED. Input: {eq_start:?}"
     );
 }

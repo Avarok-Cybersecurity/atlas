@@ -37,23 +37,32 @@ model_type = "qwen3_6_moe"
 hidden_size = 5120
 
 # Qwen3.5 recommended sampling (from model card).
+# 2026-05-24 empirical band-aid (matches Qwen3.6-35B-A3B post-revert).
+# Reverted from Qwen card's temp=1.0/pres=1.5/2.0 — those caused
+# max_tokens-overrun wandering on agentic opencode clients (35B sibling).
 [sampling.thinking_text]
-temperature = 1.0
+temperature = 0.6
 top_p = 0.95
 top_k = 20
-presence_penalty = 1.5
+presence_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.5
 
 [sampling.thinking_coding]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.5
 
 [sampling.non_thinking]
-temperature = 1.0
-top_p = 1.0
+temperature = 0.7
+top_p = 0.8
 top_k = 20
-presence_penalty = 2.0
+presence_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.5
 
 [behavior]
 # Content-loop watchdog enabled: dense Qwen3.5-27B has a known
@@ -64,3 +73,8 @@ presence_penalty = 2.0
 enable_loop_watchdog = true
 # Thinking on by default for all Qwen reasoning-tier models (sweep 2026-05-20).
 thinking_default = true
+# 2026-05-23 sweep: project-wide default flipped to true (was unset →
+# false via build_parse default).
+thinking_in_tools = true
+# 2026-05-23 sweep: explicit 2048 (was unset → 256 default).
+max_thinking_budget = 2048

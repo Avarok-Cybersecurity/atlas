@@ -37,23 +37,33 @@ mtp_type = "full_attention"
 vision = true
 
 # Recommended sampling defaults per category (from Qwen3.5 model card).
+# 2026-05-24 empirical band-aid (matches Qwen3.6-35B-A3B post-revert).
+# Reverted from Qwen card's temp=1.0/pres=1.5/2.0 — those caused
+# max_tokens-overrun wandering on agentic opencode clients on the 35B
+# sibling. Same family, same regression risk.
 [sampling.thinking_text]
-temperature = 1.0
+temperature = 0.6
 top_p = 0.95
 top_k = 20
-presence_penalty = 1.5
+presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0, align with qwen3.6-35b 10/10 campaign + Qwen vendor
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0, campaign temp=0 finding
 
 [sampling.thinking_coding]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0, align with qwen3.6-35b 10/10 campaign + Qwen vendor
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0, campaign temp=0 finding
 
 [sampling.non_thinking]
-temperature = 1.0
-top_p = 1.0
+temperature = 0.7
+top_p = 0.8
 top_k = 20
-presence_penalty = 2.0
+presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0, align with qwen3.6-35b 10/10 campaign + Qwen vendor
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0, campaign temp=0 finding
 
 [behavior]
 # Content-loop watchdog disabled: 2026-05-05 chess-game stress sweep
@@ -63,8 +73,11 @@ presence_penalty = 2.0
 enable_loop_watchdog = false
 # Thinking on by default for all Qwen reasoning-tier models (sweep 2026-05-20).
 thinking_default = true
-thinking_in_tools = false
-max_thinking_budget = 512
+# 2026-05-23 sweep: false → true. Project-wide default after Qwen3.6
+# Layer-A scanner and F1 removal landed.
+thinking_in_tools = true
+# 2026-05-23 sweep: 512 → 2048 (project-wide reasoning headroom bump).
+max_thinking_budget = 2048
 
 [[model_types]]
 model_type = "qwen3_5_moe"

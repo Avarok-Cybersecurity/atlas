@@ -22,11 +22,42 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // Native-HIP (gfx1151) has NO ported grouped-GEMM MoE path:
+        // moe_fp8_grouped_gemm is a compile stub (kernels/strix-hip/.../
+        // moe_fp8_grouped_gemm.cu writes nothing) and the grouped prefill
+        // pipeline launches additional kernels that are null on the HIP module
+        // set → cuLaunchKernel hipErrorInvalidHandle at layer 0 for any prefill
+        // chunk >64 tokens. forward_batched is the correct, complete per-token
+        // path (its kernels are all bit-exact-verified on HIP) — route there for
+        // ALL token counts on atlas_hip. SCALE keeps grouped (its symlinked
+        // grouped GEMM is real via PTX-recompile); NVIDIA byte-unchanged.
+        //
+        // EXCEPTION: the FP8 routed grouped GEMM (moe_fp8_grouped_gemm) has now
+        // been ported to HIP WMMA (kernels/strix-hip/common/moe_fp8_grouped_gemm.cu
+        // — weight-stationary per-expert, register-prefetch double-buffered, two-
+        // level FP32 block-scale accumulation matching the GB10/oracle numerics),
+        // so long FP8 prefills (>64 tokens) take the grouped path on atlas_hip too
+        // — amortizing the ~50 GB/layer per-token weight re-streaming of
+        // forward_batched. The BF16-dequant grouped GEMM is NOT ported (its
+        // strix-hip kernel is still absent), so its branch stays HIP-batched.
+        let hip_force_batched = cfg!(atlas_hip);
+        // FP8 grouped path is HIP-ready (kernel ported); do not force-batch it.
+        let hip_force_batched_fp8 = false;
+
+        // BF16 experts (FP8-dequant-on-load path): same dispatch shape as
+        // FP8 — grouped GEMM for long prefills, fused per-token for short.
+        if self.bf16_gate_weight_ptrs.is_some() {
+            if self.moe_bf16_grouped_gemm_k.0 != 0 && num_tokens > 64 && !hip_force_batched {
+                return self.forward_prefill_bf16(input, num_tokens, ctx, stream);
+            }
+            return self.forward_batched(input, num_tokens, ctx, stream);
+        }
+
         // FP8 experts: use grouped GEMM for long prefills (>64 tokens),
         // fall back to per-token fused GEMV for short prefills where
         // the GEMM launch overhead exceeds the bandwidth savings.
         if self.fp8_gate_weight_ptrs.is_some() {
-            if self.moe_fp8_grouped_gemm_k.0 != 0 && num_tokens > 64 {
+            if self.moe_fp8_grouped_gemm_k.0 != 0 && num_tokens > 64 && !hip_force_batched_fp8 {
                 return self.forward_prefill_fp8(input, num_tokens, ctx, stream);
             }
             return self.forward_batched(input, num_tokens, ctx, stream);
@@ -195,7 +226,7 @@ impl MoeLayer {
                 num_experts,
                 top_k,
                 ctx.config.norm_topk_prob,
-                1.0,
+                ctx.config.routed_scaling_factor as f32,
                 n,
                 stream,
             )?;

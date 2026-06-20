@@ -45,18 +45,17 @@ impl TransformerModel {
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;
-        let fp32 = if self.config.use_fp32_residual() {
-            4usize
-        } else {
-            2usize
-        };
+        let fp32 = 2usize;
         let k = 2usize;
 
-        // F62 (2026-04-27): SpecMamba dual-buffer pre-verify copy.
-        // Copy canonical SSM state (h_state_checkpoint) → scratch (h_state)
-        // BEFORE the kernel runs. The kernel mutates the scratch; the
-        // canonical is preserved across verify until commit.
-        self.pre_verify_copy_async(seq)?;
+        // Item #2 (STree-style in-place K=2 verify): `h_state` IS canonical
+        // — the verify kernel reads/writes it directly and the commit
+        // (`commit_accepted_prefix`) rewinds it in place on reject. There is
+        // no scratch/canonical split to seed, so the legacy SpecMamba
+        // dual-buffer pre-verify copy (~60 MB h_state + conv D2D per K=2
+        // step) is gone. The CUDA-graph capture below is unaffected: the
+        // captured nodes take the same `h_state` pointer, which never moves.
+        // (K=3/K=4/DFlash verify still run pre_verify_copy_async.)
 
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
@@ -98,7 +97,17 @@ impl TransformerModel {
             let pos = seq.seq_len + t;
             let block_idx = pos / bs;
             let block_offset = pos % bs;
-            let physical_block = seq.physical_block_for(block_idx).unwrap_or(0);
+            // Fall back to the dummy scratch block, NOT block 0: physical
+            // block 0 is a live (likely shared prefix-cache) block, and a
+            // silent write there corrupts cached KV for every reader.
+            let physical_block = seq.physical_block_for(block_idx).unwrap_or_else(|| {
+                tracing::error!(
+                    "verify_k2: no physical block for pos {pos} (block_table len {}); \
+                     writing KV to dummy block",
+                    seq.block_table.len(),
+                );
+                self.dummy_kv_block
+            });
             slots[t] = (physical_block as i64) * (bs as i64) + (block_offset as i64);
         }
         let slot_bytes = unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, 16) };
@@ -179,6 +188,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+            gdn_exact_replay: false,
         };
 
         // ── Phase 2: CUDA graph capture / replay ──

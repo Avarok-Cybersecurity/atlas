@@ -15,15 +15,22 @@ impl PagedKvCache {
         let mut layers = Vec::with_capacity(config.num_layers);
         let mut total_bytes: usize = 0;
         for i in 0..config.num_layers {
-            let layer_block_bytes = config.block_bytes_for_layer(i);
-            let pool_bytes = num_blocks * layer_block_bytes;
-            let k_pool = gpu.alloc(pool_bytes)?;
-            let v_pool = gpu.alloc(pool_bytes)?;
-            total_bytes += pool_bytes * 2;
+            // Per-side block_bytes: for symmetric dtypes both are equal; for
+            // asymmetric (e.g. Bf16KTurbo3V) the K pool is allocated bf16-sized
+            // and the V pool is allocated turbo3-sized — avoids the 4× V over-
+            // allocation that would result from a single MAX-sized stride.
+            let k_block_bytes = config.k_block_bytes_for_layer(i);
+            let v_block_bytes = config.v_block_bytes_for_layer(i);
+            let k_pool_bytes = num_blocks * k_block_bytes;
+            let v_pool_bytes = num_blocks * v_block_bytes;
+            let k_pool = gpu.alloc(k_pool_bytes)?;
+            let v_pool = gpu.alloc(v_pool_bytes)?;
+            total_bytes += k_pool_bytes + v_pool_bytes;
             layers.push(LayerPool {
                 k_pool,
                 v_pool,
-                block_stride: layer_block_bytes,
+                k_block_stride: k_block_bytes,
+                v_block_stride: v_block_bytes,
                 dtype: config.dtype_for_layer(i),
             });
         }
@@ -86,10 +93,53 @@ impl PagedKvCache {
         stream: u64,
     ) -> anyhow::Result<()> {
         for layer in &self.layers {
-            let k_offset = block_idx as usize * layer.block_stride;
-            let v_offset = block_idx as usize * layer.block_stride;
-            gpu.memset_async(layer.k_pool.offset(k_offset), 0, layer.block_stride, stream)?;
-            gpu.memset_async(layer.v_pool.offset(v_offset), 0, layer.block_stride, stream)?;
+            let k_offset = block_idx as usize * layer.k_block_stride;
+            let v_offset = block_idx as usize * layer.v_block_stride;
+            gpu.memset_async(
+                layer.k_pool.offset(k_offset),
+                0,
+                layer.k_block_stride,
+                stream,
+            )?;
+            gpu.memset_async(
+                layer.v_pool.offset(v_offset),
+                0,
+                layer.v_block_stride,
+                stream,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// DIAGNOSTIC (ATLAS_KV_POISON): fill a freshly-allocated block with 0xFF
+    /// (a NaN bit-pattern in both bf16 `0xFFFF` and fp8-e4m3 `0xFF`) instead of
+    /// zero. Any KV region that decode/attention reads but prefill never wrote
+    /// then yields deterministic NaN rather than plausible-but-wrong zeros.
+    /// Used to falsify the "unwritten fresh tail block" hypothesis: if cache-ON
+    /// output goes NaN under poison while cache-OFF stays clean, a fresh block
+    /// is being read unwritten; if both stay clean, fresh KV is fully written
+    /// and the run-to-run nondeterminism originates elsewhere (scratch/scan).
+    pub fn poison_block(
+        &self,
+        block_idx: u32,
+        gpu: &dyn crate::gpu::GpuBackend,
+        stream: u64,
+    ) -> anyhow::Result<()> {
+        for layer in &self.layers {
+            let k_offset = block_idx as usize * layer.k_block_stride;
+            let v_offset = block_idx as usize * layer.v_block_stride;
+            gpu.memset_async(
+                layer.k_pool.offset(k_offset),
+                0xFF,
+                layer.k_block_stride,
+                stream,
+            )?;
+            gpu.memset_async(
+                layer.v_pool.offset(v_offset),
+                0xFF,
+                layer.v_block_stride,
+                stream,
+            )?;
         }
         Ok(())
     }
@@ -157,13 +207,140 @@ impl PagedKvCache {
     /// Get K cache pointer for a layer and block.
     pub fn k_cache_ptr(&self, layer_idx: usize, block_idx: u32) -> DevicePtr {
         let layer = &self.layers[layer_idx];
-        layer.k_pool.offset(block_idx as usize * layer.block_stride)
+        layer
+            .k_pool
+            .offset(block_idx as usize * layer.k_block_stride)
     }
 
     /// Get V cache pointer for a layer and block.
     pub fn v_cache_ptr(&self, layer_idx: usize, block_idx: u32) -> DevicePtr {
         let layer = &self.layers[layer_idx];
-        layer.v_pool.offset(block_idx as usize * layer.block_stride)
+        layer
+            .v_pool
+            .offset(block_idx as usize * layer.v_block_stride)
+    }
+
+    /// DEBUG: decode a BF16 KV block buffer into (sum, ssq, sabs) reductions.
+    /// Each element is 2 bytes (BF16): top 16 bits of an f32. Used by
+    /// `debug_kv_checksum` to fingerprint K/V without cancellation hiding a
+    /// localized per-element divergence.
+    fn bf16_reductions(buf: &[u8]) -> (f64, f64, f64) {
+        let (mut sum, mut ssq, mut sabs) = (0f64, 0f64, 0f64);
+        for c in buf.chunks_exact(2) {
+            let bits = u16::from_le_bytes([c[0], c[1]]);
+            let v = f32::from_bits((bits as u32) << 16) as f64;
+            sum += v;
+            ssq += v * v;
+            sabs += v.abs();
+        }
+        (sum, ssq, sabs)
+    }
+
+    /// DEBUG (env-gated): PER-LAYER K and V fingerprint over `blocks`, emitting
+    /// (sum, ssq, sabs) for each attention layer so a localized divergence
+    /// can't cancel in a global sum. Splits the block list at `boundary_idx`:
+    /// blocks `[0, boundary_idx)` are the REUSED-PREFIX region (carried over
+    /// from a prior turn's prefill) and `[boundary_idx, end)` are the
+    /// RECOMPUTED-SUFFIX region. Each region gets its own per-layer line so we
+    /// can localize the FIRST layer/region where chained (ON) differs from cold
+    /// (OFF). Only valid for BF16 KV (the experiment uses `--kv-cache-dtype
+    /// bf16`); non-BF16 layers are skipped with a one-shot warning.
+    pub fn debug_kv_checksum_per_layer(
+        &self,
+        blocks: &[u32],
+        boundary_idx: usize,
+        gpu: &dyn crate::gpu::GpuBackend,
+        stream: u64,
+        tag: &str,
+    ) {
+        gpu.synchronize(stream).ok();
+        let boundary = boundary_idx.min(blocks.len());
+        let regions: [(&str, &[u32]); 2] = [
+            ("prefix", &blocks[..boundary]),
+            ("suffix", &blocks[boundary..]),
+        ];
+        for (li, layer) in self.layers.iter().enumerate() {
+            if layer.dtype != super::KvCacheDtype::Bf16 {
+                if li == 0 {
+                    tracing::warn!(
+                        "ATLAS_KV_CKSUM[{tag}] layer 0 dtype={:?} != bf16 — probe \
+                         only decodes BF16; skipping",
+                        layer.dtype
+                    );
+                }
+                continue;
+            }
+            // BF16-only probe: K and V strides are equal for symmetric dtypes.
+            let nbytes = layer.k_block_stride;
+            for (rname, rblocks) in &regions {
+                let (mut k_sum, mut k_ssq, mut k_sabs) = (0f64, 0f64, 0f64);
+                let (mut v_sum, mut v_ssq, mut v_sabs) = (0f64, 0f64, 0f64);
+                for &blk in *rblocks {
+                    let mut kb = vec![0u8; nbytes];
+                    let mut vb = vec![0u8; nbytes];
+                    if gpu.copy_d2h(self.k_cache_ptr(li, blk), &mut kb).is_err()
+                        || gpu.copy_d2h(self.v_cache_ptr(li, blk), &mut vb).is_err()
+                    {
+                        continue;
+                    }
+                    let (ks, kq, ka) = Self::bf16_reductions(&kb);
+                    let (vs, vq, va) = Self::bf16_reductions(&vb);
+                    k_sum += ks;
+                    k_ssq += kq;
+                    k_sabs += ka;
+                    v_sum += vs;
+                    v_ssq += vq;
+                    v_sabs += va;
+                }
+                tracing::warn!(
+                    "ATLAS_KV_CKSUM[{tag}] L{li} {rname} nblk={} \
+                     k_sum={k_sum:.4} k_ssq={k_ssq:.4} k_sabs={k_sabs:.4} \
+                     v_sum={v_sum:.4} v_ssq={v_ssq:.4} v_sabs={v_sabs:.4}",
+                    rblocks.len(),
+                );
+            }
+        }
+    }
+
+    /// DEBUG (env-gated): per-LOGICAL-BLOCK K/V fingerprint for ONE layer,
+    /// walking `blocks` in block_table order. Emits (logical_idx,
+    /// physical_block, k_ssq, v_ssq) per block so a per-position aliasing /
+    /// reordering bug (identical region SUM but wrong block→position mapping)
+    /// is visible. BF16 only.
+    pub fn debug_kv_per_block(
+        &self,
+        layer_idx: usize,
+        blocks: &[u32],
+        gpu: &dyn crate::gpu::GpuBackend,
+        stream: u64,
+        tag: &str,
+    ) {
+        gpu.synchronize(stream).ok();
+        let layer = &self.layers[layer_idx];
+        if layer.dtype != super::KvCacheDtype::Bf16 {
+            return;
+        }
+        // BF16-only probe: K and V strides are equal for symmetric dtypes.
+        let nbytes = layer.k_block_stride;
+        for (li, &blk) in blocks.iter().enumerate() {
+            let mut kb = vec![0u8; nbytes];
+            let mut vb = vec![0u8; nbytes];
+            if gpu
+                .copy_d2h(self.k_cache_ptr(layer_idx, blk), &mut kb)
+                .is_err()
+                || gpu
+                    .copy_d2h(self.v_cache_ptr(layer_idx, blk), &mut vb)
+                    .is_err()
+            {
+                continue;
+            }
+            let (_, k_ssq, _) = Self::bf16_reductions(&kb);
+            let (_, v_ssq, _) = Self::bf16_reductions(&vb);
+            tracing::warn!(
+                "ATLAS_KVBLK[{tag}] L{layer_idx} logical={li} phys={blk} \
+                 k_ssq={k_ssq:.4} v_ssq={v_ssq:.4}"
+            );
+        }
     }
 
     /// Get the full K cache pool pointer for a layer (for paged decode kernel).
@@ -188,8 +365,23 @@ impl PagedKvCache {
     }
 
     /// Block stride in bytes for a specific attention layer.
+    /// For symmetric dtypes returns the K stride (which equals V).
+    /// For asymmetric dtypes returns the K-side stride; use
+    /// `v_block_stride_bytes_for_layer` for the V-side stride explicitly.
     pub fn block_stride_bytes_for_layer(&self, layer_idx: usize) -> usize {
-        self.layers[layer_idx].block_stride
+        self.layers[layer_idx].k_block_stride
+    }
+
+    /// K-side block stride in bytes for a specific attention layer.
+    /// Same as `block_stride_bytes_for_layer`; named for clarity in asym call sites.
+    pub fn k_block_stride_bytes_for_layer(&self, layer_idx: usize) -> usize {
+        self.layers[layer_idx].k_block_stride
+    }
+
+    /// V-side block stride in bytes for a specific attention layer.
+    /// Differs from K-side only for asymmetric KV cache dtypes.
+    pub fn v_block_stride_bytes_for_layer(&self, layer_idx: usize) -> usize {
+        self.layers[layer_idx].v_block_stride
     }
 
     /// NVFP4 data section size in bytes per block (uniform).
@@ -205,6 +397,11 @@ impl PagedKvCache {
     /// Turbo3 data section bytes (3-bit packed).
     pub fn turbo3_data_bytes(&self) -> usize {
         self.config.turbo3_data_bytes()
+    }
+
+    /// Turbo2 data section bytes (2-bit packed).
+    pub fn turbo2_data_bytes(&self) -> usize {
+        self.config.turbo2_data_bytes()
     }
 
     /// Turbo8 data section bytes (FP8 E4M3 per element).
@@ -247,19 +444,21 @@ impl PagedKvCache {
 
     /// Read K and V data for one block at one layer from GPU to host.
     ///
-    /// Returns `(k_data, v_data)` where each is `block_stride` bytes.
+    /// Returns `(k_data, v_data)` sized to each side's block stride
+    /// (which may differ for asymmetric dtypes).
     pub fn read_block(
         &self,
         layer_idx: usize,
         block_idx: u32,
         gpu: &dyn GpuBackend,
     ) -> Result<(Vec<u8>, Vec<u8>)> {
-        let stride = self.layers[layer_idx].block_stride;
+        let k_stride = self.layers[layer_idx].k_block_stride;
+        let v_stride = self.layers[layer_idx].v_block_stride;
         let k_ptr = self.k_cache_ptr(layer_idx, block_idx);
         let v_ptr = self.v_cache_ptr(layer_idx, block_idx);
 
-        let mut k_data = vec![0u8; stride];
-        let mut v_data = vec![0u8; stride];
+        let mut k_data = vec![0u8; k_stride];
+        let mut v_data = vec![0u8; v_stride];
         gpu.copy_d2h(k_ptr, &mut k_data)?;
         gpu.copy_d2h(v_ptr, &mut v_data)?;
 

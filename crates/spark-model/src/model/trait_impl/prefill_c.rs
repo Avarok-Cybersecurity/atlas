@@ -94,11 +94,7 @@ impl TransformerModel {
         };
         let h = self.config.hidden_size;
         let _bf16 = 2usize;
-        let fp32 = if self.config.use_fp32_residual() {
-            4usize
-        } else {
-            2usize
-        };
+        let fp32 = 2usize;
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
@@ -198,8 +194,19 @@ impl TransformerModel {
                     "Marconi two-phase: restored SSM snapshot at token {snap_tok} \
                          ({matched} KV blocks cached)",
                 );
-                // Exact match: snapshot covers all tokens
-                let skip = if matched >= total_len {
+                // Snapshot covers the entire matched prefix only when
+                // snap_tok == matched. When an *intermediate* checkpoint
+                // matched at full prompt length (snap_tok < matched >=
+                // total_len — e.g. the leaf snapshot was evicted from the
+                // pool, leaving only a block-aligned checkpoint), the
+                // restored recurrent SSM state is at token `snap_tok`, NOT
+                // `total_len`. Skipping to `matched` here would leave the
+                // SSM h_state/conv_state stale while positions/KV advance to
+                // the prompt end → first decoded token reads a misaligned
+                // recurrent state → garbage / immediate stop. Skip only to
+                // `snap_tok` so suffix-prefill recomputes SSM over
+                // [snap_tok, total_len). (Mirrors the prefill_b warm-hit fix.)
+                let skip = if matched >= total_len && snap_tok >= matched {
                     matched
                 } else {
                     snap_tok
@@ -404,10 +411,23 @@ impl TransformerModel {
             profile: self.profile,
             comm: self.comm_ref(),
             graph_capture: false,
+            // Marconi warm hit: GDN layers replay from a restored SSM state
+            // and must use the bit-faithful WY4 recurrence (see layer.rs).
+            gdn_exact_replay: marconi_skip,
         };
 
         // ── 4. Per-layer forward: SSM uses three-phase, attention uses standard ──
-        let layer_kv_write_start = if marconi_skip { 0 } else { kv_write_start };
+        // Marconi intermediate hit: the first (matched - proc_start) processed
+        // tokens replay already-cached positions — write-floor them so the
+        // shared prefix-cache blocks are not rewritten with non-bit-exact
+        // recomputed K/V (see prefill_b/forward_layers.rs).
+        let layer_kv_write_start = if marconi_skip {
+            seq.cached_prefix_tokens
+                .saturating_sub(proc_start)
+                .min(proc_count)
+        } else {
+            kv_write_start
+        };
         let gdn_bufs = GdnPrefillBuffers {
             qkv: self.gdn_buf_qkv,
             gate_beta: self.gdn_buf_gate_beta,
@@ -485,6 +505,8 @@ impl TransformerModel {
         // ── 5. Update sequence state ──
         seq.tokens.extend_from_slice(tokens);
         seq.seq_len = total_len;
+        // #155: prime the decode-checkpoint cadence gate (see prefill_a).
+        seq.last_decode_ckpt_block = seq.tokens.len() / bs;
 
         // ── 6. Final norm on LAST token only ──
         let last_hidden = hidden.offset((proc_count - 1) * h * fp32);

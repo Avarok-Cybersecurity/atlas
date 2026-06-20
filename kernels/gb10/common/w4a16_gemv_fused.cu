@@ -18,6 +18,21 @@
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 
+// Standard E4M3 (1-4-3, bias 7) decode via pure bit-math. On real NVIDIA this is
+// byte-identical to (float)__nv_fp8_e4m3; on SCALE/gfx1151 the built-in
+// __nv_fp8_e4m3->float decode is a NON-STANDARD narrow format which mismatches the
+// standard E4M3 scales written by the encoder -> corrupts every block scale.
+// HIP/gfx1151 shares the same software path (no cvt.rn.satfinite.e4m3x2.f32 PTX).
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+__device__ __forceinline__ float scl_fp8(unsigned char b) {
+    unsigned int s = (b >> 7) & 1u, e = (b >> 3) & 0xFu, m = b & 0x7u; float v;
+    if (e == 0u)               v = (float)m * 0.001953125f;            // subnormal m*2^-9
+    else if (e == 15u && m == 7u) v = 0.0f;                            // NaN -> 0
+    else                       v = __uint_as_float(((e + 120u) << 23) | (m << 20)); // 2^(e-7)*(1+m/8)
+    return s ? -v : v;
+}
+#endif
+
 #define BLOCK_SIZE 256
 #define N_PER_BLOCK 4
 #define WARP_SIZE 32
@@ -84,7 +99,11 @@ extern "C" __global__ void w4a16_gemv_dual(
             (unsigned long long)n * num_groups + scale_group];
         __nv_fp8_e4m3 fp8;
         *(unsigned char*)&fp8 = scale_byte;
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+        float scale = scl_fp8(scale_byte) * scale2;
+#else
         float scale = (float)fp8 * scale2;
+#endif
 
         #pragma unroll
         for (int b = 0; b < 4; b++) {
@@ -167,7 +186,11 @@ extern "C" __global__ void w4a16_gemv_silu_input(
             (unsigned long long)n * num_groups + scale_group];
         __nv_fp8_e4m3 fp8;
         *(unsigned char*)&fp8 = scale_byte;
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+        float scale = scl_fp8(scale_byte) * scale2;
+#else
         float scale = (float)fp8 * scale2;
+#endif
 
         const unsigned int g_raw[4] = {g_data.x, g_data.y, g_data.z, g_data.w};
         const unsigned int u_raw[4] = {u_data.x, u_data.y, u_data.z, u_data.w};

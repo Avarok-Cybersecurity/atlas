@@ -100,11 +100,7 @@ impl TransformerModel {
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;
-        let fp32 = if self.config.use_fp32_residual() {
-            4usize
-        } else {
-            2usize
-        };
+        let fp32 = 2usize;
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
@@ -418,6 +414,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: false,
+            gdn_exact_replay: false,
         };
 
         let prefill_ctx = ForwardContext {
@@ -428,6 +425,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: false,
+            gdn_exact_replay: false,
         };
 
         for (layer_idx, layer) in self.layers.iter().enumerate() {

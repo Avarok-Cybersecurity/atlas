@@ -15,6 +15,8 @@
 mod activations;
 #[path = "ops/embeddings.rs"]
 mod embeddings;
+#[path = "ops/fp8_gemv_batch.rs"]
+mod fp8_gemv_batch;
 #[path = "ops/fp8_moe.rs"]
 mod fp8_moe;
 #[path = "ops/fp8_moe_batch_a.rs"]
@@ -29,6 +31,10 @@ mod gemm_quant;
 mod hyper_connection;
 #[path = "ops/kv_cache.rs"]
 mod kv_cache;
+#[path = "ops/kv_cache_fp8k.rs"]
+mod kv_cache_fp8k;
+#[path = "ops/kv_cache_turbok.rs"]
+mod kv_cache_turbok;
 #[path = "ops/moe_expert.rs"]
 mod moe_expert;
 #[path = "ops/moe_expert_more.rs"]
@@ -49,10 +55,14 @@ mod prefill_attn_a;
 mod prefill_attn_b;
 #[path = "ops/prefill_attn_batched.rs"]
 mod prefill_attn_batched;
+#[path = "ops/prefill_attn_fp8k.rs"]
+mod prefill_attn_fp8k;
 #[path = "ops/prefill_attn_main_a.rs"]
 mod prefill_attn_main_a;
 #[path = "ops/prefill_attn_main_b.rs"]
 mod prefill_attn_main_b;
+#[path = "ops/prefill_attn_turbok.rs"]
+mod prefill_attn_turbok;
 #[path = "ops/quant_dispatch.rs"]
 mod quant_dispatch;
 #[path = "ops/sampling.rs"]
@@ -70,6 +80,7 @@ mod ssm_preproc;
 
 pub use activations::*;
 pub use embeddings::*;
+pub use fp8_gemv_batch::*;
 pub use fp8_moe::*;
 pub use fp8_moe_batch_a::*;
 pub use fp8_moe_batch_b::*;
@@ -77,6 +88,8 @@ pub use gemm_dense::*;
 pub use gemm_quant::*;
 pub use hyper_connection::*;
 pub use kv_cache::*;
+pub use kv_cache_fp8k::*;
+pub use kv_cache_turbok::*;
 pub use moe_expert::*;
 pub use moe_expert_more::*;
 pub use moe_gate::*;
@@ -88,8 +101,10 @@ pub use norm::*;
 pub use prefill_attn_a::*;
 pub use prefill_attn_b::*;
 pub use prefill_attn_batched::*;
+pub use prefill_attn_fp8k::*;
 pub use prefill_attn_main_a::*;
 pub use prefill_attn_main_b::*;
+pub use prefill_attn_turbok::*;
 pub use quant_dispatch::*;
 pub use sampling::*;
 pub use ssm_gdn_a::*;

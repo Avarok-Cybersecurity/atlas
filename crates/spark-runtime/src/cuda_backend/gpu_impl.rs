@@ -38,11 +38,10 @@ use cudarc::driver::LaunchConfig;
 
 use super::{
     AtlasCudaBackend, cuCtxSetCurrent, cuEventCreate, cuEventDestroy_v2, cuEventRecord,
-    cuGraphDestroy, cuGraphExecDestroy, cuGraphInstantiateWithFlags, cuGraphLaunch, cuMemAlloc_v2,
-    cuMemAllocHost_v2, cuMemAllocManaged, cuMemFree_v2, cuMemFreeHost, cuMemGetInfo_v2,
-    cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async,
-    cuStreamBeginCapture, cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize,
-    cuStreamWaitEvent,
+    cuGraphDestroy, cuGraphExecDestroy, cuGraphLaunch, cuMemAlloc_v2, cuMemAllocHost_v2,
+    cuMemAllocManaged, cuMemFree_v2, cuMemFreeHost, cuMemGetInfo_v2, cuMemcpyDtoDAsync_v2,
+    cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async, cuStreamBeginCapture,
+    cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize, cuStreamWaitEvent,
 };
 use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 
@@ -210,10 +209,18 @@ impl GpuBackend for AtlasCudaBackend {
         // called at model init time. Layers store the returned KernelHandle.
         let cache: OnceLock<RawCudaFunc> = OnceLock::new();
         let registry = AtlasRegistry::get();
-        let raw = registry
-            .raw_function_cached(&cache, module, func_name)
-            .map_err(|e| anyhow::anyhow!("Kernel lookup {module}::{func_name}: {e}"))?;
-        Ok(KernelHandle(raw.0 as u64))
+        match registry.raw_function_cached(&cache, module, func_name) {
+            Ok(raw) => {
+                crate::kernel_audit::record(module, func_name, true);
+                Ok(KernelHandle(raw.0 as u64))
+            }
+            Err(e) => {
+                // Optional kernels (try_kernel) land here and fall back silently;
+                // the audit makes that visible in the startup kernel table.
+                crate::kernel_audit::record(module, func_name, false);
+                Err(anyhow::anyhow!("Kernel lookup {module}::{func_name}: {e}"))
+            }
+        }
     }
 
     fn copy_h2d_async(&self, src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {
@@ -257,12 +264,17 @@ impl GpuBackend for AtlasCudaBackend {
         if status != 0 {
             bail!("cuStreamEndCapture failed: status {status}");
         }
-        // Instantiate the graph into an executable
+        // Instantiate the graph into an executable. NVIDIA's libcuda exports
+        // `cuGraphInstantiateWithFlags`; SCALE (gfx1151) exposes the
+        // ABI-identical `cuGraphInstantiate` — see cuda_backend.rs.
         let mut graph_exec: u64 = 0;
-        let status = unsafe { cuGraphInstantiateWithFlags(&mut graph_exec, graph, 0) };
+        #[cfg(not(atlas_scale))]
+        let status = unsafe { super::cuGraphInstantiateWithFlags(&mut graph_exec, graph, 0) };
+        #[cfg(atlas_scale)]
+        let status = unsafe { super::cuGraphInstantiate(&mut graph_exec, graph, 0) };
         if status != 0 {
             unsafe { cuGraphDestroy(graph) };
-            bail!("cuGraphInstantiateWithFlags failed: status {status}");
+            bail!("cuGraphInstantiate failed: status {status}");
         }
         // The graph template is no longer needed after instantiation
         unsafe { cuGraphDestroy(graph) };

@@ -119,11 +119,33 @@ impl TransformerModel {
         let seq_len_ptrs_aligned = (block_ptrs_bytes + 7) & !7;
         let total_meta_bytes = seq_len_ptrs_off + seq_len_ptrs_aligned - scratch_offset_bytes;
 
-        // Sanity: meta footprint within scratch.
-        // Scratch is sized for ample MoE topk + meta — refer to BufferArena
-        // sizing in spark-runtime/src/buffers/sizes.rs. The fit check at
-        // dispatch entry guarantees total_tokens ≤ arena_cap.
-        let _ = total_meta_bytes;
+        // #110 defense-in-depth: bounds-check the metadata footprint against
+        // the scratch allocation. This should NEVER fire — the dispatch-entry
+        // predicate `check_kernel_batched_eligible` now pre-flights the full
+        // batched footprint (`q12_batched_scratch_bytes`) against scratch_cap
+        // BEFORE any stream state is mutated, and the scratch buffer is sized
+        // for `Q12_SIZING_STREAMS` streams. If this guard ever trips, the
+        // eligibility predicate and the staging layout have diverged (an SSOT
+        // violation in `q12_batched_scratch_bytes`): bail rather than overrun
+        // (out-of-range HtoD → corruption → sticky CUDA-700). Note this bail
+        // is mid-Phase-A, so the per-stream fallback re-runs setup on
+        // partially-mutated streams — strictly worse than the clean pre-flight
+        // bail, hence "should never reach here".
+        let scratch_cap = self.buffers.scratch_bytes();
+        if scratch_offset_bytes + total_meta_bytes > scratch_cap {
+            tracing::error!(
+                "stage_batched_attn_metadata SSOT violation: n={n} chunk_len={chunk_len} \
+                 meta_bytes={total_meta_bytes} scratch_offset={scratch_offset_bytes} \
+                 scratch_cap={scratch_cap} — eligibility pre-flight should have prevented this"
+            );
+            anyhow::bail!(
+                "batched attn metadata footprint {} B at offset {} exceeds scratch \
+                 capacity {} B (n={n}, chunk_len={chunk_len}) — fall back to per-stream",
+                total_meta_bytes,
+                scratch_offset_bytes,
+                scratch_cap,
+            );
+        }
 
         // Build host-side staging buffers, then upload via the model's
         // pinned-staging area.
@@ -250,6 +272,7 @@ impl TransformerModel {
             chunk_len: chunk_len as u32,
             total_tokens: total_tokens as u32,
             max_blocks_per_seq: max_blocks,
+            staged_bytes: total_meta_bytes,
         })
     }
 }

@@ -156,7 +156,10 @@ pub(super) fn retire_finished_sequences(model: &dyn Model, active: &mut Vec<Acti
                 if let Err(e) = model.compact_sequence(&mut active[i].seq, i) {
                     tracing::error!("compact_sequence: {e:#}");
                 }
-                a.seq.slot_idx = usize::MAX; // sentinel: slot reused by compact
+                // Disown the retired seq's slot (now owned by the swapped-in
+                // seq's guard): sets the reuse sentinel AND neutralizes the
+                // RAII guard so `free_sequence`/Drop won't double-release it.
+                model.detach_slot_for_reuse(&mut a.seq);
             }
             finish_sequence(model, &mut a);
         } else {

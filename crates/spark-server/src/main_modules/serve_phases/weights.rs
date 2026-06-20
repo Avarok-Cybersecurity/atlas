@@ -11,7 +11,7 @@ use atlas_core::config::ModelConfig;
 use crate::cli;
 
 pub(crate) fn quant_multiplier(config: &ModelConfig) -> Option<f64> {
-    if config.model_type == "minimax_m2" {
+    if config.model_type == "minimax_m2" || config.model_type == "step3p7" {
         Some(1.02)
     } else if config
         .quantization_config

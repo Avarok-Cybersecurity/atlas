@@ -11,6 +11,3 @@ memory_bandwidth_gbps = 200
 memory_type = "LPDDR5"
 # Apple Silicon UMA — the OOM watchdog reads true free memory at runtime.
 memory_gb = 16
-# Apple Silicon's BF16 throughput parity with FP32 makes the BF16 residual
-# the right default; FP32-residual mode is unnecessary on UMA.
-use_fp32_residual = false

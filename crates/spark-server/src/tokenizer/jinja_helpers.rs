@@ -125,9 +125,86 @@ pub(super) fn build_jinja_env(chat_template: &str) -> Result<minijinja::Environm
         },
     );
 
+    // Override minijinja's builtin `tojson` with a python-`json.dumps`
+    // compatible serializer. transformers renders the chat-template
+    // `<tools>` block via `{{ tool | tojson }}`, where jinja2's `tojson`
+    // is `json.dumps(x, ensure_ascii=False, sort_keys=False)` — i.e.
+    // SPACES after `:` and `,` (separators `": "` / `", "`) and keys in
+    // insertion order. minijinja's builtin `tojson` is COMPACT (no
+    // spaces), so the tool-definition token stream diverged from
+    // vLLM/transformers at the first `:`. This filter restores byte
+    // parity. (Key order is preserved via the `preserve_order` feature
+    // on both serde_json and minijinja — see the Cargo.toml notes.)
+    env.add_filter(
+        "tojson",
+        |value: minijinja::Value| -> Result<minijinja::Value, minijinja::Error> {
+            let mut buf = Vec::new();
+            let mut ser = serde_json::Serializer::with_formatter(&mut buf, PythonJsonFormatter);
+            serde::Serialize::serialize(&value, &mut ser).map_err(|e| {
+                minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidOperation,
+                    format!("tojson serialization failed: {e}"),
+                )
+            })?;
+            // serde_json writes valid UTF-8; ensure_ascii=False means we keep
+            // multi-byte characters verbatim (no \uXXXX escaping), which
+            // serde_json already does by default.
+            let s = String::from_utf8(buf).map_err(|e| {
+                minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidOperation,
+                    format!("tojson produced invalid UTF-8: {e}"),
+                )
+            })?;
+            Ok(minijinja::Value::from_safe_string(s))
+        },
+    );
+
     env.add_template("chat", template_static)
         .context("Failed to compile Jinja chat template")?;
     Ok(env)
+}
+
+/// A `serde_json` formatter that matches Python `json.dumps` default
+/// separators: `", "` between array/object items and `": "` between an
+/// object key and its value. serde_json's `CompactFormatter` (the
+/// default) emits no spaces, while jinja2's `tojson` uses `json.dumps`
+/// defaults. This bridges the two so Atlas's `<tools>` prompt block is
+/// byte-identical to transformers/vLLM.
+#[derive(Clone, Debug)]
+struct PythonJsonFormatter;
+
+impl serde_json::ser::Formatter for PythonJsonFormatter {
+    #[inline]
+    fn begin_array_value<W>(&mut self, writer: &mut W, first: bool) -> std::io::Result<()>
+    where
+        W: ?Sized + std::io::Write,
+    {
+        if first {
+            Ok(())
+        } else {
+            writer.write_all(b", ")
+        }
+    }
+
+    #[inline]
+    fn begin_object_key<W>(&mut self, writer: &mut W, first: bool) -> std::io::Result<()>
+    where
+        W: ?Sized + std::io::Write,
+    {
+        if first {
+            Ok(())
+        } else {
+            writer.write_all(b", ")
+        }
+    }
+
+    #[inline]
+    fn begin_object_value<W>(&mut self, writer: &mut W) -> std::io::Result<()>
+    where
+        W: ?Sized + std::io::Write,
+    {
+        writer.write_all(b": ")
+    }
 }
 
 /// Try loading an override template from jinja-templates/{model_type}.jinja.

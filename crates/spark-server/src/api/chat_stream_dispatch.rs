@@ -17,7 +17,6 @@ use crate::tool_parser;
 
 use super::chat_stream::chat_completions_stream;
 use super::compact::openai_error_response;
-use super::failures::f39_build_failure_cache;
 use super::inference_types::GrammarSpec;
 
 pub(super) async fn dispatch_streaming(
@@ -72,10 +71,7 @@ pub(super) async fn dispatch_streaming(
     let req_service_tier = req.service_tier.clone();
     let req_metadata = req.metadata.clone();
     let ctx_for_stream = req_ctx.as_ref().map(|e| e.0.clone());
-    // F44 (2026-04-27): build the cross-turn permanent-failure cache
-    // here (where `req.messages` is in scope) and pass it into the
-    // streaming function for the ToolCallEnd hook.
-    let f44_cache = f39_build_failure_cache(&req.messages);
+    let repetition_detection = req.repetition_detection();
     match chat_completions_stream(
         state,
         prompt_tokens,
@@ -98,6 +94,7 @@ pub(super) async fn dispatch_streaming(
         logit_bias,
         enable_thinking,
         thinking_budget,
+        repetition_detection,
         tools_active,
         tool_choice_required,
         suppress_tool_call,
@@ -115,7 +112,6 @@ pub(super) async fn dispatch_streaming(
         req_metadata,
         ctx_for_stream,
         dump_seq,
-        f44_cache,
     )
     .await
     {

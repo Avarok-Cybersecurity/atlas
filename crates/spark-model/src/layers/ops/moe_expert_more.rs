@@ -145,9 +145,13 @@ pub fn moe_expert_silu_down_shared_batch2(
     block_size: u32,
     stream: u64,
 ) -> Result<()> {
+    // s_act is extern shared: K floats (issue #85 -- static 1024 overflowed
+    // for Mistral-Small-4's expert_hidden_dim=2048).
+    let smem_bytes = (k as usize * std::mem::size_of::<f32>()) as u32;
     KernelLaunch::new(gpu, kernel)
         .grid([div_ceil(n, 8), 2 * (top_k + 1), 1])
         .block([block_size, 1, 1])
+        .shared_mem(smem_bytes)
         .arg_ptr(gate_out)
         .arg_ptr(up_out)
         .arg_ptr(packed_ptrs)
@@ -279,9 +283,13 @@ pub fn moe_expert_silu_down_shared_batch3(
     top_k: u32,
     stream: u64,
 ) -> Result<()> {
+    // s_act is extern shared: K floats (issue #85 -- static 1024 overflowed
+    // for expert inter dims > 1024).
+    let smem_bytes = (k as usize * std::mem::size_of::<f32>()) as u32;
     KernelLaunch::new(gpu, kernel)
         .grid([div_ceil(n, 8), 3 * (top_k + 1), 1])
         .block([128, 1, 1])
+        .shared_mem(smem_bytes)
         .arg_ptr(gate_out)
         .arg_ptr(up_out)
         .arg_ptr(packed_ptrs)

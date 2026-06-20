@@ -104,17 +104,37 @@ impl TransformerModel {
             // Marconi: restore SSM snapshot if available.
             // With intermediate checkpoints, ssm_snapshot_tokens may be less than
             // matched_tokens. We skip SSM computation only up to ssm_snapshot_tokens
-            // and recompute SSM (+ overwrite KV) for tokens between the checkpoint
-            // and matched_tokens. This trades some redundant KV writes for correct
-            // SSM state propagation.
+            // and recompute SSM for tokens between the checkpoint and
+            // matched_tokens. KV for that replay window is NOT rewritten — the
+            // layer_kv_write_start floor (forward_layers.rs) skips writes below
+            // cached_prefix_tokens, so the shared prefix-cache blocks keep the
+            // original values (a non-bit-equal rewrite would poison them).
             let mut skip = if let Some(snap_id) = prefix_match.ssm_snapshot {
                 let snap_tok = prefix_match.ssm_snapshot_tokens;
+                // Exact full-prompt hit on a hiddenless snapshot (finish
+                // leaves never stash a hidden): the exact-snap fixup cannot
+                // produce the first token's logits, so fall through to the
+                // no-snapshot full-recompute path. Only affects identical
+                // retried prompts; multi-turn warm hits have matched < total.
+                let exact_without_hidden = snap_tok == matched
+                    && matched == total
+                    && !self.ssm_snapshots.has_hidden(snap_id);
                 if snap_tok > 0
                     && matched <= total
+                    && !exact_without_hidden
                     && self
                         .ssm_snapshots
                         .session_matches(snap_id, seq.session_hash)
                 {
+                    // Cross-stream ordering: the snapshot we are about to read
+                    // was SAVED on the default stream (decode_marconi_checkpoint
+                    // / finish_leaf_snapshot / prefill_save_snapshot), but this
+                    // RESTORE runs on the prefill stream. Under concurrent
+                    // batched traffic the save's D2D can still be in flight when
+                    // this restore reads the slot — yielding torn/stale SSM
+                    // recurrent state and diverging the warm decode. Wait for
+                    // all snapshot saves recorded so far before reading.
+                    self.wait_snapshot_saves_dispatch(stream)?;
                     self.ssm_snapshots.restore(
                         snap_id,
                         seq.slot_idx,
@@ -122,6 +142,14 @@ impl TransformerModel {
                         self.gpu.as_ref(),
                         stream,
                     )?;
+                    if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+                        self.ssm_pool.debug_state_checksum(
+                            seq.slot_idx,
+                            self.gpu.as_ref(),
+                            stream,
+                            &format!("restore@{snap_tok}"),
+                        );
+                    }
                     if snap_tok < matched {
                         tracing::info!(
                             "Marconi intermediate hit: restored from checkpoint at token {} \
@@ -138,6 +166,16 @@ impl TransformerModel {
                             prefix_match.matched_blocks.len(),
                             snap_id,
                         );
+                        // Exact full-prompt leaf hit (snap_tok == matched ==
+                        // total): the last prompt token is re-run for logits,
+                        // double-advancing the SSM recurrent state. Flag it so
+                        // finalize_last re-restores state@N and emits the first
+                        // token from the snapshot's stashed hidden. Only when
+                        // the whole prompt matched — a shorter-than-total match
+                        // (matched < total) continues forward correctly.
+                        if matched == total {
+                            seq.marconi_exact_snap = Some(snap_id);
+                        }
                     }
                     true
                 } else {
@@ -146,6 +184,25 @@ impl TransformerModel {
             } else {
                 false
             };
+            // CBD probe (env-gated, default OFF = current behavior): bypass the
+            // exact-leaf-hit snapshot shortcut + marconi_exact_snap fixup, routing
+            // exact full-prompt hits through full recompute (the proven-correct
+            // cache-off-equivalent). Isolates whether the exact-snap stashed-hidden
+            // path degrades output quality (cache-ON ws ~23% vs cache-OFF ~60% with
+            // give-ups already eliminated). If ws climbs with this set, that path
+            // is the residual bug.
+            if skip
+                && prefix_match.ssm_snapshot_tokens == matched
+                && matched == total
+                && std::env::var("ATLAS_NO_MARCONI_EXACT").as_deref() == Ok("1")
+            {
+                skip = false;
+                seq.marconi_exact_snap = None;
+                tracing::info!(
+                    "ATLAS_NO_MARCONI_EXACT: bypassing exact-leaf snapshot shortcut \
+                     for {matched}-token full hit — recomputing all KV+SSM"
+                );
+            }
             let has_ssm = self.config.num_ssm_layers() > 0;
             if matched > 0 && !skip && has_ssm {
                 tracing::info!(
@@ -163,15 +220,35 @@ impl TransformerModel {
                 );
             }
             // For SSM models: use ssm_snapshot_tokens (not matched) as skip point.
-            // Exception: when matched == total (exact prompt match), the snapshot
-            // covers the entire prompt, so skip all tokens.
+            // Exception: when the snapshot covers the ENTIRE matched prefix
+            // (snap_tok == matched) AND the whole prompt matched
+            // (matched == total), the restored recurrent state is already
+            // at token `total`, so we can skip all tokens (the exact-hit
+            // fixup in finalize_last handles the redundant last-token re-run).
+            //
+            // CRITICAL (warm-hit SSM corruption fix): when an *intermediate*
+            // checkpoint matched at full prompt length (snap_tok < matched
+            // == total — e.g. the leaf snapshot was evicted from the
+            // 16-slot pool under agentic churn, leaving only a block-aligned
+            // checkpoint), the restored recurrent state is at token
+            // `snap_tok`, NOT `total`. Skipping to `total` here would leave
+            // the SSM h_state/conv_state stale by (total - snap_tok) tokens
+            // while positions/KV advance to `total`, so the first decoded
+            // token reads a misaligned recurrent state → garbage → immediate
+            // stop (empty completion). We MUST skip only to `snap_tok` so the
+            // suffix-prefill recomputes SSM over [snap_tok, total), exactly
+            // like the `matched < total` intermediate path. The redundant KV
+            // writes for [snap_tok, matched) are harmless (they duplicate
+            // already-cached values).
+            //
             // For pure attention (MLA/GQA): use matched tokens directly.
+            let snap_tok = prefix_match.ssm_snapshot_tokens;
             let skip_tokens = if skip && !has_ssm {
                 matched
-            } else if skip && matched == total {
+            } else if skip && matched == total && snap_tok == matched {
                 matched
             } else if skip {
-                prefix_match.ssm_snapshot_tokens
+                snap_tok
             } else {
                 0
             };

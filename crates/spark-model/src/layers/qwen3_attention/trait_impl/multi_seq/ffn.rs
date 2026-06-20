@@ -99,18 +99,11 @@ impl Qwen3AttentionLayer {
             )?;
         } else {
             // CONCURRENT-DECODE BUG (sibling of qwen3_ssm.rs:1102 fix):
-            // the per-seq hidden/residual stride must match the actual
-            // residual element size. When `use_fp32_residual()` is false
-            // (BF16 hidden — GB10 default via HARDWARE.toml
-            // ATLAS_HW_FP32_RESIDUAL=false), hardcoded `i * h * 4` would
-            // over-stride into the wrong batch slot for i>=1.
-            let residual_elem = if fwd.config.use_fp32_residual() {
-                4usize
-            } else {
-                2usize
-            };
-            // Phase A: per-token residual_add + post-attention RMS norm.
-            // Lays out `norm_output[0..n]` as a contiguous [N, h] MoE input.
+            // the per-seq hidden/residual stride must match the residual
+            // element size. The residual stream is always BF16, so the stride
+            // is `i * h * 2`; a hardcoded `i * h * 4` would over-stride into
+            // the wrong batch slot for i>=1.
+            let residual_elem = 2usize;
             for i in 0..n {
                 let hidden_i = hidden.offset(i * h * residual_elem);
                 let o_out_i = o_out.offset(i * h * bf16); // BF16 attn output

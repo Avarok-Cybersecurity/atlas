@@ -35,6 +35,15 @@ pub struct GrammarState {
     /// Bitmask buffer: `Box<[i32]>` of shape `(1, ceil(vocab_size / 32))`.
     bitmask_data: Box<[i32]>,
     vocab_size: usize,
+    /// Model stop/EOS token IDs (e.g. `<|im_end|>`). These are control
+    /// tokens that terminate generation, NOT part of the grammar's content
+    /// language — [`Self::accept_token`] accepts them unconditionally rather
+    /// than feeding them to the xgrammar matcher (which refuses a stop token
+    /// in a non-accepting state, desyncing the NPDA and aborting the turn).
+    /// Empty unless set via [`Self::with_stop_tokens`] — production wires the
+    /// request's `eos_tokens` in; unit tests that exercise only grammar
+    /// structure leave it empty.
+    stop_tokens: Box<[u32]>,
 }
 
 impl GrammarState {
@@ -73,7 +82,20 @@ impl GrammarState {
             matcher,
             bitmask_data,
             vocab_size,
+            stop_tokens: Box::new([]),
         })
+    }
+
+    /// Register the model's stop/EOS token IDs so [`Self::accept_token`]
+    /// exempts them from grammar refusal. See the `stop_tokens` field doc.
+    ///
+    /// Builder form so the existing two-arg [`Self::new`] (used widely by
+    /// unit tests of pure grammar structure) is unchanged; the single
+    /// production creation site chains this with the request's eos tokens.
+    #[must_use]
+    pub fn with_stop_tokens(mut self, stop_tokens: &[u32]) -> Self {
+        self.stop_tokens = stop_tokens.to_vec().into_boxed_slice();
+        self
     }
 
     /// Fill the allowed-token bitmask for the next decode step.
@@ -136,6 +158,22 @@ impl GrammarState {
         if self.matcher.is_terminated() {
             return true;
         }
+        // Stop/EOS tokens (e.g. `<|im_end|>`, 248046) are control tokens that
+        // terminate the turn — they are never part of the grammar's content
+        // language. The model legitimately ends a turn with one (after a
+        // text-only reply, or after a complete tool call) while the
+        // structural-tag NPDA is still in a non-accepting state; feeding it to
+        // `matcher.accept_token` then returns false ("refusal"), which callers
+        // mis-read as a grammar desync and abort the response mid-stream
+        // (`emit_step`: "Ending response to prevent cascading grammar-mask
+        // corruption"). That truncates agentic turns and is the dominant cause
+        // of the opencode webserver_ok gap vs vLLM (which parses tools
+        // post-hoc and never constrains the stop token). Accept it
+        // unconditionally and let the EOS handler terminate. This cannot
+        // corrupt tool-call STRUCTURE — only non-stop tokens drive the matcher.
+        if self.stop_tokens.contains(&token_id) {
+            return true;
+        }
         self.matcher.accept_token(token_id as i32)
     }
 
@@ -170,6 +208,18 @@ impl GrammarState {
     /// Whether the grammar has been fully matched (all required structure generated).
     pub fn is_terminated(&self) -> bool {
         self.matcher.is_terminated()
+    }
+
+    /// Number of actual matcher history steps (== tokens `rollback` can undo).
+    ///
+    /// BUG#3 (2026-06-02): `accept_token` returns `true` for stop/EOS tokens and
+    /// in the terminated state WITHOUT advancing the matcher (no history step).
+    /// Spec/verify rollback accounting must therefore count actual advances via
+    /// the delta of this value across a draft span — NOT the number of
+    /// `accept_token`→true calls — or it over-rewinds (corrupt state / rollback
+    /// panic) when a stop or terminated token lands inside the span.
+    pub fn num_history_steps(&self) -> usize {
+        self.matcher.num_history_steps()
     }
 
     /// Rollback the grammar state by `n` tokens.

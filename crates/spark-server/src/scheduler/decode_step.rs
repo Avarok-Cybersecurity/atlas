@@ -13,7 +13,6 @@ pub fn step_decode_only(
     code_fence_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
-    reflection_suppress_ids: &[u32],
     adaptive_sampling: bool,
 ) {
     let t0 = std::time::Instant::now();
@@ -76,7 +75,6 @@ pub fn step_decode_only(
         code_fence_token,
         tool_call_start_token,
         tool_call_end_token,
-        reflection_suppress_ids,
         adaptive_sampling,
     );
 }

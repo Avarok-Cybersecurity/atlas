@@ -72,6 +72,35 @@ impl MoeLayer {
         Ok(())
     }
 
+    /// Set BF16 expert weights for the FP8-dequant-on-load MoE path.
+    ///
+    /// Activated by `ATLAS_FP8_DEQUANT_MOE_TO_BF16=1`. Eliminates the per-layer
+    /// 0.989 FP8 cosine ceiling (measured in bench/fp8_dgx2_drift/cosine_run.py)
+    /// by serving experts as BF16 throughout, matching vLLM-BF16 reference
+    /// numerics. Memory cost: 2× expert weights vs native FP8.
+    ///
+    /// `shared_*` are the shared expert's BF16 gate/up/down DevicePtrs (or
+    /// `DevicePtr::NULL` when the model has no shared expert).
+    pub fn set_bf16_experts(
+        &mut self,
+        gate_experts: &[crate::weight_map::DenseWeight],
+        up_experts: &[crate::weight_map::DenseWeight],
+        down_experts: &[crate::weight_map::DenseWeight],
+        shared_gate: DevicePtr,
+        shared_up: DevicePtr,
+        shared_down: DevicePtr,
+        gpu: &dyn GpuBackend,
+    ) -> Result<()> {
+        use super::build_bf16_ptr_table;
+        self.bf16_gate_weight_ptrs = Some(build_bf16_ptr_table(gate_experts, gpu)?);
+        self.bf16_up_weight_ptrs = Some(build_bf16_ptr_table(up_experts, gpu)?);
+        self.bf16_down_weight_ptrs = Some(build_bf16_ptr_table(down_experts, gpu)?);
+        self.bf16_shared_gate = Some(shared_gate);
+        self.bf16_shared_up = Some(shared_up);
+        self.bf16_shared_down = Some(shared_down);
+        Ok(())
+    }
+
     /// Apply the router pre-normalization (Gemma-4 only) and return the
     /// pointer that should be fed into the gate GEMV. If the MoE has no
     /// router_pre_norm weight, this is a no-op and returns `input` unchanged.

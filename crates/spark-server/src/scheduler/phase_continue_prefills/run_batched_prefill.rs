@@ -14,7 +14,7 @@ use spark_model::traits::{Model, PrefillSlice};
 use spark_runtime::gpu::DevicePtr;
 use std::time::Instant;
 
-use super::super::sample_token;
+use super::super::sample_first_token;
 use super::super::types::PrefillInProgress;
 
 pub(super) fn run_batched_prefill_step(
@@ -25,6 +25,8 @@ pub(super) fn run_batched_prefill_step(
     prefill_stream: u64,
     prefill_event: u64,
 ) {
+    // Per-chunk InnerQ finalize poll — see `phase_continue_prefills::poll_innerq`.
+    super::poll_innerq();
     // Build per-stream chunk_len (capped at max_prefill_tokens) and
     // is_last_chunk flag, then construct PrefillSlice borrowing each
     // stream's prompt_tokens and seq.
@@ -111,13 +113,16 @@ pub(super) fn run_batched_prefill_step(
             completed_indices.push((i, None));
             continue;
         }
-        match sample_token(
+        // #131: grammar-constrain the FIRST token (and advance the matcher);
+        // no-op without a grammar.
+        match sample_first_token(
             model,
             logits,
             p.temperature,
             p.top_k,
             p.top_p,
             &p.eos_tokens,
+            p.grammar_state.as_mut(),
         ) {
             Ok(first) => {
                 tracing::info!(

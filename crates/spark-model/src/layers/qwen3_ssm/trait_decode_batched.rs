@@ -303,29 +303,46 @@ impl Qwen3SsmLayer {
         };
         self.decode_batched_conv_gdn(ssm_state, ctx, &args)?;
 
-        // ── 8. Gated RMS norm per token ──
-        // Z gate is in deinterleaved at offset [Q_2048 + K_2048 + V_4096]
-        // Normed out: reuse conv_out_buf (freed after GDN)
+        // ── 8. Gated RMS norm per token (Z gate at [Q|K|V] offset) ──
         let normed_out_buf = conv_out_buf;
-        for t in 0..(num_tokens as u32) {
-            let gdn_t = gdn_out_buf.offset(t as usize * value_dim * bf16);
-            let z_t = deinterleaved
-                .offset(t as usize * qkvz_size * bf16 + (key_dim * 2 + value_dim) * bf16);
-            let normed_t = normed_out_buf.offset(t as usize * value_dim * bf16);
-            ops::gated_rms_norm(
+        let z_offset = key_dim * 2 + value_dim; // == conv_dim
+        if num_tokens == 2 && self.fused_verify_k2_enabled() {
+            // STAGE 1: single-launch gated-RMS-norm for BOTH positions (cos==1.0).
+            ops::gdn_verify_fused_norm_k2(
                 ctx.gpu,
-                self.gated_rms_norm_k,
-                gdn_t,
-                z_t,
+                self.gdn_verify_fused_norm_k2_k,
+                gdn_out_buf,
+                deinterleaved,
                 &self.ssm.norm,
-                normed_t,
+                normed_out_buf,
                 nv as u32,
                 vd as u32,
-                vd as u32,
                 eps,
-                vd as u32,
+                qkvz_size as u32, // deint position stride (BF16 elems)
+                z_offset as u32,  // Z offset within a position
+                value_dim as u32, // gdn/out position stride
                 stream,
             )?;
+        } else {
+            for t in 0..(num_tokens as u32) {
+                let gdn_t = gdn_out_buf.offset(t as usize * value_dim * bf16);
+                let z_t = deinterleaved.offset(t as usize * qkvz_size * bf16 + z_offset * bf16);
+                let normed_t = normed_out_buf.offset(t as usize * value_dim * bf16);
+                ops::gated_rms_norm(
+                    ctx.gpu,
+                    self.gated_rms_norm_k,
+                    gdn_t,
+                    z_t,
+                    &self.ssm.norm,
+                    normed_t,
+                    nv as u32,
+                    vd as u32,
+                    vd as u32,
+                    eps,
+                    vd as u32,
+                    stream,
+                )?;
+            }
         }
 
         // ── 9. Output projection → [K, H] ──
@@ -461,11 +478,7 @@ impl Qwen3SsmLayer {
             // Per-token MoE fallback for K!=2.
             // CONCURRENT-DECODE BUG (sibling of decode_multi_seq fix at line 1102):
             // hardcoded `t * h * 4` over-strides for BF16 hidden (GB10 default).
-            let residual_elem = if ctx.config.use_fp32_residual() {
-                4usize
-            } else {
-                2usize
-            };
+            let residual_elem = 2usize;
             for t in 0..(num_tokens as u32) {
                 let normed2 = normed2_base.offset(t as usize * h * bf16);
                 let moe_out = self.ffn.forward(normed2, ctx, stream)?;

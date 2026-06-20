@@ -44,6 +44,7 @@ impl Qwen3SsmLayer {
             std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(),
             Some("1")
         );
+        let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
         if force_bf16 {
             ops::dense_gemm(
                 ctx.gpu,
@@ -59,6 +60,107 @@ impl Qwen3SsmLayer {
             .map_err(|e| {
                 anyhow::anyhow!(
                     "ssm prefill: QKVZ BF16 dense GEMM failed (M={k}, N={qkvz_size}): {e}"
+                )
+            })?;
+        } else if force_w8a8
+            && let Some(ref fp8w) = self.qkvz_fp8w
+            && self.per_token_group_quant_fp8_k.0 != 0
+            && self.fp8_gemm_t_blockscaled_k.0 != 0
+        {
+            tracing::info!(
+                "ssm prefill: QKVZ via W8A8+FP32-epilogue (vLLM-equivalent, M={k} K={h} N={qkvz_size})"
+            );
+            let m = k as usize;
+            let k_dim = h;
+            let a_fp8_bytes = m * k_dim;
+            let a_scale_bytes = m * (k_dim / 128) * 4;
+            let a_fp8_buf = ctx.gpu.alloc(a_fp8_bytes)?;
+            let a_scale_buf = ctx.gpu.alloc(a_scale_bytes)?;
+            // BISECT TEST 1: quant kernel only — call it then fall through
+            // to w8a16_gemm (which we know works) for the actual GEMM.
+            // If this still crashes, the bug is in per_token_group_quant_fp8.
+            // If it works, the bug is in fp8_gemm_t_blockscaled.
+            ops::per_token_group_quant_fp8(
+                ctx.gpu,
+                self.per_token_group_quant_fp8_k,
+                normed,
+                a_fp8_buf,
+                a_scale_buf,
+                k,
+                k_dim as u32,
+                stream,
+            )?;
+            // BISECT TEST 2: now call the GEMM with no-fold variant. If
+            // this crashes, the bug is in the MMA loop itself.
+            tracing::info!("ssm prefill: calling fp8_gemm_t_blockscaled (no-fold bisect)");
+            ops::fp8_gemm_t_blockscaled(
+                ctx.gpu,
+                self.fp8_gemm_t_blockscaled_k,
+                a_fp8_buf,
+                a_scale_buf,
+                fp8w.weight,
+                fp8w.row_scale,
+                proj_dst,
+                k,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )?;
+            ctx.gpu.synchronize(stream)?;
+            ctx.gpu.free(a_fp8_buf)?;
+            ctx.gpu.free(a_scale_buf)?;
+        } else if let Some(ref fp8w) = self.qkvz_fp8w
+            && self.w8a16_gemm_pipelined_k.0 != 0
+        {
+            // Block-scaled W8A16 prefill: matches vLLM's per-128-block FP32
+            // scale precision (vs the single-scale fp8_gemm_n128 below
+            // which bakes ALL per-block scales into one global scale,
+            // dropping per-block dynamic range). This is the SSM-side of
+            // the W8A8+FP32-epilogue fix shipped for the attention layer.
+            //
+            // Block-scaled W8A16 QKVZ routed through the bit-identical
+            // (cosine=1.0) ~4.6× faster tensor-core w8a16_gemm_pipelined kernel
+            // where available (NVIDIA). gfx1151/HIP has no cp.async, so that
+            // kernel is absent there â fall through to the cp.async-free
+            // non-pipelined w8a16_gemm branch below.
+            ops::w8a16_gemm_pipelined(
+                ctx.gpu,
+                self.w8a16_gemm_pipelined_k,
+                normed,
+                fp8w.weight,
+                fp8w.row_scale,
+                proj_dst,
+                k,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "ssm prefill: QKVZ w8a16_gemm_pipelined failed (M={k}, N={qkvz_size}): {e}"
+                )
+            })?;
+        } else if let Some(ref fp8w) = self.qkvz_fp8w
+            && self.w8a16_gemm_k.0 != 0
+        {
+            // cp.async-free fallback (gfx1151/HIP): non-pipelined block-scaled
+            // W8A16 GEMM. Same per-128-block FP32-scale math as the pipelined
+            // kernel, without the sm_80+ cp.async multistage prefetch.
+            ops::w8a16_gemm(
+                ctx.gpu,
+                self.w8a16_gemm_k,
+                normed,
+                fp8w.weight,
+                fp8w.row_scale,
+                proj_dst,
+                k,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "ssm prefill: QKVZ w8a16_gemm (block-scaled) failed (M={k}, N={qkvz_size}): {e}"
                 )
             })?;
         } else if let Some(fp8) = self.qkvz_fp8 {

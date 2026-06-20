@@ -46,13 +46,10 @@ pub fn lower_responses_to_chat(
     }
 
     if let Some(instr) = r.instructions.clone() {
-        // Per the Responses spec, only the CURRENT turn's `instructions`
-        // should apply. If we're resuming via previous_response_id, the
-        // prior transcript may already contain a synthetic-system
-        // message — drop it so the new instructions don't stack.
-        // Also insert at position 0 so the chat template sees system
-        // first (the conventional layout).
-        messages.retain(|m| m.role != "system");
+        // Per the Responses spec, `instructions` becomes a synthetic
+        // system message at position 0. No scanning, no dropping of
+        // prior synthetic-system messages — the resumed transcript is
+        // attached verbatim.
         messages.insert(0, IncomingMessage::synthetic_system(instr));
     }
     match &r.input {
@@ -81,7 +78,11 @@ pub fn lower_responses_to_chat(
     let tools: Option<Vec<crate::tool_parser::ToolDefinition>> = match r.tools {
         None => None,
         Some(list) => {
-            let mut parsed = Vec::with_capacity(list.len());
+            // Don't pre-size from `list.len()` — it's a client-controlled
+            // count from the request body, so a sized allocation derived from
+            // it is an uncontrolled-allocation sink (CWE-789). Start empty and
+            // grow on push; tools arrays are tiny so there's no perf cost.
+            let mut parsed = Vec::new();
             for raw in list {
                 let ty = raw.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 match ty {
@@ -166,6 +167,7 @@ pub fn lower_responses_to_chat(
         enable_thinking: false,
         thinking: None,
         thinking_token_budget: None,
+        repetition_detection: None,
         reasoning: r.reasoning,
         chat_template_kwargs: None,
         tools,

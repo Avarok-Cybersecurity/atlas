@@ -226,10 +226,8 @@ fn translator_tool_result_is_error_default_serde() {
         }
         _ => panic!("wrong variant"),
     }
-    let no_field: ContentBlock = serde_json::from_str(
-        r#"{"type":"tool_result","tool_use_id":"x","content":"ok"}"#,
-    )
-    .unwrap();
+    let no_field: ContentBlock =
+        serde_json::from_str(r#"{"type":"tool_result","tool_use_id":"x","content":"ok"}"#).unwrap();
     match no_field {
         ContentBlock::ToolResult { is_error, .. } => {
             assert_eq!(is_error, None);
@@ -324,4 +322,3 @@ fn response_translator_text_only() {
         other => panic!("unexpected block: {:?}", other),
     }
 }
-

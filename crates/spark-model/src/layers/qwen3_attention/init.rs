@@ -91,65 +91,8 @@ impl Qwen3AttentionLayer {
         fp8_calibration_tokens: usize,
         config: &atlas_core::config::ModelConfig,
     ) -> Result<Self> {
-        let (reshape_mod, reshape_fn, decode_mod, decode_fn) = match kv_dtype {
-            KvCacheDtype::Nvfp4 => (
-                "reshape_and_cache",
-                "reshape_and_cache_flash_nvfp4",
-                "paged_decode_nvfp4",
-                "paged_decode_attn_nvfp4",
-            ),
-            KvCacheDtype::Turbo4 => {
-                let dm = if config.head_dim <= 128 {
-                    "paged_decode_turbo4_128"
-                } else {
-                    "paged_decode_turbo4"
-                };
-                (
-                    "reshape_and_cache_turbo",
-                    "reshape_and_cache_flash_turbo4",
-                    dm,
-                    "paged_decode_attn_turbo4",
-                )
-            }
-            KvCacheDtype::Turbo3 => {
-                let dm = if config.head_dim <= 128 {
-                    "paged_decode_turbo3_128"
-                } else {
-                    "paged_decode_turbo3"
-                };
-                (
-                    "reshape_and_cache_turbo",
-                    "reshape_and_cache_flash_turbo3",
-                    dm,
-                    "paged_decode_attn_turbo3",
-                )
-            }
-            KvCacheDtype::Turbo8 => {
-                let dm = if config.head_dim <= 128 {
-                    "paged_decode_turbo8_128"
-                } else {
-                    "paged_decode_turbo8"
-                };
-                (
-                    "reshape_and_cache_turbo",
-                    "reshape_and_cache_flash_turbo8",
-                    dm,
-                    "paged_decode_attn_turbo8",
-                )
-            }
-            KvCacheDtype::Bf16 => (
-                "reshape_and_cache",
-                "reshape_and_cache_flash",
-                "paged_decode",
-                "paged_decode_attn",
-            ),
-            _ => (
-                "reshape_and_cache",
-                "reshape_and_cache_flash_fp8",
-                "paged_decode_fp8",
-                "paged_decode_attn_fp8",
-            ),
-        };
+        let (reshape_mod, reshape_fn, decode_mod, decode_fn) =
+            super::init_kernel_dispatch::kernel_modules_for_dtype(kv_dtype, config.head_dim);
         let mrope_interleaved = config.mrope_interleaved;
         Ok(Self {
             input_norm,
@@ -170,6 +113,12 @@ impl Qwen3AttentionLayer {
             attn_scale_override: None,
             k_eq_v: false,
             v_norm_weight: None,
+            head_gate_weight: None,
+            sigmoid_gate_head_broadcast_k: super::super::try_kernel(
+                gpu,
+                "residual_add",
+                "sigmoid_gate_mul_head_broadcast",
+            ),
             post_attn_out_norm: None,
             post_ffn_out_norm: None,
             layer_scalar: None,
@@ -198,22 +147,32 @@ impl Qwen3AttentionLayer {
             v_fp8w_t: None,
             o_fp8w_t: None,
             w8a16_gemm_t_k: super::super::try_kernel(gpu, "w8a16_gemm_t", "w8a16_gemm_t"),
+            w8a16_gemm_t_pipelined_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemm_t",
+                "w8a16_gemm_t_pipelined",
+            ),
+            per_token_group_quant_fp8_k: super::super::try_kernel(
+                gpu,
+                "per_token_group_quant_fp8",
+                "per_token_group_quant_fp8",
+            ),
+            fp8_gemm_t_blockscaled_k: super::super::try_kernel(
+                gpu,
+                "fp8_gemm_t_blockscaled",
+                "fp8_gemm_t_blockscaled",
+            ),
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
-            rms_norm_residual_k: if config.use_fp32_residual() {
-                if config.model_type == "gemma4" {
-                    gpu.kernel("norm", "rms_norm_residual_f32_abs")
-                        .or_else(|_| gpu.kernel("norm", "rms_norm_residual"))?
-                } else {
-                    gpu.kernel("norm", "rms_norm_residual_f32")
-                        .or_else(|_| gpu.kernel("norm", "rms_norm_residual"))?
-                }
-            } else {
-                gpu.kernel("norm", "rms_norm_residual")?
-            },
+            rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w8a16_gemv_k: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
+            w8a16_gemm_pipelined_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemm_pipelined",
+                "w8a16_gemm_pipelined",
+            ),
             w4a16_gemv_dual_k: gpu.kernel("w4a16_gemv_fused", "w4a16_gemv_dual")?,
             rope_k: gpu.kernel("rope", "rope_forward")?,
             rope_mrope_interleaved_k: super::super::try_kernel(
@@ -229,9 +188,38 @@ impl Qwen3AttentionLayer {
             ),
             rope_proportional_k: super::super::try_kernel(gpu, "rope", "rope_forward_proportional"),
             reshape_cache_k: gpu.kernel(reshape_mod, reshape_fn)?,
+            fused_k_norm_rope_cache_write_bf16_k: super::super::try_kernel(
+                gpu,
+                "fused_k_norm_rope_cache",
+                "fused_k_norm_rope_cache_write_bf16",
+            ),
+            fused_k_norm_rope_mrope_cache_write_bf16_k: super::super::try_kernel(
+                gpu,
+                "fused_k_norm_rope_cache",
+                "fused_k_norm_rope_mrope_cache_write_bf16",
+            ),
+            reshape_and_cache_flash_v_only_k: super::super::try_kernel(
+                gpu,
+                "reshape_and_cache",
+                "reshape_and_cache_flash_v_only",
+            ),
             wht_bf16_k: super::super::try_kernel(gpu, "wht_bf16", "wht_bf16_inplace"),
+            wht_bf16_k_inv: super::super::try_kernel(gpu, "wht_bf16", "wht_bf16_inplace_inv"),
+            innerq_apply_q_k: super::super::try_kernel(
+                gpu,
+                "tq_plus_innerq_apply",
+                "tq_plus_innerq_apply_q",
+            ),
+            innerq_apply_k_k: super::super::try_kernel(
+                gpu,
+                "tq_plus_innerq_apply",
+                "tq_plus_innerq_apply_k",
+            ),
             paged_decode_k: gpu.kernel(decode_mod, decode_fn)?,
             paged_decode_512_k: match kv_dtype {
+                // Bf16KTurbo3V: no HDIM=512 variant yet — dispatch site checks
+                // `paged_decode_512_k.0 != 0` so leaving handle 0 keeps the
+                // HDIM=128 path active (correct for qwen3.6 head_dim=128).
                 KvCacheDtype::Bf16 => {
                     super::super::try_kernel(gpu, "paged_decode_attn_512", "paged_decode_attn")
                 }
@@ -245,7 +233,7 @@ impl Qwen3AttentionLayer {
                     "paged_decode_turbo8_512",
                     "paged_decode_attn_turbo8",
                 ),
-                KvCacheDtype::Turbo3 => super::super::try_kernel(
+                KvCacheDtype::Turbo3 | KvCacheDtype::Turbo2 => super::super::try_kernel(
                     gpu,
                     "paged_decode_turbo4_512",
                     "paged_decode_attn_turbo4",
@@ -342,42 +330,50 @@ impl Qwen3AttentionLayer {
                 KvCacheDtype::Nvfp4 => {
                     Some(gpu.kernel("paged_decode_nvfp4", "paged_decode_attn_splitk_nvfp4")?)
                 }
-                KvCacheDtype::Turbo3 | KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8 => None,
+                KvCacheDtype::Turbo3
+                | KvCacheDtype::Turbo4
+                | KvCacheDtype::Turbo8
+                | KvCacheDtype::Bf16KTurbo3V
+                | KvCacheDtype::Bf16KTurbo4V
+                | KvCacheDtype::Bf16KTurbo2V
+                | KvCacheDtype::Fp8KTurbo3V
+                | KvCacheDtype::Fp8KTurbo4V
+                | KvCacheDtype::Fp8KTurbo2V
+                | KvCacheDtype::Turbo4KTurbo3V
+                | KvCacheDtype::Turbo4KTurbo8V
+                | KvCacheDtype::Turbo3KTurbo8V => None,
                 _ => Some(gpu.kernel("paged_decode_fp8", "paged_decode_attn_splitk_fp8")?),
             },
             paged_decode_reduce_k: match kv_dtype {
                 KvCacheDtype::Nvfp4 => {
                     Some(gpu.kernel("paged_decode_nvfp4", "paged_decode_attn_reduce_nvfp4")?)
                 }
-                KvCacheDtype::Turbo3 | KvCacheDtype::Turbo4 | KvCacheDtype::Turbo8 => None,
+                KvCacheDtype::Turbo3
+                | KvCacheDtype::Turbo4
+                | KvCacheDtype::Turbo8
+                | KvCacheDtype::Bf16KTurbo3V
+                | KvCacheDtype::Bf16KTurbo4V
+                | KvCacheDtype::Bf16KTurbo2V
+                | KvCacheDtype::Fp8KTurbo3V
+                | KvCacheDtype::Fp8KTurbo4V
+                | KvCacheDtype::Fp8KTurbo2V
+                | KvCacheDtype::Turbo4KTurbo3V
+                | KvCacheDtype::Turbo4KTurbo8V
+                | KvCacheDtype::Turbo3KTurbo8V => None,
                 _ => Some(gpu.kernel("paged_decode_fp8", "paged_decode_attn_reduce_fp8")?),
             },
-            residual_add_k: if config.use_fp32_residual() {
-                gpu.kernel("norm", "f32_residual_add")
-                    .or_else(|_| gpu.kernel("residual_add", "bf16_residual_add"))?
-            } else {
-                gpu.kernel("residual_add", "bf16_residual_add")?
-            },
+            residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             // Gemma-4 rms-norm uses the absolute formula `out = x * rms * w`.
-            rms_norm_f32_in_k: if config.use_fp32_residual() && config.model_type == "gemma4" {
-                super::super::try_kernel(gpu, "norm", "rms_norm_f32_in_abs")
-            } else {
-                KernelHandle(0)
-            },
+            rms_norm_f32_in_k: KernelHandle(0),
             sigmoid_gate_mul_k: gpu.kernel("residual_add", "sigmoid_gate_mul")?,
             deinterleave_qg_k: gpu.kernel("ssm_preprocess", "deinterleave_qg")?,
             w4a16_gemv_qg_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qg")?,
-            residual_add_rms_norm_k: if config.use_fp32_residual() {
-                if config.model_type == "gemma4" {
-                    gpu.kernel("norm", "residual_add_rms_norm_f32_abs")
-                        .or_else(|_| gpu.kernel("norm", "residual_add_rms_norm"))?
-                } else {
-                    gpu.kernel("norm", "residual_add_rms_norm_f32")
-                        .or_else(|_| gpu.kernel("norm", "residual_add_rms_norm"))?
-                }
-            } else {
-                gpu.kernel("norm", "residual_add_rms_norm")?
-            },
+            residual_add_rms_norm_k: gpu.kernel("norm", "residual_add_rms_norm")?,
+            residual_add_rms_norm_gatef32_k: crate::layers::try_kernel(
+                gpu,
+                "norm",
+                "residual_add_rms_norm_gatef32",
+            ),
             w4a16_gemv_qg_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qg_batch2")?,
             w4a16_gemv_dual_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_dual_batch2")?,
             w4a16_gemv_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
@@ -439,10 +435,82 @@ impl Qwen3AttentionLayer {
                 .kernel("prefill_paged_fp8", "inferspark_prefill_paged_fp8_64")?,
             prefill_attn_paged_nvfp4_64_k: gpu
                 .kernel("prefill_paged_nvfp4", "inferspark_prefill_paged_nvfp4_64")?,
+            prefill_attn_paged_turbo2_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_turbo2",
+                "inferspark_prefill_paged_turbo2",
+            ),
+            prefill_attn_paged_turbo3_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_turbo3",
+                "inferspark_prefill_paged_turbo3_64",
+            ),
             prefill_attn_paged_turbo4_64_k: super::super::try_kernel(
                 gpu,
                 "prefill_paged_turbo4",
                 "inferspark_prefill_paged_turbo4_64",
+            ),
+            prefill_attn_paged_turbo8_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_turbo8",
+                "inferspark_prefill_paged_turbo8_64",
+            ),
+            // TurboQuant+ safer-asym Bf16K + Turbo3V BR=64 prefill kernel.
+            // Compiled from inferspark_prefill_paged_bf16k_turbo3v.cu which
+            // forks prefill_paged_compute_asym.cuh (LOAD_K_TILE = bf16,
+            // LOAD_V_TILE = turbo3 3-bit dequant).
+            prefill_attn_paged_bf16k_turbo3v_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_bf16k_turbo3v",
+                "inferspark_prefill_paged_bf16k_turbo3v_64",
+            ),
+            // Bf16K + Turbo4V BR=64 prefill (4-bit V dequant in LOAD_V_TILE).
+            prefill_attn_paged_bf16k_turbo4v_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_bf16k_turbo4v",
+                "inferspark_prefill_paged_bf16k_turbo4v_64",
+            ),
+            // Bf16K + Turbo2V BR=64 prefill (2-bit V dequant in LOAD_V_TILE).
+            prefill_attn_paged_bf16k_turbo2v_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_bf16k_turbo2v",
+                "inferspark_prefill_paged_bf16k_turbo2v_64",
+            ),
+            // Fp8K + TurboNV BR=64 prefill kernels — K loaded as FP8 (per-tensor
+            // `k_scale` dequant in LOAD_K_TILE), V as 3/4/2-bit Lloyd-Max packed.
+            prefill_attn_paged_fp8k_turbo3v_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_fp8k_turbo3v",
+                "inferspark_prefill_paged_fp8k_turbo3v_64",
+            ),
+            prefill_attn_paged_fp8k_turbo4v_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_fp8k_turbo4v",
+                "inferspark_prefill_paged_fp8k_turbo4v_64",
+            ),
+            prefill_attn_paged_fp8k_turbo2v_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_fp8k_turbo2v",
+                "inferspark_prefill_paged_fp8k_turbo2v_64",
+            ),
+            // Both-sides-quantized TurboQuant+ asym BR=64 prefill kernels.
+            // K loaded via turbo* dequant in LOAD_K_TILE, V via the corresponding
+            // turbo* dequant in LOAD_V_TILE — separate (block_stride, data_section)
+            // pairs per side.
+            prefill_attn_paged_turbo4k_turbo3v_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_turbo4k_turbo3v",
+                "inferspark_prefill_paged_turbo4k_turbo3v_64",
+            ),
+            prefill_attn_paged_turbo4k_turbo8v_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_turbo4k_turbo8v",
+                "inferspark_prefill_paged_turbo4k_turbo8v_64",
+            ),
+            prefill_attn_paged_turbo3k_turbo8v_64_k: super::super::try_kernel(
+                gpu,
+                "prefill_paged_turbo3k_turbo8v",
+                "inferspark_prefill_paged_turbo3k_turbo8v_64",
             ),
             // ── Q12 Phase 3: batched paged-prefill kernel handles ──
             prefill_attn_paged_batched_k: super::super::try_kernel(

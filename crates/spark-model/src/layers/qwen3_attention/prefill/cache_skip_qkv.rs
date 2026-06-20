@@ -50,6 +50,15 @@ impl Qwen3AttentionLayer {
             ctx,
             stream,
         )?;
+        super::super::op_dump::dump_bf16(
+            ctx.gpu,
+            qg_out,
+            (num_tokens - 1) * q_proj_dim * bf16,
+            q_proj_dim,
+            self.attn_layer_idx,
+            "q_proj_full",
+            stream,
+        )?;
         let k_contiguous = ctx.buffers.ssm_qkvz();
         self.cache_skip_one_proj(
             SkipProj::K,
@@ -62,6 +71,15 @@ impl Qwen3AttentionLayer {
             ctx,
             stream,
         )?;
+        super::super::op_dump::dump_bf16(
+            ctx.gpu,
+            k_contiguous,
+            (num_tokens - 1) * kv_dim * bf16,
+            kv_dim,
+            self.attn_layer_idx,
+            "k_proj",
+            stream,
+        )?;
         let v_contiguous = k_contiguous.offset(num_tokens * kv_dim * bf16);
         self.cache_skip_one_proj(
             SkipProj::V,
@@ -72,6 +90,15 @@ impl Qwen3AttentionLayer {
             nkv * hd,
             h,
             ctx,
+            stream,
+        )?;
+        super::super::op_dump::dump_bf16(
+            ctx.gpu,
+            v_contiguous,
+            (num_tokens - 1) * kv_dim * bf16,
+            kv_dim,
+            self.attn_layer_idx,
+            "v_proj",
             stream,
         )?;
         Ok(())
@@ -132,8 +159,28 @@ impl Qwen3AttentionLayer {
                 h,
                 stream,
             )?;
+        } else if weight_opt.and_then(|w| w.as_fp8()).is_some()
+            && self.w8a16_gemm_pipelined_k.0 != 0
+        {
+            let fp8w = weight_opt.and_then(|w| w.as_fp8()).unwrap();
+            // attn QKV via the bit-identical (cosine=1.0) ~4.6x faster tensor-core
+            // w8a16_gemm_pipelined kernel where available (NVIDIA). gfx1151/HIP has
+            // no cp.async -> pipelined absent -> non-pipelined w8a16_gemm fallback.
+            ops::w8a16_gemm_pipelined(
+                ctx.gpu,
+                self.w8a16_gemm_pipelined_k,
+                normed,
+                fp8w.weight,
+                fp8w.row_scale,
+                out,
+                n,
+                out_dim,
+                h,
+                stream,
+            )?;
         } else if weight_opt.and_then(|w| w.as_fp8()).is_some() && self.w8a16_gemm_k.0 != 0 {
             let fp8w = weight_opt.and_then(|w| w.as_fp8()).unwrap();
+            // cp.async-free fallback (gfx1151/HIP): non-pipelined block-scaled W8A16.
             ops::w8a16_gemm(
                 ctx.gpu,
                 self.w8a16_gemm_k,

@@ -13,15 +13,16 @@
 
 use anyhow::Result;
 
-// NCCL FFI + the multi-GPU `NcclBackend` are gated on `cuda` because
-// they `#[link(name = "nccl")]` + `#[link(name = "cuda")]`. On metal
-// builds (single Apple Silicon device) only `SingleGpuBackend` below
-// is needed.
-#[cfg(feature = "cuda")]
+// NCCL FFI + the multi-GPU `NcclBackend` are gated on the `nccl`
+// feature because they `#[link(name = "nccl")]`. `nccl` is separate
+// from `cuda` so SCALE/AMD (gfx1151) builds can use the CUDA compute
+// backend without an NCCL library. On metal builds (single Apple
+// Silicon device) only `SingleGpuBackend` below is needed.
+#[cfg(feature = "nccl")]
 pub mod nccl;
-#[cfg(feature = "cuda")]
+#[cfg(feature = "nccl")]
 pub mod nccl_backend;
-#[cfg(feature = "cuda")]
+#[cfg(feature = "nccl")]
 pub use nccl_backend::NcclBackend;
 
 /// Communication backend trait for distributed operations.

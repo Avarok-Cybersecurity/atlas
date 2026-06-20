@@ -69,6 +69,8 @@ pub struct Qwen3SsmLayer {
     residual_add_k: KernelHandle,
     l2_norm_k: KernelHandle,
     residual_add_rms_norm_k: KernelHandle,
+    /// Dual-output (bf16 + f32) MoE-input norm for ATLAS_FP32_ROUTING. Zero if absent.
+    residual_add_rms_norm_gatef32_k: KernelHandle,
     gated_rms_norm_prefill_k: KernelHandle,
     // Kernels — batched verification path (multi-token GEMM)
     w4a16_gemm_k: KernelHandle,
@@ -77,11 +79,18 @@ pub struct Qwen3SsmLayer {
     w4a16_gemm_t_m128_k: KernelHandle, // M128 variant: 2 M-chunks per CTA, halves B re-reads
     w4a16_gemv_batch2_k: KernelHandle,
     dense_gemm_k: KernelHandle,
+    dense_gemm_pipelined_k: KernelHandle,
     gdn_prefill_k: KernelHandle,
     gdn_prefill_split_k: KernelHandle,
     gdn_prefill_split4_k: KernelHandle,
     gdn_prefill_persistent_k: KernelHandle,
     gdn_prefill_persistent_wy4_k: KernelHandle,
+    /// FLA multi-kernel chunked prefill (baked default for 128-dim GDN): recompute_wu →
+    /// chunk_delta_h_ksplit (k-split occupancy) → chunk_fwd_o. 1.75x vs wy4 @16k,
+    /// token-equal (cos=1.0 vs scalar). Three handles; all must be non-null.
+    gdn_prefill_fla_recompute_wu_k: KernelHandle,
+    gdn_prefill_fla_chunk_delta_h_k: KernelHandle,
+    gdn_prefill_fla_chunk_fwd_o_k: KernelHandle,
     /// WY32 chunked prefill: processes 32 tokens per WY iteration with H in
     /// shared memory. ~30x faster than per-token for 14k+ sequences.
     gdn_prefill_wy32_k: KernelHandle,
@@ -107,6 +116,12 @@ pub struct Qwen3SsmLayer {
     gdn_wy2_k: KernelHandle,
     gdn_wy3_k: KernelHandle,
     gdn_wy4_k: KernelHandle,
+    /// STAGE 1 fused K=2 MTP-verify epilogue: conv1d+L2norm ×2 and
+    /// gated-RMS-norm ×2 each folded into a single launch. Dispatched only
+    /// when the `ATLAS_GDN_FUSED_VERIFY` env flag is set (default OFF); the
+    /// per-token path runs unchanged otherwise. Bit-identical (cos == 1.0).
+    gdn_verify_fused_conv_k2_k: KernelHandle,
+    gdn_verify_fused_norm_k2_k: KernelHandle,
     /// WY-Chunkwise K=17 GDN verify (DFlash γ+1). Only present in
     /// qwen3.6-35b-a3b's PTX module set; NULL handle for other targets,
     /// in which case decode_batched(K=17) falls through to the sequential
@@ -120,6 +135,22 @@ pub struct Qwen3SsmLayer {
     out_proj_fp8: Option<DevicePtr>,
     fp8_gemm_k: KernelHandle,
     fp8_gemm_t_m128_k: KernelHandle, // M128: halves B re-reads for out_proj at ISL > 128
+    // Block-scaled W8A16 prefill kernels (preferred over single-scale
+    // fp8_gemm_n128 when block-scaled FP8 weights are available — matches
+    // vLLM's per-128-block scale precision instead of single-scale).
+    w8a16_gemm_k: KernelHandle,
+    // Pipelined (cp.async) rewrite of w8a16_gemm: bit-identical, ~4.6× faster.
+    // KernelHandle(0) when not linked into the image. Gated ON only when
+    // ATLAS_W8A16_PIPELINED=1 (default OFF — production dispatch unchanged).
+    w8a16_gemm_pipelined_k: KernelHandle,
+    w8a16_gemm_t_k: KernelHandle,
+    // W8A8 + FP32 epilogue (vLLM-equivalent) prefill kernels.
+    // `per_token_group_quant_fp8` produces FP8 activations + per-token-per-128
+    // FP32 scale; `fp8_gemm_t_blockscaled` consumes both with FP8 MMA and
+    // applies a_scale × b_scale in the FP32 epilogue. Gated behind
+    // `ATLAS_FP8_W8A8=1` for staged rollout.
+    per_token_group_quant_fp8_k: KernelHandle,
+    fp8_gemm_t_blockscaled_k: KernelHandle,
 }
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────

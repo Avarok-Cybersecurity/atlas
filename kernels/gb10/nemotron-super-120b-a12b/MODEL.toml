@@ -11,44 +11,55 @@ model_type = "nemotron_h"
 hidden_size = 4096
 
 # Nemotron-H Super uses ChatML + LatentMoE. No official sampling recommendations.
+# 2026-05-24 empirical band-aid. NVIDIA's temp=1.0 across-the-board
+# recipe risked max_tokens wandering on agentic clients (lesson from
+# Qwen3.6). Lowered to temp=0.6 thinking/tools, 0.7 non-thinking.
+# rep_pen=1.1 + dry=0.5 for loop suppression.
 [sampling.thinking_text]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; NVIDIA ships penalty-free — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [sampling.thinking_coding]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; NVIDIA ships penalty-free — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [sampling.non_thinking]
 temperature = 0.7
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; NVIDIA ships penalty-free — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
-# Tool-calling preset: lower temperature for deterministic tool calls.
 [sampling.tools]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; NVIDIA ships penalty-free — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [behavior]
-# Disable thinking when tools are active. With `tool_call_parser = "bare_json"`
-# (set below), grammar-constrained decoding enforces the exact tool-call JSON
-# schema from token 1. Letting the model think first puts the JSON inside the
-# `<think>...</think>` block where parse_tool_calls strips it before
-# extraction (verified pass-30: reasoning_content carried the correct
-# `{"name":"get_weather","arguments":{"city":"Paris"}}` while content was
-# degenerate post-think tokens, scoring 0/2). With thinking_in_tools=false the
-# template emits `<think></think>\n` and the model goes straight to the JSON
-# tool call, which the grammar shapes correctly. Thinking still works on
-# non-tool requests via thinking_default below.
-thinking_in_tools = false
+# 2026-06-06: ENABLE the content-loop watchdog. After removing the rep_pen=1.1/dry=0.5 band-aid
+# (vendor ships penalty-free), single-GPU coherence showed a temp=0 "READY\nREADY\n..." repetition
+# loop. The watchdog (period-N detect + rollback to a clean boundary) is the PROPER loop mechanism
+# vs the rep_pen band-aid that mangles greedy argmax. Same lever that recovered qwen3-next.
+enable_loop_watchdog = true
+# 2026-05-23 sweep: false → true. Project-wide default flipped to true.
+# NOTE: Super specifically had a pass-30 regression where thinking-during-
+# tools degraded bare_json output. If that returns in practice, flip
+# back to false per-model here; the project-wide change is intentionally
+# permissive but per-model overrides remain authoritative.
+thinking_in_tools = true
 # Skip the Nemotron-H chat template's `<tool_call>\n` steering prefix.
 # The prefix was added for Nano's "Think-Satisfy + JSON narration" fix
 # but on Super causes a `<tool_call>\n<tool_call>\n...` emission loop

@@ -102,13 +102,18 @@ impl SsmDecodeRing {
         let slot = self.next_slot;
         self.next_slot = (self.next_slot + 1) % self.capacity;
 
-        if self.entries.len() == self.capacity {
-            // Full: drop the oldest entry; its slot is `slot` (the ring
-            // reuses slots in insertion order, so the oldest live entry
-            // always holds the slot we are about to hand out).
-            debug_assert_eq!(self.entries[0].snapshot_slot, slot);
-            self.entries.remove(0);
-        }
+        // Evict whichever live entry owns the slot being handed out. With
+        // pure round-robin flow that is the oldest entry, but after a
+        // rollback's `truncate_after` the cursor and the live set desync
+        // (truncation removes entries without moving the cursor), so the
+        // colliding entry is not necessarily `entries[0]` — the old
+        // `entries.remove(0)` + debug_assert here panicked debug builds
+        // and, in release, left a live entry pointing at a slot the
+        // caller's `save` was about to overwrite. Two entries sharing a
+        // slot means a later rollback restores overwritten state: silent
+        // SSM corruption. Evicting by slot ownership keeps the no-shared-
+        // slot invariant under every flow.
+        self.entries.retain(|e| e.snapshot_slot != slot);
         self.entries.push(SsmRingEntry {
             token_position,
             snapshot_slot: slot,
@@ -143,6 +148,19 @@ impl SsmDecodeRing {
     /// just restored) is kept — generation resumes from it.
     pub fn truncate_after(&mut self, keep_len: usize) {
         self.entries.retain(|e| e.token_position <= keep_len);
+        // Resume slot assignment right after the newest surviving
+        // snapshot. Without this the cursor keeps pointing into the
+        // truncated tail's slots; that is *correct* under `record`'s
+        // by-slot eviction, but it can land on a surviving entry and
+        // evict a snapshot that is still useful (in the worst case the
+        // boundary just restored, leaving the next rollback nothing to
+        // anchor on). Following the newest survivor reuses the freed
+        // tail slots first and preserves maximal rollback depth.
+        if let Some(newest) = self.entries.last() {
+            self.next_slot = (newest.snapshot_slot + 1) % self.capacity;
+        } else if self.capacity > 0 {
+            self.next_slot = 0;
+        }
     }
 
     /// Number of live snapshots. Test/diagnostic helper.

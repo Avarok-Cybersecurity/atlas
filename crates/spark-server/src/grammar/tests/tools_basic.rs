@@ -24,7 +24,7 @@ fn test_qwen3_coder_tool_grammar_compilation() {
     let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
 
     let tools = test_tool_defs();
-    let result = engine.compile_qwen3_coder_tool_grammar(&tools, false);
+    let result = engine.compile_qwen3_coder_tool_grammar(&tools, false, "</parameter>");
     assert!(
         result.is_ok(),
         "Qwen3 coder grammar compilation failed: {}",

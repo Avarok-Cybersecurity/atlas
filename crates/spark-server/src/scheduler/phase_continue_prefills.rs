@@ -31,13 +31,32 @@ use std::time::Instant;
 use spark_model::traits::Model;
 
 use super::phase_promote_prefills::promote_completed_prefills;
-use super::sample_token;
+use super::sample_first_token;
 use super::types::{ActiveSeq, PrefillInProgress};
 use crate::scheduling_policy::{ActiveSeqTiming, SchedulingPolicy};
 
 use run_batched_mixed::run_batched_mixed_step;
 use run_batched_prefill::run_batched_prefill_step;
 use run_standard::run_standard_chunk_loop;
+
+/// Shared per-chunk InnerQ poll used by every prefill path (standard /
+/// batched-prefill / batched-mixed). `maybe_finalize` is idempotent post
+/// activation, and a no-op when `TURBO_INNERQ` was not set at startup —
+/// so calling on every chunk costs one OnceLock load in the disabled case.
+/// On non-cuda backends the driver doesn't exist (it talks to the CUDA
+/// Driver API directly via `atlas_core::registry`), so this collapses to
+/// a no-op via the `#[cfg]` gate.
+#[cfg(feature = "cuda")]
+pub(super) fn poll_innerq() {
+    if let Some(driver) = spark_model::layers::qwen3_attention::INNERQ.get()
+        && let Err(e) = driver.maybe_finalize(128)
+    {
+        tracing::warn!("InnerQ maybe_finalize failed: {e:#}");
+    }
+}
+
+#[cfg(not(feature = "cuda"))]
+pub(super) fn poll_innerq() {}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn continue_in_progress_prefills(
@@ -56,7 +75,6 @@ pub(super) fn continue_in_progress_prefills(
     code_fence_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
-    reflection_suppress_ids: &[u32],
     adaptive_sampling: bool,
 ) -> bool {
     let mut did_mixed_step = false;
@@ -148,7 +166,6 @@ pub(super) fn continue_in_progress_prefills(
             code_fence_token,
             tool_call_start_token,
             tool_call_end_token,
-            reflection_suppress_ids,
             adaptive_sampling,
             &mut did_mixed_step,
         );
@@ -191,13 +208,16 @@ pub(super) fn continue_in_progress_prefills(
                     p.chunk_offset = p.prompt_tokens.len();
                     let _ = model.record_event(prefill_event, prefill_stream);
                     let _ = model.stream_wait_event(model.default_stream(), prefill_event);
-                    match sample_token(
+                    // #131: grammar-constrain the FIRST token (and advance the
+                    // matcher); no-op without a grammar.
+                    match sample_first_token(
                         model,
                         logits,
                         p.temperature,
                         p.top_k,
                         p.top_p,
                         &p.eos_tokens,
+                        p.grammar_state.as_mut(),
                     ) {
                         Ok(first) => {
                             tracing::info!("Two-phase prefill first token: {first}");
@@ -234,7 +254,6 @@ pub(super) fn continue_in_progress_prefills(
                 code_fence_token,
                 tool_call_start_token,
                 tool_call_end_token,
-                reflection_suppress_ids,
                 adaptive_sampling,
                 &mut completed_indices,
                 &mut did_mixed_step,

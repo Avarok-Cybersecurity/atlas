@@ -9,10 +9,11 @@ fn nullable_u32<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<u
 }
 
 /// Layer type in a hybrid transformer model.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LayerType {
     FullAttention,
+    SlidingAttention,
     LinearAttention,
     /// Standalone MoE FFN layer (Nemotron-H: no mixer, just expert routing + FFN).
     Moe,
@@ -120,6 +121,18 @@ pub struct ModelConfig {
     pub eos_token_id: u32,
     #[serde(default)]
     pub tie_word_embeddings: bool,
+    /// CLI override (`--lm-head-dtype`) for LM-head quantization, set at serve time
+    /// (not from config.json). `Some(true)` = force BF16 lm_head; `Some(false)` = force
+    /// the model's quantized lm_head; `None` = use the model-config-driven default.
+    /// Consumed by `skip_lm_head_quantization()`. Replaces the ATLAS_LMHEAD_BF16 env var.
+    #[serde(default)]
+    pub lm_head_bf16_override: Option<bool>,
+    /// When `skip_lm_head_quantization()` == false, quantize the LM head to FP8
+    /// (E4M3, per-row scales, decoded via `w8a16_gemv`) instead of NVFP4.
+    /// Set by `--lm-head-dtype fp8`. Additive: leaves the NVFP4/BF16 paths
+    /// byte-identical when false.
+    #[serde(default)]
+    pub lm_head_fp8: bool,
 
     // ── Model type ──
     #[serde(default)]
@@ -351,6 +364,7 @@ pub struct ModelConfig {
     /// present for byte-exact rope dim.
     #[serde(default)]
     pub rotary_dim: usize,
+
     /// Target-model layer indices to capture intermediate hidden states from
     /// for DFlash speculative decoding. Sourced from the drafter's
     /// `dflash_config.target_layer_ids` (e.g., `[1, 10, 19, 28, 37]` for
@@ -474,7 +488,7 @@ mod tests;
 
 pub use dispatch::parse_config;
 pub(crate) use parsers::{
-    parse_deepseek_v4, parse_gemma4_params, parse_minimax_m2, parse_vision_config,
+    parse_deepseek_v4, parse_gemma4_params, parse_minimax_m2, parse_step3p7, parse_vision_config,
 };
 pub use parsers::{parse_mistral_params, parse_quantization_config};
 

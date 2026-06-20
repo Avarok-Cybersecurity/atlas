@@ -41,9 +41,11 @@ fn test_buffer_arena_alloc() {
     assert!(!arena.hidden_states().is_null());
     assert!(!arena.logits().is_null());
     assert_eq!(arena.max_batch_tokens(), 128);
-    // 21 allocations: 12 data + 1 scratch + 3 expert + 1 splitk + 3 HC
-    // (hc_streams/hc_post/hc_comb, placeholder-sized when hc_mult == 0).
-    assert_eq!(gpu.alloc_count(), 21);
+    // 26 allocations: main's 21 (12 data + gate_logits_f32 + moe_router_in_f32
+    // FP32-routing + 1 scratch + 3 expert + splitk + gdn_fla_scratch) plus the 5
+    // DeepSeek-V4 buffers (o_latent, norm_unit_w, hc_streams, hc_post, hc_comb;
+    // hc_* placeholder-sized when hc_mult == 0).
+    assert_eq!(gpu.alloc_count(), 26);
 }
 
 #[test]

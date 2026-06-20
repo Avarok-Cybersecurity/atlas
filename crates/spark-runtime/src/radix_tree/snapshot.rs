@@ -91,6 +91,16 @@ impl SsmSnapshotIndex {
                 best = Some((entry.snapshot_id, entry.token_count));
             }
         }
+        if std::env::var("ATLAS_SNAP_LOOKUP_DBG").is_ok() {
+            let mut cands: Vec<usize> = self.entries.iter().map(|e| e.token_count).collect();
+            cands.sort_unstable();
+            tracing::info!(
+                "snap-lookup: matched={matched_tokens} selected={:?} n_entries={} token_counts={:?}",
+                best.map(|b| b.1),
+                self.entries.len(),
+                cands,
+            );
+        }
         best
     }
 
@@ -99,18 +109,25 @@ impl SsmSnapshotIndex {
             return None;
         }
         // Forecast-based policy (B.4, 2026-04-25, Marconi paper §4):
-        // score = last_access / (1 + hit_count). Lower score = older
-        // AND less-frequently-used → evict first. Pure LRU
-        // (`last_access` only) discarded hot prefixes that just
-        // happened to be re-accessed less recently than a one-shot
-        // entry; weighting by hit_count keeps recurrent prefixes
-        // (system prompts, tool descriptions in agentic sessions)
-        // resident longer.
+        // evict the entry with the lowest last_access * (1 + hit_count)
+        // — old AND cold first. Pure LRU (`last_access` only) discarded
+        // hot prefixes that just happened to be re-accessed less
+        // recently than a one-shot entry; weighting by hit_count keeps
+        // recurrent prefixes (system prompts, tool descriptions in
+        // agentic sessions) resident longer.
+        //
+        // #155: the original formula DIVIDED by (1 + hit_count), which
+        // inverts the intent — frequently-hit snapshots scored LOWEST
+        // and were evicted first at pool saturation (measured: a
+        // just-selected snapshot evicted 7s later while ~50
+        // never-accessed entries survived → selected=None mid-session
+        // → full-conversation SSM recompute on the next warm hit).
         let mut victim_idx = 0;
         let mut victim_score = u64::MAX;
         for (i, entry) in self.entries.iter().enumerate() {
-            // Saturating math: hit_count fits u32 → +1 fits u64.
-            let score = entry.last_access / (1 + entry.hit_count as u64);
+            // Saturating math: both factors fit u64 comfortably
+            // (access_counter is monotonic per-process, hit_count u32).
+            let score = entry.last_access.saturating_mul(1 + entry.hit_count as u64);
             if score < victim_score {
                 victim_score = score;
                 victim_idx = i;

@@ -25,9 +25,52 @@ pub enum KvCacheDtype {
     Turbo4,
     /// 3-bit WHT + Lloyd-Max (8 levels). 22% smaller than turbo4.
     Turbo3,
+    /// 2-bit WHT + Lloyd-Max (4 levels). 6.4x compression vs bf16 (3 bits/elem
+    /// total: 2 b data + 0.5 b scale + 0.5 b layout overhead). Full write +
+    /// paged-decode + chunked-prefill kernel coverage. 2-bit keys cannot
+    /// sustain tool-grammar constrained decoding with the standard boundary
+    /// policy; requires the higher auto high-precision-layer default (see
+    /// `auto_high_precision_layers`) validated on the GB10 flagship.
+    Turbo2,
     /// WHT + FP8 E4M3. Same memory as FP8 but with outlier suppression.
     /// Enables FP8-level memory for models with large RMS norm weights.
     Turbo8,
+    /// TurboQuant+ asymmetric: K stored at turbo4 (4-bit), V at turbo3 (3-bit).
+    /// K dominates attention score precision; V tolerates lower precision per
+    /// turboquant_plus/docs/papers/asymmetric-kv-compression.md. Saves ~14%
+    /// bandwidth at decode (4.5 b/elem K + 3.375 b/elem V vs 4.5 + 4.5
+    /// symmetric turbo4). Decode kernel dispatch needs a new
+    /// `paged_decode_attn_turbo4k_turbo3v` variant; write kernel forks
+    /// `reshape_and_cache_flash_turbo4` for K and `..._turbo3` for V on the
+    /// same launch.
+    Turbo4KTurbo3V,
+    /// K=turbo4, V=turbo8. K=4-bit codebook; V=FP8. ~11% bandwidth saving vs
+    /// pure turbo8 symmetric. Same dispatch-table follow-up applies.
+    Turbo4KTurbo8V,
+    /// K=turbo3, V=turbo8. Smallest K (3-bit) with V=FP8 retention.
+    Turbo3KTurbo8V,
+    /// TurboQuant+ safer-asym: K stored at BF16 baseline (full precision), V
+    /// compressed to turbo4 4-bit codebook. Preserves K's attention-score
+    /// fidelity completely while compressing V which dominates KV bandwidth
+    /// at long context.
+    Bf16KTurbo4V,
+    /// K=bf16, V=turbo3 (3-bit). Aggressive V compression with full-precision K.
+    Bf16KTurbo3V,
+    /// K=fp8 (1 byte/elem with per-tensor scale), V=turbo4. K kept at the
+    /// usual fp8 quality; V at 4-bit codebook. Middle ground between bf16/turbo
+    /// and pure turbo8.
+    Fp8KTurbo4V,
+    /// K=fp8, V=turbo3. Smallest combo retaining fp8 K precision.
+    Fp8KTurbo3V,
+    /// K=bf16 baseline, V=turbo2 (2-bit). Most aggressive V compression with
+    /// full-precision K. Per asymmetric-kv-compression.md: symmetric turbo2/
+    /// turbo2 collapses quality (+58.5% PPL); this asym preserves K and only
+    /// pays the +9.5% V-side cost — 6× better quality at the same V compression.
+    Bf16KTurbo2V,
+    /// K=fp8, V=turbo2. The canonical "asymmetric rescue" config (analog of
+    /// llama-cpp-turboquant's `q8_0/turbo2`). Best compression-to-quality
+    /// ratio for turbo2 V on tested models.
+    Fp8KTurbo2V,
 }
 
 impl std::fmt::Display for KvCacheDtype {
@@ -38,8 +81,69 @@ impl std::fmt::Display for KvCacheDtype {
             KvCacheDtype::Nvfp4 => write!(f, "nvfp4"),
             KvCacheDtype::Turbo4 => write!(f, "turbo4"),
             KvCacheDtype::Turbo3 => write!(f, "turbo3"),
+            KvCacheDtype::Turbo2 => write!(f, "turbo2"),
             KvCacheDtype::Turbo8 => write!(f, "turbo8"),
+            KvCacheDtype::Turbo4KTurbo3V => write!(f, "turbo4k_turbo3v"),
+            KvCacheDtype::Turbo4KTurbo8V => write!(f, "turbo4k_turbo8v"),
+            KvCacheDtype::Turbo3KTurbo8V => write!(f, "turbo3k_turbo8v"),
+            KvCacheDtype::Bf16KTurbo4V => write!(f, "bf16k_turbo4v"),
+            KvCacheDtype::Bf16KTurbo3V => write!(f, "bf16k_turbo3v"),
+            KvCacheDtype::Fp8KTurbo4V => write!(f, "fp8k_turbo4v"),
+            KvCacheDtype::Fp8KTurbo3V => write!(f, "fp8k_turbo3v"),
+            KvCacheDtype::Bf16KTurbo2V => write!(f, "bf16k_turbo2v"),
+            KvCacheDtype::Fp8KTurbo2V => write!(f, "fp8k_turbo2v"),
         }
+    }
+}
+
+impl KvCacheDtype {
+    /// Returns the (K_dtype, V_dtype) pair. For symmetric variants both
+    /// elements are identical. For asymmetric variants the pair differs.
+    pub fn kv_pair(self) -> (KvCacheDtype, KvCacheDtype) {
+        match self {
+            KvCacheDtype::Turbo4KTurbo3V => (KvCacheDtype::Turbo4, KvCacheDtype::Turbo3),
+            KvCacheDtype::Turbo4KTurbo8V => (KvCacheDtype::Turbo4, KvCacheDtype::Turbo8),
+            KvCacheDtype::Turbo3KTurbo8V => (KvCacheDtype::Turbo3, KvCacheDtype::Turbo8),
+            KvCacheDtype::Bf16KTurbo4V => (KvCacheDtype::Bf16, KvCacheDtype::Turbo4),
+            KvCacheDtype::Bf16KTurbo3V => (KvCacheDtype::Bf16, KvCacheDtype::Turbo3),
+            KvCacheDtype::Fp8KTurbo4V => (KvCacheDtype::Fp8, KvCacheDtype::Turbo4),
+            KvCacheDtype::Fp8KTurbo3V => (KvCacheDtype::Fp8, KvCacheDtype::Turbo3),
+            KvCacheDtype::Bf16KTurbo2V => (KvCacheDtype::Bf16, KvCacheDtype::Turbo2),
+            KvCacheDtype::Fp8KTurbo2V => (KvCacheDtype::Fp8, KvCacheDtype::Turbo2),
+            other => (other, other),
+        }
+    }
+
+    /// True for the symmetric turbo dtypes whose cache contents are stored
+    /// in the WHT-rotated basis (the write path applies `wht_bf16_inplace`
+    /// before quantizing). Gates the WHT(Q) / iWHT(out) attention bookends —
+    /// call on the K or V side of `kv_pair()`, not on the combined variant.
+    /// Turbo2 is rotated by the write path like the rest; omitting it here
+    /// is what desynced the decode bookends from the write path.
+    pub fn is_wht_rotated(self) -> bool {
+        matches!(
+            self,
+            KvCacheDtype::Turbo2
+                | KvCacheDtype::Turbo3
+                | KvCacheDtype::Turbo4
+                | KvCacheDtype::Turbo8
+        )
+    }
+
+    /// True if K and V use different storage layouts.
+    pub fn is_asymmetric(self) -> bool {
+        matches!(
+            self,
+            KvCacheDtype::Turbo4KTurbo3V
+                | KvCacheDtype::Turbo4KTurbo8V
+                | KvCacheDtype::Turbo3KTurbo8V
+                | KvCacheDtype::Bf16KTurbo4V
+                | KvCacheDtype::Bf16KTurbo3V
+                | KvCacheDtype::Fp8KTurbo4V
+                | KvCacheDtype::Fp8KTurbo3V
+                | KvCacheDtype::Bf16KTurbo2V
+                | KvCacheDtype::Fp8KTurbo2V
+        )
     }
 }
 
@@ -52,9 +156,20 @@ impl std::str::FromStr for KvCacheDtype {
             "nvfp4" => Ok(KvCacheDtype::Nvfp4),
             "turbo4" => Ok(KvCacheDtype::Turbo4),
             "turbo3" => Ok(KvCacheDtype::Turbo3),
+            "turbo2" => Ok(KvCacheDtype::Turbo2),
             "turbo8" => Ok(KvCacheDtype::Turbo8),
+            "turbo4k_turbo3v" | "turbo4k3v" => Ok(KvCacheDtype::Turbo4KTurbo3V),
+            "turbo4k_turbo8v" | "turbo4k8v" => Ok(KvCacheDtype::Turbo4KTurbo8V),
+            "turbo3k_turbo8v" | "turbo3k8v" => Ok(KvCacheDtype::Turbo3KTurbo8V),
+            "bf16k_turbo4v" | "bf16k4v" => Ok(KvCacheDtype::Bf16KTurbo4V),
+            "bf16k_turbo3v" | "bf16k3v" => Ok(KvCacheDtype::Bf16KTurbo3V),
+            "fp8k_turbo4v" | "fp8k4v" => Ok(KvCacheDtype::Fp8KTurbo4V),
+            "fp8k_turbo3v" | "fp8k3v" => Ok(KvCacheDtype::Fp8KTurbo3V),
+            "bf16k_turbo2v" | "bf16k2v" => Ok(KvCacheDtype::Bf16KTurbo2V),
+            "fp8k_turbo2v" | "fp8k2v" => Ok(KvCacheDtype::Fp8KTurbo2V),
             other => bail!(
-                "Unsupported --kv-cache-dtype '{other}'. Use 'fp8', 'bf16', 'nvfp4', 'turbo4', 'turbo3', or 'turbo8'."
+                "Unsupported --kv-cache-dtype '{other}'. Symmetric: 'bf16', 'fp8', 'nvfp4', 'turbo4', 'turbo3', 'turbo8'. \
+                Asymmetric (TQ+): turbo*_turbo*v, bf16k_turbo[34]v (safer asym: K baseline, V compressed), fp8k_turbo[34]v."
             ),
         }
     }
@@ -110,18 +225,33 @@ impl KvCacheConfig {
     fn block_bytes_dims(&self, dtype: KvCacheDtype, nkv: usize, hd: usize) -> usize {
         let elems = self.block_size * nkv * hd;
         match dtype {
-            KvCacheDtype::Bf16 => elems * 2,
-            KvCacheDtype::Fp8 => elems,
-            KvCacheDtype::Nvfp4 | KvCacheDtype::Turbo4 => {
+            KvCacheDtype::Bf16
+            | KvCacheDtype::Bf16KTurbo4V
+            | KvCacheDtype::Bf16KTurbo3V
+            | KvCacheDtype::Bf16KTurbo2V => elems * 2,
+            KvCacheDtype::Fp8
+            | KvCacheDtype::Fp8KTurbo4V
+            | KvCacheDtype::Fp8KTurbo3V
+            | KvCacheDtype::Fp8KTurbo2V => elems,
+            KvCacheDtype::Nvfp4
+            | KvCacheDtype::Turbo4
+            | KvCacheDtype::Turbo4KTurbo3V
+            | KvCacheDtype::Turbo4KTurbo8V => {
                 // Both NVFP4 and Turbo4 use 4-bit data + FP8 per-group scales.
                 // Same byte layout, different codebook (E2M1 vs Lloyd-Max).
                 let data = elems / 2; // 2 nibbles per byte
                 let num_groups = elems / NVFP4_GROUP_SIZE;
                 data + num_groups // +1 FP8 scale byte per group
             }
-            KvCacheDtype::Turbo3 => {
+            KvCacheDtype::Turbo3 | KvCacheDtype::Turbo3KTurbo8V => {
                 // 3-bit WHT + Lloyd-Max (8 levels). Packed: 8 values in 3 bytes.
                 let data = elems * 3 / 8;
+                let num_groups = elems / NVFP4_GROUP_SIZE;
+                data + num_groups
+            }
+            KvCacheDtype::Turbo2 => {
+                // 2-bit WHT + Lloyd-Max (4 levels). Packed: 4 values per byte.
+                let data = elems / 4;
                 let num_groups = elems / NVFP4_GROUP_SIZE;
                 data + num_groups
             }
@@ -137,6 +267,44 @@ impl KvCacheConfig {
                 elems + num_groups * 2 // 1 byte data + BF16 scale per group
             }
         }
+    }
+
+    /// V-side bytes per block for asymmetric dtypes; equals block_bytes_dims
+    /// for symmetric dtypes. Use this when allocating the V pool separately
+    /// from K. Once real asym kernels land, callers should switch to:
+    ///   k_size = block_bytes_dims(kv_pair().0, ...)
+    ///   v_size = block_bytes_dims(kv_pair().1, ...)
+    /// and allocate the two pools independently.
+    #[allow(dead_code)]
+    pub fn v_block_bytes_dims(&self, dtype: KvCacheDtype, nkv: usize, hd: usize) -> usize {
+        let (_, v) = dtype.kv_pair();
+        self.block_bytes_dims(v, nkv, hd)
+    }
+
+    /// K-side bytes per block for a specific (asym-aware) dtype and dims.
+    /// For symmetric dtypes, returns the same value as `block_bytes_dims`.
+    /// For asymmetric, returns the K-component (e.g. Bf16KTurbo3V → bf16 bytes).
+    #[allow(dead_code)]
+    pub fn k_block_bytes_dims(&self, dtype: KvCacheDtype, nkv: usize, hd: usize) -> usize {
+        let (k, _) = dtype.kv_pair();
+        self.block_bytes_dims(k, nkv, hd)
+    }
+
+    /// K-side bytes per block for a specific attention layer.
+    /// Replaces the legacy single-stride view for asym dtypes by routing
+    /// through the K component of the dtype pair.
+    pub fn k_block_bytes_for_layer(&self, layer_idx: usize) -> usize {
+        let (nkv, hd) = self.dims_for_layer(layer_idx);
+        let (k, _) = self.dtype_for_layer(layer_idx).kv_pair();
+        self.block_bytes_dims(k, nkv, hd)
+    }
+
+    /// V-side bytes per block for a specific attention layer.
+    /// For symmetric dtypes this equals `k_block_bytes_for_layer`.
+    pub fn v_block_bytes_for_layer(&self, layer_idx: usize) -> usize {
+        let (nkv, hd) = self.dims_for_layer(layer_idx);
+        let (_, v) = self.dtype_for_layer(layer_idx).kv_pair();
+        self.block_bytes_dims(v, nkv, hd)
     }
 
     /// Legacy name: bytes per block using global dims and a given dtype.
@@ -177,15 +345,11 @@ impl KvCacheConfig {
     }
 
     /// Sum of K+V block bytes across all layers for one block slot.
-    /// Accounts for mixed dtypes when layer_dtypes is set.
+    /// Accounts for mixed dtypes when layer_dtypes is set AND asym K/V splits.
     pub fn block_bytes_kv_all_layers(&self) -> usize {
-        if self.layer_dtypes.is_empty() {
-            self.block_bytes_kv() * self.num_layers
-        } else {
-            (0..self.num_layers)
-                .map(|i| self.block_bytes_for_layer(i) * 2)
-                .sum()
-        }
+        (0..self.num_layers)
+            .map(|i| self.k_block_bytes_for_layer(i) + self.v_block_bytes_for_layer(i))
+            .sum()
     }
 
     /// Cache stride in elements (for FP8/BF16 kernels).
@@ -225,6 +389,17 @@ impl KvCacheConfig {
         self.nvfp4_scale_bytes()
     }
 
+    /// Turbo2 data section bytes (2-bit packed: 4 values per byte).
+    pub fn turbo2_data_bytes(&self) -> usize {
+        let elems = self.block_size * self.num_kv_heads * self.head_dim;
+        elems / 4
+    }
+
+    /// Turbo2 scale section bytes (FP8 per-group, same as turbo3/turbo4).
+    pub fn turbo2_scale_bytes(&self) -> usize {
+        self.nvfp4_scale_bytes()
+    }
+
     /// Turbo8 data section bytes (FP8 E4M3: 1 byte per element).
     pub fn turbo8_data_bytes(&self) -> usize {
         self.block_size * self.num_kv_heads * self.head_dim
@@ -245,8 +420,10 @@ impl KvCacheConfig {
 struct LayerPool {
     k_pool: DevicePtr,
     v_pool: DevicePtr,
-    /// Stride between blocks in bytes.
-    block_stride: usize,
+    /// Stride between K blocks in bytes (may differ from V for asym dtypes).
+    k_block_stride: usize,
+    /// Stride between V blocks in bytes (may differ from K for asym dtypes).
+    v_block_stride: usize,
     /// Effective dtype for this layer.
     dtype: KvCacheDtype,
 }
@@ -265,3 +442,6 @@ pub struct PagedKvCache {
 mod paged_impl;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_tq_plus;

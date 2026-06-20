@@ -110,6 +110,34 @@ pub fn dense_gemm(
         .launch(stream)
 }
 
+/// Pipelined tensor-core BF16 GEMM — drop-in faster `dense_gemm` (kernel
+/// `dense_gemm_bf16_pipelined`): mma.sync.m16n8k16 + cp.async 2-stage, 128x128
+/// tile. ~40x the scalar `dense_gemm` on large-M shapes (cosine=1.0, same math).
+/// Grid: (ceil(N/128), ceil(M/128), 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn dense_gemm_bf16_pipelined(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 128), div_ceil(m, 128), 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}
+
 /// W4A16 GEMM: C = A @ dequant(B).
 ///
 /// A: [M, K] BF16 activations

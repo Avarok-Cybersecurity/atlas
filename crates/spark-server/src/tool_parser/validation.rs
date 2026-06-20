@@ -37,6 +37,93 @@ fn resolve_schema_type(schema: &serde_json::Value) -> Option<&str> {
     None
 }
 
+/// Map a model-emitted parameter `key` to its canonical schema property name
+/// for the tool `call_name`. SSOT for the camelCase↔snake_case repair used by
+/// both `backfill_required_params` (post-parse) and live argument streaming
+/// (`streaming_impl::coerce_kv`). Returns `key` unchanged when the tool is
+/// unknown, has no `properties`, `key` is already a schema property, or no
+/// case-insensitive/underscore-insensitive match exists.
+pub(crate) fn normalize_param_name(tools: &[ToolDefinition], call_name: &str, key: &str) -> String {
+    let Some(tool_def) = tools.iter().find(|t| t.function.name == call_name) else {
+        return key.to_string();
+    };
+    let Some(props) = tool_def
+        .function
+        .parameters
+        .as_ref()
+        .and_then(|p| p.get("properties"))
+        .and_then(|p| p.as_object())
+    else {
+        return key.to_string();
+    };
+    if props.contains_key(key) {
+        return key.to_string();
+    }
+    // Build case-insensitive lookup: "filepath" → "file_path" (schema name).
+    let schema_normalized: std::collections::HashMap<String, &str> = props
+        .keys()
+        .map(|k| (k.to_lowercase().replace('_', ""), k.as_str()))
+        .collect();
+    let norm = key.to_lowercase().replace('_', "");
+    schema_normalized
+        .get(&norm)
+        .map(|schema_key| schema_key.to_string())
+        .unwrap_or_else(|| key.to_string())
+}
+
+/// Extract agent-type names from a delegation tool's prose description.
+///
+/// Matches lines shaped like `- <name>: …` — the convention both opencode
+/// and Claude Code use under an "Available agent types" heading. `<name>`
+/// is the token before the first `:` and must be a single bare identifier
+/// (alphanumeric + `-`/`_`), which excludes prose bullets such as
+/// `- If you want to read a file, use Read instead`.
+fn parse_agent_types(description: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in description.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("- ") else {
+            continue;
+        };
+        let Some((name, _)) = rest.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.is_empty()
+            && name.len() <= 64
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// Choose a valid `subagent_type` for a delegation tool (opencode / Claude
+/// Code `task`).
+///
+/// `subagent_type` is a REQUIRED free-form string whose legal values are
+/// listed only as prose in the tool description — there is no JSON-Schema
+/// `enum`, so the model frequently omits it. The missing-required backfill
+/// below would otherwise insert `""`, which the client rejects with an
+/// opaque `Unknown agent type:  is not a valid agent type` that the model
+/// cannot self-correct. Filling a VALID agent name instead lets delegation
+/// actually succeed.
+///
+/// Prefers a general-purpose agent (`general`, `general-purpose`), else the
+/// first agent listed, with a final fallback of `"general"` (opencode's
+/// built-in general agent).
+fn infer_default_subagent_type(description: Option<&str>) -> String {
+    let candidates = description.map(parse_agent_types).unwrap_or_default();
+    candidates
+        .iter()
+        .find(|c| c.to_ascii_lowercase().contains("general"))
+        .or_else(|| candidates.first())
+        .cloned()
+        .unwrap_or_else(|| "general".to_string())
+}
+
 pub fn backfill_required_params(calls: &mut [ToolCall], tools: &[ToolDefinition]) {
     for call in calls.iter_mut() {
         let Some(tool_def) = tools.iter().find(|t| t.function.name == call.function.name) else {
@@ -93,23 +180,19 @@ pub fn backfill_required_params(calls: &mut [ToolCall], tools: &[ToolDefinition]
         // 2. Normalize parameter names to match the schema.
         // The model sometimes emits camelCase (filePath) when the schema
         // defines snake_case (file_path), or vice versa. This is a known
-        // Qwen3-Coder issue (vLLM #35347, llama.cpp #19382).
-        if let Some(props) = properties {
-            // Build case-insensitive lookup: "filepath" → "file_path" (schema name)
-            let schema_normalized: std::collections::HashMap<String, &str> = props
-                .keys()
-                .map(|k| (k.to_lowercase().replace('_', ""), k.as_str()))
-                .collect();
-
+        // Qwen3-Coder issue (vLLM #35347, llama.cpp #19382). Delegated to the
+        // shared `normalize_param_name` SSOT helper so live argument streaming
+        // (`streaming_impl::coerce_kv`) applies the identical mapping.
+        if properties.is_some() {
             let keys_to_fix: Vec<(String, String)> = args
                 .keys()
-                .filter(|k| !props.contains_key(*k))
-                .filter_map(|k| {
-                    let norm = k.to_lowercase().replace('_', "");
-                    schema_normalized
-                        .get(&norm)
-                        .map(|schema_key| (k.clone(), schema_key.to_string()))
+                .map(|k| {
+                    (
+                        k.clone(),
+                        normalize_param_name(tools, &call.function.name, k),
+                    )
                 })
+                .filter(|(orig, mapped)| orig != mapped)
                 .collect();
 
             for (wrong_key, right_key) in keys_to_fix {
@@ -163,6 +246,15 @@ pub fn backfill_required_params(calls: &mut [ToolCall], tools: &[ToolDefinition]
                     "oldString" | "old_string" => {
                         // Can't guess what to replace — leave empty
                         continue;
+                    }
+                    // Delegation tools (opencode / Claude Code `task`) require a
+                    // free-form `subagent_type` whose legal values live only in
+                    // the description prose (no JSON-Schema enum). An empty value
+                    // is rejected downstream with an opaque "Unknown agent type:
+                    // …" the model can't self-correct, so fill a VALID agent name
+                    // parsed from the description instead of "".
+                    "subagent_type" | "subagentType" => {
+                        infer_default_subagent_type(tool_def.function.description.as_deref())
                     }
                     _ => continue,
                 };
@@ -244,6 +336,40 @@ pub fn normalize_paths(calls: &mut [ToolCall], cwd: &str) {
         let mut changed = false;
         for key in PATH_KEYS {
             if let Some(serde_json::Value::String(path)) = args.get(*key) {
+                // Long-context FP8 drift mode (2026-05-28): the model
+                // sometimes emits the value with XML-attribute-style
+                // framing — `="/tmp/x/main.rs"` instead of `/tmp/x/main.rs`.
+                // The qwen3_coder grammar accepts the literal `=` and quotes
+                // as part of the parameter body. Strip them here so the
+                // downstream path-shape check and write dispatch see a
+                // clean path. vLLM's tool_parser does similar leniency.
+                let trimmed = path.trim();
+                let mut sanitized: &str = trimmed;
+                if let Some(rest) = sanitized.strip_prefix('=') {
+                    sanitized = rest.trim_start();
+                }
+                // FP8 drift (2026-05-29, fencecontent run 1): the model
+                // sometimes leaks a JSON-fragment-shaped value like
+                // `"/tmp/x/Cargo.toml",` — the path wrapped in quotes with a
+                // trailing comma. Drop trailing commas/whitespace first so the
+                // surrounding-quote strip below sees a clean `"…"`; otherwise
+                // the file is created with the quotes+comma literally in its
+                // name and the project never builds.
+                sanitized = sanitized.trim_end_matches([',', ' ', '\t']);
+                if sanitized.len() >= 2 && sanitized.starts_with('"') && sanitized.ends_with('"') {
+                    sanitized = &sanitized[1..sanitized.len() - 1];
+                }
+                if sanitized != path.as_str() {
+                    args.insert(
+                        key.to_string(),
+                        serde_json::Value::String(sanitized.to_string()),
+                    );
+                    changed = true;
+                }
+                // Re-read after possible sanitization
+                let Some(serde_json::Value::String(path)) = args.get(*key) else {
+                    continue;
+                };
                 if !path.starts_with('/') {
                     continue; // Already relative — leave it
                 }
@@ -393,13 +519,96 @@ pub fn validate_single_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> R
     ];
     if WRITE_FAMILY.contains(&name.as_str()) {
         for key in PATH_KEYS {
-            if let Some(serde_json::Value::String(path)) = args.get(*key)
-                && path.trim().is_empty()
+            if let Some(serde_json::Value::String(path)) = args.get(*key) {
+                let trimmed = path.trim();
+                if trimmed.is_empty() {
+                    // #211 option-B diagnostic (env-gated): pinpoint the
+                    // empty_path drift — generation vs parse. Logs the full
+                    // post-parse arg shape (keys + per-value lengths). An
+                    // empty filePath alongside a large `content` is the
+                    // self-truncation generation pattern (F78); filePath
+                    // absent ⇒ omission; a path under an unexpected key ⇒
+                    // parser. Inert unless ATLAS_TOOLCALL_DEBUG=1.
+                    if std::env::var("ATLAS_TOOLCALL_DEBUG").as_deref() == Ok("1") {
+                        let shape: Vec<String> = args
+                            .iter()
+                            .map(|(k, v)| match v {
+                                serde_json::Value::String(s) => {
+                                    format!("{k}=str(len={})", s.len())
+                                }
+                                other => format!("{k}={}", other),
+                            })
+                            .collect();
+                        tracing::warn!(
+                            tool = %name, empty_key = %key,
+                            "ATLAS_TOOLCALL_DEBUG empty-path arg shape: [{}]",
+                            shape.join(", ")
+                        );
+                    }
+                    return Err(format!(
+                        "Error: {name} requires a non-empty '{key}'. \
+                             Got empty string — provide an absolute path \
+                             like '/tmp/calc-test75/Cargo.toml'."
+                    ));
+                }
+                // Long-context FP8 drift mode: model occasionally emits
+                // the value with XML-attribute-style framing — e.g.
+                // `<parameter=filePath>="/tmp/x/main.rs"</parameter>`
+                // — leaking the `="..."` shape into the value. Strip a
+                // leading `=` and a single pair of surrounding ASCII
+                // double-quotes before the path-shape check so these
+                // drifted-but-recoverable calls still resolve. vLLM's
+                // tool_parser does similar leniency.
+                // opencode resolves write paths against the agent cwd
+                // (`--dir`), so bare RELATIVE filenames like `Cargo.toml`
+                // or `src/main.rs` are legitimate — vLLM accepts them and
+                // the model emits them constantly. The previous rule
+                // required a `/`, `./`, or `../` prefix and rejected
+                // `Cargo.toml`, which made opencode loop on rejections and
+                // abandon the task. Accept any non-empty path EXCEPT ones
+                // carrying shell metacharacters / whitespace, which signal
+                // a leaked command (e.g. `created && ls -R`) rather than a
+                // real path — those we still reject (also closes CWE-78
+                // command-leak-as-path).
+                const SHELL_META: &[char] = &[
+                    ' ', '\t', '\n', '\r', '&', '|', ';', '`', '$', '<', '>', '(', ')', '*', '?',
+                ];
+                let looks_like_command = trimmed.contains(SHELL_META);
+                if looks_like_command || trimmed.len() < 3 {
+                    return Err(format!(
+                        "Error: {name} '{key}' must be a filesystem path (absolute or relative \
+                         to the working directory), at least 3 chars, with no shell \
+                         metacharacters or whitespace. Got {path:?}."
+                    ));
+                }
+            }
+        }
+    }
+    // Shell-execution tools must have a non-empty command. Mirrors F78
+    // for the Write family. Without this, the `any_text` qwen3_coder
+    // body grammar (2026-05-25) accepts an immediately-closed parameter
+    // `<parameter=command></parameter>`; opencode's bash handler then
+    // returns "The argument 'file' cannot be empty. Received ''" and
+    // the model burns to max_tokens retrying the same empty call.
+    // Previously the `json_schema` body grammar combined with
+    // `enforce_min_length_on_required_strings` (`grammar/schema.rs`)
+    // enforced min_length 1 at the FSM level; lifting that check to
+    // the validator post-parse keeps the same invariant while letting
+    // the grammar body be `any_text` (native XML wire format).
+    const SHELL_FAMILY: &[&str] = &[
+        "bash", "Bash", "shell", "Shell", "exec", "Exec", "run", "Run", "execute", "Execute",
+        "terminal", "Terminal",
+    ];
+    const CMD_KEYS: &[&str] = &["command", "cmd", "script", "code"];
+    if SHELL_FAMILY.contains(&name.as_str()) {
+        for key in CMD_KEYS {
+            if let Some(serde_json::Value::String(cmd)) = args.get(*key)
+                && (cmd.trim().is_empty() || cmd.trim().len() < 2)
             {
                 return Err(format!(
                     "Error: {name} requires a non-empty '{key}'. \
-                         Got empty string — provide an absolute path \
-                         like '/tmp/calc-test75/Cargo.toml'."
+                         Got empty string — provide the shell command \
+                         to execute, e.g. 'ls /tmp'."
                 ));
             }
         }
@@ -434,4 +643,31 @@ pub fn validate_single_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> R
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod path_sanitizer_tests {
+    #[test]
+    fn malformed_quoted_comma_filepath_sanitized() {
+        // FP8 drift: filePath value leaked as a JSON fragment `"…/Cargo.toml",`
+        // (surrounding quotes + trailing comma). The unconditional path
+        // sanitizer must clean it to a cwd-relative `Cargo.toml` so the file
+        // lands with a usable name.
+        use crate::tool_parser::{FunctionCall, ToolCall};
+        let mut calls = vec![ToolCall {
+            id: "x".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "write".into(),
+                arguments: serde_json::json!({
+                    "filePath": "\"/tmp/proj/Cargo.toml\",",
+                    "content": "[package]\nname = \"x\"\n"
+                })
+                .to_string(),
+            },
+        }];
+        super::normalize_paths(&mut calls, "/tmp/proj");
+        let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+        assert_eq!(args["filePath"], "Cargo.toml");
+    }
 }

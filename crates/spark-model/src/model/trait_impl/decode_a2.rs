@@ -144,11 +144,7 @@ impl TransformerModel {
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;
-        let fp32 = if self.config.use_fp32_residual() {
-            4usize
-        } else {
-            2usize
-        };
+        let fp32 = 2usize;
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
@@ -202,6 +198,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+            gdn_exact_replay: false,
         };
 
         // ── Phase 2: CUDA graph lookup / capture ──
@@ -350,7 +347,18 @@ impl TransformerModel {
             for i in 0..padded_n {
                 let normed_i = normed.offset(i * h * bf16);
                 let logits_i = logits.offset(i * v * bf16);
-                if let Some(ref nvfp4) = self.lm_head_nvfp4 {
+                if let Some(ref fp8) = self.lm_head_fp8 {
+                    ops::dense_gemv_fp8w(
+                        self.gpu.as_ref(),
+                        self.dense_gemv_fp8w_kernel,
+                        normed_i,
+                        fp8,
+                        logits_i,
+                        v as u32,
+                        h as u32,
+                        stream,
+                    )?;
+                } else if let Some(ref nvfp4) = self.lm_head_nvfp4 {
                     ops::w4a16_gemv(
                         self.gpu.as_ref(),
                         self.w4a16_gemv_kernel,

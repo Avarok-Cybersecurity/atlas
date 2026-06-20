@@ -20,15 +20,13 @@
         for (unsigned int _i = (t); _i < TILE_CHUNKS_512; _i += (stride)) { \
             unsigned int _row = _i / _cpr, _col = (_i % _cpr) * 8; \
             unsigned int _pos = (kv_s) + _row; \
-            unsigned int _sa = __cvta_generic_to_shared(&(smem_ptr)[_row * HDIM_512 + _col]); \
             if (_pos < (kv_l)) { \
                 unsigned int _lb = _pos / cache_block_size; \
                 unsigned int _bo = _pos % cache_block_size; \
                 unsigned int _pb = (unsigned int)(bt)[_lb]; \
                 const void* _gm = (const void*)( \
                     (cache) + _pb * _ps + _bo * _rs + (kvh) * head_dim + _col); \
-                asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" \
-                             :: "r"(_sa), "l"(_gm)); \
+                atlas_cp16(&(smem_ptr)[_row * HDIM_512 + _col], _gm); \
             } else { \
                 *((uint4*)&(smem_ptr)[_row * HDIM_512 + _col]) = make_uint4(0,0,0,0); \
             } \

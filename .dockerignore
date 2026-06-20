@@ -7,6 +7,7 @@ bench_*.sh
 bench_*.py
 bench_*.json
 *.md
+!README.md
 SECURITY.md
 .github/
 .clang-format

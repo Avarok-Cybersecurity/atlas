@@ -86,6 +86,7 @@ impl TransformerModel {
             profile: false,
             comm: None,
             graph_capture: false,
+            gdn_exact_replay: false,
         };
         let prop_state = seq
             .proposer_state
@@ -264,10 +265,8 @@ impl TransformerModel {
         };
         let h = self.config.hidden_size;
         let bf16 = 2usize;
-        debug_assert!(
-            !self.config.use_fp32_residual(),
-            "DFlash hidden capture currently assumes BF16 residual; FP32-residual models need a separate downcast path"
-        );
+        // The residual stream is always BF16, so DFlash hidden capture
+        // copies BF16 bytes directly with no downcast.
         let src = self.buffers.hidden_states().offset(token_idx * h * bf16);
         let dst_slot = dst.offset(slot * h * bf16);
         self.gpu.copy_d2d_async(src, dst_slot, h * bf16, stream)?;

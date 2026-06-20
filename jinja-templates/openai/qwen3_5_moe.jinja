@@ -97,7 +97,15 @@
             {%- endif %}
         {%- endif %}
         {%- set reasoning_content = reasoning_content|trim %}
-        {%- if loop.index0 > ns.last_query_index and enable_thinking is defined and enable_thinking is true %}
+        {#- F6 (2026-05-26): only emit the `<think>...</think>` wrapper when
+            reasoning_content is non-empty. Previously emitted unconditionally
+            for historical assistant turns → empty `<think>\n\n</think>\n\n`
+            poisoning when the client didn't round-trip reasoning_content
+            (which was opencode's situation until F1 added the field to
+            IncomingMessage). Empty-think poisoning causes the model to
+            emit `<|im_end|>` prematurely inside its own `<think>` block
+            on subsequent turns (vLLM/SGLang #131, MLC d75d64e Apr 2026). -#}
+        {%- if loop.index0 > ns.last_query_index and enable_thinking is defined and enable_thinking is true and reasoning_content %}
             {{- '<|im_start|>' + message.role + '\n<think>\n' + reasoning_content + '\n</think>\n\n' + content }}
         {%- else %}
             {{- '<|im_start|>' + message.role + '\n' + content }}

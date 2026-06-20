@@ -216,6 +216,14 @@ impl ModelConfig {
     /// FP32 lm_head path (gated by `ATLAS_GEMMA4_FP32_LMHEAD=1`) can
     /// then act on full-precision weights without the NVFP4 floor.
     pub fn skip_lm_head_quantization(&self) -> bool {
+        // CLI override (`--lm-head-dtype`, set into `lm_head_bf16_override` at serve
+        // time) wins. `bf16` keeps the LM head in BF16 instead of runtime-quantizing it
+        // to NVFP4 — the 4-bit floor on the final vocab projection is a prime suspect for
+        // argmax flips in long structured generation; vLLM keeps lm_head at checkpoint
+        // precision. (Replaces the former ATLAS_LMHEAD_BF16 env var; PCND: explicit arg.)
+        if let Some(force_bf16) = self.lm_head_bf16_override {
+            return force_bf16;
+        }
         if self.kv_lora_rank > 0 {
             return true;
         }
@@ -224,44 +232,6 @@ impl ModelConfig {
             return std::env::var("ATLAS_GEMMA4_LMHEAD_NVFP4").ok().as_deref() != Some("1");
         }
         false
-    }
-
-    /// Whether to use FP32 residual stream (hidden_states/residual buffers).
-    /// Enabled for GDN models (Qwen3.5) where BF16 truncation across 48 layers
-    /// FP32 residual prevents BF16 truncation across 48 layers but costs 2x
-    /// memory bandwidth (135 → 63 tok/s on GB10's LPDDR5X).
-    /// Controlled by ATLAS_FP32_RESIDUAL env var (default: from HARDWARE.toml).
-    /// On bandwidth-limited systems (GB10), BF16 gives 2x throughput.
-    /// On HBM systems (B200, H100), FP32 is free and improves long-context quality.
-    pub fn use_fp32_residual(&self) -> bool {
-        // Gemma-4 dense variants (31B) opt into FP32 residual to survive
-        // cumulative layer_scalar underflow. Gemma-4 MoE variants (26B)
-        // have a dual-FFN decode branch (`qwen3_attention/trait_impl.rs`
-        // line 144-180) where `moe_ffn.forward(hidden, …)` reads the raw
-        // hidden pointer — that path is not FP32-aware. Enabling FP32
-        // residual on 26B makes the MoE path read FP32 bytes as BF16,
-        // corrupting the whole decode ("<unused6226>" collapse).
-        //
-        // Gate on "has MoE experts": dense Gemma-4 (31B) gets FP32; MoE
-        // Gemma-4 (26B) keeps BF16. Env var `ATLAS_GEMMA4_FP32=0`
-        // disables even for 31B for A/B testing.
-        if self.model_type == "gemma4" {
-            if self.num_experts > 0 {
-                return false; // Gemma-4 MoE path not FP32-safe
-            }
-            return std::env::var("ATLAS_GEMMA4_FP32").ok().as_deref() != Some("0");
-        }
-        if self.linear_num_key_heads == 0 {
-            return false; // Other non-GDN models have BF16 residual only
-        }
-        // Check env override first, then fall back to build-time default
-        match std::env::var("ATLAS_FP32_RESIDUAL") {
-            Ok(v) => v == "1" || v.eq_ignore_ascii_case("true"),
-            Err(_) => {
-                // Build-time default from HARDWARE.toml (baked via env at compile)
-                option_env!("ATLAS_HW_FP32_RESIDUAL").map_or(false, |v| v == "1" || v == "true")
-            }
-        }
     }
 
     /// Mamba-2 d_inner = mamba_num_heads * mamba_head_dim.

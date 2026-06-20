@@ -24,7 +24,6 @@
 
 mod loop_detect;
 mod msg_entry;
-pub(super) mod repair_json;
 mod sampling_setup;
 mod template;
 mod thinking;
@@ -92,30 +91,31 @@ pub(crate) async fn chat_completions_inner(
     if let Err(resp) = super::chat_phases::validate_input(&req) {
         return resp;
     }
-    let f23_metrics = super::chat_phases::apply_failure_guards(&mut req);
-    let _ = f23_metrics; // kept available for downstream consumers
 
     // Tool-active gating.
     let tools_active = state.tool_call_parser.is_some()
         && req.tools.as_ref().is_some_and(|t| !t.is_empty())
         && !req.tool_choice.as_ref().is_some_and(|tc| tc.is_none());
 
-    // Inject parser-specific behavioral system prompt when tools are active.
-    // Each ToolCallParser defines guardrails (e.g. "emit <tool_call> immediately,
-    // do not narrate") that the Jinja chat template alone does not enforce.
-    if tools_active && let Some(ref parser) = state.tool_call_parser {
-        let default_choice = crate::tool_parser::ToolChoice::Mode("auto".to_string());
-        let tool_choice = req.tool_choice.as_ref().unwrap_or(&default_choice);
-        let tool_prompt = parser.system_prompt(req.tools.as_deref().unwrap_or(&[]), tool_choice);
-        if let Some(first) = req.messages.first_mut().filter(|m| m.role == "system") {
-            first.content.text = format!("{}\n\n{}", tool_prompt, first.content.text);
-        } else {
-            req.messages.insert(
-                0,
-                crate::openai::IncomingMessage::synthetic_system(tool_prompt),
-            );
-        }
-    }
+    // Tool-parser behavioral system prompt REMOVED again (2026-05-25 PM).
+    //
+    // Re-injecting the qwen3_coder `system_prompt` (with its
+    // `<parameter=content>[package]\nname = "x"</parameter>` example
+    // and `For 'Write'/'Edit' tools specifically: ...` guidance) was a
+    // mid-day attempt to give the model better multi-line content
+    // hints. Live opencode v39 session showed the opposite effect:
+    // the model emitted LITERAL `<tool_call><bash><command>` XML as
+    // CONTENT (with HTML-entity escaping like `&amp;`) because TWO
+    // tool-format guidances were competing — the chat template's
+    // `tools` argument AND my injected prompt — combined with PR 73's
+    // `qwen3_xml` parser. The model got confused which format to use
+    // and emitted free-form XML that the parser couldn't recognise.
+    //
+    // Per user's recall: the "MUCH better" state had `thinking_in_tools=true`
+    // and the chat template alone (no injection). Reverting matches
+    // that state. PR 73's qwen3_xml + native FP8 SSM + streaming
+    // byte-exact + gate-BF16 + thinking_in_tools=true is the live
+    // combination.
 
     tracing::info!(
         "Request: model={}, messages={}, tools={}, tools_active={}, tool_choice={:?}, stream={}, temp={:?}, max_tokens={}, freq_pen={:?}, rep_pen={:?}",
@@ -133,11 +133,10 @@ pub(crate) async fn chat_completions_inner(
 
     // ── Phase 1: build MsgEntry vec + image preprocess + cwd ────
     let msg_entry::BuildOut {
-        mut messages,
+        messages,
         cwd_hint,
         image_pixels,
         image_pad_counts,
-        consecutive_tool_errors,
     } = match msg_entry::build_msg_entries(&state, &req, tools_active) {
         Ok(o) => o,
         Err(resp) => return resp,
@@ -158,34 +157,11 @@ pub(crate) async fn chat_completions_inner(
     // ── Phase 2: thinking resolution (pre-template) ─────────────
     let (enable_thinking, thinking_budget) = thinking::resolve_thinking(&state, &req, tools_active);
 
-    // ── Phase 3: stale-failure observation masking ──────────────
-    {
-        let bodies: Vec<(&str, &str)> = messages
-            .iter()
-            .map(|m| (m.role.as_str(), m.content.as_str()))
-            .collect();
-        let mask = crate::observation_mask::compute_masking(&bodies, 2);
-        let mut masked_count = 0usize;
-        for (i, replacement) in mask.into_iter().enumerate() {
-            if let Some(new_body) = replacement {
-                messages[i].content = new_body;
-                masked_count += 1;
-            }
-        }
-        if masked_count > 0 {
-            tracing::info!(
-                masked_count,
-                "observation_mask: elided {masked_count} stale tool-failure bodies"
-            );
-            crate::metrics::OBSERVATION_MASK_ELIDED_BODIES.inc_by(masked_count as u64);
-        }
-    }
-
     // ── Phase 4: generic loop / spinning detection + task pin ───
     let loop_detect::LoopDetectOut {
         suppress_tool_call,
         tool_call_repeat_count,
-    } = loop_detect::check_loops(&req, &mut messages, consecutive_tool_errors, tools_active);
+    } = loop_detect::check_loops(&req, tools_active);
 
     // ── Phase 5: render Jinja template + image-pad expansion ────
     let template::TemplateOut {

@@ -58,6 +58,20 @@ impl Qwen3AttentionLayer {
         let h = ctx.config.hidden_size;
         let eps = ctx.config.rms_norm_eps as f32;
         let n = num_tokens as u32;
+        let bf16 = 2usize;
+
+        // ATLAS_OP_DUMP hook: pre-input-norm hidden state (input to layer).
+        if num_tokens > 0 {
+            super::super::op_dump::dump_bf16(
+                ctx.gpu,
+                hidden,
+                (num_tokens - 1) * h * bf16,
+                h,
+                self.attn_layer_idx,
+                "input_norm_in",
+                stream,
+            )?;
+        }
 
         // ── 1. RMS norm + residual for N tokens ──
         let normed = ctx.buffers.norm_output();
@@ -74,6 +88,18 @@ impl Qwen3AttentionLayer {
             stream,
         )
         .map_err(|e| anyhow::anyhow!("rms_norm_residual failed: {e}"))?;
+        // ATLAS_OP_DUMP hook: post-input-norm (input to Q/K/V GEMM).
+        if num_tokens > 0 {
+            super::super::op_dump::dump_bf16(
+                ctx.gpu,
+                normed,
+                (num_tokens - 1) * h * bf16,
+                h,
+                self.attn_layer_idx,
+                "input_norm_out",
+                stream,
+            )?;
+        }
 
         // DIAGNOSTIC: dump norms for L0 and L35 of Mistral
         let is_mistral_diag = ctx.profile
@@ -130,6 +156,7 @@ impl Qwen3AttentionLayer {
                 disk_block_ids,
                 disk_last_offloaded_per_layer,
                 batched_meta,
+                kv_write_start,
                 ctx,
                 stream,
             )?
@@ -270,6 +297,18 @@ impl Qwen3AttentionLayer {
             stream,
         )
         .map_err(|e| anyhow::anyhow!("residual_add_rms_norm failed: n={n} h={h}: {e}"))?;
+        // ATLAS_OP_DUMP hook: post-attn-norm output = input to MoE FFN.
+        if num_tokens > 0 {
+            super::super::op_dump::dump_bf16(
+                ctx.gpu,
+                ctx.buffers.norm_output(),
+                (num_tokens - 1) * h * bf16,
+                h,
+                self.attn_layer_idx,
+                "post_attn_norm_out",
+                stream,
+            )?;
+        }
 
         // DIAGNOSTIC: sync trap after residual+norm to isolate pre-FFN errors
         ctx.gpu.synchronize(stream).map_err(|e| {
@@ -297,6 +336,21 @@ impl Qwen3AttentionLayer {
         })?;
 
         let dense_out = ctx.buffers.moe_output();
+        // ATLAS_OP_DUMP hook: MoE output (sum of all weighted expert outputs).
+        // For Qwen3.6-A3B at full-attention layers, dense_out holds the
+        // post-FFN delta to add to the residual. This is the "MoE block
+        // output" comparable against HF `mlp.forward` last-token output.
+        if num_tokens > 0 {
+            super::super::op_dump::dump_bf16(
+                ctx.gpu,
+                dense_out,
+                (num_tokens - 1) * h * bf16,
+                h,
+                self.attn_layer_idx,
+                "moe_out",
+                stream,
+            )?;
+        }
 
         // DIAGNOSTIC: MoE output for L0 and L35
         if is_mistral_diag {
@@ -413,14 +467,7 @@ impl Qwen3AttentionLayer {
 
         // Gemma-4: hidden *= layer_scalar at end of layer (applied to ALL tokens)
         if let Some(scalar) = self.layer_scalar {
-            self.apply_layer_scalar(
-                ctx.gpu,
-                hidden,
-                num_tokens * h,
-                scalar,
-                stream,
-                ctx.config.use_fp32_residual(),
-            )?;
+            self.apply_layer_scalar(ctx.gpu, hidden, num_tokens * h, scalar, stream)?;
         }
 
         // DIAGNOSTIC: residual after L0 and L35

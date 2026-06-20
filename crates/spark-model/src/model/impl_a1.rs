@@ -34,6 +34,15 @@ impl TransformerModel {
         final_norm: DenseWeight,
         lm_head_weight: DenseWeight,
         lm_head_nvfp4: Option<QuantizedWeight>,
+        // Runtime FP8 LM head (`--lm-head-dtype fp8`). Mutually exclusive with
+        // `lm_head_nvfp4`; `None` for the NVFP4/BF16/default paths (byte-identical).
+        lm_head_fp8: Option<crate::weight_map::Fp8DenseWeight>,
+        // Separate NVFP4 head used ONLY by the MTP draft proposer when the
+        // main head is kept BF16 (`skip_lm_head_quantization()`). `None` for
+        // the NVFP4-main default, in which case the proposer falls back to
+        // `lm_head_nvfp4`. Drafts are always verified by the main BF16 head,
+        // so this approximate head never affects an accepted token.
+        mtp_lm_head_nvfp4: Option<QuantizedWeight>,
         layers: Vec<Box<dyn TransformerLayer>>,
         buffers: BufferArena,
         kv_cache: PagedKvCache,
@@ -52,46 +61,41 @@ impl TransformerModel {
         ssm_cache_slots: usize,
         ssm_checkpoint_interval: usize,
     ) -> Result<Self> {
-        let fp32_residual = config.use_fp32_residual();
-        let rms_norm_kernel = if fp32_residual {
-            gpu.kernel("norm", "rms_norm_f32")
-                .or_else(|_| gpu.kernel("norm", "rms_norm"))?
-        } else {
-            gpu.kernel("norm", "rms_norm")?
-        };
-        let bf16_to_f32_kernel = if fp32_residual {
-            gpu.kernel("residual_add", "bf16_to_f32")
-                .unwrap_or(KernelHandle(0))
-        } else {
-            KernelHandle(0) // BF16 models don't need conversion
-        };
+        let rms_norm_kernel = gpu.kernel("norm", "rms_norm")?;
         let dense_gemv_kernel = gpu.kernel("gemv", "dense_gemv_bf16")?;
-        // FP32-output dense GEMV — only loaded when LM head needs FP32 logits.
-        // For models that don't use FP32 residual, this stays KernelHandle(0)
-        // and the BF16 path is taken. The kernel lives in the same `gemv`
-        // module as `dense_gemv_bf16` so this lookup is cheap.
-        let dense_gemv_fp32out_kernel = if fp32_residual {
-            gpu.kernel("gemv", "dense_gemv_bf16_fp32out")
-                .unwrap_or(KernelHandle(0))
-        } else {
-            KernelHandle(0)
-        };
+        // FP32-output dense GEMV — the FP32 logits path required an FP32
+        // residual stream, which no longer exists, so this stays
+        // KernelHandle(0) and the BF16 path is always taken.
+        let dense_gemv_fp32out_kernel = KernelHandle(0);
         let w4a16_gemv_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv")?;
         let w4a16_gemv_logits_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_logits")?;
         let w4a16_gemm_kernel = gpu.kernel("w4a16", "w4a16_gemm")?;
         let w4a16_gemv_batch2_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?;
+        // FP8 E4M3 LUT GEMV for the `--lm-head-dtype fp8` head. Loaded
+        // unconditionally (a handle is cheap); only invoked when `lm_head_fp8`
+        // is set, so the NVFP4/BF16 paths never touch it.
+        let dense_gemv_fp8w_kernel = gpu.kernel("gemv_fp8w", "dense_gemv_fp8w")?;
+        // FP8 dual-GEMV (batch=2): present on images that ship the kernel;
+        // try_kernel keeps the handle 0 on older sets so dispatch falls back
+        // to the per-token loop.
+        let dense_gemv_fp8w_batch2_kernel = crate::layers::try_kernel(
+            gpu.as_ref(),
+            "dense_gemv_fp8w_batch2",
+            "dense_gemv_fp8w_batch2",
+        );
         let dense_gemm_kernel = gpu.kernel("gemm", "dense_gemm_bf16")?;
         let argmax_kernel = gpu.kernel("argmax", "argmax_bf16")?;
         let argmax_logits_kernel = gpu.kernel("argmax", "argmax_fp32")?;
-        let batched_embed_kernel = if fp32_residual {
-            gpu.kernel("embed_from_argmax", "batched_embed_f32")
-                .or_else(|_| gpu.kernel("embed_from_argmax", "batched_embed"))?
-        } else {
-            gpu.kernel("embed_from_argmax", "batched_embed")?
-        };
+        let batched_embed_kernel = gpu.kernel("embed_from_argmax", "batched_embed")?;
         let fill_slots_kernel = gpu.kernel("metadata_fill", "fill_slots_from_block_table")?;
         let profile = std::env::var("ATLAS_PROFILE").is_ok();
         let profile_first = std::env::var("ATLAS_PROFILE_FIRST").is_ok();
+
+        // Pin the split-K attention split count to the configured max batch so
+        // a sequence's attention reduction is invariant to how many other
+        // sequences are co-batched (concurrent-decode determinism — see
+        // tasks/determinism_investigation.md).
+        crate::layers::qwen3_attention::set_max_decode_seqs(max_batch_size as u32);
 
         tracing::info!(
             "TransformerModel: {} layers, vocab={}, hidden={}{}{}",
@@ -123,31 +127,37 @@ impl TransformerModel {
         // or lm_head quantization — its K=γ verify path checkpoints SSM state
         // for partial-accept rollback. Force `has_mtp` on whenever DFlash is
         // active so the checkpoint pools exist.
+        // The MTP proposer needs an NVFP4 vocab head for drafting: either the
+        // main head (NVFP4 default) or the draft-only head built when the main
+        // head is BF16. `draft_lm_head_nvfp4` resolves to whichever is present.
+        let draft_lm_head_nvfp4 = mtp_lm_head_nvfp4.or(lm_head_nvfp4);
         let has_mtp = self_speculative
-            || (use_speculative && !mtp_weights.is_empty() && lm_head_nvfp4.is_some())
+            || (use_speculative && !mtp_weights.is_empty() && draft_lm_head_nvfp4.is_some())
             || dflash_kgamma > 0;
         let num_intermediates = if has_mtp {
             (num_drafts + 1).max(dflash_kgamma)
         } else {
             0
         };
-        let ssm_pool = SsmStatePool::new(
+        let ssm_pool = std::sync::Arc::new(SsmStatePool::new(
             &config,
             max_batch_size,
             has_mtp,
             num_intermediates,
             gpu.as_ref(),
-        )?;
+        )?);
 
         // SSM snapshot pool: Marconi prefix-cache slots + Phase-C
         // decode-rollback ring. The decode-rollback region is only sized
         // for SSM models — `num_ssm_layers == 0` makes both regions
-        // collapse to empty. Per sequence the watchdog needs
-        // `ROLLBACK_RESTEER_CAP + 1` snapshots (one per allowed rollback,
-        // plus the current boundary); the region is sized for every
+        // collapse to empty. The ring retains DECODE_ROLLBACK_RING_SLOTS
+        // boundary snapshots per sequence (DECOUPLED from ROLLBACK_RESTEER_CAP:
+        // the cap bounds re-steer attempts, the ring must retain enough
+        // boundaries that a clean PRE-loop one survives — `CAP+1=3` was too
+        // small and forced NoSsmSnapshot declines). Sized for every
         // active-sequence pool slot (`max_batch_size`).
         let decode_ring_slots = if ssm_pool.num_ssm_layers > 0 {
-            (atlas_kernels::ROLLBACK_RESTEER_CAP as usize) + 1
+            atlas_kernels::DECODE_ROLLBACK_RING_SLOTS
         } else {
             0
         };
@@ -158,6 +168,10 @@ impl TransformerModel {
             ssm_pool.num_ssm_layers,
             decode_ring_slots,
             max_batch_size,
+            // Last-token hidden snapshot: post-final-norm `norm_output` is
+            // BF16 (`hidden_size` elements). Used to emit exact-hit logits
+            // without re-running the last token through the SSM layers.
+            config.hidden_size * 2,
             gpu.as_ref(),
         )?;
         if ssm_checkpoint_interval > 0 && ssm_cache_slots > 0 {
@@ -187,7 +201,7 @@ impl TransformerModel {
             use_speculative,
             mtp_weights,
             embed_tokens,
-            lm_head_nvfp4,
+            draft_lm_head_nvfp4,
             &config,
             gpu.as_ref(),
             mtp_quant,
@@ -226,6 +240,9 @@ impl TransformerModel {
         // Secondary stream + event for pipelining checkpoint D2D with MTP propose.
         let secondary_stream = gpu.create_stream()?;
         let secondary_event = gpu.create_event()?;
+        // Event ordering SSM-snapshot saves (default stream) before a warm
+        // Marconi restore (prefill stream). See `snapshot_event` doc in types.rs.
+        let snapshot_event = gpu.create_event()?;
 
         // EP: register moe_output buffer with NCCL and provide bf16_add kernel.
         if let Some(ref comm) = comm
@@ -277,15 +294,9 @@ impl TransformerModel {
         // FP32 softcap variant — only loaded when both softcap and FP32
         // residual are active (i.e. Gemma-4 dense). Other models keep the
         // BF16 softcap (or no softcap at all).
-        let logit_softcap_fp32_kernel = if config.final_logit_softcapping > 0.0 && fp32_residual {
-            gpu.kernel("logit_softcap", "logit_softcap_fp32")
-                .unwrap_or_else(|e| {
-                    tracing::warn!("logit_softcap_fp32 kernel not found: {e}");
-                    KernelHandle(0)
-                })
-        } else {
-            KernelHandle(0)
-        };
+        // The FP32 logit softcap variant required an FP32 residual stream,
+        // which no longer exists, so the BF16 softcap path is always taken.
+        let logit_softcap_fp32_kernel = KernelHandle(0);
         // FP32 logits gate. The LM head produces FP32 (rather than BF16)
         // logits when the residual stream is FP32 AND the LM head is a
         // dense BF16 weight (no NVFP4 quant). NVFP4 LM heads keep their
@@ -319,12 +330,10 @@ impl TransformerModel {
         // bisection's *qualitative* conclusion: FP32 lm_head + softcap
         // doesn't materially fix Gemma-4's structural NVFP4 attention
         // drift on greedy code generation. Fix is upstream of lm_head.
-        let env_override = std::env::var("ATLAS_GEMMA4_FP32_LMHEAD").ok();
-        let fp32_requested = matches!(env_override.as_deref(), Some("1") | Some("true"));
-        let use_fp32_logits = fp32_requested
-            && fp32_residual
-            && ((lm_head_nvfp4.is_none() && dense_gemv_fp32out_kernel.0 != 0)
-                || (lm_head_nvfp4.is_some() && w4a16_gemv_logits_kernel.0 != 0));
+        // FP32 logits (ATLAS_GEMMA4_FP32_LMHEAD) required an FP32 residual
+        // stream as a precondition. With the residual stream now always BF16,
+        // the FP32 logits path can never activate, so it is permanently off.
+        let use_fp32_logits = false;
         // Dedicated FP32 logits scratch — only the single-token decode path
         // uses it. Prefill and batched-decode lm_head still write BF16 to the
         // shared `buffers.logits()`. Sized for one row of `vocab_size` FP32.
@@ -411,18 +420,20 @@ impl TransformerModel {
             final_norm,
             lm_head_weight,
             lm_head_nvfp4,
+            lm_head_fp8,
             layers,
             buffers,
             kv_cache: Mutex::new(kv_cache),
             gpu,
             rms_norm_kernel,
-            bf16_to_f32_kernel,
             dense_gemv_kernel,
             dense_gemv_fp32out_kernel,
             w4a16_gemv_kernel,
             w4a16_gemv_logits_kernel,
             w4a16_gemm_kernel,
             w4a16_gemv_batch2_kernel,
+            dense_gemv_fp8w_kernel,
+            dense_gemv_fp8w_batch2_kernel,
             dense_gemm_kernel,
             argmax_kernel,
             argmax_logits_kernel,
@@ -438,7 +449,11 @@ impl TransformerModel {
             // naturally outside the captured region.
             suppress_graphs: std::sync::atomic::AtomicBool::new(
                 has_fp8_calibration
-                    || std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true"),
+                    || std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true")
+                    // PCND diagnostic: force eager decode (no CUDA-graph capture)
+                    // so ATLAS_DEBUG_SYNC_KERNELS can synchronize per launch and
+                    // surface async faults at the culprit kernel. Default-off.
+                    || std::env::var("ATLAS_DEBUG_NO_GRAPH").as_deref() == Ok("1"),
             ),
             ssm_pool,
             ssm_snapshots,
@@ -457,6 +472,7 @@ impl TransformerModel {
             prefix_cache,
             secondary_stream,
             secondary_event,
+            snapshot_event,
             comm,
             ep_cmd_buf,
             ep_protocol_v2: matches!(std::env::var("ATLAS_EP_PROTOCOL").as_deref(), Ok("v2")),

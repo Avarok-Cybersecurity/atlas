@@ -6,7 +6,7 @@ license.workspace = true
 description = "Atlas Spark — pure Rust LLM inference server"
 
 [features]
-default = ["cuda"]
+default = ["cuda", "nccl"]
 # Forwards through to atlas-core/spark-runtime/spark-model so the default
 # Linux build still activates the cuda backend after atlas-core became
 # default-features = false at the workspace level.
@@ -17,6 +17,11 @@ cuda = [
     "spark-storage/cuda",
     "spark-comm/cuda",
 ]
+# `nccl` adds the NCCL multi-GPU collective backend (EP/TP) on top of
+# `cuda`. NVIDIA builds get it via `default`; SCALE/AMD (gfx1151)
+# single-GPU builds use `--no-default-features --features cuda` to skip
+# linking libnccl.
+nccl = ["cuda", "spark-comm/nccl"]
 metal = [
     "atlas-core/metal",
     "spark-runtime/metal",
@@ -53,7 +58,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 toml = "0.8"
-minijinja = { version = "2", features = ["builtins", "adjacent_loop_items", "json"] }
+# `preserve_order`: minijinja stores `Value` maps as IndexMap (insertion
+# order) instead of BTreeMap (sorted). Without this, `Value::from_serialize`
+# re-sorts tool-schema keys before the custom `tojson` filter renders them,
+# defeating the transformers key-order match in the `<tools>` block.
+minijinja = { version = "2", features = ["builtins", "adjacent_loop_items", "json", "preserve_order"] }
 # Pure-Rust grammar-constrained decoding (W7: was the C++-backed
 # `xgrammar-rs = "0.1"` patched to `vendor/xgrammar-rs`; now the
 # from-scratch Rust port at `crates/xgrammar`). The crate's lib is

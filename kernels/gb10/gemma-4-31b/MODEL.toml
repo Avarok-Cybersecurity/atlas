@@ -45,39 +45,49 @@ mtp_layers = 0
 effective_context = 16384
 
 # Conservative sampling defaults. Gemma-4 has no official recommendations yet.
+# 2026-05-24 empirical band-aid. Google's temp=1.0 across-the-board
+# recipe risked max_tokens wandering on agentic clients (lesson from
+# Qwen3.6). Lowered to temp=0.6 thinking/coding, 0.7 non-thinking,
+# 0.6 tools. Kept Google's top_k=64. rep_pen=1.1 + dry=0.5 added.
 [sampling.thinking_text]
 temperature = 0.6
 top_p = 0.95
-top_k = 20
+top_k = 64
 presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; Google ships penalty-free (temp=1.0/top_k=64) — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [sampling.thinking_coding]
 temperature = 0.6
 top_p = 0.95
-top_k = 20
+top_k = 64
 presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; Google ships penalty-free (temp=1.0/top_k=64) — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [sampling.non_thinking]
 temperature = 0.7
 top_p = 0.95
-top_k = 20
+top_k = 64
 presence_penalty = 0.0
-# repetition_penalty: 1.1 lightly penalizes loops at temp=0.3 (Creative haiku
-# test); higher values degrade output quality. 1.0 = off.
-repetition_penalty = 1.1
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; Google ships penalty-free (temp=1.0/top_k=64) — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [sampling.tools]
 temperature = 0.6
 top_p = 0.95
-top_k = 20
+top_k = 64
 presence_penalty = 0.0
 frequency_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; Google ships penalty-free (temp=1.0/top_k=64) — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [behavior]
 # Gemma-4 uses <|channel>thought\n...<channel|> for thinking, which is
 # structurally separate from tool calls. Enable thinking with tools.
 thinking_in_tools = true
-max_thinking_budget = 512
+# 2026-05-23 sweep: 512 → 2048 (project-wide reasoning headroom bump).
+max_thinking_budget = 2048
 # BF16 KV cache — Gemma-4's large final norm weights (mean=29, max=588)
 # exceed FP8 E4M3 range (±448), causing attention corruption with FP8/NVFP4 KV.
 default_kv_dtype = "bf16"

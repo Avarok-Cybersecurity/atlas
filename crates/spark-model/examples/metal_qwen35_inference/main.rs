@@ -25,8 +25,7 @@
 use anyhow::{Context, Result, bail};
 use safetensors::SafeTensors;
 use spark_model::forward::qwen3_5::{
-    self, FullAttentionScratch, LayerKvCache, LinearAttentionScratch, LinearAttentionState,
-    Qwen35ForwardConfig, Qwen35Kernels,
+    self, LayerKvCache, LinearAttentionState, Qwen35ForwardConfig, Qwen35Kernels,
 };
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelArg};
 use spark_runtime::metal_backend::MetalGpuBackend;
@@ -34,71 +33,18 @@ use spark_runtime::weights::mlx_int8::MlxInt8Weight;
 use std::time::Instant;
 use tokenizers::Tokenizer;
 
+mod alloc;
+mod eval_io;
 mod full_attention;
 mod linear_attention;
 
+use alloc::{
+    alloc_full_attention_scratch, alloc_linear_attention_scratch, alloc_linear_attention_state,
+};
 use full_attention::FullAttentionLayer;
 use linear_attention::LinearAttentionLayer;
 
-const CFG: Qwen35ForwardConfig = Qwen35ForwardConfig::qwen3_5_4b_mlx_int8();
-
-fn alloc_full_attention_scratch(backend: &MetalGpuBackend) -> Result<FullAttentionScratch> {
-    let alloc_bf16 = |n: u32| -> Result<DevicePtr> { Ok(backend.alloc(n as usize * 2)?) };
-    Ok(FullAttentionScratch {
-        x_norm: alloc_bf16(CFG.hidden)?,
-        q_full: alloc_bf16(CFG.q_total())?,
-        q_split: alloc_bf16(CFG.q_only())?,
-        gate_split: alloc_bf16(CFG.q_only())?,
-        k: alloc_bf16(CFG.kv_dim())?,
-        v: alloc_bf16(CFG.kv_dim())?,
-        q_norm_out: alloc_bf16(CFG.q_only())?,
-        k_norm_out: alloc_bf16(CFG.kv_dim())?,
-        attn_out: alloc_bf16(CFG.q_only())?,
-        gated_attn: alloc_bf16(CFG.q_only())?,
-        o: alloc_bf16(CFG.hidden)?,
-        x_resid: alloc_bf16(CFG.hidden)?,
-        x_norm2: alloc_bf16(CFG.hidden)?,
-        gate_act: alloc_bf16(CFG.intermediate)?,
-        up_act: alloc_bf16(CFG.intermediate)?,
-        x_out: alloc_bf16(CFG.hidden)?,
-    })
-}
-
-fn alloc_linear_attention_scratch(backend: &MetalGpuBackend) -> Result<LinearAttentionScratch> {
-    let alloc_bf16 = |n: u32| -> Result<DevicePtr> { Ok(backend.alloc(n as usize * 2)?) };
-    let alloc_f32 = |n: u32| -> Result<DevicePtr> { Ok(backend.alloc(n as usize * 4)?) };
-    Ok(LinearAttentionScratch {
-        x_norm: alloc_bf16(CFG.hidden)?,
-        dt_raw: alloc_bf16(CFG.num_state_heads())?,
-        b_raw: alloc_bf16(CFG.num_state_heads())?,
-        qkv: alloc_bf16(CFG.qkv_total_lin())?,
-        qkv_smooth: alloc_bf16(CFG.qkv_total_lin())?,
-        z: alloc_bf16(CFG.z_dim_lin())?,
-        gate: alloc_f32(CFG.num_state_heads())?,
-        beta: alloc_f32(CFG.num_state_heads())?,
-        y: alloc_bf16(CFG.z_dim_lin())?,
-        y_norm: alloc_bf16(CFG.z_dim_lin())?,
-        out: alloc_bf16(CFG.hidden)?,
-        x_resid: alloc_bf16(CFG.hidden)?,
-        x_norm2: alloc_bf16(CFG.hidden)?,
-        gate_act: alloc_bf16(CFG.intermediate)?,
-        up_act: alloc_bf16(CFG.intermediate)?,
-        x_final: alloc_bf16(CFG.hidden)?,
-    })
-}
-
-fn alloc_linear_attention_state(backend: &MetalGpuBackend) -> Result<LinearAttentionState> {
-    let conv_state_bytes = (CFG.qkv_total_lin() * CFG.conv_kernel_size) as usize * 4;
-    let gdn_state_floats = (CFG.num_v_heads_lin * CFG.k_head_dim_lin * CFG.v_head_dim_lin) as usize;
-    let conv1d_state = backend.alloc(conv_state_bytes)?;
-    let gdn_state = backend.alloc(gdn_state_floats * 4)?;
-    backend.memset(conv1d_state, 0, conv_state_bytes)?;
-    backend.memset(gdn_state, 0, gdn_state_floats * 4)?;
-    Ok(LinearAttentionState {
-        conv1d_state,
-        gdn_state,
-    })
-}
+pub const CFG: Qwen35ForwardConfig = Qwen35ForwardConfig::qwen3_5_4b_mlx_int8();
 
 fn main() -> Result<()> {
     let prompt =
@@ -222,14 +168,14 @@ fn main() -> Result<()> {
     let max_seq_len = prompt_len + n_decode_budget + 4;
     let scratch = alloc_full_attention_scratch(&backend)?;
     let lin_scratch = alloc_linear_attention_scratch(&backend)?;
+    // ATLAS_KV_DTYPE={turbo8,turbo4} switches the full-attention KV
+    // caches to a TurboQuant format (WHT-rotated; 2.13× / 3.56× smaller
+    // than bf16). Default stays raw bf16.
+    let kv_dtype: qwen3_5::MetalKvDtype = std::env::var("ATLAS_KV_DTYPE")
+        .unwrap_or_else(|_| "bf16".into())
+        .parse()?;
     let kv_caches: Vec<LayerKvCache> = (0..full_attn_count)
-        .map(|_| -> Result<LayerKvCache> {
-            Ok(LayerKvCache {
-                k: backend.alloc((max_seq_len * CFG.kv_dim()) as usize * 2)?,
-                v: backend.alloc((max_seq_len * CFG.kv_dim()) as usize * 2)?,
-                capacity: max_seq_len,
-            })
-        })
+        .map(|_| LayerKvCache::alloc(&backend, kv_dtype, max_seq_len, CFG.kv_dim()))
         .collect::<Result<_>>()?;
     let lin_states: Vec<LinearAttentionState> = (0..lin_attn_count)
         .map(|_| alloc_linear_attention_state(&backend))
@@ -362,6 +308,7 @@ fn main() -> Result<()> {
     let x_final = backend.alloc(CFG.hidden as usize * 2)?;
     let logits = backend.alloc(CFG.vocab as usize * 2)?;
     let result_buf = backend.alloc(4)?;
+    let logits_out = eval_io::logits_writer();
     let sample_next = |x_in: DevicePtr| -> Result<u32> {
         backend.launch_typed(
             kernels.rms,
@@ -391,6 +338,12 @@ fn main() -> Result<()> {
             ],
         )?;
         backend.synchronize(stream)?;
+        if let Some(w) = &logits_out {
+            use std::io::Write;
+            let mut raw = vec![0u8; CFG.vocab as usize * 2];
+            backend.copy_d2h(logits, &mut raw)?;
+            w.borrow_mut().write_all(&raw)?;
+        }
         let mut buf = [0u8; 4];
         backend.copy_d2h(result_buf, &mut buf)?;
         Ok(u32::from_le_bytes(buf))
@@ -437,7 +390,15 @@ fn main() -> Result<()> {
     let mut current_token = next_token_id;
     let mut cur_pos = prompt_len;
 
-    for _ in 0..n_decode {
+    let forced_tokens = eval_io::forced_tokens();
+    if let Some(f) = &forced_tokens {
+        println!("  (teacher forcing {} tokens)", f.len());
+        if let Some(&t0) = f.first() {
+            current_token = t0;
+        }
+    }
+
+    for step in 0..n_decode {
         if cur_pos >= max_seq_len {
             println!("  (reached pre-allocated KV capacity {max_seq_len}, stopping)");
             break;
@@ -446,16 +407,29 @@ fn main() -> Result<()> {
         backend.copy_h2d(&cur_pos.to_le_bytes(), positions_ptr)?;
         run_layer_chain(cur_pos)?;
 
-        current_token = sample_next(x_buf)?;
-        generated_ids.push(current_token);
+        let sampled = sample_next(x_buf)?;
+        generated_ids.push(sampled);
         cur_pos += 1;
 
+        current_token = match &forced_tokens {
+            Some(f) => match f.get(step + 1) {
+                Some(&t) => t,
+                None => {
+                    println!("  (teacher-forcing list exhausted)");
+                    break;
+                }
+            },
+            None => sampled,
+        };
+
         // <|im_end|> per tokenizer_config.json — bail to avoid runaway.
-        if current_token == 248044 {
+        // Teacher-forced runs ignore EOS so every run covers the full list.
+        if forced_tokens.is_none() && current_token == 248044 {
             println!("  (hit <|im_end|>)");
             break;
         }
     }
+    eval_io::maybe_dump_tokens(&generated_ids)?;
     let dec_ms = t_dec.elapsed().as_secs_f64() * 1000.0;
 
     let full_text = tokenizer

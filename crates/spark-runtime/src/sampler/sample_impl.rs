@@ -4,7 +4,7 @@
 // implementation). Split out of `sampler.rs` to keep the parent file
 // under the 500-line cap. The parent re-exports these via `pub use`.
 
-use super::{SamplingParams, apply_dry_penalty, apply_lz_penalty, read_f32, record_entropy};
+use super::{SamplingParams, apply_penalties_and_bias, read_f32, record_entropy};
 
 pub fn sample_with_params_history(
     data: &[u8],
@@ -42,78 +42,12 @@ pub fn sample_with_params_seeded(
     // is the outlier here.
     let mut raw_logits: Vec<f32> = (0..n).map(|i| read_f32(data, i)).collect();
 
-    // ── 0. Windowed repetition penalty: penalize recently seen tokens ──
-    // Window=0 uses full history; window>0 uses only the last N tokens.
-    // Skip when rep_penalty <= 0.0 — the divide at the next branch would
-    // produce inf for positive logits and 0 for negative, poisoning the
-    // distribution. (Caller intent for 0.0 is unclear; treat as no-op.)
-    let rep_penalty = params.repetition_penalty;
-    if rep_penalty != 1.0 && rep_penalty > 0.0 && !token_history.is_empty() {
-        let window = params.repetition_penalty_window as usize;
-        let effective = if window > 0 && window < token_history.len() {
-            &token_history[token_history.len() - window..]
-        } else {
-            token_history
-        };
-        for &tid in effective {
-            if (tid as usize) < n {
-                let logit = &mut raw_logits[tid as usize];
-                if *logit > 0.0 {
-                    *logit /= rep_penalty;
-                } else {
-                    *logit *= rep_penalty;
-                }
-            }
-        }
-    }
-
-    // ── 0b. OpenAI-style additive penalties (presence + frequency) ──
-    // Presence: z'ⱼ = zⱼ − β (flat, if token appeared at all)
-    // Frequency: z'ⱼ = zⱼ − α · cⱼ (proportional to occurrence count)
-    let freq_pen = params.frequency_penalty;
-    let pres_pen = params.presence_penalty;
-    if (freq_pen != 0.0 || pres_pen != 0.0) && !token_history.is_empty() {
-        let window = params.repetition_penalty_window as usize;
-        let effective = if window > 0 && window < token_history.len() {
-            &token_history[token_history.len() - window..]
-        } else {
-            token_history
-        };
-        // Count occurrences per token
-        let mut counts = std::collections::HashMap::<u32, u32>::new();
-        for &tid in effective {
-            *counts.entry(tid).or_insert(0) += 1;
-        }
-        for (&tid, &count) in &counts {
-            if (tid as usize) < n {
-                raw_logits[tid as usize] -= freq_pen * count as f32 + pres_pen;
-            }
-        }
-    }
-
-    // ── 0c. LZ penalty: penalize tokens that extend repeated n-gram patterns ──
-    if params.lz_penalty > 0.0 && token_history.len() >= 4 {
-        apply_lz_penalty(&mut raw_logits, token_history, params.lz_penalty);
-    }
-
-    // ── 0d. DRY penalty: exponential penalty for extending repeated sequences ──
-    if params.dry_multiplier > 0.0 && token_history.len() >= 3 {
-        apply_dry_penalty(
-            &mut raw_logits,
-            token_history,
-            params.dry_multiplier,
-            params.dry_base,
-            params.dry_allowed_length,
-            &params.dry_sequence_breakers,
-        );
-    }
-
-    // ── 0b. Logit bias: additive per-token bias ──
-    for &(tid, bias) in &params.logit_bias {
-        if (tid as usize) < n {
-            raw_logits[tid as usize] += bias;
-        }
-    }
+    // ── 0. Penalties (repetition / presence / frequency / LZ / DRY) +
+    //       logit bias, applied in place via the shared SSOT helper.
+    // Identical behavior to the previous inline block; the same helper is
+    // now also invoked on the MTP verify + bootstrap paths so all three
+    // emit/verify sites apply the same penalties+bias+history.
+    apply_penalties_and_bias(&mut raw_logits, params, token_history);
 
     // ── Greedy bypass (post-penalty argmax) ──
     // At `temperature == 0.0` we return argmax of the penalty/bias-modified

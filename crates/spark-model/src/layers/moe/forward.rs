@@ -5,6 +5,19 @@
 use super::*;
 
 impl MoeLayer {
+    /// True when the ATLAS_FP32_ROUTING path is active: the SSM-side MoE-input
+    /// norm should emit an FP32 `router_in` (residual_add_rms_norm_gatef32) which
+    /// the gate GEMM then consumes at full precision. Requires the f32 kernels to
+    /// be present and the softmax-routed dense-gate config (NVFP4 gate / sigmoid+bias
+    /// stay BF16). Default off → BF16 routing unchanged.
+    pub fn fp32_routing_active(&self) -> bool {
+        self.gate_nvfp4.is_none()
+            && self.correction_bias_dev.is_none()
+            && self.dense_gemm_f32in.0 != 0
+            && self.moe_topk_f32.0 != 0
+            && std::env::var("ATLAS_FP32_ROUTING").as_deref() == Ok("1")
+    }
+
     /// Forward pass: gate → top-K routing → batched expert FFN → blend.
     ///
     /// All expert dispatch stays on device — zero D2H synchronization.
@@ -232,7 +245,56 @@ impl MoeLayer {
         let shared_up_scratch = ctx.buffers.ssm_qkvz();
         let shared_out = ctx.buffers.attn_output();
 
-        if let (Some(gp), Some(up), Some(dp), Some(sh)) = (
+        if let (Some(gp), Some(up), Some(dp), Some(sg), Some(su), Some(sd)) = (
+            self.bf16_gate_weight_ptrs,
+            self.bf16_up_weight_ptrs,
+            self.bf16_down_weight_ptrs,
+            self.bf16_shared_gate,
+            self.bf16_shared_up,
+            self.bf16_shared_down,
+        ) {
+            // BF16 path: FP8-dequant-on-load. Eliminates the per-layer 0.989
+            // FP8 cosine ceiling by serving experts as BF16 end-to-end.
+            prof!("exp_gate_up_bf16", {
+                ops::moe_expert_gate_up_shared_bf16(
+                    ctx.gpu,
+                    self.moe_expert_gate_up_shared_bf16_k,
+                    expert_input,
+                    gp,
+                    expert_gate_out,
+                    up,
+                    expert_up_out,
+                    indices_dev,
+                    sg,
+                    shared_gate_scratch,
+                    su,
+                    shared_up_scratch,
+                    inter,
+                    h,
+                    top_k,
+                    stream,
+                )
+            })?;
+            prof!("exp_silu_down_bf16", {
+                ops::moe_expert_silu_down_shared_bf16(
+                    ctx.gpu,
+                    self.moe_expert_silu_down_shared_bf16_k,
+                    expert_gate_out,
+                    expert_up_out,
+                    dp,
+                    expert_down_out,
+                    indices_dev,
+                    shared_gate_scratch,
+                    shared_up_scratch,
+                    sd,
+                    shared_out,
+                    h,
+                    inter,
+                    top_k,
+                    stream,
+                )
+            })?;
+        } else if let (Some(gp), Some(up), Some(dp), Some(sh)) = (
             &self.fp8_gate_weight_ptrs,
             &self.fp8_up_weight_ptrs,
             &self.fp8_down_weight_ptrs,

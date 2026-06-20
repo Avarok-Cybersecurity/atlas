@@ -154,7 +154,21 @@ pub trait Model: Send + Sync {
     ) -> Result<MixedBatchResult> {
         // Default: serial execution.
         let decode_logits = if !decode_tokens.is_empty() {
-            self.decode_batch(decode_tokens, decode_seqs, stream)?
+            let lg = self.decode_batch(decode_tokens, decode_seqs, stream)?;
+            // #110: decode_batch runs its whole forward on the DEFAULT stream
+            // — both `decode_batch_compute_main` (n>=2) and the n==1 graph path
+            // ignore the `stream` arg and hardcode `gpu.default_stream()`. The
+            // batched prefill below reuses the SAME shared arena buffers
+            // (hidden_states/residual/scratch/gdn) but submits on `stream`
+            // (prefill_stream). With no barrier the two sub-passes execute
+            // concurrently on two different streams and race over those
+            // buffers — corrupting the batched prefill's slot table into wild
+            // KV-cache indices and faulting with a CUDA illegal access
+            // (status 700). Synchronize the decode stream so its buffer use is
+            // fully retired before prefill overwrites them. This runs once per
+            // mixed step (active+prefilling), never in the hot decode loop.
+            self.synchronize(self.default_stream())?;
+            lg
         } else {
             spark_runtime::gpu::DevicePtr::NULL
         };
@@ -322,6 +336,15 @@ pub trait Model: Send + Sync {
     /// valid). Benefits multi-turn agentic sessions that resend full history.
     fn cache_sequence(&self, seq: &SequenceState);
 
+    /// #155 iter3: during decode, save a block-aligned Marconi SSM snapshot
+    /// at checkpoint-interval boundaries so the NEXT turn's warm prefix-cache
+    /// hit restores from decode-produced state near the conversation's end —
+    /// instead of replaying decode-produced tokens through the prefill kernel
+    /// (the warm-hit drift ratchet, issue #155). Called from the scheduler
+    /// after each decode step's live SSM state is canonical (post-commit on
+    /// the MTP path). Default no-op (non-hybrid models / caching disabled).
+    fn decode_marconi_checkpoint(&self, _seq: &mut SequenceState) {}
+
     /// Free all GPU resources associated with a sequence.
     ///
     /// Releases KV cache blocks and returns SSM state pool slot.
@@ -334,6 +357,17 @@ pub trait Model: Send + Sync {
     /// slot to `new_slot`. Used by the scheduler for slot compaction after
     /// swap_remove to keep active sequences at contiguous slots [0..N).
     fn compact_sequence(&self, seq: &mut SequenceState, new_slot: usize) -> Result<()>;
+
+    /// Disown a retired sequence's SSM pool slot after `compact_sequence`
+    /// migrated it to a surviving sequence.
+    ///
+    /// Sets the `slot_idx` reuse sentinel AND neutralizes the sequence's
+    /// internal slot-release guard so the migrated slot is NOT released when
+    /// this sequence is later freed or dropped (the surviving sequence now owns
+    /// it). The scheduler MUST call this — instead of mutating `slot_idx`
+    /// directly — immediately after a `compact_sequence` that reuses this
+    /// sequence's slot, so a subsequent early-return/drop cannot double-release.
+    fn detach_slot_for_reuse(&self, seq: &mut SequenceState);
 
     /// CUDA-graphed K=2 verify: 2 tokens, capture-then-replay. Returns
     /// `[verified_0, verified_1]` argmax IDs. SSM intermediates saved for
@@ -585,6 +619,22 @@ pub trait Model: Send + Sync {
         Ok(())
     }
 
+    /// Item #2 (STree-style in-place verify commit): commit the surviving
+    /// prefix of a verify pass directly onto the canonical `h_state` /
+    /// `conv_state`. Full accept (`num_accepted == k`) is a no-op (the
+    /// kernel's final state is already live); partial accept is a single
+    /// index-select of `h_state_intermediates[num_accepted-1]`. No-op
+    /// default for backends without the dual-buffer SSM state.
+    /// Runs on `secondary_stream`; pair with `sync_secondary`.
+    fn commit_accepted_prefix(
+        &self,
+        _seq: &mut SequenceState,
+        _num_accepted: usize,
+        _k: usize,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// F62 (2026-04-27): commit a verify pass to the canonical SSM state.
     /// `num_accepted ∈ [0, k]`: full accept → copy `h_state` → checkpoint;
     /// partial → copy `h_state_intermediates[num_accepted-1]`; full reject →
@@ -658,6 +708,14 @@ pub trait Model: Send + Sync {
 
     /// Make a stream wait for an event (GPU-side sync, CPU does not block).
     fn stream_wait_event(&self, _stream: u64, _event: u64) -> Result<()> {
+        Ok(())
+    }
+
+    /// Block the host until all work submitted to `stream` has completed.
+    /// Used by `mixed_forward_batch` to retire the decode pass (which runs on
+    /// the default stream) before the batched prefill reuses the shared arena
+    /// buffers on another stream (#110). Default no-op for non-CUDA mocks.
+    fn synchronize(&self, _stream: u64) -> Result<()> {
         Ok(())
     }
 }

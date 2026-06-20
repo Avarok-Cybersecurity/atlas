@@ -158,6 +158,14 @@ impl GrammarMatcher {
         self.inner.rollback(num_tokens);
     }
 
+    /// Number of accepted-token history steps currently held by the matcher
+    /// (== how many tokens `rollback` can undo). Authoritative count of actual
+    /// matcher advances — use this instead of an `accept_token` bool tally when
+    /// some accepted tokens are exempt (stop/EOS) and do NOT advance the matcher.
+    pub fn num_history_steps(&self) -> usize {
+        self.inner.num_history_steps()
+    }
+
     /// Whether the matcher has terminated. Port of the vendored
     /// `GrammarMatcher::is_terminated`.
     pub fn is_terminated(&self) -> bool {

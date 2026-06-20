@@ -21,12 +21,19 @@ pub(super) fn dequant_fp8_bytes_to_bf16(fp8_buf: &[u8], scale: f32) -> Vec<u8> {
         .collect()
 }
 
-/// Dequantize FP8 E4M3 block-scaled weight → BF16.
+/// Dequantize FP8 E4M3 block-scaled weight → BF16, entirely on the GPU.
 ///
 /// Block-scaled FP8 (e.g. `quant_method: "fp8"` with `weight_block_size: [128, 128]`):
 ///   - `{prefix}.weight`: FP8E4M3 tensor of shape `[N, K]`
-///   - `{prefix}.weight_scale_inv`: BF16 tensor of shape `[N/block, K/block]`
-///   - Dequant: `bf16[i,j] = fp8[i,j] * scale_inv[i/block, j/block]`
+///   - `{prefix}.weight_scale_inv`: BF16 (Qwen/DeepSeek) or FP32 (MiniMax) of shape `[N/block, K/block]`
+///   - Dequant: `bf16[i,j] = E4M3_LUT[fp8[i,j]] * scale_inv[i/block, j/block]`
+///
+/// The FP8 weight and scale tensors already live on the GPU (loaded by the
+/// fast weight loader). This launches `dequant_fp8_blockscaled_bf16` to do
+/// the conversion in-place on device — no D2H download, no host CPU loop,
+/// no H2D upload. Replaces the old per-element CPU loop that dominated load
+/// time for FP8-MoE models under ATLAS_FP8_DEQUANT_MOE_TO_BF16=1 (~30k calls,
+/// ~22 min total → ~seconds).
 ///
 /// Returns a BF16 DenseWeight on GPU.
 pub(crate) fn dequant_fp8_blockscaled_to_bf16(
@@ -34,6 +41,8 @@ pub(crate) fn dequant_fp8_blockscaled_to_bf16(
     prefix: &str,
     gpu: &dyn GpuBackend,
 ) -> Result<DenseWeight> {
+    use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
+
     let w = store.get(&format!("{prefix}.weight"))?;
     ensure!(
         w.dtype == WeightDtype::FP8E4M3,
@@ -49,19 +58,54 @@ pub(crate) fn dequant_fp8_blockscaled_to_bf16(
     let k = w.shape[1];
     let total = n * k;
     let byte_size = w.byte_size();
-    tracing::debug!(
-        "FP8 blockscaled dequant: {prefix} shape=[{n},{k}] total={total} byte_size={byte_size} ptr={}",
-        w.ptr.0,
-    );
-
-    // Sync to flush any pending CUDA errors from prior operations
-    gpu.synchronize(gpu.default_stream())?;
-
-    // Download FP8 weight bytes (1 byte per element)
     ensure!(
         total == byte_size,
         "FP8 size mismatch: total={total} byte_size={byte_size}"
     );
+
+    // Fast path (Qwen / DeepSeek-distill / MiniMax): standard `.weight_scale_inv`
+    // block scales dequant entirely on the GPU — no D2H/H2D round-trip. (avarok/main)
+    if let Ok(s) = store.get(&format!("{prefix}.weight_scale_inv")) {
+        ensure!(
+            s.dtype == WeightDtype::BF16 || s.dtype == WeightDtype::FP32,
+            "Expected BF16 or FP32 for {prefix}.weight_scale_inv, got {:?}",
+            s.dtype,
+        );
+        let sn = s.shape[0];
+        let sk = s.shape[1];
+        let block_n = (n / sn) as u32;
+        let block_k = (k / sk) as u32;
+        let scale_is_f32 = s.dtype == WeightDtype::FP32;
+
+        let out = gpu.alloc(total * 2)?;
+        let stream = gpu.default_stream();
+        let kernel = gpu.kernel("dequant_fp8_blockscaled_bf16", "dequant_fp8_blockscaled_bf16")?;
+        KernelLaunch::new(gpu, kernel)
+            .grid([div_ceil(k as u32, 64), div_ceil(n as u32, 4), 1])
+            .block([64, 4, 1])
+            .arg_ptr(w.ptr)
+            .arg_ptr(s.ptr)
+            .arg_ptr(out)
+            .arg_u32(n as u32)
+            .arg_u32(k as u32)
+            .arg_u32(block_n)
+            .arg_u32(block_k)
+            .arg_u32(sk as u32)
+            .arg_u32(scale_is_f32 as u32)
+            .launch(stream)?;
+        gpu.synchronize(stream).with_context(|| {
+            format!("GPU dequant_fp8_blockscaled_bf16 failed for {prefix} [{n},{k}]")
+        })?;
+        tracing::debug!(
+            "GPU-dequanted FP8 blockscaled {prefix}: [{n}, {k}] block=[{block_n}, {block_k}] -> BF16",
+        );
+        return Ok(DenseWeight { weight: out });
+    }
+
+    // Fallback (RedHatAI compressed-tensors `.weight_scale`; DeepSeek-V4 original
+    // `.scale` with F8_E8M0): the GPU kernel above only supports `.weight_scale_inv`,
+    // so dequant these scale layouts on the CPU. (DeepSeek-V4)
+    gpu.synchronize(gpu.default_stream())?;
     let mut fp8_buf = vec![0u8; byte_size];
     gpu.copy_d2h(w.ptr, &mut fp8_buf).with_context(|| {
         let free = gpu.free_memory().unwrap_or(0);
@@ -72,43 +116,14 @@ pub(crate) fn dequant_fp8_blockscaled_to_bf16(
         )
     })?;
 
-    // Download block scale. Try `.weight_scale_inv` first (standard HF / Qwen / MiniMax),
-    // then `.weight_scale` (RedHatAI / compressed-tensors block-scaled BF16/FP32),
-    // then `.scale` (DeepSeek-V4 original / RedHatAI re-quant with F8_E8M0).
     enum ScaleDtype {
         Fp32,
         Bf16,
         E8M0,
     }
     let (scale_buf, _sn, sk, block_n, block_k, scale_dtype) = if let Ok(s) =
-        store.get(&format!("{prefix}.weight_scale_inv"))
+        store.get(&format!("{prefix}.weight_scale"))
     {
-        ensure!(
-            s.dtype == WeightDtype::BF16 || s.dtype == WeightDtype::FP32,
-            "Expected BF16 or FP32 for {prefix}.weight_scale_inv, got {:?}",
-            s.dtype,
-        );
-        let sn = s.shape[0];
-        let sk = s.shape[1];
-        let block_n = n / sn;
-        let block_k = k / sk;
-        let scale_is_f32 = s.dtype == WeightDtype::FP32;
-        let scale_bytes_per = if scale_is_f32 { 4 } else { 2 };
-        let mut buf = vec![0u8; sn * sk * scale_bytes_per];
-        gpu.copy_d2h(s.ptr, &mut buf).with_context(|| {
-            format!(
-                "D2H failed for {prefix}.weight_scale_inv: ptr={}, size={}",
-                s.ptr.0,
-                sn * sk * scale_bytes_per
-            )
-        })?;
-        let sd = if scale_is_f32 {
-            ScaleDtype::Fp32
-        } else {
-            ScaleDtype::Bf16
-        };
-        (buf, sn, sk, block_n, block_k, sd)
-    } else if let Ok(s) = store.get(&format!("{prefix}.weight_scale")) {
         // RedHatAI / compressed-tensors block-scaled BF16/FP32.
         // Only accept 2-D scales here; 1-D scales are handled by per-tensor dequant.
         ensure!(
@@ -120,7 +135,6 @@ pub(crate) fn dequant_fp8_blockscaled_to_bf16(
         let (sn, sk) = if rank == 2 {
             (s.shape[0], s.shape[1])
         } else if rank == 1 {
-            // Treat 1-D as per-row with single column block
             (s.shape[0], 1)
         } else {
             bail!(
@@ -152,7 +166,6 @@ pub(crate) fn dequant_fp8_blockscaled_to_bf16(
         let (sn, sk) = if rank == 2 {
             (s.shape[0], s.shape[1])
         } else if rank == 1 {
-            // Treat 1-D scale as per-row (N) with single column
             (s.shape[0], 1)
         } else {
             bail!(
@@ -182,9 +195,7 @@ pub(crate) fn dequant_fp8_blockscaled_to_bf16(
         })?;
         (buf, sn, sk, block_n, block_k, sd)
     } else {
-        bail!(
-            "FP8 tensor {prefix}: no .weight_scale_inv, .weight_scale, or .scale found for dequant"
-        );
+        bail!("FP8 tensor {prefix}: no .weight_scale_inv, .weight_scale, or .scale found for dequant");
     };
 
     // CPU dequant: bf16_out[i,j] = fp8[i,j] * scale[i/block_n, j/block_k]
@@ -222,72 +233,12 @@ pub(crate) fn dequant_fp8_blockscaled_to_bf16(
         }
     }
 
-    // Diagnostic: print weight statistics for first few dequants
-    {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static DIAG_COUNT: AtomicUsize = AtomicUsize::new(0);
-        let count = DIAG_COUNT.fetch_add(1, Ordering::Relaxed);
-        if count < 3 {
-            let mut min_val = f32::MAX;
-            let mut max_val = f32::MIN;
-            let mut sum = 0.0f64;
-            let mut zeros = 0usize;
-            for i in 0..total {
-                let lo = bf16_out[i * 2];
-                let hi = bf16_out[i * 2 + 1];
-                let v = bf16_bytes_to_f32([lo, hi]);
-                if v == 0.0 {
-                    zeros += 1;
-                }
-                if v < min_val {
-                    min_val = v;
-                }
-                if v > max_val {
-                    max_val = v;
-                }
-                sum += v as f64;
-            }
-            let mean = sum / total as f64;
-            tracing::info!(
-                "FP8 dequant stats for {prefix}: min={min_val:.6}, max={max_val:.6}, mean={mean:.6}, zeros={zeros}/{total}"
-            );
-            // First 8 values
-            let vals: Vec<f32> = (0..8.min(total))
-                .map(|i| bf16_bytes_to_f32([bf16_out[i * 2], bf16_out[i * 2 + 1]]))
-                .collect();
-            tracing::info!("  First 8 BF16 values: {:?}", vals);
-        }
-    }
-
-    let ptr = gpu.alloc(bf16_out.len())?;
-    gpu.copy_h2d(&bf16_out, ptr)?;
-
-    // Diagnostic: readback first 8 BF16 values from GPU and compare with CPU
-    {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static VERIFY_COUNT: AtomicUsize = AtomicUsize::new(0);
-        if VERIFY_COUNT.fetch_add(1, Ordering::Relaxed) < 3 {
-            let check_len = 16.min(bf16_out.len());
-            let mut readback = vec![0u8; check_len];
-            if gpu.copy_d2h(ptr, &mut readback).is_ok() {
-                let match_ok = readback[..check_len] == bf16_out[..check_len];
-                if !match_ok {
-                    tracing::error!(
-                        "BF16 GPU readback MISMATCH for {prefix}: cpu={:?} gpu={:?}",
-                        &bf16_out[..check_len],
-                        &readback[..check_len],
-                    );
-                } else {
-                    tracing::info!("BF16 GPU readback verified OK for {prefix}");
-                }
-            }
-        }
-    }
-
+    let out = gpu.alloc(bf16_out.len())?;
+    gpu.copy_h2d(&bf16_out, out)?;
     tracing::debug!(
-        "Dequanted FP8 blockscaled {prefix}: [{n}, {k}] block=[{block_n}, {block_k}] → BF16",
+        "CPU-dequanted FP8 blockscaled {prefix}: [{n}, {k}] block=[{block_n}, {block_k}] -> BF16",
     );
-    Ok(DenseWeight { weight: ptr })
+    Ok(DenseWeight { weight: out })
 }
 
 /// Dequantize FP8 E4M3 per-tensor or per-channel scaled weight → BF16.
@@ -519,3 +470,4 @@ pub(crate) fn quantized_v2(
         input_scale: ptr(store, &format!("{prefix}.input_global_scale"))?,
     })
 }
+

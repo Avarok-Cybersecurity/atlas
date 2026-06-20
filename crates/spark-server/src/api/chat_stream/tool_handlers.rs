@@ -10,13 +10,52 @@ use axum::response::sse::Event;
 use crate::openai::ChatCompletionChunk;
 use crate::tool_parser;
 
-use super::super::failures::{
-    bump_f12_tool_call_count, f44_check_permanent_failure, flush_content_sanitizer,
-};
+use super::super::stream_guards::{bump_f12_tool_call_count, flush_content_sanitizer};
 use super::ctx::StreamCtx;
-use super::state::StreamState;
+use super::state::{PendingRetry, StreamState};
 
 type SseVec = Vec<Result<Event, std::convert::Infallible>>;
+
+/// Tier 5c (2026-05-26): emit `chunk_json` to either the client SSE
+/// stream OR a per-tool-call-index buffer in `StreamState`. When tool
+/// retry is enabled we hold all tool_call SSE chunks until
+/// `handle_tool_call_delta` runs validation; on pass the buffered chunks
+/// flush to the client, on fail they're discarded and the retry fires
+/// at `handle_done`. When tool retry is disabled this is a direct emit
+/// (preserves the existing real-time streaming behaviour).
+fn emit_or_buffer_tool_chunk(
+    state: &mut StreamState,
+    ctx: &StreamCtx,
+    idx: usize,
+    chunk_json: String,
+    sse_events: &mut SseVec,
+) {
+    if ctx.tool_retry_enabled {
+        state
+            .buffered_tool_chunks
+            .entry(idx)
+            .or_default()
+            .push(chunk_json);
+    } else {
+        sse_events.push(Ok(Event::default().data(chunk_json)));
+    }
+}
+
+/// Flush all buffered SSE chunks for tool-call `idx` into `sse_events`.
+/// No-op when retry is disabled (chunks were emitted directly).
+fn flush_buffered_tool_chunks(state: &mut StreamState, idx: usize, sse_events: &mut SseVec) {
+    if let Some(chunks) = state.buffered_tool_chunks.remove(&idx) {
+        for chunk_json in chunks {
+            sse_events.push(Ok(Event::default().data(chunk_json)));
+        }
+    }
+}
+
+/// Drop all buffered SSE chunks for tool-call `idx` without emitting.
+/// Called when validation fails and we're going to fire a Tier 5c retry.
+fn drop_buffered_tool_chunks(state: &mut StreamState, idx: usize) {
+    state.buffered_tool_chunks.remove(&idx);
+}
 
 /// `DetectorOutput::ToolCall(tc, idx)`: complete tool call.
 pub(super) fn handle_complete_tool_call(
@@ -40,13 +79,24 @@ pub(super) fn handle_complete_tool_call(
         ));
     }
     tool_parser::backfill_required_params(std::slice::from_mut(tc), &ctx.tool_defs_for_backfill);
+    if ctx.wants_typed_arguments {
+        tool_parser::coerce_all(std::slice::from_mut(tc), &ctx.tool_defs_for_backfill);
+    }
     if let Some(ref cwd) = ctx.cwd_for_normalize {
         tool_parser::normalize_paths(std::slice::from_mut(tc), cwd);
     }
-    if let Err(e) = tool_parser::validate_single_tool_call(tc, &ctx.tool_defs_for_backfill) {
+    let validation = tool_parser::validate_single_tool_call(tc, &ctx.tool_defs_for_backfill);
+    let is_soft = validation
+        .as_ref()
+        .err()
+        .map(|e| e.contains("non-empty"))
+        .unwrap_or(false);
+    if let Err(e) = &validation
+        && !is_soft
+    {
         tracing::warn!(
             tool = %tc.function.name,
-            "tool call validation error: {e}; replacing with content and ending"
+            "tool call validation error (hard): {e}; replacing with content and ending"
         );
         let msg = format!("[atlas] Tool call rejected: {e}");
         let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, msg)
@@ -55,6 +105,41 @@ pub(super) fn handle_complete_tool_call(
             Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
         ));
         state.stop_string_triggered = true;
+    } else if let Err(e) = &validation {
+        // Soft validation error (empty required string) — emit the tool
+        // call as the model produced it and let opencode's per-tool
+        // schema surface its own actionable error. See
+        // `handle_tool_call_delta` for the rationale.
+        tracing::warn!(
+            tool = %tc.function.name,
+            "tool call validation error (soft): {e}; passing through to opencode"
+        );
+        bump_f12_tool_call_count(
+            &mut state.tool_calls_emitted_count,
+            ctx.max_tool_calls_per_response,
+            &mut state.stop_string_triggered,
+        );
+        let preview: String = tc.function.arguments.chars().take(120).collect();
+        let s = if tc.function.arguments.len() > preview.len() {
+            "…"
+        } else {
+            ""
+        };
+        tracing::info!("Tool call: {}({preview}{s})", tc.function.name);
+        crate::metrics::TOOL_CALLS_TOTAL.inc();
+        let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, tc_idx);
+        sse_events.push(Ok(
+            Event::default().data(serde_json::to_string(&start).unwrap_or_default())
+        ));
+        let frag = ChatCompletionChunk::tool_call_args_fragment(
+            &ctx.model,
+            &ctx.id,
+            tc_idx,
+            &tc.function.arguments,
+        );
+        sse_events.push(Ok(
+            Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
+        ));
     } else if state
         .tool_arg_dedup
         .check(&tc.function.name, &tc.function.arguments)
@@ -156,9 +241,8 @@ pub(super) fn handle_tool_call_start(
         &mut state.stop_string_triggered,
     );
     let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, &tc, idx);
-    sse_events.push(Ok(
-        Event::default().data(serde_json::to_string(&start).unwrap_or_default())
-    ));
+    let start_json = serde_json::to_string(&start).unwrap_or_default();
+    emit_or_buffer_tool_chunk(state, ctx, idx, start_json, sse_events);
 }
 
 /// `DetectorOutput::ToolCallDelta` — incremental: append args.
@@ -201,40 +285,123 @@ pub(super) fn handle_tool_call_delta(
             std::slice::from_mut(&mut tc),
             &ctx.tool_defs_for_backfill,
         );
+        if ctx.wants_typed_arguments {
+            tool_parser::coerce_all(std::slice::from_mut(&mut tc), &ctx.tool_defs_for_backfill);
+        }
         if let Some(ref cwd) = ctx.cwd_for_normalize {
             tool_parser::normalize_paths(std::slice::from_mut(&mut tc), cwd);
         }
         if let Err(e) = tool_parser::validate_single_tool_call(&tc, &ctx.tool_defs_for_backfill) {
-            tracing::warn!(
-                tool = %name,
-                "tool call validation error (stream Δ): {e}; replacing with content and ending"
-            );
-            let msg = format!("[atlas] Tool call rejected: {e}");
-            // No `with_token_ids` here: `entry` holds a &mut borrow of
-            // `state` through line 214, so `take_ids_if` can't run. This
-            // is a rare synthetic-error edge (not the generation path);
-            // the pending IDs are still flushed exactly once on the
-            // finish chunk in handle_done, so Σ token_ids stays correct.
-            let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, msg);
-            sse_events.push(Ok(
-                Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
-            ));
-            state.stop_string_triggered = true;
-            entry.1.push_str(&args);
-            return;
+            // Mid-stream validation rejections used to emit a `[atlas] Tool
+            // call rejected: …` content chunk and trip `stop_string_triggered`
+            // — but `handle_tool_call_start` had already emitted the
+            // `tool_calls[idx]` header to opencode, so suppressing the args
+            // delta left opencode mid-call with no completion. opencode then
+            // reported `SchemaError(Missing key)`, a less actionable error
+            // than its own per-tool schema check (e.g. "The argument 'file'
+            // cannot be empty. Received ''").
+            //
+            // Empty-required-string failures (most common: F78 path tools,
+            // 2026-05-25 shell tools) are recoverable: emit the args delta
+            // as the model produced them and let opencode's per-tool schema
+            // surface its own actionable error to the model on the next
+            // turn. Hard failures (unknown tool name, args not valid JSON)
+            // still bail with a content chunk because they cannot be made
+            // into a complete tool call at all.
+            let is_soft = e.contains("non-empty");
+            if is_soft {
+                tracing::warn!(
+                    tool = %name,
+                    "tool call validation error (stream Δ, soft): {e}; passing through so opencode can surface its own per-tool schema error"
+                );
+                emit_args = tc.function.arguments.clone();
+                entry.1.push_str(&emit_args);
+            } else if ctx.tool_retry_enabled {
+                // Tier 5c (2026-05-26): drop the buffered start + args
+                // chunks for this idx, record the failure context, and
+                // signal the scheduler to stop. `handle_done` will see
+                // `pending_retry` and fire the retry inference; if the
+                // retry produces a valid call we emit it in place of
+                // the failed call, so the client never sees the bad one.
+                tracing::warn!(
+                    tool = %name,
+                    "tool call validation error (stream Δ, hard, retry pending): {e}"
+                );
+                // Release the `entry` borrow on `state.streaming_tool_args`
+                // before mutating the buffered-chunks + pending_retry on
+                // `state` (the borrow checker rejects two simultaneous
+                // mutable borrows of `state`). Capture what we still need.
+                entry.1.push_str(&args);
+                let errors_summary = e.to_string();
+                drop_buffered_tool_chunks(state, idx);
+                state.pending_retry = Some(PendingRetry {
+                    errors_summary,
+                    failed_idx: idx,
+                });
+                state.stop_string_triggered = true;
+                state
+                    .cancel_flag
+                    .store(true, std::sync::atomic::Ordering::Release);
+                return;
+            } else {
+                tracing::warn!(
+                    tool = %name,
+                    "tool call validation error (stream Δ, hard): {e}; replacing with content and ending"
+                );
+                let msg = format!("[atlas] Tool call rejected: {e}");
+                let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, msg);
+                sse_events.push(Ok(
+                    Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
+                ));
+                state.stop_string_triggered = true;
+                entry.1.push_str(&args);
+                return;
+            }
+        } else {
+            emit_args = tc.function.arguments.clone();
+            entry.1.push_str(&emit_args);
         }
-        emit_args = tc.function.arguments.clone();
-        entry.1.push_str(&emit_args);
     } else if !args.is_empty() {
         // No prior ToolCallStart for this idx — keep legacy passthrough.
     }
     if !emit_args.is_empty() {
         let frag =
             ChatCompletionChunk::tool_call_args_fragment(&ctx.model, &ctx.id, idx, &emit_args);
-        sse_events.push(Ok(
-            Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
-        ));
+        let frag_json = serde_json::to_string(&frag).unwrap_or_default();
+        // Either flush previously-buffered start + this args chunk
+        // together (success path under retry), or emit directly (retry
+        // disabled). When retry is disabled the start chunk was already
+        // emitted in real time, so `emit_or_buffer_tool_chunk` just adds
+        // the args chunk.
+        emit_or_buffer_tool_chunk(state, ctx, idx, frag_json, sse_events);
+        if ctx.tool_retry_enabled {
+            flush_buffered_tool_chunks(state, idx, sse_events);
+        }
     }
+}
+
+/// `DetectorOutput::ToolCallArgsFragment` — live-streaming: a ready-to-forward
+/// slice of `function.arguments` the detector already coerced (XML) or sliced
+/// (JSON). Append it verbatim to the accumulated args and emit it directly as an
+/// OpenAI `tool_calls[idx].function.arguments` fragment — NO coercion or
+/// validation (the detector did that per-field). If no prior `ToolCallStart`
+/// created the accumulator entry for `idx`, the fragment is dropped (the header
+/// must precede its arguments).
+pub(super) fn handle_tool_call_args_fragment(
+    state: &mut StreamState,
+    ctx: &StreamCtx,
+    fragment: String,
+    idx: usize,
+    sse_events: &mut SseVec,
+) {
+    let Some(entry) = state.streaming_tool_args.get_mut(&idx) else {
+        return;
+    };
+    entry.1.push_str(&fragment);
+    let frag = ChatCompletionChunk::tool_call_args_fragment(&ctx.model, &ctx.id, idx, &fragment);
+    sse_events.push(Ok(
+        Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
+    ));
 }
 
 /// `DetectorOutput::ToolCallEnd` — F11 within-response dedup +
@@ -248,23 +415,24 @@ pub(super) fn handle_tool_call_delta(
 /// only other server-side circuit, but a runaway can already have
 /// flooded the SSE channel before F12 fires. The name-run cap is
 /// strictly tighter than F11 and F12 for the runaway pattern.
-const MAX_CONSEC_SAME_NAME_CALLS: u32 = 6;
+///
+/// A3 (2026-05-26): tightened from 6 → 3 to match opencode's
+/// `DOOM_LOOP_THRESHOLD = 3`. Live Wave-1/3 traces showed the model
+/// emitting 4-6 same-name bash calls with drifted args before any
+/// guard tripped, by which point ~MB-long degenerate commands had
+/// already flooded the stream and the .git/ artifact pollution was
+/// already created. Three same-name calls is the empirical threshold
+/// at which opencode itself bails to the user for permission. Atlas
+/// matching this means we end the response slightly before opencode
+/// would surrender, giving the outer retry loop a clean signal.
+const MAX_CONSEC_SAME_NAME_CALLS: u32 = 3;
 
-pub(super) fn handle_tool_call_end(state: &mut StreamState, ctx: &StreamCtx, idx: usize) {
+pub(super) fn handle_tool_call_end(state: &mut StreamState, _ctx: &StreamCtx, idx: usize) {
     if let Some((name, args_json)) = state.streaming_tool_args.remove(&idx) {
         if state.tool_arg_dedup_within.check(&name, &args_json) {
             tracing::warn!(
                 tool = %name,
                 "F11 within-response dedup tripped: 2+ identical streaming tool calls; ending response"
-            );
-            state.stop_string_triggered = true;
-            state.tool_loop_capped = true;
-        } else if ctx.f44_cache_active
-            && f44_check_permanent_failure(&ctx.f44_cache, &name, &args_json)
-        {
-            tracing::warn!(
-                tool = %name,
-                "F44 streaming circuit-breaker tripped: tool_call matches a permanently-failed prior call; ending response"
             );
             state.stop_string_triggered = true;
             state.tool_loop_capped = true;

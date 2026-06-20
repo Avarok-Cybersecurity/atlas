@@ -151,6 +151,13 @@ pub struct BatchedAttnMetadata {
     /// bounds checking; per-stream block_table reads via the pointer
     /// array dereference).
     pub max_blocks_per_seq: u32,
+    /// Exact byte footprint of this metadata block within the scratch
+    /// buffer (from `scratch_offset_bytes` to the end of `seq_len_ptrs`).
+    /// SSOT for the caller's scratch-cursor advance — the per-SSM-layer
+    /// `h_state_ptrs` slot is placed at `scratch_cursor + staged_bytes`, so
+    /// an under-estimate here would overwrite the live `slot_stacked` array
+    /// with device pointers and produce wild KV-cache slots (#110 bug #2).
+    pub staged_bytes: usize,
 }
 
 /// Device pointers to full-sequence GDN input/output buffers.
@@ -199,6 +206,15 @@ pub struct ForwardContext<'a> {
     /// True when inside CUDA graph capture (between begin_capture/end_capture).
     /// MoE layers use sync all_reduce (capturable) instead of async (event-based).
     pub graph_capture: bool,
+    /// True when this prefill pass continues from a restored Marconi SSM
+    /// snapshot (warm prefix-cache hit). GDN layers must then take the
+    /// bit-faithful WY4 recurrence instead of the FLA chunked kernel: FLA's
+    /// chunk grid is anchored at the (arbitrary) snapshot offset and its
+    /// bf16 intermediates drift vs the pass that originally produced the
+    /// cached K/V, and the replay range [snap_tok, matched) is rewritten
+    /// into SHARED prefix-cache blocks — non-exact recompute poisons them
+    /// and the drift ratchets across turns (2026-06-10 warm-hit stutter).
+    pub gdn_exact_replay: bool,
 }
 
 /// A single transformer layer performing the full per-layer computation.

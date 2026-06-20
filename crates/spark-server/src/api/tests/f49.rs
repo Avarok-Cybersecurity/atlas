@@ -9,11 +9,7 @@
 
 mod f49_tests {
     use super::super::super::*;
-    use super::super::common::{
-    mk_assistant_with_tool_call,
-    mk_msg,
-    mk_tool_msg,
-};
+    use super::super::common::{mk_assistant_with_tool_call, mk_msg, mk_tool_msg};
 
     // ── F49 / F50 / F44 (fix35) tests ──
 
@@ -67,14 +63,8 @@ mod f49_tests {
     fn f51_primary_arg_handles_lowercase_bash() {
         // opencode bash tool name with `command` arg — must extract
         // the same primary_arg as Claude Code's "Bash".
-        let p_lower = primary_arg_for_tool(
-            "bash",
-            "{\"command\":\"cd /tmp && cargo init\"}",
-        );
-        let p_upper = primary_arg_for_tool(
-            "Bash",
-            "{\"command\":\"cd /tmp && cargo init\"}",
-        );
+        let p_lower = primary_arg_for_tool("bash", "{\"command\":\"cd /tmp && cargo init\"}");
+        let p_upper = primary_arg_for_tool("Bash", "{\"command\":\"cd /tmp && cargo init\"}");
         assert_eq!(p_lower, p_upper);
         assert_eq!(p_lower.as_deref(), Some("cargo init"));
     }
@@ -124,7 +114,10 @@ mod f49_tests {
         let mut msgs = vec![
             mk_msg("user", "run tests"),
             mk_assistant_with_tool_call("c0", "Bash", "{\"command\":\"cargo test\"}"),
-            mk_tool_msg("c0", "[tool error]\nerror: couldn't read src/main.rs: No such file or directory"),
+            mk_tool_msg(
+                "c0",
+                "[tool error]\nerror: couldn't read src/main.rs: No such file or directory",
+            ),
             mk_assistant_with_tool_call("c1", "Write", args),
             mk_tool_msg("c1", "Wrote file successfully."),
             mk_assistant_with_tool_call("c2", "Write", args),

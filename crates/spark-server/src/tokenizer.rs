@@ -372,4 +372,71 @@ mod tests {
             "expected assistant content in render: {rendered}"
         );
     }
+
+    /// Byte-match guard: the `{{ tool | tojson }}` filter used by the
+    /// `<tools>` block in jinja-templates/openai/qwen3_5_moe.jinja must
+    /// produce EXACTLY what transformers' jinja2 `tojson` does, which is
+    /// `json.dumps(x, ensure_ascii=False, sort_keys=False)` — spaces
+    /// after `:`/`,` and keys in insertion/declaration order. Without
+    /// this Atlas fed the model a compact, key-sorted `<tools>` block
+    /// (~26% fewer tokens), diverging from vLLM at the first `:`.
+    ///
+    /// The fixture and expected string mirror the Python reference:
+    ///   json.dumps({"type":"function","function":{"name":"bash",
+    ///     "description":"Execute a bash command","parameters":{...}}},
+    ///     ensure_ascii=False, sort_keys=False)
+    #[test]
+    fn tojson_filter_byte_matches_python_json_dumps() {
+        // Production path step 1 (api/chat/template.rs:85):
+        // `serde_json::to_value(ToolDefinition)`. ToolDefinition's serde
+        // field order is {type, function} and FunctionDefinition's is
+        // {name, description, parameters} (tool_parser.rs:27-41), so the
+        // `to_value` output is byte-equivalent to the literal below.
+        // We build the Value directly here so the test stays in the
+        // `--lib` target (which does not re-export `tool_parser`); the
+        // filter under test is identical either way. With serde_json's
+        // `preserve_order`, this literal key order is preserved.
+        let tool_value = serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "description": "Execute a bash command",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "The command to run"
+                        }
+                    },
+                    "required": ["command"]
+                }
+            }
+        });
+
+        // Production path step 2 (tokenizer/chat_impl.rs:197):
+        // minijinja::Value::from_serialize over the tool list. With
+        // minijinja's `preserve_order`, the map is an IndexMap, so key
+        // order survives into the filter.
+        let mini_val = minijinja::Value::from_serialize(&tool_value);
+
+        // Production path step 3: the `tojson` filter registered in
+        // build_jinja_env. Render via the same env the server uses.
+        let env = super::jinja_helpers::build_jinja_env("{{ tool | tojson }}")
+            .expect("inline template compiles");
+        let tmpl = env.get_template("chat").unwrap();
+        let rendered = tmpl
+            .render(minijinja::context! { tool => mini_val })
+            .expect("tojson render");
+
+        // Ground truth: Python `json.dumps(tool, ensure_ascii=False,
+        // sort_keys=False)` of the identical structure (verified with
+        // python3 against this exact fixture — len 234).
+        let expected = "{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Execute a bash command\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"The command to run\"}}, \"required\": [\"command\"]}}}";
+
+        assert_eq!(
+            rendered, expected,
+            "\nAtlas tojson:\n{rendered}\nPython json.dumps:\n{expected}\n"
+        );
+    }
 }

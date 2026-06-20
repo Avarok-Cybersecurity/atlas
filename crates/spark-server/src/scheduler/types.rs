@@ -15,6 +15,7 @@ use spark_model::traits::SequenceState;
 
 use crate::api::{InferenceRequest, InferenceResponse, StreamEvent};
 use crate::grammar::GrammarState;
+use crate::openai::RepetitionDetectionParams;
 
 /// Shared queue between receiver thread and scheduler.
 pub(super) struct PendingQueue {
@@ -30,7 +31,10 @@ pub(super) enum ResponseSink {
 
 /// An in-progress chunked prefill (prompt being processed in chunks).
 pub(super) struct PrefillInProgress {
-    pub prompt_tokens: Vec<u32>,
+    /// Arc-wrapped so the original request, the per-prefill scheduler
+    /// state, and any retry path (Tier 5c) can share the read-only
+    /// token slice without copying ~40 KB on every long prompt.
+    pub prompt_tokens: std::sync::Arc<Vec<u32>>,
     pub session_hash: u64,
     pub seq: SequenceState,
     pub chunk_offset: usize,
@@ -59,6 +63,10 @@ pub(super) struct PrefillInProgress {
     pub logit_bias: Vec<(u32, f32)>,
     pub enable_thinking: bool,
     pub thinking_budget: Option<u32>,
+    /// Per-request override for the vLLM-anchored token-loop detector.
+    /// Propagated to `ActiveSeq` on promotion. `None` = use the
+    /// boot-global watchdog parameters.
+    pub repetition_detection: Option<RepetitionDetectionParams>,
     /// Per-server spontaneous-thinking budget (from MODEL.toml
     /// `[behavior].max_thinking_budget`). When the model emits a
     /// `<think>` token without the request having explicitly enabled
@@ -118,6 +126,10 @@ pub(super) struct ActiveSeq {
     pub enable_thinking: bool,
     /// Max thinking tokens before forcing `</think>`. None = unlimited.
     pub thinking_budget: Option<u32>,
+    /// Per-request override for the vLLM-anchored token-loop detector
+    /// (content-loop + thinking-loop). `None` = use the boot-global
+    /// watchdog parameters. Mirrors vLLM's `RepetitionDetectionParams`.
+    pub repetition_detection: Option<RepetitionDetectionParams>,
     /// Per-server spontaneous-thinking budget (from MODEL.toml
     /// `[behavior].max_thinking_budget`).
     pub spontaneous_think_budget: u32,
@@ -125,6 +137,15 @@ pub(super) struct ActiveSeq {
     pub thinking_tokens: u32,
     /// When true, the next decode step must produce the `</think>` token.
     pub force_end_thinking: bool,
+    /// Decode-step counter incremented while `force_end_thinking` is
+    /// armed but the injection is deferred (waiting for a sentence-
+    /// boundary token or fence close). Reset to 0 on the false→true
+    /// arm transition and on the true→false reset (`</think>` emitted
+    /// or model exited thinking). Bounded by
+    /// [`crate::scheduler::confidence::MAX_SENTENCE_DEFER_TOKENS`] —
+    /// past that the caller computes `hard_override = true` and
+    /// `should_inject_think_end` fires unconditionally.
+    pub sentence_defer_count: u32,
     /// Consecutive tokens where top-1 softmax prob >= 0.95 (for confidence early stop).
     pub consecutive_confident: u32,
     /// True while the model is inside an unclosed ``` code fence within
@@ -150,6 +171,14 @@ pub(super) struct ActiveSeq {
     /// When true AND grammar_state is None, EOS tokens are suppressed until
     /// `<tool_call>` is generated (legacy fallback).
     pub require_tool_call: bool,
+    /// F4 (2026-06-02): sticky "this is a tool request" flag, set once at
+    /// prefill when a grammar is attached OR the legacy tool-call path is
+    /// active. Unlike `grammar_state.is_some()` it survives a graceful
+    /// grammar disengage (`emit_step` drops `grammar_state` to `None` to
+    /// salvage a turn), so the inter-tool prose-budget watchdog does not
+    /// go inert when the grammar disengages mid-response. Default false ⇒
+    /// no-op for non-tool requests (plain chat is never prose-capped).
+    pub tool_request: bool,
     /// Token ID for `<tool_call>` (legacy fallback when grammar is unavailable).
     pub tool_call_start_token: Option<u32>,
     /// True after `<tool_call>` generated in output (not inside thinking).
@@ -157,6 +186,52 @@ pub(super) struct ActiveSeq {
     /// True between emission of `<tool_call>`/`<function=…>` (open) and
     /// `</tool_call>`/`</function>` (close).
     pub inside_tool_body: bool,
+    /// Fix A (2026-06-05): true once a complete `</tool_call>` has been emitted;
+    /// gates the EOS-escape (helpers::tool_eos_escape_enabled).
+    pub tool_call_completed: bool,
+    /// Number of `<tool_call>` openers emitted AFTER the first one completed
+    /// (i.e. while `tool_call_completed == true`), outside thinking. On a
+    /// `tool_choice="auto"` grammar turn the grammar never reaches a terminal
+    /// state (`stop_after_first=false`), so the EOS-escape is the only way to
+    /// stop — but re-entering a tool body (`inside_tool_body=true`) defeats the
+    /// escape's `!inside_tool_body` guard. A degenerating FP8/long-context model
+    /// loops emitting full `<tool_call>…</tool_call>` blocks as content; each
+    /// closes cleanly so the envelope-streak guard never fires, and EOS is
+    /// suppressed to the max_tokens cap (8k-tok runaway, ~260s wasted). This
+    /// counter detects that repetition: once it exceeds
+    /// `MAX_POST_COMPLETION_TOOL_OPENS` the escape is force-armed so the model's
+    /// natural EOS can end the turn. Legit multi-call turns are unaffected — we
+    /// only stop SUPPRESSING EOS, never force-finish, so a model still mid-call
+    /// keeps generating until it actually samples EOS. Reset never needed (the
+    /// turn ends once it trips).
+    pub post_completion_tool_opens: u32,
+    /// Consecutive tokens emitted while `inside_tool_body=true`. When
+    /// this exceeds `MAX_TOOL_BODY_TOKENS` (emit_step.rs), the response
+    /// is force-ended: the model has emitted a `<tool_call>` opener but
+    /// never reached a matching close — observed live 2026-05-24 on
+    /// NVFP4 Qwen3.6 (opencode-nvfp4.jsonl seq=15: 8221 tokens, all
+    /// suppressed by sanitizer as unclosed tool-call envelope, hit
+    /// max_tokens=8192). 1024 tokens is enough headroom for legitimate
+    /// long tool-call bodies (large `content` field on a `write` call)
+    /// while bounding worst-case wasted decode at ~15s @ 65 tok/s.
+    /// Resets to 0 on tool_call_end emission.
+    pub tool_body_streak_tokens: u32,
+    /// Tier-1 (Epoch 1) sampler byte counter: True between the model
+    /// emitting `<parameter=KEY>` and the matching `</parameter>` close.
+    /// While true AND `param_body_chars_emitted == 0`, decode_logits_seq.rs
+    /// masks token id 510 (`</`, first token of `</parameter>`) with bias
+    /// -8.0 so the model is forced to emit at least one non-close token
+    /// before the close-tag's first byte can be sampled. Defends against
+    /// xgrammar's failure to enforce `minLength: 1` on json_schema body
+    /// (3 grammar attempts so far — regex `\S` sandwich, regex `+`
+    /// quantifier, json_schema style qwen_xml with minLength:1 — none
+    /// enforce due to upstream xgrammar ε-edge bugs documented in
+    /// `bench/fp8_dgx2_drift/research_synthesis.md`).
+    pub inside_parameter_body: bool,
+    /// Tier-1 byte counter — number of tokens emitted INSIDE
+    /// `<parameter=KEY>…</parameter>` body so far. Reset to 0 on opener.
+    /// Increments by 1 per token while inside; used as the mask-gate.
+    pub param_body_chars_emitted: u32,
     /// When true, `<tool_call>` token logit is set to -inf during decode.
     pub suppress_tool_call: bool,
     /// F60 (2026-04-27): when true, MTP speculative decoding is bypassed.
@@ -207,6 +282,43 @@ pub(super) struct ActiveSeq {
     pub cached_prompt_tokens: u32,
 }
 
+impl ActiveSeq {
+    /// Consume one token of generation budget (SSOT for the two decode
+    /// paths: MTP `emit_step::emit_token` and non-MTP
+    /// `decode_logits_content::handle_content_token`).
+    ///
+    /// `remaining` reaching 0 must finish the sequence at the next
+    /// `remaining == 0` check. A second decrement at 0 means a budget
+    /// desync (e.g. a token processed after the length stop should have
+    /// fired): in release builds the old bare `-= 1` wrapped to
+    /// usize::MAX, unbounding generation entirely (issue #94's
+    /// never-terminating ngram loop; debug builds panicked with
+    /// 'attempt to subtract with overflow'). Saturate, log, and finish
+    /// instead — never wrap, never hide the desync.
+    pub fn consume_generation_budget(&mut self) {
+        if !consume_budget(&mut self.remaining) {
+            tracing::warn!(
+                output_tokens = self.output_tokens.len(),
+                "generation budget decremented at 0 (token processed after \
+                 length stop should have fired) — finishing sequence instead \
+                 of wrapping"
+            );
+            self.finished = true;
+        }
+    }
+}
+
+/// Decrement `remaining` by one. Returns false (without touching
+/// `remaining`) when it is already 0 — the caller must finish the
+/// sequence rather than wrap.
+pub(super) fn consume_budget(remaining: &mut usize) -> bool {
+    if *remaining == 0 {
+        return false;
+    }
+    *remaining -= 1;
+    true
+}
+
 /// A sequence that has been swapped out to disk (KV + SSM state saved to file).
 pub(super) struct SwappedSeq {
     pub tokens: Vec<u32>,
@@ -237,9 +349,13 @@ pub(super) struct SwappedSeq {
     pub inside_thinking: bool,
     pub enable_thinking: bool,
     pub thinking_budget: Option<u32>,
+    /// Per-request override for the vLLM-anchored token-loop detector,
+    /// preserved across snapshot/restore.
+    pub repetition_detection: Option<RepetitionDetectionParams>,
     pub spontaneous_think_budget: u32,
     pub thinking_tokens: u32,
     pub force_end_thinking: bool,
+    pub sentence_defer_count: u32,
     pub consecutive_confident: u32,
     pub in_code_fence: bool,
     pub think_end_token: Option<u32>,
@@ -248,6 +364,10 @@ pub(super) struct SwappedSeq {
     pub think_just_ended: bool,
     pub think_skip_count: u32,
     pub require_tool_call: bool,
+    /// F4 (2026-06-02): sticky tool-request flag, preserved across
+    /// snapshot/restore (the grammar state itself is not serializable, so
+    /// this is the only signal that a resumed sequence was tool-active).
+    pub tool_request: bool,
     pub suppress_tool_call: bool,
     /// F60 (2026-04-27): MTP-disable flag preserved across snapshot/restore.
     pub disable_mtp: bool,
@@ -270,4 +390,28 @@ pub(super) struct SwappedSeq {
     pub cached_prompt_tokens: u32,
     pub timeout_at: Option<Instant>,
     pub swap_id: u64,
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::consume_budget;
+
+    #[test]
+    fn consume_budget_decrements_to_zero() {
+        let mut r = 2usize;
+        assert!(consume_budget(&mut r));
+        assert_eq!(r, 1);
+        assert!(consume_budget(&mut r));
+        assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn consume_budget_at_zero_signals_finish_and_never_wraps() {
+        // Regression: a bare `remaining -= 1` at 0 wrapped to usize::MAX in
+        // release builds, unbounding generation (issue #94 ngram runaway),
+        // and panicked in debug builds.
+        let mut r = 0usize;
+        assert!(!consume_budget(&mut r));
+        assert_eq!(r, 0);
+    }
 }

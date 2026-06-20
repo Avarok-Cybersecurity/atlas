@@ -98,6 +98,9 @@ fn build_active_seq_from_prefill(
     ssm_ring_capacity: usize,
 ) -> ActiveSeq {
     let temperature = p.temperature;
+    // F4: sticky tool-request flag — grammar attached OR legacy tool path.
+    // Computed before `p.grammar_state` is moved into the struct below.
+    let tool_request = p.grammar_state.is_some() || use_legacy_tool_call;
     ActiveSeq {
         seq: p.seq,
         session_hash: p.session_hash,
@@ -144,10 +147,12 @@ fn build_active_seq_from_prefill(
         } else {
             p.thinking_budget
         },
+        repetition_detection: p.repetition_detection,
         spontaneous_think_budget: p.spontaneous_think_budget,
         thinking_tokens: 0,
         cached_prompt_tokens: cached_prompt_tok,
         force_end_thinking: false,
+        sentence_defer_count: 0,
         consecutive_confident: 0,
         in_code_fence: false,
         think_end_token,
@@ -163,9 +168,15 @@ fn build_active_seq_from_prefill(
         think_just_ended: false,
         think_skip_count: 0,
         require_tool_call: use_legacy_tool_call,
+        tool_request,
         tool_call_start_token,
         tool_call_opened: false,
         inside_tool_body: false,
+        tool_call_completed: false,
+        post_completion_tool_opens: 0,
+        tool_body_streak_tokens: 0,
+        inside_parameter_body: false,
+        param_body_chars_emitted: 0,
         suppress_tool_call: p.suppress_tool_call,
         disable_mtp: p.disable_mtp,
         content_started: false,

@@ -11,8 +11,11 @@ use super::*;
 #[allow(dead_code)]
 pub struct CompletionRequest {
     pub model: String,
-    #[serde(deserialize_with = "deserialize_prompt")]
-    pub prompt: String,
+    /// OpenAI-compatible `prompt`: a string, an array of strings, an array
+    /// of integer token IDs, or an array of token-ID arrays (batch). The
+    /// token-ID forms bypass tokenization and feed the scheduler verbatim
+    /// (see `PromptInput` and the handler in `api/completions.rs`).
+    pub prompt: PromptInput,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: usize,
     pub temperature: Option<f32>,
@@ -43,23 +46,53 @@ pub struct CompletionRequest {
     pub stop: Vec<String>,
     /// Seed for deterministic sampling (same as chat completions).
     pub seed: Option<u64>,
+    /// Per-request override for the vLLM-anchored token-loop detector
+    /// (see `RepetitionDetectionParams` in `chat_request.rs`). None =
+    /// use server default.
+    #[serde(default)]
+    pub repetition_detection: Option<RepetitionDetectionParams>,
 }
 
-/// Accept `prompt` as a string or array of strings (joined).
-fn deserialize_prompt<'de, D>(d: D) -> Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum RawPrompt {
-        Str(String),
-        Arr(Vec<String>),
-    }
-    match RawPrompt::deserialize(d)? {
-        RawPrompt::Str(s) => Ok(s),
-        RawPrompt::Arr(v) => Ok(v.join("")),
-    }
+/// OpenAI-compatible `prompt` field. Mirrors the four shapes the
+/// `/v1/completions` spec permits:
+///   - `"hello"`              → `Text`
+///   - `[128000, 9906, ...]`  → `TokenIds`     (bypasses tokenization)
+///   - `[[128000], [9906]]`   → `TokenIdBatch` (bypasses tokenization)
+///   - `["hello", "world"]`   → `TextArray`    (joined, then tokenized)
+///
+/// ── serde-untagged ordering rationale ──
+/// `#[serde(untagged)]` tries variants top-to-bottom and accepts the first
+/// that deserializes. The four JSON shapes are mutually exclusive *by value
+/// type*, so there is no real collision:
+///   - A JSON string only matches `Text`.
+///   - An array of integers matches `TokenIds` but never `TextArray`
+///     (integers are not strings) nor `TokenIdBatch` (integers are not
+///     sub-arrays).
+///   - An array of strings matches only `TextArray`.
+///   - An array of arrays matches only `TokenIdBatch`.
+/// The single genuinely ambiguous input is the empty array `[]`, which
+/// satisfies every array variant; it resolves to the first array variant
+/// listed (`TokenIds([])`), i.e. an empty token sequence — semantically
+/// identical to an empty prompt, so ordering is harmless. Integer variants
+/// are listed before `TextArray` so that an all-integer array is never
+/// coerced; out-of-`u32`-range or negative numbers fail every variant and
+/// surface as a clean "did not match any variant" 400 (fail-fast).
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum PromptInput {
+    /// Plain text prompt — tokenized by the server.
+    Text(String),
+    /// Pre-tokenized prompt: integer token IDs fed to the scheduler
+    /// verbatim (no tokenization, no BOS prepended).
+    TokenIds(Vec<u32>),
+    /// Batch of pre-tokenized prompts. The legacy `/v1/completions`
+    /// handler is single-prompt, so the batch is flattened (concatenated)
+    /// into one token sequence, matching the existing string-array
+    /// behavior of joining multiple string prompts.
+    TokenIdBatch(Vec<Vec<u32>>),
+    /// Array of text prompts — joined (matching prior behavior) then
+    /// tokenized.
+    TextArray(Vec<String>),
 }
 
 /// Completion response.

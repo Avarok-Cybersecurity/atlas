@@ -172,6 +172,18 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
             crate::scheduler::CONTENT_LOOP_PERIOD_MAX,
         );
     }
+    // 2026-05-24: ATLAS_DISABLE_WATCHDOGS env var disables ALL
+    // auto-watchdogs (content-loop, inter-tool prose, F2 confidence,
+    // mid-word </think>, thinking-loop). Empirical test toggle —
+    // surface its state prominently at boot.
+    if crate::scheduler::disable_watchdogs() {
+        tracing::warn!(
+            "Model behavior: ALL auto-watchdogs DISABLED via ATLAS_DISABLE_WATCHDOGS=1 \
+             (content-loop, inter-tool prose, F2 confidence early-stop, mid-word </think> \
+             defer, thinking-loop). User-set max_thinking_budget and safety masks unaffected. \
+             Use only for empirical-test runs — re-enable for production."
+        );
+    }
     // Phase-A: per-model watchdog tunables from MODEL.toml [behavior].
     let b = &ptx_set.behavior;
     crate::scheduler::set_watchdog_params(crate::scheduler::WatchdogParams {
@@ -181,6 +193,7 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
         confidence_run_length: b.confidence_run_length,
         fuzzy_repeat_tolerance_div: b.fuzzy_repeat_tolerance_div as usize,
         max_inter_tool_prose: b.max_inter_tool_prose,
+        max_post_think_content_tokens: b.max_post_think_content_tokens,
         rollback_resteer: b.rollback_resteer,
     });
     if !b.confidence_early_stop {

@@ -71,6 +71,54 @@ fn test_grammar_state_basic_json() {
     assert!(state.is_token_allowed(b'{' as u32));
 }
 
+/// #131 regression: a `json_schema` grammar must mask the VERY FIRST token,
+/// not just tokens 2..N. The bug was that `prefill_*_step` sampled the first
+/// decode token with plain `sample_token` (no grammar bitmask), so a leading
+/// prose token (e.g. `H` of "Here", or the schema `name` "suggest") escaped
+/// before the grammar's opening `{` and broke strict parsing. The fix
+/// (`sample_first_token`) applies the bitmask from the initial state — this
+/// asserts the invariant that fix relies on: at generation-start `{` is
+/// grammar-legal while arbitrary leading letters are masked.
+#[test]
+fn test_json_schema_masks_leading_prose_token_at_start() {
+    let vocab = test_vocab();
+    let stop_ids = vec![130i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+
+    let schema = r#"{
+        "type": "object",
+        "properties": {
+            "answer": {"type": "string"}
+        },
+        "required": ["answer"]
+    }"#;
+    let compiled = engine.compile_json_schema(schema).unwrap();
+    let mut state = GrammarState::new(&compiled, engine.vocab_size()).unwrap();
+
+    // Initial-state bitmask must constrain the first token.
+    assert!(
+        state.fill_bitmask(),
+        "json_schema grammar must constrain the first token"
+    );
+
+    // `{` is the only legal structural opener for an object — must be allowed.
+    assert!(
+        state.is_token_allowed(b'{' as u32),
+        "'{{' must be grammar-legal as the first token"
+    );
+
+    // Leading prose tokens that previously LEAKED before `{` must be masked.
+    // `H` = "Here" leak; `s` = the schema-name "suggest" leak from the issue.
+    assert!(
+        !state.is_token_allowed(b'H' as u32),
+        "leading prose 'H' must be masked at generation-start (#131)"
+    );
+    assert!(
+        !state.is_token_allowed(b's' as u32),
+        "schema-name leak 's' (\"suggest\") must be masked at start (#131)"
+    );
+}
+
 #[test]
 fn test_grammar_state_accept_and_terminate() {
     let vocab = test_vocab();

@@ -25,6 +25,12 @@ extend-ignore-identifiers-re = [
 ]
 
 [default.extend-words]
+# `deint` — short form of "deinterleaved" used as the Q|K|V|Z input
+# pointer name in the fused K=2 GDN verify kernel/ops. Not a typo.
+deint = "deint"
+# "subtiles" = sub-tiles: WMMA n-sub-tile partitioning in the strix-hip
+# MoE/dense GEMM kernels (PM4_SUBTILES_PER_WARP). Not a typo of "subtitles".
+subtiles = "subtiles"
 # CUDA device-attribute constant token. Not a typo of `OPTION`.
 OPTIN = "OPTIN"
 # `image_grid_thw` is the HuggingFace tensor name for vision-input
@@ -41,6 +47,11 @@ wht = "wht"
 # `wkv_a_ba`). Domain abbreviation, not the English preposition.
 BA = "BA"
 ba = "ba"
+# `HSA` / `hsa` — AMD ROCm Heterogeneous System Architecture runtime
+# (`libhsa-runtime64`, `hsa_queue_create`, `rocr::HSA`). Appears throughout
+# the SCALE/HIP Strix-Halo porting docs. Not a typo of `HAS`/`has`.
+HSA = "HSA"
+hsa = "hsa"
 # Output-tokens loop variable in Python benchmark scripts (`for ot in ...`).
 ot = "ot"
 # Steps-per-second shorthand in concurrency benchmark output.
@@ -51,6 +62,20 @@ mis = "mis"
 # `abd` — a test-pattern token in the xgrammar FSM tests (`"abc|abd"`,
 # upstream test_fsm.cc FunctionTest7 alternation). Not a typo.
 abd = "abd"
+# `fo` — "forward-output" kernel-handle abbreviation in the GDN FLA example
+# (`k_fo` = gated_delta_rule_chunk_fwd_o handle). Not a typo of `for`/`of`.
+fo = "fo"
+# `tpe` — "tokens per expert" loop variable in the MoE microtest example.
+# Not a typo of `type`.
+tpe = "tpe"
+# `thr` — "threads" abbreviation in CUDA kernel launch-config docs
+# (e.g. `grid [..], 128 thr`). Not a typo of `the`.
+thr = "thr"
+# `RECAL` — "recalibration" log/state token in fp8_calibration. Not `RECALL`.
+RECAL = "RECAL"
+# `unparseable` — valid English spelling variant used in the tool-call parser
+# (the typos default prefers `unparsable`). Keep the existing spelling.
+unparseable = "unparseable"
 
 [default.extend-identifiers]
 # Pattern compounds the checker doesn't handle via the default list.
@@ -65,4 +90,7 @@ extend-exclude = [
     "target/",
     "book/output/",
     "tests/all_models_results*/",
+    # Local dev/benchmark scripts (not shipped); abbreviated local var names
+    # like `ND` (numdrift path) read as typos but aren't user-facing.
+    "bench/",
 ]

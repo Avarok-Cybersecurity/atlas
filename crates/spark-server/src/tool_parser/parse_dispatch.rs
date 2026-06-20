@@ -312,11 +312,9 @@ pub fn parse_tool_calls(text: &str) -> (Option<String>, Vec<ToolCall>) {
     // Triggered by Qwen3.6 cross-format contamination — observed
     // 2026-05-09 OpenClaw stress run where the model issued 5 well-formed
     // qwen3_coder envelopes then switched mid-response to MiniMax-style
-    // bare `<invoke>` blocks. The non-streaming chat_blocking path has
-    // no separate salvage hook (unlike chat_stream's tool_salvage),
-    // so we recover here using the existing `parse_minimax_xml_calls_all`
-    // — same function the streaming detector uses for the inner body
-    // of a MiniMax envelope.
+    // bare `<invoke>` blocks. We recover here using the existing
+    // `parse_minimax_xml_calls_all` — same function the streaming
+    // detector uses for the inner body of a MiniMax envelope.
     if calls.is_empty() && text.contains("<invoke name=") {
         let bare_invoke_calls = super::parse_minimax_xml_calls_all(text);
         if !bare_invoke_calls.is_empty() {

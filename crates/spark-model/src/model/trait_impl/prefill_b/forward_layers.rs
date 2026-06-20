@@ -34,11 +34,8 @@ impl TransformerModel {
         stream: u64,
     ) -> Result<()> {
         let h = self.config.hidden_size;
-        let fp32 = if self.config.use_fp32_residual() {
-            4usize
-        } else {
-            2usize
-        };
+        // BF16 residual is the shipping config (2 bytes/element).
+        let elem_bytes = 2usize;
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
@@ -82,6 +79,9 @@ impl TransformerModel {
             profile: profile_now,
             comm: self.comm_ref(),
             graph_capture: false,
+            // Marconi warm hit: GDN layers replay from a restored SSM state
+            // and must use the bit-faithful WY4 recurrence (see layer.rs).
+            gdn_exact_replay: marconi_skip,
         };
 
         // When proc_count == 1 (warm prefix cache hit), use the decode layer path
@@ -89,7 +89,21 @@ impl TransformerModel {
         // and the decode MoE path, which is ~7x faster per layer than the prefill
         // GEMM path for a single token (0.7ms/layer vs 5ms/layer).
         let use_decode_path = proc_count == 1 && effective_seq_len_start > 0;
-        let layer_kv_write_start = if marconi_skip { 0 } else { kv_write_start };
+        // Marconi warm hit: this pass replays SSM state over [snap_tok,
+        // matched) — positions whose K/V already live in shared prefix-cache
+        // blocks. Pass the per-chunk count of those replay tokens as the
+        // layer write floor so attention layers do NOT rewrite them with
+        // non-bit-exact recomputed values (drift would poison the shared
+        // blocks and ratchet across turns). `seq.cached_prefix_tokens` is
+        // the radix-tree match point; tokens at or past it are new and are
+        // written normally.
+        let layer_kv_write_start = if marconi_skip {
+            seq.cached_prefix_tokens
+                .saturating_sub(effective_seq_len_start)
+                .min(proc_count)
+        } else {
+            kv_write_start
+        };
         let prefill_t0 = if profile_now {
             self.gpu.synchronize(stream)?;
             Some(std::time::Instant::now())
@@ -196,11 +210,7 @@ impl TransformerModel {
             {
                 self.gpu.synchronize(stream)?;
                 let last_start = (proc_count - 1) * h;
-                let (vals, _) = if self.config.use_fp32_residual() {
-                    self.readback_f32(hidden.offset(last_start * fp32), h)?
-                } else {
-                    self.readback_bf16(hidden.offset(last_start * fp32), h)?
-                };
+                let (vals, _) = self.readback_bf16(hidden.offset(last_start * elem_bytes), h)?;
                 let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
                 std::fs::create_dir_all(&dir).ok();
                 let path = std::path::Path::new(&dir).join(format!("atlas_L{i}.bin"));
@@ -218,7 +228,7 @@ impl TransformerModel {
                 self.gpu.synchronize(stream)?;
                 let last_start = (proc_count - 1) * h;
                 let (vals, norm) =
-                    self.readback_bf16(hidden.offset(last_start * fp32), h.min(16))?;
+                    self.readback_bf16(hidden.offset(last_start * elem_bytes), h.min(16))?;
                 let lt = self.config.layer_type(i);
                 tracing::warn!(
                     "DIAG L{i} ({lt:?}) last_tok_norm={norm:.4} first2={:.4?}",

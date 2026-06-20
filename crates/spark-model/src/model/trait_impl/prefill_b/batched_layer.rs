@@ -141,11 +141,7 @@ impl TransformerModel {
         debug_assert_eq!(n, seqs_proc_start.len());
         let chunk_len = meta.chunk_len as usize;
         let h = ctx.config.hidden_size;
-        let dtype_bytes = if ctx.config.use_fp32_residual() {
-            4usize
-        } else {
-            2usize
-        };
+        let dtype_bytes = 2usize;
 
         // ── Phase 1: per-stream projections + conv1d + L2 norm ──
         // Each stream's data lands in gdn_bufs at offset `b * chunk_len`.

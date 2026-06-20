@@ -55,6 +55,7 @@ fn test_forward_context_lifetime() {
         profile: false,
         comm: None,
         graph_capture: false,
+        gdn_exact_replay: false,
     };
 
     assert_eq!(ctx.config.hidden_size, 2048);

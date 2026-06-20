@@ -11,6 +11,13 @@ fn s(chunk_len: usize, chunk_start: usize, is_last: bool) -> (usize, usize, bool
     (chunk_len, chunk_start, is_last)
 }
 
+// Scratch capacity large enough that the #110 footprint check never trips for
+// the structural-eligibility tests below (those assert the chunk_len/start/
+// is_last/arena/model gates, not the scratch fit). 8 MiB ≫ any footprint here.
+const BIG_SCRATCH: usize = 8 * 1024 * 1024;
+const TOP_K: usize = 8;
+const MROPE: bool = false;
+
 #[test]
 fn rejects_under_two_streams() {
     assert!(!check_kernel_batched_eligible(
@@ -18,14 +25,20 @@ fn rejects_under_two_streams() {
         0,
         8192,
         "qwen3_next",
-        256
+        256,
+        BIG_SCRATCH,
+        TOP_K,
+        MROPE,
     ));
     assert!(!check_kernel_batched_eligible(
         vec![s(4096, 0, false)],
         1,
         8192,
         "qwen3_next",
-        256
+        256,
+        BIG_SCRATCH,
+        TOP_K,
+        MROPE,
     ));
 }
 
@@ -37,6 +50,9 @@ fn accepts_uniform_n_2() {
         8192,
         "qwen3_next",
         256,
+        BIG_SCRATCH,
+        TOP_K,
+        MROPE,
     ));
 }
 
@@ -48,6 +64,9 @@ fn rejects_mismatched_chunk_len() {
         16384,
         "qwen3_next",
         256,
+        BIG_SCRATCH,
+        TOP_K,
+        MROPE,
     ));
 }
 
@@ -61,6 +80,9 @@ fn rejects_mismatched_chunk_start() {
         16384,
         "qwen3_next",
         256,
+        BIG_SCRATCH,
+        TOP_K,
+        MROPE,
     ));
 }
 
@@ -72,6 +94,9 @@ fn rejects_mismatched_is_last() {
         8192,
         "qwen3_next",
         256,
+        BIG_SCRATCH,
+        TOP_K,
+        MROPE,
     ));
 }
 
@@ -84,6 +109,9 @@ fn rejects_arena_overflow() {
         4100,
         "qwen3_next",
         256,
+        BIG_SCRATCH,
+        TOP_K,
+        MROPE,
     ));
 }
 
@@ -95,6 +123,9 @@ fn rejects_mla_model() {
         8192,
         "mistral",
         128,
+        BIG_SCRATCH,
+        TOP_K,
+        MROPE,
     ));
 }
 
@@ -107,6 +138,9 @@ fn rejects_large_head_dim() {
         8192,
         "gemma4",
         512,
+        BIG_SCRATCH,
+        TOP_K,
+        MROPE,
     ));
 }
 
@@ -118,5 +152,48 @@ fn accepts_n_4_uniform() {
         8192,
         "qwen3_next",
         256,
+        BIG_SCRATCH,
+        TOP_K,
+        MROPE,
     ));
+}
+
+#[test]
+fn rejects_scratch_footprint_overflow() {
+    // #110 regression lock: the staging footprint must fit in scratch even
+    // when the token-arena check passes. The deterministic crash repro was
+    // n=4, chunk_len=935, top_k=8, MRoPE → 374_352 B footprint vs a 348_840 B
+    // scratch. With that exact (too-small) scratch the batch is INELIGIBLE
+    // (routes to per-stream from clean state, no mid-Phase-A bail), but with
+    // the #110 enlarged scratch sizing it becomes eligible again.
+    let streams = [s(935, 0, false); 4];
+    let arena = 4096; // 4×935 = 3740 ≤ 4096 → arena check passes
+    let too_small = 348_840;
+    let enlarged = spark_runtime::buffers::q12_batched_scratch_bytes(4, 935, 8, true);
+    assert!(
+        !check_kernel_batched_eligible(
+            streams.iter().copied(),
+            4,
+            arena,
+            "qwen3_next",
+            256,
+            too_small,
+            8,
+            true,
+        ),
+        "footprint must NOT fit in the old 348_840 B scratch"
+    );
+    assert!(
+        check_kernel_batched_eligible(
+            streams.iter().copied(),
+            4,
+            arena,
+            "qwen3_next",
+            256,
+            enlarged,
+            8,
+            true,
+        ),
+        "footprint must fit once scratch is sized to it"
+    );
 }

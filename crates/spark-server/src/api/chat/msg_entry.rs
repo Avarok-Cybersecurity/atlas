@@ -32,6 +32,14 @@ pub(super) struct MsgEntry {
     /// so the Jinja template can render
     /// `<|vision_start|><|image_pad|><|vision_end|>` markers.
     pub(super) image_count: usize,
+    /// Historical reasoning trace from a prior assistant turn (the
+    /// `<think>...</think>` body). Forwarded from `IncomingMessage`
+    /// and passed to the Jinja template so the template can
+    /// rehydrate the historical `<think>` block. Empty/None ⇒ no
+    /// `<think>` block emitted for this message — prevents the
+    /// empty-`<think></think>` poisoning pattern that triggers
+    /// premature `<|im_end|>` (vLLM/SGLang #131, MLC commit d75d64e).
+    pub(super) reasoning_content: Option<String>,
 }
 
 /// Outputs of [`build_msg_entries`]. Bundled as a struct because
@@ -41,7 +49,6 @@ pub(super) struct BuildOut {
     pub(super) cwd_hint: Option<String>,
     pub(super) image_pixels: Vec<(Vec<f32>, usize, usize)>,
     pub(super) image_pad_counts: Vec<usize>,
-    pub(super) consecutive_tool_errors: u32,
 }
 
 #[allow(clippy::result_large_err)]
@@ -54,31 +61,20 @@ pub(super) fn build_msg_entries(
     let mut all_images: Vec<String> = Vec::new();
     let mut image_pad_counts: Vec<usize> = Vec::new();
     let mut consecutive_tool_errors: u32 = 0;
+    // BW1 bash-wandering watchdog: tally tool-call productivity across the
+    // conversation so a steering nudge can fire if the agent explores/runs
+    // many commands without ever writing the deliverable (gap #9).
+    let mut total_tool_calls: usize = 0;
+    let mut productive_tool_calls: usize = 0;
 
-    // Find the last real user query (not a tool response). Only
-    // assistant messages AFTER this index get the empty `<think>`
-    // wrapper (Jinja template pattern).
-    let last_query_index = req
-        .messages
-        .iter()
-        .rposition(|m| m.role == "user" && !m.content.text.starts_with("<tool_response>"))
-        .unwrap_or(req.messages.len().saturating_sub(1));
-
+    // F6 (2026-05-26): `last_query_index` was previously used to gate
+    // an empty `<think>\n\n</think>\n\n` injection for historical
+    // assistant turns. The Jinja template already does this gating
+    // itself (via its own `ns.last_query_index` computation) and the
+    // injection here was the source of empty-think poisoning. Removed.
     for (msg_idx, m) in req.messages.iter().enumerate() {
-        let mut text = m.content.text.clone();
-
-        // Historical assistant messages after the last user query
-        // get an empty think block to match training format.
-        // Skip when thinking is suppressed in tool turns (the
-        // Jinja template handles think wrapping itself).
-        let thinking_suppressed = tools_active && !state.behavior.thinking_in_tools;
-        if m.role == "assistant"
-            && state.tokenizer.supports_thinking()
-            && msg_idx > last_query_index
-            && !thinking_suppressed
-        {
-            text = format!("<think>\n\n</think>\n\n{text}");
-        }
+        let _ = msg_idx;
+        let text = m.content.text.clone();
 
         // Preserve structured tool_calls for the Jinja template.
         // Always extract from assistant messages — past turns may
@@ -110,10 +106,25 @@ pub(super) fn build_msg_entries(
             None
         };
 
+        // BW1: tally tool-call productivity (write/edit/build-run vs explore).
+        if m.role == "assistant"
+            && let Some(ref tcs) = m.tool_calls
+        {
+            for tc in tcs {
+                total_tool_calls += 1;
+                let args: serde_json::Value =
+                    serde_json::from_str(&tc.function.arguments).unwrap_or_default();
+                if crate::hint_injector::tool_call_is_productive(&tc.function.name, &args) {
+                    productive_tool_calls += 1;
+                }
+            }
+        }
+
         // Tool-response messages: pass raw content; Jinja template
         // handles `<tool_response>` wrapping and consecutive
         // grouping.
         if tools_active && m.role == "tool" {
+            let mut text = text;
             if crate::hint_injector::looks_like_error(&text) {
                 consecutive_tool_errors += 1;
                 crate::hint_injector::inject_hints(&mut text, consecutive_tool_errors);
@@ -125,16 +136,43 @@ pub(super) fn build_msg_entries(
                 content: text,
                 tool_calls: None,
                 image_count: 0,
+                reasoning_content: None,
             });
             continue;
         }
 
         let image_count = m.content.images.len();
+        // Wave 3 (2026-05-26): `ATLAS_STRIP_REASONING_HISTORY=1` drops
+        // historical reasoning_content entirely. Matches MLC commit
+        // d75d64e (Apr 2026) `strip_reasoning_in_history` for qwen3,
+        // whose PR description matches Atlas's Wave-1 failure mode
+        // verbatim: echoing prior `<think>` traces makes the next turn
+        // emit `<|im_end|>` prematurely AND seeds loop-attractor drift
+        // on prior-failed-attempt token patterns (the `lean://` loop
+        // observed in the Wave-1 opencode probe).
+        let strip_reasoning = std::env::var("ATLAS_STRIP_REASONING_HISTORY")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
         messages.push(MsgEntry {
             role: m.role.clone(),
             content: text,
             tool_calls: tool_calls_json,
             image_count,
+            // F1: forward reasoning_content for assistant messages only.
+            // Wave 3: when strip_reasoning=true, drop it for ALL turns,
+            // forcing the template back to the pre-F1 "clean content
+            // only" rendering shape — but without re-introducing the
+            // empty-`<think>\n\n</think>\n\n` poisoning, because F6's
+            // template change skips the wrapper when reasoning_content
+            // is empty.
+            reasoning_content: if m.role == "assistant" && !strip_reasoning {
+                m.reasoning_content
+                    .as_ref()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            } else {
+                None
+            },
         });
         if !m.content.images.is_empty() {
             for img_uri in &m.content.images {
@@ -223,12 +261,23 @@ pub(super) fn build_msg_entries(
     // If no vision_config (text-only model), image_pad_counts stays
     // 0 and images are silently dropped on the encoder side.
 
+    // BW1 bash-wandering watchdog: if the agent has run many tool calls with
+    // no productive file output, append a steering nudge to the most recent
+    // tool response (what the model reads just before its next action). Gated
+    // by ATLAS_BASH_WANDER_WATCHDOG (PCND, default-off).
+    if tools_active
+        && let Some(hint) =
+            crate::hint_injector::bash_wander_hint(total_tool_calls, productive_tool_calls)
+        && let Some(last_tool) = messages.iter_mut().rev().find(|e| e.role == "tool")
+    {
+        last_tool.content.push_str(&hint);
+    }
+
     Ok(BuildOut {
         messages,
         cwd_hint,
         image_pixels,
         image_pad_counts,
-        consecutive_tool_errors,
     })
 }
 

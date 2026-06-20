@@ -27,6 +27,11 @@ metal = [
 # Kept off the bare `metal` feature so a metal-feature library build
 # doesn't drag in the tokenizer crate.
 metal-example = ["metal", "dep:tokenizers", "dep:memmap2", "dep:safetensors"]
+# Opt-in gate for the GPU kernel microtest examples. NOT in `default`, so the
+# no-GPU CI `cargo test --workspace` skips building them (they link CUDA
+# driver symbols — cuGraph*/cuStream*/cuMem* — that aren't available on the
+# CI runner). Build on a real GPU host with `--features gpu-examples`.
+gpu-examples = []
 
 [dependencies]
 atlas-core = { workspace = true }
@@ -53,7 +58,7 @@ parking_lot = { workspace = true }
 # below so default Linux builds don't pull these in.
 tokenizers = { version = "0.23", optional = true, default-features = false, features = ["onig"] }
 memmap2 = { version = "0.9", optional = true }
-safetensors = { version = "0.7", optional = true }
+safetensors = { version = "0.8", optional = true }
 
 # End-to-end Qwen3.5-4B-MLX-8bit decode driver. Loads weights via
 # `MlxInt8Weight`, kernel handles via `Qwen35Kernels::resolve`, and
@@ -74,3 +79,81 @@ spark-runtime = { path = "../spark-runtime", default-features = false, features 
 
 [lints]
 workspace = true
+
+# GPU kernel microtest examples — gated on the non-default `gpu-examples`
+# feature so no-GPU CI skips building them (they link CUDA driver symbols).
+[[example]]
+name = "w8a16_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "w8a16t_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "moe_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "dense_gemm_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "fp8gemm_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "inferspark_attn_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "moe_shared_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "moe_silu_down_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "moe_blend_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "moe_topk_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_split4_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_wy_verify_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_verify_fused_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "rope_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kernel_probe"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_fla_e2e_gateb"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_chunk_delta_h_gateb"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_recompute_wu_gateb"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_batched_repro"
+required-features = ["cuda", "gpu-examples"]

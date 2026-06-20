@@ -10,6 +10,62 @@ use spark_runtime::weights::{WeightDtype, WeightStore};
 
 use super::*;
 
+/// Runtime tag for the actual quantization format of a weight buffer in
+/// GPU memory. Distinct from on-disk format (which `Nvfp4Variant` describes).
+/// Used to assert at kernel-call sites that the weight matches what the
+/// kernel expects — preventing silent leaks like FP8-block-scaled data
+/// being passed through a NVFP4 GEMM, or single-scale FP8 being passed
+/// through a kernel that expects per-row scales.
+///
+/// Phase 2c day-3 follow-up (2026-05-24): introduced after the audit at
+/// `bench/phase2c-kv-sweep/CAUSAL-PATHWAY-AUDIT.md` found that block-scaled
+/// FP8 weights from disk were being silently stuffed into the `row_scale`
+/// field of `Fp8Weight` (which documents itself as per-row F32), causing
+/// either crashes (when concat math read past the smaller block-scale
+/// tensor) or — if the concat dimension happened to fit — silent precision
+/// loss because downstream kernels (`fp8_gemm_n128`) take no scale arg
+/// and assume single-scale FP8.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeightQuantFormat {
+    /// BF16 dense — no quantization. Kernel must consume BF16 inputs.
+    Bf16,
+    /// FP8 E4M3 weight + per-row F32 dequant scale (`[N]` f32).
+    /// Produced by runtime quantization from BF16 (`Fp8DenseWeight`)
+    /// or by checkpoints that ship per-row scales.
+    /// Consumed by `w8a16_gemv` / `w8a16_gemm`.
+    Fp8PerRow,
+    /// FP8 E4M3 weight + per-block BF16 dequant scale (`[N/BS, K/BS]` BF16).
+    /// Standard Qwen-team FP8 release format (BS=128). NO Atlas kernel
+    /// currently consumes this directly for SSM — kernels expect either
+    /// dequant-to-BF16-then-NVFP4 (current path) or single-scale FP8.
+    /// **Block-scaled FP8 GEMV/GEMM is the missing kernel** (open task).
+    Fp8BlockScaled,
+    /// FP8 E4M3 weight with a single global scale baked into the kernel
+    /// (or implicit). Produced by `bf16_to_fp8` from a BF16 dense.
+    /// Consumed by `fp8_gemm_n128` (takes no scale argument).
+    Fp8SingleScale,
+    /// NVFP4: packed E2M1 nibbles + per-group FP8 block scales + per-tensor
+    /// F32 scale. Consumed by `w4a16_gemv`, `w4a16_gemm`, and variants.
+    Nvfp4,
+}
+
+impl WeightQuantFormat {
+    /// Assert that `self` matches `expected`; panic with a descriptive
+    /// message if not. Used at kernel-call sites to prevent silent leaks
+    /// of one quant format into a kernel that expects a different one.
+    #[inline]
+    #[track_caller]
+    pub fn expect(self, expected: WeightQuantFormat, context: &str) {
+        if self != expected {
+            panic!(
+                "WeightQuantFormat mismatch at {context}: kernel expects {expected:?}, \
+                 but the weight buffer is tagged {self:?}. This is a silent quant-leak \
+                 that would produce wrong outputs without this assertion."
+            );
+        }
+    }
+}
+
 /// NVFP4 quantized weight: packed E2M1 data + FP8 block scales + FP32 per-tensor scale.
 #[derive(Debug, Clone, Copy)]
 pub struct QuantizedWeight {
@@ -138,20 +194,35 @@ pub struct Fp8DenseWeight {
 
 /// FP8 E4M3 checkpoint weight loaded directly from safetensors.
 ///
-/// Unlike [`Fp8DenseWeight`] (runtime-quantized from BF16 with per-row scales),
-/// this struct represents an FP8 weight that was already quantized on disk
-/// with per-row f32 scales. Used by the `w8a16_gemv` LUT-based kernel for
-/// native FP8 serving without converting to NVFP4.
+/// This struct carries an FP8 weight buffer along with its dequantization
+/// scale. The exact scale layout depends on the [`WeightQuantFormat`] tag
+/// in `scale_format`:
+///   - [`WeightQuantFormat::Fp8PerRow`] — `scale` is `[N]` f32 per-row.
+///   - [`WeightQuantFormat::Fp8BlockScaled`] — `scale` is `[N/BS, K/BS]`
+///     BF16 per-block (BS = 128 typically, the Qwen FP8 release convention).
+///   - [`WeightQuantFormat::Fp8SingleScale`] — `scale` is the NULL DevicePtr;
+///     a single global scale is baked into the kernel that consumes this.
+///
+/// **Always check `scale_format` before reading `scale` as a particular
+/// shape.** Prior to the format tag (Phase 2c day-3 follow-up), the
+/// `Fp8Weight` struct silently mixed all three layouts in a single
+/// field, causing a `cuMemcpyDtoDAsync_v2 INVALID_VALUE` crash when the
+/// SSM build path tried to concat per-row F32 scales out of a buffer
+/// that actually held per-block BF16 scales (lower memory than expected).
 #[derive(Debug, Clone, Copy)]
 pub struct Fp8Weight {
     /// [N, K] FP8 E4M3 weight bytes on GPU.
     pub weight: DevicePtr,
-    /// `[N]` f32 per-row dequant scale on GPU.
+    /// Dequantization scale pointer. **Shape and dtype depend on
+    /// `scale_format`** — see struct docs.
     pub row_scale: DevicePtr,
     /// Output dimension (rows).
     pub n: u32,
     /// Input dimension (columns).
     pub k: u32,
+    /// Tag for the `row_scale` buffer's actual format. Asserted at
+    /// kernel call sites via `WeightQuantFormat::expect(...)`.
+    pub scale_format: WeightQuantFormat,
 }
 
 /// FP8 E4M3 weight with transposed layout for coalesced prefill GEMM.
@@ -163,7 +234,7 @@ pub struct Fp8Weight {
 pub struct Fp8WeightTransposed {
     /// [K, N] FP8 E4M3 transposed weight on GPU.
     pub weight_t: DevicePtr,
-    /// [K/128, N/128] BF16 transposed block scales on GPU.
+    /// [K/128, N/128] FP32 transposed block scales on GPU (widened at load).
     pub scale_t: DevicePtr,
     pub n: u32,
     pub k: u32,
@@ -171,7 +242,8 @@ pub struct Fp8WeightTransposed {
 
 impl Fp8Weight {
     /// Transpose this FP8 weight for coalesced prefill GEMM.
-    /// Allocates new GPU buffers for `B_t[K,N]` and `scale_t[K/128, N/128]`.
+    /// Allocates new GPU buffers for `B_t[K,N]` (FP8 bytes) and
+    /// `scale_t[K/128, N/128]` (FP32; `row_scale` is already FP32).
     pub fn transpose_for_gemm(
         &self,
         gpu: &dyn GpuBackend,
@@ -194,10 +266,13 @@ impl Fp8Weight {
             stream,
         )?;
 
-        // Allocate transposed scale: [K/128, N/128] × 2 bytes (BF16)
+        // Allocate transposed scale: [K/128, N/128] × 4 bytes (FP32).
+        // `row_scale` is now an FP32 block-scale buffer (widened at load), and
+        // `transpose_block_scale` is an FP32→FP32 transpose — see
+        // `load_fp8_block_scaled_as_fp8weight` / `w8a16_gemm_t.cu`.
         let n_blocks = n.div_ceil(128);
         let k_blocks = k.div_ceil(128);
-        let scale_t = gpu.alloc(k_blocks * n_blocks * 2)?;
+        let scale_t = gpu.alloc(k_blocks * n_blocks * 4)?;
         crate::layers::ops::transpose_block_scale(
             gpu,
             transpose_scale_k,

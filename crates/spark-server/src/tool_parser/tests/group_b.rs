@@ -411,3 +411,7 @@ fn parse_mistral_with_leading_content() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].function.name, "get_weather");
 }
+
+// MTP / speculative-decode fragmentation robustness tests live in
+// the sibling `streaming_frag.rs` module to keep this file under the
+// 500-LoC cap.

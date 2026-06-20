@@ -2,9 +2,10 @@
 
 //! TP/EP topology resolution + NCCL communicator init.
 
-// `Context` only used by the cuda-feature `init_nccl_comm` to wrap
-// NCCL bootstrap errors; metal builds don't reach that path.
-#[cfg(feature = "cuda")]
+// `Context` only used by the nccl-feature `init_nccl_comm` to wrap
+// NCCL bootstrap errors; cuda-without-nccl and metal builds don't
+// reach that path.
+#[cfg(feature = "nccl")]
 use anyhow::Context;
 use anyhow::Result;
 
@@ -124,7 +125,7 @@ pub(crate) fn resolve_topology(
     })
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(feature = "nccl")]
 pub(crate) fn init_nccl_comm(
     args: &cli::ServeArgs,
     gpu: &dyn spark_runtime::gpu::GpuBackend,
@@ -154,6 +155,27 @@ pub(crate) fn init_nccl_comm(
     Ok(Some(
         std::sync::Arc::new(backend) as std::sync::Arc<dyn spark_comm::CommBackend>
     ))
+}
+
+/// CUDA-without-NCCL variant (SCALE/AMD gfx1151): the CUDA compute
+/// backend is active but no NCCL library is linked, so multi-GPU
+/// collectives are unavailable. `world_size > 1` is rejected explicitly
+/// so a misconfigured `--rank > 0` invocation fails fast instead of
+/// silently degrading to single-rank.
+#[cfg(all(feature = "cuda", not(feature = "nccl")))]
+pub(crate) fn init_nccl_comm(
+    _args: &cli::ServeArgs,
+    _gpu: &dyn spark_runtime::gpu::GpuBackend,
+    world_size: usize,
+) -> Result<Option<std::sync::Arc<dyn spark_comm::CommBackend>>> {
+    if world_size > 1 {
+        anyhow::bail!(
+            "multi-rank NCCL is not available in this build (cuda feature \
+             without nccl — SCALE/AMD gfx1151 has no NCCL library); \
+             single-device only"
+        );
+    }
+    Ok(None)
 }
 
 /// Metal-feature variant: NCCL multi-GPU isn't reachable on a single

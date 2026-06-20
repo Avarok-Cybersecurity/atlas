@@ -55,13 +55,34 @@ impl TransformerModel {
                 && !self.tokens_have_vision_pad(&seq.tokens)
                 && seq.hss_window_start() == 0
             {
-                let acquired = self.prefix_cache.insert(
-                    &seq.tokens,
-                    &seq.block_table,
-                    &seq.disk_block_ids,
-                    bs,
-                    seq.prompt_len,
-                );
+                // #155: leaf snapshot at FULL length (prompt + generated) so
+                // the next warm hit restores at this turn's END and replays
+                // ~nothing. Save logic + the secondary-stream ordering guard
+                // live in decode_checkpoint.rs (finish_leaf_snapshot).
+                let finish_snap = self.finish_leaf_snapshot(seq);
+                let acquired = if let Some(snap_id) = finish_snap {
+                    let (displaced, acquired) = self.prefix_cache.insert_with_snapshot(
+                        &seq.tokens,
+                        &seq.block_table,
+                        &seq.disk_block_ids,
+                        bs,
+                        snap_id,
+                        seq.session_hash,
+                        seq.prompt_len,
+                    );
+                    if let Some(old) = displaced {
+                        self.ssm_snapshots.free(old);
+                    }
+                    acquired
+                } else {
+                    self.prefix_cache.insert(
+                        &seq.tokens,
+                        &seq.block_table,
+                        &seq.disk_block_ids,
+                        bs,
+                        seq.prompt_len,
+                    )
+                };
                 super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
                 // Bump KV block ref_counts so the prefix cache "owns" a reference.
                 // This keeps blocks alive after free_sequence drops the sequence's ref.
@@ -81,11 +102,21 @@ impl TransformerModel {
         // CRITICAL: release SSM slot FIRST to prevent slot leak if later
         // operations fail (e.g. after sticky CUDA error 700). The slot is a
         // CPU-side resource; its release must not be gated on GPU success.
-        let slot_to_release = if seq.slot_idx < self.ssm_pool.max_slots {
-            Some(seq.slot_idx)
-        } else {
-            None
-        };
+        //
+        // Slot-reuse sentinel: the scheduler sets `slot_idx = usize::MAX` on a
+        // retired sequence AFTER `compact_sequence` migrated this sequence's
+        // pool slot to the surviving (swapped-in) sequence. In that case THIS
+        // sequence no longer owns the slot — the survivor's guard does — so we
+        // must NOT release it (that would be a double-release: the survivor's
+        // guard still owns the same index). We still `take()` the guard to make
+        // its Drop a no-op, but discard the index without pushing it back.
+        //
+        // On the normal teardown path (`slot_idx < max_slots`), `take()` yields
+        // the owned index and we release it exactly once. `take()` also makes
+        // the guard's Drop a no-op so abort/panic cannot double-release.
+        let slot_reused_by_compact = seq.slot_idx >= self.ssm_pool.max_slots;
+        let taken = seq.ssm_slot.as_mut().and_then(|g| g.take());
+        let slot_to_release = if slot_reused_by_compact { None } else { taken };
         if let Some(slot) = slot_to_release {
             let stream = self.gpu.default_stream();
             if let Err(e) = self.ssm_pool.zero_slot(slot, self.gpu.as_ref(), stream) {
@@ -194,6 +225,22 @@ impl TransformerModel {
         Ok(())
     }
 
+    /// Disown a retired sequence's SSM slot because `compact_sequence` migrated
+    /// it to a surviving sequence. Takes the slot out of this sequence's RAII
+    /// guard WITHOUT releasing it (the survivor's guard now owns it) and sets
+    /// the `slot_idx = usize::MAX` reuse sentinel. Must be called by the
+    /// scheduler immediately after a successful `compact_sequence` that reuses
+    /// THIS sequence's slot, and BEFORE any fallible step (e.g. swap-out
+    /// `save_sequence_state`) that could drop the sequence early — otherwise the
+    /// guard's Drop would re-release the migrated slot (double-release).
+    pub(super) fn detach_slot_for_reuse_dispatch(&self, seq: &mut SequenceState) {
+        if let Some(g) = seq.ssm_slot.as_mut() {
+            // Discard the owned index without pushing it to the free list.
+            let _ = g.take();
+        }
+        seq.slot_idx = usize::MAX;
+    }
+
     pub(super) fn compact_sequence_dispatch(
         &self,
         seq: &mut SequenceState,
@@ -264,7 +311,27 @@ impl TransformerModel {
         // could hand the old_slot back to a new sequence while the copy's source
         // reads are still in flight — cross-seq race that produces partial data.
         self.gpu.synchronize(stream)?;
-        self.ssm_pool.release_slot(old_slot);
+        // Slot-migration is an ownership TRANSFER, not a free: this sequence
+        // keeps a live slot (the NEW one). Take the old idx out of the guard so
+        // its Drop won't re-release it, release the old slot exactly once, then
+        // re-point the guard at the new slot it now owns. This preserves the
+        // exactly-once invariant: old_slot is pushed here (once) and new_slot
+        // will be pushed by whichever path later frees THIS sequence (once).
+        if let Some(g) = seq.ssm_slot.as_mut() {
+            // Guard owned `old_slot`; drop that ownership before releasing.
+            let owned = g.take();
+            debug_assert_eq!(
+                owned,
+                Some(old_slot),
+                "compact_sequence: guard owned {owned:?}, expected old_slot {old_slot}"
+            );
+            self.ssm_pool.release_slot(old_slot);
+            g.migrate(new_slot);
+        } else {
+            // No guard (e.g. mock model with no SSM pool): preserve the legacy
+            // explicit release so behavior is unchanged where there is no guard.
+            self.ssm_pool.release_slot(old_slot);
+        }
         Ok(())
     }
 

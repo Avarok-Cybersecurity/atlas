@@ -70,6 +70,24 @@ pub(crate) struct SsmSnapshotPool {
     /// (equals `max_batch_size`). A sequence's SSM-pool `slot_idx` must
     /// be `< decode_max_seqs` to use the decode region.
     pub(super) decode_max_seqs: usize,
+    /// Last-token post-final-norm hidden state for each Marconi snapshot
+    /// slot. Single buffer of `num_slots * hidden_bytes`; slot `s` lives
+    /// at `offset(s * hidden_bytes)`. NULL when Marconi is disabled.
+    ///
+    /// Marconi's leaf snapshot stores SSM recurrent state *after* the last
+    /// token (state@N). On an exact full-prompt hit the engine must
+    /// produce the first generated token's logits — which normally come
+    /// from re-running the last prompt token's forward. For SSM layers
+    /// that re-run would apply the last token's recurrent update a second
+    /// time on top of state@N (double-advance → corruption). Instead we
+    /// stash the last token's post-norm hidden here at save time and feed
+    /// it straight to `lm_head` on the hit, skipping any SSM re-run.
+    pub(super) hidden_snapshot: DevicePtr,
+    /// Byte size of one slot's last-token hidden (`hidden_size * 2`, BF16).
+    pub(super) hidden_bytes: usize,
+    /// Marconi slots that currently hold a valid `hidden_snapshot` entry
+    /// (only leaf saves populate it; intermediate checkpoints do not).
+    pub(super) slot_has_hidden: Mutex<std::collections::HashSet<usize>>,
 }
 
 impl SsmSnapshotPool {
@@ -87,6 +105,7 @@ impl SsmSnapshotPool {
         num_ssm_layers: usize,
         decode_ring_slots: usize,
         decode_max_seqs: usize,
+        hidden_bytes: usize,
         gpu: &dyn GpuBackend,
     ) -> Result<Self> {
         let decode_enabled = num_ssm_layers > 0 && decode_ring_slots > 0 && decode_max_seqs > 0;
@@ -106,16 +125,21 @@ impl SsmSnapshotPool {
                 decode_conv_snapshots: Vec::new(),
                 decode_ring_slots: 0,
                 decode_max_seqs: 0,
+                hidden_snapshot: DevicePtr::NULL,
+                hidden_bytes,
+                slot_has_hidden: Mutex::new(std::collections::HashSet::new()),
             });
         }
 
         let mut h_snapshots = Vec::new();
         let mut conv_snapshots = Vec::new();
+        let mut hidden_snapshot = DevicePtr::NULL;
         if marconi_enabled {
             for _ in 0..num_ssm_layers {
                 h_snapshots.push(gpu.alloc(num_slots * h_bytes)?);
                 conv_snapshots.push(gpu.alloc(num_slots * conv_bytes)?);
             }
+            hidden_snapshot = gpu.alloc(num_slots * hidden_bytes)?;
         }
 
         let mut decode_h_snapshots = Vec::new();
@@ -158,6 +182,9 @@ impl SsmSnapshotPool {
             decode_conv_snapshots,
             decode_ring_slots: if decode_enabled { decode_ring_slots } else { 0 },
             decode_max_seqs: if decode_enabled { decode_max_seqs } else { 0 },
+            hidden_snapshot,
+            hidden_bytes,
+            slot_has_hidden: Mutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -269,6 +296,9 @@ impl SsmSnapshotPool {
             Some(s) => s,
             None => return Ok(None),
         };
+        // Reusing a freed slot: drop any stale last-token hidden tag. The
+        // caller re-populates it via `save_hidden` for leaf snapshots only.
+        self.slot_has_hidden.lock().remove(&snap_slot);
         for i in 0..self.num_ssm_layers {
             gpu.copy_d2d_async(
                 main_pool.h_state(i, ssm_slot),
@@ -330,7 +360,60 @@ impl SsmSnapshotPool {
 
     /// Return a snapshot slot to the free list.
     pub(super) fn free(&self, snap_slot: usize) {
+        self.slot_has_hidden.lock().remove(&snap_slot);
         self.free_slots.lock().push(snap_slot);
+    }
+
+    /// Stash the last-token post-final-norm hidden (`hidden_bytes`, BF16)
+    /// for a leaf snapshot slot. Used so an exact full-prompt hit can emit
+    /// the first token's logits via `lm_head` without re-running the last
+    /// token through the SSM layers (which would double-advance the
+    /// recurrent state). Only leaf saves call this; intermediate
+    /// checkpoints leave the slot untagged.
+    pub(super) fn save_hidden(
+        &self,
+        snap_slot: usize,
+        last_hidden: DevicePtr,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        if !self.is_enabled() || self.hidden_snapshot.is_null() {
+            return Ok(());
+        }
+        gpu.copy_d2d_async(
+            last_hidden,
+            self.hidden_snapshot.offset(snap_slot * self.hidden_bytes),
+            self.hidden_bytes,
+            stream,
+        )?;
+        self.slot_has_hidden.lock().insert(snap_slot);
+        Ok(())
+    }
+
+    /// Whether `snap_slot` holds a valid last-token hidden (leaf snapshot).
+    pub(super) fn has_hidden(&self, snap_slot: usize) -> bool {
+        self.slot_has_hidden.lock().contains(&snap_slot)
+    }
+
+    /// Restore the stashed last-token hidden of `snap_slot` into `dst`
+    /// (the `norm_output` buffer), ready for `lm_head`.
+    pub(super) fn restore_hidden(
+        &self,
+        snap_slot: usize,
+        dst: DevicePtr,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        if self.hidden_snapshot.is_null() {
+            bail!("SSM hidden snapshot region not allocated");
+        }
+        gpu.copy_d2d_async(
+            self.hidden_snapshot.offset(snap_slot * self.hidden_bytes),
+            dst,
+            self.hidden_bytes,
+            stream,
+        )?;
+        Ok(())
     }
 
     /// Try to reclaim a snapshot slot by evicting the LRU snapshot from the

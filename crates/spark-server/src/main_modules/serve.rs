@@ -36,6 +36,30 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // 1. Load model config (supports HF config.json and Mistral params.json)
     let (mut config, config_json) = serve_phases::load_model_config(&model_dir)?;
 
+    // CLI `--lm-head-dtype` override (replaces ATLAS_LMHEAD_BF16). Validate eagerly (PCND).
+    // Sets both `lm_head_bf16_override` (skip/keep-quantized signal consumed by
+    // `skip_lm_head_quantization()`) and `lm_head_fp8` (when quantizing, pick FP8 w8a16
+    // over NVFP4). `fp8` reuses `Some(false)` ("force quantized lm_head") and additionally
+    // routes that quantization to FP8 — additive, leaves nvfp4/bf16/default byte-identical.
+    let (lm_head_bf16_override, lm_head_fp8) = match args.lm_head_dtype.as_str() {
+        "default" => (None, false),
+        "bf16" => (Some(true), false),
+        // `Some(false)` = force the model's NVFP4-packed lm_head (skip_lm_head_quantization
+        // returns false). BF16-out fast path (w4a16_gemv) — NOT use_fp32_logits, which would
+        // force host-side sampling (~6 tok/s). Decode-speed lever; quality-gate for argmax flips.
+        "nvfp4" => (Some(false), false),
+        // FP8: force a quantized lm_head, but use runtime FP8 (E4M3, per-row scales,
+        // w8a16_gemv decode) instead of NVFP4. Mirrors the NVFP4 path's structure.
+        "fp8" => (Some(false), true),
+        other => {
+            anyhow::bail!(
+                "--lm-head-dtype must be 'default', 'bf16', 'nvfp4', or 'fp8', got '{other}'"
+            )
+        }
+    };
+    config.lm_head_bf16_override = lm_head_bf16_override;
+    config.lm_head_fp8 = lm_head_fp8;
+
     // ModelOpt-exported checkpoints drop a sibling `hf_quant_config.json`
     // whose TOP LEVEL is already the quantization block.
     serve_phases::merge_sidecar_quant_config(&model_dir, &mut config);
@@ -79,8 +103,36 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             )
         })?;
     let sampling_presets = ptx_set.sampling;
+
+    // QV1 (2026-05-26): kernel ↔ model quant compatibility validation.
+    //
+    // `ptx_for_config` selects on (model_type, hidden_size) but not on
+    // QUANT. With ATLAS_TARGET_QUANT=* the build emits one bundle per
+    // model whose label happens to be the first variant compiled
+    // ("nvfp4") even when the bundle contains native FP8 dispatch too.
+    // For now we accept the historically-compatible pairs hardcoded in
+    // `quant_pair_compatible` (and only those). Anything else hard
+    // errors RIGHT HERE with an explicit "rebuild with X" message,
+    // before any weight loading runs and any silent garbage path can
+    // be entered. A future refinement moves the compat list into
+    // MODEL.toml `[kernel].supported_quants`.
+    let model_quant = canonicalize_model_quant(&config);
+    let kernel_quant = ptx_set.target.quant;
+    if !quant_pair_compatible(kernel_quant, &model_quant) {
+        anyhow::bail!(
+            "Kernel/model QUANT MISMATCH. Kernel target: {} (quant={kernel_quant}). \
+             Model declares quant={model_quant} ({}). \
+             The compiled kernel set has no known dispatch path for \
+             quant '{model_quant}' — loading would produce silent garbage. \
+             Rebuild with ATLAS_TARGET_QUANT={model_quant} (or =* to bundle multiple \
+             variants) and restart.",
+            ptx_set.target,
+            describe_quant_source(&config),
+        );
+    }
     tracing::info!(
-        "Selected kernel target: {} ({} modules)",
+        "Selected kernel target: {} ({} modules) — quant compat: kernel={kernel_quant} \
+         model={model_quant} OK",
         ptx_set.target,
         ptx_set.modules.len(),
     );
@@ -173,6 +225,16 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         },
     );
 
+    // MTP throughput-aware gate is applied at RUNTIME, not here. The earlier
+    // static "FP8 ⇒ MTP off" weight-quant heuristic was removed: hardcoding the
+    // decision against the weight format wrongly bars a future FP8 checkpoint
+    // where MTP would help, and it conflated weight format (a proxy) with the
+    // thing that actually decides MTP economics — the per-config verify-step
+    // cost relative to a plain decode step. The scheduler now MEASURES that
+    // ratio over the first decode steps of serving and auto-disables MTP only
+    // when it is provably net-negative (verify multiplier ≥ 1 + num_drafts).
+    // See `scheduler::mtp_gate`.
+
     // 4. Post-load OOM check + audit log.
     serve_phases::post_load_memory_audit(
         &args,
@@ -197,6 +259,19 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             "dflash: --enable-prefix-caching has a community-reported correctness regression on SM12.x with DFlash; outputs may be wrong on multi-turn cache hits. Run a greedy diff-test against a non-DFlash baseline before relying on outputs."
         );
     }
+    // 2026-06-18: the previously-documented warm-Marconi-restore × MTP
+    // corruption on hybrid SSM models is RESOLVED. Verified by a greedy
+    // ground-truth A/B at batch=1 (the level MTP runs at — MTP is gated to
+    // `active.len() == 1` in the scheduler): a real 4-turn agentic
+    // conversation (incl. tool-call turns) produced byte-identical token
+    // streams with Marconi ON vs OFF (full SSM recompute), 12/12 turns. The
+    // #155 lineage (decode-era block-aligned snapshots, the
+    // commit_verify_state_async live-state invariant, finish-leaf
+    // sync_secondary) closed the interaction. Any residual divergence seen
+    // only at batch>1 is FP8 low-margin argmax tie-breaking from
+    // batch-size-dependent MoE-kernel rounding (a known FP8 quality-floor
+    // property present for fresh non-cached sequences too), not a Marconi
+    // state-management defect — so no warning is emitted here.
     let prefix_cache = serve_phases::build_prefix_cache(&args);
     let comm = serve_phases::init_nccl_comm(&args, gpu.as_ref(), world_size)?;
     if args.profile {
@@ -212,6 +287,28 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         layer_dtypes,
         hss_cache_blocks_per_seq,
     } = serve_phases::resolve_kv_cache_config(&args, &config, ptx_set.behavior.default_kv_dtype)?;
+
+    // Fail-fast: every kernel handle the selected --kv-cache-dtype's dispatch
+    // arms need must resolve NOW — not at first dispatch after a multi-minute
+    // weight load (or, worse, via a silent wrong-kernel fall-through).
+    // Validates each distinct per-layer dtype (high-precision / boundary
+    // layers can differ from the base dtype).
+    {
+        let mut distinct: Vec<spark_runtime::kv_cache::KvCacheDtype> = vec![kv_dtype];
+        for d in &layer_dtypes {
+            if !distinct.contains(d) {
+                distinct.push(*d);
+            }
+        }
+        for d in distinct {
+            spark_model::layers::qwen3_attention::validate_required_kv_kernels(
+                gpu.as_ref(),
+                d,
+                config.head_dim,
+            )
+            .context("kv-cache kernel preflight failed")?;
+        }
+    }
     let dflash_drafter_state = serve_phases::load_dflash_drafter(&args, &ptx_set, gpu.as_ref())?;
     let dflash_args =
         dflash_drafter_state
@@ -241,6 +338,19 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         dflash_args,
     )?;
 
+    // Kernel load audit: print the table of every kernel resolved during model
+    // construction (grouped by module/operation family) + flag any MISSING
+    // (handle 0 → silent slower-fallback dispatch). Catches build/codegen
+    // regressions like a dropped pipelined GEMM at load time, not as a
+    // mystery slowdown.
+    tracing::info!(
+        "{}",
+        spark_runtime::kernel_audit::render_kernel_table(
+            &ptx_set.modules,
+            atlas_kernels::KERNEL_SET_HASH,
+        )
+    );
+
     // Phase 6.3 — HSS config built early so the EP worker can install it.
     let early_high_speed_swap_cfg = serve_phases::build_high_speed_swap_config(&args)?;
 
@@ -250,6 +360,24 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         return Ok(());
     }
     let model = model_opt.expect("head retains model on rank 0");
+
+    // TQ+ InnerQ: opt-in via `TURBO_INNERQ=N` (N = calibration token count).
+    // Once enabled, the kernel-side apply pass starts accumulating K² stats
+    // and the scheduler polls `maybe_finalize` per prefill chunk; once N
+    // tokens have flowed through, scales activate and stay live for the
+    // process lifetime. CUDA-only: the driver talks to the CUDA Driver API
+    // directly via `atlas_core::registry`, which doesn't exist on metal.
+    #[cfg(feature = "cuda")]
+    if let Some(driver) = spark_model::layers::qwen3_attention::InnerQDriver::from_env() {
+        match driver.start() {
+            Ok(()) => {
+                let _ = spark_model::layers::qwen3_attention::INNERQ.set(driver);
+            }
+            Err(e) => {
+                tracing::warn!("InnerQ calibration disabled: start() failed: {e:#}");
+            }
+        }
+    }
 
     // Build EOS token list from generation_config.json (authoritative) or config.json fallback
     let mut eos_tokens = serve_phases::load_eos_tokens(&model_dir, &config);
@@ -277,15 +405,18 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         Some(std::path::Path::new(".")), // repo root for override templates
     )?;
 
+    // (AM1 attractor-mask registration removed 2026-06-03 — see
+    // decode_logits_seq.rs / compile_tools.rs; `lean` was an Atlas-only
+    // decode artifact, now fixed at the grammar `first_char` rule.)
+
     // Tokenizer-derived runtime: vocab cap, reasoning parser, think tokens,
-    // im_start hard-stop, reflection suppression, tool-call open/close tokens,
-    // and the XGrammar engine.
+    // im_start hard-stop, tool-call open/close tokens, and the XGrammar
+    // engine.
     let serve_phases::TokenizerRuntime {
         reasoning_parser_box,
         think_end_token,
         think_start_token,
         code_fence_token,
-        reflection_suppress_ids,
         tool_call_start_token,
         tool_call_end_token,
         grammar_engine,
@@ -429,7 +560,6 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             code_fence_token,
             tool_call_start_token,
             tool_call_end_token,
-            reflection_suppress_ids,
             grammar_engine,
             adaptive_sampling,
             session_manager,
@@ -475,6 +605,9 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             let mut b = ptx_set.behavior.clone();
             if let Some(cli_budget) = args.max_thinking_budget {
                 b.max_thinking_budget = cli_budget;
+            }
+            if let Some(cli_disable) = args.disable_tool_grammar {
+                b.disable_tool_grammar = cli_disable;
             }
             b
         },
@@ -534,4 +667,125 @@ fn build_auth_config(args: &cli::ServeArgs) -> Result<Option<Arc<crate::auth::Au
         if cfg.token_count() == 1 { "" } else { "s" },
     );
     Ok(Some(Arc::new(cfg)))
+}
+
+/// QV1 (2026-05-26): canonicalize the model's declared quantization to
+/// one of `"fp8"`, `"nvfp4"`, `"bf16"`, or `"unknown"`. Reads
+/// `quantization_config.quant_method`/`quant_algo`/`format` and applies
+/// the heuristics needed across ModelOpt + compressed-tensors checkpoints.
+/// Returns `"bf16"` when no quant config is present (the HF default for
+/// unquantized BF16 weights).
+fn canonicalize_model_quant(config: &atlas_core::config::ModelConfig) -> String {
+    let Some(qc) = config.quantization_config.as_ref() else {
+        return "bf16".to_string();
+    };
+    let method = qc.quant_method.to_ascii_lowercase();
+    let algo = qc.quant_algo.to_ascii_lowercase();
+    let fmt = qc.format.to_ascii_lowercase();
+    // NVFP4 detection — explicit algo OR a format string containing "nvfp4"
+    // (compressed-tensors: "nvfp4-pack-quantized" et al).
+    //
+    // ModelOpt "MIXED_PRECISION" (e.g. Nemotron-Super-120B-A12B-NVFP4,
+    // Qwen3.6-35B-A3B-NVFP4) canonicalizes to "nvfp4": it is nvfp4-base
+    // plus a few FP8 modules. Dispatch is per-MODULE and tensor-aware, NOT
+    // by this string — the loader probes `*.weight_scale` presence and
+    // dequants FP8→BF16 (weight_loader/nemotron.rs:78-108, quant_helpers.rs
+    // dense_auto), and the lm_head MIXED_PRECISION path is already handled
+    // (factory/build.rs:144). The nvfp4 kernel bundle also carries native
+    // FP8/BF16 paths (see quant_pair_compatible: nvfp4↔fp8, nvfp4↔bf16).
+    // So routing MIXED_PRECISION to the nvfp4 bundle is correct and cannot
+    // silently mis-route an FP8 module (it would fault at load, not corrupt).
+    if algo == "nvfp4" || algo == "mixed_precision" || fmt.contains("nvfp4") {
+        return "nvfp4".into();
+    }
+    // FP8 detection — explicit algo OR method/format containing "fp8".
+    if algo == "fp8" || method.contains("fp8") || fmt.contains("fp8") {
+        return "fp8".into();
+    }
+    // compressed-tensors with no FP8/NVFP4 marker is usually GPTQ/AWQ —
+    // we don't currently dispatch those on Atlas; report verbatim so
+    // the bail message is precise.
+    if !algo.is_empty() {
+        return algo;
+    }
+    if !method.is_empty() {
+        return method;
+    }
+    "unknown".into()
+}
+
+/// QV1 helper: short debug string of where the quant declaration came
+/// from, used in the bail message so the operator can locate the
+/// mis-declared field quickly.
+fn describe_quant_source(config: &atlas_core::config::ModelConfig) -> String {
+    match config.quantization_config.as_ref() {
+        Some(qc) => format!(
+            "quant_method={:?}, quant_algo={:?}, format={:?}",
+            qc.quant_method, qc.quant_algo, qc.format
+        ),
+        None => "no quantization_config in config.json".into(),
+    }
+}
+
+/// QV1: returns `true` iff the kernel target's declared quant string is
+/// known to handle the model's canonicalized quant.
+///
+/// The current Atlas build emits one bundle per (hw, model) regardless
+/// of how many quant variants it dispatches at runtime: the bundle
+/// label is whichever `ATLAS_TARGET_QUANT` value the build script
+/// happened to record first (today: always `"nvfp4"`). Each bundle
+/// nonetheless contains native FP8 / native NVFP4 / BF16-dequant code
+/// paths for the same model. This compat table makes that explicit.
+///
+/// When new quants appear (e.g. FP4 E2M1 on a future SM), add the new
+/// entry here AND the dispatch path in the weight loader. The
+/// canonical home for this list will eventually be MODEL.toml
+/// `[kernel].supported_quants` — until then, hardcode keeps the
+/// fail-fast working without a build-time plumb-through.
+fn quant_pair_compatible(kernel_quant: &str, model_quant: &str) -> bool {
+    if kernel_quant == model_quant {
+        return true;
+    }
+    matches!(
+        (kernel_quant, model_quant),
+        // The NVFP4-labeled bundle today carries native FP8 paths
+        // (FP8 fused MoE batch1/2/3, w8a16_gemv decode, FP8 prefill).
+        ("nvfp4", "fp8") |
+        // The NVFP4 bundle also handles unquantized BF16 inputs via
+        // runtime dequant → quantize. Slow but correct.
+        ("nvfp4", "bf16") |
+        // BF16 reference bundle handles any quant by dequant on load.
+        ("bf16", "fp8") |
+        ("bf16", "nvfp4")
+    )
+}
+
+#[cfg(test)]
+mod qv1_tests {
+    use super::*;
+
+    // canonicalize_model_quant is exercised via integration through
+    // the server boot path; unit-testing it requires building
+    // ModelConfig which has no `Default` impl (it's intentionally
+    // bound to a loaded model). The pair-compatibility table is a
+    // pure function and worth a unit test.
+
+    #[test]
+    fn compat_self_pair() {
+        assert!(quant_pair_compatible("nvfp4", "nvfp4"));
+        assert!(quant_pair_compatible("fp8", "fp8"));
+        assert!(quant_pair_compatible("bf16", "bf16"));
+    }
+
+    #[test]
+    fn compat_nvfp4_handles_fp8_and_bf16() {
+        assert!(quant_pair_compatible("nvfp4", "fp8"));
+        assert!(quant_pair_compatible("nvfp4", "bf16"));
+    }
+
+    #[test]
+    fn incompat_unknown_rejected() {
+        assert!(!quant_pair_compatible("nvfp4", "gptq-4bit"));
+        assert!(!quant_pair_compatible("fp8", "nvfp4"));
+    }
 }

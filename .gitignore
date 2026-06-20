@@ -1,9 +1,15 @@
 # Build artifacts
 target/
 **/target/
+# Out-of-tree cargo target dirs used for parallel/experiment builds
+# (target-final, target-fu, target-i84, target-phc, target-rc, ...).
+target-*/
 *.o
 *.ptx
 *.bak
+# Local docker build input: release binary copied in before `docker build`.
+# Regenerated from `target/release/spark`; never tracked.
+docker/gb10/spark-fastbin
 
 # tool-eval-bench run reports — local benchmark output, not source
 /runs/
@@ -47,7 +53,9 @@ __pycache__/
 *.qdrep
 *.sqlite
 perf.data*
-core.*
+# Core dumps (PID-suffixed, e.g. core.12345) — NOT source files like
+# vendor/cudarc/src/driver/safe/core.rs, which the bare `core.*` glob swallowed.
+core.[0-9]*
 
 # Environment / secrets
 .env
@@ -107,3 +115,16 @@ docker/gb10/Dockerfile.ffnbf16
 docker/gb10/Dockerfile.fp32res
 docker/gb10/Dockerfile.hangdiag
 docker/gb10/Dockerfile.zeropen
+# Catch-all for experiment-tag throwaway Dockerfiles (the canonical
+# `Dockerfile` and per-model `*/nvfp4/Dockerfile` have no suffix, so are
+# unaffected; already-tracked suffixed variants stay tracked).
+docker/gb10/Dockerfile.*
+
+# bench harness OUTPUT (data/logs, regenerated per run — keep scripts, drop artifacts)
+bench/**/runs/
+bench/**/reports/
+bench/**/logs/
+bench/**/*.jsonl
+bench/**/*.csv
+bench/**/*.pid
+bench/fp8_dgx2_drift/harness/oc

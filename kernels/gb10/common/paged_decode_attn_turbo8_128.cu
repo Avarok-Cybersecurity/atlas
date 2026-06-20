@@ -30,6 +30,12 @@
 // Block: (256, 1, 1)
 
 #include <cuda_bf16.h>
+
+// Sparse V dequant threshold — skip V load + dequant when attn weight is tiny.
+#ifndef TQ_PLUS_SPARSE_V_THRESHOLD
+#define TQ_PLUS_SPARSE_V_THRESHOLD 1e-3f
+#endif
+
 #include <cuda_fp8.h>
 
 #define WARP_SIZE 32
@@ -59,7 +65,7 @@ __device__ __forceinline__ float fp8e4m3_to_f32(__nv_fp8_storage_t b) {
 __device__ __forceinline__ void nvfp4_dequant(
     const unsigned char* data_ptr,
     const unsigned char* scale_ptr,
-    const float* lut,  // unused for turbo8 (kept for interface compat)
+    const __half* lut,  // unused for turbo8 (kept for interface compat)
     float* out
 ) {
     float gs = __bfloat162float(*(const __nv_bfloat16*)scale_ptr);
@@ -118,13 +124,13 @@ extern "C" __global__ void paged_decode_attn_turbo8(
     if (seq_len == 0) return;
 
     // Turbo4 Lloyd-Max 16-level codebook in shared memory
-    __shared__ float e2m1_lut[16];  // Reuse name to minimize code changes
+    __shared__ __half e2m1_lut[16];  // Reuse name to minimize code changes
     if (tid < 16) {
         const float lut_init[16] = {
             -2.7326f, -2.0690f, -1.6180f, -1.2562f, -0.9423f, -0.6568f, -0.3880f, -0.1284f,
              0.1284f,  0.3880f,  0.6568f,  0.9423f,  1.2562f,  1.6180f,  2.0690f,  2.7326f
         };
-        e2m1_lut[tid] = lut_init[tid];
+        e2m1_lut[tid] = __float2half(lut_init[tid]);
     }
     __syncthreads();
 
@@ -208,16 +214,6 @@ extern "C" __global__ void paged_decode_attn_turbo8(
                 scores[b] = dot * inv_sqrt_d;
             }
 
-            // Load BC V vectors
-            float v_vals[BC][VEC_BF16];
-            #pragma unroll
-            for (int b = 0; b < BC; b++) {
-                unsigned int p = block_offset + processed + b;
-                const unsigned char* vd = v_block + p * token_data_stride + kv_data_offset;
-                const unsigned char* vs = v_block + data_section_bytes + p * token_scale_stride + kv_scale_offset;
-                nvfp4_dequant(vd, vs, e2m1_lut, v_vals[b]);
-            }
-
             // Batched softmax update
             float m_new = m;
             #pragma unroll
@@ -237,6 +233,21 @@ extern "C" __global__ void paged_decode_attn_turbo8(
                 l += exp_factors[b];
             }
             m = m_new;
+
+            // Sparse V load — gate per-row on exp_factor magnitude.
+            float v_vals[BC][VEC_BF16];
+            #pragma unroll
+            for (int b = 0; b < BC; b++) {
+                if (exp_factors[b] > TQ_PLUS_SPARSE_V_THRESHOLD) {
+                    unsigned int p = block_offset + processed + b;
+                    const unsigned char* vd = v_block + p * token_data_stride + kv_data_offset;
+                    const unsigned char* vs = v_block + data_section_bytes + p * token_scale_stride + kv_scale_offset;
+                    nvfp4_dequant(vd, vs, e2m1_lut, v_vals[b]);
+                } else {
+                    #pragma unroll
+                    for (int i = 0; i < VEC_BF16; i++) v_vals[b][i] = 0.0f;
+                }
+            }
 
             // V accumulate
             #pragma unroll
@@ -270,10 +281,12 @@ extern "C" __global__ void paged_decode_attn_turbo8(
             float exp_new = __expf(score - m_new);
             l = l * exp_old + exp_new;
 
-            const unsigned char* vd = v_block + p * token_data_stride + kv_data_offset;
-            const unsigned char* vs = v_block + data_section_bytes + p * token_scale_stride + kv_scale_offset;
-            float v_tmp[VEC_BF16];
-            nvfp4_dequant(vd, vs, e2m1_lut, v_tmp);
+            float v_tmp[VEC_BF16] = {0};
+            if (exp_new > TQ_PLUS_SPARSE_V_THRESHOLD) {
+                const unsigned char* vd = v_block + p * token_data_stride + kv_data_offset;
+                const unsigned char* vs = v_block + data_section_bytes + p * token_scale_stride + kv_scale_offset;
+                nvfp4_dequant(vd, vs, e2m1_lut, v_tmp);
+            }
 
             #pragma unroll
             for (int i = 0; i < VEC_BF16; i++)
@@ -376,13 +389,13 @@ extern "C" __global__ void paged_decode_attn_splitk_nvfp4(
     if (seq_len == 0) return;
 
     // Turbo4 Lloyd-Max codebook
-    __shared__ float e2m1_lut[16];
+    __shared__ __half e2m1_lut[16];
     if (tid < 16) {
         const float lut_init[16] = {
             -2.7326f, -2.0690f, -1.6180f, -1.2562f, -0.9423f, -0.6568f, -0.3880f, -0.1284f,
              0.1284f,  0.3880f,  0.6568f,  0.9423f,  1.2562f,  1.6180f,  2.0690f,  2.7326f
         };
-        e2m1_lut[tid] = lut_init[tid];
+        e2m1_lut[tid] = __float2half(lut_init[tid]);
     }
     __syncthreads();
 

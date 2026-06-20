@@ -24,6 +24,46 @@
 
 #include <cuda_bf16.h>
 
+// V-only paged cache write. Used by the fused K-path so the K side stays
+// owned by `fused_k_norm_rope_cache_write_bf16` (which writes K with a
+// single BF16 round) while V continues through the cheap memcopy path.
+extern "C" __global__ void reshape_and_cache_flash_v_only(
+    const __nv_bfloat16* __restrict__ value,     // [num_tokens, num_kv_heads, head_dim]
+    __nv_bfloat16* __restrict__ v_cache,         // [num_blocks, block_size, num_kv_heads, head_dim]
+    const long long* __restrict__ slot_mapping,
+    const unsigned int num_kv_heads,
+    const unsigned int head_dim,
+    const unsigned int block_size,
+    const unsigned int value_stride
+) {
+    const unsigned int token_idx = blockIdx.x;
+    const long long slot = slot_mapping[token_idx];
+    if (slot < 0) return;
+
+    const unsigned int block_idx = (unsigned int)(slot / block_size);
+    const unsigned int block_offset = (unsigned int)(slot % block_size);
+    const unsigned int n_elems = num_kv_heads * head_dim;
+
+    const __nv_bfloat16* val_src = value + (unsigned long long)token_idx * value_stride;
+    const unsigned long long cache_stride = (unsigned long long)block_size * n_elems;
+    __nv_bfloat16* val_dst = v_cache + (unsigned long long)block_idx * cache_stride
+                                      + (unsigned long long)block_offset * n_elems;
+
+    const unsigned int n_vec = n_elems / 4;
+    const unsigned int n_rem = n_elems % 4;
+    const uint2* val_src_vec = (const uint2*)val_src;
+    uint2* val_dst_vec = (uint2*)val_dst;
+    for (unsigned int i = threadIdx.x; i < n_vec; i += blockDim.x) {
+        val_dst_vec[i] = val_src_vec[i];
+    }
+    if (n_rem > 0) {
+        unsigned int base = n_vec * 4;
+        for (unsigned int i = threadIdx.x; i < n_rem; i += blockDim.x) {
+            val_dst[base + i] = val_src[base + i];
+        }
+    }
+}
+
 extern "C" __global__ void reshape_and_cache_flash(
     const __nv_bfloat16* __restrict__ key,       // [num_tokens, num_kv_heads, head_dim]
     const __nv_bfloat16* __restrict__ value,     // [num_tokens, num_kv_heads, head_dim]
@@ -343,6 +383,61 @@ __device__ __forceinline__ void atomicMaxFloat(float* addr, float val) {
         if (old_val >= val) return;
         old = atomicCAS(addr_as_ui, assumed, __float_as_uint(val));
     } while (assumed != old);
+}
+
+// Per-head absmax for FP8 KV calibration.
+// Input layout: [num_tokens, num_kv_heads, head_dim] BF16.
+// Output: [num_kv_heads] f32 — caller must initialize to 0.0 (or pre-existing
+// running maxes for accumulation across observation steps).
+//
+// Grid: (num_kv_heads, 1, 1)  Block: (256, 1, 1)
+// Each block reduces all (token, head_dim) elements for its head index.
+extern "C" __global__ void bf16_absmax_per_head(
+    const __nv_bfloat16* __restrict__ data,  // [num_tokens, num_kv_heads, head_dim] BF16
+    float* __restrict__ out_max,              // [num_kv_heads] f32, atomicMax in-place
+    const unsigned int num_tokens,
+    const unsigned int num_kv_heads,
+    const unsigned int head_dim
+) {
+    const unsigned int kv_head = blockIdx.x;
+    if (kv_head >= num_kv_heads) return;
+
+    const unsigned int tid = threadIdx.x;
+    const unsigned int n_per_token = head_dim;
+    const unsigned int head_stride = num_kv_heads * head_dim;
+
+    float local_max = 0.0f;
+    // For each token in this head, scan head_dim elements
+    for (unsigned int t = 0; t < num_tokens; t++) {
+        const __nv_bfloat16* row = data + (unsigned long long)t * head_stride + kv_head * head_dim;
+        for (unsigned int d = tid; d < n_per_token; d += 256) {
+            float v = fabsf(__bfloat162float(row[d]));
+            local_max = fmaxf(local_max, v);
+        }
+    }
+
+    // Warp-level reduction
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        local_max = fmaxf(local_max, __shfl_down_sync(0xffffffff, local_max, offset));
+    }
+
+    __shared__ float warp_max[8];
+    unsigned int warp_id = tid / 32;
+    unsigned int lane_id = tid % 32;
+    if (lane_id == 0) {
+        warp_max[warp_id] = local_max;
+    }
+    __syncthreads();
+
+    if (warp_id == 0 && lane_id < 8) {
+        float val = warp_max[lane_id];
+        for (int offset = 4; offset > 0; offset >>= 1) {
+            val = fmaxf(val, __shfl_down_sync(0xff, val, offset));
+        }
+        if (lane_id == 0) {
+            atomicMaxFloat(&out_max[kv_head], val);
+        }
+    }
 }
 
 extern "C" __global__ void bf16_absmax(

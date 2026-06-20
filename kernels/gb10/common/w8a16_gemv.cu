@@ -10,7 +10,9 @@
 //
 // FP8-E4M3 weight format:
 //   B: [N, K] uint8 — one byte per weight (FP8 E4M3)
-//   block_scale: [N/BS, K/BS] BF16 — per-block scale (scale_inv from checkpoint)
+//   block_scale: [N/BS, K/BS] FP32 — per-block scale (scale_inv from checkpoint,
+//                widened to FP32 at load so the scale is applied in full FP32
+//                precision, matching vLLM / DeepGEMM / HF block-FP8 numerics)
 //   BS: block size (128)
 //
 // 4 outputs per block, 64 threads per output, vectorized 16-byte reads.
@@ -102,13 +104,13 @@ __device__ __constant__ float E4M3_LUT[256] = {
 //
 // C[n] = sum_k A[k] * E4M3_LUT[B[n,k]] * block_scale[n/BS, k/BS]
 //
-// block_scale is [ceil(N/BS), ceil(K/BS)] in BF16, stored row-major.
+// block_scale is [ceil(N/BS), ceil(K/BS)] in FP32, stored row-major.
 // Each 128×128 block of weights shares one scale factor.
 
 extern "C" __global__ void w8a16_gemv(
     const __nv_bfloat16* __restrict__ A,            // [1, K]
     const unsigned char* __restrict__ B,             // [N, K] FP8 E4M3
-    const __nv_bfloat16* __restrict__ block_scale,   // [N/BS, K/BS] BF16
+    const float* __restrict__ block_scale,           // [N/BS, K/BS] FP32
     __nv_bfloat16* __restrict__ C,                   // [1, N]
     unsigned int N,
     unsigned int K
@@ -138,7 +140,7 @@ extern "C" __global__ void w8a16_gemv(
 
         // Determine which K-block this chunk falls in and load its scale
         const unsigned int k_block = base_k / FP8_BLOCK;
-        float scale = __bfloat162float(block_scale[n_block * k_blocks + k_block]);
+        float scale = block_scale[n_block * k_blocks + k_block];
 
         // Load 16 FP8 weights as uint4
         uint4 b_data = ((const uint4*)(B + (unsigned long long)n * K))[k16];

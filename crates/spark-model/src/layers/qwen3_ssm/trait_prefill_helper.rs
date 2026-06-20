@@ -26,10 +26,15 @@ impl Qwen3SsmLayer {
         value_dim: usize,
         stream: u64,
     ) -> Result<()> {
+        let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
         if let Some(ref dense_out) = self.out_proj_dense {
-            ops::dense_gemm(
+            // SSM out_proj is kept BF16 dense for accuracy (decode uses FP8
+            // block-scaled, prefill stays BF16). Always routed through the
+            // tensor-core dense_gemm_bf16_pipelined kernel (~40× vs the old
+            // scalar dense_gemm, identical BF16 math, cosine=1.0).
+            ops::dense_gemm_bf16_pipelined(
                 ctx.gpu,
-                self.dense_gemm_k,
+                self.dense_gemm_pipelined_k,
                 normed_out_buf,
                 dense_out,
                 out_proj_buf,
@@ -38,6 +43,47 @@ impl Qwen3SsmLayer {
                 value_dim as u32,
                 stream,
             )
+        } else if force_w8a8
+            && let Some(ref fp8w) = self.out_proj_fp8w
+            && self.per_token_group_quant_fp8_k.0 != 0
+            && self.fp8_gemm_t_blockscaled_k.0 != 0
+        {
+            tracing::debug!(
+                "ssm prefill: out_proj via W8A8+FP32-epilogue (M={k} K={h} N={value_dim})"
+            );
+            let m = k as usize;
+            let k_dim = h;
+            let a_fp8_bytes = m * k_dim;
+            let a_scale_bytes = m * (k_dim / 128) * 4;
+            let a_fp8_buf = ctx.gpu.alloc(a_fp8_bytes)?;
+            let a_scale_buf = ctx.gpu.alloc(a_scale_bytes)?;
+            ops::per_token_group_quant_fp8(
+                ctx.gpu,
+                self.per_token_group_quant_fp8_k,
+                normed_out_buf,
+                a_fp8_buf,
+                a_scale_buf,
+                k,
+                k_dim as u32,
+                stream,
+            )?;
+            ops::fp8_gemm_t_blockscaled(
+                ctx.gpu,
+                self.fp8_gemm_t_blockscaled_k,
+                a_fp8_buf,
+                a_scale_buf,
+                fp8w.weight,
+                fp8w.row_scale,
+                out_proj_buf,
+                k,
+                value_dim as u32,
+                h as u32,
+                stream,
+            )?;
+            ctx.gpu.synchronize(stream)?;
+            ctx.gpu.free(a_fp8_buf)?;
+            ctx.gpu.free(a_scale_buf)?;
+            Ok(())
         } else if let Some(fp8) = self.out_proj_fp8 {
             if k > 128 {
                 ops::fp8_gemm_n128_m128(

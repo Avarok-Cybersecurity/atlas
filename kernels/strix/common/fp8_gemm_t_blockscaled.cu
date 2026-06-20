@@ -1,0 +1,1 @@
+../../gb10/common/fp8_gemm_t_blockscaled.cu

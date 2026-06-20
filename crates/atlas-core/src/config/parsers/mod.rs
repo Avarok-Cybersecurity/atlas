@@ -8,6 +8,7 @@ mod gemma4;
 mod minimax;
 mod mistral;
 mod quantization;
+mod step3p7;
 mod vision;
 
 pub(crate) use deepseek_v4::parse_deepseek_v4;
@@ -15,4 +16,5 @@ pub(crate) use gemma4::parse_gemma4_params;
 pub(crate) use minimax::parse_minimax_m2;
 pub use mistral::parse_mistral_params;
 pub use quantization::parse_quantization_config;
+pub(crate) use step3p7::parse_step3p7;
 pub(crate) use vision::parse_vision_config;

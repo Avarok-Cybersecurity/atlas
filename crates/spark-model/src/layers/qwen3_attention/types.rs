@@ -164,7 +164,14 @@ pub struct Qwen3AttentionLayer {
     pub(crate) k_eq_v: bool,
     /// Ones-filled BF16 weight buffer for the pure-RMSNorm v_norm path.
     pub(crate) v_norm_weight: Option<DenseWeight>,
-    /// Post-attention output norm (Gemma-4).
+    /// Per-head attention gate weight (Step 3.7 g_proj).
+    /// Shape: [num_q_heads, hidden_size] BF16. Applied as:
+    /// attn_out = attn_out * sigmoid(g_proj @ hidden_states)
+    /// with broadcast over head_dim.
+    pub(crate) head_gate_weight: Option<DenseWeight>,
+    /// Kernel handle for per-head sigmoid gate broadcast multiply.
+    pub(super) sigmoid_gate_head_broadcast_k: KernelHandle,
+    /// Post-attention output norm (Gemma-4).  
     pub(crate) post_attn_out_norm: Option<DenseWeight>,
     /// Post-FFN output norm (Gemma-4).
     pub(crate) post_ffn_out_norm: Option<DenseWeight>,
@@ -216,6 +223,10 @@ pub struct Qwen3AttentionLayer {
     pub(super) v_fp8w_t: Option<crate::weight_map::Fp8WeightTransposed>,
     pub(super) o_fp8w_t: Option<crate::weight_map::Fp8WeightTransposed>,
     pub(super) w8a16_gemm_t_k: KernelHandle,
+    pub(super) w8a16_gemm_t_pipelined_k: KernelHandle,
+    // W8A8 + FP32 epilogue (vLLM-equivalent) — gated by ATLAS_FP8_W8A8=1.
+    pub(super) per_token_group_quant_fp8_k: KernelHandle,
+    pub(super) fp8_gemm_t_blockscaled_k: KernelHandle,
     // Kernels — decode (GEMV M=1)
     pub(super) rms_norm_k: KernelHandle,
     pub(super) rms_norm_residual_k: KernelHandle,
@@ -225,6 +236,7 @@ pub struct Qwen3AttentionLayer {
     pub(super) w4a16_gemv_k: KernelHandle,
     pub(super) w8a16_gemv_k: KernelHandle,
     pub(super) w8a16_gemm_k: KernelHandle,
+    pub(super) w8a16_gemm_pipelined_k: KernelHandle,
     pub(super) w4a16_gemv_dual_k: KernelHandle,
     pub(super) rope_k: KernelHandle,
     /// MRoPE-interleaved kernel.
@@ -236,8 +248,28 @@ pub struct Qwen3AttentionLayer {
     /// Proportional RoPE kernel (Gemma-4 full-attention layers).
     pub(super) rope_proportional_k: KernelHandle,
     pub(super) reshape_cache_k: KernelHandle,
+    /// Fused k_norm + RoPE + paged BF16 cache write — eliminates two
+    /// intermediate BF16 rounding steps that cause the documented L35-L39
+    /// cliff in chunked-prefill BF16 KV mode (memory:
+    /// `project_qwen36_phase2b_softmax_expf.md`).
+    pub(super) fused_k_norm_rope_cache_write_bf16_k: KernelHandle,
+    /// MRoPE-interleaved variant of the above. Same precision regime.
+    /// Dispatched when `mrope_interleaved` is true.
+    pub(super) fused_k_norm_rope_mrope_cache_write_bf16_k: KernelHandle,
+    /// V-only paged cache write. Used alongside the fused K-path so the
+    /// K side of the cache stays single-rounded.
+    pub(super) reshape_and_cache_flash_v_only_k: KernelHandle,
     /// WHT kernel for turbo KV cache.
     pub(super) wht_bf16_k: KernelHandle,
+    /// Inverse WHT. With TQ_PLUS_SIGNS off this aliases the forward kernel
+    /// (plain WHT is self-inverse); with TQ+ signs the inverse reverses the
+    /// signs1/signs2 order, which is required because (S2·H·S1)·(S2·H·S1) ≠ I.
+    pub(super) wht_bf16_k_inv: KernelHandle,
+    /// InnerQ application kernels (Q pre-WHT scale_inv, K post-WHT scale).
+    /// Returns 0 handle when InnerQ kernel module isn't loaded — caller should
+    /// guard launches with `.0 != 0`.
+    pub(super) innerq_apply_q_k: KernelHandle,
+    pub(super) innerq_apply_k_k: KernelHandle,
     pub(super) paged_decode_k: KernelHandle,
     /// HDIM=512 paged decode kernel for Gemma-4 full-attention layers
     pub(super) paged_decode_512_k: KernelHandle,
@@ -278,6 +310,8 @@ pub struct Qwen3AttentionLayer {
     pub(super) deinterleave_qg_k: KernelHandle,
     pub(super) w4a16_gemv_qg_k: KernelHandle,
     pub(super) residual_add_rms_norm_k: KernelHandle,
+    /// Dual-output (bf16 + f32) MoE-input norm for ATLAS_FP32_ROUTING. Zero if absent.
+    pub(super) residual_add_rms_norm_gatef32_k: KernelHandle,
     // Kernels — batch2 (K=2 verify)
     pub(super) w4a16_gemv_qg_batch2_k: KernelHandle,
     pub(super) w4a16_gemv_dual_batch2_k: KernelHandle,
@@ -314,7 +348,28 @@ pub struct Qwen3AttentionLayer {
     pub(super) prefill_attn_paged_64_k: KernelHandle,
     pub(super) prefill_attn_paged_fp8_64_k: KernelHandle,
     pub(super) prefill_attn_paged_nvfp4_64_k: KernelHandle,
+    pub(super) prefill_attn_paged_turbo2_64_k: KernelHandle,
+    pub(super) prefill_attn_paged_turbo3_64_k: KernelHandle,
     pub(super) prefill_attn_paged_turbo4_64_k: KernelHandle,
+    pub(super) prefill_attn_paged_turbo8_64_k: KernelHandle,
+    // ── TurboQuant+ asymmetric BR=64 prefill kernels ──
+    // Combined-dtype kernels that read K and V with different on-disk layouts.
+    // Currently: Bf16K + Turbo3V (safer-asym variant — K kept at bf16 precision,
+    // V aggressively compressed to 3-bit Lloyd-Max + FP8 group scale).
+    pub(super) prefill_attn_paged_bf16k_turbo3v_64_k: KernelHandle,
+    pub(super) prefill_attn_paged_bf16k_turbo4v_64_k: KernelHandle,
+    pub(super) prefill_attn_paged_bf16k_turbo2v_64_k: KernelHandle,
+    // Fp8K + TurboNV variants — same shape as bf16k_turbo*v_64 but threads
+    // the FP8 K-side per-tensor `k_scale` through to the dequant in
+    // LOAD_K_TILE. Targets FP8-attention models (Qwen3.6-35B-FP8 etc.).
+    pub(super) prefill_attn_paged_fp8k_turbo3v_64_k: KernelHandle,
+    pub(super) prefill_attn_paged_fp8k_turbo4v_64_k: KernelHandle,
+    pub(super) prefill_attn_paged_fp8k_turbo2v_64_k: KernelHandle,
+    // Both-sides-quantized TurboQuant+ asym (K and V both turbo, separate
+    // pool strides). K-side WHT bookend + Q WHT both fire because K is turbo.
+    pub(super) prefill_attn_paged_turbo4k_turbo3v_64_k: KernelHandle,
+    pub(super) prefill_attn_paged_turbo4k_turbo8v_64_k: KernelHandle,
+    pub(super) prefill_attn_paged_turbo3k_turbo8v_64_k: KernelHandle,
     // ── Q12 Phase 3: same-chunk-len batched paged-prefill kernels ──
     // Each takes `const int* const* block_table_ptrs` + per-batch Q/O
     // offsets. Used by `Qwen3AttentionLayer::prefill_batched` when N≥2

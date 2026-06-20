@@ -10,6 +10,17 @@ behind specific subsystems — see the
 
 ## [Unreleased]
 
+### Fixed
+
+- `--gpu-memory-utilization` now enforces a hard ceiling on total GPU
+  memory (weights + buffers + KV cache + reserves), matching the vLLM /
+  sparkrun convention.  Previously the fraction was applied only to
+  post-weight free memory, causing the KV cache to over-allocate by
+  20-27 GB when values below the ~0.88 default were used.  This blocked
+  multi-service co-residency on shared-memory systems (e.g. DGX Spark
+  GB10).  The flag now behaves as documented: `0.50` on a 120 GB device
+  caps Atlas at ~60 GB total.  (#170)
+
 ## [0.1.0] — 2026-05-06
 
 Initial public release. Atlas is a pure-Rust LLM inference engine

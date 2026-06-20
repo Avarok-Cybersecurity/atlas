@@ -20,7 +20,7 @@ use crate::layer::{
 use crate::layers::ops;
 use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
-use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
+use crate::weight_map::{DenseWeight, Fp8DenseWeight, MtpWeights, QuantizedWeight};
 
 /// Architecture-agnostic transformer model.
 ///
@@ -34,12 +34,16 @@ pub struct TransformerModel {
     pub(super) final_norm: DenseWeight,
     pub(super) lm_head_weight: DenseWeight,
     pub(super) lm_head_nvfp4: Option<QuantizedWeight>,
+    /// Runtime FP8 E4M3 LM head (per-row scales), decoded via `w8a16_gemv`.
+    /// `Some` only when `--lm-head-dtype fp8` was requested; mutually exclusive
+    /// with `lm_head_nvfp4` (that stays `None` on the FP8 path). Additive: when
+    /// `None`, the NVFP4/BF16 LM-head dispatch is byte-identical to before.
+    pub(super) lm_head_fp8: Option<Fp8DenseWeight>,
     pub(super) layers: Vec<Box<dyn TransformerLayer>>,
     pub(super) buffers: BufferArena,
     pub(super) kv_cache: Mutex<PagedKvCache>,
     pub(super) gpu: Box<dyn GpuBackend>,
     pub(super) rms_norm_kernel: KernelHandle,
-    pub(super) bf16_to_f32_kernel: KernelHandle,
     pub(super) dense_gemv_kernel: KernelHandle,
     /// FP32-output variant of dense_gemv_bf16. Used by the LM head when
     /// `use_fp32_logits` is true, so the FP32 accumulator is preserved across
@@ -52,6 +56,14 @@ pub struct TransformerModel {
     pub(super) w4a16_gemv_logits_kernel: KernelHandle, // FP32 output for LM head
     pub(super) w4a16_gemm_kernel: KernelHandle,
     pub(super) w4a16_gemv_batch2_kernel: KernelHandle,
+    /// FP8 E4M3 LUT GEMV (M=1) for the FP8 LM head. Only used when
+    /// `lm_head_fp8.is_some()`; loaded unconditionally (cheap handle) so the
+    /// dispatch in `lm_head` / batched-decode / verify can reference it.
+    pub(super) dense_gemv_fp8w_kernel: KernelHandle,
+    /// FP8-weight dual-GEMV (batch=2): reads the FP8 weight once for both K=2
+    /// verify tokens. Bit-identical to two `dense_gemv_fp8w` calls; halves the
+    /// FP8 weight bandwidth for the lm_head on the MTP verify path.
+    pub(super) dense_gemv_fp8w_batch2_kernel: KernelHandle,
     pub(super) dense_gemm_kernel: KernelHandle,
     pub(super) argmax_kernel: KernelHandle,
     pub(super) argmax_logits_kernel: KernelHandle, // FP32 argmax for logits
@@ -69,7 +81,12 @@ pub struct TransformerModel {
     /// Cached CUDA graphs for batched decode, keyed by padded batch size.
     pub(super) batch_decode_graphs: Mutex<HashMap<usize, GraphHandle>>,
     /// Pre-allocated SSM state pool for stable GPU addresses across graph replays.
-    pub(super) ssm_pool: SsmStatePool,
+    /// `Arc` so each `SequenceState` can hold a `SlotGuard` that releases its
+    /// claimed slot on drop — guaranteeing the slot returns to the free list on
+    /// EVERY sequence-exit path (normal finish, abort, error, swap-out failure,
+    /// panic/unwind), not just the explicit `free_sequence`/`compact_sequence`
+    /// sites. See `SsmStatePool::claim_guarded` / `SlotGuard`.
+    pub(super) ssm_pool: Arc<SsmStatePool>,
     /// SSM state snapshot pool for Marconi prefix caching.
     pub(super) ssm_snapshots: SsmSnapshotPool,
     /// Fixed max blocks per sequence (max_seq_len / block_size + 1).
@@ -124,6 +141,17 @@ pub struct TransformerModel {
     pub(super) secondary_stream: u64,
     /// CUDA event for GPU-side inter-stream synchronization (avoids CPU-blocking sync).
     pub(super) secondary_event: u64,
+    /// CUDA event ordering SSM-snapshot SAVES (on the default stream) before a
+    /// later warm Marconi RESTORE (on the prefill stream). Marconi saves
+    /// (`decode_marconi_checkpoint`, `finish_leaf_snapshot`, prefill-time
+    /// `prefill_save_snapshot`) record this event after their D2D copies; a
+    /// warm restore in `prefill_b_prefix_lookup` waits on it before reading the
+    /// snapshot region. Without this cross-stream edge, under concurrent
+    /// batched traffic the restore (prefill stream) can read a snapshot slot
+    /// whose save D2D (default stream) has not yet completed — restoring stale
+    /// / torn SSM recurrent state and diverging the warm decode from the cold
+    /// reference (the prefix-cache × hybrid-SSM warm-restore corruption).
+    pub(super) snapshot_event: u64,
     /// Communication backend for expert parallelism (EP) all-reduce.
     /// None for single-GPU (no distributed communication needed).
     pub(super) comm: Option<std::sync::Arc<dyn spark_comm::CommBackend>>,
@@ -197,17 +225,9 @@ pub struct TransformerModel {
     /// Used when `use_fp32_logits` is true.
     pub(super) logit_softcap_fp32_kernel: KernelHandle,
     /// Whether the single-token decode LM head produces FP32 logits (rather
-    /// than BF16). True when `config.use_fp32_residual()` AND the LM head is
-    /// a dense BF16 weight (no NVFP4 quant). Drives:
-    ///   - dense_gemv_bf16_fp32out kernel writes to `logits_fp32_buf`
-    ///   - logit_softcap_fp32 kernel applied in place on the FP32 buffer
-    ///   - sampler reads FP32 directly, skipping BF16→FP32 expansion
-    ///
-    /// Gated by config.model_type=="gemma4" via use_fp32_residual() — other
-    /// models keep the BF16 path. Prefill / batched-decode lm_head still
-    /// write BF16 to `buffers.logits()`; only single-token decode is FP32
-    /// because the bug it fixes (greedy argmax tiebreak flip on the BF16
-    /// representable boundary at value 16-32) only manifests there.
+    /// than BF16). The FP32 logits path required an FP32 residual stream as a
+    /// precondition; with the residual stream now always BF16, this is always
+    /// false and the BF16 logits path is always taken.
     pub(super) use_fp32_logits: bool,
     /// FP32 logits scratch [vocab_size × 4 bytes]. NULL when `use_fp32_logits`
     /// is false (no allocation).

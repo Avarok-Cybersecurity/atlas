@@ -43,6 +43,18 @@ unsafe extern "C" {
     fn cuFuncSetAttribute(hfunc: *mut c_void, attrib: i32, value: i32) -> i32;
     fn cuGetErrorName(error: i32, pStr: *mut *const i8) -> i32;
     fn cuGetErrorString(error: i32, pStr: *mut *const i8) -> i32;
+    // Resolve a `__device__` symbol in a loaded CUmodule into a device pointer
+    // + size in bytes. Used by drivers that need to read/write device globals
+    // (e.g. InnerQ calibration state) without round-tripping through a kernel.
+    fn cuModuleGetGlobal_v2(
+        dptr: *mut u64,
+        bytes: *mut usize,
+        hmod: *mut c_void,
+        name: *const i8,
+    ) -> i32;
+    fn cuMemcpyHtoDAsync_v2(dst: u64, src: *const c_void, bytes: usize, stream: u64) -> i32;
+    fn cuMemcpyDtoHAsync_v2(dst: *mut c_void, src: u64, bytes: usize, stream: u64) -> i32;
+    fn cuStreamSynchronize(stream: u64) -> i32;
 }
 
 /// Resolve a CUresult status code into `"<NAME>: <description>"` via
@@ -113,9 +125,9 @@ impl AtlasRegistry {
     /// Subsequent calls return the cached registry instantly.
     pub fn get_or_init(
         ordinal: usize,
-        ptx_sources: &[(&'static str, &str)],
+        kernel_blobs: &[(&'static str, &'static [u8])],
     ) -> Result<&'static Self> {
-        let result = REGISTRY.get_or_init(|| match Self::init(ordinal, ptx_sources) {
+        let result = REGISTRY.get_or_init(|| match Self::init(ordinal, kernel_blobs) {
             Ok(reg) => Ok(reg),
             Err(e) => Err(format!("{e}")),
         });
@@ -125,26 +137,49 @@ impl AtlasRegistry {
         }
     }
 
-    fn init(ordinal: usize, ptx_sources: &[(&'static str, &str)]) -> Result<AtlasRegistry> {
+    fn init(
+        ordinal: usize,
+        kernel_blobs: &[(&'static str, &'static [u8])],
+    ) -> Result<AtlasRegistry> {
         let ctx = CudaContext::new(ordinal).map_err(AtlasError::CudaDriver)?;
         let stream = ctx.new_stream().map_err(AtlasError::CudaDriver)?;
 
         let mut modules = HashMap::new();
         let mut raw_modules = HashMap::new();
-        for &(name, src) in ptx_sources {
-            // Load via cudarc (safe API, for backward compat)
-            let ptx = Ptx::from_src(src);
+        for &(name, blob) in kernel_blobs {
+            // NVIDIA emits PTX (ASCII text); SCALE/AMD (gfx1151) and HIP
+            // emit a binary code object (ELF / clang offload bundle).
+            // `cuModuleLoadData` accepts either, but PTX must arrive
+            // NUL-terminated (the driver JIT parses it as a C string)
+            // while a binary object is self-describing. Sniff per blob.
+            let is_binary = blob.starts_with(b"\x7fELF")
+                || blob.starts_with(b"__CLANG_OFFLOAD_BUNDLE__")
+                || std::str::from_utf8(&blob[..blob.len().min(64)]).is_err();
+
+            // Load via cudarc (safe API) — backs `function()` lookups.
+            let ptx = if is_binary {
+                Ptx::from_binary(blob.to_vec())
+            } else {
+                let src = std::str::from_utf8(blob).map_err(|e| {
+                    AtlasError::ModuleLoad(format!("{name}: PTX not valid UTF-8: {e}"))
+                })?;
+                Ptx::from_src(src)
+            };
             let module = ctx
                 .load_module(ptx)
                 .map_err(|e| AtlasError::ModuleLoad(format!("{name}: {e}")))?;
             modules.insert(name, module);
 
             // Load via raw CUDA API (for launch_on_stream — avoids cudarc layout issues)
-            let src_nul = CString::new(src)
-                .map_err(|e| AtlasError::ModuleLoad(format!("{name}: CString: {e}")))?;
             let mut raw_mod: *mut c_void = std::ptr::null_mut();
-            let status =
-                unsafe { cuModuleLoadData(&mut raw_mod, src_nul.as_ptr() as *const c_void) };
+            let status = if is_binary {
+                // Self-describing binary object: pass the bytes directly.
+                unsafe { cuModuleLoadData(&mut raw_mod, blob.as_ptr() as *const c_void) }
+            } else {
+                let src_nul = CString::new(blob)
+                    .map_err(|e| AtlasError::ModuleLoad(format!("{name}: CString: {e}")))?;
+                unsafe { cuModuleLoadData(&mut raw_mod, src_nul.as_ptr() as *const c_void) }
+            };
             if status != 0 {
                 return Err(AtlasError::ModuleLoad(format!(
                     "{name}: cuModuleLoadData failed: {}",
@@ -237,6 +272,89 @@ impl AtlasRegistry {
     /// Get the raw CUstream handle for Atlas's own stream.
     pub fn raw_stream(&self) -> u64 {
         self.stream.cu_stream() as u64
+    }
+
+    /// Resolve a `__device__` symbol in a loaded PTX module to its device
+    /// pointer + byte length. Required for drivers that read/write device
+    /// globals without launching a kernel (e.g. InnerQ calibration state).
+    /// `symbol` must be the linker-visible name — C++ namespace symbols are
+    /// Itanium-mangled (`_ZN7tq_plus14d_innerq_scaleE`).
+    pub fn device_symbol(&self, module_name: &str, symbol: &str) -> Result<(u64, usize)> {
+        let raw_mod = self
+            .raw_modules
+            .get(module_name)
+            .ok_or_else(|| AtlasError::ModuleLoad(format!("Module '{module_name}' not loaded")))?;
+        let c_sym = CString::new(symbol).map_err(|e| {
+            AtlasError::ModuleLoad(format!("{module_name}::{symbol}: CString: {e}"))
+        })?;
+        let mut dptr: u64 = 0;
+        let mut bytes: usize = 0;
+        let status =
+            unsafe { cuModuleGetGlobal_v2(&mut dptr, &mut bytes, *raw_mod, c_sym.as_ptr().cast()) };
+        if status != 0 {
+            return Err(AtlasError::ModuleLoad(format!(
+                "{module_name}::{symbol}: cuModuleGetGlobal_v2 failed: {}",
+                cuda_error_text(status)
+            )));
+        }
+        Ok((dptr, bytes))
+    }
+
+    /// Async H2D copy into a previously-resolved device pointer.
+    ///
+    /// # Safety
+    /// Caller must ensure `dst` is a valid device pointer and the bytes
+    /// pointed to by `src` outlive the copy (host buffers must persist
+    /// until the next sync on `stream`).
+    pub unsafe fn copy_h2d_async(
+        &self,
+        dst: u64,
+        src: *const c_void,
+        bytes: usize,
+        stream: u64,
+    ) -> Result<()> {
+        let status = unsafe { cuMemcpyHtoDAsync_v2(dst, src, bytes, stream) };
+        if status != 0 {
+            return Err(AtlasError::KernelLaunch(format!(
+                "cuMemcpyHtoDAsync_v2 failed: {}",
+                cuda_error_text(status)
+            )));
+        }
+        Ok(())
+    }
+
+    /// Async D2H copy from a device pointer. Same lifetime caveats as the
+    /// H2D variant.
+    ///
+    /// # Safety
+    /// Caller must keep `dst` alive until `stream` is synchronised.
+    pub unsafe fn copy_d2h_async(
+        &self,
+        dst: *mut c_void,
+        src: u64,
+        bytes: usize,
+        stream: u64,
+    ) -> Result<()> {
+        let status = unsafe { cuMemcpyDtoHAsync_v2(dst, src, bytes, stream) };
+        if status != 0 {
+            return Err(AtlasError::KernelLaunch(format!(
+                "cuMemcpyDtoHAsync_v2 failed: {}",
+                cuda_error_text(status)
+            )));
+        }
+        Ok(())
+    }
+
+    /// Block the calling thread until all prior work on `stream` completes.
+    pub fn stream_synchronize(&self, stream: u64) -> Result<()> {
+        let status = unsafe { cuStreamSynchronize(stream) };
+        if status != 0 {
+            return Err(AtlasError::KernelLaunch(format!(
+                "cuStreamSynchronize failed: {}",
+                cuda_error_text(status)
+            )));
+        }
+        Ok(())
     }
 
     /// Launch a kernel on a specified raw CUDA stream.

@@ -4,8 +4,49 @@
 
 use super::*;
 
+// Periodic accept-distribution summary (P4, 2026-05-24). K=3 has
+// three outcomes (0/1/2 drafts accepted) so we track three counters
+// and emit a summary line every K3_SUMMARY_PERIOD verify steps.
+const K3_SUMMARY_PERIOD: u64 = 100;
+static K3_ACCEPT_2: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static K3_ACCEPT_1: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static K3_ACCEPT_0: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[inline]
+fn k3_record_outcome(num_accepted: usize, seq_len: usize) {
+    let counter = match num_accepted {
+        2 => &K3_ACCEPT_2,
+        1 => &K3_ACCEPT_1,
+        _ => &K3_ACCEPT_0,
+    };
+    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let total = K3_ACCEPT_2.load(std::sync::atomic::Ordering::Relaxed)
+        + K3_ACCEPT_1.load(std::sync::atomic::Ordering::Relaxed)
+        + K3_ACCEPT_0.load(std::sync::atomic::Ordering::Relaxed);
+    if total >= K3_SUMMARY_PERIOD {
+        let a2 = K3_ACCEPT_2.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let a1 = K3_ACCEPT_1.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let a0 = K3_ACCEPT_0.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let total = (a2 + a1 + a0).max(1);
+        let mean = (2 * a2 + a1) as f64 / total as f64;
+        tracing::info!(
+            "K3 summary: {a2} accept-2 / {a1} accept-1 / {a0} reject in last {total} steps (mean accepted={mean:.2}) seq_len={seq_len}"
+        );
+    }
+}
+
 /// K=3 verify: [last_token, draft1, draft2] → [v0, v1, v2]. Three outcomes.
-pub fn step_verify_k3(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_drafts: usize) {
+///
+/// `verify_ctx` carries the tokenizer special-token IDs the
+/// pre-sample logits-processor pipeline needs. See K=2 docstring +
+/// `verify_pipeline_helper` for context.
+pub fn step_verify_k3(
+    model: &dyn Model,
+    a: &mut ActiveSeq,
+    drafts: &[u32],
+    num_drafts: usize,
+    verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+) {
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
         a.finished = true;
@@ -40,10 +81,17 @@ pub fn step_verify_k3(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
     a.last_token_time = Instant::now();
     let [v0_argmax, v1_argmax, v2_argmax] = result;
 
-    // Use argmax for speculative acceptance (see K=2 comment).
-    let v0 = v0_argmax;
-    let v1 = v1_argmax;
-    let v2 = v2_argmax;
+    // Phase C-2 (2026-05-24): pre-sample pipeline per verify
+    // position. See K=2 docstring + `verify_pipeline_helper`.
+    let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+        model,
+        &[v0_argmax, v1_argmax, v2_argmax],
+        a,
+        verify_ctx,
+    );
+    let v0 = processed.first().copied().unwrap_or(v0_argmax);
+    let v1 = processed.get(1).copied().unwrap_or(v1_argmax);
+    let v2 = processed.get(2).copied().unwrap_or(v2_argmax);
 
     let num_accepted = if drafts[0] != v0 {
         0
@@ -122,12 +170,11 @@ pub fn step_verify_k3(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             }
         }
         let propose_us = t_propose.elapsed().as_micros();
-        if a.seq.seq_len.is_multiple_of(50) {
-            tracing::info!(
-                "K3 ACCEPT-2: verify={verify_us}μs propose={propose_us}μs seq_len={}",
-                a.seq.seq_len
-            );
-        }
+        tracing::debug!(
+            "K3 ACCEPT-2: verify={verify_us}μs propose={propose_us}μs seq_len={}",
+            a.seq.seq_len
+        );
+        k3_record_outcome(2, a.seq.seq_len);
     } else if num_accepted == 1 {
         a.seq.seq_len -= 1;
         a.seq.tokens.pop();
@@ -169,17 +216,11 @@ pub fn step_verify_k3(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             }
         }
         let propose_us = t_propose.elapsed().as_micros();
-        // Rate-limit to every 50 tokens (matches ACCEPT-2 above).
         tracing::debug!(
             "K3 ACCEPT-1: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
-        if a.seq.seq_len.is_multiple_of(50) {
-            tracing::info!(
-                "K3 ACCEPT-1 sample: verify={verify_us}μs propose={propose_us}μs seq_len={}",
-                a.seq.seq_len
-            );
-        }
+        k3_record_outcome(1, a.seq.seq_len);
     } else {
         a.seq.seq_len -= 2;
         a.seq.tokens.pop();
@@ -223,11 +264,6 @@ pub fn step_verify_k3(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             "K3 REJECT: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
-        if a.seq.seq_len.is_multiple_of(50) {
-            tracing::info!(
-                "K3 REJECT sample: verify={verify_us}μs propose={propose_us}μs seq_len={}",
-                a.seq.seq_len
-            );
-        }
+        k3_record_outcome(0, a.seq.seq_len);
     }
 }

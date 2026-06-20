@@ -16,6 +16,16 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // BF16 (FP8-dequant-on-load) experts have no fused batch2 kernel.
+        // The FP8 batch2 branch below would read expert weights that were
+        // FREED at dequant-load → garbage MTP-verify logits → degenerate
+        // repetition. Route the 2-token verify through the per-token BF16
+        // batched path, which produces the same moe_output()[2,H]. (SSOT:
+        // reuses the decode BF16 kernels via forward_batched.)
+        if self.bf16_gate_weight_ptrs.is_some() {
+            return self.forward_batched(input, 2, ctx, stream);
+        }
+
         let h = ctx.config.hidden_size as u32;
         let inter = ctx.config.moe_intermediate_size as u32;
         let num_experts = ctx.config.num_experts as u32;
@@ -66,7 +76,7 @@ impl MoeLayer {
                 num_experts,
                 top_k,
                 ctx.config.norm_topk_prob,
-                1.0,
+                ctx.config.routed_scaling_factor as f32,
                 2,
                 stream,
             )?;

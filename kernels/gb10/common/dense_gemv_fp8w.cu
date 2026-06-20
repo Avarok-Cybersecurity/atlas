@@ -21,6 +21,35 @@
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 
+// Standard E4M3 (1-4-3, bias 7) decode via pure bit-math. On real NVIDIA this is
+// byte-identical to (float)__nv_fp8_e4m3; on SCALE/gfx1151 the built-in
+// __nv_fp8_e4m3->float decode is a NON-STANDARD narrow format which mismatches the
+// standard E4M3 scales written by the encoder -> corrupts every block scale.
+// HIP/gfx1151 shares the same software path (no cvt.rn.satfinite.e4m3x2.f32 PTX).
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+__device__ __forceinline__ float scl_fp8(unsigned char b) {
+    unsigned int s = (b >> 7) & 1u, e = (b >> 3) & 0xFu, m = b & 0x7u; float v;
+    if (e == 0u)               v = (float)m * 0.001953125f;            // subnormal m*2^-9
+    else if (e == 15u && m == 7u) v = 0.0f;                            // NaN -> 0
+    else                       v = __uint_as_float(((e + 120u) << 23) | (m << 20)); // 2^(e-7)*(1+m/8)
+    return s ? -v : v;
+}
+// Standard-E4M3 ENCODE (BF16->FP8). Must pair with scl_fp8 decode: SCALE's
+// `(__nv_fp8_e4m3)` cast is non-standard on gfx1151, so encoding with it and
+// decoding with scl_fp8 would mismatch and corrupt the runtime-quantized FP8
+// head. Use this software encode under SCALE/HIP so encode/decode agree.
+__device__ __forceinline__ unsigned char scl_enc_fp8(float v) {
+    if (v != v) return 0x7F;
+    unsigned int bb = __float_as_uint(v); unsigned int sign = (bb >> 31) & 1u;
+    int e = (int)((bb >> 23) & 0xFF) - 127; unsigned int man = bb & 0x7FFFFFu;
+    int ee = e + 7; unsigned int em;
+    if (ee < 1) { ee = 0; em = 0; if (e >= -10) { float a = v < 0 ? -v : v; em = (unsigned int)(a / 0.001953125f + 0.5f); if (em > 7u) em = 7u; } }
+    else if (ee > 15) { ee = 15; em = 6; }
+    else { em = (man + (1u << 19)) >> 20; if (em > 7u) { em = 0; ee++; if (ee > 15) { ee = 15; em = 6; } } }
+    return (unsigned char)((sign << 7) | ((unsigned)ee << 3) | em);
+}
+#endif
+
 #define BLOCK_SIZE 256
 #define N_PER_BLOCK 4
 #define WARP_SIZE 32
@@ -85,8 +114,12 @@ extern "C" __global__ void quantize_bf16_to_fp8(
         float val = __bfloat162float(row_in[k]) * inv_scale;
         // Clamp to FP8 E4M3 range (saturation)
         val = fminf(fmaxf(val, -448.0f), 448.0f);
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+        row_out[k] = scl_enc_fp8(val);
+#else
         __nv_fp8_e4m3 fp8 = (__nv_fp8_e4m3)val;
         row_out[k] = *(unsigned char*)&fp8;
+#endif
     }
 }
 
@@ -152,13 +185,23 @@ extern "C" __global__ void dense_gemv_fp8w(
             __nv_bfloat16 a_lo, a_hi;
             *(unsigned short*)&a_lo = (unsigned short)(a32_lo & 0xFFFF);
             *(unsigned short*)&a_hi = (unsigned short)(a32_lo >> 16);
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+            acc += __bfloat162float(a_lo) * scl_fp8((unsigned char)(w32 & 0xFF));
+            acc += __bfloat162float(a_hi) * scl_fp8((unsigned char)((w32 >> 8) & 0xFF));
+#else
             acc += __bfloat162float(a_lo) * (float)fp8_0;
             acc += __bfloat162float(a_hi) * (float)fp8_1;
+#endif
 
             *(unsigned short*)&a_lo = (unsigned short)(a32_hi & 0xFFFF);
             *(unsigned short*)&a_hi = (unsigned short)(a32_hi >> 16);
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+            acc += __bfloat162float(a_lo) * scl_fp8((unsigned char)((w32 >> 16) & 0xFF));
+            acc += __bfloat162float(a_hi) * scl_fp8((unsigned char)((w32 >> 24) & 0xFF));
+#else
             acc += __bfloat162float(a_lo) * (float)fp8_2;
             acc += __bfloat162float(a_hi) * (float)fp8_3;
+#endif
         }
 
         // Process next 8 FP8 weights with next 8 BF16 activations
@@ -179,13 +222,23 @@ extern "C" __global__ void dense_gemv_fp8w(
             __nv_bfloat16 a_lo, a_hi;
             *(unsigned short*)&a_lo = (unsigned short)(a32_lo & 0xFFFF);
             *(unsigned short*)&a_hi = (unsigned short)(a32_lo >> 16);
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+            acc += __bfloat162float(a_lo) * scl_fp8((unsigned char)(w32 & 0xFF));
+            acc += __bfloat162float(a_hi) * scl_fp8((unsigned char)((w32 >> 8) & 0xFF));
+#else
             acc += __bfloat162float(a_lo) * (float)fp8_0;
             acc += __bfloat162float(a_hi) * (float)fp8_1;
+#endif
 
             *(unsigned short*)&a_lo = (unsigned short)(a32_hi & 0xFFFF);
             *(unsigned short*)&a_hi = (unsigned short)(a32_hi >> 16);
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+            acc += __bfloat162float(a_lo) * scl_fp8((unsigned char)((w32 >> 16) & 0xFF));
+            acc += __bfloat162float(a_hi) * scl_fp8((unsigned char)((w32 >> 24) & 0xFF));
+#else
             acc += __bfloat162float(a_lo) * (float)fp8_2;
             acc += __bfloat162float(a_hi) * (float)fp8_3;
+#endif
         }
     }
 
