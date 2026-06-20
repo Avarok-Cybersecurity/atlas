@@ -312,6 +312,52 @@ pub fn process_decode_logits(
         // accumulating across the whole response.
         if tool_call_start_token == Some(tok) && !a.inside_thinking {
             a.prose_tokens_since_last_tool = 0;
+            // Tool-call-repetition runaway guard. On a `tool_choice="auto"`
+            // grammar turn the grammar never terminates after a tool call
+            // (stop_after_first=false), so EOS stays grammar-suppressed and the
+            // only stop path is the ATLAS_TOOL_EOS_ESCAPE hatch — which a
+            // re-opened tool body defeats (its `!inside_tool_body` guard flips
+            // false the moment the model emits another `<tool_call>`). A
+            // degenerating FP8/long-context model loops emitting whole
+            // `<tool_call>…</tool_call>` blocks as content; each closes cleanly
+            // so the envelope-streak guard never fires, and the turn burns to
+            // max_tokens. Count opens that happen AFTER a real call already
+            // completed; once past threshold the turn is provably degenerating
+            // and we force-finish it (below).
+            if a.tool_call_completed {
+                a.post_completion_tool_opens = a.post_completion_tool_opens.saturating_add(1);
+                // Threshold = how many EXTRA `<tool_call>` openers (after the
+                // first completed) mark the turn as a degenerate content-leak
+                // loop with no legitimate continuation. Measured: real
+                // degenerate runaways emit 50-58 blocks in a single decode
+                // burning to the 8192 cap; a model making genuine back-to-back
+                // calls in one decode tops out far lower and then STOPS. 8 sits
+                // safely above any plausible legit single-decode multi-call
+                // (catches the runaway at ~8 blocks ≈ ~1.2k tokens, an order of
+                // magnitude below the 8k-token cap it used to hit) while leaving
+                // generous headroom so a legitimate multi-call turn is never
+                // truncated. This is the only path that reliably halts the
+                // runaway — lifting the post-sample EOS suppression alone is not
+                // enough if the grammar bitmask never surfaces an EOS token
+                // during the auto-mode alternation. Mirrors the existing
+                // MAX_TOOL_BODY_TOKENS envelope guard (emit_step.rs), which
+                // force-finishes the never-closing variant; this handles the
+                // closing-but-repeating variant.
+                const MAX_POST_COMPLETION_TOOL_OPENS: u32 = 8;
+                if a.post_completion_tool_opens >= MAX_POST_COMPLETION_TOOL_OPENS {
+                    tracing::warn!(
+                        opens = a.post_completion_tool_opens,
+                        "tool-call repetition runaway: model re-opened {MAX_POST_COMPLETION_TOOL_OPENS}+ tool-call blocks after a completed call on a tool_choice=auto turn; ending response (was burning to max_tokens). Sanitizer keeps the first valid call(s)."
+                    );
+                    a.output_tokens.push(tok);
+                    a.tool_call_opened = true;
+                    if let Some(ref mut gs) = a.grammar_state {
+                        gs.accept_token(tok);
+                    }
+                    a.finished = true;
+                    continue;
+                }
+            }
         }
         // Safety: if require_tool_call is still set after 512 tokens, the model
         // isn't generating a tool call (grammar may have failed to compile).
