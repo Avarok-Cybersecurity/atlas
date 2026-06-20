@@ -199,6 +199,11 @@ impl MoeLayer {
             // models start fine. `tid2eid_dev` is the per-layer table (Some
             // only for hash layers).
             moe_hash_route_k: super::super::try_kernel(gpu, "moe_hash_route", "moe_hash_route"),
+            moe_hash_route_batched_k: super::super::try_kernel(
+                gpu,
+                "moe_hash_route",
+                "moe_hash_route_batched",
+            ),
             tid2eid_dev,
             moe_expert_gate_up_shared_batch2_t_k: gpu.kernel(
                 "moe_shared_expert_fused_batch2_t",

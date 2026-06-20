@@ -148,6 +148,7 @@ pub struct MoeLayer {
     moe_topk_sqrtsoftplus_batched_k: KernelHandle,
     // ── hash routing (DeepSeek-V4 first `num_hash_layers` MoE layers) ──
     moe_hash_route_k: KernelHandle,
+    moe_hash_route_batched_k: KernelHandle,
     /// Static `tid2eid` table [vocab_size, top_k] i64 — present ONLY for the
     /// hash-routed layers (the loader supplies it only for those). `Some`
     /// here is the SSOT that this layer routes via the static hash table
