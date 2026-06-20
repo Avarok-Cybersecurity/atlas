@@ -46,15 +46,24 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = "0.8"
+# Feature sets are a SUPERSET of what generations request. Cargo keys a
+# cached rlib by (crate, version, feature-set, profile); if the agent's
+# project enables a feature the warm rlib lacks (e.g. tower "util",
+# axum "json"), cargo recompiles that crate from scratch and the warm hit
+# is lost. Enabling the union here keeps the agent's build a pure
+# incremental link of its own crate.
+axum = { version = "0.8", features = ["json", "macros", "ws", "multipart"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tower = "0.5"
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["full"] }
 hyper = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
+anyhow = "1"
+thiserror = "2"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }
@@ -84,9 +93,25 @@ RUST
 
 mkdir -p "${WARM_TARGET_DIR}"
 
-echo "[warm] compiling dependency tree into the shared target dir (cold = slow, once)..." >&2
+# Pre-warm EVERY cargo profile the agent actually drives. Measured agent tool
+# calls over a N=10 webserver_ok tier: `cargo test` (debug) 141×, `cargo run`
+# (debug) 97×, `cargo build --release` 25×, `cargo run --release` 25×. The
+# debug profile compiles a SEPARATE set of dep rlibs from release; warming
+# only release (the old behaviour) left every debug `cargo test`/`cargo run`
+# cold-compiling axum/tokio/hyper — ~5s idle but 150-250s under the model's
+# memory-pressure swap thrash, which was the entire 92s↔305s wall variance.
+#
+#   cargo test   → warms the DEBUG profile rlibs + the test-harness link
+#   cargo build  → warms the RELEASE profile rlibs
+# Both share ${WARM_TARGET_DIR}; the agent's CARGO_TARGET_DIR points here so
+# its builds become ~1.4s incremental links of just the project's own crate.
+echo "[warm] compiling DEBUG profile (cargo test) into shared target dir..." >&2
+CARGO_TARGET_DIR="${WARM_TARGET_DIR}" cargo test --no-run \
+    --manifest-path "${TEMPLATE_DIR}/Cargo.toml" >&2
+
+echo "[warm] compiling RELEASE profile (cargo build --release) into shared target dir..." >&2
 CARGO_TARGET_DIR="${WARM_TARGET_DIR}" cargo build --release \
     --manifest-path "${TEMPLATE_DIR}/Cargo.toml" >&2
 
-echo "[warm] warm cache ready." >&2
+echo "[warm] warm cache ready (debug + release profiles)." >&2
 du -sh "${WARM_TARGET_DIR}" 2>/dev/null | sed 's/^/[warm] target dir size: /' >&2 || true

@@ -431,7 +431,25 @@ def webserver_test(target: pathlib.Path, port: int, timeout_s: int = 15) -> dict
 
 
 def atlas_log_metrics(log_text: str) -> dict[str, Any]:
-    """Extract atlas-side counters from the captured docker log window."""
+    """Extract atlas-side counters from the captured docker log window.
+
+    `runaway_length_capped_turns` + `max_turn_output_tokens` make the dominant
+    webserver_ok wall-time driver VISIBLE per run: a deep-context FP8
+    degeneration where the model leaks repeated tool-call XML as plain text and
+    runs the final turn to the max_tokens cap (~8200 tokens @ ~31 tok/s ≈ 260s).
+    Surfacing it here means the slow-run cost is attributable to the MODEL floor
+    in the JSON record itself, not buried in the raw docker log — no masking.
+    """
+    # `... Done: <N> tokens (length) ...` is the scheduler's per-turn finish
+    # line; finish_reason "(length)" == hit the max_tokens cap (the runaway).
+    length_capped = log_text.count("(length)")
+    # Largest single-turn token count = the runaway turn. Parse the
+    # authoritative `Done: <N> tokens (<reason>)` finish line — `output_tokens=`
+    # is logged only intermittently and `docker logs --since` can clip it, so
+    # `Done:` is the reliable source for the per-turn maximum.
+    max_out = 0
+    for m in re.finditer(r"Done:\s+(\d+)\s+tokens", log_text):
+        max_out = max(max_out, int(m.group(1)))
     return {
         "ws1_mask_active_fires": log_text.count("ws1/am1 mask active"),
         "b1_drift_gauge_fires": log_text.count("B1 drift gauge"),
@@ -439,6 +457,8 @@ def atlas_log_metrics(log_text: str) -> dict[str, Any]:
         "a2_fuzzy_repair_fires": log_text.count("A2 fuzzy_repair: rescued"),
         "doom_loop_trips": log_text.count("Bug-2 name-run cap tripped"),
         "tool_call_lines": log_text.count("Tool call: "),
+        "runaway_length_capped_turns": length_capped,
+        "max_turn_output_tokens": max_out,
     }
 
 
