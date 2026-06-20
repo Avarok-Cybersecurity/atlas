@@ -388,6 +388,11 @@ fn load_correction_bias(
         format!("{layer_prefix}.ffn.gate.e_score_correction_bias"),
         format!("{layer_prefix}.ffn.gate.correction_bias"),
         format!("{layer_prefix}.mlp.gate.e_score_correction_bias"),
+        // RedHat/HF V4-Flash names the noaux_tc selection bias `ffn.gate.bias`
+        // (the router nn.Linear is bias=False, so this IS the e_score_correction
+        // _bias — used ONLY for top-k selection; weights gather raw scores).
+        format!("{layer_prefix}.ffn.gate.bias"),
+        format!("{layer_prefix}.mlp.gate.bias"),
     ];
     let Some(bias_t) = candidates.iter().find_map(|k| store.get(k).ok()) else {
         // V4-Flash ships no correction bias (noaux_tc with bias=0). Supply a
