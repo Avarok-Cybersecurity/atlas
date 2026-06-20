@@ -143,6 +143,9 @@ pub struct MoeLayer {
     // the weight loader produces transposed-only pointer tables.
     moe_expert_gate_up_shared_t_k: KernelHandle,
     moe_expert_silu_down_shared_t_k: KernelHandle,
+    // ── sqrtsoftplus routing (DeepSeek-V4) ──
+    moe_topk_sqrtsoftplus_k: KernelHandle,
+    moe_topk_sqrtsoftplus_batched_k: KernelHandle,
     moe_expert_gate_up_shared_batch2_t_k: KernelHandle,
     moe_expert_silu_down_shared_batch2_t_k: KernelHandle,
     moe_expert_gate_up_shared_batch3_t_k: KernelHandle,

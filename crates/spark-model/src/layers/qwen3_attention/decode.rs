@@ -11,6 +11,7 @@ mod attention_forward;
 mod attention_forward_kv;
 mod attention_forward_mla;
 mod attention_forward_oproj;
+mod attention_forward_v4;
 mod high_speed_swap;
 mod run_paged_decode;
 mod write_kv_cache;

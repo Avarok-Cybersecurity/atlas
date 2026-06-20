@@ -160,6 +160,7 @@ pub fn mla_fused_prefill(
     kv_lora: u32,
     v_dim: u32,
     hd: u32,
+    num_kv_heads: u32,
     inv_sqrt_d: f32,
     stream: u64,
 ) -> Result<()> {
@@ -182,6 +183,7 @@ pub fn mla_fused_prefill(
         .arg_u32(kv_lora)
         .arg_u32(v_dim)
         .arg_u32(hd)
+        .arg_u32(num_kv_heads)
         .arg_f32(inv_sqrt_d)
         .launch(stream)
 }

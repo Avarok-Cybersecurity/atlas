@@ -120,6 +120,8 @@ pub(super) fn parse_header(file: &mut File) -> Result<Vec<TensorMeta>> {
             "BF16" => WeightDtype::BF16,
             "U8" => WeightDtype::UInt8,
             "F8_E4M3" => WeightDtype::FP8E4M3,
+            "F8_E8M0" => WeightDtype::FP8E8M0,
+            "I64" => WeightDtype::Int64,
             other => bail!("Unsupported safetensors dtype '{other}' for tensor {name}"),
         };
         let shape: Vec<usize> = info["shape"]

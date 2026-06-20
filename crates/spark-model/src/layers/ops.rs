@@ -15,6 +15,8 @@
 mod activations;
 #[path = "ops/embeddings.rs"]
 mod embeddings;
+#[path = "ops/hyper_connection.rs"]
+mod hyper_connection;
 #[path = "ops/fp8_gemv_batch.rs"]
 mod fp8_gemv_batch;
 #[path = "ops/fp8_moe.rs"]
@@ -78,6 +80,7 @@ mod ssm_preproc;
 
 pub use activations::*;
 pub use embeddings::*;
+pub use hyper_connection::*;
 pub use fp8_gemv_batch::*;
 pub use fp8_moe::*;
 pub use fp8_moe_batch_a::*;

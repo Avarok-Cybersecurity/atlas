@@ -79,4 +79,41 @@ pub fn moe_topk_sigmoid(
         .launch(stream)
 }
 
+/// GPU-side MoE top-K sqrtsoftplus routing (DeepSeek-V4).
+///
+/// Uses sqrtsoftplus scoring (not sigmoid/softmax). Bias affects expert
+/// selection only, not their weights. Weights come from pre-bias
+/// sqrtsoftplus scores.
+///
+/// Kernel: `moe_topk_sqrtsoftplus(gate_logits, bias, expert_indices, expert_weights,
+///          num_experts, top_k, normalize, scaling_factor)`
+/// Grid: (1, 1, 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn moe_topk_sqrtsoftplus(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    gate_logits: DevicePtr,
+    bias: DevicePtr,
+    expert_indices: DevicePtr,
+    expert_weights: DevicePtr,
+    num_experts: u32,
+    top_k: u32,
+    normalize: bool,
+    scaling_factor: f32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([1, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(gate_logits)
+        .arg_ptr(bias)
+        .arg_ptr(expert_indices)
+        .arg_ptr(expert_weights)
+        .arg_u32(num_experts)
+        .arg_u32(top_k)
+        .arg_u32(if normalize { 1 } else { 0 })
+        .arg_f32(scaling_factor)
+        .launch(stream)
+}
+
 // ── Batched MoE Expert GEMV ──────────────────────────────────

@@ -132,6 +132,7 @@ impl Qwen3AttentionLayer {
                     eps,
                     bs,
                     inv_sqrt_d,
+                    o_lora_rank: mla.o_lora_rank as u32,
                 },
                 stream,
             )?;
@@ -447,7 +448,56 @@ impl Qwen3AttentionLayer {
         self.ms_mla_v_extract(c, mla, &d, attn_out, v_extracted, stream)?;
 
         // ── Step 8: O projection → this seq's o_out slot ──
-        if let Some(ref wo_nvfp4) = mla.wo_nvfp4 {
+        if d.o_lora_rank > 0 {
+            // DeepSeek-V4-Flash: low-rank O projection (wo_a → wo_b)
+            let o_latent = buffers.attn_output();
+            if let Some(ref woa_nvfp4) = mla.wo_a_nvfp4 {
+                ops::w4a16_gemv(
+                    gpu,
+                    self.w4a16_gemv_k,
+                    v_extracted,
+                    woa_nvfp4,
+                    o_latent,
+                    d.o_lora_rank,
+                    d.nq * d.mla_v_dim,
+                    stream,
+                )?;
+            } else {
+                ops::dense_gemv(
+                    gpu,
+                    self.dense_gemv_k,
+                    v_extracted,
+                    &mla.wo_a,
+                    o_latent,
+                    d.o_lora_rank,
+                    d.nq * d.mla_v_dim,
+                    stream,
+                )?;
+            }
+            if let Some(ref wob_nvfp4) = mla.wo_b_nvfp4 {
+                ops::w4a16_gemv(
+                    gpu,
+                    self.w4a16_gemv_k,
+                    o_latent,
+                    wob_nvfp4,
+                    o_out,
+                    d.h,
+                    d.o_lora_rank,
+                    stream,
+                )?;
+            } else {
+                ops::dense_gemv(
+                    gpu,
+                    self.dense_gemv_k,
+                    o_latent,
+                    &mla.wo_b,
+                    o_out,
+                    d.h,
+                    d.o_lora_rank,
+                    stream,
+                )?;
+            }
+        } else if let Some(ref wo_nvfp4) = mla.wo_nvfp4 {
             ops::w4a16_gemv(
                 gpu,
                 self.w4a16_gemv_k,

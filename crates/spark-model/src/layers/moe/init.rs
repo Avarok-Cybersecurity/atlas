@@ -168,6 +168,18 @@ impl MoeLayer {
                 .kernel("moe_shared_expert_fused_t", "moe_expert_gate_up_shared_t")?,
             moe_expert_silu_down_shared_t_k: gpu
                 .kernel("moe_shared_expert_fused_t", "moe_expert_silu_down_shared_t")?,
+            // sqrtsoftplus kernels: lazy-loaded via try_kernel so models that
+            // don't register them (all except DeepSeek-V4) start fine.
+            moe_topk_sqrtsoftplus_k: super::super::try_kernel(
+                gpu,
+                "moe_topk_sqrt",
+                "moe_topk_sqrtsoftplus",
+            ),
+            moe_topk_sqrtsoftplus_batched_k: super::super::try_kernel(
+                gpu,
+                "moe_topk_sqrt",
+                "moe_topk_sqrtsoftplus_batched",
+            ),
             moe_expert_gate_up_shared_batch2_t_k: gpu.kernel(
                 "moe_shared_expert_fused_batch2_t",
                 "moe_expert_gate_up_shared_batch2_t",
