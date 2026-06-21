@@ -236,6 +236,7 @@ pub fn assemble_layer(
     let wq_b_fp8 = load_fp8_mla("wq_b");
     let wo_b_fp8 = load_fp8_mla("wo_b");
     let wo_a_fp8 = load_fp8_mla("wo_a");
+    let wkv_a_fp8 = load_fp8_mla("wkv");
 
     let mla = MlaWeights {
         wq_a,
@@ -247,6 +248,7 @@ pub fn assemble_layer(
         q_a_norm,
         wkv_a,
         wkv_a_nvfp4,
+        wkv_a_fp8,
         wkv_b,
         kv_a_norm,
         wkv_a_rope,

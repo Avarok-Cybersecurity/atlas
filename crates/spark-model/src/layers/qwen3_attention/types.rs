@@ -29,6 +29,7 @@ pub struct MlaWeights {
     pub q_a_norm: DenseWeight, // [q_lora] — RMS norm weight
     pub wkv_a: DenseWeight, // [kv_lora, h] — KV down-projection (BF16)
     pub wkv_a_nvfp4: Option<QuantizedWeight>, // NVFP4 for fast decode
+    pub wkv_a_fp8: Option<crate::weight_map::Fp8Weight>,
     pub wkv_b: DenseWeight, // [n_kv*(nope+v), kv_lora] — KV up-projection (BF16)
     pub kv_a_norm: DenseWeight, // [kv_lora] — RMS norm weight
     pub wkv_a_rope: DenseWeight, // [rope, h] — K RoPE projection (BF16)

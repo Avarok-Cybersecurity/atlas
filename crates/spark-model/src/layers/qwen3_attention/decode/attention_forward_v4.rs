@@ -194,6 +194,18 @@ impl Qwen3AttentionLayer {
                     h,
                     stream,
                 )
+            } else if let Some(ref wkva_fp8) = mla.wkv_a_fp8 {
+                ops::w8a16_gemv(
+                    ctx.gpu,
+                    self.w8a16_gemv_k,
+                    normed,
+                    wkva_fp8.weight,
+                    wkva_fp8.row_scale,
+                    k_out,
+                    kv_dim,
+                    h,
+                    stream,
+                )
             } else {
                 ops::dense_gemv(
                     ctx.gpu,

@@ -108,6 +108,7 @@ pub(super) fn assemble_layer(
         wo_b_nvfp4: None,
         wo_b_fp8: None,
         wo_a_fp8: None,
+        wkv_a_fp8: None,
         wq_b_rope: require(ctx.wq_b_rope, "wq_b_rope")?,
         w_uk_t: require(ctx.w_uk_t, "w_uk_t")?,
         w_uv: require(ctx.w_uv, "w_uv")?,
