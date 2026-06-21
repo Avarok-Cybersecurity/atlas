@@ -70,20 +70,26 @@ impl MoeLayer {
             // (MiniMax/DeepSeek-V3). Must match the prefill/single-token paths or
             // decode routing diverges from prefill.
             if ctx.config.scoring_func == "sqrtsoftplus" {
-                ops::moe_topk_sqrtsoftplus_batched(
-                    ctx.gpu,
-                    self.moe_topk_sqrtsoftplus_batched_k,
-                    gate_logits,
-                    bias,
-                    indices_dev,
-                    weights_dev,
-                    num_experts,
-                    top_k,
-                    ctx.config.norm_topk_prob,
-                    ctx.config.routed_scaling_factor as f32,
-                    2,
-                    stream,
-                )?;
+                // Use the PROVEN non-batched sqrtsoftplus kernel per token (the
+                // _batched variant is unexercised — the K2 verify is the only
+                // user and it never ran for V4 before). gate_logits is BF16
+                // [2, num_experts] (2-byte stride); indices/weights are
+                // [2, top_k] (u32 / f32, 4-byte stride).
+                for t in 0..2usize {
+                    ops::moe_topk_sqrtsoftplus(
+                        ctx.gpu,
+                        self.moe_topk_sqrtsoftplus_k,
+                        gate_logits.offset(t * num_experts as usize * 2),
+                        bias,
+                        indices_dev.offset(t * top_k as usize * 4),
+                        weights_dev.offset(t * top_k as usize * 4),
+                        num_experts,
+                        top_k,
+                        ctx.config.norm_topk_prob,
+                        ctx.config.routed_scaling_factor as f32,
+                        stream,
+                    )?;
+                }
             } else {
                 ops::moe_topk_sigmoid_batched(
                     ctx.gpu,
