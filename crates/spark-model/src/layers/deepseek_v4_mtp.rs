@@ -50,7 +50,7 @@ use crate::layer::{AttnMetadataDev, ForwardContext, LayerState};
 use crate::layers::ops;
 use crate::speculative::{DraftProposer, ProposerState};
 use crate::weight_loader::deepseek_v4::DeepseekV4MtpModule;
-use crate::weight_map::{DenseWeight, QuantizedWeight};
+use crate::weight_map::DenseWeight;
 
 /// Scratch-buffer byte offset for the MTP attention metadata. Must be distinct
 /// from the target model's metadata (`32768`) so a `propose()` call does not
@@ -87,10 +87,10 @@ pub struct DeepseekV4MtpHead {
     module: DeepseekV4MtpModule,
     /// Shared token embedding table (BF16), from the target model.
     embed_tokens: DenseWeight,
-    /// Shared NVFP4 LM head used for drafting. Every draft is re-verified by
-    /// the target's BF16 head, so this approximate head only affects
-    /// acceptance, never an accepted token.
-    lm_head_nvfp4: QuantizedWeight,
+    /// Shared LM head (BF16 — DeepSeek-V4-Flash keeps the head in BF16), from the
+    /// target model. Every draft is re-verified by the target's head, so the
+    /// draft head only affects acceptance, never an accepted token.
+    lm_head: DenseWeight,
     /// Reduced vocab size for the draft LM-head GEMV (0 = full vocab).
     mtp_vocab_size: u32,
     /// Single-layer MLA-shaped KV cache for the MTP attention.
@@ -102,7 +102,6 @@ pub struct DeepseekV4MtpHead {
     residual_add_k: KernelHandle,
     hc_expand_k: KernelHandle,
     hc_head_k: KernelHandle,
-    w4a16_gemv_k: KernelHandle,
     argmax_k: KernelHandle,
 }
 
@@ -112,7 +111,7 @@ impl DeepseekV4MtpHead {
     pub fn new(
         module: DeepseekV4MtpModule,
         embed_tokens: DenseWeight,
-        lm_head_nvfp4: QuantizedWeight,
+        lm_head: DenseWeight,
         config: &atlas_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
         mtp_vocab_size: u32,
@@ -141,7 +140,7 @@ impl DeepseekV4MtpHead {
         Ok(Self {
             module,
             embed_tokens,
-            lm_head_nvfp4,
+            lm_head,
             mtp_vocab_size,
             kv_cache: Mutex::new(kv_cache),
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
@@ -149,7 +148,6 @@ impl DeepseekV4MtpHead {
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             hc_expand_k: gpu.kernel("hyper_connection", "hc_expand")?,
             hc_head_k: gpu.kernel("hyper_connection", "hc_head")?,
-            w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             argmax_k: gpu.kernel("argmax", "argmax_bf16")?,
         })
     }
@@ -391,11 +389,11 @@ impl DeepseekV4MtpHead {
             ctx.config.vocab_size as u32
         };
         let logits = ctx.buffers.logits();
-        ops::w4a16_gemv(
+        ops::dense_gemv(
             ctx.gpu,
-            self.w4a16_gemv_k,
+            self.dense_gemv_k,
             final_normed,
-            &self.lm_head_nvfp4,
+            &self.lm_head,
             logits,
             v,
             h,

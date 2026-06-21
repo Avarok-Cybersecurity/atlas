@@ -190,7 +190,10 @@ pub fn build_model(
     // NVFP4 head (main head kept BF16) or the main NVFP4 head. `None` ⇒ no
     // NVFP4 head available ⇒ the V4 proposer can't draft and is skipped.
     let v4_mtp_embed = embed;
-    let v4_mtp_draft_head = mtp_lm_head_nvfp4.or(lm_head_nvfp4);
+    // DeepSeek-V4-Flash keeps the LM head in BF16; the proposer drafts with the
+    // same BF16 head via dense_gemv (drafts are re-verified by the target, so the
+    // draft head only affects acceptance). DenseWeight is Copy.
+    let v4_mtp_lm_head = lm_head;
 
     // ── Step 3b: Post-load MoE prefill transpose (MiniMax EP=2 TTFT fix) ──
     //
@@ -463,32 +466,21 @@ pub fn build_model(
     // existing proposer setter. DFlash (below) is CLI-exclusive with
     // `--speculative`, so the two never both install.
     if let Some(v4_module) = v4_mtp_module {
-        match v4_mtp_draft_head {
-            Some(draft_head) => {
-                match crate::layers::DeepseekV4MtpHead::new(
-                    v4_module,
-                    v4_mtp_embed,
-                    draft_head,
-                    model.config_ref(),
-                    model.gpu_backend(),
-                    mtp_vocab_size,
-                    max_seq_len,
-                ) {
-                    Ok(head) => {
-                        model.set_dflash_proposer(std::sync::Arc::new(head));
-                        tracing::info!(
-                            "DeepSeek-V4 MTP speculative decoding: ENABLED (single-module)"
-                        );
-                    }
-                    Err(e) => tracing::warn!(
-                        "Failed to build DeepSeek-V4 MTP proposer: {e:#}. \
-                         Speculative decoding disabled."
-                    ),
-                }
+        match crate::layers::DeepseekV4MtpHead::new(
+            v4_module,
+            v4_mtp_embed,
+            v4_mtp_lm_head,
+            model.config_ref(),
+            model.gpu_backend(),
+            mtp_vocab_size,
+            max_seq_len,
+        ) {
+            Ok(head) => {
+                model.set_dflash_proposer(std::sync::Arc::new(head));
+                tracing::info!("DeepSeek-V4 MTP speculative decoding: ENABLED (single-module)");
             }
-            None => tracing::warn!(
-                "DeepSeek-V4 MTP module loaded but no NVFP4 draft LM head available — \
-                 speculative decoding disabled."
+            Err(e) => tracing::warn!(
+                "Failed to build DeepSeek-V4 MTP proposer: {e:#}. Speculative decoding disabled."
             ),
         }
     }
