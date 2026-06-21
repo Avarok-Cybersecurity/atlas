@@ -66,8 +66,8 @@ echo ""
 
 # Clean old containers
 echo "Cleaning up old containers..."
-sudo docker rm -f atlas-deepseek-ep0 2>/dev/null || true
-ssh "$WORKER_IP" "sudo docker rm -f atlas-deepseek-ep1 2>/dev/null || true"
+sudo docker rm -f atlas-ds-ep0 2>/dev/null || true
+ssh "$WORKER_IP" "sudo docker rm -f atlas-ds-ep1 2>/dev/null || true"
 
 RDMA_FLAGS="--device=/dev/infiniband --cap-add=IPC_LOCK --cap-add=SYS_NICE --ulimit memlock=-1 --security-opt seccomp=unconfined"
 
@@ -101,7 +101,7 @@ VOL_WORKER="-v ${MODEL_HOST_WORKER}:/model"
 # Start rank 0 (head) — HTTP server + scheduler
 echo "Starting rank 0 on $HEAD_IP..."
 sudo docker run -d \
-  --name atlas-deepseek-ep0 \
+  --name atlas-ds-ep0 \
   --gpus all \
   --ipc=host \
   --network host \
@@ -132,7 +132,7 @@ sudo docker run -d \
 # Start rank 1 (worker)
 echo "Starting rank 1 on $WORKER_IP..."
 ssh "$WORKER_IP" "sudo docker run -d \
-  --name atlas-deepseek-ep1 \
+  --name atlas-ds-ep1 \
   --gpus all \
   --ipc=host \
   --network host \
@@ -162,12 +162,12 @@ ssh "$WORKER_IP" "sudo docker run -d \
 
 echo ""
 echo "=== Both ranks starting ==="
-echo "Monitor rank 0: sudo docker logs -f atlas-deepseek-ep0"
-echo "Monitor rank 1: ssh $WORKER_IP 'sudo docker logs -f atlas-deepseek-ep1'"
+echo "Monitor rank 0: sudo docker logs -f atlas-ds-ep0"
+echo "Monitor rank 1: ssh $WORKER_IP 'sudo docker logs -f atlas-ds-ep1'"
 echo "API endpoint:   http://$HEAD_IP:$PORT/v1/chat/completions"
 
 echo ""
 echo "=== Both ranks starting ==="
-echo "Monitor rank 0: sudo docker logs -f atlas-deepseek-ep0"
-echo "Monitor rank 1: ssh $WORKER_IP 'sudo docker logs -f atlas-deepseek-ep1'"
+echo "Monitor rank 0: sudo docker logs -f atlas-ds-ep0"
+echo "Monitor rank 1: ssh $WORKER_IP 'sudo docker logs -f atlas-ds-ep1'"
 echo "API endpoint:   http://$HEAD_IP:$PORT/v1/chat/completions"
