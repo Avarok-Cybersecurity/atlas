@@ -219,11 +219,30 @@ pub fn assemble_layer(
         .map(|w| w.ptr)
         .unwrap_or(DevicePtr::NULL);
 
+    // Native block-scaled FP8 weights for the hot decode GEMVs (the checkpoint
+    // ships wq_a/wq_b/wo_b as FP8-E4M3 + 128×128 block scales). The decode path
+    // reads these at 1 byte/elem via w8a16_gemv instead of the BF16 dequant's
+    // 2 bytes — ~2× less weight traffic on the memory-bound MLA projections,
+    // lossless (in-kernel F32 dequant). `None` when the checkpoint isn't FP8.
+    let load_fp8_mla = |suffix: &str| {
+        crate::weight_map::load_fp8_block_scaled_as_fp8weight(
+            store,
+            &format!("{lp}.attn.{suffix}"),
+            gpu,
+        )
+        .ok()
+    };
+    let wq_a_fp8 = load_fp8_mla("wq_a");
+    let wq_b_fp8 = load_fp8_mla("wq_b");
+    let wo_b_fp8 = load_fp8_mla("wo_b");
+
     let mla = MlaWeights {
         wq_a,
         wq_a_nvfp4,
+        wq_a_fp8,
         wq_b,
         wq_b_nvfp4,
+        wq_b_fp8,
         q_a_norm,
         wkv_a,
         wkv_a_nvfp4,
@@ -239,6 +258,7 @@ pub fn assemble_layer(
         wo_a_nvfp4: None,
         wo_b: o_dense,
         wo_b_nvfp4: None,
+        wo_b_fp8,
         w_uk_t,
         w_uv,
         wq_b_rope,

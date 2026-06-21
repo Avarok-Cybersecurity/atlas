@@ -18,8 +18,14 @@ use crate::weight_map::{AttentionWeights, DenseWeight, QuantWeight, QuantizedWei
 pub struct MlaWeights {
     pub wq_a: DenseWeight, // [q_lora, h] — Q down-projection (BF16)
     pub wq_a_nvfp4: Option<QuantizedWeight>, // NVFP4 for fast decode
+    /// Native block-scaled FP8 weight (the checkpoint ships these projections as
+    /// FP8-E4M3 + 128×128 block scales). Used by the decode GEMV (w8a16_gemv) so
+    /// the hot path reads 1 byte/elem instead of the BF16-dequant's 2 — lossless
+    /// (the in-kernel dequant keeps F32 precision before the BF16 activation MAC).
+    pub wq_a_fp8: Option<crate::weight_map::Fp8Weight>,
     pub wq_b: DenseWeight, // [n_heads*hd, q_lora] — Q up-projection (BF16)
     pub wq_b_nvfp4: Option<QuantizedWeight>, // NVFP4 for fast decode
+    pub wq_b_fp8: Option<crate::weight_map::Fp8Weight>,
     pub q_a_norm: DenseWeight, // [q_lora] — RMS norm weight
     pub wkv_a: DenseWeight, // [kv_lora, h] — KV down-projection (BF16)
     pub wkv_a_nvfp4: Option<QuantizedWeight>, // NVFP4 for fast decode
@@ -36,6 +42,7 @@ pub struct MlaWeights {
     pub wo_a_nvfp4: Option<QuantizedWeight>,
     pub wo_b: DenseWeight, // [h, o_lora_rank]
     pub wo_b_nvfp4: Option<QuantizedWeight>,
+    pub wo_b_fp8: Option<crate::weight_map::Fp8Weight>,
     /// Absorbed MLA weights for decode (avoid full K/V expansion, preserve precision).
     /// W_UK_T: [n_heads, nope, kv_lora] — Q_nope absorption: Q_absorbed = Q_nope @ W_UK_T
     pub w_uk_t: DenseWeight,

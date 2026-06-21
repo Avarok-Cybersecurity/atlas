@@ -78,6 +78,20 @@ impl Qwen3AttentionLayer {
                     h,
                     stream,
                 )
+            } else if let Some(ref wqa_fp8) = mla.wq_a_fp8 {
+                // Native block-scaled FP8 GEMV — half the weight traffic of BF16,
+                // lossless (in-kernel F32 dequant).
+                ops::w8a16_gemv(
+                    ctx.gpu,
+                    self.w8a16_gemv_k,
+                    normed,
+                    wqa_fp8.weight,
+                    wqa_fp8.row_scale,
+                    q_latent,
+                    q_lora,
+                    h,
+                    stream,
+                )
             } else {
                 ops::dense_gemv(
                     ctx.gpu,
@@ -111,6 +125,18 @@ impl Qwen3AttentionLayer {
                     self.w4a16_gemv_k,
                     q_latent,
                     wqb_nvfp4,
+                    q_out,
+                    q_dim,
+                    q_lora,
+                    stream,
+                )
+            } else if let Some(ref wqb_fp8) = mla.wq_b_fp8 {
+                ops::w8a16_gemv(
+                    ctx.gpu,
+                    self.w8a16_gemv_k,
+                    q_latent,
+                    wqb_fp8.weight,
+                    wqb_fp8.row_scale,
                     q_out,
                     q_dim,
                     q_lora,
@@ -470,16 +496,30 @@ impl Qwen3AttentionLayer {
             Ok::<(), anyhow::Error>(())
         })?;
         prof!("wo_b", {
-            ops::dense_gemv(
-                ctx.gpu,
-                self.dense_gemv_k,
-                o_latent,
-                &mla.wo_b,
-                o_out,
-                h,
-                latent_dim,
-                stream,
-            )
+            if let Some(ref wob_fp8) = mla.wo_b_fp8 {
+                ops::w8a16_gemv(
+                    ctx.gpu,
+                    self.w8a16_gemv_k,
+                    o_latent,
+                    wob_fp8.weight,
+                    wob_fp8.row_scale,
+                    o_out,
+                    h,
+                    latent_dim,
+                    stream,
+                )
+            } else {
+                ops::dense_gemv(
+                    ctx.gpu,
+                    self.dense_gemv_k,
+                    o_latent,
+                    &mla.wo_b,
+                    o_out,
+                    h,
+                    latent_dim,
+                    stream,
+                )
+            }
         })?;
         if diag_this {
             super::super::trait_impl::diag_norm(
