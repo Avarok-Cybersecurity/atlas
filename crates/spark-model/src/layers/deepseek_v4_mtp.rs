@@ -124,11 +124,18 @@ impl DeepseekV4MtpHead {
         // one tiny layer — BF16 cost is negligible and avoids the FP8 unit-
         // scale collapse seen on the Qwen path).
         let mla_cache_dim = config.kv_lora_rank + config.qk_rope_head_dim;
+        // The MTP body is a single layer, but it was built with
+        // `attn_layer_idx = num_hidden_layers` (so its mHC/hash/compressor logic
+        // takes the "interior, no-compressor" path), and its decode indexes the
+        // KV cache pool at THAT index. So the cache pool must have
+        // `num_hidden_layers + 1` layer slots even though only the last is used.
+        // The extra slots are tiny (one MLA layer each at this seq len, ~2 MB).
+        let num_layers = config.num_hidden_layers + 1;
         let kv_config = KvCacheConfig {
             block_size: 16,
             num_kv_heads: 1,
             head_dim: mla_cache_dim,
-            num_layers: 1,
+            num_layers,
             dtype: KvCacheDtype::Bf16,
             layer_dtypes: vec![],
             layer_dims: vec![],
