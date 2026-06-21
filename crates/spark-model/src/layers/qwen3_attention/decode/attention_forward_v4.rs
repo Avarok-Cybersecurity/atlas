@@ -476,22 +476,44 @@ impl Qwen3AttentionLayer {
         prof!("wo_a_grouped", {
             for g in 0..o_groups {
                 let in_g = attn_out.offset((g * group_in) as usize * 2);
-                let w_g = crate::weight_map::DenseWeight {
-                    weight: mla.wo_a.weight.offset(
-                        (g as usize) * (o_lora as usize) * (group_in as usize) * 2,
-                    ),
-                };
                 let out_g = o_latent.offset((g * o_lora) as usize * 2);
-                ops::dense_gemv(
-                    ctx.gpu,
-                    self.dense_gemv_k,
-                    in_g,
-                    &w_g,
-                    out_g,
-                    o_lora,
-                    group_in,
-                    stream,
-                )?;
+                if let Some(ref woa_fp8) = mla.wo_a_fp8 {
+                    // Native block-scaled FP8 per group (block-diagonal):
+                    // weight rows [g*o_lora:(g+1)*o_lora] (fp8, 1 byte/elem) and the
+                    // matching [o_lora/128, group_in/128] block-scale sub-tile.
+                    let w_off = (g as usize) * (o_lora as usize) * (group_in as usize); // fp8 bytes
+                    let s_off = (g as usize)
+                        * (o_lora as usize / 128)
+                        * (group_in as usize / 128)
+                        * 4; // FP32 block-scale bytes
+                    ops::w8a16_gemv(
+                        ctx.gpu,
+                        self.w8a16_gemv_k,
+                        in_g,
+                        woa_fp8.weight.offset(w_off),
+                        woa_fp8.row_scale.offset(s_off),
+                        out_g,
+                        o_lora,
+                        group_in,
+                        stream,
+                    )?;
+                } else {
+                    let w_g = crate::weight_map::DenseWeight {
+                        weight: mla.wo_a.weight.offset(
+                            (g as usize) * (o_lora as usize) * (group_in as usize) * 2,
+                        ),
+                    };
+                    ops::dense_gemv(
+                        ctx.gpu,
+                        self.dense_gemv_k,
+                        in_g,
+                        &w_g,
+                        out_g,
+                        o_lora,
+                        group_in,
+                        stream,
+                    )?;
+                }
             }
             Ok::<(), anyhow::Error>(())
         })?;

@@ -235,6 +235,7 @@ pub fn assemble_layer(
     let wq_a_fp8 = load_fp8_mla("wq_a");
     let wq_b_fp8 = load_fp8_mla("wq_b");
     let wo_b_fp8 = load_fp8_mla("wo_b");
+    let wo_a_fp8 = load_fp8_mla("wo_a");
 
     let mla = MlaWeights {
         wq_a,
@@ -256,6 +257,7 @@ pub fn assemble_layer(
         wo_nvfp4: o_nvfp4,
         wo_a,
         wo_a_nvfp4: None,
+        wo_a_fp8,
         wo_b: o_dense,
         wo_b_nvfp4: None,
         wo_b_fp8,

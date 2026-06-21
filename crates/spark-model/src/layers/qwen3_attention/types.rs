@@ -40,6 +40,9 @@ pub struct MlaWeights {
     /// When `o_lora_rank > 0`, the decode/prefill paths use wo_a→wo_b instead of `wo`.
     pub wo_a: DenseWeight, // [o_lora_rank, n_heads*v_dim]
     pub wo_a_nvfp4: Option<QuantizedWeight>,
+    /// Native block-scaled FP8 wo_a for the grouped decode O-projection. Sliced
+    /// per o_group (block-diagonal) into w8a16_gemv calls.
+    pub wo_a_fp8: Option<crate::weight_map::Fp8Weight>,
     pub wo_b: DenseWeight, // [h, o_lora_rank]
     pub wo_b_nvfp4: Option<QuantizedWeight>,
     pub wo_b_fp8: Option<crate::weight_map::Fp8Weight>,
