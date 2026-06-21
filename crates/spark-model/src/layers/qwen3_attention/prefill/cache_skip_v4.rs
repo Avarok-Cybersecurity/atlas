@@ -121,34 +121,17 @@ impl Qwen3AttentionLayer {
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: q_a_norm sync failed: {e}"))?;
         let q_full = ctx.buffers.qkv_output();
-        if let Some(ref wqb_fp8) = mla.wq_b_fp8 {
-            // Native block-scaled fp8 TC GEMM (w8a16) — half the weight traffic
-            // of the BF16 TC path, lossless. Lowers prefill TTFT.
-            ops::w8a16_gemm(
-                ctx.gpu,
-                self.w8a16_gemm_k,
-                q_latent,
-                wqb_fp8.weight,
-                wqb_fp8.row_scale,
-                q_full,
-                n,
-                nq * hd_mla,
-                q_lora,
-                stream,
-            )?;
-        } else {
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                q_latent,
-                &mla.wq_b,
-                q_full,
-                n,
-                nq * hd_mla,
-                q_lora,
-                stream,
-            )?;
-        }
+        ops::dense_gemm(
+            ctx.gpu,
+            self.dense_gemm_k,
+            q_latent,
+            &mla.wq_b,
+            q_full,
+            n,
+            nq * hd_mla,
+            q_lora,
+            stream,
+        )?;
         ctx.gpu
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: q_full gemm sync failed: {e}"))?;
@@ -679,32 +662,17 @@ impl Qwen3AttentionLayer {
         ctx.gpu
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: wo_a grouped gemv sync failed: {e}"))?;
-        if let Some(ref wob_fp8) = mla.wo_b_fp8 {
-            ops::w8a16_gemm(
-                ctx.gpu,
-                self.w8a16_gemm_k,
-                o_latent,
-                wob_fp8.weight,
-                wob_fp8.row_scale,
-                o_out,
-                n,
-                h,
-                latent_dim,
-                stream,
-            )?;
-        } else {
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                o_latent,
-                &mla.wo_b,
-                o_out,
-                n,
-                h,
-                latent_dim,
-                stream,
-            )?;
-        }
+        ops::dense_gemm(
+            ctx.gpu,
+            self.dense_gemm_k,
+            o_latent,
+            &mla.wo_b,
+            o_out,
+            n,
+            h,
+            latent_dim,
+            stream,
+        )?;
         ctx.gpu
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: wo_b gemm sync failed: {e}"))?;
