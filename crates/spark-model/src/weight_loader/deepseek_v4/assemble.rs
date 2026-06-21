@@ -43,24 +43,44 @@ fn load_expert_proj(
     }
     // No global scale → either FP8 block-scaled or E8M0-microscaled NVFP4;
     // distinguish by the `.weight` tensor dtype.
-    let w = store
-        .get(&format!("{prefix}.weight"))
-        .with_context(|| format!("{prefix}: no .weight tensor"))?;
-    let (n, k) = (w.shape[0], w.shape[1]);
-    match w.dtype {
+    let (n, shape_k, dtype) = {
+        let w = store
+            .get(&format!("{prefix}.weight"))
+            .with_context(|| format!("{prefix}: no .weight tensor"))?;
+        (w.shape[0], w.shape[1], w.dtype)
+    };
+    match dtype {
+        // FP8 block-scaled (nvidia shared experts): weight shape is logical [n,k].
         WeightDtype::FP8E4M3 => crate::weight_map::quantized_from_fp8(
             store,
             prefix,
             n,
-            k,
+            shape_k,
             gpu,
             qctx.absmax_k,
             qctx.quantize_k,
             qctx.stream,
         ),
+        // NVFP4 4-bit (2 values/byte) + E8M0 `.scale`, no global (DeepSeek-V4
+        // ORIGINAL format, MTP module): dequant to BF16 then re-quantize to the
+        // standard NVFP4 the MoE GEMM expects. Weight shape is packed [n, k/2].
+        WeightDtype::UInt8 => {
+            let k = shape_k * 2;
+            let bf16 = crate::weight_map::dequant_nvfp4_e8m0_to_bf16(store, prefix, n, k, gpu)?;
+            let qw = crate::weight_map::quantize_to_nvfp4(
+                &bf16,
+                n,
+                k,
+                gpu,
+                qctx.absmax_k,
+                qctx.quantize_k,
+                qctx.stream,
+            )?;
+            gpu.free(bf16.weight)?;
+            Ok(qw)
+        }
         other => anyhow::bail!(
-            "{prefix}: NVFP4 experts with E8M0 `.scale` block scales (DeepSeek-V4 original / \
-             MTP module) are not yet wired to a GEMM path (weight dtype {other:?})"
+            "{prefix}: unsupported expert weight dtype {other:?} (expected FP8E4M3 or UInt8)"
         ),
     }
 }

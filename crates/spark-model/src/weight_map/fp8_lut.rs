@@ -90,6 +90,63 @@ pub(crate) fn dequant_nvfp4_to_bf16(
     Ok(DenseWeight { weight: buf })
 }
 
+/// Dequantize an NVFP4 weight with **E8M0** (power-of-2) per-block scales and
+/// **no global scale** to BF16 on CPU, then upload. This is DeepSeek-V4's
+/// ORIGINAL microscaling format (used by the MTP module's routed experts):
+/// `.weight` = 4-bit-packed E2M1 (2 per byte, stored U8/I8) + `.scale` =
+/// F8_E8M0 per block. The block size is inferred from the scale element count
+/// (`total / num_scale_elems`, e.g. 32) rather than hardcoded. One-time load cost.
+pub(crate) fn dequant_nvfp4_e8m0_to_bf16(
+    store: &WeightStore,
+    prefix: &str,
+    n: usize,
+    k: usize,
+    gpu: &dyn GpuBackend,
+) -> Result<DenseWeight> {
+    let total = n * k;
+    let packed_bytes = total / 2;
+    let packed_ptr = ptr(store, &format!("{prefix}.weight"))?;
+    let scale_t = store.get(&format!("{prefix}.scale"))?;
+    let num_groups = scale_t.num_elements();
+    ensure!(
+        num_groups > 0 && total % num_groups == 0,
+        "{prefix}: weight elems {total} not divisible by E8M0 scale groups {num_groups}"
+    );
+    let block = total / num_groups;
+
+    let mut packed = vec![0u8; packed_bytes];
+    let mut scales = vec![0u8; num_groups]; // FP8 E8M0, 1 byte each
+    gpu.copy_d2h(packed_ptr, &mut packed)?;
+    gpu.copy_d2h(scale_t.ptr, &mut scales)?;
+
+    let e2m1_table: [f32; 16] = [
+        0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
+    ];
+    // Row-major weight [n,k] and scale [n, k/block] → scale group `g` covers
+    // weight flat indices `g*block .. (g+1)*block` (same nibble convention as
+    // dequant_nvfp4_to_bf16: even flat index = low nibble).
+    let mut bf16_out = vec![0u16; total];
+    for group in 0..num_groups {
+        let block_scale = fp8_e8m0_to_f32(scales[group]);
+        for elem in 0..block {
+            let flat_idx = group * block + elem;
+            let byte_idx = flat_idx / 2;
+            let nibble = if flat_idx % 2 == 0 {
+                packed[byte_idx] & 0x0F
+            } else {
+                (packed[byte_idx] >> 4) & 0x0F
+            };
+            bf16_out[flat_idx] = f32_to_bf16(e2m1_table[nibble as usize] * block_scale);
+        }
+    }
+
+    let buf = gpu.alloc(total * 2)?;
+    let bf16_bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(bf16_out.as_ptr() as *const u8, total * 2) };
+    gpu.copy_h2d(bf16_bytes, buf)?;
+    Ok(DenseWeight { weight: buf })
+}
+
 /// FP8 E4M3 → f32 lookup table (256 entries, one per byte value).
 ///
 /// OCP FP8 E4M3FN format: sign(1) | exponent(4) | mantissa(3), bias=7.
