@@ -16,7 +16,7 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 
 #[allow(clippy::too_many_arguments, dead_code)]
-pub(super) struct DecodeMlaArgs {
+pub(in crate::layers::qwen3_attention) struct DecodeMlaArgs {
     pub normed: DevicePtr,
     pub q_out: DevicePtr,
     pub k_out: DevicePtr,

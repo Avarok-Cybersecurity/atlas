@@ -111,6 +111,59 @@ impl Qwen3AttentionLayer {
                 num_seqs: 1,
             };
             let o_out_i = o_out.offset(i * c.h * bf16);
+
+            // DeepSeek-V4-Flash (o_lora_rank > 0) uses the DIRECT-KV
+            // attention algorithm, NOT the absorbed-MLA chain. Its
+            // V3-style absorption weights (`w_uk_t` / `w_uv` / `wkv_b`)
+            // are loaded as NULL `DevicePtr` stubs (see
+            // `deepseek_v4::load_layers`: `is_v4_flash` branch), so the
+            // absorbed `ms_mla_decode_one` here would dereference a NULL
+            // weight in the Q-absorb / V-extract GEMVs → CUDA illegal
+            // address on the K=2 MTP verify. Drive the single-token
+            // V4-Flash decode chain (`attention_forward_v4`, the same one
+            // the n=1 path uses) once per verify token instead — SSOT
+            // with the correct algorithm and buffer layout.
+            if mla.o_lora_rank > 0 {
+                // Per-token forward context carrying this token's sliced
+                // attention metadata (positions / slot / seq_len /
+                // block_table). All other ctx fields are copied verbatim.
+                let ctx_i = crate::layer::ForwardContext {
+                    attn_metadata: Some(meta_i),
+                    ..*c.fwd
+                };
+                // Q/K/V projection destinations inside `qkv_output`,
+                // matching the single-token `attention_forward` layout:
+                // Q `[nq*hd]`, then K `[nkv*hd]`, then V `[nkv*hd]`. V4 is
+                // ungated MLA, so `q_proj_dim == q_dim`.
+                let qkv = c.fwd.buffers.qkv_output();
+                let q_proj_bytes = q_dim as usize * bf16;
+                let kv_bytes = (c.nkv * hd) as usize * bf16;
+                let k_out = qkv.offset(q_proj_bytes);
+                let v_out = k_out.offset(kv_bytes);
+                let args = super::super::super::decode::attention_forward_mla::DecodeMlaArgs {
+                    normed: normed_i,
+                    q_out: qkv,
+                    k_out,
+                    v_out,
+                    q_dim,
+                    h,
+                    nq,
+                    hd,
+                    eps,
+                    bs,
+                    stream,
+                };
+                let o_v4 = self.attention_forward_v4(kv_cache, &ctx_i, &args)?;
+                // `attention_forward_v4` writes its O projection into the
+                // shared `qkv_output` buffer and returns it; copy this
+                // token's row into its dedicated `o_out` slot before the
+                // next iteration reuses `qkv_output`.
+                c.fwd
+                    .gpu
+                    .copy_d2d_async(o_v4, o_out_i, c.h * bf16, stream)?;
+                continue;
+            }
+
             self.ms_mla_decode_one(
                 c,
                 kv_cache,

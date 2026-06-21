@@ -15,7 +15,13 @@ use crate::layers::ops;
 impl Qwen3AttentionLayer {
     /// Run the DeepSeek-V4-Flash decode chain. Returns the O-projection
     /// output (`ctx.buffers.qkv_output()`).
-    pub(super) fn attention_forward_v4(
+    ///
+    /// Visibility is widened to the whole `qwen3_attention` module so the
+    /// multi-sequence batched-decode path (`trait_impl::multi_seq::mla`)
+    /// can drive this exact single-token chain once per verify token —
+    /// the V4-Flash direct-KV algorithm is the SSOT here, NOT the absorbed
+    /// MLA chain used by Mistral-Small-4.
+    pub(in crate::layers::qwen3_attention) fn attention_forward_v4(
         &self,
         kv_cache: &mut PagedKvCache,
         ctx: &ForwardContext,
