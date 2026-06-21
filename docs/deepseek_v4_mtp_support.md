@@ -125,3 +125,25 @@ Implement `DraftProposer` for `DeepseekV4MtpHead`:
 - `wo_a`[8192,4096]/`wo_b`[4096,8192] o-proj rank (8192) vs. the main layer's o_lora_rank — confirm the
   grouped/block-diagonal o-proj path matches.
 - mHC `hc_attn_fn`[24,16384] mix-dim (24) vs. main-layer hc site dims.
+
+---
+
+## Progress log (live)
+
+**Loader — nvidia/DeepSeek-V4-Flash-NVFP4 now LOADS + SERVES EP=2** (was blocked):
+- Fixed (committed): `I8` dtype; per-expert format dispatch (`load_expert_proj`): Standard NVFP4
+  routed (`quantized`) + FP8 block-scaled shared experts (`quantized_from_fp8`); container rename
+  `atlas-ds-ep*` (env reaper kills `atlas-deepseek-ep*`); start script → new model + explicit paths.
+- Verified empirically via repeated EP=2 load tests: all 46 shards load, NCCL rendezvous OK, model
+  builds, server answers at ~11.7 tok/s.
+
+**BLOCKER: output is INCOHERENT** ("The three primary" → token salad). NOT the KV cache (fp8 AND
+bf16 KV both garbage) → the weight dequant path is wrong for this checkpoint. Next: per-layer
+prefill-vs-HF (or vs the known-good RedHat-format) cosine to localize which projection/expert
+dequant diverges. Suspects: `quantized()` weight_scale_2 semantics (scalar vs 1/x), the FP8→NVFP4
+shared-expert re-quant, or the NVFP4 routed `weight_scale` (E4M3 block) handling for this export.
+
+**MTP routed experts** (`mtp.0.ffn.experts.*` = NVFP4 U8/I8 + E8M0 `.scale`) still bail — need an
+E8M0-block-scaled NVFP4 GEMM path or a dequant-to-BF16/NVFP4 at load. Then the proposer.
+
+Best image: `atlas-deepseek-v4:mtpload4` (loads+serves, incoherent). Branch deepseek-v4-clean.
