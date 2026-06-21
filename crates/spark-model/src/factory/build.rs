@@ -99,6 +99,28 @@ pub fn build_model(
     let final_norm = loader.load_final_norm(store, &config, gpu.as_ref())?;
     let lm_head = loader.load_lm_head(store, &config)?;
     let mtp_weights = loader.load_mtp_weights_multi(store, &config, gpu.as_ref())?;
+
+    // DeepSeek-V4 ships an architecturally distinct MTP module (MLA + mHC), not
+    // the Qwen-shaped `MtpWeights`. Load it via the V4-specific path. (Load
+    // verification: confirms the V4 MTP loader + checkpoint format against the
+    // real weights; the `DeepseekV4MtpHead` proposer that consumes this lands
+    // next.)
+    if config.model_type == "deepseek_v4" {
+        match crate::weight_loader::deepseek_v4::load_v4_mtp_module(
+            store,
+            &config,
+            gpu.as_ref(),
+            &attn_layer_dtypes,
+        ) {
+            Ok(Some(_m)) => tracing::info!(
+                "DeepSeek-V4 MTP draft module loaded OK (num_mtp_modules={})",
+                config.num_mtp_modules
+            ),
+            Ok(None) => tracing::info!("DeepSeek-V4: no MTP module in checkpoint (MTP off)"),
+            Err(e) => tracing::error!("DeepSeek-V4 MTP module load FAILED: {e:#}"),
+        }
+    }
+
     // Capability warning: user asked for `--speculative` but the model has no
     // MTP head bundled, so speculative decoding will silently no-op. Surface
     // this loudly so the user knows the flag was inert.

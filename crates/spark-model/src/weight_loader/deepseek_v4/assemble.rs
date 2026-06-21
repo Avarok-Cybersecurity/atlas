@@ -15,8 +15,29 @@ use crate::layers::qwen3_attention::{
 };
 use crate::weight_map::{
     AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense,
-    dense_minus_one, quantized_v2,
+    dense_minus_one, quantized, quantized_v2,
 };
+
+/// Load one MoE expert projection, dispatching by the on-disk NVFP4 naming so the
+/// V4 loader handles every DeepSeek-V4-Flash checkpoint variant:
+///   - `.weight_packed` + `.weight_global_scale`  → CompressedTensors (RedHat re-quant) → `quantized_v2`
+///   - `.weight_scale_2` (+ `.input_scale`)        → Standard NVFP4 (nvidia re-quant) → `quantized`
+///   - `.scale` (F8_E8M0) only                     → DeepSeek-V4 ORIGINAL microscaling (the MTP
+///     module ships its experts in this E8M0 format; not yet wired to a GEMM path)
+fn load_expert_proj(store: &WeightStore, prefix: &str, gpu: &dyn GpuBackend) -> Result<QuantizedWeight> {
+    if store.contains(&format!("{prefix}.weight_packed")) {
+        quantized_v2(store, prefix, gpu)
+    } else if store.contains(&format!("{prefix}.weight_scale_2")) {
+        quantized(store, prefix, gpu)
+    } else {
+        anyhow::bail!(
+            "{prefix}: unsupported expert quant format — has neither `.weight_packed` \
+             (CompressedTensors) nor `.weight_scale_2` (Standard NVFP4). DeepSeek-V4's \
+             original E8M0-microscaled experts (`.scale` F8_E8M0) are not yet wired to a \
+             GEMM path."
+        )
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_layer(
@@ -78,11 +99,11 @@ pub fn assemble_layer(
     for e in 0..config.num_experts {
         if config.is_local_expert(e) {
             let ep = format!("{p}.ffn.experts.{e}");
-            let gate_proj = quantized_v2(store, &format!("{ep}.w1"), gpu)
+            let gate_proj = load_expert_proj(store, &format!("{ep}.w1"), gpu)
                 .with_context(|| format!("DeepSeek-V4 expert {e}: w1"))?;
-            let up_proj = quantized_v2(store, &format!("{ep}.w3"), gpu)
+            let up_proj = load_expert_proj(store, &format!("{ep}.w3"), gpu)
                 .with_context(|| format!("DeepSeek-V4 expert {e}: w3"))?;
-            let down_proj = quantized_v2(store, &format!("{ep}.w2"), gpu)
+            let down_proj = load_expert_proj(store, &format!("{ep}.w2"), gpu)
                 .with_context(|| format!("DeepSeek-V4 expert {e}: w2"))?;
             experts.push(ExpertWeight {
                 gate_proj,
@@ -103,11 +124,11 @@ pub fn assemble_layer(
     // to dereference null gate/up/down pointers (CUDA illegal address).
     let sep = format!("{p}.ffn.shared_experts");
     let shared_expert = ExpertWeight {
-        gate_proj: quantized_v2(store, &format!("{sep}.w1"), gpu)
+        gate_proj: load_expert_proj(store, &format!("{sep}.w1"), gpu)
             .with_context(|| "DeepSeek-V4 shared expert: w1")?,
-        up_proj: quantized_v2(store, &format!("{sep}.w3"), gpu)
+        up_proj: load_expert_proj(store, &format!("{sep}.w3"), gpu)
             .with_context(|| "DeepSeek-V4 shared expert: w3")?,
-        down_proj: quantized_v2(store, &format!("{sep}.w2"), gpu)
+        down_proj: load_expert_proj(store, &format!("{sep}.w2"), gpu)
             .with_context(|| "DeepSeek-V4 shared expert: w2")?,
     };
 

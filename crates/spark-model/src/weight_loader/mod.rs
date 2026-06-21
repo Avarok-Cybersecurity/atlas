@@ -14,7 +14,7 @@
 //!   - `nemotron`: Nemotron-H (Mamba-2 + MoE + Attention)
 //!   - `gemma4`: Gemma-4 (pure attention, GeGLU, sliding + full attention)
 
-mod deepseek_v4;
+pub(crate) mod deepseek_v4;
 pub mod dflash_loader;
 mod gemma4;
 mod minimax;

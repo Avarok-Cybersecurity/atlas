@@ -22,7 +22,14 @@
 set -euo pipefail
 
 MODEL_PATH="${MODEL_PATH:-}"
-MODEL_NAME="${MODEL_NAME:-RedHatAI/DeepSeek-V4-Flash-NVFP4-FP8}"
+MODEL_NAME="${MODEL_NAME:-nvidia/DeepSeek-V4-Flash-NVFP4}"
+# Host model directory name (under the HF hub cache on each node). The nvidia
+# NVFP4 checkpoint (ships an MTP module) lives in `v4-nvfp4-mtp`.
+MODEL_DIR="${MODEL_DIR:-v4-nvfp4-mtp}"
+# Explicit per-node host paths (avoids the $HOME footgun: $HOME resolves to
+# /workspace in some shells, whose cache dir is empty).
+MODEL_HOST_HEAD="${MODEL_HOST_HEAD:-/home/azeez/.cache/huggingface/hub/${MODEL_DIR}}"
+MODEL_HOST_WORKER="${MODEL_HOST_WORKER:-/raid/hf-cache/hub/${MODEL_DIR}}"
 IMAGE="${IMAGE:-atlas-deepseek-v4:latest}"
 HEAD_IP="${HEAD_IP:-127.0.0.1}"
 WORKER_IP="${WORKER_IP:-127.0.0.1}"
@@ -86,10 +93,10 @@ NCCL_ENV="\
   -e NCCL_DEBUG_SUBSYS=INIT,NET"
 
 # Volume mounts for model weights (host paths differ per node).
-# DGX1: ~/.cache/huggingface/redhat-ds-v4
-# DGX2: /raid/hf-cache/hub/redhat-ds-v4
-VOL_HEAD="-v ${HOME}/.cache/huggingface/hub/redhat-ds-v4:/model"
-VOL_WORKER="-v /raid/hf-cache/hub/redhat-ds-v4:/model"
+# DGX1 (head):   /home/azeez/.cache/huggingface/hub/<MODEL_DIR>
+# DGX2 (worker): /raid/hf-cache/hub/<MODEL_DIR>
+VOL_HEAD="-v ${MODEL_HOST_HEAD}:/model"
+VOL_WORKER="-v ${MODEL_HOST_WORKER}:/model"
 
 # Start rank 0 (head) — HTTP server + scheduler
 echo "Starting rank 0 on $HEAD_IP..."
