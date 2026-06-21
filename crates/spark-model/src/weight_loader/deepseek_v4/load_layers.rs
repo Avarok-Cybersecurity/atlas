@@ -177,6 +177,7 @@ pub fn load_all_layers(
 
         let layer = super::assemble::assemble_layer(
             i,
+            &lp,
             input_norm,
             post_attn_norm,
             wq_a,

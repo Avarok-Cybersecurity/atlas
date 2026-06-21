@@ -8,6 +8,10 @@
 mod assemble;
 mod compute;
 mod load_layers;
+// MTP draft-module loader for nvidia/DeepSeek-V4-Flash-NVFP4. Reachable once the
+// `DeepseekV4MtpHead` proposer + model-build wiring land (runtime-verified step);
+// its public items carry `#[allow(dead_code)]` until then.
+mod mtp;
 
 use anyhow::{Context, Result};
 use atlas_core::config::ModelConfig;

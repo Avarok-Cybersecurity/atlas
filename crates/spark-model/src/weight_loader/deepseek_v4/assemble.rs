@@ -21,6 +21,7 @@ use crate::weight_map::{
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_layer(
     layer_idx: usize,
+    layer_prefix: &str,
     input_norm: DenseWeight,
     post_attn_norm: DenseWeight,
     wq_a: DenseWeight,
@@ -49,7 +50,13 @@ pub fn assemble_layer(
     layer_kv_dtypes: &[KvCacheDtype],
 ) -> Result<Box<dyn TransformerLayer>> {
     // RedHatAI re-quant uses flattened naming: layers.N.* instead of model.layers.N.*
-    let lp = format!("layers.{layer_idx}");
+    // `layer_prefix` is the tensor-name prefix for this block: `layers.{idx}` for
+    // main layers, or `mtp.0` for the MTP draft module (which reuses this exact
+    // body — MLA + mHC + MoE). `layer_idx` is still used for the per-index meta
+    // lookups (compress_ratios / hash-layer / kv-dtype); passing an out-of-range
+    // index (= num_hidden_layers) for the MTP module makes all three fall to the
+    // safe defaults: no compressor, no hash routing, bf16 KV.
+    let lp = layer_prefix.to_string();
     let h = config.hidden_size;
     let kv_dtype = layer_kv_dtypes
         .get(layer_idx)

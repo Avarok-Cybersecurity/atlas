@@ -64,10 +64,29 @@ draft  = argmax(logits)  (grammar-masked if active)
 | Config (`num_nextn_predict_layers → num_mtp_modules`) | ✅ done | `config/parsers/deepseek_v4.rs:156-159` |
 | Scheduler MTP step / verify / accept (`DraftProposer` trait) | ✅ done | `scheduler/mtp_step.rs`; V4 only needs to satisfy the trait |
 | Generic Qwen `MtpHead` (standard-attn) | ❌ wrong vehicle | hardcodes q_proj/k_proj/v_proj + standard paged attn; no MLA, no mHC. Do **not** extend it. |
-| V4 MTP weight loader | ⬜ to build | new `weight_loader/deepseek_v4/mtp.rs` |
-| V4 MTP proposer (forward) | ⬜ to build | new `layers/deepseek_v4_mtp.rs` implementing `DraftProposer`, reusing the V4 layer forward |
+| V4 MTP weight loader | ✅ **done** | `weight_loader/deepseek_v4/mtp.rs` (`load_v4_mtp_module` → `DeepseekV4MtpModule`); reuses `assemble_layer` via a new `prefix` param. Compiles under `deny(warnings)`; main path byte-identical. |
+| V4 MTP proposer (forward) | ⬜ to build | new `layers/deepseek_v4_mtp.rs` implementing `DraftProposer`, reusing `body.decode(...)` |
 | Wire into model init | ⬜ to build | `model/impl_a1_init.rs` build path: when `num_mtp_modules>0` and `mtp.*` present, build the V4 proposer instead of the Qwen `MtpHead` |
 | Crash-safety on the new tensors today | ✅ safe | loaders are by-name lookups → extra `mtp.*` tensors are ignored, current models unaffected |
+
+### Loader — implemented (this commit)
+- `assemble_layer(layer_idx, layer_prefix, …)` gained a `layer_prefix` arg. Main caller passes
+  `layers.{i}` (byte-identical); the MTP loader passes `mtp.0` and `layer_idx = num_hidden_layers`
+  so `compress_ratios.get()` / hash-layer / kv-dtype all default to (no compressor, no hash, bf16).
+- `load_v4_mtp_module()` pre-loads the `mtp.0` MLA inputs (V4-Flash branch), loads its own
+  `mtp.0.hc_head_*`, builds the body via `assemble_layer`, then loads the combiner
+  (`enorm`,`hnorm`,`e_proj`,`h_proj`) + final `norm`. Returns `Ok(None)` when `num_mtp_modules==0`
+  or no `mtp.0.*` tensors (safe no-op for the RedHat re-quant / non-MTP models).
+
+### Proposer — next step, interface confirmed
+Body invocation contract (from `layer/transformer_layer.rs` + `model/trait_impl/decode_a.rs:238`):
+`body.decode(hidden, residual, state: &mut dyn LayerState, kv_cache, seq_len, block_table,
+disk_block_ids, disk_last_offloaded_per_layer, ctx: &ForwardContext, stream)`.
+`DeepseekV4MtpHead::propose()` will: combiner(`embed(last_token)`, `target_hidden`) → `body.decode`
+into a dedicated single-slot MTP KV cache → `rmsnorm(_, norm)` → shared lm_head GEMV → (grammar-masked)
+argmax; `after_verify()` trims the MTP KV slot. State (`LayerState` + MTP `PagedKvCache`) wraps in a
+`ProposerState`. Each sub-step needs runtime validation against the real weights (mHC sinkhorn in a
+single-token draft, EP all-reduce in the draft MoE, KV trim on rejection).
 
 ### Loader (fully specified — additive, no risk to main path)
 1. Refactor `assemble_layer()` to take a `prefix: &str` (default `"layers.{idx}"`) so it can build the body
