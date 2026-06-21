@@ -164,7 +164,13 @@ impl TransformerModel {
         // still capture/replay normally.
         let dump_step0 =
             seq.seq_len == seq.prompt_len && std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok();
-        let use_graphs = self.comm.is_none()
+        // EXPERIMENT (ATLAS_EP_GRAPHS=1): allow CUDA-graph capture under EP. The
+        // EP all-reduce queues ncclSend/Recv + local-add on the compute (capture)
+        // stream; NCCL ≥2.9 supports graph capture, so this MAY capture cleanly
+        // and remove per-kernel launch overhead. Env-gated so it can be toggled
+        // off at deploy time (instant revert) if capture crashes / replay hangs.
+        let ep_graphs = std::env::var("ATLAS_EP_GRAPHS").is_ok_and(|v| v == "1" || v == "true");
+        let use_graphs = (self.comm.is_none() || ep_graphs)
             && !self.profile
             && !self
                 .suppress_graphs
