@@ -2,6 +2,8 @@
 
 //! MoeLayer::forward_k2 (verify K=2).
 
+use anyhow::Context as _;
+
 use super::*;
 
 impl MoeLayer {
@@ -30,6 +32,16 @@ impl MoeLayer {
         let inter = ctx.config.moe_intermediate_size as u32;
         let num_experts = ctx.config.num_experts as u32;
         let top_k = ctx.config.num_experts_per_tok as u32;
+
+        // DIAG (ATLAS_K2_DIAG=1): synchronize checkpoints to localize the K2-verify
+        // illegal access (the V4 NVFP4 batch2 verify path is exercised for the first
+        // time by MTP). The label of the FIRST failing sync names the bad stage.
+        let k2_diag = std::env::var("ATLAS_K2_DIAG").is_ok_and(|v| v == "1");
+        if k2_diag {
+            ctx.gpu
+                .synchronize(stream)
+                .context("K2 ENTRY: attention+norm BEFORE forward_k2")?;
+        }
 
         // Gemma-4 router pre-norm (no-op for other models).
         let router_in = self.router_input(input, 2, h, ctx, stream)?;
@@ -119,6 +131,12 @@ impl MoeLayer {
                 2,
                 stream,
             )?;
+        }
+
+        if k2_diag {
+            ctx.gpu
+                .synchronize(stream)
+                .context("K2: gate-GEMV + topk")?;
         }
 
         // 3-5. Fused expert dispatch for 2 tokens
@@ -330,6 +348,12 @@ impl MoeLayer {
                 h,
                 stream,
             )?;
+        }
+
+        if k2_diag {
+            ctx.gpu
+                .synchronize(stream)
+                .context("K2: expert dispatch (gate_up/silu_down/blend)")?;
         }
 
         // EP all-reduce: sum partial outputs for 2 tokens
