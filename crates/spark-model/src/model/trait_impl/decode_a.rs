@@ -74,8 +74,13 @@ impl TransformerModel {
 
         // MLA models: zero buffers reused for Q_absorbed computation.
         // Without this, stale prefill data in expert_up_out / ssm_conv_out_f32 /
-        // ssm_ba contaminates the absorbed attention → generic/wrong output.
-        if self.config.kv_lora_rank > 0 {
+        // ssm_ba contaminates the ABSORBED attention → generic/wrong output.
+        // DeepSeek-V4-Flash (o_lora_rank > 0) uses the DIRECT V=K attention path
+        // (not absorbed) and writes-before-reads those scratch buffers, so the
+        // full-arena zero (~1.7GB memset/step, sized for max prefill tokens) is
+        // unnecessary — skip it for V4 to reclaim that decode-step memset
+        // bandwidth. (Other MLA models keep the zero.)
+        if self.config.kv_lora_rank > 0 && self.config.o_lora_rank == 0 {
             self.buffers.zero_all(self.gpu.as_ref(), stream)?;
         }
 
