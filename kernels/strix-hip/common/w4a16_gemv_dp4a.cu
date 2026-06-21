@@ -55,6 +55,58 @@ __device__ __constant__ signed char DP4A_CODEBOOK[16] = {
 #define DP4A_DOT(a, b, c) __dp4a((a), (b), (c))   // NVIDIA fallback (parity / portability)
 #endif
 
+// ── Codebook expansion: 8 packed weight bytes (16 nibbles) → 4 int32 DP4A
+// operands holding the SIGNED integer codebook value for each element, in
+// Atlas's consecutive-pair layout (element 2b = byte b low nibble, 2b+1 = high).
+//
+// On AMD (gfx1151) this uses the branchless v_perm expansion grabbed from
+// rocmfp4-llama (ggml/rocmfp4/rocmfp4_hip_codebook.cuh) — NO shared-memory
+// codebook, NO __syncthreads on the GEMV hot path. The four constants encode the
+// SAME grid as DP4A_CODEBOOK ({0,1,2,3,4,6,8,12} + negatives); proven byte-exact
+// vs the portable loop for all inputs on gfx1151 (perm_equiv_test.cu). The two
+// encodings are an unavoidable consequence of the perm op and are test-locked.
+__device__ __forceinline__ unsigned int dp4a_perm_codebook(unsigned int q) {
+    const unsigned int values0 = 0x03020100u; // [ 0, 1, 2, 3]
+    const unsigned int values1 = 0x0c080604u; // [ 4, 6, 8,12]
+    const unsigned int values2 = 0xfdfeff00u; // [ 0,-1,-2,-3]
+    const unsigned int values3 = 0xf4f8fafcu; // [-4,-6,-8,-12]
+    unsigned int vl = __builtin_amdgcn_perm(values1, values0, q & 0x07070707u);
+    unsigned int vh = __builtin_amdgcn_perm(values3, values2, q & 0x07070707u);
+    unsigned int m  = 0x03020100u | ((q & 0x08080808u) >> 1);
+    return __builtin_amdgcn_perm(vh, vl, m);
+}
+
+__device__ __forceinline__ void dp4a_expand_codebook(unsigned long long packed8, int wint[4]) {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__SCALE__)
+    unsigned int w0 = (unsigned int)(packed8 & 0xFFFFFFFFull);          // bytes 0-3
+    unsigned int w1 = (unsigned int)((packed8 >> 32) & 0xFFFFFFFFull);  // bytes 4-7
+    // deinterleave consecutive nibbles into one magnitude index per byte
+    unsigned int na = (w0 & 0xF) | ((w0 & 0xF0) << 4) | ((w0 & 0xF00) << 8) | ((w0 & 0xF000) << 12);
+    unsigned int nb = ((w0 >> 16) & 0xF) | (((w0 >> 16) & 0xF0) << 4) | (((w0 >> 16) & 0xF00) << 8) | (((w0 >> 16) & 0xF000) << 12);
+    unsigned int nc = (w1 & 0xF) | ((w1 & 0xF0) << 4) | ((w1 & 0xF00) << 8) | ((w1 & 0xF000) << 12);
+    unsigned int nd = ((w1 >> 16) & 0xF) | (((w1 >> 16) & 0xF0) << 4) | (((w1 >> 16) & 0xF00) << 8) | (((w1 >> 16) & 0xF000) << 12);
+    wint[0] = (int)dp4a_perm_codebook(na);
+    wint[1] = (int)dp4a_perm_codebook(nb);
+    wint[2] = (int)dp4a_perm_codebook(nc);
+    wint[3] = (int)dp4a_perm_codebook(nd);
+#else
+    // Portable fallback (NVIDIA parity): per-element codebook lookup from constant mem.
+    #pragma unroll
+    for (int j = 0; j < 4; j++) {
+        unsigned int packed = 0;
+        #pragma unroll
+        for (int e = 0; e < 4; e++) {
+            int elem = j * 4 + e;
+            int b = elem >> 1;
+            unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
+            unsigned char nib = (elem & 1) ? (byte_val >> 4) : (byte_val & 0xF);
+            packed |= ((unsigned int)(unsigned char)DP4A_CODEBOOK[nib]) << (e * 8);
+        }
+        wint[j] = (int)packed;
+    }
+#endif
+}
+
 // ── Activation int8 quantizer (once per layer, NOT per GEMV) ──────────────
 // Quantizes one BF16 activation row [1,K] to int8 [1,K] with per-16-group symmetric
 // scales [K/16]. Grid: (K/16) blocks, block: 16 threads (one per group element).
@@ -115,10 +167,7 @@ extern "C" __global__ void w4a16_gemv_dp4a(
     const unsigned int num_groups = K / DP4A_GROUP_SIZE;
     const unsigned int K16 = K / 16;
 
-    __shared__ signed char s_cb[16];
     __shared__ float smem[DP4A_N_PER_BLOCK * 2];
-    if (threadIdx.x < 16) s_cb[threadIdx.x] = DP4A_CODEBOOK[threadIdx.x];
-    __syncthreads();
 
     float acc = 0.0f;
     for (unsigned int k16 = lane; k16 < K16; k16 += threads_per_out) {
@@ -131,23 +180,11 @@ extern "C" __global__ void w4a16_gemv_dp4a(
         // 8 packed weight bytes (16 nibbles).
         unsigned long long packed8 = *(const unsigned long long*)(B_packed + (unsigned long long)n * half_K + k16 * 8);
 
-        // Expand to 16 int8 codebook values in ELEMENT order so they align lane-wise
-        // with aq[]: element 2b = byte b low nibble, element 2b+1 = byte b high nibble
-        // (matches the float w4a16_gemv pairing).
+        // Expand to 16 signed codebook values in ELEMENT order so they align lane-wise
+        // with aq[] (element 2b = byte b low nibble, 2b+1 = high; matches float w4a16_gemv).
+        // Branchless v_perm on AMD; portable loop on NVIDIA. (see dp4a_expand_codebook)
         int wint[4];
-        #pragma unroll
-        for (int j = 0; j < 4; j++) {
-            unsigned int packed = 0;
-            #pragma unroll
-            for (int e = 0; e < 4; e++) {
-                int elem = j * 4 + e;              // 0..15
-                int b = elem >> 1;                 // byte index
-                unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
-                unsigned char nib = (elem & 1) ? (byte_val >> 4) : (byte_val & 0xF);
-                packed |= ((unsigned int)(unsigned char)s_cb[nib]) << (e * 8);
-            }
-            wint[j] = (int)packed;
-        }
+        dp4a_expand_codebook(packed8, wint);
 
         int sumi = 0;
         #pragma unroll
