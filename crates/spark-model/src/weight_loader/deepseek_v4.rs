@@ -10,7 +10,7 @@ mod compute;
 mod load_layers;
 // MTP draft-module loader for nvidia/DeepSeek-V4-Flash-NVFP4.
 mod mtp;
-pub(crate) use mtp::load_v4_mtp_module;
+pub(crate) use mtp::{DeepseekV4MtpModule, load_v4_mtp_module};
 
 use anyhow::{Context, Result};
 use atlas_core::config::ModelConfig;

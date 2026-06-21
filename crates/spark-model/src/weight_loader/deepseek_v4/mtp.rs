@@ -47,6 +47,14 @@ pub struct DeepseekV4MtpModule {
     pub h_proj: DenseWeight,
     /// Final RMSNorm applied before the shared lm_head.
     pub norm: DenseWeight,
+    /// The MTP module's OWN head hyper-connection (`mtp.0.hc_head_*`). The body
+    /// was built with `layer_idx = num_hidden_layers`, so its `decode_inner_hc`
+    /// runs the MIDDLE mHC mixing only — it does NOT call `hc_head`. The
+    /// proposer must collapse `hc_streams → h_out` itself after `body.decode`,
+    /// so we surface the head weights here (a clone of the pointers already
+    /// handed to the body) rather than reaching into the private body. `None`
+    /// when `hc_mult == 0` (no mHC).
+    pub hc_head: Option<HcHeadWeights>,
 }
 
 /// Loads the DeepSeek-V4 MTP draft module if the checkpoint contains MTP weights.
@@ -143,7 +151,7 @@ pub fn load_v4_mtp_module(
         null, // w_uv_block_diag
         yarn_inv_freq,
         wo_a,
-        hc_head,
+        hc_head.clone(),
         store,
         config,
         gpu,
@@ -171,5 +179,6 @@ pub fn load_v4_mtp_module(
         e_proj,
         h_proj,
         norm,
+        hc_head,
     }))
 }

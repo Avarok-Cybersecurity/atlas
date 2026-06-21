@@ -114,6 +114,13 @@ impl TransformerModel {
         self.gpu.as_ref()
     }
 
+    /// Borrow the model config for post-construction wiring (e.g. building the
+    /// DeepSeek-V4 MTP proposer, which needs `hidden_size` / `kv_lora_rank` /
+    /// `qk_rope_head_dim` to size its private MLA KV cache).
+    pub fn config_ref(&self) -> &ModelConfig {
+        &self.config
+    }
+
     /// Install a DFlash drafter as the active proposer, replacing whatever
     /// MTP proposer (if any) `TransformerModel::new` built. The target's
     /// hidden-state capture buffer is already allocated when the config's
