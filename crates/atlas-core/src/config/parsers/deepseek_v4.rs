@@ -152,6 +152,23 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
         config.use_routing_bias = true;
     }
 
+    // Expert routing score function. DeepSeek-V4 uses `sqrtsoftplus`
+    // (`sqrt(softplus(logits))`), NOT sigmoid — the MoE forward paths dispatch
+    // on `config.scoring_func == "sqrtsoftplus"`. Leaving this unset routes every
+    // MoE layer through the sigmoid kernel → wrong expert weights → incoherent
+    // generation. (The parser builds config manually, so this is not auto-read.)
+    config.scoring_func = raw
+        .get("scoring_func")
+        .and_then(|v| v.as_str())
+        .unwrap_or("sqrtsoftplus")
+        .to_string();
+
+    // Routed-expert output scaling (DeepSeek-V4: 1.5). Consumed by the topk
+    // kernels; an unset/wrong value mis-scales every routed MoE contribution.
+    if let Some(s) = raw.get("routed_scaling_factor").and_then(|v| v.as_f64()) {
+        config.routed_scaling_factor = s;
+    }
+
     // MTP: DeepSeek-V4 uses multi-module MTP (num_nextn_predict_layers)
     if let Some(n) = raw.get("num_nextn_predict_layers").and_then(|v| v.as_u64()) {
         config.num_mtp_modules = n as usize;

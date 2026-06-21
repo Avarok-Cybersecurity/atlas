@@ -66,20 +66,40 @@ impl MoeLayer {
         let indices_dev = scratch; // [2*top_k] u32
         let weights_dev = scratch.offset(2 * top_k as usize * 4); // [2*top_k] f32
         if let Some(bias) = self.correction_bias_dev {
-            ops::moe_topk_sigmoid_batched(
-                ctx.gpu,
-                self.moe_topk_sigmoid_batched_k,
-                gate_logits,
-                bias,
-                indices_dev,
-                weights_dev,
-                num_experts,
-                top_k,
-                ctx.config.norm_topk_prob,
-                ctx.config.routed_scaling_factor as f32,
-                2,
-                stream,
-            )?;
+            // DeepSeek-V4 scores experts with sqrt(softplus(.)); sigmoid otherwise
+            // (MiniMax/DeepSeek-V3). Must match the prefill/single-token paths or
+            // decode routing diverges from prefill.
+            if ctx.config.scoring_func == "sqrtsoftplus" {
+                ops::moe_topk_sqrtsoftplus_batched(
+                    ctx.gpu,
+                    self.moe_topk_sqrtsoftplus_batched_k,
+                    gate_logits,
+                    bias,
+                    indices_dev,
+                    weights_dev,
+                    num_experts,
+                    top_k,
+                    ctx.config.norm_topk_prob,
+                    ctx.config.routed_scaling_factor as f32,
+                    2,
+                    stream,
+                )?;
+            } else {
+                ops::moe_topk_sigmoid_batched(
+                    ctx.gpu,
+                    self.moe_topk_sigmoid_batched_k,
+                    gate_logits,
+                    bias,
+                    indices_dev,
+                    weights_dev,
+                    num_experts,
+                    top_k,
+                    ctx.config.norm_topk_prob,
+                    ctx.config.routed_scaling_factor as f32,
+                    2,
+                    stream,
+                )?;
+            }
         } else {
             ops::moe_topk_softmax_batched(
                 ctx.gpu,
