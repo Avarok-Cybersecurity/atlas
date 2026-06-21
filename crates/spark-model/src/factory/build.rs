@@ -107,7 +107,12 @@ pub fn build_model(
     // owned GPU backend) and installed via `set_dflash_proposer`. Only built
     // when `--speculative` is set; otherwise the module is loaded for
     // verification then dropped.
-    let v4_mtp_module = if config.model_type == "deepseek_v4" && use_speculative {
+    // Only rank 0 runs the MTP draft (no-EP, all experts local). Skip loading it
+    // on the worker ranks — they never call propose(), so it would be dead weight.
+    let v4_mtp_module = if config.model_type == "deepseek_v4"
+        && use_speculative
+        && config.ep_rank == 0
+    {
         match crate::weight_loader::deepseek_v4::load_v4_mtp_module(
             store,
             &config,

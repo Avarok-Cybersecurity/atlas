@@ -130,6 +130,7 @@ pub fn load_v4_mtp_module(
     let body = super::assemble::assemble_layer(
         config.num_hidden_layers,
         prefix,
+        true, // force_all_experts — MTP draft runs no-EP on rank 0, needs all experts
         input_norm,
         post_attn_norm,
         wq_a,

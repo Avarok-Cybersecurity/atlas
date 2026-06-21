@@ -89,6 +89,10 @@ fn load_expert_proj(
 pub fn assemble_layer(
     layer_idx: usize,
     layer_prefix: &str,
+    // When true, load ALL experts locally regardless of EP sharding. Used for
+    // the MTP draft module, which runs only on rank 0 with no EP all-reduce, so
+    // it needs every expert present.
+    force_all_experts: bool,
     input_norm: DenseWeight,
     post_attn_norm: DenseWeight,
     wq_a: DenseWeight,
@@ -151,7 +155,7 @@ pub fn assemble_layer(
 
     let mut experts = Vec::with_capacity(config.num_experts);
     for e in 0..config.num_experts {
-        if config.is_local_expert(e) {
+        if force_all_experts || config.is_local_expert(e) {
             let ep = format!("{p}.ffn.experts.{e}");
             let gate_proj = load_expert_proj(store, &format!("{ep}.w1"), gpu, qctx)
                 .with_context(|| format!("DeepSeek-V4 expert {e}: w1"))?;

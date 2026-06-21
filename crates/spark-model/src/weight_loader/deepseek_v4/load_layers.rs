@@ -178,6 +178,7 @@ pub fn load_all_layers(
         let layer = super::assemble::assemble_layer(
             i,
             &lp,
+            false, // force_all_experts — main layers use EP sharding
             input_norm,
             post_attn_norm,
             wq_a,

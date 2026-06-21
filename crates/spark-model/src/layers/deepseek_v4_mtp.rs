@@ -322,7 +322,11 @@ impl DeepseekV4MtpHead {
             config: ctx.config,
             attn_metadata: Some(mtp_meta),
             profile: ctx.profile,
-            comm: ctx.comm,
+            // comm = None: the MTP draft runs ONLY on rank 0, so its MoE must NOT
+            // issue an EP all-reduce (rank 1 never participates → the collective
+            // hangs ~35s then corrupts CUDA). The MTP body is loaded with ALL
+            // experts local (force_all_experts), so the no-EP MoE is correct.
+            comm: None,
             graph_capture: false,
             gdn_exact_replay: false,
             token_ids: ctx.token_ids,
