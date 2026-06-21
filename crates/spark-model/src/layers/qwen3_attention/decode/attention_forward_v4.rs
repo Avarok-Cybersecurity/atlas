@@ -273,6 +273,26 @@ impl Qwen3AttentionLayer {
                 stream,
             )
         })?;
+        // Extract K's rope channels too (MQA: 1 kv head, stride hd). The decode
+        // path previously skipped this — `k_rope_tmp` (= reused q_latent) held
+        // stale data, so `rope_yarn` rotated garbage and the cached keys got
+        // near-zero positional signal → attention degenerates after a few decode
+        // tokens. Mirrors the prefill K extract (cache_skip_v4.rs:304).
+        prof!("k_rope_extract", {
+            ops::mla_q_rope_extract_batched(
+                ctx.gpu,
+                self.mla_q_rope_extract_batched_k,
+                k_out,
+                k_rope_tmp,
+                1,
+                1,
+                hd,
+                mla.nope as u32,
+                mla_rope,
+                hd,
+                stream,
+            )
+        })?;
         prof!("rope", {
             ops::rope_yarn(
                 ctx.gpu,
