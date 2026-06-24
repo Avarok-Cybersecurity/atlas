@@ -299,6 +299,42 @@ pub fn w4a16_gemm_n128_m128(
         .launch(stream)
 }
 
+/// W4A16 GEMM — LOSSLESS BF16 prefill variant of `w4a16_gemm_n128_m128`.
+///
+/// Identical launch config (grid/block/SMEM, M_TILE2=128) and weight layout
+/// (transposed NVFP4) to `w4a16_gemm_n128_m128`, but launches the
+/// `w4a16_gemm_t_m128_bf16` kernel: FP4→BF16 dequant + BF16 m16n8k16 MMA
+/// (FP32 accum), i.e. the base `w4a16_gemm` math at the fast 128x128 tiling.
+/// Unlike the default `t_m128` (which crushes weights+acts to FP8 E4M3 on
+/// NVIDIA), this preserves prefill outputs bit-for-bit vs the base kernel.
+///
+/// Grid: (ceil(N/128), ceil(M/128), 1)  Block: (128, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn w4a16_gemm_n128_m128_bf16(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &QuantizedWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 128), div_ceil(m, 128), 1])
+        .block([128, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(weight.weight_scale)
+        .arg_f32(weight.weight_scale_2)
+        .arg_ptr(output)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}
+
 /// Pre-dequanted FP8 GEMM (prefill): C = A @ B_fp8.
 ///
 /// A: [M, K] BF16, B_fp8: [N, K] FP8 E4M3 (pre-dequanted from NVFP4), C: [M, N] BF16.

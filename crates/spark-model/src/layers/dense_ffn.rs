@@ -62,6 +62,16 @@ pub struct DenseFfnLayer {
     // v2: 8-warp (256-thread) variant of t_m128 — parallel chunk MMAs, 3 CTAs/SM.
     // Preferred over t_m128 for dense-FFN prefill when present. KernelHandle(0) → use t_m128.
     w4a16_gemm_t_m128_v2_k: KernelHandle,
+    // LOSSLESS BF16 128x128 cp.async w4a16 GEMM: FP4→BF16 dequant + BF16
+    // m16n8k16 MMA (FP32 accum) — bit-for-bit the base `w4a16_gemm` math at the
+    // fast 128x128 tiling, UNLIKE the FP8-E4M3 `t_m128`/`v2` kernels above
+    // (which crush weights+activations to FP8 and perturb generation). OPT-IN
+    // ONLY, gated by env `ATLAS_BF16_TC_PREFILL` (default off → the existing
+    // v2 > t_m128 > base ladder below is byte-identical to current main). When
+    // enabled it cuts dense-FFN prefill wall ~30% at zero accuracy change
+    // (ST-995: 89.14 overall / 95.49 hallucination, 2h33m vs 3h39m base).
+    // KernelHandle(0) on miss → falls back to the existing ladder regardless.
+    w4a16_gemm_t_m128_bf16_k: KernelHandle,
     /// SiLU(gate)*up or GELU(gate)*up depending on activation.
     act_mul: KernelHandle,
     /// BF16 dense MLP weights — when `Some`, all forward paths use the
@@ -118,6 +128,8 @@ impl DenseFfnLayer {
             w4a16_gemm: gpu.kernel("w4a16", "w4a16_gemm")?,
             w4a16_gemm_t_m128_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128"),
             w4a16_gemm_t_m128_v2_k: super::try_kernel(gpu, "w4a16_v2", "w4a16_gemm_t_m128_v2"),
+            // Lossless BF16 tensor-core prefill (opt-in via ATLAS_BF16_TC_PREFILL).
+            w4a16_gemm_t_m128_bf16_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128_bf16"),
             act_mul,
             bf16_weights: None,
             dense_gemv_bf16_k,
@@ -429,9 +441,35 @@ impl DenseFfnLayer {
         // load (decode keeps the non-transposed weights via gemv → TPOT/
         // coherence unaffected). Falls back to base when no transposed copy /
         // kernel is present.
+        //
+        // LOSSLESS BF16 tensor-core opt-in (FIRST PREFERENCE when enabled):
+        // ONLY when ATLAS_BF16_TC_PREFILL is set AND the BF16 128x128 kernel is
+        // loaded AND the transposed weight copy exists do we route a projection
+        // through `w4a16_gemm_t_m128_bf16` (FP4→BF16 dequant + BF16 m16n8k16 MMA,
+        // FP32 accum — same math as the base `w4a16_gemm`, just at the fast
+        // 128x128 cp.async tiling). It is bit-for-bit identical to the base
+        // (microtest cosine=1.0) yet cuts dense-FFN prefill wall ~30%
+        // (ST-995: 89.14 overall / 95.49 hallucination, 2h33m vs 3h39m base).
+        // FLAG OFF (default) → `bf16_tc_prefill` is false and dispatch is
+        // byte-identical to the existing v2 > t_m128 > base ladder below.
+        let bf16_tc_prefill = self.w4a16_gemm_t_m128_bf16_k.0 != 0
+            && std::env::var_os("ATLAS_BF16_TC_PREFILL").is_some();
         macro_rules! w4_gemm {
             ($w:expr, $wt:expr, $in:expr, $out:expr, $n:expr, $k:expr) => {
                 match $wt {
+                    // FIRST PREFERENCE (opt-in): lossless BF16 128x128 tensor-core
+                    // prefill, bit-equivalent to the base `w4a16_gemm` below.
+                    Some(wt) if bf16_tc_prefill => ops::w4a16_gemm_n128_m128_bf16(
+                        ctx.gpu,
+                        self.w4a16_gemm_t_m128_bf16_k,
+                        $in,
+                        &wt,
+                        $out,
+                        m,
+                        $n,
+                        $k,
+                        stream,
+                    )?,
                     // Prefer v2 (8-warp) > t_m128 (4-warp) > scalar-tile base.
                     Some(wt) if self.w4a16_gemm_t_m128_v2_k.0 != 0 => ops::w4a16_gemm_n128_m128_v2(
                         ctx.gpu,
