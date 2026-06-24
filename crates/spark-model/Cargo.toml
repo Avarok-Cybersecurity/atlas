@@ -157,3 +157,7 @@ required-features = ["cuda", "gpu-examples"]
 [[example]]
 name = "gdn_batched_repro"
 required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "w4a16_bf16_microtest"
+required-features = ["cuda", "gpu-examples"]
