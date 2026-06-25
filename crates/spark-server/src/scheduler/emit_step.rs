@@ -337,10 +337,16 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         && a.tool_call_completed
         && !a.inside_tool_body
         && !a.inside_thinking;
+    // Suppress EOS only when the grammar is NOT at a completion point (see the
+    // long rationale in decode_logits_step.rs): `is_grammar_completed()` is the
+    // matcher's "stop allowed" signal, true in the tool_choice=auto free-text
+    // preamble and between completed tags, so the model can decline / stop after
+    // parallel calls. `!is_terminated()` was circular (suppressed until EOS was
+    // accepted). Keep parity with the non-spec decode path.
     let grammar_suppresses_eos = a
         .grammar_state
         .as_ref()
-        .is_some_and(|gs| !gs.is_terminated())
+        .is_some_and(|gs| !gs.is_grammar_completed())
         && !eos_escape;
     let legacy_suppresses_eos = a.require_tool_call;
     let min_tokens_suppresses = a.output_tokens.len() < a.min_tokens;
