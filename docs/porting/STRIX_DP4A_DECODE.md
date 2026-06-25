@@ -47,8 +47,20 @@ only `ATLAS_W4A16_DP4A` changes:
 | `ATLAS_W4A16_DP4A=0` (float fused) | **9.83 tok/s** | coherent |
 | `ATLAS_W4A16_DP4A=1` (int8-DP4A)   | **12.35 tok/s** | coherent, byte-identical |
 
-**+25.6 % decode**, coherence-neutral (greedy hashmap output byte-identical;
-Paris / first-8-primes / 7! all correct on both).
+**+25.6 % decode**, coherence-neutral. The DP4A=1 output is **byte-identical to
+DP4A=0** on simple greedy prompts AND on a 3-city parallel multi-tool-call prompt
+(both emit the same calls) — so DP4A is a pure decode-speed lever with zero
+coherence cost. DP4A=1 ≡ DP4A=0 on the ST subset.
+
+## Tool-calling on strix-hip: keep XGrammar ENABLED
+
+Serve BFCL/tool-calling on the native-HIP build **without** `--disable-tool-grammar`.
+With grammar enabled, the native-HIP build emits correct **parallel** multi-tool-calls
+(3-city probe → 3 calls, finish=tool_calls). Passing `--disable-tool-grammar true`
+(which the old SCALE serve scripts carried) makes the model under-emit to a single
+call → BFCL parallel categories collapse to 0%. This is independent of DP4A (float
+and DP4A behave identically) and supersedes the SCALE-era finding that "strix Atlas
+can't do BFCL" — the native-HIP grammar path works on gfx1151.
 
 ## vs llama.cpp ROCmFP4 (same box, BFCL-v4 single-turn, 1004 samples)
 
@@ -64,6 +76,30 @@ and, with DP4A, matches/beats llama.cpp ROCmFP4 on **decode** despite serving a
 2× larger (29 GB VL) checkpoint on the bandwidth-bound LPDDR5X part. A
 size-matched (~14 GB text-only) Atlas NVFP4 checkpoint is the remaining lever to
 make the speed win unambiguous.
+
+## Head-to-head WIN — same 167-sample subset, same box (2026-06-25)
+
+With the legacy multi-call tool fix (see `feat(tools)` commit) Atlas takes the
+BFCL-v4 ST 167-subset to **89.22, ahead of llama.cpp ROCmFP4-MIX's 88.02**:
+
+| Metric | **Atlas** (grammar-OFF legacy multi-call + DP4A) | llama.cpp ROCmFP4-MIX |
+|--------|------|------|
+| **BFCL-v4 ST overall** | **89.22** | 88.02 |
+| non_live / live / halluc | 89.93 / **81.48** / 97.14 | 89.93 / 77.78 / 97.14 |
+| parallel / parallel_multiple | **91.67 / 100** | 91.67 / 100 |
+| simple_python / irrelevance | 95.83 / 100 | — / 100 |
+| decode | **12.35 tok/s (DP4A)** | ~9–12 |
+| wall time | 14.79 s/it | 12.5 s/it |
+
+Atlas wins **coherence** (89.22 > 88.02) and **decode**; wall-time is ~18% behind
+(prefill-bound at ~130 vs ~200 tok/s, plus the 2× VL checkpoint) — the size-matched
+ckpt + prefill profiling are the remaining quality-neutral wall-time levers.
+
+The win came from serving WITHOUT the structural-tag grammar and parsing tool
+calls from raw output (like llama.cpp): the qwen3_coder grammar both mangles
+single-call args (simple_python 96→67) and caps parallel at 58/75, whereas legacy
+multi-call (`ATLAS_LEGACY_MULTICALL`, default on) recovers parallel 0→91.67 /
+parallel_multiple 0→100 while keeping simple/irrelevance intact.
 
 ## Reproduce
 
