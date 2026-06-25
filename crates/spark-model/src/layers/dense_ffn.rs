@@ -477,6 +477,29 @@ impl DenseFfnLayer {
         } else {
             self.w4a16_gemm_t_m128_bf16_k
         };
+        // FP8-E4M3 (k32) prefill (opt-in via ATLAS_FP8_PREFILL). LOSSY: the same
+        // transposed `*_proj_t` NVFP4 weights ([K/2,N] packed + [K/16,N] E4M3
+        // scales) as the BF16-TC path, but `w4a16_gemm_t_m128` crushes the
+        // dequanted weights AND the BF16 activations to FP8 E4M3 and runs the
+        // `m16n8k32.f32.e4m3.e4m3.f32` MMA (k32 → ~2× the BF16-TC k16 MMA
+        // throughput). Cosine ~0.999 vs base (NOT bit-identical → PERFORMANCE
+        // gate; the _2.5h IoU gate is the final arbiter, run by the coordinator).
+        // It reuses the already-loaded `w4a16_gemm_t_m128_k` and the identical
+        // `w4a16_gemm_n128_m128` launch helper (same grid/block/args as BF16-TC).
+        // Default off; no-op unless the kernel is loaded → byte-identical to main.
+        // Lower precedence than BF16-TC (lossless-leaning) so combining flags is
+        // deterministic.
+        let fp8_prefill =
+            self.w4a16_gemm_t_m128_k.0 != 0 && std::env::var_os("ATLAS_FP8_PREFILL").is_some();
+        if fp8_prefill {
+            // One-time confirmation that the FP8 k32 prefill arm is live.
+            static FP8_LOG: std::sync::Once = std::sync::Once::new();
+            FP8_LOG.call_once(|| {
+                eprintln!(
+                    "[atlas] ATLAS_FP8_PREFILL=1: dense-FFN prefill via w4a16_gemm_t_m128 (FP8 E4M3 m16n8k32 MMA, lossy ~0.999 cosine)"
+                );
+            });
+        }
         macro_rules! w4_gemm {
             ($w:expr, $wt:expr, $in:expr, $out:expr, $n:expr, $k:expr) => {
                 match $wt {
@@ -485,6 +508,21 @@ impl DenseFfnLayer {
                     Some(wt) if bf16_tc_prefill => ops::w4a16_gemm_n128_m128_bf16(
                         ctx.gpu,
                         bf16_kernel,
+                        $in,
+                        &wt,
+                        $out,
+                        m,
+                        $n,
+                        $k,
+                        stream,
+                    )?,
+                    // OPT-IN (lossy, perf gate): FP8 E4M3 k32 prefill. Same
+                    // transposed weights + launch config as BF16-TC; the kernel
+                    // itself does the FP8 crush + m16n8k32 MMA. ~2× the BF16-TC
+                    // k16 MMA throughput.
+                    Some(wt) if fp8_prefill => ops::w4a16_gemm_n128_m128(
+                        ctx.gpu,
+                        self.w4a16_gemm_t_m128_k,
                         $in,
                         &wt,
                         $out,
