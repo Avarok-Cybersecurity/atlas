@@ -221,7 +221,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         }
                     };
 
-                    layers.push(Box::new(Qwen3AttentionLayer::new(
+                    let mut layer = Qwen3AttentionLayer::new(
                         input_norm,
                         attn,
                         post_attn_norm,
@@ -234,7 +234,42 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         layer_kv_dtypes[attn_idx],
                         config.fp8_kv_calibration_tokens,
                         config,
-                    )?));
+                    )?;
+                    // Install TRANSPOSED NVFP4 q/k/v/o copies so full-attention
+                    // PREFILL dispatches the fast tensor-core `w4a16_gemm_t_m128`
+                    // path instead of the slow base `w4a16_gemm` (25.7% of the
+                    // rocprofv3 prefill trace — the dense loader never built the
+                    // transposed copies, unlike attention_arms.rs / the FFN).
+                    // Decode keeps the non-transposed gemv weights, so TPOT and
+                    // coherence are unaffected. Costs the transposed copies of
+                    // q/k/v/o per full-attention layer (16 layers).
+                    {
+                        let num_heads = config.num_attention_heads;
+                        let num_kv_heads = config.num_key_value_heads;
+                        let head_dim = config.head_dim;
+                        let q_proj_n = if config.attn_gated {
+                            num_heads * head_dim * 2
+                        } else {
+                            num_heads * head_dim
+                        };
+                        if let Some(ref qw) = q_nvfp4 {
+                            let qt = qw.transpose_for_gemm(gpu, q_proj_n, h)?;
+                            let kt = k_nvfp4
+                                .as_ref()
+                                .unwrap()
+                                .transpose_for_gemm(gpu, num_kv_heads * head_dim, h)?;
+                            let vt = v_nvfp4
+                                .as_ref()
+                                .unwrap()
+                                .transpose_for_gemm(gpu, num_kv_heads * head_dim, h)?;
+                            let ot = layer
+                                .attn
+                                .o_proj
+                                .transpose_for_gemm(gpu, h, num_heads * head_dim)?;
+                            layer.set_prefill_weights(Some(qt), Some(kt), Some(vt), Some(ot));
+                        }
+                    }
+                    layers.push(Box::new(layer));
                     attn_idx += 1;
                 }
                 LayerType::LinearAttention => {
