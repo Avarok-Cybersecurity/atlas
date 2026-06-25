@@ -13,6 +13,9 @@
 
 #[path = "ops/activations.rs"]
 mod activations;
+// strix-hip W4A8 integer-DP4A decode GEMV (additive; flag-gated OFF by default).
+#[path = "ops/dp4a.rs"]
+mod dp4a;
 #[path = "ops/embeddings.rs"]
 mod embeddings;
 #[path = "ops/fp8_gemv_batch.rs"]
@@ -77,6 +80,7 @@ mod ssm_mamba;
 mod ssm_preproc;
 
 pub use activations::*;
+pub use dp4a::*;
 pub use embeddings::*;
 pub use fp8_gemv_batch::*;
 pub use fp8_moe::*;
