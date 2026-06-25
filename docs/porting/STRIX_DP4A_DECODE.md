@@ -89,11 +89,32 @@ BFCL-v4 ST 167-subset to **89.22, ahead of llama.cpp ROCmFP4-MIX's 88.02**:
 | parallel / parallel_multiple | **91.67 / 100** | 91.67 / 100 |
 | simple_python / irrelevance | 95.83 / 100 | — / 100 |
 | decode | **12.35 tok/s (DP4A)** | ~9–12 |
-| wall time | 14.79 s/it | 12.5 s/it |
+| wall time | **13.39 s/it** (after GDN-NVFP4 prefill) | 12.5 s/it |
 
-Atlas wins **coherence** (89.22 > 88.02) and **decode**; wall-time is ~18% behind
-(prefill-bound at ~130 vs ~200 tok/s, plus the 2× VL checkpoint) — the size-matched
-ckpt + prefill profiling are the remaining quality-neutral wall-time levers.
+Atlas wins **coherence** (89.22 > 88.02) and **decode**; wall-time is ~7% behind
+after the GDN-NVFP4 prefill fix below (was 18%).
+
+## Prefill: NVFP4 tensor-core GDN qkvz (drop FP8 predequant)
+
+rocprofv3 (1367-tok prefill, graceful-shutdown trace) showed the bottleneck is the
+projection GEMMs (~89%), NOT GDN recurrence (~4%). The dense-27B GDN linear-attention
+qkvz/out_proj prefill was converting NVFP4→FP8 and running `fp8_gemm_t_m128` (23.9%
+/ 2.6s) despite the transposed NVFP4 weights already being installed. Gating the FP8
+predequant on `!cfg!(atlas_hip)` (`qwen35_dense.rs`, mirroring `linear_attn_arms.rs`)
+routes those 48 GDN qkvz GEMMs through the fast `w4a16_gemm_t` tensor-core kernel:
+
+| | before (FP8) | after (NVFP4 t_m128) |
+|---|---|---|
+| GDN qkvz prefill GEMMs (×48) | `fp8_gemm_t_m128` 2618 ms | `w4a16_gemm_t` 478 ms (**5.5×**) |
+| total prefill kernel time | 10974 ms | 8693 ms (**−20.8%**) |
+| serve TTFT (1219 tok) | 9273 ms | 7537 ms (**−18.7%**), 131→162 tok/s |
+| BFCL-v4 ST 167 wall-time | 14.79 s/it | **13.39 s/it** (−9.5%) |
+| BFCL-v4 ST accuracy | 89.22 | **89.22** (accuracy-neutral) |
+
+NVFP4 prefill has higher activation precision than the FP8 path and matches what
+decode already uses — hence accuracy-neutral. Remaining lever: the full-attention
+q/k/v/o still use the slow base `w4a16_gemm` (25.7%, 64 launches) — route to
+`t_m128` next. (The dead `ATLAS_NO_FP8_PREDEQUANT` env var never gated this.)
 
 The win came from serving WITHOUT the structural-tag grammar and parsing tool
 calls from raw output (like llama.cpp): the qwen3_coder grammar both mangles
