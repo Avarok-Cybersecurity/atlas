@@ -352,7 +352,18 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
     let min_tokens_suppresses = a.output_tokens.len() < a.min_tokens;
     let suppress_eos = grammar_suppresses_eos || legacy_suppresses_eos || min_tokens_suppresses;
 
-    if a.eos_tokens.contains(&tok) && !suppress_eos {
+    // `</tool_call>` is merged into eos_tokens as a stop token, but in legacy
+    // (no-grammar) multi-call mode it must NOT finish the turn — the model may emit
+    // further `<tool_call>` blocks (parallel) or its real EOS to stop. The non-spec
+    // decode path handles this in its tool_call_end branch (`continue` past the EOS
+    // check); the MTP/spec emit path reached this generic EOS gate instead and
+    // stopped at the FIRST call, collapsing BFCL parallel/parallel_multiple to 0
+    // whenever MTP was enabled. Mirror the non-spec behavior here.
+    let legacy_tool_close_continue = a.tool_call_end_token == Some(tok)
+        && !a.inside_thinking
+        && a.grammar_state.is_none()
+        && crate::scheduler::helpers::legacy_multicall_enabled();
+    if a.eos_tokens.contains(&tok) && !suppress_eos && !legacy_tool_close_continue {
         a.finished = true;
         return;
     }
