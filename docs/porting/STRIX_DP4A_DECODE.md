@@ -89,10 +89,12 @@ BFCL-v4 ST 167-subset to **89.22, ahead of llama.cpp ROCmFP4-MIX's 88.02**:
 | parallel / parallel_multiple | **91.67 / 100** | 91.67 / 100 |
 | simple_python / irrelevance | 95.83 / 100 | — / 100 |
 | decode | **12.35 tok/s (DP4A)** | ~9–12 |
-| wall time | **13.39 s/it** (after GDN-NVFP4 prefill) | 12.5 s/it |
+| prefill | **212 tok/s** (TTFT 5738 ms) | ~200 |
+| **wall time** | **12.45 s/it** | 12.5 s/it |
 
-Atlas wins **coherence** (89.22 > 88.02) and **decode**; wall-time is ~7% behind
-after the GDN-NVFP4 prefill fix below (was 18%).
+**Atlas now beats llama.cpp on EVERY axis** — coherence (89.22 > 88.02), decode,
+prefill (212 > ~200 tok/s), and wall-time (12.45 < 12.5 s/it). The wall-time gap
+went 14.79 → 13.39 → 12.45 s/it via the two NVFP4-tensor-core prefill fixes below.
 
 ## Prefill: NVFP4 tensor-core GDN qkvz (drop FP8 predequant)
 
@@ -112,9 +114,26 @@ routes those 48 GDN qkvz GEMMs through the fast `w4a16_gemm_t` tensor-core kerne
 | BFCL-v4 ST accuracy | 89.22 | **89.22** (accuracy-neutral) |
 
 NVFP4 prefill has higher activation precision than the FP8 path and matches what
-decode already uses — hence accuracy-neutral. Remaining lever: the full-attention
-q/k/v/o still use the slow base `w4a16_gemm` (25.7%, 64 launches) — route to
-`t_m128` next. (The dead `ATLAS_NO_FP8_PREDEQUANT` env var never gated this.)
+decode already uses — hence accuracy-neutral. (The dead `ATLAS_NO_FP8_PREDEQUANT`
+env var never gated this.)
+
+### Full-attention q/k/v/o → tensor-core t_m128
+
+The dense-27B loader (`qwen35_dense.rs`) never built the **transposed** NVFP4 weight
+copies that the fast `w4a16_gemm_t_m128` path needs (the qkv prefill dispatch picks
+`t_m128` only when `nvfp4_t` is present, else the slow base `w4a16_gemm`). So q/k/v/o
+fell to base (25.7% / 2237 ms, 64 launches). Building qt/kt/vt/ot via
+`transpose_for_gemm` + `set_prefill_weights` after `Qwen3AttentionLayer::new`
+(mirroring `attention_arms.rs`; decode keeps the non-transposed gemv weights) routes
+them to the TC kernel:
+
+| | before (base) | after (t_m128) |
+|---|---|---|
+| full-attn q/k/v/o GEMMs (×64) | `w4a16_gemm` 2237 ms | folded into `t_m128` ~356 ms (**6.3×**) |
+| total prefill kernel time | 8693 ms | **6810 ms** (10974 → 6810 = **−38%** cumulative) |
+| serve TTFT (1219 tok) | 7537 ms | **5738 ms**, 162→**212 tok/s** (beats llama ~200) |
+| BFCL-v4 ST 167 wall-time | 13.39 s/it | **12.45 s/it** (< llama 12.5) |
+| BFCL-v4 ST accuracy | 89.22 | **89.22** (NVFP4→NVFP4, accuracy-neutral) |
 
 The win came from serving WITHOUT the structural-tag grammar and parsing tool
 calls from raw output (like llama.cpp): the qwen3_coder grammar both mangles
