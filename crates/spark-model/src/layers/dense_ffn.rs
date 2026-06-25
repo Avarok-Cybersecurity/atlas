@@ -72,6 +72,13 @@ pub struct DenseFfnLayer {
     // (ST-995: 89.14 overall / 95.49 hallucination, 2h33m vs 3h39m base).
     // KernelHandle(0) on miss → falls back to the existing ladder regardless.
     w4a16_gemm_t_m128_bf16_k: KernelHandle,
+    // v2 of the LOSSLESS BF16 128x128 prefill kernel: same MMA instruction order
+    // (so BIT-IDENTICAL to bf16_k, proven by w4a16_bf16_v2_microtest) but a
+    // smaller A-tile smem pad (PAD_T=0) lifts occupancy from 2→3 CTAs/SM
+    // (~+50% resident warps), giving a measured ~2-7% faster prefill GEMM on
+    // this latency-bound kernel. Preferred over bf16_k when present and
+    // ATLAS_BF16_TC_PREFILL is set. KernelHandle(0) on miss → bf16_k.
+    w4a16_gemm_t_m128_bf16_v2_k: KernelHandle,
     /// SiLU(gate)*up or GELU(gate)*up depending on activation.
     act_mul: KernelHandle,
     /// BF16 dense MLP weights — when `Some`, all forward paths use the
@@ -130,6 +137,11 @@ impl DenseFfnLayer {
             w4a16_gemm_t_m128_v2_k: super::try_kernel(gpu, "w4a16_v2", "w4a16_gemm_t_m128_v2"),
             // Lossless BF16 tensor-core prefill (opt-in via ATLAS_BF16_TC_PREFILL).
             w4a16_gemm_t_m128_bf16_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128_bf16"),
+            w4a16_gemm_t_m128_bf16_v2_k: super::try_kernel(
+                gpu,
+                "w4a16",
+                "w4a16_gemm_t_m128_bf16_v2",
+            ),
             act_mul,
             bf16_weights: None,
             dense_gemv_bf16_k,
@@ -454,6 +466,17 @@ impl DenseFfnLayer {
         // byte-identical to the existing v2 > t_m128 > base ladder below.
         let bf16_tc_prefill = self.w4a16_gemm_t_m128_bf16_k.0 != 0
             && std::env::var_os("ATLAS_BF16_TC_PREFILL").is_some();
+        // Within the lossless BF16-TC path, prefer the higher-occupancy v2 kernel
+        // (PAD_T=0 → 3 CTAs/SM, bit-identical to v1) when it is loaded; else the
+        // proven v1 kernel. ATLAS_DISABLE_PREFILL_V2 forces v1 (A/B benchmark
+        // escape hatch). Both go through the same launch helper (identical args).
+        let use_v2 = self.w4a16_gemm_t_m128_bf16_v2_k.0 != 0
+            && std::env::var_os("ATLAS_DISABLE_PREFILL_V2").is_none();
+        let bf16_kernel = if use_v2 {
+            self.w4a16_gemm_t_m128_bf16_v2_k
+        } else {
+            self.w4a16_gemm_t_m128_bf16_k
+        };
         macro_rules! w4_gemm {
             ($w:expr, $wt:expr, $in:expr, $out:expr, $n:expr, $k:expr) => {
                 match $wt {
@@ -461,7 +484,7 @@ impl DenseFfnLayer {
                     // prefill, bit-equivalent to the base `w4a16_gemm` below.
                     Some(wt) if bf16_tc_prefill => ops::w4a16_gemm_n128_m128_bf16(
                         ctx.gpu,
-                        self.w4a16_gemm_t_m128_bf16_k,
+                        bf16_kernel,
                         $in,
                         &wt,
                         $out,

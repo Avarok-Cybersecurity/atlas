@@ -287,6 +287,14 @@ __device__ __forceinline__ void cp_async_wait_all() {
     asm volatile("cp.async.wait_group 0;");
 }
 
+// Wait until at most N cp.async groups remain in flight (staged drain).
+// Lets a deeper pipeline keep multiple tiles outstanding instead of the
+// full-drain wait_group 0. N is a compile-time immediate (PTX requires it).
+template<int N>
+__device__ __forceinline__ void cp_async_wait_group() {
+    asm volatile("cp.async.wait_group %0;" :: "n"(N));
+}
+
 __device__ __forceinline__ unsigned int pack_bf16_pair(float lo, float hi) {
     unsigned int result;
     asm("prmt.b32 %0, %1, %2, 0x7632;" : "=r"(result)
@@ -1562,6 +1570,222 @@ void w4a16_gemm_t_m128_bf16(
         if (r1 < M && c1 < N) C[r1 * N + c1] = __float2bfloat16(acc1[nt][3]);
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// M128 variant — LOSSLESS BF16 prefill, PIPELINED v2 (`w4a16_gemm_t_m128_bf16_v2`).
+//
+// Same math, same smem layout, same MMA instruction sequence (and therefore
+// the SAME per-output FP32 accumulation order) as `w4a16_gemm_t_m128_bf16`,
+// so it is BIT-IDENTICAL to it (and ~bit-equivalent to base `w4a16_gemm`).
+// The ONLY changes are scheduling/footprint, attacking the PROFILED root cause:
+// the kernel is LATENCY-BOUND at ~16% occupancy (ncu: sm__warps_active 16.7%).
+// v1 uses 34.9 KB smem/block, and with a 100 KB/SM budget that caps it to
+// 2 CTAs/SM (3×34.9=104.8 > 100) — only 8 of 48 warps resident, too few to
+// hide the cp.async + dequant + MMA latency chain.
+//
+//   LEVER — OCCUPANCY via SMEM: drop the A-tile bank-conflict pad from
+//     PAD_T=8 to PAD_T_V2=0 (A stride 32 instead of 40). A row is 32 bf16 =
+//     64 B = exactly 16-byte aligned, so cp.async.16 stays legal. This shaves
+//     A from 2×128×40×2=20480 B to 2×128×32×2=16384 B (−4 KB) → 30.9 KB/block
+//     → 3 CTAs/SM (3×30.9=92.6 ≤ 100) → +50% resident warps (12 vs 8).
+//
+// Everything else — the 2-stage cp.async double-buffer, the single-buffered
+// smem_B_bf16 dequant target, the LOAD||MMA→wait→dequant→sync schedule, the
+// MMA instruction order, registers (__launch_bounds__(128,3), no spill) — is
+// byte-for-byte v1. The A read in COMPUTE is now row-strided by a_stride=32 →
+// some smem bank conflicts (vs conflict-free at 40); this is a deliberate
+// trade — on a LATENCY-bound kernel the +50% occupancy is the dominant term.
+// (Deeper pipelines / B double-buffering / forcing 4 CTAs were all measured
+// neutral-to-slower: register spill or smem-bound. See report.)
+//
+// SMEM (STAGES=2): A 2×128×32×2=16384B, Bp 2×16×144=4608B, Bs 2×2×144=576B,
+//                  B_bf16 128×32×2=8192B, LUT 64B ≈ 30.9KB → 3 CTAs/SM.
+// Grid: (ceil(N/128), ceil(M/128), 1)  Block: (128, 1, 1)
+// ═══════════════════════════════════════════════════════════════════
+#define M128B_STAGES 2
+#define PAD_T_V2 0
+extern "C" __global__
+__launch_bounds__(128, 3)
+void w4a16_gemm_t_m128_bf16_v2(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M, unsigned int N, unsigned int K
+) {
+    const unsigned int cta_n  = blockIdx.x * N_TILE_LG;
+    const unsigned int cta_m  = blockIdx.y * (2 * M_TILE);
+    if (cta_m >= M) return;
+
+    const unsigned int warp_id = threadIdx.x / 32;
+    const unsigned int lane_id = threadIdx.x % 32;
+    const unsigned int warp_m_offset = warp_id * 16;
+    const unsigned int group_id = lane_id >> 2;
+    const unsigned int tid = lane_id & 3;
+
+    // cp.async-staged raw tiles (STAGES deep). The dequant target smem_B_bf16
+    // is SINGLE-buffered (like v1) to keep total smem at 30.9 KB → 3 CTAs/SM;
+    // A uses the reduced PAD_T_V2 pad (LEVER A) instead of PAD_T.
+    __shared__ __nv_bfloat16 smem_A[M128B_STAGES][2 * M_TILE][K_STEP_T + PAD_T_V2];
+    __shared__ unsigned char smem_Bp[M128B_STAGES][K_STEP_T / 2][N_TILE_LG + BP_PAD];
+    __shared__ unsigned char smem_Bs[M128B_STAGES][K_STEP_T / GROUP_SIZE][N_TILE_LG + BP_PAD];
+    __shared__ __nv_bfloat16 smem_B_bf16[N_TILE_LG][K_STEP_T];
+    __shared__ float smem_LUT[16];
+
+    if (threadIdx.x < 16) smem_LUT[threadIdx.x] = E2M1_LUT[threadIdx.x];
+
+    float acc0[16][4], acc1[16][4];
+    #pragma unroll
+    for (int i = 0; i < 16; i++) {
+        acc0[i][0] = 0.f; acc0[i][1] = 0.f; acc0[i][2] = 0.f; acc0[i][3] = 0.f;
+        acc1[i][0] = 0.f; acc1[i][1] = 0.f; acc1[i][2] = 0.f; acc1[i][3] = 0.f;
+    }
+
+    const unsigned int a_stride = K_STEP_T + PAD_T_V2;
+
+    // Issue cp.async loads for stage `buf` covering K-tile starting at `kb`.
+    // Byte-identical addressing to M128B_LOADS in the v1 kernel.
+    #define V2_LOADS(buf, kb) do { \
+        { \
+            unsigned int a_row_base = threadIdx.x >> 2; \
+            unsigned int a_col      = (threadIdx.x & 3) << 3; \
+            unsigned int gc = (kb) + a_col; \
+            _Pragma("unroll") \
+            for (int rnd = 0; rnd < 4; rnd++) { \
+                unsigned int row = (unsigned int)(rnd * 32) + a_row_base; \
+                unsigned int gr  = cta_m + row; \
+                cp_async_pred_16(&smem_A[(buf)][row][a_col], \
+                    &A[(unsigned long long)gr * K + gc], \
+                    (gr < M) && (gc + 7 < K)); \
+            } \
+        } \
+        { \
+            unsigned int kp  = threadIdx.x >> 3; \
+            unsigned int ns  = (threadIdx.x & 7) << 4; \
+            unsigned int gke = (kb) + (kp << 1); \
+            unsigned int gns = cta_n + ns; \
+            cp_async_pred_16(&smem_Bp[(buf)][kp][ns], \
+                &B_packed[(unsigned long long)(gke >> 1) * N + gns], \
+                (gke + 1 <= K) && (gns + 15 < N)); \
+            if (kp < K_STEP_T / GROUP_SIZE) { \
+                unsigned int sg = (kb) / GROUP_SIZE + kp; \
+                cp_async_pred_16(&smem_Bs[(buf)][kp][ns], \
+                    &B_scale[(unsigned long long)sg * N + gns], \
+                    (gns + 15 < N)); \
+            } \
+        } \
+    } while(0)
+
+    // Dequant raw tile in stage `buf` → the single BF16 buffer.
+    // Byte-identical math to v1's M128B_DEQUANT (LUT * (float)e4m3 * scale2).
+    #define V2_DEQUANT(buf) do { \
+        unsigned int my_n = threadIdx.x; \
+        unsigned char sb0 = smem_Bs[(buf)][0][my_n]; \
+        unsigned char sb1 = smem_Bs[(buf)][1][my_n]; \
+        __nv_fp8_e4m3 f0, f1; \
+        *(unsigned char*)&f0 = sb0; *(unsigned char*)&f1 = sb1; \
+        float sv0 = (float)f0 * scale2, sv1 = (float)f1 * scale2; \
+        _Pragma("unroll") \
+        for (int kp = 0; kp < 8; kp++) { \
+            unsigned char packed = smem_Bp[(buf)][kp][my_n]; \
+            smem_B_bf16[my_n][kp * 2]     = __float2bfloat16(smem_LUT[packed & 0xF] * sv0); \
+            smem_B_bf16[my_n][kp * 2 + 1] = __float2bfloat16(smem_LUT[packed >> 4]  * sv0); \
+        } \
+        _Pragma("unroll") \
+        for (int kp = 8; kp < 16; kp++) { \
+            unsigned char packed = smem_Bp[(buf)][kp][my_n]; \
+            smem_B_bf16[my_n][kp * 2]     = __float2bfloat16(smem_LUT[packed & 0xF] * sv1); \
+            smem_B_bf16[my_n][kp * 2 + 1] = __float2bfloat16(smem_LUT[packed >> 4]  * sv1); \
+        } \
+    } while(0)
+
+    // MMA over A-stage `a_buf` and the dequanted B buffer.
+    // IDENTICAL instruction order to v1's M128B_COMPUTE → bit-identical accum.
+    #define V2_COMPUTE(a_buf) do { \
+        const __nv_bfloat16* sA = (const __nv_bfloat16*)smem_A[(a_buf)]; \
+        _Pragma("unroll") \
+        for (int ch = 0; ch < 2; ch++) { \
+            unsigned int fr0 = ch * M_TILE + warp_m_offset + group_id; \
+            unsigned int fr1 = fr0 + 8; \
+            _Pragma("unroll") \
+            for (int hh = 0; hh < 2; hh++) { \
+                unsigned int fc0 = hh * 16 + tid * 2, fc1 = fc0 + 8; \
+                unsigned int a0 = *(const unsigned int*)&sA[fr0 * a_stride + fc0]; \
+                unsigned int a1 = *(const unsigned int*)&sA[fr1 * a_stride + fc0]; \
+                unsigned int a2 = *(const unsigned int*)&sA[fr0 * a_stride + fc1]; \
+                unsigned int a3 = *(const unsigned int*)&sA[fr1 * a_stride + fc1]; \
+                _Pragma("unroll") \
+                for (int nt = 0; nt < 16; nt++) { \
+                    unsigned int nc = nt * 8 + group_id; \
+                    const __nv_bfloat16* sb = &smem_B_bf16[nc][0]; \
+                    unsigned int b0 = *(const unsigned int*)&sb[fc0]; \
+                    unsigned int b1 = *(const unsigned int*)&sb[fc1]; \
+                    float* acc = ch ? acc1[nt] : acc0[nt]; \
+                    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 " \
+                        "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
+                        : "=f"(acc[0]), "=f"(acc[1]), "=f"(acc[2]), "=f"(acc[3]) \
+                        : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1), \
+                          "f"(acc[0]), "f"(acc[1]), "f"(acc[2]), "f"(acc[3])); \
+                } \
+            } \
+        } \
+    } while(0)
+
+    // Pipeline: byte-identical schedule to v1 (LOAD[nxt] || MMA[cur] → wait →
+    // dequant[nxt] → sync). The ONLY difference from v1 is the smaller A pad
+    // (PAD_T_V2), which lifts occupancy to 3 CTAs/SM.
+    V2_LOADS(0, 0);
+    cp_async_commit();
+    cp_async_wait_all();
+    __syncthreads();
+    V2_DEQUANT(0);
+    __syncthreads();
+
+    int cur = 0;
+    for (unsigned int k_base = K_STEP_T; k_base < K; k_base += K_STEP_T) {
+        int nxt = 1 - cur;
+        V2_LOADS(nxt, k_base);
+        cp_async_commit();
+        V2_COMPUTE(cur);
+        cp_async_wait_all();
+        __syncthreads();
+        V2_DEQUANT(nxt);
+        __syncthreads();
+        cur = nxt;
+    }
+    V2_COMPUTE(cur);
+
+    #undef V2_LOADS
+    #undef V2_DEQUANT
+    #undef V2_COMPUTE
+
+    // Write chunk 0: rows [cta_m..cta_m+63]
+    #pragma unroll
+    for (int nt = 0; nt < 16; nt++) {
+        unsigned int c0 = cta_n + nt * 8 + tid * 2;
+        unsigned int c1 = c0 + 1;
+        unsigned int r0 = cta_m + warp_m_offset + group_id;
+        unsigned int r1 = r0 + 8;
+        if (r0 < M && c0 < N) C[r0 * N + c0] = __float2bfloat16(acc0[nt][0]);
+        if (r0 < M && c1 < N) C[r0 * N + c1] = __float2bfloat16(acc0[nt][1]);
+        if (r1 < M && c0 < N) C[r1 * N + c0] = __float2bfloat16(acc0[nt][2]);
+        if (r1 < M && c1 < N) C[r1 * N + c1] = __float2bfloat16(acc0[nt][3]);
+    }
+    // Write chunk 1: rows [cta_m+64..cta_m+127]
+    #pragma unroll
+    for (int nt = 0; nt < 16; nt++) {
+        unsigned int c0 = cta_n + nt * 8 + tid * 2;
+        unsigned int c1 = c0 + 1;
+        unsigned int r0 = cta_m + M_TILE + warp_m_offset + group_id;
+        unsigned int r1 = r0 + 8;
+        if (r0 < M && c0 < N) C[r0 * N + c0] = __float2bfloat16(acc1[nt][0]);
+        if (r0 < M && c1 < N) C[r0 * N + c1] = __float2bfloat16(acc1[nt][1]);
+        if (r1 < M && c0 < N) C[r1 * N + c0] = __float2bfloat16(acc1[nt][2]);
+        if (r1 < M && c1 < N) C[r1 * N + c1] = __float2bfloat16(acc1[nt][3]);
+    }
+}
+#undef M128B_STAGES
 
 // ═══════════════════════════════════════════════════════════════════
 // M128 variant of fp8_gemm_t: BF16 A × FP8 B, 2 M-chunks per CTA.
