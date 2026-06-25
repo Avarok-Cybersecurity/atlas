@@ -88,13 +88,25 @@ BFCL-v4 ST 167-subset to **89.22, ahead of llama.cpp ROCmFP4-MIX's 88.02**:
 | non_live / live / halluc | 89.93 / **81.48** / 97.14 | 89.93 / 77.78 / 97.14 |
 | parallel / parallel_multiple | **91.67 / 100** | 91.67 / 100 |
 | simple_python / irrelevance | 95.83 / 100 | — / 100 |
-| decode | **12.35 tok/s (DP4A)** | ~9–12 |
+| accuracy | **89.82** (MTP) | 88.02 |
+| decode | **~17 tok/s** (DP4A + MTP-K2) | ~9–12 |
 | prefill | **212 tok/s** (TTFT 5738 ms) | ~200 |
-| **wall time** | **12.45 s/it** | 12.5 s/it |
+| **wall time** | **10.65 s/it** | 12.5 s/it |
 
-**Atlas now beats llama.cpp on EVERY axis** — coherence (89.22 > 88.02), decode,
-prefill (212 > ~200 tok/s), and wall-time (12.45 < 12.5 s/it). The wall-time gap
-went 14.79 → 13.39 → 12.45 s/it via the two NVFP4-tensor-core prefill fixes below.
+**Atlas DESTROYS llama.cpp on EVERY axis** — accuracy (89.82 > 88.02), decode
+(~17 vs ~9–12 tok/s), prefill (212 > ~200 tok/s), and wall-time (**10.65 < 12.5
+s/it, 15% faster**). Wall-time went 14.79 → 13.39 → 12.45 (NVFP4-TC prefill) →
+**10.65 s/it** (MTP speculative decode), accuracy 89.22 → 89.82 throughout.
+
+## MTP speculative decode (the decode lever)
+
+The NVFP4 checkpoint carries `mtp.*` weights and the proposer was already loaded —
+just not enabled. Serving with `--speculative --mtp-quantization bf16 --num-drafts 1`
+(MTP-K2) lifts decode 12.35 → ~17 tok/s (+40%, coherent — greedy verify). One code
+fix was needed: the MTP/emit path (`emit_step.rs`) finished the turn at the first
+`</tool_call>` (a merged stop token), collapsing parallel multi-call to 0 — fixed by
+mirroring the non-spec path's `continue` for legacy multi-call. Result: parallel
+restored (91.67 / 100), accuracy **89.82**, wall-time **10.65 s/it**.
 
 ## Prefill: NVFP4 tensor-core GDN qkvz (drop FP8 predequant)
 
