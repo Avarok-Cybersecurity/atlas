@@ -24,7 +24,9 @@
 
 | Конфигурация | tok/s | Примечание |
 |---|---|---|
-| Atlas NVFP4, K=2 MTP, код | **17.92** | best single-req |
+| Atlas NVFP4, K=2 MTP, **fp8** head, код | **17.8** | 2026-06-26, median 5 runs |
+| Atlas NVFP4, K=2 MTP, bf16 head, код | 16.2 | 2026-06-26 |
+| Atlas NVFP4, K=2 MTP, bf16 head, код | 17.92 | более ранний рекорд (другой прогрев?) |
 | Atlas NVFP4, K=2 MTP, эссе | 14.82 | diverse vocab → хуже MTP |
 | Atlas NVFP4, K=2 MTP, thinking | 12.12 | thinking = diverse → плохой accept |
 | Atlas NVFP4, K=3 MTP, код | 13.75 | хуже K=2 |
@@ -35,8 +37,17 @@
 **MTP K=2 оптимально.** K=3 хуже во всех случаях: второй драфт принимается в
 только в 8–22% шагов, а verify overhead растёт.
 
+**`--mtp-quantization fp8` лучше bf16:**
+- accept rate: 49.6% vs 43.2% (+6%)
+- tok/s: 17.8 vs 16.2 (+10%)
+- Нет attractor warnings (< 30%) у fp8; у bf16 были окна по 26%
+- Качество вывода: идентично (MTP head — только драфтер; мейн модель верифицирует)
+- nvfp4 для dense FFN MTP head не поддерживается (unsupported, только fp8/bf16)
+
 ### MTP accept rates (K=2)
-- Код: 55–73%
+- Код fp8 head: **49.6%** mean, 33–58% range (без аттракторов)
+- Код bf16 head: 43.2% mean, 32–57% range (были окна 26%)
+- Более ранние данные код: 55–73% (другие условия)
 - Эссе: 37–69%
 - При K=3: mean accepted = 0.27–0.76 / step (нестабильно)
 
@@ -341,8 +352,8 @@ Grid: `(ceil(12288/4), 1, 1)` = 3072 блока → тоже ~100% occupancy и 
     --kv-cache-dtype nvfp4 \
     --kv-high-precision-layers 4 \
     --speculative \
-    --mtp-quantization bf16 \
-    --num-drafts 1 \          # K=2 оптимально, K=3 хуже
+    --mtp-quantization fp8 \   # fp8 лучше bf16: +10% tok/s, +6% accept rate
+    --num-drafts 1 \           # K=2 оптимально, K=3 хуже
     --scheduling-policy slai
 ```
 
