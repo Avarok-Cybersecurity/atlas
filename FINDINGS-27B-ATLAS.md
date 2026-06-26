@@ -47,32 +47,55 @@
 ### Breakdown одного decode шага
 
 ```
-PROFILE total: ~75ms (draft) / ~82ms (K=3 verify, 3 tokens)
-  attn: 18ms / 16 layers = 1.1ms/layer
-  ssm:  60ms / 48 layers = 1.25ms/layer
+PROFILE total: ~78ms
+  attn: 17.4ms / 16 layers = 1.09ms/layer
+  ssm:  57.0ms / 48 layers = 1.19ms/layer
   head: 3.1ms
-  → base rate (no MTP): 12.3–13.3 tok/s
+  → base rate (no MTP): ~12 tok/s
 ```
 
-### Полный breakdown одного SSM слоя (~1204μs/layer, ATLAS_PROFILE=1)
+### Полный breakdown одного SSM слоя (~1150μs/layer, ATLAS_PROFILE=1)
 
-Измерено с `prof!` лейблами в ssm_forward.rs и trait_decode.rs:
+Измерено с `prof!` лейблами в ssm_forward.rs, trait_decode.rs, dense_ffn.rs:
 
-| Операция | Время | Доля |
-|---|---|---|
-| **moe (MoE FFN)** | **738μs** | **61%** ← реальный bottleneck |
-| qkvz GEMV (NVFP4, [12288×5120]) | 220μs | 18% |
-| out_proj GEMV (NVFP4, [5120×4096]) | 94μs | 8% |
-| launch/sync overhead | ~52μs | 4% |
-| gdn_decode | 43μs | 4% |
-| post_norm (residual_add_rms_norm) | 10μs | 1% |
-| conv1d + L2norm | 10μs | 1% |
-| pre_norm (rms_norm_residual) | 9μs | 1% |
-| ba_gates (BF16 GEMV, [96×5120]) | 15μs | 1% |
-| gated_norm | 7μs | 1% |
-| residual_add | 7μs | 1% |
+| Операция | Время | Доля | Примечание |
+|---|---|---|---|
+| **FFN gate_up (NVFP4)** | **462μs** | **40%** | w4a16_gemv_dual: gate+up fused |
+| **FFN silu_down (NVFP4)** | **272μs** | **24%** | w4a16_gemv_silu_input: SiLU×up+down fused |
+| qkvz GEMV (NVFP4) | 218μs | 19% | w4a16_gemv или w4a16_gemv_qkvz |
+| out_proj GEMV (NVFP4) | 94μs | 8% | w4a16_gemv |
+| gdn_decode | 43μs | 4% | gated_delta_rule_decode |
+| overhead (launch/norm) | ~61μs | 5% | ba_gates+conv1d+norms+residual |
 
-**Ключевой вывод: MoE FFN = 61% времени SSM блока.** Qwen3.6-27B — гибридная модель, где каждый SSM слой содержит MoE FFN sub-block. GDN decode — всего 4%.
+**SSM TOTAL: ~1150μs/layer**
+
+**Ключевой вывод: Dense FFN = 64% времени SSM слоя.** Qwen3.6-27B — это **dense** 27B модель (не MoE). Каждый SSM слой содержит SwiGLU Dense FFN. GDN decode — всего 4%.
+
+### Внутренний breakdown Dense FFN (новое)
+
+| Операция | Время | Доля | Ядро |
+|---|---|---|---|
+| gate_up (fused) | 462μs | 63% | `w4a16_gemv_dual` — gate+up GEMV в одном запуске |
+| silu_down (fused) | 272μs | 37% | `w4a16_gemv_silu_input` — SiLU(gate)×up + down GEMV |
+| **FFN TOTAL** | **734μs** | 100% | |
+
+### Анализ bandwidth эффективности Dense FFN
+
+Параметры (из модели):
+- `intermediate_size` (inter): ~13824 (по размеру весов)
+- `hidden_size` (h): 5120
+
+Размер весов NVFP4 (4 бит = 0.5 байт/параметр):
+- gate_proj: 13824 × 5120 × 0.5 = **35.4 MB**
+- up_proj: 35.4 MB
+- down_proj: 35.4 MB
+- **Итого: 106.2 MB / слой**
+
+Теоретический минимум при 178 GB/s: 106.2 / 178 = **597μs**  
+Фактически: **734μs**  
+**Bandwidth efficiency: 81%** — достаточно хорошо для GEMV.
+
+Overhead ~137μs объясняется: чтение/запись активаций (i/o буферы), launch overhead, scales.
 
 ---
 
@@ -203,20 +226,32 @@ SGLang DFlash patch (flashinfer PR #3731) даёт +1.5–2 tok/s для SM121.
 | Задача | Результат |
 |---|---|
 | Убрать norm pass из hot path (каждые 16 токенов) | Реализовано. Прирост <1% — kernel latency-bound |
-| `prof!` лейблы для всех операций SSM слоя | ✅ qkvz, ba_gates, conv1d, gdn_decode, gated_norm, out_proj, pre_norm, post_norm, moe, residual_add |
-| Full SSM breakdown — найти где ~878μs/layer пропадает | ✅ Найдено: MoE FFN = 738μs (61%) |
-| Native U8 NVFP4 загрузка чекпойнтов | ✅ cherry-pick qwen35_dense.rs + quantized.rs. Прямая загрузка без dequant→BF16→requant |
+| `prof!` лейблы для всех операций SSM слоя | ✅ qkvz, ba_gates, conv1d, gdn_decode, gated_norm, out_proj, pre_norm, post_norm, ffn, residual_add |
+| Full SSM breakdown — найти где ~878μs/layer пропадает | ✅ Dense FFN = 734μs (64%). Модель НЕ MoE — это dense SwiGLU FFN |
+| `prof!` для Dense FFN internals | ✅ gate_up=462μs (63%), silu_down=272μs (37%). Bandwidth efficiency 81% |
+| Native U8 NVFP4 загрузка чекпойнтов | ✅ cherry-pick qwen35_dense.rs + quantized.rs |
+
+### Анализ потенциала оптимизации
+
+Dense FFN при 81% bandwidth efficiency уже близко к пределу. Главные варианты:
+
+| Направление | Суть | Ожидаемый прирост |
+|---|---|---|
+| SM121-оптимизированный attention | Как flashinfer PR #3731 — SM12x-специфичный decode attention | +1–3 tok/s |
+| Fused triple GEMV: gate+up+down | Один проход по весам вместо двух запусков (но зависимость silu блокирует fusion) | ~15–20% FFN |
+| NVFP4 GEMV throughput на GB10 | Анализ occupancy/IPC `w4a16_gemv_dual` — может быть неоптимален для GB10 SM121 | диагностика |
+| MTP с dense FFN (K=2) | Текущие 17.9 tok/s для кода — можно ли улучшить accept rate? | диагностика |
 
 ### Следующие шаги
 
 | Приоритет | Задача | Ожидаемый прирост |
 |---|---|---|
-| 🔴 Высокий | Профилировать internals MoE FFN: routers, expert GEMMs, topK — найти узкое место в 738μs | диагностика |
-| 🔴 Высокий | SM121-специфичный attention kernel (как flashinfer PR #3731) | +1–3 tok/s |
-| 🟡 Средний | Ускорить MoE FFN если нашли bottleneck | потенциально +5–8 tok/s |
-| 🟡 Средний | Profiler в MTP verify path | диагностика MTP overhead |
-| 🟢 Низкий | `in_proj_ba` → NVFP4 (completeness, не perf) | <0.2 tok/s |
-| 🟢 Низкий | Tensor core GEMV для H^T @ k | 0–2 tok/s (только при высоком occupancy) |
+| 🔴 Высокий | SM121-специфичный attention kernel | +1–3 tok/s |
+| 🔴 Высокий | Профилировать `w4a16_gemv_dual` на GB10: occupancy, ILP, tensor core utilization через ncu | диагностика |
+| 🟡 Средний | Попробовать fused gate+up+down GEMV (pipeline через warp-level reduction) | ~+1–2 tok/s |
+| 🟡 Средний | Profiler в MTP verify path — где overhead MTP verify | диагностика |
+| 🟢 Низкий | `in_proj_ba` → NVFP4 | <0.2 tok/s |
+| 🟢 Низкий | Tensor core GEMV для GDN H^T@k | 0–2 tok/s (только при высоком occupancy) |
 
 ---
 

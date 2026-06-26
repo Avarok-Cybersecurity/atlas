@@ -163,6 +163,21 @@ impl DenseFfnLayer {
     ) -> Result<DevicePtr> {
         let h = ctx.config.hidden_size as u32;
         let inter = ctx.config.intermediate_size as u32;
+        let profile = ctx.profile;
+
+        macro_rules! prof {
+            ($label:expr, $body:expr) => {{
+                if profile {
+                    let t = std::time::Instant::now();
+                    let r = $body;
+                    ctx.gpu.synchronize(stream)?;
+                    tracing::info!("    FFN {}: {:.0}μs", $label, t.elapsed().as_micros());
+                    r
+                } else {
+                    $body
+                }
+            }};
+        }
 
         let gate_out = ctx.buffers.expert_gate_out();
         let up_out = ctx.buffers.expert_up_out();
@@ -173,81 +188,31 @@ impl DenseFfnLayer {
         // than the fused w4a16 path on Gemma-4-31B (the cost is dominated
         // by the bigger BF16 weight reads, not launch overhead).
         if let Some(ref bf16w) = self.bf16_weights {
-            ops::dense_gemv(
-                ctx.gpu,
-                self.dense_gemv_bf16_k,
-                input,
-                &bf16w.gate_proj,
-                gate_out,
-                inter,
-                h,
-                stream,
-            )?;
-            ops::dense_gemv(
-                ctx.gpu,
-                self.dense_gemv_bf16_k,
-                input,
-                &bf16w.up_proj,
-                up_out,
-                inter,
-                h,
-                stream,
-            )?;
-            ops::silu_mul(
-                ctx.gpu,
-                self.act_mul,
-                gate_out,
-                up_out,
-                gate_out,
-                inter,
-                stream,
-            )?;
-            let output = ctx.buffers.moe_output();
-            ops::dense_gemv(
-                ctx.gpu,
-                self.dense_gemv_bf16_k,
-                gate_out,
-                &bf16w.down_proj,
-                output,
-                h,
-                inter,
-                stream,
-            )?;
-            return Ok(output);
-        }
-
-        // Fused gate_proj + up_proj: [1, H] → [1, inter] × 2
-        ops::w4a16_gemv_dual(
-            ctx.gpu,
-            self.w4a16_gemv_dual,
-            input,
-            &self.weights.gate_proj,
-            gate_out,
-            &self.weights.up_proj,
-            up_out,
-            inter,
-            h,
-            stream,
-        )?;
-
-        let output = ctx.buffers.moe_output();
-        match self.activation {
-            FfnActivation::SiLU => {
-                // Fused SiLU(gate)*up + down_proj: [1, inter] → [1, H]
-                ops::w4a16_gemv_silu_input(
+            prof!("gate_bf16", {
+                ops::dense_gemv(
                     ctx.gpu,
-                    self.w4a16_gemv_silu_input,
+                    self.dense_gemv_bf16_k,
+                    input,
+                    &bf16w.gate_proj,
                     gate_out,
-                    up_out,
-                    &self.weights.down_proj,
-                    output,
-                    h,
                     inter,
+                    h,
                     stream,
-                )?;
-            }
-            FfnActivation::GeLU => {
-                // GELU(gate)*up → gate_out, then down_proj GEMV
+                )
+            })?;
+            prof!("up_bf16", {
+                ops::dense_gemv(
+                    ctx.gpu,
+                    self.dense_gemv_bf16_k,
+                    input,
+                    &bf16w.up_proj,
+                    up_out,
+                    inter,
+                    h,
+                    stream,
+                )
+            })?;
+            prof!("silu_mul", {
                 ops::silu_mul(
                     ctx.gpu,
                     self.act_mul,
@@ -256,17 +221,83 @@ impl DenseFfnLayer {
                     gate_out,
                     inter,
                     stream,
-                )?;
-                ops::w4a16_gemv(
+                )
+            })?;
+            let output = ctx.buffers.moe_output();
+            prof!("down_bf16", {
+                ops::dense_gemv(
                     ctx.gpu,
-                    self.w4a16_gemv,
+                    self.dense_gemv_bf16_k,
                     gate_out,
-                    &self.weights.down_proj,
+                    &bf16w.down_proj,
                     output,
                     h,
                     inter,
                     stream,
-                )?;
+                )
+            })?;
+            return Ok(output);
+        }
+
+        // Fused gate_proj + up_proj: [1, H] → [1, inter] × 2
+        prof!("gate_up", {
+            ops::w4a16_gemv_dual(
+                ctx.gpu,
+                self.w4a16_gemv_dual,
+                input,
+                &self.weights.gate_proj,
+                gate_out,
+                &self.weights.up_proj,
+                up_out,
+                inter,
+                h,
+                stream,
+            )
+        })?;
+
+        let output = ctx.buffers.moe_output();
+        match self.activation {
+            FfnActivation::SiLU => {
+                // Fused SiLU(gate)*up + down_proj: [1, inter] → [1, H]
+                prof!("silu_down", {
+                    ops::w4a16_gemv_silu_input(
+                        ctx.gpu,
+                        self.w4a16_gemv_silu_input,
+                        gate_out,
+                        up_out,
+                        &self.weights.down_proj,
+                        output,
+                        h,
+                        inter,
+                        stream,
+                    )
+                })?;
+            }
+            FfnActivation::GeLU => {
+                // GELU(gate)*up → gate_out, then down_proj GEMV
+                prof!("gelu_mul", {
+                    ops::silu_mul(
+                        ctx.gpu,
+                        self.act_mul,
+                        gate_out,
+                        up_out,
+                        gate_out,
+                        inter,
+                        stream,
+                    )
+                })?;
+                prof!("down_gelu", {
+                    ops::w4a16_gemv(
+                        ctx.gpu,
+                        self.w4a16_gemv,
+                        gate_out,
+                        &self.weights.down_proj,
+                        output,
+                        h,
+                        inter,
+                        stream,
+                    )
+                })?;
             }
         }
 
