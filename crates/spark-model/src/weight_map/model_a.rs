@@ -115,6 +115,7 @@ pub(crate) fn quantized(
         } else {
             DevicePtr::NULL
         },
+        weight_scale_2_vec: DevicePtr::NULL,
     })
 }
 
