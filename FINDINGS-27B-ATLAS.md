@@ -229,13 +229,37 @@ third norm pass и улучшении occupancy.
 
 ## 7. Что делать дальше
 
+### ✅ Сделано
+
+| Задача | Результат |
+|---|---|
+| Убрать norm pass из hot path (каждые 16 токенов) | **+1.1%** (+0.14 tok/s): 11.94 → 12.08. Норма всего ~1μs из 47μs gdn_decode — не bandwidth-bound как думали, а latency-bound при 48 блоках на 20 SM |
+| `prof!` лейблы для gdn_decode / gated_norm / out_proj | ✅ Реализовано, baseline задокументирован |
+
+### Ключевое открытие: куда уходят 870μs/layer?
+
+Из ~1273μs/layer учтено только ~395μs:
+
+| Операция | Время |
+|---|---|
+| qkvz GEMV | 231μs |
+| gdn_decode | 47μs |
+| out_proj GEMV | 95μs |
+| gated_norm | 7μs |
+| ba_gates | 15μs |
+| **Неучтено** | **~878μs** |
+
+Неучтённое — вероятно: conv1d_update_l2norm, rms_norm_residual, residual_add_rms_norm, overhead между launch'ами, CUDA graph boundaries.
+
+### Следующие шаги
+
 | Приоритет | Задача | Ожидаемый прирост |
 |---|---|---|
-| 🔴 Высокий | Убрать norm pass из hot path (каждые 16 токенов) | +1–2 tok/s |
+| 🔴 Высокий | Добавить prof! для conv1d, rms_norm_residual, residual_add — найти где ~878μs | диагностика |
 | 🔴 Высокий | SM121-специфичный attention kernel (как flashinfer PR #3731) | +1–3 tok/s |
-| 🟡 Средний | `in_proj_ba` → NVFP4 (upstream completeness, не perf) | <0.2 tok/s |
-| 🟡 Средний | Profiler в MTP verify path (сейчас decode_profiled не покрывает batch K=3) | diag |
-| 🟢 Низкий | Tensor core GEMV для H^T @ k в GDN decode | 0–2 tok/s (неопределённо) |
+| 🟡 Средний | Profiler в MTP verify path | диагностика |
+| 🟡 Средний | `in_proj_ba` → NVFP4 (completeness, не perf) | <0.2 tok/s |
+| 🟢 Низкий | Tensor core GEMV для H^T @ k (compute-bound только при высоком occupancy) | 0–2 tok/s |
 
 ---
 
