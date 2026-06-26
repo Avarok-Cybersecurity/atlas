@@ -36,6 +36,7 @@ pub fn gdn_decode(
     num_v_heads: u32,
     k_dim: u32,
     v_dim: u32,
+    do_norm: u32,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
@@ -53,6 +54,7 @@ pub fn gdn_decode(
         .arg_u32(num_v_heads)
         .arg_u32(k_dim)
         .arg_u32(v_dim)
+        .arg_u32(do_norm)
         .launch(stream)
 }
 

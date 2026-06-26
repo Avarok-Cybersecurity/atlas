@@ -124,6 +124,7 @@ impl TransformerModel {
                     conv_state_checkpoint: None,
                     h_state_intermediates: Vec::new(),
                     conv_state_intermediates: Vec::new(),
+                    norm_token_count: 0,
                 };
 
                 if has_mtp {

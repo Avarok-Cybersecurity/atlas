@@ -296,23 +296,29 @@ impl Qwen3SsmLayer {
         } else {
             self.gdn_k
         };
-        ops::gdn_decode(
-            ctx.gpu,
-            gdn_kernel,
-            state.h_state,
-            q_conv,
-            k_conv,
-            v_conv,
-            gates,
-            beta_fp32,
-            gdn_out,
-            1,
-            nk as u32,
-            nv as u32,
-            kd as u32,
-            vd as u32,
-            stream,
-        )?;
+        // Run state norm every 16 tokens to avoid the 3rd H-pass on hot steps.
+        let do_norm = (state.norm_token_count % 16 == 0) as u32;
+        state.norm_token_count = state.norm_token_count.wrapping_add(1);
+        prof!("gdn_decode", {
+            ops::gdn_decode(
+                ctx.gpu,
+                gdn_kernel,
+                state.h_state,
+                q_conv,
+                k_conv,
+                v_conv,
+                gates,
+                beta_fp32,
+                gdn_out,
+                1,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                do_norm,
+                stream,
+            )
+        })?;
         if trace {
             ctx.gpu.synchronize(stream).inspect_err(|_e| {
                 tracing::error!("CRASH at gdn_decode");
@@ -327,20 +333,22 @@ impl Qwen3SsmLayer {
         } else {
             self.gated_rms_norm_k
         };
-        ops::gated_rms_norm(
-            ctx.gpu,
-            norm_kernel,
-            gdn_out,
-            z_ptr,
-            &self.ssm.norm,
-            normed_out,
-            nv as u32,
-            vd as u32,
-            vd as u32,
-            ctx.config.rms_norm_eps as f32,
-            vd as u32,
-            stream,
-        )?;
+        prof!("gated_norm", {
+            ops::gated_rms_norm(
+                ctx.gpu,
+                norm_kernel,
+                gdn_out,
+                z_ptr,
+                &self.ssm.norm,
+                normed_out,
+                nv as u32,
+                vd as u32,
+                vd as u32,
+                ctx.config.rms_norm_eps as f32,
+                vd as u32,
+                stream,
+            )
+        })?;
         if trace {
             ctx.gpu.synchronize(stream).inspect_err(|_e| {
                 tracing::error!("CRASH at gated_rms_norm");
@@ -383,16 +391,18 @@ impl Qwen3SsmLayer {
                 stream,
             )?;
         } else {
-            ops::w4a16_gemv(
-                ctx.gpu,
-                self.w4a16_gemv_k,
-                normed_out,
-                &self.ssm.out_proj,
-                out,
-                h,
-                value_dim as u32,
-                stream,
-            )?;
+            prof!("out_proj", {
+                ops::w4a16_gemv(
+                    ctx.gpu,
+                    self.w4a16_gemv_k,
+                    normed_out,
+                    &self.ssm.out_proj,
+                    out,
+                    h,
+                    value_dim as u32,
+                    stream,
+                )
+            })?;
         }
         if trace {
             ctx.gpu.synchronize(stream).inspect_err(|_e| {
