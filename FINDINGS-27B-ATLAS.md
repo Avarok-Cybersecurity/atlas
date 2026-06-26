@@ -234,22 +234,26 @@ third norm pass и улучшении occupancy.
 | Задача | Результат |
 |---|---|
 | Убрать norm pass из hot path (каждые 16 токенов) | **+1.1%** (+0.14 tok/s): 11.94 → 12.08. Норма всего ~1μs из 47μs gdn_decode — не bandwidth-bound как думали, а latency-bound при 48 блоках на 20 SM |
-| `prof!` лейблы для gdn_decode / gated_norm / out_proj | ✅ Реализовано, baseline задокументирован |
+| `prof!` лейблы для всех операций SSM слоя | ✅ qkvz, ba_gates, conv1d, gdn_decode, gated_norm, out_proj, pre_norm, post_norm, moe, residual_add |
+| Native U8 NVFP4 загрузка чекпойнтов | ✅ Детекция UInt8 dtype, прямая загрузка без dequant→BF16→requant. `QuantizedWeight::concat_rows()` для GPU-side конкатенации QKV+Z |
 
-### Ключевое открытие: куда уходят 870μs/layer?
+### Полный breakdown SSM слоя (~1204μs/layer)
 
-Из ~1273μs/layer учтено только ~395μs:
+| Операция | Время | Доля |
+|---|---|---|
+| **moe (FFN)** | **738μs** | **61%** ← реальный bottleneck |
+| qkvz GEMV (NVFP4) | 220μs | 18% |
+| out_proj GEMV (NVFP4) | 94μs | 8% |
+| gdn_decode | 43μs | 4% |
+| ba_gates (BF16) | 15μs | 1% |
+| post_norm | 10μs | 1% |
+| conv1d + L2norm | 10μs | 1% |
+| pre_norm | 9μs | 1% |
+| gated_norm | 7μs | 1% |
+| residual_add | 7μs | 1% |
+| launch overhead | ~52μs | 4% |
 
-| Операция | Время |
-|---|---|
-| qkvz GEMV | 231μs |
-| gdn_decode | 47μs |
-| out_proj GEMV | 95μs |
-| gated_norm | 7μs |
-| ba_gates | 15μs |
-| **Неучтено** | **~878μs** |
-
-Неучтённое — вероятно: conv1d_update_l2norm, rms_norm_residual, residual_add_rms_norm, overhead между launch'ами, CUDA graph boundaries.
+**Главный вывод: MoE FFN = 61% времени SSM блока.** GDN decode всего 4%. Оптимизации GDN дают минимальный прирост именно по этой причине.
 
 ### Следующие шаги
 
