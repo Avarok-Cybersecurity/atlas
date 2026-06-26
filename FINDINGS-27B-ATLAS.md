@@ -331,15 +331,130 @@ MTP gate: verify_multiplier=0.91, max_effective=2.0
 Verify overhead уже оптимален. Резерв — поднять accept rate с 42% до 65%+.
 
 **Способы улучшить accept rate:**
-1. `--mtp-quantization fp8` или снизить квантование MTP head → лучше качество драфта
-2. Убрать "attractor" ситуации (26% окна) — возможно помогает изменение температуры для драфта
-3. Проверить более высокое разрешение: `--num-drafts 2` (K=3) при 42% accept может быть хуже K=2
+1. ✅ `--mtp-quantization fp8` → 49.6% accept (+6pp), +10% tok/s
+2. 🔴 NVFP4 MTP head (см. ниже §6)
+3. 🔴 DFlash drafter (см. ниже §7)
 
 #### 5. 🟢 qkvz GEMV — потенциал 19% SSM времени
 
 qkvz = 218μs на слой. Это `w4a16_gemv` для [12288 × 5120] (qkv+z конкатенировано).  
 Grid: `(ceil(12288/4), 1, 1)` = 3072 блока → тоже ~100% occupancy и bandwidth-bound.  
 Нет quick wins — разве что сравнить с теоретическим пределом: 12288×5120×0.5 = 31.5 MB / 178 GB/s = 177μs. Actual: 218μs → 81% efficiency. Тот же паттерн что FFN.
+
+---
+
+## 6. NVFP4 MTP head — почему не работает и что нужно
+
+### Текущее состояние
+
+Модель `Qwen3.6-27B-NVFP4` имеет **dense FFN MTP head** (не MoE).  
+Чекпойнт хранит веса MTP head в **FP8 e4m3**.
+
+`--mtp-quantization nvfp4` завершается с ошибкой (`new.rs:60`):
+```rust
+if matches!(quant, MtpQuantization::Nvfp4) {
+    anyhow::bail!("MTP NVFP4 mode is not supported for dense FFN MTP heads yet ...");
+}
+```
+
+### Почему только для MoE
+
+NVFP4 для MTP head уже реализован — но **только для MoE** голов (`new.rs:80–100`):
+- `moe_nvfp4: Option<MoeLayer>` → `quantize_to_nvfp4(gate, experts, ...)`
+- Dense FFN голова не имеет аналогичного `dense_ffn_nvfp4` поля
+
+### Что нужно сделать (конкретно)
+
+**Файлы:** `crates/spark-model/src/layers/mtp_head/`
+
+1. **`new.rs`** — добавить поле и убрать bail:
+```rust
+// В MtpHead struct добавить:
+dense_ffn_nvfp4: Option<(QuantizedWeight, QuantizedWeight, QuantizedWeight)>,
+
+// В new() заменить bail! на:
+MtpQuantization::Nvfp4 => Some((
+    quantize_to_nvfp4(&dense_ffn.gate_proj, inter, h, gpu, absmax_k, nvfp4_k, stream)?,
+    quantize_to_nvfp4(&dense_ffn.up_proj,   inter, h, gpu, absmax_k, nvfp4_k, stream)?,
+    quantize_to_nvfp4(&dense_ffn.down_proj, h, inter, gpu, absmax_k, nvfp4_k, stream)?,
+))
+```
+
+2. **`moe_forward.rs`** — новый метод `dense_ffn_forward_nvfp4`:
+```rust
+// По образцу dense_ffn.rs: w4a16_gemv_dual (gate+up) + w4a16_gemv_silu_input (down)
+ops::w4a16_gemv_dual(ctx.gpu, self.w4a16_gemv_dual_k, input, gate_w, gate_out, up_w, up_out, inter, h, stream)?;
+ops::w4a16_gemv_silu_input(ctx.gpu, self.w4a16_gemv_silu_input_k, gate_out, up_out, down_w, output, h, inter, stream)?;
+```
+
+3. **`forward.rs`** — добавить dispatch:
+```rust
+let ffn_out = if self.dense_ffn_nvfp4.is_some() {
+    self.dense_ffn_forward_nvfp4(normed2, ctx, stream)?
+} else if self.dense_ffn_generic.is_some() {
+    self.dense_ffn_forward_generic(normed2, ctx, stream)?
+} else { ... };
+```
+
+Нужны также kernel handles `w4a16_gemv_dual_k` и `w4a16_gemv_silu_input_k` в `MtpHead` struct.
+
+### Ожидаемый эффект
+
+MTP head FFN читает **2× меньше байт** (NVFP4 vs FP8):
+- gate+up: 2 × 17408 × 5120 × 0.5 = 89.1 MB → было 178 MB (FP8)
+- down: 5120 × 17408 × 0.5 = 44.5 MB → было 89 MB
+
+**Предупреждение:** чекпойнт хранит MTP веса в FP8, requantize FP8→NVFP4 может потерять точность.
+Нужно проверить accept rate после реализации — может упасть ниже FP8 (49.6%).
+
+---
+
+## 7. DFlash drafter — следующий большой шаг
+
+### Что это
+
+Z-Lab DFlash (`z-lab/Qwen3.6-27B-DFlash`) — специализированный drafter с линейным вниманием,  
+генерирует **γ=16 токенов параллельно** (block diffusion), не авторегрессивно.
+
+CONFIG в `kernels/gb10/qwen3.6-27b/MODEL.toml`:
+```toml
+[dflash]
+draft_model = "z-lab/Qwen3.6-27B-DFlash"
+gamma = 16
+window_size = 4096
+mask_token_id = 248070
+target_layer_ids = [1, 16, 31, 46, 61]
+```
+
+### Как запустить (если модель скачана)
+
+```bash
+./target/release/spark serve /path/to/Qwen3.6-27B-NVFP4 \
+    --port 8888 \
+    --kv-cache-dtype nvfp4 \
+    --kv-high-precision-layers 4 \
+    --dflash \
+    --draft-model /path/to/Qwen3.6-27B-DFlash \
+    --scheduling-policy slai
+```
+
+Без `--draft-model` — подтягивает из MODEL.toml (`z-lab/Qwen3.6-27B-DFlash` с HuggingFace).
+
+### Ожидаемый прирост
+
+SGLang + DFlash на GB10 даёт **~21 tok/s** (наш рекорд для сравнения).  
+При γ=16 и типичном accept rate 60–75% на код:
+- Expected accepted per step ≈ 16 × 0.65 = 10 токенов
+- Verify K=16 займёт ~150ms (GEMM K=16 vs GEMV K=1)
+- Эффективность: 10 / 0.15 = **67 tok/s** — теоретически. Реально существенно ниже из-за overhead.
+
+Реалистичная оценка по аналогии с SGLang: **20–23 tok/s**.
+
+### Шаги
+
+1. Скачать drafter: `huggingface-cli download z-lab/Qwen3.6-27B-DFlash --local-dir /path/to/drafter`
+2. Запустить и бенчмарк (обязательно `--scheduling-policy slai`)
+3. Сравнить accept rate и throughput с текущим MTP K=2 fp8 (17.8 tok/s)
 
 ---
 
