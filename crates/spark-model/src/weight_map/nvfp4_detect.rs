@@ -40,9 +40,12 @@ pub fn detect_nvfp4_variant(
                 return Nvfp4Variant::Fp8Dequanted;
             }
             "compressed-tensors" => {
-                // `format` is the sub-selector here. Treat anything
-                // containing "fp8" as block-scaled FP8, else assume NVFP4.
-                if qc.format.to_ascii_lowercase().contains("fp8") {
+                // `format` is the sub-selector here. "fp8" or the standard
+                // compressed-tensors FP8 token "float-quantized" (8-bit float
+                // weights, e.g. Ornith-1.0-35B-FP8 with empty quant_algo) →
+                // FP8 dequant. NVFP4 uses "*pack-quantized"/"nvfp4" formats.
+                let f = qc.format.to_ascii_lowercase();
+                if f.contains("fp8") || f.contains("float-quantized") {
                     return Nvfp4Variant::Fp8Dequanted;
                 }
                 return Nvfp4Variant::CompressedTensors;
@@ -258,7 +261,7 @@ pub(crate) fn quantized_from_fp8(
     quantize_k: spark_runtime::gpu::KernelHandle,
     stream: u64,
 ) -> Result<QuantizedWeight> {
-    let bf16 = dequant_fp8_blockscaled_to_bf16(store, prefix, gpu)?;
+    let bf16 = dequant_fp8_any_to_bf16(store, prefix, gpu)?;
     let result = quantize_to_nvfp4(&bf16, n, k, gpu, absmax_k, quantize_k, stream)?;
     // Free the BF16 intermediate — only the NVFP4 result is needed.
     gpu.free(bf16.weight)?;

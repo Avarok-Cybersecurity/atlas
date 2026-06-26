@@ -698,8 +698,12 @@ fn canonicalize_model_quant(config: &atlas_core::config::ModelConfig) -> String 
     if algo == "nvfp4" || algo == "mixed_precision" || fmt.contains("nvfp4") {
         return "nvfp4".into();
     }
-    // FP8 detection — explicit algo OR method/format containing "fp8".
-    if algo == "fp8" || method.contains("fp8") || fmt.contains("fp8") {
+    // FP8 detection — explicit algo OR method/format containing "fp8", OR the
+    // compressed-tensors "float-quantized" format (8-bit float weights, e.g.
+    // deepreinforce-ai/Ornith-1.0-35B-FP8 with quant_algo=""). NVFP4 uses
+    // "*pack-quantized" / "nvfp4" formats (caught above), so "float-quantized"
+    // is unambiguously FP8, which the nvfp4 bundle handles via FP8→BF16 dequant.
+    if algo == "fp8" || method.contains("fp8") || fmt.contains("fp8") || fmt.contains("float-quantized") {
         return "fp8".into();
     }
     // compressed-tensors with no FP8/NVFP4 marker is usually GPTQ/AWQ —

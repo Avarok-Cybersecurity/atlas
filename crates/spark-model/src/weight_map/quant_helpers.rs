@@ -108,6 +108,102 @@ pub(crate) fn dequant_fp8_blockscaled_to_bf16(
     Ok(DenseWeight { weight: out })
 }
 
+/// Dequant FP8E4M3 → BF16, auto-detecting the on-disk scale layout. All three
+/// FP8 scale conventions reduce to the SAME block-scaled kernel because it
+/// indexes `scale[n/block_n, k/block_k]`:
+///   - `weight_scale_inv` `[sn, sk]`  → block-scaled (DeepSeek / Qwen native FP8)
+///   - `weight_scale` `[N]`           → per-channel (compressed-tensors
+///     `strategy="channel"`, e.g. deepreinforce-ai/Ornith-1.0-35B-FP8) → sn=N, sk=1
+///   - `weight_scale` `[1]` / scalar  → per-tensor (ModelOpt MIXED_PRECISION) → sn=1, sk=1
+///
+/// This is the single entry point the expert and dense-projection loaders should
+/// use so every FP8 scale shape routes correctly instead of erroring on an absent
+/// `weight_scale_inv` or a non-scalar `weight_scale`.
+pub(crate) fn dequant_fp8_any_to_bf16(
+    store: &WeightStore,
+    prefix: &str,
+    gpu: &dyn GpuBackend,
+) -> Result<DenseWeight> {
+    use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
+
+    let w = store.get(&format!("{prefix}.weight"))?;
+    ensure!(
+        w.dtype == WeightDtype::FP8E4M3,
+        "Expected FP8E4M3 for {prefix}.weight, got {:?}",
+        w.dtype,
+    );
+    ensure!(
+        w.shape.len() == 2,
+        "Expected 2D weight for {prefix}, got {:?}",
+        w.shape
+    );
+    let n = w.shape[0];
+    let k = w.shape[1];
+    let total = n * k;
+    ensure!(
+        total == w.byte_size(),
+        "FP8 size mismatch: total={total} byte_size={}",
+        w.byte_size()
+    );
+
+    // Resolve scale tensor + its logical (sn, sk) grid.
+    let (s, sn, sk) = if let Ok(si) = store.get(&format!("{prefix}.weight_scale_inv")) {
+        ensure!(si.shape.len() == 2, "block scale {prefix}.weight_scale_inv must be 2D, got {:?}", si.shape);
+        let (sn, sk) = (si.shape[0], si.shape[1]);
+        (si, sn, sk)
+    } else {
+        let sc = store.get(&format!("{prefix}.weight_scale"))?;
+        let ne = sc.num_elements();
+        if ne == n {
+            // per-channel: one scale per output row → [N, 1]
+            (sc, n, 1)
+        } else if ne == 1 {
+            // per-tensor scalar → [1, 1]
+            (sc, 1, 1)
+        } else if sc.shape.len() == 2 {
+            let (sn, sk) = (sc.shape[0], sc.shape[1]);
+            (sc, sn, sk)
+        } else {
+            anyhow::bail!(
+                "Unexpected {prefix}.weight_scale shape {:?} ({ne} elems) for weight [{n},{k}]",
+                sc.shape
+            );
+        }
+    };
+    ensure!(
+        s.dtype == WeightDtype::BF16 || s.dtype == WeightDtype::FP32,
+        "Expected BF16 or FP32 scale for {prefix}, got {:?}",
+        s.dtype,
+    );
+    let block_n = (n / sn) as u32;
+    let block_k = (k / sk) as u32;
+    let scale_is_f32 = s.dtype == WeightDtype::FP32;
+
+    let out = gpu.alloc(total * 2)?;
+    let stream = gpu.default_stream();
+    let kernel = gpu.kernel("dequant_fp8_blockscaled_bf16", "dequant_fp8_blockscaled_bf16")?;
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(k as u32, 64), div_ceil(n as u32, 4), 1])
+        .block([64, 4, 1])
+        .arg_ptr(w.ptr)
+        .arg_ptr(s.ptr)
+        .arg_ptr(out)
+        .arg_u32(n as u32)
+        .arg_u32(k as u32)
+        .arg_u32(block_n)
+        .arg_u32(block_k)
+        .arg_u32(sk as u32)
+        .arg_u32(scale_is_f32 as u32)
+        .launch(stream)?;
+    gpu.synchronize(stream).with_context(|| {
+        format!("GPU dequant_fp8_any failed for {prefix} [{n},{k}] scale=[{sn},{sk}]")
+    })?;
+    tracing::debug!(
+        "GPU-dequanted FP8 {prefix}: [{n},{k}] scale=[{sn},{sk}] block=[{block_n},{block_k}] → BF16",
+    );
+    Ok(DenseWeight { weight: out })
+}
+
 /// Convert BF16 bytes (little-endian) to f32.
 pub(super) fn bf16_bytes_to_f32(bytes: [u8; 2]) -> f32 {
     let bits = u16::from_le_bytes(bytes);
@@ -139,11 +235,9 @@ pub(crate) fn dense_auto(
             // linear_attn projections) ships a scalar `weight_scale`. Pick by
             // which one is present so MIXED_PRECISION loads instead of erroring
             // on the absent `weight_scale_inv` (issue #107).
-            if store.contains(&format!("{prefix}.weight_scale_inv")) {
-                dequant_fp8_blockscaled_to_bf16(store, prefix, gpu)
-            } else {
-                dequant_fp8_to_bf16(store, prefix, gpu)
-            }
+            // All FP8 scale layouts (block `weight_scale_inv`, per-channel
+            // `weight_scale` [N], per-tensor scalar) route through one entry.
+            dequant_fp8_any_to_bf16(store, prefix, gpu)
         }
         other => anyhow::bail!("dense_auto: unsupported dtype {:?} for {name}", other),
     }
