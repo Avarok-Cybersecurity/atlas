@@ -18,6 +18,7 @@ fn test_ssm_layer_state_downcast() {
         conv_state_checkpoint: None,
         h_state_intermediates: Vec::new(),
         conv_state_intermediates: Vec::new(),
+        norm_token_count: 0,
     });
     let ssm = state.as_any().downcast_ref::<SsmLayerState>().unwrap();
     assert_eq!(ssm.h_state.0, 0x1000);
@@ -33,6 +34,7 @@ fn test_ssm_layer_state_mut() {
         conv_state_checkpoint: None,
         h_state_intermediates: Vec::new(),
         conv_state_intermediates: Vec::new(),
+        norm_token_count: 0,
     });
     let ssm = state.as_any_mut().downcast_mut::<SsmLayerState>().unwrap();
     ssm.h_state = DevicePtr(0x3000);

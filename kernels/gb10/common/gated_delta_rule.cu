@@ -74,7 +74,9 @@ extern "C" __global__ void gated_delta_rule_decode(
     unsigned int num_k_heads,
     unsigned int num_v_heads,
     unsigned int k_dim,
-    unsigned int v_dim
+    unsigned int v_dim,
+    // 1 = run state norm check this step, 0 = skip (caller runs every N tokens)
+    unsigned int do_norm
 ) {
     const unsigned int vh = blockIdx.x;    // value head index
     const unsigned int b = blockIdx.y;     // batch index
@@ -157,9 +159,9 @@ extern "C" __global__ void gated_delta_rule_decode(
 
         // ── SSM state normalization (Stuffed Mamba mitigation) ──
         // Clamp per-head h_state Frobenius norm to prevent state explosion.
-        // Each thread holds the sum-of-squares for its v_dim column across all k_dim rows.
+        // Caller passes do_norm=1 every N tokens (e.g. N=16); skip otherwise.
         #ifdef SSM_STATE_NORM_ENABLED
-        {
+        if (do_norm) {
             // local_sq already has sum over k_dim for this thread's v_dim slot
             float local_sq = 0.0f;
             for (unsigned int j = 0; j < k_dim; j++) {
@@ -224,7 +226,8 @@ extern "C" __global__ void gated_delta_rule_decode_f32(
     unsigned int num_k_heads,
     unsigned int num_v_heads,
     unsigned int k_dim,
-    unsigned int v_dim
+    unsigned int v_dim,
+    unsigned int do_norm
 ) {
     const unsigned int vh = blockIdx.x;
     const unsigned int b = blockIdx.y;
@@ -286,7 +289,7 @@ extern "C" __global__ void gated_delta_rule_decode_f32(
     }
 
     #ifdef SSM_STATE_NORM_ENABLED
-    {
+    if (do_norm) {
         float local_sq = 0.0f;
         for (unsigned int j = 0; j < k_dim; j++) {
             float hv = H[j * v_dim + tid];
