@@ -244,18 +244,22 @@ SGLang DFlash patch (flashinfer PR #3731) даёт +1.5–2 tok/s для SM121.
 
 ### Следующие шаги (конкретные)
 
-#### 1. 🔴 SM121-attention kernel (+1–3 tok/s)
+#### 1. ~~SM121-attention kernel~~ ✅ ИССЛЕДОВАН — не узкое место
 
-Attention = 17.4ms / шаг / 16 layers = 1.09ms/layer.  
-Flashinfer PR #3731 добавляет SM12x-специфичный decode attention (Blackwell warp-specialized pipeline).  
-У Atlas сейчас `kernels/gb10/common/` — нужно проверить есть ли SM121-оптимизированный decode attention или используется generic path.
+**Вывод (2026-06-26):** Attention decode НЕ является bottleneck'ом для Qwen3.6-27B.
 
-**Что делать:**
-```bash
-ls kernels/gb10/common/attention*.cu kernels/gb10/common/flash*.cu
-grep -r "SM121\|sm_120\|sm121\|blackwell" kernels/gb10/ --include="*.cu" | head -20
-```
-Если generic — портировать SM121-специфичный flash attention decode из flashinfer PR #3731 (C++/PTX level).
+**Что обнаружено в `run_paged_decode.rs` + `mod.rs`:**
+
+Split-K для NVFP4 реализован: когда `current_ctas = num_q_heads × MAX_DECODE_SEQS < NUM_SMS`, используется split-K путь.
+
+Для Qwen3.6-27B:
+- `num_q_heads = 32`, `MAX_DECODE_SEQS = 8` → `current_ctas = 256`
+- `NUM_SMS = 20` → `256 >> 20` → `num_splits = 1` → **split-K НЕ активен**
+
+Это корректно и уже исследовалось (комментарий в коде от 2026-06-03):
+> tried unpinning this for num_seqs==1 to raise split-K occupancy (16→48 CTAs) — clean A/B was **BYTE-IDENTICAL (12.7 tok/s both)**, confirming **attention is NOT the bottleneck** (~5% of decode bytes at depth).
+
+**Итог:** Attention kernel уже оптимален. ~5% decode time. Дальнейшая работа по attention нецелесообразна.
 
 #### 2. 🔴 ncu профилирование w4a16_gemv_dual
 
@@ -283,12 +287,42 @@ ncu-ui /tmp/atlas-ncu-report.ncu-rep
 
 **Альтернатива (проще):** уменьшить overhead между двумя запусками через CUDA Graphs с удалением лишних барьеров — это почти бесплатно.
 
-#### 4. 🟡 MTP verify path profiling
+#### 4. ✅ MTP verify path — ИЗМЕРЕНО
 
-При K=2 MTP для кода: 17.9 tok/s. Без MTP: 12 tok/s. Разница = 5.9 tok/s от спекуляции.  
-Добавить `prof!` в MTP verify path чтобы понять: сколько времени на WY-kernel (`gdn_decode_wy2`), сколько на verify attention, и каков реальный accept-rate bottleneck.
+**Данные из `mtp_gate` лога (2026-06-26):**
 
-**Файлы:** `trait_decode_batched.rs`, `trait_decode_batched_conv_gdn.rs`, `verify_a.rs`
+```
+MTP gate: verify_multiplier=0.91, max_effective=2.0
+  decode=89.36ms  verify K=2=80.95ms => ENABLED
+```
+
+**Выводы:**
+- Verify K=2 занимает **80.95ms** против single decode **89.36ms** → **9% быстрее**
+- Причина: SSM слои переходят с GEMV (K=1) на GEMM (K=2) → читают веса один раз, вычисляют 2 выхода
+- Attention слои (K=2): выполняются последовательно (2 decode вызова) → немного медленнее
+- Итог: батчинг SSM перевешивает attention overhead → verify быстрее single decode
+
+**MTP производительность (бенч 2026-06-26):**
+- No-MTP: 12.0 tok/s (step=83ms)
+- MTP K=2: **16.2 tok/s** (step_per_token=61.78ms)
+
+**Accept rates из K2 summary (100-шаговые окна):**
+54%, 42%, 57%, 33%, 41%, 46%, 32%, 49%, 38%, 33%, 55%, 39%, 26% → **средний ~42%**
+
+Это ниже ожидаемых 55-73% для кода — BF16 MTP head (`--mtp-quantization bf16`) хуже чем FP32.
+
+Теоретический max при accept_rate p: `(1+p) / verify_time`
+  - p=0.42 (текущий) → `1.42 / 0.0810 = 17.5 tok/s` (~совпадает с измеренным)
+  - p=0.65 (цель)    → `1.65 / 0.0810 = 20.4 tok/s` (+26% от текущего)
+  - p=0.75 (лучший)  → `1.75 / 0.0810 = 21.6 tok/s` (+33% от текущего)
+
+**Bottleneck: accept rate, не verify speed.**
+Verify overhead уже оптимален. Резерв — поднять accept rate с 42% до 65%+.
+
+**Способы улучшить accept rate:**
+1. `--mtp-quantization fp8` или снизить квантование MTP head → лучше качество драфта
+2. Убрать "attractor" ситуации (26% окна) — возможно помогает изменение температуры для драфта
+3. Проверить более высокое разрешение: `--num-drafts 2` (K=3) при 42% accept может быть хуже K=2
 
 #### 5. 🟢 qkvz GEMV — потенциал 19% SSM времени
 

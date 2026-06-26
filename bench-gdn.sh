@@ -126,7 +126,7 @@ fi
 if [ -f "$LOG_FILE" ]; then
     echo "" | tee -a "$OUTFILE"
     echo "--- Kernel timing (ATLAS_PROFILE, last ~5 steps) ---" | tee -a "$OUTFILE"
-    grep -E "SSM (qkvz|ba_gates|gdn_decode|gated_norm|out_proj|conv1d|pre_norm|post_norm|ffn|residual_add)|FFN (gate_up|silu_down|gate_bf16|up_bf16|down_bf16|silu_mul|gelu_mul|down_gelu)|PROFILE tok=" "$LOG_FILE" \
+    grep -E "SSM (qkvz|ba_gates|gdn_decode|gated_norm|out_proj|conv1d|pre_norm|post_norm|ffn|residual_add)|FFN (gate_up|silu_down|gate_bf16|up_bf16|down_bf16|silu_mul|gelu_mul|down_gelu)|PROFILE tok=|VERIFY_PROFILE k=" "$LOG_FILE" \
         | sed 's/\x1b\[[0-9;]*m//g' \
         | tail -600 \
         | python3 - "$OUTFILE" << 'PYEOF'
@@ -147,7 +147,10 @@ for line in lines:
         ffn_ops.setdefault(m.group(1), []).append(int(m.group(2)))
     m = re.search(r'PROFILE tok=\d+: total=([\d.]+)ms attn=([\d.]+)ms\(\d+\) ssm=([\d.]+)ms\(\d+\) head=([\d.]+)ms', line)
     if m:
-        profiles.append(tuple(float(x) for x in m.groups()))
+        profiles.append(('decode', tuple(float(x) for x in m.groups())))
+    m = re.search(r'VERIFY_PROFILE k=(\d+): total=([\d.]+)ms attn=([\d.]+)ms\(\d+\) ssm=([\d.]+)ms\(\d+\) head=([\d.]+)ms', line)
+    if m:
+        profiles.append(('verify', (int(m.group(1)),) + tuple(float(x) for x in m.groups()[1:])))
 
 def summarize(ops_dict, prefix):
     output = []
@@ -171,9 +174,16 @@ if ffn_ops:
     output.extend(summarize(ffn_ops, "FFN"))
 if profiles:
     output.append("")
-    for total, attn, ssm, head in profiles[-5:]:
-        ssm_per = ssm / 48
-        output.append(f"  PROFILE: total={total:.1f}ms  attn={attn:.1f}ms  ssm={ssm:.1f}ms({ssm_per:.2f}ms/layer)  head={head:.1f}ms")
+    for entry in profiles[-10:]:
+        kind = entry[0]
+        if kind == 'decode':
+            total, attn, ssm, head = entry[1]
+            ssm_per = ssm / 48
+            output.append(f"  PROFILE(decode): total={total:.1f}ms  attn={attn:.1f}ms  ssm={ssm:.1f}ms({ssm_per:.2f}ms/layer)  head={head:.1f}ms")
+        elif kind == 'verify':
+            k, total, attn, ssm, head = entry[1]
+            ssm_per = ssm / 48
+            output.append(f"  PROFILE(verify k={k}): total={total:.1f}ms  attn={attn:.1f}ms  ssm={ssm:.1f}ms({ssm_per:.2f}ms/layer)  head={head:.1f}ms")
 
 for line in output:
     print(line)

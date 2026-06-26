@@ -224,39 +224,41 @@ impl Qwen3SsmLayer {
         } else {
             (ctx.buffers.ssm_qkvz(), false)
         };
-        if use_f32_conv {
-            ops::conv1d_update_l2norm(
-                ctx.gpu,
-                self.conv1d_l2norm_f32_k,
-                state.conv_state,
-                qkv_ptr,
-                &self.ssm.conv1d,
-                conv_out,
-                conv_dim,
-                d_conv,
-                1,
-                qk_channels,
-                kd as u32,
-                1e-6,
-                stream,
-            )?;
-        } else {
-            ops::conv1d_update_l2norm(
-                ctx.gpu,
-                self.conv1d_l2norm_k,
-                state.conv_state,
-                qkv_ptr,
-                &self.ssm.conv1d,
-                conv_out,
-                conv_dim,
-                d_conv,
-                1,
-                qk_channels,
-                kd as u32,
-                1e-6,
-                stream,
-            )?;
-        }
+        prof!("conv1d", {
+            if use_f32_conv {
+                ops::conv1d_update_l2norm(
+                    ctx.gpu,
+                    self.conv1d_l2norm_f32_k,
+                    state.conv_state,
+                    qkv_ptr,
+                    &self.ssm.conv1d,
+                    conv_out,
+                    conv_dim,
+                    d_conv,
+                    1,
+                    qk_channels,
+                    kd as u32,
+                    1e-6,
+                    stream,
+                )
+            } else {
+                ops::conv1d_update_l2norm(
+                    ctx.gpu,
+                    self.conv1d_l2norm_k,
+                    state.conv_state,
+                    qkv_ptr,
+                    &self.ssm.conv1d,
+                    conv_out,
+                    conv_dim,
+                    d_conv,
+                    1,
+                    qk_channels,
+                    kd as u32,
+                    1e-6,
+                    stream,
+                )
+            }
+        })?;
         if trace {
             ctx.gpu.synchronize(stream).inspect_err(|_e| {
                 tracing::error!("CRASH at conv1d_l2norm");
