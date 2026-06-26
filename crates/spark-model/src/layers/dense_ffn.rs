@@ -79,6 +79,17 @@ pub struct DenseFfnLayer {
     // KernelHandle(0) on miss → forward_prefill falls back to the scalar path.
     // Decode (gemv, M=1) is untouched, so TPOT is unaffected.
     dense_gemm_tc_k: KernelHandle,
+    // ── strix-hip W4A8 integer-DP4A decode path (additive; OFF unless
+    // ATLAS_W4A16_DP4A=1 AND these kernels are present, i.e. gfx1151 builds).
+    // All KernelHandle(0) on miss → `forward` keeps the float fused path.
+    dp4a_quant_k: KernelHandle,       // quantize_act_int8_g16
+    dp4a_silu_quant_k: KernelHandle,  // silu_mul_quant_int8_g16 (down-proj input)
+    dp4a_gemv_k: KernelHandle,        // w4a16_gemv_dp4a (from pre-quantized act)
+    // Lazily-allocated per-layer int8 activation + f32 group-scale scratch,
+    // sized to `intermediate_size` (>= hidden_size, so it covers both the
+    // post-norm input quant and the silu(gate)*up down-proj input). Allocated
+    // once on first DP4A `forward`, reused every token. None on the float path.
+    dp4a_scratch: std::sync::OnceLock<(DevicePtr, DevicePtr)>,
 }
 
 impl DenseFfnLayer {
@@ -123,6 +134,15 @@ impl DenseFfnLayer {
             dense_gemv_bf16_k,
             dense_gemm_bf16_k,
             dense_gemm_tc_k,
+            // strix-hip-only DP4A kernels; absent (Handle(0)) on gb10/NVIDIA.
+            dp4a_quant_k: super::try_kernel(gpu, "w4a16_gemv_dp4a", "quantize_act_int8_g16"),
+            dp4a_silu_quant_k: super::try_kernel(
+                gpu,
+                "w4a16_gemv_dp4a",
+                "silu_mul_quant_int8_g16",
+            ),
+            dp4a_gemv_k: super::try_kernel(gpu, "w4a16_gemv_dp4a", "w4a16_gemv_dp4a"),
+            dp4a_scratch: std::sync::OnceLock::new(),
         })
     }
 
@@ -196,6 +216,79 @@ impl DenseFfnLayer {
                 self.dense_gemv_bf16_k,
                 gate_out,
                 &bf16w.down_proj,
+                output,
+                h,
+                inter,
+                stream,
+            )?;
+            return Ok(output);
+        }
+
+        // ── strix-hip W4A8 integer-DP4A decode path (gfx1151, flag-gated) ──
+        // Replaces the float fused dual+silu GEMVs with int8 v_dot4 GEMVs, with
+        // the activation int8-quant HOISTED: one quant of the post-norm input
+        // (shared by gate+up) and one fused silu(gate)*up quant (down input).
+        // Only taken when ATLAS_W4A16_DP4A=1 AND the kernels are present (gfx1151);
+        // otherwise falls through to the unchanged float path below.
+        if ops::dp4a_enabled()
+            && self.activation == FfnActivation::SiLU
+            && self.dp4a_quant_k.0 != 0
+            && self.dp4a_silu_quant_k.0 != 0
+            && self.dp4a_gemv_k.0 != 0
+        {
+            // Lazily allocate the int8 act + f32 scale scratch (sized to `inter`,
+            // which dominates `h`, covering both quant sites). Forward is serial
+            // per layer; `set` races resolve first-wins (the loser's alloc is
+            // dropped by the runtime arena on shutdown — not on the hot path).
+            if self.dp4a_scratch.get().is_none() {
+                let aq = ctx.gpu.alloc(inter as usize)?;
+                let ascale = ctx.gpu.alloc((inter as usize / 16) * 4)?;
+                let _ = self.dp4a_scratch.set((aq, ascale));
+            }
+            let (aq, ascale) = *self.dp4a_scratch.get().unwrap();
+
+            // Quantize post-norm input once (K=h) → reused by gate and up GEMVs.
+            ops::quantize_act_int8(ctx.gpu, self.dp4a_quant_k, input, aq, ascale, h, stream)?;
+            ops::w4a16_gemv_dp4a(
+                ctx.gpu,
+                self.dp4a_gemv_k,
+                aq,
+                ascale,
+                &self.weights.gate_proj,
+                gate_out,
+                inter,
+                h,
+                stream,
+            )?;
+            ops::w4a16_gemv_dp4a(
+                ctx.gpu,
+                self.dp4a_gemv_k,
+                aq,
+                ascale,
+                &self.weights.up_proj,
+                up_out,
+                inter,
+                h,
+                stream,
+            )?;
+            // Fused silu(gate)*up + int8 quant (K=inter) → down-proj GEMV.
+            let output = ctx.buffers.moe_output();
+            ops::silu_mul_quant_int8(
+                ctx.gpu,
+                self.dp4a_silu_quant_k,
+                gate_out,
+                up_out,
+                aq,
+                ascale,
+                inter,
+                stream,
+            )?;
+            ops::w4a16_gemv_dp4a(
+                ctx.gpu,
+                self.dp4a_gemv_k,
+                aq,
+                ascale,
+                &self.weights.down_proj,
                 output,
                 h,
                 inter,

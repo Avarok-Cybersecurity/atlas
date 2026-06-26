@@ -210,6 +210,21 @@ impl GrammarState {
         self.matcher.is_terminated()
     }
 
+    /// Whether the grammar is at a COMPLETION point right now — i.e. the root
+    /// rule has matched at the current position, so a stop/EOS token is
+    /// grammatically valid here. Distinct from [`Self::is_terminated`], which
+    /// (with `terminate_without_stop_token=false`) only reports `true` AFTER a
+    /// stop token has already been accepted.
+    ///
+    /// This is the correct signal for "may the model emit EOS now?": for the
+    /// tool-call triggered-tags grammar it is `true` in the free-text preamble
+    /// and between completed `<tool_call>` tags (so `tool_choice=auto` can
+    /// decline or stop after parallel calls), and `false` mid-tag or before the
+    /// first required tag under `tool_choice=required` (`at_least_one=true`).
+    pub fn is_grammar_completed(&self) -> bool {
+        self.matcher.is_grammar_completed()
+    }
+
     /// Number of actual matcher history steps (== tokens `rollback` can undo).
     ///
     /// BUG#3 (2026-06-02): `accept_token` returns `true` for stop/EOS tokens and

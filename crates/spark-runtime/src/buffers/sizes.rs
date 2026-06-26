@@ -200,7 +200,10 @@ impl BufferSizes {
         // for K_DIM=V_DIM=128); 0 otherwise so BufferArena allocs NULL and the
         // ATLAS_GDN_FLA dispatch stays disabled. Layout per region:
         //   W  [nt*nv][CHUNK][kd] bf16 ; U,uc [nt*nv][CHUNK][vd] bf16 ; S [nt*nv][kd][vd] f32.
-        const FLA_CHUNK: usize = 64;
+        // 32 on gfx1151 (the C=32 FLA port fitting RDNA3.5's 64KB LDS), 64 on
+        // NVIDIA — must match the compiled kernel's CHUNK (the per-chunk state
+        // region S scales with nt = ceil(tokens/CHUNK), so C=32 needs ~2x S).
+        const FLA_CHUNK: usize = if cfg!(atlas_scale) { 32 } else { 64 };
         let gdn_fla_scratch = if config.linear_num_value_heads > 0
             && config.linear_key_head_dim == 128
             && config.linear_value_head_dim == 128

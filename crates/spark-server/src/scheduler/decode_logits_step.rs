@@ -409,8 +409,12 @@ pub fn process_decode_logits(
                     }
                 }
             }
-            if a.grammar_state.is_none() {
-                // Legacy mode: one tool call per response
+            if a.grammar_state.is_none() && !crate::scheduler::helpers::legacy_multicall_enabled() {
+                // Legacy mode (kill-switch ATLAS_LEGACY_MULTICALL=0): stop after
+                // the first tool call. Default-on multi-call leaves the sequence
+                // running so the model can emit further `<tool_call>` blocks
+                // (parallel) or its real EOS to stop — mirroring llama.cpp's
+                // parse-from-raw multi-call. See legacy_multicall_enabled().
                 a.finished = true;
             }
             // Mirror finish_sequence (lines ~3445-3448): keep
@@ -452,10 +456,25 @@ pub fn process_decode_logits(
             && a.tool_call_completed
             && !a.inside_tool_body
             && !a.inside_thinking;
+        // EOS is grammatically valid whenever the grammar is at a COMPLETION
+        // point (root rule matched ⇒ a stop token may be emitted now) — NOT only
+        // once a stop token has already been accepted. The previous
+        // `!is_terminated()` test was `!stop_token_accepted`, which is circular:
+        // it suppressed EOS until an EOS was accepted, so under `tool_choice=auto`
+        // (triggered tags, `at_least_one=false`, `stop_after_first=false`) the
+        // matcher never reported done and the model could NEVER cleanly decline
+        // (free-text preamble) or stop after parallel calls. The only stop path
+        // was the `eos_escape` hatch, which requires a *completed* call — so
+        // declined turns (BFCL irrelevance/hallucination) were forced into a
+        // spurious tool call and cratered (100→33). `is_grammar_completed()` is
+        // the matcher's own "stop allowed" signal: true in the auto preamble and
+        // between completed tags, false mid-tag and before the first required tag
+        // (`required` mode stays correctly EOS-suppressed). Restores clean
+        // decline + multi-call stop, matching llama.cpp lazy-grammar semantics.
         let grammar_suppresses_eos = a
             .grammar_state
             .as_ref()
-            .is_some_and(|gs| !gs.is_terminated())
+            .is_some_and(|gs| !gs.is_grammar_completed())
             && !eos_escape;
         let legacy_suppresses_eos = a.require_tool_call;
         let min_tokens_suppresses = a.output_tokens.len() < a.min_tokens;

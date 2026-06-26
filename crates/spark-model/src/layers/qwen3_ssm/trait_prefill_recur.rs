@@ -36,35 +36,51 @@ impl Qwen3SsmLayer {
         let fp32 = 4usize;
         let gb_stride = (nv * 2) as u32;
 
-        // gfx1151/SCALE (atlas_scale): every H-in-shared-memory GDN prefill
-        // kernel exceeds RDNA3.5's 64KB LDS cap — FLA (C=64) ≈96KB, WY4 =69688,
-        // persistent =67584. Only split4 keeps the kd*vd H-state in global
-        // memory (~2KB smem) and handles arbitrary length, so route there for
-        // all sizes. Correctness-equivalent, lower throughput; the smem-H fast
-        // paths (and a future C=32 FLA variant) are Blackwell-only. NVIDIA
-        // (cfg unset) takes the full FLA/WY ladder below unchanged.
+        // FLA chunk size of the COMPILED kernel: 32 on gfx1151 (the C=32 port in
+        // kernels/strix-hip/common/gated_delta_rule_fla.cu, which fits RDNA3.5's
+        // 64KB LDS), 64 on NVIDIA (kernels/gb10/common/gated_delta_rule_fla.cu).
+        let fla_c: u32 = if cfg!(atlas_scale) { 32 } else { 64 };
+
+        // gfx1151/SCALE (atlas_scale): the smem-H WY4 (69688 B) / persistent
+        // (67584 B) / FLA C=64 (≈96KB) kernels all exceed RDNA3.5's 64KB LDS, so
+        // the only non-FLA fallback is split4 (kd*vd H-state in global memory,
+        // ~2KB smem). The C=32 FLA port DOES fit (recompute_wu 16KB /
+        // chunk_delta_h_ksplit 24KB / chunk_fwd_o 60KB), is token-equal (cos=1.0)
+        // and ~1.75x vs split4 — so take it when its kernels+scratch are present
+        // and this is not a warm-replay (same guard as the shared FLA launch
+        // below); otherwise route to split4. The NVIDIA FLA/WY ladder is unchanged.
         if cfg!(atlas_scale) {
-            return ops::gdn_prefill_split4(
-                ctx.gpu,
-                self.gdn_prefill_split4_k,
-                h_state,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gates_buf,
-                gates_buf.offset(nv * fp32),
-                gdn_out_buf,
-                1,
-                k,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                gb_stride,
-                stream,
-            );
+            let fla_ok = !ctx.gdn_exact_replay
+                && kd == 128
+                && vd == 128
+                && ctx.buffers.gdn_fla_scratch().0 != 0
+                && self.gdn_prefill_fla_recompute_wu_k.0 != 0
+                && self.gdn_prefill_fla_chunk_delta_h_k.0 != 0
+                && self.gdn_prefill_fla_chunk_fwd_o_k.0 != 0;
+            if !fla_ok {
+                return ops::gdn_prefill_split4(
+                    ctx.gpu,
+                    self.gdn_prefill_split4_k,
+                    h_state,
+                    q_ptr,
+                    k_ptr,
+                    v_ptr,
+                    gates_buf,
+                    gates_buf.offset(nv * fp32),
+                    gdn_out_buf,
+                    1,
+                    k,
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    conv_dim as u32,
+                    conv_dim as u32,
+                    gb_stride,
+                    stream,
+                );
+            }
+            // fla_ok: fall through to the shared FLA launch (guard re-checks).
         }
 
         // 2026-06-06: removed the concluded GDN-prefill experiment env flags
@@ -105,11 +121,12 @@ impl Qwen3SsmLayer {
                     "GDN prefill: FLA chunked path ACTIVE (baked default: recompute_wu → chunk_delta_h_ksplit → chunk_fwd_o)"
                 );
             });
-            let num_chunks = k.div_ceil(64);
+            let num_chunks = k.div_ceil(fla_c);
             let nt = num_chunks as usize;
+            let c = fla_c as usize;
             let w_out = fla_scratch;
-            let u_out = w_out.offset(nt * nv * 64 * kd * 2);
-            let s_out = u_out.offset(nt * nv * 64 * vd * 2);
+            let u_out = w_out.offset(nt * nv * c * kd * 2);
+            let s_out = u_out.offset(nt * nv * c * vd * 2);
             let uc_out = s_out.offset(nt * nv * kd * vd * 4);
             ops::gdn_prefill_fla(
                 ctx.gpu,

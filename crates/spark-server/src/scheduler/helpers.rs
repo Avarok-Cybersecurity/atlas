@@ -279,6 +279,18 @@ pub fn tool_eos_escape_enabled() -> bool {
 pub fn tool_response_stop_enabled() -> bool {
     env_flag_default_on("ATLAS_TOOL_RESPONSE_STOP")
 }
+/// Legacy (no-grammar) multi-call (2026-06-25, default ON): in the post-hoc
+/// parse path (`grammar_state` is None — e.g. `--disable-tool-grammar` or models
+/// that tool-call more reliably unconstrained), do NOT force-finish at the first
+/// `</tool_call>`. The model emits additional `<tool_call>` blocks (parallel
+/// multi-call) or its real EOS to stop — matching llama.cpp's parse-from-raw
+/// behavior. Single-call turns are unaffected (the model emits EOS right after
+/// its one call, same parse, one extra token). Runaway is bounded by
+/// MAX_POST_COMPLETION_TOOL_OPENS + the max_tokens cap. Kill-switch:
+/// `ATLAS_LEGACY_MULTICALL=0`/`false` restores the historical one-call stop.
+pub fn legacy_multicall_enabled() -> bool {
+    env_flag_default_on("ATLAS_LEGACY_MULTICALL")
+}
 
 /// Whether the grammar forced-token fast-path is enabled (default
 /// `true`; disabled by `ATLAS_DISABLE_FORCED_TOKEN=1`/`true`).

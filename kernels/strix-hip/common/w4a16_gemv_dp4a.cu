@@ -145,6 +145,51 @@ extern "C" __global__ void quantize_act_int8_g16(
     if (threadIdx.x == 0) a_scale[g] = d;
 }
 
+// ── Fused SiLU(gate)*up → int8 activation quantizer (down-proj input prep) ──
+// The float FFN fuses silu(gate)*up INTO the down-proj GEMV (w4a16_gemv_silu_input).
+// The DP4A down-proj needs its activation as int8 + per-16-group scales, so we
+// materialize that activation here ONCE per layer: h_i = silu(gate_i)*up_i, then
+// the SAME symmetric block-q8_1 quant (d = amax_g/127) used by quantize_act_int8_g16.
+// SSOT: the silu*mul math is bit-identical to w4a16_gemv_silu_input's inline form;
+// the quant is identical to quantize_act_int8_g16. Grid: (K/16) blocks, 16 threads.
+extern "C" __global__ void silu_mul_quant_int8_g16(
+    const __nv_bfloat16* __restrict__ gate,  // [1, K] BF16 gate proj output
+    const __nv_bfloat16* __restrict__ up,    // [1, K] BF16 up proj output
+    signed char* __restrict__ a_q,            // [1, K] int8
+    float* __restrict__ a_scale,              // [K/16] f32 per-group scale (= amax/127)
+    unsigned int K
+) {
+    const unsigned int g = blockIdx.x;
+    const unsigned int i = g * DP4A_GROUP_SIZE + threadIdx.x;
+    if (i >= K) return;
+
+    // silu(gate)*up — identical to w4a16_gemv_silu_input's per-element activation.
+    float gf = __bfloat162float(gate[i]);
+    float uf = __bfloat162float(up[i]);
+    float h  = (gf / (1.0f + __expf(-gf))) * uf;
+    float ha = fabsf(h);
+
+    __shared__ float s_amax[DP4A_GROUP_SIZE];
+    s_amax[threadIdx.x] = ha;
+    __syncthreads();
+    #pragma unroll
+    for (unsigned int off = DP4A_GROUP_SIZE / 2; off > 0; off >>= 1) {
+        if (threadIdx.x < off) {
+            float o = s_amax[threadIdx.x + off];
+            if (o > s_amax[threadIdx.x]) s_amax[threadIdx.x] = o;
+        }
+        __syncthreads();
+    }
+    float amax = s_amax[0];
+    float d = amax * (1.0f / 127.0f);
+    float inv = (d > 0.0f) ? (1.0f / d) : 0.0f;
+
+    int q = (int)rintf(h * inv);
+    q = q < -127 ? -127 : (q > 127 ? 127 : q);
+    a_q[i] = (signed char)q;
+    if (threadIdx.x == 0) a_scale[g] = d;
+}
+
 // ── DP4A GEMV (correctness v1: element-order codebook expansion) ──────────
 // out[n] = SUM_g a_scale[g] * (wscale_g * 0.5 * scale2) * dot(aq[g], wint[g])
 extern "C" __global__ void w4a16_gemv_dp4a(

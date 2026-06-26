@@ -199,7 +199,15 @@ pub(super) fn build_full_attention_nvfp4(
             .transpose_for_gemm(gpu, h, num_heads * head_dim)?;
         layer.set_prefill_weights(Some(qt), Some(kt), Some(vt), Some(ot));
     }
-    layer.predequant_for_prefill(gpu, config, stream)?;
+    // Native-HIP (atlas_hip): SKIP the NVFP4→FP8 predequant so full-attention
+    // q/k/v/o prefill runs through the already-installed transposed NVFP4 weights
+    // (qt/kt/vt/ot above) on the fast `w4a16_gemm_t_m128` tensor-core kernel,
+    // instead of the FP8 predequant path (`fp8_gemm_t_m128`, ~24% of prefill in
+    // the rocprofv3 trace). Mirrors the GDN linear_attn_arms `!cfg!(atlas_hip)`
+    // gate. SCALE/NVIDIA keep the FP8 prefill (their fp8 GEMM is the faster path).
+    if !cfg!(atlas_hip) {
+        layer.predequant_for_prefill(gpu, config, stream)?;
+    }
 
     Ok(Box::new(layer))
 }

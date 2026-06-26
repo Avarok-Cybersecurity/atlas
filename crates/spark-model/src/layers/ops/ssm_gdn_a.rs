@@ -359,11 +359,17 @@ pub fn gdn_prefill_fla(
     gb_stride: u32,
     stream: u64,
 ) -> Result<()> {
-    const C: u32 = 64; // CHUNK (kernel constant)
+    // CHUNK (kernel compile-time constant): 32 on gfx1151 (the C=32 FLA port that
+    // fits RDNA3.5's 64KB LDS), 64 on NVIDIA. Must match the compiled kernel's
+    // `#define CHUNK` — grid (num_chunks) + smem are derived from it.
+    const C: u32 = if cfg!(atlas_scale) { 32 } else { 64 };
     let (kd, vd) = (k_dim, v_dim);
     // smem byte sizes — identical formulas to the GATE-B example (validated).
+    // chunk_delta_h staging: gfx1151 SINGLE-buffers (cp.async→synchronous cp16),
+    // NVIDIA DOUBLE-buffers (cp.async pipeline).
+    let dh_buf: u32 = if cfg!(atlas_scale) { 1 } else { 2 };
     let smem_wu = C * kd * 2 + C * C * 4 + C * C * 4 + C * 4;
-    let smem_dh = 2 * (C * (2 * kd + vd) * 2) + 2 * C * 4;
+    let smem_dh = dh_buf * (C * (2 * kd + vd) * 2) + 2 * C * 4;
     let smem_fo = C * kd * 2 + C * kd * 2 + C * C * 4 + C * vd * 2 + kd * vd * 2 + C * 4;
 
     // Kernel 1: recompute_wu.

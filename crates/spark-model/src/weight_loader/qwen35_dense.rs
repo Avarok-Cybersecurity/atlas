@@ -221,7 +221,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         }
                     };
 
-                    layers.push(Box::new(Qwen3AttentionLayer::new(
+                    let mut layer = Qwen3AttentionLayer::new(
                         input_norm,
                         attn,
                         post_attn_norm,
@@ -234,7 +234,42 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         layer_kv_dtypes[attn_idx],
                         config.fp8_kv_calibration_tokens,
                         config,
-                    )?));
+                    )?;
+                    // Install TRANSPOSED NVFP4 q/k/v/o copies so full-attention
+                    // PREFILL dispatches the fast tensor-core `w4a16_gemm_t_m128`
+                    // path instead of the slow base `w4a16_gemm` (25.7% of the
+                    // rocprofv3 prefill trace — the dense loader never built the
+                    // transposed copies, unlike attention_arms.rs / the FFN).
+                    // Decode keeps the non-transposed gemv weights, so TPOT and
+                    // coherence are unaffected. Costs the transposed copies of
+                    // q/k/v/o per full-attention layer (16 layers).
+                    {
+                        let num_heads = config.num_attention_heads;
+                        let num_kv_heads = config.num_key_value_heads;
+                        let head_dim = config.head_dim;
+                        let q_proj_n = if config.attn_gated {
+                            num_heads * head_dim * 2
+                        } else {
+                            num_heads * head_dim
+                        };
+                        if let Some(ref qw) = q_nvfp4 {
+                            let qt = qw.transpose_for_gemm(gpu, q_proj_n, h)?;
+                            let kt = k_nvfp4
+                                .as_ref()
+                                .unwrap()
+                                .transpose_for_gemm(gpu, num_kv_heads * head_dim, h)?;
+                            let vt = v_nvfp4
+                                .as_ref()
+                                .unwrap()
+                                .transpose_for_gemm(gpu, num_kv_heads * head_dim, h)?;
+                            let ot = layer
+                                .attn
+                                .o_proj
+                                .transpose_for_gemm(gpu, h, num_heads * head_dim)?;
+                            layer.set_prefill_weights(Some(qt), Some(kt), Some(vt), Some(ot));
+                        }
+                    }
+                    layers.push(Box::new(layer));
                     attn_idx += 1;
                 }
                 LayerType::LinearAttention => {
@@ -328,8 +363,14 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // `fp8_gemm_n128` kernel interprets the FP8 bytes as
                     // values directly (mirrors how `predequant_nvfp4_to_fp8`
                     // bakes `scale2` into the FP8 stream). PCND: gated.
+                    // Native-HIP (atlas_hip): SKIP the FP8 SSM prefill weights so GDN
+                    // qkvz / out_proj prefill runs on the transposed NVFP4 weights
+                    // (qkvz_nvfp4_t / out_proj_nvfp4_t below) via the fast w4a16
+                    // tensor-core GEMM instead of fp8_gemm (~24% of prefill in the
+                    // rocprofv3 trace). `.filter(!atlas_hip)` → None on gfx1151, so no
+                    // FP8 buffers are allocated. SCALE/NVIDIA keep the FP8 prefill.
                     let (qkvz_fp8_prefill, out_proj_fp8_prefill) =
-                        if let Some(b2f_k) = bf16_to_fp8_k {
+                        if let Some(b2f_k) = bf16_to_fp8_k.filter(|_| !cfg!(atlas_hip)) {
                             let qkvz_total = (qkvz_size * h) as u32;
                             let qkvz_fp8 = gpu.alloc(qkvz_size * h)?;
                             crate::layers::ops::bf16_to_fp8(
@@ -386,7 +427,11 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         config,
                         gpu,
                     )?;
-                    layer.predequant_for_prefill(gpu, config, stream)?;
+                    // atlas_hip: predequant is the FP8 prefill path (skipped above);
+                    // SCALE/NVIDIA install it. Gating keeps gfx1151 on NVFP4 t_m128.
+                    if !cfg!(atlas_hip) {
+                        layer.predequant_for_prefill(gpu, config, stream)?;
+                    }
                     // Install the FP8 prefill weights AFTER `predequant_for_prefill`
                     // (which sets `out_proj_fp8` from NVFP4 + scale2). The
                     // native-FP8 path overrides both pointers when active,
