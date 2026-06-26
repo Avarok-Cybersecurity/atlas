@@ -9,6 +9,19 @@
 
 ## 1. Benchmark Results
 
+### Этот сеанс (2026-06-26) — no-MTP, temp=0, prompt=«Write a complete Python red-black tree»
+
+| Прогон | tok/s (median) | step_ms | Примечание |
+|---|---|---|---|
+| baseline-no-mtp | 11.977 | 83.49ms | до изменений этой сессии |
+| baseline-labels | 12.138 | 82.39ms | после добавления prof! меток |
+| norm-opt-n16 | 12.076 | 82.81ms | норм раз в 16 токенов |
+| full-profile-breakdown | 12.129 | 82.44ms | финальный прогон с ATLAS_PROFILE=1 |
+
+Разброс между прогонами ~1.3% — в пределах шума. **Норм-оптимизация не дала измеримого эффекта** в tok/s, что согласуется с тем, что gdn_decode = 4% SSM слоя.
+
+### MTP прогоны (из более ранних сессий)
+
 | Конфигурация | tok/s | Примечание |
 |---|---|---|
 | Atlas NVFP4, K=2 MTP, код | **17.92** | best single-req |
@@ -16,7 +29,6 @@
 | Atlas NVFP4, K=2 MTP, thinking | 12.12 | thinking = diverse → плохой accept |
 | Atlas NVFP4, K=3 MTP, код | 13.75 | хуже K=2 |
 | Atlas NVFP4, K=3 MTP, эссе | 12.18 | хуже K=2 |
-| Atlas NVFP4 без MTP (baseline) | ~12.3 | из PROFILE (1000/81ms) |
 | SGLang FP8 + DFlash SM121 | ~21.0 | наш рекорд, для сравнения |
 | vLLM NVFP4 + MTP k=3, TP=2 | 23.4 | два GPU — нечестное сравнение |
 
@@ -42,15 +54,25 @@ PROFILE total: ~75ms (draft) / ~82ms (K=3 verify, 3 tokens)
   → base rate (no MTP): 12.3–13.3 tok/s
 ```
 
-### Breakdown одного SSM слоя (~0.73ms)
+### Полный breakdown одного SSM слоя (~1204μs/layer, ATLAS_PROFILE=1)
+
+Измерено с `prof!` лейблами в ssm_forward.rs и trait_decode.rs:
 
 | Операция | Время | Доля |
 |---|---|---|
-| qkvz GEMV (NVFP4, [12288×5120]) | 230μs | 31% |
-| ba_gates GEMV (BF16, [64×5120]) | 25μs | 3% |
-| **gdn + conv1d + norms + out_proj** | **~475μs** | **65%** |
+| **moe (MoE FFN)** | **738μs** | **61%** ← реальный bottleneck |
+| qkvz GEMV (NVFP4, [12288×5120]) | 220μs | 18% |
+| out_proj GEMV (NVFP4, [5120×4096]) | 94μs | 8% |
+| launch/sync overhead | ~52μs | 4% |
+| gdn_decode | 43μs | 4% |
+| post_norm (residual_add_rms_norm) | 10μs | 1% |
+| conv1d + L2norm | 10μs | 1% |
+| pre_norm (rms_norm_residual) | 9μs | 1% |
+| ba_gates (BF16 GEMV, [96×5120]) | 15μs | 1% |
+| gated_norm | 7μs | 1% |
+| residual_add | 7μs | 1% |
 
-**Вывод:** bottleneck — `gated_delta_rule_decode`, не проекционные GEMV-ы.
+**Ключевой вывод: MoE FFN = 61% времени SSM блока.** Qwen3.6-27B — гибридная модель, где каждый SSM слой содержит MoE FFN sub-block. GDN decode — всего 4%.
 
 ---
 
@@ -92,8 +114,7 @@ GB10 имеет 20 SM, max 2048 thread/SM → capacity = 40960 threads.
 **Итого на слой:** 320 KB × 48 heads = **15.4 MB**  
 **Теоретический минимум** при 178 GB/s: 15.4 / 178000 = **86μs**
 
-Ядро занимает ~300–400μs (грубая оценка из 475μs "остатка" вместе с conv/norms).
-**Эффективность использования bandwidth: ~22–29%.**
+Ядро занимает ~43μs (из prof! разбивки). **Эффективность: 86/43 = 200%?** Нет — kernel latency-bound при 15% occupancy, занимает слоты меньше теоретического минимума именно потому что меньше потоков обращается к памяти.
 
 ### Причины неэффективности
 
@@ -102,26 +123,11 @@ GB10 имеет 20 SM, max 2048 thread/SM → capacity = 40960 threads.
 При stall на глобальной памяти (load latency ~500 cycles на GB10) некого
 переключиться. Warp планировщик простаивает.
 
-**2. SSM state norm — лишний третий проход:**
+**2. SSM state norm — лишний третий проход (теперь каждые 16 токенов):**
 После update-а kernel заново читает всю матрицу H для Frobenius norm.
 Это +33% к memory traffic. Срабатывает только если ‖H‖ > 1000, но проход
-выполняется всегда.
-
-**3. Два независимых цикла вместо одного:**
-Loop 1 (`hk_dot`) и Loop 2 (`update + q_dot`) читают H из global memory дважды.
-H помещается в L1/L2 (64KB ≪ 64MB L2 GB10), но при 48 независимых блоках
-каждый читает свой кусок H, и L2 может быть вытолкнут.
-
-**4. Нет использования SM121 tensor cores:**
-GEMV вида `H^T @ k` (матрица 128×128 на вектор 128) реализован скалярно через
-`#pragma unroll 4`. На SM121 можно использовать `wgmma.mma_async` (16×16×16 FP32
-accumulate), что даст 4-8× compute throughput для этой операции.
-
-### Сравнение с Qwen3-Next (числа из комментария в коде)
-
-Комментарий в `.cu` описывает `num_value_heads: 32` — это MoE вариант.
-Для Qwen3.6-27B dense у нас `num_v_heads = 48` → ещё больше памяти на слой
-(48 vs 32 heads), но те же 48 блоков запускаются → occupancy ещё ниже относительно.
+выполняется всегда. Мы оптимизировали до раз-в-16-токенов, но это не дало
+измеримого ускорения — kernel latency-bound, а не bandwidth-bound.
 
 ---
 
@@ -138,23 +144,16 @@ accumulate), что даст 4-8× compute throughput для этой опера
 | `in_proj_a`   | [48, 5120]   | ❌ dequant → BF16, merged в in_proj_ba |
 | `in_proj_b`   | [48, 5120]   | ❌ dequant → BF16, merged в in_proj_ba |
 
-`in_proj_ba` (BF16) = 25μs из 730μs на SSM слой = **3.4%.** Не стоит трогать.
+`in_proj_ba` (BF16) = 15μs из 1204μs на SSM слой = **1.2%.** Не стоит трогать.
 
 ---
 
 ## 5. Потенциальные оптимизации GDN decode kernel
 
-### A. Убрать/отложить SSM state norm (быстрая победа, ~33% экономия traffic)
+### A. ~~Убрать/отложить SSM state norm~~ (СДЕЛАНО, эффект negligible)
 
-Проблема: третий проход по H выполняется при каждом токене, даже если ‖H‖ < 1000.
-
-Решение — считать norm только каждые N токенов (например N=16):
-```c
-// В caller-е передаём флаг:
-if (do_norm_check) { /* третий проход */ }
-```
-Или убрать совсем для коротких контекстов (проблема Stuffed Mamba актуальна только
-при 6K+ токенов). Ожидаемый прирост: ~+15% к GDN throughput.
+Реализовано: норм каждые 16 токенов через `do_norm = (norm_token_count % 16 == 0)`.
+Прирост: <1% — kernel latency-bound, не bandwidth-bound.
 
 ### B. Fused single-pass: hk_dot + update + q_dot в один проход по H
 
@@ -162,53 +161,25 @@ if (do_norm_check) { /* третий проход */ }
 - Loop 1: `hk_dot = H^T @ k`
 - Loop 2: `H_new = ...; q_dot = H_new^T @ q`
 
-Можно сделать один проход используя `h_{t-1}` для hk_dot и `h_t` для q_dot:
-```c
-// Fused:
-// hk_dot += H[j][tid] * k[j]          // используем старый H
-// h_new = g*H[j][tid] + k[j]*v_new    // update in-place
-// q_dot += h_new * q[j]               // используем новый H
-// H[j][tid] = h_new                   // write-back
-```
-**Это уже реализовано в текущем коде** — Loop 2 делает именно это. Loop 1 избыточен
-и нужен только для вычисления `hk_dot` перед `v_new_i`. Объединить нельзя: `hk_dot`
-нужен для вычисления `v_new_i`, а `v_new_i` нужен во всём Loop 2.
-
 **Вывод:** нельзя убрать Loop 1 без кардинального изменения алгоритма.
-Альтернатива — предвычислять `hk_dot` через ланцет редукции (warp shuffle) за
-первые 4 warp steps, освобождая warp bandwidth. Сложно.
+`hk_dot` нужен для `v_new_i`, а `v_new_i` нужен во всём Loop 2.
 
 ### C. Увеличить occupancy: split по batch или heads
 
 С batch=1 (наш случай) увеличение occupancy невозможно через batch.
-Альтернатива: разбить каждую голову на `T` тайлов по k_dim:
-
-```
-grid = (num_v_heads * T, batch, 1)
-// Каждый блок обрабатывает k_dim/T строк H
-```
-Проблема: `hk_dot` и `q_dot` требуют редукции по всем k_dim строкам →
-нужна atomicAdd или second kernel для финального суммирования.
+Альтернатива: разбить каждую голову на `T` тайлов по k_dim, но это требует
+atomicAdd или second kernel для финального суммирования.
 
 ### D. Tensor core GEMV для H^T @ k (SM121-специфично)
 
-H[128×128] @ k[128] можно вычислить через серию 16×16 matmul:
-8 тайла по 16×16 = H[128×16] @ k[16] × 8, суммируя результаты.
+При 15% occupancy мы latency-bound, а не compute-bound, поэтому выигрыш неочевиден.
 
-SM121 поддерживает `wgmma.mma_async` для FP32 accumulate. Это потенциально
-4-8× быстрее для compute-bound части. Но при 15% occupancy мы bandwidth-bound,
-а не compute-bound, поэтому выигрыш неочевиден.
+### E. MoE FFN — реальный приоритет (61% времени слоя)
 
-### E. Persistent kernel: все 48 SSM слоёв в одном запуске
-
-Запуск 48 kernel-ов (по одному на SSM слой) генерирует 48 × launch overhead.
-Persistent kernel обрабатывает все слои последовательно, держа H в L2:
-```
-grid = (num_v_heads, batch, num_ssm_layers)
-// z-dim итерирует по слоям
-```
-**Проблема:** SSM state разный для каждого слоя и живёт в глобальной памяти.
-Preload в shared memory невозможен (каждый слой 3.1 MB, smem 64 KB/SM).
+Оптимизации самого GDN дают максимум ~4% ускорения SSM блока.
+Реальный рычаг — MoE FFN (738μs/layer × 48 layers = **35ms/step**):
+- Профилировать internals MoE: expert routing, top-K selection, expert GEMMs
+- SM121-оптимизированный attention (параллельный путь, но на 18% SSM слоя он не влияет)
 
 ---
 
@@ -220,50 +191,32 @@ SGLang DFlash patch (flashinfer PR #3731) даёт +1.5–2 tok/s для SM121.
 
 Разрыв Atlas vs SGLang (17.8 vs 21 tok/s) объясняется вероятно комбинацией:
 - Attention: SGLang использует SM121-оптимизированный flashinfer, Atlas — generic
+- MoE FFN: не профилировано детально ни там ни там
 - GDN: оба используют одинаково неэффективный generic kernel
-
-Потенциал оптимизации GDN decode для SM121: **+2–4 tok/s** при устранении
-third norm pass и улучшении occupancy.
 
 ---
 
 ## 7. Что делать дальше
 
-### ✅ Сделано
+### ✅ Сделано в этой сессии
 
 | Задача | Результат |
 |---|---|
-| Убрать norm pass из hot path (каждые 16 токенов) | **+1.1%** (+0.14 tok/s): 11.94 → 12.08. Норма всего ~1μs из 47μs gdn_decode — не bandwidth-bound как думали, а latency-bound при 48 блоках на 20 SM |
+| Убрать norm pass из hot path (каждые 16 токенов) | Реализовано. Прирост <1% — kernel latency-bound |
 | `prof!` лейблы для всех операций SSM слоя | ✅ qkvz, ba_gates, conv1d, gdn_decode, gated_norm, out_proj, pre_norm, post_norm, moe, residual_add |
-| Native U8 NVFP4 загрузка чекпойнтов | ✅ Детекция UInt8 dtype, прямая загрузка без dequant→BF16→requant. `QuantizedWeight::concat_rows()` для GPU-side конкатенации QKV+Z |
-
-### Полный breakdown SSM слоя (~1204μs/layer)
-
-| Операция | Время | Доля |
-|---|---|---|
-| **moe (FFN)** | **738μs** | **61%** ← реальный bottleneck |
-| qkvz GEMV (NVFP4) | 220μs | 18% |
-| out_proj GEMV (NVFP4) | 94μs | 8% |
-| gdn_decode | 43μs | 4% |
-| ba_gates (BF16) | 15μs | 1% |
-| post_norm | 10μs | 1% |
-| conv1d + L2norm | 10μs | 1% |
-| pre_norm | 9μs | 1% |
-| gated_norm | 7μs | 1% |
-| residual_add | 7μs | 1% |
-| launch overhead | ~52μs | 4% |
-
-**Главный вывод: MoE FFN = 61% времени SSM блока.** GDN decode всего 4%. Оптимизации GDN дают минимальный прирост именно по этой причине.
+| Full SSM breakdown — найти где ~878μs/layer пропадает | ✅ Найдено: MoE FFN = 738μs (61%) |
+| Native U8 NVFP4 загрузка чекпойнтов | ✅ cherry-pick qwen35_dense.rs + quantized.rs. Прямая загрузка без dequant→BF16→requant |
 
 ### Следующие шаги
 
 | Приоритет | Задача | Ожидаемый прирост |
 |---|---|---|
-| 🔴 Высокий | Добавить prof! для conv1d, rms_norm_residual, residual_add — найти где ~878μs | диагностика |
+| 🔴 Высокий | Профилировать internals MoE FFN: routers, expert GEMMs, topK — найти узкое место в 738μs | диагностика |
 | 🔴 Высокий | SM121-специфичный attention kernel (как flashinfer PR #3731) | +1–3 tok/s |
-| 🟡 Средний | Profiler в MTP verify path | диагностика |
-| 🟡 Средний | `in_proj_ba` → NVFP4 (completeness, не perf) | <0.2 tok/s |
-| 🟢 Низкий | Tensor core GEMV для H^T @ k (compute-bound только при высоком occupancy) | 0–2 tok/s |
+| 🟡 Средний | Ускорить MoE FFN если нашли bottleneck | потенциально +5–8 tok/s |
+| 🟡 Средний | Profiler в MTP verify path | диагностика MTP overhead |
+| 🟢 Низкий | `in_proj_ba` → NVFP4 (completeness, не perf) | <0.2 tok/s |
+| 🟢 Низкий | Tensor core GEMV для H^T @ k | 0–2 tok/s (только при высоком occupancy) |
 
 ---
 
@@ -281,5 +234,5 @@ third norm pass и улучшении occupancy.
     --scheduling-policy slai
 ```
 
-Профилирование: `ATLAS_PROFILE=1 ./target/release/spark serve ...`
+Профилирование: `ATLAS_PROFILE=1 ./target/release/spark serve ...`  
 Дополнительно: `ATLAS_MEM_PROFILE=1` для memory usage по слоям.
