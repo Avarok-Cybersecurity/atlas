@@ -27,6 +27,12 @@ ignore = [
     # Replaced upstream by `proc-macro-error2`; resolved naturally as
     # transitive deps bump their own clap pins.
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.x is unmaintained; transitive only, replacement crate exists upstream" },
+    # `memmap2` 0.9.x — unsoundness advisory (unchecked pointer offset in
+    # the mmap API). Pulled in transitively via `safetensors` for read-only
+    # memory-mapping of weight shards; Atlas mmaps whole files at known
+    # sizes and never constructs out-of-range offsets. No patched 0.9.x
+    # release yet — bump and remove this entry once one ships.
+    { id = "RUSTSEC-2026-0186", reason = "memmap2 unsound pointer-offset advisory; transitive via safetensors, read-only whole-file mmap only, no out-of-range offset path; no fixed 0.9.x release yet" },
 ]
 
 [licenses]
