@@ -233,25 +233,68 @@ SGLang DFlash patch (flashinfer PR #3731) даёт +1.5–2 tok/s для SM121.
 
 ### Анализ потенциала оптимизации
 
-Dense FFN при 81% bandwidth efficiency уже близко к пределу. Главные варианты:
+**w4a16_gemv_dual** (grid `(ceil(13824/4), 1, 2)` = 6912 блоков, block=256):
+- 6912 блоков / 20 SM = 345 блоков/SM → **~100% occupancy**
+- Уже bandwidth-bound при 81% эффективности
+- Margin для улучшения: ~20% → максимум +0.3 tok/s от FFN-kernels
 
-| Направление | Суть | Ожидаемый прирост |
-|---|---|---|
-| SM121-оптимизированный attention | Как flashinfer PR #3731 — SM12x-специфичный decode attention | +1–3 tok/s |
-| Fused triple GEMV: gate+up+down | Один проход по весам вместо двух запусков (но зависимость silu блокирует fusion) | ~15–20% FFN |
-| NVFP4 GEMV throughput на GB10 | Анализ occupancy/IPC `w4a16_gemv_dual` — может быть неоптимален для GB10 SM121 | диагностика |
-| MTP с dense FFN (K=2) | Текущие 17.9 tok/s для кода — можно ли улучшить accept rate? | диагностика |
+**Реальные рычаги в порядке потенциала:**
 
-### Следующие шаги
+---
 
-| Приоритет | Задача | Ожидаемый прирост |
-|---|---|---|
-| 🔴 Высокий | SM121-специфичный attention kernel | +1–3 tok/s |
-| 🔴 Высокий | Профилировать `w4a16_gemv_dual` на GB10: occupancy, ILP, tensor core utilization через ncu | диагностика |
-| 🟡 Средний | Попробовать fused gate+up+down GEMV (pipeline через warp-level reduction) | ~+1–2 tok/s |
-| 🟡 Средний | Profiler в MTP verify path — где overhead MTP verify | диагностика |
-| 🟢 Низкий | `in_proj_ba` → NVFP4 | <0.2 tok/s |
-| 🟢 Низкий | Tensor core GEMV для GDN H^T@k | 0–2 tok/s (только при высоком occupancy) |
+### Следующие шаги (конкретные)
+
+#### 1. 🔴 SM121-attention kernel (+1–3 tok/s)
+
+Attention = 17.4ms / шаг / 16 layers = 1.09ms/layer.  
+Flashinfer PR #3731 добавляет SM12x-специфичный decode attention (Blackwell warp-specialized pipeline).  
+У Atlas сейчас `kernels/gb10/common/` — нужно проверить есть ли SM121-оптимизированный decode attention или используется generic path.
+
+**Что делать:**
+```bash
+ls kernels/gb10/common/attention*.cu kernels/gb10/common/flash*.cu
+grep -r "SM121\|sm_120\|sm121\|blackwell" kernels/gb10/ --include="*.cu" | head -20
+```
+Если generic — портировать SM121-специфичный flash attention decode из flashinfer PR #3731 (C++/PTX level).
+
+#### 2. 🔴 ncu профилирование w4a16_gemv_dual
+
+Подтвердить текущие показатели и найти любые unexploited opportunities:
+```bash
+# Запустить сервер без CUDA graph (для ncu):
+ATLAS_PROFILE=1 ncu --set full \
+    --target-processes all \
+    -o /tmp/atlas-ncu-report \
+    ./target/release/spark serve ... &
+# Послать один запрос, убить, открыть отчёт:
+ncu-ui /tmp/atlas-ncu-report.ncu-rep
+```
+Смотреть: `l1tex__t_bytes_pipe_lsu_mem_global_op_ld` (DRAM bandwidth achieved), `sm__warps_active` (occupancy), cache hit rate на weight reads.
+
+#### 3. 🟡 Fused triple GEMV: gate+up+down в одном ядре
+
+Сейчас 2 запуска: `gate_up_dual` (2 проекции) + `silu_down` (1 проекция).  
+Можно написать одно ядро:
+- каждый CTA берёт тайл [N_tile] выходного вектора
+- читает gate_weights[N_tile, K] и up_weights[N_tile, K] → вычисляет silu(gate)*up в smem
+- читает down_weights[N_out_tile, N_tile] → аккумулирует partial dot product
+
+**Проблема:** down-проекция требует **полного** intermediate вектора [K=13824] для каждого выходного элемента. Нельзя потоково читать: нужен reduction через весь inter. Возможно через `atomicAdd` на partial sums, но overhead атомиков съедает выигрыш.
+
+**Альтернатива (проще):** уменьшить overhead между двумя запусками через CUDA Graphs с удалением лишних барьеров — это почти бесплатно.
+
+#### 4. 🟡 MTP verify path profiling
+
+При K=2 MTP для кода: 17.9 tok/s. Без MTP: 12 tok/s. Разница = 5.9 tok/s от спекуляции.  
+Добавить `prof!` в MTP verify path чтобы понять: сколько времени на WY-kernel (`gdn_decode_wy2`), сколько на verify attention, и каков реальный accept-rate bottleneck.
+
+**Файлы:** `trait_decode_batched.rs`, `trait_decode_batched_conv_gdn.rs`, `verify_a.rs`
+
+#### 5. 🟢 qkvz GEMV — потенциал 19% SSM времени
+
+qkvz = 218μs на слой. Это `w4a16_gemv` для [12288 × 5120] (qkv+z конкатенировано).  
+Grid: `(ceil(12288/4), 1, 1)` = 3072 блока → тоже ~100% occupancy и bandwidth-bound.  
+Нет quick wins — разве что сравнить с теоретическим пределом: 12288×5120×0.5 = 31.5 MB / 178 GB/s = 177μs. Actual: 218μs → 81% efficiency. Тот же паттерн что FFN.
 
 ---
 
