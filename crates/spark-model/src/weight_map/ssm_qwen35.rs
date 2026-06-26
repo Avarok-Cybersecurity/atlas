@@ -89,9 +89,10 @@ pub(crate) fn load_moe_qwen35(
     let inter = config.moe_intermediate_size;
     let h = config.hidden_size;
 
-    let load_bf16_then_nvfp4 = |full_prefix: &str, n: usize, k: usize| -> Result<QuantizedWeight> {
-        let bf16 = dense(store, &format!("{full_prefix}.weight"))?;
-        quantize_to_nvfp4(&bf16, n, k, gpu, absmax_k, quantize_k, stream)
+    let qctx = QuantizeCtx {
+        absmax_k,
+        quantize_k,
+        stream,
     };
 
     // Qwen3.6-35B-A3B BF16 release ships a FUSED MoE layout: one
@@ -131,51 +132,43 @@ pub(crate) fn load_moe_qwen35(
         })
     };
 
+    // Route every projection through `quantized_any` so the per-tensor BF16
+    // fallback applies uniformly to shared and routed experts. Hybrid MoE
+    // checkpoints (AgentWorld-35B, Qwen3.5-397B) ship the shared expert — and
+    // occasionally individual routed experts — as unquantized BF16 even when
+    // the model is globally FP8/NVFP4. Dispatching on the global `variant`
+    // alone sent those tensors down the FP8/NVFP4 arm and failed with
+    // "weight_scale_inv not found" before the fallback could catch them.
     let load_expert = |prefix: &str| -> Result<ExpertWeight> {
-        match variant {
-            Nvfp4Variant::Bf16Raw => Ok(ExpertWeight {
-                gate_proj: load_bf16_then_nvfp4(&format!("{prefix}.gate_proj"), inter, h)?,
-                up_proj: load_bf16_then_nvfp4(&format!("{prefix}.up_proj"), inter, h)?,
-                down_proj: load_bf16_then_nvfp4(&format!("{prefix}.down_proj"), h, inter)?,
-            }),
-            Nvfp4Variant::Fp8Dequanted => Ok(ExpertWeight {
-                gate_proj: quantized_from_fp8(
-                    store,
-                    &format!("{prefix}.gate_proj"),
-                    inter,
-                    h,
-                    gpu,
-                    absmax_k,
-                    quantize_k,
-                    stream,
-                )?,
-                up_proj: quantized_from_fp8(
-                    store,
-                    &format!("{prefix}.up_proj"),
-                    inter,
-                    h,
-                    gpu,
-                    absmax_k,
-                    quantize_k,
-                    stream,
-                )?,
-                down_proj: quantized_from_fp8(
-                    store,
-                    &format!("{prefix}.down_proj"),
-                    h,
-                    inter,
-                    gpu,
-                    absmax_k,
-                    quantize_k,
-                    stream,
-                )?,
-            }),
-            _ => Ok(ExpertWeight {
-                gate_proj: quantized_auto(store, &format!("{prefix}.gate_proj"), gpu, variant)?,
-                up_proj: quantized_auto(store, &format!("{prefix}.up_proj"), gpu, variant)?,
-                down_proj: quantized_auto(store, &format!("{prefix}.down_proj"), gpu, variant)?,
-            }),
-        }
+        Ok(ExpertWeight {
+            gate_proj: quantized_any(
+                store,
+                &format!("{prefix}.gate_proj"),
+                inter,
+                h,
+                gpu,
+                variant,
+                qctx,
+            )?,
+            up_proj: quantized_any(
+                store,
+                &format!("{prefix}.up_proj"),
+                inter,
+                h,
+                gpu,
+                variant,
+                qctx,
+            )?,
+            down_proj: quantized_any(
+                store,
+                &format!("{prefix}.down_proj"),
+                h,
+                inter,
+                gpu,
+                variant,
+                qctx,
+            )?,
+        })
     };
 
     let shared_expert = load_expert(&format!("{p}.shared_expert"))?;
