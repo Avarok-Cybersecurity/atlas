@@ -126,33 +126,49 @@ fi
 if [ -f "$LOG_FILE" ]; then
     echo "" | tee -a "$OUTFILE"
     echo "--- Kernel timing (ATLAS_PROFILE, last ~5 steps) ---" | tee -a "$OUTFILE"
-    grep -E "SSM (qkvz|ba_gates|gdn_decode|gated_norm|out_proj)|PROFILE tok=" "$LOG_FILE" \
+    grep -E "SSM (qkvz|ba_gates|gdn_decode|gated_norm|out_proj|conv1d|pre_norm|post_norm|ffn|residual_add)|FFN (gate_up|silu_down|gate_bf16|up_bf16|down_bf16|silu_mul|gelu_mul|down_gelu)|PROFILE tok=" "$LOG_FILE" \
         | sed 's/\x1b\[[0-9;]*m//g' \
-        | tail -400 \
+        | tail -600 \
         | python3 - "$OUTFILE" << 'PYEOF'
 import sys, re
 
 lines = sys.stdin.read().splitlines()
 outfile = sys.argv[1]
-kernels = {}
+ssm_ops = {}
+ffn_ops = {}
 profiles = []
 
 for line in lines:
-    m = re.search(r'SSM (\w+): (\d+)μs', line)
+    m = re.search(r'SSM (\w+): (\d+)', line)
     if m:
-        kernels.setdefault(m.group(1), []).append(int(m.group(2)))
+        ssm_ops.setdefault(m.group(1), []).append(int(m.group(2)))
+    m = re.search(r'FFN (\w+): (\d+)', line)
+    if m:
+        ffn_ops.setdefault(m.group(1), []).append(int(m.group(2)))
     m = re.search(r'PROFILE tok=\d+: total=([\d.]+)ms attn=([\d.]+)ms\(\d+\) ssm=([\d.]+)ms\(\d+\) head=([\d.]+)ms', line)
     if m:
         profiles.append(tuple(float(x) for x in m.groups()))
 
-output = []
-for name, vals in sorted(kernels.items()):
-    s = sorted(vals)
-    med = s[len(s)//2]
-    clean = [v for v in vals if v <= med * 3]
-    avg = sum(clean) / len(clean) if clean else 0
-    output.append(f"  SSM {name:12s}: avg={avg:.0f}μs  median={med}μs  n={len(vals)}")
+def summarize(ops_dict, prefix):
+    output = []
+    total_med = 0
+    for name, vals in sorted(ops_dict.items(), key=lambda kv: -sorted(kv[1])[len(kv[1])//2]):
+        s = sorted(vals)
+        med = s[len(s)//2]
+        total_med += med
+        clean = [v for v in vals if v <= med * 3]
+        avg = sum(clean) / len(clean) if clean else 0
+        output.append(f"  {prefix} {name:16s}: avg={avg:.0f}μs  median={med}μs  n={len(vals)}")
+    output.append(f"  {prefix} {'TOTAL':16s}: {total_med}μs (sum of medians)")
+    return output
 
+output = []
+if ssm_ops:
+    output.append("  --- SSM ops ---")
+    output.extend(summarize(ssm_ops, "SSM"))
+if ffn_ops:
+    output.append("  --- Dense FFN internals ---")
+    output.extend(summarize(ffn_ops, "FFN"))
 if profiles:
     output.append("")
     for total, attn, ssm, head in profiles[-5:]:
