@@ -75,10 +75,7 @@ pub(crate) fn scalar_scale_f32(
             let bits = u16::from_le_bytes(buf);
             Ok(f32::from_bits((bits as u32) << 16))
         }
-        other => anyhow::bail!(
-            "Expected FP32 or BF16 scale for {name}, got {:?}",
-            other
-        ),
+        other => anyhow::bail!("Expected FP32 or BF16 scale for {name}, got {:?}", other),
     }
 }
 

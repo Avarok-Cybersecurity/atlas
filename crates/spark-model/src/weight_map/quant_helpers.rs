@@ -148,7 +148,11 @@ pub(crate) fn dequant_fp8_any_to_bf16(
 
     // Resolve scale tensor + its logical (sn, sk) grid.
     let (s, sn, sk) = if let Ok(si) = store.get(&format!("{prefix}.weight_scale_inv")) {
-        ensure!(si.shape.len() == 2, "block scale {prefix}.weight_scale_inv must be 2D, got {:?}", si.shape);
+        ensure!(
+            si.shape.len() == 2,
+            "block scale {prefix}.weight_scale_inv must be 2D, got {:?}",
+            si.shape
+        );
         let (sn, sk) = (si.shape[0], si.shape[1]);
         (si, sn, sk)
     } else {
@@ -181,7 +185,10 @@ pub(crate) fn dequant_fp8_any_to_bf16(
 
     let out = gpu.alloc(total * 2)?;
     let stream = gpu.default_stream();
-    let kernel = gpu.kernel("dequant_fp8_blockscaled_bf16", "dequant_fp8_blockscaled_bf16")?;
+    let kernel = gpu.kernel(
+        "dequant_fp8_blockscaled_bf16",
+        "dequant_fp8_blockscaled_bf16",
+    )?;
     KernelLaunch::new(gpu, kernel)
         .grid([div_ceil(k as u32, 64), div_ceil(n as u32, 4), 1])
         .block([64, 4, 1])
