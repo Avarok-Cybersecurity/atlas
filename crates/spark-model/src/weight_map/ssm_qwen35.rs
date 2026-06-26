@@ -320,6 +320,7 @@ pub(crate) fn load_moe_no_shared(
             weight_scale: alloc_zero(scale_sz)?,
             weight_scale_2: 0.0,
             input_scale: DevicePtr::NULL,
+            weight_scale_2_vec: DevicePtr::NULL,
         })
     };
 

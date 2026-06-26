@@ -181,5 +181,6 @@ pub(crate) fn quantized_v2(
         weight_scale: ptr(store, &format!("{prefix}.weight_scale"))?,
         weight_scale_2: 1.0 / raw_global_scale,
         input_scale: ptr(store, &format!("{prefix}.input_global_scale"))?,
+        weight_scale_2_vec: DevicePtr::NULL,
     })
 }

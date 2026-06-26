@@ -10,6 +10,8 @@ use super::{ModelWeightLoader, WeightFormat};
 use crate::layer::TransformerLayer;
 use crate::layers::{DenseFfnLayer, FfnComponent, Qwen3AttentionLayer, Qwen3SsmLayer};
 use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_dense_bf16, shard_quantized_nvfp4};
+use spark_runtime::weights::WeightDtype;
+
 use crate::weight_map::{
     AttentionWeights, DenseWeight, MtpWeights, Nvfp4Variant, SsmWeights, dense, dense_auto,
     dense_f32_safe, dense_keep_f32, dequant_nvfp4_to_bf16, detect_nvfp4_variant, gpu_concat_rows,
@@ -165,7 +167,26 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                                 DenseWeight,
                                 crate::weight_map::QuantizedWeight,
                             )> {
-                                let src = dense_auto(store, &format!("{p}.{name}.weight"), gpu)?;
+                                // Pre-quantized Standard NVFP4 (e.g. sakamakismile): weight is U8
+                                // on disk. Load directly as QuantizedWeight without BF16 roundtrip.
+                                // TP sharding of pre-quantized NVFP4 is not yet supported (tp_size=1 only).
+                                let weight_key = format!("{p}.{name}.weight");
+                                if matches!(
+                                    store.get(&weight_key).map(|w| w.dtype),
+                                    Ok(WeightDtype::UInt8)
+                                ) {
+                                    let null_dense = DenseWeight {
+                                        weight: spark_runtime::gpu::DevicePtr::NULL,
+                                    };
+                                    let qw = quantized_auto(
+                                        store,
+                                        &format!("{p}.{name}"),
+                                        gpu,
+                                        Nvfp4Variant::Standard,
+                                    )?;
+                                    return Ok((null_dense, qw));
+                                }
+                                let src = dense_auto(store, &weight_key, gpu)?;
                                 let (sharded_ptr, local_n, local_k) = shard_dense_bf16(
                                     src.weight, full_n, full_k, kind, tp_rank, tp_size, gpu,
                                 )?;
@@ -245,158 +266,209 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     let value_dim = nv * config.linear_value_head_dim;
                     let la = format!("{lp}.linear_attn");
 
-                    // SSM projections are loaded per-projection by on-disk dtype:
-                    // each of in_proj_qkv / in_proj_z / out_proj may independently
-                    // be NVFP4-packed (`weight_packed`) or plain (`weight`, routed
-                    // by `dense_auto` → BF16/FP32/FP8). The unsloth NVFP4 re-quant
-                    // of Qwen3.6-27B quantizes ONLY out_proj while keeping the
-                    // in_proj_* in BF16; the old all-or-nothing gate (keyed on
-                    // in_proj_qkv.weight_packed) then looked for a non-existent
-                    // out_proj.weight and failed to build. `dense_auto` is dequant-
-                    // to-BF16 for the concat pipeline regardless of source dtype.
+                    // Detect if QKV/Z/out_proj are native Standard NVFP4 (U8 packed).
+                    // When all three are U8, load directly as QuantizedWeight and
+                    // concat on GPU — skipping the NVFP4→BF16→NVFP4 double conversion.
+                    let qkv_is_u8 = matches!(
+                        store.get(&format!("{la}.in_proj_qkv.weight")).map(|w| w.dtype),
+                        Ok(WeightDtype::UInt8)
+                    );
+                    let z_is_u8 = matches!(
+                        store.get(&format!("{la}.in_proj_z.weight")).map(|w| w.dtype),
+                        Ok(WeightDtype::UInt8)
+                    );
+                    let out_is_u8 = matches!(
+                        store.get(&format!("{la}.out_proj.weight")).map(|w| w.dtype),
+                        Ok(WeightDtype::UInt8)
+                    );
+                    let native_nvfp4 = qkv_is_u8 && z_is_u8 && out_is_u8;
+
+                    // SSM projections: load per-projection by on-disk dtype.
                     let load_ssm_proj =
                         |name: &str, rows: usize, cols: usize| -> Result<DenseWeight> {
                             if store.contains(&format!("{name}.weight_packed")) {
+                                dequant_nvfp4_to_bf16(store, name, rows, cols, gpu)
+                            } else if matches!(
+                                store.get(&format!("{name}.weight")).map(|w| w.dtype),
+                                Ok(WeightDtype::UInt8)
+                            ) {
                                 dequant_nvfp4_to_bf16(store, name, rows, cols, gpu)
                             } else {
                                 dense_auto(store, &format!("{name}.weight"), gpu)
                             }
                         };
-                    let qkv_dense = load_ssm_proj(&format!("{la}.in_proj_qkv"), qkv_rows, h)?;
-                    let z_dense = load_ssm_proj(&format!("{la}.in_proj_z"), z_rows, h)?;
-                    let out_proj_dense = load_ssm_proj(&format!("{la}.out_proj"), h, value_dim)?;
 
-                    // A, B are always BF16
-                    let in_proj_a = dense(store, &format!("{la}.in_proj_a.weight"))?;
-                    let in_proj_b = dense(store, &format!("{la}.in_proj_b.weight"))?;
+                    // A, B: BF16 in most checkpoints, but may be NVFP4 (U8 packed)
+                    // in fully-quantized checkpoints (e.g. sakamakismile NVFP4-MTP).
+                    let in_proj_a = load_ssm_proj(&format!("{la}.in_proj_a"), nv, h)?;
+                    let in_proj_b = load_ssm_proj(&format!("{la}.in_proj_b"), nv, h)?;
                     let conv1d = dense(store, &format!("{la}.conv1d.weight"))?;
-                    // A_log and dt_bias MUST be FP32 — consumer kernels in
-                    // `ssm_preprocess.cu` and `mamba2_ssm_decode.cu` declare
-                    // them `const float*`. Loading via `dense()` kept BF16
-                    // storage, reinterpreting 48-elt BF16 (96B) as 48-elt
-                    // FP32 → per-head scrambled decay gates and exponential
-                    // error amplification through GDR recurrence at long
-                    // context. The MoE sister loader (`ssm_qwen35.rs`)
-                    // already promotes these; dense was missing the mirror.
                     let a_log = dense_keep_f32(store, &format!("{la}.A_log"), gpu)?;
                     let dt_bias = dense_keep_f32(store, &format!("{la}.dt_bias"), gpu)?;
-                    // norm.weight: use `dense_f32_safe` (FP32-aware: detects
-                    // a fp32 checkpoint and truncates to BF16 with logging;
-                    // bf16 passes through). Mirrors `weight_map/ssm_qwen35.rs`
-                    // MoE sister loader (backported here 2026-05-20).
                     let norm = dense_f32_safe(store, &format!("{la}.norm.weight"), gpu)?;
-
-                    let qkvz_dense =
-                        gpu_concat_rows(&qkv_dense, qkv_rows, &z_dense, z_rows, h, gpu)?;
-                    // qkv/z BF16 are only inputs to the concat above; free them now
-                    // rather than leaking them for the layer's lifetime (Atlas issue #A1).
-                    gpu.free(qkv_dense.weight)?;
-                    gpu.free(z_dense.weight)?;
-
                     let ba_dense = interleave_ba(&in_proj_a, &in_proj_b, nv, nk, h, gpu)?;
 
                     let qkvz_size = config.ssm_qkvz_size();
-                    let qkvz_nvfp4 = quantize_to_nvfp4(
-                        &qkvz_dense,
-                        qkvz_size,
-                        h,
-                        gpu,
-                        absmax_k,
-                        quantize_k,
-                        stream,
-                    )?;
 
-                    let qkvz_nvfp4_t = qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h)?;
+                    if native_nvfp4 {
+                        // ── Native NVFP4 path: load pre-quantized weights directly ──
+                        if i == 0 {
+                            tracing::info!(
+                                "SSM native NVFP4: loading pre-quantized QKV/Z/out_proj \
+                                 (skipping BF16 roundtrip)"
+                            );
+                        }
+                        let qkv_qw = quantized_auto(
+                            store,
+                            &format!("{la}.in_proj_qkv"),
+                            gpu,
+                            Nvfp4Variant::Standard,
+                        )?;
+                        let z_qw = quantized_auto(
+                            store,
+                            &format!("{la}.in_proj_z"),
+                            gpu,
+                            Nvfp4Variant::Standard,
+                        )?;
+                        let qkvz_nvfp4 = qkv_qw.concat_rows(&z_qw, qkv_rows, z_rows, h, gpu)?;
+                        let qkvz_nvfp4_t =
+                            qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h)?;
 
-                    let out_proj_nvfp4 = quantize_to_nvfp4(
-                        &out_proj_dense,
-                        h,
-                        value_dim,
-                        gpu,
-                        absmax_k,
-                        quantize_k,
-                        stream,
-                    )?;
+                        let out_proj_nvfp4 = quantized_auto(
+                            store,
+                            &format!("{la}.out_proj"),
+                            gpu,
+                            Nvfp4Variant::Standard,
+                        )?;
+                        let out_proj_nvfp4_t =
+                            out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim)?;
 
-                    let out_proj_nvfp4_t = out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim)?;
-
-                    // Native FP8 SSM prefill GEMM: build a single-scale FP8
-                    // copy of `qkvz_dense` [qkvz_size, h] and `out_proj_dense`
-                    // [h, value_dim] by direct BF16→FP8 truncation. SSM weight
-                    // magnitudes fit in FP8 E4M3 range (|w| ≤ 448), so no
-                    // separate scalar dequant is needed at GEMM time — the
-                    // `fp8_gemm_n128` kernel interprets the FP8 bytes as
-                    // values directly (mirrors how `predequant_nvfp4_to_fp8`
-                    // bakes `scale2` into the FP8 stream). PCND: gated.
-                    let (qkvz_fp8_prefill, out_proj_fp8_prefill) =
-                        if let Some(b2f_k) = bf16_to_fp8_k {
-                            let qkvz_total = (qkvz_size * h) as u32;
-                            let qkvz_fp8 = gpu.alloc(qkvz_size * h)?;
-                            crate::layers::ops::bf16_to_fp8(
-                                gpu,
-                                b2f_k,
-                                qkvz_dense.weight,
-                                qkvz_fp8,
-                                qkvz_total,
-                                stream,
-                            )?;
-                            let out_total = (h * value_dim) as u32;
-                            let out_fp8 = gpu.alloc(h * value_dim)?;
-                            crate::layers::ops::bf16_to_fp8(
-                                gpu,
-                                b2f_k,
-                                out_proj_dense.weight,
-                                out_fp8,
-                                out_total,
-                                stream,
-                            )?;
-                            gpu.synchronize(stream)?;
-                            (Some(qkvz_fp8), Some(out_fp8))
-                        } else {
-                            (None, None)
+                        let ssm = SsmWeights {
+                            in_proj_qkvz: DenseWeight {
+                                weight: spark_runtime::gpu::DevicePtr::NULL,
+                            },
+                            in_proj_ba: ba_dense,
+                            conv1d,
+                            a_log,
+                            dt_bias,
+                            norm,
+                            out_proj: out_proj_nvfp4,
                         };
 
-                    // SSM prefill/decode always dispatch qkvz_nvfp4/_t and the NVFP4
-                    // out_proj; the BF16 qkvz_dense / out_proj_dense were only quantize
-                    // inputs. Free them rather than keep a third full-precision copy of
-                    // the largest SSM tensor across every layer (Atlas issue #A1).
-                    gpu.free(qkvz_dense.weight)?;
-                    gpu.free(out_proj_dense.weight)?;
+                        let mut layer = Qwen3SsmLayer::new_sequential(
+                            input_norm,
+                            ssm,
+                            post_attn_norm,
+                            ffn,
+                            Some(qkvz_nvfp4),
+                            Some(qkvz_nvfp4_t),
+                            Some(out_proj_nvfp4_t),
+                            config,
+                            gpu,
+                        )?;
+                        layer.predequant_for_prefill(gpu, config, stream)?;
+                        layers.push(Box::new(layer));
+                    } else {
+                        // ── Legacy path: dequant to BF16 then re-quantize ──
+                        let qkv_dense =
+                            load_ssm_proj(&format!("{la}.in_proj_qkv"), qkv_rows, h)?;
+                        let z_dense =
+                            load_ssm_proj(&format!("{la}.in_proj_z"), z_rows, h)?;
+                        let out_proj_dense =
+                            load_ssm_proj(&format!("{la}.out_proj"), h, value_dim)?;
 
-                    let ssm = SsmWeights {
-                        in_proj_qkvz: DenseWeight {
-                            weight: spark_runtime::gpu::DevicePtr::NULL,
-                        },
-                        in_proj_ba: ba_dense,
-                        conv1d,
-                        a_log,
-                        dt_bias,
-                        norm,
-                        out_proj: out_proj_nvfp4,
-                    };
+                        let qkvz_dense =
+                            gpu_concat_rows(&qkv_dense, qkv_rows, &z_dense, z_rows, h, gpu)?;
+                        gpu.free(qkv_dense.weight)?;
+                        gpu.free(z_dense.weight)?;
 
-                    let mut layer = Qwen3SsmLayer::new_sequential(
-                        input_norm,
-                        ssm,
-                        post_attn_norm,
-                        ffn,
-                        Some(qkvz_nvfp4),
-                        Some(qkvz_nvfp4_t),
-                        Some(out_proj_nvfp4_t),
-                        config,
-                        gpu,
-                    )?;
-                    layer.predequant_for_prefill(gpu, config, stream)?;
-                    // Install the FP8 prefill weights AFTER `predequant_for_prefill`
-                    // (which sets `out_proj_fp8` from NVFP4 + scale2). The
-                    // native-FP8 path overrides both pointers when active,
-                    // routing prefill through `fp8_gemm_n128` instead of
-                    // `w4a16_gemm_t`. Decode batch paths keep their NVFP4
-                    // fallback (the `qkvz_nvfp4*` fields above).
-                    if qkvz_fp8_prefill.is_some() || out_proj_fp8_prefill.is_some() {
-                        layer.set_fp8_prefill_only_weights(qkvz_fp8_prefill, out_proj_fp8_prefill);
+                        let qkvz_nvfp4 = quantize_to_nvfp4(
+                            &qkvz_dense,
+                            qkvz_size,
+                            h,
+                            gpu,
+                            absmax_k,
+                            quantize_k,
+                            stream,
+                        )?;
+                        let qkvz_nvfp4_t =
+                            qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h)?;
+
+                        let out_proj_nvfp4 = quantize_to_nvfp4(
+                            &out_proj_dense,
+                            h,
+                            value_dim,
+                            gpu,
+                            absmax_k,
+                            quantize_k,
+                            stream,
+                        )?;
+                        let out_proj_nvfp4_t =
+                            out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim)?;
+
+                        let (qkvz_fp8_prefill, out_proj_fp8_prefill) =
+                            if let Some(b2f_k) = bf16_to_fp8_k {
+                                let qkvz_total = (qkvz_size * h) as u32;
+                                let qkvz_fp8 = gpu.alloc(qkvz_size * h)?;
+                                crate::layers::ops::bf16_to_fp8(
+                                    gpu,
+                                    b2f_k,
+                                    qkvz_dense.weight,
+                                    qkvz_fp8,
+                                    qkvz_total,
+                                    stream,
+                                )?;
+                                let out_total = (h * value_dim) as u32;
+                                let out_fp8 = gpu.alloc(h * value_dim)?;
+                                crate::layers::ops::bf16_to_fp8(
+                                    gpu,
+                                    b2f_k,
+                                    out_proj_dense.weight,
+                                    out_fp8,
+                                    out_total,
+                                    stream,
+                                )?;
+                                gpu.synchronize(stream)?;
+                                (Some(qkvz_fp8), Some(out_fp8))
+                            } else {
+                                (None, None)
+                            };
+
+                        gpu.free(qkvz_dense.weight)?;
+                        gpu.free(out_proj_dense.weight)?;
+
+                        let ssm = SsmWeights {
+                            in_proj_qkvz: DenseWeight {
+                                weight: spark_runtime::gpu::DevicePtr::NULL,
+                            },
+                            in_proj_ba: ba_dense,
+                            conv1d,
+                            a_log,
+                            dt_bias,
+                            norm,
+                            out_proj: out_proj_nvfp4,
+                        };
+
+                        let mut layer = Qwen3SsmLayer::new_sequential(
+                            input_norm,
+                            ssm,
+                            post_attn_norm,
+                            ffn,
+                            Some(qkvz_nvfp4),
+                            Some(qkvz_nvfp4_t),
+                            Some(out_proj_nvfp4_t),
+                            config,
+                            gpu,
+                        )?;
+                        layer.predequant_for_prefill(gpu, config, stream)?;
+                        if qkvz_fp8_prefill.is_some() || out_proj_fp8_prefill.is_some() {
+                            layer.set_fp8_prefill_only_weights(
+                                qkvz_fp8_prefill,
+                                out_proj_fp8_prefill,
+                            );
+                        }
+                        layers.push(Box::new(layer));
                     }
-                    layers.push(Box::new(layer));
                 }
                 LayerType::SlidingAttention => {
                     unreachable!("unexpected SlidingAttention in this loader")
