@@ -45,6 +45,43 @@ pub(crate) fn scalar_f32(store: &WeightStore, name: &str, gpu: &dyn GpuBackend) 
     Ok(f32::from_le_bytes(buf))
 }
 
+/// Read a single-element scale tensor as f32, accepting either FP32 or BF16
+/// on-disk dtype.
+///
+/// modelopt NVFP4 ships the per-tensor FP8 `weight_scale` as FP32, but
+/// mixed-precision compressed-tensors checkpoints (e.g. AgentWorld-35B) store it
+/// as BF16. BF16 is the high 16 bits of the f32 bit pattern, so widen by shifting
+/// left 16. Mirrors the per-row dual-dtype handling in `quantize_fns`.
+pub(crate) fn scalar_scale_f32(
+    store: &WeightStore,
+    name: &str,
+    gpu: &dyn GpuBackend,
+) -> Result<f32> {
+    let w = store.get(name)?;
+    ensure!(
+        w.num_elements() == 1,
+        "Expected scalar for {name}, got {} elements",
+        w.num_elements()
+    );
+    match w.dtype {
+        WeightDtype::FP32 => {
+            let mut buf = [0u8; 4];
+            gpu.copy_d2h(w.ptr, &mut buf)?;
+            Ok(f32::from_le_bytes(buf))
+        }
+        WeightDtype::BF16 => {
+            let mut buf = [0u8; 2];
+            gpu.copy_d2h(w.ptr, &mut buf)?;
+            let bits = u16::from_le_bytes(buf);
+            Ok(f32::from_bits((bits as u32) << 16))
+        }
+        other => anyhow::bail!(
+            "Expected FP32 or BF16 scale for {name}, got {:?}",
+            other
+        ),
+    }
+}
+
 /// Load FP8 KV cache quantization scales from a checkpoint.
 ///
 /// Searches for `{attn_prefix}.k_proj.k_scale` and `{attn_prefix}.v_proj.v_scale`
@@ -294,7 +331,7 @@ pub(crate) fn dequant_fp8_to_bf16(
     let n_bytes = w.num_elements();
     let mut fp8_buf = vec![0u8; n_bytes];
     gpu.copy_d2h(w.ptr, &mut fp8_buf)?;
-    let scale = scalar_f32(store, &format!("{prefix}.weight_scale"), gpu)?;
+    let scale = scalar_scale_f32(store, &format!("{prefix}.weight_scale"), gpu)?;
     let bf16_buf = dequant_fp8_bytes_to_bf16(&fp8_buf, scale);
     let ptr = gpu.alloc(bf16_buf.len())?;
     gpu.copy_h2d(&bf16_buf, ptr)?;
@@ -316,7 +353,7 @@ pub(crate) fn dequant_fp8_to_bf16_into(
     let n_bytes = w.num_elements();
     let mut fp8_buf = vec![0u8; n_bytes];
     gpu.copy_d2h(w.ptr, &mut fp8_buf)?;
-    let scale = scalar_f32(store, &format!("{prefix}.weight_scale"), gpu)?;
+    let scale = scalar_scale_f32(store, &format!("{prefix}.weight_scale"), gpu)?;
     let bf16_buf = dequant_fp8_bytes_to_bf16(&fp8_buf, scale);
     gpu.copy_h2d(&bf16_buf, dest)?;
     Ok(DenseWeight { weight: dest })
