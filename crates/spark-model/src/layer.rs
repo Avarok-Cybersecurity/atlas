@@ -57,6 +57,9 @@ pub struct SsmLayerState {
     pub h_state_intermediates: Vec<DevicePtr>,
     /// Intermediate conv_state snapshots during batched verification.
     pub conv_state_intermediates: Vec<DevicePtr>,
+    /// Monotonically increasing decode step counter (per sequence, per layer).
+    /// Used to skip the SSM state norm on non-boundary steps.
+    pub norm_token_count: u32,
 }
 
 impl LayerState for SsmLayerState {
