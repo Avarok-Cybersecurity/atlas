@@ -194,12 +194,31 @@ impl BlockDiffusionDraftHead {
 
         // ── Step 1: build position ids ──
         // Layout: [ctx_pos_0, ..., ctx_pos_{eff_ctx-1}, seq_pos, ..., seq_pos+γ-1].
-        // ctx_pos_i = position - eff_ctx + i — the absolute target indices
-        // of the captured positions in chronological order.
-        let ctx_start = position.saturating_sub(eff_ctx);
+        // ctx_pos_i = start_slot + i — the ACTUAL absolute position of the
+        // i-th used accumulator slot.
+        //
+        // The ctx accumulator is indexed by absolute sequence position:
+        //   acc[abs_pos] = hidden captured at sequence position abs_pos.
+        // start_slot = ctx_total - eff_ctx = the first slot we use.
+        // So the i-th ctx slot represents actual position (start_slot + i).
+        //
+        // WRONG formula: position - eff_ctx. This gives position=23, eff_ctx=20
+        // → ctx_start=3, but slot 0 is actually at sequence position 0, not 3.
+        // Using wrong position IDs corrupts the RoPE rotations for all ctx K
+        // vectors, breaking attention and causing "." collapse in predictions.
+        let start_slot = ctx_total.saturating_sub(eff_ctx);
+        let ctx_start = start_slot;
+        // Noise position layout matching SGLang's DFlash drafter training:
+        //   noise0 (conditioning token, last_token): position - 1
+        //   noise1..gamma-1 (mask tokens): position, position+1, ..., position+gamma-2
+        // Block diffusion only trains masked positions; noise0's output is untrained
+        // (conditioning). Its position must match the actual last-token position so
+        // RoPE is consistent with target ctx K vectors at the same slot.
+        let noise0_pos = (position as i64 - 1).max(0) as i32;
         let pos_host: Vec<i32> = (0..eff_ctx)
             .map(|i| (ctx_start + i) as i32)
-            .chain((0..self.gamma).map(|i| (position + i) as i32))
+            .chain(std::iter::once(noise0_pos))
+            .chain((0..self.gamma - 1).map(|i| (position + i) as i32))
             .collect();
         let pos_bytes: Vec<u8> = pos_host.iter().flat_map(|p| p.to_le_bytes()).collect();
         gpu.copy_h2d(&pos_bytes, self.scratch.position_ids)?;
@@ -217,6 +236,16 @@ impl BlockDiffusionDraftHead {
         // First eff_ctx rows: zero (Q-side ctx is zero; K/V-side gets
         // overwritten in step 3b' below). Next γ rows: embed of
         // [last_token, mask, mask, ..., mask].
+        //
+        // The drafter is trained with the last accepted (bonus) token at
+        // noise position 0 and mask tokens at positions 1..γ-1. This gives
+        // the bidirectional attention a critical conditioning signal: the
+        // other mask positions can attend to the known last_token and
+        // calibrate their predictions accordingly. Using mask_token_id for
+        // position 0 as well would break this conditioning → 0% accept rate.
+        // Reference: dflash_worker.py line 549:
+        //   block_ids[:, 0].copy_(draft_input.bonus_tokens)
+        //   block_ids[:, 1:].fill_(mask_token_id)
         // Total stream_buf width = n_attn rows.
         if eff_ctx > 0 {
             gpu.memset(
@@ -354,10 +383,25 @@ impl BlockDiffusionDraftHead {
             dump_bf16("final.lm_head_shared[0..10]", self.lm_head_shared, 10)?;
         }
 
-        // ── Step 5: argmax per row → γ token ids ──
-        for i in 0..self.gamma {
+        // ── Step 5: argmax per row → γ-1 token ids (skip noise0) ──
+        // Block diffusion: the model is only trained at MASKED positions.
+        // noise0 (conditioning slot, input = last_token) is UNTRAINED — its
+        // logits are arbitrary garbage. SGLang skips it:
+        //   `draft_next = greedy_sample(draft_hidden[:, 1:, :])`
+        //   `draft_tokens[:, 0] = block_ids[:, 0]`  (= last_token itself)
+        // We match that: extract argmax from noise1..noise{gamma-1} only,
+        // writing to draft_tokens_dev slots 0..gamma-2 (γ-1 valid drafts).
+        if debug_dump {
+            dump_bf16("final.logits[noise0]", self.scratch.logits, 10)?;
+            dump_bf16(
+                "final.logits[noise1]",
+                self.scratch.logits.offset(self.vocab_size * bf16),
+                10,
+            )?;
+        }
+        for i in 1..self.gamma {
             let logits_row = self.scratch.logits.offset(i * self.vocab_size * bf16);
-            let token_slot = self.scratch.draft_tokens_dev.offset(i * 4);
+            let token_slot = self.scratch.draft_tokens_dev.offset((i - 1) * 4);
             ops::argmax_bf16(
                 gpu,
                 self.kernels.argmax,
@@ -367,19 +411,34 @@ impl BlockDiffusionDraftHead {
                 stream,
             )?;
         }
-        if debug_dump {
-            dump_bf16("final.logits[noise0]", self.scratch.logits, 10)?;
-        }
 
-        // ── Step 6: D2H γ × 4 bytes ──
-        let mut host_buf = vec![0u8; self.gamma * 4];
+        // ── Step 6: D2H (γ-1) × 4 bytes ──
+        let mut host_buf = vec![0u8; (self.gamma - 1) * 4];
+        let t_pre_sync = std::time::Instant::now();
         gpu.synchronize(stream)?;
+        let t_post_sync = std::time::Instant::now();
+        if dflash_prof {
+            let step0_us = t_step0_done.map(|t| t.elapsed().as_micros()).unwrap_or(0);
+            let layers_us = t_layers_done
+                .and_then(|tl| t_step0_done.map(|t0| tl.duration_since(t0).as_micros()))
+                .unwrap_or(0);
+            let sync_wait_us = t_post_sync.duration_since(t_pre_sync).as_micros();
+            tracing::info!(
+                "DFlash forward_block PROF: pre_sync(step0+layers+head+argmax)={}ms sync_wait={}ms step0_gpu={}ms layers_gpu={}ms eff_ctx={} n_attn={}",
+                t_pre_sync.elapsed().as_millis(),
+                sync_wait_us / 1000,
+                step0_us / 1000,
+                layers_us / 1000,
+                eff_ctx,
+                n_attn,
+            );
+        }
         gpu.copy_d2h(self.scratch.draft_tokens_dev, &mut host_buf)?;
         let drafts: Vec<u32> = host_buf
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        // ATLAS_DFLASH_DEBUG_DUMP_FULL=1 (one-shot): log all γ drafts so
+        // ATLAS_DFLASH_DEBUG_DUMP_FULL=1 (one-shot): log γ-1 valid drafts so
         // we can compare against the PyTorch reference run on the same
         // captured target_hidden. Static guard mirrors the input dump.
         static DRAFTS_DUMP_DONE: std::sync::atomic::AtomicBool =
@@ -391,8 +450,8 @@ impl BlockDiffusionDraftHead {
                 == Some("1")
         {
             tracing::info!(
-                "DFLASH DUMP_FULL drafts (γ={}, last_token={}, position={}, eff_ctx={}): {:?}",
-                self.gamma,
+                "DFLASH DUMP_FULL drafts (γ-1={}, last_token={}, position={}, eff_ctx={}): {:?}",
+                self.gamma - 1,
                 last_token,
                 position,
                 eff_ctx,
