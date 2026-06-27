@@ -62,7 +62,7 @@ pub fn step_verify_k2(
     drafts: &[u32],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
-    _dflash_verify_raw_argmax: bool,
+    dflash_verify_raw_argmax: bool,
 ) {
     use crate::scheduler::mtp_timing::{self, Phase};
     let t_step = Instant::now();
@@ -116,14 +116,23 @@ pub fn step_verify_k2(
     // (~0.8ms for 256k vocab × K=2); not graph-captured. Acceptance
     // is decided against the *processed* argmax, not the raw GPU
     // argmax — the pipeline is what would have run if MTP were off.
-    let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
-        model,
-        &[v0_argmax, v1_argmax],
-        a,
-        verify_ctx,
-    );
-    let v0 = processed.first().copied().unwrap_or(v0_argmax);
-    let v1 = processed.get(1).copied().unwrap_or(v1_argmax);
+    // DFlash drafter uses raw argmax — skip rep_pen/DRY pipeline which
+    // drives accept rate to 0% (pipeline modifies target token before
+    // comparison with drafter's greedy argmax). See K=4 for context.
+    let (v0, v1) = if dflash_verify_raw_argmax {
+        (v0_argmax, v1_argmax)
+    } else {
+        let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+            model,
+            &[v0_argmax, v1_argmax],
+            a,
+            verify_ctx,
+        );
+        (
+            processed.first().copied().unwrap_or(v0_argmax),
+            processed.get(1).copied().unwrap_or(v1_argmax),
+        )
+    };
     let accepted = drafts[0] == v0;
 
     // Extract logprobs from verify logits buffer (K=2 positions) when requested.
