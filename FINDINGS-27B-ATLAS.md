@@ -814,13 +814,31 @@ PAIR DUMP при K=16: `verified[..8]=[11, 198, 279, 248046, 198, 248046, ...]` 
 
 ### Текущий лучший результат DFlash
 
-| Конфигурация | tok/s | Примечание |
-|---|---|---|
-| MTP K=2 fp8 | **17.8** | текущий лучший |
-| **DFlash K=2 (cap=1)** | **10.5** | ✅ рабочий, 1.55× multiplier |
-| DFlash cap=15, K=16 verify | ~1–2 | SSM mismatch, EOS на позициях 3+ |
-| DFlash K=17 (cap=16) | ~1 | WY17 путь работает, propose overhead |
-| Цель | **>17.8** | нужен K=γ с высоким acceptance |
+Тест после сессии 6 (все фиксы: BF16/FP32, YaRN→RoPE, pos IDs, noise0, raw argmax).  
+Промпт: "Write a complete Python red-black tree", max_tokens=600, temperature=0.
+
+| cap | K verify | путь | verify_multiplier | tok/s | вывод | dispatch |
+|---|---|---|---|---|---|---|
+| 1 | 2 | step_verify_k2 | 1.55 | **10.5** | ✅ чистый | graphed k2 |
+| 2 | 3 | step_verify_k3 | 1.89 | 7.4 | ✅ чистый | WY3 kernel |
+| 4 | 5 | step_verify_dflash | 5.34 | 7.9 | ❌ гарлбид | sequential fallback |
+| 8 | 9 | step_verify_dflash | 7.30 | 6.3 | ❌ гарлбид | sequential fallback |
+| 16 | **16** | step_verify_dflash | 12.14 | 4.6 | ❌ гарлбид | sequential fallback |
+
+**Важное открытие:** cap=16 → K=**16**, не K=17.  
+С нашим argmax-фиксом (skip noise0, loop i=1..γ-1): γ=16 → **15 drafts** → K=16.  
+WY17 kernel требует 16 drafts = K=17, что недостижимо при γ=16.
+
+**Рабочие K:** {2, 3} — используют graphed k2 / WY3 (не sequential fallback).  
+cap=3 → K=4 → WY4 kernel → вероятно тоже рабочий (не тестировался).  
+cap=4+ → K=5..16 → sequential fallback → SSM state mismatch → гарлбид вывод.
+
+**Propose overhead при eff_ctx=100–500:**
+- cap=1..3 (eff_ctx≈500): forward_block=100–130ms (ctx window заполнен)
+- cap=16 (eff_ctx≈115): forward_block=57–67ms (контекст ещё не заполнен)
+
+| MTP K=2 fp8 | **17.8** | эталон |
+| Цель | **>17.8** | нужен WY4+ с высоким acceptance |
 
 ---
 
@@ -873,26 +891,33 @@ LD_LIBRARY_PATH="/home/isolo/.cache/uv/archive-v0/V0RWp7iPS0kW3pWE/nvidia/nccl/l
 
 ---
 
-### Приоритет 1: Тест с cap>1 после всех фиксов
+### ✅ Результаты теста cap=1,2,4,8,16 (2026-06-27, все фиксы применены)
 
-Все correctness баги исправлены. Нужно проверить работает ли DFlash K=γ (γ>2) теперь:
+Выводы из теста (см. таблицу в §8):
 
-```bash
-ATLAS_DFLASH_DRAFT_CAP=3 ./launch-sglang.sh ... --dflash ...
-# ожидаем: verify_multiplier > 1.0 при K=4
-```
+- cap=1 (K=2): ✅ 10.5 tok/s, чистый вывод
+- cap=2 (K=3, WY3): ✅ 7.4 tok/s, чистый вывод, verify_multiplier=1.89
+- cap=4 (K=5, sequential): ❌ 7.9 tok/s, гарлбид, SSM state mismatch
+- cap=8 (K=9, sequential): ❌ 6.3 tok/s, гарлбид
+- cap=16 (K=16, sequential): ❌ 4.6 tok/s, гарлбид
 
-Если acceptance >0% при cap=2 (K=3) или cap=3 (K=4) — SSM state mismatch может быть менее критичным чем думали (K=3 и K=4 используют WY-batch kernels, sequential fallback только для K ∉ {2,3,4,17}).
+**Открытие про WY17:** γ=16 → argmax loop i=1..15 → 15 drafts → K=16, а не K=17.  
+WY17 kernel недостижим при γ=16. К=17 требует 16 draft токенов.
 
-Если 0% — SSM state mismatch остаётся (см. Приоритет 2).
+**cap=3 (K=4, WY4) не тестировался** — высокая вероятность работы (WY4 kernel в dispatch table).
 
 ---
 
-### Приоритет 2: DFlash K=γ SSM state mismatch (если cap>1 всё ещё ломается)
+### Приоритет 1: cap=3 (K=4, WY4) тест
+
+Быстрый тест — WY4 должен работать как WY3 (cap=2). Если ✅ → это лучший доступный вариант без SSM фикса.
+
+### Приоритет 2: DFlash K=γ SSM state mismatch (sequential fallback)
 
 **Проблема:** для K ∉ {2,3,4,17} sequential fallback в `trait_decode_batched_conv_gdn.rs` пишет `h_state_intermediates` иначе чем WY-chunkwise kernels. При partial-accept rollback состояние восстанавливается из неправильного intermediate.
 
-**Симптом:** PAIR DUMP при K=16 — позиции 3+ дают EOS (248046). K=3/4 через WY-kernels — не затронуты этим багом.
+**Симптом:** cap=4/8/16 дают гарлбид (Chinese text, repetition loops). K=3 через WY3 — чистый.  
+**Scope:** K=5..16 → sequential fallback → SSM state mismatch → гарлбид.
 
 **Что нужно:**
 1. Сравнить семантику `h_state_intermediates` в WY4 kernel vs sequential цикл  
@@ -903,13 +928,20 @@ ATLAS_DFLASH_DRAFT_CAP=3 ./launch-sglang.sh ... --dflash ...
 
 ---
 
-### Приоритет 3: Verify overhead (133ms) — amortize через cap>1
+### Приоритет 3: Verify overhead и propose overhead
 
-С K=2 DFlash: `propose(43ms) + verify(133ms) ≈ 176ms` на ~1.55 токена ≈ 8.8 tok/s теоретически.  
-Verify (133ms) — главный bottleneck. Propose снизился с 50ms до 43ms (GEMM оптимизация).
+Данные из теста:
 
-При cap=N (K=N+1): verify один раз на N+1 токенов → amortize overhead:
-- cap=3 → K=4 → WY4 kernel → ~180ms verify на ~2.5–3.5 токена → потенциально 13–17 tok/s
-- cap=15 → K=16 → sequential path (SSM mismatch bug) → нужен фикс приоритета 2
+| cap | verify_ms | propose_ms | tok/step | tok/s |
+|---|---|---|---|---|
+| 1 | 133ms | 50ms | 1.55 | 10.5 |
+| 2 | 154ms | 100–130ms | 1.89 | 7.4 |
+| 16 | ~1003ms | 57–67ms | 12.14 | 4.6 |
 
-**Investigate:** можно ли `decode_verify_graphed_k2` реюзать для DFlash K=2 вместо kgamma пути (убрать propose из цикла вообще, ценой 1 вместо γ-1 drafted tokens).
+cap=2 хуже cap=1 из-за propose overhead (100–130ms при eff_ctx=500) — propose доминирует над verify.  
+cap=16 быстрый propose (eff_ctx малый), но verify=1s и SSM mismatch ломает вывод.
+
+**Главная проблема:** propose overhead растёт с eff_ctx. При eff_ctx=500 GEMM [500×25600×5120] ≈ 100ms.  
+Нужно либо: ограничить ctx_window (меньше eff_ctx) или оптимизировать GEMM для больших M.
+
+**После SSM фикса (Приоритет 2):** cap=3 (WY4) или cap=15 (WY16 если добавить) должны дать лучший amortization.
