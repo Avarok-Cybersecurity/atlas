@@ -101,9 +101,10 @@ impl BlockDiffusionDraftHead {
                 .or_else(|_| gpu.kernel("residual_add", "bf16_residual_add"))?,
             dense_gemv: gpu.kernel("gemv", "dense_gemv_bf16")?,
             dense_gemm: gpu.kernel("gemm", "dense_gemm_bf16")?,
-            // Qwen3.6-DFlash uses yarn RoPE — confirmed in the drafter
-            // `config.json:rope_scaling.rope_type="yarn"`. Atlas's yarn
-            // kernel is `rope::rope_forward_yarn`.
+            dense_gemm_pipelined: gpu.kernel("gemm", "dense_gemm_bf16_pipelined")?,
+            // Drafter uses standard RoPE (rope_scaling=null in config.json).
+            // rope_forward_yarn kernel is table-driven — with standard inv_freq
+            // it produces standard RoPE output.
             rope_qwen3: gpu.kernel("rope", "rope_forward_yarn")?,
             // FP8 KV cache writeback. Module name is the .cu stem
             // `reshape_and_cache`, function is `reshape_and_cache_flash_fp8`
