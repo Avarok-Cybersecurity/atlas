@@ -859,33 +859,57 @@ LD_LIBRARY_PATH="/home/isolo/.cache/uv/archive-v0/V0RWp7iPS0kW3pWE/nvidia/nccl/l
 
 ## 10. Next Steps
 
-### Приоритет 1: DFlash K=γ SSM state mismatch (отдельная задача)
+### Статус после сессий 2–6 (2026-06-27)
+
+Все накопленные изменения закоммичены (ветка `optimizations`, 5 коммитов):
+
+| Коммит | Что |
+|---|---|
+| `6c6dee6` | fix(ssm): BF16/FP32 mismatch в batched verify → accept rate 0%→✅ |
+| `27aa5e2` | fix(dflash): YaRN→RoPE, position IDs, noise0, argmax skip noise0 |
+| `cfc3012` | perf(dflash): batched pipelined GEMM (propose 110ms→43ms) |
+| `ba803ca` | fix(dflash): пропуск rep_pen/DRY в verify пути |
+| `6ce3ae8` | chore: propose/lm_head логи |
+
+---
+
+### Приоритет 1: Тест с cap>1 после всех фиксов
+
+Все correctness баги исправлены. Нужно проверить работает ли DFlash K=γ (γ>2) теперь:
+
+```bash
+ATLAS_DFLASH_DRAFT_CAP=3 ./launch-sglang.sh ... --dflash ...
+# ожидаем: verify_multiplier > 1.0 при K=4
+```
+
+Если acceptance >0% при cap=2 (K=3) или cap=3 (K=4) — SSM state mismatch может быть менее критичным чем думали (K=3 и K=4 используют WY-batch kernels, sequential fallback только для K ∉ {2,3,4,17}).
+
+Если 0% — SSM state mismatch остаётся (см. Приоритет 2).
+
+---
+
+### Приоритет 2: DFlash K=γ SSM state mismatch (если cap>1 всё ещё ломается)
 
 **Проблема:** для K ∉ {2,3,4,17} sequential fallback в `trait_decode_batched_conv_gdn.rs` пишет `h_state_intermediates` иначе чем WY-chunkwise kernels. При partial-accept rollback состояние восстанавливается из неправильного intermediate.
 
-**Симптом:** PAIR DUMP позиции 3+ предсказывают EOS (token 248046) даже при правильном FP32 conv/GDN. h_state после t=3 не является NaN (это бы выдало все позиции), но что-то в intermediate indexing или порядке снапшотов расходится с WY-kernel ожиданиями.
+**Симптом:** PAIR DUMP при K=16 — позиции 3+ дают EOS (248046). K=3/4 через WY-kernels — не затронуты этим багом.
 
 **Что нужно:**
-1. Сравнить как WY4 kernel заполняет `h_state_intermediates[0..2]` vs sequential путь (после каждого gdn_decode)
-2. Проверить `commit_verify_state_async` — какой intermediate index используется для partial-accept
-3. Возможно: добавить K=16 в WY-dispatch table (WY16 kernel) вместо sequential fallback
+1. Сравнить семантику `h_state_intermediates` в WY4 kernel vs sequential цикл  
+2. Проверить `commit_verify_state_async` — какой intermediate index для partial-accept  
+3. Вариант: добавить K=16 в WY-dispatch (WY16 kernel) — убрать sequential fallback
 
 **Файлы:** `trait_decode_batched_conv_gdn.rs`, `ssm_pool.rs:commit_verify_state_async_dispatch`, `kernels/gb10/*/gated_delta_rule.cu`
 
-### Приоритет 2: Verify overhead (133ms) и propose overhead (50ms)
+---
 
-С K=2 DFlash цикл: `propose(50ms) + verify(133ms) = 183ms` на ~1.55 токена → ~8.5 tok/s теоретически.  
-Verify (133ms) — главный bottleneck. Propose (50ms) — дополнительная потеря поверх него.
+### Приоритет 3: Verify overhead (133ms) — amortize через cap>1
 
-MTP K=2 fp8 @ 17.8 tok/s: нет propose step, verify по `decode_verify_graphed_k2` (отдельный путь, быстрее).  
-DFlash K=2 verify идёт через `decode_verify_graphed_kgamma` — тяжелее из-за SSM sequential loop.
+С K=2 DFlash: `propose(43ms) + verify(133ms) ≈ 176ms` на ~1.55 токена ≈ 8.8 tok/s теоретически.  
+Verify (133ms) — главный bottleneck. Propose снизился с 50ms до 43ms (GEMM оптимизация).
 
-**Пути улучшения:**
-- Если исправить K=γ SSM mismatch и поднять cap → больше токенов на один verify + propose → amortize оба overhead
-- Investigate можно ли `decode_verify_graphed_k2` реюзать для DFlash K=2 вместо kgamma пути
-- `ATLAS_DFLASH_CTX_WINDOW` (дефолт 512) → влияет на качество propose, косвенно на acceptance
+При cap=N (K=N+1): verify один раз на N+1 токенов → amortize overhead:
+- cap=3 → K=4 → WY4 kernel → ~180ms verify на ~2.5–3.5 токена → потенциально 13–17 tok/s
+- cap=15 → K=16 → sequential path (SSM mismatch bug) → нужен фикс приоритета 2
 
-### Приоритет 3: Cleanup диагностического кода в git diff
-
-В diff есть debug printf в `kernels/gb10/common/gated_delta_rule.cu` (не влияет на qwen3.6-27b — используется model-specific kernel, но лишний код).  
-`gpu.rs`, `cuda_backend.rs`, `gpu_impl.rs` — `device_sync()` метод не вызывается нигде после очистки диагностики — можно убрать или оставить (harmless).
+**Investigate:** можно ли `decode_verify_graphed_k2` реюзать для DFlash K=2 вместо kgamma пути (убрать propose из цикла вообще, ценой 1 вместо γ-1 drafted tokens).
