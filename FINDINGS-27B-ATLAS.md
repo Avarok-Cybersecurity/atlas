@@ -877,9 +877,9 @@ LD_LIBRARY_PATH="/home/isolo/.cache/uv/archive-v0/V0RWp7iPS0kW3pWE/nvidia/nccl/l
 
 ## 10. Next Steps
 
-### Статус после сессий 2–6 (2026-06-27)
+### Статус после сессий 2–7 (2026-06-27)
 
-Все накопленные изменения закоммичены (ветка `optimizations`, 5 коммитов):
+Ветка `optimizations`, 6 коммитов:
 
 | Коммит | Что |
 |---|---|
@@ -888,60 +888,104 @@ LD_LIBRARY_PATH="/home/isolo/.cache/uv/archive-v0/V0RWp7iPS0kW3pWE/nvidia/nccl/l
 | `cfc3012` | perf(dflash): batched pipelined GEMM (propose 110ms→43ms) |
 | `ba803ca` | fix(dflash): пропуск rep_pen/DRY в verify пути |
 | `6ce3ae8` | chore: propose/lm_head логи |
+| `af6b12e` | docs: cap=1..16 test results |
+
+**Текущий baseline (cap=1, ctx_window=64):** 9.4 tok/s, verify_mult=1.69, propose=45ms  
+**MTP baseline (K=2, fp8 head):** 17.8 tok/s на коде → DFlash отстаёт в ~1.9×  
+**SGLang DFlash (FP8 модель, SM121):** ~21 tok/s → наш потолок при исправном K
 
 ---
 
-### ✅ Результаты теста cap=1,2,4,8,16 (2026-06-27, все фиксы применены)
+### Анализ propose (ctx_window=64, ATLAS_DFLASH_PROF)
 
-Выводы из теста (см. таблицу в §8):
+Propose = 45ms = **74% от bandwidth-предела** (5.94 GB весов BF16 @ 178 GB/s = 33ms):
 
-- cap=1 (K=2): ✅ 10.5 tok/s, чистый вывод
-- cap=2 (K=3, WY3): ✅ 7.4 tok/s, чистый вывод, verify_multiplier=1.89
-- cap=4 (K=5, sequential): ❌ 7.9 tok/s, гарлбид, SSM state mismatch
-- cap=8 (K=9, sequential): ❌ 6.3 tok/s, гарлбид
-- cap=16 (K=16, sequential): ❌ 4.6 tok/s, гарлбид
+| компонент | время | % | описание |
+|---|---|---|---|
+| step0 (fc GEMM) | ~1ms | 2% | 0.26 GB вес, растёт с eff_ctx |
+| layers attention × 5 | ~8ms | 18% | 0.47 GB вес, константа |
+| layers FFN × 5 | ~18ms | 40% | 2.67 GB вес, константа |
+| lm_head + argmax + D2H | ~18ms | 40% | 2.54 GB вес, константа |
 
-**Открытие про WY17:** γ=16 → argmax loop i=1..15 → 15 drafts → K=16, а не K=17.  
-WY17 kernel недостижим при γ=16. К=17 требует 16 draft токенов.
-
-**cap=3 (K=4, WY4) не тестировался** — высокая вероятность работы (WY4 kernel в dispatch table).
+FFN:attention = 2.25:1. **80% propose — чтение весов FFN + lm_head.**  
+Bottleneck — bandwidth, не compute. Flash attention бесполезен (n_attn²×32 ≈ 0.03ms).
 
 ---
 
-### Приоритет 1: cap=3 (K=4, WY4) тест
+### Приоритет 1: cap=3 (K=4, WY4) — тест
 
-Быстрый тест — WY4 должен работать как WY3 (cap=2). Если ✅ → это лучший доступный вариант без SSM фикса.
+Ещё не тестировался. WY4 kernel есть в dispatch table → должен работать как WY3 (cap=2).  
+Ожидаем verify_mult ≈ 2.0–2.5. Если ✅ → лучший вариант без SSM фикса.
 
-### Приоритет 2: DFlash K=γ SSM state mismatch (sequential fallback)
+---
 
-**Проблема:** для K ∉ {2,3,4,17} sequential fallback в `trait_decode_batched_conv_gdn.rs` пишет `h_state_intermediates` иначе чем WY-chunkwise kernels. При partial-accept rollback состояние восстанавливается из неправильного intermediate.
+### Приоритет 2: SSM state mismatch (K=5..16)
 
-**Симптом:** cap=4/8/16 дают гарлбид (Chinese text, repetition loops). K=3 через WY3 — чистый.  
-**Scope:** K=5..16 → sequential fallback → SSM state mismatch → гарлбид.
+**Проблема:** sequential fallback в `trait_decode_batched_conv_gdn.rs` пишет `h_state_intermediates` иначе чем WY-chunkwise kernels → partial-accept rollback восстанавливает неверное состояние → гарблид.
 
-**Что нужно:**
-1. Сравнить семантику `h_state_intermediates` в WY4 kernel vs sequential цикл  
-2. Проверить `commit_verify_state_async` — какой intermediate index для partial-accept  
-3. Вариант: добавить K=16 в WY-dispatch (WY16 kernel) — убрать sequential fallback
+**Симптом:** cap=4/8/16 → Chinese text + repetition loops. K∈{2,3,4} через WY kernels — чистые.  
+**Scope:** K=5..16 → sequential fallback → SSM state mismatch.
+
+**Варианты фикса:**
+1. Добавить WY16 kernel → dispatch для K=16, убрать sequential fallback совсем
+2. Исправить семантику `h_state_intermediates` в sequential ветке (сложнее)
 
 **Файлы:** `trait_decode_batched_conv_gdn.rs`, `ssm_pool.rs:commit_verify_state_async_dispatch`, `kernels/gb10/*/gated_delta_rule.cu`
 
+**Потенциал:** при K=16 (cap=15) verify_mult ≈ 5–8 → возможно 25+ tok/s.
+
 ---
 
-### Приоритет 3: Verify overhead и propose overhead
+### Приоритет 3: ctx_window=64 как дефолт
 
-Данные из теста:
+Подтверждено: ctx_window=64 лучше дефолтного 512 по **обоим** параметрам:
+- propose: 45ms flat vs 47→110ms (растёт с eff_ctx)
+- verify_mult: 1.69 vs 1.52
 
-| cap | verify_ms | propose_ms | tok/step | tok/s |
-|---|---|---|---|---|
-| 1 | 133ms | 50ms | 1.55 | 10.5 |
-| 2 | 154ms | 100–130ms | 1.89 | 7.4 |
-| 16 | ~1003ms | 57–67ms | 12.14 | 4.6 |
+Изменение: одна строка в `from_weights.rs` — поменять дефолт `ctx_window = 512` → `64`.
 
-cap=2 хуже cap=1 из-за propose overhead (100–130ms при eff_ctx=500) — propose доминирует над verify.  
-cap=16 быстрый propose (eff_ctx малый), но verify=1s и SSM mismatch ломает вывод.
+---
 
-**Главная проблема:** propose overhead растёт с eff_ctx. При eff_ctx=500 GEMM [500×25600×5120] ≈ 100ms.  
-Нужно либо: ограничить ctx_window (меньше eff_ctx) или оптимизировать GEMM для больших M.
+### Приоритет 4: Двойное чтение k/v весов в каждом слое
 
-**После SSM фикса (Приоритет 2):** cap=3 (WY4) или cap=15 (WY16 если добавить) должны дать лучший amortization.
+В `forward_block_layer.rs` шаг 3b проецирует k/v для всех n_attn строк (включая ctx), затем шаг 3b' перезаписывает k/v ctx-слотов через fc_proj. Итого k_proj и v_proj читаются дважды:
+
+- Лишнее чтение: 5 слоёв × 2 × 10 MB = **100 MB** → ~0.6ms
+- Фикс: 3b запускать только для γ=16 noise-строк; ctx k/v — только через fc_proj (шаг 3b')
+
+Минорный эффект, но код станет корректнее (нет лишних GEMM).
+
+---
+
+### Приоритет 5: CUDA graph для propose
+
+При фиксированном ctx_window=64 → n_attn=80 всегда константа → shape статичен.  
+Atlas уже поддерживает CUDA graph для основного decode loop. Применить к `forward_block`.
+
+- Устраняет overhead запуска 50+ kernels за шаг
+- Ожидаемый выигрыш: ~2–5ms (propose 45ms → ~40ms)
+- Реализация: захватить граф при первом вызове с данным n_attn, реплеить при n_attn совпадает
+
+---
+
+### Приоритет 6: Квантование весов драфтера
+
+Propose = 74% от bandwidth-предела → единственный путь к значимому ускорению:
+
+| квантование | propose | Δ tok/s (cap=1) | сложность |
+|---|---|---|---|
+| BF16 (текущий) | 45ms | baseline 9.4 | — |
+| INT8 / FP8 | ~28ms | +11% (~10.4) | offline quant + INT8 GEMM kernel |
+| INT4 / FP4 | ~19ms | +17% (~11.0) | offline quant + FP4 GEMM kernel |
+
+С SSM фиксом (cap=15) + INT8: propose ~28ms, verify_mult ~6 → **30+ tok/s**.  
+lm_head (248k vocab, 2.54 GB) — самый дорогой компонент, квантуется первым.
+
+---
+
+### Приоритет 7: Sliding window attention в драфтере
+
+Слои 0–3 драфтера обучены с `sliding_window=2048`, слой 4 — full attention.  
+Мы запускаем все 5 слоёв с full bidirectional attention.  
+При ctx_window ≤ 512 и n_attn ≤ 528 < 2048 — не влияет на результат.  
+При будущем увеличении ctx_window > 2048 станет training/inference mismatch.
