@@ -616,6 +616,70 @@ fn qwen3_coder_spurious_trailing_close_reaches_flush_not_leaked() {
     );
 }
 
+/// Defense-in-depth: `scrub_tool_tags` must remove EVERY complete tool-call
+/// markup tag from a content string, including the full raw block a desync'd
+/// detector can dump on a runaway/truncation boundary. Uses the exact shape
+/// reported live against Ornith-1.0-35B (leading spurious `</_call>`, multiple
+/// `<tool_call><function=…><parameter=…>…</tool_call></_call>` blocks). Only
+/// markup is removed; the inner argument *values* and surrounding whitespace
+/// survive (they are not tool tags).
+#[test]
+fn scrub_tool_tags_strips_runaway_markup_dump() {
+    use crate::tool_parser::LeakMarkers;
+    let markers: LeakMarkers = Qwen3CoderParser.leak_markers();
+    let dump = "</_call>\n<tool_call>\n<function=alarms>\n<parameter=category>\ngrid_power\n\
+                </parameter>\n<parameter=window>\n24h\n</parameter>\n</function>\n</tool_call></_call>\n\
+                <tool_call>\n<function=fleet>\n<parameter=limit>\n200\n</parameter>\n</function>\n\
+                </tool_call></_call>";
+    let scrubbed = crate::api::sanitizer::scrub_tool_tags(dump, &markers);
+    for tag in [
+        "<tool_call>", "</tool_call>", "</_call>", "<function=", "</function>",
+        "<parameter=", "</parameter>",
+    ] {
+        assert!(
+            !scrubbed.contains(tag),
+            "tag {tag:?} survived scrub: {scrubbed:?}"
+        );
+    }
+    // Argument values are not tags and must remain.
+    assert!(scrubbed.contains("grid_power"), "value dropped: {scrubbed:?}");
+    assert!(scrubbed.contains("200"), "value dropped: {scrubbed:?}");
+}
+
+/// `scrub_tool_tags` must leave legitimate prose untouched — a bare `<`
+/// (math/comparison) and a non-tool `<...>` tag are not tool markup.
+#[test]
+fn scrub_tool_tags_preserves_non_tool_content() {
+    use crate::tool_parser::LeakMarkers;
+    let markers: LeakMarkers = Qwen3CoderParser.leak_markers();
+    let prose = "if a < b and c > d, use <div> in the template";
+    let scrubbed = crate::api::sanitizer::scrub_tool_tags(prose, &markers);
+    assert_eq!(scrubbed, prose, "non-tool content altered");
+}
+
+/// End-to-end through the streaming pipeline: when the detector hands a full
+/// raw tool-call block to the Content arm (the desync/runaway case — here
+/// forced by a leading spurious `</_call>` that desyncs envelope detection),
+/// no `<tool_call>`/`<function=`/`<parameter=`/`</_call>` markup may reach
+/// the client's content stream.
+#[test]
+fn qwen3_coder_runaway_content_dump_not_leaked() {
+    // Whole-string chunks (the detector classifies the leading stray close
+    // and any unrecognised markup as Content, which routes through the
+    // sanitizer + final scrub).
+    let chunks = [
+        "</_call>",
+        "<tool_call><function=alarms><parameter=category>grid_power</parameter></function></tool_call></_call>",
+    ];
+    let (_calls, content) = stream_through_pipeline(&chunks);
+    for tag in ["<tool_call>", "</tool_call>", "</_call>", "<function=", "<parameter="] {
+        assert!(
+            !content.contains(tag),
+            "runaway markup {tag:?} leaked into content: {content:?}"
+        );
+    }
+}
+
 /// Minimal serial env-var guard for the kill-switch test. Sets a var for the
 /// duration of a guard, restoring the prior value on drop. A process-wide
 /// mutex serialises env mutation so the env test cannot race a parallel test

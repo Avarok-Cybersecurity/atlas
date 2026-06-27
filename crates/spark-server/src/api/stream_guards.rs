@@ -148,7 +148,7 @@ pub fn flush_content_sanitizer(
         .max()
         .unwrap_or(0);
     let mut final_text = std::mem::take(tag_scan_buf);
-    // Drop any COMPLETE standalone close markers still sitting in the
+    // Drop any COMPLETE tool-call markup tags still sitting in the
     // held-back tail. The streaming `sanitize_content_chunk` loop drops a
     // close via its `OrphanClose` arm, but a close that only finishes
     // assembling at end-of-stream (or one preceded by whitespace, e.g.
@@ -157,21 +157,11 @@ pub fn flush_content_sanitizer(
     // the spurious redundant close some models emit right after the real
     // `</tool_call>` (Ornith-1.0: `</_call>` — BPE-split into `</` `_`
     // `call` `>` — or a doubled `</tool_call>`) leaks into streamed
-    // `content`. This generalises to every marker in `markers.close`,
-    // including multi-token ones, since we match the assembled buffer.
-    loop {
-        let earliest = markers
-            .close
-            .iter()
-            .filter_map(|t| final_text.find(t).map(|p| (p, t.len())))
-            .min_by_key(|(p, _)| *p);
-        match earliest {
-            Some((pos, len)) => {
-                final_text.replace_range(pos..pos + len, "");
-            }
-            None => break,
-        }
-    }
+    // `content`. `scrub_tool_tags` removes every complete marker —
+    // close tags, full-tag opens, and `<function=…>` / `<parameter=…>`
+    // attribute tags — so a runaway/desync tail dumped here is cleaned
+    // the same way as the per-chunk path.
+    final_text = super::sanitizer::scrub_tool_tags(&final_text, markers);
     // Drop a TRAILING INCOMPLETE close marker (e.g. the stream ended after
     // `</_call` before its closing `>` arrived). The original
     // `looks_like_partial_tag` guard below only fires when the WHOLE tail
