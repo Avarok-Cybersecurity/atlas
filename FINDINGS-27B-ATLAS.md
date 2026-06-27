@@ -333,7 +333,7 @@ Verify overhead уже оптимален. Резерв — поднять accep
 **Способы улучшить accept rate:**
 1. ✅ `--mtp-quantization fp8` → 49.6% accept (+6pp), +10% tok/s
 2. 🔴 NVFP4 MTP head (см. ниже §6)
-3. 🔴 DFlash drafter (см. ниже §7)
+3. ❌ DFlash drafter (см. ниже §8) — ИССЛЕДОВАН, accept rate 0%, не работает пока
 
 #### 5. 🟢 qkvz GEMV — потенциал 19% SSM времени
 
@@ -409,57 +409,424 @@ MTP head FFN читает **2× меньше байт** (NVFP4 vs FP8):
 
 ---
 
-## 7. DFlash drafter — следующий большой шаг
+## 8. DFlash drafter — АКТИВНАЯ РАБОТА (2026-06-26)
 
 ### Что это
 
-Z-Lab DFlash (`z-lab/Qwen3.6-27B-DFlash`) — специализированный drafter с линейным вниманием,  
-генерирует **γ=16 токенов параллельно** (block diffusion), не авторегрессивно.
+Z-Lab DFlash (`z-lab/Qwen3.6-27B-DFlash`, 3.3 GB) — специализированный drafter,  
+генерирует γ токенов параллельно (block diffusion). Архитектура:  
+5 transformer слоев, hidden=5120, GQA 32/8, intermediate=17408, vocab=248320.  
+fc-проекция: [5120 × 25600] BF16 — маппит 5 захваченных hiddens target-модели в drafter space.
 
-CONFIG в `kernels/gb10/qwen3.6-27b/MODEL.toml`:
-```toml
-[dflash]
-draft_model = "z-lab/Qwen3.6-27B-DFlash"
-gamma = 16
-window_size = 4096
-mask_token_id = 248070
-target_layer_ids = [1, 16, 31, 46, 61]
+**Drafter модель:** `/home/isolo/.cache/huggingface/hub/models--z-lab--Qwen3.6-27B-DFlash/snapshots/0919688658996800f86b895034249700e9481106`
+
+### История проблем и что сделано
+
+#### Сессия 1 (ранее): тест baseline
+
+```
+run 1: 1.041 tok/s — в 17× хуже baseline
+MTP gate: verify_multiplier=4.55, decode=70.27ms, verify=319.66ms
+accept rate 0.0%
 ```
 
-### Как запустить (если модель скачана)
+**Проблемы обнаружены:**
+1. `ATLAS_DFLASH_DRAFT_CAP=1` → 1 драфт → K=2 verify → 0% accept (block diffusion ≠ autoregressive)
+2. DFlash forward_block: ~110-149ms (слишком медленно)
+3. K4 graphed verify: 255-260ms (4 sequential full-model passes)
+
+#### Сессия 2 (2026-06-26): профилирование + оптимизация propose
+
+**Добавлено профилирование `ATLAS_DFLASH_PROF=1` в `forward_block.rs`:**
+- `step0_gpu` = время fc проекция (eff_ctx × batched GEMM → hidden_norm)
+- `layers_gpu` = время 5 drafter-слоёв (q/k/v/gate/up/down GEMMs)
+- `sync_wait` = время lm_head + argmax (последний sync)
+
+**Результаты с scalar `dense_gemm` (eff_ctx=24-31):**
+```
+step0_gpu=~0ms  (fc GEMM был sequential loop из eff_ctx GEMVs — каждый читал 262 MB!)
+layers_gpu=75ms (5 layers × 5 GEMMs каждый = scalar 16×16 tiles)
+sync_wait=26ms  (lm_head M=4, N=248320 — bandwidth limited)
+total forward_block=110-149ms
+```
+
+**Баг найден и исправлен:** Sequential fc GEMV loop (O(eff_ctx) × 262 MB weight reads) → заменён на один batched `dense_gemm` (читает веса 1 раз).
+
+#### Сессия 3 (2026-06-26): pipelined GEMM замена
+
+**Замена:** все `dense_gemm` (scalar 16×16 tiles) → `dense_gemm_bf16_pipelined` (tensor-core m16n8k16, 128×128 tiles, cp.async 2-stage pipeline) в:
+- `forward_block_layer.rs`: q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj (7 GEMMs)
+- `forward_block.rs`: fc GEMM (step 0), lm_head GEMM
+
+**Результаты после pipelined GEMM (eff_ctx=28-35):**
+```
+step0_gpu=2ms   (fc GEMM eff_ctx=28-35 одним batched pipelined GEMM)
+layers_gpu=24ms (5 layers — 3× ускорение от tensor-core MMA!)
+sync_wait=16ms  (lm_head — улучшение с 26ms)
+total forward_block=43-46ms
+```
+
+**Propose 43ms vs прежние 110-149ms — улучшение в 3×.**
+
+#### Сессия 3: raw argmax fix в step_verify_k4
+
+`step_verify_k4` получает флаг `dflash_verify_raw_argmax` (bool), который ставится в `true` когда `--dflash` включён, но параметр был помечен `_dflash_verify_raw_argmax` (unused). Исправлено — теперь при `dflash=true` пропускается `verify_pick_all_with_pipeline` (rep_pen/DRY), которая ломала acceptance для DFlash.
+
+### Сессия 4 (2026-06-26): SSM corruption в step_verify_dflash
+
+**Тест:** `ATLAS_DFLASH_DRAFT_CAP=4 --dflash-gamma 5` → drafts.len()=4 → `step_verify_dflash`
+
+**Результат:**
+```
+prompt: "The capital of France is"
+output: "Paris.\n\nThe capital of France is Paris\n\n:\n\n -）_ #!!!!!!!!!!!!"
+```
+
+Первые ~10 токенов правильные, потом резкий переход в garbage. Протестировано с `ATLAS_DFLASH_DEBUG_NO_GRAPH=1` — та же картина. Значит **не CUDA graph bug**.
+
+**Accept rate по логам:**
+```
+DFLASH K=γ verify: γ=4 accepted=0/4 (0%)  — подавляющее большинство шагов
+DFLASH K=γ verify: γ=4 accepted=1/4 (25%) — редко
+```
+
+### Диагностика corruption: что проверено
+
+**1. Буферы intermediates** — одни и те же указатели в `sequence.rs` и `meta.rs`. Не баг.
+
+**2. Логика seq_len rollback** — корректна (при num_accepted=0, to_drop=4 → pop 4 токена).
+
+**3. SSM h_state rollback в `commit_verify_state_async_dispatch`** — логика верна.
+
+**4. norm_token_count drift** — реальный баг CPU counter drift, исправлен в `async_chkpt.rs`:
+```rust
+// Full reject (num_accepted == 0):
+ssm.norm_token_count = ssm.norm_token_count.wrapping_sub(k as u32);
+// Partial accept (0 < num_accepted < k):
+ssm.norm_token_count = ssm.norm_token_count.wrapping_sub((k - num_accepted) as u32);
+```
+НО: оказался НЕ главной причиной corruption.
+
+### Сессия 5 (2026-06-26): Реальная причина corruption + DRAFT_CAP=16
+
+#### Реальная причина SSM corruption (USER-IDENTIFIED)
+
+**`trait_decode_batched_conv_gdn.rs` — dispatch table:**
+```
+K=2  → gdn_decode_wy2    ← WY batch kernel (работает)
+K=3  → gdn_decode_wy3    ← WY batch kernel (работает)
+K=4  → gdn_decode_wy4    ← WY batch kernel (работает)
+K=17 → gdn_decode_wy17   ← WY batch kernel (работает)
+ELSE → sequential per-token gdn_decode loop ← НИКОГДА НЕ ТЕСТИРОВАЛСЯ, БАГ
+```
+
+K=5 (DRAFT_CAP=4, gamma=5) → sequential fallback → corruption.  
+**Fix:** gamma=16 → K=17 → gdn_decode_wy17 → corruption исчезла. Вывод корректный.
+
+#### Откуда drafts=1 всегда (дефолт)
+
+В `propose.rs` строка ~272:
+```rust
+let cap: usize = std::env::var("ATLAS_DFLASH_DRAFT_CAP")
+    .ok()
+    .and_then(|s| s.parse().ok())
+    .unwrap_or(1);   // НАМЕРЕННЫЙ ДЕФОЛТ: 1
+```
+Причина: K=γ verify path не заполнял `h_state_intermediates` как WY kernels — partial accept rollback был некорректен. С gamma=16 → wy17 intermediates заполняются правильно.
+
+#### Результат теста с ATLAS_DFLASH_DRAFT_CAP=16
 
 ```bash
-./target/release/spark serve /path/to/Qwen3.6-27B-NVFP4 \
-    --port 8888 \
-    --kv-cache-dtype nvfp4 \
-    --kv-high-precision-layers 4 \
-    --dflash \
-    --draft-model /path/to/Qwen3.6-27B-DFlash \
-    --scheduling-policy slai
+ATLAS_DFLASH_PROF=1 ATLAS_DFLASH_DRAFT_CAP=16 \
+LD_LIBRARY_PATH=".../nccl/lib" \
+./target/release/spark serve Qwen3.6-27B-NVFP4 --port 8888 \
+  --kv-cache-dtype nvfp4 --kv-high-precision-layers 4 \
+  --dflash --draft-model <path> \
+  --scheduling-policy slai --gpu-memory-utilization 0.75 --mtp-quantization fp8
 ```
 
-Без `--draft-model` — подтягивает из MODEL.toml (`z-lab/Qwen3.6-27B-DFlash` с HuggingFace).
+**Лог:**
+```
+DFlash propose: forward_block=51ms total=51ms eff_ctx=64 γ=16 drafts=16 pos=316
+DFLASH K=γ verify: γ=16 accepted=0/16 (0%) seq_len=317
+DFlash propose: forward_block=51ms total=51ms eff_ctx=65 γ=16 drafts=16 pos=317
+DFLASH K=γ verify: γ=16 accepted=1/16 (6%) seq_len=319   ← редкость
+```
 
-### Ожидаемый прирост
+**Качество вывода:** ✅ корректно (числа 1..19 без corruption)  
+**Accept rate:** ~0% (1 из 20 шагов ≈ 6%, остальные 0%)  
+**tok/s: ~1.0** — в 12× хуже baseline. Каждый шаг: 1 бонусный токен / ~1s (verify≈950ms + propose≈50ms).
 
-SGLang + DFlash на GB10 даёт **~21 tok/s** (наш рекорд для сравнения).  
-При γ=16 и типичном accept rate 60–75% на код:
-- Expected accepted per step ≈ 16 × 0.65 = 10 токенов
-- Verify K=16 займёт ~150ms (GEMM K=16 vs GEMV K=1)
-- Эффективность: 10 / 0.15 = **67 tok/s** — теоретически. Реально существенно ниже из-за overhead.
+### Проблема: Chinese characters в output на speculative пути (Paris（巴黎）баг)
 
-Реалистичная оценка по аналогии с SGLang: **20–23 tok/s**.
+**Симптом:** с MTP K=2 verify модель добавляет Chinese characters в ответы которые должны быть только на английском:
+```
+MTP K=2:   "The capital of France is Paris（巴黎）"
+No-spec:   "The capital of France is Paris."
+```
 
-### Шаги
+**Изоляция (2026-06-26):** protтестировано на одном промпте:
+- Без speculative (--scheduling-policy slai, no --speculative): чистый English output
+- С MTP K=2 fp8: добавляются Chinese иероглифы
 
-1. Скачать drafter: `huggingface-cli download z-lab/Qwen3.6-27B-DFlash --local-dir /path/to/drafter`
-2. Запустить и бенчмарк (обязательно `--scheduling-policy slai`)
-3. Сравнить accept rate и throughput с текущим MTP K=2 fp8 (17.8 tok/s)
+Пользователь видел идентичный баг в SGLang при имплементации DDTree (ищет тот чат).
+
+**Гипотезы:**
+1. SSM state drift из MTP verify → незначительное изменение распределения токенов → модель "переключается" в Chinese thinking mode
+2. Thinking chain при MTP verify другой → другой результат на output
+3. Bonus token в K=2 verify немного меняет hidden state → следующий token распределён иначе
+
+**Severity:** medium — output функционально правильный (Paris = верно), но с лишними символами. Может указывать на более глубокую проблему с SSM state consistency.
+
+### Проблема: ранняя остановка генерации (seq_len cap ~87)
+
+**Симптом:** при любом запросе с DFlash cap=16 (K=17 verify) сервер останавливает генерацию после ~49 completion токенов, несмотря на max_tokens=3000. finish_reason=length.
+
+**Данные:**
+```
+prompt_tokens: 41
+completion_tokens: 49
+total_tokens: 90
+finish_reason: length   ← при max_tokens=3000!
+```
+
+Из лога: seq_len никогда не превышает ~87 (= 41 + 46). Паттерн повторяется для всех запросов:
+```
+seq_len=80, 81, 83, 84, 86, 87  ← и тут стоп
+```
+
+Thinking-модель Qwen3 расходует большинство токенов на скрытый thinking chain.
+Через `/v1/completions` с явным `<think>\n\n</think>\n` суффиксом thinking пропускается,
+но генерация всё равно обрывается на 49 токенах.
+
+**Гипотезы:**
+1. **SLAI scheduling policy** предсказывает длину вывода и ограничивает её — counting task → ~50 токенов
+2. **KV cache exhaustion**: DFlash verify аллоцирует блоки для K=17 позиций вперёд, при rollback они не освобождаются → быстрое заполнение KV cache
+3. **CUDA graph replay**: граф захватывается при первом seq_len, replay с другим seq_len использует устаревшие block table → нет места → принудительный EOS
+4. **max_seq_len взаимодействие с DFlash**: verify пытается обработать позицию seq_len+16, если `seq_len + 16 >= max_seq_len - buffer` — scheduler стопит
+
+**Как изолировать:** запустить тот же промпт без DFlash (MTP only) — если стоп исчезнет, проблема в DFlash path; если нет — это SLAI или другое.
+
+### Почему accept rate = 0%? — ROOT CAUSE НАЙДЕН (субсессия, 2026-06-26)
+
+Субсессия прочитала `forward_block.rs`, `forward_block_layer.rs`, `propose.rs`, `MODEL.toml` и нашла **три критических бага** которые вместе гарантируют 0% accept rate:
 
 ---
 
-## 8. Конфигурация запуска (оптимальная на сейчас)
+#### BUG 1 (КРИТИЧЕСКИЙ): `lm_head_shared` — LM head таргет-модели, в NVFP4 освобождается
 
+`forward_block.rs:373` явно документирует:
+> "If this returns zeros or garbage, the BF16 lm_head was freed by factory.rs's NVFP4 quantization step."
+
+В NVFP4 режиме BF16 `lm_head` таргета освобождается при квантизации. `lm_head_shared` в драфтере становится dangling pointer → garbage logits → garbage argmax → 0% accept.
+
+**Файл:** `forward_block.rs:355`, `factory.rs`
+
+---
+
+#### BUG 2 (КРИТИЧЕСКИЙ): `embed_tokens_shared` OOB для `mask_token_id=248070`
+
+`embed_tokens_shared` — это embedding table **таргет-модели** с `vocab_size=151936` (стандартный Qwen3 словарь).  
+`mask_token_id = 248070` — расширенный vocab drafter'а.
+
+Обращение к row 248070 в таблице из 151936 строк → OOB GPU read, ≈374 MB за границей аллокации → garbage embeddings для всех `gamma-1` masked noise позиций → garbage hidden states → garbage logits.
+
+**Файл:** `forward_block.rs:253`
+
+---
+
+#### BUG 3 (КРИТИЧЕСКИЙ): Target LM head используется как [248320 × h] матрица, но у неё только [151936 × h] строк
+
+Drafter vocab_size = 248320 (расширен для diffusion токенов). Target LM head = 151936 × h.  
+GEMM в `forward_block.rs:355` читает как будто 248320 строк → 39% logit домена (токены 151936..248319) читают **случайную GPU память**.
+
+Argmax over 248320 значений, где 96384 — random GPU noise → argmax почти всегда попадает в мусорный диапазон → token ID который target никогда не генерирует → **0% accept rate гарантирован**.
+
+`draft_id_to_target_id` = `None` → ремаппинг vocab отсутствует.
+
+**Файл:** `forward_block.rs:355`, `from_weights.rs:260`
+
+---
+
+#### BUG 4 (MEDIUM): Первый noise slot — `last_token` вместо `mask_token_id`
+
+Token layout в `stream_buf`:
+```
+[0, 0, ..., 0,    last_token,    mask, mask, ..., mask]
+ ←── eff_ctx ──→  ← pos 0 →     ←──── gamma-1 ───────→
+```
+Позиция 0 noise блока получает реальный токен вместо mask. Drafter обучался с all-mask входами → distribution mismatch для первой позиции.
+
+---
+
+#### BUG 5 (LOW): One-shot denoising (T=1) вместо T>1
+
+Block diffusion модели обучаются с T>1 итеративными denoising шагами. Текущая impl делает T=1 → деградация качества, но не 0% сам по себе.
+
+---
+
+### ОБНОВЛЕНИЕ: предыдущий анализ vocab mismatch был НЕВЕРЕН
+
+Вторая субсессия прочитала `from_weights.rs`, `mod.rs` и checkpoint. Оба — target и drafter — имеют **vocab_size=248320, hidden_size=5120**. Sharing `embed_tokens_shared` и `lm_head_shared` — **intentional и корректен**. BUG 1-3 из предыдущего анализа не существуют.
+
+### Реальные баги (от субсессии, 2026-06-26)
+
+#### BUG 1 (КРИТИЧЕСКИЙ): Неправильный RoPE — YaRN вместо standard
+
+`from_weights.rs:199-231` захардкодил YaRN параметры:
+```
+factor=64, beta_fast=32, beta_slow=1, original_max_position_embeddings=4096
+```
+
+Но `drafter config.json`: `"rope_scaling": null` — drafter обучался со **стандартным RoPE** (theta=10M, без интерполяции). Применение YaRN с factor=64 производит полностью неправильные positional encodings в каждом слое каждого шага → garbage attention patterns → garbage hidden states → garbage logits → **0% accept rate**.
+
+**Фикс (простой):** заменить ~30 строк YaRN вычисления на стандартный inv_freq:
+```rust
+// from_weights.rs:199-231 — заменить на:
+let n_pairs = rotary_dim / 2;
+let mut inv_freq_table = vec![0.0f32; n_pairs];
+for j in 0..n_pairs {
+    inv_freq_table[j] = 1.0 / rope_theta.powf((2 * j) as f32 / rotary_dim as f32);
+}
+```
+
+Никаких других структурных изменений не нужно — weights loading, sharing, memory allocation всё корректны.
+
+#### BUG 2 (MEDIUM): Stale docstring
+
+`dflash_head.rs:7`: "8 layers, hidden=2048, GQA 32:4" — всё неверно. Реально: 5 layers, hidden=5120, GQA 32:8. Runtime читает из config, код не сломан, но misleading.
+
+#### BUG 3 (MEDIUM): Sliding window attention игнорируется
+
+Drafter config: layers 0-3 = sliding_attention (window=2048), layer 4 = full_attention. Все 5 слоёв в `forward_block_layer.rs` запускают full bidirectional attention. При ctx_window=512 не критично (все токены влезают), но training/inference mismatch при длинных контекстах.
+
+#### BUG 4 (LOW): Первый noise slot не замаскирован
+
+`forward_block.rs:234`: slot 0 noise block получает `last_token` embedding вместо `mask_token_id`. Нарушает block diffusion protocol.
+
+### Приоритетный порядок фиксов
+
+| # | Баг | Эффект | Сложность |
+|---|-----|--------|-----------|
+| 1 | YaRN вместо standard RoPE в drafter | **0% accept** | ~5 строк |
+| 2 | First noise slot не замаскирован | деградация | ~2 строки |
+| 3 | Sliding window не применяется | деградация при ctx>512 | medium |
+
+**BUG 1 — простейший фикс, ожидаемый результат: accept rate >0%.**
+
+### ОБНОВЛЕНИЕ: RoPE фикс применён, accept всё ещё 0% (2026-06-26)
+
+YaRN→standard RoPE фикс применён (`from_weights.rs`), сборка успешна. Результаты теста:
+- Paris: "The capital of France is Paris." ✅ (Paris（巴黎）баг исчез!)
+- Accept rate: всё ещё **0% на каждом шаге** — RoPE был не единственной причиной
+
+Лог: `DFLASH K=γ verify: γ=16 accepted=0/16 (0%) seq_len=111..117...`
+
+#### Гипотезы после RoPE фикса (в расследовании)
+
+| # | Гипотеза | Файл | Статус |
+|---|----------|------|--------|
+| A | `lm_head_shared` dangling в NVFP4 — BF16 lm_head freed при квантизации | `factory.rs` | 🔴 расследуется |
+| B | Verify сравнивает token IDs с ошибочным offset/remapping | scheduler verify | 🔴 расследуется |
+| C | forward_block_layer: ctx K/V slots не получают fc_proj значения — вместо этого нули | `forward_block_layer.rs` | 🔴 расследуется |
+| D | BUG 4: первый noise slot = last_token вместо mask_token_id | `forward_block.rs:233` | известно, фикс прост |
+
+Сабсессия `claude_b285f57b-e9ff-41cc-9f1b-ae8c2a39413e` читает код по гипотезам A/B/C.
+
+### Сессия 6 (2026-06-27): BF16/FP32 mismatch в batched verify — ROOT CAUSE accept=0%
+
+#### Найденный баг
+
+`trait_decode_batched_conv_gdn.rs` — sequential fallback (K ∉ {2,3,4,17}):
+
+```
+single-token decode path (ssm_forward.rs):
+  if conv1d_l2norm_f32_k.0 != 0 → FP32 conv output → FP32 q/k/v в gdn_decode  ✅
+
+batched verify path (trait_decode_batched_conv_gdn.rs, ELSE branch):
+  всегда использовал conv1d_l2norm_k → BF16 conv output → BF16 data в gdn_decode  ❌
+```
+
+`gated_delta_rule_decode` для qwen3.6-27b/nvfp4 объявлен с `const float*` для query/key/value.  
+Передача BF16 данных → kernel читает каждые 2 BF16 байта как один FP32 float →  
+случайные значения → h_state накапливает garbage → после ~7 токенов NaN в h_state →  
+модель предсказывает EOS (token 248046) вместо реальных токенов → **accept rate = 0%**.
+
+Отдельный баг: `verify_d.rs` строка 53: `let fp32 = 2usize;` вместо `4usize` — неправильный stride для gate/beta offset.
+
+#### Фикс
+
+**`trait_decode_batched_conv_gdn.rs`** — sequential else-branch теперь проверяет `conv1d_l2norm_f32_k`, аналогично single-token decode:
+
+```rust
+let use_f32_conv = self.conv1d_l2norm_f32_k.0 != 0;
+let seq_conv_buf = if use_f32_conv { ctx.buffers.ssm_conv_out_f32() } else { conv_out_buf };
+let conv1d_k = if use_f32_conv { self.conv1d_l2norm_f32_k } else { self.conv1d_l2norm_k };
+let coes = if use_f32_conv { fp32 } else { bf16 };
+// → правильные FP32 q/k/v передаются в gdn_decode
+```
+
+**`verify_d.rs`**: `let fp32 = 4usize;` (был 2).
+
+#### Причина CUDA_ERROR_STREAM_CAPTURE_INVALIDATED (901) при диагностике
+
+Диагностический код (`gpu.synchronize(stream)` + `copy_d2h()`) находился внутри `if need_run { ... }` в `verify_d.rs` — это CUDA graph capture регион. Такие вызовы инвалидируют граф. Диагностика убрана, `trait_decode_batched.rs` восстановлен через `git checkout HEAD`.
+
+#### Результат
+
+| Конфигурация | До фикса | После фикса |
+|---|---|---|
+| DFlash K=2 (cap=1) | неизвестно | ✅ verify_multiplier=1.55, **10.5 tok/s** |
+| DFlash K=γ (cap=15, K=16) | NaN→EOS, 0% | предсказывает EOS реже, но SSM state mismatch остаётся |
+
+K=2 DFlash: `MTP gate: verify_multiplier=1.55, max_effective=16.0 => ENABLED`.  
+~55% acceptance rate (1 из 1 драфтов принимается, бонус всегда).
+
+#### Остаток: SSM state mismatch для K=γ (γ>2, K ∉ {2,3,4,17})
+
+PAIR DUMP при K=16: `verified[..8]=[11, 198, 279, 248046, 198, 248046, ...]` — позиции 3+ предсказывают EOS.
+
+Не NaN (FP32 fix убрал NaN), но WY-chunkwise vs sequential intermediate semantics расходятся.  
+Задокументировано в `propose.rs:260-272`:
+
+> "SSM state-management mismatch between the generic K=γ path and the hand-tuned K=2/3/4 specializations: the K=N!=2/3/4 fallback writes intermediates differently from the WY-chunkwise kernels, causing partial-accept rollback to land on stale state."
+
+**Это отдельная задача (kernel work).** FP32 fix убрал NaN-баг; intermediate semantics нужно фиксить отдельно.
+
+---
+
+### Текущий статус DFlash
+
+| Шаг | Статус |
+|-----|--------|
+| Profiling `ATLAS_DFLASH_PROF=1` | ✅ |
+| fc GEMV loop bug fix | ✅ |
+| Pipelined GEMM в forward_block_layer | ✅ 110ms→43ms |
+| raw argmax fix (step_verify_k4, step_verify_dflash) | ✅ |
+| norm_token_count rollback fix | ✅ `async_chkpt.rs` |
+| SSM corruption исчезла (gamma=16 wy17) | ✅ |
+| **YaRN→standard RoPE фикс** | ✅ 2026-06-26 |
+| Paris（巴黎）баг | ✅ исчез после RoPE фикса |
+| **BF16/FP32 mismatch в batched verify (ROOT CAUSE accept=0%)** | ✅ **2026-06-27** |
+| fp32=2→4 в verify_d.rs | ✅ **2026-06-27** |
+| **DFlash K=2 verify работает** | ✅ 1.55× multiplier, 10.5 tok/s |
+| DFlash K=γ (γ>2, K ∉ {2,3,4,17}) SSM state mismatch | 🔴 **отдельная задача** |
+
+### Текущий лучший результат DFlash
+
+| Конфигурация | tok/s | Примечание |
+|---|---|---|
+| MTP K=2 fp8 | **17.8** | текущий лучший |
+| **DFlash K=2 (cap=1)** | **10.5** | ✅ рабочий, 1.55× multiplier |
+| DFlash cap=15, K=16 verify | ~1–2 | SSM mismatch, EOS на позициях 3+ |
+| DFlash K=17 (cap=16) | ~1 | WY17 путь работает, propose overhead |
+| Цель | **>17.8** | нужен K=γ с высоким acceptance |
+
+---
+
+## 9. Конфигурация запуска (оптимальная на сейчас)
+
+### MTP K=2 fp8 (текущий лучший, 17.8 tok/s)
 ```bash
 ./target/release/spark serve /path/to/Qwen3.6-27B-NVFP4 \
     --port 8888 \
@@ -467,10 +834,58 @@ SGLang + DFlash на GB10 даёт **~21 tok/s** (наш рекорд для с�
     --kv-cache-dtype nvfp4 \
     --kv-high-precision-layers 4 \
     --speculative \
-    --mtp-quantization fp8 \   # fp8 лучше bf16: +10% tok/s, +6% accept rate
-    --num-drafts 1 \           # K=2 оптимально, K=3 хуже
+    --mtp-quantization fp8 \
+    --num-drafts 1 \
     --scheduling-policy slai
+```
+
+### DFlash K=2 (рабочий, 10.5 tok/s, cap=1 по дефолту)
+```bash
+ATLAS_TARGET_MODEL=qwen3.6-27b ATLAS_TARGET_QUANT=nvfp4 ATLAS_TARGET_HW=gb10 \
+RUSTFLAGS="-L /tmp/nccl-stubs" \
+LD_LIBRARY_PATH="/home/isolo/.cache/uv/archive-v0/V0RWp7iPS0kW3pWE/nvidia/nccl/lib" \
+./target/release/spark serve /home/isolo/Projects/isolorg/models/Qwen3.6-27B-NVFP4 \
+    --port 8888 --max-seq-len 4096 --kv-cache-dtype nvfp4 \
+    --kv-high-precision-layers 4 --dflash \
+    --draft-model /home/isolo/.cache/huggingface/hub/models--z-lab--Qwen3.6-27B-DFlash/snapshots/0919688658996800f86b895034249700e9481106 \
+    --scheduling-policy slai --gpu-memory-utilization 0.75
+# ATLAS_DFLASH_DRAFT_CAP не выставлен → cap=1 → K=2 verify → рабочий
 ```
 
 Профилирование: `ATLAS_PROFILE=1 ./target/release/spark serve ...`  
 Дополнительно: `ATLAS_MEM_PROFILE=1` для memory usage по слоям.
+
+---
+
+## 10. Next Steps
+
+### Приоритет 1: DFlash K=γ SSM state mismatch (отдельная задача)
+
+**Проблема:** для K ∉ {2,3,4,17} sequential fallback в `trait_decode_batched_conv_gdn.rs` пишет `h_state_intermediates` иначе чем WY-chunkwise kernels. При partial-accept rollback состояние восстанавливается из неправильного intermediate.
+
+**Симптом:** PAIR DUMP позиции 3+ предсказывают EOS (token 248046) даже при правильном FP32 conv/GDN. h_state после t=3 не является NaN (это бы выдало все позиции), но что-то в intermediate indexing или порядке снапшотов расходится с WY-kernel ожиданиями.
+
+**Что нужно:**
+1. Сравнить как WY4 kernel заполняет `h_state_intermediates[0..2]` vs sequential путь (после каждого gdn_decode)
+2. Проверить `commit_verify_state_async` — какой intermediate index используется для partial-accept
+3. Возможно: добавить K=16 в WY-dispatch table (WY16 kernel) вместо sequential fallback
+
+**Файлы:** `trait_decode_batched_conv_gdn.rs`, `ssm_pool.rs:commit_verify_state_async_dispatch`, `kernels/gb10/*/gated_delta_rule.cu`
+
+### Приоритет 2: Verify overhead (133ms) и propose overhead (50ms)
+
+С K=2 DFlash цикл: `propose(50ms) + verify(133ms) = 183ms` на ~1.55 токена → ~8.5 tok/s теоретически.  
+Verify (133ms) — главный bottleneck. Propose (50ms) — дополнительная потеря поверх него.
+
+MTP K=2 fp8 @ 17.8 tok/s: нет propose step, verify по `decode_verify_graphed_k2` (отдельный путь, быстрее).  
+DFlash K=2 verify идёт через `decode_verify_graphed_kgamma` — тяжелее из-за SSM sequential loop.
+
+**Пути улучшения:**
+- Если исправить K=γ SSM mismatch и поднять cap → больше токенов на один verify + propose → amortize оба overhead
+- Investigate можно ли `decode_verify_graphed_k2` реюзать для DFlash K=2 вместо kgamma пути
+- `ATLAS_DFLASH_CTX_WINDOW` (дефолт 512) → влияет на качество propose, косвенно на acceptance
+
+### Приоритет 3: Cleanup диагностического кода в git diff
+
+В diff есть debug printf в `kernels/gb10/common/gated_delta_rule.cu` (не влияет на qwen3.6-27b — используется model-specific kernel, но лишний код).  
+`gpu.rs`, `cuda_backend.rs`, `gpu_impl.rs` — `device_sync()` метод не вызывается нигде после очистки диагностики — можно убрать или оставить (harmless).

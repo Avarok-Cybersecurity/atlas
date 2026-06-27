@@ -325,6 +325,9 @@ impl TransformerModel {
                         .copy_d2d_async(h_ckpt, ssm.h_state, h_bytes, stream)?;
                     self.gpu
                         .copy_d2d_async(conv_ckpt, ssm.conv_state, conv_bytes, stream)?;
+                    // norm_token_count rollback: decode_batched advanced the counter
+                    // by k; on full reject, rewind to pre-verify value.
+                    ssm.norm_token_count = ssm.norm_token_count.wrapping_sub(k as u32);
                 }
             }
             self.gpu
@@ -371,6 +374,8 @@ impl TransformerModel {
                         .copy_d2d_async(ssm.h_state, h_ckpt, h_bytes, stream)?;
                     self.gpu
                         .copy_d2d_async(ssm.conv_state, conv_ckpt, conv_bytes, stream)?;
+                    // Full accept: norm_token_count is already correct (all k
+                    // tokens contributed to the live h_state).
                 } else {
                     // Partial accept: intermediate[num_accepted-1] → checkpoint
                     // AND → live. The live buffer holds state through ALL k
@@ -390,6 +395,13 @@ impl TransformerModel {
                         .copy_d2d_async(h_inter, ssm.h_state, h_bytes, stream)?;
                     self.gpu
                         .copy_d2d_async(conv_inter, ssm.conv_state, conv_bytes, stream)?;
+                    // norm_token_count rollback: decode_batched advanced the
+                    // counter by k but only num_accepted tokens are kept. Wind
+                    // back the (k - num_accepted) excess increments so the norm
+                    // trigger (count % 16 == 0) fires at the correct cadence on
+                    // subsequent verify steps.
+                    ssm.norm_token_count =
+                        ssm.norm_token_count.wrapping_sub((k - num_accepted) as u32);
                 }
 
                 ssm_layer_idx += 1;
