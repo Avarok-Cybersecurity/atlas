@@ -147,7 +147,50 @@ pub fn flush_content_sanitizer(
         .map(|t| t.len())
         .max()
         .unwrap_or(0);
-    let final_text = std::mem::take(tag_scan_buf);
+    let mut final_text = std::mem::take(tag_scan_buf);
+    // Drop any COMPLETE standalone close markers still sitting in the
+    // held-back tail. The streaming `sanitize_content_chunk` loop drops a
+    // close via its `OrphanClose` arm, but a close that only finishes
+    // assembling at end-of-stream (or one preceded by whitespace, e.g.
+    // `\n\n</_call>`, so the tail's `looks_like_partial_tag` check below
+    // never fires) survives into this flush. Without stripping it here,
+    // the spurious redundant close some models emit right after the real
+    // `</tool_call>` (Ornith-1.0: `</_call>` — BPE-split into `</` `_`
+    // `call` `>` — or a doubled `</tool_call>`) leaks into streamed
+    // `content`. This generalises to every marker in `markers.close`,
+    // including multi-token ones, since we match the assembled buffer.
+    loop {
+        let earliest = markers
+            .close
+            .iter()
+            .filter_map(|t| final_text.find(t).map(|p| (p, t.len())))
+            .min_by_key(|(p, _)| *p);
+        match earliest {
+            Some((pos, len)) => {
+                final_text.replace_range(pos..pos + len, "");
+            }
+            None => break,
+        }
+    }
+    // Drop a TRAILING INCOMPLETE close marker (e.g. the stream ended after
+    // `</_call` before its closing `>` arrived). The original
+    // `looks_like_partial_tag` guard below only fires when the WHOLE tail
+    // is a partial opener (`t.starts_with('<')`); a partial close preceded
+    // by emittable content/whitespace — `\n\n</_call` — slips past it and
+    // leaks. Find the last `<` and, if everything from it to end-of-buffer
+    // is a strict prefix of some close marker (and not a complete marker —
+    // those were already removed above), trim it off. The preceding bytes
+    // are real content and still flush.
+    if let Some(lt) = final_text.rfind('<') {
+        let suffix = &final_text[lt..];
+        let is_partial_close = markers
+            .close
+            .iter()
+            .any(|t| t.len() > suffix.len() && t.starts_with(suffix));
+        if is_partial_close {
+            final_text.truncate(lt);
+        }
+    }
     let looks_like_partial_tag = {
         let t = final_text.trim_end();
         tag_max > 0 && t.starts_with('<') && !t.contains(char::is_whitespace) && t.len() < tag_max
