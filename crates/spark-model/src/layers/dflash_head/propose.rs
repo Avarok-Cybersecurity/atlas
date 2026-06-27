@@ -198,6 +198,7 @@ impl BlockDiffusionDraftHead {
         // first-token acceptance will be poor (<<70%). Adding ctx is the
         // next iteration on top of `forward_block`.
         let _ = num_drafts;
+        let t_propose_start = std::time::Instant::now();
 
         // Append the model's latest single-slot ctx capture into the
         // per-seq accumulator. Skip when `target_hidden_stack` is None
@@ -232,6 +233,7 @@ impl BlockDiffusionDraftHead {
             dstate.ctx_len += 1;
         }
 
+        let t_forward = std::time::Instant::now();
         let drafts = self
             .forward_block(
                 last_token,
@@ -250,6 +252,7 @@ impl BlockDiffusionDraftHead {
                 tracing::warn!("DFlash forward_block failed, falling back to no-spec: {e:#}");
                 e
             })?;
+        let forward_us = t_forward.elapsed().as_micros();
         // Phase 2.5e scaffolding: K=γ verify path is implemented in model.rs
         // (decode_verify_graphed_kgamma) and dispatched via step_verify_dflash
         // when drafts.len()>=4. However, per-step output corruption (output
@@ -269,6 +272,16 @@ impl BlockDiffusionDraftHead {
             .unwrap_or(1);
         let drafts = drafts.into_iter().take(cap).collect::<Vec<_>>();
         dstate.last_num_drafted = drafts.len();
+        let total_us = t_propose_start.elapsed().as_micros();
+        tracing::info!(
+            "DFlash propose: forward_block={}ms total={}ms eff_ctx={} γ={} drafts={} pos={}",
+            forward_us / 1000,
+            total_us / 1000,
+            dstate.ctx_len,
+            self.gamma,
+            drafts.len(),
+            position,
+        );
         Ok(drafts)
     }
 }
