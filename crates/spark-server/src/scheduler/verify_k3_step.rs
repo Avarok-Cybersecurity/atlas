@@ -46,6 +46,7 @@ pub fn step_verify_k3(
     drafts: &[u32],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+    _dflash_verify_raw_argmax: bool,
 ) {
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");

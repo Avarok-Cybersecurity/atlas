@@ -564,6 +564,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             adaptive_sampling,
             session_manager,
             scheduler_spontaneous_think_budget,
+            args.dflash,
         );
     });
 

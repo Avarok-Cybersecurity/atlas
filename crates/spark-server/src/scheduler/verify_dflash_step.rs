@@ -32,6 +32,7 @@ pub fn step_verify_dflash(
     drafts: &[u32],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+    dflash_verify_raw_argmax: bool,
 ) {
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
@@ -54,23 +55,42 @@ pub fn step_verify_dflash(
     };
     a.last_token_time = Instant::now();
 
-    // Phase C-2 (2026-05-24): apply the full pre-sample
-    // logits-processor pipeline at each verify position before the
-    // accept-prefix comparison. `decode_verify_dflash` writes
-    // `[tokens.len(), vocab]` BF16 into `logits_buffer`; the helper
-    // reads it back, dequant + 8-stage pipeline + argmax per slot.
-    // Fail-safe falls back to the raw GPU argmax on D2H failure.
-    let verified = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
-        model,
-        &verified_argmax,
-        a,
-        verify_ctx,
-    );
+    // DFlash drafter proposes on raw argmax. When dflash_verify_raw_argmax is
+    // set, skip rep_pen/DRY pipeline so verifier and drafter judge on the same
+    // basis — otherwise penalty divergence collapses accept rate to 0 as context
+    // accrues (PR #132 root-cause fix). For non-DFlash callers apply the full
+    // pipeline as in K=2/3/4.
+    let verified = if dflash_verify_raw_argmax {
+        verified_argmax
+    } else {
+        crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+            model,
+            &verified_argmax,
+            a,
+            verify_ctx,
+        )
+    };
 
     // `decode_verify` already advanced `seq.seq_len` by `tokens.len()` and
     // pushed all γ+1 tokens into `seq.tokens`. The accept-prefix logic below
     // determines how many to keep — the rest must be rolled back so the
     // KV cache, SSM state, and emitted token sequence stay consistent.
+
+    // Diagnostic: log first few (draft, verified) pairs to check alignment.
+    static PAIR_DUMP_DONE: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    if !PAIR_DUMP_DONE.load(std::sync::atomic::Ordering::Relaxed) {
+        PAIR_DUMP_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
+        let n = drafts.len().min(verified.len()).min(8);
+        let pairs: Vec<(u32, u32)> = (0..n).map(|i| (drafts[i], verified[i])).collect();
+        tracing::info!(
+            "DFLASH PAIR DUMP: last_token={} tokens[..4]={:?} verified[..8]={:?} draft_vs_verified={:?}",
+            tokens[0],
+            &tokens[..tokens.len().min(4)],
+            &verified[..verified.len().min(8)],
+            pairs,
+        );
+    }
 
     // Accept-prefix: drafts[i] is "accepted" iff drafts[i] == verified[i].
     // verified[i] is the target's argmax at position i (i.e. its

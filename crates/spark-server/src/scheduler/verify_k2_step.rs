@@ -62,6 +62,7 @@ pub fn step_verify_k2(
     drafts: &[u32],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+    _dflash_verify_raw_argmax: bool,
 ) {
     let t_sync = Instant::now();
     if let Err(e) = model.sync_secondary() {
