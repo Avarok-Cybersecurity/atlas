@@ -35,6 +35,9 @@ pub struct DflashKernels {
     pub residual_rms_norm: KernelHandle,
     pub dense_gemv: KernelHandle,
     pub dense_gemm: KernelHandle,
+    /// Tensor-core pipelined BF16 GEMM — faster than dense_gemm for large M.
+    /// Uses m16n8k16 MMA with 2-stage cp.async pipeline, 128×128 tile.
+    pub dense_gemm_pipelined: KernelHandle,
     pub rope_qwen3: KernelHandle,
     pub reshape_cache_fp8: KernelHandle,
     pub prefill_attn_dflash_fp8: KernelHandle,

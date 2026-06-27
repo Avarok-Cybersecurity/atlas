@@ -157,21 +157,25 @@ impl BlockDiffusionDraftHead {
                 }
                 FULL_DUMP_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            for i in 0..eff_ctx {
-                let src_slot = base.offset((start_slot + i) * ctx_slot_bytes);
-                let dst_slot = self.scratch.fc_proj.offset(i * self.hidden_size * bf16);
-                ops::dense_gemv(
+            // Batched GEMM over all eff_ctx slots in one call — reads fc
+            // weight matrix once instead of eff_ctx sequential GEMVs.
+            // Previous loop caused O(eff_ctx) weight re-reads: each GEMV
+            // loaded 262 MB (fc: [5120×25600] BF16) → ~1.5ms × eff_ctx
+            // sequential, growing to 300ms+ at eff_ctx=200. Single GEMM
+            // reads the weight once regardless of eff_ctx.
+            if eff_ctx > 0 {
+                let src_all = base.offset(start_slot * ctx_slot_bytes);
+                ops::dense_gemm_bf16_pipelined(
                     gpu,
-                    self.kernels.dense_gemv,
-                    src_slot,
+                    self.kernels.dense_gemm_pipelined,
+                    src_all,
                     &self.fc,
-                    dst_slot,
+                    self.scratch.fc_proj,
+                    eff_ctx as u32,
                     h,
                     target_hidden_dim as u32,
                     stream,
                 )?;
-            }
-            if eff_ctx > 0 {
                 dump_bf16("step0.fc_proj.pre_norm[0]", self.scratch.fc_proj, 10)?;
                 ops::rms_norm(
                     gpu,
@@ -319,6 +323,15 @@ impl BlockDiffusionDraftHead {
             )?;
         }
 
+        // ── Phase timing (gated by ATLAS_DFLASH_PROF=1) ──
+        let dflash_prof = std::env::var("ATLAS_DFLASH_PROF").ok().as_deref() == Some("1");
+        let t_step0_done = if dflash_prof {
+            gpu.synchronize(stream)?;
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
         // ── Step 3: 8 drafter layers ──
         //
         // All compute runs on `n_attn = eff_ctx + γ` rows. Slots [0..eff_ctx]
@@ -343,6 +356,14 @@ impl BlockDiffusionDraftHead {
         }
         // Drop the original inline loop body — extracted to helper.
 
+        // ── Phase timing after layers ──
+        let t_layers_done = if dflash_prof {
+            gpu.synchronize(stream)?;
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
         // ── Step 4: final RMSNorm + LM head on noise rows only ──
         // Skip ctx slots [0..eff_ctx] (their stream_buf is garbage from
         // layer accumulation). Read from offset `eff_ctx * h * bf16`.
@@ -360,9 +381,9 @@ impl BlockDiffusionDraftHead {
             self.rms_norm_eps,
             stream,
         )?;
-        ops::dense_gemm(
+        ops::dense_gemm_bf16_pipelined(
             gpu,
-            self.kernels.dense_gemm,
+            self.kernels.dense_gemm_pipelined,
             norm_noise,
             &crate::weight_map::DenseWeight {
                 weight: self.lm_head_shared,
