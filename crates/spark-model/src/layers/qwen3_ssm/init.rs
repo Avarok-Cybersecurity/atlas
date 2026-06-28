@@ -176,7 +176,7 @@ impl Qwen3SsmLayer {
                 "gdn_verify_fused_k2",
                 "gdn_verify_fused_norm_k2",
             ),
-            // wy17 only present in qwen3.6-35b-a3b's PTX module set; NULL on other targets.
+            // wy17 present in qwen3.6-27b/nvfp4 and qwen3.6-35b-a3b/nvfp4; NULL on others.
             // decode_batched(K=17) checks for non-NULL before dispatching the fused path.
             gdn_wy17_k: super::super::try_kernel(
                 gpu,

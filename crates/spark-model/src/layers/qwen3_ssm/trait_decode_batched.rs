@@ -264,18 +264,28 @@ impl Qwen3SsmLayer {
         // out-of-bounds panic instead of an actionable error (see #bugs
         // m0t0chan EP=2 2026-04-05). Most-common cause: EP=2 worker started
         // without `--speculative --mtp-quantization` to mirror the head.
-        if ssm_state.h_state_intermediates.len() < num_tokens
-            || ssm_state.conv_state_intermediates.len() < num_tokens
+        // WY17 fused path saves K-1=16 conv intermediates (final stays in conv_state)
+        // and accesses h_state_intermediates[0] as a base pointer only — so it
+        // needs len >= K-1 = 16, not K = 17. All other paths (K=2/3/4 WY, sequential)
+        // write intermediates[0..K-1] so they need len >= K.
+        let min_inter_required = if num_tokens == 17 && self.gdn_wy17_k.0 != 0 {
+            num_tokens - 1
+        } else {
+            num_tokens
+        };
+        if ssm_state.h_state_intermediates.len() < min_inter_required
+            || ssm_state.conv_state_intermediates.len() < min_inter_required
         {
             anyhow::bail!(
                 "SSM MTP intermediate buffers not allocated (h_state_intermediates.len()={}, \
-                 conv_state_intermediates.len()={}, num_tokens={}). \
+                 conv_state_intermediates.len()={}, num_tokens={}, min_required={}). \
                  If this is an EP=2 worker, the head node is sending MTP verify commands \
                  but the worker was started without `--speculative` (and matching \
                  `--mtp-quantization`/`--num-drafts`). Add those flags to the worker invocation.",
                 ssm_state.h_state_intermediates.len(),
                 ssm_state.conv_state_intermediates.len(),
                 num_tokens,
+                min_inter_required,
             );
         }
 
