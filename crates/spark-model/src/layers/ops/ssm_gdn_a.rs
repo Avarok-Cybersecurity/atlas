@@ -111,6 +111,57 @@ pub fn gdn_prefill(
         .launch(stream)
 }
 
+/// Register-resident token-sequential prefill recurrence (warm-replay path).
+///
+/// Kernel `gated_delta_rule_prefill_regresident`: one WARP owns one v-column,
+/// holding the 128 k-rows of H in registers (4/lane) — no smem-H, no per-token
+/// barriers, >=2 CTA/SM. Token-equal to WY4 (cosine 1.0) and ~2.9x faster.
+/// Grid: (num_v_heads, batch, v_dim / 4)  Block: (128, 1, 1)  (4 warps/block).
+/// Requires k_dim == 128 and v_dim % 4 == 0.
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_prefill_regresident(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    h_state: DevicePtr,
+    query: DevicePtr,
+    key: DevicePtr,
+    value: DevicePtr,
+    gate: DevicePtr,
+    beta: DevicePtr,
+    output: DevicePtr,
+    batch_size: u32,
+    seq_len: u32,
+    num_k_heads: u32,
+    num_v_heads: u32,
+    k_dim: u32,
+    v_dim: u32,
+    qk_stride: u32,
+    v_stride: u32,
+    gb_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_v_heads, batch_size, v_dim / 4])
+        .block([128, 1, 1])
+        .arg_ptr(h_state)
+        .arg_ptr(query)
+        .arg_ptr(key)
+        .arg_ptr(value)
+        .arg_ptr(gate)
+        .arg_ptr(beta)
+        .arg_ptr(output)
+        .arg_u32(batch_size)
+        .arg_u32(seq_len)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(k_dim)
+        .arg_u32(v_dim)
+        .arg_u32(qk_stride)
+        .arg_u32(v_stride)
+        .arg_u32(gb_stride)
+        .launch(stream)
+}
+
 /// Split-v_dim prefill: 2 CTAs per v-head, 64 threads each.
 ///
 /// Kernel: `gated_delta_rule_prefill_split(h_state, query, key, value,

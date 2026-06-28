@@ -139,6 +139,45 @@ impl Qwen3SsmLayer {
                 gb_stride,
                 stream,
             )?;
+        } else if std::env::var_os("ATLAS_GDN_REGRESIDENT").is_some()
+            && kd == 128
+            && vd == 128
+            && self.gdn_prefill_regresident_k.0 != 0
+        {
+            // Register-resident token-sequential recurrence — drop-in for WY4 on
+            // the warm Marconi-replay path (this branch is only reached when the
+            // FLA `if` above fell through, i.e. gdn_exact_replay). H lives in
+            // registers (one warp per v-column, 4 k-rows/lane) instead of 64KB
+            // smem, so >=2 CTA/SM and no per-token barriers. Token-equal to WY4
+            // (cosine 1.0, max|dH|~1e-8 — same acceptance class) and ~2.9x faster
+            // in isolation. Gated by ATLAS_GDN_REGRESIDENT until serve-validated.
+            static RR_LOG: std::sync::Once = std::sync::Once::new();
+            RR_LOG.call_once(|| {
+                tracing::info!(
+                    "GDN prefill: REGISTER-RESIDENT warm-replay path ACTIVE (ATLAS_GDN_REGRESIDENT; H in regs, no smem-H)"
+                );
+            });
+            ops::gdn_prefill_regresident(
+                ctx.gpu,
+                self.gdn_prefill_regresident_k,
+                h_state,
+                q_ptr,
+                k_ptr,
+                v_ptr,
+                gates_buf,
+                gates_buf.offset(nv * fp32),
+                gdn_out_buf,
+                1,
+                k,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32,
+                conv_dim as u32,
+                gb_stride,
+                stream,
+            )?;
         } else if self.gdn_prefill_persistent_wy4_k.0 != 0 {
             // WY4-persistent: H in shared memory, 4 tokens per iteration
             // smem = H[K_DIM*V_DIM] + 8*k/q buffers + warp sums + WY scalars

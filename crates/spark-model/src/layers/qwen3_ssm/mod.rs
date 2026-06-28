@@ -85,6 +85,10 @@ pub struct Qwen3SsmLayer {
     gdn_prefill_split4_k: KernelHandle,
     gdn_prefill_persistent_k: KernelHandle,
     gdn_prefill_persistent_wy4_k: KernelHandle,
+    /// Register-resident token-sequential warm-replay recurrence (H in regs,
+    /// >=2 CTA/SM, no barriers). Token-equal to WY4 (cosine 1.0), ~2.9x faster.
+    /// Gated behind ATLAS_GDN_REGRESIDENT until serve-validated.
+    gdn_prefill_regresident_k: KernelHandle,
     /// FLA multi-kernel chunked prefill (baked default for 128-dim GDN): recompute_wu →
     /// chunk_delta_h_ksplit (k-split occupancy) → chunk_fwd_o. 1.75x vs wy4 @16k,
     /// token-equal (cos=1.0 vs scalar). Three handles; all must be non-null.
