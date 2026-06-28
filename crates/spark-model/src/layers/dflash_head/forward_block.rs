@@ -448,25 +448,7 @@ impl BlockDiffusionDraftHead {
 
         // ── Step 6: D2H (γ-1) × 4 bytes ──
         let mut host_buf = vec![0u8; (self.gamma - 1) * 4];
-        let t_pre_sync = std::time::Instant::now();
         gpu.synchronize(stream)?;
-        let t_post_sync = std::time::Instant::now();
-        if dflash_prof {
-            let step0_us = t_step0_done.map(|t| t.elapsed().as_micros()).unwrap_or(0);
-            let layers_us = t_layers_done
-                .and_then(|tl| t_step0_done.map(|t0| tl.duration_since(t0).as_micros()))
-                .unwrap_or(0);
-            let sync_wait_us = t_post_sync.duration_since(t_pre_sync).as_micros();
-            tracing::info!(
-                "DFlash forward_block PROF: pre_sync(step0+layers+head+argmax)={}ms sync_wait={}ms step0_gpu={}ms layers_gpu={}ms eff_ctx={} n_attn={}",
-                t_pre_sync.elapsed().as_millis(),
-                sync_wait_us / 1000,
-                step0_us / 1000,
-                layers_us / 1000,
-                eff_ctx,
-                n_attn,
-            );
-        }
         gpu.copy_d2h(self.scratch.draft_tokens_dev, &mut host_buf)?;
         let drafts: Vec<u32> = host_buf
             .chunks_exact(4)
