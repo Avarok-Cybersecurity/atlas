@@ -308,6 +308,54 @@ fn test_snapshot_index_lru_eviction() {
 }
 
 #[test]
+fn test_two_tier_protects_resumable_intermediate_over_oneshot() {
+    // SBR M1 two-tier: the stranding cause is that a live conversation's DEEP
+    // intermediate checkpoints have hit_count==0 (they were never the resume
+    // anchor), so the forecast treats them like one-shots and evicts them by age
+    // — even though their SESSION has been resumed. Two-tier protects ALL entries
+    // of a resumable SESSION, evicting genuine one-shots (whose session was never
+    // resumed) first instead.
+    let mut idx = SsmSnapshotIndex::new();
+    let tok: Vec<u32> = (0..128).collect();
+    let other: Vec<u32> = (200..264).collect();
+    // conv 100: deep anchor (id1, tok128) + an OLDER intermediate (id3, tok64,
+    // never individually hit).
+    idx.insert(hash_token_prefix(&tok, 128), 1, 100, 128);
+    idx.insert(hash_token_prefix(&tok, 64), 3, 100, 64); // intermediate, hit=0, oldest
+    // Resume conv 100 (hit the deep anchor) → session 100 is resumable.
+    assert_eq!(idx.lookup(&tok, 128, 100), Some((1, 128)));
+    // A genuine one-shot conv arrives NEWEST (distinct prefix hash).
+    idx.insert(hash_token_prefix(&other, 64), 2, 200, 64);
+
+    // Forecast would evict id3 (resumable conv's old intermediate = lowest score),
+    // stranding conv 100. Two-tier evicts the one-shot (id2) instead.
+    assert_eq!(
+        idx.evict_lru(),
+        Some(2),
+        "two-tier must evict the one-shot (id2), not the resumable conv's intermediate (id3)"
+    );
+}
+
+#[test]
+fn test_two_tier_all_resumable_is_pure_forecast() {
+    // Do-no-harm: when EVERY entry belongs to a resumable conversation (balanced
+    // multi-conv), there are no non-resumable victims, so two-tier degrades to
+    // the baseline recency·hit forecast — evicting the lowest-score (oldest,
+    // unhit) entry. This is the regime where "pin the deepest" variants regressed.
+    let mut idx = SsmSnapshotIndex::new();
+    let ta: Vec<u32> = (0..32).collect();
+    let tb: Vec<u32> = (100..132).collect();
+    idx.insert(hash_token_prefix(&ta, 32), 1, 100, 32); // conv A (oldest)
+    idx.insert(hash_token_prefix(&tb, 32), 2, 200, 32); // conv B (newer)
+    // Make BOTH sessions resumable.
+    assert_eq!(idx.lookup(&ta, 32, 100), Some((1, 32)));
+    assert_eq!(idx.lookup(&tb, 32, 200), Some((2, 32)));
+    // Both resumable → no one-shot victim → pure forecast evicts lowest score.
+    // After the lookups, A was hit before B (A older last_access) → A evicted.
+    assert_eq!(idx.evict_lru(), Some(1));
+}
+
+#[test]
 fn test_snapshot_index_session_isolation() {
     let mut idx = SsmSnapshotIndex::new();
     let tokens: Vec<u32> = (0..16).collect();
