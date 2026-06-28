@@ -582,6 +582,13 @@ pub fn process_decode_logits(
                 }
             }
             if a.remaining == 0 {
+                // #144: non-MTP twin of the budget-aware close in
+                // `emit_step::emit_token`. The grammar already accepted `tok`
+                // above (line ~230), so it is at the current position; if it
+                // is active and cannot legally stop here (open JSON string),
+                // emit the shortest grammar-legal close so the length-stopped
+                // output is still parseable.
+                crate::scheduler::emit_step::emit_grammar_close(a);
                 tracing::info!(
                     "process_decode_logits: remaining=0, output_tokens={}, thinking_tokens={}",
                     a.output_tokens.len(),

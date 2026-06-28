@@ -427,7 +427,7 @@ fn send_stream_event(a: &ActiveSeq, event: StreamEvent) -> bool {
 /// bounded close length, mirroring a graceful EOS. No-op when disabled
 /// (`ATLAS_GRAMMAR_BUDGET_CLOSE=0`), inside `<think>`, or when no bounded close
 /// is found — all of which fall back to the prior plain length-stop.
-fn emit_grammar_close(a: &mut ActiveSeq) {
+pub(crate) fn emit_grammar_close(a: &mut ActiveSeq) {
     if a.inside_thinking || !grammar_budget_close_enabled() {
         return;
     }
