@@ -50,7 +50,7 @@ impl TransformerModel {
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;
-        let fp32 = 4usize;
+        let fp32 = 2usize; // hidden states = BF16; matches verify_c.rs
 
         // F62 (2026-04-27): SpecMamba dual-buffer pre-verify copy.
         self.pre_verify_copy_async(seq)?;

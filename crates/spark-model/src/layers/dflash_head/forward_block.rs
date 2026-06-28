@@ -20,6 +20,7 @@ impl BlockDiffusionDraftHead {
         ctx: &ForwardContext,
         stream: u64,
         ctx_buffer: Option<(DevicePtr, usize)>,
+        initial_tokens: Option<&[u32]>,
     ) -> Result<Vec<u32>> {
         use crate::layers::ops;
 
@@ -256,10 +257,10 @@ impl BlockDiffusionDraftHead {
         }
         let token_ids_host: Vec<i32> = std::iter::repeat_n(0i32, eff_ctx)
             .chain(std::iter::once(last_token as i32))
-            .chain(std::iter::repeat_n(
-                self.mask_token_id as i32,
-                self.gamma - 1,
-            ))
+            .chain(match initial_tokens {
+                Some(tokens) => tokens.iter().map(|&t| t as i32).collect::<Vec<_>>(),
+                None => std::iter::repeat_n(self.mask_token_id as i32, self.gamma - 1).collect(),
+            })
             .collect();
         if debug_dump {
             tracing::info!(
