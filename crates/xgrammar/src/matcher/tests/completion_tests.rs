@@ -68,6 +68,33 @@ fn completion_empty_when_already_complete() {
     assert_eq!(m.find_completion_to_accept(8), Some(Vec::new()));
 }
 
+// A close that must pass a structural separator then a (here empty) required
+// field before the brace — the shape a pure breadth-first search loses to
+// content-branch explosion. After "{a" the grammar may extend `first`
+// ([a-c]*) or move on; the legal close is ",}" (separator, empty `second`,
+// brace). The closure-preferring DFS must take the separator/closers rather
+// than extending `first`.
+const SEP_OBJ: &str =
+    "root ::= \"{\" first \",\" second \"}\"\nfirst ::= [a-c]*\nsecond ::= [a-c]*\n";
+
+#[test]
+fn completion_closes_through_required_separator() {
+    let mut m = matcher(SEP_OBJ);
+    assert!(m.accept_string("{a", false));
+    assert!(!m.is_grammar_completed());
+    let close = m
+        .find_completion_to_accept(16)
+        .expect("a close through the separator exists");
+    assert_eq!(
+        close,
+        b",}".to_vec(),
+        "close = separator, then empty `second`, then brace"
+    );
+    let s = String::from_utf8(close).unwrap();
+    assert!(m.accept_string(&s, false));
+    assert!(m.is_grammar_completed());
+}
+
 #[test]
 fn completion_token_ids_encode_close() {
     // The fixture vocab (tests.rs::tok) has "}" at id 10.
