@@ -130,6 +130,16 @@ impl GrammarMatcher {
             .forced_from_bitmask(bitmask, index.max(0) as usize)
     }
 
+    /// The shortest grammar-legal close (as content token ids) that drives
+    /// the grammar from its current state to one where a stop token is
+    /// legal, or `None` if none exists within `max_bytes`. The matcher state
+    /// is unchanged. Powers Atlas budget-aware graceful close (#144).
+    ///
+    /// Additive. See `crate::matcher::GrammarMatcher::find_completion_token_ids`.
+    pub fn find_completion_token_ids(&mut self, max_bytes: usize) -> Option<Vec<i32>> {
+        self.inner.find_completion_token_ids(max_bytes)
+    }
+
     /// The maximal chain of grammar-forced tokens from the current
     /// state — Coalescence's forced-chain. The caller skips the model
     /// sample for every returned position. `max` caps the chain length

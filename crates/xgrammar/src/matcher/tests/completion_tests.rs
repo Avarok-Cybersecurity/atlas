@@ -69,6 +69,18 @@ fn completion_empty_when_already_complete() {
 }
 
 #[test]
+fn completion_token_ids_encode_close() {
+    // The fixture vocab (tests.rs::tok) has "}" at id 10.
+    let mut m = matcher(OPEN_OBJ);
+    assert!(m.accept_string("{a", false));
+    assert_eq!(m.find_completion_token_ids(16), Some(vec![10]));
+
+    let mut n = matcher(NESTED_OBJ);
+    assert!(n.accept_string("{{a", false));
+    assert_eq!(n.find_completion_token_ids(16), Some(vec![10, 10]));
+}
+
+#[test]
 fn completion_leaves_choice_point_intact() {
     // After the search, the matcher must still accept both a continuation
     // ('b', extending `inner`) and the close ('}') — proving the round-trip

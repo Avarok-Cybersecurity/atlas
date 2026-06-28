@@ -210,6 +210,34 @@ impl GrammarState {
         self.matcher.is_terminated()
     }
 
+    /// Whether a model stop/EOS token is grammar-legal at the current
+    /// position — i.e. the response may end *here* with parseable output.
+    ///
+    /// Used by budget-aware graceful close (#144) to decide whether a close
+    /// is needed: a length-truncated structured-output response whose stop
+    /// token is *not* legal here ends mid-structure (e.g. inside an open
+    /// JSON string) with unparseable output. Returns `true` (no close
+    /// needed) once terminated or when the grammar imposes no constraint.
+    pub fn stop_legal(&mut self, eos_tokens: &[u32]) -> bool {
+        if self.matcher.is_terminated() {
+            return true;
+        }
+        // `fill_bitmask` returning false means the grammar is all-accepting
+        // here, so stopping is legal. When it constrains, the stop token is
+        // present in the mask iff the root rule can complete now.
+        if !self.fill_bitmask() {
+            return true;
+        }
+        eos_tokens.iter().any(|&e| self.is_token_allowed(e))
+    }
+
+    /// The shortest grammar-legal close as content token ids (#144), or
+    /// `None` if no close is found within `max_bytes`. `Some(empty)` means
+    /// the grammar can already stop. Leaves matcher state unchanged.
+    pub fn completion_token_ids(&mut self, max_bytes: usize) -> Option<Vec<i32>> {
+        self.matcher.find_completion_token_ids(max_bytes)
+    }
+
     /// Number of actual matcher history steps (== tokens `rollback` can undo).
     ///
     /// BUG#3 (2026-06-02): `accept_token` returns `true` for stop/EOS tokens and

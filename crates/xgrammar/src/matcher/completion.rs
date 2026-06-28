@@ -108,6 +108,48 @@ impl GrammarMatcher {
         None
     }
 
+    /// Like [`Self::find_completion_to_accept`], but returns the close as
+    /// content **token ids**, greedily encoded against this matcher's vocab
+    /// (`sorted_decoded_vocab`, which excludes stop/special tokens — so a
+    /// close never emits a control token). Returns `Some(empty)` when the
+    /// grammar can already stop, and `None` when no bounded close exists or
+    /// a close byte is not representable as a content token.
+    #[must_use]
+    pub fn find_completion_token_ids(&mut self, max_bytes: usize) -> Option<Vec<i32>> {
+        let bytes = self.find_completion_to_accept(max_bytes)?;
+        if bytes.is_empty() {
+            return Some(Vec::new());
+        }
+        self.encode_bytes_greedy(&bytes)
+    }
+
+    /// Greedy longest-match encode of `bytes` into content token ids. The
+    /// concatenated token bytes equal `bytes` by construction, so detokenizing
+    /// the result reproduces the close exactly. `None` if any position has no
+    /// covering token.
+    fn encode_bytes_greedy(&self, bytes: &[u8]) -> Option<Vec<i32>> {
+        let vocab = self.tokenizer_info().sorted_decoded_vocab();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            let rem = &bytes[i..];
+            let mut best: Option<(i32, usize)> = None;
+            for (id, tok) in vocab {
+                let len = tok.len();
+                if len == 0 || len > rem.len() || !rem.starts_with(tok.as_slice()) {
+                    continue;
+                }
+                if best.is_none_or(|(_, bl)| len > bl) {
+                    best = Some((*id, len));
+                }
+            }
+            let (id, len) = best?;
+            out.push(id);
+            i += len;
+        }
+        Some(out)
+    }
+
     /// Canonical, hashable key for the parser's current scanable-state set.
     /// Sorting makes the key order-independent so two byte paths reaching
     /// the same logical configuration dedup together.
