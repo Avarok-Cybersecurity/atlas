@@ -10,25 +10,44 @@ use std::sync::OnceLock;
 
 use super::hash_token_prefix;
 
-/// SBR M1 two-tier eviction policy. When enabled, [`SsmSnapshotIndex::evict_lru`]
-/// evicts NON-resumable (one-shot / untracked) snapshots before any resumable
-/// multi-turn conversation's snapshot — protecting live conversations' SSM
-/// checkpoints from transient one-shot churn (the cause of the "replay grows as
-/// slots fill" TTFT blowup, 1s→21s). When every entry is resumable it degrades
-/// identically to the baseline recency·hit forecast (Marconi §4) — provably
-/// do-no-harm.
+/// SBR M1 tail-pin eviction policy — OPT-IN, OFF by default. When enabled,
+/// [`SsmSnapshotIndex::evict_lru`] pins the top-`tail_pin_k` DEEPEST snapshots of
+/// each RESUMABLE session (one resumed at least once), so a resuming deep
+/// conversation finds a near-tail SSM anchor instead of replaying from a far
+/// shallow survivor (the "replay grows as slots fill" blowup, 1s→21s). Measured
+/// 8× warm-resume speedup on the deep-conversation agentic regime.
 ///
-/// Enabled by default; set `ATLAS_SBR_TAIL_PIN=0` to restore the pure
-/// forecast-LRU baseline (for A/B benchmarking against the fix).
+/// DEFAULT OFF: it wins the single/few-deep-conversation regime but REGRESSES
+/// balanced many-conversation serving ~30% (the recency·hit forecast is already
+/// near-optimal there). Set `ATLAS_SBR_TAIL_PIN=1` for deep-agentic workloads.
 fn tail_pin_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        let on = std::env::var("ATLAS_SBR_TAIL_PIN").map(|v| v != "0").unwrap_or(true);
+        let on = std::env::var("ATLAS_SBR_TAIL_PIN")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
         tracing::info!(
-            "SBR snapshot two-tier eviction (protect resumable convs): {}",
-            if on { "ENABLED" } else { "disabled (baseline)" },
+            "SBR snapshot tail-pin eviction: {} (opt-in, top-K={})",
+            if on { "ENABLED" } else { "off (baseline forecast)" },
+            tail_pin_k()
         );
         on
+    })
+}
+
+/// Number of a resumable session's DEEPEST snapshots to pin. The single deepest
+/// overshoots the next match point (the leaf includes generated tokens, so the
+/// block-aligned match lands just below it), so K≥2 is needed; K=8 spans the
+/// overshoot and flattened warm-resume TTFT in measurement (mean 1.18s vs K=4
+/// 3.37s vs baseline 9.53s). Override with `ATLAS_SBR_TAIL_PIN_K`.
+fn tail_pin_k() -> usize {
+    static K: OnceLock<usize> = OnceLock::new();
+    *K.get_or_init(|| {
+        std::env::var("ATLAS_SBR_TAIL_PIN_K")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&k| k >= 1)
+            .unwrap_or(8)
     })
 }
 
@@ -129,76 +148,70 @@ impl SsmSnapshotIndex {
     }
 
     pub(super) fn evict_lru(&mut self) -> Option<usize> {
+        self.evict_lru_inner(tail_pin_enabled(), tail_pin_k())
+    }
+
+    /// Eviction victim selection (split out so the policy is unit-testable
+    /// without the env-gated `OnceLock`).
+    ///
+    /// Baseline forecast (B.4, 2026-04-25, Marconi paper §4): evict the entry
+    /// with the lowest `last_access * (1 + hit_count)` — old AND cold first.
+    /// hit_count weighting keeps recurrent prefixes (system prompts, tool
+    /// descriptions) resident (#155 fixed the inverted divide-by form).
+    ///
+    /// SBR M1 tail-pin (`pin == true`, OPT-IN — see [`tail_pin_enabled`]): the
+    /// forecast is orthogonal to REPLAY DISTANCE — a conversation's deep
+    /// per-turn checkpoints have hit_count≈0 (never the resume anchor) and get
+    /// evicted before the hot shallow prefix, stranding the next resume far from
+    /// its tail (replay = depth − shallow_prefix → the 1s→21s blowup). When
+    /// enabled we PIN the top-`pin_k` DEEPEST snapshots of each RESUMABLE session
+    /// (one with any hit_count>0) so a near-tail anchor survives, evicting only
+    /// NON-pinned entries (falling back to the global forecast only if every
+    /// entry is pinned). Measured (deep conv idle under one-shot pressure):
+    /// baseline 9.53s → 1.18s (8×, replay 11–984 tok).
+    ///
+    /// SCOPE / honesty: this wins the single/few-deep-conversation agentic
+    /// regime but REGRESSES balanced many-conversation round-robin ~30% (the
+    /// recency·hit forecast is already near-optimal there and pinning fights it),
+    /// so it is OFF by default. `pin == false` is exactly the baseline forecast.
+    pub(super) fn evict_lru_inner(&mut self, pin: bool, pin_k: usize) -> Option<usize> {
         if self.entries.is_empty() {
             return None;
         }
-        // Forecast-based policy (B.4, 2026-04-25, Marconi paper §4):
-        // evict the entry with the lowest last_access * (1 + hit_count)
-        // — old AND cold first. Pure LRU (`last_access` only) discarded
-        // hot prefixes that just happened to be re-accessed less
-        // recently than a one-shot entry; weighting by hit_count keeps
-        // recurrent prefixes (system prompts, tool descriptions in
-        // agentic sessions) resident longer.
-        //
-        // #155: the original formula DIVIDED by (1 + hit_count), which
-        // inverts the intent — frequently-hit snapshots scored LOWEST
-        // and were evicted first at pool saturation (measured: a
-        // just-selected snapshot evicted 7s later while ~50
-        // never-accessed entries survived → selected=None mid-session
-        // → full-conversation SSM recompute on the next warm hit).
-        //
-        // SBR M1 tail-pin: forecast score keeps HOT (shared-prefix) snapshots
-        // resident, but that is orthogonal to REPLAY DISTANCE — a conversation's
-        // deep per-turn checkpoint has hit_count≈0 and gets evicted before the
-        // hot system-prompt prefix, stranding a resuming turn far from its tail
-        // (replay = depth − shallow_prefix → 21s). We therefore exclude each
-        // session's DEEPEST snapshot (its "tail" = the global section we keep
-        // resident) from eviction, falling back to evicting the lowest-score
-        // tail only if every entry is a tail (pool too small for the live set).
-        // Pin only RESUMABLE sessions' deepest. A session is resumable if any
-        // of its entries has been hit (hit_count>0) — i.e. a real multi-turn
-        // conversation that has actually been resumed. One-shot sessions
-        // (e.g. distractor traffic that never returns) are NOT pinned, so they
-        // age out under the forecast score instead of wastefully holding slots
-        // and evicting a live conversation's useful intermediate checkpoints.
-        // (Measured 2026-06-27: naive "pin every session's deepest" REGRESSED
-        // a main conversation 4.0s→8.8s by pinning ~96 dead one-shot tails.)
-        // SBR M1 — TWO-TIER eviction (protect resumable conversations from
-        // transient one-shot churn). A session is RESUMABLE iff some entry has
-        // hit_count>0 (a real multi-turn conversation that was actually resumed
-        // at least once). The stranding pathology is the forecast evicting a live
-        // conversation's deep SSM checkpoint to make room for transient one-shot
-        // traffic, leaving the next resume to replay from a far-shallow survivor
-        // (1s→21s). Fix: evict NON-resumable (one-shot / untracked) entries BEFORE
-        // any resumable conversation's entry; only when no non-resumable entry
-        // exists do we fall through to the pure recency·hit forecast over all
-        // entries.
-        //
-        // This is the right discriminator (NOT count/budget heuristics, which are
-        // unreliable from the index's local view): it protects exactly what a
-        // resuming conversation needs (its own checkpoints) and is PROVABLY
-        // do-no-harm when every entry is resumable (balanced multi-conversation
-        // round-robin) — the non-resumable pool is empty, so it is identical to
-        // the baseline forecast. Earlier "pin the top-K deepest" variants
-        // regressed that regime 5.9s→7.7s by displacing live convs' working sets.
-        let pin = tail_pin_enabled();
-        let mut resumable: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+        // Pin the top-`pin_k` deepest snapshots of each RESUMABLE session.
+        let mut pinned = std::collections::HashSet::new();
         if pin {
-            for e in &self.entries {
-                if e.session_hash != 0 && e.hit_count > 0 {
+            let mut by_session: std::collections::HashMap<u64, Vec<(usize, usize)>> =
+                std::collections::HashMap::new();
+            let mut resumable: std::collections::HashSet<u64> = std::collections::HashSet::new();
+            for (i, e) in self.entries.iter().enumerate() {
+                if e.session_hash == 0 {
+                    continue;
+                }
+                if e.hit_count > 0 {
                     resumable.insert(e.session_hash);
+                }
+                by_session
+                    .entry(e.session_hash)
+                    .or_default()
+                    .push((e.token_count, i));
+            }
+            for (s, mut v) in by_session {
+                if !resumable.contains(&s) {
+                    continue;
+                }
+                v.sort_unstable_by(|a, b| b.0.cmp(&a.0)); // deepest first
+                for &(_, idx) in v.iter().take(pin_k) {
+                    pinned.insert(idx);
                 }
             }
         }
-        let protected = |e: &SnapshotEntry| -> bool {
-            pin && e.session_hash != 0 && resumable.contains(&e.session_hash)
-        };
 
-        // Tier 1: lowest-score among NON-protected (one-shot / untracked).
-        // Tier 2 fallback: lowest-score among ALL (pure forecast) when every
-        // entry belongs to a resumable conversation.
-        let mut tier1_idx: Option<usize> = None;
-        let mut tier1_score = u64::MAX;
+        // Evict the lowest-forecast NON-pinned entry; fall back to the global
+        // lowest (pure forecast) only when every entry is pinned.
+        let mut victim_idx: Option<usize> = None;
+        let mut victim_score = u64::MAX;
         let mut all_idx = 0;
         let mut all_score = u64::MAX;
         for (i, entry) in self.entries.iter().enumerate() {
@@ -209,12 +222,12 @@ impl SsmSnapshotIndex {
                 all_score = score;
                 all_idx = i;
             }
-            if !protected(entry) && score < tier1_score {
-                tier1_score = score;
-                tier1_idx = Some(i);
+            if !pinned.contains(&i) && score < victim_score {
+                victim_score = score;
+                victim_idx = Some(i);
             }
         }
-        let idx = tier1_idx.unwrap_or(all_idx);
+        let idx = victim_idx.unwrap_or(all_idx);
         let entry = self.entries.swap_remove(idx);
         Some(entry.snapshot_id)
     }

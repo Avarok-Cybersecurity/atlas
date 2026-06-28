@@ -45,10 +45,35 @@ WITHOUT keeping the sequence live (slots still evicted/shared). Default set to K
 non-flat point — the ideal anchor wasn't yet in top-K when the first burst hit;
 still 2.8× better than baseline.
 
-## Status: M1 DECISIVE WIN. Open follow-ups (lower priority)
-- Multi-real-conversation regime (K·N vs slots) robustness sweep.
+## Final shipping form (2026-06-27): top-K=8, DEFAULT OFF
+
+Multi-conversation robustness sweep settled the policy honestly:
+
+| regime | baseline | tail-pin ON | verdict |
+|---|---|---|---|
+| single deep conv (strand) | 9.53s | **1.18s (8×)** | decisive win |
+| balanced 8-conv / 24-slot round-robin | 5.89s | 7.68–7.86s | **~30% REGRESSION** |
+
+Across all four policy variants tried (single-deepest, top-K, budget-aware,
+session-count gate, two-tier), enabling tail-pin reliably **regresses balanced
+many-conversation round-robin ~30%** — the recency·hit forecast is already
+near-optimal there and pinning fights it. Attempts to detect the regime from the
+index's local view (budget/n, in-index session count, two-tier resumable-set)
+all failed because that view doesn't reflect the true active-conversation count.
+The two-tier variant was also empirically *worse* on strand (cyc0 9.04s) and is
+reverted.
+
+**Decision: ship the top-K=8 policy OFF by default** (`ATLAS_SBR_TAIL_PIN` unset
+= pure baseline forecast = provably do-no-harm everywhere), enabled via
+`ATLAS_SBR_TAIL_PIN=1` for deep single/few-conversation agentic workloads (the
+user's 1s→21s symptom), where it delivers the 8× win. Exact in both modes.
+Policy selection split into `evict_lru_inner(pin, k)` for unit-testability.
+
+## Open follow-ups (lower priority)
+- Regime auto-detection from a TRUE active-conversation signal (scheduler-side,
+  not index-local) to enable safe default-on — the 4 index-local attempts failed.
 - Formal argmax/KL parity table for the paper (exactness is structural; measure it).
-- Optional: range-based pin `[tail−W, tail]` as a principled alternative to top-K.
+- M3 2-D sheaf reconciliation: prototyped → honest negative (see M3_FINDINGS.md).
 
 ## Config / reproduction
 Binary: SBR `feat/sheaf-based-replaying` built on dgx1, bind-mounted into

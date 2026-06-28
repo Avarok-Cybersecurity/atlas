@@ -308,51 +308,43 @@ fn test_snapshot_index_lru_eviction() {
 }
 
 #[test]
-fn test_two_tier_protects_resumable_intermediate_over_oneshot() {
-    // SBR M1 two-tier: the stranding cause is that a live conversation's DEEP
-    // intermediate checkpoints have hit_count==0 (they were never the resume
-    // anchor), so the forecast treats them like one-shots and evicts them by age
-    // — even though their SESSION has been resumed. Two-tier protects ALL entries
-    // of a resumable SESSION, evicting genuine one-shots (whose session was never
-    // resumed) first instead.
+fn test_tail_pin_protects_top_k_deepest() {
+    // SBR M1 tail-pin (opt-in): when enabled, the top-K DEEPEST snapshots of a
+    // RESUMABLE session are pinned, so the shallowest (which a resume past them
+    // does not need) are evicted first and the near-tail anchors survive cache
+    // pressure. (Called via evict_lru_inner so the test is independent of the
+    // env-gated default, which is OFF.)
     let mut idx = SsmSnapshotIndex::new();
-    let tok: Vec<u32> = (0..128).collect();
-    let other: Vec<u32> = (200..264).collect();
-    // conv 100: deep anchor (id1, tok128) + an OLDER intermediate (id3, tok64,
-    // never individually hit).
-    idx.insert(hash_token_prefix(&tok, 128), 1, 100, 128);
-    idx.insert(hash_token_prefix(&tok, 64), 3, 100, 64); // intermediate, hit=0, oldest
-    // Resume conv 100 (hit the deep anchor) → session 100 is resumable.
-    assert_eq!(idx.lookup(&tok, 128, 100), Some((1, 128)));
-    // A genuine one-shot conv arrives NEWEST (distinct prefix hash).
-    idx.insert(hash_token_prefix(&other, 64), 2, 200, 64);
+    let tok: Vec<u32> = (0..256).collect();
+    // 10 checkpoints for session 100 at increasing depths (ids 1..=10).
+    let depths = [16usize, 32, 48, 64, 80, 96, 112, 128, 144, 160];
+    for (i, tc) in depths.iter().enumerate() {
+        idx.insert(hash_token_prefix(&tok, *tc), i + 1, 100, *tc);
+    }
+    // Resume conv 100 (hit the deepest) → session 100 resumable.
+    assert_eq!(idx.lookup(&tok, 160, 100), Some((10, 160)));
 
-    // Forecast would evict id3 (resumable conv's old intermediate = lowest score),
-    // stranding conv 100. Two-tier evicts the one-shot (id2) instead.
-    assert_eq!(
-        idx.evict_lru(),
-        Some(2),
-        "two-tier must evict the one-shot (id2), not the resumable conv's intermediate (id3)"
+    // pin_k=8 → pin the 8 deepest (ids 3..=10); evict the 2 shallowest (ids 1,2).
+    let e1 = idx.evict_lru_inner(true, 8).unwrap();
+    let e2 = idx.evict_lru_inner(true, 8).unwrap();
+    assert!(
+        [1, 2].contains(&e1) && [1, 2].contains(&e2) && e1 != e2,
+        "tail-pin must evict the two shallowest (ids 1,2), got {e1},{e2}"
     );
+    assert_eq!(idx.len(), 8, "the top-8 deepest must survive");
 }
 
 #[test]
-fn test_two_tier_all_resumable_is_pure_forecast() {
-    // Do-no-harm: when EVERY entry belongs to a resumable conversation (balanced
-    // multi-conv), there are no non-resumable victims, so two-tier degrades to
-    // the baseline recency·hit forecast — evicting the lowest-score (oldest,
-    // unhit) entry. This is the regime where "pin the deepest" variants regressed.
+fn test_tail_pin_off_is_pure_forecast() {
+    // Default-off / pin=false must be exactly the baseline forecast: evict the
+    // lowest-score (oldest, unhit) entry regardless of depth.
     let mut idx = SsmSnapshotIndex::new();
-    let ta: Vec<u32> = (0..32).collect();
-    let tb: Vec<u32> = (100..132).collect();
-    idx.insert(hash_token_prefix(&ta, 32), 1, 100, 32); // conv A (oldest)
-    idx.insert(hash_token_prefix(&tb, 32), 2, 200, 32); // conv B (newer)
-    // Make BOTH sessions resumable.
-    assert_eq!(idx.lookup(&ta, 32, 100), Some((1, 32)));
-    assert_eq!(idx.lookup(&tb, 32, 200), Some((2, 32)));
-    // Both resumable → no one-shot victim → pure forecast evicts lowest score.
-    // After the lookups, A was hit before B (A older last_access) → A evicted.
-    assert_eq!(idx.evict_lru(), Some(1));
+    let tok: Vec<u32> = (0..256).collect();
+    idx.insert(hash_token_prefix(&tok, 128), 1, 100, 128); // deep, oldest
+    idx.insert(hash_token_prefix(&tok, 16), 2, 100, 16); // shallow, newer
+    // pin OFF → forecast evicts the older (lower last_access) entry = id1,
+    // even though it is the deepest (no protection).
+    assert_eq!(idx.evict_lru_inner(false, 8), Some(1));
 }
 
 #[test]
