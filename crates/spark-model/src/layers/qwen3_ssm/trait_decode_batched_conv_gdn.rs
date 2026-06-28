@@ -310,7 +310,9 @@ impl Qwen3SsmLayer {
             )?;
         } else if num_tokens == 17 && self.gdn_wy17_k.0 != 0 {
             // ── K=17 (DFlash γ+1): fused WY-Chunkwise path ──
-            for t in 0..(num_tokens as u32) {
+            // Save K-1=16 conv intermediates. The final conv_state (after token 16)
+            // stays in ssm_state.conv_state; commit_verify only needs inter_idx <= 15.
+            for t in 0..(num_tokens as u32 - 1) {
                 let qkv_t = deinterleaved.offset(t as usize * qkvz_size * bf16);
                 let conv_out_t = conv_out_buf.offset(t as usize * conv_dim * bf16);
                 ops::conv1d_update_l2norm(
@@ -372,6 +374,9 @@ impl Qwen3SsmLayer {
             // causing h_state corruption and NaN after ~7 recurrent steps.
             // Use the FP32 conv kernel and ssm_conv_out_f32 buffer when available.
             let use_f32_conv = self.conv1d_l2norm_f32_k.0 != 0;
+            if num_tokens > 1 {
+                tracing::warn!("sequential K={} use_f32_conv={}", num_tokens, use_f32_conv);
+            }
             let seq_conv_buf = if use_f32_conv {
                 ctx.buffers.ssm_conv_out_f32()
             } else {
