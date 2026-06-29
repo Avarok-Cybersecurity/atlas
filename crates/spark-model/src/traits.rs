@@ -179,6 +179,15 @@ pub struct SequenceState {
 }
 
 impl SequenceState {
+    /// SSM-pool slot index for this sequence, if it has GDN/SSM (linear-attn)
+    /// layers. Used by the scheduler to order the decode batch by slot so the
+    /// batched-recurrent SSM + CUDA-graph contiguity invariant holds
+    /// (position i ↔ pool_base + i*stride). `None` for pure-attention models.
+    #[inline]
+    pub fn ssm_slot_idx(&self) -> Option<usize> {
+        self.ssm_slot.as_ref().and_then(|g| g.idx())
+    }
+
     /// Phase 6.3 sliding-window helper: the absolute logical block index
     /// of `block_table[0]`. Returns 0 when `--high-speed-swap` is off
     /// (`disk_block_ids` is empty then; `block_table` is the full history).
