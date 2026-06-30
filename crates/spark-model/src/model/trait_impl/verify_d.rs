@@ -180,10 +180,31 @@ impl TransformerModel {
 
         // Phase 6.2.c — HSS host I/O is illegal under CUDA graph capture.
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
-        // ATLAS_DFLASH_DEBUG_NO_GRAPH=1 forces eager (no graph capture) so
-        // CUDA_LAUNCH_BLOCKING=1 reports the exact failing kernel — used
-        // to localize K=γ illegal-address crashes downstream of SSM.
-        let force_eager = std::env::var("ATLAS_DFLASH_DEBUG_NO_GRAPH").ok().as_deref() == Some("1");
+        // ATLAS_DFLASH_DEBUG_NO_GRAPH=1: legacy debug flag (still honored).
+        let debug_no_graph =
+            std::env::var("ATLAS_DFLASH_DEBUG_NO_GRAPH").ok().as_deref() == Some("1");
+        // PROTECTIVE (pre-existing graphed-K=γ corruption): the K=γ verify graph
+        // emits degenerate/corrupt output — a capture bug downstream of the SSM
+        // dual-buffer commit (confirmed: graphed ≠ eager at T=0, reproduces with
+        // EAGLE on AND off). Force EAGER by default so the default path is
+        // CORRECT. Eager is also faster here (SSM-decode-bound: 13 vs 11.5 tok/s).
+        // Re-enable graphs ONLY to debug the underlying bug.
+        let allow_kgamma_graph =
+            std::env::var("ATLAS_DFLASH_UNSAFE_KGAMMA_GRAPH").ok().as_deref() == Some("1");
+        if !allow_kgamma_graph {
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!(
+                    "DFlash K=γ verify: forcing EAGER execution — the graphed K=γ \
+                     path produces corrupt output (pre-existing capture bug \
+                     downstream of the SSM dual-buffer commit). Eager is also \
+                     faster here. Set ATLAS_DFLASH_UNSAFE_KGAMMA_GRAPH=1 to force \
+                     graphs (debugging only — KNOWN to corrupt output)."
+                );
+            }
+        }
+        let force_eager = debug_no_graph || !allow_kgamma_graph;
         let use_graphs = self.comm.is_none()
             && !self
                 .suppress_graphs
