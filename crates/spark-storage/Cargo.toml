@@ -21,7 +21,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = "0.1"
 half = "2"
-rand = "0.8"
+rand = "0.9"
 rand_chacha = "0.3"
 rand_distr = "0.4"
 
