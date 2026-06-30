@@ -109,6 +109,61 @@ pub fn step_verify_dflash(
         }
     }
 
+    // ── TEMP DIAGNOSTIC: per-position acceptance ──
+    // Tracks RAW per-position match rate: drafts[i] == verified[i] independent
+    // of whether earlier positions matched. This reveals WHERE the multi-token
+    // draft chain diverges from the target, vs prefix-accept (which trivially
+    // shows ~0 at far positions because they're rarely reached). Gated behind
+    // ATLAS_DFLASH_POS_DIAG=1. Aggregated every 100 steps.
+    {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        const MAXP: usize = 32;
+        static PROPOSED: [AtomicU64; MAXP] = {
+            const Z: AtomicU64 = AtomicU64::new(0);
+            [Z; MAXP]
+        };
+        static MATCHED: [AtomicU64; MAXP] = {
+            const Z: AtomicU64 = AtomicU64::new(0);
+            [Z; MAXP]
+        };
+        // prefix-accepted: position i reached AND accepted in the prefix sense
+        static PREFIX_ACC: [AtomicU64; MAXP] = {
+            const Z: AtomicU64 = AtomicU64::new(0);
+            [Z; MAXP]
+        };
+        static STEPS: AtomicU64 = AtomicU64::new(0);
+        if std::env::var("ATLAS_DFLASH_POS_DIAG").ok().as_deref() == Some("1") {
+            for i in 0..drafts.len().min(MAXP) {
+                if i + 1 >= verified.len() {
+                    break;
+                }
+                PROPOSED[i].fetch_add(1, Ordering::Relaxed);
+                if drafts[i] == verified[i] {
+                    MATCHED[i].fetch_add(1, Ordering::Relaxed);
+                }
+                if i < num_accepted {
+                    PREFIX_ACC[i].fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            let s = STEPS.fetch_add(1, Ordering::Relaxed) + 1;
+            if s % 100 == 0 {
+                let mut tbl = String::new();
+                for i in 0..drafts.len().min(MAXP) {
+                    let p = PROPOSED[i].load(Ordering::Relaxed);
+                    let m = MATCHED[i].load(Ordering::Relaxed);
+                    let pa = PREFIX_ACC[i].load(Ordering::Relaxed);
+                    let pct = if p > 0 { 100.0 * m as f64 / p as f64 } else { 0.0 };
+                    let papct = if p > 0 { 100.0 * pa as f64 / p as f64 } else { 0.0 };
+                    tbl.push_str(&format!(
+                        "\n  pos{:<2} proposed={:<5} raw_match={:<5} ({:>5.1}%)  prefix_acc={:<5} ({:>5.1}%)",
+                        i, p, m, pct, pa, papct
+                    ));
+                }
+                tracing::info!("DFLASH POS DIAG (cumulative over {s} steps):{tbl}");
+            }
+        }
+    }
+
     // Roll back the over-extended `seq_len` and `seq.tokens`. The verify
     // advanced both by `tokens.len() = γ+1` (all γ drafts + the prefix
     // bonus slot). We keep the original prefix + `num_accepted` drafts +
