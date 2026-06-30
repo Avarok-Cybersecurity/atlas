@@ -18,7 +18,19 @@ verify_ms (K=16) = **495ms** после wy16. GDN больше НЕ домини
 - **SSM projections** (QKVZ GEMM, output proj, FFN per слой)
 - прочее (embed, norm, lm_head, argmax)
 
-**Точный breakdown — TBD (профилирование, Этап 0).**
+**Breakdown получен (Этап 0, ATLAS_DFLASH_TIMING=1, K=16, avg 100 шагов):**
+
+| Компонент | ms/step | % | |
+|---|---|---|---|
+| **SSM phase-1 conv** | **246** | **55%** | ⬅️ ДОМИНАНТА (per-token, 15× conv1d_update_l2norm × 8 слоёв) |
+| SSM phase-3 (norm+proj+FFN) | 90 | 20% | |
+| attn prefill (28 слоёв) | 78 | 17% | |
+| head (lm_head+argmax) | 21 | 5% | |
+| SSM phase-2 GDN (wy16) | 14 | 3% | ⬅️ только что оптимизировали — оказался не bottleneck |
+
+(Caveat: sync убирает overlap, абсолютный sum=449 ненадёжен, важны пропорции.)
+
+**Вывод: per-token conv = 55%, в 17× больше GDN.** Amdahl → бить сюда (C1).
 
 Базовая арифметика throughput:
 ```
@@ -73,14 +85,30 @@ vLLM: 4.09 / ~95ms ≈ 43 tok/s (verify ~110ms + batched 3 req)
 
 ---
 
-## Рекомендованный порядок (черновой, до Этапа 0)
+## Приоритет ПОСЛЕ Этапа 0 (data-driven)
 
-1. **Этап 0** — профиль (обязательно первым, иначе оптимизируем вслепую)
-2. **C4 (K tuning)** — дёшево, может дать быстрый tok/s выигрыш
-3. **C1 или C2** — по результатам Этапа 0 (что доминирует: conv → C1; недогрузка GPU → C2)
-4. Остальное по данным
+1. ✅ **Этап 0** — профиль готов. Доминанта = phase-1 per-token conv (55%).
+2. 🎯 **C1 (conv fusion)** — ГЛАВНЫЙ рычаг. По Amdahl нельзя побить 55%-компонент, вылизывая 3/5/17%. Тот же playbook что wy16 (per-token serial → один fused pass). Цель: ~120ms off verify (~25%).
+3. **C3 (phase-3, 20%)** — следующий по величине после conv.
+4. **C2 batching / C4 K-tuning** — после C1.
+5. **C5 graphed** — отдельное расследование.
+
+---
+
+## C1 — детализация (главная задача)
+
+**Проблема:** phase-1 = 15 последовательных `conv1d_update_l2norm` × ~8 SSM-слоёв ≈ 120 serial conv-запусков/step. Чистый launch + sequential-dependency overhead.
+
+**Решение (зеркало wy16):** единый batched/windowed conv над всеми K=16 токенами на слой:
+- causal depthwise conv1d для всех 16 токенов одним запуском (токен t зависит только от окна [t-d_conv+1..t] → параллелизуемо)
+- emit 15 conv_state intermediates inline (убрать per-token copy_d2d_async saves)
+- L2 norm на Q,K тоже в fused ядре
+
+**Прецедент vLLM:** `causal_conv1d_update` имеет multi-token spec-ветку (Diver-2 нашёл) — sliding-window обновление conv_state одним вызовом с `num_accepted_tokens`. Можно перенять подход.
+
+**Первый шаг:** разведка — есть ли уже batched conv ядро (как wy17 был для GDN), или писать новое.
 
 ---
 
 ## Журнал
-- Jun 30: план создан. Запущено профилирование (Этап 0).
+- Jun 30: план создан. Профилирование (Этап 0) → phase-1 conv доминирует (55%). Приоритет C1 (conv fusion). Запущена разведка conv-пути.
