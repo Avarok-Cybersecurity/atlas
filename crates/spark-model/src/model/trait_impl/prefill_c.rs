@@ -478,6 +478,9 @@ impl TransformerModel {
                         stream,
                     )?;
                 }
+                // DFlash: capture this SSM layer's hidden output for all processed
+                // tokens (after Phase 3 writes the final residual back to `hidden`).
+                self.try_dflash_prefill_capture_layer(seq, i, proc_start, proc_count, stream)?;
             } else {
                 // Attention layer: process all tokens at once.
                 layer
@@ -498,8 +501,14 @@ impl TransformerModel {
                     .map_err(|e| {
                         anyhow::anyhow!("Two-phase prefill attention layer {i} failed: {e}")
                     })?;
+                // DFlash: capture this attention layer's hidden output.
+                self.try_dflash_prefill_capture_layer(seq, i, proc_start, proc_count, stream)?;
             }
         }
+
+        // DFlash: after all layers, update ctx_len so propose() knows
+        // how many prefill positions are available.
+        self.update_dflash_ctx_len_after_prefill(seq, proc_start, proc_count)?;
 
         // ── 5. Update sequence state ──
         seq.tokens.extend_from_slice(tokens);
