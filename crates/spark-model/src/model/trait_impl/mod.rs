@@ -300,6 +300,32 @@ impl Model for TransformerModel {
     ) -> Result<()> {
         self.trim_proposer_state_dispatch(seq, num_accepted, _stream)
     }
+    fn dflash_accept_append(&self, seq: &mut SequenceState) -> Result<()> {
+        let base = match self.dflash_hidden_save {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        let proposer = match &self.proposer {
+            Some(p) => p.as_ref(),
+            None => return Ok(()),
+        };
+        let n_layers = self.dflash_capture_layers.len();
+        if n_layers == 0 {
+            return Ok(());
+        }
+        let ctx_slot_bytes = n_layers * self.config.hidden_size * 2;
+        let save_1 = base.offset(ctx_slot_bytes); // second half = row 1 (draft hidden)
+        let prop_state = seq
+            .proposer_state
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("no proposer state"))?;
+        let stream = self.gpu.default_stream();
+        // The accepted draft was emitted at position seq_len-1 (seq_len was already
+        // incremented past it). actual_pos records the true sequence position so
+        // forward_block assigns the correct RoPE rotation to this ctx K-vector.
+        let actual_pos = seq.seq_len.saturating_sub(1) as i32;
+        proposer.append_ctx_slot(save_1, actual_pos, prop_state.as_mut(), self.gpu.as_ref(), stream)
+    }
     fn compact_sequence(&self, seq: &mut SequenceState, new_slot: usize) -> Result<()> {
         self.compact_sequence_dispatch(seq, new_slot)
     }

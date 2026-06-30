@@ -582,6 +582,17 @@ pub trait Model: Send + Sync {
         stream: u64,
     ) -> Result<()>;
 
+    /// Append the draft token's hidden (row 1 of dflash_hidden_save) to the
+    /// sequence's ctx accumulator. Call on ACCEPT only, after run_mtp_propose_multi.
+    ///
+    /// On ACCEPT seq_len advances by 2 but propose() only appends row 0 (last_token
+    /// at pos N). Without this call, each accept creates a 1-slot gap that grows
+    /// into a large RoPE mismatch between noise0_pos and the last ctx slot.
+    fn dflash_accept_append(&self, seq: &mut SequenceState) -> Result<()> {
+        let _ = seq;
+        Ok(())
+    }
+
     /// Launch SSM state checkpoint D2D copies on a secondary CUDA stream.
     ///
     /// Non-blocking: returns immediately. The copies can overlap with MTP
