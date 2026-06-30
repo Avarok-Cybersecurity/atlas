@@ -110,5 +110,51 @@ vLLM: 4.09 / ~95ms ≈ 43 tok/s (verify ~110ms + batched 3 req)
 
 ---
 
+## C1 — РЕЗУЛЬТАТ (Jun 30): 🏆 ОГРОМНЫЙ УСПЕХ
+
+verify_d.rs phase-1 гонял всю pipeline (projection+gate+conv+l2norm) 15× с N=1 ради 15 conv intermediates. Заменили на ОДИН batched проход (prefill_phase1_verify) + новый conv kernel с inline intermediate-saving.
+
+| Метрика | OFF | ON | Δ |
+|---|---|---|---|
+| phase-1 conv | 246.7ms (55%) | **18.8ms (8%)** | −92% (13×) |
+| verify_ms | 496 | **269** | −46% |
+| tok/s | 12.1 | **~22** | +80-90% |
+| output | — | byte-IDENTICAL | ✅ |
+| τ | 6.56 | 6.56 | сохранён |
+
+Флаг `ATLAS_DFLASH_CONV_FUSION=1`. Коммит `7057649`.
+
+### Новый breakdown (после C1) — bottleneck сместился
+| Компонент | ms | % |
+|---|---|---|
+| **SSM phase-3** (gated norm + out proj + FFN) | 89 | **40%** ⬅️ новая доминанта |
+| **attn prefill** (28 слоёв) | 78 | **35%** ⬅️ #2 |
+| SSM phase-1 conv | 19 | 8% |
+| head | 21 | 9% |
+| SSM phase-2 GDN (wy16) | 15 | 7% |
+
+→ Следующие рычаги: **C6 (phase-3 fusion, 40%)** и **C3 (attention, 35%)** — теперь co-dominant.
+
+---
+
+## Обновлённая траектория tok/s
+
+| Веха | verify_ms | tok/s |
+|---|---|---|
+| Старт | 754 | 2.9 |
+| EAGLE (acceptance) | 520 | 13.0 |
+| wy16 (GDN) | 495 | 13.0 |
+| **C1 (conv fusion)** | **269** | **~22** |
+| vLLM | ~110 | 43 |
+
+Половину пути к vLLM tok/s прошли. Осталось phase-3 + attention.
+
+---
+
+## C6 — phase-3 fusion (новый приоритет, 40%)
+Тот же подход что C1: phase-3 (gated RMS norm + output proj + FFN) вероятно тоже гоняется per-token или неоптимально батчится. Разведка: батчится ли phase-3 над K токенами, или есть per-token loop как был в phase-1?
+
+---
+
 ## Журнал
-- Jun 30: план создан. Профилирование (Этап 0) → phase-1 conv доминирует (55%). Приоритет C1 (conv fusion). Запущена разведка conv-пути.
+- Jun 30: план создан. Этап 0 профиль → phase-1 conv 55%. **C1 conv fusion → verify 496→269ms, tok/s 12→22 (byte-identical).** Bottleneck сместился на phase-3 (40%) + attention (35%). Следующий: C6 phase-3.
