@@ -245,6 +245,27 @@ impl TransformerModel {
             let seq_lens_vec: Vec<usize> = (0..k).map(|t| seq.seq_len + t).collect();
             let block_tables_vec: Vec<Vec<u32>> = vec![seq.block_table.clone(); k];
 
+            // ── ATLAS_DFLASH_TIMING=1: per-phase GPU timing breakdown. Brackets
+            // each phase with gpu.synchronize() (serializes — only under the flag).
+            // Requires eager (syncs are illegal under graph capture); K=γ is forced
+            // eager by the guard, so this is a no-op when graphs are somehow on.
+            let timing = (std::env::var("ATLAS_DFLASH_TIMING").ok().as_deref() == Some("1"))
+                && !use_graphs;
+            if std::env::var("ATLAS_DFLASH_TIMING").ok().as_deref() == Some("1") && use_graphs {
+                static WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!(
+                        "ATLAS_DFLASH_TIMING ignored: needs eager K=γ (incompatible with graph capture)."
+                    );
+                }
+            }
+            let mut us_attn: u128 = 0; // attention prefill (sum over attn layers)
+            let mut us_p1: u128 = 0; // SSM phase-1 per-token conv
+            let mut us_p2: u128 = 0; // SSM phase-2 GDN (wy16 or wy4+replay)
+            let mut us_p3: u128 = 0; // SSM phase-3 norm+proj+FFN
+            let mut us_head: u128 = 0; // final norm + lm_head + argmax
+
             if use_graphs {
                 self.gpu.begin_capture(stream)?;
             }
@@ -299,6 +320,12 @@ impl TransformerModel {
                         )?;
                     } else if use_prefill_attn {
                         debug_assert!(seq.seq_len > 0, "prefill-verify requires non-empty context");
+                        let _ts = if timing {
+                            self.gpu.synchronize(stream)?;
+                            Some(std::time::Instant::now())
+                        } else {
+                            None
+                        };
                         layer.prefill(
                             hidden,
                             residual,
@@ -313,6 +340,10 @@ impl TransformerModel {
                             &ctx,
                             stream,
                         )?;
+                        if let Some(t) = _ts {
+                            self.gpu.synchronize(stream)?;
+                            us_attn += t.elapsed().as_micros();
+                        }
                     } else {
                         let mut dummy_states: Vec<Box<dyn LayerState>> = (0..k)
                             .map(|_| layer.alloc_state(self.gpu.as_ref()))
@@ -337,6 +368,12 @@ impl TransformerModel {
                     // Phase 1: K serial single-token calls fill gdn_bufs at
                     // token_offset=t and slide conv_state one step each, so
                     // conv_state_intermediates[t] can be saved after each call.
+                    let _ts1 = if timing {
+                        self.gpu.synchronize(stream)?;
+                        Some(std::time::Instant::now())
+                    } else {
+                        None
+                    };
                     for t in 0..k {
                         layer.prefill_phase1(
                             hidden.offset(t * h * bf16),
@@ -369,10 +406,20 @@ impl TransformerModel {
                             )?;
                         }
                     }
+                    if let Some(t) = _ts1 {
+                        self.gpu.synchronize(stream)?;
+                        us_p1 += t.elapsed().as_micros();
+                    }
                     // Phase 2: single fused WY16 pass (K=16) writes final h_state
                     // AND Hi_0..Hi_14 intermediates inline — eliminating the WY4
                     // batch + the per-token replay loop. Falls back to WY4+replay
                     // when wy16 is unavailable (other K, or kernel NULL).
+                    let _ts2 = if timing {
+                        self.gpu.synchronize(stream)?;
+                        Some(std::time::Instant::now())
+                    } else {
+                        None
+                    };
                     let used_wy16 = layer.prefill_gdn_wy16(
                         seq.layer_states[layer_idx].as_mut(),
                         &gdn_bufs,
@@ -446,7 +493,17 @@ impl TransformerModel {
                         stream,
                     )?;
                     } // end !used_wy16 (WY4 batch + per-token replay fallback)
+                    if let Some(t) = _ts2 {
+                        self.gpu.synchronize(stream)?;
+                        us_p2 += t.elapsed().as_micros();
+                    }
                     // Phase 3: gated RMS norm + output projection + FFN
+                    let _ts3 = if timing {
+                        self.gpu.synchronize(stream)?;
+                        Some(std::time::Instant::now())
+                    } else {
+                        None
+                    };
                     layer.prefill_phase3(
                         hidden,
                         residual,
@@ -456,6 +513,10 @@ impl TransformerModel {
                         &ctx,
                         stream,
                     )?;
+                    if let Some(t) = _ts3 {
+                        self.gpu.synchronize(stream)?;
+                        us_p3 += t.elapsed().as_micros();
+                    }
                 } else {
                     layer.decode_batched(
                         hidden,
@@ -484,6 +545,12 @@ impl TransformerModel {
             }
 
             // Final norm [K, H]
+            let _tsh = if timing {
+                self.gpu.synchronize(stream)?;
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
             let normed = self.buffers.norm_output();
             ops::rms_norm(
                 self.gpu.as_ref(),
@@ -514,6 +581,40 @@ impl TransformerModel {
                     vocab as u32,
                     stream,
                 )?;
+            }
+            if let Some(t) = _tsh {
+                self.gpu.synchronize(stream)?;
+                us_head += t.elapsed().as_micros();
+            }
+
+            // ── ATLAS_DFLASH_TIMING: aggregate per-phase costs, log every 50 steps ──
+            if timing {
+                use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+                static A: AtomicU64 = AtomicU64::new(0);
+                static P1: AtomicU64 = AtomicU64::new(0);
+                static P2: AtomicU64 = AtomicU64::new(0);
+                static P3: AtomicU64 = AtomicU64::new(0);
+                static HD: AtomicU64 = AtomicU64::new(0);
+                static N: AtomicU64 = AtomicU64::new(0);
+                A.fetch_add(us_attn as u64, Relaxed);
+                P1.fetch_add(us_p1 as u64, Relaxed);
+                P2.fetch_add(us_p2 as u64, Relaxed);
+                P3.fetch_add(us_p3 as u64, Relaxed);
+                HD.fetch_add(us_head as u64, Relaxed);
+                let n = N.fetch_add(1, Relaxed) + 1;
+                if n % 50 == 0 {
+                    let ms = |x: &AtomicU64| x.load(Relaxed) as f64 / n as f64 / 1000.0;
+                    let (a, p1, p2, p3, hd) = (ms(&A), ms(&P1), ms(&P2), ms(&P3), ms(&HD));
+                    let sum = (a + p1 + p2 + p3 + hd).max(1e-6);
+                    tracing::info!(
+                        "DFLASH TIMING avg/{n} steps: attn={a:.1} p1_conv={p1:.1} p2_gdn={p2:.1} p3={p3:.1} head={hd:.1} | sum={sum:.1}ms (attn {:.0}% p1 {:.0}% p2 {:.0}% p3 {:.0}% head {:.0}%)",
+                        100.0 * a / sum,
+                        100.0 * p1 / sum,
+                        100.0 * p2 / sum,
+                        100.0 * p3 / sum,
+                        100.0 * hd / sum,
+                    );
+                }
             }
 
             if use_graphs {
