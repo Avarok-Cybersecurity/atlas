@@ -370,6 +370,17 @@ impl TransformerModel {
                             )?;
                         }
                     }
+                    // Phase 2: single fused WY16 pass (K=16) writes final h_state
+                    // AND Hi_0..Hi_14 intermediates inline — eliminating the WY4
+                    // batch + the per-token replay loop. Falls back to WY4+replay
+                    // when wy16 is unavailable (other K, or kernel NULL).
+                    let used_wy16 = layer.prefill_gdn_wy16(
+                        seq.layer_states[layer_idx].as_mut(),
+                        &gdn_bufs,
+                        &ctx,
+                        stream,
+                    )?;
+                    if !used_wy16 {
                     // Phase 2: one WY4 batch GDN recurrence over all K tokens.
                     layer.prefill_gdn_full(
                         seq.layer_states[layer_idx].as_mut(),
@@ -435,6 +446,7 @@ impl TransformerModel {
                         h_bytes,
                         stream,
                     )?;
+                    } // end !used_wy16 (WY4 batch + per-token replay fallback)
                     // Phase 3: gated RMS norm + output projection + FFN
                     layer.prefill_phase3(
                         hidden,

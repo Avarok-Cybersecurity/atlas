@@ -130,6 +130,9 @@ pub struct Qwen3SsmLayer {
     /// in which case decode_batched(K=17) falls through to the sequential
     /// per-token path.
     gdn_wy17_k: KernelHandle,
+    /// K=16 (DFlash γ) fused WY-chunkwise verify kernel. Mirror of wy17 for the
+    /// 16-token verify input. NULL on models lacking gated_delta_rule_wy16.cu.
+    gdn_wy16_k: KernelHandle,
     // State allocation sizes (pre-computed from config)
     h_state_bytes: usize,
     conv_state_bytes: usize,
@@ -333,6 +336,16 @@ impl TransformerLayer for Qwen3SsmLayer {
         stream: u64,
     ) -> Result<()> {
         self.prefill_gdn_full_inner(state, gdn_bufs, ctx, stream)
+    }
+
+    fn prefill_gdn_wy16(
+        &self,
+        state: &mut dyn LayerState,
+        gdn_bufs: &GdnPrefillBuffers,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<bool> {
+        self.prefill_gdn_wy16_inner(state, gdn_bufs, ctx, stream)
     }
 
     fn prefill_gdn_full_batched(

@@ -166,6 +166,21 @@ pub trait TransformerLayer: Send + Sync {
         Ok(()) // No-op for attention layers
     }
 
+    /// K=16 DFlash verify: single fused WY16 GDN pass over `gdn_bufs` (already
+    /// post-conv from phase-1). Writes final h_state live AND Hi_0..Hi_14
+    /// intermediates inline — replacing prefill_gdn_full + the per-token replay.
+    /// Returns Ok(true) if it ran (caller skips replay); Ok(false) if the wy16
+    /// kernel/length isn't applicable (caller falls back to WY4 + replay).
+    fn prefill_gdn_wy16(
+        &self,
+        _state: &mut dyn LayerState,
+        _gdn_bufs: &GdnPrefillBuffers,
+        _ctx: &ForwardContext,
+        _stream: u64,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Q12 Path B: batched attention prefill across N stacked-input streams.
     ///
     /// Runs the full attention-layer prefill (rms_norm + residual, QKV proj,
