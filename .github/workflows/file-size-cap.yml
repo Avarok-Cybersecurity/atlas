@@ -14,7 +14,7 @@ jobs:
     name: Enforce ≤500 LoC per source file
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Check no .rs file exceeds 500 lines
         shell: bash
@@ -153,6 +153,25 @@ jobs:
             # launch sequence reads top-to-bottom and splitting fragments it.
             # Clean split tracked as follow-up.
             "crates/spark-model/src/layers/dense_ffn.rs"
+            # ── PR #202 (perf/vision-vit-perf) carry-over ──
+            # 513 LoC — prefill phase-A (vision-embed prepare + single/batched
+            # dispatch). The GEMM-based ViT perf work adds the co-dispatch
+            # `prepare_vision_embed_batched_dispatch` path alongside the existing
+            # single-image dispatch; both share the encode→splice launch order
+            # that reads top-to-bottom with `prefill_b/` and the scheduler's
+            # `prefill_a_step`. Splitting fragments that ordered sequence (same
+            # rationale as the prefill_c.rs / kernel-dispatch entries above).
+            # Clean split tracked as follow-up.
+            "crates/spark-model/src/model/trait_impl/prefill_a.rs"
+            # 506 LoC — GEMM-based ViT attention block (vit_gemm_bias +
+            # vit_attention_gemm + vit_block). Compute-heavy launch sequence:
+            # the per-head GEMM1→softmax→GEMM2→scatter ordering and the shared
+            # buf_scores/buf_probs/buf_o_stage reuse are correctness-critical and
+            # read top-to-bottom (splitting them across files inverts the launch
+            # order, same rationale as the qwen3_attention compute-heavy entries).
+            # Pushed over 500 purely by `cargo fmt` wrapping the kernel-launch
+            # arg chains. Clean split tracked as follow-up.
+            "crates/spark-model/src/layers/vision_encoder/enc_impl/vit_block.rs"
           )
 
           violations=0

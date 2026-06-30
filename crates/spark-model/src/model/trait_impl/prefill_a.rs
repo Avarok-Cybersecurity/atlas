@@ -44,21 +44,35 @@ impl TransformerModel {
             None => return Ok(()),
         };
         let stream = self.gpu.default_stream();
-        let mut total_patches = 0usize;
-        let mut post_merge_grids: Vec<(usize, usize)> = Vec::with_capacity(images.len());
-        let sms = ve.spatial_merge_size.max(1);
-        for (pixels, grid_h, grid_w) in images {
-            let p = ve.forward(pixels, *grid_h, *grid_w, self.gpu.as_ref(), stream)?;
-            total_patches += p;
-            // Record post-merge dimensions for downstream MRoPE position
-            // computation. The ViT folds `sms × sms` pre-merge patches into
-            // a single output embedding, so the effective spatial grid
-            // shrinks by that factor in each axis.
-            post_merge_grids.push((grid_h / sms, grid_w / sms));
+        // ONE batched ViT forward over all images in this request — block GEMM
+        // weights read once over Σpatches instead of N× (the per-image loop also
+        // overwrote buf_out row 0 every call, corrupting multi-image requests).
+        // Each returned (post_h, post_w, merged_p) preserves image order, so the
+        // packed buf_out matches the pad-token splice order downstream.
+        let img_refs: Vec<(&[f32], usize, usize)> = images
+            .iter()
+            .map(|(px, gh, gw)| (px.as_slice(), *gh, *gw))
+            .collect();
+        let _vt0 = std::time::Instant::now();
+        let per_image = ve.forward_batched(&img_refs, self.gpu.as_ref(), stream)?;
+        if std::env::var("ATLAS_VISION_TIMING").is_ok() {
+            self.gpu.synchronize(stream).ok();
+            tracing::info!(
+                "VIT_TIMING self-encode {} imgs: {:.1}ms",
+                images.len(),
+                _vt0.elapsed().as_secs_f64() * 1000.0
+            );
         }
-        *self.vision_embed_patches.lock() = total_patches;
+        let post_merge_grids: Vec<(usize, usize)> =
+            per_image.iter().map(|(h, w, _)| (*h, *w)).collect();
+        let total_merged: usize = per_image.iter().map(|(_, _, mp)| *mp).sum();
+        *self.vision_embed_patches.lock() = total_merged;
         *self.vision_image_grids.lock() = post_merge_grids;
-        tracing::info!("Vision encoder: {} patches encoded", total_patches);
+        tracing::info!(
+            "Vision encoder (batched): {} images, {} merged patches encoded",
+            images.len(),
+            total_merged
+        );
         Ok(())
     }
 

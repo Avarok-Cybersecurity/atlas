@@ -32,6 +32,7 @@ mrope_interleaved = true
 mrope_section = [11, 11, 10]
 
 mtp_layers = 0
+vision = true
 
 # Effective context for agentic tasks. Mirrors Qwen3.5-27B's empirical bound
 # (Atlas's hybrid-GDN long-context behavior is consistent across 27B variants).

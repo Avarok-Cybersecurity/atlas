@@ -63,12 +63,29 @@ pub(crate) fn dequant_fp8_blockscaled_to_bf16(
         "FP8 size mismatch: total={total} byte_size={byte_size}"
     );
 
-    // Fast GPU path: standard HF / Qwen / DeepSeek-V3 / MiniMax ship
-    // `.weight_scale_inv` (2-D, BF16 or FP32). Dequant entirely on device.
-    if let Ok(s) = store.get(&format!("{prefix}.weight_scale_inv")) {
+    // Fast GPU path (merged main + V4): take the device dequant when the scale
+    // is GPU-kernel-compatible — `weight_scale_inv` (DeepSeek-V3 / Qwen / MiniMax
+    // native, 2-D BF16/FP32), OR a 2-D `weight_scale` (ModelOpt / compressed-
+    // tensors mixed-precision, e.g. lovedheart AgentWorld-35B). Both are the
+    // per-block multiplier `dequant_fp8_blockscaled_bf16` consumes identically.
+    // V4 (`.scale`, F8_E8M0) and 1-D / scalar `weight_scale` are NOT taken here
+    // (the GPU kernel handles neither E8M0 nor 1-D) — they fall through to the
+    // CPU host-dequant below. NOTE: this must stay an `if let`/fall-through, not
+    // an unconditional `store.get(scale_key)?` — V4 ships no `weight_scale*` at
+    // all, so a hard get would error instead of reaching the CPU path.
+    let gpu_scale = store
+        .get(&format!("{prefix}.weight_scale_inv"))
+        .ok()
+        .or_else(|| {
+            store
+                .get(&format!("{prefix}.weight_scale"))
+                .ok()
+                .filter(|s| s.shape.len() == 2)
+        });
+    if let Some(s) = gpu_scale {
         ensure!(
             s.dtype == WeightDtype::BF16 || s.dtype == WeightDtype::FP32,
-            "Expected BF16 or FP32 for {prefix}.weight_scale_inv, got {:?}",
+            "Expected BF16 or FP32 for {prefix} GPU block scale, got {:?}",
             s.dtype,
         );
         let sn = s.shape[0];
@@ -273,15 +290,19 @@ pub(crate) fn dense_auto(
             let prefix = name
                 .strip_suffix(".weight")
                 .ok_or_else(|| anyhow::anyhow!("FP8 tensor {name} doesn't end with .weight"))?;
-            // FP8 scale conventions:
+            // FP8 scale conventions (merged main + V4):
             // 1. block-scaled (DeepSeek-V3 / Qwen native FP8): `weight_scale_inv` (2D)
             // 2. per-tensor (nvidia MIXED_PRECISION, e.g. Qwen3.6-35B-A3B-NVFP4's
             //    attn + linear_attn projections): scalar `weight_scale` (1 element)
-            // 3. block-scaled compressed-tensors (RedHatAI re-quant): `weight_scale`
-            //    with >1 element / `.scale` (DeepSeek-V4, F8_E8M0)
+            // 3. block-scaled compressed-tensors (RedHatAI re-quant): 2-D / 1-D
+            //    multi-element `weight_scale` (incl. ModelOpt mixed-precision, e.g.
+            //    lovedheart AgentWorld-35B) / `.scale` (DeepSeek-V4, F8_E8M0)
             // Pick by which one is present so MIXED_PRECISION loads instead of
             // erroring on the absent `weight_scale_inv` (issue #107), while V4 /
             // RedHatAI block-scaled checkpoints route to the block dequant.
+            // `num_elements() > 1` is the superset of main's `shape.len() == 2`
+            // (also catches 1-D per-row scales); `has_v4_scale` keeps V4 on the
+            // block path (main alone routed V4's `.scale` to the scalar path).
             let has_blockscale = store.contains(&format!("{prefix}.weight_scale_inv"));
             let has_per_row_scale = store
                 .get(&format!("{prefix}.weight_scale"))

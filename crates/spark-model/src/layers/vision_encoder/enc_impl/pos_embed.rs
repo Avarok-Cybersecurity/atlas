@@ -4,21 +4,36 @@
 //! pos_embed grid + per-patch 2D rotary cos/sin builder.
 
 use anyhow::Result;
-use spark_runtime::gpu::GpuBackend;
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::super::VisionEncoder;
 use super::f32_to_bf16_bits;
 
 impl VisionEncoder {
-    /// Bilinear interpolate the learned pos_embed grid
-    /// `[num_grid_per_side × num_grid_per_side, hidden_size]` down to
-    /// `[grid_h × grid_w, hidden_size]` in row-major order, convert to
-    /// BF16, upload to `buf_pos_resampled`.  Mirrors HF's
-    /// `fast_pos_embed_interpolate` (same index/weight formulas).
+    /// Zero-offset shim: resample into `buf_pos_resampled` (single-image path).
     pub(super) fn resample_pos_embed(
         &self,
         grid_h: usize,
         grid_w: usize,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        self.resample_pos_embed_into(grid_h, grid_w, self.buf_pos_resampled, gpu, stream)
+    }
+
+    /// Bilinear interpolate the learned pos_embed grid
+    /// `[num_grid_per_side × num_grid_per_side, hidden_size]` down to
+    /// `[grid_h × grid_w, hidden_size]` in row-major order, convert to
+    /// BF16, upload to `dst`.  Mirrors HF's
+    /// `fast_pos_embed_interpolate` (same index/weight formulas). For the
+    /// batched path, `dst` points at this image's row slice of
+    /// `buf_pos_resampled`; for single-image it IS `buf_pos_resampled`, so
+    /// the upload is byte-identical.
+    pub(super) fn resample_pos_embed_into(
+        &self,
+        grid_h: usize,
+        grid_w: usize,
+        dst: DevicePtr,
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<()> {
@@ -77,7 +92,25 @@ impl VisionEncoder {
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(out_bf16.as_ptr() as *const u8, out_bf16.len() * 2)
         };
-        gpu.copy_h2d_async(bytes, self.buf_pos_resampled, stream)
+        gpu.copy_h2d_async(bytes, dst, stream)
+    }
+
+    /// Zero-offset shim: build rope into `buf_rope_cos`/`buf_rope_sin`.
+    pub(super) fn build_rope_cossin(
+        &self,
+        grid_h: usize,
+        grid_w: usize,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        self.build_rope_cossin_into(
+            grid_h,
+            grid_w,
+            self.buf_rope_cos,
+            self.buf_rope_sin,
+            gpu,
+            stream,
+        )
     }
 
     /// Build per-patch 2D rotary cos/sin in row-major patch order
@@ -86,10 +119,12 @@ impl VisionEncoder {
     /// `[row_freq; col_freq; row_freq; col_freq]` of length head_dim,
     /// where `row_freq[k] = cos/sin(row * inv_freq[k])` and
     /// `col_freq[k] = cos/sin(col * inv_freq[k])`. Upload BF16.
-    pub(super) fn build_rope_cossin(
+    pub(super) fn build_rope_cossin_into(
         &self,
         grid_h: usize,
         grid_w: usize,
+        cos_dst: DevicePtr,
+        sin_dst: DevicePtr,
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<()> {
@@ -147,7 +182,7 @@ impl VisionEncoder {
         let sin_b: &[u8] = unsafe {
             std::slice::from_raw_parts(sin_bf16.as_ptr() as *const u8, sin_bf16.len() * 2)
         };
-        gpu.copy_h2d_async(cos_b, self.buf_rope_cos, stream)?;
-        gpu.copy_h2d_async(sin_b, self.buf_rope_sin, stream)
+        gpu.copy_h2d_async(cos_b, cos_dst, stream)?;
+        gpu.copy_h2d_async(sin_b, sin_dst, stream)
     }
 }

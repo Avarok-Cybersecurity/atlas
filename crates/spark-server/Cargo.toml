@@ -70,7 +70,7 @@ minijinja = { version = "2", features = ["builtins", "adjacent_loop_items", "jso
 xgrammar = { path = "../xgrammar" }
 prometheus = { version = "0.14", default-features = false }
 lazy_static = "1"
-tower-http = { version = "0.6", features = ["catch-panic", "cors"] }
+tower-http = { version = "0.7", features = ["catch-panic", "cors"] }
 
 [dev-dependencies]
 tempfile = "3"

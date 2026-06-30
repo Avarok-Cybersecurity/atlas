@@ -8,7 +8,7 @@ use anyhow::Result;
 use atlas_core::config::{LayerType, ModelConfig};
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
-use spark_runtime::weights::WeightStore;
+use spark_runtime::weights::{WeightDtype, WeightStore};
 
 use super::super::{ModelWeightLoader, QuantFormat, WeightFormat};
 use crate::layer::TransformerLayer;
@@ -19,6 +19,20 @@ use crate::weight_map::{
     load_fp8_block_scaled_as_fp8weight, load_kv_scales, load_moe_qwen35,
     load_moe_qwen35_fp8_experts, quantize_to_nvfp4,
 };
+
+/// True when a projection ships as native block-scaled FP8 on disk
+/// (`FP8E4M3 .weight` + `.weight_scale_inv`). Hybrid mixed-precision
+/// checkpoints (lovedheart AgentWorld-35B) keep attention/SSM projections in
+/// BF16 — or in block-FP8 under a `.weight_scale` key — even when the model is
+/// globally FP8/NVFP4. Those return false so the loader routes them through
+/// the per-tensor dense/NVFP4 path instead of the native-FP8 fast arm.
+fn proj_is_native_fp8(store: &WeightStore, prefix: &str) -> bool {
+    store
+        .get(&format!("{prefix}.weight"))
+        .map(|w| w.dtype == WeightDtype::FP8E4M3)
+        .unwrap_or(false)
+        && store.contains(&format!("{prefix}.weight_scale_inv"))
+}
 
 pub(super) fn load_layers(
     loader: &dyn ModelWeightLoader,
@@ -136,10 +150,22 @@ pub(super) fn load_layers(
         let force_nvfp4_all = std::env::var("ATLAS_FORCE_NVFP4_ALL").ok().as_deref() == Some("1");
         let force_nvfp4_moe =
             force_nvfp4_all || std::env::var("ATLAS_FORCE_NVFP4_MOE").ok().as_deref() == Some("1");
-        let skip_nvfp4_experts = native_fp8 && !force_nvfp4_moe;
+        // Hybrid FP8 checkpoints (lovedheart AgentWorld-35B-FP8) ship routed
+        // experts in a FUSED layout (`experts.gate_up_proj`/`down_proj`), which
+        // the native-FP8 per-expert loader can't address — it Errs and the MoE
+        // is left with NULL routed experts (gibberish output). `load_moe_qwen35`
+        // handles the fused layout (BF16 and FP8) by dequant→NVFP4, so route
+        // fused checkpoints through the NVFP4 expert path (as ATLAS_FORCE_NVFP4_MOE
+        // does) rather than the native-FP8 per-expert path.
+        let fused_experts = store.contains(&format!("{lp}.mlp.experts.gate_up_proj"));
+        let skip_nvfp4_experts = native_fp8 && !force_nvfp4_moe && !fused_experts;
         if skip_nvfp4_experts {
             tracing::info!(
                 "FP8: skipping NVFP4 routed experts (FP8 fused MoE batch1/2/3 handles all dispatch)"
+            );
+        } else if native_fp8 && fused_experts {
+            tracing::info!(
+                "FP8: routed experts use FUSED layout — loading via NVFP4 expert path (dequant→NVFP4)"
             );
         } else if native_fp8 && force_nvfp4_moe {
             tracing::warn!(
@@ -329,58 +355,77 @@ pub(super) fn load_layers(
             }
         }
 
-        // Native FP8 MoE: load FP8 expert weights for decode
-        if native_fp8
-            && !force_nvfp4_moe
-            && !dequant_moe_to_bf16
-            && let Ok(fp8_experts) =
-                load_moe_qwen35_fp8_experts(store, &lp, config.num_experts, gpu, config)
-        {
-            let sp = format!("{lp}.mlp.shared_expert");
-            use crate::weight_map::{Fp8ExpertWeight as FEW, Fp8Weight as FW};
-            use spark_runtime::gpu::DevicePtr;
-            let null_fw = FW {
-                weight: DevicePtr::NULL,
-                row_scale: DevicePtr::NULL,
-                n: 0,
-                k: 0,
-                // Placeholder for absent shared-expert tensor: the
-                // calling site checks `weight == NULL` before
-                // launching any kernel, so the tag is conventional.
-                // Match the block-scaled FP8 loader the other arms
-                // use so the format is consistent.
-                scale_format: crate::weight_map::WeightQuantFormat::Fp8BlockScaled,
-            };
-            let sh_gate =
-                load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.gate_proj"), gpu);
-            let sh_up = load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.up_proj"), gpu);
-            let sh_down =
-                load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.down_proj"), gpu);
-            if sh_gate.is_err() || sh_up.is_err() || sh_down.is_err() {
-                tracing::warn!(
-                    "Layer {i}: shared expert FP8 load failed (gate={}, up={}, down={})",
-                    sh_gate.is_ok(),
-                    sh_up.is_ok(),
-                    sh_down.is_ok(),
-                );
-            }
-            let shared_fp8 = FEW {
-                gate_proj: sh_gate.unwrap_or(null_fw),
-                up_proj: sh_up.unwrap_or(null_fw),
-                down_proj: sh_down.unwrap_or(null_fw),
-            };
-            if let Err(e) = moe_layer.set_fp8_experts(&fp8_experts, shared_fp8, gpu) {
-                tracing::error!("Layer {i}: failed to build FP8 expert pointer tables: {e:#}");
-                tracing::warn!("Layer {i}: falling back to NVFP4-only decode for MoE experts");
-            } else {
-                tracing::info!("Layer {i}: MoE experts loaded as native FP8");
+        // Native FP8 MoE: load FP8 expert weights for decode. Skipped for fused
+        // layouts (handled above via the NVFP4 expert path). NOTE: a failure
+        // here is logged loudly — previously the load Err was swallowed by an
+        // `if let Ok(...)` guard, leaving routed experts NULL and the model
+        // emitting gibberish with no error (root cause of the AgentWorld-FP8
+        // incoherence before the fused-layout fix).
+        if native_fp8 && !force_nvfp4_moe && !dequant_moe_to_bf16 && !fused_experts {
+            let fp8_experts =
+                match load_moe_qwen35_fp8_experts(store, &lp, config.num_experts, gpu, config) {
+                    Ok(e) => Some(e),
+                    Err(e) => {
+                        tracing::error!(
+                            "Layer {i}: native-FP8 expert load failed: {e:#} — routed experts \
+                             would be NULL (incoherent output). MoE left on its fallback path."
+                        );
+                        None
+                    }
+                };
+            if let Some(fp8_experts) = fp8_experts {
+                let sp = format!("{lp}.mlp.shared_expert");
+                use crate::weight_map::{Fp8ExpertWeight as FEW, Fp8Weight as FW};
+                use spark_runtime::gpu::DevicePtr;
+                let null_fw = FW {
+                    weight: DevicePtr::NULL,
+                    row_scale: DevicePtr::NULL,
+                    n: 0,
+                    k: 0,
+                    // Placeholder for absent shared-expert tensor: the
+                    // calling site checks `weight == NULL` before
+                    // launching any kernel, so the tag is conventional.
+                    // Match the block-scaled FP8 loader the other arms
+                    // use so the format is consistent.
+                    scale_format: crate::weight_map::WeightQuantFormat::Fp8BlockScaled,
+                };
+                let sh_gate =
+                    load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.gate_proj"), gpu);
+                let sh_up =
+                    load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.up_proj"), gpu);
+                let sh_down =
+                    load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.down_proj"), gpu);
+                if sh_gate.is_err() || sh_up.is_err() || sh_down.is_err() {
+                    tracing::warn!(
+                        "Layer {i}: shared expert FP8 load failed (gate={}, up={}, down={})",
+                        sh_gate.is_ok(),
+                        sh_up.is_ok(),
+                        sh_down.is_ok(),
+                    );
+                }
+                let shared_fp8 = FEW {
+                    gate_proj: sh_gate.unwrap_or(null_fw),
+                    up_proj: sh_up.unwrap_or(null_fw),
+                    down_proj: sh_down.unwrap_or(null_fw),
+                };
+                if let Err(e) = moe_layer.set_fp8_experts(&fp8_experts, shared_fp8, gpu) {
+                    tracing::error!("Layer {i}: failed to build FP8 expert pointer tables: {e:#}");
+                    tracing::warn!("Layer {i}: falling back to NVFP4-only decode for MoE experts");
+                } else {
+                    tracing::info!("Layer {i}: MoE experts loaded as native FP8");
+                }
             }
         }
 
         let ffn = FfnComponent::Moe(moe_layer);
 
         match lt {
-            LayerType::FullAttention if native_fp8 && dequant_attn_to_bf16 && !force_nvfp4_all => {
+            LayerType::FullAttention
+                if native_fp8
+                    && dequant_attn_to_bf16
+                    && !force_nvfp4_all
+                    && proj_is_native_fp8(store, &format!("{lp}.self_attn.q_proj")) =>
+            {
                 // ── BF16-dequant attention (diagnostic, TP=1) ──
                 // Dequant FP8 Q/K/V/O → BF16 on GPU, store as dense weights,
                 // and leave q/k/v/o quant-weights None so both prefill and
@@ -434,7 +479,11 @@ pub(super) fn load_layers(
                 layers.push(Box::new(layer));
                 attn_idx += 1;
             }
-            LayerType::FullAttention if native_fp8 && !force_nvfp4_all => {
+            LayerType::FullAttention
+                if native_fp8
+                    && !force_nvfp4_all
+                    && proj_is_native_fp8(store, &format!("{lp}.self_attn.q_proj")) =>
+            {
                 // ── Native FP8 path: FP8 for both decode AND prefill ──
                 // NO NVFP4 dequant — saves ~30 GB peak memory on 122B EP=2.
                 // Decode uses w8a16_gemv, prefill uses w8a16_gemm (both with
@@ -572,10 +621,31 @@ pub(super) fn load_layers(
             // All non-FP8 variants (NVFP4 native, BF16, etc.) take the
             // existing NVFP4-quantized decode path.
             LayerType::LinearAttention => {
+                // Native-FP8 SSM decode is valid only when in_proj_qkv actually
+                // ships as block-scaled FP8 (FP8E4M3 + `weight_scale_inv`).
+                // Hybrid checkpoints (lovedheart AgentWorld-35B-FP8) keep the SSM
+                // in BF16 even when globally FP8 → route those to the NVFP4
+                // builder, which dequants per-tensor via `dense_auto` then
+                // runtime-quantizes. True-FP8 checkpoints (397B, Qwen3.6-FP8)
+                // keep the fast native-FP8 arm unchanged.
+                let ssm_native_fp8 =
+                    proj_is_native_fp8(store, &format!("{lp}.linear_attn.in_proj_qkv"));
+                // A BF16 SSM inside a globally-FP8 checkpoint must NOT take the
+                // Fp8Dequanted single-scale FP8 *prefill* bypass (it assumes the
+                // SSM shipped as native FP8) — that corrupts prefill on a
+                // BF16-sourced SSM. Hand the NVFP4 builder `Bf16Raw` so it uses
+                // the plain BF16→NVFP4 path (identical to how the NVFP4 checkpoint
+                // loads its SSM). Genuine FP8 SSMs keep `variant` unchanged.
+                let ssm_variant =
+                    if matches!(variant, Nvfp4Variant::Fp8Dequanted) && !ssm_native_fp8 {
+                        Nvfp4Variant::Bf16Raw
+                    } else {
+                        variant
+                    };
                 let layer = match variant {
                     // force_nvfp4_all routes the FP8 SSM through the NVFP4 builder
                     // (Fp8Dequanted requant) instead of the native-FP8 build.
-                    Nvfp4Variant::Fp8Dequanted if !force_nvfp4_all => {
+                    Nvfp4Variant::Fp8Dequanted if !force_nvfp4_all && ssm_native_fp8 => {
                         linear_attn_arms::build_linear_attention_fp8(
                             i,
                             store,
@@ -594,7 +664,7 @@ pub(super) fn load_layers(
                         store,
                         &lp,
                         gpu,
-                        variant,
+                        ssm_variant,
                         config,
                         h,
                         absmax_k,

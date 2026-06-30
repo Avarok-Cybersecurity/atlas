@@ -26,8 +26,6 @@ pub(crate) fn dequant_nvfp4_to_bf16(
     gpu: &dyn GpuBackend,
 ) -> Result<DenseWeight> {
     let total = n * k;
-    let packed_bytes = total / 2;
-    let num_groups = total / 16;
 
     // Auto-detect format: compressed-tensors vs Standard
     let (packed_ptr, scale_ptr, global_scale, is_reciprocal) =
@@ -45,49 +43,38 @@ pub(crate) fn dequant_nvfp4_to_bf16(
             (pp, sp, gs, false)
         };
 
-    let mut packed = vec![0u8; packed_bytes];
-    let mut scales = vec![0u8; num_groups]; // FP8 E4M3, 1 byte each
-    gpu.copy_d2h(packed_ptr, &mut packed)?;
-    gpu.copy_d2h(scale_ptr, &mut scales)?;
-
-    // E2M1 lookup table: 4-bit nibble → float value
-    // Bits: [sign(1)][exp(2)][mantissa(1)]
-    let e2m1_table: [f32; 16] = [
-        0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
-    ];
-
-    // Dequant to f32, then convert to BF16
-    let mut bf16_out = vec![0u16; total];
-    for group in 0..num_groups {
-        let fp8_byte = scales[group];
-        let block_scale = fp8_e4m3_to_f32(fp8_byte);
-        // compressed-tensors: weight_global_scale is reciprocal → val = E2M1 * fp8_scale / global_scale
-        // Standard/modelopt: weight_scale_2 is direct multiplier → val = E2M1 * fp8_scale * global_scale
-        let combined_scale = if is_reciprocal {
-            block_scale / global_scale
+    // Fold the global-scale convention into a single MULTIPLY for the kernel:
+    // compressed-tensors stores a RECIPROCAL global (val = E2M1 * fp8_scale /
+    // global), ModelOpt a direct multiplier (val = E2M1 * fp8_scale * global).
+    let combined_global = if is_reciprocal {
+        if global_scale != 0.0 {
+            1.0 / global_scale
         } else {
-            block_scale * global_scale
-        };
-
-        for elem in 0..16 {
-            let flat_idx = group * 16 + elem;
-            let byte_idx = flat_idx / 2;
-            let nibble = if flat_idx % 2 == 0 {
-                packed[byte_idx] & 0x0F
-            } else {
-                (packed[byte_idx] >> 4) & 0x0F
-            };
-            let val = e2m1_table[nibble as usize] * combined_scale;
-            bf16_out[flat_idx] = f32_to_bf16(val);
+            0.0
         }
-    }
+    } else {
+        global_scale
+    };
 
-    // Upload BF16 to GPU
-    let buf = gpu.alloc(total * 2)?;
-    let bf16_bytes: &[u8] =
-        unsafe { std::slice::from_raw_parts(bf16_out.as_ptr() as *const u8, total * 2) };
-    gpu.copy_h2d(bf16_bytes, buf)?;
-    Ok(DenseWeight { weight: buf })
+    // GPU dequant — replaces the former D2H(packed+scales) + 83M-element
+    // single-threaded CPU loop + H2D (the real cost of the NVFP4→BF16→NVFP4
+    // fused-qkvz round-trip: ~8s per dense-27B SSM layer). Same math, on-device.
+    // One sync so the BF16 is ready for the caller (gpu_concat_rows / requant).
+    let out = gpu.alloc(total * 2)?;
+    let kernel = gpu.kernel("dequant_nvfp4_bf16", "dequant_nvfp4_to_bf16")?;
+    let stream = gpu.default_stream();
+    spark_runtime::kernel_args::KernelLaunch::new(gpu, kernel)
+        .grid([n as u32, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(packed_ptr)
+        .arg_ptr(scale_ptr)
+        .arg_ptr(out)
+        .arg_f32(combined_global)
+        .arg_u32(n as u32)
+        .arg_u32(k as u32)
+        .launch(stream)?;
+    gpu.synchronize(stream)?;
+    Ok(DenseWeight { weight: out })
 }
 
 /// Dequantize an NVFP4 weight with **E8M0** (power-of-2) per-block scales and
@@ -191,7 +178,10 @@ pub(super) static FP8_E4M3_LUT: [f32; 256] = {
 };
 
 /// Convert FP8 E4M3 byte to f32 via LUT (branchless, single array lookup).
+/// Kept (allow dead_code) as the SSOT CPU reference for the FP8 E4M3 decode now
+/// that `dequant_nvfp4_to_bf16` runs on the GPU (`dequant_nvfp4_bf16.cu`).
 #[inline(always)]
+#[allow(dead_code)]
 pub(super) fn fp8_e4m3_to_f32(bits: u8) -> f32 {
     FP8_E4M3_LUT[bits as usize]
 }
