@@ -98,7 +98,9 @@ pub fn log_cutlass_nvfp4_route(name: &str, m: u32, n: u32, k: u32) {
     }
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
     if seen.lock().unwrap().insert((h, m, n, k)) {
-        tracing::warn!("CUTLASS_NVFP4_ROUTE {name} M={m} N={n} K={k}");
+        // Route diagnostic (first-seen per shape), not a warning — keep at debug
+        // so it doesn't spam serve logs / benchmarks at the default INFO/WARN level.
+        tracing::debug!("CUTLASS_NVFP4_ROUTE {name} M={m} N={n} K={k}");
     }
 }
 
