@@ -182,3 +182,14 @@
 ---
 
 Каталог покрывает все 15 изменённых файлов и все 13 коммитов, включая мелочи (cap=γ−1, удаление debug sync, KMAX-буфер, логирование ctx_len, debug tracing pos≤1). Готов.
+---
+
+## Известные ограничения / открытые баги
+
+### ⚠️ Graphed K=γ verify выдаёт corrupt output (pre-existing, не EAGLE-регрессия)
+- **Симптом:** При CUDA-графах (use_graphs=true, дефолт) K=γ verify path даёт degenerate/divergent output (детерминированно, не FP-шум). При T=0 spec-decode lossless — graphed и eager обязаны совпадать побайтно, но не совпадают.
+- **Изоляция:** EAGLE OFF на графах ТОЖЕ расходится → баг в pre-existing графовом K=γ пути, независим от per-position capture. Подтверждается существованием флага `ATLAS_DFLASH_DEBUG_NO_GRAPH` (его комментарий: "localize K=γ illegal-address crashes downstream of SSM"). Вероятная причина — SSM checkpoint / prefill-state capture под графом.
+- **Текущий обход:** DFlash K=γ требует `ATLAS_DFLASH_DEBUG_NO_GRAPH=1` для корректного output. Все A/B-замеры этой ветки были на eager-пути (NO_GRAPH=1) — EAGLE-фикс на нём валиден и корректен.
+- **Производительность:** графовый K=γ даже медленнее eager (11.5 vs 13.0 tok/s) — SSM decode доминирует независимо от графа.
+- **Статус:** отдельное расследование (вне scope EAGLE). До фикса — форсить eager для K=γ verify либо документировать NO_GRAPH-требование.
+- **batch>1:** не тестирован. `dflash_hidden_save` — единый shared буфер (не per-slot); при max-batch-size>1 capture одной seq может перезаписать rows другой до её append. Требует валидации перед multi-seq.
