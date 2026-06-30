@@ -156,6 +156,12 @@ jobs:
             "crates/spark-model/src/model/ssm_pool.rs"
             "crates/spark-model/src/weight_loader/qwen35/load_layers.rs"
             "crates/spark-runtime/src/sampler.rs"
+            # 509 LoC — OpenAI chat-request wire struct + serde + its tests
+            # (was 492; the reasoning_effort→enable_thinking resolver pin added
+            # for the template-source-off-model refactor pushed it over). A
+            # single deserialization surface; splitting the struct from its
+            # resolver/tests fragments the wire contract.
+            "crates/spark-server/src/openai/chat_request.rs"
             "crates/spark-server/src/api/chat_blocking.rs"
             "crates/spark-server/src/api/chat_stream/handle_token.rs"
             "crates/spark-server/src/grammar/compile_tools.rs"
