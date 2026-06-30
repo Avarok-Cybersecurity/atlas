@@ -214,6 +214,21 @@ Weight-load floor (~270ms) амортизируется между concurrent з
 ### C7 — MoE weight-load efficiency
 Full-expert-set load — это floor. Только faster expert GEMM/quant или expert-locality. Deep/hard.
 
+## СОСТОЯНИЕ СЕССИИ (для возобновления после компакта)
+
+**Дайверы (Monet subsessions):**
+- **Diver-1** `claude_2a97ebc5-39b0-4508-a132-74b416a0b317` — основной (наш код Atlas, держит GPU/сервер). Модель opus. Сейчас СТОИТ (Atlas погашен).
+- **Diver-2** `claude_2c5e18e6-7288-4b8a-8c4d-f2981d627179` — vLLM reference reader. Модель opus. Сейчас BUSY — гоняет vLLM single-request замер.
+
+**GPU СЕЙЧАС:** держит **vLLM** (EngineCore ~93GB). Atlas ПОГАШЕН. ⚠️ После vLLM замера: погасить vLLM (docker stop), подтвердить GPU свободна, ВЕРНУТЬ Atlas (Diver-1) если нужны ещё замеры. НИКОГДА Atlas+vLLM одновременно.
+
+**Pending:** Diver-2 завершает vLLM single-request замер (output tok/s + mean TPOT при concurrency=1) → сравнить с нашими 22. Ожидаем ~14 (подтвердить что vLLM 43 = aggregate). Забрать результат, записать сюда.
+
+**Все фиксы закоммичены** на ветке `optimizations` в /home/isolo/Projects/atlas. Env-флаги: ATLAS_DFLASH_EAGLE_FIX, ATLAS_DFLASH_CONV_FUSION, ATLAS_VERIFY_PREFILL_SSM, ATLAS_VERIFY_PREFILL_ATTN, ATLAS_DFLASH_TIMING (все off=identical). Default форсит eager для K=γ (graphed corruption guard).
+
+**Документы (внешняя память):** DEBUG-ACCEPTANCE.md (acceptance расследование), OPTIMIZATIONS-CATALOG.md (полный список изменений), BENCH-27B-DFLASH.md (числа), SSM_VERIFY_PLAN.md / PREFILL_VERIFY_PLAN.md (планы verify-ускорения), этот файл (throughput план).
+
 ## Журнал
 - Jun 30: план создан. Этап 0 профиль → phase-1 conv 55%. **C1 conv fusion → verify 496→269ms, tok/s 12→22 (byte-identical).** Bottleneck → phase-3 (40%) + attention (35%).
-- Jun 30: C6 (phase-3) = compute-bound, не C1-style. **C4 (K-tuning) = ТУПИК** — доминанты K-независимы (weight-load floor). Дешёвые рычаги исчерпаны. Ключевой вопрос: vLLM 43 single или aggregate? → определит C2 (batching) vs compute-оптимизацию.
+- Jun 30: C6 (phase-3) = compute-bound, не C1-style. **C4 (K-tuning) = ТУПИК** — доминанты K-независимы (weight-load floor). Дешёвые рычаги исчерпаны.
+- Jun 30: Diver-2 доказал **vLLM 43 = AGGREGATE на 3 concurrent** (serve.py:584), per-request ~14. Наш single-request 22 (τ=6.56) уже впереди. Запущен vLLM single-request замер для финального подтверждения. Дальше: C2 (batching) если нужен system throughput.
