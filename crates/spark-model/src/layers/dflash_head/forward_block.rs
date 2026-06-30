@@ -21,6 +21,7 @@ impl BlockDiffusionDraftHead {
         stream: u64,
         ctx_buffer: Option<(DevicePtr, usize)>,
         initial_tokens: Option<&[u32]>,
+        ctx_positions: &[i32],
     ) -> Result<Vec<u32>> {
         use crate::layers::ops;
 
@@ -212,7 +213,6 @@ impl BlockDiffusionDraftHead {
         // Using wrong position IDs corrupts the RoPE rotations for all ctx K
         // vectors, breaking attention and causing "." collapse in predictions.
         let start_slot = ctx_total.saturating_sub(eff_ctx);
-        let ctx_start = start_slot;
         // Noise position layout matching SGLang's DFlash drafter training:
         //   noise0 (conditioning token, last_token): position - 1
         //   noise1..gamma-1 (mask tokens): position, position+1, ..., position+gamma-2
@@ -221,7 +221,16 @@ impl BlockDiffusionDraftHead {
         // RoPE is consistent with target ctx K vectors at the same slot.
         let noise0_pos = (position as i64 - 1).max(0) as i32;
         let pos_host: Vec<i32> = (0..eff_ctx)
-            .map(|i| (ctx_start + i) as i32)
+            .map(|i| {
+                // Use the recorded actual sequence position for each ctx slot.
+                // `ctx_positions[start_slot + i]` is the true absolute position,
+                // which differs from `start_slot + i` when thinking tokens created
+                // a gap between prompt and output positions in the accumulator.
+                ctx_positions
+                    .get(start_slot + i)
+                    .copied()
+                    .unwrap_or((start_slot + i) as i32) // fallback: slot index (correct for no-think)
+            })
             .chain(std::iter::once(noise0_pos))
             .chain((0..self.gamma - 1).map(|i| (position + i) as i32))
             .collect();
@@ -298,6 +307,14 @@ impl BlockDiffusionDraftHead {
                 eff_ctx * self.hidden_size * bf16,
             )?;
         }
+        // combine_hidden_states (NOT YET IMPLEMENTED — see note below):
+        // vLLM adds fc(h(bonus_token_N)) to embed(bonus_token_N) at noise0.
+        // Atlas captures h(token[0]) = h(bonus_{N-1}) during verify, making
+        // target_hidden_stack 1 step behind last_token at each propose call.
+        // Adding fc_proj[eff_ctx-1] = fc(h(bonus_{N-1})) to embed(bonus_N)
+        // creates a token mismatch that hurts acceptance. Requires capturing
+        // the OUTPUT token's hidden (bonus_N itself) during verify instead,
+        // which the current architecture does not support for K=γ.
         // ATLAS_DFLASH_DEBUG_FORCE_NOISE_PATTERN=1: overwrite noise rows
         // [eff_ctx..n_attn) with a deterministic pattern matching the
         // PyTorch reference. Lets us compare layer-0 q/k/v post-projection
