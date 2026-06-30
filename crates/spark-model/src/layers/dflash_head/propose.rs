@@ -241,10 +241,16 @@ impl BlockDiffusionDraftHead {
                 _stream,
             )?;
             dstate.ctx_len += 1;
-            // Record the actual sequence position of this slot. `position` is
-            // the current draft position (next to be filled); the hidden being
-            // appended is for the last accepted token at position-1.
-            dstate.ctx_slot_positions.push((position as i32) - 1);
+            // Record the TRUE position of this row-0 hidden = h(last_token@N).
+            // `position` = seq_len at propose time = N + last_num_accepted + 1
+            // (the just-committed block: last_token@N, num_accepted drafts, bonus).
+            // So the row-0 token `last_token` sits at N = position - 1 - num_accepted.
+            // The old formula `position - 1` mislabeled it N + num_accepted, giving
+            // the N+1,N+1,N+3,... duplicate-odd/skip-even desync. dflash_accept_append
+            // (K=2 accept) records row 1 = h(draft@N+1) at seq_len-1 = N+1 — together
+            // they now produce the monotonic N, N+1, N+2, ... sequence.
+            let row0_pos = (position as i64) - 1 - (dstate.last_num_accepted as i64);
+            dstate.ctx_slot_positions.push(row0_pos.max(0) as i32);
         }
 
         let ctx_buf = if dstate.ctx_len > 0 {
