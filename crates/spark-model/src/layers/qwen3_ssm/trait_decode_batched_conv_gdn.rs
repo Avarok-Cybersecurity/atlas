@@ -366,8 +366,69 @@ impl Qwen3SsmLayer {
                 (nv * 2) as u32, // gb_stride
                 stream,
             )?;
+        } else if num_tokens == 16 && self.gdn_wy16_k.0 != 0 {
+            // ── K=16 (DFlash γ): fused WY-Chunkwise path (mirror of K=17) ──
+            // Save K-1=15 conv intermediates. The final conv_state (after token 15)
+            // stays in ssm_state.conv_state; commit_verify only needs inter_idx <= 14.
+            for t in 0..(num_tokens as u32 - 1) {
+                let qkv_t = deinterleaved.offset(t as usize * qkvz_size * bf16);
+                let conv_out_t = conv_out_buf.offset(t as usize * conv_dim * bf16);
+                ops::conv1d_update_l2norm(
+                    ctx.gpu,
+                    self.conv1d_l2norm_k,
+                    ssm_state.conv_state,
+                    qkv_t,
+                    &self.ssm.conv1d,
+                    conv_out_t,
+                    conv_dim as u32,
+                    d_conv as u32,
+                    1,
+                    qk_ch,
+                    kd as u32,
+                    1e-6,
+                    stream,
+                )?;
+                ctx.gpu.copy_d2d_async(
+                    ssm_state.conv_state,
+                    ssm_state.conv_state_intermediates[t as usize],
+                    conv_bytes,
+                    stream,
+                )?;
+            }
+
+            let q_ptr = conv_out_buf;
+            let k_ptr = conv_out_buf.offset(key_dim * bf16);
+            let v_ptr = conv_out_buf.offset(key_dim * 2 * bf16);
+            let gate_ptr = gates_buf;
+            let beta_ptr = gates_buf.offset(nv * fp32);
+            let inter_stride_floats = (h_bytes / 4) as u32;
+            // gdn_decode_wy17 is kernel-agnostic (launches the passed handle with
+            // grid (num_v_heads, batch, 1); the kernel uses its own #define
+            // K_TOKENS). Reused here with the wy16 handle — no separate wrapper.
+            ops::gdn_decode_wy17(
+                ctx.gpu,
+                self.gdn_wy16_k,
+                ssm_state.h_state,
+                q_ptr,
+                k_ptr,
+                v_ptr,
+                gate_ptr,
+                beta_ptr,
+                gdn_out_buf,
+                ssm_state.h_state_intermediates[0],
+                inter_stride_floats,
+                1, // batch_size
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32, // qk_stride
+                conv_dim as u32, // v_stride
+                (nv * 2) as u32, // gb_stride
+                stream,
+            )?;
         } else {
-            // ── K!=2,17: sequential per-token path ──
+            // ── K!=2,16,17: sequential per-token path ──
             // Models that ship a FP32 conv kernel (e.g. qwen3.6-27b/nvfp4) also ship
             // a gdn_decode kernel that takes const float* query/key/value — passing
             // BF16 data to it misinterprets every two BF16 elements as one FP32,

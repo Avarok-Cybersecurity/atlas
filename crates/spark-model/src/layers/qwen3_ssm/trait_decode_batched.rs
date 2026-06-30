@@ -261,11 +261,13 @@ impl Qwen3SsmLayer {
         // out-of-bounds panic instead of an actionable error (see #bugs
         // m0t0chan EP=2 2026-04-05). Most-common cause: EP=2 worker started
         // without `--speculative --mtp-quantization` to mirror the head.
-        // WY17 fused path saves K-1=16 conv intermediates (final stays in conv_state)
-        // and accesses h_state_intermediates[0] as a base pointer only — so it
-        // needs len >= K-1 = 16, not K = 17. All other paths (K=2/3/4 WY, sequential)
+        // WY17/WY16 fused paths save K-1 conv intermediates (final stays in
+        // conv_state) and access h_state_intermediates[0] as a base pointer only —
+        // so they need len >= K-1, not K. All other paths (K=2/3/4 WY, sequential)
         // write intermediates[0..K-1] so they need len >= K.
-        let min_inter_required = if num_tokens == 17 && self.gdn_wy17_k.0 != 0 {
+        let min_inter_required = if (num_tokens == 17 && self.gdn_wy17_k.0 != 0)
+            || (num_tokens == 16 && self.gdn_wy16_k.0 != 0)
+        {
             num_tokens - 1
         } else {
             num_tokens
