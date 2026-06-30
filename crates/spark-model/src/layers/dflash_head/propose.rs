@@ -229,7 +229,14 @@ impl BlockDiffusionDraftHead {
             .as_deref()
             == Some("1");
 
+        // EAGLE-fix: the K=2 accept path appends row 0 + row 1 in EAGLE order
+        // BEFORE calling propose and sets this one-shot flag, so propose must
+        // NOT also decode-append row 0 (would duplicate it). Consume the flag
+        // here. K=γ/K=4 never set it → their decode-append is unaffected.
+        let eagle_skip = dstate.skip_next_decode_append;
+        dstate.skip_next_decode_append = false;
         if !skip_decode_append
+            && !eagle_skip
             && let Some(latest_ctx) = target_hidden_stack
             && dstate.ctx_len < dstate.max_ctx_len
         {

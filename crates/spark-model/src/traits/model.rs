@@ -593,6 +593,16 @@ pub trait Model: Send + Sync {
         Ok(())
     }
 
+    /// EAGLE-fix (K=2 accept): append row 0 (h(last_token@N)) at pos N, then
+    /// row 1 (h(draft@N+1)) at pos N+1 — both BEFORE propose, so forward_block
+    /// conditions on row 1 (the hidden that generated bonus). Also sets the
+    /// proposer's `skip_next_decode_append` so propose does not re-append row 0.
+    /// Replaces the decode-append(row0)+post-propose accept-append(row1) split.
+    fn dflash_eagle_accept_append(&self, seq: &mut SequenceState) -> Result<()> {
+        let _ = seq;
+        Ok(())
+    }
+
     /// Launch SSM state checkpoint D2D copies on a secondary CUDA stream.
     ///
     /// Non-blocking: returns immediately. The copies can overlap with MTP
