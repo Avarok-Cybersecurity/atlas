@@ -49,12 +49,6 @@ impl Qwen3SsmLayer {
         let d_conv = ctx.config.linear_conv_kernel_dim;
         let qkvz_size = ctx.config.ssm_qkvz_size();
 
-        // Diagnostic: always sync at entry to catch prior-layer errors
-        tracing::info!("ssm phase1 ENTRY: k={k} h={h} qkvz={qkvz_size}");
-        ctx.gpu.synchronize(stream).map_err(|e| {
-            anyhow::anyhow!("ssm phase1 ENTRY: stream broken BEFORE we start (M={k}): {e}")
-        })?;
-
         // ── 1. RMS norm + residual for N tokens ──
         let normed = ctx.buffers.norm_output();
         ops::rms_norm_residual(
