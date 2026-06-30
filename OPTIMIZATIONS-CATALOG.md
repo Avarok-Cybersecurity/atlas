@@ -193,3 +193,33 @@
 - **Производительность:** графовый K=γ даже медленнее eager (11.5 vs 13.0 tok/s) — SSM decode доминирует независимо от графа.
 - **Статус:** отдельное расследование (вне scope EAGLE). До фикса — форсить eager для K=γ verify либо документировать NO_GRAPH-требование.
 - **batch>1:** не тестирован. `dflash_hidden_save` — единый shared буфер (не per-slot); при max-batch-size>1 capture одной seq может перезаписать rows другой до её append. Требует валидации перед multi-seq.
+
+---
+
+## E. SSM verify speed — wy16 kernel (Jun 30, продолжение)
+
+### E1. Нативное gdn_wy16 ядро + decode_batched dispatch
+- **Что:** Заполнили дыру K=16 в wy-семье ядер (были wy2/wy3/wy4 и wy17, не было wy16). wy16.cu = wy17.cu с K_TOKENS=16: один fused WY-проход над 16 verify-токенами, Hi_0..Hi_14 intermediates inline + final h_state live.
+- **Файлы:** `kernels/.../gated_delta_rule_wy16.cu` (новый), `init.rs` (handle), `trait_decode_batched_conv_gdn.rs` (dispatch num_tokens==16), `trait_decode_batched.rs` (min_inter=15).
+- **Эффект:** на decode_batched пути 754→742ms (бьёт sequential, но per-token conv там доминирует).
+- **Коммит:** `808024a`
+
+### E2. wy16 в prefill_ssm phase-2 — убирает replay (главный выигрыш скорости)
+- **Что:** Заменили WY4-batch + 16-шаговый per-token replay loop в K=16 prefill_ssm на единый wy16-проход. Стартует с pre-verify h_state checkpoint, пишет final + Hi_0..Hi_14 inline → replay save/restore dance исчезает.
+- **Файлы:** `transformer_layer.rs` (trait), `qwen3_ssm/mod.rs` (override), `trait_prefill_gdn.rs` (`prefill_gdn_wy16_inner`), `verify_d.rs` (try wy16, skip replay).
+- **Эффект:** verify **520→495.6ms** (−4.7%), τ 6.67→6.56 (сохранён), output byte-coherent. Убран replay-костыль (критичный R7 из SSM_VERIFY_PLAN).
+- **Коммит:** `8ea8435`
+
+### Четыре пути SSM verify (K=16, итог)
+| Путь | verify_ms |
+|---|---|
+| decode_batched sequential (исходный) | 754 |
+| decode_batched + wy16 | 742 |
+| three-phase wy4 + replay | 520 |
+| **three-phase + wy16 phase-2** | **495** |
+
+### Важный вывод про verify-скорость
+GDN recurrence БОЛЬШЕ НЕ bottleneck. Оставшиеся 495ms доминируют: per-token conv (phase-1), attention prefill, SSM проекции. Для выхода на vLLM tok/s (43, verify ~110ms) нужна работа над этими компонентами + batching (vLLM batched 3 concurrent req). wy16 закрыл GDN-часть.
+
+### Новый env-флаг
+Нет — wy16 включается автоматически при num_tokens==16 (decode_batched) и в prefill_ssm phase-2 (когда ATLAS_VERIFY_PREFILL_SSM=1). Fallback на wy4+replay если ядро недоступно.
