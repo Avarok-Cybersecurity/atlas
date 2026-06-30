@@ -151,8 +151,20 @@ verify_d.rs phase-1 гонял всю pipeline (projection+gate+conv+l2norm) 15�
 
 ---
 
-## C6 — phase-3 fusion (новый приоритет, 40%)
-Тот же подход что C1: phase-3 (gated RMS norm + output proj + FFN) вероятно тоже гоняется per-token или неоптимально батчится. Разведка: батчится ли phase-3 над K токенами, или есть per-token loop как был в phase-1?
+## C6 — phase-3 fusion: ❌ НЕ дешёвый (разведка Jun 30)
+
+phase-3 УЖЕ batched (вызывается 1× над K=16, не per-token как phase-1). 89ms — это реальный compute: SSM out-proj GEMM (M=16, weight-load-bound) + MoE FFN (16 токенов активируют много экспертов → грузят много весов). C6 ≠ C1 — нет batching-выигрыша. Launch-overhead рычаги исчерпаны (C1 был последним большим).
+
+Аналогично attention (78ms): уже prefill-fused, остаток — genuine compute (QKVO proj weight-bound + KV reads ∝ K + MoE).
+
+## C4 — K-tuning (НОВЫЙ приоритет, атакует 75% cost) 🔄
+
+**Инсайт:** phase-3 (40%) + attention (35%) = 75% verify, оба compute-bound и **оба растут с K** (KV-reads ∝ K, MoE experts ∝ K). А τ=6.56 кластеризуется в ранних позициях (pos0 94%, pos10 prefix ~15%, pos14 ~2%) — проверять все 16 расточительно, большинство reject к pos 8-10.
+
+Снизить K (16→10-12) урежет 75% cost пропорционально, сохранив τ≈6. ~25-30% verify-cut, бесплатно (настройка, не код).
+
+**K-sweep в работе:** K=16/12/10/8/6 → τ, verify_ms, tok/s. Найти knee.
+**Caveat:** нативные WY-ядра есть для K=2/3/4/16/17. Промежуточные K=12/10/8 могут падать на медленный путь (нет wy12/wy10/wy8) — если так, либо knee на K=16, либо нужны доп. wy-ядра.
 
 ---
 
