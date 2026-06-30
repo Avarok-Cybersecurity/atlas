@@ -217,6 +217,46 @@ pub fn conv1d_update_prefill(
         .launch(stream)
 }
 
+/// Batched conv1d that also writes the per-token conv_state intermediates
+/// (causal_conv1d_update_prefill_inter) for DFlash verify partial-accept
+/// rollback. `conv_state_inter_base` + `inter_stride` (FP32 elements between
+/// consecutive token intermediates) address a contiguous (seq_len-1) pool.
+#[allow(clippy::too_many_arguments)]
+pub fn conv1d_update_prefill_inter(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    conv_state: DevicePtr,
+    input: DevicePtr,
+    weight: &DenseWeight,
+    bias: DevicePtr,
+    output: DevicePtr,
+    conv_state_inter_base: DevicePtr,
+    inter_stride: u32,
+    d_inner: u32,
+    d_conv: u32,
+    seq_len: u32,
+    input_stride: u32,
+    output_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(d_inner, 256), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(conv_state)
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(bias)
+        .arg_ptr(output)
+        .arg_ptr(conv_state_inter_base)
+        .arg_u32(inter_stride)
+        .arg_u32(d_inner)
+        .arg_u32(d_conv)
+        .arg_u32(seq_len)
+        .arg_u32(input_stride)
+        .arg_u32(output_stride)
+        .launch(stream)
+}
+
 /// Mamba-2 SSM prefill: sequential recurrence across `seq_len` tokens in a single kernel.
 ///
 /// Same algorithm as decode but loops over tokens, avoiding per-token launch overhead.

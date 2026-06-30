@@ -375,36 +375,61 @@ impl TransformerModel {
                     } else {
                         None
                     };
-                    for t in 0..k {
-                        layer.prefill_phase1(
-                            hidden.offset(t * h * bf16),
-                            residual.offset(t * h * bf16),
-                            1,
+                    // C1 conv-fusion (ATLAS_DFLASH_CONV_FUSION=1): run the entire
+                    // phase-1 pipeline ONCE over all k tokens — batches the QKVZ
+                    // projection (k GEMVs → 1 GEMM), gates, conv (writing the k-1
+                    // conv intermediates inline), and l2_norm. Falls back to the
+                    // per-token loop when off or the _inter kernel is unavailable.
+                    let conv_fusion =
+                        std::env::var("ATLAS_DFLASH_CONV_FUSION").ok().as_deref() == Some("1");
+                    let fused_p1 = conv_fusion
+                        && layer.prefill_phase1_verify(
+                            hidden,
+                            residual,
+                            k,
                             seq.layer_states[layer_idx].as_mut(),
                             &mut kv_cache,
-                            seq.seq_len + t,
+                            seq.seq_len,
                             &mut seq.block_table,
                             &mut seq.disk_block_ids,
                             &mut seq.disk_last_offloaded_per_layer,
                             0,
                             &gdn_bufs,
-                            t,
                             &ctx,
                             stream,
                         )?;
-                        let s = seq.layer_states[layer_idx]
-                            .as_any_mut()
-                            .downcast_mut::<SsmLayerState>()
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("expected SsmLayerState at layer {layer_idx}")
-                            })?;
-                        if t < s.conv_state_intermediates.len() {
-                            self.gpu.copy_d2d_async(
-                                s.conv_state,
-                                s.conv_state_intermediates[t],
-                                self.ssm_pool.conv_bytes,
+                    if !fused_p1 {
+                        for t in 0..k {
+                            layer.prefill_phase1(
+                                hidden.offset(t * h * bf16),
+                                residual.offset(t * h * bf16),
+                                1,
+                                seq.layer_states[layer_idx].as_mut(),
+                                &mut kv_cache,
+                                seq.seq_len + t,
+                                &mut seq.block_table,
+                                &mut seq.disk_block_ids,
+                                &mut seq.disk_last_offloaded_per_layer,
+                                0,
+                                &gdn_bufs,
+                                t,
+                                &ctx,
                                 stream,
                             )?;
+                            let s = seq.layer_states[layer_idx]
+                                .as_any_mut()
+                                .downcast_mut::<SsmLayerState>()
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!("expected SsmLayerState at layer {layer_idx}")
+                                })?;
+                            if t < s.conv_state_intermediates.len() {
+                                self.gpu.copy_d2d_async(
+                                    s.conv_state,
+                                    s.conv_state_intermediates[t],
+                                    self.ssm_pool.conv_bytes,
+                                    stream,
+                                )?;
+                            }
                         }
                     }
                     if let Some(t) = _ts1 {

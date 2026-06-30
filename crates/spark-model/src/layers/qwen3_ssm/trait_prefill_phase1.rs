@@ -26,6 +26,9 @@ impl Qwen3SsmLayer {
         token_offset: usize,
         ctx: &ForwardContext,
         stream: u64,
+        // Some((base, inter_stride_floats)) → write per-token conv_state
+        // intermediates inline (DFlash verify). None → final state only.
+        conv_inter: Option<(DevicePtr, u32)>,
     ) -> Result<()> {
         let h = ctx.config.hidden_size;
         let eps = ctx.config.rms_norm_eps as f32;
@@ -210,21 +213,46 @@ impl Qwen3SsmLayer {
         }
         // ── 6. Batched conv1d for all N tokens ──
         let conv_out_buf = ctx.buffers.ssm_qkvz();
-        ops::conv1d_update_prefill(
-            ctx.gpu,
-            self.conv1d_prefill_k,
-            ssm_state.conv_state,
-            deinterleaved,
-            &self.ssm.conv1d,
-            DevicePtr::NULL,
-            conv_out_buf,
-            conv_dim as u32,
-            d_conv as u32,
-            k,
-            qkvz_size as u32,
-            conv_dim as u32,
-            stream,
-        )?;
+        match conv_inter {
+            Some((inter_base, inter_stride)) if self.conv1d_prefill_inter_k.0 != 0 => {
+                // DFlash verify: also write the K-1 per-token conv_state
+                // intermediates inline for partial-accept rollback.
+                ops::conv1d_update_prefill_inter(
+                    ctx.gpu,
+                    self.conv1d_prefill_inter_k,
+                    ssm_state.conv_state,
+                    deinterleaved,
+                    &self.ssm.conv1d,
+                    DevicePtr::NULL,
+                    conv_out_buf,
+                    inter_base,
+                    inter_stride,
+                    conv_dim as u32,
+                    d_conv as u32,
+                    k,
+                    qkvz_size as u32,
+                    conv_dim as u32,
+                    stream,
+                )?;
+            }
+            _ => {
+                ops::conv1d_update_prefill(
+                    ctx.gpu,
+                    self.conv1d_prefill_k,
+                    ssm_state.conv_state,
+                    deinterleaved,
+                    &self.ssm.conv1d,
+                    DevicePtr::NULL,
+                    conv_out_buf,
+                    conv_dim as u32,
+                    d_conv as u32,
+                    k,
+                    qkvz_size as u32,
+                    conv_dim as u32,
+                    stream,
+                )?;
+            }
+        }
         if k > 4096 {
             ctx.gpu
                 .synchronize(stream)
