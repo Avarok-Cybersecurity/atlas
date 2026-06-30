@@ -82,19 +82,26 @@ impl TransformerModel {
             )?;
         }
 
-        // 1c. Upload K-entry attention metadata. Layout in scratch (after
-        // mtp metadata reservation): positions[K*4] | slots[K*8] | seq_lens[K*4]
-        // | block_table[K*max_blocks*4]. Need K*16 + K*max_blocks*4 bytes per
-        // call — at K=17 max_blocks=512 that's ~36 KB which fits comfortably
-        // in the scratch arena (offset 32768).
+        // 1c. Upload attention metadata to scratch (offset 32768).
+        // Two layouts depending on whether prefill-mode attention is active:
+        //   decode:   K-row format (num_seqs=K, K copies of block_table)
+        //   prefill:  1-row format (num_seqs=1, single block_table row)
+        // Positions and slots are identical in both layouts.
+        let use_prefill_attn = std::env::var("ATLAS_VERIFY_PREFILL_ATTN")
+            .ok()
+            .as_deref()
+            == Some("1");
+
         let meta_base = self.buffers.scratch().offset(32768);
         let max_blocks = self.max_blocks_per_seq;
 
+        // positions[K×4] — same for both layouts
         let positions: Vec<u32> = (0..k).map(|t| (seq.seq_len + t) as u32).collect();
         let pos_bytes =
             unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, k * 4) };
         self.gpu.copy_h2d_async(pos_bytes, meta_base, stream)?;
 
+        // slots[K×8] — same for both layouts
         let mut slots = vec![0i64; k];
         for t in 0..k {
             let pos = seq.seq_len + t;
@@ -103,39 +110,72 @@ impl TransformerModel {
             let physical_block = seq.physical_block_for(block_idx).unwrap_or(0);
             slots[t] = (physical_block as i64) * (bs as i64) + (block_offset as i64);
         }
-        // 256-byte gap mirrors K=4 layout for ABI compatibility with
-        // attention kernels that index meta_base + fixed offsets.
         let slot_bytes = unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, k * 8) };
         self.gpu
             .copy_h2d_async(slot_bytes, meta_base.offset(256), stream)?;
 
-        let seq_lens: Vec<i32> = (0..k).map(|t| (seq.seq_len + t + 1) as i32).collect();
-        let sl_bytes = unsafe { std::slice::from_raw_parts(seq_lens.as_ptr() as *const u8, k * 4) };
-        self.gpu
-            .copy_h2d_async(sl_bytes, meta_base.offset(512), stream)?;
+        let metadata = if use_prefill_attn {
+            // Prefill layout: single seq_len value, single block_table row.
+            // prefill_attention_paged computes kv_len from seq_len_start + num_tokens
+            // and reads block_table as a flat 1D array — no seq_idx stride.
+            let seq_len_val = [(seq.seq_len + k) as u32];
+            let sl_bytes = unsafe {
+                std::slice::from_raw_parts(seq_len_val.as_ptr() as *const u8, 4)
+            };
+            self.gpu
+                .copy_h2d_async(sl_bytes, meta_base.offset(512), stream)?;
 
-        let mb = max_blocks as usize;
-        let needed = k * mb;
-        let mut bt_buf = vec![0i32; needed];
-        for row in 0..k {
+            let mb = max_blocks as usize;
+            let mut bt_buf = vec![0i32; mb];
             for (j, &block) in seq.block_table.iter().enumerate().take(mb) {
-                bt_buf[row * mb + j] = block as i32;
+                bt_buf[j] = block as i32;
             }
-        }
-        let bt_bytes =
-            unsafe { std::slice::from_raw_parts(bt_buf.as_ptr() as *const u8, needed * 4) };
-        self.gpu
-            .copy_h2d_async(bt_bytes, meta_base.offset(768), stream)?;
+            let bt_bytes =
+                unsafe { std::slice::from_raw_parts(bt_buf.as_ptr() as *const u8, mb * 4) };
+            self.gpu
+                .copy_h2d_async(bt_bytes, meta_base.offset(768), stream)?;
 
-        let metadata = AttnMetadataDev {
-            positions: meta_base,
-            positions_h: meta_base,
-            positions_w: meta_base,
-            slot: meta_base.offset(256),
-            seq_len: meta_base.offset(512),
-            block_table: meta_base.offset(768),
-            max_blocks_per_seq: max_blocks,
-            num_seqs: k as u32,
+            AttnMetadataDev {
+                positions: meta_base,
+                positions_h: meta_base,
+                positions_w: meta_base,
+                slot: meta_base.offset(256),
+                seq_len: meta_base.offset(512),
+                block_table: meta_base.offset(768),
+                max_blocks_per_seq: seq.block_table.len() as u32,
+                num_seqs: 1,
+            }
+        } else {
+            // Decode layout: K rows of seq_lens and block_table.
+            let seq_lens: Vec<i32> = (0..k).map(|t| (seq.seq_len + t + 1) as i32).collect();
+            let sl_bytes =
+                unsafe { std::slice::from_raw_parts(seq_lens.as_ptr() as *const u8, k * 4) };
+            self.gpu
+                .copy_h2d_async(sl_bytes, meta_base.offset(512), stream)?;
+
+            let mb = max_blocks as usize;
+            let needed = k * mb;
+            let mut bt_buf = vec![0i32; needed];
+            for row in 0..k {
+                for (j, &block) in seq.block_table.iter().enumerate().take(mb) {
+                    bt_buf[row * mb + j] = block as i32;
+                }
+            }
+            let bt_bytes =
+                unsafe { std::slice::from_raw_parts(bt_buf.as_ptr() as *const u8, needed * 4) };
+            self.gpu
+                .copy_h2d_async(bt_bytes, meta_base.offset(768), stream)?;
+
+            AttnMetadataDev {
+                positions: meta_base,
+                positions_h: meta_base,
+                positions_w: meta_base,
+                slot: meta_base.offset(256),
+                seq_len: meta_base.offset(512),
+                block_table: meta_base.offset(768),
+                max_blocks_per_seq: max_blocks,
+                num_seqs: k as u32,
+            }
         };
 
         // Phase 6.2.c — HSS host I/O is illegal under CUDA graph capture.
@@ -219,11 +259,6 @@ impl TransformerModel {
 
                 if layer_type == LayerType::FullAttention {
                     if hss_engaged {
-                        // HSS path: decode_multi_seq's paged-decode kernel
-                        // reads K/V from HBM only, missing the long-context
-                        // history on disk. Fall back to decode_batched
-                        // (sequential single-token decodes via the HSS
-                        // orchestrator). See verify_b.rs for full rationale.
                         layer.decode_batched(
                             hidden,
                             residual,
@@ -234,6 +269,22 @@ impl TransformerModel {
                             &mut seq.block_table,
                             &mut seq.disk_block_ids,
                             &mut seq.disk_last_offloaded_per_layer,
+                            &ctx,
+                            stream,
+                        )?;
+                    } else if use_prefill_attn {
+                        debug_assert!(seq.seq_len > 0, "prefill-verify requires non-empty context");
+                        layer.prefill(
+                            hidden,
+                            residual,
+                            k,
+                            seq.layer_states[layer_idx].as_mut(),
+                            &mut kv_cache,
+                            seq.seq_len,
+                            &mut seq.block_table,
+                            &mut seq.disk_block_ids,
+                            &mut seq.disk_last_offloaded_per_layer,
+                            0,
                             &ctx,
                             stream,
                         )?;
