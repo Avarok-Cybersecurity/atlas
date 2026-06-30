@@ -196,6 +196,19 @@ pub fn step_verify_k2(
             tracing::error!("trim_proposer_state: {e:#}");
         }
         mtp_timing::record(Phase::TrimProposer, t_trim);
+        // EAGLE-fix (ATLAS_DFLASH_EAGLE_FIX=1, K=2 accept only): append row 0 @ N
+        // then row 1 @ N+1 BEFORE propose so forward_block conditions on row 1
+        // (the hidden that generated bonus_S). This also sets the proposer's
+        // skip-flag so propose does NOT re-append row 0. With the flag off, the
+        // legacy path runs unchanged (propose appends row 0; row 1 appended
+        // post-propose below).
+        let eagle_fix =
+            std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
+        if eagle_fix {
+            if let Err(e) = model.dflash_eagle_accept_append(&mut a.seq) {
+                tracing::error!("dflash_eagle_accept_append: {e:#}");
+            }
+        }
         let t_mask = Instant::now();
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
         mtp_timing::record(Phase::ProposeMask, t_mask);
@@ -215,12 +228,14 @@ pub fn step_verify_k2(
             }
         }
         mtp_timing::record(Phase::Propose, t_propose);
-        // Append the accepted draft's hidden (row 1 of dflash_hidden_save)
-        // so ctx_len stays in sync with seq_len. Without this, each accept
-        // opens a 1-slot gap; after N accepts noise0_pos drifts N positions
-        // ahead of the last ctx slot, corrupting RoPE and collapsing acceptance.
-        if let Err(e) = model.dflash_accept_append(&mut a.seq) {
-            tracing::error!("dflash_accept_append: {e:#}");
+        // Legacy path only: append the accepted draft's hidden (row 1 of
+        // dflash_hidden_save) AFTER propose so ctx_len stays in sync with
+        // seq_len. Under EAGLE-fix row 1 was already appended before propose, so
+        // skip here to avoid a duplicate slot.
+        if !eagle_fix {
+            if let Err(e) = model.dflash_accept_append(&mut a.seq) {
+                tracing::error!("dflash_accept_append: {e:#}");
+            }
         }
         let propose_us = t_propose.elapsed().as_micros();
         // Per-step ACCEPT trace at debug — fires every step during

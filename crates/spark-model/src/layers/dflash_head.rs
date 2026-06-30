@@ -147,6 +147,11 @@ pub struct DflashProposerState {
     /// `- last_num_accepted` term the row-0 slot (h(last_token@N)) is mislabeled
     /// `N + num_accepted`, producing the `N+1,N+1,N+3,N+3,...` desync.
     pub last_num_accepted: usize,
+    /// EAGLE-fix one-shot: when set, the next `propose()` skips its internal
+    /// decode-append because the verify step (K=2 accept) already appended
+    /// row 0 + row 1 in EAGLE order before calling propose. Consumed (reset to
+    /// false) by propose. Only set under ATLAS_DFLASH_EAGLE_FIX=1.
+    pub skip_next_decode_append: bool,
     /// Actual absolute sequence positions for each populated ctx slot. CPU-side
     /// parallel to `ctx_hidden_acc`: `ctx_slot_positions[k]` = the true sequence
     /// position of the hidden stored in `ctx_hidden_acc[k]`. Needed because
@@ -299,6 +304,7 @@ impl DraftProposer for BlockDiffusionDraftHead {
             ctx_hidden_acc,
             ctx_len: 0,
             last_num_accepted: 0,
+            skip_next_decode_append: false,
             ctx_slot_positions: Vec::with_capacity(self.max_seq_len),
             max_ctx_len: self.max_seq_len,
             ctx_slot_bytes,
