@@ -35,9 +35,51 @@
 
 ---
 
-## vLLM aeon reference (2026-06-29)
+## vLLM aeon reference (2026-06-29) — ⚠️ AGGREGATE, не per-request
 
 | Config | T | tok/s | accept_% | τ | Notes |
 |---|---|---|---|---|---|
-| vLLM DFlash, no thinking | 0 | 43 | 27.2% | 4.09 | 3 req × 139 tok, NVFP4 |
+| vLLM DFlash, no thinking | 0 | 43 | 27.2% | 4.09 | 3 req × 139 tok, NVFP4 — **43 = СУММА 3 concurrent req** (`serve.py:584 output_throughput`) |
 | vLLM DFlash, with thinking | 0 | 43 | 28.5% | 4.28 | 5 req × 1500 tok |
+
+Эти 43 tok/s — **aggregate output throughput на несколько concurrent запросов**, НЕ single-request
+latency. Прямое сравнение нашего single-request 22 против их aggregate 43 было неверным.
+Чистый single-request замер см. ниже.
+
+---
+
+## ✅ Чистый single-request A/B (validated, Jun 30) — STRICT no-think vs no-think
+
+**Условия (идентичны для обоих движков):**
+- Дословный промпт: `Write a Python implementation of a min-heap with insert, extract_min, heapify (O(n) build from list), and peek. Show time complexity for each operation. Include a complete working demo with at least 10 elements.`
+- T=0 (greedy), max_tokens=700, single request (concurrency=1), warm-run
+- drafter `z-lab/Qwen3.6-27B-DFlash`, γ=15 (draft cap, K=16)
+- **thinking OFF** на обоих (no reasoning токенов)
+
+**Модель-таргет — сверена побайтово (гипотеза «ocicek легче» ОПРОВЕРГНУТА):**
+- Atlas `/isolorg/models/Qwen3.6-27B-NVFP4`: 20 559 272 552 B (2 шарда, llm+MTP)
+- vLLM `ocicek/Qwen3.6-27B-NVFP4` (HF API): 20 559 284 232 B (llm 19.71G + mtp 0.85G)
+- Разница **11 680 B (0.00006%)**, тот же формат NVFP4 group-16, 2672 llm + 15 MTP тензора, 64 слоя.
+  Видимость «легче» = на HF-странице виден только файл llm 19.7G без MTP.
+
+| Движок | mode | tok/s (total) | tok/s (decode) | τ | prompt_tok | completion_tok | finish | per-step |
+|---|---|---|---|---|---|---|---|---|
+| **vLLM DFlash** | no-think | **64.56** | 65.92 | **7.34–7.73** | 60 | 700 | length | — |
+| **Atlas DFlash** | no-think | **16.4** | — | **4.80** | 60 | 237 | length | propose 71.7ms + verify 269.3ms |
+| Atlas DFlash | thinking ON (best) | 22 | — | 6.56 | 60 | 701 | length | propose ~113ms + verify 269ms |
+
+**Per-position acceptance (no-think):**
+- vLLM: 0.880, 0.795, 0.711, 0.627, 0.542, 0.530, 0.458, 0.410, 0.361, 0.313, 0.253, 0.181, 0.096, 0.096, 0.084
+- Atlas pos0 (с thinking, EAGLE K=γ) ≈ 0.94 — по приёмке мы конкурентны/выше.
+
+### Выводы
+1. **vLLM ~2.9–3.9× быстрее single-request** (64.56 vs Atlas best 22 = 2.9×; vs Atlas no-think 16.4 = 3.9×).
+   Разрыв РЕАЛЬНЫЙ, не артефакт aggregate-сравнения.
+2. **Это НЕ приёмка.** τ сопоставимы (7.3 vs 4.8–6.56), per-position близки. Узкое место Atlas —
+   **сырая decode-loop efficiency**: наш verify (269ms) > весь step vLLM (~15ms/ток × 7τ ≈ 110ms).
+3. **Сюрприз: thinking ПОМОГАЕТ Atlas-приёмке.** No-think уронил τ 6.56→4.80 и tok/s 22→16.4 —
+   drafter лучше предсказывает код после reasoning-цепочки в контексте. Прежняя гипотеза
+   «thinking занижает Atlas» неверна (в output-фазе DFlash и так выключен внутри thinking, `mod.rs:340`).
+4. **Главный подозреваемый разрыва — CUDA-graphs + torch.compile (C5).** vLLM warmup 52.6s
+   (компиляция + graph capture) → рантайм ~15ms/ток. Atlas форсит eager (graphed-K=γ corruption guard).
+   Eager платит launch overhead на десятках ядер × 64 слоя × step.
