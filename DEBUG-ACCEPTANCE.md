@@ -447,6 +447,53 @@ verify_b.rs:296-298 комментарий заявляет правильное
 **Fix Баг 2 (простой):** propose decode-append должен писать позицию N (= position-2, не position-1) для row 0; dflash_accept_append пишет N+1 для row 1. Развести метки.
 
 **Fix Баг 1 (EAGLE, главный):** drafter должен кондиционироваться на row 1 (h что породил bonus), а не row 0 (h с bonus на входе), как свежайший ctx slot ПЕРЕД forward_block. Требует переупорядочить: EAGLE-correct hidden доступен до propose, не после. Нетривиально — затрагивает порядок propose/accept append.
+
+---
+
+# ИТОГ — ПОБЕДА (Jun 30)
+
+Все фиксы реализованы, gated ATLAS_DFLASH_EAGLE_FIX=1, закоммичены.
+
+## Траектория acceptance
+
+| Этап | K=2 pos0 | K=2 tok/s | K=16 pos0 | K=16 τ | K=16 tok/s |
+|---|---|---|---|---|---|
+| Старт (баги) | ~0% (1%) | 8.6 | 1.1% | ~1.0 | 2.9 |
+| ctx_gap+position (Bug#1) | 53% | 10.5 | 53% | 2.97 | 5.4 |
+| monotonic labels (Bug 2) | 66.7% | 12.3 | 66% | 3.44 | 6.4 |
+| EAGLE K=2 | **79.7%** | **13.5** | — | — | — |
+| **EAGLE K=γ (per-pos capture)** | — | — | **94%** | **6.67** | **13.0** |
+| vLLM референс | ~80% | — | ~80% | 4.09 | 43 (batched) |
+
+## Финальный результат K=16 EAGLE ON
+- pos0: 66% → **94%** (выше vLLM)
+- хвост поднят: pos4 raw 47%→87%, pos8 prefix 5%→25%, pos14 prefix 0%→2%
+- mean accepted/step: 2.44 → **5.67** (+132%)
+- **τ = 6.67 — ПРЕВОСХОДИТ vLLM τ=4.09 на 63%**
+- tok/s: 6.4 → **13.0** (+93%) при том же verify (~520ms)
+
+## Два корня K=γ (оба исправлены одним per-position capture)
+1. **ctx undercount**: на accept num_accepted+1 позиций, но добавлялся 1 ctx slot → ctx держал ~35% позиций, дырявый
+2. **EAGLE shift scaled**: свежайший slot = h(last_token@N), устаревший на num_accepted vs bonus generator h@(N+num_accepted)
+
+Fix: try_dflash_capture_all (все K rows в K-row буфер) + dflash_eagle_kgamma_append (rows 0..=num_accepted на N..N+num_accepted, bonus generator свежайший).
+
+## Что осталось — НЕ acceptance, а скорость verify
+**Acceptance решён, превзошёл vLLM.** Разрыв tok/s (13 vs vLLM 43) теперь ЧИСТО verify-kernel cost:
+- K=16 verify_ms = 520ms, доминирует SSM decode_batched (8 SSM слоёв × K sequential GDN recurrence)
+- prefill-attn включён, но SSM GDN replay — bottleneck
+- Следующая цель: ускорить SSM verify (prefill SSM уже частично — 755→513ms; нужно дальше)
+- Также vLLM batched (3 concurrent req) — выше GPU утилизация
+
+## Закоммичено
+- 8917168 ctx_gap + position tracking
+- 7f4682c K=2 verify split + stochastic accept
+- 85119e7 forward_block positions + cap=gamma-1
+- 9f2d5f9 prefill_ssm verify path
+- b767d4b monotonic ctx position labels (Bug 2)
+- 9c5f6cd prefill-attn verify (Iteration 1)
+- 8aa56b8 EAGLE conditioning K=2
+- cc02368 EAGLE + ctx-undercount K=γ (τ 3.44→6.67)
 2. **Extend Bug #1 fix to K=4+ paths** — добавить accept-append с позицией в verify для K≥4
 3. **Reduce verify+propose overhead** — для K=2 нужно (verify+propose) < 118ms для выигрыша; сейчас 172ms
 4. **Bug #2 (combine_hidden_states)** — правильный фикс требует захвата h(target_greedy) в verify path; даст ещё +acceptance
