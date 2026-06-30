@@ -217,6 +217,10 @@ pub struct TransformerModel {
     pub(super) gdn_buf_z: DevicePtr,
     /// Max sequence length these buffers were allocated for.
     pub(super) gdn_buf_max_len: usize,
+    /// Temporary h_state storage for SSM verify three-phase path (R7).
+    /// Holds one slot's h_state while h_state_intermediates are filled via replay.
+    /// Size: ssm_pool.h_bytes. DevicePtr::NULL when no SSM layers.
+    pub(super) ssm_verify_h_tmp: DevicePtr,
 
     /// Logit softcapping kernel: logits = cap * tanh(logits / cap).
     /// KernelHandle(0) = disabled (no softcapping for this model).
