@@ -34,7 +34,12 @@ RESULTS_FILE = os.environ.get("BENCH_RESULTS_FILE",
 
 # SSM state pool = 32 slots. Slots leak when pool is exhausted (server bug),
 # so cap concurrency well below pool size. conc=16 leaves headroom.
-CONCURRENCY_LEVELS = [1, 2, 4, 8, 16]
+# Override with BENCH_CONC="1,2,4,8,10,12,16".
+CONCURRENCY_LEVELS = [int(x) for x in os.environ.get("BENCH_CONC", "1,2,4,8,16").split(",")]
+
+# Optional Bearer auth (vLLM serve started with VLLM_API_KEY requires it).
+_API_KEY = os.environ.get("VLLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+AUTH_HEADERS = {"Authorization": f"Bearer {_API_KEY}"} if _API_KEY else {}
 
 # Max sequence length for the server (ISL+OSL must fit).
 MAX_SEQ_LEN = int(os.environ.get("BENCH_MAX_SEQ_LEN", "4096"))
@@ -45,7 +50,8 @@ _ALL_CONFIGS = [
     (256,   256,  "balanced_short", "Short chat baseline"),
     (1024,  1024, "balanced_long",  "Standard chat (SemiAnalysis/SGLang 1K/1K)"),
     (128,   1024, "decode_short",   "Code generation (NVIDIA NIM 200/1000 class)"),
-    (1024,  8192, "decode_long",    "Long reasoning (SemiAnalysis 1K/8K class)"),
+    # (1024, 8192, "decode_long", ...) — dropped from the prefill/tps matrix: 8192-token
+    # decode dominates wall-time (~1-2h) and adds little prefill signal. Re-add if needed.
 ]
 
 # Filter out configs that exceed max_seq_len (ISL+OSL > limit).
@@ -83,7 +89,8 @@ async def detect_model():
     import urllib.request
     for i in range(180):
         try:
-            with urllib.request.urlopen(f"{URL_MODELS}", timeout=3) as r:
+            _rq = urllib.request.Request(f"{URL_MODELS}", headers=AUTH_HEADERS)
+            with urllib.request.urlopen(_rq, timeout=3) as r:
                 data = json.loads(r.read())
                 MODEL = data["data"][0]["id"]
                 return True
@@ -103,6 +110,12 @@ async def send_streaming_request(session, prompt: str, max_tokens: int):
         "temperature": 0.0,
         "stream": True,
         "stream_options": {"include_usage": True},
+        # BENCH_NO_THINK=1 disables reasoning so both engines generate pure content to
+        # max_tokens (identical semantics): Atlas counts reasoning separately from the
+        # max_tokens content cap + enforces a thinking budget; vLLM caps total. Thinking
+        # on => non-comparable token counts. Off => clean apples-to-apples.
+        **({"chat_template_kwargs": {"enable_thinking": False}}
+           if os.environ.get("BENCH_NO_THINK") == "1" else {}),
     }
 
     t_start = time.perf_counter()
@@ -134,7 +147,11 @@ async def send_streaming_request(session, prompt: str, max_tokens: int):
                         choices = event.get("choices", [])
                         if choices:
                             delta = choices[0].get("delta", {})
-                            content = delta.get("content")
+                            # reasoning models (qwen3 reasoning-parser) stream thinking
+                            # tokens as `reasoning` (vLLM) / `reasoning_content`; count them
+                            # so TTFT = true first-token latency (else TTFT = post-think).
+                            content = (delta.get("content") or delta.get("reasoning")
+                                       or delta.get("reasoning_content"))
                             if content:
                                 now = time.perf_counter()
                                 if t_first_token is None:
@@ -287,7 +304,7 @@ async def run_benchmark():
     print(f"Model: {MODEL}\n")
 
     print(f"Warming up ({WARMUP_REQUESTS} requests)...")
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(headers=AUTH_HEADERS) as session:
         for i in range(WARMUP_REQUESTS):
             r = await send_streaming_request(session, "Hello! Tell me about AI.", 50)
             if "error" in r:
@@ -298,6 +315,7 @@ async def run_benchmark():
 
     all_results = {}
     async with aiohttp.ClientSession(
+        headers=AUTH_HEADERS,
         connector=aiohttp.TCPConnector(limit=0, limit_per_host=0)
     ) as session:
         for isl, osl, regime, label in TEST_CONFIGS:
