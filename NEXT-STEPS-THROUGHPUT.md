@@ -181,13 +181,24 @@ phase-3 УЖЕ batched (вызывается 1× над K=16, не per-token к�
 
 ---
 
-## КЛЮЧЕВОЙ ВОПРОС: vLLM 43 — single или aggregate? 🔄
+## РАЗРЕШЕНО: vLLM 43 = AGGREGATE, НЕ per-request ✅ (Diver-2, цитаты vLLM кода)
 
-Наш single-request = 22 tok/s. vLLM референс "43 tok/s, 3 req × 139 tok".
-- Если 43 = AGGREGATE на 3 concurrent → per-request vLLM ≈14 → наш 22 УЖЕ быстрее, разрыв = артефакт batching.
-- Если 43 = single-request latency → реальный разрыв есть, и он в weight-load floor.
+`serve.py:584`: `output_throughput = sum(actual_output_lens) / dur_s` — сумма токенов ВСЕХ запросов / wall-clock. «3 req × 139 tok» = заголовок `vllm bench serve`, 3 **concurrent** запроса. 43 = их СУММА.
 
-Diver-2 проверяет природу метрики. ОТ ЭТОГО зависит весь дальнейший план.
+**Per-request vLLM ≈ 43/3 ≈ 14 tok/s.** Per-request метрика у vLLM выражается через TPOT/ITL (serve.py:458), а не output_throughput.
+
+### Реальное сравнение (равная concurrency)
+| | single-request tok/s | τ |
+|---|---|---|
+| **Atlas (наш)** | **22** | **6.56** |
+| vLLM (оценка из aggregate/3) | ~14 | 4.09 |
+
+**Atlas single-request БЫСТРЕЕ vLLM single-request, и выше по τ.** Разрыв 22 vs 43 был артефактом сравнения нашей latency против их aggregate-throughput на 3 запроса.
+
+**Оговорка (Diver-2):** 100% подтверждение требует исходного лога vLLM (max-concurrency + mean_tpot_ms) или перемера vLLM в single-request (`--max-concurrency 1`). В Docker-образе только код бенчмарков, не результаты. Перемер vLLM требует остановки Atlas (GPU-конфликт!).
+
+### Вывод для плана
+Цель «догнать 43 tok/s single-request» была основана на неверном сравнении. По latency мы уже конкурентны/впереди. **43 — это aggregate throughput, достигается БАТЧИНГОМ (C2).** Не «догонять», а добавить concurrency, если нужен system throughput.
 
 ## Оставшиеся рычаги (тяжёлые, после исчерпания дешёвых)
 
