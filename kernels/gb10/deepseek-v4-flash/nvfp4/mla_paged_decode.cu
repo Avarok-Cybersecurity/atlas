@@ -90,7 +90,8 @@ extern "C" __global__ void mla_paged_decode_nvfp4(
     const unsigned int block_size,
     const float inv_sqrt_d,                          // 1/sqrt(576)
     const unsigned long long block_stride_bytes,
-    const unsigned long long data_section_bytes
+    const unsigned long long data_section_bytes,
+    const __nv_bfloat16* __restrict__ sinks          // [num_q_heads] per-head attn sink (s_aux); may be NULL
 ) {
     const unsigned int q_head = blockIdx.x;
     const unsigned int seq_idx = blockIdx.y;
@@ -340,6 +341,13 @@ extern "C" __global__ void mla_paged_decode_nvfp4(
     // Write output (BF16, flattened [nq * q_dim])
     if (warp_id == 0) {
         float final_l = smem_l[0];
+        // Per-head attention sink (s_aux): add exp(sink - running_max) to the softmax
+        // denominator only (NOT the V-weighted numerator), so output = Σ(softmax·V)/(Σexp + exp(sink)).
+        // Mirrors the FP8 MLA decode kernel (mla_paged_decode_fp8.cu) and eager_attention_forward.
+        // smem_m[0] is the global running max after the cross-warp reduction above.
+        if (sinks != nullptr) {
+            final_l += __expf((float)sinks[q_head] - smem_m[0]);
+        }
         float inv_l = (final_l > 0.0f) ? (1.0f / final_l) : 0.0f;
         unsigned int* o32 = (unsigned int*)(O + (unsigned long long)q_head * q_head_dim + vec_offset_bf16);
         #pragma unroll

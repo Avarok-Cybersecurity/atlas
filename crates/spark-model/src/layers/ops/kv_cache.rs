@@ -716,6 +716,7 @@ pub fn mla_paged_decode_nvfp4(
     block_stride_bytes: u64,
     data_section_bytes: u64,
     num_seqs: u32,
+    sinks: DevicePtr,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
@@ -736,6 +737,7 @@ pub fn mla_paged_decode_nvfp4(
         .arg_f32(inv_sqrt_d)
         .arg_u64(block_stride_bytes)
         .arg_u64(data_section_bytes)
+        .arg_ptr(sinks)
         .launch(stream)
 }
 
