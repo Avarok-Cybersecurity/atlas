@@ -195,3 +195,7 @@ required-features = ["cuda", "gpu-examples"]
 [[example]]
 name = "w4a16_bf16_microtest"
 required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "nvfp4_gemm_bench"
+required-features = ["gpu-examples"]
