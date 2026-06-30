@@ -5,6 +5,69 @@
 use super::*;
 
 impl Qwen3SsmLayer {
+    /// Single-pass WY16 GDN for the K=16 DFlash verify (replaces WY4+replay).
+    /// Reads gdn_bufs (post-conv q/k/v/gate/beta), starts from the pre-verify
+    /// h_state (= checkpoint, since phase-1 conv doesn't touch h_state), and
+    /// writes the final h_state live + Hi_0..Hi_14 into h_state_intermediates.
+    /// Returns Ok(true) when the fused pass ran, Ok(false) to fall back.
+    pub(super) fn prefill_gdn_wy16_inner(
+        &self,
+        state: &mut dyn LayerState,
+        gdn_bufs: &GdnPrefillBuffers,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<bool> {
+        if gdn_bufs.total_len != 16 || self.gdn_wy16_k.0 == 0 {
+            return Ok(false);
+        }
+        let ssm_state = state
+            .as_any_mut()
+            .downcast_mut::<SsmLayerState>()
+            .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState"))?;
+        let nk = ctx.config.linear_num_key_heads;
+        let kd = ctx.config.linear_key_head_dim;
+        let nv = ctx.config.linear_num_value_heads;
+        let vd = ctx.config.linear_value_head_dim;
+        let key_dim = nk * kd;
+        let bf16 = 2usize;
+        let fp32 = 4usize;
+        let conv_dim = key_dim * 2 + nv * vd;
+        let h_bytes = nv * vd * kd * 4;
+
+        let q_ptr = gdn_bufs.qkv;
+        let k_ptr = gdn_bufs.qkv.offset(key_dim * bf16);
+        let v_ptr = gdn_bufs.qkv.offset(key_dim * 2 * bf16);
+        let gate_ptr = gdn_bufs.gate_beta;
+        let beta_ptr = gdn_bufs.gate_beta.offset(nv * fp32);
+        let inter_stride_floats = (h_bytes / 4) as u32;
+
+        // gdn_decode_wy17 is kernel-agnostic; the wy16 handle drives a K_TOKENS=16
+        // single pass writing final H (live) + Hi_0..Hi_14 (intermediates).
+        ops::gdn_decode_wy17(
+            ctx.gpu,
+            self.gdn_wy16_k,
+            ssm_state.h_state,
+            q_ptr,
+            k_ptr,
+            v_ptr,
+            gate_ptr,
+            beta_ptr,
+            gdn_bufs.output,
+            ssm_state.h_state_intermediates[0],
+            inter_stride_floats,
+            1,
+            nk as u32,
+            nv as u32,
+            kd as u32,
+            vd as u32,
+            conv_dim as u32,
+            conv_dim as u32,
+            (nv * 2) as u32,
+            stream,
+        )?;
+        Ok(true)
+    }
+
     pub(super) fn prefill_gdn_full_inner(
         &self,
         state: &mut dyn LayerState,
