@@ -25,7 +25,7 @@ jobs:
     name: cargo deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # `rust-version` pins the action's in-container toolchain to our
       # rust-toolchain.toml channel. Without it, the action's bundled Rust
       # can't honor the repo pin and rustup errors ("override toolchain
