@@ -163,10 +163,46 @@ phase-3 УЖЕ batched (вызывается 1× над K=16, не per-token к�
 
 Снизить K (16→10-12) урежет 75% cost пропорционально, сохранив τ≈6. ~25-30% verify-cut, бесплатно (настройка, не код).
 
-**K-sweep в работе:** K=16/12/10/8/6 → τ, verify_ms, tok/s. Найти knee.
-**Caveat:** нативные WY-ядра есть для K=2/3/4/16/17. Промежуточные K=12/10/8 могут падать на медленный путь (нет wy12/wy10/wy8) — если так, либо knee на K=16, либо нужны доп. wy-ядра.
+### C4 — РЕЗУЛЬТАТ: ❌ ТУПИК (K-sweep, projected)
+
+| K | τ | verify_proj | tok/s_proj |
+|---|---|---|---|
+| 16 | 6.56 | 268 | 22.0 |
+| 12 | 6.31 | 261 | 21.7 |
+| 10 | 6.45 | 258 | 22.4 |
+| 8 | 6.09 | 254 | 21.4 |
+| 6 | 4.61 | 253 | 16.3 |
+
+**Доминанты K-НЕЗАВИСИМЫ:** attn (~77), phase3 (~88), head (~20), phase1 (~18) константны по K=6→16. Только phase-2 варьируется (fallback-искажение). MoE/attention weight-load насыщается к ~6 токенам → 6-16 verify токенов грузят почти всю MoE независимо от K.
+
+**Вывод:** снижение K теряет τ без экономии verify. tok/s плоский ~22 от K=10 до 16, knee нет. **Держим K=16.** Писать wy12/wy10/wy8 НЕ нужно — даже с ними tok/s ~22.
+
+**Реальный потолок:** ~270ms K-независимый weight-load floor (attn 77 + phase3-MoE 88 + head 20 + phase1 18). Дешёвые рычаги (launch/batching внутри step) исчерпаны — C1 был последним.
 
 ---
 
+## КЛЮЧЕВОЙ ВОПРОС: vLLM 43 — single или aggregate? 🔄
+
+Наш single-request = 22 tok/s. vLLM референс "43 tok/s, 3 req × 139 tok".
+- Если 43 = AGGREGATE на 3 concurrent → per-request vLLM ≈14 → наш 22 УЖЕ быстрее, разрыв = артефакт batching.
+- Если 43 = single-request latency → реальный разрыв есть, и он в weight-load floor.
+
+Diver-2 проверяет природу метрики. ОТ ЭТОГО зависит весь дальнейший план.
+
+## Оставшиеся рычаги (тяжёлые, после исчерпания дешёвых)
+
+### C2 — Batching (если vLLM 43 = aggregate, это ГЛАВНЫЙ путь)
+Weight-load floor (~270ms) амортизируется между concurrent запросами: 3 req × 16 ток через те же MoE веса → per-request floor падает ~3×. Это ровно как vLLM достигает throughput.
+- **Блокер:** `dflash_hidden_save` единый shared буфер → нужен per-slot. batch>1 не тестирован.
+- **Эффект:** aggregate throughput potentially ~40 (как vLLM), хотя per-request остаётся ~22.
+
+### C5 — graphed K=γ (launch overhead)
+Сейчас форсим eager (graphed-K=γ corruption guard). Eager платит launch overhead × десятки ядер × слои. НО: если verify weight-load-bound (GPU занят), графы дадут мало. Нужно сначала измерить launch vs compute долю.
+- **Блокер:** pre-existing SSM dual-buffer capture баг (тяжело).
+
+### C7 — MoE weight-load efficiency
+Full-expert-set load — это floor. Только faster expert GEMM/quant или expert-locality. Deep/hard.
+
 ## Журнал
-- Jun 30: план создан. Этап 0 профиль → phase-1 conv 55%. **C1 conv fusion → verify 496→269ms, tok/s 12→22 (byte-identical).** Bottleneck сместился на phase-3 (40%) + attention (35%). Следующий: C6 phase-3.
+- Jun 30: план создан. Этап 0 профиль → phase-1 conv 55%. **C1 conv fusion → verify 496→269ms, tok/s 12→22 (byte-identical).** Bottleneck → phase-3 (40%) + attention (35%).
+- Jun 30: C6 (phase-3) = compute-bound, не C1-style. **C4 (K-tuning) = ТУПИК** — доминанты K-независимы (weight-load floor). Дешёвые рычаги исчерпаны. Ключевой вопрос: vLLM 43 single или aggregate? → определит C2 (batching) vs compute-оптимизацию.
