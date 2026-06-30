@@ -231,7 +231,9 @@ impl TransformerModel {
             None
         } else {
             let n = dflash_capture_layers.len();
-            Some(gpu.alloc(n * config.hidden_size * 2)?)
+            // 2× size: first half = row 0 (last_token), second half = row 1 (draft).
+            // On ACCEPT, both slots are appended to ctx_hidden_acc; on REJECT only row 0.
+            Some(gpu.alloc(2 * n * config.hidden_size * 2)?)
         };
 
         // EP command buffer for token broadcast (4 bytes, u32)
@@ -408,6 +410,12 @@ impl TransformerModel {
             )
         };
 
+        let ssm_verify_h_tmp = if ssm_pool.h_bytes > 0 {
+            gpu.alloc(ssm_pool.h_bytes)?
+        } else {
+            DevicePtr::NULL
+        };
+
         // FP8 calibration only runs when the cache is actually FP8 — the
         // observe() call in decode.rs sits inside the FP8 cache branch. For
         // BF16 or NVFP4 caches the MODEL.toml fp8_kv_calibration_tokens
@@ -490,6 +498,7 @@ impl TransformerModel {
             gdn_buf_out: gdn_out,
             gdn_buf_z: gdn_z,
             gdn_buf_max_len: gdn_buf_len,
+            ssm_verify_h_tmp,
             logit_softcap_kernel,
             logit_softcap_fp32_kernel,
             use_fp32_logits,

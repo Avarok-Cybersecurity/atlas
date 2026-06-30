@@ -93,6 +93,27 @@ pub trait DraftProposer: Send + Sync {
         let _ = (gpu, state);
         Ok(())
     }
+
+    /// Append one hidden-state slot to the sequence's ctx accumulator.
+    ///
+    /// Called on ACCEPT only: the accepted draft at position N+1 needs its
+    /// hidden appended so ctx_len stays in sync with seq_len. Without this,
+    /// each accept creates a 1-position gap that accumulates into a growing
+    /// RoPE mismatch between noise0_pos and the last ctx slot.
+    ///
+    /// `src` points to a `ctx_slot_bytes`-sized BF16 buffer (the second half
+    /// of `dflash_hidden_save`). Default is a no-op for MTP proposers.
+    fn append_ctx_slot(
+        &self,
+        src: DevicePtr,
+        actual_pos: i32,
+        state: &mut dyn ProposerState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        let _ = (src, actual_pos, state, gpu, stream);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
