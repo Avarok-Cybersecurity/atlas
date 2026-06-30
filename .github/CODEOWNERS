@@ -16,33 +16,33 @@
 # Reference: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
 
 # Default fallback — every PR pings the maintainer.
-*                                            @tbraun96 @azeezish @rsafier
+*                                            @tbraun96 @azeezish @rsafier @SeedSource
 
 # Compute path: kernel registration, model loaders, hot-path Rust.
-kernels/                                     @tbraun96 @azeezish @rsafier
-crates/atlas-kernels/                        @tbraun96 @azeezish @rsafier
-crates/spark-model/                          @tbraun96 @azeezish @rsafier
-crates/spark-runtime/                        @tbraun96 @azeezish @rsafier
+kernels/                                     @tbraun96 @azeezish @rsafier @SeedSource
+crates/atlas-kernels/                        @tbraun96 @azeezish @rsafier @SeedSource
+crates/spark-model/                          @tbraun96 @azeezish @rsafier @SeedSource
+crates/spark-runtime/                        @tbraun96 @azeezish @rsafier @SeedSource
 
 # Server / HTTP API surface.
-crates/spark-server/                         @tbraun96 @azeezish @rsafier
+crates/spark-server/                         @tbraun96 @azeezish @rsafier @SeedSource
 
 # Multi-rank communication (NCCL / RDMA).
-crates/spark-comm/                           @tbraun96 @azeezish @rsafier
+crates/spark-comm/                           @tbraun96 @azeezish @rsafier @SeedSource
 
 # Storage / NVMe-backed swap.
-crates/spark-storage/                        @tbraun96 @azeezish @rsafier
+crates/spark-storage/                        @tbraun96 @azeezish @rsafier @SeedSource
 
 # Build, CI, governance. Belt-and-suspenders: the broad `.github/`
 # pattern catches everything in the tree, and the more specific entries
 # below are restated explicitly so a future contributor adding a more
 # specific override (e.g. `.github/workflows/scratch.yml @someone-else`)
 # notices they're working against an explicit ownership decision.
-.github/                                     @tbraun96 @azeezish @rsafier
-.github/workflows/                           @tbraun96 @azeezish @rsafier
-.github/CODEOWNERS                           @tbraun96 @azeezish @rsafier
-.github/dependabot.yml                       @tbraun96 @azeezish @rsafier
-docs/adr/                                    @tbraun96 @azeezish @rsafier
-Cargo.toml                                   @tbraun96 @azeezish @rsafier
-LICENSE                                      @tbraun96 @azeezish @rsafier
-CLA.md                                       @tbraun96 @azeezish @rsafier
+.github/                                     @tbraun96 @azeezish @rsafier @SeedSource
+.github/workflows/                           @tbraun96 @azeezish @rsafier @SeedSource
+.github/CODEOWNERS                           @tbraun96 @azeezish @rsafier @SeedSource
+.github/dependabot.yml                       @tbraun96 @azeezish @rsafier @SeedSource
+docs/adr/                                    @tbraun96 @azeezish @rsafier @SeedSource
+Cargo.toml                                   @tbraun96 @azeezish @rsafier @SeedSource
+LICENSE                                      @tbraun96 @azeezish @rsafier @SeedSource
+CLA.md                                       @tbraun96 @azeezish @rsafier @SeedSource
