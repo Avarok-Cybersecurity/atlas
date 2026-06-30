@@ -96,7 +96,9 @@ impl Qwen3AttentionLayer {
             ctx.gpu,
             self.rms_norm_k,
             q_full,
-            &crate::weight_map::DenseWeight { weight: ctx.buffers.norm_unit_w() },
+            &crate::weight_map::DenseWeight {
+                weight: ctx.buffers.norm_unit_w(),
+            },
             q_full,
             n * nq,
             hd_mla,
@@ -360,9 +362,10 @@ impl Qwen3AttentionLayer {
             for g in 0..o_groups {
                 let in_g = attn_out.offset(((t * nq * hd_mla) + g * group_in) as usize * 2);
                 let w_g = crate::weight_map::DenseWeight {
-                    weight: mla.wo_a.weight.offset(
-                        (g as usize) * (o_lora as usize) * (group_in as usize) * 2,
-                    ),
+                    weight: mla
+                        .wo_a
+                        .weight
+                        .offset((g as usize) * (o_lora as usize) * (group_in as usize) * 2),
                 };
                 let out_g = o_latent.offset(((t * latent_dim) + g * o_lora) as usize * 2);
                 ops::dense_gemv(

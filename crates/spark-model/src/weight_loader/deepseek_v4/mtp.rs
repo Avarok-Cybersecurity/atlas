@@ -4,8 +4,8 @@
 //!
 //! `nvidia/DeepSeek-V4-Flash-NVFP4` ships one MTP module
 //! (`num_nextn_predict_layers = 1`, 1575 tensors). Its body is structurally a
-//! main V4 layer — MLA attention + manifold-constrained hyper-connections (mHC)
-//! + 256-expert NVFP4 MoE, full attention (no compressor) — stored under the
+//! main V4 layer — MLA attention, manifold-constrained hyper-connections (mHC),
+//! and a 256-expert NVFP4 MoE, full attention (no compressor) — stored under the
 //! `mtp.0.*` prefix. On top of the body sit the MTP-specific pieces:
 //!
 //!   h_in = e_proj(rmsnorm(embed(token), enorm)) + h_proj(rmsnorm(h_prev, hnorm))
@@ -106,8 +106,12 @@ pub fn load_v4_mtp_module(
     let hc_head = if config.hc_mult > 0 {
         let hc = config.hc_mult;
         let hc_dim = hc * config.hidden_size;
-        let head_fn =
-            super::assemble::load_hc_f32(store, &[format!("{prefix}.hc_head_fn")], hc * hc_dim, gpu)?;
+        let head_fn = super::assemble::load_hc_f32(
+            store,
+            &[format!("{prefix}.hc_head_fn")],
+            hc * hc_dim,
+            gpu,
+        )?;
         let head_base =
             super::assemble::load_hc_f32(store, &[format!("{prefix}.hc_head_base")], hc, gpu)?;
         let head_scale =

@@ -25,11 +25,11 @@ mod qwen35_dense;
 mod qwen3_vl;
 mod step3p7;
 
+pub use deepseek_v4::DeepSeekV4WeightLoader;
 pub use dflash_loader::{
     DflashConfig, DflashLayerWeights, DflashSubConfig, DflashWeights, load_dflash_weights,
     store_has_dflash_weights,
 };
-pub use deepseek_v4::DeepSeekV4WeightLoader;
 pub use gemma4::Gemma4WeightLoader;
 pub use minimax::MinimaxM2WeightLoader;
 pub use nemotron::NemotronHWeightLoader;

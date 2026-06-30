@@ -141,7 +141,9 @@ impl Qwen3AttentionLayer {
             ctx.gpu,
             self.rms_norm_k,
             q_full,
-            &crate::weight_map::DenseWeight { weight: ctx.buffers.norm_unit_w() },
+            &crate::weight_map::DenseWeight {
+                weight: ctx.buffers.norm_unit_w(),
+            },
             q_full,
             n * nq,
             hd_mla,
@@ -154,7 +156,10 @@ impl Qwen3AttentionLayer {
                 q_full,
                 (nq * hd_mla) as usize,
                 stream,
-                &format!("V4-prefill L{} Q after q_b_norm token0", self.attn_layer_idx),
+                &format!(
+                    "V4-prefill L{} Q after q_b_norm token0",
+                    self.attn_layer_idx
+                ),
             );
             let q_last_off = ((n - 1) * nq * hd_mla * 2) as usize;
             super::super::trait_impl::diag_norm(
@@ -403,7 +408,9 @@ impl Qwen3AttentionLayer {
         use spark_runtime::kernel_args::KernelLaunch;
         let attn_out = ctx.buffers.attn_output();
         let csa = match mla.compressor {
-            Some(c) if c.is_csa && self.csa_compress_k.0 != 0 && (n / c.ratio as u32) > 0 => Some(c),
+            Some(c) if c.is_csa && self.csa_compress_k.0 != 0 && (n / c.ratio as u32) > 0 => {
+                Some(c)
+            }
             _ => None,
         };
         let did_csa = if let Some(comp) = csa {
@@ -414,10 +421,26 @@ impl Qwen3AttentionLayer {
             let kv_comp = ctx.buffers.expert_up_out();
             let gate_comp = ctx.buffers.expert_down_out();
             ops::dense_gemm(
-                ctx.gpu, self.dense_gemm_k, normed, &comp.wkv, kv_comp, n, proj_dim, h, stream,
+                ctx.gpu,
+                self.dense_gemm_k,
+                normed,
+                &comp.wkv,
+                kv_comp,
+                n,
+                proj_dim,
+                h,
+                stream,
             )?;
             ops::dense_gemm(
-                ctx.gpu, self.dense_gemm_k, normed, &comp.wgate, gate_comp, n, proj_dim, h, stream,
+                ctx.gpu,
+                self.dense_gemm_k,
+                normed,
+                &comp.wgate,
+                gate_comp,
+                n,
+                proj_dim,
+                h,
+                stream,
             )?;
             // window softmax-gated compression → compressed [n_win, hd_mla]
             let compressed = ctx.buffers.moe_output();
@@ -435,7 +458,14 @@ impl Qwen3AttentionLayer {
                 .arg_u32(1)
                 .launch(stream)?;
             ops::rms_norm(
-                ctx.gpu, self.rms_norm_k, compressed, &comp.norm, compressed, n_win, hd_mla, eps,
+                ctx.gpu,
+                self.rms_norm_k,
+                compressed,
+                &comp.norm,
+                compressed,
+                n_win,
+                hd_mla,
+                eps,
                 stream,
             )?;
             // compressed = V (pre-rope latent); comp_k = rope(compressed) for scores.
@@ -519,8 +549,22 @@ impl Qwen3AttentionLayer {
             // Pass the per-head attention sink so the softmax denominator matches
             // the decode path (the reference applies the sink on EVERY layer).
             ops::prefill_attention_512_sink(
-                ctx.gpu, self.prefill_attn_512_k, q_full, k_out, k_out, attn_out, n, 1, nq, nkv,
-                hd_mla, 1.0f32 / (hd_mla as f32).sqrt(), true, 0, mla.attn_sink, stream,
+                ctx.gpu,
+                self.prefill_attn_512_k,
+                q_full,
+                k_out,
+                k_out,
+                attn_out,
+                n,
+                1,
+                nq,
+                nkv,
+                hd_mla,
+                1.0f32 / (hd_mla as f32).sqrt(),
+                true,
+                0,
+                mla.attn_sink,
+                stream,
             )
             .map_err(|e| anyhow::anyhow!("V4 attn: prefill_attention_512_sink failed: {e}"))?;
         }
@@ -642,9 +686,10 @@ impl Qwen3AttentionLayer {
             for g in 0..o_groups {
                 let in_g = attn_out.offset(((t * nq * hd_mla) + g * group_in) as usize * 2);
                 let w_g = crate::weight_map::DenseWeight {
-                    weight: mla.wo_a.weight.offset(
-                        (g as usize) * (o_lora as usize) * (group_in as usize) * 2,
-                    ),
+                    weight: mla
+                        .wo_a
+                        .weight
+                        .offset((g as usize) * (o_lora as usize) * (group_in as usize) * 2),
                 };
                 let out_g = o_latent.offset(((t * latent_dim) + g * o_lora) as usize * 2);
                 ops::dense_gemv(

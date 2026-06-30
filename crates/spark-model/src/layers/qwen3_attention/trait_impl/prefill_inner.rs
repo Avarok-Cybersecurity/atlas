@@ -524,7 +524,7 @@ impl Qwen3AttentionLayer {
             super::diag_norm(
                 ctx.gpu,
                 hidden,
-                h as usize,
+                h,
                 stream,
                 &format!("V4-prefill L{} hc_pre-attn", self.attn_layer_idx),
             );
@@ -686,14 +686,14 @@ impl Qwen3AttentionLayer {
             super::diag_norm(
                 ctx.gpu,
                 hc_streams,
-                h as usize,
+                h,
                 stream,
                 &format!("V4-prefill L{} hc_post-attn", self.attn_layer_idx),
             );
             super::diag_norm(
                 ctx.gpu,
                 hc_streams,
-                (n as usize) * (hc_mult as usize) * (h as usize),
+                (n as usize) * (hc_mult as usize) * h,
                 stream,
                 &format!(
                     "V4-prefill L{} hc_post-attn ALL_STREAMS",
@@ -725,7 +725,7 @@ impl Qwen3AttentionLayer {
             super::diag_norm(
                 ctx.gpu,
                 hidden,
-                h as usize,
+                h,
                 stream,
                 &format!("V4-prefill L{} hc_pre-ffn", self.attn_layer_idx),
             );
@@ -795,14 +795,14 @@ impl Qwen3AttentionLayer {
             super::diag_norm(
                 ctx.gpu,
                 hc_streams,
-                h as usize,
+                h,
                 stream,
                 &format!("V4-prefill L{} hc_post-ffn", self.attn_layer_idx),
             );
             super::diag_norm(
                 ctx.gpu,
                 hc_streams,
-                (n as usize) * (hc_mult as usize) * (h as usize),
+                (n as usize) * (hc_mult as usize) * h,
                 stream,
                 &format!(
                     "V4-prefill L{} hc_post-ffn ALL_STREAMS",
@@ -831,7 +831,7 @@ impl Qwen3AttentionLayer {
                 super::diag_norm(
                     ctx.gpu,
                     hidden,
-                    (n as usize) * (h as usize),
+                    (n as usize) * h,
                     stream,
                     &format!("V4-prefill L{} hc_head", self.attn_layer_idx),
                 );

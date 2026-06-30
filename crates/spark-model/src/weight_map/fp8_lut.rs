@@ -96,7 +96,7 @@ pub(crate) fn dequant_nvfp4_e8m0_to_bf16(
     let scale_t = store.get(&format!("{prefix}.scale"))?;
     let num_groups = scale_t.num_elements();
     ensure!(
-        num_groups > 0 && total % num_groups == 0,
+        num_groups > 0 && total.is_multiple_of(num_groups),
         "{prefix}: weight elems {total} not divisible by E8M0 scale groups {num_groups}"
     );
     let block = total / num_groups;
@@ -118,7 +118,7 @@ pub(crate) fn dequant_nvfp4_e8m0_to_bf16(
         for elem in 0..block {
             let flat_idx = group * block + elem;
             let byte_idx = flat_idx / 2;
-            let nibble = if flat_idx % 2 == 0 {
+            let nibble = if flat_idx.is_multiple_of(2) {
                 packed[byte_idx] & 0x0F
             } else {
                 (packed[byte_idx] >> 4) & 0x0F

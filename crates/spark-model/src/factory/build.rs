@@ -109,35 +109,33 @@ pub fn build_model(
     // verification then dropped.
     // Only rank 0 runs the MTP draft (no-EP, all experts local). Skip loading it
     // on the worker ranks — they never call propose(), so it would be dead weight.
-    let v4_mtp_module = if config.model_type == "deepseek_v4"
-        && use_speculative
-        && config.ep_rank == 0
-    {
-        match crate::weight_loader::deepseek_v4::load_v4_mtp_module(
-            store,
-            &config,
-            gpu.as_ref(),
-            &attn_layer_dtypes,
-        ) {
-            Ok(Some(m)) => {
-                tracing::info!(
-                    "DeepSeek-V4 MTP draft module loaded OK (num_mtp_modules={})",
-                    config.num_mtp_modules
-                );
-                Some(m)
+    let v4_mtp_module =
+        if config.model_type == "deepseek_v4" && use_speculative && config.ep_rank == 0 {
+            match crate::weight_loader::deepseek_v4::load_v4_mtp_module(
+                store,
+                &config,
+                gpu.as_ref(),
+                &attn_layer_dtypes,
+            ) {
+                Ok(Some(m)) => {
+                    tracing::info!(
+                        "DeepSeek-V4 MTP draft module loaded OK (num_mtp_modules={})",
+                        config.num_mtp_modules
+                    );
+                    Some(m)
+                }
+                Ok(None) => {
+                    tracing::info!("DeepSeek-V4: no MTP module in checkpoint (MTP off)");
+                    None
+                }
+                Err(e) => {
+                    tracing::error!("DeepSeek-V4 MTP module load FAILED: {e:#}");
+                    None
+                }
             }
-            Ok(None) => {
-                tracing::info!("DeepSeek-V4: no MTP module in checkpoint (MTP off)");
-                None
-            }
-            Err(e) => {
-                tracing::error!("DeepSeek-V4 MTP module load FAILED: {e:#}");
-                None
-            }
-        }
-    } else {
-        None
-    };
+        } else {
+            None
+        };
 
     // Capability warning: user asked for `--speculative` but the model has no
     // MTP head bundled, so speculative decoding will silently no-op. Surface

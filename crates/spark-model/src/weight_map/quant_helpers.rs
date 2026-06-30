@@ -140,7 +140,10 @@ pub(crate) fn dequant_fp8_blockscaled_to_bf16(
     }
     let mut fp8_buf = vec![0u8; total];
     gpu.copy_d2h(w.ptr, &mut fp8_buf).with_context(|| {
-        format!("D2H failed for {prefix}.weight: ptr={}, size={total}", w.ptr.0)
+        format!(
+            "D2H failed for {prefix}.weight: ptr={}, size={total}",
+            w.ptr.0
+        )
     })?;
 
     let (scale_buf, _sn, sk, block_n, block_k, scale_dtype) = if let Ok(s) =

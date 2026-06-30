@@ -26,8 +26,8 @@ pub struct MlaWeights {
     pub wq_b: DenseWeight, // [n_heads*hd, q_lora] — Q up-projection (BF16)
     pub wq_b_nvfp4: Option<QuantizedWeight>, // NVFP4 for fast decode
     pub wq_b_fp8: Option<crate::weight_map::Fp8Weight>,
-    pub q_a_norm: DenseWeight, // [q_lora] — RMS norm weight
-    pub wkv_a: DenseWeight, // [kv_lora, h] — KV down-projection (BF16)
+    pub q_a_norm: DenseWeight,                // [q_lora] — RMS norm weight
+    pub wkv_a: DenseWeight,                   // [kv_lora, h] — KV down-projection (BF16)
     pub wkv_a_nvfp4: Option<QuantizedWeight>, // NVFP4 for fast decode
     pub wkv_a_fp8: Option<crate::weight_map::Fp8Weight>,
     pub wkv_b: DenseWeight, // [n_kv*(nope+v), kv_lora] — KV up-projection (BF16)
@@ -75,9 +75,9 @@ pub struct MlaWeights {
     pub rope: usize,
     pub v_dim: usize,
     /// DeepSeek Sparse Attention compressor (CSA ratio-4 / HCA ratio-128).
-    /// `None` for full-attention layers (compress_ratios[L] == 0).
+    /// `None` for full-attention layers (`compress_ratios[L]` == 0).
     pub compressor: Option<CompressorWeights>,
-    /// Per-head attention sink logit [num_q_heads] BF16 (DeepSeek-V4 s_aux).
+    /// Per-head attention sink logit `[num_q_heads]` BF16 (DeepSeek-V4 s_aux).
     /// NULL if the checkpoint has no attn_sink for this layer.
     pub attn_sink: spark_runtime::gpu::DevicePtr,
 }
@@ -92,7 +92,7 @@ pub struct CompressorWeights {
     pub wkv: DenseWeight,
     /// gate_proj: same shape as wkv.
     pub wgate: DenseWeight,
-    /// kv_norm weight [head_dim] — STANDARD RMSNorm (loaded via dense_minus_one).
+    /// kv_norm weight `[head_dim]` — STANDARD RMSNorm (loaded via dense_minus_one).
     pub norm: DenseWeight,
     /// position_bias / ape: [ratio, proj_dim] BF16, added to the gate before softmax.
     pub ape: spark_runtime::gpu::DevicePtr,

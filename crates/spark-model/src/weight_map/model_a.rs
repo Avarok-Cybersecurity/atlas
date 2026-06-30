@@ -148,7 +148,8 @@ pub(crate) fn dense_minus_one(
             let u = v.to_bits();
             let round_bit = (u >> 15) & 1;
             let sticky = (u & 0x7FFF != 0) as u32;
-            let bf = ((u >> 16) as u16).wrapping_add((round_bit & (sticky | ((u >> 16) & 1))) as u16);
+            let bf =
+                ((u >> 16) as u16).wrapping_add((round_bit & (sticky | ((u >> 16) & 1))) as u16);
             bf.to_le_bytes()
         })
         .collect();

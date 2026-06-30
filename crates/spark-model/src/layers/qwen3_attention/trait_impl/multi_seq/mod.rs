@@ -170,21 +170,21 @@ impl Qwen3AttentionLayer {
             super::diag_norm(
                 ctx.gpu,
                 c.hidden,
-                (n as usize) * (h as usize),
+                n * h,
                 stream,
                 &format!("V4-msdecode L{} hc_pre-attn", self.attn_layer_idx),
             );
             super::diag_norm_f32(
                 ctx.gpu,
                 post,
-                (n as usize) * (hc_mult as usize),
+                n * (hc_mult as usize),
                 stream,
                 &format!("V4-msdecode L{} post-attn", self.attn_layer_idx),
             );
             super::diag_norm_f32(
                 ctx.gpu,
                 comb,
-                (n as usize) * (hc_mult as usize) * (hc_mult as usize),
+                n * (hc_mult as usize) * (hc_mult as usize),
                 stream,
                 &format!("V4-msdecode L{} comb-attn", self.attn_layer_idx),
             );
@@ -241,14 +241,14 @@ impl Qwen3AttentionLayer {
             super::diag_norm(
                 ctx.gpu,
                 hc_streams,
-                h as usize,
+                h,
                 stream,
                 &format!("V4-msdecode L{} hc_post-attn", self.attn_layer_idx),
             );
             super::diag_norm(
                 ctx.gpu,
                 hc_streams,
-                (n as usize) * (hc_mult as usize) * (h as usize),
+                n * (hc_mult as usize) * h,
                 stream,
                 &format!(
                     "V4-msdecode L{} hc_post-attn ALL_STREAMS",
@@ -279,7 +279,7 @@ impl Qwen3AttentionLayer {
                     super::diag_norm(
                         ctx.gpu,
                         c.hidden,
-                        (n as usize) * (h as usize),
+                        n * h,
                         stream,
                         &format!("V4-msdecode L{} hc_head", self.attn_layer_idx),
                     );
@@ -316,21 +316,21 @@ impl Qwen3AttentionLayer {
             super::diag_norm(
                 ctx.gpu,
                 c.hidden,
-                (n as usize) * (h as usize),
+                n * h,
                 stream,
                 &format!("V4-msdecode L{} hc_pre-ffn", self.attn_layer_idx),
             );
             super::diag_norm_f32(
                 ctx.gpu,
                 post,
-                (n as usize) * (hc_mult as usize),
+                n * (hc_mult as usize),
                 stream,
                 &format!("V4-msdecode L{} post-ffn", self.attn_layer_idx),
             );
             super::diag_norm_f32(
                 ctx.gpu,
                 comb,
-                (n as usize) * (hc_mult as usize) * (hc_mult as usize),
+                n * (hc_mult as usize) * (hc_mult as usize),
                 stream,
                 &format!("V4-msdecode L{} comb-ffn", self.attn_layer_idx),
             );
@@ -373,14 +373,14 @@ impl Qwen3AttentionLayer {
             super::diag_norm(
                 ctx.gpu,
                 hc_streams,
-                h as usize,
+                h,
                 stream,
                 &format!("V4-msdecode L{} hc_post-ffn", self.attn_layer_idx),
             );
             super::diag_norm(
                 ctx.gpu,
                 hc_streams,
-                (n as usize) * (hc_mult as usize) * (h as usize),
+                n * (hc_mult as usize) * h,
                 stream,
                 &format!(
                     "V4-msdecode L{} hc_post-ffn ALL_STREAMS",
@@ -409,7 +409,7 @@ impl Qwen3AttentionLayer {
                 super::diag_norm(
                     ctx.gpu,
                     c.hidden,
-                    (n as usize) * (h as usize),
+                    n * h,
                     stream,
                     &format!("V4-msdecode L{} hc_head", self.attn_layer_idx),
                 );

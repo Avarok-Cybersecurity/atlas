@@ -231,13 +231,15 @@ pub fn assemble_layer(
     // that weight the selected experts. `Some(table)` here is the SSOT marking
     // this as a hash-routed layer.
     let tid2eid_dev = if layer_idx < config.num_hash_layers {
-        let t = store.get(&format!("{lp}.ffn.gate.tid2eid")).with_context(|| {
-            format!(
-                "DeepSeek-V4 hash layer {layer_idx}: missing ffn.gate.tid2eid \
+        let t = store
+            .get(&format!("{lp}.ffn.gate.tid2eid"))
+            .with_context(|| {
+                format!(
+                    "DeepSeek-V4 hash layer {layer_idx}: missing ffn.gate.tid2eid \
                  (num_hash_layers={})",
-                config.num_hash_layers
-            )
-        })?;
+                    config.num_hash_layers
+                )
+            })?;
         let expected = config.vocab_size * config.num_experts_per_tok;
         anyhow::ensure!(
             t.num_elements() == expected,

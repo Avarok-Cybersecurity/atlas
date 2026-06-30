@@ -169,7 +169,9 @@ impl Qwen3AttentionLayer {
             ctx.gpu,
             self.rms_norm_k,
             q_out,
-            &crate::weight_map::DenseWeight { weight: ctx.buffers.norm_unit_w() },
+            &crate::weight_map::DenseWeight {
+                weight: ctx.buffers.norm_unit_w(),
+            },
             q_out,
             nq,
             hd,
@@ -520,10 +522,8 @@ impl Qwen3AttentionLayer {
                     // weight rows [g*o_lora:(g+1)*o_lora] (fp8, 1 byte/elem) and the
                     // matching [o_lora/128, group_in/128] block-scale sub-tile.
                     let w_off = (g as usize) * (o_lora as usize) * (group_in as usize); // fp8 bytes
-                    let s_off = (g as usize)
-                        * (o_lora as usize / 128)
-                        * (group_in as usize / 128)
-                        * 4; // FP32 block-scale bytes
+                    let s_off =
+                        (g as usize) * (o_lora as usize / 128) * (group_in as usize / 128) * 4; // FP32 block-scale bytes
                     ops::w8a16_gemv(
                         ctx.gpu,
                         self.w8a16_gemv_k,
@@ -537,9 +537,10 @@ impl Qwen3AttentionLayer {
                     )?;
                 } else {
                     let w_g = crate::weight_map::DenseWeight {
-                        weight: mla.wo_a.weight.offset(
-                            (g as usize) * (o_lora as usize) * (group_in as usize) * 2,
-                        ),
+                        weight: mla
+                            .wo_a
+                            .weight
+                            .offset((g as usize) * (o_lora as usize) * (group_in as usize) * 2),
                     };
                     ops::dense_gemv(
                         ctx.gpu,

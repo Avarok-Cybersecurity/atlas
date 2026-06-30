@@ -2,8 +2,8 @@
 
 //! DeepSeek-V4-Flash Multi-Token-Prediction (MTP) draft proposer.
 //!
-//! Implements [`DraftProposer`] over the [`DeepseekV4MtpModule`] loaded by
-//! [`crate::weight_loader::deepseek_v4::load_v4_mtp_module`]. Unlike the
+//! Implements [`DraftProposer`] over the `DeepseekV4MtpModule` loaded by
+//! `load_v4_mtp_module`. Unlike the
 //! Qwen-shaped [`crate::layers::MtpHead`] (a hand-rolled single attention +
 //! MoE block), the V4 MTP module's body is a full reused V4 layer
 //! (MLA + manifold-constrained hyper-connections (mHC) + 256-expert NVFP4
@@ -106,7 +106,7 @@ pub struct DeepseekV4MtpHead {
 }
 
 impl DeepseekV4MtpHead {
-    /// Build the proposer from a loaded [`DeepseekV4MtpModule`] and the shared
+    /// Build the proposer from a loaded `DeepseekV4MtpModule` and the shared
     /// embedding + NVFP4 LM head.
     pub fn new(
         module: DeepseekV4MtpModule,
