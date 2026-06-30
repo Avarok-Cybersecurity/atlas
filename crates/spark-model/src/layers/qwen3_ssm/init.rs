@@ -183,6 +183,13 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_wy17",
                 "gated_delta_rule_wy17",
             ),
+            // wy16 present in qwen3.6-27b/nvfp4; NULL on others. decode_batched(K=16)
+            // checks non-NULL before dispatching the fused single-pass path.
+            gdn_wy16_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy16",
+                "gated_delta_rule_wy16",
+            ),
             h_state_bytes: nv * vd * kd * 4, // FP32 [nv, kd, vd] transposed for coalescing
             conv_state_bytes: conv_dim * d_conv * 4, // FP32 [conv_dim, d_conv]
             qkvz_fp8: None,
