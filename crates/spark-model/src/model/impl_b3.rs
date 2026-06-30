@@ -327,4 +327,46 @@ impl TransformerModel {
         self.gpu.copy_d2d_async(src, dst_slot, h * bf16, stream)?;
         Ok(())
     }
+
+    /// K=γ EAGLE capture: copy the per-layer hidden of ALL `k` verify rows into
+    /// the row-major `dflash_hidden_save` ([row0 | row1 | … ], each row =
+    /// n_capture * hidden_size * bf16). Called once per capture layer inside the
+    /// verify graph (k is fixed per captured graph). After verify, the scheduler
+    /// appends rows 0..=num_accepted to ctx so every committed position gets its
+    /// target hidden (fixes the ctx-undercount) and the bonus generator (row
+    /// num_accepted) is the freshest slot (EAGLE). No-op unless DFlash is on,
+    /// this layer is a capture layer, and rank 0.
+    pub(super) fn try_dflash_capture_all(
+        &self,
+        layer_idx: usize,
+        k: usize,
+        stream: u64,
+    ) -> Result<()> {
+        let dst = match self.dflash_hidden_save {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        if let Some(ref c) = self.comm
+            && c.rank() != 0
+        {
+            return Ok(());
+        }
+        let slot = match self
+            .dflash_capture_layers
+            .iter()
+            .position(|&l| l == layer_idx)
+        {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+        let h = self.config.hidden_size;
+        let bf16 = 2usize;
+        let ctx_slot_bytes = self.dflash_capture_layers.len() * h * bf16;
+        for t in 0..k {
+            let src = self.buffers.hidden_states().offset(t * h * bf16);
+            let dst_slot = dst.offset(t * ctx_slot_bytes + slot * h * bf16);
+            self.gpu.copy_d2d_async(src, dst_slot, h * bf16, stream)?;
+        }
+        Ok(())
+    }
 }

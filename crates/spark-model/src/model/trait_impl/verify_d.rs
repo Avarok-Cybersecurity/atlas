@@ -237,6 +237,11 @@ impl TransformerModel {
                 .ok()
                 .as_deref()
                 == Some("1");
+            // EAGLE-fix (K=γ): capture ALL k verify rows so the scheduler can
+            // append rows 0..=num_accepted to ctx (fixes ctx-undercount + EAGLE
+            // shift). Flag off → legacy single row-0 capture.
+            let eagle_fix =
+                std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
             // Precompute SSM buffer dimensions (same as prefill_c.rs / phase1_inner).
             let nk = self.config.linear_num_key_heads;
             let kd = self.config.linear_key_head_dim;
@@ -435,12 +440,15 @@ impl TransformerModel {
                     )?;
                 }
 
-                // DFlash per-layer hidden capture. Captures tokens[0] (last_token)
-                // intermediate hidden at each target layer into dflash_hidden_save.
-                // This is then appended to the per-seq ctx_hidden_acc in propose(),
-                // giving the drafter correct context conditioning. No-op when DFlash
-                // is disabled or this layer is not in dflash_capture_layers.
-                self.try_dflash_capture(layer_idx, 0, stream)?;
+                // DFlash per-layer hidden capture into dflash_hidden_save.
+                // EAGLE-fix: capture all k verify rows (row-major) so the
+                // scheduler can append one ctx slot per accepted position.
+                // Legacy: capture only row 0 (last_token), appended via propose.
+                if eagle_fix {
+                    self.try_dflash_capture_all(layer_idx, k, stream)?;
+                } else {
+                    self.try_dflash_capture(layer_idx, 0, stream)?;
+                }
             }
 
             // Final norm [K, H]

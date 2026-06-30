@@ -376,6 +376,50 @@ impl Model for TransformerModel {
         }
         Ok(())
     }
+    fn dflash_eagle_kgamma_append(
+        &self,
+        seq: &mut SequenceState,
+        num_accepted: usize,
+        base_pos: usize,
+    ) -> Result<()> {
+        let base = match self.dflash_hidden_save {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        let proposer = match &self.proposer {
+            Some(p) => p.as_ref(),
+            None => return Ok(()),
+        };
+        let n_layers = self.dflash_capture_layers.len();
+        if n_layers == 0 {
+            return Ok(());
+        }
+        let ctx_slot_bytes = n_layers * self.config.hidden_size * 2;
+        let prop_state = seq
+            .proposer_state
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("no proposer state"))?;
+        let stream = self.gpu.default_stream();
+        // Append rows 0..=num_accepted at positions base_pos..=base_pos+num_accepted.
+        // Row t = dflash_hidden_save.offset(t * ctx_slot_bytes) (row-major K-row
+        // buffer). Row num_accepted is appended LAST → freshest ctx slot = the
+        // hidden that generated the bonus (EAGLE). On REJECT (num_accepted=0) this
+        // appends only row 0 @ base_pos = the generator of v0 — already EAGLE-correct.
+        for t in 0..=num_accepted {
+            let row = base.offset(t * ctx_slot_bytes);
+            let pos = (base_pos + t) as i32;
+            proposer.append_ctx_slot(row, pos, prop_state.as_mut(), self.gpu.as_ref(), stream)?;
+        }
+        // One-shot: tell the upcoming propose() to skip its own decode-append
+        // (row 0 already appended above).
+        if let Some(d) = prop_state
+            .as_any_mut()
+            .downcast_mut::<crate::layers::DflashProposerState>()
+        {
+            d.skip_next_decode_append = true;
+        }
+        Ok(())
+    }
     fn compact_sequence(&self, seq: &mut SequenceState, new_slot: usize) -> Result<()> {
         self.compact_sequence_dispatch(seq, new_slot)
     }

@@ -231,9 +231,14 @@ impl TransformerModel {
             None
         } else {
             let n = dflash_capture_layers.len();
-            // 2× size: first half = row 0 (last_token), second half = row 1 (draft).
-            // On ACCEPT, both slots are appended to ctx_hidden_acc; on REJECT only row 0.
-            Some(gpu.alloc(2 * n * config.hidden_size * 2)?)
+            // Row-major K-row buffer: [row0 | row1 | … | row_{KMAX-1}], each row =
+            // n_capture * hidden_size * bf16. Rows 0/1 keep their legacy offsets
+            // (0 and ctx_slot_bytes) so all K=2 readers (propose row 0,
+            // dflash_accept_append row 1) are unaffected. KMAX = dflash_kgamma
+            // (=17 ≥ max verify K = γ) lets the K=γ EAGLE path capture every
+            // verify row; pre-fix paths use only rows 0–1.
+            let kmax = dflash_kgamma.max(2);
+            Some(gpu.alloc(kmax * n * config.hidden_size * 2)?)
         };
 
         // EP command buffer for token broadcast (4 bytes, u32)

@@ -603,6 +603,22 @@ pub trait Model: Send + Sync {
         Ok(())
     }
 
+    /// EAGLE-fix (K=γ): append rows 0..=num_accepted from the row-major
+    /// `dflash_hidden_save` capture into the ctx accumulator, at positions
+    /// base_pos..=base_pos+num_accepted (one slot per committed position — fixes
+    /// the ctx-undercount). Row num_accepted (bonus generator) is appended LAST
+    /// → freshest slot (EAGLE). Sets `skip_next_decode_append` so propose does
+    /// not also append row 0. `base_pos` = pre-verify seq_len (= N).
+    fn dflash_eagle_kgamma_append(
+        &self,
+        seq: &mut SequenceState,
+        num_accepted: usize,
+        base_pos: usize,
+    ) -> Result<()> {
+        let _ = (seq, num_accepted, base_pos);
+        Ok(())
+    }
+
     /// Launch SSM state checkpoint D2D copies on a secondary CUDA stream.
     ///
     /// Non-blocking: returns immediately. The copies can overlap with MTP
