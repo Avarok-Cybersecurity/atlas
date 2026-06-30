@@ -108,31 +108,38 @@ pub fn step_verify_k2(
     // MTP-emitted tokens escape every mask the non-MTP path applies
     // (grammar desync + mid-word `</think>` cuts + stray `<think>`
     // re-entry + malformed tool calls). The D2H copy is one-shot
-    // (~0.8ms for 256k vocab × K=2); not graph-captured. Acceptance
-    // is decided against the *processed* argmax, not the raw GPU
-    // argmax — the pipeline is what would have run if MTP were off.
-    // DFlash drafter uses raw argmax — skip rep_pen/DRY pipeline which
-    // drives accept rate to 0% (pipeline modifies target token before
-    // comparison with drafter's greedy argmax). See K=4 for context.
-    let (v0, v1) = if dflash_verify_raw_argmax {
-        (v0_argmax, v1_argmax)
+    // (~0.8ms for 256k vocab × K=2); not graph-captured.
+    //
+    // DFlash split: acceptance check uses raw GPU argmax (drafter
+    // proposes via raw argmax — compare on the same basis). Emission
+    // always uses the pipeline-processed token so the output sequence
+    // stays aligned with what baseline decode would have produced.
+    // Previously both check and emit used raw argmax, causing sequence
+    // drift on rejection and collapsing accept rate from ~2.5 to ~1%.
+    let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+        model,
+        &[v0_argmax, v1_argmax],
+        a,
+        verify_ctx,
+    );
+    let v0_emit = processed.first().copied().unwrap_or(v0_argmax);
+    let v1_emit = processed.get(1).copied().unwrap_or(v1_argmax);
+
+    // Acceptance check: DFlash compares against raw argmax; MTP against processed.
+    // At T>0 with DFlash: use rejection sampling since the drafter always proposes
+    // via argmax (T=0 greedy) while the target has a stochastic distribution.
+    // With a point-mass drafter (p_draft = 1 at argmax), the spec-decode acceptance
+    // probability simplifies to p_target(draft_token, T), with no floor needed.
+    let v0_check = if dflash_verify_raw_argmax { v0_argmax } else { v0_emit };
+    let accepted = if dflash_verify_raw_argmax && a.temperature > 0.0 {
+        dflash_stochastic_accept(model, drafts[0], a.temperature, a.seed, a.seq.seq_len)
     } else {
-        let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
-            model,
-            &[v0_argmax, v1_argmax],
-            a,
-            verify_ctx,
-        );
-        (
-            processed.first().copied().unwrap_or(v0_argmax),
-            processed.get(1).copied().unwrap_or(v1_argmax),
-        )
+        drafts[0] == v0_check
     };
-    let accepted = drafts[0] == v0;
 
     // Extract logprobs from verify logits buffer (K=2 positions) when requested.
     let verify_lps = if let Some(top_logprobs) = a.top_logprobs {
-        extract_verify_logprobs(model, &[v0, v1], top_logprobs)
+        extract_verify_logprobs(model, &[v0_emit, v1_emit], top_logprobs)
     } else {
         Vec::new()
     };
@@ -155,14 +162,14 @@ pub fn step_verify_k2(
 
     if accepted {
         // ── ACCEPTED ──
-        emit_token(a, drafts[0], verify_lps.first().cloned());
+        emit_token(a, v0_emit, verify_lps.first().cloned());
         if !a.finished {
-            emit_token(a, v1, verify_lps.get(1).cloned());
+            emit_token(a, v1_emit, verify_lps.get(1).cloned());
         }
         if a.finished {
             return;
         }
-        a.last_token = v1;
+        a.last_token = v1_emit;
 
         // Item #2 (STree-style in-place K=2 verify commit). Full accept
         // (num_accepted=k=2): the verify kernel already wrote the canonical
@@ -181,7 +188,7 @@ pub fn step_verify_k2(
         let t_propose = Instant::now();
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
         match model.run_mtp_propose_multi(
-            v1,
+            v1_emit,
             a.seq.seq_len,
             num_drafts,
             &mut a.seq,
@@ -193,6 +200,13 @@ pub fn step_verify_k2(
             Err(e) => {
                 tracing::error!("run_mtp_propose_multi: {e:#}");
             }
+        }
+        // Append the accepted draft's hidden (row 1 of dflash_hidden_save)
+        // so ctx_len stays in sync with seq_len. Without this, each accept
+        // opens a 1-slot gap; after N accepts noise0_pos drifts N positions
+        // ahead of the last ctx slot, corrupting RoPE and collapsing acceptance.
+        if let Err(e) = model.dflash_accept_append(&mut a.seq) {
+            tracing::error!("dflash_accept_append: {e:#}");
         }
         let propose_us = t_propose.elapsed().as_micros();
         // Per-step ACCEPT trace at debug — fires every step during
@@ -226,11 +240,11 @@ pub fn step_verify_k2(
             return;
         }
 
-        emit_token(a, v0, verify_lps.first().cloned());
+        emit_token(a, v0_emit, verify_lps.first().cloned());
         if a.finished {
             return;
         }
-        a.last_token = v0;
+        a.last_token = v0_emit;
 
         if let Err(e) = model.save_hidden_for_mtp(0, 0) {
             tracing::error!("save_hidden_for_mtp(0): {e:#}");
@@ -239,7 +253,7 @@ pub fn step_verify_k2(
         let t_propose = Instant::now();
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
         match model.run_mtp_propose_multi(
-            v0,
+            v0_emit,
             a.seq.seq_len,
             num_drafts,
             &mut a.seq,
@@ -263,7 +277,7 @@ pub fn step_verify_k2(
             a.seq.seq_len,
             a.last_token,
             drafts[0],
-            v0,
+            v0_emit,
             new_draft,
         );
         k2_record_outcome(false, a.seq.seq_len);
@@ -271,4 +285,74 @@ pub fn step_verify_k2(
         // canonical post-commit). Fires only at interval boundaries.
         model.decode_marconi_checkpoint(&mut a.seq);
     }
+}
+
+/// Probabilistic DFlash acceptance for T>0.
+///
+/// DFlash drafter always uses greedy argmax (T=0), so p_draft is a point mass
+/// at the draft token: p_draft(draft) = 1. The spec-decode acceptance criterion
+/// min(1, p_target(d,T) / p_draft(d)) therefore simplifies to p_target(d, T).
+///
+/// We D2H-copy position-0 target logits (vocab × 2 BF16 bytes), compute softmax
+/// at temperature T, and accept with probability equal to the draft token's
+/// probability under the target distribution.
+///
+/// Falls back to argmax-equality check on D2H failure.
+fn dflash_stochastic_accept(
+    model: &dyn Model,
+    draft_tok: u32,
+    temperature: f32,
+    seed: Option<u64>,
+    seq_len: usize,
+) -> bool {
+    let vocab = model.vocab_size();
+    // Copy only position-0 logits (vocab × 2 bytes) from the [K, vocab] BF16 buffer.
+    let mut logits_pos0 = vec![0u8; vocab * 2];
+    if model
+        .copy_logits_to_host(model.logits_buffer_ptr(), &mut logits_pos0)
+        .is_err()
+    {
+        // Fallback: treat as if T=0 (accept only on exact argmax match).
+        // This only fires on D2H errors (essentially never in practice).
+        let argmax = logits_pos0
+            .chunks_exact(2)
+            .enumerate()
+            .map(|(i, c)| (i, bf16_to_f32(c[0], c[1])))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i as u32)
+            .unwrap_or(0);
+        return draft_tok == argmax;
+    }
+
+    // Compute numerically stable softmax(logits / T) and extract p_target(draft).
+    let inv_t = 1.0_f32 / temperature;
+    let mut max_scaled = f32::NEG_INFINITY;
+    for c in logits_pos0.chunks_exact(2) {
+        let v = bf16_to_f32(c[0], c[1]) * inv_t;
+        if v > max_scaled {
+            max_scaled = v;
+        }
+    }
+    let mut sum_exp = 0.0_f32;
+    let draft_scaled = bf16_to_f32(
+        logits_pos0[draft_tok as usize * 2],
+        logits_pos0[draft_tok as usize * 2 + 1],
+    ) * inv_t;
+    for c in logits_pos0.chunks_exact(2) {
+        sum_exp += (bf16_to_f32(c[0], c[1]) * inv_t - max_scaled).exp();
+    }
+    let p_target = ((draft_scaled - max_scaled).exp()) / sum_exp;
+
+    // Deterministic uniform sample: xorshift64 seeded with (seed, seq_len, draft_tok).
+    // This makes acceptance reproducible when a.seed is set (T>0 deterministic mode).
+    let raw_seed = seed.unwrap_or(0)
+        .wrapping_add(seq_len as u64)
+        .wrapping_add((draft_tok as u64).wrapping_mul(6364136223846793005));
+    let mut x = if raw_seed == 0 { 2862933555777941757 } else { raw_seed };
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    let u = (x >> 11) as f32 / (1u64 << 53) as f32;
+
+    u < p_target
 }
