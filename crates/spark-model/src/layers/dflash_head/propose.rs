@@ -200,6 +200,15 @@ impl BlockDiffusionDraftHead {
         let _ = num_drafts;
         let t_propose_start = std::time::Instant::now();
 
+        if position <= 1 {
+            tracing::info!(
+                "DFlash propose[pos={}]: target_layer_ids={:?} gamma={}",
+                position,
+                self.target_layer_ids,
+                self.gamma,
+            );
+        }
+
         // Append the model's latest single-slot ctx capture into the
         // per-seq accumulator. Skip when `target_hidden_stack` is None
         // (e.g. EP=2 worker rank or the very first call before any
@@ -219,6 +228,7 @@ impl BlockDiffusionDraftHead {
             .ok()
             .as_deref()
             == Some("1");
+
         if !skip_decode_append
             && let Some(latest_ctx) = target_hidden_stack
             && dstate.ctx_len < dstate.max_ctx_len
@@ -231,6 +241,10 @@ impl BlockDiffusionDraftHead {
                 _stream,
             )?;
             dstate.ctx_len += 1;
+            // Record the actual sequence position of this slot. `position` is
+            // the current draft position (next to be filled); the hidden being
+            // appended is for the last accepted token at position-1.
+            dstate.ctx_slot_positions.push((position as i32) - 1);
         }
 
         let ctx_buf = if dstate.ctx_len > 0 {
@@ -252,7 +266,7 @@ impl BlockDiffusionDraftHead {
 
         let t_forward = std::time::Instant::now();
         let drafts_t1 = self
-            .forward_block(last_token, position, ctx, _stream, ctx_buf, None)
+            .forward_block(last_token, position, ctx, _stream, ctx_buf, None, &dstate.ctx_slot_positions)
             .map_err(|e| {
                 tracing::warn!("DFlash forward_block T=1 failed: {e:#}");
                 e
@@ -266,6 +280,7 @@ impl BlockDiffusionDraftHead {
                 _stream,
                 ctx_buf,
                 Some(&drafts_t1),
+                &dstate.ctx_slot_positions,
             )
             .map_err(|e| {
                 tracing::warn!("DFlash forward_block T=2 failed, using T=1: {e:#}");
@@ -285,14 +300,13 @@ impl BlockDiffusionDraftHead {
         // intermediates differently from the WY-chunkwise kernels, causing
         // partial-accept rollback to land on stale state.
         //
-        // Until the SSM intermediate semantics are reconciled (kernel work),
-        // cap drafts at 1 → forces scheduler to use step_verify_k2 which
-        // produces correct output. Set ATLAS_DFLASH_DRAFT_CAP=N to override
-        // (N=γ to test the K=γ path; N=1 is the safe default).
+        // BF16 embed stride bug in verify_d.rs fixed (2e3a26a) — K=γ sequential
+        // path now produces correct output. Default to full γ-1 drafts.
+        // Override with ATLAS_DFLASH_DRAFT_CAP=N (e.g. N=1 to force K=2 path).
         let cap: usize = std::env::var("ATLAS_DFLASH_DRAFT_CAP")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(1);
+            .unwrap_or(self.gamma - 1);
         let drafts = drafts.into_iter().take(cap).collect::<Vec<_>>();
         dstate.last_num_drafted = drafts.len();
         let total_us = t_propose_start.elapsed().as_micros();
