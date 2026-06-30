@@ -172,6 +172,26 @@ jobs:
             # Pushed over 500 purely by `cargo fmt` wrapping the kernel-launch
             # arg chains. Clean split tracked as follow-up.
             "crates/spark-model/src/layers/vision_encoder/enc_impl/vit_block.rs"
+            # ── PR #186 (DeepSeek-V4-Flash port) carry-over ──
+            # 12 files the V4 port lands over the cap. Allow-listed to ship DS4F
+            # to users (today it's runnable only by building the #186 branch);
+            # consistent with the existing big-but-unsplittable entries above
+            # (build.rs 891, metal_backend.rs 733). The shared-file growth
+            # (prefill_inner/decode_inner — V4 added CSA/HCA + MLA decode paths)
+            # and the V4-new kernel/loader/MTP-head files read top-to-bottom like
+            # the other compute-heavy entries. Clean split tracked in #219.
+            "crates/spark-model/src/layers/qwen3_attention/trait_impl/prefill_inner.rs"
+            "crates/spark-model/src/layers/qwen3_attention/trait_impl/decode_inner.rs"
+            "crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip_v4.rs"
+            "crates/spark-model/src/layers/qwen3_attention/decode/attention_forward_v4.rs"
+            "crates/spark-model/src/layers/qwen3_attention/trait_impl/multi_seq/mla.rs"
+            "crates/spark-model/src/weight_loader/deepseek_v4/assemble.rs"
+            "crates/spark-model/src/layers/deepseek_v4_mtp.rs"
+            "crates/spark-model/src/factory/build.rs"
+            "crates/atlas-core/src/config/tests.rs"
+            "crates/atlas-core/src/config.rs"
+            "crates/spark-model/src/model/impl_b1.rs"
+            "crates/spark-model/src/model/trait_impl/prefill_b/batch_kernel.rs"
           )
 
           violations=0
