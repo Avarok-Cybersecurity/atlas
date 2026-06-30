@@ -362,7 +362,17 @@ impl TransformerModel {
         let h = self.config.hidden_size;
         let bf16 = 2usize;
         let ctx_slot_bytes = self.dflash_capture_layers.len() * h * bf16;
-        for t in 0..k {
+        // Bounds guard: the buffer holds `dflash_hidden_save_rows` rows. `k` ≤ γ
+        // ≤ KMAX by construction (γ=16, KMAX=17), but never write past the
+        // allocation even if a future drafter's γ exceeds KMAX — that would be a
+        // silent cross-buffer GPU corruption. Clamp + debug_assert to catch it.
+        let kmax = self.dflash_hidden_save_rows;
+        debug_assert!(
+            k <= kmax,
+            "try_dflash_capture_all: k={k} exceeds dflash_hidden_save_rows={kmax}"
+        );
+        let k_capped = k.min(kmax);
+        for t in 0..k_capped {
             let src = self.buffers.hidden_states().offset(t * h * bf16);
             let dst_slot = dst.offset(t * ctx_slot_bytes + slot * h * bf16);
             self.gpu.copy_d2d_async(src, dst_slot, h * bf16, stream)?;
