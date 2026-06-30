@@ -227,6 +227,15 @@ impl TransformerModel {
         // populated by the loader from the drafter's `dflash_config.target_layer_ids`).
         // Size: N_capture × hidden_size × bf16 (typically 5 × 2048 × 2 = 20 KB).
         let dflash_capture_layers: Vec<usize> = config.dflash_capture_layers.clone();
+        // Row capacity of the K-row capture buffer. KMAX = dflash_kgamma (=17 ≥
+        // max verify K = γ) so the K=γ EAGLE path can capture every verify row;
+        // pre-fix paths use only rows 0–1. Stored on the model as the single
+        // source of truth so `try_dflash_capture_all` can bound its writes.
+        let dflash_hidden_save_rows = if dflash_capture_layers.is_empty() {
+            0
+        } else {
+            dflash_kgamma.max(2)
+        };
         let dflash_hidden_save = if dflash_capture_layers.is_empty() {
             None
         } else {
@@ -234,11 +243,8 @@ impl TransformerModel {
             // Row-major K-row buffer: [row0 | row1 | … | row_{KMAX-1}], each row =
             // n_capture * hidden_size * bf16. Rows 0/1 keep their legacy offsets
             // (0 and ctx_slot_bytes) so all K=2 readers (propose row 0,
-            // dflash_accept_append row 1) are unaffected. KMAX = dflash_kgamma
-            // (=17 ≥ max verify K = γ) lets the K=γ EAGLE path capture every
-            // verify row; pre-fix paths use only rows 0–1.
-            let kmax = dflash_kgamma.max(2);
-            Some(gpu.alloc(kmax * n * config.hidden_size * 2)?)
+            // dflash_accept_append row 1) are unaffected.
+            Some(gpu.alloc(dflash_hidden_save_rows * n * config.hidden_size * 2)?)
         };
 
         // EP command buffer for token broadcast (4 bytes, u32)
@@ -477,6 +483,7 @@ impl TransformerModel {
             proposer,
             mtp_hidden_save,
             dflash_hidden_save,
+            dflash_hidden_save_rows,
             dflash_capture_layers,
             verify2_graph: Mutex::new(std::collections::HashMap::new()),
             verify3_graph: Mutex::new(std::collections::HashMap::new()),

@@ -117,6 +117,10 @@ pub struct TransformerModel {
     /// token's intermediate hiddens; the drafter consumes them via its `fc`
     /// projection on the next propose() call. None for non-DFlash runs.
     pub(super) dflash_hidden_save: Option<DevicePtr>,
+    /// Row capacity of `dflash_hidden_save` (the K-row EAGLE capture buffer).
+    /// `try_dflash_capture_all` must never write past this many rows. Single
+    /// source of truth for the buffer's KMAX; 0 when DFlash is disabled.
+    pub(super) dflash_hidden_save_rows: usize,
     /// Layer indices to capture for DFlash. Empty when DFlash is disabled.
     /// Sourced from drafter's `dflash_config.target_layer_ids` at model build.
     pub(super) dflash_capture_layers: Vec<usize>,
