@@ -149,6 +149,29 @@ pub trait TransformerLayer: Send + Sync {
         )
     }
 
+    /// DFlash K=γ verify: run the FULL batched phase-1 pipeline ONCE over
+    /// `num_tokens` (token_offset=0), writing the K-1 per-token conv_state
+    /// intermediates inline via the _inter conv kernel. Returns Ok(true) if it
+    /// ran (caller skips the per-token loop); Ok(false) to fall back.
+    fn prefill_phase1_verify(
+        &self,
+        _hidden: DevicePtr,
+        _residual: DevicePtr,
+        _num_tokens: usize,
+        _state: &mut dyn LayerState,
+        _kv_cache: &mut PagedKvCache,
+        _seq_len_start: usize,
+        _block_table: &mut Vec<u32>,
+        _disk_block_ids: &mut Vec<u32>,
+        _disk_last_offloaded_per_layer: &mut Vec<u32>,
+        _kv_write_start: usize,
+        _gdn_bufs: &GdnPrefillBuffers,
+        _ctx: &ForwardContext,
+        _stream: u64,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Two-phase SSM prefill — Phase 2: GDN recurrence on the full sequence.
     ///
     /// Runs the WY4-persistent GDN kernel over all `total_len` tokens in
