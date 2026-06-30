@@ -189,6 +189,31 @@ impl TransformerModel {
                 self.gpu.begin_capture(stream)?;
             }
 
+            // SSM three-phase parallel verify (ATLAS_VERIFY_PREFILL_SSM=1).
+            // When enabled, SSM layers use prefill_phase1/gdn_full/phase3
+            // instead of sequential decode_batched(k), reducing GDN work from
+            // K serial h_state updates to one WY4 batch recurrence.
+            let use_prefill_ssm = std::env::var("ATLAS_VERIFY_PREFILL_SSM")
+                .ok()
+                .as_deref()
+                == Some("1");
+            // Precompute SSM buffer dimensions (same as prefill_c.rs / phase1_inner).
+            let nk = self.config.linear_num_key_heads;
+            let kd = self.config.linear_key_head_dim;
+            let nv = self.config.linear_num_value_heads;
+            let vd = self.config.linear_value_head_dim;
+            let ssm_key_dim = nk * kd;
+            let ssm_value_dim = nv * vd;
+            let ssm_conv_dim = ssm_key_dim * 2 + ssm_value_dim;
+            let ssm_gate_stride = nv * 2; // elements (FP32)
+            let gdn_bufs = GdnPrefillBuffers {
+                qkv:       self.gdn_buf_qkv,
+                gate_beta: self.gdn_buf_gate_beta,
+                output:    self.gdn_buf_out,
+                z:         self.gdn_buf_z,
+                total_len: k,
+            };
+
             for (layer_idx, layer) in self.layers.iter().enumerate() {
                 let layer_type = self.config.layer_type(layer_idx);
 
@@ -230,6 +255,119 @@ impl TransformerModel {
                             stream,
                         )?;
                     }
+                } else if layer.is_ssm_layer() && use_prefill_ssm {
+                    // Three-phase parallel SSM verify (see SSM_VERIFY_PLAN.md).
+                    //
+                    // Phase 1: K serial single-token calls fill gdn_bufs at
+                    // token_offset=t and slide conv_state one step each, so
+                    // conv_state_intermediates[t] can be saved after each call.
+                    for t in 0..k {
+                        layer.prefill_phase1(
+                            hidden.offset(t * h * bf16),
+                            residual.offset(t * h * bf16),
+                            1,
+                            seq.layer_states[layer_idx].as_mut(),
+                            &mut kv_cache,
+                            seq.seq_len + t,
+                            &mut seq.block_table,
+                            &mut seq.disk_block_ids,
+                            &mut seq.disk_last_offloaded_per_layer,
+                            0,
+                            &gdn_bufs,
+                            t,
+                            &ctx,
+                            stream,
+                        )?;
+                        let s = seq.layer_states[layer_idx]
+                            .as_any_mut()
+                            .downcast_mut::<SsmLayerState>()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("expected SsmLayerState at layer {layer_idx}")
+                            })?;
+                        if t < s.conv_state_intermediates.len() {
+                            self.gpu.copy_d2d_async(
+                                s.conv_state,
+                                s.conv_state_intermediates[t],
+                                self.ssm_pool.conv_bytes,
+                                stream,
+                            )?;
+                        }
+                    }
+                    // Phase 2: one WY4 batch GDN recurrence over all K tokens.
+                    layer.prefill_gdn_full(
+                        seq.layer_states[layer_idx].as_mut(),
+                        &gdn_bufs,
+                        &ctx,
+                        stream,
+                    )?;
+                    // Fill h_state_intermediates via per-token replay from checkpoint (R7).
+                    // Extract DevicePtr copies before the replay loop to avoid borrow
+                    // conflicts with the trait method calls inside the loop.
+                    let (h_state_ptr, h_ckpt_opt, h_ints_vec) = {
+                        let s = seq.layer_states[layer_idx]
+                            .as_any_mut()
+                            .downcast_mut::<SsmLayerState>()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("expected SsmLayerState at layer {layer_idx}")
+                            })?;
+                        (
+                            s.h_state,
+                            s.h_state_checkpoint,
+                            s.h_state_intermediates.clone(),
+                        )
+                    };
+                    let h_bytes = self.ssm_pool.h_bytes;
+                    // Save WY4 final h_state to scratch
+                    self.gpu.copy_d2d_async(
+                        h_state_ptr,
+                        self.ssm_verify_h_tmp,
+                        h_bytes,
+                        stream,
+                    )?;
+                    // Restore pre-verify checkpoint so replay starts from correct state
+                    if let Some(ckpt) = h_ckpt_opt {
+                        self.gpu.copy_d2d_async(ckpt, h_state_ptr, h_bytes, stream)?;
+                    }
+                    // K serial single-token GDN steps; after each step h_state_ptr
+                    // device memory holds h_state after tokens 0..=t.
+                    for t in 0..k.min(h_ints_vec.len()) {
+                        let tok_gdn = GdnPrefillBuffers {
+                            qkv:      gdn_bufs.qkv.offset(t * ssm_conv_dim * bf16),
+                            gate_beta: gdn_bufs.gate_beta.offset(t * ssm_gate_stride * 4),
+                            output:   gdn_bufs.output.offset(t * ssm_value_dim * bf16),
+                            z:        gdn_bufs.z.offset(t * ssm_value_dim * bf16),
+                            total_len: 1,
+                        };
+                        layer.prefill_gdn_full(
+                            seq.layer_states[layer_idx].as_mut(),
+                            &tok_gdn,
+                            &ctx,
+                            stream,
+                        )?;
+                        self.gpu.copy_d2d_async(
+                            h_state_ptr,
+                            h_ints_vec[t],
+                            h_bytes,
+                            stream,
+                        )?;
+                    }
+                    // Restore WY4 final h_state
+                    self.gpu.copy_d2d_async(
+                        self.ssm_verify_h_tmp,
+                        h_state_ptr,
+                        h_bytes,
+                        stream,
+                    )?;
+                    // Phase 3: gated RMS norm + output projection + FFN
+                    layer.prefill_phase3(
+                        hidden,
+                        residual,
+                        k,
+                        &gdn_bufs,
+                        0,
+                        &ctx,
+                        stream,
+                    )?;
                 } else {
                     layer.decode_batched(
                         hidden,
@@ -245,6 +383,13 @@ impl TransformerModel {
                         stream,
                     )?;
                 }
+
+                // DFlash per-layer hidden capture. Captures tokens[0] (last_token)
+                // intermediate hidden at each target layer into dflash_hidden_save.
+                // This is then appended to the per-seq ctx_hidden_acc in propose(),
+                // giving the drafter correct context conditioning. No-op when DFlash
+                // is disabled or this layer is not in dflash_capture_layers.
+                self.try_dflash_capture(layer_idx, 0, stream)?;
             }
 
             // Final norm [K, H]
