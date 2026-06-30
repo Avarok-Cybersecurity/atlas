@@ -1,8 +1,22 @@
 # Jinja Template Overrides
 
-Drop `.jinja` files here named by `model_type` to override the chat template
-from `tokenizer_config.json`. This lets you apply community fixes or custom
-templates without re-downloading model weights.
+By default Atlas renders chat from the **model's OWN** `chat_template.jinja` /
+`tokenizer_config.json`. Atlas's cross-cutting behaviors — auto-closing a
+dangling `<think>` before a `<tool_call>` in history, stripping inline
+`<|think_on|>`/`<|think_off|>` control tokens, and mapping `reasoning_effort`
+→ thinking — are applied in **Rust message-preprocessing** (see
+`crates/spark-server/src/tokenizer/message_preprocess.rs`), so they work for
+every model without a bespoke template copy.
+
+Drop a `.jinja` file here named by `model_type` only when a model needs a
+template fix that the Rust preprocessing can't express (e.g. MiniMax's
+`_args.items()` iteration, Gemma-4's `strip_thinking` macro). The file's
+presence is the **opt-in**: it takes precedence over the model's own template.
+Set `ATLAS_DISABLE_TEMPLATE_OVERRIDES=1` to ignore this directory entirely and
+force every model onto its own template + the Rust behaviors.
+
+> The former `holo3_1_moe.jinja` override was removed: it was a byte-copy of
+> Holo-3.1's own template plus the three behaviors now handled in Rust.
 
 ## Naming Convention
 
@@ -17,8 +31,10 @@ The filename must match the model's `model_type` from `config.json`:
 
 ## Priority
 
-1. Override template from this directory (highest priority)
-2. Template from `tokenizer_config.json` (ships with model weights)
+1. Override template from this directory — **opt-in by file presence**, unless
+   `ATLAS_DISABLE_TEMPLATE_OVERRIDES=1`
+2. Template from `tokenizer_config.json` / `chat_template.jinja` (the model's
+   own — the default for models without an override file)
 3. Default ChatML fallback (lowest priority)
 
 ## Usage

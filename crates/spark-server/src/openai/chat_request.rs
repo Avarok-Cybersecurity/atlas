@@ -489,4 +489,21 @@ mod alias_tests {
             serde_json::from_str(&base(r#","thinking_token_budget":256"#)).unwrap();
         assert_eq!(req.thinking_token_budget, Some(256));
     }
+
+    /// `reasoning_effort` → `enable_thinking`: one of the three Atlas chat
+    /// behaviors that used to live in the Holo jinja override, resolved
+    /// HERE (upstream of rendering), not duplicated in the tokenizer's
+    /// message-preprocessing (see `tokenizer/message_preprocess.rs`).
+    #[test]
+    fn reasoning_effort_maps_to_enable_thinking() {
+        let off: ChatCompletionRequest =
+            serde_json::from_str(&base(r#","reasoning":{"effort":"none"}"#)).unwrap();
+        assert!(
+            !off.resolve_thinking(true).0,
+            "effort=none disables thinking"
+        );
+        let on: ChatCompletionRequest =
+            serde_json::from_str(&base(r#","reasoning":{"effort":"high"}"#)).unwrap();
+        assert_eq!(on.resolve_thinking(false), (true, Some(512)), "high→512");
+    }
 }
