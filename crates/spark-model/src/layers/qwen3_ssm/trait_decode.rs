@@ -38,7 +38,9 @@ impl Qwen3SsmLayer {
             let _t = if ctx.profile {
                 let t = std::time::Instant::now();
                 Some(t)
-            } else { None };
+            } else {
+                None
+            };
             ops::rms_norm_residual(
                 ctx.gpu,
                 self.rms_norm_residual_k,

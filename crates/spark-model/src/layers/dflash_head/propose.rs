@@ -279,7 +279,15 @@ impl BlockDiffusionDraftHead {
 
         let t_forward = std::time::Instant::now();
         let drafts_t1 = self
-            .forward_block(last_token, position, ctx, _stream, ctx_buf, None, &dstate.ctx_slot_positions)
+            .forward_block(
+                last_token,
+                position,
+                ctx,
+                _stream,
+                ctx_buf,
+                None,
+                &dstate.ctx_slot_positions,
+            )
             .map_err(|e| {
                 tracing::warn!("DFlash forward_block T=1 failed: {e:#}");
                 e

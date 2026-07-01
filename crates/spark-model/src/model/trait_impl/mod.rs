@@ -324,7 +324,13 @@ impl Model for TransformerModel {
         // incremented past it). actual_pos records the true sequence position so
         // forward_block assigns the correct RoPE rotation to this ctx K-vector.
         let actual_pos = seq.seq_len.saturating_sub(1) as i32;
-        proposer.append_ctx_slot(save_1, actual_pos, prop_state.as_mut(), self.gpu.as_ref(), stream)
+        proposer.append_ctx_slot(
+            save_1,
+            actual_pos,
+            prop_state.as_mut(),
+            self.gpu.as_ref(),
+            stream,
+        )
     }
     fn dflash_eagle_accept_append(&self, seq: &mut SequenceState) -> Result<()> {
         let base = match self.dflash_hidden_save {
