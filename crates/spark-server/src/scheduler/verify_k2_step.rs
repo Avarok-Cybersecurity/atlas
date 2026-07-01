@@ -135,7 +135,11 @@ pub fn step_verify_k2(
     // via argmax (T=0 greedy) while the target has a stochastic distribution.
     // With a point-mass drafter (p_draft = 1 at argmax), the spec-decode acceptance
     // probability simplifies to p_target(draft_token, T), with no floor needed.
-    let v0_check = if dflash_verify_raw_argmax { v0_argmax } else { v0_emit };
+    let v0_check = if dflash_verify_raw_argmax {
+        v0_argmax
+    } else {
+        v0_emit
+    };
     let accepted = if dflash_verify_raw_argmax && a.temperature > 0.0 {
         dflash_stochastic_accept(model, drafts[0], a.temperature, a.seed, a.seq.seq_len)
     } else {
@@ -202,12 +206,9 @@ pub fn step_verify_k2(
         // skip-flag so propose does NOT re-append row 0. With the flag off, the
         // legacy path runs unchanged (propose appends row 0; row 1 appended
         // post-propose below).
-        let eagle_fix =
-            std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
-        if eagle_fix {
-            if let Err(e) = model.dflash_eagle_accept_append(&mut a.seq) {
-                tracing::error!("dflash_eagle_accept_append: {e:#}");
-            }
+        let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
+        if eagle_fix && let Err(e) = model.dflash_eagle_accept_append(&mut a.seq) {
+            tracing::error!("dflash_eagle_accept_append: {e:#}");
         }
         let t_mask = Instant::now();
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
@@ -232,10 +233,8 @@ pub fn step_verify_k2(
         // dflash_hidden_save) AFTER propose so ctx_len stays in sync with
         // seq_len. Under EAGLE-fix row 1 was already appended before propose, so
         // skip here to avoid a duplicate slot.
-        if !eagle_fix {
-            if let Err(e) = model.dflash_accept_append(&mut a.seq) {
-                tracing::error!("dflash_accept_append: {e:#}");
-            }
+        if !eagle_fix && let Err(e) = model.dflash_accept_append(&mut a.seq) {
+            tracing::error!("dflash_accept_append: {e:#}");
         }
         let propose_us = t_propose.elapsed().as_micros();
         // Per-step ACCEPT trace at debug — fires every step during
@@ -389,10 +388,15 @@ fn dflash_stochastic_accept(
 
     // Deterministic uniform sample: xorshift64 seeded with (seed, seq_len, draft_tok).
     // This makes acceptance reproducible when a.seed is set (T>0 deterministic mode).
-    let raw_seed = seed.unwrap_or(0)
+    let raw_seed = seed
+        .unwrap_or(0)
         .wrapping_add(seq_len as u64)
         .wrapping_add((draft_tok as u64).wrapping_mul(6364136223846793005));
-    let mut x = if raw_seed == 0 { 2862933555777941757 } else { raw_seed };
+    let mut x = if raw_seed == 0 {
+        2862933555777941757
+    } else {
+        raw_seed
+    };
     x ^= x << 13;
     x ^= x >> 7;
     x ^= x << 17;

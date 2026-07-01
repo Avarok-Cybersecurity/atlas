@@ -118,19 +118,10 @@ pub fn step_verify_dflash(
     {
         use std::sync::atomic::{AtomicU64, Ordering};
         const MAXP: usize = 32;
-        static PROPOSED: [AtomicU64; MAXP] = {
-            const Z: AtomicU64 = AtomicU64::new(0);
-            [Z; MAXP]
-        };
-        static MATCHED: [AtomicU64; MAXP] = {
-            const Z: AtomicU64 = AtomicU64::new(0);
-            [Z; MAXP]
-        };
+        static PROPOSED: [AtomicU64; MAXP] = [const { AtomicU64::new(0) }; MAXP];
+        static MATCHED: [AtomicU64; MAXP] = [const { AtomicU64::new(0) }; MAXP];
         // prefix-accepted: position i reached AND accepted in the prefix sense
-        static PREFIX_ACC: [AtomicU64; MAXP] = {
-            const Z: AtomicU64 = AtomicU64::new(0);
-            [Z; MAXP]
-        };
+        static PREFIX_ACC: [AtomicU64; MAXP] = [const { AtomicU64::new(0) }; MAXP];
         static STEPS: AtomicU64 = AtomicU64::new(0);
         if std::env::var("ATLAS_DFLASH_POS_DIAG").ok().as_deref() == Some("1") {
             for i in 0..drafts.len().min(MAXP) {
@@ -146,14 +137,22 @@ pub fn step_verify_dflash(
                 }
             }
             let s = STEPS.fetch_add(1, Ordering::Relaxed) + 1;
-            if s % 100 == 0 {
+            if s.is_multiple_of(100) {
                 let mut tbl = String::new();
                 for i in 0..drafts.len().min(MAXP) {
                     let p = PROPOSED[i].load(Ordering::Relaxed);
                     let m = MATCHED[i].load(Ordering::Relaxed);
                     let pa = PREFIX_ACC[i].load(Ordering::Relaxed);
-                    let pct = if p > 0 { 100.0 * m as f64 / p as f64 } else { 0.0 };
-                    let papct = if p > 0 { 100.0 * pa as f64 / p as f64 } else { 0.0 };
+                    let pct = if p > 0 {
+                        100.0 * m as f64 / p as f64
+                    } else {
+                        0.0
+                    };
+                    let papct = if p > 0 {
+                        100.0 * pa as f64 / p as f64
+                    } else {
+                        0.0
+                    };
                     tbl.push_str(&format!(
                         "\n  pos{:<2} proposed={:<5} raw_match={:<5} ({:>5.1}%)  prefix_acc={:<5} ({:>5.1}%)",
                         i, p, m, pct, pa, papct
@@ -260,14 +259,11 @@ pub fn step_verify_dflash(
     // Sets skip_next_decode_append so the propose below does NOT re-append row 0.
     // pre_verify_len = N (pre-verify seq_len). Flag off → legacy single row-0
     // decode-append in propose (unchanged).
-    let eagle_fix =
-        std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
-    if eagle_fix {
-        if let Err(e) =
-            model.dflash_eagle_kgamma_append(&mut a.seq, num_accepted, pre_verify_len)
-        {
-            tracing::error!("dflash_eagle_kgamma_append: {e:#}");
-        }
+    let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
+    if eagle_fix
+        && let Err(e) = model.dflash_eagle_kgamma_append(&mut a.seq, num_accepted, pre_verify_len)
+    {
+        tracing::error!("dflash_eagle_kgamma_append: {e:#}");
     }
 
     // Re-propose for next step.
