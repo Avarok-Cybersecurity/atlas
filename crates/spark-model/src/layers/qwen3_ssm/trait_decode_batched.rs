@@ -62,150 +62,20 @@ impl Qwen3SsmLayer {
         // For sequential_qkvz (Qwen3.5): write directly to deinterleaved buffer.
         // For interleaved (80B): write to qkvz_out, then deinterleave per token.
         let deinterleaved = ctx.buffers.ssm_deinterleaved(); // [K, 12288] BF16
-        let proj_dst = if self.sequential_qkvz {
-            deinterleaved
-        } else {
-            ctx.buffers.ssm_qkvz()
-        };
-        if num_tokens == 3 {
-            if let Some(ref nvfp4) = self.qkvz_nvfp4 {
-                ops::w4a16_gemv_batch3(
-                    ctx.gpu,
-                    self.w4a16_gemv_batch3_k,
-                    normed,
-                    nvfp4,
-                    proj_dst,
-                    qkvz_size as u32,
-                    h as u32,
-                    stream,
-                )?;
-            } else {
-                for t in 0..3u32 {
-                    ops::dense_gemv(
-                        ctx.gpu,
-                        self.dense_gemv_k,
-                        normed.offset(t as usize * h * bf16),
-                        &self.ssm.in_proj_qkvz,
-                        proj_dst.offset(t as usize * qkvz_size * bf16),
-                        qkvz_size as u32,
-                        h as u32,
-                        stream,
-                    )?;
-                }
-            }
-        } else if num_tokens == 2 {
-            if let Some(ref nvfp4) = self.qkvz_nvfp4 {
-                ops::w4a16_gemv_batch2(
-                    ctx.gpu,
-                    self.w4a16_gemv_batch2_k,
-                    normed,
-                    nvfp4,
-                    proj_dst,
-                    qkvz_size as u32,
-                    h as u32,
-                    stream,
-                )?;
-            } else {
-                // Batched M=2: one pass over in_proj_qkvz for both verify
-                // tokens instead of two M=1 reads of the full projection
-                // weight. Bit-identical to the two dense_gemv calls it
-                // replaces (same per-row accumulation order); the dominant
-                // per-verify-step weight-bandwidth term across the 48 GDN
-                // layers on FP8 checkpoints (in_proj dequanted to BF16).
-                ops::dense_gemv_batch2(
-                    ctx.gpu,
-                    self.dense_gemv_batch2_k,
-                    normed,
-                    &self.ssm.in_proj_qkvz,
-                    proj_dst,
-                    qkvz_size as u32,
-                    h as u32,
-                    qkvz_size as u32,
-                    stream,
-                )?;
-            }
-        } else if let Some(fp8) = self.qkvz_fp8 {
-            ops::fp8_gemm_n128(
-                ctx.gpu,
-                self.fp8_gemm_k,
-                normed,
-                fp8,
-                proj_dst,
-                k,
-                qkvz_size as u32,
-                h as u32,
-                stream,
-            )?;
-        } else if let Some(ref nvfp4_t) = self.qkvz_nvfp4_t {
-            // m128 halves B re-reads for large M (prefill); falls back to m64 for M≤128.
-            if k > 128 {
-                ops::w4a16_gemm_n128_m128(
-                    ctx.gpu,
-                    self.w4a16_gemm_t_m128_k,
-                    normed,
-                    nvfp4_t,
-                    proj_dst,
-                    k,
-                    qkvz_size as u32,
-                    h as u32,
-                    stream,
-                )?;
-            } else {
-                ops::w4a16_gemm_n128(
-                    ctx.gpu,
-                    self.w4a16_gemm_t_k,
-                    normed,
-                    nvfp4_t,
-                    proj_dst,
-                    k,
-                    qkvz_size as u32,
-                    h as u32,
-                    stream,
-                )?;
-            }
-        } else if let Some(ref nvfp4) = self.qkvz_nvfp4 {
-            ops::w4a16_gemm(
-                ctx.gpu,
-                self.w4a16_gemm_k,
-                normed,
-                nvfp4,
-                proj_dst,
-                k,
-                qkvz_size as u32,
-                h as u32,
-                stream,
-            )?;
-        } else {
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                normed,
-                &self.ssm.in_proj_qkvz,
-                proj_dst,
-                k,
-                qkvz_size as u32,
-                h as u32,
-                stream,
-            )?;
-        }
-        if !self.sequential_qkvz {
-            for t in 0..(num_tokens as u32) {
-                let src = proj_dst.offset(t as usize * qkvz_size * bf16);
-                let dst = deinterleaved.offset(t as usize * qkvz_size * bf16);
-                ops::deinterleave_qkvz(
-                    ctx.gpu,
-                    self.deinterleave_k,
-                    src,
-                    dst,
-                    1,
-                    nk as u32,
-                    kd as u32,
-                    vpg as u32,
-                    vd as u32,
-                    stream,
-                )?;
-            }
-        }
+        self.qkvz_projection_batched(
+            ctx,
+            normed,
+            deinterleaved,
+            num_tokens,
+            k,
+            h,
+            qkvz_size,
+            nk,
+            kd,
+            vpg,
+            vd,
+            stream,
+        )?;
 
         // ── 4. BA projection + GDN gates per token ──
         // BA output: ssm_ba buffer; gates: ssm_gates buffer [K, nv*2] FP32
