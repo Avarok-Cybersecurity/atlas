@@ -32,6 +32,7 @@ pub(super) struct MlaDims {
     pub eps: f32,
     pub bs: usize,
     pub inv_sqrt_d: f32,
+    pub o_lora_rank: u32,
 }
 
 impl Qwen3AttentionLayer {

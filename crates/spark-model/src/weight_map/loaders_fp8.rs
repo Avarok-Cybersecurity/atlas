@@ -49,8 +49,15 @@ pub fn load_fp8_block_scaled_as_fp8weight(
     let k = w.shape[1];
     let weight_ptr = w.ptr;
 
-    // Load block scale_inv [N/BS, K/BS] — already on GPU from safetensors.
-    let scale_key = format!("{prefix}.weight_scale_inv");
+    // Load block scale [N/BS, K/BS] — already on GPU from safetensors. The
+    // DeepSeek-V3 / Qwen native-FP8 convention names it `weight_scale_inv`; the
+    // compressed-tensors re-quants (RedHatAI, e.g. DeepSeek-V4-Flash) name the
+    // SAME per-block dequant multiplier `weight_scale`. Accept either.
+    let scale_key = if store.contains(&format!("{prefix}.weight_scale_inv")) {
+        format!("{prefix}.weight_scale_inv")
+    } else {
+        format!("{prefix}.weight_scale")
+    };
     let s = store.get(&scale_key)?;
     ensure!(
         s.shape.len() == 2,

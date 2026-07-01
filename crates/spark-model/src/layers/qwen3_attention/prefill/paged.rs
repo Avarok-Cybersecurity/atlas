@@ -61,7 +61,7 @@ impl Qwen3AttentionLayer {
         }
 
         // ── MLA 2-step prefill (reference: HuggingFace modeling_mistral4.py) ──
-        if self.mla.is_some() {
+        if let Some(ref mla) = self.mla {
             let args = super::paged_mla::MlaPrefillArgs {
                 normed,
                 num_tokens,
@@ -76,6 +76,12 @@ impl Qwen3AttentionLayer {
                 bs: bs as u32,
                 stream,
             };
+            // DeepSeek-V4-Flash: o_lora_rank > 0 selects the V4 prefill path
+            // (wo_a→wo_b output LoRA, GQA FlashAttention). Non-V4 MLA models
+            // (Mistral, DeepSeek-V3) keep o_lora_rank == 0 and fall through.
+            if mla.o_lora_rank > 0 {
+                return self.prefill_attention_paged_v4(kv_cache, ctx, &args, seq_len_start);
+            }
             return self.prefill_attention_paged_mla(kv_cache, ctx, &args);
         }
 

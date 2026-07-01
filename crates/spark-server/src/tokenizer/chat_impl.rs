@@ -135,6 +135,18 @@ impl ChatTokenizer {
         let messages_val = minijinja::Value::from_serialize(&messages_for_render);
         let tools_val = tools.map(minijinja::Value::from_serialize);
 
+        // Diagnostic "continue final message" mode: when the LAST message is an
+        // assistant turn, render WITHOUT a generation prompt and strip the
+        // trailing end-of-turn marker so the assistant content becomes the final
+        // prefill token(s). This lets a prefill-vs-decode A/B place a generated
+        // token at the exact position decode produced it. (Standard
+        // continue_final_message convention.)
+        let continue_final = messages
+            .last()
+            .and_then(|m| m.get("role"))
+            .and_then(|r| r.as_str())
+            == Some("assistant");
+
         // Pass enable_thinking as-is to the template. The Qwen3.5 template uses it
         // to emit <think>\n (thinking) or <think>\n\n</think>\n\n (no thinking).
         // Mistral template uses reasoning_effort instead.
@@ -149,17 +161,27 @@ impl ChatTokenizer {
         let ctx = minijinja::context! {
             messages => messages_val,
             tools => tools_val.unwrap_or(minijinja::Value::UNDEFINED),
-            add_generation_prompt => true,
+            add_generation_prompt => !continue_final,
             enable_thinking => enable_thinking,
             reasoning_effort => reasoning_effort,
             disable_tool_steering => disable_tool_steering,
             add_vision_id => false,
         };
 
-        let rendered = tmpl.render(ctx).map_err(|e| {
+        let mut rendered = tmpl.render(ctx).map_err(|e| {
             tracing::error!("Jinja template error: {e:#}");
             anyhow::anyhow!("Failed to render Jinja chat template: {e}")
         })?;
+
+        if continue_final {
+            // Strip the trailing end-of-turn so the assistant content is the
+            // last prefill token (qwen-style templates close with
+            // `<|im_end|>\n`). Trim trailing whitespace first, then the marker.
+            let trimmed = rendered.trim_end();
+            let stripped = trimmed.strip_suffix("<|im_end|>").unwrap_or(trimmed);
+            rendered = stripped.to_string();
+            tracing::info!("continue_final_message: stripped trailing EOT for prefill A/B");
+        }
 
         // Debug: log the tail of the rendered template for the first few requests.
         // Use floor_char_boundary to avoid panicking on multi-byte UTF-8 (e.g. Swedish å ä ö).

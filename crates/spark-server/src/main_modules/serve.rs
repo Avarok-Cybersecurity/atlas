@@ -137,6 +137,28 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         ptx_set.modules.len(),
     );
 
+    // Text-only kernel target + a checkpoint that ships a vision tower: honor the
+    // TARGET spec and serve text-only rather than failing the build at
+    // `vision_encoder module not loaded`. Some VL checkpoints (e.g.
+    // Kbenkhaled/Qwen3.5-27B-NVFP4) carry a `vision_config`, but their Atlas
+    // kernel target (qwen3.5-27b) ships no `vision_encoder` PTX module. Drop the
+    // vision tower to text-only; image inputs are unsupported until the target
+    // is rebuilt with vision.
+    if config.vision.is_some()
+        && !ptx_set
+            .modules
+            .iter()
+            .any(|(name, _)| *name == "vision_encoder")
+    {
+        tracing::warn!(
+            "Checkpoint declares a vision tower but kernel target {} ships no \
+             vision_encoder module — serving TEXT-ONLY (image inputs ignored). \
+             Rebuild the target with vision to enable images.",
+            ptx_set.target,
+        );
+        config.vision = None;
+    }
+
     // Apply MODEL.toml [behavior].default_num_drafts unless user passed --num-drafts.
     serve_phases::apply_model_default_num_drafts(&mut args, &ptx_set);
 

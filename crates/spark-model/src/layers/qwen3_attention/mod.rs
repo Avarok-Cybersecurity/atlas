@@ -15,7 +15,10 @@
 //!   - `trait_impl`: `TransformerLayer` trait implementation
 
 mod decode;
-mod helpers;
+// V4: `pub(crate)` so the DeepSeek-V4 weight loader (`weight_loader::deepseek_v4`)
+// and the V4 attention submodules can call `helpers::yarn_rope_mscale`. Non-V4
+// code paths are unaffected by the wider visibility.
+pub(crate) mod helpers;
 mod init;
 mod init_kernel_dispatch;
 mod kernel_requirements;
@@ -33,7 +36,11 @@ mod types;
 
 #[cfg(feature = "cuda")]
 pub use innerq_driver::InnerQDriver;
-pub use types::{MlaWeights, Qwen3AttentionLayer};
+// V4: re-export the new hyper-connection / compressor weight types alongside the
+// existing ones. These are only constructed under DeepSeek-V4 detection.
+pub use types::{
+    CompressorWeights, HcHeadWeights, HcSiteWeights, HcWeights, MlaWeights, Qwen3AttentionLayer,
+};
 
 /// Startup fail-fast for `--kv-cache-dtype`: resolve every kernel handle the
 /// dtype's dispatch arms require (chunked-prefill kernel, WHT bookends) and

@@ -180,6 +180,15 @@ impl TransformerModel {
             // illegal under CUDA graph capture.
             && !hss_engaged;
 
+        // DeepSeek-V4 hash-MoE (first `num_hash_layers`) routes experts by token
+        // id via the static tid2eid table, so the verify forward needs the 2
+        // verify tokens in the stable `token_ids` device buffer. Uploaded
+        // pre-graph (host→device is illegal under CUDA-graph capture); the graph
+        // then reads the stable device buffer. Mirrors `decode()`'s token_ids.
+        let tid_bytes: Vec<u8> = tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
+        self.gpu
+            .copy_h2d_async(&tid_bytes, self.buffers.token_ids(), stream)?;
+
         let ctx = ForwardContext {
             buffers: &self.buffers,
             gpu: self.gpu.as_ref(),
@@ -189,6 +198,7 @@ impl TransformerModel {
             comm: self.comm_ref(),
             graph_capture: use_graphs,
             gdn_exact_replay: false,
+            token_ids: Some(self.buffers.token_ids()),
         };
 
         // ── Phase 2: CUDA graph capture / replay ──

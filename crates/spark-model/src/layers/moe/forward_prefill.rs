@@ -204,12 +204,20 @@ impl MoeLayer {
         let scratch = ctx.buffers.scratch();
         let indices_dev = scratch;
         let weights_dev = scratch.offset(total_expanded as usize * 4);
-        if let Some(bias) = self.correction_bias_dev {
-            ops::moe_topk_sigmoid_batched(
+        if let Some(tid2eid) = self.tid2eid_dev {
+            // DeepSeek-V4 hash routing (hash_moe layer): static
+            // `tid2eid[token_id]` selection, sqrtsoftplus-weighted.
+            let token_ids = ctx.token_ids.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "DeepSeek-V4 hash-MoE layer requires ForwardContext.token_ids (prefill grouped)"
+                )
+            })?;
+            ops::moe_hash_route_batched(
                 ctx.gpu,
-                self.moe_topk_sigmoid_batched_k,
+                self.moe_hash_route_batched_k,
                 gate_logits,
-                bias,
+                tid2eid,
+                token_ids,
                 indices_dev,
                 weights_dev,
                 num_experts,
@@ -219,6 +227,41 @@ impl MoeLayer {
                 n,
                 stream,
             )?;
+        } else if let Some(bias) = self.correction_bias_dev {
+            // DeepSeek-V4 scores experts with sqrtsoftplus (NOT sigmoid); the
+            // bias selects experts, weights gather pre-bias scores. Other
+            // sigmoid+bias models (DeepSeek-V3 / MiniMax-M2) keep sigmoid.
+            if ctx.config.scoring_func == "sqrtsoftplus" {
+                ops::moe_topk_sqrtsoftplus_batched(
+                    ctx.gpu,
+                    self.moe_topk_sqrtsoftplus_batched_k,
+                    gate_logits,
+                    bias,
+                    indices_dev,
+                    weights_dev,
+                    num_experts,
+                    top_k,
+                    ctx.config.norm_topk_prob,
+                    ctx.config.routed_scaling_factor as f32,
+                    n,
+                    stream,
+                )?;
+            } else {
+                ops::moe_topk_sigmoid_batched(
+                    ctx.gpu,
+                    self.moe_topk_sigmoid_batched_k,
+                    gate_logits,
+                    bias,
+                    indices_dev,
+                    weights_dev,
+                    num_experts,
+                    top_k,
+                    ctx.config.norm_topk_prob,
+                    ctx.config.routed_scaling_factor as f32,
+                    n,
+                    stream,
+                )?;
+            }
         } else {
             ops::moe_topk_softmax_batched(
                 ctx.gpu,

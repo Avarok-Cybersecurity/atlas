@@ -199,6 +199,49 @@ pub struct ModelConfig {
     #[serde(default)]
     pub v_head_dim: usize,
 
+    // ── DeepSeek-V4 low-rank / grouped output projection + mHC ──
+    /// Output projection latent dimension for low-rank O projection.
+    /// DeepSeek-V4 uses `o_lora_rank` to compress the output projection.
+    /// 0 = standard O (no low-rank compression).
+    #[serde(default)]
+    pub o_lora_rank: usize,
+    /// Number of block-diagonal groups for the grouped O projection (wo_a).
+    /// DeepSeek-V4-Flash splits the n_heads*head_dim attention output into
+    /// `o_groups` independent groups, each projected to `o_lora_rank` before the
+    /// follow-up wo_b mixes the `o_groups*o_lora_rank` vector back to hidden_size.
+    /// 0 = ungrouped (dense O).
+    #[serde(default)]
+    pub o_groups: usize,
+    /// YaRN attention-temperature `mscale` (`rope_scaling.mscale`). HF default
+    /// is 1.0 when absent. DeepSeek folds `_mscale` into the rope cos/sin.
+    #[serde(default)]
+    pub yarn_mscale: f32,
+    /// YaRN attention-temperature `mscale_all_dim` (`rope_scaling.mscale_all_dim`).
+    /// HF default is 0.0 when absent. Used in the `_mscale` ratio that scales
+    /// the rope cos/sin (and, when non-zero, the softmax scale).
+    #[serde(default)]
+    pub yarn_mscale_all_dim: f32,
+    /// Number of hyper-connection residual streams per block (`hc_mult`).
+    /// 0 = disabled (every model except DeepSeek-V4). DeepSeek-V4 uses 4.
+    #[serde(default)]
+    pub hc_mult: usize,
+    /// Number of Sinkhorn normalization iterations for the HC mixing matrix
+    /// (`hc_sinkhorn_iters`). DeepSeek-V4 default is 20.
+    #[serde(default)]
+    pub hc_sinkhorn_iters: usize,
+    /// Numerical-stability epsilon for HC sigmoid/softmax/Sinkhorn (`hc_eps`).
+    /// DeepSeek-V4 default is 1e-6.
+    #[serde(default)]
+    pub hc_eps: f32,
+    /// Per-layer compression ratios for hybrid attention (CSA/HCA).
+    /// 0 = full attention, >0 = compressed attention with that ratio.
+    /// Length equals num_hidden_layers. Empty = all layers full attention.
+    #[serde(default)]
+    pub compress_ratios: Vec<usize>,
+    /// Number of hash-based attention layers (DeepSeek-V4 HCA). 0 = none.
+    #[serde(default)]
+    pub num_hash_layers: usize,
+
     // ── YaRN RoPE scaling (Mistral Small 4) ──
     /// YaRN scaling factor (`yarn.factor`). 0.0 = YaRN disabled, use plain RoPE.
     #[serde(default)]
@@ -442,7 +485,7 @@ mod tests;
 
 pub use dispatch::parse_config;
 pub(crate) use parsers::{
-    parse_gemma4_params, parse_minimax_m2, parse_step3p7, parse_vision_config,
+    parse_deepseek_v4, parse_gemma4_params, parse_minimax_m2, parse_step3p7, parse_vision_config,
 };
 pub use parsers::{parse_mistral_params, parse_quantization_config};
 
