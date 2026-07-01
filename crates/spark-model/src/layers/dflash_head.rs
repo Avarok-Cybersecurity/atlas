@@ -280,6 +280,7 @@ pub struct BlockDiffusionDraftHead {
 
 mod forward_block;
 mod forward_block_layer;
+mod forward_block_step0;
 mod from_weights;
 mod propose;
 
