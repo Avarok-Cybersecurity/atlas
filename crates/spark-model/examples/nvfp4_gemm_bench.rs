@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Atlas CUTLASS NVFP4 GEMM throughput at the Holo MoE expert shapes — the clean
 //! apples-to-apples vs vLLM's MARLIN NVFP4 GEMM (rand_marlin_weight_nvfp4_like /
 //! apply_fp4_marlin_linear). Timing only (values irrelevant); weight layout per
@@ -19,10 +21,14 @@ fn bench_bf16(g: &dyn GpuBackend, n: usize, k: usize, label: &str) -> Result<()>
         g.memset(act, 0x3c, m * k * 2)?;
         let out = g.alloc(m * n * 2)?;
         g.memset(out, 0, m * n * 2)?;
-        let call = || bf16_gemm_act_weight_t(act.0, w.0, out.0, m as u32, n as u32, k as u32, stream);
+        let call =
+            || bf16_gemm_act_weight_t(act.0, w.0, out.0, m as u32, n as u32, k as u32, stream);
         for _ in 0..10 {
             if let Err(e) = call() {
-                println!("  {label} M={m}: ERR {}", format!("{e}").chars().take(120).collect::<String>());
+                println!(
+                    "  {label} M={m}: ERR {}",
+                    format!("{e}").chars().take(120).collect::<String>()
+                );
                 let _ = g.free(act);
                 let _ = g.free(out);
                 continue;
@@ -57,12 +63,17 @@ fn bench(g: &dyn GpuBackend, n: usize, k: usize, label: &str) -> Result<()> {
         let out = g.alloc(m * n * 2)?;
         g.memset(out, 0, m * n * 2)?;
         let call = || {
-            nvfp4_gemm_bf16_act_weight_t(act.0, wpt.0, wst.0, 1.0, out.0, m as u32, n as u32, k as u32, stream)
+            nvfp4_gemm_bf16_act_weight_t(
+                act.0, wpt.0, wst.0, 1.0, out.0, m as u32, n as u32, k as u32, stream,
+            )
         };
         // warmup
         for _ in 0..10 {
             if let Err(e) = call() {
-                println!("  {label} M={m}: ERR {}", format!("{e}").chars().take(120).collect::<String>());
+                println!(
+                    "  {label} M={m}: ERR {}",
+                    format!("{e}").chars().take(120).collect::<String>()
+                );
                 let _ = g.free(act);
                 let _ = g.free(out);
                 continue;
@@ -93,12 +104,18 @@ fn main() -> Result<()> {
         let v: Vec<usize> = spec.split(',').map(|x| x.parse().unwrap()).collect();
         let (n, k, m) = (v[0], v[1], v[2]);
         // single shape, few launches (for ncu): warmup 3 + 5 timed
-        let wpt = g.alloc((k / 2) * n)?; g.memset(wpt, 0x11, (k / 2) * n)?;
-        let wst = g.alloc((k / 16) * n)?; g.memset(wst, 0x3c, (k / 16) * n)?;
-        let act = g.alloc(m * k * 2)?; g.memset(act, 0x10, m * k * 2)?;
-        let out = g.alloc(m * n * 2)?; g.memset(out, 0, m * n * 2)?;
+        let wpt = g.alloc((k / 2) * n)?;
+        g.memset(wpt, 0x11, (k / 2) * n)?;
+        let wst = g.alloc((k / 16) * n)?;
+        g.memset(wst, 0x3c, (k / 16) * n)?;
+        let act = g.alloc(m * k * 2)?;
+        g.memset(act, 0x10, m * k * 2)?;
+        let out = g.alloc(m * n * 2)?;
+        g.memset(out, 0, m * n * 2)?;
         for _ in 0..8 {
-            nvfp4_gemm_bf16_act_weight_t(act.0, wpt.0, wst.0, 1.0, out.0, m as u32, n as u32, k as u32, 0)?;
+            nvfp4_gemm_bf16_act_weight_t(
+                act.0, wpt.0, wst.0, 1.0, out.0, m as u32, n as u32, k as u32, 0,
+            )?;
         }
         g.synchronize(0)?;
         println!("single-shape done N={n} K={k} M={m}");
