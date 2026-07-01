@@ -287,11 +287,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // When all three are U8, load directly as QuantizedWeight and
                     // concat on GPU — skipping the NVFP4→BF16→NVFP4 double conversion.
                     let qkv_is_u8 = matches!(
-                        store.get(&format!("{la}.in_proj_qkv.weight")).map(|w| w.dtype),
+                        store
+                            .get(&format!("{la}.in_proj_qkv.weight"))
+                            .map(|w| w.dtype),
                         Ok(WeightDtype::UInt8)
                     );
                     let z_is_u8 = matches!(
-                        store.get(&format!("{la}.in_proj_z.weight")).map(|w| w.dtype),
+                        store
+                            .get(&format!("{la}.in_proj_z.weight"))
+                            .map(|w| w.dtype),
                         Ok(WeightDtype::UInt8)
                     );
                     let out_is_u8 = matches!(
@@ -348,8 +352,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             Nvfp4Variant::Standard,
                         )?;
                         let qkvz_nvfp4 = qkv_qw.concat_rows(&z_qw, qkv_rows, z_rows, h, gpu)?;
-                        let qkvz_nvfp4_t =
-                            qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h)?;
+                        let qkvz_nvfp4_t = qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h)?;
 
                         let out_proj_nvfp4 = quantized_auto(
                             store,
@@ -387,10 +390,8 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         layers.push(Box::new(layer));
                     } else {
                         // ── Legacy path: dequant to BF16 then re-quantize ──
-                        let qkv_dense =
-                            load_ssm_proj(&format!("{la}.in_proj_qkv"), qkv_rows, h)?;
-                        let z_dense =
-                            load_ssm_proj(&format!("{la}.in_proj_z"), z_rows, h)?;
+                        let qkv_dense = load_ssm_proj(&format!("{la}.in_proj_qkv"), qkv_rows, h)?;
+                        let z_dense = load_ssm_proj(&format!("{la}.in_proj_z"), z_rows, h)?;
                         let out_proj_dense =
                             load_ssm_proj(&format!("{la}.out_proj"), h, value_dim)?;
 
@@ -408,8 +409,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             quantize_k,
                             stream,
                         )?;
-                        let qkvz_nvfp4_t =
-                            qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h)?;
+                        let qkvz_nvfp4_t = qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h)?;
 
                         let out_proj_nvfp4 = quantize_to_nvfp4(
                             &out_proj_dense,

@@ -158,7 +158,12 @@ impl TransformerModel {
                 tracing::info!(
                     "LM_HEAD_BATCHED: nvfp4 w4a16_gemm branch, num_tokens={} v={} h={} \
                      w4a16_gemm_kernel={:#x} hidden={:#x} logits={:#x}",
-                    num_tokens, v, h, self.w4a16_gemm_kernel.0, hidden.0, logits.0,
+                    num_tokens,
+                    v,
+                    h,
+                    self.w4a16_gemm_kernel.0,
+                    hidden.0,
+                    logits.0,
                 );
             }
             ops::w4a16_gemm(
