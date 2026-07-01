@@ -83,7 +83,9 @@ impl IncomingMessage {
                 let role = match obj.get("role").and_then(|r| r.as_str()).unwrap_or("user") {
                     // OpenAI Responses API may use `developer`, but most
                     // model chat templates only understand system/user/assistant/tool.
-                    // Treat developer instructions as system instructions.
+                    // Map `developer` to `user` instead of `system`, because some
+                    // templates require system messages to appear only at the beginning
+                    // of the conversation.
                     "developer" => "user",
                     other => other,
                 }
