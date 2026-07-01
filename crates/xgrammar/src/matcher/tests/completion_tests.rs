@@ -32,7 +32,10 @@ fn completion_closes_open_structure() {
     // Applying the close reaches a stop-legal (completed) state.
     let s = String::from_utf8(close).unwrap();
     assert!(m.accept_string(&s, false));
-    assert!(m.is_grammar_completed(), "after the close the grammar can stop");
+    assert!(
+        m.is_grammar_completed(),
+        "after the close the grammar can stop"
+    );
 }
 
 #[test]
@@ -118,9 +121,15 @@ fn completion_leaves_choice_point_intact() {
 
     let mut cont = matcher(OPEN_OBJ);
     assert!(cont.accept_string("{a", false));
-    assert!(cont.accept_string("b", false), "inner still extendable after search");
+    assert!(
+        cont.accept_string("b", false),
+        "inner still extendable after search"
+    );
 
     let mut closed = matcher(OPEN_OBJ);
     assert!(closed.accept_string("{a", false));
-    assert!(closed.accept_string("}", false), "close still legal after search");
+    assert!(
+        closed.accept_string("}", false),
+        "close still legal after search"
+    );
 }

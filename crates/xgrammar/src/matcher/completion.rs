@@ -32,7 +32,7 @@ const COMPLETION_NODE_BUDGET: usize = 8192;
 /// container closers and JSON structural separators. Ordering the search to
 /// take these first makes it commit to closing the current structure instead
 /// of extending it.
-const CLOSE_PRIORITY: &[u8] = &[b'"', b'}', b']', b',', b':', b' ', b'\n', b'\t'];
+const CLOSE_PRIORITY: &[u8] = b"\"}],: \n\t";
 
 /// Max distinct CONTENT (non-priority) bytes explored per node. Forced
 /// positions — e.g. each character of a required key — expose exactly one
