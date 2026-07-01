@@ -77,7 +77,7 @@ pub struct QuantizedWeight {
     pub weight_scale_2: f32,
     /// Input activation scale (FP32 on device, for FP8 activation path).
     pub input_scale: DevicePtr,
-    /// Per-row FP32 scale2 on device ([N] floats). When set, the `w4a16_gemv_prs`
+    /// Per-row FP32 scale2 on device (`[N]` floats). When set, the `w4a16_gemv_prs`
     /// kernel reads scale2 per output row instead of the scalar `weight_scale_2`,
     /// eliminating precision loss from per-tensor absmax on outlier rows.
     pub weight_scale_2_vec: DevicePtr,
@@ -133,7 +133,11 @@ impl QuantizedWeight {
         gpu.copy_d2d(other.weight, new_weight.offset(n1 * half_k), n2 * half_k)?;
 
         gpu.copy_d2d(self.weight_scale, new_scale, n1 * num_groups)?;
-        gpu.copy_d2d(other.weight_scale, new_scale.offset(n1 * num_groups), n2 * num_groups)?;
+        gpu.copy_d2d(
+            other.weight_scale,
+            new_scale.offset(n1 * num_groups),
+            n2 * num_groups,
+        )?;
 
         Ok(QuantizedWeight {
             weight: new_weight,
