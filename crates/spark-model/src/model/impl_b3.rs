@@ -229,14 +229,18 @@ impl TransformerModel {
             let new_len = (chunk_start + proc_count).min(dstate.max_ctx_len);
             tracing::info!(
                 "DFlash ctx_len update: chunk_start={} proc_count={} → ctx_len={} (max={})",
-                chunk_start, proc_count, new_len, dstate.max_ctx_len
+                chunk_start,
+                proc_count,
+                new_len,
+                dstate.max_ctx_len
             );
             dstate.ctx_len = new_len;
         } else {
             tracing::warn!(
                 "DFlash ctx_len update SKIPPED: proposer_state={} (chunk_start={} proc_count={})",
                 seq.proposer_state.is_some(),
-                chunk_start, proc_count
+                chunk_start,
+                proc_count
             );
         }
         Ok(())
@@ -314,7 +318,7 @@ impl TransformerModel {
         let h = self.config.hidden_size;
         let bf16 = 2usize;
         let ctx_slot_bytes = self.dflash_capture_layers.len() * h * bf16;
-        let src = self.buffers.hidden_states().offset(1 * h * bf16); // row 1 = draft
+        let src = self.buffers.hidden_states().offset(h * bf16); // row 1 = draft
         let dst_slot = base.offset(ctx_slot_bytes + slot * h * bf16); // second half
         self.gpu.copy_d2d_async(src, dst_slot, h * bf16, stream)?;
         Ok(())

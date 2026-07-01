@@ -87,10 +87,8 @@ impl TransformerModel {
         //   decode:   K-row format (num_seqs=K, K copies of block_table)
         //   prefill:  1-row format (num_seqs=1, single block_table row)
         // Positions and slots are identical in both layouts.
-        let use_prefill_attn = std::env::var("ATLAS_VERIFY_PREFILL_ATTN")
-            .ok()
-            .as_deref()
-            == Some("1");
+        let use_prefill_attn =
+            std::env::var("ATLAS_VERIFY_PREFILL_ATTN").ok().as_deref() == Some("1");
 
         let meta_base = self.buffers.scratch().offset(32768);
         let max_blocks = self.max_blocks_per_seq;
@@ -119,9 +117,8 @@ impl TransformerModel {
             // prefill_attention_paged computes kv_len from seq_len_start + num_tokens
             // and reads block_table as a flat 1D array — no seq_idx stride.
             let seq_len_val = [(seq.seq_len + k) as u32];
-            let sl_bytes = unsafe {
-                std::slice::from_raw_parts(seq_len_val.as_ptr() as *const u8, 4)
-            };
+            let sl_bytes =
+                unsafe { std::slice::from_raw_parts(seq_len_val.as_ptr() as *const u8, 4) };
             self.gpu
                 .copy_h2d_async(sl_bytes, meta_base.offset(512), stream)?;
 
@@ -189,8 +186,10 @@ impl TransformerModel {
         // EAGLE on AND off). Force EAGER by default so the default path is
         // CORRECT. Eager is also faster here (SSM-decode-bound: 13 vs 11.5 tok/s).
         // Re-enable graphs ONLY to debug the underlying bug.
-        let allow_kgamma_graph =
-            std::env::var("ATLAS_DFLASH_UNSAFE_KGAMMA_GRAPH").ok().as_deref() == Some("1");
+        let allow_kgamma_graph = std::env::var("ATLAS_DFLASH_UNSAFE_KGAMMA_GRAPH")
+            .ok()
+            .as_deref()
+            == Some("1");
         if !allow_kgamma_graph {
             static WARNED: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
@@ -249,8 +248,8 @@ impl TransformerModel {
             // each phase with gpu.synchronize() (serializes — only under the flag).
             // Requires eager (syncs are illegal under graph capture); K=γ is forced
             // eager by the guard, so this is a no-op when graphs are somehow on.
-            let timing = (std::env::var("ATLAS_DFLASH_TIMING").ok().as_deref() == Some("1"))
-                && !use_graphs;
+            let timing =
+                (std::env::var("ATLAS_DFLASH_TIMING").ok().as_deref() == Some("1")) && !use_graphs;
             if std::env::var("ATLAS_DFLASH_TIMING").ok().as_deref() == Some("1") && use_graphs {
                 static WARNED: std::sync::atomic::AtomicBool =
                     std::sync::atomic::AtomicBool::new(false);
@@ -274,15 +273,12 @@ impl TransformerModel {
             // When enabled, SSM layers use prefill_phase1/gdn_full/phase3
             // instead of sequential decode_batched(k), reducing GDN work from
             // K serial h_state updates to one WY4 batch recurrence.
-            let use_prefill_ssm = std::env::var("ATLAS_VERIFY_PREFILL_SSM")
-                .ok()
-                .as_deref()
-                == Some("1");
+            let use_prefill_ssm =
+                std::env::var("ATLAS_VERIFY_PREFILL_SSM").ok().as_deref() == Some("1");
             // EAGLE-fix (K=γ): capture ALL k verify rows so the scheduler can
             // append rows 0..=num_accepted to ctx (fixes ctx-undercount + EAGLE
             // shift). Flag off → legacy single row-0 capture.
-            let eagle_fix =
-                std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
+            let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
             // Precompute SSM buffer dimensions (same as prefill_c.rs / phase1_inner).
             let nk = self.config.linear_num_key_heads;
             let kd = self.config.linear_key_head_dim;
@@ -293,10 +289,10 @@ impl TransformerModel {
             let ssm_conv_dim = ssm_key_dim * 2 + ssm_value_dim;
             let ssm_gate_stride = nv * 2; // elements (FP32)
             let gdn_bufs = GdnPrefillBuffers {
-                qkv:       self.gdn_buf_qkv,
+                qkv: self.gdn_buf_qkv,
                 gate_beta: self.gdn_buf_gate_beta,
-                output:    self.gdn_buf_out,
-                z:         self.gdn_buf_z,
+                output: self.gdn_buf_out,
+                z: self.gdn_buf_z,
                 total_len: k,
             };
 
@@ -452,71 +448,68 @@ impl TransformerModel {
                         stream,
                     )?;
                     if !used_wy16 {
-                    // Phase 2: one WY4 batch GDN recurrence over all K tokens.
-                    layer.prefill_gdn_full(
-                        seq.layer_states[layer_idx].as_mut(),
-                        &gdn_bufs,
-                        &ctx,
-                        stream,
-                    )?;
-                    // Fill h_state_intermediates via per-token replay from checkpoint (R7).
-                    // Extract DevicePtr copies before the replay loop to avoid borrow
-                    // conflicts with the trait method calls inside the loop.
-                    let (h_state_ptr, h_ckpt_opt, h_ints_vec) = {
-                        let s = seq.layer_states[layer_idx]
-                            .as_any_mut()
-                            .downcast_mut::<SsmLayerState>()
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("expected SsmLayerState at layer {layer_idx}")
-                            })?;
-                        (
-                            s.h_state,
-                            s.h_state_checkpoint,
-                            s.h_state_intermediates.clone(),
-                        )
-                    };
-                    let h_bytes = self.ssm_pool.h_bytes;
-                    // Save WY4 final h_state to scratch
-                    self.gpu.copy_d2d_async(
-                        h_state_ptr,
-                        self.ssm_verify_h_tmp,
-                        h_bytes,
-                        stream,
-                    )?;
-                    // Restore pre-verify checkpoint so replay starts from correct state
-                    if let Some(ckpt) = h_ckpt_opt {
-                        self.gpu.copy_d2d_async(ckpt, h_state_ptr, h_bytes, stream)?;
-                    }
-                    // K serial single-token GDN steps; after each step h_state_ptr
-                    // device memory holds h_state after tokens 0..=t.
-                    for t in 0..k.min(h_ints_vec.len()) {
-                        let tok_gdn = GdnPrefillBuffers {
-                            qkv:      gdn_bufs.qkv.offset(t * ssm_conv_dim * bf16),
-                            gate_beta: gdn_bufs.gate_beta.offset(t * ssm_gate_stride * 4),
-                            output:   gdn_bufs.output.offset(t * ssm_value_dim * bf16),
-                            z:        gdn_bufs.z.offset(t * ssm_value_dim * bf16),
-                            total_len: 1,
-                        };
+                        // Phase 2: one WY4 batch GDN recurrence over all K tokens.
                         layer.prefill_gdn_full(
                             seq.layer_states[layer_idx].as_mut(),
-                            &tok_gdn,
+                            &gdn_bufs,
                             &ctx,
                             stream,
                         )?;
+                        // Fill h_state_intermediates via per-token replay from checkpoint (R7).
+                        // Extract DevicePtr copies before the replay loop to avoid borrow
+                        // conflicts with the trait method calls inside the loop.
+                        let (h_state_ptr, h_ckpt_opt, h_ints_vec) = {
+                            let s = seq.layer_states[layer_idx]
+                                .as_any_mut()
+                                .downcast_mut::<SsmLayerState>()
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!("expected SsmLayerState at layer {layer_idx}")
+                                })?;
+                            (
+                                s.h_state,
+                                s.h_state_checkpoint,
+                                s.h_state_intermediates.clone(),
+                            )
+                        };
+                        let h_bytes = self.ssm_pool.h_bytes;
+                        // Save WY4 final h_state to scratch
                         self.gpu.copy_d2d_async(
                             h_state_ptr,
-                            h_ints_vec[t],
+                            self.ssm_verify_h_tmp,
                             h_bytes,
                             stream,
                         )?;
-                    }
-                    // Restore WY4 final h_state
-                    self.gpu.copy_d2d_async(
-                        self.ssm_verify_h_tmp,
-                        h_state_ptr,
-                        h_bytes,
-                        stream,
-                    )?;
+                        // Restore pre-verify checkpoint so replay starts from correct state
+                        if let Some(ckpt) = h_ckpt_opt {
+                            self.gpu
+                                .copy_d2d_async(ckpt, h_state_ptr, h_bytes, stream)?;
+                        }
+                        // K serial single-token GDN steps; after each step h_state_ptr
+                        // device memory holds h_state after tokens 0..=t.
+                        for t in 0..k.min(h_ints_vec.len()) {
+                            let tok_gdn = GdnPrefillBuffers {
+                                qkv: gdn_bufs.qkv.offset(t * ssm_conv_dim * bf16),
+                                gate_beta: gdn_bufs.gate_beta.offset(t * ssm_gate_stride * 4),
+                                output: gdn_bufs.output.offset(t * ssm_value_dim * bf16),
+                                z: gdn_bufs.z.offset(t * ssm_value_dim * bf16),
+                                total_len: 1,
+                            };
+                            layer.prefill_gdn_full(
+                                seq.layer_states[layer_idx].as_mut(),
+                                &tok_gdn,
+                                &ctx,
+                                stream,
+                            )?;
+                            self.gpu
+                                .copy_d2d_async(h_state_ptr, h_ints_vec[t], h_bytes, stream)?;
+                        }
+                        // Restore WY4 final h_state
+                        self.gpu.copy_d2d_async(
+                            self.ssm_verify_h_tmp,
+                            h_state_ptr,
+                            h_bytes,
+                            stream,
+                        )?;
                     } // end !used_wy16 (WY4 batch + per-token replay fallback)
                     if let Some(t) = _ts2 {
                         self.gpu.synchronize(stream)?;
@@ -529,15 +522,7 @@ impl TransformerModel {
                     } else {
                         None
                     };
-                    layer.prefill_phase3(
-                        hidden,
-                        residual,
-                        k,
-                        &gdn_bufs,
-                        0,
-                        &ctx,
-                        stream,
-                    )?;
+                    layer.prefill_phase3(hidden, residual, k, &gdn_bufs, 0, &ctx, stream)?;
                     if let Some(t) = _ts3 {
                         self.gpu.synchronize(stream)?;
                         us_p3 += t.elapsed().as_micros();
@@ -627,7 +612,7 @@ impl TransformerModel {
                 P3.fetch_add(us_p3 as u64, Relaxed);
                 HD.fetch_add(us_head as u64, Relaxed);
                 let n = N.fetch_add(1, Relaxed) + 1;
-                if n % 50 == 0 {
+                if n.is_multiple_of(50) {
                     let ms = |x: &AtomicU64| x.load(Relaxed) as f64 / n as f64 / 1000.0;
                     let (a, p1, p2, p3, hd) = (ms(&A), ms(&P1), ms(&P2), ms(&P3), ms(&HD));
                     let sum = (a + p1 + p2 + p3 + hd).max(1e-6);

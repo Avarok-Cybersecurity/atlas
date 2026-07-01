@@ -477,7 +477,7 @@ impl Qwen3SsmLayer {
                 let gate_t = gates_buf.offset(t as usize * gate_beta_stride);
                 let beta_t = gates_buf.offset(t as usize * gate_beta_stride + nv * fp32);
                 let gdn_out_t = gdn_out_buf.offset(t as usize * args.value_dim * bf16);
-                let do_norm_t = (ssm_state.norm_token_count % 16 == 0) as u32;
+                let do_norm_t = ssm_state.norm_token_count.is_multiple_of(16) as u32;
                 ssm_state.norm_token_count = ssm_state.norm_token_count.wrapping_add(1);
 
                 ops::gdn_decode(
