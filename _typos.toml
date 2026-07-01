@@ -76,6 +76,9 @@ RECAL = "RECAL"
 # `unparseable` — valid English spelling variant used in the tool-call parser
 # (the typos default prefers `unparsable`). Keep the existing spelling.
 unparseable = "unparseable"
+# `bb09afe` — git commit hash referenced in OPTIMIZATIONS-CATALOG.md.
+# Not a typo of `safe`.
+bb09afe = "bb09afe"
 
 [default.extend-identifiers]
 # Pattern compounds the checker doesn't handle via the default list.
