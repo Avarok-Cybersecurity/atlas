@@ -92,22 +92,34 @@ fn check_embedding_and_head(store: &WeightStore) -> Result<()> {
     // spelling only need to appear as a new suffix here — no enumerated
     // prefix list to maintain.
     const EMBED_SUFFIXES: &[&str] = &[".embed_tokens.weight", ".embeddings.weight"];
+    const EMBED_EXACTS: &[&str] = &[
+        "tok_embeddings.weight",
+        "embed_tokens.weight",
+        "embed.weight",
+    ];
     let has_embed = store
         .names()
-        .any(|n| n == "tok_embeddings.weight" || EMBED_SUFFIXES.iter().any(|s| n.ends_with(s)));
+        .any(|n| EMBED_EXACTS.contains(&n) || EMBED_SUFFIXES.iter().any(|s| n.ends_with(s)));
     if !has_embed {
+        let sample: Vec<_> = store.names().take(20).collect();
         bail!(
-            "Pre-flight: no embedding tensor found (checked suffixes: \
-             {EMBED_SUFFIXES:?} and bare `tok_embeddings.weight`). \
-             Is this a language-model checkpoint?"
+            "Pre-flight: no embedding tensor found (checked exact: {EMBED_EXACTS:?}, \
+             suffixes: {EMBED_SUFFIXES:?}). Is this a language-model checkpoint? \
+             Sample tensor names: {sample:?}\
+             \n\nHint: Some re-quant checkpoints (e.g. RedHatAI DeepSeek-V4-Flash-NVFP4-FP8) \
+             ship embedding weights in a separate file not listed in model.safetensors.index.json. \
+             Check if the checkpoint directory contains a separate model.safetensors or \
+             embed_tokens.safetensors file, and if model.safetensors.index.json maps \
+             'model.embed_tokens.weight' to a shard."
         );
     }
     // LM head is optional (tied embeddings skip it). Scan suffixes:
     //   `lm_head.weight`       — HF / Qwen / Gemma / MiniMax
     //   `output.weight`        — Mistral consolidated
+    //   `head.weight`          — DeepSeek-V4 / RedHatAI re-quant
     let has_head = store
         .names()
-        .any(|n| n.ends_with("lm_head.weight") || n == "output.weight");
+        .any(|n| n.ends_with("lm_head.weight") || n == "output.weight" || n == "head.weight");
     if !has_head {
         tracing::info!("Pre-flight: no dedicated LM head tensor; assuming tied embeddings.");
     }

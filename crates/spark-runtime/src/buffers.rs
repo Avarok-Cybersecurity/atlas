@@ -67,9 +67,23 @@ pub struct BufferArena {
     expert_down_out: DevicePtr,
     /// Split-K decode attention workspace: partials from split CTAs (F32).
     splitk_workspace: DevicePtr,
+    /// Grouped O-projection latent: [M, o_groups*o_lora_rank] BF16 (V4-Flash).
+    o_latent: DevicePtr,
+    /// Zero-filled BF16 weight (max_dim) for unweighted RMSNorm under the
+    /// offset-from-1 kernel convention (scale = 1+weight → 1.0). Used by q_b_norm.
+    norm_unit_w: DevicePtr,
+    /// HC residual streams: [M, hc_mult, hidden] BF16 (DeepSeek-V4 mHC).
+    hc_streams: DevicePtr,
+    /// HC `post` mixing weights: [M, hc_mult] F32.
+    hc_post: DevicePtr,
+    /// HC `comb` Sinkhorn matrix: [M, hc_mult, hc_mult] F32.
+    hc_comb: DevicePtr,
     /// GDN FLA chunked-prefill scratch (W|U|S|uc sub-divided). NULL unless the
     /// model is a 128-dim-linear-head GDN model (ATLAS_GDN_FLA path).
     gdn_fla_scratch: DevicePtr,
+    /// Token IDs `[M]` u32 — stable across the layer loop so DeepSeek-V4
+    /// hash-MoE layers can read `tid2eid[token_id]`.
+    token_ids: DevicePtr,
     /// Maximum batch tokens this arena was sized for.
     max_batch_tokens: usize,
     /// Sizes in bytes for each buffer (for debug/logging).
@@ -107,6 +121,15 @@ impl BufferArena {
         let expert_up_out = gpu.alloc(sizes.expert_up_out)?;
         let expert_down_out = gpu.alloc(sizes.expert_down_out)?;
         let splitk_workspace = gpu.alloc(sizes.splitk_workspace)?;
+        let o_latent = gpu.alloc(sizes.o_latent)?;
+        // Zero-filled "weight" for unweighted RMSNorm under the offset-from-1
+        // convention used by the rms_norm kernel (scale = 1 + weight). Weight = 0
+        // → scale = 1.0, i.e. a pure normalize (DeepSeek-V4 q_b_norm).
+        let norm_unit_w = gpu.alloc(sizes.norm_unit_w)?;
+        gpu.memset(norm_unit_w, 0, sizes.norm_unit_w)?;
+        let hc_streams = gpu.alloc(sizes.hc_streams)?;
+        let hc_post = gpu.alloc(sizes.hc_post)?;
+        let hc_comb = gpu.alloc(sizes.hc_comb)?;
         // GDN FLA scratch: only allocate for the 128-dim-linear-head GDN path
         // (size 0 → NULL → ATLAS_GDN_FLA dispatch stays disabled).
         let gdn_fla_scratch = if sizes.gdn_fla_scratch > 0 {
@@ -114,6 +137,7 @@ impl BufferArena {
         } else {
             DevicePtr::NULL
         };
+        let token_ids = gpu.alloc(sizes.token_ids)?;
 
         tracing::info!(
             "Buffer arena: {} tokens × {:.1} MB total (attn_out={:.1}MB, ssm_deint={:.1}MB, kv_lora_rank={})",
@@ -145,7 +169,13 @@ impl BufferArena {
             expert_up_out,
             expert_down_out,
             splitk_workspace,
+            o_latent,
+            norm_unit_w,
+            hc_streams,
+            hc_post,
+            hc_comb,
             gdn_fla_scratch,
+            token_ids,
             max_batch_tokens,
             sizes,
         })
@@ -203,6 +233,12 @@ impl BufferArena {
     pub fn scratch(&self) -> DevicePtr {
         self.scratch
     }
+    /// Token IDs `[M]` u32 — stable across the layer loop (DeepSeek-V4 hash-MoE
+    /// reads `tid2eid[token_id]`). Upload the pass's token IDs here before the
+    /// layer loop; under CUDA-graph decode upload before each replay.
+    pub fn token_ids(&self) -> DevicePtr {
+        self.token_ids
+    }
     /// Allocated byte size of the scratch buffer (#110: bounds-check
     /// batched metadata-staging uploads against this).
     pub fn scratch_bytes(&self) -> usize {
@@ -228,6 +264,26 @@ impl BufferArena {
     }
     pub fn splitk_workspace(&self) -> DevicePtr {
         self.splitk_workspace
+    }
+    /// Grouped O-projection latent [M, o_groups*o_lora_rank] BF16 (V4-Flash).
+    pub fn o_latent(&self) -> DevicePtr {
+        self.o_latent
+    }
+    /// All-ones BF16 vector (max_dim) — weight for unweighted RMSNorm (q_b_norm).
+    pub fn norm_unit_w(&self) -> DevicePtr {
+        self.norm_unit_w
+    }
+    /// HC residual streams [M, hc_mult, hidden] BF16 (DeepSeek-V4 mHC).
+    pub fn hc_streams(&self) -> DevicePtr {
+        self.hc_streams
+    }
+    /// HC `post` mixing weights [M, hc_mult] F32.
+    pub fn hc_post(&self) -> DevicePtr {
+        self.hc_post
+    }
+    /// HC `comb` Sinkhorn matrix [M, hc_mult, hc_mult] F32.
+    pub fn hc_comb(&self) -> DevicePtr {
+        self.hc_comb
     }
     pub fn max_batch_tokens(&self) -> usize {
         self.max_batch_tokens

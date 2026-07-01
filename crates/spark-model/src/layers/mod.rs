@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+pub mod deepseek_v4_mtp;
 pub mod dense_ffn;
 pub mod dflash_head;
 pub mod ep_dispatch;
@@ -14,6 +15,7 @@ pub mod qwen3_attention;
 pub mod qwen3_ssm;
 pub mod vision_encoder;
 
+pub use deepseek_v4_mtp::{DeepseekV4MtpHead, DeepseekV4MtpProposerState};
 pub use dense_ffn::{DenseFfnLayer, FfnActivation};
 pub use dflash_head::{
     BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization,

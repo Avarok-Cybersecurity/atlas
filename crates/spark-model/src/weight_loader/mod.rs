@@ -14,6 +14,7 @@
 //!   - `nemotron`: Nemotron-H (Mamba-2 + MoE + Attention)
 //!   - `gemma4`: Gemma-4 (pure attention, GeGLU, sliding + full attention)
 
+pub(crate) mod deepseek_v4;
 pub mod dflash_loader;
 mod gemma4;
 mod minimax;
@@ -24,6 +25,7 @@ mod qwen35_dense;
 mod qwen3_vl;
 mod step3p7;
 
+pub use deepseek_v4::DeepSeekV4WeightLoader;
 pub use dflash_loader::{
     DflashConfig, DflashLayerWeights, DflashSubConfig, DflashWeights, load_dflash_weights,
     store_has_dflash_weights,

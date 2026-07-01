@@ -22,6 +22,12 @@ extern "C" __global__ void moe_silu_mul(
 
     float g = __bfloat162float(gate[idx]);
     float u = __bfloat162float(up[idx]);
+    // DeepSeek-V4 routed-expert swiglu clamp: gate<=limit, up in [-limit,limit]
+    // (swiglu_limit = 10.0, config). This is the ROUTED grouped-silu path; the
+    // shared expert uses its own ungated kernel.
+    const float SWIGLU_LIMIT = 10.0f;
+    g = fminf(g, SWIGLU_LIMIT);
+    u = fminf(fmaxf(u, -SWIGLU_LIMIT), SWIGLU_LIMIT);
     float sigmoid_g = 1.0f / (1.0f + __expf(-g));
     float result = g * sigmoid_g * u;
     output[idx] = __float2bfloat16(result);

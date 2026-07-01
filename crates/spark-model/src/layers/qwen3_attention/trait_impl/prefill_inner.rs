@@ -36,6 +36,25 @@ impl Qwen3AttentionLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // DeepSeek-V4: Manifold-Constrained Hyper-Connections (mHC).
+        if self.hc.is_some() {
+            return self.prefill_inner_hc(
+                hidden,
+                residual,
+                num_tokens,
+                _state,
+                kv_cache,
+                seq_len_start,
+                block_table,
+                disk_block_ids,
+                disk_last_offloaded_per_layer,
+                kv_write_start,
+                batched_meta,
+                ctx,
+                stream,
+            );
+        }
+
         let h = ctx.config.hidden_size;
         let eps = ctx.config.rms_norm_eps as f32;
         let n = num_tokens as u32;
@@ -430,6 +449,397 @@ impl Qwen3AttentionLayer {
                 h,
                 stream,
                 &format!("L{} residual", self.attn_layer_idx),
+            );
+        }
+
+        Ok(())
+    }
+
+    /// HC-enabled prefill inner.  `hc_streams` holds the persistent
+    /// multi-stream state; `hidden` is single-stream scratch.
+    #[allow(clippy::too_many_arguments)]
+    fn prefill_inner_hc(
+        &self,
+        hidden: DevicePtr,
+        _residual: DevicePtr,
+        num_tokens: usize,
+        _state: &mut dyn LayerState,
+        kv_cache: &mut PagedKvCache,
+        seq_len_start: usize,
+        block_table: &mut Vec<u32>,
+        disk_block_ids: &mut Vec<u32>,
+        disk_last_offloaded_per_layer: &mut Vec<u32>,
+        kv_write_start: usize,
+        batched_meta: Option<&BatchedAttnMetadata>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let h = ctx.config.hidden_size;
+        let eps = ctx.config.rms_norm_eps as f32;
+        let n = num_tokens as u32;
+        let hc = self.hc.as_ref().unwrap();
+        let hc_mult = hc.hc_mult as u32;
+        let is_first_layer = self.attn_layer_idx == 0;
+        let is_last_layer = self.attn_layer_idx + 1 == ctx.config.num_hidden_layers;
+        let hc_streams = ctx.buffers.hc_streams();
+        let post = ctx.buffers.hc_post();
+        let comb = ctx.buffers.hc_comb();
+        let diag_all =
+            std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
+        let diag_this = self.attn_layer_idx == 0 || diag_all;
+
+        if is_first_layer {
+            ops::hc_expand(
+                ctx.gpu,
+                self.hc_expand_k,
+                hidden,
+                hc_streams,
+                n,
+                h as u32,
+                hc_mult,
+                stream,
+            )?;
+        }
+
+        // ── Attention sublayer ──
+        ops::hc_pre(
+            ctx.gpu,
+            self.hc_pre_k,
+            hc_streams,
+            hc.attn.hc_fn,
+            hc.attn.hc_scale,
+            hc.attn.hc_base,
+            hidden,
+            post,
+            comb,
+            n,
+            h as u32,
+            hc_mult,
+            hc.sinkhorn_iters as u32,
+            eps,
+            hc.hc_eps,
+            stream,
+        )?;
+        if diag_this {
+            super::diag_norm(
+                ctx.gpu,
+                hidden,
+                h,
+                stream,
+                &format!("V4-prefill L{} hc_pre-attn", self.attn_layer_idx),
+            );
+            super::diag_norm_f32(
+                ctx.gpu,
+                post,
+                (n as usize) * (hc_mult as usize),
+                stream,
+                &format!("V4-prefill L{} post-attn", self.attn_layer_idx),
+            );
+            super::diag_norm_f32(
+                ctx.gpu,
+                comb,
+                (n as usize) * (hc_mult as usize) * (hc_mult as usize),
+                stream,
+                &format!("V4-prefill L{} comb-attn", self.attn_layer_idx),
+            );
+        }
+
+        let normed = ctx.buffers.norm_output();
+        ops::rms_norm(
+            ctx.gpu,
+            self.rms_norm_k,
+            hidden,
+            &self.input_norm,
+            normed,
+            n,
+            h as u32,
+            eps,
+            stream,
+        )?;
+
+        if batched_meta.is_some() && seq_len_start == 0 {
+            anyhow::bail!(
+                "prefill_inner_hc: batched mode requires seq_len_start > 0; \
+                 got seq_len_start=0."
+            );
+        }
+        let attn_out = if seq_len_start == 0 {
+            self.prefill_attention_with_cache_skip(
+                normed,
+                num_tokens,
+                kv_write_start,
+                kv_cache,
+                ctx,
+                stream,
+            )?
+        } else {
+            self.prefill_attention_paged(
+                normed,
+                num_tokens,
+                seq_len_start,
+                kv_cache,
+                block_table,
+                disk_block_ids,
+                disk_last_offloaded_per_layer,
+                batched_meta,
+                kv_write_start,
+                ctx,
+                stream,
+            )?
+        };
+
+        if ctx.config.tp_world_size > 1
+            && let Some(comm) = ctx.comm
+        {
+            let bytes = num_tokens * h * 2;
+            comm.all_reduce_async(attn_out.0, bytes, stream)?;
+        }
+
+        if batched_meta.is_some() && self.high_speed_swap_engaged(kv_cache) {
+            anyhow::bail!(
+                "prefill_inner_hc: batched mode does not support HSS-engaged layers \
+                 (layer {})",
+                self.attn_layer_idx
+            );
+        }
+        if self.high_speed_swap_engaged(kv_cache) {
+            let nkv = self
+                .num_kv_heads_override
+                .unwrap_or(ctx.config.num_key_value_heads) as u32;
+            let hd = self.head_dim_override.unwrap_or(ctx.config.head_dim) as u32;
+            let bs = kv_cache.block_size();
+            self.high_speed_swap_offload_new_blocks(
+                kv_cache,
+                block_table,
+                disk_block_ids,
+                disk_last_offloaded_per_layer,
+                ctx,
+                stream,
+                nkv,
+                hd,
+                bs,
+            )?;
+        }
+
+        if let Some(ref post_norm) = self.post_attn_out_norm {
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_k,
+                attn_out,
+                post_norm,
+                attn_out,
+                n,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        }
+
+        if self.ffn.is_none() {
+            ops::hc_post(
+                ctx.gpu,
+                self.hc_post_k,
+                attn_out,
+                hc_streams,
+                post,
+                comb,
+                hc_streams,
+                n,
+                h as u32,
+                hc_mult,
+                stream,
+            )?;
+            if is_last_layer && let Some(ref head) = hc.head {
+                ops::hc_head(
+                    ctx.gpu,
+                    self.hc_head_k,
+                    hc_streams,
+                    head.hc_fn,
+                    head.hc_scale,
+                    head.hc_base,
+                    hidden,
+                    n,
+                    h as u32,
+                    hc_mult,
+                    eps,
+                    hc.hc_eps,
+                    stream,
+                )?;
+            }
+            return Ok(());
+        }
+
+        ops::hc_post(
+            ctx.gpu,
+            self.hc_post_k,
+            attn_out,
+            hc_streams,
+            post,
+            comb,
+            hc_streams,
+            n,
+            h as u32,
+            hc_mult,
+            stream,
+        )?;
+        if diag_this {
+            super::diag_norm(
+                ctx.gpu,
+                hc_streams,
+                h,
+                stream,
+                &format!("V4-prefill L{} hc_post-attn", self.attn_layer_idx),
+            );
+            super::diag_norm(
+                ctx.gpu,
+                hc_streams,
+                (n as usize) * (hc_mult as usize) * h,
+                stream,
+                &format!(
+                    "V4-prefill L{} hc_post-attn ALL_STREAMS",
+                    self.attn_layer_idx
+                ),
+            );
+        }
+
+        // ── FFN sublayer ──
+        ops::hc_pre(
+            ctx.gpu,
+            self.hc_pre_k,
+            hc_streams,
+            hc.ffn.hc_fn,
+            hc.ffn.hc_scale,
+            hc.ffn.hc_base,
+            hidden,
+            post,
+            comb,
+            n,
+            h as u32,
+            hc_mult,
+            hc.sinkhorn_iters as u32,
+            eps,
+            hc.hc_eps,
+            stream,
+        )?;
+        if diag_this {
+            super::diag_norm(
+                ctx.gpu,
+                hidden,
+                h,
+                stream,
+                &format!("V4-prefill L{} hc_pre-ffn", self.attn_layer_idx),
+            );
+            super::diag_norm_f32(
+                ctx.gpu,
+                post,
+                (n as usize) * (hc_mult as usize),
+                stream,
+                &format!("V4-prefill L{} post-ffn", self.attn_layer_idx),
+            );
+            super::diag_norm_f32(
+                ctx.gpu,
+                comb,
+                (n as usize) * (hc_mult as usize) * (hc_mult as usize),
+                stream,
+                &format!("V4-prefill L{} comb-ffn", self.attn_layer_idx),
+            );
+        }
+
+        let normed2 = ctx.buffers.norm_output();
+        ops::rms_norm(
+            ctx.gpu,
+            self.rms_norm_k,
+            hidden,
+            &self.post_attn_norm,
+            normed2,
+            n,
+            h as u32,
+            eps,
+            stream,
+        )?;
+
+        self.ffn
+            .forward_prefill(normed2, num_tokens, ctx, stream)
+            .map_err(|e| anyhow::anyhow!("ffn.forward_prefill (HC) failed: {e}"))?;
+
+        let dense_out = ctx.buffers.moe_output();
+
+        if let Some(ref post_norm) = self.post_ffn_out_norm {
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_k,
+                dense_out,
+                post_norm,
+                dense_out,
+                n,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        }
+
+        ops::hc_post(
+            ctx.gpu,
+            self.hc_post_k,
+            dense_out,
+            hc_streams,
+            post,
+            comb,
+            hc_streams,
+            n,
+            h as u32,
+            hc_mult,
+            stream,
+        )?;
+        if diag_this {
+            super::diag_norm(
+                ctx.gpu,
+                hc_streams,
+                h,
+                stream,
+                &format!("V4-prefill L{} hc_post-ffn", self.attn_layer_idx),
+            );
+            super::diag_norm(
+                ctx.gpu,
+                hc_streams,
+                (n as usize) * (hc_mult as usize) * h,
+                stream,
+                &format!(
+                    "V4-prefill L{} hc_post-ffn ALL_STREAMS",
+                    self.attn_layer_idx
+                ),
+            );
+        }
+
+        if is_last_layer && let Some(ref head) = hc.head {
+            ops::hc_head(
+                ctx.gpu,
+                self.hc_head_k,
+                hc_streams,
+                head.hc_fn,
+                head.hc_scale,
+                head.hc_base,
+                hidden,
+                n,
+                h as u32,
+                hc_mult,
+                eps,
+                hc.hc_eps,
+                stream,
+            )?;
+            if diag_this {
+                super::diag_norm(
+                    ctx.gpu,
+                    hidden,
+                    (n as usize) * h,
+                    stream,
+                    &format!("V4-prefill L{} hc_head", self.attn_layer_idx),
+                );
+            }
+        } else if is_last_layer {
+            tracing::warn!(
+                "V4-prefill L{}: hc_head SKIPPED (no head weights)",
+                self.attn_layer_idx
             );
         }
 

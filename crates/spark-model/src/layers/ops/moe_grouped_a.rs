@@ -107,6 +107,40 @@ pub fn moe_topk_sigmoid_batched(
         .launch(stream)
 }
 
+/// Batched sqrtsoftplus + correction-bias routing (DeepSeek-V4 prefill).
+///
+/// Same I/O as [`moe_topk_sigmoid_batched`] but scores experts with
+/// `sqrt(log(1+exp(logits)))` (matching the single-token decode path), so
+/// V4 prefill and decode route identically. Grid (N) / Block (256).
+#[allow(clippy::too_many_arguments)]
+pub fn moe_topk_sqrtsoftplus_batched(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    gate_logits: DevicePtr,
+    bias: DevicePtr,
+    expert_indices: DevicePtr,
+    expert_weights: DevicePtr,
+    num_experts: u32,
+    top_k: u32,
+    normalize: bool,
+    scaling_factor: f32,
+    num_tokens: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_tokens, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(gate_logits)
+        .arg_ptr(bias)
+        .arg_ptr(expert_indices)
+        .arg_ptr(expert_weights)
+        .arg_u32(num_experts)
+        .arg_u32(top_k)
+        .arg_u32(if normalize { 1 } else { 0 })
+        .arg_f32(scaling_factor)
+        .launch(stream)
+}
+
 /// Pointer-table grouped GEMM: one launch covers all experts.
 ///
 /// Grid: (ceil(n_out/64), max_m_tiles, num_experts)  Block: (128, 1, 1)

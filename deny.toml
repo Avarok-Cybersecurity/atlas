@@ -16,17 +16,15 @@ yanked = "warn"
 # real vulnerabilities (the entry should be removed and the upstream
 # bumped).
 ignore = [
-    # `atty` — replaced by `is-terminal` in modern crates. Pulled in
-    # by older diagnostic / CLI helper crates as a transitive dep.
-    { id = "RUSTSEC-2024-0375", reason = "atty is unmaintained but only used for TTY detection in transitive deps; no vulnerability path" },
     # `paste` — proc-macro for token pasting. The crate works fine
     # but its maintainer stepped away; replacements (e.g. `pastey`)
     # exist but the deps that use it haven't migrated yet.
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained; proc-macro is feature-complete and pulled in by transitive deps we don't control" },
-    # `proc-macro-error` 1.x — pulled in by older clap derive macros.
-    # Replaced upstream by `proc-macro-error2`; resolved naturally as
-    # transitive deps bump their own clap pins.
-    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.x is unmaintained; transitive only, replacement crate exists upstream" },
+    # NOTE: RUSTSEC-2024-0375 (`atty`) and RUSTSEC-2024-0370
+    # (`proc-macro-error` 1.x) were removed once those crates dropped out
+    # of the tree — keeping them produced cargo-deny `advisory-not-detected`
+    # warnings ("no crate matched advisory criteria"). Re-add only if a dep
+    # pulls them back in.
 ]
 
 [licenses]

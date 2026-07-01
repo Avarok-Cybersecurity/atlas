@@ -9,8 +9,12 @@ use super::Qwen3AttentionLayer;
 
 mod attention_forward;
 mod attention_forward_kv;
-mod attention_forward_mla;
+// `pub(in …)`: the multi-sequence MLA decode path
+// (`trait_impl::multi_seq::mla`) reuses `DecodeMlaArgs` to drive the
+// V4-Flash single-token chain per verify token.
+pub(in crate::layers::qwen3_attention) mod attention_forward_mla;
 mod attention_forward_oproj;
+mod attention_forward_v4;
 mod high_speed_swap;
 mod run_paged_decode;
 mod write_kv_cache;

@@ -2,6 +2,8 @@
 
 //! MoeLayer::forward_k2 (verify K=2).
 
+use anyhow::Context as _;
+
 use super::*;
 
 impl MoeLayer {
@@ -30,6 +32,16 @@ impl MoeLayer {
         let inter = ctx.config.moe_intermediate_size as u32;
         let num_experts = ctx.config.num_experts as u32;
         let top_k = ctx.config.num_experts_per_tok as u32;
+
+        // DIAG (ATLAS_K2_DIAG=1): synchronize checkpoints to localize the K2-verify
+        // illegal access (the V4 NVFP4 batch2 verify path is exercised for the first
+        // time by MTP). The label of the FIRST failing sync names the bad stage.
+        let k2_diag = std::env::var("ATLAS_K2_DIAG").is_ok_and(|v| v == "1");
+        if k2_diag {
+            ctx.gpu
+                .synchronize(stream)
+                .context("K2 ENTRY: attention+norm BEFORE forward_k2")?;
+        }
 
         // Gemma-4 router pre-norm (no-op for other models).
         let router_in = self.router_input(input, 2, h, ctx, stream)?;
@@ -66,20 +78,46 @@ impl MoeLayer {
         let indices_dev = scratch; // [2*top_k] u32
         let weights_dev = scratch.offset(2 * top_k as usize * 4); // [2*top_k] f32
         if let Some(bias) = self.correction_bias_dev {
-            ops::moe_topk_sigmoid_batched(
-                ctx.gpu,
-                self.moe_topk_sigmoid_batched_k,
-                gate_logits,
-                bias,
-                indices_dev,
-                weights_dev,
-                num_experts,
-                top_k,
-                ctx.config.norm_topk_prob,
-                ctx.config.routed_scaling_factor as f32,
-                2,
-                stream,
-            )?;
+            // DeepSeek-V4 scores experts with sqrt(softplus(.)); sigmoid otherwise
+            // (MiniMax/DeepSeek-V3). Must match the prefill/single-token paths or
+            // decode routing diverges from prefill.
+            if ctx.config.scoring_func == "sqrtsoftplus" {
+                // Use the PROVEN non-batched sqrtsoftplus kernel per token (the
+                // _batched variant is unexercised — the K2 verify is the only
+                // user and it never ran for V4 before). gate_logits is BF16
+                // [2, num_experts] (2-byte stride); indices/weights are
+                // [2, top_k] (u32 / f32, 4-byte stride).
+                for t in 0..2usize {
+                    ops::moe_topk_sqrtsoftplus(
+                        ctx.gpu,
+                        self.moe_topk_sqrtsoftplus_k,
+                        gate_logits.offset(t * num_experts as usize * 2),
+                        bias,
+                        indices_dev.offset(t * top_k as usize * 4),
+                        weights_dev.offset(t * top_k as usize * 4),
+                        num_experts,
+                        top_k,
+                        ctx.config.norm_topk_prob,
+                        ctx.config.routed_scaling_factor as f32,
+                        stream,
+                    )?;
+                }
+            } else {
+                ops::moe_topk_sigmoid_batched(
+                    ctx.gpu,
+                    self.moe_topk_sigmoid_batched_k,
+                    gate_logits,
+                    bias,
+                    indices_dev,
+                    weights_dev,
+                    num_experts,
+                    top_k,
+                    ctx.config.norm_topk_prob,
+                    ctx.config.routed_scaling_factor as f32,
+                    2,
+                    stream,
+                )?;
+            }
         } else {
             ops::moe_topk_softmax_batched(
                 ctx.gpu,
@@ -93,6 +131,12 @@ impl MoeLayer {
                 2,
                 stream,
             )?;
+        }
+
+        if k2_diag {
+            ctx.gpu
+                .synchronize(stream)
+                .context("K2: gate-GEMV + topk")?;
         }
 
         // 3-5. Fused expert dispatch for 2 tokens
@@ -304,6 +348,12 @@ impl MoeLayer {
                 h,
                 stream,
             )?;
+        }
+
+        if k2_diag {
+            ctx.gpu
+                .synchronize(stream)
+                .context("K2: expert dispatch (gate_up/silu_down/blend)")?;
         }
 
         // EP all-reduce: sum partial outputs for 2 tokens

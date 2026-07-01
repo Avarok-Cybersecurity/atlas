@@ -68,6 +68,23 @@ pub struct BufferSizes {
     /// GDN FLA chunked-prefill scratch (single buffer, sub-divided W|U|S|uc).
     /// 0 unless the model is a 128-dim-linear-head GDN model (ATLAS_GDN_FLA path).
     pub gdn_fla_scratch: usize,
+    /// Grouped O-projection latent: `[M, o_groups*o_lora_rank]` BF16 (V4-Flash).
+    /// 256 (placeholder) when `o_groups == 0`.
+    pub o_latent: usize,
+    /// Zero-filled BF16 weight (length max_dim) for unweighted RMSNorm under the
+    /// offset-from-1 kernel convention (scale = 1+weight → 1.0). DeepSeek-V4 q_b_norm.
+    pub norm_unit_w: usize,
+    /// HC residual streams: `[M, hc_mult, hidden]` BF16 (DeepSeek-V4 mHC).
+    /// 256 (placeholder) when `hc_mult == 0`.
+    pub hc_streams: usize,
+    /// HC `post` mixing weights: `[M, hc_mult]` F32.
+    pub hc_post: usize,
+    /// HC `comb` Sinkhorn matrix: `[M, hc_mult, hc_mult]` F32.
+    pub hc_comb: usize,
+    /// Token IDs `[M]` u32 for the current pass — stable across the layer loop
+    /// so DeepSeek-V4 hash-MoE layers can read `tid2eid[token_id]`. Always
+    /// allocated (small); unused by models without hash routing.
+    pub token_ids: usize,
 }
 
 impl BufferSizes {
@@ -301,6 +318,32 @@ impl BufferSizes {
             expert_down_out,
             splitk_workspace,
             gdn_fla_scratch,
+            // Grouped O-projection latent (V4-Flash): [M, o_groups*o_lora_rank].
+            o_latent: (m * config.o_groups * config.o_lora_rank * bf16).max(256),
+            // Zero-filled weight for unweighted RMSNorm (q_b_norm).
+            norm_unit_w: max_dim * bf16,
+            // HC buffers: only allocated for DeepSeek-V4 (hc_mult > 0).
+            hc_streams: if config.hc_mult > 0 {
+                // FP32 mHC highway: the residual streams grow large across the
+                // blocks (the manifold-mixing is norm-preserving, eigenvalue 1),
+                // so BF16 storage swamps the small per-layer signal at scale and
+                // collapses generation. Store the streams in FP32 (4 bytes).
+                m * config.hc_mult * h * 4
+            } else {
+                256
+            },
+            hc_post: if config.hc_mult > 0 {
+                (m * config.hc_mult * 4).max(256)
+            } else {
+                256
+            },
+            hc_comb: if config.hc_mult > 0 {
+                (m * config.hc_mult * config.hc_mult * 4).max(256)
+            } else {
+                256
+            },
+            // Token IDs [M] u32 (stable across the layer loop for hash-MoE).
+            token_ids: (m * 4).max(256),
         }
     }
 
@@ -327,5 +370,9 @@ impl BufferSizes {
             + self.expert_down_out
             + self.splitk_workspace
             + self.gdn_fla_scratch
+            + self.hc_streams
+            + self.hc_post
+            + self.hc_comb
+            + self.token_ids
     }
 }

@@ -63,6 +63,48 @@ pub(crate) fn load_ssm_qwen35(
     })
 }
 
+/// Dequant a block-scaled FP8 weight to a fresh BF16 device buffer, given
+/// device pointers (not store keys). Mirrors `dequant_fp8_blockscaled_to_bf16`
+/// but operates on an aliased slice of a *fused* expert tensor
+/// (`experts.gate_up_proj` / `experts.down_proj`), where per-expert weights
+/// cannot be addressed by name. Caller owns and frees the returned buffer.
+#[allow(clippy::too_many_arguments)]
+fn dequant_fp8_block_slice_bf16(
+    gpu: &dyn GpuBackend,
+    weight_ptr: DevicePtr,
+    scale_ptr: DevicePtr,
+    n: usize,
+    k: usize,
+    sn: usize,
+    sk: usize,
+    scale_is_f32: bool,
+) -> Result<DevicePtr> {
+    use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
+    let out = gpu.alloc(n * k * 2)?; // BF16 = 2 bytes/element
+    let block_n = (n / sn) as u32;
+    let block_k = (k / sk) as u32;
+    let stream = gpu.default_stream();
+    let kernel = gpu.kernel(
+        "dequant_fp8_blockscaled_bf16",
+        "dequant_fp8_blockscaled_bf16",
+    )?;
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(k as u32, 64), div_ceil(n as u32, 4), 1])
+        .block([64, 4, 1])
+        .arg_ptr(weight_ptr)
+        .arg_ptr(scale_ptr)
+        .arg_ptr(out)
+        .arg_u32(n as u32)
+        .arg_u32(k as u32)
+        .arg_u32(block_n)
+        .arg_u32(block_k)
+        .arg_u32(sk as u32)
+        .arg_u32(scale_is_f32 as u32)
+        .launch(stream)?;
+    gpu.synchronize(stream)?;
+    Ok(out)
+}
+
 /// Load MoE weights for Qwen3.5, auto-selecting NVFP4 naming convention.
 ///
 /// Under EP (ep_world_size > 1), only local experts are loaded from the store.
@@ -89,9 +131,10 @@ pub(crate) fn load_moe_qwen35(
     let inter = config.moe_intermediate_size;
     let h = config.hidden_size;
 
-    let load_bf16_then_nvfp4 = |full_prefix: &str, n: usize, k: usize| -> Result<QuantizedWeight> {
-        let bf16 = dense(store, &format!("{full_prefix}.weight"))?;
-        quantize_to_nvfp4(&bf16, n, k, gpu, absmax_k, quantize_k, stream)
+    let qctx = QuantizeCtx {
+        absmax_k,
+        quantize_k,
+        stream,
     };
 
     // Qwen3.6-35B-A3B BF16 release ships a FUSED MoE layout: one
@@ -100,82 +143,147 @@ pub(crate) fn load_moe_qwen35(
     // each expert at load time and runtime-quantize to NVFP4.
     let fused_gate_up_key = format!("{p}.experts.gate_up_proj");
     let fused_down_key = format!("{p}.experts.down_proj");
-    let is_fused_bf16 = variant == Nvfp4Variant::Bf16Raw
-        && store.contains(&fused_gate_up_key)
-        && store.contains(&fused_down_key);
+    // FUSED expert layout: one `experts.gate_up_proj [E, 2*inter, h]` + one
+    // `experts.down_proj [E, h, inter]` per layer, sliced per expert at load and
+    // runtime-quantized to NVFP4. Two on-disk dtypes occur in the wild:
+    //   - BF16 (Qwen3.6-35B-A3B BF16 release) → slice and quantize directly.
+    //   - FP8E4M3 block-scaled (lovedheart AgentWorld-35B FP8: routed experts
+    //     fused-FP8 with `*_scale_inv`, while attention/SSM/shared are BF16) →
+    //     dequant each slice FP8→BF16 (reusing dequant_fp8_blockscaled_bf16)
+    //     then quantize to NVFP4. Equivalent to the proven NVFP4 expert decode
+    //     path (cf. ATLAS_FORCE_NVFP4_MOE), so no native-FP8 fused-shared kernel
+    //     contract is involved. Detection is dtype-based, not variant-based, so
+    //     it also covers a fused-BF16 layer inside a globally-FP8 checkpoint.
+    let is_fused = store.contains(&fused_gate_up_key) && store.contains(&fused_down_key);
+    let fused_is_fp8 = is_fused
+        && store
+            .get(&fused_gate_up_key)
+            .map(|w| w.dtype == WeightDtype::FP8E4M3)
+            .unwrap_or(false);
 
     let load_expert_fused = |expert_idx: usize| -> Result<ExpertWeight> {
-        // gate_up: [num_experts, 2*inter, hidden] BF16
         let fused_gu = store.get(&fused_gate_up_key)?;
-        // down: [num_experts, hidden, inter] BF16
         let fused_d = store.get(&fused_down_key)?;
-        let bf16 = 2usize;
-        let gu_per_expert_bytes = 2 * inter * h * bf16;
-        let d_per_expert_bytes = h * inter * bf16;
-        let gate_off = expert_idx * gu_per_expert_bytes;
-        let up_off = gate_off + inter * h * bf16;
-        let down_off = expert_idx * d_per_expert_bytes;
-        let gate_dw = DenseWeight {
-            weight: fused_gu.ptr.offset(gate_off),
-        };
-        let up_dw = DenseWeight {
-            weight: fused_gu.ptr.offset(up_off),
-        };
-        let down_dw = DenseWeight {
-            weight: fused_d.ptr.offset(down_off),
-        };
-        Ok(ExpertWeight {
-            gate_proj: quantize_to_nvfp4(&gate_dw, inter, h, gpu, absmax_k, quantize_k, stream)?,
-            up_proj: quantize_to_nvfp4(&up_dw, inter, h, gpu, absmax_k, quantize_k, stream)?,
-            down_proj: quantize_to_nvfp4(&down_dw, h, inter, gpu, absmax_k, quantize_k, stream)?,
-        })
+        if fused_is_fp8 {
+            // gate_up: [E, 2*inter, h] FP8 + gate_up_proj_scale_inv [E, sn, sk]
+            // down:    [E, h, inter] FP8   + down_proj_scale_inv    [E, sn, sk]
+            let gu_s = store.get(&format!("{fused_gate_up_key}_scale_inv"))?;
+            let d_s = store.get(&format!("{fused_down_key}_scale_inv"))?;
+            let (gu_sn, gu_sk) = (gu_s.shape[1], gu_s.shape[2]);
+            let (d_sn, d_sk) = (d_s.shape[1], d_s.shape[2]);
+            let gu_s_f32 = gu_s.dtype == WeightDtype::FP32;
+            let d_s_f32 = d_s.dtype == WeightDtype::FP32;
+            let gu_w_stride = 2 * inter * h; // FP8 = 1 byte/element
+            let d_w_stride = h * inter;
+            let gu_s_elem = if gu_s_f32 { 4 } else { 2 };
+            let d_s_elem = if d_s_f32 { 4 } else { 2 };
+            let gu_s_stride = gu_sn * gu_sk * gu_s_elem;
+            let d_s_stride = d_sn * d_sk * d_s_elem;
+            // Dequant the whole gate_up[e] [2*inter, h] FP8 → BF16, then slice
+            // gate (rows 0..inter) and up (rows inter..2*inter).
+            let gu_bf16 = dequant_fp8_block_slice_bf16(
+                gpu,
+                fused_gu.ptr.offset(expert_idx * gu_w_stride),
+                gu_s.ptr.offset(expert_idx * gu_s_stride),
+                2 * inter,
+                h,
+                gu_sn,
+                gu_sk,
+                gu_s_f32,
+            )?;
+            let down_bf16 = dequant_fp8_block_slice_bf16(
+                gpu,
+                fused_d.ptr.offset(expert_idx * d_w_stride),
+                d_s.ptr.offset(expert_idx * d_s_stride),
+                h,
+                inter,
+                d_sn,
+                d_sk,
+                d_s_f32,
+            )?;
+            let gate_dw = DenseWeight { weight: gu_bf16 };
+            let up_dw = DenseWeight {
+                weight: gu_bf16.offset(inter * h * 2), // BF16 = 2 bytes
+            };
+            let down_dw = DenseWeight { weight: down_bf16 };
+            let out = ExpertWeight {
+                gate_proj: quantize_to_nvfp4(
+                    &gate_dw, inter, h, gpu, absmax_k, quantize_k, stream,
+                )?,
+                up_proj: quantize_to_nvfp4(&up_dw, inter, h, gpu, absmax_k, quantize_k, stream)?,
+                down_proj: quantize_to_nvfp4(
+                    &down_dw, h, inter, gpu, absmax_k, quantize_k, stream,
+                )?,
+            };
+            gpu.free(gu_bf16)?;
+            gpu.free(down_bf16)?;
+            Ok(out)
+        } else {
+            // BF16 fused: slice and quantize directly.
+            let bf16 = 2usize;
+            let gu_per_expert_bytes = 2 * inter * h * bf16;
+            let d_per_expert_bytes = h * inter * bf16;
+            let gate_off = expert_idx * gu_per_expert_bytes;
+            let up_off = gate_off + inter * h * bf16;
+            let down_off = expert_idx * d_per_expert_bytes;
+            let gate_dw = DenseWeight {
+                weight: fused_gu.ptr.offset(gate_off),
+            };
+            let up_dw = DenseWeight {
+                weight: fused_gu.ptr.offset(up_off),
+            };
+            let down_dw = DenseWeight {
+                weight: fused_d.ptr.offset(down_off),
+            };
+            Ok(ExpertWeight {
+                gate_proj: quantize_to_nvfp4(
+                    &gate_dw, inter, h, gpu, absmax_k, quantize_k, stream,
+                )?,
+                up_proj: quantize_to_nvfp4(&up_dw, inter, h, gpu, absmax_k, quantize_k, stream)?,
+                down_proj: quantize_to_nvfp4(
+                    &down_dw, h, inter, gpu, absmax_k, quantize_k, stream,
+                )?,
+            })
+        }
     };
 
+    // Route every projection through `quantized_any` so the per-tensor BF16
+    // fallback applies uniformly to shared and routed experts. Hybrid MoE
+    // checkpoints (AgentWorld-35B, Qwen3.5-397B) ship the shared expert — and
+    // occasionally individual routed experts — as unquantized BF16 even when
+    // the model is globally FP8/NVFP4. Dispatching on the global `variant`
+    // alone sent those tensors down the FP8/NVFP4 arm and failed with
+    // "weight_scale_inv not found" before the fallback could catch them.
     let load_expert = |prefix: &str| -> Result<ExpertWeight> {
-        match variant {
-            Nvfp4Variant::Bf16Raw => Ok(ExpertWeight {
-                gate_proj: load_bf16_then_nvfp4(&format!("{prefix}.gate_proj"), inter, h)?,
-                up_proj: load_bf16_then_nvfp4(&format!("{prefix}.up_proj"), inter, h)?,
-                down_proj: load_bf16_then_nvfp4(&format!("{prefix}.down_proj"), h, inter)?,
-            }),
-            Nvfp4Variant::Fp8Dequanted => Ok(ExpertWeight {
-                gate_proj: quantized_from_fp8(
-                    store,
-                    &format!("{prefix}.gate_proj"),
-                    inter,
-                    h,
-                    gpu,
-                    absmax_k,
-                    quantize_k,
-                    stream,
-                )?,
-                up_proj: quantized_from_fp8(
-                    store,
-                    &format!("{prefix}.up_proj"),
-                    inter,
-                    h,
-                    gpu,
-                    absmax_k,
-                    quantize_k,
-                    stream,
-                )?,
-                down_proj: quantized_from_fp8(
-                    store,
-                    &format!("{prefix}.down_proj"),
-                    h,
-                    inter,
-                    gpu,
-                    absmax_k,
-                    quantize_k,
-                    stream,
-                )?,
-            }),
-            _ => Ok(ExpertWeight {
-                gate_proj: quantized_auto(store, &format!("{prefix}.gate_proj"), gpu, variant)?,
-                up_proj: quantized_auto(store, &format!("{prefix}.up_proj"), gpu, variant)?,
-                down_proj: quantized_auto(store, &format!("{prefix}.down_proj"), gpu, variant)?,
-            }),
-        }
+        Ok(ExpertWeight {
+            gate_proj: quantized_any(
+                store,
+                &format!("{prefix}.gate_proj"),
+                inter,
+                h,
+                gpu,
+                variant,
+                qctx,
+            )?,
+            up_proj: quantized_any(
+                store,
+                &format!("{prefix}.up_proj"),
+                inter,
+                h,
+                gpu,
+                variant,
+                qctx,
+            )?,
+            down_proj: quantized_any(
+                store,
+                &format!("{prefix}.down_proj"),
+                h,
+                inter,
+                gpu,
+                variant,
+                qctx,
+            )?,
+        })
     };
 
     let shared_expert = load_expert(&format!("{p}.shared_expert"))?;
@@ -184,7 +292,7 @@ pub(crate) fn load_moe_qwen35(
     for e in 0..num_experts {
         if skip_routed_experts || !config.is_local_expert(e) {
             experts.push(ExpertWeight::null());
-        } else if is_fused_bf16 {
+        } else if is_fused {
             experts.push(load_expert_fused(e)?);
         } else {
             experts.push(load_expert(&format!("{p}.experts.{e}"))?);

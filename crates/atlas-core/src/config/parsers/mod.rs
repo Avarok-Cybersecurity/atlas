@@ -3,6 +3,7 @@
 //! Per-model-family JSON parsers, split out of `config.rs` for file-size
 //! budget.
 
+mod deepseek_v4;
 mod gemma4;
 mod minimax;
 mod mistral;
@@ -10,6 +11,7 @@ mod quantization;
 mod step3p7;
 mod vision;
 
+pub(crate) use deepseek_v4::parse_deepseek_v4;
 pub(crate) use gemma4::parse_gemma4_params;
 pub(crate) use minimax::parse_minimax_m2;
 pub use mistral::parse_mistral_params;
