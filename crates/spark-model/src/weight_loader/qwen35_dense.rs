@@ -221,7 +221,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         }
                     };
 
-                    layers.push(Box::new(Qwen3AttentionLayer::new(
+                    let mut attn_layer = Qwen3AttentionLayer::new(
                         input_norm,
                         attn,
                         post_attn_norm,
@@ -234,7 +234,26 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         layer_kv_dtypes[attn_idx],
                         config.fp8_kv_calibration_tokens,
                         config,
-                    )?));
+                    )?;
+                    // Fast-prefill fix: build transposed NVFP4 copies so the full-
+                    // attention q/k/v/o projections use the w4a16_gemm_t_m128 path
+                    // instead of the ~10 TFLOP/s base w4a16_gemm. On the mixed-
+                    // precision Qwen3.6-27B checkpoint these 16 layers' 4 NVFP4
+                    // projections were 28.8% of prefill GPU time (nsys) — the base
+                    // loader (unlike attention_arms) never built these copies.
+                    if let (Some(qw), Some(kw), Some(vw)) = (q_nvfp4, k_nvfp4, v_nvfp4) {
+                        let nh = config.num_attention_heads;
+                        let nkv = config.num_key_value_heads;
+                        let hd = config.head_dim;
+                        let hh = config.hidden_size;
+                        let q_n = if config.attn_gated { nh * hd * 2 } else { nh * hd };
+                        let qt = qw.transpose_for_gemm(gpu, q_n, hh)?;
+                        let kt = kw.transpose_for_gemm(gpu, nkv * hd, hh)?;
+                        let vt = vw.transpose_for_gemm(gpu, nkv * hd, hh)?;
+                        let ot = attn_layer.attn.o_proj.transpose_for_gemm(gpu, hh, nh * hd)?;
+                        attn_layer.set_prefill_weights(Some(qt), Some(kt), Some(vt), Some(ot));
+                    }
+                    layers.push(Box::new(attn_layer));
                     attn_idx += 1;
                 }
                 LayerType::LinearAttention => {
