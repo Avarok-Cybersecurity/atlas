@@ -82,11 +82,11 @@ pub fn step_verify_k4(
         }
     };
     let verify_us = t_verify.elapsed().as_micros();
-    // Log first 20 K4 verify timings at info to measure baseline.
+    // Log first 20 K4 verify timings at debug to measure baseline.
     static K4_VERIFY_LOG_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let log_n = K4_VERIFY_LOG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if log_n < 20 {
-        tracing::info!("K4 verify kernel: {}ms (step {})", verify_us / 1000, log_n);
+        tracing::debug!("K4 verify kernel: {}ms (step {})", verify_us / 1000, log_n);
     }
     a.last_token_time = Instant::now();
     let [v0_argmax, v1_argmax, v2_argmax, v3_argmax] = result;

@@ -298,9 +298,6 @@ impl Qwen3SsmLayer {
         } else {
             self.gdn_k
         };
-        // Run state norm every 16 tokens to avoid the 3rd H-pass on hot steps.
-        let do_norm = state.norm_token_count.is_multiple_of(16) as u32;
-        state.norm_token_count = state.norm_token_count.wrapping_add(1);
         prof!("gdn_decode", {
             ops::gdn_decode(
                 ctx.gpu,
@@ -317,7 +314,6 @@ impl Qwen3SsmLayer {
                 nv as u32,
                 kd as u32,
                 vd as u32,
-                do_norm,
                 stream,
             )
         })?;

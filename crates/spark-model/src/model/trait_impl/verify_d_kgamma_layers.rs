@@ -114,7 +114,7 @@ impl TransformerModel {
                     )?;
                 }
             } else if layer.is_ssm_layer() && use_prefill_ssm {
-                // Three-phase parallel SSM verify (see SSM_VERIFY_PLAN.md).
+                // Three-phase parallel SSM verify.
                 //
                 // Phase 1: K serial single-token calls fill gdn_bufs at
                 // token_offset=t and slide conv_state one step each, so

@@ -311,7 +311,7 @@ pub fn step_verify_k2(
 /// at temperature T, and accept with probability equal to the draft token's
 /// probability under the target distribution.
 ///
-/// Falls back to argmax-equality check on D2H failure.
+/// Rejects the draft on D2H failure (the caller then emits the verified token).
 fn dflash_stochastic_accept(
     model: &dyn Model,
     draft_tok: u32,
@@ -322,20 +322,11 @@ fn dflash_stochastic_accept(
     let vocab = model.vocab_size();
     // Copy only position-0 logits (vocab × 2 bytes) from the [K, vocab] BF16 buffer.
     let mut logits_pos0 = vec![0u8; vocab * 2];
-    if model
-        .copy_logits_to_host(model.logits_buffer_ptr(), &mut logits_pos0)
-        .is_err()
-    {
-        // Fallback: treat as if T=0 (accept only on exact argmax match).
-        // This only fires on D2H errors (essentially never in practice).
-        let argmax = logits_pos0
-            .chunks_exact(2)
-            .enumerate()
-            .map(|(i, c)| (i, bf16_to_f32(c[0], c[1])))
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(i, _)| i as u32)
-            .unwrap_or(0);
-        return draft_tok == argmax;
+    if let Err(e) = model.copy_logits_to_host(model.logits_buffer_ptr(), &mut logits_pos0) {
+        // D2H failure: the buffer holds no usable logits, so reject the draft
+        // (the caller emits the verified token — safe, just no speedup).
+        tracing::debug!("dflash_stochastic_accept: logits D2H failed, rejecting draft: {e:#}");
+        return false;
     }
 
     // Compute numerically stable softmax(logits / T) and extract p_target(draft).
