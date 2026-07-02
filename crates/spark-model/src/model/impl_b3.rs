@@ -235,7 +235,7 @@ impl TransformerModel {
                 .downcast_mut::<crate::layers::DflashProposerState>()
         {
             let new_len = (chunk_start + proc_count).min(dstate.max_ctx_len);
-            tracing::info!(
+            tracing::debug!(
                 "DFlash ctx_len update: chunk_start={} proc_count={} → ctx_len={} (max={})",
                 chunk_start,
                 proc_count,

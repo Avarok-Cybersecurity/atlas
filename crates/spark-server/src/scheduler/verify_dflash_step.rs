@@ -83,7 +83,7 @@ pub fn step_verify_dflash(
         PAIR_DUMP_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
         let n = drafts.len().min(verified.len()).min(8);
         let pairs: Vec<(u32, u32)> = (0..n).map(|i| (drafts[i], verified[i])).collect();
-        tracing::info!(
+        tracing::debug!(
             "DFLASH PAIR DUMP: last_token={} tokens[..4]={:?} verified[..8]={:?} draft_vs_verified={:?}",
             tokens[0],
             &tokens[..tokens.len().min(4)],

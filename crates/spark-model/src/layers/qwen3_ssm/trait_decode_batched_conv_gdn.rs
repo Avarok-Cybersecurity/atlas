@@ -310,9 +310,12 @@ impl Qwen3SsmLayer {
             )?;
         } else if num_tokens == 17 && self.gdn_wy17_k.0 != 0 {
             // ── K=17 (DFlash γ+1): fused WY-Chunkwise path ──
-            // Save K-1=16 conv intermediates. The final conv_state (after token 16)
-            // stays in ssm_state.conv_state; commit_verify only needs inter_idx <= 15.
-            for t in 0..(num_tokens as u32 - 1) {
+            // Conv1d must run for ALL K tokens: the wy17 kernel reads all K rows
+            // of conv_out, and the live conv_state must end AFTER the final
+            // token. Snapshot conv intermediates only for t < K-1 (the array has
+            // K-1 slots); commit_verify restores inter_idx <= K-2 on partial
+            // accept and keeps the live conv_state on full accept.
+            for t in 0..num_tokens as u32 {
                 let qkv_t = deinterleaved.offset(t as usize * qkvz_size * bf16);
                 let conv_out_t = conv_out_buf.offset(t as usize * conv_dim * bf16);
                 ops::conv1d_update_l2norm(
@@ -330,12 +333,14 @@ impl Qwen3SsmLayer {
                     1e-6,
                     stream,
                 )?;
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.conv_state,
-                    ssm_state.conv_state_intermediates[t as usize],
-                    conv_bytes,
-                    stream,
-                )?;
+                if (t as usize) < num_tokens - 1 {
+                    ctx.gpu.copy_d2d_async(
+                        ssm_state.conv_state,
+                        ssm_state.conv_state_intermediates[t as usize],
+                        conv_bytes,
+                        stream,
+                    )?;
+                }
             }
 
             let q_ptr = conv_out_buf;
@@ -368,9 +373,10 @@ impl Qwen3SsmLayer {
             )?;
         } else if num_tokens == 16 && self.gdn_wy16_k.0 != 0 {
             // ── K=16 (DFlash γ): fused WY-Chunkwise path (mirror of K=17) ──
-            // Save K-1=15 conv intermediates. The final conv_state (after token 15)
-            // stays in ssm_state.conv_state; commit_verify only needs inter_idx <= 14.
-            for t in 0..(num_tokens as u32 - 1) {
+            // Conv1d for ALL K tokens (wy16 reads all K rows of conv_out; live
+            // conv_state ends after the final token). Snapshot intermediates
+            // only for t < K-1 — the array has K-1 slots.
+            for t in 0..num_tokens as u32 {
                 let qkv_t = deinterleaved.offset(t as usize * qkvz_size * bf16);
                 let conv_out_t = conv_out_buf.offset(t as usize * conv_dim * bf16);
                 ops::conv1d_update_l2norm(
@@ -388,12 +394,14 @@ impl Qwen3SsmLayer {
                     1e-6,
                     stream,
                 )?;
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.conv_state,
-                    ssm_state.conv_state_intermediates[t as usize],
-                    conv_bytes,
-                    stream,
-                )?;
+                if (t as usize) < num_tokens - 1 {
+                    ctx.gpu.copy_d2d_async(
+                        ssm_state.conv_state,
+                        ssm_state.conv_state_intermediates[t as usize],
+                        conv_bytes,
+                        stream,
+                    )?;
+                }
             }
 
             let q_ptr = conv_out_buf;

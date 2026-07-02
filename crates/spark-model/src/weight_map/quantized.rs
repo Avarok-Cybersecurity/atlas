@@ -118,6 +118,16 @@ impl QuantizedWeight {
         k: usize,
         gpu: &dyn GpuBackend,
     ) -> anyhow::Result<QuantizedWeight> {
+        // The concatenated weight carries a single scalar scale2 (self's) for
+        // ALL rows — a mismatched `other` would silently dequantize its rows
+        // with the wrong per-tensor scale.
+        anyhow::ensure!(
+            self.weight_scale_2 == other.weight_scale_2,
+            "concat_rows: weight_scale_2 mismatch (self={}, other={}) — both NVFP4 \
+             tensors must share the same per-tensor scale to be concatenated",
+            self.weight_scale_2,
+            other.weight_scale_2,
+        );
         const GROUP_SIZE: usize = 16;
         let half_k = k / 2;
         let num_groups = k / GROUP_SIZE;

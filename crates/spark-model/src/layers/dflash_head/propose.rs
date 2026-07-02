@@ -331,7 +331,7 @@ impl BlockDiffusionDraftHead {
         let drafts = drafts.into_iter().take(cap).collect::<Vec<_>>();
         dstate.last_num_drafted = drafts.len();
         let total_us = t_propose_start.elapsed().as_micros();
-        tracing::info!(
+        tracing::debug!(
             "DFlash propose: forward_block={}ms total={}ms eff_ctx={} γ={} drafts={} pos={}",
             forward_us / 1000,
             total_us / 1000,

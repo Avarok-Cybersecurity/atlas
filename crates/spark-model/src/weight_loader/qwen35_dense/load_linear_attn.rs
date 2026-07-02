@@ -4,7 +4,7 @@
 //! Extracted from `qwen35_dense.rs` so the parent file fits the 500-LoC
 //! budget.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use atlas_core::config::ModelConfig;
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
 use spark_runtime::weights::{WeightDtype, WeightStore};
@@ -114,7 +114,9 @@ pub(super) fn load_linear_attention_layer(
             gpu,
             Nvfp4Variant::Standard,
         )?;
-        let qkvz_nvfp4 = qkv_qw.concat_rows(&z_qw, qkv_rows, z_rows, h, gpu)?;
+        let qkvz_nvfp4 = qkv_qw
+            .concat_rows(&z_qw, qkv_rows, z_rows, h, gpu)
+            .with_context(|| format!("concat_rows({la}.in_proj_qkv, {la}.in_proj_z)"))?;
         let qkvz_nvfp4_t = qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h)?;
 
         let out_proj_nvfp4 = quantized_auto(
