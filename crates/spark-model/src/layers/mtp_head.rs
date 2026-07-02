@@ -353,7 +353,7 @@ impl DraftProposer for MtpHead {
         Ok(())
     }
 
-    fn free_state(&self, state: &mut dyn ProposerState) -> Result<()> {
+    fn free_state(&self, _gpu: &dyn GpuBackend, state: &mut dyn ProposerState) -> Result<()> {
         let mtp_state = state
             .as_any_mut()
             .downcast_mut::<MtpProposerState>()

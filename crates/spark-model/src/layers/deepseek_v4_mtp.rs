@@ -553,7 +553,7 @@ impl DraftProposer for DeepseekV4MtpHead {
         Ok(())
     }
 
-    fn free_state(&self, state: &mut dyn ProposerState) -> Result<()> {
+    fn free_state(&self, _gpu: &dyn GpuBackend, state: &mut dyn ProposerState) -> Result<()> {
         let v4_state = state
             .as_any_mut()
             .downcast_mut::<DeepseekV4MtpProposerState>()
