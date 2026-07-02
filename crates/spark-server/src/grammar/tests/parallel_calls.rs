@@ -78,6 +78,111 @@ fn hermes_auto_grammar_accepts_two_sequential_calls() {
     );
 }
 
+/// Live failure #4 (2026-07-02 GB10 probe battery): tools armed, model makes
+/// NO call ("just say hi") — the turn ran to `finish_reason="length"` because
+/// the scheduler suppressed EOS via `!is_terminated()`, and an auto-mode
+/// trigger grammar NEVER terminates. The correct predicate is positional
+/// stop-legality: in the preamble/dispatch state EOS is grammar-legal, so
+/// [`grammar_blocks_stop`] must NOT block the stop.
+#[test]
+fn armed_no_call_auto_grammar_never_blocks_eos() {
+    let vocab = test_vocab();
+    let stop_ids = vec![EOS as i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+    let compiled = engine
+        .compile_hermes_tool_grammar(&test_tool_defs(), true)
+        .unwrap();
+    let mut state = GrammarState::new(&compiled, engine.vocab_size())
+        .unwrap()
+        .with_stop_tokens(&[EOS]);
+
+    // The exact condition the old scheduler gate keyed on — and why it was
+    // wrong: not terminated, yet stopping is perfectly legal here.
+    assert!(
+        !state.is_terminated(),
+        "auto grammar never terminates (this is WHY !is_terminated() was the wrong gate)"
+    );
+    assert!(
+        !grammar_blocks_stop(Some(&mut state), &[EOS]),
+        "armed-but-unused tools must not suppress EOS (preamble state permits end-of-turn)"
+    );
+    // Some prose, still no call — still free to stop.
+    for b in b"hi there" {
+        assert!(state.accept_token(u32::from(*b)));
+    }
+    assert!(!grammar_blocks_stop(Some(&mut state), &[EOS]));
+    // No grammar at all (plain chat / disengaged) never blocks.
+    assert!(!grammar_blocks_stop(None, &[EOS]));
+}
+
+/// EOS acceptance after the close literal: once a call completes (the matcher
+/// ADVANCES across `</tool_call>` post-#192), the turn must be free to end —
+/// whether or not another call follows. Mid-structure, the stop stays blocked.
+#[test]
+fn eos_reachable_after_each_close_literal_but_blocked_mid_call() {
+    let vocab = test_vocab();
+    let stop_ids = vec![EOS as i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+    let compiled = engine
+        .compile_hermes_tool_grammar(&test_tool_defs(), true)
+        .unwrap();
+    let mut state = GrammarState::new(&compiled, engine.vocab_size())
+        .unwrap()
+        .with_stop_tokens(&[EOS]);
+
+    drive_one_call(&mut state, "Paris");
+    assert!(
+        !grammar_blocks_stop(Some(&mut state), &[EOS]),
+        "a completed call must terminate cleanly (EOS legal after close literal)"
+    );
+
+    // Open a second call and stop INSIDE its JSON string value: end-of-turn
+    // is grammar-illegal here, so the gate must block a (mask-leaked) EOS.
+    assert!(state.accept_token(TOOL_CALL_OPEN));
+    for b in br#"{"name":"get_weather","arguments":{"location":"To"# {
+        assert!(state.accept_token(u32::from(*b)));
+    }
+    assert!(
+        grammar_blocks_stop(Some(&mut state), &[EOS]),
+        "EOS must stay suppressed mid-structure (open JSON string)"
+    );
+
+    // Close the second call — free to stop again.
+    for b in br#"kyo"}}"# {
+        assert!(state.accept_token(u32::from(*b)));
+    }
+    assert!(state.accept_token(TOOL_CALL_CLOSE));
+    assert!(
+        !grammar_blocks_stop(Some(&mut state), &[EOS]),
+        "EOS legal again after the SECOND close literal"
+    );
+}
+
+/// tool_choice="required" (at_least_one + stop_after_first): the gate must
+/// keep suppressing EOS until the mandatory call completes, then release.
+#[test]
+fn required_mode_blocks_eos_until_call_completes() {
+    let vocab = test_vocab();
+    let stop_ids = vec![EOS as i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+    let compiled = engine
+        .compile_hermes_tool_grammar(&test_tool_defs(), false)
+        .unwrap();
+    let mut state = GrammarState::new(&compiled, engine.vocab_size())
+        .unwrap()
+        .with_stop_tokens(&[EOS]);
+
+    assert!(
+        grammar_blocks_stop(Some(&mut state), &[EOS]),
+        "required mode: EOS suppressed before the mandatory call"
+    );
+    drive_one_call(&mut state, "Paris");
+    assert!(
+        !grammar_blocks_stop(Some(&mut state), &[EOS]),
+        "required mode: EOS legal once the mandatory call completed"
+    );
+}
+
 /// Regression pin for the pre-#192 wedge: if `</tool_call>` is exempted as a
 /// stop token, `accept_token` short-circuits WITHOUT advancing the matcher,
 /// which is left mid-end-literal — a state that still constrains decoding

@@ -337,11 +337,22 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         && a.tool_call_completed
         && !a.inside_tool_body
         && !a.inside_thinking;
-    let grammar_suppresses_eos = a
-        .grammar_state
-        .as_ref()
-        .is_some_and(|gs| !gs.is_terminated())
-        && !eos_escape;
+    // #192: STOP-LEGALITY based grammar suppression — see the twin gate in
+    // `decode_logits_step::process_decode_logits`. `!is_terminated()` alone
+    // suppressed EOS forever on auto-mode turns with no completed call
+    // (armed-but-unused tools → finish="length"). Evaluated only when the
+    // token IS an EOS token (`grammar_blocks_stop` fills a bitmask).
+    //
+    // `inside_thinking` term: the matcher is PAUSED during `<think>` (tokens
+    // are neither masked nor accepted), so stop-legality is undefined there.
+    // Preserve the historical emit-path behavior — a spurious EOS inside a
+    // thinking span on a grammar-armed turn is discarded, `</think>` is the
+    // only legal exit (the non-MTP path does this via its explicit
+    // `thinking_suppresses_eos` term, which emit_token never had).
+    let grammar_suppresses_eos = a.eos_tokens.contains(&tok)
+        && !eos_escape
+        && ((a.inside_thinking && a.grammar_state.is_some())
+            || crate::grammar::grammar_blocks_stop(a.grammar_state.as_mut(), &a.eos_tokens));
     let legacy_suppresses_eos = a.require_tool_call;
     let min_tokens_suppresses = a.output_tokens.len() < a.min_tokens;
     let suppress_eos = grammar_suppresses_eos || legacy_suppresses_eos || min_tokens_suppresses;

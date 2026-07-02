@@ -207,6 +207,150 @@ fn parse_single_call_regression_unchanged() {
     );
 }
 
+// ── #192 salvage containment: unterminated trailing call ────────────────
+
+/// Post-EOS drift soup as it detokenizes in a live transcript (2026-07-02
+/// GB10 battery, blocking 3-city: `{"city":"Paris </ parameter
+/// >userassistantusersystemsystemassistant…"}`). Spaced tag fragments +
+/// role-token runs — must never end up inside a parsed argument string.
+const DRIFT_SOUP: &str = "</ parameter >userassistantusersystemsystemassistant\n \n\nusersystem";
+
+fn assert_no_soup(calls: &[ToolCall], ctx: &str) {
+    for (i, c) in calls.iter().enumerate() {
+        assert!(
+            !c.function.arguments.contains("userassistant"),
+            "{ctx}: call {i} swallowed drift soup: {:?}",
+            c.function.arguments
+        );
+        assert!(
+            !c.function.arguments.contains("</ parameter"),
+            "{ctx}: call {i} swallowed tag soup: {:?}",
+            c.function.arguments
+        );
+    }
+}
+
+#[test]
+fn parse_qwen3_coder_unterminated_tail_garbage_contained() {
+    // Two complete calls, then a third whose parameter value never closes and
+    // degenerates into role scaffold. The complete calls must parse cleanly;
+    // the salvaged third must NOT swallow the soup into its argument.
+    let text = format!(
+        "{}\n{}\n<tool_call>\n<function=get_weather>\n<parameter=city>\nTokyo {DRIFT_SOUP}",
+        qwen3_coder_call("get_weather", &[("city", "Paris")]),
+        qwen3_coder_call("get_weather", &[("city", "Berlin")]),
+    );
+    let (_content, calls) = parse_tool_calls(&text);
+    assert_eq!(calls.len(), 3, "two complete + one salvaged call");
+    assert_json_eq(
+        &calls[0].function.arguments,
+        r#"{"city":"Paris"}"#,
+        "call 0",
+    );
+    assert_json_eq(
+        &calls[1].function.arguments,
+        r#"{"city":"Berlin"}"#,
+        "call 1",
+    );
+    assert_eq!(calls[2].function.name, "get_weather");
+    assert_no_soup(&calls, "qwen3_coder blocking");
+}
+
+#[test]
+fn parse_qwen3_coder_unterminated_tail_keeps_closed_params() {
+    // Containment must only drop the UNTERMINATED trailing value — params
+    // that closed with `</parameter>` before the truncation are kept.
+    let text = format!(
+        "<tool_call>\n<function=get_weather>\n<parameter=city>\nTokyo\n</parameter>\n\
+         <parameter=units>\ncelsius {DRIFT_SOUP}"
+    );
+    let (_content, calls) = parse_tool_calls(&text);
+    assert_eq!(calls.len(), 1);
+    let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+    assert_eq!(args.get("city").and_then(|v| v.as_str()), Some("Tokyo"));
+    assert!(
+        args.get("units").is_none(),
+        "unterminated param must be dropped, got {args:?}"
+    );
+    assert_no_soup(&calls, "closed-params containment");
+}
+
+#[test]
+fn parse_hermes_unterminated_tail_garbage_contained() {
+    // Hermes shape: complete call, then an unterminated JSON body whose open
+    // string absorbs the soup. The balanced-prefix repair must contain it
+    // (args degrade to `{}` rather than swallowing the tail).
+    let text = format!(
+        "{}\n<tool_call>\n{{\"name\": \"get_weather\", \"arguments\": {{\"city\": \"Tokyo {DRIFT_SOUP}",
+        hermes_call("get_weather", r#"{"city": "Paris"}"#),
+    );
+    let (_content, calls) = parse_tool_calls(&text);
+    assert_eq!(calls.len(), 2, "complete + salvaged call");
+    assert_json_eq(
+        &calls[0].function.arguments,
+        r#"{"city":"Paris"}"#,
+        "call 0",
+    );
+    assert_eq!(calls[1].function.name, "get_weather");
+    assert_no_soup(&calls, "hermes blocking");
+}
+
+#[test]
+fn streaming_blocking_parity_on_unterminated_tail() {
+    // Invariant (d): blocking and streaming must parse the SAME emission
+    // identically — same call count, same names, and neither may leak the
+    // drift soup into any argument payload.
+    let text = format!(
+        "{}\n{}\n<tool_call>\n<function=get_weather>\n<parameter=city>\nTokyo {DRIFT_SOUP}",
+        qwen3_coder_call("get_weather", &[("city", "Paris")]),
+        qwen3_coder_call("get_weather", &[("city", "Berlin")]),
+    );
+
+    let (_content, blocking_calls) = parse_tool_calls(&text);
+
+    let mut det = StreamingToolDetector::new();
+    let outputs = drive_chunked(&mut det, &text, 7);
+    let started: Vec<usize> = indexed_trace(&outputs)
+        .iter()
+        .filter(|(k, _)| *k == "start" || *k == "call")
+        .map(|(_, i)| *i)
+        .collect();
+
+    assert_eq!(
+        blocking_calls.len(),
+        started.len(),
+        "blocking ({}) vs streaming ({}) call count diverged on the same emission",
+        blocking_calls.len(),
+        started.len(),
+    );
+    for (i, tc) in blocking_calls.iter().enumerate() {
+        assert_eq!(
+            name_for_idx(&outputs, i).as_deref(),
+            Some(tc.function.name.as_str()),
+            "name mismatch at idx {i}"
+        );
+        let streamed = args_for_idx(&outputs, i);
+        assert!(
+            !streamed.contains("userassistant") && !streamed.contains("</ parameter"),
+            "streaming leaked soup at idx {i}: {streamed:?}"
+        );
+    }
+    assert_no_soup(&blocking_calls, "parity blocking side");
+    // The two COMPLETE calls must agree byte-for-byte on args.
+    for (i, city) in ["Paris", "Berlin"].iter().enumerate() {
+        assert_json_eq(
+            &blocking_calls[i].function.arguments,
+            &format!(r#"{{"city":"{city}"}}"#),
+            &format!("blocking call {i}"),
+        );
+        assert_json_eq(
+            &args_for_idx(&outputs, i),
+            &format!(r#"{{"city":"{city}"}}"#),
+            &format!("streamed call {i}"),
+        );
+    }
+}
+
 // ── streaming detector: incrementing index across calls ─────────────────
 
 #[test]

@@ -466,11 +466,18 @@ pub fn process_decode_logits(
             && a.tool_call_completed
             && !a.inside_tool_body
             && !a.inside_thinking;
-        let grammar_suppresses_eos = a
-            .grammar_state
-            .as_ref()
-            .is_some_and(|gs| !gs.is_terminated())
-            && !eos_escape;
+        // #192: grammar EOS suppression is STOP-LEGALITY based (may the
+        // response legally end at the current matcher position?), not
+        // `!is_terminated()`. A tool_choice="auto" trigger grammar never
+        // terminates, so the old gate suppressed EOS for the whole turn when
+        // no call completed — armed-but-unused tools ran to
+        // finish_reason="length" (live probe #6, 2026-07-02). Evaluated only
+        // when the sampled token IS an EOS token: `grammar_blocks_stop`
+        // fills a bitmask (`stop_legal`), too costly as a per-token
+        // predicate and meaningless otherwise.
+        let grammar_suppresses_eos = a.eos_tokens.contains(&tok)
+            && !eos_escape
+            && crate::grammar::grammar_blocks_stop(a.grammar_state.as_mut(), &a.eos_tokens);
         let legacy_suppresses_eos = a.require_tool_call;
         let min_tokens_suppresses = a.output_tokens.len() < a.min_tokens;
         // Suppress EOS during thinking: <|im_end|> inside <think> is spurious.
