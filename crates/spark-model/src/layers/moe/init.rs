@@ -300,6 +300,8 @@ impl MoeLayer {
             fp8_gate_weight_ptrs: None,
             fp8_up_weight_ptrs: None,
             fp8_down_weight_ptrs: None,
+            // No FP8 experts installed yet — set by `set_fp8_experts`.
+            fp8_experts_block_scaled: false,
             bf16_gate_weight_ptrs: None,
             bf16_up_weight_ptrs: None,
             bf16_down_weight_ptrs: None,

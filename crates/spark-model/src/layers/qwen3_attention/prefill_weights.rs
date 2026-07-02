@@ -94,13 +94,16 @@ impl Qwen3AttentionLayer {
         self.o_nvfp4_t = o_nvfp4_t;
     }
 
-    /// Set native FP8 checkpoint weights for `w8a16_gemv` decode path.
+    /// Set native FP8 checkpoint weights for the `w8a16_gemv` decode path.
     ///
-    /// NOTE: Does NOT set `q_fp8`/`k_fp8`/`v_fp8`/`o_fp8` (raw FP8
-    /// prefill pointers) because `fp8_gemm_t` doesn't apply block scales.
-    /// Native FP8 block-scaled weights need per-block scale during GEMM,
-    /// which `fp8_gemm_t` doesn't do. Prefill falls through to the
-    /// NVFP4/BF16 dequant path instead.
+    /// The block-scaled FP8 weights stored here (weight + per-128 `row_scale`)
+    /// are ALSO consumed by block-scaled prefill: `fp8_gemm_t_blockscaled`
+    /// folds both the per-token activation scale and the per-block weight
+    /// scale in an FP32 epilogue. (Historical note: the older single-scale
+    /// `fp8_gemm_t`/`fp8_gemm_n128` prefill could not apply block scales, so
+    /// prefill used to fall through to the NVFP4/BF16 dequant path — that is
+    /// no longer the case; block-scaled prefill is the default, see
+    /// `ops::fp8_blockscaled_prefill_enabled`.)
     pub fn set_fp8_weights(
         &mut self,
         q: Option<Fp8Weight>,
@@ -108,6 +111,21 @@ impl Qwen3AttentionLayer {
         v: Option<Fp8Weight>,
         o: Option<Fp8Weight>,
     ) {
+        // Both consumers of these weights (`w8a16_gemv` decode and the
+        // block-scaled `fp8_gemm_t_blockscaled` prefill) read the scale
+        // buffer as [N/BS, K/BS] blocks — fail fast on any other layout
+        // (mirrors the SSM `set_fp8_decode_weights` setter).
+        for (w, name) in [(&q, "q"), (&k, "k"), (&v, "v"), (&o, "o")] {
+            if let Some(w) = w {
+                w.scale_format.expect(
+                    crate::weight_map::WeightQuantFormat::Fp8BlockScaled,
+                    &format!(
+                        "set_fp8_weights::{name} (w8a16_gemv / fp8_gemm_t_blockscaled expect \
+                         [N/BS,K/BS] block scales)"
+                    ),
+                );
+            }
+        }
         // Overwrite decode weights with FP8 variant. Replaces any NVFP4
         // weights set during construction.
         if let Some(qw) = q {

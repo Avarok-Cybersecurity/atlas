@@ -68,6 +68,15 @@ impl MoeLayer {
         self.fp8_gate_weight_ptrs = Some(build_fp8_ptr_table(experts, |e| &e.gate_proj, gpu)?);
         self.fp8_up_weight_ptrs = Some(build_fp8_ptr_table(experts, |e| &e.up_proj, gpu)?);
         self.fp8_down_weight_ptrs = Some(build_fp8_ptr_table(experts, |e| &e.down_proj, gpu)?);
+        // Record whether every projection behind the tables carries
+        // [N/128, K/128] block scales — the pointer tables erase the
+        // format tag, and `moe_w8a8_grouped_gemm` (block-scaled prefill)
+        // must not consume per-row / single-scale FP8.
+        self.fp8_experts_block_scaled = experts.iter().all(|e| {
+            e.gate_proj.is_block_scaled()
+                && e.up_proj.is_block_scaled()
+                && e.down_proj.is_block_scaled()
+        });
         self.fp8_shared_expert = Some(shared_expert);
         Ok(())
     }

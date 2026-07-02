@@ -25,9 +25,13 @@ impl Qwen3AttentionLayer {
         stream: u64,
     ) -> Result<DevicePtr> {
         let o_out = ctx.buffers.norm_output();
-        let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
+        let force_w8a8 = ops::fp8_blockscaled_prefill_enabled();
+        // `is_block_scaled()`: fp8_gemm_t_blockscaled reads `row_scale` as
+        // `[N/128, K/128]` blocks — per-row / single-scale FP8 must fall
+        // through to the w8a16 paths below.
         if force_w8a8
             && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
+            && fp8w.is_block_scaled()
             && self.per_token_group_quant_fp8_k.0 != 0
             && self.fp8_gemm_t_blockscaled_k.0 != 0
         {

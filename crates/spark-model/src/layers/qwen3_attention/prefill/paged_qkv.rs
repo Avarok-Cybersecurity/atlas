@@ -126,12 +126,15 @@ impl Qwen3AttentionLayer {
             ),
         };
 
-        let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
+        let force_w8a8 = ops::fp8_blockscaled_prefill_enabled();
         // W8A8 + FP32 epilogue: requires NON-transposed FP8 weights with
         // block scales (matches the kernel signature). The attn layer stores
         // those via set_fp8_weights — accessible via weight_opt.as_fp8().
+        // `is_block_scaled()` gates on the actual scale layout: per-row /
+        // single-scale FP8 must fall through to the w8a16 paths below.
         if force_w8a8
             && let Some(fp8w) = weight_opt.and_then(|w| w.as_fp8())
+            && fp8w.is_block_scaled()
             && self.per_token_group_quant_fp8_k.0 != 0
             && self.fp8_gemm_t_blockscaled_k.0 != 0
         {

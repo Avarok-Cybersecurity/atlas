@@ -47,9 +47,15 @@ impl MoeLayer {
         // fp8_gemm_t_blockscaled with both scales in the FP32 epilogue.
         // The shared expert is dense (every token), so we reuse the same
         // dense W8A8 GEMM that attention QKV/O proj already use.
-        let force_w8a8_sh = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"))
+        // `is_block_scaled()` on all three projections: the kernel reads
+        // each `row_scale` as [N/128, K/128] blocks — a non-block-scaled
+        // shared expert must fall through to the w8a16 path below.
+        let force_w8a8_sh = ops::fp8_blockscaled_prefill_enabled()
             && self.fp8_gemm_t_blockscaled_k.0 != 0
-            && self.per_token_group_quant_fp8_k.0 != 0;
+            && self.per_token_group_quant_fp8_k.0 != 0
+            && sh.gate_proj.is_block_scaled()
+            && sh.up_proj.is_block_scaled()
+            && sh.down_proj.is_block_scaled();
         let has_shared = shared_inter > 0;
         if has_shared && force_w8a8_sh {
             let shared_gate_out = ctx.buffers.ssm_deinterleaved();
@@ -363,9 +369,14 @@ impl MoeLayer {
         }
         // ATLAS_FP8_W8A8: pre-quant input/intermediate to FP8 with per-token-
         // per-128 FP32 scale, use new W8A8 grouped GEMM (vLLM-equivalent).
-        let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"))
+        // `fp8_experts_block_scaled` (recorded by `set_fp8_experts`, the
+        // pointer tables erase the per-weight format tag) gates the grouped
+        // GEMM to actual [N/128, K/128] block scales — non-block-scaled
+        // experts fall through to the grouped FP8 path below.
+        let force_w8a8 = ops::fp8_blockscaled_prefill_enabled()
             && self.moe_w8a8_grouped_gemm_k.0 != 0
-            && self.per_token_group_quant_fp8_k.0 != 0;
+            && self.per_token_group_quant_fp8_k.0 != 0
+            && self.fp8_experts_block_scaled;
 
         if force_w8a8 && max_m_tiles > 0 {
             // Quant input [num_tokens, h] → input_fp8 + input_a_scale ONCE,

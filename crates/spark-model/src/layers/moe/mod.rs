@@ -269,6 +269,11 @@ pub struct MoeLayer {
     fp8_gate_weight_ptrs: Option<Fp8ExpertPtrTable>,
     fp8_up_weight_ptrs: Option<Fp8ExpertPtrTable>,
     fp8_down_weight_ptrs: Option<Fp8ExpertPtrTable>,
+    // True when EVERY routed expert projection behind the pointer tables is
+    // `WeightQuantFormat::Fp8BlockScaled` ([N/128, K/128] scales). Recorded
+    // by `set_fp8_experts` because the raw pointer tables erase the format
+    // tag; gates the `moe_w8a8_grouped_gemm` block-scaled prefill dispatch.
+    fp8_experts_block_scaled: bool,
     // BF16 expert pointer tables — populated by the FP8-dequant-on-load
     // path. When Some, the routed-expert dispatch in `forward_prefill_fp8`
     // routes through `moe_bf16_grouped_gemm` instead of the FP8 grouped

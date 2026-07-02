@@ -241,6 +241,17 @@ pub struct Fp8WeightTransposed {
 }
 
 impl Fp8Weight {
+    /// True when `row_scale` holds `[N/128, K/128]` per-block scales
+    /// ([`WeightQuantFormat::Fp8BlockScaled`]) — the only layout the
+    /// block-scaled prefill kernels (`fp8_gemm_t_blockscaled`,
+    /// `moe_w8a8_grouped_gemm`) may consume. Dispatch sites MUST check
+    /// this before routing through those kernels: feeding per-row or
+    /// single-scale FP8 would silently read the scale buffer at the
+    /// wrong shape.
+    pub fn is_block_scaled(&self) -> bool {
+        self.scale_format == WeightQuantFormat::Fp8BlockScaled
+    }
+
     /// Transpose this FP8 weight for coalesced prefill GEMM.
     /// Allocates new GPU buffers for `B_t[K,N]` (FP8 bytes) and
     /// `scale_t[K/128, N/128]` (FP32; `row_scale` is already FP32).

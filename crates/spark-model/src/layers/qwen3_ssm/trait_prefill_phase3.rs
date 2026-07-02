@@ -50,7 +50,7 @@ impl Qwen3SsmLayer {
 
         // ── 10. Output projection GEMM: [N, 4096] × [4096, 2048] → [N, 2048] ──
         let out_proj_buf = ctx.buffers.moe_output();
-        let force_w8a8_op = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
+        let force_w8a8_op = ops::fp8_blockscaled_prefill_enabled();
         if let Some(ref dense_out) = self.out_proj_dense {
             ops::dense_gemm(
                 ctx.gpu,
@@ -65,11 +65,24 @@ impl Qwen3SsmLayer {
             )
         } else if force_w8a8_op
             && let Some(ref fp8w) = self.out_proj_fp8w
+            // fp8_gemm_t_blockscaled reads row_scale as [N/128, K/128]
+            // blocks — non-block-scaled FP8 falls through to the
+            // single-scale / NVFP4 paths below.
+            && fp8w.is_block_scaled()
             && self.per_token_group_quant_fp8_k.0 != 0
             && self.fp8_gemm_t_blockscaled_k.0 != 0
         {
+            // out_proj GEMM: C[M, N] = A[M, K] @ B[N, K]
+            //   A = normed_out : [num_tokens, value_dim]  (K = value_dim)
+            //   B = out_proj   : [h, value_dim]           (N = h)
+            // Derive N/K from the weight itself (SSOT) — the checkpoint
+            // stores out_proj as [h, value_dim], so fp8w.n = h and
+            // fp8w.k = value_dim. (The original cut quantized the
+            // activation at width h and swapped N/K in the GEMM call —
+            // latent, since `out_proj_dense` above currently shadows
+            // this branch in the native-FP8 loader arm.)
             let m = k as usize;
-            let k_dim = h;
+            let k_dim = fp8w.k as usize;
             let a_fp8_bytes = m * k_dim;
             let a_scale_bytes = m * (k_dim / 128) * 4;
             let a_fp8_buf = ctx.gpu.alloc(a_fp8_bytes)?;
@@ -81,7 +94,7 @@ impl Qwen3SsmLayer {
                 a_fp8_buf,
                 a_scale_buf,
                 k,
-                k_dim as u32,
+                fp8w.k,
                 stream,
             )?;
             ops::fp8_gemm_t_blockscaled(
@@ -93,8 +106,8 @@ impl Qwen3SsmLayer {
                 fp8w.row_scale,
                 out_proj_buf,
                 k,
-                value_dim as u32,
-                h as u32,
+                fp8w.n,
+                fp8w.k,
                 stream,
             )?;
             ctx.gpu.synchronize(stream)?;
