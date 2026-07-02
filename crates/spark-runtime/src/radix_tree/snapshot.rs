@@ -28,7 +28,11 @@ fn tail_pin_enabled() -> bool {
             .unwrap_or(false);
         tracing::info!(
             "SBR snapshot tail-pin eviction: {} (opt-in, top-K={})",
-            if on { "ENABLED" } else { "off (baseline forecast)" },
+            if on {
+                "ENABLED"
+            } else {
+                "off (baseline forecast)"
+            },
             tail_pin_k()
         );
         on

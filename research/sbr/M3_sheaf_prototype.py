@@ -155,9 +155,9 @@ def fit_vertical(states_per_layer, lam):
         Xc, Yc = X - mx, Y - my
         W = torch.linalg.solve(Xc.T @ Xc + lam * I, Xc.T @ Yc)
         b = my - W.T @ mx
-        Yhat = X @ W + b
+        Y_hat = X @ W + b
         q = torch.nn.functional.cosine_similarity(
-            (Y - my).flatten(), (Yhat - my).flatten(), dim=0).item()
+            (Y - my).flatten(), (Y_hat - my).flatten(), dim=0).item()
         Ws.append((W.float(), b.float()))
         qual.append(q)
     return Ws, qual
