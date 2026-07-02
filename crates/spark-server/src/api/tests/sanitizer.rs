@@ -4,13 +4,16 @@
 //! lines 7584-7967 of the pre-split file). The original
 //! `super::sanitize_content_chunk` etc. paths are preserved by keeping
 //! the body inside an inner `sanitizer_tests` module — `super::` here
-//! resolves to `api::tests::sanitizer`, then `use super::super::*;`
-//! pulls in the original parent (`api`) namespace.
+//! resolves to `api::tests::sanitizer`, which re-imports the helpers
+//! from their post-split homes below.
 
 #![cfg(test)]
 
+use crate::api::sanitizer::sanitize_content_chunk;
+use crate::api::stream_guards::flush_content_sanitizer;
+
 mod sanitizer_tests {
-    use super::super::super::*;
+    use super::flush_content_sanitizer;
     use crate::tool_parser::{LeakMarkers, Qwen3CoderParser, ToolCallParser};
 
     /// F73 (2026-04-29): test wrapper that defaults the new
@@ -227,132 +230,27 @@ mod sanitizer_tests {
         assert_eq!(out, "");
     }
 
+    /// F73 gate on the flush-time scrub: envelope-capable parsers
+    /// (minimax) legitimately stream envelope + inner tool tags as
+    /// content — the downstream parser extracts the call from them.
+    /// The flush must NOT scrub complete markers for such parsers.
+    #[test]
+    fn flush_envelope_markers_skips_scrub() {
+        let markers = crate::tool_parser::MinimaxXmlParser.leak_markers();
+        let tail = "</invoke>\n</minimax:tool_call>";
+        let mut buf = String::from(tail);
+        let mut suppress = false;
+        let out = flush_content_sanitizer(&mut buf, &mut suppress, &markers);
+        assert_eq!(out, tail, "envelope content must survive flush verbatim");
+    }
+
     // Note: the bash-fence tool-call salvage stack was removed (the
     // model now emits clean tool calls via the grammar fix), so its
     // tests no longer exist.
-
-    #[test]
-    fn strip_leaks_removes_mirror_block_from_real_dump_msg4() {
-        // Verbatim content from dump seq=3 message[4] assistant turn
-        // (opencode session that collapsed at turn 3, 2026-04-24).
-        let tool_defs = vec![
-            tool_parser::ToolDefinition {
-                tool_type: "function".to_string(),
-                function: tool_parser::FunctionDefinition {
-                    name: "read".to_string(),
-                    description: None,
-                    parameters: Some(serde_json::json!({"type": "object"})),
-                },
-            },
-            tool_parser::ToolDefinition {
-                tool_type: "function".to_string(),
-                function: tool_parser::FunctionDefinition {
-                    name: "write".to_string(),
-                    description: None,
-                    parameters: Some(serde_json::json!({"type": "object"})),
-                },
-            },
-        ];
-        let content = "\n\nLet me create the Rust calculator module with the source files first.\n\n<read>\n<filePath>\n/tmp/calc-test40/src/lib.rs\n</filePath>\n<offset>\n1\n</offset>\n<limit>\n100\n</limit>\n</read>";
-        let out = strip_xml_leaks_from_assistant_content(content, &tool_defs);
-        assert!(
-            out.contains("Let me create the Rust calculator module"),
-            "prose must survive: {out:?}"
-        );
-        assert!(
-            !out.contains("<read>"),
-            "read leak must be stripped: {out:?}"
-        );
-        assert!(
-            !out.contains("<filePath>"),
-            "inner tags must be stripped: {out:?}"
-        );
-        assert!(
-            !out.contains("/tmp/calc-test40/src/lib.rs"),
-            "leaked path must be removed: {out:?}"
-        );
-    }
-
-    #[test]
-    fn strip_leaks_preserves_prose_without_blocks() {
-        let tool_defs = vec![tool_parser::ToolDefinition {
-            tool_type: "function".to_string(),
-            function: tool_parser::FunctionDefinition {
-                name: "read".to_string(),
-                description: None,
-                parameters: Some(serde_json::json!({"type": "object"})),
-            },
-        }];
-        let content = "I'll read the config then write it back.";
-        let out = strip_xml_leaks_from_assistant_content(content, &tool_defs);
-        assert_eq!(out, content, "no XML block → no change");
-    }
-
-    #[test]
-    fn strip_leaks_skips_unclosed_block() {
-        // An unclosed `<read>` with no matching `</read>` must NOT be
-        // stripped — might be a mid-prose angle-bracket artefact.
-        let tool_defs = vec![tool_parser::ToolDefinition {
-            tool_type: "function".to_string(),
-            function: tool_parser::FunctionDefinition {
-                name: "read".to_string(),
-                description: None,
-                parameters: Some(serde_json::json!({"type": "object"})),
-            },
-        }];
-        let content = "prose <read> more prose";
-        let out = strip_xml_leaks_from_assistant_content(content, &tool_defs);
-        assert_eq!(out, content);
-    }
-
-    #[test]
-    fn strip_leaks_handles_multiple_blocks() {
-        // Two separate leaked blocks, both matching declared tools.
-        let tool_defs = vec![
-            tool_parser::ToolDefinition {
-                tool_type: "function".to_string(),
-                function: tool_parser::FunctionDefinition {
-                    name: "read".to_string(),
-                    description: None,
-                    parameters: Some(serde_json::json!({"type": "object"})),
-                },
-            },
-            tool_parser::ToolDefinition {
-                tool_type: "function".to_string(),
-                function: tool_parser::FunctionDefinition {
-                    name: "write".to_string(),
-                    description: None,
-                    parameters: Some(serde_json::json!({"type": "object"})),
-                },
-            },
-        ];
-        let content =
-            "A <read><filePath>/a</filePath></read> B <write><filePath>/b</filePath></write> C";
-        let out = strip_xml_leaks_from_assistant_content(content, &tool_defs);
-        assert!(!out.contains("<read>"));
-        assert!(!out.contains("<write>"));
-        assert!(
-            out.contains('A') && out.contains('B') && out.contains('C'),
-            "prose between blocks must survive: {out:?}"
-        );
-    }
-
-    #[test]
-    fn strip_leaks_ignores_blocks_for_undeclared_tools() {
-        // `<edit>` appears but no `edit` tool declared — leave it
-        // alone (could be a legit HTML fragment in prose).
-        let tool_defs = vec![tool_parser::ToolDefinition {
-            tool_type: "function".to_string(),
-            function: tool_parser::FunctionDefinition {
-                name: "write".to_string(),
-                description: None,
-                parameters: Some(serde_json::json!({"type": "object"})),
-            },
-        }];
-        let content = "prose <edit>something</edit> more";
-        let out = strip_xml_leaks_from_assistant_content(content, &tool_defs);
-        assert_eq!(out, content);
-    }
+    //
+    // Note: the `strip_xml_leaks_from_assistant_content` tests were
+    // removed when that helper was deleted in #90 (the model now emits
+    // clean tool calls via the grammar fix).
 
     // Note: the bare-XML tool-call salvage stack was removed (the model
     // now emits clean tool calls via the grammar fix), so its tests no

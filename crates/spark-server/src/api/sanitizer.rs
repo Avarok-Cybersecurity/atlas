@@ -205,63 +205,14 @@ pub fn sanitize_content_chunk(
             }
         }
     }
-    // Defense-in-depth final scrub. The state machine above suppresses
-    // well-formed orphan blocks, but a streaming-detector desync at a
-    // tool-call *runaway* / truncation boundary (model re-opens 8+ blocks
-    // and emits spurious `</_call>` separators, then a guard force-ends)
-    // can dump raw markup — e.g. `<tool_call><function=alarms>
-    // <parameter=category>grid</parameter></function></tool_call></_call>`
-    // — straight into Content. Real tool calls never reach here (the
-    // detector routes them to ToolCall outputs first), so any complete
-    // marker tag still present is leaked markup and safe to remove.
-    scrub_tool_tags(&out, markers)
-}
-
-/// Remove any COMPLETE tool-call markup tags from a content string that is
-/// about to be emitted to the client. Derived from `markers` so it stays
-/// correct for every parser. Handles both exact full tags (`</tool_call>`,
-/// `<tool_call>`, `</_call>`) and attribute-prefix opens (`<function=…>`,
-/// `<parameter=…>`) by removing through their closing `>`. A partial tag
-/// with no closing `>` ends the scan (its remainder is a tag still being
-/// formed — the caller's hold-back buffer retains real partials, so the
-/// only way one reaches here is a desync dump, where dropping it is correct).
-pub(crate) fn scrub_tool_tags(text: &str, markers: &tool_parser::LeakMarkers) -> String {
-    if text.is_empty() || (markers.orphan_open.is_empty() && markers.close.is_empty()) {
-        return text.to_string();
-    }
-    let bytes = text.as_bytes();
-    let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    'outer: while i < text.len() {
-        if bytes[i] == b'<' {
-            // Exact full-tag markers (close tags + full-tag opens that
-            // already carry their own `>`).
-            for m in markers.close.iter().chain(markers.orphan_open.iter()) {
-                if m.ends_with('>') && text[i..].starts_with(m) {
-                    i += m.len();
-                    continue 'outer;
-                }
-            }
-            // Attribute-prefix opens (e.g. `<function=`, `<parameter=`,
-            // `<param=`): remove from the prefix through the next `>`.
-            for m in markers.orphan_open.iter() {
-                if !m.ends_with('>') && text[i..].starts_with(m) {
-                    match text[i..].find('>') {
-                        Some(gt) => {
-                            i += gt + 1;
-                            continue 'outer;
-                        }
-                        // Partial open tag still forming at end-of-text —
-                        // drop the remainder (a desync fragment).
-                        None => return out,
-                    }
-                }
-            }
-        }
-        let ch_len = text[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
-        out.push_str(&text[i..i + ch_len]);
-        i += ch_len;
-    }
+    // NOTE: no final `scrub_tool_tags` pass here. The state machine above
+    // searches the WHOLE buffer every iteration, so a complete marker can
+    // never be committed to `out` outside an envelope — a trailing scrub
+    // would be dead code there. Inside a recognized envelope the inner
+    // `<invoke …>…</invoke>` tags are the legitimate F73 payload the
+    // downstream parser extracts, so scrubbing them would break the
+    // minimax envelope pass-through. Desync tails that end-of-stream dumps
+    // leave in `tag_scan_buf` are scrubbed by `flush_content_sanitizer`.
     out
 }
 

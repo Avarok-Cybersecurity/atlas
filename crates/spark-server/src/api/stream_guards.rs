@@ -159,9 +159,16 @@ pub fn flush_content_sanitizer(
     // `call` `>` — or a doubled `</tool_call>`) leaks into streamed
     // `content`. `scrub_tool_tags` removes every complete marker —
     // close tags, full-tag opens, and `<function=…>` / `<parameter=…>`
-    // attribute tags — so a runaway/desync tail dumped here is cleaned
-    // the same way as the per-chunk path.
-    final_text = super::sanitizer::scrub_tool_tags(&final_text, markers);
+    // attribute tags — so a runaway/desync tail dumped here is cleaned.
+    //
+    // F73 gate: envelope-capable parsers (minimax) legitimately stream
+    // their `<invoke …>`/`</invoke>`/`</tool_call>` bytes as content —
+    // the downstream parser extracts the tool call from that envelope.
+    // Scrubbing would destroy the payload, so skip the scrub whenever
+    // the marker set declares envelopes.
+    if markers.envelope_open.is_empty() {
+        final_text = super::scrub::scrub_tool_tags(&final_text, markers);
+    }
     // Drop a TRAILING INCOMPLETE close marker (e.g. the stream ended after
     // `</_call` before its closing `>` arrived). The original
     // `looks_like_partial_tag` guard below only fires when the WHOLE tail
