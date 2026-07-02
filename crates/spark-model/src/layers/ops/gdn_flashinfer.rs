@@ -128,8 +128,12 @@ fn lib() -> Option<&'static Lib> {
 }
 
 /// True when `ATLAS_GDN_FLASHINFER=1` AND the library + symbols loaded successfully.
+/// The env read is cached (checked per GDN layer per chunk otherwise); `lib()` is
+/// already `OnceLock`-cached, so this is a cheap load after first call.
 pub fn available() -> bool {
-    std::env::var("ATLAS_GDN_FLASHINFER").as_deref() == Ok("1") && lib().is_some()
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("ATLAS_GDN_FLASHINFER").as_deref() == Ok("1"))
+        && lib().is_some()
 }
 
 /// Run one prefill GDN scan through the FlashInfer kernel on Atlas's native buffers.

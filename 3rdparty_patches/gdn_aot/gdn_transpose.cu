@@ -18,3 +18,16 @@ extern "C" void atlas_transpose_heads(float* S, int nheads, int N, void* stream)
     dim3 grid((N * N + 255) / 256, nheads);
     k_transpose_heads_sq<<<grid, block, 0, (cudaStream_t)stream>>>(S, N);
 }
+
+// Stream-ordered device-side write of a single-sequence cu_seqlens = [0, total]
+// (int64). Replaces the host->device cudaMemcpy on the null stream in the managed
+// prefill entry: writing on the caller's stream keeps the rebuild ordered against
+// the queued GDN launches that read cu_seqlens, so a changing `total` (short final
+// chunk / varying request lengths) can't race an in-flight launch.
+__global__ void k_write_cu2(long long* cu, long long total) {
+    cu[0] = 0;
+    cu[1] = total;
+}
+extern "C" void atlas_write_cu_seqlens(void* cu, long long total, void* stream) {
+    k_write_cu2<<<1, 1, 0, (cudaStream_t)stream>>>((long long*)cu, total);
+}

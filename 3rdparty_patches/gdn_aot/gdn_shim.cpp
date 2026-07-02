@@ -2,10 +2,20 @@
 // extern "C" symbols Rust can link. Shape-generic (head_dim D=128 fixed for Holo).
 #include "gdn_holo_0.h"
 #include <cuda_runtime.h>
+#include <mutex>
 
 // Per-head k<->v transpose of the output state (gdn_transpose.cu): FlashInfer writes
 // S[v][k]; Atlas's decode kernel reads S[k][v]. Stream-ordered after the FI kernel.
 extern "C" void atlas_transpose_heads(float* S, int nheads, int N, void* stream);
+// Stream-ordered device-side write of cu_seqlens=[0,total] (gdn_transpose.cu).
+extern "C" void atlas_write_cu_seqlens(void* cu, long long total, void* stream);
+
+// The persistent scratch buffers (s_alpha/s_beta, m_tm/m_init/m_cu) are process-
+// global and grow-on-demand, so concurrent prefill calls would race their
+// alloc/free. Serialize the packed entries with one mutex — GDN prefill is a
+// coarse per-request op, so the contention cost is negligible vs. a UAF.
+// Recursive because the managed entry locks, then calls the packed entry.
+static std::recursive_mutex g_shim_mu;
 
 static gdn_holo_0_Kernel_Module_t g_module;
 static int g_loaded = 0;
@@ -49,10 +59,14 @@ extern "C" int atlas_gdn_prefill_packed(
     float scale, int total_seqlen, int nk, int nv, int kd, int vd,
     int conv_dim, int gb_stride, int num_seqs, void* stream)
 {
+  std::lock_guard<std::recursive_mutex> lk(g_shim_mu);
   cudaStream_t st=(cudaStream_t)stream;
   size_t need=(size_t)total_seqlen*nv*4;
   if(need>s_cap){ if(s_alpha)cudaFree(s_alpha); if(s_beta)cudaFree(s_beta);
-    cudaMalloc(&s_alpha,need); cudaMalloc(&s_beta,need); s_cap=need; }
+    s_alpha=nullptr; s_beta=nullptr; s_cap=0;
+    if(cudaMalloc(&s_alpha,need)!=cudaSuccess) return -10;
+    if(cudaMalloc(&s_beta,need)!=cudaSuccess) return -10;
+    s_cap=need; }
   // deinterleave gate_beta[T,gb_stride] fp32 -> contiguous alpha,beta[T,nv]
   cudaMemcpy2DAsync(s_alpha,(size_t)nv*4, gate_beta,(size_t)gb_stride*4,(size_t)nv*4,total_seqlen,cudaMemcpyDeviceToDevice,st);
   cudaMemcpy2DAsync(s_beta,(size_t)nv*4,(char*)gate_beta+(size_t)nv*4,(size_t)gb_stride*4,(size_t)nv*4,total_seqlen,cudaMemcpyDeviceToDevice,st);
@@ -84,22 +98,33 @@ extern "C" int atlas_gdn_prefill_packed(
 // only when total changes.
 static void* m_tm=nullptr; static size_t m_tm_cap=0;
 static void* m_init=nullptr; static size_t m_init_cap=0;
-static void* m_cu=nullptr; static long long m_cu_total=-1;
+static void* m_cu=nullptr;
 extern "C" int atlas_gdn_prefill_packed_managed(
     void* qkv, void* gate_beta, void* output, void* h_state,
     float scale, int total_seqlen, int nk, int nv, int kd, int vd,
     int conv_dim, int gb_stride, int num_seqs, void* stream)
 {
+  // The Rust side hardcodes single-sequence prefill; m_cu is sized + written for
+  // exactly one sequence ([0,total]). Fail loud rather than silently under-write
+  // a multi-seq cu_seqlens (would leave cu[2..num_seqs] uninitialized).
+  if(num_seqs!=1) return -1;
+  std::lock_guard<std::recursive_mutex> lk(g_shim_mu);
   cudaStream_t st=(cudaStream_t)stream;
   size_t tmn=(size_t)6144*128;
-  if(tmn>m_tm_cap){ if(m_tm)cudaFree(m_tm); cudaMalloc(&m_tm,tmn); m_tm_cap=tmn; }
+  if(tmn>m_tm_cap){ if(m_tm)cudaFree(m_tm); m_tm=nullptr; m_tm_cap=0;
+    if(cudaMalloc(&m_tm,tmn)!=cudaSuccess) return -10; m_tm_cap=tmn; }
   size_t in=(size_t)num_seqs*nv*kd*vd*4;
-  if(in>m_init_cap){ if(m_init)cudaFree(m_init); cudaMalloc(&m_init,in); m_init_cap=in; }
+  if(in>m_init_cap){ if(m_init)cudaFree(m_init); m_init=nullptr; m_init_cap=0;
+    if(cudaMalloc(&m_init,in)!=cudaSuccess) return -10; m_init_cap=in; }
+  if(!m_cu && cudaMalloc(&m_cu,(size_t)(num_seqs+1)*8)!=cudaSuccess) return -10;
   // init = incoming h_state transposed Atlas S[k][v] -> FI S[v][k] (chunk 0: h_state=0 -> 0).
   cudaMemcpyAsync(m_init, h_state, in, cudaMemcpyDeviceToDevice, st);
   atlas_transpose_heads((float*)m_init, num_seqs*nv, vd, st);
-  if((long long)total_seqlen!=m_cu_total){ if(!m_cu) cudaMalloc(&m_cu,(size_t)(num_seqs+1)*8);
-    long long h[2]={0,(long long)total_seqlen}; cudaMemcpy(m_cu,h,16,cudaMemcpyHostToDevice); m_cu_total=total_seqlen; }
+  // Rebuild cu_seqlens on the CALLER's stream every call (device-side write, no
+  // host sync, no host-side `total` cache): stream-ordered against the queued GDN
+  // launches that read it, so a changing `total` (short final chunk / varying
+  // request lengths) can't overwrite it while an in-flight launch still reads it.
+  atlas_write_cu_seqlens(m_cu, (long long)total_seqlen, st);
   return atlas_gdn_prefill_packed(qkv,gate_beta,output,h_state,m_init,m_tm,m_cu,
       scale,total_seqlen,nk,nv,kd,vd,conv_dim,gb_stride,num_seqs,stream);
 }

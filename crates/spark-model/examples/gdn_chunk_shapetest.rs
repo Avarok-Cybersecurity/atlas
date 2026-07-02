@@ -432,8 +432,17 @@ fn main() -> Result<()> {
     );
     println!("{}", "-".repeat(96));
 
-    for &t in &[2048usize, 8192, 16384] {
-        for &batch in &[1usize] {
+    // Default sweep keeps the batch-{1,2,4} + short-length coverage (correctness
+    // across batch axis + partial-chunk tails). Pass `--long` for only the
+    // long-length batch-1 perf A/B (the wmma DV-block speedup focus).
+    let long_only = std::env::args().any(|a| a == "--long");
+    let (lens, batches): (&[usize], &[usize]) = if long_only {
+        (&[2048, 8192, 16384], &[1])
+    } else {
+        (&[256, 512, 2048, 8192, 16384], &[1, 2, 4])
+    };
+    for &t in lens {
+        for &batch in batches {
             let case = gen_case(t, batch);
 
             // reference (scalar ksplit) + new kernel (wmma tc_vblock), fresh h0 each.
