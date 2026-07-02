@@ -99,6 +99,44 @@ pub fn build_model(
     let final_norm = loader.load_final_norm(store, &config, gpu.as_ref())?;
     let lm_head = loader.load_lm_head(store, &config)?;
     let mtp_weights = loader.load_mtp_weights_multi(store, &config, gpu.as_ref())?;
+
+    // DeepSeek-V4 ships an architecturally distinct MTP module (MLA + mHC), not
+    // the Qwen-shaped `MtpWeights`. Load it via the V4-specific path and keep it
+    // — the `DeepseekV4MtpHead` proposer is built from it after the model is
+    // constructed (it needs the resolved draft NVFP4 LM head + the model's
+    // owned GPU backend) and installed via `set_dflash_proposer`. Only built
+    // when `--speculative` is set; otherwise the module is loaded for
+    // verification then dropped.
+    // Only rank 0 runs the MTP draft (no-EP, all experts local). Skip loading it
+    // on the worker ranks — they never call propose(), so it would be dead weight.
+    let v4_mtp_module =
+        if config.model_type == "deepseek_v4" && use_speculative && config.ep_rank == 0 {
+            match crate::weight_loader::deepseek_v4::load_v4_mtp_module(
+                store,
+                &config,
+                gpu.as_ref(),
+                &attn_layer_dtypes,
+            ) {
+                Ok(Some(m)) => {
+                    tracing::info!(
+                        "DeepSeek-V4 MTP draft module loaded OK (num_mtp_modules={})",
+                        config.num_mtp_modules
+                    );
+                    Some(m)
+                }
+                Ok(None) => {
+                    tracing::info!("DeepSeek-V4: no MTP module in checkpoint (MTP off)");
+                    None
+                }
+                Err(e) => {
+                    tracing::error!("DeepSeek-V4 MTP module load FAILED: {e:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
     // Capability warning: user asked for `--speculative` but the model has no
     // MTP head bundled, so speculative decoding will silently no-op. Surface
     // this loudly so the user knows the flag was inert.
@@ -147,6 +185,18 @@ pub fn build_model(
         use_speculative,
         !mtp_weights.is_empty(),
     )?;
+
+    // Capture the shared embed + resolved draft NVFP4 head for the DeepSeek-V4
+    // MTP proposer BEFORE `embed` / `lm_head_nvfp4` / `mtp_lm_head_nvfp4` are
+    // moved into `TransformerModel::new`. All are `Copy` (DenseWeight /
+    // QuantizedWeight). The draft head resolves to the separate draft-only
+    // NVFP4 head (main head kept BF16) or the main NVFP4 head. `None` ⇒ no
+    // NVFP4 head available ⇒ the V4 proposer can't draft and is skipped.
+    let v4_mtp_embed = embed;
+    // DeepSeek-V4-Flash keeps the LM head in BF16; the proposer drafts with the
+    // same BF16 head via dense_gemv (drafts are re-verified by the target, so the
+    // draft head only affects acceptance). DenseWeight is Copy.
+    let v4_mtp_lm_head = lm_head;
 
     // ── Step 3b: Post-load MoE prefill transpose (MiniMax EP=2 TTFT fix) ──
     //
@@ -410,6 +460,33 @@ pub fn build_model(
         ssm_cache_slots,
         ssm_checkpoint_interval,
     )?;
+
+    // ── Step 6b: DeepSeek-V4 MTP proposer (optional, post-construction) ──
+    //
+    // Built here (not inside `new()`, which only knows the Qwen-shaped
+    // `MtpWeights`) because it needs the model's owned GPU backend, the
+    // resolved draft NVFP4 head, and the shared embedding. Installed via the
+    // existing proposer setter. DFlash (below) is CLI-exclusive with
+    // `--speculative`, so the two never both install.
+    if let Some(v4_module) = v4_mtp_module {
+        match crate::layers::DeepseekV4MtpHead::new(
+            v4_module,
+            v4_mtp_embed,
+            v4_mtp_lm_head,
+            model.config_ref(),
+            model.gpu_backend(),
+            mtp_vocab_size,
+            max_seq_len,
+        ) {
+            Ok(head) => {
+                model.set_dflash_proposer(std::sync::Arc::new(head));
+                tracing::info!("DeepSeek-V4 MTP speculative decoding: ENABLED (single-module)");
+            }
+            Err(e) => tracing::warn!(
+                "Failed to build DeepSeek-V4 MTP proposer: {e:#}. Speculative decoding disabled."
+            ),
+        }
+    }
 
     // ── Step 7: DFlash drafter (optional, post-construction) ──
     //

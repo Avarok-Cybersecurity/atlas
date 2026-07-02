@@ -3,15 +3,46 @@
 //! `Qwen3AttentionLayer` setters and small per-layer compute helpers
 //! (`apply_layer_scalar`, `effective_attn_scale`).
 
-use super::types::{MlaWeights, Qwen3AttentionLayer};
+use super::types::{HcWeights, MlaWeights, Qwen3AttentionLayer};
 use crate::layers::FfnComponent;
 use crate::weight_map::DenseWeight;
+
+/// YaRN attention-temperature factor for a single `mscale` value.
+/// Matches HF `yarn_get_mscale`: `0.1 * mscale * ln(scale) + 1.0` for
+/// `scale > 1`, else `1.0`.
+fn yarn_get_mscale(scale: f32, mscale: f32) -> f32 {
+    if scale <= 1.0 {
+        1.0
+    } else {
+        0.1 * mscale * scale.ln() + 1.0
+    }
+}
+
+/// Compute the YaRN `_mscale` ratio that DeepSeek folds into the rope
+/// cos/sin: `get_mscale(factor, mscale) / get_mscale(factor, mscale_all_dim)`.
+/// Returns 1.0 when YaRN is disabled (`yarn_factor <= 1`).
+pub(crate) fn yarn_rope_mscale(config: &atlas_core::config::ModelConfig) -> f32 {
+    let factor = config.yarn_factor;
+    if factor <= 1.0 {
+        return 1.0;
+    }
+    let num = yarn_get_mscale(factor, config.yarn_mscale);
+    let den = yarn_get_mscale(factor, config.yarn_mscale_all_dim);
+    num / den
+}
 
 impl Qwen3AttentionLayer {
     /// Set MLA weights for 2-step latent decode. When set, decode uses
     /// latent→norm→expand instead of single-step GEMV.
     pub fn set_mla_weights(&mut self, mla: MlaWeights) {
         self.mla = Some(mla);
+    }
+
+    /// Set per-block Manifold-Constrained Hyper-Connection weights
+    /// (DeepSeek-V4). When set, the attn/ffn residual sites route through
+    /// `hc_pre`/`hc_post` against the model-level `hc_streams` buffer.
+    pub fn set_hc_weights(&mut self, hc: HcWeights) {
+        self.hc = Some(hc);
     }
 
     /// Set per-layer dimension overrides for heterogeneous models (Gemma-4).

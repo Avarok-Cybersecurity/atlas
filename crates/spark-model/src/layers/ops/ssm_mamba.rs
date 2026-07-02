@@ -88,6 +88,95 @@ pub fn conv1d_update_l2norm(
         .launch(stream)
 }
 
+/// STAGE 1 fused K=2 MTP-verify conv1d+L2norm: both draft positions in one
+/// launch, with the position-0 conv-state snapshot written inline (replaces
+/// the per-token `conv1d_update_l2norm` ×2 + intervening `copy_d2d`).
+///
+/// Bit-identical to the per-token path (proven by gdn_verify_fused_microtest,
+/// cos == 1.0). `conv_state` is left holding the committed (post position-1)
+/// window; `conv_state_inter` holds the position-0 rollback snapshot.
+///
+/// Kernel: `gdn_verify_fused_conv_k2(conv_state, new_input, weight, output,
+///          conv_state_inter, dim, d_conv, qk_channels, head_dim,
+///          input_stride, output_stride, l2_eps)`
+/// Grid: (ceil(dim/256), 1, 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_verify_fused_conv_k2(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    conv_state: DevicePtr,
+    new_input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    conv_state_inter: DevicePtr,
+    d_inner: u32,
+    d_conv: u32,
+    qk_channels: u32,
+    head_dim: u32,
+    input_stride: u32,
+    output_stride: u32,
+    l2_eps: f32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(d_inner, 256), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(conv_state)
+        .arg_ptr(new_input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_ptr(conv_state_inter)
+        .arg_u32(d_inner)
+        .arg_u32(d_conv)
+        .arg_u32(qk_channels)
+        .arg_u32(head_dim)
+        .arg_u32(input_stride)
+        .arg_u32(output_stride)
+        .arg_f32(l2_eps)
+        .launch(stream)
+}
+
+/// STAGE 1 fused K=2 MTP-verify gated-RMS-norm: both draft positions in one
+/// launch (replaces the per-token `gated_rms_norm` ×2). The Z gate is read
+/// from the deinterleaved [Q|K|V|Z] buffer at `z_offset` per position.
+///
+/// Bit-identical to the per-token path (proven by gdn_verify_fused_microtest,
+/// cos == 1.0).
+///
+/// Kernel: `gdn_verify_fused_norm_k2(gdn_out, deint, weight, output,
+///          hidden_size, eps, deint_stride, z_offset, out_stride)`
+/// Grid: (num_v_heads, 2, 1)  Block: (hidden_size, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_verify_fused_norm_k2(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    gdn_out: DevicePtr,
+    deint: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    num_v_heads: u32,
+    hidden_size: u32,
+    eps: f32,
+    deint_stride: u32,
+    z_offset: u32,
+    out_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_v_heads, 2, 1])
+        .block([hidden_size, 1, 1])
+        .arg_ptr(gdn_out)
+        .arg_ptr(deint)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_u32(hidden_size)
+        .arg_f32(eps)
+        .arg_u32(deint_stride)
+        .arg_u32(z_offset)
+        .arg_u32(out_stride)
+        .launch(stream)
+}
+
 /// Multi-token conv1d sliding window update + SiLU for prefill.
 ///
 /// Processes `seq_len` tokens sequentially per channel in registers.

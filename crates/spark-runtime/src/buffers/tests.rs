@@ -41,10 +41,18 @@ fn test_buffer_arena_alloc() {
     assert!(!arena.hidden_states().is_null());
     assert!(!arena.logits().is_null());
     assert_eq!(arena.max_batch_tokens(), 128);
-    // 21 allocations: the prior 19 (12 data + 1 scratch + 3 expert + 2 splitk
-    // + 1 gdn_fla_scratch) plus the 2 FP32-routing buffers (gate_logits_f32 +
-    // moe_router_in_f32) added for the ATLAS_FP32_GATE/ROUTING path.
-    assert_eq!(gpu.alloc_count(), 21);
+    // 27 allocations: main's 18 (12 data + 1 scratch + 3 expert + 2 splitk)
+    // plus 9 added by the V4 foundation atop main:
+    //   - 2 FP32-routing buffers (gate_logits_f32 + moe_router_in_f32),
+    //   - 1 gdn_fla_scratch (allocated here: qwen3_next_80b has 128-dim linear
+    //     heads, so sizes.gdn_fla_scratch > 0),
+    //   - 2 V4-MLA buffers (o_latent + norm_unit_w, present non-zero for all
+    //     configs via the .max(256) floor),
+    //   - 3 HC buffers (hc_streams/hc_post/hc_comb, placeholder-sized 256 when
+    //     hc_mult == 0 but still allocated unconditionally),
+    //   - 1 token_ids buffer (hash-routing scratch, .max(256) floor so it is
+    //     allocated unconditionally even for models without hash routing).
+    assert_eq!(gpu.alloc_count(), 27);
 }
 
 #[test]

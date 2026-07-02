@@ -111,6 +111,59 @@ impl Qwen3AttentionLayer {
                 num_seqs: 1,
             };
             let o_out_i = o_out.offset(i * c.h * bf16);
+
+            // DeepSeek-V4-Flash (o_lora_rank > 0) uses the DIRECT-KV
+            // attention algorithm, NOT the absorbed-MLA chain. Its
+            // V3-style absorption weights (`w_uk_t` / `w_uv` / `wkv_b`)
+            // are loaded as NULL `DevicePtr` stubs (see
+            // `deepseek_v4::load_layers`: `is_v4_flash` branch), so the
+            // absorbed `ms_mla_decode_one` here would dereference a NULL
+            // weight in the Q-absorb / V-extract GEMVs → CUDA illegal
+            // address on the K=2 MTP verify. Drive the single-token
+            // V4-Flash decode chain (`attention_forward_v4`, the same one
+            // the n=1 path uses) once per verify token instead — SSOT
+            // with the correct algorithm and buffer layout.
+            if mla.o_lora_rank > 0 {
+                // Per-token forward context carrying this token's sliced
+                // attention metadata (positions / slot / seq_len /
+                // block_table). All other ctx fields are copied verbatim.
+                let ctx_i = crate::layer::ForwardContext {
+                    attn_metadata: Some(meta_i),
+                    ..*c.fwd
+                };
+                // Q/K/V projection destinations inside `qkv_output`,
+                // matching the single-token `attention_forward` layout:
+                // Q `[nq*hd]`, then K `[nkv*hd]`, then V `[nkv*hd]`. V4 is
+                // ungated MLA, so `q_proj_dim == q_dim`.
+                let qkv = c.fwd.buffers.qkv_output();
+                let q_proj_bytes = q_dim as usize * bf16;
+                let kv_bytes = (c.nkv * hd) as usize * bf16;
+                let k_out = qkv.offset(q_proj_bytes);
+                let v_out = k_out.offset(kv_bytes);
+                let args = super::super::super::decode::attention_forward_mla::DecodeMlaArgs {
+                    normed: normed_i,
+                    q_out: qkv,
+                    k_out,
+                    v_out,
+                    q_dim,
+                    h,
+                    nq,
+                    hd,
+                    eps,
+                    bs,
+                    stream,
+                };
+                let o_v4 = self.attention_forward_v4(kv_cache, &ctx_i, &args)?;
+                // `attention_forward_v4` writes its O projection into the
+                // shared `qkv_output` buffer and returns it; copy this
+                // token's row into its dedicated `o_out` slot before the
+                // next iteration reuses `qkv_output`.
+                c.fwd
+                    .gpu
+                    .copy_d2d_async(o_v4, o_out_i, c.h * bf16, stream)?;
+                continue;
+            }
+
             self.ms_mla_decode_one(
                 c,
                 kv_cache,
@@ -132,6 +185,7 @@ impl Qwen3AttentionLayer {
                     eps,
                     bs,
                     inv_sqrt_d,
+                    o_lora_rank: mla.o_lora_rank as u32,
                 },
                 stream,
             )?;
@@ -447,7 +501,56 @@ impl Qwen3AttentionLayer {
         self.ms_mla_v_extract(c, mla, &d, attn_out, v_extracted, stream)?;
 
         // ── Step 8: O projection → this seq's o_out slot ──
-        if let Some(ref wo_nvfp4) = mla.wo_nvfp4 {
+        if d.o_lora_rank > 0 {
+            // DeepSeek-V4-Flash: low-rank O projection (wo_a → wo_b)
+            let o_latent = buffers.attn_output();
+            if let Some(ref woa_nvfp4) = mla.wo_a_nvfp4 {
+                ops::w4a16_gemv(
+                    gpu,
+                    self.w4a16_gemv_k,
+                    v_extracted,
+                    woa_nvfp4,
+                    o_latent,
+                    d.o_lora_rank,
+                    d.nq * d.mla_v_dim,
+                    stream,
+                )?;
+            } else {
+                ops::dense_gemv(
+                    gpu,
+                    self.dense_gemv_k,
+                    v_extracted,
+                    &mla.wo_a,
+                    o_latent,
+                    d.o_lora_rank,
+                    d.nq * d.mla_v_dim,
+                    stream,
+                )?;
+            }
+            if let Some(ref wob_nvfp4) = mla.wo_b_nvfp4 {
+                ops::w4a16_gemv(
+                    gpu,
+                    self.w4a16_gemv_k,
+                    o_latent,
+                    wob_nvfp4,
+                    o_out,
+                    d.h,
+                    d.o_lora_rank,
+                    stream,
+                )?;
+            } else {
+                ops::dense_gemv(
+                    gpu,
+                    self.dense_gemv_k,
+                    o_latent,
+                    &mla.wo_b,
+                    o_out,
+                    d.h,
+                    d.o_lora_rank,
+                    stream,
+                )?;
+            }
+        } else if let Some(ref wo_nvfp4) = mla.wo_nvfp4 {
             ops::w4a16_gemv(
                 gpu,
                 self.w4a16_gemv_k,

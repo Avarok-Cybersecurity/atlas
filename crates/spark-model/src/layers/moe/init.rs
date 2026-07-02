@@ -12,6 +12,21 @@ impl MoeLayer {
         gpu: &dyn GpuBackend,
         config: &atlas_core::config::ModelConfig,
     ) -> Result<Self> {
+        Self::new_with_hash(weights, num_experts, gate_nvfp4, None, gpu, config)
+    }
+
+    /// Like [`MoeLayer::new`] but with an optional DeepSeek-V4 hash-routing
+    /// `tid2eid` table ([vocab_size, top_k] i64). `Some` marks this as a
+    /// hash-routed layer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_hash(
+        weights: MoeWeights,
+        num_experts: usize,
+        gate_nvfp4: Option<QuantizedWeight>,
+        tid2eid_dev: Option<DevicePtr>,
+        gpu: &dyn GpuBackend,
+        config: &atlas_core::config::ModelConfig,
+    ) -> Result<Self> {
         // Sanity-check the routing config: top-k that exceeds the
         // expert count would index OOB in the topk kernel and produce
         // silent NaN routing. Catch the misconfiguration at load time.
@@ -168,6 +183,28 @@ impl MoeLayer {
                 .kernel("moe_shared_expert_fused_t", "moe_expert_gate_up_shared_t")?,
             moe_expert_silu_down_shared_t_k: gpu
                 .kernel("moe_shared_expert_fused_t", "moe_expert_silu_down_shared_t")?,
+            // sqrtsoftplus kernels: lazy-loaded via try_kernel so models that
+            // don't register them (all except DeepSeek-V4) start fine.
+            moe_topk_sqrtsoftplus_k: super::super::try_kernel(
+                gpu,
+                "moe_topk_sqrt",
+                "moe_topk_sqrtsoftplus",
+            ),
+            moe_topk_sqrtsoftplus_batched_k: super::super::try_kernel(
+                gpu,
+                "moe_topk_sqrt",
+                "moe_topk_sqrtsoftplus_batched",
+            ),
+            // Hash routing (DeepSeek-V4 hash_moe layers): lazy-loaded so other
+            // models start fine. `tid2eid_dev` is the per-layer table (Some
+            // only for hash layers).
+            moe_hash_route_k: super::super::try_kernel(gpu, "moe_hash_route", "moe_hash_route"),
+            moe_hash_route_batched_k: super::super::try_kernel(
+                gpu,
+                "moe_hash_route",
+                "moe_hash_route_batched",
+            ),
+            tid2eid_dev,
             moe_expert_gate_up_shared_batch2_t_k: gpu.kernel(
                 "moe_shared_expert_fused_batch2_t",
                 "moe_expert_gate_up_shared_batch2_t",

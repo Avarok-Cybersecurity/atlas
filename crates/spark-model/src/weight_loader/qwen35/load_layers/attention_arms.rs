@@ -50,7 +50,28 @@ pub(super) fn build_full_attention_nvfp4(
                               full_k: usize,
                               kind: TpShardKind|
              -> Result<crate::weight_map::QuantizedWeight> {
-                let src = quantized_auto(store, &format!("{p}.{name}"), gpu, variant)?;
+                let prefix = format!("{p}.{name}");
+                // Mixed-precision compressed-tensors checkpoints (lovedheart
+                // AgentWorld-35B-NVFP4) NVFP4-pack the MoE experts but keep
+                // attention q/k/v/o as block-scaled FP8 (`.weight` FP8E4M3 + 2D
+                // `.weight_scale`, no `.weight_packed`). When the pack metadata
+                // is absent, dequant per-tensor and runtime-quantize to NVFP4
+                // (mirrors the Standard arm) instead of failing on the missing
+                // `weight_packed`.
+                let src = if store.contains(&format!("{prefix}.weight_packed")) {
+                    quantized_auto(store, &prefix, gpu, variant)?
+                } else {
+                    let dense_bf16 = dense_auto(store, &format!("{prefix}.weight"), gpu)?;
+                    quantize_to_nvfp4(
+                        &dense_bf16,
+                        full_n,
+                        full_k,
+                        gpu,
+                        absmax_k,
+                        quantize_k,
+                        stream,
+                    )?
+                };
                 if tp_size == 1 {
                     return Ok(src);
                 }

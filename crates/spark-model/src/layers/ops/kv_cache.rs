@@ -686,4 +686,114 @@ pub fn mla_cache_assemble(
         .launch(stream)
 }
 
+/// MLA Paged Decode — NVFP4 variant for DeepSeek-V4-Flash.
+///
+/// Kernel: `mla_paged_decode_nvfp4(Q, K_cache, V_cache, O, block_tables,
+///          seq_lens, max_blocks_per_seq, num_q_heads, num_kv_heads,
+///          q_head_dim, kv_cache_dim, block_size, inv_sqrt_d,
+///          block_stride_bytes, data_section_bytes)`
+/// Grid: (num_q_heads, num_seqs, 1)  Block: (256, 1, 1)
+///
+/// V4-Flash uses compressed KV cache (576 dims: 512 latent + 64 rope)
+/// and flattened Q layout (32768 dims = 64 heads × 512).
+#[allow(clippy::too_many_arguments)]
+pub fn mla_paged_decode_nvfp4(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    o: DevicePtr,
+    block_tables: DevicePtr,
+    seq_lens: DevicePtr,
+    max_blocks_per_seq: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    q_head_dim: u32,
+    kv_cache_dim: u32,
+    block_size: u32,
+    inv_sqrt_d: f32,
+    block_stride_bytes: u64,
+    data_section_bytes: u64,
+    num_seqs: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_q_heads, num_seqs, 1])
+        .block([256, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(o)
+        .arg_ptr(block_tables)
+        .arg_ptr(seq_lens)
+        .arg_u32(max_blocks_per_seq)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(q_head_dim)
+        .arg_u32(kv_cache_dim)
+        .arg_u32(block_size)
+        .arg_f32(inv_sqrt_d)
+        .arg_u64(block_stride_bytes)
+        .arg_u64(data_section_bytes)
+        .launch(stream)
+}
+
+/// MLA Paged Decode — FP8 variant for DeepSeek-V4-Flash with FP8 KV cache.
+///
+/// Kernel: `mla_paged_decode_fp8(Q, K_cache, V_cache, O, block_tables,
+///          seq_lens, max_blocks_per_seq, num_q_heads, num_kv_heads,
+///          q_head_dim, kv_cache_dim, block_size, inv_sqrt_d,
+///          k_scale, v_scale, cache_stride)`
+/// Grid: (num_q_heads, num_seqs, 1)  Block: (256, 1, 1)
+///
+/// V4-Flash uses compressed KV cache (576 dims: 512 latent + 64 rope)
+/// and FP8 quantization with per-layer scales.
+#[allow(clippy::too_many_arguments)]
+pub fn mla_paged_decode_fp8(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    o: DevicePtr,
+    block_tables: DevicePtr,
+    seq_lens: DevicePtr,
+    max_blocks_per_seq: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    q_head_dim: u32,
+    kv_cache_dim: u32,
+    block_size: u32,
+    inv_sqrt_d: f32,
+    k_scale: f32,
+    v_scale: f32,
+    cache_stride: u64,
+    num_seqs: u32,
+    sinks: DevicePtr,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_q_heads, num_seqs, 1])
+        .block([256, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(o)
+        .arg_ptr(block_tables)
+        .arg_ptr(seq_lens)
+        .arg_u32(max_blocks_per_seq)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(q_head_dim)
+        .arg_u32(kv_cache_dim)
+        .arg_u32(block_size)
+        .arg_f32(inv_sqrt_d)
+        .arg_f32(k_scale)
+        .arg_f32(v_scale)
+        .arg_u64(cache_stride)
+        .arg_ptr(sinks)
+        .launch(stream)
+}
+
 // ── Batched prefill variants (N tokens) ──

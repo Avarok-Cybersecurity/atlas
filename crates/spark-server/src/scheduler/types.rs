@@ -189,6 +189,22 @@ pub(super) struct ActiveSeq {
     /// Fix A (2026-06-05): true once a complete `</tool_call>` has been emitted;
     /// gates the EOS-escape (helpers::tool_eos_escape_enabled).
     pub tool_call_completed: bool,
+    /// Number of `<tool_call>` openers emitted AFTER the first one completed
+    /// (i.e. while `tool_call_completed == true`), outside thinking. On a
+    /// `tool_choice="auto"` grammar turn the grammar never reaches a terminal
+    /// state (`stop_after_first=false`), so the EOS-escape is the only way to
+    /// stop — but re-entering a tool body (`inside_tool_body=true`) defeats the
+    /// escape's `!inside_tool_body` guard. A degenerating FP8/long-context model
+    /// loops emitting full `<tool_call>…</tool_call>` blocks as content; each
+    /// closes cleanly so the envelope-streak guard never fires, and EOS is
+    /// suppressed to the max_tokens cap (8k-tok runaway, ~260s wasted). This
+    /// counter detects that repetition: once it exceeds
+    /// `MAX_POST_COMPLETION_TOOL_OPENS` the escape is force-armed so the model's
+    /// natural EOS can end the turn. Legit multi-call turns are unaffected — we
+    /// only stop SUPPRESSING EOS, never force-finish, so a model still mid-call
+    /// keeps generating until it actually samples EOS. Reset never needed (the
+    /// turn ends once it trips).
+    pub post_completion_tool_opens: u32,
     /// Consecutive tokens emitted while `inside_tool_body=true`. When
     /// this exceeds `MAX_TOOL_BODY_TOKENS` (emit_step.rs), the response
     /// is force-ended: the model has emitted a `<tool_call>` opener but

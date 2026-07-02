@@ -213,11 +213,11 @@ impl TransformerModel {
             }
         }
 
-        // Free MTP proposer state (KV cache blocks).
+        // Free proposer state (KV cache blocks + per-seq device buffers).
         if let Some(ref proposer) = self.proposer
             && let Some(ref mut pstate) = seq.proposer_state
         {
-            proposer.free_state(pstate.as_mut())?;
+            proposer.free_state(self.gpu.as_ref(), pstate.as_mut())?;
         }
 
         self.free_chunked_prefill_meta(seq)?;

@@ -74,8 +74,13 @@ impl TransformerModel {
 
         // MLA models: zero buffers reused for Q_absorbed computation.
         // Without this, stale prefill data in expert_up_out / ssm_conv_out_f32 /
-        // ssm_ba contaminates the absorbed attention → generic/wrong output.
-        if self.config.kv_lora_rank > 0 {
+        // ssm_ba contaminates the ABSORBED attention → generic/wrong output.
+        // DeepSeek-V4-Flash (o_lora_rank > 0) uses the DIRECT V=K attention path
+        // (not absorbed) and writes-before-reads those scratch buffers, so the
+        // full-arena zero (~1.7GB memset/step, sized for max prefill tokens) is
+        // unnecessary — skip it for V4 to reclaim that decode-step memset
+        // bandwidth. (Other MLA models keep the zero.)
+        if self.config.kv_lora_rank > 0 && self.config.o_lora_rank == 0 {
             self.buffers.zero_all(self.gpu.as_ref(), stream)?;
         }
 
@@ -118,6 +123,12 @@ impl TransformerModel {
         self.gpu
             .copy_h2d_async(bt_bytes, meta_base.offset(256), stream)?;
 
+        // Upload the decode token ID into the STABLE token_ids buffer (uploaded
+        // every step, BEFORE any CUDA-graph replay, so DeepSeek-V4 hash-MoE
+        // layers read the correct `tid2eid[token_id]`). Single token at offset 0.
+        self.gpu
+            .copy_h2d_async(&token.to_le_bytes(), self.buffers.token_ids(), stream)?;
+
         let attn_metadata = AttnMetadataDev {
             positions: meta_base,
             positions_h: meta_base,
@@ -153,7 +164,13 @@ impl TransformerModel {
         // still capture/replay normally.
         let dump_step0 =
             seq.seq_len == seq.prompt_len && std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok();
-        let use_graphs = self.comm.is_none()
+        // EXPERIMENT (ATLAS_EP_GRAPHS=1): allow CUDA-graph capture under EP. The
+        // EP all-reduce queues ncclSend/Recv + local-add on the compute (capture)
+        // stream; NCCL ≥2.9 supports graph capture, so this MAY capture cleanly
+        // and remove per-kernel launch overhead. Env-gated so it can be toggled
+        // off at deploy time (instant revert) if capture crashes / replay hangs.
+        let ep_graphs = std::env::var("ATLAS_EP_GRAPHS").is_ok_and(|v| v == "1" || v == "true");
+        let use_graphs = (self.comm.is_none() || ep_graphs)
             && !self.profile
             && !self
                 .suppress_graphs
@@ -170,6 +187,9 @@ impl TransformerModel {
             comm: self.comm_ref(),
             graph_capture: use_graphs,
             gdn_exact_replay: false,
+            // Hash-MoE: the single decode token ID (uploaded above every step
+            // before graph replay). MoE reads it at offset 0.
+            token_ids: Some(self.buffers.token_ids()),
         };
 
         // Profile mode: use per-layer sync decode for timing breakdown.

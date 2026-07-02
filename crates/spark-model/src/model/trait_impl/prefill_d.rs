@@ -127,6 +127,11 @@ impl TransformerModel {
                 Err(_) => None,
             };
             if let Some(snap_id) = snap_result {
+                // Order any later warm restore after this save's D2D (the
+                // restore may run on a different stream under concurrency).
+                if let Err(e) = self.record_snapshot_save_dispatch(stream) {
+                    tracing::warn!("prefill snapshot save: record snapshot event: {e}");
+                }
                 if self.tokens_have_vision_pad(tokens) {
                     // Vision prefill: snapshot is image-tainted and the
                     // token stream collides across distinct images, so do
@@ -217,6 +222,11 @@ impl TransformerModel {
                 }
             };
             if let Some(snap_id) = snap_result {
+                // Order any later warm restore after this save's D2D (the
+                // restore may run on a different stream under concurrency).
+                if let Err(e) = self.record_snapshot_save_dispatch(stream) {
+                    tracing::warn!("prefill snapshot save [twophase]: record snapshot event: {e}");
+                }
                 if self.tokens_have_vision_pad(tokens) {
                     // Vision prefill: the SSM snapshot is image-tainted and
                     // the token stream collides across distinct images (the

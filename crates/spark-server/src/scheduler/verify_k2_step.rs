@@ -154,10 +154,11 @@ pub fn step_verify_k2(
         }
         a.last_token = v1;
 
-        // F62 (2026-04-27): SpecMamba commit. Full accept (num_accepted=k=2):
-        // copy verify scratch → canonical state.
-        if let Err(e) = model.commit_verify_state_async(&mut a.seq, 2, 2) {
-            tracing::error!("commit_verify_state_async (accept): {e:#}");
+        // Item #2 (STree-style in-place K=2 verify commit). Full accept
+        // (num_accepted=k=2): the verify kernel already wrote the canonical
+        // h_state, so the commit is a no-op.
+        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 2, 2) {
+            tracing::error!("commit_accepted_prefix (accept): {e:#}");
             return;
         }
         if let Err(e) = model.save_hidden_for_mtp(1, 0) {
@@ -205,11 +206,12 @@ pub fn step_verify_k2(
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 0, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
-        // F62 (2026-04-27): SpecMamba commit. K=2 reject means
-        // num_accepted=1 (last_token is always accepted): copy
-        // intermediate[0] → canonical. Verify scratch is discarded.
-        if let Err(e) = model.commit_verify_state_async(&mut a.seq, 1, 2) {
-            tracing::error!("commit_verify_state_async (reject): {e:#}");
+        // Item #2 (STree-style in-place K=2 verify commit). K=2 reject means
+        // num_accepted=1 (last_token is always accepted): the in-place
+        // commit rewinds live h_state to intermediate[0] (state after the
+        // accepted token). Verify draft state is discarded.
+        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 1, 2) {
+            tracing::error!("commit_accepted_prefix (reject): {e:#}");
             a.finished = true;
             return;
         }

@@ -137,6 +137,28 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         ptx_set.modules.len(),
     );
 
+    // Text-only kernel target + a checkpoint that ships a vision tower: honor the
+    // TARGET spec and serve text-only rather than failing the build at
+    // `vision_encoder module not loaded`. Some VL checkpoints (e.g.
+    // Kbenkhaled/Qwen3.5-27B-NVFP4) carry a `vision_config`, but their Atlas
+    // kernel target (qwen3.5-27b) ships no `vision_encoder` PTX module. Drop the
+    // vision tower to text-only; image inputs are unsupported until the target
+    // is rebuilt with vision.
+    if config.vision.is_some()
+        && !ptx_set
+            .modules
+            .iter()
+            .any(|(name, _)| *name == "vision_encoder")
+    {
+        tracing::warn!(
+            "Checkpoint declares a vision tower but kernel target {} ships no \
+             vision_encoder module — serving TEXT-ONLY (image inputs ignored). \
+             Rebuild the target with vision to enable images.",
+            ptx_set.target,
+        );
+        config.vision = None;
+    }
+
     // Apply MODEL.toml [behavior].default_num_drafts unless user passed --num-drafts.
     serve_phases::apply_model_default_num_drafts(&mut args, &ptx_set);
 
@@ -225,40 +247,15 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         },
     );
 
-    // MTP weight-quant gate (SSOT = the just-detected `quant_format`).
-    //
-    // Atlas benchmarks measure K=2 MTP speculative decode as net-NEGATIVE on
-    // FP8 weights for this hybrid SSM model (~-20% decode throughput: the
-    // verify pass re-runs the full 40-layer / MoE / lm_head stack and draft
-    // acceptance is only ~30-41%, below the ~60-70% break-even), but
-    // net-POSITIVE on NVFP4 weights (4-bit weight traffic makes the verify
-    // forward cheap; ~+1.6x). MTP is enabled solely by `--speculative`, so a
-    // single launch command tuned for NVFP4 silently regresses decode when it
-    // is pointed at an FP8 checkpoint. Derive the safe default from the loaded
-    // weight quant format: on FP8, downgrade `--speculative` to off unless the
-    // user explicitly forces it with `--force-speculative`. NVFP4 (and every
-    // other variant) is left byte-identical — this is additive and only
-    // narrows the default for the measured-negative FP8 case. The per-request
-    // `disable_mtp` override and `--force-speculative` both still win.
-    if quant_format.base_variant() == spark_model::weight_map::Nvfp4Variant::Fp8Dequanted {
-        if args.speculative && !args.force_speculative {
-            args.speculative = false;
-            tracing::info!(
-                "MTP auto-gated OFF: FP8 weights detected and --speculative set without \
-                 --force-speculative; K=2 verify is measured net-negative (~-20% decode) \
-                 on FP8 hybrid SSM models. Pass --force-speculative to override."
-            );
-        } else if args.speculative && args.force_speculative {
-            tracing::info!(
-                "MTP kept ON: FP8 weights detected but --force-speculative set; honoring \
-                 explicit user override of the weight-quant gate."
-            );
-        }
-    } else if args.speculative {
-        tracing::info!(
-            "MTP enabled: NVFP4 (or non-FP8) weights — speculative decode is net-positive."
-        );
-    }
+    // MTP throughput-aware gate is applied at RUNTIME, not here. The earlier
+    // static "FP8 ⇒ MTP off" weight-quant heuristic was removed: hardcoding the
+    // decision against the weight format wrongly bars a future FP8 checkpoint
+    // where MTP would help, and it conflated weight format (a proxy) with the
+    // thing that actually decides MTP economics — the per-config verify-step
+    // cost relative to a plain decode step. The scheduler now MEASURES that
+    // ratio over the first decode steps of serving and auto-disables MTP only
+    // when it is provably net-negative (verify multiplier ≥ 1 + num_drafts).
+    // See `scheduler::mtp_gate`.
 
     // 4. Post-load OOM check + audit log.
     serve_phases::post_load_memory_audit(
@@ -284,15 +281,19 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             "dflash: --enable-prefix-caching has a community-reported correctness regression on SM12.x with DFlash; outputs may be wrong on multi-turn cache hits. Run a greedy diff-test against a non-DFlash baseline before relying on outputs."
         );
     }
-    if args.speculative && args.enable_prefix_caching && config.num_ssm_layers() > 0 {
-        tracing::warn!(
-            "--enable-prefix-caching with --speculative on a hybrid (SSM) model has a KNOWN residual \
-             corruption on warm Marconi restores under agentic multi-turn traffic (~1 in 3 runs emit \
-             duplicated tool-argument fragments). Each feature is verified clean alone (2026-06-10 \
-             N=10 gates). Until the interaction fix lands, drop one of the two flags for production \
-             agentic serving."
-        );
-    }
+    // 2026-06-18: the previously-documented warm-Marconi-restore × MTP
+    // corruption on hybrid SSM models is RESOLVED. Verified by a greedy
+    // ground-truth A/B at batch=1 (the level MTP runs at — MTP is gated to
+    // `active.len() == 1` in the scheduler): a real 4-turn agentic
+    // conversation (incl. tool-call turns) produced byte-identical token
+    // streams with Marconi ON vs OFF (full SSM recompute), 12/12 turns. The
+    // #155 lineage (decode-era block-aligned snapshots, the
+    // commit_verify_state_async live-state invariant, finish-leaf
+    // sync_secondary) closed the interaction. Any residual divergence seen
+    // only at batch>1 is FP8 low-margin argmax tie-breaking from
+    // batch-size-dependent MoE-kernel rounding (a known FP8 quality-floor
+    // property present for fresh non-cached sequences too), not a Marconi
+    // state-management defect — so no warning is emitted here.
     let prefix_cache = serve_phases::build_prefix_cache(&args);
     let comm = serve_phases::init_nccl_comm(&args, gpu.as_ref(), world_size)?;
     if args.profile {

@@ -438,6 +438,18 @@ impl StreamingToolDetector {
         self.call_counter > 0
     }
 
+    /// True while the detector is between a `<tool_call>` opener and its
+    /// matching close — i.e. accumulating a tool-call body. Callers use this
+    /// to suppress content-level scrubbing (e.g. the bare role-literal strip
+    /// in `handle_token`) that would otherwise eat a legitimate name/argument
+    /// fragment. A standalone `tool` BPE token inside the body is the leading
+    /// fragment of a `tool_*`-prefixed NAME (`tool_search`, `tool_call`,
+    /// `tool_describe`) being reassembled across token boundaries — dropping
+    /// it truncates the streamed name by exactly `len("tool")` == 4 chars.
+    pub fn inside_tool_call(&self) -> bool {
+        self.inside_tag
+    }
+
     /// Returns safe byte length to emit without splitting a partial tag.
     /// Holds back content that could be the start of `<tool_call>` or bare `<function`.
     fn safe_emit_len(&self) -> usize {

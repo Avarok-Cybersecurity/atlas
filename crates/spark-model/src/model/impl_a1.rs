@@ -75,6 +75,14 @@ impl TransformerModel {
         // unconditionally (a handle is cheap); only invoked when `lm_head_fp8`
         // is set, so the NVFP4/BF16 paths never touch it.
         let dense_gemv_fp8w_kernel = gpu.kernel("gemv_fp8w", "dense_gemv_fp8w")?;
+        // FP8 dual-GEMV (batch=2): present on images that ship the kernel;
+        // try_kernel keeps the handle 0 on older sets so dispatch falls back
+        // to the per-token loop.
+        let dense_gemv_fp8w_batch2_kernel = crate::layers::try_kernel(
+            gpu.as_ref(),
+            "dense_gemv_fp8w_batch2",
+            "dense_gemv_fp8w_batch2",
+        );
         let dense_gemm_kernel = gpu.kernel("gemm", "dense_gemm_bf16")?;
         let argmax_kernel = gpu.kernel("argmax", "argmax_bf16")?;
         let argmax_logits_kernel = gpu.kernel("argmax", "argmax_fp32")?;
@@ -232,6 +240,9 @@ impl TransformerModel {
         // Secondary stream + event for pipelining checkpoint D2D with MTP propose.
         let secondary_stream = gpu.create_stream()?;
         let secondary_event = gpu.create_event()?;
+        // Event ordering SSM-snapshot saves (default stream) before a warm
+        // Marconi restore (prefill stream). See `snapshot_event` doc in types.rs.
+        let snapshot_event = gpu.create_event()?;
 
         // EP: register moe_output buffer with NCCL and provide bf16_add kernel.
         if let Some(ref comm) = comm
@@ -422,6 +433,7 @@ impl TransformerModel {
             w4a16_gemm_kernel,
             w4a16_gemv_batch2_kernel,
             dense_gemv_fp8w_kernel,
+            dense_gemv_fp8w_batch2_kernel,
             dense_gemm_kernel,
             argmax_kernel,
             argmax_logits_kernel,
@@ -460,6 +472,7 @@ impl TransformerModel {
             prefix_cache,
             secondary_stream,
             secondary_event,
+            snapshot_event,
             comm,
             ep_cmd_buf,
             ep_protocol_v2: matches!(std::env::var("ATLAS_EP_PROTOCOL").as_deref(), Ok("v2")),

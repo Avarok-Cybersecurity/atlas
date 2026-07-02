@@ -25,6 +25,7 @@ mod logit_dump;
 mod logit_processors;
 mod logprobs;
 mod mod_helpers;
+mod mtp_gate;
 mod mtp_step;
 mod phase_continue_prefills;
 mod phase_promote_prefills;
@@ -132,13 +133,23 @@ pub fn run(
     model
         .bind_gpu_to_thread()
         .expect("Failed to bind CUDA context to scheduler thread");
-    let use_mtp = use_speculative && model.has_proposer();
+    let mut use_mtp = use_speculative && model.has_proposer();
     let num_drafts = if use_mtp || use_self_speculative || use_ngram_speculative {
         num_drafts.max(1)
     } else {
         0
     };
     let chunked = max_prefill_tokens > 0;
+    // Throughput-aware MTP gate: when MTP is requested, measure the verify-step
+    // cost multiplier over the first decode steps of the first lone-sequence
+    // session and auto-disable MTP if it is provably net-negative. Only armed
+    // for the pure-MTP path (not ngram/self/dflash, which have their own
+    // economics and proposers).
+    let mut mtp_gate = if use_mtp {
+        Some(mtp_gate::MtpGate::new(num_drafts))
+    } else {
+        None
+    };
     let mut ngram_proposer = if use_ngram_speculative {
         Some(NgramProposer::new(4)) // 4-gram context
     } else {
@@ -329,8 +340,62 @@ pub fn run(
                 && !active[0].suppress_tool_call
                 && !active[0].disable_mtp
             {
-                // MTP speculative decode: beneficial at all context lengths.
-                step_mtp(&*model, &mut active, num_drafts, &verify_ctx);
+                // Throughput-aware MTP gate: while still measuring, run the
+                // step type the gate asks for and time it. Both step types emit
+                // real, correct tokens (MTP verify and plain decode are greedy-
+                // equivalent), so the measurement window does not waste work.
+                if let Some(gate) = mtp_gate.as_mut().filter(|g| g.is_measuring()) {
+                    match gate.next_step() {
+                        mtp_gate::GateStep::MeasureDecode => {
+                            let t0 = std::time::Instant::now();
+                            step_decode_only(
+                                &*model,
+                                &mut active,
+                                think_end_token,
+                                think_start_token,
+                                code_fence_token,
+                                tool_call_start_token,
+                                tool_call_end_token,
+                                adaptive_sampling,
+                            );
+                            mtp_gate
+                                .as_mut()
+                                .expect("gate present")
+                                .record_decode(t0.elapsed());
+                        }
+                        mtp_gate::GateStep::MeasureVerify => {
+                            // Only a true verify forward (drafts already
+                            // proposed) is a representative sample; a bootstrap-
+                            // only step proposes the first draft and is skipped.
+                            let had_draft = !active[0].pending_drafts.is_empty();
+                            let t0 = std::time::Instant::now();
+                            step_mtp(&*model, &mut active, num_drafts, &verify_ctx);
+                            if had_draft {
+                                mtp_gate
+                                    .as_mut()
+                                    .expect("gate present")
+                                    .record_verify(t0.elapsed());
+                            }
+                        }
+                    }
+                    // Apply a freshly-reached decision: disable MTP for the rest
+                    // of serving when provably net-negative.
+                    if mtp_gate.as_ref().is_some_and(|g| {
+                        !g.is_measuring()
+                            && g.decision() == Some(mtp_gate::GateDecision::DisableMtp)
+                    }) {
+                        use_mtp = false;
+                        for a in active.iter_mut() {
+                            a.pending_drafts.clear();
+                        }
+                        if let Err(e) = model.sync_secondary() {
+                            tracing::error!("mtp-gate→decode sync_secondary: {e:#}");
+                        }
+                    }
+                } else {
+                    // MTP speculative decode: beneficial at all context lengths.
+                    step_mtp(&*model, &mut active, num_drafts, &verify_ctx);
+                }
             } else {
                 // Batch decode (no MTP). Clear stale drafts when transitioning out of MTP mode.
                 if use_mtp {

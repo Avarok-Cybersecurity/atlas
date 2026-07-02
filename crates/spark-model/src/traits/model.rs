@@ -619,6 +619,22 @@ pub trait Model: Send + Sync {
         Ok(())
     }
 
+    /// Item #2 (STree-style in-place verify commit): commit the surviving
+    /// prefix of a verify pass directly onto the canonical `h_state` /
+    /// `conv_state`. Full accept (`num_accepted == k`) is a no-op (the
+    /// kernel's final state is already live); partial accept is a single
+    /// index-select of `h_state_intermediates[num_accepted-1]`. No-op
+    /// default for backends without the dual-buffer SSM state.
+    /// Runs on `secondary_stream`; pair with `sync_secondary`.
+    fn commit_accepted_prefix(
+        &self,
+        _seq: &mut SequenceState,
+        _num_accepted: usize,
+        _k: usize,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// F62 (2026-04-27): commit a verify pass to the canonical SSM state.
     /// `num_accepted ∈ [0, k]`: full accept → copy `h_state` → checkpoint;
     /// partial → copy `h_state_intermediates[num_accepted-1]`; full reject →

@@ -264,7 +264,7 @@ mod propose;
 impl DraftProposer for BlockDiffusionDraftHead {
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>> {
         // Per-seq ctx accumulator: `[max_seq_len, 5 * target_hidden] BF16`.
-        // Sized once, re-used across the seq's lifetime; reset on
+        // Sized once, re-used across the seq's lifetime; freed in
         // `free_state`. At max_seq_len=16384 and 5×2048 BF16: 320 MB per
         // seq — tolerable on a single Spark with max_batch_size=1; for
         // higher batch we may want to reduce to a smaller working window.
@@ -331,9 +331,31 @@ impl DraftProposer for BlockDiffusionDraftHead {
         Ok(())
     }
 
-    fn free_state(&self, _state: &mut dyn ProposerState) -> Result<()> {
-        // Phase 1: nothing to free (no allocated KV blocks yet). Phase 2
-        // reclaims paged blocks across all drafter layers.
+    fn free_state(&self, gpu: &dyn GpuBackend, state: &mut dyn ProposerState) -> Result<()> {
+        let dstate = state
+            .as_any_mut()
+            .downcast_mut::<DflashProposerState>()
+            .ok_or_else(|| anyhow::anyhow!("Invalid DFlash proposer state"))?;
+        // Reclaim drafter KV blocks (mirrors MtpHead::free_state). The table
+        // is empty today — propose() does not yet allocate paged blocks — but
+        // this closes the leak class for the paged drafter path.
+        if !dstate.block_table.is_empty() {
+            self.kv_cache.lock().free_blocks(&dstate.block_table);
+            dstate.block_table.clear();
+        }
+        // Free the per-seq ctx accumulator — the dominant per-request
+        // allocation (`max_seq_len × 5 × target_hidden` BF16; ~320 MB at
+        // max_seq_len=16384). `DevicePtr` has no Drop, so without this every
+        // finished sequence leaks it for the server's lifetime. Guarded on a
+        // non-null pointer so a double free_state is a no-op.
+        if dstate.ctx_hidden_acc.0 != 0 {
+            gpu.free(dstate.ctx_hidden_acc)?;
+            dstate.ctx_hidden_acc = DevicePtr(0);
+        }
+        dstate.seq_len = 0;
+        dstate.ctx_len = 0;
+        dstate.prefill_done = false;
+        dstate.last_num_drafted = 0;
         Ok(())
     }
 }

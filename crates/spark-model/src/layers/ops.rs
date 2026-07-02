@@ -15,6 +15,8 @@
 mod activations;
 #[path = "ops/embeddings.rs"]
 mod embeddings;
+#[path = "ops/fp8_gemv_batch.rs"]
+mod fp8_gemv_batch;
 #[path = "ops/fp8_moe.rs"]
 mod fp8_moe;
 #[path = "ops/fp8_moe_batch_a.rs"]
@@ -25,6 +27,8 @@ mod fp8_moe_batch_b;
 mod gemm_dense;
 #[path = "ops/gemm_quant.rs"]
 mod gemm_quant;
+#[path = "ops/hyper_connection.rs"]
+mod hyper_connection;
 #[path = "ops/kv_cache.rs"]
 mod kv_cache;
 #[path = "ops/kv_cache_fp8k.rs"]
@@ -76,11 +80,13 @@ mod ssm_preproc;
 
 pub use activations::*;
 pub use embeddings::*;
+pub use fp8_gemv_batch::*;
 pub use fp8_moe::*;
 pub use fp8_moe_batch_a::*;
 pub use fp8_moe_batch_b::*;
 pub use gemm_dense::*;
 pub use gemm_quant::*;
+pub use hyper_connection::*;
 pub use kv_cache::*;
 pub use kv_cache_fp8k::*;
 pub use kv_cache_turbok::*;

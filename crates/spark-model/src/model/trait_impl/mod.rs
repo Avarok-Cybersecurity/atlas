@@ -348,6 +348,14 @@ impl Model for TransformerModel {
     ) -> Result<()> {
         self.commit_verify_state_async_dispatch(seq, num_accepted, k)
     }
+    fn commit_accepted_prefix(
+        &self,
+        seq: &mut SequenceState,
+        num_accepted: usize,
+        k: usize,
+    ) -> Result<()> {
+        self.commit_accepted_prefix_dispatch(seq, num_accepted, k)
+    }
     fn ep_worker_step(&self, slots: &mut [Option<SequenceState>]) -> Result<bool> {
         self.ep_worker_step_dispatch(slots)
     }

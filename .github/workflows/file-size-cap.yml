@@ -14,7 +14,7 @@ jobs:
     name: Enforce ≤500 LoC per source file
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Check no .rs file exceeds 500 lines
         shell: bash
@@ -153,6 +153,45 @@ jobs:
             # launch sequence reads top-to-bottom and splitting fragments it.
             # Clean split tracked as follow-up.
             "crates/spark-model/src/layers/dense_ffn.rs"
+            # ── PR #202 (perf/vision-vit-perf) carry-over ──
+            # 513 LoC — prefill phase-A (vision-embed prepare + single/batched
+            # dispatch). The GEMM-based ViT perf work adds the co-dispatch
+            # `prepare_vision_embed_batched_dispatch` path alongside the existing
+            # single-image dispatch; both share the encode→splice launch order
+            # that reads top-to-bottom with `prefill_b/` and the scheduler's
+            # `prefill_a_step`. Splitting fragments that ordered sequence (same
+            # rationale as the prefill_c.rs / kernel-dispatch entries above).
+            # Clean split tracked as follow-up.
+            "crates/spark-model/src/model/trait_impl/prefill_a.rs"
+            # 506 LoC — GEMM-based ViT attention block (vit_gemm_bias +
+            # vit_attention_gemm + vit_block). Compute-heavy launch sequence:
+            # the per-head GEMM1→softmax→GEMM2→scatter ordering and the shared
+            # buf_scores/buf_probs/buf_o_stage reuse are correctness-critical and
+            # read top-to-bottom (splitting them across files inverts the launch
+            # order, same rationale as the qwen3_attention compute-heavy entries).
+            # Pushed over 500 purely by `cargo fmt` wrapping the kernel-launch
+            # arg chains. Clean split tracked as follow-up.
+            "crates/spark-model/src/layers/vision_encoder/enc_impl/vit_block.rs"
+            # ── PR #186 (DeepSeek-V4-Flash port) carry-over ──
+            # 12 files the V4 port lands over the cap. Allow-listed to ship DS4F
+            # to users (today it's runnable only by building the #186 branch);
+            # consistent with the existing big-but-unsplittable entries above
+            # (build.rs 891, metal_backend.rs 733). The shared-file growth
+            # (prefill_inner/decode_inner — V4 added CSA/HCA + MLA decode paths)
+            # and the V4-new kernel/loader/MTP-head files read top-to-bottom like
+            # the other compute-heavy entries. Clean split tracked in #219.
+            "crates/spark-model/src/layers/qwen3_attention/trait_impl/prefill_inner.rs"
+            "crates/spark-model/src/layers/qwen3_attention/trait_impl/decode_inner.rs"
+            "crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip_v4.rs"
+            "crates/spark-model/src/layers/qwen3_attention/decode/attention_forward_v4.rs"
+            "crates/spark-model/src/layers/qwen3_attention/trait_impl/multi_seq/mla.rs"
+            "crates/spark-model/src/weight_loader/deepseek_v4/assemble.rs"
+            "crates/spark-model/src/layers/deepseek_v4_mtp.rs"
+            "crates/spark-model/src/factory/build.rs"
+            "crates/atlas-core/src/config/tests.rs"
+            "crates/atlas-core/src/config.rs"
+            "crates/spark-model/src/model/impl_b1.rs"
+            "crates/spark-model/src/model/trait_impl/prefill_b/batch_kernel.rs"
           )
 
           violations=0

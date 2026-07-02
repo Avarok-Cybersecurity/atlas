@@ -312,6 +312,7 @@ pub fn resume_swapped_seq(
         // safe default. Cleared at next emit if we re-cross a marker.
         inside_tool_body: false,
         tool_call_completed: false,
+        post_completion_tool_opens: 0,
         tool_body_streak_tokens: 0,
         inside_parameter_body: false,
         param_body_chars_emitted: 0,

@@ -74,12 +74,14 @@ pub(super) fn assemble_layer(
     let wkv_a_dense = require(ctx.wkv_a_dense, "wkv_a_dense")?;
     let mla_weights = MlaWeights {
         wq_a: wq_a_dense,
+        wq_a_fp8: None,
         wq_a_nvfp4: if disable_nvfp4_mla {
             None
         } else {
             ctx.wq_a_nvfp4
         },
         wq_b: require(ctx.wq_b, "wq_b")?,
+        wq_b_fp8: None,
         wq_b_nvfp4: if disable_nvfp4_mla {
             None
         } else {
@@ -100,6 +102,13 @@ pub(super) fn assemble_layer(
         },
         wo: require(ctx.o_dense_bf16, "o_dense_bf16")?,
         wo_nvfp4: if disable_nvfp4_mla { None } else { ctx.o_nvfp4 },
+        wo_a: null,
+        wo_a_nvfp4: None,
+        wo_b: null,
+        wo_b_nvfp4: None,
+        wo_b_fp8: None,
+        wo_a_fp8: None,
+        wkv_a_fp8: None,
         wq_b_rope: require(ctx.wq_b_rope, "wq_b_rope")?,
         w_uk_t: require(ctx.w_uk_t, "w_uk_t")?,
         w_uv: require(ctx.w_uv, "w_uv")?,
@@ -109,9 +118,12 @@ pub(super) fn assemble_layer(
         yarn_inv_freq,
         q_lora_rank: q_lora,
         kv_lora_rank: kv_lora,
+        o_lora_rank: 0,
         nope,
         rope,
         v_dim,
+        compressor: None,
+        attn_sink: spark_runtime::gpu::DevicePtr::NULL,
     };
 
     let input_norm = dense(ctx.store, &format!("{prefix}.attention_norm.weight"))?;

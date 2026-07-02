@@ -72,6 +72,84 @@ mkdir -p "${RUNS_DIR}"
 
 LOCAL_API="http://localhost:8888/v1"
 
+# ── Warm cargo cache for the AGENT'S OWN builds ────────────────────
+# A SECONDARY webserver_ok wall driver is the AGENT cold-compiling
+# axum/tokio/hyper inside opencode's --dir on EVERY `cargo test|build|run`
+# tool call. The scorer already reused the warm target dir, but the agent did
+# not — so the agent's `cargo test` (141× across a tier) cold-built the dep
+# tree (~7s idle, far worse under the FP8-model memory-pressure swap thrash).
+#
+# Fix: route the AGENT's cargo at the SAME shared warm target dir the scorer
+# uses (ATLAS_WARM_TARGET_DIR, SSOT with warm_cargo_cache.sh + score_run.py).
+# Each agent build then reuses the pre-compiled dep rlibs and only links the
+# project's own tiny crate (~1.4s incremental). warm_cargo_cache.sh now warms
+# BOTH the debug and release profiles, since the agent's `cargo test`/`cargo
+# run` use debug while `cargo build --release` uses release.
+#
+# NOTE — this is the SECONDARY cost. Forensics on the moegridfix build showed
+# the slow runs (260-360s) were dominated by an Atlas-side FP8 deep-context
+# degeneration: once the agentic context passes the 16384 window the model
+# leaks repeated <tool_call> XML as plain text and runs a turn to the max_tokens
+# cap (~8200 tok @ ~31 tok/s ≈ 260s). That is fixed IN THE ENGINE by the
+# `post_completion_tool_opens` guard (decode_logits_step.rs), which ends the
+# turn once the model re-opens ≥8 tool-call blocks after a completed call. This
+# cargo warm-dir change removes the orthogonal environmental cold-build tax.
+#
+# SSOT: same env var + same explicit default as warm_cargo_cache.sh and
+# score_run.py's _warm_target_dir() — the three never drift.
+ATLAS_WARM_TARGET_DIR="${ATLAS_WARM_TARGET_DIR:-${HOME}/.cargo/atlas-warm-target}"
+# Pass into the agent's bash environment. opencode forwards the parent
+# environment to its bash tool, so exporting here reaches `cargo` in-agent.
+# Network stays ON (NOT CARGO_NET_OFFLINE): a generation that pins a dep
+# version outside the pre-warmed set must still resolve, or it would be a
+# false build failure. The warm TARGET dir is what kills the cold-compile
+# cost; the registry index is shared+persistent so the resolver hit is cheap.
+export CARGO_TARGET_DIR="${ATLAS_WARM_TARGET_DIR}"
+
+# ── opencode output cap (DIAGNOSTIC KNOB — default = model's natural cap) ───
+# The FP8 deep-context degeneration (model leaks repeated tool-call XML and
+# burns a turn to the cap) is NOT fixed here — it is fixed in the ENGINE, by the
+# `post_completion_tool_opens` guard in decode_logits_step.rs, which detects the
+# tool-call-repetition loop and ends the turn. The MODEL still decides when to
+# stop on every healthy turn; the guard only trips on a provably degenerate loop
+# (≥8 re-opened tool-call blocks after a completed call).
+#
+# This knob is left ONLY as a diagnostic lever for de-confounding experiments —
+# e.g. measuring how much a runaway would have cost if the engine guard were
+# absent. It DEFAULTS to 8192 (opencode's own model `limit.output`), i.e. it
+# does NOT clamp the model: capping output below the model's natural stopping
+# point would MASK the model's decode behaviour, which we explicitly do not do.
+# Set ATLAS_OPENCODE_OUTPUT_CAP to a lower value only for such experiments.
+ATLAS_OPENCODE_OUTPUT_CAP="${ATLAS_OPENCODE_OUTPUT_CAP:-8192}"
+apply_output_cap() {
+  local cfg="${1:-${HOME}/.config/opencode/opencode.json}"
+  [[ -f "${cfg}" ]] || { echo "[output-cap] no opencode config at ${cfg}; skipping" >&2; return 0; }
+  ATLAS_OPENCODE_OUTPUT_CAP="${ATLAS_OPENCODE_OUTPUT_CAP}" python3 - "${cfg}" <<'PY' >&2 || true
+import json, os, sys, tempfile
+cfg = sys.argv[1]
+cap = int(os.environ["ATLAS_OPENCODE_OUTPUT_CAP"])
+try:
+    d = json.load(open(cfg))
+except Exception as e:
+    print(f"[output-cap] cannot parse {cfg}: {e}"); sys.exit(0)
+changed = False
+for prov in (d.get("provider") or {}).values():
+    for mdl in (prov.get("models") or {}).values():
+        lim = mdl.setdefault("limit", {})
+        if lim.get("output") != cap:
+            lim["output"] = cap
+            changed = True
+if changed:
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(cfg) or ".")
+    os.write(fd, (json.dumps(d, indent=2) + "\n").encode()); os.close(fd)
+    os.replace(tmp, cfg)
+    print(f"[output-cap] set limit.output={cap} in {cfg}")
+else:
+    print(f"[output-cap] limit.output already {cap} in {cfg}")
+PY
+}
+apply_output_cap "${HOME}/.config/opencode/opencode.json"
+
 # ── Cosine mode short-circuit ────────────────────────────────────
 if [[ "${COSINE_MODE}" == "1" ]]; then
   echo "=== cosine-mode: running cosine_run.py (per-layer drift diagnostic) ===" >&2
@@ -203,10 +281,39 @@ run_one() {
   else
     # opencode: --dir sets opencode's working directory; the model sees only
     # "current working directory" in the prompt, never the absolute path.
-    ATLAS_HARNESS_PORT=${HPORT:-3001} \
-      env ${extra_env} \
-      timeout "${OC_TIMEOUT:-360}" opencode run --dangerously-skip-permissions --dir "${TARGET}" --format json \
-      "${PROMPT}" > "${OC_JSON}" 2> "${OC_ERR}" || true
+    #
+    # Empty-session retry: opencode occasionally returns a transient empty
+    # session (zero tool_use events, zero files written) — a client-side glitch
+    # that has nothing to do with model quality. Scoring such a session as a
+    # model failure is wrong, so detect it (no write tool_use AND no files on
+    # disk) and re-run the opencode invocation up to OC_EMPTY_RETRIES times.
+    # A real model run always emits at least the write that creates Cargo.toml.
+    local _attempt=0
+    local _max_empty="${OC_EMPTY_RETRIES:-2}"
+    while :; do
+      rm -rf "${TARGET}"; mkdir -p "${TARGET}"
+      ATLAS_HARNESS_PORT=${HPORT:-3001} \
+        env ${extra_env} \
+        timeout "${OC_TIMEOUT:-360}" opencode run --dangerously-skip-permissions --dir "${TARGET}" --format json \
+        "${PROMPT}" > "${OC_JSON}" 2> "${OC_ERR}" || true
+      # An empty session = no tool_use events AND no real files on disk.
+      # `grep -c` exits 1 with "0" on no-match; piping through `tr -d` and
+      # defaulting keeps _tool_uses a single clean integer for the -gt test.
+      local _tool_uses _real_files
+      _tool_uses=$(grep -c '"type":"tool_use"' "${OC_JSON}" 2>/dev/null | tr -d '[:space:]')
+      _tool_uses="${_tool_uses:-0}"
+      _real_files=$(find "${TARGET}" -type f -not -path '*/.git/*' 2>/dev/null | wc -l | tr -d '[:space:]')
+      _real_files="${_real_files:-0}"
+      if [[ "${_tool_uses}" -gt 0 || "${_real_files}" -gt 0 ]]; then
+        break
+      fi
+      _attempt=$(( _attempt + 1 ))
+      if [[ "${_attempt}" -gt "${_max_empty}" ]]; then
+        echo "    [empty-session] run ${i}: still empty after ${_max_empty} retries — scoring as-is" >&2
+        break
+      fi
+      echo "    [empty-session] run ${i}: 0 tool_calls + 0 files (transient opencode glitch) — retry ${_attempt}/${_max_empty}" >&2
+    done
   fi
   END_TS=$(date +%s.%N)
 

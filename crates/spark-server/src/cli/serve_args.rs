@@ -127,20 +127,13 @@ pub struct ServeArgs {
     #[arg(long, value_name = "JSON")]
     pub default_chat_template_kwargs: Option<String>,
 
-    /// Currently slower than regular decode for hybrid SSM models.
+    /// Enable MTP speculative decoding. The scheduler then MEASURES the
+    /// verify-step cost over the first decode steps of serving and auto-disables
+    /// MTP if it is provably net-negative (verify multiplier ≥ 1 + num_drafts),
+    /// so this flag never regresses decode on configs where MTP does not pay
+    /// off. See `scheduler::mtp_gate`.
     #[arg(long, default_value_t = false)]
     pub speculative: bool,
-
-    /// Force MTP speculative decoding ON even when the weight-quant gate would
-    /// auto-disable it. Atlas measures MTP (K=2 verify) as net-NEGATIVE on FP8
-    /// weights for hybrid SSM models (~-20% decode: the verify pass re-runs the
-    /// full layer/MoE/lm_head stack and acceptance is ~30-41%, below the
-    /// ~60-70% break-even), but net-POSITIVE on NVFP4 weights. So when
-    /// `--speculative` is set on an FP8 checkpoint, MTP is auto-gated OFF by
-    /// default. Pass `--force-speculative` to override that gate and keep MTP
-    /// on regardless of weight quant format.
-    #[arg(long, default_value_t = false)]
-    pub force_speculative: bool,
 
     /// Enable self-speculative decoding: draft via layer-skipping (no MTP weights needed).
     /// Skips SSM layers during drafting for cheap predictions, then verifies with full model.

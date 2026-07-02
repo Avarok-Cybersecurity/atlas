@@ -91,10 +91,18 @@ pub(crate) fn preflight_reserve(
     .total_bytes();
     // SSM snapshot pool = Marconi prefix-cache region + Phase-C
     // decode-rollback ring. The decode ring is sized per active
-    // sequence (`ROLLBACK_RESTEER_CAP + 1` slots × `max_batch_size`),
-    // and only allocated for SSM models. Mirrors `SsmSnapshotPool::new`.
+    // sequence (`DECODE_ROLLBACK_RING_SLOTS` slots × `max_batch_size`),
+    // and only allocated for SSM models. SSOT: this reservation MUST use
+    // the SAME constant the pool actually allocates with
+    // (`SsmSnapshotPool::new` in `impl_a1.rs` uses
+    // `DECODE_ROLLBACK_RING_SLOTS`). It previously used
+    // `ROLLBACK_RESTEER_CAP + 1` (= 3) while the pool allocated
+    // `DECODE_ROLLBACK_RING_SLOTS` (= 8), under-reserving the SSM-snapshot
+    // GPU budget by `(8 - 3) × max_batch_size × num_ssm_layers ×
+    // (h_bytes + conv_bytes)` — the two constants were decoupled when the
+    // ring was widened past the rollback cap.
     let decode_ring_slots = if config.num_ssm_layers() > 0 {
-        (atlas_kernels::ROLLBACK_RESTEER_CAP as usize) + 1
+        atlas_kernels::DECODE_ROLLBACK_RING_SLOTS
     } else {
         0
     };

@@ -143,6 +143,17 @@ pub struct MoeLayer {
     // the weight loader produces transposed-only pointer tables.
     moe_expert_gate_up_shared_t_k: KernelHandle,
     moe_expert_silu_down_shared_t_k: KernelHandle,
+    // ── sqrtsoftplus routing (DeepSeek-V4) ──
+    moe_topk_sqrtsoftplus_k: KernelHandle,
+    moe_topk_sqrtsoftplus_batched_k: KernelHandle,
+    // ── hash routing (DeepSeek-V4 first `num_hash_layers` MoE layers) ──
+    moe_hash_route_k: KernelHandle,
+    moe_hash_route_batched_k: KernelHandle,
+    /// Static `tid2eid` table [vocab_size, top_k] i64 — present ONLY for the
+    /// hash-routed layers (the loader supplies it only for those). `Some`
+    /// here is the SSOT that this layer routes via the static hash table
+    /// instead of the learned gate's top-K.
+    tid2eid_dev: Option<DevicePtr>,
     moe_expert_gate_up_shared_batch2_t_k: KernelHandle,
     moe_expert_silu_down_shared_batch2_t_k: KernelHandle,
     moe_expert_gate_up_shared_batch3_t_k: KernelHandle,

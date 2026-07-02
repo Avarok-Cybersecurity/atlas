@@ -173,6 +173,7 @@ fn build_active_seq_from_prefill(
         tool_call_opened: false,
         inside_tool_body: false,
         tool_call_completed: false,
+        post_completion_tool_opens: 0,
         tool_body_streak_tokens: 0,
         inside_parameter_body: false,
         param_body_chars_emitted: 0,
