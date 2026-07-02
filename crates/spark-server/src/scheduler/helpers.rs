@@ -203,19 +203,6 @@ pub fn disable_watchdogs() -> bool {
         .get_or_init(|| parse_env_bool(std::env::var("ATLAS_DISABLE_WATCHDOGS").ok().as_deref()))
 }
 
-static MAX_TOKENS_COUNTS_REASONING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-/// When `true`, reasoning (`<think>`) tokens count against `max_tokens` just
-/// like content tokens — i.e. `max_tokens` caps the TOTAL output (reasoning +
-/// content), matching vLLM/OpenAI semantics. Default `false` preserves Atlas's
-/// native behavior where `max_tokens` caps only post-`</think>` content and
-/// reasoning is governed by the separate thinking budget. Flipped on by
-/// `ATLAS_MAX_TOKENS_TOTAL=1`/`true` (e.g. for apples-to-apples benchmarking).
-pub fn max_tokens_counts_reasoning() -> bool {
-    *MAX_TOKENS_COUNTS_REASONING
-        .get_or_init(|| parse_env_bool(std::env::var("ATLAS_MAX_TOKENS_TOTAL").ok().as_deref()))
-}
-
 static ENABLE_LOOP_WATCHDOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 /// Set once at startup from the resolved `ModelBehavior.enable_loop_watchdog`.

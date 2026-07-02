@@ -251,13 +251,6 @@ pub fn process_decode_logits(
 
         // Thinking tokens don't count toward remaining (thinking is "free").
         if a.inside_thinking {
-            // `ATLAS_MAX_TOKENS_TOTAL=1`: reasoning tokens count against
-            // max_tokens too, so it caps TOTAL output (reasoning + content)
-            // like vLLM. Default off (reasoning is "free", capped by the
-            // separate thinking budget). Twin of the guard in emit_step.
-            if crate::scheduler::helpers::max_tokens_counts_reasoning() {
-                a.consume_generation_budget();
-            }
             if think_end_token == Some(tok) {
                 a.inside_thinking = false;
                 a.force_end_thinking = false;
