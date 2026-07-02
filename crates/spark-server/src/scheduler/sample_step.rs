@@ -28,6 +28,59 @@ impl PositionKind {
     }
 }
 
+/// #192: penalty history for the CURRENT tool-call segment — the token
+/// history slice that repetition / presence / frequency / LZ / DRY penalties
+/// see, cut to AFTER the last completed `</tool_call>`.
+///
+/// With parallel tool calls the full-generation history compounds the
+/// repetition penalty on the SECOND call's structural scaffold: the divide is
+/// per OCCURRENCE (`logit /= rep_penalty` once per history hit, so 1.1^k), and
+/// by call 2 the exact scaffold tokens from call 1 (`\n`=198, `</`=510,
+/// `>`=29, `<tool_call>`) are crushed and lose to space-prefixed BPE variants
+/// (` </`=672, ` >`=835) — breaking the close literal and garbling the call
+/// (live 2026-07-02, hermes on Qwen3.6-27B: call 2 = `Berlin </ parameter >`
+/// drift, and the penalized inter-call `<tool_call>`/`\n` suppressed the
+/// third call outright). Scoping the history to the current segment gives
+/// every call the same penalty landscape the FIRST call had — the one the
+/// presets were tuned on — while keeping the intra-call anti-attractor role
+/// (A1) fully intact. Whole-block call repetition is still bounded by the
+/// post-completion open cap and the loop watchdogs.
+///
+/// No completed call in the history (single-call turns, plain chat,
+/// `tool_call_end_token=None`) => the full history, byte-identical to the
+/// previous behavior.
+pub(super) fn penalty_history_scope(
+    output_tokens: &[u32],
+    tool_call_end_token: Option<u32>,
+) -> &[u32] {
+    match tool_call_end_token.and_then(|t| output_tokens.iter().rposition(|&x| x == t)) {
+        Some(p) => &output_tokens[p + 1..],
+        None => output_tokens,
+    }
+}
+
+/// #192: drop the standing `<tool_call>` OPENER nudge while INSIDE a tool
+/// body. `sampling_setup` arms a +3.0 exponential-decay bias on the opener
+/// for tools-active requests to encourage a call to START; inside a body it
+/// is pure distortion — observed live (2026-07-02, hermes): at a borderline
+/// mid-value position it flipped the argmax to a spurious re-open
+/// (`... </ parameter > \n<tool_call> ...`), garbling the second parallel
+/// call. Negative (anti-repeat, -5/-10) opener values still apply everywhere.
+/// Pure over the bias vec so it is unit-testable without an `ActiveSeq`.
+pub(super) fn strip_in_tool_opener_bias(
+    logit_bias: &mut Vec<(u32, f32)>,
+    in_tool: bool,
+    opener: Option<u32>,
+) {
+    if !in_tool {
+        return;
+    }
+    let Some(tc_open) = opener else {
+        return;
+    };
+    logit_bias.retain(|&(id, delta)| id != tc_open || delta <= 0.0);
+}
+
 /// Build the penalty/bias-carrying [`SamplingParams`] for one sequence —
 /// the SINGLE source of truth for the repetition / presence / frequency /
 /// LZ / DRY penalty gates + the A4 floor shared by the non-MTP decode path
@@ -64,6 +117,10 @@ pub(super) fn penalty_params_for(
     );
     let in_tool = a.inside_tool_body && !a.inside_thinking;
     let mut logit_bias = base_logit_bias;
+
+    // #192: the `<tool_call>` opener nudge must not act INSIDE a tool body
+    // (spurious mid-value re-open — see `strip_in_tool_opener_bias`).
+    strip_in_tool_opener_bias(&mut logit_bias, in_tool, a.tool_call_start_token);
 
     // A4 (2026-05-26) POST_THINK_MIN_REASONING floor — moved here from the
     // inline `process_seq_logits` block (STEP 3). Suppress the `</think>`
@@ -449,4 +506,127 @@ pub fn sample_first_token(
     // emit_step disengage path handles any later desync gracefully.
     gs.accept_token(tok);
     Ok(tok)
+}
+
+#[cfg(test)]
+mod penalty_scope_tests {
+    //! #192: the per-tool-call-segment penalty history scope and the in-tool
+    //! opener-bias strip — the two levers that stop Atlas's own sampling
+    //! machinery from garbling the SECOND parallel tool call (live 2026-07-02,
+    //! hermes on Qwen3.6-27B-NVFP4: call 2 scaffold flipped to space-prefixed
+    //! BPE variants `Berlin </ parameter >` + a spurious mid-value
+    //! `<tool_call>` re-open; the third call was penalty-suppressed outright).
+    use super::{penalty_history_scope, strip_in_tool_opener_bias};
+
+    const CLOSE: u32 = 248059; // </tool_call>
+
+    #[test]
+    fn scope_without_completed_call_is_full_history() {
+        let toks = vec![1, 2, 3, 4];
+        assert_eq!(penalty_history_scope(&toks, Some(CLOSE)), &toks[..]);
+        // No configured end token (legacy/none) — also full history.
+        assert_eq!(penalty_history_scope(&toks, None), &toks[..]);
+    }
+
+    #[test]
+    fn scope_cuts_after_last_completed_call() {
+        //             call 1                 sep  call 2 (open)
+        let toks = vec![10, 11, 12, CLOSE, 198, 20, 21];
+        assert_eq!(penalty_history_scope(&toks, Some(CLOSE)), &[198, 20, 21]);
+        // Two completed calls — only the segment after the LAST close counts.
+        let toks = vec![10, CLOSE, 198, 20, CLOSE, 30];
+        assert_eq!(penalty_history_scope(&toks, Some(CLOSE)), &[30]);
+        // Close is the final token — the next position starts a fresh segment.
+        let toks = vec![10, 11, CLOSE];
+        assert_eq!(penalty_history_scope(&toks, Some(CLOSE)), &[] as &[u32]);
+    }
+
+    /// The live failure mechanism, demonstrated at the sampler level: the
+    /// repetition penalty divides PER OCCURRENCE, so a structural token used
+    /// k times across previous calls is at 1/1.1^k by the next call — enough
+    /// to lose to an unpenalized space-prefixed variant. The scoped history
+    /// restores the first-call landscape.
+    #[test]
+    fn scoped_history_prevents_cross_call_penalty_compounding() {
+        use crate::scheduler::{SamplingParams, apply_penalties_and_bias};
+        const NL: u32 = 198; // '\n' — exact scaffold token
+        const NL_VARIANT: u32 = 695; // ' \n' — space-prefixed BPE variant
+
+        let params = SamplingParams {
+            temperature: 0.0,
+            top_k: 0,
+            top_p: 1.0,
+            top_n_sigma: 0.0,
+            min_p: 0.0,
+            logit_bias: Vec::new(),
+            // MODEL.toml [sampling.tools] default for Qwen3.6-27B.
+            repetition_penalty: 1.1,
+            repetition_penalty_window: 0,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            lz_penalty: 0.0,
+            dry_multiplier: 0.0,
+            dry_base: 1.75,
+            dry_allowed_length: 2,
+            dry_sequence_breakers: Vec::new(),
+            max_tokens: 0,
+            stop_token_ids: Vec::new(),
+            seed: None,
+        };
+
+        // Call 1 used '\n' six times; the variant never appeared. The model
+        // slightly prefers the exact token (as at T=0 on the real scaffold).
+        let full_history: Vec<u32> = vec![NL; 6]
+            .into_iter()
+            .chain([10, 11, CLOSE, NL]) // close + separator newline
+            .collect();
+
+        let mut logits = vec![0.0f32; 1000];
+        logits[NL as usize] = 10.0;
+        logits[NL_VARIANT as usize] = 8.5;
+        apply_penalties_and_bias(&mut logits, &params, &full_history);
+        assert!(
+            logits[NL_VARIANT as usize] > logits[NL as usize],
+            "unscoped: 1.1^7 compounding must flip the scaffold token (the bug): {} vs {}",
+            logits[NL as usize],
+            logits[NL_VARIANT as usize],
+        );
+
+        let mut logits = vec![0.0f32; 1000];
+        logits[NL as usize] = 10.0;
+        logits[NL_VARIANT as usize] = 8.5;
+        let scoped = penalty_history_scope(&full_history, Some(CLOSE));
+        assert_eq!(scoped, &[NL], "segment = separator newline only");
+        apply_penalties_and_bias(&mut logits, &params, scoped);
+        assert!(
+            logits[NL as usize] > logits[NL_VARIANT as usize],
+            "scoped: one occurrence must NOT flip the scaffold token: {} vs {}",
+            logits[NL as usize],
+            logits[NL_VARIANT as usize],
+        );
+    }
+
+    #[test]
+    fn opener_bias_stripped_only_inside_tool_body() {
+        const OPEN: u32 = 248058; // <tool_call>
+        // Inside a body: the +3.0 nudge goes, negative anti-repeat stays,
+        // unrelated entries stay.
+        let mut bias = vec![(OPEN, 3.0f32), (42, -8.0f32)];
+        strip_in_tool_opener_bias(&mut bias, true, Some(OPEN));
+        assert_eq!(bias, vec![(42, -8.0f32)]);
+
+        let mut bias = vec![(OPEN, -5.0f32)];
+        strip_in_tool_opener_bias(&mut bias, true, Some(OPEN));
+        assert_eq!(bias, vec![(OPEN, -5.0f32)], "anti-repeat bias survives");
+
+        // Outside a body: untouched.
+        let mut bias = vec![(OPEN, 3.0f32)];
+        strip_in_tool_opener_bias(&mut bias, false, Some(OPEN));
+        assert_eq!(bias, vec![(OPEN, 3.0f32)]);
+
+        // No opener token configured: untouched.
+        let mut bias = vec![(OPEN, 3.0f32)];
+        strip_in_tool_opener_bias(&mut bias, true, None);
+        assert_eq!(bias, vec![(OPEN, 3.0f32)]);
+    }
 }

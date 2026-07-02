@@ -483,3 +483,39 @@ fn streaming_two_calls_with_interleaved_content() {
     assert!(content.contains("Checking Paris first."), "{content:?}");
     assert!(content.contains("all done."), "{content:?}");
 }
+/// GRAMMAR-shaped hermes fixture (live emission has NO whitespace: begin
+/// literal `<tool_call>{"name":"...","arguments":`, end literal
+/// `}</tool_call>`): both parse paths must return both calls' args intact
+/// at every chunk size — pins the live 2026-07-02 second-call probe shape.
+#[test]
+fn grammar_shaped_hermes_two_calls_all_chunk_sizes() {
+    // GRAMMAR-shaped emission: begin literal `<tool_call>{"name":"...","arguments":`
+    // (no whitespace), end literal `}</tool_call>`, single `\n` separator.
+    let text = "<tool_call>{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Paris\"}}</tool_call>\n<tool_call>{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Berlin\"}}</tool_call>";
+    // Blocking
+    let (_c, calls) = parse_tool_calls(text);
+    assert_eq!(calls.len(), 2, "blocking count");
+    assert_json_eq(&calls[0].function.arguments, r#"{"city":"Paris"}"#, "b0");
+    assert_json_eq(&calls[1].function.arguments, r#"{"city":"Berlin"}"#, "b1");
+    // Streaming at every chunk size 1..=16
+    for chunk in 1..=16usize {
+        let mut det = StreamingToolDetector::new();
+        let outputs = drive_chunked(&mut det, text, chunk);
+        let a0 = args_for_idx(&outputs, 0);
+        let a1 = args_for_idx(&outputs, 1);
+        let p0: Result<serde_json::Value, _> = serde_json::from_str(&a0);
+        let p1: Result<serde_json::Value, _> = serde_json::from_str(&a1);
+        assert!(p0.is_ok(), "chunk={chunk} idx0 args not JSON: {a0:?}");
+        assert!(p1.is_ok(), "chunk={chunk} idx1 args not JSON: {a1:?}");
+        assert_eq!(
+            p0.unwrap(),
+            serde_json::json!({"city":"Paris"}),
+            "chunk={chunk} idx0"
+        );
+        assert_eq!(
+            p1.unwrap(),
+            serde_json::json!({"city":"Berlin"}),
+            "chunk={chunk} idx1"
+        );
+    }
+}

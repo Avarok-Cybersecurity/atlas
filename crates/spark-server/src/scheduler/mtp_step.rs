@@ -67,7 +67,14 @@ pub fn step_mtp(
             None,
             Vec::new(),
         );
-        let history = a.output_tokens.clone();
+        // #192: same per-tool-call-segment scoping as the main pipeline
+        // (`penalty_history_scope`) so MTP bootstrap tokens see the identical
+        // penalty landscape.
+        let history = crate::scheduler::sample_step::penalty_history_scope(
+            &a.output_tokens,
+            a.tool_call_end_token,
+        )
+        .to_vec();
         let tok = match sample_token_with_grammar(
             model,
             logits,
