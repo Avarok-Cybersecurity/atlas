@@ -170,12 +170,7 @@ pub trait ModelWeightLoader {
         crate::precision_schedule::PrecisionSchedule::default()
     }
 
-    fn load_embedding(
-        &self,
-        store: &WeightStore,
-        config: &ModelConfig,
-        gpu: &dyn GpuBackend,
-    ) -> Result<DenseWeight>;
+    fn load_embedding(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight>;
     /// Load the final RMSNorm weight used before the LM head.
     ///
     /// `gpu` is passed so model-specific loaders can do on-device weight

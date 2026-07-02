@@ -548,51 +548,6 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
     }
     __syncthreads();
 
-// === FA3 software-pipeline factoring (BR64). Single-definition QK + softmax blocks
-//     used by BOTH the baseline (#else) and the ATLAS_ATTN_PIPELINE path so the
-//     pipeline only reorders calls; the softmax math has exactly one source. ===
-#define ATLAS_ASYM64_QK(ACC, KBUF) do { \
-        _Pragma("unroll") \
-        for (int _i=0;_i<4;_i++){ (ACC)[_i][0]=0; (ACC)[_i][1]=0; (ACC)[_i][2]=0; (ACC)[_i][3]=0; } \
-        const unsigned short* _sQ=(const unsigned short*)smem_Q64; \
-        const unsigned short* _sK=(const unsigned short*)smem_K64[(KBUF)]; \
-        _Pragma("unroll") \
-        for (unsigned int _ks=0; _ks<(HDIM/16); _ks++){ \
-            unsigned int _kb=_ks*16; \
-            unsigned int _ar0=qk_warp_m+group_id, _ar1=_ar0+8; \
-            unsigned int _ac0=_kb+tid_in_group*2, _ac1=_ac0+8; \
-            unsigned int _a0=*(const unsigned int*)&_sQ[_ar0*HDIM_PAD+_ac0]; \
-            unsigned int _a1=*(const unsigned int*)&_sQ[_ar1*HDIM_PAD+_ac0]; \
-            unsigned int _a2=*(const unsigned int*)&_sQ[_ar0*HDIM_PAD+_ac1]; \
-            unsigned int _a3=*(const unsigned int*)&_sQ[_ar1*HDIM_PAD+_ac1]; \
-            _Pragma("unroll") \
-            for (int _nt=0; _nt<4; _nt++){ \
-                unsigned int _nc=_nt*8+group_id, _k0=_kb+tid_in_group*2, _k1=_k0+8; \
-                unsigned int _b0=((unsigned int)_sK[_nc*HDIM_PAD+_k0+1]<<16)|(unsigned int)_sK[_nc*HDIM_PAD+_k0]; \
-                unsigned int _b1=((unsigned int)_sK[_nc*HDIM_PAD+_k1+1]<<16)|(unsigned int)_sK[_nc*HDIM_PAD+_k1]; \
-                asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 " \
-                    "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
-                    :"=f"((ACC)[_nt][0]),"=f"((ACC)[_nt][1]),"=f"((ACC)[_nt][2]),"=f"((ACC)[_nt][3]) \
-                    :"r"(_a0),"r"(_a1),"r"(_a2),"r"(_a3),"r"(_b0),"r"(_b1), \
-                     "f"((ACC)[_nt][0]),"f"((ACC)[_nt][1]),"f"((ACC)[_nt][2]),"f"((ACC)[_nt][3])); \
-            } \
-        } \
-    } while(0)
-
-#ifdef ATLAS_ATTN_PIPELINE
-    // FA3 pipeline state: acc_s_cur = S_k (being soft-maxed), acc_s_next = S_{k+1}
-    // (produced ahead so its QK^T MMAs drain on the TC during softmax_k's MUFU work).
-    float acc_s_cur[4][4], acc_s_next[4][4];
-    // Prologue: preload K[1] and compute S_0=QK_0 into acc_s_cur (overlap QK_0 with K[1] DMA).
-    if (num_kv_blocks > 1) {
-        LOAD_K_TILE(K_cache, block_table, smem_K64[1], 1*BC, kv_len, kv_head, tid, blockDim.x);
-    }
-    asm volatile("cp.async.commit_group;");
-    if (warp_id < 4) { ATLAS_ASYM64_QK(acc_s_cur, 0); }
-    asm volatile("cp.async.wait_group 0;");
-    __syncthreads();
-#endif
-
     for (unsigned int kv_block = 0; kv_block < num_kv_blocks; kv_block++) {
         unsigned int kv_start = kv_block * BC;
         unsigned int kv_end = min(kv_start + BC, kv_len);
@@ -603,17 +558,36 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
         // Warps 4-7 load V tile with 128 threads while warps 0-3 compute QK^T.
         // For FP8/NVFP4 (sync dequant): true overlap of ALU (dequant) with MMA (QK^T).
         // For BF16 (cp.async): async copies issued by 128 threads, DMA bandwidth unchanged.
-#ifdef ATLAS_ATTN_PIPELINE
-        // Pipeline: QK_{k+1} produced ahead so its MMAs drain on the TC during softmax_k's
-        // MUFU work; softmax then runs on S_k (acc_s_cur) via the reference alias below.
-        if (warp_id < 4) {
-            if (kv_block+1 < num_kv_blocks) { ATLAS_ASYM64_QK(acc_s_next, (1-buf)); }
-            float (&acc_s)[4][4] = acc_s_cur;
-#else
         float acc_s[4][4];
         if (warp_id < 4) {
-            ATLAS_ASYM64_QK(acc_s, buf);
-#endif
+            #pragma unroll
+            for (int i = 0; i < 4; i++) { acc_s[i][0]=0; acc_s[i][1]=0; acc_s[i][2]=0; acc_s[i][3]=0; }
+
+            const unsigned short* sQ = (const unsigned short*)smem_Q64;
+            const unsigned short* sK = (const unsigned short*)smem_K64[buf];
+
+            #pragma unroll
+            for (unsigned int ks = 0; ks < (HDIM/16); ks++) {
+                unsigned int kb = ks*16;
+                unsigned int ar0=qk_warp_m+group_id, ar1=ar0+8;
+                unsigned int ac0=kb+tid_in_group*2, ac1=ac0+8;
+                unsigned int a0=*(const unsigned int*)&sQ[ar0*HDIM_PAD+ac0];
+                unsigned int a1=*(const unsigned int*)&sQ[ar1*HDIM_PAD+ac0];
+                unsigned int a2=*(const unsigned int*)&sQ[ar0*HDIM_PAD+ac1];
+                unsigned int a3=*(const unsigned int*)&sQ[ar1*HDIM_PAD+ac1];
+
+                #pragma unroll
+                for (int nt=0; nt<4; nt++) {
+                    unsigned int nc=nt*8+group_id, k0=kb+tid_in_group*2, k1=k0+8;
+                    unsigned int b0=((unsigned int)sK[nc*HDIM_PAD+k0+1]<<16)|(unsigned int)sK[nc*HDIM_PAD+k0];
+                    unsigned int b1=((unsigned int)sK[nc*HDIM_PAD+k1+1]<<16)|(unsigned int)sK[nc*HDIM_PAD+k1];
+                    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+                        "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
+                        :"=f"(acc_s[nt][0]),"=f"(acc_s[nt][1]),"=f"(acc_s[nt][2]),"=f"(acc_s[nt][3])
+                        :"r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1),
+                         "f"(acc_s[nt][0]),"f"(acc_s[nt][1]),"f"(acc_s[nt][2]),"f"(acc_s[nt][3]));
+                }
+            }
 
             // === Register-based softmax with causal mask ===
             unsigned int row0=qk_warp_m+group_id, row1=row0+8;
@@ -716,20 +690,11 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
             }
         }
 
-#ifdef ATLAS_ATTN_PIPELINE
-        // Pipeline: K_{k+1} is already resident (QK-ahead consumed it); preload K_{k+2}
-        // into the freed buffer `buf` (which held the dead K_k).
-        if(kv_block+2<num_kv_blocks){
-            LOAD_K_TILE(K_cache, block_table, smem_K64[buf], (kv_block+2)*BC, kv_len, kv_head, tid, blockDim.x);
-            asm volatile("cp.async.commit_group;");
-        }
-#else
-        // === Preload K[i+1] (256 threads = 2x faster) ===
+        // === Preload K[i+1] (256 threads = 2× faster) ===
         if(kv_block+1<num_kv_blocks){
             LOAD_K_TILE(K_cache, block_table, smem_K64[1-buf], (kv_block+1)*BC, kv_len, kv_head, tid, blockDim.x);
             asm volatile("cp.async.commit_group;");
         }
-#endif
 
         // === PV MMA (all 8 warps) ===
         {
@@ -760,27 +725,11 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
             }
         }
 
-#ifdef ATLAS_ATTN_PIPELINE
-        if(kv_block+2<num_kv_blocks){
-            asm volatile("cp.async.wait_group 0;");
-        }
-        __syncthreads();
-        // Swap: S_{k+1} (acc_s_next) becomes the current scores for next iter's softmax.
-        if(warp_id<4){
-            #pragma unroll
-            for(int i=0;i<4;i++){
-                acc_s_cur[i][0]=acc_s_next[i][0]; acc_s_cur[i][1]=acc_s_next[i][1];
-                acc_s_cur[i][2]=acc_s_next[i][2]; acc_s_cur[i][3]=acc_s_next[i][3];
-            }
-        }
-#else
         if(kv_block+1<num_kv_blocks){
             asm volatile("cp.async.wait_group 0;");
         }
         __syncthreads();
-#endif
     }
-#undef ATLAS_ASYM64_QK
 
     // === Final normalization and store ===
     {

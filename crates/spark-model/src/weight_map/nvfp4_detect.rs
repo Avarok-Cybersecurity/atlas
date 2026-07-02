@@ -40,13 +40,9 @@ pub fn detect_nvfp4_variant(
                 return Nvfp4Variant::Fp8Dequanted;
             }
             "compressed-tensors" => {
-                // `format` is the sub-selector here. Block-scaled FP8 is tagged
-                // either with a literal "fp8" OR with compressed-tensors'
-                // `"float-quantized"` (8-bit float = FP8 E4M3, e.g.
-                // Hcompany/Holo-3.1-*-FP8); the rest ("nvfp4-pack-quantized",
-                // "pack-quantized") are NVFP4.
-                let fmt = qc.format.to_ascii_lowercase();
-                if fmt.contains("fp8") || fmt.contains("float-quant") {
+                // `format` is the sub-selector here. Treat anything
+                // containing "fp8" as block-scaled FP8, else assume NVFP4.
+                if qc.format.to_ascii_lowercase().contains("fp8") {
                     return Nvfp4Variant::Fp8Dequanted;
                 }
                 return Nvfp4Variant::CompressedTensors;
@@ -115,28 +111,6 @@ pub fn detect_nvfp4_variant(
         let fp8_attn_key = format!("{pfx}.self_attn.q_proj.weight_scale_inv");
         if store.contains(&fp8_attn_key) {
             return Nvfp4Variant::Fp8Dequanted;
-        }
-        // compressed-tensors `float-quantized` FP8 (e.g. Hcompany/Holo-3.1-*-FP8)
-        // ships block-FP8 as an FP8E4M3 `.weight` + 2D `.weight_scale` — NO
-        // `.weight_packed` (that's NVFP4) and NO `.weight_scale_inv` (that's
-        // DeepSeek/Qwen-native FP8). The `.weight_scale` name alias-collides
-        // with compressed-tensors NVFP4, so the `.weight_scale` checks below
-        // would misroute it to an NVFP4 variant. Disambiguate by the
-        // unambiguous FP8E4M3 weight dtype: an FP8E4M3 projection weight is
-        // always block-FP8 (Fp8Dequanted; the FP8→BF16→NVFP4 requant path in
-        // `quantized_from_fp8` reads the 2D `.weight_scale`).
-        for key in [
-            format!("{pfx}.mlp.experts.{local_expert}.gate_proj.weight"),
-            format!("{pfx}.mlp.gate_proj.weight"),
-            format!("{pfx}.self_attn.q_proj.weight"),
-        ] {
-            if store
-                .get(&key)
-                .map(|w| w.dtype == WeightDtype::FP8E4M3)
-                .unwrap_or(false)
-            {
-                return Nvfp4Variant::Fp8Dequanted;
-            }
         }
     }
     // Fallback: scan any tensor name for `.weight_scale_inv` suffix.
@@ -258,7 +232,7 @@ pub(crate) fn quantized_any(
             // Raw BF16/FP16 fine-tune: load the dense weight then runtime-quantize.
             let w = store.get(&format!("{prefix}.weight"))?;
             let bf16 = DenseWeight { weight: w.ptr };
-            let q = quantize_to_nvfp4(
+            quantize_to_nvfp4(
                 &bf16,
                 n,
                 k,
@@ -266,15 +240,7 @@ pub(crate) fn quantized_any(
                 qctx.absmax_k,
                 qctx.quantize_k,
                 qctx.stream,
-            )?;
-            // Free the BF16 source: the NVFP4 buffer is a fresh allocation, so the
-            // on-disk BF16 weight is now redundant. Without this a 35B BF16 MoE
-            // (Bf16Raw, SEPARATE per-expert layout routed through here by #200's
-            // `quantized_any`) holds BOTH the ~60GB BF16 experts AND the ~22GB
-            // NVFP4 copies → ~109GB pre-KV, no room for KV. Safe + mirrors
-            // `quantized_from_fp8` which frees its BF16 intermediate the same way.
-            gpu.free(w.ptr)?;
-            Ok(q)
+            )
         }
     }
 }

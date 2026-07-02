@@ -60,44 +60,17 @@ pub(super) fn build_jinja_env(chat_template: &str) -> Result<minijinja::Environm
     env.set_unknown_method_callback(
         |state, value, method, args| -> Result<minijinja::Value, minijinja::Error> {
             use minijinja::value::{ValueKind, from_args};
-            if value.kind() == ValueKind::String {
-                match method {
-                    "split" => {
-                        // Python `str.split(sep)` → minijinja `split` filter.
-                        // The separator is forwarded verbatim; an absent
-                        // separator falls through to the filter's default
-                        // (whitespace split), matching Python semantics.
-                        let (sep,): (Option<minijinja::Value>,) = from_args(args)?;
-                        let mut filter_args = vec![value.clone()];
-                        if let Some(sep) = sep {
-                            filter_args.push(sep);
-                        }
-                        return state.apply_filter("split", &filter_args);
-                    }
-                    "find" | "rfind" => {
-                        let (needle,): (String,) = from_args(args)?;
-                        let haystack = value.as_str().unwrap_or_default();
-                        let idx = if method == "find" {
-                            haystack.find(&needle)
-                        } else {
-                            haystack.rfind(&needle)
-                        }
-                        .map(|v| v as i64)
-                        .unwrap_or(-1);
-                        return Ok(minijinja::Value::from(idx));
-                    }
-                    "replace" => {
-                        let (from, to): (String, String) = from_args(args)?;
-                        let s = value.as_str().unwrap_or_default().replace(&from, &to);
-                        return Ok(minijinja::Value::from(s));
-                    }
-                    "strip" => {
-                        let _: () = from_args(args)?;
-                        let s = value.as_str().unwrap_or_default().trim().to_string();
-                        return Ok(minijinja::Value::from(s));
-                    }
-                    _ => {}
+            if value.kind() == ValueKind::String && method == "split" {
+                // Python `str.split(sep)` → minijinja `split` filter.
+                // The separator is forwarded verbatim; an absent
+                // separator falls through to the filter's default
+                // (whitespace split), matching Python semantics.
+                let (sep,): (Option<minijinja::Value>,) = from_args(args)?;
+                let mut filter_args = vec![value.clone()];
+                if let Some(sep) = sep {
+                    filter_args.push(sep);
                 }
+                return state.apply_filter("split", &filter_args);
             }
             if value.kind() == ValueKind::Map {
                 match method {
@@ -152,55 +125,39 @@ pub(super) fn build_jinja_env(chat_template: &str) -> Result<minijinja::Environm
         },
     );
 
-    // Tool-definition JSON serialization for the chat template's `<tools>`
-    // block (`{{ tool | tojson }}`).
-    //
-    // jinja2's `tojson` is `json.dumps(x, ensure_ascii=False, sort_keys=False)`
-    // — SPACED (separators `": "` / `", "`), insertion-order keys. #90 overrode
-    // minijinja's COMPACT builtin with `PythonJsonFormatter` to byte-match
-    // transformers/vLLM (the "HF reference" tool-JSON serialization).
-    //
-    // DECISION (2026-06-24, ST-995): the spaced HF-reference serialization
-    // REGRESSES the GDN Qwen3.6-27B's BFCL irrelevance accuracy — the model
-    // over-emits tool calls on irrelevant prompts (hallucination 93.70 -> 30,
-    // verified by gating + rendered-prompt diffs; the rendered prompts differ
-    // ONLY in this serialization). The COMPACT form (pre-#90 / the shared
-    // 89.04-build behavior) restores it (-> ~96, parity with llama.cpp 93.70).
-    // The spacing is a pure byte-stream difference — no functional/content
-    // change — but this model is measurably sensitive to it. So we DEFAULT to
-    // minijinja's compact `tojson` (correct accuracy) and keep the spaced
-    // HF-reference path available behind an opt-in env var for callers that
-    // need exact transformers/vLLM byte parity:
-    //
-    //   ATLAS_USE_HF_REF_JSON_DUMPS=1   -> spaced, Python-json.dumps byte parity (#90)
-    //   unset / anything else (DEFAULT)  -> compact (fixes ST-995 GDN irrelevance)
-    //
-    // Key order is preserved via the `preserve_order` feature in BOTH modes.
-    if std::env::var("ATLAS_USE_HF_REF_JSON_DUMPS").as_deref() == Ok("1") {
-        env.add_filter(
-            "tojson",
-            |value: minijinja::Value| -> Result<minijinja::Value, minijinja::Error> {
-                let mut buf = Vec::new();
-                let mut ser = serde_json::Serializer::with_formatter(&mut buf, PythonJsonFormatter);
-                serde::Serialize::serialize(&value, &mut ser).map_err(|e| {
-                    minijinja::Error::new(
-                        minijinja::ErrorKind::InvalidOperation,
-                        format!("tojson serialization failed: {e}"),
-                    )
-                })?;
-                // serde_json writes valid UTF-8 (ensure_ascii=False — no \uXXXX).
-                let s = String::from_utf8(buf).map_err(|e| {
-                    minijinja::Error::new(
-                        minijinja::ErrorKind::InvalidOperation,
-                        format!("tojson produced invalid UTF-8: {e}"),
-                    )
-                })?;
-                Ok(minijinja::Value::from_safe_string(s))
-            },
-        );
-    }
-    // else: fall through to minijinja's builtin COMPACT `tojson` (DEFAULT) —
-    // the ST-995 fix. (PythonJsonFormatter below is retained for the env path.)
+    // Override minijinja's builtin `tojson` with a python-`json.dumps`
+    // compatible serializer. transformers renders the chat-template
+    // `<tools>` block via `{{ tool | tojson }}`, where jinja2's `tojson`
+    // is `json.dumps(x, ensure_ascii=False, sort_keys=False)` — i.e.
+    // SPACES after `:` and `,` (separators `": "` / `", "`) and keys in
+    // insertion order. minijinja's builtin `tojson` is COMPACT (no
+    // spaces), so the tool-definition token stream diverged from
+    // vLLM/transformers at the first `:`. This filter restores byte
+    // parity. (Key order is preserved via the `preserve_order` feature
+    // on both serde_json and minijinja — see the Cargo.toml notes.)
+    env.add_filter(
+        "tojson",
+        |value: minijinja::Value| -> Result<minijinja::Value, minijinja::Error> {
+            let mut buf = Vec::new();
+            let mut ser = serde_json::Serializer::with_formatter(&mut buf, PythonJsonFormatter);
+            serde::Serialize::serialize(&value, &mut ser).map_err(|e| {
+                minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidOperation,
+                    format!("tojson serialization failed: {e}"),
+                )
+            })?;
+            // serde_json writes valid UTF-8; ensure_ascii=False means we keep
+            // multi-byte characters verbatim (no \uXXXX escaping), which
+            // serde_json already does by default.
+            let s = String::from_utf8(buf).map_err(|e| {
+                minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidOperation,
+                    format!("tojson produced invalid UTF-8: {e}"),
+                )
+            })?;
+            Ok(minijinja::Value::from_safe_string(s))
+        },
+    );
 
     env.add_template("chat", template_static)
         .context("Failed to compile Jinja chat template")?;
@@ -411,14 +368,6 @@ pub(super) fn convert_python_jinja_to_minijinja(template: &str) -> String {
     // Replace: content.split('</think>')[-1] → content | split_last('</think>')
     t = t.replace(".split('</think>')[0]", " | split_first('</think>')");
     t = t.replace(".split('</think>')[-1]", " | split_last('</think>')");
-    t = t.replace(
-        ".split(think_end_token)[0]",
-        " | split_first(think_end_token)",
-    );
-    t = t.replace(
-        ".split(think_end_token)[-1]",
-        " | split_last(think_end_token)",
-    );
 
     // .split('<think>')[-1] → | split_last('<think>')
     t = t.replace(".split('<think>')[-1]", " | split_last('<think>')");

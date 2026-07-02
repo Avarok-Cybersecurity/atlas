@@ -15,19 +15,6 @@ __device__ __forceinline__ __nv_bfloat16 fp8_to_bf16(__nv_fp8_storage_t b, float
     return __float2bfloat16(v);
 }
 
-// FP8-smem occupancy variant (NVIDIA GB10, FP8-KV, HDIM=256): keep K/V in
-// shared memory as raw E4M3 bytes and dequant in-register before each MMA,
-// halving smem_K + smem_V so 2 CTAs/SM fit. Output is bit-identical to the
-// BF16-smem path (same fp8_to_bf16 + k_scale/v_scale). Comment out this
-// define to revert to BF16-smem dequant-on-load.
-// GATED 2026-06-28 (dgx1): bit-identical (cosine 1.0) + occupancy 1->2 CTAs/SM
-// CONFIRMED via ncu, BUT per-attn-layer prefill time UNCHANGED (~18ms cold,
-// warm 360 vs 350ms baseline) => occupancy-NEUTRAL, attention is per-warp
-// dependency-latency bound (QK->softmax->PV), not occupancy bound. Disabled on
-// the serving path (no speed win); code kept validated for a future larger-BR
-// retile that USES the freed ~25KB smem. See MMQ_PORT_HANDOFF.md.
-// #define ATLAS_ATTN_FP8_SMEM
-
 // FP8 tile loader: manual load + dequant + store to smem.
 // cache_stride is in FP8 elements (1 byte each).
 #define LOAD_KV_TILE(cache, bt, smem, kv_s, kv_l, kvh, t, stride) \
@@ -82,29 +69,6 @@ __device__ __forceinline__ __nv_bfloat16 fp8_to_bf16(__nv_fp8_storage_t b, float
    to determine which scale to use. */
 
 #undef LOAD_KV_TILE
-#ifdef ATLAS_ATTN_FP8_SMEM
-// FP8-smem: copy raw E4M3 bytes into shared memory (8 bytes / chunk via uint2);
-// dequant is deferred to the in-register MMA read (fp8x2_to_*_bits). smem here
-// is __nv_fp8_storage_t, so a chunk of 8 elements is 8 bytes, not 16.
-#define LOAD_KV_TILE(cache, bt, smem, kv_s, kv_l, kvh, t, stride) \
-    do { \
-        const unsigned int _cpr = HDIM / 8; \
-        for (unsigned int _i = t; _i < TILE_CHUNKS; _i += (stride)) { \
-            unsigned int _row = _i / _cpr, _col = (_i % _cpr) * 8; \
-            unsigned int _pos = (kv_s) + _row; \
-            if (_pos < (kv_l)) { \
-                unsigned int _lb = _pos / cache_block_size; \
-                unsigned int _bo = _pos % cache_block_size; \
-                unsigned int _pb = (unsigned int)(bt)[_lb]; \
-                const __nv_fp8_storage_t* _base = (const __nv_fp8_storage_t*)(cache) \
-                    + (unsigned long long)_pb * fp8_cache_stride \
-                    + (unsigned long long)_bo * num_kv_heads * head_dim \
-                    + (unsigned long long)(kvh) * head_dim + _col; \
-                *((uint2*)&(smem)[_row][_col]) = *((const uint2*)_base); \
-            } else { *((uint2*)&(smem)[_row][_col]) = make_uint2(0,0); } \
-        } \
-    } while(0)
-#else
 #define LOAD_KV_TILE(cache, bt, smem, kv_s, kv_l, kvh, t, stride) \
     do { \
         const float _sc = ((const void*)(cache) == (const void*)K_cache) ? k_scale : v_scale; \
@@ -127,7 +91,6 @@ __device__ __forceinline__ __nv_bfloat16 fp8_to_bf16(__nv_fp8_storage_t b, float
             } else { *((uint4*)&(smem)[_row][_col]) = make_uint4(0,0,0,0); } \
         } \
     } while(0)
-#endif
 
 #undef KERNEL_PREAMBLE
 #define KERNEL_PREAMBLE /* nothing */

@@ -50,19 +50,11 @@ impl VisionEncoder {
 
         // GEMM-based ViT SDPA scratch. Q/K/V head-contiguous copies sized to
         // p_max (~44 MB total). scores/probs are the [seq,seq] score matrix,
-        // reused across the 16-head loop.
-        //
-        // BUG FIX (2026-06-29): attn_max was hardcoded to 1024, but a single
-        // image's ViT sequence can be up to p_max (6400 patches = 1280×1280).
-        // The mona_lisa fixture produces seq=4096 → the GEMM1 launch
-        // grid=[ceil(4096/16),...] writes a [4096,4096] score matrix into a
-        // [1024,1024] buffer → CUDA-700 illegal access. (In release builds the
-        // debug_assert guard is compiled out, so smaller-than-fault overflows
-        // silently corrupted adjacent GPU memory instead of crashing — which is
-        // why it "passed" on some weight layouts.) Size to the real per-image
-        // cap p_max so any admissible image fits: 6400²·4 ≈ 164 MB scores +
-        // 6400²·2 ≈ 82 MB probs. One-time scratch, fine on GB10.
-        let attn_max = p_max;
+        // sized to the per-IMAGE SDPA cap attn_max (seq is image-capped, so a
+        // full p_max² matrix is never reached) and reused across the 16-head
+        // loop. If the per-image patch cap is ever raised above attn_max, bump
+        // this in lockstep (debug_assert in vit_attention_gemm guards it).
+        let attn_max = 1024usize;
         let qkv_head_elems = p_max * num_heads * head_dim;
         let buf_qr = gpu.alloc(qkv_head_elems * 2)?; // [H, p_max, D] bf16
         let buf_kr = gpu.alloc(qkv_head_elems * 2)?; // [H, p_max, D] bf16

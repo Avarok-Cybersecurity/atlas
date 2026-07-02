@@ -193,7 +193,7 @@ impl TransformerModel {
         )?;
 
         // ── LM head for K tokens → logits[K, vocab] ──
-        self.lm_head_batched(normed, k as u32, self.buffers.logits(), stream)?;
+        self.lm_head_batched(normed, k as u32, stream)?;
 
         // ── Argmax per token ──
         let vocab = self.config.vocab_size;

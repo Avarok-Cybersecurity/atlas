@@ -4,9 +4,6 @@
 
 use super::*;
 
-mod ssm_batched;
-mod ssm_batched_recurrent;
-
 impl Qwen3SsmLayer {
     #[allow(clippy::too_many_arguments)]
     /// Multi-sequence decode for SSM (gated-delta-net) layers.
@@ -49,88 +46,58 @@ impl Qwen3SsmLayer {
         let bf16 = 2usize;
         let eps = ctx.config.rms_norm_eps as f32;
         let n = num_seqs;
-        let ssm_ms_profile = std::env::var("ATLAS_SSM_MS_PROFILE").ok().as_deref() == Some("1")
-            && !ctx.graph_capture;
-        let phase_a_t0 = if ssm_ms_profile {
-            ctx.gpu.synchronize(stream).ok();
-            Some(std::time::Instant::now())
-        } else {
-            None
-        };
 
         // Per-seq hidden/residual stride: the residual stream is always
         // BF16 (2 bytes), so hardcode the per-seq stride.
         let residual_elem = 2usize;
 
-        // ── Phase A: SSM mixer ──
+        // ── Phase A: per-sequence SSM mixer ──
         // Pre-norm, SSM mixer (recurrent, per-seq state), post-attn-norm.
         // Lays out `norm_output[0..n]` as the contiguous [N, h] BF16 MoE
-        // input. The MoE is deferred to Phase B.
-        //
-        // Fast path (batched projections): when the layer uses the
-        // sequential-QKVZ dense/NVFP4 weights with the FP32 conv+GDN
-        // recurrent kernels (the GB10 Holo serving config), the big
-        // QKVZ and out_proj GEMMs are batched into a single [N, ...] GEMM
-        // each — reading the ~50 MB QKVZ / out_proj weights ONCE instead
-        // of N times. On bandwidth-bound LPDDR5X this is the dominant
-        // decode cost, so it is the lever that makes C=N decode scale.
-        // The recurrent inner (BA/gates, conv1d, GDN, gated-norm) stays a
-        // per-seq loop with byte-identical kernels to `decode()`/`ssm_forward`.
-        if !self.try_decode_multi_seq_ssm_batched(hidden, residual, n, states, ctx, stream)? {
-            for i in 0..n {
-                let hidden_i = hidden.offset(i * h * residual_elem);
-                let residual_i = residual.offset(i * h * residual_elem);
-                let normed_i = ctx.buffers.norm_output().offset(i * h * bf16);
+        // input. Identical kernel sequence to `decode()`'s mixer; only the
+        // MoE is deferred to Phase B.
+        for i in 0..n {
+            let hidden_i = hidden.offset(i * h * residual_elem);
+            let residual_i = residual.offset(i * h * residual_elem);
+            let normed_i = ctx.buffers.norm_output().offset(i * h * bf16);
 
-                let ssm_state = states[i]
-                    .as_any_mut()
-                    .downcast_mut::<SsmLayerState>()
-                    .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState for seq {i}"))?;
+            let ssm_state = states[i]
+                .as_any_mut()
+                .downcast_mut::<SsmLayerState>()
+                .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState for seq {i}"))?;
 
-                // normed_i = rms_norm(hidden_i); residual_i = hidden_i
-                ops::rms_norm_residual(
-                    ctx.gpu,
-                    self.rms_norm_residual_k,
-                    hidden_i,
-                    &self.input_norm,
-                    normed_i,
-                    residual_i,
-                    1,
-                    h as u32,
-                    eps,
-                    stream,
-                )?;
+            // normed_i = rms_norm(hidden_i); residual_i = hidden_i
+            ops::rms_norm_residual(
+                ctx.gpu,
+                self.rms_norm_residual_k,
+                hidden_i,
+                &self.input_norm,
+                normed_i,
+                residual_i,
+                1,
+                h as u32,
+                eps,
+                stream,
+            )?;
 
-                // SSM mixer: consumes normed_i, returns ssm_out (in moe_output[0]).
-                let ssm_out = self.ssm_forward(normed_i, ssm_state, ctx, stream, false)?;
+            // SSM mixer: consumes normed_i, returns ssm_out (in moe_output[0]).
+            let ssm_out = self.ssm_forward(normed_i, ssm_state, ctx, stream, false)?;
 
-                // hidden_i += ssm_out; normed_i = rms_norm(hidden_i); residual_i = hidden_i
-                ops::residual_add_rms_norm(
-                    ctx.gpu,
-                    self.residual_add_rms_norm_k,
-                    hidden_i,
-                    ssm_out,
-                    &self.post_attn_norm,
-                    normed_i,
-                    residual_i,
-                    1,
-                    h as u32,
-                    eps,
-                    stream,
-                )?;
-            }
+            // hidden_i += ssm_out; normed_i = rms_norm(hidden_i); residual_i = hidden_i
+            ops::residual_add_rms_norm(
+                ctx.gpu,
+                self.residual_add_rms_norm_k,
+                hidden_i,
+                ssm_out,
+                &self.post_attn_norm,
+                normed_i,
+                residual_i,
+                1,
+                h as u32,
+                eps,
+                stream,
+            )?;
         }
-        let phase_a_us = if let Some(t0) = phase_a_t0 {
-            ctx.gpu.synchronize(stream).ok();
-            t0.elapsed().as_micros()
-        } else {
-            0
-        };
-        let phase_b_t0 = if ssm_ms_profile {
-            Some(std::time::Instant::now())
-        } else {
-            None
-        };
 
         // ── Phase B+C: MoE + residual, dispatched by batch size ──
         // Measured on GB10 (qwen3.5-122b, 256-expert MoE, EP=2):
@@ -173,100 +140,21 @@ impl Qwen3SsmLayer {
             _ => {
                 // Per-token MoE: each seq's forward() writes moe_output[0];
                 // consume it immediately with a per-seq residual add before
-                // the next iteration overwrites it. NOTE: the batched
-                // grouped-GEMM (forward_prefill) was measured SLOWER here on
-                // Holo (c4 31 vs 56 tok/s) — the expert sort/permute fixed
-                // overhead per layer dominates at small N. The real fix for
-                // this launch overhead is CUDA graphs for n>=2, not MoE
-                // batching (graphs capture these per-token launches for free).
-                if std::env::var("ATLAS_MOE_GROUPED_DECODE").ok().as_deref() == Some("1") {
-                    // Grouped-GEMM MoE over all N tokens (each expert read once).
-                    // Only sensible under CUDA graphs, where the sort/permute
-                    // launch overhead that made this a loss is captured for free.
-                    self.ffn.forward_prefill(normed_base, n, ctx, stream)?;
-                    let moe_out = ctx.buffers.moe_output();
+                // the next iteration overwrites it.
+                for i in 0..n {
+                    let hidden_i = hidden.offset(i * h * residual_elem);
+                    let normed_i = normed_base.offset(i * h * bf16);
+                    let moe_out = self.ffn.forward(normed_i, ctx, stream)?;
                     ops::residual_add(
                         ctx.gpu,
                         self.residual_add_k,
-                        hidden,
+                        hidden_i,
                         moe_out,
-                        (n * h) as u32,
+                        h as u32,
                         stream,
                     )?;
-                } else if n == 4
-                    && std::env::var("ATLAS_MOE_ATOMIC_C4_DECODE").ok().as_deref() == Some("1")
-                {
-                    // Purpose-built C=4 routed MoE decode: batched routing,
-                    // token-major gate/up, FP32 atomicAdd routed down
-                    // accumulation, then BF16 finalize/blend.
-                    self.ffn
-                        .forward_atomic_c4_decode(normed_base, n, ctx, stream)?;
-                    let moe_out = ctx.buffers.moe_output();
-                    ops::residual_add(
-                        ctx.gpu,
-                        self.residual_add_k,
-                        hidden,
-                        moe_out,
-                        (n * h) as u32,
-                        stream,
-                    )?;
-                } else if std::env::var("ATLAS_MOE_TOKEN_MAJOR_DECODE")
-                    .ok()
-                    .as_deref()
-                    == Some("1")
-                {
-                    // Token-major N-token MoE decode: batched gate/top-k plus
-                    // generic fused routed/shared kernels, no grouped-GEMM sort.
-                    self.ffn
-                        .forward_token_major_decode(normed_base, n, ctx, stream)?;
-                    let moe_out = ctx.buffers.moe_output();
-                    ops::residual_add(
-                        ctx.gpu,
-                        self.residual_add_k,
-                        hidden,
-                        moe_out,
-                        (n * h) as u32,
-                        stream,
-                    )?;
-                } else if std::env::var("ATLAS_MOE_BATCHED_DECODE").ok().as_deref() == Some("1") {
-                    // Batched gate GEMM over all N tokens, but keep the proven
-                    // per-token expert kernels. This avoids the grouped path's
-                    // sort/GEMM overhead while testing whether reading router
-                    // weights once helps C=4 decode.
-                    self.ffn.forward_batched(normed_base, n, ctx, stream)?;
-                    let moe_out = ctx.buffers.moe_output();
-                    ops::residual_add(
-                        ctx.gpu,
-                        self.residual_add_k,
-                        hidden,
-                        moe_out,
-                        (n * h) as u32,
-                        stream,
-                    )?;
-                } else {
-                    for i in 0..n {
-                        let hidden_i = hidden.offset(i * h * residual_elem);
-                        let normed_i = normed_base.offset(i * h * bf16);
-                        let moe_out = self.ffn.forward(normed_i, ctx, stream)?;
-                        ops::residual_add(
-                            ctx.gpu,
-                            self.residual_add_k,
-                            hidden_i,
-                            moe_out,
-                            h as u32,
-                            stream,
-                        )?;
-                    }
                 }
             }
-        }
-        if let Some(t0) = phase_b_t0 {
-            ctx.gpu.synchronize(stream).ok();
-            tracing::info!(
-                "ATLAS_SSM_MS_PROFILE n={n}: mixer={}us moe_residual={}us",
-                phase_a_us,
-                t0.elapsed().as_micros(),
-            );
         }
 
         Ok(())

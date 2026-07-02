@@ -29,8 +29,6 @@ fn rejects_under_two_streams() {
         BIG_SCRATCH,
         TOP_K,
         MROPE,
-        false,
-        false, // varlen
     ));
     assert!(!check_kernel_batched_eligible(
         vec![s(4096, 0, false)],
@@ -41,29 +39,11 @@ fn rejects_under_two_streams() {
         BIG_SCRATCH,
         TOP_K,
         MROPE,
-        false,
-        false, // varlen
     ));
 }
 
 #[test]
-fn rejects_chunk_zero() {
-    assert!(!check_kernel_batched_eligible(
-        vec![s(4096, 0, false), s(4096, 0, false)],
-        2,
-        8192,
-        "qwen3_next",
-        256,
-        BIG_SCRATCH,
-        TOP_K,
-        MROPE,
-        false,
-        false, // varlen
-    ));
-}
-
-#[test]
-fn accepts_chunk_zero_when_explicitly_allowed() {
+fn accepts_uniform_n_2() {
     assert!(check_kernel_batched_eligible(
         vec![s(4096, 0, false), s(4096, 0, false)],
         2,
@@ -73,31 +53,13 @@ fn accepts_chunk_zero_when_explicitly_allowed() {
         BIG_SCRATCH,
         TOP_K,
         MROPE,
-        true,
-        false, // varlen
-    ));
-}
-
-#[test]
-fn accepts_uniform_paged_n_2() {
-    assert!(check_kernel_batched_eligible(
-        vec![s(4096, 4096, false), s(4096, 4096, false)],
-        2,
-        8192,
-        "qwen3_next",
-        256,
-        BIG_SCRATCH,
-        TOP_K,
-        MROPE,
-        false,
-        false, // varlen
     ));
 }
 
 #[test]
 fn rejects_mismatched_chunk_len() {
     assert!(!check_kernel_batched_eligible(
-        vec![s(4096, 4096, false), s(2048, 4096, false)],
+        vec![s(4096, 0, false), s(2048, 0, false)],
         2,
         16384,
         "qwen3_next",
@@ -105,8 +67,6 @@ fn rejects_mismatched_chunk_len() {
         BIG_SCRATCH,
         TOP_K,
         MROPE,
-        false,
-        false, // varlen
     ));
 }
 
@@ -123,15 +83,13 @@ fn rejects_mismatched_chunk_start() {
         BIG_SCRATCH,
         TOP_K,
         MROPE,
-        false,
-        false, // varlen
     ));
 }
 
 #[test]
 fn rejects_mismatched_is_last() {
     assert!(!check_kernel_batched_eligible(
-        vec![s(4096, 4096, false), s(4096, 4096, true)],
+        vec![s(4096, 0, false), s(4096, 0, true)],
         2,
         8192,
         "qwen3_next",
@@ -139,8 +97,6 @@ fn rejects_mismatched_is_last() {
         BIG_SCRATCH,
         TOP_K,
         MROPE,
-        false,
-        false, // varlen
     ));
 }
 
@@ -148,7 +104,7 @@ fn rejects_mismatched_is_last() {
 fn rejects_arena_overflow() {
     // N=2 × 4096 = 8192 > 4100 arena → reject.
     assert!(!check_kernel_batched_eligible(
-        vec![s(4096, 4096, false), s(4096, 4096, false)],
+        vec![s(4096, 0, false), s(4096, 0, false)],
         2,
         4100,
         "qwen3_next",
@@ -156,15 +112,13 @@ fn rejects_arena_overflow() {
         BIG_SCRATCH,
         TOP_K,
         MROPE,
-        false,
-        false, // varlen
     ));
 }
 
 #[test]
 fn rejects_mla_model() {
     assert!(!check_kernel_batched_eligible(
-        vec![s(4096, 4096, false), s(4096, 4096, false)],
+        vec![s(4096, 0, false), s(4096, 0, false)],
         2,
         8192,
         "mistral",
@@ -172,8 +126,6 @@ fn rejects_mla_model() {
         BIG_SCRATCH,
         TOP_K,
         MROPE,
-        false,
-        false, // varlen
     ));
 }
 
@@ -181,7 +133,7 @@ fn rejects_mla_model() {
 fn rejects_large_head_dim() {
     // Gemma-4 long-attention head_dim=512 → reject.
     assert!(!check_kernel_batched_eligible(
-        vec![s(4096, 4096, false), s(4096, 4096, false)],
+        vec![s(4096, 0, false), s(4096, 0, false)],
         2,
         8192,
         "gemma4",
@@ -189,15 +141,13 @@ fn rejects_large_head_dim() {
         BIG_SCRATCH,
         TOP_K,
         MROPE,
-        false,
-        false, // varlen
     ));
 }
 
 #[test]
 fn accepts_n_4_uniform() {
     assert!(check_kernel_batched_eligible(
-        vec![s(2048, 2048, false); 4],
+        vec![s(2048, 0, false); 4],
         4,
         8192,
         "qwen3_next",
@@ -205,8 +155,6 @@ fn accepts_n_4_uniform() {
         BIG_SCRATCH,
         TOP_K,
         MROPE,
-        false,
-        false, // varlen
     ));
 }
 
@@ -218,7 +166,7 @@ fn rejects_scratch_footprint_overflow() {
     // scratch. With that exact (too-small) scratch the batch is INELIGIBLE
     // (routes to per-stream from clean state, no mid-Phase-A bail), but with
     // the #110 enlarged scratch sizing it becomes eligible again.
-    let streams = [s(935, 4096, false); 4];
+    let streams = [s(935, 0, false); 4];
     let arena = 4096; // 4×935 = 3740 ≤ 4096 → arena check passes
     let too_small = 348_840;
     let enlarged = spark_runtime::buffers::q12_batched_scratch_bytes(4, 935, 8, true);
@@ -232,8 +180,6 @@ fn rejects_scratch_footprint_overflow() {
             too_small,
             8,
             true,
-            false,
-            false, // varlen
         ),
         "footprint must NOT fit in the old 348_840 B scratch"
     );
@@ -247,8 +193,6 @@ fn rejects_scratch_footprint_overflow() {
             enlarged,
             8,
             true,
-            false,
-            false, // varlen
         ),
         "footprint must fit once scratch is sized to it"
     );

@@ -28,36 +28,6 @@ __device__ __forceinline__ __nv_bfloat16 fp8_to_bf16(__nv_fp8_storage_t b, float
 
 #define PREFILL_BATCHED
 
-// FP8-smem occupancy variant — see inferspark_prefill_paged_fp8.cu. Keep K/V
-// in shared memory as raw E4M3 bytes (1 B) and dequant in-register before the
-// MMA, halving smem_K + smem_V so 2 CTAs/SM fit. Bit-identical output. Comment
-// out to revert to BF16-smem dequant-on-load.
-// GATED 2026-06-28 (dgx1): occupancy-NEUTRAL (1->2 CTAs/SM but per-attn-layer
-// time unchanged; attention is dependency-latency bound). Disabled on serving;
-// kept for a future larger-BR retile that uses the freed smem. See handoff.
-// #define ATLAS_ATTN_FP8_SMEM
-
-#ifdef ATLAS_ATTN_FP8_SMEM
-// Copy raw E4M3 bytes (8 B / chunk via uint2); dequant deferred to MMA read.
-#define LOAD_KV_TILE(cache, bt, smem, kv_s, kv_l, kvh, t, stride) \
-    do { \
-        const unsigned int _cpr = HDIM / 8; \
-        for (unsigned int _i = t; _i < TILE_CHUNKS; _i += (stride)) { \
-            unsigned int _row = _i / _cpr, _col = (_i % _cpr) * 8; \
-            unsigned int _pos = (kv_s) + _row; \
-            if (_pos < (kv_l)) { \
-                unsigned int _lb = _pos / cache_block_size; \
-                unsigned int _bo = _pos % cache_block_size; \
-                unsigned int _pb = (unsigned int)(bt)[_lb]; \
-                const __nv_fp8_storage_t* _base = (const __nv_fp8_storage_t*)(cache) \
-                    + (unsigned long long)_pb * fp8_cache_stride \
-                    + (unsigned long long)_bo * num_kv_heads * head_dim \
-                    + (unsigned long long)(kvh) * head_dim + _col; \
-                *((uint2*)&(smem)[_row][_col]) = *((const uint2*)_base); \
-            } else { *((uint2*)&(smem)[_row][_col]) = make_uint2(0,0); } \
-        } \
-    } while(0)
-#else
 #define LOAD_KV_TILE(cache, bt, smem, kv_s, kv_l, kvh, t, stride) \
     do { \
         const float _sc = ((const void*)(cache) == (const void*)K_cache) ? k_scale : v_scale; \
@@ -80,7 +50,6 @@ __device__ __forceinline__ __nv_bfloat16 fp8_to_bf16(__nv_fp8_storage_t b, float
             } else { *((uint4*)&(smem)[_row][_col]) = make_uint4(0,0,0,0); } \
         } \
     } while(0)
-#endif
 
 #define KERNEL_NAME inferspark_prefill_paged_fp8_batched
 #define K_CACHE_TYPE const void* __restrict__

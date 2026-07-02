@@ -85,22 +85,6 @@ impl MoeLayer {
             moe_weighted_sum_blend_batch3: gpu
                 .kernel("moe_fused_batch3", "moe_weighted_sum_blend_batch3")?,
             w4a16_gemv_batch3: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch3")?,
-            moe_expert_gate_up_shared_token_major: gpu
-                .kernel("moe_prefill", "moe_expert_gate_up_shared_prefill")?,
-            moe_expert_silu_down_shared_token_major: gpu
-                .kernel("moe_prefill", "moe_expert_silu_down_shared_prefill")?,
-            moe_weighted_sum_blend_token_major: gpu
-                .kernel("moe_prefill", "moe_weighted_sum_blend_prefill")?,
-            moe_decode_atomic_c4_silu_down_accum_k: super::super::try_kernel(
-                gpu,
-                "moe_decode_atomic_c4",
-                "moe_decode_atomic_c4_silu_down_accum",
-            ),
-            moe_decode_atomic_c4_finalize_k: super::super::try_kernel(
-                gpu,
-                "moe_decode_atomic_c4",
-                "moe_decode_atomic_c4_finalize",
-            ),
             moe_sort_by_expert: gpu.kernel("moe", "moe_sort_by_expert")?,
             moe_sorted_gate_up: gpu.kernel("moe_sorted", "moe_sorted_gate_up")?,
             moe_sorted_silu_down: gpu.kernel("moe_sorted", "moe_sorted_silu_down")?,
@@ -117,14 +101,6 @@ impl MoeLayer {
                 gpu,
                 "moe_w4a16",
                 "moe_w4a16_fused_gate_up_t_k64_m128",
-            ),
-            // FUSED FP4 gate_up kernel (ATLAS_HOLO_MOE_GATEUP_FP4). try_kernel:
-            // KernelHandle(0) on images that didn't compile it; the FP4 dispatch
-            // checks this handle != 0 before firing.
-            moe_fused_gate_up_t_k64_fp4: super::super::try_kernel(
-                gpu,
-                "moe_w4a16",
-                "moe_w4a16_fused_gate_up_t_k64_fp4",
             ),
             moe_fp8_grouped_gemm_t: gpu.kernel("moe_w4a16", "moe_fp8_grouped_gemm_ptrtable_t")?,
             // THE routed-expert FP8 prefill kernel: grid-compaction (persistent
@@ -197,10 +173,6 @@ impl MoeLayer {
             gate_ptrs_t: None,
             up_ptrs_t: None,
             down_ptrs_t: None,
-            gate_sfb_cutlass: None,
-            up_sfb_cutlass: None,
-            down_sfb_cutlass: None,
-            _cutlass_sfb_owned: Vec::new(),
             down_t_scratch_packed: None,
             down_t_scratch_scale: None,
             moe_transpose_u8_batched_k: gpu
@@ -282,13 +254,6 @@ impl MoeLayer {
             nvfp4_gate_up_m128: std::env::var("ATLAS_NVFP4_GATE_UP_M128")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
-            // FP4 prefill MoE over the shared FAST_MOE=full [K/2,N] tables.
-            gateup_fp4: std::env::var("ATLAS_HOLO_MOE_GATEUP_FP4")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false),
-            down_fp4: std::env::var("ATLAS_HOLO_MOE_DOWN_FP4")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false),
             shared_gate_t: None,
             shared_up_t: None,
             shared_down_t: None,
@@ -342,12 +307,6 @@ impl MoeLayer {
             bf16_shared_up: None,
             bf16_shared_down: None,
             fp8_shared_expert: None,
-            moe_down_t_k64_fp4: super::super::try_kernel(
-                gpu,
-                "moe_w4a16",
-                "moe_w4a16_down_t_k64_fp4",
-            ),
-            moe_permute_tokens_k: super::super::try_kernel(gpu, "moe", "moe_permute_tokens"),
             // Phase 2.7 Tier C — set by loader after construction (qwen35.rs).
             is_dflash_capture_layer: false,
             correction_bias_dev: weights_correction_bias,

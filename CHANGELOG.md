@@ -10,26 +10,8 @@ behind specific subsystems — see the
 
 ## [Unreleased]
 
-### Added
-
-- Holo-3.1-35B-A3B / Holo-3.1-0.8B / Ornith-1.0-9B model support on GB10
-  (sm_121): hybrid Gated-DeltaNet + full-attention + (256-expert MoE | dense
-  FFN) + Qwen3-VL vision tower. Brings CUTLASS Sm120 NVFP4 grouped MoE, FLA
-  chunked-scan GDN prefill + wmma DV-block decode, cuBLASLt/CUTLASS attention
-  projections, kernel-batched co-dispatch prefill, radix-KV + Marconi
-  SSM-snapshot prefix caching, and self-relative auto KV budget. (#203)
-- GEMM-based Qwen3-VL ViT attention kernel (tensor-core SDPA replacing the
-  warp-per-query kernel) + tensor-core ViT block GEMMs + batched multi-image
-  forward — ~2× image-request TTFT on GB10. (#202)
-
 ### Fixed
 
-- Weight-only NVFP4 (W4A16) checkpoints now load. llm-compressor
-  `nvfp4-pack-quantized` with `input_activations: None` ships no static
-  activation scale; the loader previously required `input_global_scale` and
-  failed (e.g. `AEON-7/Ornith-1.0-35B-AEON-Ultimate-Uncensored-NVFP4`). The
-  field is loaded-but-unused (activations are quantized dynamically), so it is
-  now optional. W4A4/W4A8 checkpoints are unaffected. (#203)
 - `--gpu-memory-utilization` now enforces a hard ceiling on total GPU
   memory (weights + buffers + KV cache + reserves), matching the vLLM /
   sparkrun convention.  Previously the fraction was applied only to

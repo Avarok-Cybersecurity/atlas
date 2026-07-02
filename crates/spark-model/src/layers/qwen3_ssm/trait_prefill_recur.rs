@@ -67,32 +67,6 @@ impl Qwen3SsmLayer {
             );
         }
 
-        // FlashInfer GDN (opt-in, ATLAS_GDN_FLASHINFER=1): tensor-core chunked delta-rule
-        // scan, ~11× the scalar FLA chunk_delta_h at the Holo shape. This is the live
-        // single-stream prefill path (trait_prefill.rs -> prefill_gdn_recurrence). q_ptr is
-        // the packed-QKV base, gates_buf the gate base — handed straight to the bit-exact
-        // shim (ops::gdn_flashinfer). FLA ladder below is the fallback when flag/lib absent.
-        if !ctx.gdn_exact_replay && kd == 128 && vd == 128 && ops::gdn_flashinfer::available() {
-            let scale = 1.0f32 / (kd as f32).sqrt();
-            return ops::gdn_flashinfer::flashinfer_gdn_prefill(
-                ctx.gpu,
-                q_ptr,
-                gates_buf,
-                gdn_out_buf,
-                h_state,
-                scale,
-                k,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                gb_stride,
-                1,
-                stream,
-            );
-        }
-
         // 2026-06-06: removed the concluded GDN-prefill experiment env flags
         // (ATLAS_GDN_CHUNK64 / ATLAS_FORCE_PERSISTENT / ATLAS_DISABLE_WY4) and their
         // dispatch branches. FLA is the baked default for 128-dim linear heads; the
@@ -136,13 +110,11 @@ impl Qwen3SsmLayer {
             let w_out = fla_scratch;
             let u_out = w_out.offset(nt * nv * 64 * kd * 2);
             let s_out = u_out.offset(nt * nv * 64 * vd * 2);
-            let uc_out = s_out.offset(nt * nv * kd * vd * 2);
-            let gc_out = uc_out.offset(nt * nv * 64 * vd * 2);
+            let uc_out = s_out.offset(nt * nv * kd * vd * 4);
             ops::gdn_prefill_fla(
                 ctx.gpu,
                 self.gdn_prefill_fla_recompute_wu_k,
                 self.gdn_prefill_fla_chunk_delta_h_k,
-                self.gdn_prefill_fla_chunk_delta_h_tc_vblock_k,
                 self.gdn_prefill_fla_chunk_fwd_o_k,
                 h_state,
                 q_ptr,
@@ -155,54 +127,9 @@ impl Qwen3SsmLayer {
                 u_out,
                 s_out,
                 uc_out,
-                gc_out,
                 1,
                 k,
                 num_chunks,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                gb_stride,
-                false, // single-stream: contiguous h_state (not a pointer table)
-                spark_runtime::gpu::DevicePtr::NULL, // cu_seqlens (unused)
-                spark_runtime::gpu::DevicePtr::NULL, // cu_chunks (unused)
-                false, // not varlen
-                ctx.profile,
-                stream,
-            )?;
-        } else if std::env::var_os("ATLAS_GDN_REGRESIDENT").is_some()
-            && kd == 128
-            && vd == 128
-            && self.gdn_prefill_regresident_k.0 != 0
-        {
-            // Register-resident token-sequential recurrence — drop-in for WY4 on
-            // the warm Marconi-replay path (this branch is only reached when the
-            // FLA `if` above fell through, i.e. gdn_exact_replay). H lives in
-            // registers (one warp per v-column, 4 k-rows/lane) instead of 64KB
-            // smem, so >=2 CTA/SM and no per-token barriers. Token-equal to WY4
-            // (cosine 1.0, max|dH|~1e-8 — same acceptance class) and ~2.9x faster
-            // in isolation. Gated by ATLAS_GDN_REGRESIDENT until serve-validated.
-            static RR_LOG: std::sync::Once = std::sync::Once::new();
-            RR_LOG.call_once(|| {
-                tracing::info!(
-                    "GDN prefill: REGISTER-RESIDENT warm-replay path ACTIVE (ATLAS_GDN_REGRESIDENT; H in regs, no smem-H)"
-                );
-            });
-            ops::gdn_prefill_regresident(
-                ctx.gpu,
-                self.gdn_prefill_regresident_k,
-                h_state,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gates_buf,
-                gates_buf.offset(nv * fp32),
-                gdn_out_buf,
-                1,
-                k,
                 nk as u32,
                 nv as u32,
                 kd as u32,

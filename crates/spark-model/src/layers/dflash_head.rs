@@ -24,7 +24,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
 use crate::speculative::{DraftProposer, ProposerState};
-use crate::weight_map::{DenseWeight, QuantizedWeight};
+use crate::weight_map::DenseWeight;
 
 /// Kernel handles for the DFlash γ-block forward chain. All resolved once
 /// at `BlockDiffusionDraftHead::from_weights` against the active GPU backend
@@ -35,10 +35,6 @@ pub struct DflashKernels {
     pub residual_rms_norm: KernelHandle,
     pub dense_gemv: KernelHandle,
     pub dense_gemm: KernelHandle,
-    /// NVFP4 GEMM for the final logits when the shared lm_head is NVFP4
-    /// (e.g. Holo): a BF16 `dense_gemm` on NVFP4-packed bytes reads garbage
-    /// (and ~4× OOB → CUDA-700). `.0 == 0` when the target lm_head is BF16.
-    pub w4a16_gemm: KernelHandle,
     pub rope_qwen3: KernelHandle,
     pub reshape_cache_fp8: KernelHandle,
     pub prefill_attn_dflash_fp8: KernelHandle,
@@ -194,14 +190,8 @@ pub struct BlockDiffusionDraftHead {
     /// (Qwen3.6-35B-A3B-DFlash: vocab=248320, hidden=2048 — same as target).
     pub embed_tokens_shared: DevicePtr,
     /// Target's lm_head GPU pointer. Used for the drafter's per-position
-    /// argmax over `[γ, vocab]` logits. Valid only when the target lm_head is
-    /// BF16; when `lm_head_nvfp4` is `Some`, the NVFP4 path is used instead.
+    /// argmax over `[γ, vocab]` logits.
     pub lm_head_shared: DevicePtr,
-    /// Target's NVFP4 lm_head (packed + scales), shared with the drafter for
-    /// the final logits GEMM. `Some` when the target ships an NVFP4 lm_head
-    /// (e.g. Holo) — required because a BF16 `dense_gemm` on the NVFP4 buffer
-    /// reads garbage and OOB. `None` → use the BF16 `lm_head_shared`.
-    pub lm_head_nvfp4: Option<QuantizedWeight>,
 
     // === Weights from the drafter checkpoint ===
     /// Hidden-norm applied to the projected target context before mixing

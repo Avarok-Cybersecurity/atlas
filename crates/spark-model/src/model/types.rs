@@ -178,15 +178,6 @@ pub struct TransformerModel {
     /// assign correct (h, w) spatial position IDs to each image patch
     /// token. Empty when no images are pending.
     pub(super) vision_image_grids: Mutex<Vec<(usize, usize)>>,
-    /// Co-dispatched batched-ViT slice base for the NEXT prefill_chunk. When a
-    /// tick batches >=2 image requests into one buf_out, each request's chunk-0
-    /// splice/MRoPE must read its OWN slice: `vision_row_base` = first buf_out
-    /// row, `vision_grid_base` = first vision_image_grids index, and
-    /// `vision_owned_images` bounds the grid scan. All 0 ⇒ legacy (read from
-    /// row 0 / grid 0). Set right before prefill_chunk, reset to 0 right after.
-    pub(super) vision_row_base: Mutex<usize>,
-    pub(super) vision_grid_base: Mutex<usize>,
-    pub(super) vision_owned_images: Mutex<usize>,
     /// Page-locked host staging for batched metadata H2D transfers.
     /// Allocated once at init via cuMemAllocHost, freed in Drop.
     ///

@@ -101,13 +101,6 @@ pub struct MoeLayer {
     moe_expert_silu_down_shared_batch3: KernelHandle,
     moe_weighted_sum_blend_batch3: KernelHandle,
     w4a16_gemv_batch3: KernelHandle,
-    // Generic token-major NVFP4 MoE kernels. Used as an opt-in decode
-    // concurrency experiment for N>=4 without grouped-GEMM sorting.
-    moe_expert_gate_up_shared_token_major: KernelHandle,
-    moe_expert_silu_down_shared_token_major: KernelHandle,
-    moe_weighted_sum_blend_token_major: KernelHandle,
-    moe_decode_atomic_c4_silu_down_accum_k: KernelHandle,
-    moe_decode_atomic_c4_finalize_k: KernelHandle,
     // Sorted/grouped prefill path
     moe_sort_by_expert: KernelHandle,
     moe_sorted_gate_up: KernelHandle,
@@ -128,17 +121,6 @@ pub struct MoeLayer {
     gate_ptrs_t: Option<ExpertPtrTable>,
     up_ptrs_t: Option<ExpertPtrTable>,
     down_ptrs_t: Option<ExpertPtrTable>,
-    /// CUTLASS grouped-NVFP4 swizzled SFB weight-scale tables
-    /// (`ATLAS_HOLO_MOE_GROUPED_CUTLASS`). Device `[num_experts]` u64 arrays of
-    /// per-expert SFB pointers, built at load by `build_cutlass_grouped_sfb` from
-    /// the `gate_ptrs_t`/`up_ptrs_t` `[K/16,N]` scales (`pack_weight_sfb` swizzle).
-    /// The grouped kernel reads `gate_ptrs.packed` (`[N,K/2]`) + these SFB + the
-    /// real per-expert `scale2`. `None` => the CUTLASS grouped path is unavailable.
-    gate_sfb_cutlass: Option<DevicePtr>,
-    up_sfb_cutlass: Option<DevicePtr>,
-    down_sfb_cutlass: Option<DevicePtr>,
-    /// Keeps the per-expert SFB buffers + the two pointer arrays alive.
-    _cutlass_sfb_owned: Vec<DevicePtr>,
     /// Lazy down_proj transpose scratch — populated at the start of each
     /// prefill call when the persistent transpose pass couldn't fit
     /// down_proj. Decode keeps using `down_ptrs` (untransposed); prefill
@@ -195,14 +177,6 @@ pub struct MoeLayer {
     /// `moe_fused_gate_up_t_k64_m128 == KernelHandle(0)` and dispatch
     /// falls through to the M=64 path even when the env var is set.
     nvfp4_gate_up_m128: bool,
-    /// `ATLAS_HOLO_MOE_GATEUP_FP4=1` opts the prefill fused gate_up onto the
-    /// block-scaled FP4 kernel. Reads the SHARED FAST_MOE=full `gate_ptrs_t`/
-    /// `up_ptrs_t` `[K/2,N]` tables (no extra MoE memory); dispatch also requires
-    /// those tables present + the FP4 kernel handle != 0.
-    gateup_fp4: bool,
-    /// `ATLAS_HOLO_MOE_DOWN_FP4=1` — same, for the prefill down projection over
-    /// the shared `down_ptrs_t` table.
-    down_fp4: bool,
     /// `ATLAS_HYBRID_MOE_LAYOUT=1` opts in to the hybrid-layout path:
     /// keep BOTH original `[N, K/2]` weights (for decode + MTP verify) AND
     /// transposed `[K/2, N]` weights (for prefill). Doubles MoE-weight
@@ -225,14 +199,6 @@ pub struct MoeLayer {
     /// `KernelHandle(0)` on models that don't ship the kernel; dispatch
     /// gates on `nvfp4_gate_up_m128` AND handle non-zero.
     moe_fused_gate_up_t_k64_m128: KernelHandle,
-    /// FUSED FP4 (block-scaled e2m1) variant of the K64 fused gate+up kernel
-    /// (`ATLAS_HOLO_MOE_GATEUP_FP4`). Same signature as `moe_fused_gate_up_t_k64`
-    /// but runs one `mma.sync.kind::mxf4nvf4.scale_vec::4X.m16n8k64` per k64
-    /// tile (vs 2× m16n8k32 e4m3). `try_kernel` — `KernelHandle(0)` on images
-    /// lacking it; the dispatch in `forward_prefill_routed` only fires when this
-    /// handle != 0, `gateup_fp4` is set, and the shared `gate_ptrs_t`/`up_ptrs_t`
-    /// tables are present (FAST_MOE=full).
-    moe_fused_gate_up_t_k64_fp4: KernelHandle,
     moe_fp8_grouped_gemm_t: KernelHandle,
     w4a16_gemm_t: KernelHandle,
     bf16_to_fp8_k: KernelHandle,
@@ -318,17 +284,6 @@ pub struct MoeLayer {
     bf16_shared_down: Option<DevicePtr>,
     // FP8 shared expert weights (None when shared expert is NVFP4)
     fp8_shared_expert: Option<Fp8ExpertWeight>,
-    /// FP4 down kernel handle (`moe_w4a16_down_t_k64_fp4`). `try_kernel` =>
-    /// `KernelHandle(0)` on images lacking it; the FP4-down dispatch checks this
-    /// handle != 0, `down_fp4` is set, and the shared `down_ptrs_t` table is present.
-    pub(crate) moe_down_t_k64_fp4: KernelHandle,
-    /// `moe_permute_tokens` gather kernel — only needed by the FP4 escape-hatch
-    /// (which consumes expert-sorted contiguous rows, unlike the FP8 fused
-    /// kernel that gathers via `sorted_token_ids` internally). `try_kernel`
-    /// (handle may be 0 on images lacking it). Now unused — the CUTLASS grouped
-    /// path fuses the gather into its A-pack — kept for potential reuse.
-    #[allow(dead_code)]
-    pub(crate) moe_permute_tokens_k: KernelHandle,
     // Phase 2.7 Tier C — Frankenstein dispatch flag.
     // True when this layer's index is in `config.dflash_capture_layers`.
     // When the env var `ATLAS_FRANKENSTEIN_DECODE_VIA_PREFILL=1` is set,
@@ -343,7 +298,6 @@ pub struct MoeLayer {
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod dump;
 mod forward;
-mod forward_atomic_c4;
 mod forward_batched;
 mod forward_ep;
 mod forward_k2;
@@ -354,13 +308,10 @@ mod forward_prefill_bf16;
 mod forward_prefill_fp8;
 mod forward_prefill_phase;
 mod forward_prefill_routed;
-mod forward_token_major;
 mod helpers_a;
 mod helpers_b;
 mod helpers_c;
 mod init;
-#[cfg(test)]
-mod mod_tests;
 
 /// Build a device-side pointer table from pre-transposed QuantizedWeight vec.
 fn build_ptr_table_from_qw(
@@ -481,4 +432,48 @@ fn build_fp8_ptr_table(
         weight_ptrs,
         scale_ptrs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spark_runtime::gpu::mock::MockGpuBackend;
+
+    #[test]
+    fn test_moe_kernel_loading() {
+        let gpu = MockGpuBackend::new();
+        assert!(gpu.kernel("gemv", "dense_gemv_bf16").is_ok());
+        assert!(gpu.kernel("w4a16_gemv", "w4a16_gemv").is_ok());
+        assert!(gpu.kernel("moe_topk", "moe_topk_softmax").is_ok());
+        assert!(
+            gpu.kernel("moe_expert_gemv_fused", "moe_expert_gemv_gate_up")
+                .is_ok()
+        );
+        assert!(
+            gpu.kernel("moe_expert_gemv_fused", "moe_expert_gemv_gate_up_2x")
+                .is_ok()
+        );
+        assert!(
+            gpu.kernel("moe_expert_gemv_fused", "moe_expert_gemv_silu_down")
+                .is_ok()
+        );
+        assert!(
+            gpu.kernel("moe_expert_gemv_fused", "moe_expert_gemv_silu_down_2x")
+                .is_ok()
+        );
+        assert!(
+            gpu.kernel("moe_shared_expert_fused", "moe_expert_gate_up_shared")
+                .is_ok()
+        );
+        assert!(
+            gpu.kernel("moe_shared_expert_fused", "moe_expert_silu_down_shared")
+                .is_ok()
+        );
+        assert!(
+            gpu.kernel("moe_expert_gemv", "moe_weighted_sum_blend")
+                .is_ok()
+        );
+        // K=2 batch dispatch
+        assert!(gpu.kernel("moe_topk", "moe_topk_softmax_batched").is_ok());
+    }
 }

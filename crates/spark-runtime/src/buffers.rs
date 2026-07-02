@@ -84,18 +84,6 @@ pub struct BufferArena {
     /// Token IDs `[M]` u32 — stable across the layer loop so DeepSeek-V4
     /// hash-MoE layers can read `tid2eid[token_id]`.
     token_ids: DevicePtr,
-    /// Shared FFN activation-quant scratch (dense-FFN MMQ/int8 prefill path).
-    /// Allocated once here instead of per-DenseFfnLayer (64× would leak ~18GB).
-    /// NULL unless the model is dense (`num_experts == 0`).
-    /// `ffn_act_q8`: q8_1 activations for the Q4_K MMQ gate/up GEMM.
-    /// `ffn_act_a` / `ffn_act_scale`: int8 (a_i8 / a_scale) — reused for NVFP4 packed/scale.
-    ffn_act_q8: DevicePtr,
-    ffn_act_a: DevicePtr,
-    ffn_act_scale: DevicePtr,
-    /// Persistent FP8 block-scaled activation scratch for prefill projections.
-    fp8_act: DevicePtr,
-    /// Persistent per-128-block FP32 scales paired with `fp8_act`.
-    fp8_act_scale: DevicePtr,
     /// Maximum batch tokens this arena was sized for.
     max_batch_tokens: usize,
     /// Sizes in bytes for each buffer (for debug/logging).
@@ -150,25 +138,6 @@ impl BufferArena {
             DevicePtr::NULL
         };
         let token_ids = gpu.alloc(sizes.token_ids)?;
-        // Shared dense-FFN activation-quant scratch (MMQ/int8 prefill). Sized 0
-        // for MoE models → NULL → per-layer ensure_* path stays inert.
-        let ffn_act_q8 = if sizes.ffn_act_q8 > 0 {
-            gpu.alloc(sizes.ffn_act_q8)?
-        } else {
-            DevicePtr::NULL
-        };
-        let ffn_act_a = if sizes.ffn_act_a > 0 {
-            gpu.alloc(sizes.ffn_act_a)?
-        } else {
-            DevicePtr::NULL
-        };
-        let ffn_act_scale = if sizes.ffn_act_scale > 0 {
-            gpu.alloc(sizes.ffn_act_scale)?
-        } else {
-            DevicePtr::NULL
-        };
-        let fp8_act = gpu.alloc(sizes.fp8_act)?;
-        let fp8_act_scale = gpu.alloc(sizes.fp8_act_scale)?;
 
         tracing::info!(
             "Buffer arena: {} tokens × {:.1} MB total (attn_out={:.1}MB, ssm_deint={:.1}MB, kv_lora_rank={})",
@@ -207,11 +176,6 @@ impl BufferArena {
             hc_comb,
             gdn_fla_scratch,
             token_ids,
-            ffn_act_q8,
-            ffn_act_a,
-            ffn_act_scale,
-            fp8_act,
-            fp8_act_scale,
             max_batch_tokens,
             sizes,
         })
@@ -297,31 +261,6 @@ impl BufferArena {
     /// `DevicePtr::NULL` unless this is a 128-dim-linear-head GDN model.
     pub fn gdn_fla_scratch(&self) -> DevicePtr {
         self.gdn_fla_scratch
-    }
-    /// Shared dense-FFN q8_1 activation scratch (Q4_K MMQ gate/up). NULL for MoE.
-    pub fn ffn_act_q8(&self) -> DevicePtr {
-        self.ffn_act_q8
-    }
-    /// Shared dense-FFN int8/NVFP4 activation scratch (a_i8 / packed). NULL for MoE.
-    pub fn ffn_act_a(&self) -> DevicePtr {
-        self.ffn_act_a
-    }
-    /// Shared dense-FFN int8/NVFP4 activation-scale scratch. NULL for MoE.
-    pub fn ffn_act_scale(&self) -> DevicePtr {
-        self.ffn_act_scale
-    }
-    /// Persistent FP8 block-scaled activation scratch for prefill projections.
-    /// Replaces a per-projection alloc/sync/free in the W8A8+FP32-epilogue path.
-    pub fn fp8_act(&self) -> DevicePtr {
-        self.fp8_act
-    }
-    /// Allocated byte size of `fp8_act` (debug bounds-check at call sites).
-    pub fn fp8_act_bytes(&self) -> usize {
-        self.sizes.fp8_act
-    }
-    /// Persistent per-128-block FP32 scales paired with `fp8_act`.
-    pub fn fp8_act_scale(&self) -> DevicePtr {
-        self.fp8_act_scale
     }
     pub fn splitk_workspace(&self) -> DevicePtr {
         self.splitk_workspace

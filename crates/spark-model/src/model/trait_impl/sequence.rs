@@ -317,15 +317,6 @@ impl TransformerModel {
         // re-point the guard at the new slot it now owns. This preserves the
         // exactly-once invariant: old_slot is pushed here (once) and new_slot
         // will be pushed by whichever path later frees THIS sequence (once).
-        // Claim the NEW slot EXCLUSIVELY (bug-2 fix): if the migration target
-        // is on the free list (a slot freed by a retiring sequence in the
-        // two-phase retire compaction), remove it so it is never simultaneously
-        // owned (by this guard) and free. Without this, a later release of this
-        // slot double-pushes it and `claim_slot` hands the same slot to two
-        // sequences → shared GDN state → cross-stream content bleed. A no-op
-        // for the ownership-TRANSFER caller (lifecycle swap-out), where the
-        // target is owned by the retiring victim and not on the free list.
-        self.ssm_pool.claim_specific(new_slot);
         if let Some(g) = seq.ssm_slot.as_mut() {
             // Guard owned `old_slot`; drop that ownership before releasing.
             let owned = g.take();

@@ -56,62 +56,18 @@ pub fn gdn_decode(
         .launch(stream)
 }
 
-/// FP32 GDN decode fused with gated RMS norm.
+/// Gated delta rule prefill (multi-token, sequential SSM update within kernel).
 ///
-/// Produces the same BF16 post-gated-norm output that a separate
-/// `gdn_decode_f32` + `gated_rms_norm_f32_input` pair would produce, while
-/// avoiding the intermediate FP32 global write/read.
-#[allow(clippy::too_many_arguments)]
-pub fn gdn_decode_f32_norm(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    h_state: DevicePtr,
-    query: DevicePtr,
-    key: DevicePtr,
-    value: DevicePtr,
-    gate: DevicePtr,
-    beta: DevicePtr,
-    z_gate: DevicePtr,
-    norm_weight: DevicePtr,
-    output: DevicePtr,
-    batch_size: u32,
-    num_k_heads: u32,
-    num_v_heads: u32,
-    k_dim: u32,
-    v_dim: u32,
-    eps: f32,
-    stream: u64,
-) -> Result<()> {
-    KernelLaunch::new(gpu, kernel)
-        .grid([num_v_heads, batch_size, 1])
-        .block([128, 1, 1])
-        .arg_ptr(h_state)
-        .arg_ptr(query)
-        .arg_ptr(key)
-        .arg_ptr(value)
-        .arg_ptr(gate)
-        .arg_ptr(beta)
-        .arg_ptr(z_gate)
-        .arg_ptr(norm_weight)
-        .arg_ptr(output)
-        .arg_u32(batch_size)
-        .arg_u32(num_k_heads)
-        .arg_u32(num_v_heads)
-        .arg_u32(k_dim)
-        .arg_u32(v_dim)
-        .arg_f32(eps)
-        .launch(stream)
-}
-
-/// Register-resident token-sequential prefill recurrence (warm-replay path).
+/// Processes `seq_len` tokens sequentially per (batch, head) pair.
+/// Supports strided access: Q/K/V/gate/beta may have different strides
+/// between tokens (e.g., from conv1d output with interleaved Q|K|V layout).
 ///
-/// Kernel `gated_delta_rule_prefill_regresident`: one WARP owns one v-column,
-/// holding the 128 k-rows of H in registers (4/lane) — no smem-H, no per-token
-/// barriers, >=2 CTA/SM. Token-equal to WY4 (cosine 1.0) and ~2.9x faster.
-/// Grid: (num_v_heads, batch, v_dim / 4)  Block: (128, 1, 1)  (4 warps/block).
-/// Requires k_dim == 128 and v_dim % 4 == 0.
+/// Kernel: `gated_delta_rule_prefill(h_state, query, key, value,
+///          gate, beta, output, batch_size, seq_len, num_k_heads,
+///          num_v_heads, k_dim, v_dim, qk_stride, v_stride, gb_stride)`
+/// Grid: (num_v_heads, batch, 1)  Block: (128, 1, 1)
 #[allow(clippy::too_many_arguments)]
-pub fn gdn_prefill_regresident(
+pub fn gdn_prefill(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
     h_state: DevicePtr,
@@ -133,8 +89,9 @@ pub fn gdn_prefill_regresident(
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([num_v_heads, batch_size, v_dim / 4])
+        .grid([num_v_heads, batch_size, 1])
         .block([128, 1, 1])
+        .shared_mem(4 * k_dim * 4) // double-buffered k[128]+q[128] × 2 buffers × 4 bytes
         .arg_ptr(h_state)
         .arg_ptr(query)
         .arg_ptr(key)
@@ -155,69 +112,13 @@ pub fn gdn_prefill_regresident(
 }
 
 /// Split-v_dim prefill: 2 CTAs per v-head, 64 threads each.
-/// FUSED conv1d_update_l2norm + recurrence + gated-RMS-norm decode.
 ///
-/// Collapses the per-seq SSM decode chain `conv1d_l2norm -> gdn -> gated_norm`
-/// into one launch (shorter critical path on the chain-depth-bound decode).
-/// Race-free per-k-head grid: each block owns k-head `kh` and its `head_repeat`
-/// v-heads, conv-updating its own q/k AND v `conv_state` exclusively.
-/// Requires `head_repeat * v_dim == block`, `2*k_dim <= block`, `k_dim == v_dim`.
+/// Kernel: `gated_delta_rule_prefill_split(h_state, query, key, value,
+///          gate, beta, output, batch_size, seq_len, num_k_heads,
+///          num_v_heads, k_dim, v_dim, qk_stride, v_stride, gb_stride)`
+/// Grid: (num_v_heads * 2, batch, 1)  Block: (64, 1, 1)
 #[allow(clippy::too_many_arguments)]
-pub fn gdn_decode_f32_conv_norm(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    h_state: DevicePtr,
-    conv_state: DevicePtr,
-    new_input: DevicePtr,
-    conv_weight: DevicePtr,
-    gate: DevicePtr,
-    beta: DevicePtr,
-    z_gate: DevicePtr,
-    norm_weight: DevicePtr,
-    output: DevicePtr,
-    batch_size: u32,
-    num_k_heads: u32,
-    num_v_heads: u32,
-    k_dim: u32,
-    v_dim: u32,
-    conv_dim: u32,
-    d_conv: u32,
-    l2_eps: f32,
-    eps: f32,
-    stream: u64,
-) -> Result<()> {
-    let head_repeat = num_v_heads / num_k_heads;
-    KernelLaunch::new(gpu, kernel)
-        .grid([num_k_heads, batch_size, 1])
-        .block([head_repeat * v_dim, 1, 1])
-        .arg_ptr(h_state)
-        .arg_ptr(conv_state)
-        .arg_ptr(new_input)
-        .arg_ptr(conv_weight)
-        .arg_ptr(DevicePtr::NULL) // conv_bias
-        .arg_ptr(gate)
-        .arg_ptr(beta)
-        .arg_ptr(z_gate)
-        .arg_ptr(norm_weight)
-        .arg_ptr(output)
-        .arg_u32(batch_size)
-        .arg_u32(num_k_heads)
-        .arg_u32(num_v_heads)
-        .arg_u32(k_dim)
-        .arg_u32(v_dim)
-        .arg_u32(conv_dim)
-        .arg_u32(d_conv)
-        .arg_f32(l2_eps)
-        .arg_f32(eps)
-        .launch(stream)
-}
-
-/// Strided FP32 GDN decode for concurrent sequence decode.
-///
-/// Q/K/V are read from strided rows, typically the FP32 conv output laid out as
-/// `[batch, Q | K | V]`. Gate/beta and output are also strided by batch row.
-#[allow(clippy::too_many_arguments)]
-pub fn gdn_decode_f32_strided(
+pub fn gdn_prefill_split(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
     h_state: DevicePtr,
@@ -228,6 +129,7 @@ pub fn gdn_decode_f32_strided(
     beta: DevicePtr,
     output: DevicePtr,
     batch_size: u32,
+    seq_len: u32,
     num_k_heads: u32,
     num_v_heads: u32,
     k_dim: u32,
@@ -235,12 +137,12 @@ pub fn gdn_decode_f32_strided(
     qk_stride: u32,
     v_stride: u32,
     gb_stride: u32,
-    out_stride: u32,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([num_v_heads, batch_size, 1])
-        .block([128, 1, 1])
+        .grid([num_v_heads * 2, batch_size, 1])
+        .block([64, 1, 1])
+        .shared_mem(4 * k_dim * 4) // double-buffered k[K_DIM]+q[K_DIM] × 2 buffers × 4 bytes
         .arg_ptr(h_state)
         .arg_ptr(query)
         .arg_ptr(key)
@@ -249,6 +151,7 @@ pub fn gdn_decode_f32_strided(
         .arg_ptr(beta)
         .arg_ptr(output)
         .arg_u32(batch_size)
+        .arg_u32(seq_len)
         .arg_u32(num_k_heads)
         .arg_u32(num_v_heads)
         .arg_u32(k_dim)
@@ -256,17 +159,17 @@ pub fn gdn_decode_f32_strided(
         .arg_u32(qk_stride)
         .arg_u32(v_stride)
         .arg_u32(gb_stride)
-        .arg_u32(out_stride)
         .launch(stream)
 }
 
-/// Strided FP32 GDN decode fused with gated RMS norm.
+/// 4-way split prefill: 4 CTAs per v-head, 32 threads each (128 total CTAs).
 ///
-/// Same recurrent update as `gdn_decode_f32_strided`, but writes BF16
-/// post-gated-norm output directly and skips the intermediate FP32 output
-/// buffer plus per-token gated-rms-norm launches.
+/// Kernel: `gated_delta_rule_prefill_split4(h_state, query, key, value,
+///          gate, beta, output, batch_size, seq_len, num_k_heads,
+///          num_v_heads, k_dim, v_dim, qk_stride, v_stride, gb_stride)`
+/// Grid: (num_v_heads * 4, batch, 1)  Block: (32, 1, 1)
 #[allow(clippy::too_many_arguments)]
-pub fn gdn_decode_f32_strided_norm(
+pub fn gdn_prefill_split4(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
     h_state: DevicePtr,
@@ -275,10 +178,9 @@ pub fn gdn_decode_f32_strided_norm(
     value: DevicePtr,
     gate: DevicePtr,
     beta: DevicePtr,
-    z_gate: DevicePtr,
-    norm_weight: DevicePtr,
     output: DevicePtr,
     batch_size: u32,
+    seq_len: u32,
     num_k_heads: u32,
     num_v_heads: u32,
     k_dim: u32,
@@ -286,24 +188,21 @@ pub fn gdn_decode_f32_strided_norm(
     qk_stride: u32,
     v_stride: u32,
     gb_stride: u32,
-    z_stride: u32,
-    out_stride: u32,
-    eps: f32,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([num_v_heads, batch_size, 1])
-        .block([128, 1, 1])
+        .grid([num_v_heads * 4, batch_size, 1])
+        .block([32, 1, 1])
+        .shared_mem(4 * k_dim * 4) // double-buffered k[K_DIM]+q[K_DIM] × 2 buffers × 4 bytes
         .arg_ptr(h_state)
         .arg_ptr(query)
         .arg_ptr(key)
         .arg_ptr(value)
         .arg_ptr(gate)
         .arg_ptr(beta)
-        .arg_ptr(z_gate)
-        .arg_ptr(norm_weight)
         .arg_ptr(output)
         .arg_u32(batch_size)
+        .arg_u32(seq_len)
         .arg_u32(num_k_heads)
         .arg_u32(num_v_heads)
         .arg_u32(k_dim)
@@ -311,9 +210,228 @@ pub fn gdn_decode_f32_strided_norm(
         .arg_u32(qk_stride)
         .arg_u32(v_stride)
         .arg_u32(gb_stride)
-        .arg_u32(z_stride)
-        .arg_u32(out_stride)
-        .arg_f32(eps)
+        .launch(stream)
+}
+
+/// Persistent GDN prefill — h_state stays in shared memory for entire sequence.
+///
+/// Same parameters as gdn_prefill_split4 but uses persistent CTAs with
+/// 128 threads and 67 KB shared memory. Each CTA processes ALL tokens for
+/// one v_head, keeping h_state in shared memory (never written to global
+/// until the end). Targets L2 bandwidth (~3 TB/s) instead of LPDDR5X (273 GB/s).
+///
+/// Grid: (num_v_heads, batch, 1)  Block: (128, 1, 1)
+/// Shared: k_dim*v_dim*4 + 4*k_dim*4 bytes
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_prefill_persistent(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    h_state: DevicePtr,
+    query: DevicePtr,
+    key: DevicePtr,
+    value: DevicePtr,
+    gate: DevicePtr,
+    beta: DevicePtr,
+    output: DevicePtr,
+    batch_size: u32,
+    seq_len: u32,
+    num_k_heads: u32,
+    num_v_heads: u32,
+    k_dim: u32,
+    v_dim: u32,
+    qk_stride: u32,
+    v_stride: u32,
+    gb_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    let smem = k_dim * v_dim * 4 + 4 * k_dim * 4; // h_state + double-buffered k/q
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_v_heads, batch_size, 1])
+        .block([128, 1, 1])
+        .shared_mem(smem)
+        .arg_ptr(h_state)
+        .arg_ptr(query)
+        .arg_ptr(key)
+        .arg_ptr(value)
+        .arg_ptr(gate)
+        .arg_ptr(beta)
+        .arg_ptr(output)
+        .arg_u32(batch_size)
+        .arg_u32(seq_len)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(k_dim)
+        .arg_u32(v_dim)
+        .arg_u32(qk_stride)
+        .arg_u32(v_stride)
+        .arg_u32(gb_stride)
+        .launch(stream)
+}
+
+/// Persistent GDN prefill with explicit shared memory size.
+/// Used for WY4-persistent variant which needs more shared memory.
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_prefill_persistent_smem(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    h_state: DevicePtr,
+    query: DevicePtr,
+    key: DevicePtr,
+    value: DevicePtr,
+    gate: DevicePtr,
+    beta: DevicePtr,
+    output: DevicePtr,
+    batch_size: u32,
+    seq_len: u32,
+    num_k_heads: u32,
+    num_v_heads: u32,
+    k_dim: u32,
+    v_dim: u32,
+    qk_stride: u32,
+    v_stride: u32,
+    gb_stride: u32,
+    smem: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_v_heads, batch_size, 1])
+        .block([128, 1, 1])
+        .shared_mem(smem)
+        .arg_ptr(h_state)
+        .arg_ptr(query)
+        .arg_ptr(key)
+        .arg_ptr(value)
+        .arg_ptr(gate)
+        .arg_ptr(beta)
+        .arg_ptr(output)
+        .arg_u32(batch_size)
+        .arg_u32(seq_len)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(k_dim)
+        .arg_u32(v_dim)
+        .arg_u32(qk_stride)
+        .arg_u32(v_stride)
+        .arg_u32(gb_stride)
+        .launch(stream)
+}
+
+/// FLA multi-kernel chunked GDN prefill (`ATLAS_GDN_FLA=1`).
+///
+/// Three sequential launches on `stream` (CPU-serialized → no GPU sync needed):
+///   1. recompute_wu  (grid [num_chunks, nv, batch], 128 thr): solve (I+L)U=βV,
+///      (I+L)W=β·exp(gc)·K → W_out, U_out (bf16).
+///   2. chunk_delta_h_ksplit (grid [nv, batch], 256 thr): serial state spine,
+///      2 threads/v-column for occupancy → S_out (per-chunk entry states f32),
+///      uc_out (bf16); updates h_state in-place.
+///   3. chunk_fwd_o   (grid [num_chunks, nv, batch], 128 thr): O = Q̃·S_c +
+///      tril(decay·Q̃·Kᵀ)·uc → output (bf16, same layout as wy4).
+///
+/// W_out/U_out/S_out/uc_out are the caller's pre-sized scratch (BufferArena
+/// `gdn_fla_scratch`, sub-divided). Strides match the packed conv layout
+/// (qk_stride=v_stride=conv_dim, gb_stride=2*nv) exactly like the wy4/chunk64 path.
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_prefill_fla(
+    gpu: &dyn GpuBackend,
+    k_recompute_wu: KernelHandle,
+    k_chunk_delta_h: KernelHandle,
+    k_chunk_fwd_o: KernelHandle,
+    h_state: DevicePtr,
+    query: DevicePtr,
+    key: DevicePtr,
+    value: DevicePtr,
+    gate: DevicePtr,
+    beta: DevicePtr,
+    output: DevicePtr,
+    w_out: DevicePtr,
+    u_out: DevicePtr,
+    s_out: DevicePtr,
+    uc_out: DevicePtr,
+    batch_size: u32,
+    seq_len: u32,
+    num_chunks: u32,
+    num_k_heads: u32,
+    num_v_heads: u32,
+    k_dim: u32,
+    v_dim: u32,
+    qk_stride: u32,
+    v_stride: u32,
+    gb_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    const C: u32 = 64; // CHUNK (kernel constant)
+    let (kd, vd) = (k_dim, v_dim);
+    // smem byte sizes — identical formulas to the GATE-B example (validated).
+    let smem_wu = C * kd * 2 + C * C * 4 + C * C * 4 + C * 4;
+    let smem_dh = 2 * (C * (2 * kd + vd) * 2) + 2 * C * 4;
+    let smem_fo = C * kd * 2 + C * kd * 2 + C * C * 4 + C * vd * 2 + kd * vd * 2 + C * 4;
+
+    // Kernel 1: recompute_wu.
+    KernelLaunch::new(gpu, k_recompute_wu)
+        .grid([num_chunks, num_v_heads, batch_size])
+        .block([128, 1, 1])
+        .shared_mem(smem_wu)
+        .arg_ptr(key)
+        .arg_ptr(value)
+        .arg_ptr(gate)
+        .arg_ptr(beta)
+        .arg_ptr(w_out)
+        .arg_ptr(u_out)
+        .arg_u32(batch_size)
+        .arg_u32(seq_len)
+        .arg_u32(num_chunks)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(kd)
+        .arg_u32(vd)
+        .arg_u32(qk_stride)
+        .arg_u32(v_stride)
+        .arg_u32(gb_stride)
+        .launch(stream)?;
+
+    // Kernel 2: chunk_delta_h_ksplit (256-thread block = 2 threads / v-column).
+    KernelLaunch::new(gpu, k_chunk_delta_h)
+        .grid([num_v_heads, batch_size, 1])
+        .block([256, 1, 1])
+        .shared_mem(smem_dh)
+        .arg_ptr(h_state)
+        .arg_ptr(w_out)
+        .arg_ptr(u_out)
+        .arg_ptr(key)
+        .arg_ptr(gate)
+        .arg_ptr(s_out)
+        .arg_ptr(uc_out)
+        .arg_u32(batch_size)
+        .arg_u32(seq_len)
+        .arg_u32(num_chunks)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(kd)
+        .arg_u32(vd)
+        .arg_u32(qk_stride)
+        .arg_u32(gb_stride)
+        .launch(stream)?;
+
+    // Kernel 3: chunk_fwd_o.
+    KernelLaunch::new(gpu, k_chunk_fwd_o)
+        .grid([num_chunks, num_v_heads, batch_size])
+        .block([128, 1, 1])
+        .shared_mem(smem_fo)
+        .arg_ptr(query)
+        .arg_ptr(key)
+        .arg_ptr(gate)
+        .arg_ptr(s_out)
+        .arg_ptr(uc_out)
+        .arg_ptr(output)
+        .arg_u32(batch_size)
+        .arg_u32(seq_len)
+        .arg_u32(num_chunks)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(kd)
+        .arg_u32(vd)
+        .arg_u32(qk_stride)
+        .arg_u32(gb_stride)
         .launch(stream)
 }
 

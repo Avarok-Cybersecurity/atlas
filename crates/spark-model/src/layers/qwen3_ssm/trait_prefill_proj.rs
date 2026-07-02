@@ -44,82 +44,8 @@ impl Qwen3SsmLayer {
             std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(),
             Some("1")
         );
-        let force_w8a8 = ops::fp8_blockscaled_prefill_enabled();
-        // High-efficiency cuBLASLt BF16 GEMM path (ATLAS_CUBLAS_GEMM=1). The
-        // hand-written blockscaled mma.sync GEMM hits only ~30% of the cuBLAS
-        // ceiling on GB10 (32 vs 85 TFLOPS bf16 on this shape). Dequant the FP8
-        // weight to BF16 once (cached), then route the projection through
-        // cuBLASLt. W16A16 here is strictly more accurate than the W8A8 path.
-        if ops::cutlass_nvfp4_qkvz_enabled()
-            && let Some(ref nvfp4_t) = self.qkvz_nvfp4_t
-        {
-            ops::log_cutlass_nvfp4_route("ssm_qkvz_nvfp4", k, qkvz_size as u32, h as u32);
-            ops::cutlass_nvfp4_proj(
-                ctx.gpu,
-                normed,
-                nvfp4_t,
-                proj_dst,
-                k,
-                qkvz_size as u32,
-                h as u32,
-                stream,
-            )?;
-        } else if ops::cutlass_nvfp4_qkvz_enabled()
-            && let Some(ref fp8w) = self.qkvz_fp8w
-        {
-            ops::log_cutlass_nvfp4_route("ssm_qkvz_fp8pack", k, qkvz_size as u32, h as u32);
-            ops::cutlass_nvfp4_proj_from_fp8(
-                ctx.gpu,
-                normed,
-                fp8w,
-                proj_dst,
-                k,
-                qkvz_size as u32,
-                h as u32,
-                stream,
-            )?;
-        } else if ops::cutlass_gemm_enabled()
-            && let Some(ref fp8w) = self.qkvz_fp8w
-        {
-            ops::cutlass_bf16_proj(
-                ctx.gpu,
-                normed,
-                fp8w,
-                proj_dst,
-                k,
-                qkvz_size as u32,
-                h as u32,
-                stream,
-            )?;
-        } else if ops::cublas_fp8_enabled()
-            && let Some(ref fp8w) = self.qkvz_fp8w
-        {
-            ops::cublas_fp8_rowwise_proj(
-                ctx.gpu,
-                normed,
-                ctx.buffers.fp8_act(),
-                ctx.buffers.fp8_act_scale(),
-                fp8w,
-                proj_dst,
-                k,
-                qkvz_size as u32,
-                h as u32,
-                stream,
-            )?;
-        } else if ops::cublas_gemm_enabled()
-            && let Some(ref fp8w) = self.qkvz_fp8w
-        {
-            ops::cublas_bf16_proj(
-                ctx.gpu,
-                normed,
-                fp8w,
-                proj_dst,
-                k,
-                qkvz_size as u32,
-                h as u32,
-                stream,
-            )?;
-        } else if force_bf16 {
+        let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
+        if force_bf16 {
             ops::dense_gemm(
                 ctx.gpu,
                 self.dense_gemm_k,
@@ -141,18 +67,19 @@ impl Qwen3SsmLayer {
             && self.per_token_group_quant_fp8_k.0 != 0
             && self.fp8_gemm_t_blockscaled_k.0 != 0
         {
-            tracing::debug!(
-                "ssm prefill: QKVZ via block-scaled FP8 (W8A8+FP32-epilogue, M={k} K={h} N={qkvz_size})"
+            tracing::info!(
+                "ssm prefill: QKVZ via W8A8+FP32-epilogue (vLLM-equivalent, M={k} K={h} N={qkvz_size})"
             );
             let m = k as usize;
             let k_dim = h;
-            // Persistent arena scratch (no per-projection alloc/sync/free): the
-            // quant→GEMM chain is same-stream ordered.
-            let a_fp8_buf = ctx.buffers.fp8_act();
-            let a_scale_buf = ctx.buffers.fp8_act_scale();
-            debug_assert!(m * k_dim <= ctx.buffers.fp8_act_bytes());
-            // Per-token block FP8 quant of the activation, then block-scaled
-            // FP8×FP8 GEMM folding both per-128 scales in an FP32 epilogue.
+            let a_fp8_bytes = m * k_dim;
+            let a_scale_bytes = m * (k_dim / 128) * 4;
+            let a_fp8_buf = ctx.gpu.alloc(a_fp8_bytes)?;
+            let a_scale_buf = ctx.gpu.alloc(a_scale_bytes)?;
+            // BISECT TEST 1: quant kernel only — call it then fall through
+            // to w8a16_gemm (which we know works) for the actual GEMM.
+            // If this still crashes, the bug is in per_token_group_quant_fp8.
+            // If it works, the bug is in fp8_gemm_t_blockscaled.
             ops::per_token_group_quant_fp8(
                 ctx.gpu,
                 self.per_token_group_quant_fp8_k,
@@ -163,6 +90,9 @@ impl Qwen3SsmLayer {
                 k_dim as u32,
                 stream,
             )?;
+            // BISECT TEST 2: now call the GEMM with no-fold variant. If
+            // this crashes, the bug is in the MMA loop itself.
+            tracing::info!("ssm prefill: calling fp8_gemm_t_blockscaled (no-fold bisect)");
             ops::fp8_gemm_t_blockscaled(
                 ctx.gpu,
                 self.fp8_gemm_t_blockscaled_k,
@@ -176,6 +106,9 @@ impl Qwen3SsmLayer {
                 h as u32,
                 stream,
             )?;
+            ctx.gpu.synchronize(stream)?;
+            ctx.gpu.free(a_fp8_buf)?;
+            ctx.gpu.free(a_scale_buf)?;
         } else if let Some(ref fp8w) = self.qkvz_fp8w
             && self.w8a16_gemm_pipelined_k.0 != 0
         {

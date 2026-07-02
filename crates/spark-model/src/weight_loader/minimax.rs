@@ -298,12 +298,7 @@ impl ModelWeightLoader for MinimaxM2WeightLoader {
         Ok(layers)
     }
 
-    fn load_embedding(
-        &self,
-        store: &WeightStore,
-        _config: &ModelConfig,
-        _gpu: &dyn GpuBackend,
-    ) -> Result<DenseWeight> {
+    fn load_embedding(&self, store: &WeightStore, _config: &ModelConfig) -> Result<DenseWeight> {
         dense(store, "model.embed_tokens.weight")
     }
 

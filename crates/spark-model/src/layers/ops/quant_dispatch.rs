@@ -174,39 +174,6 @@ pub fn w4a16_gemv_batch3(
         .launch(stream)
 }
 
-/// W4A16 batched GEMV (M<=MAX_M) — the NVFP4 sibling of `w8a16_gemv_batch4/16`.
-///
-/// Reads the NVFP4 weight matrix ONCE and computes `m` outputs (one per seq),
-/// amortizing the weight read across the batch. `kernel` is `w4a16_gemv_batch4`
-/// (M<=4) or `w4a16_gemv_batch16` (M<=16). A:`[m,K]` BF16, C:`[m,N]` BF16.
-///
-/// Kernel: `w4a16_gemv_batch4/16(A, B_packed, B_scale, scale2, C, M, N, K)`
-/// Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1)
-pub fn w4a16_gemv_batchm(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    input: DevicePtr,
-    weight: &QuantizedWeight,
-    output: DevicePtr,
-    m: u32,
-    n: u32,
-    k: u32,
-    stream: u64,
-) -> Result<()> {
-    KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 4), 1, 1])
-        .block([256, 1, 1])
-        .arg_ptr(input)
-        .arg_ptr(weight.weight)
-        .arg_ptr(weight.weight_scale)
-        .arg_f32(weight.weight_scale_2)
-        .arg_ptr(output)
-        .arg_u32(m)
-        .arg_u32(n)
-        .arg_u32(k)
-        .launch(stream)
-}
-
 /// W4A16 GEMV with inline Q/Gate deinterleave on output write.
 ///
 /// Same as `w4a16_gemv` but writes Q and Gate to deinterleaved positions,

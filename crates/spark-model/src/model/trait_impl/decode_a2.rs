@@ -141,22 +141,6 @@ impl TransformerModel {
         _stream: u64,
     ) -> Result<DevicePtr> {
         let n = tokens.len();
-        if std::env::var("ATLAS_DECODE_BATCH_LOG").ok().as_deref() == Some("1") {
-            let slots: Vec<i64> = seqs
-                .iter()
-                .map(|s| {
-                    s.ssm_slot
-                        .as_ref()
-                        .and_then(|g| g.idx())
-                        .map(|x| x as i64)
-                        .unwrap_or(-1)
-                })
-                .collect();
-            let contiguous = slots.iter().enumerate().all(|(i, &s)| s == i as i64);
-            tracing::info!(
-                "ATLAS_DECODE_BATCH: n={n} slots={slots:?} contiguous_0..n={contiguous}"
-            );
-        }
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;
@@ -197,29 +181,14 @@ impl TransformerModel {
         // 1d. Upload metadata with fixed stride (active + padding)
         let metadata = self.upload_batch_metadata_fixed(seqs, padded_n, &mut kv_cache, stream)?;
 
-        // CUDA graphs for multi-sequence decode (ATLAS_DECODE_GRAPHS_MULTISEQ=1).
-        //
-        // The historical concern was that SSM h_state/conv_state pointers get
-        // baked into per-seq kernel args at capture, going stale when batch
-        // composition changes. That does NOT happen here: the scheduler holds
-        // the invariant that active sequences occupy contiguous SSM pool slots
-        // [0..n) in batch order (compact_sequence migrates survivors), verified
-        // empirically (slots always == [0,1,..,n-1]). So position i's state is
-        // ALWAYS at pool_base + i*stride — a fixed address baked correctly at
-        // capture; replay reads whatever sequence currently occupies slot i.
-        // Pad positions use the fixed dummy slot. Attention metadata, KV block
-        // tables, embed, and all scratch buffers are at fixed device addresses
-        // refreshed every step BEFORE replay. So a graph keyed by padded_n is
-        // valid across replays. This is the dominant lever for n>=2 decode
-        // (eliminates ~1500 kernel launches/step). Opt-in until soaked; flip
-        // the default once validated. Verify correctness with the needle test.
-        let ms_profile = std::env::var("ATLAS_MS_PROFILE").ok().as_deref() == Some("1");
-        // ATLAS_MS_PROFILE forces eager (graphs off) so per-phase syncs are legal.
-        let use_graphs = !ms_profile
-            && std::env::var("ATLAS_DECODE_GRAPHS_MULTISEQ")
-                .ok()
-                .as_deref()
-                == Some("1");
+        // CUDA graphs DISABLED for multi-sequence decode: SSM state pointers
+        // (h_state, conv_state) are baked into per-seq kernel args of
+        // gdn_decode/conv1d_update at capture time. When batch composition
+        // changes (sequences finish, swap_remove reorders), the graph
+        // replays with stale pointers and corrupts SSM state across seqs.
+        // Attention metadata uses fixed device addresses and is safe.
+        // n==1 still uses self.decode()'s correct graph cache.
+        let use_graphs = false;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -341,16 +310,8 @@ impl TransformerModel {
             dump_hidden("post_embed", stream)?;
 
             // Layer loop for padded_n sequences
-            let mut ssm_us: u128 = 0;
-            let mut attn_us: u128 = 0;
             for (layer_idx, layer) in self.layers.iter().enumerate() {
                 let mut layer_state_refs = extract_layer_refs(&mut all_layer_states, layer_idx);
-                let t0 = if ms_profile {
-                    self.gpu.synchronize(stream).ok();
-                    Some(std::time::Instant::now())
-                } else {
-                    None
-                };
                 layer.decode_multi_seq(
                     hidden,
                     residual,
@@ -362,27 +323,10 @@ impl TransformerModel {
                     &ctx,
                     stream,
                 )?;
-                if let Some(t0) = t0 {
-                    self.gpu.synchronize(stream).ok();
-                    let dt = t0.elapsed().as_micros();
-                    if self.config.layer_type(layer_idx) == LayerType::LinearAttention {
-                        ssm_us += dt;
-                    } else {
-                        attn_us += dt;
-                    }
-                }
                 if conc_hsd {
                     let _ = dump_hidden(&format!("after_L{:02}", layer_idx), stream);
                 }
             }
-            if ms_profile {
-                self.gpu.synchronize(stream).ok();
-            }
-            let lmhead_t0 = if ms_profile {
-                Some(std::time::Instant::now())
-            } else {
-                None
-            };
 
             // Final norm [padded_n, H]
             let normed = self.buffers.norm_output();
@@ -398,66 +342,46 @@ impl TransformerModel {
                 stream,
             )?;
 
-            // LM head: ONE batched [padded_n, vocab] GEMM so the ~254 MB
-            // vocab weight is read ONCE per step instead of once per sequence
-            // (the per-row GEMV loop re-read it N times — a major C>=2 cost:
-            // ~N×254 MB/step). nvfp4/dense are batched here; FP8 single-scale
-            // keeps the per-row path (no batched single-scale FP8 GEMM handle
-            // on the model, and Holo's lm_head is NVFP4 anyway).
+            // LM head: padded_n sequential GEMVs (weights in L2 after first)
             let logits = self.buffers.logits();
             let v = self.config.vocab_size;
-            if let Some(ref fp8) = self.lm_head_fp8 {
-                for i in 0..padded_n {
+            for i in 0..padded_n {
+                let normed_i = normed.offset(i * h * bf16);
+                let logits_i = logits.offset(i * v * bf16);
+                if let Some(ref fp8) = self.lm_head_fp8 {
                     ops::dense_gemv_fp8w(
                         self.gpu.as_ref(),
                         self.dense_gemv_fp8w_kernel,
-                        normed.offset(i * h * bf16),
+                        normed_i,
                         fp8,
-                        logits.offset(i * v * bf16),
+                        logits_i,
+                        v as u32,
+                        h as u32,
+                        stream,
+                    )?;
+                } else if let Some(ref nvfp4) = self.lm_head_nvfp4 {
+                    ops::w4a16_gemv(
+                        self.gpu.as_ref(),
+                        self.w4a16_gemv_kernel,
+                        normed_i,
+                        nvfp4,
+                        logits_i,
+                        v as u32,
+                        h as u32,
+                        stream,
+                    )?;
+                } else {
+                    ops::dense_gemv(
+                        self.gpu.as_ref(),
+                        self.dense_gemv_kernel,
+                        normed_i,
+                        &self.lm_head_weight,
+                        logits_i,
                         v as u32,
                         h as u32,
                         stream,
                     )?;
                 }
-            } else if let Some(ref nvfp4) = self.lm_head_nvfp4 {
-                ops::w4a16_gemm(
-                    self.gpu.as_ref(),
-                    self.w4a16_gemm_kernel,
-                    normed,
-                    nvfp4,
-                    logits,
-                    padded_n as u32,
-                    v as u32,
-                    h as u32,
-                    stream,
-                )?;
-            } else {
-                ops::dense_gemm(
-                    self.gpu.as_ref(),
-                    self.dense_gemm_kernel,
-                    normed,
-                    &self.lm_head_weight,
-                    logits,
-                    padded_n as u32,
-                    v as u32,
-                    h as u32,
-                    stream,
-                )?;
-            }
-            if let Some(t0) = lmhead_t0 {
-                self.gpu.synchronize(stream).ok();
-                let head_us = t0.elapsed().as_micros();
-                let total = ssm_us + attn_us + head_us;
-                tracing::info!(
-                    "ATLAS_MS_PROFILE n={n} padded_n={padded_n}: total={}us  ssm={}us({}L)  attn={}us({}L)  head={}us  [per-tok {:.2}ms]",
-                    total,
-                    ssm_us,
-                    self.config.num_ssm_layers(),
-                    attn_us,
-                    self.layers.len() - self.config.num_ssm_layers(),
-                    head_us,
-                    total as f64 / 1000.0 / padded_n as f64,
-                );
             }
 
             if use_graphs {

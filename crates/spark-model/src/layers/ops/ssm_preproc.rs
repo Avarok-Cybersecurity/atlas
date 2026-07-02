@@ -139,51 +139,6 @@ pub fn deinterleave_qg_split_qnorm(
         .launch(stream)
 }
 
-/// Fused deinterleave Q/Gate + per-head Q RMS norm + MRoPE.
-///
-/// Holo/Qwen3.6 MRoPE prefill fast path. Gate is deinterleaved to
-/// `data[q_total..]`; Q is deinterleaved, normalized, MRoPE-rotated, then
-/// written to `q_out`.
-#[allow(clippy::too_many_arguments)]
-pub fn deinterleave_qg_split_qnorm_mrope(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    data: DevicePtr,
-    q_out: DevicePtr,
-    q_norm_weight: DevicePtr,
-    pos_t: DevicePtr,
-    pos_h: DevicePtr,
-    pos_w: DevicePtr,
-    num_tokens: u32,
-    num_heads: u32,
-    head_dim: u32,
-    stride: u32,
-    rotary_dim: u32,
-    eps: f32,
-    theta: f32,
-    stream: u64,
-) -> Result<()> {
-    let raw_shared = num_heads * head_dim * 2 * 2;
-    let norm_shared = num_heads * head_dim * 2;
-    KernelLaunch::new(gpu, kernel)
-        .grid([num_tokens, 1, 1])
-        .block([256, 1, 1])
-        .shared_mem(raw_shared + norm_shared)
-        .arg_ptr(data)
-        .arg_ptr(q_out)
-        .arg_ptr(q_norm_weight)
-        .arg_ptr(pos_t)
-        .arg_ptr(pos_h)
-        .arg_ptr(pos_w)
-        .arg_u32(num_heads)
-        .arg_u32(head_dim)
-        .arg_u32(stride)
-        .arg_u32(rotary_dim)
-        .arg_f32(eps)
-        .arg_f32(theta)
-        .launch(stream)
-}
-
 /// Batched sigmoid gate multiply across multiple tokens.
 ///
 /// Replaces per-token [`sigmoid_gate_mul`] launches with a single kernel.

@@ -476,13 +476,7 @@ impl Qwen3AttentionLayer {
         // ── 8. Paged Flash Attention for chunk 1+ ── (extracted to paged_attn.rs)
         let attn_out = ctx.buffers.attn_output();
         let inv_sqrt_d = self.effective_attn_scale(hd);
-        // In Q12 batched mode `num_tokens` is the stacked token count
-        // (`batch_size * chunk_len`), while paged-attention kernels consume
-        // per-stream q_len/kv_len. Single-stream mode keeps the historical
-        // `seq_len_start + num_tokens` calculation.
-        let kv_len = batched_meta
-            .map(|m| seq_len_start + m.chunk_len as usize)
-            .unwrap_or(seq_len_start + num_tokens) as u32;
+        let kv_len = (seq_len_start + num_tokens) as u32;
 
         // TurboQuant WHT bookends (mirrors decode/attention_forward.rs).
         // write_kv_cache (section 7) WHT-rotated K/V in place before caching,
@@ -509,77 +503,23 @@ impl Qwen3AttentionLayer {
                 .launch(stream)?;
         }
         if let Some(bmeta) = batched_meta {
-            // Cross-request prefill via FlashInfer ragged/varlen attention
-            // (ATLAS_FLASHINFER_PREFILL=1): the fresh contiguous, post-RoPE
-            // Q/K/V already match FlashInfer's [rows, heads, 256] layout, so ONE
-            // varlen launch runs all N co-dispatched requests' causal
-            // self-attention — replacing the slow paged batched kernel (the
-            // reason co-dispatch flatlined). Chunk-0 only (seq_len_start==0):
-            // later chunks need the cached prefix, which isn't in the fresh
-            // buffers. BF16 / no-WHT only; head_dim 256.
-            let use_flashinfer = seq_len_start == 0
-                && hd == 256
-                && !k_is_turbo
-                && !v_is_turbo
-                && spark_runtime::flashinfer::available()
-                && std::env::var("ATLAS_FLASHINFER_PREFILL").ok().as_deref() == Some("1");
-            if use_flashinfer {
-                // VARLEN: real per-request cu_seqlens from the staged metadata
-                // (host + device copies) — works for both uniform and varied
-                // request lengths. For chunk-0 self-attention qo_indptr==kv_indptr.
-                let batch = bmeta.batch_size as usize;
-                let total = bmeta.total_tokens;
-                let indptr_h = &bmeta.cu_seqlens_host;
-                let indptr_d = bmeta.cu_seqlens.0;
-                {
-                    use std::sync::atomic::{AtomicBool, Ordering};
-                    static LOGGED: AtomicBool = AtomicBool::new(false);
-                    if !LOGGED.swap(true, Ordering::Relaxed) {
-                        tracing::warn!(
-                            "FLASHINFER_PREFILL(varlen) batch={batch} total={total} \
-                             num_tokens={num_tokens} cu_seqlens={indptr_h:?} \
-                             nq={nq} nkv={nkv} hd={hd} sm_scale={inv_sqrt_d}"
-                        );
-                    }
-                }
-                spark_runtime::flashinfer::ragged_prefill_bf16_hd256(
-                    q_contiguous.0,
-                    k_contiguous.0,
-                    v_contiguous.0,
-                    attn_out.0,
-                    indptr_h,
-                    indptr_h,
-                    indptr_d,
-                    indptr_d,
-                    batch as u32,
-                    total,
-                    total,
-                    nq,
-                    nkv,
-                    hd,
-                    inv_sqrt_d,
-                    true,
-                    stream,
-                )?;
-            } else {
-                // Q12 Path B: batched paged-prefill attention. The kernel reads
-                // Q/O at per-batch offsets internally via blockIdx.z and uses
-                // block_table_ptrs[b] for each stream's paged KV pages.
-                let args = super::paged_attn_batched::PagedAttnBatchedArgs {
-                    q_contiguous,
-                    attn_out,
-                    seq_len_start,
-                    nq,
-                    nkv,
-                    hd,
-                    bs,
-                    inv_sqrt_d,
-                    kv_len,
-                    batched_meta: bmeta,
-                    stream,
-                };
-                self.prefill_attention_paged_attn_batched(kv_cache, ctx, &args)?;
-            }
+            // Q12 Path B: batched paged-prefill attention. The kernel reads
+            // Q/O at per-batch offsets internally via blockIdx.z and uses
+            // block_table_ptrs[b] for each stream's paged KV pages.
+            let args = super::paged_attn_batched::PagedAttnBatchedArgs {
+                q_contiguous,
+                attn_out,
+                seq_len_start,
+                nq,
+                nkv,
+                hd,
+                bs,
+                inv_sqrt_d,
+                kv_len,
+                batched_meta: bmeta,
+                stream,
+            };
+            self.prefill_attention_paged_attn_batched(kv_cache, ctx, &args)?;
         } else {
             // Single-stream path requires meta_for_single (validated above).
             let meta = meta_for_single

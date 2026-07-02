@@ -228,10 +228,6 @@ pub(crate) fn init_gpu_backend(
     );
     let total_mem = gpu.total_memory()?;
     let free_mem = gpu.free_memory()?;
-    // Baseline for self-relative KV budgeting: free memory now (post context +
-    // PTX modules, pre weights) minus free-at-build = this process's own
-    // footprint, co-tenants excluded. See gpu::baseline_free_bytes.
-    spark_runtime::gpu::set_baseline_free_bytes(free_mem);
     tracing::info!(
         "GPU {}: {:.1} GB total, {:.1} GB free",
         args.gpu_ordinal,
@@ -253,7 +249,6 @@ pub(crate) fn init_gpu_backend(
     );
     let total_mem = gpu.total_memory()?;
     let free_mem = gpu.free_memory()?;
-    spark_runtime::gpu::set_baseline_free_bytes(free_mem);
     tracing::info!(
         "Metal device {}: {:.1} GB total, {:.1} GB free",
         args.gpu_ordinal,

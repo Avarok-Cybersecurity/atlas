@@ -10,10 +10,6 @@ use spark_runtime::weights::{WeightDtype, WeightStore};
 
 use super::*;
 
-#[path = "ssm_qwen35/dequant_fp8.rs"]
-mod dequant_fp8;
-use dequant_fp8::dequant_fp8_block_slice_bf16;
-
 /// Qwen3.5 SSM weights with separate projections.
 pub struct SsmWeightsQwen35 {
     /// QKV projection: [qkv_size, hidden_size] BF16 (Q+K+V, no Z).
@@ -47,37 +43,66 @@ pub(crate) fn load_ssm_qwen35(
 ) -> Result<SsmWeightsQwen35> {
     let p = format!("{layer_prefix}.linear_attn");
 
-    // Per-projection load by on-disk dtype. FP8 (Holo, block-scaled) and BF16
-    // (AEON, in modules_to_not_convert) ship plain `.weight` → `dense_auto`.
-    // The sakamakismile AgentWorld re-quant instead quantizes the GDN/SSM
-    // projections to NVFP4 (`weight_packed`); dequant those to BF16, with dims
-    // inferred from the packed shape (rows = packed[0], cols = packed[1] * 2,
-    // since E2M1 packs 2 values/byte). Mirrors the dense loader's `load_ssm_proj`
-    // (qwen35_dense.rs) — without this the NVFP4 SSM projections fail with
-    // "linear_attn.in_proj_qkv.weight not found in store".
-    let load_proj = |prefix: &str| -> Result<DenseWeight> {
-        if store.contains(&format!("{prefix}.weight_packed")) {
-            let shape = store.get(&format!("{prefix}.weight_packed"))?.shape.clone();
-            dequant_nvfp4_to_bf16(store, prefix, shape[0], shape[1] * 2, gpu)
-        } else {
-            dense_auto(store, &format!("{prefix}.weight"), gpu)
-        }
-    };
+    // For FP8 models: in_proj_qkv, in_proj_z, out_proj are FP8 block-scaled.
+    // conv1d, in_proj_a, in_proj_b are BF16 (in modules_to_not_convert).
+    let load_proj = |name: &str| -> Result<DenseWeight> { dense_auto(store, name, gpu) };
 
     Ok(SsmWeightsQwen35 {
-        in_proj_qkv: load_proj(&format!("{p}.in_proj_qkv"))?,
-        in_proj_z: load_proj(&format!("{p}.in_proj_z"))?,
-        in_proj_a: load_proj(&format!("{p}.in_proj_a"))?,
-        in_proj_b: load_proj(&format!("{p}.in_proj_b"))?,
-        conv1d: dense_auto(store, &format!("{p}.conv1d.weight"), gpu)?,
+        in_proj_qkv: load_proj(&format!("{p}.in_proj_qkv.weight"))?,
+        in_proj_z: load_proj(&format!("{p}.in_proj_z.weight"))?,
+        in_proj_a: dense(store, &format!("{p}.in_proj_a.weight"))?,
+        in_proj_b: dense(store, &format!("{p}.in_proj_b.weight"))?,
+        conv1d: dense(store, &format!("{p}.conv1d.weight"))?,
         // A_log and dt_bias MUST be FP32 — BF16 precision causes exponential
         // error amplification in the GDR decay gate at 8k+ tokens.
         a_log: dense_keep_f32(store, &format!("{p}.A_log"), gpu)?,
         dt_bias: dense_keep_f32(store, &format!("{p}.dt_bias"), gpu)?,
         // norm.weight is safe as BF16 (no recurrent amplification)
         norm: dense_f32_safe(store, &format!("{p}.norm.weight"), gpu)?,
-        out_proj: load_proj(&format!("{p}.out_proj"))?,
+        out_proj: load_proj(&format!("{p}.out_proj.weight"))?,
     })
+}
+
+/// Dequant a block-scaled FP8 weight to a fresh BF16 device buffer, given
+/// device pointers (not store keys). Mirrors `dequant_fp8_blockscaled_to_bf16`
+/// but operates on an aliased slice of a *fused* expert tensor
+/// (`experts.gate_up_proj` / `experts.down_proj`), where per-expert weights
+/// cannot be addressed by name. Caller owns and frees the returned buffer.
+#[allow(clippy::too_many_arguments)]
+fn dequant_fp8_block_slice_bf16(
+    gpu: &dyn GpuBackend,
+    weight_ptr: DevicePtr,
+    scale_ptr: DevicePtr,
+    n: usize,
+    k: usize,
+    sn: usize,
+    sk: usize,
+    scale_is_f32: bool,
+) -> Result<DevicePtr> {
+    use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
+    let out = gpu.alloc(n * k * 2)?; // BF16 = 2 bytes/element
+    let block_n = (n / sn) as u32;
+    let block_k = (k / sk) as u32;
+    let stream = gpu.default_stream();
+    let kernel = gpu.kernel(
+        "dequant_fp8_blockscaled_bf16",
+        "dequant_fp8_blockscaled_bf16",
+    )?;
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(k as u32, 64), div_ceil(n as u32, 4), 1])
+        .block([64, 4, 1])
+        .arg_ptr(weight_ptr)
+        .arg_ptr(scale_ptr)
+        .arg_ptr(out)
+        .arg_u32(n as u32)
+        .arg_u32(k as u32)
+        .arg_u32(block_n)
+        .arg_u32(block_k)
+        .arg_u32(sk as u32)
+        .arg_u32(scale_is_f32 as u32)
+        .launch(stream)?;
+    gpu.synchronize(stream)?;
+    Ok(out)
 }
 
 /// Load MoE weights for Qwen3.5, auto-selecting NVFP4 naming convention.
@@ -100,8 +125,8 @@ pub(crate) fn load_moe_qwen35(
 ) -> Result<MoeWeights> {
     let p = format!("{layer_prefix}.mlp");
 
-    let gate = dense_auto(store, &format!("{p}.gate.weight"), gpu)?;
-    let shared_expert_gate = dense_auto(store, &format!("{p}.shared_expert_gate.weight"), gpu)?;
+    let gate = dense(store, &format!("{p}.gate.weight"))?;
+    let shared_expert_gate = dense(store, &format!("{p}.shared_expert_gate.weight"))?;
 
     let inter = config.moe_intermediate_size;
     let h = config.hidden_size;
@@ -271,22 +296,6 @@ pub(crate) fn load_moe_qwen35(
             experts.push(load_expert_fused(e)?);
         } else {
             experts.push(load_expert(&format!("{p}.experts.{e}"))?);
-        }
-    }
-
-    // Fused layout (BF16 or FP8 source) shares ONE `experts.gate_up_proj` +
-    // `experts.down_proj` tensor across all experts (sliced by offset), so it
-    // can't be freed per-expert like the separate path. Free the shared source
-    // here now that every expert has been quantized to NVFP4 — #200 only frees
-    // the per-slice dequant intermediates, not these originals, so this is
-    // additive (no double-free). Drops the redundant ~60GB so only the NVFP4
-    // copies remain resident.
-    if is_fused {
-        if let Ok(w) = store.get(&fused_gate_up_key) {
-            let _ = gpu.free(w.ptr);
-        }
-        if let Ok(w) = store.get(&fused_down_key) {
-            let _ = gpu.free(w.ptr);
         }
     }
 

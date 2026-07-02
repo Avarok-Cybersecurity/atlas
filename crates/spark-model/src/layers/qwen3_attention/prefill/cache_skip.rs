@@ -7,7 +7,7 @@ use spark_runtime::gpu::DevicePtr;
 use spark_runtime::kv_cache::PagedKvCache;
 
 use super::super::Qwen3AttentionLayer;
-use crate::layer::{BatchedAttnMetadata, ForwardContext};
+use crate::layer::ForwardContext;
 use crate::layers::ops;
 
 impl Qwen3AttentionLayer {
@@ -22,11 +22,6 @@ impl Qwen3AttentionLayer {
         num_tokens: usize,
         kv_write_start: usize,
         kv_cache: &mut PagedKvCache,
-        // `Some` = batched co-dispatch chunk-0: positions/slots come from the
-        // stacked metadata and the flash kernel runs with batch=batch_size,
-        // seq_len=chunk_len (one independent causal attention per sequence).
-        // `None` = single-stream (batch=1, metadata from ctx.attn_metadata).
-        batched_meta: Option<&BatchedAttnMetadata>,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<DevicePtr> {
@@ -42,50 +37,6 @@ impl Qwen3AttentionLayer {
         let bs = kv_cache.block_size();
         let n = num_tokens as u32;
         let bf16 = 2usize;
-
-        // Batched flash supports only the standard non-MLA, hd<=256 path (these
-        // are already excluded upstream by check_kernel_batched_eligible).
-        if batched_meta.is_some() {
-            anyhow::ensure!(
-                self.mla.is_none() && hd <= 256,
-                "batched cache-skip flash: MLA/hd>256 unsupported (gate to paged)"
-            );
-        }
-        // Position + slot sources and flash launch geometry. Single-stream:
-        // ctx.attn_metadata, batch=1. Batched: stacked metadata, batch=N,
-        // seq_len=chunk_len (the kernel runs N independent causal attentions).
-        let (positions, positions_h, positions_w, kv_slot, flash_seq_len, flash_batch) =
-            if let Some(mb) = batched_meta {
-                // Derive batch from the ACTUAL stacked token count so the flash
-                // kernel never over-reads (num_tokens must be a whole number of
-                // chunk_len-length sequences).
-                anyhow::ensure!(
-                    mb.chunk_len > 0 && num_tokens.is_multiple_of(mb.chunk_len as usize),
-                    "batched flash: num_tokens {num_tokens} not a multiple of chunk_len {}",
-                    mb.chunk_len
-                );
-                let derived_batch = (num_tokens / mb.chunk_len as usize) as u32;
-                (
-                    mb.positions_stacked,
-                    mb.positions_h_stacked,
-                    mb.positions_w_stacked,
-                    mb.slot_stacked,
-                    mb.chunk_len,
-                    derived_batch,
-                )
-            } else {
-                let meta = ctx
-                    .attn_metadata
-                    .expect("attention prefill requires metadata");
-                (
-                    meta.positions,
-                    meta.positions_h,
-                    meta.positions_w,
-                    meta.slot,
-                    n,
-                    1u32,
-                )
-            };
 
         let q_dim = (nq * hd) as usize;
         let q_proj_dim = if self.gated { q_dim * 2 } else { q_dim };
@@ -169,38 +120,7 @@ impl Qwen3AttentionLayer {
         let k_contiguous = ctx.buffers.ssm_qkvz();
         let v_contiguous = k_contiguous.offset(num_tokens * kv_dim * bf16);
         let q_contiguous = ctx.buffers.ssm_deinterleaved();
-        let q_rope_fused = self.gated
-            && !self.attn.q_norm.weight.is_null()
-            && self.mrope_interleaved
-            && !self.rope_proportional
-            && std::env::var("ATLAS_ATTN_PREFILL_FUSED_QROPE")
-                .ok()
-                .as_deref()
-                == Some("1")
-            && self.deinterleave_qg_split_qnorm_mrope_k.0 != 0
-            && self.rope_mrope_interleaved_k_only_k.0 != 0;
-        if q_rope_fused {
-            ops::deinterleave_qg_split_qnorm_mrope(
-                ctx.gpu,
-                self.deinterleave_qg_split_qnorm_mrope_k,
-                qg_out,
-                q_contiguous,
-                self.attn.q_norm.weight,
-                positions,
-                positions_h,
-                positions_w,
-                n,
-                nq,
-                hd,
-                q_proj_dim as u32,
-                self.rotary_dim_override
-                    .unwrap_or(ctx.config.rotary_dim() as u32),
-                eps,
-                self.rope_theta_override
-                    .unwrap_or(ctx.config.rope_theta as f32),
-                stream,
-            )?;
-        } else if self.gated && !self.attn.q_norm.weight.is_null() {
+        if self.gated && !self.attn.q_norm.weight.is_null() {
             // Fused deinterleave + Q norm: eliminates Q global memory round-trip
             ops::deinterleave_qg_split_qnorm(
                 ctx.gpu,
@@ -346,27 +266,12 @@ impl Qwen3AttentionLayer {
         };
 
         // ── 6. RoPE for N tokens ──
+        let meta = ctx
+            .attn_metadata
+            .expect("attention prefill requires metadata");
         if self.mla.is_some() {
             // MLA: RoPE already applied inside the MLA block to rope portions only.
             // Skip shared RoPE to avoid double-rotation.
-        } else if q_rope_fused {
-            ops::rope_mrope_interleaved_k_only(
-                ctx.gpu,
-                self.rope_mrope_interleaved_k_only_k,
-                k_contiguous,
-                positions,
-                positions_h,
-                positions_w,
-                n,
-                nkv,
-                hd,
-                self.rotary_dim_override
-                    .unwrap_or(ctx.config.rotary_dim() as u32),
-                self.rope_theta_override
-                    .unwrap_or(ctx.config.rope_theta as f32),
-                stream,
-            )
-            .map_err(|e| anyhow::anyhow!("rope_mrope_interleaved_k_only failed: {e}"))?;
         } else if self.rope_proportional && self.rope_proportional_k.0 != 0 {
             let rope_angles = self
                 .rotary_dim_override
@@ -376,7 +281,7 @@ impl Qwen3AttentionLayer {
                 self.rope_proportional_k,
                 q_contiguous,
                 k_contiguous,
-                positions,
+                meta.positions,
                 n,
                 nq,
                 nkv,
@@ -393,7 +298,7 @@ impl Qwen3AttentionLayer {
                 self.rope_k,
                 q_contiguous,
                 k_contiguous,
-                positions,
+                meta.positions,
                 n,
                 nq,
                 nkv,
@@ -451,7 +356,7 @@ impl Qwen3AttentionLayer {
                 k_contiguous.offset(k_offset),
                 v_contiguous.offset(v_offset),
                 kv_cache,
-                kv_slot.offset(slot_offset),
+                meta.slot.offset(slot_offset),
                 write_count as u32,
                 nkv,
                 hd,
@@ -565,8 +470,8 @@ impl Qwen3AttentionLayer {
                 k_contiguous,
                 v_contiguous,
                 attn_out,
-                flash_seq_len,
-                flash_batch,
+                n,
+                1,
                 nq,
                 nkv,
                 hd,
@@ -586,8 +491,8 @@ impl Qwen3AttentionLayer {
                 k_contiguous,
                 v_contiguous,
                 attn_out,
-                flash_seq_len,
-                flash_batch,
+                n,
+                1,
                 nq,
                 nkv,
                 hd,

@@ -41,17 +41,6 @@ impl Model for TransformerModel {
     fn prepare_vision_embed(&self, images: &[(Vec<f32>, usize, usize)]) -> Result<()> {
         self.prepare_vision_embed_dispatch(images)
     }
-    fn prepare_vision_embed_batched(
-        &self,
-        per_request: &[Vec<(Vec<f32>, usize, usize)>],
-    ) -> Result<Vec<(usize, usize, usize, usize)>> {
-        self.prepare_vision_embed_batched_dispatch(per_request)
-    }
-    fn set_vision_slice_base(&self, row_base: usize, grid_base: usize, owned_images: usize) {
-        *self.vision_row_base.lock() = row_base;
-        *self.vision_grid_base.lock() = grid_base;
-        *self.vision_owned_images.lock() = owned_images;
-    }
     fn prefill(&self, tokens: &[u32], seq: &mut SequenceState, stream: u64) -> Result<DevicePtr> {
         self.prefill_dispatch(tokens, seq, stream)
     }

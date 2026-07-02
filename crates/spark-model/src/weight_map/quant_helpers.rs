@@ -117,11 +117,9 @@ pub(crate) fn dequant_fp8_blockscaled_to_bf16(
             .arg_u32(sk as u32)
             .arg_u32(scale_is_f32 as u32)
             .launch(stream)?;
-        // No per-call synchronize: the kernel runs async on the load stream and
-        // `out` is consumed by later same-stream ops (CUDA orders them), so
-        // correctness doesn't need it. Syncing here cost ~104s of cold-load wall
-        // (~30k calls: 256 experts × 3 proj × 40 MoE layers); a fault now surfaces
-        // at the next real sync.
+        gpu.synchronize(stream).with_context(|| {
+            format!("GPU dequant_fp8_blockscaled_bf16 failed for {prefix} [{n},{k}]")
+        })?;
 
         tracing::debug!(
             "GPU-dequanted FP8 blockscaled {prefix}: [{n}, {k}] block=[{block_n}, {block_k}] → BF16",
@@ -355,11 +353,6 @@ pub(crate) fn quantized_v2(
         weight: ptr(store, &format!("{prefix}.weight_packed"))?,
         weight_scale: ptr(store, &format!("{prefix}.weight_scale"))?,
         weight_scale_2: 1.0 / raw_global_scale,
-        // Optional: weight-only NVFP4 (W4A16) checkpoints — e.g. llm-compressor
-        // `nvfp4-pack-quantized` with `input_activations: None` — carry no static
-        // activation scale; the MoE/GEMM compute quantizes activations
-        // dynamically and never reads this field. Absent ⇒ NULL (W4A4/W4A8
-        // checkpoints still load their `input_global_scale` unchanged).
-        input_scale: ptr(store, &format!("{prefix}.input_global_scale")).unwrap_or(DevicePtr::NULL),
+        input_scale: ptr(store, &format!("{prefix}.input_global_scale"))?,
     })
 }

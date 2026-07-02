@@ -57,12 +57,7 @@ impl ModelWeightLoader for MistralWeightLoader {
         self.load_layers_inner(store, config, gpu, layer_kv_dtypes)
     }
 
-    fn load_embedding(
-        &self,
-        store: &WeightStore,
-        _config: &ModelConfig,
-        _gpu: &dyn GpuBackend,
-    ) -> Result<DenseWeight> {
+    fn load_embedding(&self, store: &WeightStore, _config: &ModelConfig) -> Result<DenseWeight> {
         dense(store, "tok_embeddings.weight")
             .or_else(|_| dense(store, "model.embed_tokens.weight"))
             .context("Mistral: embedding not found")
@@ -85,9 +80,7 @@ impl ModelWeightLoader for MistralWeightLoader {
         } else if store.contains("lm_head.weight") {
             dense(store, "lm_head.weight")
         } else if config.tie_word_embeddings {
-            dense(store, "tok_embeddings.weight")
-                .or_else(|_| dense(store, "model.embed_tokens.weight"))
-                .context("Mistral: tied embedding lm_head not found")
+            self.load_embedding(store, config)
         } else {
             anyhow::bail!("Mistral: lm_head/output weight not found")
         }

@@ -105,32 +105,6 @@ pub(crate) fn resolve_prefill_budget(
     } else {
         prefill_budget_pre_hss
     };
-    // CUDA grid-dimension safety clamp (grid.y / grid.z hard max = 65535). The
-    // SSM/GDN and attention prefill kernels launch one grid-Y block per token
-    // (grid = [_, chunk_tokens, _]); a chunk of 65536+ tokens overflows grid.y
-    // and cuLaunchKernel fails with CUDA_ERROR_INVALID_VALUE, hard-crashing the
-    // request (observed: --max-prefill-tokens=65536 on a >64K-token prompt →
-    // "grid=[16,65544,1] ... invalid argument"). Clamp the chunk to the largest
-    // block-aligned size strictly under the limit. This also bounds the
-    // max-prefill=0 (unchunked) path when --max-seq-len exceeds the limit:
-    // re-chunking at 65520 is strictly safer than a guaranteed launch failure.
-    const CUDA_MAX_GRID_DIM: usize = 65535;
-    let prefill_budget = if prefill_budget > CUDA_MAX_GRID_DIM && args.block_size > 0 {
-        let safe = (CUDA_MAX_GRID_DIM / args.block_size) * args.block_size;
-        tracing::warn!(
-            "prefill chunk={} exceeds the CUDA grid-Y limit ({}); the prefill \
-             kernels map one grid block per token, so a larger chunk overflows \
-             grid.y → cuLaunchKernel CUDA_ERROR_INVALID_VALUE. Clamping chunk to \
-             {} (largest block-aligned size under the limit). Lower \
-             --max-prefill-tokens to silence this.",
-            prefill_budget,
-            CUDA_MAX_GRID_DIM,
-            safe,
-        );
-        safe
-    } else {
-        prefill_budget
-    };
     // Default: max_batch_tokens = prefill_budget + max_batch_size (decode slots).
     // ATLAS_MAX_BATCH_TOKENS env var override allows engaging the Q12 batched
     // kernel-dispatch path which requires `arena_cap >= N_streams × chunk_len`.

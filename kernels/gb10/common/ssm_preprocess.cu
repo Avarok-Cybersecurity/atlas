@@ -16,7 +16,6 @@
 //   total QKVZ = 16*768 = 12288
 
 #include <cuda_bf16.h>
-#include <math.h>
 
 // ============================================================
 // Deinterleave QKVZ projection output
@@ -259,111 +258,6 @@ extern "C" __global__ void deinterleave_qg_split_qnorm(
             float w = __bfloat162float(q_norm_weight[dim]);  // weight is [head_dim], not [num_heads * head_dim]
             tok_q[out_idx] = __float2bfloat16(val * rms * (1.0f + w));
         }
-    }
-}
-
-// ============================================================
-// Fused deinterleave Q/Gate + per-head Q RMS norm + MRoPE
-// ============================================================
-// Holo/Qwen3.6 MRoPE prefill fast path. Extends deinterleave_qg_split_qnorm by
-// applying rotate-half MRoPE to Q before the BF16 write. The later RoPE stage can
-// then rotate K only, removing the dominant Q-head work from the standalone RoPE
-// kernel. Gate is still deinterleaved and written to data in-place.
-extern "C" __global__ void deinterleave_qg_split_qnorm_mrope(
-    __nv_bfloat16* __restrict__ data,                // [num_tokens, stride]
-    __nv_bfloat16* __restrict__ q_out,               // [num_tokens, num_heads * head_dim]
-    const __nv_bfloat16* __restrict__ q_norm_weight, // [head_dim]
-    const unsigned int* __restrict__ pos_t,          // [num_tokens]
-    const unsigned int* __restrict__ pos_h,          // [num_tokens]
-    const unsigned int* __restrict__ pos_w,          // [num_tokens]
-    unsigned int num_heads,
-    unsigned int head_dim,
-    unsigned int stride,
-    unsigned int rotary_dim,
-    float eps,
-    float theta
-) {
-    extern __shared__ __nv_bfloat16 smem[];
-
-    unsigned int total = num_heads * head_dim * 2;
-    __nv_bfloat16* q_norm = smem + total;
-    unsigned int tid = threadIdx.x;
-    unsigned int q_total = num_heads * head_dim;
-    unsigned int group_dim = 2 * head_dim;
-    __nv_bfloat16* tok_data = data + (unsigned long long)blockIdx.x * stride;
-    __nv_bfloat16* tok_q = q_out + (unsigned long long)blockIdx.x * q_total;
-
-    for (unsigned int i = tid; i < total; i += blockDim.x) {
-        smem[i] = tok_data[i];
-    }
-    __syncthreads();
-
-    for (unsigned int i = tid; i < q_total; i += blockDim.x) {
-        unsigned int h = i / head_dim;
-        unsigned int d = i % head_dim;
-        unsigned int src = h * group_dim + head_dim + d;
-        tok_data[q_total + i] = smem[src];
-    }
-
-    unsigned int warp_id = tid / 32;
-    unsigned int lane = tid % 32;
-    unsigned int num_warps = blockDim.x / 32;
-    unsigned int elems_per_thread = head_dim / 32;
-    unsigned int half_rot = rotary_dim / 2;
-
-    for (unsigned int head = warp_id; head < num_heads; head += num_warps) {
-        float sum_sq = 0.0f;
-        for (unsigned int e = 0; e < elems_per_thread; e++) {
-            unsigned int dim = lane + e * 32;
-            unsigned int src_idx = head * group_dim + dim;
-            float val = __bfloat162float(smem[src_idx]);
-            sum_sq += val * val;
-        }
-
-        sum_sq = __shfl_xor_sync(0xFFFFFFFF, sum_sq, 16) + sum_sq;
-        sum_sq = __shfl_xor_sync(0xFFFFFFFF, sum_sq, 8) + sum_sq;
-        sum_sq = __shfl_xor_sync(0xFFFFFFFF, sum_sq, 4) + sum_sq;
-        sum_sq = __shfl_xor_sync(0xFFFFFFFF, sum_sq, 2) + sum_sq;
-        sum_sq = __shfl_xor_sync(0xFFFFFFFF, sum_sq, 1) + sum_sq;
-
-        float rms = rsqrtf(sum_sq / (float)head_dim + eps);
-
-        for (unsigned int e = 0; e < elems_per_thread; e++) {
-            unsigned int dim = lane + e * 32;
-            unsigned int src_idx = head * group_dim + dim;
-            float val = __bfloat162float(smem[src_idx]);
-            float w = __bfloat162float(q_norm_weight[dim]);
-            q_norm[head * head_dim + dim] = __float2bfloat16(val * rms * (1.0f + w));
-        }
-    }
-    __syncthreads();
-
-    for (unsigned int i = tid; i < q_total; i += blockDim.x) {
-        unsigned int head = i / head_dim;
-        unsigned int dim = i % head_dim;
-        float out = __bfloat162float(q_norm[head * head_dim + dim]);
-
-        if (dim < rotary_dim) {
-            unsigned int pair_idx = dim < half_rot ? dim : dim - half_rot;
-            bool is_d0 = dim < half_rot;
-            unsigned int d0 = pair_idx;
-            unsigned int d1 = pair_idx + half_rot;
-            float x0 = __bfloat162float(q_norm[head * head_dim + d0]);
-            float x1 = __bfloat162float(q_norm[head * head_dim + d1]);
-
-            unsigned int section = pair_idx % 3;
-            unsigned int abs_pos = section == 0 ? pos_t[blockIdx.x]
-                : (section == 1 ? pos_h[blockIdx.x] : pos_w[blockIdx.x]);
-            double freq_exp_d = (double)(2 * pair_idx) / (double)rotary_dim;
-            float freq = (float)(1.0 / pow((double)theta, freq_exp_d));
-            float angle = (float)abs_pos * freq;
-            float cos_val = cosf(angle);
-            float sin_val = sinf(angle);
-            out = is_d0 ? (x0 * cos_val - x1 * sin_val)
-                        : (x1 * cos_val + x0 * sin_val);
-        }
-
-        tok_q[i] = __float2bfloat16(out);
     }
 }
 

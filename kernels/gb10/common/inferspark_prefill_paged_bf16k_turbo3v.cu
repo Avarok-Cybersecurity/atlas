@@ -106,8 +106,4 @@ __device__ __forceinline__ float fp8e4m3_f32_asym_pf(__nv_fp8_storage_t b) {
     } \
     __syncthreads();
 
-// FA3 QK-ahead software pipeline for the BR64 warm-prefill loop. A/B-tested 2026-06-28:
-// bit-exact correct but SPEED-NEUTRAL on GB10 (no MMA/MUFU overlap at 1 CTA/SM) — kept as a
-// documented negative, OFF by default. Re-test: ATLAS_EXTRA_NVCC_FLAGS=-DATLAS_ATTN_PIPELINE.
-// #define ATLAS_ATTN_PIPELINE
 #include "prefill_paged_compute_asym.cuh"

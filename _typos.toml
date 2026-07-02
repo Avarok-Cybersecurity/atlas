@@ -28,10 +28,6 @@ extend-ignore-identifiers-re = [
 # `deint` — short form of "deinterleaved" used as the Q|K|V|Z input
 # pointer name in the fused K=2 GDN verify kernel/ops. Not a typo.
 deint = "deint"
-# `ue` — the NVFP4/MX scale-factor formats `ue4m3`/`ue8m0` (cutlass
-# `float_ue4m3_t`, helpers like `mt_float_to_ue4m3`) split on the digit, so
-# the checker reads the leading `ue` as a typo for "use"/"due". Not a typo.
-ue = "ue"
 # "subtiles" = sub-tiles: WMMA n-sub-tile partitioning in the strix-hip
 # MoE/dense GEMM kernels (PM4_SUBTILES_PER_WARP). Not a typo of "subtitles".
 subtiles = "subtiles"
@@ -86,9 +82,6 @@ unparseable = "unparseable"
 wht_bf16 = "wht_bf16"
 wht_dim = "wht_dim"
 wht_stride = "wht_stride"
-# CUTLASS FP8 unsigned-E4M3 scale-factor type (float_ue4m3_t) — "ue" is not a typo.
-float_ue4m3_t = "float_ue4m3_t"
-ue4m3 = "ue4m3"
 
 [files]
 extend-exclude = [
@@ -100,8 +93,4 @@ extend-exclude = [
     # Local dev/benchmark scripts (not shipped); abbreviated local var names
     # like `ND` (numdrift path) read as typos but aren't user-facing.
     "bench/",
-    # FlashInfer GDN AOT bridge — vendored export patch + C++/CUDA harness
-    # (`dout` = gradient-w.r.t.-output, standard kernel naming). Third-party
-    # derived material, like `vendor/`.
-    "3rdparty_patches/",
 ]

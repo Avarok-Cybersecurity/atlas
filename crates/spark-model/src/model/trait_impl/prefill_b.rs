@@ -76,16 +76,13 @@ impl TransformerModel {
         };
 
         // EP=2: zero ALL buffers on every chunk (NCCL defense-in-depth).
-        // EP=1, first chunk (chunk_start==0): zero only buffers whose stale
-        // contents can affect prefill; the remaining scratch buffers are
-        // overwritten before read by embedding + layer forward.
+        // EP=1, first chunk (chunk_start==0): zero essentials (stale data from prior request).
         // EP=1, subsequent chunks: skip zeroing — buffers are overwritten by embedding
         // + layer forward before read. Saves 7 memsets × (chunks-1) per prefill.
         if self.comm.is_some() {
             self.buffers.zero_all(self.gpu.as_ref(), stream)?;
         } else if chunk_start == 0 {
-            self.buffers
-                .zero_prefill_essentials(self.gpu.as_ref(), stream)?;
+            self.buffers.zero_all(self.gpu.as_ref(), stream)?;
         }
 
         let mut kv_cache = self.kv_cache.lock();
@@ -128,8 +125,6 @@ impl TransformerModel {
             is_last_chunk,
             kv_write_start,
             marconi_skip,
-            // Single-stream: hidden lives at offset 0 ⇒ pass base (byte-identical).
-            self.buffers.hidden_states(),
             stream,
         )? {
             proc_range::ProcRange::Compute {

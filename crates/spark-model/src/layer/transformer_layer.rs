@@ -9,8 +9,6 @@ use spark_runtime::kv_cache::PagedKvCache;
 
 use super::{BatchedAttnMetadata, ForwardContext, GdnPrefillBuffers, LayerState};
 
-mod default_loops;
-
 pub trait TransformerLayer: Send + Sync {
     /// Decode one token through this layer, modifying `hidden` in-place.
     ///
@@ -84,20 +82,25 @@ pub trait TransformerLayer: Send + Sync {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        default_loops::prefill_default(
-            self,
-            hidden,
-            residual,
-            num_tokens,
-            state,
-            kv_cache,
-            seq_len_start,
-            block_table,
-            disk_block_ids,
-            disk_last_offloaded_per_layer,
-            ctx,
-            stream,
-        )
+        let h = ctx.config.hidden_size;
+        for t in 0..num_tokens {
+            let offset = t * h * 2; // BF16 = 2 bytes per element
+            let h_t = hidden.offset(offset);
+            let r_t = residual.offset(offset);
+            self.decode(
+                h_t,
+                r_t,
+                state,
+                kv_cache,
+                seq_len_start + t,
+                block_table,
+                disk_block_ids,
+                disk_last_offloaded_per_layer,
+                ctx,
+                stream,
+            )?;
+        }
+        Ok(())
     }
 
     /// Two-phase SSM prefill — Phase 1: projections and GDN input staging.
@@ -144,57 +147,6 @@ pub trait TransformerLayer: Send + Sync {
             ctx,
             stream,
         )
-    }
-
-    /// M1 large-M batched Phase-1: token-parallel projections (RMS/QKVZ/BA-gates)
-    /// over ALL stacked tokens in one large-M GEMM each. SSM-only; the caller
-    /// runs `prefill_phase1_conv1d_one` per request then `prefill_phase1_l2_batched`.
-    fn prefill_phase1_proj_batched(
-        &self,
-        hidden_stacked: DevicePtr,
-        residual_stacked: DevicePtr,
-        total_tokens: usize,
-        gdn_bufs: &GdnPrefillBuffers,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        let _ = (
-            hidden_stacked,
-            residual_stacked,
-            total_tokens,
-            gdn_bufs,
-            ctx,
-            stream,
-        );
-        anyhow::bail!("prefill_phase1_proj_batched: only implemented for SSM layers")
-    }
-
-    /// M1: per-request conv1d tail (advances per-request conv_state), reading the
-    /// request's slice of the stacked QKVZ scratch and writing into gdn_bufs.qkv.
-    fn prefill_phase1_conv1d_one(
-        &self,
-        state: &mut dyn LayerState,
-        token_offset: usize,
-        len: usize,
-        gdn_bufs: &GdnPrefillBuffers,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        let _ = (state, token_offset, len, gdn_bufs, ctx, stream);
-        anyhow::bail!("prefill_phase1_conv1d_one: only implemented for SSM layers")
-    }
-
-    /// M1: batched L2 norm over the full stacked QKV buffer after all per-request
-    /// conv1d tails have written their slices.
-    fn prefill_phase1_l2_batched(
-        &self,
-        total_tokens: usize,
-        gdn_bufs: &GdnPrefillBuffers,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        let _ = (total_tokens, gdn_bufs, ctx, stream);
-        anyhow::bail!("prefill_phase1_l2_batched: only implemented for SSM layers")
     }
 
     /// Two-phase SSM prefill — Phase 2: GDN recurrence on the full sequence.
@@ -271,27 +223,6 @@ pub trait TransformerLayer: Send + Sync {
             "prefill_gdn_full_batched: layer does not implement batched GDN \
              — caller should fall back to per-stream prefill_gdn_full"
         )
-    }
-
-    /// VARLEN batched GDN: process ragged co-dispatch lengths via `cu_seqlens` in
-    /// ONE `gdn_prefill_fla(batch=N, is_varlen)` call (replaces the non-uniform
-    /// per-request loop → fills chunk_delta_h's 32→32N CTAs). Returns `Ok(true)`
-    /// if it ran, `Ok(false)` if not eligible (caller falls back to the loop).
-    /// Default (non-SSM layers, or FLA disabled): `Ok(false)`.
-    #[allow(clippy::too_many_arguments)]
-    fn prefill_gdn_full_batched_fla_varlen(
-        &self,
-        _h_state_ptrs: DevicePtr,
-        _gdn_bufs: &GdnPrefillBuffers,
-        _batch_size: u32,
-        _cu_seqlens: DevicePtr,
-        _max_num_chunks: u32,
-        _total_nt: usize,
-        _max_seqlen: u32,
-        _ctx: &ForwardContext,
-        _stream: u64,
-    ) -> Result<bool> {
-        Ok(false)
     }
 
     /// Two-phase SSM prefill — Phase 3: post-GDN processing.
@@ -429,20 +360,25 @@ pub trait TransformerLayer: Send + Sync {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        default_loops::decode_batched_default(
-            self,
-            hidden,
-            residual,
-            num_tokens,
-            state,
-            kv_cache,
-            seq_len,
-            block_table,
-            disk_block_ids,
-            disk_last_offloaded_per_layer,
-            ctx,
-            stream,
-        )
+        let h = ctx.config.hidden_size;
+        for t in 0..num_tokens {
+            let offset = (t * h * 2) as u64; // BF16 = 2 bytes per element
+            let h_t = hidden.offset(offset as usize);
+            let r_t = residual.offset(offset as usize);
+            self.decode(
+                h_t,
+                r_t,
+                state,
+                kv_cache,
+                seq_len + t,
+                block_table,
+                disk_block_ids,
+                disk_last_offloaded_per_layer,
+                ctx,
+                stream,
+            )?;
+        }
+        Ok(())
     }
 
     /// Decode N sequences through this layer in a single batched call.
@@ -473,18 +409,32 @@ pub trait TransformerLayer: Send + Sync {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        default_loops::decode_multi_seq_default(
-            self,
-            hidden,
-            residual,
-            num_seqs,
-            states,
-            kv_cache,
-            seq_lens,
-            block_tables,
-            ctx,
-            stream,
-        )
+        let h = ctx.config.hidden_size;
+        for i in 0..num_seqs {
+            let offset = i * h * 2;
+            let h_i = hidden.offset(offset);
+            let r_i = residual.offset(offset);
+            let mut bt = block_tables[i].clone();
+            // Phase 6.1: per-seq disk_block_ids aren't threaded through this
+            // default impl yet (chunked-prefill / batched-decode are Phase 6.2
+            // scope). Pass empty stubs so the trait sig is satisfied; layers
+            // that need disk IDs (attention) override decode_multi_seq.
+            let mut stub_disk = Vec::<u32>::new();
+            let mut stub_last_offloaded = Vec::<u32>::new();
+            self.decode(
+                h_i,
+                r_i,
+                states[i],
+                kv_cache,
+                seq_lens[i],
+                &mut bt,
+                &mut stub_disk,
+                &mut stub_last_offloaded,
+                ctx,
+                stream,
+            )?;
+        }
+        Ok(())
     }
 
     /// Allocate per-sequence state for this layer.

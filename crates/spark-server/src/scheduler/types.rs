@@ -23,24 +23,6 @@ pub(super) struct PendingQueue {
     pub closed: bool,
 }
 
-/// Per-request slice of a co-dispatched batched-ViT encode. When >=2 image
-/// requests are admitted in one tick, the scheduler encodes all their images
-/// in ONE `forward_batched` call (block GEMM weights read once over Σpatches)
-/// and hands each request the offsets it owns in the shared packed `buf_out`.
-/// `Default` (all zero) means "not co-dispatched" → the request self-encodes,
-/// reading from row 0 / grid 0 exactly as the legacy single-request path.
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct VisionSlice {
-    /// First `buf_out` row (post-merge patch) this request owns.
-    pub patch_row_offset: usize,
-    /// First `vision_image_grids` index this request owns.
-    pub grid_index_offset: usize,
-    /// Number of images this request contributed to the batch.
-    pub num_images: usize,
-    /// Total post-merge rows this request owns (Σ merged_p over its images).
-    pub patch_row_count: usize,
-}
-
 /// How to deliver results for an active sequence.
 pub(super) enum ResponseSink {
     Blocking(Option<tokio::sync::oneshot::Sender<Result<InferenceResponse>>>),

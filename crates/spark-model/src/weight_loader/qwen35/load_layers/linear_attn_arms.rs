@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 // Helper functions for the LinearAttention arms of `load_layers`. Two
-// flavours: the native-FP8 path (block-scaled, w8a16 decode + prefill) and
-// the standard NVFP4-quantized path.
+// flavours: the native-FP8 path (block-scaled, w8a16_gemv decode +
+// single-scale fp8_gemm_n128 prefill) and the standard NVFP4-quantized
+// path.
 
 use anyhow::{Result, ensure};
 use atlas_core::config::ModelConfig;
@@ -13,12 +14,12 @@ use crate::layer::TransformerLayer;
 use crate::layers::{FfnComponent, Qwen3SsmLayer};
 use crate::weight_map::{
     DenseWeight, Fp8Weight, Nvfp4Variant, QuantizedWeight, SsmWeights, WeightQuantFormat,
-    dense_auto, dense_f32_safe, dense_keep_f32, gpu_concat_rows, interleave_ba,
-    load_fp8_block_scaled_as_fp8weight, load_ssm_qwen35, quantize_to_nvfp4,
+    gpu_concat_rows, interleave_ba, load_fp8_block_scaled_as_fp8weight, load_ssm_qwen35,
+    quantize_to_nvfp4,
 };
 
 /// Native FP8 SSM build: keeps decode in block-scaled FP8 via `w8a16_gemv`,
-/// and prefill in block-scaled FP8 via `w8a16_gemm`. No NVFP4 detour.
+/// and prefill in single-scale FP8 via `fp8_gemm_n128`. No NVFP4 detour.
 ///
 /// Disk format (Qwen3.5/3.6 FP8 release):
 ///   - `{p}.in_proj_qkv.weight`        : `[Nq, K]` FP8 E4M3
@@ -33,40 +34,55 @@ use crate::weight_map::{
 /// then `w8a16_gemv` consumes it directly. The scale concat copies
 /// **block rows**, not raw F32 — that was the bug in the prior cut.
 ///
-/// Load the SSM projection weights as block-scaled FP8 for the `w8a16_gemv`
-/// (decode) / `w8a16_gemm` (batched decode) path: QKV and Z concatenated into
-/// a single `[Nq+Nz, K]` FP8 buffer + matching `[(Nq+Nz)/BS, K/BS]` BF16 block
-/// scales, plus the out_proj FP8 weight. Shared by the native-FP8 build and by
-/// the decode-only FP8 overlay on the BF16 dense build (`ATLAS_HOLO_FP8_SSM_DECODE`).
-fn load_ssm_fp8_decode_weights(
+/// Prefill pipeline: dequant BF16 (via `load_ssm_qwen35`'s `dense_auto`),
+/// truncate to single-scale FP8 (`bf16_to_fp8`) — identical to the
+/// `Fp8Dequanted` branch of `build_linear_attention_nvfp4`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_linear_attention_fp8(
     layer_idx: usize,
     store: &WeightStore,
-    p: &str,
+    lp: &str,
     gpu: &dyn GpuBackend,
+    variant: Nvfp4Variant,
+    config: &ModelConfig,
     h: usize,
-) -> Result<(Fp8Weight, Fp8Weight)> {
+    stream: u64,
+    input_norm: DenseWeight,
+    post_attn_norm: DenseWeight,
+    ffn: FfnComponent,
+) -> Result<Box<dyn TransformerLayer>> {
+    let p = format!("{lp}.linear_attn");
+    tracing::info!(
+        "Layer {layer_idx}: loading SSM FP8 native (block-scaled decode + single-scale prefill)"
+    );
+
+    // ── 1. Load block-scaled FP8 from disk (aliases the WeightStore
+    //       device pointers — no extra GPU memory beyond the alloc'd
+    //       concat buffers below).
     let qkv_fp8 = load_fp8_block_scaled_as_fp8weight(store, &format!("{p}.in_proj_qkv"), gpu)?;
     let z_fp8 = load_fp8_block_scaled_as_fp8weight(store, &format!("{p}.in_proj_z"), gpu)?;
     let out_fp8 = load_fp8_block_scaled_as_fp8weight(store, &format!("{p}.out_proj"), gpu)?;
 
+    // Sanity-check the inputs match the canonical block-scaled format.
     qkv_fp8.scale_format.expect(
         WeightQuantFormat::Fp8BlockScaled,
-        "load_ssm_fp8_decode_weights::qkv_fp8 from disk",
+        "build_linear_attention_fp8::qkv_fp8 from disk",
     );
     z_fp8.scale_format.expect(
         WeightQuantFormat::Fp8BlockScaled,
-        "load_ssm_fp8_decode_weights::z_fp8 from disk",
+        "build_linear_attention_fp8::z_fp8 from disk",
     );
     out_fp8.scale_format.expect(
         WeightQuantFormat::Fp8BlockScaled,
-        "load_ssm_fp8_decode_weights::out_fp8 from disk",
+        "build_linear_attention_fp8::out_fp8 from disk",
     );
 
     let qkv_rows = qkv_fp8.n as usize;
     let z_rows = z_fp8.n as usize;
     let qkvz_n = qkv_rows + z_rows;
 
-    // Concat weight bytes along N: [Nq, K] || [Nz, K] → [Nq+Nz, K].
+    // ── 2. Concat weight bytes along N: [Nq, K] || [Nz, K] → [Nq+Nz, K].
+    //       Each row is K bytes; total = (Nq + Nz) * K.
     let qkvz_weight_ptr = gpu.alloc(qkvz_n * h)?;
     gpu.copy_d2d(qkv_fp8.weight, qkvz_weight_ptr, qkv_rows * h)?;
     gpu.copy_d2d(
@@ -75,7 +91,11 @@ fn load_ssm_fp8_decode_weights(
         z_rows * h,
     )?;
 
-    // Concat block scales along the N-block axis (BS=128, FP32).
+    // ── 3. Concat block scales along the N-block axis (BS=128, FP32):
+    //       [Nq/BS, K/BS] || [Nz/BS, K/BS] → [(Nq+Nz)/BS, K/BS].
+    //       Each scale row is `(K/BS) * 4` bytes (FP32, widened at load);
+    //       number of rows is `Nq/BS` and `Nz/BS`. Both Nq and Nz must align
+    //       to BS for the on-disk Qwen FP8 format (verified at load).
     const BS: usize = 128;
     ensure!(
         qkv_rows.is_multiple_of(BS),
@@ -89,7 +109,8 @@ fn load_ssm_fp8_decode_weights(
         h.is_multiple_of(BS),
         "SSM L{layer_idx}: hidden_size={h} not divisible by BS={BS}",
     );
-    let scale_cols = h / BS;
+    let scale_cols = h / BS; // K/BS FP32 entries per scale row
+    // row_scale is FP32 (widened at load by load_fp8_block_scaled_as_fp8weight).
     let scale_row_bytes = scale_cols * 4;
     let qkv_scale_rows = qkv_rows / BS;
     let z_scale_rows = z_rows / BS;
@@ -113,122 +134,28 @@ fn load_ssm_fp8_decode_weights(
         k: h as u32,
         scale_format: WeightQuantFormat::Fp8BlockScaled,
     };
-    Ok((qkvz_fp8, out_fp8))
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn build_linear_attention_fp8(
-    layer_idx: usize,
-    store: &WeightStore,
-    lp: &str,
-    gpu: &dyn GpuBackend,
-    _variant: Nvfp4Variant,
-    config: &ModelConfig,
-    h: usize,
-    _stream: u64,
-    input_norm: DenseWeight,
-    post_attn_norm: DenseWeight,
-    ffn: FfnComponent,
-) -> Result<Box<dyn TransformerLayer>> {
-    let p = format!("{lp}.linear_attn");
-    tracing::info!("Layer {layer_idx}: loading SSM FP8 native (block-scaled decode + prefill)");
-
-    let (qkvz_fp8, out_fp8) = load_ssm_fp8_decode_weights(layer_idx, store, &p, gpu, h)?;
     tracing::info!(
-        "Layer {layer_idx}: SSM QKVZ FP8 [{},{h}] block-scaled, out_proj FP8 [{},{}] block-scaled",
-        qkvz_fp8.n,
+        "Layer {layer_idx}: SSM QKVZ FP8 [{qkvz_n},{h}] block-scaled, out_proj FP8 [{},{}] block-scaled",
         out_fp8.n,
         out_fp8.k
     );
 
-    let nv = config.linear_num_value_heads;
-    let nk = config.linear_num_key_heads;
-    let in_proj_a = dense_auto(store, &format!("{p}.in_proj_a.weight"), gpu)?;
-    let in_proj_b = dense_auto(store, &format!("{p}.in_proj_b.weight"), gpu)?;
-    let ba_dense = interleave_ba(
-        &DenseWeight {
-            weight: in_proj_a.weight,
-        },
-        &DenseWeight {
-            weight: in_proj_b.weight,
-        },
-        nv,
-        nk,
-        h,
-        gpu,
-    )?;
-
-    // ── 4. Wire into Qwen3SsmLayer.
-    //       QKV/Z and out_proj stay in checkpoint FP8 form. The BF16 dense
-    //       fields are dead fallback slots for this native path; keeping them
-    //       null avoids materializing tens of GB of duplicate Holo weights.
-    let ssm = SsmWeights {
-        in_proj_qkvz: DenseWeight {
-            weight: spark_runtime::gpu::DevicePtr::NULL,
-        },
-        in_proj_ba: ba_dense,
-        conv1d: dense_auto(store, &format!("{p}.conv1d.weight"), gpu)?,
-        a_log: dense_keep_f32(store, &format!("{p}.A_log"), gpu)?,
-        dt_bias: dense_keep_f32(store, &format!("{p}.dt_bias"), gpu)?,
-        norm: dense_f32_safe(store, &format!("{p}.norm.weight"), gpu)?,
-        out_proj: QuantizedWeight::null(),
-    };
-
-    let mut layer = Qwen3SsmLayer::new_sequential(
-        input_norm,
-        ssm,
-        post_attn_norm,
-        ffn,
-        None,
-        None,
-        None,
-        config,
-        gpu,
-    )?;
-    layer.set_fp8_decode_weights(Some(qkvz_fp8), Some(out_fp8));
-    tracing::info!("Layer {layer_idx}: SSM native FP8 — w8a16 decode + prefill");
-    Ok(Box::new(layer))
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn build_linear_attention_dense_bf16(
-    layer_idx: usize,
-    store: &WeightStore,
-    lp: &str,
-    gpu: &dyn GpuBackend,
-    variant: Nvfp4Variant,
-    config: &ModelConfig,
-    h: usize,
-    input_norm: DenseWeight,
-    post_attn_norm: DenseWeight,
-    ffn: FfnComponent,
-) -> Result<Box<dyn TransformerLayer>> {
-    ensure!(
-        config.tp_world_size.max(1) == 1,
-        "BF16 dense SSM supports TP=1 only (got tp={})",
-        config.tp_world_size,
-    );
-    tracing::info!("Layer {layer_idx}: loading SSM FP8 projections as BF16 dense");
-
+    // ── 4. BF16 dequant for prefill (single-scale FP8) + B/A interleave.
+    //       `load_ssm_qwen35` for the `Fp8Dequanted` variant calls
+    //       `dense_auto` which dequants block-scaled FP8 → BF16. We
+    //       reuse that buffer for the prefill `bf16_to_fp8` path.
     let ssm35 = load_ssm_qwen35(store, lp, gpu, variant)?;
 
-    let qkv_rows = config.ssm_qkv_size();
-    let z_rows = config.ssm_z_size();
+    let qkv_size = config.ssm_qkv_size();
+    let z_size = config.ssm_z_size();
     let qkvz_dense = gpu_concat_rows(
         &ssm35.in_proj_qkv,
-        qkv_rows,
+        qkv_size,
         &ssm35.in_proj_z,
-        z_rows,
+        z_size,
         h,
         gpu,
     )?;
-    // `gpu_concat_rows` allocates an independent combined buffer (alloc +
-    // copy_d2d), so the per-projection BF16 expansions of in_proj_qkv /
-    // in_proj_z are dead after this point. They are freshly-allocated
-    // FP8→BF16 dequant outputs (not WeightStore aliases), ~50 MB/layer ×
-    // ~30 GDN layers ≈ 1.5 GB. Free them here — identical numerics.
-    let _ = gpu.free(ssm35.in_proj_qkv.weight);
-    let _ = gpu.free(ssm35.in_proj_z.weight);
 
     let nv = config.linear_num_value_heads;
     let nk = config.linear_num_key_heads;
@@ -245,6 +172,41 @@ pub(super) fn build_linear_attention_dense_bf16(
         gpu,
     )?;
 
+    let value_dim = nv * config.linear_value_head_dim;
+    let qkvz_size = config.ssm_qkvz_size();
+
+    // ── 5. Single-scale FP8 for prefill `fp8_gemm_n128` (kernel takes
+    //       no scale arg). Mirror the Fp8Dequanted branch of
+    //       `build_linear_attention_nvfp4`.
+    let b2f_k = gpu.kernel("w4a16", "bf16_to_fp8")?;
+    let qkvz_total = (qkvz_size * h) as u32;
+    let qkvz_fp8_prefill = gpu.alloc(qkvz_size * h)?;
+    crate::layers::ops::bf16_to_fp8(
+        gpu,
+        b2f_k,
+        qkvz_dense.weight,
+        qkvz_fp8_prefill,
+        qkvz_total,
+        stream,
+    )?;
+    let out_total = (h * value_dim) as u32;
+    let out_fp8_prefill = gpu.alloc(h * value_dim)?;
+    crate::layers::ops::bf16_to_fp8(
+        gpu,
+        b2f_k,
+        ssm35.out_proj.weight,
+        out_fp8_prefill,
+        out_total,
+        stream,
+    )?;
+    gpu.synchronize(stream)?;
+
+    // ── 6. Wire into Qwen3SsmLayer.
+    //       BF16 dense buffers stay live for the prefill-fallback path
+    //       (`dense_gemv`/`dense_gemm`) used when the FP8 prefill ptrs
+    //       are absent — but here they ARE set, so prefill GEMM uses
+    //       the FP8 single-scale buffers and decode GEMV uses the FP8
+    //       block-scaled buffers above. The NVFP4 fields stay null.
     let ssm = SsmWeights {
         in_proj_qkvz: qkvz_dense,
         in_proj_ba: ba_dense,
@@ -267,18 +229,11 @@ pub(super) fn build_linear_attention_dense_bf16(
         gpu,
     )?;
     layer.out_proj_dense = Some(ssm35.out_proj);
-    // Decode-only FP8 SSM overlay (ATLAS_HOLO_FP8_SSM_DECODE=1): install the
-    // on-disk block-scaled FP8 QKVZ/out_proj so DECODE runs through
-    // w8a16_gemv / w8a16_gemm (half the BF16 weight bandwidth — SSM weights
-    // are the bulk of the per-step fixed decode cost), while PREFILL keeps the
-    // stable BF16 dense path (sidesteps the native-FP8 FLA-prefill crash at
-    // layer 36). Costs ~25 MB/GDN layer extra (BF16 kept for prefill).
-    if std::env::var("ATLAS_HOLO_FP8_SSM_DECODE").ok().as_deref() == Some("1") {
-        let p = format!("{lp}.linear_attn");
-        let (qkvz_fp8, out_fp8) = load_ssm_fp8_decode_weights(layer_idx, store, &p, gpu, h)?;
-        layer.set_fp8_decode_weights(Some(qkvz_fp8), Some(out_fp8));
-        tracing::info!("Layer {layer_idx}: SSM FP8 decode overlay installed (BF16 prefill kept)");
-    }
+    layer.set_fp8_decode_weights(Some(qkvz_fp8), Some(out_fp8));
+    layer.set_fp8_prefill_only_weights(Some(qkvz_fp8_prefill), Some(out_fp8_prefill));
+    tracing::info!(
+        "Layer {layer_idx}: SSM native FP8 — w8a16_gemv decode (block-scaled) + fp8_gemm_n128 prefill (single-scale)"
+    );
     Ok(Box::new(layer))
 }
 

@@ -241,40 +241,6 @@ jobs:
           EOF
           cc -shared -fPIC -nostdlib -o /tmp/libnccl.so /tmp/libnccl_stub.c
           sudo install -m 0644 /tmp/libnccl.so /usr/lib/x86_64-linux-gnu/libnccl.so
-      - name: Generate libcublasLt.so + libcudart.so stubs for no-GPU linking
-        # The Holo-3.1/Ornith enablement added cublaslt.rs (ATLAS_CUBLAS_GEMM
-        # FFI) and a cudaMemcpy2DAsync path; build.rs emits -lcublasLt/-lcudart
-        # even under ATLAS_SKIP_BUILD. Stub both (every symbol returns 1 so a
-        # real invocation fails-fast; GPU paths are #[ignore]-gated) purely to
-        # satisfy the linker — same treatment as libcuda/libnccl above.
-        run: |
-          set -euo pipefail
-          cat > /tmp/libcublaslt_stub.c <<'EOF'
-          int cublasLtCreate(void){return 1;}
-          int cublasLtDestroy(void){return 1;}
-          int cublasLtMatmul(void){return 1;}
-          int cublasLtMatmulAlgoGetHeuristic(void){return 1;}
-          int cublasLtMatmulDescCreate(void){return 1;}
-          int cublasLtMatmulDescDestroy(void){return 1;}
-          int cublasLtMatmulDescSetAttribute(void){return 1;}
-          int cublasLtMatmulPreferenceCreate(void){return 1;}
-          int cublasLtMatmulPreferenceDestroy(void){return 1;}
-          int cublasLtMatmulPreferenceSetAttribute(void){return 1;}
-          int cublasLtMatrixLayoutCreate(void){return 1;}
-          int cublasLtMatrixLayoutDestroy(void){return 1;}
-          EOF
-          cc -shared -fPIC -nostdlib -o /tmp/libcublasLt.so /tmp/libcublaslt_stub.c
-          sudo install -m 0644 /tmp/libcublasLt.so /usr/lib/x86_64-linux-gnu/libcublasLt.so
-          cat > /tmp/libcudart_stub.c <<'EOF'
-          int cudaMalloc(void){return 1;}
-          int cudaFree(void){return 1;}
-          int cudaMemcpy(void){return 1;}
-          int cudaMemcpy2DAsync(void){return 1;}
-          int cudaDeviceSynchronize(void){return 1;}
-          int cudaHostAlloc(void){return 1;}
-          EOF
-          cc -shared -fPIC -nostdlib -o /tmp/libcudart.so /tmp/libcudart_stub.c
-          sudo install -m 0644 /tmp/libcudart.so /usr/lib/x86_64-linux-gnu/libcudart.so
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Default `cargo test` skips `#[ignore]`-gated tests, which is

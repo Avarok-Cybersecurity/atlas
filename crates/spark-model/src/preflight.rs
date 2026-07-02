@@ -265,7 +265,6 @@ fn check_mtp_consumability(config: &ModelConfig) -> Result<()> {
         "qwen3_next",
         "qwen3_5_moe",
         "qwen3_6_moe",
-        "holo3_1_moe",
         "qwen3_vl_moe",
         "qwen3_coder_next",
     ];

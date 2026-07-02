@@ -52,10 +52,6 @@ pub struct FastSafetensorsLoader {
     /// above ~5k tensors/shard; O_DIRECT wins below. Set to [`usize::MAX`]
     /// to disable.
     pub direct_io_tensor_cap: usize,
-    /// When true, advise the kernel to read a whole buffered shard
-    /// sequentially before the per-tensor copy loop starts. This helps NFS
-    /// mounts where many small tensor reads defeat normal readahead.
-    pub prefetch_shards: bool,
 }
 
 /// Default tensor-count cap for per-shard `O_DIRECT`. Above this, the fast
@@ -78,7 +74,6 @@ impl FastSafetensorsLoader {
             peak_memory_multiplier: None,
             try_direct_io: true,
             direct_io_tensor_cap: DEFAULT_DIRECT_IO_TENSOR_CAP,
-            prefetch_shards: false,
         }
     }
 
@@ -90,7 +85,6 @@ impl FastSafetensorsLoader {
             peak_memory_multiplier: None,
             try_direct_io: true,
             direct_io_tensor_cap: DEFAULT_DIRECT_IO_TENSOR_CAP,
-            prefetch_shards: false,
         }
     }
 
@@ -198,7 +192,6 @@ impl WeightLoader for FastSafetensorsLoader {
                 &skip_fn,
                 self.try_direct_io,
                 self.direct_io_tensor_cap,
-                self.prefetch_shards,
                 &mut weights,
                 &mut offload_logged,
             )?;
@@ -234,7 +227,6 @@ impl WeightLoader for FastSafetensorsLoader {
                 &no_skip,
                 self.try_direct_io,
                 self.direct_io_tensor_cap,
-                self.prefetch_shards,
                 &mut weights,
                 &mut extra_offload,
             )?;
@@ -262,7 +254,6 @@ fn load_shard_fast(
     skip_fn: &dyn Fn(&str) -> bool,
     try_direct_io: bool,
     direct_io_tensor_cap: usize,
-    prefetch_shards: bool,
     out: &mut HashMap<String, WeightTensor>,
     offload_logged: &mut bool,
 ) -> Result<()> {
@@ -310,9 +301,6 @@ fn load_shard_fast(
     };
     let buffered_file = File::open(shard_path)?;
     let data_fd = direct_file.as_ref().unwrap_or(&buffered_file);
-    if prefetch_shards && !using_direct {
-        advise_prefetch_shard(&buffered_file, shard_path, file_size);
-    }
 
     // Pipelined reader: sends (tensor_index, aligned_buffer, slice_start) to main.
     type ReadMsg = (usize, direct_io::AlignedBuffer, usize);
@@ -385,29 +373,3 @@ fn load_shard_fast(
     drop(buffered_file);
     Ok(())
 }
-
-#[cfg(target_os = "linux")]
-fn advise_prefetch_shard(file: &File, shard_path: &Path, file_size: u64) {
-    use std::os::unix::io::AsRawFd;
-
-    let fd = file.as_raw_fd();
-    let seq_rc = unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL) };
-    let willneed_rc = unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_WILLNEED) };
-    if seq_rc == 0 && willneed_rc == 0 {
-        tracing::info!(
-            "  NFS/shard prefetch requested for {} ({:.2} GB)",
-            shard_path.display(),
-            file_size as f64 / (1024.0 * 1024.0 * 1024.0)
-        );
-    } else {
-        tracing::warn!(
-            "  NFS/shard prefetch hint failed for {}: sequential_rc={}, willneed_rc={}",
-            shard_path.display(),
-            seq_rc,
-            willneed_rc
-        );
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn advise_prefetch_shard(_file: &File, _shard_path: &Path, _file_size: u64) {}

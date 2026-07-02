@@ -117,25 +117,6 @@ pub(crate) async fn chat_completions_inner(
     // byte-exact + gate-BF16 + thinking_in_tools=true is the live
     // combination.
 
-    // ST-995 fix: restore the parser-specific behavioral system prompt #90 removed.
-    // For the hermes parser this is the canonical NousResearch function-calling
-    // prompt ("you MAY call one or more functions... don't make assumptions"),
-    // which the GDN model needs to correctly DECLINE on irrelevance prompts. With
-    // it (and compact tool-JSON) hallucination returns to ~96 (vs 30/64 without).
-    if tools_active && let Some(ref parser) = state.tool_call_parser {
-        let default_choice = crate::tool_parser::ToolChoice::Mode("auto".to_string());
-        let tool_choice = req.tool_choice.as_ref().unwrap_or(&default_choice);
-        let tool_prompt = parser.system_prompt(req.tools.as_deref().unwrap_or(&[]), tool_choice);
-        if let Some(first) = req.messages.first_mut().filter(|m| m.role == "system") {
-            first.content.text = format!("{}\n\n{}", tool_prompt, first.content.text);
-        } else {
-            req.messages.insert(
-                0,
-                crate::openai::IncomingMessage::synthetic_system(tool_prompt),
-            );
-        }
-    }
-
     tracing::info!(
         "Request: model={}, messages={}, tools={}, tools_active={}, tool_choice={:?}, stream={}, temp={:?}, max_tokens={}, freq_pen={:?}, rep_pen={:?}",
         req.model,

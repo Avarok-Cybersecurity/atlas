@@ -25,32 +25,8 @@ impl Qwen3AttentionLayer {
         stream: u64,
     ) -> Result<DevicePtr> {
         let o_out = ctx.buffers.norm_output();
-        let force_w8a8 = ops::fp8_blockscaled_prefill_enabled();
-        if ops::cutlass_nvfp4_attn_o_enabled()
-            && let Some(ref nvfp4_t) = self.o_nvfp4_t
-        {
-            ops::log_cutlass_nvfp4_route("attn_o", n, h, nq * hd);
-            ops::cutlass_nvfp4_proj(ctx.gpu, attn_out, nvfp4_t, o_out, n, h, nq * hd, stream)?;
-        } else if ops::cutlass_nvfp4_attn_o_enabled()
-            && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
-        {
-            ops::log_cutlass_nvfp4_route("attn_o", n, h, nq * hd);
-            ops::cutlass_nvfp4_proj_from_fp8(
-                ctx.gpu,
-                attn_out,
-                fp8w,
-                o_out,
-                n,
-                h,
-                nq * hd,
-                stream,
-            )?;
-        } else if ops::cublas_gemm_enabled()
-            && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
-        {
-            // cuBLASLt BF16 (3x the hand-written mma.sync GEMM on GB10).
-            ops::cublas_bf16_proj(ctx.gpu, attn_out, fp8w, o_out, n, h, nq * hd, stream)?;
-        } else if force_w8a8
+        let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
+        if force_w8a8
             && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
             && self.per_token_group_quant_fp8_k.0 != 0
             && self.fp8_gemm_t_blockscaled_k.0 != 0
@@ -62,12 +38,10 @@ impl Qwen3AttentionLayer {
             let m = n as usize;
             let k_dim = (nq * hd) as usize; // inner contract dim — input width of o_proj
             let n_out = h as usize; // output width of o_proj
-            // Persistent arena scratch (no per-projection alloc/sync/free): the
-            // quant→GEMM→next-layer chain is same-stream ordered, so the buffer
-            // is safely reused without a host sync.
-            let a_fp8_buf = ctx.buffers.fp8_act();
-            let a_scale_buf = ctx.buffers.fp8_act_scale();
-            debug_assert!(m * k_dim <= ctx.buffers.fp8_act_bytes());
+            let a_fp8_bytes = m * k_dim;
+            let a_scale_bytes = m * (k_dim / 128) * 4;
+            let a_fp8_buf = ctx.gpu.alloc(a_fp8_bytes)?;
+            let a_scale_buf = ctx.gpu.alloc(a_scale_bytes)?;
             ops::per_token_group_quant_fp8(
                 ctx.gpu,
                 self.per_token_group_quant_fp8_k,
@@ -91,6 +65,9 @@ impl Qwen3AttentionLayer {
                 k_dim as u32,
                 stream,
             )?;
+            ctx.gpu.synchronize(stream)?;
+            ctx.gpu.free(a_fp8_buf)?;
+            ctx.gpu.free(a_scale_buf)?;
         } else if let Some(ref fp8t) = self.o_fp8w_t
             && self.w8a16_gemm_t_pipelined_k.0 != 0
         {
@@ -195,32 +172,17 @@ impl Qwen3AttentionLayer {
         } else if let Some(o_bf16) = self.o_dense_bf16.as_ref() {
             // BF16 dense fallback (Gemma-4 dense per Nvidia ModelOpt's
             // ignore list — all self_attn projections must stay BF16).
-            // Tensor-core pipelined GEMM (~40× scalar on large-M prefill).
-            if self.dense_gemm_pipelined_k.0 != 0 {
-                ops::dense_gemm_bf16_pipelined(
-                    ctx.gpu,
-                    self.dense_gemm_pipelined_k,
-                    attn_out,
-                    o_bf16,
-                    o_out,
-                    n,
-                    h,
-                    nq * hd,
-                    stream,
-                )?;
-            } else {
-                ops::dense_gemm(
-                    ctx.gpu,
-                    self.dense_gemm_k,
-                    attn_out,
-                    o_bf16,
-                    o_out,
-                    n,
-                    h,
-                    nq * hd,
-                    stream,
-                )?;
-            }
+            ops::dense_gemm(
+                ctx.gpu,
+                self.dense_gemm_k,
+                attn_out,
+                o_bf16,
+                o_out,
+                n,
+                h,
+                nq * hd,
+                stream,
+            )?;
         } else {
             ops::w4a16_gemm(
                 ctx.gpu,

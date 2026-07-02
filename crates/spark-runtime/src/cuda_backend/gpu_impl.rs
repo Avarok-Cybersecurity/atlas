@@ -247,50 +247,6 @@ impl GpuBackend for AtlasCudaBackend {
         Ok(())
     }
 
-    fn copy_d2d_2d_async(
-        &self,
-        src: DevicePtr,
-        src_pitch: usize,
-        dst: DevicePtr,
-        dst_pitch: usize,
-        width_bytes: usize,
-        height: usize,
-        stream: u64,
-    ) -> Result<()> {
-        // One pitched copy (cudaMemcpyDeviceToDevice = 3) on the caller's stream,
-        // replacing a per-row copy_d2d_async loop. cudart is linked (cutlass/
-        // flashinfer use the runtime API); a CUstream handle is a valid
-        // cudaStream_t.
-        unsafe extern "C" {
-            fn cudaMemcpy2DAsync(
-                dst: *mut c_void,
-                dpitch: usize,
-                src: *const c_void,
-                spitch: usize,
-                width: usize,
-                height: usize,
-                kind: i32,
-                stream: u64,
-            ) -> i32;
-        }
-        let status = unsafe {
-            cudaMemcpy2DAsync(
-                dst.0 as *mut c_void,
-                dst_pitch,
-                src.0 as *const c_void,
-                src_pitch,
-                width_bytes,
-                height,
-                3,
-                stream,
-            )
-        };
-        if status != 0 {
-            bail!("cudaMemcpy2DAsync failed: status {status}");
-        }
-        Ok(())
-    }
-
     fn begin_capture(&self, stream: u64) -> Result<()> {
         // CU_STREAM_CAPTURE_MODE_RELAXED = 2
         // Relaxed mode allows NCCL's internal streams to operate during

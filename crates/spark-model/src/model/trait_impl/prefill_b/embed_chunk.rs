@@ -125,15 +125,10 @@ impl TransformerModel {
                     .map(|v| v.image_pad_token_id)
                     .filter(|v| *v != 0)
                     .unwrap_or(crate::layers::vision_encoder::IMAGE_PAD_TOKEN_ID);
-                // Co-dispatch: this request's slice starts at vision_row_base
-                // in the shared packed buf_out (0 for the legacy single encode).
-                let row_base = *self.vision_row_base.lock();
-                let mut img_idx = 0usize; // pad-token count within the chunk
+                let mut img_idx = 0usize; // index into buf_out rows
                 for (i, &tok) in chunk_tokens.iter().enumerate() {
                     if tok == pad_id {
-                        let src = ve
-                            .buf_out
-                            .offset((row_base + img_idx) * ve.out_hidden_size * 2);
+                        let src = ve.buf_out.offset(img_idx * ve.out_hidden_size * 2);
                         let dst = hidden_dst.offset(i * h * elem_bytes);
                         self.gpu
                             .copy_d2d_async(src, dst, ve.out_hidden_size * 2, stream)?;

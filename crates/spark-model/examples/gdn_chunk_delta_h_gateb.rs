@@ -203,7 +203,7 @@ fn main() -> Result<()> {
             .arg_u32(NV as u32)
             .launch(0)?;
         let hp = up_f32(g, &h0)?; // chunk_delta_h mutates this → final S
-        let scp = g.alloc(nt * NV * KD * VD * 2)?;
+        let scp = g.alloc(nt * NV * KD * VD * 4)?;
         let ucp = g.alloc(nt * NV * C * VD * 2)?;
         let smem2 = (2 * (C * (2 * KD + VD) * 2) + 2 * C * 4) as u32; // 2×{W,K,U} double-buffer + 2×gc
         KernelLaunch::new(g, k_dh)
@@ -228,7 +228,7 @@ fn main() -> Result<()> {
             .arg_u32(NV as u32)
             .launch(0)?;
         g.synchronize(0)?;
-        let sc_gpu = dn_bf16(g, scp, nt * NV * KD * VD)?;
+        let sc_gpu = dn_f32(g, scp, nt * NV * KD * VD)?;
         let uc_gpu = dn_bf16(g, ucp, nt * NV * C * VD)?;
         let sf_gpu = dn_f32(g, hp, NV * KD * VD)?;
         for p in [kp, vp, gp, bp, wp, up, hp, scp, ucp] {

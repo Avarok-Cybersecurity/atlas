@@ -21,7 +21,6 @@ impl BlockDiffusionDraftHead {
         weights: DflashWeights,
         embed_tokens_shared: DevicePtr,
         lm_head_shared: DevicePtr,
-        lm_head_nvfp4: Option<crate::weight_map::QuantizedWeight>,
         target_hidden_size: usize,
         gamma: Option<usize>,
         window_size: Option<usize>,
@@ -102,7 +101,6 @@ impl BlockDiffusionDraftHead {
                 .or_else(|_| gpu.kernel("residual_add", "bf16_residual_add"))?,
             dense_gemv: gpu.kernel("gemv", "dense_gemv_bf16")?,
             dense_gemm: gpu.kernel("gemm", "dense_gemm_bf16")?,
-            w4a16_gemm: super::super::try_kernel(gpu, "w4a16", "w4a16_gemm"),
             // Qwen3.6-DFlash uses yarn RoPE — confirmed in the drafter
             // `config.json:rope_scaling.rope_type="yarn"`. Atlas's yarn
             // kernel is `rope::rope_forward_yarn`.
@@ -255,7 +253,6 @@ impl BlockDiffusionDraftHead {
 
             embed_tokens_shared,
             lm_head_shared,
-            lm_head_nvfp4,
             hidden_norm: weights.hidden_norm,
             norm: weights.norm,
             fc: weights.fc,

@@ -108,55 +108,26 @@ impl SsmSnapshotIndex {
         if self.entries.is_empty() {
             return None;
         }
-        // Per-entry forecast score (B.4, Marconi paper §4): old AND cold first.
-        // last_access * (1 + hit_count) — recent/hot survive. #155 fixed the
-        // inverted (÷) form that evicted just-selected snapshots.
-        let escore = |e: &SnapshotEntry| e.last_access.saturating_mul(1 + e.hit_count as u64);
-
-        // SESSION-AWARE eviction (default ON; ATLAS_SNAP_EVICT_LEGACY=1 → old
-        // per-entry policy). The agentic workload interleaves ~20 multi-turn
-        // conversations; per-entry LRU evicts the active conversation's OWN deep
-        // checkpoints whenever it goes briefly dormant (its unique deep snapshots
-        // have hit_count=0 and a stale last_access vs another conversation's fresh
-        // ones), so its next warm turn full-recomputes the SSM state (TTFT 1s→50s).
-        // Fix: evict from the STALEST conversation first — rank by the session's
-        // freshness (max last_access over its entries), so the active conversation's
-        // ENTIRE deep checkpoint chain stays resident until every other (completed/
-        // dormant) conversation is gone. Within the victim session, drop its lowest
-        // forecast-score entry. This is "prefix caching like llama" for SSM state:
-        // the live conversation never re-recomputes what it already computed.
-        // Selecting a different victim is correctness-safe — restore re-validates
-        // (session_hash + prefix_hash) before using any snapshot; eviction only
-        // frees a slot.
-        if std::env::var_os("ATLAS_SNAP_EVICT_LEGACY").is_none() {
-            // session freshness = max last_access among that session's entries.
-            let mut session_fresh: std::collections::HashMap<u64, u64> =
-                std::collections::HashMap::with_capacity(self.entries.len());
-            for e in &self.entries {
-                let f = session_fresh.entry(e.session_hash).or_insert(0);
-                if e.last_access > *f {
-                    *f = e.last_access;
-                }
-            }
-            let mut victim_idx = 0;
-            // (stalest session first, then lowest entry score within it)
-            let mut victim_key = (u64::MAX, u64::MAX);
-            for (i, e) in self.entries.iter().enumerate() {
-                let sf = *session_fresh.get(&e.session_hash).unwrap_or(&0);
-                let key = (sf, escore(e));
-                if key < victim_key {
-                    victim_key = key;
-                    victim_idx = i;
-                }
-            }
-            let entry = self.entries.swap_remove(victim_idx);
-            return Some(entry.snapshot_id);
-        }
-
+        // Forecast-based policy (B.4, 2026-04-25, Marconi paper §4):
+        // evict the entry with the lowest last_access * (1 + hit_count)
+        // — old AND cold first. Pure LRU (`last_access` only) discarded
+        // hot prefixes that just happened to be re-accessed less
+        // recently than a one-shot entry; weighting by hit_count keeps
+        // recurrent prefixes (system prompts, tool descriptions in
+        // agentic sessions) resident longer.
+        //
+        // #155: the original formula DIVIDED by (1 + hit_count), which
+        // inverts the intent — frequently-hit snapshots scored LOWEST
+        // and were evicted first at pool saturation (measured: a
+        // just-selected snapshot evicted 7s later while ~50
+        // never-accessed entries survived → selected=None mid-session
+        // → full-conversation SSM recompute on the next warm hit).
         let mut victim_idx = 0;
         let mut victim_score = u64::MAX;
         for (i, entry) in self.entries.iter().enumerate() {
-            let score = escore(entry);
+            // Saturating math: both factors fit u64 comfortably
+            // (access_counter is monotonic per-process, hit_count u32).
+            let score = entry.last_access.saturating_mul(1 + entry.hit_count as u64);
             if score < victim_score {
                 victim_score = score;
                 victim_idx = i;

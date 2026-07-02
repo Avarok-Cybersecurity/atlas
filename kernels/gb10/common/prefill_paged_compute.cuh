@@ -56,31 +56,6 @@ __device__ __forceinline__ unsigned int bf16x2_to_f16x2_bits(
     return *reinterpret_cast<const unsigned int*>(&h2);
 }
 
-#ifdef ATLAS_ATTN_FP8_SMEM
-#include <cuda_fp8.h>
-// FP8-smem occupancy variant — NVIDIA GB10 (sm_121), FP8-KV cache, HDIM=256.
-// K and V live in shared memory as raw E4M3 bytes (1 B) instead of dequantized
-// BF16 (2 B), halving smem_K + smem_V (~25 KB at BR=32 -> ~45 KB/CTA total) so
-// 2 CTAs/SM fit and the QK/PV MMA latency is hidden. The bytes are dequantized
-// to BF16/FP16 in-register right before each MMA via the same `fp8_to_bf16`
-// (per-tensor k_scale/v_scale) the load-time path used — so the MMA operands,
-// and therefore the kernel output, are bit-identical to the BF16-smem kernel.
-// Only the smem *storage* changes (deferred dequant). `fp8_to_bf16` is defined
-// by the including FP8 wrapper (inferspark_prefill_paged_fp8*.cu).
-__device__ __forceinline__ unsigned int fp8x2_to_bf16x2_bits(
-    __nv_fp8_storage_t lo, __nv_fp8_storage_t hi, float scale
-) {
-    unsigned short l = __bfloat16_as_ushort(fp8_to_bf16(lo, scale));
-    unsigned short h = __bfloat16_as_ushort(fp8_to_bf16(hi, scale));
-    return ((unsigned int)h << 16) | (unsigned int)l;
-}
-__device__ __forceinline__ unsigned int fp8x2_to_f16x2_bits(
-    __nv_fp8_storage_t lo, __nv_fp8_storage_t hi, float scale
-) {
-    return bf16x2_to_f16x2_bits(fp8_to_bf16(lo, scale), fp8_to_bf16(hi, scale));
-}
-#endif
-
 // Softmax exponential. Phase 2b precision fix (2026-05-24): the prior
 // degree-3 Taylor polynomial was advertised as "max err ~1e-4" but
 // numerical verification (against torch.exp on x in [-20, 0]) showed
@@ -195,15 +170,8 @@ extern "C" __global__ void KERNEL_NAME(
 #endif
 
     __shared__ __nv_bfloat16 smem_Q[BR][HDIM_PAD];
-#ifdef ATLAS_ATTN_FP8_SMEM
-    // FP8-smem variant: K/V kept as raw E4M3 bytes, dequantized in-register
-    // before each MMA (see fp8x2_to_*_bits). Halves smem_K + smem_V.
-    __shared__ __nv_fp8_storage_t smem_K[ATLAS_KBUFN][BC][HDIM_PAD];  // double-buffered
-    __shared__ __nv_fp8_storage_t smem_V[BC][HDIM_PAD];
-#else
     __shared__ __nv_bfloat16 smem_K[ATLAS_KBUFN][BC][HDIM_PAD];  // double-buffered (single under SCALE)
     __shared__ __nv_bfloat16 smem_V[BC][HDIM_PAD];
-#endif
     // Phase 2c: smem_P FP16 (10-bit mantissa) vs BF16 (7-bit).
     // Read back as 2x packed FP16 per .b32 register for the .f16.f16 MMA.
     // Bisect: `ATLAS_DISABLE_FP16_PV` reverts the Phase 2c FP16 P×V path
@@ -280,44 +248,23 @@ extern "C" __global__ void KERNEL_NAME(
             for (int i = 0; i < 4; i++) { acc_s[i][0]=0; acc_s[i][1]=0; acc_s[i][2]=0; acc_s[i][3]=0; }
 
             const unsigned short* sQ = (const unsigned short*)smem_Q;
-#ifdef ATLAS_ATTN_FP8_SMEM
-            const __nv_fp8_storage_t* sK = (const __nv_fp8_storage_t*)smem_K[ATLAS_KB(buf)];
-#else
             const unsigned short* sK = (const unsigned short*)smem_K[ATLAS_KB(buf)];
-#endif
 
             #pragma unroll
             for (unsigned int ks = 0; ks < (HDIM/16); ks++) {
                 unsigned int kb = ks*16;
                 unsigned int ar0=qk_warp_m+group_id, ar1=ar0+8;
                 unsigned int ac0=kb+tid_in_group*2, ac1=ac0+8;
-                unsigned int a0,a1,a2,a3;
-#ifdef ATLAS_ATTN_LDMATRIX
-                // SM121 ldmatrix.x4 NON-trans for the Q A-fragment (v47-proven on
-                // GB10): one instr replaces 4 manual smem loads, shortening the
-                // load->MMA dependency chain this latency-bound kernel is gated on.
-                // sQ-relative addressing so the same code serves BR32/BR64.
-                { unsigned int qb=__cvta_generic_to_shared(&sQ[(qk_warp_m+(lane_id&15))*HDIM_PAD+(lane_id>>4)*8+kb]);
-                  asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3},[%4];"
-                    :"=r"(a0),"=r"(a1),"=r"(a2),"=r"(a3):"r"(qb)); }
-                (void)ar0;(void)ar1;(void)ac0;(void)ac1;
-#else
-                a0=*(const unsigned int*)&sQ[ar0*HDIM_PAD+ac0];
-                a1=*(const unsigned int*)&sQ[ar1*HDIM_PAD+ac0];
-                a2=*(const unsigned int*)&sQ[ar0*HDIM_PAD+ac1];
-                a3=*(const unsigned int*)&sQ[ar1*HDIM_PAD+ac1];
-#endif
+                unsigned int a0=*(const unsigned int*)&sQ[ar0*HDIM_PAD+ac0];
+                unsigned int a1=*(const unsigned int*)&sQ[ar1*HDIM_PAD+ac0];
+                unsigned int a2=*(const unsigned int*)&sQ[ar0*HDIM_PAD+ac1];
+                unsigned int a3=*(const unsigned int*)&sQ[ar1*HDIM_PAD+ac1];
 
                 #pragma unroll
                 for (int nt=0; nt<4; nt++) {
                     unsigned int nc=nt*8+group_id, k0=kb+tid_in_group*2, k1=k0+8;
-#ifdef ATLAS_ATTN_FP8_SMEM
-                    unsigned int b0=fp8x2_to_bf16x2_bits(sK[nc*HDIM_PAD+k0],sK[nc*HDIM_PAD+k0+1],k_scale);
-                    unsigned int b1=fp8x2_to_bf16x2_bits(sK[nc*HDIM_PAD+k1],sK[nc*HDIM_PAD+k1+1],k_scale);
-#else
                     unsigned int b0=((unsigned int)sK[nc*HDIM_PAD+k0+1]<<16)|(unsigned int)sK[nc*HDIM_PAD+k0];
                     unsigned int b1=((unsigned int)sK[nc*HDIM_PAD+k1+1]<<16)|(unsigned int)sK[nc*HDIM_PAD+k1];
-#endif
                     asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
                         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
                         :"=f"(acc_s[nt][0]),"=f"(acc_s[nt][1]),"=f"(acc_s[nt][2]),"=f"(acc_s[nt][3])
@@ -450,19 +397,10 @@ extern "C" __global__ void KERNEL_NAME(
                 unsigned int ko=ks*16;
                 unsigned int ar0=pv_warp_m+group_id, ar1=ar0+8;
                 unsigned int ac0=ko+tid_in_group*2, ac1=ac0+8;
-                unsigned int a0,a1,a2,a3;
-#ifdef ATLAS_ATTN_LDMATRIX
-                // ldmatrix.x4 for the P (softmax-prob) A-fragment — same lever as QK.
-                { unsigned int pb=__cvta_generic_to_shared(&sP[(pv_warp_m+(lane_id&15))*p_smem_stride+(lane_id>>4)*8+ko]);
-                  asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3},[%4];"
-                    :"=r"(a0),"=r"(a1),"=r"(a2),"=r"(a3):"r"(pb)); }
-                (void)ar0;(void)ar1;(void)ac0;(void)ac1;
-#else
-                a0=*(const unsigned int*)&sP[ar0*p_smem_stride+ac0];
-                a1=*(const unsigned int*)&sP[ar1*p_smem_stride+ac0];
-                a2=*(const unsigned int*)&sP[ar0*p_smem_stride+ac1];
-                a3=*(const unsigned int*)&sP[ar1*p_smem_stride+ac1];
-#endif
+                unsigned int a0=*(const unsigned int*)&sP[ar0*p_smem_stride+ac0];
+                unsigned int a1=*(const unsigned int*)&sP[ar1*p_smem_stride+ac0];
+                unsigned int a2=*(const unsigned int*)&sP[ar0*p_smem_stride+ac1];
+                unsigned int a3=*(const unsigned int*)&sP[ar1*p_smem_stride+ac1];
                 #pragma unroll
                 for(int nt=0;nt<N_TILES_PER_WARP;nt++){
                     unsigned int nc=(pv_n_start+nt)*8+group_id, k0=ko+tid_in_group*2, k1=k0+8;
@@ -476,15 +414,10 @@ extern "C" __global__ void KERNEL_NAME(
                         :"r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1),
                          "f"(acc_o[nt][0]),"f"(acc_o[nt][1]),"f"(acc_o[nt][2]),"f"(acc_o[nt][3]));
 #else
-#ifdef ATLAS_ATTN_FP8_SMEM
-                    unsigned int b0=fp8x2_to_f16x2_bits(smem_V[k0][nc], smem_V[k0+1][nc], v_scale);
-                    unsigned int b1=fp8x2_to_f16x2_bits(smem_V[k1][nc], smem_V[k1+1][nc], v_scale);
-#else
                     unsigned int b0=bf16x2_to_f16x2_bits(
                         smem_V[k0][nc], smem_V[k0+1][nc]);
                     unsigned int b1=bf16x2_to_f16x2_bits(
                         smem_V[k1][nc], smem_V[k1+1][nc]);
-#endif
                     asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
                         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
                         :"=f"(acc_o[nt][0]),"=f"(acc_o[nt][1]),"=f"(acc_o[nt][2]),"=f"(acc_o[nt][3])
@@ -620,13 +553,8 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
 #endif
 
     __shared__ __nv_bfloat16 smem_Q64[BR64][HDIM_PAD];
-#ifdef ATLAS_ATTN_FP8_SMEM
-    __shared__ __nv_fp8_storage_t smem_K64[ATLAS_KBUFN][BC][HDIM_PAD];
-    __shared__ __nv_fp8_storage_t smem_V64[BC][HDIM_PAD];
-#else
     __shared__ __nv_bfloat16 smem_K64[ATLAS_KBUFN][BC][HDIM_PAD];
     __shared__ __nv_bfloat16 smem_V64[BC][HDIM_PAD];
-#endif
     // Phase 2c: smem_P64 FP16 — same rationale as smem_P above.
 #ifdef ATLAS_DISABLE_FP16_PV
     __shared__ __nv_bfloat16 smem_P64[BR64][BC + PAD_P];
@@ -695,44 +623,23 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
             for (int i = 0; i < 4; i++) { acc_s[i][0]=0; acc_s[i][1]=0; acc_s[i][2]=0; acc_s[i][3]=0; }
 
             const unsigned short* sQ = (const unsigned short*)smem_Q64;
-#ifdef ATLAS_ATTN_FP8_SMEM
-            const __nv_fp8_storage_t* sK = (const __nv_fp8_storage_t*)smem_K64[ATLAS_KB(buf)];
-#else
             const unsigned short* sK = (const unsigned short*)smem_K64[ATLAS_KB(buf)];
-#endif
 
             #pragma unroll
             for (unsigned int ks = 0; ks < (HDIM/16); ks++) {
                 unsigned int kb = ks*16;
                 unsigned int ar0=qk_warp_m+group_id, ar1=ar0+8;
                 unsigned int ac0=kb+tid_in_group*2, ac1=ac0+8;
-                unsigned int a0,a1,a2,a3;
-#ifdef ATLAS_ATTN_LDMATRIX
-                // SM121 ldmatrix.x4 NON-trans for the Q A-fragment (v47-proven on
-                // GB10): one instr replaces 4 manual smem loads, shortening the
-                // load->MMA dependency chain this latency-bound kernel is gated on.
-                // sQ-relative addressing so the same code serves BR32/BR64.
-                { unsigned int qb=__cvta_generic_to_shared(&sQ[(qk_warp_m+(lane_id&15))*HDIM_PAD+(lane_id>>4)*8+kb]);
-                  asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3},[%4];"
-                    :"=r"(a0),"=r"(a1),"=r"(a2),"=r"(a3):"r"(qb)); }
-                (void)ar0;(void)ar1;(void)ac0;(void)ac1;
-#else
-                a0=*(const unsigned int*)&sQ[ar0*HDIM_PAD+ac0];
-                a1=*(const unsigned int*)&sQ[ar1*HDIM_PAD+ac0];
-                a2=*(const unsigned int*)&sQ[ar0*HDIM_PAD+ac1];
-                a3=*(const unsigned int*)&sQ[ar1*HDIM_PAD+ac1];
-#endif
+                unsigned int a0=*(const unsigned int*)&sQ[ar0*HDIM_PAD+ac0];
+                unsigned int a1=*(const unsigned int*)&sQ[ar1*HDIM_PAD+ac0];
+                unsigned int a2=*(const unsigned int*)&sQ[ar0*HDIM_PAD+ac1];
+                unsigned int a3=*(const unsigned int*)&sQ[ar1*HDIM_PAD+ac1];
 
                 #pragma unroll
                 for (int nt=0; nt<4; nt++) {
                     unsigned int nc=nt*8+group_id, k0=kb+tid_in_group*2, k1=k0+8;
-#ifdef ATLAS_ATTN_FP8_SMEM
-                    unsigned int b0=fp8x2_to_bf16x2_bits(sK[nc*HDIM_PAD+k0],sK[nc*HDIM_PAD+k0+1],k_scale);
-                    unsigned int b1=fp8x2_to_bf16x2_bits(sK[nc*HDIM_PAD+k1],sK[nc*HDIM_PAD+k1+1],k_scale);
-#else
                     unsigned int b0=((unsigned int)sK[nc*HDIM_PAD+k0+1]<<16)|(unsigned int)sK[nc*HDIM_PAD+k0];
                     unsigned int b1=((unsigned int)sK[nc*HDIM_PAD+k1+1]<<16)|(unsigned int)sK[nc*HDIM_PAD+k1];
-#endif
                     asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
                         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
                         :"=f"(acc_s[nt][0]),"=f"(acc_s[nt][1]),"=f"(acc_s[nt][2]),"=f"(acc_s[nt][3])
@@ -862,19 +769,10 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
                 unsigned int ko=ks*16;
                 unsigned int ar0=pv_warp_m+group_id, ar1=ar0+8;
                 unsigned int ac0=ko+tid_in_group*2, ac1=ac0+8;
-                unsigned int a0,a1,a2,a3;
-#ifdef ATLAS_ATTN_LDMATRIX
-                // ldmatrix.x4 for the P (softmax-prob) A-fragment — same lever as QK.
-                { unsigned int pb=__cvta_generic_to_shared(&sP[(pv_warp_m+(lane_id&15))*p_smem_stride64+(lane_id>>4)*8+ko]);
-                  asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3},[%4];"
-                    :"=r"(a0),"=r"(a1),"=r"(a2),"=r"(a3):"r"(pb)); }
-                (void)ar0;(void)ar1;(void)ac0;(void)ac1;
-#else
-                a0=*(const unsigned int*)&sP[ar0*p_smem_stride64+ac0];
-                a1=*(const unsigned int*)&sP[ar1*p_smem_stride64+ac0];
-                a2=*(const unsigned int*)&sP[ar0*p_smem_stride64+ac1];
-                a3=*(const unsigned int*)&sP[ar1*p_smem_stride64+ac1];
-#endif
+                unsigned int a0=*(const unsigned int*)&sP[ar0*p_smem_stride64+ac0];
+                unsigned int a1=*(const unsigned int*)&sP[ar1*p_smem_stride64+ac0];
+                unsigned int a2=*(const unsigned int*)&sP[ar0*p_smem_stride64+ac1];
+                unsigned int a3=*(const unsigned int*)&sP[ar1*p_smem_stride64+ac1];
                 #pragma unroll
                 for(int nt=0;nt<N_TILES_PER_WARP;nt++){
                     unsigned int nc=(pv_n_start+nt)*8+group_id, k0=ko+tid_in_group*2, k1=k0+8;
@@ -888,15 +786,10 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
                         :"r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1),
                          "f"(acc_o[nt][0]),"f"(acc_o[nt][1]),"f"(acc_o[nt][2]),"f"(acc_o[nt][3]));
 #else
-#ifdef ATLAS_ATTN_FP8_SMEM
-                    unsigned int b0=fp8x2_to_f16x2_bits(smem_V64[k0][nc], smem_V64[k0+1][nc], v_scale);
-                    unsigned int b1=fp8x2_to_f16x2_bits(smem_V64[k1][nc], smem_V64[k1+1][nc], v_scale);
-#else
                     unsigned int b0=bf16x2_to_f16x2_bits(
                         smem_V64[k0][nc], smem_V64[k0+1][nc]);
                     unsigned int b1=bf16x2_to_f16x2_bits(
                         smem_V64[k1][nc], smem_V64[k1+1][nc]);
-#endif
                     asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
                         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
                         :"=f"(acc_o[nt][0]),"=f"(acc_o[nt][1]),"=f"(acc_o[nt][2]),"=f"(acc_o[nt][3])

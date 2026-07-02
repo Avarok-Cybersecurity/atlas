@@ -13,10 +13,6 @@
 
 #[path = "ops/activations.rs"]
 mod activations;
-#[path = "ops/dispatch_helpers.rs"]
-mod dispatch_helpers;
-#[path = "ops/dispatch_proj.rs"]
-mod dispatch_proj;
 #[path = "ops/embeddings.rs"]
 mod embeddings;
 #[path = "ops/fp8_gemv_batch.rs"]
@@ -27,12 +23,8 @@ mod fp8_moe;
 mod fp8_moe_batch_a;
 #[path = "ops/fp8_moe_batch_b.rs"]
 mod fp8_moe_batch_b;
-#[path = "ops/gdn_flashinfer.rs"]
-pub mod gdn_flashinfer;
 #[path = "ops/gemm_dense.rs"]
 mod gemm_dense;
-mod q4k_mmq;
-mod nvfp4_mmq;
 #[path = "ops/gemm_quant.rs"]
 mod gemm_quant;
 #[path = "ops/hyper_connection.rs"]
@@ -43,8 +35,6 @@ mod kv_cache;
 mod kv_cache_fp8k;
 #[path = "ops/kv_cache_turbok.rs"]
 mod kv_cache_turbok;
-#[path = "ops/moe_atomic_c4.rs"]
-mod moe_atomic_c4;
 #[path = "ops/moe_expert.rs"]
 mod moe_expert;
 #[path = "ops/moe_expert_more.rs"]
@@ -53,8 +43,6 @@ mod moe_expert_more;
 mod moe_gate;
 #[path = "ops/moe_grouped_a.rs"]
 mod moe_grouped_a;
-#[path = "ops/moe_grouped_a2.rs"]
-mod moe_grouped_a2;
 #[path = "ops/moe_grouped_b.rs"]
 mod moe_grouped_b;
 #[path = "ops/moe_prefill.rs"]
@@ -81,8 +69,6 @@ mod quant_dispatch;
 mod sampling;
 #[path = "ops/ssm_gdn_a.rs"]
 mod ssm_gdn_a;
-#[path = "ops/ssm_gdn_a2.rs"]
-mod ssm_gdn_a2;
 #[path = "ops/ssm_gdn_b.rs"]
 mod ssm_gdn_b;
 #[path = "ops/ssm_gdn_batched.rs"]
@@ -93,27 +79,21 @@ mod ssm_mamba;
 mod ssm_preproc;
 
 pub use activations::*;
-pub use dispatch_helpers::*;
-pub use dispatch_proj::*;
 pub use embeddings::*;
 pub use fp8_gemv_batch::*;
 pub use fp8_moe::*;
 pub use fp8_moe_batch_a::*;
 pub use fp8_moe_batch_b::*;
 pub use gemm_dense::*;
-pub use q4k_mmq::*;
-pub use nvfp4_mmq::*;
 pub use gemm_quant::*;
 pub use hyper_connection::*;
 pub use kv_cache::*;
 pub use kv_cache_fp8k::*;
 pub use kv_cache_turbok::*;
-pub use moe_atomic_c4::*;
 pub use moe_expert::*;
 pub use moe_expert_more::*;
 pub use moe_gate::*;
 pub use moe_grouped_a::*;
-pub use moe_grouped_a2::*;
 #[allow(unused_imports)]
 pub(crate) use moe_grouped_b::*;
 pub use moe_prefill::*;
@@ -128,7 +108,6 @@ pub use prefill_attn_turbok::*;
 pub use quant_dispatch::*;
 pub use sampling::*;
 pub use ssm_gdn_a::*;
-pub use ssm_gdn_a2::*;
 pub use ssm_gdn_b::*;
 pub use ssm_gdn_batched::*;
 pub use ssm_mamba::*;

@@ -142,45 +142,6 @@ pub fn rope_mrope_interleaved(
         .launch(stream)
 }
 
-/// MRoPE for K only. Used when Q was already rotated by a fused Q prefill
-/// kernel.
-#[allow(clippy::too_many_arguments)]
-pub fn rope_mrope_interleaved_k_only(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    k: DevicePtr,
-    pos_t: DevicePtr,
-    pos_h: DevicePtr,
-    pos_w: DevicePtr,
-    seq_len: u32,
-    num_kv_heads: u32,
-    head_dim: u32,
-    rotary_dim: u32,
-    theta: f32,
-    stream: u64,
-) -> Result<()> {
-    assert!(
-        rotary_dim > 0,
-        "rope_mrope_interleaved_k_only: rotary_dim=0"
-    );
-    let half_rot = (rotary_dim / 2).max(1);
-    let pos_per_block = (128 / half_rot).max(1);
-    let seq_blocks = div_ceil(seq_len, pos_per_block);
-    KernelLaunch::new(gpu, kernel)
-        .grid([num_kv_heads, seq_blocks, 1])
-        .block([128, 1, 1])
-        .arg_ptr(k)
-        .arg_ptr(pos_t)
-        .arg_ptr(pos_h)
-        .arg_ptr(pos_w)
-        .arg_u32(seq_len)
-        .arg_u32(num_kv_heads)
-        .arg_u32(head_dim)
-        .arg_u32(rotary_dim)
-        .arg_f32(theta)
-        .launch(stream)
-}
-
 /// RoPE with precomputed YaRN inv_freq table (Mistral Small 4).
 /// The kernel reads frequencies from the table instead of computing from theta.
 #[allow(clippy::too_many_arguments)]

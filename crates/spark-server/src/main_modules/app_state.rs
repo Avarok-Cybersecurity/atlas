@@ -21,8 +21,6 @@ pub struct AppState {
     pub request_tx: mpsc::Sender<InferenceRequest>,
     /// Vision config for VL models — None for text-only models.
     pub vision_config: Option<atlas_core::config::VisionConfig>,
-    /// Optional vLLM-style image area cap applied before vision patching.
-    pub vision_max_pixels: Option<usize>,
     /// Default sampling temperature from generation_config.json.
     pub default_temperature: f32,
     /// Default top-k from generation_config.json.

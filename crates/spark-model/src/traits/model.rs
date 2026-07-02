@@ -478,23 +478,6 @@ pub trait Model: Send + Sync {
         Ok(())
     }
 
-    /// Batched vision encode across N requests' images in ONE `forward_batched`
-    /// call (block GEMM weights read once over Σpatches). `per_request[i]` is
-    /// request i's images. Returns one `(patch_row_offset, grid_index_offset,
-    /// num_images, patch_row_count)` per request, in request order, locating
-    /// its slice of the shared packed `buf_out`. Default: no-op (text models).
-    fn prepare_vision_embed_batched(
-        &self,
-        _per_request: &[Vec<(Vec<f32>, usize, usize)>],
-    ) -> Result<Vec<(usize, usize, usize, usize)>> {
-        Ok(Vec::new())
-    }
-
-    /// Set the co-dispatched batched-ViT slice base for the NEXT prefill_chunk
-    /// (row offset into buf_out, grid index offset, image count owned). Pass
-    /// (0,0,0) to reset to the legacy single-request behaviour. Default: no-op.
-    fn set_vision_slice_base(&self, _row_base: usize, _grid_base: usize, _owned_images: usize) {}
-
     /// EP worker step: receive a (seq_id, cmd) preamble from rank 0 and
     /// execute the command in the addressed slot.
     ///

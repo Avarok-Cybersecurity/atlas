@@ -196,204 +196,168 @@ impl TransformerModel {
 
         let mut logits_out: Vec<DevicePtr> = Vec::with_capacity(n);
 
-        for (stream_idx, slice) in streams.iter_mut().enumerate() {
-            // Fault isolation (scheduler-hardening): a single stream's prefill
-            // error must fail ONLY that stream, not the whole co-dispatched
-            // batch. Wrap the per-stream body so an Err pushes NULL logits (the
-            // caller marks just that stream failed in `completed_indices`) and
-            // the loop continues with the others. Each stream is independent
-            // here — own seq, own KV/SSM-pool slot; the shared hidden buffer at
-            // offset 0 is re-embedded fresh by the next stream — so a mid-stream
-            // failure cannot corrupt its peers.
-            let stream_res: Result<DevicePtr> = (|| {
-                let tokens = slice.prompt_tokens;
-                let chunk_start = slice.chunk_start;
-                let chunk_len = slice.chunk_len;
-                let is_last_chunk = slice.is_last_chunk;
-                let total = tokens.len();
-                let seq = &mut *slice.seq;
+        for slice in streams.iter_mut() {
+            let tokens = slice.prompt_tokens;
+            let chunk_start = slice.chunk_start;
+            let chunk_len = slice.chunk_len;
+            let is_last_chunk = slice.is_last_chunk;
+            let total = tokens.len();
+            let seq = &mut *slice.seq;
 
-                // EP=2 zeroes ALL buffers per chunk for NCCL defence-in-depth.
-                // EP=1 zeroes only prefill essentials at chunk_start==0; layer
-                // forward overwrites the remaining scratch buffers before read.
-                if self.comm.is_some() {
-                    self.buffers.zero_all(self.gpu.as_ref(), stream)?;
-                } else if chunk_start == 0 {
-                    self.buffers
-                        .zero_prefill_essentials(self.gpu.as_ref(), stream)?;
-                }
+            // EP=2 zeroes ALL buffers per chunk for NCCL defence-in-depth.
+            // EP=1 zeroes essentials only at chunk_start==0 (stale data).
+            if self.comm.is_some() {
+                self.buffers.zero_all(self.gpu.as_ref(), stream)?;
+            } else if chunk_start == 0 {
+                self.buffers.zero_all(self.gpu.as_ref(), stream)?;
+            }
 
-                // Phase 1+1b: embed at the shared hidden-buffer offset 0.
-                // (Per-stream offsets in the buffer are deferred to Phase 2b/3
-                // when the kernel-batched path actually reads N streams' worth
-                // of hidden at once; today each stream's layer-loop consumes
-                // offset 0 before the next stream overwrites it.)
-                self.prefill_b_embed_chunk(tokens, chunk_start, chunk_len, stream)?;
+            // Phase 1+1b: embed at the shared hidden-buffer offset 0.
+            // (Per-stream offsets in the buffer are deferred to Phase 2b/3
+            // when the kernel-batched path actually reads N streams' worth
+            // of hidden at once; today each stream's layer-loop consumes
+            // offset 0 before the next stream overwrites it.)
+            self.prefill_b_embed_chunk(tokens, chunk_start, chunk_len, stream)?;
 
-                // Phase 2: prefix-cache + EP-sync + Marconi.
-                let (kv_write_start, marconi_skip) = self.prefill_b_prefix_lookup(
+            // Phase 2: prefix-cache + EP-sync + Marconi.
+            let (kv_write_start, marconi_skip) = self.prefill_b_prefix_lookup(
+                tokens,
+                seq,
+                chunk_start,
+                total,
+                &mut kv_cache,
+                stream,
+            )?;
+
+            // Block allocation through end of chunk.
+            let bs = kv_cache.block_size();
+            let end_pos = chunk_start + chunk_len;
+            let blocks_needed = (end_pos - 1) / bs + 1;
+            super::super::super::block_mgmt::ensure_blocks_through_prefill(
+                seq,
+                blocks_needed - 1,
+                &mut kv_cache,
+                self.prefix_cache.as_ref(),
+                self.gpu.as_ref(),
+                stream,
+            )?;
+
+            // Phase 2b: proc range (may early-return on full prefix hit
+            // of an intermediate chunk).
+            let (proc_start, proc_count, effective_seq_len_start) = match self
+                .prefill_b_proc_range(
                     tokens,
                     seq,
-                    chunk_start,
-                    total,
-                    &mut kv_cache,
-                    stream,
-                )?;
-
-                // Block allocation through end of chunk.
-                let bs = kv_cache.block_size();
-                let end_pos = chunk_start + chunk_len;
-                let blocks_needed = (end_pos - 1) / bs + 1;
-                super::super::super::block_mgmt::ensure_blocks_through_prefill(
-                    seq,
-                    blocks_needed - 1,
-                    &mut kv_cache,
-                    self.prefix_cache.as_ref(),
-                    self.gpu.as_ref(),
-                    stream,
-                )?;
-
-                // Phase 2b: proc range (may early-return on full prefix hit
-                // of an intermediate chunk).
-                let (proc_start, proc_count, effective_seq_len_start) = match self
-                    .prefill_b_proc_range(
-                        tokens,
-                        seq,
-                        chunk_start,
-                        chunk_len,
-                        is_last_chunk,
-                        kv_write_start,
-                        marconi_skip,
-                        // Per-stream fallback: hidden at offset 0 ⇒ base (byte-identical).
-                        self.buffers.hidden_states(),
-                        stream,
-                    )? {
-                    ProcRange::Compute {
-                        proc_start,
-                        proc_count,
-                        effective_seq_len_start,
-                    } => (proc_start, proc_count, effective_seq_len_start),
-                    ProcRange::EarlyReturn(ptr) => {
-                        // #155: fully-cached chunks must still record their
-                        // tokens — see the single-seq path (prefill_b.rs) for
-                        // the phantom-snapshot/radix-pollution root cause.
-                        seq.tokens
-                            .extend_from_slice(&tokens[chunk_start..chunk_start + chunk_len]);
-                        seq.seq_len = chunk_start + chunk_len;
-                        seq.last_decode_ckpt_block = seq.tokens.len() / bs;
-                        return Ok(ptr);
-                    }
-                };
-
-                // Phase 3+3b: positions / MRoPE / paged metadata.
-                let MetaLayout {
-                    meta_base,
-                    slot_offset,
-                    pos_stream_bytes,
-                    use_mrope,
-                    needs_paged,
-                } = self.prefill_b_upload_meta(
-                    tokens,
-                    seq,
-                    chunk_start,
-                    chunk_len,
-                    proc_start,
-                    proc_count,
-                    effective_seq_len_start,
-                    &kv_cache,
-                    stream,
-                )?;
-
-                if needs_paged {
-                    self.prefill_b_upload_paged(
-                        seq,
-                        total,
-                        proc_start,
-                        proc_count,
-                        meta_base,
-                        slot_offset,
-                        &kv_cache,
-                        stream,
-                    )?;
-                }
-
-                // Synchronise H2D before layer compute (GB10 DMA quirk —
-                // see prefill_chunk_dispatch comment).
-                self.gpu.synchronize(stream)?;
-
-                // Phase 4: forward through all layers (per-stream — Phase 2b/3
-                // will hoist this out of the loop with `layer.prefill_batched`).
-                self.prefill_b_forward_layers(
-                    seq,
-                    &mut kv_cache,
                     chunk_start,
                     chunk_len,
                     is_last_chunk,
-                    proc_count,
-                    effective_seq_len_start,
                     kv_write_start,
                     marconi_skip,
+                    stream,
+                )? {
+                ProcRange::Compute {
+                    proc_start,
+                    proc_count,
+                    effective_seq_len_start,
+                } => (proc_start, proc_count, effective_seq_len_start),
+                ProcRange::EarlyReturn(ptr) => {
+                    // #155: fully-cached chunks must still record their
+                    // tokens — see the single-seq path (prefill_b.rs) for
+                    // the phantom-snapshot/radix-pollution root cause.
+                    seq.tokens
+                        .extend_from_slice(&tokens[chunk_start..chunk_start + chunk_len]);
+                    seq.seq_len = chunk_start + chunk_len;
+                    seq.last_decode_ckpt_block = seq.tokens.len() / bs;
+                    logits_out.push(ptr);
+                    continue;
+                }
+            };
+
+            // Phase 3+3b: positions / MRoPE / paged metadata.
+            let MetaLayout {
+                meta_base,
+                slot_offset,
+                pos_stream_bytes,
+                use_mrope,
+                needs_paged,
+            } = self.prefill_b_upload_meta(
+                tokens,
+                seq,
+                chunk_start,
+                chunk_len,
+                proc_start,
+                proc_count,
+                effective_seq_len_start,
+                &kv_cache,
+                stream,
+            )?;
+
+            if needs_paged {
+                self.prefill_b_upload_paged(
+                    seq,
+                    total,
+                    proc_start,
+                    proc_count,
                     meta_base,
                     slot_offset,
-                    pos_stream_bytes,
-                    use_mrope,
-                    needs_paged,
+                    &kv_cache,
                     stream,
                 )?;
-
-                // Phase 5: update sequence state.
-                seq.tokens
-                    .extend_from_slice(&tokens[chunk_start..chunk_start + chunk_len]);
-                seq.seq_len = chunk_start + chunk_len;
-                // #155: prime the decode-checkpoint cadence gate (see prefill_a).
-                seq.last_decode_ckpt_block = seq.tokens.len() / bs;
-
-                let logits = if is_last_chunk {
-                    // Per-stream logits row (bug-1 class fix for THIS per-stream
-                    // fallback loop — the kernel-batched PHASE C was already fixed
-                    // in e86d68c). Each iteration writes the shared hidden buffer at
-                    // offset 0 and is consumed before the next overwrites it, BUT
-                    // logits are sampled by the caller AFTER the whole loop, so
-                    // every stream must land in its OWN logits row — otherwise
-                    // logits_out is N copies of offset 0 and all streams sample the
-                    // LAST stream's logits (concurrent-prefill cross-request bleed,
-                    // exposed by short prefix-cache-hit prefills bailing here).
-                    // hidden offset stays 0 (per-stream hidden is at base in this
-                    // loop); only the logits destination is per-stream.
-                    self.prefill_b_finalize_last_at(
-                        tokens,
-                        seq,
-                        &mut kv_cache,
-                        chunk_start,
-                        chunk_len,
-                        proc_count,
-                        0,
-                        stream_idx,
-                        stream,
-                    )?
-                } else {
-                    self.prefill_b_save_checkpoint(
-                        tokens,
-                        seq,
-                        &mut kv_cache,
-                        chunk_start,
-                        chunk_len,
-                        stream,
-                    )?;
-                    DevicePtr::NULL
-                };
-                Ok(logits)
-            })();
-            match stream_res {
-                Ok(l) => logits_out.push(l),
-                Err(e) => {
-                    tracing::error!(
-                        "Batched prefill fallback: stream {stream_idx} failed: {e:#} \
-                         — isolating (NULL logits; only this stream fails, batch continues)"
-                    );
-                    logits_out.push(DevicePtr::NULL);
-                }
             }
+
+            // Synchronise H2D before layer compute (GB10 DMA quirk —
+            // see prefill_chunk_dispatch comment).
+            self.gpu.synchronize(stream)?;
+
+            // Phase 4: forward through all layers (per-stream — Phase 2b/3
+            // will hoist this out of the loop with `layer.prefill_batched`).
+            self.prefill_b_forward_layers(
+                seq,
+                &mut kv_cache,
+                chunk_start,
+                chunk_len,
+                is_last_chunk,
+                proc_count,
+                effective_seq_len_start,
+                kv_write_start,
+                marconi_skip,
+                meta_base,
+                slot_offset,
+                pos_stream_bytes,
+                use_mrope,
+                needs_paged,
+                stream,
+            )?;
+
+            // Phase 5: update sequence state.
+            seq.tokens
+                .extend_from_slice(&tokens[chunk_start..chunk_start + chunk_len]);
+            seq.seq_len = chunk_start + chunk_len;
+            // #155: prime the decode-checkpoint cadence gate (see prefill_a).
+            seq.last_decode_ckpt_block = seq.tokens.len() / bs;
+
+            let logits = if is_last_chunk {
+                self.prefill_b_finalize_last(
+                    tokens,
+                    seq,
+                    &mut kv_cache,
+                    chunk_start,
+                    chunk_len,
+                    proc_count,
+                    stream,
+                )?
+            } else {
+                self.prefill_b_save_checkpoint(
+                    tokens,
+                    seq,
+                    &mut kv_cache,
+                    chunk_start,
+                    chunk_len,
+                    stream,
+                )?;
+                DevicePtr::NULL
+            };
+            logits_out.push(logits);
         }
 
         Ok(logits_out)

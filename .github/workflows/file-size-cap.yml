@@ -192,20 +192,6 @@ jobs:
             "crates/atlas-core/src/config.rs"
             "crates/spark-model/src/model/impl_b1.rs"
             "crates/spark-model/src/model/trait_impl/prefill_b/batch_kernel.rs"
-            # ── #203 (Holo/Ornith GB10 enablement) carry-over ──
-            # 549 LoC — prefill phase-A vision-slice base wiring + Holo
-            # set_vision_slice_base call sites; too many local bindings/closures
-            # to extract cleanly. Clean split tracked as follow-up.
-            "crates/spark-server/src/scheduler/prefill_a_step.rs"
-            # ── #214 (batched decode engine) carry-over ──
-            # 575 LoC — Qwen3.5 dense-checkpoint loader grew with the batched
-            # decode + mixed-precision/fused-FP8 expert branches. One linear
-            # load sequence read top-to-bottom; clean split tracked as follow-up.
-            "crates/spark-model/src/weight_loader/qwen35_dense.rs"
-            # 508 LoC — serve CLI arg surface grew with the batched-decode /
-            # max-batch-size + FP8-KV flags. Marginally over; back under 500 in
-            # the follow-on dense-FP8 PR. Clean split tracked as follow-up.
-            "crates/spark-server/src/cli/serve_args.rs"
           )
 
           violations=0

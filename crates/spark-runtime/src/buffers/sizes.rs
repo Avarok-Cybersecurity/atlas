@@ -31,13 +31,7 @@ pub fn q12_batched_scratch_bytes(n: usize, chunk_len: usize, top_k: usize, mrope
     let pos_streams = if mrope { 3 } else { 1 };
     let slot = (total * 8 + 7) & !7;
     let ptrs = ((n * std::mem::size_of::<u64>()) + 7) & !7;
-    // VARLEN cu_seqlens [n+1] i32 prefix-sum, staged after the pointer arrays
-    // (stage_batched.rs:122-126). This term scales with n, so omitting it made
-    // the SSOT under-count grow with batch size: at n>=4 the h_state_ptrs JIT
-    // slot overlapped a live per-stream pointer table → cross-stream KV/GDN
-    // bleed in decode (n<=3 clean, absorbed by over-provisioning slack).
-    let cu_seqlens = (((n + 1) * 4) + 7) & !7;
-    let stage_meta = pos_streams * pos + slot + 2 * ptrs + cu_seqlens;
+    let stage_meta = pos_streams * pos + slot + 2 * ptrs;
     // h_state_ptrs JIT slot consumed per SSM layer (N device pointers).
     let h_state_ptrs = n * std::mem::size_of::<u64>();
     moe + n * per_stream_meta + stage_meta + h_state_ptrs
@@ -91,23 +85,6 @@ pub struct BufferSizes {
     /// so DeepSeek-V4 hash-MoE layers can read `tid2eid[token_id]`. Always
     /// allocated (small); unused by models without hash routing.
     pub token_ids: usize,
-    /// Dense-FFN activation-quant scratch, SHARED across all layers by the
-    /// MMQ (Q4_K), int8 (W4A8), and NVFP4 (W4A4) prefill paths. Was previously a
-    /// per-`DenseFfnLayer` field → 64× duplication (18 GB on Qwen3.6-27B) that
-    /// OOM'd chunked prefill layer-by-layer. Sized for the largest projection K.
-    /// `ffn_act_q8`: q8_1_mmq activations `m*kpad*4 + 1MB` (Q4_K path).
-    /// `ffn_act_a`: int8 `[m,K]` / NVFP4 packed `[m,K/2]` activations.
-    /// `ffn_act_scale`: int8 `[m,K/32]*4` / NVFP4 `[m,K/16]` group scales.
-    /// 0 for MoE models (dense FFN prefill path is Dense-only).
-    pub ffn_act_q8: usize,
-    pub ffn_act_a: usize,
-    pub ffn_act_scale: usize,
-    /// FP8 block-scaled activation scratch for prefill projections (qkv / o /
-    /// ssm-qkvz). Persistent so the W8A8+FP32-epilogue path stops doing a
-    /// per-projection cuMemAlloc + cuStreamSynchronize + cuMemFree. 1 byte/elem.
-    pub fp8_act: usize,
-    /// Per-128-block FP32 scales paired with `fp8_act` (one f32 per 128 elems).
-    pub fp8_act_scale: usize,
 }
 
 impl BufferSizes {
@@ -234,57 +211,28 @@ impl BufferSizes {
         // The residual stream is always BF16.
         let residual_elem = bf16;
 
-        // FP8 block-scaled activation scratch for prefill projections. The
-        // widest contract dim across call sites is hidden (qkv / ssm-qkvz) or
-        // q_heads*head_dim (o_proj). 1 byte/elem fp8 + one f32 per 128-block.
-        let max_proj_k = h.max(q_heads * hd);
-        let fp8_act = m * max_proj_k;
-        let fp8_act_scale = m * max_proj_k.div_ceil(128) * 4;
-
         // GDN FLA chunked-prefill scratch — ONE buffer holding W|U|S|uc back-to-back,
         // sized for the chunked-prefill arena (nt = ceil(max_batch_tokens / CHUNK)).
         // Only the 128-dim-linear-head GDN path uses it (the FLA kernels are compiled
         // for K_DIM=V_DIM=128); 0 otherwise so BufferArena allocs NULL and the
         // ATLAS_GDN_FLA dispatch stays disabled. Layout per region:
-        //   W  [nt*nv][CHUNK][kd] bf16 ; U,uc [nt*nv][CHUNK][vd] bf16 ;
-        //   S  [nt*nv][kd][vd] bf16 ; gc [nt*nv][CHUNK] f32.
+        //   W  [nt*nv][CHUNK][kd] bf16 ; U,uc [nt*nv][CHUNK][vd] bf16 ; S [nt*nv][kd][vd] f32.
         const FLA_CHUNK: usize = 64;
         let gdn_fla_scratch = if config.linear_num_value_heads > 0
             && config.linear_key_head_dim == 128
             && config.linear_value_head_dim == 128
         {
-            // +margin: the batched FLA path (ATLAS_GDN_BATCHED_FLA) sizes its
-            // regions by total_nt = batch*ceil(chunk_len/64), which can exceed
-            // ceil(m/64) by up to `batch` chunks due to per-stream last-chunk
-            // rounding. 16 covers the co-dispatch max-seqs.
-            let nt = m.div_ceil(FLA_CHUNK) + 16;
+            let nt = m.div_ceil(FLA_CHUNK);
             let nv = config.linear_num_value_heads;
             let kd = config.linear_key_head_dim;
             let vd = config.linear_value_head_dim;
             let w = nt * nv * FLA_CHUNK * kd * bf16;
             let u = nt * nv * FLA_CHUNK * vd * bf16;
-            let s = nt * nv * kd * vd * bf16;
+            let s = nt * nv * kd * vd * 4;
             let uc = nt * nv * FLA_CHUNK * vd * bf16;
-            let gc = nt * nv * FLA_CHUNK * 4;
-            w + u + s + uc + gc
+            w + u + s + uc
         } else {
             0
-        };
-
-        // Dense-FFN activation-quant scratch, shared across all layers (SSOT).
-        // Sized for the largest projection K = max(hidden, intermediate); the
-        // dense_ffn prefill paths pass `h.max(inter)` to the requant kernels.
-        // 0 for MoE (num_experts>0) — those never take the dense_ffn MMQ path.
-        let (ffn_act_q8, ffn_act_a, ffn_act_scale) = if config.num_experts == 0 {
-            let kmax = h.max(config.intermediate_size);
-            let kpad = kmax.div_ceil(256) * 256;
-            (
-                m * kpad * 4 + (1 << 20), // q8_1_mmq: m*kpad*4 + 1MB (matches q8_1_scratch_bytes)
-                m * kmax,                 // int8 a_i8 [m,K] ≥ NVFP4 packed [m,K/2]
-                m * (kmax / 32) * 4,      // int8 a_scale [m,K/32]*4 ≥ NVFP4 scale [m,K/16]
-            )
-        } else {
-            (0, 0, 0)
         };
 
         Self {
@@ -396,11 +344,6 @@ impl BufferSizes {
             },
             // Token IDs [M] u32 (stable across the layer loop for hash-MoE).
             token_ids: (m * 4).max(256),
-            ffn_act_q8,
-            ffn_act_a,
-            ffn_act_scale,
-            fp8_act,
-            fp8_act_scale,
         }
     }
 
@@ -431,10 +374,5 @@ impl BufferSizes {
             + self.hc_post
             + self.hc_comb
             + self.token_ids
-            + self.ffn_act_q8
-            + self.ffn_act_a
-            + self.ffn_act_scale
-            + self.fp8_act
-            + self.fp8_act_scale
     }
 }

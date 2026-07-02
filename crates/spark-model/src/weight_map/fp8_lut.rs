@@ -319,59 +319,6 @@ pub(crate) fn load_dense_ffn(
                 down_proj_t: Some(down.transpose_for_gemm(gpu, h, inter)?),
             })
         }
-        Nvfp4Variant::Bf16Raw => {
-            // Raw BF16 fine-tune (e.g. Holo-3.1-0.8B / Ornith dense): the dense
-            // FFN ships un-quantized, so runtime-quantize BF16→NVFP4 via
-            // `quantized_any` (the `quantized_auto` path used below for
-            // Standard/CompressedTensors `unreachable!`s on Bf16Raw — it lacks
-            // the dims + quant kernels the runtime-quant needs).
-            let inter = if config.intermediate_size > 0 {
-                config.intermediate_size
-            } else {
-                config.moe_intermediate_size
-            };
-            let h = config.hidden_size;
-            let qctx = QuantizeCtx {
-                absmax_k,
-                quantize_k,
-                stream,
-            };
-            let gate = quantized_any(
-                store,
-                &format!("{prefix}.mlp.gate_proj"),
-                inter,
-                h,
-                gpu,
-                variant,
-                qctx,
-            )?;
-            let up = quantized_any(
-                store,
-                &format!("{prefix}.mlp.up_proj"),
-                inter,
-                h,
-                gpu,
-                variant,
-                qctx,
-            )?;
-            let down = quantized_any(
-                store,
-                &format!("{prefix}.mlp.down_proj"),
-                h,
-                inter,
-                gpu,
-                variant,
-                qctx,
-            )?;
-            Ok(DenseFfnWeights {
-                gate_proj: gate,
-                up_proj: up,
-                down_proj: down,
-                gate_proj_t: Some(gate.transpose_for_gemm(gpu, inter, h)?),
-                up_proj_t: Some(up.transpose_for_gemm(gpu, inter, h)?),
-                down_proj_t: Some(down.transpose_for_gemm(gpu, h, inter)?),
-            })
-        }
         _ => {
             let gate = quantized_auto(store, &format!("{prefix}.mlp.gate_proj"), gpu, variant)?;
             let up = quantized_auto(store, &format!("{prefix}.mlp.up_proj"), gpu, variant)?;

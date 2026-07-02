@@ -19,8 +19,6 @@ use crate::model::TransformerModel;
 use crate::traits::Model;
 use crate::weight_loader::load_dflash_weights;
 
-mod kv_summary;
-
 pub fn build_model(
     mut config: ModelConfig,
     store: &WeightStore,
@@ -97,7 +95,7 @@ pub fn build_model(
     config.kv_layer_dims = loader.kv_layer_dims(&config);
 
     let mut layers = loader.load_layers(store, &config, gpu.as_ref(), &attn_layer_dtypes)?;
-    let embed = loader.load_embedding(store, &config, gpu.as_ref())?;
+    let embed = loader.load_embedding(store, &config)?;
     let final_norm = loader.load_final_norm(store, &config, gpu.as_ref())?;
     let lm_head = loader.load_lm_head(store, &config)?;
     let mtp_weights = loader.load_mtp_weights_multi(store, &config, gpu.as_ref())?;
@@ -246,8 +244,61 @@ pub fn build_model(
         cache_blocks_per_seq: hss_cache_blocks_per_seq,
     };
 
+    // Phase 6.2.c — KV-dtype gating for `--high-speed-swap`.
+    //
+    // All quantization variants are now supported via host-side dequant before
+    // disk-write (the orchestrator's tiled-attention kernel reads BF16):
+    //   - BF16    : direct stream; predictor anchor (K_lr) computed natively.
+    //   - FP8     : E4M3 → BF16 (per-tensor calibration scale). Predictor
+    //               degrades to LRU (BF16-only kernel can't read FP8 layout).
+    //   - NVFP4   : E2M1 nibble + per-group FP8 scale → BF16. Predictor LRU.
+    //   - Turbo4  : Lloyd-Max 16-level + per-group FP8 scale + WHT(K/V) on
+    //               disk. Decode flow's WHT(Q)/iWHT(out) bookends handle the
+    //               Walsh-Hadamard round-trip transparently. Predictor LRU.
+    //   - Turbo3  : 3-bit packed (8 vals per 3 bytes), 8-level codebook,
+    //               per-group FP8 scales, WHT bookended. Predictor LRU.
+    //   - Turbo8  : FP8 E4M3 + per-group FP8 scales + WHT bookended.
+    //               Predictor LRU.
+    fn dtype_label(dt: KvCacheDtype) -> &'static str {
+        match dt {
+            KvCacheDtype::Bf16
+            | KvCacheDtype::Bf16KTurbo4V
+            | KvCacheDtype::Bf16KTurbo3V
+            | KvCacheDtype::Bf16KTurbo2V => "BF16",
+            KvCacheDtype::Fp8
+            | KvCacheDtype::Fp8KTurbo4V
+            | KvCacheDtype::Fp8KTurbo3V
+            | KvCacheDtype::Fp8KTurbo2V => "FP8",
+            KvCacheDtype::Nvfp4 => "NVFP4",
+            KvCacheDtype::Turbo3 | KvCacheDtype::Turbo3KTurbo8V | KvCacheDtype::Turbo2 => "Turbo3",
+            KvCacheDtype::Turbo4 | KvCacheDtype::Turbo4KTurbo3V | KvCacheDtype::Turbo4KTurbo8V => {
+                "Turbo4"
+            }
+            KvCacheDtype::Turbo8 => "Turbo8",
+        }
+    }
     if hss_cache_blocks_per_seq.is_some() {
-        kv_summary::log_hss_kv_summary(&kv_config);
+        let mut counts: std::collections::BTreeMap<&'static str, usize> =
+            std::collections::BTreeMap::new();
+        if kv_config.layer_dtypes.is_empty() {
+            *counts.entry(dtype_label(kv_config.dtype)).or_default() += kv_config.num_layers;
+        } else {
+            for dt in &kv_config.layer_dtypes {
+                *counts.entry(dtype_label(*dt)).or_default() += 1;
+            }
+        }
+        let total: usize = counts.values().sum();
+        let summary: Vec<String> = counts
+            .iter()
+            .map(|(name, n)| format!("{n} {name}"))
+            .collect();
+        tracing::info!(
+            "--high-speed-swap KV: {} attn layers ({}); HBM-shrink applies to all \
+             (Phase 6.2.c proper — host dequant for FP8/NVFP4/Turbo3/Turbo4/Turbo8; \
+             predictor scoring uses LRU for non-BF16 layers)",
+            total,
+            summary.join(" + ")
+        );
     }
     // ── gpu_memory_utilization as fraction of TOTAL GPU memory ──
     //
@@ -263,73 +314,7 @@ pub fn build_model(
     // unified-memory systems like GB10).
     let total_mem = gpu.total_memory()?;
     let actual_free = gpu.free_memory()?;
-    let gib = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
-    let mut used_so_far = total_mem.saturating_sub(actual_free);
-    // GB10 is shared (ComfyUI/voxel/etc.). Raw `used_so_far` counts those
-    // co-tenants against our --gpu-memory-utilization budget, so a low util
-    // needlessly starves the KV pool (vs vLLM, whose util is self-relative).
-    //
-    // We want the KV pool sized against Atlas's OWN footprint (weights +
-    // buffers), excluding co-tenants. Two ways to find that footprint:
-    //
-    //   1. AUTO (default, preferred): free-at-context-init minus free-now =
-    //      exactly what THIS process allocated since startup. Co-tenants that
-    //      were already resident at init are in the baseline, so they cancel
-    //      out — and it self-corrects as co-tenants come and go (no stale
-    //      constant). Requires `set_baseline_free_bytes` to have run (it does
-    //      under the real server; absent under the mock backend → we skip it).
-    //
-    //   2. MANUAL override: ATLAS_KV_EXTERNAL_RESERVE_GB=<co-tenant GB> still
-    //      wins when explicitly set (>0), for operators who want to RESERVE
-    //      headroom for co-tenants that will arrive LATER (the auto measure
-    //      only sees current state).
-    //
-    // The `.min(actual_free - reserve)` clamp below still guarantees a physical
-    // fit regardless of which path set `used_so_far`.
-    let manual_reserve_gb = std::env::var("ATLAS_KV_EXTERNAL_RESERVE_GB")
-        .ok()
-        .and_then(|v| v.parse::<f64>().ok())
-        .filter(|&gb| gb > 0.0);
-    if let Some(gb) = manual_reserve_gb {
-        let ext = (gb * 1024.0 * 1024.0 * 1024.0) as usize;
-        let discounted = used_so_far.saturating_sub(ext);
-        tracing::info!(
-            "ATLAS_KV_EXTERNAL_RESERVE_GB={gb} (manual override): discounting \
-             external/co-tenant memory from KV budget — used_so_far {:.1} GB → \
-             Atlas-own {:.1} GB",
-            gib(used_so_far),
-            gib(discounted),
-        );
-        used_so_far = discounted;
-    } else if let Some(baseline) = spark_runtime::gpu::baseline_free_bytes() {
-        // AUTO: bytes this process consumed since context init.
-        let atlas_own = baseline.saturating_sub(actual_free);
-        // Sanity-gate: baseline must be ≥ free-now, atlas_own positive and no
-        // larger than total used (co-tenants can't be negative). If a co-tenant
-        // *freed* memory during our load, baseline > free-now still holds and
-        // atlas_own just slightly overcounts (conservative — fine). If the
-        // numbers are implausible, fall back to raw used_so_far.
-        if atlas_own > 0 && atlas_own <= used_so_far {
-            tracing::info!(
-                "KV budget self-relative (auto): baseline-free {:.1} GB − free-now \
-                 {:.1} GB = Atlas-own {:.1} GB; co-tenants {:.1} GB excluded \
-                 (set ATLAS_KV_EXTERNAL_RESERVE_GB to override)",
-                gib(baseline),
-                gib(actual_free),
-                gib(atlas_own),
-                gib(used_so_far - atlas_own),
-            );
-            used_so_far = atlas_own;
-        } else {
-            tracing::warn!(
-                "KV budget auto-measure implausible (baseline {:.1} GB, free-now \
-                 {:.1} GB, used {:.1} GB) — using raw used_so_far",
-                gib(baseline),
-                gib(actual_free),
-                gib(used_so_far),
-            );
-        }
-    }
+    let used_so_far = total_mem.saturating_sub(actual_free);
     let total_budget = (total_mem as f64 * gpu_memory_utilization) as usize;
     let kv_budget = total_budget
         .saturating_sub(used_so_far)
@@ -424,47 +409,20 @@ pub fn build_model(
     if max_concurrent < max_batch_size {
         // Suggest a max_seq_len that lets the requested batch size fit.
         let suggested_max_seq_len = (num_kv_blocks / max_batch_size.max(1)) * kv_block_size;
-        // The check is WORST-CASE: it assumes every concurrent sequence reaches
-        // --max-seq-len. With paged KV (blocks allocated on demand) that almost
-        // never holds for real agent traffic (mixed/shorter sequences), so a high
-        // --max-seq-len (e.g. 64K for long agent contexts) needlessly caps
-        // --max-batch-size. ATLAS_KV_OVERCOMMIT=1 downgrades the hard error to a
-        // warning: the scheduler admits up to max_batch_size and the pool fills on
-        // demand (a genuinely over-long burst gets back-pressured by the block
-        // allocator, not a boot-time refusal).
-        let overcommit = matches!(
-            std::env::var("ATLAS_KV_OVERCOMMIT").as_deref(),
-            Ok("1") | Ok("true")
+        anyhow::bail!(
+            "KV cache can hold at most {} concurrent sequence(s) at --max-seq-len={}, \
+             but --max-batch-size={} was requested. \
+             KV pool has {} block(s) of {} tokens each; each sequence needs {} block(s). \
+             Try --max-seq-len {} (keeps max_batch_size={}) or reduce --max-batch-size.",
+            max_concurrent,
+            max_seq_len,
+            max_batch_size,
+            num_kv_blocks,
+            kv_block_size,
+            blocks_per_seq,
+            suggested_max_seq_len.max(kv_block_size),
+            max_batch_size,
         );
-        if overcommit {
-            tracing::warn!(
-                "KV OVERCOMMIT: pool fits {} seq(s) at full --max-seq-len={} but \
-                 --max-batch-size={} requested ({} block(s)/seq, {} block(s) total). \
-                 Paged KV allocates on demand; long-context bursts are back-pressured \
-                 at the block allocator, not refused at boot.",
-                max_concurrent,
-                max_seq_len,
-                max_batch_size,
-                blocks_per_seq,
-                num_kv_blocks,
-            );
-        } else {
-            anyhow::bail!(
-                "KV cache can hold at most {} concurrent sequence(s) at --max-seq-len={}, \
-                 but --max-batch-size={} was requested. \
-                 KV pool has {} block(s) of {} tokens each; each sequence needs {} block(s). \
-                 Try --max-seq-len {} (keeps max_batch_size={}), reduce --max-batch-size, \
-                 or set ATLAS_KV_OVERCOMMIT=1 to allow on-demand paged allocation.",
-                max_concurrent,
-                max_seq_len,
-                max_batch_size,
-                num_kv_blocks,
-                kv_block_size,
-                blocks_per_seq,
-                suggested_max_seq_len.max(kv_block_size),
-                max_batch_size,
-            );
-        }
     }
     let kv_cache = PagedKvCache::new(kv_config, num_kv_blocks, gpu.as_ref())?;
 
@@ -474,9 +432,6 @@ pub fn build_model(
     // so this clones the device pointer cheaply.
     let target_embed_for_dflash = embed.weight;
     let target_lm_head_for_dflash = lm_head.weight;
-    // NVFP4 lm_head (Copy) shared with the DFlash drafter so its final logits
-    // GEMM uses w4a16 instead of a BF16 dense_gemm on NVFP4-packed bytes.
-    let target_lm_head_nvfp4_for_dflash = lm_head_nvfp4;
     let target_hidden_for_dflash = config.hidden_size;
 
     let mut model = TransformerModel::new(
@@ -550,7 +505,6 @@ pub fn build_model(
                 weights,
                 target_embed_for_dflash,
                 target_lm_head_for_dflash,
-                target_lm_head_nvfp4_for_dflash,
                 target_hidden_for_dflash,
                 args.gamma,
                 args.window_size,

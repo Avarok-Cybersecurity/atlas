@@ -38,22 +38,7 @@ impl Qwen3AttentionLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        macro_rules! prof_step {
-            ($label:expr, $t0:expr) => {
-                if ctx.profile {
-                    ctx.gpu.synchronize(stream)?;
-                    tracing::info!(
-                        "  ATTN prefill [{}] N={}: {}µs",
-                        $label,
-                        n,
-                        $t0.elapsed().as_micros()
-                    );
-                }
-            };
-        }
-
         let qg_out = ctx.buffers.qkv_output();
-        let t0 = std::time::Instant::now();
         self.cache_skip_one_proj(
             SkipProj::Q,
             normed,
@@ -65,7 +50,6 @@ impl Qwen3AttentionLayer {
             ctx,
             stream,
         )?;
-        prof_step!("q_proj", t0);
         super::super::op_dump::dump_bf16(
             ctx.gpu,
             qg_out,
@@ -76,7 +60,6 @@ impl Qwen3AttentionLayer {
             stream,
         )?;
         let k_contiguous = ctx.buffers.ssm_qkvz();
-        let t0 = std::time::Instant::now();
         self.cache_skip_one_proj(
             SkipProj::K,
             normed,
@@ -88,7 +71,6 @@ impl Qwen3AttentionLayer {
             ctx,
             stream,
         )?;
-        prof_step!("k_proj", t0);
         super::super::op_dump::dump_bf16(
             ctx.gpu,
             k_contiguous,
@@ -99,7 +81,6 @@ impl Qwen3AttentionLayer {
             stream,
         )?;
         let v_contiguous = k_contiguous.offset(num_tokens * kv_dim * bf16);
-        let t0 = std::time::Instant::now();
         self.cache_skip_one_proj(
             SkipProj::V,
             normed,
@@ -111,7 +92,6 @@ impl Qwen3AttentionLayer {
             ctx,
             stream,
         )?;
-        prof_step!("v_proj", t0);
         super::super::op_dump::dump_bf16(
             ctx.gpu,
             v_contiguous,
@@ -137,12 +117,11 @@ impl Qwen3AttentionLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        // Per-projection weight bundle. Q transposed dispatch is opt-in until
-        // measured on Holo because this cache-skip path historically skipped it.
-        let use_q_t = std::env::var("ATLAS_ATTN_PREFILL_Q_T").ok().as_deref() == Some("1");
+        // Per-projection weight bundle. Q has no `q_fp8w_t` shortcut in this
+        // path (matches the inline body pre-refactor).
         let (fp8w_t, weight_opt, fp8, nvfp4_t, dense, label) = match proj {
             SkipProj::Q => (
-                use_q_t.then_some(self.q_fp8w_t.as_ref()).flatten(),
+                None,
                 self.q_weight.as_ref(),
                 self.q_fp8,
                 self.q_nvfp4_t.as_ref(),
@@ -167,57 +146,7 @@ impl Qwen3AttentionLayer {
             ),
         };
 
-        let use_t_pipelined =
-            std::env::var("ATLAS_ATTN_PREFILL_T_PIPE").ok().as_deref() == Some("1");
-        if ops::cutlass_nvfp4_attn_qkv_enabled(label)
-            && let Some(nvfp4_t) = nvfp4_t
-        {
-            ops::log_cutlass_nvfp4_route(label, n, out_dim, h);
-            ops::cutlass_nvfp4_proj(ctx.gpu, normed, nvfp4_t, out, n, out_dim, h, stream)?;
-        } else if ops::cutlass_nvfp4_attn_qkv_enabled(label)
-            && let Some(fp8w) = weight_opt.and_then(|w| w.as_fp8())
-        {
-            ops::log_cutlass_nvfp4_route(label, n, out_dim, h);
-            ops::cutlass_nvfp4_proj_from_fp8(ctx.gpu, normed, fp8w, out, n, out_dim, h, stream)?;
-        } else if ops::cublas_gemm_enabled()
-            && let Some(fp8w) = weight_opt.and_then(|w| w.as_fp8())
-        {
-            // cuBLASLt BF16 (3x the hand-written mma.sync GEMM on GB10).
-            ops::cublas_bf16_proj(ctx.gpu, normed, fp8w, out, n, out_dim, h, stream)?;
-        } else if let Some(fp8t) = fp8w_t
-            && use_t_pipelined
-            && self.w8a16_gemm_t_pipelined_k.0 != 0
-        {
-            ops::w8a16_gemm_t_pipelined(
-                ctx.gpu,
-                self.w8a16_gemm_t_pipelined_k,
-                normed,
-                fp8t.weight_t,
-                fp8t.scale_t,
-                out,
-                n,
-                out_dim,
-                h,
-                stream,
-            )?;
-        } else if let Some(fp8t) = fp8w_t
-            && self.w8a16_gemm_t_m128_k.0 != 0
-        {
-            // Fast transposed FP8 prefill: 128x128 / 8-warp / two-level FP32 fold.
-            // Consumes the same B_t[K,N] + block_scale_t the transpose produced.
-            ops::w8a16_gemm_n128_m128(
-                ctx.gpu,
-                self.w8a16_gemm_t_m128_k,
-                normed,
-                fp8t.weight_t,
-                fp8t.scale_t,
-                out,
-                n,
-                out_dim,
-                h,
-                stream,
-            )?;
-        } else if let Some(fp8t) = fp8w_t {
+        if let Some(fp8t) = fp8w_t {
             ops::w8a16_gemm_t(
                 ctx.gpu,
                 self.w8a16_gemm_t_k,

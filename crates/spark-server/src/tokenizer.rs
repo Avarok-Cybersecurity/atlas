@@ -139,30 +139,6 @@ mod tests {
         tmpl.render(ctx).expect("template renders")
     }
 
-    fn render_holo_template(messages: &[serde_json::Value], enable_thinking: bool) -> String {
-        let template_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../jinja-templates/holo3_1_moe.jinja"
-        );
-        let raw = std::fs::read_to_string(template_path)
-            .expect("bundled Holo3.1 template must be present in the repo");
-        let converted = super::jinja_helpers::convert_python_jinja_to_minijinja(&raw);
-        let env = super::jinja_helpers::build_jinja_env(&converted).expect("template compiles");
-        let tmpl = env.get_template("chat").unwrap();
-        let messages_for_render = normalize_tool_call_arguments(messages);
-        let messages_val = minijinja::Value::from_serialize(&messages_for_render);
-        let ctx = minijinja::context! {
-            messages => messages_val,
-            tools => minijinja::Value::UNDEFINED,
-            add_generation_prompt => true,
-            enable_thinking => enable_thinking,
-            reasoning_effort => "none",
-            disable_tool_steering => false,
-            add_vision_id => false,
-        };
-        tmpl.render(ctx).expect("template renders")
-    }
-
     #[test]
     fn normalize_tool_call_arguments_parses_string_to_dict() {
         // The shape opencode sends back on the second turn: assistant
@@ -196,37 +172,6 @@ mod tests {
         ];
         let normalized = normalize_tool_call_arguments(&messages);
         assert_eq!(normalized, messages);
-    }
-
-    #[test]
-    fn render_holo_template_accepts_vllm_thinking_controls() {
-        let messages = vec![
-            json!({"role": "developer", "content": "<|think_off|>Follow the instruction."}),
-            json!({"role": "user", "content": "Reply with OK."}),
-        ];
-        let rendered = render_holo_template(&messages, true);
-        assert!(rendered.contains("Follow the instruction."));
-        assert!(!rendered.contains("<|think_off|>"));
-        assert!(
-            rendered.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
-            "expected closed thinking prompt from think_off: {rendered}"
-        );
-    }
-
-    #[test]
-    fn render_holo_template_autocloses_think_before_tool_call() {
-        let messages = vec![
-            json!({"role": "user", "content": "Use bash."}),
-            json!({
-                "role": "assistant",
-                "content": "<think>\nNeed a directory listing.\n<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>"
-            }),
-        ];
-        let rendered = render_holo_template(&messages, true);
-        assert!(
-            rendered.contains("Need a directory listing.\n</think>\n\n<tool_call>"),
-            "expected unclosed think to be closed before tool call: {rendered}"
-        );
     }
 
     #[test]
@@ -441,10 +386,16 @@ mod tests {
     ///     "description":"Execute a bash command","parameters":{...}}},
     ///     ensure_ascii=False, sort_keys=False)
     #[test]
-    fn tojson_filter_default_compact_hf_ref_opt_in() {
-        // ToolDefinition serde order is {type, function:{name, description,
-        // parameters}} (tool_parser.rs); built directly so the test stays in the
-        // `--lib` target. `preserve_order` keeps this key order through the filter.
+    fn tojson_filter_byte_matches_python_json_dumps() {
+        // Production path step 1 (api/chat/template.rs:85):
+        // `serde_json::to_value(ToolDefinition)`. ToolDefinition's serde
+        // field order is {type, function} and FunctionDefinition's is
+        // {name, description, parameters} (tool_parser.rs:27-41), so the
+        // `to_value` output is byte-equivalent to the literal below.
+        // We build the Value directly here so the test stays in the
+        // `--lib` target (which does not re-export `tool_parser`); the
+        // filter under test is identical either way. With serde_json's
+        // `preserve_order`, this literal key order is preserved.
         let tool_value = serde_json::json!({
             "type": "function",
             "function": {
@@ -463,43 +414,29 @@ mod tests {
             }
         });
 
-        // DEFAULT (ST-995 fix): minijinja's builtin COMPACT `tojson` — no spaces.
-        // This is what the GDN Qwen3.6-27B needs for correct BFCL irrelevance
-        // (the spaced HF-reference form regressed hallucination 93.70 -> 30).
-        let env_default = super::jinja_helpers::build_jinja_env("{{ tool | tojson }}")
-            .expect("inline template compiles");
-        let compact = "{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"description\":\"Execute a bash command\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"The command to run\"}},\"required\":[\"command\"]}}}";
-        let got_default = env_default
-            .get_template("chat")
-            .unwrap()
-            .render(minijinja::context! { tool => minijinja::Value::from_serialize(&tool_value) })
-            .expect("tojson render");
-        assert_eq!(
-            got_default, compact,
-            "default tojson must be COMPACT (ST-995 GDN irrelevance fix)\ngot:\n{got_default}\n"
-        );
+        // Production path step 2 (tokenizer/chat_impl.rs:197):
+        // minijinja::Value::from_serialize over the tool list. With
+        // minijinja's `preserve_order`, the map is an IndexMap, so key
+        // order survives into the filter.
+        let mini_val = minijinja::Value::from_serialize(&tool_value);
 
-        // OPT-IN (ATLAS_USE_HF_REF_JSON_DUMPS=1): spaced, byte-parity with Python
-        // `json.dumps(..., ensure_ascii=False, sort_keys=False)` — the #90 / HF
-        // reference serialization (len 234). SAFETY: this is the only test that
-        // reads this env var; it is set and cleared within this scope.
-        unsafe {
-            std::env::set_var("ATLAS_USE_HF_REF_JSON_DUMPS", "1");
-        }
-        let env_hf = super::jinja_helpers::build_jinja_env("{{ tool | tojson }}")
+        // Production path step 3: the `tojson` filter registered in
+        // build_jinja_env. Render via the same env the server uses.
+        let env = super::jinja_helpers::build_jinja_env("{{ tool | tojson }}")
             .expect("inline template compiles");
-        unsafe {
-            std::env::remove_var("ATLAS_USE_HF_REF_JSON_DUMPS");
-        }
-        let spaced = "{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Execute a bash command\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"The command to run\"}}, \"required\": [\"command\"]}}}";
-        let got_hf = env_hf
-            .get_template("chat")
-            .unwrap()
-            .render(minijinja::context! { tool => minijinja::Value::from_serialize(&tool_value) })
+        let tmpl = env.get_template("chat").unwrap();
+        let rendered = tmpl
+            .render(minijinja::context! { tool => mini_val })
             .expect("tojson render");
+
+        // Ground truth: Python `json.dumps(tool, ensure_ascii=False,
+        // sort_keys=False)` of the identical structure (verified with
+        // python3 against this exact fixture — len 234).
+        let expected = "{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Execute a bash command\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"The command to run\"}}, \"required\": [\"command\"]}}}";
+
         assert_eq!(
-            got_hf, spaced,
-            "ATLAS_USE_HF_REF_JSON_DUMPS=1 must restore Python json.dumps byte parity\ngot:\n{got_hf}\n"
+            rendered, expected,
+            "\nAtlas tojson:\n{rendered}\nPython json.dumps:\n{expected}\n"
         );
     }
 }

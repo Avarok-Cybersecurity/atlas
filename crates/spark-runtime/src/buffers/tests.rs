@@ -52,10 +52,7 @@ fn test_buffer_arena_alloc() {
     //     hc_mult == 0 but still allocated unconditionally),
     //   - 1 token_ids buffer (hash-routing scratch, .max(256) floor so it is
     //     allocated unconditionally even for models without hash routing).
-    // plus 2 added by the Holo-3.1/Ornith GB10 enablement (buffers.rs):
-    //   - fp8_act + fp8_act_scale (persistent FP8 prefill-projection scratch,
-    //     allocated unconditionally). 27 + 2 = 29.
-    assert_eq!(gpu.alloc_count(), 29);
+    assert_eq!(gpu.alloc_count(), 27);
 }
 
 #[test]

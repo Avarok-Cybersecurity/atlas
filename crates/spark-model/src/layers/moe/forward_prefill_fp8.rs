@@ -47,7 +47,7 @@ impl MoeLayer {
         // fp8_gemm_t_blockscaled with both scales in the FP32 epilogue.
         // The shared expert is dense (every token), so we reuse the same
         // dense W8A8 GEMM that attention QKV/O proj already use.
-        let force_w8a8_sh = ops::fp8_blockscaled_prefill_enabled()
+        let force_w8a8_sh = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"))
             && self.fp8_gemm_t_blockscaled_k.0 != 0
             && self.per_token_group_quant_fp8_k.0 != 0;
         let has_shared = shared_inter > 0;
@@ -363,7 +363,7 @@ impl MoeLayer {
         }
         // ATLAS_FP8_W8A8: pre-quant input/intermediate to FP8 with per-token-
         // per-128 FP32 scale, use new W8A8 grouped GEMM (vLLM-equivalent).
-        let force_w8a8 = ops::fp8_blockscaled_prefill_enabled()
+        let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"))
             && self.moe_w8a8_grouped_gemm_k.0 != 0
             && self.per_token_group_quant_fp8_k.0 != 0;
 

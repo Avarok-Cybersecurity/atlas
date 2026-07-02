@@ -174,27 +174,7 @@ impl SsmStatePool {
     }
 
     pub(super) fn release_slot(&self, idx: usize) {
-        let mut free = self.free_slots.lock();
-        debug_assert!(
-            !free.contains(&idx),
-            "release_slot: slot {idx} already free (double-release hands it to two seqs)"
-        );
-        free.push(idx);
-    }
-
-    /// Remove a SPECIFIC slot from the free list if present, returning whether
-    /// it was. Used by `compact_sequence` to claim a known-free migration
-    /// target EXCLUSIVELY, so a slot is never simultaneously owned and free —
-    /// the bug-2 invariant (an owned-and-free slot gets handed to two sequences
-    /// by `claim_slot`, sharing GDN state → cross-stream corruption).
-    pub(super) fn claim_specific(&self, slot: usize) -> bool {
-        let mut free = self.free_slots.lock();
-        if let Some(pos) = free.iter().position(|&s| s == slot) {
-            free.swap_remove(pos);
-            true
-        } else {
-            false
-        }
+        self.free_slots.lock().push(idx);
     }
 
     /// Reserved pool slot used by `decode_batch` / `mixed_forward` padding.

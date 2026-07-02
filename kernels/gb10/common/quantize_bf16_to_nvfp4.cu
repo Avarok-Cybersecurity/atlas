@@ -19,22 +19,6 @@
 #define WARP_SIZE 32
 #define GROUP_SIZE 16
 
-// FP32 → BF16 truncation (upper 16 bits), entirely on-device. Replaces the
-// load-time D2H→CPU-truncate→H2D round-trip in dense_f32_safe (each of those
-// did 2 cuStreamSynchronize against the busy default stream → ~104s over 635
-// FP32 weights). One async kernel launch instead; matches the CPU truncation
-// (take the high 2 bytes of each f32, i.e. round-toward-zero) bit-for-bit.
-extern "C" __global__ void f32_to_bf16_trunc(
-    const unsigned int* __restrict__ in,   // f32 bit patterns
-    unsigned short* __restrict__ out,      // bf16 bit patterns
-    unsigned int n
-) {
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        out[i] = (unsigned short)(in[i] >> 16);
-    }
-}
-
 // ── Software float→FP8 E4M3 conversion ──
 //
 // SM121 (GB10) may not support the cvt.rn.satfinite.e4m3x2.f32 PTX instruction.

@@ -124,28 +124,22 @@ impl Qwen3AttentionLayer {
 
         // ── 2. Attention ──
         // Q12 Path B: batched mode requires seq_len_start > 0 (paged path).
-        // NOTE: batched FLASH (reusing the kernel's blockIdx.z batch dim) was
-        // tried and FAILED for large prefill chunks — numerically off + ~7x
-        // slower (the kernel's batch dim is not compatible with the co-dispatch
-        // stacking at large seq_len). So batched chunk-0 still uses paged.
-        let allow_batched_first_chunk = batched_meta.is_some()
-            && std::env::var("ATLAS_Q12_BATCHED_FIRST_CHUNK")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
-        if batched_meta.is_some() && seq_len_start == 0 && !allow_batched_first_chunk {
+        // The non-paged BR=32 batched kernel is not yet shipped, so caller
+        // must constrain to paged-path workloads (which is the natural Q12
+        // case after prefix-cache lookup).
+        if batched_meta.is_some() && seq_len_start == 0 {
             anyhow::bail!(
                 "prefill_inner: batched mode requires seq_len_start > 0 (paged path); \
                  got seq_len_start=0. Caller must fall back to per-stream for this chunk."
             );
         }
-        let attn_out = if seq_len_start == 0 && !allow_batched_first_chunk {
+        let attn_out = if seq_len_start == 0 {
             // Chunk 0 (or non-chunked): Flash Attention on contiguous Q/K/V.
             self.prefill_attention_with_cache_skip(
                 normed,
                 num_tokens,
                 kv_write_start,
                 kv_cache,
-                None,
                 ctx,
                 stream,
             )?
@@ -575,7 +569,6 @@ impl Qwen3AttentionLayer {
                 num_tokens,
                 kv_write_start,
                 kv_cache,
-                None, // batched_meta: single-stream (seq_len_start == 0)
                 ctx,
                 stream,
             )?

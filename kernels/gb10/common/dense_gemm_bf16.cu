@@ -371,16 +371,6 @@ extern "C" __global__ void dense_gemm_bf16_pipelined(
     // Issue cp.async loads for K-step `step` into double-buffer `stage`. The
     // copies are contiguous along K (the contiguous global axis for both A
     // [M,K] and B [N,K]). Bounds / K-tail fall back to a masked scalar copy.
-    //
-    // The 16-B cp.async.cg requires a 16-B-aligned SOURCE address. The chunk
-    // K-offset `gc`/`gk` is always a multiple of 8 (→ 16 B), but the per-row
-    // base `gr*K`/`gn*K` is only 16-B-aligned when K is a multiple of 8. When
-    // K%8 != 0 (e.g. the ViT attention GEMM2, where K=seq=#patches can be an
-    // odd multiple of 4), odd rows start misaligned → CUDA_ERROR_MISALIGNED_
-    // ADDRESS (716). Gate the fast path on K alignment; unaligned K routes the
-    // whole tile through the scalar fallback (uniform branch, no divergence;
-    // only hit by unaligned-K callers, which are rare + small).
-    const bool k_vec_aligned = (K & 7u) == 0u;
     auto prefetch = [&](unsigned int step, unsigned int stage) {
         unsigned int k_base = step * DM_K_STEP;
 
@@ -392,7 +382,7 @@ extern "C" __global__ void dense_gemm_bf16_pipelined(
             unsigned int gr = cta_m + row;
             unsigned int gc = k_base + col;
             __nv_bfloat16* dst = &smem_A[stage][row][col];
-            if (gr < M && gc + 8 <= K && k_vec_aligned) {
+            if (gr < M && gc + 8 <= K) {
                 dm_cp_async_cg_16(dst, &A[(unsigned long long)gr * K + gc]);
             } else {
                 #pragma unroll
@@ -413,7 +403,7 @@ extern "C" __global__ void dense_gemm_bf16_pipelined(
             unsigned int gn = cta_n + nrow;
             unsigned int gk = k_base + kcol;
             __nv_bfloat16* dst = &smem_B[stage][nrow][kcol];
-            if (gn < N && gk + 8 <= K && k_vec_aligned) {
+            if (gn < N && gk + 8 <= K) {
                 dm_cp_async_cg_16(dst, &B[(unsigned long long)gn * K + gk]);
             } else {
                 #pragma unroll

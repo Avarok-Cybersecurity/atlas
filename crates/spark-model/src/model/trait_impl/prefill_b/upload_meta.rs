@@ -116,19 +116,10 @@ impl TransformerModel {
                 if have_vision {
                     stg.positions.clear();
                     let mut current_pos: u32 = proc_start as u32;
-                    // Co-dispatch: this request owns grids[grid_base .. grid_base+owned]
-                    // of the shared packed vision_image_grids (0/all for legacy).
-                    let grid_base = *self.vision_grid_base.lock();
-                    let owned = *self.vision_owned_images.lock();
-                    let grid_hi = if owned > 0 {
-                        (grid_base + owned).min(grids.len())
-                    } else {
-                        grids.len()
-                    };
-                    let mut img_idx = grid_base;
+                    let mut img_idx = 0usize;
                     let mut i = 0usize;
                     while i < chunk_tokens.len() {
-                        if chunk_tokens[i] == pad_id && img_idx < grid_hi {
+                        if chunk_tokens[i] == pad_id && img_idx < grids.len() {
                             let (gh, gw) = grids[img_idx];
                             let run_len = gh * gw;
                             let base = current_pos;

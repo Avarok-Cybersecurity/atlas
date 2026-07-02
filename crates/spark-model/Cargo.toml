@@ -83,14 +83,6 @@ workspace = true
 # GPU kernel microtest examples — gated on the non-default `gpu-examples`
 # feature so no-GPU CI skips building them (they link CUDA driver symbols).
 [[example]]
-name = "gdn_cdh_vblock_microtest"
-required-features = ["cuda", "gpu-examples"]
-
-[[example]]
-name = "gemv_fp4_vs_fp8_microtest"
-required-features = ["cuda", "gpu-examples"]
-
-[[example]]
 name = "w8a16_microtest"
 required-features = ["cuda", "gpu-examples"]
 
@@ -115,19 +107,11 @@ name = "inferspark_attn_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
-name = "inferspark_attn_fp8_microtest"
-required-features = ["cuda", "gpu-examples"]
-
-[[example]]
 name = "moe_shared_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
 name = "moe_silu_down_microtest"
-required-features = ["cuda", "gpu-examples"]
-
-[[example]]
-name = "w8a16_gemv_batch4_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
@@ -151,10 +135,6 @@ name = "gdn_verify_fused_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
-name = "gdn_strided_norm_microtest"
-required-features = ["cuda", "gpu-examples"]
-
-[[example]]
 name = "rope_microtest"
 required-features = ["cuda", "gpu-examples"]
 
@@ -163,11 +143,11 @@ name = "kernel_probe"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
-name = "gdn_chunk_delta_h_gateb"
+name = "gdn_fla_e2e_gateb"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
-name = "gdn_chunk_shapetest"
+name = "gdn_chunk_delta_h_gateb"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]

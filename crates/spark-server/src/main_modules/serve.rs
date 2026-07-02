@@ -600,17 +600,12 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     serve_phases::log_response_store_audit(&response_store, &rate_limiter);
     let dump_writer = serve_phases::open_dump_writer(&args);
     let auth = build_auth_config(&args)?;
-    let vision_max_pixels = resolve_vision_max_pixels(&args)?;
-    if let Some(max_pixels) = vision_max_pixels {
-        tracing::info!("Vision max_pixels cap enabled: {}", max_pixels);
-    }
     let state = Arc::new(AppState {
         tokenizer,
         model_name,
         max_seq_len: args.max_seq_len,
         request_tx,
         vision_config: config.vision.clone(),
-        vision_max_pixels,
         default_temperature,
         default_top_k,
         default_top_p,
@@ -696,23 +691,6 @@ fn build_auth_config(args: &cli::ServeArgs) -> Result<Option<Arc<crate::auth::Au
     Ok(Some(Arc::new(cfg)))
 }
 
-fn resolve_vision_max_pixels(args: &cli::ServeArgs) -> Result<Option<usize>> {
-    if args.vision_max_pixels > 0 {
-        return Ok(Some(args.vision_max_pixels));
-    }
-    let Some(raw) = std::env::var("ATLAS_VISION_MAX_PIXELS").ok() else {
-        return Ok(None);
-    };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() || trimmed == "0" {
-        return Ok(None);
-    }
-    let parsed = trimmed.parse::<usize>().with_context(|| {
-        format!("ATLAS_VISION_MAX_PIXELS must be a positive integer, got {raw:?}")
-    })?;
-    Ok((parsed > 0).then_some(parsed))
-}
-
 /// QV1 (2026-05-26): canonicalize the model's declared quantization to
 /// one of `"fp8"`, `"nvfp4"`, `"bf16"`, or `"unknown"`. Reads
 /// `quantization_config.quant_method`/`quant_algo`/`format` and applies
@@ -742,16 +720,8 @@ fn canonicalize_model_quant(config: &atlas_core::config::ModelConfig) -> String 
     if algo == "nvfp4" || algo == "mixed_precision" || fmt.contains("nvfp4") {
         return "nvfp4".into();
     }
-    // FP8 detection — explicit algo OR method/format containing "fp8", OR
-    // compressed-tensors' `float-quantized` block-FP8 (e.g.
-    // Hcompany/Holo-3.1-*-FP8: `quant_method="compressed-tensors"`,
-    // `format="float-quantized"`, num_bits=8). That format string contains no
-    // literal "fp8", so match it explicitly. Canonicalizing to "fp8" lets the
-    // nvfp4 kernel bundle accept it (quant_pair_compatible: nvfp4↔fp8) — the
-    // loader detects the FP8E4M3 weight dtype as Fp8Dequanted and requants
-    // FP8→BF16→NVFP4 from the 2D `.weight_scale` (nvfp4_detect.rs).
-    if algo == "fp8" || method.contains("fp8") || fmt.contains("fp8") || fmt.contains("float-quant")
-    {
+    // FP8 detection — explicit algo OR method/format containing "fp8".
+    if algo == "fp8" || method.contains("fp8") || fmt.contains("fp8") {
         return "fp8".into();
     }
     // compressed-tensors with no FP8/NVFP4 marker is usually GPTQ/AWQ —

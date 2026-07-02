@@ -77,20 +77,18 @@ impl TransformerModel {
         if n == 0 {
             anyhow::bail!("stage_batched_attn_metadata called with empty streams_info");
         }
-        // VARLEN geometry: per-request token counts -> cu_seqlens prefix-sum.
-        // Legacy same-length still works (all proc_count equal -> uniform
-        // cu_seqlens). `chunk_len` is kept as the MAX (buffer-bound/debug only);
-        // per-request lengths come from cu_seqlens.
-        let mut cu_seqlens_host: Vec<i32> = Vec::with_capacity(n + 1);
-        cu_seqlens_host.push(0);
-        let mut acc = 0i32;
-        let mut chunk_len = 0usize;
-        for info in streams_info.iter() {
-            acc += info.proc_count as i32;
-            cu_seqlens_host.push(acc);
-            chunk_len = chunk_len.max(info.proc_count);
+        // Constraint: same chunk_len across batched streams.
+        let chunk_len = streams_info[0].proc_count;
+        for (i, info) in streams_info.iter().enumerate() {
+            if info.proc_count != chunk_len {
+                anyhow::bail!(
+                    "stage_batched_attn_metadata: stream {i} proc_count={} \
+                     != batch chunk_len={chunk_len} (scheduler gate broken)",
+                    info.proc_count
+                );
+            }
         }
-        let total_tokens = acc as usize;
+        let total_tokens = n * chunk_len;
 
         // Layout offsets within scratch (relative to scratch_offset_bytes).
         let pos_bytes = total_tokens * 4;
@@ -119,11 +117,7 @@ impl TransformerModel {
         let block_ptrs_aligned = (block_ptrs_bytes + 7) & !7;
         let seq_len_ptrs_off = block_ptrs_off + block_ptrs_aligned;
         let seq_len_ptrs_aligned = (block_ptrs_bytes + 7) & !7;
-        // VARLEN: cu_seqlens [n+1] i32 prefix-sum, after the pointer arrays.
-        let cu_seqlens_off = seq_len_ptrs_off + seq_len_ptrs_aligned;
-        let cu_seqlens_bytes = (n + 1) * 4;
-        let cu_seqlens_aligned = (cu_seqlens_bytes + 7) & !7;
-        let total_meta_bytes = cu_seqlens_off + cu_seqlens_aligned - scratch_offset_bytes;
+        let total_meta_bytes = seq_len_ptrs_off + seq_len_ptrs_aligned - scratch_offset_bytes;
 
         // #110 defense-in-depth: bounds-check the metadata footprint against
         // the scratch allocation. This should NEVER fire — the dispatch-entry
@@ -160,7 +154,7 @@ impl TransformerModel {
         stg.positions.clear();
         let mut max_blocks: u32 = 0;
         for info in streams_info.iter() {
-            for t in 0..info.proc_count {
+            for t in 0..chunk_len {
                 stg.positions.push((info.proc_start + t) as u32);
             }
             max_blocks = max_blocks.max(info.num_blocks as u32);
@@ -185,7 +179,7 @@ impl TransformerModel {
         let bs = kv_cache.block_size();
         stg.slots.clear();
         for info in streams_info.iter() {
-            for t in 0..info.proc_count {
+            for t in 0..chunk_len {
                 let pos = info.proc_start + t;
                 let block_idx = info
                     .seq
@@ -257,13 +251,6 @@ impl TransformerModel {
                 block_ptrs_bytes,
             );
             cursor += seq_len_ptrs_aligned;
-            // cu_seqlens [n+1] i32
-            std::ptr::copy_nonoverlapping(
-                cu_seqlens_host.as_ptr() as *const u8,
-                pinned.add(cursor),
-                cu_seqlens_bytes,
-            );
-            cursor += cu_seqlens_aligned;
             assert!(
                 cursor <= stg.bytes,
                 "stage_batched_attn_metadata: pinned overflow {cursor} > {}",
@@ -284,8 +271,6 @@ impl TransformerModel {
             batch_size: n as u32,
             chunk_len: chunk_len as u32,
             total_tokens: total_tokens as u32,
-            cu_seqlens: scratch_base.offset(cu_seqlens_off - positions_off),
-            cu_seqlens_host,
             max_blocks_per_seq: max_blocks,
             staged_bytes: total_meta_bytes,
         })

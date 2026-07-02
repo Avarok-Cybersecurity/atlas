@@ -51,13 +51,6 @@ pub(crate) fn load_weight_store(
                 spark_runtime::fast_weights::FastSafetensorsLoader::new()
             };
             loader.peak_memory_multiplier = mult;
-            loader.prefetch_shards = args.fast_load_prefetch_shards
-                || std::env::var("ATLAS_FAST_LOAD_PREFETCH_SHARDS")
-                    .ok()
-                    .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-            if loader.prefetch_shards {
-                tracing::info!("Fast weight loader shard prefetch/readahead enabled");
-            }
             loader
                 .load(model_dir, gpu, oom_reserve_bytes)
                 .context("Failed to load model weights (fast loader)")?

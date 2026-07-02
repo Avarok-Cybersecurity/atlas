@@ -17,7 +17,7 @@
 //!
 //! Constraints encoded:
 //!   - N ≥ 2 streams
-//!   - All streams share `chunk_len`, nonzero `seq_len_start` (q_offset), and
+//!   - All streams share `chunk_len`, `seq_len_start` (q_offset), and
 //!     `is_last_chunk` flag
 //!   - Total stacked tokens fits in buffer arena
 //!   - No MLA / HDIM=512 / HSS-engaged layer in the model
@@ -35,19 +35,91 @@ use super::super::super::types::TransformerModel;
 use super::proc_range::ProcRange;
 use super::stage_batched::PerStreamStageInfo;
 use super::upload_meta::MetaLayout;
-
-mod eligible;
-
-// Re-exports so `batch_kernel::check_kernel_batched_eligible` (used by
-// `batch_kernel_tests.rs`) and the env-flag predicates resolve unchanged
-// after the eligibility cluster moved into the `eligible` submodule.
-use eligible::first_chunk_batched_enabled;
-pub(in crate::model) use eligible::{check_kernel_batched_eligible, varlen_prefill_enabled};
-
 use crate::layer::{
     BatchedAttnMetadata, ForwardContext, GdnPrefillBuffers, LayerState, TransformerLayer,
 };
 use crate::traits::{Model, PrefillSlice, SequenceState};
+
+impl TransformerModel {
+    /// Returns true when the batched-kernel path is viable for these
+    /// streams. Cheap upfront check — caller (dispatch) falls back to
+    /// per-stream when false.
+    pub(in crate::model) fn kernel_batched_eligible(&self, streams: &[PrefillSlice<'_>]) -> bool {
+        check_kernel_batched_eligible(
+            streams
+                .iter()
+                .map(|s| (s.chunk_len, s.chunk_start, s.is_last_chunk)),
+            streams.len(),
+            self.buffers.max_batch_tokens(),
+            &self.config.model_type,
+            self.config.head_dim,
+            self.buffers.scratch_bytes(),
+            self.config.num_experts_per_tok,
+            self.config.mrope_interleaved,
+        )
+    }
+}
+
+/// Pure-data predicate extracted from [`TransformerModel::kernel_batched_eligible`]
+/// so the gating rules are unit-testable without a real `TransformerModel`.
+/// Caller materialises per-stream tuples `(chunk_len, chunk_start, is_last_chunk)`.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::model) fn check_kernel_batched_eligible<I>(
+    streams: I,
+    n: usize,
+    arena_cap: usize,
+    model_type: &str,
+    head_dim: usize,
+    scratch_cap: usize,
+    top_k: usize,
+    mrope: bool,
+) -> bool
+where
+    I: IntoIterator<Item = (usize, usize, bool)>,
+{
+    if n < 2 {
+        return false;
+    }
+    // No MLA layers in stack (batched attention doesn't support MLA).
+    // Conservatively check via model_type — mistral is the only MLA
+    // model in Atlas today.
+    if model_type == "mistral" {
+        return false;
+    }
+    // No HDIM=512 layers (Gemma-4 long-attention).
+    if head_dim > 256 {
+        return false;
+    }
+    let mut first: Option<(usize, usize, bool)> = None;
+    let mut total = 0usize;
+    for (chunk_len, chunk_start, is_last) in streams {
+        // `chunk_len`, `chunk_start`, and `is_last_chunk` must all
+        // match across streams. Different `chunk_start` produces
+        // different `effective_seq_len_start` post-Marconi (which the
+        // batched attention kernel cannot handle); mixing
+        // `is_last_chunk` can't dispatch one finalize_last and one
+        // save_checkpoint in a single batched call.
+        match first {
+            None => first = Some((chunk_len, chunk_start, is_last)),
+            Some((cl, cs, il)) => {
+                if chunk_len != cl || chunk_start != cs || is_last != il {
+                    return false;
+                }
+            }
+        }
+        total += chunk_len;
+    }
+    // Total stacked tokens fit in the token arena (hidden_states buffer).
+    if total > arena_cap {
+        return false;
+    }
+    // #110: the kernel-batched staging footprint must fit in scratch. PURE
+    // pre-flight — runs before any stream mutation, so a false routes to the
+    // per-stream path from a clean state (a mid-dispatch overrun would leave
+    // streams dirty and the fallback would re-run setup → corruption).
+    let chunk_len = first.map(|(cl, _, _)| cl).unwrap_or(0);
+    spark_runtime::buffers::q12_batched_scratch_bytes(n, chunk_len, top_k, mrope) <= scratch_cap
+}
 
 impl TransformerModel {
     /// Q12 Path B: full kernel-batched prefill orchestration.
@@ -66,26 +138,6 @@ impl TransformerModel {
         let is_last_chunk = streams[0].is_last_chunk;
         let h = self.config.hidden_size;
         let dtype_bytes = 2usize;
-        let varlen = varlen_prefill_enabled();
-        // DEFECT 2 fix: the stacked hidden buffer MUST be packed by the same
-        // cu_seqlens SSOT (Σ proc_count) that Phase1/GDN/Phase3/attn + the staged
-        // BatchedAttnMetadata (stage_batched.rs) and GdnPrefillBuffers.total_len
-        // consume — NOT by cu_off = Σ chunk_len. On a partial prefix-cache hit
-        // proc_count < chunk_len so the two prefix-sums diverge and downstream
-        // reads land on the wrong stream's hidden region. proc_count is only
-        // known AFTER proc_range, so proc_off is built as a running prefix-sum
-        // inside the PHASE-A loop below; proc_off[b] = Σ_{j<b} proc_count[j] is
-        // fully known before stream b is processed. (Cold / no-cache:
-        // proc_count == chunk_len ⇒ proc_off == old cu_off ⇒ byte-identical.)
-        let mut running_proc_off = 0usize;
-        // Largest per-stream chunk (VARLEN). All per-stream scratch slots must be
-        // sized for this, not streams[0].chunk_len, or a longer stream's meta /
-        // MoE topk staging overruns its slot (CUDA 700).
-        let max_chunk_len = streams
-            .iter()
-            .map(|s| s.chunk_len)
-            .max()
-            .unwrap_or(chunk_len);
 
         // EP active → NCCL needs the default stream.
         let stream = if self.comm.is_some() && self.config.ep_world_size > 1 {
@@ -98,11 +150,8 @@ impl TransformerModel {
         let mut kv_cache = self.kv_cache.lock();
 
         // Zero shared buffers once (instead of N times in per-stream).
-        if self.comm.is_some() {
+        if self.comm.is_some() || streams[0].chunk_start == 0 {
             self.buffers.zero_all(self.gpu.as_ref(), stream)?;
-        } else if streams[0].chunk_start == 0 {
-            self.buffers
-                .zero_prefill_essentials(self.gpu.as_ref(), stream)?;
         }
 
         let hidden_base = self.buffers.hidden_states();
@@ -124,12 +173,8 @@ impl TransformerModel {
             block_table_dev: DevicePtr,
             seq_len_dev: DevicePtr,
             num_blocks: usize,
-            // Σ proc_count of prior streams — this stream's hidden packing offset
-            // (== cu_seqlens layout). Used by PHASE-C finalize.
-            proc_off: usize,
         }
         let mut per_stream: Vec<PerStreamMeta> = Vec::with_capacity(n);
-        let force_paged_first_chunk = streams[0].chunk_start == 0 && first_chunk_batched_enabled();
 
         // Tracks MRoPE / paged-flag agreement across streams.
         let mut use_mrope: Option<bool> = None;
@@ -139,32 +184,21 @@ impl TransformerModel {
         // slot table. Conservative estimate: 12 bytes per token + small
         // header. Reserved 4 KB per stream is plenty for chunk_len ≤ 256.
         // For larger chunk_len the scratch budget scales with arena_cap.
-        let per_stream_meta_bytes = ((max_chunk_len * 16) + 64).max(4096);
+        let per_stream_meta_bytes = ((chunk_len * 16) + 64).max(4096);
         // Cumulative scratch offset cursor — starts after MoE topk
-        // staging area (per single-stream upload_meta convention). Sized by the
-        // largest per-stream chunk so a long VARLEN stream's topk staging fits.
-        let moe_scratch_bytes = max_chunk_len * self.config.num_experts_per_tok * 4 * 2 * n;
+        // staging area (per single-stream upload_meta convention).
+        let moe_scratch_bytes = chunk_len * self.config.num_experts_per_tok * 4 * 2 * n;
         let mut scratch_cursor = (moe_scratch_bytes + 63) & !63;
 
         for (b, slice) in streams.iter_mut().enumerate() {
             let tokens = slice.prompt_tokens;
             let chunk_start = slice.chunk_start;
-            // Per-stream chunk_len (VARLEN: differs per stream; legacy: == chunk_len).
-            let cl = slice.chunk_len;
             let total = tokens.len();
             let seq = &mut *slice.seq;
 
-            // Embed the FULL `cl` tokens at this stream's proc_off slot (==
-            // Σ proc_count of prior streams, the cu_seqlens layout). proc_range
-            // below re-embeds the processed suffix at the SAME slot on a
-            // partial cache hit. A full-cl embed may write a stale tail past
-            // proc_count, but that tail is in stream b+1's region which b+1's
-            // own embed (next iteration) overwrites — every region
-            // [proc_off[j], proc_off[j]+proc_count[j]) is LAST-written by
-            // stream j's own embed, so correctness holds without reordering.
-            let proc_off_b = running_proc_off;
-            let hidden_b = hidden_base.offset(proc_off_b * h * dtype_bytes);
-            self.prefill_b_embed_chunk_at(tokens, chunk_start, cl, hidden_b, stream)?;
+            // Embed at b*chunk_len*H offset into shared hidden buffer.
+            let hidden_b = hidden_base.offset(b * chunk_len * h * dtype_bytes);
+            self.prefill_b_embed_chunk_at(tokens, chunk_start, chunk_len, hidden_b, stream)?;
 
             // Prefix-cache lookup, EP-sync, Marconi restore.
             let (kv_write_start, marconi_skip) = self.prefill_b_prefix_lookup(
@@ -178,7 +212,7 @@ impl TransformerModel {
 
             // Block allocation through end of chunk.
             let bs = kv_cache.block_size();
-            let end_pos = chunk_start + cl;
+            let end_pos = chunk_start + chunk_len;
             let blocks_needed = (end_pos - 1) / bs + 1;
             super::super::super::block_mgmt::ensure_blocks_through_prefill(
                 seq,
@@ -189,19 +223,16 @@ impl TransformerModel {
                 stream,
             )?;
 
-            // Effective processing range. DEFECT 1 fix: pass this stream's
-            // proc_off hidden slot so any cache-hit re-embed lands in THIS
-            // stream's region, not the offset-0 base buffer.
+            // Effective processing range.
             let (proc_start, proc_count, effective_seq_len_start) = match self
                 .prefill_b_proc_range(
                     tokens,
                     seq,
                     chunk_start,
-                    cl,
+                    chunk_len,
                     is_last_chunk,
                     kv_write_start,
                     marconi_skip,
-                    hidden_b,
                     stream,
                 )? {
                 ProcRange::Compute {
@@ -219,9 +250,7 @@ impl TransformerModel {
             // and effective_seq_len_start (q_offset) for the batched
             // attention kernel.
             if b > 0 {
-                // VARLEN allows differing proc_count (cu_seqlens geometry); the
-                // legacy batched-attention/GDN kernels require uniform proc_count.
-                if !varlen && per_stream[0].proc_count != proc_count {
+                if per_stream[0].proc_count != proc_count {
                     anyhow::bail!(
                         "kernel-batched: stream {b} proc_count={} differs from \
                          stream 0 proc_count={}. Caller should fall back.",
@@ -245,7 +274,7 @@ impl TransformerModel {
                 tokens,
                 seq,
                 chunk_start,
-                cl,
+                chunk_len,
                 proc_start,
                 proc_count,
                 effective_seq_len_start,
@@ -253,7 +282,7 @@ impl TransformerModel {
                 meta_base,
                 stream,
             )?;
-            if layout.needs_paged || force_paged_first_chunk {
+            if layout.needs_paged {
                 self.prefill_b_upload_paged(
                     seq,
                     total,
@@ -285,7 +314,7 @@ impl TransformerModel {
             }
 
             let kv_write_start_eff = if marconi_skip { 0 } else { kv_write_start };
-            let (block_table_dev, seq_len_dev) = if layout.needs_paged || force_paged_first_chunk {
+            let (block_table_dev, seq_len_dev) = if layout.needs_paged {
                 let page_meta = seq.chunked_prefill_meta.as_ref().unwrap();
                 (page_meta.block_table, page_meta.seq_len)
             } else {
@@ -302,11 +331,7 @@ impl TransformerModel {
                 block_table_dev,
                 seq_len_dev,
                 num_blocks,
-                proc_off: proc_off_b,
             });
-            // Advance the running prefix-sum AFTER proc_count is known so the
-            // next stream packs at Σ proc_count (cu_seqlens SSOT).
-            running_proc_off += proc_count;
         }
 
         // H2D barrier before kernel compute (GB10 DMA quirk).
@@ -366,15 +391,7 @@ impl TransformerModel {
             gate_beta: self.gdn_buf_gate_beta,
             output: self.gdn_buf_out,
             z: self.gdn_buf_z,
-            // VARLEN: packed total = Σ proc_count (running_proc_off after the
-            // PHASE-A loop) — the cu_seqlens SSOT. Was Σ chunk_len (total_tokens),
-            // which over-counts on a partial cache hit and makes the GDN scan
-            // walk phantom tokens past the packed data. Legacy uniform: proc_count*n.
-            total_len: if varlen {
-                running_proc_off
-            } else {
-                proc_count * n
-            },
+            total_len: proc_count * n,
         };
 
         // ForwardContext for batched layer calls. attn_metadata is
@@ -437,23 +454,18 @@ impl TransformerModel {
             }
         }
 
-        // DIAG: detect cross-stream physical-block sharing (co-dispatch KV
-        // double-issue hypothesis for the n>=5 decode-bleed bug). Gated.
-        self.codispatch_btcheck(streams, n);
-
         // ── PHASE C: per-stream finalize ──
         let mut logits_out: Vec<DevicePtr> = Vec::with_capacity(n);
         for (b, slice) in streams.iter_mut().enumerate() {
             let tokens = slice.prompt_tokens;
             let chunk_start = slice.chunk_start;
-            let cl = slice.chunk_len;
             let seq = &mut *slice.seq;
             let m = &per_stream[b];
 
             // Phase 5: sequence-state update.
             seq.tokens
-                .extend_from_slice(&tokens[chunk_start..chunk_start + cl]);
-            seq.seq_len = chunk_start + cl;
+                .extend_from_slice(&tokens[chunk_start..chunk_start + chunk_len]);
+            seq.seq_len = chunk_start + chunk_len;
 
             let logits = if is_last_chunk {
                 self.prefill_b_finalize_last_at(
@@ -461,13 +473,9 @@ impl TransformerModel {
                     seq,
                     &mut kv_cache,
                     chunk_start,
-                    cl,
+                    chunk_len,
                     m.proc_count,
-                    // hidden_stream_offset_tokens = proc_off[b] (Σ proc_count of
-                    // prior streams, the cu_seqlens layout) — NOT cu_off[b].
-                    // finalize reads last_token = proc_off + proc_count - 1.
-                    m.proc_off,
-                    b,
+                    b * chunk_len,
                     stream,
                 )?
             } else {
@@ -476,7 +484,7 @@ impl TransformerModel {
                     seq,
                     &mut kv_cache,
                     chunk_start,
-                    cl,
+                    chunk_len,
                     stream,
                 )?;
                 DevicePtr::NULL

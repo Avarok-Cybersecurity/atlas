@@ -354,12 +354,7 @@ impl ModelWeightLoader for NemotronHWeightLoader {
         Ok(layers)
     }
 
-    fn load_embedding(
-        &self,
-        store: &WeightStore,
-        config: &ModelConfig,
-        _gpu: &dyn GpuBackend,
-    ) -> Result<DenseWeight> {
+    fn load_embedding(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
         dense(
             store,
             &format!("{}.embeddings.weight", config.weight_prefix),
@@ -379,10 +374,7 @@ impl ModelWeightLoader for NemotronHWeightLoader {
         if store.contains("lm_head.weight") {
             dense(store, "lm_head.weight")
         } else {
-            dense(
-                store,
-                &format!("{}.embeddings.weight", config.weight_prefix),
-            )
+            self.load_embedding(store, config)
         }
     }
 

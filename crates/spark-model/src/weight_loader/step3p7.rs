@@ -150,12 +150,7 @@ impl ModelWeightLoader for Step3p7WeightLoader {
         load_layers::load_layers(store, config, gpu, layer_kv_dtypes)
     }
 
-    fn load_embedding(
-        &self,
-        store: &WeightStore,
-        config: &ModelConfig,
-        _gpu: &dyn GpuBackend,
-    ) -> Result<DenseWeight> {
+    fn load_embedding(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
         let prefix = if config.weight_prefix.is_empty() {
             "model.language_model"
         } else {

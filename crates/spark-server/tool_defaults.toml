@@ -11,7 +11,6 @@
 qwen3_5_moe = "qwen3_coder"    # Qwen3.5-35B, Qwen3.5-122B — native XML format
 qwen3_5     = "qwen3_coder"    # Qwen3.5-27B Dense — native XML format
 qwen3_6_moe = "qwen3_coder"    # Qwen3.6-35B — same XML format; MRoPE-interleaved only differs at kernel layer
-holo3_1_moe = "qwen3_coder"    # Holo3.1-35B-A3B — Qwen3.5 MoE VLM, native XML format
 nemotron_h  = "qwen3_coder"    # Nemotron-H 30B — native XML format
 qwen3_next  = "hermes"        # Qwen3-Next-80B
 qwen3_vl_moe = "hermes"       # Qwen3-VL-30B
@@ -36,7 +35,6 @@ minimax_m2  = "minimax_xml"    # MiniMax M2 — <minimax:tool_call><invoke name=
 qwen3_5_moe = "qwen"
 qwen3_5     = "qwen"
 qwen3_6_moe = "qwen"
-holo3_1_moe = "qwen"
 nemotron_h  = "deepseek_r1"    # Nemotron-H ships the nano_v3 (DeepSeek-R1) parser
 qwen3_next  = "qwen"
 qwen3_vl_moe = "qwen"

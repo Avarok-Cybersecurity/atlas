@@ -380,13 +380,33 @@ impl TransformerModel {
         // NOT max_seq_len. For prompts longer than this, prefill_twophase falls back
         // to standard chunked prefill which carries h_state/conv_state between chunks.
         // The GDN recurrence is sequential anyway, so chunking is mathematically identical.
-        let (gdn_qkv, gdn_gate_beta, gdn_out, gdn_z, gdn_buf_len) =
-            super::impl_a1_init::build_gdn_prefill_buffers(
-                &config,
-                max_batch_tokens,
-                max_seq_len,
-                gpu.as_ref(),
-            )?;
+        let key_dim = config.linear_num_key_heads * config.linear_key_head_dim;
+        let value_dim = config.linear_num_value_heads * config.linear_value_head_dim;
+        let nv = config.linear_num_value_heads;
+        let conv_dim = key_dim * 2 + value_dim;
+        // GDN buffers only needed when GDN linear attention layers exist
+        // (conv_dim > 0). Mamba-2 models (Nemotron) have conv_dim=0 — skip alloc
+        // to avoid cuMemAlloc(0) error.
+        let gdn_buf_len = max_batch_tokens.min(max_seq_len);
+        let (gdn_qkv, gdn_gate_beta, gdn_out, gdn_z) = if conv_dim > 0 {
+            let qkv = gpu.alloc(gdn_buf_len * conv_dim * 2)?;
+            let gb = gpu.alloc(gdn_buf_len * nv * 2 * 4)?;
+            let o = gpu.alloc(gdn_buf_len * value_dim * 2)?;
+            let z = gpu.alloc(gdn_buf_len * value_dim * 2)?;
+            let total_mb =
+                (gdn_buf_len * (conv_dim * 2 + nv * 2 * 4 + value_dim * 2 * 2)) / (1024 * 1024);
+            tracing::info!(
+                "GDN prefill buffers: {total_mb} MB for {gdn_buf_len} tokens (chunked SSM prefill)"
+            );
+            (qkv, gb, o, z)
+        } else {
+            (
+                DevicePtr::NULL,
+                DevicePtr::NULL,
+                DevicePtr::NULL,
+                DevicePtr::NULL,
+            )
+        };
 
         // FP8 calibration only runs when the cache is actually FP8 — the
         // observe() call in decode.rs sits inside the FP8 cache branch. For
@@ -461,9 +481,6 @@ impl TransformerModel {
             vision_encoder,
             vision_embed_patches: Mutex::new(0),
             vision_image_grids: Mutex::new(Vec::new()),
-            vision_row_base: Mutex::new(0),
-            vision_grid_base: Mutex::new(0),
-            vision_owned_images: Mutex::new(0),
             pinned_staging,
             ssm_checkpoint_interval,
             ssm_state_norm_kernel: ssm_norm_k,

@@ -367,13 +367,8 @@ impl ChatCompletionRequest {
             if let Some(budget) = tc.budget_tokens {
                 return (true, Some(budget));
             }
-            // Anthropic "adaptive" / thinking object with no explicit budget
-            // means "think as long as needed" — defer to the per-model
-            // `max_thinking_budget` (None), NOT the conservative 256-token
-            // DEFAULT_THINKING_BUDGET. A hard 256 cut force-injects </think>
-            // mid-reasoning on agentic turns and wrecks tool selection.
-            // Mirrors the step-5 enable_thinking path below.
-            return (true, None);
+            // thinking object present with no budget → enable with default
+            return (true, Some(DEFAULT_THINKING_BUDGET));
         }
 
         // 2. vLLM PR: thinking_token_budget
@@ -403,13 +398,8 @@ impl ChatCompletionRequest {
                 return (budget > 0, Some(budget));
             }
             if let Some(enabled) = kwargs.enable_thinking {
-                // enable_thinking via chat_template_kwargs (incl. the server's
-                // --default-chat-template-kwargs '{"enable_thinking":true}'):
-                // defer the budget to the per-model max_thinking_budget (None)
-                // rather than the conservative 256-token DEFAULT — same rationale
-                // as the legacy/model-default branches below. Without this, that
-                // server default silently capped EVERY request's thinking at 256.
-                return (enabled, if enabled { None } else { Some(0) });
+                let budget = if enabled { DEFAULT_THINKING_BUDGET } else { 0 };
+                return (enabled, Some(budget));
             }
         }
 

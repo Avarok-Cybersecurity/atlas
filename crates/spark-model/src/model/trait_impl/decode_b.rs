@@ -31,8 +31,6 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
-mod build_states;
-
 impl TransformerModel {
     pub(super) fn mixed_forward_dispatch(
         &self,
@@ -350,8 +348,54 @@ impl TransformerModel {
         };
 
         // ── 5. Build decode layer states ──
-        let (seq_lens, block_tables, mut all_layer_states) =
-            self.mixed_build_decode_layer_states(decode_seqs, padded_n, n_decode)?;
+        let seq_lens: Vec<usize> = (0..padded_n)
+            .map(|i| {
+                if i < n_decode {
+                    decode_seqs[i].seq_len
+                } else {
+                    0
+                }
+            })
+            .collect();
+        let block_tables: Vec<Vec<u32>> = (0..padded_n)
+            .map(|i| {
+                if i < n_decode {
+                    decode_seqs[i].block_table.clone()
+                } else {
+                    vec![self.dummy_kv_block]
+                }
+            })
+            .collect();
+
+        let mut all_layer_states: Vec<Vec<Box<dyn LayerState>>> = decode_seqs
+            .iter_mut()
+            .map(|s| std::mem::take(&mut s.layer_states))
+            .collect();
+
+        // Build dummy layer_states for padding positions. Use the
+        // dedicated `dummy_slot()` (see SsmStatePool) so pad SSM kernel
+        // writes can never collide with another claimed sequence.
+        let dummy_ssm_slot = self.ssm_pool.dummy_slot();
+        for _pad_pos in n_decode..padded_n {
+            let mut dummy: Vec<Box<dyn LayerState>> = Vec::with_capacity(self.layers.len());
+            let mut ssm_idx = 0usize;
+            for (li, layer) in self.layers.iter().enumerate() {
+                if self.config.layer_type(li) == LayerType::LinearAttention {
+                    dummy.push(Box::new(SsmLayerState {
+                        h_state: self.ssm_pool.h_state(ssm_idx, dummy_ssm_slot),
+                        conv_state: self.ssm_pool.conv_state(ssm_idx, dummy_ssm_slot),
+                        h_state_checkpoint: None,
+                        conv_state_checkpoint: None,
+                        h_state_intermediates: Vec::new(),
+                        conv_state_intermediates: Vec::new(),
+                    }));
+                    ssm_idx += 1;
+                } else {
+                    dummy.push(layer.alloc_state(self.gpu.as_ref())?);
+                }
+            }
+            all_layer_states.push(dummy);
+        }
 
         // ── 6. Fused layer loop ──
         //
@@ -414,21 +458,6 @@ impl TransformerModel {
                 stream,
             )?;
         }
-
-        // ── Step 0 (spec blocker B1): per-chunk SSM state normalize ──
-        //
-        // Normalize the prefill seq's h_state on the SAME `stream`
-        // (= default_stream, reassigned near the top of this fn) that the
-        // GDN recurrence just wrote it on — in-order, no event, no race.
-        // This MUST cover EVERY mixed chunk INCLUDING the last: mixed_forward
-        // runs the GDN write on default_stream, so the terminal normalize
-        // also belongs here. Leaving the is_last normalize in run_standard.rs
-        // on prefill_stream (as the original Step 0 did) does NOT order these
-        // default_stream writes → the final chunk reads a stale state →
-        // nondeterministic corruption (the residual B1 race that failed
-        // token-for-token validation, 0/12). The standard prefill_chunk path
-        // keeps its own same-stream (prefill_stream) every-chunk normalize.
-        self.normalize_ssm_states_dispatch(prefill_seq, stream)?;
 
         // Restore decode layer_states to sequences
         for (seq, ls) in decode_seqs

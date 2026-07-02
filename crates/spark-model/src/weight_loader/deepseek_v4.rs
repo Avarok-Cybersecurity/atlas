@@ -43,12 +43,7 @@ impl ModelWeightLoader for DeepSeekV4WeightLoader {
         load_layers::load_all_layers(store, config, gpu, layer_kv_dtypes)
     }
 
-    fn load_embedding(
-        &self,
-        store: &WeightStore,
-        _config: &ModelConfig,
-        _gpu: &dyn GpuBackend,
-    ) -> Result<DenseWeight> {
+    fn load_embedding(&self, store: &WeightStore, _config: &ModelConfig) -> Result<DenseWeight> {
         // RedHatAI re-quant uses flattened naming; try it first, then standard HF names.
         if let Ok(w) = dense(store, "embed.weight") {
             return Ok(w);
@@ -95,16 +90,7 @@ impl ModelWeightLoader for DeepSeekV4WeightLoader {
             || store.contains("embed.weight")
             || store.contains("model.embed_tokens.weight")
         {
-            // Tied: reuse the embedding tensor. Inline the same dense lookups as
-            // load_embedding (load_lm_head has no `gpu`, and they don't need it).
-            if let Ok(w) = dense(store, "embed.weight") {
-                return Ok(w);
-            }
-            if let Ok(w) = dense(store, "model.embed_tokens.weight") {
-                return Ok(w);
-            }
-            return dense(store, "embed_tokens.weight")
-                .context("DeepSeek-V4: tied lm_head — no embedding tensor found");
+            return self.load_embedding(store, config);
         }
         anyhow::bail!(
             "DeepSeek-V4: lm_head not found (tried lm_head.weight, output.weight, head.weight, and tied embeddings)"

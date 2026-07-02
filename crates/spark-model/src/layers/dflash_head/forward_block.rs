@@ -331,36 +331,19 @@ impl BlockDiffusionDraftHead {
             self.rms_norm_eps,
             stream,
         )?;
-        // Final logits GEMM. When the target lm_head is NVFP4 (e.g. Holo), a
-        // BF16 dense_gemm on the packed buffer reads garbage (+ ~4× OOB →
-        // CUDA-700); use the NVFP4 GEMM with the shared QuantizedWeight.
-        if let Some(ref nvfp4) = self.lm_head_nvfp4 {
-            ops::w4a16_gemm(
-                gpu,
-                self.kernels.w4a16_gemm,
-                norm_noise,
-                nvfp4,
-                self.scratch.logits,
-                self.gamma as u32,
-                self.vocab_size as u32,
-                h,
-                stream,
-            )?;
-        } else {
-            ops::dense_gemm(
-                gpu,
-                self.kernels.dense_gemm,
-                norm_noise,
-                &crate::weight_map::DenseWeight {
-                    weight: self.lm_head_shared,
-                },
-                self.scratch.logits,
-                self.gamma as u32,
-                self.vocab_size as u32,
-                h,
-                stream,
-            )?;
-        }
+        ops::dense_gemm(
+            gpu,
+            self.kernels.dense_gemm,
+            norm_noise,
+            &crate::weight_map::DenseWeight {
+                weight: self.lm_head_shared,
+            },
+            self.scratch.logits,
+            self.gamma as u32,
+            self.vocab_size as u32,
+            h,
+            stream,
+        )?;
 
         // Optional full-stream dump after final norm (debug; before lm_head).
         if debug_dump {

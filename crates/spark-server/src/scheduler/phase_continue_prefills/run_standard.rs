@@ -21,7 +21,6 @@ pub(super) fn run_standard_chunk_loop(
     idx: usize,
     active: &mut Vec<ActiveSeq>,
     max_prefill_tokens: usize,
-    slice_budget: usize,
     prefill_stream: u64,
     prefill_event: u64,
     use_mtp: bool,
@@ -58,18 +57,7 @@ pub(super) fn run_standard_chunk_loop(
     } else {
         max_prefill_tokens
     };
-    // Step 2 (spec): cap the chunk to the policy's prefill slice budget so a
-    // fused mixed step stays under the TBT target. With ATLAS_HOLO_ALWAYS_MIXED
-    // OFF the caller passes slice_budget == max_prefill_tokens, so this `.min`
-    // is a no-op and the chunk cap is unchanged (byte-identical resting path).
-    // MLA keeps its forced full-remaining chunk (correctness gate above) — the
-    // slice budget never applies there.
-    let cap = if model.is_mla() {
-        effective_max
-    } else {
-        effective_max.min(slice_budget)
-    };
-    let mut chunk_len = remaining.min(cap);
+    let mut chunk_len = remaining.min(effective_max);
     let is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
     // Align intermediate chunks to GDN WY4 boundary (4 tokens).
     if !is_last && chunk_len >= 4 {
@@ -118,12 +106,9 @@ pub(super) fn run_standard_chunk_loop(
 
                 // Process prefill logits (if last chunk).
                 if is_last {
-                    // NOTE: the SSM-state normalize for the mixed path is done
-                    // INSIDE mixed_forward on default_stream (the stream the GDN
-                    // recurrence wrote h_state on) — for EVERY chunk including
-                    // this last one. Normalizing here on prefill_stream raced
-                    // those writes (the B1 failure, 0/12 token-for-token), so it
-                    // is gone. Do NOT re-add it.
+                    if let Err(e) = model.normalize_ssm_states(&p.seq, prefill_stream) {
+                        tracing::warn!("SSM state normalization failed: {e:#}");
+                    }
                     let _ = model.record_event(prefill_event, prefill_stream);
                     let _ = model.stream_wait_event(model.default_stream(), prefill_event);
                     // #131: grammar-constrain the FIRST token (and advance the

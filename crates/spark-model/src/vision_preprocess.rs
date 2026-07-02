@@ -45,18 +45,9 @@ fn decode_image(data_uri: &str) -> Result<DynamicImage> {
 /// - Neither side exceeds `MAX_DIM`.
 /// - Both sides are multiples of `grid_unit = patch_size × spatial_merge_size`.
 /// - Aspect ratio is preserved (rounded to nearest grid_unit).
-fn target_size_with_max_pixels(
-    orig_h: u32,
-    orig_w: u32,
-    grid_unit: u32,
-    max_pixels: Option<usize>,
-) -> (u32, u32) {
-    let dim_scale = (MAX_DIM as f32) / (orig_h.max(orig_w) as f32);
-    let pixel_scale = max_pixels
-        .filter(|&p| p > 0)
-        .map(|p| ((p as f32) / ((orig_h as f32) * (orig_w as f32))).sqrt())
-        .unwrap_or(1.0);
-    let scale = dim_scale.min(pixel_scale).min(1.0); // never upscale
+fn target_size(orig_h: u32, orig_w: u32, grid_unit: u32) -> (u32, u32) {
+    let scale = (MAX_DIM as f32) / (orig_h.max(orig_w) as f32);
+    let scale = scale.min(1.0); // never upscale
     let target_h = ((orig_h as f32 * scale / grid_unit as f32).round() as u32).max(1) * grid_unit;
     let target_w = ((orig_w as f32 * scale / grid_unit as f32).round() as u32).max(1) * grid_unit;
     (target_h, target_w)
@@ -71,23 +62,12 @@ fn target_size_with_max_pixels(
 /// - `grid_h`: number of patches along height
 /// - `grid_w`: number of patches along width
 pub fn preprocess_image(data_uri: &str, vcfg: &VisionConfig) -> Result<(Vec<f32>, usize, usize)> {
-    preprocess_image_with_max_pixels(data_uri, vcfg, None)
-}
-
-/// Preprocess an image with an optional max-pixels cap, matching vLLM-style
-/// multimodal processor controls. `None` preserves Atlas' historical 1280px
-/// long-side cap.
-pub fn preprocess_image_with_max_pixels(
-    data_uri: &str,
-    vcfg: &VisionConfig,
-    max_pixels: Option<usize>,
-) -> Result<(Vec<f32>, usize, usize)> {
     let img = decode_image(data_uri)?;
     let img = img.to_rgb8();
     let (orig_w, orig_h) = (img.width(), img.height());
 
     let grid_unit = (vcfg.patch_size * vcfg.spatial_merge_size) as u32;
-    let (th, tw) = target_size_with_max_pixels(orig_h, orig_w, grid_unit, max_pixels);
+    let (th, tw) = target_size(orig_h, orig_w, grid_unit);
 
     // Resize with CatmullRom — closest BICUBIC match in the `image` crate,
     // matching HF's `Qwen2VLImageProcessor` which uses PIL resample=3 (BICUBIC).
@@ -145,7 +125,7 @@ mod tests {
     #[test]
     fn test_target_size_no_upscale() {
         // Small image: grid_unit=32, no upscale needed.
-        let (h, w) = target_size_with_max_pixels(100, 150, 32, None);
+        let (h, w) = target_size(100, 150, 32);
         assert!(h <= 1280 && w <= 1280);
         assert_eq!(h % 32, 0);
         assert_eq!(w % 32, 0);
@@ -154,16 +134,10 @@ mod tests {
     #[test]
     fn test_target_size_downscale() {
         // Large image: should be downscaled.
-        let (h, w) = target_size_with_max_pixels(2000, 3000, 32, None);
+        let (h, w) = target_size(2000, 3000, 32);
         assert!(h.max(w) <= 1280);
         assert_eq!(h % 32, 0);
         assert_eq!(w % 32, 0);
-    }
-
-    #[test]
-    fn test_target_size_max_pixels() {
-        let (h, w) = target_size_with_max_pixels(1254, 1254, 32, Some(512 * 512));
-        assert_eq!((h, w), (512, 512));
     }
 
     #[test]

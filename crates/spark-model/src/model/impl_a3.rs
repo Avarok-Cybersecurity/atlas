@@ -73,16 +73,11 @@ impl TransformerModel {
         &self,
         hidden: DevicePtr,
         num_tokens: u32,
-        logits_dst: DevicePtr,
         stream: u64,
     ) -> Result<DevicePtr> {
         let h = self.config.hidden_size as u32;
         let v = self.config.vocab_size as u32;
-        // Caller picks the destination so co-dispatched prefill streams can each
-        // write their own logits row (was a single shared buffer = cross-stream
-        // aliasing: all streams' first token collapsed to one). Verify/decode
-        // callers pass `self.buffers.logits()` (base) — unchanged behaviour.
-        let logits = logits_dst;
+        let logits = self.buffers.logits();
         if let Some(ref fp8) = self.lm_head_fp8 {
             // FP8 E4M3 LM head. The dual-GEMV (batch=2) reads the FP8 weight
             // once for both K=2 verify tokens — bit-identical to two M=1 GEMVs

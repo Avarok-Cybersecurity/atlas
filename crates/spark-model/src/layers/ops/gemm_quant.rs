@@ -324,7 +324,6 @@ pub fn fp8_gemm_t_blockscaled(
     k: u32,
     stream: u64,
 ) -> Result<()> {
-    super::log_gemm_shape("fp8_gemm_t_blockscaled", m, n, k);
     KernelLaunch::new(gpu, kernel)
         .grid([div_ceil(n, 128), div_ceil(m, 64), 1])
         .block([128, 1, 1])
@@ -593,39 +592,6 @@ pub fn w8a16_gemm_t(
         .launch(stream)
 }
 
-/// W8A16 transposed M128 GEMM (kernel `w8a16_gemm_t_m128`): FP8 E4M3 analog of
-/// `w4a16_gemm_n128_m128_v2`. 128×128 (M×N) tile, two 64-row chunks, 8 warps,
-/// parallel-chunk `m16n8k16.bf16.bf16` MMA + two-level FP32 block-scale fold.
-/// Same transposed contract as `w8a16_gemm_t` (`B_t[K,N]` + block_scale_t[K/128,
-/// N/128]); reuses the transpose_fp8 / transpose_block_scale output as-is.
-/// Grid: (ceil(N/128), ceil(M/128), 1)  Block: (256, 1, 1)
-#[allow(clippy::too_many_arguments)]
-pub fn w8a16_gemm_n128_m128(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    input: DevicePtr,
-    weight_t: DevicePtr,      // [K, N] FP8 transposed
-    block_scale_t: DevicePtr, // [K/128, N/128] FP32 transposed
-    output: DevicePtr,
-    m: u32,
-    n: u32,
-    k: u32,
-    stream: u64,
-) -> Result<()> {
-    super::log_gemm_shape("w8a16_gemm_t_m128", m, n, k);
-    KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 128), div_ceil(m, 128), 1])
-        .block([256, 1, 1])
-        .arg_ptr(input)
-        .arg_ptr(weight_t)
-        .arg_ptr(block_scale_t)
-        .arg_ptr(output)
-        .arg_u32(m)
-        .arg_u32(n)
-        .arg_u32(k)
-        .launch(stream)
-}
-
 /// Pipelined transposed W8A16 GEMM (kernel `w8a16_gemm_t_pipelined`): same
 /// transposed args as `w8a16_gemm_t`, ~4.2x via smem-LUT + K_STEP32 +
 /// K-contiguous smem_B + 128x32 occupancy tile.
@@ -643,7 +609,6 @@ pub fn w8a16_gemm_t_pipelined(
     k: u32,
     stream: u64,
 ) -> Result<()> {
-    super::log_gemm_shape("w8a16_gemm_t_pipelined", m, n, k);
     KernelLaunch::new(gpu, kernel)
         .grid([div_ceil(n, 32), div_ceil(m, 128), 1])
         .block([256, 1, 1])

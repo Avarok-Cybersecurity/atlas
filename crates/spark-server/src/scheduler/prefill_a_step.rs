@@ -18,17 +18,6 @@ pub fn start_chunked_prefill(
     prefill_event: u64,
     grammar_engine: &mut Option<GrammarEngine>,
     spontaneous_think_budget: u32,
-    // Co-dispatch: when true, do all per-request setup (grammar/sink/seq
-    // alloc/EP broadcast) but SKIP the inline chunk-0 prefill + first-token
-    // sampling, returning `InProgress { chunk_offset: 0 }` so >=2 concurrent
-    // streams batch into one `run_batched_prefill_step` forward. Vision is
-    // excluded upstream (PrefillInProgress carries no pixel state).
-    defer: bool,
-    // Vision co-dispatch: when Some, this request's images were already encoded
-    // (batched with other requests) into the shared buf_out; skip the per-request
-    // encode and instead set the per-stream slice base around the chunk-0 splice.
-    // None ⇒ legacy self-encode. Only ever Some for single-chunk-fit image prompts.
-    vision_slice: Option<VisionSlice>,
 ) -> Result<StartPrefillResult> {
     // Merge user-supplied stop tokens with model EOS tokens.
     let stop_tokens = req.take_stop_tokens();
@@ -130,79 +119,10 @@ pub fn start_chunked_prefill(
     };
     seq.session_hash = req_session_hash;
 
-    // Deferred co-dispatch: setup + EP broadcast, then return InProgress at
-    // chunk 0 WITHOUT prefilling — the batched step packs >=2 streams into one
-    // forward. Vision is excluded upstream, so no chunk-0 embedding injection.
-    if defer {
-        debug_assert!(
-            image_pixels.is_empty(),
-            "vision must be excluded from co-dispatch"
-        );
-        if let Err(e) = (|| -> Result<()> {
-            // EP: broadcast chunk 0 to worker (no-op on single-GPU; the batched
-            // step does NOT re-broadcast, so this stays the only broadcast site).
-            model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF0)?;
-            model.ep_broadcast_cmd(chunk_len as u32)?;
-            model.ep_broadcast_cmd(0)?; // chunk_start
-            model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
-            model.ep_broadcast_tokens(&prompt_tokens)?;
-            Ok(())
-        })() {
-            let msg = format!("deferred prefill EP broadcast failed: {e:#}");
-            send_error_to_sink(&mut sink, &msg);
-            if let Err(fe) = model.free_sequence(&mut seq) {
-                tracing::error!("prefill_a_step: free_sequence (deferred broadcast error): {fe:#}");
-            }
-            return Err(e);
-        }
-        // chunk_offset = 0 (deferred co-dispatch: nothing prefilled yet).
-        return Ok(StartPrefillResult::InProgress(
-            super::prefill_a_step_params::build_prefill_in_progress(
-                prompt_tokens,
-                req_session_hash,
-                seq,
-                0,
-                max_tokens,
-                req_min_tokens,
-                eos_tokens.to_vec(),
-                sink,
-                cancel_flag,
-                request_start,
-                temperature,
-                top_k,
-                top_p,
-                top_n_sigma,
-                min_p,
-                repetition_penalty,
-                presence_penalty,
-                frequency_penalty,
-                req_lz_penalty,
-                dry_multiplier,
-                dry_base,
-                dry_allowed_length,
-                logit_bias,
-                req_enable_thinking,
-                req_thinking_budget,
-                req_repetition_detection,
-                spontaneous_think_budget,
-                req_require_tool_call,
-                req_suppress_tool_call,
-                req_disable_mtp,
-                grammar_state,
-                req_seed,
-                req_top_logprobs,
-                req_timeout_at,
-            ),
-        ));
-    }
-
     // Guard: free SSM slot on any error after allocation.
     let prefill_result = (|| -> Result<DevicePtr> {
         // Vision: encode images and store embeddings for chunk 0 token overwrite.
-        // Skipped when the images were already batch-encoded by the co-dispatch
-        // pre-pass (vision_slice.is_some()) — that path runs ONE encode + fence
-        // for the whole tick; here we only set the per-stream slice base below.
-        if vision_slice.is_none() && !image_pixels.is_empty() {
+        if !image_pixels.is_empty() {
             model.prepare_vision_embed(&image_pixels)?;
             // prepare_vision_embed() runs the vision encoder asynchronously on
             // the default stream, writing this request's patch embeddings into
@@ -228,36 +148,14 @@ pub fn start_chunked_prefill(
         model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
         model.ep_broadcast_tokens(&prompt_tokens)?;
 
-        // Co-dispatch: point this request's chunk-0 splice/MRoPE at its slice of
-        // the shared packed buf_out. Single-chunk-fit is guaranteed upstream, so
-        // the whole prompt (and its full pad run) is consumed in THIS chunk —
-        // set before, reset after (the scheduler admit loop is single-threaded,
-        // so no other request observes the non-zero base).
-        if let Some(s) = vision_slice {
-            model.set_vision_slice_base(s.patch_row_offset, s.grid_index_offset, s.num_images);
-        }
-        let _pt0 = std::time::Instant::now();
-        let chunk_res = model.prefill_chunk(
+        model.prefill_chunk(
             &prompt_tokens,
             &mut seq,
             0,
             chunk_len,
             is_last,
             prefill_stream,
-        );
-        if std::env::var("ATLAS_VISION_TIMING").is_ok() {
-            let _ = model.synchronize(prefill_stream);
-            tracing::info!(
-                "VIT_TIMING prefill_chunk {} tok (img={}): {:.1}ms",
-                chunk_len,
-                vision_slice.is_some() || !image_pixels.is_empty(),
-                _pt0.elapsed().as_secs_f64() * 1000.0
-            );
-        }
-        if vision_slice.is_some() {
-            model.set_vision_slice_base(0, 0, 0);
-        }
-        chunk_res
+        )
     })();
 
     let logits = match prefill_result {
@@ -505,45 +403,46 @@ pub fn start_chunked_prefill(
             }))
         }
     } else {
-        // chunk_offset = chunk_len (more chunks to process). DRY comes from
-        // the request (api.rs `sampling_presets.tools.dry_*`); 0.0 leaves it inert.
-        Ok(StartPrefillResult::InProgress(
-            super::prefill_a_step_params::build_prefill_in_progress(
-                prompt_tokens,
-                req_session_hash,
-                seq,
-                chunk_len,
-                max_tokens,
-                req_min_tokens,
-                eos_tokens.to_vec(),
-                sink,
-                cancel_flag,
-                request_start,
-                temperature,
-                top_k,
-                top_p,
-                top_n_sigma,
-                min_p,
-                repetition_penalty,
-                presence_penalty,
-                frequency_penalty,
-                req_lz_penalty,
-                dry_multiplier,
-                dry_base,
-                dry_allowed_length,
-                logit_bias,
-                req_enable_thinking,
-                req_thinking_budget,
-                req_repetition_detection,
-                spontaneous_think_budget,
-                req_require_tool_call,
-                req_suppress_tool_call,
-                req_disable_mtp,
-                grammar_state,
-                req_seed,
-                req_top_logprobs,
-                req_timeout_at,
-            ),
-        ))
+        Ok(StartPrefillResult::InProgress(PrefillInProgress {
+            prompt_tokens,
+            session_hash: req_session_hash,
+            seq,
+            chunk_offset: chunk_len,
+            max_tokens,
+            min_tokens: req_min_tokens,
+            eos_tokens: eos_tokens.to_vec(),
+            sink,
+            cancel_flag,
+            request_start,
+            temperature,
+            top_k,
+            top_p,
+            top_n_sigma,
+            min_p,
+            repetition_penalty,
+            repetition_penalty_window: 256,
+            presence_penalty,
+            frequency_penalty,
+            lz_penalty: req_lz_penalty,
+            // DRY comes from the request (populated at
+            // api.rs from `sampling_presets.tools.dry_*` when tools
+            // are active). 0.0 for other presets leaves DRY inert.
+            dry_multiplier,
+            dry_base,
+            dry_allowed_length,
+            dry_sequence_breakers: Vec::new(),
+            logit_bias,
+            enable_thinking: req_enable_thinking,
+            thinking_budget: req_thinking_budget,
+            repetition_detection: req_repetition_detection,
+            spontaneous_think_budget,
+            require_tool_call: req_require_tool_call,
+            suppress_tool_call: req_suppress_tool_call,
+            disable_mtp: req_disable_mtp,
+            grammar_state,
+            seed: req_seed,
+            top_logprobs: req_top_logprobs,
+            timeout_at: req_timeout_at,
+        }))
     }
 }

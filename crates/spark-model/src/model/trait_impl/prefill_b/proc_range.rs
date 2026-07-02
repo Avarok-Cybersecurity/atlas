@@ -34,15 +34,10 @@ impl TransformerModel {
         is_last_chunk: bool,
         kv_write_start: usize,
         marconi_skip: bool,
-        hidden_dst: DevicePtr,
         stream: u64,
     ) -> Result<ProcRange> {
         let h = self.config.hidden_size;
-        // DEFECT 1 fix: re-embed into the caller-provided per-stream hidden slot
-        // (the proc_off slot in the kernel-batched path), NOT the offset-0 base
-        // buffer. Single-stream / per-stream-fallback callers pass the base
-        // (`buffers.hidden_states()`) ⇒ byte-identical.
-        let hidden = hidden_dst;
+        let hidden = self.buffers.hidden_states();
 
         // Stale-V prefix-cache fix: track the contiguous prefix (from token 0)
         // whose paged K/V is guaranteed fully written for this sequence.

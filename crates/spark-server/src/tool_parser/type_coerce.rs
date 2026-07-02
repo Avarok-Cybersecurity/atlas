@@ -109,17 +109,6 @@ fn coerce_call_args(call: &mut ToolCall, tool_def: Option<&ToolDefinition>) {
         }
     }
 
-    // Second empty-key repair pass (2026-06-17). The first pass above runs
-    // BEFORE the string→array/object coercion, so a nested param that arrived
-    // stringified (the qwen3_coder XML format serializes nested arrays as JSON
-    // text inside `<parameter=…>`) was still an opaque String when repair_empty_keys
-    // first walked it — it could not descend, and degenerate `{"": "Bash", …}`
-    // items survived. Now that the coercion loop has materialized those strings
-    // into real arrays/objects, re-run the repair so the empty keys inside them
-    // get relabelled to their unique missing required property (e.g. ExitPlanMode
-    // `allowedPrompts` items → `tool`). Idempotent: no-op once no `""` keys remain.
-    changed |= repair_empty_keys(&mut args, schema);
-
     if changed && let Ok(s) = serde_json::to_string(&args) {
         call.function.arguments = s;
     }

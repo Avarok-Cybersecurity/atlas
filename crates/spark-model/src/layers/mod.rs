@@ -16,7 +16,7 @@ pub mod qwen3_ssm;
 pub mod vision_encoder;
 
 pub use deepseek_v4_mtp::{DeepseekV4MtpHead, DeepseekV4MtpProposerState};
-pub use dense_ffn::{DenseFfnLayer, DenseFfnWeights, FfnActivation};
+pub use dense_ffn::{DenseFfnLayer, FfnActivation};
 pub use dflash_head::{
     BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization,
 };
@@ -126,40 +126,6 @@ impl FfnComponent {
     ) -> Result<()> {
         match self {
             Self::Moe(m) => m.forward_batched(input, num_tokens, ctx, stream),
-            Self::Dense(d) => d.forward_batched(input, num_tokens, ctx, stream),
-            Self::None => {
-                let _ = (input, num_tokens);
-                Ok(())
-            }
-        }
-    }
-
-    pub fn forward_token_major_decode(
-        &self,
-        input: DevicePtr,
-        num_tokens: usize,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        match self {
-            Self::Moe(m) => m.forward_token_major_decode(input, num_tokens, ctx, stream),
-            Self::Dense(d) => d.forward_batched(input, num_tokens, ctx, stream),
-            Self::None => {
-                let _ = (input, num_tokens);
-                Ok(())
-            }
-        }
-    }
-
-    pub fn forward_atomic_c4_decode(
-        &self,
-        input: DevicePtr,
-        num_tokens: usize,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        match self {
-            Self::Moe(m) => m.forward_atomic_c4_decode(input, num_tokens, ctx, stream),
             Self::Dense(d) => d.forward_batched(input, num_tokens, ctx, stream),
             Self::None => {
                 let _ = (input, num_tokens);

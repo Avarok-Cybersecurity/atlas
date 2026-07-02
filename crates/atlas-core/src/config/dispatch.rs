@@ -117,15 +117,6 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
                     config.model_type = "qwen3_6_moe".to_string();
                 }
             }
-            if top_model_type == "qwen3_5_moe"
-                && config.vision.is_some()
-                && raw
-                    .get("image_token_id")
-                    .and_then(serde_json::Value::as_u64)
-                    == Some(248_056)
-            {
-                config.model_type = "holo3_1_moe".to_string();
-            }
             finalize_config(&mut config, &raw)?;
             Ok(config)
         }

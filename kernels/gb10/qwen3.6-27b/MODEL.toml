@@ -121,20 +121,6 @@ thinking_in_tools = true
 # 2026-05-23 sweep: 512 → 2048 (project-wide reasoning headroom bump).
 max_thinking_budget = 2048
 default_num_drafts = 1
-# BF16 KV cache for long-context prefill (2026-06-21 prefill-32k study).
-# The 16 full-attention layers (head_dim=256, full_attention_interval=4)
-# dominate long-context prefill, and at depth they are KV-load-latency bound.
-# The FP8 paged-attn prefill kernel (inferspark_prefill_paged_fp8.cu) loads +
-# dequants KV SYNCHRONOUSLY (no cp.async pipelining); the BF16 kernel pipelines
-# KV tile loads via cp.async, hiding the latency. Measured on dgx1, cold 32k
-# c=1 prefill (Qwen3.6-27B-FP8): FP8 KV 435.8 tok/s vs BF16 KV 480.2 tok/s
-# (+10.2%); per-chunk gaps grow steeper for FP8 (8.9→11.5s) than BF16
-# (8.8→10.0s), confirming the unhidden FP8 KV-load latency. BF16 KV is also
-# higher quality (no FP8 KV quant drift on the large-magnitude deep-layer K/V)
-# and decode is unregressed (9.6 vs 9.7 tok/s @ d32768). Resolution rule 3 in
-# serve_phases/kv_cache.rs applies this when the recipe passes the CLI default
-# `--kv-cache-dtype fp8`; an explicit non-fp8 override still wins.
-default_kv_dtype = "bf16"
 
 # Upstream Qwen/Qwen3.6-27B reports `model_type = "qwen3_5"` in config.json.
 # Atlas's `parse_qwen3_5_config` (atlas-core/src/config.rs) rewrites this to

@@ -283,11 +283,7 @@ fn server_default_merged_when_request_silent() {
 
     let (enabled, budget) = req.resolve_thinking(false);
     assert!(enabled);
-    // enable_thinking with no explicit budget defers to the per-model
-    // max_thinking_budget (None), not the conservative 256-token default —
-    // a hard cut force-injects </think> mid-reasoning and wrecks agentic
-    // tool selection (see resolve_thinking step 5).
-    assert!(budget.is_none());
+    assert!(budget.is_some());
 }
 
 #[test]

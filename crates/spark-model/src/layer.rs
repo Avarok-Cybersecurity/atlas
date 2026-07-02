@@ -142,22 +142,11 @@ pub struct BatchedAttnMetadata {
     // per-layer-call into the model's scratch buffer.
     /// Number of batched streams.
     pub batch_size: u32,
-    /// Per-stream chunk_len. In the legacy same-length path this is uniform; in
-    /// the VARLEN path (`cu_seqlens` populated) it is the MAX per-stream length
-    /// (retained only for buffer-bound/debug use — per-stream lengths come from
-    /// `cu_seqlens`).
+    /// Per-stream chunk_len (SAME for all streams — scheduler-enforced
+    /// constraint via `can_batch_prefill_only`).
     pub chunk_len: u32,
-    /// Total tokens stacked across streams. Legacy: `batch_size * chunk_len`.
-    /// VARLEN: `Σ per-stream lengths` (= `cu_seqlens_host[batch_size]`).
+    /// Total tokens stacked across streams: `batch_size * chunk_len`.
     pub total_tokens: u32,
-    /// VARLEN geometry: `[batch_size+1]` i32 prefix-sum of per-request token
-    /// counts, on device (read by the GDN kernel + FlashInfer). `DevicePtr::NULL`
-    /// in the legacy same-length path (callers fall back to `b*chunk_len`).
-    pub cu_seqlens: DevicePtr,
-    /// Host copy of `cu_seqlens` (`[batch_size+1]` i32) — FlashInfer's PrefillPlan
-    /// dereferences the indptr on the CPU, and per-request slice offsets are
-    /// computed host-side. Empty in the legacy path.
-    pub cu_seqlens_host: Vec<i32>,
     /// Maximum block_table length across the batch (kernel uses for
     /// bounds checking; per-stream block_table reads via the pointer
     /// array dereference).

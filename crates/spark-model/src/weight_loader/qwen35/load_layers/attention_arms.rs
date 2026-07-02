@@ -15,8 +15,8 @@ use crate::layer::TransformerLayer;
 use crate::layers::{FfnComponent, Qwen3AttentionLayer};
 use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_dense_bf16, shard_quantized_nvfp4};
 use crate::weight_map::{
-    AttentionWeights, DenseWeight, Nvfp4Variant, dense_auto, load_kv_scales, quantize_to_nvfp4,
-    quantized_auto,
+    AttentionWeights, DenseWeight, Nvfp4Variant, dense, dense_auto, load_kv_scales,
+    quantize_to_nvfp4, quantized_auto,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -92,8 +92,8 @@ pub(super) fn build_full_attention_nvfp4(
                 k_proj: dummy,
                 v_proj: dummy,
                 o_proj: o,
-                q_norm: dense_auto(store, &format!("{p}.q_norm.weight"), gpu)?,
-                k_norm: dense_auto(store, &format!("{p}.k_norm.weight"), gpu)?,
+                q_norm: dense(store, &format!("{p}.q_norm.weight"))?,
+                k_norm: dense(store, &format!("{p}.k_norm.weight"))?,
                 q_norm_full: None,
                 k_norm_full: None,
                 k_scale,
@@ -169,8 +169,8 @@ pub(super) fn build_full_attention_nvfp4(
                 k_proj: k_dense,
                 v_proj: v_dense,
                 o_proj: o_nvfp4,
-                q_norm: dense_auto(store, &format!("{p}.q_norm.weight"), gpu)?,
-                k_norm: dense_auto(store, &format!("{p}.k_norm.weight"), gpu)?,
+                q_norm: dense(store, &format!("{p}.q_norm.weight"))?,
+                k_norm: dense(store, &format!("{p}.k_norm.weight"))?,
                 q_norm_full: None,
                 k_norm_full: None,
                 k_scale,

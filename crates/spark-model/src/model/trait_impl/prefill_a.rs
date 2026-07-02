@@ -34,9 +34,48 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
-mod vision;
-
 impl TransformerModel {
+    pub(super) fn prepare_vision_embed_dispatch(
+        &self,
+        images: &[(Vec<f32>, usize, usize)],
+    ) -> Result<()> {
+        let ve = match &self.vision_encoder {
+            Some(ve) => ve,
+            None => return Ok(()),
+        };
+        let stream = self.gpu.default_stream();
+        // ONE batched ViT forward over all images in this request — block GEMM
+        // weights read once over Σpatches instead of N× (the per-image loop also
+        // overwrote buf_out row 0 every call, corrupting multi-image requests).
+        // Each returned (post_h, post_w, merged_p) preserves image order, so the
+        // packed buf_out matches the pad-token splice order downstream.
+        let img_refs: Vec<(&[f32], usize, usize)> = images
+            .iter()
+            .map(|(px, gh, gw)| (px.as_slice(), *gh, *gw))
+            .collect();
+        let _vt0 = std::time::Instant::now();
+        let per_image = ve.forward_batched(&img_refs, self.gpu.as_ref(), stream)?;
+        if std::env::var("ATLAS_VISION_TIMING").is_ok() {
+            self.gpu.synchronize(stream).ok();
+            tracing::info!(
+                "VIT_TIMING self-encode {} imgs: {:.1}ms",
+                images.len(),
+                _vt0.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+        let post_merge_grids: Vec<(usize, usize)> =
+            per_image.iter().map(|(h, w, _)| (*h, *w)).collect();
+        let total_merged: usize = per_image.iter().map(|(_, _, mp)| *mp).sum();
+        *self.vision_embed_patches.lock() = total_merged;
+        *self.vision_image_grids.lock() = post_merge_grids;
+        tracing::info!(
+            "Vision encoder (batched): {} images, {} merged patches encoded",
+            images.len(),
+            total_merged
+        );
+        Ok(())
+    }
+
     pub(super) fn prefill_dispatch(
         &self,
         tokens: &[u32],

@@ -231,20 +231,25 @@ impl Qwen3AttentionLayer {
         let o_out = fwd.buffers.moe_output();
         if let Some(o_bf16) = self.o_dense_bf16.as_ref() {
             // ATLAS_FP8_DEQUANT_ATTN_TO_BF16: O-proj dequanted to BF16 at load.
-            // attn_out is contiguous [n, q_dim] and o_out is [n, h], so a single
-            // batched GEMM reads the BF16 o_proj weight ONCE for all n sequences
-            // instead of once per sequence (per-seq dense_gemv re-read it N×).
-            ops::dense_gemm(
-                fwd.gpu,
-                self.dense_gemm_k,
-                attn_out,
-                o_bf16,
-                o_out,
-                n as u32,
-                h as u32,
-                nq * hd,
-                stream,
-            )?;
+            // Per-token dense_gemv — mirrors the single-seq decode path
+            // (attention_forward_oproj.rs). Without this branch the multi-seq
+            // path falls through to the NVFP4 `w4a16_gemv_batch{2,3}` branch
+            // using the stale FP8/NVFP4 `self.attn.o_proj`, reading mismatched
+            // weight bytes → CUDA_ERROR_ILLEGAL_ADDRESS in batched decode.
+            for i in 0..n {
+                let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
+                let o_out_i = o_out.offset(i * h * bf16);
+                ops::dense_gemv(
+                    fwd.gpu,
+                    self.dense_gemv_k,
+                    attn_out_i,
+                    o_bf16,
+                    o_out_i,
+                    h as u32,
+                    nq * hd,
+                    stream,
+                )?;
+            }
         } else if let Some(o_fp8) = self.o_weight.as_ref().and_then(|w| w.as_fp8()) {
             // FP8 native: per-token w8a16_gemv for O projection.
             for i in 0..n {

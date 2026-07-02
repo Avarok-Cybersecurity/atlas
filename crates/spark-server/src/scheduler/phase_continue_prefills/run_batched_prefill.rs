@@ -38,52 +38,22 @@ pub(super) fn run_batched_prefill_step(
     let n = prefilling.len();
     let mut chunk_lens: Vec<usize> = Vec::with_capacity(n);
     let mut is_last_flags: Vec<bool> = Vec::with_capacity(n);
-    // Co-dispatch (ATLAS_PREFILL_CODISPATCH=1): when all streams are at chunk 0
-    // and equal-length, give them ONE shared geometry so the kernel-batched path
-    // is eligible (check_kernel_batched_eligible requires identical chunk_len /
-    // chunk_start / is_last across streams). Ragged or non-chunk-0 batches keep
-    // per-stream geometry, which the dispatcher handles via per-stream fallback.
-    let shared_geom: Option<(usize, bool)> = if std::env::var("ATLAS_PREFILL_CODISPATCH")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-        && !model.is_mla()
-        && n >= 2
-        && prefilling.iter().all(|p| p.chunk_offset == 0)
-        && prefilling
-            .iter()
-            .all(|p| p.prompt_tokens.len() == prefilling[0].prompt_tokens.len())
-    {
-        let total = prefilling[0].prompt_tokens.len();
-        let mut cl = total.min(max_prefill_tokens);
-        let is_last = cl >= total;
-        if !is_last && cl >= 4 {
-            cl = (cl / 4) * 4;
-        }
-        Some((cl, is_last))
-    } else {
-        None
-    };
     for p in prefilling.iter() {
-        let (chunk_len, is_last) = if let Some((cl, il)) = shared_geom {
-            (cl, il)
+        let remaining = p.prompt_tokens.len() - p.chunk_offset;
+        // Same MLA correctness gate as `run_standard_chunk_loop` — MLA
+        // models lack a paged-MLA prefill kernel so multi-chunk prefill
+        // silently corrupts attention. Force single-chunk for MLA.
+        let effective_max = if model.is_mla() {
+            remaining
         } else {
-            let remaining = p.prompt_tokens.len() - p.chunk_offset;
-            // Same MLA correctness gate as `run_standard_chunk_loop` — MLA
-            // models lack a paged-MLA prefill kernel so multi-chunk prefill
-            // silently corrupts attention. Force single-chunk for MLA.
-            let effective_max = if model.is_mla() {
-                remaining
-            } else {
-                max_prefill_tokens
-            };
-            let mut chunk_len = remaining.min(effective_max);
-            let is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
-            // Align intermediate chunks to GDN WY4 boundary (4 tokens).
-            if !is_last && chunk_len >= 4 {
-                chunk_len = (chunk_len / 4) * 4;
-            }
-            (chunk_len, is_last)
+            max_prefill_tokens
         };
+        let mut chunk_len = remaining.min(effective_max);
+        let is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
+        // Align intermediate chunks to GDN WY4 boundary (4 tokens).
+        if !is_last && chunk_len >= 4 {
+            chunk_len = (chunk_len / 4) * 4;
+        }
         chunk_lens.push(chunk_len);
         is_last_flags.push(is_last);
     }
