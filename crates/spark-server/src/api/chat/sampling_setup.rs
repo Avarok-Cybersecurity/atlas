@@ -215,13 +215,17 @@ pub(super) fn build_sampling(
     };
 
     // Stop tokens.
-    let mut stop_tokens = tokenize_stop_sequences(&state.tokenizer, &req.stop);
-    if tools_active
-        && let Ok(ids) = state.tokenizer.encode("</tool_call>")
-        && ids.len() == 1
-    {
-        stop_tokens.push(ids[0]);
-    }
+    //
+    // #192: `</tool_call>` is deliberately NOT a stop token. It used to be
+    // pushed here for every tools-active request, which (a) hard-stopped the
+    // MTP/emit path at the FIRST closed tool call (the token hit the EOS
+    // handler and was even dropped from the output), and (b) landed in the
+    // grammar's stop-token exemption set, so the matcher never advanced
+    // across the end-tag literal and desynced before a second call. vLLM
+    // parity: generation continues past a closed call until natural EOS so
+    // the model can emit parallel calls; the scheduler's tool watchdogs
+    // (post-completion open cap, prose budget, loop detectors) bound run-on.
+    let stop_tokens = tokenize_stop_sequences(&state.tokenizer, &req.stop);
 
     // Tool-choice + parser-driven required mode.
     let tool_choice_required = tool_choice_required_for_parser(

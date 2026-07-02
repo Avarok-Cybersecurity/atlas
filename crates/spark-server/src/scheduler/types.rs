@@ -75,6 +75,8 @@ pub(super) struct PrefillInProgress {
     /// hard-coded 512-token fallback.
     pub spontaneous_think_budget: u32,
     pub require_tool_call: bool,
+    /// #192: request declared tools (propagated to ActiveSeq on promotion).
+    pub tools_present: bool,
     pub suppress_tool_call: bool,
     /// F60 (2026-04-27): MTP-disable flag (propagated to ActiveSeq).
     pub disable_mtp: bool,
@@ -166,7 +168,9 @@ pub(super) struct ActiveSeq {
     pub think_just_ended: bool,
     /// Consecutive `</think>` tokens skipped outside thinking. Safety limit: 50.
     pub think_skip_count: u32,
-    /// Token ID for `</tool_call>` — acts as a stop token for one-call-per-response.
+    /// Token ID for `</tool_call>`. Hard-stops only NON-tool requests
+    /// (spurious tool-call in plain chat); tool-armed requests continue past
+    /// it so multiple/parallel calls can follow (#192).
     pub tool_call_end_token: Option<u32>,
     /// When true AND grammar_state is None, EOS tokens are suppressed until
     /// `<tool_call>` is generated (legacy fallback).
@@ -179,6 +183,14 @@ pub(super) struct ActiveSeq {
     /// go inert when the grammar disengages mid-response. Default false ⇒
     /// no-op for non-tool requests (plain chat is never prose-capped).
     pub tool_request: bool,
+    /// #192: the request declared tools (from the API layer's `tools_active`).
+    /// Unlike `tool_request` this does NOT arm the prose-budget / post-think
+    /// watchdogs; it only gates multi-tool-call continuation: when true, a
+    /// `</tool_call>` outside a grammar does not finish the sequence —
+    /// generation continues (vLLM parity) so the model can emit parallel
+    /// calls, ending at natural EOS. When false (plain chat), a spurious
+    /// `</tool_call>` keeps its historical hard stop.
+    pub tools_present: bool,
     /// Token ID for `<tool_call>` (legacy fallback when grammar is unavailable).
     pub tool_call_start_token: Option<u32>,
     /// True after `<tool_call>` generated in output (not inside thinking).
@@ -368,6 +380,9 @@ pub(super) struct SwappedSeq {
     /// snapshot/restore (the grammar state itself is not serializable, so
     /// this is the only signal that a resumed sequence was tool-active).
     pub tool_request: bool,
+    /// #192: request declared tools, preserved across snapshot/restore so a
+    /// resumed multi-call turn keeps continuing past `</tool_call>`.
+    pub tools_present: bool,
     pub suppress_tool_call: bool,
     /// F60 (2026-04-27): MTP-disable flag preserved across snapshot/restore.
     pub disable_mtp: bool,

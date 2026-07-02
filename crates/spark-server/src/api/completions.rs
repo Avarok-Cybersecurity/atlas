@@ -202,6 +202,8 @@ pub async fn completions(
         thinking_budget: None,
         repetition_detection: req.repetition_detection,
         require_tool_call: false,
+        // Completions API defines no tools — multi-tool-call continuation off.
+        tools_present: false,
         suppress_tool_call: false,
         disable_mtp: false,
         grammar_spec: None,
@@ -334,6 +336,8 @@ pub(super) async fn completions_stream(
         thinking_budget: None,
         repetition_detection,
         require_tool_call: false,
+        // Completions API defines no tools — multi-tool-call continuation off.
+        tools_present: false,
         suppress_tool_call: false,
         disable_mtp: false,
         grammar_spec: None,

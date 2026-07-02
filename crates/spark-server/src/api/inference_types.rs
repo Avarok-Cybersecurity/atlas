@@ -105,6 +105,15 @@ pub enum InferenceRequest {
         repetition_detection: Option<RepetitionDetectionParams>,
         /// Whether a tool call is required (tool_choice="required").
         require_tool_call: bool,
+        /// #192: whether the request declared tools (chat `tools` non-empty
+        /// with a parser available). Unlike `grammar_spec` it stays true even
+        /// when constrained decoding is unavailable or disabled
+        /// (MODEL.toml `disable_tool_grammar`, parser opt-out, compile
+        /// failure), so the scheduler can gate multi-tool-call continuation
+        /// on "tools defined" rather than "grammar attached": with tools
+        /// present, `</tool_call>` is NOT a hard stop — generation continues
+        /// so the model can emit parallel calls, ending at natural EOS.
+        tools_present: bool,
         /// Suppress `<tool_call>` token when tool call loop detected (≥3 identical).
         suppress_tool_call: bool,
         /// F60 (2026-04-27): disable MTP speculative decoding for this
@@ -178,6 +187,9 @@ pub enum InferenceRequest {
         repetition_detection: Option<RepetitionDetectionParams>,
         /// Whether a tool call is required (tool_choice="required").
         require_tool_call: bool,
+        /// #192: whether the request declared tools — see the Blocking
+        /// variant for the multi-tool-call continuation contract.
+        tools_present: bool,
         /// Suppress `<tool_call>` token when tool call loop detected (≥3 identical).
         suppress_tool_call: bool,
         /// F60 (2026-04-27): disable MTP speculative decoding for this

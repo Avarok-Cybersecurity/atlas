@@ -234,6 +234,15 @@ impl InferenceRequest {
         }
     }
 
+    /// #192: whether the request declared tools (gates multi-tool-call
+    /// continuation — `</tool_call>` is not a hard stop when true).
+    pub fn tools_present(&self) -> bool {
+        match self {
+            InferenceRequest::Blocking { tools_present, .. } => *tools_present,
+            InferenceRequest::Streaming { tools_present, .. } => *tools_present,
+        }
+    }
+
     /// Whether `<tool_call>` should be suppressed (loop detected).
     pub fn suppress_tool_call(&self) -> bool {
         match self {

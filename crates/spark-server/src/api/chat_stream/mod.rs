@@ -141,6 +141,7 @@ pub(crate) async fn chat_completions_stream(
         thinking_budget,
         repetition_detection,
         require_tool_call: tool_choice_required,
+        tools_present: tools_active,
         suppress_tool_call,
         disable_mtp: false,
         grammar_spec,

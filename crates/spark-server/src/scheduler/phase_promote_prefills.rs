@@ -169,6 +169,7 @@ fn build_active_seq_from_prefill(
         think_skip_count: 0,
         require_tool_call: use_legacy_tool_call,
         tool_request,
+        tools_present: p.tools_present,
         tool_call_start_token,
         tool_call_opened: false,
         inside_tool_body: false,
