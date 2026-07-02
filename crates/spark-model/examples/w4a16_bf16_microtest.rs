@@ -301,7 +301,9 @@ fn run_shape(
     }
 
     // Free per-shape allocations (the harness is short-lived but be tidy).
-    for p in [a_ptr, packed_nt, scale_nt, packed_t, scale_t, c_base, c_bf16] {
+    for p in [
+        a_ptr, packed_nt, scale_nt, packed_t, scale_t, c_base, c_bf16,
+    ] {
         let _ = gpu.free(p);
     }
 
@@ -362,10 +364,14 @@ fn main() -> Result<()> {
 
     println!("{}", "-".repeat(92));
     if all_pass {
-        println!("RESULT: PASS — BF16-TC prefill is numerically equivalent to base (cosine >= {COSINE_GATE} on all shapes)");
+        println!(
+            "RESULT: PASS — BF16-TC prefill is numerically equivalent to base (cosine >= {COSINE_GATE} on all shapes)"
+        );
         Ok(())
     } else {
-        println!("RESULT: FAIL — at least one shape below cosine {COSINE_GATE} (layout/accumulation bug)");
+        println!(
+            "RESULT: FAIL — at least one shape below cosine {COSINE_GATE} (layout/accumulation bug)"
+        );
         std::process::exit(1);
     }
 }
