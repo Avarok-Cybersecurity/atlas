@@ -67,6 +67,10 @@ class TestSpec:
     extra_args: List[str] = field(default_factory=list)
     # If the suite takes too long or longctx is not meaningful, skip it:
     skip_longctx: bool = False
+    # Mark vision-capable models so the suite runs its image test (`--vision`).
+    # Only set on checkpoints that actually carry a vision tower AND whose Atlas
+    # kernel target ships a vision_encoder module.
+    vision: bool = False
     # ── Multi-rank (head + worker) parallelism ──
     # Set tp_size and/or ep_size > 1 to run as a 2-rank multi-node round.
     # Default (1, 1) = single-GPU. For a 2-rank GB10 cluster the supported
@@ -92,12 +96,12 @@ class TestSpec:
 ROUNDS: List[List[tuple]] = [
     # Round 1: 27B dense (head-only) + Sehyo 35B NVFP4 baseline (worker-only)
     [
-        ("head",   TestSpec("27B-dense-nvfp4", "Kbenkhaled/Qwen3.5-27B-NVFP4")),
+        ("head",   TestSpec("27B-dense-nvfp4", "Kbenkhaled/Qwen3.5-27B-NVFP4", vision=True)),
         ("worker", TestSpec("35B-nvfp4", "Sehyo/Qwen3.5-35B-A3B-NVFP4")),
     ],
     # Round 2: VL-30B + Sehyo 35B NVFP4 MTP
     [
-        ("head",   TestSpec("qwen3-vl-30B", "ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4")),
+        ("head",   TestSpec("qwen3-vl-30B", "ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4", vision=True)),
         ("worker", TestSpec("35B-nvfp4-mtp", "Sehyo/Qwen3.5-35B-A3B-NVFP4", mtp=True)),
     ],
     # Round 3: Gemma-4-31B + Nemotron-Nano 30B
@@ -110,7 +114,7 @@ ROUNDS: List[List[tuple]] = [
     # --max-batch-size 1 so 32k fits for the long-context test.
     [
         ("head",   TestSpec("gemma-4-31B", "nvidia/Gemma-4-31B-IT-NVFP4",
-                            kv_dtype="bf16",
+                            kv_dtype="bf16", vision=True,
                             extra_args=["--max-batch-size", "1"])),
         ("worker", TestSpec("nemotron-nano-30B",
                             "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4")),
@@ -119,7 +123,7 @@ ROUNDS: List[List[tuple]] = [
     [
         ("head",   TestSpec("gemma-4-26B",
                             "bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16",
-                            kv_dtype="bf16",
+                            kv_dtype="bf16", vision=True,
                             extra_args=["--max-batch-size", "1"])),
         ("worker", TestSpec("35B-fp8", "Qwen/Qwen3.5-35B-A3B-FP8", quant="fp8")),
     ],
@@ -154,7 +158,7 @@ ROUNDS: List[List[tuple]] = [
                             # belongs in MLA chunked-prefill correctness,
                             # not the harness spec.
         ("head",   TestSpec("35B-qwen36-fp8", "Qwen/Qwen3.6-35B-A3B-FP8",
-                            quant="fp8")),
+                            quant="fp8", vision=True)),
     ],
     # Round 7: 80B NVFP4 baseline (head) — 122B FP8 can't fit single-GPU
     # (118 GB weights > 121 GB GPU), so it moves to the EP=2 phase below.
@@ -173,6 +177,24 @@ ROUNDS: List[List[tuple]] = [
     [
         ("head",   TestSpec("122B-nvfp4", "Sehyo/Qwen3.5-122B-A10B-NVFP4",
                             extra_args=["--max-batch-size", "1"])),
+        ("head",   None),
+    ],
+    # Round 10: Holo-3.1-35B-A3B (head) — Hcompany hybrid GDN + full-attn +
+    # 256-expert MoE + Qwen3-VL ViT (the architectural twin of the flagship
+    # Qwen3.6-35B-A3B-FP8). NVFP4 weights; exercises the suite's VISION test
+    # (the only matrix entry besides Qwen3-VL / Gemma-4 with an image path).
+    # FP8 sibling (Hcompany/Holo-3.1-35B-A3B-FP8) can be added as a second
+    # round once both checkpoints are cached on the run host.
+    [
+        ("head",   TestSpec("holo-3.1-35B-nvfp4", "Hcompany/Holo-3.1-35B-A3B-NVFP4", vision=True)),
+        ("head",   None),
+    ],
+    # Round 11: Ornith-1.0-9B (head) — deepreinforce dense-VL sibling of Holo
+    # (Qwen3.5 hybrid GDN + full-attn + dense FFN + Qwen3-VL ViT, hidden=4096).
+    # Has its own `ornith-1.0-9b` kernel target; BF16 weights → runtime NVFP4.
+    # Also exercises the suite's VISION test (Qwen3-VL ViT).
+    [
+        ("head",   TestSpec("ornith-1.0-9B", "deepreinforce-ai/Ornith-1.0-9B", vision=True)),
         ("head",   None),
     ],
 ]
@@ -383,6 +405,8 @@ def run_suite(host: str, spec: TestSpec, port: int) -> dict:
     ]
     if spec.skip_longctx:
         cmd.append("--skip-longctx")
+    if spec.vision:
+        cmd.append("--vision")
     with open(log_path, "w") as f:
         proc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT)
     return {"proc": proc, "out_json": out_json, "log_path": log_path}
