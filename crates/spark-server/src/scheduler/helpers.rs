@@ -183,7 +183,10 @@ pub const NUMERIC_SENTINEL: u32 = u32::MAX;
 /// are NOT touched — those are not watchdogs.
 static DISABLE_WATCHDOGS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-fn parse_disable_watchdogs(env: Option<&str>) -> bool {
+/// Parse a boolean opt-in env var: `Some("1")` or `Some("true")`
+/// (case-insensitive, trimmed) → `true`; anything else / unset → `false`.
+/// Shared by the watchdog and max-tokens-total gates.
+fn parse_env_bool(env: Option<&str>) -> bool {
     match env {
         Some(v) => {
             let v = v.trim();
@@ -196,9 +199,8 @@ fn parse_disable_watchdogs(env: Option<&str>) -> bool {
 /// Whether all auto-watchdogs are disabled at runtime. `false` by
 /// default; flipped only when `ATLAS_DISABLE_WATCHDOGS=1`/`true`.
 pub fn disable_watchdogs() -> bool {
-    *DISABLE_WATCHDOGS.get_or_init(|| {
-        parse_disable_watchdogs(std::env::var("ATLAS_DISABLE_WATCHDOGS").ok().as_deref())
-    })
+    *DISABLE_WATCHDOGS
+        .get_or_init(|| parse_env_bool(std::env::var("ATLAS_DISABLE_WATCHDOGS").ok().as_deref()))
 }
 
 static MAX_TOKENS_COUNTS_REASONING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -210,9 +212,8 @@ static MAX_TOKENS_COUNTS_REASONING: std::sync::OnceLock<bool> = std::sync::OnceL
 /// reasoning is governed by the separate thinking budget. Flipped on by
 /// `ATLAS_MAX_TOKENS_TOTAL=1`/`true` (e.g. for apples-to-apples benchmarking).
 pub fn max_tokens_counts_reasoning() -> bool {
-    *MAX_TOKENS_COUNTS_REASONING.get_or_init(|| {
-        parse_disable_watchdogs(std::env::var("ATLAS_MAX_TOKENS_TOTAL").ok().as_deref())
-    })
+    *MAX_TOKENS_COUNTS_REASONING
+        .get_or_init(|| parse_env_bool(std::env::var("ATLAS_MAX_TOKENS_TOTAL").ok().as_deref()))
 }
 
 static ENABLE_LOOP_WATCHDOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();

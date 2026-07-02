@@ -16,7 +16,7 @@ fn bench_bf16(g: &dyn GpuBackend, n: usize, k: usize, label: &str) -> Result<()>
     let stream = 0u64;
     let w = g.alloc(n * k * 2)?; // BF16 weight [N,K]
     g.memset(w, 0x3c, n * k * 2)?;
-    for &m in &[512usize, 2048, 8192, 16384] {
+    'm: for &m in &[512usize, 2048, 8192, 16384] {
         let act = g.alloc(m * k * 2)?;
         g.memset(act, 0x3c, m * k * 2)?;
         let out = g.alloc(m * n * 2)?;
@@ -31,7 +31,10 @@ fn bench_bf16(g: &dyn GpuBackend, n: usize, k: usize, label: &str) -> Result<()>
                 );
                 let _ = g.free(act);
                 let _ = g.free(out);
-                continue;
+                // Skip the rest of THIS shape: the buffers are freed, so
+                // continuing the inner warmup loop would re-launch on freed
+                // memory and the end-of-iteration free would double-free.
+                continue 'm;
             }
         }
         g.synchronize(stream)?;
@@ -57,7 +60,7 @@ fn bench(g: &dyn GpuBackend, n: usize, k: usize, label: &str) -> Result<()> {
     g.memset(wpt, 0x11, (k / 2) * n)?;
     let wst = g.alloc((k / 16) * n)?;
     g.memset(wst, 0x3c, (k / 16) * n)?; // arbitrary nonzero e4m3 bytes
-    for &m in &[512usize, 2048, 8192, 16384] {
+    'm: for &m in &[512usize, 2048, 8192, 16384] {
         let act = g.alloc(m * k * 2)?;
         g.memset(act, 0x10, m * k * 2)?;
         let out = g.alloc(m * n * 2)?;
@@ -76,7 +79,10 @@ fn bench(g: &dyn GpuBackend, n: usize, k: usize, label: &str) -> Result<()> {
                 );
                 let _ = g.free(act);
                 let _ = g.free(out);
-                continue;
+                // Skip the rest of THIS shape: the buffers are freed, so
+                // continuing the inner warmup loop would re-launch on freed
+                // memory and the end-of-iteration free would double-free.
+                continue 'm;
             }
         }
         g.synchronize(stream)?;

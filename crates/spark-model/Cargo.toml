@@ -198,4 +198,4 @@ required-features = ["cuda", "gpu-examples"]
 
 [[example]]
 name = "nvfp4_gemm_bench"
-required-features = ["gpu-examples"]
+required-features = ["cuda", "gpu-examples"]

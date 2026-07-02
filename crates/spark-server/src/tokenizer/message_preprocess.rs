@@ -15,6 +15,9 @@
 //! off its OWN template — and lets the redundant overrides be deleted.
 //!
 //! Behaviors implemented here:
+//!   0. [`remap_developer_role`] — rewrite `role: "developer"` to
+//!      `"system"` (a model's own template raises `Unexpected message
+//!      role.` on the OpenAI developer role).
 //!   1. [`autoclose_think_before_tool_call`] — insert a missing
 //!      `</think>` before a `<tool_call>` in assistant *history* content.
 //!   2. [`resolve_think_control`] — strip inline `<|think_on|>` /
@@ -185,6 +188,30 @@ pub(crate) fn autoclose_assistant_think(messages: &mut [Value]) {
     }
 }
 
+/// Remap any `role: "developer"` message to `role: "system"` before the
+/// model template renders.
+///
+/// The OpenAI **developer** role (the o1-style system-instruction role) is
+/// accepted across the Atlas API surface, and the now-removed Holo override
+/// handled it in three places. But a model's OWN shipped
+/// `chat_template.jinja` does not know the role and raises
+/// `Unexpected message role.` on it — so a request carrying a developer
+/// message would hard-fail rendering. `developer` and `system` share
+/// system-instruction semantics, so remapping developer→system here (ahead
+/// of the model template, alongside the other cross-cutting behaviors) lets
+/// such requests render off the model's own template instead of erroring.
+///
+/// Only the `role` field is rewritten; content is untouched.
+pub(crate) fn remap_developer_role(messages: &mut [Value]) {
+    for msg in messages.iter_mut() {
+        if msg.get("role").and_then(|r| r.as_str()) == Some("developer")
+            && let Some(role) = msg.get_mut("role")
+        {
+            *role = Value::String("system".to_string());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +314,23 @@ mod tests {
         assert_eq!(out[0]["content"][1]["text"], "describe ");
     }
 
+    #[test]
+    fn remap_developer_to_system() {
+        let mut messages = vec![
+            json!({"role": "developer", "content": "You are terse."}),
+            json!({"role": "user", "content": "hi"}),
+            json!({"role": "system", "content": "unchanged"}),
+        ];
+        remap_developer_role(&mut messages);
+        assert_eq!(messages[0]["role"], "system", "developer → system");
+        assert_eq!(
+            messages[0]["content"], "You are terse.",
+            "content untouched"
+        );
+        assert_eq!(messages[1]["role"], "user", "other roles untouched");
+        assert_eq!(messages[2]["role"], "system");
+    }
+
     // --- End-to-end: Holo renders off the MODEL's own template + Rust behaviors ---
     //
     // The bundled fixture is the Holo-3.1-35B model's OWN
@@ -304,15 +348,12 @@ mod tests {
         "/tests/fixtures/holo3_1_moe.model_template.jinja"
     );
 
-    /// Mirror of `chat_impl::preprocess_for_render`: F76 arg-parse →
-    /// autoclose-think → think-control, returning prepared messages and
-    /// the effective thinking flag. Kept in sync with production so the
-    /// e2e assertions exercise the real pipeline.
+    /// Calls the real production `chat_impl::preprocess_for_render`
+    /// (F76 arg-parse → developer remap → autoclose-think → think-control)
+    /// so the e2e assertions exercise the exact pipeline, with no mirror to
+    /// drift out of sync.
     fn preprocess(messages: &[Value], enable_thinking: bool) -> (Vec<Value>, bool) {
-        let mut prepared = super::super::normalize_tool_call_arguments(messages);
-        autoclose_assistant_think(&mut prepared);
-        let (prepared, control) = resolve_think_control(&prepared);
-        (prepared, control.unwrap_or(enable_thinking))
+        super::super::chat_impl::preprocess_for_render(messages, enable_thinking)
     }
 
     fn render_holo_model_template(messages: &[Value], enable_thinking: bool) -> String {
@@ -355,6 +396,32 @@ mod tests {
         assert!(
             rendered.ends_with("<|im_start|>assistant\n<think>\n"),
             "expected open-think generation prompt: {rendered}"
+        );
+    }
+
+    /// Developer-role regression (ported from the deleted
+    /// `render_holo_template_accepts_vllm_thinking_controls`, which passed a
+    /// `role: developer` message): the Holo model's OWN template raises
+    /// `Unexpected message role.` on `developer`, so without the
+    /// developer→system remap in `preprocess_for_render` the render hard-fails.
+    /// This proves the remap lets such a request render as a system message.
+    #[test]
+    fn holo_renders_developer_message_as_system() {
+        let messages = vec![
+            json!({"role": "developer", "content": "You are a terse assistant."}),
+            json!({"role": "user", "content": "Hi"}),
+        ];
+        // Must NOT panic ("Holo model template renders" would fail on the
+        // template's `Unexpected message role.` raise otherwise).
+        let rendered = render_holo_model_template(&messages, true);
+        // The developer instruction is emitted under system framing.
+        assert!(
+            rendered.contains("<|im_start|>system\nYou are a terse assistant.<|im_end|>"),
+            "developer content must render as a system turn: {rendered}"
+        );
+        assert!(
+            rendered.contains("<|im_start|>user\nHi<|im_end|>"),
+            "user turn still renders: {rendered}"
         );
     }
 

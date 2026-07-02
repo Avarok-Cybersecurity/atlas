@@ -65,7 +65,9 @@ mod chat_impl;
 mod jinja_helpers;
 mod message_preprocess;
 
-pub(crate) use message_preprocess::{autoclose_assistant_think, resolve_think_control};
+pub(crate) use message_preprocess::{
+    autoclose_assistant_think, remap_developer_role, resolve_think_control,
+};
 
 pub struct ChatTokenizer {
     tokenizer: Tokenizer,

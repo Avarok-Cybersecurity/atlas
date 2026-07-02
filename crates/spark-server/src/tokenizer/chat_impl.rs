@@ -8,7 +8,7 @@ use tokenizers::Tokenizer;
 
 use super::{
     ChatTokenizer, StreamingDecoder, autoclose_assistant_think, normalize_tool_call_arguments,
-    resolve_think_control,
+    remap_developer_role, resolve_think_control,
 };
 
 /// Run Atlas's cross-cutting message preprocessing (formerly encoded in
@@ -21,12 +21,14 @@ use super::{
 ///
 /// Returns the rewritten messages plus the thinking flag to render with
 /// (the inline control tokens override the caller's value when present).
-fn preprocess_for_render(
+pub(crate) fn preprocess_for_render(
     messages: &[serde_json::Value],
     enable_thinking: bool,
 ) -> (Vec<serde_json::Value>, bool) {
     // F76: stringified tool-call args → dicts (see normalize_tool_call_arguments).
     let mut prepared = normalize_tool_call_arguments(messages);
+    // Behavior 0: developer→system role remap (model templates reject `developer`).
+    remap_developer_role(&mut prepared);
     // Behavior 1: auto-close dangling <think> before <tool_call> in history.
     autoclose_assistant_think(&mut prepared);
     // Behavior 2: resolve + strip inline think-control tokens.
@@ -36,17 +38,6 @@ fn preprocess_for_render(
 }
 
 impl ChatTokenizer {
-    /// Override directory for Jinja templates. Dropping a `.jinja` file
-    /// here named by model_type (e.g. `qwen3_5_moe.jinja`) OPTS IN to
-    /// overriding the model's own shipped template — use it only for
-    /// fixes that the Rust message-preprocessing (`preprocess_for_render`)
-    /// can't express. Set `ATLAS_DISABLE_TEMPLATE_OVERRIDES=1` to ignore
-    /// this directory entirely. (Loader uses
-    /// `jinja_helpers::TEMPLATE_OVERRIDE_DIR`; this const documents the
-    /// convention.)
-    #[allow(dead_code)]
-    const TEMPLATE_OVERRIDE_DIR: &'static str = "jinja-templates";
-
     pub fn from_model_dir(
         model_dir: &Path,
         eos_token_id: u32,
