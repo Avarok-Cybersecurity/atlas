@@ -148,7 +148,12 @@ pub fn parse_tool_calls(text: &str) -> (Option<String>, Vec<ToolCall>) {
         {
             let name = normalize_tool_name(&trimmed[..id_end]);
             let args_part = &trimmed[id_end..];
-            if let Some(end_rel) = find_balanced_json_end(args_part) {
+            // Phantom `json:` / `tool_call:` prose keeps its colon through
+            // normalization — skip so fallback 3 can extract any embedded
+            // `{"name":...}` call instead.
+            if is_normalized_tool_name(&name)
+                && let Some(end_rel) = find_balanced_json_end(args_part)
+            {
                 let json_slice = &args_part[..end_rel];
                 let converted = gemma4_to_json(json_slice);
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&converted)

@@ -39,6 +39,16 @@ fn is_tool_name_component(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
 
+/// Guard for candidate names scanned with `is_tool_name_or_namespace_char`:
+/// after `normalize_tool_name`, a real tool name never retains a `:`.
+/// A surviving colon means the "namespace" had an empty tail — prose like
+/// `json:{"a":1}` or `tool_call:{"name":...}` scanning as the phantom names
+/// `json:` / `tool_call:` — so the candidate is NOT a tool call and the
+/// caller must leave the original text untouched for later passes.
+fn is_normalized_tool_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains(':')
+}
+
 /// Normalize a model-emitted function name to the client-visible tool name.
 ///
 /// This keeps existing parser salvage behaviour (`Bash=Bash` -> `Bash`,

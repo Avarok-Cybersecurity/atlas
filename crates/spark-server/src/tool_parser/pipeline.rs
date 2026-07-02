@@ -226,6 +226,11 @@ impl ToolCallPass for BareMistralNamePass {
             return;
         }
         let func_name = normalize_tool_name(name_part);
+        // Phantom `json:` / `tool_call:` prose keeps its colon through
+        // normalization — no-op so later passes see the original text.
+        if !is_normalized_tool_name(&func_name) {
+            return;
+        }
         let Ok(args_obj) = serde_json::from_str::<serde_json::Value>(json_part) else {
             return;
         };
@@ -288,6 +293,9 @@ impl ToolCallPass for ParamAsFunctionSalvagePass {
         let tail = &text[first_param..];
         let from = format!("<parameter={name}>");
         let func_name = normalize_tool_name(&name);
+        if !is_normalized_tool_name(&func_name) {
+            return;
+        }
         let to = format!("<function={func_name}>");
         let fixed_tail = tail.replacen(&from, &to, 1);
         let reconstructed = format!("{before}{fixed_tail}");

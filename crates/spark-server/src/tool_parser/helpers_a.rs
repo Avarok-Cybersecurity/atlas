@@ -27,7 +27,9 @@ pub(super) fn parse_mistral_native_call(segment: &str) -> Option<ToolCall> {
     } else {
         return None;
     };
-    if name.is_empty() {
+    // A colon surviving normalization means the namespace tail was empty
+    // (prose like `json:{...}`) — not a real call.
+    if !is_normalized_tool_name(&name) {
         return None;
     }
     // Reject obvious non-identifier "names" (e.g. "Hello, world" before the
@@ -193,9 +195,13 @@ pub(super) fn parse_bare_identifier_json_calls(text: &str) -> (Option<String>, V
                         });
                     if let Some(v) = parsed {
                         // Must be an object (not just any balanced {...}).
-                        if v.is_object() {
-                            let raw_name = std::str::from_utf8(name_bytes).unwrap_or("");
-                            let name = normalize_tool_name(raw_name);
+                        // Reject phantom names that kept a trailing `:` after
+                        // normalization (`json:{...}` prose). Falling through
+                        // to `i += 1` leaves the text unconsumed for later
+                        // fallbacks (e.g. embedded-JSON `{"name":...}`).
+                        let raw_name = std::str::from_utf8(name_bytes).unwrap_or("");
+                        let name = normalize_tool_name(raw_name);
+                        if v.is_object() && is_normalized_tool_name(&name) {
                             let args = serde_json::to_string(&v).unwrap_or_else(|_| "{}".into());
                             // Capture any content between last_end and `start`.
                             if start > last_end {
