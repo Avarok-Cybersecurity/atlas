@@ -285,7 +285,11 @@ pub(super) fn build_linear_attention_dense_bf16(
     let (conv_ptr, _, _) = shard_gdn_conv_rows(ssm35.conv1d.weight, &dims, d_conv, gpu)?;
     let (a_log_ptr, _) = shard_gdn_value_vector(ssm35.a_log.weight, &dims, 1, 4, gpu)?;
     let (dt_bias_ptr, _) = shard_gdn_value_vector(ssm35.dt_bias.weight, &dims, 1, 4, gpu)?;
-    let (norm_ptr, _) = shard_gdn_value_vector(ssm35.norm.weight, &dims, dims.vd, 2, gpu)?;
+    // norm.weight is the gated-RMSNorm gain over the value HEAD-DIM ([vd]),
+    // SHARED across all value heads — REPLICATE under HeadParallel. (a_log/dt_bias
+    // above ARE per-head [nv] scalars, so they slice; slicing norm on the head
+    // axis read past the [vd] buffer → cuMemcpyDtoDAsync INVALID_VALUE at load.)
+    let norm_ptr = ssm35.norm.weight;
     let (out_proj_ptr, _, _) = shard_gdn_out_proj_row_parallel(ssm35.out_proj.weight, &dims, gpu)?;
 
     let ssm = SsmWeights {
@@ -394,7 +398,11 @@ pub(super) fn build_linear_attention_nvfp4(
     let (conv_ptr, _, _) = shard_gdn_conv_rows(ssm35.conv1d.weight, &dims, d_conv, gpu)?;
     let (a_log_ptr, _) = shard_gdn_value_vector(ssm35.a_log.weight, &dims, 1, 4, gpu)?;
     let (dt_bias_ptr, _) = shard_gdn_value_vector(ssm35.dt_bias.weight, &dims, 1, 4, gpu)?;
-    let (norm_ptr, _) = shard_gdn_value_vector(ssm35.norm.weight, &dims, dims.vd, 2, gpu)?;
+    // norm.weight is the gated-RMSNorm gain over the value HEAD-DIM ([vd]),
+    // SHARED across all value heads — REPLICATE under HeadParallel. (a_log/dt_bias
+    // above ARE per-head [nv] scalars, so they slice; slicing norm on the head
+    // axis read past the [vd] buffer → cuMemcpyDtoDAsync INVALID_VALUE at load.)
+    let norm_ptr = ssm35.norm.weight;
     let conv1d_local = DenseWeight { weight: conv_ptr };
     let a_log_local = DenseWeight { weight: a_log_ptr };
     let dt_bias_local = DenseWeight { weight: dt_bias_ptr };

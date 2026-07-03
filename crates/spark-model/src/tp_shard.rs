@@ -96,6 +96,12 @@ pub fn shard_dense_bf16(
             // Per-row strided copy: row r of dst comes from row r of src,
             // starting at column `tp_rank * local_in`.
             let col_offset_bytes = tp_rank * local_row_bytes;
+            tracing::debug!(
+                target: "spark_model::tp_shard",
+                out_dim, in_dim, local_in, src_row_bytes, local_row_bytes,
+                tp_rank, tp_size, src = src.0,
+                "dense row-parallel shard (per-row strided)"
+            );
             for r in 0..out_dim {
                 let src_off = r * src_row_bytes + col_offset_bytes;
                 let dst_off = r * local_row_bytes;
@@ -523,6 +529,12 @@ fn slice_segments(
     let row_bytes = row_elems * elem_bytes;
     let (ops, local_rows) = segment_copy_plan(segments, row_bytes, tp_rank, tp_size)?;
     let dst = gpu.alloc(local_rows * row_bytes)?;
+    tracing::debug!(
+        target: "spark_model::tp_shard",
+        ?segments, full_rows, row_elems, elem_bytes, local_rows,
+        tp_rank, tp_size, src = src.0,
+        "gdn segmented row-slice"
+    );
     for op in &ops {
         gpu.copy_d2d(src.offset(op.src_off), dst.offset(op.dst_off), op.len)?;
     }
@@ -649,6 +661,13 @@ pub fn shard_gdn_value_vector(
     let local_bytes = local_len * elem_bytes;
     let dst = gpu.alloc(local_bytes)?;
     let src_off = dims.tp_rank * local_bytes;
+    tracing::debug!(
+        target: "spark_model::tp_shard",
+        full_nv = dims.full_nv, local_nv = dims.local_nv, unit, elem_bytes,
+        full_len, local_len, local_bytes, src_off, tp_rank = dims.tp_rank,
+        src = src.0,
+        "gdn value-vector shard (per-value-head axis)"
+    );
     gpu.copy_d2d(src.offset(src_off), dst, local_bytes)?;
     Ok((dst, local_len))
 }

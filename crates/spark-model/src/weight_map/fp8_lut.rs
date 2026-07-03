@@ -470,6 +470,12 @@ pub(crate) fn gpu_concat_rows(
     let b_bytes = b_rows * k * 2;
     let total = a_bytes + b_bytes;
     let buf = gpu.alloc(total)?;
+    tracing::debug!(
+        target: "spark_model::weight_map::concat",
+        a_rows, b_rows, k, a_bytes, b_bytes, total,
+        a = a.weight.0, b = b.weight.0, buf = buf.0,
+        "gpu concat rows [a;b]"
+    );
     gpu.copy_d2d(a.weight, buf, a_bytes)?;
     gpu.copy_d2d(b.weight, buf.offset(a_bytes), b_bytes)?;
     Ok(DenseWeight { weight: buf })
