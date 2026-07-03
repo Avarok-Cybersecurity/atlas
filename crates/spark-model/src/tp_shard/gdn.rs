@@ -44,7 +44,7 @@ use super::{BF16_BYTES, TpShardKind, shard_dense_bf16};
 /// Pre-TP-shard GDN (linear-attention / SSM) dimensions reconstructed from
 /// `config`.
 ///
-/// Mirrors [`super::TpAttentionDims`]: `topology.rs` divides
+/// Mirrors [`TpAttentionDims`]: `topology.rs` divides
 /// `linear_num_key_heads` / `linear_num_value_heads` by `tp_world_size` at
 /// startup, so by the time a loader runs `config` holds **per-rank-local**
 /// head counts. The `full_*` fields multiply back up to the pre-shard sizes
@@ -124,7 +124,7 @@ impl TpGdnDims {
     }
 
     /// Full-row segment list for the `[Q|K|V]` in-projection.
-    pub(crate) fn qkv_segments(&self) -> [usize; 3] {
+    fn qkv_segments(&self) -> [usize; 3] {
         [
             self.full_key_dim(),
             self.full_key_dim(),
@@ -132,7 +132,7 @@ impl TpGdnDims {
         ]
     }
     /// Full-row segment list for the concatenated `[Q|K|V|Z]` in-projection.
-    pub(crate) fn qkvz_segments(&self) -> [usize; 4] {
+    fn qkvz_segments(&self) -> [usize; 4] {
         [
             self.full_key_dim(),
             self.full_key_dim(),
@@ -144,10 +144,10 @@ impl TpGdnDims {
 
 /// A single device-to-device copy in a segmented-slice plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CopyOp {
-    pub(crate) src_off: usize,
-    pub(crate) dst_off: usize,
-    pub(crate) len: usize,
+struct CopyOp {
+    src_off: usize,
+    dst_off: usize,
+    len: usize,
 }
 
 /// Build the copy plan for a SEGMENTED row-slice.
@@ -162,7 +162,7 @@ pub(crate) struct CopyOp {
 /// `tp_size` — the caller has already reconstructed `full_*` as
 /// `local_* * tp_size`, so this holds by construction, but it is checked to
 /// fail loudly on a mis-wired config rather than silently corrupt heads.
-pub(crate) fn segment_copy_plan(
+fn segment_copy_plan(
     segments: &[usize],
     row_bytes: usize,
     tp_rank: usize,
