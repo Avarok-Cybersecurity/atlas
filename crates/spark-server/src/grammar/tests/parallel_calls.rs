@@ -26,9 +26,12 @@ fn drive_one_call(state: &mut GrammarState, city: &str) {
         "<tool_call> open must be accepted"
     );
     // Trigger tail + args object + hermes outer close, byte-wise. The tag's
-    // begin literal is `<tool_call>{"name":"get_weather","arguments":` and
-    // its end literal is `}</tool_call>`; the args schema fills the middle.
-    let body = format!(r#"{{"name":"get_weather","arguments":{{"location":"{city}"}}}}"#);
+    // begin literal is `<tool_call>\n{"name": "get_weather", "arguments": `
+    // and its end literal is `}\n</tool_call>` (2026-07-03: tag format
+    // mirrors the model's template-demonstrated shape); the args schema
+    // fills the middle.
+    let body =
+        format!("\n{{\"name\": \"get_weather\", \"arguments\": {{\"location\":\"{city}\"}}}}\n");
     for (i, b) in body.bytes().enumerate() {
         assert!(
             state.accept_token(u32::from(b)),
@@ -139,7 +142,7 @@ fn eos_reachable_after_each_close_literal_but_blocked_mid_call() {
     // Open a second call and stop INSIDE its JSON string value: end-of-turn
     // is grammar-illegal here, so the gate must block a (mask-leaked) EOS.
     assert!(state.accept_token(TOOL_CALL_OPEN));
-    for b in br#"{"name":"get_weather","arguments":{"location":"To"# {
+    for b in b"\n{\"name\": \"get_weather\", \"arguments\": {\"location\":\"To" {
         assert!(state.accept_token(u32::from(*b)));
     }
     assert!(
@@ -148,7 +151,7 @@ fn eos_reachable_after_each_close_literal_but_blocked_mid_call() {
     );
 
     // Close the second call — free to stop again.
-    for b in br#"kyo"}}"# {
+    for b in b"kyo\"}}\n" {
         assert!(state.accept_token(u32::from(*b)));
     }
     assert!(state.accept_token(TOOL_CALL_CLOSE));
@@ -202,7 +205,7 @@ fn hermes_grammar_wedges_if_tool_call_close_is_stop_exempt() {
         .with_stop_tokens(&[EOS, TOOL_CALL_CLOSE]);
 
     assert!(state.accept_token(TOOL_CALL_OPEN));
-    let body = r#"{"name":"get_weather","arguments":{"location":"Paris"}}"#;
+    let body = "\n{\"name\": \"get_weather\", \"arguments\": {\"location\":\"Paris\"}}\n";
     for b in body.bytes() {
         assert!(state.accept_token(u32::from(b)));
     }
