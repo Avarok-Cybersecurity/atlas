@@ -426,7 +426,7 @@ impl MoeLayer {
 
             // EP all-reduce per-token partial output
             if let Some(comm) = ctx.comm
-                && comm.world_size() > 1
+                && ctx.config.ep_world_size > 1
             {
                 if ctx.graph_capture {
                     comm.all_reduce(output_t.0, h as usize * 2)?;
