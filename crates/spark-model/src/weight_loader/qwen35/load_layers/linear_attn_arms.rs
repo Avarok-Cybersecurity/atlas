@@ -297,7 +297,9 @@ pub(super) fn build_linear_attention_dense_bf16(
         in_proj_ba: ba_dense,
         conv1d: DenseWeight { weight: conv_ptr },
         a_log: DenseWeight { weight: a_log_ptr },
-        dt_bias: DenseWeight { weight: dt_bias_ptr },
+        dt_bias: DenseWeight {
+            weight: dt_bias_ptr,
+        },
         norm: DenseWeight { weight: norm_ptr },
         out_proj: QuantizedWeight::null(),
     };
@@ -405,7 +407,9 @@ pub(super) fn build_linear_attention_nvfp4(
     let norm_ptr = ssm35.norm.weight;
     let conv1d_local = DenseWeight { weight: conv_ptr };
     let a_log_local = DenseWeight { weight: a_log_ptr };
-    let dt_bias_local = DenseWeight { weight: dt_bias_ptr };
+    let dt_bias_local = DenseWeight {
+        weight: dt_bias_ptr,
+    };
     let norm_local = DenseWeight { weight: norm_ptr };
 
     // out_proj is row-parallel: slice its input (value_dim) to local, then

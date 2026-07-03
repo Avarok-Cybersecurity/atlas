@@ -106,10 +106,26 @@ fn qkvz_segment_plan_is_segmented_not_contiguous() {
     // Rank-1 local halves: Q[16..32], K[48..64], V[128..192], Z[256..320].
     // Packed dst (rows): 0, 16, 32, 96.
     let want = [
-        CopyOp { src_off: 16 * row_bytes, dst_off: 0, len: 16 * row_bytes },
-        CopyOp { src_off: 48 * row_bytes, dst_off: 16 * row_bytes, len: 16 * row_bytes },
-        CopyOp { src_off: 128 * row_bytes, dst_off: 32 * row_bytes, len: 64 * row_bytes },
-        CopyOp { src_off: 256 * row_bytes, dst_off: 96 * row_bytes, len: 64 * row_bytes },
+        CopyOp {
+            src_off: 16 * row_bytes,
+            dst_off: 0,
+            len: 16 * row_bytes,
+        },
+        CopyOp {
+            src_off: 48 * row_bytes,
+            dst_off: 16 * row_bytes,
+            len: 16 * row_bytes,
+        },
+        CopyOp {
+            src_off: 128 * row_bytes,
+            dst_off: 32 * row_bytes,
+            len: 64 * row_bytes,
+        },
+        CopyOp {
+            src_off: 256 * row_bytes,
+            dst_off: 96 * row_bytes,
+            len: 64 * row_bytes,
+        },
     ];
     assert_eq!(ops, want);
 
@@ -130,14 +146,13 @@ fn qkvz_two_rank_reconcat_tiles_full() {
 
     // Synthetic full weight: row r filled with value r (u16), h cols each.
     let full: Vec<u16> = (0..full_rows)
-        .flat_map(|r| std::iter::repeat(r as u16).take(h))
+        .flat_map(|r| std::iter::repeat_n(r as u16, h))
         .collect();
 
     // CPU reference slice using the plan (byte offsets → row indices).
     let cpu_slice = |d: &TpGdnDims| -> Vec<u16> {
         let row_bytes = h * BF16_BYTES;
-        let (ops, local_rows) =
-            segment_copy_plan(&segs, row_bytes, d.tp_rank, d.tp_size).unwrap();
+        let (ops, local_rows) = segment_copy_plan(&segs, row_bytes, d.tp_rank, d.tp_size).unwrap();
         let mut out = vec![0u16; local_rows * h];
         for op in &ops {
             let src_row = op.src_off / row_bytes;
@@ -197,9 +212,21 @@ fn conv_segment_plan_uses_qkv_segments() {
     assert_eq!(local_rows, d.local_conv_dim()); // 96
     // Rank 0: Q[0..16], K[32..48], V[64..128]; packed at 0,16,32.
     let want = [
-        CopyOp { src_off: 0, dst_off: 0, len: 16 * row_bytes },
-        CopyOp { src_off: 32 * row_bytes, dst_off: 16 * row_bytes, len: 16 * row_bytes },
-        CopyOp { src_off: 64 * row_bytes, dst_off: 32 * row_bytes, len: 64 * row_bytes },
+        CopyOp {
+            src_off: 0,
+            dst_off: 0,
+            len: 16 * row_bytes,
+        },
+        CopyOp {
+            src_off: 32 * row_bytes,
+            dst_off: 16 * row_bytes,
+            len: 16 * row_bytes,
+        },
+        CopyOp {
+            src_off: 64 * row_bytes,
+            dst_off: 32 * row_bytes,
+            len: 64 * row_bytes,
+        },
     ];
     assert_eq!(ops, want);
 }
@@ -238,8 +265,8 @@ fn value_vector_offsets() {
     assert_eq!(norm_src_off, 128);
     // a_log: unit = 1, fp32. full = 8, local = 4.
     let f32_bytes = 4usize;
-    let alog_src_off = d.tp_rank * d.local_nv * f32_bytes; // rank1 = 4*4
-    assert_eq!(alog_src_off, 16);
+    let a_log_src_off = d.tp_rank * d.local_nv * f32_bytes; // rank1 = 4*4
+    assert_eq!(a_log_src_off, 16);
 }
 
 /// A non-divisible segment must be rejected loudly, not silently corrupt.

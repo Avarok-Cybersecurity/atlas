@@ -222,8 +222,7 @@ impl TransformerModel {
     /// in `sample_first_token` D2H, worker in the next cmd recv, both
     /// GPUs spinning in NCCL kernels).
     pub(crate) fn multi_rank_protocol_active(&self) -> bool {
-        self.comm.is_some()
-            && (self.config.ep_world_size > 1 || self.config.tp_world_size > 1)
+        self.comm.is_some() && (self.config.ep_world_size > 1 || self.config.tp_world_size > 1)
     }
 
     pub(super) fn ep_broadcast_seq_and_cmd(&self, seq_id: u32, cmd: u32, v2: bool) -> Result<()> {
