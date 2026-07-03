@@ -10,6 +10,38 @@ use super::super::types::TransformerModel;
 use crate::traits::SequenceState;
 
 impl TransformerModel {
+    /// Plain single-token `decode()` already captures this step's hidden
+    /// state into `dflash_hidden_save` (via the unconditional
+    /// `try_dflash_capture` call in the decode layer loop), but nothing
+    /// previously moved that capture into the EAGLE ctx accumulator —
+    /// only the DFlash verify/propose path appended to it. When DFlash is
+    /// gated off for a stretch of decode() steps (e.g. a spontaneous
+    /// `<think>` block gating `!inside_thinking`) and then resumes, the
+    /// accumulator was missing every position generated during the gap,
+    /// so the drafter's first post-resume `propose()` conditioned on
+    /// stale, non-contiguous history. Called unconditionally at the end
+    /// of every `decode()` step to keep the accumulator contiguous
+    /// regardless of which path generated each token.
+    pub(super) fn dflash_decode_ctx_append_dispatch(&self, seq: &mut SequenceState) -> Result<()> {
+        let base = match self.dflash_hidden_save {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        let proposer = match &self.proposer {
+            Some(p) => p.as_ref(),
+            None => return Ok(()),
+        };
+        if self.dflash_capture_layers.is_empty() {
+            return Ok(());
+        }
+        let Some(prop_state) = seq.proposer_state.as_mut() else {
+            return Ok(());
+        };
+        let stream = self.gpu.default_stream();
+        let actual_pos = seq.seq_len as i32;
+        proposer.append_ctx_slot(base, actual_pos, prop_state.as_mut(), self.gpu.as_ref(), stream)
+    }
+
     pub(super) fn dflash_accept_append_dispatch(&self, seq: &mut SequenceState) -> Result<()> {
         let base = match self.dflash_hidden_save {
             Some(p) => p,
