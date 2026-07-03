@@ -104,20 +104,48 @@ fn think_control_strips_in_array_content() {
 }
 
 #[test]
-fn remap_developer_to_system() {
-    let mut messages = vec![
+fn remap_developer_only_to_system() {
+    // No system message present → developer remapped in place; order and
+    // content preserved.
+    let out = remap_developer_role(vec![
         json!({"role": "developer", "content": "You are terse."}),
         json!({"role": "user", "content": "hi"}),
-        json!({"role": "system", "content": "unchanged"}),
+    ]);
+    assert_eq!(out.len(), 2);
+    assert_eq!(out[0]["role"], "system", "developer → system");
+    assert_eq!(out[0]["content"], "You are terse.", "content untouched");
+    assert_eq!(out[1]["role"], "user");
+}
+
+#[test]
+fn remap_developer_plus_system_coalesces() {
+    // developer + system both present → folded into ONE leading system
+    // message (order preserved), so the model template's single-leading-
+    // system rule holds instead of erroring on a duplicate system.
+    let out = remap_developer_role(vec![
+        json!({"role": "developer", "content": "Be terse."}),
+        json!({"role": "system", "content": "You are helpful."}),
+        json!({"role": "user", "content": "hi"}),
+    ]);
+    let systems = out.iter().filter(|m| m["role"] == "system").count();
+    assert_eq!(systems, 1, "exactly one system message after coalesce");
+    assert_eq!(out[0]["role"], "system");
+    assert_eq!(out[0]["content"], "Be terse.\n\nYou are helpful.");
+    assert_eq!(out[1]["role"], "user", "non-system messages preserved");
+    assert_eq!(out.len(), 2);
+}
+
+#[test]
+fn remap_noop_without_developer() {
+    let messages = vec![
+        json!({"role": "system", "content": "s"}),
+        json!({"role": "user", "content": "u"}),
     ];
-    remap_developer_role(&mut messages);
-    assert_eq!(messages[0]["role"], "system", "developer → system");
     assert_eq!(
-        messages[0]["content"], "You are terse.",
-        "content untouched"
+        remap_developer_role(messages.clone()),
+        messages,
+        "no developer role → untouched"
     );
-    assert_eq!(messages[1]["role"], "user", "other roles untouched");
-    assert_eq!(messages[2]["role"], "system");
 }
 
 // --- End-to-end: Holo renders off the MODEL's own template + Rust behaviors ---
@@ -210,6 +238,33 @@ fn holo_renders_developer_message_as_system() {
     assert!(
         rendered.contains("<|im_start|>user\nHi<|im_end|>"),
         "user turn still renders: {rendered}"
+    );
+}
+
+/// Developer + explicit system in the same request (a real OpenAI client
+/// pattern). Naively remapping developer→system yields TWO system messages,
+/// and the Holo template raises `System message must be at the beginning.`
+/// on the non-leading one (caught live on Holo-3.1-35B-A3B-NVFP4). The
+/// coalescing remap folds both into one leading system message so the render
+/// succeeds and both instructions survive.
+#[test]
+fn holo_renders_developer_plus_system_coalesced() {
+    let messages = vec![
+        json!({"role": "developer", "content": "Always end replies with Done."}),
+        json!({"role": "system", "content": "You are helpful."}),
+        json!({"role": "user", "content": "Hi"}),
+    ];
+    // Must NOT panic on the template's duplicate/non-leading system raise.
+    let rendered = render_holo_model_template(&messages, true);
+    // Exactly one system block, carrying BOTH instructions.
+    assert_eq!(
+        rendered.matches("<|im_start|>system\n").count(),
+        1,
+        "exactly one system block: {rendered}"
+    );
+    assert!(
+        rendered.contains("Always end replies with Done.") && rendered.contains("You are helpful."),
+        "both developer and system instructions must survive: {rendered}"
     );
 }
 

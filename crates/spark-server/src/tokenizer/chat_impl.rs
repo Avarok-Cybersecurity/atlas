@@ -26,9 +26,10 @@ pub(crate) fn preprocess_for_render(
     enable_thinking: bool,
 ) -> (Vec<serde_json::Value>, bool) {
     // F76: stringified tool-call args → dicts (see normalize_tool_call_arguments).
-    let mut prepared = normalize_tool_call_arguments(messages);
-    // Behavior 0: developer→system role remap (model templates reject `developer`).
-    remap_developer_role(&mut prepared);
+    let prepared = normalize_tool_call_arguments(messages);
+    // Behavior 0: developer→system role remap (model templates reject `developer`;
+    // folds developer+system into one leading system message).
+    let mut prepared = remap_developer_role(prepared);
     // Behavior 1: auto-close dangling <think> before <tool_call> in history.
     autoclose_assistant_think(&mut prepared);
     // Behavior 2: resolve + strip inline think-control tokens.

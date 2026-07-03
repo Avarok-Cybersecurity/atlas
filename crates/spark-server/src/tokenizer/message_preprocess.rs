@@ -16,7 +16,8 @@
 //!
 //! Behaviors implemented here:
 //!   0. [`remap_developer_role`] — rewrite `role: "developer"` to
-//!      `"system"` (a model's own template raises `Unexpected message
+//!      `"system"` (folding developer+system into one leading system;
+//!      a model's own template raises `Unexpected message
 //!      role.` on the OpenAI developer role).
 //!   1. [`autoclose_think_before_tool_call`] — insert a missing
 //!      `</think>` before a `<tool_call>` in assistant *history* content.
@@ -202,14 +203,79 @@ pub(crate) fn autoclose_assistant_think(messages: &mut [Value]) {
 /// such requests render off the model's own template instead of erroring.
 ///
 /// Only the `role` field is rewritten; content is untouched.
-pub(crate) fn remap_developer_role(messages: &mut [Value]) {
-    for msg in messages.iter_mut() {
-        if msg.get("role").and_then(|r| r.as_str()) == Some("developer")
-            && let Some(role) = msg.get_mut("role")
-        {
-            *role = Value::String("system".to_string());
+pub(crate) fn remap_developer_role(messages: Vec<Value>) -> Vec<Value> {
+    let role_of = |m: &Value| -> Option<String> {
+        m.get("role").and_then(|r| r.as_str()).map(str::to_string)
+    };
+    let is_sys_level =
+        |m: &Value| matches!(role_of(m).as_deref(), Some("developer") | Some("system"));
+
+    let has_dev = messages
+        .iter()
+        .any(|m| role_of(m).as_deref() == Some("developer"));
+    if !has_dev {
+        return messages; // nothing to remap
+    }
+
+    // Simple case: the developer message(s) are the only system-level
+    // messages — remap developer→system in place, no coalescing needed.
+    if messages.iter().filter(|m| is_sys_level(m)).count()
+        == messages
+            .iter()
+            .filter(|m| role_of(m).as_deref() == Some("developer"))
+            .count()
+    {
+        let mut messages = messages;
+        for m in messages.iter_mut() {
+            if role_of(m).as_deref() == Some("developer")
+                && let Some(role) = m.get_mut("role")
+            {
+                *role = Value::String("system".to_string());
+            }
+        }
+        return messages;
+    }
+
+    // A `system` message already exists alongside `developer`. Remapping
+    // both to `system` would leave two system messages, which a model's own
+    // template rejects (only a leading system is allowed). Fold all
+    // system-level (`developer` + `system`) STRING content into ONE system
+    // message at the first such position, preserving order. A (rare)
+    // non-string system message is kept as its own message untouched.
+    let mut merged = String::new();
+    let mut out: Vec<Value> = Vec::with_capacity(messages.len());
+    let mut slot: Option<usize> = None;
+    for m in messages {
+        if is_sys_level(&m) {
+            if let Some(s) = m.get("content").and_then(|c| c.as_str()) {
+                if !merged.is_empty() && !s.is_empty() {
+                    merged.push_str("\n\n");
+                }
+                merged.push_str(s);
+                if slot.is_none() {
+                    slot = Some(out.len());
+                    out.push(Value::Null); // reserve; filled below
+                }
+            } else {
+                // Non-string system-level content (rare): keep as its own
+                // system message rather than drop the payload.
+                let mut m = m;
+                if let Some(role) = m.get_mut("role") {
+                    *role = Value::String("system".to_string());
+                }
+                out.push(m);
+            }
+        } else {
+            out.push(m);
         }
     }
+    if let Some(i) = slot {
+        let mut sys = serde_json::Map::new();
+        sys.insert("role".to_string(), Value::String("system".to_string()));
+        sys.insert("content".to_string(), Value::String(merged));
+        out[i] = Value::Object(sys);
+    }
+    out
 }
 
 #[cfg(test)]
