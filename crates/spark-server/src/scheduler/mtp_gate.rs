@@ -53,15 +53,19 @@
 use std::time::Duration;
 
 /// Depth-regime factor that triggers re-measurement, in either direction.
-/// The weight-bound → KV-bound transition plays out over roughly an order of
-/// magnitude of depth, so factor-4 crossings give at most a couple of
-/// re-measurements per decade of depth growth — and the factor doubles as
-/// hysteresis against flapping around a boundary. Each re-measurement costs
-/// `2 * (WARMUP_SAMPLES + TIMED_SAMPLES)` steps, all of which emit real,
-/// correct tokens (verify and plain decode are greedy-equivalent), so the
-/// only cost of an unnecessary re-measurement is the sub-optimal step type
-/// during the window itself.
-const REMEASURE_DEPTH_FACTOR: usize = 4;
+/// Factor 2, not 4: the verify multiplier crosses the break-even (m=2.0 at
+/// K=2) over a NARROW depth band on this hybrid MoE — measured m=2.01 at
+/// ~7k, 1.86 at ~13k (Qwen3.6-35B-A3B-FP8/GB10). A factor-4 window let a
+/// session that STARTS shallow (agentic tool sessions begin ~5k) grow into
+/// the MTP-profitable band (~10-13k) WITHOUT ever re-measuring — only a
+/// 5k→20k jump would trip factor 4 — so it stayed gated off session-wide,
+/// wasting the win exactly where sessions deepen the most. Factor 2 re-checks
+/// at ~10k, flipping MTP on for the deep majority of the session. Each
+/// re-measurement is `2 * (WARMUP_SAMPLES + TIMED_SAMPLES)` steps that emit
+/// real, correct tokens (verify and plain decode are greedy-equivalent), so a
+/// re-measure — even one that flips back near the boundary — costs only the
+/// sub-optimal step type during its own ~14-step window, never correctness.
+const REMEASURE_DEPTH_FACTOR: usize = 2;
 
 /// Floor for the regime comparison: below this depth every context is
 /// "short" — the KV/SSM state read per step is far below the per-step expert
