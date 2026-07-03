@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::*;
+// Internal slice-plan helpers live in the `gdn` submodule (pub(crate));
+// import them directly rather than re-exporting from the lib surface.
+use super::gdn::{CopyOp, segment_copy_plan};
 
 /// Validate the slice-offset math without exercising the GPU.
 #[test]

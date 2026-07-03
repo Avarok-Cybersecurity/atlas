@@ -335,9 +335,6 @@ impl TpMoeDims {
 
 mod gdn;
 pub use gdn::*;
-// Internal slice-plan helpers (private API) — re-exported for the unit tests
-// in `tp_shard/tests.rs`, which reach them via `use super::*`.
-pub(crate) use gdn::{CopyOp, segment_copy_plan};
 
 mod quant_shard;
 pub use quant_shard::{shard_fp8_block_scaled, shard_quantized_nvfp4};
