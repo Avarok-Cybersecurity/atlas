@@ -85,13 +85,21 @@ pub(super) fn handle_complete_tool_call(
     if let Some(ref cwd) = ctx.cwd_for_normalize {
         tool_parser::normalize_paths(std::slice::from_mut(tc), cwd);
     }
-    let validation = tool_parser::validate_single_tool_call(tc, &ctx.tool_defs_for_backfill);
-    let is_soft = validation
-        .as_ref()
-        .err()
-        .map(|e| e.contains("non-empty"))
-        .unwrap_or(false);
-    if let Err(e) = &validation
+    // Typed severity (was a fragile `contains("non-empty")` sniff): soft =
+    // MissingParam (2026-07-03 ST-collapse class) + EmptyRequired (2026-05-25
+    // disposition) pass through; Hard bails.
+    let validation = tool_parser::assess_tool_call(tc, &ctx.tool_defs_for_backfill).map_err(|i| {
+        (
+            matches!(
+                i,
+                tool_parser::ToolCallIssue::MissingParam(_)
+                    | tool_parser::ToolCallIssue::EmptyRequired(_)
+            ),
+            i.into_message(),
+        )
+    });
+    let is_soft = validation.as_ref().err().is_some_and(|(soft, _)| *soft);
+    if let Err((_, e)) = &validation
         && !is_soft
     {
         tracing::warn!(
@@ -105,10 +113,10 @@ pub(super) fn handle_complete_tool_call(
             Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
         ));
         state.stop_string_triggered = true;
-    } else if let Err(e) = &validation {
-        // Soft validation error (empty required string) — emit the tool
-        // call as the model produced it and let opencode's per-tool
-        // schema surface its own actionable error. See
+    } else if let Err((_, e)) = &validation {
+        // Soft validation error (missing param / empty required string) —
+        // emit the tool call as the model produced it and let the client's
+        // per-tool schema surface its own actionable error. See
         // `handle_tool_call_delta` for the rationale.
         tracing::warn!(
             tool = %tc.function.name,
@@ -287,7 +295,7 @@ pub(super) fn handle_tool_call_delta(
         if let Some(ref cwd) = ctx.cwd_for_normalize {
             tool_parser::normalize_paths(std::slice::from_mut(&mut tc), cwd);
         }
-        if let Err(e) = tool_parser::validate_single_tool_call(&tc, &ctx.tool_defs_for_backfill) {
+        if let Err(issue) = tool_parser::assess_tool_call(&tc, &ctx.tool_defs_for_backfill) {
             // Mid-stream validation rejections used to emit a `[atlas] Tool
             // call rejected: …` content chunk and trip `stop_string_triggered`
             // — but `handle_tool_call_start` had already emitted the
@@ -298,13 +306,19 @@ pub(super) fn handle_tool_call_delta(
             // cannot be empty. Received ''").
             //
             // Empty-required-string failures (most common: F78 path tools,
-            // 2026-05-25 shell tools) are recoverable: emit the args delta
+            // 2026-05-25 shell tools) and missing required params (2026-07-03
+            // ST-collapse class) are recoverable: emit the args delta
             // as the model produced them and let opencode's per-tool schema
             // surface its own actionable error to the model on the next
             // turn. Hard failures (unknown tool name, args not valid JSON)
             // still bail with a content chunk because they cannot be made
             // into a complete tool call at all.
-            let is_soft = e.contains("non-empty");
+            let is_soft = matches!(
+                issue,
+                tool_parser::ToolCallIssue::MissingParam(_)
+                    | tool_parser::ToolCallIssue::EmptyRequired(_)
+            );
+            let e = issue.into_message();
             if is_soft {
                 tracing::warn!(
                     tool = %name,

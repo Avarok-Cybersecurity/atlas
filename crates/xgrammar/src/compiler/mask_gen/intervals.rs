@@ -107,11 +107,21 @@ impl MaskGenerator<'_> {
                 }
                 let token = &sorted[i as usize].1;
 
-                // Speculative fast-accept path.
+                // Speculative fast-accept path. Deliberately does NOT
+                // update `prev_token`/`prev_matched`: the token never
+                // touches the parser, and `scan_one_token`'s LCP reuse
+                // is only sound when `prev_token` is the last token
+                // actually walked (parser holds `prev_matched` bytes of
+                // it, and its bytes past `prev_matched` were rejected).
+                // Updating it here poisoned that invariant: the next
+                // walked token sharing a prefix with a fast-accepted
+                // neighbor hit `lcp > prev_matched` and was wrongly
+                // rejected (upstream C++ `continue`s without updating
+                // `prev_token` — the fused ` "` ws->string-open token
+                // regression in grammar-constrained tool calls).
                 if speculative
                     && self.try_speculative_accept(token, i, &spec_mask, definite_bitset.as_deref())
                 {
-                    prev_token = Some(token.clone());
                     i += 1;
                     continue;
                 }

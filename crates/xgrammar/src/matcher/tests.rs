@@ -20,6 +20,7 @@ mod bitmask_tests;
 mod coalesce_tests;
 mod completion_tests;
 mod jump_rollback_tests;
+mod mask_regression_tests;
 
 /// A tiny RAW-vocab tokenizer covering the bytes / multi-char tokens
 /// used by the test grammars. Index 0 (`</s>`) is the stop token; the

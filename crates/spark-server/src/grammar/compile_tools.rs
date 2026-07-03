@@ -204,15 +204,34 @@ impl GrammarEngine {
             }
             let schema = enforce_min_length_on_required_strings(&raw_schema);
 
-            let begin = format!(r#"<tool_call>{{"name":"{name}","arguments":"#);
+            // Tag begin/end MUST match the model's template-demonstrated
+            // format (`<tool_call>\n{"name": "X", "arguments": {…}}\n</tool_call>`
+            // — newline after the tag, space after colons). The historical
+            // compact form was OOD for the model: conditioned on a forced
+            // compact call, its natural continuation was ANOTHER
+            // `<tool_call>` (per the template's multi-call examples), which
+            // the trigger engaged and the FSM made it fill with argmax junk
+            // (`{"loan_amount":-1,"interest_rate":-0.0,…}` trailing calls,
+            // 2026-07-03, reproduced with and without MTP).
+            let begin = format!("<tool_call>\n{{\"name\": \"{name}\", \"arguments\": ");
             tag_entries.push(serde_json::json!({
                 "type": "tag",
                 "begin": begin,
                 "content": {"type": "json_schema", "json_schema": schema},
-                "end": "}</tool_call>",
+                "end": "}\n</tool_call>",
             }));
 
-            let trigger = r#"<tool_call>{"name":""#.to_string();
+            // 2026-07-03: SHORT shared trigger. The historical LATE trigger
+            // `<tool_call>{"name":"` could never fire — the Qwen template's
+            // own tool instructions demonstrate `<tool_call>\n{"name": …`
+            // (newline + spaced JSON), so auto-mode constrained decoding
+            // NEVER engaged and the model's habit of closing `arguments`
+            // before trailing required params went unchecked (ST-995
+            // non_live 85.42→39.72 collapse; `tool_choice="required"` —
+            // grammar active from token 0 — produced the complete, correct
+            // call for the same prompt). Trigger on the tag itself; the tag
+            // `begin` then forces the compact wire format.
+            let trigger = "<tool_call>".to_string();
             if !seen_triggers.contains_key(&trigger) {
                 seen_triggers.insert(trigger.clone(), true);
                 triggers.push(trigger);
