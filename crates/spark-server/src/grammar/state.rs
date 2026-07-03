@@ -18,13 +18,16 @@ use super::engine::GrammarError;
 /// request, while the GPU is busy with the prompt — so the first decode
 /// steps never pay a cold mask-computation stall.
 ///
-/// `8` is a deliberately small constant: a tool-call structural-tag
-/// grammar has only a handful of genuinely expensive states (the JSON
-/// string / value scanners), and the call is `<= ranked.len()` work, so
-/// over-provisioning `k` is harmless. The mask cache is per-grammar and
-/// shared (`Arc`) across every request that reuses the cached
-/// `CompiledGrammar`, so this warm-up amortizes across requests too.
-const FORCED_TOKEN_TOP_K: usize = 8;
+/// `512`: measured on Qwen3.6-35B-A3B (248K vocab, qwen3_coder structural-tag
+/// grammar, GB10), the old `8` left the decode loop's resident states —
+/// preamble/trigger-tracking and the JSON body scanners — COLD, and every
+/// grammar-armed decode token paid a ~41 ms JIT mask computation: 26 → 12.6
+/// tok/s from merely ARMING tools (2.05x), which also inflated the MTP verify
+/// step past its net-negative gate. The warm set must cover the states the
+/// loop actually lives in, not just the 8 broadest scanners. The call is
+/// bounded by `ranked.len()` (over-provisioning stays harmless), runs during
+/// prefill overlap, and the cache is shared per-grammar across requests.
+const FORCED_TOKEN_TOP_K: usize = 512;
 
 /// Per-request grammar matching state.
 ///
