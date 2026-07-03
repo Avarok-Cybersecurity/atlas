@@ -16,6 +16,37 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 
 impl Qwen3SsmLayer {
+    /// GDN HeadParallel tensor-parallel all-reduce of the row-parallel
+    /// `out_proj` output.
+    ///
+    /// Each TP rank ran the GDN scan over its LOCAL value-head slice and
+    /// projected with the row-parallel `out_proj` (columns = local value_dim),
+    /// so its `[num_tokens, h]` BF16 buffer holds a PARTIAL sum over the full
+    /// hidden dim. Summing across ranks reconstructs the complete SSM output,
+    /// exactly mirroring attention's post-`o_proj` reduce
+    /// (`qwen3_attention/trait_impl/decode_inner.rs`). Must run BEFORE the
+    /// residual add / post-norm that consumes `out_proj_buf`.
+    ///
+    /// No-op when `tp_world_size == 1` or no communicator is present (single
+    /// GPU, or a path that already holds the complete output).
+    pub(super) fn ssm_tp_all_reduce(
+        &self,
+        out_proj_buf: DevicePtr,
+        num_tokens: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        if ctx.config.tp_world_size > 1
+            && let Some(comm) = ctx.comm
+        {
+            // BF16 [num_tokens, hidden_size] — same byte count attention
+            // reduces after o_proj.
+            let bytes = num_tokens * ctx.config.hidden_size * 2;
+            comm.all_reduce_async(out_proj_buf.0, bytes, stream)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn prefill_out_proj_dispatch(
         &self,
         ctx: &ForwardContext,

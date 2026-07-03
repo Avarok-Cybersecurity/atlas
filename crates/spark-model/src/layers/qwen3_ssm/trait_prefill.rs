@@ -376,6 +376,9 @@ impl Qwen3SsmLayer {
         // ── 10. Output projection GEMM: [N, 4096] × [4096, 2048] → [N, 2048] ──
         let out_proj_buf = ctx.buffers.moe_output();
         self.prefill_out_proj_dispatch(ctx, normed_out_buf, out_proj_buf, k, h, value_dim, stream)?;
+        // GDN HeadParallel: reduce the row-parallel partial out_proj across TP
+        // ranks (num_tokens × h BF16) before the residual add. No-op at tp=1.
+        self.ssm_tp_all_reduce(out_proj_buf, num_tokens, ctx, stream)?;
         // ATLAS_GDN_DUMP hook: SSM out_proj output — drift attribution.
         super::debug::maybe_dump_gdn_buf(
             ctx.gpu,

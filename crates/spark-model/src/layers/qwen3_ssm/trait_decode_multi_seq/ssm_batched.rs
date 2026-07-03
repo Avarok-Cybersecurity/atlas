@@ -307,6 +307,10 @@ impl Qwen3SsmLayer {
         }
         detail_step!("out_proj");
 
+        // GDN HeadParallel: reduce the row-parallel partial out_proj across TP
+        // ranks (n × h BF16) before the residual add. No-op at tp=1.
+        self.ssm_tp_all_reduce(ssm_out_base, n, ctx, stream)?;
+
         // ── 5. Batched residual add + post-attn RMS norm → norm_output[0..n] ──
         ops::residual_add_rms_norm(
             ctx.gpu,
