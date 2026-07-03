@@ -29,7 +29,7 @@ pub fn step_decode_only(
     // ActiveSeq is reordered, so the post-decode position->seq mapping stays
     // consistent.
     if n > 1 {
-        active.sort_by_key(|a| a.seq.ssm_slot_idx().unwrap_or(a.seq.slot_idx as usize));
+        active.sort_by_key(|a| a.seq.ssm_slot_idx().unwrap_or(a.seq.slot_idx));
     }
     let tokens: Vec<u32> = active.iter().map(|a| a.last_token).collect();
 
