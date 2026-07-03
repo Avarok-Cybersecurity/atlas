@@ -44,6 +44,18 @@ pub struct GrammarState {
     /// request's `eos_tokens` in; unit tests that exercise only grammar
     /// structure leave it empty.
     stop_tokens: Box<[u32]>,
+    /// Per-position fill cache. `fill_next_token_bitmask` over a 248K vocab is
+    /// ~30ms; it is re-run redundantly within a SINGLE token position (once to
+    /// constrain sampling, again by `stop_legal`/`grammar_blocks_stop` to test
+    /// EOS-legality against the same matcher state). The mask only changes when
+    /// the matcher advances, so cache it and skip the refill until then. When
+    /// `bitmask_valid` is true, `bitmask_data` holds the fill for the current
+    /// matcher position and `bitmask_fill_result` its return value. Invalidated
+    /// (set false) at every matcher-advancing site: `accept_token`, `rollback`,
+    /// `reset`. Over-invalidation only costs a refill; under-invalidation would
+    /// serve a stale mask, so the invalidations are deliberately generous.
+    bitmask_valid: bool,
+    bitmask_fill_result: bool,
 }
 
 impl GrammarState {
@@ -83,6 +95,8 @@ impl GrammarState {
             bitmask_data,
             vocab_size,
             stop_tokens: Box::new([]),
+            bitmask_valid: false,
+            bitmask_fill_result: false,
         })
     }
 
@@ -116,9 +130,23 @@ impl GrammarState {
         if self.matcher.is_terminated() {
             return false;
         }
+        // Per-position cache: the mask is invariant until the matcher advances
+        // (accept_token / rollback / reset all invalidate). Deduping the
+        // redundant same-position refill (sampling-constrain vs stop_legal
+        // EOS-legality) keeps exactly ONE real fill_next_token_bitmask per
+        // token — preserving the "fill every token" NPDA-sync invariant above —
+        // while removing the ~30ms redundant 248K-vocab refill that inflated the
+        // MTP verify step and tripped its net-negative gate.
+        if self.bitmask_valid {
+            return self.bitmask_fill_result;
+        }
         reset_token_bitmask(&mut self.bitmask_data);
-        self.matcher
-            .fill_next_token_bitmask(&mut self.bitmask_data, 0, false)
+        let filled = self
+            .matcher
+            .fill_next_token_bitmask(&mut self.bitmask_data, 0, false);
+        self.bitmask_valid = true;
+        self.bitmask_fill_result = filled;
+        filled
     }
 
     /// Raw bitmask data: `ceil(vocab_size / 32)` i32 words.
@@ -155,6 +183,11 @@ impl GrammarState {
     /// completed grammar are not "rejected by grammar"; they are simply
     /// past the stop, which the EOS handler will terminate independently.
     pub fn accept_token(&mut self, token_id: u32) -> bool {
+        // Any advance invalidates the per-position bitmask cache. Done
+        // unconditionally (even on the early-return paths that don't move the
+        // matcher) — over-invalidation only costs a refill, whereas a missed
+        // invalidation would serve a stale mask and desync the NPDA.
+        self.bitmask_valid = false;
         if self.matcher.is_terminated() {
             return true;
         }
@@ -255,11 +288,13 @@ impl GrammarState {
     /// Used for MTP speculative decode: when draft tokens are rejected,
     /// the grammar state must be rewound to match.
     pub fn rollback(&mut self, n: usize) {
+        self.bitmask_valid = false;
         self.matcher.rollback(n as i32);
     }
 
     /// Reset the grammar state to the initial position.
     pub fn reset(&mut self) {
+        self.bitmask_valid = false;
         self.matcher.reset();
     }
 
