@@ -347,29 +347,45 @@ pub fn sample_token_with_grammar(
     // allowed (global max ∩ allowed-set = the max). Emit it directly; fall back
     // to the host path below only when the argmax is grammar-disallowed.
     // Mirrors the verify-path fast path. Kill-switch ATLAS_DISABLE_FAST_GREEDY=1.
+    //
+    // #237 (fix 4a): penalty-neutrality relaxed to the SSOT `fast_greedy`
+    // gate shared with the verify helper — reduce-only penalties cannot flip
+    // an argmax that is not in the scoped `history` and has a positive raw
+    // logit (proof in `fast_greedy` module docs). `history` here is already
+    // the scoped span the slow path feeds to `apply_penalties_and_bias`.
     if crate::scheduler::verify_pipeline_helper::fast_greedy_grammar_enabled()
         && suppress_ids.is_empty()
         && (temperature == 0.0 || crate::scheduler::decode_logits_seq::force_temp_zero_enabled())
-        && penalties.repetition_penalty == 1.0
-        && penalties.presence_penalty == 0.0
-        && penalties.frequency_penalty == 0.0
-        && penalties.lz_penalty == 0.0
-        && penalties.dry_multiplier == 0.0
     {
-        let top1 = model.argmax_on_device(logits, 0)?;
-        let allowed = match grammar_state.as_mut() {
-            Some(gs) => {
-                if gs.is_terminated() {
-                    true
-                } else {
-                    gs.fill_bitmask();
-                    gs.is_token_allowed(top1)
+        let gate = crate::scheduler::fast_greedy::classify_penalties(penalties);
+        if gate != crate::scheduler::fast_greedy::PenaltyGate::Blocked {
+            let top1 = model.argmax_on_device(logits, 0)?;
+            let immune = gate == crate::scheduler::fast_greedy::PenaltyGate::Neutral
+                || crate::scheduler::fast_greedy::argmax_immune(top1, history, || {
+                    crate::scheduler::fast_greedy::logit_is_positive(
+                        model,
+                        logits,
+                        0,
+                        model.vocab_size(),
+                        top1,
+                    )
+                });
+            if immune {
+                let allowed = match grammar_state.as_mut() {
+                    Some(gs) => {
+                        if gs.is_terminated() {
+                            true
+                        } else {
+                            gs.fill_bitmask();
+                            gs.is_token_allowed(top1)
+                        }
+                    }
+                    None => true,
+                };
+                if allowed {
+                    return Ok(top1);
                 }
             }
-            None => true,
-        };
-        if allowed {
-            return Ok(top1);
         }
     }
 

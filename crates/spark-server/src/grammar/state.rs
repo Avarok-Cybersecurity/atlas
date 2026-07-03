@@ -143,10 +143,15 @@ impl GrammarState {
         if self.bitmask_valid {
             return self.bitmask_fill_result;
         }
+        let t_fill = std::time::Instant::now();
         reset_token_bitmask(&mut self.bitmask_data);
         let filled = self
             .matcher
             .fill_next_token_bitmask(&mut self.bitmask_data, 0, false);
+        crate::scheduler::mtp_timing::record(
+            crate::scheduler::mtp_timing::Phase::GrammarFill,
+            t_fill,
+        );
         self.bitmask_valid = true;
         self.bitmask_fill_result = filled;
         filled
@@ -238,7 +243,27 @@ impl GrammarState {
         if self.matcher.is_terminated() {
             return None;
         }
-        self.matcher.forced_token()
+        // #237: reuse the per-position cached bitmask instead of
+        // `matcher.forced_token()`, which recomputes a FULL
+        // `fill_next_token_bitmask` of its own on every call — a second
+        // authoritative mask fill per token position (the pipeline runs
+        // ForcedTokenFastPath before GrammarBitmaskApply, so every decode and
+        // every verify position paid the fill twice). EXACTNESS:
+        // `matcher.forced_token()` == "compute the authoritative next-token
+        // mask, return its sole set bit if exactly one". [`Self::fill_bitmask`]
+        // computes that same authoritative mask into `bitmask_data` (the
+        // per-position cache is invalidated on every matcher advance, so a
+        // cached mask is always the current position's), and
+        // `forced_from_bitmask` performs the identical sole-set-bit analysis
+        // on it. `fill_bitmask() == false` means the mask is unconstrained
+        // (all-ones ⇒ ≥ 2 legal tokens ⇒ not forced) — `None` either way.
+        if !self.fill_bitmask() {
+            return None;
+        }
+        let t = std::time::Instant::now();
+        let forced = self.matcher.forced_from_bitmask(&mut self.bitmask_data, 0);
+        crate::scheduler::mtp_timing::record(crate::scheduler::mtp_timing::Phase::ForcedTok, t);
+        forced
     }
 
     /// Whether the grammar has been fully matched (all required structure generated).

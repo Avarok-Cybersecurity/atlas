@@ -19,6 +19,7 @@ mod decode_logits_seq;
 mod decode_logits_step;
 mod decode_step;
 mod emit_step;
+mod fast_greedy;
 mod helpers;
 mod lifecycle;
 mod logit_dump;
@@ -26,6 +27,7 @@ mod logit_processors;
 mod logprobs;
 mod mod_helpers;
 mod mtp_gate;
+pub(crate) mod mtp_timing;
 mod mtp_step;
 mod phase_continue_prefills;
 mod phase_promote_prefills;
@@ -145,9 +147,15 @@ pub fn run(
     // session and auto-disable MTP if it is provably net-negative. Only armed
     // for the pure-MTP path (not ngram/self/dflash, which have their own
     // economics and proposers).
-    let mut mtp_gate = if use_mtp {
+    let mut mtp_gate = if use_mtp && !mtp_timing::gate_forced() {
         Some(mtp_gate::MtpGate::new(num_drafts))
     } else {
+        if use_mtp && mtp_timing::gate_forced() {
+            tracing::warn!(
+                "ATLAS_MTP_GATE_FORCE=1: MTP throughput gate DISARMED (diagnostic; \
+                 verify runs even where the gate would measure it net-negative)"
+            );
+        }
         None
     };
     let mut ngram_proposer = if use_ngram_speculative {
