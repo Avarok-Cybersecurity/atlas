@@ -124,7 +124,7 @@ impl TpGdnDims {
     }
 
     /// Full-row segment list for the `[Q|K|V]` in-projection.
-    fn qkv_segments(&self) -> [usize; 3] {
+    pub(crate) fn qkv_segments(&self) -> [usize; 3] {
         [
             self.full_key_dim(),
             self.full_key_dim(),
@@ -132,7 +132,7 @@ impl TpGdnDims {
         ]
     }
     /// Full-row segment list for the concatenated `[Q|K|V|Z]` in-projection.
-    fn qkvz_segments(&self) -> [usize; 4] {
+    pub(crate) fn qkvz_segments(&self) -> [usize; 4] {
         [
             self.full_key_dim(),
             self.full_key_dim(),
@@ -144,10 +144,10 @@ impl TpGdnDims {
 
 /// A single device-to-device copy in a segmented-slice plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CopyOp {
-    src_off: usize,
-    dst_off: usize,
-    len: usize,
+pub(crate) struct CopyOp {
+    pub(crate) src_off: usize,
+    pub(crate) dst_off: usize,
+    pub(crate) len: usize,
 }
 
 /// Build the copy plan for a SEGMENTED row-slice.
@@ -162,7 +162,7 @@ struct CopyOp {
 /// `tp_size` — the caller has already reconstructed `full_*` as
 /// `local_* * tp_size`, so this holds by construction, but it is checked to
 /// fail loudly on a mis-wired config rather than silently corrupt heads.
-fn segment_copy_plan(
+pub(crate) fn segment_copy_plan(
     segments: &[usize],
     row_bytes: usize,
     tp_rank: usize,
