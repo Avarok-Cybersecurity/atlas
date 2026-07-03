@@ -166,9 +166,18 @@ fn launch(
     let [a, b, scale, c] = ptrs;
     let handle = gpu.kernel(name, name)?;
     let (grid, block) = match name {
-        // 256×128 M×N tile, 512-thread (16-warp) block — matches the
-        // w8a16_gemm.cu production geometry.
+        // Geometry MUST match the production launcher (ops::w8a16_gemm) and the
+        // per-target .cu: native-HIP (gfx1151) is a 256×128 tile / 512-thread
+        // kernel; every other target (GB10 kernels/gb10/common/w8a16_gemm.cu,
+        // M_TILE=N_TILE=64, 128 threads) is 64×64 / 128. Using the HIP geometry
+        // on GB10 launches a 64×64 kernel with 512 threads → smem/stride skew =
+        // false validation. (Bug found 2026-07-03 while isolating the 397B-V2
+        // out_proj fault — the microtest passed the kernel at out_proj dims once
+        // corrected, exonerating the kernel.)
+        #[cfg(atlas_hip)]
         "w8a16_gemm" => ([n.div_ceil(128), m.div_ceil(256), 1], [512u32, 1, 1]),
+        #[cfg(not(atlas_hip))]
+        "w8a16_gemm" => ([n.div_ceil(64), m.div_ceil(64), 1], [128u32, 1, 1]),
         // Fix-A pipelined rewrite: 128×64 tile (M×N), 256-thread block (8 warps).
         "w8a16_gemm_pipelined" => ([n.div_ceil(32), m.div_ceil(128), 1], [256u32, 1, 1]),
         other => bail!("no launch geometry registered for kernel '{other}' — add an arm"),
@@ -204,9 +213,18 @@ fn launch_no_sync(
     let [a, b, scale, c] = ptrs;
     let handle = gpu.kernel(name, name)?;
     let (grid, block) = match name {
-        // 256×128 M×N tile, 512-thread (16-warp) block — matches the
-        // w8a16_gemm.cu production geometry.
+        // Geometry MUST match the production launcher (ops::w8a16_gemm) and the
+        // per-target .cu: native-HIP (gfx1151) is a 256×128 tile / 512-thread
+        // kernel; every other target (GB10 kernels/gb10/common/w8a16_gemm.cu,
+        // M_TILE=N_TILE=64, 128 threads) is 64×64 / 128. Using the HIP geometry
+        // on GB10 launches a 64×64 kernel with 512 threads → smem/stride skew =
+        // false validation. (Bug found 2026-07-03 while isolating the 397B-V2
+        // out_proj fault — the microtest passed the kernel at out_proj dims once
+        // corrected, exonerating the kernel.)
+        #[cfg(atlas_hip)]
         "w8a16_gemm" => ([n.div_ceil(128), m.div_ceil(256), 1], [512u32, 1, 1]),
+        #[cfg(not(atlas_hip))]
+        "w8a16_gemm" => ([n.div_ceil(64), m.div_ceil(64), 1], [128u32, 1, 1]),
         "w8a16_gemm_pipelined" => ([n.div_ceil(32), m.div_ceil(128), 1], [256u32, 1, 1]),
         other => bail!("no launch geometry registered for kernel '{other}' — add an arm"),
     };
