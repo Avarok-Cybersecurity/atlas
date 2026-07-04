@@ -185,6 +185,7 @@ mod trait_decode_batched_conv_gdn;
 mod trait_decode_multi_seq;
 mod trait_prefill;
 mod trait_prefill_gdn;
+mod trait_prefill_gdn_batched;
 mod trait_prefill_helper;
 mod trait_prefill_phase1;
 mod trait_prefill_phase3;

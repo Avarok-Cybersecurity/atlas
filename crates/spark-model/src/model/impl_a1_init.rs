@@ -168,9 +168,9 @@ pub(super) fn build_misc_scratch(
         // against total GPU memory.
         let o_f32 = gpu.alloc(gdn_buf_max_len * value_dim * 4)?;
         let z = gpu.alloc(gdn_buf_max_len * value_dim * 2)?;
-        let total_mb =
-            (gdn_buf_max_len * (conv_dim * 2 + nv * 2 * 4 + value_dim * 2 * 2 + value_dim * 4))
-                / (1024 * 1024);
+        let total_mb = (gdn_buf_max_len
+            * (conv_dim * 2 + nv * 2 * 4 + value_dim * 2 * 2 + value_dim * 4))
+            / (1024 * 1024);
         tracing::info!(
             "GDN prefill buffers: {total_mb} MB for {gdn_buf_max_len} tokens (chunked SSM prefill)"
         );

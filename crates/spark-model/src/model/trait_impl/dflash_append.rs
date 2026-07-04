@@ -39,7 +39,13 @@ impl TransformerModel {
         };
         let stream = self.gpu.default_stream();
         let actual_pos = seq.seq_len as i32;
-        proposer.append_ctx_slot(base, actual_pos, prop_state.as_mut(), self.gpu.as_ref(), stream)
+        proposer.append_ctx_slot(
+            base,
+            actual_pos,
+            prop_state.as_mut(),
+            self.gpu.as_ref(),
+            stream,
+        )
     }
 
     pub(super) fn dflash_accept_append_dispatch(&self, seq: &mut SequenceState) -> Result<()> {

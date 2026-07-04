@@ -283,7 +283,8 @@ impl TransformerModel {
                     None
                 };
                 // Stage-2b NVTX: SSM phase 3 = norm + GDN out_proj + dense FFN.
-                let _nvtx_p3 = NvtxRange::new(&format!("ssm/layer{layer_idx:02}/p3_norm_outproj_ffn"));
+                let _nvtx_p3 =
+                    NvtxRange::new(&format!("ssm/layer{layer_idx:02}/p3_norm_outproj_ffn"));
                 layer.prefill_phase3(hidden, residual, k, gdn_bufs, 0, ctx, stream)?;
                 if let Some(t) = _ts3 {
                     self.gpu.synchronize(stream)?;

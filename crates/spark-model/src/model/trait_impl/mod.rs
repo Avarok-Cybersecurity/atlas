@@ -37,6 +37,7 @@ mod verify_b;
 mod verify_c;
 mod verify_c2;
 mod verify_d;
+mod verify_d_kgamma_attn_meta;
 mod verify_d_kgamma_layers;
 
 impl Model for TransformerModel {

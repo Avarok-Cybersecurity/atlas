@@ -545,8 +545,11 @@ fn process_detector_content(
         false
     };
 
-    let token_trip =
-        check_loop_watchdog(sanitized, &mut state.loop_scan_buf, state.loop_watchdog_triggered);
+    let token_trip = check_loop_watchdog(
+        sanitized,
+        &mut state.loop_scan_buf,
+        state.loop_watchdog_triggered,
+    );
 
     if semantic_trip || token_trip {
         if semantic_trip {

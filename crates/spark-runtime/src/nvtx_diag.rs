@@ -68,9 +68,7 @@ fn nvtx() -> Option<&'static NvtxFns> {
                 _lib: lib,
             });
         }
-        tracing::warn!(
-            "ATLAS_NVTX_DIAG=1 set but no libnvToolsExt found — NVTX ranges disabled"
-        );
+        tracing::warn!("ATLAS_NVTX_DIAG=1 set but no libnvToolsExt found — NVTX ranges disabled");
         None
     })
     .as_ref()
@@ -98,10 +96,10 @@ impl NvtxRange {
 impl Drop for NvtxRange {
     #[inline]
     fn drop(&mut self) {
-        if self.active {
-            if let Some(n) = nvtx() {
-                unsafe { (n.pop)() };
-            }
+        if self.active
+            && let Some(n) = nvtx()
+        {
+            unsafe { (n.pop)() };
         }
     }
 }

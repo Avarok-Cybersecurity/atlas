@@ -97,8 +97,10 @@ impl Qwen3SsmLayer {
         // w4a16_gemv kernel serial decode uses to keep the two paths
         // numerically aligned. Escape hatch: =0 to restore the old batched
         // GEMM path.
-        let out_proj_fix =
-            std::env::var("ATLAS_DFLASH_VERIFY_OUTPROJ_FIX").ok().as_deref() != Some("0");
+        let out_proj_fix = std::env::var("ATLAS_DFLASH_VERIFY_OUTPROJ_FIX")
+            .ok()
+            .as_deref()
+            != Some("0");
         // Stage-2b NVTX: GDN out_proj — with out_proj_fix ON (shipping
         // default) this takes the per-token w4a16_gemv loop, NOT the
         // ambiguous w4a16_gemm_t_m128 kernel shared by FFN down_proj/attn
@@ -117,7 +119,9 @@ impl Qwen3SsmLayer {
                     value_dim as u32,
                     stream,
                 )
-                .map_err(|e| anyhow::anyhow!("ssm phase3: out_proj GEMV fix failed (row {t}): {e}"))?;
+                .map_err(|e| {
+                    anyhow::anyhow!("ssm phase3: out_proj GEMV fix failed (row {t}): {e}")
+                })?;
             }
             Ok(())
         } else if let Some(ref dense_out) = self.out_proj_dense {

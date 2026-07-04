@@ -76,22 +76,6 @@ pub fn step_verify_dflash(
     // determines how many to keep — the rest must be rolled back so the
     // KV cache, SSM state, and emitted token sequence stay consistent.
 
-    // Diagnostic: log first few (draft, verified) pairs to check alignment.
-    static PAIR_DUMP_DONE: std::sync::atomic::AtomicBool =
-        std::sync::atomic::AtomicBool::new(false);
-    if !PAIR_DUMP_DONE.load(std::sync::atomic::Ordering::Relaxed) {
-        PAIR_DUMP_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
-        let n = drafts.len().min(verified.len()).min(8);
-        let pairs: Vec<(u32, u32)> = (0..n).map(|i| (drafts[i], verified[i])).collect();
-        tracing::debug!(
-            "DFLASH PAIR DUMP: last_token={} tokens[..4]={:?} verified[..8]={:?} draft_vs_verified={:?}",
-            tokens[0],
-            &tokens[..tokens.len().min(4)],
-            &verified[..verified.len().min(8)],
-            pairs,
-        );
-    }
-
     // Accept-prefix: drafts[i] is "accepted" iff drafts[i] == verified[i].
     // verified[i] is the target's argmax at position i (i.e. its
     // prediction for what should follow `tokens[i]`). drafts[i] was the

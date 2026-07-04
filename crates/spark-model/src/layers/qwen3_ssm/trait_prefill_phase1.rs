@@ -91,13 +91,18 @@ impl Qwen3SsmLayer {
         // matched M=1 shape produces ~2.29% rel_diff vs the serial arm.
         // Escape hatch: =0 to restore the old GEMM-family dispatch.
         let qkvz_fix = num_tokens == 1
-            && std::env::var("ATLAS_DFLASH_VERIFY_QKVZ_FIX").ok().as_deref() != Some("0");
+            && std::env::var("ATLAS_DFLASH_VERIFY_QKVZ_FIX")
+                .ok()
+                .as_deref()
+                != Some("0");
         // Stage-2b NVTX: GDN QKVZ in-proj — shares kernel names/shapes with
         // other GEMM/GEMV call sites (attn Q/K/V, FFN, out_proj); this tag
         // disambiguates it in nsys's nvtx_kern_sum report.
         let _nvtx = NvtxRange::new("ssm/qkvz_proj");
-        if qkvz_fix && self.sequential_qkvz && self.qkvz_nvfp4.is_some() {
-            let nvfp4 = self.qkvz_nvfp4.as_ref().expect("checked is_some above");
+        if qkvz_fix
+            && self.sequential_qkvz
+            && let Some(nvfp4) = self.qkvz_nvfp4.as_ref()
+        {
             ops::w4a16_gemv(
                 ctx.gpu,
                 self.w4a16_gemv_k,
