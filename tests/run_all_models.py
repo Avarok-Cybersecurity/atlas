@@ -691,6 +691,51 @@ def run_ep2_round(spec: TestSpec) -> Optional[dict]:
     return {"label": spec.label, "mtp": spec.mtp, "data": data, "ep2": True}
 
 
+# ─── Coverage manifest ─────────────────────────────────────────────────
+
+MANIFEST_PATH = os.path.join(RESULTS_DIR, "_manifest.json")
+
+
+def planned_specs(run_singlegpu, skip, only_round,
+                  run_ep2, run_tp2, run_tpep, run_ep4):
+    """Return the ordered [(label, model)] this run intends to cover.
+
+    Mirrors the exact phase-selection logic in main(); it is the single source
+    of truth for the roster so the gate never re-lists models. A spec appears
+    here iff the run would attempt to boot it.
+    """
+    planned = []
+    if run_singlegpu:
+        for idx, pairs in enumerate(ROUNDS, start=1):
+            if only_round is not None and idx != only_round:
+                continue
+            if idx in skip:
+                continue
+            for _host, spec in pairs:
+                if spec is not None:
+                    planned.append((spec.label, spec.model))
+    if run_ep2:
+        planned += [(s.label, s.model) for s in EP2_ROUNDS]
+    if run_tp2:
+        planned += [(s.label, s.model) for s in TP2_ROUNDS]
+    if run_tpep:
+        planned += [(s.label, s.model) for s in TPEP_ROUNDS]
+    if run_ep4:
+        planned += [(s.label, s.model) for s in EP4_ROUNDS]
+    return planned
+
+
+def write_manifest(**flags):
+    planned = planned_specs(**flags)
+    manifest = {
+        "generated_by": "tests/run_all_models.py",
+        "labels": [{"label": label, "model": model} for label, model in planned],
+    }
+    with open(MANIFEST_PATH, "w") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"[manifest] {len(planned)} model(s) planned this run -> {MANIFEST_PATH}")
+
+
 # ─── Main ──────────────────────────────────────────────────────────────
 
 def main():
@@ -718,6 +763,19 @@ def main():
     run_ep2 = (not args.skip_ep2) and (args.only_round is None) and (not only_phase_active)
     run_tp2 = (not args.skip_tp2) and (args.only_round is None) and (not args.only_tpep)
     run_tpep = (not args.skip_tpep) and (args.only_round is None) and (not args.only_tp2)
+    run_ep4 = bool(EP4_ROUNDS) and os.environ.get("ATLAS_ENABLE_EP4") == "1"
+
+    # Declare intent up front: the set of (label, model) this run is *supposed*
+    # to cover, given the phase flags above. Written before any container boots
+    # so it survives a total-crash run. tests/gate_results.py reads this to make
+    # "serve matrix passes" mean *every planned model produced a passing result*
+    # — a model that never booted writes no <label>.json and would otherwise be
+    # invisible to a glob-only gate (false green). SSOT for the roster is this
+    # planner; the gate derives coverage from it, it does not re-list models.
+    write_manifest(
+        run_singlegpu=run_singlegpu, skip=skip, only_round=args.only_round,
+        run_ep2=run_ep2, run_tp2=run_tp2, run_tpep=run_tpep, run_ep4=run_ep4,
+    )
 
     if run_singlegpu:
         for idx, pairs in enumerate(ROUNDS, start=1):
