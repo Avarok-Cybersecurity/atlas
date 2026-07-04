@@ -408,12 +408,15 @@ impl DenseFfnLayer {
         inter: u32,
         stream: u64,
     ) -> Result<()> {
+        // 2026-07-04: W4A4 MMQ is opt-in (ATLAS_FFN_NVFP4_MMQ) — must MATCH the
+        // dispatch gate so the load-time repack (and freeing of the _t copies the
+        // int8 default path requants from) only happens when W4A4 is actually used.
         let active = self.nvfp4_mmq_nc_k.0 != 0
             && self.nvfp4_quant_act_k.0 != 0
             && self.nvfp4_repack_k.0 != 0
             && self.nvfp4_silu_scaled_k.0 != 0
             && matches!(self.activation, FfnActivation::SiLU)
-            && std::env::var_os("ATLAS_NO_FFN_NVFP4_MMQ").is_none();
+            && std::env::var_os("ATLAS_FFN_NVFP4_MMQ").is_some();
         if !active {
             return Ok(());
         }
@@ -1149,13 +1152,23 @@ impl DenseFfnLayer {
         // bit-identical) — the _2.5h IoU gate is the final arbiter.
         // PCND: explicit opt-in, default off = byte-for-byte prior behavior; the
         // arm is a no-op (and no buffers are built) unless the kernels are loaded.
-        let int8_prefill =
-            self.int8_faith2_k.0 != 0 && std::env::var_os("ATLAS_INT8_PREFILL").is_some();
+        // DEFAULT ON for SiLU models with the int8 kernel (2026-07-04). int8 W4A8
+        // (requant→int8 MMA, cosine 0.99998) is the accuracy-safe FFN prefill: the
+        // prior NVFP4 W4A4 default (4-bit ACTIVATIONS) cost ~8 BFCL pts (full-995
+        // non_live 76.5→~90 A/B, mini). int8 (54.9 TFLOP/s) is slower than W4A4
+        // (80) but FASTER than the 06-15 w4a16 baseline (48) — net win vs the ref:
+        // accuracy restored AND faster. W4A4 is now opt-in (ATLAS_FFN_NVFP4_MMQ)
+        // for callers who want max prefill throughput at the accuracy cost.
+        // Kill-switch ATLAS_NO_FFN_INT8_PREFILL. Non-SiLU / models without the
+        // int8 kernel: int8_faith2_k==0 → unchanged (byte-identical prior behavior).
+        let int8_prefill = self.int8_faith2_k.0 != 0
+            && matches!(self.activation, FfnActivation::SiLU)
+            && std::env::var_os("ATLAS_NO_FFN_INT8_PREFILL").is_none();
         if int8_prefill {
             static INT8_LOG: std::sync::Once = std::sync::Once::new();
             INT8_LOG.call_once(|| {
                 eprintln!(
-                    "[atlas] ATLAS_INT8_PREFILL=1: dense-FFN prefill via int8_gemm_faith2 (W4A8 requant→int8 MMA, lossy ~0.99998 cosine)"
+                    "[atlas] dense-FFN prefill via int8_gemm_faith2 (W4A8 requant→int8 MMA, cosine ~0.99998) — accuracy-safe default; opt out with ATLAS_NO_FFN_INT8_PREFILL, opt into W4A4 with ATLAS_FFN_NVFP4_MMQ"
                 );
             });
         }
@@ -1168,7 +1181,11 @@ impl DenseFfnLayer {
             && self.nvfp4_quant_act_k.0 != 0
             && self.nvfp4_silu_scaled_k.0 != 0
             && matches!(self.activation, FfnActivation::SiLU)
-            && std::env::var_os("ATLAS_NO_FFN_NVFP4_MMQ").is_none();
+            // 2026-07-04: now OPT-IN (was default-on). W4A4's 4-bit activations
+            // cost ~8 BFCL pts; int8 W4A8 above is the accuracy-safe default. This
+            // arm is preempted by int8_prefill anyway; the flag flip makes the
+            // intent explicit and skips the load-time repack (see finalize).
+            && std::env::var_os("ATLAS_FFN_NVFP4_MMQ").is_some();
         if fp4mmq_prefill {
             static FP4MMQ_LOG: std::sync::Once = std::sync::Once::new();
             FP4MMQ_LOG.call_once(|| {
