@@ -31,6 +31,7 @@
 use anyhow::Result;
 
 use crate::gpu::{DevicePtr, GpuBackend, KernelArg, KernelHandle};
+use crate::nvtx_diag::NvtxRange;
 
 /// Per-arg metadata: which slot of `storage` it lives at, and how
 /// many native bytes it occupies. Buffer args set `is_buffer = true`
@@ -62,6 +63,9 @@ pub struct KernelLaunch<'a> {
     /// Parallel array recording per-arg kind so `launch()` can build
     /// a typed `KernelArg` slice.
     kinds: Vec<ArgKind>,
+    /// Stage-2b diagnostic-only NVTX call-site label (see `nvtx_diag`).
+    /// `None` unless a call site opts in via `.nvtx_label(...)`.
+    nvtx_label: Option<String>,
 }
 
 impl<'a> KernelLaunch<'a> {
@@ -74,7 +78,18 @@ impl<'a> KernelLaunch<'a> {
             shared_mem: 0,
             storage: Vec::with_capacity(16),
             kinds: Vec::with_capacity(16),
+            nvtx_label: None,
         }
+    }
+
+    /// Stage-2b kernel-attribution diagnostic: tag this specific call site
+    /// with an NVTX range label so nsys's NVTX+CUDA-API correlation can
+    /// distinguish it from other call sites that happen to dispatch the
+    /// same underlying kernel (e.g. FFN down_proj vs attention out_proj,
+    /// both `w4a16_gemm_t_m128`). No-op unless `ATLAS_NVTX_DIAG=1`.
+    pub fn nvtx_label(mut self, label: impl Into<String>) -> Self {
+        self.nvtx_label = Some(label.into());
+        self
     }
 
     pub fn grid(mut self, grid: [u32; 3]) -> Self {
@@ -173,6 +188,7 @@ impl<'a> KernelLaunch<'a> {
                 args.push(KernelArg::Bytes(bytes));
             }
         }
+        let _nvtx = self.nvtx_label.as_deref().map(NvtxRange::new);
         let r = self.gpu.launch_typed(
             self.kernel,
             self.grid,
@@ -181,6 +197,7 @@ impl<'a> KernelLaunch<'a> {
             stream,
             &args,
         );
+        drop(_nvtx);
         // ATLAS_DEBUG_SYNC_KERNELS (PCND, default-off): synchronize after
         // each launch so an async CUDA fault surfaces AT the culprit launch
         // (with grid/block) instead of at a later, unrelated sync point.

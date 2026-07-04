@@ -7,6 +7,7 @@
 
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
+use spark_runtime::nvtx_diag::NvtxRange;
 
 use crate::layer::ForwardContext;
 use crate::layers::ops;
@@ -532,23 +533,29 @@ impl DenseFfnLayer {
         }
 
         // gate_proj GEMM: [M, H] → [M, inter]
-        w4_gemm!(
-            &self.weights.gate_proj,
-            self.weights.gate_proj_t,
-            input,
-            gate_out,
-            inter,
-            h
-        );
-        // up_proj GEMM: [M, H] → [M, inter]
-        w4_gemm!(
-            &self.weights.up_proj,
-            self.weights.up_proj_t,
-            input,
-            up_out,
-            inter,
-            h
-        );
+        {
+            // Stage-2b NVTX: FFN gate/up (N=intermediate_size) — always
+            // unambiguous by grid shape, but tagged for completeness/
+            // cross-checking against the down_proj tag below.
+            let _nvtx = NvtxRange::new("ffn/gate_up_proj");
+            w4_gemm!(
+                &self.weights.gate_proj,
+                self.weights.gate_proj_t,
+                input,
+                gate_out,
+                inter,
+                h
+            );
+            // up_proj GEMM: [M, H] → [M, inter]
+            w4_gemm!(
+                &self.weights.up_proj,
+                self.weights.up_proj_t,
+                input,
+                up_out,
+                inter,
+                h
+            );
+        }
 
         // activation(gate) * up for all M tokens (SiLU or GELU)
         ops::silu_mul(
@@ -563,14 +570,21 @@ impl DenseFfnLayer {
 
         // down_proj GEMM: [M, inter] → [M, H]
         let output = ctx.buffers.moe_output();
-        w4_gemm!(
-            &self.weights.down_proj,
-            self.weights.down_proj_t,
-            gate_out,
-            output,
-            h,
-            inter
-        );
+        {
+            // Stage-2b NVTX: FFN down_proj — this is the call site that
+            // shares a kernel (w4a16_gemm_t_m128, N=hidden_size) with
+            // attention out_proj; this tag is what disambiguates the two
+            // in nsys's nvtx_kern_sum report.
+            let _nvtx = NvtxRange::new("ffn/down_proj");
+            w4_gemm!(
+                &self.weights.down_proj,
+                self.weights.down_proj_t,
+                gate_out,
+                output,
+                h,
+                inter
+            );
+        }
 
         Ok(())
     }

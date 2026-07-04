@@ -13,6 +13,7 @@ use spark_runtime::kv_cache::PagedKvCache;
 use super::super::types::TransformerModel;
 use crate::layer::{ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState};
 use crate::traits::SequenceState;
+use spark_runtime::nvtx_diag::NvtxRange;
 
 pub(super) struct KgammaLayerTiming {
     pub us_attn: u128,
@@ -77,6 +78,9 @@ impl TransformerModel {
                     } else {
                         None
                     };
+                    // Stage-2b NVTX: per-layer range so nsys nvtx_kern_sum can
+                    // show whether any single full-attention layer dominates.
+                    let _nvtx_layer = NvtxRange::new(&format!("attn/layer{layer_idx:02}"));
                     layer.prefill(
                         hidden,
                         residual,
@@ -125,6 +129,9 @@ impl TransformerModel {
                 } else {
                     None
                 };
+                // Stage-2b NVTX: per-layer/per-phase range (SSM phase 1 =
+                // QKVZ in-proj + conv).
+                let _nvtx_p1 = NvtxRange::new(&format!("ssm/layer{layer_idx:02}/p1_qkvz_conv"));
                 // C1 conv-fusion (ATLAS_DFLASH_CONV_FUSION=1): run the entire
                 // phase-1 pipeline ONCE over all k tokens — batches the QKVZ
                 // projection (k GEMVs → 1 GEMM), gates, conv (writing the k-1
@@ -186,6 +193,7 @@ impl TransformerModel {
                     self.gpu.synchronize(stream)?;
                     us_p1 += t.elapsed().as_micros();
                 }
+                drop(_nvtx_p1);
                 // Phase 2: single fused WY16 pass (K=16) writes final h_state
                 // AND Hi_0..Hi_14 intermediates inline — eliminating the WY4
                 // batch + the per-token replay loop. Falls back to WY4+replay
@@ -196,6 +204,8 @@ impl TransformerModel {
                 } else {
                     None
                 };
+                // Stage-2b NVTX: SSM phase 2 = GDN wy16 recurrence.
+                let _nvtx_p2 = NvtxRange::new(&format!("ssm/layer{layer_idx:02}/p2_gdn"));
                 let used_wy16 = layer.prefill_gdn_wy16(
                     seq.layer_states[layer_idx].as_mut(),
                     gdn_bufs,
@@ -242,6 +252,8 @@ impl TransformerModel {
                             qkv: gdn_bufs.qkv.offset(t * ssm_conv_dim * bf16),
                             gate_beta: gdn_bufs.gate_beta.offset(t * ssm_gate_stride * 4),
                             output: gdn_bufs.output.offset(t * ssm_value_dim * bf16),
+                            output_f32: DevicePtr::NULL,
+                            output_f32_written: std::cell::Cell::new(false),
                             z: gdn_bufs.z.offset(t * ssm_value_dim * bf16),
                             total_len: 1,
                         };
@@ -262,6 +274,7 @@ impl TransformerModel {
                     self.gpu.synchronize(stream)?;
                     us_p2 += t.elapsed().as_micros();
                 }
+                drop(_nvtx_p2);
                 // Phase 3: gated RMS norm + output projection + FFN
                 let _ts3 = if timing {
                     self.gpu.synchronize(stream)?;
@@ -269,6 +282,8 @@ impl TransformerModel {
                 } else {
                     None
                 };
+                // Stage-2b NVTX: SSM phase 3 = norm + GDN out_proj + dense FFN.
+                let _nvtx_p3 = NvtxRange::new(&format!("ssm/layer{layer_idx:02}/p3_norm_outproj_ffn"));
                 layer.prefill_phase3(hidden, residual, k, gdn_bufs, 0, ctx, stream)?;
                 if let Some(t) = _ts3 {
                     self.gpu.synchronize(stream)?;

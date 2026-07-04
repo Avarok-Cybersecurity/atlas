@@ -7,6 +7,7 @@
 
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
+use spark_runtime::nvtx_diag::NvtxRange;
 
 use super::super::Qwen3AttentionLayer;
 use crate::layer::ForwardContext;
@@ -14,6 +15,7 @@ use crate::layers::ops;
 
 /// Identifies which projection (Q/K/V) — selects the correct weight bank
 /// from `Qwen3AttentionLayer`.
+#[derive(Clone, Copy)]
 pub(super) enum Proj {
     Q,
     K,
@@ -102,6 +104,14 @@ impl Qwen3AttentionLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // Stage-2b NVTX: attention Q/K/V projection, tagged per proj kind
+        // so nsys can separate it from out_proj/FFN/GDN call sites that
+        // share the same underlying kernel names.
+        let _nvtx = NvtxRange::new(match proj {
+            Proj::Q => "attn/q_proj",
+            Proj::K => "attn/k_proj",
+            Proj::V => "attn/v_proj",
+        });
         let (fp8w_t, weight_opt, fp8, nvfp4_t, dense) = match proj {
             Proj::Q => (
                 self.q_fp8w_t.as_ref(),

@@ -2098,6 +2098,7 @@ dependencies = [
  "dispatch2",
  "half",
  "libc",
+ "libloading 0.8.9",
  "memmap2",
  "objc2",
  "objc2-foundation",

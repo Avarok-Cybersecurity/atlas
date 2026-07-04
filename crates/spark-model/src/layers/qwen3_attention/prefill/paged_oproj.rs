@@ -7,6 +7,7 @@
 
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
+use spark_runtime::nvtx_diag::NvtxRange;
 
 use super::super::Qwen3AttentionLayer;
 use crate::layer::ForwardContext;
@@ -25,6 +26,10 @@ impl Qwen3AttentionLayer {
         stream: u64,
     ) -> Result<DevicePtr> {
         let o_out = ctx.buffers.norm_output();
+        // Stage-2b NVTX: attention out_proj — the call site that shares a
+        // kernel (w4a16_gemm_t_m128, N=hidden_size) with FFN down_proj;
+        // this tag is what disambiguates the two in nsys's nvtx_kern_sum.
+        let _nvtx = NvtxRange::new("attn/out_proj");
         let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
         if force_w8a8
             && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())

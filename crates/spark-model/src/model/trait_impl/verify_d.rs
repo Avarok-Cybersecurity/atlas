@@ -20,6 +20,7 @@ use atlas_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
+use spark_runtime::nvtx_diag::NvtxRange;
 
 use super::super::block_mgmt::{
     apply_evicted_blocks, ensure_blocks_through_decode, ensure_blocks_through_prefill,
@@ -47,6 +48,10 @@ impl TransformerModel {
         if k == 0 {
             return Ok(Vec::new());
         }
+        // Stage-2b NVTX: whole K=γ verify step (host glue + all GPU work),
+        // so nsys nvtx_kern_sum/nvtx_sum can report total step wall-clock
+        // alongside the per-component breakdown below.
+        let _nvtx_step = NvtxRange::new("verify_step");
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;
@@ -289,6 +294,8 @@ impl TransformerModel {
                 qkv: self.gdn_buf_qkv,
                 gate_beta: self.gdn_buf_gate_beta,
                 output: self.gdn_buf_out,
+                output_f32: self.gdn_buf_out_f32,
+                output_f32_written: std::cell::Cell::new(false),
                 z: self.gdn_buf_z,
                 total_len: k,
             };
@@ -358,6 +365,55 @@ impl TransformerModel {
                     stream,
                 )?;
             }
+            // Iteration-4 KL-gate diagnostic prototype
+            // (`ATLAS_DFLASH_KL_DIAG=1`, default off, exploratory only —
+            // NOT a production gate). Self-confidence proxy computed from
+            // the SAME batched-verify logits already produced above (no
+            // second serial-decode forward pass): per verified position,
+            // top-1 vs top-2 margin in logit space (`= ln(p1/p2)` exactly,
+            // softmax-normalization-invariant) and top-1 probability via a
+            // full-vocab logsumexp. Requires eager (D2H + host loop is
+            // illegal under CUDA graph capture); no-ops when `use_graphs`.
+            // Only viable with `ATLAS_DFLASH_DEBUG_NO_GRAPH=1` in the env
+            // (forces `use_graphs=false` via `force_eager` above).
+            if !use_graphs && std::env::var("ATLAS_DFLASH_KL_DIAG").ok().as_deref() == Some("1") {
+                self.gpu.synchronize(stream)?;
+                let mut row = vec![0u8; vocab * bf16];
+                for t in 0..k {
+                    let logits_t = self.buffers.logits().offset(t * vocab * bf16);
+                    self.gpu.copy_d2h(logits_t, &mut row)?;
+
+                    let mut top1_v = f32::NEG_INFINITY;
+                    let mut top1_i = 0u32;
+                    let mut top2_v = f32::NEG_INFINITY;
+                    for vi in 0..vocab {
+                        let val = kl_diag_bf16_to_f32(row[vi * 2], row[vi * 2 + 1]);
+                        if val > top1_v {
+                            top2_v = top1_v;
+                            top1_v = val;
+                            top1_i = vi as u32;
+                        } else if val > top2_v {
+                            top2_v = val;
+                        }
+                    }
+                    let mut sum_exp = 0.0f64;
+                    for vi in 0..vocab {
+                        let val = kl_diag_bf16_to_f32(row[vi * 2], row[vi * 2 + 1]);
+                        sum_exp += ((val - top1_v) as f64).exp();
+                    }
+                    let lse = top1_v as f64 + sum_exp.ln();
+                    let p_top1 = ((top1_v as f64) - lse).exp();
+                    let margin = top1_v - top2_v;
+
+                    let pos = seq.seq_len + t;
+                    let expected = if t + 1 < k { Some(tokens[t + 1]) } else { None };
+                    let matched = expected == Some(top1_i);
+                    tracing::info!(
+                        "KL_DIAG pos={pos} margin={margin:.4} p_top1={p_top1:.4} \
+                         argmax={top1_i} expected={expected:?} matched={matched}"
+                    );
+                }
+            }
             if let Some(t) = _tsh {
                 self.gpu.synchronize(stream)?;
                 us_head += t.elapsed().as_micros();
@@ -411,9 +467,19 @@ impl TransformerModel {
 
         // ── Phase 3: Post-graph (D2H copy only) ──
 
+        // Stage-2b NVTX: host-side glue — `copy_d2h` internally issues
+        // cuMemcpyDtoHAsync_v2 on the default stream followed by a
+        // blocking cuStreamSynchronize (see cuda_backend/gpu_impl.rs).
+        // This is the ONLY unconditional sync/D2H pair on the shipping
+        // K=γ verify path (all other sync/copy_d2h call sites in this
+        // file are gated behind ATLAS_DFLASH_TIMING/ATLAS_DFLASH_KL_DIAG,
+        // both off by default) — reads back the K argmax token ids so
+        // the scheduler can run partial-accept comparison on the host.
+        let _nvtx_glue = NvtxRange::new("glue/d2h_argmax_readback");
         let out_ptr = self.buffers.scratch();
         let mut buf = vec![0u8; k * 4];
         self.gpu.copy_d2h(out_ptr, &mut buf)?;
+        drop(_nvtx_glue);
         let mut out = Vec::with_capacity(k);
         for t in 0..k {
             let off = t * 4;
@@ -433,4 +499,10 @@ impl TransformerModel {
 
         Ok(out)
     }
+}
+
+/// KL-gate diagnostic helper (`ATLAS_DFLASH_KL_DIAG=1`).
+fn kl_diag_bf16_to_f32(lo: u8, hi: u8) -> f32 {
+    let bits16 = (lo as u16) | ((hi as u16) << 8);
+    f32::from_bits((bits16 as u32) << 16)
 }
