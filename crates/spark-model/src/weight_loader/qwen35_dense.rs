@@ -240,6 +240,38 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // FP8 is enabled we overlay the block-scaled FP8 weights on top;
             // the hot forward / forward_prefill paths then use FP8, the rare
             // batched paths fall back to real NVFP4.
+            // Native-BF16 dense-FFN prefill (Holo/Ornith Bf16Raw): the fast
+            // tensor-core `dense_gemm_tc` path (dense_ffn::forward_prefill) needs
+            // LIVE BF16 gate/up/down. `load_dense_ffn`'s Bf16Raw arm runtime-
+            // quantizes each proj via `quantized_any`, whose Bf16Raw branch
+            // FREES the store's cached BF16 buffer (`gpu.free(w.ptr)` in
+            // nvfp4_detect.rs). `dense_auto` returns that SAME (now-freed) store
+            // ptr for a BF16 tensor, so overlaying it AFTER load_dense_ffn hands
+            // `set_bf16_weights` freed GPU memory -> dense_gemm_tc CUDA-700 at
+            // grid=[div_ceil(intermediate_size,64),..] on the first prefill.
+            // Snapshot fresh D2D copies BEFORE the free (the clone is an
+            // independent allocation the layer owns for its lifetime).
+            let ffn_bf16_snapshot = if matches!(variant, Nvfp4Variant::Bf16Raw) {
+                let inter = if config.intermediate_size > 0 {
+                    config.intermediate_size
+                } else {
+                    config.moe_intermediate_size
+                };
+                let clone_bf16 = |name: &str, rows: usize, cols: usize| -> Result<DenseWeight> {
+                    let src = dense_auto(store, &format!("{lp}.mlp.{name}.weight"), gpu)?;
+                    let bytes = rows * cols * 2; // BF16 = 2 bytes/elem
+                    let dst = gpu.alloc(bytes)?;
+                    gpu.copy_d2d(src.weight, dst, bytes)?;
+                    Ok(DenseWeight { weight: dst })
+                };
+                Some((
+                    clone_bf16("gate_proj", inter, h)?,
+                    clone_bf16("up_proj", inter, h)?,
+                    clone_bf16("down_proj", h, inter)?,
+                ))
+            } else {
+                None
+            };
             let ffn_weights = load_dense_ffn(
                 store, &lp, gpu, variant, absmax_k, quantize_k, stream, config,
             )?;
@@ -260,6 +292,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // ATLAS_FFN_NVFP4_MMQ: same discipline for the W4A4 FP4-MMQ arm — repack
             // gate/up to block_nvfp4 + free their `_t` copies (net ~0 footprint).
             dffn.finalize_nvfp4_mmq_load(gpu, h as u32, config.intermediate_size as u32, stream)?;
+            // Native-BF16 dense-FFN overlay (Bf16Raw, no-metadata Holo dense): install the
+            // live BF16 gate/up/down snapshot so forward/forward_prefill's bf16 branch
+            // (preferred over the NVFP4 fallback) reads valid memory. The NVFP4 weights built
+            // by load_dense_ffn stay as the spec-decode/batched fallback (never null -> no
+            // CUDA-700 at concurrency). Snapshot was taken before load_dense_ffn freed the
+            // store's BF16 buffer (see ffn_bf16_snapshot above).
+            if let Some((g, u, d)) = ffn_bf16_snapshot {
+                dffn.set_bf16_weights(g, u, d);
+            }
             let ffn = FfnComponent::Dense(dffn);
 
             match lt {
@@ -267,6 +308,9 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     let p = format!("{lp}.self_attn");
                     let tp_rank = config.tp_rank;
                     let tp_size = config.tp_world_size.max(1);
+                    // Bf16Raw installs a BF16 dense O-proj after the layer is
+                    // built; other variants leave this None (NVFP4/FP8 dispatch).
+                    let mut o_dense_bf16: Option<DenseWeight> = None;
                     let (attn, q_nvfp4, k_nvfp4, v_nvfp4) = match variant {
                         Nvfp4Variant::CompressedTensors => {
                             // NVFP4-from-disk path: column-parallel Q/K/V, row-parallel O.
@@ -331,9 +375,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             };
                             (attn, Some(q), Some(k), Some(v))
                         }
-                        Nvfp4Variant::Standard
-                        | Nvfp4Variant::Fp8Dequanted
-                        | Nvfp4Variant::Bf16Raw => {
+                        Nvfp4Variant::Standard | Nvfp4Variant::Fp8Dequanted => {
                             // BF16 → NVFP4 path: shard BF16 then quantize per-rank.
                             let load_bf16_then_nvfp4 = |name: &str,
                                                         full_n: usize,
@@ -427,6 +469,60 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             };
                             (attn, Some(q_nvfp4), Some(k_nvfp4), Some(v_nvfp4))
                         }
+                        Nvfp4Variant::Bf16Raw => {
+                            // Native BF16 dense attention: keep Q/K/V/O in BF16
+                            // and dispatch the dense_gemv/dense_gemm kernels that
+                            // ship in the nvfp4 bundle (common/ dense_*_bf16). No
+                            // runtime BF16 -> NVFP4 quant — that lossily quantized
+                            // these no-metadata Holo dense checkpoints. Mirrors
+                            // qwen35/load_layers.rs:552 (BF16-dequant attention)
+                            // and gemma4/loader_a.rs:300/418.
+                            let load_bf16_dense =
+                                |name: &str,
+                                 full_n: usize,
+                                 full_k: usize,
+                                 kind: TpShardKind|
+                                 -> Result<DenseWeight> {
+                                    let src =
+                                        dense_auto(store, &format!("{p}.{name}.weight"), gpu)?;
+                                    if tp_size == 1 {
+                                        return Ok(src);
+                                    }
+                                    let (sharded_ptr, _local_n, _local_k) = shard_dense_bf16(
+                                        src.weight, full_n, full_k, kind, tp_rank, tp_size, gpu,
+                                    )?;
+                                    if sharded_ptr != src.weight {
+                                        gpu.free(src.weight)?;
+                                    }
+                                    Ok(DenseWeight {
+                                        weight: sharded_ptr,
+                                    })
+                                };
+                            let [q_dense, k_dense, v_dense, o_dense] =
+                                load_qkvo_tp(config, load_bf16_dense)?;
+
+                            let (k_scale, v_scale) = load_kv_scales(store, &p, gpu);
+
+                            // Keep q/k/v BF16 dense ALIVE (do NOT free): the dense
+                            // forward reads them directly. o_proj stays NULL — the
+                            // set_o_dense_bf16(o_dense) call after layer build
+                            // installs the BF16 O-proj that decode/prefill prefer.
+                            let attn = AttentionWeights {
+                                q_proj: q_dense,
+                                k_proj: k_dense,
+                                v_proj: v_dense,
+                                o_proj: crate::weight_map::QuantizedWeight::null(),
+                                q_norm: dense(store, &format!("{p}.q_norm.weight"))?,
+                                k_norm: dense(store, &format!("{p}.k_norm.weight"))?,
+                                q_norm_full: None,
+                                k_norm_full: None,
+                                k_scale,
+                                v_scale,
+                            };
+                            o_dense_bf16 = Some(o_dense);
+                            // BF16 native: no NVFP4 q/k/v weights → dense fallback.
+                            (attn, None, None, None)
+                        }
                     };
 
                     let mut attn_layer = Qwen3AttentionLayer::new(
@@ -458,6 +554,13 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         let op = &attn_layer.attn.o_proj;
                         let ot = op.transpose_for_gemm(gpu, hh, nh * hd)?;
                         attn_layer.set_prefill_weights(Some(qt), Some(kt), Some(vt), Some(ot));
+                    }
+                    // Native-BF16 (Bf16Raw): install the dense O-proj so decode +
+                    // prefill prefer it over the (NULL) NVFP4 o_proj. Mutually
+                    // exclusive with the transposed-NVFP4 block above (q_nvfp4 is
+                    // None on the Bf16Raw path).
+                    if let Some(o_dense) = o_dense_bf16 {
+                        attn_layer.set_o_dense_bf16(o_dense);
                     }
                     // Overlay native FP8 q/k/v/o on top of the NVFP4 weights when
                     // enabled (single-GPU FP8 checkpoint). Hot decode/prefill paths
@@ -727,6 +830,56 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // rather than leaking them for the layer's lifetime (Atlas issue #A1).
                     gpu.free(qkv_dense.weight)?;
                     gpu.free(z_dense.weight)?;
+
+                    let ba_dense = interleave_ba(&in_proj_a, &in_proj_b, nv, nk, h, gpu)?;
+
+                    // Native-BF16 SSM arm (no-metadata dense Holo checkpoints:
+                    // Nvfp4Variant::Bf16Raw). The standard nvfp4 bundle ships the
+                    // common/ BF16 dense kernels (dense_gemv_bf16 / dense_gemm_bf16
+                    // / dense_gemm_bf16_pipelined) that every SSM forward arm's
+                    // dense fallback already dispatches, so keep the concatenated
+                    // qkvz_dense [Q|K|V|Z] and out_proj_dense ALIVE and route
+                    // through those instead of the lossy BF16->NVFP4 runtime
+                    // requant. No NVFP4/FP8 copy is built at all: in_proj_qkvz +
+                    // out_proj_dense feed dense_gemv (per-seq decode,
+                    // ssm_forward.rs:107/412), dense_gemm (batched decode,
+                    // trait_decode_batched.rs:113/350 + ssm_batched.rs:180/279)
+                    // and dense_gemm_bf16_pipelined (prefill,
+                    // trait_prefill_proj.rs:298 + trait_prefill_helper.rs:89).
+                    // ssm.out_proj stays null — every out_proj arm prefers
+                    // out_proj_dense when Some; predequant_for_prefill /
+                    // set_fp8_prefill_only_weights are skipped (NVFP4/FP8 only).
+                    if matches!(variant, Nvfp4Variant::Bf16Raw) {
+                        let ssm = SsmWeights {
+                            in_proj_qkvz: qkvz_dense,
+                            in_proj_ba: ba_dense,
+                            conv1d,
+                            a_log,
+                            dt_bias,
+                            norm,
+                            out_proj: crate::weight_map::QuantizedWeight::null(),
+                        };
+                        let mut layer = Qwen3SsmLayer::new_sequential(
+                            input_norm,
+                            ssm,
+                            post_attn_norm,
+                            ffn,
+                            None, // qkvz_nvfp4  — BF16 dense fallback used instead
+                            None, // qkvz_nvfp4_t
+                            None, // out_proj_nvfp4_t
+                            config,
+                            gpu,
+                        )?;
+                        // pub field (qwen3_ssm/mod.rs:46); selected by every
+                        // out_proj arm (ssm_forward.rs:412,
+                        // trait_decode_batched.rs:350, ssm_batched.rs:279,
+                        // trait_prefill_helper.rs:89).
+                        layer.out_proj_dense = Some(out_proj_dense);
+                        layers.push(Box::new(layer));
+                        continue;
+                    }
+
+                    let qkvz_size = config.ssm_qkvz_size();
 
                     // GDN ≥FP8 precision policy (2026-07-04). The nvidia
                     // Qwen3.6-27B-NVFP4 checkpoint ships GDN in_proj_qkv /
