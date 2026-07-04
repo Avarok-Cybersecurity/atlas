@@ -67,14 +67,22 @@ effective_context = 24576
 # without the language-mixing/wandering side-effects of Qwen's
 # presence_penalty=1.5 (validated on Qwen3.6-35B-A3B opencode session
 # 2026-05-24). Top_p/top_k tracked from official model card.
+# 2026-07-04: rep_penalty 1.1->1.0 + dry_multiplier 0.5->0.0 in ALL presets,
+# syncing to the Qwen3.6-35B-A3B fix (2026-06-03, "rep_penalty is the
+# code-corruptor"; vLLM serves penalty-free greedy). The 27B was the
+# un-synced outlier: its tool-path 1.1/0.5 corrupted grammar-constrained
+# tool-call args even at temp 0 (penalties are applied before the grammar
+# mask, so they shift the argmax among legal JSON tokens — and tool-call
+# JSON legitimately repeats " { , and key names), regressing BFCL ST-995
+# non_live ~85->~76 vs the penalty-free 89.04 config.
 [sampling.thinking_text]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0
+dry_multiplier = 0.0
 
 [sampling.thinking_coding]
 temperature = 0.6
@@ -82,8 +90,8 @@ top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0
+dry_multiplier = 0.0
 
 [sampling.non_thinking]
 temperature = 0.7
@@ -91,8 +99,8 @@ top_p = 0.8
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0
+dry_multiplier = 0.0
 
 [sampling.tools]
 temperature = 0.6
@@ -100,8 +108,8 @@ top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0
+dry_multiplier = 0.0
 
 [behavior]
 # Content-loop watchdog enabled: dense Qwen3.6-27B has a known
