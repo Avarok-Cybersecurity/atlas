@@ -28,26 +28,62 @@ impl Qwen3SsmLayer {
 
         // ── 9. Gated RMS norm (batched: all chunk tokens × heads) ──
         // Read GDN output and Z from full-sequence buffers at token_offset.
-        let gdn_out_chunk = gdn_bufs.output.offset(token_offset * value_dim * bf16);
+        // ATLAS_DFLASH_VERIFY_GDN_F32 prototype: when the GDN dispatch wrote
+        // FP32 output (gdn_bufs.output_f32) this call, read it directly here
+        // instead of the BF16-truncated `output` buffer.
+        //
+        // CORRECTNESS GUARD: `output_f32_written` is set by whichever GDN
+        // dispatch branch ran for THIS call (prefill_gdn_wy16_inner for
+        // total_len==16, prefill_gdn_full_inner's split4 branch for other
+        // sizes reaching that rung of the ladder) — it is the direct signal
+        // that output_f32 holds fresh data, not a total_len-based proxy.
+        // A prior stopgap gated on `num_tokens != 16` alone, which made the
+        // FP32 path a permanent no-op on production K=γ verify batches
+        // (total_len=γ+1=16); this reads the real per-call outcome instead.
+        let fp32 = 4usize;
+        let use_f32_gdn = gdn_bufs.output_f32_written.get()
+            && self.gated_rms_norm_prefill_f32_k.0 != 0
+            && !gdn_bufs.output_f32.is_null()
+            && std::env::var("ATLAS_DFLASH_VERIFY_GDN_F32").ok().as_deref() == Some("1");
         let z_chunk = gdn_bufs.z.offset(token_offset * value_dim * bf16);
 
         // Output buffer: reuse ssm_qkvz (same as monolithic prefill)
         let normed_out_buf = ctx.buffers.ssm_qkvz();
-        ops::gated_rms_norm_prefill(
-            ctx.gpu,
-            self.gated_rms_norm_prefill_k,
-            gdn_out_chunk,
-            z_chunk,
-            &self.ssm.norm,
-            normed_out_buf,
-            nv as u32,
-            vd as u32,
-            eps,
-            k,
-            value_dim as u32, // input_token_stride: GDN output is [N, value_dim] contiguous
-            value_dim as u32, // gate_token_stride: Z buffer is [N, value_dim] contiguous
-            stream,
-        )?;
+        if use_f32_gdn {
+            let gdn_out_chunk_f32 = gdn_bufs.output_f32.offset(token_offset * value_dim * fp32);
+            ops::gated_rms_norm_prefill(
+                ctx.gpu,
+                self.gated_rms_norm_prefill_f32_k,
+                gdn_out_chunk_f32,
+                z_chunk,
+                &self.ssm.norm,
+                normed_out_buf,
+                nv as u32,
+                vd as u32,
+                eps,
+                k,
+                value_dim as u32, // input_token_stride: GDN FP32 output is [N, value_dim] contiguous
+                value_dim as u32, // gate_token_stride: Z buffer is [N, value_dim] contiguous
+                stream,
+            )?;
+        } else {
+            let gdn_out_chunk = gdn_bufs.output.offset(token_offset * value_dim * bf16);
+            ops::gated_rms_norm_prefill(
+                ctx.gpu,
+                self.gated_rms_norm_prefill_k,
+                gdn_out_chunk,
+                z_chunk,
+                &self.ssm.norm,
+                normed_out_buf,
+                nv as u32,
+                vd as u32,
+                eps,
+                k,
+                value_dim as u32, // input_token_stride: GDN output is [N, value_dim] contiguous
+                value_dim as u32, // gate_token_stride: Z buffer is [N, value_dim] contiguous
+                stream,
+            )?;
+        }
 
         // ── 10. Output projection GEMM: [N, 4096] × [4096, 2048] → [N, 2048] ──
         let out_proj_buf = ctx.buffers.moe_output();

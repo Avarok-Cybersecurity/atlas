@@ -382,6 +382,7 @@ impl TransformerModel {
             gdn_buf_qkv: misc.gdn_buf_qkv,
             gdn_buf_gate_beta: misc.gdn_buf_gate_beta,
             gdn_buf_out: misc.gdn_buf_out,
+            gdn_buf_out_f32: misc.gdn_buf_out_f32,
             gdn_buf_z: misc.gdn_buf_z,
             gdn_buf_max_len: misc.gdn_buf_max_len,
             ssm_verify_h_tmp: misc.ssm_verify_h_tmp,

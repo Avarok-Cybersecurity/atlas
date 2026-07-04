@@ -239,6 +239,7 @@ impl TransformerModel {
         let probe_layers = !use_graphs
             && seq.seq_len == seq.prompt_len
             && std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok();
+
         for (i, layer) in self.layers.iter().enumerate() {
             layer.decode(
                 hidden,

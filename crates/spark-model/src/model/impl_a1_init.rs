@@ -31,6 +31,7 @@ pub(super) struct MiscScratch {
     pub gdn_buf_qkv: DevicePtr,
     pub gdn_buf_gate_beta: DevicePtr,
     pub gdn_buf_out: DevicePtr,
+    pub gdn_buf_out_f32: DevicePtr,
     pub gdn_buf_z: DevicePtr,
     pub gdn_buf_max_len: usize,
     pub ssm_verify_h_tmp: DevicePtr,
@@ -157,19 +158,26 @@ pub(super) fn build_misc_scratch(
     // (conv_dim > 0). Mamba-2 models (Nemotron) have conv_dim=0 — skip alloc
     // to avoid cuMemAlloc(0) error.
     let gdn_buf_max_len = max_batch_tokens.min(max_seq_len);
-    let (gdn_buf_qkv, gdn_buf_gate_beta, gdn_buf_out, gdn_buf_z) = if conv_dim > 0 {
+    let (gdn_buf_qkv, gdn_buf_gate_beta, gdn_buf_out, gdn_buf_out_f32, gdn_buf_z) = if conv_dim > 0
+    {
         let qkv = gpu.alloc(gdn_buf_max_len * conv_dim * 2)?;
         let gb = gpu.alloc(gdn_buf_max_len * nv * 2 * 4)?;
         let o = gpu.alloc(gdn_buf_max_len * value_dim * 2)?;
+        // FP32 sibling of `o` for ATLAS_DFLASH_VERIFY_GDN_F32 (K=γ verify
+        // precision fix prototype). ~2x the BF16 buffer's size, negligible
+        // against total GPU memory.
+        let o_f32 = gpu.alloc(gdn_buf_max_len * value_dim * 4)?;
         let z = gpu.alloc(gdn_buf_max_len * value_dim * 2)?;
         let total_mb =
-            (gdn_buf_max_len * (conv_dim * 2 + nv * 2 * 4 + value_dim * 2 * 2)) / (1024 * 1024);
+            (gdn_buf_max_len * (conv_dim * 2 + nv * 2 * 4 + value_dim * 2 * 2 + value_dim * 4))
+                / (1024 * 1024);
         tracing::info!(
             "GDN prefill buffers: {total_mb} MB for {gdn_buf_max_len} tokens (chunked SSM prefill)"
         );
-        (qkv, gb, o, z)
+        (qkv, gb, o, o_f32, z)
     } else {
         (
+            DevicePtr::NULL,
             DevicePtr::NULL,
             DevicePtr::NULL,
             DevicePtr::NULL,
@@ -194,6 +202,7 @@ pub(super) fn build_misc_scratch(
         gdn_buf_qkv,
         gdn_buf_gate_beta,
         gdn_buf_out,
+        gdn_buf_out_f32,
         gdn_buf_z,
         gdn_buf_max_len,
         ssm_verify_h_tmp,

@@ -75,6 +75,9 @@ pub struct Qwen3SsmLayer {
     /// Dual-output (bf16 + f32) MoE-input norm for ATLAS_FP32_ROUTING. Zero if absent.
     residual_add_rms_norm_gatef32_k: KernelHandle,
     gated_rms_norm_prefill_k: KernelHandle,
+    /// FP32-input variant for ATLAS_DFLASH_VERIFY_GDN_F32 (K=γ verify precision fix).
+    /// Zero (NULL) if the kernel wasn't linked; dispatch falls back to gated_rms_norm_prefill_k.
+    gated_rms_norm_prefill_f32_k: KernelHandle,
     // Kernels — batched verification path (multi-token GEMM)
     w4a16_gemm_k: KernelHandle,
     w4a16_gemm_t_k: KernelHandle, // Transposed B layout [K/2, N] — K_STEP_T=32
@@ -86,6 +89,9 @@ pub struct Qwen3SsmLayer {
     gdn_prefill_k: KernelHandle,
     gdn_prefill_split_k: KernelHandle,
     gdn_prefill_split4_k: KernelHandle,
+    /// FP32-output variant for ATLAS_DFLASH_VERIFY_GDN_F32 (K=γ verify precision fix).
+    /// Only covers the split4 dispatch branch; zero (NULL) if unavailable.
+    gdn_prefill_split4_f32_k: KernelHandle,
     gdn_prefill_persistent_k: KernelHandle,
     gdn_prefill_persistent_wy4_k: KernelHandle,
     /// FLA multi-kernel chunked prefill (baked default for 128-dim GDN): recompute_wu →
@@ -137,6 +143,10 @@ pub struct Qwen3SsmLayer {
     /// K=16 (DFlash γ) fused WY-chunkwise verify kernel. Mirror of wy17 for the
     /// 16-token verify input. NULL on models lacking gated_delta_rule_wy16.cu.
     gdn_wy16_k: KernelHandle,
+    /// FP32-output variant for ATLAS_DFLASH_VERIFY_GDN_F32 (K=γ verify precision
+    /// fix). Covers the wy16 fast path that intercepts all K=16 production
+    /// DFlash verify calls. Zero (NULL) if unavailable.
+    gdn_wy16_f32_k: KernelHandle,
     // State allocation sizes (pre-computed from config)
     h_state_bytes: usize,
     conv_state_bytes: usize,

@@ -41,18 +41,33 @@ impl Qwen3SsmLayer {
         let beta_ptr = gdn_bufs.gate_beta.offset(nv * fp32);
         let inter_stride_floats = (h_bytes / 4) as u32;
 
+        // ATLAS_DFLASH_VERIFY_GDN_F32 prototype: closes the BF16-truncation
+        // gap in the K=γ verify path's dominant dispatch branch (production
+        // verify batches are total_len=γ+1=16, which this fast path owns
+        // exclusively). Mirrors the split4_f32 dispatch below; sets
+        // output_f32_written so phase3 knows the buffer holds fresh data.
+        let use_f32_gdn = self.gdn_wy16_f32_k.0 != 0
+            && !gdn_bufs.output_f32.is_null()
+            && std::env::var("ATLAS_DFLASH_VERIFY_GDN_F32").ok().as_deref() == Some("1");
+        let (kernel, out_ptr) = if use_f32_gdn {
+            (self.gdn_wy16_f32_k, gdn_bufs.output_f32)
+        } else {
+            (self.gdn_wy16_k, gdn_bufs.output)
+        };
+        gdn_bufs.output_f32_written.set(use_f32_gdn);
+
         // gdn_decode_wy17 is kernel-agnostic; the wy16 handle drives a K_TOKENS=16
         // single pass writing final H (live) + Hi_0..Hi_14 (intermediates).
         ops::gdn_decode_wy17(
             ctx.gpu,
-            self.gdn_wy16_k,
+            kernel,
             ssm_state.h_state,
             q_ptr,
             k_ptr,
             v_ptr,
             gate_ptr,
             beta_ptr,
-            gdn_bufs.output,
+            out_ptr,
             ssm_state.h_state_intermediates[0],
             inter_stride_floats,
             1,
@@ -79,6 +94,15 @@ impl Qwen3SsmLayer {
             .as_any_mut()
             .downcast_mut::<SsmLayerState>()
             .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState"))?;
+
+        // ATLAS_DFLASH_VERIFY_GDN_F32: default to "not written" for every
+        // branch in this ladder; only the split4-f32 branch below flips it
+        // back to true. Required because gdn_bufs (and its Cell) is shared
+        // across SSM layers within a verify call — without resetting here,
+        // a layer that falls through to WY32/persistent/chunked (all BF16)
+        // could inherit a stale `true` left by prefill_gdn_wy16_inner's
+        // dispatch on a previous layer.
+        gdn_bufs.output_f32_written.set(false);
 
         let nk = ctx.config.linear_num_key_heads;
         let kd = ctx.config.linear_key_head_dim;
@@ -282,27 +306,59 @@ impl Qwen3SsmLayer {
                 stream,
             )?;
         } else {
-            ops::gdn_prefill_split4(
-                ctx.gpu,
-                self.gdn_prefill_split4_k,
-                ssm_state.h_state,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gate_ptr,
-                beta_ptr,
-                gdn_bufs.output,
-                1,
-                total,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                gb_stride,
-                stream,
-            )?;
+            // ATLAS_DFLASH_VERIFY_GDN_F32 prototype: closes the BF16-truncation
+            // gap in the K=γ verify path's split4 dispatch (the branch this
+            // model target's K=15 verify actually takes). Only covers this
+            // ladder branch — WY32/persistent/chunked callers above stay BF16.
+            let use_f32_gdn = self.gdn_prefill_split4_f32_k.0 != 0
+                && !gdn_bufs.output_f32.is_null()
+                && std::env::var("ATLAS_DFLASH_VERIFY_GDN_F32").ok().as_deref() == Some("1");
+            gdn_bufs.output_f32_written.set(use_f32_gdn);
+            if use_f32_gdn {
+                ops::gdn_prefill_split4(
+                    ctx.gpu,
+                    self.gdn_prefill_split4_f32_k,
+                    ssm_state.h_state,
+                    q_ptr,
+                    k_ptr,
+                    v_ptr,
+                    gate_ptr,
+                    beta_ptr,
+                    gdn_bufs.output_f32,
+                    1,
+                    total,
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    conv_dim as u32,
+                    conv_dim as u32,
+                    gb_stride,
+                    stream,
+                )?;
+            } else {
+                ops::gdn_prefill_split4(
+                    ctx.gpu,
+                    self.gdn_prefill_split4_k,
+                    ssm_state.h_state,
+                    q_ptr,
+                    k_ptr,
+                    v_ptr,
+                    gate_ptr,
+                    beta_ptr,
+                    gdn_bufs.output,
+                    1,
+                    total,
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    conv_dim as u32,
+                    conv_dim as u32,
+                    gb_stride,
+                    stream,
+                )?;
+            }
         }
 
         Ok(())

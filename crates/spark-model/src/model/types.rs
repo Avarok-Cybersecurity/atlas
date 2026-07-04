@@ -217,6 +217,10 @@ pub struct TransformerModel {
     pub(super) gdn_buf_gate_beta: DevicePtr,
     /// Full-sequence GDN output: [max_seq_len, value_dim] BF16
     pub(super) gdn_buf_out: DevicePtr,
+    /// FP32 sibling of `gdn_buf_out` for ATLAS_DFLASH_VERIFY_GDN_F32 (K=γ verify
+    /// precision fix prototype): [max_seq_len, value_dim] FP32.
+    /// DevicePtr::NULL when conv_dim == 0 (no SSM layers).
+    pub(super) gdn_buf_out_f32: DevicePtr,
     /// Full-sequence Z gate (for gated RMS norm in phase 3): [max_seq_len, value_dim] BF16
     pub(super) gdn_buf_z: DevicePtr,
     /// Max sequence length these buffers were allocated for.

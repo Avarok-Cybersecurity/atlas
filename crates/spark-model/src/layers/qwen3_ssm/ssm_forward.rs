@@ -169,7 +169,6 @@ impl Qwen3SsmLayer {
             ctx.gpu.synchronize(stream)?;
             Self::debug_bf16(ctx.gpu, "deinterleaved-Q", deinterleaved, 4);
         }
-
         // Sequential offsets into deinterleaved buffer: [Q_2048 | K_2048 | V_4096 | Z_4096]
         let key_dim = nk * kd; // 2048
         let value_dim = nv * vd; // 4096
@@ -268,7 +267,6 @@ impl Qwen3SsmLayer {
             ctx.gpu.synchronize(stream)?;
             Self::debug_bf16(ctx.gpu, "conv1d-l2norm-out", conv_out, 4);
         }
-
         // ── 5. Split conv output → Q', K', V' ──
         // Bytes per element: 4 if FP32 conv output, 2 if BF16
         let elem_size = if use_f32_conv { 4 } else { 2 };
@@ -322,7 +320,6 @@ impl Qwen3SsmLayer {
                 tracing::error!("CRASH at gdn_decode");
             })?;
         }
-
         // ── 7. Gated RMS norm with Z gate — per-head normalization ──
         // GDN output is [nv * vd], norm weight is [vd], applied as [nv, vd]
         let normed_out = ctx.buffers.ssm_qkvz();
@@ -411,7 +408,6 @@ impl Qwen3SsmLayer {
             ctx.gpu.synchronize(stream)?;
             Self::debug_bf16(ctx.gpu, "out-proj", out, 4);
         }
-
         Ok(out)
     }
 }

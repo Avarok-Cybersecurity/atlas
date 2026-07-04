@@ -390,6 +390,8 @@ impl TransformerModel {
             qkv: self.gdn_buf_qkv,
             gate_beta: self.gdn_buf_gate_beta,
             output: self.gdn_buf_out,
+            output_f32: DevicePtr::NULL,
+            output_f32_written: std::cell::Cell::new(false),
             z: self.gdn_buf_z,
             total_len: proc_count * n,
         };

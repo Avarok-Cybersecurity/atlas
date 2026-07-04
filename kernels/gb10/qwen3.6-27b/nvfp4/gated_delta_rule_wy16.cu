@@ -222,3 +222,164 @@ extern "C" __global__ void gated_delta_rule_wy16(
         }
     }
 }
+
+// ATLAS_DFLASH_VERIFY_GDN_F32 prototype: FP32-output sibling of
+// gated_delta_rule_wy16, covering the K=16 fast path that intercepts every
+// production DFlash K=γ verify call (γ+1=16 tokens). Byte-identical to the
+// kernel above except: `output` is `float* __restrict__` and the final
+// store skips the `__float2bfloat16` truncation. All internal accumulation
+// (H, Hi_t, qd[t]) was already FP32 in the original — only the output-write
+// boundary changes, mirroring gated_delta_rule_prefill_split4_f32.
+extern "C" __global__ void gated_delta_rule_wy16_f32(
+    float* __restrict__ h_state,
+    const __nv_bfloat16* __restrict__ query,
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    float* __restrict__ output,
+    // Pool of 15 intermediates (Hi_0..Hi_14). Each Hi_t is at
+    // h_state_inter_base + t * inter_stride_floats (per (b, vh)).
+    float* __restrict__ h_state_inter_base,
+    unsigned int inter_stride_floats,
+    unsigned int batch_size,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride
+) {
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads || b >= batch_size) return;
+
+    const unsigned int tid = threadIdx.x;
+    const unsigned int hr = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / hr;
+    const unsigned int hv = k_dim * v_dim;
+
+    float* H = h_state + ((b * num_v_heads + vh) * hv);
+    float* Hi_base = h_state_inter_base + ((b * num_v_heads + vh) * hv);
+
+    __shared__ float sk[K_TOKENS][128];
+    __shared__ float sq[K_TOKENS][128];
+    __shared__ float sg[K_TOKENS];
+    __shared__ float sbt[K_TOKENS];
+    __shared__ float smem_warp[4];
+
+    if (tid < k_dim) {
+        #pragma unroll
+        for (int t = 0; t < K_TOKENS; t++) {
+            const __nv_bfloat16* q_t = query + (b * K_TOKENS + t) * qk_stride + kh * k_dim;
+            const __nv_bfloat16* k_t = key   + (b * K_TOKENS + t) * qk_stride + kh * k_dim;
+            sq[t][tid] = (float)q_t[tid];
+            sk[t][tid] = (float)k_t[tid];
+        }
+    }
+    if (tid < K_TOKENS) {
+        float g_raw = gate[(b * K_TOKENS + tid) * gb_stride + vh];
+        sg[tid] = fminf(fmaxf(g_raw, 1e-6f), 1.0f - 1e-6f);
+        sbt[tid] = beta[(b * K_TOKENS + tid) * gb_stride + vh];
+    }
+    __syncthreads();
+
+    __shared__ float kd_flat[K_TOKENS * (K_TOKENS - 1) / 2];
+
+    #pragma unroll
+    for (int t = 1; t < K_TOKENS; t++) {
+        #pragma unroll
+        for (int s = 0; s < t; s++) {
+            float p = (tid < k_dim) ? sk[t][tid] * sk[s][tid] : 0.0f;
+            float r = atlas_block_reduce_sum(p, smem_warp, tid);
+            if (tid == 0) {
+                kd_flat[t * (t - 1) / 2 + s] = r;
+            }
+            __syncthreads();
+        }
+    }
+
+    if (tid < v_dim) {
+        float vi[K_TOKENS];
+        #pragma unroll
+        for (int t = 0; t < K_TOKENS; t++) {
+            const __nv_bfloat16* v_t = value + (b * K_TOKENS + t) * v_stride + vh * v_dim;
+            vi[t] = (float)v_t[tid];
+        }
+
+        float hk[K_TOKENS];
+        #pragma unroll
+        for (int t = 0; t < K_TOKENS; t++) hk[t] = 0.0f;
+
+        #pragma unroll 4
+        for (unsigned int j = 0; j < k_dim; j += 4) {
+            float h0 = H[(j + 0) * v_dim + tid];
+            float h1 = H[(j + 1) * v_dim + tid];
+            float h2 = H[(j + 2) * v_dim + tid];
+            float h3 = H[(j + 3) * v_dim + tid];
+            #pragma unroll
+            for (int t = 0; t < K_TOKENS; t++) {
+                hk[t] += h0 * sk[t][j + 0] + h1 * sk[t][j + 1]
+                       + h2 * sk[t][j + 2] + h3 * sk[t][j + 3];
+            }
+        }
+
+        float vn[K_TOKENS];
+        vn[0] = (vi[0] - sg[0] * hk[0]) * sbt[0];
+
+        for (int t = 1; t < K_TOKENS; t++) {
+            float corrected = 0.0f;
+            float lead_prod = 1.0f;
+            for (int u = 0; u < t; u++) lead_prod *= sg[u];
+            corrected = lead_prod * hk[t];
+            for (int s = 0; s < t; s++) {
+                float gprod = 1.0f;
+                for (int u = s + 1; u < t; u++) gprod *= sg[u];
+                corrected += gprod * kd_flat[t * (t - 1) / 2 + s] * vn[s];
+            }
+            vn[t] = (vi[t] - sg[t] * corrected) * sbt[t];
+        }
+
+        float qd[K_TOKENS];
+        #pragma unroll
+        for (int t = 0; t < K_TOKENS; t++) qd[t] = 0.0f;
+
+        #pragma unroll 4
+        for (unsigned int j = 0; j < k_dim; j += 4) {
+            float h0 = H[(j + 0) * v_dim + tid];
+            float h1 = H[(j + 1) * v_dim + tid];
+            float h2 = H[(j + 2) * v_dim + tid];
+            float h3 = H[(j + 3) * v_dim + tid];
+
+            #pragma unroll
+            for (int t = 0; t < K_TOKENS; t++) {
+                h0 = sg[t] * h0 + sk[t][j + 0] * vn[t];
+                h1 = sg[t] * h1 + sk[t][j + 1] * vn[t];
+                h2 = sg[t] * h2 + sk[t][j + 2] * vn[t];
+                h3 = sg[t] * h3 + sk[t][j + 3] * vn[t];
+                if (t < K_TOKENS - 1) {
+                    float* Hi_t = Hi_base + t * inter_stride_floats;
+                    Hi_t[(j + 0) * v_dim + tid] = h0;
+                    Hi_t[(j + 1) * v_dim + tid] = h1;
+                    Hi_t[(j + 2) * v_dim + tid] = h2;
+                    Hi_t[(j + 3) * v_dim + tid] = h3;
+                } else {
+                    H[(j + 0) * v_dim + tid] = h0;
+                    H[(j + 1) * v_dim + tid] = h1;
+                    H[(j + 2) * v_dim + tid] = h2;
+                    H[(j + 3) * v_dim + tid] = h3;
+                }
+                qd[t] += h0 * sq[t][j + 0] + h1 * sq[t][j + 1]
+                       + h2 * sq[t][j + 2] + h3 * sq[t][j + 3];
+            }
+        }
+
+        // ── Write outputs (K rows × v_dim), FP32 — no BF16 truncation ──
+        float s = rsqrtf((float)k_dim);
+        #pragma unroll
+        for (int t = 0; t < K_TOKENS; t++) {
+            output[((b * K_TOKENS + t) * num_v_heads + vh) * v_dim + tid] = qd[t] * s;
+        }
+    }
+}
