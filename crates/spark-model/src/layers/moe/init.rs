@@ -148,6 +148,16 @@ impl MoeLayer {
                 "moe_shared_expert_fused_bf16",
                 "moe_expert_silu_down_shared_bf16",
             ),
+            moe_expert_gate_up_shared_bf16_batch2_k: super::super::try_kernel(
+                gpu,
+                "moe_shared_expert_fused_bf16_batch2",
+                "moe_expert_gate_up_shared_bf16_batch2",
+            ),
+            moe_expert_silu_down_shared_bf16_batch2_k: super::super::try_kernel(
+                gpu,
+                "moe_shared_expert_fused_bf16_batch2",
+                "moe_expert_silu_down_shared_bf16_batch2",
+            ),
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemm_pipelined_k: super::super::try_kernel(
                 gpu,

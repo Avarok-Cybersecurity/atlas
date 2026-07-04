@@ -85,7 +85,9 @@ pub fn verify_pick_with_pipeline(
     a: &mut ActiveSeq,
     ctx: &LogitsContext,
 ) -> u32 {
+    use crate::scheduler::mtp_timing::{self, Phase};
     // 1. Dequant per the same scheme as `process_seq_logits`.
+    let t_dequant = std::time::Instant::now();
     let mut f32_logits: Vec<f32> = if is_fp32 {
         (0..vocab_size)
             .map(|j| {
@@ -107,6 +109,7 @@ pub fn verify_pick_with_pipeline(
             })
             .collect()
     };
+    mtp_timing::record(Phase::Dequant, t_dequant);
 
     // 2. Build this position's penalty/bias params (Verify kind: greedy,
     //    seed-free, no caller bias — the builder still appends the A4 floor
@@ -134,6 +137,7 @@ pub fn verify_pick_with_pipeline(
     //    bypass token — emit directly, no argmax scan. R1: this does NOT
     //    advance the grammar matcher; the K-loop in
     //    `verify_pick_all_with_pipeline` owns `accept_token` / `rollback`.
+    let t_proc = std::time::Instant::now();
     if let Some(tok) = crate::scheduler::logit_processors::process_position_logits(
         &mut f32_logits,
         a,
@@ -141,11 +145,14 @@ pub fn verify_pick_with_pipeline(
         &penalties,
         crate::scheduler::sample_step::PositionKind::Verify,
     ) {
+        mtp_timing::record(Phase::PipelineProc, t_proc);
         return tok;
     }
+    mtp_timing::record(Phase::PipelineProc, t_proc);
 
     // 4. Argmax over the (now-masked-and-penalised) vector. Matches the
     //    sampler's argmax branch behaviour.
+    let t_argmax = std::time::Instant::now();
     let mut best_id: u32 = 0;
     let mut best_val: f32 = f32::NEG_INFINITY;
     for (i, &v) in f32_logits.iter().enumerate() {
@@ -154,6 +161,7 @@ pub fn verify_pick_with_pipeline(
             best_id = i as u32;
         }
     }
+    mtp_timing::record(Phase::Argmax, t_argmax);
     best_id
 }
 
@@ -172,6 +180,7 @@ pub fn verify_pick_all_with_pipeline(
     a: &mut ActiveSeq,
     ctx: &LogitsContext,
 ) -> Vec<u32> {
+    use crate::scheduler::mtp_timing::{self, Phase};
     let k = argmax_ids.len();
     if k == 0 {
         return Vec::new();
@@ -203,16 +212,49 @@ pub fn verify_pick_all_with_pipeline(
     // are either no-ops in the content/greedy/neutral regime or acceptable
     // speed-for-quality trades (we hold a measured accuracy margin over vLLM).
     // Kill-switch: ATLAS_DISABLE_FAST_GREEDY=1.
-    if fast_greedy_grammar_enabled()
+    //
+    // #237 (fix 4a): the all-penalties-neutral requirement is relaxed to the
+    // SSOT `fast_greedy` gate — reduce-only penalties (rep>=1.0, presence/
+    // frequency>=0, LZ/DRY off, no bias) provably cannot flip an argmax whose
+    // token is NOT in the scoped penalty history and whose raw logit is > 0
+    // (see `fast_greedy` module docs for the proof). The membership test uses
+    // the SAME scoped history the slow path hands to
+    // `apply_penalties_and_bias` (`penalty_history_scope`), which is also
+    // deliberately STALE across positions ≥ 1 exactly like the slow path
+    // (output_tokens does not grow until `emit_token`, after this helper).
+    let fast_penalty_gate = if fast_greedy_grammar_enabled()
         && a.grammar_state.is_some()
         && !a.inside_thinking
         && (a.temperature == 0.0 || force_temp_zero_enabled())
-        && a.repetition_penalty == 1.0
-        && a.presence_penalty == 0.0
-        && a.frequency_penalty == 0.0
-        && a.lz_penalty == 0.0
-        && a.dry_multiplier == 0.0
     {
+        crate::scheduler::fast_greedy::classify_penalties(
+            &crate::scheduler::sample_step::penalty_params_for(
+                a,
+                crate::scheduler::sample_step::PositionKind::Verify,
+                0.0,
+                None,
+                Vec::new(),
+            ),
+        )
+    } else {
+        crate::scheduler::fast_greedy::PenaltyGate::Blocked
+    };
+    if fast_penalty_gate != crate::scheduler::fast_greedy::PenaltyGate::Blocked {
+        let t_fast = std::time::Instant::now();
+        let vocab = model.vocab_size();
+        let logits_base = model.logits_buffer_ptr();
+        // Scoped history for the ReduceOnly immunity test — cloned before the
+        // `&mut a.grammar_state` borrow below.
+        let scoped_history: Vec<u32> =
+            if fast_penalty_gate == crate::scheduler::fast_greedy::PenaltyGate::ReduceOnly {
+                crate::scheduler::sample_step::penalty_history_scope(
+                    &a.output_tokens,
+                    ctx.tool_call_end_token,
+                )
+                .to_vec()
+            } else {
+                Vec::new()
+            };
         let before = a.grammar_state.as_ref().map(|gs| gs.num_history_steps());
         let mut fast: Vec<u32> = Vec::with_capacity(k);
         let mut all_allowed = true;
@@ -224,6 +266,22 @@ pub fn verify_pick_all_with_pipeline(
                 unreachable!("grammar_state present (gated by is_some above)")
             };
             for (i, &tok) in argmax_ids.iter().enumerate() {
+                // ReduceOnly regime: the argmax must be penalty-immune (not in
+                // the scoped history + raw logit > 0) or we take the slow path.
+                if fast_penalty_gate == crate::scheduler::fast_greedy::PenaltyGate::ReduceOnly
+                    && !crate::scheduler::fast_greedy::argmax_immune(tok, &scoped_history, || {
+                        crate::scheduler::fast_greedy::logit_is_positive(
+                            model,
+                            logits_base,
+                            i,
+                            vocab,
+                            tok,
+                        )
+                    })
+                {
+                    all_allowed = false;
+                    break;
+                }
                 let allowed = if gs.is_terminated() {
                     true // no further constraint past grammar completion
                 } else {
@@ -250,6 +308,7 @@ pub fn verify_pick_all_with_pipeline(
                 gs.rollback(adv);
             }
         }
+        mtp_timing::record(Phase::FastGreedy, t_fast);
         if all_allowed && fast.len() == k {
             return fast; // no D2H, no CPU pipeline — all positions GPU-greedy + grammar-legal
         }
@@ -262,6 +321,7 @@ pub fn verify_pick_all_with_pipeline(
     // not go through verify (no MTP for dense Gemma).
     let elem_bytes = 2usize;
     let total = k * vocab * elem_bytes;
+    let t_d2h = std::time::Instant::now();
     let mut buf = vec![0u8; total];
     if model
         .copy_logits_to_host(model.logits_buffer_ptr(), &mut buf)
@@ -269,6 +329,7 @@ pub fn verify_pick_all_with_pipeline(
     {
         return argmax_ids.to_vec();
     }
+    mtp_timing::record(Phase::D2h, t_d2h);
 
     let mut picks: Vec<u32> = Vec::with_capacity(k);
     // Snapshot the matcher's history depth BEFORE speculative advances so we

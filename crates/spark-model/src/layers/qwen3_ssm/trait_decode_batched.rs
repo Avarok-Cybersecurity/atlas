@@ -106,24 +106,21 @@ impl Qwen3SsmLayer {
                     stream,
                 )?;
             } else {
-                ops::dense_gemv(
+                // Batched M=2: one pass over in_proj_qkvz for both verify
+                // tokens instead of two M=1 reads of the full projection
+                // weight. Bit-identical to the two dense_gemv calls it
+                // replaces (same per-row accumulation order); the dominant
+                // per-verify-step weight-bandwidth term across the 48 GDN
+                // layers on FP8 checkpoints (in_proj dequanted to BF16).
+                ops::dense_gemv_batch2(
                     ctx.gpu,
-                    self.dense_gemv_k,
+                    self.dense_gemv_batch2_k,
                     normed,
                     &self.ssm.in_proj_qkvz,
                     proj_dst,
                     qkvz_size as u32,
                     h as u32,
-                    stream,
-                )?;
-                ops::dense_gemv(
-                    ctx.gpu,
-                    self.dense_gemv_k,
-                    normed.offset(h * bf16),
-                    &self.ssm.in_proj_qkvz,
-                    proj_dst.offset(qkvz_size * bf16),
                     qkvz_size as u32,
-                    h as u32,
                     stream,
                 )?;
             }

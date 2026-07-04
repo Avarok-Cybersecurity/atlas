@@ -261,6 +261,12 @@ pub struct MoeLayer {
     // Fused BF16 decode kernels (mirror moe_expert_*_shared_fp8 layout).
     moe_expert_gate_up_shared_bf16_k: KernelHandle,
     moe_expert_silu_down_shared_bf16_k: KernelHandle,
+    // Fused BF16 K=2 batch kernels for MTP verify (mirror the FP8 batch2 layout).
+    // Handle may be 0 on images that don't ship the kernel; the K=2 BF16
+    // dispatch site is gated on this being non-null and falls back to the
+    // per-token batched path otherwise.
+    moe_expert_gate_up_shared_bf16_batch2_k: KernelHandle,
+    moe_expert_silu_down_shared_bf16_batch2_k: KernelHandle,
     w8a16_gemm_k: KernelHandle,           // for shared expert FP8 prefill
     w8a16_gemm_pipelined_k: KernelHandle, // ATLAS_W8A16_PIPELINED shared-expert variant
     // Fused gate GEMV + topK softmax (saves 1 kernel launch per layer)

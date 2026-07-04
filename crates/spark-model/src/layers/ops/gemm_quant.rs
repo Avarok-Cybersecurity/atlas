@@ -130,6 +130,41 @@ pub fn dense_gemv(
         .launch(stream)
 }
 
+/// Dense BF16 GEMV, batched over 2 rows (M=2): one pass over the weight
+/// produces both output rows, halving weight bandwidth vs two `dense_gemv`
+/// launches. Bit-identical to two M=1 `dense_gemv` calls — each row's
+/// accumulator follows the same K-iteration/reduction order.
+///
+/// `input`: `[2, K]` BF16 (contiguous); `output`: two rows at
+/// `output + t * out_stride` (BF16 elements). Used by the K=2 MTP verify
+/// path for the GDN `in_proj_qkvz` (dequant-to-BF16 on FP8 checkpoints),
+/// which otherwise re-read the full projection weight once per verify token.
+///
+/// Kernel: `dense_gemv_bf16_batch2(A, B, C, N, K, out_stride)`
+#[allow(clippy::too_many_arguments)]
+pub fn dense_gemv_batch2(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    n: u32,
+    k: u32,
+    out_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 4), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_u32(n)
+        .arg_u32(k)
+        .arg_u32(out_stride)
+        .launch(stream)
+}
+
 /// Dense FP8-weight GEMV (M=1): C = A @ (dequant(B_fp8) * row_scale).
 ///
 /// A: `[1, K]` BF16, B: `[N, K]` FP8 E4M3, row_scale: `[N]` f32, C: `[1, N]` BF16.

@@ -63,12 +63,15 @@ pub fn step_verify_k2(
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
 ) {
+    use crate::scheduler::mtp_timing::{self, Phase};
+    let t_step = Instant::now();
     let t_sync = Instant::now();
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
         a.finished = true;
         return;
     }
+    mtp_timing::record(Phase::SyncSecondary, t_sync);
     let sync_us = t_sync.elapsed().as_micros();
 
     // EP: broadcast verify K=2 command + tokens so worker runs decode_verify_graphed in lockstep.
@@ -87,6 +90,7 @@ pub fn step_verify_k2(
         }
     }
 
+    mtp_timing::record(Phase::EpBroadcast, t_ep);
     let ep_us = t_ep.elapsed().as_micros();
 
     let t_verify = Instant::now();
@@ -98,6 +102,7 @@ pub fn step_verify_k2(
             return;
         }
     };
+    mtp_timing::record(Phase::VerifyForward, t_verify);
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
     let [v0_argmax, v1_argmax] = result;
@@ -157,19 +162,27 @@ pub fn step_verify_k2(
         // Item #2 (STree-style in-place K=2 verify commit). Full accept
         // (num_accepted=k=2): the verify kernel already wrote the canonical
         // h_state, so the commit is a no-op.
+        let t_commit = Instant::now();
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 2, 2) {
             tracing::error!("commit_accepted_prefix (accept): {e:#}");
             return;
         }
+        mtp_timing::record(Phase::Commit, t_commit);
+        let t_save = Instant::now();
         if let Err(e) = model.save_hidden_for_mtp(1, 0) {
             tracing::error!("save_hidden_for_mtp(1): {e:#}");
             return;
         }
+        mtp_timing::record(Phase::SaveHidden, t_save);
+        let t_trim = Instant::now();
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 1, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
-        let t_propose = Instant::now();
+        mtp_timing::record(Phase::TrimProposer, t_trim);
+        let t_mask = Instant::now();
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
+        mtp_timing::record(Phase::ProposeMask, t_mask);
+        let t_propose = Instant::now();
         match model.run_mtp_propose_multi(
             v1,
             a.seq.seq_len,
@@ -184,6 +197,7 @@ pub fn step_verify_k2(
                 tracing::error!("run_mtp_propose_multi: {e:#}");
             }
         }
+        mtp_timing::record(Phase::Propose, t_propose);
         let propose_us = t_propose.elapsed().as_micros();
         // Per-step ACCEPT trace at debug — fires every step during
         // spec-decode. Power-user diagnostics:
@@ -197,24 +211,31 @@ pub fn step_verify_k2(
         k2_record_outcome(true, a.seq.seq_len);
         // #155 iter3: block-aligned Marconi checkpoint (live SSM state is
         // canonical post-commit). Fires only at interval boundaries.
+        let t_marconi = Instant::now();
         model.decode_marconi_checkpoint(&mut a.seq);
+        mtp_timing::record(Phase::MarconiCkpt, t_marconi);
+        mtp_timing::step_done(t_step, a.seq.seq_len);
     } else {
         // ── REJECTED ──
         a.seq.seq_len -= 1;
         a.seq.tokens.pop();
 
+        let t_trim = Instant::now();
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 0, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
+        mtp_timing::record(Phase::TrimProposer, t_trim);
         // Item #2 (STree-style in-place K=2 verify commit). K=2 reject means
         // num_accepted=1 (last_token is always accepted): the in-place
         // commit rewinds live h_state to intermediate[0] (state after the
         // accepted token). Verify draft state is discarded.
+        let t_commit = Instant::now();
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 1, 2) {
             tracing::error!("commit_accepted_prefix (reject): {e:#}");
             a.finished = true;
             return;
         }
+        mtp_timing::record(Phase::Commit, t_commit);
 
         emit_token(a, v0, verify_lps.first().cloned());
         if a.finished {
@@ -222,12 +243,16 @@ pub fn step_verify_k2(
         }
         a.last_token = v0;
 
+        let t_save = Instant::now();
         if let Err(e) = model.save_hidden_for_mtp(0, 0) {
             tracing::error!("save_hidden_for_mtp(0): {e:#}");
             return;
         }
-        let t_propose = Instant::now();
+        mtp_timing::record(Phase::SaveHidden, t_save);
+        let t_mask = Instant::now();
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
+        mtp_timing::record(Phase::ProposeMask, t_mask);
+        let t_propose = Instant::now();
         match model.run_mtp_propose_multi(
             v0,
             a.seq.seq_len,
@@ -242,6 +267,7 @@ pub fn step_verify_k2(
                 tracing::error!("run_mtp_propose_multi: {e:#}");
             }
         }
+        mtp_timing::record(Phase::Propose, t_propose);
         let propose_us = t_propose.elapsed().as_micros();
         let new_draft = a.pending_drafts.first().copied().unwrap_or(0);
         // REJECT log demoted from `info!` to `debug!` to match the
@@ -259,6 +285,9 @@ pub fn step_verify_k2(
         k2_record_outcome(false, a.seq.seq_len);
         // #155 iter3: block-aligned Marconi checkpoint (live SSM state is
         // canonical post-commit). Fires only at interval boundaries.
+        let t_marconi = Instant::now();
         model.decode_marconi_checkpoint(&mut a.seq);
+        mtp_timing::record(Phase::MarconiCkpt, t_marconi);
+        mtp_timing::step_done(t_step, a.seq.seq_len);
     }
 }

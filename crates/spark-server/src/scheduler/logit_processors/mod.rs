@@ -222,6 +222,7 @@ pub fn process_position_logits(
     //    per-occurrence repetition penalty does not compound across completed
     //    parallel calls and crush the next call's structural scaffold (see
     //    `sample_step::penalty_history_scope`).
+    let t_pen = std::time::Instant::now();
     apply_penalties_and_bias(
         logits,
         penalties,
@@ -230,6 +231,9 @@ pub fn process_position_logits(
             ctx.tool_call_end_token,
         ),
     );
+    if kind == PositionKind::Verify {
+        crate::scheduler::mtp_timing::record(crate::scheduler::mtp_timing::Phase::Penalties, t_pen);
+    }
 
     None
 }

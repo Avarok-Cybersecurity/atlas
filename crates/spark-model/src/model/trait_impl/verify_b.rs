@@ -172,13 +172,21 @@ impl TransformerModel {
             tracing::info!("FP8 calibration frozen — re-enabling CUDA graphs (MTP verify)");
         }
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
+        // ATLAS_K2_DIAG=1 arms per-stage synchronize checkpoints inside
+        // forward_k2 to localize any illegal access on the batch2 verify path.
+        // Those host syncs are illegal under CUDA-graph capture
+        // (STREAM_CAPTURE_UNSUPPORTED, status 900), so the diagnostic must run
+        // the verify eagerly. Zero production impact — only when K2_DIAG is set
+        // (mirrors ATLAS_DFLASH_DEBUG_NO_GRAPH for the DFlash verify path).
+        let k2_diag_eager = std::env::var("ATLAS_K2_DIAG").ok().as_deref() == Some("1");
         let use_graphs = self.comm.is_none()
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
             // Phase 6.2.c — see decode() for rationale: HSS path's host I/O is
             // illegal under CUDA graph capture.
-            && !hss_engaged;
+            && !hss_engaged
+            && !k2_diag_eager;
 
         // DeepSeek-V4 hash-MoE (first `num_hash_layers`) routes experts by token
         // id via the static tid2eid table, so the verify forward needs the 2

@@ -18,13 +18,16 @@ use super::engine::GrammarError;
 /// request, while the GPU is busy with the prompt — so the first decode
 /// steps never pay a cold mask-computation stall.
 ///
-/// `8` is a deliberately small constant: a tool-call structural-tag
-/// grammar has only a handful of genuinely expensive states (the JSON
-/// string / value scanners), and the call is `<= ranked.len()` work, so
-/// over-provisioning `k` is harmless. The mask cache is per-grammar and
-/// shared (`Arc`) across every request that reuses the cached
-/// `CompiledGrammar`, so this warm-up amortizes across requests too.
-const FORCED_TOKEN_TOP_K: usize = 8;
+/// `512`: measured on Qwen3.6-35B-A3B (248K vocab, qwen3_coder structural-tag
+/// grammar, GB10), the old `8` left the decode loop's resident states —
+/// preamble/trigger-tracking and the JSON body scanners — COLD, and every
+/// grammar-armed decode token paid a ~41 ms JIT mask computation: 26 → 12.6
+/// tok/s from merely ARMING tools (2.05x), which also inflated the MTP verify
+/// step past its net-negative gate. The warm set must cover the states the
+/// loop actually lives in, not just the 8 broadest scanners. The call is
+/// bounded by `ranked.len()` (over-provisioning stays harmless), runs during
+/// prefill overlap, and the cache is shared per-grammar across requests.
+const FORCED_TOKEN_TOP_K: usize = 512;
 
 /// Per-request grammar matching state.
 ///
@@ -44,6 +47,18 @@ pub struct GrammarState {
     /// request's `eos_tokens` in; unit tests that exercise only grammar
     /// structure leave it empty.
     stop_tokens: Box<[u32]>,
+    /// Per-position fill cache. `fill_next_token_bitmask` over a 248K vocab is
+    /// ~30ms; it is re-run redundantly within a SINGLE token position (once to
+    /// constrain sampling, again by `stop_legal`/`grammar_blocks_stop` to test
+    /// EOS-legality against the same matcher state). The mask only changes when
+    /// the matcher advances, so cache it and skip the refill until then. When
+    /// `bitmask_valid` is true, `bitmask_data` holds the fill for the current
+    /// matcher position and `bitmask_fill_result` its return value. Invalidated
+    /// (set false) at every matcher-advancing site: `accept_token`, `rollback`,
+    /// `reset`. Over-invalidation only costs a refill; under-invalidation would
+    /// serve a stale mask, so the invalidations are deliberately generous.
+    bitmask_valid: bool,
+    bitmask_fill_result: bool,
 }
 
 impl GrammarState {
@@ -83,6 +98,8 @@ impl GrammarState {
             bitmask_data,
             vocab_size,
             stop_tokens: Box::new([]),
+            bitmask_valid: false,
+            bitmask_fill_result: false,
         })
     }
 
@@ -116,9 +133,28 @@ impl GrammarState {
         if self.matcher.is_terminated() {
             return false;
         }
+        // Per-position cache: the mask is invariant until the matcher advances
+        // (accept_token / rollback / reset all invalidate). Deduping the
+        // redundant same-position refill (sampling-constrain vs stop_legal
+        // EOS-legality) keeps exactly ONE real fill_next_token_bitmask per
+        // token — preserving the "fill every token" NPDA-sync invariant above —
+        // while removing the ~30ms redundant 248K-vocab refill that inflated the
+        // MTP verify step and tripped its net-negative gate.
+        if self.bitmask_valid {
+            return self.bitmask_fill_result;
+        }
+        let t_fill = std::time::Instant::now();
         reset_token_bitmask(&mut self.bitmask_data);
-        self.matcher
-            .fill_next_token_bitmask(&mut self.bitmask_data, 0, false)
+        let filled = self
+            .matcher
+            .fill_next_token_bitmask(&mut self.bitmask_data, 0, false);
+        crate::scheduler::mtp_timing::record(
+            crate::scheduler::mtp_timing::Phase::GrammarFill,
+            t_fill,
+        );
+        self.bitmask_valid = true;
+        self.bitmask_fill_result = filled;
+        filled
     }
 
     /// Raw bitmask data: `ceil(vocab_size / 32)` i32 words.
@@ -155,6 +191,11 @@ impl GrammarState {
     /// completed grammar are not "rejected by grammar"; they are simply
     /// past the stop, which the EOS handler will terminate independently.
     pub fn accept_token(&mut self, token_id: u32) -> bool {
+        // Any advance invalidates the per-position bitmask cache. Done
+        // unconditionally (even on the early-return paths that don't move the
+        // matcher) — over-invalidation only costs a refill, whereas a missed
+        // invalidation would serve a stale mask and desync the NPDA.
+        self.bitmask_valid = false;
         if self.matcher.is_terminated() {
             return true;
         }
@@ -202,7 +243,27 @@ impl GrammarState {
         if self.matcher.is_terminated() {
             return None;
         }
-        self.matcher.forced_token()
+        // #237: reuse the per-position cached bitmask instead of
+        // `matcher.forced_token()`, which recomputes a FULL
+        // `fill_next_token_bitmask` of its own on every call — a second
+        // authoritative mask fill per token position (the pipeline runs
+        // ForcedTokenFastPath before GrammarBitmaskApply, so every decode and
+        // every verify position paid the fill twice). EXACTNESS:
+        // `matcher.forced_token()` == "compute the authoritative next-token
+        // mask, return its sole set bit if exactly one". [`Self::fill_bitmask`]
+        // computes that same authoritative mask into `bitmask_data` (the
+        // per-position cache is invalidated on every matcher advance, so a
+        // cached mask is always the current position's), and
+        // `forced_from_bitmask` performs the identical sole-set-bit analysis
+        // on it. `fill_bitmask() == false` means the mask is unconstrained
+        // (all-ones ⇒ ≥ 2 legal tokens ⇒ not forced) — `None` either way.
+        if !self.fill_bitmask() {
+            return None;
+        }
+        let t = std::time::Instant::now();
+        let forced = self.matcher.forced_from_bitmask(&mut self.bitmask_data, 0);
+        crate::scheduler::mtp_timing::record(crate::scheduler::mtp_timing::Phase::ForcedTok, t);
+        forced
     }
 
     /// Whether the grammar has been fully matched (all required structure generated).
@@ -255,11 +316,13 @@ impl GrammarState {
     /// Used for MTP speculative decode: when draft tokens are rejected,
     /// the grammar state must be rewound to match.
     pub fn rollback(&mut self, n: usize) {
+        self.bitmask_valid = false;
         self.matcher.rollback(n as i32);
     }
 
     /// Reset the grammar state to the initial position.
     pub fn reset(&mut self) {
+        self.bitmask_valid = false;
         self.matcher.reset();
     }
 

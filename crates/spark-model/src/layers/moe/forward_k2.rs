@@ -18,13 +18,20 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        // BF16 (FP8-dequant-on-load) experts have no fused batch2 kernel.
-        // The FP8 batch2 branch below would read expert weights that were
-        // FREED at dequant-load → garbage MTP-verify logits → degenerate
-        // repetition. Route the 2-token verify through the per-token BF16
-        // batched path, which produces the same moe_output()[2,H]. (SSOT:
-        // reuses the decode BF16 kernels via forward_batched.)
-        if self.bf16_gate_weight_ptrs.is_some() {
+        // BF16 (FP8-dequant-on-load) experts. The FP8/NVFP4 batch2 branches
+        // below read expert weights that were FREED at dequant-load, so they
+        // must NOT run for a dequanted model. When the fused BF16 batch2
+        // kernels are present (and we're not EP), take the dedicated BF16
+        // batch2 path (single-launch 2-token dispatch, same math as the
+        // per-token BF16 decode kernels). Otherwise fall back to the per-token
+        // BF16 batched path (SSOT: reuses the decode BF16 kernels via
+        // forward_batched), which produces the same moe_output()[2,H].
+        let is_ep = ctx.comm.is_some_and(|c| c.world_size() > 1);
+        let use_bf16_batch2 = self.bf16_gate_weight_ptrs.is_some()
+            && self.moe_expert_gate_up_shared_bf16_batch2_k.0 != 0
+            && self.moe_expert_silu_down_shared_bf16_batch2_k.0 != 0
+            && !is_ep;
+        if self.bf16_gate_weight_ptrs.is_some() && !use_bf16_batch2 {
             return self.forward_batched(input, 2, ctx, stream);
         }
 
@@ -148,9 +155,70 @@ impl MoeLayer {
         let shared_down_out = ctx.buffers.attn_output();
         let output = ctx.buffers.moe_output();
 
-        let is_ep = ctx.comm.is_some_and(|c| c.world_size() > 1);
-
-        if let (Some(gp), Some(up), Some(dp), Some(sh)) = (
+        if use_bf16_batch2
+            && let (Some(gp), Some(up), Some(dp), Some(sg), Some(su), Some(sd)) = (
+                self.bf16_gate_weight_ptrs,
+                self.bf16_up_weight_ptrs,
+                self.bf16_down_weight_ptrs,
+                self.bf16_shared_gate,
+                self.bf16_shared_up,
+                self.bf16_shared_down,
+            )
+        {
+            // BF16 batch2 path (FP8-dequant-on-load experts, MTP K=2 verify).
+            // Single-launch 2-token dispatch mirroring the FP8 batch2 layout;
+            // identical math to the per-token moe_expert_*_shared_bf16 kernels.
+            // Non-EP only (guaranteed by use_bf16_batch2).
+            ops::moe_expert_gate_up_shared_bf16_batch2(
+                ctx.gpu,
+                self.moe_expert_gate_up_shared_bf16_batch2_k,
+                input,
+                gp,
+                expert_gate_out,
+                up,
+                expert_up_out,
+                indices_dev,
+                sg,
+                shared_gate_scratch,
+                su,
+                shared_up_scratch,
+                inter,
+                h,
+                top_k,
+                stream,
+            )?;
+            ops::moe_expert_silu_down_shared_bf16_batch2(
+                ctx.gpu,
+                self.moe_expert_silu_down_shared_bf16_batch2_k,
+                expert_gate_out,
+                expert_up_out,
+                dp,
+                expert_down_out,
+                indices_dev,
+                shared_gate_scratch,
+                shared_up_scratch,
+                sd,
+                shared_down_out,
+                h,
+                inter,
+                top_k,
+                stream,
+            )?;
+            ops::moe_weighted_sum_blend_batch2(
+                ctx.gpu,
+                self.moe_weighted_sum_blend_batch2,
+                output,
+                expert_down_out,
+                weights_dev,
+                shared_down_out,
+                input,
+                self.weights.shared_expert_gate.weight,
+                h,
+                top_k,
+                h,
+                stream,
+            )?;
+        } else if let (Some(gp), Some(up), Some(dp), Some(sh)) = (
             &self.fp8_gate_weight_ptrs,
             &self.fp8_up_weight_ptrs,
             &self.fp8_down_weight_ptrs,

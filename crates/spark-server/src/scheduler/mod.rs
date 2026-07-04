@@ -19,6 +19,7 @@ mod decode_logits_seq;
 mod decode_logits_step;
 mod decode_step;
 mod emit_step;
+mod fast_greedy;
 mod helpers;
 mod lifecycle;
 mod logit_dump;
@@ -27,6 +28,7 @@ mod logprobs;
 mod mod_helpers;
 mod mtp_gate;
 mod mtp_step;
+pub(crate) mod mtp_timing;
 mod phase_continue_prefills;
 mod phase_promote_prefills;
 mod phase_start_prefills;
@@ -133,7 +135,7 @@ pub fn run(
     model
         .bind_gpu_to_thread()
         .expect("Failed to bind CUDA context to scheduler thread");
-    let mut use_mtp = use_speculative && model.has_proposer();
+    let use_mtp = use_speculative && model.has_proposer();
     let num_drafts = if use_mtp || use_self_speculative || use_ngram_speculative {
         num_drafts.max(1)
     } else {
@@ -145,9 +147,15 @@ pub fn run(
     // session and auto-disable MTP if it is provably net-negative. Only armed
     // for the pure-MTP path (not ngram/self/dflash, which have their own
     // economics and proposers).
-    let mut mtp_gate = if use_mtp {
+    let mut mtp_gate = if use_mtp && !mtp_timing::gate_forced() {
         Some(mtp_gate::MtpGate::new(num_drafts))
     } else {
+        if use_mtp && mtp_timing::gate_forced() {
+            tracing::warn!(
+                "ATLAS_MTP_GATE_FORCE=1: MTP throughput gate DISARMED (diagnostic; \
+                 verify runs even where the gate would measure it net-negative)"
+            );
+        }
         None
     };
     let mut ngram_proposer = if use_ngram_speculative {
@@ -344,7 +352,16 @@ pub fn run(
                 // step type the gate asks for and time it. Both step types emit
                 // real, correct tokens (MTP verify and plain decode are greedy-
                 // equivalent), so the measurement window does not waste work.
+                //
+                // The verify/decode multiplier is DEPTH-DEPENDENT (weight-bound
+                // at short context vs KV/SSM-bound at depth — see mtp_gate module
+                // docs), so a decision is only valid for the regime it was
+                // measured in: re-open measurement when the live depth leaves it.
+                if let Some(gate) = mtp_gate.as_mut() {
+                    gate.maybe_remeasure(active[0].seq.seq_len);
+                }
                 if let Some(gate) = mtp_gate.as_mut().filter(|g| g.is_measuring()) {
+                    gate.note_depth(active[0].seq.seq_len);
                     match gate.next_step() {
                         mtp_gate::GateStep::MeasureDecode => {
                             let t0 = std::time::Instant::now();
@@ -378,13 +395,17 @@ pub fn run(
                             }
                         }
                     }
-                    // Apply a freshly-reached decision: disable MTP for the rest
-                    // of serving when provably net-negative.
-                    if mtp_gate.as_ref().is_some_and(|g| {
-                        !g.is_measuring()
-                            && g.decision() == Some(mtp_gate::GateDecision::DisableMtp)
-                    }) {
-                        use_mtp = false;
+                    // One-time transition work for a freshly-reached DISABLE:
+                    // drop pending drafts and order the draft-head state resync
+                    // before the next plain decode reads it. NOT permanent —
+                    // `maybe_remeasure` above re-opens measurement when the
+                    // depth regime changes, so MTP can come back exactly where
+                    // it pays (deep agentic contexts).
+                    if mtp_gate
+                        .as_mut()
+                        .and_then(mtp_gate::MtpGate::take_fresh_decision)
+                        == Some(mtp_gate::GateDecision::DisableMtp)
+                    {
                         for a in active.iter_mut() {
                             a.pending_drafts.clear();
                         }
@@ -392,8 +413,25 @@ pub fn run(
                             tracing::error!("mtp-gate→decode sync_secondary: {e:#}");
                         }
                     }
+                } else if mtp_gate
+                    .as_ref()
+                    .is_some_and(|g| g.decision() == Some(mtp_gate::GateDecision::DisableMtp))
+                {
+                    // Measured net-negative in the CURRENT depth regime: plain
+                    // decode. Consulted every step (not a latched kill switch)
+                    // so the regime re-measurement above can flip it back.
+                    step_decode_only(
+                        &*model,
+                        &mut active,
+                        think_end_token,
+                        think_start_token,
+                        code_fence_token,
+                        tool_call_start_token,
+                        tool_call_end_token,
+                        adaptive_sampling,
+                    );
                 } else {
-                    // MTP speculative decode: beneficial at all context lengths.
+                    // MTP wins in this regime (or no gate): speculative decode.
                     step_mtp(&*model, &mut active, num_drafts, &verify_ctx);
                 }
             } else {

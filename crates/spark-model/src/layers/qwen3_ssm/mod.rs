@@ -56,6 +56,9 @@ pub struct Qwen3SsmLayer {
     gated_rms_norm_k: KernelHandle,
     gated_rms_norm_f32_k: KernelHandle,
     dense_gemv_k: KernelHandle,
+    /// K=2 verify: batched (M=2) BF16 GDN in_proj_qkvz — one weight pass for
+    /// both verify tokens instead of two M=1 `dense_gemv` reads.
+    dense_gemv_batch2_k: KernelHandle,
     w4a16_gemv_k: KernelHandle,
     w8a16_gemv_k: KernelHandle,
     w4a16_gemv_qkvz_k: KernelHandle,
