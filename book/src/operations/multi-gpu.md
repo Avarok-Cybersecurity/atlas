@@ -162,4 +162,4 @@ TP for dense models on future multi-GPU hardware is on the roadmap; today there'
 - `crates/spark-model/src/layers/minimax_moe.rs` (EP=2 dispatch example).
 - `kernels/gb10/minimax-m2-229b/nvfp4/moe_dispatch.cu` — kernel.
 - `docs/design/ep2-token-dispatch-design.md` — design note.
-- `docs/EP2-TROUBLESHOOTING.md` — field-tested troubleshooting.
+- `docs/GB10_DEPLOYMENT_GUIDE.md` §7 — field-tested EP=2 troubleshooting.

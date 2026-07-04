@@ -35,9 +35,11 @@ release notes in `docs/releases/`.
 - **License is AGPL-3.0-only.** Don't mix in permissive-only code without
   confirming compatibility. `deny.toml` controls what dependency licenses
   are allowed.
-- **Don't regress on models already in the support matrix.** 13 models
-  across Qwen3/Qwen3.5/Qwen3-VL, Nemotron-H, Mistral-Small-4, Gemma-4,
-  MiniMax M2/M2.7. See QUICKSTART.md for the current list.
+- **Don't regress on models already in the support matrix** — Qwen3/Qwen3.5/
+  Qwen3.6/Qwen3-Next/Qwen3-VL, Nemotron-3, Mistral-Small-4, Gemma-4, MiniMax-M2.7.
+  The complete, current model×quant matrix (the SSOT for what's supported) is
+  [`docs/GB10_DEPLOYMENT_GUIDE.md`](docs/GB10_DEPLOYMENT_GUIDE.md) §2; the
+  per-model kernel registry is `kernels/gb10/<model>/MODEL.toml`.
 
 ## Local checks before a PR
 
@@ -47,10 +49,12 @@ The commands CI will run:
 # 1. Formatting
 cargo fmt --all -- --check
 
-# 2. Lints (the build-script gate lets clippy run without CUDA on the host)
-ATLAS_SKIP_BUILD=1 cargo clippy --workspace --tests --all-features -- -Dwarnings
+# 2. Lints (the build-script gate lets clippy run without CUDA on the host;
+#    matches ci.yml — deny-warnings comes from [workspace.lints], not a flag)
+ATLAS_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo clippy --workspace --tests
 
-# 3. License headers
+# 3. License headers (SPDX AGPL-3.0-only line 1; wraps the same apache/skywalking-eyes
+#    engine CI runs against .licenserc.yaml):
 bash scripts/check-license-headers.sh
 
 # 4. Typos
@@ -147,7 +151,7 @@ To ensure high code quality, all agents contributing to Atlas must strictly adhe
 ### Core Directives
 - **Minimal Edits:** Make the smallest edit necessary—sufficient but not excessive.
 - **TDD & Testing:** Test-driven development is required. Minimize test mocking; maximize production code coverage. Never add test-specific workarounds to production paths.
-- **File Size:** Keep files ≤250 lines. Split larger files via exact piecewise copy when necessary.
+- **File Size:** Keep Rust source files ≤500 LoC — this is the CI-enforced cap (`.github/workflows/file-size-cap.yml` is the SSOT). Split larger files into sub-modules per the Atlas idiom (see `crates/spark-model/src/layers/qwen3_attention/` for the compute-heavy template, `crates/spark-model/src/weight_loader/` for the variant-dispatch template).
 - **Security:** Write secure code adhering to OWASP, CWE, and NIST standards.
 
 ### The "Big Three" Invariants (Always Apply)
