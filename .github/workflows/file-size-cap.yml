@@ -143,6 +143,12 @@ jobs:
             # consultation (#242). Extract the gate step-dispatch+decision block
             # into a scheduler helper. Split tracked in #244.
             "crates/spark-server/src/scheduler/mod.rs"
+            # 521 LoC — parallel-tool-call fixture suite added by #231. Split
+            # into per-format (hermes/qwen3_coder) sibling test files. #244.
+            "crates/spark-server/src/tool_parser/tests/group_g_parallel.rs"
+            # 533 LoC — streaming tool-handler grew by the #231 name-run cap +
+            # #224 BPE-fragment guard. Extract the run-tracking helpers. #244.
+            "crates/spark-server/src/api/chat_stream/tool_handlers.rs"
             "crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip.rs"
             "crates/spark-model/src/layers/qwen3_attention/prefill/paged.rs"
             "crates/spark-model/src/model/block_mgmt.rs"
