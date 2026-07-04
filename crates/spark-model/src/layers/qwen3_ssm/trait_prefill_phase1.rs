@@ -3,6 +3,7 @@
 //! is_ssm_layer + prefill_phase1.
 
 use super::*;
+use spark_runtime::nvtx_diag::NvtxRange;
 
 impl Qwen3SsmLayer {
     pub(super) fn is_ssm_layer_inner(&self) -> bool {
@@ -82,7 +83,33 @@ impl Qwen3SsmLayer {
         } else {
             ctx.buffers.ssm_qkvz()
         };
-        if let Some(fp8) = self.qkvz_fp8 {
+        // Route the per-token (num_tokens==1) verify-path qkvz projection
+        // through the same dedicated w4a16_gemv kernel serial decode uses
+        // (ssm_forward.rs), instead of the GEMM-family kernel this ladder
+        // otherwise picks even at M=1 (no dedicated M=1 GEMV case exists
+        // below). Without this, the GEMM-vs-GEMV kernel-choice mismatch at
+        // matched M=1 shape produces ~2.29% rel_diff vs the serial arm.
+        // Escape hatch: =0 to restore the old GEMM-family dispatch.
+        let qkvz_fix = num_tokens == 1
+            && std::env::var("ATLAS_DFLASH_VERIFY_QKVZ_FIX").ok().as_deref() != Some("0");
+        // Stage-2b NVTX: GDN QKVZ in-proj — shares kernel names/shapes with
+        // other GEMM/GEMV call sites (attn Q/K/V, FFN, out_proj); this tag
+        // disambiguates it in nsys's nvtx_kern_sum report.
+        let _nvtx = NvtxRange::new("ssm/qkvz_proj");
+        if qkvz_fix && self.sequential_qkvz && self.qkvz_nvfp4.is_some() {
+            let nvfp4 = self.qkvz_nvfp4.as_ref().expect("checked is_some above");
+            ops::w4a16_gemv(
+                ctx.gpu,
+                self.w4a16_gemv_k,
+                normed,
+                nvfp4,
+                proj_dst,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )
+            .map_err(|e| anyhow::anyhow!("ssm phase1: QKVZ GEMV fix failed: {e}"))?;
+        } else if let Some(fp8) = self.qkvz_fp8 {
             ops::fp8_gemm_n128(
                 ctx.gpu,
                 self.fp8_gemm_k,
@@ -157,6 +184,7 @@ impl Qwen3SsmLayer {
                 stream,
             )?;
         }
+        drop(_nvtx);
         // Diagnostic sync: isolate QKVZ GEMM crash from later kernels.
         // Only for long sequences (>4096) where the crash occurs.
         if k > 4096 {

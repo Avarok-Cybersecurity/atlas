@@ -3,6 +3,7 @@
 //! prefill_phase3 + alloc_state.
 
 use super::*;
+use spark_runtime::nvtx_diag::NvtxRange;
 
 impl Qwen3SsmLayer {
     #[allow(clippy::too_many_arguments)]
@@ -51,7 +52,39 @@ impl Qwen3SsmLayer {
         // ── 10. Output projection GEMM: [N, 4096] × [4096, 2048] → [N, 2048] ──
         let out_proj_buf = ctx.buffers.moe_output();
         let force_w8a8_op = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
-        if let Some(ref dense_out) = self.out_proj_dense {
+        // Serial decode (ssm_forward.rs) always uses the dedicated
+        // w4a16_gemv kernel with the untransposed `self.ssm.out_proj`
+        // weight; the batched ladder below would otherwise check
+        // `out_proj_nvfp4_t` first and take a different (transposed-weight
+        // GEMM) kernel family, diverging from serial decode by ~2.26%
+        // rel_diff at matched shapes. Loop per-row through the same
+        // w4a16_gemv kernel serial decode uses to keep the two paths
+        // numerically aligned. Escape hatch: =0 to restore the old batched
+        // GEMM path.
+        let out_proj_fix =
+            std::env::var("ATLAS_DFLASH_VERIFY_OUTPROJ_FIX").ok().as_deref() != Some("0");
+        // Stage-2b NVTX: GDN out_proj — with out_proj_fix ON (shipping
+        // default) this takes the per-token w4a16_gemv loop, NOT the
+        // ambiguous w4a16_gemm_t_m128 kernel shared by FFN down_proj/attn
+        // out_proj; tagged regardless so nsys's nvtx_kern_sum can confirm
+        // (or refute) that assumption for all dispatch branches.
+        let _nvtx = NvtxRange::new("ssm/out_proj");
+        if out_proj_fix {
+            for t in 0..num_tokens {
+                ops::w4a16_gemv(
+                    ctx.gpu,
+                    self.w4a16_gemv_k,
+                    normed_out_buf.offset(t * value_dim * bf16),
+                    &self.ssm.out_proj,
+                    out_proj_buf.offset(t * h * bf16),
+                    h as u32,
+                    value_dim as u32,
+                    stream,
+                )
+                .map_err(|e| anyhow::anyhow!("ssm phase3: out_proj GEMV fix failed (row {t}): {e}"))?;
+            }
+            Ok(())
+        } else if let Some(ref dense_out) = self.out_proj_dense {
             ops::dense_gemm(
                 ctx.gpu,
                 self.dense_gemm_k,
@@ -153,6 +186,7 @@ impl Qwen3SsmLayer {
             )
         }
         .map_err(|e| anyhow::anyhow!("ssm phase3: out_proj GEMM failed: {e}"))?;
+        drop(_nvtx);
 
         // ── 11. Batched residual + post-norm + MoE ──
         ops::residual_add_rms_norm(
@@ -170,6 +204,7 @@ impl Qwen3SsmLayer {
         )?;
         self.ffn
             .forward_prefill(ctx.buffers.norm_output(), num_tokens, ctx, stream)?;
+
         ops::residual_add(
             ctx.gpu,
             self.residual_add_k,
