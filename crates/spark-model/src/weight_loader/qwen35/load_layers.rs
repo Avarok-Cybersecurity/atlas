@@ -787,7 +787,7 @@ pub(super) fn load_layers(
                     // fp4_proj_decode drops Holo's modelopt SSM out of the BF16-
                     // dense + FP8-overlay build so it falls through to the NVFP4
                     // builder below → in_proj_qkvz/out_proj decode on w4a16_gemv.
-                    _ if modelopt_mixed_precision && !fp4_proj_decode => {
+                    _ if modelopt_mixed_precision && !fp4_proj_decode && !ssm_native_fp8 => {
                         linear_attn_arms::build_linear_attention_dense_bf16(
                             i,
                             store,
