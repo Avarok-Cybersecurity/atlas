@@ -98,13 +98,19 @@ pub(super) fn logit_is_positive(
     let idx = row * vocab + tok as usize;
     let v = if model.logits_ptr_is_fp32(base) {
         let mut b = [0u8; 4];
-        if model.copy_logits_to_host(base.offset(idx * 4), &mut b).is_err() {
+        if model
+            .copy_logits_to_host(base.offset(idx * 4), &mut b)
+            .is_err()
+        {
             return false;
         }
         f32::from_le_bytes(b)
     } else {
         let mut b = [0u8; 2];
-        if model.copy_logits_to_host(base.offset(idx * 2), &mut b).is_err() {
+        if model
+            .copy_logits_to_host(base.offset(idx * 2), &mut b)
+            .is_err()
+        {
             return false;
         }
         crate::scheduler::helpers::bf16_to_f32(b[0], b[1])
