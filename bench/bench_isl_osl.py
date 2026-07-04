@@ -61,13 +61,22 @@ def percentile(data: list, p: float) -> float:
     return s[f] + (k - f) * (s[c] - s[f])
 
 
-def send_request(url: str, model: str, prompt: str, max_tokens: int) -> dict:
+def send_request(url: str, model: str, prompt: str, max_tokens: int,
+                 enable_thinking: bool = True, thinking_budget=None) -> dict:
+    # Thinking control: with thinking ON, TTFT-to-first-content includes the
+    # reasoning phase (up to the model's thinking budget) — that's
+    # time-to-first-ANSWER, not prefill. --no-thinking measures pure prefill
+    # TTFT. --thinking-budget caps the reasoning length.
+    ctk = {"enable_thinking": enable_thinking}
+    if thinking_budget is not None:
+        ctk["thinking_budget"] = thinking_budget
     body = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "temperature": 0.0,
         "stream": True,
+        "chat_template_kwargs": ctk,
         # Authoritative output-token accounting. The server reports the
         # exact sampled-token count in usage.completion_tokens and (with
         # return_token_ids) the IDs on each chunk. Counting SSE chunks or
@@ -205,6 +214,10 @@ def main():
     parser.add_argument("--runs", type=int, default=3,
                         help="Runs per config (median reported)")
     parser.add_argument("--warmup", type=int, default=2)
+    parser.add_argument("--no-thinking", action="store_true",
+                        help="disable model thinking → measures PURE prefill TTFT (vs time-to-first-answer)")
+    parser.add_argument("--thinking-budget", type=int, default=None,
+                        help="cap reasoning tokens (e.g. 128); None = model default")
     parser.add_argument("--configs", nargs="+", default=None,
                         help="Filter by regime name (e.g. balanced_short decode_long)")
     parser.add_argument("--output", default=None,
@@ -224,13 +237,14 @@ def main():
     print(f"Model:   {model}")
     print(f"Runs:    {args.runs} per config (median)")
     print(f"Configs: {len(configs)}")
+    print(f"Thinking: {'OFF (pure prefill TTFT)' if args.no_thinking else 'ON (time-to-first-answer)'}"+(f"  budget={args.thinking_budget}" if args.thinking_budget else ""))
     print()
 
     # Warmup
     if args.warmup > 0:
         print(f"Warming up ({args.warmup} requests)...")
         for i in range(args.warmup):
-            r = send_request(args.url, model, "Hello!", 50)
+            r = send_request(args.url, model, "Hello!", 50, not args.no_thinking, args.thinking_budget)
             if "error" in r:
                 print(f"  warmup {i + 1}: FAILED ({r['error'][:80]})")
             else:
@@ -245,7 +259,7 @@ def main():
         ttfts, tpots, tok_rates, token_counts = [], [], [], []
 
         for run_idx in range(args.runs):
-            r = send_request(args.url, model, prompt, osl)
+            r = send_request(args.url, model, prompt, osl, not args.no_thinking, args.thinking_budget)
             if "error" in r:
                 print(f"  {regime} run {run_idx + 1}: FAILED ({r['error'][:80]})")
                 continue
