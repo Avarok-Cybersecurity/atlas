@@ -44,7 +44,7 @@ use super::{BF16_BYTES, TpShardKind, shard_dense_bf16};
 /// Pre-TP-shard GDN (linear-attention / SSM) dimensions reconstructed from
 /// `config`.
 ///
-/// Mirrors [`TpAttentionDims`]: `topology.rs` divides
+/// Mirrors [`super::TpAttentionDims`]: `topology.rs` divides
 /// `linear_num_key_heads` / `linear_num_value_heads` by `tp_world_size` at
 /// startup, so by the time a loader runs `config` holds **per-rank-local**
 /// head counts. The `full_*` fields multiply back up to the pre-shard sizes
