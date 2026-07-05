@@ -138,12 +138,17 @@ pub(super) fn build_misc_scratch(
         let gb = gpu.alloc(gdn_buf_max_len * nv * 2 * 4)?;
         let o = gpu.alloc(gdn_buf_max_len * value_dim * 2)?;
         // FP32 sibling of `o` for ATLAS_DFLASH_VERIFY_GDN_F32 (K=γ verify
-        // precision fix prototype). ~2x the BF16 buffer's size, negligible
-        // against total GPU memory.
-        let o_f32 = gpu.alloc(gdn_buf_max_len * value_dim * 4)?;
+        // precision fix prototype). Conditional allocation behind env flag.
+        let (o_f32, f32_bytes) =
+            if std::env::var("ATLAS_DFLASH_VERIFY_GDN_F32").as_deref() == Ok("1") {
+                let buf = gpu.alloc(gdn_buf_max_len * value_dim * 4)?;
+                (buf, gdn_buf_max_len * value_dim * 4)
+            } else {
+                (DevicePtr::NULL, 0)
+            };
         let z = gpu.alloc(gdn_buf_max_len * value_dim * 2)?;
-        let total_mb = (gdn_buf_max_len
-            * (conv_dim * 2 + nv * 2 * 4 + value_dim * 2 * 2 + value_dim * 4))
+        let total_mb = (gdn_buf_max_len * (conv_dim * 2 + nv * 2 * 4 + value_dim * 2 * 2)
+            + f32_bytes)
             / (1024 * 1024);
         tracing::info!(
             "GDN prefill buffers: {total_mb} MB for {gdn_buf_max_len} tokens (chunked SSM prefill)"

@@ -205,7 +205,8 @@ impl TransformerModel {
             // Record the actual sequence position for this slot once — on the
             // first capture layer only (slot_idx == 0). Subsequent layers
             // write into the same logical slot and must not push again.
-            if slot_idx == 0 {
+            // Guard vector length to stay in lockstep with ctx_len clamping.
+            if slot_idx == 0 && dstate.ctx_slot_positions.len() < dstate.max_ctx_len {
                 dstate.ctx_slot_positions.push(abs_pos as i32);
             }
         }
@@ -244,7 +245,7 @@ impl TransformerModel {
             );
             dstate.ctx_len = new_len;
         } else {
-            tracing::warn!(
+            tracing::trace!(
                 "DFlash ctx_len update SKIPPED: proposer_state={} (chunk_start={} proc_count={})",
                 seq.proposer_state.is_some(),
                 chunk_start,

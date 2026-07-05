@@ -156,21 +156,6 @@ impl TransformerModel {
                 )?;
             }
         } else if let Some(ref nvfp4) = self.lm_head_nvfp4 {
-            static LM_HEAD_GEMM_LOGGED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !LM_HEAD_GEMM_LOGGED.load(std::sync::atomic::Ordering::Relaxed) {
-                LM_HEAD_GEMM_LOGGED.store(true, std::sync::atomic::Ordering::Relaxed);
-                tracing::info!(
-                    "LM_HEAD_BATCHED: nvfp4 w4a16_gemm branch, num_tokens={} v={} h={} \
-                     w4a16_gemm_kernel={:#x} hidden={:#x} logits={:#x}",
-                    num_tokens,
-                    v,
-                    h,
-                    self.w4a16_gemm_kernel.0,
-                    hidden.0,
-                    logits.0,
-                );
-            }
             ops::w4a16_gemm(
                 self.gpu.as_ref(),
                 self.w4a16_gemm_kernel,

@@ -106,11 +106,16 @@ impl BlockDiffusionDraftHead {
             w4a16_gemm: super::super::try_kernel(gpu, "w4a16", "w4a16_gemm"),
             // Tensor-core pipelined BF16 GEMM — faster than dense_gemm for
             // large M. Uses m16n8k16 MMA with 2-stage cp.async pipeline,
-            // 128×128 tile.
-            dense_gemm_pipelined: gpu.kernel("gemm", "dense_gemm_bf16_pipelined")?,
-            // Drafter uses standard RoPE (rope_scaling=null in config.json).
-            // rope_forward_yarn kernel is table-driven — with standard inv_freq
-            // it produces standard RoPE output.
+            // 128×128 tile. Optional kernel, not yet used (will be deployed in
+            // a follow-up PR); defaults to KernelHandle(0) if unavailable.
+            dense_gemm_pipelined: super::super::try_kernel(
+                gpu,
+                "gemm",
+                "dense_gemm_bf16_pipelined",
+            ),
+            // rope_forward_yarn kernel is table-driven — the inv_freq table
+            // computed below (standard or YaRN, per config.rope_scaling)
+            // determines the actual RoPE behavior.
             rope_qwen3: gpu.kernel("rope", "rope_forward_yarn")?,
             // FP8 KV cache writeback. Module name is the .cu stem
             // `reshape_and_cache`, function is `reshape_and_cache_flash_fp8`
@@ -196,28 +201,80 @@ impl BlockDiffusionDraftHead {
             position_ids: gpu.alloc(n_attn * 4)?,
         };
 
-        // Pre-compute standard RoPE inv_freq table for drafter.
-        // Drafter config.json has `rope_scaling: null` — no interpolation.
-        // Previous code incorrectly applied YaRN (factor=64) which corrupted
-        // all positional encodings and caused 0% accept rate.
+        // Pre-compute RoPE inv_freq table for drafter, selecting standard or YaRN
+        // based on config.json's rope_scaling field.
         let rope_theta = 10_000_000.0f32; // drafter rope_theta from config
         let rotary_dim = head_dim;
         let dim_f = rotary_dim as f32;
         let n_pairs = rotary_dim / 2;
         let mut inv_freq_table = vec![0.0f32; n_pairs];
-        for j in 0..n_pairs {
-            inv_freq_table[j] = 1.0 / rope_theta.powf((2 * j) as f32 / dim_f);
+
+        match &weights.config.rope_scaling {
+            Some(scaling) if scaling.rope_type.as_deref() == Some("yarn") => {
+                // YaRN interpolation: use config parameters with fallback defaults
+                let factor = scaling.factor.unwrap_or(64.0);
+                let beta_fast = scaling.beta_fast.unwrap_or(32.0);
+                let beta_slow = scaling.beta_slow.unwrap_or(1.0);
+                let orig_max_pos = scaling.original_max_position_embeddings.unwrap_or(4096.0);
+
+                let find_correction_dim = |num_rot: f32| -> f32 {
+                    (dim_f * (orig_max_pos / (num_rot * 2.0 * std::f32::consts::PI)).ln())
+                        / (2.0 * rope_theta.ln())
+                };
+                let low = find_correction_dim(beta_fast).floor().max(0.0);
+                let high = find_correction_dim(beta_slow)
+                    .ceil()
+                    .min((rotary_dim - 1) as f32);
+                let ramp_denom = if (high - low).abs() < 1e-6 {
+                    high - low + 0.001
+                } else {
+                    high - low
+                };
+
+                for j in 0..n_pairs {
+                    let pos_freq = rope_theta.powf((2 * j) as f32 / dim_f);
+                    let inv_freq_extrap = 1.0 / pos_freq;
+                    let inv_freq_interp = 1.0 / (factor * pos_freq);
+                    let ramp = ((j as f32 - low) / ramp_denom).clamp(0.0, 1.0);
+                    let extrap_factor = 1.0 - ramp;
+                    inv_freq_table[j] =
+                        inv_freq_interp * (1.0 - extrap_factor) + inv_freq_extrap * extrap_factor;
+                }
+
+                tracing::info!(
+                    "DFlash RoPE inv_freq: {} pairs, YaRN (factor={}, beta_fast={}, beta_slow={}, max_pos={})",
+                    n_pairs,
+                    factor,
+                    beta_fast,
+                    beta_slow,
+                    orig_max_pos
+                );
+            }
+            Some(scaling) if scaling.rope_type.is_some() => {
+                let rope_type = scaling.rope_type.as_ref().unwrap();
+                anyhow::bail!(
+                    "DFlash drafter has unsupported rope_scaling.rope_type='{rope_type}'; \
+                     only 'yarn' and null/standard are supported",
+                );
+            }
+            _ => {
+                // Standard RoPE (rope_scaling: null or absent)
+                for j in 0..n_pairs {
+                    inv_freq_table[j] = 1.0 / rope_theta.powf((2 * j) as f32 / dim_f);
+                }
+                tracing::info!(
+                    "DFlash RoPE inv_freq: {} pairs, theta={rope_theta} (standard, no interpolation)",
+                    n_pairs,
+                );
+            }
         }
+
         let inv_freq_bytes: Vec<u8> = inv_freq_table
             .iter()
             .flat_map(|v| v.to_le_bytes())
             .collect();
         let yarn_inv_freq = gpu.alloc(inv_freq_bytes.len())?;
         gpu.copy_h2d(&inv_freq_bytes, yarn_inv_freq)?;
-        tracing::info!(
-            "DFlash RoPE inv_freq: {} pairs, theta={rope_theta} (standard, no interpolation)",
-            n_pairs,
-        );
 
         let head = Self {
             num_layers,

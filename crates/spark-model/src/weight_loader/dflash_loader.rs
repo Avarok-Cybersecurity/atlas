@@ -51,6 +51,9 @@ pub struct DflashConfig {
     /// Block size γ. Qwen3.6-DFlash ships `block_size: 16`.
     #[serde(default = "default_block_size")]
     pub block_size: usize,
+    /// RoPE scaling configuration (e.g. YaRN parameters). Null/absent = standard RoPE.
+    #[serde(default)]
+    pub rope_scaling: Option<RopeScaling>,
     /// DFlash-specific nested config object.
     #[serde(default)]
     pub dflash_config: Option<DflashSubConfig>,
@@ -58,6 +61,26 @@ pub struct DflashConfig {
 
 fn default_block_size() -> usize {
     16
+}
+
+/// RoPE scaling configuration for DFlash drafter.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RopeScaling {
+    /// Rope scaling type: "yarn" for YaRN interpolation, or null/other for standard RoPE.
+    #[serde(default)]
+    pub rope_type: Option<String>,
+    /// YaRN factor parameter (e.g. 64.0). Fallback: 64.0 if absent.
+    #[serde(default)]
+    pub factor: Option<f32>,
+    /// YaRN beta_fast parameter (e.g. 32.0). Fallback: 32.0 if absent.
+    #[serde(default)]
+    pub beta_fast: Option<f32>,
+    /// YaRN beta_slow parameter (e.g. 1.0). Fallback: 1.0 if absent.
+    #[serde(default)]
+    pub beta_slow: Option<f32>,
+    /// YaRN original_max_position_embeddings (e.g. 4096). Fallback: 4096 if absent.
+    #[serde(default)]
+    pub original_max_position_embeddings: Option<f32>,
 }
 
 /// Nested `dflash_config` block in the drafter's `config.json`.
