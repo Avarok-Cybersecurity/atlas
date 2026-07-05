@@ -120,11 +120,21 @@ impl QuantizedWeight {
     ) -> anyhow::Result<QuantizedWeight> {
         // The concatenated weight carries a single scalar scale2 (self's) for
         // ALL rows — a mismatched `other` would silently dequantize its rows
-        // with the wrong per-tensor scale.
+        // with the wrong per-tensor scale. This bit-exact equality only holds
+        // for `Nvfp4Variant::Standard` (NVIDIA ModelOpt) checkpoints, whose
+        // convention is a single global per-tensor `weight_scale_2` scalar
+        // shared across every row of the tensor — so two tensors quantized
+        // together by the same run share the identical f32 bit pattern.
+        // Other conventions (e.g. compressed-tensors) may carry independent
+        // per-tensor scales even for logically concatenable projections.
         anyhow::ensure!(
             self.weight_scale_2 == other.weight_scale_2,
             "concat_rows: weight_scale_2 mismatch (self={}, other={}) — both NVFP4 \
-             tensors must share the same per-tensor scale to be concatenated",
+             tensors must share the same per-tensor scale to be concatenated. \
+             This is expected for ModelOpt/Standard NVFP4 checkpoints (single \
+             global per-tensor scale2); re-quantize with the ModelOpt/Standard \
+             quantizer, or report which checkpoint/quantizer produced independent \
+             per-tensor scales for these projections",
             self.weight_scale_2,
             other.weight_scale_2,
         );

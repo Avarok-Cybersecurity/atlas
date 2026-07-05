@@ -290,12 +290,23 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             )> {
                                 // Pre-quantized Standard NVFP4 (e.g. sakamakismile): weight is U8
                                 // on disk. Load directly as QuantizedWeight without BF16 roundtrip.
-                                // TP sharding of pre-quantized NVFP4 is not yet supported (tp_size=1 only).
+                                // TP sharding of pre-quantized NVFP4 is not yet supported: enforce
+                                // tp_size=1 explicitly, or every rank silently loads the full
+                                // unsharded weight (duplicated, not sharded — wrong results with
+                                // no error).
                                 let weight_key = format!("{p}.{name}.weight");
                                 if matches!(
                                     store.get(&weight_key).map(|w| w.dtype),
                                     Ok(WeightDtype::UInt8)
                                 ) {
+                                    anyhow::ensure!(
+                                        tp_size == 1,
+                                        "pre-quantized NVFP4 weight '{weight_key}' (U8 on disk) \
+                                         cannot be loaded under tensor parallelism (tp_size={tp_size}): \
+                                         TP sharding of pre-quantized NVFP4 checkpoints is not yet \
+                                         implemented. Use tp_size=1, or dequantize this checkpoint to \
+                                         BF16 first so it goes through the shard-then-requantize path."
+                                    );
                                     let null_dense = DenseWeight {
                                         weight: spark_runtime::gpu::DevicePtr::NULL,
                                     };
