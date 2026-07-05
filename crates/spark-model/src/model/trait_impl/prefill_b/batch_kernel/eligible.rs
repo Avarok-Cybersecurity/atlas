@@ -65,7 +65,10 @@ impl TransformerModel {
                 .map(|s| (s.chunk_len, s.chunk_start, s.is_last_chunk)),
             streams.len(),
             self.buffers.max_batch_tokens(),
-            &self.config.model_type,
+            // is_mla == AttentionType::Mla; read the underlying fact directly to
+            // avoid rebuilding the full ModelCapabilities struct on this
+            // per-prefill-batch hot path.
+            self.config.kv_lora_rank > 0,
             self.config.head_dim,
             self.buffers.scratch_bytes(),
             self.config.num_experts_per_tok,
@@ -139,7 +142,7 @@ pub(in crate::model) fn check_kernel_batched_eligible<I>(
     streams: I,
     n: usize,
     arena_cap: usize,
-    model_type: &str,
+    is_mla: bool,
     head_dim: usize,
     scratch_cap: usize,
     top_k: usize,
@@ -154,9 +157,12 @@ where
         return false;
     }
     // No MLA layers in stack (batched attention doesn't support MLA).
-    // Conservatively check via model_type — mistral is the only MLA
-    // model in Atlas today.
-    if model_type == "mistral" {
+    // Keyed on the MLA capability (AttentionType::Mla, i.e. kv_lora_rank>0),
+    // which is architecture-generic: it covers mistral AND deepseek_v4 (the
+    // old `model_type=="mistral"` string silently missed the latter, though
+    // deepseek_v4 was already rejected one check later by head_dim>256, so the
+    // outcome is unchanged on every model shipped today).
+    if is_mla {
         return false;
     }
     // No HDIM=512 layers (Gemma-4 long-attention).
