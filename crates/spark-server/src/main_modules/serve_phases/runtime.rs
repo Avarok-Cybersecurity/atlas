@@ -9,6 +9,7 @@ use std::path::Path;
 use anyhow::Result;
 
 use atlas_core::config::ModelConfig;
+use atlas_kernels::SamplingCategory;
 
 use crate::cli;
 
@@ -51,39 +52,78 @@ pub(crate) struct SamplingDefaults {
     pub(crate) min_p: f32,
 }
 
-pub(crate) fn load_sampling_defaults(model_dir: &Path, args: &cli::ServeArgs) -> SamplingDefaults {
+pub(crate) fn load_sampling_defaults(
+    model_dir: &Path,
+    args: &cli::ServeArgs,
+    preset: &SamplingCategory,
+) -> SamplingDefaults {
     let gen_config_path = model_dir.join("generation_config.json");
     let gen_cfg = std::fs::read_to_string(&gen_config_path)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    if gen_cfg.is_none() {
+        tracing::warn!(
+            "No parseable generation_config.json at {} — falling back to MODEL.toml sampling preset (temperature={}, top_k={}, top_p={})",
+            gen_config_path.display(),
+            preset.temperature,
+            preset.top_k,
+            preset.top_p
+        );
+    }
+    let defaults = resolve_sampling_defaults(
+        gen_cfg.as_ref(),
+        preset,
+        args.default_top_n_sigma,
+        args.default_min_p,
+    );
+    tracing::info!(
+        "Default sampling: temperature={}, top_k={}, top_p={}, top_n_sigma={}, min_p={}",
+        defaults.temperature,
+        defaults.top_k,
+        defaults.top_p,
+        defaults.top_n_sigma,
+        defaults.min_p
+    );
+    defaults
+}
+
+/// Resolve the request-level sampling defaults from `generation_config.json`,
+/// field-by-field, falling back to the model's curated MODEL.toml `preset`
+/// (not hard-coded constants) whenever the config is absent, unparseable, or
+/// missing a given field.
+///
+/// The preset fallback is the guard: an absent/unparseable `generation_config`
+/// used to leave `temperature`/`top_k` at hard-coded values that could drift
+/// from the model's curated preset; sourcing the fallback from the same preset
+/// that drives the penalties keeps a single source of truth and guarantees the
+/// defaults are non-degenerate (never silently `0` → greedy). A config that is
+/// *present* and legitimately requests `temperature=0` is still honored.
+fn resolve_sampling_defaults(
+    gen_cfg: Option<&serde_json::Value>,
+    preset: &SamplingCategory,
+    default_top_n_sigma: f32,
+    default_min_p: f32,
+) -> SamplingDefaults {
     let temperature = gen_cfg
-        .as_ref()
         .and_then(|v| v.get("temperature")?.as_f64())
         .map(|t| t as f32)
-        .unwrap_or(0.6);
+        .unwrap_or(preset.temperature);
     let top_k = gen_cfg
-        .as_ref()
         .and_then(|v| v.get("top_k")?.as_u64())
         .map(|k| k as u32)
-        .unwrap_or(20);
+        .unwrap_or(preset.top_k);
     let top_p = gen_cfg
-        .as_ref()
         .and_then(|v| v.get("top_p")?.as_f64())
         .map(|p| p as f32)
-        .unwrap_or(0.95);
+        .unwrap_or(preset.top_p);
     let top_n_sigma = gen_cfg
-        .as_ref()
         .and_then(|v| v.get("top_n_sigma")?.as_f64())
         .map(|s| s as f32)
-        .unwrap_or(args.default_top_n_sigma);
+        .unwrap_or(default_top_n_sigma);
     let min_p = gen_cfg
-        .as_ref()
         .and_then(|v| v.get("min_p")?.as_f64())
         .map(|p| p as f32)
-        .unwrap_or(args.default_min_p);
-    tracing::info!(
-        "Default sampling: temperature={temperature}, top_k={top_k}, top_p={top_p}, top_n_sigma={top_n_sigma}, min_p={min_p}"
-    );
+        .unwrap_or(default_min_p);
     SamplingDefaults {
         temperature,
         top_k,
@@ -324,4 +364,77 @@ pub(crate) fn resolve_tool_call_parser(
         }
     }
     Ok(tool_call_format.map(|f| std::sync::Arc::from(f.into_parser())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn preset() -> SamplingCategory {
+        // A curated, deliberately non-greedy preset (mirrors a MODEL.toml
+        // `[sampling.non_thinking]`).
+        atlas_kernels::SamplingPresets::default().non_thinking
+    }
+
+    #[test]
+    fn missing_generation_config_falls_back_to_preset_not_greedy() {
+        let p = preset();
+        // gen_cfg = None models an absent or unparseable generation_config.json.
+        let d = resolve_sampling_defaults(None, &p, 0.0, 0.0);
+        assert_eq!(d.temperature, p.temperature);
+        assert_eq!(d.top_k, p.top_k);
+        assert_eq!(d.top_p, p.top_p);
+        // The guard's whole point: the fallback must not be a silent greedy 0.
+        assert!(
+            d.temperature > 0.0,
+            "fallback temperature must be non-greedy"
+        );
+        assert!(d.top_k > 0, "fallback top_k must not collapse to 0");
+        assert!(d.top_p > 0.0, "fallback top_p must be usable");
+        // top_n_sigma / min_p fall back to the CLI-arg defaults.
+        assert_eq!(d.top_n_sigma, 0.0);
+        assert_eq!(d.min_p, 0.0);
+    }
+
+    #[test]
+    fn present_generation_config_overrides_preset() {
+        let p = preset();
+        let cfg = serde_json::json!({
+            "temperature": 0.15,
+            "top_k": 7,
+            "top_p": 0.5,
+            "top_n_sigma": 1.5,
+            "min_p": 0.02
+        });
+        let d = resolve_sampling_defaults(Some(&cfg), &p, 0.0, 0.0);
+        assert_eq!(d.temperature, 0.15);
+        assert_eq!(d.top_k, 7);
+        assert_eq!(d.top_p, 0.5);
+        assert_eq!(d.top_n_sigma, 1.5);
+        assert_eq!(d.min_p, 0.02);
+    }
+
+    #[test]
+    fn partial_generation_config_falls_back_per_field() {
+        let p = preset();
+        // Only temperature is present; every other field must fall back.
+        let cfg = serde_json::json!({ "temperature": 0.9 });
+        let d = resolve_sampling_defaults(Some(&cfg), &p, 3.0, 0.05);
+        assert_eq!(d.temperature, 0.9); // from config
+        assert_eq!(d.top_k, p.top_k); // preset fallback
+        assert_eq!(d.top_p, p.top_p); // preset fallback
+        assert_eq!(d.top_n_sigma, 3.0); // arg fallback
+        assert_eq!(d.min_p, 0.05); // arg fallback
+    }
+
+    #[test]
+    fn present_config_may_legitimately_request_greedy() {
+        // A config that is present and explicitly asks for temperature=0 is
+        // honored — the guard only backfills *absent* fields, it does not
+        // clamp an intentional greedy request.
+        let p = preset();
+        let cfg = serde_json::json!({ "temperature": 0.0 });
+        let d = resolve_sampling_defaults(Some(&cfg), &p, 0.0, 0.0);
+        assert_eq!(d.temperature, 0.0);
+    }
 }

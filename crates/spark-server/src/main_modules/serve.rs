@@ -411,14 +411,16 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // Build EOS token list from generation_config.json (authoritative) or config.json fallback
     let mut eos_tokens = serve_phases::load_eos_tokens(&model_dir, &config);
 
-    // Read default sampling parameters from generation_config.json.
+    // Read default sampling parameters from generation_config.json, falling
+    // back to the model's curated MODEL.toml preset (non-thinking category)
+    // when the config is absent/unparseable — never to a silent greedy 0.
     let serve_phases::SamplingDefaults {
         temperature: default_temperature,
         top_k: default_top_k,
         top_p: default_top_p,
         top_n_sigma: default_top_n_sigma,
         min_p: default_min_p,
-    } = serve_phases::load_sampling_defaults(&model_dir, &args);
+    } = serve_phases::load_sampling_defaults(&model_dir, &args, &sampling_presets.non_thinking);
 
     // 6. Load tokenizer
     // Thinking support is derived from model capabilities, not hardcoded model names.
