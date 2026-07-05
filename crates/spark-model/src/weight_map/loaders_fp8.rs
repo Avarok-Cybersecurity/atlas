@@ -212,6 +212,70 @@ pub(crate) fn quantize_to_nvfp4(
         weight_scale: scale_buf,
         weight_scale_2: scale2,
         input_scale: DevicePtr::NULL,
+        weight_scale_2_vec: DevicePtr::NULL,
+    })
+}
+
+/// Quantize a BF16 dense weight to NVFP4 with **per-row scale2**.
+///
+/// Same two-phase approach but computes scale2 independently for each output row,
+/// eliminating precision loss from per-tensor absmax on tensors with outlier rows.
+/// The resulting QuantizedWeight has `weight_scale_2_vec` set (non-NULL) and
+/// requires `w4a16_gemv_prs` instead of `w4a16_gemv` at inference time.
+#[allow(dead_code)]
+pub(crate) fn quantize_to_nvfp4_per_row(
+    bf16_weight: &DenseWeight,
+    n: usize,
+    k: usize,
+    gpu: &dyn GpuBackend,
+    row_absmax_kernel: spark_runtime::gpu::KernelHandle,
+    quantize_prs_kernel: spark_runtime::gpu::KernelHandle,
+    stream: u64,
+) -> Result<QuantizedWeight> {
+    use spark_runtime::kernel_args::KernelLaunch;
+
+    // Phase 1: per-row absmax
+    let row_max_buf = gpu.alloc(n * 4)?;
+    KernelLaunch::new(gpu, row_absmax_kernel)
+        .grid([n as u32, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(bf16_weight.weight)
+        .arg_ptr(row_max_buf)
+        .arg_u32(n as u32)
+        .arg_u32(k as u32)
+        .launch(stream)?;
+
+    // Phase 2: per-row-scale2 quantize
+    let packed_buf = gpu.alloc(n * k / 2)?;
+    let scale_buf = gpu.alloc(n * k / 16)?;
+    let scale2_vec_buf = gpu.alloc(n * 4)?;
+
+    KernelLaunch::new(gpu, quantize_prs_kernel)
+        .grid([n as u32, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(bf16_weight.weight)
+        .arg_ptr(packed_buf)
+        .arg_ptr(scale_buf)
+        .arg_ptr(row_max_buf)
+        .arg_ptr(scale2_vec_buf)
+        .arg_u32(n as u32)
+        .arg_u32(k as u32)
+        .launch(stream)?;
+
+    gpu.synchronize(stream)?;
+
+    // Read one scale2 for the scalar field (use max for compatibility diagnostics)
+    let mut max_bytes = [0u8; 4];
+    // Just use the first row's scale2 as the scalar (it's unused in PRS path)
+    gpu.copy_d2h(scale2_vec_buf, &mut max_bytes)?;
+    let scale2_first = f32::from_le_bytes(max_bytes);
+
+    Ok(QuantizedWeight {
+        weight: packed_buf,
+        weight_scale: scale_buf,
+        weight_scale_2: scale2_first,
+        input_scale: DevicePtr::NULL,
+        weight_scale_2_vec: scale2_vec_buf,
     })
 }
 

@@ -77,6 +77,10 @@ pub struct QuantizedWeight {
     pub weight_scale_2: f32,
     /// Input activation scale (FP32 on device, for FP8 activation path).
     pub input_scale: DevicePtr,
+    /// Per-row FP32 scale2 on device (`[N]` floats). When set, the `w4a16_gemv_prs`
+    /// kernel reads scale2 per output row instead of the scalar `weight_scale_2`,
+    /// eliminating precision loss from per-tensor absmax on outlier rows.
+    pub weight_scale_2_vec: DevicePtr,
 }
 
 impl QuantizedWeight {
@@ -87,12 +91,71 @@ impl QuantizedWeight {
             weight_scale: DevicePtr::NULL,
             weight_scale_2: 0.0,
             input_scale: DevicePtr::NULL,
+            weight_scale_2_vec: DevicePtr::NULL,
         }
+    }
+
+    /// Whether this weight has per-row scale2 (for PRS GEMV dispatch).
+    pub fn has_per_row_scale2(&self) -> bool {
+        self.weight_scale_2_vec != DevicePtr::NULL
     }
 
     /// Whether this weight points to NULL (remote expert placeholder).
     pub fn is_null(&self) -> bool {
         self.weight == DevicePtr::NULL
+    }
+
+    /// Concatenate two NVFP4 weights by rows: `[N1, K/2]` + `[N2, K/2]` → `[N1+N2, K/2]`.
+    ///
+    /// Both weights MUST share the same `K` (input dimension) and the same scalar
+    /// `weight_scale_2`. The packed weight bytes and FP8 block scales are concatenated
+    /// on-GPU via `cuMemcpy`.
+    pub fn concat_rows(
+        &self,
+        other: &QuantizedWeight,
+        n1: usize,
+        n2: usize,
+        k: usize,
+        gpu: &dyn GpuBackend,
+    ) -> anyhow::Result<QuantizedWeight> {
+        // The concatenated weight carries a single scalar scale2 (self's) for
+        // ALL rows — a mismatched `other` would silently dequantize its rows
+        // with the wrong per-tensor scale.
+        anyhow::ensure!(
+            self.weight_scale_2 == other.weight_scale_2,
+            "concat_rows: weight_scale_2 mismatch (self={}, other={}) — both NVFP4 \
+             tensors must share the same per-tensor scale to be concatenated",
+            self.weight_scale_2,
+            other.weight_scale_2,
+        );
+        const GROUP_SIZE: usize = 16;
+        let half_k = k / 2;
+        let num_groups = k / GROUP_SIZE;
+
+        let total_n = n1 + n2;
+        let packed_size = total_n * half_k;
+        let scale_size = total_n * num_groups;
+
+        let new_weight = gpu.alloc(packed_size)?;
+        let new_scale = gpu.alloc(scale_size)?;
+
+        gpu.copy_d2d(self.weight, new_weight, n1 * half_k)?;
+        gpu.copy_d2d(other.weight, new_weight.offset(n1 * half_k), n2 * half_k)?;
+
+        gpu.copy_d2d(self.weight_scale, new_scale, n1 * num_groups)?;
+        gpu.copy_d2d(
+            other.weight_scale,
+            new_scale.offset(n1 * num_groups),
+            n2 * num_groups,
+        )?;
+
+        Ok(QuantizedWeight {
+            weight: new_weight,
+            weight_scale: new_scale,
+            weight_scale_2: self.weight_scale_2,
+            input_scale: DevicePtr::NULL,
+            weight_scale_2_vec: DevicePtr::NULL,
+        })
     }
 
     /// Transpose weight layout from [N, K/2] to [K/2, N] for coalesced GEMM reads.
@@ -141,6 +204,7 @@ impl QuantizedWeight {
             weight_scale: new_scale,
             weight_scale_2: self.weight_scale_2,
             input_scale: self.input_scale,
+            weight_scale_2_vec: self.weight_scale_2_vec,
         })
     }
 
