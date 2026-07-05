@@ -9,7 +9,11 @@ use spark_runtime::weights::{WeightDtype, WeightStore};
 use super::{ModelWeightLoader, WeightFormat};
 use crate::layer::TransformerLayer;
 use crate::layers::{DenseFfnLayer, FfnComponent, Qwen3AttentionLayer, Qwen3SsmLayer};
-use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_dense_bf16, shard_quantized_nvfp4};
+use crate::tp_shard::{
+    TpGdnDims, TpShardKind, load_qkvo_tp, shard_dense_bf16, shard_gdn_ba_rows, shard_gdn_conv_rows,
+    shard_gdn_out_proj_row_parallel, shard_gdn_qkvz_rows, shard_gdn_value_vector,
+    shard_quantized_nvfp4,
+};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, Fp8Weight, MtpWeights, Nvfp4Variant, SsmWeights, dense,
     dense_auto, dense_f32_safe, dense_keep_f32, dequant_nvfp4_to_bf16, detect_nvfp4_variant,
@@ -595,8 +599,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                 LayerType::LinearAttention => {
                     let nv = config.linear_num_value_heads;
                     let nk = config.linear_num_key_heads;
-                    let qkv_rows = config.ssm_qkv_size();
-                    let z_rows = config.ssm_z_size();
+                    // GDN HeadParallel: config holds per-rank-LOCAL linear head counts
+                    // (topology.rs divided them by tp_size). TpGdnDims rebuilds the FULL
+                    // pre-shard sizes so load/concat/interleave run at FULL, then the
+                    // shard_gdn_* slicers cut this rank's contiguous head range. value_dim
+                    // stays LOCAL (sizes the downstream quantize of the sharded buffers).
+                    let tp_size = config.tp_world_size.max(1);
+                    let dims = TpGdnDims::from_config(config);
+                    let qkv_rows = dims.full_conv_dim();
+                    let z_rows = dims.full_value_dim();
                     let value_dim = nv * config.linear_value_head_dim;
                     let la = format!("{lp}.linear_attn");
 
@@ -704,11 +715,6 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         continue;
                     }
 
-                    // A, B, conv1d, A_log, dt_bias, norm are independent of the
-                    // qkv/z/out_proj on-disk format below — load them once up
-                    // front so both the native-NVFP4 fast path and the legacy
-                    // dequant/requant path can share them.
-                    //
                     // A_log and dt_bias MUST be FP32 — consumer kernels in
                     // `ssm_preprocess.cu` and `mamba2_ssm_decode.cu` declare
                     // them `const float*`. Loading via `dense()` kept BF16
@@ -822,7 +828,8 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
 
                     let qkv_dense = load_ssm_proj(&format!("{la}.in_proj_qkv"), qkv_rows, h)?;
                     let z_dense = load_ssm_proj(&format!("{la}.in_proj_z"), z_rows, h)?;
-                    let out_proj_dense = load_ssm_proj(&format!("{la}.out_proj"), h, value_dim)?;
+                    let out_proj_dense =
+                        load_ssm_proj(&format!("{la}.out_proj"), h, dims.full_value_dim())?;
 
                     let qkvz_dense =
                         gpu_concat_rows(&qkv_dense, qkv_rows, &z_dense, z_rows, h, gpu)?;
@@ -831,7 +838,51 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     gpu.free(qkv_dense.weight)?;
                     gpu.free(z_dense.weight)?;
 
-                    let ba_dense = interleave_ba(&in_proj_a, &in_proj_b, nv, nk, h, gpu)?;
+                    let ba_dense =
+                        interleave_ba(&in_proj_a, &in_proj_b, dims.full_nv, dims.full_nk, h, gpu)?;
+
+                    // GDN HeadParallel shard: cut the FULL concat/interleave/on-disk buffers
+                    // to this rank's contiguous head range (mirrors the MoE loader,
+                    // linear_attn_arms.rs). Runs BEFORE both consumers below (the Bf16Raw
+                    // branch AND the NVFP4/FP8 path), so both get sharded weights. qkvz
+                    // (segmented [Q|K|V|Z]) + conv (segmented [Q|K|V]) slice per-block; ba
+                    // slices contiguously; a_log/dt_bias are per-value-head FP32 scalars;
+                    // out_proj is row-parallel on value_dim (partials summed by the
+                    // post-out_proj all-reduce already in Qwen3SsmLayer::forward). norm is
+                    // [vd] shared across value heads -> REPLICATE (never sliced). Free only
+                    // the fresh qkvz/ba concat buffers; conv/a_log/dt_bias/out_proj sources
+                    // are store aliases or dequant bufs freed downstream (the NVFP4 path
+                    // frees the sharded qkvz/out_proj later). At tp==1 the else arm is a
+                    // pure pass-through and every slicer no-ops -> byte-identical.
+                    let (qkvz_dense, ba_dense, conv1d, a_log, dt_bias, out_proj_dense) = if tp_size
+                        > 1
+                    {
+                        let d_conv = config.linear_conv_kernel_dim;
+                        let (qkvz_ptr, _, _) = shard_gdn_qkvz_rows(qkvz_dense.weight, &dims, gpu)?;
+                        gpu.free(qkvz_dense.weight)?;
+                        let (ba_ptr, _, _) = shard_gdn_ba_rows(ba_dense.weight, &dims, gpu)?;
+                        gpu.free(ba_dense.weight)?;
+                        let (conv_ptr, _, _) =
+                            shard_gdn_conv_rows(conv1d.weight, &dims, d_conv, gpu)?;
+                        let (a_log_ptr, _) =
+                            shard_gdn_value_vector(a_log.weight, &dims, 1, 4, gpu)?;
+                        let (dt_bias_ptr, _) =
+                            shard_gdn_value_vector(dt_bias.weight, &dims, 1, 4, gpu)?;
+                        let (out_ptr, _, _) =
+                            shard_gdn_out_proj_row_parallel(out_proj_dense.weight, &dims, gpu)?;
+                        (
+                            DenseWeight { weight: qkvz_ptr },
+                            DenseWeight { weight: ba_ptr },
+                            DenseWeight { weight: conv_ptr },
+                            DenseWeight { weight: a_log_ptr },
+                            DenseWeight {
+                                weight: dt_bias_ptr,
+                            },
+                            DenseWeight { weight: out_ptr },
+                        )
+                    } else {
+                        (qkvz_dense, ba_dense, conv1d, a_log, dt_bias, out_proj_dense)
+                    };
 
                     // Native-BF16 SSM arm (no-metadata dense Holo checkpoints:
                     // Nvfp4Variant::Bf16Raw). The standard nvfp4 bundle ships the
