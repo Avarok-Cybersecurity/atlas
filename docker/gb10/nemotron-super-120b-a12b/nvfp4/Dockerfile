@@ -24,6 +24,7 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/
 COPY kernels/ kernels/
+COPY vendor/ vendor/
 COPY jinja-templates/ jinja-templates/
 
 ENV ATLAS_TARGET_HW=gb10

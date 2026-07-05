@@ -14,6 +14,22 @@
 #     -v ~/.cache/huggingface:/root/.cache/huggingface \
 #     atlas-gb10:qwen3.6-35b-a3b serve Qwen/Qwen3.6-35B-A3B-FP8 \
 #       --dflash --draft-model z-lab/Qwen3.6-35B-A3B-DFlash --max-seq-len 16384
+#
+# Run (proven agentic webserver_ok config — dgx2, 10/10 webserver_ok + 10/10
+#      followed_directions, opencode Axum ping/pong suite, Σwall ~1650s):
+#   docker run --gpus all --ipc=host --network host \
+#     -v ~/.cache/huggingface:/root/.cache/huggingface \
+#     atlas-gb10:qwen3.6-35b-a3b serve Qwen/Qwen3.6-35B-A3B-FP8 \
+#       --model-name qwen36-35b-a3b --max-seq-len 32768 --max-batch-size 2 \
+#       --gpu-memory-utilization 0.70 --kv-cache-dtype bf16 \
+#       --lm-head-dtype bf16 --scheduling-policy slai \
+#       --speculative --num-drafts 1 --mtp-quantization bf16 \
+#       --enable-prefix-caching --ssm-cache-slots 256 --ssm-checkpoint-interval 16
+#   Notes: default tool-call parser (qwen3_coder) — do NOT pass --tool-call-parser
+#   hermes (mangles multi-line file writes, #37). --enable-prefix-caching is the
+#   master switch for BOTH KV reuse and Marconi SSM-snapshot restore on this
+#   attn+GDN hybrid. lm_head bf16 (NVFP4 lm_head collapses). fp8 KV cache is a
+#   ~3x decode REGRESSION on SM121 here — keep KV at bf16.
 
 # ── Build stage ──────────────────────────────────────────────────
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS builder
@@ -31,6 +47,7 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/
 COPY kernels/ kernels/
+COPY vendor/ vendor/
 
 ENV ATLAS_TARGET_HW=gb10
 ENV ATLAS_TARGET_MODEL=qwen3.6-35b-a3b

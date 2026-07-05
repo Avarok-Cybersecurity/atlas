@@ -24,6 +24,7 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/
 COPY kernels/ kernels/
+COPY vendor/ vendor/
 
 ENV ATLAS_TARGET_HW=gb10
 ENV ATLAS_TARGET_MODEL=qwen3-vl-30b-a3b
