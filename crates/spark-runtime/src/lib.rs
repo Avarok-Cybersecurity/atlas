@@ -33,6 +33,7 @@ pub mod kv_dequant;
 pub mod kv_spill;
 #[cfg(feature = "metal")]
 pub mod metal_backend;
+pub mod nvtx_diag;
 pub mod prefix_cache;
 pub mod radix_tree;
 pub mod sampler;
