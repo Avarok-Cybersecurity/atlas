@@ -599,6 +599,43 @@ pub trait Model: Send + Sync {
         stream: u64,
     ) -> Result<()>;
 
+    /// Append the draft token's hidden (row 1 of dflash_hidden_save) to the
+    /// sequence's ctx accumulator. Call on ACCEPT only, after run_mtp_propose_multi.
+    ///
+    /// On ACCEPT seq_len advances by 2 but propose() only appends row 0 (last_token
+    /// at pos N). Without this call, each accept creates a 1-slot gap that grows
+    /// into a large RoPE mismatch between noise0_pos and the last ctx slot.
+    fn dflash_accept_append(&self, seq: &mut SequenceState) -> Result<()> {
+        let _ = seq;
+        Ok(())
+    }
+
+    /// EAGLE-fix (K=2 accept): append row 0 (h(last_token@N)) at pos N, then
+    /// row 1 (h(draft@N+1)) at pos N+1 — both BEFORE propose, so forward_block
+    /// conditions on row 1 (the hidden that generated bonus). Also sets the
+    /// proposer's `skip_next_decode_append` so propose does not re-append row 0.
+    /// Replaces the decode-append(row0)+post-propose accept-append(row1) split.
+    fn dflash_eagle_accept_append(&self, seq: &mut SequenceState) -> Result<()> {
+        let _ = seq;
+        Ok(())
+    }
+
+    /// EAGLE-fix (K=γ): append rows 0..=num_accepted from the row-major
+    /// `dflash_hidden_save` capture into the ctx accumulator, at positions
+    /// base_pos..=base_pos+num_accepted (one slot per committed position — fixes
+    /// the ctx-undercount). Row num_accepted (bonus generator) is appended LAST
+    /// → freshest slot (EAGLE). Sets `skip_next_decode_append` so propose does
+    /// not also append row 0. `base_pos` = pre-verify seq_len (= N).
+    fn dflash_eagle_kgamma_append(
+        &self,
+        seq: &mut SequenceState,
+        num_accepted: usize,
+        base_pos: usize,
+    ) -> Result<()> {
+        let _ = (seq, num_accepted, base_pos);
+        Ok(())
+    }
+
     /// Launch SSM state checkpoint D2D copies on a secondary CUDA stream.
     ///
     /// Non-blocking: returns immediately. The copies can overlap with MTP

@@ -197,6 +197,30 @@ pub trait TransformerLayer: Send + Sync {
         anyhow::bail!("prefill_phase1_l2_batched: only implemented for SSM layers")
     }
 
+    /// DFlash K=γ verify: run the FULL batched phase-1 pipeline ONCE over
+    /// `num_tokens` (token_offset=0), writing the K-1 per-token conv_state
+    /// intermediates inline via the _inter conv kernel. Returns Ok(true) if it
+    /// ran (caller skips the per-token loop); Ok(false) to fall back.
+    #[allow(clippy::too_many_arguments)]
+    fn prefill_phase1_verify(
+        &self,
+        _hidden: DevicePtr,
+        _residual: DevicePtr,
+        _num_tokens: usize,
+        _state: &mut dyn LayerState,
+        _kv_cache: &mut PagedKvCache,
+        _seq_len_start: usize,
+        _block_table: &mut Vec<u32>,
+        _disk_block_ids: &mut Vec<u32>,
+        _disk_last_offloaded_per_layer: &mut Vec<u32>,
+        _kv_write_start: usize,
+        _gdn_bufs: &GdnPrefillBuffers,
+        _ctx: &ForwardContext,
+        _stream: u64,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Two-phase SSM prefill — Phase 2: GDN recurrence on the full sequence.
     ///
     /// Runs the WY4-persistent GDN kernel over all `total_len` tokens in
@@ -212,6 +236,21 @@ pub trait TransformerLayer: Send + Sync {
         _stream: u64,
     ) -> Result<()> {
         Ok(()) // No-op for attention layers
+    }
+
+    /// K=16 DFlash verify: single fused WY16 GDN pass over `gdn_bufs` (already
+    /// post-conv from phase-1). Writes final h_state live AND Hi_0..Hi_14
+    /// intermediates inline — replacing prefill_gdn_full + the per-token replay.
+    /// Returns Ok(true) if it ran (caller skips replay); Ok(false) if the wy16
+    /// kernel/length isn't applicable (caller falls back to WY4 + replay).
+    fn prefill_gdn_wy16(
+        &self,
+        _state: &mut dyn LayerState,
+        _gdn_bufs: &GdnPrefillBuffers,
+        _ctx: &ForwardContext,
+        _stream: u64,
+    ) -> Result<bool> {
+        Ok(false)
     }
 
     /// Q12 Path B: batched attention prefill across N stacked-input streams.

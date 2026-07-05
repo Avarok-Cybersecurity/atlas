@@ -434,6 +434,8 @@ impl TransformerModel {
             output: self.gdn_buf_out,
             z: self.gdn_buf_z,
             total_len: proc_count,
+            output_f32: self.gdn_buf_out_f32,
+            output_f32_written: std::cell::Cell::new(false),
         };
 
         for (i, layer) in self.layers.iter().enumerate() {

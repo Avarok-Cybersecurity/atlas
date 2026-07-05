@@ -190,6 +190,15 @@ pub struct GdnPrefillBuffers {
     pub gate_beta: DevicePtr,
     /// GDN recurrence output: [total_len, value_dim] BF16.
     pub output: DevicePtr,
+    /// FP32 sibling of `output`, written only when ATLAS_DFLASH_VERIFY_GDN_F32=1 and
+    /// the FP32 split4 kernel is available. `DevicePtr::NULL` otherwise.
+    pub output_f32: DevicePtr,
+    /// Set by whichever GDN dispatch branch ran (wy16_f32 or split4_f32) to
+    /// record whether `output_f32` actually holds fresh data this call.
+    /// Consumed by phase3 so it never reads a stale/never-written buffer —
+    /// the correct replacement for a `total_len`-based proxy guard, since
+    /// which branch actually wrote depends on kernel availability too.
+    pub output_f32_written: std::cell::Cell<bool>,
     /// Z gate for gated RMS norm: [total_len, value_dim] BF16.
     pub z: DevicePtr,
     /// Total number of tokens across all chunks.

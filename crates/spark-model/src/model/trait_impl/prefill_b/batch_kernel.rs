@@ -375,6 +375,8 @@ impl TransformerModel {
             } else {
                 proc_count * n
             },
+            output_f32: DevicePtr::NULL,
+            output_f32_written: std::cell::Cell::new(false),
         };
 
         // ForwardContext for batched layer calls. attn_metadata is

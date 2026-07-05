@@ -117,6 +117,10 @@ pub struct TransformerModel {
     /// token's intermediate hiddens; the drafter consumes them via its `fc`
     /// projection on the next propose() call. None for non-DFlash runs.
     pub(super) dflash_hidden_save: Option<DevicePtr>,
+    /// Row capacity of `dflash_hidden_save` (the K-row EAGLE capture buffer).
+    /// `try_dflash_capture_all` must never write past this many rows. Single
+    /// source of truth for the buffer's KMAX; 0 when DFlash is disabled.
+    pub(super) dflash_hidden_save_rows: usize,
     /// Layer indices to capture for DFlash. Empty when DFlash is disabled.
     /// Sourced from drafter's `dflash_config.target_layer_ids` at model build.
     pub(super) dflash_capture_layers: Vec<usize>,
@@ -222,10 +226,18 @@ pub struct TransformerModel {
     pub(super) gdn_buf_gate_beta: DevicePtr,
     /// Full-sequence GDN output: [max_seq_len, value_dim] BF16
     pub(super) gdn_buf_out: DevicePtr,
+    /// FP32 sibling of `gdn_buf_out` for ATLAS_DFLASH_VERIFY_GDN_F32 (K=γ verify
+    /// precision fix prototype): [max_seq_len, value_dim] FP32.
+    /// DevicePtr::NULL when conv_dim == 0 (no SSM layers).
+    pub(super) gdn_buf_out_f32: DevicePtr,
     /// Full-sequence Z gate (for gated RMS norm in phase 3): [max_seq_len, value_dim] BF16
     pub(super) gdn_buf_z: DevicePtr,
     /// Max sequence length these buffers were allocated for.
     pub(super) gdn_buf_max_len: usize,
+    /// Temporary h_state storage for SSM verify three-phase path (R7).
+    /// Holds one slot's h_state while h_state_intermediates are filled via replay.
+    /// Size: ssm_pool.h_bytes. DevicePtr::NULL when no SSM layers.
+    pub(super) ssm_verify_h_tmp: DevicePtr,
 
     /// Logit softcapping kernel: logits = cap * tanh(logits / cap).
     /// KernelHandle(0) = disabled (no softcapping for this model).

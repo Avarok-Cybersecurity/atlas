@@ -202,6 +202,12 @@ impl TransformerModel {
             let dst_offset = abs_pos * n_capture * h * bf16 + slot_idx * h * bf16;
             self.gpu
                 .copy_d2d_async(src, acc_base.offset(dst_offset), h * bf16, stream)?;
+            // Record the actual sequence position for this slot once — on the
+            // first capture layer only (slot_idx == 0). Subsequent layers
+            // write into the same logical slot and must not push again.
+            if slot_idx == 0 {
+                dstate.ctx_slot_positions.push(abs_pos as i32);
+            }
         }
         Ok(())
     }
@@ -229,7 +235,21 @@ impl TransformerModel {
                 .downcast_mut::<crate::layers::DflashProposerState>()
         {
             let new_len = (chunk_start + proc_count).min(dstate.max_ctx_len);
+            tracing::debug!(
+                "DFlash ctx_len update: chunk_start={} proc_count={} → ctx_len={} (max={})",
+                chunk_start,
+                proc_count,
+                new_len,
+                dstate.max_ctx_len
+            );
             dstate.ctx_len = new_len;
+        } else {
+            tracing::warn!(
+                "DFlash ctx_len update SKIPPED: proposer_state={} (chunk_start={} proc_count={})",
+                seq.proposer_state.is_some(),
+                chunk_start,
+                proc_count
+            );
         }
         Ok(())
     }
@@ -278,6 +298,89 @@ impl TransformerModel {
         let src = self.buffers.hidden_states().offset(token_idx * h * bf16);
         let dst_slot = dst.offset(slot * h * bf16);
         self.gpu.copy_d2d_async(src, dst_slot, h * bf16, stream)?;
+        Ok(())
+    }
+
+    /// Capture row 1 (draft token's hidden at each capture layer) into the
+    /// second half of `dflash_hidden_save`. Called inside the CUDA graph
+    /// alongside `try_dflash_capture(layer_idx, 0)` so both last_token and
+    /// draft hiddens are available post-graph for the ACCEPT-case ctx append.
+    pub(super) fn try_dflash_capture_draft(&self, layer_idx: usize, stream: u64) -> Result<()> {
+        let base = match self.dflash_hidden_save {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        if let Some(ref c) = self.comm
+            && c.rank() != 0
+        {
+            return Ok(());
+        }
+        let slot = match self
+            .dflash_capture_layers
+            .iter()
+            .position(|&l| l == layer_idx)
+        {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+        let h = self.config.hidden_size;
+        let bf16 = 2usize;
+        let ctx_slot_bytes = self.dflash_capture_layers.len() * h * bf16;
+        let src = self.buffers.hidden_states().offset(h * bf16); // row 1 = draft
+        let dst_slot = base.offset(ctx_slot_bytes + slot * h * bf16); // second half
+        self.gpu.copy_d2d_async(src, dst_slot, h * bf16, stream)?;
+        Ok(())
+    }
+
+    /// K=γ EAGLE capture: copy the per-layer hidden of ALL `k` verify rows into
+    /// the row-major `dflash_hidden_save` ([row0 | row1 | … ], each row =
+    /// n_capture * hidden_size * bf16). Called once per capture layer inside the
+    /// verify graph (k is fixed per captured graph). After verify, the scheduler
+    /// appends rows 0..=num_accepted to ctx so every committed position gets its
+    /// target hidden (fixes the ctx-undercount) and the bonus generator (row
+    /// num_accepted) is the freshest slot (EAGLE). No-op unless DFlash is on,
+    /// this layer is a capture layer, and rank 0.
+    pub(super) fn try_dflash_capture_all(
+        &self,
+        layer_idx: usize,
+        k: usize,
+        stream: u64,
+    ) -> Result<()> {
+        let dst = match self.dflash_hidden_save {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        if let Some(ref c) = self.comm
+            && c.rank() != 0
+        {
+            return Ok(());
+        }
+        let slot = match self
+            .dflash_capture_layers
+            .iter()
+            .position(|&l| l == layer_idx)
+        {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+        let h = self.config.hidden_size;
+        let bf16 = 2usize;
+        let ctx_slot_bytes = self.dflash_capture_layers.len() * h * bf16;
+        // Bounds guard: the buffer holds `dflash_hidden_save_rows` rows. `k` ≤ γ
+        // ≤ KMAX by construction (γ=16, KMAX=17), but never write past the
+        // allocation even if a future drafter's γ exceeds KMAX — that would be a
+        // silent cross-buffer GPU corruption. Clamp + debug_assert to catch it.
+        let kmax = self.dflash_hidden_save_rows;
+        debug_assert!(
+            k <= kmax,
+            "try_dflash_capture_all: k={k} exceeds dflash_hidden_save_rows={kmax}"
+        );
+        let k_capped = k.min(kmax);
+        for t in 0..k_capped {
+            let src = self.buffers.hidden_states().offset(t * h * bf16);
+            let dst_slot = dst.offset(t * ctx_slot_bytes + slot * h * bf16);
+            self.gpu.copy_d2d_async(src, dst_slot, h * bf16, stream)?;
+        }
         Ok(())
     }
 }

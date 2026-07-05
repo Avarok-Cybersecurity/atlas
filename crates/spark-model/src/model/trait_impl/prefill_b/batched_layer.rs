@@ -233,6 +233,8 @@ impl TransformerModel {
                         output: gdn_bufs.output.offset(off * value_dim * bf16),
                         z: gdn_bufs.z.offset(off * value_dim * bf16),
                         total_len: len,
+                        output_f32: gdn_bufs.output_f32.offset(off * value_dim * fp32),
+                        output_f32_written: std::cell::Cell::new(false),
                     };
                     let st = seq.layer_states[layer_idx].as_mut();
                     layer.prefill_gdn_full(st, &gb, ctx, stream)?;

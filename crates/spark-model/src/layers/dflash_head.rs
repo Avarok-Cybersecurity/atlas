@@ -39,6 +39,9 @@ pub struct DflashKernels {
     /// (e.g. Holo): a BF16 `dense_gemm` on NVFP4-packed bytes reads garbage
     /// (and ~4× OOB → CUDA-700). `.0 == 0` when the target lm_head is BF16.
     pub w4a16_gemm: KernelHandle,
+    /// Tensor-core pipelined BF16 GEMM — faster than dense_gemm for large M.
+    /// Uses m16n8k16 MMA with 2-stage cp.async pipeline, 128×128 tile.
+    pub dense_gemm_pipelined: KernelHandle,
     pub rope_qwen3: KernelHandle,
     pub reshape_cache_fp8: KernelHandle,
     pub prefill_attn_dflash_fp8: KernelHandle,
@@ -141,6 +144,12 @@ pub struct DflashProposerState {
     pub ctx_hidden_acc: DevicePtr,
     /// Number of populated slots in `ctx_hidden_acc`. Capped at `max_ctx_len`.
     pub ctx_len: usize,
+    /// Actual absolute sequence positions for each populated ctx slot. CPU-side
+    /// parallel to `ctx_hidden_acc`: `ctx_slot_positions[k]` = the true sequence
+    /// position of the hidden stored in `ctx_hidden_acc[k]`. Needed because
+    /// thinking tokens create a gap (prompt at 0..P, output at P+T..N) so slot
+    /// index k != actual position when T > 0.
+    pub ctx_slot_positions: Vec<i32>,
     /// Allocation cap for `ctx_hidden_acc` (in slot count). Mirrors the
     /// `max_seq_len` build arg so we can clamp without re-fetching it.
     pub max_ctx_len: usize,
@@ -291,6 +300,7 @@ impl DraftProposer for BlockDiffusionDraftHead {
             prefill_done: false,
             ctx_hidden_acc,
             ctx_len: 0,
+            ctx_slot_positions: Vec::with_capacity(self.max_seq_len),
             max_ctx_len: self.max_seq_len,
             ctx_slot_bytes,
         }))

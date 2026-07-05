@@ -227,11 +227,24 @@ impl TransformerModel {
         // populated by the loader from the drafter's `dflash_config.target_layer_ids`).
         // Size: N_capture × hidden_size × bf16 (typically 5 × 2048 × 2 = 20 KB).
         let dflash_capture_layers: Vec<usize> = config.dflash_capture_layers.clone();
+        // Row capacity of the K-row capture buffer. KMAX = dflash_kgamma (=17 ≥
+        // max verify K = γ) so the K=γ EAGLE path can capture every verify row;
+        // pre-fix paths use only rows 0–1. Stored on the model as the single
+        // source of truth so `try_dflash_capture_all` can bound its writes.
+        let dflash_hidden_save_rows = if dflash_capture_layers.is_empty() {
+            0
+        } else {
+            dflash_kgamma.max(2)
+        };
         let dflash_hidden_save = if dflash_capture_layers.is_empty() {
             None
         } else {
             let n = dflash_capture_layers.len();
-            Some(gpu.alloc(n * config.hidden_size * 2)?)
+            // Row-major K-row buffer: [row0 | row1 | … | row_{KMAX-1}], each row =
+            // n_capture * hidden_size * bf16. Rows 0/1 keep their legacy offsets
+            // (0 and ctx_slot_bytes) so all K=2 readers (propose row 0,
+            // dflash_accept_append row 1) are unaffected.
+            Some(gpu.alloc(dflash_hidden_save_rows * n * config.hidden_size * 2)?)
         };
 
         // EP command buffer for token broadcast (4 bytes, u32)
@@ -276,117 +289,17 @@ impl TransformerModel {
             slots: Vec::with_capacity(max_batch_tokens),
         });
 
-        // SSM state normalization kernel + pointer buffer (for chunked prefill).
-        let ssm_norm_k = gpu
-            .kernel("ssm_state_norm", "ssm_state_clamp_norm_fused")
-            .unwrap_or(KernelHandle(0));
-
-        // Logit softcapping (Gemma-4: cap=30.0). Only load if model uses it.
-        let logit_softcap_kernel = if config.final_logit_softcapping > 0.0 {
-            gpu.kernel("logit_softcap", "logit_softcap_bf16")
-                .unwrap_or_else(|e| {
-                    tracing::warn!("logit_softcap kernel not found: {e}");
-                    KernelHandle(0)
-                })
-        } else {
-            KernelHandle(0)
-        };
-        // FP32 softcap variant — only loaded when both softcap and FP32
-        // residual are active (i.e. Gemma-4 dense). Other models keep the
-        // BF16 softcap (or no softcap at all).
-        // The FP32 logit softcap variant required an FP32 residual stream,
-        // which no longer exists, so the BF16 softcap path is always taken.
-        let logit_softcap_fp32_kernel = KernelHandle(0);
-        // FP32 logits gate. The LM head produces FP32 (rather than BF16)
-        // logits when the residual stream is FP32 AND the LM head is a
-        // dense BF16 weight (no NVFP4 quant). NVFP4 LM heads keep their
-        // existing path because that quantization is a much larger
-        // precision floor than the BF16 store; FP32 wouldn't help there.
-        // Today this only affects Gemma-4 dense (model_type=="gemma4",
-        // num_experts==0, tied BF16 embed→lm_head).
-        // Gemma-4-31B FP32 lm_head experiment. Disabled by default —
-        // session 2026-05-01 verified the BF16 lm_head store is NOT the
-        // source of Gemma-4's haiku argmax flip: FP32 view of step-1
-        // logits keeps top1=` a` (21.85), top2=` waves` (21.706) — same
-        // 0.14-margin tiebreak as BF16. The drift is upstream in attention
-        // or MLP, not in the lm_head precision boundary. Code paths kept
-        // wired so a future bisection (Phase 2 of the plan) can re-enable
-        // via `ATLAS_GEMMA4_FP32_LMHEAD=1`. Keep `use_fp32_logits=false`
-        // by default so the rest of the model behaves identically to the
-        // pre-fix BF16 path on every model family.
-        // FP32 lm_head + softcap. Default OFF — empirically the gain on
-        // Gemma-4-31B is marginal (Creative occasionally cleaner; fib still
-        // fails the same broken-indentation pattern) but the cost is huge:
-        // FP32 forces host-side sampling (vocab=262144 × 4 bytes per
-        // decode step → ~1 MB D2H per token) which crushes decode TPS
-        // from ~35 tok/s to ~6 tok/s on Gemma-4-31B. Not worth it without
-        // a GPU-side FP32 argmax kernel. `ATLAS_GEMMA4_FP32_LMHEAD=1`
-        // re-enables for bisection / future work.
-        //
-        // The earlier "FP32 doesn't fix haiku" comment in this file was
-        // arrived at via incomplete bisection (the scheduler readback
-        // always assumed BF16 — see commit 16b2f3a's commit body). The
-        // 2026-05-01 evening run with the dispatch wired confirmed the
-        // bisection's *qualitative* conclusion: FP32 lm_head + softcap
-        // doesn't materially fix Gemma-4's structural NVFP4 attention
-        // drift on greedy code generation. Fix is upstream of lm_head.
-        // FP32 logits (ATLAS_GEMMA4_FP32_LMHEAD) required an FP32 residual
-        // stream as a precondition. With the residual stream now always BF16,
-        // the FP32 logits path can never activate, so it is permanently off.
-        let use_fp32_logits = false;
-        // Dedicated FP32 logits scratch — only the single-token decode path
-        // uses it. Prefill and batched-decode lm_head still write BF16 to the
-        // shared `buffers.logits()`. Sized for one row of `vocab_size` FP32.
-        let logits_fp32_buf = if use_fp32_logits {
-            let bytes = config.vocab_size * 4;
-            let p = gpu.alloc(bytes)?;
-            tracing::info!(
-                "FP32 LM head + softcap active (model_type={}, vocab={}). \
-                 Decode logits scratch: {} bytes.",
-                config.model_type,
-                config.vocab_size,
-                bytes,
-            );
-            p
-        } else {
-            DevicePtr::NULL
-        };
-
-        // Embedding scale (Gemma-4: sqrt(hidden_size)). Only load if model uses it.
-        let embed_scale_kernel = if config.embed_scale > 0.0 {
-            gpu.kernel("embed_scale", "bf16_scale_inplace")
-                .unwrap_or_else(|e| {
-                    tracing::warn!("embed_scale kernel not found: {e}");
-                    KernelHandle(0)
-                })
-        } else {
-            KernelHandle(0)
-        };
-        if config.embed_scale > 0.0 {
-            tracing::info!(
-                "Embedding scale: {:.4} (sqrt({}))",
-                config.embed_scale,
-                config.hidden_size
-            );
-        }
-        let ssm_norm_ptrs = if ssm_pool.num_ssm_layers > 0 {
-            gpu.alloc(ssm_pool.num_ssm_layers * 8)
-                .unwrap_or(DevicePtr::NULL)
-        } else {
-            DevicePtr::NULL
-        };
-
-        // GDN prefill buffers: sized for max_batch_tokens (the prefill chunk size),
-        // NOT max_seq_len. For prompts longer than this, prefill_twophase falls back
-        // to standard chunked prefill which carries h_state/conv_state between chunks.
-        // The GDN recurrence is sequential anyway, so chunking is mathematically identical.
-        let (gdn_qkv, gdn_gate_beta, gdn_out, gdn_z, gdn_buf_len) =
-            super::impl_a1_init::build_gdn_prefill_buffers(
-                &config,
-                max_batch_tokens,
-                max_seq_len,
-                gpu.as_ref(),
-            )?;
+        // Misc scratch kernels/buffers (SSM norm, logit softcap, FP32
+        // logits, embed scale, GDN prefill buffers, verify scratch).
+        // Extracted to `impl_a1_init::build_misc_scratch` to keep this
+        // file under the 500-LoC cap.
+        let misc = super::impl_a1_init::build_misc_scratch(
+            &config,
+            gpu.as_ref(),
+            max_batch_tokens,
+            max_seq_len,
+            &ssm_pool,
+        )?;
 
         // FP8 calibration only runs when the cache is actually FP8 — the
         // observe() call in decode.rs sits inside the FP8 cache branch. For
@@ -444,6 +357,7 @@ impl TransformerModel {
             proposer,
             mtp_hidden_save,
             dflash_hidden_save,
+            dflash_hidden_save_rows,
             dflash_capture_layers,
             verify2_graph: Mutex::new(std::collections::HashMap::new()),
             verify3_graph: Mutex::new(std::collections::HashMap::new()),
@@ -466,18 +380,20 @@ impl TransformerModel {
             vision_owned_images: Mutex::new(0),
             pinned_staging,
             ssm_checkpoint_interval,
-            ssm_state_norm_kernel: ssm_norm_k,
-            ssm_norm_ptrs_buf: ssm_norm_ptrs,
-            gdn_buf_qkv: gdn_qkv,
-            gdn_buf_gate_beta: gdn_gate_beta,
-            gdn_buf_out: gdn_out,
-            gdn_buf_z: gdn_z,
-            gdn_buf_max_len: gdn_buf_len,
-            logit_softcap_kernel,
-            logit_softcap_fp32_kernel,
-            use_fp32_logits,
-            logits_fp32_buf,
-            embed_scale_kernel,
+            ssm_state_norm_kernel: misc.ssm_state_norm_kernel,
+            ssm_norm_ptrs_buf: misc.ssm_norm_ptrs_buf,
+            gdn_buf_qkv: misc.gdn_buf_qkv,
+            gdn_buf_gate_beta: misc.gdn_buf_gate_beta,
+            gdn_buf_out: misc.gdn_buf_out,
+            gdn_buf_out_f32: misc.gdn_buf_out_f32,
+            gdn_buf_z: misc.gdn_buf_z,
+            gdn_buf_max_len: misc.gdn_buf_max_len,
+            ssm_verify_h_tmp: misc.ssm_verify_h_tmp,
+            logit_softcap_kernel: misc.logit_softcap_kernel,
+            logit_softcap_fp32_kernel: misc.logit_softcap_fp32_kernel,
+            use_fp32_logits: misc.use_fp32_logits,
+            logits_fp32_buf: misc.logits_fp32_buf,
+            embed_scale_kernel: misc.embed_scale_kernel,
         })
     }
 }
