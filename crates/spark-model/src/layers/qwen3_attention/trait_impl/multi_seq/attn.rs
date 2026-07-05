@@ -285,22 +285,51 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         } else if !self.attn.o_proj.is_null() {
-            // WIDE-VERIFY BATCHED O-PROJ (DFlash γ=16, n>3). One GEMM reads
-            // the o_proj weight ONCE for all n rows instead of the per-row
-            // GEMV loop below. attn_out is contiguous [n, q_dim]; o_out is
-            // contiguous [n, h]; both already laid out for a single M=n GEMM
-            // (no scatter). Uses the pipelined m128_v2 kernel when the
-            // transposed weight is present (base M64 GEMM is the slow path).
-            self.wide_verify_gemm(
-                c,
-                attn_out,
-                &self.attn.o_proj,
-                self.o_nvfp4_t.as_ref(),
-                o_out,
-                n as u32,
-                h as u32,
-                nq * hd,
-            )?;
+            // n>=4 (or n==1): tile the proven batch3/batch2 GEMV kernels so the
+            // o_proj weight is read once per tile (n=8 -> 3+3+2 = 3 reads vs 8).
+            // attn_out [n,q_dim] and o_out [n,h] are contiguous, so each tile is
+            // just an offset into the same kernels the n==2/3 branches use.
+            let mut s = 0usize;
+            while s < n {
+                let k = (n - s).min(3);
+                let ai = attn_out.offset(s * q_dim as usize * bf16);
+                let oi = o_out.offset(s * h * bf16);
+                if k == 3 {
+                    ops::w4a16_gemv_batch3(
+                        fwd.gpu,
+                        self.w4a16_gemv_batch3_k,
+                        ai,
+                        &self.attn.o_proj,
+                        oi,
+                        h as u32,
+                        nq * hd,
+                        stream,
+                    )?;
+                } else if k == 2 {
+                    ops::w4a16_gemv_batch2(
+                        fwd.gpu,
+                        self.w4a16_gemv_batch2_k,
+                        ai,
+                        &self.attn.o_proj,
+                        oi,
+                        h as u32,
+                        nq * hd,
+                        stream,
+                    )?;
+                } else {
+                    ops::w4a16_gemv(
+                        fwd.gpu,
+                        self.w4a16_gemv_k,
+                        ai,
+                        &self.attn.o_proj,
+                        oi,
+                        h as u32,
+                        nq * hd,
+                        stream,
+                    )?;
+                }
+                s += k;
+            }
         } else {
             for i in 0..n {
                 let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);

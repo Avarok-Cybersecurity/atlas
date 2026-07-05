@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Phase 2: per-token Q/K/V projection. Three branches:
-//! - n=3 + NVFP4 → batch3 GEMV path
-//! - n=2 + NVFP4 → batch2 GEMV path
-//! - else        → sequential per-token GEMV (FP8/NVFP4/BF16 fallback)
+//! Phase 2: per-token Q/K/V projection. Four branches:
+//! - n=3 + NVFP4  → batch3 GEMV path
+//! - n=2 + NVFP4  → batch2 GEMV path
+//! - n>=4 + NVFP4 → tiled batch3/batch2 GEMV path (greedy 3s + 2/1 remainder)
+//! - else         → sequential per-token GEMV (FP8/NVFP4/BF16 fallback)
 //!
-//! Both batch paths read each weight once for N tokens and then scatter
-//! into the per-seq QKV layout. The sequential path repeats the GEMV per
-//! token but supports every weight encoding.
+//! The batch paths read each weight once per tile and then scatter into the
+//! per-seq QKV layout. The tiled path extends that to n>=4 so decode
+//! concurrency doesn't collapse back to one weight read per token. The
+//! sequential path repeats the GEMV per token but supports every weight
+//! encoding.
 
 use anyhow::Result;
 
@@ -48,15 +51,16 @@ impl Qwen3AttentionLayer {
             && self.v_weight.as_ref().and_then(|w| w.as_nvfp4()).is_some()
         {
             self.ms_qkv_batch2(c)?;
-        } else if n > 3
+        } else if n >= 4
             && self.q_weight.as_ref().and_then(|w| w.as_nvfp4()).is_some()
             && self.k_weight.as_ref().and_then(|w| w.as_nvfp4()).is_some()
             && self.v_weight.as_ref().and_then(|w| w.as_nvfp4()).is_some()
         {
-            // WIDE-VERIFY BATCHED QKV (DFlash γ=16, n=17). The last per-token
-            // weight loop in the wide verify — one GEMM per Q/K/V reads each
-            // weight ONCE for all n rows instead of n× (mirrors batch3 with M=n).
-            self.ms_qkv_batchn(c)?;
+            // n>=4 NVFP4: tile the proven batch3/batch2 GEMV kernels so the
+            // q/k/v projection weights are read once per tile (n=8 -> 3+3+2 =
+            // 3 weight-matrix reads instead of 8 per-seq) — amortizes the
+            // attention-projection bandwidth that otherwise caps decode scaling.
+            self.ms_qkv_batch_tiled(c)?;
         } else {
             for i in 0..n {
                 let normed_i = normed.offset(i * h * bf16);
@@ -328,111 +332,15 @@ impl Qwen3AttentionLayer {
         Ok(())
     }
 
-    /// Best available NVFP4 GEMM for a wide (M>3) verify projection. Prefers
-    /// the pipelined `w4a16_gemm_t_m128_v2` (8-warp, cp.async double-buffered
-    /// — the same fast kernel the dense FFN prefill uses) when the transposed
-    /// weight and v2 kernel are present, then the 4-warp m128, then the N128,
-    /// falling back to the base M64 `w4a16_gemm` (the "~10 TFLOP flat
-    /// bottleneck") only when no transposed copy exists. B is read once either
-    /// way; this just picks the faster tiling/pipelining at M=17.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn wide_verify_gemm(
-        &self,
-        c: &MultiSeqCtx<'_>,
-        input: spark_runtime::gpu::DevicePtr,
-        w_base: &crate::weight_map::QuantizedWeight,
-        w_t: Option<&crate::weight_map::QuantizedWeight>,
-        output: spark_runtime::gpu::DevicePtr,
-        m: u32,
-        n: u32,
-        k: u32,
-    ) -> Result<()> {
-        let gpu = c.fwd.gpu;
-        let stream = c.stream;
-        if let Some(wt) = w_t {
-            // Small-M routing (w4a16_m17_bench): at M<=64 the M64-tile
-            // `w4a16_gemm_t` beats the M128-tile kernels (87% of an M128
-            // tile is padding at M=17), and `w4a16_gemm_t_k64` wins deep-K
-            // shapes. Mirrors dense_ffn::w4a16_prefill_gemm; same
-            // ATLAS_FFN_SMALLM=0 kill-switch.
-            fn small_m_enabled() -> bool {
-                static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-                *ON.get_or_init(|| std::env::var("ATLAS_FFN_SMALLM").ok().as_deref() != Some("0"))
-            }
-            if m <= 64 && k.is_multiple_of(32) && small_m_enabled() {
-                if k >= 8192 && k.is_multiple_of(64) && self.w4a16_gemm_t_k64_k.0 != 0 {
-                    return ops::w4a16_gemm_n128(
-                        gpu,
-                        self.w4a16_gemm_t_k64_k,
-                        input,
-                        wt,
-                        output,
-                        m,
-                        n,
-                        k,
-                        stream,
-                    );
-                }
-                if self.w4a16_gemm_t_k.0 != 0 {
-                    return ops::w4a16_gemm_n128(
-                        gpu,
-                        self.w4a16_gemm_t_k,
-                        input,
-                        wt,
-                        output,
-                        m,
-                        n,
-                        k,
-                        stream,
-                    );
-                }
-            }
-            if self.w4a16_gemm_t_m128_v2_k.0 != 0 {
-                return ops::w4a16_gemm_n128_m128_v2(
-                    gpu,
-                    self.w4a16_gemm_t_m128_v2_k,
-                    input,
-                    wt,
-                    output,
-                    m,
-                    n,
-                    k,
-                    stream,
-                );
-            }
-            if self.w4a16_gemm_t_m128_k.0 != 0 {
-                return ops::w4a16_gemm_n128_m128(
-                    gpu,
-                    self.w4a16_gemm_t_m128_k,
-                    input,
-                    wt,
-                    output,
-                    m,
-                    n,
-                    k,
-                    stream,
-                );
-            }
-        }
-        ops::w4a16_gemm(
-            gpu,
-            self.w4a16_gemm_k,
-            input,
-            w_base,
-            output,
-            m,
-            n,
-            k,
-            stream,
-        )
-    }
-
-    /// Wide-verify (n>3) NVFP4 batched QKV. Reads each of Q/K/V ONCE for all
-    /// n rows via `w4a16_gemm`, then scatters into the per-seq interleaved
-    /// layout — a direct generalization of `ms_qkv_batch3` to arbitrary n
-    /// (the fused batch3 GEMV only exists for n=3). The scatter + per-head
-    /// norm loops are cheap (D2D + norm, no weight reads), so they stay.
-    fn ms_qkv_batchn(&self, c: &MultiSeqCtx<'_>) -> Result<()> {
+    /// n>=4 NVFP4 batched path: tile the proven `batch3`/`batch2` GEMV kernels
+    /// across the n sequences (greedy 3s, then a 2 or 1 remainder). Each tile
+    /// reads the q/k/v projection weights ONCE for its 2-3 tokens, so n=8 costs
+    /// 3 weight-matrix reads instead of 8 — amortizing attention-projection
+    /// bandwidth at decode. Layout is byte-identical to `ms_qkv_batch3` (same
+    /// kernels, same q_proj_bytes/kv_bytes/per_seq_qkv offsets), so it inherits
+    /// that path's correctness; the only new logic is the tiling loop + base
+    /// offsets. The k==1 remainder falls back to the per-seq projection.
+    fn ms_qkv_batch_tiled(&self, c: &MultiSeqCtx<'_>) -> Result<()> {
         let MultiSeqCtx {
             fwd,
             n,
@@ -443,6 +351,7 @@ impl Qwen3AttentionLayer {
             hd,
             eps,
             bf16,
+            q_dim,
             q_proj_dim,
             q_proj_bytes,
             per_seq_qkv,
@@ -453,109 +362,189 @@ impl Qwen3AttentionLayer {
         let q_nvfp4 = self.q_weight.as_ref().and_then(|w| w.as_nvfp4()).unwrap();
         let k_nvfp4 = self.k_weight.as_ref().and_then(|w| w.as_nvfp4()).unwrap();
         let v_nvfp4 = self.v_weight.as_ref().and_then(|w| w.as_nvfp4()).unwrap();
-
-        // Q projection: single GEMM → contiguous [n, q_proj_dim] in q_scratch
-        // (interleaved Q|Gate when gated). q_proj_bytes = q_proj_dim*bf16, so
-        // the row stride matches the batch3 output — the scatter below is
-        // identical.
-        let q_scratch = fwd.buffers.ssm_qkvz();
-        self.wide_verify_gemm(
-            c,
-            normed,
-            q_nvfp4,
-            self.q_nvfp4_t.as_ref(),
-            q_scratch,
-            n as u32,
-            q_proj_dim,
-            h as u32,
-        )?;
-        if self.gated {
-            // Split interleaved [Q|Gate] → deinterleaved, in place, all n rows
-            // (grid is per-token). Matches what w4a16_gemv_qg_batch3 does inline.
-            ops::deinterleave_qg(
-                fwd.gpu,
-                self.deinterleave_qg_k,
-                q_scratch,
-                n as u32,
-                nq,
-                hd,
-                q_proj_dim,
-                stream,
-            )?;
-        }
-
-        // K, V projections: one GEMM each (weights read once).
         let kv_dim = nkv * hd;
         let kv_bytes = kv_dim as usize * bf16;
-        let k_scratch = fwd.buffers.attn_output();
-        let v_scratch = k_scratch.offset(n * kv_bytes);
-        self.wide_verify_gemm(
-            c,
-            normed,
-            k_nvfp4,
-            self.k_nvfp4_t.as_ref(),
-            k_scratch,
-            n as u32,
-            kv_dim,
-            h as u32,
-        )?;
-        self.wide_verify_gemm(
-            c,
-            normed,
-            v_nvfp4,
-            self.v_nvfp4_t.as_ref(),
-            v_scratch,
-            n as u32,
-            kv_dim,
-            h as u32,
-        )?;
 
-        // Scatter contiguous Q/K/V into the per-seq interleaved qkv_buf.
-        for i in 0..n {
-            let q_out_i = qkv_buf.offset(i * per_seq_qkv);
-            let k_out_i = q_out_i.offset(q_proj_bytes);
-            let v_out_i = k_out_i.offset(kv_bytes);
-            fwd.gpu.copy_d2d_async(
-                q_scratch.offset(i * q_proj_bytes),
-                q_out_i,
-                q_proj_bytes,
-                stream,
-            )?;
-            fwd.gpu
-                .copy_d2d_async(k_scratch.offset(i * kv_bytes), k_out_i, kv_bytes, stream)?;
-            fwd.gpu
-                .copy_d2d_async(v_scratch.offset(i * kv_bytes), v_out_i, kv_bytes, stream)?;
-        }
-
-        // Per-head q_norm / k_norm.
-        for i in 0..n {
-            let q_out_i = qkv_buf.offset(i * per_seq_qkv);
-            let k_out_i = q_out_i.offset(q_proj_bytes);
-            if !self.attn.q_norm.weight.is_null() {
-                ops::rms_norm(
-                    fwd.gpu,
-                    self.rms_norm_k,
-                    q_out_i,
-                    &self.attn.q_norm,
-                    q_out_i,
+        let mut s = 0usize;
+        while s < n {
+            let k = (n - s).min(3);
+            let normed_base = normed.offset(s * h * bf16);
+            if k >= 2 {
+                let q_scratch = fwd.buffers.ssm_qkvz();
+                let k_scratch = fwd.buffers.attn_output();
+                let v_scratch = k_scratch.offset(k * kv_bytes);
+                if k == 3 {
+                    if self.gated {
+                        ops::w4a16_gemv_qg_batch3(
+                            fwd.gpu,
+                            self.w4a16_gemv_qg_batch3_k,
+                            normed_base,
+                            q_nvfp4,
+                            q_scratch,
+                            q_proj_dim,
+                            h as u32,
+                            nq,
+                            hd,
+                            stream,
+                        )?;
+                    } else {
+                        ops::w4a16_gemv_batch3(
+                            fwd.gpu,
+                            self.w4a16_gemv_batch3_k,
+                            normed_base,
+                            q_nvfp4,
+                            q_scratch,
+                            q_proj_dim,
+                            h as u32,
+                            stream,
+                        )?;
+                    }
+                    ops::w4a16_gemv_dual_batch3(
+                        fwd.gpu,
+                        self.w4a16_gemv_dual_batch3_k,
+                        normed_base,
+                        k_nvfp4,
+                        k_scratch,
+                        v_nvfp4,
+                        v_scratch,
+                        kv_dim,
+                        h as u32,
+                        stream,
+                    )?;
+                } else {
+                    if self.gated {
+                        ops::w4a16_gemv_qg_batch2(
+                            fwd.gpu,
+                            self.w4a16_gemv_qg_batch2_k,
+                            normed_base,
+                            q_nvfp4,
+                            q_scratch,
+                            q_proj_dim,
+                            h as u32,
+                            nq,
+                            hd,
+                            stream,
+                        )?;
+                    } else {
+                        ops::w4a16_gemv_batch2(
+                            fwd.gpu,
+                            self.w4a16_gemv_batch2_k,
+                            normed_base,
+                            q_nvfp4,
+                            q_scratch,
+                            q_proj_dim,
+                            h as u32,
+                            stream,
+                        )?;
+                    }
+                    ops::w4a16_gemv_dual_batch2(
+                        fwd.gpu,
+                        self.w4a16_gemv_dual_batch2_k,
+                        normed_base,
+                        k_nvfp4,
+                        k_scratch,
+                        v_nvfp4,
+                        v_scratch,
+                        kv_dim,
+                        h as u32,
+                        stream,
+                    )?;
+                }
+                for j in 0..k {
+                    let q_out = qkv_buf.offset((s + j) * per_seq_qkv);
+                    let k_out = q_out.offset(q_proj_bytes);
+                    let v_out = k_out.offset(kv_bytes);
+                    fwd.gpu.copy_d2d_async(
+                        q_scratch.offset(j * q_proj_bytes),
+                        q_out,
+                        q_proj_bytes,
+                        stream,
+                    )?;
+                    fwd.gpu.copy_d2d_async(
+                        k_scratch.offset(j * kv_bytes),
+                        k_out,
+                        kv_bytes,
+                        stream,
+                    )?;
+                    fwd.gpu.copy_d2d_async(
+                        v_scratch.offset(j * kv_bytes),
+                        v_out,
+                        kv_bytes,
+                        stream,
+                    )?;
+                    if !self.attn.q_norm.weight.is_null() {
+                        ops::rms_norm(
+                            fwd.gpu,
+                            self.rms_norm_k,
+                            q_out,
+                            &self.attn.q_norm,
+                            q_out,
+                            nq,
+                            hd,
+                            eps,
+                            stream,
+                        )?;
+                    }
+                    if !self.attn.k_norm.weight.is_null() {
+                        ops::rms_norm(
+                            fwd.gpu,
+                            self.rms_norm_k,
+                            k_out,
+                            &self.attn.k_norm,
+                            k_out,
+                            nkv,
+                            hd,
+                            eps,
+                            stream,
+                        )?;
+                    }
+                }
+                s += k;
+            } else {
+                // k == 1 remainder: per-seq projection (byte-identical to the
+                // n<4 fallback loop).
+                let q_out = qkv_buf.offset(s * per_seq_qkv);
+                let k_out = q_out.offset(q_proj_bytes);
+                let v_out = k_out.offset(kv_bytes);
+                self.ms_qkv_seq_q(
+                    fwd,
+                    normed_base,
+                    q_out,
+                    q_proj_dim,
+                    q_dim,
                     nq,
                     hd,
-                    eps,
+                    h,
                     stream,
                 )?;
-            }
-            if !self.attn.k_norm.weight.is_null() {
-                ops::rms_norm(
-                    fwd.gpu,
-                    self.rms_norm_k,
-                    k_out_i,
-                    &self.attn.k_norm,
-                    k_out_i,
-                    nkv,
-                    hd,
-                    eps,
-                    stream,
-                )?;
+                self.ms_qkv_seq_kv(fwd, normed_base, k_out, v_out, nkv, hd, h, stream)?;
+                if !self.attn.q_norm.weight.is_null() {
+                    ops::rms_norm(
+                        fwd.gpu,
+                        self.rms_norm_k,
+                        q_out,
+                        &self.attn.q_norm,
+                        q_out,
+                        nq,
+                        hd,
+                        eps,
+                        stream,
+                    )?;
+                }
+                if !self.attn.k_norm.weight.is_null() {
+                    ops::rms_norm(
+                        fwd.gpu,
+                        self.rms_norm_k,
+                        k_out,
+                        &self.attn.k_norm,
+                        k_out,
+                        nkv,
+                        hd,
+                        eps,
+                        stream,
+                    )?;
+                }
+                s += 1;
             }
         }
         Ok(())
