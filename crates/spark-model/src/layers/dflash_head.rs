@@ -211,6 +211,14 @@ pub struct BlockDiffusionDraftHead {
     /// (e.g. Holo) — required because a BF16 `dense_gemm` on the NVFP4 buffer
     /// reads garbage and OOB. `None` → use the BF16 `lm_head_shared`.
     pub lm_head_nvfp4: Option<QuantizedWeight>,
+    /// Vocab dimension `lm_head_nvfp4` was actually quantized against (the
+    /// target's tokenizer-capped `config.vocab_size`, NOT the drafter's own
+    /// `vocab_size`). The two can differ — e.g. a tokenizer with fewer
+    /// entries than the checkpoint's raw vocab caps `lm_head_nvfp4`'s row
+    /// count below the drafter's `vocab_size`. Using `vocab_size` as the
+    /// GEMM's N here would read past the packed weight/scale buffers.
+    /// Only meaningful when `lm_head_nvfp4` is `Some`.
+    pub lm_head_nvfp4_vocab_size: usize,
 
     // === Weights from the drafter checkpoint ===
     /// Hidden-norm applied to the projected target context before mixing

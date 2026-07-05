@@ -477,6 +477,13 @@ pub fn build_model(
     // NVFP4 lm_head (Copy) shared with the DFlash drafter so its final logits
     // GEMM uses w4a16 instead of a BF16 dense_gemm on NVFP4-packed bytes.
     let target_lm_head_nvfp4_for_dflash = lm_head_nvfp4;
+    // `lm_head_nvfp4` (when Some) was quantized against `config.vocab_size`
+    // AFTER tokenizer-based capping (`cap_vocab_size_to_tokenizer`, called
+    // before `build_model`) — it may hold fewer rows than the drafter's own
+    // (uncapped) `vocab_size`. The DFlash head must use THIS value, not its
+    // own config's vocab_size, as the GEMM's N for the NVFP4 lm_head path,
+    // or it reads past the end of the packed weight/scale buffers.
+    let target_lm_head_nvfp4_vocab_for_dflash = config.vocab_size;
     let target_hidden_for_dflash = config.hidden_size;
 
     let mut model = TransformerModel::new(
@@ -551,6 +558,7 @@ pub fn build_model(
                 target_embed_for_dflash,
                 target_lm_head_for_dflash,
                 target_lm_head_nvfp4_for_dflash,
+                target_lm_head_nvfp4_vocab_for_dflash,
                 target_hidden_for_dflash,
                 args.gamma,
                 args.window_size,

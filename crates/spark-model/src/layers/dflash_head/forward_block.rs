@@ -334,6 +334,12 @@ impl BlockDiffusionDraftHead {
         // Final logits GEMM. When the target lm_head is NVFP4 (e.g. Holo), a
         // BF16 dense_gemm on the packed buffer reads garbage (+ ~4× OOB →
         // CUDA-700); use the NVFP4 GEMM with the shared QuantizedWeight.
+        //
+        // N is `lm_head_nvfp4_vocab_size`, NOT `self.vocab_size` — the
+        // packed weight/scale buffers were quantized against the target's
+        // (possibly tokenizer-capped) vocab, which can be smaller than the
+        // drafter's own `vocab_size`. Using `vocab_size` here reads past
+        // the end of those buffers (CUDA_ERROR_ILLEGAL_ADDRESS).
         if let Some(ref nvfp4) = self.lm_head_nvfp4 {
             ops::w4a16_gemm(
                 gpu,
@@ -342,7 +348,7 @@ impl BlockDiffusionDraftHead {
                 nvfp4,
                 self.scratch.logits,
                 self.gamma as u32,
-                self.vocab_size as u32,
+                self.lm_head_nvfp4_vocab_size as u32,
                 h,
                 stream,
             )?;
@@ -372,15 +378,25 @@ impl BlockDiffusionDraftHead {
         }
 
         // ── Step 5: argmax per row → γ token ids ──
+        //
+        // Row stride/N must match whichever branch above actually wrote
+        // `scratch.logits` — the NVFP4 branch wrote rows `lm_head_nvfp4_vocab_size`
+        // wide, not `vocab_size`. Using the wrong stride here would read
+        // adjacent rows' data (or past the last row) for every row after 0.
+        let logits_vocab = if self.lm_head_nvfp4.is_some() {
+            self.lm_head_nvfp4_vocab_size
+        } else {
+            self.vocab_size
+        };
         for i in 0..self.gamma {
-            let logits_row = self.scratch.logits.offset(i * self.vocab_size * bf16);
+            let logits_row = self.scratch.logits.offset(i * logits_vocab * bf16);
             let token_slot = self.scratch.draft_tokens_dev.offset(i * 4);
             ops::argmax_bf16(
                 gpu,
                 self.kernels.argmax,
                 logits_row,
                 token_slot,
-                self.vocab_size as u32,
+                logits_vocab as u32,
                 stream,
             )?;
         }
