@@ -54,6 +54,27 @@ class VerdictBars(unittest.TestCase):
     def test_zero_tps_fails(self):
         self.assertIn("tps(0)", G.verdict(_model_result("m", tps=(0.0,))))
 
+    def test_no_baseline_liveness_only_passes(self):
+        # Positive tps, no baseline, not required -> pass (liveness only).
+        self.assertEqual(G.verdict(_model_result("m", tps=(30.0,)), baseline=None), [])
+
+    def test_no_baseline_required_fails(self):
+        v = G.verdict(_model_result("m", tps=(30.0,)), baseline=None, require_baseline=True)
+        self.assertIn("tps(no-baseline)", v)
+
+    def test_tps_within_tolerance_passes(self):
+        # 46 vs baseline 50 -> 8% down, inside the 10% band.
+        self.assertEqual(G.verdict(_model_result("m", tps=(46.0,)), baseline={"tps": 50.0}), [])
+
+    def test_tps_regression_fails(self):
+        # 30 vs baseline 50 -> 40% down, a real regression tps(0) can't catch.
+        v = G.verdict(_model_result("m", tps=(30.0,)), baseline={"tps": 50.0})
+        self.assertTrue(any(b.startswith("tps(") and "<" in b for b in v), v)
+
+    def test_dead_server_beats_baseline_check(self):
+        # avg<=0 is tps(0) even when a baseline exists — liveness first.
+        self.assertIn("tps(0)", G.verdict(_model_result("m", tps=(0.0,)), baseline={"tps": 50.0}))
+
 
 class Coverage(unittest.TestCase):
     def setUp(self):
@@ -97,6 +118,55 @@ class Coverage(unittest.TestCase):
 
     def test_no_manifest_returns_none(self):
         self.assertIsNone(G.load_manifest(self.tmp, None))
+
+
+class Baselines(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.bdir = tempfile.mkdtemp()
+
+    def _write(self, label, result):
+        with open(os.path.join(self.tmp, f"{label}.json"), "w") as f:
+            json.dump(result, f)
+
+    def _manifest(self, labels):
+        man = {"labels": [{"label": l, "model": m} for l, m in labels]}
+        with open(os.path.join(self.tmp, G.MANIFEST_NAME), "w") as f:
+            json.dump(man, f)
+
+    def test_update_writes_avg_and_gate_then_passes(self):
+        self._manifest([("a", "M/a")])
+        self._write("a", _model_result("M/a", tps=(40.0, 60.0)))  # avg 50
+        roster = G.load_manifest(self.tmp, None)
+        written = G.update_baselines(self.tmp, roster, self.bdir)
+        self.assertEqual(written, [("a", 50.0)])
+        self.assertEqual(G.load_baseline("a", self.bdir), {"tps": 50.0})
+        # Re-run the SAME result against the fresh baseline -> clean pass.
+        _, _, failed = G.gate_manifest(self.tmp, roster, self.bdir)
+        self.assertEqual(failed, [])
+
+    def test_update_skips_dead_server(self):
+        self._manifest([("a", "M/a")])
+        self._write("a", _model_result("M/a", tps=(0.0,)))
+        roster = G.load_manifest(self.tmp, None)
+        self.assertEqual(G.update_baselines(self.tmp, roster, self.bdir), [])
+
+    def test_regression_caught_by_gate(self):
+        self._manifest([("a", "M/a")])
+        G.write_baseline("a", {"tps": 50.0}, self.bdir)
+        self._write("a", _model_result("M/a", tps=(30.0,)))  # 40% down
+        roster = G.load_manifest(self.tmp, None)
+        _, _, failed = G.gate_manifest(self.tmp, roster, self.bdir)
+        self.assertEqual([f[0] for f in failed], ["M/a"])
+
+    def test_require_baselines_blocks_unblessed_model(self):
+        self._manifest([("a", "M/a")])
+        self._write("a", _model_result("M/a", tps=(50.0,)))  # healthy but no baseline
+        roster = G.load_manifest(self.tmp, None)
+        _, _, ok = G.gate_manifest(self.tmp, roster, self.bdir, require_baseline=False)
+        self.assertEqual(ok, [])                       # default: liveness-only pass
+        _, _, blocked = G.gate_manifest(self.tmp, roster, self.bdir, require_baseline=True)
+        self.assertEqual([f[0] for f in blocked], ["M/a"])
 
 
 class MainExit(unittest.TestCase):

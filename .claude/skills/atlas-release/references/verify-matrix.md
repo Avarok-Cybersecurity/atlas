@@ -106,15 +106,21 @@ The per-model bars (constants at the top of the script, chosen up front):
 - **codegen** — the fibonacci exec smoke PASS.
 - **tools** — at least one real PASS, **or** all `N/A` (known-gap parser). An
   all-WARN/FAIL result on a supported parser fails.
-- **tps** — mean > 0 (the server produced tokens, not errors).
+- **tps** — liveness (mean > 0) **plus** a regression bar: if a blessed
+  `tests/baselines/<label>.json` exists, a run > `TPS_TOLERANCE` (10%) below it
+  fails; without a baseline it's liveness-only (loud note) unless
+  `--require-baselines`. Refresh deliberately: `gate_results.py --update-baselines`
+  writes `{"tps": avg}` per label, then review + commit the diff. (Baseline-snapshot
+  approach proposed by @Sujimoshi in #253; folded into the gate here to keep one
+  roster/SSOT rather than a parallel suite.)
 
 Validated against fixtures (full-pass / planned-but-missing / below-bar /
-known-gap-all-N/A) in `tests/test_gate_results.py`. Run order for
-`/atlas-release gate`:
+known-gap-all-N/A / tps-regression / no-baseline / require-baselines) in
+`tests/test_gate_results.py` (23 tests). Run order for `/atlas-release gate`:
 ```bash
 ATLAS_IMAGE=<tag> python3 tests/run_all_models.py               # boots + probes matrix -> *.json + _manifest.json
 python3 scripts/test_coherence.py --url http://localhost:8888   # leak/determinism/tools, exit 1 on fail
-python3 tests/gate_results.py                                   # coverage-enforcing verdict, exit 0/1
+python3 tests/gate_results.py                                   # coverage + regression verdict, exit 0/1
 ```
 All three green = shippable. Record the verdict + the results table next to the
 image tag (`docs/releases/<sha>.md`). **A gate with an unrecorded number is not a
