@@ -101,14 +101,43 @@ pub fn sample_with_params_seeded(
             .unwrap_or(0);
     }
 
-    // ── 3. Sort descending + top-k ──
-    logits.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    if top_k > 0 && top_k < logits.len() {
+    // ── 3. Rank-dependent filtering (top-k / min-p / top-p) ──
+    // These need descending order — but a full O(n·log n) sort of the whole
+    // ~248K vocab every token is wasteful when top_k caps survivors at a small
+    // k (the model default here is top_k=20; a full sort was ~2.3ms/tok). Use
+    // an O(n) quickselect to isolate the top-k, then sort only those k. Pure
+    // temperature sampling (no top_k/top_p/min_p) needs no ordering at all —
+    // the multinomial draw below is order-independent — so skip sorting.
+    let cmp_desc =
+        |a: &(u32, f32), b: &(u32, f32)| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal);
+    let sorted = if top_k > 0 && top_k < logits.len() {
+        // Quickselect the top-k into [0, top_k) (O(n)), drop the rest, then
+        // sort just the k survivors (O(k·log k)). Identical result to
+        // full-sort-then-truncate; min-p/top-p below run over these k.
+        logits.select_nth_unstable_by(top_k, cmp_desc);
         logits.truncate(top_k);
-    }
+        logits.sort_unstable_by(cmp_desc);
+        true
+    } else if min_p > 0.0 || top_p < 1.0 {
+        // No top-k cap, but min-p/top-p still need full descending order.
+        logits.sort_unstable_by(cmp_desc);
+        true
+    } else {
+        false
+    };
 
     // ── 4. Softmax ──
-    let max_val = logits[0].1;
+    // `sorted` ⇒ logits[0] is the max; otherwise reduce for it. min_p/top_p
+    // below are only reachable when `sorted` is true, so their reliance on
+    // descending order still holds.
+    let max_val = if sorted {
+        logits[0].1
+    } else {
+        logits
+            .iter()
+            .map(|&(_, v)| v)
+            .fold(f32::NEG_INFINITY, f32::max)
+    };
     let mut probs: Vec<(u32, f32)> = logits
         .iter()
         .map(|&(idx, logit)| (idx, (logit - max_val).exp()))
