@@ -287,6 +287,7 @@ export const roadmap = {
     {
       title: 'AMD Strix Halo',
       status: 'In bring up',
+      gift: true,
       body: 'Native gfx1151 through SCALE. Serving Qwen at NVFP4 quality on a branch and stabilizing CI.',
       cta: 'PR #187',
       url: strixPrUrl
