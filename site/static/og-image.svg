@@ -1,20 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif">
-  <!-- Background matches the site `bg` token -->
-  <rect width="1200" height="630" fill="#0a0c10"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <!-- warm workshop / daylight -->
+  <rect width="1200" height="630" fill="#f4f0e8"/>
+  <rect width="1200" height="8" fill="#b5622f"/>
 
-  <!-- Three chevrons (same colors as logo.svg / favicon.svg) -->
-  <g fill="none" stroke-width="44" stroke-linecap="round" stroke-linejoin="round" transform="translate(110 165)">
-    <polyline points="0,0 160,150 0,300" stroke="#BE9DF8"/>
-    <polyline points="135,0 295,150 135,300" stroke="#49C3DB"/>
-    <polyline points="270,0 430,150 270,300" stroke="#12B981"/>
+  <!-- chevron mark -->
+  <g fill="none" stroke-width="34" stroke-linecap="round" stroke-linejoin="round" transform="translate(96 96)">
+    <polyline points="0,0 122,112 0,224" stroke="#BE9DF8"/>
+    <polyline points="102,0 224,112 102,224" stroke="#49C3DB"/>
+    <polyline points="204,0 326,112 204,224" stroke="#12B981"/>
   </g>
+  <text x="450" y="292" fill="#1a1815" font-size="150" font-weight="850" letter-spacing="-6">Atlas</text>
 
-  <!-- Wordmark — large -->
-  <text x="630" y="320" fill="#E6E8EC" font-size="160" font-weight="700" letter-spacing="-2">Atlas</text>
+  <!-- tagline -->
+  <text x="98" y="430" fill="#1a1815" font-size="58" font-weight="700" letter-spacing="-1">Pure Rust inference, tuned for</text>
+  <text x="98" y="500" fill="#b5622f" font-size="58" font-weight="800" letter-spacing="-1">the machine on your desk.</text>
 
-  <!-- Subtitle -->
-  <text x="632" y="395" fill="#9397A0" font-size="46" font-weight="500" letter-spacing="2">INFERENCE ENGINE</text>
-
-  <!-- Tagline -->
-  <text x="634" y="475" fill="#7c3aed" font-size="34" font-weight="400">Pure Rust LLM Inference</text>
+  <!-- footer line -->
+  <text x="98" y="576" fill="#8f887a" font-size="30" font-weight="600" font-family="ui-monospace, 'SF Mono', Menlo, monospace">atlasinference.io</text>
+  <text x="1102" y="576" fill="#3b7a50" font-size="30" font-weight="700" text-anchor="end" font-family="ui-monospace, 'SF Mono', Menlo, monospace">verified on DGX Spark · GB10</text>
 </svg>
