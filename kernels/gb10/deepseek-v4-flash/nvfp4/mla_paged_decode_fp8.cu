@@ -17,7 +17,16 @@
 #define BC 4
 #define KV_LORA_DIM 512
 #define ROPE_DIM 64
-#define MLA_CACHE_DIM 576  // KV_LORA_DIM + ROPE_DIM
+#define MLA_CACHE_DIM 576  // raw paged cache token: KV_LORA_DIM(512) + ROPE_DIM(64)
+// 4b compressed pool block width = qk_nope_head_dim(448) + qk_rope_head_dim(64) = 512.
+// The compressor (cache_skip_v4) builds comp_k at hd_mla = nope+rope = 512 with rope
+// IN-PLACE at dims 448-511 (NOT the 512-575 tail). Prefill dots it over 0-511 (rope
+// included). Persist writes it contiguous at 512/block — decode MUST read at 512 stride.
+#define COMP_BLOCK_DIM 512
+
+// 4b diagnostic: per-arm online-softmax accumulator update (tracks each arm's
+// max-score + mass independently of the real combined path).
+#define ARM_UPD(M, S, sc) do { float _mn = fmaxf((M), (sc)); (S) = (S) * __expf((M) - _mn) + __expf((sc) - _mn); (M) = _mn; } while (0)
 
 // ---- Helpers ----------------------------------------------------------------
 
@@ -47,7 +56,11 @@ extern "C" __global__ void mla_paged_decode_fp8(
     const float k_scale,                             // FP8 scale for K
     const float v_scale,                             // FP8 scale for V
     const unsigned long long cache_stride_bytes,
-    const __nv_bfloat16* __restrict__ sinks          // [num_q_heads] per-head attn sink (s_aux); may be NULL
+    const unsigned int sliding_window,               // 0 = full; else attend only the last `sliding_window` positions
+    const __nv_bfloat16* __restrict__ sinks,         // [num_q_heads] per-head attn sink (s_aux); may be NULL
+    const unsigned char* __restrict__ comp_pool,     // 4b: flat FP8 compressed-KV pool [comp_block_count][576]; may be NULL
+    const unsigned int comp_block_count,             // 4b: # completed compressed blocks to attend; 0 = no compressed arm (ratio-0 layers)
+    const unsigned int diag_layer_idx                // 4b diag: this layer's index; gates the per-arm printf to one layer
 ) {
     const unsigned int q_head = blockIdx.x;
     const unsigned int seq_idx = blockIdx.y;
@@ -86,8 +99,13 @@ extern "C" __global__ void mla_paged_decode_fp8(
         q_reg[2*i+1] = __bfloat162float(__ushort_as_bfloat16((unsigned short)(v >> 16)));
     }
 
-    unsigned int chunk_size = (seq_len + NUM_WARPS - 1) / NUM_WARPS;
-    unsigned int my_start = warp_id * chunk_size;
+    // Sliding-window (DeepSeek-V4 decode, item 4a): attend only the last
+    // `sliding_window` raw positions. 0 = full. Chunk [kv_start, seq_len) across warps.
+    unsigned int kv_start = 0;
+    if (sliding_window > 0u && seq_len > sliding_window) kv_start = seq_len - sliding_window;
+    unsigned int win_len = seq_len - kv_start;
+    unsigned int chunk_size = (win_len + NUM_WARPS - 1) / NUM_WARPS;
+    unsigned int my_start = kv_start + warp_id * chunk_size;
     unsigned int my_end = my_start + chunk_size;
     if (my_end > seq_len) my_end = seq_len;
     if (my_start > seq_len) my_start = seq_len;
@@ -97,6 +115,9 @@ extern "C" __global__ void mla_paged_decode_fp8(
     float o_reg[VEC_BF16];
     #pragma unroll
     for (int i = 0; i < VEC_BF16; i++) o_reg[i] = 0.0f;
+    // 4b diagnostic: independent per-arm (max-score, mass). Does NOT feed o_reg.
+    float m_raw = -1e30f, s_raw = 0.0f, m_comp = -1e30f, s_comp = 0.0f;
+    int argmax_pos = -1; // diag: absolute token position holding the raw max-score
 
     unsigned int pos = my_start;
     while (pos < my_end) {
@@ -154,6 +175,11 @@ extern "C" __global__ void mla_paged_decode_fp8(
                     dot += __shfl_xor_sync(0xffffffff, dot, offset);
                 
                 scores[b] = dot * inv_sqrt_d;
+            }
+            #pragma unroll
+            for (int b = 0; b < BC; b++) { // diag: raw arm + argmax pos
+                if (scores[b] > m_raw) argmax_pos = (int)(pos + processed + b);
+                ARM_UPD(m_raw, s_raw, scores[b]);
             }
 
             float v_vals[BC][VEC_BF16];
@@ -238,6 +264,8 @@ extern "C" __global__ void mla_paged_decode_fp8(
                 dot += __shfl_xor_sync(0xffffffff, dot, offset);
 
             float score = dot * inv_sqrt_d;
+            if (score > m_raw) argmax_pos = (int)(pos + processed); // diag: raw argmax pos
+            ARM_UPD(m_raw, s_raw, score); // diag: raw arm (tail)
             float m_new = fmaxf(m, score);
             float exp_old = __expf(m - m_new);
             float exp_new = __expf(score - m_new);
@@ -269,6 +297,69 @@ extern "C" __global__ void mla_paged_decode_fp8(
         }
 
         pos += batch_count;
+    }
+
+    // ── Compressed arm (4b): attend the flat compressed-KV pool ──
+    // comp_pool: [comp_block_count][576] FP8, block b at byte offset b*576. Same
+    // dtype/scale/layout (latent|rope) as the raw K, same Q, same inv_sqrt_d, and
+    // MLA K==V — so it folds into the SAME online-softmax (m,l,o_reg) as the raw
+    // window. Distributed across warps like the raw arm; the cross-warp reduction
+    // below then merges [windowed-raw ∪ compressed] into one softmax. Distant
+    // context lives ONLY here (compressed); recent tokens are double-represented
+    // (raw window + compressed) — that overlap is correct (matches prefill).
+    // comp_block_count == 0 (ratio-0 layers, or empty pool) → this loop is a no-op.
+    if (comp_pool != nullptr && comp_block_count > 0u) {
+        const unsigned int cchunk = (comp_block_count + NUM_WARPS - 1) / NUM_WARPS;
+        unsigned int cstart = warp_id * cchunk;
+        unsigned int cend = cstart + cchunk;
+        if (cend > comp_block_count) cend = comp_block_count;
+        for (unsigned int cb = cstart; cb < cend; cb++) {
+            const unsigned char* c_block = comp_pool + (unsigned long long)cb * COMP_BLOCK_DIM;
+
+            // Load K (== comp_k) as PURE LATENT over dims 0-511 — NO rope overwrite.
+            // The prefill oracle (prefill_attn_compressed.cu) dots the compressed arm
+            // over dims 0-511 only; comp_k's rope tail (512-575) is never touched
+            // there → prefill's compressed scoring is rope-FREE. The raw arm's rope
+            // overwrite is WRONG here: comp_k_rope is fixed at pos w*ratio while decode
+            // Q_rope grows with position → a rope·rope term that grows with relative
+            // distance, spiking the oldest blocks the moment they go compressed-only
+            // (the observed maxC spike). Match prefill: latent-only compressed dot.
+            float k_tmp[VEC_BF16];
+            const unsigned char* k_latent = c_block + kv_latent_offset;
+            #pragma unroll
+            for (int i = 0; i < VEC_BF16; i++)
+                k_tmp[i] = fp8e4m3_to_f32((__nv_fp8_storage_t)k_latent[i]) * k_scale;
+
+            // score = (Q · comp_k) / sqrt(d)
+            float dot = 0.0f;
+            #pragma unroll
+            for (int i = 0; i < VEC_BF16 && i + lane_id * VEC_BF16 < kv_latent_dim; i++)
+                dot += q_reg[i] * k_tmp[i];
+            #pragma unroll
+            for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
+                dot += __shfl_xor_sync(0xffffffff, dot, offset);
+            float score = dot * inv_sqrt_d;
+            ARM_UPD(m_comp, s_comp, score); // diag: compressed arm
+
+            float m_new = fmaxf(m, score);
+            float exp_old = __expf(m - m_new);
+            float exp_new = __expf(score - m_new);
+            l = l * exp_old + exp_new;
+
+            // Load V (== comp_k) as PURE LATENT over dims 0-511 — NO rope overwrite,
+            // mirroring the K side and prefill's compressed-arm output accumulation
+            // (prefill_attn_compressed accumulates Vc over dims 0-511 only).
+            float v_tmp[VEC_BF16];
+            const unsigned char* v_latent = c_block + kv_latent_offset;
+            #pragma unroll
+            for (int i = 0; i < VEC_BF16; i++)
+                v_tmp[i] = fp8e4m3_to_f32((__nv_fp8_storage_t)v_latent[i]) * v_scale;
+
+            #pragma unroll
+            for (int i = 0; i < VEC_BF16; i++)
+                o_reg[i] = o_reg[i] * exp_old + exp_new * v_tmp[i];
+            m = m_new;
+        }
     }
 
     // Reduce across warps
@@ -330,6 +421,39 @@ extern "C" __global__ void mla_paged_decode_fp8(
             unsigned int lo = (unsigned int)__bfloat16_as_ushort(__float2bfloat16(v0));
             unsigned int hi = (unsigned int)__bfloat16_as_ushort(__float2bfloat16(v1));
             o32[i] = lo | (hi << 16);
+        }
+    }
+
+    // ── 4b diagnostic: per-arm mass + max-score, one layer / head0 / seq0 ──
+    // Merges each arm's independent (max, mass) across warps and logs one line
+    // per decode step. Discriminates: compressed shareC drifting →0/1 with
+    // position = mis-scaled/mis-roped compressed arm; both shares stable with
+    // maxR/maxC creeping up together = uniform per-step sharpening (precision).
+    {
+        __shared__ float dg_mr[NUM_WARPS], dg_sr[NUM_WARPS], dg_mc[NUM_WARPS], dg_sc[NUM_WARPS];
+        __shared__ int dg_am[NUM_WARPS];
+        if (lane_id == 0) {
+            dg_mr[warp_id] = m_raw;  dg_sr[warp_id] = s_raw;
+            dg_mc[warp_id] = m_comp; dg_sc[warp_id] = s_comp;
+            dg_am[warp_id] = argmax_pos;
+        }
+        __syncthreads();
+        if (tid == 0 && blockIdx.x == 0 && blockIdx.y == 0 && diag_layer_idx == 20u) {
+            float MR = -1e30f, SR = 0.0f, MC = -1e30f, SC = 0.0f;
+            float bestMR = -1e30f; int am = -1;
+            for (int w = 0; w < NUM_WARPS; w++) {
+                float mn = fmaxf(MR, dg_mr[w]); SR = SR * __expf(MR - mn) + dg_sr[w] * __expf(dg_mr[w] - mn); MR = mn;
+                float mc = fmaxf(MC, dg_mc[w]); SC = SC * __expf(MC - mc) + dg_sc[w] * __expf(dg_mc[w] - mc); MC = mc;
+                if (dg_mr[w] > bestMR) { bestMR = dg_mr[w]; am = dg_am[w]; }
+            }
+            float gm = fmaxf(MR, MC);
+            float LR = SR * __expf(MR - gm), LC = SC * __expf(MC - gm);
+            float shareC = (LR + LC > 0.0f) ? LC / (LR + LC) : 0.0f;
+            // argR = absolute pos of the raw max; recR = how many tokens back from
+            // the newest (0 = attending the most recent token). Window kv_start = seq_len-128.
+            int recR = (am >= 0) ? (int)(seq_len - 1) - am : -1;
+            printf("V4ARM seq=%u maxR=%.3f maxC=%.3f massR=%.4e massC=%.4e shareC=%.4f argR=%d recR=%d kvstart=%d\n",
+                   seq_len, MR, MC, LR, LC, shareC, am, recR, (int)(seq_len > 128u ? seq_len - 128u : 0u));
         }
     }
 }

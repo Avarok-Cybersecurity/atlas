@@ -76,6 +76,19 @@ impl Qwen3AttentionLayer {
             }
         }
 
+        // Fable5 2026-07-05: mHC-input dump (normed + residual) at HOSTREF pos, L0/L21.
+        super::super::trait_impl::v4_mhc_dump(
+            ctx.gpu,
+            "prefill",
+            self.attn_layer_idx,
+            meta.positions,
+            n as usize,
+            normed,
+            ctx.buffers.residual(),
+            h as usize,
+            stream,
+        );
+
         // ── 1. Q latent → norm → expand ──
         let q_latent = ctx.buffers.ssm_ba();
         if use_tc {
@@ -400,6 +413,19 @@ impl Qwen3AttentionLayer {
             );
         }
 
+        // Fable5 2026-07-05: dump prefill-built Q (post-rope, head 0) at HOSTREF pos
+        // for decode-Q-vs-prefill-Q comparison.
+        super::super::trait_impl::v4_prefill_q_dump(
+            ctx.gpu,
+            self.attn_layer_idx,
+            meta.positions,
+            n as usize,
+            q_full,
+            (nq * hd_mla) as usize,
+            hd_mla as usize,
+            stream,
+        );
+
         // ── 4. Core attention ──
         // CSA layers (compress_ratios[L]=4): attend over [raw causal KV | compressed
         // windowed KV] + per-head sink (DeepSeek Sparse Attention). For short prompts
@@ -407,10 +433,18 @@ impl Qwen3AttentionLayer {
         // (layers 0-1) and HCA-short layers fall back to plain prefill attention.
         use spark_runtime::kernel_args::KernelLaunch;
         let attn_out = ctx.buffers.attn_output();
+        // DeepSeek-V4 sliding-window (port item 1): the RAW attention arm is windowed to
+        // the last V4_WINDOW keys on EVERY layer (config sliding_window=128). Distant
+        // context is carried by the compressed arm (CSA/HCA), never raw. Full-causal raw
+        // attention past the window is out-of-distribution → prompt-length salad. Windowing
+        // the raw arm; compression stays intact.
+        const V4_WINDOW: u32 = 128;
+        // Port item 3: admit BOTH CSA (ratio 4, overlap) AND HCA (ratio 128, non-overlap)
+        // layers to the compression path. The csa_compress kernel already branches on is_csa
+        // for stride/token-map/output-count; only the launch's is_csa flag must be passed
+        // through (was hardcoded 1). HCA layers were falling to windowed-raw-only (OOD).
         let csa = match mla.compressor {
-            Some(c) if c.is_csa && self.csa_compress_k.0 != 0 && (n / c.ratio as u32) > 0 => {
-                Some(c)
-            }
+            Some(c) if self.csa_compress_k.0 != 0 && (n / c.ratio as u32) > 0 => Some(c),
             _ => None,
         };
         let did_csa = if let Some(comp) = csa {
@@ -455,7 +489,7 @@ impl Qwen3AttentionLayer {
                 .arg_u32(ratio)
                 .arg_u32(hd_mla)
                 .arg_u32(proj_dim)
-                .arg_u32(1)
+                .arg_u32(if comp.is_csa { 1 } else { 0 })
                 .launch(stream)?;
             ops::rms_norm(
                 ctx.gpu,
@@ -520,6 +554,83 @@ impl Qwen3AttentionLayer {
                 hd_mla,
                 stream,
             )?;
+            // ── 4b increment-1: persist prefill's compressed blocks (FP8) ──
+            // comp_k is now final (rope'd, bf16). Quantize the n_win blocks to
+            // FP8-E4M3 into the layer's persistent flat pool (blocks [0, n_win))
+            // so decode reads raw + compressed arms at ONE dtype/scale (single
+            // online softmax). Was ephemeral scratch (moe_output), discarded.
+            // No serve behavior change yet — written, not yet read by decode.
+            // V4 fp8-KV uses static k_scale=1.0 (fp8_calibration off) → the raw
+            // arm's write (reshape_and_cache_fp8, scale 1.0) is a plain e4m3 cast,
+            // which bf16_to_fp8 matches exactly. If V4 ever calibrates (scale!=1.0)
+            // this needs a scale-aware cast — guarded below.
+            let (k_scale, _v_scale) = self.effective_fp8_scales();
+            debug_assert!(
+                (k_scale - 1.0).abs() < 1e-6,
+                "V4 compressed-pool persist assumes k_scale=1.0 (got {k_scale}); add scale-aware cast"
+            );
+            let n_elems = (n_win * hd_mla) as usize; // hd_mla=576 even → even (bf16_to_fp8 req.)
+            debug_assert!(
+                (n_win as usize) <= comp.pool_blocks,
+                "V4 compressed pool overflow: n_win={n_win} > pool_blocks={}",
+                comp.pool_blocks
+            );
+            ops::bf16_to_fp8(ctx.gpu, self.bf16_to_fp8_k, comp_k, comp.pool, n_elems as u32, stream)?;
+            // Record how many compressed blocks prefill wrote → decode's compressed
+            // arm attends exactly [0, n_win). inc-2: single-shot prefill, blocks at
+            // pool offset 0, no decode-time append. (Chunked prefill would need an
+            // offset + accumulate — an inc-3 concern alongside decode-append.)
+            self.v4_comp_pool_filled
+                .store(n_win, std::sync::atomic::Ordering::Relaxed);
+            // Dump-diff validation (env-gated): dequant the fp8 pool on host and
+            // compare to the bf16 comp_k it was quantized from. Byte-equality is
+            // meaningless post-quant; fidelity (cosine + max-abs-err within e4m3
+            // tolerance) is the real question — it proves decode will read a
+            // faithful comp_k, plus the size/offset/alloc are correct (no OOB).
+            if std::env::var("ATLAS_V4_POOL_DIFF").is_ok() {
+                ctx.gpu.synchronize(stream)?;
+                let e4m3 = |b: u8| -> f32 {
+                    let s = if b & 0x80 != 0 { -1.0f32 } else { 1.0f32 };
+                    let e = ((b >> 3) & 0x0F) as i32;
+                    let m = (b & 0x07) as f32;
+                    if e == 0 {
+                        s * m * 2f32.powi(-9) // subnormal: 2^(1-7-3)
+                    } else if e == 0x0F && (b & 0x07) == 0x07 {
+                        f32::NAN // e4m3 reserves 0x7F/0xFF for NaN (no inf)
+                    } else {
+                        s * (1.0 + m / 8.0) * 2f32.powi(e - 7)
+                    }
+                };
+                let mut src_bf16 = vec![0u8; n_elems * 2];
+                let mut dst_fp8 = vec![0u8; n_elems];
+                let ok = ctx.gpu.copy_d2h(comp_k, &mut src_bf16).is_ok()
+                    && ctx.gpu.copy_d2h(comp.pool, &mut dst_fp8).is_ok();
+                if ok {
+                    let (mut dot, mut na, mut nb, mut maxerr) = (0f64, 0f64, 0f64, 0f64);
+                    for i in 0..n_elems {
+                        let a = f32::from_bits(
+                            (u16::from_le_bytes([src_bf16[2 * i], src_bf16[2 * i + 1]]) as u32) << 16,
+                        ) as f64;
+                        let b = e4m3(dst_fp8[i]) as f64;
+                        dot += a * b;
+                        na += a * a;
+                        nb += b * b;
+                        maxerr = maxerr.max((a - b).abs());
+                    }
+                    let cos = if na > 0.0 && nb > 0.0 {
+                        dot / (na.sqrt() * nb.sqrt())
+                    } else {
+                        1.0
+                    };
+                    tracing::info!(
+                        "V4_POOL_DIFF L{} ratio={} n_win={} elems={} cos={:.6} maxerr={:.4} pool_blocks={}",
+                        self.attn_layer_idx, ratio, n_win, n_elems, cos, maxerr, comp.pool_blocks
+                    );
+                    debug_assert!(cos > 0.99, "V4 pool fp8 fidelity low on L{}: cos={cos:.6}", self.attn_layer_idx);
+                } else {
+                    tracing::warn!("V4_POOL_DIFF L{} copy_d2h failed", self.attn_layer_idx);
+                }
+            }
             KernelLaunch::new(ctx.gpu, self.prefill_attn_compressed_k)
                 .grid([nq, n.div_ceil(16), 1])
                 .block([128, 1, 1])
@@ -537,12 +648,54 @@ impl Qwen3AttentionLayer {
                 .arg_u32(hd_mla)
                 .arg_u32(n_win)
                 .arg_u32(ratio)
+                .arg_u32(V4_WINDOW)
                 .arg_f32(1.0f32 / (hd_mla as f32).sqrt())
                 .launch(stream)?;
             true
         } else {
             false
         };
+        // 4b inc-3: seed the decode-append ring from prefill's tail so decode-time
+        // appends are correct from the FIRST window — mirrors the reference
+        // Compressor.forward(start_pos==0) kv_state seed (model.py:330-335):
+        //  - CSA overlap: prev_win = the last FULL window's normed-x (= the next
+        //    window's Ca half). Without it the first decode block's Ca is masked →
+        //    one wrong block attended for the rest of the sequence (the observed
+        //    early-loop regression).
+        //  - both CSA/HCA: the trailing partial-window (`remainder`) tokens seed the
+        //    ring's leading slots so decode COMPLETES that straddle window. HCA with
+        //    a prompt shorter than one window has n_win=0 and is gated OUT of the
+        //    compress branch above, yet still must seed here (else its window-0
+        //    decode append is built from an empty ring).
+        // Runs for EVERY compressor layer (uses mla.compressor directly, not the
+        // n/ratio-gated `csa`). Reset here = the per-sequence clean start.
+        if let Some(comp) = mla.compressor.as_ref() {
+            use std::sync::atomic::Ordering::Relaxed;
+            let cratio = comp.ratio as u32;
+            let cnwin = n / cratio;
+            let crem = n % cratio;
+            let hbytes = h as usize * 2;
+            self.v4_decode_started.store(false, Relaxed);
+            if comp.is_csa && cnwin > 0 {
+                ctx.gpu.copy_d2d_async(
+                    normed.offset(((cnwin - 1) * cratio) as usize * hbytes),
+                    comp.prev_win,
+                    cratio as usize * hbytes,
+                    stream,
+                )?;
+                self.v4_comp_prev_valid.store(true, Relaxed);
+            } else {
+                self.v4_comp_prev_valid.store(false, Relaxed);
+            }
+            if crem > 0 {
+                ctx.gpu.copy_d2d_async(
+                    normed.offset((cnwin * cratio) as usize * hbytes),
+                    comp.ring,
+                    crem as usize * hbytes,
+                    stream,
+                )?;
+            }
+        }
         if !did_csa {
             // V4 full-attention (non-CSA) is always HDIM=512 → the 512 kernel.
             // MLA: V==K (k_out carries the rope tail; v_out is the plain latent).
@@ -562,7 +715,7 @@ impl Qwen3AttentionLayer {
                 hd_mla,
                 1.0f32 / (hd_mla as f32).sqrt(),
                 true,
-                0,
+                V4_WINDOW,
                 mla.attn_sink,
                 stream,
             )
@@ -672,6 +825,21 @@ impl Qwen3AttentionLayer {
         ctx.gpu
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: write_kv_cache sync failed: {e}"))?;
+        // Fable5 write-path A/B (2026-07-05): dump the 576 cache line at the
+        // ATLAS_V4_CACHEDUMP_POS position (prefill writer).
+        super::super::trait_impl::v4_cache_dump(
+            ctx.gpu,
+            kv_cache,
+            self.attn_layer_idx,
+            meta.positions,
+            n as usize,
+            k_cache_assembled,
+            mla_cache_dim as usize,
+            meta.block_table,
+            kv_cache.block_size() as u32,
+            "prefill",
+            stream,
+        );
 
         // ── 6. Grouped low-rank O projection (block-diagonal wo_a → wo_b) ──
         // wo_a is block-diagonal over o_groups (DeepseekV4GroupedLinear); see

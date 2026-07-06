@@ -152,6 +152,10 @@ impl Qwen3AttentionLayer {
                     eps,
                     bs,
                     stream,
+                    // Batched / MTP-verify path: skip the inc-3 compressed-pool
+                    // append (a shared per-layer position counter can't track
+                    // interleaved verify tokens) → frozen inc-2 pool here.
+                    pos: None,
                 };
                 let o_v4 = self.attention_forward_v4(kv_cache, &ctx_i, &args)?;
                 // `attention_forward_v4` writes its O projection into the

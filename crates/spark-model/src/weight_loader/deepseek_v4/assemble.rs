@@ -287,6 +287,36 @@ pub fn assemble_layer(
             // compressor.norm is a STANDARD RMSNorm → subtract 1 for the offset kernel.
             let norm = dense_minus_one(store, &format!("{cp}.norm.weight"), gpu)?;
             let ape = store.get(&format!("{cp}.ape"))?.ptr;
+            // 4b: allocate the persistent flat compressed-KV pool for this layer.
+            // Sized to the full context (max_position_embeddings // ratio blocks)
+            // so decode never overflows; each block is one hd_mla-wide FP8-E4M3
+            // comp_k. FP8 (1 byte/elem) matches the raw KV arm's dtype/scale so the
+            // decode kernel reads both arms at one scale (single online softmax).
+            // ponytail: sized from model max_pos, not the runtime --max-seq-len;
+            // tighten to the KV budget if the ~3.3GB CSA-layer total ever matters.
+            // Block width = qk_nope_head_dim + qk_rope_head_dim (= 448+64 = 512), the
+            // width cache_skip_v4 builds comp_k at (rope in-place at 448-511). NOT
+            // kv_lora_rank+rope (576, the RAW cache token) — the compressed pool and
+            // the decode compressed-arm read must both use 512, or blocks ≥1 misalign.
+            let hd_mla = config.qk_nope_head_dim + config.qk_rope_head_dim;
+            let pool_blocks = config.max_position_embeddings.div_ceil(ratio);
+            let pool = gpu.alloc(pool_blocks * hd_mla)?;
+            gpu.memset(pool, 0, pool_blocks * hd_mla)?;
+            // 4b inc-3: decode-time normed-x rings (BF16, 2 bytes/elem). `ring`
+            // holds the current window's `ratio` tokens; CSA also keeps the
+            // previous window (`prev_win`) + a 2×ratio concat stage for the
+            // overlap. HCA has no overlap → NULL prev_win/stage. Sizes are tiny
+            // (HCA r=128,h≈4096 → 1 MB ring/layer; CSA r=4 → ~kB).
+            let h = config.hidden_size;
+            let ring = gpu.alloc(ratio * h * 2)?;
+            let (prev_win, stage) = if is_csa {
+                (gpu.alloc(ratio * h * 2)?, gpu.alloc(2 * ratio * h * 2)?)
+            } else {
+                (
+                    spark_runtime::gpu::DevicePtr::NULL,
+                    spark_runtime::gpu::DevicePtr::NULL,
+                )
+            };
             Some(CompressorWeights {
                 wkv,
                 wgate,
@@ -295,6 +325,11 @@ pub fn assemble_layer(
                 ratio,
                 proj_dim,
                 is_csa,
+                pool,
+                pool_blocks,
+                ring,
+                prev_win,
+                stage,
             })
         } else {
             None

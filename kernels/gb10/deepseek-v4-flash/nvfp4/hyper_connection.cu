@@ -165,6 +165,10 @@ extern "C" __global__ void hc_pre(
         // is non-expansive (eigenvalue == 1) regardless of logit magnitude — the
         // manifold constraint the kernel's name promises. Matches the reference,
         // which likewise ends its Sinkhorn on a column normalization.
+        // NOTE (2026-07-05): dropping this to match the reference's eps-ending
+        // Sinkhorn was A/B-tested (portv4b11) and REGRESSED coherence onset
+        // (~150→~90 tok) — the extra projection compensates for another mHC
+        // deviation, so it stays. eps-Sinkhorn is NOT the ~150 base-degrade lever.
         for (unsigned int j = 0; j < hc; ++j) {
             float c = 0.f;
             for (unsigned int i = 0; i < hc; ++i) c += comb[i * hc + j];

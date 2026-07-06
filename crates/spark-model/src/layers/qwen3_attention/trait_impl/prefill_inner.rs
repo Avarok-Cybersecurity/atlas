@@ -495,6 +495,18 @@ impl Qwen3AttentionLayer {
         let diag_this = self.attn_layer_idx == 0 || diag_all;
 
         if is_first_layer {
+            // Fable5 2026-07-05: dump token ID + hidden (embedding, pre-expand) at HOSTREF pos.
+            super::v4_hidden_dump(
+                ctx.gpu,
+                "prefill",
+                self.attn_layer_idx,
+                seq_len_start,
+                num_tokens,
+                ctx.buffers.token_ids(),
+                hidden,
+                h,
+                stream,
+            );
             ops::hc_expand(
                 ctx.gpu,
                 self.hc_expand_k,

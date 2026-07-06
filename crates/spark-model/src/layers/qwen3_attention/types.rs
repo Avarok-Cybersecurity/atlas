@@ -102,6 +102,37 @@ pub struct CompressorWeights {
     pub proj_dim: usize,
     /// true = CSA (2×ratio overlap window); false = HCA (single window).
     pub is_csa: bool,
+    /// 4b: persistent flat compressed-KV pool (decode reads it; inc-3 appends).
+    /// Layout `[pool_blocks × hd_mla]` FP8-E4M3, each block = one rope'd `comp_k`
+    /// entry quantized at the raw KV arm's scale (k_scale=1.0 for V4) so decode
+    /// reads raw+compressed at one dtype/scale (single online softmax). Flat
+    /// per-seq (V4 serves max_batch=1), NOT paged — mirrors the reference
+    /// `Compressor.kv_cache` contiguous buffer so `block_idx = pos/ratio` matches
+    /// prefill's index set exactly (no ring, no block-table remap).
+    /// Prefill fills blocks `[0, n_win)`; decode appends after.
+    pub pool: spark_runtime::gpu::DevicePtr,
+    /// Capacity in compressed blocks = `max_position_embeddings.div_ceil(ratio)`.
+    pub pool_blocks: usize,
+    /// 4b inc-3: persistent decode-time normed-x ring `[ratio × hidden]` BF16.
+    /// Each decode token's compressor input (`normed`, the layer-input RMSNorm
+    /// output — the SAME tensor prefill's `cache_skip_v4` feeds `wkv`/`wgate`) is
+    /// written to slot `pos % ratio`. At a window boundary the ring holds the
+    /// `ratio` tokens of the just-completed window in order, and decode reruns the
+    /// prefill compress pipeline over it to append one pool block. BF16 (not FP8):
+    /// quantize only at the pool write, so decode's compressor input matches
+    /// prefill's bit-for-bit (fp8-ing the input would add a stage prefill never
+    /// sees and make the golden-vector gate uninterpretable).
+    pub ring: spark_runtime::gpu::DevicePtr,
+    /// 4b inc-3 (CSA only): previous completed window's normed-x `[ratio × hidden]`
+    /// BF16. CSA reads a 2×ratio overlap (prev window's Ca + current window's Cb);
+    /// after each append the ring is copied here to feed the next window's Ca.
+    /// `DevicePtr::NULL` for HCA (no overlap). The first decode window has no valid
+    /// prev (it would be a prefill window absent from the decode ring) → Ca masked.
+    pub prev_win: spark_runtime::gpu::DevicePtr,
+    /// 4b inc-3 (CSA only): concat staging `[2×ratio × hidden]` BF16 = prev_win ‖
+    /// ring, the 2×ratio-token input the CSA compress kernel indexes for one
+    /// overlapped window. `DevicePtr::NULL` for HCA.
+    pub stage: spark_runtime::gpu::DevicePtr,
 }
 
 /// Per-block Manifold-Constrained Hyper-Connection (mHC) parameters for one
@@ -367,6 +398,22 @@ pub struct Qwen3AttentionLayer {
     pub(super) csa_compress_k: KernelHandle,
     /// DeepSeek-V4 CSA prefill attention over [raw | compressed] KV + sink.
     pub(super) prefill_attn_compressed_k: KernelHandle,
+    /// 4b: # compressed blocks prefill wrote to `mla.compressor.pool` for the
+    /// active sequence (= prefill_len / ratio). Decode's compressed arm attends
+    /// blocks `[0, this)`. AtomicU32 for interior mutability under prefill's
+    /// `&self`; V4 serves max_batch=1 so one counter suffices (inc-3: per-seq
+    /// tracking + decode-time append will grow this each boundary crossing).
+    pub(super) v4_comp_pool_filled: std::sync::atomic::AtomicU32,
+    /// 4b inc-3 decode-append state (V4 serves max_batch=1 → scalar per layer).
+    /// `prev_valid`: the CSA `prev_win` ring holds a real previous decode window
+    /// (false until the first decode append, and reset each prefill) — when false
+    /// the CSA append masks Ca (window-0 semantics). `decode_started`/`first_pos`:
+    /// the absolute position of the first decode token this sequence, used to skip
+    /// any prefill/decode straddle window whose ring slots aren't all decode-written
+    /// (that one block is left as prefill/zero — a documented seam, not corruption).
+    pub(super) v4_comp_prev_valid: std::sync::atomic::AtomicBool,
+    pub(super) v4_decode_started: std::sync::atomic::AtomicBool,
+    pub(super) v4_decode_first_pos: std::sync::atomic::AtomicU32,
     /// HDIM=512 paged prefill (BF16 KV) for Gemma-4 chunked long-context prefill
     pub(super) prefill_attn_paged_512_k: KernelHandle,
     pub(super) prefill_attn_64_k: KernelHandle,
