@@ -1,0 +1,11 @@
+# Atlas Inference
+
+Pure Rust + CUDA LLM inference engine, hand-tuned for prosumer AI machines (NVIDIA DGX Spark / GB10 today, AMD Strix Halo in bring-up).
+
+## Links
+
+- Repo: https://github.com/Avarok-Cybersecurity/atlas
+- Deployment guide: https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md
+- Recipes (model SSOT): https://github.com/Avarok-Cybersecurity/atlas-recipes
+- Discord: https://discord.gg/6vDbKaKrKD
+- Site: https://atlasinference.io

@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "generate": "node scripts/gen-models.mjs && node scripts/gen-benchmarks.mjs && node scripts/gen-stars.mjs"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.10",

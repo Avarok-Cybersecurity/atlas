@@ -1,41 +1,33 @@
 <script>
   import Nav from '$lib/components/Nav.svelte';
+  import GiftBanner from '$lib/components/GiftBanner.svelte';
   import Hero from '$lib/components/Hero.svelte';
-  import Stats from '$lib/components/Stats.svelte';
-  import Speed from '$lib/components/Speed.svelte';
-  import ModelSlider from '$lib/components/ModelSlider.svelte';
-  import Roadmap from '$lib/components/Roadmap.svelte';
+  import Proof from '$lib/components/Proof.svelte';
+  import StarProof from '$lib/components/StarProof.svelte';
   import Community from '$lib/components/Community.svelte';
-  import Contact from '$lib/components/Contact.svelte';
-  import TryIt from '$lib/components/TryIt.svelte';
+  import Verified from '$lib/components/Verified.svelte';
+  import Hardware from '$lib/components/Hardware.svelte';
+  import ModelSlider from '$lib/components/ModelSlider.svelte';
+  import GetRunning from '$lib/components/GetRunning.svelte';
+  import Mission from '$lib/components/Mission.svelte';
+  import Contribute from '$lib/components/Contribute.svelte';
+  import Roadmap from '$lib/components/Roadmap.svelte';
+  import ReachOut from '$lib/components/ReachOut.svelte';
   import Footer from '$lib/components/Footer.svelte';
 </script>
 
-<svelte:head>
-  <title>Atlas Inference Engine</title>
-  {@html `<script type="application/ld+json">${JSON.stringify({
-    '@context': 'https://schema.org',
-    '@type': 'SoftwareApplication',
-    name: 'Atlas Inference Engine',
-    applicationCategory: 'DeveloperApplication',
-    operatingSystem: 'Linux',
-    description: 'Pure Rust LLM Inference.',
-    url: 'https://atlasinference.io/',
-    sameAs: [
-      'https://sparkrun.dev/runtimes/atlas/',
-      'https://github.com/Avarok-Cybersecurity/atlas-recipes',
-      'https://x.com/atlasinference'
-    ]
-  })}<\/script>`}
-</svelte:head>
-
 <Nav />
+<GiftBanner />
 <Hero />
-<Stats />
-<Speed />
-<ModelSlider />
-<TryIt />
+<Proof />
+<StarProof />
 <Community />
-<Contact />
+<Verified />
+<Hardware />
+<ModelSlider />
+<GetRunning />
+<Mission />
+<Contribute />
 <Roadmap />
+<ReachOut />
 <Footer />
