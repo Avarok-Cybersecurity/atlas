@@ -511,8 +511,18 @@ impl Qwen3AttentionLayer {
                 1,
                 mla_rope,
                 mla_rope,
-                mla.yarn_inv_freq,
-                super::super::helpers::yarn_rope_mscale(ctx.config),
+                // Sliding layers (compressor==None) = reference "main" rope:
+                // plain θ=10000, mscale=1 (no yarn). CSA/HCA keep θ=160000 yarn.
+                if mla.compressor.is_none() {
+                    mla.main_inv_freq
+                } else {
+                    mla.yarn_inv_freq
+                },
+                if mla.compressor.is_none() {
+                    1.0f32
+                } else {
+                    super::super::helpers::yarn_rope_mscale(ctx.config)
+                },
                 stream,
             )
         })?;
@@ -677,8 +687,19 @@ impl Qwen3AttentionLayer {
                 0, // no KV heads — de-rotate the query/output heads only
                 mla_rope,
                 mla_rope,
-                mla.yarn_inv_freq,
-                super::super::helpers::yarn_rope_mscale(ctx.config),
+                // MUST match the Q/K rope inv_freq for this layer type (rope-in
+                // == de-rotate-out), else the output is scrambled. Sliding =
+                // main θ=10000; CSA/HCA = θ=160000 yarn.
+                if mla.compressor.is_none() {
+                    mla.main_inv_freq
+                } else {
+                    mla.yarn_inv_freq
+                },
+                if mla.compressor.is_none() {
+                    1.0f32
+                } else {
+                    super::super::helpers::yarn_rope_mscale(ctx.config)
+                },
                 stream,
             )?;
             ops::mla_q_rope_writeback_batched(

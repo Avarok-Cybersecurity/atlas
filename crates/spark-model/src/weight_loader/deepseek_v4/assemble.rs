@@ -393,6 +393,7 @@ pub fn assemble_layer(
         w_uk_block_diag,
         w_uv_block_diag,
         yarn_inv_freq,
+        main_inv_freq: super::compute::main_inv_freq(config, gpu)?,
         q_lora_rank: config.q_lora_rank,
         kv_lora_rank: config.kv_lora_rank,
         o_lora_rank: config.o_lora_rank,

@@ -68,6 +68,12 @@ pub struct MlaWeights {
     /// Precomputed YaRN inv_freq table [rotary_dim/2] FP32 on GPU.
     /// NULL = use standard theta computation in the RoPE kernel.
     pub yarn_inv_freq: spark_runtime::gpu::DevicePtr,
+    /// Plain θ=10000 inv_freq [rotary_dim/2] FP32 on GPU, NO YaRN. Used for the
+    /// raw-arm Q/K rope on `sliding_attention` layers (compressor==None): the
+    /// reference gives sliding layers the "main" rope (θ=rope_theta=10000, no
+    /// yarn) while CSA/HCA layers use "compress" (θ=compress_rope_theta=160000
+    /// + yarn). Atlas previously applied the single yarn table to every layer.
+    pub main_inv_freq: spark_runtime::gpu::DevicePtr,
     pub q_lora_rank: usize,
     pub kv_lora_rank: usize,
     pub o_lora_rank: usize,
