@@ -55,17 +55,14 @@ function deriveQuant(stem) {
 }
 
 // --- main --------------------------------------------------------------------
-if (!existsSync(BASELINES_ROOT)) {
-  console.error(
-    `gen-benchmarks: baselines directory does not exist: ${BASELINES_ROOT}\n` +
-      `  Set ATLAS_BASELINES_ROOT or ensure tests/baselines/ is checked out.`
-  );
-  process.exit(1);
-}
-
-const files = readdirSync(BASELINES_ROOT)
-  .filter((f) => f.endsWith('.json'))
-  .sort();
+// A missing OR empty tests/baselines/ is the EXPECTED "pending" state (before
+// the first gate run, or on a checkout that does not carry the dir). Never a
+// build failure — the receipt simply renders its submission-pending panel.
+const files = existsSync(BASELINES_ROOT)
+  ? readdirSync(BASELINES_ROOT)
+      .filter((f) => f.endsWith('.json'))
+      .sort()
+  : [];
 
 let status;
 let entries = [];
