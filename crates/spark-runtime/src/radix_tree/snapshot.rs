@@ -25,6 +25,11 @@ pub(super) struct SnapshotEntry {
 pub(super) struct SsmSnapshotIndex {
     pub(super) entries: Vec<SnapshotEntry>,
     pub(super) access_counter: u64,
+    /// Session of the most recent `lookup` — the live conversation. Its
+    /// DEEPEST snapshot is the one its next warm turn will restore from, so
+    /// `evict_lru` protects it (ATLAS_SSM_TAIL_PROTECT). Tracks the running
+    /// tip: recomputed each eviction from `token_count`, never a pinned slot.
+    last_lookup_session: u64,
 }
 
 impl SsmSnapshotIndex {
@@ -32,6 +37,7 @@ impl SsmSnapshotIndex {
         Self {
             entries: Vec::new(),
             access_counter: 0,
+            last_lookup_session: 0,
         }
     }
 
@@ -72,6 +78,10 @@ impl SsmSnapshotIndex {
         matched_tokens: usize,
         session_hash: u64,
     ) -> Option<(usize, usize)> {
+        // Track the live conversation so eviction can protect its deep tail.
+        if session_hash != 0 {
+            self.last_lookup_session = session_hash;
+        }
         let mut best: Option<(usize, usize)> = None; // (snapshot_id, token_count)
         for entry in &mut self.entries {
             if entry.token_count > matched_tokens {
@@ -138,10 +148,36 @@ impl SsmSnapshotIndex {
                     *f = e.last_access;
                 }
             }
-            let mut victim_idx = 0;
+            // ATLAS_SSM_TAIL_PROTECT: exempt the live conversation's DEEPEST
+            // snapshot from eviction — its next warm turn restores from it.
+            // Without this the just-saved deep tail (hit_count=0, low escore) is
+            // evicted before the hot token-8192 anchor (self-reinforced hit_count),
+            // so warm restore falls back to 8192 and recomputes thousands of SSM
+            // tokens (measured 50-75% of restores, mean ~4400 tok, ~7.6s TTFT/turn).
+            // Recomputed each call (follows the deepening tip, never a pinned slot);
+            // exactly ONE entry, scoped to the active session, so any pool >=2 has a
+            // victim and never deadlocks. Correctness-safe: restore re-validates
+            // session_hash+prefix_hash+depth, so changing the victim cannot drift.
+            let protected_idx: Option<usize> = if self.last_lookup_session != 0
+                && std::env::var_os("ATLAS_SSM_TAIL_PROTECT").is_some()
+            {
+                self.entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.session_hash == self.last_lookup_session)
+                    .max_by_key(|(_, e)| e.token_count)
+                    .map(|(i, _)| i)
+            } else {
+                None
+            };
+            let n = self.entries.len();
+            let mut victim_idx = protected_idx.map_or(0, |p| if p == 0 && n > 1 { 1 } else { 0 });
             // (stalest session first, then lowest entry score within it)
             let mut victim_key = (u64::MAX, u64::MAX);
             for (i, e) in self.entries.iter().enumerate() {
+                if Some(i) == protected_idx && n > 1 {
+                    continue; // never evict the live session's deepest tail
+                }
                 let sf = *session_fresh.get(&e.session_hash).unwrap_or(&0);
                 let key = (sf, escore(e));
                 if key < victim_key {
