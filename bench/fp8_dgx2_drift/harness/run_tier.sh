@@ -209,7 +209,7 @@ fi
 # bit-identical token sequence for every run, enabling prefix-cache reuse,
 # and (b) removes tokenization noise that would otherwise confound the
 # A/B comparison between tiers.
-PROMPT='Please create a pure rust Axum project here in the current working directory. Just have a ping/pong endpoint. The server MUST bind to the port from the ATLAS_HARNESS_PORT env var (default 3001) — use `let port: u16 = std::env::var("ATLAS_HARNESS_PORT").unwrap_or_else(|_| "3001".to_string()).parse().unwrap();` then bind to `0.0.0.0:port`. Add tests, run them and prove all tests pass, then run the server and use curl to prove it works. Finally, tear down the server.'
+PROMPT='Please create a pure rust Axum project here in the current working directory. Just have a ping/pong endpoint. The server MUST bind to the port from the ATLAS_HARNESS_PORT env var (default 3001) — use `let port: u16 = std::env::var("ATLAS_HARNESS_PORT").unwrap_or_else(|_| "3001".to_string()).parse().unwrap();` then bind to `0.0.0.0:port`. Add tests, run them and prove all tests pass, then run the server and use curl to prove it works. Whenever you run the server or any long-lived process in the background, always start it detached with its output redirected to a file (for example `setsid cargo run > /tmp/server.log 2>&1 &`) so your shell never blocks waiting on it, and wrap any command that might hang, such as curl checks or process kills, in a short `timeout 15`. Finally, tear down the server by killing whatever is listening on its port rather than guessing the process name, always wrapped in a short timeout so it can never stall your shell, for example `timeout 5 fuser -k ${ATLAS_HARNESS_PORT:-3001}/tcp 2>/dev/null || true`.'
 
 # CLI prompt override: --prompt-file PATH (or `-` for stdin). Enables the
 # graduated-difficulty ladder to drive the harness via piped/file input.
@@ -293,6 +293,7 @@ run_one() {
     while :; do
       rm -rf "${TARGET}"; mkdir -p "${TARGET}"
       ATLAS_HARNESS_PORT=${HPORT:-3001} \
+        ATLAS_AGENT_SHELL=1 \
         env ${extra_env} \
         timeout "${OC_TIMEOUT:-360}" opencode run --dangerously-skip-permissions --dir "${TARGET}" --format json \
         "${PROMPT}" > "${OC_JSON}" 2> "${OC_ERR}" || true

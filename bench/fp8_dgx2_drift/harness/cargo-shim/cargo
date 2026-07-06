@@ -1,0 +1,15 @@
+#!/bin/bash
+# cargo shim (harness infra, #33 companion): opencode's bash tool blocks ~120s on a
+# backgrounded `cargo run` (long-lived server holds the tool's stdout pipe). Prepend
+# this dir to the AGENT's PATH so `cargo run` is force-detached and never hangs the
+# shell, regardless of how the model writes the command. Gated on ATLAS_AGENT_SHELL=1
+# (set only on the opencode process in run_tier.sh) so the SCORER's `cargo run
+# --release` (its own process-group management) and plain build/test pass through.
+REAL="${ATLAS_REAL_CARGO:-/workspace/.cargo/bin/cargo}"
+if [ "${1:-}" = "run" ] && [ -n "${ATLAS_AGENT_SHELL:-}" ]; then
+  shift
+  setsid "$REAL" run "$@" > /tmp/agent_server.log 2>&1 < /dev/null &
+  echo "[cargo-shim] 'cargo run' detached (pid $!), logs -> /tmp/agent_server.log"
+  exit 0
+fi
+exec "$REAL" "$@"
