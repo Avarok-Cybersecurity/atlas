@@ -442,18 +442,6 @@ impl Qwen3AttentionLayer {
 
         // 1. Expand single-stream embedding into hc_mult copies on first layer.
         if is_first_layer {
-            // Fable5 2026-07-05: dump token ID + hidden (embedding, pre-expand) at HOSTREF pos.
-            super::v4_hidden_dump(
-                ctx.gpu,
-                "decode",
-                self.attn_layer_idx,
-                seq_len.saturating_sub(1),
-                1,
-                ctx.buffers.token_ids(),
-                hidden,
-                h,
-                stream,
-            );
             ops::hc_expand(
                 ctx.gpu,
                 self.hc_expand_k,

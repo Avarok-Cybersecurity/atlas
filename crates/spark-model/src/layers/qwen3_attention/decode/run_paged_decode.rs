@@ -128,7 +128,6 @@ impl Qwen3AttentionLayer {
                     self.mla.as_ref().unwrap().attn_sink,
                     comp_pool,
                     comp_blocks,
-                    self.attn_layer_idx as u32, // 4b diag: gates the per-arm printf
                     stream,
                 )
             }

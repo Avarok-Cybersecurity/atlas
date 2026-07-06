@@ -76,19 +76,6 @@ impl Qwen3AttentionLayer {
             }
         }
 
-        // Fable5 2026-07-05: mHC-input dump (normed + residual) at HOSTREF pos, L0/L21.
-        super::super::trait_impl::v4_mhc_dump(
-            ctx.gpu,
-            "prefill",
-            self.attn_layer_idx,
-            meta.positions,
-            n as usize,
-            normed,
-            ctx.buffers.residual(),
-            h as usize,
-            stream,
-        );
-
         // ── 1. Q latent → norm → expand ──
         let q_latent = ctx.buffers.ssm_ba();
         if use_tc {
@@ -413,19 +400,6 @@ impl Qwen3AttentionLayer {
             );
         }
 
-        // Fable5 2026-07-05: dump prefill-built Q (post-rope, head 0) at HOSTREF pos
-        // for decode-Q-vs-prefill-Q comparison.
-        super::super::trait_impl::v4_prefill_q_dump(
-            ctx.gpu,
-            self.attn_layer_idx,
-            meta.positions,
-            n as usize,
-            q_full,
-            (nq * hd_mla) as usize,
-            hd_mla as usize,
-            stream,
-        );
-
         // ── 4. Core attention ──
         // CSA layers (compress_ratios[L]=4): attend over [raw causal KV | compressed
         // windowed KV] + per-head sink (DeepSeek Sparse Attention). For short prompts
@@ -575,62 +549,20 @@ impl Qwen3AttentionLayer {
                 "V4 compressed pool overflow: n_win={n_win} > pool_blocks={}",
                 comp.pool_blocks
             );
-            ops::bf16_to_fp8(ctx.gpu, self.bf16_to_fp8_k, comp_k, comp.pool, n_elems as u32, stream)?;
+            ops::bf16_to_fp8(
+                ctx.gpu,
+                self.bf16_to_fp8_k,
+                comp_k,
+                comp.pool,
+                n_elems as u32,
+                stream,
+            )?;
             // Record how many compressed blocks prefill wrote → decode's compressed
             // arm attends exactly [0, n_win). inc-2: single-shot prefill, blocks at
             // pool offset 0, no decode-time append. (Chunked prefill would need an
             // offset + accumulate — an inc-3 concern alongside decode-append.)
             self.v4_comp_pool_filled
                 .store(n_win, std::sync::atomic::Ordering::Relaxed);
-            // Dump-diff validation (env-gated): dequant the fp8 pool on host and
-            // compare to the bf16 comp_k it was quantized from. Byte-equality is
-            // meaningless post-quant; fidelity (cosine + max-abs-err within e4m3
-            // tolerance) is the real question — it proves decode will read a
-            // faithful comp_k, plus the size/offset/alloc are correct (no OOB).
-            if std::env::var("ATLAS_V4_POOL_DIFF").is_ok() {
-                ctx.gpu.synchronize(stream)?;
-                let e4m3 = |b: u8| -> f32 {
-                    let s = if b & 0x80 != 0 { -1.0f32 } else { 1.0f32 };
-                    let e = ((b >> 3) & 0x0F) as i32;
-                    let m = (b & 0x07) as f32;
-                    if e == 0 {
-                        s * m * 2f32.powi(-9) // subnormal: 2^(1-7-3)
-                    } else if e == 0x0F && (b & 0x07) == 0x07 {
-                        f32::NAN // e4m3 reserves 0x7F/0xFF for NaN (no inf)
-                    } else {
-                        s * (1.0 + m / 8.0) * 2f32.powi(e - 7)
-                    }
-                };
-                let mut src_bf16 = vec![0u8; n_elems * 2];
-                let mut dst_fp8 = vec![0u8; n_elems];
-                let ok = ctx.gpu.copy_d2h(comp_k, &mut src_bf16).is_ok()
-                    && ctx.gpu.copy_d2h(comp.pool, &mut dst_fp8).is_ok();
-                if ok {
-                    let (mut dot, mut na, mut nb, mut maxerr) = (0f64, 0f64, 0f64, 0f64);
-                    for i in 0..n_elems {
-                        let a = f32::from_bits(
-                            (u16::from_le_bytes([src_bf16[2 * i], src_bf16[2 * i + 1]]) as u32) << 16,
-                        ) as f64;
-                        let b = e4m3(dst_fp8[i]) as f64;
-                        dot += a * b;
-                        na += a * a;
-                        nb += b * b;
-                        maxerr = maxerr.max((a - b).abs());
-                    }
-                    let cos = if na > 0.0 && nb > 0.0 {
-                        dot / (na.sqrt() * nb.sqrt())
-                    } else {
-                        1.0
-                    };
-                    tracing::info!(
-                        "V4_POOL_DIFF L{} ratio={} n_win={} elems={} cos={:.6} maxerr={:.4} pool_blocks={}",
-                        self.attn_layer_idx, ratio, n_win, n_elems, cos, maxerr, comp.pool_blocks
-                    );
-                    debug_assert!(cos > 0.99, "V4 pool fp8 fidelity low on L{}: cos={cos:.6}", self.attn_layer_idx);
-                } else {
-                    tracing::warn!("V4_POOL_DIFF L{} copy_d2h failed", self.attn_layer_idx);
-                }
-            }
             KernelLaunch::new(ctx.gpu, self.prefill_attn_compressed_k)
                 .grid([nq, n.div_ceil(16), 1])
                 .block([128, 1, 1])
@@ -825,21 +757,6 @@ impl Qwen3AttentionLayer {
         ctx.gpu
             .synchronize(stream)
             .map_err(|e| anyhow::anyhow!("V4 attn: write_kv_cache sync failed: {e}"))?;
-        // Fable5 write-path A/B (2026-07-05): dump the 576 cache line at the
-        // ATLAS_V4_CACHEDUMP_POS position (prefill writer).
-        super::super::trait_impl::v4_cache_dump(
-            ctx.gpu,
-            kv_cache,
-            self.attn_layer_idx,
-            meta.positions,
-            n as usize,
-            k_cache_assembled,
-            mla_cache_dim as usize,
-            meta.block_table,
-            kv_cache.block_size() as u32,
-            "prefill",
-            stream,
-        );
 
         // ── 6. Grouped low-rank O projection (block-diagonal wo_a → wo_b) ──
         // wo_a is block-diagonal over o_groups (DeepseekV4GroupedLinear); see

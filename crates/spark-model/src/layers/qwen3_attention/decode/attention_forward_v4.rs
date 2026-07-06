@@ -71,19 +71,6 @@ impl Qwen3AttentionLayer {
             }};
         }
 
-        // Fable5 2026-07-05: mHC-input dump (normed + residual) at HOSTREF pos, L0/L21.
-        super::super::trait_impl::v4_mhc_dump(
-            ctx.gpu,
-            "decode",
-            self.attn_layer_idx,
-            meta.positions,
-            1,
-            normed,
-            ctx.buffers.residual(),
-            h as usize,
-            stream,
-        );
-
         // ── 4b inc-3: decode-time compressed-block append ──
         // Capture this token's compressor input (`normed`, the layer-input
         // RMSNorm output prefill's `cache_skip_v4` feeds `wkv`/`wgate`) into a
@@ -94,8 +81,11 @@ impl Qwen3AttentionLayer {
         // compute so the MoE scratch buffers (expert_up_out/…) are free, exactly
         // as prefill uses them. Single-sequence eager decode only: `pos` is None
         // on the batched/MTP path, and a captured graph can't re-run host logic.
-        if let (Some(pos), Some(comp)) = (pos, mla.compressor.as_ref()) {
-            if meta.num_seqs == 1 && !ctx.graph_capture {
+        if let (Some(pos), Some(comp)) = (pos, mla.compressor.as_ref())
+            && meta.num_seqs == 1
+            && !ctx.graph_capture
+        {
+            {
                 use std::sync::atomic::Ordering::Relaxed;
                 let ratio = comp.ratio as u32;
                 let proj_dim = comp.proj_dim as u32;
@@ -621,21 +611,6 @@ impl Qwen3AttentionLayer {
                 ctx.graph_capture,
             )
         })?;
-        // Fable5 write-path A/B (2026-07-05): dump the 576 cache line at the
-        // ATLAS_V4_CACHEDUMP_POS position (decode writer).
-        super::super::trait_impl::v4_cache_dump(
-            ctx.gpu,
-            kv_cache,
-            self.attn_layer_idx,
-            meta.positions,
-            1,
-            k_cache_assembled,
-            mla_cache_dim as usize,
-            meta.block_table,
-            kv_cache.block_size() as u32,
-            "decode",
-            stream,
-        );
 
         // ── Step 5: Paged decode attention ──
         let attn_out = ctx.buffers.attn_output();
@@ -660,22 +635,6 @@ impl Qwen3AttentionLayer {
                 stream,
             )
         })?;
-        // Fable5 discriminator #3 (2026-07-05): host-reference attention. Dump Q,
-        // raw kernel attn_out (pre-eq.26), FP8 keys, sink, scale at pos=ATLAS_V4_HOSTREF_POS.
-        super::super::trait_impl::v4_hostref_dump(
-            ctx.gpu,
-            kv_cache,
-            self.attn_layer_idx,
-            meta.positions,
-            q_out,
-            attn_out,
-            hd as usize,
-            meta.block_table,
-            bs as u32,
-            mla.attn_sink,
-            inv_sqrt_d,
-            stream,
-        );
         if diag_this {
             super::super::trait_impl::diag_norm(
                 ctx.gpu,

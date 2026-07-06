@@ -772,9 +772,8 @@ pub fn mla_paged_decode_fp8(
     num_seqs: u32,
     sliding_window: u32,
     sinks: DevicePtr,
-    comp_pool: DevicePtr,      // 4b: flat FP8 compressed-KV pool (NULL = no compressed arm)
-    comp_block_count: u32,     // 4b: # compressed blocks to attend (0 = no-op)
-    diag_layer_idx: u32,       // 4b diag: layer idx, gates the per-arm printf
+    comp_pool: DevicePtr, // 4b: flat FP8 compressed-KV pool (NULL = no compressed arm)
+    comp_block_count: u32, // 4b: # compressed blocks to attend (0 = no-op)
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
@@ -800,7 +799,6 @@ pub fn mla_paged_decode_fp8(
         .arg_ptr(sinks)
         .arg_ptr(comp_pool)
         .arg_u32(comp_block_count)
-        .arg_u32(diag_layer_idx)
         .launch(stream)
 }
 
