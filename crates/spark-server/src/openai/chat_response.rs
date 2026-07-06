@@ -136,7 +136,6 @@ impl ChatCompletionResponse {
                 message: ChatMessage {
                     role: "assistant".to_string(),
                     reasoning_content: None,
-                    reasoning: None,
                     annotations: extract_url_annotations(&content),
                     refusal: None,
                     content: Some(content),
@@ -168,7 +167,6 @@ impl ChatCompletionResponse {
                 message: ChatMessage {
                     role: "assistant".to_string(),
                     reasoning_content: None,
-                    reasoning: None,
                     annotations: content.as_deref().and_then(extract_url_annotations),
                     refusal: None,
                     content,
