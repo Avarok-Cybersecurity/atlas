@@ -427,6 +427,18 @@ impl Qwen3AttentionLayer {
         // layers to the compression path. The csa_compress kernel already branches on is_csa
         // for stride/token-map/output-count; only the launch's is_csa flag must be passed
         // through (was hardcoded 1). HCA layers were falling to windowed-raw-only (OOD).
+        //
+        // Per-request init of the compressed-block counter. `v4_comp_pool_filled`
+        // is serve-global and persists across requests; prefill only re-stores it
+        // inside the `(n / ratio) > 0` guard below. A sub-ratio prompt (n < ratio,
+        // e.g. ratio-128 HCA layers with a short prompt) therefore skips the store
+        // and inherits a prior request's value, causing decode to attend a stale
+        // compressed block from earlier traffic. Store this sequence's own block
+        // count (0 when sub-ratio) up front so requests never leak across each other.
+        if let Some(c) = mla.compressor.as_ref() {
+            self.v4_comp_pool_filled
+                .store(n / c.ratio as u32, std::sync::atomic::Ordering::Relaxed);
+        }
         let csa = match mla.compressor {
             Some(c) if self.csa_compress_k.0 != 0 && (n / c.ratio as u32) > 0 => Some(c),
             _ => None,
