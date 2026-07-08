@@ -27,7 +27,7 @@ jobs:
       run:
         working-directory: site
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install bun
         uses: oven-sh/setup-bun@v2
@@ -38,7 +38,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Checkout atlas-recipes (model SSOT)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: Avarok-Cybersecurity/atlas-recipes
           path: atlas-recipes-src
