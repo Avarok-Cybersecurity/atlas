@@ -330,7 +330,7 @@ impl TransformerModel {
             )?;
 
             // LM head for 2 tokens (GEMM: weights loaded once)
-            self.lm_head_batched(normed, k as u32, stream)?;
+            self.lm_head_batched(normed, k as u32, self.buffers.logits(), stream)?;
 
             // Argmax inside graph (fixed scratch addresses — graph-safe)
             let vocab = self.config.vocab_size;

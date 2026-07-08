@@ -67,14 +67,22 @@ effective_context = 24576
 # without the language-mixing/wandering side-effects of Qwen's
 # presence_penalty=1.5 (validated on Qwen3.6-35B-A3B opencode session
 # 2026-05-24). Top_p/top_k tracked from official model card.
+# 2026-07-04: rep_penalty 1.1->1.0 + dry_multiplier 0.5->0.0 in ALL presets,
+# syncing to the Qwen3.6-35B-A3B fix (2026-06-03, "rep_penalty is the
+# code-corruptor"; vLLM serves penalty-free greedy). The 27B was the
+# un-synced outlier: its tool-path 1.1/0.5 corrupted grammar-constrained
+# tool-call args even at temp 0 (penalties are applied before the grammar
+# mask, so they shift the argmax among legal JSON tokens — and tool-call
+# JSON legitimately repeats " { , and key names), regressing BFCL ST-995
+# non_live ~85->~76 vs the penalty-free 89.04 config.
 [sampling.thinking_text]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0
+dry_multiplier = 0.0
 
 [sampling.thinking_coding]
 temperature = 0.6
@@ -82,8 +90,8 @@ top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0
+dry_multiplier = 0.0
 
 [sampling.non_thinking]
 temperature = 0.7
@@ -91,8 +99,8 @@ top_p = 0.8
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0
+dry_multiplier = 0.0
 
 [sampling.tools]
 temperature = 0.6
@@ -100,8 +108,8 @@ top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0
+dry_multiplier = 0.0
 
 [behavior]
 # Content-loop watchdog enabled: dense Qwen3.6-27B has a known
@@ -121,6 +129,20 @@ thinking_in_tools = true
 # 2026-05-23 sweep: 512 → 2048 (project-wide reasoning headroom bump).
 max_thinking_budget = 2048
 default_num_drafts = 1
+# BF16 KV cache for long-context prefill (2026-06-21 prefill-32k study).
+# The 16 full-attention layers (head_dim=256, full_attention_interval=4)
+# dominate long-context prefill, and at depth they are KV-load-latency bound.
+# The FP8 paged-attn prefill kernel (inferspark_prefill_paged_fp8.cu) loads +
+# dequants KV SYNCHRONOUSLY (no cp.async pipelining); the BF16 kernel pipelines
+# KV tile loads via cp.async, hiding the latency. Measured on dgx1, cold 32k
+# c=1 prefill (Qwen3.6-27B-FP8): FP8 KV 435.8 tok/s vs BF16 KV 480.2 tok/s
+# (+10.2%); per-chunk gaps grow steeper for FP8 (8.9→11.5s) than BF16
+# (8.8→10.0s), confirming the unhidden FP8 KV-load latency. BF16 KV is also
+# higher quality (no FP8 KV quant drift on the large-magnitude deep-layer K/V)
+# and decode is unregressed (9.6 vs 9.7 tok/s @ d32768). Resolution rule 3 in
+# serve_phases/kv_cache.rs applies this when the recipe passes the CLI default
+# `--kv-cache-dtype fp8`; an explicit non-fp8 override still wins.
+default_kv_dtype = "bf16"
 
 # Upstream Qwen/Qwen3.6-27B reports `model_type = "qwen3_5"` in config.json.
 # Atlas's `parse_qwen3_5_config` (atlas-core/src/config.rs) rewrites this to

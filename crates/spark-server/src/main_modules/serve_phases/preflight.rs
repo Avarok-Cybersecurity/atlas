@@ -62,23 +62,9 @@ pub(crate) fn preflight_reserve(
     } else {
         args.max_seq_len
     };
-    // Mirror of the auto-clamp in resolve_prefill_budget (kv_cache.rs).
-    // See issue #15: when prefix caching + SSM snapshots are both on,
-    // single-chunk prefill produces no reachable intermediate snapshots.
-    let prefill_budget_pre = if !user_set_prefill_pre
-        && args.enable_prefix_caching
-        && args.ssm_checkpoint_interval > 0
-        && args.ssm_cache_slots > 0
-    {
-        let target = args.ssm_checkpoint_interval * args.block_size;
-        if prefill_budget_pre > target && target > 0 {
-            target
-        } else {
-            prefill_budget_pre
-        }
-    } else {
-        prefill_budget_pre
-    };
+    // Issue #15 auto-clamp removed (2026-07-02): snapshot reachability is
+    // handled by the tail-checkpoint split in `prefill_chunk_dispatch`, so
+    // the budget (and this arena-sizing mirror) stays at full chunk size.
     let max_batch_tokens_pre = prefill_budget_pre
         .max(spec_tokens_pre)
         .max(args.max_batch_size);
@@ -228,6 +214,10 @@ pub(crate) fn init_gpu_backend(
     );
     let total_mem = gpu.total_memory()?;
     let free_mem = gpu.free_memory()?;
+    // Baseline for self-relative KV budgeting: free memory now (post context +
+    // PTX modules, pre weights) minus free-at-build = this process's own
+    // footprint, co-tenants excluded. See gpu::baseline_free_bytes.
+    spark_runtime::gpu::set_baseline_free_bytes(free_mem);
     tracing::info!(
         "GPU {}: {:.1} GB total, {:.1} GB free",
         args.gpu_ordinal,
@@ -249,6 +239,7 @@ pub(crate) fn init_gpu_backend(
     );
     let total_mem = gpu.total_memory()?;
     let free_mem = gpu.free_memory()?;
+    spark_runtime::gpu::set_baseline_free_bytes(free_mem);
     tracing::info!(
         "Metal device {}: {:.1} GB total, {:.1} GB free",
         args.gpu_ordinal,

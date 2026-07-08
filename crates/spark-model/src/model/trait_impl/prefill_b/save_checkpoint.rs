@@ -23,13 +23,27 @@ impl TransformerModel {
         chunk_len: usize,
         stream: u64,
     ) -> Result<()> {
-        if self.ssm_checkpoint_interval == 0 || !self.ssm_snapshots.is_enabled() {
+        if !self.ssm_snapshots.is_enabled() {
             return Ok(());
         }
         let bs = kv_cache.block_size();
         let end_token = chunk_start + chunk_len;
         let end_block = end_token / bs;
-        if end_block == 0 || !end_block.is_multiple_of(self.ssm_checkpoint_interval) {
+        // Tail checkpoints (issue #15 follow-up): the last two block
+        // boundaries below the prompt end bracket the next turn's
+        // block-aligned radix match (divergence sits within the template's
+        // generation-only suffix, < block_size tokens before `total`), so a
+        // snapshot at each makes warm multi-turn restores work regardless of
+        // --ssm-checkpoint-interval. The final chunk is split at these
+        // boundaries by `prefill_chunk_dispatch`. Interval checkpoints
+        // additionally fire at chunk boundaries that are interval-block
+        // multiples (with full-size chunks that granularity is coarse — the
+        // tail checkpoints + leaf carry the warm path).
+        let tail = (tokens.len().saturating_sub(1) / bs) * bs;
+        let is_prompt_tail = end_token == tail || (tail >= bs && end_token == tail - bs);
+        let on_interval = self.ssm_checkpoint_interval > 0
+            && end_block.is_multiple_of(self.ssm_checkpoint_interval);
+        if end_block == 0 || !(is_prompt_tail || on_interval) {
             return Ok(());
         }
         // Stale-V cap (mirrors finalize_last): never checkpoint-cache a block

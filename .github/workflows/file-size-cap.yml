@@ -162,13 +162,22 @@ jobs:
             "crates/spark-server/src/scheduler/emit_step.rs"
             "crates/spark-server/src/scheduler/helpers.rs"
             "crates/spark-server/src/tool_parser/validation.rs"
-            # ── PR #169 (perf/qwen36-dense-ffn-tc-prefill) carry-over ──
-            # 519 LoC — dense-FFN forward. The tensor-core w4a16 prefill path
-            # adds transposed gate/up/down handles + a per-(dtype,phase) kernel
-            # dispatch macro; like the other kernel-dispatch files above, the
-            # launch sequence reads top-to-bottom and splitting fragments it.
-            # Clean split tracked as follow-up.
+            # ── PR #169 (perf/qwen36-dense-ffn-tc-prefill) carry-over,
+            # grown by PR #223 (perf/qwen36-27b-prefill-nvfp4) ──
+            # 1507 LoC — dense-FFN forward: multi-arm quantized-FFN dispatch
+            # (w4a16 t_m128 / int8 faith2 / Q4_K MMQ / NVFP4 W4A4 MMQ) under
+            # active A/B development across concurrent sessions; the per-arm
+            # launch sequences read top-to-bottom and a mid-flight split would
+            # conflict with in-progress work. Split scheduled post PR #223.
             "crates/spark-model/src/layers/dense_ffn.rs"
+            # ── PR #223 (perf/qwen36-27b-prefill-nvfp4) carry-over ──
+            # 1634 LoC — int8 W4A8 prefill GEMM microbench example: one
+            # sequential fn main (alloc → upload → launch → verify → time) whose
+            # host-reference checks mirror the kernel launch order step by step;
+            # splitting fragments that order (same rationale as the
+            # gdn_fla_e2e_gateb.rs example entry above). Dev-only harness, run
+            # manually on GB10.
+            "crates/spark-model/examples/int8_gemm_test.rs"
             # ── PR #202 (perf/vision-vit-perf) carry-over ──
             # 513 LoC — prefill phase-A (vision-embed prepare + single/batched
             # dispatch). The GEMM-based ViT perf work adds the co-dispatch
@@ -208,6 +217,36 @@ jobs:
             "crates/atlas-core/src/config.rs"
             "crates/spark-model/src/model/impl_b1.rs"
             "crates/spark-model/src/model/trait_impl/prefill_b/batch_kernel.rs"
+            # ── #203 (Holo/Ornith GB10 enablement) carry-over ──
+            # 549 LoC — prefill phase-A vision-slice base wiring + Holo
+            # set_vision_slice_base call sites; too many local bindings/closures
+            # to extract cleanly. Clean split tracked as follow-up.
+            "crates/spark-server/src/scheduler/prefill_a_step.rs"
+            # ── #214 (batched decode engine) carry-over ──
+            # 575 LoC — Qwen3.5 dense-checkpoint loader grew with the batched
+            # decode + mixed-precision/fused-FP8 expert branches. One linear
+            # load sequence read top-to-bottom; clean split tracked as follow-up.
+            "crates/spark-model/src/weight_loader/qwen35_dense.rs"
+            # 508 LoC — serve CLI arg surface grew with the batched-decode /
+            # max-batch-size + FP8-KV flags. Marginally over; back under 500 in
+            # the follow-on dense-FP8 PR. Clean split tracked as follow-up.
+            "crates/spark-server/src/cli/serve_args.rs"
+            # ── PR #229 (perf/qwen36-27b-prefill-nvfp4) carry-overs ──
+            # Three files inherited over-cap from main unchanged (grew on
+            # main between this branch's base and its main-merge; would fail
+            # on any fresh PR): 632 / 521 / 533 LoC. Clean splits tracked
+            # as follow-up.
+            "crates/spark-server/src/scheduler/sample_step.rs"
+            "crates/spark-server/src/tool_parser/tests/group_g_parallel.rs"
+            "crates/spark-server/src/api/chat_stream/tool_handlers.rs"
+            # 572 LoC — SSM batched-decode dispatcher grew with the
+            # native-FP8 NULL-QKVZ/out_proj dispatch fix (K=2/K=3 MTP-verify
+            # would deref a NULL QuantizedWeight on FP8-only builds). Single
+            # impl block, launch-order-critical like the qwen3_attention
+            # decode dispatchers above; conv/GDN halves were already
+            # extracted to trait_decode_batched_conv_gdn.rs. Clean split
+            # tracked as follow-up.
+            "crates/spark-model/src/layers/qwen3_ssm/trait_decode_batched.rs"
           )
 
           violations=0

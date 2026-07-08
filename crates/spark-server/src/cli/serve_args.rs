@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! `serve` subcommand arguments.
-//!
 //! Split out of `cli.rs` to keep each file under the 500-LoC cap; the
 //! struct is re-exported as `cli::ServeArgs` so call sites are unchanged.
-
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -307,11 +305,15 @@ pub struct ServeArgs {
     pub ssm_cache_slots: usize,
 
     /// Save SSM state snapshots at regular block boundaries during prefill.
-    /// When set to N > 0, a snapshot is saved every N blocks during chunked
-    /// prefill. On future prefix cache hits, the deepest intermediate snapshot
-    /// is restored, reducing SSM recomputation from the full prefix to just
-    /// the tokens between the checkpoint and the match point.
-    /// 0 = disabled (leaf-only snapshots). 256 = every 4096 tokens (block_size=16).
+    /// When set to N > 0, a snapshot is saved at every chunked-prefill chunk
+    /// boundary whose block index is a multiple of N. On future prefix cache
+    /// hits, the deepest intermediate snapshot is restored, reducing SSM
+    /// recomputation to the tokens between the checkpoint and the match point.
+    /// Independent of this interval, a tail checkpoint is always saved at the
+    /// prompt's last full-block boundary (plus a leaf snapshot at prompt end);
+    /// warm multi-turn restores hit the tail checkpoint. Chunk size is never
+    /// reduced to serve this interval.
+    /// 0 = tail + leaf snapshots only. 256 = every 4096 tokens (block_size=16).
     #[arg(long, default_value_t = 256)]
     pub ssm_checkpoint_interval: usize,
 
@@ -452,6 +454,19 @@ pub struct ServeArgs {
     /// Setting `ATLAS_FAST_LOAD=0` has the same effect.
     #[arg(long, default_value_t = false)]
     pub no_fast_load: bool,
+
+    /// Ask the fast loader to prefetch each buffered shard before per-tensor
+    /// reads. Useful on NFS-backed model stores with many small tensors per
+    /// shard, where normal kernel readahead may not keep up. Also enabled by
+    /// `ATLAS_FAST_LOAD_PREFETCH_SHARDS=1`.
+    #[arg(long, default_value_t = false)]
+    pub fast_load_prefetch_shards: bool,
+
+    /// Cap decoded vision input area before patching. 0 preserves the
+    /// model/default image preprocessor cap. Also settable with
+    /// `ATLAS_VISION_MAX_PIXELS`.
+    #[arg(long, default_value_t = 0)]
+    pub vision_max_pixels: usize,
 
     /// Address to bind the HTTP listener to. Defaults to `127.0.0.1` so a
     /// fresh install is reachable only from the local machine; pass

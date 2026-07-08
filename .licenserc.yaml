@@ -10,4 +10,7 @@ header:
   paths-ignore:
     - 'target/**'
     - 'vendor/**'
+    # Vendored llama.cpp/ggml CUDA MMQ sources (MIT-licensed upstream);
+    # third-party material keeps its original license — never stamp AGPL here.
+    - 'kernels/gb10/qwen3.6-27b/nvfp4/q4k_vendor/**'
   comment: on-failure

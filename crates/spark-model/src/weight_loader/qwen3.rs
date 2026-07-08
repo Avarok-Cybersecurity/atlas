@@ -422,7 +422,12 @@ impl ModelWeightLoader for Qwen3WeightLoader {
         Ok(layers)
     }
 
-    fn load_embedding(&self, store: &WeightStore, _config: &ModelConfig) -> Result<DenseWeight> {
+    fn load_embedding(
+        &self,
+        store: &WeightStore,
+        _config: &ModelConfig,
+        _gpu: &dyn GpuBackend,
+    ) -> Result<DenseWeight> {
         dense(store, "model.embed_tokens.weight")
     }
 
@@ -435,11 +440,11 @@ impl ModelWeightLoader for Qwen3WeightLoader {
         dense(store, "model.norm.weight")
     }
 
-    fn load_lm_head(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
+    fn load_lm_head(&self, store: &WeightStore, _config: &ModelConfig) -> Result<DenseWeight> {
         if store.contains("lm_head.weight") {
             dense(store, "lm_head.weight")
         } else {
-            self.load_embedding(store, config)
+            dense(store, "model.embed_tokens.weight")
         }
     }
 

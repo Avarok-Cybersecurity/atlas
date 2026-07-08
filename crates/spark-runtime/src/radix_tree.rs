@@ -100,6 +100,10 @@ impl PrefixCache for RadixTree {
         }
     }
 
+    fn peek_matched_tokens(&self, tokens: &[u32], block_size: usize) -> usize {
+        self.inner.lock().walk(tokens, block_size).2
+    }
+
     fn insert(
         &self,
         tokens: &[u32],

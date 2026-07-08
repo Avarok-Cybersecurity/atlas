@@ -67,7 +67,46 @@ impl Qwen3SsmLayer {
         } else {
             ctx.buffers.ssm_qkvz()
         };
-        if num_tokens == 3 {
+        // Native-FP8 build (e.g. Qwen3.6-35B-A3B-FP8): the dense and NVFP4
+        // QKVZ slots are NULL — the block-scaled FP8 weight (`qkvz_fp8w`) is
+        // the ONLY live copy. The K=2/K=3 MTP-verify batched pass must
+        // dispatch through it; falling to `dense_gemv` below dereferences the
+        // NULL slot (CUDA_ERROR_ILLEGAL_ADDRESS on the first graphed K=2
+        // verify — 2026-07-02 flagship gate). Mirrors the M<=4 dispatch in
+        // trait_decode_multi_seq/ssm_batched.rs: one weight pass via
+        // `w8a16_gemv_batch4`, per-token `w8a16_gemv` when it isn't linked.
+        if (num_tokens == 2 || num_tokens == 3)
+            && let Some(ref fp8) = self.qkvz_fp8w
+        {
+            if self.w8a16_gemv_batch4_k.0 != 0 {
+                ops::w8a16_gemv_batch4(
+                    ctx.gpu,
+                    self.w8a16_gemv_batch4_k,
+                    normed,
+                    fp8.weight,
+                    fp8.row_scale,
+                    proj_dst,
+                    num_tokens as u32,
+                    qkvz_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+            } else {
+                for t in 0..num_tokens {
+                    ops::w8a16_gemv(
+                        ctx.gpu,
+                        self.w8a16_gemv_k,
+                        normed.offset(t * h * bf16),
+                        fp8.weight,
+                        fp8.row_scale,
+                        proj_dst.offset(t * qkvz_size * bf16),
+                        qkvz_size as u32,
+                        h as u32,
+                        stream,
+                    )?;
+                }
+            }
+        } else if num_tokens == 3 {
             if let Some(ref nvfp4) = self.qkvz_nvfp4 {
                 ops::w4a16_gemv_batch3(
                     ctx.gpu,
@@ -356,6 +395,40 @@ impl Qwen3SsmLayer {
                 value_dim as u32,
                 stream,
             )?;
+        } else if (num_tokens == 2 || num_tokens == 3)
+            && let Some(ref fp8) = self.out_proj_fp8w
+        {
+            // Native-FP8 build: `ssm.out_proj` is a NULL QuantizedWeight —
+            // the block-scaled FP8 copy (`out_proj_fp8w`) is the only live
+            // weight. Same NULL-deref hazard as the QKVZ dispatch above.
+            if self.w8a16_gemv_batch4_k.0 != 0 {
+                ops::w8a16_gemv_batch4(
+                    ctx.gpu,
+                    self.w8a16_gemv_batch4_k,
+                    normed_out_buf,
+                    fp8.weight,
+                    fp8.row_scale,
+                    out_proj_buf,
+                    num_tokens as u32,
+                    h as u32,
+                    value_dim as u32,
+                    stream,
+                )?;
+            } else {
+                for t in 0..num_tokens {
+                    ops::w8a16_gemv(
+                        ctx.gpu,
+                        self.w8a16_gemv_k,
+                        normed_out_buf.offset(t * value_dim * bf16),
+                        fp8.weight,
+                        fp8.row_scale,
+                        out_proj_buf.offset(t * h * bf16),
+                        h as u32,
+                        value_dim as u32,
+                        stream,
+                    )?;
+                }
+            }
         } else if num_tokens == 3 {
             ops::w4a16_gemv_batch3(
                 ctx.gpu,

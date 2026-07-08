@@ -240,7 +240,11 @@ pub(super) fn build_msg_entries(
         && let Some(vcfg) = &state.vision_config
     {
         for (idx, uri) in all_images.iter().enumerate() {
-            match spark_model::vision_preprocess::preprocess_image(uri, vcfg) {
+            match spark_model::vision_preprocess::preprocess_image_with_max_pixels(
+                uri,
+                vcfg,
+                state.vision_max_pixels,
+            ) {
                 Ok((pixels, grid_h, grid_w)) => {
                     image_pad_counts[idx] = spark_model::vision_preprocess::image_pad_count(
                         grid_h,

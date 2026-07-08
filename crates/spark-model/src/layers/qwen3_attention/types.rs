@@ -68,6 +68,12 @@ pub struct MlaWeights {
     /// Precomputed YaRN inv_freq table [rotary_dim/2] FP32 on GPU.
     /// NULL = use standard theta computation in the RoPE kernel.
     pub yarn_inv_freq: spark_runtime::gpu::DevicePtr,
+    /// Plain θ=10000 inv_freq [rotary_dim/2] FP32 on GPU, NO YaRN. Used for the
+    /// raw-arm Q/K rope on `sliding_attention` layers (compressor==None): the
+    /// reference gives sliding layers the "main" rope (θ=rope_theta=10000, no
+    /// yarn) while CSA/HCA layers use "compress" (θ=compress_rope_theta=160000
+    /// + yarn). Atlas previously applied the single yarn table to every layer.
+    pub main_inv_freq: spark_runtime::gpu::DevicePtr,
     pub q_lora_rank: usize,
     pub kv_lora_rank: usize,
     pub o_lora_rank: usize,
@@ -102,6 +108,37 @@ pub struct CompressorWeights {
     pub proj_dim: usize,
     /// true = CSA (2×ratio overlap window); false = HCA (single window).
     pub is_csa: bool,
+    /// 4b: persistent flat compressed-KV pool (decode reads it; inc-3 appends).
+    /// Layout `[pool_blocks × hd_mla]` FP8-E4M3, each block = one rope'd `comp_k`
+    /// entry quantized at the raw KV arm's scale (k_scale=1.0 for V4) so decode
+    /// reads raw+compressed at one dtype/scale (single online softmax). Flat
+    /// per-seq (V4 serves max_batch=1), NOT paged — mirrors the reference
+    /// `Compressor.kv_cache` contiguous buffer so `block_idx = pos/ratio` matches
+    /// prefill's index set exactly (no ring, no block-table remap).
+    /// Prefill fills blocks `[0, n_win)`; decode appends after.
+    pub pool: spark_runtime::gpu::DevicePtr,
+    /// Capacity in compressed blocks = `max_position_embeddings.div_ceil(ratio)`.
+    pub pool_blocks: usize,
+    /// 4b inc-3: persistent decode-time normed-x ring `[ratio × hidden]` BF16.
+    /// Each decode token's compressor input (`normed`, the layer-input RMSNorm
+    /// output — the SAME tensor prefill's `cache_skip_v4` feeds `wkv`/`wgate`) is
+    /// written to slot `pos % ratio`. At a window boundary the ring holds the
+    /// `ratio` tokens of the just-completed window in order, and decode reruns the
+    /// prefill compress pipeline over it to append one pool block. BF16 (not FP8):
+    /// quantize only at the pool write, so decode's compressor input matches
+    /// prefill's bit-for-bit (fp8-ing the input would add a stage prefill never
+    /// sees and make the golden-vector gate uninterpretable).
+    pub ring: spark_runtime::gpu::DevicePtr,
+    /// 4b inc-3 (CSA only): previous completed window's normed-x `[ratio × hidden]`
+    /// BF16. CSA reads a 2×ratio overlap (prev window's Ca + current window's Cb);
+    /// after each append the ring is copied here to feed the next window's Ca.
+    /// `DevicePtr::NULL` for HCA (no overlap). The first decode window has no valid
+    /// prev (it would be a prefill window absent from the decode ring) → Ca masked.
+    pub prev_win: spark_runtime::gpu::DevicePtr,
+    /// 4b inc-3 (CSA only): concat staging `[2×ratio × hidden]` BF16 = prev_win ‖
+    /// ring, the 2×ratio-token input the CSA compress kernel indexes for one
+    /// overlapped window. `DevicePtr::NULL` for HCA.
+    pub stage: spark_runtime::gpu::DevicePtr,
 }
 
 /// Per-block Manifold-Constrained Hyper-Connection (mHC) parameters for one
@@ -235,6 +272,11 @@ pub struct Qwen3AttentionLayer {
     pub(super) o_fp8w_t: Option<crate::weight_map::Fp8WeightTransposed>,
     pub(super) w8a16_gemm_t_k: KernelHandle,
     pub(super) w8a16_gemm_t_pipelined_k: KernelHandle,
+    // Fast transposed FP8 prefill GEMM (128x128 / 8-warp / two-level FP32 fold).
+    // Consumes the SAME B_t[K,N] + block_scale_t[K/128,N/128] that
+    // transpose_fp8 / transpose_block_scale already produce. KernelHandle(0) on
+    // miss → fall back to w8a16_gemm_t.
+    pub(super) w8a16_gemm_t_m128_k: KernelHandle,
     // W8A8 + FP32 epilogue (vLLM-equivalent) — gated by ATLAS_FP8_W8A8=1.
     pub(super) per_token_group_quant_fp8_k: KernelHandle,
     pub(super) fp8_gemm_t_blockscaled_k: KernelHandle,
@@ -252,6 +294,8 @@ pub struct Qwen3AttentionLayer {
     pub(super) rope_k: KernelHandle,
     /// MRoPE-interleaved kernel.
     pub(super) rope_mrope_interleaved_k: KernelHandle,
+    /// K-only MRoPE kernel used when Q RoPE is fused into Q deinterleave/norm.
+    pub(super) rope_mrope_interleaved_k_only_k: KernelHandle,
     /// YaRN RoPE kernel using pre-computed inv_freq table (Mistral, etc.)
     pub(super) rope_yarn_k: KernelHandle,
     /// Interleaved (GPT-J / is_neox_style=False) YaRN RoPE kernel — DeepSeek MLA.
@@ -339,11 +383,20 @@ pub struct Qwen3AttentionLayer {
     pub(super) w4a16_gemm_t_k: KernelHandle,
     pub(super) w4a16_gemm_t_k64_k: KernelHandle,
     pub(super) w4a16_gemm_t_m128_k: KernelHandle,
+    /// LOSSLESS BF16-TC variant of t_m128 for QKV/o projection prefill (FP4→BF16
+    /// dequant + BF16 MMA, no FP8 activation crush). Opt-in via ATLAS_BF16_TC_PROJ
+    /// (default off → t_m128 path unchanged). KernelHandle(0) on miss.
+    pub(super) w4a16_gemm_t_m128_bf16_k: KernelHandle,
     /// MiniMax-only shadow kernel.
     pub(super) w4a16_gemm_t_m128_v2_k: KernelHandle,
     /// v3 variant: K_STEP=64.
     pub(super) w4a16_gemm_t_m128_v3_k: KernelHandle,
     pub(super) dense_gemm_k: KernelHandle,
+    /// Tensor-core pipelined BF16 GEMM (mma.sync + cp.async, 128×128 tile) —
+    /// ~40× the scalar `dense_gemm_k` on large-M prefill projections, same math
+    /// (cosine 1.0). Used for the BF16-fallback Q/K/V/O projections (Holo's
+    /// native-FP8-dequant-to-BF16 attention path).
+    pub(super) dense_gemm_pipelined_k: KernelHandle,
     pub(super) prefill_attn_k: KernelHandle,
     /// HDIM=512 contiguous prefill for Gemma-4 full-attention layers
     pub(super) prefill_attn_512_k: KernelHandle,
@@ -351,6 +404,22 @@ pub struct Qwen3AttentionLayer {
     pub(super) csa_compress_k: KernelHandle,
     /// DeepSeek-V4 CSA prefill attention over [raw | compressed] KV + sink.
     pub(super) prefill_attn_compressed_k: KernelHandle,
+    /// 4b: # compressed blocks prefill wrote to `mla.compressor.pool` for the
+    /// active sequence (= prefill_len / ratio). Decode's compressed arm attends
+    /// blocks `[0, this)`. AtomicU32 for interior mutability under prefill's
+    /// `&self`; V4 serves max_batch=1 so one counter suffices (inc-3: per-seq
+    /// tracking + decode-time append will grow this each boundary crossing).
+    pub(super) v4_comp_pool_filled: std::sync::atomic::AtomicU32,
+    /// 4b inc-3 decode-append state (V4 serves max_batch=1 → scalar per layer).
+    /// `prev_valid`: the CSA `prev_win` ring holds a real previous decode window
+    /// (false until the first decode append, and reset each prefill) — when false
+    /// the CSA append masks Ca (window-0 semantics). `decode_started`/`first_pos`:
+    /// the absolute position of the first decode token this sequence, used to skip
+    /// any prefill/decode straddle window whose ring slots aren't all decode-written
+    /// (that one block is left as prefill/zero — a documented seam, not corruption).
+    pub(super) v4_comp_prev_valid: std::sync::atomic::AtomicBool,
+    pub(super) v4_decode_started: std::sync::atomic::AtomicBool,
+    pub(super) v4_decode_first_pos: std::sync::atomic::AtomicU32,
     /// HDIM=512 paged prefill (BF16 KV) for Gemma-4 chunked long-context prefill
     pub(super) prefill_attn_paged_512_k: KernelHandle,
     pub(super) prefill_attn_64_k: KernelHandle,
@@ -398,6 +467,7 @@ pub struct Qwen3AttentionLayer {
     // Batched prefill kernels
     pub(super) deinterleave_qg_split_k: KernelHandle,
     pub(super) deinterleave_qg_split_qnorm_k: KernelHandle,
+    pub(super) deinterleave_qg_split_qnorm_mrope_k: KernelHandle,
     pub(super) sigmoid_gate_mul_batched_k: KernelHandle,
     // Pre-dequanted FP8 weights for zero-overhead prefill GEMMs
     pub(super) q_fp8: Option<DevicePtr>,

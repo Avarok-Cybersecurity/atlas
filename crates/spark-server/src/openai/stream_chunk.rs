@@ -45,12 +45,10 @@ pub struct ChunkDelta {
     /// Reasoning trace chunk (from <think>...</think>). Streamed during
     /// the thinking phase when enable_thinking=true. Cline and Roo Code
     /// both check for this field via `"reasoning_content" in delta`.
+    /// Single canonical field — no `reasoning` mirror is emitted (a delta
+    /// carrying both is rejected by strict OpenAI-compatible clients).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
-    /// Forward-compatible alias: mirrors `reasoning_content` for clients that
-    /// use the shorter `reasoning` field name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning: Option<String>,
     /// Omitted when absent — Cline, Roo Code, and most OpenAI-compatible clients
     /// expect content to be missing (not `null`) in role and done chunks.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,7 +79,6 @@ impl ChatCompletionChunk {
                 delta: ChunkDelta {
                     role: Some("assistant".to_string()),
                     reasoning_content: None,
-                    reasoning: None,
                     content: None,
                     tool_calls: None,
                     refusal: None,
@@ -107,8 +104,7 @@ impl ChatCompletionChunk {
                 index: 0,
                 delta: ChunkDelta {
                     role: None,
-                    reasoning_content: Some(text.clone()),
-                    reasoning: Some(text),
+                    reasoning_content: Some(text),
                     content: None,
                     tool_calls: None,
                     refusal: None,
@@ -134,7 +130,6 @@ impl ChatCompletionChunk {
                 delta: ChunkDelta {
                     role: None,
                     reasoning_content: None,
-                    reasoning: None,
                     content: Some(text),
                     tool_calls: None,
                     refusal: None,
@@ -167,7 +162,6 @@ impl ChatCompletionChunk {
                 delta: ChunkDelta {
                     role: Some("assistant".to_string()),
                     reasoning_content: None,
-                    reasoning: None,
                     content: None,
                     tool_calls: Some(vec![crate::tool_parser::ChunkToolCall {
                         index: tc_index,
@@ -204,7 +198,6 @@ impl ChatCompletionChunk {
                 delta: ChunkDelta {
                     role: None,
                     reasoning_content: None,
-                    reasoning: None,
                     content: None,
                     tool_calls: Some(vec![crate::tool_parser::ChunkToolCall {
                         index: tc_index,
@@ -238,7 +231,6 @@ impl ChatCompletionChunk {
                 delta: ChunkDelta {
                     role: None,
                     reasoning_content: None,
-                    reasoning: None,
                     content: None,
                     tool_calls: None,
                     refusal: None,
@@ -285,7 +277,6 @@ impl ChatCompletionChunk {
                 delta: ChunkDelta {
                     role: None,
                     reasoning_content: None,
-                    reasoning: None,
                     content: None,
                     tool_calls: None,
                     refusal: Some(refusal),
@@ -313,7 +304,6 @@ impl ChatCompletionChunk {
                 delta: ChunkDelta {
                     role: None,
                     reasoning_content: None,
-                    reasoning: None,
                     content: None,
                     tool_calls: None,
                     refusal: None,

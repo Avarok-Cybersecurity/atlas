@@ -36,6 +36,7 @@ impl TransformerModel {
             chunk_len,
             proc_count,
             0,
+            0,
             stream,
         )
     }
@@ -53,6 +54,7 @@ impl TransformerModel {
         chunk_len: usize,
         proc_count: usize,
         hidden_stream_offset_tokens: usize,
+        logits_row: usize,
         stream: u64,
     ) -> Result<DevicePtr> {
         let h = self.config.hidden_size;
@@ -201,7 +203,19 @@ impl TransformerModel {
         }
 
         // ── 7. LM head on last token → logits ──
-        self.lm_head(normed, stream)?;
+        // Co-dispatched streams must each write their OWN logits row, else all
+        // streams' first token collapses to one shared buffer (cross-request
+        // contamination). Row 0 (single-stream + batched stream 0) keeps the
+        // byte-identical `lm_head` GEMV path; rows >0 write to their own offset.
+        let logits_ptr = if logits_row == 0 {
+            self.lm_head(normed, stream)?;
+            self.decode_logits_ptr()
+        } else {
+            let v = self.config.vocab_size;
+            let dst = self.buffers.logits().offset(logits_row * v * 2);
+            self.lm_head_batched(normed, 1, dst, stream)?;
+            dst
+        };
 
         // Per-layer divergence dump: full logits vector + top-10 token IDs.
         if let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP")
@@ -415,6 +429,6 @@ impl TransformerModel {
         // DFlash: advance ctx_len after the LAST chunk of chunked prefill.
         self.update_dflash_ctx_len_after_prefill(seq, chunk_start, chunk_len)?;
 
-        Ok(self.decode_logits_ptr())
+        Ok(logits_ptr)
     }
 }

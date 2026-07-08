@@ -117,6 +117,25 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
                     config.model_type = "qwen3_6_moe".to_string();
                 }
             }
+            // Holo-3.1 (Hcompany) is a fine-tune of Qwen3.6-35B-A3B and shares
+            // its ENTIRE config — same vision tower, same image_token_id
+            // (248056), same MRoPE layout. The one structural difference is
+            // that Hcompany strips the MTP head from its releases
+            // (text_config has no mtp_num_hidden_layers), while every
+            // official Qwen3.6-35B checkpoint ships mtp_num_hidden_layers=1.
+            // Gate on that: without it the flagship Qwen/Qwen3.6-35B-A3B-FP8
+            // was misdetected as holo3_1_moe and failed kernel-target
+            // resolution (targets declare qwen3_6_moe).
+            if top_model_type == "qwen3_5_moe"
+                && config.vision.is_some()
+                && config.mtp_num_hidden_layers == 0
+                && raw
+                    .get("image_token_id")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(248_056)
+            {
+                config.model_type = "holo3_1_moe".to_string();
+            }
             finalize_config(&mut config, &raw)?;
             Ok(config)
         }

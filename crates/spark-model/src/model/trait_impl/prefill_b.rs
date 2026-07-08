@@ -56,6 +56,66 @@ impl TransformerModel {
             "chunk_start({chunk_start}) + chunk_len({chunk_len}) > total({total})"
         );
 
+        // Tail-checkpoint split (issue #15 follow-up, 2026-07-02): a warm
+        // multi-turn hit matches the radix at BLOCK granularity, and the
+        // divergence point sits at/near the previous prompt end (the chat
+        // template's generation-only suffix — e.g. Qwen's forced empty
+        // <think> block — is absent from the re-rendered history), so the
+        // next turn's `matched` lands at floor(divergence/bs)*bs, which is
+        // the prompt's last full-block boundary OR one block below it (when
+        // the template suffix crosses that boundary; measured: both occur).
+        // Snapshot eligibility requires snap_tok <= matched — the leaf
+        // snapshot (at `total`) is PAST both, making warm turns recompute the
+        // full SSM state (or fall back an entire turn to the previous tail,
+        // measured 1.3-3.2k-token replays). Split the final chunk ONCE, one
+        // block below the last block boundary under `total`: that position is
+        // <= both possible match points, so the snapshot
+        // `prefill_b_save_checkpoint` saves there (independent of
+        // --ssm-checkpoint-interval) is always eligible and the warm replay
+        // is <= 2 blocks, folded into the suffix prefill pass. A single cut
+        // costs one extra small pass at save time (a cut at the boundary
+        // itself would need a second pass and is redundant — measured
+        // +~160ms/turn for two cuts vs <=31-token replay for one).
+        //
+        // The extra pass costs ~150ms on this class of MoE model (a tiny-M
+        // pass still sweeps most activated expert weights), which is -7% on
+        // a cold 2k prefill — so on single-GPU the split only fires when the
+        // radix already holds a prefix of this prompt (peek is read-only):
+        // single-shot requests never pay; conversations pay from turn 2
+        // onward, where the cost is amortized against the warm win. Known
+        // residual: turn 2 of a conversation still recomputes the full SSM
+        // state (its cold turn 1 saved no tail checkpoint). On EP>1 the
+        // split is unconditional instead: rank-local radix contents diverge,
+        // and chunk sequences must be deterministic on (tokens, config)
+        // across ranks (bug #33 invariant). Skipped for vision prompts (pad
+        // runs must not straddle chunk boundaries) and non-SSM models
+        // (KV-only cache hits need no snapshot).
+        if is_last_chunk
+            && self.config.num_ssm_layers() > 0
+            && self.ssm_snapshots.is_enabled()
+            && self.prefix_cache.is_active()
+            && !self.tokens_have_vision_pad(tokens)
+        {
+            let bs = self.kv_cache.lock().block_size();
+            // One block below the last block boundary strictly under `total`.
+            let cut = ((total.saturating_sub(1) / bs) * bs).saturating_sub(bs);
+            let ep_active = self.comm.is_some() && self.config.ep_world_size > 1;
+            if cut > chunk_start
+                && cut < total
+                && (ep_active || self.prefix_cache.peek_matched_tokens(tokens, bs) > 0)
+            {
+                self.prefill_chunk_dispatch(
+                    tokens,
+                    seq,
+                    chunk_start,
+                    cut - chunk_start,
+                    false,
+                    stream,
+                )?;
+                return self.prefill_chunk_dispatch(tokens, seq, cut, total - cut, true, stream);
+            }
+        }
+
         // Guard: chunk_len must not exceed buffer arena capacity.
         // Exceeding this causes CUDA illegal memory access (error 700)
         // which permanently corrupts GPU state.
@@ -76,13 +136,16 @@ impl TransformerModel {
         };
 
         // EP=2: zero ALL buffers on every chunk (NCCL defense-in-depth).
-        // EP=1, first chunk (chunk_start==0): zero essentials (stale data from prior request).
+        // EP=1, first chunk (chunk_start==0): zero only buffers whose stale
+        // contents can affect prefill; the remaining scratch buffers are
+        // overwritten before read by embedding + layer forward.
         // EP=1, subsequent chunks: skip zeroing — buffers are overwritten by embedding
         // + layer forward before read. Saves 7 memsets × (chunks-1) per prefill.
         if self.comm.is_some() {
             self.buffers.zero_all(self.gpu.as_ref(), stream)?;
         } else if chunk_start == 0 {
-            self.buffers.zero_all(self.gpu.as_ref(), stream)?;
+            self.buffers
+                .zero_prefill_essentials(self.gpu.as_ref(), stream)?;
         }
 
         let mut kv_cache = self.kv_cache.lock();
@@ -125,6 +188,8 @@ impl TransformerModel {
             is_last_chunk,
             kv_write_start,
             marconi_skip,
+            // Single-stream: hidden lives at offset 0 ⇒ pass base (byte-identical).
+            self.buffers.hidden_states(),
             stream,
         )? {
             proc_range::ProcRange::Compute {

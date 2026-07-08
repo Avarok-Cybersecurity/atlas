@@ -264,9 +264,9 @@ fn run_shape(
         .arg_u32(k as u32)
         .launch(stream)?;
 
-    // ── w4a16_gemm_t_m128_bf16: grid (ceil(N/128), ceil(M/128), 1), block (128,1,1) ──
+    // ── w4a16_gemm_t: grid (ceil(N/128), ceil(M/64), 1), block (128,1,1) ──
     KernelLaunch::new(gpu, bf16_h)
-        .grid([n.div_ceil(128) as u32, m.div_ceil(128) as u32, 1])
+        .grid([n.div_ceil(128) as u32, m.div_ceil(64) as u32, 1])
         .block([128, 1, 1])
         .arg_ptr(a_ptr)
         .arg_ptr(packed_t)
@@ -325,7 +325,8 @@ fn main() -> Result<()> {
     let stream = gpu.create_stream()?;
 
     let base_h = gpu.kernel("w4a16", "w4a16_gemm")?;
-    let bf16_h = gpu.kernel("w4a16", "w4a16_gemm_t_m128_bf16")?;
+    // Validating w4a16_gemm_t_m64_bf16 (M_TILE=64, v2's (float)f0 decode) vs base.
+    let bf16_h = gpu.kernel("w4a16", "w4a16_gemm_t_m64_bf16")?;
 
     // (label, M, N, K). Prefill gate/up/down + M-tile-boundary + K-tail edges.
     let shapes: &[(&str, usize, usize, usize)] = &[

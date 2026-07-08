@@ -247,6 +247,46 @@ fn with_token_ids_stamps_first_choice() {
     assert!(chunk.choices.is_empty());
 }
 
+// ── reasoning wire format: exactly one field ────────────────────────
+// A response carrying BOTH `reasoning_content` and a `reasoning` mirror is
+// rejected by strict OpenAI-compatible clients (they assert exactly one).
+// Atlas emits only `reasoning_content` — these lock that contract in.
+
+#[test]
+fn reasoning_delta_emits_only_reasoning_content() {
+    let chunk = ChatCompletionChunk::reasoning_chunk("m", "id", "thinking".into());
+    let json = serde_json::to_string(&chunk).unwrap();
+    assert!(
+        json.contains("\"reasoning_content\":\"thinking\""),
+        "reasoning_content missing: {json}"
+    );
+    assert!(
+        !json.contains("\"reasoning\":"),
+        "mirror `reasoning` field leaked into stream delta: {json}"
+    );
+}
+
+#[test]
+fn blocking_message_emits_only_reasoning_content() {
+    let msg = ChatMessage {
+        role: "assistant".into(),
+        reasoning_content: Some("thinking".into()),
+        content: Some("hi".into()),
+        tool_calls: None,
+        annotations: None,
+        refusal: None,
+    };
+    let json = serde_json::to_string(&msg).unwrap();
+    assert!(
+        json.contains("\"reasoning_content\":\"thinking\""),
+        "reasoning_content missing: {json}"
+    );
+    assert!(
+        !json.contains("\"reasoning\":"),
+        "mirror `reasoning` field leaked into message: {json}"
+    );
+}
+
 // ── ChatTemplateKwargs ────────────────────────────────────────────
 
 #[test]
@@ -283,7 +323,11 @@ fn server_default_merged_when_request_silent() {
 
     let (enabled, budget) = req.resolve_thinking(false);
     assert!(enabled);
-    assert!(budget.is_some());
+    // enable_thinking with no explicit budget defers to the per-model
+    // max_thinking_budget (None), not the conservative 256-token default —
+    // a hard cut force-injects </think> mid-reasoning and wrecks agentic
+    // tool selection (see resolve_thinking step 5).
+    assert!(budget.is_none());
 }
 
 #[test]

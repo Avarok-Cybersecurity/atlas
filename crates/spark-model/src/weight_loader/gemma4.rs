@@ -57,7 +57,12 @@ impl ModelWeightLoader for Gemma4WeightLoader {
         loader_a::load_layers_impl(store, config, gpu, layer_kv_dtypes)
     }
 
-    fn load_embedding(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
+    fn load_embedding(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        _gpu: &dyn GpuBackend,
+    ) -> Result<DenseWeight> {
         loader_b::load_embedding_impl(store, config)
     }
 
