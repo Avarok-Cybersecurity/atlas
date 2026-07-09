@@ -226,10 +226,7 @@ fn apply_nemotron_puzzle_json(raw: &mut serde_json::Value) -> Result<()> {
         .map(|v| v.is_null() || v.as_u64() == Some(0))
         .unwrap_or(true)
     {
-        obj.insert(
-            "num_hidden_layers".into(),
-            serde_json::json!(n_layers),
-        );
+        obj.insert("num_hidden_layers".into(), serde_json::json!(n_layers));
     }
     // Collect max MoE dims from block_configs for scalar fallbacks
     let mut max_inter = 0usize;
@@ -266,10 +263,7 @@ fn apply_nemotron_puzzle_json(raw: &mut serde_json::Value) -> Result<()> {
 }
 
 /// Map Puzzle `layers_block_type` / `block_configs` onto Atlas layer schedule.
-fn apply_nemotron_puzzle_config(
-    config: &mut ModelConfig,
-    raw: &serde_json::Value,
-) -> Result<()> {
+fn apply_nemotron_puzzle_config(config: &mut ModelConfig, raw: &serde_json::Value) -> Result<()> {
     let block_types = raw
         .get("layers_block_type")
         .and_then(|v| v.as_array())
