@@ -31,7 +31,10 @@ fn schema_param_names_leaves_open_schemas_unconstrained() {
     });
     assert_eq!(schema_param_names(&open), None);
     // Empty / missing properties → nothing to constrain to.
-    assert_eq!(schema_param_names(&serde_json::json!({"type": "object"})), None);
+    assert_eq!(
+        schema_param_names(&serde_json::json!({"type": "object"})),
+        None
+    );
     assert_eq!(
         schema_param_names(&serde_json::json!({"type": "object", "properties": {}})),
         None
@@ -68,4 +71,19 @@ fn body_ebnf_keeps_identifier_rule_without_names() {
             "schema-less path must keep the historical identifier rule:\n{ebnf}"
         );
     }
+}
+
+#[test]
+fn body_ebnf_first_content_allows_lt_via_close_ladder() {
+    let ebnf = xml_param_value_body_ebnf("</parameter>", None);
+    // The first-content rule must carry the `<`-arms of the close ladder …
+    assert!(
+        ebnf.contains(r#"first_content ::= [^ \t\r\n<=>] | "<" [^/]"#),
+        "first_content must allow `<` unless it starts the close tag:\n{ebnf}"
+    );
+    // … including the deepest prefix arm (everything but the final `>`).
+    assert!(
+        ebnf.contains(r#""</parameter" [^>]"#),
+        "the full close-prefix arm must be present:\n{ebnf}"
+    );
 }

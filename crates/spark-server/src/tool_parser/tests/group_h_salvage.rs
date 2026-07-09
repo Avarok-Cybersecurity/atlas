@@ -78,7 +78,10 @@ fn buffered_pipeline_recovers_live_shape_1() {
     let tool = write_tool();
     backfill_required_params(&mut calls, std::slice::from_ref(&tool));
     let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
-    assert_eq!(args["filePath"], "/tmp/x/session.rs", "path must be salvaged from the echoed key");
+    assert_eq!(
+        args["filePath"], "/tmp/x/session.rs",
+        "path must be salvaged from the echoed key"
+    );
     assert_eq!(args["content"], "use axum::Json;");
     assert!(
         args.get("parameter").is_none(),
@@ -122,7 +125,10 @@ fn buffered_salvage_does_not_clobber_populated_target() {
     let tool = write_tool();
     backfill_required_params(&mut calls, std::slice::from_ref(&tool));
     let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
-    assert_eq!(args["filePath"], "/tmp/real.rs", "populated key must win over the echo");
+    assert_eq!(
+        args["filePath"], "/tmp/real.rs",
+        "populated key must win over the echo"
+    );
 }
 
 #[test]

@@ -116,7 +116,10 @@ fn short_tool_trigger_enabled() -> bool {
 /// so a drifted close still terminates the value. Routed through the same
 /// trait-supplied `value_close` (no hard-coded per-model tokens). Deferred:
 /// 2a (this) is the structural backstop; 2b is the next kill-switched step.
-pub(crate) fn xml_param_value_body_ebnf(value_close: &str, param_names: Option<&[String]>) -> String {
+pub(crate) fn xml_param_value_body_ebnf(
+    value_close: &str,
+    param_names: Option<&[String]>,
+) -> String {
     let ladder = ebnf_until_close_ladder(value_close);
     let rest_rule = if value_harden_enabled() {
         format!("rest ::= rest_part{{0,{VALUE_REST_MAX_REPEAT}}}")
@@ -145,13 +148,13 @@ pub(crate) fn xml_param_value_body_ebnf(value_close: &str, param_names: Option<&
         _ => "paramname ::= [a-zA-Z_] [a-zA-Z_0-9]*".to_string(),
     };
     // Content-start rule: allow a leading whitespace run (INCLUDING `\n`),
-    // then REQUIRE at least one non-whitespace char that is NOT `<`, `=`, or
-    // `>` before the rest. Two distinct boundary bugs are closed here:
-    //  - `<` exclusion + the `leading_ws*` split: the old `[^ \t\r\n<]`
-    //    masked the model's genuine top-1 at content-start (a leading `\n`)
-    //    and — under FP8 long-ctx drift — forced the argmax onto a wrong
-    //    identifier runner-up (`lean`/`cargo`). The split unmasks `\n` while
-    //    keeping the non-empty guard.
+    // then REQUIRE at least one non-whitespace char that is NOT `=` or `>`
+    // before the rest. Boundary bugs closed here:
+    //  - `leading_ws*` split: the old `[^ \t\r\n<]` masked the model's
+    //    genuine top-1 at content-start (a leading `\n`) and — under FP8
+    //    long-ctx drift — forced the argmax onto a wrong identifier
+    //    runner-up (`lean`/`cargo`). The split unmasks `\n` while keeping
+    //    the non-empty guard.
     //  - `=`/`>` exclusion (2026-06-03, diag agent acb6cb1): the param key
     //    closes with `>` and the tokenizer has ~198 `>X` MERGE tokens
     //    (`>=`=9628, `>>`, …). At the `<parameter=KEY>`→value boundary the
@@ -164,17 +167,53 @@ pub(crate) fn xml_param_value_body_ebnf(value_close: &str, param_names: Option<&
     //    Legit `>a`/`>{`/`>"` merges stay legal (2nd byte passes); only a
     //    value that genuinely starts with `=`/`>` is disallowed (rare for
     //    code/TOML edit args). Parser is innocent; this is NOT numerics.
+    //  - `<`-start UNBANNED (2026-07-09): the historical blanket `<`
+    //    exclusion (Epoch-3 "close-tag-as-first-body-token" guard) made any
+    //    value whose first non-WS char is `<` UNREPRESENTABLE — the mask
+    //    deflected `<script>` / `<!DOCTYPE` at position 0, so the model
+    //    could not write Svelte/HTML/XML files AT ALL. Live opencode
+    //    session: every `.svelte` write came out script-logic-only (the
+    //    masked model fell into JS-module mode), the model noticed and
+    //    retried the identical write forever — the repeat-loop the
+    //    repetition guards then cut mid-sentence. The BUG#2 negative-prefix
+    //    ladder already prevents the original failure (the literal
+    //    `{value_close}` as body) at EVERY position, so first_content now
+    //    reuses the SAME ladder for its `<` arm: `<` is legal at content
+    //    start unless it begins the exact close delimiter.
     format!(
         r#"root ::= param ("\n" param)*
 param ::= "<parameter=" paramname ">" value "{value_close}"
 {paramname_rule}
 value ::= leading_ws first_content rest
 leading_ws ::= [ \t\r\n]*
-first_content ::= [^ \t\r\n<=>]
+first_content ::= [^ \t\r\n<=>] | {first_lt_arms}
 {rest_rule}
 rest_part ::= {ladder}
-"#
+"#,
+        first_lt_arms = ladder_lt_arms(&ladder),
     )
+}
+
+/// The `<`-starting alternates of an [`ebnf_until_close_ladder`] alternation.
+///
+/// For close `</parameter>` the full ladder is
+/// `[^<] | "<" [^/] | "</" [^p] | …`; this keeps only the arms that BEGIN
+/// with the close delimiter's first char (`"<" [^/] | "</" [^p] | …`) — i.e.
+/// "a `<` is fine unless it starts the exact close sequence". Used by
+/// `first_content` so `<`-initial values (Svelte `<script>`, HTML
+/// `<!DOCTYPE`) are representable while the literal close tag still cannot
+/// open a value. Derived from the ladder (SSOT), not hard-coded per format.
+fn ladder_lt_arms(ladder: &str) -> String {
+    let arms: Vec<&str> = ladder
+        .split(" | ")
+        .filter(|arm| arm.starts_with('"'))
+        .collect();
+    if arms.is_empty() {
+        // Single-char close delimiter: its ladder is just `[^c]`, which the
+        // base `[^ \t\r\n<=>]` class already covers conservatively.
+        return "[^ \\t\\r\\n<=>]".to_string();
+    }
+    arms.join(" | ")
 }
 
 /// Extract the property names a qwen3_coder `<parameter=NAME>` key slot may

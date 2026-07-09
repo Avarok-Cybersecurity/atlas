@@ -326,6 +326,10 @@ pub enum StreamEvent {
         reasoning_tokens: u32,
         /// Prefix-cached prompt tokens (for usage details).
         cached_prompt_tokens: u32,
+        /// Server-side guard that force-finished the sequence (e.g.
+        /// "fuzzy_repetition"), if any — dump/observability only, never
+        /// part of the OpenAI wire format.
+        guard_stop: Option<&'static str>,
     },
     Error(String),
 }

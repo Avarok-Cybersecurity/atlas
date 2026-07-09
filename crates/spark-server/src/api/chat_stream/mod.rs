@@ -269,16 +269,20 @@ pub(crate) async fn chat_completions_stream(
                 decode_time_ms,
                 reasoning_tokens,
                 cached_prompt_tokens,
-            } => handle_done::handle_done(
-                &mut stream_state,
-                &ctx,
-                finish_reason,
-                completion_tokens,
-                time_to_first_token_ms,
-                decode_time_ms,
-                reasoning_tokens,
-                cached_prompt_tokens,
-            ),
+                guard_stop,
+            } => {
+                stream_state.guard_stop = guard_stop;
+                handle_done::handle_done(
+                    &mut stream_state,
+                    &ctx,
+                    finish_reason,
+                    completion_tokens,
+                    time_to_first_token_ms,
+                    decode_time_ms,
+                    reasoning_tokens,
+                    cached_prompt_tokens,
+                )
+            }
             StreamEvent::Error(msg) => handle_error::handle_error(&ctx, msg),
         };
 

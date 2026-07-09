@@ -286,6 +286,7 @@ pub(super) fn handle_done(
             "stop_string_triggered": state.stop_string_triggered,
             "loop_watchdog_triggered": state.loop_watchdog_triggered,
             "tool_loop_capped": state.tool_loop_capped,
+            "guard_stop": state.guard_stop,
             "_note": "Synthesized from post-sanitizer accumulators; \
                       per-chunk capture is a follow-up.",
         });

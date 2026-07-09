@@ -118,6 +118,12 @@ pub(super) struct ActiveSeq {
     pub min_tokens: usize,
     pub eos_tokens: Vec<u32>,
     pub finished: bool,
+    /// Which server-side guard force-finished this sequence (e.g.
+    /// "fuzzy_repetition"), if any. Surfaced in the synthesized --dump body
+    /// so a guard-cut turn is attributable without log archaeology (the
+    /// 2026-07-09 fuzzy cuts reported bare finish=length with every dump
+    /// flag false). Not part of the OpenAI wire format.
+    pub guard_stop: Option<&'static str>,
     pub sink: ResponseSink,
     /// Cooperative cancellation flag from the streaming pipeline.
     /// `Some` for streaming requests with the flag wired through;

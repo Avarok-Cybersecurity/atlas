@@ -421,6 +421,7 @@ pub(super) async fn completions_stream(
                 decode_time_ms,
                 reasoning_tokens,
                 cached_prompt_tokens,
+                guard_stop: _,
             } => {
                 let tps = if decode_time_ms > 0.0 {
                     completion_tokens.saturating_sub(1) as f64 / (decode_time_ms / 1000.0)

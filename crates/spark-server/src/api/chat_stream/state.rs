@@ -121,6 +121,10 @@ pub(super) struct StreamState {
     /// "response was forcibly truncated" and gives every agent a
     /// clean hook to break its outer retry loop.
     pub(super) tool_loop_capped: bool,
+    /// Scheduler-side guard that force-finished the sequence (from
+    /// `StreamEvent::Done.guard_stop`, e.g. "fuzzy_repetition") — surfaced
+    /// in the synthesized --dump body only.
+    pub(super) guard_stop: Option<&'static str>,
     /// Cooperative cancellation flag shared with the scheduler. Flipped
     /// true on any forced-stop condition (`tool_loop_capped`, loop-
     /// watchdog fire, …); the scheduler reads it in
@@ -206,6 +210,7 @@ impl StreamState {
             tool_calls_emitted_count: 0,
             name_run: None,
             tool_loop_capped: false,
+            guard_stop: None,
             cancel_flag,
             reasoning_xml_scan_buf: String::new(),
             reasoning_xml_leak_detected: false,

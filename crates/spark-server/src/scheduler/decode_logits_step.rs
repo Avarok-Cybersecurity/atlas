@@ -696,6 +696,7 @@ pub fn process_decode_logits(
                              mismatches), stopping at {} tokens (rollback declined: {reason:?})",
                             a.output_tokens.len()
                         );
+                        a.guard_stop = Some("fuzzy_repetition");
                         a.finished = true;
                     }
                 }
