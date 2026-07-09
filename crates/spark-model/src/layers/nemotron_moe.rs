@@ -35,6 +35,10 @@ pub struct NemotronMoeLayer {
     input_norm: DenseWeight,
     /// LatentMoE dimension (0 = direct, >0 = latent).
     moe_latent_size: usize,
+    /// Routed expert intermediate size for this layer (Puzzle: per-block).
+    moe_inter: usize,
+    /// Top-K experts activated per token for this layer (Puzzle: per-block).
+    top_k: usize,
     // Kernel handles — decode (single token)
     rms_norm_residual_k: KernelHandle,
     dense_gemv_k: KernelHandle,
@@ -76,14 +80,28 @@ impl NemotronMoeLayer {
         input_norm: DenseWeight,
         config: &ModelConfig,
         gpu: &dyn GpuBackend,
+        moe_inter: usize,
+        top_k: usize,
     ) -> Result<Self> {
         let up_ptrs = build_ptr_table(&weights.experts, |e| &e.up_proj, gpu)?;
         let down_ptrs = build_ptr_table(&weights.experts, |e| &e.down_proj, gpu)?;
+        let moe_inter = if moe_inter > 0 {
+            moe_inter
+        } else {
+            config.moe_intermediate_size
+        };
+        let top_k = if top_k > 0 {
+            top_k
+        } else {
+            config.num_experts_per_tok
+        };
 
         Ok(Self {
             weights,
             input_norm,
             moe_latent_size: config.moe_latent_size,
+            moe_inter,
+            top_k,
             rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             topk_sigmoid_k: gpu.kernel("moe_topk_sig", "moe_topk_sigmoid")?,
@@ -144,7 +162,7 @@ impl NemotronMoeLayer {
     /// when memory is tight (Super 120B: 128 experts × 40 layers would OOM).
     pub fn prepare_prefill_weights(&mut self, gpu: &dyn GpuBackend, config: &ModelConfig) {
         let h = config.hidden_size;
-        let inter = config.moe_intermediate_size;
+        let inter = self.moe_inter;
         let shared_inter = config.shared_expert_intermediate_size;
 
         // Only transpose routed experts for small models (Nano 30B: 23 MoE layers × 128 experts).
@@ -234,10 +252,10 @@ impl TransformerLayer for NemotronMoeLayer {
         stream: u64,
     ) -> Result<()> {
         let h = ctx.config.hidden_size;
-        let inter = ctx.config.moe_intermediate_size as u32;
+        let inter = self.moe_inter as u32;
         let shared_inter = ctx.config.shared_expert_intermediate_size as u32;
         let num_experts = ctx.config.num_experts as u32;
-        let top_k = ctx.config.num_experts_per_tok as u32;
+        let top_k = self.top_k as u32;
         let eps = ctx.config.rms_norm_eps as f32;
         let scale = ctx.config.routed_scaling_factor as f32;
         let n = num_tokens as u32;

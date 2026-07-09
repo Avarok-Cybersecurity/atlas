@@ -50,12 +50,14 @@ impl ModelWeightLoader for NemotronHWeightLoader {
         // nearby allocations (BUG #29). Using a scratch buffer avoids all frees
         // during loading. Size = max(in_proj, out_proj, shared_up, shared_down) in BF16 bytes.
         let moe_input = config.moe_input_size();
+        // Puzzle: intermediate size varies per MoE layer — size scratch to max.
+        let max_moe_inter = config.max_moe_intermediate_size();
         let scratch_elems = (config.mamba2_in_proj_size() * h)
             .max(h * config.mamba2_d_inner())
             .max(config.shared_expert_intermediate_size * h)
             .max(h * config.shared_expert_intermediate_size)
-            .max(config.moe_intermediate_size * moe_input)
-            .max(moe_input * config.moe_intermediate_size);
+            .max(max_moe_inter * moe_input)
+            .max(moe_input * max_moe_inter);
         let scratch_bytes = scratch_elems * 2; // BF16 = 2 bytes
         let scratch = gpu.alloc(scratch_bytes)?;
 
@@ -115,7 +117,9 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                     unreachable!("unexpected SlidingAttention in this loader")
                 }
                 atlas_core::config::LayerType::Moe => {
-                    // Standalone MoE FFN layer
+                    // Standalone MoE FFN layer (uniform Super/Nano or Puzzle per-block)
+                    let moe_inter = config.moe_intermediate_size_for(i);
+                    let top_k = config.num_experts_per_tok_for(i);
                     let moe = load_nemotron_moe(
                         store,
                         i,
@@ -128,21 +132,22 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                         Some(scratch),
                         &lp,
                     )?;
-                    if i < 4 {
+                    if i < 4 || moe_inter != config.moe_intermediate_size {
                         tracing::info!(
-                            "L{i} MoE: latent={} has_fc1={} has_fc2={} shared_up_s2={:.6e} shared_down_s2={:.6e} experts[0].up_s2={:.6e}",
+                            "L{i} MoE: inter={moe_inter} top_k={top_k} latent={} has_fc1={} has_fc2={} shared_up_s2={:.6e} experts[0].up_s2={:.6e}",
                             config.moe_latent_size,
                             moe.fc1_latent_proj.is_some(),
                             moe.fc2_latent_proj.is_some(),
                             moe.shared_up.weight_scale_2,
-                            moe.shared_down.weight_scale_2,
                             moe.experts
                                 .first()
                                 .map(|e| e.up_proj.weight_scale_2)
                                 .unwrap_or(0.0),
                         );
                     }
-                    layers.push(Box::new(NemotronMoeLayer::new(moe, norm, config, gpu)?));
+                    layers.push(Box::new(NemotronMoeLayer::new(
+                        moe, norm, config, gpu, moe_inter, top_k,
+                    )?));
                 }
                 atlas_core::config::LayerType::FullAttention => {
                     // Attention layer — quantize BF16 Q/K/V/O directly from

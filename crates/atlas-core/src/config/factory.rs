@@ -68,6 +68,8 @@ impl ModelConfig {
             moe_shared_expert_intermediate_size: 0,
             routed_scaling_factor: 1.0,
             moe_latent_size: 0,
+            moe_intermediate_sizes: Vec::new(),
+            num_experts_per_toks: Vec::new(),
             vision: None,
             quantization_config: None,
             attn_gated: true,
