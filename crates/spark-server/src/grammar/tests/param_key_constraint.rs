@@ -87,3 +87,30 @@ fn body_ebnf_first_content_allows_lt_via_close_ladder() {
         "the full close-prefix arm must be present:\n{ebnf}"
     );
 }
+
+#[test]
+fn p1_opts_empty_value_and_force_close_shapes() {
+    use super::super::compile_tools::xml_param_value_body_ebnf_opts;
+    // Defaults (both off) == the shipped shape.
+    let d = xml_param_value_body_ebnf_opts("</parameter>", None, false, false);
+    assert!(d.contains("value ::= leading_ws first_content rest"));
+    assert!(d.contains(r#""</parameter" [^>]"#));
+    // P1-1: empty value representable.
+    let ev = xml_param_value_body_ebnf_opts("</parameter>", None, true, false);
+    assert!(
+        ev.contains("value ::= leading_ws (first_content rest)?"),
+        "empty-value opt-in must make content optional:\n{ev}"
+    );
+    // P1-2: deepest ladder arm gone → after `</parameter` only `>` is legal.
+    let fc = xml_param_value_body_ebnf_opts("</parameter>", None, false, true);
+    assert!(
+        !fc.contains(r#""</parameter" [^>]"#),
+        "force-close must drop the deepest arm:\n{fc}"
+    );
+    assert!(
+        fc.contains(r#""</paramete" [^r]"#),
+        "shallower arms must survive:\n{fc}"
+    );
+    // first_content's `<`-arms follow the same forced ladder.
+    assert!(!fc.contains(r#"first_content ::= [^ \t\r\n<=>] | "<" [^/] | "</" [^p] | "</p" [^a] | "</pa" [^r] | "</par" [^a] | "</para" [^m] | "</param" [^e] | "</parame" [^t] | "</paramet" [^e] | "</paramete" [^r] | "</parameter" [^>]"#));
+}

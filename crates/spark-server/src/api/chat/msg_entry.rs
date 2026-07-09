@@ -66,6 +66,12 @@ pub(super) fn build_msg_entries(
     // many commands without ever writing the deliverable (gap #9).
     let mut total_tool_calls: usize = 0;
     let mut productive_tool_calls: usize = 0;
+    // P1-6 (2026-07-09): (index into `messages`, pre-hint original
+    // text) for every tool-result entry, for duplicate-error masking
+    // after the loop. Comparison must see the ORIGINAL text — the
+    // injected hints vary with the escalation counter and would break
+    // exact-match grouping.
+    let mut tool_result_originals: Vec<(usize, String)> = Vec::new();
 
     // F6 (2026-05-26): `last_query_index` was previously used to gate
     // an empty `<think>\n\n</think>\n\n` injection for historical
@@ -125,6 +131,9 @@ pub(super) fn build_msg_entries(
         // grouping.
         if tools_active && m.role == "tool" {
             let mut text = text;
+            // P1-6 (2026-07-09): record the pre-hint original at the
+            // index this entry is about to occupy.
+            tool_result_originals.push((messages.len(), text.clone()));
             if crate::hint_injector::looks_like_error(&text) {
                 consecutive_tool_errors += 1;
                 crate::hint_injector::inject_hints(&mut text, consecutive_tool_errors);
@@ -179,6 +188,22 @@ pub(super) fn build_msg_entries(
                 all_images.push(img_uri.clone());
                 image_pad_counts.push(0);
             }
+        }
+    }
+
+    // P1-6 (2026-07-09): duplicate-error observation masking
+    // (arXiv:2508.21433 pattern). Feeding an identical error text back
+    // verbatim N times reinforces the failing-call attractor (45k
+    // collapse: 6x "BadResource: FileSystem.readFile (/home/nologik)").
+    // Mask the OLDER occurrences of a repeated error-shaped tool
+    // result, keeping only the NEWEST verbatim (hints attach to the
+    // newest, which is preserved untouched). Kill-switch
+    // ATLAS_NO_ERROR_DEDUP=1 restores verbatim history. MUST run
+    // before the vacuous-system removal below — the recorded indices
+    // refer to the un-shifted `messages` vec.
+    if tools_active && !error_dedup_disabled() {
+        for (idx, replacement) in duplicate_error_masks(&tool_result_originals) {
+            messages[idx].content = replacement;
         }
     }
 
@@ -307,6 +332,144 @@ fn is_vacuous_system_content(content: &str) -> bool {
                 .all(|c| c.is_ascii_alphabetic() || c == ' ' || c == '_' || c == '-');
     }
     false
+}
+
+/// P1-6 (2026-07-09): kill-switch — `ATLAS_NO_ERROR_DEDUP=1` restores
+/// verbatim duplicate-error history (disables the masking pass).
+fn error_dedup_disabled() -> bool {
+    std::env::var("ATLAS_NO_ERROR_DEDUP").as_deref() == Ok("1")
+}
+
+/// P1-6 (2026-07-09): duplicate-error observation masking.
+///
+/// Input: `(message_index, original_pre_hint_text)` for every
+/// tool-result entry, in conversation order. Output: `(message_index,
+/// replacement_text)` for the OLDER members of each duplicate-error
+/// group; the newest member of each group stays verbatim. Two
+/// tool results are duplicates when BOTH are error-shaped
+/// (`crate::hint_injector::looks_like_error`) AND either equal after
+/// trim or Jaccard >= 0.9 over 4-gram shingles (the loop_detector
+/// measure — SSOT). Successful outputs never participate: identical
+/// success observations (e.g. repeated `ls`) are legitimate.
+fn duplicate_error_masks(tool_results: &[(usize, String)]) -> Vec<(usize, String)> {
+    const NEAR_DUP_JACCARD: f64 = 0.9;
+    let errors: Vec<(usize, &str)> = tool_results
+        .iter()
+        .filter(|(_, t)| crate::hint_injector::looks_like_error(t))
+        .map(|(i, t)| (*i, t.trim()))
+        .collect();
+    if errors.len() < 2 {
+        return Vec::new();
+    }
+    let shingle_sets: Vec<_> = errors
+        .iter()
+        .map(|(_, t)| crate::loop_detector::shingle_set(t))
+        .collect();
+    // First-match grouping against each group's first member. Short
+    // errors (< 4 tokens) have empty shingle sets — jaccard() returns
+    // 0.0 for those, so they group via exact-trim match only.
+    let mut groups: Vec<Vec<usize>> = Vec::new(); // indices into `errors`
+    for i in 0..errors.len() {
+        let group = groups.iter_mut().find(|g| {
+            let rep = g[0];
+            errors[rep].1 == errors[i].1
+                || crate::loop_detector::jaccard(&shingle_sets[rep], &shingle_sets[i])
+                    >= NEAR_DUP_JACCARD
+        });
+        match group {
+            Some(g) => g.push(i),
+            None => groups.push(vec![i]),
+        }
+    }
+    let mut masks = Vec::new();
+    for g in &groups {
+        let n = g.len();
+        if n < 2 {
+            continue;
+        }
+        // Keep the LAST (newest) verbatim; mask the earlier ones.
+        for (k, &ei) in g.iter().take(n - 1).enumerate() {
+            masks.push((
+                errors[ei].0,
+                format!("[same error as below, attempt {} of {}]", k + 1, n),
+            ));
+        }
+    }
+    masks
+}
+
+#[cfg(test)]
+mod error_dedup_tests {
+    use super::duplicate_error_masks;
+
+    #[test]
+    fn exact_duplicate_errors_mask_older_keep_newest() {
+        // The 45k-collapse shape: identical error text repeated.
+        let err = "Error: BadResource: FileSystem.readFile (/home/nologik)";
+        let results = vec![
+            (2, err.to_string()),
+            (5, format!("  {err}\n")), // trim-equal counts as duplicate
+            (9, err.to_string()),
+        ];
+        let masks = duplicate_error_masks(&results);
+        assert_eq!(
+            masks,
+            vec![
+                (2, "[same error as below, attempt 1 of 3]".to_string()),
+                (5, "[same error as below, attempt 2 of 3]".to_string()),
+            ],
+            "older duplicates masked, newest (idx 9) untouched"
+        );
+    }
+
+    #[test]
+    fn non_error_duplicates_untouched() {
+        let ok = "src\nCargo.toml\nREADME.md";
+        let results = vec![
+            (1, ok.to_string()),
+            (3, ok.to_string()),
+            (7, ok.to_string()),
+        ];
+        assert!(
+            duplicate_error_masks(&results).is_empty(),
+            "identical SUCCESS observations are legitimate — never masked"
+        );
+    }
+
+    #[test]
+    fn distinct_errors_untouched() {
+        let results = vec![
+            (1, "Error: ENOENT no such file /a/b".to_string()),
+            (
+                4,
+                "Error: Permission denied writing /etc/passwd".to_string(),
+            ),
+        ];
+        assert!(duplicate_error_masks(&results).is_empty());
+    }
+
+    #[test]
+    fn near_duplicate_errors_group_via_jaccard() {
+        // Long errors differing in one trailing token: Jaccard over
+        // 4-gram shingles lands just above 0.9 at ~90 tokens.
+        let body: Vec<String> = (0..90).map(|i| format!("frame{i}")).collect();
+        let base = format!("Error: {}", body.join(" "));
+        let mut variant_body = body.clone();
+        *variant_body.last_mut().unwrap() = "different".to_string();
+        let variant = format!("Error: {}", variant_body.join(" "));
+        let results = vec![(0, base), (2, variant)];
+        let masks = duplicate_error_masks(&results);
+        assert_eq!(
+            masks,
+            vec![(0, "[same error as below, attempt 1 of 2]".to_string())]
+        );
+    }
+
+    #[test]
+    fn single_error_never_masked() {
+        let results = vec![(0, "Error: something failed".to_string())];
+        assert!(duplicate_error_masks(&results).is_empty());
+    }
 }
 
 #[cfg(test)]

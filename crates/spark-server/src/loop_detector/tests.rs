@@ -167,6 +167,124 @@ fn one_off_repeat_does_not_trigger_suppress() {
     assert_eq!(v, LoopState::None, "two-turn repeat is not yet a loop");
 }
 
+// ─── P1-5 (2026-07-09): exact-match failing-call fast path ──────────
+
+#[test]
+fn p1_5_three_identical_failing_short_calls_detected_without_suppress() {
+    // 45k-collapse shape: 3 byte-identical FAILING calls whose
+    // ~3-token unit sits below MIN_CHANNEL_TOKENS — the legacy
+    // detector is blind (empty signatures ⇒ None ⇒ no Suppress), and
+    // the fast path must flag the loop candidate instead. The fast
+    // path never drives suppress_tool_call: the orchestrator only
+    // bumps tool_call_repeat_count (soft bias decay), leaving
+    // <tool_call> — the escape action — available.
+    let sig = sig_with_tool("", "write", r#"{"p":""}"#);
+    assert!(
+        sig.is_empty(),
+        "short call must be below MIN_CHANNEL_TOKENS for this test to be meaningful"
+    );
+    let sigs = vec![sig.clone(), sig.clone(), sig];
+    assert_eq!(
+        detect(&sigs),
+        LoopState::None,
+        "legacy detect() must stay blind (⇒ suppress NOT set via Suppress verdict)"
+    );
+
+    let turn = CallOutcome {
+        call_unit: Some("write\u{1f}{\"p\":\"\"}".to_string()),
+        failing: true,
+    };
+    let turns = vec![turn.clone(), turn.clone(), turn];
+    assert_eq!(
+        detect_exact_failing_repeat(&turns),
+        Some(3),
+        "fast path must fire on 3 byte-identical failing calls"
+    );
+}
+
+#[test]
+fn p1_5_three_identical_succeeding_short_calls_unchanged_legacy() {
+    // Same 3 identical short calls but the results SUCCEEDED — the
+    // fast path must NOT fire without error-shaped results, and the
+    // legacy path stays unchanged (no detection below
+    // MIN_CHANNEL_TOKENS).
+    let turn = CallOutcome {
+        call_unit: Some("write\u{1f}{\"p\":\"\"}".to_string()),
+        failing: false,
+    };
+    let turns = vec![turn.clone(), turn.clone(), turn];
+    assert_eq!(detect_exact_failing_repeat(&turns), None);
+
+    let sig = sig_with_tool("", "write", r#"{"p":""}"#);
+    assert_eq!(
+        detect(&[sig.clone(), sig.clone(), sig]),
+        LoopState::None,
+        "legacy behavior unchanged for short succeeding repeats"
+    );
+}
+
+#[test]
+fn p1_5_two_identical_failing_calls_not_enough() {
+    let turn = CallOutcome {
+        call_unit: Some("x\u{1f}{}".to_string()),
+        failing: true,
+    };
+    assert_eq!(detect_exact_failing_repeat(&[turn.clone(), turn]), None);
+}
+
+#[test]
+fn p1_5_differing_units_break_the_run() {
+    let a = CallOutcome {
+        call_unit: Some("write\u{1f}{\"p\":\"a\"}".to_string()),
+        failing: true,
+    };
+    let b = CallOutcome {
+        call_unit: Some("write\u{1f}{\"p\":\"b\"}".to_string()),
+        failing: true,
+    };
+    assert_eq!(detect_exact_failing_repeat(&[a.clone(), a, b]), None);
+}
+
+#[test]
+fn p1_5_no_tool_call_turn_breaks_the_run() {
+    let call = CallOutcome {
+        call_unit: Some("x\u{1f}{}".to_string()),
+        failing: true,
+    };
+    let prose = CallOutcome {
+        call_unit: None,
+        failing: false,
+    };
+    assert_eq!(
+        detect_exact_failing_repeat(&[call.clone(), prose, call]),
+        None
+    );
+}
+
+#[test]
+fn p1_5_recent_calls_all_failing_gate() {
+    let fail = CallOutcome {
+        call_unit: Some("x\u{1f}{}".to_string()),
+        failing: true,
+    };
+    let ok = CallOutcome {
+        call_unit: Some("x\u{1f}{}".to_string()),
+        failing: false,
+    };
+    // All three failing ⇒ Suppress hard-mask must be skipped.
+    assert!(recent_calls_all_failing(
+        &[fail.clone(), fail.clone(), fail.clone()],
+        3
+    ));
+    // Any succeeding call in the window ⇒ legacy Suppress applies.
+    assert!(!recent_calls_all_failing(
+        &[fail.clone(), ok, fail.clone()],
+        3
+    ));
+    // Fewer outcomes than requested ⇒ conservative false.
+    assert!(!recent_calls_all_failing(&[fail], 3));
+}
+
 #[test]
 fn signature_below_min_tokens_is_empty() {
     // Even if some shingles could be formed at order < SHINGLE_ORDER,

@@ -45,11 +45,23 @@ fn ebnf_literal_escape(c: char) -> String {
 /// opencode webserver_ok gap. NOTE this re-permits `<`-content; BUG#1 graceful
 /// disengage keeps any residual refusal non-fatal, and the live N=10 A/B is the
 /// gate for whether the prior F2 XML-attribute-drift mode returns.
-fn ebnf_until_close_ladder(close: &str) -> String {
+/// P1-2 (2026-07-09, env `ATLAS_GRAMMAR_FORCE_CLOSE=1`): with `force_close`,
+/// the DEEPEST arm (`"</parameter" [^>]` for qwen3_coder) is omitted, so once
+/// the value contains the full close-prefix the ONLY legal continuation is the
+/// literal final char — xgrammar's mask deflects a dropped `>` at sample time
+/// (the 45k garble `</parameter<parameter=` becomes unrepresentable). Cost:
+/// value content containing `</parameter` + non-`>` (e.g. `</parameters>`)
+/// becomes unwritable — hence opt-in + BFCL A/B gate before default-on.
+fn ebnf_until_close_ladder_opts(close: &str, force_close: bool) -> String {
     let chars: Vec<char> = close.chars().collect();
     debug_assert!(!chars.is_empty(), "close delimiter must be non-empty");
     let mut alts: Vec<String> = Vec::with_capacity(chars.len().max(1));
-    for k in 0..chars.len() {
+    let depth = if force_close && chars.len() > 1 {
+        chars.len() - 1
+    } else {
+        chars.len()
+    };
+    for k in 0..depth {
         let neg = ebnf_class_escape(chars[k]);
         if k == 0 {
             alts.push(format!("[^{neg}]"));
@@ -67,6 +79,18 @@ fn ebnf_until_close_ladder(close: &str) -> String {
         return "[^\\x00]".to_string();
     }
     alts.join(" | ")
+}
+
+fn ebnf_until_close_ladder(close: &str) -> String {
+    ebnf_until_close_ladder_opts(close, false)
+}
+
+/// P1-1/P1-2 env opt-ins (read per call; set in the serving environment).
+fn grammar_allow_empty_value() -> bool {
+    std::env::var("ATLAS_GRAMMAR_ALLOW_EMPTY_VALUE").as_deref() == Ok("1")
+}
+fn grammar_force_close() -> bool {
+    std::env::var("ATLAS_GRAMMAR_FORCE_CLOSE").as_deref() == Ok("1")
 }
 
 /// F2-2a (2026-06-02): structural ceiling on a parameter VALUE's `rest`
@@ -120,7 +144,22 @@ pub(crate) fn xml_param_value_body_ebnf(
     value_close: &str,
     param_names: Option<&[String]>,
 ) -> String {
-    let ladder = ebnf_until_close_ladder(value_close);
+    xml_param_value_body_ebnf_opts(
+        value_close,
+        param_names,
+        grammar_allow_empty_value(),
+        grammar_force_close(),
+    )
+}
+
+/// Explicit-parameter core (unit-testable without env races).
+pub(crate) fn xml_param_value_body_ebnf_opts(
+    value_close: &str,
+    param_names: Option<&[String]>,
+    allow_empty_value: bool,
+    force_close: bool,
+) -> String {
+    let ladder = ebnf_until_close_ladder_opts(value_close, force_close);
     let rest_rule = if value_harden_enabled() {
         format!("rest ::= rest_part{{0,{VALUE_REST_MAX_REPEAT}}}")
     } else {
@@ -180,11 +219,23 @@ pub(crate) fn xml_param_value_body_ebnf(
     //    `{value_close}` as body) at EVERY position, so first_content now
     //    reuses the SAME ladder for its `<` arm: `<` is legal at content
     //    start unless it begins the exact close delimiter.
+    // P1-1 (2026-07-09, env `ATLAS_GRAMMAR_ALLOW_EMPTY_VALUE=1`): the
+    // non-empty guard makes an EMPTY parameter value unrepresentable, so a
+    // model intending `<parameter=content></parameter>` is mask-coerced onto
+    // garbage first bytes — at 43k depth this manufactured the byte-identical
+    // `</parameter<parameter=` attractor. Opt-in allows the empty value
+    // (immediate close). Trade-off: re-opens the Epoch-3 empty-garbage-call
+    // shape — hence opt-in + BFCL A/B gate before default-on.
+    let value_rule = if allow_empty_value {
+        "value ::= leading_ws (first_content rest)?"
+    } else {
+        "value ::= leading_ws first_content rest"
+    };
     format!(
         r#"root ::= param ("\n" param)*
 param ::= "<parameter=" paramname ">" value "{value_close}"
 {paramname_rule}
-value ::= leading_ws first_content rest
+{value_rule}
 leading_ws ::= [ \t\r\n]*
 first_content ::= [^ \t\r\n<=>] | {first_lt_arms}
 {rest_rule}
