@@ -332,6 +332,7 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
                     "Inter-tool prose budget exhausted in MTP/emit path; ending response \
                      (no tool call after budget — would otherwise burn to max_tokens)."
                 );
+                a.guard_stop = Some("inter_tool_prose_budget");
                 a.finished = true;
             }
         }

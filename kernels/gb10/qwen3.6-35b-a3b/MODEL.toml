@@ -265,7 +265,11 @@ max_thinking_budget = 768
 # agentic runs into 360s cap-riders (tq12 gate 0/2). 384 is the value
 # the 2026-06-07 10/10 series and the CC2-CC6 Claude-Code validation
 # actually ran with.
-max_inter_tool_prose = 384
+# P2-1 (2026-07-09): 384 amputated legitimate plan/analysis prose turns
+# (opencode arms tools every turn). Repeating wander is caught by the content-
+# loop + SimHash watchdogs; this bound only limits a non-repeating dormant-
+# opener burn. Raised to fit plans while staying << max_tokens.
+max_inter_tool_prose = 3072
 # F1 (2026-06-02): unconditional post-`</think>` content-token cap for
 # tool-active requests. Backstops the grammar-legal-but-never-closing
 # tool-value runaway (a garbled/merged BPE `</parameter>` close leaves
