@@ -39,6 +39,7 @@ impl Qwen3AttentionLayer {
             eps,
             bs,
             stream,
+            pos,
         } = *args;
         let mla = self
             .mla
@@ -68,6 +69,199 @@ impl Qwen3AttentionLayer {
                     $body
                 }
             }};
+        }
+
+        // ── 4b inc-3: decode-time compressed-block append ──
+        // Capture this token's compressor input (`normed`, the layer-input
+        // RMSNorm output prefill's `cache_skip_v4` feeds `wkv`/`wgate`) into a
+        // per-layer BF16 ring, and at each window boundary rerun prefill's
+        // compress pipeline over the ring to append ONE FP8 pool block —
+        // restoring the double-representation (raw sliding window + compressed
+        // history) that inc-2 froze at the prefill count. Runs BEFORE the Q/K/V
+        // compute so the MoE scratch buffers (expert_up_out/…) are free, exactly
+        // as prefill uses them. Single-sequence eager decode only: `pos` is None
+        // on the batched/MTP path, and a captured graph can't re-run host logic.
+        if let (Some(pos), Some(comp)) = (pos, mla.compressor.as_ref())
+            && meta.num_seqs == 1
+            && !ctx.graph_capture
+        {
+            {
+                use std::sync::atomic::Ordering::Relaxed;
+                let ratio = comp.ratio as u32;
+                let proj_dim = comp.proj_dim as u32;
+                let nope = mla.nope as u32;
+                let rope_d = mla_rope;
+                let hd_mla = nope + rope_d; // compressed block width (= q head_dim)
+                let hb = h as usize * 2; // BF16 bytes per token row
+
+                // Capture normed → ring slot (pos % ratio). At a boundary the
+                // ring then holds the completed window's `ratio` tokens in order.
+                let slot = (pos % ratio) as usize;
+                ctx.gpu
+                    .copy_d2d_async(normed, comp.ring.offset(slot * hb), hb, stream)?;
+
+                if (pos + 1) % ratio == 0 {
+                    let w = (pos + 1) / ratio - 1;
+                    let filled = self.v4_comp_pool_filled.load(Relaxed);
+                    // Append the next window we don't already hold. Straddle
+                    // windows are handled by the prefill→decode ring seed
+                    // (cache_skip_v4), so the ring is always complete here — no
+                    // coverage guard needed. prev_win is seeded (CSA) so the very
+                    // first decode block gets its real Ca (not masked).
+                    if w >= filled {
+                        use spark_runtime::kernel_args::KernelLaunch;
+                        let prev_valid = self.v4_comp_prev_valid.load(Relaxed);
+                        // CSA with a real previous window → 2×ratio overlap
+                        // (grid[2], take block 1). HCA, or the first CSA window
+                        // (Ca masked = window-0 semantics), → ring only (grid[1],
+                        // block 0). See csa_compress.cu for the Ca/Cb layout.
+                        let (comp_in, t_rows, launch_win, tgt) = if comp.is_csa && prev_valid {
+                            ctx.gpu.copy_d2d_async(
+                                comp.prev_win,
+                                comp.stage,
+                                ratio as usize * hb,
+                                stream,
+                            )?;
+                            ctx.gpu.copy_d2d_async(
+                                comp.ring,
+                                comp.stage.offset(ratio as usize * hb),
+                                ratio as usize * hb,
+                                stream,
+                            )?;
+                            (comp.stage, 2 * ratio, 2u32, 1u32)
+                        } else {
+                            (comp.ring, ratio, 1u32, 0u32)
+                        };
+
+                        // compressor projections kv/gate = W·comp_in [T, proj_dim]
+                        let kv_comp = ctx.buffers.expert_up_out();
+                        let gate_comp = ctx.buffers.expert_down_out();
+                        ops::dense_gemm(
+                            ctx.gpu,
+                            self.dense_gemm_k,
+                            comp_in,
+                            &comp.wkv,
+                            kv_comp,
+                            t_rows,
+                            proj_dim,
+                            h,
+                            stream,
+                        )?;
+                        ops::dense_gemm(
+                            ctx.gpu,
+                            self.dense_gemm_k,
+                            comp_in,
+                            &comp.wgate,
+                            gate_comp,
+                            t_rows,
+                            proj_dim,
+                            h,
+                            stream,
+                        )?;
+                        // window softmax-gated compression → [launch_win, hd_mla]
+                        let compressed = ctx.buffers.moe_output();
+                        KernelLaunch::new(ctx.gpu, self.csa_compress_k)
+                            .grid([launch_win, 1, 1])
+                            .block([256, 1, 1])
+                            .arg_ptr(kv_comp)
+                            .arg_ptr(gate_comp)
+                            .arg_ptr(comp.ape)
+                            .arg_ptr(compressed)
+                            .arg_u32(t_rows)
+                            .arg_u32(ratio)
+                            .arg_u32(hd_mla)
+                            .arg_u32(proj_dim)
+                            .arg_u32(if comp.is_csa { 1 } else { 0 })
+                            .launch(stream)?;
+                        // rms_norm the target block in place (matches prefill).
+                        let block = compressed.offset(tgt as usize * hd_mla as usize * 2);
+                        ops::rms_norm(
+                            ctx.gpu,
+                            self.rms_norm_k,
+                            block,
+                            &comp.norm,
+                            block,
+                            1,
+                            hd_mla,
+                            eps,
+                            stream,
+                        )?;
+                        // comp_k = rope(block): copy → extract tail → yarn @ w*ratio
+                        // → writeback. Uses the window's compress position w*ratio,
+                        // theta = yarn_inv_freq, interleaved — mirrors prefill.
+                        let comp_k = compressed.offset(launch_win as usize * hd_mla as usize * 2);
+                        ctx.gpu
+                            .copy_d2d_async(block, comp_k, hd_mla as usize * 2, stream)?;
+                        let pos_bytes = (w * ratio).to_le_bytes();
+                        let comp_positions = ctx.buffers.ssm_ba();
+                        ctx.gpu.copy_h2d_async(&pos_bytes, comp_positions, stream)?;
+                        let comp_rope_tmp = ctx.buffers.ssm_conv_out_f32();
+                        ops::mla_q_rope_extract_batched(
+                            ctx.gpu,
+                            self.mla_q_rope_extract_batched_k,
+                            comp_k,
+                            comp_rope_tmp,
+                            1,
+                            1,
+                            hd_mla,
+                            nope,
+                            rope_d,
+                            hd_mla,
+                            stream,
+                        )?;
+                        ops::rope_yarn(
+                            ctx.gpu,
+                            self.rope_yarn_interleaved_k,
+                            comp_rope_tmp,
+                            comp_rope_tmp,
+                            comp_positions,
+                            1,
+                            0,
+                            1,
+                            rope_d,
+                            rope_d,
+                            mla.yarn_inv_freq,
+                            super::super::helpers::yarn_rope_mscale(ctx.config),
+                            stream,
+                        )?;
+                        ops::mla_q_rope_writeback_batched(
+                            ctx.gpu,
+                            self.mla_q_rope_writeback_batched_k,
+                            comp_rope_tmp,
+                            comp_k,
+                            1,
+                            1,
+                            hd_mla,
+                            nope,
+                            rope_d,
+                            hd_mla,
+                            stream,
+                        )?;
+                        // Quantize the rope'd block into pool[w] (FP8, 1 byte/elem,
+                        // k_scale=1.0 → plain e4m3 cast, matches the raw KV arm).
+                        ops::bf16_to_fp8(
+                            ctx.gpu,
+                            self.bf16_to_fp8_k,
+                            comp_k,
+                            comp.pool.offset(w as usize * hd_mla as usize),
+                            hd_mla,
+                            stream,
+                        )?;
+                        // Publish: decode's compressed arm now attends [0, w+1).
+                        self.v4_comp_pool_filled.store(w + 1, Relaxed);
+                        // CSA: this window becomes the next window's Ca source.
+                        if comp.is_csa {
+                            ctx.gpu.copy_d2d_async(
+                                comp.ring,
+                                comp.prev_win,
+                                ratio as usize * hb,
+                                stream,
+                            )?;
+                            self.v4_comp_prev_valid.store(true, Relaxed);
+                        }
+                    }
+                }
+            }
         }
 
         // ── Step 1: Q latent → norm → expand ──
@@ -317,8 +511,18 @@ impl Qwen3AttentionLayer {
                 1,
                 mla_rope,
                 mla_rope,
-                mla.yarn_inv_freq,
-                super::super::helpers::yarn_rope_mscale(ctx.config),
+                // Sliding layers (compressor==None) = reference "main" rope:
+                // plain θ=10000, mscale=1 (no yarn). CSA/HCA keep θ=160000 yarn.
+                if mla.compressor.is_none() {
+                    mla.main_inv_freq
+                } else {
+                    mla.yarn_inv_freq
+                },
+                if mla.compressor.is_none() {
+                    1.0f32
+                } else {
+                    super::super::helpers::yarn_rope_mscale(ctx.config)
+                },
                 stream,
             )
         })?;
@@ -483,8 +687,19 @@ impl Qwen3AttentionLayer {
                 0, // no KV heads — de-rotate the query/output heads only
                 mla_rope,
                 mla_rope,
-                mla.yarn_inv_freq,
-                super::super::helpers::yarn_rope_mscale(ctx.config),
+                // MUST match the Q/K rope inv_freq for this layer type (rope-in
+                // == de-rotate-out), else the output is scrambled. Sliding =
+                // main θ=10000; CSA/HCA = θ=160000 yarn.
+                if mla.compressor.is_none() {
+                    mla.main_inv_freq
+                } else {
+                    mla.yarn_inv_freq
+                },
+                if mla.compressor.is_none() {
+                    1.0f32
+                } else {
+                    super::super::helpers::yarn_rope_mscale(ctx.config)
+                },
                 stream,
             )?;
             ops::mla_q_rope_writeback_batched(

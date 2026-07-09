@@ -117,6 +117,24 @@
             "command": "sparkrun run @atlas/qwen3.6-27b-fp8-mtp --hosts localhost"
           },
           {
+            "displayName": "Qwen3.6 27B NVFP4 Prefill Record",
+            "hfId": "nvidia/Qwen3.6-27B-NVFP4",
+            "params": "27B",
+            "quant": "nvfp4",
+            "topology": "single",
+            "recipeStem": "qwen3.6-27b-nvfp4-prefill-record",
+            "command": "sparkrun run @atlas/qwen3.6-27b-nvfp4-prefill-record --hosts localhost"
+          },
+          {
+            "displayName": "Qwen3.6 35B A3B FP8 Bf16head",
+            "hfId": "Qwen/Qwen3.6-35B-A3B-FP8",
+            "params": "35B",
+            "quant": "fp8",
+            "topology": "single",
+            "recipeStem": "qwen3.6-35b-a3b-fp8-bf16head",
+            "command": "sparkrun run @atlas/qwen3.6-35b-a3b-fp8-bf16head --hosts localhost"
+          },
+          {
             "displayName": "Qwen3.6 35B A3B FP8 MTP",
             "hfId": "Qwen/Qwen3.6-35B-A3B-FP8",
             "params": "35B",
@@ -126,8 +144,17 @@
             "command": "sparkrun run @atlas/qwen3.6-35b-a3b-fp8-mtp --hosts localhost"
           },
           {
+            "displayName": "Qwen3.6 35B A3B FP8 Nvfp4head",
+            "hfId": "Qwen/Qwen3.6-35B-A3B-FP8",
+            "params": "35B",
+            "quant": "fp8",
+            "topology": "single",
+            "recipeStem": "qwen3.6-35b-a3b-fp8-nvfp4head",
+            "command": "sparkrun run @atlas/qwen3.6-35b-a3b-fp8-nvfp4head --hosts localhost"
+          },
+          {
             "displayName": "Qwen3.6 35B A3B NVFP4",
-            "hfId": "RedHatAI/Qwen3.6-35B-A3B-NVFP4",
+            "hfId": "nvidia/Qwen3.6-35B-A3B-NVFP4",
             "params": "35B",
             "quant": "nvfp4",
             "topology": "single",
@@ -142,6 +169,29 @@
     "vendor": "Gemma",
     "icon": "gemma",
     "subfamilies": [
+      {
+        "name": "Gemma Diffusion",
+        "recipes": [
+          {
+            "displayName": "Diffusion Gemma BF16",
+            "hfId": "google/diffusiongemma-26B-A4B-it",
+            "params": "",
+            "quant": "",
+            "topology": "single",
+            "recipeStem": "diffusion-gemma-bf16",
+            "command": "sparkrun run @atlas/diffusion-gemma-bf16 --hosts localhost"
+          },
+          {
+            "displayName": "Diffusion Gemma FP8 Dynamic",
+            "hfId": "RedHatAI/diffusiongemma-26B-A4B-it-FP8-dynamic",
+            "params": "",
+            "quant": "",
+            "topology": "single",
+            "recipeStem": "diffusion-gemma-fp8-dynamic",
+            "command": "sparkrun run @atlas/diffusion-gemma-fp8-dynamic --hosts localhost"
+          }
+        ]
+      },
       {
         "name": "Gemma-4",
         "recipes": [
@@ -236,6 +286,26 @@
             "topology": "EP=2",
             "recipeStem": "minimax-m2.7-nvfp4-ep2",
             "command": "sparkrun run @atlas/minimax-m2.7-nvfp4-ep2 --hosts <spark-1>,<spark-2>"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "vendor": "DeepSeek",
+    "icon": "deepseek",
+    "subfamilies": [
+      {
+        "name": "DeepSeek-V4",
+        "recipes": [
+          {
+            "displayName": "Deepseek V4 Flash NVFP4 EP=2",
+            "hfId": "nvidia/DeepSeek-V4-Flash-NVFP4",
+            "params": "280B",
+            "quant": "nvfp4",
+            "topology": "EP=2",
+            "recipeStem": "deepseek-v4-flash-nvfp4-ep2",
+            "command": "sparkrun run @atlas/deepseek-v4-flash-nvfp4-ep2 --hosts <spark-1>,<spark-2>"
           }
         ]
       }

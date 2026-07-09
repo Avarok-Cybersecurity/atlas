@@ -46,6 +46,12 @@ FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04@sha256:95318efecfd68ab3d109da5277863
 
 LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
 
+# Stamp the source commit into the image so ":latest" provenance is answerable:
+#   docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' <tag>
+# Passed by scripts/release.sh and the atlas-release skill via --build-arg ATLAS_GIT_SHA.
+ARG ATLAS_GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${ATLAS_GIT_SHA}"
+
 # NCCL for multi-GPU (EP=2), RDMA userspace for RoCE transport.
 # NCCL ≥ 2.28 is required for `ncclMemAlloc`/`ncclMemFree` symmetric memory
 # windows (substrate for device-API fused allreduce kernels). The base
