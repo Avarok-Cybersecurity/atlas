@@ -15,9 +15,11 @@
 // State H: [batch, num_heads, head_dim, state_size] FP32
 //          = [B, 64, 64, 128] — state_size is contiguous (fast dimension).
 //
-// Grid: (num_heads, batch, 1)   Block: (128, 1, 1)
+// Grid: (num_heads, batch, 1)   Block: (state_size, 1, 1)  [or padded ≤128]
 // Each block handles one (batch, head) pair.
-// 128 threads = state_size → each thread handles one state column.
+// One thread per state column. Nano/Super use state_size=128; Puzzle=96.
+// Final y-reduction MUST only sum active warps (ceil(state_size/32)), not a
+// hard-coded 4 — otherwise smem_warp[3] is unread garbage for state_size<128.
 
 #include <cuda_bf16.h>
 
@@ -129,9 +131,14 @@ extern "C" __global__ void mamba2_ssm_decode(
 
     // ── Final cross-warp reduction + D skip connection + write output ──
     // Threads 0..head_dim-1 each handle one output element.
+    // Only sum warps that cover state columns (Puzzle state_size=96 → 3 warps).
+    const unsigned int n_warps = (state_size + 31u) / 32u;
     if (tid < head_dim) {
-        float y_val = smem_warp[0][tid] + smem_warp[1][tid]
-                    + smem_warp[2][tid] + smem_warp[3][tid];
+        float y_val = 0.f;
+        #pragma unroll
+        for (unsigned int w = 0; w < 4; w++) {
+            if (w < n_warps) y_val += smem_warp[w][tid];
+        }
         // D skip connection: y += D * x
         y_val += D_val * smem_x[tid];
         output[(unsigned long long)(b * num_heads + head) * head_dim + tid] =
@@ -226,9 +233,14 @@ extern "C" __global__ void mamba2_ssm_prefill(
         }
         __syncthreads();
 
+        // Only sum active warps (see decode kernel note for Puzzle state_size=96).
+        const unsigned int n_warps = (state_size + 31u) / 32u;
         if (tid < head_dim) {
-            float y_val = smem_warp[0][tid] + smem_warp[1][tid]
-                        + smem_warp[2][tid] + smem_warp[3][tid];
+            float y_val = 0.f;
+            #pragma unroll
+            for (unsigned int w = 0; w < 4; w++) {
+                if (w < n_warps) y_val += smem_warp[w][tid];
+            }
             y_val += D_val * smem_x[tid];
             output[(unsigned long long)t * y_stride
                 + (unsigned long long)(b * num_heads + head) * head_dim + tid] =
