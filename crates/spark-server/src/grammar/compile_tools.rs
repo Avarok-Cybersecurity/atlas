@@ -116,12 +116,33 @@ fn short_tool_trigger_enabled() -> bool {
 /// so a drifted close still terminates the value. Routed through the same
 /// trait-supplied `value_close` (no hard-coded per-model tokens). Deferred:
 /// 2a (this) is the structural backstop; 2b is the next kill-switched step.
-fn xml_param_value_body_ebnf(value_close: &str) -> String {
+pub(crate) fn xml_param_value_body_ebnf(value_close: &str, param_names: Option<&[String]>) -> String {
     let ladder = ebnf_until_close_ladder(value_close);
     let rest_rule = if value_harden_enabled() {
         format!("rest ::= rest_part{{0,{VALUE_REST_MAX_REPEAT}}}")
     } else {
         "rest ::= rest_part*".to_string()
+    };
+    // Echo-attractor fix (2026-07-09): constrain the parameter NAME to the
+    // tool schema's property names when they are known. The historical
+    // identifier rule accepted ANY identifier, so at long context a model
+    // drifting into the wire-format echo attractor could emit
+    // `<parameter=parameter>filePath>…` / `<parameter=write>content>…` —
+    // grammar-LEGAL under the old rule, and the key-slot masking of `=`
+    // actively converted a recoverable one-token echo into a permanently
+    // mis-keyed call (live opencode collapse at 42.5k tokens, 2026-07-09).
+    // With the alternation below, xgrammar's mask forces the key slot onto a
+    // real schema property, making the mis-keyed shape unrepresentable.
+    // `None` (schema-less / open schema) keeps the historical identifier rule.
+    let paramname_rule = match param_names {
+        Some(names) if !names.is_empty() => {
+            let alts: Vec<String> = names
+                .iter()
+                .map(|n| serde_json::to_string(n).unwrap_or_else(|_| "\"\"".into()))
+                .collect();
+            format!("paramname ::= {}", alts.join(" | "))
+        }
+        _ => "paramname ::= [a-zA-Z_] [a-zA-Z_0-9]*".to_string(),
     };
     // Content-start rule: allow a leading whitespace run (INCLUDING `\n`),
     // then REQUIRE at least one non-whitespace char that is NOT `<`, `=`, or
@@ -146,7 +167,7 @@ fn xml_param_value_body_ebnf(value_close: &str) -> String {
     format!(
         r#"root ::= param ("\n" param)*
 param ::= "<parameter=" paramname ">" value "{value_close}"
-paramname ::= [a-zA-Z_] [a-zA-Z_0-9]*
+{paramname_rule}
 value ::= leading_ws first_content rest
 leading_ws ::= [ \t\r\n]*
 first_content ::= [^ \t\r\n<=>]
@@ -154,6 +175,23 @@ first_content ::= [^ \t\r\n<=>]
 rest_part ::= {ladder}
 "#
     )
+}
+
+/// Extract the property names a qwen3_coder `<parameter=NAME>` key slot may
+/// take for this (sanitized) tool schema, or `None` to keep the permissive
+/// identifier rule. `None` when: no/empty `properties`, or the schema
+/// explicitly opts into arbitrary extra keys (`additionalProperties` set to
+/// anything but `false`) — constraining those would mask legitimate calls.
+pub(crate) fn schema_param_names(schema: &serde_json::Value) -> Option<Vec<String>> {
+    let props = schema.get("properties")?.as_object()?;
+    if props.is_empty() {
+        return None;
+    }
+    match schema.get("additionalProperties") {
+        None | Some(serde_json::Value::Bool(false)) => {}
+        Some(_) => return None,
+    }
+    Some(props.keys().cloned().collect())
 }
 
 impl GrammarEngine {
@@ -442,8 +480,12 @@ impl GrammarEngine {
             // content-glue it can induce is largely tolerated (Rust is
             // whitespace-insensitive; SC1 repairs TOML). The real webserver_ok
             // gap is being re-measured via the harness aggregate, not probes.
-            let body_ebnf = xml_param_value_body_ebnf(value_close);
-            let _ = &st.schema;
+            // Echo-attractor fix (2026-07-09): the sanitized schema's property
+            // names now constrain the `<parameter=NAME>` key slot (see
+            // `xml_param_value_body_ebnf`). Previously the schema was
+            // discarded here and any identifier was key-legal.
+            let param_names = schema_param_names(&st.schema);
+            let body_ebnf = xml_param_value_body_ebnf(value_close, param_names.as_deref());
             tag_entries.push(serde_json::json!({
                 "type": "tag",
                 "begin": begin,
@@ -545,11 +587,14 @@ impl GrammarEngine {
                      emitted at trace level by xgrammar.",
                     tool_names.join(", "),
                 );
-                let body_ebnf = xml_param_value_body_ebnf(value_close);
                 let tag_entries_fallback: Vec<serde_json::Value> = sanitized_tools
                     .iter()
                     .map(|st| {
-                        let _ = &st.schema;
+                        // Echo-attractor fix (2026-07-09): per-tool key-slot
+                        // constraint, mirroring the primary path above.
+                        let param_names = schema_param_names(&st.schema);
+                        let body_ebnf =
+                            xml_param_value_body_ebnf(value_close, param_names.as_deref());
                         serde_json::json!({
                             "type": "tag",
                             "begin": format!("<tool_call>\n<function={}>\n", st.name),
