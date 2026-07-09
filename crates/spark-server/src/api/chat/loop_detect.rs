@@ -69,7 +69,8 @@ pub(super) fn check_loops(req: &ChatCompletionRequest, tools_active: bool) -> Lo
     // outcomes — `Signature` only covers assistant content, never the
     // role=="tool" results. Forward scan, then reversed to
     // newest-first (same window as the signatures above).
-    let mut outcomes_fwd: Vec<(Option<String>, bool, bool)> = Vec::new(); // (unit, saw_result, all_err)
+    // (unit, saw_result, all_err, result_text)
+    let mut outcomes_fwd: Vec<(Option<String>, bool, bool, String)> = Vec::new();
     for m in req.messages.iter() {
         match m.role.as_str() {
             "assistant" => {
@@ -89,12 +90,17 @@ pub(super) fn check_loops(req: &ChatCompletionRequest, tools_active: bool) -> Lo
                         }
                         s
                     });
-                outcomes_fwd.push((unit, false, true));
+                outcomes_fwd.push((unit, false, true, String::new()));
             }
             "tool" => {
                 if let Some(last) = outcomes_fwd.last_mut() {
                     last.1 = true;
                     last.2 &= crate::hint_injector::looks_like_error(&m.content.text);
+                    // P1-5b: capture the result text (bounded) so the
+                    // Suppress gate can measure result-to-result progress.
+                    let take = m.content.text.chars().take(2000);
+                    last.3.extend(take);
+                    last.3.push('\n');
                 }
             }
             _ => {}
@@ -105,9 +111,10 @@ pub(super) fn check_loops(req: &ChatCompletionRequest, tools_active: bool) -> Lo
         .rev()
         .take(8)
         .map(
-            |(unit, saw_result, all_err)| crate::loop_detector::CallOutcome {
+            |(unit, saw_result, all_err, result_text)| crate::loop_detector::CallOutcome {
                 call_unit: unit,
                 failing: saw_result && all_err,
+                result_unit: if saw_result { Some(result_text) } else { None },
             },
         )
         .collect();
@@ -163,6 +170,24 @@ pub(super) fn check_loops(req: &ChatCompletionRequest, tools_active: bool) -> Lo
             // feedback for the failing call itself ships in P0-3.
             let failing_repeat =
                 crate::loop_detector::recent_calls_all_failing(&call_outcomes, *run_length);
+            // P1-5b (2026-07-09): progress gate. A productive
+            // similar-call cycle (cargo check → fix → check) has
+            // DIFFERENT results each round; masking <tool_call> there
+            // cornered the model into an empty "..." EOS at 57k. Only
+            // a loop whose results are ALSO near-identical (no new
+            // information) keeps the hard-mask.
+            let progressing = crate::loop_detector::recent_results_progressing(
+                &call_outcomes,
+                (*run_length).max(2),
+            );
+            if progressing && !failing_repeat {
+                tracing::warn!(
+                    score = *score,
+                    run_length = *run_length,
+                    channel = channel.name(),
+                    "Loop detector → SUPPRESS on PROGRESSING cycle: results differ                      round-to-round; <tool_call> hard-mask SKIPPED (soft bias decay only)"
+                );
+            }
             if failing_repeat {
                 tracing::warn!(
                     score = *score,
@@ -179,7 +204,7 @@ pub(super) fn check_loops(req: &ChatCompletionRequest, tools_active: bool) -> Lo
                     "Loop detector → SUPPRESS: hard-mask <tool_call> for one turn"
                 );
             }
-            suppress_tool_call = !failing_repeat && !loop_suppress_disabled();
+            suppress_tool_call = !failing_repeat && !progressing && !loop_suppress_disabled();
             tool_call_repeat_count = *run_length;
             crate::metrics::LOOP_DETECTOR_VERDICTS
                 .with_label_values(&["suppress", channel.name(), if spinning { "1" } else { "0" }])

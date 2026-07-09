@@ -315,6 +315,38 @@ pub struct CallOutcome {
     /// one of them was error-shaped
     /// (`crate::hint_injector::looks_like_error`).
     pub failing: bool,
+    /// Concatenated text of the tool results that followed the call
+    /// (bounded by the orchestrator). `None` when no result followed.
+    /// P1-5b: lets the Suppress gate distinguish a productive
+    /// similar-call cycle (cargo check → fix → check: results DIFFER
+    /// each round) from a true infinite loop (results identical).
+    pub result_unit: Option<String>,
+}
+
+/// P1-5b (2026-07-09): true iff the newest `n` turns' tool RESULTS show
+/// forward progress — i.e. at least one adjacent pair of results is
+/// materially different (Jaccard < 0.9 over 4-gram shingles). A build-
+/// fix-rebuild cycle has similar CALLS but different RESULTS each round
+/// (new error list); masking `<tool_call>` there corners the model into
+/// an empty stop ("..." EOS, 57k session 2026-07-09). A true infinite
+/// loop repeats both. Missing results ⇒ NOT progressing (conservative:
+/// legacy Suppress applies).
+pub fn recent_results_progressing(newest_first: &[CallOutcome], n: usize) -> bool {
+    if n < 2 || newest_first.len() < n {
+        return false;
+    }
+    let window = &newest_first[..n];
+    if window.iter().any(|c| c.result_unit.is_none()) {
+        return false;
+    }
+    window.windows(2).any(|pair| {
+        let a = pair[0].result_unit.as_deref().unwrap_or("");
+        let b = pair[1].result_unit.as_deref().unwrap_or("");
+        if a.trim() == b.trim() {
+            return false;
+        }
+        jaccard(&shingle_set(a), &shingle_set(b)) < 0.9
+    })
 }
 
 /// P1-5 (2026-07-09): exact-match fast path for the 45k-collapse

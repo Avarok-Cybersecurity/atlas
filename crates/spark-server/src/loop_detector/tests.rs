@@ -193,6 +193,7 @@ fn p1_5_three_identical_failing_short_calls_detected_without_suppress() {
     let turn = CallOutcome {
         call_unit: Some("write\u{1f}{\"p\":\"\"}".to_string()),
         failing: true,
+        result_unit: None,
     };
     let turns = vec![turn.clone(), turn.clone(), turn];
     assert_eq!(
@@ -211,6 +212,7 @@ fn p1_5_three_identical_succeeding_short_calls_unchanged_legacy() {
     let turn = CallOutcome {
         call_unit: Some("write\u{1f}{\"p\":\"\"}".to_string()),
         failing: false,
+        result_unit: None,
     };
     let turns = vec![turn.clone(), turn.clone(), turn];
     assert_eq!(detect_exact_failing_repeat(&turns), None);
@@ -228,6 +230,7 @@ fn p1_5_two_identical_failing_calls_not_enough() {
     let turn = CallOutcome {
         call_unit: Some("x\u{1f}{}".to_string()),
         failing: true,
+        result_unit: None,
     };
     assert_eq!(detect_exact_failing_repeat(&[turn.clone(), turn]), None);
 }
@@ -237,10 +240,12 @@ fn p1_5_differing_units_break_the_run() {
     let a = CallOutcome {
         call_unit: Some("write\u{1f}{\"p\":\"a\"}".to_string()),
         failing: true,
+        result_unit: None,
     };
     let b = CallOutcome {
         call_unit: Some("write\u{1f}{\"p\":\"b\"}".to_string()),
         failing: true,
+        result_unit: None,
     };
     assert_eq!(detect_exact_failing_repeat(&[a.clone(), a, b]), None);
 }
@@ -250,10 +255,12 @@ fn p1_5_no_tool_call_turn_breaks_the_run() {
     let call = CallOutcome {
         call_unit: Some("x\u{1f}{}".to_string()),
         failing: true,
+        result_unit: None,
     };
     let prose = CallOutcome {
         call_unit: None,
         failing: false,
+        result_unit: None,
     };
     assert_eq!(
         detect_exact_failing_repeat(&[call.clone(), prose, call]),
@@ -266,10 +273,12 @@ fn p1_5_recent_calls_all_failing_gate() {
     let fail = CallOutcome {
         call_unit: Some("x\u{1f}{}".to_string()),
         failing: true,
+        result_unit: None,
     };
     let ok = CallOutcome {
         call_unit: Some("x\u{1f}{}".to_string()),
         failing: false,
+        result_unit: None,
     };
     // All three failing ⇒ Suppress hard-mask must be skipped.
     assert!(recent_calls_all_failing(
@@ -292,4 +301,66 @@ fn signature_below_min_tokens_is_empty() {
     // produce noise.
     let s = Signature::build("yes", std::iter::empty());
     assert!(s.is_empty(), "3-token text must yield empty signature");
+}
+
+// ── P1-5b (2026-07-09): result-progress gate ──
+
+fn outcome(unit: &str, failing: bool, result: &str) -> CallOutcome {
+    CallOutcome {
+        call_unit: Some(unit.into()),
+        failing,
+        result_unit: Some(result.into()),
+    }
+}
+
+#[test]
+fn progressing_cycle_detected_when_results_differ() {
+    // cargo check-fix-check: similar calls, DIFFERENT error lists.
+    let outcomes = vec![
+        outcome(
+            "bash\u{1f}cargo check",
+            false,
+            "error[E0308]: mismatched types in transactions.rs line 41",
+        ),
+        outcome(
+            "bash\u{1f}cargo check",
+            false,
+            "error[E0433]: unresolved import sqlx::SqlitePool in db.rs",
+        ),
+        outcome(
+            "bash\u{1f}cargo check",
+            false,
+            "error[E0599]: no method named fetch_all found for Pool",
+        ),
+    ];
+    assert!(
+        recent_results_progressing(&outcomes, 3),
+        "differing results round-to-round = progress; must not hard-mask"
+    );
+}
+
+#[test]
+fn true_loop_not_progressing_when_results_identical() {
+    let outcomes = vec![
+        outcome("write\u{1f}{\"f\":1}", false, "Wrote file successfully."),
+        outcome("write\u{1f}{\"f\":1}", false, "Wrote file successfully."),
+        outcome("write\u{1f}{\"f\":1}", false, "Wrote file successfully."),
+    ];
+    assert!(
+        !recent_results_progressing(&outcomes, 3),
+        "identical results = true loop; legacy Suppress must apply"
+    );
+}
+
+#[test]
+fn missing_results_are_conservatively_not_progressing() {
+    let outcomes = vec![
+        CallOutcome {
+            call_unit: Some("x".into()),
+            failing: false,
+            result_unit: None,
+        },
+        outcome("x", false, "a result"),
+    ];
+    assert!(!recent_results_progressing(&outcomes, 2));
 }
