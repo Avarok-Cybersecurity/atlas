@@ -157,3 +157,77 @@ fn streaming_live_fragments_recover_echoed_key() {
     assert_eq!(args["content"], "use axum::Json;");
     assert!(args.get("parameter").is_none());
 }
+
+// ── P0-2 (2026-07-09): garbled close-reopen (`</parameter<parameter=`) ──
+
+#[test]
+fn buffered_recovers_garbled_close_reopen() {
+    // The 45k live shape: model dropped the `>` of a close. Buffered path
+    // already re-splits at the reopen; the orphan `</parameter` tail must be
+    // stripped from the first value.
+    let input = "<tool_call>\n\
+        <function=write>\n\
+        <parameter=content>use axum::Json;\n</parameter<parameter=filePath>\n/tmp/x/+page.svelte\n</parameter>\n\
+        </function>\n\
+        </tool_call>";
+    let (_c, mut calls) = parse_tool_calls(input);
+    assert_eq!(calls.len(), 1);
+    let tool = write_tool();
+    backfill_required_params(&mut calls, std::slice::from_ref(&tool));
+    let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+    assert_eq!(
+        args["content"], "use axum::Json;",
+        "orphan </parameter tail must be stripped"
+    );
+    assert_eq!(args["filePath"], "/tmp/x/+page.svelte");
+}
+
+#[test]
+fn streaming_recovers_garbled_close_reopen() {
+    let mut det = StreamingToolDetector::new_with_tools(vec![write_tool()]);
+    let full = "<tool_call>\n<function=write>\n\
+                <parameter=content>use axum::Json;\n</parameter<parameter=filePath>\n/tmp/x/+page.svelte\n</parameter>\n\
+                </function>\n</tool_call>";
+    let mut outputs = Vec::new();
+    for chunk in full.as_bytes().chunks(9) {
+        outputs.extend(det.process(std::str::from_utf8(chunk).unwrap()));
+    }
+    outputs.extend(det.flush());
+    let mut frags = String::new();
+    for o in &outputs {
+        if let DetectorOutput::ToolCallArgsFragment { fragment, .. } = o {
+            frags.push_str(fragment);
+        }
+    }
+    let args: serde_json::Value =
+        serde_json::from_str(&frags).unwrap_or_else(|e| panic!("bad args json {frags:?}: {e}"));
+    assert_eq!(
+        args["filePath"], "/tmp/x/+page.svelte",
+        "reopened param must be recovered live"
+    );
+    assert!(
+        !args["content"].as_str().unwrap().contains("</parameter"),
+        "garble must not leak into content"
+    );
+}
+
+#[test]
+fn legit_close_prefix_content_not_split() {
+    // Negative: a value containing `</parameter` NOT followed by
+    // `<parameter=` is real content (this file's own fixtures!) and must
+    // survive intact through the buffered path via the proper close.
+    let input = "<tool_call>\n\
+        <function=write>\n\
+        <parameter=filePath>/tmp/doc.md</parameter>\n\
+        <parameter=content>the close tag is </parameter followed by text</parameter>\n\
+        </function>\n\
+        </tool_call>";
+    let (_c, mut calls) = parse_tool_calls(input);
+    let tool = write_tool();
+    backfill_required_params(&mut calls, std::slice::from_ref(&tool));
+    let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+    assert_eq!(
+        args["content"],
+        "the close tag is </parameter followed by text"
+    );
+}

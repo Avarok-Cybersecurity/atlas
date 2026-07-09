@@ -124,6 +124,13 @@ pub(super) struct ActiveSeq {
     /// 2026-07-09 fuzzy cuts reported bare finish=length with every dump
     /// flag false). Not part of the OpenAI wire format.
     pub guard_stop: Option<&'static str>,
+    /// P0-1: provisional `</parameter>` close progress inside a parameter
+    /// VALUE body (0 = none, 1 = saw `</`, 2 = saw `</` `parameter`). The
+    /// body-exit commits only on the confirmed full close; HTML/Svelte
+    /// close tags in value content no longer exit the body (which
+    /// reclassified file content as envelope tokens and tripped the
+    /// stuck-envelope cap mid-write).
+    pub param_close_pending: u8,
     pub sink: ResponseSink,
     /// Cooperative cancellation flag from the streaming pipeline.
     /// `Some` for streaming requests with the flag wired through;

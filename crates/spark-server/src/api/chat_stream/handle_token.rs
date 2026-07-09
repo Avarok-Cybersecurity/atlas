@@ -573,6 +573,11 @@ fn process_detector_content(
         }
         state.loop_watchdog_triggered = true;
         state.stop_string_triggered = true;
+        state.guard_stop = Some(if semantic_trip {
+            "simhash_semantic_loop"
+        } else {
+            "token_loop_watchdog"
+        });
         state
             .cancel_flag
             .store(true, std::sync::atomic::Ordering::Release);

@@ -148,6 +148,35 @@ pub(super) fn handle_complete_tool_call(
         sse_events.push(Ok(
             Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
         ));
+        // P0-3 (2026-07-09): server-authored corrective feedback. The soft
+        // pass-through is kept (ST-995 never-drop invariant), but a call
+        // whose REQUIRED params are empty is guaranteed to fail client-side
+        // with an opaque error (opencode: "BadResource: FileSystem.readFile")
+        // that the model retries verbatim — the 45k doom loop. Name the
+        // problem in a content chunk so the retry context actually changes.
+        // Rate-limited to once per response.
+        if !state.corrective_hint_sent {
+            let empties = tool_parser::find_empty_required_params(tc, &ctx.tool_defs_for_backfill);
+            let garbled = tc.function.arguments.contains("</parameter<parameter=");
+            if !empties.is_empty() || garbled {
+                state.corrective_hint_sent = true;
+                let msg = format!(
+                    "
+[atlas] The {} call above has EMPTY required parameter(s): {}.                      It will fail. Re-issue the call with real values for every                      required parameter (do not repeat it unchanged).",
+                    tc.function.name,
+                    if empties.is_empty() {
+                        "<garbled parameter boundary>".to_string()
+                    } else {
+                        empties.join(", ")
+                    },
+                );
+                let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, msg)
+                    .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
+                sse_events.push(Ok(
+                    Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
+                ));
+            }
+        }
     } else if state
         .tool_arg_dedup
         .check(&tc.function.name, &tc.function.arguments)

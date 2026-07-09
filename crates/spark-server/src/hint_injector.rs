@@ -195,6 +195,30 @@ impl HintInjector for NotInstalledHint {
 /// Always runs last as a fallback.
 pub struct GenericErrorHint;
 
+/// P0-4 (2026-07-09): structured client errors like opencode's
+/// `BadResource: FileSystem.readFile (...)` matched NO hint pattern, so
+/// `consecutive_tool_errors` reset to 0 on every retry and the escalating
+/// `<CRITICAL>` rescue never fired across 6 identical failures. Recognize a
+/// PascalCase/ALLCAPS error-code prefix followed by `:` (BadResource:,
+/// NotFound:, EISDIR:), excluding single-hump prose words (Note:, Warning:
+/// has its own patterns).
+fn pascal_error_prefix(text: &str) -> bool {
+    let t = text.trim_start();
+    let Some(first) = t.split(':').next() else {
+        return false;
+    };
+    // split(':') guarantees the byte after `first` is `:` when first < t.
+    if first.len() < 4
+        || first.len() >= t.len()
+        || !first.chars().all(|c| c.is_ascii_alphanumeric())
+    {
+        return false;
+    }
+    let caps = first.chars().filter(|c| c.is_ascii_uppercase()).count();
+    let has_lower = first.chars().any(|c| c.is_ascii_lowercase());
+    (has_lower && caps >= 2) || (!has_lower && caps == first.chars().count())
+}
+
 impl HintInjector for GenericErrorHint {
     fn is_relevant(&self, ctx: &HintContext) -> bool {
         ctx.text.starts_with("Error")
@@ -203,6 +227,8 @@ impl HintInjector for GenericErrorHint {
             || ctx.text.contains("error:")
             || ctx.text.contains("failed")
             || ctx.text.contains("Permission denied")
+            || ctx.text.starts_with("BadResource")
+            || pascal_error_prefix(ctx.text)
     }
 
     fn hint(&self, ctx: &HintContext) -> String {
