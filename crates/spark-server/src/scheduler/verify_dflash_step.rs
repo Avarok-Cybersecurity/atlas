@@ -32,6 +32,7 @@ pub fn step_verify_dflash(
     drafts: &[u32],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+    dflash_verify_raw_argmax: bool,
 ) {
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
@@ -54,18 +55,21 @@ pub fn step_verify_dflash(
     };
     a.last_token_time = Instant::now();
 
-    // Phase C-2 (2026-05-24): apply the full pre-sample
-    // logits-processor pipeline at each verify position before the
-    // accept-prefix comparison. `decode_verify_dflash` writes
-    // `[tokens.len(), vocab]` BF16 into `logits_buffer`; the helper
-    // reads it back, dequant + 8-stage pipeline + argmax per slot.
-    // Fail-safe falls back to the raw GPU argmax on D2H failure.
-    let verified = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
-        model,
-        &verified_argmax,
-        a,
-        verify_ctx,
-    );
+    // DFlash drafter proposes on raw argmax. When dflash_verify_raw_argmax is
+    // set, skip rep_pen/DRY pipeline so verifier and drafter judge on the same
+    // basis — otherwise penalty divergence collapses accept rate to 0 as context
+    // accrues (PR #132 root-cause fix). For non-DFlash callers apply the full
+    // pipeline as in K=2/3/4.
+    let verified = if dflash_verify_raw_argmax {
+        verified_argmax
+    } else {
+        crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+            model,
+            &verified_argmax,
+            a,
+            verify_ctx,
+        )
+    };
 
     // `decode_verify` already advanced `seq.seq_len` by `tokens.len()` and
     // pushed all γ+1 tokens into `seq.tokens`. The accept-prefix logic below
@@ -176,6 +180,20 @@ pub fn step_verify_dflash(
 
     if let Err(e) = model.trim_proposer_state(&mut a.seq, num_accepted, 0) {
         tracing::error!("trim_proposer_state: {e:#}");
+    }
+
+    // EAGLE-fix (ATLAS_DFLASH_EAGLE_FIX=1): append one ctx slot per committed
+    // position (rows 0..=num_accepted at N..N+num_accepted), with the bonus
+    // generator (row num_accepted) freshest. Fixes the ctx-undercount (was 1
+    // slot/step regardless of num_accepted) and the EAGLE conditioning shift.
+    // Sets skip_next_decode_append so the propose below does NOT re-append row 0.
+    // pre_verify_len = N (pre-verify seq_len). Flag off → legacy single row-0
+    // decode-append in propose (unchanged).
+    let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
+    if eagle_fix
+        && let Err(e) = model.dflash_eagle_kgamma_append(&mut a.seq, num_accepted, pre_verify_len)
+    {
+        tracing::error!("dflash_eagle_kgamma_append: {e:#}");
     }
 
     // Re-propose for next step.

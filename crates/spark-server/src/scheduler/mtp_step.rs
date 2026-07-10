@@ -18,6 +18,7 @@ pub fn step_mtp(
     active: &mut [ActiveSeq],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+    dflash_verify_raw_argmax: bool,
 ) {
     let mut bootstrap_idxs: Vec<usize> = Vec::new();
     let mut verify_idxs: Vec<usize> = Vec::new();
@@ -181,13 +182,41 @@ pub fn step_mtp(
         // MTP keeps using the existing graphed paths; this dispatch is purely
         // additive.
         if drafts.len() >= 4 {
-            step_verify_dflash(model, a, &drafts, num_drafts, verify_ctx);
+            step_verify_dflash(
+                model,
+                a,
+                &drafts,
+                num_drafts,
+                verify_ctx,
+                dflash_verify_raw_argmax,
+            );
         } else if num_drafts >= 3 && drafts.len() >= 3 {
-            step_verify_k4(model, a, &drafts, num_drafts, verify_ctx);
+            step_verify_k4(
+                model,
+                a,
+                &drafts,
+                num_drafts,
+                verify_ctx,
+                dflash_verify_raw_argmax,
+            );
         } else if num_drafts >= 2 && drafts.len() >= 2 {
-            step_verify_k3(model, a, &drafts, num_drafts, verify_ctx);
+            step_verify_k3(
+                model,
+                a,
+                &drafts,
+                num_drafts,
+                verify_ctx,
+                dflash_verify_raw_argmax,
+            );
         } else {
-            step_verify_k2(model, a, &drafts, num_drafts, verify_ctx);
+            step_verify_k2(
+                model,
+                a,
+                &drafts,
+                num_drafts,
+                verify_ctx,
+                dflash_verify_raw_argmax,
+            );
         }
     }
 }
