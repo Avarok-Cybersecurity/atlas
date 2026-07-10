@@ -214,10 +214,14 @@ impl BlockDiffusionDraftHead {
         // hiddens to the accumulator poisons the ctx for subsequent
         // propose() calls. Setting this flag uses ONLY prefill captures
         // — clean ctx isolation for diagnosing real-traffic acceptance.
+        // EAGLE one-shot: a `dflash_append` dispatcher may have already
+        // appended the relevant ctx slot(s) for this step before calling
+        // propose — consume the flag so it doesn't double-append row 0.
         let skip_decode_append = std::env::var("ATLAS_DFLASH_DEBUG_NO_DECODE_APPEND")
             .ok()
             .as_deref()
-            == Some("1");
+            == Some("1")
+            || std::mem::take(&mut dstate.skip_next_decode_append);
         if !skip_decode_append
             && let Some(latest_ctx) = target_hidden_stack
             && dstate.ctx_len < dstate.max_ctx_len

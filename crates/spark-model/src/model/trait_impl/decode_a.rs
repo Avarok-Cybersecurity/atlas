@@ -216,6 +216,11 @@ impl TransformerModel {
             && graph.0 != 0
         {
             self.gpu.launch_graph(*graph, stream)?;
+            // The captured graph re-runs try_dflash_capture every replay
+            // (captured inside the layer loop below), so the accumulator
+            // catch-up append must also run on every replay, not just on
+            // first capture.
+            self.dflash_decode_ctx_append_dispatch(seq)?;
             seq.tokens.push(token);
             seq.seq_len += 1;
             return Ok(self.decode_logits_ptr());
@@ -234,6 +239,7 @@ impl TransformerModel {
         let probe_layers = !use_graphs
             && seq.seq_len == seq.prompt_len
             && std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok();
+
         for (i, layer) in self.layers.iter().enumerate() {
             layer.decode(
                 hidden,
@@ -372,6 +378,11 @@ impl TransformerModel {
             }
             // If graph.0 == 0 (mock): operations already executed during capture
         }
+
+        // EAGLE ctx-accumulator catch-up (see `dflash_decode_ctx_append_dispatch`
+        // doc comment) — keeps the accumulator contiguous even when this
+        // decode() step ran outside DFlash's own propose/verify path.
+        self.dflash_decode_ctx_append_dispatch(seq)?;
 
         seq.tokens.push(token);
         seq.seq_len += 1;

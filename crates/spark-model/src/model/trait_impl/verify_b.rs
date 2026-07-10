@@ -307,12 +307,15 @@ impl TransformerModel {
                         stream,
                     )?;
                 }
-                // DFlash hidden capture for ctx conditioning. Capture from
-                // the LAST verified position (K-1) — the bonus token in
-                // K=2. This populates `dflash_hidden_save` so the next
-                // `propose()` has fresh target hiddens. No-op when DFlash
-                // is disabled.
-                self.try_dflash_capture(layer_idx, k - 1, stream)?;
+                // DFlash ctx conditioning: capture both row 0 (last_token) and
+                // row 1 (draft) at each target capture layer. Row 0 goes to the
+                // first half of dflash_hidden_save; row 1 to the second half.
+                // On REJECT (common case): only row 0 is appended to ctx.
+                // On ACCEPT: both rows are appended — row 0 at position N,
+                // row 1 at position N+1 — so ctx_len stays in sync with seq_len
+                // and noise0_pos always matches the last ctx slot (no RoPE gap).
+                self.try_dflash_capture(layer_idx, 0, stream)?;
+                self.try_dflash_capture_draft(layer_idx, stream)?;
             }
 
             // Final norm [2, H]

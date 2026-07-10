@@ -23,6 +23,7 @@ mod decode_a2;
 mod decode_b;
 mod decode_b2;
 mod decode_checkpoint;
+mod dflash_append;
 mod ep_misc;
 mod meta;
 mod prefill_a;
@@ -36,6 +37,8 @@ mod verify_b;
 mod verify_c;
 mod verify_c2;
 mod verify_d;
+mod verify_d_kgamma_attn_meta;
+mod verify_d_kgamma_layers;
 
 impl Model for TransformerModel {
     fn prepare_vision_embed(&self, images: &[(Vec<f32>, usize, usize)]) -> Result<()> {
@@ -310,6 +313,20 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<()> {
         self.trim_proposer_state_dispatch(seq, num_accepted, _stream)
+    }
+    fn dflash_accept_append(&self, seq: &mut SequenceState) -> Result<()> {
+        self.dflash_accept_append_dispatch(seq)
+    }
+    fn dflash_eagle_accept_append(&self, seq: &mut SequenceState) -> Result<()> {
+        self.dflash_eagle_accept_append_dispatch(seq)
+    }
+    fn dflash_eagle_kgamma_append(
+        &self,
+        seq: &mut SequenceState,
+        num_accepted: usize,
+        base_pos: usize,
+    ) -> Result<()> {
+        self.dflash_eagle_kgamma_append_dispatch(seq, num_accepted, base_pos)
     }
     fn compact_sequence(&self, seq: &mut SequenceState, new_slot: usize) -> Result<()> {
         self.compact_sequence_dispatch(seq, new_slot)

@@ -133,6 +133,11 @@ pub struct DflashProposerState {
     /// over the full prompt's captured hiddens; subsequent steps incrementally
     /// append the latest accepted tokens' projections.
     pub prefill_done: bool,
+    /// EAGLE one-shot: when set, the next `propose()` skips its internal
+    /// decode-append because a `dflash_append` dispatcher already appended
+    /// the relevant ctx slot(s) in EAGLE row order before calling propose.
+    /// Consumed (reset to `false`) by `propose_drafts`.
+    pub skip_next_decode_append: bool,
     /// Multi-token accumulator for captured target hidden states. Layout:
     /// `[max_ctx_len, 5 * target_hidden]` BF16 packed. The scheduler appends
     /// the model's `dflash_hidden_save` (latest decoded position's 5 hiddens)
@@ -306,6 +311,7 @@ impl DraftProposer for BlockDiffusionDraftHead {
             seq_len: 0,
             last_num_drafted: 0,
             prefill_done: false,
+            skip_next_decode_append: false,
             ctx_hidden_acc,
             ctx_len: 0,
             ctx_slot_positions: Vec::with_capacity(self.max_seq_len),

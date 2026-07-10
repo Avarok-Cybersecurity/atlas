@@ -50,7 +50,7 @@ impl TransformerModel {
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;
-        let fp32 = 2usize;
+        let fp32 = 2usize; // hidden states = BF16; matches verify_c.rs
 
         // F62 (2026-04-27): SpecMamba dual-buffer pre-verify copy.
         self.pre_verify_copy_async(seq)?;
@@ -82,68 +82,41 @@ impl TransformerModel {
             )?;
         }
 
-        // 1c. Upload K-entry attention metadata. Layout in scratch (after
-        // mtp metadata reservation): positions[K*4] | slots[K*8] | seq_lens[K*4]
-        // | block_table[K*max_blocks*4]. Need K*16 + K*max_blocks*4 bytes per
-        // call — at K=17 max_blocks=512 that's ~36 KB which fits comfortably
-        // in the scratch arena (offset 32768).
-        let meta_base = self.buffers.scratch().offset(32768);
-        let max_blocks = self.max_blocks_per_seq;
-
-        let positions: Vec<u32> = (0..k).map(|t| (seq.seq_len + t) as u32).collect();
-        let pos_bytes =
-            unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, k * 4) };
-        self.gpu.copy_h2d_async(pos_bytes, meta_base, stream)?;
-
-        let mut slots = vec![0i64; k];
-        for t in 0..k {
-            let pos = seq.seq_len + t;
-            let block_idx = pos / bs;
-            let block_offset = pos % bs;
-            let physical_block = seq.physical_block_for(block_idx).unwrap_or(0);
-            slots[t] = (physical_block as i64) * (bs as i64) + (block_offset as i64);
-        }
-        // 256-byte gap mirrors K=4 layout for ABI compatibility with
-        // attention kernels that index meta_base + fixed offsets.
-        let slot_bytes = unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, k * 8) };
-        self.gpu
-            .copy_h2d_async(slot_bytes, meta_base.offset(256), stream)?;
-
-        let seq_lens: Vec<i32> = (0..k).map(|t| (seq.seq_len + t + 1) as i32).collect();
-        let sl_bytes = unsafe { std::slice::from_raw_parts(seq_lens.as_ptr() as *const u8, k * 4) };
-        self.gpu
-            .copy_h2d_async(sl_bytes, meta_base.offset(512), stream)?;
-
-        let mb = max_blocks as usize;
-        let needed = k * mb;
-        let mut bt_buf = vec![0i32; needed];
-        for row in 0..k {
-            for (j, &block) in seq.block_table.iter().enumerate().take(mb) {
-                bt_buf[row * mb + j] = block as i32;
-            }
-        }
-        let bt_bytes =
-            unsafe { std::slice::from_raw_parts(bt_buf.as_ptr() as *const u8, needed * 4) };
-        self.gpu
-            .copy_h2d_async(bt_bytes, meta_base.offset(768), stream)?;
-
-        let metadata = AttnMetadataDev {
-            positions: meta_base,
-            positions_h: meta_base,
-            positions_w: meta_base,
-            slot: meta_base.offset(256),
-            seq_len: meta_base.offset(512),
-            block_table: meta_base.offset(768),
-            max_blocks_per_seq: max_blocks,
-            num_seqs: k as u32,
-        };
+        // 1c. Upload attention metadata to scratch (offset 32768).
+        // See `build_kgamma_attn_metadata` for the decode-vs-prefill layout.
+        let use_prefill_attn =
+            std::env::var("ATLAS_VERIFY_PREFILL_ATTN").ok().as_deref() == Some("1");
+        let metadata = self.build_kgamma_attn_metadata(k, seq, bs, use_prefill_attn, stream)?;
 
         // Phase 6.2.c — HSS host I/O is illegal under CUDA graph capture.
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
-        // ATLAS_DFLASH_DEBUG_NO_GRAPH=1 forces eager (no graph capture) so
-        // CUDA_LAUNCH_BLOCKING=1 reports the exact failing kernel — used
-        // to localize K=γ illegal-address crashes downstream of SSM.
-        let force_eager = std::env::var("ATLAS_DFLASH_DEBUG_NO_GRAPH").ok().as_deref() == Some("1");
+        // ATLAS_DFLASH_DEBUG_NO_GRAPH=1: legacy debug flag (still honored).
+        let debug_no_graph =
+            std::env::var("ATLAS_DFLASH_DEBUG_NO_GRAPH").ok().as_deref() == Some("1");
+        // PROTECTIVE (pre-existing graphed-K=γ corruption): the K=γ verify graph
+        // emits degenerate/corrupt output — a capture bug downstream of the SSM
+        // dual-buffer commit (confirmed: graphed ≠ eager at T=0, reproduces with
+        // EAGLE on AND off). Force EAGER by default so the default path is
+        // CORRECT. Eager is also faster here (SSM-decode-bound: 13 vs 11.5 tok/s).
+        // Re-enable graphs ONLY to debug the underlying bug.
+        let allow_kgamma_graph = std::env::var("ATLAS_DFLASH_UNSAFE_KGAMMA_GRAPH")
+            .ok()
+            .as_deref()
+            == Some("1");
+        if !allow_kgamma_graph {
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!(
+                    "DFlash K=γ verify: forcing EAGER execution — the graphed K=γ \
+                     path produces corrupt output (pre-existing capture bug \
+                     downstream of the SSM dual-buffer commit). Eager is also \
+                     faster here. Set ATLAS_DFLASH_UNSAFE_KGAMMA_GRAPH=1 to force \
+                     graphs (debugging only — KNOWN to corrupt output)."
+                );
+            }
+        }
+        let force_eager = debug_no_graph || !allow_kgamma_graph;
         let use_graphs = self.comm.is_none()
             && !self
                 .suppress_graphs
@@ -185,69 +158,90 @@ impl TransformerModel {
             let seq_lens_vec: Vec<usize> = (0..k).map(|t| seq.seq_len + t).collect();
             let block_tables_vec: Vec<Vec<u32>> = vec![seq.block_table.clone(); k];
 
+            // ── ATLAS_DFLASH_TIMING=1: per-phase GPU timing breakdown. Brackets
+            // each phase with gpu.synchronize() (serializes — only under the flag).
+            // Requires eager (syncs are illegal under graph capture); K=γ is forced
+            // eager by the guard, so this is a no-op when graphs are somehow on.
+            let timing =
+                (std::env::var("ATLAS_DFLASH_TIMING").ok().as_deref() == Some("1")) && !use_graphs;
+            if std::env::var("ATLAS_DFLASH_TIMING").ok().as_deref() == Some("1") && use_graphs {
+                static WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!(
+                        "ATLAS_DFLASH_TIMING ignored: needs eager K=γ (incompatible with graph capture)."
+                    );
+                }
+            }
+            let mut us_head: u128 = 0; // final norm + lm_head + argmax
+
             if use_graphs {
                 self.gpu.begin_capture(stream)?;
             }
 
-            for (layer_idx, layer) in self.layers.iter().enumerate() {
-                let layer_type = self.config.layer_type(layer_idx);
+            // SSM three-phase parallel verify (ATLAS_VERIFY_PREFILL_SSM=1).
+            // When enabled, SSM layers use prefill_phase1/gdn_full/phase3
+            // instead of sequential decode_batched(k), reducing GDN work from
+            // K serial h_state updates to one WY4 batch recurrence.
+            let use_prefill_ssm =
+                std::env::var("ATLAS_VERIFY_PREFILL_SSM").ok().as_deref() == Some("1");
+            // EAGLE-fix (K=γ): capture ALL k verify rows so the scheduler can
+            // append rows 0..=num_accepted to ctx (fixes ctx-undercount + EAGLE
+            // shift). Flag off → legacy single row-0 capture.
+            let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
+            // Precompute SSM buffer dimensions (same as prefill_c.rs / phase1_inner).
+            let nk = self.config.linear_num_key_heads;
+            let kd = self.config.linear_key_head_dim;
+            let nv = self.config.linear_num_value_heads;
+            let vd = self.config.linear_value_head_dim;
+            let ssm_key_dim = nk * kd;
+            let ssm_value_dim = nv * vd;
+            let ssm_conv_dim = ssm_key_dim * 2 + ssm_value_dim;
+            let ssm_gate_stride = nv * 2; // elements (FP32)
+            let gdn_bufs = GdnPrefillBuffers {
+                qkv: self.gdn_buf_qkv,
+                gate_beta: self.gdn_buf_gate_beta,
+                output: self.gdn_buf_out,
+                output_f32: self.gdn_buf_out_f32,
+                output_f32_written: std::cell::Cell::new(false),
+                z: self.gdn_buf_z,
+                total_len: k,
+            };
 
-                if layer_type == LayerType::FullAttention {
-                    if hss_engaged {
-                        // HSS path: decode_multi_seq's paged-decode kernel
-                        // reads K/V from HBM only, missing the long-context
-                        // history on disk. Fall back to decode_batched
-                        // (sequential single-token decodes via the HSS
-                        // orchestrator). See verify_b.rs for full rationale.
-                        layer.decode_batched(
-                            hidden,
-                            residual,
-                            k,
-                            seq.layer_states[layer_idx].as_mut(),
-                            &mut kv_cache,
-                            seq.seq_len,
-                            &mut seq.block_table,
-                            &mut seq.disk_block_ids,
-                            &mut seq.disk_last_offloaded_per_layer,
-                            &ctx,
-                            stream,
-                        )?;
-                    } else {
-                        let mut dummy_states: Vec<Box<dyn LayerState>> = (0..k)
-                            .map(|_| layer.alloc_state(self.gpu.as_ref()))
-                            .collect::<Result<_>>()?;
-                        let mut refs: Vec<&mut (dyn LayerState + 'static)> =
-                            dummy_states.iter_mut().map(|s| s.as_mut()).collect();
-                        layer.decode_multi_seq(
-                            hidden,
-                            residual,
-                            k,
-                            &mut refs,
-                            &mut kv_cache,
-                            &seq_lens_vec,
-                            &block_tables_vec,
-                            &ctx,
-                            stream,
-                        )?;
-                    }
-                } else {
-                    layer.decode_batched(
-                        hidden,
-                        residual,
-                        k,
-                        seq.layer_states[layer_idx].as_mut(),
-                        &mut kv_cache,
-                        seq.seq_len,
-                        &mut seq.block_table,
-                        &mut seq.disk_block_ids,
-                        &mut seq.disk_last_offloaded_per_layer,
-                        &ctx,
-                        stream,
-                    )?;
-                }
-            }
+            let timing_res = self.run_kgamma_verify_layers(
+                seq,
+                &mut kv_cache,
+                hidden,
+                residual,
+                k,
+                h,
+                bf16,
+                hss_engaged,
+                use_prefill_attn,
+                use_prefill_ssm,
+                eagle_fix,
+                timing,
+                &seq_lens_vec,
+                &block_tables_vec,
+                &gdn_bufs,
+                ssm_conv_dim,
+                ssm_gate_stride,
+                ssm_value_dim,
+                &ctx,
+                stream,
+            )?;
+            let us_attn = timing_res.us_attn;
+            let us_p1 = timing_res.us_p1;
+            let us_p2 = timing_res.us_p2;
+            let us_p3 = timing_res.us_p3;
 
             // Final norm [K, H]
+            let _tsh = if timing {
+                self.gpu.synchronize(stream)?;
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
             let normed = self.buffers.norm_output();
             ops::rms_norm(
                 self.gpu.as_ref(),
@@ -279,6 +273,89 @@ impl TransformerModel {
                     stream,
                 )?;
             }
+            // Iteration-4 KL-gate diagnostic prototype
+            // (`ATLAS_DFLASH_KL_DIAG=1`, default off, exploratory only —
+            // NOT a production gate). Self-confidence proxy computed from
+            // the SAME batched-verify logits already produced above (no
+            // second serial-decode forward pass): per verified position,
+            // top-1 vs top-2 margin in logit space (`= ln(p1/p2)` exactly,
+            // softmax-normalization-invariant) and top-1 probability via a
+            // full-vocab logsumexp. Requires eager (D2H + host loop is
+            // illegal under CUDA graph capture); no-ops when `use_graphs`.
+            // Only viable with `ATLAS_DFLASH_DEBUG_NO_GRAPH=1` in the env
+            // (forces `use_graphs=false` via `force_eager` above).
+            if !use_graphs && std::env::var("ATLAS_DFLASH_KL_DIAG").ok().as_deref() == Some("1") {
+                self.gpu.synchronize(stream)?;
+                let mut row = vec![0u8; vocab * bf16];
+                for t in 0..k {
+                    let logits_t = self.buffers.logits().offset(t * vocab * bf16);
+                    self.gpu.copy_d2h(logits_t, &mut row)?;
+
+                    let mut top1_v = f32::NEG_INFINITY;
+                    let mut top1_i = 0u32;
+                    let mut top2_v = f32::NEG_INFINITY;
+                    for vi in 0..vocab {
+                        let val = kl_diag_bf16_to_f32(row[vi * 2], row[vi * 2 + 1]);
+                        if val > top1_v {
+                            top2_v = top1_v;
+                            top1_v = val;
+                            top1_i = vi as u32;
+                        } else if val > top2_v {
+                            top2_v = val;
+                        }
+                    }
+                    let mut sum_exp = 0.0f64;
+                    for vi in 0..vocab {
+                        let val = kl_diag_bf16_to_f32(row[vi * 2], row[vi * 2 + 1]);
+                        sum_exp += ((val - top1_v) as f64).exp();
+                    }
+                    let lse = top1_v as f64 + sum_exp.ln();
+                    let p_top1 = ((top1_v as f64) - lse).exp();
+                    let margin = top1_v - top2_v;
+
+                    let pos = seq.seq_len + t;
+                    let expected = if t + 1 < k { Some(tokens[t + 1]) } else { None };
+                    let matched = expected == Some(top1_i);
+                    tracing::info!(
+                        "KL_DIAG pos={pos} margin={margin:.4} p_top1={p_top1:.4} \
+                         argmax={top1_i} expected={expected:?} matched={matched}"
+                    );
+                }
+            }
+            if let Some(t) = _tsh {
+                self.gpu.synchronize(stream)?;
+                us_head += t.elapsed().as_micros();
+            }
+
+            // ── ATLAS_DFLASH_TIMING: aggregate per-phase costs, log every 50 steps ──
+            if timing {
+                use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+                static A: AtomicU64 = AtomicU64::new(0);
+                static P1: AtomicU64 = AtomicU64::new(0);
+                static P2: AtomicU64 = AtomicU64::new(0);
+                static P3: AtomicU64 = AtomicU64::new(0);
+                static HD: AtomicU64 = AtomicU64::new(0);
+                static N: AtomicU64 = AtomicU64::new(0);
+                A.fetch_add(us_attn as u64, Relaxed);
+                P1.fetch_add(us_p1 as u64, Relaxed);
+                P2.fetch_add(us_p2 as u64, Relaxed);
+                P3.fetch_add(us_p3 as u64, Relaxed);
+                HD.fetch_add(us_head as u64, Relaxed);
+                let n = N.fetch_add(1, Relaxed) + 1;
+                if n.is_multiple_of(50) {
+                    let ms = |x: &AtomicU64| x.load(Relaxed) as f64 / n as f64 / 1000.0;
+                    let (a, p1, p2, p3, hd) = (ms(&A), ms(&P1), ms(&P2), ms(&P3), ms(&HD));
+                    let sum = (a + p1 + p2 + p3 + hd).max(1e-6);
+                    tracing::info!(
+                        "DFLASH TIMING avg/{n} steps: attn={a:.1} p1_conv={p1:.1} p2_gdn={p2:.1} p3={p3:.1} head={hd:.1} | sum={sum:.1}ms (attn {:.0}% p1 {:.0}% p2 {:.0}% p3 {:.0}% head {:.0}%)",
+                        100.0 * a / sum,
+                        100.0 * p1 / sum,
+                        100.0 * p2 / sum,
+                        100.0 * p3 / sum,
+                        100.0 * hd / sum,
+                    );
+                }
+            }
 
             if use_graphs {
                 let graph = self.gpu.end_capture(stream)?;
@@ -298,6 +375,14 @@ impl TransformerModel {
 
         // ── Phase 3: Post-graph (D2H copy only) ──
 
+        // Host-side glue — `copy_d2h` internally issues cuMemcpyDtoHAsync_v2
+        // on the default stream followed by a blocking cuStreamSynchronize
+        // (see cuda_backend/gpu_impl.rs). This is the ONLY unconditional
+        // sync/D2H pair on the shipping K=γ verify path (all other
+        // sync/copy_d2h call sites in this file are gated behind
+        // ATLAS_DFLASH_TIMING/ATLAS_DFLASH_KL_DIAG, both off by default) —
+        // reads back the K argmax token ids so the scheduler can run
+        // partial-accept comparison on the host.
         let out_ptr = self.buffers.scratch();
         let mut buf = vec![0u8; k * 4];
         self.gpu.copy_d2h(out_ptr, &mut buf)?;
@@ -320,4 +405,10 @@ impl TransformerModel {
 
         Ok(out)
     }
+}
+
+/// KL-gate diagnostic helper (`ATLAS_DFLASH_KL_DIAG=1`).
+fn kl_diag_bf16_to_f32(lo: u8, hi: u8) -> f32 {
+    let bits16 = (lo as u16) | ((hi as u16) << 8);
+    f32::from_bits((bits16 as u32) << 16)
 }

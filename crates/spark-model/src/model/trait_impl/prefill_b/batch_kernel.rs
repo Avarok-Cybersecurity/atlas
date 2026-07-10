@@ -365,6 +365,8 @@ impl TransformerModel {
             qkv: self.gdn_buf_qkv,
             gate_beta: self.gdn_buf_gate_beta,
             output: self.gdn_buf_out,
+            output_f32: DevicePtr::NULL,
+            output_f32_written: std::cell::Cell::new(false),
             z: self.gdn_buf_z,
             // VARLEN: packed total = Σ proc_count (running_proc_off after the
             // PHASE-A loop) — the cu_seqlens SSOT. Was Σ chunk_len (total_tokens),
@@ -375,8 +377,6 @@ impl TransformerModel {
             } else {
                 proc_count * n
             },
-            output_f32: DevicePtr::NULL,
-            output_f32_written: std::cell::Cell::new(false),
         };
 
         // ForwardContext for batched layer calls. attn_metadata is

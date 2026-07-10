@@ -50,11 +50,20 @@ impl TransformerModel {
         let h = self.config.hidden_size;
         let bf16 = 2usize;
         let fp32 = 2usize;
+        let profile = self.profile;
 
         let hidden = self.buffers.hidden_states(); // [K, H]
         let residual = self.buffers.residual(); // [K, H]
 
         let mut kv_cache = self.kv_cache.lock();
+
+        let t_start = if profile {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+        let mut attn_us = 0u64;
+        let mut ssm_us = 0u64;
 
         // ── Embed all K tokens into hidden[K, H] ──
         for (t, &token) in tokens.iter().enumerate() {
@@ -65,6 +74,11 @@ impl TransformerModel {
         // ── Per-layer processing ──
         for (i, layer) in self.layers.iter().enumerate() {
             let layer_type = self.config.layer_type(i);
+            let t_layer = if profile {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
 
             if layer_type == atlas_core::config::LayerType::FullAttention {
                 // Attention layers: sequential per-token (need per-token metadata)
@@ -175,9 +189,24 @@ impl TransformerModel {
                     stream,
                 )?;
             }
+
+            if let Some(t) = t_layer {
+                self.gpu.synchronize(stream)?;
+                let elapsed = t.elapsed().as_micros() as u64;
+                if layer_type == atlas_core::config::LayerType::FullAttention {
+                    attn_us += elapsed;
+                } else {
+                    ssm_us += elapsed;
+                }
+            }
         }
 
         // ── Final norm for K tokens ──
+        let t_head = if profile {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
         let normed = self.buffers.norm_output();
         let eps = self.config.rms_norm_eps as f32;
         ops::rms_norm(
@@ -194,6 +223,23 @@ impl TransformerModel {
 
         // ── LM head for K tokens → logits[K, vocab] ──
         self.lm_head_batched(normed, k as u32, self.buffers.logits(), stream)?;
+
+        if profile && let (Some(t_head), Some(t_start)) = (t_head, t_start) {
+            self.gpu.synchronize(stream)?;
+            let head_us = t_head.elapsed().as_micros() as u64;
+            let total_us = attn_us + ssm_us + head_us;
+            tracing::info!(
+                "VERIFY_PROFILE k={}: total={:.1}ms attn={:.1}ms({}) ssm={:.1}ms({}) head={:.1}ms",
+                k,
+                total_us as f64 / 1000.0,
+                attn_us as f64 / 1000.0,
+                self.config.num_attention_layers(),
+                ssm_us as f64 / 1000.0,
+                self.config.num_ssm_layers(),
+                head_us as f64 / 1000.0,
+            );
+            let _ = t_start;
+        }
 
         // ── Argmax per token ──
         let vocab = self.config.vocab_size;
