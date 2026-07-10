@@ -573,9 +573,15 @@ extern "C" __global__ void fp8_gemm_t(
     // load latency of GB10 global memory is hidden behind compute, instead of
     // the old wait_group-0 full drain every K-step. Accuracy-neutral (identical
     // FP8 MMA math); targets the latency-bound GDN-projection prefill.
+    // faith2 big-K: each pipeline tile carries KT=64 (two 32-wide sub-tiles),
+    // halving the loop-iteration/__syncthreads count vs K_STEP_T=32 — the
+    // compute/loop-bound limiter at larger M — while reusing the proven,
+    // 16-byte-aligned 32-wide cp.async loads and 32-wide FP8 MMA. Combined with
+    // the 4-stage cp.async pipeline (hides load latency at small M).
     constexpr int NSTAGE = 4;
-    __shared__ __nv_bfloat16 smem_A[NSTAGE][M_TILE][K_STEP_T + PAD_T];
-    __shared__ unsigned char smem_B[NSTAGE][N_TILE_LG][K_STEP_T];
+    constexpr int KT = 2 * K_STEP_T;   // 64
+    __shared__ __nv_bfloat16 smem_A[NSTAGE][M_TILE][KT + PAD_T];
+    __shared__ unsigned char smem_B[NSTAGE][N_TILE_LG][KT];
 
     float acc[16][4];
     #pragma unroll
@@ -584,10 +590,10 @@ extern "C" __global__ void fp8_gemm_t(
         acc[i][2] = 0.0f; acc[i][3] = 0.0f;
     }
 
-    const unsigned int a_stride = K_STEP_T + PAD_T;
+    const unsigned int a_stride = KT + PAD_T;
 
-    // Load A (BF16) + B (FP8, pre-dequanted) via cp.async
-    #define FP8_LOADS(buf, kb) do { \
+    // One 32-wide sub-load: A[.. gc..gc+31] + B[.. kb..kb+31] into smem col `sc`.
+    #define FP8_SUBLOAD(buf, kb, sc) do { \
         { \
             unsigned int a_row_base = threadIdx.x >> 2; \
             unsigned int a_col = (threadIdx.x & 3) << 3; \
@@ -596,7 +602,7 @@ extern "C" __global__ void fp8_gemm_t(
             for (int rnd = 0; rnd < 2; rnd++) { \
                 unsigned int row = rnd * 32 + a_row_base; \
                 unsigned int gr = cta_m + row; \
-                cp_async_pred_16(&smem_A[(buf)][row][a_col], \
+                cp_async_pred_16(&smem_A[(buf)][row][(sc) + a_col], \
                     &A[(unsigned long long)gr * K + gc], \
                     (gr < M) && (gc + 7 < K)); \
             } \
@@ -605,35 +611,58 @@ extern "C" __global__ void fp8_gemm_t(
             unsigned int my_n = threadIdx.x; \
             unsigned int gn = cta_n + my_n; \
             bool valid = (gn < N) && ((kb) + 31 < K); \
-            cp_async_pred_16(&smem_B[(buf)][my_n][0], \
+            cp_async_pred_16(&smem_B[(buf)][my_n][(sc)], \
                 &B_fp8[(unsigned long long)gn * K + (kb)], valid); \
-            cp_async_pred_16(&smem_B[(buf)][my_n][16], \
+            cp_async_pred_16(&smem_B[(buf)][my_n][(sc) + 16], \
                 &B_fp8[(unsigned long long)gn * K + (kb) + 16], valid); \
         } \
     } while(0)
 
-    // FP8 MMA — identical to w4a16_gemm_t COMPUTE_MMA
-    #define FP8_COMPUTE(a_buf, b_buf) do { \
+    // Load a full KT=64 tile (two 32-wide sub-tiles into cols 0..31, 32..63).
+    #define FP8_LOADS(buf, kb) do { \
+        FP8_SUBLOAD(buf, (kb), 0); \
+        FP8_SUBLOAD(buf, (kb) + K_STEP_T, K_STEP_T); \
+    } while(0)
+
+    // Compute one 32-wide slice at smem K-offset `ko` (0 or 32). Reused twice.
+    // faith2 register pre-stage in HALVES: hoist 8 weight-fragment pairs into
+    // registers, fire their 8 MMAs, then the next 8 — 16 independent smem loads
+    // up front per half (memory-level parallelism to break the load→MMA latency
+    // chain) at only +16 registers, staying under the spill threshold that a
+    // full 16-pair (+32 reg) hoist crossed on top of acc[16][4].
+    #define FP8_COMPUTE_SUB(a_buf, b_buf, ko) do { \
         const unsigned short* sA = (const unsigned short*)smem_A[(a_buf)]; \
         unsigned int fr0 = warp_m_offset + group_id, fr1 = fr0 + 8; \
-        unsigned int a0 = bf16x4_to_e4m3x4(&sA[fr0 * a_stride + tid * 4]); \
-        unsigned int a1 = bf16x4_to_e4m3x4(&sA[fr1 * a_stride + tid * 4]); \
-        unsigned int a2 = bf16x4_to_e4m3x4(&sA[fr0 * a_stride + 16 + tid * 4]); \
-        unsigned int a3 = bf16x4_to_e4m3x4(&sA[fr1 * a_stride + 16 + tid * 4]); \
+        unsigned int a0 = bf16x4_to_e4m3x4(&sA[fr0 * a_stride + (ko) + tid * 4]); \
+        unsigned int a1 = bf16x4_to_e4m3x4(&sA[fr1 * a_stride + (ko) + tid * 4]); \
+        unsigned int a2 = bf16x4_to_e4m3x4(&sA[fr0 * a_stride + (ko) + 16 + tid * 4]); \
+        unsigned int a3 = bf16x4_to_e4m3x4(&sA[fr1 * a_stride + (ko) + 16 + tid * 4]); \
         _Pragma("unroll") \
-        for (int nt = 0; nt < 16; nt++) { \
-            unsigned int nc = nt * 8 + group_id; \
-            unsigned int b0 = *(const unsigned int*)&smem_B[(b_buf)][nc][4 * tid]; \
-            unsigned int b1 = *(const unsigned int*)&smem_B[(b_buf)][nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
+        for (int half = 0; half < 2; half++) { \
+            unsigned int bf0[8], bf1[8]; \
+            _Pragma("unroll") \
+            for (int j = 0; j < 8; j++) { \
+                unsigned int nc = (half * 8 + j) * 8 + group_id; \
+                bf0[j] = *(const unsigned int*)&smem_B[(b_buf)][nc][(ko) + 4 * tid]; \
+                bf1[j] = *(const unsigned int*)&smem_B[(b_buf)][nc][(ko) + 16 + 4 * tid]; \
+            } \
+            _Pragma("unroll") \
+            for (int j = 0; j < 8; j++) { \
+                atlas_mma_e4m3(acc[half * 8 + j], a0,a1,a2,a3, bf0[j], bf1[j]); \
+            } \
         } \
     } while(0)
 
-    // Prolog: issue the first NSTAGE-1 tiles, one commit-group each.
-    const int num_tiles = (int)((K + K_STEP_T - 1) / K_STEP_T);
+    #define FP8_COMPUTE(a_buf, b_buf) do { \
+        FP8_COMPUTE_SUB(a_buf, b_buf, 0); \
+        FP8_COMPUTE_SUB(a_buf, b_buf, K_STEP_T); \
+    } while(0)
+
+    // Prolog: issue the first NSTAGE-1 KT-tiles, one commit-group each.
+    const int num_tiles = (int)((K + KT - 1) / KT);
     #pragma unroll
     for (int s = 0; s < NSTAGE - 1; s++) {
-        FP8_LOADS(s, (unsigned int)s * K_STEP_T);
+        FP8_LOADS(s, (unsigned int)s * KT);
         cp_async_commit();
     }
     // Steady state: exactly one commit-group per iteration keeps the in-flight
@@ -644,13 +673,15 @@ extern "C" __global__ void fp8_gemm_t(
         cp_async_wait_group<NSTAGE - 2>();
         __syncthreads();
         int pf = t + NSTAGE - 1;
-        FP8_LOADS(pf % NSTAGE, (unsigned int)pf * K_STEP_T);
+        FP8_LOADS(pf % NSTAGE, (unsigned int)pf * KT);
         cp_async_commit();
         FP8_COMPUTE(t % NSTAGE, t % NSTAGE);
         __syncthreads();
     }
 
+    #undef FP8_SUBLOAD
     #undef FP8_LOADS
+    #undef FP8_COMPUTE_SUB
     #undef FP8_COMPUTE
 
     #pragma unroll
