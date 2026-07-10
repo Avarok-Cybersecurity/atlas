@@ -22,6 +22,12 @@
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 
+// ARM-2 Phase-K RIDER 1: the E8M0 scale primitive (mx_block_scale / atlas_dec_e4m3)
+// lives in ONE shared header, included by both Family A (this file) and Family B
+// (../qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu) — bit-identical across
+// families, no second copy.
+#include "mx_block_scale.cuh"
+
 // Tuning note: 32-thread blocks (1 warp per block) outperform 128-thread blocks
 // on GB10 for the transposed decode silu_down — more blocks → better SM
 // occupancy, the s_act shared-mem precompute parallelism is unchanged because
@@ -34,40 +40,7 @@ __device__ __constant__ float E2M1_LUT_T[16] = {
     -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f
 };
 
-// NVFP4 per-block FP8-E4M3 scale decode. SCALE/gfx1151 `(float)__nv_fp8_e4m3`
-// is NON-STANDARD (same bug fixed in moe_sorted_prefill.cu / the decode GEMVs) —
-// software scl_fp8 there; NVIDIA path is the verbatim cast.
-#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
-    unsigned int s = (b >> 7) & 1u, e = (b >> 3) & 0xFu, m = b & 0x7u; float v;
-    if (e == 0u)               v = (float)m * 0.001953125f;
-    else if (e == 15u && m == 7u) v = 0.0f;
-    else                       v = __uint_as_float(((e + 120u) << 23) | (m << 20));
-    return s ? -v : v;
-}
-#else
-__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
-    __nv_fp8_e4m3 f; *(unsigned char*)&f = b; return (float)f;
-}
-#endif
-
-// Per-block dequant-scale, parameterized on the weight's scale format.
-//   E8M0=false → NVFP4: FP8-E4M3 per-16 scale byte × per-tensor global (s2).
-//   E8M0=true  → native MXFP4 (ARM-2): the scale byte is a biased E8M0
-//                exponent; effective scale = 2^(sb-127), NO global (s2 ignored).
-//                sb==0 → 0, sb==0xFF (NaN sentinel) → 0. Bit-constructs the
-//                power of two so it is BYTE-EXACT with the Rust host reference
-//                `fp8_e8m0_to_f32` (weight_map/fp8_lut.rs) — the Leg-2 SSOT —
-//                rather than `exp2f`, whose ex2.approx would drift.
-template<bool E8M0>
-__device__ __forceinline__ float mx_block_scale(unsigned char sb, float s2) {
-    if (E8M0) {
-        if (sb == 0u || sb == 255u) return 0.0f;
-        return __uint_as_float((unsigned int)sb << 23);
-    } else {
-        return atlas_dec_e4m3(sb) * s2;
-    }
-}
+// atlas_dec_e4m3 + mx_block_scale<E8M0> now live in mx_block_scale.cuh (RIDER 1).
 
 // Transposed-layout fused gate+up decode kernel.
 //
