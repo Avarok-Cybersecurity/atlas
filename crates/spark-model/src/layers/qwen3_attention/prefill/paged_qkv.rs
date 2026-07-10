@@ -14,6 +14,7 @@ use crate::layers::ops;
 
 /// Identifies which projection (Q/K/V) — selects the correct weight bank
 /// from `Qwen3AttentionLayer`.
+#[derive(Clone, Copy)]
 pub(super) enum Proj {
     Q,
     K,

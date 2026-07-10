@@ -198,6 +198,16 @@ impl BlockDiffusionDraftHead {
         // first-token acceptance will be poor (<<70%). Adding ctx is the
         // next iteration on top of `forward_block`.
         let _ = num_drafts;
+        let t_propose_start = std::time::Instant::now();
+
+        if position <= 1 {
+            tracing::info!(
+                "DFlash propose[pos={}]: target_layer_ids={:?} gamma={}",
+                position,
+                self.target_layer_ids,
+                self.gamma,
+            );
+        }
 
         // Append the model's latest single-slot ctx capture into the
         // per-seq accumulator. Skip when `target_hidden_stack` is None
@@ -234,26 +244,70 @@ impl BlockDiffusionDraftHead {
                 _stream,
             )?;
             dstate.ctx_len += 1;
+            // Record the TRUE position of this row-0 hidden = h(last_token@N).
+            // `position` = seq_len at propose time = N + last_num_accepted + 1
+            // (the just-committed block: last_token@N, num_accepted drafts, bonus).
+            // So the row-0 token `last_token` sits at N = position - 1 - num_accepted.
+            // The old formula `position - 1` mislabeled it N + num_accepted, giving
+            // the N+1,N+1,N+3,... duplicate-odd/skip-even desync. dflash_accept_append
+            // (K=2 accept) records row 1 = h(draft@N+1) at seq_len-1 = N+1 — together
+            // they now produce the monotonic N, N+1, N+2, ... sequence.
+            let row0_pos = (position as i64) - 1 - (dstate.last_num_accepted as i64);
+            dstate.ctx_slot_positions.push(row0_pos.max(0) as i32);
         }
 
-        let drafts = self
+        let ctx_buf = if dstate.ctx_len > 0 {
+            Some((dstate.ctx_hidden_acc, dstate.ctx_len))
+        } else {
+            None
+        };
+
+        // ATLAS_DFLASH_T=N controls denoising iterations (default=1).
+        // T=2: run forward_block twice — first with masks (T=1), then again
+        // substituting T=1 argmax predictions in place of the mask tokens.
+        // Each iteration costs ~48ms; break-even vs T=1 requires acceptance
+        // improvement large enough to offset the doubled propose time.
+        let t_denoise = std::env::var("ATLAS_DFLASH_T")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(1)
+            .max(1);
+
+        let t_forward = std::time::Instant::now();
+        let drafts_t1 = self
             .forward_block(
                 last_token,
                 position,
                 ctx,
                 _stream,
-                // Pass the accumulator's start pointer + `ctx_len` so
-                // forward_block knows how many ctx positions to project.
-                if dstate.ctx_len > 0 {
-                    Some((dstate.ctx_hidden_acc, dstate.ctx_len))
-                } else {
-                    None
-                },
+                ctx_buf,
+                None,
+                &dstate.ctx_slot_positions,
             )
             .map_err(|e| {
-                tracing::warn!("DFlash forward_block failed, falling back to no-spec: {e:#}");
+                tracing::warn!("DFlash forward_block T=1 failed: {e:#}");
                 e
             })?;
+
+        let drafts = if t_denoise >= 2 && !drafts_t1.is_empty() {
+            self.forward_block(
+                last_token,
+                position,
+                ctx,
+                _stream,
+                ctx_buf,
+                Some(&drafts_t1),
+                &dstate.ctx_slot_positions,
+            )
+            .map_err(|e| {
+                tracing::warn!("DFlash forward_block T=2 failed, using T=1: {e:#}");
+                e
+            })
+            .unwrap_or(drafts_t1)
+        } else {
+            drafts_t1
+        };
+        let forward_us = t_forward.elapsed().as_micros();
         // Phase 2.5e scaffolding: K=γ verify path is implemented in model.rs
         // (decode_verify_graphed_kgamma) and dispatched via step_verify_dflash
         // when drafts.len()>=4. However, per-step output corruption (output
@@ -263,16 +317,30 @@ impl BlockDiffusionDraftHead {
         // intermediates differently from the WY-chunkwise kernels, causing
         // partial-accept rollback to land on stale state.
         //
-        // Until the SSM intermediate semantics are reconciled (kernel work),
-        // cap drafts at 1 → forces scheduler to use step_verify_k2 which
-        // produces correct output. Set ATLAS_DFLASH_DRAFT_CAP=N to override
-        // (N=γ to test the K=γ path; N=1 is the safe default).
+        // BF16 embed stride bug in verify_d.rs fixed (2e3a26a) — that specific
+        // stride bug is no longer the blocker. However, GPU validation on this
+        // stack (GB10, Qwen3.6-27B-NVFP4+DFlash, forced ATLAS_DFLASH_DRAFT_CAP=16)
+        // still measures 0/16 accepted on the K=γ path — the deeper SSM
+        // state-management mismatch documented above is not resolved by the
+        // stride fix alone. Keep the safe default at 1 (forces step_verify_k2)
+        // until that's root-caused; override with ATLAS_DFLASH_DRAFT_CAP=N to
+        // exercise the K=γ path (e.g. N=γ-1) for further investigation.
         let cap: usize = std::env::var("ATLAS_DFLASH_DRAFT_CAP")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1);
         let drafts = drafts.into_iter().take(cap).collect::<Vec<_>>();
         dstate.last_num_drafted = drafts.len();
+        let total_us = t_propose_start.elapsed().as_micros();
+        tracing::debug!(
+            "DFlash propose: forward_block={}ms total={}ms eff_ctx={} γ={} drafts={} pos={}",
+            forward_us / 1000,
+            total_us / 1000,
+            dstate.ctx_len,
+            self.gamma,
+            drafts.len(),
+            position,
+        );
         Ok(drafts)
     }
 }

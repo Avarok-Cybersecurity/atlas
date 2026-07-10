@@ -149,11 +149,19 @@ pub struct DflashProposerState {
     pub ctx_hidden_acc: DevicePtr,
     /// Number of populated slots in `ctx_hidden_acc`. Capped at `max_ctx_len`.
     pub ctx_len: usize,
+    /// Drafts accepted in the verify that immediately preceded this propose.
+    /// Set by `after_verify` (always called before `propose`). The decode-append
+    /// in `propose` needs it to label the row-0 ctx slot with the TRUE position
+    /// of `last_token`: `N = position - 1 - last_num_accepted`. Without the
+    /// `- last_num_accepted` term the row-0 slot (h(last_token@N)) is mislabeled
+    /// `N + num_accepted`, producing the `N+1,N+1,N+3,N+3,...` desync.
+    pub last_num_accepted: usize,
     /// Actual absolute sequence positions for each populated ctx slot. CPU-side
     /// parallel to `ctx_hidden_acc`: `ctx_slot_positions[k]` = the true sequence
     /// position of the hidden stored in `ctx_hidden_acc[k]`. Needed because
     /// thinking tokens create a gap (prompt at 0..P, output at P+T..N) so slot
-    /// index k != actual position when T > 0.
+    /// index k != actual position when T > 0. Used by `forward_block` to assign
+    /// correct RoPE positions to ctx K-vectors.
     pub ctx_slot_positions: Vec<i32>,
     /// Allocation cap for `ctx_hidden_acc` (in slot count). Mirrors the
     /// `max_seq_len` build arg so we can clamp without re-fetching it.
@@ -290,6 +298,7 @@ pub struct BlockDiffusionDraftHead {
 
 mod forward_block;
 mod forward_block_layer;
+mod forward_block_step0;
 mod from_weights;
 mod propose;
 
@@ -314,6 +323,7 @@ impl DraftProposer for BlockDiffusionDraftHead {
             skip_next_decode_append: false,
             ctx_hidden_acc,
             ctx_len: 0,
+            last_num_accepted: 0,
             ctx_slot_positions: Vec::with_capacity(self.max_seq_len),
             max_ctx_len: self.max_seq_len,
             ctx_slot_bytes,
@@ -360,7 +370,9 @@ impl DraftProposer for BlockDiffusionDraftHead {
         // Phase 1: no real KV trim because `propose()` is a stub. Phase 2
         // adds the rollback that drops `(last_num_drafted - num_accepted)`
         // tokens from each layer's paged cache.
-        let _ = num_accepted;
+        // Record num_accepted so the NEXT propose's decode-append can label the
+        // row-0 ctx slot at the true last_token position N = position-1-num_accepted.
+        dstate.last_num_accepted = num_accepted;
         dstate.last_num_drafted = 0;
         Ok(())
     }
@@ -390,6 +402,30 @@ impl DraftProposer for BlockDiffusionDraftHead {
         dstate.ctx_len = 0;
         dstate.prefill_done = false;
         dstate.last_num_drafted = 0;
+        Ok(())
+    }
+
+    fn append_ctx_slot(
+        &self,
+        src: spark_runtime::gpu::DevicePtr,
+        actual_pos: i32,
+        state: &mut dyn ProposerState,
+        gpu: &dyn spark_runtime::gpu::GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        let dstate = state
+            .as_any_mut()
+            .downcast_mut::<DflashProposerState>()
+            .ok_or_else(|| anyhow::anyhow!("Invalid DFlash proposer state"))?;
+        if dstate.ctx_len >= dstate.max_ctx_len {
+            return Ok(());
+        }
+        let dst = dstate
+            .ctx_hidden_acc
+            .offset(dstate.ctx_len * dstate.ctx_slot_bytes);
+        gpu.copy_d2d_async(src, dst, dstate.ctx_slot_bytes, stream)?;
+        dstate.ctx_len += 1;
+        dstate.ctx_slot_positions.push(actual_pos);
         Ok(())
     }
 }
