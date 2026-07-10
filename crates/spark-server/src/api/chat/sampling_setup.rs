@@ -341,10 +341,7 @@ pub(super) fn build_sampling(
 /// `top_logprobs` count wins (clamped 0-20); `logprobs: true` alone
 /// enables sampled-token logprobs with no alternatives (count 0);
 /// otherwise disabled.
-pub(crate) fn resolve_top_logprobs(
-    logprobs: Option<bool>,
-    top_logprobs: Option<u8>,
-) -> Option<u8> {
+pub(crate) fn resolve_top_logprobs(logprobs: Option<bool>, top_logprobs: Option<u8>) -> Option<u8> {
     match (logprobs, top_logprobs) {
         (_, Some(n)) => Some(n.min(20)),
         (Some(true), None) => Some(0),

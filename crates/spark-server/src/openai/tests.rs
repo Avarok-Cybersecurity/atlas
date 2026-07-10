@@ -397,7 +397,10 @@ fn completion_logprobs_serializes_four_parallel_arrays_with_nulls() {
         token_logprobs: vec![None, Some(-0.5)],
         top_logprobs: vec![
             None,
-            Some(std::collections::HashMap::from([("llo".to_string(), -0.5f32)])),
+            Some(std::collections::HashMap::from([(
+                "llo".to_string(),
+                -0.5f32,
+            )])),
         ],
         text_offset: vec![0, 2],
     };

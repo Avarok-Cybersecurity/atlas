@@ -58,12 +58,11 @@ fn resolve_prompts(
     prompt: &PromptInput,
 ) -> Result<Vec<Vec<u32>>, (StatusCode, String)> {
     match prompt {
-        PromptInput::Text(s) => Ok(vec![
-            state
-                .tokenizer
-                .encode(s)
-                .map_err(|e| (StatusCode::BAD_REQUEST, format!("Tokenization error: {e}")))?,
-        ]),
+        PromptInput::Text(s) => {
+            Ok(vec![state.tokenizer.encode(s).map_err(|e| {
+                (StatusCode::BAD_REQUEST, format!("Tokenization error: {e}"))
+            })?])
+        }
         PromptInput::TextArray(parts) => {
             // OpenAI spec: each array element is an INDEPENDENT prompt
             // yielding its own choice. (Earlier Atlas joined the array
@@ -72,9 +71,10 @@ fn resolve_prompts(
             parts
                 .iter()
                 .map(|part| {
-                    state.tokenizer.encode(part).map_err(|e| {
-                        (StatusCode::BAD_REQUEST, format!("Tokenization error: {e}"))
-                    })
+                    state
+                        .tokenizer
+                        .encode(part)
+                        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Tokenization error: {e}")))
                 })
                 .collect()
         }
@@ -209,12 +209,13 @@ pub(super) async fn completions_stream(
     let prompt_len = prompt_tokens.len();
     let echo = req.echo;
     let logprobs_k = p.logprobs_k;
-    let include_usage = req
-        .stream_options
-        .as_ref()
-        .is_some_and(|o| o.include_usage);
+    let include_usage = req.stream_options.as_ref().is_some_and(|o| o.include_usage);
     // Echo needs the prompt tokens after the request consumes them.
-    let echo_prompt = if echo { Some(prompt_tokens.clone()) } else { None };
+    let echo_prompt = if echo {
+        Some(prompt_tokens.clone())
+    } else {
+        None
+    };
     // Echo WITHOUT logprobs has no PromptLogprobs event to hook — the
     // prompt text chunk is prepended client-side; decode it now, before
     // the request takes ownership of the tokens.
@@ -298,9 +299,9 @@ pub(super) async fn completions_stream(
                     &[],
                 );
                 let chunk = CompletionChunk::echo_chunk(&model, &id, text, Some(lp));
-                vec![Ok(Event::default().data(
-                    serde_json::to_string(&chunk).unwrap_or_default(),
-                ))]
+                vec![Ok(
+                    Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
+                )]
             }
             StreamEvent::Token(tok) | StreamEvent::TokenWithLogprobs(tok, _) => {
                 all_toks.push(tok);
@@ -314,9 +315,9 @@ pub(super) async fn completions_stream(
                     d
                 };
                 let chunk = CompletionChunk::text_chunk(&model, &id, delta);
-                vec![Ok(Event::default().data(
-                    serde_json::to_string(&chunk).unwrap_or_default(),
-                ))]
+                vec![Ok(
+                    Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
+                )]
             }
             StreamEvent::Done {
                 finish_reason,
@@ -361,9 +362,9 @@ pub(super) async fn completions_stream(
                     ]
                 } else {
                     let chunk = CompletionChunk::done_chunk(&model, &id, &finish_reason, usage);
-                    vec![Ok(Event::default().data(
-                        serde_json::to_string(&chunk).unwrap_or_default(),
-                    ))]
+                    vec![Ok(
+                        Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
+                    )]
                 }
             }
             StreamEvent::Error(msg) => {
@@ -383,7 +384,11 @@ pub(super) async fn completions_stream(
     let done_event = futures::stream::once(async {
         Ok::<_, std::convert::Infallible>(Event::default().data("[DONE]"))
     });
-    let prefix = futures::stream::iter(echo_prefix.into_iter().map(Ok::<_, std::convert::Infallible>));
+    let prefix = futures::stream::iter(
+        echo_prefix
+            .into_iter()
+            .map(Ok::<_, std::convert::Infallible>),
+    );
     let full_stream = prefix.chain(token_stream).chain(done_event);
 
     Ok(Sse::new(full_stream)

@@ -60,7 +60,11 @@ pub(super) fn render_template(
             // system/user/assistant/tool, so map it here; a template
             // that rejects non-leading system messages was already
             // rejecting non-leading system — pre-existing limitation.
-            let role = if m.role == "developer" { "system" } else { m.role.as_str() };
+            let role = if m.role == "developer" {
+                "system"
+            } else {
+                m.role.as_str()
+            };
             let mut msg = serde_json::json!({"role": role, "content": content_val});
             if let Some(ref tcs) = m.tool_calls {
                 msg["tool_calls"] = serde_json::Value::Array(tcs.clone());

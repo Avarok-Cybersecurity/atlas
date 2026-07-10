@@ -111,7 +111,8 @@ mod tests {
 
     #[test]
     fn text_offset_is_cumulative_decoded_length() {
-        let out = build_completion_logprobs(&dec, true, &[7, 8], &[lp(8, -0.3)], &[9], &[lp(9, -0.4)]);
+        let out =
+            build_completion_logprobs(&dec, true, &[7, 8], &[lp(8, -0.3)], &[9], &[lp(9, -0.4)]);
         // "t7 "(3) "t8 "(3) "t9 "(3)
         assert_eq!(out.text_offset, vec![0, 3, 6]);
     }
@@ -127,7 +128,10 @@ mod tests {
             &[lp(3, -0.2), lp(4, -0.3)],
         );
         assert_eq!(out.tokens.len(), 4);
-        assert_eq!(out.token_logprobs, vec![None, Some(-0.1), Some(-0.2), Some(-0.3)]);
+        assert_eq!(
+            out.token_logprobs,
+            vec![None, Some(-0.1), Some(-0.2), Some(-0.3)]
+        );
     }
 
     #[test]

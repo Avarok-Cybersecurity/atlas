@@ -292,7 +292,14 @@ impl TransformerModel {
         // chunk's hidden rows are live, BEFORE finalize_last (which
         // re-derives norm_output + logits for the first sampled token).
         // No-op unless seq.collect_prompt_logprobs is set.
-        self.collect_prompt_logprobs_chunk(tokens, seq, chunk_start, proc_start, proc_count, stream)?;
+        self.collect_prompt_logprobs_chunk(
+            tokens,
+            seq,
+            chunk_start,
+            proc_start,
+            proc_count,
+            stream,
+        )?;
 
         if is_last_chunk {
             // ── Phase 6+7+8: final norm, lm_head, prefix-cache + snapshot save ──

@@ -17,11 +17,11 @@
 //! Collecting requests bypass the prefix cache (see `prefix_lookup.rs`)
 //! so every position is guaranteed a live hidden row.
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 
 use super::super::super::types::TransformerModel;
 use crate::layers::ops;
-use crate::traits::{extract_bf16, SequenceState};
+use crate::traits::{SequenceState, extract_bf16};
 
 /// Rows projected per LM-head batch. `buffers.logits()` is sized for
 /// `min(m, 32)` rows; every real serve config has m ≥ 32.

@@ -374,7 +374,11 @@ pub fn start_chunked_prefill(
                 last_token: first,
                 // max_tokens==0 (scoring-only): the sampled token is
                 // discarded — empty output derives finish_reason="length".
-                output_tokens: if max_tokens == 0 { Vec::new() } else { vec![first] },
+                output_tokens: if max_tokens == 0 {
+                    Vec::new()
+                } else {
+                    vec![first]
+                },
                 remaining: 0,
                 min_tokens: req_min_tokens,
                 eos_tokens: eos_tokens.to_vec(),

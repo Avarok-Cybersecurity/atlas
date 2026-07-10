@@ -91,7 +91,9 @@ pub(super) async fn run_blocking(
                 grammar_spec: None,
                 // Distinct choices need distinct sampling streams; same
                 // offset scheme as chat_blocking's n>1 loop.
-                seed: req.seed.map(|s| s.wrapping_add((prompt_i * n + n_i) as u64)),
+                seed: req
+                    .seed
+                    .map(|s| s.wrapping_add((prompt_i * n + n_i) as u64)),
                 top_logprobs: p.logprobs_k,
                 prompt_logprobs: if req.echo { p.logprobs_k } else { None },
                 echo: req.echo,
@@ -142,10 +144,7 @@ pub(super) async fn run_blocking(
             let completion_text = strip_stop_sequences(completion_text, &req.stop);
             let completion_text = strip_thinking_tags(&completion_text);
             let text = if req.echo {
-                let prompt_text = state
-                    .tokenizer
-                    .decode(prompt_tokens)
-                    .unwrap_or_default();
+                let prompt_text = state.tokenizer.decode(prompt_tokens).unwrap_or_default();
                 format!("{prompt_text}{completion_text}")
             } else {
                 completion_text
