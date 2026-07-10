@@ -101,7 +101,7 @@ pub struct CompletionLogprobs {
 ///   - `"hello"`              → `Text`
 ///   - `[128000, 9906, ...]`  → `TokenIds`     (bypasses tokenization)
 ///   - `[[128000], [9906]]`   → `TokenIdBatch` (bypasses tokenization)
-///   - `["hello", "world"]`   → `TextArray`    (joined, then tokenized)
+///   - `["hello", "world"]`   → `TextArray`    (one prompt per element)
 ///
 /// ── serde-untagged ordering rationale ──
 /// `#[serde(untagged)]` tries variants top-to-bottom and accepts the first
@@ -128,13 +128,12 @@ pub enum PromptInput {
     /// Pre-tokenized prompt: integer token IDs fed to the scheduler
     /// verbatim (no tokenization, no BOS prepended).
     TokenIds(Vec<u32>),
-    /// Batch of pre-tokenized prompts. The legacy `/v1/completions`
-    /// handler is single-prompt, so the batch is flattened (concatenated)
-    /// into one token sequence, matching the existing string-array
-    /// behavior of joining multiple string prompts.
+    /// Batch of pre-tokenized prompts: one INDEPENDENT prompt per
+    /// sub-array, each yielding its own choice (OpenAI batch semantics;
+    /// lm-eval batch_size>1 sends this form).
     TokenIdBatch(Vec<Vec<u32>>),
-    /// Array of text prompts — joined (matching prior behavior) then
-    /// tokenized.
+    /// Array of text prompts — one independent prompt per element, each
+    /// tokenized separately and yielding its own choice.
     TextArray(Vec<String>),
 }
 
@@ -208,6 +207,10 @@ pub struct CompletionChunkChoice {
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<String>,
+    /// Present only on the echo chunk (legacy `echo` + `logprobs` while
+    /// streaming: the prompt text + its logprobs precede generation).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<CompletionLogprobs>,
 }
 
 impl CompletionChunk {
@@ -222,8 +225,63 @@ impl CompletionChunk {
                 index: 0,
                 text,
                 finish_reason: None,
+                logprobs: None,
             }],
             usage: None,
+        }
+    }
+
+    /// Echo chunk: the prompt text (plus its logprobs when requested),
+    /// emitted before any generated-token chunk.
+    pub fn echo_chunk(
+        model: &str,
+        id: &str,
+        text: String,
+        logprobs: Option<CompletionLogprobs>,
+    ) -> Self {
+        Self {
+            id: id.to_string(),
+            object: "text_completion".to_string(),
+            created: unix_timestamp(),
+            model: model.to_string(),
+            choices: vec![CompletionChunkChoice {
+                index: 0,
+                text,
+                finish_reason: None,
+                logprobs,
+            }],
+            usage: None,
+        }
+    }
+
+    /// Finish chunk WITHOUT usage — used with `stream_options.include_usage`,
+    /// where usage arrives in a separate `choices: []` chunk (chat parity).
+    pub fn finish_chunk_no_usage(model: &str, id: &str, finish_reason: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            object: "text_completion".to_string(),
+            created: unix_timestamp(),
+            model: model.to_string(),
+            choices: vec![CompletionChunkChoice {
+                index: 0,
+                text: String::new(),
+                finish_reason: Some(finish_reason.to_string()),
+                logprobs: None,
+            }],
+            usage: None,
+        }
+    }
+
+    /// Usage-only chunk (`choices: []`), emitted before `[DONE]` when
+    /// `stream_options.include_usage` is set.
+    pub fn usage_only_chunk(model: &str, id: &str, usage: Usage) -> Self {
+        Self {
+            id: id.to_string(),
+            object: "text_completion".to_string(),
+            created: unix_timestamp(),
+            model: model.to_string(),
+            choices: Vec::new(),
+            usage: Some(usage),
         }
     }
 
@@ -238,6 +296,7 @@ impl CompletionChunk {
                 index: 0,
                 text: String::new(),
                 finish_reason: Some(finish_reason.to_string()),
+                logprobs: None,
             }],
             usage: Some(usage),
         }
