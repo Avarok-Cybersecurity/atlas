@@ -69,11 +69,47 @@ fn load_expert_proj(
         // WAS: `dequant_nvfp4_e8m0_to_bf16 → quantize_to_nvfp4` = TWO lossy
         // 4-bit conversions at load (MXFP4→BF16→NVFP4) — the founding-scar path
         // ARM-2 removes. `n`/`shape_k`/`qctx`/`gpu` unused on this arm now.
-        WeightDtype::UInt8 => crate::weight_map::quantized_mxfp4_e8m0(store, prefix),
+        WeightDtype::UInt8 => {
+            let qw = crate::weight_map::quantized_mxfp4_e8m0(store, prefix)?;
+            maybe_dump_expert0(prefix, &qw, gpu)?;
+            Ok(qw)
+        }
         other => anyhow::bail!(
             "{prefix}: unsupported expert weight dtype {other:?} (expected FP8E4M3 or UInt8)"
         ),
     }
+}
+
+/// Phase-K STEP 0 (gating): one-shot device byte-check of the native-MXFP4
+/// loader. When `ATLAS_DUMP_EXPERT0=1`, dumps `layers.0.ffn.experts.0.w1`'s
+/// device-resident packed nibbles (`.weight`) + E8M0 scales (`.weight_scale`)
+/// to `/tmp` for sha256 vs the on-disk reference (`ARM-2-LEG1-BYTE-CHECK.md`:
+/// weight `177ac128…`, scale `ea4ac989…`). Dumps the PRE-transpose buffer (the
+/// loader output, before any `transpose_for_gemm` swizzle) — matches the Leg-1
+/// caveat. Sizes are fixed by the frozen ckpt: weight 4194304 B, scale 262144 B.
+fn maybe_dump_expert0(
+    prefix: &str,
+    qw: &QuantizedWeight,
+    gpu: &dyn GpuBackend,
+) -> Result<()> {
+    if std::env::var("ATLAS_DUMP_EXPERT0").as_deref() != Ok("1") {
+        return Ok(());
+    }
+    if !prefix.ends_with("layers.0.ffn.experts.0.w1") {
+        return Ok(());
+    }
+    let mut w = vec![0u8; 4194304];
+    gpu.copy_d2h(qw.weight, &mut w)?;
+    let mut s = vec![0u8; 262144];
+    gpu.copy_d2h(qw.weight_scale, &mut s)?;
+    std::fs::write("/tmp/atlas_expert0_w1_weight.bin", &w)?;
+    std::fs::write("/tmp/atlas_expert0_w1_scale.bin", &s)?;
+    eprintln!(
+        "ATLAS_DUMP_EXPERT0: dumped {prefix} weight={} B scale={} B to /tmp/atlas_expert0_w1_*.bin",
+        w.len(),
+        s.len()
+    );
+    Ok(())
 }
 
 /// Detect the landed quant format of the ROUTED experts, for the E8M0 MoE-GEMM
