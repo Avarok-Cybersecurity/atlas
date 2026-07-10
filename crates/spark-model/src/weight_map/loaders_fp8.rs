@@ -212,6 +212,7 @@ pub(crate) fn quantize_to_nvfp4(
         weight_scale: scale_buf,
         weight_scale_2: scale2,
         input_scale: DevicePtr::NULL,
+        weight_scale_2_vec: DevicePtr::NULL,
     })
 }
 

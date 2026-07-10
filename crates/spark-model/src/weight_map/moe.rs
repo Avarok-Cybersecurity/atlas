@@ -56,6 +56,7 @@ impl MoeWeights {
             weight_scale: DevicePtr::NULL,
             weight_scale_2: 1.0,
             input_scale: DevicePtr::NULL,
+            weight_scale_2_vec: DevicePtr::NULL,
         };
         let null_expert = ExpertWeight {
             gate_proj: null_quant,

@@ -193,6 +193,7 @@ fn load_moe_ffn(
                         weight_scale,
                         weight_scale_2,
                         input_scale,
+                        weight_scale_2_vec: DevicePtr::NULL,
                     })
                 };
                 let gate_proj = load_expert_proj("gate_proj")?;

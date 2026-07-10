@@ -98,6 +98,7 @@ fn slice_fused_experts(
             } else {
                 fused_input_scale.offset(e * input_scale_bytes_per_expert)
             },
+            weight_scale_2_vec: DevicePtr::NULL,
         })
         .collect()
 }
