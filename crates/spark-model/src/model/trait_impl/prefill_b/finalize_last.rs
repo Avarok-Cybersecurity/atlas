@@ -142,10 +142,10 @@ impl TransformerModel {
             stream,
         )?;
 
-        // Diagnostic: post-norm hidden state
-        if (chunk_start + chunk_len) > 16384
-            || std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true")
-        {
+        // Diagnostic: post-norm hidden state (env-gated; the former >16384-ctx
+        // auto-trigger fired a synchronize + readback on EVERY deep agentic
+        // turn's last chunk — pure TTFT waste on the warm path).
+        if std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {
             self.gpu.synchronize(stream)?;
             let (vals, norm) = self.readback_bf16(normed, h.min(16))?;
             tracing::warn!(
@@ -241,10 +241,10 @@ impl TransformerModel {
             tracing::info!("ATLAS_NEMO_DUMP: top-10 logits = {top:?}");
         }
 
-        // Diagnostic: logits stats
-        if (chunk_start + chunk_len) > 16384
-            || std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true")
-        {
+        // Diagnostic: logits stats (env-gated; see above — the former
+        // >16384-ctx auto-trigger did a synchronize + full-vocab (248k) D2H +
+        // sort on every deep turn's last chunk, all off the TTFT critical path).
+        if std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {
             self.gpu.synchronize(stream)?;
             let logits_ptr = self.buffers.logits();
             let n_logits = self.config.vocab_size;
