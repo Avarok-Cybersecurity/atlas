@@ -310,21 +310,24 @@ impl BlockDiffusionDraftHead {
         let forward_us = t_forward.elapsed().as_micros();
         // Phase 2.5e scaffolding: K=γ verify path is implemented in model.rs
         // (decode_verify_graphed_kgamma) and dispatched via step_verify_dflash
-        // when drafts.len()>=4. However, per-step output corruption (output
-        // starts correct then degenerates to gibberish at K=5) indicates an
-        // SSM state-management mismatch between the generic K=γ path and the
-        // hand-tuned K=2/3/4 specializations: the K=N!=2/3/4 fallback writes
-        // intermediates differently from the WY-chunkwise kernels, causing
-        // partial-accept rollback to land on stale state.
+        // when drafts.len()>=4. Earlier GPU validation (through #292, before
+        // this cluster's noise0-skip argmax fix in `forward_block.rs`) measured
+        // a hard 0/16 accept collapse — every draft was corrupted by the
+        // noise0 conditioning slot (untrained per the block-diffusion paper)
+        // leaking into the argmax extraction, which desynced every downstream
+        // K=γ verify comparison regardless of the SSM/embed-stride fixes
+        // already landed (2e3a26a).
         //
-        // BF16 embed stride bug in verify_d.rs fixed (2e3a26a) — that specific
-        // stride bug is no longer the blocker. However, GPU validation on this
-        // stack (GB10, Qwen3.6-27B-NVFP4+DFlash, forced ATLAS_DFLASH_DRAFT_CAP=16)
-        // still measures 0/16 accepted on the K=γ path — the deeper SSM
-        // state-management mismatch documented above is not resolved by the
-        // stride fix alone. Keep the safe default at 1 (forces step_verify_k2)
-        // until that's root-caused; override with ATLAS_DFLASH_DRAFT_CAP=N to
-        // exercise the K=γ path (e.g. N=γ-1) for further investigation.
+        // With that fix in this commit, GPU validation on this stack (GB10,
+        // Qwen3.6-27B-NVFP4+DFlash, forced ATLAS_DFLASH_DRAFT_CAP=16) now
+        // measures real, non-zero acceptance (0-93% per step, avg ~15-20%
+        // over a 700-token run) with no output corruption. However, K=γ
+        // verify costs ~12.6x a plain decode step on this hardware/model, so
+        // net throughput is not yet demonstrated positive at that acceptance
+        // rate (this run: 3.1 tok/s vs the K=2 default path's 13.0 tok/s).
+        // Keep the safe default at 1 (forces step_verify_k2) until the
+        // throughput tradeoff is characterized; override with
+        // ATLAS_DFLASH_DRAFT_CAP=N (e.g. N=γ-1) to exercise the K=γ path.
         let cap: usize = std::env::var("ATLAS_DFLASH_DRAFT_CAP")
             .ok()
             .and_then(|s| s.parse().ok())
