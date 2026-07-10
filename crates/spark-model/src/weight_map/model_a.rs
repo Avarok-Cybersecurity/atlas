@@ -158,6 +158,9 @@ pub(crate) fn quantized_mxfp4_e8m0(
         weight_scale: ptr(store, &format!("{prefix}.scale"))?,
         weight_scale_2: 1.0, // native MXFP4 has no per-tensor global
         input_scale: DevicePtr::NULL,
+        // native MXFP4 uses the scalar `weight_scale_2` (E8M0 per-group), not
+        // the per-output-row scale2 vector added by #257 → NULL.
+        weight_scale_2_vec: DevicePtr::NULL,
     })
 }
 
