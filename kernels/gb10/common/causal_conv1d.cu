@@ -234,6 +234,83 @@ extern "C" __global__ void causal_conv1d_update_prefill(
 }
 
 // ============================================================
+// PREFILL UPDATE + INTERMEDIATES: Multi-token sliding window + SiLU,
+// saving the per-token conv_state for partial-accept rollback (DFlash verify).
+// ============================================================
+// Identical to causal_conv1d_update_prefill, but after consuming each token
+// t < seq_len-1 it writes the window state (the conv_state that token t+1 would
+// start from) into conv_state_inter_base + t*inter_stride + ch*d_conv. The
+// final state (after token seq_len-1) goes to live conv_state, as before.
+// Generalizes causal_conv1d_update_chunk2's single-intermediate save (K=2) to
+// arbitrary K. NO L2 norm here (the pipeline applies a separate batched l2_norm
+// to Q/K afterward — must not be fused in).
+//
+// Grid: (ceil(dim/256), 1, 1)  Block: (256, 1, 1)
+extern "C" __global__ void causal_conv1d_update_prefill_inter(
+    float* __restrict__ conv_state,             // [dim, d_conv] FP32 (in/out)
+    const __nv_bfloat16* __restrict__ input,    // N tokens, input[t * input_stride + ch]
+    const __nv_bfloat16* __restrict__ weight,   // [dim, d_conv] BF16
+    const float* __restrict__ bias,             // [dim] or nullptr
+    __nv_bfloat16* __restrict__ output,         // N tokens, output[t * output_stride + ch]
+    float* __restrict__ conv_state_inter_base,  // (seq_len-1) intermediates, [dim, d_conv] FP32 each
+    unsigned int inter_stride,                  // FP32 elements between consecutive token intermediates
+    unsigned int dim,
+    unsigned int d_conv,
+    unsigned int seq_len,          // number of tokens
+    unsigned int input_stride,     // BF16 elements between consecutive tokens in input
+    unsigned int output_stride     // BF16 elements between consecutive tokens in output
+) {
+    const unsigned int ch = blockIdx.x * blockDim.x + threadIdx.x;
+    if (ch >= dim) return;
+
+    float* state = conv_state + ch * d_conv;
+    const __nv_bfloat16* w = weight + ch * d_conv;
+    const float b_val = (bias != nullptr) ? bias[ch] : 0.0f;
+
+    // Load weights into registers (d_conv = 4 for Qwen3-Next)
+    float w_reg[4];
+    for (unsigned int k = 0; k < d_conv && k < 4; k++) {
+        w_reg[k] = (float)w[k];
+    }
+
+    // Load current sliding window state into registers
+    float s[4];
+    for (unsigned int k = 0; k < d_conv && k < 4; k++) {
+        s[k] = state[k];
+    }
+
+    // Process all tokens sequentially — state stays in registers
+    for (unsigned int t = 0; t < seq_len; t++) {
+        float new_val = (float)input[(unsigned long long)t * input_stride + ch];
+
+        // Shift state left by 1, insert new value
+        s[0] = s[1]; s[1] = s[2]; s[2] = s[3]; s[3] = new_val;
+
+        // Save the post-insert window state for tokens 0..seq_len-2. Token
+        // seq_len-1's state is the final, written to live conv_state below.
+        if (t + 1 < seq_len) {
+            float* inter =
+                conv_state_inter_base + (unsigned long long)t * inter_stride + ch * d_conv;
+            for (unsigned int k = 0; k < d_conv && k < 4; k++) {
+                inter[k] = s[k];
+            }
+        }
+
+        // Depthwise convolution
+        float acc = b_val + s[0]*w_reg[0] + s[1]*w_reg[1] + s[2]*w_reg[2] + s[3]*w_reg[3];
+
+        // SiLU activation
+        float sigmoid_acc = 1.0f / (1.0f + __expf(-acc));
+        output[(unsigned long long)t * output_stride + ch] = __float2bfloat16(acc * sigmoid_acc);
+    }
+
+    // Write final state (after token seq_len-1) back to live conv_state
+    for (unsigned int k = 0; k < d_conv && k < 4; k++) {
+        state[k] = s[k];
+    }
+}
+
+// ============================================================
 // CHUNK2: Fused 2-token conv1d update + SiLU
 // ============================================================
 // Processes 2 tokens through the conv1d sliding window in one kernel.

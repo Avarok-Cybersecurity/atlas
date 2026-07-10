@@ -169,7 +169,6 @@ impl Qwen3SsmLayer {
             ctx.gpu.synchronize(stream)?;
             Self::debug_bf16(ctx.gpu, "deinterleaved-Q", deinterleaved, 4);
         }
-
         // Sequential offsets into deinterleaved buffer: [Q_2048 | K_2048 | V_4096 | Z_4096]
         let key_dim = nk * kd; // 2048
         let value_dim = nv * vd; // 4096
@@ -224,39 +223,41 @@ impl Qwen3SsmLayer {
         } else {
             (ctx.buffers.ssm_qkvz(), false)
         };
-        if use_f32_conv {
-            ops::conv1d_update_l2norm(
-                ctx.gpu,
-                self.conv1d_l2norm_f32_k,
-                state.conv_state,
-                qkv_ptr,
-                &self.ssm.conv1d,
-                conv_out,
-                conv_dim,
-                d_conv,
-                1,
-                qk_channels,
-                kd as u32,
-                1e-6,
-                stream,
-            )?;
-        } else {
-            ops::conv1d_update_l2norm(
-                ctx.gpu,
-                self.conv1d_l2norm_k,
-                state.conv_state,
-                qkv_ptr,
-                &self.ssm.conv1d,
-                conv_out,
-                conv_dim,
-                d_conv,
-                1,
-                qk_channels,
-                kd as u32,
-                1e-6,
-                stream,
-            )?;
-        }
+        prof!("conv1d", {
+            if use_f32_conv {
+                ops::conv1d_update_l2norm(
+                    ctx.gpu,
+                    self.conv1d_l2norm_f32_k,
+                    state.conv_state,
+                    qkv_ptr,
+                    &self.ssm.conv1d,
+                    conv_out,
+                    conv_dim,
+                    d_conv,
+                    1,
+                    qk_channels,
+                    kd as u32,
+                    1e-6,
+                    stream,
+                )
+            } else {
+                ops::conv1d_update_l2norm(
+                    ctx.gpu,
+                    self.conv1d_l2norm_k,
+                    state.conv_state,
+                    qkv_ptr,
+                    &self.ssm.conv1d,
+                    conv_out,
+                    conv_dim,
+                    d_conv,
+                    1,
+                    qk_channels,
+                    kd as u32,
+                    1e-6,
+                    stream,
+                )
+            }
+        })?;
         if trace {
             ctx.gpu.synchronize(stream).inspect_err(|_e| {
                 tracing::error!("CRASH at conv1d_l2norm");
@@ -266,7 +267,6 @@ impl Qwen3SsmLayer {
             ctx.gpu.synchronize(stream)?;
             Self::debug_bf16(ctx.gpu, "conv1d-l2norm-out", conv_out, 4);
         }
-
         // ── 5. Split conv output → Q', K', V' ──
         // Bytes per element: 4 if FP32 conv output, 2 if BF16
         let elem_size = if use_f32_conv { 4 } else { 2 };
@@ -327,23 +327,25 @@ impl Qwen3SsmLayer {
                 })?;
             }
         } else {
-            ops::gdn_decode(
-                ctx.gpu,
-                gdn_kernel,
-                state.h_state,
-                q_conv,
-                k_conv,
-                v_conv,
-                gates,
-                beta_fp32,
-                gdn_out,
-                1,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                stream,
-            )?;
+            prof!("gdn_decode", {
+                ops::gdn_decode(
+                    ctx.gpu,
+                    gdn_kernel,
+                    state.h_state,
+                    q_conv,
+                    k_conv,
+                    v_conv,
+                    gates,
+                    beta_fp32,
+                    gdn_out,
+                    1,
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    stream,
+                )
+            })?;
             if trace {
                 ctx.gpu.synchronize(stream).inspect_err(|_e| {
                     tracing::error!("CRASH at gdn_decode");
@@ -357,20 +359,22 @@ impl Qwen3SsmLayer {
             } else {
                 self.gated_rms_norm_k
             };
-            ops::gated_rms_norm(
-                ctx.gpu,
-                norm_kernel,
-                gdn_out,
-                z_ptr,
-                &self.ssm.norm,
-                normed_out,
-                nv as u32,
-                vd as u32,
-                vd as u32,
-                ctx.config.rms_norm_eps as f32,
-                vd as u32,
-                stream,
-            )?;
+            prof!("gated_norm", {
+                ops::gated_rms_norm(
+                    ctx.gpu,
+                    norm_kernel,
+                    gdn_out,
+                    z_ptr,
+                    &self.ssm.norm,
+                    normed_out,
+                    nv as u32,
+                    vd as u32,
+                    vd as u32,
+                    ctx.config.rms_norm_eps as f32,
+                    vd as u32,
+                    stream,
+                )
+            })?;
             if trace {
                 ctx.gpu.synchronize(stream).inspect_err(|_e| {
                     tracing::error!("CRASH at gated_rms_norm");
@@ -419,16 +423,18 @@ impl Qwen3SsmLayer {
                 stream,
             )?;
         } else {
-            ops::w4a16_gemv(
-                ctx.gpu,
-                self.w4a16_gemv_k,
-                normed_out,
-                &self.ssm.out_proj,
-                out,
-                h,
-                value_dim as u32,
-                stream,
-            )?;
+            prof!("out_proj", {
+                ops::w4a16_gemv(
+                    ctx.gpu,
+                    self.w4a16_gemv_k,
+                    normed_out,
+                    &self.ssm.out_proj,
+                    out,
+                    h,
+                    value_dim as u32,
+                    stream,
+                )
+            })?;
         }
         if trace {
             ctx.gpu.synchronize(stream).inspect_err(|_e| {
@@ -439,7 +445,6 @@ impl Qwen3SsmLayer {
             ctx.gpu.synchronize(stream)?;
             Self::debug_bf16(ctx.gpu, "out-proj", out, 4);
         }
-
         Ok(out)
     }
 }

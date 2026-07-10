@@ -26,6 +26,9 @@ impl Qwen3SsmLayer {
         token_offset: usize,
         ctx: &ForwardContext,
         stream: u64,
+        // Some((base, inter_stride_floats)) → write per-token conv_state
+        // intermediates inline (DFlash verify). None → final state only.
+        conv_inter: Option<(DevicePtr, u32)>,
     ) -> Result<()> {
         let h = ctx.config.hidden_size;
         let eps = ctx.config.rms_norm_eps as f32;
@@ -95,19 +98,48 @@ impl Qwen3SsmLayer {
         // prefill GPU time (19–31 ms/call) while single-stream requests, which
         // already used this helper, ran NVFP4 and were ~5× faster.
         let deinterleaved = ctx.buffers.ssm_deinterleaved();
-        self.prefill_qkvz_proj(
-            normed,
-            deinterleaved,
-            k,
-            qkvz_size,
-            h,
-            nk,
-            kd,
-            vpg,
-            vd,
-            ctx,
-            stream,
-        )?;
+        // Route the per-token (num_tokens==1) verify-path qkvz projection
+        // through the same dedicated w4a16_gemv kernel serial decode uses
+        // (ssm_forward.rs), instead of the GEMM-family kernel the shared
+        // dispatch otherwise picks even at M=1 (no dedicated M=1 GEMV case
+        // exists there). Without this, the GEMM-vs-GEMV kernel-choice mismatch
+        // at matched M=1 shape produces ~2.29% rel_diff vs the serial arm.
+        // Escape hatch: =0 to restore the GEMM-family dispatch.
+        let qkvz_fix = num_tokens == 1
+            && std::env::var("ATLAS_DFLASH_VERIFY_QKVZ_FIX")
+                .ok()
+                .as_deref()
+                != Some("0");
+        if qkvz_fix
+            && self.sequential_qkvz
+            && let Some(nvfp4) = self.qkvz_nvfp4.as_ref()
+        {
+            ops::w4a16_gemv(
+                ctx.gpu,
+                self.w4a16_gemv_k,
+                normed,
+                nvfp4,
+                deinterleaved,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )
+            .map_err(|e| anyhow::anyhow!("ssm phase1: QKVZ GEMV fix failed: {e}"))?;
+        } else {
+            self.prefill_qkvz_proj(
+                normed,
+                deinterleaved,
+                k,
+                qkvz_size,
+                h,
+                nk,
+                kd,
+                vpg,
+                vd,
+                ctx,
+                stream,
+            )?;
+        }
         // ── 4+5. Fused BA GEMM + GDN gates (token-parallel) ──
         let ba_size = ctx.config.ssm_ba_size();
         let gates_buf = ctx.buffers.ssm_gates();
@@ -137,21 +169,46 @@ impl Qwen3SsmLayer {
         }
         // ── 6. Batched conv1d for all N tokens ──
         let conv_out_buf = ctx.buffers.ssm_qkvz();
-        ops::conv1d_update_prefill(
-            ctx.gpu,
-            self.conv1d_prefill_k,
-            ssm_state.conv_state,
-            deinterleaved,
-            &self.ssm.conv1d,
-            DevicePtr::NULL,
-            conv_out_buf,
-            conv_dim as u32,
-            d_conv as u32,
-            k,
-            qkvz_size as u32,
-            conv_dim as u32,
-            stream,
-        )?;
+        match conv_inter {
+            Some((inter_base, inter_stride)) if self.conv1d_prefill_inter_k.0 != 0 => {
+                // DFlash verify: also write the K-1 per-token conv_state
+                // intermediates inline for partial-accept rollback.
+                ops::conv1d_update_prefill_inter(
+                    ctx.gpu,
+                    self.conv1d_prefill_inter_k,
+                    ssm_state.conv_state,
+                    deinterleaved,
+                    &self.ssm.conv1d,
+                    DevicePtr::NULL,
+                    conv_out_buf,
+                    inter_base,
+                    inter_stride,
+                    conv_dim as u32,
+                    d_conv as u32,
+                    k,
+                    qkvz_size as u32,
+                    conv_dim as u32,
+                    stream,
+                )?;
+            }
+            _ => {
+                ops::conv1d_update_prefill(
+                    ctx.gpu,
+                    self.conv1d_prefill_k,
+                    ssm_state.conv_state,
+                    deinterleaved,
+                    &self.ssm.conv1d,
+                    DevicePtr::NULL,
+                    conv_out_buf,
+                    conv_dim as u32,
+                    d_conv as u32,
+                    k,
+                    qkvz_size as u32,
+                    conv_dim as u32,
+                    stream,
+                )?;
+            }
+        }
         if k > 4096 {
             ctx.gpu
                 .synchronize(stream)

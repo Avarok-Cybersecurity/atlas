@@ -104,6 +104,13 @@ impl Qwen3SsmLayer {
                 "residual_add_rms_norm_gatef32",
             ),
             gated_rms_norm_prefill_k: gpu.kernel("norm", "gated_rms_norm_prefill")?,
+            // ATLAS_DFLASH_VERIFY_GDN_F32 prototype: FP32-input variant closing the
+            // BF16-truncation gap in the K=γ verify path's GDN-output → norm handoff.
+            gated_rms_norm_prefill_f32_k: super::super::try_kernel(
+                gpu,
+                "norm",
+                "gated_rms_norm_prefill_f32_input",
+            ),
             w4a16_gemm_k: gpu.kernel("w4a16", "w4a16_gemm")?,
             w4a16_gemm_t_k: gpu.kernel("w4a16", "w4a16_gemm_t")?,
             w4a16_gemm_t_k64_k: gpu.kernel("w4a16", "w4a16_gemm_t_k64")?,
@@ -122,6 +129,13 @@ impl Qwen3SsmLayer {
                 .kernel("gated_delta_rule", "gated_delta_rule_prefill_split")?,
             gdn_prefill_split4_k: gpu
                 .kernel("gated_delta_rule", "gated_delta_rule_prefill_split4")?,
+            // ATLAS_DFLASH_VERIFY_GDN_F32 prototype: FP32-output sibling of the split4
+            // kernel dispatched for K=γ (K=15) verify calls (only ladder branch covered).
+            gdn_prefill_split4_f32_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule",
+                "gated_delta_rule_prefill_split4_f32",
+            ),
             gdn_prefill_persistent_k: super::super::try_kernel(
                 gpu,
                 "gated_delta_rule_persistent",
@@ -186,6 +200,11 @@ impl Qwen3SsmLayer {
             compute_gdn_gates_k: gpu.kernel("ssm_preprocess", "compute_gdn_gates")?,
             ba_gates_prefill_k: gpu.kernel("ssm_preprocess", "dense_gemm_ba_gates_prefill")?,
             conv1d_prefill_k: gpu.kernel("causal_conv1d", "causal_conv1d_update_prefill")?,
+            conv1d_prefill_inter_k: super::super::try_kernel(
+                gpu,
+                "causal_conv1d",
+                "causal_conv1d_update_prefill_inter",
+            ),
             gdn_chunk2_k: gpu.kernel("gated_delta_rule", "gated_delta_rule_chunk2")?,
             conv1d_chunk2_k: gpu.kernel("causal_conv1d", "causal_conv1d_update_chunk2")?,
             gdn_chunk3_k: gpu.kernel("gated_delta_rule", "gated_delta_rule_chunk3")?,
@@ -207,12 +226,27 @@ impl Qwen3SsmLayer {
                 "gdn_verify_fused_k2",
                 "gdn_verify_fused_norm_k2",
             ),
-            // wy17 only present in qwen3.6-35b-a3b's PTX module set; NULL on other targets.
+            // wy17 present in qwen3.6-27b/nvfp4 and qwen3.6-35b-a3b/nvfp4; NULL on others.
             // decode_batched(K=17) checks for non-NULL before dispatching the fused path.
             gdn_wy17_k: super::super::try_kernel(
                 gpu,
                 "gated_delta_rule_wy17",
                 "gated_delta_rule_wy17",
+            ),
+            // wy16 present in qwen3.6-27b/nvfp4; NULL on others. decode_batched(K=16)
+            // checks non-NULL before dispatching the fused single-pass path.
+            gdn_wy16_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy16",
+                "gated_delta_rule_wy16",
+            ),
+            // ATLAS_DFLASH_VERIFY_GDN_F32 prototype: FP32-output sibling of
+            // gdn_wy16_k, closing the BF16-truncation gap in the K=γ verify
+            // path's dominant (K=16) dispatch branch.
+            gdn_wy16_f32_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy16",
+                "gated_delta_rule_wy16_f32",
             ),
             h_state_bytes: nv * vd * kd * 4, // FP32 [nv, kd, vd] transposed for coalescing
             conv_state_bytes: conv_dim * d_conv * 4, // FP32 [conv_dim, d_conv]

@@ -310,7 +310,12 @@ impl Qwen3SsmLayer {
             )?;
         } else if num_tokens == 17 && self.gdn_wy17_k.0 != 0 {
             // ── K=17 (DFlash γ+1): fused WY-Chunkwise path ──
-            for t in 0..(num_tokens as u32) {
+            // Conv1d must run for ALL K tokens: the wy17 kernel reads all K rows
+            // of conv_out, and the live conv_state must end AFTER the final
+            // token. Snapshot conv intermediates only for t < K-1 (the array has
+            // K-1 slots); commit_verify restores inter_idx <= K-2 on partial
+            // accept and keeps the live conv_state on full accept.
+            for t in 0..num_tokens as u32 {
                 let qkv_t = deinterleaved.offset(t as usize * qkvz_size * bf16);
                 let conv_out_t = conv_out_buf.offset(t as usize * conv_dim * bf16);
                 ops::conv1d_update_l2norm(
@@ -328,12 +333,14 @@ impl Qwen3SsmLayer {
                     1e-6,
                     stream,
                 )?;
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.conv_state,
-                    ssm_state.conv_state_intermediates[t as usize],
-                    conv_bytes,
-                    stream,
-                )?;
+                if (t as usize) < num_tokens - 1 {
+                    ctx.gpu.copy_d2d_async(
+                        ssm_state.conv_state,
+                        ssm_state.conv_state_intermediates[t as usize],
+                        conv_bytes,
+                        stream,
+                    )?;
+                }
             }
 
             let q_ptr = conv_out_buf;
@@ -364,9 +371,12 @@ impl Qwen3SsmLayer {
                 (nv * 2) as u32, // gb_stride
                 stream,
             )?;
-        } else {
-            // ── K!=2,17: sequential per-token path ──
-            for t in 0..(num_tokens as u32) {
+        } else if num_tokens == 16 && self.gdn_wy16_k.0 != 0 {
+            // ── K=16 (DFlash γ): fused WY-Chunkwise path (mirror of K=17) ──
+            // Conv1d for ALL K tokens (wy16 reads all K rows of conv_out; live
+            // conv_state ends after the final token). Snapshot intermediates
+            // only for t < K-1 — the array has K-1 slots.
+            for t in 0..num_tokens as u32 {
                 let qkv_t = deinterleaved.offset(t as usize * qkvz_size * bf16);
                 let conv_out_t = conv_out_buf.offset(t as usize * conv_dim * bf16);
                 ops::conv1d_update_l2norm(
@@ -384,45 +394,51 @@ impl Qwen3SsmLayer {
                     1e-6,
                     stream,
                 )?;
-
-                let q_t = conv_out_t;
-                let k_t = conv_out_buf.offset(t as usize * conv_dim * bf16 + key_dim * bf16);
-                let v_t = conv_out_buf.offset(t as usize * conv_dim * bf16 + key_dim * 2 * bf16);
-                let gate_beta_stride = nv * 2 * fp32;
-                let gate_t = gates_buf.offset(t as usize * gate_beta_stride);
-                let beta_t = gates_buf.offset(t as usize * gate_beta_stride + nv * fp32);
-                let gdn_out_t = gdn_out_buf.offset(t as usize * args.value_dim * bf16);
-                ops::gdn_decode(
-                    ctx.gpu,
-                    self.gdn_k,
-                    ssm_state.h_state,
-                    q_t,
-                    k_t,
-                    v_t,
-                    gate_t,
-                    beta_t,
-                    gdn_out_t,
-                    1,
-                    nk as u32,
-                    nv as u32,
-                    kd as u32,
-                    vd as u32,
-                    stream,
-                )?;
-
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.h_state,
-                    ssm_state.h_state_intermediates[t as usize],
-                    h_bytes,
-                    stream,
-                )?;
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.conv_state,
-                    ssm_state.conv_state_intermediates[t as usize],
-                    conv_bytes,
-                    stream,
-                )?;
+                if (t as usize) < num_tokens - 1 {
+                    ctx.gpu.copy_d2d_async(
+                        ssm_state.conv_state,
+                        ssm_state.conv_state_intermediates[t as usize],
+                        conv_bytes,
+                        stream,
+                    )?;
+                }
             }
+
+            let q_ptr = conv_out_buf;
+            let k_ptr = conv_out_buf.offset(key_dim * bf16);
+            let v_ptr = conv_out_buf.offset(key_dim * 2 * bf16);
+            let gate_ptr = gates_buf;
+            let beta_ptr = gates_buf.offset(nv * fp32);
+            let inter_stride_floats = (h_bytes / 4) as u32;
+            // gdn_decode_wy17 is kernel-agnostic (launches the passed handle with
+            // grid (num_v_heads, batch, 1); the kernel uses its own #define
+            // K_TOKENS). Reused here with the wy16 handle — no separate wrapper.
+            ops::gdn_decode_wy17(
+                ctx.gpu,
+                self.gdn_wy16_k,
+                ssm_state.h_state,
+                q_ptr,
+                k_ptr,
+                v_ptr,
+                gate_ptr,
+                beta_ptr,
+                gdn_out_buf,
+                ssm_state.h_state_intermediates[0],
+                inter_stride_floats,
+                1, // batch_size
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32, // qk_stride
+                conv_dim as u32, // v_stride
+                (nv * 2) as u32, // gb_stride
+                stream,
+            )?;
+        } else {
+            // ── K!=2,3,4,16,17: sequential per-token path ──
+            // Extracted to `conv_gdn_sequential.rs` for the 500-LoC budget.
+            return self.decode_batched_conv_gdn_sequential(ssm_state, ctx, args);
         }
 
         Ok(())

@@ -34,18 +34,30 @@ impl Qwen3SsmLayer {
             .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState"))?;
 
         let normed = ctx.buffers.norm_output();
-        ops::rms_norm_residual(
-            ctx.gpu,
-            self.rms_norm_residual_k,
-            hidden,
-            &self.input_norm,
-            normed,
-            residual,
-            1,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        {
+            let _t = if ctx.profile {
+                let t = std::time::Instant::now();
+                Some(t)
+            } else {
+                None
+            };
+            ops::rms_norm_residual(
+                ctx.gpu,
+                self.rms_norm_residual_k,
+                hidden,
+                &self.input_norm,
+                normed,
+                residual,
+                1,
+                h as u32,
+                eps,
+                stream,
+            )?;
+            if let Some(t) = _t {
+                ctx.gpu.synchronize(stream)?;
+                tracing::info!("    SSM pre_norm: {:.0}μs", t.elapsed().as_micros());
+            }
+        }
         if debug {
             ctx.gpu.synchronize(stream)?;
             Self::debug_bf16(ctx.gpu, "pre-norm", normed, 4);
@@ -57,13 +69,12 @@ impl Qwen3SsmLayer {
             Self::debug_bf16(ctx.gpu, "ssm-out", ssm_out, 4);
         }
 
-        // Profile: time SSM vs MoE separately
+        // Profile: per-op breakdown of post-SSM path
         if ctx.profile {
             use std::time::Instant;
-            ctx.gpu.synchronize(stream)?;
-            let t0 = Instant::now();
 
             let normed2 = ctx.buffers.norm_output();
+            let t1 = Instant::now();
             ops::residual_add_rms_norm(
                 ctx.gpu,
                 self.residual_add_rms_norm_k,
@@ -77,11 +88,15 @@ impl Qwen3SsmLayer {
                 eps,
                 stream,
             )?;
+            ctx.gpu.synchronize(stream)?;
+            tracing::info!("    SSM post_norm: {:.0}μs", t1.elapsed().as_micros());
+
+            let t2 = Instant::now();
             let moe_out = self.ffn.forward(normed2, ctx, stream)?;
             ctx.gpu.synchronize(stream)?;
-            let moe_us = t0.elapsed().as_micros();
-            tracing::info!("  SSM-MoE: {:.1}ms", moe_us as f64 / 1000.0);
+            tracing::info!("    SSM ffn: {:.0}μs", t2.elapsed().as_micros());
 
+            let t3 = Instant::now();
             ops::residual_add(
                 ctx.gpu,
                 self.residual_add_k,
@@ -90,6 +105,9 @@ impl Qwen3SsmLayer {
                 h as u32,
                 stream,
             )?;
+            ctx.gpu.synchronize(stream)?;
+            tracing::info!("    SSM residual_add: {:.0}μs", t3.elapsed().as_micros());
+
             return Ok(());
         }
 
