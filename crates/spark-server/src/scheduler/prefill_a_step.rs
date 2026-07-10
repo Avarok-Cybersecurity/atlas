@@ -69,6 +69,7 @@ pub fn start_chunked_prefill(
     let req_disable_mtp = req.disable_mtp();
     let req_seed = req.seed();
     let req_top_logprobs = req.top_logprobs();
+    let req_prompt_logprobs = req.prompt_logprobs();
     let req_timeout_at = req.timeout_at();
     let grammar_spec = req.take_grammar_spec();
     let mut grammar_state = compile_grammar_state(grammar_engine, &grammar_spec, eos_tokens);
@@ -130,6 +131,7 @@ pub fn start_chunked_prefill(
         }
     };
     seq.session_hash = req_session_hash;
+    seq.collect_prompt_logprobs = req_prompt_logprobs;
 
     // Deferred co-dispatch: setup + EP broadcast, then return InProgress at
     // chunk 0 WITHOUT prefilling — the batched step packs >=2 streams into one
@@ -328,7 +330,28 @@ pub fn start_chunked_prefill(
         };
 
         let spontaneous_think = !req_enable_thinking && think_start_token == Some(first);
+        // Legacy echo+logprobs: hand prompt logprobs to a streaming client
+        // BEFORE any token event (blocking carries them via finish_sequence).
+        if req_prompt_logprobs.is_some()
+            && let ResponseSink::Streaming(ref tx) = sink
+        {
+            let lps: Vec<crate::api::TokenLogprobs> = seq
+                .prompt_logprobs
+                .drain(..)
+                .map(|p| crate::api::TokenLogprobs {
+                    token_id: p.token_id,
+                    logprob: p.logprob,
+                    top: p.top,
+                })
+                .collect();
+            if let Err(e) = tx.blocking_send(StreamEvent::PromptLogprobs(lps)) {
+                tracing::warn!("prefill_a_step: prompt-logprobs send failed: {e}");
+            }
+        }
+        // max_tokens==0 is a scoring-only call: no generated token leaves
+        // the server (the sampled `first` is discarded below too).
         if !spontaneous_think
+            && max_tokens > 0
             && let ResponseSink::Streaming(ref tx) = sink
             && let Err(e) = tx.blocking_send(StreamEvent::Token(first))
         {
@@ -349,7 +372,13 @@ pub fn start_chunked_prefill(
                 seq,
                 session_hash: req_session_hash,
                 last_token: first,
-                output_tokens: vec![first],
+                // max_tokens==0 (scoring-only): the sampled token is
+                // discarded — empty output derives finish_reason="length".
+                output_tokens: if max_tokens == 0 {
+                    Vec::new()
+                } else {
+                    vec![first]
+                },
                 remaining: 0,
                 min_tokens: req_min_tokens,
                 eos_tokens: eos_tokens.to_vec(),

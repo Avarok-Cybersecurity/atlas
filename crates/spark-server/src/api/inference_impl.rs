@@ -315,6 +315,18 @@ impl InferenceRequest {
         }
     }
 
+    /// Legacy /v1/completions prompt-token logprobs (echo scoring).
+    pub fn prompt_logprobs(&self) -> Option<u8> {
+        match self {
+            InferenceRequest::Blocking {
+                prompt_logprobs, ..
+            } => *prompt_logprobs,
+            InferenceRequest::Streaming {
+                prompt_logprobs, ..
+            } => *prompt_logprobs,
+        }
+    }
+
     /// Request timeout deadline. None = no timeout.
     pub fn timeout_at(&self) -> Option<std::time::Instant> {
         match self {

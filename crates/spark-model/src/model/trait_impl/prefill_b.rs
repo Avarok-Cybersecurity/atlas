@@ -35,6 +35,7 @@ mod forward_layers;
 mod h_state_ptrs;
 mod prefix_lookup;
 mod proc_range;
+mod prompt_logprobs;
 mod save_checkpoint;
 mod stage_batched;
 mod upload_meta;
@@ -286,6 +287,19 @@ impl TransformerModel {
         // #155: prime the decode-checkpoint cadence gate; the last chunk
         // leaves it at the prompt's complete-block count (see prefill_a).
         seq.last_decode_ckpt_block = seq.tokens.len() / bs;
+
+        // ── Legacy echo+logprobs: project prompt positions while this
+        // chunk's hidden rows are live, BEFORE finalize_last (which
+        // re-derives norm_output + logits for the first sampled token).
+        // No-op unless seq.collect_prompt_logprobs is set.
+        self.collect_prompt_logprobs_chunk(
+            tokens,
+            seq,
+            chunk_start,
+            proc_start,
+            proc_count,
+            stream,
+        )?;
 
         if is_last_chunk {
             // ── Phase 6+7+8: final norm, lm_head, prefix-cache + snapshot save ──

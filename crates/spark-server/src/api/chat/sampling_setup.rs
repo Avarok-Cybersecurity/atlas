@@ -312,8 +312,7 @@ pub(super) fn build_sampling(
         None
     };
 
-    // top_logprobs (OpenAI spec: 0-20).
-    let top_logprobs = req.top_logprobs.map(|n| n.min(20));
+    let top_logprobs = resolve_top_logprobs(req.logprobs, req.top_logprobs);
 
     Ok(SamplingSetup {
         temperature,
@@ -338,9 +337,41 @@ pub(super) fn build_sampling(
     })
 }
 
+/// Resolve chat logprobs params (OpenAI spec): an explicit
+/// `top_logprobs` count wins (clamped 0-20); `logprobs: true` alone
+/// enables sampled-token logprobs with no alternatives (count 0);
+/// otherwise disabled.
+pub(crate) fn resolve_top_logprobs(logprobs: Option<bool>, top_logprobs: Option<u8>) -> Option<u8> {
+    match (logprobs, top_logprobs) {
+        (_, Some(n)) => Some(n.min(20)),
+        (Some(true), None) => Some(0),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::resolve_top_logprobs;
     use super::tool_choice_required_for_parser;
+
+    #[test]
+    fn logprobs_true_alone_enables_with_zero_top() {
+        assert_eq!(resolve_top_logprobs(Some(true), None), Some(0));
+    }
+
+    #[test]
+    fn explicit_top_logprobs_wins_and_clamps() {
+        assert_eq!(resolve_top_logprobs(None, Some(5)), Some(5));
+        assert_eq!(resolve_top_logprobs(Some(false), Some(3)), Some(3));
+        assert_eq!(resolve_top_logprobs(Some(true), Some(99)), Some(20));
+    }
+
+    #[test]
+    fn absent_or_false_disables() {
+        assert_eq!(resolve_top_logprobs(None, None), None);
+        assert_eq!(resolve_top_logprobs(Some(false), None), None);
+    }
+
     use crate::tool_parser::{ToolChoice, ToolChoiceFunction};
 
     #[test]

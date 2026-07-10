@@ -165,14 +165,32 @@ pub fn prefill_request(
     // Spontaneous <think>: if the first token is <think> and thinking was not
     // requested, suppress it and enter thinking mode on the ActiveSeq.
     let spontaneous_think = !req_enable_thinking && think_start_token == Some(first);
+    // Legacy echo+logprobs: prompt logprobs precede any token event.
+    if seq.collect_prompt_logprobs.is_some()
+        && let ResponseSink::Streaming(ref tx) = sink
+    {
+        let lps: Vec<crate::api::TokenLogprobs> = seq
+            .prompt_logprobs
+            .drain(..)
+            .map(|p| crate::api::TokenLogprobs {
+                token_id: p.token_id,
+                logprob: p.logprob,
+                top: p.top,
+            })
+            .collect();
+        if let Err(e) = tx.blocking_send(StreamEvent::PromptLogprobs(lps)) {
+            tracing::warn!("prefill_b_step: prompt-logprobs send failed: {e}");
+        }
+    }
     if !spontaneous_think
+        && max_tokens > 0
         && let ResponseSink::Streaming(ref tx) = sink
         && let Err(e) = tx.blocking_send(StreamEvent::Token(first))
     {
         tracing::warn!("prefill_b_step: first-token send failed (receiver dropped): {e}");
     }
 
-    let output_tokens = if spontaneous_think {
+    let output_tokens = if spontaneous_think || max_tokens == 0 {
         vec![]
     } else {
         vec![first]

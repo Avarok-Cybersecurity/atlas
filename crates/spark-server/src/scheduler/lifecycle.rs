@@ -47,6 +47,14 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
                         logprobs: std::mem::take(&mut a.logprobs_data),
                         reasoning_tokens: a.thinking_tokens,
                         cached_prompt_tokens: a.cached_prompt_tokens,
+                        prompt_logprobs: std::mem::take(&mut a.seq.prompt_logprobs)
+                            .into_iter()
+                            .map(|p| crate::api::TokenLogprobs {
+                                token_id: p.token_id,
+                                logprob: p.logprob,
+                                top: p.top,
+                            })
+                            .collect(),
                     }))
                     .is_err()
                 {
