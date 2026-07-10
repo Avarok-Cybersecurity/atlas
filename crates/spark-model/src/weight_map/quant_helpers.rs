@@ -361,5 +361,6 @@ pub(crate) fn quantized_v2(
         // dynamically and never reads this field. Absent ⇒ NULL (W4A4/W4A8
         // checkpoints still load their `input_global_scale` unchanged).
         input_scale: ptr(store, &format!("{prefix}.input_global_scale")).unwrap_or(DevicePtr::NULL),
+        weight_scale_2_vec: DevicePtr::NULL,
     })
 }

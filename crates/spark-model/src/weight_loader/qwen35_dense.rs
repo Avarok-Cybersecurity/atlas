@@ -288,7 +288,37 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                                 DenseWeight,
                                 crate::weight_map::QuantizedWeight,
                             )> {
-                                let src = dense_auto(store, &format!("{p}.{name}.weight"), gpu)?;
+                                // Pre-quantized Standard NVFP4 (e.g. sakamakismile): weight is U8
+                                // on disk. Load directly as QuantizedWeight without BF16 roundtrip.
+                                // TP sharding of pre-quantized NVFP4 is not yet supported: enforce
+                                // tp_size=1 explicitly, or every rank silently loads the full
+                                // unsharded weight (duplicated, not sharded — wrong results with
+                                // no error).
+                                let weight_key = format!("{p}.{name}.weight");
+                                if matches!(
+                                    store.get(&weight_key).map(|w| w.dtype),
+                                    Ok(WeightDtype::UInt8)
+                                ) {
+                                    anyhow::ensure!(
+                                        tp_size == 1,
+                                        "pre-quantized NVFP4 weight '{weight_key}' (U8 on disk) \
+                                         cannot be loaded under tensor parallelism (tp_size={tp_size}): \
+                                         TP sharding of pre-quantized NVFP4 checkpoints is not yet \
+                                         implemented. Use tp_size=1, or dequantize this checkpoint to \
+                                         BF16 first so it goes through the shard-then-requantize path."
+                                    );
+                                    let null_dense = DenseWeight {
+                                        weight: spark_runtime::gpu::DevicePtr::NULL,
+                                    };
+                                    let qw = quantized_auto(
+                                        store,
+                                        &format!("{p}.{name}"),
+                                        gpu,
+                                        Nvfp4Variant::Standard,
+                                    )?;
+                                    return Ok((null_dense, qw));
+                                }
+                                let src = dense_auto(store, &weight_key, gpu)?;
                                 let (sharded_ptr, local_n, local_k) = shard_dense_bf16(
                                     src.weight, full_n, full_k, kind, tp_rank, tp_size, gpu,
                                 )?;
@@ -425,6 +455,14 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         |name: &str, rows: usize, cols: usize| -> Result<DenseWeight> {
                             if store.contains(&format!("{name}.weight_packed")) {
                                 dequant_nvfp4_to_bf16(store, name, rows, cols, gpu)
+                            } else if matches!(
+                                store.get(&format!("{name}.weight")).map(|w| w.dtype),
+                                Ok(WeightDtype::UInt8)
+                            ) {
+                                // Standard-convention NVFP4 (packed bytes at
+                                // `.weight`, not `.weight_packed`) — same dequant,
+                                // different on-disk key.
+                                dequant_nvfp4_to_bf16(store, name, rows, cols, gpu)
                             } else {
                                 dense_auto(store, &format!("{name}.weight"), gpu)
                             }
@@ -508,14 +546,11 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         continue;
                     }
 
-                    let qkv_dense = load_ssm_proj(&format!("{la}.in_proj_qkv"), qkv_rows, h)?;
-                    let z_dense = load_ssm_proj(&format!("{la}.in_proj_z"), z_rows, h)?;
-                    let out_proj_dense = load_ssm_proj(&format!("{la}.out_proj"), h, value_dim)?;
-
-                    // A, B are always BF16
-                    let in_proj_a = dense(store, &format!("{la}.in_proj_a.weight"))?;
-                    let in_proj_b = dense(store, &format!("{la}.in_proj_b.weight"))?;
-                    let conv1d = dense(store, &format!("{la}.conv1d.weight"))?;
+                    // A, B, conv1d, A_log, dt_bias, norm are independent of the
+                    // qkv/z/out_proj on-disk format below — load them once up
+                    // front so both the native-NVFP4 fast path and the legacy
+                    // dequant/requant path can share them.
+                    //
                     // A_log and dt_bias MUST be FP32 — consumer kernels in
                     // `ssm_preprocess.cu` and `mamba2_ssm_decode.cu` declare
                     // them `const float*`. Loading via `dense()` kept BF16
@@ -524,6 +559,14 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // error amplification through GDR recurrence at long
                     // context. The MoE sister loader (`ssm_qwen35.rs`)
                     // already promotes these; dense was missing the mirror.
+                    //
+                    // in_proj_a/b: route through `load_ssm_proj` (not the raw
+                    // `dense()` byte-reinterpret) so a Standard-NVFP4 A/B
+                    // (U8-packed) checkpoint dequants correctly instead of
+                    // being read as BF16 garbage.
+                    let in_proj_a = load_ssm_proj(&format!("{la}.in_proj_a"), nv, h)?;
+                    let in_proj_b = load_ssm_proj(&format!("{la}.in_proj_b"), nv, h)?;
+                    let conv1d = dense(store, &format!("{la}.conv1d.weight"))?;
                     let a_log = dense_keep_f32(store, &format!("{la}.A_log"), gpu)?;
                     let dt_bias = dense_keep_f32(store, &format!("{la}.dt_bias"), gpu)?;
                     // norm.weight: use `dense_f32_safe` (FP32-aware: detects
@@ -531,6 +574,97 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // bf16 passes through). Mirrors `weight_map/ssm_qwen35.rs`
                     // MoE sister loader (backported here 2026-05-20).
                     let norm = dense_f32_safe(store, &format!("{la}.norm.weight"), gpu)?;
+                    let ba_dense = interleave_ba(&in_proj_a, &in_proj_b, nv, nk, h, gpu)?;
+                    let qkvz_size = config.ssm_qkvz_size();
+
+                    // Native Standard-NVFP4 GDN (pre-quantized checkpoint, e.g.
+                    // sakamakismile): in_proj_qkv / in_proj_z / out_proj ship
+                    // U8-packed NVFP4 directly on disk (`.weight` dtype UInt8,
+                    // not `.weight_packed` — that's the compressed-tensors
+                    // convention `load_ssm_proj` already dequants above). Load
+                    // them straight into `QuantizedWeight` and concat on GPU,
+                    // skipping the BF16-dequant→re-quantize roundtrip entirely
+                    // (that roundtrip is what the FP8/BF16-opt-in paths above
+                    // exist to avoid for FP8-native and BF16-preferring
+                    // checkpoints; here there's no lossy step to avoid in the
+                    // first place — the data is already NVFP4). Requires all
+                    // three projections to be U8; a partial-U8 checkpoint
+                    // falls through to the legacy path below, where the
+                    // `load_ssm_proj` UInt8 branch added above still dequants
+                    // each U8 tensor correctly on its own.
+                    let native_nvfp4 = matches!(
+                        store
+                            .get(&format!("{la}.in_proj_qkv.weight"))
+                            .map(|w| w.dtype),
+                        Ok(WeightDtype::UInt8)
+                    ) && matches!(
+                        store
+                            .get(&format!("{la}.in_proj_z.weight"))
+                            .map(|w| w.dtype),
+                        Ok(WeightDtype::UInt8)
+                    ) && matches!(
+                        store.get(&format!("{la}.out_proj.weight")).map(|w| w.dtype),
+                        Ok(WeightDtype::UInt8)
+                    );
+                    if native_nvfp4 {
+                        let qkv_qw = quantized_auto(
+                            store,
+                            &format!("{la}.in_proj_qkv"),
+                            gpu,
+                            Nvfp4Variant::Standard,
+                        )?;
+                        let z_qw = quantized_auto(
+                            store,
+                            &format!("{la}.in_proj_z"),
+                            gpu,
+                            Nvfp4Variant::Standard,
+                        )?;
+                        let qkvz_nvfp4 = qkv_qw.concat_rows(&z_qw, qkv_rows, z_rows, h, gpu)?;
+                        let qkvz_nvfp4_t = qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h)?;
+
+                        let out_proj_nvfp4 = quantized_auto(
+                            store,
+                            &format!("{la}.out_proj"),
+                            gpu,
+                            Nvfp4Variant::Standard,
+                        )?;
+                        let out_proj_nvfp4_t =
+                            out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim)?;
+
+                        let ssm = SsmWeights {
+                            in_proj_qkvz: DenseWeight {
+                                weight: spark_runtime::gpu::DevicePtr::NULL,
+                            },
+                            in_proj_ba: ba_dense,
+                            conv1d,
+                            a_log,
+                            dt_bias,
+                            norm,
+                            out_proj: out_proj_nvfp4,
+                        };
+                        let mut layer = Qwen3SsmLayer::new_sequential(
+                            input_norm,
+                            ssm,
+                            post_attn_norm,
+                            ffn,
+                            Some(qkvz_nvfp4),
+                            Some(qkvz_nvfp4_t),
+                            Some(out_proj_nvfp4_t),
+                            config,
+                            gpu,
+                        )?;
+                        layer.predequant_for_prefill(gpu, config, stream)?;
+                        tracing::info!(
+                            "SSM[{lp}] native NVFP4 GDN: qkvz+out_proj loaded pre-quantized \
+                             (U8-packed on disk; no BF16 dequant/requant roundtrip)"
+                        );
+                        layers.push(Box::new(layer));
+                        continue;
+                    }
+
+                    let qkv_dense = load_ssm_proj(&format!("{la}.in_proj_qkv"), qkv_rows, h)?;
+                    let z_dense = load_ssm_proj(&format!("{la}.in_proj_z"), z_rows, h)?;
+                    let out_proj_dense = load_ssm_proj(&format!("{la}.out_proj"), h, value_dim)?;
 
                     let qkvz_dense =
                         gpu_concat_rows(&qkv_dense, qkv_rows, &z_dense, z_rows, h, gpu)?;
@@ -538,10 +672,6 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // rather than leaking them for the layer's lifetime (Atlas issue #A1).
                     gpu.free(qkv_dense.weight)?;
                     gpu.free(z_dense.weight)?;
-
-                    let ba_dense = interleave_ba(&in_proj_a, &in_proj_b, nv, nk, h, gpu)?;
-
-                    let qkvz_size = config.ssm_qkvz_size();
 
                     // GDN ≥FP8 precision policy (2026-07-04). The nvidia
                     // Qwen3.6-27B-NVFP4 checkpoint ships GDN in_proj_qkv /
