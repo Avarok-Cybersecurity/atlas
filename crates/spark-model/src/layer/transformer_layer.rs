@@ -197,10 +197,10 @@ pub trait TransformerLayer: Send + Sync {
         anyhow::bail!("prefill_phase1_l2_batched: only implemented for SSM layers")
     }
 
-    /// DFlash K=γ verify: run the FULL batched phase-1 pipeline ONCE over
-    /// `num_tokens` (token_offset=0), writing the K-1 per-token conv_state
-    /// intermediates inline via the _inter conv kernel. Returns Ok(true) if it
-    /// ran (caller skips the per-token loop); Ok(false) to fall back.
+    /// DFlash K=γ verify: full batched phase-1 pipeline once over `num_tokens`
+    /// (token_offset=0), writing K-1 per-token conv_state intermediates
+    /// inline. Ok(true) if it ran (caller skips the per-token loop), Ok(false)
+    /// to fall back.
     #[allow(clippy::too_many_arguments)]
     fn prefill_phase1_verify(
         &self,
@@ -222,12 +222,8 @@ pub trait TransformerLayer: Send + Sync {
     }
 
     /// Two-phase SSM prefill — Phase 2: GDN recurrence on the full sequence.
-    ///
     /// Runs the WY4-persistent GDN kernel over all `total_len` tokens in
-    /// `gdn_bufs` in a single launch. The kernel reads packed QKV and
-    /// gate/beta from the full-sequence buffers and writes the GDN output.
-    ///
-    /// Only meaningful for SSM layers. Attention layers return `Ok(())`.
+    /// `gdn_bufs` in a single launch. SSM layers only; attention returns `Ok(())`.
     fn prefill_gdn_full(
         &self,
         _state: &mut dyn LayerState,
@@ -239,10 +235,9 @@ pub trait TransformerLayer: Send + Sync {
     }
 
     /// K=16 DFlash verify: single fused WY16 GDN pass over `gdn_bufs` (already
-    /// post-conv from phase-1). Writes final h_state live AND Hi_0..Hi_14
-    /// intermediates inline — replacing prefill_gdn_full + the per-token replay.
-    /// Returns Ok(true) if it ran (caller skips replay); Ok(false) if the wy16
-    /// kernel/length isn't applicable (caller falls back to WY4 + replay).
+    /// post-conv from phase-1), writing final h_state live AND Hi_0..Hi_14
+    /// intermediates inline. Ok(true) if it ran (caller skips replay), Ok(false)
+    /// if the wy16 kernel/length isn't applicable (falls back to WY4 + replay).
     fn prefill_gdn_wy16(
         &self,
         _state: &mut dyn LayerState,
@@ -254,21 +249,15 @@ pub trait TransformerLayer: Send + Sync {
     }
 
     /// Q12 Path B: batched attention prefill across N stacked-input streams.
-    ///
     /// Runs the full attention-layer prefill (rms_norm + residual, QKV proj,
-    /// RoPE, KV-write, batched attention compute, O proj, post-attn norm,
-    /// FFN, final residual) over `num_tokens = batch_size * chunk_len`
-    /// stacked tokens, using `batched_meta` for per-stream metadata
-    /// resolution.
-    ///
-    /// Default impl returns Err — only `Qwen3AttentionLayer` overrides.
-    /// SSM/dense layers don't override (they have their own batched paths
-    /// or work without batched metadata).
-    ///
-    /// Caller (model-level `prefill_attn_batched_layer`) is responsible for
-    /// ensuring all streams share the same chunk_len, seq_len_start
-    /// (q_offset), and that the layer is not MLA / not HDIM=512 / not HSS-
-    /// engaged. The override bails Err if any unsupported case is detected.
+    /// RoPE, KV-write, batched attention compute, O proj, post-attn norm, FFN,
+    /// final residual) over `num_tokens = batch_size * chunk_len` stacked
+    /// tokens, using `batched_meta` for per-stream metadata resolution.
+    /// Default returns Err — only `Qwen3AttentionLayer` overrides (SSM/dense
+    /// layers have their own batched paths or work without batched metadata).
+    /// Caller (`prefill_attn_batched_layer`) ensures all streams share the
+    /// same chunk_len/seq_len_start and the layer is not MLA/HDIM=512/HSS;
+    /// the override bails Err if an unsupported case is detected.
     fn prefill_inner_batched_q12(
         &self,
         _hidden_stacked: DevicePtr,
@@ -283,20 +272,14 @@ pub trait TransformerLayer: Send + Sync {
         anyhow::bail!("prefill_inner_batched_q12: not implemented for this layer type")
     }
 
-    /// Q12 Path B: batched GDN recurrence across N streams.
-    ///
-    /// Runs the same WY32 / persistent / split4 GDN kernel as
-    /// `prefill_gdn_full` but with `batch_size = batch_size` and
+    /// Q12 Path B: batched GDN recurrence across N streams. Runs the same
+    /// WY32/persistent/split4 GDN kernel as `prefill_gdn_full` but with
     /// `h_state_ptrs` pointing to a device array of N per-stream h_state
-    /// pointers (staged by `TransformerModel::stage_h_state_ptrs`).
-    /// `gdn_bufs.qkv` / `gate_beta` / `output` are stacked across N
-    /// streams contiguously: each stream's data lives at
-    /// `b * chunk_len * conv_dim` (BF16) within the buffer.
-    ///
-    /// Default impl returns `Err` — the SSM layer override implements the
-    /// actual batched dispatch using the kernel handles loaded in
-    /// commit `8d07ca4`. Attention layers don't override (they don't
-    /// have a GDN step).
+    /// pointers (staged by `TransformerModel::stage_h_state_ptrs`);
+    /// `gdn_bufs.qkv`/`gate_beta`/`output` are stacked across N streams
+    /// contiguously at `b * chunk_len * conv_dim` (BF16). Default returns
+    /// `Err` — the SSM layer override implements the batched dispatch;
+    /// attention layers don't override (no GDN step).
     fn prefill_gdn_full_batched(
         &self,
         _h_state_ptrs: DevicePtr,
@@ -333,13 +316,10 @@ pub trait TransformerLayer: Send + Sync {
         Ok(false)
     }
 
-    /// Two-phase SSM prefill — Phase 3: post-GDN processing.
-    ///
-    /// Reads GDN output and Z gate from `gdn_bufs` at `token_offset`,
-    /// then runs gated RMS norm, output projection, residual add, and MoE
-    /// for the chunk of `num_tokens` tokens.
-    ///
-    /// Only meaningful for SSM layers. Attention layers return `Ok(())`.
+    /// Two-phase SSM prefill — Phase 3: post-GDN processing. Reads GDN output
+    /// and Z gate from `gdn_bufs` at `token_offset`, then runs gated RMS norm,
+    /// output projection, residual add, and MoE for the chunk of `num_tokens`
+    /// tokens. SSM layers only; attention layers return `Ok(())`.
     #[allow(clippy::too_many_arguments)]
     fn prefill_phase3(
         &self,
@@ -406,11 +386,11 @@ pub trait TransformerLayer: Send + Sync {
     }
 
     /// Phase 8a unified-layout MoE transpose: build persistent transposed
-    /// gate/up/down for all experts and free the untransposed copies.
-    /// Phased flow keeps memory budget tight enough for MiniMax M2.7 EP=2.
-    /// After this call, the untransposed-layout decode kernels can no
-    /// longer execute correctly — `MoeLayer::use_t_layout_for_decode()` must
-    /// gate dispatch to the `_t` decode kernels. Default no-op.
+    /// gate/up/down for all experts and free the untransposed copies (keeps
+    /// memory budget tight enough for MiniMax M2.7 EP=2). After this call the
+    /// untransposed-layout decode kernels can no longer execute correctly —
+    /// `MoeLayer::use_t_layout_for_decode()` must gate dispatch to `_t` decode
+    /// kernels. Default no-op.
     fn transpose_moe_for_prefill_unified(
         &mut self,
         _gpu: &dyn GpuBackend,
@@ -419,14 +399,12 @@ pub trait TransformerLayer: Send + Sync {
         Ok(())
     }
 
-    /// Block C Path 2 hybrid-layout MoE transpose: build persistent
-    /// transposed gate/up/down alongside the untransposed originals (no
-    /// frees). Doubles MoE-weight memory but recovers the ~15 % decode
-    /// regression of pure unified mode — decode + MTP verify dispatch
-    /// keeps using the warp-reduction kernels on the originals while
-    /// prefill (forward_batched) routes through transposed kernels.
-    /// Caller must verify enough free memory before invocation. Default
-    /// no-op for non-MoE layers.
+    /// Block C Path 2 hybrid-layout MoE transpose: build persistent transposed
+    /// gate/up/down alongside the untransposed originals (no frees). Doubles
+    /// MoE-weight memory but recovers the ~15% decode regression of pure
+    /// unified mode — decode + MTP verify keep using the warp-reduction
+    /// kernels on the originals while prefill routes through transposed
+    /// kernels. Caller must verify enough free memory. Default no-op.
     fn transpose_moe_for_prefill_hybrid(
         &mut self,
         _gpu: &dyn GpuBackend,
@@ -436,23 +414,12 @@ pub trait TransformerLayer: Send + Sync {
     }
 
     /// Decode K tokens through this layer using GEMM-batched projections.
-    ///
     /// Used for speculative decode verification: processes multiple tokens
     /// per layer with GEMM for weight-heavy projections (amortizes bandwidth)
-    /// and sequential ops for stateful/recurrent components.
-    ///
-    /// # Arguments
-    /// * `hidden` - [K, hidden_size] BF16, read and written (K tokens contiguous)
-    /// * `residual` - [K, hidden_size] BF16, scratch for residual stream
-    /// * `num_tokens` - Number of tokens (K)
-    /// * `state` - Per-layer state
-    /// * `kv_cache` - Paged KV cache
-    /// * `seq_len` - Starting sequence length (before these tokens)
-    /// * `block_table` - Block table for KV cache
-    /// * `ctx` - Shared context
-    /// * `stream` - CUDA stream
-    ///
-    /// Default: falls back to sequential single-token decode calls.
+    /// and sequential ops for stateful/recurrent components. `hidden`/
+    /// `residual` are `[K, hidden_size]` BF16 contiguous; `seq_len` is the
+    /// starting sequence length before these K tokens. Default: falls back to
+    /// sequential single-token decode calls.
     #[allow(clippy::too_many_arguments)]
     fn decode_batched(
         &self,
@@ -484,21 +451,11 @@ pub trait TransformerLayer: Send + Sync {
         )
     }
 
-    /// Decode N sequences through this layer in a single batched call.
-    ///
-    /// Each sequence contributes 1 token. The weight matrices are loaded
-    /// once and applied to all N sequences (amortizing memory bandwidth).
-    ///
-    /// # Arguments
-    /// * `hidden` - [N, hidden_size] BF16, contiguous
-    /// * `residual` - [N, hidden_size] BF16, contiguous
-    /// * `num_seqs` - Number of sequences (N)
-    /// * `states` - N per-layer states (one per sequence)
-    /// * `kv_cache` - Shared paged KV cache
-    /// * `ctx` - Forward context (attn_metadata contains N-sequence metadata)
-    /// * `stream` - CUDA stream
-    ///
-    /// Default: falls back to N sequential single-token decode calls.
+    /// Decode N sequences through this layer in a single batched call. Each
+    /// sequence contributes 1 token; `hidden`/`residual` are `[N, hidden_size]`
+    /// BF16 contiguous. The weight matrices are loaded once and applied to all
+    /// N sequences (amortizing memory bandwidth). Default: falls back to N
+    /// sequential single-token decode calls.
     #[allow(clippy::too_many_arguments)]
     fn decode_multi_seq<'a, 'b: 'a>(
         &self,
