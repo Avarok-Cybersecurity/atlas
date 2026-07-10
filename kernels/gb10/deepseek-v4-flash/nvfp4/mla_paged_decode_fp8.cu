@@ -17,7 +17,12 @@
 #define BC 4
 #define KV_LORA_DIM 512
 #define ROPE_DIM 64
-#define MLA_CACHE_DIM 576  // KV_LORA_DIM + ROPE_DIM
+#define MLA_CACHE_DIM 576  // raw paged cache token: KV_LORA_DIM(512) + ROPE_DIM(64)
+// 4b compressed pool block width = qk_nope_head_dim(448) + qk_rope_head_dim(64) = 512.
+// The compressor (cache_skip_v4) builds comp_k at hd_mla = nope+rope = 512 with rope
+// IN-PLACE at dims 448-511 (NOT the 512-575 tail). Prefill dots it over 0-511 (rope
+// included). Persist writes it contiguous at 512/block — decode MUST read at 512 stride.
+#define COMP_BLOCK_DIM 512
 
 // ---- Helpers ----------------------------------------------------------------
 
@@ -47,7 +52,10 @@ extern "C" __global__ void mla_paged_decode_fp8(
     const float k_scale,                             // FP8 scale for K
     const float v_scale,                             // FP8 scale for V
     const unsigned long long cache_stride_bytes,
-    const __nv_bfloat16* __restrict__ sinks          // [num_q_heads] per-head attn sink (s_aux); may be NULL
+    const unsigned int sliding_window,               // 0 = full; else attend only the last `sliding_window` positions
+    const __nv_bfloat16* __restrict__ sinks,         // [num_q_heads] per-head attn sink (s_aux); may be NULL
+    const unsigned char* __restrict__ comp_pool,     // 4b: flat FP8 compressed-KV pool [comp_block_count][576]; may be NULL
+    const unsigned int comp_block_count              // 4b: # completed compressed blocks to attend; 0 = no compressed arm (ratio-0 layers)
 ) {
     const unsigned int q_head = blockIdx.x;
     const unsigned int seq_idx = blockIdx.y;
@@ -86,8 +94,13 @@ extern "C" __global__ void mla_paged_decode_fp8(
         q_reg[2*i+1] = __bfloat162float(__ushort_as_bfloat16((unsigned short)(v >> 16)));
     }
 
-    unsigned int chunk_size = (seq_len + NUM_WARPS - 1) / NUM_WARPS;
-    unsigned int my_start = warp_id * chunk_size;
+    // Sliding-window (DeepSeek-V4 decode, item 4a): attend only the last
+    // `sliding_window` raw positions. 0 = full. Chunk [kv_start, seq_len) across warps.
+    unsigned int kv_start = 0;
+    if (sliding_window > 0u && seq_len > sliding_window) kv_start = seq_len - sliding_window;
+    unsigned int win_len = seq_len - kv_start;
+    unsigned int chunk_size = (win_len + NUM_WARPS - 1) / NUM_WARPS;
+    unsigned int my_start = kv_start + warp_id * chunk_size;
     unsigned int my_end = my_start + chunk_size;
     if (my_end > seq_len) my_end = seq_len;
     if (my_start > seq_len) my_start = seq_len;
@@ -269,6 +282,68 @@ extern "C" __global__ void mla_paged_decode_fp8(
         }
 
         pos += batch_count;
+    }
+
+    // ── Compressed arm (4b): attend the flat compressed-KV pool ──
+    // comp_pool: [comp_block_count][576] FP8, block b at byte offset b*576. Same
+    // dtype/scale/layout (latent|rope) as the raw K, same Q, same inv_sqrt_d, and
+    // MLA K==V — so it folds into the SAME online-softmax (m,l,o_reg) as the raw
+    // window. Distributed across warps like the raw arm; the cross-warp reduction
+    // below then merges [windowed-raw ∪ compressed] into one softmax. Distant
+    // context lives ONLY here (compressed); recent tokens are double-represented
+    // (raw window + compressed) — that overlap is correct (matches prefill).
+    // comp_block_count == 0 (ratio-0 layers, or empty pool) → this loop is a no-op.
+    if (comp_pool != nullptr && comp_block_count > 0u) {
+        const unsigned int cchunk = (comp_block_count + NUM_WARPS - 1) / NUM_WARPS;
+        unsigned int cstart = warp_id * cchunk;
+        unsigned int cend = cstart + cchunk;
+        if (cend > comp_block_count) cend = comp_block_count;
+        for (unsigned int cb = cstart; cb < cend; cb++) {
+            const unsigned char* c_block = comp_pool + (unsigned long long)cb * COMP_BLOCK_DIM;
+
+            // Load K (== comp_k) as PURE LATENT over dims 0-511 — NO rope overwrite.
+            // The prefill oracle (prefill_attn_compressed.cu) dots the compressed arm
+            // over dims 0-511 only; comp_k's rope tail (512-575) is never touched
+            // there → prefill's compressed scoring is rope-FREE. The raw arm's rope
+            // overwrite is WRONG here: comp_k_rope is fixed at pos w*ratio while decode
+            // Q_rope grows with position → a rope·rope term that grows with relative
+            // distance, spiking the oldest blocks the moment they go compressed-only
+            // (the observed maxC spike). Match prefill: latent-only compressed dot.
+            float k_tmp[VEC_BF16];
+            const unsigned char* k_latent = c_block + kv_latent_offset;
+            #pragma unroll
+            for (int i = 0; i < VEC_BF16; i++)
+                k_tmp[i] = fp8e4m3_to_f32((__nv_fp8_storage_t)k_latent[i]) * k_scale;
+
+            // score = (Q · comp_k) / sqrt(d)
+            float dot = 0.0f;
+            #pragma unroll
+            for (int i = 0; i < VEC_BF16 && i + lane_id * VEC_BF16 < kv_latent_dim; i++)
+                dot += q_reg[i] * k_tmp[i];
+            #pragma unroll
+            for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
+                dot += __shfl_xor_sync(0xffffffff, dot, offset);
+            float score = dot * inv_sqrt_d;
+
+            float m_new = fmaxf(m, score);
+            float exp_old = __expf(m - m_new);
+            float exp_new = __expf(score - m_new);
+            l = l * exp_old + exp_new;
+
+            // Load V (== comp_k) as PURE LATENT over dims 0-511 — NO rope overwrite,
+            // mirroring the K side and prefill's compressed-arm output accumulation
+            // (prefill_attn_compressed accumulates Vc over dims 0-511 only).
+            float v_tmp[VEC_BF16];
+            const unsigned char* v_latent = c_block + kv_latent_offset;
+            #pragma unroll
+            for (int i = 0; i < VEC_BF16; i++)
+                v_tmp[i] = fp8e4m3_to_f32((__nv_fp8_storage_t)v_latent[i]) * v_scale;
+
+            #pragma unroll
+            for (int i = 0; i < VEC_BF16; i++)
+                o_reg[i] = o_reg[i] * exp_old + exp_new * v_tmp[i];
+            m = m_new;
+        }
     }
 
     // Reduce across warps

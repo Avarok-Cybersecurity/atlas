@@ -55,6 +55,11 @@ extern "C" __global__ void inferspark_prefill_512(
     unsigned int kv_len = seq_len;
     if (causal) kv_len = min(kv_len, q_row + 1);
 
+    // Sliding-window mask (DeepSeek-V4 probe): attend only the last `sliding_window`
+    // keys ending at q_row. sliding_window==0 => full (unchanged behavior).
+    unsigned int kv_start = 0;
+    if (sliding_window > 0u && kv_len > sliding_window) kv_start = kv_len - sliding_window;
+
     // Online softmax over KV positions
     float m = -1e30f;
     float l = 0.0f;
@@ -63,7 +68,7 @@ extern "C" __global__ void inferspark_prefill_512(
         o_acc[d] = 0.0f;
     }
 
-    for (unsigned int kv_pos = 0; kv_pos < kv_len; kv_pos++) {
+    for (unsigned int kv_pos = kv_start; kv_pos < kv_len; kv_pos++) {
         const __nv_bfloat16* K_row = K + (unsigned long long)batch * seq_len * kv_stride
                                         + (unsigned long long)kv_pos * kv_stride
                                         + (unsigned long long)kv_head * head_dim;

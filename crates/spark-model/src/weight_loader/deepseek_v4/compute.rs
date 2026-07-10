@@ -311,3 +311,23 @@ pub fn ensure_yarn_inv_freq(
     *shared = ptr;
     Ok(ptr)
 }
+
+/// Plain θ=10000 inv_freq (NO YaRN) for the raw-arm rope on `sliding_attention`
+/// layers. The reference's "main" rope: θ=10000 (config `rope_theta`, which
+/// Atlas's dispatch overrides to compress_rope_theta=160000 for the shared yarn
+/// table — so the 10000 base is hardcoded here to match the reference). Cheap
+/// (~32 floats); computed per compressor-less layer, no shared cache needed.
+pub fn main_inv_freq(config: &ModelConfig, gpu: &dyn GpuBackend) -> Result<DevicePtr> {
+    const MAIN_ROPE_THETA: f32 = 10000.0; // reference rope_theta for sliding layers
+    let rope = config.qk_rope_head_dim;
+    let n_pairs = rope / 2;
+    let dim_f = rope as f32;
+    let mut inv_freq = vec![0.0f32; n_pairs];
+    for (j, f) in inv_freq.iter_mut().enumerate() {
+        *f = 1.0 / MAIN_ROPE_THETA.powf((2 * j) as f32 / dim_f);
+    }
+    let bytes: Vec<u8> = inv_freq.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let ptr = alloc_or_managed(gpu, bytes.len())?;
+    gpu.copy_h2d(&bytes, ptr)?;
+    Ok(ptr)
+}

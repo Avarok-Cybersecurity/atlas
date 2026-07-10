@@ -86,6 +86,24 @@ impl Qwen3AttentionLayer {
                     kv_cache_dim
                 );
                 let (k_scale, v_scale) = self.effective_fp8_scales();
+                // Attention scale = head_dim^-0.5 = 1/sqrt(512). Reference model.py:464
+                // `self.softmax_scale = self.head_dim ** -0.5` (head_dim=512, no YaRN
+                // mscale on the scale). hd_mla = nope+rope = 448+64 = 512, so the
+                // incoming inv_sqrt_d = effective_attn_scale(hd=512) = 1/sqrt(512)
+                // ALREADY matches prefill (prefill_attn_compressed uses 1/sqrt(hd_mla=512)).
+                // (An earlier 1/sqrt(576) override was a regression on a wrong-dim read.)
+                // 4b: compressed arm — flat FP8 pool + block count. ratio-0 layers
+                // (compressor=None) → NULL pool + 0 blocks = kernel no-op. Compress
+                // layers → prefill-written blocks [0, filled) (inc-2: prefill blocks
+                // only, no decode-time append yet — cap is the frozen prefill count).
+                let (comp_pool, comp_blocks) = match mla.compressor {
+                    Some(c) => (
+                        c.pool,
+                        self.v4_comp_pool_filled
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                    ),
+                    None => (spark_runtime::gpu::DevicePtr::NULL, 0u32),
+                };
                 ops::mla_paged_decode_fp8(
                     gpu,
                     self.mla_paged_decode_fp8_k,
@@ -106,7 +124,10 @@ impl Qwen3AttentionLayer {
                     v_scale,
                     kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
                     num_seqs,
+                    128, // V4 decode sliding_window (config sliding_window=128), item 4a
                     self.mla.as_ref().unwrap().attn_sink,
+                    comp_pool,
+                    comp_blocks,
                     stream,
                 )
             }

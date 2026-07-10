@@ -1,36 +1,35 @@
 <script>
-  import { discordUrl, redditUrl, xUrl, xHandle } from '$lib/data.js';
+  import { footer, contactEmails, discordUrl, mlperfTrademark } from '$lib/data.js';
 </script>
 
 <footer>
   <div class="footer-inner">
     <div class="footer-brand">
-      <div class="flogo">Atlas</div>
-      <p>LLM inference from scratch in Rust and CUDA. Zero python dependencies, zero complex recipes. Maximum throughput.</p>
+      <div class="flogo"><img src="/favicon.svg" alt="" width="28" height="28" /> Atlas</div>
+      <p>{footer.tagline}</p>
+      <p class="lic">{footer.license}</p>
     </div>
-    <div class="fcol">
-      <h4>Product</h4>
-      <a href="#speed">Why Atlas</a>
-      <a href="#models">Models</a>
-      <a href="#roadmap">Roadmap</a>
-    </div>
-    <div class="fcol">
-      <h4>Run Atlas</h4>
-      <a href="https://sparkrun.dev/runtimes/atlas/" target="_blank" rel="noopener">sparkrun</a>
-      <a href="https://github.com/Avarok-Cybersecurity/atlas-recipes" target="_blank" rel="noopener">Recipes (SSOT)</a>
-    </div>
-    <div class="fcol">
-      <h4>Community</h4>
-      <a href={discordUrl}>Discord</a>
-      <a href={xUrl} target="_blank" rel="noopener">X {xHandle}</a>
-      <a href={redditUrl}>Reddit</a>
-    </div>
+
+    {#each footer.cols as col}
+      <div class="fcol">
+        <h4>{col.heading}</h4>
+        {#each col.links as l}
+          <a href={l.url} target="_blank" rel="noopener">{l.text}</a>
+        {/each}
+      </div>
+    {/each}
+
     <div class="fcol">
       <h4>Contact</h4>
-      <a href={discordUrl}>Discord</a>
-      <a href="mailto:debaterishaqui@gmail.com">debaterishaqui@gmail.com</a>
-      <a href="mailto:thomas@avarok.net">thomas@avarok.net</a>
+      <a href={discordUrl} target="_blank" rel="noopener">Discord</a>
+      {#each contactEmails as e}
+        <a href={`mailto:${e}`}>{e}</a>
+      {/each}
     </div>
   </div>
-  <div class="footer-bottom">Atlas Inference Engine. Built with Rust and CUDA.</div>
+
+  <div class="footer-legal">
+    <div>© Atlas Inference · Pure Rust + CUDA · Community Edition AGPLv3.</div>
+    <div class="tm">{mlperfTrademark}</div>
+  </div>
 </footer>

@@ -332,8 +332,18 @@ impl Qwen3AttentionLayer {
             nkv,
             rope,
             rope,
-            mla.yarn_inv_freq,
-            super::super::helpers::yarn_rope_mscale(ctx.config),
+            // Sliding layers (compressor==None) = reference "main" rope: plain
+            // θ=10000, mscale=1 (no yarn). CSA/HCA keep the θ=160000 yarn table.
+            if mla.compressor.is_none() {
+                mla.main_inv_freq
+            } else {
+                mla.yarn_inv_freq
+            },
+            if mla.compressor.is_none() {
+                1.0f32
+            } else {
+                super::super::helpers::yarn_rope_mscale(ctx.config)
+            },
             stream,
         )?;
         ops::mla_q_rope_writeback_batched(
@@ -407,10 +417,30 @@ impl Qwen3AttentionLayer {
         // (layers 0-1) and HCA-short layers fall back to plain prefill attention.
         use spark_runtime::kernel_args::KernelLaunch;
         let attn_out = ctx.buffers.attn_output();
+        // DeepSeek-V4 sliding-window (port item 1): the RAW attention arm is windowed to
+        // the last V4_WINDOW keys on EVERY layer (config sliding_window=128). Distant
+        // context is carried by the compressed arm (CSA/HCA), never raw. Full-causal raw
+        // attention past the window is out-of-distribution → prompt-length salad. Windowing
+        // the raw arm; compression stays intact.
+        const V4_WINDOW: u32 = 128;
+        // Port item 3: admit BOTH CSA (ratio 4, overlap) AND HCA (ratio 128, non-overlap)
+        // layers to the compression path. The csa_compress kernel already branches on is_csa
+        // for stride/token-map/output-count; only the launch's is_csa flag must be passed
+        // through (was hardcoded 1). HCA layers were falling to windowed-raw-only (OOD).
+        //
+        // Per-request init of the compressed-block counter. `v4_comp_pool_filled`
+        // is serve-global and persists across requests; prefill only re-stores it
+        // inside the `(n / ratio) > 0` guard below. A sub-ratio prompt (n < ratio,
+        // e.g. ratio-128 HCA layers with a short prompt) therefore skips the store
+        // and inherits a prior request's value, causing decode to attend a stale
+        // compressed block from earlier traffic. Store this sequence's own block
+        // count (0 when sub-ratio) up front so requests never leak across each other.
+        if let Some(c) = mla.compressor.as_ref() {
+            self.v4_comp_pool_filled
+                .store(n / c.ratio as u32, std::sync::atomic::Ordering::Relaxed);
+        }
         let csa = match mla.compressor {
-            Some(c) if c.is_csa && self.csa_compress_k.0 != 0 && (n / c.ratio as u32) > 0 => {
-                Some(c)
-            }
+            Some(c) if self.csa_compress_k.0 != 0 && (n / c.ratio as u32) > 0 => Some(c),
             _ => None,
         };
         let did_csa = if let Some(comp) = csa {
@@ -455,7 +485,7 @@ impl Qwen3AttentionLayer {
                 .arg_u32(ratio)
                 .arg_u32(hd_mla)
                 .arg_u32(proj_dim)
-                .arg_u32(1)
+                .arg_u32(if comp.is_csa { 1 } else { 0 })
                 .launch(stream)?;
             ops::rms_norm(
                 ctx.gpu,
@@ -520,6 +550,41 @@ impl Qwen3AttentionLayer {
                 hd_mla,
                 stream,
             )?;
+            // ── 4b increment-1: persist prefill's compressed blocks (FP8) ──
+            // comp_k is now final (rope'd, bf16). Quantize the n_win blocks to
+            // FP8-E4M3 into the layer's persistent flat pool (blocks [0, n_win))
+            // so decode reads raw + compressed arms at ONE dtype/scale (single
+            // online softmax). Was ephemeral scratch (moe_output), discarded.
+            // No serve behavior change yet — written, not yet read by decode.
+            // V4 fp8-KV uses static k_scale=1.0 (fp8_calibration off) → the raw
+            // arm's write (reshape_and_cache_fp8, scale 1.0) is a plain e4m3 cast,
+            // which bf16_to_fp8 matches exactly. If V4 ever calibrates (scale!=1.0)
+            // this needs a scale-aware cast — guarded below.
+            let (k_scale, _v_scale) = self.effective_fp8_scales();
+            debug_assert!(
+                (k_scale - 1.0).abs() < 1e-6,
+                "V4 compressed-pool persist assumes k_scale=1.0 (got {k_scale}); add scale-aware cast"
+            );
+            let n_elems = (n_win * hd_mla) as usize; // hd_mla=576 even → even (bf16_to_fp8 req.)
+            debug_assert!(
+                (n_win as usize) <= comp.pool_blocks,
+                "V4 compressed pool overflow: n_win={n_win} > pool_blocks={}",
+                comp.pool_blocks
+            );
+            ops::bf16_to_fp8(
+                ctx.gpu,
+                self.bf16_to_fp8_k,
+                comp_k,
+                comp.pool,
+                n_elems as u32,
+                stream,
+            )?;
+            // Record how many compressed blocks prefill wrote → decode's compressed
+            // arm attends exactly [0, n_win). inc-2: single-shot prefill, blocks at
+            // pool offset 0, no decode-time append. (Chunked prefill would need an
+            // offset + accumulate — an inc-3 concern alongside decode-append.)
+            self.v4_comp_pool_filled
+                .store(n_win, std::sync::atomic::Ordering::Relaxed);
             KernelLaunch::new(ctx.gpu, self.prefill_attn_compressed_k)
                 .grid([nq, n.div_ceil(16), 1])
                 .block([128, 1, 1])
@@ -537,12 +602,54 @@ impl Qwen3AttentionLayer {
                 .arg_u32(hd_mla)
                 .arg_u32(n_win)
                 .arg_u32(ratio)
+                .arg_u32(V4_WINDOW)
                 .arg_f32(1.0f32 / (hd_mla as f32).sqrt())
                 .launch(stream)?;
             true
         } else {
             false
         };
+        // 4b inc-3: seed the decode-append ring from prefill's tail so decode-time
+        // appends are correct from the FIRST window — mirrors the reference
+        // Compressor.forward(start_pos==0) kv_state seed (model.py:330-335):
+        //  - CSA overlap: prev_win = the last FULL window's normed-x (= the next
+        //    window's Ca half). Without it the first decode block's Ca is masked →
+        //    one wrong block attended for the rest of the sequence (the observed
+        //    early-loop regression).
+        //  - both CSA/HCA: the trailing partial-window (`remainder`) tokens seed the
+        //    ring's leading slots so decode COMPLETES that straddle window. HCA with
+        //    a prompt shorter than one window has n_win=0 and is gated OUT of the
+        //    compress branch above, yet still must seed here (else its window-0
+        //    decode append is built from an empty ring).
+        // Runs for EVERY compressor layer (uses mla.compressor directly, not the
+        // n/ratio-gated `csa`). Reset here = the per-sequence clean start.
+        if let Some(comp) = mla.compressor.as_ref() {
+            use std::sync::atomic::Ordering::Relaxed;
+            let cratio = comp.ratio as u32;
+            let cnwin = n / cratio;
+            let crem = n % cratio;
+            let hbytes = h as usize * 2;
+            self.v4_decode_started.store(false, Relaxed);
+            if comp.is_csa && cnwin > 0 {
+                ctx.gpu.copy_d2d_async(
+                    normed.offset(((cnwin - 1) * cratio) as usize * hbytes),
+                    comp.prev_win,
+                    cratio as usize * hbytes,
+                    stream,
+                )?;
+                self.v4_comp_prev_valid.store(true, Relaxed);
+            } else {
+                self.v4_comp_prev_valid.store(false, Relaxed);
+            }
+            if crem > 0 {
+                ctx.gpu.copy_d2d_async(
+                    normed.offset((cnwin * cratio) as usize * hbytes),
+                    comp.ring,
+                    crem as usize * hbytes,
+                    stream,
+                )?;
+            }
+        }
         if !did_csa {
             // V4 full-attention (non-CSA) is always HDIM=512 → the 512 kernel.
             // MLA: V==K (k_out carries the rope tail; v_out is the plain latent).
@@ -562,7 +669,7 @@ impl Qwen3AttentionLayer {
                 hd_mla,
                 1.0f32 / (hd_mla as f32).sqrt(),
                 true,
-                0,
+                V4_WINDOW,
                 mla.attn_sink,
                 stream,
             )
@@ -600,8 +707,18 @@ impl Qwen3AttentionLayer {
                 0,
                 rope,
                 rope,
-                mla.yarn_inv_freq,
-                super::super::helpers::yarn_rope_mscale(ctx.config),
+                // De-rotation must match this layer's Q/K rope (rope-in ==
+                // de-rotate-out): sliding = main θ=10000; CSA/HCA = θ=160000.
+                if mla.compressor.is_none() {
+                    mla.main_inv_freq
+                } else {
+                    mla.yarn_inv_freq
+                },
+                if mla.compressor.is_none() {
+                    1.0f32
+                } else {
+                    super::super::helpers::yarn_rope_mscale(ctx.config)
+                },
                 stream,
             )?;
             ops::mla_q_rope_writeback_batched(
