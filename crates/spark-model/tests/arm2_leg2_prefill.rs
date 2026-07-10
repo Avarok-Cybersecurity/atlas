@@ -26,12 +26,24 @@ use support::*;
 const BMOD: &str = "moe_w4a16";
 const SEED: u64 = 0x_ADA2_1E62_5EED_0002;
 
-// ══════════ CHECK 4 — Family B prefill, 5 entries, bit-exact e8m0 vs NVFP4-equivalent ══════════
+// ONE `#[test]` per binary: the CUDA context lives on the AtlasRegistry
+// singleton and is current only on the thread that first initialized it. cargo
+// runs each `#[test]` on its own thread, so a per-check backend init would break
+// (only the first thread has a current context). Mirror the original single-
+// `main` harness: init the backend once, run all checks on this thread.
+// Run CHECK 5 under `compute-sanitizer --tool memcheck --report-api-errors no`.
 #[test]
-#[ignore] // Requires GB10 GPU (native-MXFP4 E8M0 prefill kernels)
-fn check4_family_b_prefill_bit_exact() -> Result<()> {
+#[ignore] // Requires GB10 GPU (native-MXFP4 E8M0 prefill kernels); CHECK 5 wants memcheck
+fn leg2_family_b_prefill() -> Result<()> {
     let (backend, st) = setup()?;
     let gpu: &dyn GpuBackend = &backend;
+    check4_family_b_prefill_bit_exact(gpu, st)?;
+    check5_multi_expert_memcheck(gpu, st)?;
+    Ok(())
+}
+
+// ══════════ CHECK 4 — Family B prefill, 5 entries, bit-exact e8m0 vs NVFP4-equivalent ══════════
+fn check4_family_b_prefill_bit_exact(gpu: &dyn GpuBackend, st: u64) -> Result<()> {
     let mut rng = Rng(SEED);
     let mut all_ok = true;
 
@@ -156,11 +168,7 @@ fn check4_family_b_prefill_bit_exact() -> Result<()> {
 // `compute-sanitizer memcheck` (host-side too) = the routed-GEMM path is
 // memory-safe at real shapes (any remaining fault is upstream: routing/HC/attn/EP).
 // Ceiling: covers the routed GEMM path only (silu skipped — addressing-neutral).
-#[test]
-#[ignore] // Requires GB10 GPU + compute-sanitizer memcheck as the oracle
-fn check5_multi_expert_memcheck() -> Result<()> {
-    let (backend, st) = setup()?;
-    let gpu: &dyn GpuBackend = &backend;
+fn check5_multi_expert_memcheck(gpu: &dyn GpuBackend, st: u64) -> Result<()> {
     let mut rng = Rng(SEED);
 
     println!("CHECK 5  real-shape multi-expert integration (V4 routed dims; compute-sanitizer memcheck is the oracle):");

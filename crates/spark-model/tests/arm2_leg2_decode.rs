@@ -22,12 +22,24 @@ use support::*;
 const DMOD: &str = "moe_shared_expert_fused_t";
 const SEED: u64 = 0x_ADA2_1E62_5EED_0002;
 
-// ══════════ CHECK 1 — Family A decode, e8m0 routed vs host f32 GEMV (full-range E8M0) ══════════
+// ONE `#[test]` per binary: the CUDA context lives on the AtlasRegistry
+// singleton and is current only on the thread that first initialized it. cargo
+// runs each `#[test]` on its own thread, so 5 separate backend-init tests would
+// break (only the first thread has a current context). Mirror the original
+// single-`main` harness: init the backend once, run all checks on this thread.
 #[test]
 #[ignore] // Requires GB10 GPU (native-MXFP4 E8M0 decode kernels)
-fn check1_family_a_decode_vs_host_gemv() -> Result<()> {
+fn leg2_family_a_decode() -> Result<()> {
     let (backend, st) = setup()?;
     let gpu: &dyn GpuBackend = &backend;
+    check1_family_a_decode_vs_host_gemv(gpu, st)?;
+    check2_rider_a3_shared_nvfp4_bit_identical(gpu, st)?;
+    check3_rider_a4_mixed_no_cross_contamination(gpu, st)?;
+    Ok(())
+}
+
+// ══════════ CHECK 1 — Family A decode, e8m0 routed vs host f32 GEMV (full-range E8M0) ══════════
+fn check1_family_a_decode_vs_host_gemv(gpu: &dyn GpuBackend, st: u64) -> Result<()> {
     let mut rng = Rng(SEED);
     let null = DevicePtr(0);
     let k_dec_e8m0 = gpu.kernel(DMOD, "moe_expert_gate_up_shared_t_e8m0")?;
@@ -81,11 +93,7 @@ fn check1_family_a_decode_vs_host_gemv() -> Result<()> {
 // ══════════ CHECK 2 — RIDER A3: NVFP4 shared branch bit-identical (baseline vs e8m0 wrapper) ══════════
 // Shared expert is NVFP4 in BOTH wrappers (<GROUP_SIZE,false>). Routed ptr
 // table = [0] so the routed slot writes 0 (no deref). Compare sh_*_out.
-#[test]
-#[ignore] // Requires GB10 GPU (native-MXFP4 E8M0 decode kernels)
-fn check2_rider_a3_shared_nvfp4_bit_identical() -> Result<()> {
-    let (backend, st) = setup()?;
-    let gpu: &dyn GpuBackend = &backend;
+fn check2_rider_a3_shared_nvfp4_bit_identical(gpu: &dyn GpuBackend, st: u64) -> Result<()> {
     let mut rng = Rng(SEED);
     let k_dec_base = gpu.kernel(DMOD, "moe_expert_gate_up_shared_t")?;
     let k_dec_e8m0 = gpu.kernel(DMOD, "moe_expert_gate_up_shared_t_e8m0")?;
@@ -162,11 +170,7 @@ fn check2_rider_a3_shared_nvfp4_bit_identical() -> Result<()> {
 }
 
 // ══════════ CHECK 3 — RIDER A4: mixed launch (routed-E8M0 + shared-NVFP4) no cross-contamination ══════════
-#[test]
-#[ignore] // Requires GB10 GPU (native-MXFP4 E8M0 decode kernels)
-fn check3_rider_a4_mixed_no_cross_contamination() -> Result<()> {
-    let (backend, st) = setup()?;
-    let gpu: &dyn GpuBackend = &backend;
+fn check3_rider_a4_mixed_no_cross_contamination(gpu: &dyn GpuBackend, st: u64) -> Result<()> {
     let mut rng = Rng(SEED);
     let null = DevicePtr(0);
     let k_dec_e8m0 = gpu.kernel(DMOD, "moe_expert_gate_up_shared_t_e8m0")?;
