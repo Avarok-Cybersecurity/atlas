@@ -209,6 +209,8 @@ pub async fn completions(
         grammar_spec: None,
         seed: req.seed,
         top_logprobs: None,
+        prompt_logprobs: None,
+        echo: false,
         timeout_at: {
             let secs = state.request_timeout as f32;
             if secs > 0.0 {
@@ -343,6 +345,8 @@ pub(super) async fn completions_stream(
         grammar_spec: None,
         seed,
         top_logprobs: None,
+        prompt_logprobs: None,
+        echo: false,
         timeout_at: None,
         token_tx,
         // /v1/completions has no guard pipeline yet — the flag is
@@ -366,6 +370,13 @@ pub(super) async fn completions_stream(
     let mut all_toks: Vec<u32> = Vec::new();
     let mut emitted: usize = 0;
     let token_stream = ReceiverStream::new(token_rx).map(move |event| match event {
+        // Placeholder until the echo streaming path lands (commit 5):
+        // completions_stream doesn't request prompt_logprobs yet.
+        StreamEvent::PromptLogprobs(_) => {
+            let chunk = CompletionChunk::text_chunk(&model, &id, String::new());
+            let json = serde_json::to_string(&chunk).unwrap_or_default();
+            Ok::<_, std::convert::Infallible>(Event::default().data(json))
+        }
         StreamEvent::Token(tok) | StreamEvent::TokenWithLogprobs(tok, _) => {
             all_toks.push(tok);
             let full = state.tokenizer.decode(&all_toks).unwrap_or_default();

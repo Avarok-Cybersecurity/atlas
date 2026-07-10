@@ -147,6 +147,8 @@ pub(crate) async fn chat_completions_stream(
         grammar_spec,
         seed,
         top_logprobs,
+        prompt_logprobs: None,
+        echo: false,
         timeout_at,
         token_tx,
         cancel_flag: cancel_flag.clone(),
@@ -239,6 +241,9 @@ pub(crate) async fn chat_completions_stream(
             StreamEvent::Token(tok) | StreamEvent::TokenWithLogprobs(tok, _) => {
                 handle_token::handle_token(&mut stream_state, &ctx, tok)
             }
+            // Legacy /v1/completions-only event; chat never requests
+            // prompt_logprobs, so nothing to emit here.
+            StreamEvent::PromptLogprobs(_) => Vec::new(),
             StreamEvent::Done {
                 finish_reason,
                 prompt_tokens: _,
