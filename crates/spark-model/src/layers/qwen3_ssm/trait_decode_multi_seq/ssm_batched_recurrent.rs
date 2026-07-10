@@ -347,7 +347,7 @@ impl Qwen3SsmLayer {
                         rec_gdn_us += t0.elapsed().as_micros();
                     }
                 } else {
-                    let do_norm = (ssm_state.norm_token_count % 16 == 0) as u32;
+                    let do_norm = ssm_state.norm_token_count.is_multiple_of(16) as u32;
                     ssm_state.norm_token_count = ssm_state.norm_token_count.wrapping_add(1);
                     ops::gdn_decode(
                         ctx.gpu,
