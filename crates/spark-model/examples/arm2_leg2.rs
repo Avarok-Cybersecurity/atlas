@@ -729,6 +729,102 @@ fn main() -> Result<()> {
         println!("   [{}] {} =>{}", if ok { "PASS" } else { "FAIL" }, label, detail);
     }
 
+    // ══════════ CHECK 5 — real-shape MULTI-EXPERT integration (memory-safety gate) ══════════
+    // The new gate the CELL-BLOCKED scar demands. CHECK 4 tiles are single-expert
+    // (private buffers, identity sorted_token_ids) and never exercise real
+    // expert_offsets / sorted_token_ids / per-expert ptr-table indexing at real
+    // shapes — exactly where a per-16-vs-per-32 stride slip or a gather OOB hides.
+    // This drives the EXACT V4-serve prefill routed path (fused_gate_up_t_k64_e8m0
+    // → ptrtable_t_k64_e8m0 down) at real DeepSeek-V4-Flash routed dims with a
+    // realistic prefill routing. NO numeric assert — `compute-sanitizer memcheck`
+    // is the oracle: a clean run (host-side too) = the routed-GEMM path is
+    // memory-safe at real shapes (fault is upstream: routing/HC/attention/EP).
+    // Ceiling: covers the routed GEMM path only (silu skipped — addressing-neutral).
+    {
+        println!("\nCHECK 5  real-shape multi-expert integration (V4 routed dims; compute-sanitizer memcheck is the oracle):");
+        let h = 4096usize; // dim (hidden)
+        let inter = 2048usize; // moe_inter_dim
+        let ne = 256usize; // n_routed_experts
+        let top_k = 6usize; // n_activated_experts
+        let t_tokens = 256usize;
+        let total_expanded = t_tokens * top_k;
+
+        // EXACT production e8m0 symbols (fused gate/up + ptrtable_t_k64 down).
+        let k_gu = gpu.kernel(bmod, "moe_w4a16_fused_gate_up_t_k64_e8m0")?;
+        let k_dn = gpu.kernel(bmod, "moe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0")?;
+
+        // Realistic routing: assign each (token,slot) an expert, sort by expert →
+        // real expert_offsets (variable counts, empty experts) + sorted_token_ids.
+        let mut rows: Vec<(u32, i32)> = Vec::with_capacity(total_expanded);
+        for tok in 0..t_tokens {
+            for _ in 0..top_k {
+                rows.push(((rng.next_u64() % ne as u64) as u32, tok as i32));
+            }
+        }
+        rows.sort_by_key(|r| r.0);
+        let sti: Vec<i32> = rows.iter().map(|r| r.1).collect();
+        let mut offs: Vec<i32> = vec![0i32; ne + 1];
+        for &(e, _) in &rows {
+            offs[e as usize + 1] += 1;
+        }
+        for e in 0..ne {
+            offs[e + 1] += offs[e];
+        }
+        let max_per_expert = (0..ne).map(|e| offs[e + 1] - offs[e]).max().unwrap_or(0);
+        let mt = (max_per_expert as u32).max(1).div_ceil(64);
+
+        // Shared E8M0 weights (memcheck cares about addressing, not values):
+        // ptr-tables point all `ne` experts at one gate/up [h,inter] + one down [inter,h].
+        let gw = gen_wt_bitexact(&mut rng, h, inter, true);
+        let uw = gen_wt_bitexact(&mut rng, h, inter, true);
+        let dw = gen_wt_bitexact(&mut rng, inter, h, true);
+        let gwp = up_u8(gpu, &gw.packed)?;
+        let gws = up_u8(gpu, &gw.s_e8m0)?;
+        let uwp = up_u8(gpu, &uw.packed)?;
+        let uws = up_u8(gpu, &uw.s_e8m0)?;
+        let dwp = up_u8(gpu, &dw.packed)?;
+        let dws = up_u8(gpu, &dw.s_e8m0)?;
+        let gpt = up_u64(gpu, &vec![gwp.0; ne])?;
+        let gst = up_u64(gpu, &vec![gws.0; ne])?;
+        let upt = up_u64(gpu, &vec![uwp.0; ne])?;
+        let ust = up_u64(gpu, &vec![uws.0; ne])?;
+        let dpt = up_u64(gpu, &vec![dwp.0; ne])?;
+        let dst = up_u64(gpu, &vec![dws.0; ne])?;
+        let s2 = up_f32(gpu, &vec![1.0f32; ne])?;
+
+        let a: Vec<u16> = (0..t_tokens * h)
+            .map(|_| f32_to_bf16_bits(rng.unit() * 2.0 - 1.0))
+            .collect();
+        let a_p = up_u16(gpu, &a)?;
+        let off_p = up_i32(gpu, &offs)?;
+        let sti_p = up_i32(gpu, &sti)?;
+        let gate_out = gpu.alloc(total_expanded * inter * 2)?;
+        let up_out = gpu.alloc(total_expanded * inter * 2)?;
+        let down_out = gpu.alloc(total_expanded * h * 2)?;
+
+        // gate_up (real sorted_token_ids gather), then down (null sti = identity),
+        // exactly as forward_prefill_routed.rs sequences them.
+        launch_fused(
+            gpu, FOp::FusedK64N128, k_gu, a_p, gpt, gst, s2, upt, ust, s2, gate_out, up_out, off_p,
+            sti_p, ne as u32, inter as u32, h as u32, mt, st,
+        )?;
+        launch_grouped(
+            gpu, GOp::PtrN128, k_dn, gate_out, dpt, dst, s2, down_out, off_p, DevicePtr(0),
+            ne as u32, h as u32, inter as u32, mt, st,
+        )?;
+        gpu.synchronize(st)?;
+
+        println!(
+            "   [PASS] launched+synced gate_up_e8m0 + down_e8m0 over {ne} experts, {total_expanded} rows (max/expert={max_per_expert}, mt={mt}). Clean iff memcheck reports 0 errors."
+        );
+        for pp in [
+            gwp, gws, uwp, uws, dwp, dws, gpt, gst, upt, ust, dpt, dst, s2, a_p, off_p, sti_p,
+            gate_out, up_out, down_out,
+        ] {
+            gpu.free(pp).ok();
+        }
+    }
+
     println!(
         "\n(*) = V4-serve-path entry (fused_gate_up_t_k64 gate/up + ptrtable_t_k64 down). Others off-path, tested for RIDER-2 completeness."
     );
