@@ -772,9 +772,11 @@ mod inter_tool_prose_tests {
     #[test]
     fn default_prose_budget_is_plan_friendly() {
         // Regression: 384 amputated legitimate plan turns (2026-07-09).
-        assert!(
-            super::MAX_INTER_TOOL_PROSE >= 2048,
-            "inter-tool prose budget must fit a typical plan/analysis turn"
-        );
+        const {
+            assert!(
+                super::MAX_INTER_TOOL_PROSE >= 2048,
+                "inter-tool prose budget must fit a typical plan/analysis turn"
+            );
+        };
     }
 }

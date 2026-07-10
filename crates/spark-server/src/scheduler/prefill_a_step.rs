@@ -192,6 +192,8 @@ pub fn start_chunked_prefill(
             min_tokens: req_min_tokens,
             eos_tokens: eos_tokens.to_vec(),
             finished: true,
+            guard_stop: None,
+            param_close_pending: 0,
             sink,
             cancel_flag: cancel_flag.clone(),
             temperature,
