@@ -83,6 +83,11 @@ pub(crate) fn dequant_nvfp4_to_bf16(
 /// `.weight` = 4-bit-packed E2M1 (2 per byte, stored U8/I8) + `.scale` =
 /// F8_E8M0 per block. The block size is inferred from the scale element count
 /// (`total / num_scale_elems`, e.g. 32) rather than hardcoded. One-time load cost.
+// ARM-2: no longer called on the load path — the native MXFP4 arm
+// (`quantized_mxfp4_e8m0`) lands E8M0 bytes device-resident transcode-free
+// instead of dequant→requantize. RETAINED as the correct host-side E8M0→BF16
+// reference for Phase-K Leg-2 (kernel dequant numeric check on synthetic tiles).
+#[allow(dead_code)]
 pub(crate) fn dequant_nvfp4_e8m0_to_bf16(
     store: &WeightStore,
     prefix: &str,

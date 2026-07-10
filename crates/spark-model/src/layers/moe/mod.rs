@@ -68,6 +68,16 @@ pub(crate) enum ExpertPtrSet {
 #[allow(dead_code)]
 pub struct MoeLayer {
     pub weights: MoeWeights,
+    /// Quant format of the ROUTED experts as landed in GPU memory. `Nvfp4`
+    /// (default) = packed E2M1 + FP8-E4M3 per-16 block scales + f32 per-tensor
+    /// global. Set to `Mxfp4E8m0` by the DeepSeek-V4 native-MXFP4 loader
+    /// (transcode-free: E8M0 per-32 scales, no global) so the Phase-K E8M0
+    /// GEMM variants dispatch on it instead of the NVFP4 kernels. Consumed at
+    /// the grouped/decode GEMM call sites (assert via `WeightQuantFormat::expect`).
+    // Written by the loader (Phase L); READ at the GEMM dispatch sites in Phase K.
+    // Until Phase K wires the read, `deny(warnings)` would flag it never-read.
+    #[allow(dead_code)]
+    pub(crate) experts_scale_kind: crate::weight_map::WeightQuantFormat,
     // NVFP4-quantized gate weight (quarters bandwidth for routing)
     gate_nvfp4: Option<QuantizedWeight>,
     /// Pre-expert norm: applied to input AFTER routing but BEFORE expert dispatch.

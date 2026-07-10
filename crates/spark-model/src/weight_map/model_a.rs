@@ -119,6 +119,48 @@ pub(crate) fn quantized(
     })
 }
 
+/// Native MXFP4 routed expert: land the on-disk bytes device-resident
+/// **UNCHANGED** — no dequant, no re-quantize, no dtype coercion (the
+/// transcode-free path, contrast `quantized_from_fp8` / the old E8M0
+/// `dequant→quantize_to_nvfp4` arm that cost TWO lossy 4-bit conversions).
+///
+/// On-disk layout (DeepSeek-V4-Flash ORIGINAL routed format):
+///   - `.weight` = 4-bit E2M1 nibbles, 2 per byte, stored U8/I8, shape `[n, k/2]`
+///   - `.scale`  = F8_E8M0 per-block (biased exponent; scale = `2^(byte-127)`),
+///     `GROUP_SIZE=32`, NO per-tensor global.
+///
+/// The buffer is tagged `WeightQuantFormat::Mxfp4E8m0` at the MoE-layer level
+/// (`MoeWeights::experts_scale_kind`); the E8M0 kernel variants (Phase-K)
+/// consume `weight_scale` as E8M0 bytes and ignore `weight_scale_2`. Asserts
+/// the inferred block size is 32 so a non-MX checkpoint can't slip through.
+pub(crate) fn quantized_mxfp4_e8m0(
+    store: &WeightStore,
+    prefix: &str,
+) -> Result<QuantizedWeight> {
+    let w = store.get(&format!("{prefix}.weight"))?;
+    let n = w.shape[0];
+    let k_packed = w.shape[1];
+    let total_nibbles = n * k_packed * 2;
+    let scale_t = store.get(&format!("{prefix}.scale"))?;
+    let num_groups = scale_t.num_elements();
+    ensure!(
+        num_groups > 0 && total_nibbles.is_multiple_of(num_groups),
+        "{prefix}: MXFP4 weight nibbles {total_nibbles} not divisible by E8M0 scale groups {num_groups}"
+    );
+    let block = total_nibbles / num_groups;
+    ensure!(
+        block == 32,
+        "{prefix}: native MXFP4 expects GROUP_SIZE=32, inferred {block} (scale groups {num_groups}) \
+         — refusing to land a non-MX checkpoint on the transcode-free path"
+    );
+    Ok(QuantizedWeight {
+        weight: ptr(store, &format!("{prefix}.weight"))?,
+        weight_scale: ptr(store, &format!("{prefix}.scale"))?,
+        weight_scale_2: 1.0, // native MXFP4 has no per-tensor global
+        input_scale: DevicePtr::NULL,
+    })
+}
+
 pub(crate) fn dense(store: &WeightStore, name: &str) -> Result<DenseWeight> {
     let w = store.get(name)?;
     Ok(DenseWeight { weight: w.ptr })

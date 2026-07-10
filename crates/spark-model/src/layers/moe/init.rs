@@ -51,6 +51,10 @@ impl MoeLayer {
         let rms_norm_k = gpu.kernel("norm", "rms_norm")?;
         Ok(Self {
             weights,
+            // Default: standard NVFP4 (FP8-E4M3 per-16 + f32 global). The
+            // DeepSeek-V4 native-MXFP4 loader overrides this to `Mxfp4E8m0`
+            // after construction (see deepseek_v4/assemble.rs).
+            experts_scale_kind: crate::weight_map::WeightQuantFormat::Nvfp4,
             gate_nvfp4,
             pre_expert_norm: None,
             pre_expert_norm_k: rms_norm_k,

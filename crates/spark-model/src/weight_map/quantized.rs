@@ -47,6 +47,16 @@ pub enum WeightQuantFormat {
     /// NVFP4: packed E2M1 nibbles + per-group FP8 block scales + per-tensor
     /// F32 scale. Consumed by `w4a16_gemv`, `w4a16_gemm`, and variants.
     Nvfp4,
+    /// Native MXFP4 (OCP micro-scaling): packed E2M1 nibbles + per-block
+    /// **E8M0** power-of-2 scales (`GROUP_SIZE=32`), **no** per-tensor global.
+    /// This is DeepSeek-V4-Flash's ORIGINAL on-disk routed-expert format. The
+    /// bytes are landed device-resident UNCHANGED (transcode-free) — the
+    /// scale byte is a biased exponent, effective scale `2^(byte-127)`.
+    /// Consumed by the E8M0 variants of the MoE grouped/decode GEMMs
+    /// (Phase-K lane); feeding these bytes through an `Nvfp4` kernel (which
+    /// reads the scale as FP8-E4M3 per-16 and applies a global) = silent
+    /// garbage — assert with `WeightQuantFormat::expect` at the dispatch site.
+    Mxfp4E8m0,
 }
 
 impl WeightQuantFormat {
