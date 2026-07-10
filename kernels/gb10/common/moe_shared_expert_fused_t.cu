@@ -51,6 +51,24 @@ __device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
 }
 #endif
 
+// Per-block dequant-scale, parameterized on the weight's scale format.
+//   E8M0=false → NVFP4: FP8-E4M3 per-16 scale byte × per-tensor global (s2).
+//   E8M0=true  → native MXFP4 (ARM-2): the scale byte is a biased E8M0
+//                exponent; effective scale = 2^(sb-127), NO global (s2 ignored).
+//                sb==0 → 0, sb==0xFF (NaN sentinel) → 0. Bit-constructs the
+//                power of two so it is BYTE-EXACT with the Rust host reference
+//                `fp8_e8m0_to_f32` (weight_map/fp8_lut.rs) — the Leg-2 SSOT —
+//                rather than `exp2f`, whose ex2.approx would drift.
+template<bool E8M0>
+__device__ __forceinline__ float mx_block_scale(unsigned char sb, float s2) {
+    if (E8M0) {
+        if (sb == 0u || sb == 255u) return 0.0f;
+        return __uint_as_float((unsigned int)sb << 23);
+    } else {
+        return atlas_dec_e4m3(sb) * s2;
+    }
+}
+
 // Transposed-layout fused gate+up decode kernel.
 //
 // Single-token GEMV: for each routed expert slot (top_k of them) plus the
@@ -58,7 +76,8 @@ __device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
 // blockIdx.z selects gate (0) or up (1). Same coalescence strategy as
 // silu_down_t — each thread owns one output, lanes within warp adjacent
 // in N.
-extern "C" __global__ void moe_expert_gate_up_shared_t(
+template<int GS, bool E8M0>
+__device__ __forceinline__ void gate_up_shared_t_impl(
     const __nv_bfloat16* __restrict__ A,
     const unsigned long long* __restrict__ gate_packed_t_ptrs,
     const unsigned long long* __restrict__ gate_scale_t_ptrs,
@@ -144,14 +163,14 @@ extern "C" __global__ void moe_expert_gate_up_shared_t(
     // [K/2, N] packed: each byte at (k_half, n) holds two consecutive k
     // nibbles for output position n. Iterate by scale-group (16 K) to
     // cache the per-group scale.
-    const unsigned int num_groups = K / GROUP_SIZE;
+    const unsigned int num_groups = K / GS;
     float acc = 0.0f;
     for (unsigned int sg = 0; sg < num_groups; sg++) {
         unsigned char sb = B_scale[(unsigned long long)sg * N + n];
-        float sc = atlas_dec_e4m3(sb) * s2;
-        const unsigned int kh_base = sg * 8;
+        float sc = mx_block_scale<E8M0>(sb, s2);
+        const unsigned int kh_base = sg * (GS / 2);
         #pragma unroll
-        for (unsigned int kh_off = 0; kh_off < 8; kh_off++) {
+        for (unsigned int kh_off = 0; kh_off < (GS / 2); kh_off++) {
             unsigned int k_half = kh_base + kh_off;
             unsigned char byte = B_packed[(unsigned long long)k_half * N + n];
             float a_lo = __bfloat162float(A[k_half * 2]);
@@ -169,13 +188,74 @@ extern "C" __global__ void moe_expert_gate_up_shared_t(
     }
 }
 
+// NVFP4 (default): FP8-E4M3 per-16 scales × per-tensor global.
+extern "C" __global__ void moe_expert_gate_up_shared_t(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned long long* __restrict__ gate_packed_t_ptrs,
+    const unsigned long long* __restrict__ gate_scale_t_ptrs,
+    const float* __restrict__ gate_scale2_vals,
+    __nv_bfloat16* __restrict__ gate_out,
+    const unsigned long long* __restrict__ up_packed_t_ptrs,
+    const unsigned long long* __restrict__ up_scale_t_ptrs,
+    const float* __restrict__ up_scale2_vals,
+    __nv_bfloat16* __restrict__ up_out,
+    const unsigned int* __restrict__ expert_indices,
+    const unsigned char* __restrict__ sh_gate_t_packed,
+    const unsigned char* __restrict__ sh_gate_t_scale,
+    float sh_gate_s2,
+    __nv_bfloat16* __restrict__ sh_gate_out,
+    const unsigned char* __restrict__ sh_up_t_packed,
+    const unsigned char* __restrict__ sh_up_t_scale,
+    float sh_up_s2,
+    __nv_bfloat16* __restrict__ sh_up_out,
+    unsigned int N, unsigned int K, unsigned int top_k
+) {
+    gate_up_shared_t_impl<GROUP_SIZE, false>(
+        A, gate_packed_t_ptrs, gate_scale_t_ptrs, gate_scale2_vals, gate_out,
+        up_packed_t_ptrs, up_scale_t_ptrs, up_scale2_vals, up_out, expert_indices,
+        sh_gate_t_packed, sh_gate_t_scale, sh_gate_s2, sh_gate_out,
+        sh_up_t_packed, sh_up_t_scale, sh_up_s2, sh_up_out, N, K, top_k);
+}
+
+// Native MXFP4 (ARM-2): E8M0 per-32 scales, no global. Fed the E8M0-tagged
+// (`WeightQuantFormat::Mxfp4E8m0`) routed-expert buffers from the transcode-free
+// loader. GROUP_SIZE 16→32, scale byte read as a biased E8M0 exponent.
+extern "C" __global__ void moe_expert_gate_up_shared_t_e8m0(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned long long* __restrict__ gate_packed_t_ptrs,
+    const unsigned long long* __restrict__ gate_scale_t_ptrs,
+    const float* __restrict__ gate_scale2_vals,
+    __nv_bfloat16* __restrict__ gate_out,
+    const unsigned long long* __restrict__ up_packed_t_ptrs,
+    const unsigned long long* __restrict__ up_scale_t_ptrs,
+    const float* __restrict__ up_scale2_vals,
+    __nv_bfloat16* __restrict__ up_out,
+    const unsigned int* __restrict__ expert_indices,
+    const unsigned char* __restrict__ sh_gate_t_packed,
+    const unsigned char* __restrict__ sh_gate_t_scale,
+    float sh_gate_s2,
+    __nv_bfloat16* __restrict__ sh_gate_out,
+    const unsigned char* __restrict__ sh_up_t_packed,
+    const unsigned char* __restrict__ sh_up_t_scale,
+    float sh_up_s2,
+    __nv_bfloat16* __restrict__ sh_up_out,
+    unsigned int N, unsigned int K, unsigned int top_k
+) {
+    gate_up_shared_t_impl<32, true>(
+        A, gate_packed_t_ptrs, gate_scale_t_ptrs, gate_scale2_vals, gate_out,
+        up_packed_t_ptrs, up_scale_t_ptrs, up_scale2_vals, up_out, expert_indices,
+        sh_gate_t_packed, sh_gate_t_scale, sh_gate_s2, sh_gate_out,
+        sh_up_t_packed, sh_up_t_scale, sh_up_s2, sh_up_out, N, K, top_k);
+}
+
 // Transposed-layout silu_down decode kernel.
 //
 // Per-expert weight buffers `[K/2, N]` packed NVFP4 + `[K/16, N]` FP8 scales.
 // Input gate_out / up_out: `[(top_k+1), K]` BF16 (per-slot). top_k slot is
 // the shared-expert input. Output C: `[top_k, N]` BF16; shared-expert
 // output goes to `sh_down_out: [N]`.
-extern "C" __global__ void moe_expert_silu_down_shared_t(
+template<int GS, bool E8M0>
+__device__ __forceinline__ void silu_down_shared_t_impl(
     const __nv_bfloat16* __restrict__ gate_out,
     const __nv_bfloat16* __restrict__ up_out,
     const unsigned long long* __restrict__ packed_t_ptrs,   // [num_experts] device ptrs to [K/2 * N] bytes
@@ -249,17 +329,17 @@ extern "C" __global__ void moe_expert_silu_down_shared_t(
     // `B_packed[k_half * N + n]` reads are coalesced (1 byte per lane,
     // 32 bytes contiguous per warp per iter).
     const unsigned int K_half = K / 2;
-    const unsigned int num_groups = K / GROUP_SIZE;
+    const unsigned int num_groups = K / GS;
     float acc = 0.0f;
 
-    // Iterate scale groups (8 K_half iters per group). Cache the
+    // Iterate scale groups (GS/2 K_half iters per group). Cache the
     // per-group scale in a register.
     for (unsigned int sg = 0; sg < num_groups; sg++) {
         unsigned char sb = B_scale[(unsigned long long)sg * N + n];
-        float sc = atlas_dec_e4m3(sb) * s2;
-        const unsigned int kh_base = sg * 8;
+        float sc = mx_block_scale<E8M0>(sb, s2);
+        const unsigned int kh_base = sg * (GS / 2);
         #pragma unroll
-        for (unsigned int kh_off = 0; kh_off < 8; kh_off++) {
+        for (unsigned int kh_off = 0; kh_off < (GS / 2); kh_off++) {
             unsigned int k_half = kh_base + kh_off;
             unsigned char byte = B_packed[(unsigned long long)k_half * N + n];
             unsigned int nibble_lo = byte & 0xFu;
@@ -270,7 +350,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_t(
             float a_hi = s_act[k_half * 2 + 1];
             acc += a_lo * w_lo + a_hi * w_hi;
         }
-        if (kh_base + 8 > K_half) break;
+        if (kh_base + (GS / 2) > K_half) break;
     }
 
     // Output offset: routed → C[expert_slot * N + n]; shared → sh_down_out[n].
@@ -279,4 +359,50 @@ extern "C" __global__ void moe_expert_silu_down_shared_t(
     } else {
         C[(unsigned long long)expert_slot * N + n] = __float2bfloat16(acc);
     }
+}
+
+// NVFP4 (default): FP8-E4M3 per-16 scales × per-tensor global.
+extern "C" __global__ void moe_expert_silu_down_shared_t(
+    const __nv_bfloat16* __restrict__ gate_out,
+    const __nv_bfloat16* __restrict__ up_out,
+    const unsigned long long* __restrict__ packed_t_ptrs,
+    const unsigned long long* __restrict__ scale_t_ptrs,
+    const float* __restrict__ scale2_vals,
+    __nv_bfloat16* __restrict__ C,
+    const unsigned int* __restrict__ expert_indices,
+    const __nv_bfloat16* __restrict__ sh_gate_in,
+    const __nv_bfloat16* __restrict__ sh_up_in,
+    const unsigned char* __restrict__ sh_down_t_packed,
+    const unsigned char* __restrict__ sh_down_t_scale,
+    float sh_down_s2,
+    __nv_bfloat16* __restrict__ sh_down_out,
+    unsigned int N, unsigned int K, unsigned int top_k
+) {
+    silu_down_shared_t_impl<GROUP_SIZE, false>(
+        gate_out, up_out, packed_t_ptrs, scale_t_ptrs, scale2_vals, C,
+        expert_indices, sh_gate_in, sh_up_in, sh_down_t_packed, sh_down_t_scale,
+        sh_down_s2, sh_down_out, N, K, top_k);
+}
+
+// Native MXFP4 (ARM-2): E8M0 per-32 scales, no global.
+extern "C" __global__ void moe_expert_silu_down_shared_t_e8m0(
+    const __nv_bfloat16* __restrict__ gate_out,
+    const __nv_bfloat16* __restrict__ up_out,
+    const unsigned long long* __restrict__ packed_t_ptrs,
+    const unsigned long long* __restrict__ scale_t_ptrs,
+    const float* __restrict__ scale2_vals,
+    __nv_bfloat16* __restrict__ C,
+    const unsigned int* __restrict__ expert_indices,
+    const __nv_bfloat16* __restrict__ sh_gate_in,
+    const __nv_bfloat16* __restrict__ sh_up_in,
+    const unsigned char* __restrict__ sh_down_t_packed,
+    const unsigned char* __restrict__ sh_down_t_scale,
+    float sh_down_s2,
+    __nv_bfloat16* __restrict__ sh_down_out,
+    unsigned int N, unsigned int K, unsigned int top_k
+) {
+    silu_down_shared_t_impl<32, true>(
+        gate_out, up_out, packed_t_ptrs, scale_t_ptrs, scale2_vals, C,
+        expert_indices, sh_gate_in, sh_up_in, sh_down_t_packed, sh_down_t_scale,
+        sh_down_s2, sh_down_out, N, K, top_k);
 }
