@@ -46,8 +46,12 @@ pub(super) async fn run_blocking(
     prompts: Vec<Vec<u32>>,
     p: CompletionParams,
 ) -> Response {
-    let n = req.n.max(1);
-    let mut choices: Vec<CompletionChoice> = Vec::with_capacity(prompts.len() * n);
+    // n is validated to 1..=128 at the handler entry. The capacity is a
+    // HINT clamped independently of user input (the vec grows amortized
+    // past it) so no request can size an allocation directly.
+    let n = req.n.clamp(1, 128);
+    let mut choices: Vec<CompletionChoice> =
+        Vec::with_capacity(prompts.len().saturating_mul(n).min(1024));
     let mut sum_prompt = 0usize;
     let mut sum_completion = 0usize;
     let mut sum_cached = 0usize;

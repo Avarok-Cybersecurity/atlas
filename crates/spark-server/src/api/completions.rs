@@ -156,6 +156,15 @@ pub async fn completions(
             .filter_map(|(k, &v)| k.parse::<u32>().ok().map(|id| (id, v)))
             .collect()
     });
+    // OpenAI spec bounds n to 1-128; an unbounded n would drive both an
+    // attacker-controlled allocation and an unbounded sequential-inference
+    // loop (CodeQL: uncontrolled allocation size). Fail fast per spec.
+    if req.n == 0 || req.n > 128 {
+        return openai_error_response(
+            StatusCode::BAD_REQUEST,
+            format!("n must be between 1 and 128, got {}", req.n),
+        );
+    }
     let stop_tokens = tokenize_stop_sequences(&state.tokenizer, &req.stop);
     // OpenAI clamps chat top_logprobs to 20; same bound here (spec says
     // 5 for legacy — being more permissive, never less).

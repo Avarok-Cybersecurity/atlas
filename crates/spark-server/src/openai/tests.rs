@@ -430,3 +430,15 @@ fn completion_response_carries_system_fingerprint_and_optional_logprobs() {
     // clients treat an explicit null as a malformed logprobs block.
     assert!(v["choices"][0].get("logprobs").is_none());
 }
+
+#[test]
+fn completion_request_n_bounds_are_handler_enforced() {
+    // serde accepts any usize; the HANDLER rejects n==0 and n>128 with a
+    // 400 (OpenAI spec bound). This test locks the parse side: values
+    // arrive intact for the handler check (no silent serde clamping).
+    let req: CompletionRequest = serde_json::from_value(serde_json::json!({
+        "model": "m", "prompt": "p", "n": 4096,
+    }))
+    .expect("parse");
+    assert_eq!(req.n, 4096);
+}
