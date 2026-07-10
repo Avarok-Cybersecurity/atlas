@@ -569,8 +569,13 @@ extern "C" __global__ void fp8_gemm_t(
     const unsigned int group_id = lane_id >> 2;
     const unsigned int tid = lane_id & 3;
 
-    __shared__ __nv_bfloat16 smem_A[2][M_TILE][K_STEP_T + PAD_T];
-    __shared__ unsigned char smem_B[2][N_TILE_LG][K_STEP_T];
+    // 4-stage cp.async pipeline (was 2): keep NSTAGE-1 tiles in flight so the
+    // load latency of GB10 global memory is hidden behind compute, instead of
+    // the old wait_group-0 full drain every K-step. Accuracy-neutral (identical
+    // FP8 MMA math); targets the latency-bound GDN-projection prefill.
+    constexpr int NSTAGE = 4;
+    __shared__ __nv_bfloat16 smem_A[NSTAGE][M_TILE][K_STEP_T + PAD_T];
+    __shared__ unsigned char smem_B[NSTAGE][N_TILE_LG][K_STEP_T];
 
     float acc[16][4];
     #pragma unroll
@@ -624,24 +629,26 @@ extern "C" __global__ void fp8_gemm_t(
         } \
     } while(0)
 
-    // Prolog: load first tile, wait, no dequant needed
-    FP8_LOADS(0, 0);
-    cp_async_commit();
-    cp_async_wait_all();
-    __syncthreads();
-
-    // Main loop: LOAD(nxt) || COMPUTE(cur) → wait → sync
-    int cur = 0;
-    for (unsigned int k_base = K_STEP_T; k_base < K; k_base += K_STEP_T) {
-        int nxt = 1 - cur;
-        FP8_LOADS(nxt, k_base);
+    // Prolog: issue the first NSTAGE-1 tiles, one commit-group each.
+    const int num_tiles = (int)((K + K_STEP_T - 1) / K_STEP_T);
+    #pragma unroll
+    for (int s = 0; s < NSTAGE - 1; s++) {
+        FP8_LOADS(s, (unsigned int)s * K_STEP_T);
         cp_async_commit();
-        FP8_COMPUTE(cur, cur);
-        cp_async_wait_all();
-        __syncthreads();
-        cur = nxt;
     }
-    FP8_COMPUTE(cur, cur);
+    // Steady state: exactly one commit-group per iteration keeps the in-flight
+    // count uniform, so cp_async_wait_group<NSTAGE-2> always leaves tile t
+    // resident (the out-of-range prefetch at the tail predicates to a no-op
+    // load but still commits an empty group — preserving the invariant).
+    for (int t = 0; t < num_tiles; t++) {
+        cp_async_wait_group<NSTAGE - 2>();
+        __syncthreads();
+        int pf = t + NSTAGE - 1;
+        FP8_LOADS(pf % NSTAGE, (unsigned int)pf * K_STEP_T);
+        cp_async_commit();
+        FP8_COMPUTE(t % NSTAGE, t % NSTAGE);
+        __syncthreads();
+    }
 
     #undef FP8_LOADS
     #undef FP8_COMPUTE

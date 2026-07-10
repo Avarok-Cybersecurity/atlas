@@ -129,6 +129,31 @@ fn main() -> Result<()> {
     let b_ptr = upload_bytes(gpu, &b_fp8)?;
     let c_ptr = gpu.alloc(m * n * 2)?;
 
+    // A/B probe: time fp8_fp8_gemm_t (FP8 activation, no in-loop convert) vs
+    // fp8_gemm_t (BF16 activation). Accuracy-neutral routing candidate.
+    if std::env::var_os("ATLAS_PROBE_FP8FP8").is_some() {
+        let a_fp8: Vec<u8> = (0..m * k).map(|i| f32_to_e4m3(bf16_bits_to_f32(a_bf16[i]))).collect();
+        let a8_ptr = upload_bytes(gpu, &a_fp8)?;
+        for (name, aptr, abf16) in [("fp8_fp8_gemm_t", a8_ptr, false), ("fp8_gemm_t", a_ptr, true)] {
+            let _ = abf16;
+            let h = gpu.kernel("w4a16", name)?;
+            let launch = |s| KernelLaunch::new(gpu, h)
+                .grid([div_ceil(n as u32, 128), div_ceil(m as u32, 64), 1]).block([128, 1, 1])
+                .arg_ptr(aptr).arg_ptr(b_ptr).arg_ptr(c_ptr)
+                .arg_u32(m as u32).arg_u32(n as u32).arg_u32(k as u32).launch(s);
+            for _ in 0..8 { launch(stream)?; }
+            gpu.synchronize(stream)?;
+            let iters = 60u32;
+            let t0 = std::time::Instant::now();
+            for _ in 0..iters { launch(stream)?; }
+            gpu.synchronize(stream)?;
+            let secs = t0.elapsed().as_secs_f64() / iters as f64;
+            let flop = 2.0 * m as f64 * n as f64 * k as f64;
+            println!("PROBE {name}: M={m} N={n} K={k} {:.3} ms {:.1} TFLOP/s", secs * 1e3, flop / secs / 1e12);
+        }
+        for p in [a8_ptr] { gpu.free(p).ok(); }
+    }
+
     let handle = gpu.kernel("w4a16", "fp8_gemm_t")?;
     KernelLaunch::new(gpu, handle)
         .grid([div_ceil(n as u32, 128), div_ceil(m as u32, 64), 1])
@@ -141,6 +166,33 @@ fn main() -> Result<()> {
         .arg_u32(k as u32)
         .launch(stream)?;
     gpu.synchronize(stream)?;
+
+    // Timed loop → TFLOP/s (accuracy-neutral throughput probe). Warmup 5, time 50.
+    {
+        for _ in 0..5 {
+            KernelLaunch::new(gpu, handle)
+                .grid([div_ceil(n as u32, 128), div_ceil(m as u32, 64), 1])
+                .block([128, 1, 1])
+                .arg_ptr(a_ptr).arg_ptr(b_ptr).arg_ptr(c_ptr)
+                .arg_u32(m as u32).arg_u32(n as u32).arg_u32(k as u32)
+                .launch(stream)?;
+        }
+        gpu.synchronize(stream)?;
+        let iters = 50u32;
+        let t0 = std::time::Instant::now();
+        for _ in 0..iters {
+            KernelLaunch::new(gpu, handle)
+                .grid([div_ceil(n as u32, 128), div_ceil(m as u32, 64), 1])
+                .block([128, 1, 1])
+                .arg_ptr(a_ptr).arg_ptr(b_ptr).arg_ptr(c_ptr)
+                .arg_u32(m as u32).arg_u32(n as u32).arg_u32(k as u32)
+                .launch(stream)?;
+        }
+        gpu.synchronize(stream)?;
+        let secs = t0.elapsed().as_secs_f64() / iters as f64;
+        let flop = 2.0 * m as f64 * n as f64 * k as f64;
+        println!("TIMING: M={m} N={n} K={k} {:.3} ms/iter {:.1} TFLOP/s", secs * 1e3, flop / secs / 1e12);
+    }
 
     let mut c_raw = vec![0u8; m * n * 2];
     gpu.copy_d2h(c_ptr, &mut c_raw)?;
