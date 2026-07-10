@@ -14,12 +14,6 @@ pub(super) struct SnapshotEntry {
     token_count: usize,
     prefix_hash: u64,
     last_access: u64,
-    /// Cumulative hits over the entry's lifetime — combined with
-    /// `last_access` in eviction to approximate the forecast-based
-    /// policy from the Marconi paper §4 (B.4, 2026-04-25). Hot
-    /// prefixes (high hit count) survive longer than cold ones at
-    /// the same age.
-    hit_count: u32,
 }
 
 pub(super) struct SsmSnapshotIndex {
@@ -66,7 +60,6 @@ impl SsmSnapshotIndex {
             token_count,
             prefix_hash,
             last_access: self.access_counter,
-            hit_count: 0,
         });
         None
     }
@@ -82,8 +75,15 @@ impl SsmSnapshotIndex {
         if session_hash != 0 {
             self.last_lookup_session = session_hash;
         }
+        // Side-effect-free scan: only the WINNER gets its recency bumped,
+        // below. Bumping every improving candidate kept shallow early-prefix
+        // entries eternally fresh (each deep lookup walks the improving chain
+        // through them), pinning them in the pool while the tail checkpoints
+        // the next warm turn actually needs were evicted — the measured
+        // frozen-anchor / 18.6k-token SSM replay pathology (2026-07-10).
         let mut best: Option<(usize, usize)> = None; // (snapshot_id, token_count)
-        for entry in &mut self.entries {
+        let mut best_idx: Option<usize> = None;
+        for (i, entry) in self.entries.iter().enumerate() {
             if entry.token_count > matched_tokens {
                 continue;
             }
@@ -95,11 +95,13 @@ impl SsmSnapshotIndex {
                 continue;
             }
             if best.is_none() || entry.token_count > best.unwrap().1 {
-                self.access_counter += 1;
-                entry.last_access = self.access_counter;
-                entry.hit_count = entry.hit_count.saturating_add(1);
                 best = Some((entry.snapshot_id, entry.token_count));
+                best_idx = Some(i);
             }
+        }
+        if let Some(i) = best_idx {
+            self.access_counter += 1;
+            self.entries[i].last_access = self.access_counter;
         }
         if std::env::var("ATLAS_SNAP_LOOKUP_DBG").is_ok() {
             let mut cands: Vec<usize> = self.entries.iter().map(|e| e.token_count).collect();
@@ -118,10 +120,17 @@ impl SsmSnapshotIndex {
         if self.entries.is_empty() {
             return None;
         }
-        // Per-entry forecast score (B.4, Marconi paper §4): old AND cold first.
-        // last_access * (1 + hit_count) — recent/hot survive. #155 fixed the
-        // inverted (÷) form that evicted just-selected snapshots.
-        let escore = |e: &SnapshotEntry| e.last_access.saturating_mul(1 + e.hit_count as u64);
+        // Pure recency (LRU). The former forecast score
+        // `last_access * (1 + hit_count)` multiplied a monotonic timestamp by
+        // hit count, so any once-hit old entry outscored every fresh save;
+        // once the cold entries drained, each new save's evict victim was the
+        // PREVIOUS fresh save — the live turn's tail checkpoint died ms before
+        // the next turn's lookup needed it, freezing the restore anchor
+        // (measured: anchor pinned at token 9056 for 29 turns, 12.7k-token SSM
+        // replay, 40s TTFT tail). With winner-only recency bumps in `lookup`,
+        // plain LRU keeps the selected anchor and recent tail checkpoints
+        // resident and lets unhit fossils age out.
+        let escore = |e: &SnapshotEntry| e.last_access;
 
         // SESSION-AWARE eviction (default ON; ATLAS_SNAP_EVICT_LEGACY=1 → old
         // per-entry policy). The agentic workload interleaves ~20 multi-turn
