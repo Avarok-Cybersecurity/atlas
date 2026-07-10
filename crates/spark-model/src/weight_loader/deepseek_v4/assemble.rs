@@ -146,6 +146,32 @@ fn detect_routed_scale_kind(
     WeightQuantFormat::Nvfp4
 }
 
+/// Detect the SHARED expert quant format (ARM-2 Phase-K RIDER A1). Same native
+/// -MXFP4 test as `detect_routed_scale_kind`, on `ffn.shared_experts.w1`. The
+/// native V4 ckpt ships the shared expert FP8-block-scaled (`.weight` F8_E4M3,
+/// NOT UInt8) → `Nvfp4` (it is transcoded to NVFP4 at load); a genuinely native
+/// MXFP4 shared expert (UInt8 `.weight` + `.scale`) → `Mxfp4E8m0`.
+fn detect_shared_scale_kind(
+    store: &WeightStore,
+    layer_prefix: &str,
+) -> crate::weight_map::WeightQuantFormat {
+    use crate::weight_map::WeightQuantFormat;
+    use spark_runtime::weights::WeightDtype;
+    let wp = format!("{layer_prefix}.ffn.shared_experts.w1");
+    let native = !store.contains(&format!("{wp}.weight_packed"))
+        && !store.contains(&format!("{wp}.weight_scale_2"))
+        && store.contains(&format!("{wp}.scale"))
+        && store
+            .get(&format!("{wp}.weight"))
+            .map(|w| w.dtype == WeightDtype::UInt8)
+            .unwrap_or(false);
+    if native {
+        WeightQuantFormat::Mxfp4E8m0
+    } else {
+        WeightQuantFormat::Nvfp4
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_layer(
     layer_idx: usize,
@@ -323,6 +349,10 @@ pub fn assemble_layer(
     // Tag routed-expert quant format so the Phase-K E8M0 MoE-GEMM variants
     // dispatch on native MXFP4 (transcode-free) vs the standard NVFP4 kernels.
     moe.experts_scale_kind = detect_routed_scale_kind(store, p, config, force_all_experts);
+    // Tag the SHARED expert format independently (RIDER A1): the native ckpt is
+    // heterogeneous — routed E8M0-MXFP4, shared FP8→NVFP4. The dual-format decode
+    // kernel asserts shared==Nvfp4; a different shared format fires the `expect`.
+    moe.shared_experts_scale_kind = detect_shared_scale_kind(store, p);
 
     // ── MLA weights ──
     // RedHatAI checkpoint: wkv_a may only contain kv_lora_rank rows (no rope).

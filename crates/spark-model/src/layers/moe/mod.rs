@@ -78,6 +78,13 @@ pub struct MoeLayer {
     // Until Phase K wires the read, `deny(warnings)` would flag it never-read.
     #[allow(dead_code)]
     pub(crate) experts_scale_kind: crate::weight_map::WeightQuantFormat,
+    /// Quant format of the SHARED expert (ARM-2 Phase-K RIDER A1). The native
+    /// V4 ckpt is heterogeneous: routed experts `Mxfp4E8m0` but the shared
+    /// expert is FP8→`Nvfp4`. Keyed off the weight tag (not `is_shared`
+    /// positionality) so the dual-format decode kernel's `expect` net fires if
+    /// a future ckpt ships a different shared format. Default `Nvfp4`.
+    #[allow(dead_code)]
+    pub(crate) shared_experts_scale_kind: crate::weight_map::WeightQuantFormat,
     // NVFP4-quantized gate weight (quarters bandwidth for routing)
     gate_nvfp4: Option<QuantizedWeight>,
     /// Pre-expert norm: applied to input AFTER routing but BEFORE expert dispatch.
@@ -171,6 +178,10 @@ pub struct MoeLayer {
     // the weight loader produces transposed-only pointer tables.
     moe_expert_gate_up_shared_t_k: KernelHandle,
     moe_expert_silu_down_shared_t_k: KernelHandle,
+    // ARM-2 Phase-K: native-MXFP4 (E8M0 routed / NVFP4 shared) dual-format
+    // decode variants. KernelHandle(0) on models that don't ship them.
+    moe_expert_gate_up_shared_t_e8m0_k: KernelHandle,
+    moe_expert_silu_down_shared_t_e8m0_k: KernelHandle,
     // ── sqrtsoftplus routing (DeepSeek-V4) ──
     moe_topk_sqrtsoftplus_k: KernelHandle,
     moe_topk_sqrtsoftplus_batched_k: KernelHandle,
@@ -230,6 +241,14 @@ pub struct MoeLayer {
     moe_grouped_gemm_t_k64: KernelHandle,
     moe_fused_gate_up_t: KernelHandle,
     moe_fused_gate_up_t_k64: KernelHandle,
+    // ARM-2 Phase-K: native-MXFP4 (E8M0 per-32) prefill variants of the W4A16
+    // routed-expert GEMMs. KernelHandle(0) on models that don't ship them
+    // (only the deepseek-v4-flash target compiles the `_e8m0` entries).
+    moe_grouped_gemm_e8m0: KernelHandle,
+    moe_grouped_gemm_t_e8m0: KernelHandle,
+    moe_grouped_gemm_t_k64_e8m0: KernelHandle,
+    moe_fused_gate_up_t_e8m0: KernelHandle,
+    moe_fused_gate_up_t_k64_e8m0: KernelHandle,
     /// M=128 variant of the K64 fused gate+up kernel (Block D #3, Avarok
     /// tile-shape rewrite). Loaded with `try_kernel` — falls back to
     /// `KernelHandle(0)` on models that don't ship the kernel; dispatch
@@ -354,6 +373,33 @@ pub struct MoeLayer {
     // path. Used to test whether the kernel choice is the dominant cause
     // of low DFlash drafter acceptance on FP4/FP8 targets.
     pub is_dflash_capture_layer: bool,
+}
+
+impl MoeLayer {
+    /// ARM-2 Phase-K routed-expert kernel-handle select. Returns the E8M0
+    /// variant when the routed experts are native MXFP4 (`Mxfp4E8m0`), else the
+    /// NVFP4 handle. Panics if E8M0 is selected but the `_e8m0` kernel is
+    /// absent from this target (`try_kernel` gave 0) — that means a native
+    /// checkpoint reached a build that never compiled the variant, which must
+    /// be loud, not silent NVFP4-on-E8M0 garbage (the straggler net).
+    #[inline]
+    fn e8m0_or(
+        &self,
+        nvfp4: spark_runtime::gpu::KernelHandle,
+        e8m0: spark_runtime::gpu::KernelHandle,
+        site: &str,
+    ) -> spark_runtime::gpu::KernelHandle {
+        if self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Mxfp4E8m0 {
+            assert!(
+                e8m0.0 != 0,
+                "ARM-2 Phase-K: routed experts tagged Mxfp4E8m0 at {site}, but the \
+                 _e8m0 kernel handle is unresolved (not compiled into this target)."
+            );
+            e8m0
+        } else {
+            nvfp4
+        }
+    }
 }
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
