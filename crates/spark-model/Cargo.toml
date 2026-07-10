@@ -83,6 +83,10 @@ workspace = true
 # GPU kernel microtest examples — gated on the non-default `gpu-examples`
 # feature so no-GPU CI skips building them (they link CUDA driver symbols).
 [[example]]
+name = "arm2_leg2"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gdn_cdh_vblock_microtest"
 required-features = ["cuda", "gpu-examples"]
 
