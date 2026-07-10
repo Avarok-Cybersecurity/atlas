@@ -761,6 +761,13 @@ fn main() -> Result<()> {
                 rows.push(((rng.next_u64() % ne as u64) as u32, tok as i32));
             }
         }
+        // Layer 1 is a hash-MoE layer (layer_idx < num_hash_layers=3): static
+        // tid2eid routing is NOT load-balanced → piles tokens on few experts, so
+        // one expert exceeds M_TILE=64 → mt>=2, exercising the multi-m-tile k_base
+        // loop that balanced routing (mt=1) never hits. Force that imbalance.
+        for r in rows.iter_mut().take(200) {
+            r.0 = 7;
+        }
         rows.sort_by_key(|r| r.0);
         let sti: Vec<i32> = rows.iter().map(|r| r.1).collect();
         let mut offs: Vec<i32> = vec![0i32; ne + 1];
