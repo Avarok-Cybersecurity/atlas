@@ -87,11 +87,7 @@ fn load_expert_proj(
 /// weight `177ac128…`, scale `ea4ac989…`). Dumps the PRE-transpose buffer (the
 /// loader output, before any `transpose_for_gemm` swizzle) — matches the Leg-1
 /// caveat. Sizes are fixed by the frozen ckpt: weight 4194304 B, scale 262144 B.
-fn maybe_dump_expert0(
-    prefix: &str,
-    qw: &QuantizedWeight,
-    gpu: &dyn GpuBackend,
-) -> Result<()> {
+fn maybe_dump_expert0(prefix: &str, qw: &QuantizedWeight, gpu: &dyn GpuBackend) -> Result<()> {
     if std::env::var("ATLAS_DUMP_EXPERT0").as_deref() != Ok("1") {
         return Ok(());
     }

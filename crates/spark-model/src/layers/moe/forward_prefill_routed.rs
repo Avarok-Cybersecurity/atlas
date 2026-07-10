@@ -126,8 +126,7 @@ impl MoeLayer {
         }
         if max_m_tiles > 0 {
             if let (Some(gp), Some(up)) = (&self.gate_ptrs_t, &self.up_ptrs_t) {
-                if self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Mxfp4E8m0
-                {
+                if self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Mxfp4E8m0 {
                     // ── ARM-2 Phase-K: native-MXFP4 (E8M0) fused gate_up ──
                     // Leading branch so E8M0 routed experts NEVER reach the
                     // NVFP4-only cutlass/fp4/m128 sub-paths below (structurally
@@ -336,8 +335,7 @@ impl MoeLayer {
             // FP8/w4a16 down kernels, so unpermute downstream is unchanged.
             // Compounds with the FP4 gate_up path to run the whole FFN at FP4.
             if let Some(dp) = &self.down_ptrs_t {
-                if self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Mxfp4E8m0
-                {
+                if self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Mxfp4E8m0 {
                     // ── ARM-2 Phase-K: native-MXFP4 (E8M0) grouped down ──
                     // Leading branch (bypasses NVFP4-only cutlass/fp4/fp8_down).
                     assert!(

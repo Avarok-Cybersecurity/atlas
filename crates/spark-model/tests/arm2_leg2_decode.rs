@@ -45,7 +45,9 @@ fn check1_family_a_decode_vs_host_gemv(gpu: &dyn GpuBackend, st: u64) -> Result<
     let k_dec_e8m0 = gpu.kernel(DMOD, "moe_expert_gate_up_shared_t_e8m0")?;
 
     let (k, n, top_k) = (512usize, 256usize, 1u32);
-    let a: Vec<u16> = (0..k).map(|_| f32_to_bf16_bits(rng.unit() * 2.0 - 1.0)).collect();
+    let a: Vec<u16> = (0..k)
+        .map(|_| f32_to_bf16_bits(rng.unit() * 2.0 - 1.0))
+        .collect();
     let gw = gen_wt_fullrange(&mut rng, k, n);
     let uw = gen_wt_fullrange(&mut rng, k, n);
     let a_p = up_u16(gpu, &a)?;
@@ -64,8 +66,8 @@ fn check1_family_a_decode_vs_host_gemv(gpu: &dyn GpuBackend, st: u64) -> Result<
     let sh_g_out = gpu.alloc(n * 2)?;
     let sh_u_out = gpu.alloc(n * 2)?;
     launch_decode_gate_up(
-        gpu, k_dec_e8m0, a_p, gpt, gst, s2, gate_out, upt, ust, s2, up_out, eidx,
-        null, null, 0.0, sh_g_out, null, null, 0.0, sh_u_out, n as u32, k as u32, top_k, st,
+        gpu, k_dec_e8m0, a_p, gpt, gst, s2, gate_out, upt, ust, s2, up_out, eidx, null, null, 0.0,
+        sh_g_out, null, null, 0.0, sh_u_out, n as u32, k as u32, top_k, st,
     )?;
     gpu.synchronize(st)?;
     let kg = rd_u16(gpu, gate_out, n)?;
@@ -80,7 +82,9 @@ fn check1_family_a_decode_vs_host_gemv(gpu: &dyn GpuBackend, st: u64) -> Result<
         "         gate: exact {eg}/{n} maxULP {ug} | up: exact {eu}/{n} maxULP {uu}  => {}",
         if pass { "PASS (<=1 ULP)" } else { "FAIL" }
     );
-    for p in [a_p, gwp, gws, uwp, uws, gpt, gst, upt, ust, s2, eidx, gate_out, up_out, sh_g_out, sh_u_out] {
+    for p in [
+        a_p, gwp, gws, uwp, uws, gpt, gst, upt, ust, s2, eidx, gate_out, up_out, sh_g_out, sh_u_out,
+    ] {
         gpu.free(p).ok();
     }
     assert!(
@@ -99,7 +103,9 @@ fn check2_rider_a3_shared_nvfp4_bit_identical(gpu: &dyn GpuBackend, st: u64) -> 
     let k_dec_e8m0 = gpu.kernel(DMOD, "moe_expert_gate_up_shared_t_e8m0")?;
 
     let (k, n, top_k) = (512usize, 256usize, 1u32);
-    let a: Vec<u16> = (0..k).map(|_| f32_to_bf16_bits(rng.unit() * 2.0 - 1.0)).collect();
+    let a: Vec<u16> = (0..k)
+        .map(|_| f32_to_bf16_bits(rng.unit() * 2.0 - 1.0))
+        .collect();
     // NVFP4 shared weight: nibbles + random valid E4M3 scale bytes (avoid NaN 0x7F/0xFF).
     let g16 = k / 16;
     let mk_nvfp4 = |rng: &mut Rng| -> (Vec<u8>, Vec<u8>) {
@@ -110,7 +116,8 @@ fn check2_rider_a3_shared_nvfp4_bit_identical(gpu: &dyn GpuBackend, st: u64) -> 
         let mut packed = vec![0u8; k / 2 * n];
         for kh in 0..k / 2 {
             for col in 0..n {
-                packed[kh * n + col] = (nib[(2 * kh) * n + col] & 0xF) | ((nib[(2 * kh + 1) * n + col] & 0xF) << 4);
+                packed[kh * n + col] =
+                    (nib[(2 * kh) * n + col] & 0xF) | ((nib[(2 * kh + 1) * n + col] & 0xF) << 4);
             }
         }
         let mut sc = vec![0u8; g16 * n];
@@ -141,8 +148,8 @@ fn check2_rider_a3_shared_nvfp4_bit_identical(gpu: &dyn GpuBackend, st: u64) -> 
         let sh_g_out = gpu.alloc(n * 2)?;
         let sh_u_out = gpu.alloc(n * 2)?;
         launch_decode_gate_up(
-            gpu, kern, a_p, z_tbl, z_tbl, s2, gate_out, z_tbl, z_tbl, s2, up_out, eidx,
-            sgp_p, sgs_p, sh_g2, sh_g_out, sup_p, sus_p, sh_u2, sh_u_out, n as u32, k as u32, top_k, st,
+            gpu, kern, a_p, z_tbl, z_tbl, s2, gate_out, z_tbl, z_tbl, s2, up_out, eidx, sgp_p,
+            sgs_p, sh_g2, sh_g_out, sup_p, sus_p, sh_u2, sh_u_out, n as u32, k as u32, top_k, st,
         )?;
         gpu.synchronize(st)?;
         let g = rd_u16(gpu, sh_g_out, n)?;
@@ -165,7 +172,10 @@ fn check2_rider_a3_shared_nvfp4_bit_identical(gpu: &dyn GpuBackend, st: u64) -> 
     for p in [a_p, sgp_p, sgs_p, sup_p, sus_p, z_tbl, s2, eidx] {
         gpu.free(p).ok();
     }
-    assert!(pass, "CHECK 2 FAIL: sh_gate diffs {d1}/{n}, sh_up diffs {d2}/{n} (not bit-identical)");
+    assert!(
+        pass,
+        "CHECK 2 FAIL: sh_gate diffs {d1}/{n}, sh_up diffs {d2}/{n} (not bit-identical)"
+    );
     Ok(())
 }
 
@@ -176,7 +186,9 @@ fn check3_rider_a4_mixed_no_cross_contamination(gpu: &dyn GpuBackend, st: u64) -
     let k_dec_e8m0 = gpu.kernel(DMOD, "moe_expert_gate_up_shared_t_e8m0")?;
 
     let (k, n, top_k) = (512usize, 256usize, 1u32);
-    let a: Vec<u16> = (0..k).map(|_| f32_to_bf16_bits(rng.unit() * 2.0 - 1.0)).collect();
+    let a: Vec<u16> = (0..k)
+        .map(|_| f32_to_bf16_bits(rng.unit() * 2.0 - 1.0))
+        .collect();
     let gw = gen_wt_fullrange(&mut rng, k, n); // routed E8M0
     let uw = gen_wt_fullrange(&mut rng, k, n);
     let g16 = k / 16;
@@ -187,7 +199,8 @@ fn check3_rider_a4_mixed_no_cross_contamination(gpu: &dyn GpuBackend, st: u64) -
     let mut spacked = vec![0u8; k / 2 * n];
     for kh in 0..k / 2 {
         for col in 0..n {
-            spacked[kh * n + col] = (snib[(2 * kh) * n + col] & 0xF) | ((snib[(2 * kh + 1) * n + col] & 0xF) << 4);
+            spacked[kh * n + col] =
+                (snib[(2 * kh) * n + col] & 0xF) | ((snib[(2 * kh + 1) * n + col] & 0xF) << 4);
         }
     }
     let mut sscale = vec![0u8; g16 * n];
@@ -220,8 +233,8 @@ fn check3_rider_a4_mixed_no_cross_contamination(gpu: &dyn GpuBackend, st: u64) -
         let sh_g_out = gpu.alloc(n * 2)?;
         let sh_u_out = gpu.alloc(n * 2)?;
         launch_decode_gate_up(
-            gpu, k_dec_e8m0, a_p, gpt, gst, s2, gate_out, upt, ust, s2, up_out, eidx,
-            sh_p, sh_s, sh_g2, sh_g_out, sh_p, sh_s, sh_g2, sh_u_out, n as u32, k as u32, top_k, st,
+            gpu, k_dec_e8m0, a_p, gpt, gst, s2, gate_out, upt, ust, s2, up_out, eidx, sh_p, sh_s,
+            sh_g2, sh_g_out, sh_p, sh_s, sh_g2, sh_u_out, n as u32, k as u32, top_k, st,
         )?;
         gpu.synchronize(st)?;
         let go = rd_u16(gpu, gate_out, n)?;
@@ -241,8 +254,8 @@ fn check3_rider_a4_mixed_no_cross_contamination(gpu: &dyn GpuBackend, st: u64) -
         let sh_g_out = gpu.alloc(n * 2)?;
         let sh_u_out = gpu.alloc(n * 2)?;
         launch_decode_gate_up(
-            gpu, k_dec_e8m0, a_p, ztbl, ztbl, s2, gate_out, ztbl, ztbl, s2, up_out, eidx,
-            sgp_p, sgs_p, sh_g2, sh_g_out, sgp_p, sgs_p, sh_g2, sh_u_out, n as u32, k as u32, top_k, st,
+            gpu, k_dec_e8m0, a_p, ztbl, ztbl, s2, gate_out, ztbl, ztbl, s2, up_out, eidx, sgp_p,
+            sgs_p, sh_g2, sh_g_out, sgp_p, sgs_p, sh_g2, sh_u_out, n as u32, k as u32, top_k, st,
         )?;
         gpu.synchronize(st)?;
         let sgo = rd_u16(gpu, sh_g_out, n)?;
@@ -257,12 +270,16 @@ fn check3_rider_a4_mixed_no_cross_contamination(gpu: &dyn GpuBackend, st: u64) -
     let (p1, d1, _) = cmp_bits(&routed_only_gate, &mixed_routed);
     let (p2, d2, _) = cmp_bits(&shared_only_gate, &mixed_shared);
     let pass = p1 && p2;
-    println!("CHECK 3  RIDER A4 mixed-fusion (routed-E8M0 + shared-NVFP4) no cross-contamination (K={k} N={n}):");
+    println!(
+        "CHECK 3  RIDER A4 mixed-fusion (routed-E8M0 + shared-NVFP4) no cross-contamination (K={k} N={n}):"
+    );
     println!(
         "         routed(mixed vs alone) diffs {d1}/{n} | shared(mixed vs alone) diffs {d2}/{n}  => {}",
         if pass { "PASS (bit-identical)" } else { "FAIL" }
     );
-    for p in [a_p, gwp, gws, uwp, uws, gpt, gst, upt, ust, sgp_p, sgs_p, s2, eidx, ztbl] {
+    for p in [
+        a_p, gwp, gws, uwp, uws, gpt, gst, upt, ust, sgp_p, sgs_p, s2, eidx, ztbl,
+    ] {
         gpu.free(p).ok();
     }
     assert!(

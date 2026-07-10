@@ -309,9 +309,7 @@ impl MoeLayer {
                 // ARM-2 Phase-K RIDER A1: the _e8m0 fused decode kernel is
                 // <32,true,GROUP_SIZE,false> — routed E8M0, shared NVFP4. Assert
                 // the shared expert really is NVFP4 before trusting that.
-                if self.experts_scale_kind
-                    == crate::weight_map::WeightQuantFormat::Mxfp4E8m0
-                {
+                if self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Mxfp4E8m0 {
                     self.shared_experts_scale_kind.expect(
                         crate::weight_map::WeightQuantFormat::Nvfp4,
                         "decode fused _e8m0 kernel assumes an NVFP4 shared expert",

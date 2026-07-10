@@ -50,9 +50,30 @@ fn check4_family_b_prefill_bit_exact(gpu: &dyn GpuBackend, st: u64) -> Result<()
     println!("CHECK 4  Family B prefill — 5 W4A16 entries, e8m0 vs NVFP4-equivalent (bit-exact):");
     // entry: (label, base, e8m0, transposed, op, K set). K hits unroll boundaries + realistic.
     let grouped_entries: &[(&str, &str, &str, bool, GOp, &[usize])] = &[
-        ("ptrtable(k16,non-t)", "moe_w4a16_grouped_gemm_ptrtable", "moe_w4a16_grouped_gemm_ptrtable_e8m0", false, GOp::Ptr64, &[64, 128, 448]),
-        ("ptrtable_t(k32)", "moe_w4a16_grouped_gemm_ptrtable_t", "moe_w4a16_grouped_gemm_ptrtable_t_e8m0", true, GOp::PtrN128, &[64, 128, 448]),
-        ("ptrtable_t_k64(down*)", "moe_w4a16_grouped_gemm_ptrtable_t_k64", "moe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0", true, GOp::PtrK64N128, &[64, 128, 448]),
+        (
+            "ptrtable(k16,non-t)",
+            "moe_w4a16_grouped_gemm_ptrtable",
+            "moe_w4a16_grouped_gemm_ptrtable_e8m0",
+            false,
+            GOp::Ptr64,
+            &[64, 128, 448],
+        ),
+        (
+            "ptrtable_t(k32)",
+            "moe_w4a16_grouped_gemm_ptrtable_t",
+            "moe_w4a16_grouped_gemm_ptrtable_t_e8m0",
+            true,
+            GOp::PtrN128,
+            &[64, 128, 448],
+        ),
+        (
+            "ptrtable_t_k64(down*)",
+            "moe_w4a16_grouped_gemm_ptrtable_t_k64",
+            "moe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0",
+            true,
+            GOp::PtrK64N128,
+            &[64, 128, 448],
+        ),
     ];
     let (n_b, m_b) = (256usize, 128usize);
     for (label, base, e8m0, t, op, ks) in grouped_entries.iter().copied() {
@@ -62,7 +83,9 @@ fn check4_family_b_prefill_bit_exact(gpu: &dyn GpuBackend, st: u64) -> Result<()
         let mut detail = String::new();
         for &k in ks {
             let w = gen_wt_bitexact(&mut rng, k, n_b, t);
-            let a: Vec<u16> = (0..m_b * k).map(|_| f32_to_bf16_bits(rng.unit() * 2.0 - 1.0)).collect();
+            let a: Vec<u16> = (0..m_b * k)
+                .map(|_| f32_to_bf16_bits(rng.unit() * 2.0 - 1.0))
+                .collect();
             let a_p = up_u16(gpu, &a)?;
             let wp = up_u8(gpu, &w.packed)?;
             let ws_e = up_u8(gpu, &w.s_e8m0)?;
@@ -77,7 +100,10 @@ fn check4_family_b_prefill_bit_exact(gpu: &dyn GpuBackend, st: u64) -> Result<()
             let mt = (m_b as u32).div_ceil(64);
             let run = |kern: KernelHandle, bst: DevicePtr| -> Result<Vec<u16>> {
                 let c = gpu.alloc(m_b * n_b * 2)?;
-                launch_grouped(gpu, op, kern, a_p, bpt, bst, s2, c, off, sti_p, 1, n_b as u32, k as u32, mt, st)?;
+                launch_grouped(
+                    gpu, op, kern, a_p, bpt, bst, s2, c, off, sti_p, 1, n_b as u32, k as u32, mt,
+                    st,
+                )?;
                 gpu.synchronize(st)?;
                 let v = rd_u16(gpu, c, m_b * n_b)?;
                 gpu.free(c).ok();
@@ -87,18 +113,38 @@ fn check4_family_b_prefill_bit_exact(gpu: &dyn GpuBackend, st: u64) -> Result<()
             let cn = run(kbase, bst_n)?;
             let (p, d, _) = cmp_bits(&cn, &ce);
             ok &= p;
-            detail.push_str(&format!(" K{k}:{}", if p { "ok".into() } else { format!("DIFF{d}") }));
+            detail.push_str(&format!(
+                " K{k}:{}",
+                if p { "ok".into() } else { format!("DIFF{d}") }
+            ));
             for pp in [a_p, wp, ws_e, ws_n, bpt, bst_e, bst_n, s2, off, sti_p] {
                 gpu.free(pp).ok();
             }
         }
         all_ok &= ok;
-        println!("   [{}] {} =>{}", if ok { "PASS" } else { "FAIL" }, label, detail);
+        println!(
+            "   [{}] {} =>{}",
+            if ok { "PASS" } else { "FAIL" },
+            label,
+            detail
+        );
     }
     // fused entries (gate+up, 2 outputs).
     let fused_entries: &[(&str, &str, &str, FOp, &[usize])] = &[
-        ("fused_gate_up_t(k32)", "moe_w4a16_fused_gate_up_t", "moe_w4a16_fused_gate_up_t_e8m0", FOp::FusedN128, &[64, 128, 448]),
-        ("fused_gate_up_t_k64(gate/up*)", "moe_w4a16_fused_gate_up_t_k64", "moe_w4a16_fused_gate_up_t_k64_e8m0", FOp::FusedK64N128, &[64, 128, 448]),
+        (
+            "fused_gate_up_t(k32)",
+            "moe_w4a16_fused_gate_up_t",
+            "moe_w4a16_fused_gate_up_t_e8m0",
+            FOp::FusedN128,
+            &[64, 128, 448],
+        ),
+        (
+            "fused_gate_up_t_k64(gate/up*)",
+            "moe_w4a16_fused_gate_up_t_k64",
+            "moe_w4a16_fused_gate_up_t_k64_e8m0",
+            FOp::FusedK64N128,
+            &[64, 128, 448],
+        ),
     ];
     for (label, base, e8m0, op, ks) in fused_entries.iter().copied() {
         let kbase = gpu.kernel(BMOD, base)?;
@@ -108,7 +154,9 @@ fn check4_family_b_prefill_bit_exact(gpu: &dyn GpuBackend, st: u64) -> Result<()
         for &k in ks {
             let gw = gen_wt_bitexact(&mut rng, k, n_b, true);
             let uw = gen_wt_bitexact(&mut rng, k, n_b, true);
-            let a: Vec<u16> = (0..m_b * k).map(|_| f32_to_bf16_bits(rng.unit() * 2.0 - 1.0)).collect();
+            let a: Vec<u16> = (0..m_b * k)
+                .map(|_| f32_to_bf16_bits(rng.unit() * 2.0 - 1.0))
+                .collect();
             let a_p = up_u16(gpu, &a)?;
             let gwp = up_u8(gpu, &gw.packed)?;
             let gse = up_u8(gpu, &gw.s_e8m0)?;
@@ -127,10 +175,16 @@ fn check4_family_b_prefill_bit_exact(gpu: &dyn GpuBackend, st: u64) -> Result<()
             let sti: Vec<i32> = (0..m_b as i32).collect();
             let sti_p = up_i32(gpu, &sti)?;
             let mt = (m_b as u32).div_ceil(64);
-            let run = |kern: KernelHandle, gst: DevicePtr, ust: DevicePtr| -> Result<(Vec<u16>, Vec<u16>)> {
+            let run = |kern: KernelHandle,
+                       gst: DevicePtr,
+                       ust: DevicePtr|
+             -> Result<(Vec<u16>, Vec<u16>)> {
                 let cg = gpu.alloc(m_b * n_b * 2)?;
                 let cu = gpu.alloc(m_b * n_b * 2)?;
-                launch_fused(gpu, op, kern, a_p, gpt, gst, s2, upt, ust, s2, cg, cu, off, sti_p, 1, n_b as u32, k as u32, mt, st)?;
+                launch_fused(
+                    gpu, op, kern, a_p, gpt, gst, s2, upt, ust, s2, cg, cu, off, sti_p, 1,
+                    n_b as u32, k as u32, mt, st,
+                )?;
                 gpu.synchronize(st)?;
                 let g = rd_u16(gpu, cg, m_b * n_b)?;
                 let u = rd_u16(gpu, cu, m_b * n_b)?;
@@ -143,18 +197,36 @@ fn check4_family_b_prefill_bit_exact(gpu: &dyn GpuBackend, st: u64) -> Result<()
             let (pg, dg, _) = cmp_bits(&gn, &ge);
             let (pu, du, _) = cmp_bits(&un, &ue);
             ok &= pg && pu;
-            detail.push_str(&format!(" K{k}:{}", if pg && pu { "ok".into() } else { format!("gDIFF{dg}/uDIFF{du}") }));
-            for pp in [a_p, gwp, gse, gsn, uwp, use_, usn, gpt, gse_t, gsn_t, upt, use_t, usn_t, s2, off, sti_p] {
+            detail.push_str(&format!(
+                " K{k}:{}",
+                if pg && pu {
+                    "ok".into()
+                } else {
+                    format!("gDIFF{dg}/uDIFF{du}")
+                }
+            ));
+            for pp in [
+                a_p, gwp, gse, gsn, uwp, use_, usn, gpt, gse_t, gsn_t, upt, use_t, usn_t, s2, off,
+                sti_p,
+            ] {
                 gpu.free(pp).ok();
             }
         }
         all_ok &= ok;
-        println!("   [{}] {} =>{}", if ok { "PASS" } else { "FAIL" }, label, detail);
+        println!(
+            "   [{}] {} =>{}",
+            if ok { "PASS" } else { "FAIL" },
+            label,
+            detail
+        );
     }
     println!(
         "(*) = V4-serve-path entry (fused_gate_up_t_k64 gate/up + ptrtable_t_k64 down). Others off-path, tested for RIDER-2 completeness."
     );
-    assert!(all_ok, "CHECK 4 FAIL: a Family-B entry diverged (see per-entry DIFF above)");
+    assert!(
+        all_ok,
+        "CHECK 4 FAIL: a Family-B entry diverged (see per-entry DIFF above)"
+    );
     Ok(())
 }
 
@@ -171,7 +243,9 @@ fn check4_family_b_prefill_bit_exact(gpu: &dyn GpuBackend, st: u64) -> Result<()
 fn check5_multi_expert_memcheck(gpu: &dyn GpuBackend, st: u64) -> Result<()> {
     let mut rng = Rng(SEED);
 
-    println!("CHECK 5  real-shape multi-expert integration (V4 routed dims; compute-sanitizer memcheck is the oracle):");
+    println!(
+        "CHECK 5  real-shape multi-expert integration (V4 routed dims; compute-sanitizer memcheck is the oracle):"
+    );
     let h = 4096usize; // dim (hidden)
     let inter = 2048usize; // moe_inter_dim
     let ne = 256usize; // n_routed_experts
@@ -242,12 +316,42 @@ fn check5_multi_expert_memcheck(gpu: &dyn GpuBackend, st: u64) -> Result<()> {
     // gate_up (real sorted_token_ids gather), then down (null sti = identity),
     // exactly as forward_prefill_routed.rs sequences them.
     launch_fused(
-        gpu, FOp::FusedK64N128, k_gu, a_p, gpt, gst, s2, upt, ust, s2, gate_out, up_out, off_p,
-        sti_p, ne as u32, inter as u32, h as u32, mt, st,
+        gpu,
+        FOp::FusedK64N128,
+        k_gu,
+        a_p,
+        gpt,
+        gst,
+        s2,
+        upt,
+        ust,
+        s2,
+        gate_out,
+        up_out,
+        off_p,
+        sti_p,
+        ne as u32,
+        inter as u32,
+        h as u32,
+        mt,
+        st,
     )?;
     launch_grouped(
-        gpu, GOp::PtrN128, k_dn, gate_out, dpt, dst, s2, down_out, off_p, DevicePtr(0),
-        ne as u32, h as u32, inter as u32, mt, st,
+        gpu,
+        GOp::PtrN128,
+        k_dn,
+        gate_out,
+        dpt,
+        dst,
+        s2,
+        down_out,
+        off_p,
+        DevicePtr(0),
+        ne as u32,
+        h as u32,
+        inter as u32,
+        mt,
+        st,
     )?;
     gpu.synchronize(st)?;
 

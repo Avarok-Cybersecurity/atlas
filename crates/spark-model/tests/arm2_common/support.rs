@@ -93,19 +93,34 @@ pub fn up_u8(g: &dyn GpuBackend, v: &[u8]) -> Result<DevicePtr> {
     Ok(p)
 }
 pub fn up_u16(g: &dyn GpuBackend, v: &[u16]) -> Result<DevicePtr> {
-    up_u8(g, &v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>())
+    up_u8(
+        g,
+        &v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>(),
+    )
 }
 pub fn up_u32(g: &dyn GpuBackend, v: &[u32]) -> Result<DevicePtr> {
-    up_u8(g, &v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>())
+    up_u8(
+        g,
+        &v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>(),
+    )
 }
 pub fn up_i32(g: &dyn GpuBackend, v: &[i32]) -> Result<DevicePtr> {
-    up_u8(g, &v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>())
+    up_u8(
+        g,
+        &v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>(),
+    )
 }
 pub fn up_f32(g: &dyn GpuBackend, v: &[f32]) -> Result<DevicePtr> {
-    up_u8(g, &v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>())
+    up_u8(
+        g,
+        &v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>(),
+    )
 }
 pub fn up_u64(g: &dyn GpuBackend, v: &[u64]) -> Result<DevicePtr> {
-    up_u8(g, &v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>())
+    up_u8(
+        g,
+        &v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>(),
+    )
 }
 pub fn rd_u16(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Result<Vec<u16>> {
     let mut raw = vec![0u8; n * 2];
@@ -358,9 +373,15 @@ pub fn launch_grouped(
     st: u64,
 ) -> Result<()> {
     match op {
-        GOp::Ptr64 => ops::moe_w4a16_grouped_gemm_ptrtable(g, kern, a, bp, bs, s2, c, off, sti, ne, n, k, mt, st),
-        GOp::PtrN128 => ops::moe_w4a16_grouped_gemm_ptrtable_n128(g, kern, a, bp, bs, s2, c, off, sti, ne, n, k, mt, st),
-        GOp::PtrK64N128 => ops::moe_w4a16_grouped_gemm_ptrtable_k64_n128(g, kern, a, bp, bs, s2, c, off, sti, ne, n, k, mt, st),
+        GOp::Ptr64 => ops::moe_w4a16_grouped_gemm_ptrtable(
+            g, kern, a, bp, bs, s2, c, off, sti, ne, n, k, mt, st,
+        ),
+        GOp::PtrN128 => ops::moe_w4a16_grouped_gemm_ptrtable_n128(
+            g, kern, a, bp, bs, s2, c, off, sti, ne, n, k, mt, st,
+        ),
+        GOp::PtrK64N128 => ops::moe_w4a16_grouped_gemm_ptrtable_k64_n128(
+            g, kern, a, bp, bs, s2, c, off, sti, ne, n, k, mt, st,
+        ),
     }
 }
 pub fn launch_fused(
@@ -385,7 +406,11 @@ pub fn launch_fused(
     st: u64,
 ) -> Result<()> {
     match op {
-        FOp::FusedN128 => ops::moe_w4a16_fused_gate_up_n128(g, kern, a, gp, gs, gs2, upp, ups, ups2, cg, cu, off, sti, ne, n, k, mt, st),
-        FOp::FusedK64N128 => ops::moe_w4a16_fused_gate_up_k64_n128(g, kern, a, gp, gs, gs2, upp, ups, ups2, cg, cu, off, sti, ne, n, k, mt, st),
+        FOp::FusedN128 => ops::moe_w4a16_fused_gate_up_n128(
+            g, kern, a, gp, gs, gs2, upp, ups, ups2, cg, cu, off, sti, ne, n, k, mt, st,
+        ),
+        FOp::FusedK64N128 => ops::moe_w4a16_fused_gate_up_k64_n128(
+            g, kern, a, gp, gs, gs2, upp, ups, ups2, cg, cu, off, sti, ne, n, k, mt, st,
+        ),
     }
 }
