@@ -347,6 +347,8 @@ impl Qwen3SsmLayer {
                         rec_gdn_us += t0.elapsed().as_micros();
                     }
                 } else {
+                    let do_norm = (ssm_state.norm_token_count % 16 == 0) as u32;
+                    ssm_state.norm_token_count = ssm_state.norm_token_count.wrapping_add(1);
                     ops::gdn_decode(
                         ctx.gpu,
                         self.gdn_f32_k,
@@ -362,6 +364,7 @@ impl Qwen3SsmLayer {
                         nv as u32,
                         kd as u32,
                         vd as u32,
+                        do_norm,
                         stream,
                     )?;
                     if let Some(t0) = sub_t0 {
