@@ -110,9 +110,20 @@ impl TransformerModel {
         let byte_len = n * 4;
         let stream = self.gpu.default_stream();
 
-        // Use scratch buffer (guaranteed large enough for metadata) as device staging.
-        // This is safe because ep_broadcast_tokens is called BEFORE prefill_chunk,
-        // which overwrites scratch with its own metadata.
+        // Use scratch buffer as device staging. This is safe because
+        // ep_broadcast_tokens is called BEFORE prefill_chunk, which overwrites
+        // scratch with its own metadata. Scratch is sized from the prefill
+        // CHUNK size, not the full prompt length, so a long prompt's token
+        // payload (n*4 bytes) can exceed it — bound-check before the H2D copy
+        // and NCCL broadcast rather than overrun into adjacent device buffers
+        // (which raises CUDA error 700 and wedges the GPU).
+        let scratch_bytes = self.buffers.sizes().scratch;
+        if byte_len > scratch_bytes {
+            anyhow::bail!(
+                "ep_broadcast_tokens: token payload {byte_len} bytes (n={n}) \
+                 exceeds scratch capacity {scratch_bytes} bytes",
+            );
+        }
         let dev_buf = self.buffers.scratch();
 
         if comm.rank() == 0 {

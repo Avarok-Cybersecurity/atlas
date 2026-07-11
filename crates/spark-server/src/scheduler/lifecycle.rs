@@ -148,7 +148,19 @@ pub fn swap_out_sequence(
     let mut a = active.swap_remove(victim_idx);
 
     // Compact the swapped-in sequence (same logic as retire path).
-    if victim_idx < active.len() && active[victim_idx].seq.slot_idx != victim_idx {
+    //
+    // Under EP protocol v2 slots are pre-allocated and kept in place —
+    // migrating SSM state on the head only would desync the worker's
+    // slot-keyed mirror, so `retire_finished_sequences` skips compaction
+    // entirely under v2. Mirror that here (a non-contiguous active vec is
+    // valid under v2). NOTE: the non-v2 branch still compacts onto the
+    // position index `victim_idx`, which can double-own a slot when
+    // co-dispatch left the vec non-contiguous — see follow-up to port the
+    // two-phase exclusive-claim logic from the retire path.
+    if !model.ep_protocol_v2()
+        && victim_idx < active.len()
+        && active[victim_idx].seq.slot_idx != victim_idx
+    {
         model.compact_sequence(&mut active[victim_idx].seq, victim_idx)?;
         // Disown the victim's migrated slot BEFORE the fallible save below: sets
         // the reuse sentinel AND neutralizes the RAII guard so a `?`-early-

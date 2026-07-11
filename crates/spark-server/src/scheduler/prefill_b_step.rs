@@ -289,7 +289,7 @@ pub fn prefill_request(
         session_hash: req_session_hash,
         last_token: first,
         output_tokens,
-        remaining: max_tokens - 1,
+        remaining: max_tokens.saturating_sub(1),
         min_tokens: req_min_tokens,
         eos_tokens: eos_tokens.to_vec(),
         finished: false,

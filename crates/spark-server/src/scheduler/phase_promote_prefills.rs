@@ -132,7 +132,7 @@ fn build_active_seq_from_prefill(
         remaining: if immediate_finish {
             0
         } else {
-            p.max_tokens - 1
+            p.max_tokens.saturating_sub(1)
         },
         min_tokens: p.min_tokens,
         eos_tokens: p.eos_tokens,

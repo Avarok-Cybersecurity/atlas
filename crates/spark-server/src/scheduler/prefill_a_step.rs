@@ -459,7 +459,7 @@ pub fn start_chunked_prefill(
                 } else {
                     vec![first]
                 },
-                remaining: max_tokens - 1,
+                remaining: max_tokens.saturating_sub(1),
                 min_tokens: req_min_tokens,
                 eos_tokens: eos_tokens.to_vec(),
                 finished: false,
