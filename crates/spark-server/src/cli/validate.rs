@@ -255,7 +255,7 @@ mod tests {
 
     /// Parse a `spark serve ...` command line into `ServeArgs` for testing.
     fn parse(extra: &[&str]) -> ServeArgs {
-        let mut argv = vec!["spark", "serve", "--model", "dummy/model"];
+        let mut argv = vec!["spark", "serve", "dummy/model", "--model-name", "dummy"];
         argv.extend_from_slice(extra);
         match super::super::Cli::parse_from(argv).command {
             super::super::Command::Serve(a) => a,
