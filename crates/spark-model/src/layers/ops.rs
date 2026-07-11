@@ -31,6 +31,8 @@ mod fp8_moe_batch_b;
 pub mod gdn_flashinfer;
 #[path = "ops/gemm_dense.rs"]
 mod gemm_dense;
+#[path = "ops/gemm_dense_fp8.rs"]
+mod gemm_dense_fp8;
 #[path = "ops/gemm_dense_int8.rs"]
 mod gemm_dense_int8;
 #[path = "ops/gemm_quant.rs"]
@@ -103,6 +105,7 @@ pub use fp8_moe::*;
 pub use fp8_moe_batch_a::*;
 pub use fp8_moe_batch_b::*;
 pub use gemm_dense::*;
+pub use gemm_dense_fp8::*;
 pub use gemm_dense_int8::*;
 pub use gemm_quant::*;
 pub use hyper_connection::*;
