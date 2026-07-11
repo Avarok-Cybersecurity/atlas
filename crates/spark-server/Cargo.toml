@@ -49,6 +49,12 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 axum = { version = "0.8", features = ["json"] }
+# Direct hyper/hyper-util/tower access for the manual accept loop in
+# `serve_router.rs` — `axum::serve` does not expose hyper's connection-layer
+# `header_read_timeout`, which is what bounds a slowloris (slow-header) client.
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+tower = { version = "0.5", features = ["util"] }
 tokio = { version = "1", features = ["full", "parking_lot"] }
 tokio-stream = "0.1"
 futures = "0.3"
