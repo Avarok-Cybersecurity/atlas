@@ -82,6 +82,8 @@ workspace = true
 
 # GPU kernel microtest examples — gated on the non-default `gpu-examples`
 # feature so no-GPU CI skips building them (they link CUDA driver symbols).
+# NOTE: the ARM-2 Leg-2 native-MXFP4 (E8M0) numeric gate lives as a real
+# `#[ignore]`d integration test — see crates/spark-model/tests/arm2_leg2_*.rs.
 [[example]]
 name = "gdn_cdh_vblock_microtest"
 required-features = ["cuda", "gpu-examples"]

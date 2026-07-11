@@ -51,6 +51,11 @@ impl MoeLayer {
         let rms_norm_k = gpu.kernel("norm", "rms_norm")?;
         Ok(Self {
             weights,
+            // Default: standard NVFP4 (FP8-E4M3 per-16 + f32 global). The
+            // DeepSeek-V4 native-MXFP4 loader overrides this to `Mxfp4E8m0`
+            // after construction (see deepseek_v4/assemble.rs).
+            experts_scale_kind: crate::weight_map::WeightQuantFormat::Nvfp4,
+            shared_experts_scale_kind: crate::weight_map::WeightQuantFormat::Nvfp4,
             gate_nvfp4,
             pre_expert_norm: None,
             pre_expert_norm_k: rms_norm_k,
@@ -110,6 +115,33 @@ impl MoeLayer {
                 .kernel("moe_w4a16", "moe_w4a16_grouped_gemm_ptrtable_t_k64")?,
             moe_fused_gate_up_t: gpu.kernel("moe_w4a16", "moe_w4a16_fused_gate_up_t")?,
             moe_fused_gate_up_t_k64: gpu.kernel("moe_w4a16", "moe_w4a16_fused_gate_up_t_k64")?,
+            // ARM-2 Phase-K native-MXFP4 (E8M0) prefill variants — try_kernel:
+            // only the deepseek-v4-flash target's moe_w4a16 module ships them.
+            moe_grouped_gemm_e8m0: super::super::try_kernel(
+                gpu,
+                "moe_w4a16",
+                "moe_w4a16_grouped_gemm_ptrtable_e8m0",
+            ),
+            moe_grouped_gemm_t_e8m0: super::super::try_kernel(
+                gpu,
+                "moe_w4a16",
+                "moe_w4a16_grouped_gemm_ptrtable_t_e8m0",
+            ),
+            moe_grouped_gemm_t_k64_e8m0: super::super::try_kernel(
+                gpu,
+                "moe_w4a16",
+                "moe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0",
+            ),
+            moe_fused_gate_up_t_e8m0: super::super::try_kernel(
+                gpu,
+                "moe_w4a16",
+                "moe_w4a16_fused_gate_up_t_e8m0",
+            ),
+            moe_fused_gate_up_t_k64_e8m0: super::super::try_kernel(
+                gpu,
+                "moe_w4a16",
+                "moe_w4a16_fused_gate_up_t_k64_e8m0",
+            ),
             // M=128 variant only present in models where Block D #3 has
             // been ported (currently minimax-m2-229b). Other models keep
             // KernelHandle(0) and dispatch falls through to M=64.
@@ -221,6 +253,19 @@ impl MoeLayer {
                 .kernel("moe_shared_expert_fused_t", "moe_expert_gate_up_shared_t")?,
             moe_expert_silu_down_shared_t_k: gpu
                 .kernel("moe_shared_expert_fused_t", "moe_expert_silu_down_shared_t")?,
+            // ARM-2 Phase-K dual-format decode variants (E8M0 routed / NVFP4
+            // shared). try_kernel — the entries are in the common .cu but load
+            // by name; 0 where a target doesn't compile that module.
+            moe_expert_gate_up_shared_t_e8m0_k: super::super::try_kernel(
+                gpu,
+                "moe_shared_expert_fused_t",
+                "moe_expert_gate_up_shared_t_e8m0",
+            ),
+            moe_expert_silu_down_shared_t_e8m0_k: super::super::try_kernel(
+                gpu,
+                "moe_shared_expert_fused_t",
+                "moe_expert_silu_down_shared_t_e8m0",
+            ),
             // sqrtsoftplus kernels: lazy-loaded via try_kernel so models that
             // don't register them (all except DeepSeek-V4) start fine.
             moe_topk_sqrtsoftplus_k: super::super::try_kernel(

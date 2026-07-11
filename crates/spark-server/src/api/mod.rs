@@ -34,6 +34,8 @@ pub mod chat_stream;
 pub mod chat_stream_dispatch;
 pub mod compact;
 pub mod completions;
+pub mod completions_exec;
+pub mod completions_logprobs;
 pub mod conversations;
 pub mod inference_impl;
 pub mod inference_types;

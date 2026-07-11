@@ -165,6 +165,17 @@ pub struct SequenceState {
     /// uninitialised. Length equals the model's attention layer count;
     /// empty when HSS is disabled.
     pub disk_last_offloaded_per_layer: Vec<u32>,
+    /// Legacy /v1/completions echo+logprobs: Some(k) = during prefill,
+    /// project every prompt position's hidden state and record the actual
+    /// next token's logprob plus top-k alternatives. Set by the scheduler
+    /// before prefill; None = zero-cost (the collection helper
+    /// early-returns). Requests with this set bypass the prefix cache so
+    /// every position has a live hidden row.
+    pub collect_prompt_logprobs: Option<u8>,
+    /// Accumulated across prefill chunks: one entry per prompt position
+    /// i in [0, prompt_len-1) scoring tokens[i+1]. The final prompt
+    /// position (whose target is the first GENERATED token) is excluded.
+    pub prompt_logprobs: Vec<PromptTokenLogprob>,
 }
 
 impl SequenceState {
@@ -207,5 +218,7 @@ impl SequenceState {
 /// `Sync` safety: the model is exclusively accessed from the scheduler
 /// thread. The `unsafe impl Sync` on `TransformerModel` documents this
 /// single-thread invariant — do NOT share `&dyn Model` across threads.
+mod logprobs;
 mod model;
+pub use logprobs::*;
 pub use model::Model;

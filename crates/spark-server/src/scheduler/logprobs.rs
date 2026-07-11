@@ -13,34 +13,12 @@ pub fn extract_logprobs_from_f32(
     sampled_token: u32,
     k: usize,
 ) -> crate::api::TokenLogprobs {
-    // Log-softmax: logprob = logit - log(sum(exp(logits)))
-    let max_logit = f32_logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let log_sum_exp = max_logit
-        + f32_logits
-            .iter()
-            .map(|&l| (l - max_logit).exp())
-            .sum::<f32>()
-            .ln();
-    let sampled_logprob = if (sampled_token as usize) < f32_logits.len() {
-        f32_logits[sampled_token as usize] - log_sum_exp
-    } else {
-        f32::NEG_INFINITY
-    };
-    // Find top-K by partial sort.
-    let mut indexed: Vec<(u32, f32)> = f32_logits
-        .iter()
-        .enumerate()
-        .map(|(j, &l)| (j as u32, l - log_sum_exp))
-        .collect();
-    let nth = k.min(indexed.len().saturating_sub(1));
-    indexed.select_nth_unstable_by(nth, |a, b| {
-        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let mut top: Vec<(u32, f32)> = indexed[..k.min(indexed.len())].to_vec();
-    top.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    // SSOT: the log-softmax + top-k math lives in spark-model
+    // (`traits::logprobs`), shared with prompt-logprob collection.
+    let (logprob, top) = spark_model::traits::logprob_of(f32_logits, sampled_token, k);
     crate::api::TokenLogprobs {
         token_id: sampled_token,
-        logprob: sampled_logprob,
+        logprob,
         top,
     }
 }

@@ -24,11 +24,15 @@ impl TransformerModel {
     ) -> Result<(usize, bool)> {
         let bs = kv_cache.block_size();
         if chunk_start == 0 {
-            let mut prefix_match = if self.tokens_have_vision_pad(tokens) {
-                spark_runtime::prefix_cache::PrefixMatch::empty()
-            } else {
-                self.prefix_cache.lookup(tokens, bs, seq.session_hash)
-            };
+            // Prompt-logprob collection needs a live hidden row for EVERY
+            // position — a cache/Marconi skip would leave gaps. Force the
+            // full-recompute path (documented perf cost, scoring calls only).
+            let mut prefix_match =
+                if self.tokens_have_vision_pad(tokens) || seq.collect_prompt_logprobs.is_some() {
+                    spark_runtime::prefix_cache::PrefixMatch::empty()
+                } else {
+                    self.prefix_cache.lookup(tokens, bs, seq.session_hash)
+                };
             // F83 (2026-04-30): on EP>1, head and worker have
             // independent local prefix caches whose match counts can
             // diverge (eviction order differences, async insert

@@ -182,8 +182,17 @@ pub(super) fn continue_in_progress_prefills(
     let q12_dispatch_disabled = std::env::var("ATLAS_BISECT_Q12_DISABLE")
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
-    let can_batch_prefill_only =
-        !q12_dispatch_disabled && prefilling.len() >= 2 && active.is_empty() && !model.is_ep();
+    // Prompt-logprob collection (legacy echo scoring) is single-stream
+    // only: the batched dispatch's hidden-buffer stream offsets are not
+    // wired into the collection helper. Rare debug/eval traffic.
+    let any_collecting = prefilling
+        .iter()
+        .any(|p| p.seq.collect_prompt_logprobs.is_some());
+    let can_batch_prefill_only = !q12_dispatch_disabled
+        && !any_collecting
+        && prefilling.len() >= 2
+        && active.is_empty()
+        && !model.is_ep();
     // When ATLAS_HOLO_ALWAYS_MIXED is on, COLLAPSE the multi-prefill+decode
     // case onto the single-stream fused path below (FIFO head prefill fused
     // with all active decodes via mixed_forward, sized by the slice budget)
@@ -193,6 +202,7 @@ pub(super) fn continue_in_progress_prefills(
     // improvement). The non-head prefill streams advance on subsequent ticks.
     let can_batch_mixed = !always_mixed
         && !q12_dispatch_disabled
+        && !any_collecting
         && prefilling.len() >= 2
         && !active.is_empty()
         && !single_active_with_spec

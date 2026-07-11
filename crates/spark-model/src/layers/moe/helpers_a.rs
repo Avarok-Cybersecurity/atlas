@@ -66,6 +66,15 @@ impl MoeLayer {
         let mut up_t = Vec::with_capacity(num_experts);
         let mut down_t = Vec::with_capacity(num_experts);
 
+        // ARM-2 Phase-K Family C: native-MXFP4 routed experts have per-32 E8M0
+        // scales ([N, K/32]); NVFP4 is per-16. The scale transpose must use the
+        // matching block size or the E8M0 kernels read a mis-shaped scale table.
+        let routed_gs =
+            if self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Mxfp4E8m0 {
+                32
+            } else {
+                16
+            };
         for expert in &self.weights.experts {
             if expert.gate_proj.is_null() {
                 gate_t.push(QuantizedWeight::null());
@@ -74,10 +83,22 @@ impl MoeLayer {
                     down_t.push(QuantizedWeight::null());
                 }
             } else {
-                gate_t.push(expert.gate_proj.transpose_for_gemm(gpu, inter, h)?);
-                up_t.push(expert.up_proj.transpose_for_gemm(gpu, inter, h)?);
+                gate_t.push(
+                    expert
+                        .gate_proj
+                        .transpose_for_gemm_gs(gpu, inter, h, routed_gs)?,
+                );
+                up_t.push(
+                    expert
+                        .up_proj
+                        .transpose_for_gemm_gs(gpu, inter, h, routed_gs)?,
+                );
                 if include_down {
-                    down_t.push(expert.down_proj.transpose_for_gemm(gpu, h, inter)?);
+                    down_t.push(
+                        expert
+                            .down_proj
+                            .transpose_for_gemm_gs(gpu, h, inter, routed_gs)?,
+                    );
                 }
             }
         }
@@ -173,6 +194,13 @@ impl MoeLayer {
         let num_experts = self.weights.experts.len();
 
         // ── Phase A: transpose gate+up routed experts ──
+        // ARM-2 Phase-K Family C: native-MXFP4 routed experts are per-32 E8M0.
+        let routed_gs =
+            if self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Mxfp4E8m0 {
+                32
+            } else {
+                16
+            };
         let mut gate_t = Vec::with_capacity(num_experts);
         let mut up_t = Vec::with_capacity(num_experts);
         for expert in &self.weights.experts {
@@ -180,8 +208,16 @@ impl MoeLayer {
                 gate_t.push(QuantizedWeight::null());
                 up_t.push(QuantizedWeight::null());
             } else {
-                gate_t.push(expert.gate_proj.transpose_for_gemm(gpu, inter, h)?);
-                up_t.push(expert.up_proj.transpose_for_gemm(gpu, inter, h)?);
+                gate_t.push(
+                    expert
+                        .gate_proj
+                        .transpose_for_gemm_gs(gpu, inter, h, routed_gs)?,
+                );
+                up_t.push(
+                    expert
+                        .up_proj
+                        .transpose_for_gemm_gs(gpu, inter, h, routed_gs)?,
+                );
             }
         }
         self.gate_ptrs_t = Some(build_ptr_table_from_qw(&gate_t, gpu)?);
@@ -237,7 +273,11 @@ impl MoeLayer {
             if expert.down_proj.is_null() {
                 down_t.push(QuantizedWeight::null());
             } else {
-                down_t.push(expert.down_proj.transpose_for_gemm(gpu, h, inter)?);
+                down_t.push(
+                    expert
+                        .down_proj
+                        .transpose_for_gemm_gs(gpu, h, inter, routed_gs)?,
+                );
             }
         }
         self.down_ptrs_t = Some(build_ptr_table_from_qw(&down_t, gpu)?);

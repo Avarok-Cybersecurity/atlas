@@ -306,9 +306,22 @@ impl MoeLayer {
                 let sh_gate_t = self.shared_gate_t.as_ref().unwrap_or(&null_qw);
                 let sh_up_t = self.shared_up_t.as_ref().unwrap_or(&null_qw);
                 let sh_down_t = self.shared_down_t.as_ref().unwrap_or(&null_qw);
+                // ARM-2 Phase-K RIDER A1: the _e8m0 fused decode kernel is
+                // <32,true,GROUP_SIZE,false> — routed E8M0, shared NVFP4. Assert
+                // the shared expert really is NVFP4 before trusting that.
+                if self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Mxfp4E8m0 {
+                    self.shared_experts_scale_kind.expect(
+                        crate::weight_map::WeightQuantFormat::Nvfp4,
+                        "decode fused _e8m0 kernel assumes an NVFP4 shared expert",
+                    );
+                }
                 ops::moe_expert_gate_up_shared_t(
                     ctx.gpu,
-                    self.moe_expert_gate_up_shared_t_k,
+                    self.e8m0_or(
+                        self.moe_expert_gate_up_shared_t_k,
+                        self.moe_expert_gate_up_shared_t_e8m0_k,
+                        "decode gate_up_shared_t",
+                    ),
                     input_t,
                     gate_t.packed_ptrs,
                     gate_t.scale_ptrs,
@@ -330,7 +343,11 @@ impl MoeLayer {
                 )?;
                 ops::moe_expert_silu_down_shared_t(
                     ctx.gpu,
-                    self.moe_expert_silu_down_shared_t_k,
+                    self.e8m0_or(
+                        self.moe_expert_silu_down_shared_t_k,
+                        self.moe_expert_silu_down_shared_t_e8m0_k,
+                        "decode silu_down_shared_t",
+                    ),
                     expert_gate_out,
                     expert_up_out,
                     down_t.packed_ptrs,

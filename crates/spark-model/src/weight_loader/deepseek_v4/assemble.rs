@@ -61,27 +61,110 @@ fn load_expert_proj(
             qctx.quantize_k,
             qctx.stream,
         ),
-        // NVFP4 4-bit (2 values/byte) + E8M0 `.scale`, no global (DeepSeek-V4
-        // ORIGINAL format, MTP module): dequant to BF16 then re-quantize to the
-        // standard NVFP4 the MoE GEMM expects. Weight shape is packed [n, k/2].
+        // NVFP4 4-bit (2 values/byte) + E8M0 `.scale`, no global — DeepSeek-V4's
+        // ORIGINAL native MXFP4 routed format. Land the bytes device-resident
+        // UNCHANGED (transcode-free): NO dequant, NO re-quantize. Tagged
+        // `Mxfp4E8m0` at the MoE-layer level (see `detect_routed_scale_kind`);
+        // the E8M0 GEMM variants (Phase-K) consume the E8M0 scales directly.
+        // WAS: `dequant_nvfp4_e8m0_to_bf16 → quantize_to_nvfp4` = TWO lossy
+        // 4-bit conversions at load (MXFP4→BF16→NVFP4) — the founding-scar path
+        // ARM-2 removes. `n`/`shape_k`/`qctx`/`gpu` unused on this arm now.
         WeightDtype::UInt8 => {
-            let k = shape_k * 2;
-            let bf16 = crate::weight_map::dequant_nvfp4_e8m0_to_bf16(store, prefix, n, k, gpu)?;
-            let qw = crate::weight_map::quantize_to_nvfp4(
-                &bf16,
-                n,
-                k,
-                gpu,
-                qctx.absmax_k,
-                qctx.quantize_k,
-                qctx.stream,
-            )?;
-            gpu.free(bf16.weight)?;
+            let qw = crate::weight_map::quantized_mxfp4_e8m0(store, prefix)?;
+            maybe_dump_expert0(prefix, &qw, gpu)?;
             Ok(qw)
         }
         other => anyhow::bail!(
             "{prefix}: unsupported expert weight dtype {other:?} (expected FP8E4M3 or UInt8)"
         ),
+    }
+}
+
+/// Phase-K STEP 0 (gating): one-shot device byte-check of the native-MXFP4
+/// loader. When `ATLAS_DUMP_EXPERT0=1`, dumps `layers.0.ffn.experts.0.w1`'s
+/// device-resident packed nibbles (`.weight`) + E8M0 scales (`.weight_scale`)
+/// to `/tmp` for sha256 vs the on-disk reference (`ARM-2-LEG1-BYTE-CHECK.md`:
+/// weight `177ac128…`, scale `ea4ac989…`). Dumps the PRE-transpose buffer (the
+/// loader output, before any `transpose_for_gemm` swizzle) — matches the Leg-1
+/// caveat. Sizes are fixed by the frozen ckpt: weight 4194304 B, scale 262144 B.
+fn maybe_dump_expert0(prefix: &str, qw: &QuantizedWeight, gpu: &dyn GpuBackend) -> Result<()> {
+    if std::env::var("ATLAS_DUMP_EXPERT0").as_deref() != Ok("1") {
+        return Ok(());
+    }
+    if !prefix.ends_with("layers.0.ffn.experts.0.w1") {
+        return Ok(());
+    }
+    let mut w = vec![0u8; 4194304];
+    gpu.copy_d2h(qw.weight, &mut w)?;
+    let mut s = vec![0u8; 262144];
+    gpu.copy_d2h(qw.weight_scale, &mut s)?;
+    std::fs::write("/tmp/atlas_expert0_w1_weight.bin", &w)?;
+    std::fs::write("/tmp/atlas_expert0_w1_scale.bin", &s)?;
+    eprintln!(
+        "ATLAS_DUMP_EXPERT0: dumped {prefix} weight={} B scale={} B to /tmp/atlas_expert0_w1_*.bin",
+        w.len(),
+        s.len()
+    );
+    Ok(())
+}
+
+/// Detect the landed quant format of the ROUTED experts, for the E8M0 MoE-GEMM
+/// dispatch tag (`MoeLayer::experts_scale_kind`). Mirrors `load_expert_proj`'s
+/// format dispatch: ONLY the `UInt8 .weight` + `.scale` + no-global/packed arm
+/// lands native MXFP4 (transcode-free, via `quantized_mxfp4_e8m0`); every other
+/// arm produces standard NVFP4. Probes the first locally-owned routed expert
+/// (EP-safe — each rank owns some); defaults to `Nvfp4` if none present.
+fn detect_routed_scale_kind(
+    store: &WeightStore,
+    layer_prefix: &str,
+    config: &ModelConfig,
+    force_all_experts: bool,
+) -> crate::weight_map::WeightQuantFormat {
+    use crate::weight_map::WeightQuantFormat;
+    use spark_runtime::weights::WeightDtype;
+    for e in 0..config.num_experts {
+        if force_all_experts || config.is_local_expert(e) {
+            let wp = format!("{layer_prefix}.ffn.experts.{e}.w1");
+            let native = !store.contains(&format!("{wp}.weight_packed"))
+                && !store.contains(&format!("{wp}.weight_scale_2"))
+                && store.contains(&format!("{wp}.scale"))
+                && store
+                    .get(&format!("{wp}.weight"))
+                    .map(|w| w.dtype == WeightDtype::UInt8)
+                    .unwrap_or(false);
+            return if native {
+                WeightQuantFormat::Mxfp4E8m0
+            } else {
+                WeightQuantFormat::Nvfp4
+            };
+        }
+    }
+    WeightQuantFormat::Nvfp4
+}
+
+/// Detect the SHARED expert quant format (ARM-2 Phase-K RIDER A1). Same native
+/// -MXFP4 test as `detect_routed_scale_kind`, on `ffn.shared_experts.w1`. The
+/// native V4 ckpt ships the shared expert FP8-block-scaled (`.weight` F8_E4M3,
+/// NOT UInt8) → `Nvfp4` (it is transcoded to NVFP4 at load); a genuinely native
+/// MXFP4 shared expert (UInt8 `.weight` + `.scale`) → `Mxfp4E8m0`.
+fn detect_shared_scale_kind(
+    store: &WeightStore,
+    layer_prefix: &str,
+) -> crate::weight_map::WeightQuantFormat {
+    use crate::weight_map::WeightQuantFormat;
+    use spark_runtime::weights::WeightDtype;
+    let wp = format!("{layer_prefix}.ffn.shared_experts.w1");
+    let native = !store.contains(&format!("{wp}.weight_packed"))
+        && !store.contains(&format!("{wp}.weight_scale_2"))
+        && store.contains(&format!("{wp}.scale"))
+        && store
+            .get(&format!("{wp}.weight"))
+            .map(|w| w.dtype == WeightDtype::UInt8)
+            .unwrap_or(false);
+    if native {
+        WeightQuantFormat::Mxfp4E8m0
+    } else {
+        WeightQuantFormat::Nvfp4
     }
 }
 
@@ -251,7 +334,7 @@ pub fn assemble_layer(
     } else {
         None
     };
-    let moe = MoeLayer::new_with_hash(
+    let mut moe = MoeLayer::new_with_hash(
         moe_weights,
         config.num_experts,
         gate_nvfp4,
@@ -259,6 +342,13 @@ pub fn assemble_layer(
         gpu,
         config,
     )?;
+    // Tag routed-expert quant format so the Phase-K E8M0 MoE-GEMM variants
+    // dispatch on native MXFP4 (transcode-free) vs the standard NVFP4 kernels.
+    moe.experts_scale_kind = detect_routed_scale_kind(store, p, config, force_all_experts);
+    // Tag the SHARED expert format independently (RIDER A1): the native ckpt is
+    // heterogeneous — routed E8M0-MXFP4, shared FP8→NVFP4. The dual-format decode
+    // kernel asserts shared==Nvfp4; a different shared format fires the `expect`.
+    moe.shared_experts_scale_kind = detect_shared_scale_kind(store, p);
 
     // ── MLA weights ──
     // RedHatAI checkpoint: wkv_a may only contain kv_lora_rank rows (no rope).
