@@ -97,6 +97,6 @@ The end result on a 256-expert MoE at batch=80: Atlas at 8.43 ms vs PyTorch at 3
 - `kernels/gb10/<model>/<quant>/moe_expert_relu2_down_shared.cu` — token-level decode MoE.
 - `kernels/gb10/<model>/<quant>/moe_shared_expert_fused_fp8.cu` — fused shared-expert path.
 - `kernels/gb10/minimax-m2-229b/nvfp4/moe_dispatch.cu` — EP=2 token dispatch.
-- `crates/spark-model/src/layers/moe.rs`, `moe_prefill.rs`, `moe_shared.rs`, `minimax_moe.rs` — Rust side.
+- `crates/spark-model/src/layers/moe/` (`forward.rs`, `forward_prefill.rs`, `forward_ep.rs`, …) — Rust side.
 - `docs/design/ep2-token-dispatch-design.md` — EP=2 design note.
 - `docs/design/tool-calling-gap-analysis.md` — not directly MoE but covers the MoE+tool-calling interaction.

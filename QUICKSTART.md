@@ -416,8 +416,9 @@ For **Open WebUI**: set the base URL to `http://<spark-ip>:8888/v1` and any API 
   Subsequent runs use the cached weights from `~/.cache/huggingface`.
 - **Startup time** is typically 2-5 minutes (weight loading + CUDA graph compilation).
 - **GPU memory** should be clean before starting. Check with `nvidia-smi`.
-- **Tool calling** is supported via `--tool-call-parser hermes` (Qwen models) or
-  `--tool-call-parser qwen3_coder` (Nemotron-H). See the Tool Calling section below.
+- **Tool calling** is supported via `--tool-call-parser hermes` (Qwen3-VL / Qwen3-Next —
+  JSON format) or `--tool-call-parser qwen3_coder` (Qwen3.5 family and Nemotron-H —
+  XML format). See the Tool Calling section below.
 - **NVFP4 quantization** uses 4-bit E2M1 weights with FP8 block scales. All models in
   this guide use NVFP4 for both weights and KV cache.
 
@@ -447,7 +448,7 @@ sudo docker run -d \
     --scheduling-policy slai \
     --speculative \
     --mtp-quantization nvfp4 \
-    --tool-call-parser hermes
+    --tool-call-parser qwen3_coder
 ```
 
 **Call a tool:**

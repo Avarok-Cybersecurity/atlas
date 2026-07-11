@@ -115,6 +115,6 @@ With CUDA graphs enabled (the default in production), steps 5–6 collapse to a 
 | "How does a layer launch a kernel?" | `crates/spark-model/src/layers/ops.rs`, look for `KernelLaunch::new(gpu, kernel).grid(...).arg_ptr(...).launch(stream)` |
 | "How does the engine loop over layers?" | `crates/spark-model/src/engine.rs` |
 | "How does the factory pick a `ModelWeightLoader`?" | `crates/spark-model/src/factory.rs` — `loader_for_config()` |
-| "How is the HTTP request parsed into a scheduler job?" | `crates/spark-server/src/api.rs`, `crates/spark-server/src/scheduler.rs` |
+| "How is the HTTP request parsed into a scheduler job?" | `crates/spark-server/src/api/`, `crates/spark-server/src/scheduler/` |
 
 The [spark-runtime chapter](../crates/spark-runtime.md) expands on `GpuBackend`; [spark-model](../crates/spark-model.md) on the layer/factory split; [atlas-kernels](../crates/atlas-kernels.md) on the build-time codegen. The [SBIO chapter](./sbio.md) explains why every arrow in the diagram above goes through a trait.
