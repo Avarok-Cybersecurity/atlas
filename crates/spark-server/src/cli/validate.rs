@@ -109,21 +109,10 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
             "set --kv-cache-dtype fp8, or drop --fp8-kv-calibration-tokens (0 = off).",
         ));
     }
-
-    // ── --kv-high-precision-layers is a no-op when the base KV cache is bf16. ──
-    if args.kv_high_precision_layers != "0" && args.kv_cache_dtype == "bf16" {
-        v.push(Violation::new(
-            format!(
-                "--kv-high-precision-layers {} has no effect with --kv-cache-dtype bf16.",
-                args.kv_high_precision_layers
-            ),
-            "high-precision layers keep selected layers at bf16 while the rest are \
-             quantized; with an already-bf16 cache every layer is bf16, so the flag \
-             does nothing.",
-            "use a quantized --kv-cache-dtype (fp8/nvfp4) to benefit, or drop \
-             --kv-high-precision-layers.",
-        ));
-    }
+    // NOTE: --kv-high-precision-layers with a bf16 base is redundant (a no-op),
+    // but NOT a hard error — the canonical flagship serve recipe passes
+    // `--kv-cache-dtype bf16 --kv-high-precision-layers auto` together, so
+    // rejecting it would break a real, supported command. Redundant ≠ invalid.
 
     // ── --require-auth needs at least one token source. ──
     if args.require_auth && args.auth_tokens_file.is_none() && args.auth_token.is_none() {
@@ -345,15 +334,28 @@ mod tests {
     }
 
     #[test]
-    fn hp_layers_noop_on_bf16_kv() {
+    fn flagship_recipe_is_accepted() {
+        // The canonical 35B flagship serve recipe (PR #278) passes
+        // `--kv-cache-dtype bf16 --kv-high-precision-layers auto` together —
+        // redundant but valid. The validator must NOT reject it.
         assert!(
             validate_serve_args(&parse(&[
                 "--kv-cache-dtype",
                 "bf16",
+                "--lm-head-dtype",
+                "nvfp4",
                 "--kv-high-precision-layers",
                 "auto",
+                "--scheduling-policy",
+                "slai",
+                "--speculative",
+                "--num-drafts",
+                "1",
+                "--mtp-quantization",
+                "bf16",
+                "--enable-prefix-caching",
             ]))
-            .is_err()
+            .is_ok()
         );
     }
 
