@@ -234,9 +234,41 @@ pub(crate) fn quantized_any(
     let has_scale_inv = store.contains(&format!("{prefix}.weight_scale_inv"));
     let has_only_dense =
         !has_packed && !has_scale && !has_scale_inv && store.contains(&format!("{prefix}.weight"));
+
+    // Per-key fallback #2 (unsloth/Qwen3.6-{27B,35B-A3B}-NVFP4, re-quantized
+    // 2026-07-10): mixed-precision checkpoints that are NVFP4 for most of the
+    // net but leave a tail of layers — and, in the MoE, the shared experts —
+    // as FP8 E4M3 with a per-row `weight_scale` ([N,1] BF16). Those keys carry
+    // no NVFP4 metadata at all (no `weight_packed`, no `weight_global_scale`,
+    // no `weight_scale_2`), so the declared NVFP4 variant cannot load them and
+    // the whole model dies on `weight_global_scale not found in store`.
+    // Detect the FP8 layout per key and dequant→runtime-quantize instead.
+    //
+    // The three NVFP4 layouts are all excluded by construction, so this can
+    // never steal a key that IS NVFP4:
+    //   Standard (ModelOpt/nvidia) -> has `weight_scale_2`
+    //   CompressedTensors (Sehyo)  -> has `weight_packed` + `weight_global_scale`
+    //   this FP8 case              -> has neither, and `.weight` is FP8E4M3
+    let has_fp8_dense = !has_packed
+        && !store.contains(&format!("{prefix}.weight_global_scale"))
+        && !store.contains(&format!("{prefix}.weight_scale_2"))
+        && (has_scale || has_scale_inv)
+        && store
+            .get(&format!("{prefix}.weight"))
+            .map(|w| w.dtype == WeightDtype::FP8E4M3)
+            .unwrap_or(false);
+
     let effective_variant = if has_only_dense && !matches!(variant, Nvfp4Variant::Bf16Raw) {
         tracing::debug!("{prefix}: no quantization metadata; falling back to runtime BF16→NVFP4");
         Nvfp4Variant::Bf16Raw
+    } else if has_fp8_dense
+        && !matches!(
+            variant,
+            Nvfp4Variant::Fp8Dequanted | Nvfp4Variant::Bf16Raw
+        )
+    {
+        tracing::debug!("{prefix}: FP8 key in an NVFP4 checkpoint; dequant FP8→BF16→NVFP4");
+        Nvfp4Variant::Fp8Dequanted
     } else {
         variant
     };
