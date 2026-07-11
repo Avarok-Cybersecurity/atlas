@@ -26,6 +26,13 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     tracing::info!("Atlas Spark starting...");
     tracing::info!("Licensed under AGPL-3.0-only — see /LICENSE in this container");
 
+    // Reject contradictory flag combinations up front (issue #288) — before the
+    // multi-minute model load — with a message that tells humans and AI agents
+    // exactly what to change. Hard error, never a warning.
+    if let Err(msg) = cli::validate_serve_args(&args) {
+        anyhow::bail!("{msg}");
+    }
+
     // 0. Resolve model directory from HF ID or path
     let model_dir = serve_phases::resolve_model_dir(&args)?;
 
