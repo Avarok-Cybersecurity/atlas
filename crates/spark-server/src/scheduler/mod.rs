@@ -392,9 +392,7 @@ pub fn run(
                                 a.pending_drafts.clear();
                             }
                             if let Err(e) = model.sync_secondary() {
-                                tracing::error!(
-                                    "mtp-gate re-measure→decode sync_secondary: {e:#}"
-                                );
+                                tracing::error!("mtp-gate re-measure→decode sync_secondary: {e:#}");
                             }
                             let t0 = std::time::Instant::now();
                             step_decode_only(

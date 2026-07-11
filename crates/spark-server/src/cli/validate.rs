@@ -42,11 +42,7 @@ struct Violation {
 }
 
 impl Violation {
-    fn new(
-        what: impl Into<String>,
-        why: impl Into<String>,
-        fix: impl Into<String>,
-    ) -> Self {
+    fn new(what: impl Into<String>, why: impl Into<String>, fix: impl Into<String>) -> Self {
         Self {
             what: what.into(),
             why: why.into(),
@@ -63,8 +59,18 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
 
     // ── Enumerated-value typos (caught here so a typo fails fast, before the
     //    model load, rather than mid-startup at each scattered parse site). ──
-    check_enum(&mut v, "--lm-head-dtype", &args.lm_head_dtype, LM_HEAD_DTYPES);
-    check_enum(&mut v, "--mtp-quantization", &args.mtp_quantization, MTP_QUANTS);
+    check_enum(
+        &mut v,
+        "--lm-head-dtype",
+        &args.lm_head_dtype,
+        LM_HEAD_DTYPES,
+    );
+    check_enum(
+        &mut v,
+        "--mtp-quantization",
+        &args.mtp_quantization,
+        MTP_QUANTS,
+    );
     check_enum(
         &mut v,
         "--scheduling-policy",
@@ -82,7 +88,10 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
         .is_err()
     {
         v.push(Violation::new(
-            format!("--kv-cache-dtype '{}' is not a known KV cache dtype.", args.kv_cache_dtype),
+            format!(
+                "--kv-cache-dtype '{}' is not a known KV cache dtype.",
+                args.kv_cache_dtype
+            ),
             "the value does not parse to any supported KV cache format.",
             "use one of: fp8, bf16, nvfp4 (or a turbo* TurboQuant-Plus variant).",
         ));
@@ -129,7 +138,10 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     let any_spec = args.speculative || args.self_speculative || args.ngram_speculative;
     if args.num_drafts > 1 && !any_spec {
         v.push(Violation::new(
-            format!("--num-drafts {} is set but no speculative method is enabled.", args.num_drafts),
+            format!(
+                "--num-drafts {} is set but no speculative method is enabled.",
+                args.num_drafts
+            ),
             "the draft count only applies when speculative decoding proposes drafts; \
              without it the flag is ignored.",
             "add --speculative (MTP), --self-speculative, or --ngram-speculative — or \
@@ -164,14 +176,20 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     }
     if args.ep_size > args.world_size {
         v.push(Violation::new(
-            format!("--ep-size {} exceeds --world-size {}.", args.ep_size, args.world_size),
+            format!(
+                "--ep-size {} exceeds --world-size {}.",
+                args.ep_size, args.world_size
+            ),
             "expert parallelism cannot span more ranks than exist.",
             "raise --world-size to at least --ep-size, or lower --ep-size.",
         ));
     }
     if args.tp_size > args.world_size {
         v.push(Violation::new(
-            format!("--tp-size {} exceeds --world-size {}.", args.tp_size, args.world_size),
+            format!(
+                "--tp-size {} exceeds --world-size {}.",
+                args.tp_size, args.world_size
+            ),
             "tensor parallelism cannot span more ranks than exist.",
             "raise --world-size to at least --tp-size, or lower --tp-size.",
         ));
@@ -279,13 +297,15 @@ mod tests {
         assert!(err.contains("--fp8-kv-calibration-tokens"));
         assert!(err.contains("fix:"));
         // The same flags with an fp8 cache are fine.
-        assert!(validate_serve_args(&parse(&[
-            "--kv-cache-dtype",
-            "fp8",
-            "--fp8-kv-calibration-tokens",
-            "256",
-        ]))
-        .is_ok());
+        assert!(
+            validate_serve_args(&parse(&[
+                "--kv-cache-dtype",
+                "fp8",
+                "--fp8-kv-calibration-tokens",
+                "256",
+            ]))
+            .is_ok()
+        );
     }
 
     #[test]
@@ -297,9 +317,7 @@ mod tests {
     #[test]
     fn num_drafts_needs_speculative() {
         assert!(validate_serve_args(&parse(&["--num-drafts", "2"])).is_err());
-        assert!(
-            validate_serve_args(&parse(&["--num-drafts", "2", "--speculative"])).is_ok()
-        );
+        assert!(validate_serve_args(&parse(&["--num-drafts", "2", "--speculative"])).is_ok());
     }
 
     #[test]
@@ -311,16 +329,18 @@ mod tests {
     #[test]
     fn ep_size_cannot_exceed_world_size() {
         assert!(validate_serve_args(&parse(&["--ep-size", "2"])).is_err());
-        assert!(
-            validate_serve_args(&parse(&["--ep-size", "2", "--world-size", "2"])).is_ok()
-        );
+        assert!(validate_serve_args(&parse(&["--ep-size", "2", "--world-size", "2"])).is_ok());
     }
 
     #[test]
     fn disable_thinking_conflicts_with_budget() {
         assert!(
-            validate_serve_args(&parse(&["--disable-thinking", "--max-thinking-budget", "2048"]))
-                .is_err()
+            validate_serve_args(&parse(&[
+                "--disable-thinking",
+                "--max-thinking-budget",
+                "2048"
+            ]))
+            .is_err()
         );
     }
 

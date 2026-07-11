@@ -182,8 +182,7 @@ async fn serve_with_header_timeout(
     /// trickle connection is reaped quickly.
     const HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-    let mut make_service =
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let mut make_service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
 
     loop {
         let (socket, peer_addr) = match listener.accept().await {
