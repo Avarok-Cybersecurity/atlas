@@ -379,21 +379,6 @@ pub fn run(
                     gate.note_depth(active[0].seq.seq_len);
                     match gate.next_step() {
                         mtp_gate::GateStep::MeasureDecode => {
-                            // A re-measure resets the gate to the Decode phase
-                            // straight out of a KeepMtp regime, so the prior
-                            // step was an MTP verify whose live-state restore
-                            // runs async on the secondary stream. This decode
-                            // reads h_state/conv_state, so order the restore
-                            // first and drop now-stale drafts — the same work
-                            // every other MTP→decode transition does. Idempotent
-                            // and near-free (GPU stream_wait_event) once the
-                            // measurement is already running decode-only steps.
-                            for a in active.iter_mut() {
-                                a.pending_drafts.clear();
-                            }
-                            if let Err(e) = model.sync_secondary() {
-                                tracing::error!("mtp-gate re-measure→decode sync_secondary: {e:#}");
-                            }
                             let t0 = std::time::Instant::now();
                             step_decode_only(
                                 &*model,
