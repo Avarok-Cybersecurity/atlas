@@ -58,6 +58,17 @@ pub(super) fn try_chat_fast_path(
     a: &ActiveSeq,
     ctx: &LogitsContext,
 ) -> Option<Vec<u32>> {
+    // DFlash masked-verify mode ONLY. The fast path exists to make
+    // ATLAS_DFLASH_MASKED_VERIFY affordable; it must never run for MTP:
+    // returning the GPU argmax where the slow path computes a host-side
+    // argmax over dequantized F32 logits changes tie-breaking on
+    // near-tie tokens — measured 2026-07-11 as temp-0 MTP output drift
+    // vs an unpatched binary (think block identical, answer flips at
+    // low-margin tokens). MTP keeps the slow path unconditionally so
+    // its behavior is byte-invariant by construction.
+    if !super::dflash_masked_verify_enabled() {
+        return None;
+    }
     let fast_masked_enabled = {
         static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *CACHED
