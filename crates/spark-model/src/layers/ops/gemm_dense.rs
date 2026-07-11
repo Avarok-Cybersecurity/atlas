@@ -412,12 +412,15 @@ pub fn fp8_gemm_n128(
     k: u32,
     stream: u64,
 ) -> Result<()> {
-    // ATLAS_FP8_LDMAB=1: route through the ldmatrix.x4 A+B kernel
-    // (fp8_fp8_gemm_ldmab, ncu-proven 2.1x over the scalar-load fp8_gemm_t at
-    // the GDN-projection shapes, cosine 1.0). Quantizes the bf16 activation to
-    // e4m3 once into a persistent scratch, then launches the ldmatrix GEMM.
-    // K must be a multiple of 32 (the ldmab K-tile). Opt-in for A/B gating.
-    if k % 32 == 0 && std::env::var_os("ATLAS_FP8_LDMAB").is_some() {
+    // DEFAULT-ON: route the GDN-projection prefill GEMM through the ldmatrix.x4
+    // A+B kernel (fp8_fp8_gemm_ldmab). ncu-proven 2.1x over the scalar-load
+    // fp8_gemm_t (10.7%->higher SM, MIO stall 74->44 cyc), cosine 1.000000 vs
+    // fp8_fp8_gemm_t, and a confirmed same-box+cross-box e2e warm-TTFT win
+    // (median -5.8%, p90 -10.3%, IoU 0.6264 unchanged). Quantizes the bf16
+    // activation to e4m3 once into a persistent scratch, then launches the
+    // ldmatrix GEMM. K must be a multiple of 32 (the ldmab K-tile). Opt-OUT with
+    // ATLAS_FP8_LDMAB=0 (falls through to the scalar path below).
+    if k % 32 == 0 && std::env::var("ATLAS_FP8_LDMAB").as_deref() != Ok("0") {
         use std::sync::{Mutex, OnceLock};
         static QK: OnceLock<KernelHandle> = OnceLock::new();
         static LK: OnceLock<KernelHandle> = OnceLock::new();
