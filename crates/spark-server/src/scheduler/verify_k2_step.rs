@@ -200,13 +200,14 @@ pub fn step_verify_k2(
             tracing::error!("trim_proposer_state: {e:#}");
         }
         mtp_timing::record(Phase::TrimProposer, t_trim);
-        // EAGLE-fix (ATLAS_DFLASH_EAGLE_FIX=1, K=2 accept only): append row 0 @ N
-        // then row 1 @ N+1 BEFORE propose so forward_block conditions on row 1
-        // (the hidden that generated bonus_S). This also sets the proposer's
-        // skip-flag so propose does NOT re-append row 0. With the flag off, the
-        // legacy path runs unchanged (propose appends row 0; row 1 appended
-        // post-propose below).
-        let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
+        // EAGLE-fix (K=2 accept only): append row 0 @ N then row 1 @ N+1 BEFORE
+        // propose so forward_block conditions on row 1 (the hidden that
+        // generated bonus_S). This also sets the proposer's skip-flag so
+        // propose does NOT re-append row 0. On by default (GPU-validated fix,
+        // see verify_dflash_step.rs). ATLAS_DFLASH_EAGLE_FIX=0 restores the
+        // legacy path (propose appends row 0; row 1 appended post-propose
+        // below).
+        let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() != Some("0");
         if eagle_fix && let Err(e) = model.dflash_eagle_accept_append(&mut a.seq) {
             tracing::error!("dflash_eagle_accept_append: {e:#}");
         }

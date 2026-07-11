@@ -182,14 +182,15 @@ pub fn step_verify_dflash(
         tracing::error!("trim_proposer_state: {e:#}");
     }
 
-    // EAGLE-fix (ATLAS_DFLASH_EAGLE_FIX=1): append one ctx slot per committed
-    // position (rows 0..=num_accepted at N..N+num_accepted), with the bonus
-    // generator (row num_accepted) freshest. Fixes the ctx-undercount (was 1
-    // slot/step regardless of num_accepted) and the EAGLE conditioning shift.
-    // Sets skip_next_decode_append so the propose below does NOT re-append row 0.
-    // pre_verify_len = N (pre-verify seq_len). Flag off → legacy single row-0
-    // decode-append in propose (unchanged).
-    let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
+    // EAGLE-fix: append one ctx slot per committed position (rows
+    // 0..=num_accepted at N..N+num_accepted), with the bonus generator (row
+    // num_accepted) freshest. Fixes the ctx-undercount (was 1 slot/step
+    // regardless of num_accepted) and the EAGLE conditioning shift. Sets
+    // skip_next_decode_append so the propose below does NOT re-append row 0.
+    // pre_verify_len = N (pre-verify seq_len). On by default (GPU-validated:
+    // mean K=γ accept 14.5%→35.5% on identical prompt, no output regression).
+    // ATLAS_DFLASH_EAGLE_FIX=0 restores the legacy single row-0 decode-append.
+    let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() != Some("0");
     if eagle_fix
         && let Err(e) = model.dflash_eagle_kgamma_append(&mut a.seq, num_accepted, pre_verify_len)
     {
