@@ -505,6 +505,23 @@ pub trait Model: Send + Sync {
         Ok(())
     }
 
+    /// Unified DFlash ctx commit (ATLAS_DFLASH_UNIFIED_CTX=1). Copies
+    /// `num_committed` scratch rows (`dflash_hidden_save` rows
+    /// `0..num_committed`) into `ctx_hidden_acc` at the CURRENT TAIL
+    /// (`ctx_len`), stamping RoPE positions `base_pos..base_pos+num_committed`,
+    /// folding the watermark slide in first. `base_pos` is the RoPE position,
+    /// NOT the acc row index (they diverge after a watermark slide — DDD §4.1
+    /// landmine). The single structural replacement for the ~5 fragmented
+    /// appends. Default no-op for models without a DFlash drafter.
+    fn commit_ctx(
+        &self,
+        _seq: &mut SequenceState,
+        _num_committed: usize,
+        _base_pos: usize,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Run the MTP proposer for one draft token off the saved hidden state.
     /// `None` when no proposer is wired.
     fn run_mtp_propose(
