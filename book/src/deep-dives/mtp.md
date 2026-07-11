@@ -108,4 +108,4 @@ N-gram speculative was experimented with heavily on TRT-LLM (see the `project_ng
 - `crates/spark-runtime/src/kv_cache.rs` — `rewind_kv_cache`.
 - `kernels/gb10/<model>/<quant>/` — there isn't a "MTP kernel"; MTP reuses the main model's attention/MoE kernels with different shapes.
 - `docs/SPEC-DECODING-TODO.md` — authoritative design + outstanding items.
-- `docs/history/alpha-2-release.md` and subsequent pass notes — bug-sweep history.
+- `docs/ATLAS_SPARK_JOURNEY.md` — release journey and bug-sweep history.

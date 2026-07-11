@@ -228,5 +228,5 @@ Minimum Atlas config for running Claude Code, OpenCode, Cline, or nanobot:
 - `crates/spark-server/src/reasoning_parser/` — `<think>` detection + extraction.
 - `crates/spark-server/src/openai/`, `anthropic/` — request/response structs.
 - `crates/spark-server/src/api/` — the HTTP handlers.
-- `docs/design/tool-calling-gap-analysis.md` — authoritative tool-call design note.
+- `docs/ARCHITECTURE.md` — system overview covering the tool-call path.
 - [XGrammar deep dive](../deep-dives/xgrammar.md) for the constrained-decoding side.

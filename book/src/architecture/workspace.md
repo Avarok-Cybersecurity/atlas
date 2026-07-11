@@ -109,15 +109,15 @@ docker/
 
 The multi-model `Dockerfile` at `docker/gb10/Dockerfile` is what ships as `avarok/atlas-gb10:latest`. Per-model Dockerfiles exist for operators who want a smaller image containing only one target — the kernel registry still uses `KernelTarget` at runtime, but only one target set is baked in.
 
-## Docs, design, history, releases
+## Docs, design records, history, releases
 
 Inside `docs/`:
 
-- `design/` — authoritative design docs for in-flight features (NVFP4 coherence, FP8 native serving, xgrammar integration, MixKVQ, tool-calling gap analysis, chunked prefill, etc.). Treat these as the long-form rationale behind code changes; commit messages are deliberately terse and point here.
-- `history/` — benchmark journeys and retrospectives (alpha-2 release, SM100 notes, Qwen3.5-35B journey, SSM catastrophic forgetting TODO, multi-GPU optimizations). Useful context, but not a contract.
-- `releases/` — human-readable release notes per alpha version (`alpha-2.43.md`, `alpha-2.44.md`).
+- `adr/` — architecture decision records (licensing, pure-Rust, hybrid SSM/attention, NVFP4/FP8 quantization, TP/EP composition, EP batched decode, etc.). Treat these as the long-form rationale behind code changes; commit messages are deliberately terse and point here. Top-level notes like `ARCHITECTURE.md`, `ATLAS_KERNELS.md`, and `HARDWARE.md` sit alongside them.
+- `ATLAS_SPARK_JOURNEY.md` — benchmark journey and retrospective across the Spark line. Useful context, but not a contract.
+- `releases/` — human-readable release notes keyed by release (`README.md` plus per-release files).
 
-The book you're reading in `book/` synthesises all of this into a single narrative — it is *not* a canonical rewrite of those documents. The design docs in `docs/design/` remain the authoritative reference and the book links to them directly from the deep-dive chapters.
+The book you're reading in `book/` synthesises all of this into a single narrative — it is *not* a canonical rewrite of those documents. The design records in `docs/adr/` remain the authoritative reference and the book links to them directly from the deep-dive chapters.
 
 ## What changes when you add a…
 

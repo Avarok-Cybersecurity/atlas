@@ -42,7 +42,7 @@ pub enum KvCacheDtype {
 
 `PagedKvCache` holds a pool of fixed-size blocks (configurable, typically 16 tokens per block). `KvCacheConfig` derives pool sizing from `ModelConfig` + `--max-seq-len` + `--max-batch-size`. Allocation is O(1) from a free list; eviction is handled by the scheduler.
 
-The **TurboQuant** family (`turbo3`, `turbo4`, `turbo8`) is specific to Atlas: Walsh-Hadamard rotation followed by Lloyd-Max quantization to optimal Gaussian codebook levels. For the same bit rate, turbo4 has ~2× lower MSE than NVFP4 on the kinds of activations transformers produce, because WHT flattens outliers before quantization. See `docs/design/turboquant-nightjob-2026-03-31.md` and [FP8](../deep-dives/fp8.md) / [NVFP4](../deep-dives/nvfp4.md) chapters.
+The **TurboQuant** family (`turbo3`, `turbo4`, `turbo8`) is specific to Atlas: Walsh-Hadamard rotation followed by Lloyd-Max quantization to optimal Gaussian codebook levels. For the same bit rate, turbo4 has ~2× lower MSE than NVFP4 on the kinds of activations transformers produce, because WHT flattens outliers before quantization. See `docs/turboquant-plus.md` and [FP8](../deep-dives/fp8.md) / [NVFP4](../deep-dives/nvfp4.md) chapters.
 
 ## Prefix caching (`prefix_cache.rs`, `radix_tree.rs`)
 
@@ -53,7 +53,7 @@ RadixAttention: the system prompt shared by every request can be KV-cached once,
 
 Hit rates are high in practice — system prompts and few-shot examples dominate, and chat agents reuse most of their tool schemas across turns. TTFT drops ~10× on warm-cache hits. This is the feature enabled by `--enable-prefix-caching`.
 
-**Marconi (SSM snapshots)** extends the idea to SSM layers: a full SSM state is ~GB on a 35B model, so prefix cache hits for hybrid models also need a snapshotted SSM state to be genuinely equivalent. That machinery lives partly here and partly in `spark-model`. See `docs/design/` for the SSM-snapshot-cache design.
+**Marconi (SSM snapshots)** extends the idea to SSM layers: a full SSM state is ~GB on a 35B model, so prefix cache hits for hybrid models also need a snapshotted SSM state to be genuinely equivalent. That machinery lives partly here and partly in `spark-model`. See `docs/adr/0003-hybrid-ssm-attention.md` for the SSM-snapshot-cache design.
 
 ## Buffer arena (`buffers.rs`)
 
@@ -73,7 +73,7 @@ The arena never reallocates during serving. This is one of the invariants that m
 `SamplingParams` — `temperature`, `top_p`, `top_k`, `top_n_sigma`, `min_p`, `repetition_penalty`, `presence_penalty`. The sampler:
 
 1. Applies penalties (presence, repetition) in-place on the logits buffer.
-2. Applies `top_n_sigma` (entropy-based filter; see `docs/design/` for the theory).
+2. Applies `top_n_sigma` (entropy-based filter).
 3. Applies `top_p` + `top_k` + `min_p`.
 4. Softmax.
 5. Multinomial sampling or argmax (if `temperature == 0`).
