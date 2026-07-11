@@ -239,6 +239,14 @@ impl TransformerModel {
                         stream,
                     )?;
                 }
+                // DFlash hidden capture for ctx conditioning. Capture from
+                // the LAST verified position (K-1), mirroring verify_b.rs
+                // (K=2). Without this, every K=4 verify step leaves
+                // `dflash_hidden_save` stale and the next `propose()`
+                // conditions on a repeated old hidden — accept collapses
+                // silently. Must be inside the graph capture region.
+                // No-op when DFlash is disabled.
+                self.try_dflash_capture(layer_idx, k - 1, stream)?;
             }
 
             // Final norm [4, H]

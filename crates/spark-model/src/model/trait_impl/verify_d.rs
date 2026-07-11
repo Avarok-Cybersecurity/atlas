@@ -245,6 +245,16 @@ impl TransformerModel {
                         stream,
                     )?;
                 }
+                // DFlash intermediate hidden capture: snapshot each capture
+                // layer's output at position k-1 (last verify token) into
+                // dflash_hidden_save[slot] while hidden_states still holds
+                // this layer's activation — mirrors verify_b.rs for K=2.
+                // Must be inside the graph capture region so the per-layer
+                // intermediate (not the final-layer-only post-loop value)
+                // is recorded. Without this, every K=γ verify step leaves
+                // the capture stale and the next propose() conditions on a
+                // repeated old hidden — accept collapses silently.
+                self.try_dflash_capture(layer_idx, k - 1, stream)?;
             }
 
             // Final norm [K, H]
