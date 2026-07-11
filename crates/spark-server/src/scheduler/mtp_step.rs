@@ -201,7 +201,17 @@ pub fn step_mtp(
         let was_suspended = crate::scheduler::adaptive_spec::is_suspended(a);
         let will_propose = crate::scheduler::adaptive_spec::spec_allowed(a);
         let reprobe_resume = was_suspended && will_propose;
-        if crate::scheduler::adaptive_spec::serial_append_enabled()
+        if crate::scheduler::adaptive_spec::unified_ctx_enabled() {
+            // Unified ctx commit: same complement-gate as the old serial
+            // append — fire iff propose() will NOT run (or re-probe resume),
+            // so commit and propose decode-append never both cover a token.
+            if !will_propose || reprobe_resume {
+                let base_pos = a.seq.seq_len.saturating_sub(1);
+                if let Err(e) = model.commit_ctx(&mut a.seq, 1, base_pos) {
+                    tracing::error!("commit_ctx (mtp serial): {e:#}");
+                }
+            }
+        } else if crate::scheduler::adaptive_spec::serial_append_enabled()
             && (!will_propose || reprobe_resume)
             && let Err(e) = model.dflash_serial_ctx_append(&mut a.seq)
         {

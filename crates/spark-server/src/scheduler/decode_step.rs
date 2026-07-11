@@ -88,11 +88,19 @@ pub fn step_decode_only(
     // token's capture. n==1 only: `try_dflash_capture` stores row 0, which
     // is ambiguous in a multi-seq batch (fine here — DFlash runs
     // --max-batch-size 1).
-    if n == 1
-        && crate::scheduler::adaptive_spec::serial_append_enabled()
-        && let Err(e) = model.dflash_serial_ctx_append(&mut active[0].seq)
-    {
-        tracing::error!("dflash_serial_ctx_append (decode_only): {e:#}");
+    if n == 1 {
+        if crate::scheduler::adaptive_spec::unified_ctx_enabled() {
+            // Unified ctx commit: serial token at RoPE position seq_len-1
+            // (decode() advanced seq_len past the token just processed).
+            let base_pos = active[0].seq.seq_len.saturating_sub(1);
+            if let Err(e) = model.commit_ctx(&mut active[0].seq, 1, base_pos) {
+                tracing::error!("commit_ctx (decode_only serial): {e:#}");
+            }
+        } else if crate::scheduler::adaptive_spec::serial_append_enabled()
+            && let Err(e) = model.dflash_serial_ctx_append(&mut active[0].seq)
+        {
+            tracing::error!("dflash_serial_ctx_append (decode_only): {e:#}");
+        }
     }
 
     process_decode_logits(

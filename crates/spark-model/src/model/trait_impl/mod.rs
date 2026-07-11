@@ -388,6 +388,95 @@ impl Model for TransformerModel {
         Ok(())
     }
 
+    fn commit_ctx(
+        &self,
+        seq: &mut SequenceState,
+        num_committed: usize,
+        base_pos: usize,
+    ) -> Result<()> {
+        if num_committed == 0 {
+            return Ok(());
+        }
+        let base = match self.dflash_hidden_save {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        let prop = match seq.proposer_state.as_mut() {
+            Some(p) => p.as_mut(),
+            None => return Ok(()),
+        };
+        // Graceful no-op for non-DFlash proposers (shared bootstrap path).
+        let d = match prop
+            .as_any_mut()
+            .downcast_mut::<crate::layers::DflashProposerState>()
+        {
+            Some(d) => d,
+            None => return Ok(()),
+        };
+        let n_layers = self.dflash_capture_layers.len();
+        if n_layers == 0 {
+            return Ok(());
+        }
+        let ctx_slot_bytes = n_layers * self.config.hidden_size * 2;
+        let stream = self.gpu.default_stream();
+
+        // Watermark slide FIRST, on the ctx_len (row-index) axis. If the
+        // incoming rows would exceed capacity, keep the NEWEST rows and drop
+        // the oldest (mirrors dflash_serial_ctx_append). keep is clamped so
+        // drop_n >= keep — the single D2D copy's src/dst can never overlap.
+        // ctx_committed resets to 0 (next propose re-precomputes the slid
+        // rows chunk-wise); ctx_positions values (absolute RoPE positions)
+        // are preserved by the drain, so stamps stay exact across the slide.
+        if d.ctx_len + num_committed > d.max_ctx_len {
+            let keep = (d.max_ctx_len / 2).min(d.max_ctx_len.saturating_sub(num_committed));
+            let drop_n = d.ctx_len.saturating_sub(keep);
+            if drop_n > 0 {
+                let src = d.ctx_hidden_acc.offset(drop_n * ctx_slot_bytes);
+                let dst0 = d.ctx_hidden_acc.offset(0);
+                self.gpu
+                    .copy_d2d_async(src, dst0, keep * ctx_slot_bytes, stream)?;
+                d.ctx_positions.drain(..drop_n);
+                d.ctx_len = keep;
+                d.ctx_committed = 0;
+                tracing::info!(
+                    "DFlash UNIFIED_CTX watermark: slid ctx window (dropped {} oldest, keep {})",
+                    drop_n,
+                    keep,
+                );
+            }
+        }
+
+        // Append num_committed rows at the TAIL (ctx_len axis). dst uses
+        // ctx_len (acc row index); base_pos stamps ctx_positions (RoPE axis).
+        // Conflating the two axes is the DDD §4.1 landmine: they coincide
+        // only until the first slide — and the sliding prompts ARE the reds.
+        debug_assert_eq!(d.ctx_positions.len(), d.ctx_len);
+        for t in 0..num_committed {
+            let row = base.offset(t * ctx_slot_bytes);
+            let dst = d.ctx_hidden_acc.offset(d.ctx_len * ctx_slot_bytes);
+            self.gpu.copy_d2d_async(row, dst, ctx_slot_bytes, stream)?;
+            d.ctx_positions.push((base_pos + t) as i32);
+            d.ctx_len += 1;
+        }
+        // Freshest ctx slot = row (num_committed-1) = the bonus generator
+        // (EAGLE order, matches kgamma_append). Block the next propose()'s
+        // internal decode-append so this capture is never double-appended.
+        d.skip_next_decode_append = true;
+
+        // One-shot activation log so A/B runs can confirm the path is live.
+        static UNIFIED_CTX_LOGGED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !UNIFIED_CTX_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!(
+                "DFlash UNIFIED_CTX ACTIVE: first commit_ctx rows={} base_pos={} ctx_len={}",
+                num_committed,
+                base_pos,
+                d.ctx_len,
+            );
+        }
+        Ok(())
+    }
+
     fn dflash_serial_ctx_append(&self, seq: &mut SequenceState) -> Result<()> {
         // Ctx-holes fix: append the serial-decoded token's captured hidden.
         // The decode layer loop (decode_a.rs try_dflash_capture) already

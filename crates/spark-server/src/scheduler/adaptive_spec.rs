@@ -128,6 +128,17 @@ pub(crate) fn serial_append_enabled() -> bool {
     *CACHED.get_or_init(|| std::env::var("ATLAS_DFLASH_SERIAL_APPEND").ok().as_deref() == Some("1"))
 }
 
+/// ATLAS_DFLASH_UNIFIED_CTX=1 → route the two commit points through the
+/// single `commit_ctx` (hole-immune by construction, DDD §4.1) instead of
+/// the ~5 fragmented appends. Default OFF = the 24.1 path, so both paths
+/// A/B on ONE binary.
+pub(crate) fn unified_ctx_enabled() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("ATLAS_DFLASH_UNIFIED_CTX").ok().as_deref() == Some("1")
+    })
+}
+
 /// Count a serially-decoded token toward the re-probe interval.
 pub(crate) fn tick_serial(a: &mut ActiveSeq) {
     if enabled() && a.spec_adapt.suspended {

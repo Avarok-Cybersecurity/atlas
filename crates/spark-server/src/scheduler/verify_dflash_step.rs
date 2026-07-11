@@ -134,11 +134,21 @@ pub fn step_verify_dflash(
     // generator (row num_accepted) freshest. Fixes the ctx-undercount (was 1
     // slot/step regardless of num_accepted) and the EAGLE conditioning shift.
     // Sets skip_next_decode_append so the propose below does NOT re-append row 0.
-    let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
-    if eagle_fix
-        && let Err(e) = model.dflash_eagle_kgamma_append(&mut a.seq, num_accepted, pre_verify_len)
-    {
-        tracing::error!("dflash_eagle_kgamma_append: {e:#}");
+    // Unified ctx commit (ATLAS_DFLASH_UNIFIED_CTX=1): ONE unconditional
+    // commit at the K=gamma point — rows 0..=num_accepted at RoPE base
+    // pre_verify_len. Structural replacement for dflash_eagle_kgamma_append.
+    if crate::scheduler::adaptive_spec::unified_ctx_enabled() {
+        if let Err(e) = model.commit_ctx(&mut a.seq, num_accepted + 1, pre_verify_len) {
+            tracing::error!("commit_ctx (kgamma): {e:#}");
+        }
+    } else {
+        let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
+        if eagle_fix
+            && let Err(e) =
+                model.dflash_eagle_kgamma_append(&mut a.seq, num_accepted, pre_verify_len)
+        {
+            tracing::error!("dflash_eagle_kgamma_append: {e:#}");
+        }
     }
 
     // Emit accepted drafts.
