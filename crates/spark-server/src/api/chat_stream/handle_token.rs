@@ -174,6 +174,9 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
             }
             state.emitted = 0; // Reset — next decode will be content-only
             state.all_toks.clear(); // Clear thinking tokens from accumulator
+            state.content_decoded.clear();
+            state.detok_prefix_offset = 0;
+            state.detok_read_offset = 0;
             return sse_events;
         }
         // Still in thinking — accumulate but don't emit as content
@@ -188,15 +191,17 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
             if state.reasoning_xml_leak_detected {
                 return sse_events;
             }
-            // Open thinking: emit as reasoning_content
-            let full = ctx
-                .state
-                .tokenizer
-                .decode(&state.all_toks)
-                .unwrap_or_default();
-            let stable_end = full.trim_end_matches('\u{FFFD}').len();
+            // Open thinking: emit as reasoning_content. Incrementally extend
+            // the stable decoded text instead of re-decoding all_toks (O(n²)).
+            let delta_stable = ctx.state.tokenizer.incremental_decode(
+                &state.all_toks,
+                &mut state.detok_prefix_offset,
+                &mut state.detok_read_offset,
+            );
+            state.content_decoded.push_str(&delta_stable);
+            let stable_end = state.content_decoded.len();
             if stable_end > state.emitted {
-                let raw = full[state.emitted..stable_end].to_string();
+                let raw = state.content_decoded[state.emitted..stable_end].to_string();
                 let mut cleaned = raw.clone();
                 state.emitted = stable_end;
                 // Strip format tokens that shouldn't appear in thinking.
@@ -245,7 +250,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
                         cleaned = cleaned.replace(&nl_form, "\n");
                     }
                 }
-                maybe_log_decode_trace(&raw, &cleaned, full.len(), stable_end - raw.len());
+                maybe_log_decode_trace(&raw, &cleaned, stable_end, stable_end - raw.len());
                 // Layer-A in-think tool-call leak scanner. The per-
                 // delta strippers above can miss boundary splits
                 // (e.g. `<too` in delta N + `l_call>` in delta N+1)
@@ -351,15 +356,20 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
     // token completes it. `state.all_toks` and `state.emitted` are
     // reset at `</think>` (line 147), so this slice references the
     // post-thinking content only.
-    let full = ctx
-        .state
-        .tokenizer
-        .decode(&state.all_toks)
-        .unwrap_or_default();
-    let stable_end = full.trim_end_matches('\u{FFFD}').len();
+    // Incrementally extend the stable decoded text instead of re-decoding the
+    // whole `all_toks` list every token (O(n²)). `content_decoded` stays
+    // byte-identical to the previous `decode(&all_toks)` trimmed of any
+    // trailing incomplete-multibyte token.
+    let delta_stable = ctx.state.tokenizer.incremental_decode(
+        &state.all_toks,
+        &mut state.detok_prefix_offset,
+        &mut state.detok_read_offset,
+    );
+    state.content_decoded.push_str(&delta_stable);
+    let stable_end = state.content_decoded.len();
     let _ = tok; // tok already in state.all_toks via line 86
     let mut delta = if stable_end > state.emitted {
-        let raw = full[state.emitted..stable_end].to_string();
+        let raw = state.content_decoded[state.emitted..stable_end].to_string();
         state.emitted = stable_end;
         raw
     } else {
@@ -389,6 +399,9 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
             state.thinking_done = false;
             state.all_toks.clear();
             state.emitted = 0;
+            state.content_decoded.clear();
+            state.detok_prefix_offset = 0;
+            state.detok_read_offset = 0;
         }
     }
 
