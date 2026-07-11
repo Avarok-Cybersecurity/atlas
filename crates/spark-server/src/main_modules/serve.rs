@@ -568,6 +568,16 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     let scheduler_spontaneous_think_budget = args
         .max_thinking_budget
         .unwrap_or(ptx_set.behavior.max_thinking_budget);
+    // DFlash mode: the drafter proposes on raw argmax, so the verify steps
+    // must judge acceptance on the same (GOLD) basis — skipping the
+    // rep_pen/DRY pre-sample pipeline — or drafter and verifier disagree by
+    // construction and accept craters. ATLAS_DFLASH_MASKED_VERIFY=1 routes
+    // verify PICKS back through the pre-sample masking (unmasked
+    // special-token leak fix); that is handled at the pick sites via
+    // `verify_pipeline_helper::dflash_masked_verify_enabled()` and must NOT
+    // flip this bool — this selects the verify architecture, not the pick
+    // basis.
+    let dflash_verify_raw_argmax = args.dflash;
     std::thread::spawn(move || {
         scheduler::run(
             scheduler_model,
@@ -575,6 +585,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             scheduler_eos,
             max_batch_size,
             use_speculative,
+            dflash_verify_raw_argmax,
             num_drafts,
             policy,
             max_prefill_tokens,

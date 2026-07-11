@@ -32,6 +32,7 @@ pub fn step_verify_dflash(
     drafts: &[u32],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+    dflash_verify_raw_argmax: bool,
 ) {
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
@@ -54,18 +55,29 @@ pub fn step_verify_dflash(
     };
     a.last_token_time = Instant::now();
 
-    // Phase C-2 (2026-05-24): apply the full pre-sample
-    // logits-processor pipeline at each verify position before the
-    // accept-prefix comparison. `decode_verify_dflash` writes
-    // `[tokens.len(), vocab]` BF16 into `logits_buffer`; the helper
-    // reads it back, dequant + 8-stage pipeline + argmax per slot.
-    // Fail-safe falls back to the raw GPU argmax on D2H failure.
-    let verified = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
-        model,
-        &verified_argmax,
-        a,
-        verify_ctx,
-    );
+    // DFlash drafter proposes on raw argmax; when dflash_verify_raw_argmax
+    // is set (process-wide DFlash mode), skip the rep_pen/DRY pipeline so
+    // verifier and drafter judge on the SAME (GOLD) basis.
+    // ATLAS_DFLASH_MASKED_VERIFY=1 restores the masking stages for the
+    // picks (special-token leak fix). For non-DFlash callers (unreachable
+    // today since step_verify_dflash is only dispatched at drafts.len()>=4,
+    // which only DFlash produces), apply the full pre-sample pipeline as in
+    // K=2/3/4: `decode_verify_dflash` writes `[tokens.len(), vocab]` BF16
+    // into `logits_buffer`; the helper reads it back, dequant + 8-stage
+    // pipeline + argmax per slot. Fail-safe falls back to the raw GPU
+    // argmax on D2H failure.
+    let verified = if dflash_verify_raw_argmax
+        && !crate::scheduler::verify_pipeline_helper::dflash_masked_verify_enabled()
+    {
+        verified_argmax
+    } else {
+        crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+            model,
+            &verified_argmax,
+            a,
+            verify_ctx,
+        )
+    };
 
     // `decode_verify` already advanced `seq.seq_len` by `tokens.len()` and
     // pushed all γ+1 tokens into `seq.tokens`. The accept-prefix logic below
