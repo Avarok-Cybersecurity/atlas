@@ -77,9 +77,7 @@ pub(crate) fn fast_greedy_grammar_enabled() -> bool {
 /// is cheap (the chat fast path in this file makes it ≈ free).
 pub(crate) fn dflash_masked_verify_enabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("ATLAS_DFLASH_MASKED_VERIFY").ok().as_deref() == Some("1")
-    })
+    *CACHED.get_or_init(|| std::env::var("ATLAS_DFLASH_MASKED_VERIFY").ok().as_deref() == Some("1"))
 }
 
 /// Per-position verify logits, dequantised + processed through the full

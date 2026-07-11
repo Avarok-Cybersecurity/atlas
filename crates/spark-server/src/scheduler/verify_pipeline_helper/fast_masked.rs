@@ -60,9 +60,8 @@ pub(super) fn try_chat_fast_path(
 ) -> Option<Vec<u32>> {
     let fast_masked_enabled = {
         static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *CACHED.get_or_init(|| {
-            std::env::var("ATLAS_DISABLE_FAST_MASKED").ok().as_deref() != Some("1")
-        })
+        *CACHED
+            .get_or_init(|| std::env::var("ATLAS_DISABLE_FAST_MASKED").ok().as_deref() != Some("1"))
     };
     let adadec_recording = {
         static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -85,12 +84,9 @@ pub(super) fn try_chat_fast_path(
         Some(b) => a.thinking_tokens >= b.saturating_mul(THINK_DEFER_BUDGET_FACTOR),
         None => a.thinking_tokens >= THINK_DEFER_ABS_CEILING,
     } || a.sentence_defer_count >= MAX_SENTENCE_DEFER_TOKENS;
-    let think_end_inject_armed =
-        a.inside_thinking && (a.force_end_thinking || defer_hard_override);
-    let pin_tool_armed = a.think_just_ended
-        && a.require_tool_call
-        && !a.tool_call_opened
-        && !a.inside_thinking;
+    let think_end_inject_armed = a.inside_thinking && (a.force_end_thinking || defer_hard_override);
+    let pin_tool_armed =
+        a.think_just_ended && a.require_tool_call && !a.tool_call_opened && !a.inside_thinking;
     // (c) penalty gate — same construction the slow path uses per
     // position (penalty_params_for is position-independent here).
     let penalty_gate = crate::scheduler::fast_greedy::classify_penalties(
@@ -134,13 +130,7 @@ pub(super) fn try_chat_fast_path(
         }
         if penalty_gate == crate::scheduler::fast_greedy::PenaltyGate::ReduceOnly
             && !crate::scheduler::fast_greedy::argmax_immune(tok, &scoped_history, || {
-                crate::scheduler::fast_greedy::logit_is_positive(
-                    model,
-                    logits_base,
-                    i,
-                    vocab,
-                    tok,
-                )
+                crate::scheduler::fast_greedy::logit_is_positive(model, logits_base, i, vocab, tok)
             })
         {
             all_clear = false;

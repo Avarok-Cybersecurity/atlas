@@ -402,7 +402,13 @@ pub fn run(
                             // only step proposes the first draft and is skipped.
                             let had_draft = !active[0].pending_drafts.is_empty();
                             let t0 = std::time::Instant::now();
-                            step_mtp(&*model, &mut active, num_drafts, &verify_ctx, dflash_verify_raw_argmax);
+                            step_mtp(
+                                &*model,
+                                &mut active,
+                                num_drafts,
+                                &verify_ctx,
+                                dflash_verify_raw_argmax,
+                            );
                             if had_draft {
                                 mtp_gate
                                     .as_mut()
@@ -448,7 +454,13 @@ pub fn run(
                     );
                 } else {
                     // MTP wins in this regime (or no gate): speculative decode.
-                    step_mtp(&*model, &mut active, num_drafts, &verify_ctx, dflash_verify_raw_argmax);
+                    step_mtp(
+                        &*model,
+                        &mut active,
+                        num_drafts,
+                        &verify_ctx,
+                        dflash_verify_raw_argmax,
+                    );
                 }
             } else {
                 // Batch decode (no MTP). Clear stale drafts when transitioning out of MTP mode.
