@@ -628,15 +628,26 @@ pub(super) fn apply_stop_string_holdback(
     debug_assert!(!*triggered, "caller must gate on !triggered");
     accumulated_content.push_str(new_chars);
 
-    // Bounded search window: vLLM only scans the suffix that could
-    // contain a stop string straddling the new chars. Atlas keeps the
-    // simpler full-string scan here because Atlas accumulators are
-    // already bounded by the per-request token budget and the inner
-    // memchr-driven `str::find` is O(n) anyway.
+    // Bounded search window: only the suffix that could contain a stop
+    // string straddling the newly appended chars can hold a *new* match —
+    // every prior call already full-scanned (and found nothing in) the
+    // content before this window. A match can begin at earliest
+    // `max_stop_len - 1` bytes before the new chars; we also back up over
+    // the held-back `buffer_len` bytes for margin. This keeps per-token
+    // cost O(new + buffer + max_stop) instead of O(total), turning the
+    // whole-response scan from O(n²) into O(n).
+    let max_stop_len = stop_strings.iter().map(String::len).max().unwrap_or(0);
+    let search_start = {
+        let raw = accumulated_content
+            .len()
+            .saturating_sub(new_chars.len() + buffer_len + max_stop_len);
+        accumulated_content.floor_char_boundary(raw)
+    };
     let matched_pos = stop_strings
         .iter()
-        .filter_map(|s| accumulated_content.find(s.as_str()))
-        .min();
+        .filter_map(|s| accumulated_content[search_start..].find(s.as_str()))
+        .min()
+        .map(|rel| rel + search_start);
 
     if let Some(pos) = matched_pos {
         accumulated_content.truncate(pos);
