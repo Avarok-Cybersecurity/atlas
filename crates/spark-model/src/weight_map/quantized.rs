@@ -278,6 +278,46 @@ pub struct DenseWeight {
     pub weight: DevicePtr,
 }
 
+impl DenseWeight {
+    /// Quantize a BF16 weight `[N, K]` to FP8 E4M3 `[N, K]` with per-row
+    /// f32 scales. Allocates the FP8 buffer + row_scale buffer on the
+    /// GPU, runs the `quantize_bf16_to_fp8` kernel, and returns the
+    /// resulting [`Fp8DenseWeight`].
+    ///
+    /// Called once at model load time. Caller is responsible for any
+    /// stream synchronization needed before the returned weight is
+    /// consumed by `fp8_gemm_n128` or related kernels.
+    ///
+    /// Phase G (DFlash drafter FP8 weights). Mirrors
+    /// [`QuantizedWeight::predequant_to_fp8`] for the BF16 source path.
+    pub fn quantize_to_fp8(
+        &self,
+        gpu: &dyn GpuBackend,
+        quantize_kernel: spark_runtime::gpu::KernelHandle,
+        n: usize,
+        k: usize,
+        stream: u64,
+    ) -> Result<Fp8DenseWeight> {
+        let fp8_buf = gpu.alloc(n * k)?;
+        let row_scale_buf = gpu.alloc(n * std::mem::size_of::<f32>())?;
+        crate::layers::ops::quantize_bf16_to_fp8(
+            gpu,
+            quantize_kernel,
+            self.weight,
+            fp8_buf,
+            row_scale_buf,
+            n as u32,
+            k as u32,
+            stream,
+        )?;
+        gpu.synchronize(stream)?;
+        Ok(Fp8DenseWeight {
+            weight: fp8_buf,
+            row_scale: row_scale_buf,
+        })
+    }
+}
+
 /// FP8 E4M3 dense weight (runtime-quantized from BF16).
 ///
 /// Halves weight bandwidth vs BF16. Per-row f32 scale preserves accuracy.

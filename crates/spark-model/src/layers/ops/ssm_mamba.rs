@@ -136,6 +136,62 @@ pub fn gdn_verify_fused_conv_k2(
         .launch(stream)
 }
 
+/// Fused generic-K DFlash-verify conv1d+L2norm: ALL K draft positions in one
+/// launch, with every per-token conv-state rollback snapshot written inline
+/// to a strided intermediates array (replaces the per-token
+/// `conv1d_update_l2norm` ×K + `copy_d2d` ×K sequence — 34 serialized ops at
+/// K=17). `conv_state` is left holding the committed (post final-position)
+/// window, which the kernel also duplicates as snapshot K-1, so the caller
+/// issues NO copies.
+///
+/// Same numerics as the per-token path (identical accumulation order under
+/// --fmad=false; the K=2 twin is proven bit-identical by
+/// gdn_verify_fused_microtest).
+///
+/// Kernel: `gdn_verify_fused_conv_kn(conv_state, new_input, weight, output,
+///          conv_state_inter, num_tokens, dim, d_conv, qk_channels, head_dim,
+///          input_stride, output_stride, inter_stride, l2_eps)`
+/// Grid: (ceil(dim/256), 1, 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_verify_fused_conv_kn(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    conv_state: DevicePtr,
+    new_input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    conv_state_inter: DevicePtr,
+    num_tokens: u32,
+    d_inner: u32,
+    d_conv: u32,
+    qk_channels: u32,
+    head_dim: u32,
+    input_stride: u32,
+    output_stride: u32,
+    inter_stride: u32,
+    l2_eps: f32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(d_inner, 256), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(conv_state)
+        .arg_ptr(new_input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_ptr(conv_state_inter)
+        .arg_u32(num_tokens)
+        .arg_u32(d_inner)
+        .arg_u32(d_conv)
+        .arg_u32(qk_channels)
+        .arg_u32(head_dim)
+        .arg_u32(input_stride)
+        .arg_u32(output_stride)
+        .arg_u32(inter_stride)
+        .arg_f32(l2_eps)
+        .launch(stream)
+}
+
 /// STAGE 1 fused K=2 MTP-verify gated-RMS-norm: both draft positions in one
 /// launch (replaces the per-token `gated_rms_norm` ×2). The Z gate is read
 /// from the deinterleaved [Q|K|V|Z] buffer at `z_offset` per position.

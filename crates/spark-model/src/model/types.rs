@@ -120,6 +120,10 @@ pub struct TransformerModel {
     /// Layer indices to capture for DFlash. Empty when DFlash is disabled.
     /// Sourced from drafter's `dflash_config.target_layer_ids` at model build.
     pub(super) dflash_capture_layers: Vec<usize>,
+    /// Row capacity of `dflash_hidden_save` (the K-row EAGLE capture buffer).
+    /// `try_dflash_capture_all` must never write past this many rows. Single
+    /// source of truth for the buffer's KMAX; 0 when DFlash is disabled.
+    pub(super) dflash_hidden_save_rows: usize,
     /// Cached CUDA graphs for K=2 verification, **keyed by `seq.slot_idx`**.
     /// Same rationale as `decode_graph`: the captured graph has SSM
     /// h_state/conv_state pointers baked in as kernel arguments, so replay for
@@ -135,6 +139,11 @@ pub struct TransformerModel {
     /// `(seq.slot_idx, K)`. K is `tokens.len()` (γ+1 typically). One graph
     /// per (slot, K) — different γ values coexist via the K dimension.
     pub(super) verify_kgamma_graph: Mutex<std::collections::HashMap<(usize, usize), GraphHandle>>,
+    /// Cached CUDA graphs for the DFlash decode+verify fused pass, keyed by
+    /// `(seq.slot_idx, M)` where M = tokens.len() = 1 + num_drafts.
+    /// Replaces the separate `decode_graph` (M=1) + `verify{k}_graph` (M=k)
+    /// on the DFlash path with a single M-row weight sweep.
+    pub(super) fused_graph: Mutex<std::collections::HashMap<(usize, usize), GraphHandle>>,
     /// Prefix cache for KV block reuse across requests.
     pub(super) prefix_cache: Box<dyn spark_runtime::prefix_cache::PrefixCache>,
     /// Secondary CUDA stream for pipelining checkpoint D2D with MTP propose.

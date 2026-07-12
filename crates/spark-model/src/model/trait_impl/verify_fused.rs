@@ -1,13 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! K=γ (DFlash) verify path.
+//! DFlash decode+verify single-pass fusion (M = 1 + num_drafts).
 //!
-//! ## Safety
+//! Replaces the two separate weight sweeps on the DFlash path:
+//!   - decode_a.rs  : M=1, accepted token → `decode_graph`
+//!   - verify_b/c.rs: M=k, draft block   → `verify{k}_graph`
 //!
-//! `unsafe { from_raw_parts(...) }` blocks reinterpret stack arrays
-//! / `Vec`s of POD integers (`u32`, `i32`, `i64`, `usize`) as byte
-//! slices for H2D upload. See `verify_c.rs` module docs for the full
-//! safety contract — same pattern, same invariants here.
+//! with one M=(1+k) forward that reads every weight once. Row 0 is the
+//! accepted token (decode semantics); rows 1..=k are the draft block
+//! (verify semantics). `try_dflash_capture` fires at row 0 so the DFlash
+//! drafter always conditions on a confirmed-accepted token's per-layer
+//! hidden instead of a potentially-rejected draft's hidden.
+//!
+//! ## Safety contract (same as verify_b.rs)
+//! `unsafe { from_raw_parts(...) }` reinterprets stack arrays of POD
+//! integers as byte slices for H2D upload. All source types are POD with
+//! no padding; lengths are exact; sources outlive the async copy.
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
@@ -37,22 +45,25 @@ use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
 impl TransformerModel {
-    pub(super) fn decode_verify_graphed_kgamma_dispatch(
+    /// DFlash decode+verify fused dispatch.
+    ///
+    /// `tokens`: `[accepted_token, draft_0, ..., draft_{k-1}]`.
+    /// Returns `Vec<u32>` of length `tokens.len()` — the in-graph argmax at
+    /// each position. Row 0 is the "decode" result (what follows the accepted
+    /// token); rows 1..k are the "verify" results for each draft.
+    pub(super) fn decode_and_verify_fused_dispatch(
         &self,
         tokens: &[u32],
         seq: &mut SequenceState,
         _stream: u64,
     ) -> Result<Vec<u32>> {
-        let k = tokens.len();
-        if k == 0 {
-            return Ok(Vec::new());
-        }
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
-        let bf16 = 2usize;
-        let fp32 = 2usize;
+        let bf16 = 2usize; // bytes per BF16 element
+        let m = tokens.len(); // 1 + k
+        let vocab = self.config.vocab_size;
 
-        // F62 (2026-04-27): SpecMamba dual-buffer pre-verify copy.
+        // SSM dual-buffer pre-verify copy (same as verify_b/c).
         self.pre_verify_copy_async(seq)?;
 
         let hidden = self.buffers.hidden_states();
@@ -62,14 +73,14 @@ impl TransformerModel {
 
         // ── Phase 1: Pre-graph (varies per step, NOT captured) ──
 
-        // 1a. Embed K tokens
-        for t in 0..k {
-            self.embed(tokens[t], hidden.offset(t * h * fp32), stream)?;
+        // 1a. Embed M tokens into consecutive rows of hidden_states.
+        for (t, &tok) in tokens.iter().enumerate() {
+            self.embed(tok, hidden.offset(t * h * bf16), stream)?;
         }
 
-        // 1b. Allocate KV blocks for all K positions
+        // 1b. Allocate KV blocks for all M positions.
         let bs = kv_cache.block_size();
-        for t in 0..k {
+        for t in 0..m {
             let pos = seq.seq_len + t;
             let blocks_needed = (pos / bs) + 1;
             ensure_blocks_through_decode(
@@ -82,42 +93,50 @@ impl TransformerModel {
             )?;
         }
 
-        // 1c. Upload K-entry attention metadata. Layout in scratch (after
-        // mtp metadata reservation): positions[K*4] | slots[K*8] | seq_lens[K*4]
-        // | block_table[K*max_blocks*4]. Need K*16 + K*max_blocks*4 bytes per
-        // call — at K=17 max_blocks=512 that's ~36 KB which fits comfortably
-        // in the scratch arena (offset 32768).
+        // 1c. Upload M-entry attention metadata.
         let meta_base = self.buffers.scratch().offset(32768);
         let max_blocks = self.max_blocks_per_seq;
 
-        let positions: Vec<u32> = (0..k).map(|t| (seq.seq_len + t) as u32).collect();
+        // Positions: [seq_len, seq_len+1, ..., seq_len+m-1]
+        let positions: Vec<u32> = (0..m).map(|t| (seq.seq_len + t) as u32).collect();
         let pos_bytes =
-            unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, k * 4) };
+            unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, m * 4) };
         self.gpu.copy_h2d_async(pos_bytes, meta_base, stream)?;
 
-        let mut slots = vec![0i64; k];
-        for t in 0..k {
+        // KV write slots.
+        let mut slots = vec![0i64; m];
+        for t in 0..m {
             let pos = seq.seq_len + t;
             let block_idx = pos / bs;
             let block_offset = pos % bs;
             let physical_block = seq.physical_block_for(block_idx).unwrap_or(0);
             slots[t] = (physical_block as i64) * (bs as i64) + (block_offset as i64);
         }
-        // 256-byte gap mirrors K=4 layout for ABI compatibility with
-        // attention kernels that index meta_base + fixed offsets.
-        let slot_bytes = unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, k * 8) };
+        let slot_bytes =
+            unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, m * 8) };
         self.gpu
             .copy_h2d_async(slot_bytes, meta_base.offset(256), stream)?;
 
-        let seq_lens: Vec<i32> = (0..k).map(|t| (seq.seq_len + t + 1) as i32).collect();
-        let sl_bytes = unsafe { std::slice::from_raw_parts(seq_lens.as_ptr() as *const u8, k * 4) };
+        // Seq-lens for multi-seq attention (staggered: row t sees seq_len+t
+        // prior keys). Mirrors verify_b.rs / verify_c.rs convention.
+        let seq_lens_meta: Vec<i32> = (0..m).map(|t| (seq.seq_len + t + 1) as i32).collect();
+        let sl_bytes =
+            unsafe { std::slice::from_raw_parts(seq_lens_meta.as_ptr() as *const u8, m * 4) };
         self.gpu
             .copy_h2d_async(sl_bytes, meta_base.offset(512), stream)?;
 
+        // Block table: M identical rows (same physical sequence).
         let mb = max_blocks as usize;
-        let needed = k * mb;
-        let mut bt_buf = vec![0i32; needed];
-        for row in 0..k {
+        let needed = m * mb;
+        let mut bt_buf_vec;
+        let mut bt_buf_stack = [0i32; 1024];
+        let bt_buf: &mut [i32] = if needed <= 1024 {
+            &mut bt_buf_stack[..needed]
+        } else {
+            bt_buf_vec = vec![0i32; needed];
+            &mut bt_buf_vec
+        };
+        for row in 0..m {
             for (j, &block) in seq.block_table.iter().enumerate().take(mb) {
                 bt_buf[row * mb + j] = block as i32;
             }
@@ -135,21 +154,26 @@ impl TransformerModel {
             seq_len: meta_base.offset(512),
             block_table: meta_base.offset(768),
             max_blocks_per_seq: max_blocks,
-            num_seqs: k as u32,
+            num_seqs: m as u32,
         };
 
-        // Phase 6.2.c — HSS host I/O is illegal under CUDA graph capture.
+        // FP8 calibration re-enable (mirrors verify_b.rs).
+        if self
+            .suppress_graphs
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && seq.seq_len > self.config.fp8_kv_calibration_tokens + 10
+        {
+            self.suppress_graphs
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            tracing::info!("FP8 calibration frozen — re-enabling CUDA graphs (DFlash fused)");
+        }
+
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
-        // ATLAS_DFLASH_DEBUG_NO_GRAPH=1 forces eager (no graph capture) so
-        // CUDA_LAUNCH_BLOCKING=1 reports the exact failing kernel — used
-        // to localize K=γ illegal-address crashes downstream of SSM.
-        let force_eager = std::env::var("ATLAS_DFLASH_DEBUG_NO_GRAPH").ok().as_deref() == Some("1");
         let use_graphs = self.comm.is_none()
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
-            && !hss_engaged
-            && !force_eager;
+            && !hss_engaged;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -165,13 +189,13 @@ impl TransformerModel {
 
         // ── Phase 2: CUDA graph capture / replay ──
 
+        let cache_key = (seq.slot_idx, m);
         let mut graph_cache = if use_graphs {
-            Some(self.verify_kgamma_graph.lock())
+            Some(self.fused_graph.lock())
         } else {
             None
         };
 
-        let cache_key = (seq.slot_idx, k);
         let cached_for_slot = graph_cache
             .as_ref()
             .and_then(|c| c.get(&cache_key).copied());
@@ -182,8 +206,9 @@ impl TransformerModel {
         }
         let need_run = cached_for_slot.is_none();
         if need_run {
-            let seq_lens_vec: Vec<usize> = (0..k).map(|t| seq.seq_len + t).collect();
-            let block_tables_vec: Vec<Vec<u32>> = vec![seq.block_table.clone(); k];
+            // Staggered seq-lens for decode_multi_seq (same semantics as verify_b/c).
+            let seq_lens_vec: Vec<usize> = (0..m).map(|t| seq.seq_len + t).collect();
+            let block_tables_vec: Vec<Vec<u32>> = vec![seq.block_table.clone(); m];
 
             if use_graphs {
                 self.gpu.begin_capture(stream)?;
@@ -194,15 +219,13 @@ impl TransformerModel {
 
                 if layer_type == LayerType::FullAttention {
                     if hss_engaged {
-                        // HSS path: decode_multi_seq's paged-decode kernel
-                        // reads K/V from HBM only, missing the long-context
-                        // history on disk. Fall back to decode_batched
-                        // (sequential single-token decodes via the HSS
-                        // orchestrator). See verify_b.rs for full rationale.
+                        // HSS: paged-decode kernel only reads HBM blocks, missing
+                        // long-context disk history. Fall back to sequential
+                        // decode_batched (same rationale as verify_b.rs).
                         layer.decode_batched(
                             hidden,
                             residual,
-                            k,
+                            m,
                             seq.layer_states[layer_idx].as_mut(),
                             &mut kv_cache,
                             seq.seq_len,
@@ -213,7 +236,7 @@ impl TransformerModel {
                             stream,
                         )?;
                     } else {
-                        let mut dummy_states: Vec<Box<dyn LayerState>> = (0..k)
+                        let mut dummy_states: Vec<Box<dyn LayerState>> = (0..m)
                             .map(|_| layer.alloc_state(self.gpu.as_ref()))
                             .collect::<Result<_>>()?;
                         let mut refs: Vec<&mut (dyn LayerState + 'static)> =
@@ -221,7 +244,7 @@ impl TransformerModel {
                         layer.decode_multi_seq(
                             hidden,
                             residual,
-                            k,
+                            m,
                             &mut refs,
                             &mut kv_cache,
                             &seq_lens_vec,
@@ -231,10 +254,11 @@ impl TransformerModel {
                         )?;
                     }
                 } else {
+                    // SSM: batch all M tokens together (M=2/3 fast paths exist).
                     layer.decode_batched(
                         hidden,
                         residual,
-                        k,
+                        m,
                         seq.layer_states[layer_idx].as_mut(),
                         &mut kv_cache,
                         seq.seq_len,
@@ -245,25 +269,15 @@ impl TransformerModel {
                         stream,
                     )?;
                 }
-                // DFlash intermediate hidden capture: snapshot each capture
-                // layer's output at position k-1 (last verify token) into
-                // dflash_hidden_save[slot] while hidden_states still holds
-                // this layer's activation — mirrors verify_b.rs for K=2.
-                // Must be inside the graph capture region so the per-layer
-                // intermediate (not the final-layer-only post-loop value) is
-                // recorded. Under ATLAS_DFLASH_EAGLE_FIX=1, capture ALL k
-                // verify rows so the scheduler can append rows
-                // 0..=num_accepted to ctx after the accept walk (EAGLE).
-                let eagle_fix =
-                    std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
-                if eagle_fix {
-                    self.try_dflash_capture_all(layer_idx, k, stream)?;
-                } else {
-                    self.try_dflash_capture(layer_idx, k - 1, stream)?;
-                }
+                // DFlash hidden capture at row 0 (the accepted/decode token).
+                // Row 0 = tokens[0] = a.last_token = the confirmed-accepted bonus
+                // from the previous step. Capturing here ensures the DFlash drafter
+                // always conditions on an accepted token's per-layer hidden, never
+                // on a potentially-rejected draft's hidden.
+                self.try_dflash_capture(layer_idx, 0, stream)?;
             }
 
-            // Final norm [K, H]
+            // Final norm over all M rows.
             let normed = self.buffers.norm_output();
             ops::rms_norm(
                 self.gpu.as_ref(),
@@ -271,19 +285,18 @@ impl TransformerModel {
                 hidden,
                 &self.final_norm,
                 normed,
-                k as u32,
+                m as u32,
                 h as u32,
                 self.config.rms_norm_eps as f32,
                 stream,
             )?;
 
-            // LM head for K tokens
-            self.lm_head_batched(normed, k as u32, self.buffers.logits(), stream)?;
+            // LM head for M tokens (weights read once).
+            self.lm_head_batched(normed, m as u32, self.buffers.logits(), stream)?;
 
-            // Argmax inside graph (fixed scratch addresses — graph-safe)
-            let vocab = self.config.vocab_size;
+            // In-graph argmax for all M rows (fixed scratch addresses — graph-safe).
             let argmax_out = self.buffers.scratch();
-            for t in 0..k {
+            for t in 0..m {
                 let logits_t = self.buffers.logits().offset(t * vocab * bf16);
                 let out_t = argmax_out.offset(t * 4);
                 ops::argmax_bf16(
@@ -300,9 +313,9 @@ impl TransformerModel {
                 let graph = self.gpu.end_capture(stream)?;
                 if graph.0 != 0 {
                     tracing::info!(
-                        "Captured CUDA graph for K=γ verify (slot={} K={})",
+                        "DFlash fused CUDA graph captured (slot={}, M={})",
                         seq.slot_idx,
-                        k
+                        m
                     );
                     if let Some(ref mut cache) = graph_cache {
                         cache.insert(cache_key, graph);
@@ -312,28 +325,23 @@ impl TransformerModel {
             }
         }
 
-        // ── Phase 3: Post-graph (D2H copy only) ──
+        // ── Phase 3: Post-graph D2H ──
 
         let out_ptr = self.buffers.scratch();
-        let mut buf = vec![0u8; k * 4];
+        let mut buf = vec![0u8; m * 4];
         self.gpu.copy_d2h(out_ptr, &mut buf)?;
-        let mut out = Vec::with_capacity(k);
-        for t in 0..k {
-            let off = t * 4;
-            out.push(u32::from_le_bytes([
-                buf[off],
-                buf[off + 1],
-                buf[off + 2],
-                buf[off + 3],
-            ]));
-        }
+        let result: Vec<u32> = (0..m)
+            .map(|t| {
+                let b = t * 4;
+                u32::from_le_bytes([buf[b], buf[b + 1], buf[b + 2], buf[b + 3]])
+            })
+            .collect();
 
-        // See decode_verify_graphed for rationale on `seq_len += k` fix.
         for &t in tokens {
             seq.tokens.push(t);
         }
-        seq.seq_len += k;
+        seq.seq_len += m;
 
-        Ok(out)
+        Ok(result)
     }
 }

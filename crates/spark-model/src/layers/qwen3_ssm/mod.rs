@@ -84,6 +84,7 @@ pub struct Qwen3SsmLayer {
     w4a16_gemm_t_k: KernelHandle, // Transposed B layout [K/2, N] — K_STEP_T=32
     w4a16_gemm_t_k64_k: KernelHandle, // K64 variant: K_STEP_T=64, halves outer loop
     w4a16_gemm_t_m128_k: KernelHandle, // M128 variant: 2 M-chunks per CTA, halves B re-reads
+    w4a16_gemm_t_m128_v2_k: KernelHandle, // M128 8-warp pipelined (fast at small M; the FFN's kernel)
     w4a16_gemv_batch2_k: KernelHandle,
     dense_gemm_k: KernelHandle,
     dense_gemm_pipelined_k: KernelHandle,
@@ -144,6 +145,11 @@ pub struct Qwen3SsmLayer {
     /// per-token path runs unchanged otherwise. Bit-identical (cos == 1.0).
     gdn_verify_fused_conv_k2_k: KernelHandle,
     gdn_verify_fused_norm_k2_k: KernelHandle,
+    /// Fused generic-K verify conv1d+L2norm (one launch for all K positions,
+    /// rollback snapshots written inline). Used by the K=17 DFlash verify arm;
+    /// default ON when present, kill-switch `ATLAS_GDN_FUSED_CONV17=0`.
+    /// NULL handle on targets lacking the .cu → per-token loop unchanged.
+    gdn_verify_fused_conv_kn_k: KernelHandle,
     /// WY-Chunkwise K=17 GDN verify (DFlash γ+1). Only present in
     /// qwen3.6-35b-a3b's PTX module set; NULL handle for other targets,
     /// in which case decode_batched(K=17) falls through to the sequential

@@ -63,6 +63,15 @@ impl FfnComponent {
         matches!(self, Self::None)
     }
 
+    /// True for a plain dense (SwiGLU) FFN. Wide-batch verify paths gate their
+    /// `forward_prefill` fast path on this: batching reads dense weights once
+    /// (big win at N=17), but on a 256-expert MoE the grouped-GEMM is a net
+    /// loss at small batch (per-expert M~1 + sort/permute overhead), so MoE
+    /// keeps its per-token loop.
+    pub fn is_dense(&self) -> bool {
+        matches!(self, Self::Dense(_))
+    }
+
     /// ATLAS_FP32_ROUTING active for this FFN (MoE only; false otherwise).
     pub fn fp32_routing_active(&self) -> bool {
         match self {

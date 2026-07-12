@@ -289,6 +289,17 @@ pub trait GpuBackend: Send + Sync {
         Ok(())
     }
 
+    /// Block the calling host thread until all work already
+    /// recorded against the event — e.g. an async D2H copy issued on the
+    /// graph stream followed by `record_event`, then `event_synchronize`
+    /// right before the host dereferences the destination pinned buffer.
+    /// Cheaper than `synchronize(stream)` when the stream has work beyond
+    /// the event you care about: this only waits for the recorded point,
+    /// not for everything subsequently enqueued.
+    fn event_synchronize(&self, _event: u64) -> Result<()> {
+        Ok(())
+    }
+
     /// Destroy an event.
     fn destroy_event(&self, _event: u64) -> Result<()> {
         Ok(())
