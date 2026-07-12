@@ -378,9 +378,52 @@ pub(crate) fn load_dense_ffn(
             })
         }
         _ => {
-            let gate = quantized_auto(store, &format!("{prefix}.mlp.gate_proj"), gpu, variant)?;
-            let up = quantized_auto(store, &format!("{prefix}.mlp.up_proj"), gpu, variant)?;
-            let down = quantized_auto(store, &format!("{prefix}.mlp.down_proj"), gpu, variant)?;
+            // `quantized_any`, not `quantized_auto`: mixed-precision
+            // compressed-tensors checkpoints (unsloth Qwen3.6-*-NVFP4,
+            // re-quantized 2026-07-10) leave a tail of dense-FFN layers as FP8
+            // E4M3 + per-row `weight_scale` inside an otherwise-NVFP4 net.
+            // `quantized_auto` would take the declared variant at face value and
+            // die on the absent `weight_global_scale`; `quantized_any` detects
+            // the per-key layout and dequant→requantizes those keys. It
+            // dispatches identically for genuinely-NVFP4 keys.
+            let inter_ = if config.intermediate_size > 0 {
+                config.intermediate_size
+            } else {
+                config.moe_intermediate_size
+            };
+            let h_ = config.hidden_size;
+            let qctx = QuantizeCtx {
+                absmax_k,
+                quantize_k,
+                stream,
+            };
+            let gate = quantized_any(
+                store,
+                &format!("{prefix}.mlp.gate_proj"),
+                inter_,
+                h_,
+                gpu,
+                variant,
+                qctx,
+            )?;
+            let up = quantized_any(
+                store,
+                &format!("{prefix}.mlp.up_proj"),
+                inter_,
+                h_,
+                gpu,
+                variant,
+                qctx,
+            )?;
+            let down = quantized_any(
+                store,
+                &format!("{prefix}.mlp.down_proj"),
+                h_,
+                inter_,
+                gpu,
+                variant,
+                qctx,
+            )?;
             let inter = if config.intermediate_size > 0 {
                 config.intermediate_size
             } else {
