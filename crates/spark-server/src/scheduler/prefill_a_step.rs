@@ -416,6 +416,8 @@ pub fn start_chunked_prefill(
                 think_start_token,
                 think_ended: !req_enable_thinking && think_end_token.is_some(),
                 think_just_ended: false,
+                post_think_emitted: 0,
+                spec_adapt: Default::default(),
                 think_skip_count: 0,
                 require_tool_call: use_legacy_tool_call,
                 tool_request,
@@ -459,7 +461,7 @@ pub fn start_chunked_prefill(
                 } else {
                     vec![first]
                 },
-                remaining: max_tokens.saturating_sub(1),
+                remaining: max_tokens - 1,
                 min_tokens: req_min_tokens,
                 eos_tokens: eos_tokens.to_vec(),
                 finished: false,
@@ -505,6 +507,8 @@ pub fn start_chunked_prefill(
                     !req_enable_thinking && think_end_token.is_some()
                 },
                 think_just_ended: false,
+                post_think_emitted: 0,
+                spec_adapt: Default::default(),
                 think_skip_count: 0,
                 require_tool_call: use_legacy_tool_call,
                 tool_request,
