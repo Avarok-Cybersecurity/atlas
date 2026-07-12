@@ -112,8 +112,7 @@ impl TransformerModel {
             let physical_block = seq.physical_block_for(block_idx).unwrap_or(0);
             slots[t] = (physical_block as i64) * (bs as i64) + (block_offset as i64);
         }
-        let slot_bytes =
-            unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, m * 8) };
+        let slot_bytes = unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, m * 8) };
         self.gpu
             .copy_h2d_async(slot_bytes, meta_base.offset(256), stream)?;
 

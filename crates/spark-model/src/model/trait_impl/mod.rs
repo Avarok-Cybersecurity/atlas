@@ -337,13 +337,15 @@ impl Model for TransformerModel {
         // Row 0 @ N
         let save_0 = base;
         let dst_0 = d.ctx_hidden_acc.offset(d.ctx_len * ctx_slot_bytes);
-        self.gpu.copy_d2d_async(save_0, dst_0, ctx_slot_bytes, stream)?;
+        self.gpu
+            .copy_d2d_async(save_0, dst_0, ctx_slot_bytes, stream)?;
         d.ctx_positions.push(pos_row0);
         d.ctx_len += 1;
         // Row 1 @ N+1
         let save_1 = base.offset(ctx_slot_bytes);
         let dst_1 = d.ctx_hidden_acc.offset(d.ctx_len * ctx_slot_bytes);
-        self.gpu.copy_d2d_async(save_1, dst_1, ctx_slot_bytes, stream)?;
+        self.gpu
+            .copy_d2d_async(save_1, dst_1, ctx_slot_bytes, stream)?;
         d.ctx_positions.push(pos_row1);
         d.ctx_len += 1;
         d.skip_next_decode_append = true;

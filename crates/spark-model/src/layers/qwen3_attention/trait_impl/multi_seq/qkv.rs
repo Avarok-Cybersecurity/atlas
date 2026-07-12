@@ -414,7 +414,17 @@ impl Qwen3AttentionLayer {
                 );
             }
         }
-        ops::w4a16_gemm(gpu, self.w4a16_gemm_k, input, w_base, output, m, n, k, stream)
+        ops::w4a16_gemm(
+            gpu,
+            self.w4a16_gemm_k,
+            input,
+            w_base,
+            output,
+            m,
+            n,
+            k,
+            stream,
+        )
     }
 
     /// Wide-verify (n>3) NVFP4 batched QKV. Reads each of Q/K/V ONCE for all

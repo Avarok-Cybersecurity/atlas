@@ -196,9 +196,7 @@ pub fn step_verify_k2(
         // (the hidden that generated bonus). This also sets the proposer's
         // skip-flag so propose does NOT re-append row 0.
         let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
-        if eagle_fix
-            && let Err(e) = model.dflash_eagle_accept_append(&mut a.seq)
-        {
+        if eagle_fix && let Err(e) = model.dflash_eagle_accept_append(&mut a.seq) {
             tracing::error!("dflash_eagle_accept_append: {e:#}");
         }
         let t_save = Instant::now();

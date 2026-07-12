@@ -474,9 +474,8 @@ pub fn prefill_attention_paged_dflash_bf16_indirect(
         .arg_u32(sliding_window)
         .arg_u32(0u32) // causal_mask_enabled = 0 (DFlash bidirectional)
         .arg_f32(inv_sqrt_d)
-        .arg_ptr(kv_len_q_offset_dev)          // KERNEL_EXTRA_PARAMS: kv_len_ptr
+        .arg_ptr(kv_len_q_offset_dev) // KERNEL_EXTRA_PARAMS: kv_len_ptr
         .arg_ptr(kv_len_q_offset_dev.offset(4)) // KERNEL_EXTRA_PARAMS: q_offset_ptr
         .arg_ptr(kv_len_q_offset_dev.offset(8)) // KERNEL_EXTRA_PARAMS: q_rope_pos_ptr
         .launch(stream)
 }
-

@@ -585,7 +585,8 @@ impl Qwen3SsmLayer {
             // DENSE ONLY: the per-token `else` below is retained for 256-expert
             // MoE, where grouped-GEMM is a net loss at small batch (per-expert
             // M~1 + sort/permute overhead across the 36-layer SSM stack).
-            self.ffn.forward_prefill(normed2_base, num_tokens, ctx, stream)?;
+            self.ffn
+                .forward_prefill(normed2_base, num_tokens, ctx, stream)?;
             let moe_out = ctx.buffers.moe_output();
             ops::residual_add(
                 ctx.gpu,

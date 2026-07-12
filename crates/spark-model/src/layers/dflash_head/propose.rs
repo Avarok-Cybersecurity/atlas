@@ -47,7 +47,10 @@ impl BlockDiffusionDraftHead {
         {
             static CTX_PARITY_DONE: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
-            if std::env::var("ATLAS_DFLASH_CTX_PARITY_DUMP").ok().as_deref() == Some("1")
+            if std::env::var("ATLAS_DFLASH_CTX_PARITY_DUMP")
+                .ok()
+                .as_deref()
+                == Some("1")
                 && dstate.ctx_len > 0
                 && !CTX_PARITY_DONE.load(std::sync::atomic::Ordering::Relaxed)
             {
@@ -358,8 +361,7 @@ impl BlockDiffusionDraftHead {
                 let slot_mapping = &self.scratch.slot_mapping_dev;
                 let mut chunk_start = committed;
                 while chunk_start < dstate.ctx_len {
-                    let chunk_count =
-                        (dstate.ctx_len - chunk_start).min(self.ctx_window);
+                    let chunk_count = (dstate.ctx_len - chunk_start).min(self.ctx_window);
                     // Build slot_mapping for this chunk
                     // [chunk_start .. chunk_start + chunk_count).
                     crate::layers::ops::fill_slots_from_block_table(
@@ -401,10 +403,7 @@ impl BlockDiffusionDraftHead {
             // where a violation would surface. Host-side Vec scan,
             // probe-gated, zero cost when off.
             if std::env::var("ATLAS_DFLASH_CTXLEN_PROBE").ok().as_deref() == Some("1")
-                && let Some(i) = dstate
-                    .ctx_positions
-                    .windows(2)
-                    .position(|w| w[1] <= w[0])
+                && let Some(i) = dstate.ctx_positions.windows(2).position(|w| w[1] <= w[0])
             {
                 tracing::warn!(
                     "DFLASH CTX_POSITIONS VIOLATION: slot {} pos {} -> slot {} pos {} \

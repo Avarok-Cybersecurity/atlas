@@ -127,7 +127,11 @@ impl BlockDiffusionDraftHead {
             target_hidden_dim as u32,
             stream,
         )?;
-        dump_buf("fc_proj", self.scratch.fc_proj, new_ctx_count * self.hidden_size * bf16)?;
+        dump_buf(
+            "fc_proj",
+            self.scratch.fc_proj,
+            new_ctx_count * self.hidden_size * bf16,
+        )?;
 
         // ── Step 2: hidden_norm RMS in-place ─────────────────────────
         // py:375–380  `ops.rms_norm(normed_context_states, context_states,
@@ -201,7 +205,9 @@ impl BlockDiffusionDraftHead {
         let all_k_stage = self.scratch.mlp_intermediate;
         for l in 0..l_total {
             for row in 0..new_ctx_count {
-                let k_src = self.scratch.fused_kv_out
+                let k_src = self
+                    .scratch
+                    .fused_kv_out
                     .offset(row * row_stride + l * 2 * kv_slab_bytes);
                 let k_dst = all_k_stage.offset((l * new_ctx_count + row) * kv_slab_bytes);
                 gpu.copy_d2d(k_src, k_dst, kv_slab_bytes)?;
@@ -271,7 +277,9 @@ impl BlockDiffusionDraftHead {
 
             // Compact V_l from the fused GEMM output.
             for row in 0..new_ctx_count {
-                let v_src = self.scratch.fused_kv_out
+                let v_src = self
+                    .scratch
+                    .fused_kv_out
                     .offset(row * row_stride + l * 2 * kv_slab_bytes + kv_slab_bytes);
                 let v_dst = v_stage.offset(row * kv_slab_bytes);
                 gpu.copy_d2d(v_src, v_dst, kv_slab_bytes)?;

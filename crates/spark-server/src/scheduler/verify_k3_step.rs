@@ -108,7 +108,10 @@ pub fn step_verify_k3(
     } else {
         // MTP path: full pre-sample pipeline (rep_pen + DRY) unchanged.
         let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
-            model, &[v0_argmax, v1_argmax, v2_argmax], a, verify_ctx,
+            model,
+            &[v0_argmax, v1_argmax, v2_argmax],
+            a,
+            verify_ctx,
         );
         (
             processed.first().copied().unwrap_or(v0_argmax),

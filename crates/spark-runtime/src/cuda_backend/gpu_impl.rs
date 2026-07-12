@@ -38,11 +38,11 @@ use cudarc::driver::LaunchConfig;
 
 use super::{
     AtlasCudaBackend, cuCtxSetCurrent, cuEventCreate, cuEventDestroy_v2, cuEventRecord,
-    cuEventSynchronize,
-    cuGraphDestroy, cuGraphExecDestroy, cuGraphLaunch, cuMemAlloc_v2, cuMemAllocHost_v2,
-    cuMemAllocManaged, cuMemFree_v2, cuMemFreeHost, cuMemGetInfo_v2, cuMemcpyDtoDAsync_v2,
-    cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async, cuStreamBeginCapture,
-    cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize, cuStreamWaitEvent,
+    cuEventSynchronize, cuGraphDestroy, cuGraphExecDestroy, cuGraphLaunch, cuMemAlloc_v2,
+    cuMemAllocHost_v2, cuMemAllocManaged, cuMemFree_v2, cuMemFreeHost, cuMemGetInfo_v2,
+    cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async,
+    cuStreamBeginCapture, cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize,
+    cuStreamWaitEvent,
 };
 use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 

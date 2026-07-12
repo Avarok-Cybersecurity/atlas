@@ -109,7 +109,11 @@ impl Qwen3SsmLayer {
             w4a16_gemm_t_k64_k: gpu.kernel("w4a16", "w4a16_gemm_t_k64")?,
             w4a16_gemm_t_m128_k: gpu.kernel("w4a16", "w4a16_gemm_t_m128")?,
             // 8-warp pipelined M128 (try_kernel: 0 when absent → falls back to m128/n128).
-            w4a16_gemm_t_m128_v2_k: super::super::try_kernel(gpu, "w4a16_v2", "w4a16_gemm_t_m128_v2"),
+            w4a16_gemm_t_m128_v2_k: super::super::try_kernel(
+                gpu,
+                "w4a16_v2",
+                "w4a16_gemm_t_m128_v2",
+            ),
             w4a16_gemv_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
             dense_gemm_k: gpu.kernel("gemm", "dense_gemm_bf16")?,
             // try_kernel: 0-handle if absent (gated at dispatch); the pipelined

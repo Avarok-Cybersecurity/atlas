@@ -126,8 +126,10 @@ impl BlockDiffusionDraftHead {
             // write to the paged cache (block_table may not be
             // allocated here — only the Option B propose.rs path
             // guarantees a valid block_table before calling).
-            let dump_commit =
-                std::env::var("ATLAS_DFLASH_PRECOMPUTE_COMMIT").ok().as_deref() == Some("1");
+            let dump_commit = std::env::var("ATLAS_DFLASH_PRECOMPUTE_COMMIT")
+                .ok()
+                .as_deref()
+                == Some("1");
             self.precompute_ctx_kv(
                 base,
                 start_slot,

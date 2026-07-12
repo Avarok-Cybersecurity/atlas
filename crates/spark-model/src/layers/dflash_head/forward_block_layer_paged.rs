@@ -133,9 +133,7 @@ impl BlockDiffusionDraftHead {
         if let Err(e) = std::fs::write(&path, &buf) {
             tracing::warn!("DFLASH BLOCK_DUMP per-layer: write {path} failed: {e}");
         } else if layer_idx == 0 {
-            tracing::info!(
-                "DFLASH BLOCK_DUMP per-layer: wrote {path} ({rows}x{cols} BF16)"
-            );
+            tracing::info!("DFLASH BLOCK_DUMP per-layer: wrote {path} ({rows}x{cols} BF16)");
         }
         Ok(())
     }
@@ -198,7 +196,15 @@ impl BlockDiffusionDraftHead {
 
         // id259 per-layer dump: post-input_norm (γ × h).
         if args.block_dump {
-            self.block_dump_buf(ctx, self.scratch.norm_buf, layer_idx, "input_norm", g, h, stream)?;
+            self.block_dump_buf(
+                ctx,
+                self.scratch.norm_buf,
+                layer_idx,
+                "input_norm",
+                g,
+                h,
+                stream,
+            )?;
         }
 
         // Phase G: when self.quant == Fp8Weights, swap each dense_gemm
@@ -253,7 +259,15 @@ impl BlockDiffusionDraftHead {
             h,
         )?;
         if args.block_dump {
-            self.block_dump_buf(ctx, self.scratch.q_buf, layer_idx, "q_postproj", g, q_dim, stream)?;
+            self.block_dump_buf(
+                ctx,
+                self.scratch.q_buf,
+                layer_idx,
+                "q_postproj",
+                g,
+                q_dim,
+                stream,
+            )?;
         }
         ops::rms_norm(
             gpu,
@@ -267,7 +281,15 @@ impl BlockDiffusionDraftHead {
             stream,
         )?;
         if args.block_dump {
-            self.block_dump_buf(ctx, self.scratch.q_buf, layer_idx, "q_postnorm", g, q_dim, stream)?;
+            self.block_dump_buf(
+                ctx,
+                self.scratch.q_buf,
+                layer_idx,
+                "q_postnorm",
+                g,
+                q_dim,
+                stream,
+            )?;
         }
 
         // 3b-k / 3c-k. K_noise branch: k_proj then k_norm — faithful to
@@ -286,7 +308,15 @@ impl BlockDiffusionDraftHead {
             h,
         )?;
         if args.block_dump {
-            self.block_dump_buf(ctx, self.scratch.k_buf, layer_idx, "k_postproj", g, kv_dim, stream)?;
+            self.block_dump_buf(
+                ctx,
+                self.scratch.k_buf,
+                layer_idx,
+                "k_postproj",
+                g,
+                kv_dim,
+                stream,
+            )?;
         }
         ops::rms_norm(
             gpu,
@@ -300,7 +330,15 @@ impl BlockDiffusionDraftHead {
             stream,
         )?;
         if args.block_dump {
-            self.block_dump_buf(ctx, self.scratch.k_buf, layer_idx, "k_postnorm", g, kv_dim, stream)?;
+            self.block_dump_buf(
+                ctx,
+                self.scratch.k_buf,
+                layer_idx,
+                "k_postnorm",
+                g,
+                kv_dim,
+                stream,
+            )?;
         }
 
         // 3b-v. V_noise branch: v_proj — faithful to dflash.py:74.
@@ -342,8 +380,24 @@ impl BlockDiffusionDraftHead {
 
         // id259 per-layer dump: post-RoPE (the rotated q/k actually fed to attn).
         if args.block_dump {
-            self.block_dump_buf(ctx, self.scratch.q_buf, layer_idx, "q_postrope", g, q_dim, stream)?;
-            self.block_dump_buf(ctx, self.scratch.k_buf, layer_idx, "k_postrope", g, kv_dim, stream)?;
+            self.block_dump_buf(
+                ctx,
+                self.scratch.q_buf,
+                layer_idx,
+                "q_postrope",
+                g,
+                q_dim,
+                stream,
+            )?;
+            self.block_dump_buf(
+                ctx,
+                self.scratch.k_buf,
+                layer_idx,
+                "k_postrope",
+                g,
+                kv_dim,
+                stream,
+            )?;
             self.block_dump_buf(ctx, self.scratch.v_buf, layer_idx, "v", g, kv_dim, stream)?;
         }
 
@@ -494,9 +548,9 @@ impl BlockDiffusionDraftHead {
         // non-causal prefill_attention — matches dflash.py:75-97 op-for-op.
         // Default (env unset): paged-indirect kernel, unchanged.
         static USE_CONTIG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *USE_CONTIG.get_or_init(|| {
-            std::env::var("ATLAS_DFLASH_CONTIG_ATTN").ok().as_deref() == Some("1")
-        }) {
+        if *USE_CONTIG
+            .get_or_init(|| std::env::var("ATLAS_DFLASH_CONTIG_ATTN").ok().as_deref() == Some("1"))
+        {
             return self.forward_block_layer_attention_contig(args, ctx, k_pool, v_pool);
         }
 
