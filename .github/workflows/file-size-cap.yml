@@ -247,6 +247,13 @@ jobs:
             # extracted to trait_decode_batched_conv_gdn.rs. Clean split
             # tracked as follow-up.
             "crates/spark-model/src/layers/qwen3_ssm/trait_decode_batched.rs"
+            # -- #300/#301 (mixed-precision NVFP4 weights) carry-over --
+            # 522 LoC; landed on main 2026-07-12 without an entry, so the
+            # check is red on main and fails every fresh PR. Entry added by
+            # the first affected PR per the #229 carry-over precedent above;
+            # not this PR's code. Clean split tracked as follow-up by the
+            # fp8_lut authors.
+            "crates/spark-model/src/weight_map/fp8_lut.rs"
           )
 
           violations=0
