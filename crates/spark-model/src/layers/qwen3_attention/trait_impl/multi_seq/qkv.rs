@@ -359,8 +359,8 @@ impl Qwen3AttentionLayer {
                 static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
                 *ON.get_or_init(|| std::env::var("ATLAS_FFN_SMALLM").ok().as_deref() != Some("0"))
             }
-            if m <= 64 && k % 32 == 0 && small_m_enabled() {
-                if k >= 8192 && k % 64 == 0 && self.w4a16_gemm_t_k64_k.0 != 0 {
+            if m <= 64 && k.is_multiple_of(32) && small_m_enabled() {
+                if k >= 8192 && k.is_multiple_of(64) && self.w4a16_gemm_t_k64_k.0 != 0 {
                     return ops::w4a16_gemm_n128(
                         gpu,
                         self.w4a16_gemm_t_k64_k,
