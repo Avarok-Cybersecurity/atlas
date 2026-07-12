@@ -132,7 +132,7 @@ fn build_active_seq_from_prefill(
         remaining: if immediate_finish {
             0
         } else {
-            p.max_tokens.saturating_sub(1)
+            p.max_tokens - 1
         },
         min_tokens: p.min_tokens,
         eos_tokens: p.eos_tokens,
@@ -185,6 +185,8 @@ fn build_active_seq_from_prefill(
             !p.enable_thinking && think_end_token.is_some()
         },
         think_just_ended: false,
+        post_think_emitted: 0,
+        spec_adapt: Default::default(),
         think_skip_count: 0,
         require_tool_call: use_legacy_tool_call,
         tool_request,
