@@ -1086,6 +1086,7 @@ impl DenseFfnLayer {
     ///   - M>64 (real prefill): v2 (8-warp) > t_m128 (4-warp), unchanged.
     ///   - No transposed copy: base `w4a16_gemm` (9-12x the bandwidth floor —
     ///     last resort).
+    ///
     /// Kill-switch: ATLAS_FFN_SMALLM=0 restores the m128-only dispatch for A/B.
     #[allow(clippy::too_many_arguments)]
     fn w4a16_prefill_gemm(
@@ -1105,8 +1106,8 @@ impl DenseFfnLayer {
             *ON.get_or_init(|| std::env::var("ATLAS_FFN_SMALLM").ok().as_deref() != Some("0"))
         }
         if let Some(wt) = wt {
-            if m <= 64 && k % 32 == 0 && small_m_enabled() {
-                if k >= 8192 && k % 64 == 0 && self.w4a16_gemm_t_k64_k.0 != 0 {
+            if m <= 64 && k.is_multiple_of(32) && small_m_enabled() {
+                if k >= 8192 && k.is_multiple_of(64) && self.w4a16_gemm_t_k64_k.0 != 0 {
                     return ops::w4a16_gemm_n128(
                         ctx.gpu,
                         self.w4a16_gemm_t_k64_k,
