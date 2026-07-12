@@ -107,8 +107,16 @@ fn main() -> Result<()> {
     let kernels: Vec<(&str, KernelHandle, Geom)> = [
         ("w4a16_gemm       (N64,M64) ", "w4a16_gemm", Geom::N64M64),
         ("w4a16_gemm_t     (N128,M64)", "w4a16_gemm_t", Geom::N128M64),
-        ("w4a16_gemm_t_k64 (N128,M64)", "w4a16_gemm_t_k64", Geom::N128M64),
-        ("w4a16_gemm_t_m128(N128,M128)", "w4a16_gemm_t_m128", Geom::N128M128),
+        (
+            "w4a16_gemm_t_k64 (N128,M64)",
+            "w4a16_gemm_t_k64",
+            Geom::N128M64,
+        ),
+        (
+            "w4a16_gemm_t_m128(N128,M128)",
+            "w4a16_gemm_t_m128",
+            Geom::N128M128,
+        ),
     ]
     .into_iter()
     .filter_map(|(name, func, geom)| match g.kernel("w4a16", func) {

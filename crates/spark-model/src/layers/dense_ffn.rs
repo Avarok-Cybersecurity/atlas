@@ -794,9 +794,8 @@ impl DenseFfnLayer {
             })
         }
         if decode_ffn_via_gemm() && self.activation == FfnActivation::SiLU && self.act_mul.0 != 0 {
-            let wt_alive = |w: &Option<QuantizedWeight>| {
-                w.as_ref().is_some_and(|w| !w.weight.is_null())
-            };
+            let wt_alive =
+                |w: &Option<QuantizedWeight>| w.as_ref().is_some_and(|w| !w.weight.is_null());
             if wt_alive(&self.weights.gate_proj_t) && wt_alive(&self.weights.up_proj_t) {
                 static LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
                 LOGGED.get_or_init(|| {

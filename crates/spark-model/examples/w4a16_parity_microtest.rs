@@ -202,7 +202,11 @@ fn main() -> Result<()> {
             all_ok &= ok;
             eprintln!(
                 "{label}  {name}  cos={c:.7}  max|Δ|={max_d:.5} (base max|C|={max_abs_base:.3})  {}",
-                if ok { "PASS" } else { "FAIL ← kernel disagrees with base" }
+                if ok {
+                    "PASS"
+                } else {
+                    "FAIL ← kernel disagrees with base"
+                }
             );
         }
         eprintln!();
