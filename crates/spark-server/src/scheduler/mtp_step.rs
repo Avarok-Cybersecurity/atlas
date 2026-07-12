@@ -53,7 +53,9 @@ pub fn step_mtp(
         // fused forward, accept/reject, bonus-token emit, and re-propose for
         // the next step. This replaces the two-sweep sequence (M=1 decode here
         // + M=1+k fused in Phase B) with a single M=1+k fused sweep.
-        if dflash_verify_raw_argmax {
+        if dflash_verify_raw_argmax
+            && !crate::scheduler::verify_pipeline_helper::dflash_seam_serial_enabled()
+        {
             let eff = if a.grammar_state.is_some() {
                 1
             } else {
