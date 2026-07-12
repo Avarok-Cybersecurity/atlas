@@ -147,12 +147,16 @@ pub fn swap_out_sequence(
 ) -> Result<SwappedSeq> {
     let mut a = active.swap_remove(victim_idx);
 
-    // Save the victim's state FIRST, while its SSM slot is untouched.
-    // `save_sequence_state` reads SSM state through the layer-state device
-    // pointers (which still address the victim's own slot), so it must run
-    // before any slot compaction / free. On a save error `a` is dropped and
-    // its RAII guard releases its own slot — no survivor owns it yet, so no
-    // double-release.
+    // Compact the swapped-in sequence (same logic as retire path).
+    if victim_idx < active.len() && active[victim_idx].seq.slot_idx != victim_idx {
+        model.compact_sequence(&mut active[victim_idx].seq, victim_idx)?;
+        // Disown the victim's migrated slot BEFORE the fallible save below: sets
+        // the reuse sentinel AND neutralizes the RAII guard so a `?`-early-
+        // return (create_file/save_sequence_state error) that drops `a` cannot
+        // double-release the slot now owned by the swapped-in sequence.
+        model.detach_slot_for_reuse(&mut a.seq);
+    }
+
     let (swap_id, mut writer) = spill.create_file()?;
     model.save_sequence_state(&a.seq, &mut writer)?;
     drop(writer);
@@ -162,24 +166,10 @@ pub fn swap_out_sequence(
     let seq_len = a.seq.seq_len;
     let tokens = a.seq.tokens.clone();
 
-    // Free GPU resources (KV blocks + SSM slot). Releasing the victim's slot
-    // to the pool here makes it available as an exclusive compaction target
-    // below.
+    // Free GPU resources (KV blocks + SSM slot).
     let slot_idx = a.seq.slot_idx as u32;
     model.free_sequence(&mut a.seq)?;
     let _ = model.ep_broadcast_cmd_for_seq(slot_idx, 0xFFFFFFF1);
-
-    // Compact the swapped-in survivor (moved from the end into `victim_idx`)
-    // back into the contiguous slot range, using the SAME exclusivity-safe
-    // two-phase logic as the retire path. The previous per-swap "compact onto
-    // the position index victim_idx" migrated a survivor onto a slot still
-    // owned by another live sequence when co-dispatch left the active vec
-    // non-contiguous (double-own → shared GDN h_state → cross-request bleed),
-    // and even in the contiguous case overwrote the victim's slot before the
-    // save. Under EP v2, slots are pinned in place (see retire) — skip it.
-    if !model.ep_protocol_v2() {
-        super::mod_helpers::compact_survivors_into_range(model, active);
-    }
 
     Ok(SwappedSeq {
         tokens,
@@ -221,6 +211,7 @@ pub fn swap_out_sequence(
         think_start_token: a.think_start_token,
         think_ended: a.think_ended,
         think_just_ended: a.think_just_ended,
+        post_think_emitted: a.post_think_emitted,
         think_skip_count: a.think_skip_count,
         require_tool_call: a.require_tool_call,
         tool_request: a.tool_request,
@@ -308,6 +299,8 @@ pub fn resume_swapped_seq(
         think_start_token: s.think_start_token,
         think_ended: s.think_ended,
         think_just_ended: s.think_just_ended,
+        post_think_emitted: s.post_think_emitted,
+        spec_adapt: Default::default(),
         think_skip_count: s.think_skip_count,
         require_tool_call: s.require_tool_call,
         tool_request: s.tool_request,

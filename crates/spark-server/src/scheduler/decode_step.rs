@@ -79,6 +79,22 @@ pub fn step_decode_only(
         }
     };
 
+    // Ctx-holes fix (ATLAS_DFLASH_SERIAL_APPEND=1): think-gated stretches
+    // route HERE (mod.rs sends `inside_thinking` seqs to step_decode_only,
+    // never the mtp bootstrap), so their captured target hiddens were
+    // overwritten and permanently lost — the dominant ctx hole: a 270-token
+    // think stretch leaves the drafter conditioned on the prompt alone
+    // (observed GAP≈290 at first propose, accept ≤6%). Append each decoded
+    // token's capture. n==1 only: `try_dflash_capture` stores row 0, which
+    // is ambiguous in a multi-seq batch (fine here — DFlash runs
+    // --max-batch-size 1).
+    if n == 1
+        && crate::scheduler::adaptive_spec::serial_append_enabled()
+        && let Err(e) = model.dflash_serial_ctx_append(&mut active[0].seq)
+    {
+        tracing::error!("dflash_serial_ctx_append (decode_only): {e:#}");
+    }
+
     process_decode_logits(
         model,
         active,
