@@ -55,12 +55,9 @@ pub fn step_mtp(
         // + M=1+k fused in Phase B) with a single M=1+k fused sweep.
         if dflash_verify_raw_argmax
             && !crate::scheduler::verify_pipeline_helper::dflash_seam_serial_enabled()
+            && crate::scheduler::adaptive_spec::spec_allowed(a)
         {
-            let eff = if a.grammar_state.is_some() {
-                1
-            } else {
-                num_drafts
-            };
+            let eff = if a.grammar_state.is_some() { 1 } else { num_drafts };
             let _gmask = mtp_grammar_mask_for(a);
             match model.run_mtp_propose_multi(
                 a.last_token,
@@ -73,29 +70,17 @@ pub fn step_mtp(
                 Ok(init) if !init.is_empty() => {
                     if eff >= 3 && init.len() >= 3 {
                         step_verify_k4(
-                            model,
-                            a,
-                            &init,
-                            num_drafts,
-                            verify_ctx,
+                            model, a, &init, num_drafts, verify_ctx,
                             dflash_verify_raw_argmax,
                         );
                     } else if eff >= 2 && init.len() >= 2 {
                         step_verify_k3(
-                            model,
-                            a,
-                            &init,
-                            num_drafts,
-                            verify_ctx,
+                            model, a, &init, num_drafts, verify_ctx,
                             dflash_verify_raw_argmax,
                         );
                     } else {
                         step_verify_k2(
-                            model,
-                            a,
-                            &init,
-                            num_drafts,
-                            verify_ctx,
+                            model, a, &init, num_drafts, verify_ctx,
                             dflash_verify_raw_argmax,
                         );
                     }
@@ -181,6 +166,31 @@ pub fn step_mtp(
             continue;
         }
         a.last_token = tok;
+        // Adaptive speculation: count serial tokens toward the re-probe window.
+        crate::scheduler::adaptive_spec::tick_serial(a);
+
+        // Ctx-holes fix (ATLAS_DFLASH_SERIAL_APPEND=1), COMPLEMENT-GATED:
+        // the serial ctx-append fires iff propose() will NOT run this
+        // iteration, so append and propose decode-append can never both
+        // cover one token — double-append impossible by construction
+        // (that was the cuMemcpyDtoDAsync status-1 crash).
+        // `spec_allowed` is evaluated exactly once (it mutates re-probe
+        // state); its verdict is reused for the propose gate below.
+        // Exception — re-probe RESUME: the token decoded on the un-suspend
+        // iteration would otherwise fall in a hole (the stale
+        // `skip_next_decode_append` set by the last suspended token makes
+        // the propose below skip its decode-append). Append it here; the
+        // skip flag this sets is consumed by that propose — one append,
+        // no duplicate, seam covered.
+        let was_suspended = crate::scheduler::adaptive_spec::is_suspended(a);
+        let will_propose = crate::scheduler::adaptive_spec::spec_allowed(a);
+        let reprobe_resume = was_suspended && will_propose;
+        if crate::scheduler::adaptive_spec::serial_append_enabled()
+            && (!will_propose || reprobe_resume)
+            && let Err(e) = model.dflash_serial_ctx_append(&mut a.seq)
+        {
+            tracing::error!("dflash_serial_ctx_append: {e:#}");
+        }
 
         if let Err(e) = model.save_hidden_for_mtp(0, 0) {
             tracing::error!("save_hidden_for_mtp: {e:#}");
@@ -200,7 +210,10 @@ pub fn step_mtp(
         } else {
             num_drafts
         };
-        {
+        // Adaptive speculation: a suspended seq skips proposing entirely and
+        // stays on this serial bootstrap path until the re-probe fires.
+        // (`will_propose` is the single spec_allowed evaluation above.)
+        if will_propose {
             match model.run_mtp_propose_multi(
                 tok,
                 a.seq.seq_len,
@@ -258,41 +271,13 @@ pub fn step_mtp(
         // MTP keeps using the existing graphed paths; this dispatch is purely
         // additive.
         if drafts.len() >= 4 {
-            step_verify_dflash(
-                model,
-                a,
-                &drafts,
-                num_drafts,
-                verify_ctx,
-                dflash_verify_raw_argmax,
-            );
+            step_verify_dflash(model, a, &drafts, num_drafts, verify_ctx, dflash_verify_raw_argmax);
         } else if num_drafts >= 3 && drafts.len() >= 3 {
-            step_verify_k4(
-                model,
-                a,
-                &drafts,
-                num_drafts,
-                verify_ctx,
-                dflash_verify_raw_argmax,
-            );
+            step_verify_k4(model, a, &drafts, num_drafts, verify_ctx, dflash_verify_raw_argmax);
         } else if num_drafts >= 2 && drafts.len() >= 2 {
-            step_verify_k3(
-                model,
-                a,
-                &drafts,
-                num_drafts,
-                verify_ctx,
-                dflash_verify_raw_argmax,
-            );
+            step_verify_k3(model, a, &drafts, num_drafts, verify_ctx, dflash_verify_raw_argmax);
         } else {
-            step_verify_k2(
-                model,
-                a,
-                &drafts,
-                num_drafts,
-                verify_ctx,
-                dflash_verify_raw_argmax,
-            );
+            step_verify_k2(model, a, &drafts, num_drafts, verify_ctx, dflash_verify_raw_argmax);
         }
     }
 }

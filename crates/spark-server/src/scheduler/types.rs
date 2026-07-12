@@ -184,6 +184,16 @@ pub(super) struct ActiveSeq {
     pub think_ended: bool,
     /// One-shot signal: set when `</think>` was the most recently emitted token.
     pub think_just_ended: bool,
+    /// Tokens emitted since `</think>` (0 while thinking; resets if the model
+    /// re-enters a think block). Consumed by the DFlash spec-resume guard
+    /// (ATLAS_DFLASH_RESUME_GUARD) to keep the answer's opening tokens on
+    /// serial decode, where the T=0 verify-vs-decode low-margin flips
+    /// concentrate (measured 2026-07-07).
+    pub post_think_emitted: u32,
+    /// Adaptive speculation (ATLAS_DFLASH_ADAPTIVE=1): rolling accept window
+    /// + suspend/re-probe state. Transient — reset on swap/restore (a
+    /// resumed sequence re-measures). See `adaptive_spec` module docs.
+    pub spec_adapt: crate::scheduler::adaptive_spec::AdaptState,
     /// Consecutive `</think>` tokens skipped outside thinking. Safety limit: 50.
     pub think_skip_count: u32,
     /// Token ID for `</tool_call>`. Hard-stops only NON-tool requests
@@ -392,6 +402,7 @@ pub(super) struct SwappedSeq {
     pub think_start_token: Option<u32>,
     pub think_ended: bool,
     pub think_just_ended: bool,
+    pub post_think_emitted: u32,
     pub think_skip_count: u32,
     pub require_tool_call: bool,
     /// F4 (2026-06-02): sticky tool-request flag, preserved across
