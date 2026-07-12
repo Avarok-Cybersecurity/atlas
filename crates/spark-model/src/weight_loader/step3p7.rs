@@ -181,7 +181,12 @@ impl ModelWeightLoader for Step3p7WeightLoader {
         Ok(w)
     }
 
-    fn load_lm_head(&self, store: &WeightStore, _config: &ModelConfig) -> Result<DenseWeight> {
+    fn load_lm_head(
+        &self,
+        store: &WeightStore,
+        _config: &ModelConfig,
+        _gpu: &dyn GpuBackend,
+    ) -> Result<DenseWeight> {
         dense(store, "lm_head.weight")
     }
 

@@ -34,20 +34,50 @@ fn proj_is_native_fp8(store: &WeightStore, prefix: &str) -> bool {
     is_fp8_weight && has_block_scale
 }
 
-/// True when `{prefix}.weight` is on-disk FP8 with ANY dequant scale — block
-/// (`weight_scale_inv` / 2D `weight_scale`) OR the ModelOpt per-tensor SCALAR
-/// `weight_scale` (shape `[]`). `load_fp8_block_scaled_as_fp8weight` broadcasts
-/// the scalar into a uniform block grid, so all three are loadable as FP8. The
-/// nvidia Qwen3.6-27B-NVFP4 GDN projections use the scalar form, which
-/// `proj_is_native_fp8` (2D-only) misses.
+/// True when `{prefix}.weight` is on-disk FP8 with a scale the native-FP8
+/// `w8a16` path can actually consume — i.e. one that is (or broadcasts to) the
+/// `[ceil(N/128), ceil(K/128)]` FP32 block grid the kernel indexes as
+/// `block_scale[n/128, k/128]`:
+///
+///   * `weight_scale_inv` / 2-D `weight_scale` shaped as that block grid
+///     (DeepSeek-V3 / Qwen-native convention), or
+///   * a per-tensor SCALAR `weight_scale` (ModelOpt; e.g. the nvidia
+///     Qwen3.6-27B-NVFP4 GDN projections) — `load_fp8_block_scaled_as_fp8weight`
+///     broadcasts it into a uniform grid, which is exact.
+///
+/// A **per-row** `weight_scale` (`[N,1]`, e.g. unsloth's re-quantized
+/// Qwen3.6-*-NVFP4, 2026-07-10) is deliberately REJECTED. It is not a block
+/// grid: the kernel would read row `n`'s multiplier from grid cell `n/128`, so
+/// 127 of every 128 rows get some other row's scale. That is in-bounds — the
+/// widened `[N]` buffer is *larger* than the `[N/128, K/128]` grid — so it does
+/// not fault; it silently produces garbage logits. Returning false here drops
+/// the projection to the default `dequant_fp8_blockscaled_to_bf16` →
+/// `quantize_to_nvfp4` path, which reads a `[N,1]` scale correctly
+/// (`block_n = N/N = 1`, i.e. one multiplier per row).
 fn proj_is_fp8_any_scale(store: &WeightStore, prefix: &str) -> bool {
-    let is_fp8 = store
-        .get(&format!("{prefix}.weight"))
-        .map(|w| w.dtype == WeightDtype::FP8E4M3)
-        .unwrap_or(false);
-    is_fp8
-        && (store.contains(&format!("{prefix}.weight_scale_inv"))
-            || store.contains(&format!("{prefix}.weight_scale")))
+    let Ok(w) = store.get(&format!("{prefix}.weight")) else {
+        return false;
+    };
+    if w.dtype != WeightDtype::FP8E4M3 || w.shape.len() != 2 {
+        return false;
+    }
+    let (n, k) = (w.shape[0], w.shape[1]);
+
+    for key in [
+        format!("{prefix}.weight_scale_inv"),
+        format!("{prefix}.weight_scale"),
+    ] {
+        let Ok(s) = store.get(&key) else { continue };
+        // Per-tensor scalar → broadcast to a uniform grid: exact.
+        if s.num_elements() == 1 {
+            return true;
+        }
+        // 2-D scale: only a genuine 128×128 block grid is consumable.
+        if s.shape.len() == 2 && s.shape[0] == n.div_ceil(128) && s.shape[1] == k.div_ceil(128) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Concatenate two block-scaled FP8 weights along rows (dim 0):
@@ -891,8 +921,13 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         loaders_b::load_final_norm(store, config)
     }
 
-    fn load_lm_head(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
-        loaders_b::load_lm_head(store, config)
+    fn load_lm_head(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        gpu: &dyn GpuBackend,
+    ) -> Result<DenseWeight> {
+        loaders_b::load_lm_head(store, config, gpu)
     }
 
     fn load_mtp_weights(

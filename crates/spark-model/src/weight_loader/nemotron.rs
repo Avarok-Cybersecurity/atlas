@@ -375,7 +375,12 @@ impl ModelWeightLoader for NemotronHWeightLoader {
         dense(store, &format!("{}.norm_f.weight", config.weight_prefix))
     }
 
-    fn load_lm_head(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
+    fn load_lm_head(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        _gpu: &dyn GpuBackend,
+    ) -> Result<DenseWeight> {
         if store.contains("lm_head.weight") {
             dense(store, "lm_head.weight")
         } else {

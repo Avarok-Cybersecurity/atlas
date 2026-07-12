@@ -78,7 +78,12 @@ impl ModelWeightLoader for DeepSeekV4WeightLoader {
             .context("DeepSeek-V4: no final norm tensor found (tried norm.weight, model.norm.weight, final_norm.weight)")
     }
 
-    fn load_lm_head(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
+    fn load_lm_head(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        _gpu: &dyn GpuBackend,
+    ) -> Result<DenseWeight> {
         // Try standard HF name first
         if store.contains("lm_head.weight") {
             return dense(store, "lm_head.weight");

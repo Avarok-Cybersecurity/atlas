@@ -10,9 +10,7 @@ use spark_runtime::weights::{WeightDtype, WeightStore};
 
 use super::ModelWeightLoader;
 use crate::layer::TransformerLayer;
-use crate::weight_map::{
-    DenseWeight, MtpWeights, dense, dense_auto, detect_nvfp4_variant, load_mtp,
-};
+use crate::weight_map::{DenseWeight, MtpWeights, dense_auto, detect_nvfp4_variant, load_mtp};
 
 pub struct Qwen35WeightLoader;
 
@@ -89,21 +87,44 @@ impl ModelWeightLoader for Qwen35WeightLoader {
         dense_auto(store, &format!("{prefix}.norm.weight"), gpu)
     }
 
-    fn load_lm_head(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
+    fn load_lm_head(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        gpu: &dyn GpuBackend,
+    ) -> Result<DenseWeight> {
         // lm_head location varies by quantizer:
         //   Sehyo: "lm_head.weight"
         //   Kbenkhaled: "language_model.lm_head.weight"
-        for pattern in &[
-            "lm_head.weight",
-            "language_model.lm_head.weight",
-            "model.lm_head.weight",
-        ] {
-            if store.contains(pattern) {
-                return dense(store, pattern);
+        //
+        // Dequant FP8 ONLY; hand every other dtype through untouched.
+        // `dense` does no dtype check, which is correct for a BF16 head and for
+        // a Standard-NVFP4 head (`weight` U8-packed + weight_scale_2, e.g.
+        // nvidia/Qwen3.6-*-NVFP4) that the consumer unpacks itself — routing
+        // those through `dense_auto_fp8_or_bf16` hard-errors on `unsupported
+        // dtype UInt8`. But it is WRONG for FP8: mixed-precision checkpoints
+        // (unsloth Qwen3.6-*-NVFP4, 2026-07-10) keep lm_head as FP8 E4M3 +
+        // per-row `weight_scale`, and feeding those bytes to a BF16 GEMM reads
+        // 2x the allocation on the largest tensor in the model →
+        // CUDA_ERROR_ILLEGAL_ADDRESS at the first sync after build.
+        for prefix in ["lm_head", "language_model.lm_head", "model.lm_head"] {
+            let key = format!("{prefix}.weight");
+            if !store.contains(&key) {
+                continue;
             }
+            let is_fp8 = store
+                .get(&key)
+                .map(|w| w.dtype == WeightDtype::FP8E4M3)
+                .unwrap_or(false);
+            return if is_fp8 {
+                crate::weight_map::dense_auto_fp8_or_bf16(store, prefix, gpu)
+            } else {
+                crate::weight_map::dense(store, &key)
+            };
         }
+        // Tied embeddings: the head IS the embedding table.
         let prefix = &config.weight_prefix;
-        dense(store, &format!("{prefix}.embed_tokens.weight"))
+        crate::weight_map::dense(store, &format!("{prefix}.embed_tokens.weight"))
     }
 
     fn load_mtp_weights(

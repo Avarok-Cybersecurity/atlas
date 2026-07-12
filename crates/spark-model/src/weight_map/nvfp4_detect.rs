@@ -262,10 +262,7 @@ pub(crate) fn quantized_any(
         tracing::debug!("{prefix}: no quantization metadata; falling back to runtime BF16→NVFP4");
         Nvfp4Variant::Bf16Raw
     } else if has_fp8_dense
-        && !matches!(
-            variant,
-            Nvfp4Variant::Fp8Dequanted | Nvfp4Variant::Bf16Raw
-        )
+        && !matches!(variant, Nvfp4Variant::Fp8Dequanted | Nvfp4Variant::Bf16Raw)
     {
         tracing::debug!("{prefix}: FP8 key in an NVFP4 checkpoint; dequant FP8→BF16→NVFP4");
         Nvfp4Variant::Fp8Dequanted

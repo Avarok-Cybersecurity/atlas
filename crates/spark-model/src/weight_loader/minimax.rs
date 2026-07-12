@@ -316,7 +316,12 @@ impl ModelWeightLoader for MinimaxM2WeightLoader {
         dense(store, "model.norm.weight")
     }
 
-    fn load_lm_head(&self, store: &WeightStore, _config: &ModelConfig) -> Result<DenseWeight> {
+    fn load_lm_head(
+        &self,
+        store: &WeightStore,
+        _config: &ModelConfig,
+        _gpu: &dyn GpuBackend,
+    ) -> Result<DenseWeight> {
         dense(store, "lm_head.weight")
     }
 

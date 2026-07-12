@@ -167,7 +167,12 @@ impl ModelWeightLoader for Qwen3VLWeightLoader {
         dense(store, &format!("{prefix}.norm.weight"))
     }
 
-    fn load_lm_head(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
+    fn load_lm_head(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        _gpu: &dyn GpuBackend,
+    ) -> Result<DenseWeight> {
         for pattern in &[
             "lm_head.weight",
             "language_model.lm_head.weight",
