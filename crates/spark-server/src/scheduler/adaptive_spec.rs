@@ -125,9 +125,7 @@ pub(crate) fn is_suspended(a: &ActiveSeq) -> bool {
 /// and bootstrap tokens alike. Read once.
 pub(crate) fn serial_append_enabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("ATLAS_DFLASH_SERIAL_APPEND").ok().as_deref() == Some("1")
-    })
+    *CACHED.get_or_init(|| std::env::var("ATLAS_DFLASH_SERIAL_APPEND").ok().as_deref() == Some("1"))
 }
 
 /// Count a serially-decoded token toward the re-probe interval.

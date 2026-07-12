@@ -57,7 +57,11 @@ pub fn step_mtp(
             && !crate::scheduler::verify_pipeline_helper::dflash_seam_serial_enabled()
             && crate::scheduler::adaptive_spec::spec_allowed(a)
         {
-            let eff = if a.grammar_state.is_some() { 1 } else { num_drafts };
+            let eff = if a.grammar_state.is_some() {
+                1
+            } else {
+                num_drafts
+            };
             let _gmask = mtp_grammar_mask_for(a);
             match model.run_mtp_propose_multi(
                 a.last_token,
@@ -70,17 +74,29 @@ pub fn step_mtp(
                 Ok(init) if !init.is_empty() => {
                     if eff >= 3 && init.len() >= 3 {
                         step_verify_k4(
-                            model, a, &init, num_drafts, verify_ctx,
+                            model,
+                            a,
+                            &init,
+                            num_drafts,
+                            verify_ctx,
                             dflash_verify_raw_argmax,
                         );
                     } else if eff >= 2 && init.len() >= 2 {
                         step_verify_k3(
-                            model, a, &init, num_drafts, verify_ctx,
+                            model,
+                            a,
+                            &init,
+                            num_drafts,
+                            verify_ctx,
                             dflash_verify_raw_argmax,
                         );
                     } else {
                         step_verify_k2(
-                            model, a, &init, num_drafts, verify_ctx,
+                            model,
+                            a,
+                            &init,
+                            num_drafts,
+                            verify_ctx,
                             dflash_verify_raw_argmax,
                         );
                     }
@@ -271,13 +287,41 @@ pub fn step_mtp(
         // MTP keeps using the existing graphed paths; this dispatch is purely
         // additive.
         if drafts.len() >= 4 {
-            step_verify_dflash(model, a, &drafts, num_drafts, verify_ctx, dflash_verify_raw_argmax);
+            step_verify_dflash(
+                model,
+                a,
+                &drafts,
+                num_drafts,
+                verify_ctx,
+                dflash_verify_raw_argmax,
+            );
         } else if num_drafts >= 3 && drafts.len() >= 3 {
-            step_verify_k4(model, a, &drafts, num_drafts, verify_ctx, dflash_verify_raw_argmax);
+            step_verify_k4(
+                model,
+                a,
+                &drafts,
+                num_drafts,
+                verify_ctx,
+                dflash_verify_raw_argmax,
+            );
         } else if num_drafts >= 2 && drafts.len() >= 2 {
-            step_verify_k3(model, a, &drafts, num_drafts, verify_ctx, dflash_verify_raw_argmax);
+            step_verify_k3(
+                model,
+                a,
+                &drafts,
+                num_drafts,
+                verify_ctx,
+                dflash_verify_raw_argmax,
+            );
         } else {
-            step_verify_k2(model, a, &drafts, num_drafts, verify_ctx, dflash_verify_raw_argmax);
+            step_verify_k2(
+                model,
+                a,
+                &drafts,
+                num_drafts,
+                verify_ctx,
+                dflash_verify_raw_argmax,
+            );
         }
     }
 }
