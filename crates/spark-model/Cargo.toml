@@ -157,6 +157,18 @@ name = "gdn_strided_norm_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "gdn_conv_kn_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "w4a16_m17_bench"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "w4a16_parity_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "rope_microtest"
 required-features = ["cuda", "gpu-examples"]
 
