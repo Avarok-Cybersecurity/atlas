@@ -134,9 +134,7 @@ pub(crate) fn serial_append_enabled() -> bool {
 /// A/B on ONE binary.
 pub(crate) fn unified_ctx_enabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("ATLAS_DFLASH_UNIFIED_CTX").ok().as_deref() == Some("1")
-    })
+    *CACHED.get_or_init(|| std::env::var("ATLAS_DFLASH_UNIFIED_CTX").ok().as_deref() == Some("1"))
 }
 
 /// Count a serially-decoded token toward the re-probe interval.
