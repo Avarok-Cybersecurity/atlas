@@ -45,65 +45,57 @@ impl Qwen3SsmLayer {
         // paths (and a future C=32 FLA variant) are Blackwell-only. NVIDIA
         // (cfg unset) takes the full FLA/WY ladder below unchanged.
         if cfg!(atlas_scale) {
-            // MID-CHUNK tail capture: split the split4 recurrence at cap_local,
-            // D2D the @tb h_state into the reserved snapshot slot, then finish
-            // the trailing tokens with h_state chained. Byte-identical to a
-            // single call — same algebra as the >4096 sub-chunk loop below.
+            // MID-CHUNK tail capture: split the split4 recurrence at cap_local
+            // (and, when present, cap_local - bs), D2D each captured h_state
+            // into its reserved slot, then finish the trailing tokens with
+            // h_state chained. Byte-identical to a single call — same algebra as
+            // the >4096 sub-chunk loop below.
             if let (Some(cap), Some(idx)) = (ctx.midchunk_capture.as_ref(), midcap_idx) {
                 let cl = cap.cap_local;
                 if cl > 0 && (cl as u32) < k {
                     let bf16 = 2usize;
                     let value_dim = nv * vd;
-                    // Segment 1: local tokens [0, cap_local).
-                    ops::gdn_prefill_split4(
-                        ctx.gpu,
-                        self.gdn_prefill_split4_k,
-                        h_state,
-                        q_ptr,
-                        k_ptr,
-                        v_ptr,
-                        gates_buf,
-                        gates_buf.offset(nv * fp32),
-                        gdn_out_buf,
-                        1,
-                        cl as u32,
-                        nk as u32,
-                        nv as u32,
-                        kd as u32,
-                        vd as u32,
-                        conv_dim as u32,
-                        conv_dim as u32,
-                        gb_stride,
-                        stream,
-                    )?;
-                    // Capture h_state @ tb into the reserved slot for this layer.
+                    // Run split4 over local tokens [start, start+len); h_state is
+                    // the SAME (chained) across calls — offsets mirror the >4096
+                    // sub-chunk loop's stride arithmetic.
+                    let seg = |start: usize, len: u32| -> Result<()> {
+                        let gate = gates_buf.offset(start * gb_stride as usize * fp32);
+                        ops::gdn_prefill_split4(
+                            ctx.gpu,
+                            self.gdn_prefill_split4_k,
+                            h_state,
+                            q_ptr.offset(start * conv_dim * bf16),
+                            k_ptr.offset(start * conv_dim * bf16),
+                            v_ptr.offset(start * conv_dim * bf16),
+                            gate,
+                            gate.offset(nv * fp32),
+                            gdn_out_buf.offset(start * value_dim * bf16),
+                            1,
+                            len,
+                            nk as u32,
+                            nv as u32,
+                            kd as u32,
+                            vd as u32,
+                            conv_dim as u32,
+                            conv_dim as u32,
+                            gb_stride,
+                            stream,
+                        )
+                    };
+                    // Optional EARLIER capture at cap_local - bs (token tb - bs).
+                    let mut start = 0usize;
+                    if let Some(ce) = cap.cap_local_early {
+                        seg(0, ce as u32)?;
+                        ctx.gpu
+                            .copy_d2d_async(h_state, cap.h_dsts_early[idx], cap.h_bytes, stream)?;
+                        start = ce;
+                    }
+                    // Capture h_state @ the tail boundary tb.
+                    seg(start, (cl - start) as u32)?;
                     ctx.gpu
                         .copy_d2d_async(h_state, cap.h_dsts[idx], cap.h_bytes, stream)?;
-                    // Segment 2: local tokens [cap_local, k) with OFFSET q/k/v/
-                    // gate/beta/output pointers (mirrors the >4096 loop stride
-                    // arithmetic); h_state is the SAME (chained) across calls.
-                    let gate2 = gates_buf.offset(cl * gb_stride as usize * fp32);
-                    return ops::gdn_prefill_split4(
-                        ctx.gpu,
-                        self.gdn_prefill_split4_k,
-                        h_state,
-                        q_ptr.offset(cl * conv_dim * bf16),
-                        k_ptr.offset(cl * conv_dim * bf16),
-                        v_ptr.offset(cl * conv_dim * bf16),
-                        gate2,
-                        gate2.offset(nv * fp32),
-                        gdn_out_buf.offset(cl * value_dim * bf16),
-                        1,
-                        k - cl as u32,
-                        nk as u32,
-                        nv as u32,
-                        kd as u32,
-                        vd as u32,
-                        conv_dim as u32,
-                        conv_dim as u32,
-                        gb_stride,
-                        stream,
-                    );
+                    // Trailing tokens [cap_local, k).
+                    return seg(cl, k - cl as u32);
                 }
             }
             return ops::gdn_prefill_split4(
@@ -372,41 +364,44 @@ impl Qwen3SsmLayer {
             let cl = cap.cap_local;
             if cl > 0 && (cl as u32) < k {
                 let bf16 = 2usize;
-                // Segment 1: [0, cap_local).
-                ops::conv1d_update_prefill(
-                    ctx.gpu,
-                    self.conv1d_prefill_k,
-                    conv_state,
-                    input,
-                    &self.ssm.conv1d,
-                    DevicePtr::NULL,
-                    output,
-                    conv_dim as u32,
-                    d_conv as u32,
-                    cl as u32,
-                    qkvz_size as u32,
-                    conv_dim as u32,
-                    stream,
-                )?;
-                // Capture conv_state @ tb into the reserved slot for this layer.
+                // Run the sliding-window conv over local tokens [start, start+len);
+                // conv_state is chained across calls (the same contract multi-chunk
+                // prefill relies on), so the split is byte-exact.
+                let seg = |start: usize, len: u32| -> Result<()> {
+                    ops::conv1d_update_prefill(
+                        ctx.gpu,
+                        self.conv1d_prefill_k,
+                        conv_state,
+                        input.offset(start * qkvz_size * bf16),
+                        &self.ssm.conv1d,
+                        DevicePtr::NULL,
+                        output.offset(start * conv_dim * bf16),
+                        conv_dim as u32,
+                        d_conv as u32,
+                        len,
+                        qkvz_size as u32,
+                        conv_dim as u32,
+                        stream,
+                    )
+                };
+                // Optional EARLIER capture at cap_local - bs (token tb - bs).
+                let mut start = 0usize;
+                if let Some(ce) = cap.cap_local_early {
+                    seg(0, ce as u32)?;
+                    ctx.gpu.copy_d2d_async(
+                        conv_state,
+                        cap.conv_dsts_early[idx],
+                        cap.conv_bytes,
+                        stream,
+                    )?;
+                    start = ce;
+                }
+                // Capture conv_state @ the tail boundary tb.
+                seg(start, (cl - start) as u32)?;
                 ctx.gpu
                     .copy_d2d_async(conv_state, cap.conv_dsts[idx], cap.conv_bytes, stream)?;
-                // Segment 2: [cap_local, k) with OFFSET input/output; state chained.
-                ops::conv1d_update_prefill(
-                    ctx.gpu,
-                    self.conv1d_prefill_k,
-                    conv_state,
-                    input.offset(cl * qkvz_size * bf16),
-                    &self.ssm.conv1d,
-                    DevicePtr::NULL,
-                    output.offset(cl * conv_dim * bf16),
-                    conv_dim as u32,
-                    d_conv as u32,
-                    k - cl as u32,
-                    qkvz_size as u32,
-                    conv_dim as u32,
-                    stream,
-                )?;
+                // Trailing tokens [cap_local, k).
+                seg(cl, k - cl as u32)?;
                 return Ok(());
             }
         }

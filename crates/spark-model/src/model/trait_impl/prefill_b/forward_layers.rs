@@ -96,6 +96,9 @@ impl TransformerModel {
             h_bytes: p.h_bytes,
             conv_bytes: p.conv_bytes,
             ssm_layer_counter: &midcap_counter,
+            cap_local_early: p.cap_local_early,
+            h_dsts_early: &p.h_dsts_early,
+            conv_dsts_early: &p.conv_dsts_early,
         });
 
         let ctx = ForwardContext {

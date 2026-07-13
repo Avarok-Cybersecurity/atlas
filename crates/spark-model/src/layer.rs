@@ -281,6 +281,17 @@ pub struct MidchunkCapture<'a> {
     pub conv_bytes: usize,
     /// Fresh per-pass SSM-layer ordinal counter (model order == pool order).
     pub ssm_layer_counter: &'a std::sync::atomic::AtomicUsize,
+    /// Optional SECOND capture one KV block earlier, at `tb - block_size`
+    /// (local split point `cap_local - block_size`). `Some` only when the pass
+    /// also covers that point. On ~5/19 warm turns the next turn's block-floored
+    /// `matched_tokens` lands exactly `tb - block_size` (generation-suffix /
+    /// retokenize divergence), one block short of the tail; registering this
+    /// earlier restore point makes those turns zero-replay too.
+    pub cap_local_early: Option<usize>,
+    /// Per-SSM-layer h_state dst for the `tb - block_size` slot (offset applied).
+    pub h_dsts_early: &'a [DevicePtr],
+    /// Per-SSM-layer conv_state dst for the `tb - block_size` slot.
+    pub conv_dsts_early: &'a [DevicePtr],
 }
 
 /// A single transformer layer performing the full per-layer computation.
