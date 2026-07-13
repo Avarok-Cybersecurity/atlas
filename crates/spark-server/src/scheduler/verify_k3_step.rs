@@ -70,43 +70,29 @@ pub fn step_verify_k3(
     }
 
     let t_verify = Instant::now();
-    // Fused single-sweep path: DFlash only AND single-rank only. Under EP
-    // (multi-rank) the worker ranks dispatch `decode_verify_graphed_k3` on the
-    // broadcast cmd above, so the master MUST run the same method to stay in
-    // NCCL lockstep — the fused forward is not EP-coherent. The MTP path
-    // (non-raw-argmax) also stays on the legacy graphed verify unchanged.
-    let result_vec: Vec<u32> = if dflash_verify_raw_argmax && !model.is_ep() {
-        // Fused path: single M=3 forward, DFlash hidden captured at row 0.
-        match model.decode_and_verify_fused(&tokens_k3, &mut a.seq, 0) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!("decode_and_verify_fused (k3): {e:#}");
-                a.finished = true;
-                return;
-            }
-        }
-    } else {
-        match model.decode_verify_graphed_k3(&tokens_k3, &mut a.seq, 0) {
-            Ok(r) => r.to_vec(),
-            Err(e) => {
-                tracing::error!("decode_verify_graphed_k3: {e:#}");
-                a.finished = true;
-                return;
-            }
+    let result = match model.decode_verify_graphed_k3(&tokens_k3, &mut a.seq, 0) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("decode_verify_graphed_k3: {e:#}");
+            a.finished = true;
+            return;
         }
     };
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
-    let (v0_argmax, v1_argmax, v2_argmax) = (result_vec[0], result_vec[1], result_vec[2]);
+    let [v0_argmax, v1_argmax, v2_argmax] = result;
 
     let (v0, v1, v2) = if dflash_verify_raw_argmax
         && !crate::scheduler::verify_pipeline_helper::dflash_masked_verify_enabled()
     {
-        // DFlash drafter proposes on raw argmax; verify on the SAME (GOLD)
+        // DFlash: drafter proposes on raw argmax; verify on the SAME (GOLD)
         // basis so verifier/drafter judge identically. No rep_pen/DRY here.
+        // See K=2 docstring for the full rationale.
         (v0_argmax, v1_argmax, v2_argmax)
     } else {
         // MTP path: full pre-sample pipeline (rep_pen + DRY) unchanged.
+        // Phase C-2 (2026-05-24): pre-sample pipeline per verify
+        // position. See K=2 docstring + `verify_pipeline_helper`.
         let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
             model,
             &[v0_argmax, v1_argmax, v2_argmax],

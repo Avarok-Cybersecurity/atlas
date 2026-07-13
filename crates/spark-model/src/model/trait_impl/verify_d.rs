@@ -250,24 +250,11 @@ impl TransformerModel {
                 // dflash_hidden_save[slot] while hidden_states still holds
                 // this layer's activation — mirrors verify_b.rs for K=2.
                 // Must be inside the graph capture region so the per-layer
-                // intermediate (not the final-layer-only post-loop value) is
-                // recorded. Under ATLAS_DFLASH_EAGLE_FIX=1 OR
-                // ATLAS_DFLASH_UNIFIED_CTX=1, capture ALL k verify rows so
-                // the scheduler can append rows 0..=num_accepted to ctx
-                // after the accept walk (EAGLE order). UNIFIED_CTX requires
-                // the same full capture: commit_ctx copies scratch rows
-                // 0..=num_accepted — with only the k-1 capture, row 0 holds
-                // the WRONG token's hidden and rows 1.. are stale garbage
-                // (2026-07-09 accept-collapse root cause: EAGLE_FIX=0 under
-                // UNIFIED=1 starved this capture and poisoned drafter ctx).
-                let capture_all = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref()
-                    == Some("1")
-                    || std::env::var("ATLAS_DFLASH_UNIFIED_CTX").ok().as_deref() == Some("1");
-                if capture_all {
-                    self.try_dflash_capture_all(layer_idx, k, stream)?;
-                } else {
-                    self.try_dflash_capture(layer_idx, k - 1, stream)?;
-                }
+                // intermediate (not the final-layer-only post-loop value)
+                // is recorded. Without this, every K=γ verify step leaves
+                // the capture stale and the next propose() conditions on a
+                // repeated old hidden — accept collapses silently.
+                self.try_dflash_capture(layer_idx, k - 1, stream)?;
             }
 
             // Final norm [K, H]

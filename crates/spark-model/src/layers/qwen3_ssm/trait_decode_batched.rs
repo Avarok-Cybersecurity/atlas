@@ -176,23 +176,8 @@ impl Qwen3SsmLayer {
                 stream,
             )?;
         } else if let Some(ref nvfp4_t) = self.qkvz_nvfp4_t {
-            // Prefer the 8-warp pipelined v2 (fast even at small M — the wide
-            // DFlash verify runs M=17, where plain m128 padding loses to n128,
-            // but v2 wins; it's the same kernel the dense FFN prefill uses).
-            // Else m128 for large-M prefill; else n128.
-            if self.w4a16_gemm_t_m128_v2_k.0 != 0 {
-                ops::w4a16_gemm_n128_m128_v2(
-                    ctx.gpu,
-                    self.w4a16_gemm_t_m128_v2_k,
-                    normed,
-                    nvfp4_t,
-                    proj_dst,
-                    k,
-                    qkvz_size as u32,
-                    h as u32,
-                    stream,
-                )?;
-            } else if k > 128 {
+            // m128 halves B re-reads for large M (prefill); falls back to m64 for M≤128.
+            if k > 128 {
                 ops::w4a16_gemm_n128_m128(
                     ctx.gpu,
                     self.w4a16_gemm_t_m128_k,
@@ -493,32 +478,17 @@ impl Qwen3SsmLayer {
                 )?;
             }
         } else if let Some(ref nvfp4_t) = self.out_proj_nvfp4_t {
-            if self.w4a16_gemm_t_m128_v2_k.0 != 0 {
-                // 8-warp pipelined v2 (fast at M=17 wide verify; FFN's kernel).
-                ops::w4a16_gemm_n128_m128_v2(
-                    ctx.gpu,
-                    self.w4a16_gemm_t_m128_v2_k,
-                    normed_out_buf,
-                    nvfp4_t,
-                    out_proj_buf,
-                    k,
-                    h as u32,
-                    value_dim as u32,
-                    stream,
-                )?;
-            } else {
-                ops::w4a16_gemm_n128(
-                    ctx.gpu,
-                    self.w4a16_gemm_t_k,
-                    normed_out_buf,
-                    nvfp4_t,
-                    out_proj_buf,
-                    k,
-                    h as u32,
-                    value_dim as u32,
-                    stream,
-                )?;
-            }
+            ops::w4a16_gemm_n128(
+                ctx.gpu,
+                self.w4a16_gemm_t_k,
+                normed_out_buf,
+                nvfp4_t,
+                out_proj_buf,
+                k,
+                h as u32,
+                value_dim as u32,
+                stream,
+            )?;
         } else {
             ops::w4a16_gemm(
                 ctx.gpu,
@@ -578,30 +548,8 @@ impl Qwen3SsmLayer {
                 (2 * h) as u32,
                 stream,
             )?;
-        } else if self.ffn.is_dense() {
-            // WIDE-VERIFY BATCHED DENSE FFN (DFlash γ=16, num_tokens=17). This
-            // is the MAJORITY layer type (GDN/SSM) on the hybrid 27B, so its
-            // per-token FFN loop was the dominant remaining verify cost after
-            // the attention layers were batched. normed2_base is already
-            // [num_tokens, h] (batched residual_add_rms_norm above), so
-            // forward_prefill reads gate/up/down ONCE for all tokens.
-            //
-            // DENSE ONLY: the per-token `else` below is retained for 256-expert
-            // MoE, where grouped-GEMM is a net loss at small batch (per-expert
-            // M~1 + sort/permute overhead across the 36-layer SSM stack).
-            self.ffn
-                .forward_prefill(normed2_base, num_tokens, ctx, stream)?;
-            let moe_out = ctx.buffers.moe_output();
-            ops::residual_add(
-                ctx.gpu,
-                self.residual_add_k,
-                hidden,
-                moe_out,
-                (num_tokens * h) as u32,
-                stream,
-            )?;
         } else {
-            // Per-token MoE fallback for K!=2 (256-expert MoE).
+            // Per-token MoE fallback for K!=2.
             // CONCURRENT-DECODE BUG (sibling of decode_multi_seq fix at line 1102):
             // hardcoded `t * h * 4` over-strides for BF16 hidden (GB10 default).
             let residual_elem = 2usize;

@@ -263,20 +263,6 @@ jobs:
             # not this PR's code. Clean split tracked as follow-up by the
             # fp8_lut authors.
             "crates/spark-model/src/weight_map/fp8_lut.rs"
-            # -- K=gamma DFlash base engine carry-overs (this PR) --
-            # Drafter block forward + paged attention + weight assembly are
-            # compute-heavy launch sequences that read top-to-bottom (same
-            # rationale as the qwen3_attention compute-heavy entries above);
-            # trait_impl/mod.rs grew with the ctx-append dispatch family.
-            # Splits tracked as follow-up per the #90/#186 precedent.
-            "crates/spark-model/src/layers/dflash_head.rs"
-            "crates/spark-model/src/layers/dflash_head/forward_block.rs"
-            "crates/spark-model/src/layers/dflash_head/forward_block_layer_paged.rs"
-            "crates/spark-model/src/layers/dflash_head/from_weights.rs"
-            "crates/spark-model/src/layers/dflash_head/propose.rs"
-            "crates/spark-model/src/layers/ops/gemm_dense.rs"
-            "crates/spark-model/src/layers/qwen3_ssm/trait_decode_batched_conv_gdn.rs"
-            "crates/spark-model/src/model/trait_impl/mod.rs"
           )
 
           violations=0
