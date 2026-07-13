@@ -363,8 +363,8 @@ fn main() -> Result<()> {
 
         // Sanity: the host-side prediction of the old effective weight.
         let pred: Vec<f64> = w64.iter().map(|v| old_effective(*v)).collect();
-        let pred_tru = truth(&x, &pred, hidden, tokens);
-        let (a_pred, _) = cmp(&db(g, op_old, tokens * hidden)?, &pred_tru);
+        let pred_truth = truth(&x, &pred, hidden, tokens);
+        let (a_pred, _) = cmp(&db(g, op_old, tokens * hidden)?, &pred_truth);
 
         println!(
             "{:<22} {:>13.3e} {:>13.3e} {:>13.3e} {:>13.3e}   [old==1+bf16(w-1) model: {:.1e}]",
