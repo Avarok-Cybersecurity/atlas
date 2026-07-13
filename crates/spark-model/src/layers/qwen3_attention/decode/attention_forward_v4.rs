@@ -177,7 +177,7 @@ impl Qwen3AttentionLayer {
                         let block = compressed.offset(tgt as usize * hd_mla as usize * 2);
                         ops::rms_norm(
                             ctx.gpu,
-                            self.rms_norm_k,
+                            self.rms_norm_w_k,
                             block,
                             &comp.norm,
                             block,
@@ -308,7 +308,7 @@ impl Qwen3AttentionLayer {
         prof!("q_norm", {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 q_latent,
                 &mla.q_a_norm,
                 q_latent,
@@ -426,7 +426,7 @@ impl Qwen3AttentionLayer {
         // → attention score overflow → NaN. nkv heads × (kv_dim/nkv) each.
         ops::rms_norm(
             ctx.gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             k_out,
             &mla.kv_a_norm,
             k_out,

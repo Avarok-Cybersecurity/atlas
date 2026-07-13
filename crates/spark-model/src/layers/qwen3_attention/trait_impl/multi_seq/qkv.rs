@@ -70,7 +70,7 @@ impl Qwen3AttentionLayer {
                 if !self.attn.q_norm.weight.is_null() {
                     ops::rms_norm(
                         fwd.gpu,
-                        self.rms_norm_k,
+                        self.rms_norm_w_k,
                         q_out_i,
                         &self.attn.q_norm,
                         q_out_i,
@@ -83,7 +83,7 @@ impl Qwen3AttentionLayer {
                 if !self.attn.k_norm.weight.is_null() {
                     ops::rms_norm(
                         fwd.gpu,
-                        self.rms_norm_k,
+                        self.rms_norm_w_k,
                         k_out_i,
                         &self.attn.k_norm,
                         k_out_i,
@@ -186,7 +186,7 @@ impl Qwen3AttentionLayer {
             if !self.attn.q_norm.weight.is_null() {
                 ops::rms_norm(
                     fwd.gpu,
-                    self.rms_norm_k,
+                    self.rms_norm_w_k,
                     q_out_i,
                     &self.attn.q_norm,
                     q_out_i,
@@ -199,7 +199,7 @@ impl Qwen3AttentionLayer {
             if !self.attn.k_norm.weight.is_null() {
                 ops::rms_norm(
                     fwd.gpu,
-                    self.rms_norm_k,
+                    self.rms_norm_w_k,
                     k_out_i,
                     &self.attn.k_norm,
                     k_out_i,
@@ -301,7 +301,7 @@ impl Qwen3AttentionLayer {
             if !self.attn.q_norm.weight.is_null() {
                 ops::rms_norm(
                     fwd.gpu,
-                    self.rms_norm_k,
+                    self.rms_norm_w_k,
                     q_out_i,
                     &self.attn.q_norm,
                     q_out_i,
@@ -314,7 +314,7 @@ impl Qwen3AttentionLayer {
             if !self.attn.k_norm.weight.is_null() {
                 ops::rms_norm(
                     fwd.gpu,
-                    self.rms_norm_k,
+                    self.rms_norm_w_k,
                     k_out_i,
                     &self.attn.k_norm,
                     k_out_i,

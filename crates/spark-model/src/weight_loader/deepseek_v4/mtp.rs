@@ -26,7 +26,7 @@ use spark_runtime::weights::WeightStore;
 
 use crate::layer::TransformerLayer;
 use crate::layers::qwen3_attention::HcHeadWeights;
-use crate::weight_map::{DenseWeight, dense_auto, dense_minus_one};
+use crate::weight_map::{DenseWeight, dense_auto};
 
 /// A loaded DeepSeek-V4 MTP draft module: the reused V4 transformer body plus the
 /// MTP-specific input combiner and final norm. Embedding + lm_head are shared with
@@ -91,13 +91,13 @@ pub fn load_v4_mtp_module(
     // Mirrors the V4-Flash branch of `load_all_layers` (o_lora_rank > 0): direct
     // KV projection + grouped low-rank O projection, so the V3 absorption tensors
     // (w_uk_t / w_uv / w_qk_absorbed / block-diagonals) are NULL/unused.
-    let input_norm = dense_minus_one(store, &format!("{prefix}.attn_norm.weight"), gpu)?;
-    let post_attn_norm = dense_minus_one(store, &format!("{prefix}.ffn_norm.weight"), gpu)?;
+    let input_norm = dense_auto(store, &format!("{prefix}.attn_norm.weight"), gpu)?;
+    let post_attn_norm = dense_auto(store, &format!("{prefix}.ffn_norm.weight"), gpu)?;
     let wq_a = dense_auto(store, &format!("{ap}.wq_a.weight"), gpu)?;
     let wq_b = dense_auto(store, &format!("{ap}.wq_b.weight"), gpu)?;
-    let q_a_norm = dense_minus_one(store, &format!("{ap}.q_norm.weight"), gpu)?;
+    let q_a_norm = dense_auto(store, &format!("{ap}.q_norm.weight"), gpu)?;
     let wkv_a = dense_auto(store, &format!("{ap}.wkv.weight"), gpu)?;
-    let kv_a_norm = dense_minus_one(store, &format!("{ap}.kv_norm.weight"), gpu)?;
+    let kv_a_norm = dense_auto(store, &format!("{ap}.kv_norm.weight"), gpu)?;
     let wo_a = dense_auto(store, &format!("{ap}.wo_a.weight"), gpu)?;
     let wo_b = dense_auto(store, &format!("{ap}.wo_b.weight"), gpu)?;
 
@@ -164,11 +164,12 @@ pub fn load_v4_mtp_module(
     )?;
 
     // ── MTP-specific combiner + final norm ──
-    // enorm/hnorm/norm are standard RMSNorms (offset-from-1 kernel → dense_minus_one).
+    // enorm/hnorm/norm are HF-vanilla RMSNorms — loaded exactly, normalized by
+    // `rms_norm_vanilla` (see `DeepseekV4MtpHead::rms_norm_k`).
     // e_proj/h_proj are FP8 block-scaled linears in the checkpoint (dense_auto dequants).
-    let enorm = dense_minus_one(store, &format!("{prefix}.enorm.weight"), gpu)?;
-    let hnorm = dense_minus_one(store, &format!("{prefix}.hnorm.weight"), gpu)?;
-    let norm = dense_minus_one(store, &format!("{prefix}.norm.weight"), gpu)?;
+    let enorm = dense_auto(store, &format!("{prefix}.enorm.weight"), gpu)?;
+    let hnorm = dense_auto(store, &format!("{prefix}.hnorm.weight"), gpu)?;
+    let norm = dense_auto(store, &format!("{prefix}.norm.weight"), gpu)?;
     let e_proj = dense_auto(store, &format!("{prefix}.e_proj.weight"), gpu)?;
     let h_proj = dense_auto(store, &format!("{prefix}.h_proj.weight"), gpu)?;
 

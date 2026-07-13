@@ -257,7 +257,7 @@ impl Qwen3AttentionLayer {
         if let Some(ref post_norm) = self.post_attn_out_norm {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 attn_out,
                 post_norm,
                 attn_out,
@@ -350,7 +350,7 @@ impl Qwen3AttentionLayer {
             // 1. Norm dense MLP output with post_feedforward_layernorm_1
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 dense_out,
                 dense_norm,
                 dense_out,
@@ -372,7 +372,7 @@ impl Qwen3AttentionLayer {
             let moe_out = ctx.buffers.moe_output();
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 moe_out,
                 post_norm,
                 moe_out,
@@ -396,7 +396,7 @@ impl Qwen3AttentionLayer {
             if let Some(ref combined_norm) = self.post_ffn_out_norm {
                 ops::rms_norm(
                     ctx.gpu,
-                    self.rms_norm_k,
+                    self.rms_norm_w_k,
                     moe_out,
                     combined_norm,
                     moe_out,
@@ -421,7 +421,7 @@ impl Qwen3AttentionLayer {
             if let Some(ref post_norm) = self.post_ffn_out_norm {
                 ops::rms_norm(
                     ctx.gpu,
-                    self.rms_norm_k,
+                    self.rms_norm_w_k,
                     dense_out,
                     post_norm,
                     dense_out,
@@ -553,7 +553,7 @@ impl Qwen3AttentionLayer {
         let normed = ctx.buffers.norm_output();
         ops::rms_norm(
             ctx.gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             hidden,
             &self.input_norm,
             normed,
@@ -631,7 +631,7 @@ impl Qwen3AttentionLayer {
         if let Some(ref post_norm) = self.post_attn_out_norm {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 attn_out,
                 post_norm,
                 attn_out,
@@ -755,7 +755,7 @@ impl Qwen3AttentionLayer {
         let normed2 = ctx.buffers.norm_output();
         ops::rms_norm(
             ctx.gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             hidden,
             &self.post_attn_norm,
             normed2,
@@ -774,7 +774,7 @@ impl Qwen3AttentionLayer {
         if let Some(ref post_norm) = self.post_ffn_out_norm {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 dense_out,
                 post_norm,
                 dense_out,

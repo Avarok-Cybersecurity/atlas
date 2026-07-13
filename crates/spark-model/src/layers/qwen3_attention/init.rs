@@ -173,6 +173,12 @@ impl Qwen3AttentionLayer {
                 "fp8_gemm_t_blockscaled",
             ),
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
+            rms_norm_w_k: if crate::ships_vanilla_norm_weights(config) {
+                gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla")?
+            } else {
+                gpu.kernel("norm", "rms_norm")?
+            },
+            norm_vanilla: crate::ships_vanilla_norm_weights(config),
             rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
