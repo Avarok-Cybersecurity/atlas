@@ -250,6 +250,37 @@ pub struct ForwardContext<'a> {
     /// the installed-active-pair path byte-identical. Prefill runs eager
     /// (`graph_capture: false`) so this per-pass CPU borrow is safe.
     pub routed_lora_layers: Option<&'a [Option<crate::lora::LoraLayerWeights>]>,
+    /// OPT-IN mid-chunk SSM tail capture (`ATLAS_SSM_TAIL_MIDCHUNK=1`).
+    ///
+    /// `Some` only on the single prefill pass whose local token range spans
+    /// the block-floored matched-prefix boundary `tb`. GDN/SSM layers then
+    /// split their recurrent (h_state) and conv (conv_state) kernels at
+    /// `cap_local` and copy the @tb state into the reserved snapshot slot.
+    /// `None` (default) => no split, byte-identical to prior behavior.
+    pub midchunk_capture: Option<MidchunkCapture<'a>>,
+}
+
+/// Per-pass descriptor for mid-chunk SSM tail capture. Points at the reserved
+/// Marconi snapshot slot's per-SSM-layer destination buffers (already offset to
+/// the slot) plus the split point in local (chunk) token coordinates.
+///
+/// `ssm_layer_counter` is a fresh per-pass counter: each SSM layer's prefill
+/// increments it once, in model order, so the value indexes `h_dsts`/`conv_dsts`
+/// (which are in the same SSM-layer order as the snapshot pool).
+pub struct MidchunkCapture<'a> {
+    /// Split point in local token coordinates: capture state AFTER this many
+    /// tokens (== `tb - proc_start`).
+    pub cap_local: usize,
+    /// Per-SSM-layer h_state snapshot destination (offset to the reserved slot).
+    pub h_dsts: &'a [DevicePtr],
+    /// Per-SSM-layer conv_state snapshot destination (offset to the reserved slot).
+    pub conv_dsts: &'a [DevicePtr],
+    /// Bytes per layer of h_state.
+    pub h_bytes: usize,
+    /// Bytes per layer of conv_state.
+    pub conv_bytes: usize,
+    /// Fresh per-pass SSM-layer ordinal counter (model order == pool order).
+    pub ssm_layer_counter: &'a std::sync::atomic::AtomicUsize,
 }
 
 /// A single transformer layer performing the full per-layer computation.

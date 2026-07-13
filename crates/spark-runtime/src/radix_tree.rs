@@ -183,6 +183,21 @@ impl PrefixCache for RadixTree {
         (displaced, newly_acquired)
     }
 
+    fn insert_tail_snapshot(
+        &self,
+        tokens: &[u32],
+        snapshot_id: usize,
+        session_hash: u64,
+    ) -> Vec<usize> {
+        // Index only. The tree nodes for [0, tokens.len()) are inserted by the
+        // final chunk's `insert` (finalize_last); re-inserting the whole prefix
+        // here cost ~0.9 s/turn for zero benefit.
+        let prefix_hash = hash_token_prefix(tokens, tokens.len());
+        self.snapshot_index
+            .lock()
+            .insert_tail(prefix_hash, snapshot_id, session_hash, tokens.len())
+    }
+
     fn insert_intermediate_snapshot(
         &self,
         tokens: &[u32],

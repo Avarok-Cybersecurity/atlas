@@ -89,6 +89,7 @@ impl TransformerModel {
             gdn_exact_replay: false,
             token_ids: None,
             routed_lora_layers: None, // #30: MTP/draft decode never routes prefill.
+            midchunk_capture: None,
         };
         let prop_state = seq
             .proposer_state

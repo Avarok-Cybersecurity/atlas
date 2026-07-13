@@ -55,6 +55,19 @@ pub(super) fn run_batched_mixed_step(
             max_prefill_tokens
         };
         let mut chunk_len = remaining.min(effective_max);
+        // Land a chunk boundary on `ssm_tail_boundary` so the SSM snapshot saved
+        // there is exactly what the NEXT turn's block-floored `matched_tokens`
+        // looks up — otherwise the warm restore falls back to the coarse
+        // --ssm-checkpoint-interval grid and replays ~254 SSM tokens per turn.
+        if spark_runtime::ssm_tail_ckpt_enabled()
+            && !spark_runtime::ssm_tail_midchunk_enabled()
+            && let Some(bs) = model.kv_block_size()
+            && let Some(tb) = spark_runtime::ssm_tail_boundary(p.prompt_tokens.len(), bs)
+            && p.chunk_offset < tb
+            && p.chunk_offset + chunk_len > tb
+        {
+            chunk_len = tb - p.chunk_offset;
+        }
         let is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
         if !is_last && chunk_len >= 4 {
             chunk_len = (chunk_len / 4) * 4;

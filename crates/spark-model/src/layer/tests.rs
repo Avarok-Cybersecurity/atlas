@@ -58,6 +58,7 @@ fn test_forward_context_lifetime() {
         gdn_exact_replay: false,
         token_ids: None,
         routed_lora_layers: None,
+        midchunk_capture: None,
     };
 
     assert_eq!(ctx.config.hidden_size, 2048);

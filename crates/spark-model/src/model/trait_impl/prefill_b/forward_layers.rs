@@ -31,6 +31,7 @@ impl TransformerModel {
         pos_stream_bytes: usize,
         use_mrope: bool,
         needs_paged: bool,
+        midcap: Option<&super::midchunk_capture::MidCapturePlan>,
         stream: u64,
     ) -> Result<()> {
         let h = self.config.hidden_size;
@@ -84,6 +85,19 @@ impl TransformerModel {
                 .profile_first_pending
                 .swap(false, std::sync::atomic::Ordering::Relaxed);
 
+        // Mid-chunk tail capture (opt-in): fresh per-pass SSM-layer ordinal
+        // counter; each SSM layer's prefill increments it once, in model order,
+        // to index the plan's per-layer snapshot destinations.
+        let midcap_counter = std::sync::atomic::AtomicUsize::new(0);
+        let midchunk_capture = midcap.map(|p| crate::layer::MidchunkCapture {
+            cap_local: p.cap_local,
+            h_dsts: &p.h_dsts,
+            conv_dsts: &p.conv_dsts,
+            h_bytes: p.h_bytes,
+            conv_bytes: p.conv_bytes,
+            ssm_layer_counter: &midcap_counter,
+        });
+
         let ctx = ForwardContext {
             buffers: &self.buffers,
             gpu: self.gpu.as_ref(),
@@ -100,6 +114,7 @@ impl TransformerModel {
             token_ids: Some(self.buffers.token_ids()),
             // #30: request slot pairs (None unless routing to a non-active slot).
             routed_lora_layers: self.routed_slot_layers(seq.adapter_slot),
+            midchunk_capture,
         };
 
         // When proc_count == 1 (warm prefix cache hit), use the decode layer path

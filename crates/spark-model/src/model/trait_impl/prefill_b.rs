@@ -33,6 +33,7 @@ mod embed_chunk;
 mod finalize_last;
 mod forward_layers;
 mod h_state_ptrs;
+mod midchunk_capture;
 mod prefix_lookup;
 mod proc_range;
 mod prompt_logprobs;
@@ -264,6 +265,12 @@ impl TransformerModel {
         // per chunk but prevents the illegal memory access.
         self.gpu.synchronize(stream)?;
 
+        // ── Mid-chunk tail SSM capture (opt-in): plan BEFORE the forward
+        // pass so SSM layers split their h/conv kernels at `tb` in-pass.
+        // `None` (flag off or pass doesn't span `tb`) => no split. ──
+        let midcap_plan =
+            self.prepare_midchunk_capture(tokens, seq, &mut kv_cache, proc_start, proc_count);
+
         // ── Phase 4: forward through all layers ──
         self.prefill_b_forward_layers(
             seq,
@@ -280,8 +287,15 @@ impl TransformerModel {
             pos_stream_bytes,
             use_mrope,
             needs_paged,
+            midcap_plan.as_ref(),
             stream,
         )?;
+
+        // Register the reserved slot as the session tail once the full pass has
+        // captured the @tb state into it (no-op when no capture was planned).
+        if let Some(plan) = midcap_plan.as_ref() {
+            self.finalize_midchunk_capture(tokens, seq, plan);
+        }
 
         // ── Phase 5: update sequence state incrementally ──
         // Always add chunk tokens exactly once. The early-return path for

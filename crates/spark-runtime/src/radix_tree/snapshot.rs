@@ -25,6 +25,9 @@ pub(super) struct SnapshotEntry {
     /// and the state is addressed by `prefix_hash` (the tier key). Always
     /// `false` when `ATLAS_SSM_TIER` is off, so the default path is unchanged.
     tiered: bool,
+    /// True for the per-session TAIL snapshot (the restore point the next turn's
+    /// block-floored `matched_tokens` looks up). Exactly one is kept per session.
+    is_tail: bool,
 }
 
 /// Where a matched snapshot's state currently lives (Phase 1b).
@@ -134,8 +137,58 @@ impl SsmSnapshotIndex {
             last_access: self.access_counter,
             hit_count: 0,
             tiered: false,
+            is_tail: false,
         });
         None
+    }
+
+    /// Insert the per-session TAIL snapshot, superseding this session's previous one.
+    ///
+    /// Keeping every turn's tail grows the index by one entry per turn, which evicts
+    /// the cold 512-grid checkpoints laid down during the trajectory's COLD prefill.
+    /// Measured cost of not doing this: fallback replays up to 3712 tokens and a 57 s
+    /// TTFT tail. Returns every displaced snapshot_id for the caller to free.
+    pub(super) fn insert_tail(
+        &mut self,
+        prefix_hash: u64,
+        snapshot_id: usize,
+        session_hash: u64,
+        token_count: usize,
+    ) -> Vec<usize> {
+        let mut displaced = Vec::new();
+        if session_hash != 0 {
+            let mut i = 0;
+            while i < self.entries.len() {
+                if self.entries[i].is_tail && self.entries[i].session_hash == session_hash {
+                    displaced.push(self.entries.swap_remove(i).snapshot_id);
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        for entry in &mut self.entries {
+            if entry.prefix_hash == prefix_hash {
+                displaced.push(entry.snapshot_id);
+                entry.snapshot_id = snapshot_id;
+                entry.session_hash = session_hash;
+                entry.token_count = token_count;
+                entry.is_tail = true;
+                self.access_counter += 1;
+                entry.last_access = self.access_counter;
+                return displaced;
+            }
+        }
+        self.access_counter += 1;
+        self.entries.push(SnapshotEntry {
+            snapshot_id,
+            session_hash,
+            token_count,
+            prefix_hash,
+            last_access: self.access_counter,
+            hit_count: 0,
+            is_tail: true,
+        });
+        displaced
     }
 
     /// Find deepest snapshot matching session within matched_tokens range.
@@ -266,7 +319,7 @@ impl SsmSnapshotIndex {
         // ENTIRE deep checkpoint chain stays resident until every other (completed/
         // dormant) conversation is gone. Within the victim session, drop its lowest
         // forecast-score entry. This is "prefix caching like llama" for SSM state:
-        // the live conversation never re-recomputes what it already computed.
+        // the live conversation never re-computes what it already computed.
         // Selecting a different victim is correctness-safe — restore re-validates
         // (session_hash + prefix_hash) before using any snapshot; eviction only
         // frees a slot.

@@ -227,6 +227,7 @@ impl TransformerModel {
             // before graph replay). MoE reads it at offset 0.
             token_ids: Some(self.buffers.token_ids()),
             routed_lora_layers: None, // #30: single-seq decode never routes prefill.
+            midchunk_capture: None,
         };
 
         // Profile mode: use per-layer sync decode for timing breakdown.
