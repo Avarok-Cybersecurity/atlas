@@ -152,6 +152,7 @@ jobs:
             "crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip.rs"
             "crates/spark-model/src/layers/qwen3_attention/prefill/paged.rs"
             "crates/spark-model/src/model/block_mgmt.rs"
+            "crates/spark-model/src/model/impl_a1.rs"
             "crates/spark-model/src/model/impl_a2.rs"
             "crates/spark-model/src/model/ssm_pool.rs"
             "crates/spark-model/src/weight_loader/qwen35/load_layers.rs"
