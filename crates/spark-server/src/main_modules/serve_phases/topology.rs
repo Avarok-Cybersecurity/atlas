@@ -96,10 +96,36 @@ pub(crate) fn resolve_topology(
         }
         config.num_attention_heads /= tp_size;
         config.num_key_value_heads /= tp_size;
+        // GDN HeadParallel: linear-attention (SSM) key/value head counts are
+        // sharded exactly like attention heads — each rank owns a contiguous
+        // head range; the recurrence is head-parallel with one all-reduce after
+        // out_proj. Only relevant for SSM-hybrid models (linear_*_heads > 0);
+        // pure-attention configs leave these at 0 and skip the divide.
+        if config.linear_num_key_heads > 0 || config.linear_num_value_heads > 0 {
+            if !config.linear_num_key_heads.is_multiple_of(tp_size) {
+                anyhow::bail!(
+                    "TP requires linear_num_key_heads ({}) divisible by tp_size ({})",
+                    config.linear_num_key_heads,
+                    tp_size,
+                );
+            }
+            if !config.linear_num_value_heads.is_multiple_of(tp_size) {
+                anyhow::bail!(
+                    "TP requires linear_num_value_heads ({}) divisible by tp_size ({})",
+                    config.linear_num_value_heads,
+                    tp_size,
+                );
+            }
+            config.linear_num_key_heads /= tp_size;
+            config.linear_num_value_heads /= tp_size;
+        }
         tracing::info!(
-            "TP-local head counts: num_attention_heads={}, num_key_value_heads={}",
+            "TP-local head counts: num_attention_heads={}, num_key_value_heads={}, \
+             linear_num_key_heads={}, linear_num_value_heads={}",
             config.num_attention_heads,
             config.num_key_value_heads,
+            config.linear_num_key_heads,
+            config.linear_num_value_heads,
         );
     }
     if world_size > 1 {

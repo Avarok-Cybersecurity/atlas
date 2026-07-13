@@ -53,7 +53,9 @@ impl TransformerModel {
             // Calling unconditionally on EP active fixes that — when
             // either side has matched=0 the agreed value is 0 and we
             // simply fall through to the no-cache path on both sides.
-            let ep_active = self.comm.is_some() && self.config.ep_world_size > 1;
+            // EP *or* pure TP: any multi-rank world must agree on `matched`
+            // (rank-local prefix caches can diverge in either topology).
+            let ep_active = self.multi_rank_protocol_active();
             if ep_active {
                 let local = prefix_match.matched_tokens as u32;
                 let agreed = self.ep_min_u32(local)? as usize;

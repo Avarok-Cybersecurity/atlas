@@ -17,6 +17,20 @@ pub fn step_decode_only(
 ) {
     let t0 = std::time::Instant::now();
     let n = active.len();
+    // Batched decode (CUDA-graph replay + batched-recurrent SSM) requires the
+    // active sequences in SSM-pool-slot order, so batch position i maps to a
+    // contiguous state address (pool_base + i*stride). The pool assigns
+    // consecutive slots but the active list is in reverse-arrival order
+    // ([7,6,..,0] for 8 seqs), which fails the contiguity check in
+    // ssm_batched_recurrent.rs and the graph-capture slot==i assumption,
+    // forcing the eager per-seq loop (no concurrency scaling). Sort ascending
+    // by SSM slot (falling back to KV slot for non-SSM models) so the
+    // contiguous-slot invariant holds and the batched paths engage. The whole
+    // ActiveSeq is reordered, so the post-decode position->seq mapping stays
+    // consistent.
+    if n > 1 {
+        active.sort_by_key(|a| a.seq.ssm_slot_idx().unwrap_or(a.seq.slot_idx));
+    }
     let tokens: Vec<u32> = active.iter().map(|a| a.last_token).collect();
 
     // CONCURRENT-DECODE DIAG: per-step batch state (slot, seq_len, etc).

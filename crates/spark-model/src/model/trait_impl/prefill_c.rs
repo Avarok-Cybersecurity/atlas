@@ -85,9 +85,10 @@ impl TransformerModel {
             return self.prefill_chunk(tokens, seq, 0, total_len, true, stream);
         }
 
-        // Use the caller-provided stream for compute-copy overlap,
-        // unless EP is active (NCCL requires the default stream).
-        let stream = if self.comm.is_some() && self.config.ep_world_size > 1 {
+        // Use the caller-provided stream for compute-copy overlap, unless
+        // a multi-rank world is active (EP or pure TP — NCCL requires the
+        // default stream).
+        let stream = if self.multi_rank_protocol_active() {
             self.gpu.default_stream()
         } else {
             stream

@@ -257,7 +257,17 @@ impl TransformerModel {
         // Marconi restore (prefill stream). See `snapshot_event` doc in types.rs.
         let snapshot_event = gpu.create_event()?;
 
-        // EP: register moe_output buffer with NCCL and provide bf16_add kernel.
+        // EP/TP: register the all-reduce target buffers with NCCL (caches the
+        // IB/RoCE memory registration, enabling zero-copy user-buffer
+        // collectives) and provide the bf16_add kernel for the 2-rank
+        // send/recv fast path.
+        //   - moe_output: EP MoE reduce + ALL GDN HeadParallel SSM out_proj
+        //     reduces (decode `ssm_forward`, batched decode, multi-seq
+        //     batched, prefill, prefill phase-3 all write out_proj into
+        //     `buffers.moe_output()`).
+        //   - norm_output: attention o_proj decode output
+        //     (`attention_forward_oproj` writes o_out = `buffers.norm_output()`),
+        //     reduced per attention layer under TP.
         if let Some(ref comm) = comm
             && comm.world_size() == 2
         {
@@ -266,6 +276,12 @@ impl TransformerModel {
             match comm.register_buffer(moe_ptr, moe_bytes) {
                 Ok(_) => tracing::info!("Registered moe_output ({moe_bytes} B) with NCCL"),
                 Err(e) => tracing::warn!("ncclCommRegister moe_output failed (non-fatal): {e}"),
+            }
+            let norm_ptr = buffers.norm_output().0;
+            let norm_bytes = buffers.sizes().norm_output;
+            match comm.register_buffer(norm_ptr, norm_bytes) {
+                Ok(_) => tracing::info!("Registered norm_output ({norm_bytes} B) with NCCL"),
+                Err(e) => tracing::warn!("ncclCommRegister norm_output failed (non-fatal): {e}"),
             }
             match gpu.kernel("bf16_add", "bf16_add_inplace") {
                 Ok(k) => comm.set_add_kernel(k.0),

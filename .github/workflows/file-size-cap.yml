@@ -152,6 +152,7 @@ jobs:
             "crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip.rs"
             "crates/spark-model/src/layers/qwen3_attention/prefill/paged.rs"
             "crates/spark-model/src/model/block_mgmt.rs"
+            "crates/spark-model/src/model/impl_a1.rs"
             "crates/spark-model/src/model/impl_a2.rs"
             "crates/spark-model/src/model/ssm_pool.rs"
             "crates/spark-model/src/weight_loader/qwen35/load_layers.rs"
@@ -246,6 +247,14 @@ jobs:
             # decode dispatchers above; conv/GDN halves were already
             # extracted to trait_decode_batched_conv_gdn.rs. Clean split
             # tracked as follow-up.
+            # 548 LoC — Qwen3.5 linear-attn (SSM) loader arm; grew with the
+            # HeadParallel config-localize + per-rank segmented weight loads
+            # (FP8-dense + NVFP4 builders). Two linear load sequences read
+            # top-to-bottom; clean split tracked as follow-up.
+            "crates/spark-model/src/weight_loader/qwen35/load_layers/linear_attn_arms.rs"
+            # 503 LoC — batched-recurrent GDN decode; marginally over (added the
+            # per-seq SSM out_proj all-reduce for HeadParallel). Back under 500
+            # once the batched/graph paths consolidate. Follow-up.
             "crates/spark-model/src/layers/qwen3_ssm/trait_decode_batched.rs"
             # -- #300/#301 (mixed-precision NVFP4 weights) carry-over --
             # 522 LoC; landed on main 2026-07-12 without an entry, so the
