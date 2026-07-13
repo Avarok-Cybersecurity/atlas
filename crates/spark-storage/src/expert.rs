@@ -221,7 +221,7 @@ impl ExpertRecordHeader {
     /// Serialize into the fixed 256-byte on-disk header block. Layout:
     ///   u32 magic, u32 version, u32 layer, u32 expert,
     ///   u32 inter, u32 hidden, u32 group_size, u32 input_scale_flags,
-    ///   f32 scale2[3], f32 input_scale[3] (0.0 where absent), zero pad to 256.
+    ///   `f32 scale2[3]`, `f32 input_scale[3]` (0.0 where absent), zero pad to 256.
     /// `input_scale_flags` bit `i` set => projection `i` has an activation scale.
     pub fn to_bytes(&self) -> [u8; Self::BYTES as usize] {
         let mut out = [0u8; Self::BYTES as usize];
