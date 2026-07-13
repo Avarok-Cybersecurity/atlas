@@ -91,10 +91,10 @@ fn launch(
 }
 
 /// max |device - truth|, and the max relative error against the truth magnitude.
-fn cmp(dev: &[f64], tru: &[f64]) -> (f64, f64) {
+fn cmp(dev: &[f64], truth_v: &[f64]) -> (f64, f64) {
     let mut amax = 0.0f64;
     let mut rmax = 0.0f64;
-    for (d, t) in dev.iter().zip(tru) {
+    for (d, t) in dev.iter().zip(truth_v) {
         let a = (d - t).abs();
         amax = amax.max(a);
         if t.abs() > 1e-9 {
@@ -190,8 +190,8 @@ fn main() -> Result<()> {
                     hidden as u32,
                 )?;
                 let dev = db(g, op, tokens * hidden)?;
-                let tru = truth(&x, &w64, hidden, tokens);
-                let (a, rel) = cmp(&dev, &tru);
+                let truth_v = truth(&x, &w64, hidden, tokens);
+                let (a, rel) = cmp(&dev, &truth_v);
                 // BF16 store granularity: one ULP at magnitude ~4 is ~0.03. The kernel
                 // reduces in F32, so allow one BF16 ULP of slack, no more.
                 let bad = rel > 0.01;
@@ -251,8 +251,8 @@ fn main() -> Result<()> {
     )?;
     let dev = db(g, op, tokens * hidden)?;
     let ones = vec![1.0f64; hidden];
-    let tru = truth(&x, &ones, hidden, tokens);
-    let (a, rel) = cmp(&dev, &tru);
+    let truth_v = truth(&x, &ones, hidden, tokens);
+    let (a, rel) = cmp(&dev, &truth_v);
     let i1_ok = a == 0.0;
     println!(
         "  offset kernel, w=0  ->  max|abs| {:.3e}  max rel {:.3e}   {}",
@@ -289,8 +289,8 @@ fn main() -> Result<()> {
         hidden as u32,
     )?;
     let dev = db(g, op, tokens * hidden)?;
-    let tru = truth(&x, &w_eff, hidden, tokens);
-    let (a, rel) = cmp(&dev, &tru);
+    let truth_v = truth(&x, &w_eff, hidden, tokens);
+    let (a, rel) = cmp(&dev, &truth_v);
     let v3_ok = rel < 0.01;
     println!(
         "  offset kernel, w~U(-0.5,0.5)  ->  max|abs| {:.3e}  max rel {:.3e}   {}",
@@ -324,7 +324,7 @@ fn main() -> Result<()> {
             .map(|_| bf16::from_f32(r.r(c.lo, c.hi) as f32))
             .collect();
         let w64: Vec<f64> = w.iter().map(|v| v.to_f64()).collect();
-        let tru = truth(&x, &w64, hidden, tokens); // truth uses the EXACT checkpoint weight
+        let truth_v = truth(&x, &w64, hidden, tokens); // truth uses the EXACT checkpoint weight
         let xp = ub(g, &x)?;
 
         // OLD: loader stored bf16(w-1); offset kernel adds 1 back.
@@ -344,7 +344,7 @@ fn main() -> Result<()> {
             tokens as u32,
             hidden as u32,
         )?;
-        let (a_old, r_old) = cmp(&db(g, op_old, tokens * hidden)?, &tru);
+        let (a_old, r_old) = cmp(&db(g, op_old, tokens * hidden)?, &truth_v);
 
         // NEW: exact weight, vanilla kernel.
         let wp_new = ub(g, &w)?;
@@ -359,7 +359,7 @@ fn main() -> Result<()> {
             tokens as u32,
             hidden as u32,
         )?;
-        let (a_new, r_new) = cmp(&db(g, op_new, tokens * hidden)?, &tru);
+        let (a_new, r_new) = cmp(&db(g, op_new, tokens * hidden)?, &truth_v);
 
         // Sanity: the host-side prediction of the old effective weight.
         let pred: Vec<f64> = w64.iter().map(|v| old_effective(*v)).collect();
