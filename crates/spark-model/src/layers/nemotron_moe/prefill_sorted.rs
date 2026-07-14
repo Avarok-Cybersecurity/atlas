@@ -210,7 +210,41 @@ impl NemotronMoeLayer {
             .arg_ptr(p.shared_up_out_base)
             .arg_u32(shared_relu2_n)
             .launch(stream)?;
-        if let Some(w_fp8) = self.shared_down_pd_fp8 {
+        // OPT-IN only: shared_down's input is relu^2(x) -- squared, all-positive,
+        // wide dynamic range -- and quantizing it to FP4 measurably degraded long-
+        // prompt outputs (hallucinated MC options, repetition loops) while the
+        // normed-input W4A4 GEMMs stayed clean. ATLAS_SHARED_W4A4_DOWN=1 to test.
+        let w4a4_down = p.n >= 512
+            && self.w4a4_gemm_k.0 != 0
+            && self.quantize_nvfp4_k.0 != 0
+            && ctx.buffers.fp8_act_bytes() >= (p.shared_inter as usize) * (p.n as usize)
+            && std::env::var("ATLAS_SHARED_W4A4_DOWN").is_ok();
+        if w4a4_down {
+            let a4 = ctx.buffers.fp8_act();
+            let a4_sf = a4.offset((p.n as usize) * (p.shared_inter as usize) / 2);
+            ops::quantize_bf16_to_nvfp4(
+                ctx.gpu,
+                self.quantize_nvfp4_k,
+                p.shared_up_out_base,
+                a4,
+                a4_sf,
+                p.n,
+                p.shared_inter,
+                stream,
+            )?;
+            ops::w4a4_gemm_mfast(
+                ctx.gpu,
+                self.w4a4_gemm_k,
+                a4,
+                a4_sf,
+                &self.weights.shared_down,
+                shared_down_out,
+                p.n,
+                p.h as u32,
+                p.shared_inter,
+                stream,
+            )?;
+        } else if let Some(w_fp8) = self.shared_down_pd_fp8 {
             ops::fp8_gemm_m128_mfast(
                 ctx.gpu,
                 self.fp8_gemm_m128_k,

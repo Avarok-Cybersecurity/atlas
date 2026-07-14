@@ -89,6 +89,8 @@ pub struct NemotronMoeLayer {
     w4a16_gemm_t_k: KernelHandle,
     w4a16_gemm_t_m128_k: KernelHandle,
     fp8_gemm_m128_k: KernelHandle,
+    w4a4_gemm_k: KernelHandle,
+    quantize_nvfp4_k: KernelHandle,
 }
 
 impl NemotronMoeLayer {
@@ -185,6 +187,8 @@ impl NemotronMoeLayer {
             w4a16_gemm_t_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t"),
             w4a16_gemm_t_m128_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128"),
             fp8_gemm_m128_k: super::try_kernel(gpu, "w4a16", "fp8_gemm_t_m128_mfast"),
+            w4a4_gemm_k: super::try_kernel(gpu, "w4a4", "w4a4_gemm_mfast"),
+            quantize_nvfp4_k: super::try_kernel(gpu, "quantize_nvfp4", "quantize_bf16_to_nvfp4"),
         })
     }
 }
@@ -435,7 +439,40 @@ impl TransformerLayer for NemotronMoeLayer {
         // Always compute shared expert UP — even when batched path overwrites it later.
         // The batched UP kernel writes shared_up_out for shared blocks, but we need
         // this result for the per-token fallback path AND it's harmless to overwrite.
-        if let Some(w_fp8) = self.shared_up_pd_fp8 {
+        // Native FP4 tensor cores: shared_up consumed in its ORIGINAL NVFP4 form
+        // (no FP8 or transposed copies), activations quantized to NVFP4 in one
+        // pass. Same gates as the SSM W4A4 path; ATLAS_NO_SHARED_W4A4=1 disables.
+        let w4a4 = n >= 512
+            && self.w4a4_gemm_k.0 != 0
+            && self.quantize_nvfp4_k.0 != 0
+            && ctx.buffers.fp8_act_bytes() >= (shared_inter as usize).max(h) * (n as usize)
+            && std::env::var("ATLAS_NO_SHARED_W4A4").is_err();
+        if w4a4 {
+            let a4 = ctx.buffers.fp8_act();
+            let a4_sf = a4.offset((n as usize) * h / 2);
+            ops::quantize_bf16_to_nvfp4(
+                ctx.gpu,
+                self.quantize_nvfp4_k,
+                normed,
+                a4,
+                a4_sf,
+                n,
+                h as u32,
+                stream,
+            )?;
+            ops::w4a4_gemm_mfast(
+                ctx.gpu,
+                self.w4a4_gemm_k,
+                a4,
+                a4_sf,
+                &self.weights.shared_up,
+                shared_up_out_base,
+                n,
+                shared_inter,
+                h as u32,
+                stream,
+            )?;
+        } else if let Some(w_fp8) = self.shared_up_pd_fp8 {
             ops::fp8_gemm_m128_mfast(
                 ctx.gpu,
                 self.fp8_gemm_m128_k,
