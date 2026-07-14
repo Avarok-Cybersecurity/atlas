@@ -328,6 +328,7 @@ impl TransformerModel {
                     cache_disk_block_ids,
                     bs,
                     seq.cached_prefix_tokens.min(cache_tokens_len),
+                    seq.adapter_id,
                 );
                 super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
             }
@@ -350,10 +351,12 @@ impl TransformerModel {
                 Ok(Some(id)) => Some(id),
                 Ok(None) => {
                     tracing::debug!("Snapshot pool full, reclaiming...");
-                    if self
-                        .ssm_snapshots
-                        .reclaim_from_cache(self.prefix_cache.as_ref(), kv_cache)
-                    {
+                    if self.ssm_snapshots.reclaim_from_cache(
+                        self.prefix_cache.as_ref(),
+                        kv_cache,
+                        self.ssm_tier_store.as_deref(),
+                        self.gpu.as_ref(),
+                    ) {
                         self.ssm_snapshots
                             .save(
                                 seq.slot_idx,
@@ -399,6 +402,7 @@ impl TransformerModel {
                         snap_id,
                         seq.session_hash,
                         seq.cached_prefix_tokens,
+                        seq.adapter_id,
                     );
                     super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
                     if let Some(old) = displaced {
@@ -412,6 +416,7 @@ impl TransformerModel {
                     &seq.disk_block_ids,
                     bs,
                     seq.cached_prefix_tokens,
+                    seq.adapter_id,
                 );
                 super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
             }
@@ -422,6 +427,7 @@ impl TransformerModel {
                 &seq.disk_block_ids,
                 bs,
                 seq.cached_prefix_tokens,
+                seq.adapter_id,
             );
             super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
         }

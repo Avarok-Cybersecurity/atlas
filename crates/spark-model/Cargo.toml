@@ -36,6 +36,7 @@ gpu-examples = []
 [dependencies]
 atlas-core = { workspace = true }
 atlas-kernels = { workspace = true }
+atlas-tier = { workspace = true }
 # `default-features = false` so the metal feature can opt out of
 # spark-runtime's `cuda` default — otherwise the dep line silently
 # re-enables cudarc on every build.

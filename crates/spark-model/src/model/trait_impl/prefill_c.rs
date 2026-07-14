@@ -159,7 +159,8 @@ impl TransformerModel {
         let prefix_match = if self.tokens_have_vision_pad(tokens) {
             spark_runtime::prefix_cache::PrefixMatch::empty()
         } else {
-            self.prefix_cache.lookup(tokens, bs, seq.session_hash)
+            self.prefix_cache
+                .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
         };
         let matched = prefix_match.matched_tokens;
         seq.cached_prefix_tokens = matched;
@@ -175,8 +176,12 @@ impl TransformerModel {
         );
 
         // Marconi: restore SSM snapshot if available (session-gated).
-        let (kv_write_start, marconi_skip) = if let Some(snap_id) = prefix_match.ssm_snapshot {
-            let snap_tok = prefix_match.ssm_snapshot_tokens;
+        // Phase 1b spill-tier fault-in (#6): fold a resident hit with a
+        // faulted-back spilled anchor; see `ssm_fault_in::eff_ssm_snapshot`.
+        let (eff_snapshot, eff_snapshot_tokens) =
+            self.eff_ssm_snapshot(&prefix_match, seq.session_hash, stream);
+        let (kv_write_start, marconi_skip) = if let Some(snap_id) = eff_snapshot {
+            let snap_tok = eff_snapshot_tokens;
             if snap_tok > 0
                 && matched <= total_len
                 && self

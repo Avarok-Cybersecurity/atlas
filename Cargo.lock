@@ -160,6 +160,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-rdma"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cc",
+]
+
+[[package]]
 name = "atlas-reduce"
 version = "0.1.0"
 dependencies = [
@@ -180,6 +188,14 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "atlas-tier"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
 ]
 
 [[package]]
@@ -2092,6 +2108,7 @@ dependencies = [
  "anyhow",
  "atlas-core",
  "atlas-kernels",
+ "atlas-tier",
  "base64 0.22.1",
  "half",
  "image",
@@ -2172,6 +2189,8 @@ name = "spark-storage"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atlas-rdma",
+ "atlas-tier",
  "cufile-sys",
  "half",
  "io-uring",
@@ -2181,6 +2200,7 @@ dependencies = [
  "rand_distr",
  "serde",
  "serde_json",
+ "spark-runtime",
  "tracing",
  "tracing-subscriber",
 ]

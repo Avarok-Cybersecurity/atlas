@@ -416,19 +416,8 @@ impl SsmSnapshotPool {
         Ok(())
     }
 
-    /// Try to reclaim a snapshot slot by evicting the LRU snapshot from the
-    /// prefix cache's snapshot index. Snapshots are decoupled from tree nodes,
-    /// so this directly frees a snapshot without needing to evict KV blocks.
-    pub(super) fn reclaim_from_cache(
-        &self,
-        prefix_cache: &dyn spark_runtime::prefix_cache::PrefixCache,
-        _kv_cache: &mut PagedKvCache,
-    ) -> bool {
-        if let Some(snap) = prefix_cache.evict_snapshot_lru() {
-            self.free(snap);
-            true
-        } else {
-            false
-        }
-    }
+    // `reclaim_from_cache` (spill-or-drop) and the Phase-1 spill/fault-in
+    // primitives live in the sibling `ssm_snapshot_spill` module to keep this
+    // file under the 500-LoC cap. They are a second `impl SsmSnapshotPool`
+    // block over the same fields.
 }

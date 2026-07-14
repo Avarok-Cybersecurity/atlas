@@ -34,6 +34,8 @@ pub(crate) mod impl_b2;
 pub(crate) mod impl_b3;
 pub(crate) mod ssm_pool;
 pub(crate) mod ssm_snapshot;
+pub(crate) mod ssm_snapshot_spill;
+pub(crate) mod ssm_tier;
 pub(crate) mod trait_impl;
 pub(crate) mod types;
 

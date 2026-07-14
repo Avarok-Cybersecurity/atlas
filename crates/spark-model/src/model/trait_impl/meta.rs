@@ -37,6 +37,23 @@ impl TransformerModel {
         // only models would need a different orchestrator. We expose dims
         // unconditionally and let the scheduler decide whether to install,
         // gated by the user's --high-speed-swap CLI choice.
+        //
+        // KV paging identity (ATLAS_KV_PAGING): the SAME config-derived
+        // fingerprint the SSM tier uses (quant identity + geometry + the
+        // ATLAS_MODEL_ID salt), via the KV convention (blob_bytes = 0).
+        // Underivable ⇒ None with a loud warn; the flag-ON connect then fails
+        // fast with an actionable error unless ATLAS_KV_PAGING_NS is set. Every
+        // other path ignores the field (default-off ⇒ unread).
+        let model_fp = match crate::model::ssm_tier::ModelFingerprint::derive_kv(&self.config) {
+            Ok(fp) => Some(fp.nonzero()),
+            Err(e) => {
+                tracing::warn!(
+                    "KV paging fingerprint underivable ({e:#}); ATLAS_KV_PAGING=1 \
+                     will fail fast unless ATLAS_KV_PAGING_NS is set"
+                );
+                None
+            }
+        };
         Some(spark_storage::ModelDims {
             num_layers: self.config.num_hidden_layers as u32,
             max_blocks_per_layer: self.max_blocks_per_seq,
@@ -44,6 +61,7 @@ impl TransformerModel {
             num_kv_heads: self.config.num_key_value_heads as u16,
             head_dim: self.config.head_dim as u16,
             block_size: self.kv_cache.lock().block_size() as u16,
+            model_fp,
         })
     }
 
@@ -174,6 +192,7 @@ impl TransformerModel {
         // every sequence's first decode step.
         let num_attn_layers = self.config.num_attention_layers();
         Ok(SequenceState {
+            adapter_id: 0,
             tokens: Vec::new(),
             block_table: Vec::new(),
             seq_len: 0,

@@ -89,6 +89,12 @@ pub struct TransformerModel {
     pub(super) ssm_pool: Arc<SsmStatePool>,
     /// SSM state snapshot pool for Marconi prefix caching.
     pub(super) ssm_snapshots: SsmSnapshotPool,
+    /// Optional SSM snapshot spill tier (`ATLAS_SSM_TIER`). `None` (default)
+    /// keeps the drop-only reclaim path byte-identical; `Some` moves an evicted
+    /// snapshot's bytes to the tier (keeping its index entry findable) so a warm
+    /// turn faults it back instead of recomputing. Threaded into
+    /// [`SsmSnapshotPool::reclaim_from_cache`] at every reclaim call site.
+    pub(super) ssm_tier_store: Option<Arc<dyn super::ssm_tier::SnapshotBlobStore>>,
     /// Fixed max blocks per sequence (max_seq_len / block_size + 1).
     /// Used as constant stride in attention metadata for CUDA graph compatibility.
     pub(super) max_blocks_per_seq: u32,

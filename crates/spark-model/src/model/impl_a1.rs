@@ -154,6 +154,11 @@ impl TransformerModel {
             gpu.as_ref(),
         )?);
 
+        // Fail fast if an SSM tier was requested (`ATLAS_SSM_TIER`) on a model
+        // with no recurrent state — a tier request there was previously a
+        // silent no-op. No-op when the tier is unset (default path).
+        super::ssm_tier::ensure_ssm_tier_capability(&config)?;
+
         // SSM snapshot pool: Marconi prefix-cache slots + Phase-C
         // decode-rollback ring. The decode-rollback region is only sized
         // for SSM models — `num_ssm_layers == 0` makes both regions
@@ -180,6 +185,13 @@ impl TransformerModel {
             // without re-running the last token through the SSM layers.
             config.hidden_size * 2,
             gpu.as_ref(),
+        )?;
+        // Optional SSM snapshot spill tier. `None` (default) keeps the reclaim
+        // drop path byte-identical; blob sizing tracks the pool's spill layout.
+        let ssm_tier_store = super::impl_a1_init::build_ssm_tier_store(
+            &config,
+            ssm_snapshots.spill_blob_bytes(),
+            ssm_pool.num_ssm_layers,
         )?;
         if ssm_checkpoint_interval > 0 && ssm_cache_slots > 0 {
             tracing::info!(
@@ -473,6 +485,7 @@ impl TransformerModel {
             ),
             ssm_pool,
             ssm_snapshots,
+            ssm_tier_store,
             max_blocks_per_seq,
             dummy_kv_block,
             profile,

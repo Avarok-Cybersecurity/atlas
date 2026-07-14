@@ -59,6 +59,23 @@ impl ModelConfig {
         }
     }
 
+    /// Whether this model carries recurrent (SSM / linear-attention) state —
+    /// the honest capability signal for the SSM snapshot tiers. Derived from
+    /// [`Self::num_ssm_layers`] so the config-level predicate and the runtime
+    /// pool predicate (`ssm_pool.num_ssm_layers > 0`) agree by construction
+    /// (SSOT). A pure-attention model (dense or MoE) returns `false`:
+    /// requesting an SSM tier for it must fail fast, never silently no-op.
+    pub fn has_recurrent_state(&self) -> bool {
+        self.num_ssm_layers() > 0
+    }
+
+    /// Whether this model has MoE routed experts — the capability signal for
+    /// the expert-streaming tier. Keyed on config, never on observed expert
+    /// tensors (EP ranks legitimately own zero local expert tensors).
+    pub fn has_experts(&self) -> bool {
+        self.num_experts > 0
+    }
+
     /// Rotary embedding dimension.
     ///
     /// Priority:

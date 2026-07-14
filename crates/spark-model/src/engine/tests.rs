@@ -142,6 +142,7 @@ impl Model for MockModel {
 
     fn alloc_sequence(&self) -> Result<SequenceState> {
         Ok(SequenceState {
+            adapter_id: 0,
             tokens: Vec::new(),
             block_table: Vec::new(),
             seq_len: 0,
