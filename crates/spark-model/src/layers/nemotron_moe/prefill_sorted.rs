@@ -203,18 +203,44 @@ impl NemotronMoeLayer {
             .arg_ptr(p.shared_up_out_base)
             .arg_u32(shared_relu2_n)
             .launch(stream)?;
-        if let Some(ref sdt) = self.shared_down_t {
-            ops::w4a16_gemm_n128(
+        if let Some(w_fp8) = self.shared_down_pd_fp8 {
+            ops::fp8_gemm_m128_mfast(
                 ctx.gpu,
-                self.w4a16_gemm_t_k,
+                self.fp8_gemm_m128_k,
                 p.shared_up_out_base,
-                sdt,
+                w_fp8,
                 shared_down_out,
                 p.n,
                 p.h as u32,
                 p.shared_inter,
                 stream,
             )?;
+        } else if let Some(ref sdt) = self.shared_down_t {
+            if p.n > 128 && self.w4a16_gemm_t_m128_k.0 != 0 {
+                ops::w4a16_gemm_n128_m128(
+                    ctx.gpu,
+                    self.w4a16_gemm_t_m128_k,
+                    p.shared_up_out_base,
+                    sdt,
+                    shared_down_out,
+                    p.n,
+                    p.h as u32,
+                    p.shared_inter,
+                    stream,
+                )?;
+            } else {
+                ops::w4a16_gemm_n128(
+                    ctx.gpu,
+                    self.w4a16_gemm_t_k,
+                    p.shared_up_out_base,
+                    sdt,
+                    shared_down_out,
+                    p.n,
+                    p.h as u32,
+                    p.shared_inter,
+                    stream,
+                )?;
+            }
         } else {
             ops::w4a16_gemm(
                 ctx.gpu,
@@ -231,19 +257,32 @@ impl NemotronMoeLayer {
 
         if is_latent {
             // 5h-p.latent. fc2_latent: routed_out [N, L] → [N, H], then blend with shared
-            let fc2 = self.weights.fc2_latent_proj.as_ref().unwrap();
             let fc2_out = ctx.buffers.attn_output();
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                routed_out,
-                fc2,
-                fc2_out,
-                p.n,
-                p.h as u32,
-                p.latent,
-                stream,
-            )?;
+            if let Some(w_fp8) = self.fc2_pd_fp8 {
+                ops::fp8_gemm_m128_mfast(
+                    ctx.gpu,
+                    self.fp8_gemm_m128_k,
+                    routed_out,
+                    w_fp8,
+                    fc2_out,
+                    p.n,
+                    p.h as u32,
+                    p.latent,
+                    stream,
+                )?;
+            } else {
+                let fc2 = self.weights.fc2_latent_proj.as_ref().unwrap();
+                self.dense_gemm_prefill(
+                    ctx.gpu,
+                    routed_out,
+                    fc2,
+                    fc2_out,
+                    p.n,
+                    p.h as u32,
+                    p.latent,
+                    stream,
+                )?;
+            }
             // output = fc2_out + shared_down_out → p.hidden
             ops::residual_add(
                 ctx.gpu,

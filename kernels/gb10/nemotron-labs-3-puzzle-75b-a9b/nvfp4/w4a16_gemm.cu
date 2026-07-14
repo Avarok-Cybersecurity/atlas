@@ -74,23 +74,73 @@ extern "C" __global__ void w4a16_gemm(
             }
         }
         {
-            #pragma unroll
-            for (unsigned int i = 0; i < 8; i++) {
-                unsigned int idx = threadIdx.x * 8 + i;
-                unsigned int k = idx / N_TILE_SM;
-                unsigned int n = idx % N_TILE_SM;
-                unsigned int gk = k_base + k;
-                unsigned int gn = cta_n + n;
-                if (gk < K && gn < N) {
-                    unsigned int k_pair = gk / 2;
-                    unsigned char packed_byte = B_packed[(unsigned long long)gn * half_K + k_pair];
-                    unsigned int nibble = (gk & 1) ? (packed_byte >> 4) : (packed_byte & 0xF);
-                    unsigned int sg = gk / GROUP_SIZE;
+            // Coalesced B-tile load.
+            //
+            // The old mapping (idx = tid*8+i; k = idx/N_TILE_SM; n = idx%N_TILE_SM)
+            // gave each thread 8 elements that shared one k but spanned 8 different
+            // n, i.e. 8 separate 1-byte loads at `gn * half_K` stride — 8 distinct
+            // cache lines per thread and ~256 memory transactions per warp. B is
+            // N-major (K contiguous within a row), so the coalesced access is along K.
+            //
+            // New mapping: each thread owns ONE row and a contiguous run of K.
+            //   thread t -> n = t>>1, khalf = t&1, covering k0 = k_base + khalf*8
+            //   and the 8 k-values k0..k0+7 == 4 contiguous packed bytes.
+            // Threads 2i / 2i+1 read the two halves of row i's 8-byte window, so
+            // adjacent lanes touch adjacent addresses. 1 vector load per thread
+            // instead of 8 scalar loads.
+            //
+            // GROUP_SIZE=16 and k0 is a multiple of 8, so all 8 k-values of a thread
+            // fall in the same scale group => the B_scale read is hoisted out too
+            // (1 scale load instead of 8).
+            const unsigned int n = threadIdx.x >> 1;
+            const unsigned int khalf = threadIdx.x & 1u;
+            const unsigned int k0 = k_base + khalf * 8u;
+            const unsigned int gn = cta_n + n;
+            const unsigned int kl = khalf * 8u;  // local k offset within the tile
+
+            if (n < N_TILE_SM) {
+                if (gn < N && k0 < K) {
+                    const unsigned long long byte_off =
+                        (unsigned long long)gn * half_K + (k0 >> 1);
+                    // All 8 k-values share one scale group (see note above).
+                    const unsigned int sg = k0 / GROUP_SIZE;
                     unsigned char sb = B_scale[(unsigned long long)gn * num_groups + sg];
                     __nv_fp8_e4m3 fp8; *(unsigned char*)&fp8 = sb;
-                    smem_B[k][n] = __float2bfloat16(E2M1_LUT[nibble] * (float)fp8 * scale2);
+                    const float s = (float)fp8 * scale2;
+
+                    unsigned char pb[4];
+                    if (((half_K & 3u) == 0u) && (k0 + 8u <= K)) {
+                        // 4-byte aligned and fully in-bounds: single 32-bit load.
+                        unsigned int w = *(const unsigned int*)(B_packed + byte_off);
+                        pb[0] = (unsigned char)(w & 0xFFu);
+                        pb[1] = (unsigned char)((w >> 8) & 0xFFu);
+                        pb[2] = (unsigned char)((w >> 16) & 0xFFu);
+                        pb[3] = (unsigned char)((w >> 24) & 0xFFu);
+                    } else {
+                        #pragma unroll
+                        for (unsigned int j = 0; j < 4; j++) {
+                            unsigned int gk = k0 + j * 2u;
+                            pb[j] = (gk < K) ? B_packed[byte_off + j] : 0u;
+                        }
+                    }
+
+                    #pragma unroll
+                    for (unsigned int j = 0; j < 8; j++) {
+                        unsigned int gk = k0 + j;
+                        float v = 0.0f;
+                        if (gk < K) {
+                            unsigned char packed_byte = pb[j >> 1];
+                            unsigned int nibble =
+                                (gk & 1u) ? (packed_byte >> 4) : (packed_byte & 0xFu);
+                            v = E2M1_LUT[nibble] * s;
+                        }
+                        smem_B[kl + j][n] = __float2bfloat16(v);
+                    }
                 } else {
-                    smem_B[k][n] = __float2bfloat16(0.0f);
+                    #pragma unroll
+                    for (unsigned int j = 0; j < 8; j++) {
+                        smem_B[kl + j][n] = __float2bfloat16(0.0f);
+                    }
                 }
             }
         }
@@ -368,14 +418,15 @@ extern "C" __global__ void w4a16_gemm_t(
 // smem: A 2×64×40×2=10240B, B_fp8 2×128×32=8192B = ~18.4KB
 // ═══════════════════════════════════════════════════════════════════
 
-extern "C" __global__ void fp8_gemm_t(
+__device__ __forceinline__ void fp8_gemm_t_impl(
     const __nv_bfloat16* __restrict__ A,       // [M, K] BF16
     const unsigned char* __restrict__ B_fp8,   // [N, K] FP8 E4M3
     __nv_bfloat16* __restrict__ C,             // [M, N] BF16
-    unsigned int M, unsigned int N, unsigned int K
+    unsigned int M, unsigned int N, unsigned int K,
+    const unsigned int cta_m, const unsigned int cta_n
 ) {
-    const unsigned int cta_n = blockIdx.x * N_TILE_LG;
-    const unsigned int cta_m = blockIdx.y * M_TILE;
+
+
     const unsigned int warp_id = threadIdx.x / 32;
     const unsigned int lane_id = threadIdx.x % 32;
     const unsigned int warp_m_offset = warp_id * 16;
@@ -478,6 +529,38 @@ extern "C" __global__ void fp8_gemm_t(
         if (r1 < M && c1 < N) C[r1*N+c1] = __float2bfloat16(acc[nt][3]);
     }
 }
+
+// Two CTA-origin mappings over the SAME body.
+//
+// fp8_gemm_t: n on the fast axis (legacy order; kept for callers that tile M
+// coarsely). fp8_gemm_t_mfast: m on the fast axis.
+//
+// Every M-block re-reads the whole B panel for its N column. With n fast, the
+// M/64 blocks that share a panel are scheduled N/128 blocks apart, so the panel
+// is evicted from L2 between them and B comes from DRAM once per M-block. FP8 B
+// is 2x the bytes of the NVFP4 it replaces, so on Puzzle that mis-ordering cost
+// ~47 GB of DRAM traffic in one 1k prefill (SSM layers 255 ms -> 688 ms). With m
+// fast the sharers are co-resident and the panel is fetched once.
+extern "C" __global__ void fp8_gemm_t(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_fp8,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M, unsigned int N, unsigned int K
+) {
+    fp8_gemm_t_impl(A, B_fp8, C, M, N, K,
+                    blockIdx.y * M_TILE, blockIdx.x * N_TILE_LG);
+}
+
+extern "C" __global__ void fp8_gemm_t_mfast(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_fp8,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M, unsigned int N, unsigned int K
+) {
+    fp8_gemm_t_impl(A, B_fp8, C, M, N, K,
+                    blockIdx.x * M_TILE, blockIdx.y * N_TILE_LG);
+}
+
 
 // ═══════════════════════════════════════════════════════════════════
 // Pre-dequant: NVFP4 [N, K/2] + scales [N, K/GROUP_SIZE] → FP8 [N, K]
@@ -907,8 +990,16 @@ void w4a16_gemm_t_m128(
     __nv_bfloat16* __restrict__ C,
     unsigned int M, unsigned int N, unsigned int K
 ) {
-    const unsigned int cta_n  = blockIdx.x * N_TILE_LG;
-    const unsigned int cta_m  = blockIdx.y * (2 * M_TILE);  // base row for this block
+    // Grid axes are SWAPPED relative to the other GEMMs: blockIdx.x is the
+    // M-block, blockIdx.y is the N-block.
+    //
+    // Every m-block re-reads the whole B panel for its n-column. With n on the
+    // fast axis, the 8 m-blocks sharing a B panel are scheduled ~141 blocks
+    // apart, so the panel is evicted from L2 between them and B is fetched from
+    // DRAM 8x (~20 GB across the 112 calls in one 1k prefill). Putting m on the
+    // fast axis makes those 8 blocks co-resident, so 7 of the 8 reads hit L2.
+    const unsigned int cta_n  = blockIdx.y * N_TILE_LG;
+    const unsigned int cta_m  = blockIdx.x * (2 * M_TILE);  // base row for this block
     if (cta_m >= M) return;
 
     const unsigned int warp_id = threadIdx.x / 32;
@@ -1093,6 +1184,163 @@ void w4a16_gemm_t_m128(
         if (r1 < M && c1 < N) C[r1 * N + c1] = __float2bfloat16(acc1[nt][3]);
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// fp8_gemm_t_m128_mfast — w4a16_gemm_t_m128 with the dequant DELETED.
+//
+// Identical tiling (M_TILE 128 = 2 chunks, N_TILE_LG 128, K_STEP_T 32, 4 warps,
+// same A handling, same MMA, m on the fast grid axis). The only difference is
+// that B arrives already FP8 E4M3 [N, K], so it is cp.async'd straight into the
+// MMA's B tile: no smem_Bp/smem_Bs staging, no LUT, no per-K-step FP4->FP8
+// conversion. Isolates the dequant cost exactly.
+// ═══════════════════════════════════════════════════════════════════
+// K step of 64 (not 32) for the FP8 B path: halves the number of pipeline stages
+// and barriers over a K=4096 reduction (128 -> 64) and doubles the MMA work per
+// stage, so the cp.async of the next tile has twice as much math to hide behind.
+#define FK      64
+#define FK_PAD   8   // row stride 72 halves = 144 B, 16B-aligned for cp.async
+extern "C" __global__
+__launch_bounds__(128, 3)
+void fp8_gemm_t_m128_mfast(
+    const __nv_bfloat16* __restrict__ A,       // [M, K] BF16
+    const unsigned char* __restrict__ B_fp8,   // [N, K] FP8 E4M3
+    __nv_bfloat16* __restrict__ C,             // [M, N] BF16
+    unsigned int M, unsigned int N, unsigned int K
+) {
+    // 128x128 tile over 4 warps: each warp owns two 64-row chunks (acc0/acc1).
+    // Spreading the same tile over 8 warps measured WORSE (505 vs 484 ms): it
+    // doubles the redundant B-fragment smem reads per MMA.
+    const unsigned int cta_n = blockIdx.y * N_TILE_LG;
+    const unsigned int cta_m = blockIdx.x * (2 * M_TILE);
+    if (cta_m >= M) return;
+
+    const unsigned int warp_id = threadIdx.x / 32;
+    const unsigned int lane_id = threadIdx.x % 32;
+    const unsigned int warp_m_offset = warp_id * 16;
+    const unsigned int group_id = lane_id >> 2;
+    const unsigned int tid = lane_id & 3;
+
+    __shared__ __nv_bfloat16 smem_A[2][2 * M_TILE][FK + FK_PAD];  // 36864 B
+    __shared__ unsigned char smem_B[2][N_TILE_LG][FK];            // 16384 B
+
+    float acc0[16][4], acc1[16][4];
+    #pragma unroll
+    for (int i = 0; i < 16; i++) {
+        acc0[i][0] = 0.f; acc0[i][1] = 0.f; acc0[i][2] = 0.f; acc0[i][3] = 0.f;
+        acc1[i][0] = 0.f; acc1[i][1] = 0.f; acc1[i][2] = 0.f; acc1[i][3] = 0.f;
+    }
+
+    const unsigned int a_stride = FK + FK_PAD;
+
+    // A: 128 rows x 8 col-chunks of 8 halves = 1024 chunks -> 8 per thread.
+    // B: 128 rows x 4 chunks of 16 B        =  512 chunks -> 4 per thread.
+    #define FM128_LOADS(buf, kb) do { \
+        { \
+            unsigned int a_row_base = threadIdx.x >> 3; \
+            unsigned int a_col      = (threadIdx.x & 7u) << 3; \
+            unsigned int gc = (kb) + a_col; \
+            _Pragma("unroll") \
+            for (int rnd = 0; rnd < 8; rnd++) { \
+                unsigned int row = (unsigned int)(rnd * 16) + a_row_base; \
+                unsigned int gr  = cta_m + row; \
+                cp_async_pred_16(&smem_A[(buf)][row][a_col], \
+                    &A[(unsigned long long)gr * K + gc], \
+                    (gr < M) && (gc + 7 < K)); \
+            } \
+        } \
+        _Pragma("unroll") \
+        for (unsigned int ch = 0; ch < 4u; ch++) { \
+            unsigned int idx = threadIdx.x + ch * 128u; \
+            unsigned int n_  = idx >> 2; \
+            unsigned int q   = idx & 3u; \
+            unsigned int gn  = cta_n + n_; \
+            cp_async_pred_16(&smem_B[(buf)][n_][q * 16u], \
+                &B_fp8[(unsigned long long)gn * K + (kb) + q * 16u], \
+                (gn < N) && ((kb) + q * 16u + 15u < K)); \
+        } \
+    } while(0)
+
+    // One m16n8k32 MMA per (n-tile, k-half); FK=64 -> 2 k-halves per stage.
+    //
+    // The two M-chunks run as separate passes and each re-reads B from smem. Hoisting
+    // B so both chunks share one read (8 live A-fragments per k-half instead of 4)
+    // measured WORSE: 448 -> 477 ms. The extra register pressure and the loss of ILP
+    // between the two independent accumulator chains cost more than the saved LDS.
+    #define FM128_MMA(buf, base, ACC) do { \
+        const unsigned short* sA = (const unsigned short*)smem_A[(buf)]; \
+        unsigned int fr0 = (base) + warp_m_offset + group_id; \
+        unsigned int fr1 = fr0 + 8; \
+        _Pragma("unroll") \
+        for (unsigned int kh = 0; kh < 2u; kh++) { \
+            unsigned int ko = kh * 32u; \
+            unsigned int a0 = bf16x4_to_e4m3x4(&sA[fr0 * a_stride + ko + tid * 4]); \
+            unsigned int a1 = bf16x4_to_e4m3x4(&sA[fr1 * a_stride + ko + tid * 4]); \
+            unsigned int a2 = bf16x4_to_e4m3x4(&sA[fr0 * a_stride + ko + 16 + tid * 4]); \
+            unsigned int a3 = bf16x4_to_e4m3x4(&sA[fr1 * a_stride + ko + 16 + tid * 4]); \
+            _Pragma("unroll") \
+            for (int nt = 0; nt < 16; nt++) { \
+                unsigned int nc = nt * 8 + group_id; \
+                unsigned int b0 = *(const unsigned int*)&smem_B[(buf)][nc][ko + 4 * tid]; \
+                unsigned int b1 = *(const unsigned int*)&smem_B[(buf)][nc][ko + 16 + 4 * tid]; \
+                asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 " \
+                    "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
+                    :"=f"(ACC[nt][0]),"=f"(ACC[nt][1]),"=f"(ACC[nt][2]),"=f"(ACC[nt][3]) \
+                    :"r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1), \
+                     "f"(ACC[nt][0]),"f"(ACC[nt][1]),"f"(ACC[nt][2]),"f"(ACC[nt][3])); \
+            } \
+        } \
+    } while(0)
+
+    #define FM128_COMPUTE(buf) do { \
+        FM128_MMA(buf, 0u, acc0); \
+        FM128_MMA(buf, M_TILE, acc1); \
+    } while(0)
+
+    FM128_LOADS(0, 0);
+    cp_async_commit();
+    cp_async_wait_all();
+    __syncthreads();
+
+    int cur = 0;
+    for (unsigned int k_base = FK; k_base < K; k_base += FK) {
+        int nxt = 1 - cur;
+        FM128_LOADS(nxt, k_base);
+        cp_async_commit();
+        FM128_COMPUTE(cur);
+        cp_async_wait_all();
+        __syncthreads();
+        cur = nxt;
+    }
+    FM128_COMPUTE(cur);
+
+    #undef FM128_LOADS
+    #undef FM128_MMA
+    #undef FM128_COMPUTE
+
+    #pragma unroll
+    for (int nt = 0; nt < 16; nt++) {
+        unsigned int c0 = cta_n + nt * 8 + tid * 2;
+        unsigned int c1 = c0 + 1;
+        unsigned int r0 = cta_m + warp_m_offset + group_id;
+        unsigned int r1 = r0 + 8;
+        if (r0 < M && c0 < N) C[(unsigned long long)r0 * N + c0] = __float2bfloat16(acc0[nt][0]);
+        if (r0 < M && c1 < N) C[(unsigned long long)r0 * N + c1] = __float2bfloat16(acc0[nt][1]);
+        if (r1 < M && c0 < N) C[(unsigned long long)r1 * N + c0] = __float2bfloat16(acc0[nt][2]);
+        if (r1 < M && c1 < N) C[(unsigned long long)r1 * N + c1] = __float2bfloat16(acc0[nt][3]);
+    }
+    #pragma unroll
+    for (int nt = 0; nt < 16; nt++) {
+        unsigned int c0 = cta_n + nt * 8 + tid * 2;
+        unsigned int c1 = c0 + 1;
+        unsigned int r0 = cta_m + M_TILE + warp_m_offset + group_id;
+        unsigned int r1 = r0 + 8;
+        if (r0 < M && c0 < N) C[(unsigned long long)r0 * N + c0] = __float2bfloat16(acc1[nt][0]);
+        if (r0 < M && c1 < N) C[(unsigned long long)r0 * N + c1] = __float2bfloat16(acc1[nt][1]);
+        if (r1 < M && c0 < N) C[(unsigned long long)r1 * N + c0] = __float2bfloat16(acc1[nt][2]);
+        if (r1 < M && c1 < N) C[(unsigned long long)r1 * N + c1] = __float2bfloat16(acc1[nt][3]);
+    }
+}
+
 
 // ═══════════════════════════════════════════════════════════════════
 // M128 variant of fp8_gemm_t: BF16 A × FP8 B, 2 M-chunks per CTA.

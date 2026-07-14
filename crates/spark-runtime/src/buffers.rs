@@ -81,6 +81,9 @@ pub struct BufferArena {
     /// GDN FLA chunked-prefill scratch (W|U|S|uc sub-divided). NULL unless the
     /// model is a 128-dim-linear-head GDN model (ATLAS_GDN_FLA path).
     gdn_fla_scratch: DevicePtr,
+    /// Mamba-2 SSD chunked-scan scratch (dt | dA_cumsum | CB). NULL unless the model
+    /// has Mamba-2 SSM layers.
+    ssd_scratch: DevicePtr,
     /// Token IDs `[M]` u32 — stable across the layer loop so DeepSeek-V4
     /// hash-MoE layers can read `tid2eid[token_id]`.
     token_ids: DevicePtr,
@@ -144,6 +147,11 @@ impl BufferArena {
         let hc_comb = gpu.alloc(sizes.hc_comb)?;
         // GDN FLA scratch: only allocate for the 128-dim-linear-head GDN path
         // (size 0 → NULL → ATLAS_GDN_FLA dispatch stays disabled).
+        let ssd_scratch = if sizes.ssd_scratch > 0 {
+            gpu.alloc(sizes.ssd_scratch)?
+        } else {
+            DevicePtr::NULL
+        };
         let gdn_fla_scratch = if sizes.gdn_fla_scratch > 0 {
             gpu.alloc(sizes.gdn_fla_scratch)?
         } else {
@@ -206,6 +214,7 @@ impl BufferArena {
             hc_post,
             hc_comb,
             gdn_fla_scratch,
+            ssd_scratch,
             token_ids,
             ffn_act_q8,
             ffn_act_a,
@@ -268,6 +277,10 @@ impl BufferArena {
     /// Scratch buffer for MoE routing + kernel metadata uploads.
     pub fn scratch(&self) -> DevicePtr {
         self.scratch
+    }
+    /// Mamba-2 SSD chunked-scan scratch (dt | dA_cumsum | CB). NULL if unused.
+    pub fn ssd_scratch(&self) -> DevicePtr {
+        self.ssd_scratch
     }
     /// Token IDs `[M]` u32 — stable across the layer loop (DeepSeek-V4 hash-MoE
     /// reads `tid2eid[token_id]`). Upload the pass's token IDs here before the

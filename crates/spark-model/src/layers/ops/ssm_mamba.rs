@@ -306,11 +306,18 @@ pub fn mamba2_ssm_prefill_persistent(
     y_stride: u32,
     stream: u64,
 ) -> Result<()> {
-    // H_smem + smem_x + smem_warp
-    let smem = head_dim * state_size * 4 + head_dim * 4 + 4 * head_dim * 4;
+    // Dynamic shared memory, must match the kernel's layout:
+    //   sH     : head_dim * (state_size + 1)  (+1 pad avoids smem bank conflicts)
+    //   smem_x : head_dim
+    //   smem_B : state_size   (dt*B for the current token)
+    //   smem_C : state_size
+    // Must match the kernel layout: sH + sX + sB + sC.
+    let smem = head_dim * (state_size + 1) * 4 + head_dim * 4 + state_size * 4 + state_size * 4;
+    // SUB=4 threads cooperate per head_dim row (must match the kernel's `SUB`).
+    const SUB: u32 = 4;
     KernelLaunch::new(gpu, kernel)
         .grid([num_heads, batch_size, 1])
-        .block([state_size, 1, 1])
+        .block([head_dim * SUB, 1, 1])
         .shared_mem(smem)
         .arg_ptr(h_state)
         .arg_ptr(x)
@@ -332,6 +339,148 @@ pub fn mamba2_ssm_prefill_persistent(
         .arg_u32(x_stride)
         .arg_u32(bc_stride)
         .arg_u32(dt_stride)
+        .arg_u32(y_stride)
+        .launch(stream)
+}
+
+// ── Mamba-2 SSD chunked prefill scan ──────────────────────────────────────────
+//
+// Replaces the token-sequential recurrence with the chunked (state-space duality)
+// formulation: the scan becomes tensor-core matmuls with only ceil(T/64) sequential
+// links instead of T. See kernels/gb10/common/mamba2_ssd_chunk.cu.
+
+/// SSD chunk length (must match `SSD_L` in the kernel).
+pub const SSD_L: u32 = 64;
+/// head_dim rows per SSD scan block (must match `SSD_PT` in the kernel).
+pub const SSD_PT: u32 = 64;
+
+/// K1: per-chunk dt (softplus+clamp) and inclusive cumsum of the log-decay.
+#[allow(clippy::too_many_arguments)]
+pub fn mamba2_ssd_cumsum(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    dt_raw: DevicePtr,
+    a_log: DevicePtr,
+    dt_bias: DevicePtr,
+    dt_out: DevicePtr,
+    da_cs: DevicePtr,
+    seq_len: u32,
+    num_heads: u32,
+    nchunks: u32,
+    batch_size: u32,
+    dt_stride: u32,
+    dt_min: f32,
+    dt_max: f32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([nchunks, num_heads, batch_size])
+        .block([SSD_L, 1, 1])
+        .arg_ptr(dt_raw)
+        .arg_ptr(a_log)
+        .arg_ptr(dt_bias)
+        .arg_ptr(dt_out)
+        .arg_ptr(da_cs)
+        .arg_u32(seq_len)
+        .arg_u32(num_heads)
+        .arg_u32(nchunks)
+        .arg_u32(dt_stride)
+        .arg_f32(dt_min)
+        .arg_f32(dt_max)
+        .launch(stream)
+}
+
+/// K2: CB[c][g][t][s] = C_t . B_s  (raw, fp32).
+#[allow(clippy::too_many_arguments)]
+pub fn mamba2_ssd_bmm(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    b_proj: DevicePtr,
+    c_proj: DevicePtr,
+    cb: DevicePtr,
+    seq_len: u32,
+    nchunks: u32,
+    n_groups: u32,
+    state_size: u32,
+    batch_size: u32,
+    bc_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    // smem: sC[L][N] + sB[L][N] bf16
+    let smem = 2 * SSD_L * state_size * 2;
+    KernelLaunch::new(gpu, kernel)
+        .grid([nchunks, n_groups, batch_size])
+        .block([128, 1, 1])
+        .shared_mem(smem)
+        .arg_ptr(b_proj)
+        .arg_ptr(c_proj)
+        .arg_ptr(cb)
+        .arg_u32(seq_len)
+        .arg_u32(nchunks)
+        .arg_u32(n_groups)
+        .arg_u32(state_size)
+        .arg_u32(bc_stride)
+        .launch(stream)
+}
+
+/// K3: fused chunk_state + state_passing + chunk_scan (h0 stays in shared memory,
+/// so the per-chunk `states` tensor vLLM round-trips through DRAM never exists).
+#[allow(clippy::too_many_arguments)]
+pub fn mamba2_ssd_scan(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    h_state: DevicePtr,
+    x: DevicePtr,
+    b_proj: DevicePtr,
+    c_proj: DevicePtr,
+    d_param: DevicePtr,
+    dt_f32: DevicePtr,
+    da_cs: DevicePtr,
+    cb: DevicePtr,
+    output: DevicePtr,
+    seq_len: u32,
+    num_heads: u32,
+    head_dim: u32,
+    state_size: u32,
+    n_groups: u32,
+    nchunks: u32,
+    batch_size: u32,
+    x_stride: u32,
+    bc_stride: u32,
+    y_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    // sH[PT][N+1] f32 | sHb[PT][N] | sB[L][N] | sCM[L][N] | sX[L][PT] | sXt[PT][L] bf16
+    // | sdA[L] f32 | sdt[L] f32
+    let smem = SSD_PT * (state_size + 1) * 4
+        + SSD_PT * state_size * 2
+        + SSD_L * state_size * 2
+        + SSD_L * state_size * 2
+        + SSD_L * SSD_PT * 2
+        + SSD_PT * SSD_L * 2
+        + SSD_L * 4
+        + SSD_L * 4;
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_heads, head_dim / SSD_PT, batch_size])
+        .block([512, 1, 1])   // 16 warps, 2 warp-tasks each (see kernel)
+        .shared_mem(smem)
+        .arg_ptr(h_state)
+        .arg_ptr(x)
+        .arg_ptr(b_proj)
+        .arg_ptr(c_proj)
+        .arg_ptr(d_param)
+        .arg_ptr(dt_f32)
+        .arg_ptr(da_cs)
+        .arg_ptr(cb)
+        .arg_ptr(output)
+        .arg_u32(seq_len)
+        .arg_u32(num_heads)
+        .arg_u32(head_dim)
+        .arg_u32(state_size)
+        .arg_u32(n_groups)
+        .arg_u32(nchunks)
+        .arg_u32(x_stride)
+        .arg_u32(bc_stride)
         .arg_u32(y_stride)
         .launch(stream)
 }

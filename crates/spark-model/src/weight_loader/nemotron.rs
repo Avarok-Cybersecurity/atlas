@@ -109,9 +109,73 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                             stream,
                         )?;
                     }
-                    layers.push(Box::new(NemotronMamba2Layer::new(
-                        norm, ssm, config, gpu, i,
-                    )?));
+                    // Transposed NVFP4 copies of the two SSM projections. These
+                    // switch prefill from the base `w4a16_gemm` (M64/N64/K16, no
+                    // pipelining) to `w4a16_gemm_t` (N128/K32, FP8 MMA, 2-stage
+                    // cp.async) — see NemotronMamba2Layer::set_prefill_weights.
+                    // The 40 SSM layers are ~46% of prefill time on Puzzle, and
+                    // without this the fast kernel is compiled but unreachable.
+                    // Cost: ~2.1 GB extra weights. ATLAS_NO_SSM_PREFILL_T=1 keeps
+                    // the base GEMM (same-binary A/B + escape hatch).
+                    //
+                    // Two mutually exclusive prefill weight representations:
+                    //
+                    //   FP8  (default) — pre-dequantized E4M3 [N, K], consumed by
+                    //     `fp8_gemm_t`, which has NO dequant phase. The NVFP4
+                    //     path re-derives its B tile from FP4 on every K step of
+                    //     every M-block (cost N*K*(M/M_TILE), i.e. 8x over at 1k
+                    //     tokens); ablating that ALU alone cut a 1k prefill from
+                    //     557 ms to 424 ms, so it is worth removing outright.
+                    //     Cost: ~4.3 GB (vs ~2.1 GB for the transposed copies).
+                    //
+                    //   Transposed NVFP4 — `w4a16_gemm_t`/`_m128`. Kept as the
+                    //     escape hatch via ATLAS_NO_SSM_FP8_PREFILL=1.
+                    //
+                    // NVFP4 stays resident either way: decode uses w4a16_gemv.
+                    let fp8_prefill = std::env::var("ATLAS_NO_SSM_FP8_PREFILL").is_err();
+                    let prefill_t =
+                        !fp8_prefill && std::env::var("ATLAS_NO_SSM_PREFILL_T").is_err();
+                    let proj_t = if prefill_t {
+                        let in_t = ssm.in_proj.transpose_for_gemm(
+                            gpu,
+                            config.mamba2_in_proj_size(),
+                            h,
+                        )?;
+                        let out_t =
+                            ssm.out_proj
+                                .transpose_for_gemm(gpu, h, config.mamba2_d_inner())?;
+                        Some((in_t, out_t))
+                    } else {
+                        None
+                    };
+                    let proj_fp8 = if fp8_prefill {
+                        let pdq_k = gpu.kernel("w4a16", "predequant_nvfp4_to_fp8")?;
+                        let in_fp8 = ssm.in_proj.predequant_to_fp8(
+                            gpu,
+                            pdq_k,
+                            config.mamba2_in_proj_size(),
+                            h,
+                            stream,
+                        )?;
+                        let out_fp8 = ssm.out_proj.predequant_to_fp8(
+                            gpu,
+                            pdq_k,
+                            h,
+                            config.mamba2_d_inner(),
+                            stream,
+                        )?;
+                        Some((in_fp8, out_fp8))
+                    } else {
+                        None
+                    };
+                    let mut layer = NemotronMamba2Layer::new(norm, ssm, config, gpu, i)?;
+                    if let Some((in_t, out_t)) = proj_t {
+                        layer.set_prefill_weights(Some(in_t), Some(out_t));
+                    }
+                    if let Some((in_fp8, out_fp8)) = proj_fp8 {
+                        layer.set_fp8_prefill_weights(in_fp8, out_fp8);
+                    }
+                    layers.push(Box::new(layer));
                 }
                 atlas_core::config::LayerType::SlidingAttention => {
                     unreachable!("unexpected SlidingAttention in this loader")
@@ -145,9 +209,14 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                                 .unwrap_or(0.0),
                         );
                     }
-                    layers.push(Box::new(NemotronMoeLayer::new(
-                        moe, norm, config, gpu, moe_inter, top_k,
-                    )?));
+                    let mut moe_layer =
+                        NemotronMoeLayer::new(moe, norm, config, gpu, moe_inter, top_k)?;
+                    // Builds the transposed shared-expert weights (2 small matrices
+                    // per layer) so prefill can use `w4a16_gemm_t` instead of the base
+                    // `w4a16_gemm`. Routed-expert transposition stays disabled inside
+                    // for LatentMoE — 512 experts x 40 layers would not fit.
+                    moe_layer.prepare_prefill_weights(gpu, config);
+                    layers.push(Box::new(moe_layer));
                 }
                 atlas_core::config::LayerType::FullAttention => {
                     // Attention layer — quantize BF16 Q/K/V/O directly from
@@ -323,7 +392,25 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                         attn.o_proj = o;
                         (Some(q), Some(k), Some(v))
                     };
-                    layers.push(Box::new(Qwen3AttentionLayer::new_ungated(
+                    // Transposed Q/K/V/O so prefill uses `w4a16_gemm_t` (FP8 MMA,
+                    // N128/K32, cp.async) instead of the base `w4a16_gemm`. Same
+                    // gap as the SSM/MoE layers: the setter existed but was never
+                    // called for Nemotron. Q/K/V/O are small (h=4096, kv=2 heads),
+                    // so the extra copies cost ~0.3 GB.
+                    let q_dim = config.num_attention_heads * config.head_dim;
+                    let kv_dim = config.num_key_value_heads * config.head_dim;
+                    let qt = q_nv
+                        .as_ref()
+                        .and_then(|w| w.transpose_for_gemm(gpu, q_dim, h).ok());
+                    let kt = k_nv
+                        .as_ref()
+                        .and_then(|w| w.transpose_for_gemm(gpu, kv_dim, h).ok());
+                    let vt = v_nv
+                        .as_ref()
+                        .and_then(|w| w.transpose_for_gemm(gpu, kv_dim, h).ok());
+                    let ot = attn.o_proj.transpose_for_gemm(gpu, h, q_dim).ok();
+
+                    let mut attn_layer = Qwen3AttentionLayer::new_ungated(
                         norm,
                         attn,
                         DenseWeight {
@@ -338,7 +425,9 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                         layer_kv_dtypes[attn_idx],
                         config.fp8_kv_calibration_tokens,
                         config,
-                    )?));
+                    )?;
+                    attn_layer.set_prefill_weights(qt, kt, vt, ot);
+                    layers.push(Box::new(attn_layer));
                     attn_idx += 1;
                 }
             }

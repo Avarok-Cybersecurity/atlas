@@ -50,6 +50,12 @@ pub struct NemotronMoeLayer {
     residual_add_k: KernelHandle,
     // Kernel handles — prefill (batched GEMM)
     dense_gemm_k: KernelHandle,
+    /// Pipelined tensor-core BF16 GEMM (mma.sync.m16n8k16 + cp.async 2-stage,
+    /// 128x128 tile). `dense_gemm_bf16` is a SCALAR 16x16 kernel — on the
+    /// large-M prefill shapes it is ~40x slower, and the three dense GEMMs of a
+    /// LatentMoE layer (gate, fc1_latent, fc2_latent) were the single largest
+    /// prefill cost on Puzzle (34% of all GPU time). Same math (cosine=1.0).
+    dense_gemm_pipelined_k: KernelHandle,
     w4a16_gemm_k: KernelHandle,
     // Batched N-token MoE prefill kernels
     topk_sigmoid_batched_k: KernelHandle,
@@ -70,8 +76,18 @@ pub struct NemotronMoeLayer {
     // Transposed shared expert weights
     shared_up_t: Option<QuantizedWeight>,
     shared_down_t: Option<QuantizedWeight>,
+    // Pre-dequantized FP8 E4M3 [N, K] copies of the shared-expert projections.
+    // Consumed by `fp8_gemm_t_m128_mfast` (no dequant phase); see the SSM layer.
+    shared_up_pd_fp8: Option<DevicePtr>,
+    shared_down_pd_fp8: Option<DevicePtr>,
+    // FP8 E4M3 copies of the BF16 latent projections, so prefill runs the tuned
+    // FP8 GEMM instead of dense_gemm_bf16_pipelined (and halves their bytes).
+    fc1_pd_fp8: Option<DevicePtr>,
+    fc2_pd_fp8: Option<DevicePtr>,
     // Transposed SSM GEMM kernel handle (for shared expert)
     w4a16_gemm_t_k: KernelHandle,
+    w4a16_gemm_t_m128_k: KernelHandle,
+    fp8_gemm_m128_k: KernelHandle,
 }
 
 impl NemotronMoeLayer {
@@ -111,6 +127,11 @@ impl NemotronMoeLayer {
             weighted_sum_scale_k: gpu.kernel("relu2", "moe_weighted_sum_scale")?,
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             dense_gemm_k: gpu.kernel("gemm", "dense_gemm_bf16")?,
+            dense_gemm_pipelined_k: super::try_kernel(
+                gpu,
+                "gemm",
+                "dense_gemm_bf16_pipelined",
+            ),
             w4a16_gemm_k: gpu.kernel("w4a16", "w4a16_gemm")?,
             topk_sigmoid_batched_k: super::try_kernel(
                 gpu,
@@ -151,12 +172,53 @@ impl NemotronMoeLayer {
             down_ptrs_t: None,
             shared_up_t: None,
             shared_down_t: None,
+            shared_up_pd_fp8: None,
+            shared_down_pd_fp8: None,
+            fc1_pd_fp8: None,
+            fc2_pd_fp8: None,
             w4a16_gemm_t_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t"),
+            w4a16_gemm_t_m128_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128"),
+            fp8_gemm_m128_k: super::try_kernel(gpu, "w4a16", "fp8_gemm_t_m128_mfast"),
         })
     }
 }
 
 impl NemotronMoeLayer {
+    /// Dense BF16 GEMM for the prefill path.
+    ///
+    /// Prefers the pipelined tensor-core kernel and falls back to the scalar
+    /// `dense_gemm_bf16` only if it is not compiled for this target. Single
+    /// source of truth for the three dense GEMMs of a LatentMoE layer (gate,
+    /// fc1_latent, fc2_latent).
+    #[allow(clippy::too_many_arguments)]
+    fn dense_gemm_prefill(
+        &self,
+        gpu: &dyn GpuBackend,
+        input: DevicePtr,
+        weight: &DenseWeight,
+        output: DevicePtr,
+        m: u32,
+        n: u32,
+        k: u32,
+        stream: u64,
+    ) -> Result<()> {
+        if self.dense_gemm_pipelined_k.0 != 0 {
+            ops::dense_gemm_bf16_pipelined(
+                gpu,
+                self.dense_gemm_pipelined_k,
+                input,
+                weight,
+                output,
+                m,
+                n,
+                k,
+                stream,
+            )
+        } else {
+            ops::dense_gemm(gpu, self.dense_gemm_k, input, weight, output, m, n, k, stream)
+        }
+    }
+
     /// Transpose expert weights for fast grouped GEMM prefill.
     /// Called from weight loader after construction. Skips expert transposition
     /// when memory is tight (Super 120B: 128 experts × 40 layers would OOM).
@@ -192,8 +254,44 @@ impl NemotronMoeLayer {
             }
         }
 
-        // Transpose shared expert weights (only for direct MoE — Super is too memory-tight)
-        if self.moe_latent_size == 0 {
+        // Transpose the shared expert weights unconditionally.
+        //
+        // This is only TWO matrices per layer (shared_up, shared_down), unlike the
+        // routed experts above (512 per layer). It was previously gated behind the
+        // same `moe_latent_size == 0` memory guard, which lumped a ~cheap transpose
+        // in with the expensive one and left every LatentMoE layer on the base
+        // `w4a16_gemm`. On Puzzle the shared-expert GEMMs were a large slice of
+        // prefill; the transposed copies unlock `w4a16_gemm_t` (FP8 MMA, N128/K32,
+        // cp.async) for them. `.ok()` keeps the base GEMM as the fallback.
+        //
+        // Same idea as the SSM projections: pre-dequantize to FP8 E4M3 once at load so
+        // prefill runs `fp8_gemm_t_m128_mfast` (no dequant phase, M on the fast grid
+        // axis). But unlike the SSM ones this is OPT-IN, because it is a real trade:
+        //
+        //   off (default) : 1k TTFT 490 ms, decode 33.3 tok/s  <- decode at baseline
+        //   on            : 1k TTFT 450 ms, decode 32.6 tok/s  <- -2.4% decode
+        //
+        // The ~2.1 GB of extra resident weights (shared_up/down + fc1/fc2) costs ~2%
+        // of decode, which is memory-bandwidth-bound on this box. Same-binary A/B,
+        // 10 runs each, verified on a cold server (not thermal). The SSM copies
+        // (4.3 GB, allocated during the load itself) cost nothing measurable, so the
+        // two are gated separately. Set ATLAS_SHARED_FP8_PREFILL=1 to take the trade.
+        let fp8_prefill = std::env::var("ATLAS_SHARED_FP8_PREFILL").is_ok();
+        if fp8_prefill && self.fp8_gemm_m128_k.0 != 0 {
+            if let Ok(pdq_k) = gpu.kernel("w4a16", "predequant_nvfp4_to_fp8") {
+                self.shared_up_pd_fp8 = self
+                    .weights
+                    .shared_up
+                    .predequant_to_fp8(gpu, pdq_k, shared_inter as usize, h, 0)
+                    .ok();
+                self.shared_down_pd_fp8 = self
+                    .weights
+                    .shared_down
+                    .predequant_to_fp8(gpu, pdq_k, h, shared_inter as usize, 0)
+                    .ok();
+            }
+        }
+        if self.shared_up_pd_fp8.is_none() || self.shared_down_pd_fp8.is_none() {
             self.shared_up_t = self
                 .weights
                 .shared_up
@@ -204,6 +302,34 @@ impl NemotronMoeLayer {
                 .shared_down
                 .transpose_for_gemm(gpu, h, shared_inter)
                 .ok();
+        }
+
+        // fc1/fc2 latent are BF16 dense and were the only prefill GEMMs still on
+        // dense_gemm_bf16_pipelined. Converting them to FP8 E4M3 both halves their
+        // bytes and moves them onto fp8_gemm_t_m128_mfast.
+        let lat = self.moe_latent_size;
+        if lat > 0
+            && fp8_prefill
+            && self.fp8_gemm_m128_k.0 != 0
+            && let Ok(b2f) = gpu.kernel("w4a16", "bf16_to_fp8")
+        {
+            let conv = |w: &DenseWeight, n: usize, k: usize| -> Option<DevicePtr> {
+                let dst = gpu.alloc(n * k).ok()?;
+                crate::layers::ops::bf16_to_fp8(gpu, b2f, w.weight, dst, (n * k) as u32, 0)
+                    .ok()?;
+                gpu.synchronize(0).ok()?;
+                Some(dst)
+            };
+            self.fc1_pd_fp8 = self
+                .weights
+                .fc1_latent_proj
+                .as_ref()
+                .and_then(|w| conv(w, lat, h));
+            self.fc2_pd_fp8 = self
+                .weights
+                .fc2_latent_proj
+                .as_ref()
+                .and_then(|w| conv(w, h, lat));
         }
     }
 }
@@ -277,9 +403,8 @@ impl TransformerLayer for NemotronMoeLayer {
 
         // ── 2. Batched Gate GEMM: [N, H] x [H, num_experts]^T → [N, num_experts] ──
         let gate_logits = ctx.buffers.gate_logits();
-        ops::dense_gemm(
+        self.dense_gemm_prefill(
             ctx.gpu,
-            self.dense_gemm_k,
             normed,
             &self.weights.gate,
             gate_logits,
@@ -304,18 +429,48 @@ impl TransformerLayer for NemotronMoeLayer {
         // Always compute shared expert UP — even when batched path overwrites it later.
         // The batched UP kernel writes shared_up_out for shared blocks, but we need
         // this result for the per-token fallback path AND it's harmless to overwrite.
-        if let Some(ref sut) = self.shared_up_t {
-            ops::w4a16_gemm_n128(
+        if let Some(w_fp8) = self.shared_up_pd_fp8 {
+            ops::fp8_gemm_m128_mfast(
                 ctx.gpu,
-                self.w4a16_gemm_t_k,
+                self.fp8_gemm_m128_k,
                 normed,
-                sut,
+                w_fp8,
                 shared_up_out_base,
                 n,
                 shared_inter,
                 h as u32,
                 stream,
             )?;
+        } else if let Some(ref sut) = self.shared_up_t {
+            // Same NVFP4 weights, better kernel: w4a16_gemm_t_m128 tiles M at 128
+            // (half the B panel passes of w4a16_gemm_t's 64) and puts M on the fast
+            // grid axis so those passes hit L2. Costs nothing extra -- the transposed
+            // copy already exists -- and needs no FP8 residency.
+            if n > 128 && self.w4a16_gemm_t_m128_k.0 != 0 {
+                ops::w4a16_gemm_n128_m128(
+                    ctx.gpu,
+                    self.w4a16_gemm_t_m128_k,
+                    normed,
+                    sut,
+                    shared_up_out_base,
+                    n,
+                    shared_inter,
+                    h as u32,
+                    stream,
+                )?;
+            } else {
+                ops::w4a16_gemm_n128(
+                    ctx.gpu,
+                    self.w4a16_gemm_t_k,
+                    normed,
+                    sut,
+                    shared_up_out_base,
+                    n,
+                    shared_inter,
+                    h as u32,
+                    stream,
+                )?;
+            }
         } else {
             ops::w4a16_gemm(
                 ctx.gpu,
@@ -335,19 +490,32 @@ impl TransformerLayer for NemotronMoeLayer {
         // Cannot use ssm_ba (too small) or moe_output (used later for unpermute).
         let latent = self.moe_latent_size as u32;
         let latent_base = if latent > 0 {
-            let fc1 = self.weights.fc1_latent_proj.as_ref().unwrap();
             let latent_buf = ctx.buffers.attn_output();
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                normed,
-                fc1,
-                latent_buf,
-                n,
-                latent,
-                h as u32,
-                stream,
-            )?;
+            if let Some(w_fp8) = self.fc1_pd_fp8 {
+                ops::fp8_gemm_m128_mfast(
+                    ctx.gpu,
+                    self.fp8_gemm_m128_k,
+                    normed,
+                    w_fp8,
+                    latent_buf,
+                    n,
+                    latent,
+                    h as u32,
+                    stream,
+                )?;
+            } else {
+                let fc1 = self.weights.fc1_latent_proj.as_ref().unwrap();
+                self.dense_gemm_prefill(
+                    ctx.gpu,
+                    normed,
+                    fc1,
+                    latent_buf,
+                    n,
+                    latent,
+                    h as u32,
+                    stream,
+                )?;
+            }
             Some(latent_buf)
         } else {
             None
