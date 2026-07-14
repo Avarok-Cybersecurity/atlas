@@ -302,7 +302,13 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // property present for fresh non-cached sequences too), not a Marconi
     // state-management defect — so no warning is emitted here.
     let prefix_cache = serve_phases::build_prefix_cache(&args);
-    let comm = serve_phases::init_nccl_comm(&args, gpu.as_ref(), world_size)?;
+    let comm = serve_phases::init_nccl_comm(
+        &args,
+        gpu.as_ref(),
+        world_size,
+        max_batch_tokens,
+        config.hidden_size,
+    )?;
     if args.profile {
         // SAFETY: called before any threads are spawned.
         unsafe {
