@@ -61,7 +61,14 @@ impl TransformerModel {
         ssm_cache_slots: usize,
         ssm_checkpoint_interval: usize,
     ) -> Result<Self> {
-        let rms_norm_kernel = gpu.kernel("norm", "rms_norm")?;
+        // `rms_norm_kernel` normalizes exactly one weight: `final_norm` (a
+        // checkpoint tensor). Models that ship HF-vanilla norm weights load it
+        // exactly and must use the vanilla kernel.
+        let rms_norm_kernel = if crate::ships_vanilla_norm_weights(&config) {
+            gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla")?
+        } else {
+            gpu.kernel("norm", "rms_norm")?
+        };
         let dense_gemv_kernel = gpu.kernel("gemv", "dense_gemv_bf16")?;
         // FP32-output dense GEMV — the FP32 logits path required an FP32
         // residual stream, which no longer exists, so this stays
@@ -147,6 +154,11 @@ impl TransformerModel {
             gpu.as_ref(),
         )?);
 
+        // Fail fast if an SSM tier was requested (`ATLAS_SSM_TIER`) on a model
+        // with no recurrent state — a tier request there was previously a
+        // silent no-op. No-op when the tier is unset (default path).
+        super::ssm_tier::ensure_ssm_tier_capability(&config)?;
+
         // SSM snapshot pool: Marconi prefix-cache slots + Phase-C
         // decode-rollback ring. The decode-rollback region is only sized
         // for SSM models — `num_ssm_layers == 0` makes both regions
@@ -173,6 +185,13 @@ impl TransformerModel {
             // without re-running the last token through the SSM layers.
             config.hidden_size * 2,
             gpu.as_ref(),
+        )?;
+        // Optional SSM snapshot spill tier. `None` (default) keeps the reclaim
+        // drop path byte-identical; blob sizing tracks the pool's spill layout.
+        let ssm_tier_store = super::impl_a1_init::build_ssm_tier_store(
+            &config,
+            ssm_snapshots.spill_blob_bytes(),
+            ssm_pool.num_ssm_layers,
         )?;
         if ssm_checkpoint_interval > 0 && ssm_cache_slots > 0 {
             tracing::info!(
@@ -227,11 +246,24 @@ impl TransformerModel {
         // populated by the loader from the drafter's `dflash_config.target_layer_ids`).
         // Size: N_capture × hidden_size × bf16 (typically 5 × 2048 × 2 = 20 KB).
         let dflash_capture_layers: Vec<usize> = config.dflash_capture_layers.clone();
+        // Row capacity of the K-row capture buffer. KMAX = dflash_kgamma (=17 >=
+        // max verify K = gamma) so the K=gamma EAGLE path can capture every verify row;
+        // pre-fix paths use only rows 0-1. Stored on the model as the single
+        // source of truth so `try_dflash_capture_all` can bound its writes.
+        let dflash_hidden_save_rows = if dflash_capture_layers.is_empty() {
+            0
+        } else {
+            dflash_kgamma.max(2)
+        };
         let dflash_hidden_save = if dflash_capture_layers.is_empty() {
             None
         } else {
             let n = dflash_capture_layers.len();
-            Some(gpu.alloc(n * config.hidden_size * 2)?)
+            // Row-major K-row buffer: [row0 | row1 | ... | row_{KMAX-1}], each row =
+            // n_capture * hidden_size * bf16. Rows 0/1 keep their legacy offsets
+            // (0 and ctx_slot_bytes) so all K=2 readers (propose row 0,
+            // dflash_accept_append row 1) are unaffected.
+            Some(gpu.alloc(dflash_hidden_save_rows * n * config.hidden_size * 2)?)
         };
 
         // EP command buffer for token broadcast (4 bytes, u32)
@@ -244,7 +276,17 @@ impl TransformerModel {
         // Marconi restore (prefill stream). See `snapshot_event` doc in types.rs.
         let snapshot_event = gpu.create_event()?;
 
-        // EP: register moe_output buffer with NCCL and provide bf16_add kernel.
+        // EP/TP: register the all-reduce target buffers with NCCL (caches the
+        // IB/RoCE memory registration, enabling zero-copy user-buffer
+        // collectives) and provide the bf16_add kernel for the 2-rank
+        // send/recv fast path.
+        //   - moe_output: EP MoE reduce + ALL GDN HeadParallel SSM out_proj
+        //     reduces (decode `ssm_forward`, batched decode, multi-seq
+        //     batched, prefill, prefill phase-3 all write out_proj into
+        //     `buffers.moe_output()`).
+        //   - norm_output: attention o_proj decode output
+        //     (`attention_forward_oproj` writes o_out = `buffers.norm_output()`),
+        //     reduced per attention layer under TP.
         if let Some(ref comm) = comm
             && comm.world_size() == 2
         {
@@ -253,6 +295,12 @@ impl TransformerModel {
             match comm.register_buffer(moe_ptr, moe_bytes) {
                 Ok(_) => tracing::info!("Registered moe_output ({moe_bytes} B) with NCCL"),
                 Err(e) => tracing::warn!("ncclCommRegister moe_output failed (non-fatal): {e}"),
+            }
+            let norm_ptr = buffers.norm_output().0;
+            let norm_bytes = buffers.sizes().norm_output;
+            match comm.register_buffer(norm_ptr, norm_bytes) {
+                Ok(_) => tracing::info!("Registered norm_output ({norm_bytes} B) with NCCL"),
+                Err(e) => tracing::warn!("ncclCommRegister norm_output failed (non-fatal): {e}"),
             }
             match gpu.kernel("bf16_add", "bf16_add_inplace") {
                 Ok(k) => comm.set_add_kernel(k.0),
@@ -437,6 +485,7 @@ impl TransformerModel {
             ),
             ssm_pool,
             ssm_snapshots,
+            ssm_tier_store,
             max_blocks_per_seq,
             dummy_kv_block,
             profile,
@@ -444,11 +493,13 @@ impl TransformerModel {
             proposer,
             mtp_hidden_save,
             dflash_hidden_save,
+            dflash_hidden_save_rows,
             dflash_capture_layers,
             verify2_graph: Mutex::new(std::collections::HashMap::new()),
             verify3_graph: Mutex::new(std::collections::HashMap::new()),
             verify4_graph: Mutex::new(std::collections::HashMap::new()),
             verify_kgamma_graph: Mutex::new(std::collections::HashMap::new()),
+            fused_graph: Mutex::new(std::collections::HashMap::new()),
             prefix_cache,
             secondary_stream,
             secondary_event,

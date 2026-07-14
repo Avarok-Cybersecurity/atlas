@@ -39,6 +39,7 @@ pub(super) fn assemble_layer(
         weight_scale: spark_runtime::gpu::DevicePtr::NULL,
         weight_scale_2: 0.0,
         input_scale: spark_runtime::gpu::DevicePtr::NULL,
+        weight_scale_2_vec: spark_runtime::gpu::DevicePtr::NULL,
     };
     let attn = AttentionWeights {
         q_proj: null,

@@ -13,6 +13,10 @@
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 
+// ARM-2 Phase-K RIDER 1: shared E8M0 scale primitive (mx_block_scale<E8M0>),
+// one copy for Family A (decode) and Family B (this file). See the header.
+#include "../../common/mx_block_scale.cuh"
+
 #define M_TILE 64
 #define N_TILE_SM 64
 #define N_TILE_LG 128
@@ -31,7 +35,11 @@ __device__ __constant__ float E2M1_LUT_MOE[16] = {
 // ═══════════════════════════════════════════════════════════════════
 // Original N_TILE=64 pointer-table variant — kept for decode.
 // ═══════════════════════════════════════════════════════════════════
-extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
+// GS/E8M0 templated (ARM-2 Phase-K): <GROUP_SIZE,false> = NVFP4 (byte-identical
+// to the original — the NVFP4 dequant branch below is verbatim); <32,true> =
+// native MXFP4 (E8M0 per-32 scale, no global) via mx_block_scale<true>.
+template<int GS, bool E8M0>
+__device__ __forceinline__ void moe_w4a16_grouped_gemm_ptrtable_impl(
     const __nv_bfloat16* __restrict__ A,
     const unsigned long long* __restrict__ B_packed_ptrs,
     const unsigned long long* __restrict__ B_scale_ptrs,
@@ -83,7 +91,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
     const unsigned int b_stride = N_TILE_SM + PAD;
     const unsigned int M_eff = (unsigned int)M_expert;
     const unsigned int half_K = K / 2;
-    const unsigned int num_groups = K / GROUP_SIZE;
+    const unsigned int num_groups = K / GS;
 
     for (unsigned int k_base = 0; k_base < K; k_base += K_STEP) {
         {
@@ -108,7 +116,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
 
         {
             const unsigned int ept = (K_STEP * N_TILE_SM) / 128;
-            unsigned int scale_group = k_base / GROUP_SIZE;
+            unsigned int scale_group = k_base / GS;
             #pragma unroll
             for (unsigned int i = 0; i < ept; i++) {
                 unsigned int idx = threadIdx.x * ept + i;
@@ -121,8 +129,15 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
                     unsigned char packed_byte = B_expert[(unsigned long long)gn * half_K + k_pair];
                     unsigned int nibble = (gk & 1) ? (packed_byte >> 4) : (packed_byte & 0xF);
                     unsigned char sb = S_expert[(unsigned long long)gn * num_groups + scale_group];
-                    __nv_fp8_e4m3 fp8; *(unsigned char*)&fp8 = sb;
-                    smem_B[k][n] = __float2bfloat16(E2M1_LUT_MOE[nibble] * (float)fp8 * scale2);
+                    if (E8M0) {
+                        // Native MXFP4: 2^(sb-127), no global (RIDER 1 bit-construct).
+                        float sc = mx_block_scale<true>(sb, scale2);
+                        smem_B[k][n] = __float2bfloat16(E2M1_LUT_MOE[nibble] * sc);
+                    } else {
+                        // NVFP4: verbatim original multiply order (LUT*fp8)*scale2.
+                        __nv_fp8_e4m3 fp8; *(unsigned char*)&fp8 = sb;
+                        smem_B[k][n] = __float2bfloat16(E2M1_LUT_MOE[nibble] * (float)fp8 * scale2);
+                    }
                 } else {
                     smem_B[k][n] = __float2bfloat16(0.0f);
                 }
@@ -167,6 +182,38 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
         if (r1v && c0 < N) C[r1*N+c0] = __float2bfloat16(acc[nt][2]);
         if (r1v && c1 < N) C[r1*N+c1] = __float2bfloat16(acc[nt][3]);
     }
+}
+
+// NVFP4 (default) — byte-identical to the pre-template extern-C entry.
+extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned long long* __restrict__ B_packed_ptrs,
+    const unsigned long long* __restrict__ B_scale_ptrs,
+    const float* __restrict__ scale2_vals,
+    __nv_bfloat16* __restrict__ C,
+    const int* __restrict__ expert_offsets,
+    const int* __restrict__ sorted_token_ids,
+    unsigned int num_experts, unsigned int N, unsigned int K
+) {
+    moe_w4a16_grouped_gemm_ptrtable_impl<GROUP_SIZE, false>(
+        A, B_packed_ptrs, B_scale_ptrs, scale2_vals, C,
+        expert_offsets, sorted_token_ids, num_experts, N, K);
+}
+
+// Native MXFP4 (ARM-2): E8M0 per-32 scales, no global.
+extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_e8m0(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned long long* __restrict__ B_packed_ptrs,
+    const unsigned long long* __restrict__ B_scale_ptrs,
+    const float* __restrict__ scale2_vals,
+    __nv_bfloat16* __restrict__ C,
+    const int* __restrict__ expert_offsets,
+    const int* __restrict__ sorted_token_ids,
+    unsigned int num_experts, unsigned int N, unsigned int K
+) {
+    moe_w4a16_grouped_gemm_ptrtable_impl<32, true>(
+        A, B_packed_ptrs, B_scale_ptrs, scale2_vals, C,
+        expert_offsets, sorted_token_ids, num_experts, N, K);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -219,7 +266,11 @@ __device__ __forceinline__ unsigned int moe_bf16x4_to_e4m3x4(const unsigned shor
     return ((unsigned int)h1 << 16) | (unsigned int)h0;
 }
 
-extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
+// GS/E8M0 templated (ARM-2 Phase-K). <GROUP_SIZE,false> = NVFP4 (byte-identical);
+// <32,true> = native MXFP4 (E8M0 per-32, no global). The FP8-MMA dequant collapses
+// K_STEP_T/GS scale groups; for E8M0 the 2 NVFP4 groups become 1.
+template<int GS, bool E8M0>
+__device__ __forceinline__ void moe_w4a16_grouped_gemm_ptrtable_t_impl(
     const __nv_bfloat16* __restrict__ A,
     const unsigned long long* __restrict__ B_packed_ptrs,
     const unsigned long long* __restrict__ B_scale_ptrs,
@@ -259,7 +310,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
 
     __shared__ __nv_bfloat16 smem_A[2][M_TILE][K_STEP_T + PAD_T];
     __shared__ unsigned char smem_Bp[2][K_STEP_T / 2][N_TILE_LG + BP_PAD];
-    __shared__ unsigned char smem_Bs[2][K_STEP_T / GROUP_SIZE][N_TILE_LG + BP_PAD];
+    __shared__ unsigned char smem_Bs[2][K_STEP_T / GS][N_TILE_LG + BP_PAD];
     // +4 pad: row stride = 36 bytes (stride_words=9, gcd(9,32)=1).
     // Thread t's DEQUANT write: bank = (t*9 + kp/2) % 32 — all 32 distinct → 0 conflicts.
     // MMA reads: (nc*9 + tid) % 32 — 3 conflict pairs vs 16 without padding.
@@ -312,8 +363,8 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
             moe_cp_async_pred_16(&smem_Bp[(buf)][kp][ns], \
                 &B_expert[(unsigned long long)(gke >> 1) * N + gns], \
                 (gke + 1 <= K) && (gns + 15 < N)); \
-            if (kp < K_STEP_T / GROUP_SIZE) { \
-                unsigned int sg = (kb) / GROUP_SIZE + kp; \
+            if (kp < K_STEP_T / GS) { \
+                unsigned int sg = (kb) / GS + kp; \
                 moe_cp_async_pred_16(&smem_Bs[(buf)][kp][ns], \
                     &S_expert[(unsigned long long)sg * N + gns], \
                     (gns + 15 < N)); \
@@ -321,31 +372,21 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
         } \
     } while(0)
 
-    // Dequant B: FP4 → FP8 E4M3
+    // Dequant B: FP4 → FP8 E4M3. K_STEP_T/GS scale groups (NVFP4 GS=16 → 2;
+    // E8M0 GS=32 → 1). sv[g] = mx_block_scale<E8M0> (RIDER 1); NVFP4 sv[g] is
+    // byte-identical to the old (float)f*scale2.
     #define MOE_DEQUANT(buf) do { \
         unsigned int my_n = threadIdx.x; \
-        unsigned char sb0 = smem_Bs[(buf)][0][my_n]; \
-        unsigned char sb1 = smem_Bs[(buf)][1][my_n]; \
-        __nv_fp8_e4m3 f0, f1; \
-        *(unsigned char*)&f0 = sb0; \
-        *(unsigned char*)&f1 = sb1; \
-        float sv0 = (float)f0 * scale2; \
-        float sv1 = (float)f1 * scale2; \
+        float sv[K_STEP_T / GS]; \
         _Pragma("unroll") \
-        for (int kp = 0; kp < 8; kp++) { \
-            unsigned char packed = smem_Bp[(buf)][kp][my_n]; \
-            float lo = smem_LUT[packed & 0xF] * sv0; \
-            float hi = smem_LUT[packed >> 4] * sv0; \
-            unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
-            *(unsigned short*)&smem_B_fp8[my_n][kp * 2] = fp8_pair; \
-        } \
+        for (int g = 0; g < K_STEP_T / GS; g++) \
+            sv[g] = mx_block_scale<E8M0>(smem_Bs[(buf)][g][my_n], scale2); \
         _Pragma("unroll") \
-        for (int kp = 8; kp < 16; kp++) { \
+        for (int kp = 0; kp < K_STEP_T / 2; kp++) { \
+            float s = sv[kp / (GS / 2)]; \
             unsigned char packed = smem_Bp[(buf)][kp][my_n]; \
-            float lo = smem_LUT[packed & 0xF] * sv1; \
-            float hi = smem_LUT[packed >> 4] * sv1; \
+            float lo = smem_LUT[packed & 0xF] * s; \
+            float hi = smem_LUT[packed >> 4] * s; \
             unsigned short fp8_pair; \
             asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
                          : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
@@ -424,6 +465,38 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
     }
 }
 
+// NVFP4 (default) — byte-identical to the pre-template extern-C entry.
+extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned long long* __restrict__ B_packed_ptrs,
+    const unsigned long long* __restrict__ B_scale_ptrs,
+    const float* __restrict__ scale2_vals,
+    __nv_bfloat16* __restrict__ C,
+    const int* __restrict__ expert_offsets,
+    const int* __restrict__ sorted_token_ids,
+    unsigned int num_experts, unsigned int N, unsigned int K
+) {
+    moe_w4a16_grouped_gemm_ptrtable_t_impl<GROUP_SIZE, false>(
+        A, B_packed_ptrs, B_scale_ptrs, scale2_vals, C,
+        expert_offsets, sorted_token_ids, num_experts, N, K);
+}
+
+// Native MXFP4 (ARM-2): E8M0 per-32 scales, no global.
+extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_e8m0(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned long long* __restrict__ B_packed_ptrs,
+    const unsigned long long* __restrict__ B_scale_ptrs,
+    const float* __restrict__ scale2_vals,
+    __nv_bfloat16* __restrict__ C,
+    const int* __restrict__ expert_offsets,
+    const int* __restrict__ sorted_token_ids,
+    unsigned int num_experts, unsigned int N, unsigned int K
+) {
+    moe_w4a16_grouped_gemm_ptrtable_t_impl<32, true>(
+        A, B_packed_ptrs, B_scale_ptrs, scale2_vals, C,
+        expert_offsets, sorted_token_ids, num_experts, N, K);
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // K64 variant of FP8-MMA transposed MoE GEMM.
 //
@@ -446,7 +519,11 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
 #define K_STEP_T64 64
 #define PAD_T64 8  // (64+8)*2 = 144 bytes, 144%16 = 0 ✓
 
-extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64(
+// GS/E8M0 templated (ARM-2 Phase-K). <GROUP_SIZE,false> = NVFP4 (numerically
+// identical); <32,true> = native MXFP4 (E8M0 per-32, no global). K64: NVFP4 4
+// scale groups → E8M0 2.
+template<int GS, bool E8M0>
+__device__ __forceinline__ void moe_w4a16_grouped_gemm_ptrtable_t_k64_impl(
     const __nv_bfloat16* __restrict__ A,
     const unsigned long long* __restrict__ B_packed_ptrs,
     const unsigned long long* __restrict__ B_scale_ptrs,
@@ -489,7 +566,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64(
     // With pad: 80-byte rows (20 banks/row) → nc*20 % 32 hits all distinct banks for nc=0..7.
     __shared__ __nv_bfloat16 smem_A_k64[2][M_TILE][K_STEP_T64 + PAD_T64];
     __shared__ unsigned char smem_Bp_k64[2][K_STEP_T64 / 2][N_TILE_LG + BP_PAD];
-    __shared__ unsigned char smem_Bs_k64[2][K_STEP_T64 / GROUP_SIZE][N_TILE_LG + BP_PAD];
+    __shared__ unsigned char smem_Bs_k64[2][K_STEP_T64 / GS][N_TILE_LG + BP_PAD];
     __shared__ unsigned char smem_B_fp8_k64[N_TILE_LG][K_STEP_T64 + 16];
     __shared__ float smem_LUT_k64[16];
     __shared__ int smem_tok_k64[M_TILE];
@@ -542,8 +619,8 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64(
                 moe_cp_async_pred_16(&smem_Bp_k64[(buf)][kp_cur][ns], \
                     &B_expert[(unsigned long long)(gke >> 1) * N + gns], \
                     (gke + 1 < K) && (gns + 15 < N)); \
-                if (kp_cur < K_STEP_T64 / GROUP_SIZE) { \
-                    unsigned int sg = (kb) / GROUP_SIZE + kp_cur; \
+                if (kp_cur < K_STEP_T64 / GS) { \
+                    unsigned int sg = (kb) / GS + kp_cur; \
                     moe_cp_async_pred_16(&smem_Bs_k64[(buf)][kp_cur][ns], \
                         &S_expert[(unsigned long long)sg * N + gns], \
                         (gns + 15 < N)); \
@@ -552,53 +629,20 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64(
         } \
     } while(0)
 
-    // Dequant B: FP4 → FP8 E4M3, 4 scale groups for K64
+    // Dequant B: FP4 → FP8 E4M3. K_STEP_T64/GS scale groups (NVFP4 GS=16 → 4;
+    // E8M0 GS=32 → 2). sv[g] = mx_block_scale<E8M0> (RIDER 1); NVFP4 byte-identical.
     #define K64_DEQUANT(buf) do { \
         unsigned int my_n = threadIdx.x; \
-        __nv_fp8_e4m3 f0, f1, f2, f3; \
-        *(unsigned char*)&f0 = smem_Bs_k64[(buf)][0][my_n]; \
-        *(unsigned char*)&f1 = smem_Bs_k64[(buf)][1][my_n]; \
-        *(unsigned char*)&f2 = smem_Bs_k64[(buf)][2][my_n]; \
-        *(unsigned char*)&f3 = smem_Bs_k64[(buf)][3][my_n]; \
-        float sv0 = (float)f0 * scale2; \
-        float sv1 = (float)f1 * scale2; \
-        float sv2 = (float)f2 * scale2; \
-        float sv3 = (float)f3 * scale2; \
+        float sv[K_STEP_T64 / GS]; \
         _Pragma("unroll") \
-        for (int kp = 0; kp < 8; kp++) { \
-            unsigned char packed = smem_Bp_k64[(buf)][kp][my_n]; \
-            float lo = smem_LUT_k64[packed & 0xF] * sv0; \
-            float hi = smem_LUT_k64[packed >> 4] * sv0; \
-            unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
-            *(unsigned short*)&smem_B_fp8_k64[my_n][kp * 2] = fp8_pair; \
-        } \
+        for (int g = 0; g < K_STEP_T64 / GS; g++) \
+            sv[g] = mx_block_scale<E8M0>(smem_Bs_k64[(buf)][g][my_n], scale2); \
         _Pragma("unroll") \
-        for (int kp = 8; kp < 16; kp++) { \
+        for (int kp = 0; kp < K_STEP_T64 / 2; kp++) { \
+            float s = sv[kp / (GS / 2)]; \
             unsigned char packed = smem_Bp_k64[(buf)][kp][my_n]; \
-            float lo = smem_LUT_k64[packed & 0xF] * sv1; \
-            float hi = smem_LUT_k64[packed >> 4] * sv1; \
-            unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
-            *(unsigned short*)&smem_B_fp8_k64[my_n][kp * 2] = fp8_pair; \
-        } \
-        _Pragma("unroll") \
-        for (int kp = 16; kp < 24; kp++) { \
-            unsigned char packed = smem_Bp_k64[(buf)][kp][my_n]; \
-            float lo = smem_LUT_k64[packed & 0xF] * sv2; \
-            float hi = smem_LUT_k64[packed >> 4] * sv2; \
-            unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
-            *(unsigned short*)&smem_B_fp8_k64[my_n][kp * 2] = fp8_pair; \
-        } \
-        _Pragma("unroll") \
-        for (int kp = 24; kp < 32; kp++) { \
-            unsigned char packed = smem_Bp_k64[(buf)][kp][my_n]; \
-            float lo = smem_LUT_k64[packed & 0xF] * sv3; \
-            float hi = smem_LUT_k64[packed >> 4] * sv3; \
+            float lo = smem_LUT_k64[packed & 0xF] * s; \
+            float hi = smem_LUT_k64[packed >> 4] * s; \
             unsigned short fp8_pair; \
             asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
                          : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
@@ -686,13 +730,48 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64(
     }
 }
 
+// NVFP4 (default) — numerically identical to the pre-template extern-C entry.
+extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned long long* __restrict__ B_packed_ptrs,
+    const unsigned long long* __restrict__ B_scale_ptrs,
+    const float* __restrict__ scale2_vals,
+    __nv_bfloat16* __restrict__ C,
+    const int* __restrict__ expert_offsets,
+    const int* __restrict__ sorted_token_ids,
+    unsigned int num_experts, unsigned int N, unsigned int K
+) {
+    moe_w4a16_grouped_gemm_ptrtable_t_k64_impl<GROUP_SIZE, false>(
+        A, B_packed_ptrs, B_scale_ptrs, scale2_vals, C,
+        expert_offsets, sorted_token_ids, num_experts, N, K);
+}
+
+// Native MXFP4 (ARM-2): E8M0 per-32 scales, no global.
+extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned long long* __restrict__ B_packed_ptrs,
+    const unsigned long long* __restrict__ B_scale_ptrs,
+    const float* __restrict__ scale2_vals,
+    __nv_bfloat16* __restrict__ C,
+    const int* __restrict__ expert_offsets,
+    const int* __restrict__ sorted_token_ids,
+    unsigned int num_experts, unsigned int N, unsigned int K
+) {
+    moe_w4a16_grouped_gemm_ptrtable_t_k64_impl<32, true>(
+        A, B_packed_ptrs, B_scale_ptrs, scale2_vals, C,
+        expert_offsets, sorted_token_ids, num_experts, N, K);
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // K64 fused gate+up MoE GEMM — same K64 pipeline as down GEMM above.
 //
 // Replaces moe_w4a16_fused_gate_up_t for both gate+up projections
 // when K=h=2048 (64 → 32 K-steps, zero pipeline stall).
 // ═══════════════════════════════════════════════════════════════════
-extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
+// GS/E8M0 templated (ARM-2 Phase-K) — V4-hit primary. <GROUP_SIZE,false> = NVFP4
+// (numerically identical); <32,true> = native MXFP4 (E8M0 per-32, no global).
+template<int GS, bool E8M0>
+__device__ __forceinline__ void moe_w4a16_fused_gate_up_t_k64_impl(
     const __nv_bfloat16* __restrict__ A,
     const unsigned long long* __restrict__ gate_packed_ptrs,
     const unsigned long long* __restrict__ gate_scale_ptrs,
@@ -750,7 +829,7 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
 
     __shared__ __nv_bfloat16 smem_A_fgu64[2][M_TILE][K_STEP_T64 + PAD_T64];
     __shared__ unsigned char smem_Bp_fgu64[2][K_STEP_T64 / 2][N_TILE_LG + BP_PAD];
-    __shared__ unsigned char smem_Bs_fgu64[2][K_STEP_T64 / GROUP_SIZE][N_TILE_LG + BP_PAD];
+    __shared__ unsigned char smem_Bs_fgu64[2][K_STEP_T64 / GS][N_TILE_LG + BP_PAD];
     // B_fp8 row stride 80 bytes → zero smem bank conflicts (see K64_DEQUANT comment above).
     __shared__ unsigned char smem_B_fp8_fgu64[N_TILE_LG][K_STEP_T64 + 16];
     __shared__ float smem_LUT_fgu64[16];
@@ -801,8 +880,8 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
                 moe_cp_async_pred_16(&smem_Bp_fgu64[(buf)][kp_cur][ns], \
                     &B_expert[(unsigned long long)(gke >> 1) * N + gns], \
                     (gke + 1 < K) && (gns + 15 < N)); \
-                if (kp_cur < K_STEP_T64 / GROUP_SIZE) { \
-                    unsigned int sg = (kb) / GROUP_SIZE + kp_cur; \
+                if (kp_cur < K_STEP_T64 / GS) { \
+                    unsigned int sg = (kb) / GS + kp_cur; \
                     moe_cp_async_pred_16(&smem_Bs_fgu64[(buf)][kp_cur][ns], \
                         &S_expert[(unsigned long long)sg * N + gns], \
                         (gns + 15 < N)); \
@@ -811,52 +890,20 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
         } \
     } while(0)
 
+    // Dequant B: FP4 → FP8 E4M3. K_STEP_T64/GS scale groups (NVFP4 GS=16 → 4;
+    // E8M0 GS=32 → 2). sv[g] = mx_block_scale<E8M0> (RIDER 1); NVFP4 byte-identical.
     #define FGU64_DEQUANT(buf) do { \
         unsigned int my_n = threadIdx.x; \
-        __nv_fp8_e4m3 f0, f1, f2, f3; \
-        *(unsigned char*)&f0 = smem_Bs_fgu64[(buf)][0][my_n]; \
-        *(unsigned char*)&f1 = smem_Bs_fgu64[(buf)][1][my_n]; \
-        *(unsigned char*)&f2 = smem_Bs_fgu64[(buf)][2][my_n]; \
-        *(unsigned char*)&f3 = smem_Bs_fgu64[(buf)][3][my_n]; \
-        float sv0 = (float)f0 * scale2; \
-        float sv1 = (float)f1 * scale2; \
-        float sv2 = (float)f2 * scale2; \
-        float sv3 = (float)f3 * scale2; \
+        float sv[K_STEP_T64 / GS]; \
         _Pragma("unroll") \
-        for (int kp = 0; kp < 8; kp++) { \
-            unsigned char packed = smem_Bp_fgu64[(buf)][kp][my_n]; \
-            float lo = smem_LUT_fgu64[packed & 0xF] * sv0; \
-            float hi = smem_LUT_fgu64[packed >> 4] * sv0; \
-            unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
-            *(unsigned short*)&smem_B_fp8_fgu64[my_n][kp * 2] = fp8_pair; \
-        } \
+        for (int g = 0; g < K_STEP_T64 / GS; g++) \
+            sv[g] = mx_block_scale<E8M0>(smem_Bs_fgu64[(buf)][g][my_n], scale2); \
         _Pragma("unroll") \
-        for (int kp = 8; kp < 16; kp++) { \
+        for (int kp = 0; kp < K_STEP_T64 / 2; kp++) { \
+            float s = sv[kp / (GS / 2)]; \
             unsigned char packed = smem_Bp_fgu64[(buf)][kp][my_n]; \
-            float lo = smem_LUT_fgu64[packed & 0xF] * sv1; \
-            float hi = smem_LUT_fgu64[packed >> 4] * sv1; \
-            unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
-            *(unsigned short*)&smem_B_fp8_fgu64[my_n][kp * 2] = fp8_pair; \
-        } \
-        _Pragma("unroll") \
-        for (int kp = 16; kp < 24; kp++) { \
-            unsigned char packed = smem_Bp_fgu64[(buf)][kp][my_n]; \
-            float lo = smem_LUT_fgu64[packed & 0xF] * sv2; \
-            float hi = smem_LUT_fgu64[packed >> 4] * sv2; \
-            unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
-            *(unsigned short*)&smem_B_fp8_fgu64[my_n][kp * 2] = fp8_pair; \
-        } \
-        _Pragma("unroll") \
-        for (int kp = 24; kp < 32; kp++) { \
-            unsigned char packed = smem_Bp_fgu64[(buf)][kp][my_n]; \
-            float lo = smem_LUT_fgu64[packed & 0xF] * sv3; \
-            float hi = smem_LUT_fgu64[packed >> 4] * sv3; \
+            float lo = smem_LUT_fgu64[packed & 0xF] * s; \
+            float hi = smem_LUT_fgu64[packed >> 4] * s; \
             unsigned short fp8_pair; \
             asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
                          : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
@@ -941,6 +988,48 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
     }
 }
 
+// NVFP4 (default) — numerically identical to the pre-template extern-C entry.
+extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned long long* __restrict__ gate_packed_ptrs,
+    const unsigned long long* __restrict__ gate_scale_ptrs,
+    const float* __restrict__ gate_scale2_vals,
+    const unsigned long long* __restrict__ up_packed_ptrs,
+    const unsigned long long* __restrict__ up_scale_ptrs,
+    const float* __restrict__ up_scale2_vals,
+    __nv_bfloat16* __restrict__ C_gate,
+    __nv_bfloat16* __restrict__ C_up,
+    const int* __restrict__ expert_offsets,
+    const int* __restrict__ sorted_token_ids,
+    unsigned int num_experts, unsigned int N, unsigned int K
+) {
+    moe_w4a16_fused_gate_up_t_k64_impl<GROUP_SIZE, false>(
+        A, gate_packed_ptrs, gate_scale_ptrs, gate_scale2_vals,
+        up_packed_ptrs, up_scale_ptrs, up_scale2_vals, C_gate, C_up,
+        expert_offsets, sorted_token_ids, num_experts, N, K);
+}
+
+// Native MXFP4 (ARM-2): E8M0 per-32 scales, no global.
+extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64_e8m0(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned long long* __restrict__ gate_packed_ptrs,
+    const unsigned long long* __restrict__ gate_scale_ptrs,
+    const float* __restrict__ gate_scale2_vals,
+    const unsigned long long* __restrict__ up_packed_ptrs,
+    const unsigned long long* __restrict__ up_scale_ptrs,
+    const float* __restrict__ up_scale2_vals,
+    __nv_bfloat16* __restrict__ C_gate,
+    __nv_bfloat16* __restrict__ C_up,
+    const int* __restrict__ expert_offsets,
+    const int* __restrict__ sorted_token_ids,
+    unsigned int num_experts, unsigned int N, unsigned int K
+) {
+    moe_w4a16_fused_gate_up_t_k64_impl<32, true>(
+        A, gate_packed_ptrs, gate_scale_ptrs, gate_scale2_vals,
+        up_packed_ptrs, up_scale_ptrs, up_scale2_vals, C_gate, C_up,
+        expert_offsets, sorted_token_ids, num_experts, N, K);
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Fused gate+up MoE GEMM.
 //
@@ -951,7 +1040,11 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
 //
 // Grid: (ceil(2*N / N_TILE_LG), max_m_tiles, num_experts)
 // ═══════════════════════════════════════════════════════════════════
-extern "C" __global__ void moe_w4a16_fused_gate_up_t(
+// GS/E8M0 templated (ARM-2 Phase-K). <GROUP_SIZE,false> = NVFP4 (numerically
+// identical); <32,true> = native MXFP4 (E8M0 per-32, no global). K32: NVFP4 2
+// scale groups → E8M0 1.
+template<int GS, bool E8M0>
+__device__ __forceinline__ void moe_w4a16_fused_gate_up_t_impl(
     const __nv_bfloat16* __restrict__ A,
     // Gate weights
     const unsigned long long* __restrict__ gate_packed_ptrs,
@@ -1014,7 +1107,7 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t(
 
     __shared__ __nv_bfloat16 smem_A[2][M_TILE][K_STEP_T + PAD_T];
     __shared__ unsigned char smem_Bp[2][K_STEP_T / 2][N_TILE_LG + BP_PAD];
-    __shared__ unsigned char smem_Bs[2][K_STEP_T / GROUP_SIZE][N_TILE_LG + BP_PAD];
+    __shared__ unsigned char smem_Bs[2][K_STEP_T / GS][N_TILE_LG + BP_PAD];
     // Same +4 padding as grouped_gemm_ptrtable_t: eliminates 8-way DEQUANT write conflicts.
     __shared__ unsigned char smem_B_fp8[N_TILE_LG][K_STEP_T + 4];
     __shared__ float smem_LUT[16];
@@ -1066,8 +1159,8 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t(
             moe_cp_async_pred_16(&smem_Bp[(buf)][kp][ns], \
                 &B_expert[(unsigned long long)(gke >> 1) * N + gns], \
                 (gke + 1 <= K) && (gns + 15 < N)); \
-            if (kp < K_STEP_T / GROUP_SIZE) { \
-                unsigned int sg = (kb) / GROUP_SIZE + kp; \
+            if (kp < K_STEP_T / GS) { \
+                unsigned int sg = (kb) / GS + kp; \
                 moe_cp_async_pred_16(&smem_Bs[(buf)][kp][ns], \
                     &S_expert[(unsigned long long)sg * N + gns], \
                     (gns + 15 < N)); \
@@ -1075,30 +1168,20 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t(
         } \
     } while(0)
 
+    // Dequant B: FP4 → FP8 E4M3. K_STEP_T/GS scale groups (NVFP4 GS=16 → 2;
+    // E8M0 GS=32 → 1). sv[g] = mx_block_scale<E8M0> (RIDER 1); NVFP4 byte-identical.
     #define FGU_DEQUANT(buf) do { \
         unsigned int my_n = threadIdx.x; \
-        unsigned char sb0 = smem_Bs[(buf)][0][my_n]; \
-        unsigned char sb1 = smem_Bs[(buf)][1][my_n]; \
-        __nv_fp8_e4m3 f0, f1; \
-        *(unsigned char*)&f0 = sb0; \
-        *(unsigned char*)&f1 = sb1; \
-        float sv0 = (float)f0 * scale2; \
-        float sv1 = (float)f1 * scale2; \
+        float sv[K_STEP_T / GS]; \
         _Pragma("unroll") \
-        for (int kp = 0; kp < 8; kp++) { \
-            unsigned char packed = smem_Bp[(buf)][kp][my_n]; \
-            float lo = smem_LUT[packed & 0xF] * sv0; \
-            float hi = smem_LUT[packed >> 4] * sv0; \
-            unsigned short fp8_pair; \
-            asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
-                         : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
-            *(unsigned short*)&smem_B_fp8[my_n][kp * 2] = fp8_pair; \
-        } \
+        for (int g = 0; g < K_STEP_T / GS; g++) \
+            sv[g] = mx_block_scale<E8M0>(smem_Bs[(buf)][g][my_n], scale2); \
         _Pragma("unroll") \
-        for (int kp = 8; kp < 16; kp++) { \
+        for (int kp = 0; kp < K_STEP_T / 2; kp++) { \
+            float s = sv[kp / (GS / 2)]; \
             unsigned char packed = smem_Bp[(buf)][kp][my_n]; \
-            float lo = smem_LUT[packed & 0xF] * sv1; \
-            float hi = smem_LUT[packed >> 4] * sv1; \
+            float lo = smem_LUT[packed & 0xF] * s; \
+            float hi = smem_LUT[packed >> 4] * s; \
             unsigned short fp8_pair; \
             asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" \
                          : "=h"(fp8_pair) : "f"(hi), "f"(lo)); \
@@ -1168,6 +1251,48 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t(
         if (r1v && c0 < N) C[r1*N+c0] = __float2bfloat16(acc[nt][2]);
         if (r1v && c1 < N) C[r1*N+c1] = __float2bfloat16(acc[nt][3]);
     }
+}
+
+// NVFP4 (default) — numerically identical to the pre-template extern-C entry.
+extern "C" __global__ void moe_w4a16_fused_gate_up_t(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned long long* __restrict__ gate_packed_ptrs,
+    const unsigned long long* __restrict__ gate_scale_ptrs,
+    const float* __restrict__ gate_scale2_vals,
+    const unsigned long long* __restrict__ up_packed_ptrs,
+    const unsigned long long* __restrict__ up_scale_ptrs,
+    const float* __restrict__ up_scale2_vals,
+    __nv_bfloat16* __restrict__ C_gate,
+    __nv_bfloat16* __restrict__ C_up,
+    const int* __restrict__ expert_offsets,
+    const int* __restrict__ sorted_token_ids,
+    unsigned int num_experts, unsigned int N, unsigned int K
+) {
+    moe_w4a16_fused_gate_up_t_impl<GROUP_SIZE, false>(
+        A, gate_packed_ptrs, gate_scale_ptrs, gate_scale2_vals,
+        up_packed_ptrs, up_scale_ptrs, up_scale2_vals, C_gate, C_up,
+        expert_offsets, sorted_token_ids, num_experts, N, K);
+}
+
+// Native MXFP4 (ARM-2): E8M0 per-32 scales, no global.
+extern "C" __global__ void moe_w4a16_fused_gate_up_t_e8m0(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned long long* __restrict__ gate_packed_ptrs,
+    const unsigned long long* __restrict__ gate_scale_ptrs,
+    const float* __restrict__ gate_scale2_vals,
+    const unsigned long long* __restrict__ up_packed_ptrs,
+    const unsigned long long* __restrict__ up_scale_ptrs,
+    const float* __restrict__ up_scale2_vals,
+    __nv_bfloat16* __restrict__ C_gate,
+    __nv_bfloat16* __restrict__ C_up,
+    const int* __restrict__ expert_offsets,
+    const int* __restrict__ sorted_token_ids,
+    unsigned int num_experts, unsigned int N, unsigned int K
+) {
+    moe_w4a16_fused_gate_up_t_impl<32, true>(
+        A, gate_packed_ptrs, gate_scale_ptrs, gate_scale2_vals,
+        up_packed_ptrs, up_scale_ptrs, up_scale2_vals, C_gate, C_up,
+        expert_offsets, sorted_token_ids, num_experts, N, K);
 }
 
 // ═══════════════════════════════════════════════════════════════════

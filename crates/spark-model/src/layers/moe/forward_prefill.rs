@@ -364,7 +364,7 @@ impl MoeLayer {
         // 8. Blend shared expert: output += sigmoid(dot(input, gate)) * shared
         // Skip when has_shared == false (no shared expert in this model config).
         // EP fix: defer shared expert blend until AFTER all-reduce to avoid doubling.
-        let is_ep_prefill = ctx.comm.is_some_and(|c| c.world_size() > 1);
+        let is_ep_prefill = ctx.comm.is_some() && ctx.config.ep_world_size > 1;
         if has_shared && !is_ep_prefill {
             let shared_down_out = ctx.buffers.attn_output();
             if use_overlap {
@@ -397,7 +397,7 @@ impl MoeLayer {
 
         // EP all-reduce
         if let Some(comm) = ctx.comm
-            && comm.world_size() > 1
+            && ctx.config.ep_world_size > 1
         {
             let _t0 = if ctx.profile {
                 ctx.gpu.synchronize(stream)?;

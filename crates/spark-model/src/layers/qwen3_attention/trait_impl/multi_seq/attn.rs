@@ -284,6 +284,23 @@ impl Qwen3AttentionLayer {
                 nq * hd,
                 stream,
             )?;
+        } else if !self.attn.o_proj.is_null() {
+            // WIDE-VERIFY BATCHED O-PROJ (DFlash γ=16, n>3). One GEMM reads
+            // the o_proj weight ONCE for all n rows instead of the per-row
+            // GEMV loop below. attn_out is contiguous [n, q_dim]; o_out is
+            // contiguous [n, h]; both already laid out for a single M=n GEMM
+            // (no scatter). Uses the pipelined m128_v2 kernel when the
+            // transposed weight is present (base M64 GEMM is the slow path).
+            self.wide_verify_gemm(
+                c,
+                attn_out,
+                &self.attn.o_proj,
+                self.o_nvfp4_t.as_ref(),
+                o_out,
+                n as u32,
+                h as u32,
+                nq * hd,
+            )?;
         } else {
             for i in 0..n {
                 let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);

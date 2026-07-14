@@ -149,6 +149,7 @@ jobs:
           int cuMemAllocHost(void **a, unsigned long b) { (void)a; (void)b; return 100; }
           int cuMemAllocHost_v2(void **a, unsigned long b) { (void)a; (void)b; return 100; }
           int cuMemFreeHost(void *a) { (void)a; return 100; }
+          int cuMemHostGetDevicePointer_v2(unsigned long long *a, void *b, unsigned int c) { (void)a; (void)b; (void)c; return 100; }
           /* Memcpy / memset */
           int cuMemcpyHtoD(unsigned long long a, const void *b, unsigned long c) {
               (void)a; (void)b; (void)c; return 100;

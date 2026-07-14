@@ -224,10 +224,27 @@ pub(super) fn retire_finished_sequences(model: &dyn Model, active: &mut Vec<Acti
         }
     }
 
-    // Phase 2: targets are the [0..n) slots not already held by a survivor
-    // (freed in Phase 1, or never occupied). There are exactly as many targets
-    // as survivors whose slot is out of range, so every survivor lands in
-    // [0..n) with a unique slot.
+    // Phase 2: compact survivors back into contiguous slots [0..n).
+    compact_survivors_into_range(model, &mut survivors);
+    *active = survivors;
+}
+
+/// Compact live sequences into contiguous SSM slots `[0..n)` (n = the slice
+/// length), claiming each migration target exclusively from the free list so
+/// no two live sequences can ever share a slot.
+///
+/// This is the exclusivity-safe core shared by `retire_finished_sequences`
+/// (Phase 2) and `swap_out_sequence`: every sequence whose `slot_idx` is out
+/// of the `[0..n)` range is migrated onto a free slot in that range (a slot
+/// not held by any surviving sequence — i.e. one freed by a just-retired /
+/// swapped-out sequence, or never occupied). There are exactly as many free
+/// targets as out-of-range survivors, so each lands on a unique slot.
+///
+/// PRECONDITION: any slot being vacated (a retired/swapped-out sequence's
+/// slot) must already be released to the pool before this runs, so it is
+/// available as a target. Never call this under `ep_protocol_v2()` — v2
+/// keeps slots pinned in place (see `retire_finished_sequences`).
+pub(super) fn compact_survivors_into_range(model: &dyn Model, survivors: &mut [ActiveSeq]) {
     let n = survivors.len();
     let occupied: std::collections::HashSet<usize> =
         survivors.iter().map(|a| a.seq.slot_idx).collect();
@@ -241,11 +258,11 @@ pub(super) fn retire_finished_sequences(model: &dyn Model, active: &mut Vec<Acti
                     }
                 }
                 None => tracing::error!(
-                    "retire: no free target for out-of-range slot {} (n={n})",
+                    "compact_survivors_into_range: no free target for out-of-range \
+                     slot {} (n={n})",
                     a.seq.slot_idx
                 ),
             }
         }
     }
-    *active = survivors;
 }

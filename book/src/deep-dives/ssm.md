@@ -50,7 +50,7 @@ The **chunked prefill** path in `kernels/gb10/<model>/<quant>/` breaks the prefi
 
 Savings: ~7–9 GB of scratch memory for long-context prefill, at negligible perf cost. Before chunked prefill, 122B at 8k context wouldn't fit in 119.7 GB. After it, it does.
 
-See `docs/design/chunked-ssm-prefill.md` (and the `project_chunked_ssm_prefill_fix` note — there was a BF16 paged-dispatch bug where the FP8 kernel was called on a BF16 cache, producing NaN; fixed in wave-4).
+See `docs/adr/0003-hybrid-ssm-attention.md` for the chunked-SSM-prefill design (there was a BF16 paged-dispatch bug where the FP8 kernel was called on a BF16 cache, producing NaN; fixed in wave-4).
 
 ## Marconi: SSM state snapshots for prefix caching
 

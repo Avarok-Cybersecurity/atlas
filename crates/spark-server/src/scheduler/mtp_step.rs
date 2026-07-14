@@ -18,6 +18,7 @@ pub fn step_mtp(
     active: &mut [ActiveSeq],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+    dflash_verify_raw_argmax: bool,
 ) {
     let mut bootstrap_idxs: Vec<usize> = Vec::new();
     let mut verify_idxs: Vec<usize> = Vec::new();
@@ -41,6 +42,81 @@ pub fn step_mtp(
     }
     for &idx in &bootstrap_idxs {
         let a = &mut active[idx];
+
+        // DFlash path: skip the standalone M=1 decode. The fused pass already
+        // computes every position's logit in one weight sweep, so the "next
+        // decoded token" is the bonus token at result[num_accepted] — the logit
+        // at the position immediately after the accepted prefix (§8 vLLM
+        // bonus-token pattern). Propose initial drafts using the DFlash hidden
+        // already captured at row 0 by the previous step's fused pass (or
+        // prefill), then route through step_verify_k3/k2 which handles the
+        // fused forward, accept/reject, bonus-token emit, and re-propose for
+        // the next step. This replaces the two-sweep sequence (M=1 decode here
+        // + M=1+k fused in Phase B) with a single M=1+k fused sweep.
+        if dflash_verify_raw_argmax
+            && !crate::scheduler::verify_pipeline_helper::dflash_seam_serial_enabled()
+            && crate::scheduler::adaptive_spec::spec_allowed(a)
+        {
+            let eff = if a.grammar_state.is_some() {
+                1
+            } else {
+                num_drafts
+            };
+            let _gmask = mtp_grammar_mask_for(a);
+            match model.run_mtp_propose_multi(
+                a.last_token,
+                a.seq.seq_len,
+                eff,
+                &mut a.seq,
+                0,
+                _gmask.as_deref(),
+            ) {
+                Ok(init) if !init.is_empty() => {
+                    if eff >= 3 && init.len() >= 3 {
+                        step_verify_k4(
+                            model,
+                            a,
+                            &init,
+                            num_drafts,
+                            verify_ctx,
+                            dflash_verify_raw_argmax,
+                        );
+                    } else if eff >= 2 && init.len() >= 2 {
+                        step_verify_k3(
+                            model,
+                            a,
+                            &init,
+                            num_drafts,
+                            verify_ctx,
+                            dflash_verify_raw_argmax,
+                        );
+                    } else {
+                        step_verify_k2(
+                            model,
+                            a,
+                            &init,
+                            num_drafts,
+                            verify_ctx,
+                            dflash_verify_raw_argmax,
+                        );
+                    }
+                    continue;
+                }
+                Ok(_) => {
+                    tracing::warn!(
+                        "DFlash bootstrap propose returned empty; falling back to standalone decode"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("DFlash bootstrap propose: {e:#}");
+                }
+            }
+            // Rare fallback: propose failed or returned empty (e.g. drafter not
+            // yet primed). Fall through to the standalone decode below so the
+            // sequence emits its next token rather than stalling.
+        }
+
+        // Non-DFlash path (or DFlash-propose fallback): EP broadcast + standalone decode.
         // EP: broadcast token to worker before decode (worker runs decode in lockstep).
         if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, a.last_token) {
             tracing::error!("EP broadcast bootstrap token: {e:#}");
@@ -106,6 +182,41 @@ pub fn step_mtp(
             continue;
         }
         a.last_token = tok;
+        // Adaptive speculation: count serial tokens toward the re-probe window.
+        crate::scheduler::adaptive_spec::tick_serial(a);
+
+        // Ctx-holes fix (ATLAS_DFLASH_SERIAL_APPEND=1), COMPLEMENT-GATED:
+        // the serial ctx-append fires iff propose() will NOT run this
+        // iteration, so append and propose decode-append can never both
+        // cover one token — double-append impossible by construction
+        // (that was the cuMemcpyDtoDAsync status-1 crash).
+        // `spec_allowed` is evaluated exactly once (it mutates re-probe
+        // state); its verdict is reused for the propose gate below.
+        // Exception — re-probe RESUME: the token decoded on the un-suspend
+        // iteration would otherwise fall in a hole (the stale
+        // `skip_next_decode_append` set by the last suspended token makes
+        // the propose below skip its decode-append). Append it here; the
+        // skip flag this sets is consumed by that propose — one append,
+        // no duplicate, seam covered.
+        let was_suspended = crate::scheduler::adaptive_spec::is_suspended(a);
+        let will_propose = crate::scheduler::adaptive_spec::spec_allowed(a);
+        let reprobe_resume = was_suspended && will_propose;
+        if crate::scheduler::adaptive_spec::unified_ctx_enabled() {
+            // Unified ctx commit: same complement-gate as the old serial
+            // append — fire iff propose() will NOT run (or re-probe resume),
+            // so commit and propose decode-append never both cover a token.
+            if !will_propose || reprobe_resume {
+                let base_pos = a.seq.seq_len.saturating_sub(1);
+                if let Err(e) = model.commit_ctx(&mut a.seq, 1, base_pos) {
+                    tracing::error!("commit_ctx (mtp serial): {e:#}");
+                }
+            }
+        } else if crate::scheduler::adaptive_spec::serial_append_enabled()
+            && (!will_propose || reprobe_resume)
+            && let Err(e) = model.dflash_serial_ctx_append(&mut a.seq)
+        {
+            tracing::error!("dflash_serial_ctx_append: {e:#}");
+        }
 
         if let Err(e) = model.save_hidden_for_mtp(0, 0) {
             tracing::error!("save_hidden_for_mtp: {e:#}");
@@ -125,21 +236,26 @@ pub fn step_mtp(
         } else {
             num_drafts
         };
-        match model.run_mtp_propose_multi(
-            tok,
-            a.seq.seq_len,
-            effective_num_drafts,
-            &mut a.seq,
-            0,
-            _mtp_grammar_mask.as_deref(),
-        ) {
-            Ok(drafts) if !drafts.is_empty() => {
-                tracing::debug!("MTP bootstrap: tok={tok} → drafts={drafts:?}");
-                a.pending_drafts = drafts;
-            }
-            Ok(_) => tracing::warn!("MTP propose returned empty"),
-            Err(e) => {
-                tracing::error!("run_mtp_propose_multi: {e:#}");
+        // Adaptive speculation: a suspended seq skips proposing entirely and
+        // stays on this serial bootstrap path until the re-probe fires.
+        // (`will_propose` is the single spec_allowed evaluation above.)
+        if will_propose {
+            match model.run_mtp_propose_multi(
+                tok,
+                a.seq.seq_len,
+                effective_num_drafts,
+                &mut a.seq,
+                0,
+                _mtp_grammar_mask.as_deref(),
+            ) {
+                Ok(drafts) if !drafts.is_empty() => {
+                    tracing::debug!("MTP bootstrap: tok={tok} → drafts={drafts:?}");
+                    a.pending_drafts = drafts;
+                }
+                Ok(_) => tracing::warn!("MTP propose returned empty"),
+                Err(e) => {
+                    tracing::error!("run_mtp_propose_multi: {e:#}");
+                }
             }
         }
 
@@ -181,13 +297,41 @@ pub fn step_mtp(
         // MTP keeps using the existing graphed paths; this dispatch is purely
         // additive.
         if drafts.len() >= 4 {
-            step_verify_dflash(model, a, &drafts, num_drafts, verify_ctx);
+            step_verify_dflash(
+                model,
+                a,
+                &drafts,
+                num_drafts,
+                verify_ctx,
+                dflash_verify_raw_argmax,
+            );
         } else if num_drafts >= 3 && drafts.len() >= 3 {
-            step_verify_k4(model, a, &drafts, num_drafts, verify_ctx);
+            step_verify_k4(
+                model,
+                a,
+                &drafts,
+                num_drafts,
+                verify_ctx,
+                dflash_verify_raw_argmax,
+            );
         } else if num_drafts >= 2 && drafts.len() >= 2 {
-            step_verify_k3(model, a, &drafts, num_drafts, verify_ctx);
+            step_verify_k3(
+                model,
+                a,
+                &drafts,
+                num_drafts,
+                verify_ctx,
+                dflash_verify_raw_argmax,
+            );
         } else {
-            step_verify_k2(model, a, &drafts, num_drafts, verify_ctx);
+            step_verify_k2(
+                model,
+                a,
+                &drafts,
+                num_drafts,
+                verify_ctx,
+                dflash_verify_raw_argmax,
+            );
         }
     }
 }

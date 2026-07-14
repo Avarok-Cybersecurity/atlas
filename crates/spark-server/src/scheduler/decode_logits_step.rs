@@ -4,6 +4,17 @@
 
 use super::*;
 
+thread_local! {
+    /// Reusable host staging buffer for the D2H logits copy on the sampling
+    /// path. Hoisted out of the per-token `vec![0u8; n*vocab*elem]` to avoid an
+    /// mmap/munmap + page-fault cycle every decoded token (the buffer is
+    /// ~0.5-1 MB at a 250k vocab). Fully overwritten by `copy_logits_to_host`,
+    /// so residual contents are irrelevant. Per-thread: the scheduler drives
+    /// decode on one thread.
+    static DECODE_LOGITS_HOST_SCRATCH: std::cell::RefCell<Vec<u8>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// DIAG (ATLAS_DECODE_TIMING=1): localize the host-path decode cost. Splits the
 /// per-token wall into `copy` (D2H of the full 248k-vocab logits + the GPU
 /// forward-wait absorbed by that sync) vs `sample` (the host scalar loops over
@@ -97,7 +108,11 @@ pub fn process_decode_logits(
             let logits_fp32 = model.decode_logits_fp32();
             let elem_bytes = if logits_fp32 { 4 } else { 2 };
             let t_copy = std::time::Instant::now();
-            let mut buf = vec![0u8; n * vocab_size * elem_bytes];
+            // Reuse the per-thread staging buffer (restored at the end of this
+            // block). `resize` only grows it; `copy_logits_to_host` overwrites
+            // every byte so the residual/zero-fill is irrelevant.
+            let mut buf = DECODE_LOGITS_HOST_SCRATCH.with_borrow_mut(std::mem::take);
+            buf.resize(n * vocab_size * elem_bytes, 0);
             if let Err(e) = model.copy_logits_to_host(logits, &mut buf) {
                 tracing::error!("copy_logits_to_host error: {e:#}");
                 for mut a in active.drain(..) {
@@ -137,6 +152,10 @@ pub fn process_decode_logits(
                 })
                 .collect();
             decode_timing_record(copy_us, t_sample.elapsed().as_micros() as u64);
+            // Return the staging buffer for reuse next token (its capacity is
+            // preserved). The error path above intentionally drops it — that is
+            // rare and only forfeits the cached capacity.
+            DECODE_LOGITS_HOST_SCRATCH.with_borrow_mut(|slot| *slot = buf);
             sampled
         };
     let step_ms = t0.elapsed().as_secs_f64() * 1000.0;

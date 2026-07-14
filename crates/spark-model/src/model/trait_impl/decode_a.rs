@@ -170,7 +170,24 @@ impl TransformerModel {
         // and remove per-kernel launch overhead. Env-gated so it can be toggled
         // off at deploy time (instant revert) if capture crashes / replay hangs.
         let ep_graphs = std::env::var("ATLAS_EP_GRAPHS").is_ok_and(|v| v == "1" || v == "true");
-        let use_graphs = (self.comm.is_none() || ep_graphs)
+        // GDN HeadParallel TP decode graphs (ATLAS_GDN_DECODE_GRAPH=1, default
+        // OFF): capture the whole single-token decode forward — ~130 kernels
+        // plus the per-layer TP all-reduces (48 GDN SSM out_proj + 16
+        // attention o_proj on Qwen3.6) — into one replayable graph. The
+        // collectives go through `all_reduce_async` (event fork/join onto the
+        // dedicated NCCL comm stream), which stream capture pulls into the
+        // graph as cross-stream nodes; capture runs in RELAXED mode (see
+        // `begin_capture`) as NCCL requires, and the events are
+        // CU_EVENT_DISABLE_TIMING (capture-legal). All per-token inputs
+        // (token embedding, positions, slot, seq_len, block_table) are
+        // uploaded to STABLE device buffers in Phase 1 before replay, and the
+        // per-slot SSM conv/h states are updated in place at stable pointers,
+        // so replay is shape/pointer-static. This removes the per-token host
+        // launch cost that dominates 2-node GDN HeadParallel decode. Capture
+        // failure falls back to eager execution (graphs then stay disabled).
+        let gdn_graphs =
+            std::env::var("ATLAS_GDN_DECODE_GRAPH").is_ok_and(|v| v == "1" || v == "true");
+        let use_graphs = (self.comm.is_none() || ep_graphs || gdn_graphs)
             && !self.profile
             && !self
                 .suppress_graphs
@@ -223,28 +240,167 @@ impl TransformerModel {
 
         // ── Phase 3: Capture new CUDA graph (or run eagerly for EP) ──
 
+        // Track whether a capture is actually recording: a begin_capture
+        // failure falls back to eager execution (and disables graphs for the
+        // rest of the run) instead of failing the decode step.
+        let mut capture_active = false;
         if use_graphs {
             tracing::info!(
                 "CUDA graph capture: starting for {} layers",
                 self.layers.len()
             );
-            self.gpu.begin_capture(stream)?;
+            match self.gpu.begin_capture(stream) {
+                Ok(()) => capture_active = true,
+                Err(e) => {
+                    tracing::warn!(
+                        "CUDA graph begin_capture failed ({e:#}) — \
+                         running eagerly and disabling graph capture"
+                    );
+                    self.suppress_graphs
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
         }
 
         let probe_layers = !use_graphs
             && seq.seq_len == seq.prompt_len
             && std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok();
+        self.decode_forward_body(
+            hidden,
+            residual,
+            seq,
+            &mut kv_cache,
+            &ctx,
+            probe_layers,
+            use_graphs,
+            stream,
+        )?;
+
+        // Decode-step diagnostic for Gemma-4 degeneration analysis. Only fires
+        // when ATLAS_DIAG_GEMMA4=1 (which also disables CUDA graphs upstream,
+        // so the d2h sync below is safe). Reads top-5 tokens by logit so we
+        // can see whether the LM head produced a near-tie or a confident bad
+        // pick. (B4 — Creative haiku degeneration loop diagnostic.)
+        if std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {
+            self.gpu.synchronize(stream)?;
+            let n_logits = self.config.vocab_size;
+            // Read the buffer the LM head actually wrote to. With Gemma-4
+            // dense the single-token decode lm_head produces FP32 in
+            // `logits_fp32_buf`; the BF16 buffer would be all zeros there.
+            let logit_vals: Vec<f32> = if self.use_fp32_logits {
+                let mut buf = vec![0u8; n_logits * 4];
+                if let Err(e) = self.gpu.copy_d2h(self.logits_fp32_buf, &mut buf) {
+                    tracing::error!("ATLAS_DIAG_GEMMA4: copy_d2h(logits_fp32_buf): {e:#}");
+                }
+                buf.chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect()
+            } else {
+                let mut buf = vec![0u8; n_logits * 2];
+                if let Err(e) = self.gpu.copy_d2h(self.buffers.logits(), &mut buf) {
+                    tracing::error!("ATLAS_DIAG_GEMMA4: copy_d2h(logits BF16): {e:#}");
+                }
+                buf.chunks_exact(2)
+                    .map(|c| {
+                        let bits = u16::from_le_bytes([c[0], c[1]]);
+                        f32::from_bits((bits as u32) << 16)
+                    })
+                    .collect()
+            };
+            let max = logit_vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let min = logit_vals.iter().cloned().fold(f32::INFINITY, f32::min);
+            let mut idx: Vec<usize> = (0..logit_vals.len()).collect();
+            idx.sort_by(|&a, &b| {
+                logit_vals[b]
+                    .partial_cmp(&logit_vals[a])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let top5: Vec<(usize, f32)> = idx.iter().take(5).map(|&i| (i, logit_vals[i])).collect();
+            tracing::warn!(
+                "DIAG decode logits: max={max:.4} min={min:.4} prev_token={token} top5={top5:?}",
+            );
+        }
+
+        if capture_active {
+            match self.gpu.end_capture(stream) {
+                Ok(graph) if graph.0 != 0 => {
+                    tracing::info!(
+                        "CUDA graph captured successfully for slot={} (handle={:?})",
+                        seq.slot_idx,
+                        graph.0
+                    );
+                    if let Some(ref mut cache) = graph_cache {
+                        cache.insert(seq.slot_idx, graph);
+                    }
+                    self.gpu.launch_graph(graph, stream)?;
+                }
+                Ok(_) => {
+                    tracing::warn!("CUDA graph capture returned null handle — running eagerly");
+                    // If graph.0 == 0 (mock): operations already executed during capture
+                }
+                Err(e) => {
+                    // Capture RECORDS without executing, so nothing has run
+                    // for this token yet — re-run the whole forward body
+                    // eagerly (end_capture failure terminates the capture, so
+                    // the stream is back in normal mode) and disable graphs
+                    // for the rest of the run.
+                    tracing::warn!(
+                        "CUDA graph end_capture failed ({e:#}) — \
+                         re-running decode step eagerly and disabling graph capture"
+                    );
+                    self.suppress_graphs
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    self.decode_forward_body(
+                        hidden,
+                        residual,
+                        seq,
+                        &mut kv_cache,
+                        &ctx,
+                        false,
+                        false,
+                        stream,
+                    )?;
+                }
+            }
+        }
+
+        seq.tokens.push(token);
+        seq.seq_len += 1;
+
+        Ok(self.decode_logits_ptr())
+    }
+
+    /// Single-token decode forward body: per-layer decode + periodic SSM
+    /// state normalization + final RMS norm + LM head.
+    ///
+    /// Runs once per decode step — either eagerly or inside a CUDA graph
+    /// capture region — and a SECOND time as the eager fallback when
+    /// `end_capture` fails (capture records without executing, so a re-run
+    /// performs the step exactly once). Everything here is stream-ordered on
+    /// `stream`; the only host syncs are gated on `!use_graphs` /
+    /// `probe_layers` (both false under capture).
+    fn decode_forward_body(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        seq: &mut SequenceState,
+        kv_cache: &mut PagedKvCache,
+        ctx: &ForwardContext,
+        probe_layers: bool,
+        use_graphs: bool,
+        stream: u64,
+    ) -> Result<()> {
         for (i, layer) in self.layers.iter().enumerate() {
             layer.decode(
                 hidden,
                 residual,
                 seq.layer_states[i].as_mut(),
-                &mut kv_cache,
+                kv_cache,
                 seq.seq_len,
                 &mut seq.block_table,
                 &mut seq.disk_block_ids,
                 &mut seq.disk_last_offloaded_per_layer,
-                &ctx,
+                ctx,
                 stream,
             )?;
             // CBD per-layer hidden fingerprint at decode step 0 (eager only).
@@ -309,73 +465,6 @@ impl TransformerModel {
 
         // LM head reads from normed directly (no D2D copy needed)
         self.lm_head(normed, stream)?;
-
-        // Decode-step diagnostic for Gemma-4 degeneration analysis. Only fires
-        // when ATLAS_DIAG_GEMMA4=1 (which also disables CUDA graphs upstream,
-        // so the d2h sync below is safe). Reads top-5 tokens by logit so we
-        // can see whether the LM head produced a near-tie or a confident bad
-        // pick. (B4 — Creative haiku degeneration loop diagnostic.)
-        if std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {
-            self.gpu.synchronize(stream)?;
-            let n_logits = self.config.vocab_size;
-            // Read the buffer the LM head actually wrote to. With Gemma-4
-            // dense the single-token decode lm_head produces FP32 in
-            // `logits_fp32_buf`; the BF16 buffer would be all zeros there.
-            let logit_vals: Vec<f32> = if self.use_fp32_logits {
-                let mut buf = vec![0u8; n_logits * 4];
-                if let Err(e) = self.gpu.copy_d2h(self.logits_fp32_buf, &mut buf) {
-                    tracing::error!("ATLAS_DIAG_GEMMA4: copy_d2h(logits_fp32_buf): {e:#}");
-                }
-                buf.chunks_exact(4)
-                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                    .collect()
-            } else {
-                let mut buf = vec![0u8; n_logits * 2];
-                if let Err(e) = self.gpu.copy_d2h(self.buffers.logits(), &mut buf) {
-                    tracing::error!("ATLAS_DIAG_GEMMA4: copy_d2h(logits BF16): {e:#}");
-                }
-                buf.chunks_exact(2)
-                    .map(|c| {
-                        let bits = u16::from_le_bytes([c[0], c[1]]);
-                        f32::from_bits((bits as u32) << 16)
-                    })
-                    .collect()
-            };
-            let max = logit_vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            let min = logit_vals.iter().cloned().fold(f32::INFINITY, f32::min);
-            let mut idx: Vec<usize> = (0..logit_vals.len()).collect();
-            idx.sort_by(|&a, &b| {
-                logit_vals[b]
-                    .partial_cmp(&logit_vals[a])
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            let top5: Vec<(usize, f32)> = idx.iter().take(5).map(|&i| (i, logit_vals[i])).collect();
-            tracing::warn!(
-                "DIAG decode logits: max={max:.4} min={min:.4} prev_token={token} top5={top5:?}",
-            );
-        }
-
-        if use_graphs {
-            let graph = self.gpu.end_capture(stream)?;
-            if graph.0 != 0 {
-                tracing::info!(
-                    "CUDA graph captured successfully for slot={} (handle={:?})",
-                    seq.slot_idx,
-                    graph.0
-                );
-                if let Some(ref mut cache) = graph_cache {
-                    cache.insert(seq.slot_idx, graph);
-                }
-                self.gpu.launch_graph(graph, stream)?;
-            } else {
-                tracing::warn!("CUDA graph capture returned null handle — running eagerly");
-            }
-            // If graph.0 == 0 (mock): operations already executed during capture
-        }
-
-        seq.tokens.push(token);
-        seq.seq_len += 1;
-
-        Ok(self.decode_logits_ptr())
+        Ok(())
     }
 }

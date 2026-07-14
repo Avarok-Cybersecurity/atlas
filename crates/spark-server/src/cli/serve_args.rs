@@ -282,7 +282,10 @@ pub struct ServeArgs {
     pub master_port: u16,
 
     /// Tool call parser format. Enables OpenAI-compatible tool calling.
-    /// Supported: "hermes" (Qwen3/3.5 JSON format), "qwen3_coder" (Nemotron-H XML format).
+    /// Supported: "hermes" (JSON `<tool_call>`, Qwen3-VL / Qwen3-Next),
+    /// "qwen3_coder" (Qwen3-Coder XML `<function=...>`, Qwen3.5 family +
+    /// Nemotron-H), "qwen3_xml", "gemma4", "mistral", "minimax_xml",
+    /// "bare_json". See the `FromStr for ToolCallFormat` in tool_parser.rs.
     /// When set, tool definitions in requests are injected into the system
     /// prompt and model output is parsed for tool_call tags.
     #[arg(long, value_name = "FORMAT")]

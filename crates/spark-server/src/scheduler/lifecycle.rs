@@ -47,6 +47,14 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
                         logprobs: std::mem::take(&mut a.logprobs_data),
                         reasoning_tokens: a.thinking_tokens,
                         cached_prompt_tokens: a.cached_prompt_tokens,
+                        prompt_logprobs: std::mem::take(&mut a.seq.prompt_logprobs)
+                            .into_iter()
+                            .map(|p| crate::api::TokenLogprobs {
+                                token_id: p.token_id,
+                                logprob: p.logprob,
+                                top: p.top,
+                            })
+                            .collect(),
                     }))
                     .is_err()
                 {
@@ -203,6 +211,7 @@ pub fn swap_out_sequence(
         think_start_token: a.think_start_token,
         think_ended: a.think_ended,
         think_just_ended: a.think_just_ended,
+        post_think_emitted: a.post_think_emitted,
         think_skip_count: a.think_skip_count,
         require_tool_call: a.require_tool_call,
         tool_request: a.tool_request,
@@ -290,6 +299,8 @@ pub fn resume_swapped_seq(
         think_start_token: s.think_start_token,
         think_ended: s.think_ended,
         think_just_ended: s.think_just_ended,
+        post_think_emitted: s.post_think_emitted,
+        spec_adapt: Default::default(),
         think_skip_count: s.think_skip_count,
         require_tool_call: s.require_tool_call,
         tool_request: s.tool_request,

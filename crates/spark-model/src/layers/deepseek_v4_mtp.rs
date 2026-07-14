@@ -150,7 +150,9 @@ impl DeepseekV4MtpHead {
             lm_head,
             mtp_vocab_size,
             kv_cache: Mutex::new(kv_cache),
-            rms_norm_k: gpu.kernel("norm", "rms_norm")?,
+            // V4 ships HF-vanilla norm weights (enorm/hnorm/norm are loaded
+            // exactly) — the offset-from-1 kernel would apply `1 + w`.
+            rms_norm_k: gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla")?,
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             hc_expand_k: gpu.kernel("hyper_connection", "hc_expand")?,

@@ -126,7 +126,36 @@ impl MoeLayer {
         }
         if max_m_tiles > 0 {
             if let (Some(gp), Some(up)) = (&self.gate_ptrs_t, &self.up_ptrs_t) {
-                if grouped_cutlass_gate_up_enabled()
+                if self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Mxfp4E8m0 {
+                    // ── ARM-2 Phase-K: native-MXFP4 (E8M0) fused gate_up ──
+                    // Leading branch so E8M0 routed experts NEVER reach the
+                    // NVFP4-only cutlass/fp4/m128 sub-paths below (structurally
+                    // off for the V4 serve, but the branch makes it provable).
+                    assert!(
+                        self.moe_fused_gate_up_t_k64_e8m0.0 != 0,
+                        "ARM-2: routed experts Mxfp4E8m0 but fused_gate_up_t_k64_e8m0 unresolved"
+                    );
+                    ops::moe_w4a16_fused_gate_up_k64_n128(
+                        ctx.gpu,
+                        self.moe_fused_gate_up_t_k64_e8m0,
+                        expert_input,
+                        gp.packed_ptrs,
+                        gp.scale_ptrs,
+                        gp.scale2_vals,
+                        up.packed_ptrs,
+                        up.scale_ptrs,
+                        up.scale2_vals,
+                        expert_gate_out,
+                        expert_up_out,
+                        expert_offsets,
+                        sorted_token_ids,
+                        num_experts,
+                        inter,
+                        h,
+                        max_m_tiles,
+                        stream,
+                    )?;
+                } else if grouped_cutlass_gate_up_enabled()
                     && self.gate_sfb_cutlass.is_some()
                     && self.up_sfb_cutlass.is_some()
                 {
@@ -243,6 +272,13 @@ impl MoeLayer {
                     }
                 }
             } else {
+                // ARM-2 Phase-K straggler net: V4 native builds gate_ptrs_t, so
+                // E8M0 never reaches this non-transposed fallback. If it does,
+                // panic (a real finding) rather than run NVFP4-on-E8M0 garbage.
+                self.experts_scale_kind.expect(
+                    crate::weight_map::WeightQuantFormat::Nvfp4,
+                    "prefill non-transposed gate_up fallback (no E8M0 variant wired)",
+                );
                 let (gp, up) = (&self.gate_ptrs, &self.up_ptrs);
                 ops::moe_w4a16_grouped_gemm_ptrtable(
                     ctx.gpu,
@@ -299,7 +335,30 @@ impl MoeLayer {
             // FP8/w4a16 down kernels, so unpermute downstream is unchanged.
             // Compounds with the FP4 gate_up path to run the whole FFN at FP4.
             if let Some(dp) = &self.down_ptrs_t {
-                if grouped_cutlass_gate_up_enabled()
+                if self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Mxfp4E8m0 {
+                    // ── ARM-2 Phase-K: native-MXFP4 (E8M0) grouped down ──
+                    // Leading branch (bypasses NVFP4-only cutlass/fp4/fp8_down).
+                    assert!(
+                        self.moe_grouped_gemm_t_k64_e8m0.0 != 0,
+                        "ARM-2: routed experts Mxfp4E8m0 but grouped_gemm_t_k64_e8m0 unresolved"
+                    );
+                    ops::moe_w4a16_grouped_gemm_ptrtable_n128(
+                        ctx.gpu,
+                        self.moe_grouped_gemm_t_k64_e8m0,
+                        expert_gate_out,
+                        dp.packed_ptrs,
+                        dp.scale_ptrs,
+                        dp.scale2_vals,
+                        expert_down_out,
+                        expert_offsets,
+                        DevicePtr(0),
+                        num_experts,
+                        h,
+                        inter,
+                        max_m_tiles,
+                        stream,
+                    )?;
+                } else if grouped_cutlass_gate_up_enabled()
                     && self.down_sfb_cutlass.is_some()
                     && std::env::var("ATLAS_HOLO_MOE_GROUPED_DOWN").ok().as_deref() == Some("1")
                 {
@@ -394,6 +453,11 @@ impl MoeLayer {
                     }
                 }
             } else {
+                // ARM-2 Phase-K straggler net (see gate_up fallback above).
+                self.experts_scale_kind.expect(
+                    crate::weight_map::WeightQuantFormat::Nvfp4,
+                    "prefill non-transposed down fallback (no E8M0 variant wired)",
+                );
                 ops::moe_w4a16_grouped_gemm_ptrtable(
                     ctx.gpu,
                     self.moe_grouped_gemm,

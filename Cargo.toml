@@ -8,6 +8,8 @@ members = [
     "crates/atlas-embed",
     "crates/atlas-reduce",
     "crates/atlas-kernels",
+    "crates/atlas-tier",
+    "crates/atlas-rdma",
     "crates/spark-runtime",
     "crates/spark-comm",
     "crates/spark-model",
@@ -85,6 +87,8 @@ atlas-activation = { path = "crates/atlas-activation" }
 atlas-embed = { path = "crates/atlas-embed" }
 atlas-reduce = { path = "crates/atlas-reduce" }
 atlas-kernels = { path = "crates/atlas-kernels" }
+atlas-tier = { path = "crates/atlas-tier" }
+atlas-rdma = { path = "crates/atlas-rdma" }
 
 # W7: the `[patch.crates-io] xgrammar-rs` entry was removed — Atlas now
 # depends on the pure-Rust `crates/xgrammar` crate directly (no FFI,

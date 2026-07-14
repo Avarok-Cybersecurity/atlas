@@ -76,7 +76,7 @@ The full list:
 | `turbo4` | 0.5 | 4-bit WHT + Lloyd-Max — ~2× lower MSE than NVFP4 at same bit rate |
 | `turbo8` | 1 | WHT + FP8 — outlier-resistant FP8 |
 
-The Turbo family is Atlas-specific: Walsh-Hadamard rotates out the outlier structure typical of transformer K/V activations before quantizing with an optimally-placed codebook. For the same bit count, turbo4 gives measurably lower per-token error than NVFP4 on models with large RMSNorm weights. It is purely additive — you opt in via `--kv-cache-dtype turbo4`; the NVFP4 path is unchanged. See `docs/design/turboquant-nightjob-2026-03-31.md`.
+The Turbo family is Atlas-specific: Walsh-Hadamard rotates out the outlier structure typical of transformer K/V activations before quantizing with an optimally-placed codebook. For the same bit count, turbo4 gives measurably lower per-token error than NVFP4 on models with large RMSNorm weights. It is purely additive — you opt in via `--kv-cache-dtype turbo4`; the NVFP4 path is unchanged. See `docs/turboquant-plus.md`.
 
 ## Files to read
 
@@ -84,4 +84,4 @@ The Turbo family is Atlas-specific: Walsh-Hadamard rotates out the outlier struc
 - `kernels/gb10/<model>/<quant>/paged_decode_attn_fp8.cu` — native FP8 KV attention.
 - `crates/atlas-quant/src/fp8.rs` — `Fp8Format`, scale dtypes, LUT.
 - `crates/spark-runtime/src/kv_cache.rs` — `KvCacheDtype::Fp8` sizing + calibration plumbing.
-- `docs/design/fp8-native-design.md` — the authoritative design note.
+- `docs/adr/0004-nvfp4-fp8-quantization.md` — the authoritative quantization decision record.

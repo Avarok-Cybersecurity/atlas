@@ -26,7 +26,7 @@ impl MoeLayer {
         // per-token BF16 decode kernels). Otherwise fall back to the per-token
         // BF16 batched path (SSOT: reuses the decode BF16 kernels via
         // forward_batched), which produces the same moe_output()[2,H].
-        let is_ep = ctx.comm.is_some_and(|c| c.world_size() > 1);
+        let is_ep = ctx.comm.is_some() && ctx.config.ep_world_size > 1;
         let use_bf16_batch2 = self.bf16_gate_weight_ptrs.is_some()
             && self.moe_expert_gate_up_shared_bf16_batch2_k.0 != 0
             && self.moe_expert_silu_down_shared_bf16_batch2_k.0 != 0
@@ -426,7 +426,7 @@ impl MoeLayer {
 
         // EP all-reduce: sum partial outputs for 2 tokens
         if let Some(comm) = ctx.comm
-            && comm.world_size() > 1
+            && ctx.config.ep_world_size > 1
         {
             if ctx.graph_capture {
                 comm.all_reduce(output.0, 2 * h as usize * 2)?;

@@ -440,6 +440,14 @@ impl Qwen3SsmLayer {
             Self::debug_bf16(ctx.gpu, "out-proj", out, 4);
         }
 
+        // GDN HeadParallel: `out` is this rank's PARTIAL row-parallel out_proj
+        // over its local value heads. Reduce across TP ranks to the complete
+        // SSM output before the caller's residual add. Single-token path
+        // (dense_gemv / w8a16_gemv / w4a16_gemv above → one position), so
+        // num_tokens = 1. No-op at tp=1. Covers single-token decode
+        // (trait_decode) and per-sequence multi-seq decode (trait_decode_multi_seq).
+        self.ssm_tp_all_reduce(out, 1, ctx, stream)?;
+
         Ok(out)
     }
 }

@@ -141,6 +141,8 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
             grammar_spec: grammar_spec.clone(),
             seed: req.seed.map(|s| s.wrapping_add(choice_idx as u64)),
             top_logprobs,
+            prompt_logprobs: None,
+            echo: false,
             timeout_at,
             response_tx: tx,
         };

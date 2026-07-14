@@ -75,7 +75,6 @@ The one place where constrained decoding can interact badly with sampling: very 
 ## Files to read
 
 - `vendor/xgrammar-rs/` — the XGrammar Rust bindings.
-- `crates/spark-server/src/grammar.rs` — per-request grammar compilation and mask application.
+- `crates/spark-server/src/grammar/` — per-request grammar compilation and mask application.
 - `crates/spark-server/src/tool_parser.rs` — tool-call format → grammar translation.
-- `docs/design/xgrammar-integration-plan.md`, `xgrammar2-upgrade-plan.md`.
-- `docs/design/tool-calling-gap-analysis.md` — the broader tool-call quality story.
+- `docs/adr/0010-vendor-xgrammar.md` — the decision record behind vendoring XGrammar.

@@ -70,7 +70,7 @@ For 122B, 119B, 229B models, the experts don't fit on one GB10. Split them acros
 - Expert FFN runs locally on the owning rank.
 - Results come back via `all_gather`.
 
-The collective ops go through `spark-comm::CommBackend`; the dispatch kernel `moe_dispatch.cu` handles the local-vs-remote bucketing. See [spark-comm](../crates/spark-comm.md) and [Multi-GPU & EP=2](../operations/multi-gpu.md).
+The collective ops go through `spark-comm::CommBackend`; the EP dispatch logic in `crates/spark-model/src/layers/moe/forward_ep.rs` handles the local-vs-remote bucketing. See [spark-comm](../crates/spark-comm.md) and [Multi-GPU & EP=2](../operations/multi-gpu.md).
 
 ## Routing edge cases
 
@@ -96,7 +96,7 @@ The end result on a 256-expert MoE at batch=80: Atlas at 8.43 ms vs PyTorch at 3
 - `kernels/gb10/<model>/<quant>/moe_prefill.cu` — grouped-GEMM prefill.
 - `kernels/gb10/<model>/<quant>/moe_expert_relu2_down_shared.cu` — token-level decode MoE.
 - `kernels/gb10/<model>/<quant>/moe_shared_expert_fused_fp8.cu` — fused shared-expert path.
-- `kernels/gb10/minimax-m2-229b/nvfp4/moe_dispatch.cu` — EP=2 token dispatch.
-- `crates/spark-model/src/layers/moe.rs`, `moe_prefill.rs`, `moe_shared.rs`, `minimax_moe.rs` — Rust side.
-- `docs/design/ep2-token-dispatch-design.md` — EP=2 design note.
-- `docs/design/tool-calling-gap-analysis.md` — not directly MoE but covers the MoE+tool-calling interaction.
+- `kernels/gb10/minimax-m2-229b/nvfp4/moe_w4a16_grouped_gemm.cu` — routed grouped-GEMM kernel.
+- `crates/spark-model/src/layers/moe/` (`forward.rs`, `forward_prefill.rs`, `forward_ep.rs`, …) — Rust side; `forward_ep.rs` holds the EP=2 token dispatch.
+- `docs/adr/0007-tp-ep-composition.md` — TP/EP composition design record.
+- `docs/adr/0011-ep-batched-decode-optimization.md` — EP batched-decode optimization.

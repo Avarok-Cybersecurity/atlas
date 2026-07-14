@@ -108,7 +108,7 @@ The full kernel numbers table:
 
 ## Concurrency sweep
 
-`scripts/bench-concurrency.sh` drives N parallel streams against one server. Reveals the scheduler + KV allocator under load. Typical pattern on Qwen3.5-35B:
+`scripts/run_conc_benchmark.sh` drives N parallel streams against one server. Reveals the scheduler + KV allocator under load. Typical pattern on Qwen3.5-35B:
 
 | Concurrency | p50 tok/s | p95 latency (TTFT ms) |
 |---:|---:|---:|
@@ -126,9 +126,9 @@ Run a request, note the TTFT. Run the same request again — with `--enable-pref
 
 ## Where raw results live
 
-- **Pinned snapshots** (tracked): `bench/*.json`, `CONCURRENCY_SWEEP_RESULTS.md`. These feed the book and the README.
+- **Pinned snapshots** (tracked): result files under `bench/`. These feed the book and the README.
 - **Ephemeral Criterion runs** (gitignored): `target/criterion/`.
-- **Historical benchmark journeys**: `docs/history/` — each major release has a benchmark retrospective (`alpha-2-benches.md`, `Qwen3.5-35B-A3B-NVFP4-JOURNEY.md`, etc.).
+- **Historical benchmark journeys**: `docs/ATLAS_SPARK_JOURNEY.md` — the benchmark retrospective across the Spark line.
 
 ## Apples-to-apples notes
 
@@ -146,6 +146,6 @@ The headline "3.6× faster than NVIDIA's 36 tok/s" is apples-to-apples against N
 - `crates/atlas-spark-bench/src/lib.rs` — E2E harness.
 - Each primitive crate's `benches/*.rs` — per-kernel micro.
 - `bench/*.json` — pinned result snapshots.
-- `scripts/sweep_all_models.sh`, `bench-concurrency.sh` — automation.
-- `docs/history/` — benchmark journeys and retrospectives.
+- `scripts/sweep_all_models.sh`, `scripts/run_conc_benchmark.sh` — automation.
+- `docs/ATLAS_SPARK_JOURNEY.md` — benchmark journey and retrospective.
 - README "Benchmark Results" section — the authoritative long-form table.

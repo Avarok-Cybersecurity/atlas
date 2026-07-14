@@ -67,6 +67,26 @@ impl WeightDtype {
             other => bail!("Unsupported safetensors dtype: {other:?}"),
         }
     }
+
+    /// Map a raw safetensors header dtype STRING (as it appears in the JSON
+    /// header, e.g. `"BF16"`, `"F8_E4M3"`) to a [`WeightDtype`], factored out
+    /// so the RDMA weight loader (which receives dtype as a wire string in the
+    /// peer manifest, not a `safetensors::Dtype`) resolves it identically to
+    /// the disk loaders — byte-identity depends on the two ends agreeing.
+    pub fn from_safetensors_str(s: &str) -> Result<Self> {
+        Ok(match s {
+            "F32" => Self::FP32,
+            "BF16" => Self::BF16,
+            "U8" => Self::UInt8,
+            // I8 is a 1-byte raw container (packed NVFP4); signedness is
+            // irrelevant, treat as raw bytes exactly like the disk path.
+            "I8" => Self::UInt8,
+            "F8_E4M3" => Self::FP8E4M3,
+            "F8_E8M0" => Self::FP8E8M0,
+            "I64" => Self::Int64,
+            other => bail!("Unsupported safetensors dtype '{other}'"),
+        })
+    }
 }
 
 /// A weight tensor on the GPU.
@@ -99,9 +119,10 @@ impl WeightStore {
         }
     }
 
-    /// Crate-internal: wrap a pre-built map. Used by alternate loaders
-    /// (e.g. `fast_weights::FastSafetensorsLoader`).
-    pub(crate) fn from_map(weights: HashMap<String, WeightTensor>) -> Self {
+    /// Wrap a pre-built map. Used by alternate loaders (e.g.
+    /// `fast_weights::FastSafetensorsLoader`, and the RDMA weight loader in
+    /// `spark-storage`, which lives in a different crate and so needs this pub).
+    pub fn from_map(weights: HashMap<String, WeightTensor>) -> Self {
         Self { weights }
     }
 
@@ -224,7 +245,7 @@ impl SafetensorsLoader {
 }
 
 /// Parse expert index from tensor name (e.g. "model.layers.3.mlp.experts.42.gate_proj.weight" → 42).
-pub(crate) fn parse_expert_index(name: &str) -> Option<usize> {
+pub fn parse_expert_index(name: &str) -> Option<usize> {
     let parts: Vec<&str> = name.split('.').collect();
     for (i, part) in parts.iter().enumerate() {
         if *part == "experts" && i + 1 < parts.len() {
@@ -237,3 +258,33 @@ pub(crate) fn parse_expert_index(name: &str) -> Option<usize> {
 mod loader;
 pub mod mlx_int8;
 pub(crate) use loader::{check_oom_guard, estimate_has_fp8, estimate_load_bytes};
+
+#[cfg(test)]
+mod from_str_tests {
+    use super::WeightDtype;
+
+    #[test]
+    fn from_safetensors_str_matches_disk_mapping() {
+        // The RDMA weight peer publishes these raw header strings; the client
+        // must resolve them to the exact WeightDtype the disk loaders use, else
+        // byte_size/shape diverge and logits break. Locks the closed mapping.
+        use WeightDtype::*;
+        for (s, want) in [
+            ("F32", FP32),
+            ("BF16", BF16),
+            ("U8", UInt8),
+            ("I8", UInt8), // packed NVFP4 raw container
+            ("F8_E4M3", FP8E4M3),
+            ("F8_E8M0", FP8E8M0),
+            ("I64", Int64),
+        ] {
+            assert_eq!(
+                WeightDtype::from_safetensors_str(s).unwrap(),
+                want,
+                "dtype {s}"
+            );
+        }
+        assert!(WeightDtype::from_safetensors_str("F16").is_err());
+        assert!(WeightDtype::from_safetensors_str("bogus").is_err());
+    }
+}

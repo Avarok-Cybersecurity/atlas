@@ -153,7 +153,7 @@ impl MoeLayer {
             stream,
         )?;
 
-        let is_ep = ctx.comm.is_some_and(|c| c.world_size() > 1);
+        let is_ep = ctx.comm.is_some() && ctx.config.ep_world_size > 1;
         let shared_for_blend = if is_ep {
             ctx.gpu
                 .memset_async(expert_gate_out, 0, num_tokens * h as usize * 2, stream)?;
@@ -178,7 +178,7 @@ impl MoeLayer {
         )?;
 
         if let Some(comm) = ctx.comm
-            && comm.world_size() > 1
+            && ctx.config.ep_world_size > 1
         {
             if ctx.graph_capture {
                 comm.all_reduce(output.0, num_tokens * h as usize * 2)?;

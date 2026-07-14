@@ -50,7 +50,7 @@ Criterion stores results under `target/criterion/`. The repo's `bench/` director
 ## Scripts that drive it
 
 - `scripts/sweep_all_models.sh` — boots each model in turn, runs the short-prompt bench, and writes the `README.md` throughput table.
-- `scripts/bench-concurrency.sh` — runs the N-stream sweep.
+- `scripts/run_conc_benchmark.sh` — runs the N-stream sweep (`bench/bench_concurrency.py` is the underlying driver).
 - `scripts/test-minimax-ep2.sh` — doubles as perf + correctness for EP=2 MiniMax.
 
 All three live in the top-level `scripts/` directory, not in the crate.
@@ -73,7 +73,7 @@ Every bench starts with this. Failing fast if the server isn't up beats a confus
 
 - **Hand-vetted snapshots:** `bench/*.json` (gitignored at the file level but some stable ones are tracked). These feed the [Benchmarks](../operations/benchmarks.md) chapter.
 - **Criterion outputs:** `target/criterion/` (gitignored).
-- **Concurrency-sweep logs:** `CONCURRENCY_SWEEP_RESULTS.md` in the repo root (tracked, updated manually when a significant run completes).
+- **Concurrency-sweep logs:** pinned result files under `bench/` (tracked, updated manually when a significant run completes).
 
 ## What this crate is not
 

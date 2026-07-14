@@ -78,6 +78,8 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
     // is stripped. This handles MTP bootstrap/verify paths.
     if !a.inside_thinking && a.think_start_token == Some(tok) {
         a.inside_thinking = true;
+        // Re-entering thinking: re-arm the spec-resume guard for the next exit.
+        a.post_think_emitted = 0;
         a.think_ended = false;
         a.think_skip_count = 0;
         a.thinking_budget = Some(a.spontaneous_think_budget);
@@ -174,6 +176,15 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
     }
 
     a.output_tokens.push(tok);
+
+    // Spec-resume guard bookkeeping: count tokens emitted after `</think>`.
+    // The `</think>` token itself is not counted (think_ended is still false
+    // when it arrives; the transition below sets it). For requests that never
+    // think, think_ended starts true, so the guard delays spec by the same N
+    // from the response start.
+    if a.think_ended && !a.inside_thinking {
+        a.post_think_emitted += 1;
+    }
 
     // Thinking tokens are "free" (don't decrement remaining).
     // Detect </think> transition. Track thinking token count for budget enforcement.

@@ -57,6 +57,9 @@ impl Qwen3SsmLayer {
         // that on co-dispatched requests while single-stream (which already used
         // this helper) ran NVFP4. Routing through it equalises the two paths.
         self.prefill_out_proj_dispatch(ctx, normed_out_buf, out_proj_buf, k, h, value_dim, stream)?;
+        // GDN HeadParallel: reduce the row-parallel partial out_proj across TP
+        // ranks (num_tokens × h BF16) before the residual add. No-op at tp=1.
+        self.ssm_tp_all_reduce(out_proj_buf, num_tokens, ctx, stream)?;
 
         // ── 11. Batched residual + post-norm + MoE ──
         ops::residual_add_rms_norm(

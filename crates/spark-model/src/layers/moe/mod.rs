@@ -11,9 +11,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 use crate::layer::ForwardContext;
 use crate::layers::ops;
-use crate::weight_map::{
-    DenseWeight, ExpertWeight, Fp8ExpertWeight, Fp8Weight, MoeWeights, QuantizedWeight,
-};
+use crate::weight_map::{DenseWeight, Fp8ExpertWeight, MoeWeights, QuantizedWeight};
 
 /// Device-side pointer table for one projection across all experts.
 ///
@@ -68,6 +66,23 @@ pub(crate) enum ExpertPtrSet {
 #[allow(dead_code)]
 pub struct MoeLayer {
     pub weights: MoeWeights,
+    /// Quant format of the ROUTED experts as landed in GPU memory. `Nvfp4`
+    /// (default) = packed E2M1 + FP8-E4M3 per-16 block scales + f32 per-tensor
+    /// global. Set to `Mxfp4E8m0` by the DeepSeek-V4 native-MXFP4 loader
+    /// (transcode-free: E8M0 per-32 scales, no global) so the Phase-K E8M0
+    /// GEMM variants dispatch on it instead of the NVFP4 kernels. Consumed at
+    /// the grouped/decode GEMM call sites (assert via `WeightQuantFormat::expect`).
+    // Written by the loader (Phase L); READ at the GEMM dispatch sites in Phase K.
+    // Until Phase K wires the read, `deny(warnings)` would flag it never-read.
+    #[allow(dead_code)]
+    pub(crate) experts_scale_kind: crate::weight_map::WeightQuantFormat,
+    /// Quant format of the SHARED expert (ARM-2 Phase-K RIDER A1). The native
+    /// V4 ckpt is heterogeneous: routed experts `Mxfp4E8m0` but the shared
+    /// expert is FP8→`Nvfp4`. Keyed off the weight tag (not `is_shared`
+    /// positionality) so the dual-format decode kernel's `expect` net fires if
+    /// a future ckpt ships a different shared format. Default `Nvfp4`.
+    #[allow(dead_code)]
+    pub(crate) shared_experts_scale_kind: crate::weight_map::WeightQuantFormat,
     // NVFP4-quantized gate weight (quarters bandwidth for routing)
     gate_nvfp4: Option<QuantizedWeight>,
     /// Pre-expert norm: applied to input AFTER routing but BEFORE expert dispatch.
@@ -161,6 +176,10 @@ pub struct MoeLayer {
     // the weight loader produces transposed-only pointer tables.
     moe_expert_gate_up_shared_t_k: KernelHandle,
     moe_expert_silu_down_shared_t_k: KernelHandle,
+    // ARM-2 Phase-K: native-MXFP4 (E8M0 routed / NVFP4 shared) dual-format
+    // decode variants. KernelHandle(0) on models that don't ship them.
+    moe_expert_gate_up_shared_t_e8m0_k: KernelHandle,
+    moe_expert_silu_down_shared_t_e8m0_k: KernelHandle,
     // ── sqrtsoftplus routing (DeepSeek-V4) ──
     moe_topk_sqrtsoftplus_k: KernelHandle,
     moe_topk_sqrtsoftplus_batched_k: KernelHandle,
@@ -220,6 +239,14 @@ pub struct MoeLayer {
     moe_grouped_gemm_t_k64: KernelHandle,
     moe_fused_gate_up_t: KernelHandle,
     moe_fused_gate_up_t_k64: KernelHandle,
+    // ARM-2 Phase-K: native-MXFP4 (E8M0 per-32) prefill variants of the W4A16
+    // routed-expert GEMMs. KernelHandle(0) on models that don't ship them
+    // (only the deepseek-v4-flash target compiles the `_e8m0` entries).
+    moe_grouped_gemm_e8m0: KernelHandle,
+    moe_grouped_gemm_t_e8m0: KernelHandle,
+    moe_grouped_gemm_t_k64_e8m0: KernelHandle,
+    moe_fused_gate_up_t_e8m0: KernelHandle,
+    moe_fused_gate_up_t_k64_e8m0: KernelHandle,
     /// M=128 variant of the K64 fused gate+up kernel (Block D #3, Avarok
     /// tile-shape rewrite). Loaded with `try_kernel` — falls back to
     /// `KernelHandle(0)` on models that don't ship the kernel; dispatch
@@ -346,6 +373,33 @@ pub struct MoeLayer {
     pub is_dflash_capture_layer: bool,
 }
 
+impl MoeLayer {
+    /// ARM-2 Phase-K routed-expert kernel-handle select. Returns the E8M0
+    /// variant when the routed experts are native MXFP4 (`Mxfp4E8m0`), else the
+    /// NVFP4 handle. Panics if E8M0 is selected but the `_e8m0` kernel is
+    /// absent from this target (`try_kernel` gave 0) — that means a native
+    /// checkpoint reached a build that never compiled the variant, which must
+    /// be loud, not silent NVFP4-on-E8M0 garbage (the straggler net).
+    #[inline]
+    fn e8m0_or(
+        &self,
+        nvfp4: spark_runtime::gpu::KernelHandle,
+        e8m0: spark_runtime::gpu::KernelHandle,
+        site: &str,
+    ) -> spark_runtime::gpu::KernelHandle {
+        if self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Mxfp4E8m0 {
+            assert!(
+                e8m0.0 != 0,
+                "ARM-2 Phase-K: routed experts tagged Mxfp4E8m0 at {site}, but the \
+                 _e8m0 kernel handle is unresolved (not compiled into this target)."
+            );
+            e8m0
+        } else {
+            nvfp4
+        }
+    }
+}
+
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod dump;
 mod forward;
@@ -367,124 +421,5 @@ mod helpers_c;
 mod init;
 #[cfg(test)]
 mod mod_tests;
-
-/// Build a device-side pointer table from pre-transposed QuantizedWeight vec.
-fn build_ptr_table_from_qw(
-    weights: &[QuantizedWeight],
-    gpu: &dyn GpuBackend,
-) -> Result<ExpertPtrTable> {
-    let n = weights.len();
-    let packed_bytes: Vec<u8> = weights
-        .iter()
-        .flat_map(|w| w.weight.0.to_le_bytes())
-        .collect();
-    let scale_bytes: Vec<u8> = weights
-        .iter()
-        .flat_map(|w| w.weight_scale.0.to_le_bytes())
-        .collect();
-    let scale2_bytes: Vec<u8> = weights
-        .iter()
-        .flat_map(|w| w.weight_scale_2.to_le_bytes())
-        .collect();
-
-    let packed_ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&packed_bytes, packed_ptrs)?;
-    let scale_ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&scale_bytes, scale_ptrs)?;
-    let scale2_vals = gpu.alloc(n * 4)?;
-    gpu.copy_h2d(&scale2_bytes, scale2_vals)?;
-
-    Ok(ExpertPtrTable {
-        packed_ptrs,
-        scale_ptrs,
-        scale2_vals,
-    })
-}
-
-/// Build a device-side pointer table for one projection across all experts.
-fn build_ptr_table(
-    experts: &[ExpertWeight],
-    proj: impl Fn(&ExpertWeight) -> &crate::weight_map::QuantizedWeight,
-    gpu: &dyn GpuBackend,
-) -> Result<ExpertPtrTable> {
-    let n = experts.len();
-
-    // Build host-side arrays
-    let packed_bytes: Vec<u8> = experts
-        .iter()
-        .flat_map(|e| proj(e).weight.0.to_le_bytes())
-        .collect();
-    let scale_bytes: Vec<u8> = experts
-        .iter()
-        .flat_map(|e| proj(e).weight_scale.0.to_le_bytes())
-        .collect();
-    let scale2_bytes: Vec<u8> = experts
-        .iter()
-        .flat_map(|e| proj(e).weight_scale_2.to_le_bytes())
-        .collect();
-
-    // Upload to device
-    let packed_ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&packed_bytes, packed_ptrs)?;
-
-    let scale_ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&scale_bytes, scale_ptrs)?;
-
-    let scale2_vals = gpu.alloc(n * 4)?;
-    gpu.copy_h2d(&scale2_bytes, scale2_vals)?;
-
-    Ok(ExpertPtrTable {
-        packed_ptrs,
-        scale_ptrs,
-        scale2_vals,
-    })
-}
-
-/// Build a device-side FP8 pointer table for one projection across all experts.
-///
-/// FP8 experts store 2 arrays (weight + block_scale) per projection,
-/// vs NVFP4's 3 (packed + scale + scale2).
-/// Build a device-side BF16 pointer table for one projection across all
-/// experts. Used by the FP8-dequant-to-BF16 MoE path; one device pointer
-/// per expert pointing at that expert's `[N, K]` BF16 weight buffer.
-pub(crate) fn build_bf16_ptr_table(
-    experts: &[DenseWeight],
-    gpu: &dyn GpuBackend,
-) -> Result<DevicePtr> {
-    let n = experts.len();
-    let weight_bytes: Vec<u8> = experts
-        .iter()
-        .flat_map(|e| e.weight.0.to_le_bytes())
-        .collect();
-    let ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&weight_bytes, ptrs)?;
-    Ok(ptrs)
-}
-
-fn build_fp8_ptr_table(
-    experts: &[Fp8ExpertWeight],
-    proj: impl Fn(&Fp8ExpertWeight) -> &Fp8Weight,
-    gpu: &dyn GpuBackend,
-) -> Result<Fp8ExpertPtrTable> {
-    let n = experts.len();
-
-    let weight_bytes: Vec<u8> = experts
-        .iter()
-        .flat_map(|e| proj(e).weight.0.to_le_bytes())
-        .collect();
-    let scale_bytes: Vec<u8> = experts
-        .iter()
-        .flat_map(|e| proj(e).row_scale.0.to_le_bytes())
-        .collect();
-
-    let weight_ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&weight_bytes, weight_ptrs)?;
-
-    let scale_ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&scale_bytes, scale_ptrs)?;
-
-    Ok(Fp8ExpertPtrTable {
-        weight_ptrs,
-        scale_ptrs,
-    })
-}
+mod ptr_table_build;
+pub(crate) use ptr_table_build::*;

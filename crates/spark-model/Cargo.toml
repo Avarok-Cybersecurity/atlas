@@ -36,6 +36,7 @@ gpu-examples = []
 [dependencies]
 atlas-core = { workspace = true }
 atlas-kernels = { workspace = true }
+atlas-tier = { workspace = true }
 # `default-features = false` so the metal feature can opt out of
 # spark-runtime's `cuda` default — otherwise the dep line silently
 # re-enables cudarc on every build.
@@ -82,6 +83,8 @@ workspace = true
 
 # GPU kernel microtest examples — gated on the non-default `gpu-examples`
 # feature so no-GPU CI skips building them (they link CUDA driver symbols).
+# NOTE: the ARM-2 Leg-2 native-MXFP4 (E8M0) numeric gate lives as a real
+# `#[ignore]`d integration test — see crates/spark-model/tests/arm2_leg2_*.rs.
 [[example]]
 name = "gdn_cdh_vblock_microtest"
 required-features = ["cuda", "gpu-examples"]
@@ -152,6 +155,18 @@ required-features = ["cuda", "gpu-examples"]
 
 [[example]]
 name = "gdn_strided_norm_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_conv_kn_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "w4a16_m17_bench"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "w4a16_parity_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]

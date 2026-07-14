@@ -69,6 +69,7 @@ impl TransformerModel {
                         snap_id,
                         seq.session_hash,
                         seq.prompt_len,
+                        seq.adapter_id,
                     );
                     if let Some(old) = displaced {
                         self.ssm_snapshots.free(old);
@@ -81,6 +82,7 @@ impl TransformerModel {
                         &seq.disk_block_ids,
                         bs,
                         seq.prompt_len,
+                        seq.adapter_id,
                     )
                 };
                 super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
@@ -130,8 +132,11 @@ impl TransformerModel {
 
         // Release prefix cache refs before freeing blocks.
         // (i.e., blocks not shared with the prefix cache).
-        self.prefix_cache
-            .release(&seq.tokens, self.kv_cache.lock().block_size());
+        self.prefix_cache.release(
+            &seq.tokens,
+            self.kv_cache.lock().block_size(),
+            seq.adapter_id,
+        );
         if !seq.block_table.is_empty() {
             self.kv_cache.lock().free_blocks(&seq.block_table);
             seq.block_table.clear();

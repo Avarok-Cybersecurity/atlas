@@ -53,7 +53,7 @@ export const runCommandRaw =
 // --- hardware acknowledgment (modest banner) ---------------------------------
 export const gifts = {
   line: 'Thank you NVIDIA and AMD.',
-  sub: 'DGX Spark gifted by NVIDIA, Strix Halo gifted by AMD. Both camps handed us silicon and we intend to earn it.'
+  sub: 'DGX Spark gifted by NVIDIA, Strix Halo gifted by AMD. Both camps handed us silicon and we intend to contnue proving to the world the raw power of these machines.'
 };
 
 // --- hero --------------------------------------------------------------------
@@ -223,7 +223,7 @@ export const mission = {
   title: 'Local AI worth having, open to all.',
   body: [
     'AI worth having should run on hardware you own. Prosumer machines like DGX Spark and Strix Halo are the first generation that makes that real, and we build for them first.',
-    'Pure Rust because the whole stack should be inspectable by one person, HTTP to kernel dispatch, no interpreter in the hot path. We develop on machines granted by NVIDIA and AMD. Both camps handed us silicon and we intend to earn it.',
+    'Pure Rust because the whole stack should be inspectable by one person, HTTP to kernel dispatch, no interpreter in the hot path. We develop on machines granted by NVIDIA and AMD. Both camps handed us silicon and we intend to contnue proving to the world the raw power of these machines.',
     'Open to all. The test fleet is the community desks. If a model matters to you, it matters to us.'
   ]
 };

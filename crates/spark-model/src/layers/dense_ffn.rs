@@ -174,6 +174,12 @@ pub struct DenseFfnLayer {
     fp4mmq_gate: std::sync::OnceLock<Fp4MmqWeight>,
     fp4mmq_up: std::sync::OnceLock<Fp4MmqWeight>,
     fp4mmq_down: std::sync::OnceLock<Fp4MmqWeight>,
+    // Small-M (DFlash verify M=17) routing companion to `w4a16_gemm_t_k`
+    // (declared above): deep-K variant. w4a16_m17_bench: `w4a16_gemm_t_k64`
+    // wins deep-K down_proj (554 vs 810us at K=17408); the M64-tile
+    // `w4a16_gemm_t` beats M128 tiles at M<=64 (283 vs 324us on gate/up).
+    // KernelHandle(0) → m128 dispatch.
+    w4a16_gemm_t_k64_k: KernelHandle,
     /// SiLU(gate)*up or GELU(gate)*up depending on activation.
     act_mul: KernelHandle,
     /// BF16 dense MLP weights — when `Some`, all forward paths use the
@@ -291,6 +297,7 @@ impl DenseFfnLayer {
             fp4mmq_gate: std::sync::OnceLock::new(),
             fp4mmq_up: std::sync::OnceLock::new(),
             fp4mmq_down: std::sync::OnceLock::new(),
+            w4a16_gemm_t_k64_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_k64"),
             act_mul,
             bf16_weights: None,
             dense_gemv_bf16_k,
@@ -769,6 +776,89 @@ impl DenseFfnLayer {
             return Ok(output);
         }
 
+        // ATLAS_DECODE_FFN_VIA_GEMM=1: route decode's M=1 FFN projections
+        // through the SAME transposed-weight GEMM kernels the DFlash verify
+        // path uses (`w4a16_prefill_gemm` → w4a16_gemm_t / _t_k64), instead
+        // of the dedicated GEMV kernels. Purpose: bit-identical FFN numerics
+        // between serial decode and batched verify — the batch-K vs batch-1
+        // divergence #218's bisect isolated ("FFN non-associativity") and the
+        // root cause of the T=0 spec trajectory flips (2026-07-07 session).
+        // Split SiLU staging already matches prefill SiLU numerics (swiglu
+        // clamp), so with this arm the whole FFN block is kernel-identical to
+        // a verify row. Requires the *_proj_t transposed copies (the NVFP4-MMQ
+        // prefill arm FREES them — disable it if the warn below fires).
+        fn decode_ffn_via_gemm() -> bool {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| {
+                std::env::var("ATLAS_DECODE_FFN_VIA_GEMM").ok().as_deref() == Some("1")
+            })
+        }
+        if decode_ffn_via_gemm() && self.activation == FfnActivation::SiLU && self.act_mul.0 != 0 {
+            let wt_alive =
+                |w: &Option<QuantizedWeight>| w.as_ref().is_some_and(|w| !w.weight.is_null());
+            if wt_alive(&self.weights.gate_proj_t) && wt_alive(&self.weights.up_proj_t) {
+                static LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+                LOGGED.get_or_init(|| {
+                    tracing::info!(
+                        "decode FFN via verify GEMM path (ATLAS_DECODE_FFN_VIA_GEMM=1): \
+                         gate/up/down through w4a16_prefill_gemm at M=1"
+                    );
+                });
+                self.w4a16_prefill_gemm(
+                    ctx,
+                    &self.weights.gate_proj,
+                    self.weights.gate_proj_t.as_ref(),
+                    input,
+                    gate_out,
+                    1,
+                    inter,
+                    h,
+                    stream,
+                )?;
+                self.w4a16_prefill_gemm(
+                    ctx,
+                    &self.weights.up_proj,
+                    self.weights.up_proj_t.as_ref(),
+                    input,
+                    up_out,
+                    1,
+                    inter,
+                    h,
+                    stream,
+                )?;
+                ops::silu_mul(
+                    ctx.gpu,
+                    self.act_mul,
+                    gate_out,
+                    up_out,
+                    gate_out,
+                    inter,
+                    stream,
+                )?;
+                let output = ctx.buffers.moe_output();
+                self.w4a16_prefill_gemm(
+                    ctx,
+                    &self.weights.down_proj,
+                    self.weights.down_proj_t.as_ref(),
+                    gate_out,
+                    output,
+                    1,
+                    h,
+                    inter,
+                    stream,
+                )?;
+                return Ok(output);
+            }
+            static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            WARNED.get_or_init(|| {
+                tracing::warn!(
+                    "ATLAS_DECODE_FFN_VIA_GEMM=1 requested but transposed FFN copies \
+                     are freed/absent (NVFP4-MMQ prefill arm?) — falling back to GEMV; \
+                     the unification experiment is NOT active"
+                );
+            });
+        }
+
         // Fused gate_proj + up_proj: [1, H] → [1, inter] × 2.
         // Single-warp variant (lossless) when ATLAS_DECODE_OPT is on and the
         // _sw kernel is present; otherwise the proven 64-thread kernel.
@@ -986,6 +1076,94 @@ impl DenseFfnLayer {
     }
 
     /// N-token prefill: GEMM for all projections.
+    /// W4A16 prefill/verify GEMM dispatch, routed by (M, K) per
+    /// w4a16_m17_bench measurements on GB10:
+    ///   - M<=64 (DFlash verify M=17): the M64-tile `w4a16_gemm_t` beats the
+    ///     M128-tile kernels (283 vs 324us on gate/up — 87% of an M128 tile
+    ///     is padding at M=17), and `w4a16_gemm_t_k64` wins deep-K down_proj
+    ///     (554 vs 810us at K=17408, where N/128 CTAs can't fill the GPU and
+    ///     the halved K-loop matters).
+    ///   - M>64 (real prefill): v2 (8-warp) > t_m128 (4-warp), unchanged.
+    ///   - No transposed copy: base `w4a16_gemm` (9-12x the bandwidth floor —
+    ///     last resort).
+    ///
+    /// Kill-switch: ATLAS_FFN_SMALLM=0 restores the m128-only dispatch for A/B.
+    #[allow(clippy::too_many_arguments)]
+    fn w4a16_prefill_gemm(
+        &self,
+        ctx: &ForwardContext,
+        w: &QuantizedWeight,
+        wt: Option<&QuantizedWeight>,
+        input: DevicePtr,
+        output: DevicePtr,
+        m: u32,
+        n: u32,
+        k: u32,
+        stream: u64,
+    ) -> Result<()> {
+        fn small_m_enabled() -> bool {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| std::env::var("ATLAS_FFN_SMALLM").ok().as_deref() != Some("0"))
+        }
+        if let Some(wt) = wt {
+            if m <= 64 && k.is_multiple_of(32) && small_m_enabled() {
+                if k >= 8192 && k.is_multiple_of(64) && self.w4a16_gemm_t_k64_k.0 != 0 {
+                    return ops::w4a16_gemm_n128(
+                        ctx.gpu,
+                        self.w4a16_gemm_t_k64_k,
+                        input,
+                        wt,
+                        output,
+                        m,
+                        n,
+                        k,
+                        stream,
+                    );
+                }
+                if self.w4a16_gemm_t_k.0 != 0 {
+                    return ops::w4a16_gemm_n128(
+                        ctx.gpu,
+                        self.w4a16_gemm_t_k,
+                        input,
+                        wt,
+                        output,
+                        m,
+                        n,
+                        k,
+                        stream,
+                    );
+                }
+            }
+            if self.w4a16_gemm_t_m128_v2_k.0 != 0 {
+                return ops::w4a16_gemm_n128_m128_v2(
+                    ctx.gpu,
+                    self.w4a16_gemm_t_m128_v2_k,
+                    input,
+                    wt,
+                    output,
+                    m,
+                    n,
+                    k,
+                    stream,
+                );
+            }
+            if self.w4a16_gemm_t_m128_k.0 != 0 {
+                return ops::w4a16_gemm_n128_m128(
+                    ctx.gpu,
+                    self.w4a16_gemm_t_m128_k,
+                    input,
+                    wt,
+                    output,
+                    m,
+                    n,
+                    k,
+                    stream,
+                );
+            }
+        }
+        ops::w4a16_gemm(ctx.gpu, self.w4a16_gemm, input, w, output, m, n, k, stream)
+    }
+
     pub fn forward_prefill(
         &self,
         input: DevicePtr,
@@ -1389,6 +1567,16 @@ impl DenseFfnLayer {
                         $k,
                         stream,
                     )?,
+                    // Small-M routing (DFlash verify, M<=64): delegate to
+                    // `w4a16_prefill_gemm`, which picks `w4a16_gemm_t` /
+                    // `w4a16_gemm_t_k64` per the w4a16_m17_bench numbers and
+                    // falls back to the same v2/m128 kernels below.
+                    // ATLAS_FFN_SMALLM=0 disables. Sits after the opt-in
+                    // quant arms so explicit MMQ/int8/FP8 experiments keep
+                    // priority.
+                    Some(wt) if m <= 64 => {
+                        self.w4a16_prefill_gemm(ctx, $w, Some(&wt), $in, $out, m, $n, $k, stream)?
+                    }
                     // Prefer v2 (8-warp) > t_m128 (4-warp) > scalar-tile base.
                     Some(wt) if self.w4a16_gemm_t_m128_v2_k.0 != 0 => ops::w4a16_gemm_n128_m128_v2(
                         ctx.gpu,

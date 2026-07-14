@@ -91,7 +91,7 @@ impl Qwen3AttentionLayer {
         }
         ops::rms_norm(
             ctx.gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             q_latent,
             &mla.q_a_norm,
             q_latent,
@@ -156,7 +156,7 @@ impl Qwen3AttentionLayer {
         }
         ops::rms_norm(
             ctx.gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             kv_latent,
             &mla.kv_a_norm,
             kv_latent,

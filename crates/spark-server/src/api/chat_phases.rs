@@ -64,6 +64,18 @@ pub(super) fn validate_input(req: &ChatCompletionRequest) -> Result<(), Response
             None,
         ));
     }
+    // OpenAI spec bounds n to 1-128; an unbounded n would drive both an
+    // attacker-controlled allocation (Vec::with_capacity(n)) and an
+    // unbounded sequential-inference loop in the blocking path. Fail fast
+    // per spec — mirrors the /v1/completions guard.
+    if req.n == 0 || req.n > 128 {
+        return Err(openai_error_response_with_param(
+            StatusCode::BAD_REQUEST,
+            format!("n must be between 1 and 128, got {}", req.n),
+            Some("n"),
+            None,
+        ));
+    }
     if let Some(crate::tool_parser::ToolChoice::Mode(ref s)) = req.tool_choice {
         if !["auto", "none", "required"].contains(&s.as_str()) {
             return Err(openai_error_response(

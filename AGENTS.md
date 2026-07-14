@@ -24,8 +24,8 @@ moving parts:
   attention, reduce, activation, embed).
 - **`crates/atlas-spark-bench/`** — benchmark harness.
 
-Design docs live in `docs/design/`; historical notes in `docs/history/`;
-release notes in `docs/releases/`.
+Architecture decision records live in `docs/adr/`; the benchmark journey in
+`docs/ATLAS_SPARK_JOURNEY.md`; release notes in `docs/releases/`.
 
 ## Ground rules
 
@@ -171,5 +171,5 @@ To ensure high code quality, all agents contributing to Atlas must strictly adhe
 - **Demand Elegance:** For complex fixes, choose the elegant, well-architected solution over a hacky workaround.
 
 See `CONTRIBUTING.md` for coding style and the CLA expectations,
-`SECURITY.md` for disclosure, and `docs/design/` for the authoritative
+`SECURITY.md` for disclosure, and `docs/adr/` for the authoritative
 architecture references.
