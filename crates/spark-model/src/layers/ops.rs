@@ -99,6 +99,8 @@ mod ssm_gdn_batched;
 mod ssm_mamba;
 #[path = "ops/ssm_preproc.rs"]
 mod ssm_preproc;
+#[path = "ops/ssm_ssd.rs"]
+mod ssm_ssd;
 
 pub use activations::*;
 pub use dispatch_helpers::*;
@@ -145,3 +147,4 @@ pub use ssm_gdn_b::*;
 pub use ssm_gdn_batched::*;
 pub use ssm_mamba::*;
 pub use ssm_preproc::*;
+pub use ssm_ssd::*;
