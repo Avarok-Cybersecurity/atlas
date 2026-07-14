@@ -367,14 +367,7 @@ impl NemotronMoeLayer {
             } else {
                 let fc2 = self.weights.fc2_latent_proj.as_ref().unwrap();
                 self.dense_gemm_prefill(
-                    ctx.gpu,
-                    routed_out,
-                    fc2,
-                    fc2_out,
-                    p.n,
-                    p.h as u32,
-                    p.latent,
-                    stream,
+                    ctx.gpu, routed_out, fc2, fc2_out, p.n, p.h as u32, p.latent, stream,
                 )?;
             }
             // output = fc2_out + shared_down_out → p.hidden

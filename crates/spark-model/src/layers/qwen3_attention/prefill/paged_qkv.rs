@@ -96,7 +96,17 @@ impl Qwen3AttentionLayer {
         )?;
 
         let k_contiguous = ctx.buffers.ssm_qkvz();
-        self.prefill_one_proj(Proj::K, normed, k_contiguous, n, nkv * hd, h, a4, ctx, stream)?;
+        self.prefill_one_proj(
+            Proj::K,
+            normed,
+            k_contiguous,
+            n,
+            nkv * hd,
+            h,
+            a4,
+            ctx,
+            stream,
+        )?;
         super::super::op_dump::dump_bf16(
             ctx.gpu,
             k_contiguous,
@@ -108,7 +118,17 @@ impl Qwen3AttentionLayer {
         )?;
 
         let v_contiguous = k_contiguous.offset(num_tokens * kv_dim * bf16);
-        self.prefill_one_proj(Proj::V, normed, v_contiguous, n, nkv * hd, h, a4, ctx, stream)?;
+        self.prefill_one_proj(
+            Proj::V,
+            normed,
+            v_contiguous,
+            n,
+            nkv * hd,
+            h,
+            a4,
+            ctx,
+            stream,
+        )?;
         super::super::op_dump::dump_bf16(
             ctx.gpu,
             v_contiguous,
@@ -162,9 +182,7 @@ impl Qwen3AttentionLayer {
         };
 
         // Native FP4: pre-quantized activations x original NVFP4 weights.
-        if let (Some((a4p, a4sf)), Some(nvfp4)) =
-            (a4, weight_opt.and_then(|w| w.as_nvfp4()))
-        {
+        if let (Some((a4p, a4sf)), Some(nvfp4)) = (a4, weight_opt.and_then(|w| w.as_nvfp4())) {
             let _ = label;
             return ops::w4a4_gemm_mfast(
                 ctx.gpu,

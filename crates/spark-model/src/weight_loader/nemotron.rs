@@ -136,11 +136,9 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                     let prefill_t =
                         !fp8_prefill && std::env::var("ATLAS_NO_SSM_PREFILL_T").is_err();
                     let proj_t = if prefill_t {
-                        let in_t = ssm.in_proj.transpose_for_gemm(
-                            gpu,
-                            config.mamba2_in_proj_size(),
-                            h,
-                        )?;
+                        let in_t =
+                            ssm.in_proj
+                                .transpose_for_gemm(gpu, config.mamba2_in_proj_size(), h)?;
                         let out_t =
                             ssm.out_proj
                                 .transpose_for_gemm(gpu, h, config.mamba2_d_inner())?;

@@ -461,7 +461,7 @@ pub fn mamba2_ssd_scan(
         + 2 * SSD_L * 4;
     KernelLaunch::new(gpu, kernel)
         .grid([num_heads, head_dim / SSD_PT, batch_size])
-        .block([512, 1, 1])   // 16 warps, 2 warp-tasks each (see kernel)
+        .block([512, 1, 1]) // 16 warps, 2 warp-tasks each (see kernel)
         .shared_mem(smem)
         .arg_ptr(h_state)
         .arg_ptr(x)

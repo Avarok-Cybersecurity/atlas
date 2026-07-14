@@ -18,6 +18,7 @@ use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
 use crate::weight_map::{DenseWeight, Fp8Weight, NemotronSsmWeights, QuantizedWeight};
 
+mod prefill;
 mod trait_impl;
 
 #[allow(dead_code)]
