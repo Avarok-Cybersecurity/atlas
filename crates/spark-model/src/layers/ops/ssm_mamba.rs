@@ -450,16 +450,15 @@ pub fn mamba2_ssd_scan(
     y_stride: u32,
     stream: u64,
 ) -> Result<()> {
-    // sH[PT][N+1] f32 | sHb[PT][N] | sB[L][N] | sCM[L][N] | sX[L][PT] | sXt[PT][L] bf16
-    // | sdA[L] f32 | sdt[L] f32
+    // sH[PT][N+1] f32 | double-buffered streaming tiles: sB[2][L][N] |
+    // sCM[2][L][N] | sX[2][L][PT] bf16 | sdA[2][L] + sdt[2][L] f32.
+    // (sHb and sXt were dropped -- derived on the fly; see the kernel.)
     let smem = SSD_PT * (state_size + 1) * 4
-        + SSD_PT * state_size * 2
-        + SSD_L * state_size * 2
-        + SSD_L * state_size * 2
-        + SSD_L * SSD_PT * 2
-        + SSD_PT * SSD_L * 2
-        + SSD_L * 4
-        + SSD_L * 4;
+        + 2 * SSD_L * state_size * 2
+        + 2 * SSD_L * state_size * 2
+        + 2 * SSD_L * SSD_PT * 2
+        + 2 * SSD_L * 4
+        + 2 * SSD_L * 4;
     KernelLaunch::new(gpu, kernel)
         .grid([num_heads, head_dim / SSD_PT, batch_size])
         .block([512, 1, 1])   // 16 warps, 2 warp-tasks each (see kernel)

@@ -176,6 +176,14 @@ extern "C" __global__ void mamba2_ssd_bmm(
     }
 }
 
+__device__ __forceinline__ void ssd_cpa16(void* d, const void* src, bool pred) {
+    unsigned x = __cvta_generic_to_shared(d);
+    int sz = pred ? 16 : 0;   // src-size 0 => 16 bytes of ZERO-FILL
+    asm volatile("cp.async.ca.shared.global [%0],[%1],16,%2;\n" ::"r"(x), "l"(src), "r"(sz));
+}
+__device__ __forceinline__ void ssd_commit() { asm volatile("cp.async.commit_group;"); }
+__device__ __forceinline__ void ssd_wait0() { asm volatile("cp.async.wait_group 0;"); }
+
 // ---------------------------------------------------------------------------
 // K3: fused chunk_state + state_passing + chunk_scan.
 //
@@ -214,15 +222,21 @@ extern "C" __global__ void mamba2_ssd_scan(
 
     const float D_val = D_param[h];
 
+    // Streaming tiles are DOUBLE-BUFFERED: at 78.6 KB the old single-buffer
+    // layout allowed exactly 1 CTA/SM, so the SM sat idle during every serial
+    // per-chunk load (640 of them across a 1k prefill = most of the kernel's
+    // 41 ms). cp.async now prefetches chunk c+1 while c computes. To fit the
+    // doubled tiles under the 99 KB block limit, two derivable tiles were
+    // dropped: sHb (h0 in bf16 -- (a) now converts from the fp32 sH on the
+    // fly) and sXt (the x transpose -- (e) builds its A fragments from sX
+    // with paired 16-bit reads, the same pattern (b) already uses).
     extern __shared__ char smem_raw[];
-    float*         sH  = (float*)smem_raw;                          // [PT][N+1] fp32 (h0)
-    __nv_bfloat16* sHb = (__nv_bfloat16*)(sH + SSD_PT * (N + 1));   // [PT][N]  h0 bf16
-    __nv_bfloat16* sB  = sHb + SSD_PT * N;                          // [L][N]
-    __nv_bfloat16* sCM = sB  + SSD_L * N;                           // [L][N] as C, then [L][L] as M
-    __nv_bfloat16* sX  = sCM + SSD_L * N;                           // [L][PT]
-    __nv_bfloat16* sXt = sX  + SSD_L * SSD_PT;                      // [PT][L]
-    float*         sdA = (float*)(sXt + SSD_PT * SSD_L);            // [L]
-    float*         sdt = sdA + SSD_L;                               // [L]
+    float*         sH   = (float*)smem_raw;                          // [PT][N+1] fp32 (h0)
+    __nv_bfloat16* sBd  = (__nv_bfloat16*)(sH + SSD_PT * (N + 1));   // [2][L][N]
+    __nv_bfloat16* sCMd = sBd + 2 * SSD_L * N;                       // [2][L][N] C, then [L][L] M
+    __nv_bfloat16* sXd  = sCMd + 2 * SSD_L * N;                      // [2][L][PT]
+    float*         sdAd = (float*)(sXd + 2 * SSD_L * SSD_PT);        // [2][L]
+    float*         sdtd = sdAd + 2 * SSD_L;                          // [2][L]
 
     const unsigned int warp = threadIdx.x >> 5;
     const unsigned int lane = threadIdx.x & 31u;
@@ -238,45 +252,54 @@ extern "C" __global__ void mamba2_ssd_scan(
     }
     __syncthreads();
 
-    for (unsigned int c = 0; c < nchunks; c++) {
-        const unsigned long long dbase =
-            (((unsigned long long)b * num_heads + h) * nchunks + c) * SSD_L;
+    // cp.async load of chunk `c` into buffer slot `sl`. 16 B granularity; rows
+    // are 16B-aligned (all strides checked: x/bc strides x2 bytes are multiples
+    // of 16). Tokens past seq_len zero-fill via the src-size-0 form.
+    #define SSD_LOAD(sl, c) do { \
+        const unsigned long long dbase_ = \
+            (((unsigned long long)b * num_heads + h) * nchunks + (c)) * SSD_L; \
+        for (unsigned int i = threadIdx.x; i < SSD_L / 4u; i += blockDim.x) { \
+            ssd_cpa16(&sdAd[(sl) * SSD_L + i * 4u], dA_cs + dbase_ + i * 4u, true); \
+            ssd_cpa16(&sdtd[(sl) * SSD_L + i * 4u], dt_f32 + dbase_ + i * 4u, true); \
+        } \
+        for (unsigned int i = threadIdx.x; i < SSD_L * SSD_PT / 8u; i += blockDim.x) { \
+            const unsigned int t = i / (SSD_PT / 8u), pc = (i % (SSD_PT / 8u)) * 8u; \
+            const unsigned int gt = (c) * SSD_L + t; \
+            ssd_cpa16(&sXd[(sl) * SSD_L * SSD_PT + t * SSD_PT + pc], \
+                x + (unsigned long long)gt * x_stride \
+                  + (unsigned long long)(b * num_heads + h) * P + p0 + pc, \
+                gt < seq_len); \
+        } \
+        for (unsigned int i = threadIdx.x; i < SSD_L * N / 8u; i += blockDim.x) { \
+            const unsigned int t = i / (N / 8u), nc = (i % (N / 8u)) * 8u; \
+            const unsigned int gt = (c) * SSD_L + t; \
+            const unsigned long long off_ = \
+                (unsigned long long)gt * bc_stride + b * n_groups * N + g * N + nc; \
+            ssd_cpa16(&sBd[(sl) * SSD_L * N + t * N + nc],  B_in + off_, gt < seq_len); \
+            ssd_cpa16(&sCMd[(sl) * SSD_L * N + t * N + nc], C_in + off_, gt < seq_len); \
+        } \
+    } while (0)
 
-        for (unsigned int i = threadIdx.x; i < SSD_L; i += blockDim.x) {
-            sdA[i] = dA_cs[dbase + i];
-            sdt[i] = dt_f32[dbase + i];
+    SSD_LOAD(0, 0);
+    ssd_commit();
+    ssd_wait0();
+    __syncthreads();
+
+    unsigned int slot = 0;
+    for (unsigned int c = 0; c < nchunks; c++) {
+        // Prefetch chunk c+1 into the other slot while this chunk computes.
+        if (c + 1 < nchunks) {
+            SSD_LOAD(slot ^ 1u, c + 1);
+            ssd_commit();
         }
-        // x tile: [L][PT] and its transpose [PT][L]
-        for (unsigned int i = threadIdx.x; i < SSD_L * SSD_PT; i += blockDim.x) {
-            const unsigned int t = i / SSD_PT, p = i - t * SSD_PT;
-            const unsigned int gt = c * SSD_L + t;
-            __nv_bfloat16 v = __float2bfloat16(0.0f);
-            if (gt < seq_len) {
-                v = x[(unsigned long long)gt * x_stride
-                      + (unsigned long long)(b * num_heads + h) * P + p0 + p];
-            }
-            sX[t * SSD_PT + p] = v;
-            sXt[p * SSD_L + t] = v;
-        }
-        // B and C tiles: [L][N]
-        for (unsigned int i = threadIdx.x; i < SSD_L * N; i += blockDim.x) {
-            const unsigned int t = i / N, n = i - t * N;
-            const unsigned int gt = c * SSD_L + t;
-            const unsigned long long off =
-                (unsigned long long)gt * bc_stride + b * n_groups * N + g * N + n;
-            const bool ok = gt < seq_len;
-            sB[i]  = ok ? B_in[off] : __float2bfloat16(0.0f);
-            sCM[i] = ok ? C_in[off] : __float2bfloat16(0.0f);
-        }
-        __syncthreads();
+        __nv_bfloat16* sB  = sBd  + slot * SSD_L * N;
+        __nv_bfloat16* sCM = sCMd + slot * SSD_L * N;
+        __nv_bfloat16* sX  = sXd  + slot * SSD_L * SSD_PT;
+        float*         sdA = sdAd + slot * SSD_L;
+        float*         sdt = sdtd + slot * SSD_L;
 
         const float cs_last = sdA[SSD_L - 1];
 
-        // h0 -> bf16 (B-operand of Y_off), laid out [p][n] so k is contiguous.
-        for (unsigned int i = threadIdx.x; i < SSD_PT * N; i += blockDim.x) {
-            const unsigned int p = i / N, n = i - p * N;
-            sHb[p * N + n] = __float2bfloat16(sH[p * (N + 1) + n]);
-        }
         // Cd[t][n] = C[t][n] * exp(cs_t)   (row scaling folds the decay into the operand)
         for (unsigned int i = threadIdx.x; i < SSD_L * N; i += blockDim.x) {
             const unsigned int t = i / N;
@@ -300,7 +323,8 @@ extern "C" __global__ void mamba2_ssd_scan(
         for (int q = 0; q < 2; q++) { acc[q][0]=0.f; acc[q][1]=0.f; acc[q][2]=0.f; acc[q][3]=0.f; }
         {
             const unsigned short* A16 = (const unsigned short*)sCM;   // [L][N]
-            const unsigned short* B16 = (const unsigned short*)sHb;   // [PT][N] (n contiguous)
+            // B-operand (h0^T) converts fp32 sH -> packed bf16x2 on the fly; the
+            // resident bf16 copy (sHb) was dropped to fit the double buffers.
             for (unsigned int k = 0; k < N; k += 16u) {
                 const unsigned int r0 = wm + gid, r1 = wm + gid + 8u;
                 const unsigned int c0 = k + tid * 2u, c1 = k + tid * 2u + 8u;
@@ -312,8 +336,11 @@ extern "C" __global__ void mamba2_ssd_scan(
                 #pragma unroll
                 for (unsigned int q = 0; q < 2u; q++) {
                     const unsigned int p = (wnb + q) * 8u + gid;      // MMA N index = p
-                    unsigned int b0 = ((unsigned int)B16[p*N + c0+1] << 16) | B16[p*N + c0];
-                    unsigned int b1 = ((unsigned int)B16[p*N + c1+1] << 16) | B16[p*N + c1];
+                    const float* hrow = sH + p * (N + 1);
+                    __nv_bfloat162 h0p = __floats2bfloat162_rn(hrow[c0], hrow[c0 + 1]);
+                    __nv_bfloat162 h1p = __floats2bfloat162_rn(hrow[c1], hrow[c1 + 1]);
+                    unsigned int b0 = *(const unsigned int*)&h0p;
+                    unsigned int b1 = *(const unsigned int*)&h1p;
                     asm volatile(
                         "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
                         "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};"
@@ -417,7 +444,9 @@ extern "C" __global__ void mamba2_ssd_scan(
                 hacc[u][i][0]=0.f; hacc[u][i][1]=0.f; hacc[u][i][2]=0.f; hacc[u][i][3]=0.f;
             }
         {
-            const unsigned short* A16 = (const unsigned short*)sXt;  // [PT][L]
+            // A-operand is x^T [PT][L]; the transpose tile was dropped, so build
+            // the packed pairs from sX [L][PT] directly: Xt[r][c] = sX[c][r].
+            const unsigned short* X16 = (const unsigned short*)sX;   // [L][PT]
             const unsigned short* B16 = (const unsigned short*)sB;   // [L][N] -> B[n][k=s] = sB[s][n]
             for (unsigned int k = 0; k < SSD_L; k += 16u) {
                 const unsigned int c0 = k + tid * 2u, c1 = k + tid * 2u + 8u;
@@ -425,10 +454,10 @@ extern "C" __global__ void mamba2_ssd_scan(
                 for (unsigned int u = 0; u < 2u; u++) {
                     const unsigned int emt = (emt0 + u * 2u) * 16u;
                     const unsigned int r0 = emt + gid, r1 = emt + gid + 8u;
-                    unsigned int a0 = ((unsigned int)A16[r0*SSD_L + c0+1] << 16) | A16[r0*SSD_L + c0];
-                    unsigned int a1 = ((unsigned int)A16[r1*SSD_L + c0+1] << 16) | A16[r1*SSD_L + c0];
-                    unsigned int a2 = ((unsigned int)A16[r0*SSD_L + c1+1] << 16) | A16[r0*SSD_L + c1];
-                    unsigned int a3 = ((unsigned int)A16[r1*SSD_L + c1+1] << 16) | A16[r1*SSD_L + c1];
+                    unsigned int a0 = ((unsigned int)X16[(c0+1)*SSD_PT + r0] << 16) | X16[c0*SSD_PT + r0];
+                    unsigned int a1 = ((unsigned int)X16[(c0+1)*SSD_PT + r1] << 16) | X16[c0*SSD_PT + r1];
+                    unsigned int a2 = ((unsigned int)X16[(c1+1)*SSD_PT + r0] << 16) | X16[c1*SSD_PT + r0];
+                    unsigned int a3 = ((unsigned int)X16[(c1+1)*SSD_PT + r1] << 16) | X16[c1*SSD_PT + r1];
                     #pragma unroll
                     for (unsigned int j = 0; j < 2u; j++) {
                         const unsigned int ntile = enb + j * 8u;
@@ -474,8 +503,13 @@ extern "C" __global__ void mamba2_ssd_scan(
                 }
             }
         }
+        // The prefetch of chunk c+1 has had the whole compute phase to land;
+        // this wait is the pipeline's only stall point.
+        ssd_wait0();
         __syncthreads();
+        slot ^= 1u;
     }
+    #undef SSD_LOAD
 
     for (unsigned int i = threadIdx.x; i < SSD_PT * N; i += blockDim.x) {
         const unsigned int p = i / N, n = i - p * N;

@@ -96,7 +96,52 @@ impl NemotronMoeLayer {
         let expert_up_out = ctx.buffers.expert_up_out();
         let avg_per_expert = (p.num_tokens * p.top_k as usize).div_ceil(ne);
         let max_m_tiles = (avg_per_expert * 2).div_ceil(64).max(1) as u32;
-        if let Some(ref upt) = self.up_ptrs_t {
+        // Native FP4 up GEMM: latent activations quantized to NVFP4 once per layer,
+        // expert weights consumed as raw E2M1 + scales (no LUT dequant), relu^2
+        // fused. OPT-IN ONLY (ATLAS_MOE_W4A4=1): although the latent is a linear
+        // (fc1) output, it is the input to EVERY routed expert, and quantizing it
+        // to FP4 produced a systematic repetition tic in long-prompt A/B ("the
+        // silence between notes, the silence between breaths, the silence...")
+        // plus one outright story-collapse, while the BF16 path stayed clean on
+        // the same prompts. Worth ~13ms at 1k if the numerics are ever fixed
+        // (calibrated input_scale instead of dynamic scale2=1.0 is the candidate).
+        let w4a4_up = is_latent
+            && p.n >= 512
+            && self.moe_w4a4_grouped_k.0 != 0
+            && self.quantize_nvfp4_k.0 != 0
+            && ctx.buffers.fp8_act_bytes() >= (p.n as usize) * (p.latent as usize)
+            && std::env::var("ATLAS_MOE_W4A4").is_ok();
+        if w4a4_up {
+            let a4 = ctx.buffers.fp8_act();
+            let a4_sf = a4.offset((p.n as usize) * (p.latent as usize) / 2);
+            ops::quantize_bf16_to_nvfp4(
+                ctx.gpu,
+                self.quantize_nvfp4_k,
+                expert_input,
+                a4,
+                a4_sf,
+                p.n,
+                p.latent,
+                stream,
+            )?;
+            ops::moe_w4a4_grouped_gemm_relu2(
+                ctx.gpu,
+                self.moe_w4a4_grouped_k,
+                a4,
+                a4_sf,
+                self.up_ptrs.packed_ptrs,
+                self.up_ptrs.scale_ptrs,
+                self.up_ptrs.scale2_vals,
+                expert_up_out,
+                expert_offsets,
+                sorted_token_ids,
+                p.num_experts,
+                p.inter,
+                expert_k,
+                max_m_tiles,
+                stream,
+            )?;
+        } else if let Some(ref upt) = self.up_ptrs_t {
             ops::moe_w4a16_grouped_gemm_ptrtable(
                 ctx.gpu,
                 self.moe_grouped_gemm_n128_k,
@@ -113,6 +158,14 @@ impl NemotronMoeLayer {
                 max_m_tiles,
                 stream,
             )?;
+            // This branch has no fused epilogue: apply relu^2 elementwise.
+            let relu2_n = total_expanded * p.inter;
+            KernelLaunch::new(ctx.gpu, self.moe_relu2_elementwise_k)
+                .grid([div_ceil(relu2_n, 256), 1, 1])
+                .block([256, 1, 1])
+                .arg_ptr(expert_up_out)
+                .arg_u32(relu2_n)
+                .launch(stream)?;
         } else {
             // relu^2 fused into the UP GEMM's store when the epilogue variant is
             // compiled -- saves a full read+write of expert_up_out.
