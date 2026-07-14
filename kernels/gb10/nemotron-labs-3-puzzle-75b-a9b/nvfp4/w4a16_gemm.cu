@@ -1505,16 +1505,14 @@ void fp8_gemm_t_m128(
 // SMEM: Af 2×128×32=8192B, Bf 2×128×32=8192B ≈ 16KB, 3 blocks → 48KB/SM.
 // Grid: (ceil(N/128), ceil(M/128), 1)  Block: (128, 1, 1)
 // ═══════════════════════════════════════════════════════════════════
-extern "C" __global__
-__launch_bounds__(128, 3)
-void fp8_fp8_gemm_t_m128(
+__device__ __forceinline__
+void fp8_fp8_gemm_t_m128_impl(
     const unsigned char* __restrict__ A_fp8,  // [M, K] FP8 E4M3
     const unsigned char* __restrict__ B_fp8,  // [N, K] FP8 E4M3
     __nv_bfloat16* __restrict__ C,            // [M, N] BF16
-    unsigned int M, unsigned int N, unsigned int K
+    unsigned int M, unsigned int N, unsigned int K,
+    const unsigned int cta_m, const unsigned int cta_n
 ) {
-    const unsigned int cta_n = blockIdx.x * N_TILE_LG;
-    const unsigned int cta_m = blockIdx.y * (2 * M_TILE);
     if (cta_m >= M) return;
 
     const unsigned int warp_id = threadIdx.x / 32;
@@ -1523,6 +1521,10 @@ void fp8_fp8_gemm_t_m128(
     const unsigned int group_id = lane_id >> 2;
     const unsigned int tid = lane_id & 3;
 
+    // NOTE: rows at the natural 32 B stride give a 2-way bank conflict on every
+    // fragment load (lanes g and g+4 collide). Padding to 48 was measured NEUTRAL
+    // (447.8 vs 445.9 ms) -- the conflicts are fully hidden -- so the smaller
+    // footprint is kept.
     __shared__ unsigned char smem_Af[2][2 * M_TILE][A_FP8_STRIDE];  //  8192 B
     __shared__ unsigned char smem_Bf[2][N_TILE_LG][K_STEP_T];        //  8192 B
 
@@ -1644,4 +1646,32 @@ void fp8_fp8_gemm_t_m128(
         if (r1 < M && c0 < N) C[r1 * N + c0] = __float2bfloat16(acc1[nt][2]);
         if (r1 < M && c1 < N) C[r1 * N + c1] = __float2bfloat16(acc1[nt][3]);
     }
+}
+
+// Grid wrappers over the same body. fp8_fp8_gemm_t_m128 keeps the legacy n-fast
+// order (qwen-style attention cache-skip path binds it by name). _mfast puts M on
+// the fast axis so the M-blocks sharing a B panel are co-resident and the panel
+// stays in L2 -- same reasoning as fp8_gemm_t_m128_mfast above.
+extern "C" __global__
+__launch_bounds__(128, 3)
+void fp8_fp8_gemm_t_m128(
+    const unsigned char* __restrict__ A_fp8,
+    const unsigned char* __restrict__ B_fp8,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M, unsigned int N, unsigned int K
+) {
+    fp8_fp8_gemm_t_m128_impl(A_fp8, B_fp8, C, M, N, K,
+                             blockIdx.y * (2 * M_TILE), blockIdx.x * N_TILE_LG);
+}
+
+extern "C" __global__
+__launch_bounds__(128, 3)
+void fp8_fp8_gemm_t_m128_mfast(
+    const unsigned char* __restrict__ A_fp8,
+    const unsigned char* __restrict__ B_fp8,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M, unsigned int N, unsigned int K
+) {
+    fp8_fp8_gemm_t_m128_impl(A_fp8, B_fp8, C, M, N, K,
+                             blockIdx.x * (2 * M_TILE), blockIdx.y * N_TILE_LG);
 }

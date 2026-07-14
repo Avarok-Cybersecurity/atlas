@@ -241,7 +241,9 @@ impl BufferSizes {
         // FP8 block-scaled activation scratch for prefill projections. The
         // widest contract dim across call sites is hidden (qkv / ssm-qkvz) or
         // q_heads*head_dim (o_proj). 1 byte/elem fp8 + one f32 per 128-block.
-        let max_proj_k = h.max(q_heads * hd);
+        // Mamba-2 out_proj contracts over d_inner (may exceed hidden), and its
+        // prefill input is FP8-precast into this buffer.
+        let max_proj_k = h.max(q_heads * hd).max(mamba2_d_inner);
         let fp8_act = m * max_proj_k;
         let fp8_act_scale = m * max_proj_k.div_ceil(128) * 4;
 

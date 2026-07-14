@@ -214,19 +214,47 @@ impl TransformerLayer for NemotronMamba2Layer {
         // ── 2. in_proj GEMM: [N, h] × [h, in_proj_size] → [N, in_proj_size] ──
         //    Layout per token: [z(d_inner) | xBC(d_xbc) | dt(num_heads)]
         let proj = ctx.buffers.ssm_qkvz();
+        // Pre-cast A to FP8 once per GEMM. The BF16-A kernel converts A to E4M3
+        // inside every CTA, so each activation element was re-converted once per
+        // n-block (in_proj_size/128 = ~141x for in_proj). The MMA consumes E4M3
+        // either way -- numerically identical, strictly less work.
+        // Only when the GEMMs are big enough to amortize the two extra dependent
+        // launches per layer: at n<=256 the pre-cast measured ~+15 ms on short
+        // prompts (80 serial kernel boundaries) while saving nothing, and at
+        // n=1023 it saves ~15 ms. Crossover is between; 512 is safely past it.
+        let fp8_a = n >= 512
+            && self.fp8_fp8_gemm_t_k.0 != 0
+            && self.bf16_to_fp8_k.0 != 0
+            && ctx.buffers.fp8_act_bytes() >= (n as usize) * self.d_inner.max(h);
         if let Some(w_fp8) = self.in_proj_pd_fp8 {
             // Weights already FP8: no per-K-step dequant, no M-block redundancy.
-            ops::fp8_gemm_m128_mfast(
-                ctx.gpu,
-                self.fp8_gemm_t_k,
-                normed,
-                w_fp8,
-                proj,
-                n,
-                self.in_proj_size as u32,
-                h as u32,
-                stream,
-            )?;
+            if fp8_a {
+                let a8 = ctx.buffers.fp8_act();
+                ops::bf16_to_fp8(ctx.gpu, self.bf16_to_fp8_k, normed, a8, n * h as u32, stream)?;
+                ops::fp8_fp8_gemm_m128_mfast(
+                    ctx.gpu,
+                    self.fp8_fp8_gemm_t_k,
+                    a8,
+                    w_fp8,
+                    proj,
+                    n,
+                    self.in_proj_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+            } else {
+                ops::fp8_gemm_m128_mfast(
+                    ctx.gpu,
+                    self.fp8_gemm_t_k,
+                    normed,
+                    w_fp8,
+                    proj,
+                    n,
+                    self.in_proj_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+            }
         } else if let Some(ref wt) = self.in_proj_t {
             // Fast path: transposed weights + FP8 MMA (N128, K32, cp.async pipeline)
             if n > 128 && self.w4a16_gemm_t_m128_k.0 != 0 {
@@ -456,17 +484,40 @@ impl TransformerLayer for NemotronMamba2Layer {
         // ── 6. out_proj GEMM: [N, d_inner] × [d_inner, h] → [N, h] ──
         let out = ctx.buffers.ssm_qkvz();
         if let Some(w_fp8) = self.out_proj_pd_fp8 {
-            ops::fp8_gemm_m128_mfast(
-                ctx.gpu,
-                self.fp8_gemm_t_k,
-                gated_out,
-                w_fp8,
-                out,
-                n,
-                h as u32,
-                self.d_inner as u32,
-                stream,
-            )?;
+            if fp8_a {
+                let a8 = ctx.buffers.fp8_act();
+                ops::bf16_to_fp8(
+                    ctx.gpu,
+                    self.bf16_to_fp8_k,
+                    gated_out,
+                    a8,
+                    n * self.d_inner as u32,
+                    stream,
+                )?;
+                ops::fp8_fp8_gemm_m128_mfast(
+                    ctx.gpu,
+                    self.fp8_fp8_gemm_t_k,
+                    a8,
+                    w_fp8,
+                    out,
+                    n,
+                    h as u32,
+                    self.d_inner as u32,
+                    stream,
+                )?;
+            } else {
+                ops::fp8_gemm_m128_mfast(
+                    ctx.gpu,
+                    self.fp8_gemm_t_k,
+                    gated_out,
+                    w_fp8,
+                    out,
+                    n,
+                    h as u32,
+                    self.d_inner as u32,
+                    stream,
+                )?;
+            }
         } else if let Some(ref wt) = self.out_proj_t {
             if n > 128 && self.w4a16_gemm_t_m128_k.0 != 0 {
                 ops::w4a16_gemm_n128_m128(

@@ -495,6 +495,39 @@ pub fn fp8_gemm_m128_mfast(
 /// Grid: (ceil(N*K/2 / 256), 1, 1)  Block: (256, 1, 1)
 #[allow(clippy::too_many_arguments)]
 
+/// `fp8_fp8_gemm_t_m128_mfast`: FP8 A x FP8 B, 128-row M tile, m on the fast
+/// axis. A must already be E4M3 (see `bf16_to_fp8`); the MMA consumed E4M3
+/// either way, so pre-casting A is numerically identical to the BF16-A kernel.
+pub fn fp8_fp8_gemm_m128_mfast(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    b_fp8: DevicePtr,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(m, 128), div_ceil(n, 128), 1])
+        .block([128, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(b_fp8)
+        .arg_ptr(output)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}
+
+/// Pre-dequant NVFP4 → FP8 E4M3.  One-time conversion at model load.
+///
+/// Reads B_packed[N, K/2] + B_scale[N, K/GROUP_SIZE] + scale2 → B_fp8[N, K].
+///
+/// Grid: (ceil(N*K/2 / 256), 1, 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+
 pub fn predequant_nvfp4_to_fp8(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,

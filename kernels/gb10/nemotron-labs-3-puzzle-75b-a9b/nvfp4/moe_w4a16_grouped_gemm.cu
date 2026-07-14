@@ -324,7 +324,8 @@ extern "C" __global__ void moe_w4a16_grouped_gemm(
 // Grid: (ceil(N_out/N_TILE), max_m_tiles, num_experts)
 // Block: (128, 1, 1)
 // ═══════════════════════════════════════════════════════════════════
-extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
+__device__ __forceinline__ void moe_w4a16_grouped_gemm_ptrtable_impl(
+
     const __nv_bfloat16* __restrict__ A,           // [num_tokens, K] original (unpermuted)
     const unsigned long long* __restrict__ B_packed_ptrs, // [num_experts] → expert's B_packed
     const unsigned long long* __restrict__ B_scale_ptrs,  // [num_experts] → expert's B_scale
@@ -335,6 +336,8 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
     unsigned int num_experts,
     unsigned int N,
     unsigned int K
+,
+    const bool relu2
 ) {
     const unsigned int expert_id = blockIdx.z;
     if (expert_id >= num_experts) return;
@@ -572,13 +575,57 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
             const unsigned int row1 = cta_m + lr1;
             const bool v0 = (int)(lr0 + cta_m_local) < M_expert;
             const bool v1 = (int)(lr1 + cta_m_local) < M_expert;
-            if (v0 && col0 < N) C[row0 * N + col0] = __float2bfloat16(acc[m*4+nt][0]);
-            if (v0 && col1 < N) C[row0 * N + col1] = __float2bfloat16(acc[m*4+nt][1]);
-            if (v1 && col0 < N) C[row1 * N + col0] = __float2bfloat16(acc[m*4+nt][2]);
-            if (v1 && col1 < N) C[row1 * N + col1] = __float2bfloat16(acc[m*4+nt][3]);
+            float o0 = acc[m*4+nt][0], o1 = acc[m*4+nt][1];
+            float o2 = acc[m*4+nt][2], o3 = acc[m*4+nt][3];
+            if (relu2) {
+                // relu^2 epilogue in fp32 on the accumulator -- replaces the
+                // elementwise relu_squared_inplace pass over the whole up_out
+                // tensor (a full extra read+write of it from DRAM).
+                o0 = o0 > 0.f ? o0 * o0 : 0.f;
+                o1 = o1 > 0.f ? o1 * o1 : 0.f;
+                o2 = o2 > 0.f ? o2 * o2 : 0.f;
+                o3 = o3 > 0.f ? o3 * o3 : 0.f;
+            }
+            if (v0 && col0 < N) C[row0 * N + col0] = __float2bfloat16(o0);
+            if (v0 && col1 < N) C[row0 * N + col1] = __float2bfloat16(o1);
+            if (v1 && col0 < N) C[row1 * N + col0] = __float2bfloat16(o2);
+            if (v1 && col1 < N) C[row1 * N + col1] = __float2bfloat16(o3);
         }
     }
 #undef MOE_PF
+}
+
+extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
+
+    const __nv_bfloat16* __restrict__ A,           // [num_tokens, K] original (unpermuted)
+    const unsigned long long* __restrict__ B_packed_ptrs, // [num_experts] → expert's B_packed
+    const unsigned long long* __restrict__ B_scale_ptrs,  // [num_experts] → expert's B_scale
+    const float* __restrict__ scale2_vals,         // [num_experts] per-expert scale2
+    __nv_bfloat16* __restrict__ C,                  // [total_expanded, N_out] output
+    const int* __restrict__ expert_offsets,          // [num_experts + 1] prefix sum
+    const int* __restrict__ sorted_token_ids,       // [total_expanded] → original token index
+    unsigned int num_experts,
+    unsigned int N,
+    unsigned int K
+) {
+    moe_w4a16_grouped_gemm_ptrtable_impl(A, B_packed_ptrs, B_scale_ptrs, scale2_vals, C, expert_offsets, sorted_token_ids, num_experts, N, K, false);
+}
+
+// Same GEMM with a fused relu^2 epilogue for the expert UP projection.
+extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_relu2(
+
+    const __nv_bfloat16* __restrict__ A,           // [num_tokens, K] original (unpermuted)
+    const unsigned long long* __restrict__ B_packed_ptrs, // [num_experts] → expert's B_packed
+    const unsigned long long* __restrict__ B_scale_ptrs,  // [num_experts] → expert's B_scale
+    const float* __restrict__ scale2_vals,         // [num_experts] per-expert scale2
+    __nv_bfloat16* __restrict__ C,                  // [total_expanded, N_out] output
+    const int* __restrict__ expert_offsets,          // [num_experts + 1] prefix sum
+    const int* __restrict__ sorted_token_ids,       // [total_expanded] → original token index
+    unsigned int num_experts,
+    unsigned int N,
+    unsigned int K
+) {
+    moe_w4a16_grouped_gemm_ptrtable_impl(A, B_packed_ptrs, B_scale_ptrs, scale2_vals, C, expert_offsets, sorted_token_ids, num_experts, N, K, true);
 }
 
 // ═══════════════════════════════════════════════════════════════════

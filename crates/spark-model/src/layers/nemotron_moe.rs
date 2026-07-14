@@ -66,6 +66,7 @@ pub struct NemotronMoeLayer {
     moe_sort_k: KernelHandle,
     moe_grouped_gemm_k: KernelHandle,
     moe_relu2_elementwise_k: KernelHandle,
+    moe_grouped_gemm_relu2_k: KernelHandle,
     moe_unpermute_reduce_k: KernelHandle,
     moe_grouped_gemm_n128_k: KernelHandle,
     up_ptrs: ExpertPtrTable,
@@ -160,6 +161,11 @@ impl NemotronMoeLayer {
                 "moe_w4a16_grouped_gemm_ptrtable",
             ),
             moe_relu2_elementwise_k: super::try_kernel(gpu, "relu2", "relu_squared_inplace"),
+            moe_grouped_gemm_relu2_k: super::try_kernel(
+                gpu,
+                "moe_w4a16",
+                "moe_w4a16_grouped_gemm_ptrtable_relu2",
+            ),
             moe_unpermute_reduce_k: super::try_kernel(gpu, "moe", "moe_unpermute_reduce_indexed"),
             moe_grouped_gemm_n128_k: super::try_kernel(
                 gpu,

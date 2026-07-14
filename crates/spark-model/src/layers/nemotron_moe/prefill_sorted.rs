@@ -114,9 +114,16 @@ impl NemotronMoeLayer {
                 stream,
             )?;
         } else {
+            // relu^2 fused into the UP GEMM's store when the epilogue variant is
+            // compiled -- saves a full read+write of expert_up_out.
+            let fused = self.moe_grouped_gemm_relu2_k.0 != 0;
             ops::moe_w4a16_grouped_gemm_ptrtable(
                 ctx.gpu,
-                self.moe_grouped_gemm_k,
+                if fused {
+                    self.moe_grouped_gemm_relu2_k
+                } else {
+                    self.moe_grouped_gemm_k
+                },
                 expert_input,
                 self.up_ptrs.packed_ptrs,
                 self.up_ptrs.scale_ptrs,
@@ -130,16 +137,16 @@ impl NemotronMoeLayer {
                 max_m_tiles,
                 stream,
             )?;
+            if !fused {
+                let relu2_n = total_expanded * p.inter;
+                KernelLaunch::new(ctx.gpu, self.moe_relu2_elementwise_k)
+                    .grid([div_ceil(relu2_n, 256), 1, 1])
+                    .block([256, 1, 1])
+                    .arg_ptr(expert_up_out)
+                    .arg_u32(relu2_n)
+                    .launch(stream)?;
+            }
         }
-
-        // 5d. ReLU² activation in-place on expert_up_out
-        let relu2_n = total_expanded * p.inter;
-        KernelLaunch::new(ctx.gpu, self.moe_relu2_elementwise_k)
-            .grid([div_ceil(relu2_n, 256), 1, 1])
-            .block([256, 1, 1])
-            .arg_ptr(expert_up_out)
-            .arg_u32(relu2_n)
-            .launch(stream)?;
 
         // 5e. Grouped DOWN GEMM: [sorted, p.inter] → [sorted, expert_out_dim]
         let expert_down_out = ctx.buffers.expert_down_out();
