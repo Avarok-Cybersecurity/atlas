@@ -26,7 +26,40 @@ impl Qwen3AttentionLayer {
     ) -> Result<DevicePtr> {
         let o_out = ctx.buffers.norm_output();
         let force_w8a8 = ops::fp8_blockscaled_prefill_enabled();
-        if ops::cutlass_nvfp4_attn_o_enabled()
+        // Native FP4 o_proj: quantize attn_out to NVFP4 and consume o_proj in
+        // its original NVFP4 form. OPT-IN ONLY -- see the QKV path's comment.
+        let w4a4 = n >= 256
+            && self.w4a4_gemm_k.0 != 0
+            && self.quantize_nvfp4_k.0 != 0
+            && ctx.buffers.fp8_act_bytes() >= (n as usize) * (nq as usize) * (hd as usize)
+            && std::env::var("ATLAS_ATTN_W4A4").is_ok();
+        if w4a4 {
+            let kd = nq * hd;
+            let a4 = ctx.buffers.fp8_act();
+            let a4_sf = a4.offset((n as usize) * (kd as usize) / 2);
+            ops::quantize_bf16_to_nvfp4(
+                ctx.gpu,
+                self.quantize_nvfp4_k,
+                attn_out,
+                a4,
+                a4_sf,
+                n,
+                kd,
+                stream,
+            )?;
+            ops::w4a4_gemm_mfast(
+                ctx.gpu,
+                self.w4a4_gemm_k,
+                a4,
+                a4_sf,
+                &self.attn.o_proj,
+                o_out,
+                n,
+                h,
+                kd,
+                stream,
+            )?;
+        } else if ops::cutlass_nvfp4_attn_o_enabled()
             && let Some(ref nvfp4_t) = self.o_nvfp4_t
         {
             ops::log_cutlass_nvfp4_route("attn_o", n, h, nq * hd);
