@@ -390,7 +390,7 @@ pub fn mamba2_ssd_cumsum(
         .launch(stream)
 }
 
-/// K2: CB[c][g][t][s] = C_t . B_s  (raw, fp32).
+/// K2: `CB[c][g][t][s] = C_t . B_s` (raw, fp32).
 #[allow(clippy::too_many_arguments)]
 pub fn mamba2_ssd_bmm(
     gpu: &dyn GpuBackend,
