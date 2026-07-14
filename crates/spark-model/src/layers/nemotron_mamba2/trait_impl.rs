@@ -226,7 +226,44 @@ impl TransformerLayer for NemotronMamba2Layer {
             && self.fp8_fp8_gemm_t_k.0 != 0
             && self.bf16_to_fp8_k.0 != 0
             && ctx.buffers.fp8_act_bytes() >= (n as usize) * self.d_inner.max(h);
-        if let Some(w_fp8) = self.in_proj_pd_fp8 {
+        // Native FP4 tensor cores (mma.sync kind::mxf4nvf4, sm_121): weights stay in
+        // their original NVFP4 form (no FP8 copies read) and activations are
+        // dynamically quantized to NVFP4 (packed E2M1 + per-16 E4M3 scales) in one
+        // pass. Halves B traffic vs the FP8 path and doubles per-MMA throughput.
+        // W4A4 changes activation numerics -- ATLAS_NO_SSM_W4A4=1 falls back to the
+        // FP8 path (same-binary A/B + quality escape hatch). Scratch: packed A at
+        // fp8_act[0], scales at fp8_act[n*K/2]; total n*K*9/16 <= fp8_act's n*K.
+        let w4a4 = n >= 512
+            && self.w4a4_gemm_k.0 != 0
+            && self.quantize_nvfp4_k.0 != 0
+            && ctx.buffers.fp8_act_bytes() >= (n as usize) * self.d_inner.max(h)
+            && std::env::var("ATLAS_NO_SSM_W4A4").is_err();
+        if w4a4 {
+            let a4 = ctx.buffers.fp8_act();
+            let a4_sf = a4.offset((n as usize) * h / 2);
+            ops::quantize_bf16_to_nvfp4(
+                ctx.gpu,
+                self.quantize_nvfp4_k,
+                normed,
+                a4,
+                a4_sf,
+                n,
+                h as u32,
+                stream,
+            )?;
+            ops::w4a4_gemm_mfast(
+                ctx.gpu,
+                self.w4a4_gemm_k,
+                a4,
+                a4_sf,
+                &self.ssm.in_proj,
+                proj,
+                n,
+                self.in_proj_size as u32,
+                h as u32,
+                stream,
+            )?;
+        } else if let Some(w_fp8) = self.in_proj_pd_fp8 {
             // Weights already FP8: no per-K-step dequant, no M-block redundancy.
             if fp8_a {
                 let a8 = ctx.buffers.fp8_act();
@@ -483,7 +520,32 @@ impl TransformerLayer for NemotronMamba2Layer {
 
         // ── 6. out_proj GEMM: [N, d_inner] × [d_inner, h] → [N, h] ──
         let out = ctx.buffers.ssm_qkvz();
-        if let Some(w_fp8) = self.out_proj_pd_fp8 {
+        if w4a4 {
+            let a4 = ctx.buffers.fp8_act();
+            let a4_sf = a4.offset((n as usize) * self.d_inner / 2);
+            ops::quantize_bf16_to_nvfp4(
+                ctx.gpu,
+                self.quantize_nvfp4_k,
+                gated_out,
+                a4,
+                a4_sf,
+                n,
+                self.d_inner as u32,
+                stream,
+            )?;
+            ops::w4a4_gemm_mfast(
+                ctx.gpu,
+                self.w4a4_gemm_k,
+                a4,
+                a4_sf,
+                &self.ssm.out_proj,
+                out,
+                n,
+                h as u32,
+                self.d_inner as u32,
+                stream,
+            )?;
+        } else if let Some(w_fp8) = self.out_proj_pd_fp8 {
             if fp8_a {
                 let a8 = ctx.buffers.fp8_act();
                 ops::bf16_to_fp8(

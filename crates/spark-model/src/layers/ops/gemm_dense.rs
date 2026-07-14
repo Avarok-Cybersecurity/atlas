@@ -234,6 +234,41 @@ pub fn w4a4_gemm(
 ///
 /// Grid: (ceil(N/128), ceil(M/64), 1)  Block: (128, 1, 1)
 #[allow(clippy::too_many_arguments)]
+/// `w4a4_gemm_mfast`: same W4A4 GEMM with M on the fast grid axis, so the
+/// M-blocks sharing a B panel are co-resident and B streams from DRAM once.
+pub fn w4a4_gemm_mfast(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    a_packed: DevicePtr,
+    a_scale: DevicePtr,
+    weight: &QuantizedWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(m, 128), div_ceil(n, 128), 1])
+        .block([128, 1, 1])
+        .arg_ptr(a_packed)
+        .arg_ptr(a_scale)
+        .arg_ptr(weight.weight)
+        .arg_ptr(weight.weight_scale)
+        .arg_ptr(output)
+        .arg_f32(1.0) // scaleA2 (activation single-level)
+        .arg_f32(weight.weight_scale_2) // scaleB2 (weight per-tensor)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}
+
+/// W4A16 GEMM with N_TILE=128: same kernel signature, wider N tile.
+///
+/// Grid: (ceil(N/128), ceil(M/64), 1)  Block: (128, 1, 1)
+#[allow(clippy::too_many_arguments)]
+
 pub fn w4a16_gemm_n128(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
