@@ -164,8 +164,34 @@ impl TransformerModel {
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
-        // Pad to nearest captured graph size [2, 4, 8]
+        // CUDA-graph decision, computed BEFORE padded_n is consumed so the
+        // eager path (graphs off) can skip the dummy padding lanes entirely.
+        // See the detailed rationale below (Phase 2) for why a graph keyed by
+        // padded_n is valid across replays.
+        let ms_profile = std::env::var("ATLAS_MS_PROFILE").ok().as_deref() == Some("1");
+        // ATLAS_MS_PROFILE forces eager (graphs off) so per-phase syncs are legal.
+        let use_graphs = !ms_profile
+            && std::env::var("ATLAS_DECODE_GRAPHS_MULTISEQ")
+                .ok()
+                .as_deref()
+                == Some("1");
+
+        // Pad to nearest captured graph size [2, 4, 8] — this is the graph
+        // key / capture bucket (must stay stable across replays).
         let padded_n = [2, 4, 8].iter().copied().find(|&s| s >= n).unwrap_or(n);
+
+        // Effective per-lane work width. Graph mode runs the full padded bucket
+        // (the fixed capture shape); eager mode runs EXACTLY the n active lanes,
+        // eliminating the wasted full-model compute on dummy padded lanes at
+        // C=3,5,6,7. When use_graphs is true, eff_n == padded_n, so the emitted
+        // path is byte-identical to before.
+        let eff_n = if use_graphs { padded_n } else { n };
+        if !use_graphs {
+            // trace!, not debug!: this fires every decode step (per token).
+            tracing::trace!(
+                "decode eager (graphs off): running eff_n={eff_n} lanes (padded_n={padded_n}, n={n})"
+            );
+        }
 
         // ── Phase 1: Pre-graph (runs every step, NOT captured) ──
 
@@ -174,8 +200,8 @@ impl TransformerModel {
             self.embed(tok, hidden.offset(i * h * fp32), stream)?;
         }
 
-        // 1b. Zero padding hidden[n..padded_n)
-        for i in n..padded_n {
+        // 1b. Zero padding hidden[n..eff_n) — empty (no-op) on the eager path.
+        for i in n..eff_n {
             self.gpu.memset(hidden.offset(i * h * fp32), 0, h * fp32)?;
         }
 
@@ -195,7 +221,7 @@ impl TransformerModel {
         }
 
         // 1d. Upload metadata with fixed stride (active + padding)
-        let metadata = self.upload_batch_metadata_fixed(seqs, padded_n, &mut kv_cache, stream)?;
+        let metadata = self.upload_batch_metadata_fixed(seqs, eff_n, &mut kv_cache, stream)?;
 
         // CUDA graphs for multi-sequence decode (ATLAS_DECODE_GRAPHS_MULTISEQ=1).
         //
@@ -213,13 +239,8 @@ impl TransformerModel {
         // valid across replays. This is the dominant lever for n>=2 decode
         // (eliminates ~1500 kernel launches/step). Opt-in until soaked; flip
         // the default once validated. Verify correctness with the needle test.
-        let ms_profile = std::env::var("ATLAS_MS_PROFILE").ok().as_deref() == Some("1");
-        // ATLAS_MS_PROFILE forces eager (graphs off) so per-phase syncs are legal.
-        let use_graphs = !ms_profile
-            && std::env::var("ATLAS_DECODE_GRAPHS_MULTISEQ")
-                .ok()
-                .as_deref()
-                == Some("1");
+        // (ms_profile + use_graphs are computed above, before padded_n, so the
+        // eager path can pick eff_n = n and drop the dummy padding lanes.)
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -257,11 +278,12 @@ impl TransformerModel {
         }
         {
             // First time for this padded_n — capture a new graph (or run eagerly for EP).
-            // Build layer states for all padded_n sequences (real + dummy padding).
-            let seq_lens: Vec<usize> = (0..padded_n)
+            // Build layer states for all eff_n sequences (real + dummy padding).
+            // On the eager path eff_n == n, so no dummy lanes are built.
+            let seq_lens: Vec<usize> = (0..eff_n)
                 .map(|i| if i < n { seqs[i].seq_len } else { 0 })
                 .collect();
-            let block_tables: Vec<Vec<u32>> = (0..padded_n)
+            let block_tables: Vec<Vec<u32>> = (0..eff_n)
                 .map(|i| {
                     if i < n {
                         seqs[i].block_table.clone()
@@ -283,7 +305,7 @@ impl TransformerModel {
             // scheduler invariant ("active occupies contiguous slots
             // [0..n)") ever drifts.
             let dummy_ssm_slot = self.ssm_pool.dummy_slot();
-            for _pad_pos in n..padded_n {
+            for _pad_pos in n..eff_n {
                 let mut dummy: Vec<Box<dyn LayerState>> = Vec::with_capacity(self.layers.len());
                 let mut ssm_idx = 0usize;
                 for (li, layer) in self.layers.iter().enumerate() {
@@ -312,15 +334,15 @@ impl TransformerModel {
             // hidden values for each seq after each layer to localize where
             // pos>=1 diverges from pos 0 in concurrent batched decode.
             let conc_hsd = std::env::var("ATLAS_CONC_HSD").is_ok_and(|v| v == "1" || v == "true")
-                && padded_n >= 2
+                && eff_n >= 2
                 && self.comm.is_none();
             let dump_hidden = |label: &str, stream: u64| -> Result<()> {
                 if !conc_hsd {
                     return Ok(());
                 }
                 self.gpu.synchronize(stream)?;
-                let mut bufs: Vec<Vec<f32>> = Vec::with_capacity(padded_n);
-                for i in 0..padded_n {
+                let mut bufs: Vec<Vec<f32>> = Vec::with_capacity(eff_n);
+                for i in 0..eff_n {
                     let mut buf = vec![0u8; 4 * 4]; // 4 FP32 values
                     let _ = self.gpu.copy_d2h(hidden.offset(i * h * fp32), &mut buf);
                     let vals: Vec<f32> = buf
@@ -340,7 +362,7 @@ impl TransformerModel {
 
             dump_hidden("post_embed", stream)?;
 
-            // Layer loop for padded_n sequences
+            // Layer loop for eff_n sequences (== padded_n under graphs, == n eager)
             let mut ssm_us: u128 = 0;
             let mut attn_us: u128 = 0;
             for (layer_idx, layer) in self.layers.iter().enumerate() {
@@ -354,7 +376,7 @@ impl TransformerModel {
                 layer.decode_multi_seq(
                     hidden,
                     residual,
-                    padded_n,
+                    eff_n,
                     &mut layer_state_refs,
                     &mut kv_cache,
                     &seq_lens,
@@ -384,7 +406,7 @@ impl TransformerModel {
                 None
             };
 
-            // Final norm [padded_n, H]
+            // Final norm [eff_n, H]
             let normed = self.buffers.norm_output();
             ops::rms_norm(
                 self.gpu.as_ref(),
@@ -392,13 +414,13 @@ impl TransformerModel {
                 hidden,
                 &self.final_norm,
                 normed,
-                padded_n as u32,
+                eff_n as u32,
                 h as u32,
                 self.config.rms_norm_eps as f32,
                 stream,
             )?;
 
-            // LM head: ONE batched [padded_n, vocab] GEMM so the ~254 MB
+            // LM head: ONE batched [eff_n, vocab] GEMM so the ~254 MB
             // vocab weight is read ONCE per step instead of once per sequence
             // (the per-row GEMV loop re-read it N times — a major C>=2 cost:
             // ~N×254 MB/step). nvfp4/dense are batched here; FP8 single-scale
@@ -407,7 +429,7 @@ impl TransformerModel {
             let logits = self.buffers.logits();
             let v = self.config.vocab_size;
             if let Some(ref fp8) = self.lm_head_fp8 {
-                for i in 0..padded_n {
+                for i in 0..eff_n {
                     ops::dense_gemv_fp8w(
                         self.gpu.as_ref(),
                         self.dense_gemv_fp8w_kernel,
@@ -426,7 +448,7 @@ impl TransformerModel {
                     normed,
                     nvfp4,
                     logits,
-                    padded_n as u32,
+                    eff_n as u32,
                     v as u32,
                     h as u32,
                     stream,
@@ -438,7 +460,7 @@ impl TransformerModel {
                     normed,
                     &self.lm_head_weight,
                     logits,
-                    padded_n as u32,
+                    eff_n as u32,
                     v as u32,
                     h as u32,
                     stream,
@@ -449,14 +471,14 @@ impl TransformerModel {
                 let head_us = t0.elapsed().as_micros();
                 let total = ssm_us + attn_us + head_us;
                 tracing::info!(
-                    "ATLAS_MS_PROFILE n={n} padded_n={padded_n}: total={}us  ssm={}us({}L)  attn={}us({}L)  head={}us  [per-tok {:.2}ms]",
+                    "ATLAS_MS_PROFILE n={n} padded_n={padded_n} eff_n={eff_n}: total={}us  ssm={}us({}L)  attn={}us({}L)  head={}us  [per-tok {:.2}ms]",
                     total,
                     ssm_us,
                     self.config.num_ssm_layers(),
                     attn_us,
                     self.layers.len() - self.config.num_ssm_layers(),
                     head_us,
-                    total as f64 / 1000.0 / padded_n as f64,
+                    total as f64 / 1000.0 / eff_n as f64,
                 );
             }
 
