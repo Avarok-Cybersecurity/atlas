@@ -15,6 +15,19 @@ use super::ctx::MultiSeqCtx;
 use crate::layers::ops;
 use crate::layers::qwen3_attention::Qwen3AttentionLayer;
 
+/// `ATLAS_FP8_QKV_BATCH` — opt-in gate for the n==2 all-FP8 batched QKV path
+/// (`ms_qkv_batch2_fp8`). Default OFF: when unset the per-token FP8 loop runs
+/// unchanged (byte-identical default). Cached on first read.
+fn fp8_qkv_batch_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("ATLAS_FP8_QKV_BATCH").ok().as_deref(),
+            Some("1") | Some("true")
+        )
+    })
+}
+
 impl Qwen3AttentionLayer {
     pub(super) fn ms_phase_qkv(&self, c: &MultiSeqCtx<'_>) -> Result<()> {
         let MultiSeqCtx {
@@ -57,6 +70,17 @@ impl Qwen3AttentionLayer {
             // weight loop in the wide verify — one GEMM per Q/K/V reads each
             // weight ONCE for all n rows instead of n× (mirrors batch3 with M=n).
             self.ms_qkv_batchn(c)?;
+        } else if n == 2
+            && self.w8a16_gemv_batch4_k.0 != 0
+            && fp8_qkv_batch_enabled()
+            && self.q_weight.as_ref().and_then(|w| w.as_fp8()).is_some()
+            && self.k_weight.as_ref().and_then(|w| w.as_fp8()).is_some()
+            && self.v_weight.as_ref().and_then(|w| w.as_fp8()).is_some()
+        {
+            // LEVER 2: n==2 all-FP8 batched QKV (ATLAS_FP8_QKV_BATCH, default
+            // OFF). Reads each FP8 Q/K/V weight ONCE for both seqs instead of
+            // per-token; bit-identical to the per-token FP8 loop below.
+            self.ms_qkv_batch2_fp8(c)?;
         } else {
             for i in 0..n {
                 let normed_i = normed.offset(i * h * bf16);
@@ -295,6 +319,158 @@ impl Qwen3AttentionLayer {
                 .copy_d2d_async(v_scratch.offset(i * kv_bytes), v_out_i, kv_bytes, stream)?;
         }
 
+        for i in 0..2usize {
+            let q_out_i = qkv_buf.offset(i * per_seq_qkv);
+            let k_out_i = q_out_i.offset(q_proj_bytes);
+            if !self.attn.q_norm.weight.is_null() {
+                ops::rms_norm(
+                    fwd.gpu,
+                    self.rms_norm_w_k,
+                    q_out_i,
+                    &self.attn.q_norm,
+                    q_out_i,
+                    nq,
+                    hd,
+                    eps,
+                    stream,
+                )?;
+            }
+            if !self.attn.k_norm.weight.is_null() {
+                ops::rms_norm(
+                    fwd.gpu,
+                    self.rms_norm_w_k,
+                    k_out_i,
+                    &self.attn.k_norm,
+                    k_out_i,
+                    nkv,
+                    hd,
+                    eps,
+                    stream,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// n=2 all-FP8 batched QKV path (`ATLAS_FP8_QKV_BATCH`). Mirrors the layout
+    /// and per-seq norm handling of `ms_qkv_batch2`, but drives Q/K/V with the
+    /// block-scaled FP8 `w8a16_gemv_batch4` primitive at M=2 — one pass over
+    /// each FP8 weight for both sequences. `w8a16_gemv_batch4` reduces per row
+    /// in the same k-order as `w8a16_gemv`, so the result is bit-identical to
+    /// the per-token FP8 loop (only the weight read is shared).
+    ///
+    /// NOTE: there is no dedicated `w8a16_gemv_batch2` CUDA kernel; the M<=4
+    /// `w8a16_gemv_batch4` with M=2 is the available, proven primitive (the
+    /// `w8a16_gemv_batch2` wrapper in `ops` targets a kernel that is not built).
+    fn ms_qkv_batch2_fp8(&self, c: &MultiSeqCtx<'_>) -> Result<()> {
+        let MultiSeqCtx {
+            fwd,
+            stream,
+            h,
+            nq,
+            nkv,
+            hd,
+            eps,
+            bf16,
+            q_proj_dim,
+            q_proj_bytes,
+            per_seq_qkv,
+            normed,
+            qkv_buf,
+            ..
+        } = *c;
+        let q_fp8 = self.q_weight.as_ref().and_then(|w| w.as_fp8()).unwrap();
+        let k_fp8 = self.k_weight.as_ref().and_then(|w| w.as_fp8()).unwrap();
+        let v_fp8 = self.v_weight.as_ref().and_then(|w| w.as_fp8()).unwrap();
+
+        tracing::debug!(
+            target: "atlas::attn",
+            gated = self.gated,
+            "ms_qkv_batch2_fp8: n=2 batched FP8 QKV (w8a16_gemv_batch4 M=2)"
+        );
+
+        // Q: one pass over the FP8 weight for both rows -> [2, q_proj_dim].
+        let q_scratch = fwd.buffers.ssm_qkvz();
+        ops::w8a16_gemv_batch4(
+            fwd.gpu,
+            self.w8a16_gemv_batch4_k,
+            normed,
+            q_fp8.weight,
+            q_fp8.row_scale,
+            q_scratch,
+            2,
+            q_proj_dim,
+            h as u32,
+            stream,
+        )?;
+
+        // K, V: separate passes (no dual-FP8 kernel) into distinct scratch
+        // regions, mirroring the k_scratch / v_scratch split in `ms_qkv_batch2`.
+        let kv_dim = nkv * hd;
+        let kv_bytes = kv_dim as usize * bf16;
+        let k_scratch = fwd.buffers.attn_output();
+        let v_scratch = k_scratch.offset(2 * kv_bytes);
+        ops::w8a16_gemv_batch4(
+            fwd.gpu,
+            self.w8a16_gemv_batch4_k,
+            normed,
+            k_fp8.weight,
+            k_fp8.row_scale,
+            k_scratch,
+            2,
+            kv_dim,
+            h as u32,
+            stream,
+        )?;
+        ops::w8a16_gemv_batch4(
+            fwd.gpu,
+            self.w8a16_gemv_batch4_k,
+            normed,
+            v_fp8.weight,
+            v_fp8.row_scale,
+            v_scratch,
+            2,
+            kv_dim,
+            h as u32,
+            stream,
+        )?;
+
+        // Scatter contiguous [2, *] scratch into the per-seq QKV layout.
+        for i in 0..2usize {
+            let q_out_i = qkv_buf.offset(i * per_seq_qkv);
+            let k_out_i = q_out_i.offset(q_proj_bytes);
+            let v_out_i = k_out_i.offset(kv_bytes);
+            fwd.gpu.copy_d2d_async(
+                q_scratch.offset(i * q_proj_bytes),
+                q_out_i,
+                q_proj_bytes,
+                stream,
+            )?;
+            fwd.gpu
+                .copy_d2d_async(k_scratch.offset(i * kv_bytes), k_out_i, kv_bytes, stream)?;
+            fwd.gpu
+                .copy_d2d_async(v_scratch.offset(i * kv_bytes), v_out_i, kv_bytes, stream)?;
+        }
+
+        // Gated Q: deinterleave per seq in place — matches the per-token gated
+        // FP8 path (which deinterleaves q_out_i right after the GEMV).
+        if self.gated {
+            for i in 0..2usize {
+                let q_out_i = qkv_buf.offset(i * per_seq_qkv);
+                ops::deinterleave_qg(
+                    fwd.gpu,
+                    self.deinterleave_qg_k,
+                    q_out_i,
+                    1,
+                    nq,
+                    hd,
+                    q_proj_dim,
+                    stream,
+                )?;
+            }
+        }
+
+        // Per-seq q_norm / k_norm, identical to the per-token path.
         for i in 0..2usize {
             let q_out_i = qkv_buf.offset(i * per_seq_qkv);
             let k_out_i = q_out_i.offset(q_proj_bytes);

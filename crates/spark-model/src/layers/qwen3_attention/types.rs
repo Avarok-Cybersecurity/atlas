@@ -297,6 +297,11 @@ pub struct Qwen3AttentionLayer {
     pub(super) dense_gemv_k: KernelHandle,
     pub(super) w4a16_gemv_k: KernelHandle,
     pub(super) w8a16_gemv_k: KernelHandle,
+    /// Block-scaled FP8 batched GEMV (M<=4). Drives the n==2 all-FP8 QKV batch
+    /// path (`ATLAS_FP8_QKV_BATCH`) with M=2 — one weight pass for both seqs,
+    /// bit-identical per row to the per-token `w8a16_gemv` loop. Zero handle
+    /// when the kernel is absent from the bundle → batch path stays gated off.
+    pub(super) w8a16_gemv_batch4_k: KernelHandle,
     pub(super) w8a16_gemm_k: KernelHandle,
     pub(super) w8a16_gemm_pipelined_k: KernelHandle,
     pub(super) w4a16_gemv_dual_k: KernelHandle,
