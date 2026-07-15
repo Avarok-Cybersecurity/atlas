@@ -27,6 +27,10 @@ const KERNELS: &[&str] = &[
 fn main() {
     println!("cargo:rerun-if-env-changed=ATLAS_SKIP_BUILD");
     println!("cargo:rerun-if-env-changed=SKIP_ATLAS_BUILD");
+    // FIRST, before any early return: `rustc-check-cfg` does not cross crates,
+    // so this crate must declare the cfg name or every `#[cfg(atlas_rdma_verbs)]`
+    // below trips `unexpected_cfgs` (a hard error under `warnings = "deny"`).
+    println!("cargo:rustc-check-cfg=cfg(atlas_rdma_verbs)");
 
     // Apple Silicon hosts have no libcuda and no nvcc. Emit the stub and
     // skip the linker hint so `cargo check` works under
@@ -45,6 +49,15 @@ fn main() {
     // symbols resolved at link time even when the kernel registry is
     // an empty stub.
     link_libcuda();
+    // The one-sided RDMA verbs shim is built by the CUDA-free `atlas-rdma`
+    // crate; `rustc-cfg` does not cross crate boundaries, so re-emit
+    // `atlas_rdma_verbs` here for this crate's own gated code, keyed off
+    // atlas-rdma's `links` metadata (`cargo:has_verbs=1` → the DEP_ var below,
+    // visible because we depend on atlas-rdma DIRECTLY). The ON condition
+    // (Linux AND !ATLAS_SKIP_BUILD) is decided in one place — atlas-rdma/build.rs.
+    if std::env::var("DEP_ATLAS_RDMA_SHIM_HAS_VERBS").is_ok() {
+        println!("cargo:rustc-cfg=atlas_rdma_verbs");
+    }
     if skip_build() {
         emit_stub();
         println!("cargo:rerun-if-changed=build.rs");

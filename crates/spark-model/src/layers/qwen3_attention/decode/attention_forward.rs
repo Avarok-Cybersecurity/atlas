@@ -240,7 +240,7 @@ impl Qwen3AttentionLayer {
         if let Some(ref q_norm_full) = self.attn.q_norm_full {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 q_out,
                 q_norm_full,
                 q_out,
@@ -252,7 +252,7 @@ impl Qwen3AttentionLayer {
         } else if !self.attn.q_norm.weight.is_null() {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 q_out,
                 &self.attn.q_norm,
                 q_out,
@@ -265,7 +265,7 @@ impl Qwen3AttentionLayer {
         if let Some(ref k_norm_full) = self.attn.k_norm_full {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 k_out,
                 k_norm_full,
                 k_out,
@@ -277,7 +277,7 @@ impl Qwen3AttentionLayer {
         } else if !self.attn.k_norm.weight.is_null() {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 k_out,
                 &self.attn.k_norm,
                 k_out,
@@ -300,7 +300,7 @@ impl Qwen3AttentionLayer {
         if let Some(v_norm_w) = self.v_norm_weight.as_ref() {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 v_out,
                 v_norm_w,
                 v_out,

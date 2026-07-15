@@ -78,10 +78,12 @@ impl TransformerModel {
             Ok(Some(id)) => Some(id),
             Ok(None) => {
                 // Pool exhausted — try to reclaim from cache
-                if self
-                    .ssm_snapshots
-                    .reclaim_from_cache(self.prefix_cache.as_ref(), kv_cache)
-                {
+                if self.ssm_snapshots.reclaim_from_cache(
+                    self.prefix_cache.as_ref(),
+                    kv_cache,
+                    self.ssm_tier_store.as_deref(),
+                    self.gpu.as_ref(),
+                ) {
                     self.ssm_snapshots
                         .save(
                             seq.slot_idx,
@@ -149,6 +151,7 @@ impl TransformerModel {
             boundary_disk,
             bs,
             end_token,
+            seq.adapter_id,
         );
         super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
         if let Some(old) = self.prefix_cache.insert_intermediate_snapshot(
@@ -159,6 +162,7 @@ impl TransformerModel {
             snap_id,
             seq.session_hash,
             end_token,
+            seq.adapter_id,
         ) {
             self.ssm_snapshots.free(old);
         }

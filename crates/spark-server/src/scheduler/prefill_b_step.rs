@@ -249,6 +249,8 @@ pub fn prefill_request(
             think_start_token,
             think_ended: !req_enable_thinking && think_end_token.is_some(),
             think_just_ended: false,
+            post_think_emitted: 0,
+            spec_adapt: Default::default(),
             think_skip_count: 0,
             require_tool_call: use_legacy_tool_call,
             tool_request,
@@ -334,6 +336,8 @@ pub fn prefill_request(
             !req_enable_thinking && think_end_token.is_some()
         },
         think_just_ended: false,
+        post_think_emitted: 0,
+        spec_adapt: Default::default(),
         think_skip_count: 0,
         require_tool_call: use_legacy_tool_call,
         tool_request,

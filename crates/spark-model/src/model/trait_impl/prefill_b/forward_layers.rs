@@ -250,12 +250,36 @@ impl TransformerModel {
                 .map(|(i, us)| format!("L{}={:.2}ms", i, *us as f64 / 1000.0))
                 .collect();
             let path_label = if use_decode_path { "decode" } else { "prefill" };
+            // Aggregate the same per-layer samples by layer type so the profile
+            // attributes cost to mamba / moe / attention instead of bare indices.
+            let mut by_type: std::collections::BTreeMap<String, (u128, usize)> =
+                std::collections::BTreeMap::new();
+            for (i, us) in layer_times.iter().copied().enumerate() {
+                let e = by_type
+                    .entry(format!("{:?}", self.config.layer_type(i)))
+                    .or_insert((0, 0));
+                e.0 += us;
+                e.1 += 1;
+            }
+            let per_type: Vec<String> = by_type
+                .iter()
+                .map(|(k, (us, n))| {
+                    format!(
+                        "{}x{}={:.0}ms(avg {:.1})",
+                        n,
+                        k,
+                        *us as f64 / 1000.0,
+                        *us as f64 / 1000.0 / *n as f64
+                    )
+                })
+                .collect();
             tracing::info!(
-                "Prefill chunk {} tok (proc {}, {}): {:.1}ms total, top5: {}",
+                "Prefill chunk {} tok (proc {}, {}): {:.1}ms total, by_type: {}, top5: {}",
                 chunk_len,
                 proc_count,
                 path_label,
                 total_us as f64 / 1000.0,
+                per_type.join(", "),
                 top5.join(", "),
             );
         }

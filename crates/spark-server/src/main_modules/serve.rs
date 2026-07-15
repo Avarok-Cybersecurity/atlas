@@ -26,6 +26,13 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     tracing::info!("Atlas Spark starting...");
     tracing::info!("Licensed under AGPL-3.0-only — see /LICENSE in this container");
 
+    // Reject contradictory flag combinations up front (issue #288) — before the
+    // multi-minute model load — with a message that tells humans and AI agents
+    // exactly what to change. Hard error, never a warning.
+    if let Err(msg) = cli::validate_serve_args(&args) {
+        anyhow::bail!("{msg}");
+    }
+
     // 0. Resolve model directory from HF ID or path
     let model_dir = serve_phases::resolve_model_dir(&args)?;
 
@@ -295,7 +302,13 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // property present for fresh non-cached sequences too), not a Marconi
     // state-management defect — so no warning is emitted here.
     let prefix_cache = serve_phases::build_prefix_cache(&args);
-    let comm = serve_phases::init_nccl_comm(&args, gpu.as_ref(), world_size)?;
+    let comm = serve_phases::init_nccl_comm(
+        &args,
+        gpu.as_ref(),
+        world_size,
+        max_batch_tokens,
+        config.hidden_size,
+    )?;
     if args.profile {
         // SAFETY: called before any threads are spawned.
         unsafe {
@@ -561,6 +574,16 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     let scheduler_spontaneous_think_budget = args
         .max_thinking_budget
         .unwrap_or(ptx_set.behavior.max_thinking_budget);
+    // DFlash mode: the drafter proposes on raw argmax, so the verify steps
+    // must judge acceptance on the same (GOLD) basis — skipping the
+    // rep_pen/DRY pre-sample pipeline — or drafter and verifier disagree by
+    // construction and accept craters. ATLAS_DFLASH_MASKED_VERIFY=1 routes
+    // verify PICKS back through the pre-sample masking (unmasked
+    // special-token leak fix); that is handled at the pick sites via
+    // `verify_pipeline_helper::dflash_masked_verify_enabled()` and must NOT
+    // flip this bool — this selects the verify architecture, not the pick
+    // basis.
+    let dflash_verify_raw_argmax = args.dflash;
     std::thread::spawn(move || {
         scheduler::run(
             scheduler_model,
@@ -568,6 +591,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             scheduler_eos,
             max_batch_size,
             use_speculative,
+            dflash_verify_raw_argmax,
             num_drafts,
             policy,
             max_prefill_tokens,

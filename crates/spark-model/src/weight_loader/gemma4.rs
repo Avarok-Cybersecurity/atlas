@@ -75,7 +75,12 @@ impl ModelWeightLoader for Gemma4WeightLoader {
         loader_b::load_final_norm_impl(store, config)
     }
 
-    fn load_lm_head(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
+    fn load_lm_head(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        _gpu: &dyn GpuBackend,
+    ) -> Result<DenseWeight> {
         loader_b::load_lm_head_impl(store, config)
     }
 

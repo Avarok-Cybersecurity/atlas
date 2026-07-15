@@ -108,6 +108,11 @@ pub struct SequenceState {
     /// prefill. The model uses this to tag saved snapshots and verify ownership
     /// before restoring. 0 = no session tracking (legacy behavior).
     pub session_hash: u64,
+    /// Per-adapter prefix-cache namespace (adapter-correct KV). Folded into the
+    /// prefix hash so two adapters that share a token prefix never reuse each
+    /// other's blocks. `0` = base / no adapter (a strict no-op in the fold, so
+    /// behavior is byte-identical until a LoRA path stamps a non-zero id).
+    pub adapter_id: u64,
     /// Persistent paged metadata for chunked prefill, allocated lazily on the
     /// first chunk that needs paged attention.
     pub chunked_prefill_meta: Option<ChunkedPrefillPageMetadata>,
@@ -179,6 +184,15 @@ pub struct SequenceState {
 }
 
 impl SequenceState {
+    /// SSM-pool slot index for this sequence, if it has GDN/SSM (linear-attn)
+    /// layers. Used by the scheduler to order the decode batch by slot so the
+    /// batched-recurrent SSM + CUDA-graph contiguity invariant holds
+    /// (position i ↔ pool_base + i*stride). `None` for pure-attention models.
+    #[inline]
+    pub fn ssm_slot_idx(&self) -> Option<usize> {
+        self.ssm_slot.as_ref().and_then(|g| g.idx())
+    }
+
     /// Phase 6.3 sliding-window helper: the absolute logical block index
     /// of `block_table[0]`. Returns 0 when `--high-speed-swap` is off
     /// (`disk_block_ids` is empty then; `block_table` is the full history).

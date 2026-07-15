@@ -79,7 +79,12 @@ impl ModelWeightLoader for MistralWeightLoader {
             .context("Mistral: final norm not found")
     }
 
-    fn load_lm_head(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
+    fn load_lm_head(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        _gpu: &dyn GpuBackend,
+    ) -> Result<DenseWeight> {
         if store.contains("output.weight") {
             dense(store, "output.weight")
         } else if store.contains("lm_head.weight") {

@@ -231,7 +231,11 @@ pub fn backfill_required_params(calls: &mut [ToolCall], tools: &[ToolDefinition]
                     "description" => {
                         if let Some(serde_json::Value::String(cmd)) = args.get("command") {
                             if cmd.len() > 50 {
-                                format!("Run: {}...", &cmd[..47])
+                                // Truncate on a char boundary — `cmd` is raw
+                                // model output and a byte slice at [..47] would
+                                // panic if a multibyte char straddles byte 47.
+                                let head: String = cmd.chars().take(47).collect();
+                                format!("Run: {head}...")
                             } else {
                                 format!("Run: {cmd}")
                             }
@@ -514,10 +518,13 @@ pub fn assess_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> Result<(),
         match serde_json::from_str(&call.function.arguments) {
             Ok(a) => a,
             Err(_) => {
+                // Truncate on a char boundary — `arguments` is raw model
+                // output (the hermes path stores it as a verbatim string), so
+                // a byte slice at [..100] would panic if a multibyte char
+                // straddles byte 100.
+                let preview: String = call.function.arguments.chars().take(100).collect();
                 return Err(ToolCallIssue::Hard(format!(
-                    "Error: {} arguments must be valid JSON. Got: {}",
-                    name,
-                    &call.function.arguments[..call.function.arguments.len().min(100)]
+                    "Error: {name} arguments must be valid JSON. Got: {preview}"
                 )));
             }
         };

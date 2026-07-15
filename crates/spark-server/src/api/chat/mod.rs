@@ -89,6 +89,10 @@ pub(crate) async fn chat_completions_inner(
 
     // ── Input validation + cross-turn F-feature guards ──
     if let Err(resp) = super::chat_phases::validate_input(&req) {
+        // Balance the REQUESTS_ACTIVE gauge incremented above: every other
+        // terminal path decrements it, but this fail-fast 400 returns before
+        // reaching a dispatch handler.
+        crate::metrics::REQUESTS_ACTIVE.dec();
         return resp;
     }
 

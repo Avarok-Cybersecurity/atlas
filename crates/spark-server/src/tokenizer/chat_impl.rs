@@ -94,6 +94,50 @@ impl ChatTokenizer {
             .map_err(|e| anyhow::anyhow!("Tokenizer decode error: {e}"))
     }
 
+    /// Incremental detokenizer (vLLM `detokenize_incrementally` scheme).
+    /// Returns the newly-STABLE decoded bytes of `toks` since the last call and
+    /// advances the offsets. Only the suffix window `toks[prefix_offset..]` is
+    /// decoded each call (a handful of tokens since the last stable boundary),
+    /// so streaming a full response is O(n) rather than re-decoding the whole
+    /// history every token (O(n²)).
+    ///
+    /// Byte-identical to `decode(&all_toks)` + `trim_end_matches('\u{FFFD}')`
+    /// for byte-level BPE and SentencePiece tokenizers: a token's decoded bytes
+    /// do not depend on tokens before it, so `decode(toks[prefix_offset..])` is
+    /// exactly the corresponding suffix of `decode(toks)`. A token whose window
+    /// decode ends in U+FFFD (incomplete multibyte) is held back — the offsets
+    /// stay put, so the window naturally extends until a later token completes
+    /// the codepoint (same deferral the old `trim_end_matches` did). Uses the
+    /// skip-special-tokens `decode`, matching the full-decode it replaces.
+    pub fn incremental_decode(
+        &self,
+        toks: &[u32],
+        prefix_offset: &mut usize,
+        read_offset: &mut usize,
+    ) -> String {
+        // Guard against stale offsets after an `all_toks` reset.
+        if *read_offset > toks.len() || *prefix_offset > *read_offset {
+            *prefix_offset = 0;
+            *read_offset = 0;
+        }
+        let prefix_text = self
+            .decode(&toks[*prefix_offset..*read_offset])
+            .unwrap_or_default();
+        let new_text = self.decode(&toks[*prefix_offset..]).unwrap_or_default();
+        if new_text.len() > prefix_text.len()
+            && !new_text.ends_with('\u{FFFD}')
+            && let Some(delta) = new_text.get(prefix_text.len()..)
+        {
+            let delta = delta.to_string();
+            *prefix_offset = *read_offset;
+            *read_offset = toks.len();
+            return delta;
+        }
+        // Incomplete multibyte at the tail (or a non-boundary split): hold this
+        // token; the offsets stay put so the next call retries with more context.
+        String::new()
+    }
+
     /// Create a stateful streaming decoder wrapper. Each `step(token_id)` returns
     /// `Ok(Some(chunk))` when enough bytes have accumulated for valid UTF-8,
     /// or `Ok(None)` for incomplete multi-byte sequences.

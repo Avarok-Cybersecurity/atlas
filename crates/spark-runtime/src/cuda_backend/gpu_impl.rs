@@ -38,10 +38,11 @@ use cudarc::driver::LaunchConfig;
 
 use super::{
     AtlasCudaBackend, cuCtxSetCurrent, cuEventCreate, cuEventDestroy_v2, cuEventRecord,
-    cuGraphDestroy, cuGraphExecDestroy, cuGraphLaunch, cuMemAlloc_v2, cuMemAllocHost_v2,
-    cuMemAllocManaged, cuMemFree_v2, cuMemFreeHost, cuMemGetInfo_v2, cuMemcpyDtoDAsync_v2,
-    cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async, cuStreamBeginCapture,
-    cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize, cuStreamWaitEvent,
+    cuEventSynchronize, cuGraphDestroy, cuGraphExecDestroy, cuGraphLaunch, cuMemAlloc_v2,
+    cuMemAllocHost_v2, cuMemAllocManaged, cuMemFree_v2, cuMemFreeHost, cuMemGetInfo_v2,
+    cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async,
+    cuStreamBeginCapture, cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize,
+    cuStreamWaitEvent,
 };
 use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 
@@ -428,6 +429,18 @@ impl GpuBackend for AtlasCudaBackend {
         let status = unsafe { cuStreamWaitEvent(stream, event, 0) };
         if status != 0 {
             bail!("cuStreamWaitEvent failed: status {status}");
+        }
+        Ok(())
+    }
+
+    fn event_synchronize(&self, event: u64) -> Result<()> {
+        // Block calling thread until all work recorded against `event`
+        // (on whatever stream `record_event` targeted) has completed.
+        // Used in Phase E.2: drafter D2H copy is recorded against this
+        // event, host blocks here just before reading the pinned buffer.
+        let status = unsafe { cuEventSynchronize(event) };
+        if status != 0 {
+            bail!("cuEventSynchronize failed: status {status}");
         }
         Ok(())
     }

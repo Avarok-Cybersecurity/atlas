@@ -36,7 +36,13 @@ impl TransformerModel {
     }
 
     pub(super) fn is_ep_dispatch(&self) -> bool {
-        self.comm.is_some() && self.config.ep_world_size > 1
+        // "EP" here means "the multi-rank head↔worker command protocol is
+        // active" — true for EP sharding AND for pure TP (GDN HeadParallel
+        // `--tp-size 2 --ep-size 1`, where rank>0 also runs the command
+        // loop). The scheduler consults this to disable single-GPU-only
+        // fused paths (mixed_forward / co-dispatch) that have no worker
+        // wire protocol; those must be off for ANY multi-rank world.
+        self.multi_rank_protocol_active()
     }
 
     pub(super) fn is_mla_dispatch(&self) -> bool {
@@ -57,7 +63,10 @@ impl TransformerModel {
     }
 
     pub(super) fn ep_broadcast_cmd_dispatch(&self, cmd: u32) -> Result<()> {
-        if self.comm.is_some() && self.config.ep_world_size > 1 {
+        // Gate matches `ep_broadcast_seq_and_cmd`: live for EP AND pure TP
+        // (see `multi_rank_protocol_active`). Gating on `ep_world_size`
+        // alone dropped the prefill chunk args under `--tp-size 2`.
+        if self.multi_rank_protocol_active() {
             self.ep_broadcast_u32(cmd)?;
         }
         Ok(())

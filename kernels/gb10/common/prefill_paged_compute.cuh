@@ -161,8 +161,8 @@ extern "C" __global__ void KERNEL_NAME(
     const int* __restrict__ block_table,
 #endif
     const unsigned int q_len,
-    const unsigned int kv_len,
-    const unsigned int q_offset,
+    unsigned int kv_len,
+    unsigned int q_offset,
     const unsigned int num_q_heads,
     const unsigned int num_kv_heads,
     const unsigned int head_dim,
@@ -217,6 +217,14 @@ extern "C" __global__ void KERNEL_NAME(
     __shared__ float smem_ml[BR][2];
 
     KERNEL_PREAMBLE
+
+    // q_rope_pos: absolute position used to rotate the query block. Indirect
+    // (DFlash) declares it in KERNEL_PREAMBLE from a device u32 (= true decode
+    // position, decoupled from cache-slot base). All other variants: equals
+    // q_offset (correct for causal attention where RoPE pos == cache base).
+#ifndef Q_ROPE_POS_OVERRIDE
+    unsigned int q_rope_pos = q_offset;
+#endif
 
     const unsigned int group_id = lane_id >> 2;
     const unsigned int tid_in_group = lane_id & 3;
@@ -333,7 +341,7 @@ extern "C" __global__ void KERNEL_NAME(
                 acc_s[nt][0]*=inv_sqrt_d; acc_s[nt][1]*=inv_sqrt_d;
                 acc_s[nt][2]*=inv_sqrt_d; acc_s[nt][3]*=inv_sqrt_d;
                 unsigned int c0=nt*8+tid_in_group*2, c1=c0+1;
-                unsigned int qr0=q_offset+q_start+row0, qr1=q_offset+q_start+row1;
+                unsigned int qr0=q_rope_pos+q_start+row0, qr1=q_rope_pos+q_start+row1;
                 // Causal mask: only enforce when causal_mask_enabled (default 1).
                 // DFlash γ-block runs with causal_mask_enabled=0 so the γ
                 // queries attend bidirectionally within their block; the prefix
@@ -587,8 +595,8 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
     const int* __restrict__ block_table,
 #endif
     const unsigned int q_len,
-    const unsigned int kv_len,
-    const unsigned int q_offset,
+    unsigned int kv_len,
+    unsigned int q_offset,
     const unsigned int num_q_heads,
     const unsigned int num_kv_heads,
     const unsigned int head_dim,
@@ -636,6 +644,14 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
     __shared__ float smem_ml64[BR64][2];
 
     KERNEL_PREAMBLE
+
+    // q_rope_pos: absolute position used to rotate the query block. Indirect
+    // (DFlash) declares it in KERNEL_PREAMBLE from a device u32 (= true decode
+    // position, decoupled from cache-slot base). All other variants: equals
+    // q_offset (correct for causal attention where RoPE pos == cache base).
+#ifndef Q_ROPE_POS_OVERRIDE
+    unsigned int q_rope_pos = q_offset;
+#endif
 
     const unsigned int group_id = lane_id >> 2;
     const unsigned int tid_in_group = lane_id & 3;
@@ -748,7 +764,7 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
                 acc_s[nt][0]*=inv_sqrt_d; acc_s[nt][1]*=inv_sqrt_d;
                 acc_s[nt][2]*=inv_sqrt_d; acc_s[nt][3]*=inv_sqrt_d;
                 unsigned int c0=nt*8+tid_in_group*2, c1=c0+1;
-                unsigned int qr0=q_offset+q_start+row0, qr1=q_offset+q_start+row1;
+                unsigned int qr0=q_rope_pos+q_start+row0, qr1=q_rope_pos+q_start+row1;
                 // Causal mask gated for DFlash γ-block (causal_mask_enabled=0).
                 if(causal_mask_enabled){
                     if(kv_start+c0>qr0) acc_s[nt][0]=-1e30f; if(kv_start+c1>qr0) acc_s[nt][1]=-1e30f;

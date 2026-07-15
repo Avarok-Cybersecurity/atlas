@@ -98,7 +98,7 @@ pub struct CompressorWeights {
     pub wkv: DenseWeight,
     /// gate_proj: same shape as wkv.
     pub wgate: DenseWeight,
-    /// kv_norm weight `[head_dim]` — STANDARD RMSNorm (loaded via dense_minus_one).
+    /// kv_norm weight `[head_dim]` — HF-vanilla RMSNorm (loaded exactly).
     pub norm: DenseWeight,
     /// position_bias / ape: [ratio, proj_dim] BF16, added to the gate before softmax.
     pub ape: spark_runtime::gpu::DevicePtr,
@@ -281,7 +281,16 @@ pub struct Qwen3AttentionLayer {
     pub(super) per_token_group_quant_fp8_k: KernelHandle,
     pub(super) fp8_gemm_t_blockscaled_k: KernelHandle,
     // Kernels — decode (GEMV M=1)
+    /// Offset-from-1 `rms_norm` (`out = x * (1 + w) / rms`). Used ONLY for the
+    /// unweighted normalize (`norm_unit_w()` is zero-filled, so `1 + 0 = 1`).
     pub(super) rms_norm_k: KernelHandle,
+    /// The norm kernel for every weight that comes from the CHECKPOINT.
+    /// Same handle as `rms_norm_k` for offset-from-1 models; `rms_norm_vanilla`
+    /// (`out = x * w / rms`) for models that ship HF-vanilla norm weights.
+    pub(super) rms_norm_w_k: KernelHandle,
+    /// True when `rms_norm_w_k` is the vanilla kernel — i.e. the checkpoint's
+    /// norm weights are loaded exactly, with no `-1` pre-subtraction.
+    pub(super) norm_vanilla: bool,
     pub(super) rms_norm_residual_k: KernelHandle,
     /// Gemma-4 FP32-input rms_norm (absolute formula).
     pub(super) rms_norm_f32_in_k: KernelHandle,
@@ -481,6 +490,10 @@ pub struct Qwen3AttentionLayer {
     // M128 variants
     pub(super) fp8_gemm_t_m128_k: KernelHandle,
     pub(super) fp8_fp8_gemm_t_m128_k: KernelHandle,
+    // Native FP4 prefill (mxf4nvf4): present only for models whose kernel dir
+    // ships w4a4_gemm_mfast (try_kernel returns 0 elsewhere).
+    pub(super) w4a4_gemm_k: KernelHandle,
+    pub(super) quantize_nvfp4_k: KernelHandle,
     /// Online FP8 KV scale calibration.
     pub(super) fp8_calibration: Option<Fp8KvCalibration>,
 }

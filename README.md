@@ -348,9 +348,10 @@ sudo docker run -d --name atlas \
     --scheduling-policy slai \
     --enable-prefix-caching \
     --speculative \
-    --num-drafts 2 \
     --tool-call-parser qwen3_coder
 ```
+
+`--num-drafts` is omitted so it defaults to `1`, i.e. MTP **K=2** (the CLI defines `--num-drafts 1` as K=2, `2` as K=3). K=2 is the measured-fastest verify width for this model; K=3 is slower.
 
 ### Recipe C — Qwen3.5-122B-A10B (NVFP4, single Spark)
 

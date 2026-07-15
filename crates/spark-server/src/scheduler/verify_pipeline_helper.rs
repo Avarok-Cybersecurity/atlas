@@ -50,6 +50,8 @@
 //! still see slightly stale `output_tokens` for positions ≥ 1 —
 //! best-effort, mirrors greedy unroll.
 
+mod fast_masked;
+
 use crate::scheduler::ActiveSeq;
 use crate::scheduler::decode_logits_seq::force_temp_zero_enabled;
 use crate::scheduler::helpers::bf16_to_f32;
@@ -62,6 +64,32 @@ use spark_model::traits::Model;
 pub(crate) fn fast_greedy_grammar_enabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| std::env::var("ATLAS_DISABLE_FAST_GREEDY").ok().as_deref() != Some("1"))
+}
+
+/// ATLAS_DFLASH_MASKED_VERIFY=1: route DFlash verify PICKS through the
+/// pre-sample pipeline so structural specials (`</think>`, `<think>`,
+/// `<tool_call>`) can never leak unmasked into the output — the T=0
+/// spec-entry derails, root cause 2026-07-08.
+///
+/// ⚠️ PICK-BASIS ONLY. This must never gate `dflash_verify_raw_argmax`
+/// itself: that bool selects the verify architecture at the step level,
+/// this env only chooses the pick basis at the pick sites. Masking picks
+/// is cheap (the chat fast path in this file makes it ≈ free).
+pub(crate) fn dflash_masked_verify_enabled() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var("ATLAS_DFLASH_MASKED_VERIFY").ok().as_deref() == Some("1"))
+}
+
+/// ATLAS_DFLASH_SEAM_SERIAL=1: take spec ENTRY (bootstrap, no pending
+/// drafts) through the standalone M=1 decode + propose instead of the
+/// fused single-sweep bootstrap. Evidence 2026-07-08: temp-0 derails
+/// concentrate on the serial-to-spec seam; the fused bootstrap chain
+/// diverges on its first step after serial decode, while routing that one
+/// step through plain decode makes the seam numerics identical to
+/// no-spec by construction. Costs one serial step per spec entry.
+pub(crate) fn dflash_seam_serial_enabled() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var("ATLAS_DFLASH_SEAM_SERIAL").ok().as_deref() == Some("1"))
 }
 
 /// Per-position verify logits, dequantised + processed through the full
@@ -184,6 +212,16 @@ pub fn verify_pick_all_with_pipeline(
     let k = argmax_ids.len();
     if k == 0 {
         return Vec::new();
+    }
+
+    // ── CHAT FAST PATH (2026-07-08): masked-greedy == raw-argmax guard ──
+    // See `fast_masked` module docs: for a grammarless request with no
+    // forced/stateful stage armed and argmax-preserving penalties, the
+    // pipeline provably cannot change any pick, so the raw argmax IS the
+    // masked pick and the [K, vocab] D2H is skipped entirely. Any
+    // ineligible position falls through to the slow path for the call.
+    if let Some(picks) = fast_masked::try_chat_fast_path(model, argmax_ids, a, ctx) {
+        return picks;
     }
 
     // ── FAST PATH (#3, 2026-06-02): on-GPU greedy pick under grammar ──

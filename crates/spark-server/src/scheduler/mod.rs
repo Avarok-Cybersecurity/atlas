@@ -12,6 +12,7 @@
 //! When busy: drains pending queue (mutex lock) after each decode step.
 
 // ── Submodules (split for ≤500 LoC files) ──────────────────────────────────
+mod adaptive_spec;
 mod confidence;
 mod decode_logits_content;
 mod decode_logits_seq;
@@ -113,6 +114,7 @@ pub fn run(
     eos_tokens: Vec<u32>,
     max_batch_size: usize,
     use_speculative: bool,
+    dflash_verify_raw_argmax: bool,
     num_drafts: usize,
     policy: Box<dyn SchedulingPolicy>,
     max_prefill_tokens: usize,
@@ -348,6 +350,30 @@ pub fn run(
                 tool_call_start_token,
                 tool_call_end_token,
             };
+            // Spec-resume guard (ATLAS_DFLASH_RESUME_GUARD=N, default 0 = off):
+            // keep the first N post-`</think>` tokens on plain serial decode.
+            // The T=0 verify-vs-decode low-margin flips measured 2026-07-07
+            // concentrate in the answer's opening tokens; serial-decoding that
+            // window sidesteps them while leaving the high-accept answer body
+            // speculated. N=0 preserves exact prior behavior.
+            static DFLASH_RESUME_GUARD: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+            let dflash_resume_guard = *DFLASH_RESUME_GUARD.get_or_init(|| {
+                std::env::var("ATLAS_DFLASH_RESUME_GUARD")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0)
+            });
+            // ATLAS_DFLASH_SPEC_THINK=1: speculate INSIDE think blocks (vLLM
+            // semantics — reference measures 45% draft acceptance on thinking,
+            // 2026-07-07 calibration). Bypasses the think-gate AND the resume
+            // guard: output is coherent but not byte-lossless vs no-spec (the
+            // batch-K numerics floor can flip a low-margin token mid-think),
+            // and thinking-budget forced-end is not enforced on the raw-argmax
+            // verify path. Throughput mode; leave OFF for byte-proof runs.
+            static DFLASH_SPEC_THINK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            let dflash_spec_think = *DFLASH_SPEC_THINK.get_or_init(|| {
+                std::env::var("ATLAS_DFLASH_SPEC_THINK").ok().as_deref() == Some("1")
+            });
             if use_ngram_speculative && active.len() == 1 && active[0].grammar_state.is_none() {
                 // N-gram speculative: CPU proposer + CUDA-graphed K=2 verify.
                 if let Some(ref mut proposer) = ngram_proposer {
@@ -359,7 +385,18 @@ pub fn run(
                 step_self_spec(&*model, &mut active, num_drafts, &verify_ctx);
             } else if use_mtp
                 && active.len() == 1
-                && !active[0].inside_thinking
+                && (
+                    // SPEC_THINK: speculate everywhere EXCEPT the first
+                    // `dflash_resume_guard` generated tokens — every observed
+                    // T=0 flip (2026-07-07/08) fires within ~7 tokens of spec
+                    // ENTRY (sequence start or post-think resume); serial-
+                    // decoding the entry window dodges the divergence while
+                    // leaving the body speculated.
+                    (dflash_spec_think
+                        && active[0].output_tokens.len() as u32 >= dflash_resume_guard)
+                        || (!active[0].inside_thinking
+                            && active[0].post_think_emitted >= dflash_resume_guard)
+                )
                 && !active[0].suppress_tool_call
                 && !active[0].disable_mtp
             {
@@ -401,7 +438,13 @@ pub fn run(
                             // only step proposes the first draft and is skipped.
                             let had_draft = !active[0].pending_drafts.is_empty();
                             let t0 = std::time::Instant::now();
-                            step_mtp(&*model, &mut active, num_drafts, &verify_ctx);
+                            step_mtp(
+                                &*model,
+                                &mut active,
+                                num_drafts,
+                                &verify_ctx,
+                                dflash_verify_raw_argmax,
+                            );
                             if had_draft {
                                 mtp_gate
                                     .as_mut()
@@ -447,7 +490,13 @@ pub fn run(
                     );
                 } else {
                     // MTP wins in this regime (or no gate): speculative decode.
-                    step_mtp(&*model, &mut active, num_drafts, &verify_ctx);
+                    step_mtp(
+                        &*model,
+                        &mut active,
+                        num_drafts,
+                        &verify_ctx,
+                        dflash_verify_raw_argmax,
+                    );
                 }
             } else {
                 // Batch decode (no MTP). Clear stale drafts when transitioning out of MTP mode.

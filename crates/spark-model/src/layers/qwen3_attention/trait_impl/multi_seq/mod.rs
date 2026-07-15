@@ -191,7 +191,7 @@ impl Qwen3AttentionLayer {
         }
         ops::rms_norm(
             ctx.gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             c.hidden,
             &self.input_norm,
             c.normed,
@@ -337,7 +337,7 @@ impl Qwen3AttentionLayer {
         }
         ops::rms_norm(
             ctx.gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             c.hidden,
             &self.post_attn_norm,
             c.normed,

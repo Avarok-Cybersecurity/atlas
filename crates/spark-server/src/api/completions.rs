@@ -140,6 +140,36 @@ pub async fn completions(
         }
     }
 
+    // Range-validate sampling params, mirroring the chat path (which returns
+    // 400 for out-of-spec values). Without this, a negative temperature is
+    // silently reinterpreted as greedy decoding and out-of-range penalties are
+    // applied verbatim, both diverging from OpenAI (and Atlas's own chat
+    // endpoint), which reject with HTTP 400.
+    if let Some(t) = req.temperature
+        && !(0.0..=2.0).contains(&t)
+    {
+        return openai_error_response(
+            StatusCode::BAD_REQUEST,
+            format!("temperature must be between 0 and 2, got {t}"),
+        );
+    }
+    if let Some(pp) = req.presence_penalty
+        && !(-2.0..=2.0).contains(&pp)
+    {
+        return openai_error_response(
+            StatusCode::BAD_REQUEST,
+            format!("presence_penalty must be between -2 and 2, got {pp}"),
+        );
+    }
+    if let Some(fp) = req.frequency_penalty
+        && !(-2.0..=2.0).contains(&fp)
+    {
+        return openai_error_response(
+            StatusCode::BAD_REQUEST,
+            format!("frequency_penalty must be between -2 and 2, got {fp}"),
+        );
+    }
+
     let temperature = req.temperature.unwrap_or(state.default_temperature);
     let top_k = req.top_k.unwrap_or(state.default_top_k);
     let top_p = req.top_p.unwrap_or(state.default_top_p);
@@ -291,6 +321,12 @@ pub(super) async fn completions_stream(
     let id = chunk_id.clone();
     let mut all_toks: Vec<u32> = Vec::new();
     let mut emitted: usize = 0;
+    // Incremental-detokenizer state (see `ChatTokenizer::incremental_decode`):
+    // extends `content_decoded` a bounded suffix at a time instead of
+    // re-decoding all_toks every token (O(n²) → O(n)).
+    let mut content_decoded = String::new();
+    let mut detok_prefix_offset: usize = 0;
+    let mut detok_read_offset: usize = 0;
     let token_stream = ReceiverStream::new(token_rx).flat_map(move |event| {
         let events: Vec<Result<Event, std::convert::Infallible>> = match event {
             // Echo + logprobs: prompt text and its logprobs, before any
@@ -314,12 +350,16 @@ pub(super) async fn completions_stream(
             }
             StreamEvent::Token(tok) | StreamEvent::TokenWithLogprobs(tok, _) => {
                 all_toks.push(tok);
-                let full = state.tokenizer.decode(&all_toks).unwrap_or_default();
-                let stable_end = full.trim_end_matches('\u{FFFD}').len();
+                content_decoded.push_str(&state.tokenizer.incremental_decode(
+                    &all_toks,
+                    &mut detok_prefix_offset,
+                    &mut detok_read_offset,
+                ));
+                let stable_end = content_decoded.len();
                 let delta = if stable_end <= emitted {
                     String::new()
                 } else {
-                    let d = full[emitted..stable_end].to_string();
+                    let d = content_decoded[emitted..stable_end].to_string();
                     emitted = stable_end;
                     d
                 };

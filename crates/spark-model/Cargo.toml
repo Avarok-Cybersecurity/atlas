@@ -36,6 +36,7 @@ gpu-examples = []
 [dependencies]
 atlas-core = { workspace = true }
 atlas-kernels = { workspace = true }
+atlas-tier = { workspace = true }
 # `default-features = false` so the metal feature can opt out of
 # spark-runtime's `cuda` default — otherwise the dep line silently
 # re-enables cudarc on every build.
@@ -154,6 +155,18 @@ required-features = ["cuda", "gpu-examples"]
 
 [[example]]
 name = "gdn_strided_norm_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_conv_kn_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "w4a16_m17_bench"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "w4a16_parity_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]

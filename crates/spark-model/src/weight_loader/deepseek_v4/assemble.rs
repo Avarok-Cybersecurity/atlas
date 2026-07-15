@@ -14,8 +14,8 @@ use crate::layers::qwen3_attention::{
     CompressorWeights, HcHeadWeights, HcSiteWeights, HcWeights, MlaWeights, Qwen3AttentionLayer,
 };
 use crate::weight_map::{
-    AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense,
-    dense_minus_one, quantized, quantized_v2,
+    AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense, dense_auto,
+    quantized, quantized_v2,
 };
 
 /// Load one MoE expert projection, dispatching by the on-disk format so the V4
@@ -375,7 +375,7 @@ pub fn assemble_layer(
             let wkv = dense(store, &format!("{cp}.wkv.weight"))?;
             let wgate = dense(store, &format!("{cp}.wgate.weight"))?;
             // compressor.norm is a STANDARD RMSNorm → subtract 1 for the offset kernel.
-            let norm = dense_minus_one(store, &format!("{cp}.norm.weight"), gpu)?;
+            let norm = dense_auto(store, &format!("{cp}.norm.weight"), gpu)?;
             let ape = store.get(&format!("{cp}.ape"))?.ptr;
             // 4b: allocate the persistent flat compressed-KV pool for this layer.
             // Sized to the full context (max_position_embeddings // ratio blocks)
@@ -548,6 +548,19 @@ pub fn assemble_layer(
             hc_eps: config.hc_eps,
         });
     }
+
+    // V4 loads its norm weights EXACTLY (no -1 pre-subtraction) and normalizes
+    // with `rms_norm_vanilla`. The only paths that would bypass that kernel are
+    // the fused residual+norm ones, taken when the mHC highway is absent — and
+    // they are offset-from-1 only, with no vanilla twin in-tree. They would
+    // silently compute `x * (1 + w)` on an exact weight. Fail loudly instead.
+    anyhow::ensure!(
+        layer.hc.is_some(),
+        "DeepSeek-V4 requires the mHC highway (hc_mult > 0, got {}): without it the fused \
+         residual+norm kernels would apply the offset-from-1 convention to exactly-loaded \
+         norm weights",
+        config.hc_mult
+    );
 
     Ok(Box::new(layer))
 }

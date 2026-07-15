@@ -74,6 +74,10 @@ pub struct BufferSizes {
     /// GDN FLA chunked-prefill scratch (single buffer, sub-divided W|U|S|uc).
     /// 0 unless the model is a 128-dim-linear-head GDN model (ATLAS_GDN_FLA path).
     pub gdn_fla_scratch: usize,
+    /// Mamba-2 SSD chunked-scan scratch (single buffer, sub-divided dt | dA_cumsum | CB).
+    /// 0 unless the model has Mamba-2 SSM layers. Shared across layers: they run
+    /// sequentially on one stream, so one allocation serves all 40.
+    pub ssd_scratch: usize,
     /// Grouped O-projection latent: `[M, o_groups*o_lora_rank]` BF16 (V4-Flash).
     /// 256 (placeholder) when `o_groups == 0`.
     pub o_latent: usize,
@@ -237,7 +241,9 @@ impl BufferSizes {
         // FP8 block-scaled activation scratch for prefill projections. The
         // widest contract dim across call sites is hidden (qkv / ssm-qkvz) or
         // q_heads*head_dim (o_proj). 1 byte/elem fp8 + one f32 per 128-block.
-        let max_proj_k = h.max(q_heads * hd);
+        // Mamba-2 out_proj contracts over d_inner (may exceed hidden), and its
+        // prefill input is FP8-precast into this buffer.
+        let max_proj_k = h.max(q_heads * hd).max(mamba2_d_inner);
         let fp8_act = m * max_proj_k;
         let fp8_act_scale = m * max_proj_k.div_ceil(128) * 4;
 
@@ -249,6 +255,18 @@ impl BufferSizes {
         //   W  [nt*nv][CHUNK][kd] bf16 ; U,uc [nt*nv][CHUNK][vd] bf16 ;
         //   S  [nt*nv][kd][vd] bf16 ; gc [nt*nv][CHUNK] f32.
         const FLA_CHUNK: usize = 64;
+        // SSD chunked scan (mamba2_ssd_*): dt[H][nc][L] f32 + dA_cs[H][nc][L] f32
+        //                                 + CB[nc][G][L][L] f32,  L = 64.
+        const SSD_L: usize = 64;
+        let ssd_scratch = if config.mamba_num_heads > 0 && config.ssm_state_size > 0 {
+            let nc = m.div_ceil(SSD_L) + 1;
+            let hh = config.mamba_num_heads;
+            let gg = config.n_groups.max(1);
+            (hh * nc * SSD_L * 4) * 2 + nc * gg * SSD_L * SSD_L * 4
+        } else {
+            0
+        };
+
         let gdn_fla_scratch = if config.linear_num_value_heads > 0
             && config.linear_key_head_dim == 128
             && config.linear_value_head_dim == 128
@@ -370,6 +388,7 @@ impl BufferSizes {
             expert_down_out,
             splitk_workspace,
             gdn_fla_scratch,
+            ssd_scratch,
             // Grouped O-projection latent (V4-Flash): [M, o_groups*o_lora_rank].
             o_latent: (m * config.o_groups * config.o_lora_rank * bf16).max(256),
             // Zero-filled weight for unweighted RMSNorm (q_b_norm).
@@ -427,6 +446,7 @@ impl BufferSizes {
             + self.expert_down_out
             + self.splitk_workspace
             + self.gdn_fla_scratch
+            + self.ssd_scratch
             + self.hc_streams
             + self.hc_post
             + self.hc_comb

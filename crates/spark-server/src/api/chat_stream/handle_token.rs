@@ -174,6 +174,9 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
             }
             state.emitted = 0; // Reset — next decode will be content-only
             state.all_toks.clear(); // Clear thinking tokens from accumulator
+            state.content_decoded.clear();
+            state.detok_prefix_offset = 0;
+            state.detok_read_offset = 0;
             return sse_events;
         }
         // Still in thinking — accumulate but don't emit as content
@@ -188,15 +191,17 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
             if state.reasoning_xml_leak_detected {
                 return sse_events;
             }
-            // Open thinking: emit as reasoning_content
-            let full = ctx
-                .state
-                .tokenizer
-                .decode(&state.all_toks)
-                .unwrap_or_default();
-            let stable_end = full.trim_end_matches('\u{FFFD}').len();
+            // Open thinking: emit as reasoning_content. Incrementally extend
+            // the stable decoded text instead of re-decoding all_toks (O(n²)).
+            let delta_stable = ctx.state.tokenizer.incremental_decode(
+                &state.all_toks,
+                &mut state.detok_prefix_offset,
+                &mut state.detok_read_offset,
+            );
+            state.content_decoded.push_str(&delta_stable);
+            let stable_end = state.content_decoded.len();
             if stable_end > state.emitted {
-                let raw = full[state.emitted..stable_end].to_string();
+                let raw = state.content_decoded[state.emitted..stable_end].to_string();
                 let mut cleaned = raw.clone();
                 state.emitted = stable_end;
                 // Strip format tokens that shouldn't appear in thinking.
@@ -245,7 +250,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
                         cleaned = cleaned.replace(&nl_form, "\n");
                     }
                 }
-                maybe_log_decode_trace(&raw, &cleaned, full.len(), stable_end - raw.len());
+                maybe_log_decode_trace(&raw, &cleaned, stable_end, stable_end - raw.len());
                 // Layer-A in-think tool-call leak scanner. The per-
                 // delta strippers above can miss boundary splits
                 // (e.g. `<too` in delta N + `l_call>` in delta N+1)
@@ -351,15 +356,20 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
     // token completes it. `state.all_toks` and `state.emitted` are
     // reset at `</think>` (line 147), so this slice references the
     // post-thinking content only.
-    let full = ctx
-        .state
-        .tokenizer
-        .decode(&state.all_toks)
-        .unwrap_or_default();
-    let stable_end = full.trim_end_matches('\u{FFFD}').len();
+    // Incrementally extend the stable decoded text instead of re-decoding the
+    // whole `all_toks` list every token (O(n²)). `content_decoded` stays
+    // byte-identical to the previous `decode(&all_toks)` trimmed of any
+    // trailing incomplete-multibyte token.
+    let delta_stable = ctx.state.tokenizer.incremental_decode(
+        &state.all_toks,
+        &mut state.detok_prefix_offset,
+        &mut state.detok_read_offset,
+    );
+    state.content_decoded.push_str(&delta_stable);
+    let stable_end = state.content_decoded.len();
     let _ = tok; // tok already in state.all_toks via line 86
     let mut delta = if stable_end > state.emitted {
-        let raw = full[state.emitted..stable_end].to_string();
+        let raw = state.content_decoded[state.emitted..stable_end].to_string();
         state.emitted = stable_end;
         raw
     } else {
@@ -389,6 +399,9 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
             state.thinking_done = false;
             state.all_toks.clear();
             state.emitted = 0;
+            state.content_decoded.clear();
+            state.detok_prefix_offset = 0;
+            state.detok_read_offset = 0;
         }
     }
 
@@ -628,15 +641,26 @@ pub(super) fn apply_stop_string_holdback(
     debug_assert!(!*triggered, "caller must gate on !triggered");
     accumulated_content.push_str(new_chars);
 
-    // Bounded search window: vLLM only scans the suffix that could
-    // contain a stop string straddling the new chars. Atlas keeps the
-    // simpler full-string scan here because Atlas accumulators are
-    // already bounded by the per-request token budget and the inner
-    // memchr-driven `str::find` is O(n) anyway.
+    // Bounded search window: only the suffix that could contain a stop
+    // string straddling the newly appended chars can hold a *new* match —
+    // every prior call already full-scanned (and found nothing in) the
+    // content before this window. A match can begin at earliest
+    // `max_stop_len - 1` bytes before the new chars; we also back up over
+    // the held-back `buffer_len` bytes for margin. This keeps per-token
+    // cost O(new + buffer + max_stop) instead of O(total), turning the
+    // whole-response scan from O(n²) into O(n).
+    let max_stop_len = stop_strings.iter().map(String::len).max().unwrap_or(0);
+    let search_start = {
+        let raw = accumulated_content
+            .len()
+            .saturating_sub(new_chars.len() + buffer_len + max_stop_len);
+        accumulated_content.floor_char_boundary(raw)
+    };
     let matched_pos = stop_strings
         .iter()
-        .filter_map(|s| accumulated_content.find(s.as_str()))
-        .min();
+        .filter_map(|s| accumulated_content[search_start..].find(s.as_str()))
+        .min()
+        .map(|rel| rel + search_start);
 
     if let Some(pos) = matched_pos {
         accumulated_content.truncate(pos);

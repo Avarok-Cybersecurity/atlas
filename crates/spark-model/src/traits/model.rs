@@ -426,10 +426,101 @@ pub trait Model: Send + Sync {
         self.decode_verify_graphed_kgamma(tokens, seq, stream)
     }
 
+    /// DFlash fused decode+verify: one M=(1+k) forward replacing separate
+    /// M=1 decode + M=k verify on the DFlash path.
+    ///
+    /// `tokens[0]` = accepted/decode token; `tokens[1..]` = draft block.
+    /// `try_dflash_capture` fires at row 0 so the DFlash drafter conditions
+    /// on the confirmed-accepted token's per-layer hidden, never on a
+    /// potentially-rejected draft's hidden.
+    ///
+    /// CUDA-graph cache keyed by `(slot_idx, tokens.len())`. Default falls
+    /// back to `decode_verify_graphed_kgamma` (which itself falls back to
+    /// eager `decode_verify`) for models that don't override.
+    fn decode_and_verify_fused(
+        &self,
+        tokens: &[u32],
+        seq: &mut SequenceState,
+        stream: u64,
+    ) -> Result<Vec<u32>> {
+        self.decode_verify_graphed_kgamma(tokens, seq, stream)
+    }
+
     /// Save the post-norm hidden state at `token_idx` (0 or 1) to a
     /// dedicated MTP input buffer. Must precede `run_mtp_propose` — MTP
     /// overwrites shared buffers including `norm_output`.
     fn save_hidden_for_mtp(&self, token_idx: usize, stream: u64) -> Result<()>;
+
+    /// Capture `hidden_states[token_idx]` from every DFlash capture layer
+    /// into `dflash_hidden_save`. Called after gamma verify Phase 3 D2H
+    /// sync (bonus position known). No-op when DFlash is disabled.
+    fn save_dflash_hidden_for_propose(&self, _token_idx: usize, _stream: u64) -> Result<()> {
+        Ok(())
+    }
+
+    /// Append the accepted draft's hidden state (row 1 of dflash_hidden_save)
+    /// into the proposer context. Base primitive for both legacy and Eagle paths.
+    /// Default no-op for models without a DFlash drafter.
+    fn dflash_accept_append(&self, _seq: &mut SequenceState) -> Result<()> {
+        Ok(())
+    }
+
+    /// EAGLE-fix (K=2 accept): append row 0 @ N then row 1 @ N+1 BEFORE propose
+    /// so forward_block conditions on row 1 (the hidden that generated bonus).
+    /// Default no-op for models without a DFlash drafter.
+    fn dflash_eagle_accept_append(&self, _seq: &mut SequenceState) -> Result<()> {
+        Ok(())
+    }
+
+    /// EAGLE-fix (K=gamma): append rows 0..=num_accepted at positions
+    /// base_pos..=base_pos+num_accepted. Row num_accepted is appended LAST ->
+    /// freshest ctx slot = the hidden that generated the bonus (EAGLE).
+    /// Default no-op for models without a DFlash drafter.
+    fn dflash_eagle_kgamma_append(
+        &self,
+        _seq: &mut SequenceState,
+        _num_accepted: usize,
+        _base_pos: usize,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Ctx-holes fix (serial decode): append the just-decoded token's
+    /// captured per-layer hidden (`dflash_hidden_save` row 0, filled by
+    /// `try_dflash_capture` inside the decode layer loop) into the seq's
+    /// DFlash ctx accumulator, stamped at its true position
+    /// (`seq.seq_len - 1`, matching propose.rs's decode-append convention).
+    ///
+    /// Called from the scheduler's serial bootstrap path when adaptive
+    /// speculation has SUSPENDED this seq — propose() never runs there, so
+    /// without this hook every serially-decoded token's target hidden is
+    /// overwritten (single-slot model capture) and permanently lost,
+    /// leaving holes in the drafter's ctx at spec re-entry (measured
+    /// -0.42 accepted/step on think-gated vs spec-through-think content).
+    ///
+    /// Sets `skip_next_decode_append` so a propose() firing later (re-probe)
+    /// does not double-append the same capture. Graceful no-op when DFlash
+    /// is disabled or the seq has a non-DFlash proposer state.
+    fn dflash_serial_ctx_append(&self, _seq: &mut SequenceState) -> Result<()> {
+        Ok(())
+    }
+
+    /// Unified DFlash ctx commit (ATLAS_DFLASH_UNIFIED_CTX=1). Copies
+    /// `num_committed` scratch rows (`dflash_hidden_save` rows
+    /// `0..num_committed`) into `ctx_hidden_acc` at the CURRENT TAIL
+    /// (`ctx_len`), stamping RoPE positions `base_pos..base_pos+num_committed`,
+    /// folding the watermark slide in first. `base_pos` is the RoPE position,
+    /// NOT the acc row index (they diverge after a watermark slide — DDD §4.1
+    /// landmine). The single structural replacement for the ~5 fragmented
+    /// appends. Default no-op for models without a DFlash drafter.
+    fn commit_ctx(
+        &self,
+        _seq: &mut SequenceState,
+        _num_committed: usize,
+        _base_pos: usize,
+    ) -> Result<()> {
+        Ok(())
+    }
 
     /// Run the MTP proposer for one draft token off the saved hidden state.
     /// `None` when no proposer is wired.

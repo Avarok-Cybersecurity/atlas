@@ -204,7 +204,7 @@ impl Qwen3AttentionLayer {
                 // never reach this branch — they early-return above.
                 ops::rms_norm(
                     ctx.gpu,
-                    self.rms_norm_k,
+                    self.rms_norm_w_k,
                     q_contiguous,
                     q_norm_full,
                     q_contiguous,
@@ -216,7 +216,7 @@ impl Qwen3AttentionLayer {
             } else if !self.attn.q_norm.weight.is_null() {
                 ops::rms_norm(
                     ctx.gpu,
-                    self.rms_norm_k,
+                    self.rms_norm_w_k,
                     q_contiguous,
                     &self.attn.q_norm,
                     q_contiguous,
@@ -230,7 +230,7 @@ impl Qwen3AttentionLayer {
         if let Some(ref k_norm_full) = self.attn.k_norm_full {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 k_contiguous,
                 k_norm_full,
                 k_contiguous,
@@ -242,7 +242,7 @@ impl Qwen3AttentionLayer {
         } else if !self.attn.k_norm.weight.is_null() {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 k_contiguous,
                 &self.attn.k_norm,
                 k_contiguous,
@@ -264,7 +264,7 @@ impl Qwen3AttentionLayer {
         if let Some(v_norm_w) = self.v_norm_weight.as_ref() {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 v_contiguous,
                 v_norm_w,
                 v_contiguous,

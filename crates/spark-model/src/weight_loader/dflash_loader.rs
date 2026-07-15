@@ -54,6 +54,38 @@ pub struct DflashConfig {
     /// DFlash-specific nested config object.
     #[serde(default)]
     pub dflash_config: Option<DflashSubConfig>,
+    /// Drafter base RoPE θ. Defaults to 10M (matches Qwen3.6-DFlash).
+    #[serde(default = "default_rope_theta")]
+    pub rope_theta: f32,
+    /// HF-style `rope_scaling` block. `None` ⇒ plain RoPE (the v2 2026-04-27
+    /// Qwen3.6-DFlash drafter ships `rope_scaling: null`). When present and
+    /// `rope_type == "yarn"`, the drafter's YaRN parameters are used to
+    /// build the inv_freq table at construction time.
+    #[serde(default)]
+    pub rope_scaling: Option<DflashRopeScaling>,
+}
+
+fn default_rope_theta() -> f32 {
+    10_000_000.0
+}
+
+/// Subset of HF `rope_scaling` block consumed by Atlas. Mirrors the field
+/// names in `transformers`' Qwen3 config so `serde_json::from_str` works
+/// directly on the drafter's `config.json`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DflashRopeScaling {
+    /// Currently only `"yarn"` is recognised; anything else falls back to
+    /// plain RoPE with a warning logged at construction time.
+    #[serde(default)]
+    pub rope_type: Option<String>,
+    #[serde(default)]
+    pub factor: Option<f32>,
+    #[serde(default)]
+    pub beta_fast: Option<f32>,
+    #[serde(default)]
+    pub beta_slow: Option<f32>,
+    #[serde(default)]
+    pub original_max_position_embeddings: Option<f32>,
 }
 
 fn default_block_size() -> usize {

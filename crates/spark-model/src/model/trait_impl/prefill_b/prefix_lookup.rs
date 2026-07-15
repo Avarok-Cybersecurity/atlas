@@ -31,7 +31,8 @@ impl TransformerModel {
                 if self.tokens_have_vision_pad(tokens) || seq.collect_prompt_logprobs.is_some() {
                     spark_runtime::prefix_cache::PrefixMatch::empty()
                 } else {
-                    self.prefix_cache.lookup(tokens, bs, seq.session_hash)
+                    self.prefix_cache
+                        .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
                 };
             // F83 (2026-04-30): on EP>1, head and worker have
             // independent local prefix caches whose match counts can
@@ -53,16 +54,21 @@ impl TransformerModel {
             // Calling unconditionally on EP active fixes that — when
             // either side has matched=0 the agreed value is 0 and we
             // simply fall through to the no-cache path on both sides.
-            let ep_active = self.comm.is_some() && self.config.ep_world_size > 1;
+            // EP *or* pure TP: any multi-rank world must agree on `matched`
+            // (rank-local prefix caches can diverge in either topology).
+            let ep_active = self.multi_rank_protocol_active();
             if ep_active {
                 let local = prefix_match.matched_tokens as u32;
                 let agreed = self.ep_min_u32(local)? as usize;
                 if agreed < prefix_match.matched_tokens {
-                    self.prefix_cache.release(tokens, bs);
+                    self.prefix_cache.release(tokens, bs, seq.adapter_id);
                     if agreed > 0 {
-                        prefix_match =
-                            self.prefix_cache
-                                .lookup(&tokens[..agreed], bs, seq.session_hash);
+                        prefix_match = self.prefix_cache.lookup(
+                            &tokens[..agreed],
+                            bs,
+                            seq.session_hash,
+                            seq.adapter_id,
+                        );
                     } else {
                         prefix_match = spark_runtime::prefix_cache::PrefixMatch::empty();
                     }
@@ -113,8 +119,13 @@ impl TransformerModel {
             // layer_kv_write_start floor (forward_layers.rs) skips writes below
             // cached_prefix_tokens, so the shared prefix-cache blocks keep the
             // original values (a non-bit-equal rewrite would poison them).
-            let mut skip = if let Some(snap_id) = prefix_match.ssm_snapshot {
-                let snap_tok = prefix_match.ssm_snapshot_tokens;
+            // Phase 1b spill-tier fault-in: fold a resident hit with a
+            // faulted-back spilled anchor; see `ssm_fault_in::eff_ssm_snapshot`.
+            let (eff_snapshot, eff_snapshot_tokens) =
+                self.eff_ssm_snapshot(&prefix_match, seq.session_hash, stream);
+
+            let mut skip = if let Some(snap_id) = eff_snapshot {
+                let snap_tok = eff_snapshot_tokens;
                 // Exact full-prompt hit on a hiddenless snapshot (finish
                 // leaves never stash a hidden): the exact-snap fixup cannot
                 // produce the first token's logits, so fall through to the
@@ -246,7 +257,18 @@ impl TransformerModel {
             // already-cached values).
             //
             // For pure attention (MLA/GQA): use matched tokens directly.
-            let snap_tok = prefix_match.ssm_snapshot_tokens;
+            //
+            // CRITICAL (tier fault-in skip fix): use the EFFECTIVE snapshot
+            // depth, not the resident-only `ssm_snapshot_tokens`. When the
+            // anchor was SPILLED and faulted back in above, the resident field
+            // is 0 and the real depth lives in `ssm_snapshot_tier_tokens` (both
+            // folded into `eff_snapshot_tokens`). Using the raw field here would
+            // make `snap_tok = 0 → skip_tokens = 0` for every tier restore, so
+            // the suffix prefill re-runs the SSM over the ENTIRE prefix — the
+            // restore completes but skips nothing, making a warm fault-in slower
+            // than a plain recompute. `eff_snapshot_tokens` makes the skip point
+            // equal the restored state depth.
+            let snap_tok = eff_snapshot_tokens;
             let skip_tokens = if skip && !has_ssm {
                 matched
             } else if skip && matched == total && snap_tok == matched {

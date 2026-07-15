@@ -103,7 +103,11 @@ impl TransformerModel {
             let ep_active = self.comm.is_some() && self.config.ep_world_size > 1;
             if cut > chunk_start
                 && cut < total
-                && (ep_active || self.prefix_cache.peek_matched_tokens(tokens, bs) > 0)
+                && (ep_active
+                    || self
+                        .prefix_cache
+                        .peek_matched_tokens(tokens, bs, seq.adapter_id)
+                        > 0)
             {
                 self.prefill_chunk_dispatch(
                     tokens,
@@ -128,9 +132,11 @@ impl TransformerModel {
             );
         }
 
-        // Use the caller-provided stream for compute-copy overlap,
-        // unless EP is active (NCCL requires the default stream).
-        let stream = if self.comm.is_some() && self.config.ep_world_size > 1 {
+        // Use the caller-provided stream for compute-copy overlap, unless
+        // a multi-rank world is active (EP or pure TP — NCCL collectives
+        // must stay stream-ordered with the cmd broadcasts, which run on
+        // the default stream).
+        let stream = if self.multi_rank_protocol_active() {
             self.gpu.default_stream()
         } else {
             stream

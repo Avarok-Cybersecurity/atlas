@@ -13,7 +13,7 @@ use std::ptr;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use super::{COLLECTIVE_TIMEOUT_SECS, NcclBackend};
+use super::{ALL_REDUCE_DTYPE_BYTES, COLLECTIVE_TIMEOUT_SECS, NcclBackend};
 use crate::CommBackend;
 use crate::nccl::{self, NcclDataType, NcclRedOp};
 
@@ -22,7 +22,9 @@ impl CommBackend for NcclBackend {
         if self.world_size == 2 && self.add_kernel.load(Ordering::Relaxed) != 0 {
             return self.all_reduce_2rank(ptr, bytes, self.legacy_stream);
         }
-        let count = bytes / 2;
+        // Fallback: ncclAllReduce reduces IN-PLACE on `ptr` and never touches
+        // `recv_buffer`, so it is not subject to the receive-buffer bound.
+        let count = bytes / ALL_REDUCE_DTYPE_BYTES;
         let comm = *self.comm.lock();
         let result = unsafe {
             nccl::ncclAllReduce(
@@ -53,7 +55,8 @@ impl CommBackend for NcclBackend {
             return Ok(());
         }
 
-        let count = bytes / 2;
+        // Fallback: in-place on `ptr`, does not use `recv_buffer`.
+        let count = bytes / ALL_REDUCE_DTYPE_BYTES;
         let comm = *self.comm.lock();
 
         // 1. Record "MoE compute done" on compute stream
@@ -289,15 +292,8 @@ mod tests {
         assert!(COLLECTIVE_TIMEOUT_SECS <= 300);
     }
 
-    #[test]
-    fn test_recv_buffer_size_sufficient() {
-        use crate::nccl_backend::RECV_BUFFER_SIZE;
-        // Verify buffer covers all use cases including large models.
-        let single_decode = 6144 * 2; // 12 KB (122B hidden)
-        let k3_verify = 6144 * 3 * 2; // 36 KB
-        let prefill_chunk = 6144 * 4096 * 2; // 48 MB (122B, 4096 chunk)
-        assert!(RECV_BUFFER_SIZE >= single_decode);
-        assert!(RECV_BUFFER_SIZE >= k3_verify);
-        assert!(RECV_BUFFER_SIZE >= prefill_chunk);
-    }
+    // The receive-buffer capacity invariant — which replaced a
+    // `test_recv_buffer_size_sufficient` that asserted a fixed 64 MiB constant
+    // against a 4096-token prefill chunk while the shipped default was 8192 —
+    // is tested next to the code that enforces it, in `recv_buffer.rs`.
 }

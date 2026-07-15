@@ -159,7 +159,7 @@ TP for dense models on future multi-GPU hardware is on the roadmap; today there'
 
 - `scripts/start-ep2.sh`, `scripts/start-minimax-ep2.sh`, `scripts/test-minimax-ep2.sh`
 - `crates/spark-comm/src/nccl_backend.rs` — NCCL impl.
-- `crates/spark-model/src/layers/minimax_moe.rs` (EP=2 dispatch example).
-- `kernels/gb10/minimax-m2-229b/nvfp4/moe_dispatch.cu` — kernel.
-- `docs/design/ep2-token-dispatch-design.md` — design note.
+- `crates/spark-model/src/layers/moe/forward_ep.rs` (EP=2 dispatch); MiniMax loader in `crates/spark-model/src/weight_loader/minimax.rs`.
+- `kernels/gb10/minimax-m2-229b/nvfp4/moe_w4a16_grouped_gemm.cu` — routed grouped-GEMM kernel.
+- `docs/adr/0007-tp-ep-composition.md` — TP/EP composition design record.
 - `docs/GB10_DEPLOYMENT_GUIDE.md` §7 — field-tested EP=2 troubleshooting.

@@ -65,6 +65,7 @@ unsafe extern "C" {
     pub(super) fn cuEventCreate(phEvent: *mut u64, flags: u32) -> i32;
     pub(super) fn cuEventRecord(hEvent: u64, hStream: u64) -> i32;
     pub(super) fn cuStreamWaitEvent(hStream: u64, hEvent: u64, flags: u32) -> i32;
+    pub(super) fn cuEventSynchronize(hEvent: u64) -> i32;
     pub(super) fn cuEventDestroy_v2(hEvent: u64) -> i32;
 }
 
