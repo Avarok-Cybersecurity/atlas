@@ -38,6 +38,36 @@ impl Qwen3AttentionLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // Native FP4 path: quantize `normed` to NVFP4 ONCE and share it across
+        // the Q, K and V GEMMs (same input). OPT-IN ONLY (ATLAS_ATTN_W4A4=1):
+        // although the input is normed (the distribution class that gated clean
+        // on the SSM projections), the outputs here are attention LOGIT inputs,
+        // and same-binary A/B on long prompts showed the hallucinated-multiple-
+        // choice signature with this on and clean answers with it off -- small
+        // perturbations in q/k reroute attention. It also measured only ~2 ms.
+        let w4a4 = n >= 256
+            && self.w4a4_gemm_k.0 != 0
+            && self.quantize_nvfp4_k.0 != 0
+            && self.q_weight.as_ref().and_then(|w| w.as_nvfp4()).is_some()
+            && ctx.buffers.fp8_act_bytes() >= (n as usize) * (h as usize)
+            && std::env::var("ATLAS_ATTN_W4A4").is_ok();
+        let a4 = if w4a4 {
+            let a4 = ctx.buffers.fp8_act();
+            let a4_sf = a4.offset((n as usize) * (h as usize) / 2);
+            ops::quantize_bf16_to_nvfp4(
+                ctx.gpu,
+                self.quantize_nvfp4_k,
+                normed,
+                a4,
+                a4_sf,
+                n,
+                h,
+                stream,
+            )?;
+            Some((a4, a4_sf))
+        } else {
+            None
+        };
         let qg_out = ctx.buffers.qkv_output();
         self.prefill_one_proj(
             Proj::Q,
@@ -46,6 +76,7 @@ impl Qwen3AttentionLayer {
             n,
             q_proj_dim as u32,
             h,
+            a4,
             ctx,
             stream,
         )?;
@@ -65,7 +96,17 @@ impl Qwen3AttentionLayer {
         )?;
 
         let k_contiguous = ctx.buffers.ssm_qkvz();
-        self.prefill_one_proj(Proj::K, normed, k_contiguous, n, nkv * hd, h, ctx, stream)?;
+        self.prefill_one_proj(
+            Proj::K,
+            normed,
+            k_contiguous,
+            n,
+            nkv * hd,
+            h,
+            a4,
+            ctx,
+            stream,
+        )?;
         super::super::op_dump::dump_bf16(
             ctx.gpu,
             k_contiguous,
@@ -77,7 +118,17 @@ impl Qwen3AttentionLayer {
         )?;
 
         let v_contiguous = k_contiguous.offset(num_tokens * kv_dim * bf16);
-        self.prefill_one_proj(Proj::V, normed, v_contiguous, n, nkv * hd, h, ctx, stream)?;
+        self.prefill_one_proj(
+            Proj::V,
+            normed,
+            v_contiguous,
+            n,
+            nkv * hd,
+            h,
+            a4,
+            ctx,
+            stream,
+        )?;
         super::super::op_dump::dump_bf16(
             ctx.gpu,
             v_contiguous,
@@ -99,6 +150,7 @@ impl Qwen3AttentionLayer {
         n: u32,
         out_dim: u32,
         h: u32,
+        a4: Option<(DevicePtr, DevicePtr)>,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
@@ -128,6 +180,23 @@ impl Qwen3AttentionLayer {
                 "attn_v",
             ),
         };
+
+        // Native FP4: pre-quantized activations x original NVFP4 weights.
+        if let (Some((a4p, a4sf)), Some(nvfp4)) = (a4, weight_opt.and_then(|w| w.as_nvfp4())) {
+            let _ = label;
+            return ops::w4a4_gemm_mfast(
+                ctx.gpu,
+                self.w4a4_gemm_k,
+                a4p,
+                a4sf,
+                nvfp4,
+                out,
+                n,
+                out_dim,
+                h,
+                stream,
+            );
+        }
 
         let force_w8a8 = ops::fp8_blockscaled_prefill_enabled();
         // W8A8 + FP32 epilogue: requires NON-transposed FP8 weights with
@@ -309,6 +378,107 @@ impl Qwen3AttentionLayer {
                     h,
                     stream,
                 )?;
+            }
+        }
+        // ── LoRA runtime delta: out += scale·(normed@Aᵀ)@Bᵀ (Q/K/V).
+        // For gated Q this folds into the RAW interleaved `[Q|gate]` `out`
+        // (out_dim = q_proj_dim) BEFORE the caller's `deinterleave_qg_split`
+        // (paged.rs / cache_skip.rs) — the PEFT `lora_B` was trained against
+        // exactly that interleaved basis, so Q folds like K/V, just wider.
+        // Runs before the caller's ATLAS_OP_DUMP, so dumps show ADAPTED
+        // outputs (what an HF+PEFT forward hook shows).
+        if let Some(ref lw) = self.lora {
+            let (pair, route, module) = match proj {
+                Proj::Q => (
+                    lw.q.as_ref(),
+                    lw.q_route.as_ref(),
+                    Some(crate::lora::LoraModule::QProj),
+                ),
+                Proj::K => (
+                    lw.k.as_ref(),
+                    lw.k_route.as_ref(),
+                    Some(crate::lora::LoraModule::KProj),
+                ),
+                Proj::V => (
+                    lw.v.as_ref(),
+                    lw.v_route.as_ref(),
+                    Some(crate::lora::LoraModule::VProj),
+                ),
+            };
+            if let Some(pair) = pair {
+                debug_assert_eq!(pair.k_in, h);
+                debug_assert_eq!(pair.n_out, out_dim);
+                // #30 routed-prefill precision: when this prefill routes to a
+                // NON-active slot (`ctx.routed_lora_layers` Some), select THAT
+                // slot's (global_layer, module) pair and fold it through the SAME
+                // dense `apply_lora_delta` (dense_gemm_tc for m>1) the ACTIVE
+                // adapter's prefill uses — numerically identical to serving that
+                // adapter active, unlike the per-row bgmv whose accumulation order
+                // tips razor-margin tokens. `lw.layer_idx` is the GLOBAL layer
+                // index (not `attn_layer_idx`), matching the pool's GLOBAL-indexed
+                // slice. `None` when the routed slot doesn't adapt this module →
+                // fall through to the bgmv (base for that module) / installed pair.
+                let routed_pair = ctx.routed_lora_layers.and_then(|ls| {
+                    module.and_then(|m| crate::lora::select_routed_pair(ls, lw.layer_idx, m))
+                });
+                // Request-scoped routing: fold THIS request's adapter delta over
+                // all `n` prompt tokens via the bgmv when the prefill uploaded a
+                // per-request slot buffer (`seq_slot != 0`) and the module has a
+                // route. `normed` is contiguous [n, h] and `out` is contiguous
+                // [n, out_dim], so the bgmv (all rows = same slot) is
+                // byte-identical to `n` single-row `apply_lora_delta`. No pool /
+                // no route → the installed-active-pair path (pre-M2 behaviour).
+                let seq_slot = ctx
+                    .attn_metadata
+                    .map(|m| m.seq_slot)
+                    .unwrap_or(DevicePtr(0));
+                if let Some(routed_pair) = routed_pair {
+                    // #30 dense routed path (MUST be checked before the bgmv branch:
+                    // a routed prefill satisfies BOTH conditions and the dense path
+                    // must win). Same k_in/n_out/max_rank as the installed pair
+                    // (uniform pool) — only a/b/scale differ (the request slot's).
+                    debug_assert_eq!(routed_pair.k_in, h);
+                    debug_assert_eq!(routed_pair.n_out, out_dim);
+                    ops::lora_delta::apply_lora_delta(
+                        ctx.gpu,
+                        &lw.kernels,
+                        routed_pair,
+                        normed,
+                        out,
+                        n,
+                        ctx.buffers.lora_xa(),
+                        ctx.buffers.lora_delta(),
+                        stream,
+                    )?;
+                } else if seq_slot.0 != 0
+                    && let Some(route) = route
+                {
+                    ops::lora_delta::apply_lora_bgmv(
+                        ctx.gpu,
+                        &lw.kernels,
+                        route,
+                        normed,
+                        out,
+                        seq_slot,
+                        n,
+                        pair.k_in,
+                        pair.n_out,
+                        ctx.buffers.lora_xa(),
+                        stream,
+                    )?;
+                } else {
+                    ops::lora_delta::apply_lora_delta(
+                        ctx.gpu,
+                        &lw.kernels,
+                        pair,
+                        normed,
+                        out,
+                        n,
+                        ctx.buffers.lora_xa(),
+                        ctx.buffers.lora_delta(),
+                        stream,
+                    )?;
+                }
             }
         }
         Ok(())

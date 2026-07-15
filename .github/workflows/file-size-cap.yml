@@ -41,6 +41,14 @@ jobs:
             # external contributors. Candidate for a `traits/model/mod.rs`
             # split that pulls verify/decode default impls into siblings.
             "crates/spark-model/src/traits/model.rs"
+            # ── PR: LoRA-on-HSS-tier carry-over ──
+            # 502 LoC — `TransformerLayer` trait: the core per-layer interface
+            # (~20 methods spanning decode / prefill / SSM-phase / MoE-transpose,
+            # each with a long arg list + doc). Atomic interface, same rationale
+            # as `traits/model.rs` above. Tipped over 500 by the `as_any_mut`
+            # downcast hook the LoRA install walk needs. Clean split
+            # (SSM-prefill phases -> sibling supertrait) tracked as follow-up.
+            "crates/spark-model/src/layer/transformer_layer.rs"
             # 513 LoC — Gemma-4 weight loader (variant-dispatch family).
             # Already part of a `gemma4/` split; the leftover holds the
             # single-file dispatch entry-point + per-layer-type orchestration.

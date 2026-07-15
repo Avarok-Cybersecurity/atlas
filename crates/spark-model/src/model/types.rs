@@ -41,6 +41,18 @@ pub struct TransformerModel {
     pub(super) lm_head_fp8: Option<Fp8DenseWeight>,
     pub(super) layers: Vec<Box<dyn TransformerLayer>>,
     pub(super) buffers: BufferArena,
+    /// Startup-static LoRA adapter (pool + per-layer pairs + M2 pointer
+    /// tables). `None` = no adapter. Installed post-construction via
+    /// `set_lora_weights`, which also copies the per-layer pairs into the
+    /// layer structs; kept here as the owner of the pool/tables and for
+    /// status introspection.
+    pub(super) lora: Option<crate::lora::LoraWeights>,
+    /// True when runtime adapter rotation is ARMED: `ATLAS_LORA_ROTATE=1`, or
+    /// `$ATLAS_LORA_PEER` set. Armed ⇒ decode runs eager (no CUDA-graph
+    /// capture) so a `set_active_lora` re-point is immediately live
+    /// (eager-on-rotate). `false` (single startup adapter, no rotation env)
+    /// keeps the decode-graph path byte-identical to today.
+    pub(super) lora_rotatable: bool,
     pub(super) kv_cache: Mutex<PagedKvCache>,
     pub(super) gpu: Box<dyn GpuBackend>,
     pub(super) rms_norm_kernel: KernelHandle,
@@ -89,6 +101,12 @@ pub struct TransformerModel {
     pub(super) ssm_pool: Arc<SsmStatePool>,
     /// SSM state snapshot pool for Marconi prefix caching.
     pub(super) ssm_snapshots: SsmSnapshotPool,
+    /// Optional SSM snapshot spill tier (`ATLAS_SSM_TIER`). `None` (default)
+    /// keeps the drop-only reclaim path byte-identical; `Some` moves an evicted
+    /// snapshot's bytes to the tier (keeping its index entry findable) so a warm
+    /// turn faults it back instead of recomputing. Threaded into
+    /// [`SsmSnapshotPool::reclaim_from_cache`] at every reclaim call site.
+    pub(super) ssm_tier_store: Option<Arc<dyn super::ssm_tier::SnapshotBlobStore>>,
     /// Fixed max blocks per sequence (max_seq_len / block_size + 1).
     /// Used as constant stride in attention metadata for CUDA graph compatibility.
     pub(super) max_blocks_per_seq: u32,

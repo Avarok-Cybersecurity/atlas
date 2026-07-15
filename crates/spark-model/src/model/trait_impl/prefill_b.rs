@@ -103,7 +103,11 @@ impl TransformerModel {
             let ep_active = self.comm.is_some() && self.config.ep_world_size > 1;
             if cut > chunk_start
                 && cut < total
-                && (ep_active || self.prefix_cache.peek_matched_tokens(tokens, bs) > 0)
+                && (ep_active
+                    || self
+                        .prefix_cache
+                        .peek_matched_tokens(tokens, bs, seq.adapter_id)
+                        > 0)
             {
                 self.prefill_chunk_dispatch(
                     tokens,

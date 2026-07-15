@@ -174,6 +174,8 @@ pub fn swap_out_sequence(
     Ok(SwappedSeq {
         tokens,
         session_hash: a.session_hash,
+        adapter_slot: a.seq.adapter_slot,
+        adapter_id: a.seq.adapter_id,
         seq_len,
         num_blocks,
         last_token: a.last_token,
@@ -255,6 +257,14 @@ pub fn resume_swapped_seq(
     // Restore CPU-side metadata.
     seq.tokens = s.tokens;
     seq.seq_len = s.seq_len;
+    seq.adapter_slot = s.adapter_slot;
+    seq.adapter_id = s.adapter_id;
+    // Task #25: swap-out released this seq's slot ref (via free_sequence); a
+    // resumed seq re-enters ACTIVE decode WITHOUT re-running the prefill stamp,
+    // so re-acquire here to balance that release and re-protect the slot for the
+    // remainder of the decode. Stores the freshly resolved index (release keys
+    // off it, so the acquire/release stay balanced regardless of any rotate).
+    seq.acquired_adapter_slot = model.acquire_adapter_slot(s.adapter_slot);
 
     Ok(ActiveSeq {
         seq,

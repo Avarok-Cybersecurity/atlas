@@ -33,14 +33,14 @@ mod prefill;
 mod prefill_weights;
 mod trait_impl;
 mod types;
+mod types_weights;
 
 #[cfg(feature = "cuda")]
 pub use innerq_driver::InnerQDriver;
 // V4: re-export the new hyper-connection / compressor weight types alongside the
 // existing ones. These are only constructed under DeepSeek-V4 detection.
-pub use types::{
-    CompressorWeights, HcHeadWeights, HcSiteWeights, HcWeights, MlaWeights, Qwen3AttentionLayer,
-};
+pub use types::Qwen3AttentionLayer;
+pub use types_weights::{CompressorWeights, HcHeadWeights, HcSiteWeights, HcWeights, MlaWeights};
 
 /// Startup fail-fast for `--kv-cache-dtype`: resolve every kernel handle the
 /// dtype's dispatch arms require (chunked-prefill kernel, WHT bookends) and

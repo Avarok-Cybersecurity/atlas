@@ -109,6 +109,18 @@ impl TransformerModel {
                     self.gpu
                         .copy_h2d_async(bt_bytes, meta_base.offset(256), stream)?;
 
+                    // Request-scoped LoRA routing (eager per-token verify). One
+                    // sequence → one adapter for all K tokens; 1-elem buffer at
+                    // the free +128 gap (layout slot@+8/seq_len@+16/bt@+256).
+                    // Eager path, so no capture concern. `DevicePtr(0)` (no
+                    // pool) → installed-pair fallback.
+                    let seq_slot = self.upload_seq_slot_uniform(
+                        seq.adapter_slot,
+                        1,
+                        meta_base.offset(128),
+                        stream,
+                    )?;
+
                     let attn_metadata = AttnMetadataDev {
                         positions: meta_base,
                         positions_h: meta_base,
@@ -118,6 +130,7 @@ impl TransformerModel {
                         block_table: meta_base.offset(256),
                         max_blocks_per_seq: max_blocks,
                         num_seqs: 1,
+                        seq_slot,
                     };
 
                     let ctx = ForwardContext {
@@ -130,6 +143,7 @@ impl TransformerModel {
                         graph_capture: false,
                         gdn_exact_replay: false,
                         token_ids: None,
+                        routed_lora_layers: None, // #30: verify decode; no prefill route.
                     };
 
                     let h_t = hidden.offset(t * h * fp32);
@@ -159,6 +173,7 @@ impl TransformerModel {
                     graph_capture: false,
                     gdn_exact_replay: false,
                     token_ids: None,
+                    routed_lora_layers: None, // #30: verify decode; no prefill route.
                 };
 
                 layer.decode_batched(

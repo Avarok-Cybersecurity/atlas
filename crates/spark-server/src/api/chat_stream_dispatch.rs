@@ -26,6 +26,17 @@ pub(super) async fn dispatch_streaming(
     dump_seq: Option<u64>,
     prompt_tokens: Vec<u32>,
     session_hash: u64,
+    // M2 per-request LoRA routing: resolved adapter slot (-1 = defer to active).
+    adapter_slot: i32,
+    // Resolved source-language token id (0 = deployment default).
+    src_lang_id: u32,
+    // Resolved target-language token id (0 = deployment default).
+    tgt_lang_id: u32,
+    // NLLB beam search params (1/1.0/false = greedy). Streaming + beam is
+    // rejected in the handler; threaded here only to set the Streaming defaults.
+    num_beams: u32,
+    length_penalty: f32,
+    early_stopping: bool,
     image_pixels: Vec<(Vec<f32>, usize, usize)>,
     max_tokens: usize,
     temperature: f32,
@@ -76,6 +87,12 @@ pub(super) async fn dispatch_streaming(
         state,
         prompt_tokens,
         session_hash,
+        adapter_slot,
+        src_lang_id,
+        tgt_lang_id,
+        num_beams,
+        length_penalty,
+        early_stopping,
         image_pixels,
         max_tokens,
         req.min_tokens,

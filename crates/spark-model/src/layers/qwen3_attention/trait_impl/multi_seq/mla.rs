@@ -109,6 +109,7 @@ impl Qwen3AttentionLayer {
                     .offset(i * meta.max_blocks_per_seq as usize * 4),
                 max_blocks_per_seq: meta.max_blocks_per_seq,
                 num_seqs: 1,
+                seq_slot: spark_runtime::gpu::DevicePtr(0),
             };
             let o_out_i = o_out.offset(i * c.h * bf16);
 
@@ -264,7 +265,7 @@ impl Qwen3AttentionLayer {
         }
         ops::rms_norm(
             gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             q_latent,
             &mla.q_a_norm,
             q_latent,
@@ -365,7 +366,7 @@ impl Qwen3AttentionLayer {
         }
         ops::rms_norm(
             gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             kv_latent,
             &mla.kv_a_norm,
             kv_latent,

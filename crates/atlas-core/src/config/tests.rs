@@ -325,6 +325,65 @@ fn test_parse_nemotron_h_config() {
 }
 
 #[test]
+fn test_parse_nemotron_h_puzzle_config() {
+    // Minimal Puzzle-shaped schedule: 4 layers with heterogeneous MoE dims.
+    // Full checkpoint has 88 layers; this covers dispatch + per-layer lookup.
+    let json = r#"{
+        "model_type": "nemotron_h_puzzle",
+        "architectures": ["NemotronHPuzzleForCausalLM"],
+        "hidden_size": 4096,
+        "num_hidden_layers": null,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 2,
+        "head_dim": 128,
+        "intermediate_size": 21504,
+        "n_routed_experts": 512,
+        "n_shared_experts": 1,
+        "moe_latent_size": 1024,
+        "moe_shared_expert_intermediate_size": 5376,
+        "vocab_size": 131072,
+        "layers_block_type": ["mamba", "moe", "attention", "moe"],
+        "block_configs": [
+            {"block_type": "mamba"},
+            {"block_type": "moe", "moe_intermediate_size": 1280, "num_experts_per_tok": 4},
+            {"block_type": "attention"},
+            {"block_type": "moe", "moe_intermediate_size": 2688, "num_experts_per_tok": 22}
+        ],
+        "mamba_num_heads": 128,
+        "mamba_head_dim": 64,
+        "ssm_state_size": 96,
+        "n_groups": 8,
+        "expand": 2,
+        "conv_kernel": 4,
+        "norm_eps": 1e-5,
+        "routed_scaling_factor": 5.0,
+        "norm_topk_prob": true
+    }"#;
+    let cfg = parse_config(json).unwrap();
+    assert_eq!(cfg.model_type, "nemotron_h_puzzle");
+    assert_eq!(cfg.num_hidden_layers, 4);
+    assert_eq!(cfg.num_experts, 512);
+    assert_eq!(cfg.moe_latent_size, 1024);
+    assert_eq!(cfg.shared_expert_intermediate_size, 5376);
+    assert_eq!(cfg.layer_types.len(), 4);
+    assert_eq!(cfg.layer_type(0), LayerType::LinearAttention);
+    assert_eq!(cfg.layer_type(1), LayerType::Moe);
+    assert_eq!(cfg.layer_type(2), LayerType::FullAttention);
+    assert_eq!(cfg.layer_type(3), LayerType::Moe);
+    assert_eq!(cfg.num_moe_layers(), 2);
+    // Per-layer schedule
+    assert_eq!(cfg.moe_intermediate_size_for(1), 1280);
+    assert_eq!(cfg.num_experts_per_tok_for(1), 4);
+    assert_eq!(cfg.moe_intermediate_size_for(3), 2688);
+    assert_eq!(cfg.num_experts_per_tok_for(3), 22);
+    // Non-MoE layers fall back to scalar max
+    assert_eq!(cfg.moe_intermediate_size, 2688);
+    assert_eq!(cfg.num_experts_per_tok, 22);
+    assert_eq!(cfg.max_moe_intermediate_size(), 2688);
+    assert_eq!(cfg.weight_prefix, "backbone");
+}
+
+#[test]
 fn test_expert_parallelism_range() {
     let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
     // Single GPU: all experts local
@@ -621,4 +680,62 @@ fn test_qwen36_35b_with_mtp_is_not_holo() {
     // Vision tower still parses — the flagship ships a ViT even though
     // text-only serving keeps H/W position IDs at zero.
     assert!(cfg.vision.is_some());
+}
+
+#[test]
+fn test_parse_nllb_m2m100_config() {
+    let json = r#"{
+        "activation_function": "relu",
+        "architectures": ["M2M100ForConditionalGeneration"],
+        "bos_token_id": 0,
+        "d_model": 2048,
+        "decoder_attention_heads": 16,
+        "decoder_ffn_dim": 8192,
+        "decoder_layers": 24,
+        "encoder_attention_heads": 16,
+        "encoder_ffn_dim": 8192,
+        "encoder_layers": 24,
+        "eos_token_id": 2,
+        "is_encoder_decoder": true,
+        "max_position_embeddings": 1024,
+        "model_type": "m2m_100",
+        "num_hidden_layers": 24,
+        "pad_token_id": 1,
+        "scale_embedding": true,
+        "use_cache": true,
+        "vocab_size": 256206
+    }"#;
+
+    let cfg = parse_config(json).unwrap();
+    assert_eq!(cfg.model_type, "m2m_100");
+    assert_eq!(cfg.hidden_size, 2048);
+    assert_eq!(cfg.num_hidden_layers, 24);
+    assert_eq!(cfg.intermediate_size, 8192);
+    assert_eq!(cfg.num_attention_heads, 16);
+    assert_eq!(cfg.num_key_value_heads, 16);
+    assert_eq!(cfg.head_dim, 128);
+    assert_eq!(cfg.max_position_embeddings, 1024);
+    assert_eq!(cfg.vocab_size, 256206);
+    assert_eq!(cfg.weight_prefix, "model.decoder");
+    assert!(!cfg.attn_gated);
+}
+
+#[test]
+fn test_parse_nllb_rejects_missing_required_dimension() {
+    let json = r#"{
+        "bos_token_id": 0,
+        "d_model": 2048,
+        "decoder_ffn_dim": 8192,
+        "decoder_layers": 24,
+        "eos_token_id": 2,
+        "max_position_embeddings": 1024,
+        "model_type": "nllb",
+        "vocab_size": 256206
+    }"#;
+
+    let err = parse_config(json).unwrap_err().to_string();
+    assert!(
+        err.contains("nllb config missing required field `decoder_attention_heads`"),
+        "{err}"
+    );
 }

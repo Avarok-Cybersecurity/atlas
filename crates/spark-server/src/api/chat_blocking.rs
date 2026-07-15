@@ -28,6 +28,18 @@ pub(super) struct BlockingPathArgs {
     pub dump_seq: Option<u64>,
     pub prompt_tokens: Vec<u32>,
     pub session_hash: u64,
+    /// M2 per-request LoRA routing: resolved adapter slot (`-1` = defer to active).
+    pub adapter_slot: i32,
+    /// Resolved source-language token id (0 = deployment default).
+    pub src_lang_id: u32,
+    /// Resolved target-language token id (0 = deployment default).
+    pub tgt_lang_id: u32,
+    /// NLLB beam search: beams per request (1 = greedy).
+    pub num_beams: u32,
+    /// NLLB beam search: length penalty.
+    pub length_penalty: f32,
+    /// NLLB beam search: early stopping.
+    pub early_stopping: bool,
     pub image_pixels: Vec<(Vec<f32>, usize, usize)>,
     pub max_tokens: usize,
     pub temperature: f32,
@@ -64,6 +76,12 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         dump_seq,
         prompt_tokens,
         session_hash,
+        adapter_slot,
+        src_lang_id,
+        tgt_lang_id,
+        num_beams,
+        length_penalty,
+        early_stopping,
         image_pixels,
         max_tokens,
         temperature,
@@ -110,6 +128,12 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         let request = InferenceRequest::Blocking {
             prompt_tokens: prompt_tokens.clone(),
             session_hash,
+            adapter_slot,
+            src_lang_id,
+            tgt_lang_id,
+            num_beams,
+            length_penalty,
+            early_stopping,
             image_pixels: if choice_idx == 0 {
                 image_pixels.clone()
             } else {

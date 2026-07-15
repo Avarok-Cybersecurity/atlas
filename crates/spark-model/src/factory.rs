@@ -13,8 +13,8 @@ use spark_runtime::weights::WeightStore;
 use crate::mistral_loader::MistralWeightLoader;
 use crate::weight_loader::{
     DeepSeekV4WeightLoader, DflashConfig, Gemma4WeightLoader, MinimaxM2WeightLoader,
-    ModelWeightLoader, NemotronHWeightLoader, Qwen3VLWeightLoader, Qwen3WeightLoader,
-    Qwen35DenseWeightLoader, Qwen35WeightLoader, Step3p7WeightLoader,
+    ModelWeightLoader, NemotronHWeightLoader, NllbWeightLoader, Qwen3VLWeightLoader,
+    Qwen3WeightLoader, Qwen35DenseWeightLoader, Qwen35WeightLoader, Step3p7WeightLoader,
 };
 
 /// DFlash speculative-decoding build arguments. `None` for non-DFlash runs;
@@ -32,6 +32,25 @@ pub struct DflashBuildArgs<'a> {
     pub drafter_config: DflashConfig,
     pub gamma: Option<usize>,
     pub window_size: Option<usize>,
+}
+
+/// LoRA adapter build arguments (`--lora-adapter NAME=PATH`). `None` for
+/// base-only runs; `Some(...)` carries the adapter's separate on-device
+/// [`WeightStore`] (loaded via
+/// `spark_runtime::weights::adapter::load_adapter_safetensors`), the parsed
+/// `adapter_config.json`, and the pool-shape CLI knobs.
+///
+/// Unlike DFlash (loaded post-construction), the LoRA pool is allocated at
+/// the TOP of `build_model` — before the buffer arena and the free-memory
+/// snapshot — so its bytes are automatically debited from the KV budget.
+pub struct LoraBuildArgs<'a> {
+    /// One or more adapters to pack (repeated `--lora-adapter NAME=PATH`),
+    /// each carrying its NAME, its on-device `WeightStore`, and its parsed
+    /// `adapter_config.json`. Slot k = `adapters[k]`. A single element is
+    /// byte-identical to the pre-multi-adapter path.
+    pub adapters: Vec<crate::lora::LoraAdapterInput<'a>>,
+    pub max_lora_rank: usize,
+    pub max_loras: usize,
 }
 
 // ── Loader registry ─────────────────────────────────────────────────────────
@@ -70,8 +89,11 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         // full-attention layers — both handled at forward-pass layer time,
         // not during weight loading.
         "qwen3_6_moe" | "holo3_1_moe" => Ok(Box::new(Qwen35WeightLoader)),
-        // Nemotron-H family (Mamba-2 + MoE + Attention)
-        "nemotron_h" => Ok(Box::new(NemotronHWeightLoader)),
+        // Nemotron-H family (Mamba-2 + MoE + Attention), including Puzzle
+        // (heterogeneous per-block MoE intermediate / top-k).
+        "nemotron_h" | "nemotron_h_puzzle" => Ok(Box::new(NemotronHWeightLoader)),
+        // NLLB / M2M-100 encoder-decoder translation family.
+        "m2m_100" | "nllb" => Ok(Box::new(NllbWeightLoader)),
         // Gemma-4 family (pure attention, GeGLU, sliding + full attention)
         "gemma4" | "gemma_4" => Ok(Box::new(Gemma4WeightLoader)),
         // Mistral family (MLA + MoE, GQA fallback for initial bring-up)
@@ -86,7 +108,7 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         "deepseek_v4" => Ok(Box::new(DeepSeekV4WeightLoader)),
         _ => bail!(
             "Unsupported model type: '{}' (normalized: '{}'). \
-             Supported: qwen3_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, holo3_1_moe, qwen3_vl_moe, nemotron_h, gemma4, mistral, minimax_m2, deepseek_v4",
+             Supported: qwen3_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, holo3_1_moe, qwen3_vl_moe, nemotron_h, nemotron_h_puzzle, gemma4, mistral, minimax_m2, deepseek_v4, m2m_100",
             config.model_type,
             normalized,
         ),
@@ -139,6 +161,9 @@ mod tests {
             0,
             None,
             None, // dflash_args
+            None, // lora_args
+            None, // nllb_lang
+            None, // nllb_lora_dir
         );
         match result {
             Err(e) => assert!(e.to_string().contains("Unsupported model type: 'llama'")),
@@ -158,7 +183,27 @@ mod tests {
         config.model_type = "holo3_1_moe".to_string();
         assert!(loader_for_config(&config).is_ok());
 
+        config.model_type = "m2m_100".to_string();
+        assert!(loader_for_config(&config).is_ok());
+
         config.model_type = "unsupported_model".to_string();
         assert!(loader_for_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_nllb_loader_fails_fast_until_encoder_decoder_runtime_exists() {
+        let mut config = ModelConfig::qwen3_next_80b_nvfp4();
+        config.model_type = "nllb".to_string();
+        let loader = loader_for_config(&config).unwrap();
+        let store = WeightStore::empty();
+        let gpu = spark_runtime::gpu::mock::MockGpuBackend::new();
+
+        let err = loader.load_embedding(&store, &config, &gpu).unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "Atlas does not yet implement the encoder-decoder runtime required by facebook/nllb-200-3.3B"
+            ),
+            "{err}"
+        );
     }
 }

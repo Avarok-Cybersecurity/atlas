@@ -338,6 +338,18 @@ impl TransformerModel {
             (DevicePtr::NULL, DevicePtr::NULL)
         };
 
+        // Request-scoped LoRA routing for the fused (SLAI) prefill portion. The
+        // decode portion already routes via `upload_batch_metadata_at` (its own
+        // +128 gap); the prefilling sequence uses the dedicated `lora_seq_slot`
+        // arena buffer (`proc_count` uniform slots), so the two never collide.
+        // Without this, a prefilling request co-scheduled with decodes would
+        // still contaminate its prompt KV with the global active adapter.
+        let prefill_seq_slot = self.upload_seq_slot_uniform(
+            prefill_seq.adapter_slot,
+            proc_count,
+            self.buffers.lora_seq_slot(),
+            stream,
+        )?;
         let prefill_metadata = AttnMetadataDev {
             positions: prefill_meta_base,
             positions_h: prefill_meta_base,
@@ -347,6 +359,7 @@ impl TransformerModel {
             block_table: prefill_bt_dev,
             max_blocks_per_seq: prefill_seq.block_table.len() as u32,
             num_seqs: 1,
+            seq_slot: prefill_seq_slot,
         };
 
         // ── 5. Build decode layer states ──
@@ -369,6 +382,8 @@ impl TransformerModel {
             graph_capture: false,
             gdn_exact_replay: false,
             token_ids: None,
+            // #30: decode never routes prefill — installed-pair/bgmv path only.
+            routed_lora_layers: None,
         };
 
         let prefill_ctx = ForwardContext {
@@ -381,6 +396,9 @@ impl TransformerModel {
             graph_capture: false,
             gdn_exact_replay: false,
             token_ids: None,
+            // #30: the fused (SLAI) prefill portion routes by the prefilling
+            // seq's slot (None unless it routes to a non-active slot).
+            routed_lora_layers: self.routed_slot_layers(prefill_seq.adapter_slot),
         };
 
         for (layer_idx, layer) in self.layers.iter().enumerate() {

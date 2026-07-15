@@ -6,7 +6,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
@@ -88,6 +88,7 @@ impl TransformerModel {
             graph_capture: false,
             gdn_exact_replay: false,
             token_ids: None,
+            routed_lora_layers: None, // #30: MTP/draft decode never routes prefill.
         };
         let prop_state = seq
             .proposer_state

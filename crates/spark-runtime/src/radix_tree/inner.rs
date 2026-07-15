@@ -55,7 +55,16 @@ pub(super) struct RadixTreeInner {
     nodes: Vec<RadixNode>,
     /// Indices of deleted nodes available for reuse.
     free_nodes: Vec<NodeId>,
-    root: NodeId,
+    /// Task #24 (adapter-correct KV): one radix ROOT per stable `adapter_id`.
+    /// Adapter A's and adapter B's node chains live in physically disjoint
+    /// subtrees, so a cross-adapter walk can never reach the wrong adapter's
+    /// blocks (correct MISS) and an insert under one root can never clobber
+    /// another adapter's node (the children map is keyed by token chunk, so
+    /// seeding the context-hash alone would NOT prevent that cross-adapter
+    /// insert-collision — disjoint roots do). `adapter_id == 0` is the base /
+    /// no-adapter root created in `new()`, so base keying is byte-identical to
+    /// the pre-LoRA single-root tree.
+    roots: HashMap<u64, NodeId>,
     access_counter: u64,
 }
 
@@ -72,10 +81,12 @@ impl RadixTreeInner {
             parent_key: None,
             partial_suffix: None,
         };
+        let mut roots = HashMap::new();
+        roots.insert(0u64, 0usize); // base / no-adapter root
         Self {
             nodes: vec![root],
             free_nodes: Vec::new(),
-            root: 0,
+            roots,
             access_counter: 0,
         }
     }
@@ -83,6 +94,34 @@ impl RadixTreeInner {
     pub(super) fn next_access(&mut self) -> u64 {
         self.access_counter += 1;
         self.access_counter
+    }
+
+    /// Read-side root for `adapter_id`: `None` when this adapter has no cached
+    /// blocks yet (walk/inc_refs/dec_refs then no-op → clean MISS).
+    fn root_for_read(&self, adapter_id: u64) -> Option<NodeId> {
+        self.roots.get(&adapter_id).copied()
+    }
+
+    /// Insert-side root for `adapter_id`: creates a fresh disjoint root the first
+    /// time an adapter caches anything. Roots carry `block_idx == u32::MAX` and
+    /// `parent == None`, so they are excluded from eviction and `num_entries`.
+    fn root_for_insert(&mut self, adapter_id: u64) -> NodeId {
+        if let Some(&id) = self.roots.get(&adapter_id) {
+            return id;
+        }
+        let id = self.alloc_node(RadixNode {
+            children: HashMap::new(),
+            block_idx: u32::MAX,
+            disk_block_id: u32::MAX,
+            context_hash: 0,
+            ref_count: 0,
+            last_access: 0,
+            parent: None,
+            parent_key: None,
+            partial_suffix: None,
+        });
+        self.roots.insert(adapter_id, id);
+        id
     }
 
     pub(super) fn alloc_node(&mut self, node: RadixNode) -> NodeId {
@@ -102,8 +141,16 @@ impl RadixTreeInner {
     /// that were inserted before HSS engaged (caller's responsibility to
     /// filter / treat MAX as "no disk-side ref to bump"). Snapshot lookup is
     /// now handled by the separate SsmSnapshotIndex after the walk completes.
-    pub(super) fn walk(&self, tokens: &[u32], block_size: usize) -> (Vec<u32>, Vec<u32>, usize) {
-        let mut current = self.root;
+    pub(super) fn walk(
+        &self,
+        tokens: &[u32],
+        block_size: usize,
+        adapter_id: u64,
+    ) -> (Vec<u32>, Vec<u32>, usize) {
+        let mut current = match self.root_for_read(adapter_id) {
+            Some(r) => r,
+            None => return (Vec::new(), Vec::new(), 0), // adapter has nothing cached
+        };
         let mut matched_blocks = Vec::new();
         let mut matched_disk = Vec::new();
         let mut matched_tokens = 0;
@@ -173,9 +220,18 @@ impl RadixTreeInner {
     }
 
     /// Increment ref_count on all nodes along the matched path.
-    pub(super) fn inc_refs(&mut self, tokens: &[u32], block_size: usize, num_matched: usize) {
+    pub(super) fn inc_refs(
+        &mut self,
+        tokens: &[u32],
+        block_size: usize,
+        num_matched: usize,
+        adapter_id: u64,
+    ) {
         let access = self.next_access();
-        let mut current = self.root;
+        let mut current = match self.root_for_read(adapter_id) {
+            Some(r) => r,
+            None => return,
+        };
         let num_blocks = num_matched / block_size;
 
         for i in 0..num_blocks {
@@ -191,8 +247,11 @@ impl RadixTreeInner {
     }
 
     /// Decrement ref_count on all nodes along the matched path.
-    pub(super) fn dec_refs(&mut self, tokens: &[u32], block_size: usize) {
-        let mut current = self.root;
+    pub(super) fn dec_refs(&mut self, tokens: &[u32], block_size: usize, adapter_id: u64) {
+        let mut current = match self.root_for_read(adapter_id) {
+            Some(r) => r,
+            None => return,
+        };
         let num_full_blocks = tokens.len() / block_size;
 
         for i in 0..num_full_blocks {
@@ -226,9 +285,11 @@ impl RadixTreeInner {
         disk_block_ids: &[u32],
         block_size: usize,
         matched_tokens: usize,
+        adapter_id: u64,
     ) -> Vec<u32> {
         let access = self.next_access();
-        let mut current = self.root;
+        let root_id = self.root_for_insert(adapter_id);
+        let mut current = root_id;
         let mut parent_ctx_hash: u64 = 0; // root context hash
         let num_full_blocks = tokens.len() / block_size;
         let num_blocks = num_full_blocks.min(block_table.len());
@@ -311,7 +372,7 @@ impl RadixTreeInner {
         }
 
         let remainder = tokens.len() % block_size;
-        if remainder > 0 && block_table.len() > num_full_blocks && current != self.root {
+        if remainder > 0 && block_table.len() > num_full_blocks && current != root_id {
             let partial_toks = tokens[num_full_blocks * block_size..].to_vec();
             let partial_block = block_table[num_full_blocks];
             let partial_disk = if hss_active && disk_block_ids.len() > num_full_blocks {
@@ -356,7 +417,10 @@ impl RadixTreeInner {
 
             let mut best: Option<(NodeId, u64)> = None;
             for (id, node) in self.nodes.iter().enumerate() {
-                if id == self.root {
+                // Roots (one per adapter_id) carry `parent == None` and
+                // `block_idx == u32::MAX`; the block_idx guard below already
+                // excludes them, but skip explicitly for clarity.
+                if node.parent.is_none() {
                     continue;
                 }
                 if node.ref_count <= 1 && node.children.is_empty() && node.block_idx != u32::MAX {
@@ -406,11 +470,11 @@ impl RadixTreeInner {
     }
 
     pub(super) fn num_entries(&self) -> usize {
-        // Count non-root, non-deleted nodes.
+        // Count non-root, non-deleted nodes. Roots (per adapter_id) and freed
+        // nodes both carry `block_idx == u32::MAX`, so this filter excludes them.
         self.nodes
             .iter()
-            .enumerate()
-            .filter(|(id, n)| *id != self.root && n.block_idx != u32::MAX)
+            .filter(|n| n.block_idx != u32::MAX)
             .count()
     }
 }

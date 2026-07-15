@@ -37,6 +37,19 @@ pub(super) struct CompletionParams {
     /// Clamped `logprobs` (OpenAI integer form). Drives generated-token
     /// logprobs always, and prompt logprobs when `echo` is set.
     pub logprobs_k: Option<u8>,
+    /// M2 per-request LoRA routing: resolved adapter slot (`-1` = defer to
+    /// the installed active adapter).
+    pub adapter_slot: i32,
+    /// Resolved source-language token id (0 = deployment default).
+    pub src_lang_id: u32,
+    /// Resolved target-language token id (0 = deployment default).
+    pub tgt_lang_id: u32,
+    /// NLLB beam search: beams per request (1 = greedy).
+    pub num_beams: u32,
+    /// NLLB beam search: length penalty.
+    pub length_penalty: f32,
+    /// NLLB beam search: early stopping.
+    pub early_stopping: bool,
 }
 
 /// Run every (prompt × n) choice sequentially and assemble the response.
@@ -66,6 +79,12 @@ pub(super) async fn run_blocking(
             let request = InferenceRequest::Blocking {
                 prompt_tokens: Arc::new(prompt_tokens.clone()),
                 session_hash,
+                adapter_slot: p.adapter_slot,
+                src_lang_id: p.src_lang_id,
+                tgt_lang_id: p.tgt_lang_id,
+                num_beams: p.num_beams,
+                length_penalty: p.length_penalty,
+                early_stopping: p.early_stopping,
                 image_pixels: Vec::new(),
                 max_tokens: req.max_tokens,
                 min_tokens: 0,

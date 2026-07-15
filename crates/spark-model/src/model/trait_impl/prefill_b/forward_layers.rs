@@ -54,6 +54,18 @@ impl TransformerModel {
         } else {
             (meta_base, meta_base)
         };
+
+        // Request-scoped LoRA routing (chunked prefill) — dedicated arena buffer
+        // holding `proc_count` uniform slots (see prefill_a.rs). Covers both the
+        // paged-prefill layer path and the warm-prefix `use_decode_path` fork
+        // (proc_count==1): the single-seq decode apply reads slot[0], correct
+        // for the uniform buffer. `DevicePtr(0)` (no pool) → installed-pair path.
+        let seq_slot = self.upload_seq_slot_uniform(
+            seq.adapter_slot,
+            proc_count,
+            self.buffers.lora_seq_slot(),
+            stream,
+        )?;
         let attn_metadata = AttnMetadataDev {
             positions: meta_base,
             positions_h: positions_h_dev,
@@ -63,6 +75,7 @@ impl TransformerModel {
             block_table: block_table_dev,
             max_blocks_per_seq: seq.block_table.len() as u32,
             num_seqs: 1,
+            seq_slot,
         };
 
         // Consume the one-shot ATLAS_PROFILE_FIRST flag (additive).
@@ -85,6 +98,8 @@ impl TransformerModel {
             // Hash-MoE: this chunk's token IDs (uploaded in prefill_b_embed_chunk
             // to the stable buffer, in chunk order matching the MoE loop).
             token_ids: Some(self.buffers.token_ids()),
+            // #30: request slot pairs (None unless routing to a non-active slot).
+            routed_lora_layers: self.routed_slot_layers(seq.adapter_slot),
         };
 
         // When proc_count == 1 (warm prefix cache hit), use the decode layer path
@@ -250,12 +265,36 @@ impl TransformerModel {
                 .map(|(i, us)| format!("L{}={:.2}ms", i, *us as f64 / 1000.0))
                 .collect();
             let path_label = if use_decode_path { "decode" } else { "prefill" };
+            // Aggregate the same per-layer samples by layer type so the profile
+            // attributes cost to mamba / moe / attention instead of bare indices.
+            let mut by_type: std::collections::BTreeMap<String, (u128, usize)> =
+                std::collections::BTreeMap::new();
+            for (i, us) in layer_times.iter().copied().enumerate() {
+                let e = by_type
+                    .entry(format!("{:?}", self.config.layer_type(i)))
+                    .or_insert((0, 0));
+                e.0 += us;
+                e.1 += 1;
+            }
+            let per_type: Vec<String> = by_type
+                .iter()
+                .map(|(k, (us, n))| {
+                    format!(
+                        "{}x{}={:.0}ms(avg {:.1})",
+                        n,
+                        k,
+                        *us as f64 / 1000.0,
+                        *us as f64 / 1000.0 / *n as f64
+                    )
+                })
+                .collect();
             tracing::info!(
-                "Prefill chunk {} tok (proc {}, {}): {:.1}ms total, top5: {}",
+                "Prefill chunk {} tok (proc {}, {}): {:.1}ms total, by_type: {}, top5: {}",
                 chunk_len,
                 proc_count,
                 path_label,
                 total_us as f64 / 1000.0,
+                per_type.join(", "),
                 top5.join(", "),
             );
         }

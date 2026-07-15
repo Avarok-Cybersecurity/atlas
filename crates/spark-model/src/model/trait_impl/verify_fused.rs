@@ -145,6 +145,14 @@ impl TransformerModel {
         self.gpu
             .copy_h2d_async(bt_bytes, meta_base.offset(768), stream)?;
 
+        // Request-scoped LoRA routing (graphed fused verify) — see verify_b.rs.
+        // One sequence → one adapter; [M]-all-equal buffer at the +128 gap,
+        // uploaded pre-`begin_capture`. `DevicePtr(0)` (no pool) →
+        // installed-pair fallback.
+        debug_assert!(m <= 32, "fused verify seq_slot +128 gap holds M ≤ 32");
+        let seq_slot =
+            self.upload_seq_slot_uniform(seq.adapter_slot, m, meta_base.offset(128), stream)?;
+
         let metadata = AttnMetadataDev {
             positions: meta_base,
             positions_h: meta_base,
@@ -154,6 +162,7 @@ impl TransformerModel {
             block_table: meta_base.offset(768),
             max_blocks_per_seq: max_blocks,
             num_seqs: m as u32,
+            seq_slot,
         };
 
         // FP8 calibration re-enable (mirrors verify_b.rs).
@@ -168,11 +177,14 @@ impl TransformerModel {
         }
 
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
+        // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
+        let lora_eager = self.lora.is_some() && crate::lora::lora_eager_env();
         let use_graphs = self.comm.is_none()
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
-            && !hss_engaged;
+            && !hss_engaged
+            && !lora_eager;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -184,6 +196,7 @@ impl TransformerModel {
             graph_capture: use_graphs,
             gdn_exact_replay: false,
             token_ids: None,
+            routed_lora_layers: None, // #30: decode/verify never routes prefill.
         };
 
         // ── Phase 2: CUDA graph capture / replay ──

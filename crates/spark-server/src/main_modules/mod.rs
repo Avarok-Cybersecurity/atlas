@@ -5,6 +5,7 @@
 pub(crate) mod app_state;
 pub(crate) mod kv_dtypes;
 pub(crate) mod middleware;
+pub(crate) mod promotion;
 pub(crate) mod serve;
 pub(crate) mod serve_phases;
 pub(crate) mod serve_router;

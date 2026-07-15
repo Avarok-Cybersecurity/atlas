@@ -87,11 +87,25 @@ pub(super) fn drain_pending_requests(
     let (ref mtx, ref cv) = **pending;
     let mut g = mtx.lock();
     if active.is_empty() && prefilling.is_empty() {
-        // Block until signalled (no busy-wait, no polling).
-        while g.requests.is_empty() && !g.closed {
+        // Block until signalled (no busy-wait, no polling). Also wake on a
+        // pending rotation: a quiescence-applied LoraCommand (Rotate / Promote /
+        // PromoteDisk) is pushed onto `g.rotations` by the rotation forwarder and
+        // notified on this same Condvar. Without `rotations.is_empty()` in the
+        // predicate the notify would wake us but the loop would immediately
+        // re-sleep (requests still empty), starving the quiescence-apply block —
+        // an idle-scheduler deadlock for demand-driven promotion.
+        while g.requests.is_empty() && g.rotations.is_empty() && !g.closed {
             cv.wait(&mut g);
         }
         if g.closed && g.requests.is_empty() {
+            return Vec::new();
+        }
+        // Rotation-only wakeup: we exited the wait with no requests but a pending
+        // rotation. Return an empty batch so the caller reaches the
+        // quiescence-apply block (active/prefilling/new_reqs/swapped all empty)
+        // and drains `g.rotations` at true quiescence. Do NOT fall into the
+        // co-dispatch window with zero requests.
+        if g.requests.is_empty() {
             return Vec::new();
         }
         // Co-dispatch micro-batch window (ATLAS_PREFILL_CODISPATCH=1): when idle,

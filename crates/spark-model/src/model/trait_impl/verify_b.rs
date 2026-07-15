@@ -140,6 +140,19 @@ impl TransformerModel {
         self.gpu
             .copy_h2d_async(bt_bytes, meta_base.offset(768), stream)?;
 
+        // Request-scoped LoRA routing (graphed verify). One sequence → one
+        // adapter for all K tokens: a [K]-all-equal buffer at the free +128 gap
+        // (multi-seq layout slot@+256/seq_len@+512/bt@+768, so +128+K*4 ≤ +256
+        // needs K ≤ 32). Uploaded pre-`begin_capture` (same phasing as
+        // positions), so the captured verify graph reads a stable address whose
+        // contents refresh each step. The non-HSS `decode_multi_seq` routes off
+        // this [K] buffer; the HSS `decode_batched` single-token loop reads
+        // index 0 (correct for the uniform buffer). `DevicePtr(0)` (no pool) →
+        // installed-pair fallback.
+        debug_assert!(k <= 32, "verify seq_slot +128 gap holds K ≤ 32");
+        let seq_slot =
+            self.upload_seq_slot_uniform(seq.adapter_slot, k, meta_base.offset(128), stream)?;
+
         let metadata = AttnMetadataDev {
             positions: meta_base,
             positions_h: meta_base,
@@ -149,6 +162,7 @@ impl TransformerModel {
             block_table: meta_base.offset(768),
             max_blocks_per_seq: max_blocks,
             num_seqs: k as u32,
+            seq_slot,
         };
 
         // CUDA graphs cannot capture NCCL all-reduce (disabled for EP).
@@ -179,6 +193,8 @@ impl TransformerModel {
         // the verify eagerly. Zero production impact — only when K2_DIAG is set
         // (mirrors ATLAS_DFLASH_DEBUG_NO_GRAPH for the DFlash verify path).
         let k2_diag_eager = std::env::var("ATLAS_K2_DIAG").ok().as_deref() == Some("1");
+        // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
+        let lora_eager = self.lora.is_some() && crate::lora::lora_eager_env();
         let use_graphs = self.comm.is_none()
             && !self
                 .suppress_graphs
@@ -186,7 +202,8 @@ impl TransformerModel {
             // Phase 6.2.c — see decode() for rationale: HSS path's host I/O is
             // illegal under CUDA graph capture.
             && !hss_engaged
-            && !k2_diag_eager;
+            && !k2_diag_eager
+            && !lora_eager;
 
         // DeepSeek-V4 hash-MoE (first `num_hash_layers`) routes experts by token
         // id via the static tid2eid table, so the verify forward needs the 2
@@ -207,6 +224,7 @@ impl TransformerModel {
             graph_capture: use_graphs,
             gdn_exact_replay: false,
             token_ids: Some(self.buffers.token_ids()),
+            routed_lora_layers: None, // #30: decode/verify never routes prefill.
         };
 
         // ── Phase 2: CUDA graph capture / replay ──

@@ -13,6 +13,7 @@
 
 // ── Submodules (split for ≤500 LoC files) ──────────────────────────────────
 mod adaptive_spec;
+mod beam_prefill;
 mod confidence;
 mod decode_logits_content;
 mod decode_logits_seq;
@@ -47,6 +48,7 @@ mod verify_k3_step;
 mod verify_k4_step;
 mod verify_pipeline_helper;
 
+use beam_prefill::resolve_beam_hyp;
 use confidence::*;
 use decode_logits_content::*;
 use decode_logits_seq::*;
@@ -106,11 +108,67 @@ use crate::grammar::{GrammarEngine, GrammarState};
 use crate::ngram::NgramProposer;
 use crate::scheduling_policy::SchedulingPolicy;
 
+/// A runtime LoRA adapter control command, applied by the scheduler at a
+/// QUIESCENT point (no in-flight decode) so it never races a graph replay or a
+/// live delta read.
+pub enum LoraCommand {
+    /// Rotate the globally-active adapter to a RESIDENT slot by NAME.
+    Rotate(String),
+    /// Dynamically LOAD the adapter at `dir` into pool `slot` (pool-size-1
+    /// per-request weight change) and make it that slot's resident adapter.
+    LoadIntoSlot {
+        name: String,
+        dir: std::path::PathBuf,
+        slot: usize,
+    },
+    /// Task #27: demand-driven RDMA PROMOTE of a stageable-but-not-resident
+    /// adapter from the peer into a cache pool slot (victim chosen on the model
+    /// thread), then make it active. The chosen slot + any evicted name flow
+    /// back through the ack. `peft` supplies the r/alpha the peer manifest lacks.
+    Promote {
+        peer_addr: String,
+        adapter_id: String,
+        name: String,
+        peft: atlas_core::config::PeftAdapterConfig,
+    },
+    /// No-RDMA sibling of [`Self::Promote`]: demand-driven DISK promote of a
+    /// stageable-but-not-resident adapter loaded from `dir` into a cache pool
+    /// slot (victim chosen on the model thread), then made active. The chosen
+    /// slot + any evicted name flow back through the ack. No `peft`: the disk
+    /// swap re-parses the dir's `adapter_config.json`.
+    PromoteDisk {
+        name: String,
+        dir: std::path::PathBuf,
+    },
+}
+
+/// Successful result of a [`LoraCommand`] applied at quiescence. Rotate/Load
+/// return [`LoraAck::Done`]; a Promote returns the resolved cache slot (which the
+/// HTTP miss path uses as the request's `adapter_slot`) and any evicted adapter
+/// name (so the caller drops its stale name->slot overlay entry).
+#[derive(Debug, Clone)]
+pub enum LoraAck {
+    Done,
+    Promoted {
+        slot: usize,
+        evicted: Option<String>,
+    },
+}
+
+/// A LoRA control command plus the oneshot ack the HTTP handler awaits
+/// (`Ok(ack)` on success, `Err(reason)` on unknown adapter / rotation not armed /
+/// load failure / pool full).
+pub type LoraRotation = (
+    LoraCommand,
+    tokio::sync::oneshot::Sender<Result<LoraAck, String>>,
+);
+
 /// Run the scheduler loop on the current thread.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
-    model: Box<dyn Model>,
+    mut model: Box<dyn Model>,
     request_rx: tokio::sync::mpsc::Receiver<InferenceRequest>,
+    rotation_rx: tokio::sync::mpsc::Receiver<LoraRotation>,
     eos_tokens: Vec<u32>,
     max_batch_size: usize,
     use_speculative: bool,
@@ -190,6 +248,7 @@ pub fn run(
         Mutex::new(PendingQueue {
             requests: Vec::new(),
             closed: false,
+            rotations: Vec::new(),
         }),
         Condvar::new(),
     ));
@@ -204,6 +263,18 @@ pub fn run(
         }
         p.0.lock().closed = true;
         p.1.notify_one();
+    });
+
+    // Rotation receiver thread: LoRA adapter-rotation control requests land in
+    // `pending.rotations` (never the sequence queue) and wake the scheduler via
+    // the SAME condvar. The scheduler applies them at a quiescent point.
+    let pr = Arc::clone(&pending);
+    std::thread::spawn(move || {
+        let mut rx = rotation_rx;
+        while let Some(rot) = rx.blocking_recv() {
+            pr.0.lock().rotations.push(rot);
+            pr.1.notify_one();
+        }
     });
 
     // Dedicated CUDA stream + event for prefill compute-copy overlap.
@@ -239,6 +310,68 @@ pub fn run(
         // ── Drain pending → start prefill (chunked or full) ──
         let new_reqs =
             drain_pending_requests(&pending, &active, &prefilling, &*policy, max_batch_size);
+
+        // ── Apply queued LoRA adapter rotations at a QUIESCENT point ──
+        // Only when nothing is in flight (no active decode, no in-progress
+        // prefill, no just-drained request, AND no sequence spilled to disk) so
+        // the re-point/promote never races a live delta read or a graph replay.
+        // `swapped` MUST be empty too: a spilled sequence has RELEASED its adapter
+        // ref (#25), so without this gate a Promote/swap could evict/re-stage the
+        // slot its KV was computed under and corrupt it on resume (#27 FINDING 1 /
+        // #31). Otherwise the commands stay queued and retry once the batch drains.
+        if active.is_empty() && prefilling.is_empty() && new_reqs.is_empty() && swapped.is_empty() {
+            let rotations = std::mem::take(&mut pending.0.lock().rotations);
+            for (cmd, ack) in rotations {
+                let res = match cmd {
+                    LoraCommand::Rotate(name) => {
+                        let r = model
+                            .set_active_lora(&name)
+                            .map(|()| LoraAck::Done)
+                            .map_err(|e| format!("{e:#}"));
+                        if let Err(ref e) = r {
+                            tracing::warn!("LoRA rotation to '{name}' failed: {e}");
+                        }
+                        r
+                    }
+                    LoraCommand::LoadIntoSlot { name, dir, slot } => {
+                        let r = model
+                            .swap_lora_from_disk(&dir, &name, slot)
+                            .map(|()| LoraAck::Done)
+                            .map_err(|e| format!("{e:#}"));
+                        if let Err(ref e) = r {
+                            tracing::warn!("LoRA disk swap '{name}' -> slot {slot} failed: {e}");
+                        }
+                        r
+                    }
+                    LoraCommand::Promote {
+                        peer_addr,
+                        adapter_id,
+                        name,
+                        peft,
+                    } => {
+                        let r = model
+                            .promote_lora_from_peer(&peer_addr, &adapter_id, &name, peft)
+                            .map(|(slot, evicted)| LoraAck::Promoted { slot, evicted })
+                            .map_err(|e| format!("{e:#}"));
+                        if let Err(ref e) = r {
+                            tracing::warn!("LoRA promote '{name}' failed: {e}");
+                        }
+                        r
+                    }
+                    LoraCommand::PromoteDisk { name, dir } => {
+                        let r = model
+                            .promote_lora_from_disk(&dir, &name)
+                            .map(|(slot, evicted)| LoraAck::Promoted { slot, evicted })
+                            .map_err(|e| format!("{e:#}"));
+                        if let Err(ref e) = r {
+                            tracing::warn!("LoRA disk-promote '{name}' failed: {e}");
+                        }
+                        r
+                    }
+                };
+                let _ = ack.send(res);
+            }
+        }
         if new_reqs.is_empty() && active.is_empty() && prefilling.is_empty() {
             // Receiver thread was closed (shutdown).
             let pending_closed = pending.0.lock().closed;

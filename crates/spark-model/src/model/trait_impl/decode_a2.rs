@@ -215,7 +215,10 @@ impl TransformerModel {
         // the default once validated. Verify correctness with the needle test.
         let ms_profile = std::env::var("ATLAS_MS_PROFILE").ok().as_deref() == Some("1");
         // ATLAS_MS_PROFILE forces eager (graphs off) so per-phase syncs are legal.
+        // ATLAS_LORA_EAGER: same LoRA graph-vs-eager debugging hatch as decode_a.
+        let lora_eager = self.lora.is_some() && crate::lora::lora_eager_env();
         let use_graphs = !ms_profile
+            && !lora_eager
             && std::env::var("ATLAS_DECODE_GRAPHS_MULTISEQ")
                 .ok()
                 .as_deref()
@@ -231,6 +234,7 @@ impl TransformerModel {
             graph_capture: use_graphs,
             gdn_exact_replay: false,
             token_ids: None,
+            routed_lora_layers: None, // #30: batched decode never routes prefill.
         };
 
         // ── Phase 2: CUDA graph lookup / capture ──

@@ -10,7 +10,7 @@ use std::ffi::c_void;
 
 use super::{ReadRequest, StorageBackend};
 use crate::cuda_min::{PinnedBuffer, copy_h_to_d_async, stream_sync};
-use crate::group::GroupKey;
+use crate::group::{GroupKey, GroupLayout};
 use crate::layout::Layout;
 
 pub struct PosixBackend {
@@ -80,6 +80,10 @@ impl StorageBackend for PosixBackend {
         // path where the file is single-process / single-run.
         let _ = fd;
         Ok(())
+    }
+
+    fn group_layout(&self) -> GroupLayout {
+        self.layout.spec
     }
 }
 

@@ -214,6 +214,13 @@ pub struct DenseFfnLayer {
     // Preferred over w8a16_gemm when a transposed FP8 weight copy is present.
     // KernelHandle(0) → fall back to non-transposed w8a16_gemm.
     w8a16_gemm_t_m128_k: KernelHandle,
+    /// v0 LoRA overlay for gate/up/down. `set_lora_weights` REJECTS layers
+    /// where `fp8_weights` or `bf16_weights` are installed (v0 supports the
+    /// NVFP4 dispatch path only — the FP8/BF16 decode branches early-return
+    /// before the NVFP4 tail where the deltas will land; holo is NVFP4 so
+    /// it is unaffected). M0: stored only — compute reads land in M1.
+    #[allow(dead_code)]
+    lora: Option<ops::lora_delta::LoraFfnWeights>,
 }
 
 impl DenseFfnLayer {
@@ -313,6 +320,7 @@ impl DenseFfnLayer {
                 "w8a16_gemv_silu_input",
             ),
             w8a16_gemm_t_m128_k: super::try_kernel(gpu, "w8a16_gemm_t_m128", "w8a16_gemm_t_m128"),
+            lora: None,
         };
         Ok(layer)
     }
@@ -463,7 +471,7 @@ impl DenseFfnLayer {
         let mut freed = 0usize;
         for wt in [&mut self.weights.gate_proj_t, &mut self.weights.up_proj_t]
             .into_iter()
-            .chain(down_t.take().into_iter())
+            .chain(down_t.take())
         {
             if let Some(w) = wt.as_ref()
                 && !w.weight.is_null()
@@ -529,6 +537,21 @@ impl DenseFfnLayer {
             up_proj: up,
             down_proj: down,
         });
+    }
+
+    /// Install the startup-static LoRA FFN overlay (gate/up/down deltas).
+    /// Hard-rejects when FP8/BF16 weight overlays are installed — those
+    /// decode branches early-return before the NVFP4 tail where the M1
+    /// delta insertions land, so a permissive install would silently skip
+    /// deltas. holo is NVFP4, so it is unaffected.
+    pub fn set_lora_weights(&mut self, w: ops::lora_delta::LoraFfnWeights) -> Result<()> {
+        anyhow::ensure!(
+            self.fp8_weights.is_none() && self.bf16_weights.is_none(),
+            "LoRA v0 supports only the NVFP4 dense-FFN path (FP8/BF16 weight \
+             overlays installed on this layer)"
+        );
+        self.lora = Some(w);
+        Ok(())
     }
 
     /// Install BF16 dense MLP weights. After this call, the forward paths

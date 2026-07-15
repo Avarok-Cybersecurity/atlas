@@ -61,6 +61,25 @@ pub enum InferenceRequest {
         prompt_tokens: std::sync::Arc<Vec<u32>>,
         /// Session hash for SSM snapshot isolation (hash of first 64 prompt tokens).
         session_hash: u64,
+        /// M2 per-request LoRA routing: adapter pool SLOT this request applies
+        /// (`-1` = defer to installed active; byte-identical to today). Set from
+        /// the resolved `adapter` field; carried onto `SequenceState.adapter_slot`.
+        adapter_slot: i32,
+        /// Per-request source-language token id (0 = deployment default);
+        /// carried onto `SequenceState.src_lang_id`.
+        src_lang_id: u32,
+        /// Per-request target-language token id (0 = deployment default);
+        /// carried onto `SequenceState.tgt_lang_id`.
+        tgt_lang_id: u32,
+        /// NLLB beam search: beams per request (1 = greedy); carried onto
+        /// `SequenceState.num_beams`.
+        num_beams: u32,
+        /// NLLB beam search: length penalty; carried onto
+        /// `SequenceState.length_penalty`.
+        length_penalty: f32,
+        /// NLLB beam search: early stopping; carried onto
+        /// `SequenceState.early_stopping`.
+        early_stopping: bool,
         /// Preprocessed image data: (pixels `[P,1536]` f32, grid_h, grid_w) per image.
         image_pixels: Vec<(Vec<f32>, usize, usize)>,
         max_tokens: usize,
@@ -154,6 +173,21 @@ pub enum InferenceRequest {
         prompt_tokens: std::sync::Arc<Vec<u32>>,
         /// Session hash for SSM snapshot isolation (hash of first 64 prompt tokens).
         session_hash: u64,
+        /// M2 per-request LoRA routing: adapter pool SLOT (`-1` = defer to
+        /// installed active). See the Blocking variant.
+        adapter_slot: i32,
+        /// Per-request source-language token id (0 = deployment default).
+        /// See the Blocking variant.
+        src_lang_id: u32,
+        /// Per-request target-language token id (0 = deployment default).
+        /// See the Blocking variant.
+        tgt_lang_id: u32,
+        /// NLLB beam search: beams per request (1 = greedy). See Blocking.
+        num_beams: u32,
+        /// NLLB beam search: length penalty. See Blocking.
+        length_penalty: f32,
+        /// NLLB beam search: early stopping. See Blocking.
+        early_stopping: bool,
         /// Preprocessed image data: (pixels `[P,1536]` f32, grid_h, grid_w) per image.
         image_pixels: Vec<(Vec<f32>, usize, usize)>,
         max_tokens: usize,

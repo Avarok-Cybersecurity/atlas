@@ -129,6 +129,17 @@ impl TransformerModel {
         self.gpu
             .copy_h2d_async(&token.to_le_bytes(), self.buffers.token_ids(), stream)?;
 
+        // ── M2 request-scoped LoRA routing (single-seq decode). Upload this
+        // request's 1-elem adapter-slot buffer to the free +128 gap (positions
+        // @+0..+4, slot @+8..+16, seq_len @+16..+20, block_table @+256 — +128
+        // is clear). Fixed address + per-step contents = graph-safe (same
+        // phasing as positions), uploaded pre-`begin_capture`. `DevicePtr(0)`
+        // when no adapter pool is resident → the K/V/O apply sites take the
+        // byte-identical installed-pair path. `seq.adapter_slot == -1` (no
+        // per-request `adapter` field) resolves to the active slot.
+        let seq_slot =
+            self.upload_seq_slot_uniform(seq.adapter_slot, 1, meta_base.offset(128), stream)?;
+
         let attn_metadata = AttnMetadataDev {
             positions: meta_base,
             positions_h: meta_base,
@@ -138,6 +149,7 @@ impl TransformerModel {
             block_table: meta_base.offset(256),
             max_blocks_per_seq: max_blocks,
             num_seqs: 1,
+            seq_slot,
         };
 
         // CUDA graphs cannot capture NCCL all-reduce (it runs on a separate
@@ -187,13 +199,20 @@ impl TransformerModel {
         // failure falls back to eager execution (graphs then stay disabled).
         let gdn_graphs =
             std::env::var("ATLAS_GDN_DECODE_GRAPH").is_ok_and(|v| v == "1" || v == "true");
+        // LoRA debugging hatch (ATLAS_LORA_EAGER=1): force eager decode when an
+        // adapter is active so graph-vs-eager delta parity can be compared.
+        // Default (unset) keeps graphs ON — the LoRA delta launches are
+        // capture-safe (pool weights / arena scratch / f32 scale are all
+        // load-time-fixed). Folded in as one more suppressor.
+        let lora_eager = self.lora.is_some() && crate::lora::lora_eager_env();
         let use_graphs = (self.comm.is_none() || ep_graphs || gdn_graphs)
             && !self.profile
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
             && !hss_engaged
-            && !dump_step0;
+            && !dump_step0
+            && !lora_eager;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -207,6 +226,7 @@ impl TransformerModel {
             // Hash-MoE: the single decode token ID (uploaded above every step
             // before graph replay). MoE reads it at offset 0.
             token_ids: Some(self.buffers.token_ids()),
+            routed_lora_layers: None, // #30: single-seq decode never routes prefill.
         };
 
         // Profile mode: use per-layer sync decode for timing breakdown.

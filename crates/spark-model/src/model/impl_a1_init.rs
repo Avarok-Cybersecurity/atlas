@@ -149,3 +149,24 @@ pub(super) fn build_mtp_proposer(
         }
     }
 }
+
+/// Build the optional SSM snapshot spill tier for `TransformerModel::new`,
+/// hoisted 1:1 to keep `impl_a1.rs` under the 500-LoC cap. Returns `None`
+/// (the byte-identical default) unless `ATLAS_SSM_TIER` is set on a recurrent
+/// model; otherwise selects the env-driven backend keyed by the model
+/// fingerprint (so different models sharing one peer can't collide).
+///
+/// `blob_bytes` MUST be `SsmSnapshotPool::spill_blob_bytes()` so the tier's
+/// fixed blob sizing matches the spill/fault-in gathers.
+pub(super) fn build_ssm_tier_store(
+    config: &ModelConfig,
+    blob_bytes: usize,
+    num_ssm_layers: usize,
+) -> Result<Option<Arc<dyn super::ssm_tier::SnapshotBlobStore>>> {
+    if super::ssm_tier::ssm_tier_enabled() && num_ssm_layers > 0 {
+        let fp = super::ssm_tier::ModelFingerprint::derive(config, blob_bytes)?;
+        Ok(Some(super::ssm_tier::build_tier_store(fp, blob_bytes)?))
+    } else {
+        Ok(None)
+    }
+}

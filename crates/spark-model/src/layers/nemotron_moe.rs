@@ -20,7 +20,7 @@ use spark_runtime::kv_cache::PagedKvCache;
 
 use crate::layer::{EmptyLayerState, ForwardContext, LayerState, TransformerLayer};
 use crate::layers::ops;
-use crate::weight_map::{DenseWeight, NemotronExpertWeight, NemotronMoeWeights, QuantizedWeight};
+use crate::weight_map::{DenseWeight, NemotronMoeWeights, QuantizedWeight};
 
 /// Device-side pointer table for one projection across all experts.
 struct ExpertPtrTable {
@@ -35,6 +35,10 @@ pub struct NemotronMoeLayer {
     input_norm: DenseWeight,
     /// LatentMoE dimension (0 = direct, >0 = latent).
     moe_latent_size: usize,
+    /// Routed expert intermediate size for this layer (Puzzle: per-block).
+    moe_inter: usize,
+    /// Top-K experts activated per token for this layer (Puzzle: per-block).
+    top_k: usize,
     // Kernel handles — decode (single token)
     rms_norm_residual_k: KernelHandle,
     dense_gemv_k: KernelHandle,
@@ -46,6 +50,12 @@ pub struct NemotronMoeLayer {
     residual_add_k: KernelHandle,
     // Kernel handles — prefill (batched GEMM)
     dense_gemm_k: KernelHandle,
+    /// Pipelined tensor-core BF16 GEMM (mma.sync.m16n8k16 + cp.async 2-stage,
+    /// 128x128 tile). `dense_gemm_bf16` is a SCALAR 16x16 kernel — on the
+    /// large-M prefill shapes it is ~40x slower, and the three dense GEMMs of a
+    /// LatentMoE layer (gate, fc1_latent, fc2_latent) were the single largest
+    /// prefill cost on Puzzle (34% of all GPU time). Same math (cosine=1.0).
+    dense_gemm_pipelined_k: KernelHandle,
     w4a16_gemm_k: KernelHandle,
     // Batched N-token MoE prefill kernels
     topk_sigmoid_batched_k: KernelHandle,
@@ -56,6 +66,8 @@ pub struct NemotronMoeLayer {
     moe_sort_k: KernelHandle,
     moe_grouped_gemm_k: KernelHandle,
     moe_relu2_elementwise_k: KernelHandle,
+    moe_grouped_gemm_relu2_k: KernelHandle,
+    moe_w4a4_grouped_k: KernelHandle,
     moe_unpermute_reduce_k: KernelHandle,
     moe_grouped_gemm_n128_k: KernelHandle,
     up_ptrs: ExpertPtrTable,
@@ -66,8 +78,20 @@ pub struct NemotronMoeLayer {
     // Transposed shared expert weights
     shared_up_t: Option<QuantizedWeight>,
     shared_down_t: Option<QuantizedWeight>,
+    // Pre-dequantized FP8 E4M3 [N, K] copies of the shared-expert projections.
+    // Consumed by `fp8_gemm_t_m128_mfast` (no dequant phase); see the SSM layer.
+    shared_up_pd_fp8: Option<DevicePtr>,
+    shared_down_pd_fp8: Option<DevicePtr>,
+    // FP8 E4M3 copies of the BF16 latent projections, so prefill runs the tuned
+    // FP8 GEMM instead of dense_gemm_bf16_pipelined (and halves their bytes).
+    fc1_pd_fp8: Option<DevicePtr>,
+    fc2_pd_fp8: Option<DevicePtr>,
     // Transposed SSM GEMM kernel handle (for shared expert)
     w4a16_gemm_t_k: KernelHandle,
+    w4a16_gemm_t_m128_k: KernelHandle,
+    fp8_gemm_m128_k: KernelHandle,
+    w4a4_gemm_k: KernelHandle,
+    quantize_nvfp4_k: KernelHandle,
 }
 
 impl NemotronMoeLayer {
@@ -76,14 +100,28 @@ impl NemotronMoeLayer {
         input_norm: DenseWeight,
         config: &ModelConfig,
         gpu: &dyn GpuBackend,
+        moe_inter: usize,
+        top_k: usize,
     ) -> Result<Self> {
         let up_ptrs = build_ptr_table(&weights.experts, |e| &e.up_proj, gpu)?;
         let down_ptrs = build_ptr_table(&weights.experts, |e| &e.down_proj, gpu)?;
+        let moe_inter = if moe_inter > 0 {
+            moe_inter
+        } else {
+            config.moe_intermediate_size
+        };
+        let top_k = if top_k > 0 {
+            top_k
+        } else {
+            config.num_experts_per_tok
+        };
 
         Ok(Self {
             weights,
             input_norm,
             moe_latent_size: config.moe_latent_size,
+            moe_inter,
+            top_k,
             rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             topk_sigmoid_k: gpu.kernel("moe_topk_sig", "moe_topk_sigmoid")?,
@@ -93,6 +131,7 @@ impl NemotronMoeLayer {
             weighted_sum_scale_k: gpu.kernel("relu2", "moe_weighted_sum_scale")?,
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             dense_gemm_k: gpu.kernel("gemm", "dense_gemm_bf16")?,
+            dense_gemm_pipelined_k: super::try_kernel(gpu, "gemm", "dense_gemm_bf16_pipelined"),
             w4a16_gemm_k: gpu.kernel("w4a16", "w4a16_gemm")?,
             topk_sigmoid_batched_k: super::try_kernel(
                 gpu,
@@ -121,6 +160,12 @@ impl NemotronMoeLayer {
                 "moe_w4a16_grouped_gemm_ptrtable",
             ),
             moe_relu2_elementwise_k: super::try_kernel(gpu, "relu2", "relu_squared_inplace"),
+            moe_grouped_gemm_relu2_k: super::try_kernel(
+                gpu,
+                "moe_w4a16",
+                "moe_w4a16_grouped_gemm_ptrtable_relu2",
+            ),
+            moe_w4a4_grouped_k: super::try_kernel(gpu, "moe_w4a4", "moe_w4a4_grouped_gemm_relu2"),
             moe_unpermute_reduce_k: super::try_kernel(gpu, "moe", "moe_unpermute_reduce_indexed"),
             moe_grouped_gemm_n128_k: super::try_kernel(
                 gpu,
@@ -133,68 +178,27 @@ impl NemotronMoeLayer {
             down_ptrs_t: None,
             shared_up_t: None,
             shared_down_t: None,
+            shared_up_pd_fp8: None,
+            shared_down_pd_fp8: None,
+            fc1_pd_fp8: None,
+            fc2_pd_fp8: None,
             w4a16_gemm_t_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t"),
+            w4a16_gemm_t_m128_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128"),
+            fp8_gemm_m128_k: super::try_kernel(gpu, "w4a16", "fp8_gemm_t_m128_mfast"),
+            w4a4_gemm_k: super::try_kernel(gpu, "w4a4", "w4a4_gemm_mfast"),
+            quantize_nvfp4_k: super::try_kernel(gpu, "quantize_nvfp4", "quantize_bf16_to_nvfp4"),
         })
-    }
-}
-
-impl NemotronMoeLayer {
-    /// Transpose expert weights for fast grouped GEMM prefill.
-    /// Called from weight loader after construction. Skips expert transposition
-    /// when memory is tight (Super 120B: 128 experts × 40 layers would OOM).
-    pub fn prepare_prefill_weights(&mut self, gpu: &dyn GpuBackend, config: &ModelConfig) {
-        let h = config.hidden_size;
-        let inter = config.moe_intermediate_size;
-        let shared_inter = config.shared_expert_intermediate_size;
-
-        // Only transpose routed experts for small models (Nano 30B: 23 MoE layers × 128 experts).
-        // Super 120B has 40 MoE layers × 128 experts = 5120 matrices — too much memory.
-        // The sorted grouped GEMM still works with non-transposed weights via the base kernel.
-        if self.moe_latent_size == 0 {
-            let expert_k = h;
-            let mut up_t = Vec::new();
-            let mut down_t = Vec::new();
-            for expert in &self.weights.experts {
-                if let Ok(ut) = expert.up_proj.transpose_for_gemm(gpu, inter, expert_k) {
-                    up_t.push(ut);
-                }
-                if let Ok(dt) = expert.down_proj.transpose_for_gemm(gpu, expert_k, inter) {
-                    down_t.push(dt);
-                }
-            }
-            if up_t.len() == self.weights.experts.len()
-                && let Ok(ptrs) = build_ptr_table_from_weights(&up_t, gpu)
-            {
-                self.up_ptrs_t = Some(ptrs);
-            }
-            if down_t.len() == self.weights.experts.len()
-                && let Ok(ptrs) = build_ptr_table_from_weights(&down_t, gpu)
-            {
-                self.down_ptrs_t = Some(ptrs);
-            }
-        }
-
-        // Transpose shared expert weights (only for direct MoE — Super is too memory-tight)
-        if self.moe_latent_size == 0 {
-            self.shared_up_t = self
-                .weights
-                .shared_up
-                .transpose_for_gemm(gpu, shared_inter, h)
-                .ok();
-            self.shared_down_t = self
-                .weights
-                .shared_down
-                .transpose_for_gemm(gpu, h, shared_inter)
-                .ok();
-        }
     }
 }
 
 mod decode_helpers;
 mod prefill_fallback;
 mod prefill_sorted;
+mod prefill_weights;
+mod ptr_tables;
 
 use prefill_sorted::SortedPrefillCtx;
+use ptr_tables::{build_ptr_table, build_ptr_table_from_weights};
 
 impl TransformerLayer for NemotronMoeLayer {
     fn decode(
@@ -234,10 +238,10 @@ impl TransformerLayer for NemotronMoeLayer {
         stream: u64,
     ) -> Result<()> {
         let h = ctx.config.hidden_size;
-        let inter = ctx.config.moe_intermediate_size as u32;
+        let inter = self.moe_inter as u32;
         let shared_inter = ctx.config.shared_expert_intermediate_size as u32;
         let num_experts = ctx.config.num_experts as u32;
-        let top_k = ctx.config.num_experts_per_tok as u32;
+        let top_k = self.top_k as u32;
         let eps = ctx.config.rms_norm_eps as f32;
         let scale = ctx.config.routed_scaling_factor as f32;
         let n = num_tokens as u32;
@@ -259,9 +263,8 @@ impl TransformerLayer for NemotronMoeLayer {
 
         // ── 2. Batched Gate GEMM: [N, H] x [H, num_experts]^T → [N, num_experts] ──
         let gate_logits = ctx.buffers.gate_logits();
-        ops::dense_gemm(
+        self.dense_gemm_prefill(
             ctx.gpu,
-            self.dense_gemm_k,
             normed,
             &self.weights.gate,
             gate_logits,
@@ -286,18 +289,81 @@ impl TransformerLayer for NemotronMoeLayer {
         // Always compute shared expert UP — even when batched path overwrites it later.
         // The batched UP kernel writes shared_up_out for shared blocks, but we need
         // this result for the per-token fallback path AND it's harmless to overwrite.
-        if let Some(ref sut) = self.shared_up_t {
-            ops::w4a16_gemm_n128(
+        // Native FP4 tensor cores: shared_up consumed in its ORIGINAL NVFP4 form
+        // (no FP8 or transposed copies), activations quantized to NVFP4 in one
+        // pass. Same gates as the SSM W4A4 path; ATLAS_NO_SHARED_W4A4=1 disables.
+        let w4a4 = n >= 512
+            && self.w4a4_gemm_k.0 != 0
+            && self.quantize_nvfp4_k.0 != 0
+            && ctx.buffers.fp8_act_bytes() >= (shared_inter as usize).max(h) * (n as usize)
+            && std::env::var("ATLAS_NO_SHARED_W4A4").is_err();
+        if w4a4 {
+            let a4 = ctx.buffers.fp8_act();
+            let a4_sf = a4.offset((n as usize) * h / 2);
+            ops::quantize_bf16_to_nvfp4(
                 ctx.gpu,
-                self.w4a16_gemm_t_k,
+                self.quantize_nvfp4_k,
                 normed,
-                sut,
+                a4,
+                a4_sf,
+                n,
+                h as u32,
+                stream,
+            )?;
+            ops::w4a4_gemm_mfast(
+                ctx.gpu,
+                self.w4a4_gemm_k,
+                a4,
+                a4_sf,
+                &self.weights.shared_up,
                 shared_up_out_base,
                 n,
                 shared_inter,
                 h as u32,
                 stream,
             )?;
+        } else if let Some(w_fp8) = self.shared_up_pd_fp8 {
+            ops::fp8_gemm_m128_mfast(
+                ctx.gpu,
+                self.fp8_gemm_m128_k,
+                normed,
+                w_fp8,
+                shared_up_out_base,
+                n,
+                shared_inter,
+                h as u32,
+                stream,
+            )?;
+        } else if let Some(ref sut) = self.shared_up_t {
+            // Same NVFP4 weights, better kernel: w4a16_gemm_t_m128 tiles M at 128
+            // (half the B panel passes of w4a16_gemm_t's 64) and puts M on the fast
+            // grid axis so those passes hit L2. Costs nothing extra -- the transposed
+            // copy already exists -- and needs no FP8 residency.
+            if n > 128 && self.w4a16_gemm_t_m128_k.0 != 0 {
+                ops::w4a16_gemm_n128_m128(
+                    ctx.gpu,
+                    self.w4a16_gemm_t_m128_k,
+                    normed,
+                    sut,
+                    shared_up_out_base,
+                    n,
+                    shared_inter,
+                    h as u32,
+                    stream,
+                )?;
+            } else {
+                ops::w4a16_gemm_n128(
+                    ctx.gpu,
+                    self.w4a16_gemm_t_k,
+                    normed,
+                    sut,
+                    shared_up_out_base,
+                    n,
+                    shared_inter,
+                    h as u32,
+                    stream,
+                )?;
+            }
         } else {
             ops::w4a16_gemm(
                 ctx.gpu,
@@ -317,19 +383,25 @@ impl TransformerLayer for NemotronMoeLayer {
         // Cannot use ssm_ba (too small) or moe_output (used later for unpermute).
         let latent = self.moe_latent_size as u32;
         let latent_base = if latent > 0 {
-            let fc1 = self.weights.fc1_latent_proj.as_ref().unwrap();
             let latent_buf = ctx.buffers.attn_output();
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                normed,
-                fc1,
-                latent_buf,
-                n,
-                latent,
-                h as u32,
-                stream,
-            )?;
+            if let Some(w_fp8) = self.fc1_pd_fp8 {
+                ops::fp8_gemm_m128_mfast(
+                    ctx.gpu,
+                    self.fp8_gemm_m128_k,
+                    normed,
+                    w_fp8,
+                    latent_buf,
+                    n,
+                    latent,
+                    h as u32,
+                    stream,
+                )?;
+            } else {
+                let fc1 = self.weights.fc1_latent_proj.as_ref().unwrap();
+                self.dense_gemm_prefill(
+                    ctx.gpu, normed, fc1, latent_buf, n, latent, h as u32, stream,
+                )?;
+            }
             Some(latent_buf)
         } else {
             None
@@ -379,70 +451,4 @@ impl TransformerLayer for NemotronMoeLayer {
     fn alloc_state(&self, _gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
         Ok(Box::new(EmptyLayerState))
     }
-}
-
-fn build_ptr_table_from_weights(
-    weights: &[QuantizedWeight],
-    gpu: &dyn GpuBackend,
-) -> Result<ExpertPtrTable> {
-    let n = weights.len();
-    let packed_bytes: Vec<u8> = weights
-        .iter()
-        .flat_map(|w| w.weight.0.to_le_bytes())
-        .collect();
-    let scale_bytes: Vec<u8> = weights
-        .iter()
-        .flat_map(|w| w.weight_scale.0.to_le_bytes())
-        .collect();
-    let scale2_bytes: Vec<u8> = weights
-        .iter()
-        .flat_map(|w| w.weight_scale_2.to_le_bytes())
-        .collect();
-    let packed_ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&packed_bytes, packed_ptrs)?;
-    let scale_ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&scale_bytes, scale_ptrs)?;
-    let scale2_vals = gpu.alloc(n * 4)?;
-    gpu.copy_h2d(&scale2_bytes, scale2_vals)?;
-    Ok(ExpertPtrTable {
-        packed_ptrs,
-        scale_ptrs,
-        scale2_vals,
-    })
-}
-
-fn build_ptr_table(
-    experts: &[NemotronExpertWeight],
-    proj: impl Fn(&NemotronExpertWeight) -> &QuantizedWeight,
-    gpu: &dyn GpuBackend,
-) -> Result<ExpertPtrTable> {
-    let n = experts.len();
-
-    let packed_bytes: Vec<u8> = experts
-        .iter()
-        .flat_map(|e| proj(e).weight.0.to_le_bytes())
-        .collect();
-    let scale_bytes: Vec<u8> = experts
-        .iter()
-        .flat_map(|e| proj(e).weight_scale.0.to_le_bytes())
-        .collect();
-    let scale2_bytes: Vec<u8> = experts
-        .iter()
-        .flat_map(|e| proj(e).weight_scale_2.to_le_bytes())
-        .collect();
-
-    let packed_ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&packed_bytes, packed_ptrs)?;
-
-    let scale_ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&scale_bytes, scale_ptrs)?;
-
-    let scale2_vals = gpu.alloc(n * 4)?;
-    gpu.copy_h2d(&scale2_bytes, scale2_vals)?;
-
-    Ok(ExpertPtrTable {
-        packed_ptrs,
-        scale_ptrs,
-        scale2_vals,
-    })
 }

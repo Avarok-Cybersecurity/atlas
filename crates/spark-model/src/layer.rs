@@ -102,6 +102,13 @@ pub struct AttnMetadataDev {
     pub max_blocks_per_seq: u32,
     /// Number of sequences in this batch (1 for single-sequence decode).
     pub num_seqs: u32,
+    /// M2 per-request LoRA routing: `[num_seqs]` i32 at this device address,
+    /// one adapter SLOT index per row (`< 0` = base / no delta; pad rows are
+    /// `-1`). Uploaded each decode step to a stable address (like positions /
+    /// block_table), so the batched bgmv stays inside the captured decode
+    /// graph. `DevicePtr(0)` on every non-routed path (single-seq decode,
+    /// prefill, verify, MLA, MTP) — the bgmv apply sites no-op when it is null.
+    pub seq_slot: DevicePtr,
 }
 
 /// Q12 batched-prefill device-side metadata.
@@ -232,6 +239,17 @@ pub struct ForwardContext<'a> {
     /// for models without hash routing. Must be a STABLE address across the
     /// layer loop (and, under CUDA-graph decode, uploaded before each replay).
     pub token_ids: Option<DevicePtr>,
+    /// #30 (routed-prefill precision): the REQUEST slot's per-layer LoRA pairs,
+    /// GLOBAL-layer-indexed (`len == num_hidden_layers`), set ONLY at the prefill
+    /// entries and ONLY when the request routes to a NON-active slot. `Some` makes
+    /// the K/V/O prefill apply sites select the request slot's pair and fold it
+    /// through the SAME dense `apply_lora_delta` (dense_gemm_tc) the ACTIVE adapter
+    /// uses — numerically identical to serving that adapter active, instead of the
+    /// per-row bgmv (whose fp accumulation order tips razor-margin tokens). `None`
+    /// (active/base request, no LoRA, and every decode/verify/mtp/moe pass) leaves
+    /// the installed-active-pair path byte-identical. Prefill runs eager
+    /// (`graph_capture: false`) so this per-pass CPU borrow is safe.
+    pub routed_lora_layers: Option<&'a [Option<crate::lora::LoraLayerWeights>]>,
 }
 
 /// A single transformer layer performing the full per-layer computation.
