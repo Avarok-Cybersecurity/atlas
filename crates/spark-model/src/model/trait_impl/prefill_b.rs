@@ -26,6 +26,11 @@ use crate::traits::{Model, SequenceState};
 
 mod batch;
 mod batch_kernel;
+// Re-exported so the `TransformerModel::prefill_batch_chunk` override in the
+// parent `trait_impl` module can downcast-detect a post-mutation kernel-batched
+// failure and propagate it (instead of replaying dirty seqs). `batch_kernel` is
+// a private submodule, so the marker is not otherwise nameable from the parent.
+pub(in crate::model) use batch_kernel::KernelBatchedCommitted;
 #[cfg(test)]
 mod batch_kernel_tests;
 mod batched_layer;

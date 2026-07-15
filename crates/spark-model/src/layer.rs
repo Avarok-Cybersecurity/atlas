@@ -16,6 +16,27 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 mod transformer_layer;
 pub use transformer_layer::TransformerLayer;
 
+/// Whether chunk-0 (fresh K/V, `seq_len_start==0`) streams may take the
+/// batched (paged) prefill path. Enabled by `ATLAS_Q12_BATCHED_FIRST_CHUNK=1`
+/// or `ATLAS_PREFILL_CODISPATCH=1` (the latter is the single end-to-end flag
+/// for cross-request co-dispatch of fresh prompts, whose every stream starts
+/// at `chunk_start==0`).
+///
+/// Canonical home for this two-flag predicate so the Path-B eligibility gate
+/// (`prefill_b::batch_kernel::eligible`) and the attention layers
+/// (`qwen3_attention::prefill_inner` / `prefill/paged_attn_batched`) agree on
+/// exactly which streams are admitted. Both flags default OFF — no behavior
+/// change unless a user sets one.
+pub(crate) fn first_chunk_batched_enabled() -> bool {
+    ["ATLAS_Q12_BATCHED_FIRST_CHUNK", "ATLAS_PREFILL_CODISPATCH"]
+        .iter()
+        .any(|k| {
+            std::env::var(k)
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+        })
+}
+
 /// Per-layer persistent state tracked across decode steps.
 ///
 /// Attention layers use [`EmptyLayerState`] (KV lives in `PagedKvCache`).

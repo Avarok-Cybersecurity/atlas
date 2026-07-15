@@ -79,9 +79,12 @@ impl Qwen3AttentionLayer {
                 self.attn_layer_idx
             );
         }
-        let allow_first_chunk = std::env::var("ATLAS_Q12_BATCHED_FIRST_CHUNK")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        // Match the Path-B eligibility gate exactly: admit chunk-0 batched
+        // attention under EITHER ATLAS_Q12_BATCHED_FIRST_CHUNK=1 OR
+        // ATLAS_PREFILL_CODISPATCH=1 (shared predicate in crate::layer), so a
+        // CODISPATCH-only batch that passed eligibility does not bail here after
+        // Phase-A state mutation.
+        let allow_first_chunk = crate::layer::first_chunk_batched_enabled();
         if seq_len_start == 0 && !allow_first_chunk {
             anyhow::bail!(
                 "prefill_attention_paged_attn_batched: seq_len_start=0 not supported \

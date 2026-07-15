@@ -118,14 +118,27 @@ impl TransformerModel {
         }
 
         // Q12 Path B: kernel-batched fast path. Check eligibility upfront
-        // (cheap) and, when viable, dispatch to the outer-layer-loop
-        // implementation that uses BatchedAttnMetadata + per-layer batched
-        // dispatchers. On Err from the kernel path, fall through to the
-        // per-stream body below. The kernel path bails BEFORE any state
-        // mutation on the structural eligibility check; mid-Phase-A bails
-        // (e.g. proc_count mismatch from differing prefix-cache hits) leave
-        // the streams in a partially-mutated state — we propagate that Err
-        // so the caller can retry single-stream or surface to the user.
+        // (cheap, pure, pre-mutation) and, when viable, dispatch to the
+        // outer-layer-loop implementation that uses BatchedAttnMetadata +
+        // per-layer batched dispatchers.
+        //
+        // On Err from the kernel path we branch on WHERE it happened, because
+        // the two classes need opposite handling:
+        //   * PRE-mutation bails (per-stream setup / staging: proc_count /
+        //     MRoPE / needs_paged mismatch, scratch pre-flight, metadata
+        //     staging). Block allocation is idempotent and `seq.tokens`/SSM
+        //     state are still untouched, so the per-stream loop below re-runs
+        //     these streams correctly → fall through.
+        //   * POST-mutation errors (the committed region: outer layer loop
+        //     onward — SSM recurrence advanced IN PLACE, KV written, finalize).
+        //     Replaying these dirty seqs per-stream would double-advance the
+        //     non-idempotent SSM state → silent corruption. `batch_kernel`
+        //     tags these with `KernelBatchedCommitted`; we PROPAGATE them so
+        //     only the affected streams fail cleanly instead of returning
+        //     wrong tokens.
+        // NOTE: `kernel_batched_eligible` routes prefix-cache-active batches
+        // straight to per-stream (pristine seqs), so this Err split governs the
+        // no-cache co-dispatch path.
         //
         // Runtime kill switch: set `ATLAS_Q12_BATCHED=0` to force-disable
         // the kernel-batched path without rebuilding. Default is enabled
@@ -148,14 +161,31 @@ impl TransformerModel {
                     return Ok(v);
                 }
                 Err(e) => {
-                    // Structural bails (proc_count/seq_lens_start mismatch,
-                    // unsupported layer feature) are logged at info so the
-                    // first occurrence is visible in production logs without
-                    // requiring debug-level tracing. Subsequent bails are
-                    // still logged but with reduced verbosity in tight loops.
+                    // Post-mutation failure: the committed region already
+                    // advanced SSM recurrence / wrote KV for one or more layers
+                    // (tagged `KernelBatchedCommitted`). Replaying via the
+                    // per-stream loop below would double-advance the SSM state →
+                    // corruption. Propagate so the scheduler fails just these
+                    // streams cleanly rather than silently returning wrong
+                    // tokens.
+                    if e.downcast_ref::<super::batch_kernel::KernelBatchedCommitted>()
+                        .is_some()
+                    {
+                        tracing::error!(
+                            target: "atlas::q12",
+                            "Q12 kernel-batched failed AFTER state mutation — propagating \
+                             (no per-stream replay to avoid double SSM advance): {e:#}"
+                        );
+                        return Err(e);
+                    }
+                    // Pre-mutation structural bail (proc_count/seq_lens_start
+                    // mismatch, unsupported layer feature, scratch pre-flight) —
+                    // streams are still pristine, so fall through to per-stream.
+                    // Logged at info so the first occurrence is visible in
+                    // production logs without requiring debug-level tracing.
                     tracing::info!(
                         target: "atlas::q12",
-                        "Q12 kernel-batched bailed → falling back to per-stream: {e}"
+                        "Q12 kernel-batched bailed (pre-mutation) → falling back to per-stream: {e}"
                     );
                 }
             }

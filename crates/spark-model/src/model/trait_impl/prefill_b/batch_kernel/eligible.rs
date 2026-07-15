@@ -18,15 +18,11 @@ use crate::traits::PrefillSlice;
 /// `ATLAS_Q12_BATCHED_FIRST_CHUNK=1` or `ATLAS_PREFILL_CODISPATCH=1` (the latter
 /// is the single end-to-end flag for cross-request co-dispatch of fresh prompts,
 /// whose every stream starts at chunk_start==0).
-pub(super) fn first_chunk_batched_enabled() -> bool {
-    ["ATLAS_Q12_BATCHED_FIRST_CHUNK", "ATLAS_PREFILL_CODISPATCH"]
-        .iter()
-        .any(|k| {
-            std::env::var(k)
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false)
-        })
-}
+///
+/// Delegates to the crate-canonical predicate in `crate::layer` so this
+/// eligibility gate and the attention layers (`qwen3_attention`) admit the
+/// EXACT same set of chunk-0 streams — see the correctness note there.
+pub(super) use crate::layer::first_chunk_batched_enabled;
 
 impl TransformerModel {
     /// Returns true when the batched-kernel path is viable for these

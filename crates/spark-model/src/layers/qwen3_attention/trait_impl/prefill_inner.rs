@@ -128,10 +128,15 @@ impl Qwen3AttentionLayer {
         // tried and FAILED for large prefill chunks — numerically off + ~7x
         // slower (the kernel's batch dim is not compatible with the co-dispatch
         // stacking at large seq_len). So batched chunk-0 still uses paged.
-        let allow_batched_first_chunk = batched_meta.is_some()
-            && std::env::var("ATLAS_Q12_BATCHED_FIRST_CHUNK")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
+        // Match the Path-B eligibility gate exactly: chunk-0 batched attention
+        // is admitted when EITHER ATLAS_Q12_BATCHED_FIRST_CHUNK=1 OR
+        // ATLAS_PREFILL_CODISPATCH=1 (shared predicate in crate::layer). Before
+        // this, the layer honored only the first flag while eligibility honored
+        // both — so a CODISPATCH-only co-dispatch batch passed eligibility,
+        // mutated GDN/KV state in Phase A, then bailed here at seq_len_start==0,
+        // forcing a per-stream replay of already-mutated seqs.
+        let allow_batched_first_chunk =
+            batched_meta.is_some() && crate::layer::first_chunk_batched_enabled();
         if batched_meta.is_some() && seq_len_start == 0 && !allow_batched_first_chunk {
             anyhow::bail!(
                 "prefill_inner: batched mode requires seq_len_start > 0 (paged path); \

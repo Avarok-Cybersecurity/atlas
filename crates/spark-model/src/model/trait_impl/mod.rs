@@ -129,6 +129,24 @@ impl Model for TransformerModel {
         match self.prefill_batch_chunk_dispatch(streams, stream) {
             Ok(v) => Ok(v),
             Err(e) => {
+                // Post-mutation kernel-batched failure: the dispatch tags errors
+                // raised after SSM recurrence / KV state has already advanced
+                // (one or more layers) with `KernelBatchedCommitted`. Replaying
+                // those streams through the per-stream loop below would
+                // double-advance the SSM state → corruption, so propagate the
+                // error instead: the scheduler fails just those streams cleanly
+                // rather than silently returning wrong tokens. Untagged errors
+                // (stub-not-implemented, arena cap, pre-mutation structural
+                // mismatch) leave seqs pristine and still downgrade to the
+                // per-stream loop.
+                if e.downcast_ref::<prefill_b::KernelBatchedCommitted>().is_some() {
+                    tracing::error!(
+                        "prefill_batch_chunk: kernel-batched dispatch failed AFTER \
+                         state mutation — propagating (no per-stream replay to \
+                         avoid double SSM advance): {e:#}"
+                    );
+                    return Err(e);
+                }
                 // Log at debug — under expected for this stub. Promotes to
                 // info if a real error is encountered (future Phase 4b body).
                 tracing::debug!(

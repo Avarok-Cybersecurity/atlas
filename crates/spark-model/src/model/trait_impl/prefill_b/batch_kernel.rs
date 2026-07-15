@@ -49,6 +49,34 @@ use crate::layer::{
 };
 use crate::traits::{Model, PrefillSlice, SequenceState};
 
+/// Marker attached (via `anyhow::Context`) to any error raised once the
+/// kernel-batched path has entered its irreversible-mutation region — the
+/// outer per-layer dispatch loop (SSM recurrence advance / KV writes) and the
+/// PHASE-C finalize/checkpoint. Its presence tells the dispatcher
+/// (`prefill_batch_chunk_dispatch`) that these streams are DIRTY: replaying
+/// them through the per-stream fallback would double-advance the non-idempotent
+/// SSM recurrence, so the error MUST propagate instead of falling through.
+///
+/// Errors raised BEFORE this region (per-stream setup / staging: proc_count /
+/// MRoPE / needs_paged mismatch, scratch pre-flight, metadata staging) are NOT
+/// tagged — block allocation is idempotent and `seq.tokens`/SSM state are still
+/// untouched there, so the per-stream loop re-runs those streams correctly.
+#[derive(Debug)]
+pub(in crate::model) struct KernelBatchedCommitted;
+
+impl std::fmt::Display for KernelBatchedCommitted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("kernel-batched path failed after committing SSM/KV state mutation")
+    }
+}
+
+/// Tag an error as originating in the committed (post-mutation) region. Free
+/// function (not a closure) so it is `Copy` and reusable across every
+/// `.map_err` site in the layer loop / PHASE C.
+fn commit_err(e: anyhow::Error) -> anyhow::Error {
+    e.context(KernelBatchedCommitted)
+}
+
 impl TransformerModel {
     /// Q12 Path B: full kernel-batched prefill orchestration.
     ///
@@ -398,7 +426,12 @@ impl TransformerModel {
         // Per-stream kv_write_starts vector for attention dispatcher.
         let kv_write_starts: Vec<usize> = per_stream.iter().map(|m| m.kv_write_start_eff).collect();
 
-        // Outer layer loop with mixed dispatch.
+        // ── COMMITTED REGION ──
+        // From the outer layer loop onward each SSM layer advances the
+        // recurrent h_state IN PLACE (non-idempotent) and attention writes KV.
+        // Any error from here on is tagged `KernelBatchedCommitted` (via
+        // `commit_err`) so the dispatcher propagates it rather than replaying
+        // these now-dirty seqs through the per-stream loop (double SSM advance).
         for (layer_idx, layer) in self.layers.iter().enumerate() {
             // Gather per-stream seq refs for this layer.
             let mut seqs_vec: Vec<&mut SequenceState> =
@@ -419,7 +452,8 @@ impl TransformerModel {
                     h_state_ptrs_off,
                     &ctx,
                     stream,
-                )?;
+                )
+                .map_err(commit_err)?;
             } else {
                 self.prefill_attn_batched_layer(
                     layer.as_ref(),
@@ -433,7 +467,8 @@ impl TransformerModel {
                     &meta,
                     &ctx,
                     stream,
-                )?;
+                )
+                .map_err(commit_err)?;
             }
         }
 
@@ -455,6 +490,8 @@ impl TransformerModel {
                 .extend_from_slice(&tokens[chunk_start..chunk_start + cl]);
             seq.seq_len = chunk_start + cl;
 
+            // Still inside the committed region — SSM/KV already mutated by the
+            // layer loop, so tag finalize/checkpoint errors too (`commit_err`).
             let logits = if is_last_chunk {
                 self.prefill_b_finalize_last_at(
                     tokens,
@@ -469,7 +506,8 @@ impl TransformerModel {
                     m.proc_off,
                     b,
                     stream,
-                )?
+                )
+                .map_err(commit_err)?
             } else {
                 self.prefill_b_save_checkpoint(
                     tokens,
@@ -478,7 +516,8 @@ impl TransformerModel {
                     chunk_start,
                     cl,
                     stream,
-                )?;
+                )
+                .map_err(commit_err)?;
                 DevicePtr::NULL
             };
             logits_out.push(logits);
