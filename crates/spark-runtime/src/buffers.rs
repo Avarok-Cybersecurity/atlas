@@ -11,7 +11,9 @@ use atlas_core::config::ModelConfig;
 
 mod accessors;
 mod sizes;
-pub use sizes::{BufferSizes, Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
+mod sizes_q12;
+pub use sizes::BufferSizes;
+pub use sizes_q12::{Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
 
 /// Pre-allocated GPU buffers for a single forward pass.
 ///
