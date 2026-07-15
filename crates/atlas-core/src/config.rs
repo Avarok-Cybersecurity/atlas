@@ -175,6 +175,15 @@ pub struct ModelConfig {
     /// instead of full `[hidden_size]`. Absent for Nano 30B.
     #[serde(default)]
     pub moe_latent_size: usize,
+    /// Per-layer MoE intermediate sizes (Nemotron-H Puzzle heterogeneous channel
+    /// pruning). Length == `num_hidden_layers`; 0 for non-MoE layers. Empty =
+    /// fall back to scalar `moe_intermediate_size` for every MoE layer.
+    #[serde(default, skip_deserializing, skip_serializing)]
+    pub moe_intermediate_sizes: Vec<usize>,
+    /// Per-layer top-K expert counts (Puzzle). Same layout as
+    /// `moe_intermediate_sizes`. Empty = use scalar `num_experts_per_tok`.
+    #[serde(default, skip_deserializing, skip_serializing)]
+    pub num_experts_per_toks: Vec<usize>,
 
     // ── MLA (Multi-head Latent Attention) — Mistral Small 4 / DeepSeek-V2+ ──
     /// KV latent dimension for compressed cache. 0 = standard attention (no MLA).

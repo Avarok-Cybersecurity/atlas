@@ -89,8 +89,9 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         // full-attention layers — both handled at forward-pass layer time,
         // not during weight loading.
         "qwen3_6_moe" | "holo3_1_moe" => Ok(Box::new(Qwen35WeightLoader)),
-        // Nemotron-H family (Mamba-2 + MoE + Attention)
-        "nemotron_h" => Ok(Box::new(NemotronHWeightLoader)),
+        // Nemotron-H family (Mamba-2 + MoE + Attention), including Puzzle
+        // (heterogeneous per-block MoE intermediate / top-k).
+        "nemotron_h" | "nemotron_h_puzzle" => Ok(Box::new(NemotronHWeightLoader)),
         // NLLB / M2M-100 encoder-decoder translation family.
         "m2m_100" | "nllb" => Ok(Box::new(NllbWeightLoader)),
         // Gemma-4 family (pure attention, GeGLU, sliding + full attention)
@@ -107,7 +108,7 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         "deepseek_v4" => Ok(Box::new(DeepSeekV4WeightLoader)),
         _ => bail!(
             "Unsupported model type: '{}' (normalized: '{}'). \
-             Supported: qwen3_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, holo3_1_moe, qwen3_vl_moe, nemotron_h, gemma4, mistral, minimax_m2, deepseek_v4, m2m_100",
+             Supported: qwen3_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, holo3_1_moe, qwen3_vl_moe, nemotron_h, nemotron_h_puzzle, gemma4, mistral, minimax_m2, deepseek_v4, m2m_100",
             config.model_type,
             normalized,
         ),

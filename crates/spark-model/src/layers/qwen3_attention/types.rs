@@ -495,6 +495,10 @@ pub struct Qwen3AttentionLayer {
     // M128 variants
     pub(super) fp8_gemm_t_m128_k: KernelHandle,
     pub(super) fp8_fp8_gemm_t_m128_k: KernelHandle,
+    // Native FP4 prefill (mxf4nvf4): present only for models whose kernel dir
+    // ships w4a4_gemm_mfast (try_kernel returns 0 elsewhere).
+    pub(super) w4a4_gemm_k: KernelHandle,
+    pub(super) quantize_nvfp4_k: KernelHandle,
     /// Online FP8 KV scale calibration.
     pub(super) fp8_calibration: Option<Fp8KvCalibration>,
 }

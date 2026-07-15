@@ -598,6 +598,12 @@ impl Qwen3AttentionLayer {
             fp8_fp8_gemm_k: gpu.kernel("w4a16", "fp8_fp8_gemm_t")?,
             fp8_gemm_t_m128_k: gpu.kernel("w4a16", "fp8_gemm_t_m128")?,
             fp8_fp8_gemm_t_m128_k: gpu.kernel("w4a16", "fp8_fp8_gemm_t_m128")?,
+            w4a4_gemm_k: crate::layers::try_kernel(gpu, "w4a4", "w4a4_gemm_mfast"),
+            quantize_nvfp4_k: crate::layers::try_kernel(
+                gpu,
+                "quantize_nvfp4",
+                "quantize_bf16_to_nvfp4",
+            ),
             fp8_calibration: if fp8_calibration_tokens > 0
                 && !matches!(
                     kv_dtype,

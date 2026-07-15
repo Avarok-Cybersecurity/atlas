@@ -38,6 +38,36 @@ impl Qwen3AttentionLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // Native FP4 path: quantize `normed` to NVFP4 ONCE and share it across
+        // the Q, K and V GEMMs (same input). OPT-IN ONLY (ATLAS_ATTN_W4A4=1):
+        // although the input is normed (the distribution class that gated clean
+        // on the SSM projections), the outputs here are attention LOGIT inputs,
+        // and same-binary A/B on long prompts showed the hallucinated-multiple-
+        // choice signature with this on and clean answers with it off -- small
+        // perturbations in q/k reroute attention. It also measured only ~2 ms.
+        let w4a4 = n >= 256
+            && self.w4a4_gemm_k.0 != 0
+            && self.quantize_nvfp4_k.0 != 0
+            && self.q_weight.as_ref().and_then(|w| w.as_nvfp4()).is_some()
+            && ctx.buffers.fp8_act_bytes() >= (n as usize) * (h as usize)
+            && std::env::var("ATLAS_ATTN_W4A4").is_ok();
+        let a4 = if w4a4 {
+            let a4 = ctx.buffers.fp8_act();
+            let a4_sf = a4.offset((n as usize) * (h as usize) / 2);
+            ops::quantize_bf16_to_nvfp4(
+                ctx.gpu,
+                self.quantize_nvfp4_k,
+                normed,
+                a4,
+                a4_sf,
+                n,
+                h,
+                stream,
+            )?;
+            Some((a4, a4_sf))
+        } else {
+            None
+        };
         let qg_out = ctx.buffers.qkv_output();
         self.prefill_one_proj(
             Proj::Q,
@@ -46,6 +76,7 @@ impl Qwen3AttentionLayer {
             n,
             q_proj_dim as u32,
             h,
+            a4,
             ctx,
             stream,
         )?;
@@ -65,7 +96,17 @@ impl Qwen3AttentionLayer {
         )?;
 
         let k_contiguous = ctx.buffers.ssm_qkvz();
-        self.prefill_one_proj(Proj::K, normed, k_contiguous, n, nkv * hd, h, ctx, stream)?;
+        self.prefill_one_proj(
+            Proj::K,
+            normed,
+            k_contiguous,
+            n,
+            nkv * hd,
+            h,
+            a4,
+            ctx,
+            stream,
+        )?;
         super::super::op_dump::dump_bf16(
             ctx.gpu,
             k_contiguous,
@@ -77,7 +118,17 @@ impl Qwen3AttentionLayer {
         )?;
 
         let v_contiguous = k_contiguous.offset(num_tokens * kv_dim * bf16);
-        self.prefill_one_proj(Proj::V, normed, v_contiguous, n, nkv * hd, h, ctx, stream)?;
+        self.prefill_one_proj(
+            Proj::V,
+            normed,
+            v_contiguous,
+            n,
+            nkv * hd,
+            h,
+            a4,
+            ctx,
+            stream,
+        )?;
         super::super::op_dump::dump_bf16(
             ctx.gpu,
             v_contiguous,
@@ -99,6 +150,7 @@ impl Qwen3AttentionLayer {
         n: u32,
         out_dim: u32,
         h: u32,
+        a4: Option<(DevicePtr, DevicePtr)>,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
@@ -128,6 +180,23 @@ impl Qwen3AttentionLayer {
                 "attn_v",
             ),
         };
+
+        // Native FP4: pre-quantized activations x original NVFP4 weights.
+        if let (Some((a4p, a4sf)), Some(nvfp4)) = (a4, weight_opt.and_then(|w| w.as_nvfp4())) {
+            let _ = label;
+            return ops::w4a4_gemm_mfast(
+                ctx.gpu,
+                self.w4a4_gemm_k,
+                a4p,
+                a4sf,
+                nvfp4,
+                out,
+                n,
+                out_dim,
+                h,
+                stream,
+            );
+        }
 
         let force_w8a8 = ops::fp8_blockscaled_prefill_enabled();
         // W8A8 + FP32 epilogue: requires NON-transposed FP8 weights with

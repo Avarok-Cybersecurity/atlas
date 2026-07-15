@@ -1,0 +1,53 @@
+[model]
+name = "nemotron-labs-3-puzzle-75b-a9b"
+hf_id = "nvidia/NVIDIA-Nemotron-Labs-3-Puzzle-75B-A9B-NVFP4"
+model_type = "nemotron_h_puzzle"
+architecture = "hybrid_mamba2_latent_moe_attention_puzzle"
+parameters = "75B"
+active_parameters = "9B"
+
+[[model_types]]
+model_type = "nemotron_h_puzzle"
+hidden_size = 4096
+
+# Inherit Super sampling defaults — same ChatML / LatentMoE family.
+[sampling.thinking_text]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[behavior]
+enable_loop_watchdog = true
+thinking_in_tools = true
+disable_tool_steering = true
+tool_call_parser = "bare_json"
+max_thinking_budget = 2048
+thinking_default = true

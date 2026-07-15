@@ -320,6 +320,37 @@ impl ModelConfig {
         }
     }
 
+    /// Routed expert intermediate size for layer `i`.
+    ///
+    /// Puzzle checkpoints prune channels non-uniformly across MoE layers;
+    /// look up `moe_intermediate_sizes[i]` when populated, else the scalar.
+    pub fn moe_intermediate_size_for(&self, layer: usize) -> usize {
+        self.moe_intermediate_sizes
+            .get(layer)
+            .copied()
+            .filter(|&s| s > 0)
+            .unwrap_or(self.moe_intermediate_size)
+    }
+
+    /// Top-K experts per token for layer `i` (Puzzle per-block schedule).
+    pub fn num_experts_per_tok_for(&self, layer: usize) -> usize {
+        self.num_experts_per_toks
+            .get(layer)
+            .copied()
+            .filter(|&k| k > 0)
+            .unwrap_or(self.num_experts_per_tok)
+    }
+
+    /// Max routed intermediate across all layers (buffer / scratch sizing).
+    pub fn max_moe_intermediate_size(&self) -> usize {
+        self.moe_intermediate_sizes
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .max(self.moe_intermediate_size)
+    }
+
     /// Number of MoE-only layers (Nemotron-H).
     pub fn num_moe_layers(&self) -> usize {
         self.layer_types
