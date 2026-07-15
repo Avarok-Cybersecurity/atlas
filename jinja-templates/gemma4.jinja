@@ -269,7 +269,7 @@
         `compile_gemma4_tool_grammar` grammar constraint, this forces the
         model to emit a structured tool call instead of narrative text (the
         WARN root cause on 26B Search + 31B Weather/Search). -#}
-    {%- if tools -%}
+    {%- if tools and ns.prev_message_type != 'tool_response' -%}
         {{- '<|tool_call>call:' -}}
     {%- endif -%}
 {%- endif -%}
