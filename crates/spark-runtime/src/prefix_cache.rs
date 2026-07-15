@@ -91,6 +91,29 @@ pub struct PrefixMatch {
     pub ssm_snapshot_tier_tokens: usize,
 }
 
+/// Read-only projection of what [`PrefixCache::lookup`] WOULD return, without
+/// taking refs, touching LRU/hit-count, restoring, or faulting-in any SSM
+/// snapshot. Used by the experimental Q12 uniform-depth co-dispatch pre-flight
+/// (`ATLAS_Q12_CACHE_CODISPATCH`) to compute each stream's
+/// `effective_seq_len_start` BEFORE any Phase-A mutation, so streams can be
+/// partitioned by cache-hit depth without dirtying per-stream state on a
+/// mismatch.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PrefixPeek {
+    /// Block-aligned tokens `lookup` would match (== `PrefixMatch::matched_tokens`).
+    pub matched_tokens: usize,
+    /// Resident (HBM) SSM snapshot id `lookup` would select for `session_hash`,
+    /// if any. Read-only — no LRU/hit-count side effect.
+    pub ssm_snapshot: Option<usize>,
+    /// Tokens covered by `ssm_snapshot` (0 when none).
+    pub ssm_snapshot_tokens: usize,
+    /// The deepest matching anchor is SPILLED to the byte tier (Phase 1b): the
+    /// real `lookup` would fault it in, whose resulting depth this read-only
+    /// probe deliberately does NOT model. Always `false` when `ATLAS_SSM_TIER`
+    /// is off, so this is inert on the default path.
+    pub tiered: bool,
+}
+
 impl PrefixMatch {
     /// Empty match (no cached prefix found).
     pub fn empty() -> Self {
@@ -153,6 +176,23 @@ pub trait PrefixCache: Send + Sync {
     /// Task #24: keyed by `adapter_id` so a cross-adapter peek reports a miss.
     fn peek_matched_tokens(&self, _tokens: &[u32], _block_size: usize, _adapter_id: u64) -> usize {
         0
+    }
+
+    /// Read-only richer probe (matched tokens + the resident SSM snapshot
+    /// `lookup` would select) with NO side effects — no inc_ref, no LRU/
+    /// hit-count mutation, no snapshot restore/fault-in. Used by the Q12
+    /// uniform-depth co-dispatch pre-flight to compute `effective_seq_len_start`
+    /// before any Phase-A mutation. Default is a no-op (`NoPrefixCaching` and
+    /// any other impl report a miss), so this is inert unless the flag path
+    /// (`ATLAS_Q12_CACHE_CODISPATCH`) is engaged against a real cache.
+    fn peek_match(
+        &self,
+        _tokens: &[u32],
+        _block_size: usize,
+        _session_hash: u64,
+        _adapter_id: u64,
+    ) -> PrefixPeek {
+        PrefixPeek::default()
     }
 
     /// Insert a completed prefill's blocks into the cache.

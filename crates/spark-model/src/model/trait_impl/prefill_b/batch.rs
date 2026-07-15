@@ -147,6 +147,37 @@ impl TransformerModel {
         let q12_batched_enabled = std::env::var("ATLAS_Q12_BATCHED")
             .map(|v| v != "0" && v.to_lowercase() != "false")
             .unwrap_or(true);
+
+        // ── EXPERIMENTAL (Lever 1, UNVALIDATED — needs GPU A/B before default-on) ──
+        // Uniform-depth co-dispatch under an ACTIVE prefix cache, behind
+        // ATLAS_Q12_CACHE_CODISPATCH (default OFF). When the flag is unset this
+        // whole block is skipped and `kernel_batched_eligible`'s blanket cache
+        // bail governs, so behaviour is byte-identical to today.
+        //
+        // A read-only pre-flight (`peek_match` → `preflight_eff_seq_len_start`)
+        // computes each stream's effective_seq_len_start WITHOUT mutating any
+        // state, partitions the largest uniform-depth subset (size>=2),
+        // kernel-batches it, and single-streams the rest. `try_cache_codispatch`
+        // returns None (leaving every seq pristine) when no worthwhile subset
+        // exists, so we fall through to the normal path below.
+        //
+        // RISKS to verify on GPU (see session report):
+        //   (1) `marconi_exact_snap` full exact-leaf hits are NOT replicated by
+        //       the batched PHASE-C, so the pre-flight excludes them (→ single-
+        //       stream). Any drift here surfaces as wrong first-token logits.
+        //   (2) peek==lookup determinism relies on the SINGLE-THREADED,
+        //       SINGLE-NODE scheduler (no cache insert interleaves peek→Phase-A;
+        //       peek is head-local ⇒ multi-rank excluded below).
+        if q12_batched_enabled
+            && Self::cache_codispatch_enabled()
+            && self.prefix_cache.is_active()
+            && !self.multi_rank_protocol_active()
+        {
+            if let Some(logits) = self.try_cache_codispatch(streams, stream)? {
+                return Ok(logits);
+            }
+        }
+
         if q12_batched_enabled && self.kernel_batched_eligible(streams) {
             tracing::debug!(
                 target: "atlas::q12",

@@ -10,7 +10,7 @@
 
 use parking_lot::Mutex;
 
-use crate::prefix_cache::{EvictedBlocks, PrefixCache, PrefixMatch};
+use crate::prefix_cache::{EvictedBlocks, PrefixCache, PrefixMatch, PrefixPeek};
 
 mod inner;
 mod snapshot;
@@ -135,6 +135,42 @@ impl PrefixCache for RadixTree {
 
     fn peek_matched_tokens(&self, tokens: &[u32], block_size: usize, adapter_id: u64) -> usize {
         self.inner.lock().walk(tokens, block_size, adapter_id).2
+    }
+
+    fn peek_match(
+        &self,
+        tokens: &[u32],
+        block_size: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> PrefixPeek {
+        // Read-only twin of `lookup`: `walk` is `&self` (no inc_ref / hit
+        // record) and `peek_tiered` is the non-mutating counterpart of
+        // `lookup_tiered` (no LRU/hit-count bump). No snapshot is restored or
+        // faulted in.
+        let matched_tokens = self.inner.lock().walk(tokens, block_size, adapter_id).2;
+        let mut pk = PrefixPeek {
+            matched_tokens,
+            ..PrefixPeek::default()
+        };
+        if matched_tokens > 0 {
+            if let Some(m) =
+                self.snapshot_index
+                    .lock()
+                    .peek_tiered(tokens, matched_tokens, session_hash, adapter_id)
+            {
+                match m.loc {
+                    snapshot::SnapLoc::Hbm(slot) => {
+                        pk.ssm_snapshot = Some(slot);
+                        pk.ssm_snapshot_tokens = m.token_count;
+                    }
+                    snapshot::SnapLoc::Tier(_) => {
+                        pk.tiered = true;
+                    }
+                }
+            }
+        }
+        pk
     }
 
     fn insert(

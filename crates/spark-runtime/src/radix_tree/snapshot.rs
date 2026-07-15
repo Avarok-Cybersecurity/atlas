@@ -460,6 +460,48 @@ impl SsmSnapshotIndex {
         result
     }
 
+    /// Read-only twin of [`Self::lookup_tiered`]: returns the deepest matching
+    /// anchor (resident or spilled) WITHOUT mutating LRU/hit-count/stats. Used
+    /// by the Q12 uniform-depth co-dispatch pre-flight (`peek_match`). The
+    /// selection logic is byte-identical to `lookup_tiered`'s scan so the probed
+    /// depth matches what a subsequent real `lookup` would restore.
+    pub(super) fn peek_tiered(
+        &self,
+        tokens: &[u32],
+        matched_tokens: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> Option<SnapMatch> {
+        let mut best: Option<usize> = None;
+        let mut best_depth = 0usize;
+        for (i, entry) in self.entries.iter().enumerate() {
+            if entry.token_count > matched_tokens {
+                continue;
+            }
+            if session_hash != 0 && entry.session_hash != 0 && entry.session_hash != session_hash {
+                continue;
+            }
+            if hash_token_prefix(tokens, entry.token_count, adapter_id) != entry.prefix_hash {
+                continue;
+            }
+            if best.is_none() || entry.token_count > best_depth {
+                best = Some(i);
+                best_depth = entry.token_count;
+            }
+        }
+        best.map(|i| {
+            let e = &self.entries[i];
+            SnapMatch {
+                token_count: e.token_count,
+                loc: if e.tiered {
+                    SnapLoc::Tier(e.prefix_hash)
+                } else {
+                    SnapLoc::Hbm(e.snapshot_id)
+                },
+            }
+        })
+    }
+
     /// **Promote** a spilled entry back to HBM after the caller faulted its
     /// bytes into `new_slot`. Flips `tiered → false` and re-homes `snapshot_id`.
     /// Returns `false` if `prefix_hash` is unknown (entry evicted meanwhile).
