@@ -332,6 +332,7 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
                     "Inter-tool prose budget exhausted in MTP/emit path; ending response \
                      (no tool call after budget — would otherwise burn to max_tokens)."
                 );
+                a.guard_stop = Some("inter_tool_prose_budget");
                 a.finished = true;
             }
         }
@@ -652,6 +653,7 @@ pub fn update_tool_param_state(a: &mut ActiveSeq, tok: u32) {
             streak = a.tool_body_streak_tokens,
             "Stuck in tool-call ENVELOPE for {MAX_TOOL_BODY_TOKENS}+ tokens with no </tool_call> (excludes parameter-value content); ending response (model never closed the envelope — would otherwise burn to max_tokens). Sanitizer will salvage what it can."
         );
+        a.guard_stop = Some("tool_envelope_stuck");
         a.finished = true;
     }
 
@@ -662,16 +664,58 @@ pub fn update_tool_param_state(a: &mut ActiveSeq, tok: u32) {
     const TOK_LT_SLASH: u32 = 510;
 
     if a.inside_parameter_body {
-        if tok == TOK_LT_SLASH {
-            // Start of `</parameter>` close-tag — exit body.
-            a.inside_parameter_body = false;
-            a.param_body_chars_emitted = 0;
-        } else {
-            // Any non-close body token advances the counter. The
-            // position-0 mask in `decode_logits_seq.rs` (close-tag +
-            // AM1 attractor) fires only while this counter is 0, so it
-            // deactivates after the first emitted body token.
-            a.param_body_chars_emitted = a.param_body_chars_emitted.saturating_add(1);
+        // P0-1 (2026-07-09): PROVISIONAL close detection. The old code
+        // exited the body on ANY `</` token (510) — but since the
+        // `<`-initial-value fix, parameter VALUES legitimately contain
+        // HTML/Svelte close tags (`</script>`, `</div>`, …), every one of
+        // which starts with token 510. Each false exit reclassified the
+        // rest of the file content as ENVELOPE tokens, walked the streak
+        // to MAX_TOOL_BODY_TOKENS, and force-killed legitimate writes
+        // mid-file (8 kills in the 2026-07-09 45k session). Now the exit
+        // COMMITS only on the full confirmed `</` `parameter` `>` token
+        // sequence; any other continuation re-enters the value body and
+        // back-counts the provisionally-held tokens as body chars. A
+        // merged/nonstandard tokenization of the close falls back to
+        // "stay inside" — safe: value tokens are streak-exempt, and the
+        // next exact close still exits.
+        match a.param_close_pending {
+            0 => {
+                if tok == TOK_LT_SLASH {
+                    a.param_close_pending = 1;
+                } else {
+                    // Any non-close body token advances the counter. The
+                    // position-0 mask in `decode_logits_seq.rs` (close-tag +
+                    // AM1 attractor) fires only while this counter is 0, so it
+                    // deactivates after the first emitted body token.
+                    a.param_body_chars_emitted = a.param_body_chars_emitted.saturating_add(1);
+                }
+            }
+            1 => {
+                if tok == TOK_PARAMETER {
+                    a.param_close_pending = 2;
+                } else {
+                    // `</` was value content (e.g. `</div>`), not a close.
+                    a.param_close_pending = 0;
+                    a.param_body_chars_emitted = a.param_body_chars_emitted.saturating_add(2);
+                }
+            }
+            _ => {
+                a.param_close_pending = 0;
+                if tok == TOK_GT {
+                    // Confirmed `</parameter>` — exit body. Also reset the
+                    // envelope streak: a confirmed close IS forward progress
+                    // (the doc comment above always claimed this reset; the
+                    // code never performed it).
+                    a.inside_parameter_body = false;
+                    a.param_body_chars_emitted = 0;
+                    a.tool_body_streak_tokens = 0;
+                } else {
+                    // `</parameter` NOT followed by `>` (e.g. the garbled
+                    // `</parameter<parameter=` reopen, or `</parameters`) —
+                    // grammar-legal value content; stay inside the body.
+                    a.param_body_chars_emitted = a.param_body_chars_emitted.saturating_add(3);
+                }
+            }
         }
         return;
     }

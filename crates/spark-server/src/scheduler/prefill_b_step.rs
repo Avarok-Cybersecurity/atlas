@@ -169,6 +169,8 @@ pub fn prefill_request(
             min_tokens: req_min_tokens,
             eos_tokens: eos_tokens.to_vec(),
             finished: true,
+            guard_stop: None,
+            param_close_pending: 0,
             sink,
             cancel_flag: cancel_flag.clone(),
             temperature,
@@ -258,12 +260,17 @@ pub fn prefill_request(
         // the matcher). The plain decode loop only masks/accepts tokens 2..N,
         // so without this a leading prose token escapes before the grammar's
         // opening `{`. No-op vs `sample_token` when no grammar is active.
+        // P1-4 (2026-07-09): thread the resolved `min_p` (request +
+        // MODEL.toml floor via sampling_setup) — the first-token sample
+        // previously ran with a hardcoded 0.0 min_p, bypassing the FP8
+        // argmax-flip safety net. Kill-switch: ATLAS_NO_MTP_MINP=1.
         sample_first_token(
             model,
             logits,
             temperature,
             top_k,
             top_p,
+            min_p,
             eos_tokens,
             grammar_state.as_mut(),
         )
@@ -343,6 +350,8 @@ pub fn prefill_request(
             min_tokens: req_min_tokens,
             eos_tokens: eos_tokens.to_vec(),
             finished: true,
+            guard_stop: None,
+            param_close_pending: 0,
             sink,
             cancel_flag: cancel_flag.clone(),
             temperature,
@@ -422,6 +431,8 @@ pub fn prefill_request(
         min_tokens: req_min_tokens,
         eos_tokens: eos_tokens.to_vec(),
         finished: false,
+        guard_stop: None,
+        param_close_pending: 0,
         sink,
         cancel_flag,
         temperature,

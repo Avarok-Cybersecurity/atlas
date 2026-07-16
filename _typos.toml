@@ -80,6 +80,14 @@ RECAL = "RECAL"
 # `unparseable` — valid English spelling variant used in the tool-call parser
 # (the typos default prefers `unparsable`). Keep the existing spelling.
 unparseable = "unparseable"
+# `paramete` / `parame` etc. — deliberate close-tag ladder prefixes of
+# "</parameter>" asserted verbatim in the tool-grammar EBNF tests
+# (param_key_constraint.rs: `"</paramete" [^r]`). Not typos of "parameter".
+paramete = "paramete"
+parame = "parame"
+paramet = "paramet"
+para = "para"
+param = "param"
 # `sxl` — "sum of x*l" accumulator in the GPU Q4_K weight quantizer
 # (q4k_quantize.cu), a faithful port of llama.cpp's make_qkx3_quants
 # least-squares fit (sl/sl2/sxl naming kept 1:1 with upstream). Not `xsl`.

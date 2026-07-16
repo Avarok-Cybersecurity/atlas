@@ -137,6 +137,8 @@ fn build_active_seq_from_prefill(
         min_tokens: p.min_tokens,
         eos_tokens: p.eos_tokens,
         finished: immediate_finish,
+        guard_stop: None,
+        param_close_pending: 0,
         sink: p.sink,
         cancel_flag: p.cancel_flag,
         temperature: p.temperature,

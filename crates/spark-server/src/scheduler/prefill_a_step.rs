@@ -192,6 +192,8 @@ pub fn start_chunked_prefill(
             min_tokens: req_min_tokens,
             eos_tokens: eos_tokens.to_vec(),
             finished: true,
+            guard_stop: None,
+            param_close_pending: 0,
             sink,
             cancel_flag: cancel_flag.clone(),
             temperature,
@@ -426,12 +428,16 @@ pub fn start_chunked_prefill(
         // Single chunk covered the entire prompt — get first token.
         // #131: constrain the FIRST token with the grammar (and advance the
         // matcher). Mirrors prefill_b_step; no-op when no grammar is active.
+        // P1-4 (2026-07-09): thread the resolved `min_p` (request +
+        // MODEL.toml floor) — previously a hardcoded 0.0 inside the sampler.
+        // Kill-switch: ATLAS_NO_MTP_MINP=1.
         let first = match sample_first_token(
             model,
             logits,
             temperature,
             top_k,
             top_p,
+            min_p,
             eos_tokens,
             grammar_state.as_mut(),
         ) {
@@ -512,6 +518,8 @@ pub fn start_chunked_prefill(
                 min_tokens: req_min_tokens,
                 eos_tokens: eos_tokens.to_vec(),
                 finished: true,
+                guard_stop: None,
+                param_close_pending: 0,
                 sink,
                 cancel_flag: cancel_flag.clone(),
                 temperature,
@@ -594,6 +602,8 @@ pub fn start_chunked_prefill(
                 min_tokens: req_min_tokens,
                 eos_tokens: eos_tokens.to_vec(),
                 finished: false,
+                guard_stop: None,
+                param_close_pending: 0,
                 sink,
                 cancel_flag,
                 temperature,

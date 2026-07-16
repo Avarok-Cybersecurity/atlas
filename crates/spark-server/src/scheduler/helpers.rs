@@ -367,8 +367,28 @@ pub fn set_watchdog_params(p: WatchdogParams) {
 /// `WatchdogParams` until `set_watchdog_params` runs — so unit tests and
 /// any pre-boot caller see exactly the old hardcoded constants.
 pub fn watchdog_params() -> WatchdogParams {
-    *WATCHDOG_PARAMS.get().unwrap_or(&DEFAULT_WATCHDOG_PARAMS)
+    let mut p = *WATCHDOG_PARAMS.get().unwrap_or(&DEFAULT_WATCHDOG_PARAMS);
+    // P2-1 (2026-07-09): `max_inter_tool_prose` (384) was tuned as an
+    // `<invoke>`-dormant-opener WANDER bound, but opencode arms tools on every
+    // turn, so a legitimate PLAN / analysis prose turn (`grammar_state.is_some()`
+    // ⇒ "tool turn") is subject to it and gets guillotined mid-sentence
+    // (finish=length) — the "worst run ever" 6-turn session died writing an API
+    // plan at 385 tokens. The REPEATING wander is already caught by the
+    // content-loop + SimHash watchdogs independently; this budget's residual job
+    // is only the non-repeating dormant-opener burn. Raise the effective bound
+    // to a plan-friendly value (still << max_tokens, per the ultracode do-NOT
+    // list) and expose it for tuning. Env wins over MODEL.toml.
+    if let Some(v) = *INTER_TOOL_PROSE_OVERRIDE.get_or_init(|| {
+        std::env::var("ATLAS_MAX_INTER_TOOL_PROSE")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+    }) {
+        p.max_inter_tool_prose = v;
+    }
+    p
 }
+
+static INTER_TOOL_PROSE_OVERRIDE: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
 
 /// `mask[id] == true` iff token `id` decodes to a pure ASCII-digit run
 /// (optionally one leading space). Built once at startup from the
@@ -449,7 +469,7 @@ pub fn mid_word_token_mask() -> Option<std::sync::Arc<[bool]>> {
 /// anything beyond is the failure mode (re-narrating the plan
 /// rather than executing it). Counted across non-thinking,
 /// non-tool-body tokens only.
-pub const MAX_INTER_TOOL_PROSE: u32 = 384;
+pub const MAX_INTER_TOOL_PROSE: u32 = 3072;
 
 /// F1 (2026-06-02): unconditional per-generation cap on post-`</think>`
 /// content tokens for tool-active requests (`grammar_state.is_some()`).
@@ -746,3 +766,17 @@ fn detect_token_loop_with_period(
 #[cfg(test)]
 #[path = "helpers_tests.rs"]
 mod thinking_loop_tests;
+
+#[cfg(test)]
+mod inter_tool_prose_tests {
+    #[test]
+    fn default_prose_budget_is_plan_friendly() {
+        // Regression: 384 amputated legitimate plan turns (2026-07-09).
+        const {
+            assert!(
+                super::MAX_INTER_TOOL_PROSE >= 2048,
+                "inter-tool prose budget must fit a typical plan/analysis turn"
+            );
+        };
+    }
+}

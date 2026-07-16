@@ -28,6 +28,7 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
                 decode_time_ms: decode_ms,
                 reasoning_tokens: a.thinking_tokens,
                 cached_prompt_tokens: a.cached_prompt_tokens,
+                guard_stop: a.guard_stop,
             }) {
                 tracing::warn!(
                     "finish_sequence: streaming Done send failed (receiver dropped): {e}"
@@ -275,6 +276,8 @@ pub fn resume_swapped_seq(
         min_tokens: s.min_tokens,
         eos_tokens: s.eos_tokens,
         finished: false,
+        guard_stop: None,
+        param_close_pending: 0,
         sink: s.sink,
         // cancel_flag isn't preserved across spill/restore — the
         // original stream is long gone by the time a swapped-out seq
