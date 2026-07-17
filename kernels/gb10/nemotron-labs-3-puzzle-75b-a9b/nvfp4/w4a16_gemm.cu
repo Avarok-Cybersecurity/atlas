@@ -990,16 +990,16 @@ void w4a16_gemm_t_m128(
     __nv_bfloat16* __restrict__ C,
     unsigned int M, unsigned int N, unsigned int K
 ) {
-    // Grid axes are SWAPPED relative to the other GEMMs: blockIdx.x is the
-    // M-block, blockIdx.y is the N-block.
+    // GRID CONTRACT — N is the FAST axis, matching the SHARED launcher
+    // `ops::w4a16_gemm_n128_m128` and every other model's `w4a16_gemm_t_m128`.
     //
-    // Every m-block re-reads the whole B panel for its n-column. With n on the
-    // fast axis, the 8 m-blocks sharing a B panel are scheduled ~141 blocks
-    // apart, so the panel is evicted from L2 between them and B is fetched from
-    // DRAM 8x (~20 GB across the 112 calls in one 1k prefill). Putting m on the
-    // fast axis makes those 8 blocks co-resident, so 7 of the 8 reads hit L2.
-    const unsigned int cta_n  = blockIdx.y * N_TILE_LG;
-    const unsigned int cta_m  = blockIdx.x * (2 * M_TILE);  // base row for this block
+    // Do NOT swap these to m-fast here. This kernel is reached through a launcher
+    // shared by all NVFP4 models; swapping the axes in one model's copy while the
+    // launcher feeds every model made 18 other kernels mis-map every CTA (silent
+    // garbage, no error — it read as a dense-27B numerical break). If the m-fast
+    // L2 ordering is wanted, add a separately named `_mfast` kernel + launcher.
+    const unsigned int cta_n  = blockIdx.x * N_TILE_LG;
+    const unsigned int cta_m  = blockIdx.y * (2 * M_TILE);  // base row for this block
     if (cta_m >= M) return;
 
     const unsigned int warp_id = threadIdx.x / 32;

@@ -273,6 +273,14 @@ pub fn w4a16_gemm_n128_m128_v2(
 ///
 /// Grid: (ceil(N/128), ceil(M/128), 1)  Block: (128, 1, 1)
 /// SMEM: ~29.8 KB → 3 blocks/SM (vs 5 for m64 at ~19.6 KB).
+///
+/// GRID CONTRACT — N is the FAST axis (blockIdx.x = N-block, blockIdx.y = M-block).
+/// Every `w4a16_gemm_t_m128` kernel across all model dirs reads it this way. This
+/// launcher is SHARED (qwen3_attention, dense_ffn, qwen3_ssm, nemotron_*), so the
+/// axes must NOT be swapped here to suit one model: doing so silently mis-maps every
+/// CTA for the other 18 kernels and produces garbage output with no error. If a model
+/// wants the m-fast (L2-friendly) order, add a SEPARATELY NAMED kernel + launcher
+/// (see `w4a4_gemm_mfast` / `fp8_gemm_t_m128_mfast`) rather than mutating this one.
 #[allow(clippy::too_many_arguments)]
 pub fn w4a16_gemm_n128_m128(
     gpu: &dyn GpuBackend,
@@ -286,7 +294,7 @@ pub fn w4a16_gemm_n128_m128(
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(m, 128), div_ceil(n, 128), 1])
+        .grid([div_ceil(n, 128), div_ceil(m, 128), 1])
         .block([128, 1, 1])
         .arg_ptr(input)
         .arg_ptr(weight.weight)
