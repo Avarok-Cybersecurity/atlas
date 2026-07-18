@@ -94,7 +94,17 @@ impl Qwen3SsmLayer {
         // verify — 2026-07-02 flagship gate). Mirrors the M<=4 dispatch in
         // trait_decode_multi_seq/ssm_batched.rs: one weight pass via
         // `w8a16_gemv_batch4`, per-token `w8a16_gemv` when it isn't linked.
-        if (num_tokens == 2 || num_tokens == 3)
+        // 2..=4: the K=4 verify (num_drafts=3) hits this same NULL-slot
+        // hazard — on native-FP8-GDN checkpoints (e.g. nvidia/Qwen3.6-27B-
+        // NVFP4, whose GDN layers ship FP8) `in_proj_qkvz`/`qkvz_nvfp4*` are
+        // NULL and `qkvz_fp8w` is the only live weight. The old `== 2 || == 3`
+        // guard let num_tokens=4 fall through to `dense_gemm` on the NULL
+        // dense slot → CUDA_ERROR_ILLEGAL_ADDRESS on the first K=4 verify
+        // (localized via ATLAS_K4_DIAG, 2026-07-18). `w8a16_gemv_batch4`
+        // is built for M<=4 (see w8a16_gemv_batch4.cu), so widening the
+        // guard is sufficient; the per-token `w8a16_gemv` fallback already
+        // loops over num_tokens.
+        if (2..=4).contains(&num_tokens)
             && let Some(ref fp8) = self.qkvz_fp8w
         {
             if self.w8a16_gemv_batch4_k.0 != 0 {
@@ -437,9 +447,13 @@ impl Qwen3SsmLayer {
                 value_dim as u32,
                 stream,
             )?;
-        } else if (num_tokens == 2 || num_tokens == 3)
+        } else if (2..=4).contains(&num_tokens)
             && let Some(ref fp8) = self.out_proj_fp8w
         {
+            // 2..=4: same K=4 NULL-slot hazard as the QKVZ dispatch above —
+            // on native-FP8-GDN checkpoints `ssm.out_proj` is NULL and
+            // `out_proj_fp8w` is the only live weight; the old guard sent
+            // num_tokens=4 to `w4a16_gemm` on the NULL slot.
             // Native-FP8 build: `ssm.out_proj` is a NULL QuantizedWeight —
             // the block-scaled FP8 copy (`out_proj_fp8w`) is the only live
             // weight. Same NULL-deref hazard as the QKVZ dispatch above.
