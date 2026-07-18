@@ -84,47 +84,53 @@ extern "C" __global__ void w4a16_gemv(
     if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT[threadIdx.x];
     __syncthreads();
 
-    float acc = 0.0f;
+    float acc0 = 0.0f, acc1 = 0.0f;
 
-    // Vectorized: process 16 K-values per iteration (2× uint4 activation + uint64 weight)
-    // One scale per GROUP_SIZE=16, so each iteration uses exactly 1 scale lookup.
-    for (unsigned int k16 = lane; k16 < K16; k16 += threads_per_out) {
-        const unsigned int base_k = k16 * 16;
+    // Vectorized: 16 K-values per chunk (2× uint4 activation + uint64 weight),
+    // TWO chunks in flight per iteration with independent accumulators. Keeping 2
+    // outstanding weight loads per thread hides DRAM latency (ncu: 72% of warp
+    // stalls are long-scoreboard on GB10). The FP8 group scale is factored out of
+    // the inner 16-FMA block (exact regroup: sum(s*w*a) == s*sum(w*a)).
+    const unsigned int stride2 = threads_per_out * 2u;
+    for (unsigned int k16 = lane * 2u; k16 < K16 + 1u; k16 += stride2) {
+        #pragma unroll
+        for (int c = 0; c < 2; c++) {
+            const unsigned int kk = k16 + (unsigned int)c;
+            if (kk >= K16) break;
 
-        // Load 16 BF16 activations as 2× uint4 (256-bit total)
-        uint4 a_lo = ((const uint4*)A)[k16 * 2];
-        uint4 a_hi = ((const uint4*)A)[k16 * 2 + 1];
-        const unsigned int a_raw[8] = {a_lo.x, a_lo.y, a_lo.z, a_lo.w,
-                                        a_hi.x, a_hi.y, a_hi.z, a_hi.w};
+            // Load 16 BF16 activations as 2× uint4 (256-bit total)
+            uint4 a_lo = ((const uint4*)A)[kk * 2];
+            uint4 a_hi = ((const uint4*)A)[kk * 2 + 1];
+            const unsigned int a_raw[8] = {a_lo.x, a_lo.y, a_lo.z, a_lo.w,
+                                            a_hi.x, a_hi.y, a_hi.z, a_hi.w};
 
-        // Load 8 packed weight bytes as uint64 (16 FP4 values)
-        unsigned long long packed8 = *(const unsigned long long*)(B_packed + (unsigned long long)n * half_K + k16 * 8);
+            // Load 8 packed weight bytes as uint64 (16 FP4 values)
+            unsigned long long packed8 = *(const unsigned long long*)(B_packed + (unsigned long long)n * half_K + kk * 8);
 
-        // Load single FP8 scale — 16 values = exactly 1 group
-        unsigned int scale_group = base_k / GROUP_SIZE;
-        unsigned char scale_byte = B_scale[(unsigned long long)n * num_groups + scale_group];
-        __nv_fp8_e4m3 fp8;
-        *(unsigned char*)&fp8 = scale_byte;
+            // Load single FP8 scale — 16 values = exactly 1 group (group index == kk)
+            unsigned char scale_byte = B_scale[(unsigned long long)n * num_groups + kk];
+            __nv_fp8_e4m3 fp8;
+            *(unsigned char*)&fp8 = scale_byte;
 #if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-        float scale = scl_fp8(scale_byte) * scale2;
+            float scale = scl_fp8(scale_byte) * scale2;
 #else
-        float scale = (float)fp8 * scale2;
+            float scale = (float)fp8 * scale2;
 #endif
 
-        // Unpack 8 bytes × 2 nibbles = 16 weight values, FMA with activations
-        #pragma unroll
-        for (int b = 0; b < 8; b++) {
-            unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
-            float w_lo = s_lut[byte_val & 0xF] * scale;
-            float w_hi = s_lut[byte_val >> 4] * scale;
-
-            __nv_bfloat16 a_lo_bf, a_hi_bf;
-            *(unsigned short*)&a_lo_bf = (unsigned short)(a_raw[b] & 0xFFFF);
-            *(unsigned short*)&a_hi_bf = (unsigned short)(a_raw[b] >> 16);
-            acc += __bfloat162float(a_lo_bf) * w_lo;
-            acc += __bfloat162float(a_hi_bf) * w_hi;
+            // Unpack 8 bytes × 2 nibbles = 16 weight values, FMA with activations
+            float part = 0.0f;
+            #pragma unroll
+            for (int b = 0; b < 8; b++) {
+                unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
+                float2 af = __bfloat1622float2(*(const __nv_bfloat162*)&a_raw[b]);
+                part = fmaf(af.x, s_lut[byte_val & 0xF], part);
+                part = fmaf(af.y, s_lut[byte_val >> 4], part);
+            }
+            if (c == 0) acc0 = fmaf(scale, part, acc0);
+            else        acc1 = fmaf(scale, part, acc1);
         }
     }
+    float acc = acc0 + acc1;
 
     // Warp shuffle reduction within each group of 64 threads
     // First reduce within each warp (32 threads)
