@@ -153,7 +153,14 @@ impl TransformerModel {
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
         // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
         let lora_eager = self.lora.is_some() && crate::lora::lora_eager_env();
-        let use_graphs = self.comm.is_none() && !hss_engaged && !lora_eager;
+        // ATLAS_K4_DIAG=1: run the K=4 verify EAGERLY (no CUDA graph) with a
+        // stream-synchronize checkpoint after every layer, so an illegal
+        // access is attributed to the exact layer instead of surfacing as an
+        // opaque status-700 on the post-graph D2H. Mirrors ATLAS_K2_DIAG on
+        // the K=2 path (verify_b.rs). Diagnostic only — default behavior is
+        // byte-for-byte unchanged when the env is unset.
+        let k4_diag = std::env::var("ATLAS_K4_DIAG").ok().as_deref() == Some("1");
+        let use_graphs = self.comm.is_none() && !hss_engaged && !lora_eager && !k4_diag;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -258,6 +265,15 @@ impl TransformerModel {
                 // silently. Must be inside the graph capture region.
                 // No-op when DFlash is disabled.
                 self.try_dflash_capture(layer_idx, k - 1, stream)?;
+
+                // ATLAS_K4_DIAG checkpoint: surface an illegal access at the
+                // layer that raised it (eager mode only — sync is illegal
+                // under graph capture, and use_graphs is false when k4_diag).
+                if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
+                    anyhow::bail!(
+                        "K4_DIAG: CUDA error after layer {layer_idx} ({layer_type:?}): {e:#}"
+                    );
+                }
             }
 
             // Final norm [4, H]
@@ -274,8 +290,16 @@ impl TransformerModel {
                 stream,
             )?;
 
+            if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
+                anyhow::bail!("K4_DIAG: CUDA error after final norm: {e:#}");
+            }
+
             // LM head for 4 tokens
             self.lm_head_batched(normed, k as u32, self.buffers.logits(), stream)?;
+
+            if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
+                anyhow::bail!("K4_DIAG: CUDA error after lm_head_batched: {e:#}");
+            }
 
             // Argmax inside graph
             let vocab = self.config.vocab_size;
@@ -291,6 +315,10 @@ impl TransformerModel {
                     vocab as u32,
                     stream,
                 )?;
+            }
+
+            if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
+                anyhow::bail!("K4_DIAG: CUDA error after argmax: {e:#}");
             }
 
             if use_graphs {
