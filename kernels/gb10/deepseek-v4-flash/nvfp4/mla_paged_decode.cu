@@ -91,7 +91,7 @@ extern "C" __global__ void mla_paged_decode_nvfp4(
     const float inv_sqrt_d,                          // 1/sqrt(576)
     const unsigned long long block_stride_bytes,
     const unsigned long long data_section_bytes,
-    const __nv_bfloat16* __restrict__ sinks          // [num_q_heads] per-head attn sink (s_aux); may be NULL
+    const float* __restrict__ sinks                  // [num_q_heads] per-head attn sink (s_aux); may be NULL. FP32 checkpoint-native, indexed as float.
 ) {
     const unsigned int q_head = blockIdx.x;
     const unsigned int seq_idx = blockIdx.y;
@@ -346,7 +346,7 @@ extern "C" __global__ void mla_paged_decode_nvfp4(
         // Mirrors the FP8 MLA decode kernel (mla_paged_decode_fp8.cu) and eager_attention_forward.
         // smem_m[0] is the global running max after the cross-warp reduction above.
         if (sinks != nullptr) {
-            final_l += __expf((float)sinks[q_head] - smem_m[0]);
+            final_l += __expf(sinks[q_head] - smem_m[0]);
         }
         float inv_l = (final_l > 0.0f) ? (1.0f / final_l) : 0.0f;
         unsigned int* o32 = (unsigned int*)(O + (unsigned long long)q_head * q_head_dim + vec_offset_bf16);
