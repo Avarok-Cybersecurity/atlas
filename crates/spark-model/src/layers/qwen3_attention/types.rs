@@ -225,6 +225,8 @@ pub struct Qwen3AttentionLayer {
     pub(super) w4a16_gemv_qg_batch3_k: KernelHandle,
     pub(super) w4a16_gemv_dual_batch3_k: KernelHandle,
     pub(super) w4a16_gemv_batch3_k: KernelHandle,
+    /// M<=4 batched GEMV (K=4 verify q/k/v/o); 0-handle when absent.
+    pub(super) w4a16_gemv_batch4_k: KernelHandle,
     // Kernels — prefill (GEMM M=N + Flash Attention)
     pub(super) w4a16_gemm_k: KernelHandle,
     pub(super) w4a16_gemm_t_k: KernelHandle,

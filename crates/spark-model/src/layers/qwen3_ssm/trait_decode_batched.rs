@@ -621,6 +621,28 @@ impl Qwen3SsmLayer {
                 (2 * h) as u32,
                 stream,
             )?;
+        } else if num_tokens == 4
+            && self
+                .ffn
+                .try_forward_k4(normed2_base, ctx, stream)
+                .inspect_err(|e| tracing::error!("ffn.try_forward_k4: {e:#}"))
+                .unwrap_or(false)
+        {
+            // K=4 verify FFN via M<=4 batched GEMV: one weight read per
+            // projection for all 4 rows at near-peak stream bandwidth. nsys
+            // (2026-07-18): the forward_prefill MMQ arm below cost 54.8 ms/
+            // verify-step across the 64-layer dense FFN stack at M=4 vs the
+            // ~31 ms weight-traffic floor this path hits. Falls through to
+            // forward_prefill when unavailable (MoE / missing kernel).
+            let moe_out = ctx.buffers.moe_output();
+            ops::residual_add(
+                ctx.gpu,
+                self.residual_add_k,
+                hidden,
+                moe_out,
+                (num_tokens * h) as u32,
+                stream,
+            )?;
         } else if self.ffn.is_dense() {
             // WIDE-VERIFY BATCHED DENSE FFN (DFlash γ=16, num_tokens=17). This
             // is the MAJORITY layer type (GDN/SSM) on the hybrid 27B, so its
