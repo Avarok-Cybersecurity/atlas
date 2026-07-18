@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::super::{WeightDtype, WeightTensor, evict_page_cache};
+use super::super::{WeightDtype, WeightTensor, evict_page_cache, f16_to_bf16_bytes};
 use super::{SafetensorsIndex, check_oom_guard, estimate_has_fp8, estimate_load_bytes};
 use crate::gpu::GpuBackend;
 
@@ -99,9 +99,16 @@ pub(super) fn load_sharded(
                 continue;
             }
             let view = tensors.tensor(name)?;
-            let dtype = WeightDtype::from_safetensors(view.dtype())?;
             let shape: Vec<usize> = view.shape().to_vec();
-            let data = view.data();
+            // F16 shards: convert bytes to BF16 before upload (same length,
+            // different bit layout). WeightDtype stays closed to store dtypes.
+            let converted: Vec<u8>;
+            let (data, dtype): (&[u8], _) = if view.dtype() == safetensors::Dtype::F16 {
+                converted = f16_to_bf16_bytes(view.data());
+                (&converted, WeightDtype::BF16)
+            } else {
+                (view.data(), WeightDtype::from_safetensors(view.dtype())?)
+            };
 
             // Try GPU alloc first; if OOM, fall back to managed (UVM) memory.
             // On GB10 unified memory, managed alloc uses Linux swap for overflow.
@@ -180,9 +187,15 @@ pub(super) fn load_single(
         if skip_fn(&name) {
             continue;
         }
-        let dtype = WeightDtype::from_safetensors(view.dtype())?;
         let shape: Vec<usize> = view.shape().to_vec();
-        let data = view.data();
+        // F16: convert to BF16 at load — see load_sharded above.
+        let converted: Vec<u8>;
+        let (data, dtype): (&[u8], _) = if view.dtype() == safetensors::Dtype::F16 {
+            converted = f16_to_bf16_bytes(view.data());
+            (&converted, WeightDtype::BF16)
+        } else {
+            (view.data(), WeightDtype::from_safetensors(view.dtype())?)
+        };
 
         let ptr = gpu.alloc(data.len())?;
         gpu.copy_h2d(data, ptr)?;
