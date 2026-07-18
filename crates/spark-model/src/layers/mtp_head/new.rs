@@ -286,6 +286,30 @@ impl MtpHead {
             lm = (effective_vocab * h / 2) as f64 / (1024.0 * 1024.0),
         );
 
+        // ATLAS_MTP_DRAFTER_PREFILL: dedicated batched-prefill scratch
+        // (~50 MB at h=5120/nq=32/hd=256, PREFILL_CHUNK=512 rows). Dedicated
+        // rather than aliased onto the shared arena so the pass has zero
+        // aliasing hazards; allocated only when the env is set (PCND).
+        let prefill_scratch = if super::mtp_drafter_prefill_enabled() {
+            let c = super::prefill::PREFILL_CHUNK;
+            let bf16 = 2usize;
+            Some(super::MtpPrefillScratch {
+                embed: gpu.alloc(c * h * bf16)?,
+                normed_embed: gpu.alloc(c * h * bf16)?,
+                normed_hidden: gpu.alloc(c * h * bf16)?,
+                concat: gpu.alloc(c * 2 * h * bf16)?,
+                fc_out: gpu.alloc(c * h * bf16)?,
+                normed2: gpu.alloc(c * h * bf16)?,
+                k_out: gpu.alloc(c * nkv * hd * bf16)?,
+                v_out: gpu.alloc(c * nkv * hd * bf16)?,
+                q_scratch: gpu.alloc(c * nq * hd * bf16)?,
+                pos_dev: gpu.alloc(c * 4)?,
+                slot_dev: gpu.alloc(c * 8)?,
+            })
+        } else {
+            None
+        };
+
         Ok(Self {
             pre_fc_norm_embedding: weights.pre_fc_norm_embedding,
             pre_fc_norm_hidden: weights.pre_fc_norm_hidden,
@@ -342,6 +366,10 @@ impl MtpHead {
             moe_topk_k,
             moe_silu_mul_k,
             moe_weighted_sum_blend_k,
+            // Batched BF16 GEMM for drafter prefill; 0-handle when the
+            // target's kernel set lacks it (prefill then no-ops).
+            dense_gemm_k: crate::layers::try_kernel(gpu, "gemm", "dense_gemm_bf16"),
+            prefill_scratch,
         })
     }
 }

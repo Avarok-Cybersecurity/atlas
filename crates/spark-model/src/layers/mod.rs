@@ -21,7 +21,7 @@ pub use dflash_head::{
     BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization,
 };
 pub use moe::MoeLayer;
-pub use mtp_head::{MtpHead, MtpQuantization};
+pub use mtp_head::{MtpHead, MtpQuantization, mtp_drafter_prefill_enabled};
 pub use nemotron_mamba2::NemotronMamba2Layer;
 pub use nemotron_moe::NemotronMoeLayer;
 pub use qwen3_attention::Qwen3AttentionLayer;

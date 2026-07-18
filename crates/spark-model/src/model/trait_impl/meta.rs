@@ -127,6 +127,13 @@ impl TransformerModel {
         self.gpu.synchronize(stream)?;
         let has_mtp = self.proposer.is_some() || self.self_speculative;
 
+        // ATLAS_MTP_DRAFTER_PREFILL: a fresh sequence invalidates the
+        // whole-prompt hidden capture — without this, a warm-restored prefill
+        // (no chunks computed) would pair the NEW prompt's tokens with the
+        // PREVIOUS sequence's captured hiddens in the drafter prefill.
+        self.mtp_prefill_capture_len
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+
         // Build layer states: SSM layers point into the pool (fixed addresses),
         // attention layers use their own alloc_state (EmptyLayerState).
         // When MTP is available, pre-allocate checkpoint + K=2 intermediate

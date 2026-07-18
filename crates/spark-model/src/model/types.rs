@@ -128,6 +128,21 @@ pub struct TransformerModel {
     /// Size: hidden_size * 4 bytes (one FP32 vector). MTP overwrites shared
     /// buffers (norm_output etc.), so the target hidden must be saved here first.
     pub(super) mtp_hidden_save: DevicePtr,
+    /// ATLAS_MTP_DRAFTER_PREFILL: per-position final-layer hidden capture for
+    /// the whole prompt, `[max_seq_len, hidden_size]` BF16 (~335 MB at 32k /
+    /// h=5120). NULL unless the env is set AND an MTP proposer is built.
+    /// Filled contiguously by the prefill chunk epilogues; consumed once by
+    /// the drafter-prefill pass on the first propose() of a sequence.
+    pub(super) mtp_prefill_hidden: DevicePtr,
+    /// Row capacity of `mtp_prefill_hidden` (== max_seq_len at alloc; 0 when
+    /// the feature is off). SSOT for the capture bounds check.
+    pub(super) mtp_prefill_capacity: usize,
+    /// Rows of `mtp_prefill_hidden` captured contiguously from position 0 for
+    /// the CURRENT sequence. Reset to 0 on `alloc_sequence`; a chunk whose
+    /// start does not extend the contiguous range (prefix-cache reuse, warm
+    /// restore) leaves it stale-short, which safely disables drafter-prefill
+    /// for that sequence (coverage check at the propose site).
+    pub(super) mtp_prefill_capture_len: std::sync::atomic::AtomicUsize,
     /// DFlash 5-layer hidden-state stack. Allocated only when a
     /// `BlockDiffusionDraftHead` proposer is built. Layout:
     /// `[5 × hidden_size × bf16]` shallow-to-deep at the layer indices
