@@ -89,6 +89,25 @@ impl WeightDtype {
     }
 }
 
+/// Convert a little-endian IEEE-754 half-precision (F16) tensor byte buffer
+/// to BF16 bytes. F16 and BF16 are both 2 bytes/element but have different
+/// bit layouts (5-bit vs 8-bit exponent), so the bytes cannot be
+/// reinterpreted — each value goes f16 → f32 (exact) → bf16
+/// (round-to-nearest-even). Shared by both disk loaders so F16 checkpoints
+/// (e.g. centml modelopt W4A4 exports, which ship all unquantized tensors as
+/// F16) land in the store as BF16; [`WeightDtype`] itself stays closed to
+/// store-legal dtypes and F16 can never appear on the RDMA wire.
+pub(crate) fn f16_to_bf16_bytes(src: &[u8]) -> Vec<u8> {
+    use half::{bf16, f16};
+    debug_assert_eq!(src.len() % 2, 0, "F16 tensor byte length must be even");
+    let mut out = Vec::with_capacity(src.len());
+    for pair in src.chunks_exact(2) {
+        let h = f16::from_le_bytes([pair[0], pair[1]]);
+        out.extend_from_slice(&bf16::from_f32(h.to_f32()).to_le_bytes());
+    }
+    out
+}
+
 /// A weight tensor on the GPU.
 pub struct WeightTensor {
     pub ptr: DevicePtr,
@@ -285,7 +304,28 @@ mod from_str_tests {
                 "dtype {s}"
             );
         }
+        // F16 is converted to BF16 at disk-load; a store (and therefore a
+        // peer manifest) can never contain it, so the wire mapping rejects it.
         assert!(WeightDtype::from_safetensors_str("F16").is_err());
         assert!(WeightDtype::from_safetensors_str("bogus").is_err());
+    }
+
+    #[test]
+    fn f16_bytes_convert_to_bf16_via_f32() {
+        use half::{bf16, f16};
+        // Cover sign, exact powers of two, a value needing mantissa rounding
+        // (f16 has 10 mantissa bits, bf16 only 7), f16 max, and a subnormal.
+        let vals = [0.0f32, 1.0, -1.5, 0.1, 65504.0, -6.1035156e-5];
+        let src: Vec<u8> = vals
+            .iter()
+            .flat_map(|v| f16::from_f32(*v).to_le_bytes())
+            .collect();
+        let out = super::f16_to_bf16_bytes(&src);
+        assert_eq!(out.len(), src.len());
+        for (i, v) in vals.iter().enumerate() {
+            let got = bf16::from_le_bytes([out[2 * i], out[2 * i + 1]]);
+            let want = bf16::from_f32(f16::from_f32(*v).to_f32());
+            assert_eq!(got, want, "value {v}");
+        }
     }
 }
