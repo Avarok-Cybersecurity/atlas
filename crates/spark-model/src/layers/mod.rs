@@ -109,6 +109,24 @@ impl FfnComponent {
         }
     }
 
+    /// K=4 verify FFN via batched GEMV (dense only). Returns `false` when the
+    /// path is unavailable (MoE / missing batch4 kernel / non-NVFP4 weights)
+    /// so the caller can fall back to `forward_prefill`.
+    pub fn try_forward_k4(
+        &self,
+        input: DevicePtr,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<bool> {
+        match self {
+            Self::Dense(d) if d.can_forward_k4() => {
+                d.forward_k4(input, ctx, stream)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     pub fn forward_prefill(
         &self,
         input: DevicePtr,
