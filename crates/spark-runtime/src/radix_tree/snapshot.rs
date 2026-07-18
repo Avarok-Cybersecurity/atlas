@@ -225,6 +225,14 @@ impl SsmSnapshotIndex {
             if session_hash != 0 && entry.session_hash != 0 && entry.session_hash != session_hash {
                 continue;
             }
+            // A TAIL snapshot (midchunk-captured next-turn restore point) bleeds a
+            // little past the exact prefix boundary, so it is byte-safe ONLY for the
+            // SAME non-zero session. Cross-request / single-turn (session_hash == 0)
+            // reuse of another session's tail corrupts SSM state -> garbled tool calls
+            // (project_midchunk_cross_request_corruption). Force those to recompute.
+            if entry.is_tail && (session_hash == 0 || entry.session_hash != session_hash) {
+                continue;
+            }
             let h = hash_token_prefix(tokens, entry.token_count, adapter_id);
             if h != entry.prefix_hash {
                 continue;
