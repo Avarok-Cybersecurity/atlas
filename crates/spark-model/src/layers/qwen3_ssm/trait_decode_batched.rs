@@ -4,6 +4,23 @@
 
 use super::*;
 
+/// ATLAS_K4_DIAG=1 phase checkpoint (see verify_c2.rs). Synchronizes the
+/// stream after a named phase of the batched GDN decode so an illegal access
+/// is attributed to the exact op. No-op (and no env read past the first call)
+/// unless the diagnostic env is set. Only legal in eager mode — verify_c2
+/// disables CUDA-graph capture whenever the env is set, and this checkpoint
+/// is only reachable from that eager path.
+fn k4_diag_checkpoint(ctx: &ForwardContext, phase: &str, stream: u64) -> Result<()> {
+    static DIAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let on = *DIAG.get_or_init(|| std::env::var("ATLAS_K4_DIAG").ok().as_deref() == Some("1"));
+    if on && !ctx.graph_capture
+        && let Err(e) = ctx.gpu.synchronize(stream)
+    {
+        anyhow::bail!("K4_DIAG: CUDA error after GDN phase `{phase}`: {e:#}");
+    }
+    Ok(())
+}
+
 impl Qwen3SsmLayer {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_batched_inner(
@@ -57,6 +74,8 @@ impl Qwen3SsmLayer {
             eps,
             stream,
         )?;
+
+        k4_diag_checkpoint(ctx, "1:rms_norm_residual", stream)?;
 
         // ── 2+3. QKVZ projection (+ deinterleave if needed) ──
         // For sequential_qkvz (Qwen3.5): write directly to deinterleaved buffer.
@@ -261,6 +280,8 @@ impl Qwen3SsmLayer {
             }
         }
 
+        k4_diag_checkpoint(ctx, "2+3:qkvz_proj+deinterleave", stream)?;
+
         // ── 4. BA projection + GDN gates per token ──
         // BA output: ssm_ba buffer; gates: ssm_gates buffer [K, nv*2] FP32
         // Layout per token: [gate(nv), beta(nv)] → stride = 2*nv FP32 elements.
@@ -301,6 +322,8 @@ impl Qwen3SsmLayer {
                 stream,
             )?;
         }
+
+        k4_diag_checkpoint(ctx, "4:ba_proj+gates", stream)?;
 
         // ── 5-7. Conv1d + L2 norm + GDN per token (with intermediate checkpoints) ──
         // Reuse ssm_qkvz buffer for conv output (safe: deinterleave is done)
@@ -354,6 +377,8 @@ impl Qwen3SsmLayer {
         };
         self.decode_batched_conv_gdn(ssm_state, ctx, &args)?;
 
+        k4_diag_checkpoint(ctx, "5-7:conv1d+l2norm+gdn_wy", stream)?;
+
         // ── 8. Gated RMS norm per token (Z gate at [Q|K|V] offset) ──
         let normed_out_buf = conv_out_buf;
         let z_offset = key_dim * 2 + value_dim; // == conv_dim
@@ -395,6 +420,8 @@ impl Qwen3SsmLayer {
                 )?;
             }
         }
+
+        k4_diag_checkpoint(ctx, "8:gated_rms_norm", stream)?;
 
         // ── 9. Output projection → [K, H] ──
         let out_proj_buf = ctx.buffers.moe_output(); // [K, H] BF16
@@ -537,6 +564,8 @@ impl Qwen3SsmLayer {
         // ranks (num_tokens × h BF16) before the residual add. No-op at tp=1.
         self.ssm_tp_all_reduce(out_proj_buf, num_tokens, ctx, stream)?;
 
+        k4_diag_checkpoint(ctx, "9:out_proj", stream)?;
+
         // ── 10. Batched residual + post-norm, then MoE + residual ──
         // residual_add_rms_norm supports multi-token (grid.x = num_tokens)
         let normed2_base = ctx.buffers.norm_output();
@@ -589,8 +618,10 @@ impl Qwen3SsmLayer {
             // DENSE ONLY: the per-token `else` below is retained for 256-expert
             // MoE, where grouped-GEMM is a net loss at small batch (per-expert
             // M~1 + sort/permute overhead across the 36-layer SSM stack).
+            k4_diag_checkpoint(ctx, "10a:residual_add_rms_norm", stream)?;
             self.ffn
                 .forward_prefill(normed2_base, num_tokens, ctx, stream)?;
+            k4_diag_checkpoint(ctx, "10b:ffn_forward_prefill", stream)?;
             let moe_out = ctx.buffers.moe_output();
             ops::residual_add(
                 ctx.gpu,
