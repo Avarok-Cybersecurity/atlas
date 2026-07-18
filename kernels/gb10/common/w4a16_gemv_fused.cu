@@ -76,48 +76,57 @@ extern "C" __global__ void w4a16_gemv_dual(
 
     const unsigned int half_K = K / 2;
     const unsigned int num_groups = K / GROUP_SIZE;
-    const unsigned int K8 = K / 8;
+    const unsigned int K16 = K / 16;
 
     __shared__ float s_lut[16];
     __shared__ float smem[N_PER_BLOCK * 2];
     if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT_FUSED_W4[threadIdx.x];
     __syncthreads();
 
-    float acc = 0.0f;
+    float acc0 = 0.0f, acc1 = 0.0f;
 
-    for (unsigned int k8 = lane; k8 < K8; k8 += threads_per_out) {
-        const unsigned int base_k = k8 * 8;
+    // 16 K-values per chunk (uint64 weight load), TWO chunks in flight per
+    // iteration with independent accumulators — hides DRAM latency (ncu: 72% of
+    // warp stalls are long-scoreboard on GB10). Scale factored out of the inner
+    // block (exact regroup). Requires K % 16 == 0 (was K % 8).
+    const unsigned int stride2 = threads_per_out * 2u;
+    for (unsigned int k16 = lane * 2u; k16 < K16 + 1u; k16 += stride2) {
+        #pragma unroll
+        for (int c = 0; c < 2; c++) {
+            const unsigned int kk = k16 + (unsigned int)c;
+            if (kk >= K16) break;
 
-        uint4 a_data = ((const uint4*)A)[k8];
-        const unsigned int a_raw[4] = {a_data.x, a_data.y, a_data.z, a_data.w};
+            uint4 a_lo4 = ((const uint4*)A)[kk * 2];
+            uint4 a_hi4 = ((const uint4*)A)[kk * 2 + 1];
+            const unsigned int a_raw[8] = {a_lo4.x, a_lo4.y, a_lo4.z, a_lo4.w,
+                                            a_hi4.x, a_hi4.y, a_hi4.z, a_hi4.w};
 
-        unsigned int packed4 = *(const unsigned int*)(
-            B_packed + (unsigned long long)n * half_K + k8 * 4);
+            unsigned long long packed8 = *(const unsigned long long*)(
+                B_packed + (unsigned long long)n * half_K + kk * 8);
 
-        unsigned int scale_group = base_k / GROUP_SIZE;
-        unsigned char scale_byte = B_scale[
-            (unsigned long long)n * num_groups + scale_group];
-        __nv_fp8_e4m3 fp8;
-        *(unsigned char*)&fp8 = scale_byte;
+            unsigned char scale_byte = B_scale[
+                (unsigned long long)n * num_groups + kk];
+            __nv_fp8_e4m3 fp8;
+            *(unsigned char*)&fp8 = scale_byte;
 #if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-        float scale = scl_fp8(scale_byte) * scale2;
+            float scale = scl_fp8(scale_byte) * scale2;
 #else
-        float scale = (float)fp8 * scale2;
+            float scale = (float)fp8 * scale2;
 #endif
 
-        #pragma unroll
-        for (int b = 0; b < 4; b++) {
-            unsigned char byte_val = (packed4 >> (b * 8)) & 0xFF;
-            float w_lo = s_lut[byte_val & 0xF] * scale;
-            float w_hi = s_lut[byte_val >> 4] * scale;
-
-            __nv_bfloat16 a_lo, a_hi;
-            *(unsigned short*)&a_lo = (unsigned short)(a_raw[b] & 0xFFFF);
-            *(unsigned short*)&a_hi = (unsigned short)(a_raw[b] >> 16);
-            acc += __bfloat162float(a_lo) * w_lo;
-            acc += __bfloat162float(a_hi) * w_hi;
+            float part = 0.0f;
+            #pragma unroll
+            for (int b = 0; b < 8; b++) {
+                unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
+                float2 af = __bfloat1622float2(*(const __nv_bfloat162*)&a_raw[b]);
+                part = fmaf(af.x, s_lut[byte_val & 0xF], part);
+                part = fmaf(af.y, s_lut[byte_val >> 4], part);
+            }
+            if (c == 0) acc0 = fmaf(scale, part, acc0);
+            else        acc1 = fmaf(scale, part, acc1);
         }
     }
+    float acc = acc0 + acc1;
 
     const unsigned int warp_lane = threadIdx.x % WARP_SIZE;
 
