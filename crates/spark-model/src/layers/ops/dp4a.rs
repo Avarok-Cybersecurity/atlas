@@ -118,3 +118,72 @@ pub fn w4a16_gemv_dp4a(
         .arg_u32(k)
         .launch(stream)
 }
+
+/// W4A8 DP4A batch-2 GEMV (M=2) from PRE-QUANTIZED int8 activations, for the MTP
+/// K=2 verify down-projection. `C[2,N] = A_int8[2,K] @ dequant(B)`. The two
+/// tokens share the weight read inside the kernel. a_q=[2,K] and a_scale=[2,K/16]
+/// are contiguous (row-major); output=[2,N] contiguous.
+///
+/// Kernel: `w4a16_gemv_dp4a_batch2(a_q, a_scale, B_packed, B_scale, scale2, C, N, K)`
+/// Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1)
+pub fn w4a16_gemv_dp4a_batch2(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    a_q: DevicePtr,
+    a_scale: DevicePtr,
+    weight: &QuantizedWeight,
+    output: DevicePtr,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 4), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(a_q)
+        .arg_ptr(a_scale)
+        .arg_ptr(weight.weight)
+        .arg_ptr(weight.weight_scale)
+        .arg_f32(weight.weight_scale_2)
+        .arg_ptr(output)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}
+
+/// W4A8 DP4A dual batch-2 (fused gate+up for M=2 verify). Two projections
+/// (gate, up) dispatched via grid .z=2; the two int8 activations are shared.
+/// `C0[2,N] = A[2,K] @ dequant(B0)` (gate), `C1[2,N] = A[2,K] @ dequant(B1)` (up).
+///
+/// Kernel: `w4a16_gemv_dp4a_dual_batch2(a_q, a_scale, B0,B0s,s0, C0, B1,B1s,s1, C1, N, K)`
+/// Grid: (ceil(N/4), 1, 2)  Block: (256, 1, 1)
+pub fn w4a16_gemv_dp4a_dual_batch2(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    a_q: DevicePtr,
+    a_scale: DevicePtr,
+    gate_weight: &QuantizedWeight,
+    gate_out: DevicePtr,
+    up_weight: &QuantizedWeight,
+    up_out: DevicePtr,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 4), 1, 2])
+        .block([256, 1, 1])
+        .arg_ptr(a_q)
+        .arg_ptr(a_scale)
+        .arg_ptr(gate_weight.weight)
+        .arg_ptr(gate_weight.weight_scale)
+        .arg_f32(gate_weight.weight_scale_2)
+        .arg_ptr(gate_out)
+        .arg_ptr(up_weight.weight)
+        .arg_ptr(up_weight.weight_scale)
+        .arg_f32(up_weight.weight_scale_2)
+        .arg_ptr(up_out)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}

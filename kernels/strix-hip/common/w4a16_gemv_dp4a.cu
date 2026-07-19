@@ -249,3 +249,158 @@ extern "C" __global__ void w4a16_gemv_dp4a(
     __syncthreads();
     if (lane == 0) C[n] = __float2bfloat16(smem[local_out * 2] + smem[local_out * 2 + 1]);
 }
+
+// ── W4A8 DP4A batch-2 GEMV (M=2) for MTP K=2 verify ───────────────────────
+// Two int8 activations (the 2 verify tokens) SHARE the weight read (packed8 +
+// codebook expand + FP8 scale) and each accumulate an independent sudot4 sum.
+// C[2,N] = A_int8[2,K] @ dequant(B). Mirrors the float w4a16_gemv_batch2 layout
+// (A=[2,K], C=[2,N], row-major, second row at +K / +N). Weights are EXACT int8
+// (same codebook as M=1); the only new error vs float batch2 is int8 act quant.
+extern "C" __global__ void w4a16_gemv_dp4a_batch2(
+    const signed char* __restrict__ a_q,          // [2, K] int8
+    const float* __restrict__ a_scale,            // [2, K/16] f32 act scales
+    const unsigned char* __restrict__ B_packed,   // [N, K/2] uint8 (2 nibbles/byte)
+    const unsigned char* __restrict__ B_scale,    // [N, K/16] FP8-E4M3 weight scales
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,                // [2, N] BF16 out
+    unsigned int N,
+    unsigned int K
+) {
+    const unsigned int threads_per_out = DP4A_BLOCK_SIZE / DP4A_N_PER_BLOCK;  // 64
+    const unsigned int local_out = threadIdx.x / threads_per_out;
+    const unsigned int lane = threadIdx.x % threads_per_out;
+    const unsigned int n = blockIdx.x * DP4A_N_PER_BLOCK + local_out;
+    if (n >= N) return;
+
+    const unsigned int half_K = K / 2;
+    const unsigned int num_groups = K / DP4A_GROUP_SIZE;
+    const unsigned int K16 = K / 16;
+
+    const signed char* __restrict__ a_q1 = a_q + K;        // second input row
+    const float* __restrict__ a_scale1 = a_scale + K16;    // second input scales
+    __nv_bfloat16* __restrict__ C1 = C + N;                // second output row
+
+    __shared__ float smem[DP4A_N_PER_BLOCK * 4];  // 4 outputs x 2 warps x 2 accs
+
+    float acc0 = 0.0f, acc1 = 0.0f;
+    for (unsigned int k16 = lane; k16 < K16; k16 += threads_per_out) {
+        const unsigned int base_k = k16 * 16;
+
+        int4 aq0 = *(const int4*)(a_q + base_k);     // 16 int8 act, token 0
+        int4 aq1 = *(const int4*)(a_q1 + base_k);    // 16 int8 act, token 1
+        const int a0[4] = {aq0.x, aq0.y, aq0.z, aq0.w};
+        const int a1[4] = {aq1.x, aq1.y, aq1.z, aq1.w};
+
+        // SHARED weight read: 8 packed bytes (16 nibbles) -> 4 int32 codebook operands
+        unsigned long long packed8 = *(const unsigned long long*)(B_packed + (unsigned long long)n * half_K + k16 * 8);
+        int wint[4];
+        dp4a_expand_codebook(packed8, wint);
+
+        int sumi0 = 0, sumi1 = 0;
+        #pragma unroll
+        for (int j = 0; j < 4; j++) {
+            sumi0 = DP4A_DOT(a0[j], wint[j], sumi0);
+            sumi1 = DP4A_DOT(a1[j], wint[j], sumi1);
+        }
+
+        float wscale = dp4a_scl_fp8(B_scale[(unsigned long long)n * num_groups + k16]);
+        float w = wscale * 0.5f * scale2;
+        acc0 += (float)sumi0 * a_scale[k16]  * w;
+        acc1 += (float)sumi1 * a_scale1[k16] * w;
+    }
+
+    const unsigned int warp_lane = threadIdx.x % DP4A_WARP_SIZE;
+    #pragma unroll
+    for (int offset = DP4A_WARP_SIZE / 2; offset > 0; offset >>= 1) {
+        acc0 += __shfl_down_sync(0xFFFFFFFF, acc0, offset);
+        acc1 += __shfl_down_sync(0xFFFFFFFF, acc1, offset);
+    }
+    if (warp_lane == 0) {
+        smem[local_out * 4 + (lane / DP4A_WARP_SIZE) * 2 + 0] = acc0;
+        smem[local_out * 4 + (lane / DP4A_WARP_SIZE) * 2 + 1] = acc1;
+    }
+    __syncthreads();
+    if (lane == 0) {
+        C[n]  = __float2bfloat16(smem[local_out * 4 + 0] + smem[local_out * 4 + 2]);
+        C1[n] = __float2bfloat16(smem[local_out * 4 + 1] + smem[local_out * 4 + 3]);
+    }
+}
+
+// ── W4A8 DP4A dual batch-2 (fused gate+up for M=2 verify) ──────────────────
+// Same as w4a16_gemv_dp4a_batch2 but blockIdx.z selects which projection
+// (gate vs up); the two int8 activations are shared across both projections.
+// Mirrors the float w4a16_gemv_dual_batch2 interface (grid .z = 2).
+extern "C" __global__ void w4a16_gemv_dp4a_dual_batch2(
+    const signed char* __restrict__ a_q,           // [2, K_in] int8
+    const float* __restrict__ a_scale,             // [2, K_in/16]
+    const unsigned char* __restrict__ B0_packed, const unsigned char* __restrict__ B0_scale, float B0_scale2,
+    __nv_bfloat16* __restrict__ C0,                // [2, N] gate out
+    const unsigned char* __restrict__ B1_packed, const unsigned char* __restrict__ B1_scale, float B1_scale2,
+    __nv_bfloat16* __restrict__ C1,                // [2, N] up out
+    unsigned int N,
+    unsigned int K_in
+) {
+    const unsigned int proj = blockIdx.z;
+    const unsigned char* B_packed = (proj == 0) ? B0_packed : B1_packed;
+    const unsigned char* B_scale  = (proj == 0) ? B0_scale  : B1_scale;
+    const float scale2 = (proj == 0) ? B0_scale2 : B1_scale2;
+    __nv_bfloat16* C_out = (proj == 0) ? C0 : C1;
+
+    const unsigned int threads_per_out = DP4A_BLOCK_SIZE / DP4A_N_PER_BLOCK;
+    const unsigned int local_out = threadIdx.x / threads_per_out;
+    const unsigned int lane = threadIdx.x % threads_per_out;
+    const unsigned int n = blockIdx.x * DP4A_N_PER_BLOCK + local_out;
+    if (n >= N) return;
+
+    const unsigned int half_K = K_in / 2;
+    const unsigned int num_groups = K_in / DP4A_GROUP_SIZE;
+    const unsigned int K16 = K_in / 16;
+
+    const signed char* __restrict__ a_q1 = a_q + K_in;
+    const float* __restrict__ a_scale1 = a_scale + K16;
+    __nv_bfloat16* __restrict__ C_out1 = C_out + N;
+
+    __shared__ float smem[DP4A_N_PER_BLOCK * 4];
+
+    float acc0 = 0.0f, acc1 = 0.0f;
+    for (unsigned int k16 = lane; k16 < K16; k16 += threads_per_out) {
+        const unsigned int base_k = k16 * 16;
+
+        int4 aq0 = *(const int4*)(a_q + base_k);
+        int4 aq1 = *(const int4*)(a_q1 + base_k);
+        const int a0[4] = {aq0.x, aq0.y, aq0.z, aq0.w};
+        const int a1[4] = {aq1.x, aq1.y, aq1.z, aq1.w};
+
+        unsigned long long packed8 = *(const unsigned long long*)(B_packed + (unsigned long long)n * half_K + k16 * 8);
+        int wint[4];
+        dp4a_expand_codebook(packed8, wint);
+
+        int sumi0 = 0, sumi1 = 0;
+        #pragma unroll
+        for (int j = 0; j < 4; j++) {
+            sumi0 = DP4A_DOT(a0[j], wint[j], sumi0);
+            sumi1 = DP4A_DOT(a1[j], wint[j], sumi1);
+        }
+
+        float wscale = dp4a_scl_fp8(B_scale[(unsigned long long)n * num_groups + k16]);
+        float w = wscale * 0.5f * scale2;
+        acc0 += (float)sumi0 * a_scale[k16]  * w;
+        acc1 += (float)sumi1 * a_scale1[k16] * w;
+    }
+
+    const unsigned int warp_lane = threadIdx.x % DP4A_WARP_SIZE;
+    #pragma unroll
+    for (int offset = DP4A_WARP_SIZE / 2; offset > 0; offset >>= 1) {
+        acc0 += __shfl_down_sync(0xFFFFFFFF, acc0, offset);
+        acc1 += __shfl_down_sync(0xFFFFFFFF, acc1, offset);
+    }
+    if (warp_lane == 0) {
+        smem[local_out * 4 + (lane / DP4A_WARP_SIZE) * 2 + 0] = acc0;
+        smem[local_out * 4 + (lane / DP4A_WARP_SIZE) * 2 + 1] = acc1;
+    }
+    __syncthreads();
+    if (lane == 0) {
+        C_out[n]  = __float2bfloat16(smem[local_out * 4 + 0] + smem[local_out * 4 + 2]);
+        C_out1[n] = __float2bfloat16(smem[local_out * 4 + 1] + smem[local_out * 4 + 3]);
+    }
+}
