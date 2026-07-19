@@ -315,15 +315,29 @@ impl Qwen3SsmLayer {
                         (n * h) as u32,
                         stream,
                     )?;
-                } else if std::env::var("ATLAS_MOE_TOKEN_MAJOR_DECODE")
+                } else if std::env::var("ATLAS_MOE_LEGACY_PERTOKEN_DECODE")
                     .ok()
                     .as_deref()
-                    == Some("1")
+                    != Some("1")
                 {
-                    // Token-major N-token MoE decode: batched gate/top-k plus
-                    // generic fused routed/shared kernels, no grouped-GEMM sort.
-                    self.ffn
-                        .forward_token_major_decode(normed_base, n, ctx, stream)?;
+                    // Token-major N-token MoE decode — DEFAULT for n>=4. Packs
+                    // (token, expert) into blockIdx.y so all N tokens' experts run
+                    // in ~3 batched kernel launches/layer instead of the legacy
+                    // per-token loop's ~24 serial launches (which also aliased
+                    // scratch → forced cross-token serialization) + a wsum_blend
+                    // starved to 8 blocks. Measured +7-19% concurrent decode.
+                    // `forward_token_major_decode` calls `reject_decode_lora`
+                    // FIRST (before any GPU work) and errors on a LoRA-active
+                    // (Fold/Refuse) route or non-NVFP4 weights — fall back to the
+                    // proven per-row `forward_batched` in that case, no side
+                    // effects. Opt out fully with ATLAS_MOE_LEGACY_PERTOKEN_DECODE=1.
+                    if self
+                        .ffn
+                        .forward_token_major_decode(normed_base, n, ctx, stream)
+                        .is_err()
+                    {
+                        self.ffn.forward_batched(normed_base, n, ctx, stream)?;
+                    }
                     let moe_out = ctx.buffers.moe_output();
                     ops::residual_add(
                         ctx.gpu,

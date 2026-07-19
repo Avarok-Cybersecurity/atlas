@@ -29,6 +29,14 @@ fn think_ended_gpu_argmax_enabled() -> bool {
 /// fast path is not paying for itself.
 static THINK_MASK_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Parallel host sampling toggle (ATLAS_PARALLEL_SAMPLE, default ON). Set to
+/// "0" to force the serial per-seq sampling path — an escape hatch for the
+/// telemetry-ordering caveat above, or for A/B measurement of the rayon win.
+fn parallel_sample_enabled() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var("ATLAS_PARALLEL_SAMPLE").as_deref() != Ok("0"))
+}
+
 /// DIAG (ATLAS_DECODE_TIMING=1): localize the host-path decode cost. Splits the
 /// per-token wall into `copy` (D2H of the full 248k-vocab logits + the GPU
 /// forward-wait absorbed by that sync) vs `sample` (the host scalar loops over
@@ -200,23 +208,53 @@ pub fn process_decode_logits(
                 tool_call_end_token,
             };
             let t_sample = std::time::Instant::now();
-            let sampled: Vec<(u32, Option<crate::api::TokenLogprobs>)> = active
-                .iter_mut()
-                .enumerate()
-                .map(|(i, a)| {
-                    process_seq_logits(
-                        model,
-                        a,
-                        &buf,
-                        i,
-                        vocab_size,
-                        elem_bytes,
-                        logits_fp32,
-                        &ctx,
-                        adaptive_sampling,
-                    )
-                })
-                .collect();
+            // Per-sequence host sampling is independent: each call reads a
+            // disjoint `buf` slice, mutates its own `ActiveSeq`, uses a
+            // per-thread `SEQ_F32_SCRATCH`, and advances a per-seq seed. The
+            // collect is order-preserving, so the emitted tokens are identical
+            // to the serial path. (Process-global sampler telemetry —
+            // `sampler::LAST_ENTROPY`, the AdaDec/B1 diagnostics — is
+            // synchronized but last-write-wins across workers, so those
+            // best-effort gauges may report an arbitrary in-step sequence's
+            // value under n>1; token output is unaffected.) Each
+            // call scans the full ~250k vocab (BF16→FP32 expand + penalties +
+            // argmax), the dominant host-path cost at n>=2. Fan out across the
+            // rayon pool ONLY for n>1: at n=1 (the common single-stream /
+            // opencode host path) the serial path avoids rayon's dispatch
+            // overhead. `process_seq_logits` touches no GPU state (its `_model`
+            // arg is unused), so no CUDA calls cross threads. The parallel path
+            // is also gated off when the opt-in `ATLAS_LOGIT_DUMP` diagnostic is
+            // active, since its shared per-step record would interleave across
+            // workers.
+            let parallel_sample =
+                n > 1 && !super::logit_dump::enabled() && parallel_sample_enabled();
+            let sample_one = |i: usize, a: &mut ActiveSeq| {
+                process_seq_logits(
+                    model,
+                    a,
+                    &buf,
+                    i,
+                    vocab_size,
+                    elem_bytes,
+                    logits_fp32,
+                    &ctx,
+                    adaptive_sampling,
+                )
+            };
+            let sampled: Vec<(u32, Option<crate::api::TokenLogprobs>)> = if parallel_sample {
+                use rayon::prelude::*;
+                active
+                    .par_iter_mut()
+                    .enumerate()
+                    .map(|(i, a)| sample_one(i, a))
+                    .collect()
+            } else {
+                active
+                    .iter_mut()
+                    .enumerate()
+                    .map(|(i, a)| sample_one(i, a))
+                    .collect()
+            };
             decode_timing_record(copy_us, t_sample.elapsed().as_micros() as u64);
             // Return the staging buffer for reuse next token (its capacity is
             // preserved). The error path above intentionally drops it — that is
@@ -330,9 +368,6 @@ pub fn process_decode_logits(
             a.consume_generation_budget();
             if think_end_token == Some(tok) {
                 a.inside_thinking = false;
-                // Sticky: was THIS close force-injected? Read by the
-                // post-think EOS guard below.
-                a.think_force_closed = a.force_end_thinking;
                 a.force_end_thinking = false;
                 a.sentence_defer_count = 0;
                 a.consecutive_confident = 0;
@@ -616,10 +651,8 @@ pub fn process_decode_logits(
         // MTP-verify emit path (`emit_step.rs`) has no such guard, which is why
         // MTP-on stopped here while MTP-off leaked; this restores parity.
         let tools_armed = a.require_tool_call || a.tool_request;
-        let post_think_suppresses_eos = tools_armed
-            && a.think_ended
-            && a.think_force_closed
-            && post_think_content_tokens < POST_THINK_MIN_CONTENT;
+        let post_think_suppresses_eos =
+            tools_armed && a.think_ended && post_think_content_tokens < POST_THINK_MIN_CONTENT;
         let suppress_eos = grammar_suppresses_eos
             || legacy_suppresses_eos
             || min_tokens_suppresses
