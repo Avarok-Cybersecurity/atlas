@@ -95,6 +95,12 @@ pub struct DenseFfnLayer {
     w4a16_gemv_dual_batch3: KernelHandle,
     w4a16_gemv_batch2: KernelHandle,
     w4a16_gemv_batch3: KernelHandle,
+    // W4A8 integer-DP4A batch-2 decode kernels (MTP K=2 verify). Engaged when
+    // ATLAS_W4A16_DP4A=1 (ops::dp4a_enabled) AND all three handles are present.
+    // KernelHandle(0) on miss → arm skipped, float batch2 path used.
+    dp4a_quant_k: KernelHandle,
+    dp4a_dual_batch2_k: KernelHandle,
+    dp4a_batch2_k: KernelHandle,
     w4a16_gemm: KernelHandle,
     // 128x128 2-stage cp.async pipelined w4a16 GEMM — the fast prefill kernel
     // attention/SSM already use. The base `w4a16_gemm` (M64xN64) only hits
@@ -257,6 +263,9 @@ impl DenseFfnLayer {
             w4a16_gemv_dual_batch3: gpu.kernel("w4a16_gemv", "w4a16_gemv_dual_batch3")?,
             w4a16_gemv_batch2: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
             w4a16_gemv_batch3: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch3")?,
+            dp4a_quant_k: super::try_kernel(gpu, "w4a16_gemv_dp4a", "quantize_act_int8_g16"),
+            dp4a_dual_batch2_k: super::try_kernel(gpu, "w4a16_gemv_dp4a", "w4a16_gemv_dp4a_dual_batch2"),
+            dp4a_batch2_k: super::try_kernel(gpu, "w4a16_gemv_dp4a", "w4a16_gemv_dp4a_batch2"),
             w4a16_gemm: gpu.kernel("w4a16", "w4a16_gemm")?,
             w4a16_gemm_t_m128_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128"),
             w4a16_gemm_t_m128_v2_k: super::try_kernel(gpu, "w4a16_v2", "w4a16_gemm_t_m128_v2"),
@@ -985,6 +994,10 @@ impl DenseFfnLayer {
 
     /// K=2 speculative: batched GEMV for 2 tokens.
     /// 3 launches: dual batch2 (gate+up) + silu_mul + batch2 (down).
+    /// DP4A path (ATLAS_W4A16_DP4A=1 + kernels present): int8-quant the 2 token
+    /// activations once, then W4A8 sudot4 batch2 GEMVs sharing the weight read —
+    /// the ~25% win on the bandwidth-bound verify GEMV (76% of decode time per
+    /// rocprofv3). Falls back to the float batch2 path otherwise.
     pub fn forward_k2(&self, input: DevicePtr, ctx: &ForwardContext, stream: u64) -> Result<()> {
         let h = ctx.config.hidden_size as u32;
         let inter = ctx.config.intermediate_size as u32;
@@ -992,41 +1005,103 @@ impl DenseFfnLayer {
         let gate_out = ctx.buffers.expert_gate_out();
         let up_out = ctx.buffers.expert_up_out();
 
-        // Fused gate+up for 2 tokens
-        ops::w4a16_gemv_dual_batch2(
-            ctx.gpu,
-            self.w4a16_gemv_dual_batch2,
-            input,
-            &self.weights.gate_proj,
-            gate_out,
-            &self.weights.up_proj,
-            up_out,
-            inter,
-            h,
-            stream,
-        )?;
-        ops::silu_mul(
-            ctx.gpu,
-            self.act_mul,
-            gate_out,
-            up_out,
-            gate_out,
-            2 * inter,
-            stream,
-        )?;
-        let output = ctx.buffers.moe_output();
-        ops::w4a16_gemv_batch2(
-            ctx.gpu,
-            self.w4a16_gemv_batch2,
-            gate_out,
-            &self.weights.down_proj,
-            output,
-            h,
-            inter,
-            stream,
-        )?;
-
-        Ok(())
+        if ops::dp4a_enabled()
+            && !self.dp4a_quant_k.is_null()
+            && !self.dp4a_dual_batch2_k.is_null()
+            && !self.dp4a_batch2_k.is_null()
+        {
+            // Reuse the shared dense-FFN int8 activation-quant scratch (sized for
+            // prefill max_batch × K — plenty for M=2 decode). Layout [2,K] row-major.
+            let a_q = ctx.buffers.ffn_act_a();
+            let a_scale = ctx.buffers.ffn_act_scale();
+            // Quantize the 2 verify-token inputs [2, h] BF16 -> int8 [2, h] + f32 [2, h/16].
+            ops::quantize_act_int8(ctx.gpu, self.dp4a_quant_k, input, a_q, a_scale, h, stream)?;
+            ops::quantize_act_int8(
+                ctx.gpu,
+                self.dp4a_quant_k,
+                input.offset(h as usize * 2),
+                a_q.offset(h as usize),
+                a_scale.offset((h / 16) as usize * 4),
+                h,
+                stream,
+            )?;
+            // Fused gate+up DP4A batch2 (weight read shared across the 2 tokens).
+            ops::w4a16_gemv_dp4a_dual_batch2(
+                ctx.gpu,
+                self.dp4a_dual_batch2_k,
+                a_q,
+                a_scale,
+                &self.weights.gate_proj,
+                gate_out,
+                &self.weights.up_proj,
+                up_out,
+                inter,
+                h,
+                stream,
+            )?;
+            // SiLU(gate)*up (float, reused) -> gate_out [2, inter].
+            ops::silu_mul(ctx.gpu, self.act_mul, gate_out, up_out, gate_out, 2 * inter, stream)?;
+            // Quantize the down-proj input [2, inter] BF16 -> int8 [2, inter] (reuse scratch).
+            let output = ctx.buffers.moe_output();
+            ops::quantize_act_int8(ctx.gpu, self.dp4a_quant_k, gate_out, a_q, a_scale, inter, stream)?;
+            ops::quantize_act_int8(
+                ctx.gpu,
+                self.dp4a_quant_k,
+                gate_out.offset(inter as usize * 2),
+                a_q.offset(inter as usize),
+                a_scale.offset((inter / 16) as usize * 4),
+                inter,
+                stream,
+            )?;
+            // Down DP4A batch2.
+            ops::w4a16_gemv_dp4a_batch2(
+                ctx.gpu,
+                self.dp4a_batch2_k,
+                a_q,
+                a_scale,
+                &self.weights.down_proj,
+                output,
+                h,
+                inter,
+                stream,
+            )?;
+            Ok(())
+        } else {
+            // Float batch2 path (default).
+            ops::w4a16_gemv_dual_batch2(
+                ctx.gpu,
+                self.w4a16_gemv_dual_batch2,
+                input,
+                &self.weights.gate_proj,
+                gate_out,
+                &self.weights.up_proj,
+                up_out,
+                inter,
+                h,
+                stream,
+            )?;
+            ops::silu_mul(
+                ctx.gpu,
+                self.act_mul,
+                gate_out,
+                up_out,
+                gate_out,
+                2 * inter,
+                stream,
+            )?;
+            let output = ctx.buffers.moe_output();
+            ops::w4a16_gemv_batch2(
+                ctx.gpu,
+                self.w4a16_gemv_batch2,
+                gate_out,
+                &self.weights.down_proj,
+                output,
+                h,
+                inter,
+                stream,
+            )?;
+            Ok(())
+        }
     }
 
     /// K=3 speculative: batched GEMV for 3 tokens.
