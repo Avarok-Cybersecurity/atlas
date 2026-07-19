@@ -13,7 +13,8 @@ use super::*;
 fn k4_diag_checkpoint(ctx: &ForwardContext, phase: &str, stream: u64) -> Result<()> {
     static DIAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let on = *DIAG.get_or_init(|| std::env::var("ATLAS_K4_DIAG").ok().as_deref() == Some("1"));
-    if on && !ctx.graph_capture
+    if on
+        && !ctx.graph_capture
         && let Err(e) = ctx.gpu.synchronize(stream)
     {
         anyhow::bail!("K4_DIAG: CUDA error after GDN phase `{phase}`: {e:#}");

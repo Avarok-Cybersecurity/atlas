@@ -65,11 +65,11 @@ impl MtpHead {
         };
         // v1: BF16 head + BF16 drafter KV only (see module docs).
         let (fc_w, k_w, v_w) = match (&self.fc, &self.k_proj, &self.v_proj) {
-            (
-                ProjectionWeight::Bf16(fc),
-                ProjectionWeight::Bf16(k),
-                ProjectionWeight::Bf16(v),
-            ) if self.kv_bf16 && self.dense_gemm_k.0 != 0 => (fc, k, v),
+            (ProjectionWeight::Bf16(fc), ProjectionWeight::Bf16(k), ProjectionWeight::Bf16(v))
+                if self.kv_bf16 && self.dense_gemm_k.0 != 0 =>
+            {
+                (fc, k, v)
+            }
             _ => {
                 static WARNED: std::sync::Once = std::sync::Once::new();
                 WARNED.call_once(|| {
@@ -211,9 +211,8 @@ impl MtpHead {
 
             // 6. RoPE positions i+1 and KV slots i, uploaded per chunk.
             let positions: Vec<u32> = (0..c).map(|r| (done + r + 1) as u32).collect();
-            let pos_bytes = unsafe {
-                std::slice::from_raw_parts(positions.as_ptr() as *const u8, c * 4)
-            };
+            let pos_bytes =
+                unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, c * 4) };
             ctx.gpu.copy_h2d_async(pos_bytes, scratch.pos_dev, stream)?;
             let slots: Vec<i64> = (0..c)
                 .map(|r| {
@@ -221,10 +220,10 @@ impl MtpHead {
                     (mtp_state.block_table[i / bs] as i64) * (bs as i64) + (i % bs) as i64
                 })
                 .collect();
-            let slot_bytes = unsafe {
-                std::slice::from_raw_parts(slots.as_ptr() as *const u8, c * 8)
-            };
-            ctx.gpu.copy_h2d_async(slot_bytes, scratch.slot_dev, stream)?;
+            let slot_bytes =
+                unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, c * 8) };
+            ctx.gpu
+                .copy_h2d_async(slot_bytes, scratch.slot_dev, stream)?;
 
             ops::rope(
                 ctx.gpu,
@@ -291,5 +290,6 @@ fn self_copy_embed_row(
 ) -> Result<()> {
     let row_bytes = h * 2;
     let src = head.embed_tokens.weight.offset(token * row_bytes);
-    ctx.gpu.copy_d2d_async(src, dst.offset(r * row_bytes), row_bytes, stream)
+    ctx.gpu
+        .copy_d2d_async(src, dst.offset(r * row_bytes), row_bytes, stream)
 }

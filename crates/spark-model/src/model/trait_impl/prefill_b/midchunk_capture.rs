@@ -93,10 +93,12 @@ impl TransformerModel {
         match self.ssm_snapshots.reserve_tail_slot(session_hash) {
             Some(s) => Some(s),
             None => {
-                if self
-                    .ssm_snapshots
-                    .reclaim_from_cache(self.prefix_cache.as_ref(), kv_cache, self.ssm_tier_store.as_deref(), self.gpu.as_ref())
-                {
+                if self.ssm_snapshots.reclaim_from_cache(
+                    self.prefix_cache.as_ref(),
+                    kv_cache,
+                    self.ssm_tier_store.as_deref(),
+                    self.gpu.as_ref(),
+                ) {
                     self.ssm_snapshots.reserve_tail_slot(session_hash)
                 } else {
                     None
@@ -150,18 +152,20 @@ impl TransformerModel {
         let mut tb_early = None;
         let mut h_dsts_early = Vec::new();
         let mut conv_dsts_early = Vec::new();
-        if bs > 0 && cap_local > bs && tb > bs
+        if bs > 0
+            && cap_local > bs
+            && tb > bs
             && let Some(slot2) = self.reserve_snapshot_slot(seq.session_hash, kv_cache)
         {
-                cap_local_early = Some(cap_local - bs);
-                snap_slot_early = Some(slot2);
-                tb_early = Some(tb - bs);
-                h_dsts_early = Vec::with_capacity(n);
-                conv_dsts_early = Vec::with_capacity(n);
-                for l in 0..n {
-                    h_dsts_early.push(self.ssm_snapshots.tail_h_dst(l, slot2));
-                    conv_dsts_early.push(self.ssm_snapshots.tail_conv_dst(l, slot2));
-                }
+            cap_local_early = Some(cap_local - bs);
+            snap_slot_early = Some(slot2);
+            tb_early = Some(tb - bs);
+            h_dsts_early = Vec::with_capacity(n);
+            conv_dsts_early = Vec::with_capacity(n);
+            for l in 0..n {
+                h_dsts_early.push(self.ssm_snapshots.tail_h_dst(l, slot2));
+                conv_dsts_early.push(self.ssm_snapshots.tail_conv_dst(l, slot2));
+            }
         }
 
         Some(MidCapturePlan {
@@ -195,10 +199,12 @@ impl TransformerModel {
         seq: &SequenceState,
         plan: &MidCapturePlan,
     ) {
-        for old in
-            self.prefix_cache
-                .insert_tail_snapshot(&tokens[..plan.tb], plan.snap_slot, seq.session_hash, seq.adapter_id)
-        {
+        for old in self.prefix_cache.insert_tail_snapshot(
+            &tokens[..plan.tb],
+            plan.snap_slot,
+            seq.session_hash,
+            seq.adapter_id,
+        ) {
             self.ssm_snapshots.free(old);
         }
         tracing::info!(

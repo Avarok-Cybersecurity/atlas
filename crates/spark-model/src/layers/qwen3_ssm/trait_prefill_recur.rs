@@ -86,8 +86,12 @@ impl Qwen3SsmLayer {
                     let mut start = 0usize;
                     if let Some(ce) = cap.cap_local_early {
                         seg(0, ce as u32)?;
-                        ctx.gpu
-                            .copy_d2d_async(h_state, cap.h_dsts_early[idx], cap.h_bytes, stream)?;
+                        ctx.gpu.copy_d2d_async(
+                            h_state,
+                            cap.h_dsts_early[idx],
+                            cap.h_bytes,
+                            stream,
+                        )?;
                         start = ce;
                     }
                     // Capture h_state @ the tail boundary tb.

@@ -129,7 +129,8 @@ impl TransformerModel {
             proc_count * h * bf16,
             stream,
         )?;
-        self.mtp_prefill_capture_len.store(new_len, Ordering::Relaxed);
+        self.mtp_prefill_capture_len
+            .store(new_len, Ordering::Relaxed);
         Ok(())
     }
 

@@ -2,77 +2,23 @@
 
 //! Throughput-aware MTP runtime gate.
 //!
-//! MTP speculative decode is economical only when a single verify step
-//! (which advances up to `1 + num_drafts` tokens) is cheaper per produced
-//! token than running that many plain single-token decode steps. Whether it
-//! pays off is a property of the *measured* per-step cost on this exact
-//! model + quantization + hardware combination — NOT of the weight format.
-//! For example, on a hybrid SSM model the verify pass re-runs the full
-//! layer / MoE / lm_head stack, and on FP8 weights that makes one verify
-//! step cost ~2.3x a plain decode step even though draft acceptance is
-//! healthy (~80%); on NVFP4 weights the 4-bit weight traffic makes the same
-//! verify step cost only ~1.1x. An acceptance-only gate is therefore wrong:
-//! acceptance is healthy in the FP8 case yet MTP still loses.
-//!
-//! This gate measures the verify-cost multiplier
-//!   `m = verify_step_wall / decode_step_wall`
-//! over the first decode steps of a single-sequence serving session, then
-//! applies a PROVABLE bound:
-//!
-//! For `K_drafts = num_drafts` drafts per step, a verify step advances at
-//! MOST `1 + K_drafts` tokens (perfect acceptance). So its best-case
-//! tokens-per-wall is `(1 + K_drafts) / m` (in units of decode steps). If
-//!   `m >= 1 + K_drafts`
-//! then even at 100% acceptance the verify step produces no more tokens per
-//! unit wall than `1 + K_drafts` plain decode steps would — MTP is
-//! net-negative at ANY acceptance and is disabled. No acceptance estimate is
-//! needed for this decision; it is a hard upper bound.
-//!
-//! When `m < 1 + K_drafts`, MTP *can* win, and does so once acceptance clears
-//! the break-even `m - 1` drafts-accepted-per-step. We keep MTP on in that
-//! regime (the live K-summary logging in the verify steps already surfaces
-//! acceptance for observability).
-//!
-//! ## The multiplier is DEPTH-DEPENDENT — decisions are per-regime, not permanent
-//!
-//! `m` is not a constant of the model+hardware: it is a function of context
-//! depth, because WHAT a decode step is bound by changes with depth. At short
-//! context on a fine-grained MoE, a decode step is expert-WEIGHT-read bound;
-//! the `1 + K` verify tokens route to (mostly) distinct experts, so a verify
-//! step reads ~`(1 + K)x` the expert weights and `m ≈ 1 + K` — provably
-//! net-negative. At deep context the step is KV/SSM-READ bound; the verify's
-//! `1 + K` tokens SHARE one pass over the context state, so `m → ~1.1` and
-//! MTP wins big. Measured on Qwen3.6-35B-A3B-FP8 (GB10): `m = 4.13` at
-//! short context vs `m = 1.09` at ~17k agentic depth — same engine, same
-//! flags. A decision latched from whichever request happens to arrive first
-//! is therefore wrong for the other regime (a short warm-up probe would
-//! permanently disable MTP for a long agentic session, and vice versa).
-//! The gate records the depth at which it measured and re-measures when the
-//! live depth leaves that regime (see [`REMEASURE_DEPTH_FACTOR`]).
+//! Measures `m = verify_step_wall / decode_step_wall` over the first decode
+//! steps, then disables MTP when net-negative. The disable threshold uses the
+//! MEASURED expected tokens (`1 + mean_accepted`), not the theoretical `1 + K`
+//! max — so MTP is disabled at the ACTUAL acceptance rate, not just the
+//! impossible 100% worst case. `m` is depth-dependent (weight-bound at short
+//! context, KV/SSM-bound at depth), so the gate re-measures when the live
+//! depth leaves the measured regime (see [`REMEASURE_DEPTH_FACTOR`]). Ongoing
+//! adaptation: if the acceptance EMA drops below break-even, re-opens
+//! measurement (see [`Self::should_reconsider`]).
 
 use std::time::Duration;
 
-/// Depth-regime factor that triggers re-measurement, in either direction.
-/// Factor 2, not 4: the verify multiplier crosses the break-even (m=2.0 at
-/// K=2) over a NARROW depth band on this hybrid MoE — measured m=2.01 at
-/// ~7k, 1.86 at ~13k (Qwen3.6-35B-A3B-FP8/GB10). A factor-4 window let a
-/// session that STARTS shallow (agentic tool sessions begin ~5k) grow into
-/// the MTP-profitable band (~10-13k) WITHOUT ever re-measuring — only a
-/// 5k→20k jump would trip factor 4 — so it stayed gated off session-wide,
-/// wasting the win exactly where sessions deepen the most. Factor 2 re-checks
-/// at ~10k, flipping MTP on for the deep majority of the session. Each
-/// re-measurement is `2 * (WARMUP_SAMPLES + TIMED_SAMPLES)` steps that emit
-/// real, correct tokens (verify and plain decode are greedy-equivalent), so a
-/// re-measure — even one that flips back near the boundary — costs only the
-/// sub-optimal step type during its own ~14-step window, never correctness.
+/// Factor that triggers re-measurement when live depth leaves the measured
+/// regime (either direction). Factor 2 re-checks at ~2× depth.
 const REMEASURE_DEPTH_FACTOR: usize = 2;
 
-/// Floor for the regime comparison: below this depth every context is
-/// "short" — the KV/SSM state read per step is far below the per-step expert
-/// weight traffic, so factor comparisons between tiny depths (e.g. 32 vs 130
-/// tokens) would re-measure inside one and the same weight-bound regime.
-/// 512 tokens of bf16 KV across the attention layers is still ≪ the ~GB of
-/// active-expert weights read per step on the models this gate serves.
+/// Floor for the regime comparison (below this, all contexts are "shallow").
 const REMEASURE_DEPTH_FLOOR: usize = 512;
 
 /// Number of leading samples of each step type discarded as graph-capture /
@@ -334,27 +280,21 @@ impl MtpGate {
         } else {
             f64::INFINITY
         };
-        // Adaptive threshold: use the MEASURED expected tokens per step
-        // (1 + mean_accepted) instead of the theoretical max (1 + K). This
-        // disables MTP when it is ACTUALLY net-negative at the current
-        // acceptance rate, not just at the impossible 100%-acceptance worst
-        // case. Example: K=3 (max_effective=4) at m=2.5 with mean_accepted=1.0
-        // → effective=2.0 < 2.5 → DISABLE (the old gate would keep it:
-        // 2.5 < 4). With mean_accepted=2.0 → effective=3.0 > 2.5 → KEEP.
+        // Adaptive threshold: use MEASURED expected tokens (1 + mean_accepted)
+        // instead of theoretical max (1 + K). Disables MTP at the ACTUAL
+        // acceptance rate, not the impossible 100% worst case.
         let mean_accepted = if self.acceptance_samples.len() > WARMUP_SAMPLES {
-            let timed: Vec<usize> =
-                self.acceptance_samples.iter().copied().skip(WARMUP_SAMPLES).collect();
-            let n = timed.len();
-            timed.iter().map(|&x| x as f64).sum::<f64>() / n.max(1) as f64
+            let timed: Vec<usize> = self
+                .acceptance_samples
+                .iter()
+                .copied()
+                .skip(WARMUP_SAMPLES)
+                .collect();
+            timed.iter().map(|&x| x as f64).sum::<f64>() / timed.len().max(1) as f64
         } else {
-            // No acceptance data (e.g. all bootstraps) — fall back to the
-            // theoretical max, preserving the prior conservative behavior.
-            self.max_effective - 1.0
+            self.max_effective - 1.0 // no acceptance data → theoretical max fallback
         };
         let effective_tokens = 1.0 + mean_accepted;
-        // Keep MTP only if the measured expected tokens exceed the verify
-        // cost multiplier (speedup > 1.0). Also keep the hard upper bound
-        // (m >= max_effective → disable regardless of acceptance).
         let decision = if multiplier >= self.max_effective || multiplier >= effective_tokens {
             GateDecision::DisableMtp
         } else {

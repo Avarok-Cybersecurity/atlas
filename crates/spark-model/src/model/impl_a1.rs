@@ -249,9 +249,7 @@ impl TransformerModel {
         // [max_seq_len, hidden_size] BF16 — 335 MB at 32k/h=5120. Explicitly
         // opt-in (PCND): NULL (and zero cost) unless the env is set and MTP
         // is active. Sized to max_seq_len so an 8k+ prompt capture holds.
-        let mtp_prefill_hidden = if has_mtp
-            && crate::layers::mtp_drafter_prefill_enabled()
-        {
+        let mtp_prefill_hidden = if has_mtp && crate::layers::mtp_drafter_prefill_enabled() {
             let bytes = max_seq_len * config.hidden_size * 2;
             tracing::info!(
                 "ATLAS_MTP_DRAFTER_PREFILL=1: allocating {:.0} MB prompt-hidden \
