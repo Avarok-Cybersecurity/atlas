@@ -37,7 +37,7 @@ pub fn fp8_gemm_n128(
     // win. Quantizes the bf16 activation to e4m3 once into a persistent scratch,
     // then launches the ldmatrix GEMM. K must be a multiple of 32 (the ldmab
     // K-tile). Opt-OUT with ATLAS_FP8_LDMAB=0 (falls through to the scalar path).
-    if k % 32 == 0 && std::env::var("ATLAS_FP8_LDMAB").as_deref() != Ok("0") {
+    if k.is_multiple_of(32) && std::env::var("ATLAS_FP8_LDMAB").as_deref() != Ok("0") {
         use std::sync::{Mutex, OnceLock};
         static QK: OnceLock<KernelHandle> = OnceLock::new();
         static LK: OnceLock<KernelHandle> = OnceLock::new();

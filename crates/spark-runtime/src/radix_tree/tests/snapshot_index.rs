@@ -19,6 +19,7 @@ fn entry(
         last_access,
         hit_count,
         tiered: false,
+        is_tail: false,
     }
 }
 

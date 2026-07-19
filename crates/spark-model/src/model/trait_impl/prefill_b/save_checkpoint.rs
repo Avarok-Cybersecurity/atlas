@@ -133,21 +133,6 @@ impl TransformerModel {
             self.ssm_snapshots.free(snap_id);
             return Ok(());
         }
-        if is_tail {
-            // Index-only: `finalize_last` inserts [0, total) for this same turn and
-            // owns the ref_count/disk-ref bookkeeping. Re-inserting the whole prefix
-            // here measured ~0.9 s/turn. Superseding the session's previous tail keeps
-            // the cold 512-grid checkpoints alive (they are the fallback restore points).
-            for old in self.prefix_cache.insert_tail_snapshot(
-                boundary_tokens,
-                snap_id,
-                seq.session_hash,
-            ) {
-                self.ssm_snapshots.free(old);
-            }
-            tracing::info!("tail SSM checkpoint saved at token {end_token} (snapshot_id {snap_id})");
-            return Ok(());
-        }
         let boundary_disk = if seq.disk_block_ids.len() >= end_block {
             &seq.disk_block_ids[..end_block]
         } else {

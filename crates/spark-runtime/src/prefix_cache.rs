@@ -243,6 +243,7 @@ pub trait PrefixCache: Send + Sync {
         tokens: &[u32],
         snapshot_id: usize,
         session_hash: u64,
+        adapter_id: u64,
     ) -> Vec<usize>;
 
     /// Release ref_counts on blocks that were acquired via `lookup`.
@@ -353,6 +354,7 @@ impl PrefixCache for NoPrefixCaching {
         _tokens: &[u32],
         _snapshot_id: usize,
         _session_hash: u64,
+        _adapter_id: u64,
     ) -> Vec<usize> {
         Vec::new()
     }

@@ -94,7 +94,7 @@ impl TransformerModel {
             None => {
                 if self
                     .ssm_snapshots
-                    .reclaim_from_cache(self.prefix_cache.as_ref(), kv_cache)
+                    .reclaim_from_cache(self.prefix_cache.as_ref(), kv_cache, self.ssm_tier_store.as_deref(), self.gpu.as_ref())
                 {
                     self.ssm_snapshots.reserve_tail_slot(session_hash)
                 } else {
@@ -149,8 +149,9 @@ impl TransformerModel {
         let mut tb_early = None;
         let mut h_dsts_early = Vec::new();
         let mut conv_dsts_early = Vec::new();
-        if bs > 0 && cap_local > bs && tb > bs {
-            if let Some(slot2) = self.reserve_snapshot_slot(seq.session_hash, kv_cache) {
+        if bs > 0 && cap_local > bs && tb > bs
+            && let Some(slot2) = self.reserve_snapshot_slot(seq.session_hash, kv_cache)
+        {
                 cap_local_early = Some(cap_local - bs);
                 snap_slot_early = Some(slot2);
                 tb_early = Some(tb - bs);
@@ -160,7 +161,6 @@ impl TransformerModel {
                     h_dsts_early.push(self.ssm_snapshots.tail_h_dst(l, slot2));
                     conv_dsts_early.push(self.ssm_snapshots.tail_conv_dst(l, slot2));
                 }
-            }
         }
 
         Some(MidCapturePlan {
@@ -182,9 +182,11 @@ impl TransformerModel {
 
     /// Register the captured slots after the full forward pass has copied the
     /// @tb (and, when present, @tb-bs) state into them:
-    ///   * TAIL slot -> `insert_tail_snapshot` (supersedes the session tail).
-    ///   * EARLIER slot -> `insert_intermediate_snapshot` (a NON-tail entry, so
-    ///     it does NOT evict the tail; both become valid restore points).
+    ///
+    /// * TAIL slot -> `insert_tail_snapshot` (supersedes the session tail).
+    /// * EARLIER slot -> `insert_intermediate_snapshot` (a NON-tail entry, so
+    ///   it does NOT evict the tail; both become valid restore points).
+    ///
     /// Frees any snapshot id displaced by either insert.
     pub(in crate::model) fn finalize_midchunk_capture(
         &self,
@@ -194,7 +196,7 @@ impl TransformerModel {
     ) {
         for old in
             self.prefix_cache
-                .insert_tail_snapshot(&tokens[..plan.tb], plan.snap_slot, seq.session_hash)
+                .insert_tail_snapshot(&tokens[..plan.tb], plan.snap_slot, seq.session_hash, seq.adapter_id)
         {
             self.ssm_snapshots.free(old);
         }
@@ -216,6 +218,7 @@ impl TransformerModel {
                 slot2,
                 seq.session_hash,
                 tb_early,
+                seq.adapter_id,
             ) {
                 self.ssm_snapshots.free(old);
             }

@@ -105,8 +105,8 @@ impl TransformerModel {
             let captured = self
                 .mtp_prefill_capture_len
                 .load(std::sync::atomic::Ordering::Relaxed);
-            if p >= 2 && captured >= p && seq.tokens.len() >= p {
-                if let Err(e) = proposer.prefill_drafter(
+            if p >= 2 && captured >= p && seq.tokens.len() >= p
+                && let Err(e) = proposer.prefill_drafter(
                     &seq.tokens[..p],
                     self.mtp_prefill_hidden,
                     prop_state.as_mut(),
@@ -115,7 +115,6 @@ impl TransformerModel {
                 ) {
                     tracing::warn!("MTP drafter prefill failed (continuing without): {e:#}");
                 }
-            }
         }
         proposer.propose(
             token,

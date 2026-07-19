@@ -186,6 +186,7 @@ impl SsmSnapshotIndex {
             prefix_hash,
             last_access: self.access_counter,
             hit_count: 0,
+            tiered: false,
             is_tail: true,
         });
         displaced
