@@ -213,17 +213,17 @@ impl TransformerModel {
     ///
     /// - `num_accepted == k` (full accept): the kernel's final `h_state`
     ///   is the committed state → no-op.
-    /// - `0 < num_accepted < k` (partial / K=2 reject): copy
+    /// - `0 < num_accepted < k` (partial accept): copy
     ///   `h_state_intermediates[num_accepted - 1]` (state after the last
     ///   accepted token) → `h_state` (+ conv intermediate).
     ///
-    /// The K=2 verify path runs the kernel directly on the canonical
-    /// `h_state` (no `pre_verify_copy_async` scratch-seed), so on a full
-    /// accept the live state is already committed and on a partial accept
-    /// the single index-select below leaves `h_state` canonical for every
-    /// successor (bootstrap decode, gate-flip decode, concurrent request).
-    /// No `*_checkpoint` write is needed. (K=3/K=4/DFlash verify still use
-    /// the legacy dual-buffer `commit_verify_state_async`.)
+    /// All verify paths (K=2, K=3, K=4, DFlash) run the kernel directly
+    /// on the canonical `h_state` (no `pre_verify_copy_async` scratch-seed),
+    /// so on a full accept the live state is already committed and on a
+    /// partial accept the single index-select below leaves `h_state`
+    /// canonical for every successor (bootstrap decode, gate-flip decode,
+    /// concurrent request). No `*_checkpoint` write is needed — the next
+    /// `start_checkpoint_async` syncs h_state → checkpoint at prefill time.
     ///
     /// Runs on `secondary_stream`; pair with `sync_secondary`.
     pub(super) fn commit_accepted_prefix_dispatch(

@@ -55,7 +55,7 @@ impl TransformerModel {
         // dual-buffer pre-verify copy (~60 MB h_state + conv D2D per K=2
         // step) is gone. The CUDA-graph capture below is unaffected: the
         // captured nodes take the same `h_state` pointer, which never moves.
-        // (K=3/K=4/DFlash verify still run pre_verify_copy_async.)
+        // (K=3/K=4/DFlash verify share the same in-place convention.)
 
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();

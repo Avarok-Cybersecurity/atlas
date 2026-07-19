@@ -191,21 +191,16 @@ pub fn step_verify_dflash(
         a.seq.seq_len,
     );
 
-    // SSM commit / rollback. Hybrid models (Qwen3.6-A3B has 30 GDN layers)
-    // advance recurrent SSM state per-position during verify; without this
-    // commit, the canonical h_state stays at position+γ even if only a few
-    // drafts were accepted, producing gibberish on subsequent decodes.
-    //
-    // Semantics (default trait impl):
-    //  - num_accepted == k_verify (full accept): canonical = h_state
-    //  - 0 < num_accepted < k_verify (partial): canonical = intermediate[num_accepted-1]
-    //  - num_accepted == 0: canonical untouched (rollback to checkpoint)
+    // Item #2 (STree-style in-place verify commit). h_state is canonical:
+    //  - num_accepted == k_verify (full accept): no-op (h_state already correct)
+    //  - 0 < num_accepted < k_verify (partial): intermediate[total_accepted-1] → h_state
+    // No checkpoint write needed — the next start_checkpoint_async syncs.
     //
     // k_verify = drafts.len() + 1 (the prefix bonus position is also verified).
     let k_verify = drafts.len() + 1;
     let total_accepted = num_accepted + 1; // bonus is always "accepted"
-    if let Err(e) = model.commit_verify_state_async(&mut a.seq, total_accepted, k_verify) {
-        tracing::error!("commit_verify_state_async (dflash): {e:#}");
+    if let Err(e) = model.commit_accepted_prefix(&mut a.seq, total_accepted, k_verify) {
+        tracing::error!("commit_accepted_prefix (dflash): {e:#}");
         a.finished = true;
         return;
     }
