@@ -1006,9 +1006,9 @@ impl DenseFfnLayer {
         let up_out = ctx.buffers.expert_up_out();
 
         if ops::dp4a_enabled()
-            && !self.dp4a_quant_k.is_null()
-            && !self.dp4a_dual_batch2_k.is_null()
-            && !self.dp4a_batch2_k.is_null()
+            && self.dp4a_quant_k.0 != 0
+            && self.dp4a_dual_batch2_k.0 != 0
+            && self.dp4a_batch2_k.0 != 0
         {
             // Reuse the shared dense-FFN int8 activation-quant scratch (sized for
             // prefill max_batch × K — plenty for M=2 decode). Layout [2,K] row-major.
