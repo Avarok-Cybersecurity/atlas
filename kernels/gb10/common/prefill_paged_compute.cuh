@@ -119,7 +119,14 @@ __device__ __forceinline__ float sw_exp(float x) {
 #ifndef HDIM
 #define HDIM 256
 #endif
+// PAD_KV may be overridden by a kernel before including this header (e.g. the
+// FP8-smem cp.async path needs a 16-aligned row stride for 16-byte cp.async /
+// uint4 stores; FP8 elements are 1 byte so PAD_KV=8 → 264 = only 8-aligned,
+// whereas PAD_KV=16 → 272 = 16-aligned). Default 8 keeps the BF16 row stride
+// (256+8)*2 = 528 bytes 16-aligned, as before.
+#ifndef PAD_KV
 #define PAD_KV 8
+#endif
 #define HDIM_PAD (HDIM + PAD_KV)
 #define PAD_P 8
 #define N_TILES_PER_WARP ((HDIM / 8) / 2)

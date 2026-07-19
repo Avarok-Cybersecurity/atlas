@@ -32,6 +32,17 @@ __device__ __forceinline__ __nv_bfloat16 fp8_to_bf16(__nv_fp8_storage_t b, float
 // in prefill_paged_compute.cuh uses fp8x2_to_*_bits). OOB rows (pos >= kv_len)
 // are zeroed synchronously (uint4) — safe because the committed cp.async group
 // covers only valid-row entries. cache_stride is in FP8 elements (1 byte each).
+//
+// ALIGNMENT (2026-07-19 fix): FP8-smem elements are 1 byte, so the row stride
+// HDIM_PAD must itself be 16-aligned for the 16-byte atlas_cp16 and uint4
+// stores. With the default PAD_KV=8 → HDIM_PAD=264 → 264 mod 16 = 8 (odd rows
+// misaligned → silent cp.async misalignment fault, 1/8 tool-call coherence).
+// Override PAD_KV=16 → HDIM_PAD=272 → 272 mod 16 = 0 before including the
+// shared header (which is #ifndef-guarded so the override sticks). The BF16 /
+// NVFP4 paths don't define ATLAS_ATTN_FP8_SMEM, so they keep PAD_KV=8.
+#ifdef ATLAS_ATTN_FP8_SMEM
+#define PAD_KV 16
+#endif
 #define LOAD_KV_TILE(cache, bt, smem, kv_s, kv_l, kvh, t, stride) \
     do { \
         const unsigned int _cpr = HDIM / 16; \
