@@ -134,6 +134,9 @@ pub struct DenseFfnLayer {
     // below) and requant the BF16 activations every call (`requant_a_bf16_int8`,
     // into `int8_a_scratch`). KernelHandle(0) on miss → arm never taken.
     int8_faith2_k: KernelHandle,
+    // faith5: int32 per-sb accumulation (breaks the MMA→scale dependency chain).
+    // Opt-in via ATLAS_INT8_FAITH5=1 (replaces faith2 for int8 prefill GEMMs).
+    int8_faith5_k: KernelHandle,
     requant_w_int8_k: KernelHandle,
     requant_a_int8_k: KernelHandle,
     // Lazily-built, process-lifetime int8 weight copies (one per projection),
@@ -278,6 +281,7 @@ impl DenseFfnLayer {
             ),
             w4a16_gemm_t_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t"),
             int8_faith2_k: super::try_kernel(gpu, "w4a16", "int8_gemm_faith2"),
+            int8_faith5_k: super::try_kernel(gpu, "w4a16", "int8_gemm_i32acc"),
             requant_w_int8_k: super::try_kernel(gpu, "w4a16", "requant_w_nvfp4_int8"),
             requant_a_int8_k: super::try_kernel(gpu, "w4a16", "requant_a_bf16_int8"),
             int8_gate: std::sync::OnceLock::new(),
@@ -1616,9 +1620,19 @@ impl DenseFfnLayer {
                     // (down_faith2 && !$allow_q4k): down falls here instead of Q4_K.
                     _ if int8_prefill || (down_faith2 && !$allow_q4k) => {
                         let iw = self.ensure_int8_weight($cell, ctx.gpu, $w, $n, $k, stream)?;
+                        // faith5 (ATLAS_INT8_FAITH5=1): int32 per-sb accumulation
+                        // breaks the MMA→scale dependency chain. Same kernel signature
+                        // + grid/block as faith2 — just a different KernelHandle.
+                        let int8_kernel = if self.int8_faith5_k.0 != 0
+                            && std::env::var_os("ATLAS_INT8_FAITH5").is_some()
+                        {
+                            self.int8_faith5_k
+                        } else {
+                            self.int8_faith2_k
+                        };
                         ops::int8_gemm_faith2_prefill(
                             ctx.gpu,
-                            self.int8_faith2_k,
+                            int8_kernel,
                             self.requant_a_int8_k,
                             $in,
                             iw.w_i8,
