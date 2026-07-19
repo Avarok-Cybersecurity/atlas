@@ -1,0 +1,71 @@
+[03:54:44] === E2E GOLDEN RUN START (native-FP8-GDN, 2af4df6 stack) ===
+[03:54:44] step0: kill stale serve + wait mem
+[03:54:49] step0: mem avail=GB
+[03:54:49] step1: launch golden serve (native-FP8-GDN)
+[03:54:49] step1: serve pid=1554977; polling health (up to 7min)
+[03:56:01] step1: HEALTHY after ~84s
+[03:56:01] step1: native-FP8-GDN engaged? /home/azeez/serve_e2e_golden.log:1 native-FP8 lines; crash markers=/home/azeez/serve_e2e_golden.log:0
+[03:56:01] step2: warmup 3 requests
+[03:56:04] step2: warmup done
+[03:56:04] step3: coherence gate 14/14
+COHERENCE 14/14
+RESULT coherence=14/14 kl_mean=NA kl_max=NA tok_agree=NA
+[03:56:32] step3: coherence done
+[03:56:32] step4: corruption gate 0/5
+  pair0: irr_tc=True simple=TOOLCALL
+  pair1: irr_tc=True simple=TOOLCALL
+  pair2: irr_tc=True simple=TOOLCALL
+  pair3: irr_tc=True simple=TOOLCALL
+  pair4: irr_tc=True simple=TOOLCALL
+RESULT mixed_prose=0/5  (PASS if 0-1; contamination if high)
+[04:00:09] step4: corruption done
+[04:00:09] step5: warm-TTFT 3-turn probe
+turn1: TTFT=8216ms prompt_tokens=48 out='A Transformer attention layer is the core computat'
+turn2: TTFT=9996ms prompt_tokens=170 out='Grouped-Query Attention (GQA) is an optimization t'
+turn3: TTFT=10628ms prompt_tokens=283 out='When combining **Grouped-Query Attention (GQA)** w'
+[04:00:38] step5: warm-TTFT done; midchunk fires=/home/azeez/serve_e2e_golden.log:31
+[04:00:38] step6: BFCL nvidia e2e subset accuracy
+[04:00:43] step6: BFCL rc=2
+import json,sys,glob,os
+d=sys.argv[1]
+for f in ["scores.json","result_summary.json","accuracy.json"]:
+    p=os.path.join(d,f)
+    if os.path.exists(p):
+        s=json.load(open(p))
+        print("BFCL_FILE",f,"->",{k:s[k] for k in ("score","overall_accuracy","accuracy","non_live_accuracy","live_accuracy") if k in s} or list(s.keys())[:10])
+[04:00:43] step6: BFCL done
+[04:00:43] step7: stop serve + wait mem
+[04:02:24] step7: mem avail=GB serve_procs=0
+[04:02:24] === E2E GOLDEN RUN DONE ===
+E2E_GOLDEN_DONE rc=0
+[04:02:50] === BFCL RE-RUN (fixed config: max_throughput) ===
+[04:04:31] serve launched, polling health
+[04:05:43] HEALTHY ~84s
+[04:05:43] warmup 2
+[04:05:45] BFCL subset start
+[04:05:52] BFCL rc=2
+BFCL_NO_SCORE_FILES; dir listing: []
+[04:05:52] BFCL subset done; stopping serve
+[04:07:03] === BFCL RE-RUN (fixed config: max_throughput) ===
+[04:07:33] === BFCL RE-RUN DONE; mem=GB ===
+BFCL_RERUN_DONE rc=2
+[04:08:43] serve launched, polling health
+[04:09:55] HEALTHY ~84s
+[04:09:55] warmup 2
+[04:09:58] BFCL subset start
+[04:14:35] === BFCL RE-RUN (fixed config: max_throughput) ===
+[04:16:15] serve launched, polling health
+[04:17:27] HEALTHY ~84s
+[04:17:27] warmup 2
+[04:17:30] BFCL subset start
+[04:22:15] === BFCL RE-RUN (fixed config: max_throughput) ===
+[04:23:55] serve launched, polling health
+[04:25:07] HEALTHY ~84s
+[04:25:07] warmup 2
+[04:25:09] BFCL subset start
+[04:40:52] BFCL rc=0
+BFCL_FILE result_summary.json -> ['version', 'git_sha', 'test_started_at', 'n_samples_issued', 'n_samples_completed', 'n_samples_failed', 'duration_ns', 'state', 'complete', 'ttft', 'tpot', 'latency']
+BFCL_FILE result_summary.json -> ['version', 'git_sha', 'test_started_at', 'n_samples_issued', 'n_samples_completed', 'n_samples_failed', 'duration_ns', 'state', 'complete', 'ttft', 'tpot', 'latency']
+[04:40:52] BFCL subset done; stopping serve
+[04:42:33] === BFCL RE-RUN DONE; mem=GB ===
+BFCL_RERUN_DONE rc=0

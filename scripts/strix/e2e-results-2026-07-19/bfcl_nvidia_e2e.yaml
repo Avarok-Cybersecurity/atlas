@@ -1,0 +1,43 @@
+datasets:
+- accuracy_config:
+    eval_method: bfcl_v4
+    extractor: function_call_extractor
+    ground_truth: ground_truth
+    num_repeats: 1
+  name: bfcl_v4::function_calling
+  params:
+    categories:
+    - non_live
+    - live
+    - hallucination
+    category_sample_pct:
+      hallucination: 2
+      live: 1
+      non_live: 0.5
+    subset_floor: 4
+  type: accuracy
+endpoint_config:
+  api_key: null
+  endpoints:
+  - http://localhost:8081
+  api_type: openai
+model_params:
+  name: nvidia/Qwen3.6-27B-NVFP4
+  tokenizer_name: /home/azeez/.cache/huggingface/hub/models--nvidia--Qwen3.6-27B-NVFP4/snapshots/0893e1606ff3d5f97a441f405d5fc541a6bdf404
+  temperature: 0
+  seed: 42
+  max_new_tokens: 256
+name: bfcl-v4-nvidia-e2e-subset
+report_dir: results/bfcl_v4_nvidia_e2e/
+settings:
+  client:
+    max_connections: 1
+    num_workers: 1
+  load_pattern:
+    type: max_throughput
+  runtime:
+    dataloader_random_seed: 42
+    min_duration_ms: 0
+timeout: 3600
+type: offline
+version: '1.0'
