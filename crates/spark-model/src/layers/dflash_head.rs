@@ -503,9 +503,12 @@ impl DraftProposer for BlockDiffusionDraftHead {
         ctx: &crate::layer::ForwardContext,
         stream: u64,
         draft_embed_target: Option<spark_runtime::gpu::DevicePtr>,
-        grammar_bitmask: Option<&[i32]>,
+        mut grammar: Option<&mut dyn crate::speculative::DraftMaskProvider>,
         target_hidden_stack: Option<spark_runtime::gpu::DevicePtr>,
     ) -> Result<Vec<u32>> {
+        // DFlash keeps single-mask behavior: it does not autoregress per-draft
+        // grammar, so take the position-0 mask only and do not advance/rollback.
+        let mask0 = grammar.as_deref_mut().and_then(|g| g.current_mask());
         self.propose_drafts(
             last_token,
             target_hidden,
@@ -515,7 +518,7 @@ impl DraftProposer for BlockDiffusionDraftHead {
             ctx,
             stream,
             draft_embed_target,
-            grammar_bitmask,
+            mask0.as_deref(),
             target_hidden_stack,
         )
     }

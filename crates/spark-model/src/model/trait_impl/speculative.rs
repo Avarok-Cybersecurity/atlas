@@ -23,7 +23,7 @@ use crate::layer::{
     AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
-use crate::speculative::DraftProposer;
+use crate::speculative::{DraftMaskProvider, DraftProposer};
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
@@ -171,11 +171,11 @@ impl TransformerModel {
         num_drafts: usize,
         seq: &mut SequenceState,
         _stream: u64,
-        grammar_bitmask: Option<&[i32]>,
+        grammar: Option<&mut dyn DraftMaskProvider>,
     ) -> Result<Vec<u32>> {
         // MTP loads ALL experts on every rank — no EP all_reduce needed.
         // Rank 1 does not participate in MTP propose.
-        self.run_mtp_propose_inner(token, position, num_drafts, seq, grammar_bitmask)
+        self.run_mtp_propose_inner(token, position, num_drafts, seq, grammar)
     }
 
     pub(super) fn read_deferred_draft_token_dispatch(&self) -> Result<u32> {

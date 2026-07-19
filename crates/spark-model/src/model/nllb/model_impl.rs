@@ -337,7 +337,7 @@ impl Model for NllbGpuModel {
         _num_drafts: usize,
         _seq: &mut SequenceState,
         _stream: u64,
-        _grammar_bitmask: Option<&[i32]>,
+        _grammar: Option<&mut dyn crate::speculative::DraftMaskProvider>,
     ) -> Result<Vec<u32>> {
         Ok(Vec::new())
     }

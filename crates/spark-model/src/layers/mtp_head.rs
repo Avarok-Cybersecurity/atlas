@@ -304,7 +304,7 @@ impl DraftProposer for MtpHead {
         ctx: &ForwardContext,
         stream: u64,
         draft_embed_target: Option<DevicePtr>,
-        grammar_bitmask: Option<&[i32]>,
+        mut grammar: Option<&mut dyn crate::speculative::DraftMaskProvider>,
         _target_hidden_stack: Option<DevicePtr>,
     ) -> Result<Vec<u32>> {
         let mtp_state = state
@@ -324,18 +324,11 @@ impl DraftProposer for MtpHead {
             } else {
                 None
             };
-            // Grammar-masked drafting (num_drafts==1 path only for now).
-            // For num_drafts > 1 we would need to speculatively advance the
-            // matcher between drafts and roll back before returning; the
-            // current scheduler only uses num_drafts==1, so we pass the same
-            // mask for every i and warn loudly if K>1 + grammar combine.
-            if grammar_bitmask.is_some() && i > 0 {
-                tracing::warn!(
-                    "MTP grammar-masked drafting called with num_drafts>1 (i={i}); \
-                     mask held fixed across draft positions — acceptance may drop."
-                );
-            }
-            let mask_for_draft = grammar_bitmask;
+            // Grammar-masked multi-draft: fetch the per-position bitmask for
+            // THIS draft before forward_one, then speculatively advance the
+            // grammar after the draft is chosen so draft[i+1] sees the correct
+            // post-draft[i] mask. All advances are rolled back after the loop.
+            let mask = grammar.as_deref_mut().and_then(|g| g.current_mask());
             let draft = self.forward_one(
                 current_token,
                 current_hidden,
@@ -344,7 +337,7 @@ impl DraftProposer for MtpHead {
                 ctx,
                 stream,
                 embed_target,
-                mask_for_draft,
+                mask.as_deref(),
             )?;
             tracing::debug!(
                 "MTP propose[{i}]: token={current_token} pos={} mtp_seq_len={} → draft={draft}",
@@ -355,8 +348,14 @@ impl DraftProposer for MtpHead {
             current_token = draft;
             // For subsequent drafts, use the MTP head's own hidden state
             current_hidden = ctx.buffers.hidden_states();
+            if let Some(g) = grammar.as_deref_mut() {
+                g.advance(draft);
+            }
         }
 
+        if let Some(g) = grammar.as_deref_mut() {
+            g.rollback();
+        }
         mtp_state.last_num_drafted = drafts.len();
         Ok(drafts)
     }

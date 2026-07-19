@@ -490,7 +490,7 @@ impl DraftProposer for DeepseekV4MtpHead {
         ctx: &ForwardContext,
         stream: u64,
         _draft_embed_target: Option<DevicePtr>,
-        grammar_bitmask: Option<&[i32]>,
+        mut grammar: Option<&mut dyn crate::speculative::DraftMaskProvider>,
         _target_hidden_stack: Option<DevicePtr>,
     ) -> Result<Vec<u32>> {
         let v4_state = state
@@ -502,12 +502,7 @@ impl DraftProposer for DeepseekV4MtpHead {
         let mut current_token = last_token;
         let mut current_hidden = target_hidden;
         for i in 0..num_drafts {
-            if grammar_bitmask.is_some() && i > 0 {
-                tracing::warn!(
-                    "V4 MTP grammar-masked drafting with num_drafts>1 (i={i}); \
-                     mask held fixed across draft positions — acceptance may drop."
-                );
-            }
+            let mask = grammar.as_deref_mut().and_then(|g| g.current_mask());
             let draft = self.forward_one(
                 current_token,
                 current_hidden,
@@ -515,8 +510,11 @@ impl DraftProposer for DeepseekV4MtpHead {
                 v4_state,
                 ctx,
                 stream,
-                grammar_bitmask,
+                mask.as_deref(),
             )?;
+            if let Some(g) = grammar.as_deref_mut() {
+                g.advance(draft);
+            }
             tracing::debug!(
                 "V4 MTP propose[{i}]: token={current_token} pos={} mtp_seq_len={} → draft={draft}",
                 position + i,
@@ -526,6 +524,9 @@ impl DraftProposer for DeepseekV4MtpHead {
             current_token = draft;
             // Subsequent drafts feed on the MTP head's own collapsed hidden.
             current_hidden = ctx.buffers.hidden_states();
+        }
+        if let Some(g) = grammar.as_deref_mut() {
+            g.rollback();
         }
         v4_state.last_num_drafted = drafts.len();
         Ok(drafts)

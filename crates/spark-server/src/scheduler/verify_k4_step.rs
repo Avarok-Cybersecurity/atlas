@@ -195,15 +195,15 @@ pub fn step_verify_k4(
             tracing::error!("trim_proposer_state: {e:#}");
         }
         let t_propose = Instant::now();
-        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(
-            v3,
-            a.seq.seq_len,
-            num_drafts,
-            &mut a.seq,
-            0,
-            _mtp_grammar_mask.as_deref(),
-        ) {
+        let inside_thinking = a.inside_thinking;
+        let seq_len = a.seq.seq_len;
+        let mut draft_mask = a
+            .grammar_state
+            .as_mut()
+            .map(|gs| crate::scheduler::spec_step::GrammarDraftMask::new(gs, inside_thinking));
+        let provider: Option<&mut dyn spark_model::DraftMaskProvider> =
+            draft_mask.as_mut().map(|p| p as &mut dyn spark_model::DraftMaskProvider);
+        match model.run_mtp_propose_multi(v3, seq_len, num_drafts, &mut a.seq, 0, provider) {
             Ok(d) if !d.is_empty() => a.pending_drafts = d,
             Ok(_) => {}
             Err(e) => {
@@ -246,15 +246,15 @@ pub fn step_verify_k4(
             return;
         }
         let t_propose = Instant::now();
-        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(
-            v2,
-            a.seq.seq_len,
-            num_drafts,
-            &mut a.seq,
-            0,
-            _mtp_grammar_mask.as_deref(),
-        ) {
+        let inside_thinking = a.inside_thinking;
+        let seq_len = a.seq.seq_len;
+        let mut draft_mask = a
+            .grammar_state
+            .as_mut()
+            .map(|gs| crate::scheduler::spec_step::GrammarDraftMask::new(gs, inside_thinking));
+        let provider: Option<&mut dyn spark_model::DraftMaskProvider> =
+            draft_mask.as_mut().map(|p| p as &mut dyn spark_model::DraftMaskProvider);
+        match model.run_mtp_propose_multi(v2, seq_len, num_drafts, &mut a.seq, 0, provider) {
             Ok(d) if !d.is_empty() => a.pending_drafts = d,
             Ok(_) => {}
             Err(e) => {
@@ -294,15 +294,15 @@ pub fn step_verify_k4(
             return;
         }
         let t_propose = Instant::now();
-        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(
-            v1,
-            a.seq.seq_len,
-            num_drafts,
-            &mut a.seq,
-            0,
-            _mtp_grammar_mask.as_deref(),
-        ) {
+        let inside_thinking = a.inside_thinking;
+        let seq_len = a.seq.seq_len;
+        let mut draft_mask = a
+            .grammar_state
+            .as_mut()
+            .map(|gs| crate::scheduler::spec_step::GrammarDraftMask::new(gs, inside_thinking));
+        let provider: Option<&mut dyn spark_model::DraftMaskProvider> =
+            draft_mask.as_mut().map(|p| p as &mut dyn spark_model::DraftMaskProvider);
+        match model.run_mtp_propose_multi(v1, seq_len, num_drafts, &mut a.seq, 0, provider) {
             Ok(d) if !d.is_empty() => a.pending_drafts = d,
             Ok(_) => {}
             Err(e) => {
@@ -341,15 +341,15 @@ pub fn step_verify_k4(
             return;
         }
         let t_propose = Instant::now();
-        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(
-            v0,
-            a.seq.seq_len,
-            num_drafts,
-            &mut a.seq,
-            0,
-            _mtp_grammar_mask.as_deref(),
-        ) {
+        let inside_thinking = a.inside_thinking;
+        let seq_len = a.seq.seq_len;
+        let mut draft_mask = a
+            .grammar_state
+            .as_mut()
+            .map(|gs| crate::scheduler::spec_step::GrammarDraftMask::new(gs, inside_thinking));
+        let provider: Option<&mut dyn spark_model::DraftMaskProvider> =
+            draft_mask.as_mut().map(|p| p as &mut dyn spark_model::DraftMaskProvider);
+        match model.run_mtp_propose_multi(v0, seq_len, num_drafts, &mut a.seq, 0, provider) {
             Ok(d) if !d.is_empty() => a.pending_drafts = d,
             Ok(_) => {}
             Err(e) => {

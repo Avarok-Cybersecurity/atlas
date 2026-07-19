@@ -23,7 +23,7 @@ use crate::layer::{
     AttnMetadataDev, ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
 };
 use crate::layers::ops;
-use crate::speculative::DraftProposer;
+use crate::speculative::{DraftMaskProvider, DraftProposer};
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
@@ -34,7 +34,7 @@ impl TransformerModel {
         position: usize,
         num_drafts: usize,
         seq: &mut SequenceState,
-        grammar_bitmask: Option<&[i32]>,
+        grammar: Option<&mut dyn DraftMaskProvider>,
     ) -> Result<Vec<u32>> {
         let proposer = match &self.proposer {
             Some(p) => p.as_ref(),
@@ -125,7 +125,7 @@ impl TransformerModel {
             &ctx,
             stream,
             draft_embed_target,
-            grammar_bitmask,
+            grammar,
             self.dflash_hidden_save,
         )
     }

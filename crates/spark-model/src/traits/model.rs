@@ -35,6 +35,7 @@ use anyhow::{Result, bail};
 use spark_runtime::gpu::DevicePtr;
 
 use super::{MixedBatchResult, MixedForwardResult, PrefillSlice, SequenceState};
+use crate::speculative::DraftMaskProvider;
 
 /// One beam-search request for a translation model (NLLB). Carries the resolved
 /// per-request parameters the scheduler stamps onto the sequence; the model runs
@@ -654,7 +655,7 @@ pub trait Model: Send + Sync {
         num_drafts: usize,
         seq: &mut SequenceState,
         stream: u64,
-        grammar_bitmask: Option<&[i32]>,
+        grammar: Option<&mut dyn DraftMaskProvider>,
     ) -> Result<Vec<u32>>;
 
     /// Read the draft token ID stored on GPU by the last `run_mtp_propose_multi`

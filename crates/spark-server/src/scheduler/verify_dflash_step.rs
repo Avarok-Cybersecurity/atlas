@@ -221,16 +221,23 @@ pub fn step_verify_dflash(
 
     // Re-propose for next step — unless adaptive speculation just suspended
     // this seq (no drafts → the scheduler serial-decodes it via bootstrap).
-    let _mtp_grammar_mask = mtp_grammar_mask_for(a);
     let t_propose = std::time::Instant::now();
     if crate::scheduler::adaptive_spec::spec_allowed(a) {
+        let inside_thinking = a.inside_thinking;
+        let seq_len = a.seq.seq_len;
+        let mut draft_mask = a
+            .grammar_state
+            .as_mut()
+            .map(|gs| crate::scheduler::spec_step::GrammarDraftMask::new(gs, inside_thinking));
+        let provider: Option<&mut dyn spark_model::DraftMaskProvider> =
+            draft_mask.as_mut().map(|p| p as &mut dyn spark_model::DraftMaskProvider);
         match model.run_mtp_propose_multi(
             a.last_token,
-            a.seq.seq_len,
+            seq_len,
             num_drafts,
             &mut a.seq,
             0,
-            _mtp_grammar_mask.as_deref(),
+            provider,
         ) {
             Ok(d) if !d.is_empty() => a.pending_drafts = d,
             Ok(_) => {}

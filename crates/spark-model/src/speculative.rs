@@ -21,6 +21,21 @@ pub trait ProposerState: Send + Sync {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
+/// Supplies per-draft-position grammar bitmasks during autoregressive MTP
+/// drafting. The proposer calls `current_mask()` before sampling each draft,
+/// then `advance(token)` after, so draft[i+1] is masked by the grammar state
+/// that follows draft[i]. `rollback()` undoes all speculative advances once
+/// drafting completes (the real acceptance happens later in verify).
+pub trait DraftMaskProvider {
+    /// Bitmask (ceil(vocab/32) i32 words) for the CURRENT draft position, or
+    /// `None` when the grammar is unconstrained / terminated / inside think.
+    fn current_mask(&mut self) -> Option<Vec<i32>>;
+    /// Speculatively advance the grammar by the just-drafted `token`.
+    fn advance(&mut self, token: u32);
+    /// Undo every speculative advance made since this provider was created.
+    fn rollback(&mut self);
+}
+
 /// A draft token proposer for speculative decoding.
 ///
 /// The engine calls `propose()` after each target decode to get draft tokens,
@@ -60,7 +75,7 @@ pub trait DraftProposer: Send + Sync {
         ctx: &ForwardContext,
         stream: u64,
         draft_embed_target: Option<DevicePtr>,
-        grammar_bitmask: Option<&[i32]>,
+        grammar: Option<&mut dyn DraftMaskProvider>,
         target_hidden_stack: Option<DevicePtr>,
     ) -> Result<Vec<u32>>;
 

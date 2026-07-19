@@ -183,14 +183,16 @@ pub fn step_verify_k3(
             tracing::error!("trim_proposer_state: {e:#}");
         }
         let t_propose = Instant::now();
-        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
+        let inside_thinking = a.inside_thinking;
+        let mut draft_mask = a.grammar_state.as_mut().map(|gs| crate::scheduler::spec_step::GrammarDraftMask::new(gs, inside_thinking));
+        let provider: Option<&mut dyn spark_model::DraftMaskProvider> = draft_mask.as_mut().map(|p| p as &mut dyn spark_model::DraftMaskProvider);
         match model.run_mtp_propose_multi(
             v2,
             a.seq.seq_len,
-            crate::scheduler::spec_step::effective_drafts_under_grammar(a, num_drafts),
+            num_drafts,
             &mut a.seq,
             0,
-            _mtp_grammar_mask.as_deref(),
+            provider,
         ) {
             Ok(d) if !d.is_empty() => a.pending_drafts = d,
             Ok(_) => {}
@@ -230,14 +232,16 @@ pub fn step_verify_k3(
             return;
         }
         let t_propose = Instant::now();
-        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
+        let inside_thinking = a.inside_thinking;
+        let mut draft_mask = a.grammar_state.as_mut().map(|gs| crate::scheduler::spec_step::GrammarDraftMask::new(gs, inside_thinking));
+        let provider: Option<&mut dyn spark_model::DraftMaskProvider> = draft_mask.as_mut().map(|p| p as &mut dyn spark_model::DraftMaskProvider);
         match model.run_mtp_propose_multi(
             v1,
             a.seq.seq_len,
-            crate::scheduler::spec_step::effective_drafts_under_grammar(a, num_drafts),
+            num_drafts,
             &mut a.seq,
             0,
-            _mtp_grammar_mask.as_deref(),
+            provider,
         ) {
             Ok(d) if !d.is_empty() => a.pending_drafts = d,
             Ok(_) => {}
@@ -275,14 +279,16 @@ pub fn step_verify_k3(
             return;
         }
         let t_propose = Instant::now();
-        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
+        let inside_thinking = a.inside_thinking;
+        let mut draft_mask = a.grammar_state.as_mut().map(|gs| crate::scheduler::spec_step::GrammarDraftMask::new(gs, inside_thinking));
+        let provider: Option<&mut dyn spark_model::DraftMaskProvider> = draft_mask.as_mut().map(|p| p as &mut dyn spark_model::DraftMaskProvider);
         match model.run_mtp_propose_multi(
             v0,
             a.seq.seq_len,
-            crate::scheduler::spec_step::effective_drafts_under_grammar(a, num_drafts),
+            num_drafts,
             &mut a.seq,
             0,
-            _mtp_grammar_mask.as_deref(),
+            provider,
         ) {
             Ok(d) if !d.is_empty() => a.pending_drafts = d,
             Ok(_) => {}
