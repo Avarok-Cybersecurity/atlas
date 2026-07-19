@@ -10,7 +10,7 @@
 //! context, KV/SSM-bound at depth), so the gate re-measures when the live
 //! depth leaves the measured regime (see [`REMEASURE_DEPTH_FACTOR`]). Ongoing
 //! adaptation: if the acceptance EMA drops below break-even, re-opens
-//! measurement (see [`Self::should_reconsider`]).
+//! measurement (see `should_reconsider`).
 
 use std::time::Duration;
 
