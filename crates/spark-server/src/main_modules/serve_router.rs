@@ -153,14 +153,81 @@ pub(crate) async fn build_and_serve(
     }
     tracing::info!("Listening on {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    // `into_make_service_with_connect_info` exposes the socket peer addr
-    // to extractors — needed by `rate_limit_middleware` when the caller
-    // didn't send X-Forwarded-For.
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await?;
+    serve_with_header_timeout(listener, app).await
+}
 
-    Ok(())
+/// Serve `app` with a hyper connection-layer **header-read timeout** so a
+/// slowloris client (one that opens a connection and dribbles request headers
+/// forever) cannot pin an accept slot indefinitely.
+///
+/// `axum::serve` uses hyper's defaults, which impose NO timeout on the
+/// header-read phase (the per-request scheduler `timeout_at` only engages
+/// AFTER the request is fully parsed and admitted, so it does not protect this
+/// phase). A blanket `tower_http::TimeoutLayer` is the wrong tool — it would
+/// also abort legitimate long generations. So we drop to hyper's
+/// `hyper_util::server::conn::auto::Builder` and set `header_read_timeout`
+/// directly. `into_make_service_with_connect_info` is preserved (per-connection
+/// `make_service.call(peer)`), so `ConnectInfo<SocketAddr>` — which
+/// `rate_limit_middleware` reads — keeps working.
+async fn serve_with_header_timeout(
+    listener: tokio::net::TcpListener,
+    app: Router,
+) -> anyhow::Result<()> {
+    use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+    use hyper_util::server::conn::auto::Builder;
+    use tower::{Service, ServiceExt};
+
+    /// Slow-header cutoff. Matches hyper's own historical default; long enough
+    /// for any legitimate client to finish sending headers, short enough that a
+    /// trickle connection is reaped quickly.
+    const HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    let mut make_service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+
+    loop {
+        let (socket, peer_addr) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                // Transient accept errors (fd exhaustion, RST races) must not
+                // kill the server — log and keep accepting.
+                tracing::warn!("accept error: {e}");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                continue;
+            }
+        };
+
+        // Build the per-connection tower service, wiring the peer address into
+        // `ConnectInfo`. `IntoMakeServiceWithConnectInfo` is always ready and
+        // infallible.
+        let tower_service = match make_service.call(peer_addr).await {
+            Ok(svc) => svc,
+            Err(infallible) => match infallible {},
+        };
+
+        tokio::spawn(async move {
+            let socket = TokioIo::new(socket);
+            let hyper_service = hyper::service::service_fn(
+                move |request: hyper::Request<hyper::body::Incoming>| {
+                    tower_service.clone().oneshot(request)
+                },
+            );
+
+            let mut builder = Builder::new(TokioExecutor::new());
+            // A timer must be installed for the header-read timeout to fire.
+            builder
+                .http1()
+                .timer(TokioTimer::new())
+                .header_read_timeout(HEADER_READ_TIMEOUT);
+            builder.http2().timer(TokioTimer::new());
+
+            if let Err(err) = builder
+                .serve_connection_with_upgrades(socket, hyper_service)
+                .await
+            {
+                // Client-side disconnects / slow-header timeouts are expected
+                // and noisy — keep them at debug.
+                tracing::debug!("connection closed: {err}");
+            }
+        });
+    }
 }

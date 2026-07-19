@@ -70,7 +70,7 @@ impl Qwen3AttentionLayer {
             .expect("attention layer requires pre-uploaded metadata");
 
         // ── MLA 2-step decode ── (extracted to attention_forward_mla.rs)
-        if self.mla.is_some() {
+        if let Some(ref mla) = self.mla {
             let args = super::attention_forward_mla::DecodeMlaArgs {
                 normed,
                 q_out,
@@ -83,7 +83,13 @@ impl Qwen3AttentionLayer {
                 eps,
                 bs,
                 stream,
+                // Absolute position of the token being generated (seq_len counts
+                // it). Drives the V4 inc-3 compressed-pool decode append.
+                pos: Some(seq_len.saturating_sub(1) as u32),
             };
+            if mla.o_lora_rank > 0 {
+                return self.attention_forward_v4(kv_cache, ctx, &args);
+            }
             return self.attention_forward_mla(kv_cache, ctx, &args);
         }
 

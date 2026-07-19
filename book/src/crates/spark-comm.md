@@ -92,7 +92,7 @@ The unit tests for the expert-parallel layer code do not instantiate `NcclBacken
 
 ## What's explicitly not here
 
-- **No kernel code.** The actual token-dispatch kernels for EP=2 live in `kernels/gb10/<model>/<quant>/moe_dispatch.cu`.
+- **No kernel code.** The EP=2 token-dispatch logic lives in Rust at `crates/spark-model/src/layers/moe/forward_ep.rs`, and the routed grouped-GEMM kernel in `kernels/gb10/<model>/<quant>/moe_w4a16_grouped_gemm.cu`.
 - **No scheduler logic.** That's `spark-server::scheduler`.
 - **No RDMA-specific code.** Atlas talks through NCCL; NCCL talks through `libibverbs`/`librdmacm`. We do not bypass.
 

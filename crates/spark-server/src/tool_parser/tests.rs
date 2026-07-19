@@ -10,4 +10,5 @@ mod group_c;
 mod group_d;
 mod group_e;
 mod group_f;
+mod group_g_parallel;
 mod streaming_frag;

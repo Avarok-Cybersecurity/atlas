@@ -11,9 +11,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 use crate::layer::ForwardContext;
 use crate::layers::ops;
-use crate::weight_map::{
-    DenseWeight, ExpertWeight, Fp8ExpertWeight, Fp8Weight, MoeWeights, QuantizedWeight,
-};
+use crate::weight_map::{DenseWeight, Fp8ExpertWeight, MoeWeights, QuantizedWeight};
 
 /// Device-side pointer table for one projection across all experts.
 ///
@@ -68,6 +66,23 @@ pub(crate) enum ExpertPtrSet {
 #[allow(dead_code)]
 pub struct MoeLayer {
     pub weights: MoeWeights,
+    /// Quant format of the ROUTED experts as landed in GPU memory. `Nvfp4`
+    /// (default) = packed E2M1 + FP8-E4M3 per-16 block scales + f32 per-tensor
+    /// global. Set to `Mxfp4E8m0` by the DeepSeek-V4 native-MXFP4 loader
+    /// (transcode-free: E8M0 per-32 scales, no global) so the Phase-K E8M0
+    /// GEMM variants dispatch on it instead of the NVFP4 kernels. Consumed at
+    /// the grouped/decode GEMM call sites (assert via `WeightQuantFormat::expect`).
+    // Written by the loader (Phase L); READ at the GEMM dispatch sites in Phase K.
+    // Until Phase K wires the read, `deny(warnings)` would flag it never-read.
+    #[allow(dead_code)]
+    pub(crate) experts_scale_kind: crate::weight_map::WeightQuantFormat,
+    /// Quant format of the SHARED expert (ARM-2 Phase-K RIDER A1). The native
+    /// V4 ckpt is heterogeneous: routed experts `Mxfp4E8m0` but the shared
+    /// expert is FP8→`Nvfp4`. Keyed off the weight tag (not `is_shared`
+    /// positionality) so the dual-format decode kernel's `expect` net fires if
+    /// a future ckpt ships a different shared format. Default `Nvfp4`.
+    #[allow(dead_code)]
+    pub(crate) shared_experts_scale_kind: crate::weight_map::WeightQuantFormat,
     // NVFP4-quantized gate weight (quarters bandwidth for routing)
     gate_nvfp4: Option<QuantizedWeight>,
     /// Pre-expert norm: applied to input AFTER routing but BEFORE expert dispatch.
@@ -101,6 +116,13 @@ pub struct MoeLayer {
     moe_expert_silu_down_shared_batch3: KernelHandle,
     moe_weighted_sum_blend_batch3: KernelHandle,
     w4a16_gemv_batch3: KernelHandle,
+    // Generic token-major NVFP4 MoE kernels. Used as an opt-in decode
+    // concurrency experiment for N>=4 without grouped-GEMM sorting.
+    moe_expert_gate_up_shared_token_major: KernelHandle,
+    moe_expert_silu_down_shared_token_major: KernelHandle,
+    moe_weighted_sum_blend_token_major: KernelHandle,
+    moe_decode_atomic_c4_silu_down_accum_k: KernelHandle,
+    moe_decode_atomic_c4_finalize_k: KernelHandle,
     // Sorted/grouped prefill path
     moe_sort_by_expert: KernelHandle,
     moe_sorted_gate_up: KernelHandle,
@@ -121,6 +143,17 @@ pub struct MoeLayer {
     gate_ptrs_t: Option<ExpertPtrTable>,
     up_ptrs_t: Option<ExpertPtrTable>,
     down_ptrs_t: Option<ExpertPtrTable>,
+    /// CUTLASS grouped-NVFP4 swizzled SFB weight-scale tables
+    /// (`ATLAS_HOLO_MOE_GROUPED_CUTLASS`). Device `[num_experts]` u64 arrays of
+    /// per-expert SFB pointers, built at load by `build_cutlass_grouped_sfb` from
+    /// the `gate_ptrs_t`/`up_ptrs_t` `[K/16,N]` scales (`pack_weight_sfb` swizzle).
+    /// The grouped kernel reads `gate_ptrs.packed` (`[N,K/2]`) + these SFB + the
+    /// real per-expert `scale2`. `None` => the CUTLASS grouped path is unavailable.
+    gate_sfb_cutlass: Option<DevicePtr>,
+    up_sfb_cutlass: Option<DevicePtr>,
+    down_sfb_cutlass: Option<DevicePtr>,
+    /// Keeps the per-expert SFB buffers + the two pointer arrays alive.
+    _cutlass_sfb_owned: Vec<DevicePtr>,
     /// Lazy down_proj transpose scratch — populated at the start of each
     /// prefill call when the persistent transpose pass couldn't fit
     /// down_proj. Decode keeps using `down_ptrs` (untransposed); prefill
@@ -143,6 +176,21 @@ pub struct MoeLayer {
     // the weight loader produces transposed-only pointer tables.
     moe_expert_gate_up_shared_t_k: KernelHandle,
     moe_expert_silu_down_shared_t_k: KernelHandle,
+    // ARM-2 Phase-K: native-MXFP4 (E8M0 routed / NVFP4 shared) dual-format
+    // decode variants. KernelHandle(0) on models that don't ship them.
+    moe_expert_gate_up_shared_t_e8m0_k: KernelHandle,
+    moe_expert_silu_down_shared_t_e8m0_k: KernelHandle,
+    // ── sqrtsoftplus routing (DeepSeek-V4) ──
+    moe_topk_sqrtsoftplus_k: KernelHandle,
+    moe_topk_sqrtsoftplus_batched_k: KernelHandle,
+    // ── hash routing (DeepSeek-V4 first `num_hash_layers` MoE layers) ──
+    moe_hash_route_k: KernelHandle,
+    moe_hash_route_batched_k: KernelHandle,
+    /// Static `tid2eid` table [vocab_size, top_k] i64 — present ONLY for the
+    /// hash-routed layers (the loader supplies it only for those). `Some`
+    /// here is the SSOT that this layer routes via the static hash table
+    /// instead of the learned gate's top-K.
+    tid2eid_dev: Option<DevicePtr>,
     moe_expert_gate_up_shared_batch2_t_k: KernelHandle,
     moe_expert_silu_down_shared_batch2_t_k: KernelHandle,
     moe_expert_gate_up_shared_batch3_t_k: KernelHandle,
@@ -166,6 +214,14 @@ pub struct MoeLayer {
     /// `moe_fused_gate_up_t_k64_m128 == KernelHandle(0)` and dispatch
     /// falls through to the M=64 path even when the env var is set.
     nvfp4_gate_up_m128: bool,
+    /// `ATLAS_HOLO_MOE_GATEUP_FP4=1` opts the prefill fused gate_up onto the
+    /// block-scaled FP4 kernel. Reads the SHARED FAST_MOE=full `gate_ptrs_t`/
+    /// `up_ptrs_t` `[K/2,N]` tables (no extra MoE memory); dispatch also requires
+    /// those tables present + the FP4 kernel handle != 0.
+    gateup_fp4: bool,
+    /// `ATLAS_HOLO_MOE_DOWN_FP4=1` — same, for the prefill down projection over
+    /// the shared `down_ptrs_t` table.
+    down_fp4: bool,
     /// `ATLAS_HYBRID_MOE_LAYOUT=1` opts in to the hybrid-layout path:
     /// keep BOTH original `[N, K/2]` weights (for decode + MTP verify) AND
     /// transposed `[K/2, N]` weights (for prefill). Doubles MoE-weight
@@ -183,11 +239,27 @@ pub struct MoeLayer {
     moe_grouped_gemm_t_k64: KernelHandle,
     moe_fused_gate_up_t: KernelHandle,
     moe_fused_gate_up_t_k64: KernelHandle,
+    // ARM-2 Phase-K: native-MXFP4 (E8M0 per-32) prefill variants of the W4A16
+    // routed-expert GEMMs. KernelHandle(0) on models that don't ship them
+    // (only the deepseek-v4-flash target compiles the `_e8m0` entries).
+    moe_grouped_gemm_e8m0: KernelHandle,
+    moe_grouped_gemm_t_e8m0: KernelHandle,
+    moe_grouped_gemm_t_k64_e8m0: KernelHandle,
+    moe_fused_gate_up_t_e8m0: KernelHandle,
+    moe_fused_gate_up_t_k64_e8m0: KernelHandle,
     /// M=128 variant of the K64 fused gate+up kernel (Block D #3, Avarok
     /// tile-shape rewrite). Loaded with `try_kernel` — falls back to
     /// `KernelHandle(0)` on models that don't ship the kernel; dispatch
     /// gates on `nvfp4_gate_up_m128` AND handle non-zero.
     moe_fused_gate_up_t_k64_m128: KernelHandle,
+    /// FUSED FP4 (block-scaled e2m1) variant of the K64 fused gate+up kernel
+    /// (`ATLAS_HOLO_MOE_GATEUP_FP4`). Same signature as `moe_fused_gate_up_t_k64`
+    /// but runs one `mma.sync.kind::mxf4nvf4.scale_vec::4X.m16n8k64` per k64
+    /// tile (vs 2× m16n8k32 e4m3). `try_kernel` — `KernelHandle(0)` on images
+    /// lacking it; the dispatch in `forward_prefill_routed` only fires when this
+    /// handle != 0, `gateup_fp4` is set, and the shared `gate_ptrs_t`/`up_ptrs_t`
+    /// tables are present (FAST_MOE=full).
+    moe_fused_gate_up_t_k64_fp4: KernelHandle,
     moe_fp8_grouped_gemm_t: KernelHandle,
     w4a16_gemm_t: KernelHandle,
     bf16_to_fp8_k: KernelHandle,
@@ -250,6 +322,12 @@ pub struct MoeLayer {
     // Fused BF16 decode kernels (mirror moe_expert_*_shared_fp8 layout).
     moe_expert_gate_up_shared_bf16_k: KernelHandle,
     moe_expert_silu_down_shared_bf16_k: KernelHandle,
+    // Fused BF16 K=2 batch kernels for MTP verify (mirror the FP8 batch2 layout).
+    // Handle may be 0 on images that don't ship the kernel; the K=2 BF16
+    // dispatch site is gated on this being non-null and falls back to the
+    // per-token batched path otherwise.
+    moe_expert_gate_up_shared_bf16_batch2_k: KernelHandle,
+    moe_expert_silu_down_shared_bf16_batch2_k: KernelHandle,
     w8a16_gemm_k: KernelHandle,           // for shared expert FP8 prefill
     w8a16_gemm_pipelined_k: KernelHandle, // ATLAS_W8A16_PIPELINED shared-expert variant
     // Fused gate GEMV + topK softmax (saves 1 kernel launch per layer)
@@ -273,6 +351,17 @@ pub struct MoeLayer {
     bf16_shared_down: Option<DevicePtr>,
     // FP8 shared expert weights (None when shared expert is NVFP4)
     fp8_shared_expert: Option<Fp8ExpertWeight>,
+    /// FP4 down kernel handle (`moe_w4a16_down_t_k64_fp4`). `try_kernel` =>
+    /// `KernelHandle(0)` on images lacking it; the FP4-down dispatch checks this
+    /// handle != 0, `down_fp4` is set, and the shared `down_ptrs_t` table is present.
+    pub(crate) moe_down_t_k64_fp4: KernelHandle,
+    /// `moe_permute_tokens` gather kernel — only needed by the FP4 escape-hatch
+    /// (which consumes expert-sorted contiguous rows, unlike the FP8 fused
+    /// kernel that gathers via `sorted_token_ids` internally). `try_kernel`
+    /// (handle may be 0 on images lacking it). Now unused — the CUTLASS grouped
+    /// path fuses the gather into its A-pack — kept for potential reuse.
+    #[allow(dead_code)]
+    pub(crate) moe_permute_tokens_k: KernelHandle,
     // Phase 2.7 Tier C — Frankenstein dispatch flag.
     // True when this layer's index is in `config.dflash_capture_layers`.
     // When the env var `ATLAS_FRANKENSTEIN_DECODE_VIA_PREFILL=1` is set,
@@ -284,9 +373,37 @@ pub struct MoeLayer {
     pub is_dflash_capture_layer: bool,
 }
 
+impl MoeLayer {
+    /// ARM-2 Phase-K routed-expert kernel-handle select. Returns the E8M0
+    /// variant when the routed experts are native MXFP4 (`Mxfp4E8m0`), else the
+    /// NVFP4 handle. Panics if E8M0 is selected but the `_e8m0` kernel is
+    /// absent from this target (`try_kernel` gave 0) — that means a native
+    /// checkpoint reached a build that never compiled the variant, which must
+    /// be loud, not silent NVFP4-on-E8M0 garbage (the straggler net).
+    #[inline]
+    fn e8m0_or(
+        &self,
+        nvfp4: spark_runtime::gpu::KernelHandle,
+        e8m0: spark_runtime::gpu::KernelHandle,
+        site: &str,
+    ) -> spark_runtime::gpu::KernelHandle {
+        if self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Mxfp4E8m0 {
+            assert!(
+                e8m0.0 != 0,
+                "ARM-2 Phase-K: routed experts tagged Mxfp4E8m0 at {site}, but the \
+                 _e8m0 kernel handle is unresolved (not compiled into this target)."
+            );
+            e8m0
+        } else {
+            nvfp4
+        }
+    }
+}
+
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod dump;
 mod forward;
+mod forward_atomic_c4;
 mod forward_batched;
 mod forward_ep;
 mod forward_k2;
@@ -297,172 +414,12 @@ mod forward_prefill_bf16;
 mod forward_prefill_fp8;
 mod forward_prefill_phase;
 mod forward_prefill_routed;
+mod forward_token_major;
 mod helpers_a;
 mod helpers_b;
 mod helpers_c;
 mod init;
-
-/// Build a device-side pointer table from pre-transposed QuantizedWeight vec.
-fn build_ptr_table_from_qw(
-    weights: &[QuantizedWeight],
-    gpu: &dyn GpuBackend,
-) -> Result<ExpertPtrTable> {
-    let n = weights.len();
-    let packed_bytes: Vec<u8> = weights
-        .iter()
-        .flat_map(|w| w.weight.0.to_le_bytes())
-        .collect();
-    let scale_bytes: Vec<u8> = weights
-        .iter()
-        .flat_map(|w| w.weight_scale.0.to_le_bytes())
-        .collect();
-    let scale2_bytes: Vec<u8> = weights
-        .iter()
-        .flat_map(|w| w.weight_scale_2.to_le_bytes())
-        .collect();
-
-    let packed_ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&packed_bytes, packed_ptrs)?;
-    let scale_ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&scale_bytes, scale_ptrs)?;
-    let scale2_vals = gpu.alloc(n * 4)?;
-    gpu.copy_h2d(&scale2_bytes, scale2_vals)?;
-
-    Ok(ExpertPtrTable {
-        packed_ptrs,
-        scale_ptrs,
-        scale2_vals,
-    })
-}
-
-/// Build a device-side pointer table for one projection across all experts.
-fn build_ptr_table(
-    experts: &[ExpertWeight],
-    proj: impl Fn(&ExpertWeight) -> &crate::weight_map::QuantizedWeight,
-    gpu: &dyn GpuBackend,
-) -> Result<ExpertPtrTable> {
-    let n = experts.len();
-
-    // Build host-side arrays
-    let packed_bytes: Vec<u8> = experts
-        .iter()
-        .flat_map(|e| proj(e).weight.0.to_le_bytes())
-        .collect();
-    let scale_bytes: Vec<u8> = experts
-        .iter()
-        .flat_map(|e| proj(e).weight_scale.0.to_le_bytes())
-        .collect();
-    let scale2_bytes: Vec<u8> = experts
-        .iter()
-        .flat_map(|e| proj(e).weight_scale_2.to_le_bytes())
-        .collect();
-
-    // Upload to device
-    let packed_ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&packed_bytes, packed_ptrs)?;
-
-    let scale_ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&scale_bytes, scale_ptrs)?;
-
-    let scale2_vals = gpu.alloc(n * 4)?;
-    gpu.copy_h2d(&scale2_bytes, scale2_vals)?;
-
-    Ok(ExpertPtrTable {
-        packed_ptrs,
-        scale_ptrs,
-        scale2_vals,
-    })
-}
-
-/// Build a device-side FP8 pointer table for one projection across all experts.
-///
-/// FP8 experts store 2 arrays (weight + block_scale) per projection,
-/// vs NVFP4's 3 (packed + scale + scale2).
-/// Build a device-side BF16 pointer table for one projection across all
-/// experts. Used by the FP8-dequant-to-BF16 MoE path; one device pointer
-/// per expert pointing at that expert's `[N, K]` BF16 weight buffer.
-pub(crate) fn build_bf16_ptr_table(
-    experts: &[DenseWeight],
-    gpu: &dyn GpuBackend,
-) -> Result<DevicePtr> {
-    let n = experts.len();
-    let weight_bytes: Vec<u8> = experts
-        .iter()
-        .flat_map(|e| e.weight.0.to_le_bytes())
-        .collect();
-    let ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&weight_bytes, ptrs)?;
-    Ok(ptrs)
-}
-
-fn build_fp8_ptr_table(
-    experts: &[Fp8ExpertWeight],
-    proj: impl Fn(&Fp8ExpertWeight) -> &Fp8Weight,
-    gpu: &dyn GpuBackend,
-) -> Result<Fp8ExpertPtrTable> {
-    let n = experts.len();
-
-    let weight_bytes: Vec<u8> = experts
-        .iter()
-        .flat_map(|e| proj(e).weight.0.to_le_bytes())
-        .collect();
-    let scale_bytes: Vec<u8> = experts
-        .iter()
-        .flat_map(|e| proj(e).row_scale.0.to_le_bytes())
-        .collect();
-
-    let weight_ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&weight_bytes, weight_ptrs)?;
-
-    let scale_ptrs = gpu.alloc(n * 8)?;
-    gpu.copy_h2d(&scale_bytes, scale_ptrs)?;
-
-    Ok(Fp8ExpertPtrTable {
-        weight_ptrs,
-        scale_ptrs,
-    })
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use spark_runtime::gpu::mock::MockGpuBackend;
-
-    #[test]
-    fn test_moe_kernel_loading() {
-        let gpu = MockGpuBackend::new();
-        assert!(gpu.kernel("gemv", "dense_gemv_bf16").is_ok());
-        assert!(gpu.kernel("w4a16_gemv", "w4a16_gemv").is_ok());
-        assert!(gpu.kernel("moe_topk", "moe_topk_softmax").is_ok());
-        assert!(
-            gpu.kernel("moe_expert_gemv_fused", "moe_expert_gemv_gate_up")
-                .is_ok()
-        );
-        assert!(
-            gpu.kernel("moe_expert_gemv_fused", "moe_expert_gemv_gate_up_2x")
-                .is_ok()
-        );
-        assert!(
-            gpu.kernel("moe_expert_gemv_fused", "moe_expert_gemv_silu_down")
-                .is_ok()
-        );
-        assert!(
-            gpu.kernel("moe_expert_gemv_fused", "moe_expert_gemv_silu_down_2x")
-                .is_ok()
-        );
-        assert!(
-            gpu.kernel("moe_shared_expert_fused", "moe_expert_gate_up_shared")
-                .is_ok()
-        );
-        assert!(
-            gpu.kernel("moe_shared_expert_fused", "moe_expert_silu_down_shared")
-                .is_ok()
-        );
-        assert!(
-            gpu.kernel("moe_expert_gemv", "moe_weighted_sum_blend")
-                .is_ok()
-        );
-        // K=2 batch dispatch
-        assert!(gpu.kernel("moe_topk", "moe_topk_softmax_batched").is_ok());
-    }
-}
+mod mod_tests;
+mod ptr_table_build;
+pub(crate) use ptr_table_build::*;

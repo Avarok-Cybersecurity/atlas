@@ -291,59 +291,95 @@ impl Qwen3SsmLayer {
         } else {
             ctx.buffers.attn_output() // BF16 fallback
         };
+        let normed_out = ctx.buffers.ssm_qkvz();
         let gdn_kernel = if use_f32_gdn {
             self.gdn_f32_k
         } else {
             self.gdn_k
         };
-        ops::gdn_decode(
-            ctx.gpu,
-            gdn_kernel,
-            state.h_state,
-            q_conv,
-            k_conv,
-            v_conv,
-            gates,
-            beta_fp32,
-            gdn_out,
-            1,
-            nk as u32,
-            nv as u32,
-            kd as u32,
-            vd as u32,
-            stream,
-        )?;
-        if trace {
-            ctx.gpu.synchronize(stream).inspect_err(|_e| {
-                tracing::error!("CRASH at gdn_decode");
-            })?;
-        }
-
-        // ── 7. Gated RMS norm with Z gate — per-head normalization ──
-        // GDN output is [nv * vd], norm weight is [vd], applied as [nv, vd]
-        let normed_out = ctx.buffers.ssm_qkvz();
-        let norm_kernel = if use_f32_gdn {
-            self.gated_rms_norm_f32_k
+        let fused_gdn_norm = use_f32_gdn
+            && self.gdn_f32_norm_k.0 != 0
+            && std::env::var("ATLAS_GDN_FUSED_NORM").ok().as_deref() == Some("1");
+        if fused_gdn_norm {
+            ops::gdn_decode_f32_norm(
+                ctx.gpu,
+                self.gdn_f32_norm_k,
+                state.h_state,
+                q_conv,
+                k_conv,
+                v_conv,
+                gates,
+                beta_fp32,
+                z_ptr,
+                self.ssm.norm.weight,
+                normed_out,
+                1,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                ctx.config.rms_norm_eps as f32,
+                stream,
+            )?;
+            if trace {
+                ctx.gpu.synchronize(stream).inspect_err(|_e| {
+                    tracing::error!("CRASH at gdn_decode_f32_norm");
+                })?;
+            }
         } else {
-            self.gated_rms_norm_k
-        };
-        ops::gated_rms_norm(
-            ctx.gpu,
-            norm_kernel,
-            gdn_out,
-            z_ptr,
-            &self.ssm.norm,
-            normed_out,
-            nv as u32,
-            vd as u32,
-            vd as u32,
-            ctx.config.rms_norm_eps as f32,
-            vd as u32,
-            stream,
-        )?;
-        if trace {
+            ops::gdn_decode(
+                ctx.gpu,
+                gdn_kernel,
+                state.h_state,
+                q_conv,
+                k_conv,
+                v_conv,
+                gates,
+                beta_fp32,
+                gdn_out,
+                1,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                stream,
+            )?;
+            if trace {
+                ctx.gpu.synchronize(stream).inspect_err(|_e| {
+                    tracing::error!("CRASH at gdn_decode");
+                })?;
+            }
+
+            // ── 7. Gated RMS norm with Z gate — per-head normalization ──
+            // GDN output is [nv * vd], norm weight is [vd], applied as [nv, vd]
+            let norm_kernel = if use_f32_gdn {
+                self.gated_rms_norm_f32_k
+            } else {
+                self.gated_rms_norm_k
+            };
+            ops::gated_rms_norm(
+                ctx.gpu,
+                norm_kernel,
+                gdn_out,
+                z_ptr,
+                &self.ssm.norm,
+                normed_out,
+                nv as u32,
+                vd as u32,
+                vd as u32,
+                ctx.config.rms_norm_eps as f32,
+                vd as u32,
+                stream,
+            )?;
+            if trace {
+                ctx.gpu.synchronize(stream).inspect_err(|_e| {
+                    tracing::error!("CRASH at gated_rms_norm");
+                })?;
+            }
+        }
+        if trace && fused_gdn_norm {
             ctx.gpu.synchronize(stream).inspect_err(|_e| {
-                tracing::error!("CRASH at gated_rms_norm");
+                tracing::error!("CRASH after fused gdn norm");
             })?;
         }
         if debug {
@@ -403,6 +439,14 @@ impl Qwen3SsmLayer {
             ctx.gpu.synchronize(stream)?;
             Self::debug_bf16(ctx.gpu, "out-proj", out, 4);
         }
+
+        // GDN HeadParallel: `out` is this rank's PARTIAL row-parallel out_proj
+        // over its local value heads. Reduce across TP ranks to the complete
+        // SSM output before the caller's residual add. Single-token path
+        // (dense_gemv / w8a16_gemv / w4a16_gemv above → one position), so
+        // num_tokens = 1. No-op at tp=1. Covers single-token decode
+        // (trait_decode) and per-sequence multi-seq decode (trait_decode_multi_seq).
+        self.ssm_tp_all_reduce(out, 1, ctx, stream)?;
 
         Ok(out)
     }

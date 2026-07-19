@@ -23,6 +23,24 @@ pub(super) struct PendingQueue {
     pub closed: bool,
 }
 
+/// Per-request slice of a co-dispatched batched-ViT encode. When >=2 image
+/// requests are admitted in one tick, the scheduler encodes all their images
+/// in ONE `forward_batched` call (block GEMM weights read once over Σpatches)
+/// and hands each request the offsets it owns in the shared packed `buf_out`.
+/// `Default` (all zero) means "not co-dispatched" → the request self-encodes,
+/// reading from row 0 / grid 0 exactly as the legacy single-request path.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct VisionSlice {
+    /// First `buf_out` row (post-merge patch) this request owns.
+    pub patch_row_offset: usize,
+    /// First `vision_image_grids` index this request owns.
+    pub grid_index_offset: usize,
+    /// Number of images this request contributed to the batch.
+    pub num_images: usize,
+    /// Total post-merge rows this request owns (Σ merged_p over its images).
+    pub patch_row_count: usize,
+}
+
 /// How to deliver results for an active sequence.
 pub(super) enum ResponseSink {
     Blocking(Option<tokio::sync::oneshot::Sender<Result<InferenceResponse>>>),
@@ -75,6 +93,8 @@ pub(super) struct PrefillInProgress {
     /// hard-coded 512-token fallback.
     pub spontaneous_think_budget: u32,
     pub require_tool_call: bool,
+    /// #192: request declared tools (propagated to ActiveSeq on promotion).
+    pub tools_present: bool,
     pub suppress_tool_call: bool,
     /// F60 (2026-04-27): MTP-disable flag (propagated to ActiveSeq).
     pub disable_mtp: bool,
@@ -164,9 +184,21 @@ pub(super) struct ActiveSeq {
     pub think_ended: bool,
     /// One-shot signal: set when `</think>` was the most recently emitted token.
     pub think_just_ended: bool,
+    /// Tokens emitted since `</think>` (0 while thinking; resets if the model
+    /// re-enters a think block). Consumed by the DFlash spec-resume guard
+    /// (ATLAS_DFLASH_RESUME_GUARD) to keep the answer's opening tokens on
+    /// serial decode, where the T=0 verify-vs-decode low-margin flips
+    /// concentrate (measured 2026-07-07).
+    pub post_think_emitted: u32,
+    /// Adaptive speculation (ATLAS_DFLASH_ADAPTIVE=1): rolling accept window
+    /// + suspend/re-probe state. Transient — reset on swap/restore (a
+    /// resumed sequence re-measures). See `adaptive_spec` module docs.
+    pub spec_adapt: crate::scheduler::adaptive_spec::AdaptState,
     /// Consecutive `</think>` tokens skipped outside thinking. Safety limit: 50.
     pub think_skip_count: u32,
-    /// Token ID for `</tool_call>` — acts as a stop token for one-call-per-response.
+    /// Token ID for `</tool_call>`. Hard-stops only NON-tool requests
+    /// (spurious tool-call in plain chat); tool-armed requests continue past
+    /// it so multiple/parallel calls can follow (#192).
     pub tool_call_end_token: Option<u32>,
     /// When true AND grammar_state is None, EOS tokens are suppressed until
     /// `<tool_call>` is generated (legacy fallback).
@@ -179,6 +211,14 @@ pub(super) struct ActiveSeq {
     /// go inert when the grammar disengages mid-response. Default false ⇒
     /// no-op for non-tool requests (plain chat is never prose-capped).
     pub tool_request: bool,
+    /// #192: the request declared tools (from the API layer's `tools_active`).
+    /// Unlike `tool_request` this does NOT arm the prose-budget / post-think
+    /// watchdogs; it only gates multi-tool-call continuation: when true, a
+    /// `</tool_call>` outside a grammar does not finish the sequence —
+    /// generation continues (vLLM parity) so the model can emit parallel
+    /// calls, ending at natural EOS. When false (plain chat), a spurious
+    /// `</tool_call>` keeps its historical hard stop.
+    pub tools_present: bool,
     /// Token ID for `<tool_call>` (legacy fallback when grammar is unavailable).
     pub tool_call_start_token: Option<u32>,
     /// True after `<tool_call>` generated in output (not inside thinking).
@@ -362,12 +402,16 @@ pub(super) struct SwappedSeq {
     pub think_start_token: Option<u32>,
     pub think_ended: bool,
     pub think_just_ended: bool,
+    pub post_think_emitted: u32,
     pub think_skip_count: u32,
     pub require_tool_call: bool,
     /// F4 (2026-06-02): sticky tool-request flag, preserved across
     /// snapshot/restore (the grammar state itself is not serializable, so
     /// this is the only signal that a resumed sequence was tool-active).
     pub tool_request: bool,
+    /// #192: request declared tools, preserved across snapshot/restore so a
+    /// resumed multi-call turn keeps continuing past `</tool_call>`.
+    pub tools_present: bool,
     pub suppress_tool_call: bool,
     /// F60 (2026-04-27): MTP-disable flag preserved across snapshot/restore.
     pub disable_mtp: bool,

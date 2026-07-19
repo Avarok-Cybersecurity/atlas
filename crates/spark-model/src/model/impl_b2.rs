@@ -207,6 +207,7 @@ impl TransformerModel {
                 graph_capture: false,
                 gdn_exact_replay: false,
                 midchunk_capture: None,
+                token_ids: None,
             };
             let drafts = proposer.propose(
                 token_0,

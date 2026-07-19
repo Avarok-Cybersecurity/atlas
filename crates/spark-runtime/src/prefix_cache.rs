@@ -124,6 +124,14 @@ pub trait PrefixCache: Send + Sync {
     /// snapshot isolation (0 = legacy/no session tracking).
     fn lookup(&self, tokens: &[u32], block_size: usize, session_hash: u64) -> PrefixMatch;
 
+    /// Read-only longest-prefix probe: number of tokens (block-aligned)
+    /// `lookup` would match, WITHOUT taking refs, touching LRU state, or
+    /// counting a hit/miss. Used by the prefill tail-checkpoint split to
+    /// detect conversation reuse before deciding to pay the extra pass.
+    fn peek_matched_tokens(&self, _tokens: &[u32], _block_size: usize) -> usize {
+        0
+    }
+
     /// Insert a completed prefill's blocks into the cache.
     ///
     /// `block_table[i]` is the physical block for tokens

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+pub mod deepseek_v4_mtp;
 pub mod dense_ffn;
 pub mod dflash_head;
 pub mod ep_dispatch;
@@ -14,7 +15,8 @@ pub mod qwen3_attention;
 pub mod qwen3_ssm;
 pub mod vision_encoder;
 
-pub use dense_ffn::{DenseFfnLayer, FfnActivation};
+pub use deepseek_v4_mtp::{DeepseekV4MtpHead, DeepseekV4MtpProposerState};
+pub use dense_ffn::{DenseFfnLayer, DenseFfnWeights, FfnActivation};
 pub use dflash_head::{
     BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization,
 };
@@ -59,6 +61,15 @@ pub enum FfnComponent {
 impl FfnComponent {
     pub fn is_none(&self) -> bool {
         matches!(self, Self::None)
+    }
+
+    /// True for a plain dense (SwiGLU) FFN. Wide-batch verify paths gate their
+    /// `forward_prefill` fast path on this: batching reads dense weights once
+    /// (big win at N=17), but on a 256-expert MoE the grouped-GEMM is a net
+    /// loss at small batch (per-expert M~1 + sort/permute overhead), so MoE
+    /// keeps its per-token loop.
+    pub fn is_dense(&self) -> bool {
+        matches!(self, Self::Dense(_))
     }
 
     /// ATLAS_FP32_ROUTING active for this FFN (MoE only; false otherwise).
@@ -124,6 +135,40 @@ impl FfnComponent {
     ) -> Result<()> {
         match self {
             Self::Moe(m) => m.forward_batched(input, num_tokens, ctx, stream),
+            Self::Dense(d) => d.forward_batched(input, num_tokens, ctx, stream),
+            Self::None => {
+                let _ = (input, num_tokens);
+                Ok(())
+            }
+        }
+    }
+
+    pub fn forward_token_major_decode(
+        &self,
+        input: DevicePtr,
+        num_tokens: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        match self {
+            Self::Moe(m) => m.forward_token_major_decode(input, num_tokens, ctx, stream),
+            Self::Dense(d) => d.forward_batched(input, num_tokens, ctx, stream),
+            Self::None => {
+                let _ = (input, num_tokens);
+                Ok(())
+            }
+        }
+    }
+
+    pub fn forward_atomic_c4_decode(
+        &self,
+        input: DevicePtr,
+        num_tokens: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        match self {
+            Self::Moe(m) => m.forward_atomic_c4_decode(input, num_tokens, ctx, stream),
             Self::Dense(d) => d.forward_batched(input, num_tokens, ctx, stream),
             Self::None => {
                 let _ = (input, num_tokens);

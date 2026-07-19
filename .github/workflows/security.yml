@@ -25,7 +25,15 @@ jobs:
     name: cargo deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+      # `rust-version` pins the action's in-container toolchain to our
+      # rust-toolchain.toml channel. Without it, the action's bundled Rust
+      # can't honor the repo pin and rustup errors ("override toolchain
+      # '1.93.1' is not installed") before cargo-deny runs. Keep this in sync
+      # with rust-toolchain.toml. (cargo-deny is metadata-only — it audits the
+      # pinned Cargo.lock and does not compile the workspace — so the toolchain
+      # is about consistency with the repo pin, not the audit result.)
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
+          rust-version: "1.93.1"
           command: check advisories licenses sources bans

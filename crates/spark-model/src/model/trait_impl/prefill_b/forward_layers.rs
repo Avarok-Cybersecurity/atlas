@@ -100,6 +100,9 @@ impl TransformerModel {
             // and must use the bit-faithful WY4 recurrence (see layer.rs).
             gdn_exact_replay: marconi_skip,
             midchunk_capture,
+            // Hash-MoE: this chunk's token IDs (uploaded in prefill_b_embed_chunk
+            // to the stable buffer, in chunk order matching the MoE loop).
+            token_ids: Some(self.buffers.token_ids()),
         };
 
         // When proc_count == 1 (warm prefix cache hit), use the decode layer path

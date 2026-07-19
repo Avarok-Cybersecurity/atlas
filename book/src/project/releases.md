@@ -20,7 +20,7 @@ The multi-model Docker image always tracks the latest alpha at `avarok/atlas-gb1
 
 ## Recent themes
 
-Rather than duplicate every release note, here's the shape of recent work. Each theme maps to a set of design docs under `docs/design/` and bug-sweep notes in history.
+Rather than duplicate every release note, here's the shape of recent work. Each theme maps to architecture decision records under `docs/adr/` and the benchmark history in `docs/ATLAS_SPARK_JOURNEY.md`.
 
 ### alpha-2.0 → alpha-2.20 — coherence and the model matrix
 
@@ -73,6 +73,6 @@ Alongside the bug sweeps, "Pass-N" work is the systematic model-matrix regressio
 
 ## What's next
 
-OSS release prep (alpha-2.43-share) was the major non-code milestone: archive tags, `docs/design/` cleanup, `atlas-internal/` separation for proprietary artefacts. See `project_oss_prep.md` in history.
+OSS release prep (alpha-2.43-share) was the major non-code milestone: archive tags, docs cleanup, `atlas-internal/` separation for proprietary artefacts.
 
-For the current roadmap, check the repo's pinned issues and the authoritative design docs at [`docs/design/`](https://github.com/Avarok-Cybersecurity/atlas/tree/main/docs/design).
+For the current roadmap, check the repo's pinned issues and the authoritative decision records at [`docs/adr/`](https://github.com/Avarok-Cybersecurity/atlas/tree/main/docs/adr).

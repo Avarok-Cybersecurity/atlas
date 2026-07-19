@@ -188,3 +188,28 @@ fn batch_accept_token_length_mismatch_panics() {
     let mut ms = vec![GrammarMatcher::from_compiled_grammar(cg)];
     let _ = BatchGrammarMatcher::accept_token(&mut ms, &[1, 2], false);
 }
+
+// Regression for upstream xgrammar #630 ("segfault in RepetitionRangeExpander
+// from wrong grammar object lookup"): two unbounded repeats whose lower bound
+// exceeds the unzip threshold (128) in the SAME rule crashed the C++ expander,
+// which looked a builder-side expr id up in `base_grammar_` (OOB read). The
+// Rust port expands repetition ranges at parse time against a single builder
+// (no separate RepetitionRangeExpander functor, no base/builder split), so the
+// bug class cannot occur. This pins that invariant end-to-end: the grammar
+// compiles and the matcher enforces both lower bounds.
+#[test]
+fn repetition_unbounded_above_threshold_same_rule() {
+    let a129 = "a".repeat(129);
+    let b129 = "b".repeat(129);
+    let mut ok = matcher("root ::= \"a\"{129,} \"b\"{129,}\n");
+    assert!(
+        ok.accept_string(&(a129 + &b129), false),
+        "129×'a' then 129×'b' must satisfy both unbounded-above-threshold repeats"
+    );
+    // Fewer than 129 leading 'a's must not let a 'b' through.
+    let mut bad = matcher("root ::= \"a\"{129,} \"b\"{129,}\n");
+    assert!(
+        !bad.accept_string("ab", false),
+        "'b' before the 129-'a' lower bound is satisfied must be rejected"
+    );
+}

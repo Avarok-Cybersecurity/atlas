@@ -38,7 +38,99 @@ impl Qwen3AttentionLayer {
     ) -> Result<()> {
         use atlas_core::device::sm121::NUM_SMS;
 
+        // DeepSeek-V4-Flash uses MLA with a compressed KV cache (576 dims:
+        // 512 latent + 64 rope). Detection: V4-Flash has rope > 0 (64 dims),
+        // V3 (and non-MLA models) have rope = 0. When V4-Flash is active the
+        // MLA decode kernels are used in place of the standard paged-decode
+        // path for the NVFP4/FP8 KV dtypes. All other behavior is unchanged.
+        let is_v4_flash = self.mla.as_ref().map(|m| m.rope > 0).unwrap_or(false);
+
         match self.kv_dtype {
+            // ── DeepSeek-V4-Flash MLA decode (guarded; before the generic arms) ──
+            KvCacheDtype::Nvfp4 if is_v4_flash => {
+                let mla = self.mla.as_ref().unwrap();
+                let kv_cache_dim = (mla.kv_lora_rank + mla.rope) as u32; // 512 + 64 = 576
+                tracing::info!(
+                    "V4-Flash MLA decode (NVFP4): q_head_dim={}, kv_cache_dim={}",
+                    head_dim,
+                    kv_cache_dim
+                );
+                ops::mla_paged_decode_nvfp4(
+                    gpu,
+                    self.mla_paged_decode_k,
+                    q,
+                    kv_cache.k_pool_ptr(self.attn_layer_idx),
+                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    output,
+                    block_table,
+                    seq_lens,
+                    max_blocks_per_seq,
+                    num_q_heads,
+                    num_kv_heads,
+                    head_dim,
+                    kv_cache_dim,
+                    block_size,
+                    inv_sqrt_d,
+                    kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.nvfp4_data_bytes() as u64,
+                    num_seqs,
+                    stream,
+                )
+            }
+            KvCacheDtype::Fp8 if is_v4_flash => {
+                let mla = self.mla.as_ref().unwrap();
+                let kv_cache_dim = (mla.kv_lora_rank + mla.rope) as u32; // 512 + 64 = 576
+                tracing::info!(
+                    "V4-Flash MLA decode (FP8): q_head_dim={}, kv_cache_dim={}",
+                    head_dim,
+                    kv_cache_dim
+                );
+                let (k_scale, v_scale) = self.effective_fp8_scales();
+                // Attention scale = head_dim^-0.5 = 1/sqrt(512). Reference model.py:464
+                // `self.softmax_scale = self.head_dim ** -0.5` (head_dim=512, no YaRN
+                // mscale on the scale). hd_mla = nope+rope = 448+64 = 512, so the
+                // incoming inv_sqrt_d = effective_attn_scale(hd=512) = 1/sqrt(512)
+                // ALREADY matches prefill (prefill_attn_compressed uses 1/sqrt(hd_mla=512)).
+                // (An earlier 1/sqrt(576) override was a regression on a wrong-dim read.)
+                // 4b: compressed arm — flat FP8 pool + block count. ratio-0 layers
+                // (compressor=None) → NULL pool + 0 blocks = kernel no-op. Compress
+                // layers → prefill-written blocks [0, filled) (inc-2: prefill blocks
+                // only, no decode-time append yet — cap is the frozen prefill count).
+                let (comp_pool, comp_blocks) = match mla.compressor {
+                    Some(c) => (
+                        c.pool,
+                        self.v4_comp_pool_filled
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                    ),
+                    None => (spark_runtime::gpu::DevicePtr::NULL, 0u32),
+                };
+                ops::mla_paged_decode_fp8(
+                    gpu,
+                    self.mla_paged_decode_fp8_k,
+                    q,
+                    kv_cache.k_pool_ptr(self.attn_layer_idx),
+                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    output,
+                    block_table,
+                    seq_lens,
+                    max_blocks_per_seq,
+                    num_q_heads,
+                    num_kv_heads,
+                    head_dim,
+                    kv_cache_dim,
+                    block_size,
+                    inv_sqrt_d,
+                    k_scale,
+                    v_scale,
+                    kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    num_seqs,
+                    128, // V4 decode sliding_window (config sliding_window=128), item 4a
+                    self.mla.as_ref().unwrap().attn_sink,
+                    comp_pool,
+                    comp_blocks,
+                    stream,
+                )
+            }
             KvCacheDtype::Nvfp4 => {
                 // Split count derived from the configured max batch (constant),
                 // not the runtime co-batched count, so a sequence's reduction

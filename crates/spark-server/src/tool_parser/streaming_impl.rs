@@ -344,7 +344,17 @@ impl StreamingToolDetector {
         // one or dispatches the wrong one with empty args. Mirror the
         // in-stream close path: emit ToolCallDelta + ToolCallEnd against
         // the already-streamed header, not a full ToolCall.
-        if was_inside_tag && let Some(tc) = parse_one_call(text.trim(), self.call_counter) {
+        // #192 containment (parity with `parse_tool_calls`): this buffer has NO
+        // `</tool_call>` close, so an unterminated trailing `<parameter=…>`
+        // value is unbounded — cut at the last complete `</parameter>` (else
+        // drop the param section) before salvaging, so drifted tail garbage
+        // is never swallowed into an argument string.
+        if was_inside_tag
+            && let Some(tc) = parse_one_call(
+                contain_unterminated_call_tail(text.trim()),
+                self.call_counter,
+            )
+        {
             let idx = self.call_counter as usize;
             if self.current_tc_name.is_some() {
                 // Live path: if we already streamed fragments, emit only the

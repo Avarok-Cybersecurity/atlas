@@ -38,10 +38,11 @@ use cudarc::driver::LaunchConfig;
 
 use super::{
     AtlasCudaBackend, cuCtxSetCurrent, cuEventCreate, cuEventDestroy_v2, cuEventRecord,
-    cuGraphDestroy, cuGraphExecDestroy, cuGraphLaunch, cuMemAlloc_v2, cuMemAllocHost_v2,
-    cuMemAllocManaged, cuMemFree_v2, cuMemFreeHost, cuMemGetInfo_v2, cuMemcpyDtoDAsync_v2,
-    cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async, cuStreamBeginCapture,
-    cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize, cuStreamWaitEvent,
+    cuEventSynchronize, cuGraphDestroy, cuGraphExecDestroy, cuGraphLaunch, cuMemAlloc_v2,
+    cuMemAllocHost_v2, cuMemAllocManaged, cuMemFree_v2, cuMemFreeHost, cuMemGetInfo_v2,
+    cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async,
+    cuStreamBeginCapture, cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize,
+    cuStreamWaitEvent,
 };
 use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 
@@ -247,6 +248,63 @@ impl GpuBackend for AtlasCudaBackend {
         Ok(())
     }
 
+    fn copy_d2d_2d_async(
+        &self,
+        src: DevicePtr,
+        src_pitch: usize,
+        dst: DevicePtr,
+        dst_pitch: usize,
+        width_bytes: usize,
+        height: usize,
+        stream: u64,
+    ) -> Result<()> {
+        // NVIDIA: one pitched copy (cudaMemcpyDeviceToDevice = 3) on the caller's
+        // stream via the cudart runtime, replacing a per-row copy_d2d_async loop.
+        #[cfg(not(atlas_scale))]
+        {
+            unsafe extern "C" {
+                fn cudaMemcpy2DAsync(
+                    dst: *mut c_void,
+                    dpitch: usize,
+                    src: *const c_void,
+                    spitch: usize,
+                    width: usize,
+                    height: usize,
+                    kind: i32,
+                    stream: u64,
+                ) -> i32;
+            }
+            let status = unsafe {
+                cudaMemcpy2DAsync(
+                    dst.0 as *mut c_void,
+                    dst_pitch,
+                    src.0 as *const c_void,
+                    src_pitch,
+                    width_bytes,
+                    height,
+                    3,
+                    stream,
+                )
+            };
+            if status != 0 {
+                bail!("cudaMemcpy2DAsync failed: status {status}");
+            }
+            Ok(())
+        }
+        // strix/SCALE: no cudart runtime linked (SCALE's libcuda is driver-only).
+        // Fall back to the per-row driver-API loop this pitched copy replaced —
+        // `copy_d2d_async` uses `cuMemcpyDtoDAsync`, which SCALE provides.
+        #[cfg(atlas_scale)]
+        {
+            for row in 0..height {
+                let s = DevicePtr(src.0 + (row * src_pitch) as u64);
+                let d = DevicePtr(dst.0 + (row * dst_pitch) as u64);
+                self.copy_d2d_async(s, d, width_bytes, stream)?;
+            }
+            Ok(())
+        }
+    }
+
     fn begin_capture(&self, stream: u64) -> Result<()> {
         // CU_STREAM_CAPTURE_MODE_RELAXED = 2
         // Relaxed mode allows NCCL's internal streams to operate during
@@ -384,6 +442,18 @@ impl GpuBackend for AtlasCudaBackend {
         let status = unsafe { cuStreamWaitEvent(stream, event, 0) };
         if status != 0 {
             bail!("cuStreamWaitEvent failed: status {status}");
+        }
+        Ok(())
+    }
+
+    fn event_synchronize(&self, event: u64) -> Result<()> {
+        // Block calling thread until all work recorded against `event`
+        // (on whatever stream `record_event` targeted) has completed.
+        // Used in Phase E.2: drafter D2H copy is recorded against this
+        // event, host blocks here just before reading the pinned buffer.
+        let status = unsafe { cuEventSynchronize(event) };
+        if status != 0 {
+            bail!("cuEventSynchronize failed: status {status}");
         }
         Ok(())
     }

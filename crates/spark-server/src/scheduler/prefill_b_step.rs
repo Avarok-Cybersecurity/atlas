@@ -51,6 +51,7 @@ pub fn prefill_request(
         tracing::info!("Thinking enabled, budget={:?}", req_thinking_budget);
     }
     let req_require_tool_call = req.require_tool_call();
+    let req_tools_present = req.tools_present();
     let req_suppress_tool_call = req.suppress_tool_call();
     let req_disable_mtp = req.disable_mtp();
     let req_seed = req.seed();
@@ -164,14 +165,32 @@ pub fn prefill_request(
     // Spontaneous <think>: if the first token is <think> and thinking was not
     // requested, suppress it and enter thinking mode on the ActiveSeq.
     let spontaneous_think = !req_enable_thinking && think_start_token == Some(first);
+    // Legacy echo+logprobs: prompt logprobs precede any token event.
+    if seq.collect_prompt_logprobs.is_some()
+        && let ResponseSink::Streaming(ref tx) = sink
+    {
+        let lps: Vec<crate::api::TokenLogprobs> = seq
+            .prompt_logprobs
+            .drain(..)
+            .map(|p| crate::api::TokenLogprobs {
+                token_id: p.token_id,
+                logprob: p.logprob,
+                top: p.top,
+            })
+            .collect();
+        if let Err(e) = tx.blocking_send(StreamEvent::PromptLogprobs(lps)) {
+            tracing::warn!("prefill_b_step: prompt-logprobs send failed: {e}");
+        }
+    }
     if !spontaneous_think
+        && max_tokens > 0
         && let ResponseSink::Streaming(ref tx) = sink
         && let Err(e) = tx.blocking_send(StreamEvent::Token(first))
     {
         tracing::warn!("prefill_b_step: first-token send failed (receiver dropped): {e}");
     }
 
-    let output_tokens = if spontaneous_think {
+    let output_tokens = if spontaneous_think || max_tokens == 0 {
         vec![]
     } else {
         vec![first]
@@ -230,9 +249,12 @@ pub fn prefill_request(
             think_start_token,
             think_ended: !req_enable_thinking && think_end_token.is_some(),
             think_just_ended: false,
+            post_think_emitted: 0,
+            spec_adapt: Default::default(),
             think_skip_count: 0,
             require_tool_call: use_legacy_tool_call,
             tool_request,
+            tools_present: req_tools_present,
             suppress_tool_call: req_suppress_tool_call,
             disable_mtp: req_disable_mtp,
             content_started: false,
@@ -314,9 +336,12 @@ pub fn prefill_request(
             !req_enable_thinking && think_end_token.is_some()
         },
         think_just_ended: false,
+        post_think_emitted: 0,
+        spec_adapt: Default::default(),
         think_skip_count: 0,
         require_tool_call: use_legacy_tool_call,
         tool_request,
+        tools_present: req_tools_present,
         suppress_tool_call: req_suppress_tool_call,
         disable_mtp: req_disable_mtp,
         content_started: false,

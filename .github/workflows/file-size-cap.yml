@@ -14,7 +14,7 @@ jobs:
     name: Enforce ≤500 LoC per source file
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Check no .rs file exceeds 500 lines
         shell: bash
@@ -133,9 +133,26 @@ jobs:
             "crates/spark-model/src/layers/mtp_head/forward.rs"
             "crates/spark-model/src/layers/ops/gemm_quant.rs"
             "crates/spark-model/src/layers/ops/moe_expert.rs"
+            # 648 LoC — grew via #231 (per-call penalty-history scope) + the
+            # #237 fast-greedy penalty bound. Split tracked in #244: move the
+            # remaining inline greedy admission into the existing fast_greedy.rs
+            # sibling + a sample_step_slow.rs. Exact piecewise copy, deferred to
+            # keep #242 focused on the verify-perf fixes.
+            "crates/spark-server/src/scheduler/sample_step.rs"
+            # 523 LoC — run() loop grew by the depth-aware MTP-gate per-step
+            # consultation (#242). Extract the gate step-dispatch+decision block
+            # into a scheduler helper. Split tracked in #244.
+            "crates/spark-server/src/scheduler/mod.rs"
+            # 521 LoC — parallel-tool-call fixture suite added by #231. Split
+            # into per-format (hermes/qwen3_coder) sibling test files. #244.
+            "crates/spark-server/src/tool_parser/tests/group_g_parallel.rs"
+            # 533 LoC — streaming tool-handler grew by the #231 name-run cap +
+            # #224 BPE-fragment guard. Extract the run-tracking helpers. #244.
+            "crates/spark-server/src/api/chat_stream/tool_handlers.rs"
             "crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip.rs"
             "crates/spark-model/src/layers/qwen3_attention/prefill/paged.rs"
             "crates/spark-model/src/model/block_mgmt.rs"
+            "crates/spark-model/src/model/impl_a1.rs"
             "crates/spark-model/src/model/impl_a2.rs"
             "crates/spark-model/src/model/ssm_pool.rs"
             "crates/spark-model/src/weight_loader/qwen35/load_layers.rs"
@@ -146,13 +163,120 @@ jobs:
             "crates/spark-server/src/scheduler/emit_step.rs"
             "crates/spark-server/src/scheduler/helpers.rs"
             "crates/spark-server/src/tool_parser/validation.rs"
-            # ── PR #169 (perf/qwen36-dense-ffn-tc-prefill) carry-over ──
-            # 519 LoC — dense-FFN forward. The tensor-core w4a16 prefill path
-            # adds transposed gate/up/down handles + a per-(dtype,phase) kernel
-            # dispatch macro; like the other kernel-dispatch files above, the
-            # launch sequence reads top-to-bottom and splitting fragments it.
-            # Clean split tracked as follow-up.
+            # ── PR #169 (perf/qwen36-dense-ffn-tc-prefill) carry-over,
+            # grown by PR #223 (perf/qwen36-27b-prefill-nvfp4) ──
+            # 1507 LoC — dense-FFN forward: multi-arm quantized-FFN dispatch
+            # (w4a16 t_m128 / int8 faith2 / Q4_K MMQ / NVFP4 W4A4 MMQ) under
+            # active A/B development across concurrent sessions; the per-arm
+            # launch sequences read top-to-bottom and a mid-flight split would
+            # conflict with in-progress work. Split scheduled post PR #223.
             "crates/spark-model/src/layers/dense_ffn.rs"
+            # ── PR #223 (perf/qwen36-27b-prefill-nvfp4) carry-over ──
+            # 1634 LoC — int8 W4A8 prefill GEMM microbench example: one
+            # sequential fn main (alloc → upload → launch → verify → time) whose
+            # host-reference checks mirror the kernel launch order step by step;
+            # splitting fragments that order (same rationale as the
+            # gdn_fla_e2e_gateb.rs example entry above). Dev-only harness, run
+            # manually on GB10.
+            "crates/spark-model/examples/int8_gemm_test.rs"
+            # ── PR #202 (perf/vision-vit-perf) carry-over ──
+            # 513 LoC — prefill phase-A (vision-embed prepare + single/batched
+            # dispatch). The GEMM-based ViT perf work adds the co-dispatch
+            # `prepare_vision_embed_batched_dispatch` path alongside the existing
+            # single-image dispatch; both share the encode→splice launch order
+            # that reads top-to-bottom with `prefill_b/` and the scheduler's
+            # `prefill_a_step`. Splitting fragments that ordered sequence (same
+            # rationale as the prefill_c.rs / kernel-dispatch entries above).
+            # Clean split tracked as follow-up.
+            "crates/spark-model/src/model/trait_impl/prefill_a.rs"
+            # 506 LoC — GEMM-based ViT attention block (vit_gemm_bias +
+            # vit_attention_gemm + vit_block). Compute-heavy launch sequence:
+            # the per-head GEMM1→softmax→GEMM2→scatter ordering and the shared
+            # buf_scores/buf_probs/buf_o_stage reuse are correctness-critical and
+            # read top-to-bottom (splitting them across files inverts the launch
+            # order, same rationale as the qwen3_attention compute-heavy entries).
+            # Pushed over 500 purely by `cargo fmt` wrapping the kernel-launch
+            # arg chains. Clean split tracked as follow-up.
+            "crates/spark-model/src/layers/vision_encoder/enc_impl/vit_block.rs"
+            # ── PR #186 (DeepSeek-V4-Flash port) carry-over ──
+            # 12 files the V4 port lands over the cap. Allow-listed to ship DS4F
+            # to users (today it's runnable only by building the #186 branch);
+            # consistent with the existing big-but-unsplittable entries above
+            # (build.rs 891, metal_backend.rs 733). The shared-file growth
+            # (prefill_inner/decode_inner — V4 added CSA/HCA + MLA decode paths)
+            # and the V4-new kernel/loader/MTP-head files read top-to-bottom like
+            # the other compute-heavy entries. Clean split tracked in #219.
+            "crates/spark-model/src/layers/qwen3_attention/trait_impl/prefill_inner.rs"
+            "crates/spark-model/src/layers/qwen3_attention/trait_impl/decode_inner.rs"
+            "crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip_v4.rs"
+            "crates/spark-model/src/layers/qwen3_attention/decode/attention_forward_v4.rs"
+            "crates/spark-model/src/layers/qwen3_attention/trait_impl/multi_seq/mla.rs"
+            "crates/spark-model/src/weight_loader/deepseek_v4/assemble.rs"
+            "crates/spark-model/src/layers/deepseek_v4_mtp.rs"
+            "crates/spark-model/src/factory/build.rs"
+            "crates/atlas-core/src/config/tests.rs"
+            "crates/atlas-core/src/config.rs"
+            "crates/spark-model/src/model/impl_b1.rs"
+            "crates/spark-model/src/model/trait_impl/prefill_b/batch_kernel.rs"
+            # ── #203 (Holo/Ornith GB10 enablement) carry-over ──
+            # 549 LoC — prefill phase-A vision-slice base wiring + Holo
+            # set_vision_slice_base call sites; too many local bindings/closures
+            # to extract cleanly. Clean split tracked as follow-up.
+            "crates/spark-server/src/scheduler/prefill_a_step.rs"
+            # ── #214 (batched decode engine) carry-over ──
+            # 575 LoC — Qwen3.5 dense-checkpoint loader grew with the batched
+            # decode + mixed-precision/fused-FP8 expert branches. One linear
+            # load sequence read top-to-bottom; clean split tracked as follow-up.
+            "crates/spark-model/src/weight_loader/qwen35_dense.rs"
+            # 508 LoC — serve CLI arg surface grew with the batched-decode /
+            # max-batch-size + FP8-KV flags. Marginally over; back under 500 in
+            # the follow-on dense-FP8 PR. Clean split tracked as follow-up.
+            "crates/spark-server/src/cli/serve_args.rs"
+            # ── PR #229 (perf/qwen36-27b-prefill-nvfp4) carry-overs ──
+            # Three files inherited over-cap from main unchanged (grew on
+            # main between this branch's base and its main-merge; would fail
+            # on any fresh PR): 632 / 521 / 533 LoC. Clean splits tracked
+            # as follow-up.
+            "crates/spark-server/src/scheduler/sample_step.rs"
+            "crates/spark-server/src/tool_parser/tests/group_g_parallel.rs"
+            "crates/spark-server/src/api/chat_stream/tool_handlers.rs"
+            # 572 LoC — SSM batched-decode dispatcher grew with the
+            # native-FP8 NULL-QKVZ/out_proj dispatch fix (K=2/K=3 MTP-verify
+            # would deref a NULL QuantizedWeight on FP8-only builds). Single
+            # impl block, launch-order-critical like the qwen3_attention
+            # decode dispatchers above; conv/GDN halves were already
+            # extracted to trait_decode_batched_conv_gdn.rs. Clean split
+            # tracked as follow-up.
+            # 548 LoC — Qwen3.5 linear-attn (SSM) loader arm; grew with the
+            # HeadParallel config-localize + per-rank segmented weight loads
+            # (FP8-dense + NVFP4 builders). Two linear load sequences read
+            # top-to-bottom; clean split tracked as follow-up.
+            "crates/spark-model/src/weight_loader/qwen35/load_layers/linear_attn_arms.rs"
+            # 503 LoC — batched-recurrent GDN decode; marginally over (added the
+            # per-seq SSM out_proj all-reduce for HeadParallel). Back under 500
+            # once the batched/graph paths consolidate. Follow-up.
+            "crates/spark-model/src/layers/qwen3_ssm/trait_decode_batched.rs"
+            # -- #300/#301 (mixed-precision NVFP4 weights) carry-over --
+            # 522 LoC; landed on main 2026-07-12 without an entry, so the
+            # check is red on main and fails every fresh PR. Entry added by
+            # the first affected PR per the #229 carry-over precedent above;
+            # not this PR's code. Clean split tracked as follow-up by the
+            # fp8_lut authors.
+            "crates/spark-model/src/weight_map/fp8_lut.rs"
+            # -- K=gamma DFlash base engine carry-overs (this PR) --
+            # Drafter block forward + paged attention + weight assembly are
+            # compute-heavy launch sequences that read top-to-bottom (same
+            # rationale as the qwen3_attention compute-heavy entries above);
+            # trait_impl/mod.rs grew with the ctx-append dispatch family.
+            # Splits tracked as follow-up per the #90/#186 precedent.
+            "crates/spark-model/src/layers/dflash_head.rs"
+            "crates/spark-model/src/layers/dflash_head/forward_block.rs"
+            "crates/spark-model/src/layers/dflash_head/forward_block_layer_paged.rs"
+            "crates/spark-model/src/layers/dflash_head/from_weights.rs"
+            "crates/spark-model/src/layers/dflash_head/propose.rs"
+            "crates/spark-model/src/layers/ops/gemm_dense.rs"
+            "crates/spark-model/src/layers/qwen3_ssm/trait_decode_batched_conv_gdn.rs"
+            "crates/spark-model/src/model/trait_impl/mod.rs"
           )
 
           violations=0

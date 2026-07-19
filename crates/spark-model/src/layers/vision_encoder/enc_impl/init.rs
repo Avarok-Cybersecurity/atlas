@@ -48,6 +48,29 @@ impl VisionEncoder {
         let buf_rope_cos = gpu.alloc(p_max * head_dim * 2)?;
         let buf_rope_sin = gpu.alloc(p_max * head_dim * 2)?;
 
+        // GEMM-based ViT SDPA scratch. Q/K/V head-contiguous copies sized to
+        // p_max (~44 MB total). scores/probs are the [seq,seq] score matrix,
+        // reused across the 16-head loop.
+        //
+        // BUG FIX (2026-06-29): attn_max was hardcoded to 1024, but a single
+        // image's ViT sequence can be up to p_max (6400 patches = 1280×1280).
+        // The mona_lisa fixture produces seq=4096 → the GEMM1 launch
+        // grid=[ceil(4096/16),...] writes a [4096,4096] score matrix into a
+        // [1024,1024] buffer → CUDA-700 illegal access. (In release builds the
+        // debug_assert guard is compiled out, so smaller-than-fault overflows
+        // silently corrupted adjacent GPU memory instead of crashing — which is
+        // why it "passed" on some weight layouts.) Size to the real per-image
+        // cap p_max so any admissible image fits: 6400²·4 ≈ 164 MB scores +
+        // 6400²·2 ≈ 82 MB probs. One-time scratch, fine on GB10.
+        let attn_max = p_max;
+        let qkv_head_elems = p_max * num_heads * head_dim;
+        let buf_qr = gpu.alloc(qkv_head_elems * 2)?; // [H, p_max, D] bf16
+        let buf_kr = gpu.alloc(qkv_head_elems * 2)?; // [H, p_max, D] bf16
+        let buf_vt = gpu.alloc(qkv_head_elems * 2)?; // [H, D, p_max] bf16
+        let buf_scores = gpu.alloc(attn_max * attn_max * 4)?; // [seq, seq] f32
+        let buf_probs = gpu.alloc(attn_max * attn_max * 2)?; // [seq, seq] bf16
+        let buf_o_stage = gpu.alloc(p_max * head_dim * 2)?; // [seq, D] bf16
+
         // Download pos_embed weight to host as f32 so we can bilinear-
         // interpolate it per image (HF: `fast_pos_embed_interpolate`).
         let pos_n = num_position_embeddings * hidden_size;
@@ -80,10 +103,29 @@ impl VisionEncoder {
             deepstack_indexes,
             merger,
             k_gemm: gpu.kernel("vision_encoder", "vision_gemm_bias")?,
+            // Tensor-core pipelined matmul (~40× the scalar vision_gemm_bias on
+            // the ViT's large-M GEMMs) + a row-broadcast bias add. Both gated to
+            // 0 → fall back to vision_gemm_bias. The ViT GEMMs dominate image prefill.
+            k_gemm_pipelined: crate::layers::try_kernel(gpu, "gemm", "dense_gemm_bf16_pipelined"),
+            k_add_bias: crate::layers::try_kernel(gpu, "vision_encoder", "vision_add_bias"),
             k_norm: gpu.kernel("vision_encoder", "vision_layer_norm")?,
             k_add: gpu.kernel("vision_encoder", "vision_add_inplace")?,
             k_gelu: gpu.kernel("vision_encoder", "vision_gelu")?,
+            // Legacy warp-per-query ViT attention — present in EVERY vision
+            // kernel tree, the universal fallback (hard-required).
             k_attn: gpu.kernel("vision_encoder", "vision_attention_rope")?,
+            // GEMM-based ViT SDPA kernels (the ~2× image-TTFT path). SOFT: only
+            // the qwen3.6 / Holo vision tree ships them. Vision models on an
+            // older tree (qwen3-vl-30b, gemma-4) leave these null and
+            // `vit_block` auto-falls back to `k_attn` — see `vit_attention_gemm`
+            // gate. Hard-requiring them here would break every such model at
+            // init with `vit_rope_deinterleave: named symbol not found`.
+            k_rope_deint: crate::layers::try_kernel(gpu, "vision_encoder", "vit_rope_deinterleave"),
+            k_softmax: crate::layers::try_kernel(gpu, "vision_encoder", "vit_softmax_rows"),
+            k_scatter_head: crate::layers::try_kernel(gpu, "vision_encoder", "vit_scatter_head"),
+            // f32-out dense GEMM for raw QKᵀ scores (GEMM-ViT path only). SOFT,
+            // paired with the kernels above.
+            k_gemm_f32: crate::layers::try_kernel(gpu, "gemm", "dense_gemm_bf16_f32out"),
             k_merge: gpu.kernel("vision_encoder", "vision_spatial_merge")?,
             k_f32_bf16: gpu.kernel("vision_encoder", "vision_f32_to_bf16")?,
             k_copy: gpu.kernel("vision_encoder", "vision_bf16_copy")?,
@@ -105,6 +147,12 @@ impl VisionEncoder {
             buf_pos_resampled,
             buf_rope_cos,
             buf_rope_sin,
+            buf_qr,
+            buf_kr,
+            buf_vt,
+            buf_scores,
+            buf_probs,
+            buf_o_stage,
             pos_embed_host_f32,
             rope_inv_freq,
         })

@@ -273,6 +273,14 @@ fn env_flag_default_on(name: &str) -> bool {
 pub fn tool_eos_escape_enabled() -> bool {
     env_flag_default_on("ATLAS_TOOL_EOS_ESCAPE")
 }
+/// #144 (budget-aware graceful close, default ON): when a length-limited
+/// structured-output response would otherwise stop with the EOS token
+/// grammar-illegal mid-structure (e.g. inside an open JSON string), emit the
+/// shortest grammar-legal close so the truncated output is still parseable.
+/// Kill-switch: `ATLAS_GRAMMAR_BUDGET_CLOSE=0`/`false` disables.
+pub fn grammar_budget_close_enabled() -> bool {
+    env_flag_default_on("ATLAS_GRAMMAR_BUDGET_CLOSE")
+}
 /// Fix B (2026-06-05, baked default ON): hard-stop on the <tool_response>
 /// control token (a token the model must never generate). Default ON for the
 /// same reason as Fix A. Kill-switch: `ATLAS_TOOL_RESPONSE_STOP=0`/`false`.

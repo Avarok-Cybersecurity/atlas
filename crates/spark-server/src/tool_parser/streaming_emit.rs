@@ -161,6 +161,16 @@ impl StreamingToolDetector {
             if args_start >= limit {
                 return outputs;
             }
+            // #192: anchor on the args object's `{`, skipping the whitespace
+            // models emit after the colon (`"arguments": {`). Without this,
+            // `find_balanced_json_end` (which requires a leading `{`) never
+            // balances, and the "no close yet" fallback streamed EVERYTHING
+            // buffered — the hermes envelope's outer `}` and the (partial)
+            // `</tool_call>` tag leaked into the client's function.arguments.
+            let mut args_start = args_start;
+            while args_start < limit && self.buffer.as_bytes()[args_start].is_ascii_whitespace() {
+                args_start += 1;
+            }
             let body = &self.buffer[args_start..limit];
             let settled = if let Some(e) = find_balanced_json_end(body) {
                 e

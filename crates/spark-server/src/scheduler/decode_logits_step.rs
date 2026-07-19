@@ -4,6 +4,17 @@
 
 use super::*;
 
+thread_local! {
+    /// Reusable host staging buffer for the D2H logits copy on the sampling
+    /// path. Hoisted out of the per-token `vec![0u8; n*vocab*elem]` to avoid an
+    /// mmap/munmap + page-fault cycle every decoded token (the buffer is
+    /// ~0.5-1 MB at a 250k vocab). Fully overwritten by `copy_logits_to_host`,
+    /// so residual contents are irrelevant. Per-thread: the scheduler drives
+    /// decode on one thread.
+    static DECODE_LOGITS_HOST_SCRATCH: std::cell::RefCell<Vec<u8>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// DIAG (ATLAS_DECODE_TIMING=1): localize the host-path decode cost. Splits the
 /// per-token wall into `copy` (D2H of the full 248k-vocab logits + the GPU
 /// forward-wait absorbed by that sync) vs `sample` (the host scalar loops over
@@ -97,7 +108,11 @@ pub fn process_decode_logits(
             let logits_fp32 = model.decode_logits_fp32();
             let elem_bytes = if logits_fp32 { 4 } else { 2 };
             let t_copy = std::time::Instant::now();
-            let mut buf = vec![0u8; n * vocab_size * elem_bytes];
+            // Reuse the per-thread staging buffer (restored at the end of this
+            // block). `resize` only grows it; `copy_logits_to_host` overwrites
+            // every byte so the residual/zero-fill is irrelevant.
+            let mut buf = DECODE_LOGITS_HOST_SCRATCH.with_borrow_mut(std::mem::take);
+            buf.resize(n * vocab_size * elem_bytes, 0);
             if let Err(e) = model.copy_logits_to_host(logits, &mut buf) {
                 tracing::error!("copy_logits_to_host error: {e:#}");
                 for mut a in active.drain(..) {
@@ -137,6 +152,10 @@ pub fn process_decode_logits(
                 })
                 .collect();
             decode_timing_record(copy_us, t_sample.elapsed().as_micros() as u64);
+            // Return the staging buffer for reuse next token (its capacity is
+            // preserved). The error path above intentionally drops it — that is
+            // rare and only forfeits the cached capacity.
+            DECODE_LOGITS_HOST_SCRATCH.with_borrow_mut(|slot| *slot = buf);
             sampled
         };
     let step_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -374,9 +393,10 @@ pub fn process_decode_logits(
             a.logprobs_data.push(lp);
         }
 
-        // </tool_call> stop: in legacy mode (no grammar), stop after first tool call.
-        // When grammar is active, allow the model to generate multiple tool calls —
-        // the grammar controls when EOS is valid.
+        // </tool_call> handling. Tool-armed requests (grammar active OR
+        // `tools_present`) continue generating past a closed call so the model
+        // can emit multiple/parallel calls (#192); only a NON-tool request
+        // that spuriously emits `</tool_call>` hard-stops here.
         if tool_call_end_token == Some(tok) && !a.inside_thinking {
             a.output_tokens.push(tok);
             // Fix A (2026-06-05): mark the tool call complete so the EOS-escape
@@ -409,12 +429,21 @@ pub fn process_decode_logits(
                     }
                 }
             }
-            if a.grammar_state.is_none() && !crate::scheduler::helpers::legacy_multicall_enabled() {
-                // Legacy mode (kill-switch ATLAS_LEGACY_MULTICALL=0): stop after
-                // the first tool call. Default-on multi-call leaves the sequence
-                // running so the model can emit further `<tool_call>` blocks
-                // (parallel) or its real EOS to stop — mirroring llama.cpp's
-                // parse-from-raw multi-call. See legacy_multicall_enabled().
+            if a.grammar_state.is_none() && !a.tools_present {
+                // Plain-chat hard stop: a request with NO tools declared has no
+                // business emitting `<tool_call>` blocks — end the turn (the
+                // historical "legacy mode" behavior, now scoped to non-tool
+                // requests only).
+                //
+                // #192: when tools ARE declared (`tools_present`), a closed
+                // tool call no longer finishes the sequence even without an
+                // active grammar (grammar disengaged mid-response on a
+                // model/matcher disagreement, opted out, or disabled). vLLM
+                // parity: keep decoding so the model can emit PARALLEL calls;
+                // the turn ends at natural EOS (require_tool_call was cleared
+                // at `<tool_call>`, so EOS is no longer suppressed) or via the
+                // tool watchdogs (post-completion open cap above, prose
+                // budget, loop detectors) if it runs on.
                 a.finished = true;
             }
             // Mirror finish_sequence (lines ~3445-3448): keep
@@ -456,26 +485,18 @@ pub fn process_decode_logits(
             && a.tool_call_completed
             && !a.inside_tool_body
             && !a.inside_thinking;
-        // EOS is grammatically valid whenever the grammar is at a COMPLETION
-        // point (root rule matched ⇒ a stop token may be emitted now) — NOT only
-        // once a stop token has already been accepted. The previous
-        // `!is_terminated()` test was `!stop_token_accepted`, which is circular:
-        // it suppressed EOS until an EOS was accepted, so under `tool_choice=auto`
-        // (triggered tags, `at_least_one=false`, `stop_after_first=false`) the
-        // matcher never reported done and the model could NEVER cleanly decline
-        // (free-text preamble) or stop after parallel calls. The only stop path
-        // was the `eos_escape` hatch, which requires a *completed* call — so
-        // declined turns (BFCL irrelevance/hallucination) were forced into a
-        // spurious tool call and cratered (100→33). `is_grammar_completed()` is
-        // the matcher's own "stop allowed" signal: true in the auto preamble and
-        // between completed tags, false mid-tag and before the first required tag
-        // (`required` mode stays correctly EOS-suppressed). Restores clean
-        // decline + multi-call stop, matching llama.cpp lazy-grammar semantics.
-        let grammar_suppresses_eos = a
-            .grammar_state
-            .as_ref()
-            .is_some_and(|gs| !gs.is_grammar_completed())
-            && !eos_escape;
+        // #192: grammar EOS suppression is STOP-LEGALITY based (may the
+        // response legally end at the current matcher position?), not
+        // `!is_terminated()`. A tool_choice="auto" trigger grammar never
+        // terminates, so the old gate suppressed EOS for the whole turn when
+        // no call completed — armed-but-unused tools ran to
+        // finish_reason="length" (live probe #6, 2026-07-02). Evaluated only
+        // when the sampled token IS an EOS token: `grammar_blocks_stop`
+        // fills a bitmask (`stop_legal`), too costly as a per-token
+        // predicate and meaningless otherwise.
+        let grammar_suppresses_eos = a.eos_tokens.contains(&tok)
+            && !eos_escape
+            && crate::grammar::grammar_blocks_stop(a.grammar_state.as_mut(), &a.eos_tokens);
         let legacy_suppresses_eos = a.require_tool_call;
         let min_tokens_suppresses = a.output_tokens.len() < a.min_tokens;
         // Suppress EOS during thinking: <|im_end|> inside <think> is spurious.
@@ -601,6 +622,13 @@ pub fn process_decode_logits(
                 }
             }
             if a.remaining == 0 {
+                // #144: non-MTP twin of the budget-aware close in
+                // `emit_step::emit_token`. The grammar already accepted `tok`
+                // above (line ~230), so it is at the current position; if it
+                // is active and cannot legally stop here (open JSON string),
+                // emit the shortest grammar-legal close so the length-stopped
+                // output is still parseable.
+                crate::scheduler::emit_step::emit_grammar_close(a);
                 tracing::info!(
                     "process_decode_logits: remaining=0, output_tokens={}, thinking_tokens={}",
                     a.output_tokens.len(),

@@ -94,6 +94,50 @@ impl ChatTokenizer {
             .map_err(|e| anyhow::anyhow!("Tokenizer decode error: {e}"))
     }
 
+    /// Incremental detokenizer (vLLM `detokenize_incrementally` scheme).
+    /// Returns the newly-STABLE decoded bytes of `toks` since the last call and
+    /// advances the offsets. Only the suffix window `toks[prefix_offset..]` is
+    /// decoded each call (a handful of tokens since the last stable boundary),
+    /// so streaming a full response is O(n) rather than re-decoding the whole
+    /// history every token (O(n²)).
+    ///
+    /// Byte-identical to `decode(&all_toks)` + `trim_end_matches('\u{FFFD}')`
+    /// for byte-level BPE and SentencePiece tokenizers: a token's decoded bytes
+    /// do not depend on tokens before it, so `decode(toks[prefix_offset..])` is
+    /// exactly the corresponding suffix of `decode(toks)`. A token whose window
+    /// decode ends in U+FFFD (incomplete multibyte) is held back — the offsets
+    /// stay put, so the window naturally extends until a later token completes
+    /// the codepoint (same deferral the old `trim_end_matches` did). Uses the
+    /// skip-special-tokens `decode`, matching the full-decode it replaces.
+    pub fn incremental_decode(
+        &self,
+        toks: &[u32],
+        prefix_offset: &mut usize,
+        read_offset: &mut usize,
+    ) -> String {
+        // Guard against stale offsets after an `all_toks` reset.
+        if *read_offset > toks.len() || *prefix_offset > *read_offset {
+            *prefix_offset = 0;
+            *read_offset = 0;
+        }
+        let prefix_text = self
+            .decode(&toks[*prefix_offset..*read_offset])
+            .unwrap_or_default();
+        let new_text = self.decode(&toks[*prefix_offset..]).unwrap_or_default();
+        if new_text.len() > prefix_text.len()
+            && !new_text.ends_with('\u{FFFD}')
+            && let Some(delta) = new_text.get(prefix_text.len()..)
+        {
+            let delta = delta.to_string();
+            *prefix_offset = *read_offset;
+            *read_offset = toks.len();
+            return delta;
+        }
+        // Incomplete multibyte at the tail (or a non-boundary split): hold this
+        // token; the offsets stay put so the next call retries with more context.
+        String::new()
+    }
+
     /// Create a stateful streaming decoder wrapper. Each `step(token_id)` returns
     /// `Ok(Some(chunk))` when enough bytes have accumulated for valid UTF-8,
     /// or `Ok(None)` for incomplete multi-byte sequences.
@@ -135,6 +179,18 @@ impl ChatTokenizer {
         let messages_val = minijinja::Value::from_serialize(&messages_for_render);
         let tools_val = tools.map(minijinja::Value::from_serialize);
 
+        // Diagnostic "continue final message" mode: when the LAST message is an
+        // assistant turn, render WITHOUT a generation prompt and strip the
+        // trailing end-of-turn marker so the assistant content becomes the final
+        // prefill token(s). This lets a prefill-vs-decode A/B place a generated
+        // token at the exact position decode produced it. (Standard
+        // continue_final_message convention.)
+        let continue_final = messages
+            .last()
+            .and_then(|m| m.get("role"))
+            .and_then(|r| r.as_str())
+            == Some("assistant");
+
         // Pass enable_thinking as-is to the template. The Qwen3.5 template uses it
         // to emit <think>\n (thinking) or <think>\n\n</think>\n\n (no thinking).
         // Mistral template uses reasoning_effort instead.
@@ -149,17 +205,27 @@ impl ChatTokenizer {
         let ctx = minijinja::context! {
             messages => messages_val,
             tools => tools_val.unwrap_or(minijinja::Value::UNDEFINED),
-            add_generation_prompt => true,
+            add_generation_prompt => !continue_final,
             enable_thinking => enable_thinking,
             reasoning_effort => reasoning_effort,
             disable_tool_steering => disable_tool_steering,
             add_vision_id => false,
         };
 
-        let rendered = tmpl.render(ctx).map_err(|e| {
+        let mut rendered = tmpl.render(ctx).map_err(|e| {
             tracing::error!("Jinja template error: {e:#}");
             anyhow::anyhow!("Failed to render Jinja chat template: {e}")
         })?;
+
+        if continue_final {
+            // Strip the trailing end-of-turn so the assistant content is the
+            // last prefill token (qwen-style templates close with
+            // `<|im_end|>\n`). Trim trailing whitespace first, then the marker.
+            let trimmed = rendered.trim_end();
+            let stripped = trimmed.strip_suffix("<|im_end|>").unwrap_or(trimmed);
+            rendered = stripped.to_string();
+            tracing::info!("continue_final_message: stripped trailing EOT for prefill A/B");
+        }
 
         // Debug: log the tail of the rendered template for the first few requests.
         // Use floor_char_boundary to avoid panicking on multi-byte UTF-8 (e.g. Swedish å ä ö).

@@ -56,6 +56,9 @@ pub struct Qwen3SsmLayer {
     gated_rms_norm_k: KernelHandle,
     gated_rms_norm_f32_k: KernelHandle,
     dense_gemv_k: KernelHandle,
+    /// K=2 verify: batched (M=2) BF16 GDN in_proj_qkvz — one weight pass for
+    /// both verify tokens instead of two M=1 `dense_gemv` reads.
+    dense_gemv_batch2_k: KernelHandle,
     w4a16_gemv_k: KernelHandle,
     w8a16_gemv_k: KernelHandle,
     w4a16_gemv_qkvz_k: KernelHandle,
@@ -65,6 +68,10 @@ pub struct Qwen3SsmLayer {
     conv1d_l2norm_f32_k: KernelHandle,
     gdn_k: KernelHandle,
     gdn_f32_k: KernelHandle,
+    gdn_f32_norm_k: KernelHandle,
+    gdn_f32_conv_norm_k: KernelHandle,
+    gdn_f32_strided_k: KernelHandle,
+    gdn_f32_strided_norm_k: KernelHandle,
     ba_gates_k: KernelHandle,
     residual_add_k: KernelHandle,
     l2_norm_k: KernelHandle,
@@ -77,6 +84,7 @@ pub struct Qwen3SsmLayer {
     w4a16_gemm_t_k: KernelHandle, // Transposed B layout [K/2, N] — K_STEP_T=32
     w4a16_gemm_t_k64_k: KernelHandle, // K64 variant: K_STEP_T=64, halves outer loop
     w4a16_gemm_t_m128_k: KernelHandle, // M128 variant: 2 M-chunks per CTA, halves B re-reads
+    w4a16_gemm_t_m128_v2_k: KernelHandle, // M128 8-warp pipelined (fast at small M; the FFN's kernel)
     w4a16_gemv_batch2_k: KernelHandle,
     dense_gemm_k: KernelHandle,
     dense_gemm_pipelined_k: KernelHandle,
@@ -85,11 +93,21 @@ pub struct Qwen3SsmLayer {
     gdn_prefill_split4_k: KernelHandle,
     gdn_prefill_persistent_k: KernelHandle,
     gdn_prefill_persistent_wy4_k: KernelHandle,
+    /// Register-resident token-sequential warm-replay recurrence (H in regs, >=2
+    /// CTA/SM, no barriers). Token-equal to WY4 (cosine 1.0), ~2.9x faster.
+    /// Gated behind ATLAS_GDN_REGRESIDENT until serve-validated.
+    gdn_prefill_regresident_k: KernelHandle,
     /// FLA multi-kernel chunked prefill (baked default for 128-dim GDN): recompute_wu →
     /// chunk_delta_h_ksplit (k-split occupancy) → chunk_fwd_o. 1.75x vs wy4 @16k,
     /// token-equal (cos=1.0 vs scalar). Three handles; all must be non-null.
     gdn_prefill_fla_recompute_wu_k: KernelHandle,
     gdn_prefill_fla_chunk_delta_h_k: KernelHandle,
+    /// Tensor-core / DV-block-split variant of the FLA chunk_delta_h spine
+    /// (`gated_delta_rule_chunk_delta_h_tc_vblock`). Loaded by default but not
+    /// yet wired into the prefill dispatch — the cos-gate validates it in
+    /// isolation first. `allow(dead_code)` until the launch site reads it.
+    #[allow(dead_code)]
+    gdn_prefill_fla_chunk_delta_h_tc_vblock_k: KernelHandle,
     gdn_prefill_fla_chunk_fwd_o_k: KernelHandle,
     /// WY32 chunked prefill: processes 32 tokens per WY iteration with H in
     /// shared memory. ~30x faster than per-token for 14k+ sequences.
@@ -112,6 +130,11 @@ pub struct Qwen3SsmLayer {
     // Kernels — fused chunk3 path (3-token verification)
     gdn_chunk3_k: KernelHandle,
     w4a16_gemv_batch3_k: KernelHandle,
+    // NVFP4 batched decode GEMV (multi-seq concurrency): batch4 (M<=4) /
+    // batch16 (M<=16) — siblings of w8a16_gemv_batch4/16 for the FP4 QKVZ +
+    // out_proj, so FP4 decode amortizes the weight read at C=4..16 like FP8.
+    w4a16_gemv_batch4_k: KernelHandle,
+    w4a16_gemv_batch16_k: KernelHandle,
     // Kernels — WY-chunkwise path (2-pass verification)
     gdn_wy2_k: KernelHandle,
     gdn_wy3_k: KernelHandle,
@@ -122,6 +145,11 @@ pub struct Qwen3SsmLayer {
     /// per-token path runs unchanged otherwise. Bit-identical (cos == 1.0).
     gdn_verify_fused_conv_k2_k: KernelHandle,
     gdn_verify_fused_norm_k2_k: KernelHandle,
+    /// Fused generic-K verify conv1d+L2norm (one launch for all K positions,
+    /// rollback snapshots written inline). Used by the K=17 DFlash verify arm;
+    /// default ON when present, kill-switch `ATLAS_GDN_FUSED_CONV17=0`.
+    /// NULL handle on targets lacking the .cu → per-token loop unchanged.
+    gdn_verify_fused_conv_kn_k: KernelHandle,
     /// WY-Chunkwise K=17 GDN verify (DFlash γ+1). Only present in
     /// qwen3.6-35b-a3b's PTX module set; NULL handle for other targets,
     /// in which case decode_batched(K=17) falls through to the sequential
@@ -143,6 +171,15 @@ pub struct Qwen3SsmLayer {
     // KernelHandle(0) when not linked into the image. Gated ON only when
     // ATLAS_W8A16_PIPELINED=1 (default OFF — production dispatch unchanged).
     w8a16_gemm_pipelined_k: KernelHandle,
+    // M<=4 weight-streaming block-scaled FP8 GEMV. Replaces the M-padded
+    // w8a16_gemm_pipelined for n<=4 batched decode (qkvz + out_proj): pipelined
+    // pads M=4 to a 128-row MMA tile (32× compute over-provision, issue-bound);
+    // this streams the weight once with 4 FP32 accumulators. Bit-identical per
+    // row to w8a16_gemv. KernelHandle(0) when not linked.
+    w8a16_gemv_batch4_k: KernelHandle,
+    // M<=16 sibling of batch4 for high-concurrency decode (n=5..16): same
+    // weight-streaming GEMV, avoids the M-padded MMA at C=8/16.
+    w8a16_gemv_batch16_k: KernelHandle,
     w8a16_gemm_t_k: KernelHandle,
     // W8A8 + FP32 epilogue (vLLM-equivalent) prefill kernels.
     // `per_token_group_quant_fp8` produces FP8 activations + per-token-per-128
@@ -322,6 +359,47 @@ impl TransformerLayer for Qwen3SsmLayer {
         )
     }
 
+    fn prefill_phase1_proj_batched(
+        &self,
+        hidden_stacked: DevicePtr,
+        residual_stacked: DevicePtr,
+        total_tokens: usize,
+        gdn_bufs: &GdnPrefillBuffers,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        self.prefill_phase1_proj_batched_inner(
+            hidden_stacked,
+            residual_stacked,
+            total_tokens,
+            gdn_bufs,
+            ctx,
+            stream,
+        )
+    }
+
+    fn prefill_phase1_conv1d_one(
+        &self,
+        state: &mut dyn LayerState,
+        token_offset: usize,
+        len: usize,
+        gdn_bufs: &GdnPrefillBuffers,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        self.prefill_phase1_conv1d_one_inner(state, token_offset, len, gdn_bufs, ctx, stream)
+    }
+
+    fn prefill_phase1_l2_batched(
+        &self,
+        total_tokens: usize,
+        gdn_bufs: &GdnPrefillBuffers,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        self.prefill_phase1_l2_batched_inner(total_tokens, gdn_bufs, ctx, stream)
+    }
+
     fn prefill_gdn_full(
         &self,
         state: &mut dyn LayerState,
@@ -346,6 +424,31 @@ impl TransformerLayer for Qwen3SsmLayer {
             gdn_bufs,
             batch_size,
             chunk_len,
+            ctx,
+            stream,
+        )
+    }
+
+    fn prefill_gdn_full_batched_fla_varlen(
+        &self,
+        h_state_ptrs: DevicePtr,
+        gdn_bufs: &GdnPrefillBuffers,
+        batch_size: u32,
+        cu_seqlens: DevicePtr,
+        max_num_chunks: u32,
+        total_nt: usize,
+        max_seqlen: u32,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<bool> {
+        self.prefill_gdn_full_batched_fla_varlen_inner(
+            h_state_ptrs,
+            gdn_bufs,
+            batch_size,
+            cu_seqlens,
+            max_num_chunks,
+            total_nt,
+            max_seqlen,
             ctx,
             stream,
         )
@@ -378,33 +481,4 @@ impl TransformerLayer for Qwen3SsmLayer {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use atlas_core::config::ModelConfig;
-    use spark_runtime::gpu::mock::MockGpuBackend;
-
-    #[test]
-    fn test_ssm_state_allocation_sizes() {
-        let config = ModelConfig::qwen3_next_80b_nvfp4();
-        let nv = config.linear_num_value_heads; // 32
-        let vd = config.linear_value_head_dim; // 128
-        let nk = config.linear_num_key_heads; // 16
-        let kd = config.linear_key_head_dim; // 128
-        let d_conv = config.linear_conv_kernel_dim; // 4
-
-        let h_bytes = nv * vd * kd * 4;
-        assert_eq!(h_bytes, 32 * 128 * 128 * 4); // 2 MB
-
-        // conv_dim = 2*key_dim + value_dim = 2*2048 + 4096 = 8192
-        let conv_dim = nk * kd * 2 + nv * vd;
-        let conv_bytes = conv_dim * d_conv * 4;
-        assert_eq!(conv_bytes, 8192 * 4 * 4); // 128 KB
-
-        // Verify allocations
-        let gpu = MockGpuBackend::new();
-        let h_state = gpu.alloc(h_bytes).unwrap();
-        let conv_state = gpu.alloc(conv_bytes).unwrap();
-        assert!(!h_state.is_null());
-        assert!(!conv_state.is_null());
-    }
-}
+mod tests;

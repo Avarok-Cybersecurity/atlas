@@ -213,7 +213,7 @@ impl DraftProposer for MultiModuleMtpHead {
         Ok(())
     }
 
-    fn free_state(&self, state: &mut dyn ProposerState) -> Result<()> {
+    fn free_state(&self, _gpu: &dyn GpuBackend, state: &mut dyn ProposerState) -> Result<()> {
         let mm_state = state
             .as_any_mut()
             .downcast_mut::<MultiModuleMtpState>()

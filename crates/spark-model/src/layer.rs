@@ -142,11 +142,22 @@ pub struct BatchedAttnMetadata {
     // per-layer-call into the model's scratch buffer.
     /// Number of batched streams.
     pub batch_size: u32,
-    /// Per-stream chunk_len (SAME for all streams — scheduler-enforced
-    /// constraint via `can_batch_prefill_only`).
+    /// Per-stream chunk_len. In the legacy same-length path this is uniform; in
+    /// the VARLEN path (`cu_seqlens` populated) it is the MAX per-stream length
+    /// (retained only for buffer-bound/debug use — per-stream lengths come from
+    /// `cu_seqlens`).
     pub chunk_len: u32,
-    /// Total tokens stacked across streams: `batch_size * chunk_len`.
+    /// Total tokens stacked across streams. Legacy: `batch_size * chunk_len`.
+    /// VARLEN: `Σ per-stream lengths` (= `cu_seqlens_host[batch_size]`).
     pub total_tokens: u32,
+    /// VARLEN geometry: `[batch_size+1]` i32 prefix-sum of per-request token
+    /// counts, on device (read by the GDN kernel + FlashInfer). `DevicePtr::NULL`
+    /// in the legacy same-length path (callers fall back to `b*chunk_len`).
+    pub cu_seqlens: DevicePtr,
+    /// Host copy of `cu_seqlens` (`[batch_size+1]` i32) — FlashInfer's PrefillPlan
+    /// dereferences the indptr on the CPU, and per-request slice offsets are
+    /// computed host-side. Empty in the legacy path.
+    pub cu_seqlens_host: Vec<i32>,
     /// Maximum block_table length across the batch (kernel uses for
     /// bounds checking; per-stream block_table reads via the pointer
     /// array dereference).
@@ -223,6 +234,10 @@ pub struct ForwardContext<'a> {
     /// `cap_local` and copy the @tb state into the reserved snapshot slot.
     /// `None` (default) => no split, byte-identical to prior behavior.
     pub midchunk_capture: Option<MidchunkCapture<'a>>,
+    /// DeepSeek-V4 hash-MoE layers (static `tid2eid[token_id]` routing); `None`
+    /// for models without hash routing. Must be a STABLE address across the
+    /// layer loop (and, under CUDA-graph decode, uploaded before each replay).
+    pub token_ids: Option<DevicePtr>,
 }
 
 /// Per-pass descriptor for mid-chunk SSM tail capture. Points at the reserved
@@ -232,6 +247,7 @@ pub struct ForwardContext<'a> {
 /// `ssm_layer_counter` is a fresh per-pass counter: each SSM layer's prefill
 /// increments it once, in model order, so the value indexes `h_dsts`/`conv_dsts`
 /// (which are in the same SSM-layer order as the snapshot pool).
+#[derive(Clone, Copy)]
 pub struct MidchunkCapture<'a> {
     /// Split point in local token coordinates: capture state AFTER this many
     /// tokens (== `tb - proc_start`).

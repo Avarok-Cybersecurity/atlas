@@ -26,6 +26,13 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     tracing::info!("Atlas Spark starting...");
     tracing::info!("Licensed under AGPL-3.0-only — see /LICENSE in this container");
 
+    // Reject contradictory flag combinations up front (issue #288) — before the
+    // multi-minute model load — with a message that tells humans and AI agents
+    // exactly what to change. Hard error, never a warning.
+    if let Err(msg) = cli::validate_serve_args(&args) {
+        anyhow::bail!("{msg}");
+    }
+
     // 0. Resolve model directory from HF ID or path
     let model_dir = serve_phases::resolve_model_dir(&args)?;
 
@@ -136,6 +143,28 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         ptx_set.target,
         ptx_set.modules.len(),
     );
+
+    // Text-only kernel target + a checkpoint that ships a vision tower: honor the
+    // TARGET spec and serve text-only rather than failing the build at
+    // `vision_encoder module not loaded`. Some VL checkpoints (e.g.
+    // Kbenkhaled/Qwen3.5-27B-NVFP4) carry a `vision_config`, but their Atlas
+    // kernel target (qwen3.5-27b) ships no `vision_encoder` PTX module. Drop the
+    // vision tower to text-only; image inputs are unsupported until the target
+    // is rebuilt with vision.
+    if config.vision.is_some()
+        && !ptx_set
+            .modules
+            .iter()
+            .any(|(name, _)| *name == "vision_encoder")
+    {
+        tracing::warn!(
+            "Checkpoint declares a vision tower but kernel target {} ships no \
+             vision_encoder module — serving TEXT-ONLY (image inputs ignored). \
+             Rebuild the target with vision to enable images.",
+            ptx_set.target,
+        );
+        config.vision = None;
+    }
 
     // Apply MODEL.toml [behavior].default_num_drafts unless user passed --num-drafts.
     serve_phases::apply_model_default_num_drafts(&mut args, &ptx_set);
@@ -539,6 +568,16 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     let scheduler_spontaneous_think_budget = args
         .max_thinking_budget
         .unwrap_or(ptx_set.behavior.max_thinking_budget);
+    // DFlash mode: the drafter proposes on raw argmax, so the verify steps
+    // must judge acceptance on the same (GOLD) basis — skipping the
+    // rep_pen/DRY pre-sample pipeline — or drafter and verifier disagree by
+    // construction and accept craters. ATLAS_DFLASH_MASKED_VERIFY=1 routes
+    // verify PICKS back through the pre-sample masking (unmasked
+    // special-token leak fix); that is handled at the pick sites via
+    // `verify_pipeline_helper::dflash_masked_verify_enabled()` and must NOT
+    // flip this bool — this selects the verify architecture, not the pick
+    // basis.
+    let dflash_verify_raw_argmax = args.dflash;
     std::thread::spawn(move || {
         scheduler::run(
             scheduler_model,
@@ -546,6 +585,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             scheduler_eos,
             max_batch_size,
             use_speculative,
+            dflash_verify_raw_argmax,
             num_drafts,
             policy,
             max_prefill_tokens,
@@ -578,12 +618,17 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     serve_phases::log_response_store_audit(&response_store, &rate_limiter);
     let dump_writer = serve_phases::open_dump_writer(&args);
     let auth = build_auth_config(&args)?;
+    let vision_max_pixels = resolve_vision_max_pixels(&args)?;
+    if let Some(max_pixels) = vision_max_pixels {
+        tracing::info!("Vision max_pixels cap enabled: {}", max_pixels);
+    }
     let state = Arc::new(AppState {
         tokenizer,
         model_name,
         max_seq_len: args.max_seq_len,
         request_tx,
         vision_config: config.vision.clone(),
+        vision_max_pixels,
         default_temperature,
         default_top_k,
         default_top_p,
@@ -669,6 +714,23 @@ fn build_auth_config(args: &cli::ServeArgs) -> Result<Option<Arc<crate::auth::Au
     Ok(Some(Arc::new(cfg)))
 }
 
+fn resolve_vision_max_pixels(args: &cli::ServeArgs) -> Result<Option<usize>> {
+    if args.vision_max_pixels > 0 {
+        return Ok(Some(args.vision_max_pixels));
+    }
+    let Some(raw) = std::env::var("ATLAS_VISION_MAX_PIXELS").ok() else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "0" {
+        return Ok(None);
+    }
+    let parsed = trimmed.parse::<usize>().with_context(|| {
+        format!("ATLAS_VISION_MAX_PIXELS must be a positive integer, got {raw:?}")
+    })?;
+    Ok((parsed > 0).then_some(parsed))
+}
+
 /// QV1 (2026-05-26): canonicalize the model's declared quantization to
 /// one of `"fp8"`, `"nvfp4"`, `"bf16"`, or `"unknown"`. Reads
 /// `quantization_config.quant_method`/`quant_algo`/`format` and applies
@@ -698,8 +760,16 @@ fn canonicalize_model_quant(config: &atlas_core::config::ModelConfig) -> String 
     if algo == "nvfp4" || algo == "mixed_precision" || fmt.contains("nvfp4") {
         return "nvfp4".into();
     }
-    // FP8 detection — explicit algo OR method/format containing "fp8".
-    if algo == "fp8" || method.contains("fp8") || fmt.contains("fp8") {
+    // FP8 detection — explicit algo OR method/format containing "fp8", OR
+    // compressed-tensors' `float-quantized` block-FP8 (e.g.
+    // Hcompany/Holo-3.1-*-FP8: `quant_method="compressed-tensors"`,
+    // `format="float-quantized"`, num_bits=8). That format string contains no
+    // literal "fp8", so match it explicitly. Canonicalizing to "fp8" lets the
+    // nvfp4 kernel bundle accept it (quant_pair_compatible: nvfp4↔fp8) — the
+    // loader detects the FP8E4M3 weight dtype as Fp8Dequanted and requants
+    // FP8→BF16→NVFP4 from the 2D `.weight_scale` (nvfp4_detect.rs).
+    if algo == "fp8" || method.contains("fp8") || fmt.contains("fp8") || fmt.contains("float-quant")
+    {
         return "fp8".into();
     }
     // compressed-tensors with no FP8/NVFP4 marker is usually GPTQ/AWQ —

@@ -119,7 +119,15 @@ pub(super) fn parse_header(file: &mut File) -> Result<Vec<TensorMeta>> {
             "F32" => WeightDtype::FP32,
             "BF16" => WeightDtype::BF16,
             "U8" => WeightDtype::UInt8,
+            // I8 is a 1-byte raw container; DeepSeek-V4-Flash-NVFP4 ships its MTP
+            // experts' 4-bit-packed weights as I8 (vs U8 for the main layers).
+            // Signedness is irrelevant for packed FP4 — the dequant kernel extracts
+            // nibbles by bit ops — so treat I8 as raw bytes (UInt8), matching the
+            // NVFP4 expert path.
+            "I8" => WeightDtype::UInt8,
             "F8_E4M3" => WeightDtype::FP8E4M3,
+            "F8_E8M0" => WeightDtype::FP8E8M0,
+            "I64" => WeightDtype::Int64,
             other => bail!("Unsupported safetensors dtype '{other}' for tensor {name}"),
         };
         let shape: Vec<usize> = info["shape"]

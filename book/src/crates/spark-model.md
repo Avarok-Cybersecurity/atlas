@@ -45,7 +45,7 @@ Every layer type is a trait object. The decode-step loop in `engine.rs` iterates
 | Dense FFN | `dense_ffn.rs` | Dense models (Qwen3.5-27B, Gemma-4-31B) |
 | Gemma-4 sliding+full alternating attention | `gemma4_attention.rs` | Gemma-4-31B |
 | Mistral attention + MoE | `mistral_attention.rs`, `mistral_moe.rs` | Mistral-Small-4 |
-| MiniMax attention + 256-expert sigmoid MoE | `minimax_attention.rs`, `minimax_moe.rs` | MiniMax-M2.7 |
+| MiniMax attention + 256-expert sigmoid MoE | `weight_loader/minimax.rs`, `layers/moe/` | MiniMax-M2.7 |
 | Vision ViT block + merger | `vision_encoder.rs` | Qwen3-VL, Qwen3.6 |
 
 New models reuse these where possible. Writing a new layer type is rare — the MiniMax 256-expert sigmoid-routed MoE is the most recent example, and it was a new file because the routing semantics genuinely differ from softmax-topk. Gemma-4's sliding+full alternation got a new file because the attention window masks alternate per layer.

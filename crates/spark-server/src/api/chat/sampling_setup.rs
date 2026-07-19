@@ -85,20 +85,29 @@ pub(super) fn build_sampling(
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
 
+    // Core sampling (temp/top_k/top_p) defaults to the model's shipped
+    // generation_config.json (state.default_*) — matching vLLM and the model
+    // author's recommended config — instead of the hand-curated MODEL.toml
+    // [sampling] presets. The lower preset temps (e.g. Holo thinking/tools =
+    // 0.6 vs generation_config 1.0) made the model over-commit to tool calls
+    // vs vLLM: lower temperature is more deterministic, so it picks "call the
+    // tool" far more consistently. The selected preset still drives the
+    // penalties below (generation_config doesn't define those); min_p and
+    // top_n_sigma already default to generation_config.
     let temperature = if force_temp_zero {
         0.0
     } else {
-        req.temperature.unwrap_or(preset.temperature)
+        req.temperature.unwrap_or(state.default_temperature)
     };
     let top_k = if force_temp_zero {
         0
     } else {
-        req.top_k.unwrap_or(preset.top_k)
+        req.top_k.unwrap_or(state.default_top_k)
     };
     let top_p = if force_temp_zero {
         1.0
     } else {
-        req.top_p.unwrap_or(preset.top_p)
+        req.top_p.unwrap_or(state.default_top_p)
     };
     let top_n_sigma = if force_temp_zero {
         0.0
@@ -215,13 +224,17 @@ pub(super) fn build_sampling(
     };
 
     // Stop tokens.
-    let mut stop_tokens = tokenize_stop_sequences(&state.tokenizer, &req.stop);
-    if tools_active
-        && let Ok(ids) = state.tokenizer.encode("</tool_call>")
-        && ids.len() == 1
-    {
-        stop_tokens.push(ids[0]);
-    }
+    //
+    // #192: `</tool_call>` is deliberately NOT a stop token. It used to be
+    // pushed here for every tools-active request, which (a) hard-stopped the
+    // MTP/emit path at the FIRST closed tool call (the token hit the EOS
+    // handler and was even dropped from the output), and (b) landed in the
+    // grammar's stop-token exemption set, so the matcher never advanced
+    // across the end-tag literal and desynced before a second call. vLLM
+    // parity: generation continues past a closed call until natural EOS so
+    // the model can emit parallel calls; the scheduler's tool watchdogs
+    // (post-completion open cap, prose budget, loop detectors) bound run-on.
+    let stop_tokens = tokenize_stop_sequences(&state.tokenizer, &req.stop);
 
     // Tool-choice + parser-driven required mode.
     let tool_choice_required = tool_choice_required_for_parser(
@@ -299,8 +312,7 @@ pub(super) fn build_sampling(
         None
     };
 
-    // top_logprobs (OpenAI spec: 0-20).
-    let top_logprobs = req.top_logprobs.map(|n| n.min(20));
+    let top_logprobs = resolve_top_logprobs(req.logprobs, req.top_logprobs);
 
     Ok(SamplingSetup {
         temperature,
@@ -325,9 +337,41 @@ pub(super) fn build_sampling(
     })
 }
 
+/// Resolve chat logprobs params (OpenAI spec): an explicit
+/// `top_logprobs` count wins (clamped 0-20); `logprobs: true` alone
+/// enables sampled-token logprobs with no alternatives (count 0);
+/// otherwise disabled.
+pub(crate) fn resolve_top_logprobs(logprobs: Option<bool>, top_logprobs: Option<u8>) -> Option<u8> {
+    match (logprobs, top_logprobs) {
+        (_, Some(n)) => Some(n.min(20)),
+        (Some(true), None) => Some(0),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::resolve_top_logprobs;
     use super::tool_choice_required_for_parser;
+
+    #[test]
+    fn logprobs_true_alone_enables_with_zero_top() {
+        assert_eq!(resolve_top_logprobs(Some(true), None), Some(0));
+    }
+
+    #[test]
+    fn explicit_top_logprobs_wins_and_clamps() {
+        assert_eq!(resolve_top_logprobs(None, Some(5)), Some(5));
+        assert_eq!(resolve_top_logprobs(Some(false), Some(3)), Some(3));
+        assert_eq!(resolve_top_logprobs(Some(true), Some(99)), Some(20));
+    }
+
+    #[test]
+    fn absent_or_false_disables() {
+        assert_eq!(resolve_top_logprobs(None, None), None);
+        assert_eq!(resolve_top_logprobs(Some(false), None), None);
+    }
+
     use crate::tool_parser::{ToolChoice, ToolChoiceFunction};
 
     #[test]

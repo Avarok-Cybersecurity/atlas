@@ -4,10 +4,27 @@
 #![deny(clippy::all)]
 
 pub mod buffers;
+#[cfg(all(feature = "cuda", not(atlas_scale)))]
+pub mod cublaslt;
+// Metal/no-cuda builds get unreachable stubs so spark-model's unconditional
+// references to these cuda-only entry points still resolve (compile-only).
+#[cfg(any(not(feature = "cuda"), atlas_scale))]
+#[path = "cublaslt_metal_stub.rs"]
+pub mod cublaslt;
 #[cfg(feature = "cuda")]
 pub mod cuda_backend;
+#[cfg(all(feature = "cuda", not(atlas_scale)))]
+pub mod cutlass;
+#[cfg(any(not(feature = "cuda"), atlas_scale))]
+#[path = "cutlass_metal_stub.rs"]
+pub mod cutlass;
 #[cfg(unix)]
 pub mod fast_weights;
+#[cfg(feature = "cuda")]
+pub mod flashinfer;
+#[cfg(not(feature = "cuda"))]
+#[path = "flashinfer_metal_stub.rs"]
+pub mod flashinfer;
 pub mod gpu;
 pub mod kernel_args;
 pub mod kernel_audit;

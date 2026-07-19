@@ -62,13 +62,17 @@ pub fn step_verify_k2(
     drafts: &[u32],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+    dflash_verify_raw_argmax: bool,
 ) {
+    use crate::scheduler::mtp_timing::{self, Phase};
+    let t_step = Instant::now();
     let t_sync = Instant::now();
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
         a.finished = true;
         return;
     }
+    mtp_timing::record(Phase::SyncSecondary, t_sync);
     let sync_us = t_sync.elapsed().as_micros();
 
     // EP: broadcast verify K=2 command + tokens so worker runs decode_verify_graphed in lockstep.
@@ -87,37 +91,60 @@ pub fn step_verify_k2(
         }
     }
 
+    mtp_timing::record(Phase::EpBroadcast, t_ep);
     let ep_us = t_ep.elapsed().as_micros();
 
     let t_verify = Instant::now();
-    let result = match model.decode_verify_graphed(&tokens_k2, &mut a.seq, 0) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!("decode_verify_graphed: {e:#}");
-            a.finished = true;
-            return;
+    // Fused single-sweep path: DFlash only AND single-rank only. Under EP
+    // (multi-rank) the worker ranks dispatch `decode_verify_graphed` on the
+    // broadcast cmd above, so the master MUST run the same method to stay in
+    // NCCL lockstep — the fused forward is not EP-coherent. The MTP path
+    // (non-raw-argmax) also stays on the legacy graphed verify unchanged.
+    let result_vec: Vec<u32> = if dflash_verify_raw_argmax && !model.is_ep() {
+        // Fused path: single M=2 forward, DFlash hidden captured at row 0.
+        match model.decode_and_verify_fused(&tokens_k2, &mut a.seq, 0) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("decode_and_verify_fused (k2): {e:#}");
+                a.finished = true;
+                return;
+            }
+        }
+    } else {
+        match model.decode_verify_graphed(&tokens_k2, &mut a.seq, 0) {
+            Ok(r) => r.to_vec(),
+            Err(e) => {
+                tracing::error!("decode_verify_graphed: {e:#}");
+                a.finished = true;
+                return;
+            }
         }
     };
+    mtp_timing::record(Phase::VerifyForward, t_verify);
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
-    let [v0_argmax, v1_argmax] = result;
+    let (v0_argmax, v1_argmax) = (result_vec[0], result_vec[1]);
 
-    // Phase C-2 (2026-05-24): apply the full pre-sample logits-
-    // processor pipeline to each verify position. Without this,
-    // MTP-emitted tokens escape every mask the non-MTP path applies
-    // (grammar desync + mid-word `</think>` cuts + stray `<think>`
-    // re-entry + malformed tool calls). The D2H copy is one-shot
-    // (~0.8ms for 256k vocab × K=2); not graph-captured. Acceptance
-    // is decided against the *processed* argmax, not the raw GPU
-    // argmax — the pipeline is what would have run if MTP were off.
-    let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
-        model,
-        &[v0_argmax, v1_argmax],
-        a,
-        verify_ctx,
-    );
-    let v0 = processed.first().copied().unwrap_or(v0_argmax);
-    let v1 = processed.get(1).copied().unwrap_or(v1_argmax);
+    let (v0, v1) = if dflash_verify_raw_argmax
+        && !crate::scheduler::verify_pipeline_helper::dflash_masked_verify_enabled()
+    {
+        // DFlash drafter proposes on raw argmax; verify on the SAME (GOLD) basis.
+        (v0_argmax, v1_argmax)
+    } else {
+        // MTP path: full pre-sample pipeline (rep_pen + DRY) unchanged.
+        // Phase C-2 (2026-05-24): apply the logits-processor pipeline to each
+        // verify position so MTP-emitted tokens see the same masks as non-MTP.
+        let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+            model,
+            &[v0_argmax, v1_argmax],
+            a,
+            verify_ctx,
+        );
+        (
+            processed.first().copied().unwrap_or(v0_argmax),
+            processed.get(1).copied().unwrap_or(v1_argmax),
+        )
+    };
     let accepted = drafts[0] == v0;
 
     // Extract logprobs from verify logits buffer (K=2 positions) when requested.
@@ -157,19 +184,36 @@ pub fn step_verify_k2(
         // Item #2 (STree-style in-place K=2 verify commit). Full accept
         // (num_accepted=k=2): the verify kernel already wrote the canonical
         // h_state, so the commit is a no-op.
+        let t_commit = Instant::now();
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 2, 2) {
             tracing::error!("commit_accepted_prefix (accept): {e:#}");
             return;
         }
+        mtp_timing::record(Phase::Commit, t_commit);
+
+        // EAGLE-fix (ATLAS_DFLASH_EAGLE_FIX=1, K=2 accept only): append row 0 @ N
+        // then row 1 @ N+1 BEFORE propose so forward_block conditions on row 1
+        // (the hidden that generated bonus). This also sets the proposer's
+        // skip-flag so propose does NOT re-append row 0.
+        let eagle_fix = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref() == Some("1");
+        if eagle_fix && let Err(e) = model.dflash_eagle_accept_append(&mut a.seq) {
+            tracing::error!("dflash_eagle_accept_append: {e:#}");
+        }
+        let t_save = Instant::now();
         if let Err(e) = model.save_hidden_for_mtp(1, 0) {
             tracing::error!("save_hidden_for_mtp(1): {e:#}");
             return;
         }
+        mtp_timing::record(Phase::SaveHidden, t_save);
+        let t_trim = Instant::now();
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 1, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
-        let t_propose = Instant::now();
+        mtp_timing::record(Phase::TrimProposer, t_trim);
+        let t_mask = Instant::now();
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
+        mtp_timing::record(Phase::ProposeMask, t_mask);
+        let t_propose = Instant::now();
         match model.run_mtp_propose_multi(
             v1,
             a.seq.seq_len,
@@ -184,6 +228,7 @@ pub fn step_verify_k2(
                 tracing::error!("run_mtp_propose_multi: {e:#}");
             }
         }
+        mtp_timing::record(Phase::Propose, t_propose);
         let propose_us = t_propose.elapsed().as_micros();
         // Per-step ACCEPT trace at debug — fires every step during
         // spec-decode. Power-user diagnostics:
@@ -197,24 +242,31 @@ pub fn step_verify_k2(
         k2_record_outcome(true, a.seq.seq_len);
         // #155 iter3: block-aligned Marconi checkpoint (live SSM state is
         // canonical post-commit). Fires only at interval boundaries.
+        let t_marconi = Instant::now();
         model.decode_marconi_checkpoint(&mut a.seq);
+        mtp_timing::record(Phase::MarconiCkpt, t_marconi);
+        mtp_timing::step_done(t_step, a.seq.seq_len);
     } else {
         // ── REJECTED ──
         a.seq.seq_len -= 1;
         a.seq.tokens.pop();
 
+        let t_trim = Instant::now();
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 0, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
+        mtp_timing::record(Phase::TrimProposer, t_trim);
         // Item #2 (STree-style in-place K=2 verify commit). K=2 reject means
         // num_accepted=1 (last_token is always accepted): the in-place
         // commit rewinds live h_state to intermediate[0] (state after the
         // accepted token). Verify draft state is discarded.
+        let t_commit = Instant::now();
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 1, 2) {
             tracing::error!("commit_accepted_prefix (reject): {e:#}");
             a.finished = true;
             return;
         }
+        mtp_timing::record(Phase::Commit, t_commit);
 
         emit_token(a, v0, verify_lps.first().cloned());
         if a.finished {
@@ -222,12 +274,16 @@ pub fn step_verify_k2(
         }
         a.last_token = v0;
 
+        let t_save = Instant::now();
         if let Err(e) = model.save_hidden_for_mtp(0, 0) {
             tracing::error!("save_hidden_for_mtp(0): {e:#}");
             return;
         }
-        let t_propose = Instant::now();
+        mtp_timing::record(Phase::SaveHidden, t_save);
+        let t_mask = Instant::now();
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
+        mtp_timing::record(Phase::ProposeMask, t_mask);
+        let t_propose = Instant::now();
         match model.run_mtp_propose_multi(
             v0,
             a.seq.seq_len,
@@ -242,6 +298,7 @@ pub fn step_verify_k2(
                 tracing::error!("run_mtp_propose_multi: {e:#}");
             }
         }
+        mtp_timing::record(Phase::Propose, t_propose);
         let propose_us = t_propose.elapsed().as_micros();
         let new_draft = a.pending_drafts.first().copied().unwrap_or(0);
         // REJECT log demoted from `info!` to `debug!` to match the
@@ -259,6 +316,9 @@ pub fn step_verify_k2(
         k2_record_outcome(false, a.seq.seq_len);
         // #155 iter3: block-aligned Marconi checkpoint (live SSM state is
         // canonical post-commit). Fires only at interval boundaries.
+        let t_marconi = Instant::now();
         model.decode_marconi_checkpoint(&mut a.seq);
+        mtp_timing::record(Phase::MarconiCkpt, t_marconi);
+        mtp_timing::step_done(t_step, a.seq.seq_len);
     }
 }

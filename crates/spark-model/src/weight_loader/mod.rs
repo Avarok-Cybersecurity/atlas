@@ -14,6 +14,7 @@
 //!   - `nemotron`: Nemotron-H (Mamba-2 + MoE + Attention)
 //!   - `gemma4`: Gemma-4 (pure attention, GeGLU, sliding + full attention)
 
+pub(crate) mod deepseek_v4;
 pub mod dflash_loader;
 mod gemma4;
 mod minimax;
@@ -24,6 +25,7 @@ mod qwen35_dense;
 mod qwen3_vl;
 mod step3p7;
 
+pub use deepseek_v4::DeepSeekV4WeightLoader;
 pub use dflash_loader::{
     DflashConfig, DflashLayerWeights, DflashSubConfig, DflashWeights, load_dflash_weights,
     store_has_dflash_weights,
@@ -168,7 +170,12 @@ pub trait ModelWeightLoader {
         crate::precision_schedule::PrecisionSchedule::default()
     }
 
-    fn load_embedding(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight>;
+    fn load_embedding(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        gpu: &dyn GpuBackend,
+    ) -> Result<DenseWeight>;
     /// Load the final RMSNorm weight used before the LM head.
     ///
     /// `gpu` is passed so model-specific loaders can do on-device weight
@@ -182,7 +189,12 @@ pub trait ModelWeightLoader {
         config: &ModelConfig,
         gpu: &dyn GpuBackend,
     ) -> Result<DenseWeight>;
-    fn load_lm_head(&self, store: &WeightStore, config: &ModelConfig, gpu: &dyn GpuBackend) -> Result<DenseWeight>;
+    fn load_lm_head(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        gpu: &dyn GpuBackend,
+    ) -> Result<DenseWeight>;
 
     /// Load MTP head weights (returns None if no MTP weights in store).
     fn load_mtp_weights(

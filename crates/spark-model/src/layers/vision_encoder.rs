@@ -45,14 +45,20 @@ pub struct VisionEncoder {
     pub deepstack_indexes: Vec<usize>, // [8, 16, 24] (1-indexed, after Nth block)
     pub merger: MergerLayer,           // final merger (after block 27)
     // kernel handles
-    k_gemm: KernelHandle,  // vision_gemm_bias: C[M,N] = A[M,K]@B[N,K]^T + bias
-    k_norm: KernelHandle,  // vision_layer_norm (biased, in-place)
-    k_add: KernelHandle,   // vision_add_inplace
-    k_gelu: KernelHandle,  // vision_gelu (in-place)
-    k_attn: KernelHandle,  // vision_attention_rope (seq-full SDPA + 2D rotary)
+    k_gemm: KernelHandle, // vision_gemm_bias: C[M,N] = A[M,K]@B[N,K]^T + bias
+    k_gemm_pipelined: KernelHandle, // dense_gemm_bf16_pipelined (tensor-core, ~40×; no bias)
+    k_add_bias: KernelHandle, // vision_add_bias: C += bias[n] (fuses bias for the TC path)
+    k_norm: KernelHandle, // vision_layer_norm (biased, in-place)
+    k_add: KernelHandle,  // vision_add_inplace
+    k_gelu: KernelHandle, // vision_gelu (in-place)
+    k_attn: KernelHandle, // vision_attention_rope (legacy SDPA — ATLAS_VISION_ATTN_LEGACY=1)
+    k_rope_deint: KernelHandle, // vit_rope_deinterleave (rope + head-contig Qr/Kr + V transpose)
+    k_softmax: KernelHandle, // vit_softmax_rows (parallel row softmax)
+    k_scatter_head: KernelHandle, // vit_scatter_head (contig → interleaved O slot)
+    k_gemm_f32: KernelHandle, // dense_gemm_bf16_f32out (raw QKᵀ scores, f32 out)
     k_merge: KernelHandle, // vision_spatial_merge (2×2)
     k_f32_bf16: KernelHandle, // vision_f32_to_bf16
-    k_copy: KernelHandle,  // vision_bf16_copy
+    k_copy: KernelHandle, // vision_bf16_copy
     // config
     pub hidden_size: usize,        // 1152
     pub num_heads: usize,          // 16
@@ -74,6 +80,13 @@ pub struct VisionEncoder {
     pub buf_pos_resampled: DevicePtr, // [p_max × 1152] bf16 — per-image interp pos_embed
     pub buf_rope_cos: DevicePtr,      // [p_max × head_dim] bf16 — per-image rotary cos
     pub buf_rope_sin: DevicePtr,      // [p_max × head_dim] bf16 — per-image rotary sin
+    // GEMM-based ViT SDPA scratch (reused across the per-head loop within one image).
+    pub buf_qr: DevicePtr, // [H × p_max × head_dim] bf16 — rotated Q, head-contiguous
+    pub buf_kr: DevicePtr, // [H × p_max × head_dim] bf16 — rotated K, head-contiguous
+    pub buf_vt: DevicePtr, // [H × head_dim × p_max] bf16 — transposed V, head-contiguous
+    pub buf_scores: DevicePtr, // [attn_max × attn_max] f32  — per-head raw QKᵀ
+    pub buf_probs: DevicePtr, // [attn_max × attn_max] bf16 — per-head softmax probs
+    pub buf_o_stage: DevicePtr, // [p_max × head_dim] bf16 — per-head GEMM2 output staging
     // host-side prep state
     pos_embed_host_f32: Vec<f32>, // [num_position_embeddings × hidden_size] row-major
     rope_inv_freq: Vec<f32>,      // [head_dim / 4] frequencies

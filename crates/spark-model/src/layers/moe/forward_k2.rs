@@ -2,6 +2,8 @@
 
 //! MoeLayer::forward_k2 (verify K=2).
 
+use anyhow::Context as _;
+
 use super::*;
 
 impl MoeLayer {
@@ -16,13 +18,20 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        // BF16 (FP8-dequant-on-load) experts have no fused batch2 kernel.
-        // The FP8 batch2 branch below would read expert weights that were
-        // FREED at dequant-load → garbage MTP-verify logits → degenerate
-        // repetition. Route the 2-token verify through the per-token BF16
-        // batched path, which produces the same moe_output()[2,H]. (SSOT:
-        // reuses the decode BF16 kernels via forward_batched.)
-        if self.bf16_gate_weight_ptrs.is_some() {
+        // BF16 (FP8-dequant-on-load) experts. The FP8/NVFP4 batch2 branches
+        // below read expert weights that were FREED at dequant-load, so they
+        // must NOT run for a dequanted model. When the fused BF16 batch2
+        // kernels are present (and we're not EP), take the dedicated BF16
+        // batch2 path (single-launch 2-token dispatch, same math as the
+        // per-token BF16 decode kernels). Otherwise fall back to the per-token
+        // BF16 batched path (SSOT: reuses the decode BF16 kernels via
+        // forward_batched), which produces the same moe_output()[2,H].
+        let is_ep = ctx.comm.is_some() && ctx.config.ep_world_size > 1;
+        let use_bf16_batch2 = self.bf16_gate_weight_ptrs.is_some()
+            && self.moe_expert_gate_up_shared_bf16_batch2_k.0 != 0
+            && self.moe_expert_silu_down_shared_bf16_batch2_k.0 != 0
+            && !is_ep;
+        if self.bf16_gate_weight_ptrs.is_some() && !use_bf16_batch2 {
             return self.forward_batched(input, 2, ctx, stream);
         }
 
@@ -30,6 +39,16 @@ impl MoeLayer {
         let inter = ctx.config.moe_intermediate_size as u32;
         let num_experts = ctx.config.num_experts as u32;
         let top_k = ctx.config.num_experts_per_tok as u32;
+
+        // DIAG (ATLAS_K2_DIAG=1): synchronize checkpoints to localize the K2-verify
+        // illegal access (the V4 NVFP4 batch2 verify path is exercised for the first
+        // time by MTP). The label of the FIRST failing sync names the bad stage.
+        let k2_diag = std::env::var("ATLAS_K2_DIAG").is_ok_and(|v| v == "1");
+        if k2_diag {
+            ctx.gpu
+                .synchronize(stream)
+                .context("K2 ENTRY: attention+norm BEFORE forward_k2")?;
+        }
 
         // Gemma-4 router pre-norm (no-op for other models).
         let router_in = self.router_input(input, 2, h, ctx, stream)?;
@@ -66,20 +85,46 @@ impl MoeLayer {
         let indices_dev = scratch; // [2*top_k] u32
         let weights_dev = scratch.offset(2 * top_k as usize * 4); // [2*top_k] f32
         if let Some(bias) = self.correction_bias_dev {
-            ops::moe_topk_sigmoid_batched(
-                ctx.gpu,
-                self.moe_topk_sigmoid_batched_k,
-                gate_logits,
-                bias,
-                indices_dev,
-                weights_dev,
-                num_experts,
-                top_k,
-                ctx.config.norm_topk_prob,
-                ctx.config.routed_scaling_factor as f32,
-                2,
-                stream,
-            )?;
+            // DeepSeek-V4 scores experts with sqrt(softplus(.)); sigmoid otherwise
+            // (MiniMax/DeepSeek-V3). Must match the prefill/single-token paths or
+            // decode routing diverges from prefill.
+            if ctx.config.scoring_func == "sqrtsoftplus" {
+                // Use the PROVEN non-batched sqrtsoftplus kernel per token (the
+                // _batched variant is unexercised — the K2 verify is the only
+                // user and it never ran for V4 before). gate_logits is BF16
+                // [2, num_experts] (2-byte stride); indices/weights are
+                // [2, top_k] (u32 / f32, 4-byte stride).
+                for t in 0..2usize {
+                    ops::moe_topk_sqrtsoftplus(
+                        ctx.gpu,
+                        self.moe_topk_sqrtsoftplus_k,
+                        gate_logits.offset(t * num_experts as usize * 2),
+                        bias,
+                        indices_dev.offset(t * top_k as usize * 4),
+                        weights_dev.offset(t * top_k as usize * 4),
+                        num_experts,
+                        top_k,
+                        ctx.config.norm_topk_prob,
+                        ctx.config.routed_scaling_factor as f32,
+                        stream,
+                    )?;
+                }
+            } else {
+                ops::moe_topk_sigmoid_batched(
+                    ctx.gpu,
+                    self.moe_topk_sigmoid_batched_k,
+                    gate_logits,
+                    bias,
+                    indices_dev,
+                    weights_dev,
+                    num_experts,
+                    top_k,
+                    ctx.config.norm_topk_prob,
+                    ctx.config.routed_scaling_factor as f32,
+                    2,
+                    stream,
+                )?;
+            }
         } else {
             ops::moe_topk_softmax_batched(
                 ctx.gpu,
@@ -95,6 +140,12 @@ impl MoeLayer {
             )?;
         }
 
+        if k2_diag {
+            ctx.gpu
+                .synchronize(stream)
+                .context("K2: gate-GEMV + topk")?;
+        }
+
         // 3-5. Fused expert dispatch for 2 tokens
         let expert_gate_out = ctx.buffers.expert_gate_out();
         let expert_up_out = ctx.buffers.expert_up_out();
@@ -104,9 +155,70 @@ impl MoeLayer {
         let shared_down_out = ctx.buffers.attn_output();
         let output = ctx.buffers.moe_output();
 
-        let is_ep = ctx.comm.is_some_and(|c| c.world_size() > 1);
-
-        if let (Some(gp), Some(up), Some(dp), Some(sh)) = (
+        if use_bf16_batch2
+            && let (Some(gp), Some(up), Some(dp), Some(sg), Some(su), Some(sd)) = (
+                self.bf16_gate_weight_ptrs,
+                self.bf16_up_weight_ptrs,
+                self.bf16_down_weight_ptrs,
+                self.bf16_shared_gate,
+                self.bf16_shared_up,
+                self.bf16_shared_down,
+            )
+        {
+            // BF16 batch2 path (FP8-dequant-on-load experts, MTP K=2 verify).
+            // Single-launch 2-token dispatch mirroring the FP8 batch2 layout;
+            // identical math to the per-token moe_expert_*_shared_bf16 kernels.
+            // Non-EP only (guaranteed by use_bf16_batch2).
+            ops::moe_expert_gate_up_shared_bf16_batch2(
+                ctx.gpu,
+                self.moe_expert_gate_up_shared_bf16_batch2_k,
+                input,
+                gp,
+                expert_gate_out,
+                up,
+                expert_up_out,
+                indices_dev,
+                sg,
+                shared_gate_scratch,
+                su,
+                shared_up_scratch,
+                inter,
+                h,
+                top_k,
+                stream,
+            )?;
+            ops::moe_expert_silu_down_shared_bf16_batch2(
+                ctx.gpu,
+                self.moe_expert_silu_down_shared_bf16_batch2_k,
+                expert_gate_out,
+                expert_up_out,
+                dp,
+                expert_down_out,
+                indices_dev,
+                shared_gate_scratch,
+                shared_up_scratch,
+                sd,
+                shared_down_out,
+                h,
+                inter,
+                top_k,
+                stream,
+            )?;
+            ops::moe_weighted_sum_blend_batch2(
+                ctx.gpu,
+                self.moe_weighted_sum_blend_batch2,
+                output,
+                expert_down_out,
+                weights_dev,
+                shared_down_out,
+                input,
+                self.weights.shared_expert_gate.weight,
+                h,
+                top_k,
+                h,
+                stream,
+            )?;
+        } else if let (Some(gp), Some(up), Some(dp), Some(sh)) = (
             &self.fp8_gate_weight_ptrs,
             &self.fp8_up_weight_ptrs,
             &self.fp8_down_weight_ptrs,
@@ -306,9 +418,15 @@ impl MoeLayer {
             )?;
         }
 
+        if k2_diag {
+            ctx.gpu
+                .synchronize(stream)
+                .context("K2: expert dispatch (gate_up/silu_down/blend)")?;
+        }
+
         // EP all-reduce: sum partial outputs for 2 tokens
         if let Some(comm) = ctx.comm
-            && comm.world_size() > 1
+            && ctx.config.ep_world_size > 1
         {
             if ctx.graph_capture {
                 comm.all_reduce(output.0, 2 * h as usize * 2)?;

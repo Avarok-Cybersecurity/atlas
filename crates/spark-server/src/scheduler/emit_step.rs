@@ -78,6 +78,8 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
     // is stripped. This handles MTP bootstrap/verify paths.
     if !a.inside_thinking && a.think_start_token == Some(tok) {
         a.inside_thinking = true;
+        // Re-entering thinking: re-arm the spec-resume guard for the next exit.
+        a.post_think_emitted = 0;
         a.think_ended = false;
         a.think_skip_count = 0;
         a.thinking_budget = Some(a.spontaneous_think_budget);
@@ -174,6 +176,15 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
     }
 
     a.output_tokens.push(tok);
+
+    // Spec-resume guard bookkeeping: count tokens emitted after `</think>`.
+    // The `</think>` token itself is not counted (think_ended is still false
+    // when it arrives; the transition below sets it). For requests that never
+    // think, think_ended starts true, so the guard delays spec by the same N
+    // from the response start.
+    if a.think_ended && !a.inside_thinking {
+        a.post_think_emitted += 1;
+    }
 
     // Thinking tokens are "free" (don't decrement remaining).
     // Detect </think> transition. Track thinking token count for budget enforcement.
@@ -337,17 +348,22 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         && a.tool_call_completed
         && !a.inside_tool_body
         && !a.inside_thinking;
-    // Suppress EOS only when the grammar is NOT at a completion point (see the
-    // long rationale in decode_logits_step.rs): `is_grammar_completed()` is the
-    // matcher's "stop allowed" signal, true in the tool_choice=auto free-text
-    // preamble and between completed tags, so the model can decline / stop after
-    // parallel calls. `!is_terminated()` was circular (suppressed until EOS was
-    // accepted). Keep parity with the non-spec decode path.
-    let grammar_suppresses_eos = a
-        .grammar_state
-        .as_ref()
-        .is_some_and(|gs| !gs.is_grammar_completed())
-        && !eos_escape;
+    // #192: STOP-LEGALITY based grammar suppression — see the twin gate in
+    // `decode_logits_step::process_decode_logits`. `!is_terminated()` alone
+    // suppressed EOS forever on auto-mode turns with no completed call
+    // (armed-but-unused tools → finish="length"). Evaluated only when the
+    // token IS an EOS token (`grammar_blocks_stop` fills a bitmask).
+    //
+    // `inside_thinking` term: the matcher is PAUSED during `<think>` (tokens
+    // are neither masked nor accepted), so stop-legality is undefined there.
+    // Preserve the historical emit-path behavior — a spurious EOS inside a
+    // thinking span on a grammar-armed turn is discarded, `</think>` is the
+    // only legal exit (the non-MTP path does this via its explicit
+    // `thinking_suppresses_eos` term, which emit_token never had).
+    let grammar_suppresses_eos = a.eos_tokens.contains(&tok)
+        && !eos_escape
+        && ((a.inside_thinking && a.grammar_state.is_some())
+            || crate::grammar::grammar_blocks_stop(a.grammar_state.as_mut(), &a.eos_tokens));
     let legacy_suppresses_eos = a.require_tool_call;
     let min_tokens_suppresses = a.output_tokens.len() < a.min_tokens;
     let suppress_eos = grammar_suppresses_eos || legacy_suppresses_eos || min_tokens_suppresses;
@@ -375,42 +391,102 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
     // OPENCODE FIX: see process_decode_logits — same gate. Suppress streaming
     // of spontaneous-thinking content so it doesn't pollute opencode's history.
     let suppress_stream = a.inside_thinking && !a.enable_thinking;
-    if let ResponseSink::Streaming(ref tx) = a.sink
-        && !suppress_stream
-    {
+    if !suppress_stream {
         let event = if let Some(lp) = a.logprobs_data.last().cloned() {
             StreamEvent::TokenWithLogprobs(tok, lp)
         } else {
             StreamEvent::Token(tok)
         };
-        // Discriminate transient backpressure (channel full) from a real
-        // consumer-drop (channel closed). The previous `try_send().is_err()`
-        // collapsed the two and silently terminated the seq with
-        // `finish_reason="length"` whenever the SSE consumer momentarily
-        // stalled — surfaced as "request stops half-way" in Open WebUI.
-        match tx.try_send(event) {
-            Ok(()) => {}
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                tracing::debug!("Streaming receiver dropped, finishing seq");
-                a.finished = true;
-                return;
-            }
-            Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                if let Err(e) = tx.blocking_send(event) {
-                    tracing::error!("Streaming send failed during backpressure: {e}");
-                    a.finished = true;
-                    return;
-                }
-            }
+        if !send_stream_event(a, event) {
+            a.finished = true;
+            return;
         }
     }
     if a.remaining == 0 {
+        // #144: before the hard length-stop, if a grammar is active and the
+        // stop token is not legal at the current position (e.g. mid JSON
+        // string), emit the shortest grammar-legal close so the truncated
+        // `finish_reason="length"` output is still parseable.
+        emit_grammar_close(a);
         tracing::info!(
             "emit_token: remaining=0, output_tokens={}, thinking_tokens={}",
             a.output_tokens.len(),
             a.thinking_tokens
         );
         a.finished = true;
+    }
+}
+
+/// Cap on the grammar-close byte length explored at budget end (#144). A
+/// structural close (`"`, `}`, `]`, …) is short; if no close is reachable
+/// within this many bytes the response finishes as before (plain length-stop).
+const MAX_GRAMMAR_CLOSE_BYTES: usize = 32;
+
+/// Send one stream event to the response sink, handling backpressure.
+/// Returns `false` if the receiver has dropped (caller should finish the
+/// sequence). A non-streaming sink is a no-op that returns `true`.
+///
+/// Extracted from `emit_token`'s inline send so the budget-aware close
+/// streams its tokens through the identical path — SSOT for the
+/// try_send / blocking_send backpressure discrimination (transient channel-full
+/// vs. real consumer-drop; collapsing them once truncated seqs mid-stream).
+fn send_stream_event(a: &ActiveSeq, event: StreamEvent) -> bool {
+    let ResponseSink::Streaming(ref tx) = a.sink else {
+        return true;
+    };
+    match tx.try_send(event) {
+        Ok(()) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            tracing::debug!("Streaming receiver dropped, finishing seq");
+            false
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => match tx.blocking_send(event) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::error!("Streaming send failed during backpressure: {e}");
+                false
+            }
+        },
+    }
+}
+
+/// #144 budget-aware graceful close. At budget exhaustion, if a grammar is
+/// active, not terminated, and the stop token is NOT legal at the current
+/// position, emit the shortest grammar-legal close so a length-truncated
+/// structured-output response is still parseable instead of ending with an
+/// open string / unbalanced JSON. The close tokens are pushed to
+/// `output_tokens` and streamed through [`send_stream_event`] (so blocking and
+/// streaming responses agree); they intentionally exceed `max_tokens` by the
+/// bounded close length, mirroring a graceful EOS. No-op when disabled
+/// (`ATLAS_GRAMMAR_BUDGET_CLOSE=0`), inside `<think>`, or when no bounded close
+/// is found — all of which fall back to the prior plain length-stop.
+pub(crate) fn emit_grammar_close(a: &mut ActiveSeq) {
+    if a.inside_thinking || !grammar_budget_close_enabled() {
+        return;
+    }
+    let close = {
+        let Some(gs) = a.grammar_state.as_mut() else {
+            return;
+        };
+        if gs.is_terminated() || gs.stop_legal(&a.eos_tokens) {
+            return;
+        }
+        match gs.completion_token_ids(MAX_GRAMMAR_CLOSE_BYTES) {
+            Some(tokens) if !tokens.is_empty() => tokens,
+            _ => return,
+        }
+    };
+    tracing::info!(
+        close_len = close.len(),
+        output_len = a.output_tokens.len(),
+        "grammar budget-close: emitting graceful close so length-stop yields parseable output"
+    );
+    for tok in close {
+        let tok = tok as u32;
+        a.output_tokens.push(tok);
+        if !send_stream_event(a, StreamEvent::Token(tok)) {
+            break;
+        }
     }
 }
 

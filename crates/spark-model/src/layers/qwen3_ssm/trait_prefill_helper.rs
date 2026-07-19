@@ -16,6 +16,37 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 
 impl Qwen3SsmLayer {
+    /// GDN HeadParallel tensor-parallel all-reduce of the row-parallel
+    /// `out_proj` output.
+    ///
+    /// Each TP rank ran the GDN scan over its LOCAL value-head slice and
+    /// projected with the row-parallel `out_proj` (columns = local value_dim),
+    /// so its `[num_tokens, h]` BF16 buffer holds a PARTIAL sum over the full
+    /// hidden dim. Summing across ranks reconstructs the complete SSM output,
+    /// exactly mirroring attention's post-`o_proj` reduce
+    /// (`qwen3_attention/trait_impl/decode_inner.rs`). Must run BEFORE the
+    /// residual add / post-norm that consumes `out_proj_buf`.
+    ///
+    /// No-op when `tp_world_size == 1` or no communicator is present (single
+    /// GPU, or a path that already holds the complete output).
+    pub(super) fn ssm_tp_all_reduce(
+        &self,
+        out_proj_buf: DevicePtr,
+        num_tokens: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        if ctx.config.tp_world_size > 1
+            && let Some(comm) = ctx.comm
+        {
+            // BF16 [num_tokens, hidden_size] — same byte count attention
+            // reduces after o_proj.
+            let bytes = num_tokens * ctx.config.hidden_size * 2;
+            comm.all_reduce_async(out_proj_buf.0, bytes, stream)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn prefill_out_proj_dispatch(
         &self,
         ctx: &ForwardContext,
@@ -27,7 +58,35 @@ impl Qwen3SsmLayer {
         stream: u64,
     ) -> Result<()> {
         let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
-        if let Some(ref dense_out) = self.out_proj_dense {
+        if ops::cutlass_nvfp4_ssm_out_enabled()
+            && let Some(ref nvfp4_t) = self.out_proj_nvfp4_t
+        {
+            ops::log_cutlass_nvfp4_route("ssm_out_nvfp4", k, h as u32, value_dim as u32);
+            ops::cutlass_nvfp4_proj(
+                ctx.gpu,
+                normed_out_buf,
+                nvfp4_t,
+                out_proj_buf,
+                k,
+                h as u32,
+                value_dim as u32,
+                stream,
+            )
+        } else if ops::cutlass_nvfp4_ssm_out_enabled()
+            && let Some(ref fp8w) = self.out_proj_fp8w
+        {
+            ops::log_cutlass_nvfp4_route("ssm_out_fp8pack", k, h as u32, value_dim as u32);
+            ops::cutlass_nvfp4_proj_from_fp8(
+                ctx.gpu,
+                normed_out_buf,
+                fp8w,
+                out_proj_buf,
+                k,
+                h as u32,
+                value_dim as u32,
+                stream,
+            )
+        } else if let Some(ref dense_out) = self.out_proj_dense {
             // SSM out_proj is kept BF16 dense for accuracy (decode uses FP8
             // block-scaled, prefill stays BF16). Always routed through the
             // tensor-core dense_gemm_bf16_pipelined kernel (~40× vs the old
@@ -53,10 +112,10 @@ impl Qwen3SsmLayer {
             );
             let m = k as usize;
             let k_dim = h;
-            let a_fp8_bytes = m * k_dim;
-            let a_scale_bytes = m * (k_dim / 128) * 4;
-            let a_fp8_buf = ctx.gpu.alloc(a_fp8_bytes)?;
-            let a_scale_buf = ctx.gpu.alloc(a_scale_bytes)?;
+            // Persistent arena scratch (no per-projection alloc/sync/free).
+            let a_fp8_buf = ctx.buffers.fp8_act();
+            let a_scale_buf = ctx.buffers.fp8_act_scale();
+            debug_assert!(m * k_dim <= ctx.buffers.fp8_act_bytes());
             ops::per_token_group_quant_fp8(
                 ctx.gpu,
                 self.per_token_group_quant_fp8_k,
@@ -80,10 +139,37 @@ impl Qwen3SsmLayer {
                 h as u32,
                 stream,
             )?;
-            ctx.gpu.synchronize(stream)?;
-            ctx.gpu.free(a_fp8_buf)?;
-            ctx.gpu.free(a_scale_buf)?;
             Ok(())
+        } else if let Some(ref fp8w) = self.out_proj_fp8w
+            && self.w8a16_gemm_pipelined_k.0 != 0
+        {
+            ops::w8a16_gemm_pipelined(
+                ctx.gpu,
+                self.w8a16_gemm_pipelined_k,
+                normed_out_buf,
+                fp8w.weight,
+                fp8w.row_scale,
+                out_proj_buf,
+                k,
+                h as u32,
+                value_dim as u32,
+                stream,
+            )
+        } else if let Some(ref fp8w) = self.out_proj_fp8w
+            && self.w8a16_gemm_k.0 != 0
+        {
+            ops::w8a16_gemm(
+                ctx.gpu,
+                self.w8a16_gemm_k,
+                normed_out_buf,
+                fp8w.weight,
+                fp8w.row_scale,
+                out_proj_buf,
+                k,
+                h as u32,
+                value_dim as u32,
+                stream,
+            )
         } else if let Some(fp8) = self.out_proj_fp8 {
             if k > 128 {
                 ops::fp8_gemm_n128_m128(

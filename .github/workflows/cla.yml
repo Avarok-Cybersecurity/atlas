@@ -16,6 +16,9 @@ jobs:
       statuses: write
       actions: write
     steps:
+      # Retained for EXTERNAL first-time human contributors only: it re-injects a
+      # prior signature comment on re-push so the CLA doesn't have to be re-signed.
+      # Maintainer-controlled identities are allowlisted above and never reach here.
       - name: "Prepare Dynamic Signature Match"
         if: (contains(github.event.comment.body, 'recheck') || contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA')) || github.event_name == 'pull_request_target'
         env:
@@ -63,7 +66,10 @@ jobs:
           path-to-signatures: 'signatures/version1/cla.json'
           path-to-document: 'https://github.com/${{ github.repository }}/blob/main/CLA.md'
           branch: 'cla-signatures'
-          allowlist: dependabot[bot],renovate[bot],google-labs-jules[bot],claude[bot],google-labs-jules,claude
+          # Maintainer-controlled identities are allowlisted: they own the copyright
+          # and have already signed, so gating their own (AI-generated) PRs adds only
+          # friction. External first-time contributors are still asked to sign.
+          allowlist: dependabot[bot],renovate[bot],google-labs-jules[bot],claude[bot],google-labs-jules,claude,AzeezIsh,tbraun96
           lock-pullrequest-aftermerge: false
           create-file-commit-message: 'chore: setup CLA signatures file'
           signed-commit-message: 'chore: $contributorName signed the CLA in PR #$pullRequestNo'

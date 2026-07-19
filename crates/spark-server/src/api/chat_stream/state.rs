@@ -18,9 +18,20 @@ pub(super) struct StreamState {
     /// Token IDs accumulated since the last reset (cleared at the
     /// `</think>` boundary so post-thinking content decodes cleanly).
     pub(super) all_toks: Vec<u32>,
-    /// Byte offset into the thinking-phase decoded text already
-    /// emitted as `reasoning_chunk` deltas.
+    /// Byte offset into the decoded text (`content_decoded`) already
+    /// emitted as `reasoning_chunk` / content deltas.
     pub(super) emitted: usize,
+    /// Cumulative STABLE decoded text of `all_toks` for the current phase,
+    /// byte-identical to `decode(all_toks)` with any trailing incomplete
+    /// multibyte token trimmed. Grown incrementally (see `detok_incremental`)
+    /// so streaming a response is O(n) rather than re-decoding the whole
+    /// history every token (O(n²)). Reset alongside `all_toks`/`emitted`.
+    pub(super) content_decoded: String,
+    /// vLLM-style incremental-detokenizer offsets into `all_toks`: the decode
+    /// window is `all_toks[prefix_offset..]`, with `[prefix_offset..read_offset]`
+    /// the already-emitted prefix used for left context.
+    pub(super) detok_prefix_offset: usize,
+    pub(super) detok_read_offset: usize,
     /// Lazy streaming-decoder over the content phase (post-thinking).
     pub(super) content_decoder: Option<crate::tokenizer::StreamingDecoder<'static>>,
     /// Buffer used for stop-string matching across delta boundaries.
@@ -169,6 +180,9 @@ impl StreamState {
         Self {
             all_toks: Vec::new(),
             emitted: 0,
+            content_decoded: String::new(),
+            detok_prefix_offset: 0,
+            detok_read_offset: 0,
             content_decoder: None,
             accumulated_content: String::new(),
             stop_string_emitted_len: 0,

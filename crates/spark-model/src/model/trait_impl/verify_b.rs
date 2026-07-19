@@ -172,13 +172,30 @@ impl TransformerModel {
             tracing::info!("FP8 calibration frozen — re-enabling CUDA graphs (MTP verify)");
         }
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
+        // ATLAS_K2_DIAG=1 arms per-stage synchronize checkpoints inside
+        // forward_k2 to localize any illegal access on the batch2 verify path.
+        // Those host syncs are illegal under CUDA-graph capture
+        // (STREAM_CAPTURE_UNSUPPORTED, status 900), so the diagnostic must run
+        // the verify eagerly. Zero production impact — only when K2_DIAG is set
+        // (mirrors ATLAS_DFLASH_DEBUG_NO_GRAPH for the DFlash verify path).
+        let k2_diag_eager = std::env::var("ATLAS_K2_DIAG").ok().as_deref() == Some("1");
         let use_graphs = self.comm.is_none()
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
             // Phase 6.2.c — see decode() for rationale: HSS path's host I/O is
             // illegal under CUDA graph capture.
-            && !hss_engaged;
+            && !hss_engaged
+            && !k2_diag_eager;
+
+        // DeepSeek-V4 hash-MoE (first `num_hash_layers`) routes experts by token
+        // id via the static tid2eid table, so the verify forward needs the 2
+        // verify tokens in the stable `token_ids` device buffer. Uploaded
+        // pre-graph (host→device is illegal under CUDA-graph capture); the graph
+        // then reads the stable device buffer. Mirrors `decode()`'s token_ids.
+        let tid_bytes: Vec<u8> = tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
+        self.gpu
+            .copy_h2d_async(&tid_bytes, self.buffers.token_ids(), stream)?;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -190,6 +207,7 @@ impl TransformerModel {
             graph_capture: use_graphs,
             gdn_exact_replay: false,
             midchunk_capture: None,
+            token_ids: Some(self.buffers.token_ids()),
         };
 
         // ── Phase 2: CUDA graph capture / replay ──
@@ -313,7 +331,7 @@ impl TransformerModel {
             )?;
 
             // LM head for 2 tokens (GEMM: weights loaded once)
-            self.lm_head_batched(normed, k as u32, stream)?;
+            self.lm_head_batched(normed, k as u32, self.buffers.logits(), stream)?;
 
             // Argmax inside graph (fixed scratch addresses — graph-safe)
             let vocab = self.config.vocab_size;

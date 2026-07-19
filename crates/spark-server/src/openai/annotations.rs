@@ -8,12 +8,13 @@ pub struct ChatMessage {
     /// Model reasoning trace (from <think>...</think> tags).
     /// Only populated when enable_thinking=true. Both Cline and Roo Code
     /// check for this field. DeepSeek-originated, vLLM/LiteLLM standard.
+    /// This is the single canonical reasoning field on the response wire —
+    /// Atlas deliberately does NOT also emit a `reasoning` mirror, because
+    /// strict OpenAI-compatible clients reject a message that carries both
+    /// (they expect exactly one). Requests may still send either name; see
+    /// the `alias = "reasoning"` on the input-side message type.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
-    /// Forward-compatible alias: mirrors `reasoning_content` for clients that
-    /// use the shorter `reasoning` field name (e.g. some OpenAI SDK versions).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning: Option<String>,
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<crate::tool_parser::ToolCall>>,

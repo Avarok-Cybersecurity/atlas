@@ -82,11 +82,15 @@ pub trait DraftProposer: Send + Sync {
         stream: u64,
     ) -> Result<()>;
 
-    /// Free per-sequence proposer state (KV cache blocks, etc.).
+    /// Free per-sequence proposer state (KV cache blocks, device buffers, etc.).
     ///
     /// Must be called when a sequence is finished to avoid resource leaks.
-    fn free_state(&self, state: &mut dyn ProposerState) -> Result<()> {
-        let _ = state;
+    /// `gpu` is threaded in (symmetric with `alloc_state`) so implementations
+    /// can release raw device allocations stored on the state — `DevicePtr`
+    /// has no `Drop`, so anything `alloc_state` allocated leaks unless it is
+    /// explicitly freed here.
+    fn free_state(&self, gpu: &dyn GpuBackend, state: &mut dyn ProposerState) -> Result<()> {
+        let _ = (gpu, state);
         Ok(())
     }
 }

@@ -22,6 +22,7 @@ attn_output_gate = true
 partial_rotary_factor = 0.25
 
 mtp_layers = 0
+vision = true
 
 [[model_types]]
 model_type = "qwen3_5"

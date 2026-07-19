@@ -350,6 +350,47 @@ fn test_snapshot_index_overwrite_existing() {
 }
 
 #[test]
+fn test_snapshot_index_hit_pinned_fossil_does_not_starve_fresh_tail() {
+    // Regression: agentic warm-restore anchor freeze (2026-07-10). A shallow
+    // early-conversation snapshot that lookups repeatedly walked through must
+    // NOT outlive the strictly fresher tail checkpoint the next warm turn
+    // needs. Under the old `last_access * (1 + hit_count)` eviction score the
+    // fossil was unbeatable and every eviction killed the newest save.
+    let mut idx = SsmSnapshotIndex::new();
+    let tokens: Vec<u32> = (0..256).collect();
+    let session = 7;
+
+    // Fossil at token 16, selected as anchor by many deep lookups.
+    idx.insert(hash_token_prefix(&tokens, 16), 1, session, 16);
+    for _ in 0..30 {
+        assert_eq!(idx.lookup(&tokens, 24, session), Some((1, 16)));
+    }
+
+    // The live turn then saves a deeper tail checkpoint.
+    idx.insert(hash_token_prefix(&tokens, 112), 2, session, 112);
+
+    // Pool pressure: the fossil must be the victim, not the fresh tail.
+    assert_eq!(idx.evict_lru(), Some(1));
+    assert_eq!(idx.lookup(&tokens, 112, session), Some((2, 112)));
+}
+
+#[test]
+fn test_snapshot_index_lookup_bumps_winner_only() {
+    // The improving-chain scan must be side-effect-free for losers: after a
+    // deep lookup selects the deepest entry, the shallow entries it walked
+    // through must still be older than the winner (evictable first).
+    let mut idx = SsmSnapshotIndex::new();
+    let tokens: Vec<u32> = (0..256).collect();
+
+    idx.insert(hash_token_prefix(&tokens, 16), 1, 0, 16); // shallow, inserted first
+    idx.insert(hash_token_prefix(&tokens, 32), 2, 0, 32); // deep
+    assert_eq!(idx.lookup(&tokens, 48, 0), Some((2, 32)));
+
+    // Shallow loser must be evicted before the bumped winner.
+    assert_eq!(idx.evict_lru(), Some(1));
+}
+
+#[test]
 fn test_snapshot_index_deepest_match() {
     let mut idx = SsmSnapshotIndex::new();
     let tokens: Vec<u32> = (0..64).collect();

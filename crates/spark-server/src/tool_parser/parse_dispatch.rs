@@ -3,6 +3,31 @@
 
 use super::*;
 
+/// #192: bound the salvageable region of an UNTERMINATED trailing
+/// `<tool_call>` body (no `</tool_call>` close anywhere after it).
+///
+/// XML-parameter bodies (qwen3_coder / minimax shapes) have no closing
+/// delimiter for the final `<parameter=…>` value in this case, so the naive
+/// salvage swallowed everything to end-of-text into that argument — including
+/// post-drift role scaffold ("userassistant…", spaced tag soup). Cut at the
+/// last COMPLETE `</parameter>`; if none closed, drop the parameter section
+/// entirely (name-only call; the validation layer backfills required string
+/// params exactly like the streaming detector's `final_close` path, so
+/// blocking == streaming on the same truncated emission).
+///
+/// Tails without `<parameter=` (hermes JSON bodies, prose) pass through
+/// unchanged — `parse_one_call` already contains truncated JSON via its
+/// balanced-prefix repair.
+pub(super) fn contain_unterminated_call_tail(rest: &str) -> &str {
+    if let Some(p) = rest.rfind("</parameter>") {
+        &rest[..p + "</parameter>".len()]
+    } else if let Some(p) = rest.find("<parameter=") {
+        &rest[..p]
+    } else {
+        rest
+    }
+}
+
 /// Parse tool calls from completed model output.
 ///
 /// Scans for `<tool_call></tool_call>` tags and auto-detects inner format
@@ -108,7 +133,22 @@ pub fn parse_tool_calls(text: &str) -> (Option<String>, Vec<ToolCall>) {
                         // No closing </tool_call> — likely truncated by max_tokens.
                         // Try to parse the truncated content as a tool call anyway.
                         // The JSON may be incomplete, but parse_one_call handles this.
-                        if let Some(tc) = parse_one_call(rest.trim(), idx) {
+                        //
+                        // #192 containment: an UNTERMINATED trailing parameter
+                        // value must not be salvaged — with no `</parameter>`
+                        // bound, a drifted tail (post-EOS role scaffold, tag
+                        // soup) would be swallowed verbatim into the argument
+                        // string (live 2026-07-02: `{"city":"Paris </ parameter
+                        // >userassistant…"}`). Cut at the last COMPLETE
+                        // `</parameter>` close (else drop all params). This
+                        // also matches the streaming detector, which only emits
+                        // `</parameter>`-closed params and backfills required
+                        // ones — blocking and streaming now parse the same
+                        // truncated emission identically. Hermes JSON tails are
+                        // unaffected (contained downstream by parse_one_call's
+                        // balanced-JSON-prefix repair).
+                        let contained = contain_unterminated_call_tail(rest);
+                        if let Some(tc) = parse_one_call(contained.trim(), idx) {
                             calls.push(tc);
                         } else {
                             content_parts.push(format!("<tool_call>{rest}"));

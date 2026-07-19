@@ -21,6 +21,11 @@ Twelve `(GB10, model, quant)` targets ship in the default image today. One multi
 
 Throughput figures are p50 single-request decode on a short prompt (`max_tokens ≤ 128`, `temperature ≤ 0.1`). The "Best tok/s" column reflects the flag set that wins for that model (e.g. MTP enabled where supported, NVFP4 KV cache for Qwen models). Full numbers for alternative flag combinations are in [Benchmarking](../operations/benchmarks.md).
 
+> **Recently added (not yet tabulated):** DeepSeek-V4-Flash — MLA + MoE + CSA/HCA
+> hybrid attention + mHC, with native MXFP4 (E8M0) routed-expert loading and
+> Phase-K E8M0 GEMM kernels — landed end-to-end on GB10 in #293. Its
+> `model_type` dispatches through `factory.rs` (`deepseek_v4`).
+
 ## How to pick
 
 - **Fastest** — Qwen3.5-35B-A3B with MTP. The flagship. 131 tok/s.

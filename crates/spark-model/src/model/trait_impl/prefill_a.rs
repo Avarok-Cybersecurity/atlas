@@ -34,34 +34,9 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
-impl TransformerModel {
-    pub(super) fn prepare_vision_embed_dispatch(
-        &self,
-        images: &[(Vec<f32>, usize, usize)],
-    ) -> Result<()> {
-        let ve = match &self.vision_encoder {
-            Some(ve) => ve,
-            None => return Ok(()),
-        };
-        let stream = self.gpu.default_stream();
-        let mut total_patches = 0usize;
-        let mut post_merge_grids: Vec<(usize, usize)> = Vec::with_capacity(images.len());
-        let sms = ve.spatial_merge_size.max(1);
-        for (pixels, grid_h, grid_w) in images {
-            let p = ve.forward(pixels, *grid_h, *grid_w, self.gpu.as_ref(), stream)?;
-            total_patches += p;
-            // Record post-merge dimensions for downstream MRoPE position
-            // computation. The ViT folds `sms × sms` pre-merge patches into
-            // a single output embedding, so the effective spatial grid
-            // shrinks by that factor in each axis.
-            post_merge_grids.push((grid_h / sms, grid_w / sms));
-        }
-        *self.vision_embed_patches.lock() = total_patches;
-        *self.vision_image_grids.lock() = post_merge_grids;
-        tracing::info!("Vision encoder: {} patches encoded", total_patches);
-        Ok(())
-    }
+mod vision;
 
+impl TransformerModel {
     pub(super) fn prefill_dispatch(
         &self,
         tokens: &[u32],
@@ -256,6 +231,11 @@ impl TransformerModel {
             let token_ids_dev = self.buffers.scratch();
             self.gpu
                 .copy_h2d_async(token_ids_bytes, token_ids_dev, stream)?;
+            // Also stage token IDs into the STABLE token_ids buffer (scratch is
+            // reused for MoE routing during the layer loop). DeepSeek-V4 hash-MoE
+            // layers read `tid2eid[token_id]` per token, in this same order.
+            self.gpu
+                .copy_h2d_async(token_ids_bytes, self.buffers.token_ids(), stream)?;
             ops::batched_embed(
                 self.gpu.as_ref(),
                 self.batched_embed_kernel,
@@ -366,6 +346,9 @@ impl TransformerModel {
             // and must use the bit-faithful WY4 recurrence (see layer.rs).
             gdn_exact_replay: marconi_skip,
             midchunk_capture: None,
+            // Hash-MoE: token IDs for the `proc_count` tokens processed this
+            // pass, in MoE-loop order (uploaded above to the stable buffer).
+            token_ids: Some(self.buffers.token_ids()),
         };
 
         // ── 4. Forward through all layers ──

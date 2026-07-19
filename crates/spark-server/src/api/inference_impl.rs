@@ -47,11 +47,29 @@ impl InferenceRequest {
         }
     }
 
+    /// Whether this request carries preprocessed image embeddings.
+    pub fn has_image_pixels(&self) -> bool {
+        match self {
+            InferenceRequest::Blocking { image_pixels, .. } => !image_pixels.is_empty(),
+            InferenceRequest::Streaming { image_pixels, .. } => !image_pixels.is_empty(),
+        }
+    }
+
     /// Preprocessed image data, consumed by the scheduler before prefill.
     pub fn take_image_pixels(&mut self) -> Vec<(Vec<f32>, usize, usize)> {
         match self {
             InferenceRequest::Blocking { image_pixels, .. } => std::mem::take(image_pixels),
             InferenceRequest::Streaming { image_pixels, .. } => std::mem::take(image_pixels),
+        }
+    }
+
+    /// Borrow the preprocessed image data (non-consuming) — used by the vision
+    /// co-dispatch pre-pass to batch-encode across requests before the admit
+    /// loop consumes each request.
+    pub fn image_pixels_ref(&self) -> &[(Vec<f32>, usize, usize)] {
+        match self {
+            InferenceRequest::Blocking { image_pixels, .. } => image_pixels.as_slice(),
+            InferenceRequest::Streaming { image_pixels, .. } => image_pixels.as_slice(),
         }
     }
 
@@ -234,6 +252,15 @@ impl InferenceRequest {
         }
     }
 
+    /// #192: whether the request declared tools (gates multi-tool-call
+    /// continuation — `</tool_call>` is not a hard stop when true).
+    pub fn tools_present(&self) -> bool {
+        match self {
+            InferenceRequest::Blocking { tools_present, .. } => *tools_present,
+            InferenceRequest::Streaming { tools_present, .. } => *tools_present,
+        }
+    }
+
     /// Whether `<tool_call>` should be suppressed (loop detected).
     pub fn suppress_tool_call(&self) -> bool {
         match self {
@@ -285,6 +312,18 @@ impl InferenceRequest {
         match self {
             InferenceRequest::Blocking { top_logprobs, .. } => *top_logprobs,
             InferenceRequest::Streaming { top_logprobs, .. } => *top_logprobs,
+        }
+    }
+
+    /// Legacy /v1/completions prompt-token logprobs (echo scoring).
+    pub fn prompt_logprobs(&self) -> Option<u8> {
+        match self {
+            InferenceRequest::Blocking {
+                prompt_logprobs, ..
+            } => *prompt_logprobs,
+            InferenceRequest::Streaming {
+                prompt_logprobs, ..
+            } => *prompt_logprobs,
         }
     }
 

@@ -24,11 +24,15 @@ impl TransformerModel {
     ) -> Result<(usize, bool)> {
         let bs = kv_cache.block_size();
         if chunk_start == 0 {
-            let mut prefix_match = if self.tokens_have_vision_pad(tokens) {
-                spark_runtime::prefix_cache::PrefixMatch::empty()
-            } else {
-                self.prefix_cache.lookup(tokens, bs, seq.session_hash)
-            };
+            // Prompt-logprob collection needs a live hidden row for EVERY
+            // position — a cache/Marconi skip would leave gaps. Force the
+            // full-recompute path (documented perf cost, scoring calls only).
+            let mut prefix_match =
+                if self.tokens_have_vision_pad(tokens) || seq.collect_prompt_logprobs.is_some() {
+                    spark_runtime::prefix_cache::PrefixMatch::empty()
+                } else {
+                    self.prefix_cache.lookup(tokens, bs, seq.session_hash)
+                };
             // F83 (2026-04-30): on EP>1, head and worker have
             // independent local prefix caches whose match counts can
             // diverge (eviction order differences, async insert
@@ -49,7 +53,9 @@ impl TransformerModel {
             // Calling unconditionally on EP active fixes that — when
             // either side has matched=0 the agreed value is 0 and we
             // simply fall through to the no-cache path on both sides.
-            let ep_active = self.comm.is_some() && self.config.ep_world_size > 1;
+            // EP *or* pure TP: any multi-rank world must agree on `matched`
+            // (rank-local prefix caches can diverge in either topology).
+            let ep_active = self.multi_rank_protocol_active();
             if ep_active {
                 let local = prefix_match.matched_tokens as u32;
                 let agreed = self.ep_min_u32(local)? as usize;

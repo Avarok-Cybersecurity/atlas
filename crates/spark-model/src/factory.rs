@@ -12,9 +12,9 @@ use spark_runtime::weights::WeightStore;
 
 use crate::mistral_loader::MistralWeightLoader;
 use crate::weight_loader::{
-    DflashConfig, Gemma4WeightLoader, MinimaxM2WeightLoader, ModelWeightLoader,
-    NemotronHWeightLoader, Qwen3VLWeightLoader, Qwen3WeightLoader, Qwen35DenseWeightLoader,
-    Qwen35WeightLoader, Step3p7WeightLoader,
+    DeepSeekV4WeightLoader, DflashConfig, Gemma4WeightLoader, MinimaxM2WeightLoader,
+    ModelWeightLoader, NemotronHWeightLoader, Qwen3VLWeightLoader, Qwen3WeightLoader,
+    Qwen35DenseWeightLoader, Qwen35WeightLoader, Step3p7WeightLoader,
 };
 
 /// DFlash speculative-decoding build arguments. `None` for non-DFlash runs;
@@ -69,7 +69,7 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         // Only difference is MRoPE-interleaved layout + attn_output_gate on
         // full-attention layers — both handled at forward-pass layer time,
         // not during weight loading.
-        "qwen3_6_moe" => Ok(Box::new(Qwen35WeightLoader)),
+        "qwen3_6_moe" | "holo3_1_moe" => Ok(Box::new(Qwen35WeightLoader)),
         // Nemotron-H family (Mamba-2 + MoE + Attention)
         "nemotron_h" => Ok(Box::new(NemotronHWeightLoader)),
         // Gemma-4 family (pure attention, GeGLU, sliding + full attention)
@@ -82,9 +82,11 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         // Step 3.7 Flash — 288-expert sigmoid-routed MoE + shared expert +
         // mixed full/sliding attention + attention gate + 3 MTP modules.
         "step3p7" => Ok(Box::new(Step3p7WeightLoader)),
+        // DeepSeek-V4 family (Flash) — MLA + MoE + CSA/HCA hybrid attention + mHC.
+        "deepseek_v4" => Ok(Box::new(DeepSeekV4WeightLoader)),
         _ => bail!(
             "Unsupported model type: '{}' (normalized: '{}'). \
-             Supported: qwen3_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, qwen3_vl_moe, nemotron_h, gemma4, mistral, minimax_m2",
+             Supported: qwen3_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, holo3_1_moe, qwen3_vl_moe, nemotron_h, gemma4, mistral, minimax_m2, deepseek_v4",
             config.model_type,
             normalized,
         ),
@@ -151,6 +153,9 @@ mod tests {
         assert!(loader_for_config(&config).is_ok());
 
         config.model_type = "nemotron_h".to_string();
+        assert!(loader_for_config(&config).is_ok());
+
+        config.model_type = "holo3_1_moe".to_string();
         assert!(loader_for_config(&config).is_ok());
 
         config.model_type = "unsupported_model".to_string();

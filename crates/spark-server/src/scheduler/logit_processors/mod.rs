@@ -218,7 +218,22 @@ pub fn process_position_logits(
 
     // 4. Penalties + bias (incl. A4) on the now-masked logits, using the
     //    seq's output-token history — the SSOT stage shared by both paths.
-    apply_penalties_and_bias(logits, penalties, &seq.output_tokens);
+    //    #192: history is scoped to the CURRENT tool-call segment so the
+    //    per-occurrence repetition penalty does not compound across completed
+    //    parallel calls and crush the next call's structural scaffold (see
+    //    `sample_step::penalty_history_scope`).
+    let t_pen = std::time::Instant::now();
+    apply_penalties_and_bias(
+        logits,
+        penalties,
+        crate::scheduler::sample_step::penalty_history_scope(
+            &seq.output_tokens,
+            ctx.tool_call_end_token,
+        ),
+    );
+    if kind == PositionKind::Verify {
+        crate::scheduler::mtp_timing::record(crate::scheduler::mtp_timing::Phase::Penalties, t_pen);
+    }
 
     None
 }

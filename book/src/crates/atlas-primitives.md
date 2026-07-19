@@ -60,7 +60,7 @@ Two modules:
 RoPE has two variants in use:
 
 - **Standard RoPE** — used by Qwen3, Nemotron-H, Mistral, Gemma-4 full attention.
-- **MRoPE** (multi-RoPE) — used by Qwen3.5 / Qwen3.6 / Qwen3-VL for vision models. Splits the head dim into spatial (H, W) and temporal (T) segments and applies RoPE to each independently. The buffer arena carries a `3× positions` scratch instead of `1×`; a bug in early builds where scratch was sized for `1×` caused `cuMemcpyHtoDAsync status 1` at long context — see the [MRoPE scratch fix](https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/history) notes.
+- **MRoPE** (multi-RoPE) — used by Qwen3.5 / Qwen3.6 / Qwen3-VL for vision models. Splits the head dim into spatial (H, W) and temporal (T) segments and applies RoPE to each independently. The buffer arena carries a `3× positions` scratch instead of `1×`; a bug in early builds where scratch was sized for `1×` caused `cuMemcpyHtoDAsync status 1` at long context — fixed by sizing the arena scratch for the full `3× positions`.
 
 The actual RoPE kernel (`rope.cu`) is one of the top-three-fastest ops in the benchmark suite — 18.2× faster than PyTorch at seq=512 GQA16:2. The trick is precomputing `cos`/`sin` on the Grace CPU via NEON SIMD (`precompute_freqs_cis_simd` for AArch64), so the GPU only does the rotation, not the trig.
 

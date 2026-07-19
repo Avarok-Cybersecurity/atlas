@@ -130,6 +130,7 @@ impl TransformerModel {
                         graph_capture: false,
                         gdn_exact_replay: false,
                         midchunk_capture: None,
+                        token_ids: None,
                     };
 
                     let h_t = hidden.offset(t * h * fp32);
@@ -159,6 +160,7 @@ impl TransformerModel {
                     graph_capture: false,
                     gdn_exact_replay: false,
                     midchunk_capture: None,
+                    token_ids: None,
                 };
 
                 layer.decode_batched(
@@ -193,7 +195,7 @@ impl TransformerModel {
         )?;
 
         // ── LM head for K tokens → logits[K, vocab] ──
-        self.lm_head_batched(normed, k as u32, stream)?;
+        self.lm_head_batched(normed, k as u32, self.buffers.logits(), stream)?;
 
         // ── Argmax per token ──
         let vocab = self.config.vocab_size;

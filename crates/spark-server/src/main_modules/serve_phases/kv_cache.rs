@@ -33,40 +33,14 @@ pub(crate) fn resolve_prefill_budget(
     } else {
         args.max_seq_len
     };
-    // Issue #15: when prefix caching + SSM snapshots are both enabled, the
-    // SSM snapshot taken at finalize_last (token_count = full prompt length)
-    // is unreachable from future requests because the radix-tree match for
-    // a different prompt length will be < tokens.len(). Intermediate
-    // checkpoints are saved by `prefill_b_save_checkpoint` only at chunk
-    // ends whose end_block is a multiple of `ssm_checkpoint_interval`, so a
-    // single-chunk prefill produces zero reachable snapshots. Auto-clamp
-    // the prefill budget to a checkpoint-aligned size so chunked prefill
-    // actually fires and downstream agentic conversations get cache hits.
-    let prefill_budget_pre_hss = if !user_set_prefill
-        && args.enable_prefix_caching
-        && args.ssm_checkpoint_interval > 0
-        && args.ssm_cache_slots > 0
-    {
-        let target = args.ssm_checkpoint_interval * args.block_size;
-        if prefill_budget_pre_hss > target && target > 0 {
-            tracing::info!(
-                "--enable-prefix-caching with --ssm-checkpoint-interval={} \
-                 and --block-size={}: auto-clamping max_prefill_tokens \
-                 from {} to {} so chunked prefill fires at SSM-checkpoint \
-                 boundaries (issue #15). Override with --max-prefill-tokens \
-                 to keep the larger value.",
-                args.ssm_checkpoint_interval,
-                args.block_size,
-                prefill_budget_pre_hss,
-                target,
-            );
-            target
-        } else {
-            prefill_budget_pre_hss
-        }
-    } else {
-        prefill_budget_pre_hss
-    };
+    // Issue #15 (resolved 2026-07-02): the old auto-clamp of the prefill
+    // budget to `ssm_checkpoint_interval * block_size` forced micro-chunked
+    // prefill (one full model pass per 256 tokens at interval=16) purely to
+    // make intermediate SSM snapshots reachable — costing ~0.6s of chunk
+    // pacing per warm turn. Reachability is now guaranteed by the
+    // tail-checkpoint split in `prefill_chunk_dispatch` (a snapshot at the
+    // prompt's last full-block boundary, saved regardless of the interval),
+    // so full-size chunks are always used.
     let prefill_budget = if args.high_speed_swap {
         let hss_cap_tokens = args.high_speed_swap_cache_blocks_per_seq as usize * args.block_size;
         let hss_chunk_max = hss_cap_tokens.saturating_sub(args.max_batch_size);
@@ -104,6 +78,32 @@ pub(crate) fn resolve_prefill_budget(
         clamped
     } else {
         prefill_budget_pre_hss
+    };
+    // CUDA grid-dimension safety clamp (grid.y / grid.z hard max = 65535). The
+    // SSM/GDN and attention prefill kernels launch one grid-Y block per token
+    // (grid = [_, chunk_tokens, _]); a chunk of 65536+ tokens overflows grid.y
+    // and cuLaunchKernel fails with CUDA_ERROR_INVALID_VALUE, hard-crashing the
+    // request (observed: --max-prefill-tokens=65536 on a >64K-token prompt →
+    // "grid=[16,65544,1] ... invalid argument"). Clamp the chunk to the largest
+    // block-aligned size strictly under the limit. This also bounds the
+    // max-prefill=0 (unchunked) path when --max-seq-len exceeds the limit:
+    // re-chunking at 65520 is strictly safer than a guaranteed launch failure.
+    const CUDA_MAX_GRID_DIM: usize = 65535;
+    let prefill_budget = if prefill_budget > CUDA_MAX_GRID_DIM && args.block_size > 0 {
+        let safe = (CUDA_MAX_GRID_DIM / args.block_size) * args.block_size;
+        tracing::warn!(
+            "prefill chunk={} exceeds the CUDA grid-Y limit ({}); the prefill \
+             kernels map one grid block per token, so a larger chunk overflows \
+             grid.y → cuLaunchKernel CUDA_ERROR_INVALID_VALUE. Clamping chunk to \
+             {} (largest block-aligned size under the limit). Lower \
+             --max-prefill-tokens to silence this.",
+            prefill_budget,
+            CUDA_MAX_GRID_DIM,
+            safe,
+        );
+        safe
+    } else {
+        prefill_budget
     };
     // Default: max_batch_tokens = prefill_budget + max_batch_size (decode slots).
     // ATLAS_MAX_BATCH_TOKENS env var override allows engaging the Q12 batched

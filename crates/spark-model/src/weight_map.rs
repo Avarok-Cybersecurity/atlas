@@ -9,6 +9,8 @@
 
 #[path = "weight_map/expert.rs"]
 mod expert;
+#[path = "weight_map/fp8_dequant.rs"]
+mod fp8_dequant;
 #[path = "weight_map/fp8_lut.rs"]
 mod fp8_lut;
 #[path = "weight_map/loaders_fp8.rs"]
@@ -43,6 +45,7 @@ mod ssm_qwen35_more;
 mod tests;
 
 pub use expert::*;
+pub(crate) use fp8_dequant::*;
 pub use loaders_fp8::*;
 pub use loaders_mtp::*;
 pub use model_a::*;

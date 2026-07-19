@@ -47,6 +47,16 @@ pub enum WeightQuantFormat {
     /// NVFP4: packed E2M1 nibbles + per-group FP8 block scales + per-tensor
     /// F32 scale. Consumed by `w4a16_gemv`, `w4a16_gemm`, and variants.
     Nvfp4,
+    /// Native MXFP4 (OCP micro-scaling): packed E2M1 nibbles + per-block
+    /// **E8M0** power-of-2 scales (`GROUP_SIZE=32`), **no** per-tensor global.
+    /// This is DeepSeek-V4-Flash's ORIGINAL on-disk routed-expert format. The
+    /// bytes are landed device-resident UNCHANGED (transcode-free) — the
+    /// scale byte is a biased exponent, effective scale `2^(byte-127)`.
+    /// Consumed by the E8M0 variants of the MoE grouped/decode GEMMs
+    /// (Phase-K lane); feeding these bytes through an `Nvfp4` kernel (which
+    /// reads the scale as FP8-E4M3 per-16 and applies a global) = silent
+    /// garbage — assert with `WeightQuantFormat::expect` at the dispatch site.
+    Mxfp4E8m0,
 }
 
 impl WeightQuantFormat {
@@ -77,6 +87,10 @@ pub struct QuantizedWeight {
     pub weight_scale_2: f32,
     /// Input activation scale (FP32 on device, for FP8 activation path).
     pub input_scale: DevicePtr,
+    /// Per-row FP32 scale2 on device (`[N]` floats). When set, the `w4a16_gemv_prs`
+    /// kernel reads scale2 per output row instead of the scalar `weight_scale_2`,
+    /// eliminating precision loss from per-tensor absmax on outlier rows.
+    pub weight_scale_2_vec: DevicePtr,
 }
 
 impl QuantizedWeight {
@@ -87,12 +101,81 @@ impl QuantizedWeight {
             weight_scale: DevicePtr::NULL,
             weight_scale_2: 0.0,
             input_scale: DevicePtr::NULL,
+            weight_scale_2_vec: DevicePtr::NULL,
         }
+    }
+
+    /// Whether this weight has per-row scale2 (for PRS GEMV dispatch).
+    pub fn has_per_row_scale2(&self) -> bool {
+        self.weight_scale_2_vec != DevicePtr::NULL
     }
 
     /// Whether this weight points to NULL (remote expert placeholder).
     pub fn is_null(&self) -> bool {
         self.weight == DevicePtr::NULL
+    }
+
+    /// Concatenate two NVFP4 weights by rows: `[N1, K/2]` + `[N2, K/2]` → `[N1+N2, K/2]`.
+    ///
+    /// Both weights MUST share the same `K` (input dimension) and the same scalar
+    /// `weight_scale_2`. The packed weight bytes and FP8 block scales are concatenated
+    /// on-GPU via `cuMemcpy`.
+    pub fn concat_rows(
+        &self,
+        other: &QuantizedWeight,
+        n1: usize,
+        n2: usize,
+        k: usize,
+        gpu: &dyn GpuBackend,
+    ) -> anyhow::Result<QuantizedWeight> {
+        // The concatenated weight carries a single scalar scale2 (self's) for
+        // ALL rows — a mismatched `other` would silently dequantize its rows
+        // with the wrong per-tensor scale. This bit-exact equality only holds
+        // for `Nvfp4Variant::Standard` (NVIDIA ModelOpt) checkpoints, whose
+        // convention is a single global per-tensor `weight_scale_2` scalar
+        // shared across every row of the tensor — so two tensors quantized
+        // together by the same run share the identical f32 bit pattern.
+        // Other conventions (e.g. compressed-tensors) may carry independent
+        // per-tensor scales even for logically concatenable projections.
+        anyhow::ensure!(
+            self.weight_scale_2 == other.weight_scale_2,
+            "concat_rows: weight_scale_2 mismatch (self={}, other={}) — both NVFP4 \
+             tensors must share the same per-tensor scale to be concatenated. \
+             This is expected for ModelOpt/Standard NVFP4 checkpoints (single \
+             global per-tensor scale2); re-quantize with the ModelOpt/Standard \
+             quantizer, or report which checkpoint/quantizer produced independent \
+             per-tensor scales for these projections",
+            self.weight_scale_2,
+            other.weight_scale_2,
+        );
+        const GROUP_SIZE: usize = 16;
+        let half_k = k / 2;
+        let num_groups = k / GROUP_SIZE;
+
+        let total_n = n1 + n2;
+        let packed_size = total_n * half_k;
+        let scale_size = total_n * num_groups;
+
+        let new_weight = gpu.alloc(packed_size)?;
+        let new_scale = gpu.alloc(scale_size)?;
+
+        gpu.copy_d2d(self.weight, new_weight, n1 * half_k)?;
+        gpu.copy_d2d(other.weight, new_weight.offset(n1 * half_k), n2 * half_k)?;
+
+        gpu.copy_d2d(self.weight_scale, new_scale, n1 * num_groups)?;
+        gpu.copy_d2d(
+            other.weight_scale,
+            new_scale.offset(n1 * num_groups),
+            n2 * num_groups,
+        )?;
+
+        Ok(QuantizedWeight {
+            weight: new_weight,
+            weight_scale: new_scale,
+            weight_scale_2: self.weight_scale_2,
+            input_scale: DevicePtr::NULL,
+            weight_scale_2_vec: DevicePtr::NULL,
+        })
     }
 
     /// Transpose weight layout from [N, K/2] to [K/2, N] for coalesced GEMM reads.
@@ -106,7 +189,21 @@ impl QuantizedWeight {
         n: usize,
         k: usize,
     ) -> Result<QuantizedWeight> {
-        const GROUP_SIZE: usize = 16;
+        // NVFP4 default: per-16 block scales. Native MXFP4 (E8M0) is per-32 —
+        // ARM-2 Phase-K callers use `transpose_for_gemm_gs(.., 32)` for routed
+        // experts (the scale tensor is [N, K/32], not [N, K/16]).
+        self.transpose_for_gemm_gs(gpu, n, k, 16)
+    }
+
+    /// `transpose_for_gemm` with an explicit scale block size. Scale tensor is
+    /// `[N, K/group_size]`; the packed-weight transpose is group-size-independent.
+    pub fn transpose_for_gemm_gs(
+        &self,
+        gpu: &dyn GpuBackend,
+        n: usize,
+        k: usize,
+        group_size: usize,
+    ) -> Result<QuantizedWeight> {
         let half_k = k / 2;
 
         // Transpose B_packed: [N, K/2] → [K/2, N] into a NEW GPU allocation.
@@ -122,8 +219,8 @@ impl QuantizedWeight {
         let new_weight = gpu.alloc(packed_size)?;
         gpu.copy_h2d(&t_buf, new_weight)?;
 
-        // Transpose B_scale: [N, K/GROUP_SIZE] → [K/GROUP_SIZE, N] into a NEW allocation.
-        let num_groups = k / GROUP_SIZE;
+        // Transpose B_scale: [N, K/group_size] → [K/group_size, N] into a NEW allocation.
+        let num_groups = k / group_size;
         let scale_size = n * num_groups;
         let mut sbuf = vec![0u8; scale_size];
         gpu.copy_d2h(self.weight_scale, &mut sbuf)?;
@@ -141,6 +238,7 @@ impl QuantizedWeight {
             weight_scale: new_scale,
             weight_scale_2: self.weight_scale_2,
             input_scale: self.input_scale,
+            weight_scale_2_vec: self.weight_scale_2_vec,
         })
     }
 
@@ -178,6 +276,46 @@ impl QuantizedWeight {
 #[derive(Debug, Clone, Copy)]
 pub struct DenseWeight {
     pub weight: DevicePtr,
+}
+
+impl DenseWeight {
+    /// Quantize a BF16 weight `[N, K]` to FP8 E4M3 `[N, K]` with per-row
+    /// f32 scales. Allocates the FP8 buffer + row_scale buffer on the
+    /// GPU, runs the `quantize_bf16_to_fp8` kernel, and returns the
+    /// resulting [`Fp8DenseWeight`].
+    ///
+    /// Called once at model load time. Caller is responsible for any
+    /// stream synchronization needed before the returned weight is
+    /// consumed by `fp8_gemm_n128` or related kernels.
+    ///
+    /// Phase G (DFlash drafter FP8 weights). Mirrors
+    /// [`QuantizedWeight::predequant_to_fp8`] for the BF16 source path.
+    pub fn quantize_to_fp8(
+        &self,
+        gpu: &dyn GpuBackend,
+        quantize_kernel: spark_runtime::gpu::KernelHandle,
+        n: usize,
+        k: usize,
+        stream: u64,
+    ) -> Result<Fp8DenseWeight> {
+        let fp8_buf = gpu.alloc(n * k)?;
+        let row_scale_buf = gpu.alloc(n * std::mem::size_of::<f32>())?;
+        crate::layers::ops::quantize_bf16_to_fp8(
+            gpu,
+            quantize_kernel,
+            self.weight,
+            fp8_buf,
+            row_scale_buf,
+            n as u32,
+            k as u32,
+            stream,
+        )?;
+        gpu.synchronize(stream)?;
+        Ok(Fp8DenseWeight {
+            weight: fp8_buf,
+            row_scale: row_scale_buf,
+        })
+    }
 }
 
 /// FP8 E4M3 dense weight (runtime-quantized from BF16).

@@ -11,6 +11,15 @@
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 
+/// Diagnostic kill-switch: `ATLAS_GDN_WY17=0` forces the K=17 verify off the
+/// fused wy17 arm (BF16 conv + WY-chunkwise GDN) onto the sequential
+/// per-token fallback (FP32 conv + gdn_decode — the numerics closest to
+/// single-token decode). MUCH slower; for greedy-losslessness bisection only.
+fn wy17_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_GDN_WY17").ok().as_deref() != Some("0"))
+}
+
 use super::{Qwen3SsmLayer, SsmLayerState};
 use crate::layer::ForwardContext;
 use crate::layers::ops;
@@ -308,32 +317,76 @@ impl Qwen3SsmLayer {
                 (nv * 2) as u32, // gb_stride
                 stream,
             )?;
-        } else if num_tokens == 17 && self.gdn_wy17_k.0 != 0 {
+        } else if num_tokens == 17 && self.gdn_wy17_k.0 != 0 && wy17_enabled() {
             // ── K=17 (DFlash γ+1): fused WY-Chunkwise path ──
-            for t in 0..(num_tokens as u32) {
-                let qkv_t = deinterleaved.offset(t as usize * qkvz_size * bf16);
-                let conv_out_t = conv_out_buf.offset(t as usize * conv_dim * bf16);
-                ops::conv1d_update_l2norm(
+            //
+            // Conv epilogue: single fused launch over all 17 positions when
+            // the kernel is present (writes every rollback snapshot inline —
+            // replaces 17 conv launches + 17 copy_d2d, each serialized on the
+            // in-place conv_state update at 1-token occupancy). Requires the
+            // pool-contiguous intermediates layout (slot-major, stride
+            // conv_bytes — same contiguity the WY17 GDN call below already
+            // assumes for h_state_intermediates). Kill-switch:
+            // ATLAS_GDN_FUSED_CONV17=0 restores the per-token loop for A/B.
+            let conv_inter_base = ssm_state.conv_state_intermediates[0];
+            let inter_contiguous = ssm_state
+                .conv_state_intermediates
+                .iter()
+                .take(num_tokens)
+                .enumerate()
+                .all(|(t, p)| p.0 == conv_inter_base.0 + (t * conv_bytes) as u64);
+            let fused_conv = self.gdn_verify_fused_conv_kn_k.0 != 0
+                && inter_contiguous
+                && !matches!(
+                    std::env::var("ATLAS_GDN_FUSED_CONV17").ok().as_deref(),
+                    Some("0")
+                );
+            if fused_conv {
+                ops::gdn_verify_fused_conv_kn(
                     ctx.gpu,
-                    self.conv1d_l2norm_k,
+                    self.gdn_verify_fused_conv_kn_k,
                     ssm_state.conv_state,
-                    qkv_t,
+                    deinterleaved,
                     &self.ssm.conv1d,
-                    conv_out_t,
+                    conv_out_buf,
+                    conv_inter_base,
+                    num_tokens as u32,
                     conv_dim as u32,
                     d_conv as u32,
-                    1,
                     qk_ch,
                     kd as u32,
+                    qkvz_size as u32, // input stride (BF16 elems between positions)
+                    conv_dim as u32,  // output stride (BF16 elems between positions)
+                    (conv_bytes / 4) as u32, // snapshot stride (FP32 elems)
                     1e-6,
                     stream,
                 )?;
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.conv_state,
-                    ssm_state.conv_state_intermediates[t as usize],
-                    conv_bytes,
-                    stream,
-                )?;
+            } else {
+                for t in 0..(num_tokens as u32) {
+                    let qkv_t = deinterleaved.offset(t as usize * qkvz_size * bf16);
+                    let conv_out_t = conv_out_buf.offset(t as usize * conv_dim * bf16);
+                    ops::conv1d_update_l2norm(
+                        ctx.gpu,
+                        self.conv1d_l2norm_k,
+                        ssm_state.conv_state,
+                        qkv_t,
+                        &self.ssm.conv1d,
+                        conv_out_t,
+                        conv_dim as u32,
+                        d_conv as u32,
+                        1,
+                        qk_ch,
+                        kd as u32,
+                        1e-6,
+                        stream,
+                    )?;
+                    ctx.gpu.copy_d2d_async(
+                        ssm_state.conv_state,
+                        ssm_state.conv_state_intermediates[t as usize],
+                        conv_bytes,
+                        stream,
+                    )?;
+                }
             }
 
             let q_ptr = conv_out_buf;
@@ -366,12 +419,38 @@ impl Qwen3SsmLayer {
             )?;
         } else {
             // ── K!=2,17: sequential per-token path ──
+            //
+            // gated_delta_rule_decode expects FP32 Q/K/V (see kernel signature),
+            // but causal_conv1d_update_l2norm outputs BF16 by default. Reading
+            // BF16 conv output as FP32 produces garbage → every argmax disagrees
+            // with the draft → 0% accept on wide-γ DFlash verify.
+            //
+            // Fix: use the FP32 conv variant (conv1d_l2norm_f32_k) into
+            // ssm_conv_out_f32, then stride Q/K/V with FP32 element size.
+            // Mirrors ssm_forward.rs single-token decode. When the FP32 kernel
+            // is absent (non-GB10 backends) fall through to BF16 conv as before.
+            let use_f32_conv = self.conv1d_l2norm_f32_k.0 != 0;
+            let conv_elem = if use_f32_conv { fp32 } else { bf16 };
+            let conv_kernel = if use_f32_conv {
+                self.conv1d_l2norm_f32_k
+            } else {
+                self.conv1d_l2norm_k
+            };
+            // ssm_conv_out_f32 is sized m * qkvz_size * 4 bytes (m ≥ 32 for
+            // DFlash), so K ≤ 32 tokens always fit without aliasing ssm_qkvz.
+            let f32_conv_base = ctx.buffers.ssm_conv_out_f32();
+
             for t in 0..(num_tokens as u32) {
                 let qkv_t = deinterleaved.offset(t as usize * qkvz_size * bf16);
-                let conv_out_t = conv_out_buf.offset(t as usize * conv_dim * bf16);
+                // Write conv output for token t to the correct typed buffer.
+                let conv_out_t = if use_f32_conv {
+                    f32_conv_base.offset(t as usize * conv_dim * fp32)
+                } else {
+                    conv_out_buf.offset(t as usize * conv_dim * bf16)
+                };
                 ops::conv1d_update_l2norm(
                     ctx.gpu,
-                    self.conv1d_l2norm_k,
+                    conv_kernel,
                     ssm_state.conv_state,
                     qkv_t,
                     &self.ssm.conv1d,
@@ -385,9 +464,11 @@ impl Qwen3SsmLayer {
                     stream,
                 )?;
 
+                // Q/K/V pointers into conv output; element size matches the
+                // kernel's type expectation (FP32 for gated_delta_rule_decode).
                 let q_t = conv_out_t;
-                let k_t = conv_out_buf.offset(t as usize * conv_dim * bf16 + key_dim * bf16);
-                let v_t = conv_out_buf.offset(t as usize * conv_dim * bf16 + key_dim * 2 * bf16);
+                let k_t = conv_out_t.offset(key_dim * conv_elem);
+                let v_t = conv_out_t.offset(key_dim * 2 * conv_elem);
                 let gate_beta_stride = nv * 2 * fp32;
                 let gate_t = gates_buf.offset(t as usize * gate_beta_stride);
                 let beta_t = gates_buf.offset(t as usize * gate_beta_stride + nv * fp32);

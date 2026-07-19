@@ -135,11 +135,14 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
             thinking_budget,
             repetition_detection: req.repetition_detection(),
             require_tool_call: tool_choice_required,
+            tools_present: tools_active,
             suppress_tool_call,
             disable_mtp: false,
             grammar_spec: grammar_spec.clone(),
             seed: req.seed.map(|s| s.wrapping_add(choice_idx as u64)),
             top_logprobs,
+            prompt_logprobs: None,
+            echo: false,
             timeout_at,
             response_tx: tx,
         };
@@ -290,8 +293,7 @@ async fn build_choice_message(
     let _ = response; // currently only used for finish_reason.clone() below
     let mut message = crate::openai::ChatMessage {
         role: "assistant".to_string(),
-        reasoning_content: reasoning_content_i.clone(),
-        reasoning: reasoning_content_i,
+        reasoning_content: reasoning_content_i,
         annotations: crate::citation::merged_annotations(&output_text_i),
         refusal: None,
         content: Some(output_text_i.clone()),
@@ -327,8 +329,7 @@ async fn build_choice_message(
                 "F7: hoisted {} tool-call(s) from inside <think> block (would have been silently dropped)",
                 hoisted_tool_calls.len()
             );
-            message.reasoning_content = hoisted_reasoning.clone();
-            message.reasoning = hoisted_reasoning;
+            message.reasoning_content = hoisted_reasoning;
         }
         let (content, parsed_tool_calls) = tool_parser::parse_tool_calls(&output_text_i);
         let mut tool_calls_i = hoisted_tool_calls;

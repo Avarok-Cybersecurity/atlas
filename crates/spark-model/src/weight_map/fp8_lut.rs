@@ -26,8 +26,6 @@ pub(crate) fn dequant_nvfp4_to_bf16(
     gpu: &dyn GpuBackend,
 ) -> Result<DenseWeight> {
     let total = n * k;
-    let packed_bytes = total / 2;
-    let num_groups = total / 16;
 
     // Auto-detect format: compressed-tensors vs Standard
     let (packed_ptr, scale_ptr, global_scale, is_reciprocal) =
@@ -45,44 +43,95 @@ pub(crate) fn dequant_nvfp4_to_bf16(
             (pp, sp, gs, false)
         };
 
-    let mut packed = vec![0u8; packed_bytes];
-    let mut scales = vec![0u8; num_groups]; // FP8 E4M3, 1 byte each
-    gpu.copy_d2h(packed_ptr, &mut packed)?;
-    gpu.copy_d2h(scale_ptr, &mut scales)?;
+    // Fold the global-scale convention into a single MULTIPLY for the kernel:
+    // compressed-tensors stores a RECIPROCAL global (val = E2M1 * fp8_scale /
+    // global), ModelOpt a direct multiplier (val = E2M1 * fp8_scale * global).
+    let combined_global = if is_reciprocal {
+        if global_scale != 0.0 {
+            1.0 / global_scale
+        } else {
+            0.0
+        }
+    } else {
+        global_scale
+    };
 
-    // E2M1 lookup table: 4-bit nibble → float value
-    // Bits: [sign(1)][exp(2)][mantissa(1)]
+    // GPU dequant — replaces the former D2H(packed+scales) + 83M-element
+    // single-threaded CPU loop + H2D (the real cost of the NVFP4→BF16→NVFP4
+    // fused-qkvz round-trip: ~8s per dense-27B SSM layer). Same math, on-device.
+    // One sync so the BF16 is ready for the caller (gpu_concat_rows / requant).
+    let out = gpu.alloc(total * 2)?;
+    let kernel = gpu.kernel("dequant_nvfp4_bf16", "dequant_nvfp4_to_bf16")?;
+    let stream = gpu.default_stream();
+    spark_runtime::kernel_args::KernelLaunch::new(gpu, kernel)
+        .grid([n as u32, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(packed_ptr)
+        .arg_ptr(scale_ptr)
+        .arg_ptr(out)
+        .arg_f32(combined_global)
+        .arg_u32(n as u32)
+        .arg_u32(k as u32)
+        .launch(stream)?;
+    gpu.synchronize(stream)?;
+    Ok(DenseWeight { weight: out })
+}
+
+/// Dequantize an NVFP4 weight with **E8M0** (power-of-2) per-block scales and
+/// **no global scale** to BF16 on CPU, then upload. This is DeepSeek-V4's
+/// ORIGINAL microscaling format (used by the MTP module's routed experts):
+/// `.weight` = 4-bit-packed E2M1 (2 per byte, stored U8/I8) + `.scale` =
+/// F8_E8M0 per block. The block size is inferred from the scale element count
+/// (`total / num_scale_elems`, e.g. 32) rather than hardcoded. One-time load cost.
+// ARM-2: no longer called on the load path — the native MXFP4 arm
+// (`quantized_mxfp4_e8m0`) lands E8M0 bytes device-resident transcode-free
+// instead of dequant→requantize. RETAINED as the correct host-side E8M0→BF16
+// reference for Phase-K Leg-2 (kernel dequant numeric check on synthetic tiles).
+#[allow(dead_code)]
+pub(crate) fn dequant_nvfp4_e8m0_to_bf16(
+    store: &WeightStore,
+    prefix: &str,
+    n: usize,
+    k: usize,
+    gpu: &dyn GpuBackend,
+) -> Result<DenseWeight> {
+    let total = n * k;
+    let packed_bytes = total / 2;
+    let packed_ptr = ptr(store, &format!("{prefix}.weight"))?;
+    let scale_t = store.get(&format!("{prefix}.scale"))?;
+    let num_groups = scale_t.num_elements();
+    ensure!(
+        num_groups > 0 && total.is_multiple_of(num_groups),
+        "{prefix}: weight elems {total} not divisible by E8M0 scale groups {num_groups}"
+    );
+    let block = total / num_groups;
+
+    let mut packed = vec![0u8; packed_bytes];
+    let mut scales = vec![0u8; num_groups]; // FP8 E8M0, 1 byte each
+    gpu.copy_d2h(packed_ptr, &mut packed)?;
+    gpu.copy_d2h(scale_t.ptr, &mut scales)?;
+
     let e2m1_table: [f32; 16] = [
         0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
     ];
-
-    // Dequant to f32, then convert to BF16
+    // Row-major weight [n,k] and scale [n, k/block] → scale group `g` covers
+    // weight flat indices `g*block .. (g+1)*block` (same nibble convention as
+    // dequant_nvfp4_to_bf16: even flat index = low nibble).
     let mut bf16_out = vec![0u16; total];
     for group in 0..num_groups {
-        let fp8_byte = scales[group];
-        let block_scale = fp8_e4m3_to_f32(fp8_byte);
-        // compressed-tensors: weight_global_scale is reciprocal → val = E2M1 * fp8_scale / global_scale
-        // Standard/modelopt: weight_scale_2 is direct multiplier → val = E2M1 * fp8_scale * global_scale
-        let combined_scale = if is_reciprocal {
-            block_scale / global_scale
-        } else {
-            block_scale * global_scale
-        };
-
-        for elem in 0..16 {
-            let flat_idx = group * 16 + elem;
+        let block_scale = fp8_e8m0_to_f32(scales[group]);
+        for elem in 0..block {
+            let flat_idx = group * block + elem;
             let byte_idx = flat_idx / 2;
-            let nibble = if flat_idx % 2 == 0 {
+            let nibble = if flat_idx.is_multiple_of(2) {
                 packed[byte_idx] & 0x0F
             } else {
                 (packed[byte_idx] >> 4) & 0x0F
             };
-            let val = e2m1_table[nibble as usize] * combined_scale;
-            bf16_out[flat_idx] = f32_to_bf16(val);
+            bf16_out[flat_idx] = f32_to_bf16(e2m1_table[nibble as usize] * block_scale);
         }
     }
 
-    // Upload BF16 to GPU
     let buf = gpu.alloc(total * 2)?;
     let bf16_bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(bf16_out.as_ptr() as *const u8, total * 2) };
@@ -134,9 +183,39 @@ pub(super) static FP8_E4M3_LUT: [f32; 256] = {
 };
 
 /// Convert FP8 E4M3 byte to f32 via LUT (branchless, single array lookup).
+/// Kept (allow dead_code) as the SSOT CPU reference for the FP8 E4M3 decode now
+/// that `dequant_nvfp4_to_bf16` runs on the GPU (`dequant_nvfp4_bf16.cu`).
 #[inline(always)]
+#[allow(dead_code)]
 pub(super) fn fp8_e4m3_to_f32(bits: u8) -> f32 {
     FP8_E4M3_LUT[bits as usize]
+}
+
+/// FP8 E8M0 → f32 lookup table (256 entries).
+///
+/// E8M0 format: unsigned 8-bit exponent, 0 mantissa, bias=127.
+/// Value = 2^(exp - 127). exp=0 → 0, exp=255 → NaN (stored as 0.0).
+static FP8_E8M0_LUT: [f32; 256] = {
+    let mut table = [0.0f32; 256];
+    let mut i: u32 = 0;
+    while i < 256 {
+        let exp = i as u8;
+        table[i as usize] = if exp == 0 {
+            0.0f32
+        } else if exp == 255 {
+            0.0f32 // NaN weight-scales should not appear in practice
+        } else {
+            f32::from_bits((exp as u32) << 23)
+        };
+        i += 1;
+    }
+    table
+};
+
+/// Convert FP8 E8M0 byte to f32 via LUT (branchless, single array lookup).
+#[inline(always)]
+pub(super) fn fp8_e8m0_to_f32(bits: u8) -> f32 {
+    FP8_E8M0_LUT[bits as usize]
 }
 
 /// Convert f32 to BF16 with IEEE-754 round-to-nearest-even.
@@ -245,6 +324,59 @@ pub(crate) fn load_dense_ffn(
                 down_proj_t: Some(down.transpose_for_gemm(gpu, h, inter)?),
             })
         }
+        Nvfp4Variant::Bf16Raw => {
+            // Raw BF16 fine-tune (e.g. Holo-3.1-0.8B / Ornith dense): the dense
+            // FFN ships un-quantized, so runtime-quantize BF16→NVFP4 via
+            // `quantized_any` (the `quantized_auto` path used below for
+            // Standard/CompressedTensors `unreachable!`s on Bf16Raw — it lacks
+            // the dims + quant kernels the runtime-quant needs).
+            let inter = if config.intermediate_size > 0 {
+                config.intermediate_size
+            } else {
+                config.moe_intermediate_size
+            };
+            let h = config.hidden_size;
+            let qctx = QuantizeCtx {
+                absmax_k,
+                quantize_k,
+                stream,
+            };
+            let gate = quantized_any(
+                store,
+                &format!("{prefix}.mlp.gate_proj"),
+                inter,
+                h,
+                gpu,
+                variant,
+                qctx,
+            )?;
+            let up = quantized_any(
+                store,
+                &format!("{prefix}.mlp.up_proj"),
+                inter,
+                h,
+                gpu,
+                variant,
+                qctx,
+            )?;
+            let down = quantized_any(
+                store,
+                &format!("{prefix}.mlp.down_proj"),
+                h,
+                inter,
+                gpu,
+                variant,
+                qctx,
+            )?;
+            Ok(DenseFfnWeights {
+                gate_proj: gate,
+                up_proj: up,
+                down_proj: down,
+                gate_proj_t: Some(gate.transpose_for_gemm(gpu, inter, h)?),
+                up_proj_t: Some(up.transpose_for_gemm(gpu, inter, h)?),
+                down_proj_t: Some(down.transpose_for_gemm(gpu, h, inter)?),
+            })
+        }
         _ => {
             // `quantized_any`, not `quantized_auto`: mixed-precision
             // compressed-tensors checkpoints (unsloth Qwen3.6-*-NVFP4,
@@ -338,6 +470,12 @@ pub(crate) fn gpu_concat_rows(
     let b_bytes = b_rows * k * 2;
     let total = a_bytes + b_bytes;
     let buf = gpu.alloc(total)?;
+    tracing::debug!(
+        target: "spark_model::weight_map::concat",
+        a_rows, b_rows, k, a_bytes, b_bytes, total,
+        a = a.weight.0, b = b.weight.0, buf = buf.0,
+        "gpu concat rows [a;b]"
+    );
     gpu.copy_d2d(a.weight, buf, a_bytes)?;
     gpu.copy_d2d(b.weight, buf.offset(a_bytes), b_bytes)?;
     Ok(DenseWeight { weight: buf })

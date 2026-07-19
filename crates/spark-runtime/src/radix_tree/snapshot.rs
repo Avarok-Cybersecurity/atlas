@@ -14,12 +14,6 @@ pub(super) struct SnapshotEntry {
     token_count: usize,
     prefix_hash: u64,
     last_access: u64,
-    /// Cumulative hits over the entry's lifetime — combined with
-    /// `last_access` in eviction to approximate the forecast-based
-    /// policy from the Marconi paper §4 (B.4, 2026-04-25). Hot
-    /// prefixes (high hit count) survive longer than cold ones at
-    /// the same age.
-    hit_count: u32,
     /// True for the per-session TAIL snapshot (the restore point the next turn's
     /// block-floored `matched_tokens` looks up). Exactly one is kept per session.
     is_tail: bool,
@@ -28,10 +22,10 @@ pub(super) struct SnapshotEntry {
 pub(super) struct SsmSnapshotIndex {
     pub(super) entries: Vec<SnapshotEntry>,
     pub(super) access_counter: u64,
-    /// Session whose `lookup` ran most recently — i.e. the conversation
-    /// currently being served this turn. Used by `evict_lru` to protect the
-    /// ACTIVE session's restore point while freely reclaiming slots from other
-    /// (typically completed) sessions. Set on every session-tagged lookup.
+    /// Session of the most recent `lookup` — the live conversation. Its
+    /// DEEPEST snapshot is the one its next warm turn will restore from, so
+    /// `evict_lru` protects it (ATLAS_SSM_TAIL_PROTECT). Tracks the running
+    /// tip: recomputed each eviction from `token_count`, never a pinned slot.
     last_lookup_session: u64,
 }
 
@@ -69,7 +63,6 @@ impl SsmSnapshotIndex {
             token_count,
             prefix_hash,
             last_access: self.access_counter,
-            hit_count: 0,
             is_tail: false,
         });
         None
@@ -118,7 +111,6 @@ impl SsmSnapshotIndex {
             token_count,
             prefix_hash,
             last_access: self.access_counter,
-            hit_count: 0,
             is_tail: true,
         });
         displaced
@@ -131,17 +123,31 @@ impl SsmSnapshotIndex {
         matched_tokens: usize,
         session_hash: u64,
     ) -> Option<(usize, usize)> {
-        // Remember the active conversation so a later `evict_lru` this turn
-        // protects ITS restore point (not a stale/completed session's).
+        // Track the live conversation so eviction can protect its deep tail.
         if session_hash != 0 {
             self.last_lookup_session = session_hash;
         }
+        // Side-effect-free scan: only the WINNER gets its recency bumped,
+        // below. Bumping every improving candidate kept shallow early-prefix
+        // entries eternally fresh (each deep lookup walks the improving chain
+        // through them), pinning them in the pool while the tail checkpoints
+        // the next warm turn actually needs were evicted — the measured
+        // frozen-anchor / 18.6k-token SSM replay pathology (2026-07-10).
         let mut best: Option<(usize, usize)> = None; // (snapshot_id, token_count)
-        for entry in &mut self.entries {
+        let mut best_idx: Option<usize> = None;
+        for (i, entry) in self.entries.iter().enumerate() {
             if entry.token_count > matched_tokens {
                 continue;
             }
             if session_hash != 0 && entry.session_hash != 0 && entry.session_hash != session_hash {
+                continue;
+            }
+            // A TAIL snapshot (midchunk-captured next-turn restore point) bleeds a
+            // little past the exact prefix boundary, so it is byte-safe ONLY for the
+            // SAME non-zero session. Cross-request / single-turn (session_hash == 0)
+            // reuse of another session's tail corrupts SSM state -> garbled tool calls
+            // (project_midchunk_cross_request_corruption). Force those to recompute.
+            if entry.is_tail && (session_hash == 0 || entry.session_hash != session_hash) {
                 continue;
             }
             let h = hash_token_prefix(tokens, entry.token_count);
@@ -149,11 +155,13 @@ impl SsmSnapshotIndex {
                 continue;
             }
             if best.is_none() || entry.token_count > best.unwrap().1 {
-                self.access_counter += 1;
-                entry.last_access = self.access_counter;
-                entry.hit_count = entry.hit_count.saturating_add(1);
                 best = Some((entry.snapshot_id, entry.token_count));
+                best_idx = Some(i);
             }
+        }
+        if let Some(i) = best_idx {
+            self.access_counter += 1;
+            self.entries[i].last_access = self.access_counter;
         }
         if std::env::var("ATLAS_SNAP_LOOKUP_DBG").is_ok() {
             let mut cands: Vec<usize> = self.entries.iter().map(|e| e.token_count).collect();
@@ -172,55 +180,93 @@ impl SsmSnapshotIndex {
         if self.entries.is_empty() {
             return None;
         }
-        // Forecast-based policy (B.4, 2026-04-25, Marconi paper §4): evict the
-        // lowest last_access * (1 + hit_count) — old AND cold first — weighting
-        // by hit_count so recurrent prefixes survive (#155: the original
-        // formula DIVIDED, inverting the intent so frequently-hit snapshots
-        // were evicted first, forcing full-conversation recompute).
-        //
-        // Cross-session fairness (2026-07-03): with SEQUENTIAL agentic
-        // trajectories, a COMPLETED trajectory's snapshots (old but with a high
-        // hit_count from having been its own frozen restore point) outscore the
-        // ACTIVE trajectory's fresh deep checkpoints and refuse to evict —
-        // starving the active trajectory until ITS restore point re-freezes at
-        // a shallow depth and the recompute tail grows unbounded (measured:
-        // session B frozen at 13825 while it grew to 17808+, recompute climbing
-        // 79 -> 4447). Fix: protect ONLY the active session's DEEPEST snapshot
-        // (its next-turn restore point) and reclaim OTHER sessions' snapshots
-        // first (coldest-first), dipping into the active session's own non-tip
-        // churn only when no other-session slot remains. This hands the live
-        // conversation effectively the whole pool — matching the single-session
-        // behavior that tracks the tip (recompute <= one interval). The active
-        // session is whichever ran the most recent session-tagged lookup this
-        // turn. Retention-only: never perturbs the SSM forward path, so
-        // restores stay byte-exact. active==0 (session tracking disabled) falls
-        // through to the plain global forecast-LRU above.
-        let active = self.last_lookup_session;
-        let active_deepest = self
-            .entries
-            .iter()
-            .filter(|e| e.session_hash == active)
-            .map(|e| e.token_count)
-            .max();
-        let score = |e: &SnapshotEntry| e.last_access.saturating_mul(1 + e.hit_count as u64);
-        let mut best_other: Option<(usize, u64)> = None; // any non-active-session entry
-        let mut best_self: Option<(usize, u64)> = None; // active-session non-tip entry
-        for (i, entry) in self.entries.iter().enumerate() {
-            let s = score(entry);
-            if active == 0 || entry.session_hash != active {
-                if best_other.map_or(true, |(_, bs)| s < bs) {
-                    best_other = Some((i, s));
-                }
-            } else if Some(entry.token_count) != active_deepest {
-                if best_self.map_or(true, |(_, bs)| s < bs) {
-                    best_self = Some((i, s));
+        // Pure recency (LRU). The former forecast score
+        // `last_access * (1 + hit_count)` multiplied a monotonic timestamp by
+        // hit count, so any once-hit old entry outscored every fresh save;
+        // once the cold entries drained, each new save's evict victim was the
+        // PREVIOUS fresh save — the live turn's tail checkpoint died ms before
+        // the next turn's lookup needed it, freezing the restore anchor
+        // (measured: anchor pinned at token 9056 for 29 turns, 12.7k-token SSM
+        // replay, 40s TTFT tail). With winner-only recency bumps in `lookup`,
+        // plain LRU keeps the selected anchor and recent tail checkpoints
+        // resident and lets unhit fossils age out.
+        let escore = |e: &SnapshotEntry| e.last_access;
+
+        // SESSION-AWARE eviction (default ON; ATLAS_SNAP_EVICT_LEGACY=1 → old
+        // per-entry policy). The agentic workload interleaves ~20 multi-turn
+        // conversations; per-entry LRU evicts the active conversation's OWN deep
+        // checkpoints whenever it goes briefly dormant (its unique deep snapshots
+        // have hit_count=0 and a stale last_access vs another conversation's fresh
+        // ones), so its next warm turn full-recomputes the SSM state (TTFT 1s→50s).
+        // Fix: evict from the STALEST conversation first — rank by the session's
+        // freshness (max last_access over its entries), so the active conversation's
+        // ENTIRE deep checkpoint chain stays resident until every other (completed/
+        // dormant) conversation is gone. Within the victim session, drop its lowest
+        // forecast-score entry. This is "prefix caching like llama" for SSM state:
+        // the live conversation never re-recomputes what it already computed.
+        // Selecting a different victim is correctness-safe — restore re-validates
+        // (session_hash + prefix_hash) before using any snapshot; eviction only
+        // frees a slot.
+        if std::env::var_os("ATLAS_SNAP_EVICT_LEGACY").is_none() {
+            // session freshness = max last_access among that session's entries.
+            let mut session_fresh: std::collections::HashMap<u64, u64> =
+                std::collections::HashMap::with_capacity(self.entries.len());
+            for e in &self.entries {
+                let f = session_fresh.entry(e.session_hash).or_insert(0);
+                if e.last_access > *f {
+                    *f = e.last_access;
                 }
             }
+            // ATLAS_SSM_TAIL_PROTECT: exempt the live conversation's DEEPEST
+            // snapshot from eviction — its next warm turn restores from it.
+            // Without this the just-saved deep tail (hit_count=0, low escore) is
+            // evicted before the hot token-8192 anchor (self-reinforced hit_count),
+            // so warm restore falls back to 8192 and recomputes thousands of SSM
+            // tokens (measured 50-75% of restores, mean ~4400 tok, ~7.6s TTFT/turn).
+            // Recomputed each call (follows the deepening tip, never a pinned slot);
+            // exactly ONE entry, scoped to the active session, so any pool >=2 has a
+            // victim and never deadlocks. Correctness-safe: restore re-validates
+            // session_hash+prefix_hash+depth, so changing the victim cannot drift.
+            let protected_idx: Option<usize> = if self.last_lookup_session != 0
+                && std::env::var_os("ATLAS_SSM_TAIL_PROTECT").is_some()
+            {
+                self.entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.session_hash == self.last_lookup_session)
+                    .max_by_key(|(_, e)| e.token_count)
+                    .map(|(i, _)| i)
+            } else {
+                None
+            };
+            let n = self.entries.len();
+            let mut victim_idx = protected_idx.map_or(0, |p| if p == 0 && n > 1 { 1 } else { 0 });
+            // (stalest session first, then lowest entry score within it)
+            let mut victim_key = (u64::MAX, u64::MAX);
+            for (i, e) in self.entries.iter().enumerate() {
+                if Some(i) == protected_idx && n > 1 {
+                    continue; // never evict the live session's deepest tail
+                }
+                let sf = *session_fresh.get(&e.session_hash).unwrap_or(&0);
+                let key = (sf, escore(e));
+                if key < victim_key {
+                    victim_key = key;
+                    victim_idx = i;
+                }
+            }
+            let entry = self.entries.swap_remove(victim_idx);
+            return Some(entry.snapshot_id);
         }
-        // Reclaim from other sessions first, then the active session's own
-        // non-tip churn. If the only entry left is the active session's
-        // protected tip, decline rather than evict the live restore point.
-        let victim_idx = best_other.or(best_self).map(|(i, _)| i)?;
+
+        let mut victim_idx = 0;
+        let mut victim_score = u64::MAX;
+        for (i, entry) in self.entries.iter().enumerate() {
+            let score = escore(entry);
+            if score < victim_score {
+                victim_score = score;
+                victim_idx = i;
+            }
+        }
         let entry = self.entries.swap_remove(victim_idx);
         Some(entry.snapshot_id)
     }

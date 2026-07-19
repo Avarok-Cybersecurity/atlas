@@ -165,6 +165,7 @@ impl TransformerModel {
             graph_capture: use_graphs,
             gdn_exact_replay: false,
             midchunk_capture: None,
+            token_ids: None,
         };
 
         // ── Phase 2: CUDA graph capture / replay ──
@@ -249,6 +250,14 @@ impl TransformerModel {
                         stream,
                     )?;
                 }
+                // DFlash hidden capture for ctx conditioning. Capture from
+                // the LAST verified position (K-1), mirroring verify_b.rs
+                // (K=2). Without this, every K=3 verify step leaves
+                // `dflash_hidden_save` stale and the next `propose()`
+                // conditions on a repeated old hidden — accept collapses
+                // silently. Must be inside the graph capture region.
+                // No-op when DFlash is disabled.
+                self.try_dflash_capture(layer_idx, k - 1, stream)?;
             }
 
             // Final norm [3, H]
@@ -266,7 +275,7 @@ impl TransformerModel {
             )?;
 
             // LM head for 3 tokens
-            self.lm_head_batched(normed, k as u32, stream)?;
+            self.lm_head_batched(normed, k as u32, self.buffers.logits(), stream)?;
 
             // Argmax inside graph
             let vocab = self.config.vocab_size;

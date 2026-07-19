@@ -227,11 +227,24 @@ impl TransformerModel {
         // populated by the loader from the drafter's `dflash_config.target_layer_ids`).
         // Size: N_capture × hidden_size × bf16 (typically 5 × 2048 × 2 = 20 KB).
         let dflash_capture_layers: Vec<usize> = config.dflash_capture_layers.clone();
+        // Row capacity of the K-row capture buffer. KMAX = dflash_kgamma (=17 >=
+        // max verify K = gamma) so the K=gamma EAGLE path can capture every verify row;
+        // pre-fix paths use only rows 0-1. Stored on the model as the single
+        // source of truth so `try_dflash_capture_all` can bound its writes.
+        let dflash_hidden_save_rows = if dflash_capture_layers.is_empty() {
+            0
+        } else {
+            dflash_kgamma.max(2)
+        };
         let dflash_hidden_save = if dflash_capture_layers.is_empty() {
             None
         } else {
             let n = dflash_capture_layers.len();
-            Some(gpu.alloc(n * config.hidden_size * 2)?)
+            // Row-major K-row buffer: [row0 | row1 | ... | row_{KMAX-1}], each row =
+            // n_capture * hidden_size * bf16. Rows 0/1 keep their legacy offsets
+            // (0 and ctx_slot_bytes) so all K=2 readers (propose row 0,
+            // dflash_accept_append row 1) are unaffected.
+            Some(gpu.alloc(dflash_hidden_save_rows * n * config.hidden_size * 2)?)
         };
 
         // EP command buffer for token broadcast (4 bytes, u32)
@@ -244,7 +257,17 @@ impl TransformerModel {
         // Marconi restore (prefill stream). See `snapshot_event` doc in types.rs.
         let snapshot_event = gpu.create_event()?;
 
-        // EP: register moe_output buffer with NCCL and provide bf16_add kernel.
+        // EP/TP: register the all-reduce target buffers with NCCL (caches the
+        // IB/RoCE memory registration, enabling zero-copy user-buffer
+        // collectives) and provide the bf16_add kernel for the 2-rank
+        // send/recv fast path.
+        //   - moe_output: EP MoE reduce + ALL GDN HeadParallel SSM out_proj
+        //     reduces (decode `ssm_forward`, batched decode, multi-seq
+        //     batched, prefill, prefill phase-3 all write out_proj into
+        //     `buffers.moe_output()`).
+        //   - norm_output: attention o_proj decode output
+        //     (`attention_forward_oproj` writes o_out = `buffers.norm_output()`),
+        //     reduced per attention layer under TP.
         if let Some(ref comm) = comm
             && comm.world_size() == 2
         {
@@ -253,6 +276,12 @@ impl TransformerModel {
             match comm.register_buffer(moe_ptr, moe_bytes) {
                 Ok(_) => tracing::info!("Registered moe_output ({moe_bytes} B) with NCCL"),
                 Err(e) => tracing::warn!("ncclCommRegister moe_output failed (non-fatal): {e}"),
+            }
+            let norm_ptr = buffers.norm_output().0;
+            let norm_bytes = buffers.sizes().norm_output;
+            match comm.register_buffer(norm_ptr, norm_bytes) {
+                Ok(_) => tracing::info!("Registered norm_output ({norm_bytes} B) with NCCL"),
+                Err(e) => tracing::warn!("ncclCommRegister norm_output failed (non-fatal): {e}"),
             }
             match gpu.kernel("bf16_add", "bf16_add_inplace") {
                 Ok(k) => comm.set_add_kernel(k.0),
@@ -380,33 +409,13 @@ impl TransformerModel {
         // NOT max_seq_len. For prompts longer than this, prefill_twophase falls back
         // to standard chunked prefill which carries h_state/conv_state between chunks.
         // The GDN recurrence is sequential anyway, so chunking is mathematically identical.
-        let key_dim = config.linear_num_key_heads * config.linear_key_head_dim;
-        let value_dim = config.linear_num_value_heads * config.linear_value_head_dim;
-        let nv = config.linear_num_value_heads;
-        let conv_dim = key_dim * 2 + value_dim;
-        // GDN buffers only needed when GDN linear attention layers exist
-        // (conv_dim > 0). Mamba-2 models (Nemotron) have conv_dim=0 — skip alloc
-        // to avoid cuMemAlloc(0) error.
-        let gdn_buf_len = max_batch_tokens.min(max_seq_len);
-        let (gdn_qkv, gdn_gate_beta, gdn_out, gdn_z) = if conv_dim > 0 {
-            let qkv = gpu.alloc(gdn_buf_len * conv_dim * 2)?;
-            let gb = gpu.alloc(gdn_buf_len * nv * 2 * 4)?;
-            let o = gpu.alloc(gdn_buf_len * value_dim * 2)?;
-            let z = gpu.alloc(gdn_buf_len * value_dim * 2)?;
-            let total_mb =
-                (gdn_buf_len * (conv_dim * 2 + nv * 2 * 4 + value_dim * 2 * 2)) / (1024 * 1024);
-            tracing::info!(
-                "GDN prefill buffers: {total_mb} MB for {gdn_buf_len} tokens (chunked SSM prefill)"
-            );
-            (qkv, gb, o, z)
-        } else {
-            (
-                DevicePtr::NULL,
-                DevicePtr::NULL,
-                DevicePtr::NULL,
-                DevicePtr::NULL,
-            )
-        };
+        let (gdn_qkv, gdn_gate_beta, gdn_out, gdn_z, gdn_buf_len) =
+            super::impl_a1_init::build_gdn_prefill_buffers(
+                &config,
+                max_batch_tokens,
+                max_seq_len,
+                gpu.as_ref(),
+            )?;
 
         // FP8 calibration only runs when the cache is actually FP8 — the
         // observe() call in decode.rs sits inside the FP8 cache branch. For
@@ -464,11 +473,13 @@ impl TransformerModel {
             proposer,
             mtp_hidden_save,
             dflash_hidden_save,
+            dflash_hidden_save_rows,
             dflash_capture_layers,
             verify2_graph: Mutex::new(std::collections::HashMap::new()),
             verify3_graph: Mutex::new(std::collections::HashMap::new()),
             verify4_graph: Mutex::new(std::collections::HashMap::new()),
             verify_kgamma_graph: Mutex::new(std::collections::HashMap::new()),
+            fused_graph: Mutex::new(std::collections::HashMap::new()),
             prefix_cache,
             secondary_stream,
             secondary_event,
@@ -481,6 +492,9 @@ impl TransformerModel {
             vision_encoder,
             vision_embed_patches: Mutex::new(0),
             vision_image_grids: Mutex::new(Vec::new()),
+            vision_row_base: Mutex::new(0),
+            vision_grid_base: Mutex::new(0),
+            vision_owned_images: Mutex::new(0),
             pinned_staging,
             ssm_checkpoint_interval,
             ssm_state_norm_kernel: ssm_norm_k,

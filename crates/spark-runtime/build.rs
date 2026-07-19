@@ -11,6 +11,11 @@ fn main() {
     // signal the atlas-kernels build uses; covers both the SCALE (`strix`)
     // and native-HIP (`strix-hip`) AMD targets.
     println!("cargo:rustc-check-cfg=cfg(atlas_scale)");
+    // atlas_cutlass / atlas_flashinfer: NVIDIA-only accel cfgs (GB10). Never
+    // set on strix (no CUTLASS/FlashInfer build), but register the names so
+    // merged #[cfg(...)] gates don-t trip the unexpected_cfgs lint.
+    println!("cargo:rustc-check-cfg=cfg(atlas_cutlass)");
+    println!("cargo:rustc-check-cfg=cfg(atlas_flashinfer)");
     if std::env::var("ATLAS_TARGET_HW")
         .as_deref()
         .map(|hw| hw.starts_with("strix"))

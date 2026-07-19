@@ -105,6 +105,15 @@ pub enum InferenceRequest {
         repetition_detection: Option<RepetitionDetectionParams>,
         /// Whether a tool call is required (tool_choice="required").
         require_tool_call: bool,
+        /// #192: whether the request declared tools (chat `tools` non-empty
+        /// with a parser available). Unlike `grammar_spec` it stays true even
+        /// when constrained decoding is unavailable or disabled
+        /// (MODEL.toml `disable_tool_grammar`, parser opt-out, compile
+        /// failure), so the scheduler can gate multi-tool-call continuation
+        /// on "tools defined" rather than "grammar attached": with tools
+        /// present, `</tool_call>` is NOT a hard stop — generation continues
+        /// so the model can emit parallel calls, ending at natural EOS.
+        tools_present: bool,
         /// Suppress `<tool_call>` token when tool call loop detected (≥3 identical).
         suppress_tool_call: bool,
         /// F60 (2026-04-27): disable MTP speculative decoding for this
@@ -125,6 +134,13 @@ pub enum InferenceRequest {
         seed: Option<u64>,
         /// Number of top logprobs to return per token. None = disabled.
         top_logprobs: Option<u8>,
+        /// Legacy /v1/completions `logprobs`: Some(k) = collect prompt-token
+        /// logprobs (top-k alternatives) during prefill. Forces full
+        /// recompute (prefix cache bypassed) so every position is scored.
+        prompt_logprobs: Option<u8>,
+        /// Legacy /v1/completions `echo`: prepend the prompt to the
+        /// response text (handler-side; carried here for symmetry/logging).
+        echo: bool,
         /// Request timeout as absolute deadline. None = no timeout.
         timeout_at: Option<std::time::Instant>,
         response_tx: tokio::sync::oneshot::Sender<anyhow::Result<InferenceResponse>>,
@@ -178,6 +194,9 @@ pub enum InferenceRequest {
         repetition_detection: Option<RepetitionDetectionParams>,
         /// Whether a tool call is required (tool_choice="required").
         require_tool_call: bool,
+        /// #192: whether the request declared tools — see the Blocking
+        /// variant for the multi-tool-call continuation contract.
+        tools_present: bool,
         /// Suppress `<tool_call>` token when tool call loop detected (≥3 identical).
         suppress_tool_call: bool,
         /// F60 (2026-04-27): disable MTP speculative decoding for this
@@ -198,6 +217,11 @@ pub enum InferenceRequest {
         seed: Option<u64>,
         /// Number of top logprobs to return per token. None = disabled.
         top_logprobs: Option<u8>,
+        /// Legacy /v1/completions `logprobs`: Some(k) = collect prompt-token
+        /// logprobs during prefill (see Blocking variant).
+        prompt_logprobs: Option<u8>,
+        /// Legacy /v1/completions `echo` (see Blocking variant).
+        echo: bool,
         /// Request timeout as absolute deadline. None = no timeout.
         timeout_at: Option<std::time::Instant>,
         token_tx: tokio::sync::mpsc::Sender<StreamEvent>,
@@ -243,6 +267,11 @@ pub struct InferenceResponse {
     /// Number of prompt tokens served by the prefix cache (no prefill compute
     /// cost). Reported as `usage.prompt_tokens_details.cached_tokens`.
     pub cached_prompt_tokens: u32,
+    /// Prompt-token logprobs (legacy /v1/completions `logprobs` + `echo`):
+    /// one entry per prompt position i in [0, prompt_len-1) scoring token
+    /// i+1. Empty unless requested. The handler prepends the null entry
+    /// for the first prompt token (no preceding context).
+    pub prompt_logprobs: Vec<TokenLogprobs>,
 }
 
 /// Events sent during streaming generation.
@@ -250,6 +279,9 @@ pub enum StreamEvent {
     Token(u32),
     /// Token with logprobs data (when top_logprobs is requested).
     TokenWithLogprobs(u32, TokenLogprobs),
+    /// Prompt-token logprobs, emitted once right after prefill when
+    /// `prompt_logprobs` was requested (legacy completions echo path).
+    PromptLogprobs(Vec<TokenLogprobs>),
     Done {
         finish_reason: String,
         prompt_tokens: usize,

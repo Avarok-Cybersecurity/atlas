@@ -52,7 +52,7 @@ _RE_BUILD = re.compile(r"\bcargo\s+(?:build|check|run|test)\b")
 _RE_TEST = re.compile(r"\bcargo\s+(?:test|nextest)\b")
 _RE_RUN = re.compile(r"\bcargo\s+run\b|\./target/(?:debug|release)/|\btarget/(?:debug|release)/\S")
 _RE_CURL = re.compile(r"\bcurl\b|\bwget\b|\bhttp(?:ie|x)\b|\bnc\s+-z\b")
-_RE_KILL = re.compile(r"\bp?kill\b|\bkill\s+(?:%|-9|-TERM|-SIGTERM|\$|\d)")
+_RE_KILL = re.compile(r"\bp?kill\b|\bkill\s+(?:%|-9|-TERM|-SIGTERM|\$|\d)|\bfuser\s+-k\b")
 
 
 def _bash_commands(events: list[dict[str, Any]]) -> list[str]:

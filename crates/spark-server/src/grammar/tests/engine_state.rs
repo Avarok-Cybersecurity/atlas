@@ -363,3 +363,76 @@ fn test_forced_token_none_on_genuine_choice() {
         "a two-way choice must not be reported as forced",
     );
 }
+
+/// #144 budget-aware graceful close: inside an OPEN JSON string value the
+/// stop token is grammar-illegal — a length-stop here yields unparseable
+/// output. `completion_token_ids` must return a grammar-legal close that,
+/// once applied, makes the stop token legal (the output is parseable).
+#[test]
+fn test_budget_close_completes_open_json_string() {
+    let vocab = test_vocab();
+    let stop_ids = vec![130i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+
+    let schema = r#"{
+        "type": "object",
+        "properties": { "name": {"type": "string"} },
+        "required": ["name"]
+    }"#;
+    let compiled = engine.compile_json_schema(schema).unwrap();
+    let mut state = GrammarState::new(&compiled, engine.vocab_size()).unwrap();
+
+    // Drive the grammar to inside an open string value: `{"name":"ab`
+    for ch in br#"{"name":"ab"# {
+        assert!(
+            state.accept_token(u32::from(*ch)),
+            "byte {ch} must be grammar-legal while building the object",
+        );
+    }
+    // Mid-string the response may NOT stop — EOS would truncate to invalid JSON.
+    assert!(
+        !state.stop_legal(&[130]),
+        "EOS must be illegal inside an open JSON string",
+    );
+
+    // A bounded grammar-legal close exists.
+    let close = state
+        .completion_token_ids(32)
+        .expect("a bounded close exists for an open string");
+    assert!(!close.is_empty(), "a non-empty close is required here");
+
+    // Applying the close makes stopping legal — the truncated output parses.
+    for tok in &close {
+        assert!(
+            state.accept_token(*tok as u32),
+            "every close token must be grammar-legal",
+        );
+    }
+    assert!(
+        state.stop_legal(&[130]),
+        "after the close, EOS is legal (output is parseable)",
+    );
+}
+
+/// When the grammar can already stop (a complete value), `stop_legal` is
+/// true and the budget-close is empty — no spurious tokens are appended.
+#[test]
+fn test_budget_close_noop_when_already_stop_legal() {
+    let vocab = test_vocab();
+    let stop_ids = vec![130i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+
+    let compiled = engine.compile_json_grammar().unwrap();
+    let mut state = GrammarState::new(&compiled, engine.vocab_size()).unwrap();
+
+    // `{}` is a complete JSON value.
+    assert!(state.accept_token(b'{' as u32));
+    assert!(state.accept_token(b'}' as u32));
+
+    assert!(state.stop_legal(&[130]), "a complete value may stop");
+    assert_eq!(
+        state.completion_token_ids(32),
+        Some(Vec::new()),
+        "already stop-legal: the close is empty",
+    );
+}
