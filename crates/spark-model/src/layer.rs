@@ -250,7 +250,7 @@ pub struct ForwardContext<'a> {
     /// the installed-active-pair path byte-identical. Prefill runs eager
     /// (`graph_capture: false`) so this per-pass CPU borrow is safe.
     pub routed_lora_layers: Option<&'a [Option<crate::lora::LoraLayerWeights>]>,
-    /// OPT-IN mid-chunk SSM tail capture (`ATLAS_SSM_TAIL_MIDCHUNK=1`).
+    /// Default-ON mid-chunk SSM tail capture (opt-out `ATLAS_SSM_TAIL_MIDCHUNK=0`).
     ///
     /// `Some` only on the single prefill pass whose local token range spans
     /// the block-floored matched-prefix boundary `tb`. GDN/SSM layers then

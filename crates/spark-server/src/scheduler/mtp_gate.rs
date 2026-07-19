@@ -137,6 +137,19 @@ pub struct MtpGate {
     phase: Phase,
     decode_samples: Vec<Duration>,
     verify_samples: Vec<Duration>,
+    /// Acceptance samples (num_accepted per verify step) collected during the
+    /// Verify measurement phase, parallel to `verify_samples`. Used to compute
+    /// the MEASURED expected tokens per step (`1 + mean_accepted`) for the
+    /// adaptive disable threshold — strictly tighter than the theoretical
+    /// `max_effective = 1 + K` (which assumes 100% acceptance).
+    acceptance_samples: Vec<usize>,
+    /// Exponential moving average of num_accepted, updated after the initial
+    /// decision for ongoing adaptation. If it drops below the break-even
+    /// (`1 + ema < measured_multiplier`), the gate re-opens measurement.
+    acceptance_ema: f64,
+    /// The measured verify/decode multiplier at the last `finalize`. Used by
+    /// [`Self::should_reconsider`] for the ongoing acceptance-drop check.
+    measured_multiplier: f64,
     decision: Option<GateDecision>,
     /// Sequence depth (tokens) most recently observed while sampling; frozen
     /// into `measured_at_depth` when a decision is reached.
@@ -158,6 +171,9 @@ impl MtpGate {
             phase: Phase::Decode,
             decode_samples: Vec::with_capacity(WARMUP_SAMPLES + TIMED_SAMPLES),
             verify_samples: Vec::with_capacity(WARMUP_SAMPLES + TIMED_SAMPLES),
+            acceptance_samples: Vec::with_capacity(WARMUP_SAMPLES + TIMED_SAMPLES),
+            acceptance_ema: 0.0,
+            measured_multiplier: 0.0,
             decision: None,
             observed_depth: 0,
             measured_at_depth: 0,
@@ -191,6 +207,7 @@ impl MtpGate {
             self.phase = Phase::Decode;
             self.decode_samples.clear();
             self.verify_samples.clear();
+            self.acceptance_samples.clear();
             self.decision = None;
             self.fresh_decision = None;
         }
@@ -246,6 +263,56 @@ impl MtpGate {
         }
     }
 
+    /// Record the number of drafts accepted in a verify step. During the
+    /// measurement phase this populates `acceptance_samples` (parallel to
+    /// `verify_samples`). After the decision, it updates the rolling EMA for
+    /// ongoing adaptation — if acceptance drops below the break-even
+    /// (`1 + ema < measured_multiplier`), [`Self::should_reconsider`] flags
+    /// it so the scheduler can re-measure or disable.
+    pub fn record_acceptance(&mut self, num_accepted: usize) {
+        if self.phase == Phase::Verify {
+            self.acceptance_samples.push(num_accepted);
+        } else if self.phase == Phase::Done {
+            // EMA update (alpha=0.2 — responds within ~5 steps to a shift).
+            self.acceptance_ema = 0.8 * self.acceptance_ema + 0.2 * num_accepted as f64;
+        }
+    }
+
+    /// Ongoing adaptation check: after the initial decision, if the rolling
+    /// acceptance EMA has dropped below the break-even for the measured
+    /// multiplier, MTP is now net-negative at the current acceptance even
+    /// though it was profitable when measured. The scheduler should call
+    /// this and, if true, re-open measurement (which may disable MTP).
+    pub fn should_reconsider(&self) -> bool {
+        self.phase == Phase::Done
+            && self.decision == Some(GateDecision::KeepMtp)
+            && self.measured_multiplier > 0.0
+            && 1.0 + self.acceptance_ema < self.measured_multiplier
+    }
+
+    /// Unconditionally re-open measurement (called by the scheduler when
+    /// [`Self::should_reconsider`] fires — the acceptance drop is a
+    /// workload-shift signal, not a depth-regime change).
+    pub fn force_remeasure(&mut self) {
+        if self.phase != Phase::Done {
+            return;
+        }
+        self.phase = Phase::Decode;
+        self.decode_samples.clear();
+        self.verify_samples.clear();
+        self.acceptance_samples.clear();
+        self.decision = None;
+        self.fresh_decision = None;
+    }
+
+    /// Debug accessors for the reconsider log line.
+    pub fn acceptance_ema_debug(&self) -> f64 {
+        self.acceptance_ema
+    }
+    pub fn measured_multiplier_debug(&self) -> f64 {
+        self.measured_multiplier
+    }
+
     /// Median of the post-warmup samples for a step type, in seconds.
     fn median_secs(samples: &[Duration]) -> f64 {
         let mut timed: Vec<f64> = samples
@@ -267,30 +334,55 @@ impl MtpGate {
         } else {
             f64::INFINITY
         };
-        let decision = if multiplier >= self.max_effective {
+        // Adaptive threshold: use the MEASURED expected tokens per step
+        // (1 + mean_accepted) instead of the theoretical max (1 + K). This
+        // disables MTP when it is ACTUALLY net-negative at the current
+        // acceptance rate, not just at the impossible 100%-acceptance worst
+        // case. Example: K=3 (max_effective=4) at m=2.5 with mean_accepted=1.0
+        // → effective=2.0 < 2.5 → DISABLE (the old gate would keep it:
+        // 2.5 < 4). With mean_accepted=2.0 → effective=3.0 > 2.5 → KEEP.
+        let mean_accepted = if self.acceptance_samples.len() > WARMUP_SAMPLES {
+            let timed: Vec<usize> =
+                self.acceptance_samples.iter().copied().skip(WARMUP_SAMPLES).collect();
+            let n = timed.len();
+            timed.iter().map(|&x| x as f64).sum::<f64>() / n.max(1) as f64
+        } else {
+            // No acceptance data (e.g. all bootstraps) — fall back to the
+            // theoretical max, preserving the prior conservative behavior.
+            self.max_effective - 1.0
+        };
+        let effective_tokens = 1.0 + mean_accepted;
+        // Keep MTP only if the measured expected tokens exceed the verify
+        // cost multiplier (speedup > 1.0). Also keep the hard upper bound
+        // (m >= max_effective → disable regardless of acceptance).
+        let decision = if multiplier >= self.max_effective || multiplier >= effective_tokens {
             GateDecision::DisableMtp
         } else {
             GateDecision::KeepMtp
         };
         match decision {
             GateDecision::DisableMtp => tracing::info!(
-                "MTP gate: verify_multiplier={multiplier:.2}, max_effective={:.1} \
-                 (decode={:.2}ms verify={:.2}ms, depth={}) => DISABLED for this depth \
-                 regime (net-negative at any acceptance; re-measures on regime change)",
+                "MTP gate: verify_multiplier={multiplier:.2}, max_effective={:.1}, \
+                 measured_effective={effective_tokens:.2} (mean_accepted={mean_accepted:.2}, \
+                 decode={:.2}ms verify={:.2}ms, depth={}) => DISABLED for this depth \
+                 regime (net-negative at current acceptance; re-measures on regime change)",
                 self.max_effective,
                 decode_s * 1000.0,
                 verify_s * 1000.0,
                 self.observed_depth,
             ),
             GateDecision::KeepMtp => tracing::info!(
-                "MTP gate: verify_multiplier={multiplier:.2}, max_effective={:.1} \
-                 (decode={:.2}ms verify={:.2}ms, depth={}) => ENABLED",
+                "MTP gate: verify_multiplier={multiplier:.2}, max_effective={:.1}, \
+                 measured_effective={effective_tokens:.2} (mean_accepted={mean_accepted:.2}, \
+                 decode={:.2}ms verify={:.2}ms, depth={}) => ENABLED",
                 self.max_effective,
                 decode_s * 1000.0,
                 verify_s * 1000.0,
                 self.observed_depth,
             ),
         }
+        self.measured_multiplier = multiplier;
+        self.acceptance_ema = mean_accepted;
         self.measured_at_depth = self.observed_depth;
         self.decision = Some(decision);
         self.fresh_decision = Some(decision);

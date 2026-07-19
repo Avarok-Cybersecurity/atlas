@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! MID-CHUNK SSM tail capture (`ATLAS_SSM_TAIL_MIDCHUNK=1`).
+//! MID-CHUNK SSM tail capture (default-on, opt-out `ATLAS_SSM_TAIL_MIDCHUNK=0`).
 //!
 //! The clamp-based `ATLAS_SSM_TAIL_CKPT` path lands a chunk boundary on
 //! `ssm_tail_boundary(tb)` and saves the SSM snapshot there via an extra
@@ -34,8 +34,9 @@
 //!      registers the tail slot as the session tail and the earlier slot as an
 //!      intermediate snapshot in the index.
 //!
-//! All behavior is gated on `ssm_tail_midchunk_enabled()` — flag off is a no-op
-//! (returns `None`) and byte-identical to prior behavior.
+//! All behavior is gated on `ssm_tail_midchunk_enabled()` — opt-out
+//! (`ATLAS_SSM_TAIL_MIDCHUNK=0`) is a no-op (returns `None`) and byte-identical
+//! to prior behavior.
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
