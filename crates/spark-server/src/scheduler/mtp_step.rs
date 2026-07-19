@@ -57,22 +57,24 @@ pub fn step_mtp(
             && !crate::scheduler::verify_pipeline_helper::dflash_seam_serial_enabled()
             && crate::scheduler::adaptive_spec::spec_allowed(a)
         {
-            let eff = if a.grammar_state.is_some() {
-                1
-            } else {
-                num_drafts
-            };
-            let _gmask = mtp_grammar_mask_for(a);
+            let inside_thinking = a.inside_thinking;
+            let seq_len = a.seq.seq_len;
+            let mut draft_mask = a
+                .grammar_state
+                .as_mut()
+                .map(|gs| crate::scheduler::spec_step::GrammarDraftMask::new(gs, inside_thinking));
+            let provider: Option<&mut dyn spark_model::DraftMaskProvider> =
+                draft_mask.as_mut().map(|p| p as &mut dyn spark_model::DraftMaskProvider);
             match model.run_mtp_propose_multi(
                 a.last_token,
-                a.seq.seq_len,
-                eff,
+                seq_len,
+                num_drafts,
                 &mut a.seq,
                 0,
-                _gmask.as_deref(),
+                provider,
             ) {
                 Ok(init) if !init.is_empty() => {
-                    if eff >= 3 && init.len() >= 3 {
+                    if num_drafts >= 3 && init.len() >= 3 {
                         step_verify_k4(
                             model,
                             a,
@@ -81,7 +83,7 @@ pub fn step_mtp(
                             verify_ctx,
                             dflash_verify_raw_argmax,
                         );
-                    } else if eff >= 2 && init.len() >= 2 {
+                    } else if num_drafts >= 2 && init.len() >= 2 {
                         step_verify_k3(
                             model,
                             a,
@@ -231,7 +233,9 @@ pub fn step_mtp(
             tracing::error!("save_hidden_for_mtp: {e:#}");
             continue;
         }
-        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
+        let inside_thinking = a.inside_thinking;
+        let mut draft_mask = a.grammar_state.as_mut().map(|gs| crate::scheduler::spec_step::GrammarDraftMask::new(gs, inside_thinking));
+        let provider: Option<&mut dyn spark_model::DraftMaskProvider> = draft_mask.as_mut().map(|p| p as &mut dyn spark_model::DraftMaskProvider);
         // BUG#4 (2026-06-02): when a grammar is active, generate only ONE draft.
         // run_mtp_propose_multi (mtp_multi.rs) masks only draft[0] with the
         // position-0 bitmask and leaves draft[1..] UNMASKED, so multi-draft +
@@ -243,8 +247,6 @@ pub fn step_mtp(
         // 2026-07-09: hoisted to the `effective_drafts_under_grammar` SSOT,
         // now also applied at the five verify-path re-propose sites that
         // previously bypassed this clamp (the "mask held fixed" warn spam).
-        let effective_num_drafts =
-            crate::scheduler::spec_step::effective_drafts_under_grammar(a, num_drafts);
         // Adaptive speculation: a suspended seq skips proposing entirely and
         // stays on this serial bootstrap path until the re-probe fires.
         // (`will_propose` is the single spec_allowed evaluation above.)
@@ -252,10 +254,10 @@ pub fn step_mtp(
             match model.run_mtp_propose_multi(
                 tok,
                 a.seq.seq_len,
-                effective_num_drafts,
+                num_drafts,
                 &mut a.seq,
                 0,
-                _mtp_grammar_mask.as_deref(),
+                provider,
             ) {
                 Ok(drafts) if !drafts.is_empty() => {
                     tracing::debug!("MTP bootstrap: tok={tok} → drafts={drafts:?}");

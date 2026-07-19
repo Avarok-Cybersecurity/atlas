@@ -13,7 +13,7 @@ use spark_runtime::kv_cache::PagedKvCache;
 
 use super::types::{PinnedMetaStaging, TransformerModel};
 use crate::layer::{AttnMetadataDev, LayerState};
-use crate::speculative::DraftProposer;
+use crate::speculative::{DraftMaskProvider, DraftProposer};
 use crate::traits::{ChunkedPrefillPageMetadata, Model, PrefillSlice, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights};
 
@@ -615,16 +615,9 @@ impl Model for TransformerModel {
         num_drafts: usize,
         seq: &mut SequenceState,
         _stream: u64,
-        grammar_bitmask: Option<&[i32]>,
+        grammar: Option<&mut dyn DraftMaskProvider>,
     ) -> Result<Vec<u32>> {
-        self.run_mtp_propose_multi_dispatch(
-            token,
-            position,
-            num_drafts,
-            seq,
-            _stream,
-            grammar_bitmask,
-        )
+        self.run_mtp_propose_multi_dispatch(token, position, num_drafts, seq, _stream, grammar)
     }
     fn read_deferred_draft_token(&self) -> Result<u32> {
         self.read_deferred_draft_token_dispatch()

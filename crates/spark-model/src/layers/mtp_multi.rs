@@ -110,7 +110,7 @@ impl DraftProposer for MultiModuleMtpHead {
         ctx: &ForwardContext,
         stream: u64,
         draft_embed_target: Option<DevicePtr>,
-        grammar_bitmask: Option<&[i32]>,
+        mut grammar: Option<&mut dyn crate::speculative::DraftMaskProvider>,
         _target_hidden_stack: Option<DevicePtr>,
     ) -> Result<Vec<u32>> {
         let mm_state = state
@@ -134,10 +134,11 @@ impl DraftProposer for MultiModuleMtpHead {
             // in-process, no GPU embed needed.
             let embed_target = if i == k - 1 { draft_embed_target } else { None };
 
-            // Grammar mask: the same single-position mask is passed to every
-            // module (MultiModule with grammar is untested — for num_drafts
-            // > 1 + grammar, MtpHead's caller-side warning fires).
-            let mask_for_draft = grammar_bitmask;
+            // Grammar-masked multi-draft: per-position bitmask for THIS module,
+            // fetched before forward_one. The grammar is speculatively advanced
+            // after each draft (below) so module i+1 sees the correct mask, and
+            // all advances are rolled back after the loop.
+            let mask = grammar.as_deref_mut().and_then(|g| g.current_mask());
 
             let draft = self.modules[i].forward_one(
                 current_token,
@@ -147,7 +148,7 @@ impl DraftProposer for MultiModuleMtpHead {
                 ctx,
                 stream,
                 embed_target,
-                mask_for_draft,
+                mask.as_deref(),
             )?;
 
             tracing::debug!(
@@ -162,8 +163,14 @@ impl DraftProposer for MultiModuleMtpHead {
             // MtpHead writes its own hidden output into
             // `ctx.buffers.hidden_states()` before the LM head GEMM.
             current_hidden = ctx.buffers.hidden_states();
+            if let Some(g) = grammar.as_deref_mut() {
+                g.advance(draft);
+            }
         }
 
+        if let Some(g) = grammar.as_deref_mut() {
+            g.rollback();
+        }
         mm_state.last_num_drafted = drafts.len();
         Ok(drafts)
     }
