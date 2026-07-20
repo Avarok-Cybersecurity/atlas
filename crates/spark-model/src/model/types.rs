@@ -28,6 +28,10 @@ use crate::weight_map::{DenseWeight, Fp8DenseWeight, MtpWeights, QuantizedWeight
 /// Adding a new model only requires implementing [`TransformerLayer`]
 /// for each layer type — the model loop stays unchanged.
 #[allow(dead_code)]
+/// Rows in the drafter catch-up hidden ring (see `mtp_catchup_ring`):
+/// 512 covers the gate's 256-token serial re-probe interval with 2x margin.
+pub(super) const MTP_CATCHUP_RING_ROWS: usize = 512;
+
 pub struct TransformerModel {
     pub(super) config: ModelConfig,
     pub(super) embed_tokens: DenseWeight,
@@ -133,6 +137,14 @@ pub struct TransformerModel {
     /// Size: hidden_size * 4 bytes (one FP32 vector). MTP overwrites shared
     /// buffers (norm_output etc.), so the target hidden must be saved here first.
     pub(super) mtp_hidden_save: DevicePtr,
+    /// ATLAS_MTP_CATCHUP: circular per-position final-hidden ring captured
+    /// during serial-decode stretches (BF16 rows, slot = position % ring
+    /// len). Feeds the drafter catch-up on the next propose. NULL when the
+    /// feature is off or no proposer exists.
+    pub(super) mtp_catchup_ring: DevicePtr,
+    /// (first_position, count) of the contiguous position range currently
+    /// resident in the ring; a non-contiguous capture resets the range.
+    pub(super) mtp_catchup_meta: parking_lot::Mutex<(usize, usize)>,
     /// ATLAS_MTP_DRAFTER_PREFILL: per-position final-layer hidden capture for
     /// the whole prompt, `[max_seq_len, hidden_size]` BF16 (~335 MB at 32k /
     /// h=5120). NULL unless the env is set AND an MTP proposer is built.

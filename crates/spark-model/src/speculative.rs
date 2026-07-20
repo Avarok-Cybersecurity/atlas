@@ -43,6 +43,16 @@ pub fn draft_conf_tau() -> f32 {
         .unwrap_or(0.0)
 }
 
+/// Drafter catch-up feed on serial->speculative transitions
+/// (`ATLAS_MTP_CATCHUP=1`, staged off). During serial-decode stretches the
+/// scheduler rings the per-step final hiddens; on the next propose the gap
+/// rows are batch-fed into the drafter KV so it never runs stale. Wrong
+/// feeds cannot corrupt output (verification rejects bad drafts) — the
+/// stake is acceptance only, which is the flip gate's metric.
+pub fn mtp_catchup_enabled() -> bool {
+    std::env::var("ATLAS_MTP_CATCHUP").ok().as_deref() == Some("1")
+}
+
 pub trait DraftProposer: Send + Sync {
     /// Allocate per-sequence proposer state.
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>>;
@@ -52,6 +62,27 @@ pub trait DraftProposer: Send + Sync {
     /// 0). `None` = not computed; callers must not gate on it then.
     fn last_confidence(&self) -> Option<f32> {
         None
+    }
+
+    /// Current drafter KV length (rows), for gap detection. 0 = unknown /
+    /// not applicable (catch-up is skipped).
+    fn drafter_rows(&self, _state: &mut dyn ProposerState) -> usize {
+        0
+    }
+
+    /// Append drafter rows `row_base ..` from `(tokens, hiddens)` pairs —
+    /// the catch-up feed. Returns rows written (0 = unsupported/no-op).
+    #[allow(clippy::too_many_arguments)]
+    fn catchup_drafter(
+        &self,
+        _tokens: &[u32],
+        _hiddens: DevicePtr,
+        _row_base: usize,
+        _state: &mut dyn ProposerState,
+        _ctx: &ForwardContext,
+        _stream: u64,
+    ) -> Result<usize> {
+        Ok(0)
     }
 
     /// Propose up to `num_drafts` tokens autoregressively.

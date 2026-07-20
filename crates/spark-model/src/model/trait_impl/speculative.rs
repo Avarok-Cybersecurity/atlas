@@ -154,6 +154,40 @@ impl TransformerModel {
         Ok(())
     }
 
+    /// ATLAS_MTP_CATCHUP: ring-capture the final hidden of a serially
+    /// decoded token (position `pos`), keeping the ring's position range
+    /// contiguous (a gap resets the range to just this row).
+    pub(super) fn save_hidden_for_catchup_dispatch(
+        &self,
+        token_idx: usize,
+        pos: usize,
+    ) -> Result<()> {
+        if self.mtp_catchup_ring.is_null() {
+            return Ok(());
+        }
+        let ring_rows = super::super::types::MTP_CATCHUP_RING_ROWS;
+        let stream = self.gpu.default_stream();
+        let h = self.config.hidden_size;
+        let bf16 = 2usize;
+        let src = self.buffers.hidden_states().offset(token_idx * h * bf16);
+        let dst = self.mtp_catchup_ring.offset((pos % ring_rows) * h * bf16);
+        self.gpu.copy_d2d_async(src, dst, h * bf16, stream)?;
+        let mut meta = self.mtp_catchup_meta.lock();
+        let (start, count) = *meta;
+        *meta = if count > 0 && pos == start + count {
+            // Contiguous append; cap the range at ring capacity by advancing
+            // the start once the ring wraps (oldest row overwritten).
+            if count == ring_rows {
+                (start + 1, ring_rows)
+            } else {
+                (start, count + 1)
+            }
+        } else {
+            (pos, 1)
+        };
+        Ok(())
+    }
+
     pub(super) fn run_mtp_propose_dispatch(
         &self,
         token: u32,

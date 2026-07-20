@@ -244,6 +244,14 @@ impl TransformerModel {
 
         // MTP hidden state save buffer (1 × hidden_size FP32)
         let mtp_hidden_save = gpu.alloc(config.hidden_size * 4)?;
+        // Catch-up ring: 512 rows covers the gate's serial re-probe interval
+        // (256 tokens) with 2x margin; ~4 MB at hidden 4096. Only allocated
+        // when the staged feature is enabled.
+        let mtp_catchup_ring = if crate::speculative::mtp_catchup_enabled() {
+            gpu.alloc(super::types::MTP_CATCHUP_RING_ROWS * config.hidden_size * 2)?
+        } else {
+            DevicePtr::NULL
+        };
 
         // ATLAS_MTP_DRAFTER_PREFILL: whole-prompt hidden capture buffer,
         // [max_seq_len, hidden_size] BF16 — 335 MB at 32k/h=5120. Explicitly
@@ -517,6 +525,8 @@ impl TransformerModel {
             profile_first_pending: std::sync::atomic::AtomicBool::new(profile_first),
             proposer,
             mtp_hidden_save,
+            mtp_catchup_ring,
+            mtp_catchup_meta: parking_lot::Mutex::new((0, 0)),
             mtp_prefill_hidden,
             mtp_prefill_capacity: if mtp_prefill_hidden.is_null() {
                 0

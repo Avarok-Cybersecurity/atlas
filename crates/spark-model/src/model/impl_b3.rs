@@ -119,6 +119,52 @@ impl TransformerModel {
                 tracing::warn!("MTP drafter prefill failed (continuing without): {e:#}");
             }
         }
+        // ATLAS_MTP_CATCHUP: before proposing, batch-feed any serial-decode
+        // gap [rows .. position) into the drafter KV from the hidden ring, so
+        // the drafter attends over real recent context instead of a stale
+        // (position-discontinuous) tail. Ring rows are position-indexed
+        // (slot = pos % ring); feed in <=2 contiguous GPU segments across the
+        // wrap. Wrong feeds cannot corrupt output (verify rejects bad
+        // drafts); acceptance is the flip gate's metric.
+        if crate::speculative::mtp_catchup_enabled() && !self.mtp_catchup_ring.is_null() {
+            let rows = proposer.drafter_rows(prop_state.as_mut());
+            if rows > 0 && rows < position {
+                let (start, count) = *self.mtp_catchup_meta.lock();
+                let ring_rows = super::types::MTP_CATCHUP_RING_ROWS;
+                let covered = start <= rows && start + count >= position;
+                if covered && seq.tokens.len() > position {
+                    let h = self.config.hidden_size;
+                    let bf16 = 2usize;
+                    let mut base = rows;
+                    while base < position {
+                        // Contiguous ring segment starting at `base`.
+                        let slot = base % ring_rows;
+                        let seg_end = (position).min(base + (ring_rows - slot));
+                        let n_rows = seg_end - base;
+                        // tokens[j] pairs with hidden row j: pass the token
+                        // window [base ..= seg_end] (n_rows + 1 tokens).
+                        let toks = &seq.tokens[base..=seg_end];
+                        let hid = self.mtp_catchup_ring.offset(slot * h * bf16);
+                        match proposer.catchup_drafter(
+                            toks,
+                            hid,
+                            base,
+                            prop_state.as_mut(),
+                            &ctx,
+                            stream,
+                        ) {
+                            Ok(w) if w == n_rows => base = seg_end,
+                            Ok(_) | Err(_) => break, // degrade: propose as today
+                        }
+                    }
+                    if base == position {
+                        tracing::debug!(
+                            "MTP catch-up: drafter fed rows {rows}..{position} from ring"
+                        );
+                    }
+                }
+            }
+        }
         let drafts = proposer.propose(
             token,
             self.mtp_hidden_save,

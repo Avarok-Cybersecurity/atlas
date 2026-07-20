@@ -379,6 +379,26 @@ impl DraftProposer for MtpHead {
         self.prefill_drafter_impl(prompt_tokens, hiddens, state, ctx, stream)
     }
 
+    fn drafter_rows(&self, state: &mut dyn ProposerState) -> usize {
+        state
+            .as_any_mut()
+            .downcast_mut::<MtpProposerState>()
+            .map(|s| s.seq_len)
+            .unwrap_or(0)
+    }
+
+    fn catchup_drafter(
+        &self,
+        tokens: &[u32],
+        hiddens: DevicePtr,
+        row_base: usize,
+        state: &mut dyn ProposerState,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<usize> {
+        self.drafter_rows_impl(tokens, hiddens, row_base, state, ctx, stream)
+    }
+
     fn read_deferred_draft_token(&self, gpu: &dyn GpuBackend) -> Result<u32> {
         self.read_deferred_draft_token(gpu)
     }

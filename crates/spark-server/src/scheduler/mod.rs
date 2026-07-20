@@ -559,6 +559,15 @@ pub fn run(
                                 adaptive_sampling,
                             );
                             gate.record_decode(t0.elapsed());
+                            // ATLAS_MTP_CATCHUP: ring the serially decoded
+                            // token's hidden so the next MTP re-probe can
+                            // batch-feed the drafter over the serial gap
+                            // (no-op when the feature is off).
+                            if let Some(pos) = active[0].seq.seq_len.checked_sub(1)
+                                && let Err(e) = model.save_hidden_for_catchup(0, pos)
+                            {
+                                tracing::warn!("save_hidden_for_catchup: {e:#}");
+                            }
                         }
                         mtp_gate::GateStep::MeasureVerify => {
                             // A bootstrap-only step (no pending drafts) emits

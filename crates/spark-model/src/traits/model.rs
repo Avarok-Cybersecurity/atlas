@@ -557,6 +557,12 @@ pub trait Model: Send + Sync {
     /// overwrites shared buffers including `norm_output`.
     fn save_hidden_for_mtp(&self, token_idx: usize, stream: u64) -> Result<()>;
 
+    /// ATLAS_MTP_CATCHUP: ring-capture a serially decoded token's final
+    /// hidden at `pos` for the drafter catch-up feed. Default no-op.
+    fn save_hidden_for_catchup(&self, _token_idx: usize, _pos: usize) -> Result<()> {
+        Ok(())
+    }
+
     /// Capture `hidden_states[token_idx]` from every DFlash capture layer
     /// into `dflash_hidden_save`. Called after gamma verify Phase 3 D2H
     /// sync (bonus position known). No-op when DFlash is disabled.

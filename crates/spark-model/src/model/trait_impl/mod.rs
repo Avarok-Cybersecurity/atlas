@@ -324,6 +324,10 @@ impl Model for TransformerModel {
     ) -> Result<Vec<u32>> {
         self.decode_and_verify_fused_dispatch(tokens, seq, _stream)
     }
+    fn save_hidden_for_catchup(&self, token_idx: usize, pos: usize) -> Result<()> {
+        self.save_hidden_for_catchup_dispatch(token_idx, pos)
+    }
+
     fn save_hidden_for_mtp(&self, token_idx: usize, _stream: u64) -> Result<()> {
         self.save_hidden_for_mtp_dispatch(token_idx, _stream)
     }
