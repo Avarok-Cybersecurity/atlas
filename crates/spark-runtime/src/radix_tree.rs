@@ -14,6 +14,7 @@ use crate::prefix_cache::{EvictedBlocks, PrefixCache, PrefixMatch};
 
 mod inner;
 mod snapshot;
+mod snapshot_stats;
 
 #[cfg(test)]
 mod tests;

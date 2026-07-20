@@ -7,6 +7,7 @@
 //! through the radix tree.
 
 use super::hash_token_prefix;
+use super::snapshot_stats::SnapshotStats;
 
 pub(super) struct SnapshotEntry {
     snapshot_id: usize,
@@ -14,12 +15,6 @@ pub(super) struct SnapshotEntry {
     token_count: usize,
     prefix_hash: u64,
     last_access: u64,
-    /// Cumulative hits over the entry's lifetime — combined with
-    /// `last_access` in eviction to approximate the forecast-based
-    /// policy from the Marconi paper §4 (B.4, 2026-04-25). Hot
-    /// prefixes (high hit count) survive longer than cold ones at
-    /// the same age.
-    hit_count: u32,
     /// Phase 1b — spill-not-drop location. `false` = resident in HBM at
     /// `snapshot_id`. `true` = spilled to the byte tier; `snapshot_id` is stale
     /// and the state is addressed by `prefix_hash` (the tier key). Always
@@ -67,36 +62,6 @@ pub(super) struct SsmSnapshotIndex {
     stats: SnapshotStats,
 }
 
-/// Aggregate SSM-snapshot cache telemetry (Phase 0). Summarised via
-/// `log_stats_if_due` when `ATLAS_SSM_SNAP_STATS` is set.
-#[derive(Default, Clone, Copy)]
-pub(super) struct SnapshotStats {
-    /// Snapshots registered (new prefix inserted, not an overwrite).
-    pub saves: u64,
-    /// Prefix lookups attempted.
-    pub lookups: u64,
-    /// Lookups that restored *some* anchor (deep or shallow).
-    pub hits: u64,
-    /// Σ restored-anchor depth over hits — mean anchor = this / hits.
-    pub anchor_depth_sum: u64,
-    /// Σ (matched_tokens − anchor_depth) over hits: the SSM tokens that still
-    /// had to be recomputed because the deep tail was not resident. This is the
-    /// #278 metric ("mean recompute 4438→262 tok") and Phase 1's target.
-    pub recompute_tokens_on_hit: u64,
-    /// Σ matched_tokens over *misses* (no anchor at all → full recompute).
-    pub recompute_tokens_on_miss: u64,
-    /// Snapshot slots freed by `evict_lru` — a DROP (state discarded) on the
-    /// default path; Phase 1 spills instead via `evict_to_tier`.
-    pub evictions: u64,
-    /// Phase 1b: entries moved HBM→Tier by `evict_to_tier` (spills, not drops).
-    pub tier_spills: u64,
-    /// Phase 1b: lookups whose deepest anchor was found in the tier (would have
-    /// been a recompute pre-spill) — the converted loss.
-    pub tier_hits: u64,
-    /// Phase 1b: tier entries faulted back into HBM via `promote`.
-    pub tier_fault_ins: u64,
-}
-
 impl SsmSnapshotIndex {
     pub(super) fn new() -> Self {
         Self {
@@ -135,7 +100,6 @@ impl SsmSnapshotIndex {
             token_count,
             prefix_hash,
             last_access: self.access_counter,
-            hit_count: 0,
             tiered: false,
             is_tail: false,
         });
@@ -181,7 +145,6 @@ impl SsmSnapshotIndex {
             token_count,
             prefix_hash,
             last_access: self.access_counter,
-            hit_count: 0,
             tiered: false,
             is_tail: true,
         });
@@ -208,8 +171,16 @@ impl SsmSnapshotIndex {
         if session_hash != 0 {
             self.last_lookup_session = session_hash;
         }
+        // Side-effect-free scan: only the WINNER gets its recency bumped,
+        // below. Bumping every improving candidate kept shallow early-prefix
+        // entries eternally fresh (each deep lookup walks the improving chain
+        // through them), pinning them in the pool while the tail checkpoints
+        // the next warm turn actually needs were evicted — the measured
+        // frozen-anchor / 18.6k-token SSM replay pathology (2026-07-10,
+        // re-landed after #317's re-cut reverted it).
         let mut best: Option<(usize, usize)> = None; // (snapshot_id, token_count)
-        for entry in &mut self.entries {
+        let mut best_idx: Option<usize> = None;
+        for (i, entry) in self.entries.iter().enumerate() {
             // Tiered entries hold no HBM slot — the non-tier `lookup` must never
             // hand back a spilled entry's stale slot. Tier-aware callers use
             // `lookup_tiered`. (No entry is ever tiered when ATLAS_SSM_TIER off.)
@@ -232,11 +203,13 @@ impl SsmSnapshotIndex {
                 continue;
             }
             if best.is_none() || entry.token_count > best.unwrap().1 {
-                self.access_counter += 1;
-                entry.last_access = self.access_counter;
-                entry.hit_count = entry.hit_count.saturating_add(1);
                 best = Some((entry.snapshot_id, entry.token_count));
+                best_idx = Some(i);
             }
+        }
+        if let Some(i) = best_idx {
+            self.access_counter += 1;
+            self.entries[i].last_access = self.access_counter;
         }
         // Phase-0 telemetry: hit-rate + recompute distance. `recompute` is the
         // SSM prefix that still had to be re-run because no deeper anchor was
@@ -305,8 +278,16 @@ impl SsmSnapshotIndex {
         if self.entries.is_empty() {
             return None;
         }
-        // Per-entry forecast score: last_access * (1 + hit_count) — old/cold first.
-        let escore = |e: &SnapshotEntry| e.last_access.saturating_mul(1 + e.hit_count as u64);
+        // Pure recency (LRU). The former forecast score
+        // `last_access * (1 + hit_count)` multiplied a monotonic timestamp by
+        // hit count, so any once-hit old entry outscored every fresh save;
+        // once the cold entries drained, each new save's evict victim was the
+        // PREVIOUS fresh save — the live turn's tail checkpoint died ms before
+        // the next turn's lookup needed it, freezing the restore anchor
+        // (measured 2026-07-10: anchor pinned at token 9056 for 29 turns,
+        // 12.7k-token SSM replay, 40s TTFT tail). Re-landed after #317's
+        // re-cut restored the old score.
+        let escore = |e: &SnapshotEntry| e.last_access;
 
         // SESSION-AWARE eviction (default ON; ATLAS_SNAP_EVICT_LEGACY=1 → old per-entry).
         if std::env::var_os("ATLAS_SNAP_EVICT_LEGACY").is_none() {
@@ -342,7 +323,7 @@ impl SsmSnapshotIndex {
     /// scoped, so pools ≥2 never deadlock). Correctness-safe (restore re-validates).
     /// `skip_tiered`: ignore spilled entries (no HBM slot). Returns `None` if none eligible.
     fn session_aware_victim(&self, tail_protect: bool, skip_tiered: bool) -> Option<usize> {
-        let escore = |e: &SnapshotEntry| e.last_access.saturating_mul(1 + e.hit_count as u64);
+        let escore = |e: &SnapshotEntry| e.last_access;
         let eligible = |e: &SnapshotEntry| !(skip_tiered && e.tiered);
 
         // session freshness = max last_access among that session's eligible entries.
@@ -442,7 +423,6 @@ impl SsmSnapshotIndex {
             let ac = self.access_counter;
             let e = &mut self.entries[i];
             e.last_access = ac;
-            e.hit_count = e.hit_count.saturating_add(1);
             let tiered = e.tiered;
             let depth = e.token_count;
             let loc = if tiered {
