@@ -55,7 +55,7 @@ impl TransformerModel {
         // dual-buffer pre-verify copy (~60 MB h_state + conv D2D per K=2
         // step) is gone. The CUDA-graph capture below is unaffected: the
         // captured nodes take the same `h_state` pointer, which never moves.
-        // (K=3/K=4/DFlash verify still run pre_verify_copy_async.)
+        // (K=3/K=4/DFlash verify share the same in-place convention.)
 
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
@@ -225,6 +225,7 @@ impl TransformerModel {
             gdn_exact_replay: false,
             token_ids: Some(self.buffers.token_ids()),
             routed_lora_layers: None, // #30: decode/verify never routes prefill.
+            midchunk_capture: None,
         };
 
         // ── Phase 2: CUDA graph capture / replay ──

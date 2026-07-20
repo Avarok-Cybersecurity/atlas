@@ -210,19 +210,24 @@ impl Qwen3SsmLayer {
 
         // Input: deinterleaved [N, qkvz_size], output: conv_out [N, conv_dim]
         // Conv1d processes QKV channels (first conv_dim of each token's qkvz_size)
-        ops::conv1d_update_prefill(
-            ctx.gpu,
-            self.conv1d_prefill_k,
+        // MID-CHUNK tail capture: reserve THIS SSM layer's per-pass ordinal
+        // once (shared by the conv + recurrence splits below). `None` unless
+        // ATLAS_SSM_TAIL_MIDCHUNK is active for a pass that spans `tb`.
+        let midcap_idx = ctx.midchunk_capture.as_ref().map(|c| {
+            c.ssm_layer_counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        });
+        // Conv1d — optionally split at cap_local, capturing conv_state @ tb.
+        self.conv1d_prefill_capture(
+            ctx,
             ssm_state.conv_state,
             deinterleaved,
-            &self.ssm.conv1d,
-            DevicePtr::NULL,
             conv_out_buf,
-            conv_dim as u32,
-            d_conv as u32,
+            conv_dim,
+            d_conv,
             k,
-            qkvz_size as u32,
-            conv_dim as u32,
+            qkvz_size,
+            midcap_idx,
             stream,
         )?;
         // ATLAS_GDN_DUMP hook #1: post-conv1d (post-silu, applied inside
@@ -307,6 +312,7 @@ impl Qwen3SsmLayer {
             kd,
             vd,
             conv_dim,
+            midcap_idx,
             ctx,
             stream,
         )?;
@@ -399,11 +405,7 @@ impl Qwen3SsmLayer {
             None
         };
 
-        // ATLAS_DUMP_EXPERT_IDS=1 also dumps the residual_add_rms_norm
-        // INPUTS (hidden + out_proj_buf separately) for last token.
-        // This isolates whether the gate-input direction-divergence vs HF
-        // comes from (a) hidden being corrupted, (b) out_proj_buf differing,
-        // or (c) the residual_add_rms_norm kernel itself computing differently.
+        // ATLAS_DUMP_EXPERT_IDS=1: also dumps residual_add_rms_norm INPUTS (hidden + out_proj_buf) for drift attribution.
         if std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1") {
             ctx.gpu.synchronize(stream)?;
             let offset = (num_tokens - 1) * h * 2;

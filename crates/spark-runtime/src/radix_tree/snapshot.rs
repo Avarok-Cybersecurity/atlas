@@ -25,6 +25,9 @@ pub(super) struct SnapshotEntry {
     /// and the state is addressed by `prefix_hash` (the tier key). Always
     /// `false` when `ATLAS_SSM_TIER` is off, so the default path is unchanged.
     tiered: bool,
+    /// True for the per-session TAIL snapshot (the restore point the next turn's
+    /// block-floored `matched_tokens` looks up). Exactly one is kept per session.
+    is_tail: bool,
 }
 
 /// Where a matched snapshot's state currently lives (Phase 1b).
@@ -134,8 +137,55 @@ impl SsmSnapshotIndex {
             last_access: self.access_counter,
             hit_count: 0,
             tiered: false,
+            is_tail: false,
         });
         None
+    }
+
+    /// Insert the per-session TAIL snapshot, superseding this session's previous one.
+    /// Returns displaced snapshot_ids for the caller to free.
+    pub(super) fn insert_tail(
+        &mut self,
+        prefix_hash: u64,
+        snapshot_id: usize,
+        session_hash: u64,
+        token_count: usize,
+    ) -> Vec<usize> {
+        let mut displaced = Vec::new();
+        if session_hash != 0 {
+            let mut i = 0;
+            while i < self.entries.len() {
+                if self.entries[i].is_tail && self.entries[i].session_hash == session_hash {
+                    displaced.push(self.entries.swap_remove(i).snapshot_id);
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        for entry in &mut self.entries {
+            if entry.prefix_hash == prefix_hash {
+                displaced.push(entry.snapshot_id);
+                entry.snapshot_id = snapshot_id;
+                entry.session_hash = session_hash;
+                entry.token_count = token_count;
+                entry.is_tail = true;
+                self.access_counter += 1;
+                entry.last_access = self.access_counter;
+                return displaced;
+            }
+        }
+        self.access_counter += 1;
+        self.entries.push(SnapshotEntry {
+            snapshot_id,
+            session_hash,
+            token_count,
+            prefix_hash,
+            last_access: self.access_counter,
+            hit_count: 0,
+            tiered: false,
+            is_tail: true,
+        });
+        displaced
     }
 
     /// Find deepest snapshot matching session within matched_tokens range.
@@ -170,6 +220,11 @@ impl SsmSnapshotIndex {
                 continue;
             }
             if session_hash != 0 && entry.session_hash != 0 && entry.session_hash != session_hash {
+                continue;
+            }
+            // TAIL snapshots bleed past the exact prefix — byte-safe ONLY for the
+            // same non-zero session. Cross-request reuse corrupts SSM state.
+            if entry.is_tail && (session_hash == 0 || entry.session_hash != session_hash) {
                 continue;
             }
             let h = hash_token_prefix(tokens, entry.token_count, adapter_id);
@@ -250,30 +305,14 @@ impl SsmSnapshotIndex {
         if self.entries.is_empty() {
             return None;
         }
-        // Per-entry forecast score (B.4, Marconi paper §4): old AND cold first.
-        // last_access * (1 + hit_count) — recent/hot survive. #155 fixed the
-        // inverted (÷) form that evicted just-selected snapshots.
+        // Per-entry forecast score: last_access * (1 + hit_count) — old/cold first.
         let escore = |e: &SnapshotEntry| e.last_access.saturating_mul(1 + e.hit_count as u64);
 
-        // SESSION-AWARE eviction (default ON; ATLAS_SNAP_EVICT_LEGACY=1 → old
-        // per-entry policy). The agentic workload interleaves ~20 multi-turn
-        // conversations; per-entry LRU evicts the active conversation's OWN deep
-        // checkpoints whenever it goes briefly dormant (its unique deep snapshots
-        // have hit_count=0 and a stale last_access vs another conversation's fresh
-        // ones), so its next warm turn full-recomputes the SSM state (TTFT 1s→50s).
-        // Fix: evict from the STALEST conversation first — rank by the session's
-        // freshness (max last_access over its entries), so the active conversation's
-        // ENTIRE deep checkpoint chain stays resident until every other (completed/
-        // dormant) conversation is gone. Within the victim session, drop its lowest
-        // forecast-score entry. This is "prefix caching like llama" for SSM state:
-        // the live conversation never re-recomputes what it already computed.
-        // Selecting a different victim is correctness-safe — restore re-validates
-        // (session_hash + prefix_hash) before using any snapshot; eviction only
-        // frees a slot.
+        // SESSION-AWARE eviction (default ON; ATLAS_SNAP_EVICT_LEGACY=1 → old per-entry).
         if std::env::var_os("ATLAS_SNAP_EVICT_LEGACY").is_none() {
             let tail_protect = self.last_lookup_session != 0
                 && std::env::var_os("ATLAS_SSM_TAIL_PROTECT").is_some();
-            // Skip tiered entries — they hold no HBM slot to free.
+            // Skip tiered entries (no HBM slot to free).
             let victim_idx = self.session_aware_victim(tail_protect, true)?;
             let entry = self.entries.swap_remove(victim_idx);
             self.stats.evictions += 1;
@@ -297,31 +336,11 @@ impl SsmSnapshotIndex {
         Some(entry.snapshot_id)
     }
 
-    /// Pure victim selection for the session-aware eviction policy (default
-    /// path). Returns the index into `self.entries` to drop. Split out so it
-    /// is unit-testable without mutating process env.
-    ///
-    /// Ranking: evict the STALEST conversation first (by session freshness =
-    /// max `last_access` over its entries), then the lowest per-entry forecast
-    /// score within it — the live conversation's whole deep chain stays
-    /// resident until every dormant conversation is gone.
-    ///
-    /// `tail_protect` (ATLAS_SSM_TAIL_PROTECT, ported from #278): additionally
-    /// exempt the live conversation's DEEPEST snapshot — its next warm turn
-    /// restores from it. Session-aware ranking alone only protects the live
-    /// session vs *dormant* ones; within a single/dominant session it falls
-    /// through to lowest-escore = the just-aged deep tail (hit_count=0), which
-    /// the hot token-8192 anchor out-scores, so warm restore falls back to 8192
-    /// and recomputes thousands of SSM tokens (~4400 tok, ~7.6s TTFT/turn).
-    /// Exactly ONE entry is exempted, scoped to the active session, so any pool
-    /// \>=2 always has a victim and never deadlocks. Correctness-safe: restore
-    /// re-validates session_hash+prefix_hash+depth, so changing the victim
-    /// cannot cause a wrong-position restore.
-    ///
-    /// `skip_tiered` (Phase 1b): ignore entries already spilled to the byte tier
-    /// — they hold no HBM slot, so they are neither a valid drop victim (freeing
-    /// their stale `snapshot_id` would double-free) nor a spill candidate.
-    /// Returns `None` when no eligible entry exists (all spilled / empty).
+    /// Pure victim selection for session-aware eviction. Split out for unit tests.
+    /// Ranking: stalest session first, then lowest forecast score within it.
+    /// `tail_protect`: exempt the live session's deepest snapshot (one entry,
+    /// scoped, so pools ≥2 never deadlock). Correctness-safe (restore re-validates).
+    /// `skip_tiered`: ignore spilled entries (no HBM slot). Returns `None` if none eligible.
     fn session_aware_victim(&self, tail_protect: bool, skip_tiered: bool) -> Option<usize> {
         let escore = |e: &SnapshotEntry| e.last_access.saturating_mul(1 + e.hit_count as u64);
         let eligible = |e: &SnapshotEntry| !(skip_tiered && e.tiered);
@@ -366,21 +385,10 @@ impl SsmSnapshotIndex {
         victim.map(|(i, _)| i)
     }
 
-    // ─────────────────────────── Phase 1b: spill tier ───────────────────────
-    // Location state machine over the same `entries`: an entry is either
-    // resident (`tiered == false`, state at `snapshot_id`) or spilled
-    // (`tiered == true`, state at `prefix_hash` in the byte tier). Only reached
-    // when the caller has ATLAS_SSM_TIER on; the default path never tiers.
-    // Consumed via the `PrefixCache` trait (`evict_snapshot_to_tier`,
-    // `promote_snapshot`) and `RadixTree::lookup`'s tier-aware sub-lookup.
+    // ─── Phase 1b: spill tier ─── resident vs spilled state machine (ATLAS_SSM_TIER).
 
-    /// **Spill victim selection** (replaces `evict_lru`'s drop when the tier is
-    /// engaged). Pick the same session-aware/tail-protected victim as the drop
-    /// path but among HBM-resident entries only, mark it spilled, and return
-    /// `(freed_slot, key)` so the caller moves its bytes to the tier and reuses
-    /// the slot. The entry STAYS in the index (findable by `lookup_tiered`), so
-    /// a later warm turn faults it back in instead of recomputing.
-    /// `None` ⇒ nothing HBM-resident to free (all already spilled / empty).
+    /// Spill victim selection (tier engaged). Marks the victim spilled, returns
+    /// `(freed_slot, key)`. Entry stays in the index for `lookup_tiered` fault-in.
     pub(super) fn evict_to_tier(&mut self) -> Option<(usize, u64)> {
         if self.entries.is_empty() {
             return None;

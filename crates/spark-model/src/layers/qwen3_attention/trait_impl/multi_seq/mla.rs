@@ -130,6 +130,7 @@ impl Qwen3AttentionLayer {
                 // block_table). All other ctx fields are copied verbatim.
                 let ctx_i = crate::layer::ForwardContext {
                     attn_metadata: Some(meta_i),
+                    midchunk_capture: None,
                     ..*c.fwd
                 };
                 // Q/K/V projection destinations inside `qkv_output`,

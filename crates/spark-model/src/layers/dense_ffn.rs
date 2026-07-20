@@ -95,6 +95,8 @@ pub struct DenseFfnLayer {
     w4a16_gemv_dual_batch3: KernelHandle,
     w4a16_gemv_batch2: KernelHandle,
     w4a16_gemv_batch3: KernelHandle,
+    /// M<=4 batched GEMV (K=4 verify FFN); 0-handle when absent.
+    w4a16_gemv_batch4: KernelHandle,
     w4a16_gemm: KernelHandle,
     // 128x128 2-stage cp.async pipelined w4a16 GEMM — the fast prefill kernel
     // attention/SSM already use. The base `w4a16_gemm` (M64xN64) only hits
@@ -132,6 +134,9 @@ pub struct DenseFfnLayer {
     // below) and requant the BF16 activations every call (`requant_a_bf16_int8`,
     // into `int8_a_scratch`). KernelHandle(0) on miss → arm never taken.
     int8_faith2_k: KernelHandle,
+    // faith5: int32 per-sb accumulation (breaks the MMA→scale dependency chain).
+    // Opt-in via ATLAS_INT8_FAITH5=1 (replaces faith2 for int8 prefill GEMMs).
+    int8_faith5_k: KernelHandle,
     requant_w_int8_k: KernelHandle,
     requant_a_int8_k: KernelHandle,
     // Lazily-built, process-lifetime int8 weight copies (one per projection),
@@ -264,6 +269,7 @@ impl DenseFfnLayer {
             w4a16_gemv_dual_batch3: gpu.kernel("w4a16_gemv", "w4a16_gemv_dual_batch3")?,
             w4a16_gemv_batch2: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
             w4a16_gemv_batch3: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch3")?,
+            w4a16_gemv_batch4: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
             w4a16_gemm: gpu.kernel("w4a16", "w4a16_gemm")?,
             w4a16_gemm_t_m128_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128"),
             w4a16_gemm_t_m128_v2_k: super::try_kernel(gpu, "w4a16_v2", "w4a16_gemm_t_m128_v2"),
@@ -275,6 +281,7 @@ impl DenseFfnLayer {
             ),
             w4a16_gemm_t_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t"),
             int8_faith2_k: super::try_kernel(gpu, "w4a16", "int8_gemm_faith2"),
+            int8_faith5_k: super::try_kernel(gpu, "w4a16", "int8_gemm_i32acc"),
             requant_w_int8_k: super::try_kernel(gpu, "w4a16", "requant_w_nvfp4_int8"),
             requant_a_int8_k: super::try_kernel(gpu, "w4a16", "requant_a_bf16_int8"),
             int8_gate: std::sync::OnceLock::new(),
@@ -1098,6 +1105,75 @@ impl DenseFfnLayer {
         Ok(())
     }
 
+    /// Whether the K=4 batched-GEMV verify path is available (batch4 kernel
+    /// present AND NVFP4 weights loaded — the batchm GEMV reads the
+    /// non-transposed NVFP4 layout).
+    pub fn can_forward_k4(&self) -> bool {
+        self.w4a16_gemv_batch4.0 != 0 && !self.weights.gate_proj.weight.is_null()
+    }
+
+    /// K=4 speculative verify: batched GEMV for 4 tokens.
+    /// 4 launches: batch4 gate + batch4 up + silu_mul + batch4 down — each
+    /// projection weight is read ONCE for all 4 rows at near-peak stream
+    /// bandwidth. nsys (2026-07-18): the `forward_prefill` MMQ arm this
+    /// replaces for the K=4 verify cost 54.8 ms/step across the 64-layer
+    /// dense FFN stack (~156 GB/s effective at M=4); the batch GEMV family
+    /// measures ~290 GB/s on the same shapes (w8a16_gemv_batch4 sibling),
+    /// putting this path at the ~31 ms weight-traffic floor.
+    pub fn forward_k4(&self, input: DevicePtr, ctx: &ForwardContext, stream: u64) -> Result<()> {
+        let h = ctx.config.hidden_size as u32;
+        let inter = ctx.config.intermediate_size as u32;
+
+        let gate_out = ctx.buffers.expert_gate_out();
+        let up_out = ctx.buffers.expert_up_out();
+
+        ops::w4a16_gemv_batchm(
+            ctx.gpu,
+            self.w4a16_gemv_batch4,
+            input,
+            &self.weights.gate_proj,
+            gate_out,
+            4,
+            inter,
+            h,
+            stream,
+        )?;
+        ops::w4a16_gemv_batchm(
+            ctx.gpu,
+            self.w4a16_gemv_batch4,
+            input,
+            &self.weights.up_proj,
+            up_out,
+            4,
+            inter,
+            h,
+            stream,
+        )?;
+        ops::silu_mul(
+            ctx.gpu,
+            self.act_mul,
+            gate_out,
+            up_out,
+            gate_out,
+            4 * inter,
+            stream,
+        )?;
+        let output = ctx.buffers.moe_output();
+        ops::w4a16_gemv_batchm(
+            ctx.gpu,
+            self.w4a16_gemv_batch4,
+            gate_out,
+            &self.weights.down_proj,
+            output,
+            4,
+            h,
+            inter,
+            stream,
+        )?;
+
+        Ok(())
+    }
+
     /// N-token prefill: GEMM for all projections.
     /// W4A16 prefill/verify GEMM dispatch, routed by (M, K) per
     /// w4a16_m17_bench measurements on GB10:
@@ -1544,9 +1620,19 @@ impl DenseFfnLayer {
                     // (down_faith2 && !$allow_q4k): down falls here instead of Q4_K.
                     _ if int8_prefill || (down_faith2 && !$allow_q4k) => {
                         let iw = self.ensure_int8_weight($cell, ctx.gpu, $w, $n, $k, stream)?;
+                        // faith5 (ATLAS_INT8_FAITH5=1): int32 per-sb accumulation
+                        // breaks the MMA→scale dependency chain. Same kernel signature
+                        // + grid/block as faith2 — just a different KernelHandle.
+                        let int8_kernel = if self.int8_faith5_k.0 != 0
+                            && std::env::var_os("ATLAS_INT8_FAITH5").is_some()
+                        {
+                            self.int8_faith5_k
+                        } else {
+                            self.int8_faith2_k
+                        };
                         ops::int8_gemm_faith2_prefill(
                             ctx.gpu,
-                            self.int8_faith2_k,
+                            int8_kernel,
                             self.requant_a_int8_k,
                             $in,
                             iw.w_i8,

@@ -52,8 +52,11 @@ impl TransformerModel {
         let bf16 = 2usize;
         let fp32 = 2usize;
 
-        // F62 (2026-04-27): SpecMamba dual-buffer pre-verify copy.
-        self.pre_verify_copy_async(seq)?;
+        // Item #2 (STree-style in-place K=γ verify): `h_state` IS canonical
+        // — the verify kernel reads/writes it directly and the commit
+        // (`commit_accepted_prefix`) rewinds it in place on reject. No
+        // scratch/canonical split — dual-buffer pre-verify copy eliminated.
+        // Modeled on verify_b.rs (K=2 in-place).
 
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
@@ -174,6 +177,7 @@ impl TransformerModel {
             gdn_exact_replay: false,
             token_ids: None,
             routed_lora_layers: None, // #30: decode/verify never routes prefill.
+            midchunk_capture: None,
         };
 
         // ── Phase 2: CUDA graph capture / replay ──

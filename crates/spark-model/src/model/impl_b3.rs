@@ -89,11 +89,36 @@ impl TransformerModel {
             gdn_exact_replay: false,
             token_ids: None,
             routed_lora_layers: None, // #30: MTP/draft decode never routes prefill.
+            midchunk_capture: None,
         };
         let prop_state = seq
             .proposer_state
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("No proposer state for sequence"))?;
+        // ATLAS_MTP_DRAFTER_PREFILL: on the FIRST propose of a sequence,
+        // batch-prefill the drafter's KV over the prompt (fresh-state check
+        // and quant support live inside prefill_drafter; it fast-returns 0 on
+        // every later call). Requires the capture to cover the full prompt —
+        // partial capture (prefix-cache reuse / warm restore) skips cleanly.
+        if !self.mtp_prefill_hidden.is_null() {
+            let p = seq.prompt_len;
+            let captured = self
+                .mtp_prefill_capture_len
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if p >= 2
+                && captured >= p
+                && seq.tokens.len() >= p
+                && let Err(e) = proposer.prefill_drafter(
+                    &seq.tokens[..p],
+                    self.mtp_prefill_hidden,
+                    prop_state.as_mut(),
+                    &ctx,
+                    stream,
+                )
+            {
+                tracing::warn!("MTP drafter prefill failed (continuing without): {e:#}");
+            }
+        }
         proposer.propose(
             token,
             self.mtp_hidden_save,

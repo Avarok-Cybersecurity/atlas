@@ -750,6 +750,14 @@ pub trait Model: Send + Sync {
         false
     }
 
+    /// Tokens per paged-KV block, or `None` when the model has no paged KV.
+    /// The scheduler uses this to land a prefill chunk boundary exactly on the
+    /// block boundary a warm turn will match at (see
+    /// `spark_runtime::ssm_tail_boundary`).
+    fn kv_block_size(&self) -> Option<usize> {
+        None
+    }
+
     /// EP broadcast: send a command (u32) to all worker ranks.
     ///
     /// Called by rank 0 before each model operation to synchronize workers.

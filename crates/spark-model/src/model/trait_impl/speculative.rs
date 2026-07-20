@@ -91,6 +91,49 @@ impl TransformerModel {
         TransformerModel::decode_draft(self, token, seq, stream)
     }
 
+    /// ATLAS_MTP_DRAFTER_PREFILL: copy this prefill chunk's final-layer
+    /// hiddens (`[proc_count, h]` BF16, contiguous at the head of the hidden
+    /// buffer) into the whole-prompt capture at row `chunk_start`.
+    ///
+    /// Contiguity-tracked: `chunk_start == 0` (re)starts the capture; a chunk
+    /// extending the current range appends; anything else (prefix-cache
+    /// reuse, Marconi warm restore — rows whose hiddens were never computed)
+    /// leaves the tracked length short, which safely disables the drafter
+    /// prefill for that sequence via the coverage check at the propose site.
+    pub(super) fn try_mtp_prefill_capture(
+        &self,
+        chunk_start: usize,
+        proc_count: usize,
+        stream: u64,
+    ) -> Result<()> {
+        if self.mtp_prefill_hidden.is_null() || proc_count == 0 {
+            return Ok(());
+        }
+        use std::sync::atomic::Ordering;
+        let len = self.mtp_prefill_capture_len.load(Ordering::Relaxed);
+        let new_len = if chunk_start == 0 {
+            proc_count
+        } else if chunk_start == len {
+            len + proc_count
+        } else {
+            return Ok(());
+        };
+        if chunk_start + proc_count > self.mtp_prefill_capacity {
+            return Ok(());
+        }
+        let h = self.config.hidden_size;
+        let bf16 = 2usize;
+        self.gpu.copy_d2d_async(
+            self.buffers.hidden_states(),
+            self.mtp_prefill_hidden.offset(chunk_start * h * bf16),
+            proc_count * h * bf16,
+            stream,
+        )?;
+        self.mtp_prefill_capture_len
+            .store(new_len, Ordering::Relaxed);
+        Ok(())
+    }
+
     pub(super) fn save_hidden_for_mtp_dispatch(
         &self,
         token_idx: usize,

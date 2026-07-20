@@ -68,6 +68,11 @@ pub struct TransformerModel {
     pub(super) w4a16_gemv_logits_kernel: KernelHandle, // FP32 output for LM head
     pub(super) w4a16_gemm_kernel: KernelHandle,
     pub(super) w4a16_gemv_batch2_kernel: KernelHandle,
+    /// Batched M<=4 NVFP4 GEMV for the K=3/K=4 verify lm_head (one weight
+    /// read for all rows; nsys 2026-07-18: the M64-tile `w4a16_gemm` at M=4
+    /// cost 19.3 ms/verify-step on the 248320-row lm_head — 94% tile padding).
+    /// 0-handle when the target lacks the kernel (dispatch falls back).
+    pub(super) w4a16_gemv_batch4_kernel: KernelHandle,
     /// FP8 E4M3 LUT GEMV (M=1) for the FP8 LM head. Only used when
     /// `lm_head_fp8.is_some()`; loaded unconditionally (cheap handle) so the
     /// dispatch in `lm_head` / batched-decode / verify can reference it.
@@ -128,6 +133,21 @@ pub struct TransformerModel {
     /// Size: hidden_size * 4 bytes (one FP32 vector). MTP overwrites shared
     /// buffers (norm_output etc.), so the target hidden must be saved here first.
     pub(super) mtp_hidden_save: DevicePtr,
+    /// ATLAS_MTP_DRAFTER_PREFILL: per-position final-layer hidden capture for
+    /// the whole prompt, `[max_seq_len, hidden_size]` BF16 (~335 MB at 32k /
+    /// h=5120). NULL unless the env is set AND an MTP proposer is built.
+    /// Filled contiguously by the prefill chunk epilogues; consumed once by
+    /// the drafter-prefill pass on the first propose() of a sequence.
+    pub(super) mtp_prefill_hidden: DevicePtr,
+    /// Row capacity of `mtp_prefill_hidden` (== max_seq_len at alloc; 0 when
+    /// the feature is off). SSOT for the capture bounds check.
+    pub(super) mtp_prefill_capacity: usize,
+    /// Rows of `mtp_prefill_hidden` captured contiguously from position 0 for
+    /// the CURRENT sequence. Reset to 0 on `alloc_sequence`; a chunk whose
+    /// start does not extend the contiguous range (prefix-cache reuse, warm
+    /// restore) leaves it stale-short, which safely disables drafter-prefill
+    /// for that sequence (coverage check at the propose site).
+    pub(super) mtp_prefill_capture_len: std::sync::atomic::AtomicUsize,
     /// DFlash 5-layer hidden-state stack. Allocated only when a
     /// `BlockDiffusionDraftHead` proposer is built. Layout:
     /// `[5 × hidden_size × bf16]` shallow-to-deep at the layer indices

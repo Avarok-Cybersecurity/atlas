@@ -70,6 +70,21 @@ pub(super) fn run_standard_chunk_loop(
         effective_max.min(slice_budget)
     };
     let mut chunk_len = remaining.min(cap);
+    // Land a chunk boundary on `ssm_tail_boundary` so the SSM snapshot saved
+    // there is exactly what the NEXT turn's block-floored `matched_tokens`
+    // looks up — otherwise the warm restore falls back to the coarse
+    // --ssm-checkpoint-interval grid and replays ~254 SSM tokens per turn.
+    // Suppressed when mid-chunk capture is ON (it captures in-pass, no clamp
+    // needed) and when the abandoned ATLAS_SSM_TAIL_CKPT is OFF (default).
+    if spark_runtime::ssm_tail_ckpt_enabled()
+        && !spark_runtime::ssm_tail_midchunk_enabled()
+        && let Some(bs) = model.kv_block_size()
+        && let Some(tb) = spark_runtime::ssm_tail_boundary(p.prompt_tokens.len(), bs)
+        && p.chunk_offset < tb
+        && p.chunk_offset + chunk_len > tb
+    {
+        chunk_len = tb - p.chunk_offset;
+    }
     let is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
     // Align intermediate chunks to GDN WY4 boundary (4 tokens).
     if !is_last && chunk_len >= 4 {

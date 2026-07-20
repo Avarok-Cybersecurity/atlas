@@ -570,6 +570,7 @@ pub fn run(
                             // proposed) is a representative sample; a bootstrap-
                             // only step proposes the first draft and is skipped.
                             let had_draft = !active[0].pending_drafts.is_empty();
+                            let seq_len_before = active[0].seq.seq_len;
                             let t0 = std::time::Instant::now();
                             step_mtp(
                                 &*model,
@@ -583,6 +584,16 @@ pub fn run(
                                     .as_mut()
                                     .expect("gate present")
                                     .record_verify(t0.elapsed());
+                                // Adaptive-K: report acceptance (tokens emitted
+                                // minus the 1 bonus token) so the gate's disable
+                                // threshold uses the MEASURED expected tokens,
+                                // not the theoretical 1+K max.
+                                let emitted = active[0].seq.seq_len.saturating_sub(seq_len_before);
+                                let accepted = emitted.saturating_sub(1);
+                                mtp_gate
+                                    .as_mut()
+                                    .expect("gate present")
+                                    .record_acceptance(accepted);
                             }
                         }
                     }
@@ -623,6 +634,8 @@ pub fn run(
                     );
                 } else {
                     // MTP wins in this regime (or no gate): speculative decode.
+                    let was_verify = !active[0].pending_drafts.is_empty();
+                    let seq_len_before = active[0].seq.seq_len;
                     step_mtp(
                         &*model,
                         &mut active,
@@ -630,6 +643,26 @@ pub fn run(
                         &verify_ctx,
                         dflash_verify_raw_argmax,
                     );
+                    // Adaptive-K: feed ongoing acceptance to the gate so it can
+                    // detect a drop below break-even and re-measure (which may
+                    // disable MTP if the workload shifted to lower-acceptance
+                    // territory at the same depth).
+                    if was_verify {
+                        let emitted = active[0].seq.seq_len.saturating_sub(seq_len_before);
+                        let accepted = emitted.saturating_sub(1);
+                        if let Some(gate) = mtp_gate.as_mut() {
+                            gate.record_acceptance(accepted);
+                            if gate.should_reconsider() {
+                                tracing::info!(
+                                    "MTP gate: acceptance dropped below break-even \
+                                     (ema={:.2}, m={:.2}) — re-measuring",
+                                    gate.acceptance_ema_debug(),
+                                    gate.measured_multiplier_debug(),
+                                );
+                                gate.force_remeasure();
+                            }
+                        }
+                    }
                 }
             } else {
                 // Batch decode (no MTP). Clear stale drafts when transitioning out of MTP mode.

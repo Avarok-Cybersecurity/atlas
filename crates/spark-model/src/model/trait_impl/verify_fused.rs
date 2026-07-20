@@ -63,8 +63,8 @@ impl TransformerModel {
         let m = tokens.len(); // 1 + k
         let vocab = self.config.vocab_size;
 
-        // SSM dual-buffer pre-verify copy (same as verify_b/c).
-        self.pre_verify_copy_async(seq)?;
+        // In-place verify: h_state IS canonical — no pre_verify_copy_async
+        // needed. Modeled on verify_b.rs (K=2 in-place).
 
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
@@ -197,6 +197,7 @@ impl TransformerModel {
             gdn_exact_replay: false,
             token_ids: None,
             routed_lora_layers: None, // #30: decode/verify never routes prefill.
+            midchunk_capture: None,
         };
 
         // ── Phase 2: CUDA graph capture / replay ──

@@ -180,9 +180,11 @@ pub fn step_verify_k4(
         }
         a.last_token = v3;
 
-        // F62/F63 (2026-04-27): SpecMamba commit. K=4 full accept.
-        if let Err(e) = model.commit_verify_state_async(&mut a.seq, 4, 4) {
-            tracing::error!("commit_verify_state_async (K=4 accept-4): {e:#}");
+        // Item #2 (STree-style in-place K=4 verify commit). Full accept
+        // (num_accepted=k=4): the verify kernel already wrote the canonical
+        // h_state, so the commit is a no-op.
+        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 4, 4) {
+            tracing::error!("commit_accepted_prefix (K=4 accept-4): {e:#}");
             return;
         }
         if let Err(e) = model.save_hidden_for_mtp(3, 0) {
@@ -220,9 +222,11 @@ pub fn step_verify_k4(
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 2, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
-        // F62/F63 (2026-04-27): K=4 partial accept (3 of 4).
-        if let Err(e) = model.commit_verify_state_async(&mut a.seq, 3, 4) {
-            tracing::error!("commit_verify_state_async (K=4 accept-3): {e:#}");
+        // Item #2 (STree-style in-place K=4 verify commit). Partial accept
+        // (num_accepted=3 < k=4): rewind live h_state to intermediate[2]
+        // (state after the third accepted token).
+        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 3, 4) {
+            tracing::error!("commit_accepted_prefix (K=4 accept-3): {e:#}");
             a.finished = true;
             return;
         }
@@ -270,9 +274,10 @@ pub fn step_verify_k4(
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 1, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
-        // F62/F63 (2026-04-27): K=4 partial accept (2 of 4).
-        if let Err(e) = model.commit_verify_state_async(&mut a.seq, 2, 4) {
-            tracing::error!("commit_verify_state_async (K=4 accept-2): {e:#}");
+        // Item #2 (STree-style in-place K=4 verify commit). Partial accept
+        // (num_accepted=2 < k=4): rewind live h_state to intermediate[1].
+        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 2, 4) {
+            tracing::error!("commit_accepted_prefix (K=4 accept-2): {e:#}");
             a.finished = true;
             return;
         }
@@ -318,9 +323,11 @@ pub fn step_verify_k4(
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 0, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
-        // F62/F63 (2026-04-27): K=4 partial accept (1 of 4).
-        if let Err(e) = model.commit_verify_state_async(&mut a.seq, 1, 4) {
-            tracing::error!("commit_verify_state_async (K=4 accept-1): {e:#}");
+        // Item #2 (STree-style in-place K=4 verify commit). Partial accept
+        // (num_accepted=1 < k=4): rewind live h_state to intermediate[0]
+        // (state after the always-accepted bonus token).
+        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 1, 4) {
+            tracing::error!("commit_accepted_prefix (K=4 accept-1): {e:#}");
             a.finished = true;
             return;
         }

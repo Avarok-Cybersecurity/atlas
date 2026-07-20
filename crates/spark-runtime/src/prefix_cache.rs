@@ -235,6 +235,17 @@ pub trait PrefixCache: Send + Sync {
         adapter_id: u64,
     ) -> Option<usize>;
 
+    /// Register the per-session TAIL snapshot in the index WITHOUT touching the
+    /// radix tree (the final chunk's `insert` covers those blocks). Supersedes
+    /// this session's previous tail; returns displaced snapshot ids to free.
+    fn insert_tail_snapshot(
+        &self,
+        tokens: &[u32],
+        snapshot_id: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> Vec<usize>;
+
     /// Release ref_counts on blocks that were acquired via `lookup`.
     ///
     /// Called when a sequence finishes. Decrements ref_count on cache
@@ -336,6 +347,16 @@ impl PrefixCache for NoPrefixCaching {
         _adapter_id: u64,
     ) -> Option<usize> {
         None
+    }
+
+    fn insert_tail_snapshot(
+        &self,
+        _tokens: &[u32],
+        _snapshot_id: usize,
+        _session_hash: u64,
+        _adapter_id: u64,
+    ) -> Vec<usize> {
+        Vec::new()
     }
 
     fn release(&self, _tokens: &[u32], _block_size: usize, _adapter_id: u64) {}

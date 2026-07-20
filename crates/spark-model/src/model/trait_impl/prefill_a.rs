@@ -384,6 +384,7 @@ impl TransformerModel {
             token_ids: Some(self.buffers.token_ids()),
             // #30: request slot pairs (None unless routing to a non-active slot).
             routed_lora_layers: self.routed_slot_layers(seq.adapter_slot),
+            midchunk_capture: None,
         };
 
         // ── 4. Forward through all layers ──
@@ -478,6 +479,10 @@ impl TransformerModel {
                 }
             }
         }
+
+        // ATLAS_MTP_DRAFTER_PREFILL: capture the processed rows' final-layer
+        // hiddens for the whole-prompt drafter prefill. No-op when disabled.
+        self.try_mtp_prefill_capture(seq_len_start, proc_count, stream)?;
 
         // ── 5. Final norm on LAST token only ──
         let last_hidden = hidden.offset((proc_count - 1) * h * fp32);

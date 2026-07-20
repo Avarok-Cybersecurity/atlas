@@ -3195,6 +3195,97 @@ void int8_gemm_8w_ldmab(
 #undef ATLAS_MMA_S8
 
 // ═══════════════════════════════════════════════════════════════════
+// FP8 W8A8, 8-warp + ldmatrix.x4 for BOTH A AND B (fp8_fp8_gemm_ldmab).
+// The ldmatrix port of the GDN-projection prefill GEMM: fp8_gemm_t ran at
+// ncu 10.7% SM / 56% MIO-queue stall because the A+B MMA fragments were read
+// with ~32 scalar smem loads/K-step. FP8 e4m3 uses the SAME m16n8k32 8-bit
+// fragment layout as s8, so the ldmatrix.x4 loads proven bit-exact for
+// int8_gemm_8w_ldmab port verbatim; only the MMA (s8->e4m3) and the epilogue
+// (int32+scale -> direct f32 accumulate; fp8_gemm_t is unscaled, scale folded
+// into weights upstream) change. A is pre-quantized to e4m3 by the caller
+// (bf16_to_fp8), B is the pre-dequanted e4m3 weight. Grid (N/128,M/128) blk 256.
+#define ATLAS_MMA_E4M3F(d, a0,a1,a2,a3, b0,b1) \
+    asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 " \
+        "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
+        : "=f"((d)[0]),"=f"((d)[1]),"=f"((d)[2]),"=f"((d)[3]) \
+        : "r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1), \
+          "f"((d)[0]),"f"((d)[1]),"f"((d)[2]),"f"((d)[3]))
+
+extern "C" __global__
+__launch_bounds__(256, 2)
+void fp8_fp8_gemm_ldmab(
+    const unsigned char* __restrict__ A_fp8,   // [M, K] e4m3
+    const unsigned char* __restrict__ B_fp8,   // [N, K] e4m3
+    __nv_bfloat16* __restrict__ C,             // [M, N] bf16
+    unsigned int M, unsigned int N, unsigned int K
+) {
+    const unsigned int cta_m = blockIdx.y * 128;
+    const unsigned int cta_n = blockIdx.x * 128;
+    if (cta_m >= M) return;
+    const unsigned int t = threadIdx.x;
+    const unsigned int warp_id = t >> 5;
+    const unsigned int lane = t & 31;
+    const unsigned int group_id = lane >> 2;
+    const unsigned int t4 = lane & 3;
+    const unsigned int wrow = warp_id * 16;
+
+    __shared__ unsigned char smem_Ai[2][128][32];
+    __shared__ unsigned char smem_Bi[2][128][32];
+
+    float acc[16][4];
+    #pragma unroll
+    for (int i = 0; i < 16; i++) { acc[i][0]=0.f; acc[i][1]=0.f; acc[i][2]=0.f; acc[i][3]=0.f; }
+
+    #define LABF_LOADS(buf, kb) do { \
+        { unsigned ar = t >> 1; unsigned ac = (t & 1) << 4; unsigned gc = (kb) + ac; unsigned gr = cta_m + ar; \
+          cp_async_pred_16(&smem_Ai[(buf)][ar][ac], &A_fp8[(unsigned long long)gr*K+gc], (gr<M)&&(gc+15<K)); } \
+        { unsigned an = t >> 1; unsigned ac = (t & 1) << 4; unsigned gc = (kb) + ac; unsigned gn = cta_n + an; \
+          cp_async_pred_16(&smem_Bi[(buf)][an][ac], &B_fp8[(unsigned long long)gn*K+gc], (gn<N)&&(gc+15<K)); } \
+    } while(0)
+
+    #define LABF_COMPUTE(buf) do { \
+        unsigned a0,a1,a2,a3; \
+        const int* xs = (const int*)&smem_Ai[(buf)][wrow][0] + (lane % 16)*8 + (lane / 16)*4; \
+        asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0,%1,%2,%3},[%4];" \
+            : "=r"(a0),"=r"(a1),"=r"(a2),"=r"(a3) : "l"(xs)); \
+        _Pragma("unroll") for (int p = 0; p < 8; p++) { \
+            unsigned nt0 = 2*p, nt1 = 2*p+1; \
+            unsigned brow = ((lane<16)?nt0:nt1)*8 + (lane&7); \
+            const void* bxs = &smem_Bi[(buf)][brow][((lane>>3)&1)*16]; \
+            unsigned q0,q1,q2,q3; \
+            asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0,%1,%2,%3},[%4];" \
+                : "=r"(q0),"=r"(q1),"=r"(q2),"=r"(q3) : "l"(bxs)); \
+            ATLAS_MMA_E4M3F(acc[nt0], a0,a1,a2,a3, q0,q1); \
+            ATLAS_MMA_E4M3F(acc[nt1], a0,a1,a2,a3, q2,q3); \
+        } \
+    } while(0)
+
+    LABF_LOADS(0, 0); cp_async_commit(); cp_async_wait_all(); __syncthreads();
+    int cur = 0;
+    for (unsigned int kb = 32; kb < K; kb += 32) {
+        int nxt = 1 - cur;
+        LABF_LOADS(nxt, kb); cp_async_commit();
+        LABF_COMPUTE(cur);
+        cp_async_wait_all(); __syncthreads();
+        cur = nxt;
+    }
+    LABF_COMPUTE(cur);
+    #undef LABF_LOADS
+    #undef LABF_COMPUTE
+
+    #pragma unroll
+    for (int nt = 0; nt < 16; nt++) {
+        unsigned c0 = cta_n + nt*8 + t4*2, c1 = c0 + 1;
+        unsigned r0 = cta_m + wrow + group_id, r1 = r0 + 8;
+        if (r0<M&&c0<N) C[r0*N+c0]=__float2bfloat16(acc[nt][0]);
+        if (r0<M&&c1<N) C[r0*N+c1]=__float2bfloat16(acc[nt][1]);
+        if (r1<M&&c0<N) C[r1*N+c0]=__float2bfloat16(acc[nt][2]);
+        if (r1<M&&c1<N) C[r1*N+c1]=__float2bfloat16(acc[nt][3]);
+    }
+}
+#undef ATLAS_MMA_E4M3F
+
+// ═══════════════════════════════════════════════════════════════════
 // int8 W4A8, 8-warp + ldmatrix.x4 A-fragment load (int8_gemm_8w_ilp).
 // THE load-bearing MMQ lever: replace the manual scalar smem loads of the
 // weight (A) fragment with ONE ldmatrix.sync.aligned.m8n8.x4.b16 (proven
@@ -3906,7 +3997,172 @@ void int8_gemm_faith2(
 #undef F2_SB
 #undef F2W
 
-// int8 W4A8 FAITH3 — faith2 + B-fragment ILP. ncu on faith2 showed the dominant
+// int8 W4A8 I32ACC — faith2 + INT32 per-sb accumulation (break the MMA→scale
+// dependency chain). The ncu diagnosis of faith2: "pure dependency-latency
+// (Compute 26%/Mem 33%, NOTHING saturates)" — the kernel is gated on the
+// 4-deep chain MMA→int2float→mul(wsc)→mul(asc)→add(acc) that SERIALIZES each
+// MMA behind the previous one's scale. faith3 (B-frag ILP) was NEUTRAL because
+// it didn't break the chain — the scale still blocks each MMA.
+//
+// I32ACC fix: accumulate the mma.sync.s32 result in INT32 (iacc += s, 1-cycle
+// int add — no float conversion) so the 8 independent j-iteration MMAs issue
+// back-to-back without waiting for the scale. The per-block scale (wsc*asc,
+// constant within one sb) is applied ONCE at the sb boundary, converting the
+// int32 partial to float and adding to the persistent float accumulator.
+//
+// Register cost: +64 int32 (iacc[2][8][4], reused per sb) on top of faith2's
+// 64 float (facc[2][8][4], persistent). ~128 regs/thread → 1 CTA/SM (from 2).
+// OK because the kernel is latency-bound (ncu: nothing saturates) — cutting
+// occupancy doesn't hurt a kernel that's waiting on dependency chains, and
+// breaking the chain is the win.
+// ═════════════════════════════════════════════════════════════════
+#define I32A_TILE 128
+#define I32A_SB   (I32A_TILE/32)
+#define I32AW     36
+#define ATLAS_MMA_S8_I32A(d, a0,a1,a2,a3, b0,b1) \
+    asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
+        "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
+        : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
+        : "r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1), \
+          "r"((d)[0]),"r"((d)[1]),"r"((d)[2]),"r"((d)[3]))
+
+extern "C" __global__
+__launch_bounds__(256, 1)
+void int8_gemm_i32acc(
+    const signed char* __restrict__ A_i8,
+    const signed char* __restrict__ B_i8,
+    const float* __restrict__ A_scale,
+    const float* __restrict__ B_scale,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M, unsigned int N, unsigned int K
+) {
+    const unsigned int cta_n = blockIdx.x * 128;
+    const unsigned int cta_m = blockIdx.y * 128;
+    if (cta_m >= M || cta_n >= N) return;
+    const unsigned int t = threadIdx.x;
+    const unsigned int warp_id = t >> 5;
+    const unsigned int lane = t & 31;
+    const unsigned int ng = warp_id >> 1;
+    const unsigned int mh = warp_id & 1;
+    const unsigned int nb = K >> 5;
+
+    __shared__ int   sW[128][I32AW];
+    __shared__ int   sA[128][I32AW];
+    __shared__ float sWs[128][I32A_SB];
+    __shared__ float sAs[128][I32A_SB];
+
+    // Persistent float accumulator (survives across sb iterations).
+    float facc[2][8][4];
+    #pragma unroll
+    for (int n=0;n<2;n++) for(int j=0;j<8;j++){facc[n][j][0]=0;facc[n][j][1]=0;facc[n][j][2]=0;facc[n][j][3]=0;}
+
+    for (unsigned int kb = 0; kb < K; kb += I32A_TILE) {
+        // ── Load tile (same as faith2) ──
+        const unsigned I32A_CPR = I32A_TILE/16;
+        #pragma unroll
+        for (int c = 0; c < I32A_TILE/32; c++) {
+            unsigned lin = c*256 + t;
+            unsigned row = lin / I32A_CPR;
+            unsigned col = (lin % I32A_CPR) << 4;
+            unsigned gk = kb + col;
+            signed char* wdst = ((signed char*)&sW[row][0]) + col;
+            signed char* adst = ((signed char*)&sA[row][0]) + col;
+            cp_async_pred_16(wdst, &B_i8[(unsigned long long)(cta_n+row)*K + gk], (cta_n+row<N)&&(gk+15<K));
+            cp_async_pred_16(adst, &A_i8[(unsigned long long)(cta_m+row)*K + gk], (cta_m+row<M)&&(gk+15<K));
+        }
+        if (t < 128) {
+            unsigned blk = kb >> 5;
+            #pragma unroll
+            for (int s=0;s<I32A_SB;s++){
+                sWs[t][s] = (cta_n+t<N)?B_scale[(unsigned long long)(cta_n+t)*nb + blk + s]:0.f;
+                sAs[t][s] = (cta_m+t<M)?A_scale[(unsigned long long)(cta_m+t)*nb + blk + s]:0.f;
+            }
+        }
+        cp_async_commit(); cp_async_wait_all(); __syncthreads();
+
+        // ── sb loop: int32 accumulation, scale at sb boundary ──
+        #pragma unroll
+        for (int sb=0; sb<I32A_SB; sb++){
+            unsigned WA[2][4];
+            float    wsc[2][2];
+            #pragma unroll
+            for (int n=0;n<2;n++){
+                unsigned wbase_row = ng*32 + n*16;
+                const int* xs = &sW[wbase_row][0] + (lane%16)*I32AW + sb*8 + (lane/16)*4;
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0,%1,%2,%3},[%4];"
+                    : "=r"(WA[n][0]),"=r"(WA[n][1]),"=r"(WA[n][2]),"=r"(WA[n][3]) : "l"(xs));
+                wsc[n][0] = sWs[wbase_row + lane/4][sb];
+                wsc[n][1] = sWs[wbase_row + 8 + lane/4][sb];
+            }
+
+            // Int32 per-sb accumulators — live across the j-loop (no float ops).
+            int iacc[2][8][4];
+            #pragma unroll
+            for (int n=0;n<2;n++) for(int j=0;j<8;j++){iacc[n][j][0]=0;iacc[n][j][1]=0;iacc[n][j][2]=0;iacc[n][j][3]=0;}
+            // Stash asc per j for the sb-boundary scale (asc varies with j).
+            float ascs[8][2];
+
+            // j-loop: PURE int32 MMAs — no float conversion, no scale chain.
+            // The 8 independent j-iteration MMAs pipeline back-to-back.
+            #pragma unroll
+            for (int j=0;j<8;j++){
+                unsigned mcol0 = mh*64 + j*8;
+                ascs[j][0] = sAs[mcol0 + (lane%4)*2][sb];
+                ascs[j][1] = sAs[mcol0 + (lane%4)*2 + 1][sb];
+                const int* abase = &sA[mcol0 + lane/4][0] + sb*8;
+                unsigned b0 = abase[lane%4];
+                unsigned b1 = abase[lane%4 + 4];
+                #pragma unroll
+                for (int n=0;n<2;n++){
+                    int s[4]={0,0,0,0};
+                    ATLAS_MMA_S8_I32A(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], b0,b1);
+                    // INT32 accumulate — no float chain, MMAs pipeline freely.
+                    iacc[n][j][0] += s[0];
+                    iacc[n][j][1] += s[1];
+                    iacc[n][j][2] += s[2];
+                    iacc[n][j][3] += s[3];
+                }
+            }
+
+            // sb boundary: convert + scale ALL (n,j) at once.
+            // The float ops are OUTSIDE the MMA critical path.
+            #pragma unroll
+            for (int n=0;n<2;n++){
+                #pragma unroll
+                for (int j=0;j<8;j++){
+                    float sc0 = wsc[n][0] * ascs[j][0];
+                    float sc1 = wsc[n][0] * ascs[j][1];
+                    float sc2 = wsc[n][1] * ascs[j][0];
+                    float sc3 = wsc[n][1] * ascs[j][1];
+                    facc[n][j][0] += (float)iacc[n][j][0] * sc0;
+                    facc[n][j][1] += (float)iacc[n][j][1] * sc1;
+                    facc[n][j][2] += (float)iacc[n][j][2] * sc2;
+                    facc[n][j][3] += (float)iacc[n][j][3] * sc3;
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    // ── Epilogue: write facc to C (same as faith2) ──
+    #pragma unroll
+    for (int n=0;n<2;n++){
+        unsigned nrow0 = cta_n + ng*32 + n*16 + lane/4;
+        #pragma unroll
+        for (int j=0;j<8;j++){
+            unsigned mcol = cta_m + mh*64 + j*8 + (lane%4)*2;
+            unsigned cN0=nrow0, cN1=nrow0+8;
+            if (mcol<M   && cN0<N) C[(unsigned long long)mcol*N + cN0]     = __float2bfloat16(facc[n][j][0]);
+            if (mcol+1<M && cN0<N) C[(unsigned long long)(mcol+1)*N + cN0] = __float2bfloat16(facc[n][j][1]);
+            if (mcol<M   && cN1<N) C[(unsigned long long)mcol*N + cN1]     = __float2bfloat16(facc[n][j][2]);
+            if (mcol+1<M && cN1<N) C[(unsigned long long)(mcol+1)*N + cN1] = __float2bfloat16(facc[n][j][3]);
+        }
+    }
+}
+#undef ATLAS_MMA_S8_I32A
+#undef I32A_TILE
+#undef I32A_SB
+#undef I32AW
 // stall is SHORT_SCOREBOARD (smem-read latency) 47% of 7.2 cyc/instr; occupancy
 // is dead (raising CTA/SM regressed). The remaining lever is ILP on the smem reads:
 // faith2 loads the activation B-fragment (2 scalar smem loads) INSIDE the j-loop,

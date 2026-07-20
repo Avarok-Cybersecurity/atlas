@@ -24,6 +24,42 @@ use crate::weight_map::{
     DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight, quantize_to_fp8, quantize_to_nvfp4,
 };
 
+/// ATLAS_MTP_DRAFTER_PREFILL=1 — opt-in drafter context prefill (cached once).
+///
+/// When set, the target prefill captures every position's final-layer hidden
+/// and the MTP drafter's KV cache is batch-prefilled over the whole prompt
+/// before the first propose(), mirroring vLLM's MTP proposer prefill. The
+/// drafter's KV entries are pure functions of its input pair
+/// `(embed(token_{i+1}), target_hidden_i)` — a single-layer drafter's K/V do
+/// not depend on its own attention outputs — so the prefill needs only the
+/// fc + k/v projections + norms + RoPE + cache write, no attention pass.
+pub fn mtp_drafter_prefill_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_MTP_DRAFTER_PREFILL").ok().as_deref() == Some("1"))
+}
+
+/// Dedicated scratch for the batched drafter prefill (allocated in
+/// `MtpHead::new` only when [`mtp_drafter_prefill_enabled`]). All buffers are
+/// sized for [`prefill::PREFILL_CHUNK`] rows; dedicated (not aliased onto the
+/// shared arena) so the pass has no aliasing hazards against target buffers.
+pub(crate) struct MtpPrefillScratch {
+    pub embed: DevicePtr,
+    pub normed_embed: DevicePtr,
+    pub normed_hidden: DevicePtr,
+    pub concat: DevicePtr,
+    pub fc_out: DevicePtr,
+    pub normed2: DevicePtr,
+    pub k_out: DevicePtr,
+    pub v_out: DevicePtr,
+    /// RoPE rotates Q and K in one launch; prefill discards Q, but the kernel
+    /// still needs a writable [chunk, nq*hd] region.
+    pub q_scratch: DevicePtr,
+    /// u32 RoPE positions, one per row.
+    pub pos_dev: DevicePtr,
+    /// i64 KV slot mapping, one per row.
+    pub slot_dev: DevicePtr,
+}
+
 /// MTP head weight precision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MtpQuantization {
@@ -157,6 +193,10 @@ pub struct MtpHead {
     moe_topk_k: Option<KernelHandle>,
     moe_silu_mul_k: Option<KernelHandle>,
     moe_weighted_sum_blend_k: Option<KernelHandle>,
+    /// Batched BF16 GEMM for the drafter-prefill pass (0 when absent).
+    dense_gemm_k: KernelHandle,
+    /// Drafter-prefill scratch; `None` unless ATLAS_MTP_DRAFTER_PREFILL=1.
+    prefill_scratch: Option<MtpPrefillScratch>,
 }
 
 impl MtpHead {
@@ -243,6 +283,7 @@ impl MtpHead {
 mod forward;
 mod moe_forward;
 mod new;
+mod prefill;
 
 impl DraftProposer for MtpHead {
     fn alloc_state(&self, _gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>> {
@@ -318,6 +359,17 @@ impl DraftProposer for MtpHead {
 
         mtp_state.last_num_drafted = drafts.len();
         Ok(drafts)
+    }
+
+    fn prefill_drafter(
+        &self,
+        prompt_tokens: &[u32],
+        hiddens: DevicePtr,
+        state: &mut dyn ProposerState,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<usize> {
+        self.prefill_drafter_impl(prompt_tokens, hiddens, state, ctx, stream)
     }
 
     fn read_deferred_draft_token(&self, gpu: &dyn GpuBackend) -> Result<u32> {

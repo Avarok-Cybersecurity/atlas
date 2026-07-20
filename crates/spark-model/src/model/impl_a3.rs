@@ -155,6 +155,28 @@ impl TransformerModel {
                     stream,
                 )?;
             }
+        } else if (num_tokens == 3 || num_tokens == 4)
+            && self.w4a16_gemv_batch4_kernel.0 != 0
+            && let Some(ref nvfp4) = self.lm_head_nvfp4
+        {
+            // K=3/K=4 verify lm_head: one weight read for all rows via the
+            // M<=4 batched GEMV. nsys (2026-07-18, drafts=3 serve): the base
+            // M64-tile `w4a16_gemm` below cost 19.3 ms/verify-step on the
+            // [248320, 5120] NVFP4 lm_head at M=4 — 94% of the M-tile is
+            // padding, ~33 GB/s effective. The batch GEMV streams the same
+            // 636 MB once at near-peak (~2.5 ms), the single largest slice
+            // of the K=4 verify-vs-K=2 cost gap.
+            ops::w4a16_gemv_batchm(
+                self.gpu.as_ref(),
+                self.w4a16_gemv_batch4_kernel,
+                hidden,
+                nvfp4,
+                logits,
+                num_tokens,
+                v,
+                h,
+                stream,
+            )?;
         } else if let Some(ref nvfp4) = self.lm_head_nvfp4 {
             ops::w4a16_gemm(
                 self.gpu.as_ref(),

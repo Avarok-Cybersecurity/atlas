@@ -442,6 +442,25 @@ impl Qwen3AttentionLayer {
     ) -> Result<()> {
         let gpu = c.fwd.gpu;
         let stream = c.stream;
+        // K=4 MTP verify (M<=4): the M<=4 batched GEMV reads the
+        // non-transposed weight ONCE for all rows at near-peak stream
+        // bandwidth. nsys (2026-07-18, drafts=3): the M64-tile w4a16_gemm_t
+        // this bypasses cost 16.3 ms/verify-step across the 16 attention
+        // layers' q/k/v/o at M=4 (94% tile padding) vs ~4.5 ms via the GEMV.
+        // Gated to m<=4 so the DFlash wide verify (M=17) keeps the GEMM.
+        if m <= 4 && self.w4a16_gemv_batch4_k.0 != 0 {
+            return ops::w4a16_gemv_batchm(
+                gpu,
+                self.w4a16_gemv_batch4_k,
+                input,
+                w_base,
+                output,
+                m,
+                n,
+                k,
+                stream,
+            );
+        }
         if let Some(wt) = w_t {
             // Small-M routing (w4a16_m17_bench): at M<=64 the M64-tile
             // `w4a16_gemm_t` beats the M128-tile kernels (87% of an M128

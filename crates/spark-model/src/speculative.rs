@@ -64,6 +64,27 @@ pub trait DraftProposer: Send + Sync {
         target_hidden_stack: Option<DevicePtr>,
     ) -> Result<Vec<u32>>;
 
+    /// Prefill the drafter's own context (KV cache) over the prompt, before
+    /// the first `propose()` of a sequence (ATLAS_MTP_DRAFTER_PREFILL).
+    ///
+    /// * `prompt_tokens` — the prompt token ids `t_0..t_{P-1}`.
+    /// * `hiddens` — device buffer `[P, hidden_size]` BF16; row `i` is the
+    ///   target's final-layer (pre-final-norm) hidden after processing `t_i`.
+    ///
+    /// Returns the number of drafter positions written (0 = unsupported /
+    /// already prefilled / nothing to do). Default: no-op.
+    fn prefill_drafter(
+        &self,
+        prompt_tokens: &[u32],
+        hiddens: DevicePtr,
+        state: &mut dyn ProposerState,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<usize> {
+        let _ = (prompt_tokens, hiddens, state, ctx, stream);
+        Ok(0)
+    }
+
     /// Read the draft token ID stored on GPU by the last `propose()` call
     /// that used `draft_embed_target = Some(...)`. Returns 0 if not supported.
     fn read_deferred_draft_token(&self, gpu: &dyn GpuBackend) -> Result<u32> {

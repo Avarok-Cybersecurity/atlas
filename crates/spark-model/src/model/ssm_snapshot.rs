@@ -364,6 +364,50 @@ impl SsmSnapshotPool {
         self.free_slots.lock().push(snap_slot);
     }
 
+    /// Reserve a Marconi snapshot slot for an in-pass MID-CHUNK tail capture.
+    /// Pops a free slot, tags it with `session_hash`, and clears any stale
+    /// last-token-hidden marker (a tail snapshot is never a leaf). Returns
+    /// `None` when the pool is exhausted; the caller may `reclaim_from_cache`
+    /// and retry, or skip capture. Mirrors the bookkeeping `save` performs so
+    /// `restore` and session isolation behave identically for this slot.
+    pub(crate) fn reserve_tail_slot(&self, session_hash: u64) -> Option<usize> {
+        if !self.is_enabled() {
+            return None;
+        }
+        let snap_slot = self.free_slots.lock().pop()?;
+        self.slot_has_hidden.lock().remove(&snap_slot);
+        if session_hash != 0 {
+            self.session_tags.lock().insert(snap_slot, session_hash);
+        }
+        Some(snap_slot)
+    }
+
+    /// Per-SSM-layer h_state snapshot destination for `snap_slot`
+    /// (byte offset into the layer's slot region already applied).
+    pub(crate) fn tail_h_dst(&self, ssm_layer: usize, snap_slot: usize) -> DevicePtr {
+        self.h_snapshots[ssm_layer].offset(snap_slot * self.h_bytes)
+    }
+
+    /// Per-SSM-layer conv_state snapshot destination for `snap_slot`.
+    pub(crate) fn tail_conv_dst(&self, ssm_layer: usize, snap_slot: usize) -> DevicePtr {
+        self.conv_snapshots[ssm_layer].offset(snap_slot * self.conv_bytes)
+    }
+
+    /// Bytes per layer of a snapshot's h_state.
+    pub(crate) fn h_bytes(&self) -> usize {
+        self.h_bytes
+    }
+
+    /// Bytes per layer of a snapshot's conv_state.
+    pub(crate) fn conv_bytes(&self) -> usize {
+        self.conv_bytes
+    }
+
+    /// Number of SSM layers (== length of the per-layer dst vectors).
+    pub(crate) fn num_ssm_layers(&self) -> usize {
+        self.num_ssm_layers
+    }
+
     /// Stash the last-token post-final-norm hidden (`hidden_bytes`, BF16)
     /// for a leaf snapshot slot. Used so an exact full-prompt hit can emit
     /// the first token's logits via `lm_head` without re-running the last

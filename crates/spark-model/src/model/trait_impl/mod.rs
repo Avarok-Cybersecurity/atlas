@@ -702,6 +702,10 @@ impl Model for TransformerModel {
     fn is_mla(&self) -> bool {
         self.is_mla_dispatch()
     }
+
+    fn kv_block_size(&self) -> Option<usize> {
+        Some(self.kv_cache.lock().block_size())
+    }
     fn decode_logits_fp32(&self) -> bool {
         self.decode_logits_fp32_dispatch()
     }

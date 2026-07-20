@@ -78,6 +78,10 @@ impl TransformerModel {
         let w4a16_gemv_logits_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_logits")?;
         let w4a16_gemm_kernel = gpu.kernel("w4a16", "w4a16_gemm")?;
         let w4a16_gemv_batch2_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?;
+        // M<=4 batched GEMV for the K=3/K=4 verify lm_head (try_kernel:
+        // 0-handle on targets that predate it; dispatch falls back).
+        let w4a16_gemv_batch4_kernel =
+            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch4");
         // FP8 E4M3 LUT GEMV for the `--lm-head-dtype fp8` head. Loaded
         // unconditionally (a handle is cheap); only invoked when `lm_head_fp8`
         // is set, so the NVFP4/BF16 paths never touch it.
@@ -240,6 +244,24 @@ impl TransformerModel {
 
         // MTP hidden state save buffer (1 × hidden_size FP32)
         let mtp_hidden_save = gpu.alloc(config.hidden_size * 4)?;
+
+        // ATLAS_MTP_DRAFTER_PREFILL: whole-prompt hidden capture buffer,
+        // [max_seq_len, hidden_size] BF16 — 335 MB at 32k/h=5120. Explicitly
+        // opt-in (PCND): NULL (and zero cost) unless the env is set and MTP
+        // is active. Sized to max_seq_len so an 8k+ prompt capture holds.
+        let mtp_prefill_hidden = if has_mtp && crate::layers::mtp_drafter_prefill_enabled() {
+            let bytes = max_seq_len * config.hidden_size * 2;
+            tracing::info!(
+                "ATLAS_MTP_DRAFTER_PREFILL=1: allocating {:.0} MB prompt-hidden \
+                 capture ({} x {} BF16) for MTP drafter prefill",
+                bytes as f64 / 1e6,
+                max_seq_len,
+                config.hidden_size,
+            );
+            gpu.alloc(bytes)?
+        } else {
+            DevicePtr::NULL
+        };
 
         // DFlash 5-layer hidden-state stack. Allocated only when a
         // BlockDiffusionDraftHead is the active proposer (`config.dflash_capture_layers`
@@ -462,6 +484,7 @@ impl TransformerModel {
             w4a16_gemv_logits_kernel,
             w4a16_gemm_kernel,
             w4a16_gemv_batch2_kernel,
+            w4a16_gemv_batch4_kernel,
             dense_gemv_fp8w_kernel,
             dense_gemv_fp8w_batch2_kernel,
             dense_gemm_kernel,
@@ -494,6 +517,13 @@ impl TransformerModel {
             profile_first_pending: std::sync::atomic::AtomicBool::new(profile_first),
             proposer,
             mtp_hidden_save,
+            mtp_prefill_hidden,
+            mtp_prefill_capacity: if mtp_prefill_hidden.is_null() {
+                0
+            } else {
+                max_seq_len
+            },
+            mtp_prefill_capture_len: std::sync::atomic::AtomicUsize::new(0),
             dflash_hidden_save,
             dflash_hidden_save_rows,
             dflash_capture_layers,
