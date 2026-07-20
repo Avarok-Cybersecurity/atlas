@@ -44,6 +44,14 @@ pub(super) fn maybe_sample_expert_union(
     if !enabled() {
         return;
     }
+    // NEVER sync/copy inside a CUDA-graph capture — it invalidates the
+    // capture (CUDA 901) and wedges the serve (measured: 35B NVFP4
+    // decode_verify_graphed, 2026-07-20). Graph REPLAYS run no host code at
+    // all, so this tap inherently samples only eager verify steps; disable
+    // graphs for full-fidelity measurement runs.
+    if gpu.stream_is_capturing(stream) {
+        return;
+    }
     let call = CALLS.fetch_add(1, Ordering::Relaxed);
     if !call.is_multiple_of(SAMPLE_EVERY) {
         return;
