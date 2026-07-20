@@ -50,19 +50,25 @@ impl MtpHead {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<usize> {
-        self.drafter_rows_impl(prompt_tokens, hiddens, 0, state, ctx, stream)
+        self.drafter_rows_impl(prompt_tokens, hiddens, 0, 1, state, ctx, stream)
     }
 
-    /// Row-offset generalization of the drafter prefill: writes drafter rows
-    /// `row_base .. row_base + (tokens.len() - 1)` (KV slot i, RoPE position
-    /// i+1, pair = (embed(tokens[j+1]), hiddens row j)). `row_base = 0` is
-    /// the classic whole-prompt prefill; `row_base = seq_len` is the
-    /// catch-up feed after a serial-decode stretch (ATLAS_MTP_CATCHUP).
+    /// Row/position generalization of the drafter prefill: appends drafter
+    /// rows at KV slots `row_base ..` with RoPE positions `pos_base ..`
+    /// (row r = pair `(embed(prompt_tokens[r+1]), hiddens row r)`, RoPE
+    /// `pos_base + r` = its sequence pair key + 1). Slots and positions are
+    /// decoupled because without drafter prefill the row space is COMPACTED
+    /// (slots dense, RoPE sequence-space with gaps — matching `forward_one`).
+    /// `row_base = 0, pos_base = 1` is the classic whole-prompt prefill;
+    /// the catch-up feed (ATLAS_MTP_CATCHUP) appends at `row_base = seq_len`
+    /// with the fed pairs' true sequence positions.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn drafter_rows_impl(
         &self,
         prompt_tokens: &[u32],
         hiddens: DevicePtr,
         row_base: usize,
+        pos_base: usize,
         state: &mut dyn ProposerState,
         ctx: &ForwardContext,
         stream: u64,
@@ -228,8 +234,9 @@ impl MtpHead {
                 )?;
             }
 
-            // 6. RoPE positions i+1 and KV slots i, uploaded per chunk.
-            let positions: Vec<u32> = (0..c).map(|r| (row_base + done + r + 1) as u32).collect();
+            // 6. RoPE positions pos_base+r and KV slots row_base+r, uploaded
+            //    per chunk (decoupled — see fn docs).
+            let positions: Vec<u32> = (0..c).map(|r| (pos_base + done + r) as u32).collect();
             let pos_bytes =
                 unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, c * 4) };
             ctx.gpu.copy_h2d_async(pos_bytes, scratch.pos_dev, stream)?;
@@ -286,6 +293,8 @@ impl MtpHead {
         }
 
         mtp_state.seq_len = row_base + rows_total;
+        // Last fed row has RoPE pos_base + rows_total - 1 = pair key + 1.
+        mtp_state.last_pair_key = Some(pos_base + rows_total - 2);
         tracing::info!(
             "MTP drafter prefill: {} positions ({} prompt tokens) in {:.1} ms",
             rows_total,

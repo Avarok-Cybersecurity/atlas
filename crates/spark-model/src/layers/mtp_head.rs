@@ -103,6 +103,12 @@ pub struct MtpProposerState {
     /// Number of drafts produced in the last propose() call.
     /// Used by after_verify to know how many entries to trim.
     pub last_num_drafted: usize,
+    /// Sequence-space pair key of the newest drafter row (a `forward_one`
+    /// call with RoPE position `p` writes pair key `p - 1`). `seq_len` alone
+    /// cannot locate the drafter in the sequence — without drafter prefill
+    /// the row space is compacted (accepted pairs only) and drifts from the
+    /// sequence position. `None` until the first row is written.
+    pub last_pair_key: Option<usize>,
 }
 
 impl ProposerState for MtpProposerState {
@@ -295,6 +301,7 @@ impl DraftProposer for MtpHead {
             block_table: Vec::new(),
             seq_len: 0,
             last_num_drafted: 0,
+            last_pair_key: None,
         }))
     }
 
@@ -387,16 +394,24 @@ impl DraftProposer for MtpHead {
             .unwrap_or(0)
     }
 
+    fn last_pair_key(&self, state: &mut dyn ProposerState) -> Option<usize> {
+        state
+            .as_any_mut()
+            .downcast_mut::<MtpProposerState>()
+            .and_then(|s| s.last_pair_key)
+    }
+
     fn catchup_drafter(
         &self,
         tokens: &[u32],
         hiddens: DevicePtr,
         row_base: usize,
+        pos_base: usize,
         state: &mut dyn ProposerState,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<usize> {
-        self.drafter_rows_impl(tokens, hiddens, row_base, state, ctx, stream)
+        self.drafter_rows_impl(tokens, hiddens, row_base, pos_base, state, ctx, stream)
     }
 
     fn read_deferred_draft_token(&self, gpu: &dyn GpuBackend) -> Result<u32> {
@@ -434,6 +449,11 @@ impl DraftProposer for MtpHead {
         let old_sl = mtp_state.seq_len;
         if num_to_trim > 0 {
             mtp_state.seq_len = mtp_state.seq_len.saturating_sub(num_to_trim);
+            // Trimmed rows have consecutive pair keys; the newest surviving
+            // key moves back by the same count.
+            if let Some(k) = mtp_state.last_pair_key {
+                mtp_state.last_pair_key = Some(k.saturating_sub(num_to_trim));
+            }
         }
         tracing::debug!(
             "MTP after_verify: accepted={num_accepted} drafted={num_drafted} trim={num_to_trim} mtp_seq_len: {old_sl} → {}",
@@ -466,6 +486,7 @@ mod tests {
             block_table: vec![0, 1, 2],
             seq_len: 42,
             last_num_drafted: 0,
+            last_pair_key: None,
         });
         let mtp = state.as_any().downcast_ref::<MtpProposerState>().unwrap();
         assert_eq!(mtp.seq_len, 42);

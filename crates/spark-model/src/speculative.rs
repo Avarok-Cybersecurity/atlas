@@ -64,20 +64,29 @@ pub trait DraftProposer: Send + Sync {
         None
     }
 
-    /// Current drafter KV length (rows), for gap detection. 0 = unknown /
-    /// not applicable (catch-up is skipped).
+    /// Current drafter KV length (rows), for the catch-up append point.
+    /// 0 = unknown / not applicable (catch-up is skipped).
     fn drafter_rows(&self, _state: &mut dyn ProposerState) -> usize {
         0
     }
 
-    /// Append drafter rows `row_base ..` from `(tokens, hiddens)` pairs —
-    /// the catch-up feed. Returns rows written (0 = unsupported/no-op).
+    /// Sequence-space pair key of the newest drafter row (`None` = untracked;
+    /// catch-up is skipped). The drafter row space is compacted, so `rows`
+    /// cannot locate the drafter in the sequence — this can.
+    fn last_pair_key(&self, _state: &mut dyn ProposerState) -> Option<usize> {
+        None
+    }
+
+    /// Append drafter rows at KV slots `row_base ..` with RoPE positions
+    /// `pos_base ..` from `(tokens, hiddens)` pairs — the catch-up feed.
+    /// Returns rows written (0 = unsupported/no-op).
     #[allow(clippy::too_many_arguments)]
     fn catchup_drafter(
         &self,
         _tokens: &[u32],
         _hiddens: DevicePtr,
         _row_base: usize,
+        _pos_base: usize,
         _state: &mut dyn ProposerState,
         _ctx: &ForwardContext,
         _stream: u64,

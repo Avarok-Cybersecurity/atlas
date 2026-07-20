@@ -638,6 +638,9 @@ impl MtpHead {
         };
 
         state.seq_len += 1;
+        // Pair-key bookkeeping (ATLAS_MTP_CATCHUP gap detection): this call
+        // wrote the pair for sequence key `position - 1` at the row above.
+        state.last_pair_key = Some(position.saturating_sub(1));
         Ok(token_id)
     }
 }

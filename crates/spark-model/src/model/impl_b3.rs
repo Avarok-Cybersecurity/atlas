@@ -119,60 +119,80 @@ impl TransformerModel {
                 tracing::warn!("MTP drafter prefill failed (continuing without): {e:#}");
             }
         }
-        // ATLAS_MTP_CATCHUP: before proposing, batch-feed any serial-decode
-        // gap [rows .. position) into the drafter KV from the hidden ring, so
-        // the drafter attends over real recent context instead of a stale
-        // (position-discontinuous) tail. Ring rows are position-indexed
-        // (slot = pos % ring); feed in <=2 contiguous GPU segments across the
-        // wrap. Wrong feeds cannot corrupt output (verify rejects bad
-        // drafts); acceptance is the flip gate's metric.
+        // ATLAS_MTP_CATCHUP: before proposing, feed pairs the drafter missed
+        // during a serial-decode stretch. Coordinates (measured 2026-07-20 on
+        // the 27B rig): at propose entry `position == seq.tokens.len()` and
+        // the imminent forward_one writes the pair for sequence key
+        // `position - 1`; pair key k = (embed(tokens[k+1]), hidden_k), RoPE
+        // k+1. The serial-decode ring stores, under label n, the hidden of
+        // the step that COMMITTED token n — i.e. hidden_{n-1} — so pair key k
+        // reads ring label k+1. Drafter KV slots are compacted (append-only)
+        // while RoPE stays sequence-space, so RoPE gaps are already the norm:
+        // partial feeds (clipped to ring coverage) are safe, and wrong feeds
+        // cannot corrupt output (verify rejects bad drafts).
         if crate::speculative::mtp_catchup_enabled() && !self.mtp_catchup_ring.is_null() {
             let rows = proposer.drafter_rows(prop_state.as_mut());
+            let last_key = proposer.last_pair_key(prop_state.as_mut());
+            let (start, count) = *self.mtp_catchup_meta.lock();
+            if let Some(last) = last_key
+                && rows > 0
+                && count > 0
             {
-                // Skip-reason telemetry: the guards below degrade silently by
-                // design (propose-as-today); this line is the only way to see
-                // WHY a gap was not fed (convention drift, ring gap, boundary).
-                let (s, c) = *self.mtp_catchup_meta.lock();
-                tracing::debug!(
-                    "MTP catch-up eval: rows={rows} position={position} ring=[{s},+{c}) \
-                     tokens_len={}",
-                    seq.tokens.len(),
-                );
-            }
-            if rows > 0 && rows < position {
-                let (start, count) = *self.mtp_catchup_meta.lock();
-                let ring_rows = super::types::MTP_CATCHUP_RING_ROWS;
-                let covered = start <= rows && start + count >= position;
-                if covered && seq.tokens.len() > position {
+                // Missing pair keys: (last .. position-1); the propose itself
+                // covers position-1. Clip to ring coverage [start, start+count)
+                // in label space (label = key + 1).
+                let mut k0 = (last + 1).max(start.saturating_sub(1));
+                let k1 = (position.saturating_sub(2)).min((start + count).saturating_sub(2));
+                let want = (position.saturating_sub(1)).saturating_sub(last + 1);
+                if k0 <= k1 && want > 0 {
+                    let ring_rows = super::types::MTP_CATCHUP_RING_ROWS;
                     let h = self.config.hidden_size;
                     let bf16 = 2usize;
-                    let mut base = rows;
-                    while base < position {
-                        // Contiguous ring segment starting at `base`.
-                        let slot = base % ring_rows;
-                        let seg_end = (position).min(base + (ring_rows - slot));
-                        let n_rows = seg_end - base;
-                        // tokens[j] pairs with hidden row j: pass the token
-                        // window [base ..= seg_end] (n_rows + 1 tokens).
-                        let toks = &seq.tokens[base..=seg_end];
+                    let fed_from = k0;
+                    while k0 <= k1 {
+                        // Ring-contiguous segment: labels k0+1 .. until wrap.
+                        let slot = (k0 + 1) % ring_rows;
+                        let seg_last = k1.min(k0 + (ring_rows - slot) - 1);
+                        let n_rows = seg_last - k0 + 1;
+                        // Row r feeds pair key k0+r = embed(tokens[k0+r+1]):
+                        // the impl reads prompt_tokens[r+1], so pass the
+                        // window starting at index k0 (n_rows + 1 tokens).
+                        let toks = &seq.tokens[k0..=seg_last + 1];
                         let hid = self.mtp_catchup_ring.offset(slot * h * bf16);
+                        let row_base = proposer.drafter_rows(prop_state.as_mut());
                         match proposer.catchup_drafter(
                             toks,
                             hid,
-                            base,
+                            row_base,
+                            k0 + 1,
                             prop_state.as_mut(),
                             &ctx,
                             stream,
                         ) {
-                            Ok(w) if w == n_rows => base = seg_end,
-                            Ok(_) | Err(_) => break, // degrade: propose as today
+                            Ok(w) if w == n_rows => k0 = seg_last + 1,
+                            Ok(w) => {
+                                tracing::debug!(
+                                    "MTP catch-up: short feed ({w}/{n_rows} rows) — degrading"
+                                );
+                                break;
+                            }
+                            Err(e) => {
+                                tracing::debug!("MTP catch-up: feed failed ({e:#}) — degrading");
+                                break;
+                            }
                         }
                     }
-                    if base == position {
+                    if k0 > k1 {
                         tracing::debug!(
-                            "MTP catch-up: drafter fed rows {rows}..{position} from ring"
+                            "MTP catch-up: fed pair keys {fed_from}..={k1} \
+                             (missed {want}, position {position})"
                         );
                     }
+                } else if want > 0 {
+                    tracing::debug!(
+                        "MTP catch-up: gap of {want} pairs outside ring coverage \
+                         (last_key={last} position={position} ring=[{start},+{count}))"
+                    );
                 }
             }
         }
