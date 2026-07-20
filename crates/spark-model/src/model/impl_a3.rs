@@ -121,6 +121,7 @@ impl TransformerModel {
                 if ops::dp4a_enabled()
                     && self.dp4a_lm_head_batch2_k.0 != 0
                     && self.dp4a_quant_k.0 != 0
+                    && std::env::var_os("ATLAS_DP4A_LM_HEAD").is_some()
                 {
                     // W4A8 DP4A batch2: int8-quant the 2 verify hidden [2, h] ->
                     // int8 [2, h] + f32 [2, h/16] (reuse shared FFN act-quant scratch),
