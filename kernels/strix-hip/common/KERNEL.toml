@@ -26,5 +26,11 @@ moe_shared_expert_fused_batch3 = "moe_fused_batch3"
 inferspark_prefill_paged = "prefill_paged"
 inferspark_prefill_paged_fp8 = "prefill_paged_fp8"
 inferspark_prefill_paged_nvfp4 = "prefill_paged_nvfp4"
+# Turbo KV chunked-prefill wrappers ported from gb10/common. They are target-agnostic
+# (thin LOAD_KV_TILE macro over the shared prefill_paged_compute.cuh, no NVIDIA intrinsics).
+# Without these aliases the modules register under their unstripped file stem and
+# validate_required_kernels rejects every turbo --kv-cache-dtype.
+inferspark_prefill_paged_turbo4 = "prefill_paged_turbo4"
+inferspark_prefill_paged_turbo8 = "prefill_paged_turbo8"
 inferspark_prefill_fp8kv = "prefill_fp8kv"
 nemotron_moe_prefill = "nemotron_moe_prefill"
