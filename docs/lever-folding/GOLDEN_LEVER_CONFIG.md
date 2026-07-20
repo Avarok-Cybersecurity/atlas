@@ -33,7 +33,7 @@ This config got: TPS 12.06, TTFT avg 1.5s (med 1.25s), wall 97 min, BFCL 87.14% 
 ## A/B findings that picked each knob
 - **KV dtype**: fp8 KV BFCL 84.4% vs bf16 88.7% → **bf16** (fp8 regresses 4.3%).
 - **FFN prefill**: MMQ ~80 TFLOP/s (lossy, IoU-drop suspect) vs BF16_TC ~51 TFLOP/s (bit-identical, IoU-safe) vs INT8 (cosine 0.99998). Gate uses **BF16_TC** for IoU safety; MMQ is the max-perf trade.
-- **K**: K=1 (88.75%, 6.72 s/sample) | K=3 (87.5%, 6.29 s/sample — faster, ~1% lower, needs grammar fold) | K=2 (pending). K=1 is the apples-to-apples safe choice; K=2/K=3 with the grammar fold are the decode-speed options.
+- **K**: K=1 (88.75%, 6.72 s/sample) | **K=2 (88.75%, 5.74 s/sample — THE SWEET SPOT: K=1 accuracy at ~15% faster)** | K=3 (87.5%, 6.29 s/sample). K=2 needs the grammar fold (per-position mask). Gate uses **K=2**.
 - **Grammar**: coherence 8/8 either way (correctness safe). **IoU drop suspected from grammar ON** (forces tool-call markup where ground truth is free-form) + MMQ (lossy). Gate uses **grammar OFF** to preserve IoU; the perf-phase A/B (BF16_TC + grammar OFF) is the direct IoU-isolation test.
 - **SSM rollback**: already engineered by `73f331da` (in-place K=2/K=3/K=4 commit) — no work needed.
 - **Tail capture / in-place K=4 / drafter prefill**: byte-identical — free TTFT/decode wins, no IoU cost.

@@ -9,7 +9,7 @@ PORT="${PORT:-8888}"
 MODEL="${MODEL:-centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf}"
 IMG="${IMG:-atlas-gb10:midchunk-adapk-ldmab}"
 CACHE="${CACHE:-/workspace/.cache/huggingface}"
-NUM_DRAFTS="${NUM_DRAFTS:-1}"
+NUM_DRAFTS="${NUM_DRAFTS:-2}"   # K=2 is the sweet spot: 88.75% BFCL @ 5.74 s/sample (K=1=6.72, K=3=87.5%@6.29)
 FFN_LEVER="${FFN_LEVER:-ATLAS_BF16_TC_PREFILL=1}"   # IoU-safe default; use ATLAS_FFN_NVFP4_MMQ=1 for max-perf (lossy)
 GRAMMAR="${GRAMMAR:-true}"                            # true=OFF (IoU-safe); false=ON (max-perf, IoU-drop suspect)
 KV="${KV:-bf16}"
