@@ -10,6 +10,7 @@ IMAGE=atlas-gb10:midchunk-adapk-ldmab   # e6566c0b (+ grammar fold if K>1)
 MODEL=centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf
 env:
   ATLAS_BF16_TC_PREFILL=1     # bit-identical TC FFN prefill (~51 TFLOP/s) — IoU-safe (NOT MMQ)
+  ATLAS_NO_FFN_NVFP4_MMQ=1    # CRITICAL: MMQ is default-on; must disable it for BF16_TC to engage
   ATLAS_SSM_TAIL_MIDCHUNK=1   # GDN tail capture (warm TTFT, byte-identical)
   ATLAS_MTP_DRAFTER_PREFILL=1 # drafter context prefill
 flags:
