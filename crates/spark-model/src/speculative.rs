@@ -26,9 +26,33 @@ pub trait ProposerState: Send + Sync {
 /// The engine calls `propose()` after each target decode to get draft tokens,
 /// then verifies them with the target model. `after_verify()` lets the
 /// proposer trim state (e.g., KV cache) based on how many drafts were accepted.
+/// Confidence floor for submitting drafts to verification
+/// (`ATLAS_MTP_DRAFT_CONF`, default 0.0 = disabled). When the drafter's
+/// chain confidence (min top-1 softmax prob across the drafts of one
+/// propose) is below this, the drafts are discarded and the next step
+/// decodes serially — skipping a verify that would most likely reject.
+/// Economics at K=1 on the 35B MoE: verify ≈ 35 ms for 1+acc tokens vs
+/// decode+propose ≈ 21 ms for 1, so a draft is only worth verifying when
+/// p(accept) ≳ 0.66 — the threshold to calibrate around. Staged OFF until
+/// its measured A/B (same discipline as ATLAS_SNAP_EVICT_ALPHA).
+pub fn draft_conf_tau() -> f32 {
+    std::env::var("ATLAS_MTP_DRAFT_CONF")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .map(|t| t.clamp(0.0, 0.99))
+        .unwrap_or(0.0)
+}
+
 pub trait DraftProposer: Send + Sync {
     /// Allocate per-sequence proposer state.
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>>;
+
+    /// Chain confidence of the most recent `propose` (min top-1 softmax prob
+    /// across its drafts), when the proposer computes it (`draft_conf_tau` >
+    /// 0). `None` = not computed; callers must not gate on it then.
+    fn last_confidence(&self) -> Option<f32> {
+        None
+    }
 
     /// Propose up to `num_drafts` tokens autoregressively.
     ///

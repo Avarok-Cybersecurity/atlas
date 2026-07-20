@@ -359,6 +359,7 @@ impl MtpHead {
             argmax_k: gpu.kernel("argmax", "argmax_bf16")?,
             embed_from_argmax_k: gpu.kernel("embed_from_argmax", "embed_from_argmax")?,
             draft_token_id_dev: gpu.alloc(4)?,
+            last_conf_bits: std::sync::atomic::AtomicU32::new(1.0f32.to_bits()),
             dense_gemv_k,
             dense_gemv_fp8w_k,
             w8a16_gemv_k: gpu.kernel("w8a16_gemv", "w8a16_gemv").ok(),

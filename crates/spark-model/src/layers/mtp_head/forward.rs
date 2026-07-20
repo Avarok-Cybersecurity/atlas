@@ -490,6 +490,42 @@ impl MtpHead {
             );
         }
 
+        // 13a. Drafter chain confidence (ATLAS_MTP_DRAFT_CONF > 0):
+        // observational only — token selection below is untouched. D2H the
+        // BF16 logits (~200 us, the same cost the grammar-masked path pays)
+        // and fold this draft's top-1 softmax prob into the propose-scoped
+        // running MIN (`last_conf_bits`, reset by `propose`). The clamp that
+        // acts on it lives in `run_mtp_propose_inner`.
+        if crate::speculative::draft_conf_tau() > 0.0 {
+            let vocab = v as usize;
+            let mut bf16_buf = vec![0u8; vocab * 2];
+            if ctx.gpu.copy_d2h(logits, &mut bf16_buf).is_ok() {
+                let mut max = f32::NEG_INFINITY;
+                for i in 0..vocab {
+                    let hi = u16::from_le_bytes([bf16_buf[2 * i], bf16_buf[2 * i + 1]]);
+                    let x = f32::from_bits((hi as u32) << 16);
+                    if x > max {
+                        max = x;
+                    }
+                }
+                let mut denom = 0.0f64;
+                for i in 0..vocab {
+                    let hi = u16::from_le_bytes([bf16_buf[2 * i], bf16_buf[2 * i + 1]]);
+                    let x = f32::from_bits((hi as u32) << 16);
+                    denom += ((x - max) as f64).exp();
+                }
+                let top1 = (1.0 / denom.max(1.0)) as f32; // exp(max-max)=1 over Z
+                let cur = f32::from_bits(
+                    self.last_conf_bits
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                );
+                if top1 < cur {
+                    self.last_conf_bits
+                        .store(top1.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+
         // 13. Argmax
         let out_ptr = ctx.buffers.scratch();
 

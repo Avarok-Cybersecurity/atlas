@@ -119,7 +119,7 @@ impl TransformerModel {
                 tracing::warn!("MTP drafter prefill failed (continuing without): {e:#}");
             }
         }
-        proposer.propose(
+        let drafts = proposer.propose(
             token,
             self.mtp_hidden_save,
             position,
@@ -130,7 +130,28 @@ impl TransformerModel {
             draft_embed_target,
             grammar_bitmask,
             self.dflash_hidden_save,
-        )
+        )?;
+        // Confidence clamp (ATLAS_MTP_DRAFT_CONF, staged off by default):
+        // when the drafter's chain confidence is below tau, discard the
+        // drafts — the next step decodes serially instead of paying a
+        // verify that would most likely reject (break-even acceptance at
+        // K=1 on the 35B MoE is ~0.66). The drafter KV rows written by
+        // this propose MUST be trimmed exactly as a full rejection would
+        // (after_verify(0)), or the drafter desyncs from the target.
+        let tau = crate::speculative::draft_conf_tau();
+        if tau > 0.0
+            && !drafts.is_empty()
+            && let Some(conf) = proposer.last_confidence()
+            && conf < tau
+        {
+            tracing::debug!(
+                "MTP draft skipped: chain confidence {conf:.3} < tau {tau:.3}                  (pos {position}, {} drafts trimmed)",
+                drafts.len(),
+            );
+            proposer.after_verify(0, prop_state.as_mut(), stream)?;
+            return Ok(Vec::new());
+        }
+        Ok(drafts)
     }
 
     /// Borrow the GPU backend for post-construction wiring (e.g. installing

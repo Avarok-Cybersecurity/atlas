@@ -185,6 +185,10 @@ pub struct MtpHead {
     embed_from_argmax_k: KernelHandle,
     /// Fixed device buffer (4 bytes) for deferred draft token ID readback.
     draft_token_id_dev: DevicePtr,
+    /// Chain confidence of the last propose (f32 bits; min top-1 softmax
+    /// prob across drafts). Written by `forward_one` when
+    /// `draft_conf_tau() > 0`; reset to 1.0 at each propose start.
+    pub(super) last_conf_bits: std::sync::atomic::AtomicU32,
     // BF16/FP8 kernel handles (None if NVFP4 mode)
     dense_gemv_k: Option<KernelHandle>,
     dense_gemv_fp8w_k: Option<KernelHandle>,
@@ -312,6 +316,9 @@ impl DraftProposer for MtpHead {
             .downcast_mut::<MtpProposerState>()
             .ok_or_else(|| anyhow::anyhow!("Invalid MTP proposer state"))?;
 
+        // Reset chain confidence for this propose (forward_one mins into it).
+        self.last_conf_bits
+            .store(1.0f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
         let mut drafts = Vec::with_capacity(num_drafts);
         let mut current_token = last_token;
         let mut current_hidden = target_hidden;
@@ -374,6 +381,16 @@ impl DraftProposer for MtpHead {
 
     fn read_deferred_draft_token(&self, gpu: &dyn GpuBackend) -> Result<u32> {
         self.read_deferred_draft_token(gpu)
+    }
+
+    fn last_confidence(&self) -> Option<f32> {
+        if crate::speculative::draft_conf_tau() <= 0.0 {
+            return None;
+        }
+        Some(f32::from_bits(
+            self.last_conf_bits
+                .load(std::sync::atomic::Ordering::Relaxed),
+        ))
     }
 
     fn after_verify(
