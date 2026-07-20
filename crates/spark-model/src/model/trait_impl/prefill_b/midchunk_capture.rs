@@ -13,8 +13,8 @@
 //! Two capture points per pass:
 //!   * `tb` — the block-floored matched-prefix boundary, registered as the
 //!     session TAIL snapshot.
-//!   * `tb - block_size` — one KV block earlier, registered as a NON-TAIL
-//!     intermediate. On ~5/19 warm turns the next turn's block-floored
+//!   * `tb - block_size` — one KV block earlier, registered as the tail's
+//!     SIBLING (leased alongside it). On ~5/19 warm turns the next turn's block-floored
 //!     `matched_tokens` lands exactly `tb - block_size` (the chat-template
 //!     generation-suffix / detokenize-retokenize divergence puts the longest
 //!     common prefix one block short of the tail). The tail@`tb` is then
@@ -31,8 +31,8 @@
 //!      `cap_local` (and `cap_local - bs` when present) and D2D-copies each
 //!      captured state into its reserved slot.
 //!   3. [`TransformerModel::finalize_midchunk_capture`] (after `forward_layers`)
-//!      registers the tail slot as the session tail and the earlier slot as an
-//!      intermediate snapshot in the index.
+//!      registers the tail slot as the session tail and the earlier slot as
+//!      the tail's sibling in the index (both leased against eviction).
 //!
 //! All behavior is gated on `ssm_tail_midchunk_enabled()` — opt-out
 //! (`ATLAS_SSM_TAIL_MIDCHUNK=0`) is a no-op (returns `None`) and byte-identical
@@ -228,17 +228,15 @@ impl TransformerModel {
         );
 
         if let (Some(tb_early), Some(slot2)) = (plan.tb_early, plan.snap_slot_early) {
-            // Intermediate (non-tail): the radix-tree nodes for [0, tb_early)
-            // are laid down by this turn's finalize_last `insert([0, total))`,
-            // so this is index-only (block_table/disk are ignored by the impl).
-            if let Some(old) = self.prefix_cache.insert_intermediate_snapshot(
+            // Tail SIBLING: leased alongside the tail (it serves the warm
+            // turns whose block-floored match lands one block below tb —
+            // measured 2/7 of restores on the eviction rig). Index-only, like
+            // the tail; must follow insert_tail_snapshot (its sweep clears the
+            // session's previous tail + sibling).
+            if let Some(old) = self.prefix_cache.insert_tail_sibling_snapshot(
                 &tokens[..tb_early],
-                &[],
-                &[],
-                plan.bs,
                 slot2,
                 seq.session_hash,
-                tb_early,
                 seq.adapter_id,
             ) {
                 self.ssm_snapshots.free(old);

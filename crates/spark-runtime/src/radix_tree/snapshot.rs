@@ -23,6 +23,13 @@ pub(super) struct SnapshotEntry {
     /// True for the per-session TAIL snapshot (the restore point the next turn's
     /// block-floored `matched_tokens` looks up). Exactly one is kept per session.
     pub(super) is_tail: bool,
+    /// True for the tail's EARLY sibling (the mid-chunk capture at `tb - bs`).
+    /// Serves warm turns whose block-floored match lands one block below the
+    /// tail (measured 2/7 of restores on the eviction rig). Exact-prefix keyed
+    /// — NOT session-gated in lookups (safe cross-session, unlike `is_tail`) —
+    /// but leased alongside the tail. At most one per session (swept together
+    /// with the tail by `insert_tail`).
+    pub(super) is_tail_sibling: bool,
 }
 
 /// Where a matched snapshot's state currently lives (Phase 1b).
@@ -128,91 +135,6 @@ impl SsmSnapshotIndex {
         self.last_lookup_session != 0
             && tail_lease_enabled()
             && self.evictions_since_lookup < tail_lease_ttl()
-    }
-
-    pub(super) fn insert(
-        &mut self,
-        prefix_hash: u64,
-        snapshot_id: usize,
-        session_hash: u64,
-        token_count: usize,
-    ) -> Option<usize> {
-        for entry in &mut self.entries {
-            if entry.prefix_hash == prefix_hash {
-                let old = entry.snapshot_id;
-                entry.snapshot_id = snapshot_id;
-                entry.session_hash = session_hash;
-                entry.token_count = token_count;
-                // A fresh HBM save re-homes the prefix: it is resident again.
-                entry.tiered = false;
-                // A plain save re-homing this prefix is by definition NOT a
-                // tail. Without this, an overwrite could re-home another
-                // session's is_tail entry (new session_hash, is_tail still
-                // set), breaching the <=1-leased-entry-per-session invariant
-                // insert_tail's supersede sweep maintains.
-                entry.is_tail = false;
-                self.access_counter += 1;
-                entry.last_access = self.access_counter;
-                return Some(old);
-            }
-        }
-        self.access_counter += 1;
-        self.stats.saves += 1;
-        self.entries.push(SnapshotEntry {
-            snapshot_id,
-            session_hash,
-            token_count,
-            prefix_hash,
-            last_access: self.access_counter,
-            tiered: false,
-            is_tail: false,
-        });
-        None
-    }
-
-    /// Insert the per-session TAIL snapshot, superseding this session's previous one.
-    /// Returns displaced snapshot_ids for the caller to free.
-    pub(super) fn insert_tail(
-        &mut self,
-        prefix_hash: u64,
-        snapshot_id: usize,
-        session_hash: u64,
-        token_count: usize,
-    ) -> Vec<usize> {
-        let mut displaced = Vec::new();
-        if session_hash != 0 {
-            let mut i = 0;
-            while i < self.entries.len() {
-                if self.entries[i].is_tail && self.entries[i].session_hash == session_hash {
-                    displaced.push(self.entries.swap_remove(i).snapshot_id);
-                } else {
-                    i += 1;
-                }
-            }
-        }
-        for entry in &mut self.entries {
-            if entry.prefix_hash == prefix_hash {
-                displaced.push(entry.snapshot_id);
-                entry.snapshot_id = snapshot_id;
-                entry.session_hash = session_hash;
-                entry.token_count = token_count;
-                entry.is_tail = true;
-                self.access_counter += 1;
-                entry.last_access = self.access_counter;
-                return displaced;
-            }
-        }
-        self.access_counter += 1;
-        self.entries.push(SnapshotEntry {
-            snapshot_id,
-            session_hash,
-            token_count,
-            prefix_hash,
-            last_access: self.access_counter,
-            tiered: false,
-            is_tail: true,
-        });
-        displaced
     }
 
     /// Find deepest snapshot matching session within matched_tokens range.
@@ -421,13 +343,20 @@ impl SsmSnapshotIndex {
                 *f = e.last_access;
             }
         }
-        let n_eligible = self.entries.iter().filter(|e| eligible(e)).count();
         let leased = |e: &SnapshotEntry| {
             tail_protect
-                && e.is_tail
+                && (e.is_tail || e.is_tail_sibling)
                 && e.session_hash != 0
                 && e.session_hash == self.last_lookup_session
         };
+        // The lease bites only while an UNLEASED eligible candidate exists, so
+        // a pool of only-leased entries (or a single entry) still yields a
+        // victim — no deadlock, and `save`/reclaim always make progress.
+        let n_unleased = self
+            .entries
+            .iter()
+            .filter(|e| eligible(e) && !leased(e))
+            .count();
         // Within-session rank: S(e) = norm(recency) + α·norm(depth) — Marconi
         // Eq 2 (see snap_evict_alpha). At the default α=0 this is exactly
         // pure-LRU ordering. Min-max normalization over the ELIGIBLE pool per
@@ -460,8 +389,8 @@ impl SsmSnapshotIndex {
             if !eligible(e) {
                 continue;
             }
-            if leased(e) && n_eligible > 1 {
-                continue; // never evict the live session's restore point
+            if leased(e) && n_unleased >= 1 {
+                continue; // never evict the live session's restore points
             }
             let sf = *session_fresh.get(&e.session_hash).unwrap_or(&0);
             let s = score(e);
