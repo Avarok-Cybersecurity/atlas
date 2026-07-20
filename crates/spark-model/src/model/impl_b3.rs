@@ -128,6 +128,17 @@ impl TransformerModel {
         // drafts); acceptance is the flip gate's metric.
         if crate::speculative::mtp_catchup_enabled() && !self.mtp_catchup_ring.is_null() {
             let rows = proposer.drafter_rows(prop_state.as_mut());
+            {
+                // Skip-reason telemetry: the guards below degrade silently by
+                // design (propose-as-today); this line is the only way to see
+                // WHY a gap was not fed (convention drift, ring gap, boundary).
+                let (s, c) = *self.mtp_catchup_meta.lock();
+                tracing::debug!(
+                    "MTP catch-up eval: rows={rows} position={position} ring=[{s},+{c}) \
+                     tokens_len={}",
+                    seq.tokens.len(),
+                );
+            }
             if rows > 0 && rows < position {
                 let (start, count) = *self.mtp_catchup_meta.lock();
                 let ring_rows = super::types::MTP_CATCHUP_RING_ROWS;
