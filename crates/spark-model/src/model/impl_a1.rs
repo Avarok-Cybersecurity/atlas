@@ -71,6 +71,8 @@ impl TransformerModel {
         let w4a16_gemv_logits_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_logits")?;
         let w4a16_gemm_kernel = gpu.kernel("w4a16", "w4a16_gemm")?;
         let w4a16_gemv_batch2_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?;
+        let dp4a_quant_k = crate::layers::try_kernel(gpu, "w4a16_gemv_dp4a", "quantize_act_int8_g16");
+        let dp4a_lm_head_batch2_k = crate::layers::try_kernel(gpu, "w4a16_gemv_dp4a", "w4a16_gemv_dp4a_batch2");
         // FP8 E4M3 LUT GEMV for the `--lm-head-dtype fp8` head. Loaded
         // unconditionally (a handle is cheap); only invoked when `lm_head_fp8`
         // is set, so the NVFP4/BF16 paths never touch it.
@@ -441,6 +443,8 @@ impl TransformerModel {
             w4a16_gemv_logits_kernel,
             w4a16_gemm_kernel,
             w4a16_gemv_batch2_kernel,
+            dp4a_quant_k,
+            dp4a_lm_head_batch2_k,
             dense_gemv_fp8w_kernel,
             dense_gemv_fp8w_batch2_kernel,
             dense_gemm_kernel,

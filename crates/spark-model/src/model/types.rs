@@ -56,6 +56,10 @@ pub struct TransformerModel {
     pub(super) w4a16_gemv_logits_kernel: KernelHandle, // FP32 output for LM head
     pub(super) w4a16_gemm_kernel: KernelHandle,
     pub(super) w4a16_gemv_batch2_kernel: KernelHandle,
+    /// W4A8 DP4A batch-2 verify kernels (lm_head_batched DP4A path). Engaged when
+    /// ATLAS_W4A16_DP4A=1 AND both handles present; float batch2 is the fallback.
+    pub(super) dp4a_quant_k: KernelHandle,
+    pub(super) dp4a_lm_head_batch2_k: KernelHandle,
     /// FP8 E4M3 LUT GEMV (M=1) for the FP8 LM head. Only used when
     /// `lm_head_fp8.is_some()`; loaded unconditionally (cheap handle) so the
     /// dispatch in `lm_head` / batched-decode / verify can reference it.

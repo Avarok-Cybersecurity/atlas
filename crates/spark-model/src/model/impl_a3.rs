@@ -118,16 +118,48 @@ impl TransformerModel {
             // Double-GEMV: reads weights once, computes 2 outputs.
             // GEMM M=2 with 64×64 tiles wastes 97% of M-dimension → ~3× slower.
             if let Some(ref nvfp4) = self.lm_head_nvfp4 {
-                ops::w4a16_gemv_batch2(
-                    self.gpu.as_ref(),
-                    self.w4a16_gemv_batch2_kernel,
-                    hidden,
-                    nvfp4,
-                    logits,
-                    v,
-                    h,
-                    stream,
-                )?;
+                if ops::dp4a_enabled()
+                    && self.dp4a_lm_head_batch2_k.0 != 0
+                    && self.dp4a_quant_k.0 != 0
+                {
+                    // W4A8 DP4A batch2: int8-quant the 2 verify hidden [2, h] ->
+                    // int8 [2, h] + f32 [2, h/16] (reuse shared FFN act-quant scratch),
+                    // then dp4a batch2 GEMV sharing the lm_head weight read.
+                    let a_q = self.buffers.ffn_act_a();
+                    let a_scale = self.buffers.ffn_act_scale();
+                    ops::quantize_act_int8(self.gpu.as_ref(), self.dp4a_quant_k, hidden, a_q, a_scale, h, stream)?;
+                    ops::quantize_act_int8(
+                        self.gpu.as_ref(),
+                        self.dp4a_quant_k,
+                        hidden.offset(h as usize * 2),
+                        a_q.offset(h as usize),
+                        a_scale.offset((h / 16) as usize * 4),
+                        h,
+                        stream,
+                    )?;
+                    ops::w4a16_gemv_dp4a_batch2(
+                        self.gpu.as_ref(),
+                        self.dp4a_lm_head_batch2_k,
+                        a_q,
+                        a_scale,
+                        nvfp4,
+                        logits,
+                        v,
+                        h,
+                        stream,
+                    )?;
+                } else {
+                    ops::w4a16_gemv_batch2(
+                        self.gpu.as_ref(),
+                        self.w4a16_gemv_batch2_kernel,
+                        hidden,
+                        nvfp4,
+                        logits,
+                        v,
+                        h,
+                        stream,
+                    )?;
+                }
             } else {
                 // Dense fallback: 2× GEMV. Stays BF16 even when
                 // use_fp32_logits is on — the FP32 path is decode-only
