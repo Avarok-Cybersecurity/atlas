@@ -52,8 +52,12 @@ fn index(entries: Vec<SnapshotEntry>, live: u64) -> SsmSnapshotIndex {
 fn deep_tail_evicted_without_tail_protect() {
     let idx = index(
         vec![
-            entry(/*id*/ 7, /*sess*/ 1, /*tok*/ 8192, /*last*/ 100),
-            entry(/*id*/ 9, /*sess*/ 1, /*tok*/ 16000, /*last*/ 50),
+            entry(
+                /*id*/ 7, /*sess*/ 1, /*tok*/ 8192, /*last*/ 100,
+            ),
+            entry(
+                /*id*/ 9, /*sess*/ 1, /*tok*/ 16000, /*last*/ 50,
+            ),
         ],
         1,
     );
@@ -67,10 +71,7 @@ fn deep_tail_evicted_without_tail_protect() {
 /// same-session save pressure.
 #[test]
 fn tail_lease_protects_live_session_is_tail() {
-    let idx = index(
-        vec![entry(7, 1, 8192, 100), tail_entry(9, 1, 6064, 50)],
-        1,
-    );
+    let idx = index(vec![entry(7, 1, 8192, 100), tail_entry(9, 1, 6064, 50)], 1);
     let v = idx.session_aware_victim(true, false).unwrap();
     // Victim must NOT be the leased tail (id 9) despite its age.
     assert_eq!(idx.entries[v].snapshot_id, 7);
@@ -133,10 +134,7 @@ fn single_leased_entry_still_evictable() {
 /// a normal candidate after the TTL so a dead session cannot squat a slot.
 #[test]
 fn lease_expires_without_live_lookups() {
-    let mut idx = index(
-        vec![tail_entry(9, 1, 6064, 50), entry(7, 2, 4000, 100)],
-        1,
-    );
+    let mut idx = index(vec![tail_entry(9, 1, 6064, 50), entry(7, 2, 4000, 100)], 1);
     // Lease fresh: the newer non-tail entry is the victim... but session 2 is
     // FRESHER than session 1, so session-staleness picks session 1 first and
     // the lease deflects to... there is only the tail in session 1, so the
@@ -227,11 +225,21 @@ fn lookup_bumps_winner_only() {
     let ph80 = super::hash_token_prefix(&toks, 80, 0);
     idx.insert(ph40, 1, 7, 40); // shallow — the improving-chain fossil
     idx.insert(ph80, 2, 7, 80); // deep — the winner
-    let shallow_before = idx.entries.iter().find(|e| e.snapshot_id == 1).unwrap().last_access;
+    let shallow_before = idx
+        .entries
+        .iter()
+        .find(|e| e.snapshot_id == 1)
+        .unwrap()
+        .last_access;
     // Deep lookup walks past the shallow candidate to select the deep one.
     let m = idx.lookup_tiered(&toks, 100, 7, 0).expect("hit");
     assert_eq!(m.token_count, 80, "deep entry wins");
-    let shallow_after = idx.entries.iter().find(|e| e.snapshot_id == 1).unwrap().last_access;
+    let shallow_after = idx
+        .entries
+        .iter()
+        .find(|e| e.snapshot_id == 1)
+        .unwrap()
+        .last_access;
     assert_eq!(
         shallow_before, shallow_after,
         "losing candidate's recency must not move"
@@ -239,7 +247,12 @@ fn lookup_bumps_winner_only() {
     // Same contract on the reference (non-tier) lookup.
     let m2 = idx.lookup(&toks, 100, 7, 0).expect("hit");
     assert_eq!(m2.1, 80);
-    let shallow_final = idx.entries.iter().find(|e| e.snapshot_id == 1).unwrap().last_access;
+    let shallow_final = idx
+        .entries
+        .iter()
+        .find(|e| e.snapshot_id == 1)
+        .unwrap()
+        .last_access;
     assert_eq!(shallow_before, shallow_final);
 }
 
@@ -375,4 +388,44 @@ fn reinsert_unspills() {
     idx.insert(0xAA, 5, 7, 40);
     // The entry is resident again at slot 5; the drop path can free it.
     assert_eq!(idx.evict_lru(), Some(5));
+}
+
+// ─────────────── Marconi α-score (staged, inert at default α=0) ───────────────
+
+/// At the default α=0 the within-session rank is EXACTLY pure-LRU: the
+/// oldest entry of the stalest session is the victim, depth ignored.
+#[test]
+fn alpha_zero_is_pure_lru_ordering() {
+    // Same session: deep-but-old vs shallow-but-fresh. α=0 → oldest dies.
+    let idx = index(vec![entry(1, 7, 20000, 10), entry(2, 7, 100, 90)], 7);
+    let v = idx.session_aware_victim(false, false).unwrap();
+    assert_eq!(idx.entries[v].snapshot_id, 1, "α=0 ranks purely by recency");
+}
+
+/// With α set, depth outweighs a modest recency gap WITHIN a session (a
+/// deep tail outscores a shallow fresh save), while session staleness stays
+/// the PRIMARY key — a fresher session's shallow entry still outlives a
+/// staler session entirely. α is injected (never via env — process-global
+/// mutation races the parallel test runner).
+#[test]
+fn alpha_prefers_depth_within_session_staleness_still_primary() {
+    // One session: deep old entry vs shallow slightly-fresher entry.
+    let idx = index(vec![entry(1, 7, 20000, 50), entry(2, 7, 100, 60)], 7);
+    let v = idx
+        .session_aware_victim_with_alpha(false, false, 2.0)
+        .unwrap();
+    assert_eq!(
+        idx.entries[v].snapshot_id, 2,
+        "α=2: the shallow entry is the victim despite being fresher"
+    );
+    // Two sessions: staleness first regardless of α — the stale session's
+    // DEEP entry still dies before the fresh session's shallow one.
+    let idx2 = index(vec![entry(1, 1, 20000, 10), entry(2, 2, 100, 90)], 2);
+    let v2 = idx2
+        .session_aware_victim_with_alpha(false, false, 2.0)
+        .unwrap();
+    assert_eq!(
+        idx2.entries[v2].snapshot_id, 1,
+        "session staleness remains the primary key at any α"
+    );
 }
