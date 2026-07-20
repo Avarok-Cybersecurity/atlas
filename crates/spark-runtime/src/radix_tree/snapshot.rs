@@ -46,20 +46,52 @@ pub(super) struct SnapMatch {
 pub(super) struct SsmSnapshotIndex {
     pub(super) entries: Vec<SnapshotEntry>,
     pub(super) access_counter: u64,
-    /// Session of the most recent `lookup` — the live conversation. Its
-    /// DEEPEST snapshot is the one its next warm turn will restore from, so
-    /// `evict_lru` protects it (ATLAS_SSM_TAIL_PROTECT, ported from #278).
-    /// Tracks the running tip: recomputed each eviction from `token_count`,
-    /// never a pinned slot. Complements the session-aware victim ranking
-    /// below — session-aware protects the live session vs *dormant* ones;
-    /// tail-protect protects the deep tail *within* the live session (the
-    /// single/dominant-conversation case session-freshness can't see).
+    /// Session of the most recent `lookup`/`lookup_tiered` — the live
+    /// conversation. Eviction leases that session's `is_tail` entry (the
+    /// TRUE restore point the next warm turn's block-floored
+    /// `matched_tokens` looks up) — NOT its deepest entry: the deepest is
+    /// the finish leaf written at end-of-turn, which sits ABOVE
+    /// `matched_tokens` and is unusable for restore (#278's original
+    /// deepest-entry semantics protected exactly the wrong slot; measured
+    /// 2026-07-20 eviction rig: 0 Marconi hits with it on OR off).
+    /// Complements the session-aware victim ranking — session-aware
+    /// protects the live session vs *dormant* ones; the tail lease protects
+    /// the restore point *within* the live session under same-session or
+    /// sessionless-churn pressure.
     last_lookup_session: u64,
+    /// Evictions since the last session-latching lookup. The lease is a
+    /// LEASE, not a pin: if the leased session never looks up again (it
+    /// ended; subsequent cold traffic never reaches lookup at
+    /// matched_tokens == 0), the lease lapses after
+    /// [`tail_lease_ttl`] evictions so a dead session's tail cannot
+    /// squat a slot indefinitely.
+    evictions_since_lookup: u32,
     /// Phase-0 measurement counters (ATLAS_SSM_SNAP_STATS). All aggregate,
     /// off the hot path's critical decisions — they only observe. The residual
     /// `recompute_tokens_on_hit` after tail-protect + a large pool is exactly
     /// what Phase 1 (spill-not-drop) converts from recompute → fault-in.
     stats: SnapshotStats,
+}
+
+/// Tail-lease kill switch. Default ON; `ATLAS_SSM_TAIL_PROTECT=0` (or `off`)
+/// disables. Backward compatible with the old opt-in scripts that set `=1`.
+fn tail_lease_enabled() -> bool {
+    !matches!(
+        std::env::var("ATLAS_SSM_TAIL_PROTECT").as_deref(),
+        Ok("0") | Ok("off")
+    )
+}
+
+/// Evictions a leased tail survives without its session looking up again.
+/// Derivation: the 2026-07-20 eviction rig measured ~18 evictions between a
+/// deep session's turns at 8 slots with 6 churn requests/turn — 64 is a >3x
+/// margin there, while production pools (128–256 slots) evict rarely enough
+/// that the TTL almost never binds. Override: ATLAS_SSM_TAIL_LEASE_TTL.
+fn tail_lease_ttl() -> u32 {
+    std::env::var("ATLAS_SSM_TAIL_LEASE_TTL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(64)
 }
 
 impl SsmSnapshotIndex {
@@ -68,8 +100,16 @@ impl SsmSnapshotIndex {
             entries: Vec::new(),
             access_counter: 0,
             last_lookup_session: 0,
+            evictions_since_lookup: 0,
             stats: SnapshotStats::default(),
         }
+    }
+
+    /// Whether the live session's tail lease is currently in force.
+    fn tail_lease_active(&self) -> bool {
+        self.last_lookup_session != 0
+            && tail_lease_enabled()
+            && self.evictions_since_lookup < tail_lease_ttl()
     }
 
     pub(super) fn insert(
@@ -87,6 +127,12 @@ impl SsmSnapshotIndex {
                 entry.token_count = token_count;
                 // A fresh HBM save re-homes the prefix: it is resident again.
                 entry.tiered = false;
+                // A plain save re-homing this prefix is by definition NOT a
+                // tail. Without this, an overwrite could re-home another
+                // session's is_tail entry (new session_hash, is_tail still
+                // set), breaching the <=1-leased-entry-per-session invariant
+                // insert_tail's supersede sweep maintains.
+                entry.is_tail = false;
                 self.access_counter += 1;
                 entry.last_access = self.access_counter;
                 return Some(old);
@@ -166,10 +212,11 @@ impl SsmSnapshotIndex {
         session_hash: u64,
         adapter_id: u64,
     ) -> Option<(usize, usize)> {
-        // Track the live conversation so eviction can protect its deep tail
-        // (ATLAS_SSM_TAIL_PROTECT).
+        // Track the live conversation so eviction can lease its is_tail
+        // restore point; a fresh lookup renews the lease.
         if session_hash != 0 {
             self.last_lookup_session = session_hash;
+            self.evictions_since_lookup = 0;
         }
         // Side-effect-free scan: only the WINNER gets its recency bumped,
         // below. Bumping every improving candidate kept shallow early-prefix
@@ -291,12 +338,12 @@ impl SsmSnapshotIndex {
 
         // SESSION-AWARE eviction (default ON; ATLAS_SNAP_EVICT_LEGACY=1 → old per-entry).
         if std::env::var_os("ATLAS_SNAP_EVICT_LEGACY").is_none() {
-            let tail_protect = self.last_lookup_session != 0
-                && std::env::var_os("ATLAS_SSM_TAIL_PROTECT").is_some();
+            let tail_protect = self.tail_lease_active();
             // Skip tiered entries (no HBM slot to free).
             let victim_idx = self.session_aware_victim(tail_protect, true)?;
             let entry = self.entries.swap_remove(victim_idx);
             self.stats.evictions += 1;
+            self.evictions_since_lookup = self.evictions_since_lookup.saturating_add(1);
             return Some(entry.snapshot_id);
         }
 
@@ -318,9 +365,15 @@ impl SsmSnapshotIndex {
     }
 
     /// Pure victim selection for session-aware eviction. Split out for unit tests.
-    /// Ranking: stalest session first, then lowest forecast score within it.
-    /// `tail_protect`: exempt the live session's deepest snapshot (one entry,
-    /// scoped, so pools ≥2 never deadlock). Correctness-safe (restore re-validates).
+    /// Ranking: stalest session first, then oldest entry within it.
+    /// `tail_protect`: lease the live session's `is_tail` restore point — the
+    /// snapshot the next warm turn's block-floored `matched_tokens` actually
+    /// looks up, NOT the deepest entry (that is the end-of-turn finish leaf,
+    /// which sits above `matched_tokens` and never restores; #278 semantics
+    /// protected it and bought nothing — 2026-07-20 rig: 0 hits either way).
+    /// insert_tail's supersede sweep plus insert()'s is_tail-clearing keep
+    /// the leased set at <=1 entry, so pools >=2 never deadlock.
+    /// Correctness-safe (restore re-validates).
     /// `skip_tiered`: ignore spilled entries (no HBM slot). Returns `None` if none eligible.
     fn session_aware_victim(&self, tail_protect: bool, skip_tiered: bool) -> Option<usize> {
         let escore = |e: &SnapshotEntry| e.last_access;
@@ -336,26 +389,22 @@ impl SsmSnapshotIndex {
             }
         }
         let n_eligible = self.entries.iter().filter(|e| eligible(e)).count();
-        let protected_idx: Option<usize> = if tail_protect {
-            self.entries
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| eligible(e) && e.session_hash == self.last_lookup_session)
-                .max_by_key(|(_, e)| e.token_count)
-                .map(|(i, _)| i)
-        } else {
-            None
+        let leased = |e: &SnapshotEntry| {
+            tail_protect
+                && e.is_tail
+                && e.session_hash != 0
+                && e.session_hash == self.last_lookup_session
         };
-        // (stalest session first, then lowest entry score within it). Protected
+        // (stalest session first, then oldest entry within it). The lease
         // bites only when >1 eligible entry remains, so a single-entry pool
-        // (even if it is the protected tail) still yields a victim → no deadlock.
+        // (even if it is the leased tail) still yields a victim → no deadlock.
         let mut victim: Option<(usize, (u64, u64))> = None;
         for (i, e) in self.entries.iter().enumerate() {
             if !eligible(e) {
                 continue;
             }
-            if Some(i) == protected_idx && n_eligible > 1 {
-                continue; // never evict the live session's deepest tail
+            if leased(e) && n_eligible > 1 {
+                continue; // never evict the live session's restore point
             }
             let sf = *session_fresh.get(&e.session_hash).unwrap_or(&0);
             let key = (sf, escore(e));
@@ -374,14 +423,14 @@ impl SsmSnapshotIndex {
         if self.entries.is_empty() {
             return None;
         }
-        let tail_protect =
-            self.last_lookup_session != 0 && std::env::var_os("ATLAS_SSM_TAIL_PROTECT").is_some();
+        let tail_protect = self.tail_lease_active();
         let idx = self.session_aware_victim(tail_protect, /*skip_tiered*/ true)?;
         let e = &mut self.entries[idx];
         e.tiered = true;
         let freed_slot = e.snapshot_id;
         let key = e.prefix_hash;
         self.stats.tier_spills += 1;
+        self.evictions_since_lookup = self.evictions_since_lookup.saturating_add(1);
         Some((freed_slot, key))
     }
 
@@ -398,6 +447,7 @@ impl SsmSnapshotIndex {
     ) -> Option<SnapMatch> {
         if session_hash != 0 {
             self.last_lookup_session = session_hash;
+            self.evictions_since_lookup = 0;
         }
         // Deepest matching prefix across BOTH resident and spilled entries.
         let mut best: Option<usize> = None;
@@ -407,6 +457,14 @@ impl SsmSnapshotIndex {
                 continue;
             }
             if session_hash != 0 && entry.session_hash != 0 && entry.session_hash != session_hash {
+                continue;
+            }
+            // TAIL snapshots bleed past the exact prefix — byte-safe ONLY for
+            // the same non-zero session (ported from `lookup`; the serving
+            // path previously had NO is_tail gate, so a sessionless lookup
+            // could restore another session's tail — the exact cross-request
+            // corruption the session-gate exists to prevent).
+            if entry.is_tail && (session_hash == 0 || entry.session_hash != session_hash) {
                 continue;
             }
             if hash_token_prefix(tokens, entry.token_count, adapter_id) != entry.prefix_hash {
