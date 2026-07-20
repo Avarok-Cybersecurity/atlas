@@ -126,6 +126,20 @@ impl TransformerModel {
         if !spark_runtime::ssm_tail_midchunk_enabled() || !self.ssm_snapshots.is_enabled() {
             return None;
         }
+        // Reuse gate: capture costs a per-prefill kernel split + D2D copy and
+        // is only ever consumable by a LATER request of the SAME session (the
+        // snapshot lookup is session-gated). A session seen for the FIRST
+        // time — which includes ALL single-turn traffic, whose ≤1024-token
+        // prefix hash is unique per request — can never reuse this capture,
+        // so skip it entirely; sessions gain capture from their second
+        // request onward (the first request's leaf save tags the session),
+        // exactly when reuse begins. Measured (35B FP8 webserver_ok N=10,
+        // 2026-07-20): capture-always Σ1846s/9-of-10 + 257 tok/turn vs
+        // capture-off Σ1495s/10-of-10 + 203 tok/turn on sessionless agentic
+        // traffic; multi-turn warm-TTFT (-54% max) is preserved from turn 3.
+        if !self.ssm_snapshots.session_has_history(seq.session_hash) {
+            return None;
+        }
         let bs = kv_cache.block_size();
         let tb = spark_runtime::ssm_tail_boundary(tokens.len(), bs)?;
         // Only capture when this pass strictly crosses tb.

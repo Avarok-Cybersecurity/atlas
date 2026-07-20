@@ -358,10 +358,30 @@ impl SsmSnapshotPool {
         Ok(())
     }
 
-    /// Return a snapshot slot to the free list.
+    /// Return a snapshot slot to the free list. Clears the slot's session
+    /// tag: a freed slot carries no restorable state, so leaving the tag
+    /// would make [`Self::session_has_history`] report phantom history.
     pub(super) fn free(&self, snap_slot: usize) {
         self.slot_has_hidden.lock().remove(&snap_slot);
+        self.session_tags.lock().remove(&snap_slot);
         self.free_slots.lock().push(snap_slot);
+    }
+
+    /// Whether any LIVE snapshot slot is tagged with `session_hash` — i.e.
+    /// this session has produced at least one snapshot before (a prior turn
+    /// finished, or a prior tail was captured). Used by the mid-chunk tail
+    /// capture to skip sessions on first sight: `session_hash` is a hash of
+    /// the first ≤1024 prompt tokens, so single-turn traffic gets a unique
+    /// hash per request and can never reuse a captured tail, while
+    /// multi-turn agents (stable long system prompt) match from their
+    /// second request onward — exactly when tail reuse begins.
+    pub(crate) fn session_has_history(&self, session_hash: u64) -> bool {
+        session_hash != 0
+            && self
+                .session_tags
+                .lock()
+                .values()
+                .any(|&s| s == session_hash)
     }
 
     /// Reserve a Marconi snapshot slot for an in-pass MID-CHUNK tail capture.
