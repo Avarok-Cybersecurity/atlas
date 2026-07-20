@@ -26,7 +26,7 @@ extern "C" __global__ void prefill_attn_compressed(
     const __nv_bfloat16* __restrict__ V,       // [S, num_kv_heads, head_dim]
     const __nv_bfloat16* __restrict__ Kc,      // [n_comp, head_dim]  (kv head 0)
     const __nv_bfloat16* __restrict__ Vc,      // [n_comp, head_dim]
-    const __nv_bfloat16* __restrict__ sinks,   // [num_q_heads]  per-head sink logit
+    const float* __restrict__ sinks,   // [num_q_heads]  per-head sink logit (FP32: checkpoint-native; reading as bf16 hard-zeroed 7 heads)
     __nv_bfloat16* __restrict__ O,             // [S, num_q_heads, head_dim]
     const unsigned int seq_len,
     const unsigned int num_q_heads,
@@ -101,7 +101,7 @@ extern "C" __global__ void prefill_attn_compressed(
 
     // ── attention sink: per-head logit in the denominator only (no value) ──
     if (valid && sinks != nullptr) {
-        float sg = __bfloat162float(sinks[q_head]);
+        float sg = sinks[q_head];
         float m_new = fmaxf(m, sg);
         float eo = __expf(m - m_new);
         for (unsigned int d = 0; d < 64 && dim_start + d < head_dim; ++d) o_acc[d] *= eo;

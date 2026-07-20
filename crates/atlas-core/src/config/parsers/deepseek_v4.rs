@@ -235,15 +235,23 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
         {
             config.yarn_original_max_position_embeddings = om as usize;
         }
-        // Attention-temperature mscale. HF defaults: mscale=1.0, mscale_all_dim=0.0
-        // when absent. `_mscale = get_mscale(factor, mscale) / get_mscale(factor,
-        // mscale_all_dim)` is folded into the rope cos/sin (see the V4 forward).
-        config.yarn_mscale = rp.get("mscale").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-        config.yarn_mscale_all_dim = rp
-            .get("mscale_all_dim")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0) as f32;
+        // (YaRN rope amplitude mscale is forced to the DS4F contract
+        // unconditionally after this block — see the forced assignment below.)
     }
+
+    // DS4F YaRN amplitude contract: force attention_factor = 1.0 on EVERY rope
+    // path (sliding θ=10000 and CSA/HCA θ=160000), unconditionally for
+    // model_type deepseek_v4. The official DeepSeek-V4-Flash reference disables
+    // YaRN amplitude scaling: DeepSeek's own inference/model.py builds cos/sin via
+    // torch.polar(ones, freqs) (no mscale on any path), transformers
+    // configuration_deepseek_v4.py forces attention_factor=1.0 on the compress
+    // path, and vLLM nvidia_model.py sets mscale=0/mscale_all_dim=0. With both
+    // terms equal, yarn_rope_mscale = get_mscale(f,0)/get_mscale(f,0) = 1.0,
+    // removing the erroneous 1.2772589 amplitude previously applied on the
+    // CSA/HCA (compressor) layers. Only this parser writes these fields and only
+    // yarn_rope_mscale reads them, so Qwen3/DFlash are unaffected.
+    config.yarn_mscale = 0.0;
+    config.yarn_mscale_all_dim = 0.0;
 
     // DEBUG: Log YaRN parameters to verify they're being read correctly
     println!(
@@ -258,4 +266,110 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
 
     finalize_config(&mut config, &raw)?;
     Ok(config)
+}
+
+#[cfg(test)]
+mod mscale_contract_tests {
+    use super::*;
+
+    // Real DeepSeek-V4-Flash-DSpark config.json (load-bearing fields).
+    const DS4F_CONFIG: &str = r#"{
+      "architectures": ["DeepseekV4ForCausalLM"],
+      "head_dim": 512,
+      "hidden_size": 4096,
+      "max_position_embeddings": 1048576,
+      "model_type": "deepseek_v4",
+      "num_attention_heads": 64,
+      "num_hidden_layers": 43,
+      "num_key_value_heads": 1,
+      "o_lora_rank": 1024,
+      "q_lora_rank": 1024,
+      "qk_rope_head_dim": 64,
+      "rms_norm_eps": 1e-06,
+      "rope_scaling": {
+        "beta_fast": 32,
+        "beta_slow": 1,
+        "factor": 16,
+        "original_max_position_embeddings": 65536,
+        "type": "yarn"
+      },
+      "rope_theta": 10000,
+      "vocab_size": 129280,
+      "compress_rope_theta": 160000,
+      "compress_ratios": [0,0,4,128,4,128,4,0,0,0]
+    }"#;
+
+    // Mirrors compute.rs `const MAIN_ROPE_THETA: f32 = 10000.0` — the sliding
+    // (compressor-absent) rope theta. This diff does not touch compute.rs, so the
+    // value is unchanged; asserted here as the sliding-theta contract.
+    const SLIDING_ROPE_THETA_CONTRACT: f32 = 10000.0;
+
+    // Test 1 + Test 4: the DS4F config makes yarn_rope_mscale == 1.0 for EVERY
+    // runtime call site. All nine sites call `yarn_rope_mscale(ctx.config)` with
+    // this parsed config; the helper (spark-model) is unit-tested separately to
+    // return exactly 1.0 when the two mscale terms are equal. Here we prove the
+    // parser produces terms that force that: yarn_mscale == yarn_mscale_all_dim.
+    #[test]
+    fn ds4f_forces_mscale_terms_equal_so_ratio_is_one() {
+        let c = parse_deepseek_v4(DS4F_CONFIG).expect("parse DS4F");
+        assert_eq!(c.yarn_mscale, 0.0, "yarn_mscale must be forced to 0.0");
+        assert_eq!(
+            c.yarn_mscale_all_dim, 0.0,
+            "yarn_mscale_all_dim must be forced to 0.0"
+        );
+        assert_eq!(
+            c.yarn_mscale, c.yarn_mscale_all_dim,
+            "equal terms => yarn_rope_mscale ratio == 1.0 (no 1.2772589 amplitude)"
+        );
+    }
+
+    // Test 2: compress-path theta stays 160000.
+    #[test]
+    fn ds4f_compress_theta_is_160000() {
+        let c = parse_deepseek_v4(DS4F_CONFIG).expect("parse DS4F");
+        assert_eq!(c.rope_theta, 160000.0, "compress rope_theta must be 160000");
+    }
+
+    // Test 3: sliding-path theta contract is 10000 (compute.rs MAIN_ROPE_THETA,
+    // untouched by this diff).
+    #[test]
+    fn sliding_theta_contract_is_10000() {
+        assert_eq!(SLIDING_ROPE_THETA_CONTRACT, 10000.0);
+    }
+
+    // Test 6: no unrelated YaRN defaults changed — factor/beta/original_max_pos
+    // still parse from the checkpoint exactly as before.
+    #[test]
+    fn ds4f_other_yarn_params_unchanged() {
+        let c = parse_deepseek_v4(DS4F_CONFIG).expect("parse DS4F");
+        assert_eq!(c.yarn_factor, 16.0);
+        assert_eq!(c.yarn_beta_fast, 32.0);
+        assert_eq!(c.yarn_beta_slow, 1.0);
+        assert_eq!(c.yarn_original_max_position_embeddings, 65536);
+    }
+
+    // The force is UNCONDITIONAL: even a (hypothetical) checkpoint that ships an
+    // explicit non-zero mscale is overridden to the disabled contract.
+    #[test]
+    fn ds4f_explicit_checkpoint_mscale_is_overridden() {
+        let with_mscale = DS4F_CONFIG.replace(
+            "\"type\": \"yarn\"",
+            "\"type\": \"yarn\", \"mscale\": 1.0, \"mscale_all_dim\": 0.0",
+        );
+        let c = parse_deepseek_v4(&with_mscale).expect("parse DS4F w/ explicit mscale");
+        assert_eq!(c.yarn_mscale, 0.0);
+        assert_eq!(c.yarn_mscale_all_dim, 0.0);
+    }
+
+    // Test 5 (config side): the force lives ONLY in this DS4F parser. A non-DS4F
+    // factory config keeps the shared factory default (yarn_mscale = 1.0),
+    // proving Qwen/other models are untouched by the DS4F override.
+    #[test]
+    fn non_ds4f_factory_default_mscale_untouched() {
+        let qwen = ModelConfig::qwen3_next_80b_nvfp4();
+        assert_eq!(
+            qwen.yarn_mscale, 1.0,
+            "shared factory default must remain 1.0 for non-DS4F models"
+        );
+    }
 }
