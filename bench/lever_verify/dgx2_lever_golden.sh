@@ -9,7 +9,7 @@ PORT="${PORT:-8888}"
 MODEL="${MODEL:-centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf}"
 IMG="${IMG:-atlas-gb10:midchunk-adapk-ldmab}"
 CACHE="${CACHE:-/workspace/.cache/huggingface}"
-NUM_DRAFTS="${NUM_DRAFTS:-2}"   # K=2 is the sweet spot: 88.75% BFCL @ 5.74 s/sample (K=1=6.72, K=3=87.5%@6.29)
+NUM_DRAFTS="${NUM_DRAFTS:-1}"   # K=1 + grammar OFF is the BEST: 89% BFCL @ 5.60 s/sample (vs K=2 grammar-ON 88.75%@5.74, K=1 grammar-ON 88.75%@6.72). IoU-safe + fastest + highest accuracy.
 FFN_LEVER="${FFN_LEVER:-ATLAS_BF16_TC_PREFILL=1}"   # IoU-safe default; use ATLAS_FFN_NVFP4_MMQ=1 for max-perf (lossy)
 MMQ_DISABLE="${MMQ_DISABLE:-1}"                      # 1=disable MMQ (needed for BF16_TC to engage — MMQ is default-on); 0 for max-perf (MMQ)
 GRAMMAR="${GRAMMAR:-true}"                            # true=OFF (IoU-safe); false=ON (max-perf, IoU-drop suspect)
