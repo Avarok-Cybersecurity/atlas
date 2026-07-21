@@ -240,6 +240,27 @@ impl TransformerModel {
             return Ok(());
         }
 
+        // `num_accepted == 0` has no representable rewind target here: the
+        // per-token intermediates are indexed `num_accepted - 1`, and this is
+        // `usize` arithmetic in a release build (overflow-checks off), so a 0
+        // would wrap to `usize::MAX` and hand `h_intermediate()` an
+        // out-of-range index — a wild device pointer straight into
+        // `copy_d2d_async`. Every scheduler caller passes >= 1 today (position
+        // 0 of a verify batch is accepted by construction; DFlash adds the
+        // bonus token via `num_accepted + 1`), but that is a caller
+        // convention, not an invariant this function can see. Fail fast so a
+        // future caller change surfaces as an error instead of silent memory
+        // corruption. A genuine "nothing accepted" rewind belongs in
+        // `rollback_ssm_states`, which restores the pre-verify checkpoint.
+        if num_accepted == 0 {
+            anyhow::bail!(
+                "commit_accepted_prefix: num_accepted == 0 (k={k}) has no intermediate to \
+                 rewind to — position 0 of a verify batch is accepted by construction. \
+                 Use rollback_ssm_states() for a full-reject rewind to the pre-verify \
+                 checkpoint."
+            );
+        }
+
         let stream = self.secondary_stream;
         let mut ssm_layer_idx = 0usize;
         for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
