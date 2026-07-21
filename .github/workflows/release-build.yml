@@ -41,6 +41,18 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # This repo targets CUDA 13.0: every docker/gb10/**/Dockerfile is
+  # `nvidia/cuda:13.0.0-devel-ubuntu24.04`, and ci.yml/docs.yml pin
+  # CUDARC_CUDA_VERSION=13000. GB10 is sm_121, which needs >= 12.8, so the
+  # cuda-toolkit action's 12.6 default was both wrong for this repo and too
+  # old for the target architecture. Defined once here.
+  CUDA_APT_VERSION: "13-0"
+  CUDA_DOT_VERSION: "13.0"
+  CUDA_FULL_VERSION: "13.0.2"
+  # NOTE: CUDARC_CUDA_VERSION is deliberately NOT set here. Workflow-level
+  # `env` overrides values written to $GITHUB_ENV by an earlier step, so
+  # declaring it here would defeat the SCALE step's 12080 override and build
+  # the AMD target against a CUDA 13 ABI. Each toolchain sets it itself.
 
 jobs:
   # ---------------------------------------------------------------------
@@ -171,17 +183,53 @@ jobs:
         if: matrix.os == 'macos'
         run: brew install cmake llvm
 
-      - name: Install CUDA toolkit
-        if: startsWith(matrix.toolchain, 'cuda')
+      - name: Install CUDA toolkit (linux)
+        if: startsWith(matrix.toolchain, 'cuda') && matrix.os == 'linux'
+        run: |
+          set -euo pipefail
+          # Installed straight from NVIDIA's apt repo rather than via the
+          # cuda-toolkit action: it pins the exact version this repo targets
+          # and picks the right repo arch, where the action silently defaulted
+          # to 12.6.1 on both arches.
+          case '${{ matrix.target }}' in
+            x86_64-*)  repo_arch=x86_64 ;;
+            aarch64-*) repo_arch=sbsa ;;
+            *) echo "::error::no CUDA repo arch for ${{ matrix.target }}"; exit 1 ;;
+          esac
+          kr=cuda-keyring_1.1-1_all.deb
+          curl -fsSL --retry 3 -O \
+            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/$repo_arch/$kr"
+          sudo dpkg -i "$kr" && rm -f "$kr"
+          sudo apt-get update
+          v='${{ env.CUDA_APT_VERSION }}'
+          # driver-dev supplies the libcuda stub that spark-storage's raw
+          # extern "C" FFI links against on a runner with no GPU.
+          sudo apt-get install -y --no-install-recommends \
+            "cuda-nvcc-$v" "cuda-cudart-dev-$v" "cuda-nvrtc-dev-$v" \
+            "cuda-driver-dev-$v" "cuda-profiler-api-$v"
+          cuda_root="/usr/local/cuda-${{ env.CUDA_DOT_VERSION }}"
+          [ -x "$cuda_root/bin/nvcc" ] || { echo "::error::nvcc missing at $cuda_root"; exit 1; }
+          "$cuda_root/bin/nvcc" --version | tail -2
+          {
+            echo "CUDA_PATH=$cuda_root"
+            echo "CUDA_HOME=$cuda_root"
+            echo "LIBRARY_PATH=$cuda_root/lib64/stubs:${LIBRARY_PATH:-}"
+            echo "CUDARC_CUDA_VERSION=13000"
+          } >> "$GITHUB_ENV"
+          echo "$cuda_root/bin" >> "$GITHUB_PATH"
+
+      - name: Install CUDA toolkit (windows)
+        if: startsWith(matrix.toolchain, 'cuda') && matrix.os == 'windows'
         uses: Jimver/cuda-toolkit@v0.2.19
         with:
+          cuda: ${{ env.CUDA_FULL_VERSION }}
           method: network
-          # Package names are apt names with DASHES. The first draft used
-          # `nvrtc_dev` / `cuda_profiler_api`, which apt resolved to
-          # `cuda-nvrtc_dev-12-6` / `cuda-cuda_profiler_api-12-6` -- neither
-          # exists, and every CUDA job died on it. `driver-dev` supplies the
-          # libcuda stub the raw extern "C" FFI in spark-storage links against.
-          sub-packages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev", "driver-dev", "profiler-api"]'
+          sub-packages: '["nvcc", "cudart", "nvrtc", "nvrtc_dev", "profiler_api"]'
+
+      - name: Pin cudarc CUDA version (windows)
+        if: startsWith(matrix.toolchain, 'cuda') && matrix.os == 'windows'
+        shell: bash
+        run: echo "CUDARC_CUDA_VERSION=13000" >> "$GITHUB_ENV"
 
       - name: Install NCCL
         if: contains(matrix.toolchain, 'nccl')
