@@ -345,23 +345,31 @@ impl TransformerModel {
                         conv_bytes,
                         stream,
                     )?;
-                } else if ssm.h_state_intermediates.is_empty() {
-                    // No intermediates available (self-spec / ngram path) and
-                    // the caller asked for a partial rollback. Without
-                    // intermediates we cannot reach the post-N-token state
-                    // by replay; silently skipping would leave SSM state
-                    // advanced past the accepted boundary, corrupting
-                    // every subsequent decode. Fail fast so the operator
-                    // sees the misconfiguration instead of silent gibberish.
+                } else {
+                    // `num_accepted > h_state_intermediates.len()`, including
+                    // the empty case. There is no snapshot for the requested
+                    // boundary, so h_state/conv_state are left ADVANCED past
+                    // the last accepted token. Falling through silently
+                    // corrupts every subsequent decode with no error and no
+                    // log line — the failure surfaces much later as
+                    // gibberish. Fail fast for the whole range, not just for
+                    // the empty case (the empty case was already guarded; the
+                    // non-empty-but-too-short case was not, and it becomes
+                    // reachable as soon as K exceeds the intermediate pool
+                    // depth `num_drafts + 1`).
                     anyhow::bail!(
                         "rollback_ssm_states: cannot restore SSM to N={num_accepted} \
-                         without per-token intermediates (layer {i}). \
-                         self-speculative / ngram with SSM models needs MTP \
-                         intermediates support; use --speculative (MTP) or \
-                         --num-drafts 1 for SSM models."
+                         (layer {i}): only {} per-token intermediate(s) available. \
+                         With no intermediates this is the self-speculative / ngram \
+                         path — use --speculative (MTP) or --num-drafts 1 for SSM \
+                         models. With too few, the MTP intermediate pool \
+                         (num_drafts + 1) is smaller than the verify width K.",
+                        ssm.h_state_intermediates.len(),
                     );
                 }
-                // If num_accepted == num_tokens, SSM state is already correct
+                // `num_accepted == num_tokens` (full accept) never reaches
+                // here: callers guard it (`seq.seq_len > expected_seq_len`),
+                // and it would otherwise be swallowed by the branch above.
             }
         }
         // No synchronize needed: rollback copies and subsequent operations
