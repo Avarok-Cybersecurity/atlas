@@ -293,6 +293,11 @@ impl TransformerModel {
             self.finalize_midchunk_capture(tokens, seq, plan);
         }
 
+        // ATLAS_MTP_DRAFTER_PREFILL: capture this chunk's final-layer hidden
+        // rows for the whole-prompt drafter prefill. No-op when disabled. This
+        // is the large/chunked-prompt path (small prompts go through prefill_a).
+        self.try_mtp_prefill_capture(effective_seq_len_start, proc_count, stream)?;
+
         // ── Phase 5: update sequence state incrementally ──
         // Always add chunk tokens exactly once. The early-return path for
         // fully cached non-last chunks doesn't add tokens, so this is the

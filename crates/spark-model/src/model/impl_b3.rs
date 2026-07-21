@@ -90,6 +90,9 @@ impl TransformerModel {
             midchunk_capture: None,
             token_ids: None,
         };
+        // ATLAS_MTP_DRAFTER_PREFILL / CARRY: give the drafter its prompt context
+        // on the first propose of this sequence (cold prefill or warm carry).
+        self.ensure_drafter_context(proposer, seq, &ctx, stream);
         let prop_state = seq
             .proposer_state
             .as_mut()

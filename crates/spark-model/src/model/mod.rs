@@ -32,6 +32,7 @@ pub(crate) mod impl_a3;
 pub(crate) mod impl_b1;
 pub(crate) mod impl_b2;
 pub(crate) mod impl_b3;
+pub(crate) mod mtp_carry;
 pub(crate) mod ssm_pool;
 pub(crate) mod ssm_snapshot;
 pub(crate) mod trait_impl;

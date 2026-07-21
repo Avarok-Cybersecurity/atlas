@@ -58,6 +58,32 @@ enum ProjectionWeight {
     Bf16(DenseWeight),
 }
 
+/// ATLAS_MTP_DRAFTER_PREFILL=1 — opt-in drafter context prefill (cached once).
+pub fn mtp_drafter_prefill_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_MTP_DRAFTER_PREFILL").ok().as_deref() == Some("1"))
+}
+
+/// Dedicated scratch for the batched drafter prefill (allocated in
+/// `MtpHead::new` only when `mtp_drafter_prefill_enabled`). All buffers are
+/// sized for `prefill::PREFILL_CHUNK` rows.
+pub(crate) struct MtpPrefillScratch {
+    pub embed: DevicePtr,
+    pub normed_embed: DevicePtr,
+    pub normed_hidden: DevicePtr,
+    pub concat: DevicePtr,
+    pub fc_out: DevicePtr,
+    pub normed2: DevicePtr,
+    pub k_out: DevicePtr,
+    pub v_out: DevicePtr,
+    /// RoPE rotates Q and K in one launch; prefill discards Q.
+    pub q_scratch: DevicePtr,
+    /// u32 RoPE positions, one per row.
+    pub pos_dev: DevicePtr,
+    /// i64 KV slot mapping, one per row.
+    pub slot_dev: DevicePtr,
+}
+
 /// Per-sequence MTP proposer state.
 pub struct MtpProposerState {
     /// Block table for MTP's own KV cache.
@@ -67,6 +93,9 @@ pub struct MtpProposerState {
     /// Number of drafts produced in the last propose() call.
     /// Used by after_verify to know how many entries to trim.
     pub last_num_drafted: usize,
+    /// Sequence-space pair key of the newest drafter row (RoPE position `p`
+    /// writes pair key `p - 1`). `None` until the first row is written.
+    pub last_pair_key: Option<usize>,
 }
 
 impl ProposerState for MtpProposerState {
@@ -157,6 +186,10 @@ pub struct MtpHead {
     moe_topk_k: Option<KernelHandle>,
     moe_silu_mul_k: Option<KernelHandle>,
     moe_weighted_sum_blend_k: Option<KernelHandle>,
+    /// Batched BF16 GEMM for the drafter-prefill pass (0 when absent).
+    dense_gemm_k: KernelHandle,
+    /// Drafter-prefill scratch; `None` unless ATLAS_MTP_DRAFTER_PREFILL=1.
+    prefill_scratch: Option<MtpPrefillScratch>,
 }
 
 impl MtpHead {
@@ -243,6 +276,7 @@ impl MtpHead {
 mod forward;
 mod moe_forward;
 mod new;
+mod prefill;
 
 impl DraftProposer for MtpHead {
     fn alloc_state(&self, _gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>> {
@@ -250,6 +284,7 @@ impl DraftProposer for MtpHead {
             block_table: Vec::new(),
             seq_len: 0,
             last_num_drafted: 0,
+            last_pair_key: None,
         }))
     }
 
@@ -320,6 +355,87 @@ impl DraftProposer for MtpHead {
         Ok(drafts)
     }
 
+    fn prefill_drafter(
+        &self,
+        prompt_tokens: &[u32],
+        hiddens: DevicePtr,
+        state: &mut dyn ProposerState,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<usize> {
+        self.prefill_drafter_impl(prompt_tokens, hiddens, state, ctx, stream)
+    }
+
+    fn drafter_rows(&self, state: &mut dyn ProposerState) -> usize {
+        state
+            .as_any_mut()
+            .downcast_mut::<MtpProposerState>()
+            .map(|s| s.seq_len)
+            .unwrap_or(0)
+    }
+
+    fn last_pair_key(&self, state: &mut dyn ProposerState) -> Option<usize> {
+        state
+            .as_any_mut()
+            .downcast_mut::<MtpProposerState>()
+            .and_then(|s| s.last_pair_key)
+    }
+
+    fn take_drafter_kv(
+        &self,
+        state: &mut dyn ProposerState,
+    ) -> Option<(Vec<u32>, usize, Option<usize>)> {
+        let st = state.as_any_mut().downcast_mut::<MtpProposerState>()?;
+        if st.block_table.is_empty() || st.seq_len == 0 {
+            return None;
+        }
+        let blocks = std::mem::take(&mut st.block_table);
+        let rows = st.seq_len;
+        let key = st.last_pair_key;
+        st.seq_len = 0;
+        st.last_pair_key = None;
+        st.last_num_drafted = 0;
+        Some((blocks, rows, key))
+    }
+
+    fn install_drafter_kv(
+        &self,
+        state: &mut dyn ProposerState,
+        blocks: Vec<u32>,
+        rows: usize,
+        last_pair_key: Option<usize>,
+    ) -> bool {
+        let Some(st) = state.as_any_mut().downcast_mut::<MtpProposerState>() else {
+            return false;
+        };
+        if !st.block_table.is_empty() || st.seq_len != 0 {
+            return false;
+        }
+        st.block_table = blocks;
+        st.seq_len = rows;
+        st.last_pair_key = last_pair_key;
+        true
+    }
+
+    fn free_drafter_kv(&self, blocks: &[u32]) {
+        if !blocks.is_empty() {
+            self.kv_cache.lock().free_blocks(blocks);
+        }
+    }
+
+    fn catchup_drafter(
+        &self,
+        tokens: &[u32],
+        hiddens: DevicePtr,
+        row_base: usize,
+        pos_base: usize,
+        state: &mut dyn ProposerState,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<usize> {
+        self.drafter_rows_impl(tokens, hiddens, row_base, pos_base, state, ctx, stream)
+    }
+
     fn read_deferred_draft_token(&self, gpu: &dyn GpuBackend) -> Result<u32> {
         self.read_deferred_draft_token(gpu)
     }
@@ -345,6 +461,10 @@ impl DraftProposer for MtpHead {
         let old_sl = mtp_state.seq_len;
         if num_to_trim > 0 {
             mtp_state.seq_len = mtp_state.seq_len.saturating_sub(num_to_trim);
+            // Trimmed rows have consecutive pair keys; move the newest key back.
+            if let Some(k) = mtp_state.last_pair_key {
+                mtp_state.last_pair_key = Some(k.saturating_sub(num_to_trim));
+            }
         }
         tracing::debug!(
             "MTP after_verify: accepted={num_accepted} drafted={num_drafted} trim={num_to_trim} mtp_seq_len: {old_sl} → {}",
@@ -377,6 +497,7 @@ mod tests {
             block_table: vec![0, 1, 2],
             seq_len: 42,
             last_num_drafted: 0,
+            last_pair_key: None,
         });
         let mtp = state.as_any().downcast_ref::<MtpProposerState>().unwrap();
         assert_eq!(mtp.seq_len, 42);

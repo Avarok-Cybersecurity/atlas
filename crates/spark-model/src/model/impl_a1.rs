@@ -224,6 +224,24 @@ impl TransformerModel {
         // MTP hidden state save buffer (1 × hidden_size FP32)
         let mtp_hidden_save = gpu.alloc(config.hidden_size * 4)?;
 
+        // ATLAS_MTP_DRAFTER_PREFILL: whole-prompt hidden capture buffer,
+        // [max_seq_len, hidden_size] BF16. Opt-in (PCND): NULL unless the env is
+        // set and MTP is active.
+        let mtp_prefill_hidden = if has_mtp && crate::layers::mtp_head::mtp_drafter_prefill_enabled()
+        {
+            let bytes = max_seq_len * config.hidden_size * 2;
+            tracing::info!(
+                "ATLAS_MTP_DRAFTER_PREFILL=1: allocating {:.0} MB prompt-hidden \
+                 capture ({} x {} BF16) for MTP drafter prefill",
+                bytes as f64 / 1e6,
+                max_seq_len,
+                config.hidden_size,
+            );
+            gpu.alloc(bytes)?
+        } else {
+            DevicePtr::NULL
+        };
+
         // DFlash 5-layer hidden-state stack. Allocated only when a
         // BlockDiffusionDraftHead is the active proposer (`config.dflash_capture_layers`
         // populated by the loader from the drafter's `dflash_config.target_layer_ids`).
@@ -476,6 +494,15 @@ impl TransformerModel {
             profile_first_pending: std::sync::atomic::AtomicBool::new(profile_first),
             proposer,
             mtp_hidden_save,
+            mtp_prefill_hidden,
+            mtp_prefill_capacity: if mtp_prefill_hidden.is_null() {
+                0
+            } else {
+                max_seq_len
+            },
+            mtp_prefill_capture_len: std::sync::atomic::AtomicUsize::new(0),
+            mtp_carry: parking_lot::Mutex::new(None),
+            mtp_store_range: parking_lot::Mutex::new((0, 0)),
             dflash_hidden_save,
             dflash_hidden_save_rows,
             dflash_capture_layers,

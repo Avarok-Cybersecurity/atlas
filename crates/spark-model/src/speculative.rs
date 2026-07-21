@@ -30,6 +30,69 @@ pub trait DraftProposer: Send + Sync {
     /// Allocate per-sequence proposer state.
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>>;
 
+    /// Current drafter KV length (rows), for the catch-up append point.
+    fn drafter_rows(&self, _state: &mut dyn ProposerState) -> usize {
+        0
+    }
+
+    /// Sequence-space pair key of the newest drafter row (`None` = untracked).
+    fn last_pair_key(&self, _state: &mut dyn ProposerState) -> Option<usize> {
+        None
+    }
+
+    /// ATLAS_MTP_CARRY_DRAFTER: move this sequence's drafter KV blocks OUT of
+    /// its proposer state, so `free_state` releases nothing.
+    fn take_drafter_kv(
+        &self,
+        _state: &mut dyn ProposerState,
+    ) -> Option<(Vec<u32>, usize, Option<usize>)> {
+        None
+    }
+
+    /// Inverse of [`take_drafter_kv`]: install carried blocks into a fresh state.
+    fn install_drafter_kv(
+        &self,
+        _state: &mut dyn ProposerState,
+        _blocks: Vec<u32>,
+        _rows: usize,
+        _last_pair_key: Option<usize>,
+    ) -> bool {
+        false
+    }
+
+    /// Release drafter KV blocks that no proposer state owns.
+    fn free_drafter_kv(&self, _blocks: &[u32]) {}
+
+    /// Append drafter rows at KV slots `row_base ..` with RoPE positions
+    /// `pos_base ..` from `(tokens, hiddens)` pairs — the catch-up feed.
+    #[allow(clippy::too_many_arguments)]
+    fn catchup_drafter(
+        &self,
+        _tokens: &[u32],
+        _hiddens: DevicePtr,
+        _row_base: usize,
+        _pos_base: usize,
+        _state: &mut dyn ProposerState,
+        _ctx: &ForwardContext,
+        _stream: u64,
+    ) -> Result<usize> {
+        Ok(0)
+    }
+
+    /// Prefill the drafter's own context (KV cache) over the prompt, before
+    /// the first `propose()` of a sequence (ATLAS_MTP_DRAFTER_PREFILL).
+    fn prefill_drafter(
+        &self,
+        prompt_tokens: &[u32],
+        hiddens: DevicePtr,
+        state: &mut dyn ProposerState,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<usize> {
+        let _ = (prompt_tokens, hiddens, state, ctx, stream);
+        Ok(0)
+    }
+
     /// Propose up to `num_drafts` tokens autoregressively.
     ///
     /// # Arguments
