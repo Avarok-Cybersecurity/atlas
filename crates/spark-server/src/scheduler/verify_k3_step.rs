@@ -47,9 +47,7 @@ fn k3_record_positional(d1_match: bool, d2_match: bool, seq_len: usize) {
         K3_D2_MATCH_UNCOND.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     if K3_STEPS.load(std::sync::atomic::Ordering::Relaxed) >= K3_SUMMARY_PERIOD {
-        let steps = K3_STEPS
-            .swap(0, std::sync::atomic::Ordering::Relaxed)
-            .max(1);
+        let steps = K3_STEPS.swap(0, std::sync::atomic::Ordering::Relaxed).max(1);
         let d1 = K3_D1_MATCH.swap(0, std::sync::atomic::Ordering::Relaxed);
         let d2u = K3_D2_MATCH_UNCOND.swap(0, std::sync::atomic::Ordering::Relaxed);
         let d2c = K3_D2_MATCH_COND.swap(0, std::sync::atomic::Ordering::Relaxed);
