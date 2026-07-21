@@ -360,31 +360,33 @@ fn deepseek_v4_reasoning_primer_is_opt_in() {
         .expect("deepseek_v4 template must render")
     };
 
-    // Reasoning mode: the real <think> primer is present; suffix ends
-    // <｜Assistant｜><think> (official thinking contract).
+    // Reasoning mode (enable_thinking==true): suffix ends <｜Assistant｜><think>
+    // (official DS4F thinking contract, encoding_dsv4.py:388).
     let thinking = render(minijinja::Value::from(true));
     assert!(
         thinking.ends_with("<｜Assistant｜><think>"),
         "reasoning mode must prime <think>: {thinking:?}"
     );
 
-    // Direct mode (explicit false): NO primer, suffix ends at <｜Assistant｜>.
+    // Direct mode (explicit false): suffix ends <｜Assistant｜></think> — the
+    // official direct contract (thinking pre-closed; model answers directly).
     let direct = render(minijinja::Value::from(false));
     assert!(
-        !direct.contains("<think>"),
-        "direct mode must NOT emit a <think> primer: {direct:?}"
+        direct.ends_with("<｜Assistant｜></think>"),
+        "direct suffix must be the official <｜Assistant｜></think>: {direct:?}"
     );
     assert!(
-        direct.ends_with("<｜Assistant｜>"),
-        "direct suffix must end at the assistant token: {direct:?}"
+        !direct.contains("<think>"),
+        "direct mode must NOT open a <think> block: {direct:?}"
     );
 
-    // Default (enable_thinking undefined) must be byte-identical to direct —
-    // preserves the 35/40 canonical direct-mode prompt contract.
+    // Default (enable_thinking undefined) resolves to direct at the API edge
+    // (thinking_default=false), so the template's else-branch must also produce
+    // the official direct suffix — identical to explicit-false.
     let default = render(minijinja::Value::UNDEFINED);
     assert_eq!(
         default, direct,
-        "default (unspecified) must be byte-identical to direct mode"
+        "default (unspecified) must render the official direct suffix"
     );
 }
 
@@ -403,7 +405,9 @@ fn deepseek_v4_reasoning_parser_is_registered() {
         .and_then(|t| t.get("deepseek_v4"))
         .and_then(|s| s.as_str())
         .expect("tool_defaults [reasoning] must register deepseek_v4");
-    let fmt: ReasoningFormat = fmt_str.parse().expect("deepseek_v4 reasoning format parses");
+    let fmt: ReasoningFormat = fmt_str
+        .parse()
+        .expect("deepseek_v4 reasoning format parses");
     let p = fmt.into_parser();
     assert_eq!(p.start_tag(), "<think>", "DS4F reasoning start tag");
     assert_eq!(p.end_tag(), "</think>", "DS4F reasoning end tag");
