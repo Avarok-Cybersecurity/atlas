@@ -71,13 +71,14 @@
   {
     "id": "macos-x86_64-metal",
     "os": "macos",
-    "runner": "macos-13",
+    "runner": "macos-14",
     "target": "x86_64-apple-darwin",
     "platform": "metal",
     "cargo_features": "--no-default-features --features metal",
     "toolchain": "none",
     "experimental": true,
-    "pr_validate": true
+    "pr_validate": true,
+    "cross": true
   },
   {
     "id": "windows-x86_64-nvidia-cuda",

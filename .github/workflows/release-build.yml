@@ -187,6 +187,25 @@ jobs:
         if: matrix.os == 'macos'
         run: brew install cmake llvm
 
+      - name: Configure cross-arch build (macos)
+        if: matrix.os == 'macos' && matrix.cross
+        run: |
+          set -euo pipefail
+          # The Intel slice is built on an Apple Silicon runner: macos-13
+          # (Intel) runners are being retired and never once scheduled for
+          # this matrix, so the job sat queued and was cancelled every run.
+          # Xcode ships both slices, so cross-compiling is the reliable path.
+          # cc-rs and cmake do NOT infer the arch from --target, so state it:
+          # otherwise native deps build for arm64 and the link fails on
+          # mismatched architectures.
+          {
+            echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)"
+            echo "MACOSX_DEPLOYMENT_TARGET=11.0"
+            echo "CFLAGS_x86_64_apple_darwin=-arch x86_64"
+            echo "CXXFLAGS_x86_64_apple_darwin=-arch x86_64"
+            echo "CMAKE_OSX_ARCHITECTURES=x86_64"
+          } >> "$GITHUB_ENV"
+
       - name: Install CUDA toolkit (linux)
         if: startsWith(matrix.toolchain, 'cuda') && matrix.os == 'linux'
         run: |
