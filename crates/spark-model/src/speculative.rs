@@ -162,7 +162,10 @@ pub fn mtp_catchup_enabled() -> bool {
 ///    `try_mtp_prefill_capture` no-ops whenever a prefill starts at a
 ///    reused-prefix boundary and the drafter prompt-prefill is then skipped.
 ///    Prefilling it on every turn measured **+0.086 p1 / +0.101 p2_uncond /
-///    +10.2% accepted tokens per verify step** at n ~ 10k per arm.
+///    +10.2% accepted tokens per verify step** at n ~ 10k per arm, of which a
+///    de-confounding pair (drafter coverage held at zero, prefix caching the
+///    only variable) attributes **+0.079 p1 / +0.089 p2_uncond — 92% / 88% —
+///    to drafter coverage** and the small remainder to warm restore.
 ///
 /// Both dwarf this flag, and (2) also changes what this flag is worth: a
 /// drafter that can actually see the prompt is a different drafter. **Build
