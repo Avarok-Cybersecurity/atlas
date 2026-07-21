@@ -172,7 +172,19 @@ impl Model for TransformerModel {
         name: &str,
         slot: usize,
     ) -> Result<()> {
-        self.swap_lora_slot_from_disk(dir, name, slot)
+        // The disk/peer LoRA swap paths land tensors through spark-storage's
+        // RDMA weight loader, which is cuda AND unix. Same fail-fast shape as
+        // `promote_lora_from_peer` below rather than a silent no-op: a caller
+        // asking to hot-swap an adapter must not be told it succeeded.
+        #[cfg(all(feature = "cuda", unix))]
+        {
+            self.swap_lora_slot_from_disk(dir, name, slot)
+        }
+        #[cfg(not(all(feature = "cuda", unix)))]
+        {
+            let _ = (dir, name, slot);
+            anyhow::bail!("LoRA disk swap requires the cuda feature on a unix host")
+        }
     }
     fn promote_lora_from_peer(
         &mut self,
@@ -181,14 +193,14 @@ impl Model for TransformerModel {
         name: &str,
         peft: atlas_core::config::PeftAdapterConfig,
     ) -> Result<(usize, Option<String>)> {
-        #[cfg(feature = "cuda")]
+        #[cfg(all(feature = "cuda", unix))]
         {
             self.promote_lora_slot_from_peer(peer_addr, adapter_id, name, peft)
         }
-        #[cfg(not(feature = "cuda"))]
+        #[cfg(not(all(feature = "cuda", unix)))]
         {
             let _ = (peer_addr, adapter_id, name, peft);
-            anyhow::bail!("LoRA peer promotion requires the cuda feature")
+            anyhow::bail!("LoRA peer promotion requires the cuda feature on a unix host")
         }
     }
     fn promote_lora_from_disk(
@@ -196,7 +208,15 @@ impl Model for TransformerModel {
         dir: &std::path::Path,
         name: &str,
     ) -> Result<(usize, Option<String>)> {
-        self.promote_lora_slot_from_disk(dir, name)
+        #[cfg(all(feature = "cuda", unix))]
+        {
+            self.promote_lora_slot_from_disk(dir, name)
+        }
+        #[cfg(not(all(feature = "cuda", unix)))]
+        {
+            let _ = (dir, name);
+            anyhow::bail!("LoRA disk promotion requires the cuda feature on a unix host")
+        }
     }
     fn high_speed_swap_dims(&self) -> Option<spark_storage::ModelDims> {
         self.high_speed_swap_dims_dispatch()

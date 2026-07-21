@@ -160,13 +160,18 @@ pub const fn rdma_verbs_enabled() -> bool {
 #[cfg(test)]
 mod rdma_verbs_probe_tests;
 
-// Non-cuda stub surface — same names as the real CUDA orchestrator
-// above so spark-model's call sites compile unchanged. `with_local`
-// always returns None (orchestrator absent), `local_installed` is
-// false, and `install_local` bails — see `stubs.rs` for rationale.
-#[cfg(not(feature = "cuda"))]
+// Stub surface — same names as the real orchestrator above so spark-model's
+// call sites compile unchanged. `with_local` always returns None (orchestrator
+// absent), `local_installed` is false, and `install_local` bails — see
+// `stubs.rs` for rationale.
+//
+// The gate is `not(all(cuda, unix))`, not `not(cuda)`: the real orchestrator is
+// CUDA + GDS + io_uring, so it needs BOTH. Gating on the feature alone was
+// correct only while cuda implied Linux; a CUDA build on Windows has no
+// io_uring and must land here too.
+#[cfg(not(all(feature = "cuda", unix)))]
 mod stubs;
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(all(feature = "cuda", unix)))]
 pub use stubs::{HighSpeedSwap, install_local, local_installed, with_local};
 
 #[cfg(all(feature = "cuda", unix))]
