@@ -24,18 +24,21 @@ use crate::weight_map::{
     DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight, quantize_to_fp8, quantize_to_nvfp4,
 };
 
-/// ATLAS_MTP_DRAFTER_PREFILL=1 — opt-in drafter context prefill (cached once).
+/// Drafter context prefill — **ON by default**, cached once.
 ///
-/// When set, the target prefill captures every position's final-layer hidden
-/// and the MTP drafter's KV cache is batch-prefilled over the whole prompt
-/// before the first propose(), mirroring vLLM's MTP proposer prefill. The
-/// drafter's KV entries are pure functions of its input pair
-/// `(embed(token_{i+1}), target_hidden_i)` — a single-layer drafter's K/V do
-/// not depend on its own attention outputs — so the prefill needs only the
-/// fc + k/v projections + norms + RoPE + cache write, no attention pass.
+/// The target prefill captures every position's final-layer hidden and the MTP
+/// drafter's KV cache is batch-prefilled over the whole prompt before the first
+/// propose(), mirroring vLLM's MTP proposer prefill. The drafter's KV entries
+/// are pure functions of its input pair `(embed(token_{i+1}), target_hidden_i)`
+/// — a single-layer drafter's K/V do not depend on its own attention outputs —
+/// so the prefill needs only the fc + k/v projections + norms + RoPE + cache
+/// write, no attention pass.
+///
+/// Policy, including the kill switch and the coupling to the cross-turn carry
+/// (which this half is useless without), lives in
+/// [`crate::model::drafter_context`] — the single source of truth.
 pub fn mtp_drafter_prefill_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_MTP_DRAFTER_PREFILL").ok().as_deref() == Some("1"))
+    crate::model::drafter_context::config().prefill
 }
 
 /// Dedicated scratch for the batched drafter prefill (allocated in
@@ -69,6 +72,21 @@ pub enum MtpQuantization {
     Fp8,
     /// BF16 (2 bytes/weight) — highest accuracy, slowest MTP forward.
     Bf16,
+}
+
+impl MtpQuantization {
+    /// Whether the batched drafter prefill can run at this precision.
+    ///
+    /// NECESSARY, not sufficient — `prefill::prefill_drafter` remains the
+    /// authority and re-checks the actual weight variants and kernel handles.
+    /// This predicate exists so the caller can skip the `max_seq_len x hidden`
+    /// BF16 prompt-hidden buffer (335 MB at 32k/h=5120, 2.7 GB at 256k) for a
+    /// head that could never use it. It is exact by construction:
+    /// `quantize_proj` produces `ProjectionWeight::Bf16` for, and only for,
+    /// [`MtpQuantization::Bf16`].
+    pub fn supports_drafter_prefill(self) -> bool {
+        matches!(self, Self::Bf16)
+    }
 }
 
 impl std::str::FromStr for MtpQuantization {

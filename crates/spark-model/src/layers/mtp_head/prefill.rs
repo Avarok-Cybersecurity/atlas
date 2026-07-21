@@ -99,9 +99,9 @@ impl MtpHead {
                 static WARNED: std::sync::Once = std::sync::Once::new();
                 WARNED.call_once(|| {
                     tracing::warn!(
-                        "ATLAS_MTP_DRAFTER_PREFILL: drafter prefill supports the BF16 \
-                         MTP head (--mtp-quantization bf16) with BF16 KV only; \
-                         continuing WITHOUT drafter context prefill."
+                        "MTP drafter context: the batched drafter prefill supports \
+                         the BF16 MTP head (--mtp-quantization bf16) with BF16 KV \
+                         only; continuing WITHOUT drafter context prefill."
                     );
                 });
                 return Ok(0);
