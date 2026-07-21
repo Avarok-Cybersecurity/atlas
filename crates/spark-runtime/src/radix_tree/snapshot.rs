@@ -82,6 +82,17 @@ pub(super) struct SsmSnapshotIndex {
 
 /// Tail-lease kill switch. Default ON; `ATLAS_SSM_TAIL_PROTECT=0` (or `off`)
 /// disables. Backward compatible with the old opt-in scripts that set `=1`.
+///
+/// **INERT IN THE SHIPPING (MLPerf-edge) CONFIG — it protects nothing there.**
+/// The lease only ever shields an entry with `is_tail == true`, and the sole
+/// production writer of that flag is `insert_tail_snapshot`, called only from
+/// `finalize_midchunk_capture`, which is unreachable when
+/// `ATLAS_SSM_TAIL_MIDCHUNK=0` — which the frozen MLPerf-edge config sets.
+/// Verified 2026-07-21 by call-graph audit (the 2026-07-20 eviction rig
+/// likewise measured 0 lease hits). Do not read a `ATLAS_SSM_TAIL_PROTECT=1`
+/// in a launch script as evidence that tail protection is doing work; check
+/// `ATLAS_SSM_TAIL_MIDCHUNK` first. Behaviour here is deliberately unchanged —
+/// this note is a warning to the next reader, not a defect report.
 fn tail_lease_enabled() -> bool {
     !matches!(
         std::env::var("ATLAS_SSM_TAIL_PROTECT").as_deref(),
@@ -94,6 +105,10 @@ fn tail_lease_enabled() -> bool {
 /// deep session's turns at 8 slots with 6 churn requests/turn — 64 is a >3x
 /// margin there, while production pools (128–256 slots) evict rarely enough
 /// that the TTL almost never binds. Override: ATLAS_SSM_TAIL_LEASE_TTL.
+///
+/// Same caveat as [`tail_lease_enabled`]: with `ATLAS_SSM_TAIL_MIDCHUNK=0` no
+/// entry is ever marked `is_tail`, so this TTL governs an empty set and
+/// `ATLAS_SSM_TAIL_LEASE_TTL=128` in a launch script changes nothing.
 fn tail_lease_ttl() -> u32 {
     std::env::var("ATLAS_SSM_TAIL_LEASE_TTL")
         .ok()
