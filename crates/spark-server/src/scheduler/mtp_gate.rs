@@ -46,6 +46,25 @@ const REMEASURE_DEPTH_FLOOR: usize = 512;
 const WINDOW_STEPS: usize = 16;
 /// Consecutive out-of-margin windows required before switching mode.
 const SWITCH_DWELL_WINDOWS: usize = 2;
+/// Fewest steps a window must contain for its tokens/wall ratio to be a
+/// usable throughput estimate. Windows can close EARLY (the scheduled-probe
+/// path in [`MtpGate::record_step`] closes the current window as soon as
+/// `tokens_since_event` crosses the interval, which after a depth-regime
+/// change is already satisfied on the very first step). Such a window can
+/// hold a single step, and a single step is dominated by whichever transient
+/// landed in it — MTP bootstrap/propose, a graph re-capture, or the first
+/// step at a new depth — all of which emit 1 token for a full step's wall.
+/// Folding one in is bad; REPLACING a baseline with one is catastrophic,
+/// because `stale` (set for BOTH modes by `maybe_remeasure`) forces
+/// `replace`: observed in production as the gate recording MTP at 6.8 tok/s
+/// against a true 18.3-18.4 and then switching to Serial for the rest of the
+/// session. Half a window is the threshold: it is the point at which one
+/// transient step is a minority of the estimate (≤1/8 of the wall), and it
+/// still admits the legitimately-short windows the early-close path produces
+/// in steady state. Shorter windows are DISCARDED, not blended: `stale`
+/// survives the discard, so the next FULL window performs the replace the
+/// regime change asked for, only with a trustworthy number.
+const MIN_WINDOW_STEPS: usize = WINDOW_STEPS / 2;
 /// EWMA smoothing for per-mode tok/s (responds within ~3 windows).
 const TPS_ALPHA: f64 = 0.3;
 /// Relative noise floor for the switch margin. Derived from the observed
@@ -287,7 +306,11 @@ impl MtpGate {
         } else {
             self.mode
         };
-        if self.win_wall > 0.0 && self.win_steps > 0 {
+        // Only a window with enough steps to average out step-level
+        // transients may touch a baseline. A shorter one is discarded
+        // outright — including its `stale` flag, which stays set so the next
+        // full window still performs the post-regime-change replace.
+        if self.win_wall > 0.0 && self.win_steps >= MIN_WINDOW_STEPS {
             let window_tps = self.win_tokens / self.win_wall;
             let replace = self.probing || self.stats_mut(ran).stale;
             self.stats_mut(ran).update(window_tps, replace);

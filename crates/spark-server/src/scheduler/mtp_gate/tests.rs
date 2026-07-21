@@ -198,3 +198,105 @@ fn bootstrap_steps_count_at_least_one_token() {
     let tps = g.mtp_tps_debug().expect("window closed");
     assert!(tps > 0.0);
 }
+
+// ---------------------------------------------------------------------------
+// Regression: partial windows must never replace a baseline.
+//
+// Production failure (2026-07-20, W4A4 27B @16k): `maybe_remeasure` marks BOTH
+// modes stale AND forces `tokens_since_event` to the probe interval. The very
+// next step therefore satisfies the early-close condition in `record_step`, so
+// `close_window` runs with `win_steps == 1`; because `stale` is set, `replace`
+// is true and that ONE step became the mode's whole baseline. The step that
+// lands there is an MTP bootstrap (1 token for a full step's wall), so the gate
+// recorded MTP at 6.8 tok/s against a true 18.3-18.4 and switched to Serial for
+// the rest of the session.
+//
+// Walls below are the measured ones: MTP 2 tok / 109ms = 18.35 tok/s steady,
+// bootstrap 1 tok / 147ms = 6.80 tok/s, serial 1 tok / 82ms = 12.20 tok/s.
+// ---------------------------------------------------------------------------
+
+const MTP_STEADY_WALL: Duration = Duration::from_millis(109); // 2 tok => 18.35 tok/s
+const BOOTSTRAP_WALL: Duration = Duration::from_millis(147); //  1 tok =>  6.80 tok/s
+const SERIAL_WALL: Duration = Duration::from_millis(82); //  1 tok => 12.20 tok/s
+
+#[test]
+fn stale_partial_window_does_not_replace_baseline() {
+    let mut g = MtpGate::new(2);
+    g.note_depth(600);
+    drive_mtp(&mut g, WINDOW_STEPS * 2, 2, MTP_STEADY_WALL);
+    let good = g.mtp_tps_debug().expect("baseline established");
+    assert!(
+        (good - 18.35).abs() < 0.1,
+        "precondition: steady MTP baseline, got {good}"
+    );
+
+    // Depth regime changes -> both baselines stale, probe forced due.
+    g.maybe_remeasure(2400);
+    // The single bootstrap-heavy step that the early-close path turns into a
+    // whole "window". This is the poison pill.
+    drive_mtp(&mut g, 1, 1, BOOTSTRAP_WALL);
+
+    let after = g.mtp_tps_debug().expect("baseline must survive");
+    assert!(
+        (after - good).abs() < 1e-9,
+        "a 1-step window replaced the MTP baseline: {good} -> {after} \
+         (the 6.8-vs-18.3 production bug)"
+    );
+}
+
+#[test]
+fn stale_replace_still_happens_on_the_next_full_window() {
+    // Discarding the partial window must not lose the regime change: the
+    // NEXT full window still REPLACES (not blends), which is the whole point
+    // of the stale flag.
+    let mut g = MtpGate::new(2);
+    g.note_depth(600);
+    drive_mtp(&mut g, WINDOW_STEPS * 2, 2, MTP_STEADY_WALL);
+    g.maybe_remeasure(2400);
+    drive_mtp(&mut g, 1, 1, BOOTSTRAP_WALL); // discarded
+
+    // The regime change schedules an off-mode probe, so the gate asks for a
+    // serial window next; serve it before MTP resumes.
+    drive_serial(&mut g, WINDOW_STEPS, SERIAL_WALL);
+
+    // A full window at a genuinely different rate: 2 tok / 200ms = 10 tok/s.
+    drive_mtp(&mut g, WINDOW_STEPS, 2, Duration::from_millis(200));
+    let tps = g.mtp_tps_debug().expect("updated");
+    assert!(
+        (tps - 10.0).abs() < 0.05,
+        "stale flag must survive a discarded window and force a REPLACE \
+         (expected 10.0 tok/s, blended would be ~15.8); got {tps}"
+    );
+}
+
+#[test]
+fn regime_change_does_not_flip_a_winning_mtp_to_serial() {
+    // End-to-end shape of the production failure: MTP is genuinely faster
+    // (18.35 vs 12.20) and must still be the mode after a depth-regime change.
+    let mut g = MtpGate::new(2);
+    g.note_depth(600);
+
+    // Establish both baselines: MTP windows, then the scheduled serial probe.
+    run_mtp_until_probe(&mut g, 2, MTP_STEADY_WALL);
+    drive_serial(&mut g, WINDOW_STEPS, SERIAL_WALL);
+    assert!(!g.in_serial_mode(), "precondition: MTP is the faster mode");
+
+    // Depth regime change, then the bootstrap step, then the forced probe.
+    g.maybe_remeasure(2400);
+    drive_mtp(&mut g, 1, 1, BOOTSTRAP_WALL);
+    drive_serial(&mut g, WINDOW_STEPS, SERIAL_WALL);
+    // And MTP continues at its true rate.
+    drive_mtp(&mut g, WINDOW_STEPS * 2, 2, MTP_STEADY_WALL);
+
+    let mtp = g.mtp_tps_debug().expect("mtp baseline");
+    assert!(
+        mtp > 15.0,
+        "MTP baseline must reflect its true 18.35 tok/s, got {mtp}"
+    );
+    assert!(
+        !g.in_serial_mode(),
+        "gate switched to Serial while MTP was 1.5x faster (mtp={mtp}, \
+         serial={:?}) — the 2026-07-20 regression",
+        g.serial_tps_debug()
+    );
+}
