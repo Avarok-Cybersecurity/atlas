@@ -184,9 +184,9 @@ impl TransformerModel {
                              {} of those are the anchor->match gap to {})",
                             snap_tok,
                             snap_tok,
-                            total - snap_tok,
+                            total.saturating_sub(snap_tok),
                             total,
-                            matched - snap_tok,
+                            matched.saturating_sub(snap_tok),
                             matched,
                         );
                     } else {

@@ -303,6 +303,36 @@ impl TransformerModel {
     ) -> Result<()> {
         use crate::layer::SsmLayerState;
 
+        // PRE-VALIDATION PASS — no GPU work is enqueued until every SSM layer
+        // is known to be restorable. Bailing part-way through the copy loop
+        // below would leave the first N layers rewound and the rest advanced
+        // past the accepted boundary: a MIXED state, which is strictly worse
+        // than the uniform corruption it is meant to prevent and much harder
+        // to reason about. Validate first, then copy unconditionally.
+        if num_accepted > 0 {
+            for (i, layer_state) in seq.layer_states.iter().enumerate() {
+                if self.config.layer_type(i) != atlas_core::config::LayerType::LinearAttention {
+                    continue;
+                }
+                let ssm = layer_state
+                    .as_any()
+                    .downcast_ref::<SsmLayerState>()
+                    .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
+                if num_accepted > ssm.h_state_intermediates.len() {
+                    anyhow::bail!(
+                        "rollback_ssm_states: cannot restore SSM to N={num_accepted} \
+                         (layer {i}): only {} per-token intermediate(s) available. \
+                         With no intermediates this is the self-speculative / ngram \
+                         path — use --speculative (MTP) or --num-drafts 1 for SSM \
+                         models. With too few, the MTP intermediate pool \
+                         (num_drafts + 1) is smaller than the verify width K. \
+                         No rollback copies were enqueued.",
+                        ssm.h_state_intermediates.len(),
+                    );
+                }
+            }
+        }
+
         let stream = self.gpu.default_stream();
         for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
             if self.config.layer_type(i) == atlas_core::config::LayerType::LinearAttention {
@@ -346,24 +376,17 @@ impl TransformerModel {
                         stream,
                     )?;
                 } else {
-                    // `num_accepted > h_state_intermediates.len()`, including
-                    // the empty case. There is no snapshot for the requested
-                    // boundary, so h_state/conv_state are left ADVANCED past
-                    // the last accepted token. Falling through silently
-                    // corrupts every subsequent decode with no error and no
-                    // log line — the failure surfaces much later as
-                    // gibberish. Fail fast for the whole range, not just for
-                    // the empty case (the empty case was already guarded; the
-                    // non-empty-but-too-short case was not, and it becomes
-                    // reachable as soon as K exceeds the intermediate pool
-                    // depth `num_drafts + 1`).
-                    anyhow::bail!(
-                        "rollback_ssm_states: cannot restore SSM to N={num_accepted} \
-                         (layer {i}): only {} per-token intermediate(s) available. \
-                         With no intermediates this is the self-speculative / ngram \
-                         path — use --speculative (MTP) or --num-drafts 1 for SSM \
-                         models. With too few, the MTP intermediate pool \
-                         (num_drafts + 1) is smaller than the verify width K.",
+                    // Unreachable: the pre-validation pass above already
+                    // bailed for every `num_accepted > intermediates.len()`,
+                    // and `num_accepted == 0` took the first branch. Kept as
+                    // a hard error rather than a silent fallthrough — the
+                    // original code returned Ok(()) here, leaving h_state and
+                    // conv_state ADVANCED past the last accepted token with
+                    // no error and no log line, which corrupts every
+                    // subsequent decode and surfaces much later as gibberish.
+                    unreachable!(
+                        "rollback_ssm_states: layer {i} passed pre-validation but \
+                         num_accepted={num_accepted} exceeds {} intermediates",
                         ssm.h_state_intermediates.len(),
                     );
                 }
