@@ -112,7 +112,7 @@ jobs:
           if [ "${{ inputs.pr_mode }}" = true ]; then
             sel=$(jq -c '{include: [.[] | select(.pr_validate)]}' .github/release-matrix.json)
             jq -r '.[] | select(.pr_validate | not)
-                   | "::warning::\(.id) NOT VALIDATED in PR mode — toolchain \(.toolchain) unavailable on hosted runners"' \
+                   | "::warning::\(.id) NOT VALIDATED in PR mode — \(.note // "toolchain \(.toolchain) unavailable on hosted runners")"' \
               .github/release-matrix.json
           else
             sel=$(jq -c '{include: .}' .github/release-matrix.json)
