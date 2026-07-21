@@ -249,6 +249,35 @@ pub trait DraftProposer: Send + Sync {
         None
     }
 
+    /// ATLAS_MTP_CARRY_DRAFTER: move this sequence's drafter KV blocks OUT of
+    /// its proposer state, so `free_state` releases nothing and the model can
+    /// hold them for the next turn. Returns `(blocks, rows, last_pair_key)`;
+    /// `None` = unsupported or nothing to carry. After this call the state
+    /// must behave as if freshly allocated.
+    fn take_drafter_kv(
+        &self,
+        _state: &mut dyn ProposerState,
+    ) -> Option<(Vec<u32>, usize, Option<usize>)> {
+        None
+    }
+
+    /// Inverse of [`take_drafter_kv`]: install carried blocks into a fresh
+    /// proposer state. Returns false when unsupported (caller must then free
+    /// the blocks itself).
+    fn install_drafter_kv(
+        &self,
+        _state: &mut dyn ProposerState,
+        _blocks: Vec<u32>,
+        _rows: usize,
+        _last_pair_key: Option<usize>,
+    ) -> bool {
+        false
+    }
+
+    /// Release drafter KV blocks that no proposer state owns (a carried entry
+    /// being replaced or dropped).
+    fn free_drafter_kv(&self, _blocks: &[u32]) {}
+
     /// Append drafter rows at KV slots `row_base ..` with RoPE positions
     /// `pos_base ..` from `(tokens, hiddens)` pairs — the catch-up feed.
     /// Returns rows written (0 = unsupported/no-op).

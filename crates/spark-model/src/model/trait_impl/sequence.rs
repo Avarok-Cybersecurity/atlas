@@ -252,6 +252,36 @@ impl TransformerModel {
             }
         }
 
+        // ATLAS_MTP_CARRY_DRAFTER: hand this turn's drafter KV to the model's
+        // single carry slot BEFORE `free_state`, so the next turn of the same
+        // session can adopt it instead of starting blind. `take_drafter_kv`
+        // empties the proposer state, so the `free_state` below then releases
+        // nothing — the blocks are owned by the carry slot XOR by a live
+        // sequence, never both.
+        if crate::model::mtp_carry::mtp_carry_drafter_enabled()
+            && let Some(ref proposer) = self.proposer
+            && let Some(ref mut pstate) = seq.proposer_state
+            && let Some((blocks, rows, last_pair_key)) = proposer.take_drafter_kv(pstate.as_mut())
+        {
+            let entry = crate::model::mtp_carry::CarriedDrafter {
+                block_table: blocks,
+                rows,
+                last_pair_key,
+                tokens: seq.tokens.clone(),
+            };
+            let previous = self.mtp_carry.lock().replace(entry);
+            if let Some(old) = previous {
+                proposer.free_drafter_kv(&old.block_table);
+            }
+            if crate::model::mtp_carry::mtp_carry_debug() {
+                tracing::info!(
+                    "MTP_CARRY store: rows={rows} last_pair_key={last_pair_key:?} \
+                     seq_tokens={}",
+                    seq.tokens.len(),
+                );
+            }
+        }
+
         // Free proposer state (KV cache blocks + per-seq device buffers).
         if let Some(ref proposer) = self.proposer
             && let Some(ref mut pstate) = seq.proposer_state

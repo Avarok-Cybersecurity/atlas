@@ -401,6 +401,51 @@ impl DraftProposer for MtpHead {
             .and_then(|s| s.last_pair_key)
     }
 
+    fn take_drafter_kv(
+        &self,
+        state: &mut dyn ProposerState,
+    ) -> Option<(Vec<u32>, usize, Option<usize>)> {
+        let st = state.as_any_mut().downcast_mut::<MtpProposerState>()?;
+        if st.block_table.is_empty() || st.seq_len == 0 {
+            return None;
+        }
+        let blocks = std::mem::take(&mut st.block_table);
+        let rows = st.seq_len;
+        let key = st.last_pair_key;
+        // Leave the state exactly as `alloc_state` would: no blocks, no rows,
+        // no pair key. `free_state` then has nothing to release.
+        st.seq_len = 0;
+        st.last_pair_key = None;
+        st.last_num_drafted = 0;
+        Some((blocks, rows, key))
+    }
+
+    fn install_drafter_kv(
+        &self,
+        state: &mut dyn ProposerState,
+        blocks: Vec<u32>,
+        rows: usize,
+        last_pair_key: Option<usize>,
+    ) -> bool {
+        let Some(st) = state.as_any_mut().downcast_mut::<MtpProposerState>() else {
+            return false;
+        };
+        // Only ever into a fresh state — otherwise the old blocks would leak.
+        if !st.block_table.is_empty() || st.seq_len != 0 {
+            return false;
+        }
+        st.block_table = blocks;
+        st.seq_len = rows;
+        st.last_pair_key = last_pair_key;
+        true
+    }
+
+    fn free_drafter_kv(&self, blocks: &[u32]) {
+        if !blocks.is_empty() {
+            self.kv_cache.lock().free_blocks(blocks);
+        }
+    }
+
     fn catchup_drafter(
         &self,
         tokens: &[u32],

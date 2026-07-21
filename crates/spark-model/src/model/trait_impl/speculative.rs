@@ -110,15 +110,26 @@ impl TransformerModel {
             return Ok(());
         }
         use std::sync::atomic::Ordering;
-        let len = self.mtp_prefill_capture_len.load(Ordering::Relaxed);
-        let new_len = if chunk_start == 0 {
-            proc_count
-        } else if chunk_start == len {
-            len + proc_count
-        } else {
-            return Ok(());
-        };
         if chunk_start + proc_count > self.mtp_prefill_capacity {
+            return Ok(());
+        }
+        let len = self.mtp_prefill_capture_len.load(Ordering::Relaxed);
+        let contiguous_from_zero = if chunk_start == 0 {
+            Some(proc_count)
+        } else if chunk_start == len {
+            Some(len + proc_count)
+        } else {
+            None
+        };
+        // ATLAS_MTP_CARRY_DRAFTER: a warm turn's chunk starts at the reused-
+        // prefix boundary, which the contiguous-from-zero tracker above must
+        // reject (its consumer prefills the drafter from row 0). The carry
+        // path consumes the SAME buffer position-indexed, so it wants the
+        // write regardless of where the chunk starts — the rows are still
+        // `hidden_i` at absolute row `i`. Note the SOURCE is the head of the
+        // hidden buffer (this chunk's rows), only the DESTINATION is absolute.
+        let carry_on = crate::model::mtp_carry::mtp_carry_drafter_enabled();
+        if contiguous_from_zero.is_none() && !carry_on {
             return Ok(());
         }
         let h = self.config.hidden_size;
@@ -129,9 +140,92 @@ impl TransformerModel {
             proc_count * h * bf16,
             stream,
         )?;
-        self.mtp_prefill_capture_len
-            .store(new_len, Ordering::Relaxed);
+        if let Some(new_len) = contiguous_from_zero {
+            self.mtp_prefill_capture_len
+                .store(new_len, Ordering::Relaxed);
+        }
+        if carry_on {
+            let mut r = self.mtp_store_range.lock();
+            *r = crate::model::mtp_carry::merge_interval(*r, chunk_start, proc_count);
+        }
         Ok(())
+    }
+
+    /// ATLAS_MTP_CARRY_DRAFTER: give the drafter this turn's prompt context on
+    /// the FIRST propose of a sequence, by adopting the previous turn's
+    /// drafter KV and appending only the span this turn actually computed.
+    ///
+    /// Why not just re-run `prefill_drafter`: measured 1136 ms over 11,947
+    /// rows on GB10 (2026-07-21) against a 1134 ms warm TTFT — a full rebuild
+    /// spends more TTFT than the ~10% acceptance gain returns on the scored
+    /// workload. The append here is proportional to the NEW tokens.
+    ///
+    /// Conventions (see `mtp_carry` module docs): pair key `k` is
+    /// `(embed(t_{k+1}), hidden_k)` with RoPE `k + 1`; `mtp_prefill_hidden`
+    /// row `i` is `hidden_i`. Rows are compacted, so a skipped key leaves no
+    /// hole — only a missing row, which is the steady state of this row space
+    /// anyway.
+    ///
+    /// Returns the outcome for logging. Never fails the propose: every branch
+    /// degrades to "drafter has fewer rows", which costs acceptance, not
+    /// correctness, because the target verifies every draft.
+    pub(in crate::model) fn try_carry_drafter(
+        &self,
+        proposer: &dyn DraftProposer,
+        seq_tokens: &[u32],
+        prompt_len: usize,
+        prop_state: &mut dyn crate::speculative::ProposerState,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> crate::model::mtp_carry::CarryOutcome {
+        use crate::model::mtp_carry::{CarryOutcome, hidden_row_offset, plan_append};
+        let prompt = &seq_tokens[..prompt_len.min(seq_tokens.len())];
+        let Some(entry) = self.mtp_carry.lock().take() else {
+            return CarryOutcome::NoCarry;
+        };
+        if !entry.adoptable_by(prompt) {
+            proposer.free_drafter_kv(&entry.block_table);
+            return CarryOutcome::PrefixMismatch;
+        }
+        let (rows, last_key) = (entry.rows, entry.last_pair_key.unwrap_or(0));
+        // `install_drafter_kv` takes ownership on success only; keep a copy of
+        // the ids so a refused install frees them instead of leaking.
+        let block_ids = entry.block_table.clone();
+        if !proposer.install_drafter_kv(prop_state, entry.block_table, rows, entry.last_pair_key) {
+            // Fresh-state precondition violated (the drafter already has rows).
+            // Nothing owns these blocks now, so release them here.
+            proposer.free_drafter_kv(&block_ids);
+            return CarryOutcome::NoCarry;
+        }
+        let (lo, hi) = *self.mtp_store_range.lock();
+        let Some(plan) = plan_append(last_key, prompt.len(), lo, hi) else {
+            return CarryOutcome::NoHiddens;
+        };
+        // `drafter_rows_impl` reads `tokens[r + 1]` and `hiddens` row `r` for
+        // row r, and RoPE `pos_base + r`. Row r must be pair key
+        // `first_key + r`, i.e. `(embed(t_{first_key+r+1}), hidden_{first_key+r})`
+        // at RoPE `first_key + r + 1`.
+        let tokens = &prompt[plan.first_key..];
+        let hiddens = hidden_row_offset(
+            self.mtp_prefill_hidden,
+            plan.first_key,
+            self.config.hidden_size,
+        );
+        match proposer.catchup_drafter(
+            tokens,
+            hiddens,
+            rows,
+            plan.first_key + 1,
+            prop_state,
+            ctx,
+            stream,
+        ) {
+            Ok(appended) => CarryOutcome::Adopted { rows, appended },
+            Err(e) => {
+                tracing::warn!("MTP carry append failed (drafter keeps carried rows): {e:#}");
+                CarryOutcome::Adopted { rows, appended: 0 }
+            }
+        }
     }
 
     pub(super) fn save_hidden_for_mtp_dispatch(
