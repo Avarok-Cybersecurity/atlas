@@ -409,3 +409,76 @@ fn test_vision_pad_tokens_are_image_blind_collision() {
     );
     assert_eq!(m.matched_blocks, vec![10, 20]);
 }
+
+/// REGRESSION (2026-07-21): the block that STRADDLES a non-block-aligned
+/// `prompt_len` was dropped by the finish-time `cache_sequence` insert, which
+/// truncated every subsequent turn's prefix match at exactly
+/// `floor(prompt_len / block_size) * block_size`.
+///
+/// `insert` classified a block as already-ref'd when `token_start >=
+/// matched_tokens`, but `inc_refs` only bumps `matched_tokens / block_size`
+/// WHOLE blocks — the straddling block is matched through `walk`'s
+/// partial-suffix path, which takes no ref. So that one block was created
+/// with the cache's baseline ref alone and the sequence's `release`
+/// immediately decremented it to zero, where `walk`'s `ref_count > 0` guard
+/// stops. Every generated token, and the full-length finish leaf snapshot
+/// keyed above them, became unreachable even though both were inserted.
+///
+/// Live symptom on GB10 (dgx2 rig, block_size 16): a turn whose prompt ended
+/// at 12719 tokens generated 170 more, yet the next turn matched only
+/// 12704 = 794 x 16 and replayed ~190 SSM tokens per warm turn.
+#[test]
+fn finish_insert_keeps_the_block_straddling_prompt_len_alive() {
+    let bs = 16usize;
+    let tree = RadixTree::new();
+
+    // Turn N's prompt: 40 tokens = 2 whole blocks + an 8-token remainder.
+    // (A chat template essentially never ends on a block boundary.)
+    let prompt: Vec<u32> = (0..40).collect();
+    // Turn N's full sequence: that prompt + 24 generated tokens = 4 blocks.
+    let seq: Vec<u32> = (0..64).collect();
+
+    // 1. prefill caches the prompt; nothing matched before it.
+    tree.insert(&prompt, &[10, 11, 12], &[], bs, 0, 0);
+    tree.release(&prompt, bs, 0);
+
+    // 2. the sequence looks up its own prompt. This is the step whose refs
+    //    the finish insert reasons about: `inc_refs` bumps 40/16 = 2 WHOLE
+    //    blocks, and the 8-token remainder matches via the partial suffix
+    //    with no ref taken.
+    assert_eq!(tree.lookup(&prompt, bs, 0, 0).matched_tokens, 40);
+
+    // 3. on finish, prompt + generated is cached with matched = prompt_len.
+    tree.insert(&seq, &[10, 11, 12, 13], &[], bs, prompt.len(), 0);
+
+    // 4. the sequence is freed.
+    tree.release(&seq, bs, 0);
+
+    // 5. the next turn's prompt contains all 64 tokens, so all 4 blocks must
+    //    still be reachable. `peek_matched_tokens` takes no refs, so this
+    //    assertion cannot itself perturb the state it measures.
+    assert_eq!(
+        tree.peek_matched_tokens(&seq, bs, 0),
+        64,
+        "the block straddling prompt_len (40) was dropped, truncating the \
+         match at the prompt boundary and hiding every generated token"
+    );
+}
+
+/// The fix must be a strict no-op when `matched_tokens` IS block-aligned —
+/// that is the path every previously-passing test exercises.
+#[test]
+fn block_aligned_match_ref_accounting_is_unchanged() {
+    let bs = 16usize;
+    let tree = RadixTree::new();
+    let prompt: Vec<u32> = (0..32).collect(); // exactly 2 blocks
+    let seq: Vec<u32> = (0..64).collect();
+
+    tree.insert(&prompt, &[10, 11], &[], bs, 0, 0);
+    tree.release(&prompt, bs, 0);
+    assert_eq!(tree.lookup(&prompt, bs, 0, 0).matched_tokens, 32);
+    tree.insert(&seq, &[10, 11, 12, 13], &[], bs, prompt.len(), 0);
+    tree.release(&seq, bs, 0);
+
+    assert_eq!(tree.peek_matched_tokens(&seq, bs, 0), 64);
+}

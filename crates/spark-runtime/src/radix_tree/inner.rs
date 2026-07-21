@@ -278,6 +278,12 @@ impl RadixTreeInner {
     /// cache's baseline ref (=1) alive across the release. Without this the
     /// very first sequence to cache a prompt immediately renders its own
     /// cache entry un-findable on exit (`walk` requires `ref_count > 0`).
+    ///
+    /// The "already acquired" test must mirror `inc_refs` EXACTLY, which bumps
+    /// `num_matched / block_size` **whole** blocks. A block that straddles a
+    /// non-block-aligned `matched_tokens` was matched by `walk`'s sub-block /
+    /// partial-suffix path, which creates no node ref — so it needs the
+    /// pre-bump too.
     pub(super) fn insert(
         &mut self,
         tokens: &[u32],
@@ -315,8 +321,10 @@ impl RadixTreeInner {
         for i in 0..num_blocks {
             let chunk = &tokens[i * block_size..(i + 1) * block_size];
             let ctx_hash = context_hash_combine(parent_ctx_hash, chunk);
-            let token_start = i * block_size;
-            let is_seq_owned = token_start >= matched_tokens;
+            // Same block count `inc_refs` walks — NOT `i * block_size >=
+            // matched_tokens`, which classifies the straddling block as
+            // already-ref'd when nothing ever ref'd it.
+            let is_seq_owned = i >= matched_tokens / block_size;
             let disk_id = if hss_active {
                 disk_block_ids[i]
             } else {
