@@ -420,7 +420,13 @@ jobs:
             tar -C dist -czf "dist/$name.tar.gz" "$name"
             asset="dist/$name.tar.gz"
           fi
-          sha256sum "$asset" > "$asset.sha256" 2>/dev/null || shasum -a 256 "$asset" > "$asset.sha256"
+          # Record the BARE filename, not "dist/<name>": a checksum file is
+          # consumed with `sha256sum -c` from the directory holding the
+          # artifact (both by the verify step and by anyone downloading a
+          # release asset), and a stored relative path breaks there.
+          ( cd "$(dirname "$asset")" \
+            && { sha256sum "$(basename "$asset")" > "$(basename "$asset").sha256" 2>/dev/null \
+                 || shasum -a 256 "$(basename "$asset")" > "$(basename "$asset").sha256"; } )
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
