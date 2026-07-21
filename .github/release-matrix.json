@@ -53,7 +53,9 @@
     "toolchain": "scale",
     "experimental": true,
     "pr_validate": true,
-    "scale_arch": "gfx1151"
+    "scale_arch": "gfx1151",
+    "target_model": "qwen3.6-27b",
+    "target_quant": "nvfp4"
   },
   {
     "id": "macos-aarch64-metal",

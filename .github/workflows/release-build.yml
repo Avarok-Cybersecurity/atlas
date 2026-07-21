@@ -208,9 +208,12 @@ jobs:
           v='${{ env.CUDA_APT_VERSION }}'
           # driver-dev supplies the libcuda stub that spark-storage's raw
           # extern "C" FFI links against on a runner with no GPU.
+          # libcublas-dev supplies libcublasLt: the kernel build scripts emit
+          # `rustc-link-lib=dylib=cublasLt`, so omitting it fails at LINK time
+          # after a full compile — the most expensive place to discover it.
           sudo apt-get install -y --no-install-recommends \
             "cuda-nvcc-$v" "cuda-cudart-dev-$v" "cuda-nvrtc-dev-$v" \
-            "cuda-driver-dev-$v" "cuda-profiler-api-$v"
+            "cuda-driver-dev-$v" "cuda-profiler-api-$v" "libcublas-dev-$v"
           cuda_root="/usr/local/cuda-${{ env.CUDA_DOT_VERSION }}"
           [ -x "$cuda_root/bin/nvcc" ] || { echo "::error::nvcc missing at $cuda_root"; exit 1; }
           "$cuda_root/bin/nvcc" --version | tail -2
@@ -236,8 +239,10 @@ jobs:
           # Sub-packages are version-suffixed; installing the full toolkit
           # would blow the runner's disk budget.
           $short = $v.Substring(0, $v.LastIndexOf('.'))
+          # cublas/cublas_dev for the same cublasLt link the Linux side needs.
           $args = @("-s", "nvcc_$short", "cudart_$short", "nvrtc_$short",
-                    "nvrtc_dev_$short", "cuda_profiler_api_$short")
+                    "nvrtc_dev_$short", "cuda_profiler_api_$short",
+                    "cublas_$short", "cublas_dev_$short")
           $p = Start-Process -FilePath .\cuda.exe -ArgumentList $args -Wait -PassThru -NoNewWindow
           if ($p.ExitCode -ne 0) { throw "CUDA installer exited $($p.ExitCode)" }
           $root = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$short"
@@ -247,6 +252,12 @@ jobs:
           "CUDA_HOME=$root"          | Out-File -FilePath $env:GITHUB_ENV -Append
           "CUDARC_CUDA_VERSION=13000"| Out-File -FilePath $env:GITHUB_ENV -Append
           "$root\bin"               | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Set up MSVC developer environment (windows)
+        if: matrix.os == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Install build deps (windows)
         if: matrix.os == 'windows'
@@ -266,6 +277,10 @@ jobs:
         if: matrix.toolchain == 'scale'
         run: |
           set -euo pipefail
+          # ATLAS_TARGET_MODEL/QUANT are REQUIRED, not optional: atlas-kernels
+          # defaults to qwen3-next-80b-a3b, which has no kernels/strix/
+          # directory, and the build script panics resolving targets. They are
+          # matrix fields so a second strix model is another JSON row.
           # SCALE recompiles the unmodified CUDA kernels for AMD. Tarball URL
           # and prerequisites are the ones documented in
           # docs/porting/amd-strix-halo-scale.md; 1.7.1 is the first release
@@ -292,6 +307,8 @@ jobs:
             echo "CUDA_HOME=$SCALE_HOME/targets/$arch"
             echo "CUDARC_CUDA_VERSION=12080"
             echo "ATLAS_TARGET_HW=strix"
+            echo "ATLAS_TARGET_MODEL=${{ matrix.target_model }}"
+            echo "ATLAS_TARGET_QUANT=${{ matrix.target_quant }}"
           } >> "$GITHUB_ENV"
           echo "$SCALE_HOME/targets/$arch/bin" >> "$GITHUB_PATH"
 
