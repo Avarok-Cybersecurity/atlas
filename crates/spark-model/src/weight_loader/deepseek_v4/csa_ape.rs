@@ -24,7 +24,11 @@ use spark_runtime::weights::{WeightDtype, WeightStore};
 /// - **BF16 checkpoint**: widen once here into a freshly allocated FP32 buffer
 ///   (process-lifetime, same ownership model as the other derived loader buffers).
 /// - **Any other dtype**: fail loudly with the tensor key and dtype.
-pub(super) fn load_ape_f32(store: &WeightStore, key: &str, gpu: &dyn GpuBackend) -> Result<DevicePtr> {
+pub(super) fn load_ape_f32(
+    store: &WeightStore,
+    key: &str,
+    gpu: &dyn GpuBackend,
+) -> Result<DevicePtr> {
     let t = store.get(key)?;
     match t.dtype {
         WeightDtype::FP32 => Ok(t.ptr),
