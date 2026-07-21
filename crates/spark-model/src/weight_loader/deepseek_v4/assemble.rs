@@ -376,7 +376,10 @@ pub fn assemble_layer(
             let wgate = dense(store, &format!("{cp}.wgate.weight"))?;
             // compressor.norm is a STANDARD RMSNorm → subtract 1 for the offset kernel.
             let norm = dense_auto(store, &format!("{cp}.norm.weight"), gpu)?;
-            let ape = store.get(&format!("{cp}.ape"))?.ptr;
+            // ape is checkpoint-native F32 [ratio, proj_dim]; csa_compress indexes it
+            // as `const float*`. Normalize here so the kernel can never misread it as
+            // bf16 (the L2–L42 window-softmax corruption fixed alongside attn_sink #341).
+            let ape = super::csa_ape::load_ape_f32(store, &format!("{cp}.ape"), gpu)?;
             // 4b: allocate the persistent flat compressed-KV pool for this layer.
             // Sized to the full context (max_position_embeddings // ratio blocks)
             // so decode never overflows; each block is one hd_mla-wide FP8-E4M3

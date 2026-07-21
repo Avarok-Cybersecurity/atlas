@@ -20,7 +20,10 @@
 extern "C" __global__ void csa_compress(
     const __nv_bfloat16* __restrict__ kv,   // [S, proj_dim]
     const __nv_bfloat16* __restrict__ gate, // [S, proj_dim]
-    const __nv_bfloat16* __restrict__ ape,  // [ratio, proj_dim]
+    const float* __restrict__ ape,          // [ratio, proj_dim] FP32: checkpoint-native
+                                            // dtype (reading as bf16 read half of the
+                                            // wrong element and corrupted the window
+                                            // softmax gate on every compressed layer)
     __nv_bfloat16* __restrict__ out,        // [n_win, head_dim]
     const unsigned int seq_len,
     const unsigned int ratio,
@@ -43,7 +46,7 @@ extern "C" __global__ void csa_compress(
                 for (unsigned int r = 0; r < ratio; ++r) {
                     const unsigned int tok = (w - 1) * ratio + r;
                     const float g = __bfloat162float(gate[(size_t)tok * proj_dim + d])
-                                  + __bfloat162float(ape[(size_t)r * proj_dim + d]);
+                                  + ape[(size_t)r * proj_dim + d];
                     const float v = __bfloat162float(kv[(size_t)tok * proj_dim + d]);
                     const float mn = fmaxf(m, g);
                     const float eo = __expf(m - mn);
@@ -58,7 +61,7 @@ extern "C" __global__ void csa_compress(
                 const unsigned int tok = w * ratio + r;
                 const unsigned int c = head_dim + d;
                 const float g = __bfloat162float(gate[(size_t)tok * proj_dim + c])
-                              + __bfloat162float(ape[(size_t)r * proj_dim + c]);
+                              + ape[(size_t)r * proj_dim + c];
                 const float v = __bfloat162float(kv[(size_t)tok * proj_dim + c]);
                 const float mn = fmaxf(m, g);
                 const float eo = __expf(m - mn);
@@ -72,7 +75,7 @@ extern "C" __global__ void csa_compress(
             for (unsigned int r = 0; r < ratio; ++r) {
                 const unsigned int tok = w * ratio + r;
                 const float g = __bfloat162float(gate[(size_t)tok * proj_dim + d])
-                              + __bfloat162float(ape[(size_t)r * proj_dim + d]);
+                              + ape[(size_t)r * proj_dim + d];
                 const float v = __bfloat162float(kv[(size_t)tok * proj_dim + d]);
                 const float mn = fmaxf(m, g);
                 const float eo = __expf(m - mn);

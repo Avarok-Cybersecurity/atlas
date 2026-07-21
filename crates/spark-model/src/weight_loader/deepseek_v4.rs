@@ -7,6 +7,7 @@
 
 mod assemble;
 mod attn_sink;
+mod csa_ape;
 mod compute;
 mod load_layers;
 // MTP draft-module loader for nvidia/DeepSeek-V4-Flash-NVFP4.
