@@ -172,7 +172,9 @@ pub fn step_verify_k3(
         // (num_accepted=k=3): the verify kernel already wrote the canonical
         // h_state, so the commit is a no-op.
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 3, 3) {
+            // SSM state is no longer trustworthy — terminate, do not continue.
             tracing::error!("commit_accepted_prefix (K=3 accept-3): {e:#}");
+            a.finished = true;
             return;
         }
         if let Err(e) = model.save_hidden_for_mtp(2, 0) {
