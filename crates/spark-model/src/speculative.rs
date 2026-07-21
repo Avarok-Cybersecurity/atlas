@@ -85,6 +85,39 @@ pub fn mtp_catchup_enabled() -> bool {
 ///
 /// SAFETY. A wrong feed cannot corrupt output: verification rejects bad
 /// drafts. The stake is acceptance only.
+///
+/// ## STATUS 2026-07-21: MEASURED AND **REFUTED AS IMPLEMENTED**. DO NOT ENABLE.
+///
+/// dgx2, W4A4 27B, nd=2, gate disarmed, 8-turn session to ~11k context,
+/// n=700 verify steps per arm. Control (flag OFF on this same binary) is
+/// BIT-IDENTICAL to the pre-change baseline, so the arms are clean.
+///
+/// | arm | delivered feeds | p1 | p2_uncond |
+/// |---|---|---|---|
+/// | OFF (baseline) | — | 0.653 | 0.499 |
+/// | ON, `0..num_accepted` | 458 fed / 231 missed = 67% | 0.669 (+0.62 sd) | 0.520 (+0.80 sd) |
+/// | ON, `0..=num_accepted` | 713 fed / 5 missed = 99% | 0.633 (−0.78 sd) | 0.476 (−0.86 sd) |
+///
+/// The second row was a dose-response test: the exclusive bound left exactly
+/// one label unwritten per step (a verify step advances the sequence by
+/// `1 + num_accepted`), which collapsed the ring's contiguous `(start,count)`
+/// window and lost a third of the feeds. Closing that off-by-one took
+/// delivery from 67% to 99% — and the acceptance delta **reversed sign**.
+///
+/// Feeding MORE of these hiddens makes acceptance WORSE. That is positive
+/// evidence that the hidden being fed is misaligned with the pair key it is
+/// fed under — the label/row correspondence derived in `verify_k3_step` is
+/// wrong somewhere — and it retro-actively explains the +0.021 at 67% as
+/// noise (0.80 sd) rather than signal.
+///
+/// What survives: the DEFECT is still real and measured (unconditional
+/// acceptance 0.660 -> 0.485 -> 0.407, loss concentrated at the d=1->d=2
+/// hidden-state handoff), and the catch-up machinery demonstrably reaches the
+/// drafter (a wrong feed moved acceptance by ~0.9 sd, so a right one should
+/// too). What is wrong is this label mapping. Next session: re-derive which
+/// verify hidden row belongs to which pair key from first principles and
+/// verify it with a dumped hidden checksum before trusting any acceptance
+/// number.
 pub fn mtp_refeed_accepted_enabled() -> bool {
     std::env::var("ATLAS_MTP_REFEED_ACCEPTED").ok().as_deref() == Some("1")
 }
