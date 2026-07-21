@@ -190,6 +190,15 @@ jobs:
         with:
           key: ${{ matrix.id }}
 
+      - name: Free disk space (linux)
+        if: matrix.os == 'linux'
+        run: |
+          # A CUDA toolkit or the 1.43 GB SCALE tarball plus this workspace's
+          # kernel build does not fit alongside the preinstalled SDKs.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/lib/jvm || true
+          df -h / | tail -1
+
       - name: Install build deps (linux)
         if: matrix.os == 'linux'
         run: |
@@ -205,24 +214,50 @@ jobs:
         uses: Jimver/cuda-toolkit@v0.2.19
         with:
           method: network
-          # Kernel compilation only needs nvcc + the driver stubs; skipping the
-          # rest keeps a ~3 GB install down to something a runner can hold.
-          sub-packages: '["nvcc", "cudart", "nvrtc", "nvrtc_dev", "cuda_profiler_api"]'
+          # Package names are apt names with DASHES. The first draft used
+          # `nvrtc_dev` / `cuda_profiler_api`, which apt resolved to
+          # `cuda-nvrtc_dev-12-6` / `cuda-cuda_profiler_api-12-6` -- neither
+          # exists, and every CUDA job died on it. `driver-dev` supplies the
+          # libcuda stub the raw extern "C" FFI in spark-storage links against.
+          sub-packages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev", "driver-dev", "profiler-api"]'
 
       - name: Install NCCL
         if: contains(matrix.toolchain, 'nccl')
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends libnccl2 libnccl-dev
 
-      - name: SCALE toolchain (AMD)
+      - name: Install SCALE toolchain (AMD)
         if: matrix.toolchain == 'scale'
         run: |
-          # SCALE is not redistributable from a hosted runner. This entry is
-          # experimental precisely because the toolchain has to come from a
-          # self-hosted runner or a cached tarball; fail loudly, do not
-          # silently produce a CUDA binary labelled `amd`.
-          echo "::error::SCALE toolchain unavailable on hosted runners — run this entry on self-hosted"
-          exit 1
+          set -euo pipefail
+          # SCALE recompiles the unmodified CUDA kernels for AMD. Tarball URL
+          # and prerequisites are the ones documented in
+          # docs/porting/amd-strix-halo-scale.md; 1.7.1 is the first release
+          # whose bundled ROCm fixes the gfx1151 queue-create crash.
+          # build-essential -> cuda.h needs <cstddef>; libnuma -> libhsakmt.
+          sudo apt-get install -y --no-install-recommends build-essential libnuma1 libnuma-dev
+          mkdir -p "$HOME/scale" && cd "$HOME/scale"
+          curl -L --fail --retry 3 -o scale.tar.xz \
+            https://pkgs.scale-lang.com/tar/scale-1.7.1-amd64.tar.xz
+          tar -xf scale.tar.xz && rm -f scale.tar.xz
+          SCALE_HOME="$HOME/scale/scale-1.7.1-Linux"
+          arch='${{ matrix.scale_arch }}'
+          # Fail loudly if the layout is not what we expect: a missing nvcc
+          # here would otherwise fall through to the host nvcc and silently
+          # produce an NVIDIA binary labelled `amd`.
+          [ -x "$SCALE_HOME/targets/$arch/bin/nvcc" ] || {
+            echo "::error::SCALE nvcc missing at $SCALE_HOME/targets/$arch/bin/nvcc"
+            ls "$SCALE_HOME/targets" 2>/dev/null || true
+            exit 1
+          }
+          {
+            echo "SCALE_HOME=$SCALE_HOME"
+            echo "CUDA_PATH=$SCALE_HOME/targets/$arch"
+            echo "CUDA_HOME=$SCALE_HOME/targets/$arch"
+            echo "CUDARC_CUDA_VERSION=12080"
+            echo "ATLAS_TARGET_HW=strix"
+          } >> "$GITHUB_ENV"
+          echo "$SCALE_HOME/targets/$arch/bin" >> "$GITHUB_PATH"
 
       - name: Build spark
         shell: bash

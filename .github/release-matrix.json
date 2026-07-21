@@ -52,18 +52,8 @@
     "cargo_features": "--no-default-features --features cuda",
     "toolchain": "scale",
     "experimental": true,
-    "pr_validate": false
-  },
-  {
-    "id": "linux-aarch64-amd-scale",
-    "os": "linux",
-    "runner": "ubuntu-24.04-arm",
-    "target": "aarch64-unknown-linux-gnu",
-    "platform": "amd",
-    "cargo_features": "--no-default-features --features cuda",
-    "toolchain": "scale",
-    "experimental": true,
-    "pr_validate": false
+    "pr_validate": true,
+    "scale_arch": "gfx1151"
   },
   {
     "id": "macos-aarch64-metal",
