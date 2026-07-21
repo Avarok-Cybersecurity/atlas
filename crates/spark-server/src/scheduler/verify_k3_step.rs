@@ -188,6 +188,28 @@ pub fn step_verify_k3(
     // steps where position 1 happened to succeed.
     k3_record_positional(drafts[0] == v0, drafts[1] == v1, a.seq.seq_len);
 
+    // ATLAS_MTP_REFEED_ACCEPTED: ring the TARGET's true hidden for every
+    // accepted position so the next propose's catch-up feed can rebuild the
+    // drafter rows that `after_verify` is about to drop.
+    //
+    // Label convention (must match the serial-decode hook in scheduler/mod.rs,
+    // which calls `save_hidden_for_catchup(0, seq.seq_len - 1)` after
+    // appending): label n holds the hidden that PRODUCED the token at
+    // position n, i.e. hidden_{n-1} in the drafter's pair-key space.
+    // Here `a.seq.seq_len` has already been advanced by k=3 inside verify, so
+    // the pre-verify base is `L = a.seq.seq_len - 3`; verify row t is the
+    // forward pass at position L+t and its hidden produced the token at
+    // L+t+1. Ring row t under label L+t+1 for t in 0..num_accepted.
+    if spark_model::speculative::mtp_refeed_accepted_enabled() && num_accepted > 0 {
+        let base = a.seq.seq_len.saturating_sub(3);
+        for t in 0..num_accepted {
+            if let Err(e) = model.save_hidden_for_catchup(t, base + t + 1) {
+                tracing::debug!("save_hidden_for_catchup(K=3, t={t}): {e:#} — degrading");
+                break;
+            }
+        }
+    }
+
     // Extract logprobs from verify logits buffer (K=3 positions) when requested.
     let verify_lps = if let Some(top_logprobs) = a.top_logprobs {
         extract_verify_logprobs(model, &[v0, v1, v2], top_logprobs)

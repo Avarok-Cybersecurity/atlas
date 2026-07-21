@@ -445,7 +445,11 @@ impl DraftProposer for MtpHead {
         // e.g. K=2: drafted 1, accepted 0 → trim 1. accepted 1 → trim 0.
         // e.g. K=3: drafted 2, accepted 0 → trim 2. accepted 1 → trim 1. accepted 2 → trim 0.
         let num_drafted = mtp_state.last_num_drafted.max(1);
-        let num_to_trim = num_drafted.saturating_sub(num_accepted);
+        let num_to_trim = mtp_rows_to_trim(
+            num_drafted,
+            num_accepted,
+            crate::speculative::mtp_refeed_accepted_enabled(),
+        );
         let old_sl = mtp_state.seq_len;
         if num_to_trim > 0 {
             mtp_state.seq_len = mtp_state.seq_len.saturating_sub(num_to_trim);
@@ -491,5 +495,77 @@ mod tests {
         let mtp = state.as_any().downcast_ref::<MtpProposerState>().unwrap();
         assert_eq!(mtp.seq_len, 42);
         assert_eq!(mtp.block_table.len(), 3);
+    }
+}
+
+/// How many drafter KV rows `after_verify` must drop.
+///
+/// * Rejected rows always go: `num_drafted - num_accepted`.
+/// * With `refeed_accepted` (ATLAS_MTP_REFEED_ACCEPTED), the ACCEPTED rows
+///   that were written with the drafter's own hidden also go — that is every
+///   accepted draft except the first. Draft 1 consumed the target's verified
+///   hidden (`mtp_hidden_save`) and is correct; drafts 2.. each consumed the
+///   previous draft's drafter-side residual. Those rows are rebuilt from the
+///   catch-up ring on the next propose, with the target's true hidden.
+///
+/// Never returns more than `num_drafted` — the drafter cannot un-write rows it
+/// never wrote, and over-trimming would corrupt the compacted row space by
+/// desynchronising `seq_len` from `last_pair_key`.
+pub(crate) fn mtp_rows_to_trim(
+    num_drafted: usize,
+    num_accepted: usize,
+    refeed_accepted: bool,
+) -> usize {
+    let rejected = num_drafted.saturating_sub(num_accepted);
+    let accepted_with_drafter_hidden = if refeed_accepted {
+        num_accepted.saturating_sub(1)
+    } else {
+        0
+    };
+    (rejected + accepted_with_drafter_hidden).min(num_drafted)
+}
+
+#[cfg(test)]
+mod refeed_trim_tests {
+    use super::mtp_rows_to_trim;
+
+    #[test]
+    fn flag_off_is_exactly_the_legacy_behaviour() {
+        // Legacy: trim only the rejected rows. These are the K=2/3/4 cases
+        // the schedulers actually produce.
+        assert_eq!(mtp_rows_to_trim(1, 0, false), 1); // K=2 reject
+        assert_eq!(mtp_rows_to_trim(1, 1, false), 0); // K=2 accept
+        assert_eq!(mtp_rows_to_trim(2, 0, false), 2); // K=3 reject
+        assert_eq!(mtp_rows_to_trim(2, 1, false), 1); // K=3 accept-1
+        assert_eq!(mtp_rows_to_trim(2, 2, false), 0); // K=3 accept-2
+        assert_eq!(mtp_rows_to_trim(3, 3, false), 0); // K=4 accept-3
+    }
+
+    #[test]
+    fn flag_on_also_drops_accepted_rows_past_the_first() {
+        // The first accepted draft used the TARGET hidden — it stays.
+        assert_eq!(mtp_rows_to_trim(1, 1, true), 0); // K=2 accept: nothing extra
+        assert_eq!(mtp_rows_to_trim(2, 1, true), 1); // K=3 accept-1: rejected only
+        assert_eq!(mtp_rows_to_trim(2, 2, true), 1); // K=3 accept-2: drop draft 2
+        assert_eq!(mtp_rows_to_trim(3, 2, true), 2); // K=4 accept-2: 1 rejected + 1
+        assert_eq!(mtp_rows_to_trim(3, 3, true), 2); // K=4 accept-3: drop drafts 2,3
+    }
+
+    #[test]
+    fn full_reject_is_identical_with_and_without_the_flag() {
+        // Nothing was accepted, so there is no drafter-hidden row to rebuild.
+        for d in 0..8 {
+            assert_eq!(mtp_rows_to_trim(d, 0, true), mtp_rows_to_trim(d, 0, false));
+        }
+    }
+
+    #[test]
+    fn never_trims_more_rows_than_were_drafted() {
+        for d in 0..8 {
+            for a in 0..=d + 2 {
+                assert!(mtp_rows_to_trim(d, a, true) <= d, "d={d} a={a}");
+                assert!(mtp_rows_to_trim(d, a, false) <= d, "d={d} a={a}");
+            }
+        }
     }
 }

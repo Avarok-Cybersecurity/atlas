@@ -53,6 +53,42 @@ pub fn mtp_catchup_enabled() -> bool {
     std::env::var("ATLAS_MTP_CATCHUP").ok().as_deref() == Some("1")
 }
 
+/// Re-feed ACCEPTED draft rows with the target's TRUE hidden state
+/// (`ATLAS_MTP_REFEED_ACCEPTED=1`, default OFF). Requires `ATLAS_MTP_CATCHUP=1`.
+///
+/// WHY. The MTP head is one module run autoregressively. Draft 1 consumes the
+/// TARGET's verified hidden (`mtp_hidden_save`); every later draft consumes the
+/// drafter's OWN single-block residual (`mtp_head.rs`, `current_hidden =
+/// ctx.buffers.hidden_states()`). The drafter KV row written for draft d >= 2
+/// therefore pairs the right token with the WRONG hidden — and on ACCEPT that
+/// row is kept forever: `after_verify` trims only REJECTED rows. So every
+/// accepted draft permanently contaminates the drafter's own context.
+///
+/// Measured on dgx2 (W4A4 27B, gate disarmed, seq_len ~10k, n=700/config):
+/// unconditional per-position acceptance 0.660 -> 0.485 -> 0.407, i.e. the
+/// FIRST autoregressive step costs x0.735 while the second costs only x0.838 —
+/// the loss is concentrated exactly at the hidden-state handoff. Neither
+/// existing lever touches it: `ATLAS_MTP_CATCHUP=1` alone is bit-identical
+/// (its ring is only written on SERIAL decode steps, and with the throughput
+/// gate disarmed there are none), and dropping `ATLAS_MTP_DRAFTER_PREFILL`
+/// costs only 0.017/0.030 (~1 sd).
+///
+/// WHAT THIS DOES. After a verify, the target's true hidden for every accepted
+/// position is sitting in the verify hidden buffer. Ring those hiddens under
+/// the same label convention the serial path uses, and have `after_verify`
+/// additionally drop the `num_accepted - 1` accepted rows that were written
+/// with a drafter hidden. The next propose's catch-up feed then rebuilds
+/// exactly those rows from the ring, with the TARGET's hidden, through the
+/// already-exercised `catchup_drafter` batch path. No new kernel, no new
+/// state machine — it reuses the gap-fill machinery for a gap that was never
+/// being detected.
+///
+/// SAFETY. A wrong feed cannot corrupt output: verification rejects bad
+/// drafts. The stake is acceptance only.
+pub fn mtp_refeed_accepted_enabled() -> bool {
+    std::env::var("ATLAS_MTP_REFEED_ACCEPTED").ok().as_deref() == Some("1")
+}
+
 pub trait DraftProposer: Send + Sync {
     /// Allocate per-sequence proposer state.
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>>;
