@@ -6111,14 +6111,12 @@ extern "C" __global__ void fp8_gemm_t_row_scaled(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B[(b_buf)][nc][16 + 4 * tid]; \
-            asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 " \
-                "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
-                :"=f"(acc[nt][0]),"=f"(acc[nt][1]), \
-                 "=f"(acc[nt][2]),"=f"(acc[nt][3]) \
-                :"r"(a0),"r"(a1),"r"(a2),"r"(a3), \
-                 "r"(b0),"r"(b1), \
-                 "f"(acc[nt][0]),"f"(acc[nt][1]), \
-                 "f"(acc[nt][2]),"f"(acc[nt][3])); \
+            /* Same helper FP8_COMPUTE uses: on NVIDIA its #else arm is this \
+             * exact PTX (__forceinline__, so codegen is byte-identical); on \
+             * SCALE/gfx1151 it is the validated __shfl-repack -> 2x \
+             * mma.m16n8k16.bf16 replacement. Emitting the PTX inline here is \
+             * what made this .cu uncompilable for AMD. */ \
+            atlas_mma_e4m3(acc[nt], a0, a1, a2, a3, b0, b1); \
         } \
     } while(0)
 
@@ -6252,14 +6250,12 @@ extern "C" __global__ void fp8_gemm_t_row_scaled_m16(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B[(b_buf)][nc][16 + 4 * tid]; \
-            asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 " \
-                "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
-                :"=f"(acc[nt][0]),"=f"(acc[nt][1]), \
-                 "=f"(acc[nt][2]),"=f"(acc[nt][3]) \
-                :"r"(a0),"r"(a1),"r"(a2),"r"(a3), \
-                 "r"(b0),"r"(b1), \
-                 "f"(acc[nt][0]),"f"(acc[nt][1]), \
-                 "f"(acc[nt][2]),"f"(acc[nt][3])); \
+            /* Same helper FP8_COMPUTE uses: on NVIDIA its #else arm is this \
+             * exact PTX (__forceinline__, so codegen is byte-identical); on \
+             * SCALE/gfx1151 it is the validated __shfl-repack -> 2x \
+             * mma.m16n8k16.bf16 replacement. Emitting the PTX inline here is \
+             * what made this .cu uncompilable for AMD. */ \
+            atlas_mma_e4m3(acc[nt], a0, a1, a2, a3, b0, b1); \
         } \
     } while(0)
 

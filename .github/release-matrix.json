@@ -52,11 +52,10 @@
     "cargo_features": "--no-default-features --features cuda",
     "toolchain": "scale",
     "experimental": true,
-    "pr_validate": false,
+    "pr_validate": true,
     "scale_arch": "gfx1151",
     "target_model": "qwen3.6-27b",
-    "target_quant": "nvfp4",
-    "note": "gfx1151 has no FP8 matrix instruction. w4a16_gemm.cu's GEMM bodies emit raw mma.sync.m16n8k32.e4m3 PTX that SCALE cannot codegen; the source itself records that this .cu compiles for AMD only via the strix-hip-real WMMA rewrite. Kernel-port work, not CI."
+    "target_quant": "nvfp4"
   },
   {
     "id": "macos-aarch64-metal",
