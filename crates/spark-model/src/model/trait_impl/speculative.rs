@@ -183,15 +183,18 @@ impl TransformerModel {
         let Some(entry) = self.mtp_carry.lock().take() else {
             return CarryOutcome::NoCarry;
         };
-        if !entry.adoptable_by(prompt) {
+        let Some((rows, last_key)) = entry.usable_by(prompt) else {
+            let common = entry.common_prefix_len(prompt);
             proposer.free_drafter_kv(&entry.block_table);
-            return CarryOutcome::PrefixMismatch;
-        }
-        let (rows, last_key) = (entry.rows, entry.last_pair_key.unwrap_or(0));
+            return CarryOutcome::PrefixMismatch {
+                common,
+                entry_rows: entry.rows,
+            };
+        };
         // `install_drafter_kv` takes ownership on success only; keep a copy of
         // the ids so a refused install frees them instead of leaking.
         let block_ids = entry.block_table.clone();
-        if !proposer.install_drafter_kv(prop_state, entry.block_table, rows, entry.last_pair_key) {
+        if !proposer.install_drafter_kv(prop_state, entry.block_table, rows, Some(last_key)) {
             // Fresh-state precondition violated (the drafter already has rows).
             // Nothing owns these blocks now, so release them here.
             proposer.free_drafter_kv(&block_ids);
@@ -220,10 +223,18 @@ impl TransformerModel {
             ctx,
             stream,
         ) {
-            Ok(appended) => CarryOutcome::Adopted { rows, appended },
+            Ok(appended) => CarryOutcome::Adopted {
+                rows,
+                appended,
+                first_key: plan.first_key,
+            },
             Err(e) => {
                 tracing::warn!("MTP carry append failed (drafter keeps carried rows): {e:#}");
-                CarryOutcome::Adopted { rows, appended: 0 }
+                CarryOutcome::Adopted {
+                    rows,
+                    appended: 0,
+                    first_key: plan.first_key,
+                }
             }
         }
     }

@@ -585,8 +585,7 @@ pub fn run(
                             // by dumped hidden fingerprints (93/93 cross-step,
                             // see `speculative::mtp_refeed_accepted_enabled`),
                             // so the serial hook was the side that disagreed.
-                            if let Err(e) =
-                                model.save_hidden_for_catchup(0, active[0].seq.seq_len)
+                            if let Err(e) = model.save_hidden_for_catchup(0, active[0].seq.seq_len)
                             {
                                 tracing::warn!("save_hidden_for_catchup: {e:#}");
                             }

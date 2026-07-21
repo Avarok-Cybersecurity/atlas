@@ -284,5 +284,4 @@ impl TransformerModel {
         self.gpu.record_event(self.secondary_event, stream)?;
         Ok(())
     }
-
 }

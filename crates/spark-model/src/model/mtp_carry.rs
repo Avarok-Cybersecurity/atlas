@@ -92,16 +92,39 @@ impl CarriedDrafter {
             .count()
     }
 
-    /// The carried rows are adoptable by `prompt` iff every token that
-    /// produced them is also a prefix token of `prompt`. Rows cover pair keys
-    /// up to `last_pair_key`, and pair key `k` consumed `tokens[0..=k+1]`, so
-    /// the tokens that matter are `tokens[0..=last_pair_key + 1]`.
-    pub fn adoptable_by(&self, prompt: &[u32]) -> bool {
-        let Some(k) = self.last_pair_key else {
-            return false;
-        };
-        let needed = k + 2;
-        self.rows > 0 && prompt.len() >= needed && self.common_prefix_len(prompt) >= needed
+    /// How much of this entry `prompt` may adopt.
+    ///
+    /// Pair key `k` consumed `tokens[0..=k + 1]`, so a key is usable exactly
+    /// when the prompt agrees with those tokens. Requiring the WHOLE entry to
+    /// match is too strict in practice: a chat template can re-tokenize the
+    /// assistant/user boundary, so the tail of the previous turn's sequence
+    /// need not reappear verbatim in the next turn's prompt (measured on the
+    /// 27B rig — full-match adoption reported `prefix mismatch` on every warm
+    /// turn). Truncating instead of refusing keeps the ~12k rows that DO
+    /// match and loses only the handful that do not.
+    ///
+    /// Rows are append-only in increasing key order, so dropping `d` rows from
+    /// the TAIL drops the `d` highest keys. `last_pair_key` is then clamped to
+    /// `L - 2`, which can only OVERSTATE the surviving row's true key when the
+    /// tail had gaps — and overstating merely starts the append later, i.e.
+    /// costs coverage, never correctness. Rows beyond the returned count are
+    /// overwritten by the append or never read (the drafter reads `seq_len`
+    /// rows).
+    ///
+    /// Returns `(rows, last_pair_key)` to adopt, or `None` when nothing is
+    /// usable.
+    pub fn usable_by(&self, prompt: &[u32]) -> Option<(usize, usize)> {
+        let k = self.last_pair_key?;
+        if self.rows == 0 {
+            return None;
+        }
+        let common = self.common_prefix_len(prompt);
+        // Need at least tokens[0..=1] in common for pair key 0 to survive.
+        let max_key = common.checked_sub(2)?;
+        let key = k.min(max_key);
+        let dropped = k - key;
+        let rows = self.rows.checked_sub(dropped)?;
+        if rows == 0 { None } else { Some((rows, key)) }
     }
 }
 
@@ -167,20 +190,37 @@ pub fn merge_interval(cur: (usize, usize), start: usize, count: usize) -> (usize
 /// Result of a carry attempt, for logging and tests.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CarryOutcome {
-    Adopted { rows: usize, appended: usize },
+    Adopted {
+        rows: usize,
+        appended: usize,
+        first_key: usize,
+    },
     NoCarry,
-    PrefixMismatch,
+    PrefixMismatch {
+        common: usize,
+        entry_rows: usize,
+    },
     NoHiddens,
 }
 
 impl std::fmt::Display for CarryOutcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CarryOutcome::Adopted { rows, appended } => {
-                write!(f, "adopted rows={rows} appended={appended}")
-            }
+            CarryOutcome::Adopted {
+                rows,
+                appended,
+                first_key,
+            } => write!(
+                f,
+                "adopted rows={rows} appended={appended} first_key={first_key}"
+            ),
             CarryOutcome::NoCarry => write!(f, "no carried state"),
-            CarryOutcome::PrefixMismatch => write!(f, "prefix mismatch"),
+            CarryOutcome::PrefixMismatch { common, entry_rows } => {
+                write!(
+                    f,
+                    "prefix mismatch (common={common} entry_rows={entry_rows})"
+                )
+            }
             CarryOutcome::NoHiddens => write!(f, "hidden store does not cover the append span"),
         }
     }
@@ -200,19 +240,43 @@ mod tests {
     }
 
     #[test]
-    fn adoptable_requires_every_producing_token_to_match() {
+    fn usable_by_keeps_everything_when_the_whole_entry_matches() {
         let c = carried(&[1, 2, 3, 4, 5], 4, Some(3));
-        // pair key 3 consumed tokens[0..=4], so 5 tokens must match.
-        assert!(c.adoptable_by(&[1, 2, 3, 4, 5, 6, 7]));
-        assert!(!c.adoptable_by(&[1, 2, 3, 4, 9, 6, 7]));
-        // A prompt shorter than the producing prefix cannot adopt.
-        assert!(!c.adoptable_by(&[1, 2, 3, 4]));
+        // pair key 3 consumed tokens[0..=4]; all 5 match.
+        assert_eq!(c.usable_by(&[1, 2, 3, 4, 5, 6, 7]), Some((4, 3)));
     }
 
     #[test]
-    fn adoptable_is_false_without_rows_or_key() {
-        assert!(!carried(&[1, 2, 3], 0, Some(1)).adoptable_by(&[1, 2, 3, 4]));
-        assert!(!carried(&[1, 2, 3], 2, None).adoptable_by(&[1, 2, 3, 4]));
+    fn usable_by_truncates_the_tail_instead_of_refusing() {
+        // Divergence at index 4 => common = 4 => highest usable key is 2, so
+        // one row is dropped. This is the chat-template re-tokenization case
+        // that made full-match adoption refuse every warm turn.
+        let c = carried(&[1, 2, 3, 4, 5], 4, Some(3));
+        assert_eq!(c.usable_by(&[1, 2, 3, 4, 9, 6, 7]), Some((3, 2)));
+        // Divergence at index 2 => common = 2 => only key 0 survives.
+        assert_eq!(c.usable_by(&[1, 2, 9, 9]), Some((1, 0)));
+    }
+
+    #[test]
+    fn usable_by_declines_when_nothing_survives() {
+        let c = carried(&[1, 2, 3, 4, 5], 4, Some(3));
+        // Fewer than 2 tokens in common: not even pair key 0 is usable.
+        assert_eq!(c.usable_by(&[1, 9, 9]), None);
+        assert_eq!(c.usable_by(&[]), None);
+        // No rows, or no tracked key.
+        assert_eq!(
+            carried(&[1, 2, 3], 0, Some(1)).usable_by(&[1, 2, 3, 4]),
+            None
+        );
+        assert_eq!(carried(&[1, 2, 3], 2, None).usable_by(&[1, 2, 3, 4]), None);
+    }
+
+    #[test]
+    fn usable_by_never_drops_more_rows_than_exist() {
+        // A compacted entry: 2 rows but a far-ahead key. Truncating to a low
+        // common prefix must decline rather than underflow.
+        let c = carried(&[1, 2, 3, 4, 5, 6], 2, Some(4));
+        assert_eq!(c.usable_by(&[1, 2, 9]), None);
     }
 
     #[test]

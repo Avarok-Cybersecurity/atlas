@@ -44,7 +44,9 @@ fn k4_record_positional(d1: bool, d2: bool, d3: bool, seq_len: usize) {
         K4_D3U.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     if K4_STEPS.load(std::sync::atomic::Ordering::Relaxed) >= K4_SUMMARY_PERIOD {
-        let n = K4_STEPS.swap(0, std::sync::atomic::Ordering::Relaxed).max(1);
+        let n = K4_STEPS
+            .swap(0, std::sync::atomic::Ordering::Relaxed)
+            .max(1);
         let d1c = K4_D1.swap(0, std::sync::atomic::Ordering::Relaxed);
         let d2u = K4_D2U.swap(0, std::sync::atomic::Ordering::Relaxed);
         let d3u = K4_D3U.swap(0, std::sync::atomic::Ordering::Relaxed);
@@ -57,8 +59,16 @@ fn k4_record_positional(d1: bool, d2: bool, d3: bool, seq_len: usize) {
             (d1c as f64) / (n as f64),
             (d2u as f64) / (n as f64),
             (d3u as f64) / (n as f64),
-            if d1c > 0 { (d2c as f64) / (d1c as f64) } else { f64::NAN },
-            if d2c > 0 { (d3c as f64) / (d2c as f64) } else { f64::NAN },
+            if d1c > 0 {
+                (d2c as f64) / (d1c as f64)
+            } else {
+                f64::NAN
+            },
+            if d2c > 0 {
+                (d3c as f64) / (d2c as f64)
+            } else {
+                f64::NAN
+            },
         );
     }
 }
