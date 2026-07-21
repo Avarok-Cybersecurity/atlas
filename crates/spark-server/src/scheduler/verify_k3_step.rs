@@ -199,11 +199,39 @@ pub fn step_verify_k3(
     // Here `a.seq.seq_len` has already been advanced by k=3 inside verify, so
     // the pre-verify base is `L = a.seq.seq_len - 3`; verify row t is the
     // forward pass at position L+t and its hidden produced the token at
-    // L+t+1. Ring row t under label L+t+1 for t in 0..num_accepted.
-    if spark_model::speculative::mtp_refeed_accepted_enabled() && num_accepted > 0 {
+    // L+t+1. Ring row t under label L+t+1 for t in 0..=num_accepted.
+    //
+    // The bound is INCLUSIVE, and both ends of it are load-bearing:
+    //
+    //  * rows 0..=num_accepted-1 are the repair itself. Drafts 1.. of the
+    //    previous propose wrote pair keys L..L+num_accepted-2 with the
+    //    DRAFTER's own hidden; the truth for pair key L+j is hidden_{L+j} =
+    //    verify row j, which under the label convention is label L+j+1.
+    //  * row `num_accepted` closes the ring. A verify step advances the
+    //    sequence by `1 + num_accepted`, so the next step's base is
+    //    L' = L + num_accepted + 1 and its first label is L' + 1. Stopping at
+    //    `num_accepted - 1` leaves label L + num_accepted + 1 = L' unwritten
+    //    EVERY step, and `save_hidden_for_catchup_dispatch` resets its
+    //    contiguous (start, count) window on any non-contiguous append — so a
+    //    single hole per step collapses coverage. Measured with the exclusive
+    //    bound: 458 feeds vs 231 "gap of 1 pairs outside ring coverage".
+    //    That row is not wasted either: label L' = the next propose position,
+    //    whose content is hidden_{L'-1} = `mtp_hidden_save` — the row the
+    //    NEXT step's full-reject case needs.
+    //
+    // Row `num_accepted` is always in range (K=3 has rows 0..=2 and
+    // num_accepted <= 2), and it is always a COMMITTED position: on reject the
+    // step still commits v0, so row 0 under label L+1 is the correct single
+    // write. Hence no `num_accepted > 0` guard.
+    //
+    // `mtp_refeed_shift` deliberately perturbs the label; it is a
+    // mapping-validation hatch and must stay 0 in any production leg.
+    if spark_model::speculative::mtp_refeed_accepted_enabled() {
         let base = a.seq.seq_len.saturating_sub(3);
-        for t in 0..num_accepted {
-            if let Err(e) = model.save_hidden_for_catchup(t, base + t + 1) {
+        let shift = spark_model::speculative::mtp_refeed_shift();
+        for t in 0..=num_accepted {
+            let label = ((base + t + 1) as isize + shift).max(0) as usize;
+            if let Err(e) = model.save_hidden_for_catchup(t, label) {
                 tracing::debug!("save_hidden_for_catchup(K=3, t={t}): {e:#} — degrading");
                 break;
             }

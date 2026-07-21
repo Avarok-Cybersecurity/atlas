@@ -172,6 +172,17 @@ impl TransformerModel {
         let src = self.buffers.hidden_states().offset(token_idx * h * bf16);
         let dst = self.mtp_catchup_ring.offset((pos % ring_rows) * h * bf16);
         self.gpu.copy_d2d_async(src, dst, h * bf16, stream)?;
+        if crate::speculative::mtp_refeed_debug() {
+            self.gpu.synchronize(stream)?;
+            let fp_src = crate::speculative::hidden_fingerprint(self.gpu.as_ref(), src, h);
+            let fp_dst = crate::speculative::hidden_fingerprint(self.gpu.as_ref(), dst, h);
+            tracing::info!(
+                "REFEED_DBG ring_write label={pos} row={token_idx} slot={} \
+                 fp_src={fp_src:016x} fp_dst={fp_dst:016x} match={}",
+                pos % ring_rows,
+                fp_src == fp_dst,
+            );
+        }
         let mut meta = self.mtp_catchup_meta.lock();
         let (start, count) = *meta;
         *meta = if count > 0 && pos == start + count {

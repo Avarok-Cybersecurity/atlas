@@ -134,6 +134,37 @@ impl TransformerModel {
             let rows = proposer.drafter_rows(prop_state.as_mut());
             let last_key = proposer.last_pair_key(prop_state.as_mut());
             let (start, count) = *self.mtp_catchup_meta.lock();
+            // ATLAS_MTP_REFEED_DEBUG: the ring round-trip check. The pair key
+            // this propose is ABOUT to write is `position - 1`, and it reads
+            // its hidden from `mtp_hidden_save`; under the label convention
+            // that same hidden is ring label `position`. So
+            // `fp(ring[position % rows]) == fp(mtp_hidden_save)` iff the
+            // ring's write-side slot arithmetic, the D2D plumbing and the
+            // read-side slot arithmetic all agree. It does NOT prove the
+            // label convention itself (see `mtp_refeed_shift`).
+            if crate::speculative::mtp_refeed_debug() {
+                let ring_rows = super::types::MTP_CATCHUP_RING_ROWS;
+                let h = self.config.hidden_size;
+                let fp_save = crate::speculative::hidden_fingerprint(
+                    self.gpu.as_ref(),
+                    self.mtp_hidden_save,
+                    h,
+                );
+                let fp_ring = crate::speculative::hidden_fingerprint(
+                    self.gpu.as_ref(),
+                    self.mtp_catchup_ring
+                        .offset((position % ring_rows) * h * 2),
+                    h,
+                );
+                let covered = count > 0 && position >= start && position < start + count;
+                tracing::info!(
+                    "REFEED_DBG propose position={position} rows={rows} \
+                     last_key={last_key:?} ring=[{start},+{count}) \
+                     fp_save={fp_save:016x} fp_ring[{position}]={fp_ring:016x} \
+                     covered={covered} roundtrip_ok={}",
+                    covered && fp_save == fp_ring,
+                );
+            }
             if let Some(last) = last_key
                 && rows > 0
                 && count > 0
@@ -159,6 +190,22 @@ impl TransformerModel {
                         // window starting at index k0 (n_rows + 1 tokens).
                         let toks = &seq.tokens[k0..=seg_last + 1];
                         let hid = self.mtp_catchup_ring.offset(slot * h * bf16);
+                        if crate::speculative::mtp_refeed_debug() {
+                            for r in 0..n_rows {
+                                let fp = crate::speculative::hidden_fingerprint(
+                                    self.gpu.as_ref(),
+                                    hid.offset(r * h * bf16),
+                                    h,
+                                );
+                                tracing::info!(
+                                    "REFEED_DBG feed key={} label={} tok={} rope={} fp={fp:016x}",
+                                    k0 + r,
+                                    k0 + r + 1,
+                                    toks[r + 1],
+                                    k0 + r + 1,
+                                );
+                            }
+                        }
                         let row_base = proposer.drafter_rows(prop_state.as_mut());
                         match proposer.catchup_drafter(
                             toks,

@@ -86,40 +86,106 @@ pub fn mtp_catchup_enabled() -> bool {
 /// SAFETY. A wrong feed cannot corrupt output: verification rejects bad
 /// drafts. The stake is acceptance only.
 ///
-/// ## STATUS 2026-07-21: MEASURED AND **REFUTED AS IMPLEMENTED**. DO NOT ENABLE.
+/// ## STATUS 2026-07-21 (SUPERSEDES the earlier "refuted" note). STAGED OFF.
 ///
-/// dgx2, W4A4 27B, nd=2, gate disarmed, 8-turn session to ~11k context,
-/// n=700 verify steps per arm. Control (flag OFF on this same binary) is
-/// BIT-IDENTICAL to the pre-change baseline, so the arms are clean.
+/// The earlier note claimed the pair-key -> hidden mapping was wrong, inferred
+/// from a sign reversal between a 67%-delivery and a 99%-delivery arm at
+/// n=700 (+0.021 -> −0.023 on p2_uncond). **That inference is withdrawn.** The
+/// two arms differed by only ~1.7 sd, neither was more than 1 sd from the
+/// baseline, and they are not paired samples (each arm emits different text).
 ///
-/// | arm | delivered feeds | p1 | p2_uncond |
-/// |---|---|---|---|
-/// | OFF (baseline) | — | 0.653 | 0.499 |
-/// | ON, `0..num_accepted` | 458 fed / 231 missed = 67% | 0.669 (+0.62 sd) | 0.520 (+0.80 sd) |
-/// | ON, `0..=num_accepted` | 713 fed / 5 missed = 99% | 0.633 (−0.78 sd) | 0.476 (−0.86 sd) |
+/// The mapping has since been VERIFIED DIRECTLY, with dumped hidden
+/// fingerprints (`ATLAS_MTP_REFEED_DEBUG=1`, FNV-1a over each BF16 row), on
+/// dgx2 / W4A4 27B / nd=2 / gate disarmed:
 ///
-/// The second row was a dose-response test: the exclusive bound left exactly
-/// one label unwritten per step (a verify step advances the sequence by
-/// `1 + num_accepted`), which collapsed the ring's contiguous `(start,count)`
-/// window and lost a third of the feeds. Closing that off-by-one took
-/// delivery from 67% to 99% — and the acceptance delta **reversed sign**.
+/// | check | result |
+/// |---|---|
+/// | ring D2D landed (`fp_src == fp_dst`) | 658 / 658 |
+/// | fed hidden == live ring content at that label | 422 / 422 |
+/// | `label == key + 1` and `RoPE == key + 1` on every feed | always |
+/// | `fp(ring[position]) == fp(mtp_hidden_save)` at each propose | 302 / 304 (the 2 are a run's first propose) |
+/// | **feed(key k) == `mtp_hidden_save` at the propose whose position was k+1** | **93 / 93** |
 ///
-/// Feeding MORE of these hiddens makes acceptance WORSE. That is positive
-/// evidence that the hidden being fed is misaligned with the pair key it is
-/// fed under — the label/row correspondence derived in `verify_k3_step` is
-/// wrong somewhere — and it retro-actively explains the +0.021 at 67% as
-/// noise (0.80 sd) rather than signal.
+/// The last row is the non-tautological one: it compares the hidden this
+/// feature feeds for pair key `k` against the hidden the drafter's own
+/// `forward_one` consumed as `target_hidden` when it wrote pair key `k` —
+/// two different code paths, bit-identical on every checkable case. So the
+/// convention "ring label n holds hidden_{n−1}, hence pair key k reads label
+/// k+1" is confirmed against an independently-exercised consumer.
 ///
-/// What survives: the DEFECT is still real and measured (unconditional
-/// acceptance 0.660 -> 0.485 -> 0.407, loss concentrated at the d=1->d=2
-/// hidden-state handoff), and the catch-up machinery demonstrably reaches the
-/// drafter (a wrong feed moved acceptance by ~0.9 sd, so a right one should
-/// too). What is wrong is this label mapping. Next session: re-derive which
-/// verify hidden row belongs to which pair key from first principles and
-/// verify it with a dumped hidden checksum before trusting any acceptance
-/// number.
+/// What the earlier session DID find is real and is now fixed: the exclusive
+/// `0..num_accepted` bound left one label unwritten per step, collapsing the
+/// ring's contiguous window (458 fed / 231 missed = 67%). The bound is now
+/// `0..=num_accepted` on both K=3 and K=4 (K=4 matters because
+/// `mtp_rows_to_trim`'s extra trim is K-agnostic — without a K=4 ring write,
+/// nd=3 would drop accepted drafter rows with nothing rebuilding them).
+///
+/// It stays default OFF pending its powered A/B (~10k verify steps per arm;
+/// with `ATLAS_MTP_GATE_FORCE=1` the engine is bit-reproducible, so n rises
+/// only with NEW CONTENT, never with repetitions).
+///
+/// CONTEXT FOR WHOEVER PICKS THIS UP: this lever is small by construction. It
+/// repairs at most `num_accepted − 1` drafter KV rows per step, and the
+/// measured p1->p2 cliff happens WITHIN a single `propose` — where a KV-history
+/// repair cannot act at all. Measured on the same box the same night, the
+/// drafter holds only **142 rows at sequence position 10,098** on a warm turn,
+/// because `try_mtp_prefill_capture` no-ops whenever a prefill starts at a
+/// reused-prefix boundary and the drafter prompt-prefill is then skipped. Cold
+/// (prefilled) vs warm (blind) acceptance measured +0.043 p1 / +0.067
+/// p2_uncond at n=10,400. Fix that first.
 pub fn mtp_refeed_accepted_enabled() -> bool {
     std::env::var("ATLAS_MTP_REFEED_ACCEPTED").ok().as_deref() == Some("1")
+}
+
+/// Deliberate off-by-N perturbation of the re-feed's ring LABEL
+/// (`ATLAS_MTP_REFEED_SHIFT`, default 0 = the derived mapping).
+///
+/// This is a MAPPING-VALIDATION hatch, not a tuning knob. The label
+/// convention (`label n holds hidden_{n-1}`, so pair key `k` reads label
+/// `k+1`) cannot be falsified by any self-consistent checksum: the only
+/// independently-exercised consumer of the verify hidden buffer is
+/// `save_hidden_for_mtp(num_accepted)`, which reads the SAME buffer at the
+/// SAME offset formula as the re-feed's `t = num_accepted` write, and the
+/// sequence positions strictly between two propose positions are never
+/// observed by any other code path. So the mapping is tested BEHAVIOURALLY
+/// instead: shift every re-fed label by ±1 and measure acceptance. A uniform
+/// shift keeps the ring contiguous (delivery is unchanged) but hands pair key
+/// `k` the hidden of position `k ± 1`. If the derived mapping is right,
+/// `shift = 0` must be the maximum of the three arms; if `+1` or `−1` wins,
+/// that arm IS the correct mapping. If all three are indistinguishable, the
+/// drafter's KV-history rows do not carry enough signal for this lever to
+/// work at all — which is itself the answer.
+pub fn mtp_refeed_shift() -> isize {
+    std::env::var("ATLAS_MTP_REFEED_SHIFT")
+        .ok()
+        .and_then(|v| v.parse::<isize>().ok())
+        .unwrap_or(0)
+        .clamp(-4, 4)
+}
+
+/// `ATLAS_MTP_REFEED_DEBUG=1`: fingerprint every hidden that enters and
+/// leaves the catch-up ring, so the pair-key -> hidden mapping can be read
+/// off the serve log instead of argued about. Costs a D2H of one hidden row
+/// (`h * 2` bytes) plus a stream sync per event — NEVER enable it in a timed
+/// leg. See `mtp_refeed_shift` for why the fingerprints alone cannot falsify
+/// the mapping, and what they DO establish (the ring's slot arithmetic and
+/// the pair-key bookkeeping round-trip).
+pub fn mtp_refeed_debug() -> bool {
+    std::env::var("ATLAS_MTP_REFEED_DEBUG").ok().as_deref() == Some("1")
+}
+
+/// FNV-1a over a BF16 GPU row, for `mtp_refeed_debug` fingerprints.
+pub fn hidden_fingerprint(gpu: &dyn GpuBackend, p: DevicePtr, h: usize) -> u64 {
+    let mut b = vec![0u8; h * 2];
+    if gpu.copy_d2h(p, &mut b).is_err() {
+        return 0;
+    }
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in &b {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    hash
 }
 
 pub trait DraftProposer: Send + Sync {
