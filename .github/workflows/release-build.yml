@@ -273,12 +273,16 @@ jobs:
           # would blow the runner's disk budget.
           $short = $v.Substring(0, $v.LastIndexOf('.'))
           # cublas/cublas_dev for the same cublasLt link the Linux side needs.
-          # cudart_dev supplies include/crt/host_config.h, which cuda_runtime.h
-          # includes unconditionally. Without it nvcc installs fine and the
-          # failure surfaces much later as C1083 during kernel compilation.
-          $args = @("-s", "nvcc_$short", "cudart_$short", "cudart_dev_$short",
-                    "nvrtc_$short", "nvrtc_dev_$short", "cuda_profiler_api_$short",
-                    "cublas_$short", "cublas_dev_$short", "thrust_$short")
+          # Install the FULL toolkit rather than naming sub-packages. Two
+          # rounds of guessing component names cost two cycles: `nvrtc_dev` /
+          # `cuda_profiler_api` were wrong on Linux, then `cudart_dev` /
+          # `thrust` are not valid Windows component names either and the
+          # installer rejected the whole command with exit -522190823 -- an
+          # opaque code that names neither the bad component nor the reason.
+          # The component list is not documented per-version anywhere stable,
+          # so `-s` alone (install everything) trades a few GB of runner disk
+          # for determinism. Windows runners have ~80 GB free on D:.
+          $args = @("-s")
           $p = Start-Process -FilePath .\cuda.exe -ArgumentList $args -Wait -PassThru -NoNewWindow
           if ($p.ExitCode -ne 0) { throw "CUDA installer exited $($p.ExitCode)" }
           $root = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$short"
