@@ -122,7 +122,17 @@ impl Qwen3AttentionLayer {
                 eps,
                 stream,
             )?;
-            self.ffn.forward_prefill(normed2, n, fwd, stream)?;
+            // n == 4 (the K=4 MTP verify width) has a cheaper arm than
+            // `forward_prefill`: the batched GEMV `forward_k4` reads each
+            // projection weight once for all four rows (~290 GB/s) where
+            // forward_prefill measured 54.8 ms/step across the FFN stack at
+            // M=4 (~156 GB/s). Wider verifies (DFlash gamma=16, n=17) keep
+            // forward_prefill -- forward_k4 is hard-wired to 4 rows.
+            // `try_forward_k4` returns false when the batched path is
+            // unavailable, leaving forward_prefill as the fallback.
+            if n != 4 || !self.ffn.try_forward_k4(normed2, fwd, stream)? {
+                self.ffn.forward_prefill(normed2, n, fwd, stream)?;
+            }
             let moe_out = fwd.buffers.moe_output();
             ops::residual_add(
                 fwd.gpu,

@@ -149,13 +149,28 @@ impl Qwen3SsmLayer {
         // forward_prefill at N>=4, which that path uses but which loses for
         // the 36-layer SSM stack.
         let normed_base = ctx.buffers.norm_output();
+        // n == 4: a dense FFN has a batched-GEMV verify path (`forward_k4`)
+        // that reads each projection weight ONCE for all four rows, instead of
+        // the per-token loop below that re-reads gate/up/down four times per
+        // layer. It was already wired into the batched multi-SEQUENCE decode
+        // path (`trait_decode_batched.rs`) but had no caller on this
+        // speculative-verify path, so a 4-token verify paid the per-token cost
+        // on every layer. Measured on dgx3 (27B, 16k ctx, gate forced off):
+        // verify-cost multiplier m = 1.147 at n=2 and 1.259 at n=3 -- both
+        // near the fused-kernel floor -- but 1.914 at n=4, which is why
+        // --num-drafts 3 measured BELOW --num-drafts 1 (14.07 vs 17.94 tok/s).
+        // `try_forward_k4` self-guards (dense FFN + batch4 kernel + NVFP4
+        // weights) and returns false when unavailable, in which case the
+        // original arms below run unchanged.
+        let k4_batched = n == 4 && self.ffn.try_forward_k4(normed_base, ctx, stream)?;
         match n {
-            2 | 3 => {
+            _ if n == 2 || n == 3 || k4_batched => {
                 if n == 2 {
                     self.ffn.forward_k2(normed_base, ctx, stream)?;
-                } else {
+                } else if n == 3 {
                     self.ffn.forward_k3(normed_base, ctx, stream)?;
                 }
+                // n == 4: `try_forward_k4` above already wrote moe_output[0..4].
                 // Batched output lives in moe_output[0..n].
                 for i in 0..n {
                     let hidden_i = hidden.offset(i * h * residual_elem);

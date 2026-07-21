@@ -118,6 +118,28 @@ impl FfnComponent {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<bool> {
+        // Report the outcome ONCE per process: a silent fallback here is the
+        // difference between "the batched K=4 verify path ran and did not
+        // help" and "the batched K=4 verify path was never taken", which
+        // need opposite follow-ups. Cheap: one atomic on a per-layer call.
+        let available = matches!(self, Self::Dense(d) if d.can_forward_k4());
+        static ANNOUNCE: std::sync::Once = std::sync::Once::new();
+        ANNOUNCE.call_once(|| {
+            if available {
+                tracing::info!(
+                    "K=4 verify FFN: batched-GEMV path ENGAGED (forward_k4; one weight \
+                     read per projection for all 4 rows)"
+                );
+            } else {
+                tracing::info!(
+                    "K=4 verify FFN: batched-GEMV path UNAVAILABLE (dense_ffn={}, \
+                     batch4_kernel+NVFP4_weights={}); falling back to the per-token / \
+                     prefill arm",
+                    matches!(self, Self::Dense(_)),
+                    available,
+                );
+            }
+        });
         match self {
             Self::Dense(d) if d.can_forward_k4() => {
                 d.forward_k4(input, ctx, stream)?;
