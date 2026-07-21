@@ -4351,6 +4351,13 @@ void int8_gemm_faith4(
         : "r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1), \
           "r"((d)[0]),"r"((d)[1]),"r"((d)[2]),"r"((d)[3]))
 
+// gfx1151 (RDNA3.5) has 64 KiB of LDS; this kernel's double-buffered tiles
+// need ~80 KiB, so SCALE rejects it with "local memory exceeds limit".
+// Shrinking the tile is a performance decision that needs gfx1151 hardware to
+// validate, and this kernel is listed in NEITHER kernels/gb10 nor
+// kernels/strix KERNEL.toml -- nothing loads it on either platform -- so it is
+// simply not built for SCALE. NVIDIA is unaffected.
+#if !defined(__SCALE__)
 extern "C" __global__
 __launch_bounds__(256, 1)
 void int8_gemm_mmq2(
@@ -4466,6 +4473,7 @@ void int8_gemm_mmq2(
         }
     }
 }
+#endif  // !__SCALE__
 #undef ATLAS_MMA_S8
 #undef M2_TILE
 #undef M2_SB
@@ -4926,6 +4934,13 @@ void int8_gemm_faith7(
         cp_async_pred_16(_wd, &B_i8[(unsigned long long)(cta_n+_row)*K+_gk], (cta_n+_row<N)&&(_gk+15<K)); \
         cp_async_pred_16(_ad, &A_i8[(unsigned long long)(cta_m+_row)*K+_gk], (cta_m+_row<M)&&(_gk+15<K)); \
     } } while(0)
+// gfx1151 (RDNA3.5) has 64 KiB of LDS; this kernel's double-buffered tiles
+// need ~80 KiB, so SCALE rejects it with "local memory exceeds limit".
+// Shrinking the tile is a performance decision that needs gfx1151 hardware to
+// validate, and this kernel is listed in NEITHER kernels/gb10 nor
+// kernels/strix KERNEL.toml -- nothing loads it on either platform -- so it is
+// simply not built for SCALE. NVIDIA is unaffected.
+#if !defined(__SCALE__)
 extern "C" __global__
 __launch_bounds__(256, 1)
 void int8_gemm_faith8(
@@ -5032,6 +5047,7 @@ void int8_gemm_faith8(
         }
     }
 }
+#endif  // !__SCALE__
 #undef ATLAS_MMA_S8
 #undef F8_LOAD_TILE
 #undef F2_TILE
@@ -5055,6 +5071,13 @@ void int8_gemm_faith8(
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
         : "r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1), \
           "r"((d)[0]),"r"((d)[1]),"r"((d)[2]),"r"((d)[3]))
+// gfx1151 (RDNA3.5) has 64 KiB of LDS; this kernel's double-buffered tiles
+// need ~80 KiB, so SCALE rejects it with "local memory exceeds limit".
+// Shrinking the tile is a performance decision that needs gfx1151 hardware to
+// validate, and this kernel is listed in NEITHER kernels/gb10 nor
+// kernels/strix KERNEL.toml -- nothing loads it on either platform -- so it is
+// simply not built for SCALE. NVIDIA is unaffected.
+#if !defined(__SCALE__)
 extern "C" __global__
 __launch_bounds__(256, 1)
 void int8_gemm_faith9(
@@ -5156,6 +5179,7 @@ void int8_gemm_faith9(
         }
     }
 }
+#endif  // !__SCALE__
 #undef ATLAS_MMA_S8
 #undef F2_TILE
 #undef F2_SB
