@@ -14,6 +14,7 @@ use crate::prefix_cache::{EvictedBlocks, PrefixCache, PrefixMatch};
 
 mod inner;
 mod snapshot;
+mod snapshot_dbg;
 mod snapshot_insert;
 mod snapshot_stats;
 mod snapshot_tier;

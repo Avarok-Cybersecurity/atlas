@@ -40,6 +40,21 @@ impl SsmSnapshotIndex {
             self.evictions_since_lookup = 0;
         }
         // Deepest matching prefix across BOTH resident and spilled entries.
+        //
+        // READ THIS BEFORE CONCLUDING THE SELECTOR IS LEAVING DEPTH ON THE TABLE
+        // (2026-07-21, dgx1): a serve log records a snapshot's POSITION but not
+        // its CONTENT, so grepping saves and hits and asking "did a save at a
+        // deeper position exist?" scores ~100% of warm hits as mis-selected —
+        // the previous turn's own end-of-prompt leaf and finish leaf ALWAYS sit
+        // between this turn's restore point and its prompt end. They cover the
+        // model's generated continuation, which the next prompt does not
+        // reproduce (re-rendered history + the chat template's generation-only
+        // suffix), so their prefix hash does not match and they are correctly
+        // rejected below. Classified in place with `ATLAS_SNAP_LOOKUP_DBG`, the
+        // measured count of selectable-but-not-selected entries is ZERO, and the
+        // selected depth is exactly `matched - bs` every time (the tail-checkpoint
+        // split in prefill_b.rs puts an anchor there for precisely this purpose).
+        // Use the dump, not the log positions.
         let mut best: Option<usize> = None;
         let mut best_depth = 0usize;
         for (i, entry) in self.entries.iter().enumerate() {
@@ -92,6 +107,15 @@ impl SsmSnapshotIndex {
             self.stats.recompute_tokens_on_miss += matched_tokens as u64;
             None
         };
+        if std::env::var_os("ATLAS_SNAP_LOOKUP_DBG").is_some() {
+            self.log_lookup_candidates(
+                tokens,
+                matched_tokens,
+                session_hash,
+                adapter_id,
+                result.as_ref().map(|m| m.token_count),
+            );
+        }
         self.log_stats_if_due();
         result
     }
