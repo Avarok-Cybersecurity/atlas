@@ -114,6 +114,7 @@ jobs:
           int cuStreamBeginCapture(void *a, int b) { (void)a; (void)b; return 100; }
           int cuStreamBeginCapture_v2(void *a, int b) { (void)a; (void)b; return 100; }
           int cuStreamEndCapture(void *a, void **b) { (void)a; (void)b; return 100; }
+          int cuStreamIsCapturing(void *a, unsigned int *b) { (void)a; (void)b; return 100; }
           int cuStreamWaitEvent(void *a, void *b, unsigned int c) { (void)a; (void)b; (void)c; return 100; }
           /* Modules + launch */
           int cuModuleLoadData(void **a, const void *b) { (void)a; (void)b; return 100; }
