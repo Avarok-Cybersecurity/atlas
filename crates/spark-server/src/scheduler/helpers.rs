@@ -870,16 +870,31 @@ mod hard_limit_tests {
         assert!(!seqlen_force_stop(8190, 8192), "room for one more token");
         assert!(seqlen_force_stop(8191, 8192), "next token would be at 8191");
         assert!(seqlen_force_stop(8192, 8192), "already at the ceiling");
-        assert!(seqlen_force_stop(9000, 8192), "past the ceiling never continues");
+        assert!(
+            seqlen_force_stop(9000, 8192),
+            "past the ceiling never continues"
+        );
     }
 
     #[test]
     fn hard_ceiling_hit_on_budget_or_seqlen() {
         // §C-1/§C-2: exhausted completion budget OR context ceiling reached.
-        assert!(hard_ceiling_hit(0, 10, 8192), "remaining==0 is a hard ceiling");
-        assert!(hard_ceiling_hit(500, 8191, 8192), "seq-len ceiling is a hard ceiling");
-        assert!(!hard_ceiling_hit(500, 10, 8192), "budget + room left → no ceiling");
-        assert!(!hard_ceiling_hit(500, 10, 0), "max_seq_len unset → only budget matters");
+        assert!(
+            hard_ceiling_hit(0, 10, 8192),
+            "remaining==0 is a hard ceiling"
+        );
+        assert!(
+            hard_ceiling_hit(500, 8191, 8192),
+            "seq-len ceiling is a hard ceiling"
+        );
+        assert!(
+            !hard_ceiling_hit(500, 10, 8192),
+            "budget + room left → no ceiling"
+        );
+        assert!(
+            !hard_ceiling_hit(500, 10, 0),
+            "max_seq_len unset → only budget matters"
+        );
     }
 
     #[test]

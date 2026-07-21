@@ -521,10 +521,8 @@ pub fn process_decode_logits(
         // generation cannot overrun. `remaining` already reflects this token's
         // decrement (thinking or content branch above); `a.seq.seq_len` is the
         // current KV position. No-op until a ceiling is actually hit.
-        let hard_ceiling =
-            hard_ceiling_hit(a.remaining, a.seq.seq_len, max_seq_len_ceiling());
-        let thinking_suppresses_eos =
-            eos_suppressed_by_thinking(a.inside_thinking, hard_ceiling);
+        let hard_ceiling = hard_ceiling_hit(a.remaining, a.seq.seq_len, max_seq_len_ceiling());
+        let thinking_suppresses_eos = eos_suppressed_by_thinking(a.inside_thinking, hard_ceiling);
         // Post-thinking EOS guard. Empirically (dump fix22b 2026-04-25
         // ses_23b4781f7ffebc7UgkKWedTmjd seq=43): when the thinking-loop
         // watchdog force-closes `</think>` mid-narration, the model can
