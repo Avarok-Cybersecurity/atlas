@@ -12,9 +12,14 @@ use anyhow::Result;
 
 use crate::group::{GroupKey, GroupLayout, KvKind};
 
+// io_uring is a Linux kernel interface with no analogue elsewhere; the
+// portable `posix` backend (positional read/write via atlas_tier::pio) is what
+// non-Linux builds use.
+#[cfg(target_os = "linux")]
 pub mod io_uring;
 pub mod posix;
 
+#[cfg(target_os = "linux")]
 pub use self::io_uring::IoUringBackend;
 pub use posix::PosixBackend;
 

@@ -82,64 +82,71 @@ pub use model_dims::ModelDims;
 // assumption, and io_uring has no Windows analogue at all. The whole NVMe /
 // RDMA cold-tier stack below is therefore unix-only, and a Windows `spark`
 // binary is built without it rather than against an unvalidated IOCP port.
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub mod layout;
 
 // CUDA-only modules: each holds raw `cu*` FFI calls or a `DeviceBuffer`,
 // or transitively imports from the cuda_* modules above. Gated together
 // because separating them would just smear the boundary.
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub mod backend;
-#[cfg(all(feature = "cuda", unix))]
+// The tier micro-benchmark drives io_uring directly (submission queues, not
+// the StorageBackend trait), so it is Linux-only along with io_uring itself.
+#[cfg(all(feature = "cuda", target_os = "linux"))]
 pub mod bench;
 // T1 write-back cache composite (wraps any StorageBackend). cuda but not verbs.
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub mod cascade_backend;
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub mod expert_arena;
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub mod expert_tier;
+// RDMA expert staging needs rdma-core (libibverbs), which is Linux-only.
 #[cfg(all(feature = "cuda", unix))]
 pub mod expert_tier_rdma;
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub mod high_speed_swap;
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub mod predictor;
-#[cfg(all(feature = "cuda", unix))]
+// Capability probe for cuFile / GPUDirect Storage, which NVIDIA ships for
+// Linux only. There is nothing to probe on other platforms.
+#[cfg(all(feature = "cuda", target_os = "linux"))]
 pub mod probe;
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub mod scratch_pool;
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub mod tiled_attention;
 // RDMA weight loader — the cuda client of `weight_peer` that one-sided-READs a
 // model's tensors into a `spark_runtime::weights::WeightStore` for fast swaps.
 // RDMA-stage a PEFT adapter's A/B tensors straight into a resident LoRA pool
 // slot (reuses the weight_peer manifest + wire; landing byte-identical to the
 // disk pack).
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub mod weight_lora_rdma;
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub mod weight_tier_rdma;
 
-#[cfg(all(feature = "cuda", unix))]
-pub use backend::{IoUringBackend, PosixBackend, ReadRequest, StorageBackend};
+#[cfg(feature = "cuda")]
+pub use backend::{PosixBackend, ReadRequest, StorageBackend};
+// io_uring is Linux-only; everything else in the tier is portable.
+#[cfg(all(feature = "cuda", target_os = "linux"))]
+pub use backend::IoUringBackend;
 pub use config::HighSpeedSwapConfig;
 pub use eviction::EvictionPolicy;
 pub use expert::{
     ExpertKey, ExpertLayout, ExpertRecordHeader, ExpertRecordId, ExpertRecordSpec, Proj, ProjBytes,
 };
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub use expert_arena::ExpertArena;
-#[cfg(unix)]
 pub use expert_pack::{ExpertFileReader, ExpertFileWriter};
 pub use expert_pack::{ExpertIndex, ProjData, ProjView, pack_record, unpack_record};
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub use expert_tier::{
     ArenaSlot, ExpertResidency, ExpertTier, PosixTier, TierKind, UmaArenaTier, open_tier,
 };
 #[cfg(all(feature = "cuda", unix))]
 pub use expert_tier_rdma::RdmaTier;
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub use high_speed_swap::{HighSpeedSwap, install_local, local_installed, with_local};
 #[cfg(all(feature = "cuda", atlas_rdma_verbs))]
 pub use kv_paging::KvPagingBackend;
@@ -165,24 +172,23 @@ mod rdma_verbs_probe_tests;
 // absent), `local_installed` is false, and `install_local` bails — see
 // `stubs.rs` for rationale.
 //
-// The gate is `not(all(cuda, unix))`, not `not(cuda)`: the real orchestrator is
-// CUDA + GDS + io_uring, so it needs BOTH. Gating on the feature alone was
-// correct only while cuda implied Linux; a CUDA build on Windows has no
-// io_uring and must land here too.
-#[cfg(not(all(feature = "cuda", unix)))]
+// Gated on the cuda feature alone: the orchestrator itself is now portable
+// (its backend is an alias -- io_uring on Linux, the positional-I/O backend
+// elsewhere), so a Windows CUDA build gets the REAL tier, not this stub.
+#[cfg(not(feature = "cuda"))]
 mod stubs;
-#[cfg(not(all(feature = "cuda", unix)))]
+#[cfg(not(feature = "cuda"))]
 pub use stubs::{HighSpeedSwap, install_local, local_installed, with_local};
 
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub use predictor::{Predictor, PredictorDims};
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(all(feature = "cuda", target_os = "linux"))]
 pub use probe::{Backend, ProbeConfig, ProbeResult, run_probe};
 pub use projection::{PredictorShape, build_projection};
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub use tiled_attention::{TiledAttention, TiledAttentionDims};
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub use weight_lora_rdma::{LoraAbKind, LoraLandTarget, RdmaLoraLoader};
 pub use weight_peer::{WeightManifest, WeightTensorRecord};
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(feature = "cuda")]
 pub use weight_tier_rdma::RdmaWeightLoader;

@@ -33,8 +33,6 @@ pub(crate) mod impl_b1;
 pub(crate) mod impl_b2;
 pub(crate) mod impl_b3;
 pub(crate) mod impl_lora;
-// Consumes the RDMA LoRA loader; unix-only with it.
-#[cfg(unix)]
 pub(crate) mod impl_lora_swap;
 pub(crate) mod ssm_pool;
 pub(crate) mod ssm_snapshot;
