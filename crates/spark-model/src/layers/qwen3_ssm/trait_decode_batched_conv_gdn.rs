@@ -117,13 +117,24 @@ impl Qwen3SsmLayer {
                     1e-6,
                     stream,
                 )?;
-                // Skip t == K-1: no reader exists. `commit_accepted_prefix`
-                // early-returns on full accept, so it only ever indexes
-                // `num_accepted - 1 <= k - 2`; the K=2/3/4 schedulers call it
-                // with (n, k) pairs whose max n is k-1; and
+                // Skip t == K-1: no reader exists, and that is ENFORCED, not
+                // merely argued. `commit_accepted_prefix` now bails on both
+                // `num_accepted == 0` and `num_accepted > k` and early-returns
+                // on `num_accepted == k`, so its reachable intermediate index
+                // is exactly [0, k-2] (async_chkpt.rs). The other two readers
+                // are bounded by their callers: `rollback_ssm_states` is only
+                // called from the self-spec path under
+                // `if a.seq.seq_len > expected_seq_len` (spec_step.rs:158),
+                // which means at least one draft was REJECTED, so
+                // `num_accepted + 1 <= K-1` and the index is <= K-2; and
                 // `start_rollback_and_checkpoint_async` is only ever called
-                // with 1..=K-1 (impl_a2.rs, spec_step.rs). Writing it cost a
-                // conv_bytes D2D per SSM layer per verify step for nothing.
+                // with 1..=K-1 (impl_a2.rs:450-509, spec_step.rs:340).
+                // DFlash cannot reach these branches at all: it dispatches
+                // only at `drafts.len() >= 4` (mtp_step.rs:308), i.e. verify
+                // width >= 5, which lands on K=17 or the sequential fallback,
+                // both of which still write every intermediate.
+                // Writing it cost a conv_bytes D2D per SSM layer per verify
+                // step for nothing (measured: 0.14% of decode GPU time).
                 if t + 1 < 4 {
                     ctx.gpu.copy_d2d_async(
                         ssm_state.conv_state,

@@ -196,6 +196,31 @@ impl TransformerModel {
     ) -> Result<()> {
         use crate::layer::SsmLayerState;
 
+        // Width invariant. Together with the `num_accepted == 0` guard below
+        // this pins the reachable intermediate index to exactly [0, k-2],
+        // which is the invariant the fused K=2/3/4 verify paths rely on when
+        // they skip writing `conv_state_intermediates[k-1]`
+        // (qwen3_ssm/trait_decode_batched_conv_gdn.rs). Enforcing it here
+        // turns that from a global argument about callers into a locally
+        // checked precondition: if a caller ever passes a width that would
+        // reach index k-1, it errors here instead of silently reading a slot
+        // the kernel no longer writes.
+        //
+        // `num_accepted > k` is nonsense (more tokens committed than
+        // verified) and is the shape a bonus-token off-by-one would take —
+        // e.g. DFlash passing `gamma` instead of `gamma + 1` as `k` while
+        // passing `num_accepted + 1`. Today `verify_dflash_step.rs` passes
+        // `k_verify = drafts.len() + 1` against `total_accepted =
+        // num_accepted + 1`, so the two agree; this catches the day they
+        // stop agreeing.
+        if num_accepted > k {
+            anyhow::bail!(
+                "commit_accepted_prefix: num_accepted ({num_accepted}) > k ({k}) — more \
+                 tokens committed than were verified. Check that the caller's `k` is the \
+                 VERIFY WIDTH (drafts + 1), not the draft count."
+            );
+        }
+
         // Full accept: the verify kernel's final h_state/conv_state is
         // already the canonical committed state — nothing to do.
         if num_accepted == k {
