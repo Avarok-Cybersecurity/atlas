@@ -12,6 +12,61 @@ static K3_ACCEPT_2: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 static K3_ACCEPT_1: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static K3_ACCEPT_0: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+// UNCONDITIONAL per-position draft-match counters (2026-07-21).
+//
+// The accept-chain (`num_accepted`) short-circuits: if draft 1 is rejected,
+// draft 2 is discarded WITHOUT being scored, so the only rate the chain can
+// report for position 2 is the CONDITIONAL p(2|1). Measured p1 ~= 0.70 but
+// p(2|1) ~= 0.53, and it is not possible to tell from the chain alone whether
+// position 2 is genuinely worse or whether p(2|1) is a survivorship artifact
+// (position 2 is only ever scored on contexts where position 1 already
+// succeeded, which is a biased sample).
+//
+// The verify step already computes the target argmax at EVERY position
+// (`v0`, `v1`, `v2`) in one batched pass, so `drafts[1] == v1` is observable
+// on every step regardless of whether `drafts[0] == v0`. That is the
+// unconditional rate. Caveat worth remembering when reading it: `v1` is the
+// target's argmax GIVEN `drafts[0]` as the preceding token, so when draft 1
+// was wrong this measures the drafter on a counterfactual context — which is
+// exactly the comparison we want (same position, unbiased sample of contexts).
+static K3_STEPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static K3_D1_MATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static K3_D2_MATCH_UNCOND: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static K3_D2_MATCH_COND: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[inline]
+fn k3_record_positional(d1_match: bool, d2_match: bool, seq_len: usize) {
+    K3_STEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if d1_match {
+        K3_D1_MATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if d2_match {
+            K3_D2_MATCH_COND.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    if d2_match {
+        K3_D2_MATCH_UNCOND.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    if K3_STEPS.load(std::sync::atomic::Ordering::Relaxed) >= K3_SUMMARY_PERIOD {
+        let steps = K3_STEPS.swap(0, std::sync::atomic::Ordering::Relaxed).max(1);
+        let d1 = K3_D1_MATCH.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let d2u = K3_D2_MATCH_UNCOND.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let d2c = K3_D2_MATCH_COND.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let p1 = (d1 as f64) / (steps as f64);
+        let p2_uncond = (d2u as f64) / (steps as f64);
+        let p2_cond = if d1 > 0 {
+            (d2c as f64) / (d1 as f64)
+        } else {
+            f64::NAN
+        };
+        tracing::info!(
+            "K3 positional: steps={steps} p1={p1:.3} p2_uncond={p2_uncond:.3} \
+             p2_cond={p2_cond:.3} (d1={d1} d2u={d2u} d2c={d2c}) seq_len={seq_len} \
+             [p2_uncond ~= p2_cond => position 2 genuinely worse; \
+              p2_uncond ~= p1 => p2_cond is survivorship]"
+        );
+    }
+}
+
 #[inline]
 fn k3_record_outcome(num_accepted: usize, seq_len: usize) {
     let counter = match num_accepted {
@@ -127,6 +182,11 @@ pub fn step_verify_k3(
     } else {
         2
     };
+
+    // Unconditional per-position draft match — scored BEFORE the accept chain
+    // short-circuits, so position 2 is measured on every step, not only on the
+    // steps where position 1 happened to succeed.
+    k3_record_positional(drafts[0] == v0, drafts[1] == v1, a.seq.seq_len);
 
     // Extract logprobs from verify logits buffer (K=3 positions) when requested.
     let verify_lps = if let Some(top_logprobs) = a.top_logprobs {
