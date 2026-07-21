@@ -9,6 +9,13 @@ on:
   # installs. Defined once here; release.yml calls it rather than copying it.
   workflow_call:
 
+# Least privilege: CI only reads the repo. Without an explicit block the
+# GITHUB_TOKEN inherits the repository default, which can be write — flagged by
+# CodeQL (code-scanning/32) once this workflow gained the release-matrix job.
+# The reusable workflows it calls inherit this and declare the same.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
