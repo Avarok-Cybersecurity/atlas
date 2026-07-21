@@ -75,66 +75,71 @@ pub use model_dims::ModelDims;
 
 // `layout` opens disk files with `O_DIRECT` and pre-allocates via
 // `posix_fallocate` — both Linux-specific. Only the cuda-side modules
-// (high_speed_swap, backend/io_uring, backend/posix) consume it, so
-// gating it on the cuda feature is sufficient.
-#[cfg(feature = "cuda")]
+// (high_speed_swap, backend/io_uring, backend/posix) consume it.
+//
+// The gate is `all(cuda, unix)`, NOT `cuda` alone: gating on the feature was
+// only ever sufficient because cuda implied Linux. CUDA on Windows breaks that
+// assumption, and io_uring has no Windows analogue at all. The whole NVMe /
+// RDMA cold-tier stack below is therefore unix-only, and a Windows `spark`
+// binary is built without it rather than against an unvalidated IOCP port.
+#[cfg(all(feature = "cuda", unix))]
 pub mod layout;
 
 // CUDA-only modules: each holds raw `cu*` FFI calls or a `DeviceBuffer`,
 // or transitively imports from the cuda_* modules above. Gated together
 // because separating them would just smear the boundary.
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub mod backend;
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub mod bench;
 // T1 write-back cache composite (wraps any StorageBackend). cuda but not verbs.
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub mod cascade_backend;
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub mod expert_arena;
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub mod expert_tier;
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub mod expert_tier_rdma;
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub mod high_speed_swap;
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub mod predictor;
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub mod probe;
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub mod scratch_pool;
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub mod tiled_attention;
 // RDMA weight loader — the cuda client of `weight_peer` that one-sided-READs a
 // model's tensors into a `spark_runtime::weights::WeightStore` for fast swaps.
 // RDMA-stage a PEFT adapter's A/B tensors straight into a resident LoRA pool
 // slot (reuses the weight_peer manifest + wire; landing byte-identical to the
 // disk pack).
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub mod weight_lora_rdma;
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub mod weight_tier_rdma;
 
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub use backend::{IoUringBackend, PosixBackend, ReadRequest, StorageBackend};
 pub use config::HighSpeedSwapConfig;
 pub use eviction::EvictionPolicy;
 pub use expert::{
     ExpertKey, ExpertLayout, ExpertRecordHeader, ExpertRecordId, ExpertRecordSpec, Proj, ProjBytes,
 };
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub use expert_arena::ExpertArena;
 #[cfg(unix)]
 pub use expert_pack::{ExpertFileReader, ExpertFileWriter};
 pub use expert_pack::{ExpertIndex, ProjData, ProjView, pack_record, unpack_record};
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub use expert_tier::{
     ArenaSlot, ExpertResidency, ExpertTier, PosixTier, TierKind, UmaArenaTier, open_tier,
 };
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub use expert_tier_rdma::RdmaTier;
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub use high_speed_swap::{HighSpeedSwap, install_local, local_installed, with_local};
 #[cfg(all(feature = "cuda", atlas_rdma_verbs))]
 pub use kv_paging::KvPagingBackend;
@@ -164,15 +169,15 @@ mod stubs;
 #[cfg(not(feature = "cuda"))]
 pub use stubs::{HighSpeedSwap, install_local, local_installed, with_local};
 
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub use predictor::{Predictor, PredictorDims};
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub use probe::{Backend, ProbeConfig, ProbeResult, run_probe};
 pub use projection::{PredictorShape, build_projection};
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub use tiled_attention::{TiledAttention, TiledAttentionDims};
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub use weight_lora_rdma::{LoraAbKind, LoraLandTarget, RdmaLoraLoader};
 pub use weight_peer::{WeightManifest, WeightTensorRecord};
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub use weight_tier_rdma::RdmaWeightLoader;
