@@ -160,6 +160,20 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Add the target to the PINNED toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          # rust-toolchain.toml pins 1.93.1, so that -- not `stable` -- is the
+          # toolchain cargo actually uses. The action above installs the target
+          # for `stable` (1.97.1), which leaves the pinned toolchain without
+          # it. Host-target rows never noticed; the one CROSS row
+          # (x86_64-apple-darwin on an arm64 runner) failed with
+          # `E0463: can't find crate for core`. Idempotent where already present.
+          rustup target add ${{ matrix.target }}
+          rustup show active-toolchain
+          rustup target list --installed
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.id }}
