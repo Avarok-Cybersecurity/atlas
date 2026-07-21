@@ -316,6 +316,23 @@ jobs:
           $llvm = "C:\Program Files\LLVM\bin"
           if (Test-Path $llvm) { "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append }
           cmake --version
+          # The CUDA import libraries (cuda.lib, cudart.lib, nvrtc.lib,
+          # cublasLt.lib -- everything the build scripts emit
+          # `rustc-link-lib=dylib=` for) live in $CUDA_PATH\lib\x64, which is
+          # not on the MSVC default search path. Without it the whole build
+          # compiles and then dies at link with LNK1181.
+          #
+          # This runs AFTER msvc-dev-cmd ON PURPOSE: that action rewrites LIB
+          # wholesale, so appending in the CUDA install step above would be
+          # silently discarded. Order is the fix, not just the value.
+          $cudaLib = "$env:CUDA_PATH\lib\x64"
+          foreach ($l in @("cuda.lib", "cudart.lib", "nvrtc.lib", "cublasLt.lib")) {
+            if (-not (Test-Path "$cudaLib\$l")) {
+              Get-ChildItem $cudaLib -Name -ErrorAction SilentlyContinue | Select-Object -First 20
+              throw "$l missing from $cudaLib"
+            }
+          }
+          "LIB=$env:LIB;$cudaLib" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Install NCCL
         if: contains(matrix.toolchain, 'nccl')
