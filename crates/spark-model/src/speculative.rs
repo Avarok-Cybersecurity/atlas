@@ -143,15 +143,30 @@ pub fn mtp_catchup_enabled() -> bool {
 /// STAYS DEFAULT OFF pending the standard gates (C2 smoke, A 35B
 /// webserver_ok, B/D ST-995).
 ///
-/// CONTEXT FOR WHOEVER PICKS THIS UP: this lever is small by construction. It
-/// repairs at most `num_accepted − 1` drafter KV rows per step, and the
-/// measured p1->p2 cliff happens WITHIN a single `propose` — where a KV-history
-/// repair cannot act at all. Measured on the same box the same night, the
-/// drafter holds only **142 rows at sequence position 10,098** on a warm turn,
-/// because `try_mtp_prefill_capture` no-ops whenever a prefill starts at a
-/// reused-prefix boundary and the drafter prompt-prefill is then skipped. Cold
-/// (prefilled) vs warm (blind) acceptance measured +0.043 p1 / +0.067
-/// p2_uncond at n=10,400. Fix that first.
+/// ## SIZE IT AGAINST THE REAL PRIZE BEFORE SPENDING ANY MORE TIME HERE
+///
+/// This lever is small BY CONSTRUCTION: it repairs at most
+/// `num_accepted − 1` drafter KV **history** rows per step, while the measured
+/// p1->p2 cliff happens WITHIN a single `propose`, where a history repair
+/// cannot act at all. Two larger effects were measured the same night:
+///
+/// 1. **The drafter's own INPUT hidden at draft position >= 2** (dgx1's
+///    teacher-forced oracle probe, `ATLAS_MTP_ORACLE_P2`): feeding draft 2 the
+///    TARGET's true hidden instead of the MTP head's own takes p2_cond
+///    0.5265 -> 0.7196, McNemar z = +18.4, recovering 1.40x the p1−p2 gap.
+///    "Exposure bias" is refuted — the drafter is not mis-calibrated, it is
+///    fed the wrong vector. That is **+0.193**, about **7x** this flag's
+///    +0.027.
+/// 2. **Drafter context blindness on WARM turns** (dgx2): the drafter holds
+///    only **142 KV rows at sequence position 10,098**, because
+///    `try_mtp_prefill_capture` no-ops whenever a prefill starts at a
+///    reused-prefix boundary and the drafter prompt-prefill is then skipped.
+///    Prefilling it on every turn measured **+0.086 p1 / +0.101 p2_uncond /
+///    +10.2% accepted tokens per verify step** at n ~ 10k per arm.
+///
+/// Both dwarf this flag, and (2) also changes what this flag is worth: a
+/// drafter that can actually see the prompt is a different drafter. **Build
+/// (2) first, then re-measure this.**
 pub fn mtp_refeed_accepted_enabled() -> bool {
     std::env::var("ATLAS_MTP_REFEED_ACCEPTED").ok().as_deref() == Some("1")
 }
