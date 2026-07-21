@@ -35,7 +35,9 @@ pub use windows::DirectSwapFile;
 #[allow(dead_code)]
 pub(crate) fn validate_record_bytes(record_bytes: usize) -> anyhow::Result<()> {
     if record_bytes == 0 || !record_bytes.is_multiple_of(4096) {
-        anyhow::bail!("DirectSwapFile: record_bytes ({record_bytes}) must be a non-zero 4 KiB multiple");
+        anyhow::bail!(
+            "DirectSwapFile: record_bytes ({record_bytes}) must be a non-zero 4 KiB multiple"
+        );
     }
     Ok(())
 }
