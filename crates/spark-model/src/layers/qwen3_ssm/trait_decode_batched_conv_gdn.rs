@@ -117,12 +117,21 @@ impl Qwen3SsmLayer {
                     1e-6,
                     stream,
                 )?;
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.conv_state,
-                    ssm_state.conv_state_intermediates[t as usize],
-                    conv_bytes,
-                    stream,
-                )?;
+                // Skip t == K-1: no reader exists. `commit_accepted_prefix`
+                // early-returns on full accept, so it only ever indexes
+                // `num_accepted - 1 <= k - 2`; the K=2/3/4 schedulers call it
+                // with (n, k) pairs whose max n is k-1; and
+                // `start_rollback_and_checkpoint_async` is only ever called
+                // with 1..=K-1 (impl_a2.rs, spec_step.rs). Writing it cost a
+                // conv_bytes D2D per SSM layer per verify step for nothing.
+                if t + 1 < 4 {
+                    ctx.gpu.copy_d2d_async(
+                        ssm_state.conv_state,
+                        ssm_state.conv_state_intermediates[t as usize],
+                        conv_bytes,
+                        stream,
+                    )?;
+                }
             }
 
             // WY-chunkwise GDN: 2-pass algorithm for 4-token verification.
@@ -174,12 +183,15 @@ impl Qwen3SsmLayer {
                     1e-6,
                     stream,
                 )?;
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.conv_state,
-                    ssm_state.conv_state_intermediates[t as usize],
-                    conv_bytes,
-                    stream,
-                )?;
+                // Skip t == K-1 (dead write — see the K=4 branch above).
+                if t + 1 < 3 {
+                    ctx.gpu.copy_d2d_async(
+                        ssm_state.conv_state,
+                        ssm_state.conv_state_intermediates[t as usize],
+                        conv_bytes,
+                        stream,
+                    )?;
+                }
             }
 
             let q_ptr = conv_out_buf;
@@ -235,12 +247,10 @@ impl Qwen3SsmLayer {
                     1e-6,
                     stream,
                 )?;
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.conv_state,
-                    ssm_state.conv_state_intermediates[1],
-                    conv_bytes,
-                    stream,
-                )?;
+                // intermediates[1] (= K-1) is NOT written: the committed
+                // post-t1 window is already live in conv_state and the
+                // full-accept path early-returns without reading it. See the
+                // K=4 branch for the reader enumeration.
             } else {
                 let qkv_0 = deinterleaved;
                 let conv_out_0 = conv_out_buf;
@@ -283,12 +293,8 @@ impl Qwen3SsmLayer {
                     1e-6,
                     stream,
                 )?;
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.conv_state,
-                    ssm_state.conv_state_intermediates[1],
-                    conv_bytes,
-                    stream,
-                )?;
+                // intermediates[1] (= K-1) is NOT written — dead write, see
+                // the K=4 branch for the reader enumeration.
             }
 
             let q_ptr = conv_out_buf;
