@@ -48,7 +48,6 @@ env:
   # old for the target architecture. Defined once here.
   CUDA_APT_VERSION: "13-0"
   CUDA_DOT_VERSION: "13.0"
-  CUDA_FULL_VERSION: "13.0.2"
   # NOTE: CUDARC_CUDA_VERSION is deliberately NOT set here. Workflow-level
   # `env` overrides values written to $GITHUB_ENV by an earlier step, so
   # declaring it here would defeat the SCALE step's 12080 override and build
@@ -177,14 +176,18 @@ jobs:
         if: matrix.os == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
+          # libibverbs/librdmacm: atlas-rdma compiles src/rdma_shim.c against
+          # <infiniband/verbs.h> on every non-macOS target. Same dependency
+          # #339 added to the DeepSeek-V4 builder stage.
+          sudo apt-get install -y --no-install-recommends \
+            cmake clang libclang-dev libibverbs-dev librdmacm-dev
 
       - name: Install build deps (macos)
         if: matrix.os == 'macos'
         run: brew install cmake llvm
 
-      - name: Install CUDA toolkit (linux)
-        if: startsWith(matrix.toolchain, 'cuda') && matrix.os == 'linux'
+      - name: Install CUDA toolkit
+        if: startsWith(matrix.toolchain, 'cuda')
         run: |
           set -euo pipefail
           # Installed straight from NVIDIA's apt repo rather than via the
@@ -217,19 +220,6 @@ jobs:
             echo "CUDARC_CUDA_VERSION=13000"
           } >> "$GITHUB_ENV"
           echo "$cuda_root/bin" >> "$GITHUB_PATH"
-
-      - name: Install CUDA toolkit (windows)
-        if: startsWith(matrix.toolchain, 'cuda') && matrix.os == 'windows'
-        uses: Jimver/cuda-toolkit@v0.2.19
-        with:
-          cuda: ${{ env.CUDA_FULL_VERSION }}
-          method: network
-          sub-packages: '["nvcc", "cudart", "nvrtc", "nvrtc_dev", "profiler_api"]'
-
-      - name: Pin cudarc CUDA version (windows)
-        if: startsWith(matrix.toolchain, 'cuda') && matrix.os == 'windows'
-        shell: bash
-        run: echo "CUDARC_CUDA_VERSION=13000" >> "$GITHUB_ENV"
 
       - name: Install NCCL
         if: contains(matrix.toolchain, 'nccl')

@@ -76,16 +76,5 @@
     "toolchain": "none",
     "experimental": true,
     "pr_validate": true
-  },
-  {
-    "id": "windows-x86_64-nvidia-cuda",
-    "os": "windows",
-    "runner": "windows-2022",
-    "target": "x86_64-pc-windows-msvc",
-    "platform": "nvidia",
-    "cargo_features": "--no-default-features --features cuda",
-    "toolchain": "cuda",
-    "experimental": true,
-    "pr_validate": true
   }
 ]
