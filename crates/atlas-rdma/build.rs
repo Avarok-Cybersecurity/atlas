@@ -3,7 +3,7 @@
 // Build script for atlas-rdma. It compiles the one-sided RDMA verbs C shim
 // and decides `cfg(atlas_rdma_verbs)` for the whole workspace:
 //
-//   * cfg ON  ⇔ target_os != macos AND !skip_build()   (unchanged semantics)
+//   * cfg ON  ⇔ target_os == linux AND !skip_build()  (rdma-core is Linux-only)
 //   * skip_build() honours ATLAS_SKIP_BUILD / SKIP_ATLAS_BUILD ∈ {1,true,TRUE}
 //     — the CPU/CI convention for hosts without rdma-core dev headers. There
 //     is deliberately NO header probing: on Linux with the skip unset and
@@ -41,8 +41,12 @@ fn main() {
         return;
     }
 
-    // Apple Silicon hosts have no rdma-core; the verbs module compiles out.
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+    // rdma-core (libibverbs) is a LINUX-ONLY library, so gate positively on
+    // linux rather than excluding macOS. The old `!= macos` predicate meant
+    // every other target — Windows, the BSDs — tried to compile rdma_shim.c
+    // against <infiniband/verbs.h>, a header that cannot exist there, and
+    // failed in cc with a missing include rather than compiling out cleanly.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
         return;
     }
     if skip_build() {

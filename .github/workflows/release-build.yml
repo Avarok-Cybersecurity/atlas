@@ -48,6 +48,7 @@ env:
   # old for the target architecture. Defined once here.
   CUDA_APT_VERSION: "13-0"
   CUDA_DOT_VERSION: "13.0"
+  CUDA_FULL_VERSION: "13.0.2"
   # NOTE: CUDARC_CUDA_VERSION is deliberately NOT set here. Workflow-level
   # `env` overrides values written to $GITHUB_ENV by an earlier step, so
   # declaring it here would defeat the SCALE step's 12080 override and build
@@ -186,8 +187,8 @@ jobs:
         if: matrix.os == 'macos'
         run: brew install cmake llvm
 
-      - name: Install CUDA toolkit
-        if: startsWith(matrix.toolchain, 'cuda')
+      - name: Install CUDA toolkit (linux)
+        if: startsWith(matrix.toolchain, 'cuda') && matrix.os == 'linux'
         run: |
           set -euo pipefail
           # Installed straight from NVIDIA's apt repo rather than via the
@@ -220,6 +221,41 @@ jobs:
             echo "CUDARC_CUDA_VERSION=13000"
           } >> "$GITHUB_ENV"
           echo "$cuda_root/bin" >> "$GITHUB_PATH"
+
+      - name: Install CUDA toolkit (windows)
+        if: startsWith(matrix.toolchain, 'cuda') && matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          # NVIDIA's own silent network installer. The cuda-toolkit action has
+          # no 13.0.2 ("Version not available"), and pinning an older CUDA
+          # would contradict what this repo targets everywhere else.
+          $v = "${{ env.CUDA_FULL_VERSION }}"
+          $url = "https://developer.download.nvidia.com/compute/cuda/$v/network_installers/cuda_${v}_windows_network.exe"
+          Write-Host "downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile cuda.exe -UseBasicParsing
+          # Sub-packages are version-suffixed; installing the full toolkit
+          # would blow the runner's disk budget.
+          $short = $v.Substring(0, $v.LastIndexOf('.'))
+          $args = @("-s", "nvcc_$short", "cudart_$short", "nvrtc_$short",
+                    "nvrtc_dev_$short", "cuda_profiler_api_$short")
+          $p = Start-Process -FilePath .\cuda.exe -ArgumentList $args -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "CUDA installer exited $($p.ExitCode)" }
+          $root = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$short"
+          if (-not (Test-Path "$root\bin\nvcc.exe")) { throw "nvcc missing at $root" }
+          & "$root\bin\nvcc.exe" --version | Select-Object -Last 2
+          "CUDA_PATH=$root"          | Out-File -FilePath $env:GITHUB_ENV -Append
+          "CUDA_HOME=$root"          | Out-File -FilePath $env:GITHUB_ENV -Append
+          "CUDARC_CUDA_VERSION=13000"| Out-File -FilePath $env:GITHUB_ENV -Append
+          "$root\bin"               | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Install build deps (windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          # bindgen (xgrammar) needs libclang; windows-2022 ships LLVM.
+          $llvm = "C:\Program Files\LLVM\bin"
+          if (Test-Path $llvm) { "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append }
+          cmake --version
 
       - name: Install NCCL
         if: contains(matrix.toolchain, 'nccl')

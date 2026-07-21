@@ -17,7 +17,10 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::expert::{ExpertKey, ExpertLayout, ExpertRecordHeader, ExpertRecordSpec, Proj};
+use crate::expert::{ExpertLayout, ExpertRecordHeader, ExpertRecordSpec, Proj};
+// Only the unix-gated packing path names this type.
+#[cfg(unix)]
+use crate::expert::ExpertKey;
 
 /// Borrowed packed+scale bytes for one projection, as they will sit on disk
 /// (prefill-resident / transposed layout).
