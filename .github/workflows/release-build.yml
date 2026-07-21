@@ -273,14 +273,26 @@ jobs:
           # would blow the runner's disk budget.
           $short = $v.Substring(0, $v.LastIndexOf('.'))
           # cublas/cublas_dev for the same cublasLt link the Linux side needs.
-          $args = @("-s", "nvcc_$short", "cudart_$short", "nvrtc_$short",
-                    "nvrtc_dev_$short", "cuda_profiler_api_$short",
-                    "cublas_$short", "cublas_dev_$short")
+          # cudart_dev supplies include/crt/host_config.h, which cuda_runtime.h
+          # includes unconditionally. Without it nvcc installs fine and the
+          # failure surfaces much later as C1083 during kernel compilation.
+          $args = @("-s", "nvcc_$short", "cudart_$short", "cudart_dev_$short",
+                    "nvrtc_$short", "nvrtc_dev_$short", "cuda_profiler_api_$short",
+                    "cublas_$short", "cublas_dev_$short", "thrust_$short")
           $p = Start-Process -FilePath .\cuda.exe -ArgumentList $args -Wait -PassThru -NoNewWindow
           if ($p.ExitCode -ne 0) { throw "CUDA installer exited $($p.ExitCode)" }
           $root = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$short"
           if (-not (Test-Path "$root\bin\nvcc.exe")) { throw "nvcc missing at $root" }
           & "$root\bin\nvcc.exe" --version | Select-Object -Last 2
+          # Verify the headers the build will actually need HERE, where the
+          # error can name the missing component -- not three minutes later as
+          # a C1083 from deep inside kernel compilation.
+          foreach ($h in @("crt\host_config.h", "cuda_runtime.h")) {
+            if (-not (Test-Path "$root\include\$h")) {
+              Get-ChildItem "$root\include" -Name | Select-Object -First 20
+              throw "CUDA include\$h missing - a sub-package failed to install"
+            }
+          }
           "CUDA_PATH=$root"          | Out-File -FilePath $env:GITHUB_ENV -Append
           "CUDA_HOME=$root"          | Out-File -FilePath $env:GITHUB_ENV -Append
           "CUDARC_CUDA_VERSION=13000"| Out-File -FilePath $env:GITHUB_ENV -Append
