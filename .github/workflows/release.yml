@@ -47,8 +47,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event.inputs.new_version || github.ref }}
-  cancel-in-progress: false
+  # PRs and dispatches must NOT share a group. They previously both keyed on
+  # `github.ref`, and with cancel-in-progress:false a superseded PR run stayed
+  # queued forever and blocked every later push to the same PR.
+  # PR runs supersede each other (an outdated build is waste); a dispatch must
+  # never be cancelled mid-publish.
+  group: >-
+    release-${{ github.event_name == 'pull_request'
+      && format('pr-{0}', github.event.number)
+      || format('dispatch-{0}', github.event.inputs.new_version) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
