@@ -162,13 +162,22 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------
+  # The ordinary CI gates (fmt, clippy, tests, licence headers, typos, the
+  # macOS/metal job) must pass BEFORE the release matrix spends runner time.
+  # Called as a reusable workflow so CI stays defined in exactly one place.
+  # ---------------------------------------------------------------------
+  ci:
+    name: ci
+    uses: ./.github/workflows/ci.yml
+
+  # ---------------------------------------------------------------------
   # One job per (OS, arch, platform). Experimental entries may fail without
   # failing the release — that is what lets an unproven target sit in the
   # matrix while it is being brought up.
   # ---------------------------------------------------------------------
   build:
     name: build ${{ matrix.id }}
-    needs: validate
+    needs: [validate, ci]
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.experimental }}
     strategy:
@@ -292,9 +301,9 @@ jobs:
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
-        if: github.event_name == 'workflow_dispatch'
         with:
           name: spark-${{ matrix.id }}
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 90 }}
           path: |
             ${{ steps.package.outputs.asset }}
             ${{ steps.package.outputs.asset }}.sha256
@@ -373,12 +382,12 @@ jobs:
   dry-run-summary:
     name: dry-run summary
     needs: [validate, build]
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'false'
+    if: github.event_name == 'pull_request' || github.event.inputs.dry_run != 'false'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.inputs.ref }}
+          ref: ${{ github.event.inputs.ref || '' }}
           fetch-depth: 0
 
       - uses: actions/download-artifact@v4
@@ -386,10 +395,27 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Verify every artifact is real (checksums + non-empty)
+        run: |
+          set -euo pipefail
+          # The point of the PR dry run is that a later release CANNOT fail in
+          # a way this run would have passed. So verify the packages the same
+          # way a consumer would: checksum them and confirm they are non-empty.
+          shopt -s nullglob
+          n=0
+          for f in dist/*.tar.gz dist/*.zip; do
+            [ -s "$f" ] || { echo "::error::$f is empty"; exit 1; }
+            (cd dist && sha256sum -c "$(basename "$f").sha256") \
+              || { echo "::error::checksum mismatch for $f"; exit 1; }
+            n=$((n+1))
+          done
+          [ "$n" -gt 0 ] || { echo "::error::no artifacts were produced"; exit 1; }
+          echo "verified $n artifact(s)"
+
       - name: Report what WOULD be published
         env:
           GH_TOKEN: ${{ github.token }}
-          NEW_VERSION: ${{ github.event.inputs.new_version }}
+          NEW_VERSION: ${{ github.event.inputs.new_version || format('0.0.0-pr{0}', github.event.number) }}
         run: |
           set -euo pipefail
           {
@@ -406,6 +432,13 @@ jobs:
             echo
             echo "#### Release notes that would be generated"
             echo '```markdown'
-            bash scripts/release-notes.sh preview "$NEW_VERSION" || echo "(preview unavailable)"
+            # Non-fatal, but never silently blank: a PR token may lack the
+            # write scope the generate-notes endpoint wants, and that should
+            # read as a degraded preview, not as "there are no notes".
+            bash scripts/release-notes.sh preview "$NEW_VERSION" \
+              || echo "(preview unavailable — generate-notes needs contents:write; not granted on pull_request)"
             echo '```'
+            echo
+            echo "_Nothing was tagged, pushed or published: \`publish\` runs only on"
+            echo "workflow_dispatch with dry_run=false._"
           } >> "$GITHUB_STEP_SUMMARY"

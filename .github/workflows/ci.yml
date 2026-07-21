@@ -4,6 +4,10 @@ on:
   pull_request:
   push:
     branches: [main, master]
+  # Reusable: release.yml gates its (expensive) build matrix on CI passing, so
+  # a fmt or clippy failure costs one cheap runner instead of eight toolchain
+  # installs. Defined once here; release.yml calls it rather than copying it.
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
