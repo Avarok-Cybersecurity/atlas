@@ -1,0 +1,351 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Release: build `spark` for every (OS, arch, GPU-platform) in
+# `.github/release-matrix.json` and publish a GitHub Release.
+#
+# The matrix is DATA, not code: adding a platform (a new Cargo feature, a new
+# accelerator) is one JSON object, never an edit to this file. Each entry
+# declares its own `toolchain`, so a target that needs CUDA, SCALE or nothing
+# at all is expressed in the same shape.
+#
+# `dry_run` defaults to TRUE: the workflow builds and uploads artifacts but
+# writes nothing to the repository. Publishing is an explicit opt-out.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or SHA to build"
+        required: true
+        default: main
+      new_version:
+        description: "Release version, bare semver (e.g. 0.2.0) — tag becomes vX.Y.Z"
+        required: true
+      dry_run:
+        description: "Build and upload artifacts only; do not tag or publish"
+        type: boolean
+        required: true
+        default: true
+  # PR trigger is scoped to this workflow's own files. It runs `validate` only
+  # — never a build, never a publish — so the release plumbing is checked on
+  # every change to it without spending an hour of runner time per PR.
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - ".github/release-matrix.json"
+      - "scripts/release-notes.sh"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.new_version || github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Cheap, always-runs gate. Everything that can be wrong statically is
+  # caught here BEFORE any runner spends time installing a CUDA toolkit.
+  # ---------------------------------------------------------------------
+  validate:
+    name: validate inputs + matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.build-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate new_version is bare semver
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          v='${{ github.event.inputs.new_version }}'
+          # Bare semver only: the leading `v` is added when we build the tag,
+          # so accepting `v1.2.3` here would produce the tag `vv1.2.3`.
+          if ! printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::new_version must be bare semver (1.2.3), got '$v'"
+            exit 1
+          fi
+          # Ask the REMOTE, not the local clone: actions/checkout fetches
+          # depth-1 with no tags, so `git rev-parse refs/tags/...` would find
+          # nothing and this guard would silently always pass.
+          if git ls-remote --exit-code --tags origin "refs/tags/v$v" >/dev/null 2>&1; then
+            echo "::error::tag v$v already exists"
+            exit 1
+          fi
+
+      - name: Require a branch ref for a real publish
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false'
+        run: |
+          set -euo pipefail
+          # Publishing commits the version bump back to `ref`, so `ref` has to
+          # be a branch. A SHA or tag would make `git push HEAD:<ref>` fail
+          # AFTER the binaries were already built — an hour in.
+          ref='${{ github.event.inputs.ref }}'
+          git ls-remote --exit-code --heads origin "$ref" >/dev/null 2>&1 || {
+            echo "::error::dry_run=false requires 'ref' to be a branch; '$ref' is not"
+            exit 1
+          }
+
+      - name: Validate matrix shape
+        run: |
+          set -euo pipefail
+          jq -e 'type == "array" and length > 0' .github/release-matrix.json >/dev/null
+          # Every entry must carry every key: a missing `toolchain` would
+          # silently build a CUDA target with no CUDA installed.
+          missing=$(jq -r '
+            [ .[] | select(
+                has("id") and has("os") and has("runner") and has("target")
+                and has("platform") and has("cargo_features")
+                and has("toolchain") and has("experimental") | not
+              ) | .id // "<no id>" ] | join(", ")' .github/release-matrix.json)
+          [ -z "$missing" ] || { echo "::error::entries missing keys: $missing"; exit 1; }
+          dupes=$(jq -r '[.[].id] | group_by(.) | map(select(length>1) | .[0]) | join(", ")' \
+            .github/release-matrix.json)
+          [ -z "$dupes" ] || { echo "::error::duplicate matrix ids: $dupes"; exit 1; }
+
+      - name: Validate every cargo feature exists in spark-server
+        run: |
+          set -euo pipefail
+          # The most likely matrix error is a typo'd or removed feature name.
+          # `cargo metadata` is the SSOT for what features actually exist.
+          known=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name=="spark-server") | .features | keys[]' | sort -u)
+          echo "spark-server features: $(echo "$known" | tr '\n' ' ')"
+          bad=0
+          while read -r feats; do
+            for f in $(printf '%s' "$feats" | grep -oP '(?<=--features )[^ ]+' | tr ',' ' '); do
+              grep -qx -- "$f" <<<"$known" || { echo "::error::unknown feature '$f'"; bad=1; }
+            done
+          done < <(jq -r '.[].cargo_features' .github/release-matrix.json)
+          [ "$bad" = 0 ]
+
+      - name: Emit build matrix
+        id: build-matrix
+        run: |
+          set -euo pipefail
+          echo "matrix=$(jq -c '{include: .}' .github/release-matrix.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Release matrix"
+            echo "| id | runner | target | features | toolchain | experimental |"
+            echo "|---|---|---|---|---|---|"
+            jq -r '.[] | "| \(.id) | \(.runner) | \(.target) | `\(.cargo_features)` | \(.toolchain) | \(.experimental) |"' \
+              .github/release-matrix.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------
+  # One job per (OS, arch, platform). Experimental entries may fail without
+  # failing the release — that is what lets an unproven target sit in the
+  # matrix while it is being brought up.
+  # ---------------------------------------------------------------------
+  build:
+    name: build ${{ matrix.id }}
+    needs: validate
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.validate.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.ref }}
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.id }}
+
+      - name: Install build deps (linux)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
+
+      - name: Install build deps (macos)
+        if: matrix.os == 'macos'
+        run: brew install cmake llvm
+
+      - name: Install CUDA toolkit
+        if: startsWith(matrix.toolchain, 'cuda')
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          method: network
+          # Kernel compilation only needs nvcc + the driver stubs; skipping the
+          # rest keeps a ~3 GB install down to something a runner can hold.
+          sub-packages: '["nvcc", "cudart", "nvrtc", "nvrtc_dev", "cuda_profiler_api"]'
+
+      - name: Install NCCL
+        if: contains(matrix.toolchain, 'nccl')
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends libnccl2 libnccl-dev
+
+      - name: SCALE toolchain (AMD)
+        if: matrix.toolchain == 'scale'
+        run: |
+          # SCALE is not redistributable from a hosted runner. This entry is
+          # experimental precisely because the toolchain has to come from a
+          # self-hosted runner or a cached tarball; fail loudly, do not
+          # silently produce a CUDA binary labelled `amd`.
+          echo "::error::SCALE toolchain unavailable on hosted runners — run this entry on self-hosted"
+          exit 1
+
+      - name: Build spark
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver='${{ github.event.inputs.new_version }}'
+          name="spark-${ver}-${{ matrix.id }}"
+          staging="dist/$name"
+          mkdir -p "$staging"
+          bin=target/${{ matrix.target }}/release/spark
+          [ "${{ matrix.os }}" = windows ] && bin="$bin.exe"
+          cp "$bin" "$staging/"
+          cp LICENSE README.md "$staging/" 2>/dev/null || true
+          if [ "${{ matrix.os }}" = windows ]; then
+            (cd dist && 7z a -tzip "$name.zip" "$name" >/dev/null)
+            asset="dist/$name.zip"
+          else
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+            asset="dist/$name.tar.gz"
+          fi
+          sha256sum "$asset" > "$asset.sha256" 2>/dev/null || shasum -a 256 "$asset" > "$asset.sha256"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spark-${{ matrix.id }}
+          path: |
+            ${{ steps.package.outputs.asset }}
+            ${{ steps.package.outputs.asset }}.sha256
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------
+  # Publish. Skipped entirely on dry_run, so a dry run can never tag, never
+  # push and never create a Release.
+  # ---------------------------------------------------------------------
+  publish:
+    name: publish release
+    needs: [validate, build]
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.ref }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Refuse to publish an empty release
+        run: |
+          set -euo pipefail
+          # Every non-experimental target could still have been skipped (a
+          # cancelled job, a matrix where everything is experimental). A
+          # Release with no binaries is worse than no Release.
+          count=$(find dist -type f ! -name '*.sha256' | wc -l)
+          [ "$count" -gt 0 ] || { echo "::error::no artifacts to publish"; exit 1; }
+          echo "publishing $count artifact(s)"
+          find dist -type f | sort
+
+      - name: Bump workspace version and tag (lockstep)
+        env:
+          NEW_VERSION: ${{ github.event.inputs.new_version }}
+        run: |
+          set -euo pipefail
+          # Cargo version, git tag and release name are kept identical:
+          # downstreams identify a build by `spark --version`, so a tag that
+          # disagrees with Cargo.toml is a silent mis-identification.
+          bash scripts/release-notes.sh bump "$NEW_VERSION"
+          git config user.name  "tbraun96"
+          git config user.email "tbraun96@gmail.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): v${NEW_VERSION}"
+          git tag -a "v${NEW_VERSION}" -m "Atlas v${NEW_VERSION}"
+          git push origin HEAD:"${{ github.event.inputs.ref }}"
+          git push origin "v${NEW_VERSION}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_VERSION: ${{ github.event.inputs.new_version }}
+        run: |
+          set -euo pipefail
+          # `--generate-notes` is GitHub's own changelog generator: it emits
+          # "What's Changed" (every merged PR since the previous tag) and
+          # "New Contributors". Hand-rolling either would duplicate data
+          # GitHub already derives from the same commits.
+          gh release create "v${NEW_VERSION}" \
+            --title "Atlas v${NEW_VERSION}" \
+            --generate-notes \
+            --verify-tag \
+            dist/*
+
+  # ---------------------------------------------------------------------
+  # Dry-run reporting. Makes `dry_run=true` show exactly what a real run
+  # would have published, so the decision to publish is made on evidence.
+  # ---------------------------------------------------------------------
+  dry-run-summary:
+    name: dry-run summary
+    needs: [validate, build]
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'false'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.ref }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Report what WOULD be published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_VERSION: ${{ github.event.inputs.new_version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### DRY RUN — nothing was tagged, pushed or published"
+            echo
+            echo "Would create tag \`v${NEW_VERSION}\` on \`${{ github.event.inputs.ref }}\`."
+            echo
+            echo "#### Artifacts"
+            if find dist -type f ! -name '*.sha256' | grep -q .; then
+              find dist -type f ! -name '*.sha256' | sort | sed 's/^/- /'
+            else
+              echo "- (none — every build job failed or was skipped)"
+            fi
+            echo
+            echo "#### Release notes that would be generated"
+            echo '```markdown'
+            bash scripts/release-notes.sh preview "$NEW_VERSION" || echo "(preview unavailable)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
