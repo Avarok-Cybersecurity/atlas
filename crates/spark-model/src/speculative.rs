@@ -120,9 +120,28 @@ pub fn mtp_catchup_enabled() -> bool {
 /// `mtp_rows_to_trim`'s extra trim is K-agnostic — without a K=4 ring write,
 /// nd=3 would drop accepted drafter rows with nothing rebuilding them).
 ///
-/// It stays default OFF pending its powered A/B (~10k verify steps per arm;
-/// with `ATLAS_MTP_GATE_FORCE=1` the engine is bit-reproducible, so n rises
+/// ## POWERED A/B (2026-07-21, dgx2): the pre-registered threshold is MET.
+///
+/// nd=2, gate disarmed, 16 documents x 8 turns, ~10k verify steps per arm
+/// (with `ATLAS_MTP_GATE_FORCE=1` the engine is bit-reproducible, so n rises
 /// only with NEW CONTENT, never with repetitions).
+///
+/// | arm | n | p1 | p2_uncond | tokens/verify step |
+/// |---|---|---|---|---|
+/// | OFF | 10,400 | 0.6100 | 0.4182 | 1.882 |
+/// | ON  | 10,100 | 0.6262 | **0.4452** | 1.926 |
+/// | delta | | +0.016 (2.4 sd) | **+0.027 (3.9 sd)** | **+2.3%** |
+///
+/// Criterion, pre-registered before the run: `p2_uncond` up by >= 0.015 at
+/// >= 3 sd. Met. At n=700 — the sample that produced the earlier "refuted"
+/// verdict — this same effect is ~1.0 sd, i.e. invisible. That verdict was a
+/// power problem, not a mapping problem.
+///
+/// Caveat kept deliberately: the arms emit different text, so the binomial sd
+/// understates the true variance. Content is matched (identical documents and
+/// questions in both arms) but this is one measurement, not a replication.
+/// STAYS DEFAULT OFF pending the standard gates (C2 smoke, A 35B
+/// webserver_ok, B/D ST-995).
 ///
 /// CONTEXT FOR WHOEVER PICKS THIS UP: this lever is small by construction. It
 /// repairs at most `num_accepted − 1` drafter KV rows per step, and the
