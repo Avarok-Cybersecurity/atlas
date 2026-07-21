@@ -10,6 +10,10 @@
 #
 # `dry_run` defaults to TRUE: the workflow builds and uploads artifacts but
 # writes nothing to the repository. Publishing is an explicit opt-out.
+#
+# On a pull request the same build matrix runs (minus targets whose toolchain
+# cannot exist on a hosted runner), so the matrix is proven buildable before
+# a release ever depends on it.
 name: Release
 
 on:
@@ -27,9 +31,12 @@ on:
         type: boolean
         required: true
         default: true
-  # PR trigger is scoped to this workflow's own files. It runs `validate` only
-  # — never a build, never a publish — so the release plumbing is checked on
-  # every change to it without spending an hour of runner time per PR.
+  # PR trigger is scoped to this workflow's own files. It runs `validate` AND
+  # the full build matrix (every entry with `pr_validate: true`), so a change
+  # to the release plumbing is proven to still compile on every target before
+  # it merges. It never publishes: `publish` is workflow_dispatch-only.
+  # Entries that cannot build on a hosted runner (SCALE) are reported as NOT
+  # VALIDATED rather than passed vacuously.
   pull_request:
     paths:
       - ".github/workflows/release.yml"
@@ -102,7 +109,8 @@ jobs:
             [ .[] | select(
                 has("id") and has("os") and has("runner") and has("target")
                 and has("platform") and has("cargo_features")
-                and has("toolchain") and has("experimental") | not
+                and has("toolchain") and has("experimental")
+                and has("pr_validate") | not
               ) | .id // "<no id>" ] | join(", ")' .github/release-matrix.json)
           [ -z "$missing" ] || { echo "::error::entries missing keys: $missing"; exit 1; }
           dupes=$(jq -r '[.[].id] | group_by(.) | map(select(length>1) | .[0]) | join(", ")' \
@@ -129,7 +137,19 @@ jobs:
         id: build-matrix
         run: |
           set -euo pipefail
-          echo "matrix=$(jq -c '{include: .}' .github/release-matrix.json)" >> "$GITHUB_OUTPUT"
+          # On a PR we build every entry that CAN be built on a hosted runner.
+          # Entries with pr_validate=false are physically impossible here (the
+          # SCALE toolchain is not redistributable) — they are reported as NOT
+          # VALIDATED rather than passed vacuously.
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            sel=$(jq -c '{include: [.[] | select(.pr_validate)]}' .github/release-matrix.json)
+            jq -r '.[] | select(.pr_validate | not)
+                   | "::warning::\(.id) NOT VALIDATED on PR — toolchain \(.toolchain) unavailable on hosted runners"' \
+              .github/release-matrix.json
+          else
+            sel=$(jq -c '{include: .}' .github/release-matrix.json)
+          fi
+          echo "matrix=$sel" >> "$GITHUB_OUTPUT"
 
       - name: Summary
         run: |
@@ -149,7 +169,6 @@ jobs:
   build:
     name: build ${{ matrix.id }}
     needs: validate
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.experimental }}
     strategy:
@@ -158,7 +177,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.inputs.ref }}
+          # On a PR there is no `ref` input; checkout defaults to the PR merge
+          # commit, which is what we want to validate.
+          ref: ${{ github.event.inputs.ref || '' }}
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
@@ -214,7 +235,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # No version input exists on a PR. Stamp the artifact explicitly
+          # rather than packaging an empty version string.
           ver='${{ github.event.inputs.new_version }}'
+          [ -n "$ver" ] || ver="0.0.0-pr${{ github.event.number }}"
           name="spark-${ver}-${{ matrix.id }}"
           staging="dist/$name"
           mkdir -p "$staging"
@@ -233,6 +257,7 @@ jobs:
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch'
         with:
           name: spark-${{ matrix.id }}
           path: |

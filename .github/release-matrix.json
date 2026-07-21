@@ -7,7 +7,8 @@
     "platform": "nvidia",
     "cargo_features": "--no-default-features --features cuda",
     "toolchain": "cuda",
-    "experimental": false
+    "experimental": false,
+    "pr_validate": true
   },
   {
     "id": "linux-x86_64-nvidia-cuda-nccl",
@@ -17,7 +18,8 @@
     "platform": "nvidia",
     "cargo_features": "--features cuda,nccl",
     "toolchain": "cuda-nccl",
-    "experimental": true
+    "experimental": true,
+    "pr_validate": true
   },
   {
     "id": "linux-aarch64-nvidia-cuda",
@@ -27,7 +29,8 @@
     "platform": "nvidia",
     "cargo_features": "--no-default-features --features cuda",
     "toolchain": "cuda-sbsa",
-    "experimental": false
+    "experimental": false,
+    "pr_validate": true
   },
   {
     "id": "linux-aarch64-nvidia-cuda-nccl",
@@ -37,7 +40,8 @@
     "platform": "nvidia",
     "cargo_features": "--features cuda,nccl",
     "toolchain": "cuda-nccl-sbsa",
-    "experimental": true
+    "experimental": true,
+    "pr_validate": true
   },
   {
     "id": "linux-x86_64-amd-scale",
@@ -47,7 +51,8 @@
     "platform": "amd",
     "cargo_features": "--no-default-features --features cuda",
     "toolchain": "scale",
-    "experimental": true
+    "experimental": true,
+    "pr_validate": false
   },
   {
     "id": "linux-aarch64-amd-scale",
@@ -57,7 +62,8 @@
     "platform": "amd",
     "cargo_features": "--no-default-features --features cuda",
     "toolchain": "scale",
-    "experimental": true
+    "experimental": true,
+    "pr_validate": false
   },
   {
     "id": "macos-aarch64-metal",
@@ -67,7 +73,8 @@
     "platform": "metal",
     "cargo_features": "--no-default-features --features metal",
     "toolchain": "none",
-    "experimental": true
+    "experimental": true,
+    "pr_validate": true
   },
   {
     "id": "macos-x86_64-metal",
@@ -77,7 +84,8 @@
     "platform": "metal",
     "cargo_features": "--no-default-features --features metal",
     "toolchain": "none",
-    "experimental": true
+    "experimental": true,
+    "pr_validate": true
   },
   {
     "id": "windows-x86_64-nvidia-cuda",
@@ -87,6 +95,7 @@
     "platform": "nvidia",
     "cargo_features": "--no-default-features --features cuda",
     "toolchain": "cuda",
-    "experimental": true
+    "experimental": true,
+    "pr_validate": true
   }
 ]
