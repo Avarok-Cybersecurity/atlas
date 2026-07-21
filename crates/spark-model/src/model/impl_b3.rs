@@ -91,64 +91,14 @@ impl TransformerModel {
             routed_lora_layers: None, // #30: MTP/draft decode never routes prefill.
             midchunk_capture: None,
         };
+        // Give the drafter its prompt context on the first propose of this
+        // sequence: whole-prompt prefill on a COLD turn, carried rows + a
+        // short append on a WARM one. See `ensure_drafter_context`.
+        self.ensure_drafter_context(proposer, seq, &ctx, stream);
         let prop_state = seq
             .proposer_state
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("No proposer state for sequence"))?;
-        // ATLAS_MTP_DRAFTER_PREFILL: on the FIRST propose of a sequence,
-        // batch-prefill the drafter's KV over the prompt (fresh-state check
-        // and quant support live inside prefill_drafter; it fast-returns 0 on
-        // every later call). Requires the capture to cover the full prompt —
-        // a COLD turn satisfies that; a WARM turn never does, which is the
-        // context-blindness defect ATLAS_MTP_CARRY_DRAFTER closes below.
-        if !self.mtp_prefill_hidden.is_null() {
-            let p = seq.prompt_len;
-            let captured = self
-                .mtp_prefill_capture_len
-                .load(std::sync::atomic::Ordering::Relaxed);
-            let cold_prefill_ok = p >= 2 && captured >= p && seq.tokens.len() >= p;
-            let carry_on = crate::model::mtp_carry::mtp_carry_drafter_enabled();
-            // Both branches below are FIRST-PROPOSE only: `prefill_drafter`
-            // enforces that itself (`mtp_state.seq_len != row_base` fast-return),
-            // and the carry must not re-run once the drafter owns rows.
-            let first_propose = proposer.drafter_rows(prop_state.as_mut()) == 0;
-            if cold_prefill_ok {
-                // A cold turn builds its own rows, so any carried entry is
-                // dead. It MUST be released here: the drafter KV pool holds
-                // exactly `max_seq_len / block_size + 1` blocks — one
-                // sequence's worth — so a carried entry left alive would
-                // starve this prefill's `alloc_block` calls.
-                if carry_on && let Some(old) = self.mtp_carry.lock().take() {
-                    proposer.free_drafter_kv(&old.block_table);
-                }
-                if let Err(e) = proposer.prefill_drafter(
-                    &seq.tokens[..p],
-                    self.mtp_prefill_hidden,
-                    prop_state.as_mut(),
-                    &ctx,
-                    stream,
-                ) {
-                    tracing::warn!("MTP drafter prefill failed (continuing without): {e:#}");
-                }
-            } else if carry_on && first_propose && p >= 2 {
-                // WARM turn: adopt the previous turn's drafter KV and append
-                // only this turn's newly-computed span. See `try_carry_drafter`.
-                let outcome = self.try_carry_drafter(
-                    proposer,
-                    &seq.tokens,
-                    p,
-                    prop_state.as_mut(),
-                    &ctx,
-                    stream,
-                );
-                if crate::model::mtp_carry::mtp_carry_debug() {
-                    tracing::info!(
-                        "MTP_CARRY adopt: prompt_len={p} store={:?} -> {outcome}",
-                        *self.mtp_store_range.lock(),
-                    );
-                }
-            }
-        }
         // ATLAS_MTP_CATCHUP: before proposing, feed pairs the drafter missed
         // during a serial-decode stretch. Coordinates (measured 2026-07-20 on
         // the 27B rig): at propose entry `position == seq.tokens.len()` and

@@ -151,6 +151,91 @@ impl TransformerModel {
         Ok(())
     }
 
+    /// Give the drafter its prompt context on the FIRST propose of a sequence.
+    ///
+    /// COLD turn: the whole-prompt capture covers the prompt, so run the
+    /// classic `prefill_drafter`. WARM turn: the capture never covers it (a
+    /// reused prefix computes nothing), which is the context-blindness defect
+    /// — adopt the previous turn's drafter KV and append only the new span.
+    ///
+    /// Extracted from `run_mtp_propose_inner` so `impl_b3.rs` does not grow
+    /// past its size budget.
+    pub(in crate::model) fn ensure_drafter_context(
+        &self,
+        proposer: &dyn DraftProposer,
+        seq: &mut SequenceState,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) {
+        // Disjoint field borrows: the proposer state is mutated while the
+        // token slice is read. Destructuring is what makes that legal, and it
+        // avoids cloning a 12k-token vector on every propose.
+        let SequenceState {
+            tokens: seq_tokens,
+            prompt_len,
+            proposer_state,
+            ..
+        } = seq;
+        let Some(prop_state) = proposer_state.as_mut() else {
+            return;
+        };
+        let prompt_len = *prompt_len;
+        // ATLAS_MTP_DRAFTER_PREFILL: on the FIRST propose of a sequence,
+        // batch-prefill the drafter's KV over the prompt (fresh-state check
+        // and quant support live inside prefill_drafter; it fast-returns 0 on
+        // every later call). Requires the capture to cover the full prompt —
+        // a COLD turn satisfies that; a WARM turn never does, which is the
+        // context-blindness defect ATLAS_MTP_CARRY_DRAFTER closes below.
+        if !self.mtp_prefill_hidden.is_null() {
+            let p = prompt_len;
+            let captured = self
+                .mtp_prefill_capture_len
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let cold_prefill_ok = p >= 2 && captured >= p && seq_tokens.len() >= p;
+            let carry_on = crate::model::mtp_carry::mtp_carry_drafter_enabled();
+            // Both branches below are FIRST-PROPOSE only: `prefill_drafter`
+            // enforces that itself (`mtp_state.seq_len != row_base` fast-return),
+            // and the carry must not re-run once the drafter owns rows.
+            let first_propose = proposer.drafter_rows(prop_state.as_mut()) == 0;
+            if cold_prefill_ok {
+                // A cold turn builds its own rows, so any carried entry is
+                // dead. It MUST be released here: the drafter KV pool holds
+                // exactly `max_seq_len / block_size + 1` blocks — one
+                // sequence's worth — so a carried entry left alive would
+                // starve this prefill's `alloc_block` calls.
+                if carry_on && let Some(old) = self.mtp_carry.lock().take() {
+                    proposer.free_drafter_kv(&old.block_table);
+                }
+                if let Err(e) = proposer.prefill_drafter(
+                    &seq_tokens[..p],
+                    self.mtp_prefill_hidden,
+                    prop_state.as_mut(),
+                    ctx,
+                    stream,
+                ) {
+                    tracing::warn!("MTP drafter prefill failed (continuing without): {e:#}");
+                }
+            } else if carry_on && first_propose && p >= 2 {
+                // WARM turn: adopt the previous turn's drafter KV and append
+                // only this turn's newly-computed span. See `try_carry_drafter`.
+                let outcome = self.try_carry_drafter(
+                    proposer,
+                    seq_tokens,
+                    p,
+                    prop_state.as_mut(),
+                    ctx,
+                    stream,
+                );
+                if crate::model::mtp_carry::mtp_carry_debug() {
+                    tracing::info!(
+                        "MTP_CARRY adopt: prompt_len={p} store={:?} -> {outcome}",
+                        *self.mtp_store_range.lock(),
+                    );
+                }
+            }
+        }
+    }
+
     /// ATLAS_MTP_CARRY_DRAFTER: give the drafter this turn's prompt context on
     /// the FIRST propose of a sequence, by adopting the previous turn's
     /// drafter KV and appending only the span this turn actually computed.
