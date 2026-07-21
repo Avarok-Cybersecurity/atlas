@@ -312,11 +312,24 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "$SCALE_HOME/targets/$arch/bin" >> "$GITHUB_PATH"
 
-      - name: Build spark
+      - name: Build spark (unix)
+        if: matrix.os != 'windows'
         shell: bash
         run: |
           set -euo pipefail
           cargo build --release -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
+
+      - name: Build spark (windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          # pwsh, NOT bash. Under `shell: bash` on Windows, Git Bash puts its
+          # own /usr/bin ahead of MSVC on PATH, and rustc then invokes
+          # `C:\Program Files\Git\usr\bin\link.exe` -- the coreutils `link`
+          # -- instead of the MSVC linker. It fails with "extra operand" on the
+          # first object file.
+          cargo build --release -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package
         id: package
