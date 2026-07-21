@@ -15,6 +15,25 @@ pub mod sm121 {
     /// Number of streaming multiprocessors
     pub const NUM_SMS: u32 = 48;
 
+    /// Slot capacity of the split-K paged-attention decode workspace.
+    ///
+    /// The split-K decode kernel writes one `[o[head_dim], m, l]` partial per
+    /// `(seq, q_head, split)` triple — workspace layout
+    /// `[num_seqs, num_q_heads, num_splits, head_dim + 2]`, grid
+    /// `(num_q_heads, num_splits, num_seqs)`; see
+    /// `kernels/gb10/common/paged_decode_attn.cu`. The buffer is allocated for
+    /// this many slots (`buffers::sizes`), so every dispatch MUST satisfy
+    ///
+    /// ```text
+    /// num_seqs * num_q_heads * num_splits <= SPLITK_WORKSPACE_SLOTS
+    /// ```
+    ///
+    /// or the kernel writes past the end of the workspace. Use
+    /// `qwen3_attention::split_k_num_splits`, which enforces this; do not
+    /// open-code the split count. Raising the split count for occupancy
+    /// therefore requires raising this constant (and the allocation) first.
+    pub const SPLITK_WORKSPACE_SLOTS: u32 = NUM_SMS;
+
     /// Shared memory per SM (bytes)
     pub const SMEM_PER_SM: usize = 99 * 1024; // 99 KB
 

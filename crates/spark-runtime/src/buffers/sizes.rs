@@ -210,10 +210,19 @@ impl BufferSizes {
         let mamba2_d_inner = config.mamba2_d_inner();
         let max_dim = h.max(mamba2_d_inner);
 
-        // Split-K decode workspace: NUM_SMS * (head_dim + 2) * sizeof(f32).
-        // Partials from split CTAs are stored as [o[head_dim], m, l] per split.
-        // Total slots = num_seqs * num_splits ≤ NUM_SMS, so this is constant ~48 KB.
-        let splitk_workspace = 48 * (hd + 2) * 4;
+        // Split-K decode workspace: SPLITK_WORKSPACE_SLOTS * (head_dim + 2) * sizeof(f32).
+        // Partials from split CTAs are stored as [o[head_dim], m, l] per slot, and the
+        // kernel indexes ONE SLOT PER (seq, q_head, split) — layout
+        // [num_seqs, num_q_heads, num_splits, head_dim + 2] (paged_decode_attn.cu).
+        // So the invariant is
+        //     num_seqs * num_q_heads * num_splits <= SPLITK_WORKSPACE_SLOTS
+        // and it is enforced in `qwen3_attention::split_k_num_splits`, which is the only
+        // place a split count may be computed. (The previous comment here read
+        // "num_seqs * num_splits <= NUM_SMS" — it omitted the num_q_heads factor, which
+        // made the buffer look far roomier than it is. At the only currently reachable
+        // split-K config — num_seqs 1, 24 q-heads, 2 splits — it is EXACTLY full.)
+        let splitk_workspace =
+            atlas_core::device::sm121::SPLITK_WORKSPACE_SLOTS as usize * (hd + 2) * 4;
 
         // The residual stream is always BF16.
         let residual_elem = bf16;

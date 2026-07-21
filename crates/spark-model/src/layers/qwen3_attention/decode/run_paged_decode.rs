@@ -134,13 +134,9 @@ impl Qwen3AttentionLayer {
             KvCacheDtype::Nvfp4 => {
                 // Split count derived from the configured max batch (constant),
                 // not the runtime co-batched count, so a sequence's reduction
-                // tree is identical alone vs co-batched (determinism fix).
-                let current_ctas = num_q_heads * super::super::split_ref_seqs(num_seqs);
-                let num_splits = if current_ctas >= NUM_SMS {
-                    1u32
-                } else {
-                    NUM_SMS / current_ctas
-                };
+                // tree is identical alone vs co-batched (determinism fix), and
+                // bounded by the fixed-size split-K workspace.
+                let num_splits = super::super::split_k_num_splits(num_q_heads, num_seqs);
 
                 if num_splits > 1 {
                     let splitk_k = self
@@ -561,13 +557,9 @@ impl Qwen3AttentionLayer {
             _ => {
                 // FP8 paged decode. Split count from configured max batch
                 // (constant), not runtime co-batched count → deterministic
-                // reduction tree alone vs co-batched (determinism fix).
-                let current_ctas = num_q_heads * super::super::split_ref_seqs(num_seqs);
-                let num_splits = if current_ctas >= NUM_SMS {
-                    1u32
-                } else {
-                    NUM_SMS / current_ctas
-                };
+                // reduction tree alone vs co-batched (determinism fix), and
+                // bounded by the fixed-size split-K workspace.
+                let num_splits = super::super::split_k_num_splits(num_q_heads, num_seqs);
 
                 // DIAGNOSTIC (ATLAS_ATTN_DBG): split-K reduction structure for the
                 // active row depends on `num_seqs` (co-batched count) via num_splits.

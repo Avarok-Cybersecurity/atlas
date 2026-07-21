@@ -103,3 +103,112 @@ pub(crate) fn split_ref_seqs(num_seqs: u32) -> u32 {
         .unwrap_or(num_seqs)
         .max(num_seqs)
 }
+
+/// Split count for the split-K paged-attention decode path — the ONLY place it
+/// may be computed.
+///
+/// Returns 1 when the single-pass kernel should be used instead.
+///
+/// Two properties, both load-bearing:
+///
+/// 1. **Determinism.** The count is derived from `split_ref_seqs` (the
+///    configured max decode batch), not the runtime co-batched `num_seqs`, so a
+///    sequence's non-associative online-softmax reduction tree is identical
+///    alone vs co-batched. See `split_ref_seqs` above.
+/// 2. **Memory safety.** The split-K workspace holds
+///    `SPLITK_WORKSPACE_SLOTS` slots and the kernel writes one slot per
+///    `(seq, q_head, split)`, so the dispatch MUST satisfy
+///    `num_seqs * num_q_heads * num_splits <= SPLITK_WORKSPACE_SLOTS`.
+///    Previously this bound held only *implicitly*, via the `.max(num_seqs)`
+///    clamp inside `split_ref_seqs`, and the buffer-sizing comment stated the
+///    bound with the `num_q_heads` factor missing. Anyone raising the split
+///    count for occupancy — the obvious next optimization, since the grid is
+///    only `num_q_heads * num_seqs` CTAs on `NUM_SMS` SMs — would have silently
+///    written past the end of the workspace. It is now enforced here.
+///
+/// The clamp is a no-op for every split count the current heuristic produces
+/// (`num_splits <= NUM_SMS / current_ctas` and `current_ctas >= num_q_heads *
+/// num_seqs`, so the product is already `<= SPLITK_WORKSPACE_SLOTS`); it exists
+/// so that a future change to the heuristic fails safe instead of corrupting
+/// device memory. `split_k_bound_holds_for_all_reachable_shapes` proves both.
+pub(crate) fn split_k_num_splits(num_q_heads: u32, num_seqs: u32) -> u32 {
+    use atlas_core::device::sm121::{NUM_SMS, SPLITK_WORKSPACE_SLOTS};
+
+    debug_assert!(num_q_heads >= 1 && num_seqs >= 1);
+    let current_ctas = num_q_heads * split_ref_seqs(num_seqs);
+    let num_splits = if current_ctas >= NUM_SMS {
+        1
+    } else {
+        NUM_SMS / current_ctas
+    };
+
+    // Hard workspace bound. Never let the split count exceed what the
+    // fixed-size workspace can hold for THIS dispatch.
+    //
+    // `.max(1)` on `max_splits` is deliberate and is NOT a bound violation: a
+    // returned count of 1 means "use the single-pass kernel", which never
+    // touches the workspace. So the invariant is conditional — it binds only
+    // when the split-K path is actually taken.
+    let slots_per_split = num_seqs.saturating_mul(num_q_heads).max(1);
+    let max_splits = (SPLITK_WORKSPACE_SLOTS / slots_per_split).max(1);
+    let num_splits = num_splits.min(max_splits);
+    debug_assert!(
+        num_splits == 1 || num_seqs * num_q_heads * num_splits <= SPLITK_WORKSPACE_SLOTS,
+        "split-K workspace overflow: num_seqs={num_seqs} num_q_heads={num_q_heads} \
+         num_splits={num_splits} needs {} slots > SPLITK_WORKSPACE_SLOTS={SPLITK_WORKSPACE_SLOTS}",
+        num_seqs * num_q_heads * num_splits
+    );
+    num_splits
+}
+
+#[cfg(test)]
+mod split_k_tests {
+    use super::*;
+    use atlas_core::device::sm121::{NUM_SMS, SPLITK_WORKSPACE_SLOTS};
+
+    /// The workspace invariant must hold for every shape the decode path can
+    /// present, and the bound must never silently shrink a split count that the
+    /// existing heuristic already produced safely.
+    #[test]
+    fn split_k_bound_holds_for_all_reachable_shapes() {
+        for num_q_heads in [1u32, 4, 8, 16, 24, 32, 40, 48, 64, 96] {
+            for num_seqs in 1u32..=32 {
+                let splits = split_k_num_splits(num_q_heads, num_seqs);
+                assert!(splits >= 1, "split count must be at least 1");
+                // The bound is CONDITIONAL: splits == 1 selects the single-pass
+                // kernel, which never touches the workspace. (num_q_heads=4,
+                // num_seqs=13 is exactly such a case: 52 > 48 slots, but
+                // splits == 1 so nothing is written.)
+                let slots = num_seqs * num_q_heads * splits;
+                assert!(
+                    splits == 1 || slots <= SPLITK_WORKSPACE_SLOTS,
+                    "workspace overflow: nq={num_q_heads} ns={num_seqs} splits={splits} \
+                     slots={slots} > {SPLITK_WORKSPACE_SLOTS}"
+                );
+
+                // Behaviour-preservation: identical to the legacy open-coded
+                // formula, which was already within the bound.
+                let current_ctas = num_q_heads * split_ref_seqs(num_seqs);
+                let legacy = if current_ctas >= NUM_SMS {
+                    1
+                } else {
+                    NUM_SMS / current_ctas
+                };
+                assert_eq!(
+                    splits, legacy,
+                    "clamp changed behaviour for nq={num_q_heads} ns={num_seqs}"
+                );
+            }
+        }
+    }
+
+    /// The config this campaign measured: single-stream, no speculation, 24
+    /// q-heads → 2 splits → 48 slots, i.e. the workspace is EXACTLY full.
+    /// A regression that grew the split count here would run off the end.
+    #[test]
+    fn measured_config_fills_the_workspace_exactly() {
+        let splits = split_k_num_splits(24, 1);
+        assert_eq!(splits, 2);
+        assert_eq!(1 * 24 * splits, SPLITK_WORKSPACE_SLOTS);
+    }
+}
