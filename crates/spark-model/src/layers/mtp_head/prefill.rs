@@ -126,42 +126,15 @@ impl MtpHead {
             mtp_state.block_table.push(kv_cache.alloc_block()?);
         }
 
-        // ATLAS_MTP_PREFILL_PROFILE=1: per-phase wall clock for this pass, so the
-        // 1136 ms measured over 11,947 rows can be attributed to a phase instead
-        // of guessed at. Each phase is synced, so the totals are only meaningful
-        // WITH the flag on — never enable it in a timed leg.
-        let profile = std::env::var("ATLAS_MTP_PREFILL_PROFILE").ok().as_deref() == Some("1");
-        let mut t_embed = 0f64;
-        let mut t_concat = 0f64;
-        let mut t_rest = 0f64;
-        let mut t_fc = 0f64;
-        let mut t_kv = 0f64;
-        macro_rules! phase {
-            ($acc:expr, $body:block) => {{
-                if profile {
-                    let s = std::time::Instant::now();
-                    let r = (|| -> Result<()> { $body })();
-                    ctx.gpu.synchronize(stream)?;
-                    $acc += s.elapsed().as_secs_f64() * 1e3;
-                    r?;
-                } else {
-                    (|| -> Result<()> { $body })()?;
-                }
-            }};
-        }
-
         let mut done = 0usize;
         while done < rows_total {
             let c = (rows_total - done).min(PREFILL_CHUNK);
 
             // 1. Gather embeddings of t_{i+1} for rows done..done+c.
-            phase!(t_embed, {
-                for r in 0..c {
-                    let tok = prompt_tokens[done + r + 1] as usize;
-                    self_copy_embed_row(self, ctx, tok, scratch.embed, r, h, stream)?;
-                }
-                Ok(())
-            });
+            for r in 0..c {
+                let tok = prompt_tokens[done + r + 1] as usize;
+                self_copy_embed_row(self, ctx, tok, scratch.embed, r, h, stream)?;
+            }
 
             // 2. Pre-fc norms: embedding rows and target-hidden rows.
             ops::rms_norm(
@@ -188,35 +161,30 @@ impl MtpHead {
             )?;
 
             // 3. Per-row concat [normed_embed | normed_hidden] → [c, 2h].
-            phase!(t_concat, {
-                for r in 0..c {
-                    ops::bf16_concat(
-                        ctx.gpu,
-                        self.bf16_concat_k,
-                        scratch.normed_embed.offset(r * h * bf16),
-                        scratch.normed_hidden.offset(r * h * bf16),
-                        scratch.concat.offset(r * 2 * h * bf16),
-                        h as u32,
-                        stream,
-                    )?;
-                }
-                Ok(())
-            });
+            for r in 0..c {
+                ops::bf16_concat(
+                    ctx.gpu,
+                    self.bf16_concat_k,
+                    scratch.normed_embed.offset(r * h * bf16),
+                    scratch.normed_hidden.offset(r * h * bf16),
+                    scratch.concat.offset(r * 2 * h * bf16),
+                    h as u32,
+                    stream,
+                )?;
+            }
 
             // 4. fc: [c, 2h] → [c, h], then input layernorm.
-            phase!(t_fc, {
-                ops::dense_gemm(
-                    ctx.gpu,
-                    self.dense_gemm_k,
-                    scratch.concat,
-                    fc_w,
-                    scratch.fc_out,
-                    c as u32,
-                    h as u32,
-                    (2 * h) as u32,
-                    stream,
-                )
-            });
+            ops::dense_gemm(
+                ctx.gpu,
+                self.dense_gemm_k,
+                scratch.concat,
+                fc_w,
+                scratch.fc_out,
+                c as u32,
+                h as u32,
+                (2 * h) as u32,
+                stream,
+            )?;
             ops::rms_norm(
                 ctx.gpu,
                 self.rms_norm_k,
@@ -230,30 +198,28 @@ impl MtpHead {
             )?;
 
             // 5. K/V projections (Q is not needed — outputs are discarded).
-            phase!(t_kv, {
-                ops::dense_gemm(
-                    ctx.gpu,
-                    self.dense_gemm_k,
-                    scratch.normed2,
-                    k_w,
-                    scratch.k_out,
-                    c as u32,
-                    nkv * hd,
-                    h as u32,
-                    stream,
-                )?;
-                ops::dense_gemm(
-                    ctx.gpu,
-                    self.dense_gemm_k,
-                    scratch.normed2,
-                    v_w,
-                    scratch.v_out,
-                    c as u32,
-                    nkv * hd,
-                    h as u32,
-                    stream,
-                )
-            });
+            ops::dense_gemm(
+                ctx.gpu,
+                self.dense_gemm_k,
+                scratch.normed2,
+                k_w,
+                scratch.k_out,
+                c as u32,
+                nkv * hd,
+                h as u32,
+                stream,
+            )?;
+            ops::dense_gemm(
+                ctx.gpu,
+                self.dense_gemm_k,
+                scratch.normed2,
+                v_w,
+                scratch.v_out,
+                c as u32,
+                nkv * hd,
+                h as u32,
+                stream,
+            )?;
             if !self.k_norm.weight.is_null() {
                 ops::rms_norm(
                     ctx.gpu,
@@ -321,11 +287,7 @@ impl MtpHead {
             // The async H2D sources (positions/slots) are Vec-backed; the
             // driver has queued them, but sync before drop for safety —
             // one sync per 512-row chunk is negligible next to the GEMMs.
-            let t_sync = std::time::Instant::now();
             ctx.gpu.synchronize(stream)?;
-            if profile {
-                t_rest += t_sync.elapsed().as_secs_f64() * 1e3;
-            }
 
             done += c;
         }
@@ -339,14 +301,6 @@ impl MtpHead {
             prompt_tokens.len(),
             t0.elapsed().as_secs_f64() * 1e3,
         );
-        if profile {
-            tracing::info!(
-                "MTP drafter prefill PROFILE: embed_loop={t_embed:.1} ms \
-                 concat_loop={t_concat:.1} ms fc_gemm={t_fc:.1} ms kv_gemm={t_kv:.1} ms \
-                 tail_sync={t_rest:.1} ms \
-                 (rows={rows_total}, chunk={PREFILL_CHUNK})"
-            );
-        }
         Ok(rows_total)
     }
 }

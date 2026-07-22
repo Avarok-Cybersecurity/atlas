@@ -21,7 +21,7 @@ pub use dflash_head::{
     BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization,
 };
 pub use moe::MoeLayer;
-pub use mtp_head::{MtpHead, MtpQuantization};
+pub use mtp_head::{MtpHead, MtpQuantization, mtp_drafter_prefill_enabled};
 pub use nemotron_mamba2::NemotronMamba2Layer;
 pub use nemotron_moe::NemotronMoeLayer;
 pub use qwen3_attention::Qwen3AttentionLayer;
@@ -106,6 +106,24 @@ impl FfnComponent {
             Self::Moe(m) => m.forward_k3(input, ctx, stream),
             Self::Dense(d) => d.forward_k3(input, ctx, stream),
             Self::None => Ok(()),
+        }
+    }
+
+    /// K=4 verify FFN via batched GEMV (dense only). Returns `false` when the
+    /// path is unavailable (MoE / missing batch4 kernel / non-NVFP4 weights)
+    /// so the caller can fall back to `forward_prefill`.
+    pub fn try_forward_k4(
+        &self,
+        input: DevicePtr,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<bool> {
+        match self {
+            Self::Dense(d) if d.can_forward_k4() => {
+                d.forward_k4(input, ctx, stream)?;
+                Ok(true)
+            }
+            _ => Ok(false),
         }
     }
 

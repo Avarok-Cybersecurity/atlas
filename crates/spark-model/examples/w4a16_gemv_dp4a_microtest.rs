@@ -74,9 +74,13 @@ fn main() -> Result<()> {
 
     // ── inputs ──
     let mut rng = Rng(seed);
-    let a_bf16: Vec<u16> = (0..k).map(|_| f32_to_bf16_bits(rng.uniform(-1.0, 1.0))).collect();
+    let a_bf16: Vec<u16> = (0..k)
+        .map(|_| f32_to_bf16_bits(rng.uniform(-1.0, 1.0)))
+        .collect();
     // 4-bit NVFP4 weights: random nibbles 0..15, packed 2/byte → [N, K/2].
-    let b_packed: Vec<u8> = (0..n * k / 2).map(|_| (rng.next_u64() & 0xFF) as u8).collect();
+    let b_packed: Vec<u8> = (0..n * k / 2)
+        .map(|_| (rng.next_u64() & 0xFF) as u8)
+        .collect();
     // per-16 group E4M3 scales, positive, ~0.5..2.0 (exp field 6..8, bias 7).
     let num_groups = k / GROUP_SIZE;
     let b_scale: Vec<u8> = (0..n * num_groups)
@@ -105,11 +109,19 @@ fn main() -> Result<()> {
     let kf = gpu.kernel("w4a16_gemv", "w4a16_gemv")?;
     let launch_float = |sync: bool| -> Result<()> {
         KernelLaunch::new(gpu, kf.clone())
-            .grid([(n as u32).div_ceil(4), 1, 1]).block([256, 1, 1])
-            .arg_ptr(a_ptr).arg_ptr(b_ptr).arg_ptr(s_ptr).arg_f32(scale2)
-            .arg_ptr(c_ref).arg_u32(n as u32).arg_u32(k as u32)
+            .grid([(n as u32).div_ceil(4), 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(a_ptr)
+            .arg_ptr(b_ptr)
+            .arg_ptr(s_ptr)
+            .arg_f32(scale2)
+            .arg_ptr(c_ref)
+            .arg_u32(n as u32)
+            .arg_u32(k as u32)
             .launch(stream)?;
-        if sync { gpu.synchronize(stream)?; }
+        if sync {
+            gpu.synchronize(stream)?;
+        }
         Ok(())
     };
     // dp4a: quantize_act_int8_g16(A, a_q, a_scale, K) then w4a16_gemv_dp4a(...)
@@ -117,15 +129,28 @@ fn main() -> Result<()> {
     let kd = gpu.kernel("w4a16_gemv_dp4a", "w4a16_gemv_dp4a")?;
     let launch_dp4a = |sync: bool| -> Result<()> {
         KernelLaunch::new(gpu, kq.clone())
-            .grid([num_groups as u32, 1, 1]).block([GROUP_SIZE as u32, 1, 1])
-            .arg_ptr(a_ptr).arg_ptr(aq_ptr).arg_ptr(as_ptr).arg_u32(k as u32)
+            .grid([num_groups as u32, 1, 1])
+            .block([GROUP_SIZE as u32, 1, 1])
+            .arg_ptr(a_ptr)
+            .arg_ptr(aq_ptr)
+            .arg_ptr(as_ptr)
+            .arg_u32(k as u32)
             .launch(stream)?;
         KernelLaunch::new(gpu, kd.clone())
-            .grid([(n as u32).div_ceil(4), 1, 1]).block([256, 1, 1])
-            .arg_ptr(aq_ptr).arg_ptr(as_ptr).arg_ptr(b_ptr).arg_ptr(s_ptr).arg_f32(scale2)
-            .arg_ptr(c_dp4).arg_u32(n as u32).arg_u32(k as u32)
+            .grid([(n as u32).div_ceil(4), 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(aq_ptr)
+            .arg_ptr(as_ptr)
+            .arg_ptr(b_ptr)
+            .arg_ptr(s_ptr)
+            .arg_f32(scale2)
+            .arg_ptr(c_dp4)
+            .arg_u32(n as u32)
+            .arg_u32(k as u32)
             .launch(stream)?;
-        if sync { gpu.synchronize(stream)?; }
+        if sync {
+            gpu.synchronize(stream)?;
+        }
         Ok(())
     };
 
@@ -135,7 +160,10 @@ fn main() -> Result<()> {
     let read = |ptr: DevicePtr| -> Result<Vec<f32>> {
         let mut raw = vec![0u8; n * 2];
         gpu.copy_d2h(ptr, &mut raw)?;
-        Ok(raw.chunks_exact(2).map(|c| bf16_bits_to_f32(u16::from_le_bytes([c[0], c[1]]))).collect())
+        Ok(raw
+            .chunks_exact(2)
+            .map(|c| bf16_bits_to_f32(u16::from_le_bytes([c[0], c[1]])))
+            .collect())
     };
     let cref = read(c_ref)?;
     let cdp4 = read(c_dp4)?;
@@ -143,36 +171,59 @@ fn main() -> Result<()> {
     let (mut dot, mut nr, mut nd, mut max_rel, mut sum_rel) = (0f64, 0f64, 0f64, 0f64, 0f64);
     for i in 0..n {
         let (r, d) = (cref[i] as f64, cdp4[i] as f64);
-        dot += r * d; nr += r * r; nd += d * d;
+        dot += r * d;
+        nr += r * r;
+        nd += d * d;
         let rel = (r - d).abs() / r.abs().max(1e-3);
-        max_rel = max_rel.max(rel); sum_rel += rel;
+        max_rel = max_rel.max(rel);
+        sum_rel += rel;
     }
     let cosine = dot / (nr.sqrt() * nd.sqrt());
-    println!("cosine={cosine:.6}  mean_rel={:.4}  max_rel={:.4}", sum_rel / n as f64, max_rel);
+    println!(
+        "cosine={cosine:.6}  mean_rel={:.4}  max_rel={:.4}",
+        sum_rel / n as f64,
+        max_rel
+    );
 
     // kernel timing (wall, relative A/B)
     let time = |f: &dyn Fn(bool) -> Result<()>| -> Result<f64> {
-        for _ in 0..10 { f(true)?; }
+        for _ in 0..10 {
+            f(true)?;
+        }
         let t0 = Instant::now();
-        for _ in 0..100 { f(true)?; }
+        for _ in 0..100 {
+            f(true)?;
+        }
         Ok(t0.elapsed().as_secs_f64() / 100.0 * 1e6)
     };
     // GEMV-only (activations pre-quantized once): the amortized per-GEMV cost the real
     // decode path sees, since quant is hoisted to once-per-layer across ~5 GEMVs.
     let launch_dp4a_gemv = |sync: bool| -> Result<()> {
         KernelLaunch::new(gpu, kd.clone())
-            .grid([(n as u32).div_ceil(4), 1, 1]).block([256, 1, 1])
-            .arg_ptr(aq_ptr).arg_ptr(as_ptr).arg_ptr(b_ptr).arg_ptr(s_ptr).arg_f32(scale2)
-            .arg_ptr(c_dp4).arg_u32(n as u32).arg_u32(k as u32)
+            .grid([(n as u32).div_ceil(4), 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(aq_ptr)
+            .arg_ptr(as_ptr)
+            .arg_ptr(b_ptr)
+            .arg_ptr(s_ptr)
+            .arg_f32(scale2)
+            .arg_ptr(c_dp4)
+            .arg_u32(n as u32)
+            .arg_u32(k as u32)
             .launch(stream)?;
-        if sync { gpu.synchronize(stream)?; }
+        if sync {
+            gpu.synchronize(stream)?;
+        }
         Ok(())
     };
     let us_float = time(&launch_float)?;
     let us_dp4a = time(&launch_dp4a)?;
     let us_gemv = time(&launch_dp4a_gemv)?;
-    println!("float w4a16_gemv: {us_float:.1} us | dp4a quant+gemv: {us_dp4a:.1} us ({:.2}x) | dp4a GEMV-only: {us_gemv:.1} us ({:.2}x amortized)",
-             us_float / us_dp4a, us_float / us_gemv);
+    println!(
+        "float w4a16_gemv: {us_float:.1} us | dp4a quant+gemv: {us_dp4a:.1} us ({:.2}x) | dp4a GEMV-only: {us_gemv:.1} us ({:.2}x amortized)",
+        us_float / us_dp4a,
+        us_float / us_gemv
+    );
 
     if cosine >= COSINE_GATE {
         println!("PASS (cosine {cosine:.6} >= {COSINE_GATE})");

@@ -40,19 +40,6 @@ lazy_static! {
             &["verdict", "channel", "spinning"]
         ).unwrap();
 
-    // ── Anthropic translation-drift counter (P5.1) ──
-    //
-    // Increments whenever the Anthropic→OpenAI translator produces a
-    // round-trip diff against the original Anthropic shape. Diffs
-    // indicate translation bugs that compound across long agentic
-    // sessions. Logging the actual diff is gated behind the
-    // ATLAS_DEBUG_TRANSLATION_DRIFT env var (anthropic.rs).
-    pub static ref ANTHROPIC_TRANSLATION_DRIFTS: IntCounter =
-        register_int_counter!(
-            "atlas_anthropic_translation_drifts_total",
-            "Anthropic ↔ OpenAI translator round-trip mismatches detected"
-        ).unwrap();
-
     // ── Speculative-decode telemetry (A.2 EASD scaffolding) ──
     //
     // Per-K acceptance counters. Enables measuring baseline accept

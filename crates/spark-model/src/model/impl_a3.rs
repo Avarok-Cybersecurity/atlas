@@ -128,7 +128,15 @@ impl TransformerModel {
                     // then dp4a batch2 GEMV sharing the lm_head weight read.
                     let a_q = self.buffers.ffn_act_a();
                     let a_scale = self.buffers.ffn_act_scale();
-                    ops::quantize_act_int8(self.gpu.as_ref(), self.dp4a_quant_k, hidden, a_q, a_scale, h, stream)?;
+                    ops::quantize_act_int8(
+                        self.gpu.as_ref(),
+                        self.dp4a_quant_k,
+                        hidden,
+                        a_q,
+                        a_scale,
+                        h,
+                        stream,
+                    )?;
                     ops::quantize_act_int8(
                         self.gpu.as_ref(),
                         self.dp4a_quant_k,
@@ -188,17 +196,42 @@ impl TransformerModel {
                     stream,
                 )?;
             }
-        } else if num_tokens == 3 && self.lm_head_nvfp4.is_some() {
-            // K=3 verify (num_drafts=2): batch3 GEMV reads the lm_head weight
-            // ONCE for 3 rows instead of w4a16_gemm (M=3 on 64x64 tiles wastes
-            // ~95% of M => ~3x slower). Unblocks deeper MTP drafting.
-            let nvfp4 = self.lm_head_nvfp4.as_ref().unwrap();
+        } else if num_tokens == 3
+            && self.w4a16_gemv_batch3_kernel.0 != 0
+            && let Some(ref nvfp4) = self.lm_head_nvfp4
+        {
+            // Strix K=3 verify (num_drafts=2): batch3 GEMV reads the lm_head
+            // weight ONCE for 3 rows instead of w4a16_gemm (M=3 on 64x64 tiles
+            // wastes ~95% of M => ~3x slower). Unblocks deeper MTP drafting.
+            // Preferred over the generic batchm arm for exactly 3 rows.
             ops::w4a16_gemv_batch3(
                 self.gpu.as_ref(),
                 self.w4a16_gemv_batch3_kernel,
                 hidden,
                 nvfp4,
                 logits,
+                v,
+                h,
+                stream,
+            )?;
+        } else if (num_tokens == 3 || num_tokens == 4)
+            && self.w4a16_gemv_batch4_kernel.0 != 0
+            && let Some(ref nvfp4) = self.lm_head_nvfp4
+        {
+            // K=3/K=4 verify lm_head: one weight read for all rows via the
+            // M<=4 batched GEMV. nsys (2026-07-18, drafts=3 serve): the base
+            // M64-tile `w4a16_gemm` below cost 19.3 ms/verify-step on the
+            // [248320, 5120] NVFP4 lm_head at M=4 — 94% of the M-tile is
+            // padding, ~33 GB/s effective. The batch GEMV streams the same
+            // 636 MB once at near-peak (~2.5 ms), the single largest slice
+            // of the K=4 verify-vs-K=2 cost gap.
+            ops::w4a16_gemv_batchm(
+                self.gpu.as_ref(),
+                self.w4a16_gemv_batch4_kernel,
+                hidden,
+                nvfp4,
+                logits,
+                num_tokens,
                 v,
                 h,
                 stream,

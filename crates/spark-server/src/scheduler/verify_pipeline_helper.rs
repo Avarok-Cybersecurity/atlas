@@ -92,6 +92,25 @@ pub(crate) fn dflash_seam_serial_enabled() -> bool {
     *CACHED.get_or_init(|| std::env::var("ATLAS_DFLASH_SEAM_SERIAL").ok().as_deref() == Some("1"))
 }
 
+/// P1-3 (2026-07-09): honor the request temperature on the MTP verify path.
+/// Under MTP + grammar ~97-100% of emitted tokens flow through verify, which
+/// PINNED the pick to a (penalty-aware) argmax regardless of the client's
+/// `temperature` — retries were byte-identical, and low-margin argmax flips
+/// at close boundaries became deterministic attractors (adversarially
+/// verified forensics, 2026-07-09; the failing session requested temp=0.3).
+/// When enabled and the sequence has `temperature > 0.0`, the slow verify
+/// path SAMPLES from the pipeline-processed (grammar-masked + penalised)
+/// logits with the sequence's temperature/top_k/top_p/min_p instead of
+/// taking the argmax — the sampled pick is grammar-mask-allowed by
+/// construction because masked tokens are -inf and excluded from the
+/// candidate set. Acceptance stays `draft == pick`, so the accept rate may
+/// drop at temp>0: that is standard speculative-sampling behaviour. Default
+/// ON; set `ATLAS_NO_MTP_VERIFY_SAMPLE=1` to revert to the pinned argmax.
+pub(crate) fn mtp_verify_sample_enabled() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var("ATLAS_NO_MTP_VERIFY_SAMPLE").ok().as_deref() != Some("1"))
+}
+
 /// Per-position verify logits, dequantised + processed through the full
 /// pre-sample pipeline. Returns the chosen token: either the forced
 /// token from a [`crate::scheduler::logit_processors::forced_token::ForcedTokenFastPath`]
@@ -103,6 +122,10 @@ pub(crate) fn dflash_seam_serial_enabled() -> bool {
 /// `a`: the active sequence; the pipeline mutates seq state in place
 /// (F2 confidence arm, sentence_defer_count, etc.).
 /// `ctx`: tokenizer special-token IDs used by the pipeline.
+/// `verify_pos`: this position's index within the verify span (0..K) —
+/// P1-3 (2026-07-09): used only to derive the per-token seed offset for
+/// the temp>0 sampling branch, matching the `output_tokens.len()`-based
+/// seed the non-MTP path would have used for the same emitted position.
 ///
 /// Mirrors the host-side path of `decode_logits_seq::process_seq_logits`
 /// for byte-identical pipeline semantics.
@@ -112,6 +135,7 @@ pub fn verify_pick_with_pipeline(
     vocab_size: usize,
     a: &mut ActiveSeq,
     ctx: &LogitsContext,
+    verify_pos: usize,
 ) -> u32 {
     use crate::scheduler::mtp_timing::{self, Phase};
     // 1. Dequant per the same scheme as `process_seq_logits`.
@@ -177,6 +201,62 @@ pub fn verify_pick_with_pipeline(
         return tok;
     }
     mtp_timing::record(Phase::PipelineProc, t_proc);
+
+    // 4a. P1-3 (2026-07-09): when the request asked for temperature > 0,
+    //     SAMPLE from the processed logits instead of taking the argmax.
+    //     The processors (grammar bitmask, think/tool masks, penalties+bias)
+    //     already ran in place above, so masked tokens sit at -inf and the
+    //     sampler's candidate filter excludes them — the sampled pick is
+    //     grammar-mask-allowed by construction. This mirrors the non-MTP
+    //     tail of `decode_logits_seq::process_seq_logits` exactly: neutral
+    //     penalty params (penalties were applied in step 3, so the sampler's
+    //     internal `apply_penalties_and_bias` is a no-op) + the sequence's
+    //     temperature / top_k / top_p / top_n_sigma / min_p. min_p is the
+    //     resolved request+MODEL.toml-floor value, subject to the P1-4
+    //     ATLAS_NO_MTP_MINP kill-switch. The seed advances per emitted
+    //     position (`output_tokens.len() + verify_pos`) — the same offset
+    //     FinalDecode would use if this position is accepted and emitted.
+    //     Unreachable under ATLAS_FORCE_TEMP_ZERO (the bypass in
+    //     `process_position_logits` returns Some(argmax) before this point);
+    //     the guard is kept as documentation. Kill-switch:
+    //     ATLAS_NO_MTP_VERIFY_SAMPLE=1 reverts to the pinned argmax below.
+    if mtp_verify_sample_enabled() && a.temperature > 0.0 && !force_temp_zero_enabled() {
+        let t_sample = std::time::Instant::now();
+        let step_seed = a
+            .seed
+            .map(|s| s.wrapping_add((a.output_tokens.len() + verify_pos) as u64));
+        let sampler_shape = spark_runtime::sampler::SamplingParams {
+            temperature: a.temperature,
+            top_k: a.top_k,
+            top_p: a.top_p,
+            top_n_sigma: a.top_n_sigma,
+            min_p: crate::scheduler::sample_step::effective_min_p(a.min_p),
+            logit_bias: Vec::new(),
+            repetition_penalty: 1.0,
+            repetition_penalty_window: 0,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            lz_penalty: 0.0,
+            dry_multiplier: 0.0,
+            dry_base: penalties.dry_base,
+            dry_allowed_length: penalties.dry_allowed_length,
+            dry_sequence_breakers: Vec::new(),
+            max_tokens: 0,
+            stop_token_ids: Vec::new(),
+            seed: step_seed,
+        };
+        // SAFETY: `f32_logits` is a live Vec<f32> of `vocab_size` elements;
+        // reinterpreting as bytes is the same cast the non-MTP sampler tail
+        // uses (`decode_logits_seq.rs`).
+        let f32_bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(f32_logits.as_ptr() as *const u8, vocab_size * 4) };
+        let sampled =
+            spark_runtime::sampler::sample_with_params_history(f32_bytes, &sampler_shape, &[]);
+        // Recorded under the Argmax phase: it replaces the argmax pick and
+        // keeps the mtp_timing phase set unchanged.
+        mtp_timing::record(Phase::Argmax, t_sample);
+        return sampled;
+    }
 
     // 4. Argmax over the (now-masked-and-penalised) vector. Matches the
     //    sampler's argmax branch behaviour.
@@ -260,6 +340,11 @@ pub fn verify_pick_all_with_pipeline(
     // `apply_penalties_and_bias` (`penalty_history_scope`), which is also
     // deliberately STALE across positions ≥ 1 exactly like the slow path
     // (output_tokens does not grow until `emit_token`, after this helper).
+    // P1-3 (2026-07-09): this temp==0 gate is load-bearing for verify-time
+    // sampling — at temperature > 0 the fast GPU-argmax shortcut must NOT
+    // fire, so every position routes through the slow pipeline below where
+    // the temp>0 sampling branch (step 4a in `verify_pick_with_pipeline`)
+    // draws from the processed logits. Confirmed and kept as-is.
     let fast_penalty_gate = if fast_greedy_grammar_enabled()
         && a.grammar_state.is_some()
         && !a.inside_thinking
@@ -380,7 +465,9 @@ pub fn verify_pick_all_with_pipeline(
 
     for i in 0..k {
         let slice = &buf[i * vocab * elem_bytes..(i + 1) * vocab * elem_bytes];
-        let pick = verify_pick_with_pipeline(slice, false, vocab, a, ctx);
+        // P1-3 (2026-07-09): `i` threads the verify-position index down for
+        // the per-position seed offset of the temp>0 sampling branch.
+        let pick = verify_pick_with_pipeline(slice, false, vocab, a, ctx, i);
         picks.push(pick);
 
         // Speculatively advance the matcher with `pick[i]` so the next

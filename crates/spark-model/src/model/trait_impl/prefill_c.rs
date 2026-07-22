@@ -159,7 +159,8 @@ impl TransformerModel {
         let prefix_match = if self.tokens_have_vision_pad(tokens) {
             spark_runtime::prefix_cache::PrefixMatch::empty()
         } else {
-            self.prefix_cache.lookup(tokens, bs, seq.session_hash)
+            self.prefix_cache
+                .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
         };
         let matched = prefix_match.matched_tokens;
         seq.cached_prefix_tokens = matched;
@@ -175,8 +176,12 @@ impl TransformerModel {
         );
 
         // Marconi: restore SSM snapshot if available (session-gated).
-        let (kv_write_start, marconi_skip) = if let Some(snap_id) = prefix_match.ssm_snapshot {
-            let snap_tok = prefix_match.ssm_snapshot_tokens;
+        // Phase 1b spill-tier fault-in (#6): fold a resident hit with a
+        // faulted-back spilled anchor; see `ssm_fault_in::eff_ssm_snapshot`.
+        let (eff_snapshot, eff_snapshot_tokens) =
+            self.eff_ssm_snapshot(&prefix_match, seq.session_hash, stream);
+        let (kv_write_start, marconi_skip) = if let Some(snap_id) = eff_snapshot {
+            let snap_tok = eff_snapshot_tokens;
             if snap_tok > 0
                 && matched <= total_len
                 && self
@@ -392,6 +397,17 @@ impl TransformerModel {
             (DevicePtr::NULL, DevicePtr::NULL)
         };
 
+        // Request-scoped LoRA routing (two-phase prefill) — same dedicated
+        // arena buffer + m-element uniform slot array as prefill_a. See
+        // prefill_a.rs for the placement rationale. `DevicePtr(0)` (no pool)
+        // → installed-pair fallback; `-1` resolves to active.
+        let seq_slot = self.upload_seq_slot_uniform(
+            seq.adapter_slot,
+            proc_count,
+            self.buffers.lora_seq_slot(),
+            stream,
+        )?;
+
         let attn_metadata = AttnMetadataDev {
             positions: meta_base,
             positions_h: meta_base,
@@ -401,6 +417,7 @@ impl TransformerModel {
             block_table: block_table_dev,
             max_blocks_per_seq: seq.block_table.len() as u32,
             num_seqs: 1,
+            seq_slot,
         };
 
         let ctx = ForwardContext {
@@ -416,6 +433,8 @@ impl TransformerModel {
             gdn_exact_replay: marconi_skip,
             midchunk_capture: None,
             token_ids: None,
+            // #30: request slot pairs (None unless routing to a non-active slot).
+            routed_lora_layers: self.routed_slot_layers(seq.adapter_slot),
         };
 
         // ── 4. Per-layer forward: SSM uses three-phase, attention uses standard ──

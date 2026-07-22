@@ -71,6 +71,56 @@ pub(crate) fn normalize_param_name(tools: &[ToolDefinition], call_name: &str, ke
         .unwrap_or_else(|| key.to_string())
 }
 
+/// Echo-attractor salvage (2026-07-09): at long context the model can emit
+/// the XML wire format shifted by one structural token —
+/// `<parameter=parameter>filePath>\n/tmp/x</parameter>` or
+/// `<parameter=write>content>…</parameter>` — so the REAL key lands as the
+/// leading `IDENT>` of the value while the key slot holds an echoed
+/// structural word (`parameter`, the function name, …). The grammar's
+/// key-slot masking makes this shape sticky once entered (`=` is masked, so
+/// the echo closes early), and the real path/content are fully present in
+/// the value. Recover them: when `key` is NOT a schema property and the
+/// value begins with `PROP>` for a schema property `PROP`, re-split into
+/// `(PROP, rest)`.
+///
+/// SSOT — used by both the buffered pipeline (`backfill_required_params`
+/// step 2.5) and live argument streaming (`streaming_emit::coerce_kv`), the
+/// same dual-wiring as [`normalize_param_name`]. Deliberately conservative:
+/// never fires when the emitted key is itself a schema property (a legit
+/// value could start with `IDENT>`), and requires the exact `PROP>` prefix.
+pub(crate) fn salvage_echoed_param(
+    tools: &[ToolDefinition],
+    call_name: &str,
+    key: &str,
+    value: &str,
+) -> Option<(String, String)> {
+    let props = tools
+        .iter()
+        .find(|t| t.function.name == call_name)?
+        .function
+        .parameters
+        .as_ref()?
+        .get("properties")?
+        .as_object()?;
+    if props.is_empty() || props.contains_key(key) {
+        return None;
+    }
+    // Longest property first so e.g. `filePath>` wins over a hypothetical
+    // `file>` prefix.
+    let mut names: Vec<&String> = props.keys().collect();
+    names.sort_by_key(|n| std::cmp::Reverse(n.len()));
+    for prop in names {
+        if let Some(rest) = value
+            .strip_prefix(prop.as_str())
+            .and_then(|r| r.strip_prefix('>'))
+        {
+            // Both parse paths `.trim()` parameter values; stay consistent.
+            return Some((prop.clone(), rest.trim().to_string()));
+        }
+    }
+    None
+}
+
 /// Extract agent-type names from a delegation tool's prose description.
 ///
 /// Matches lines shaped like `- <name>: …` — the convention both opencode
@@ -198,6 +248,37 @@ pub fn backfill_required_params(calls: &mut [ToolCall], tools: &[ToolDefinition]
             for (wrong_key, right_key) in keys_to_fix {
                 if let Some(val) = args.remove(&wrong_key) {
                     args.entry(right_key).or_insert(val);
+                    changed = true;
+                }
+            }
+        }
+
+        // 2.5. Echo-attractor salvage: re-split `{"parameter": "filePath>…"}`
+        // shapes where the real key leaked into the value (see
+        // `salvage_echoed_param`). Runs BEFORE the missing-required backfill
+        // so the recovered key satisfies `required` instead of being
+        // synthesized as "" (which clients reject with errors the degraded
+        // model then retries verbatim — the 42.5k opencode doom loop).
+        if properties.is_some() {
+            let salvageable: Vec<(String, String, String)> = args
+                .iter()
+                .filter_map(|(k, v)| {
+                    let s = v.as_str()?;
+                    salvage_echoed_param(tools, &call.function.name, k, s)
+                        .map(|(real_key, real_val)| (k.clone(), real_key, real_val))
+                })
+                .collect();
+            for (echoed_key, real_key, real_val) in salvageable {
+                let target_empty = matches!(
+                    args.get(&real_key),
+                    None | Some(serde_json::Value::String(_))
+                ) && args
+                    .get(&real_key)
+                    .and_then(|v| v.as_str())
+                    .is_none_or(|s| s.trim().is_empty());
+                if target_empty {
+                    args.remove(&echoed_key);
+                    args.insert(real_key, serde_json::Value::String(real_val));
                     changed = true;
                 }
             }

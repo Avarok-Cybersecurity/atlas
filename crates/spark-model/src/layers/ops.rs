@@ -14,12 +14,12 @@
 #[path = "ops/activations.rs"]
 mod activations;
 // strix-hip W4A8 integer-DP4A decode GEMV (additive; flag-gated OFF by default).
-#[path = "ops/dp4a.rs"]
-mod dp4a;
 #[path = "ops/dispatch_helpers.rs"]
 mod dispatch_helpers;
 #[path = "ops/dispatch_proj.rs"]
 mod dispatch_proj;
+#[path = "ops/dp4a.rs"]
+mod dp4a;
 #[path = "ops/embeddings.rs"]
 mod embeddings;
 #[path = "ops/fp8_gemv_batch.rs"]
@@ -36,6 +36,10 @@ pub mod gdn_flashinfer;
 mod gemm_dense;
 #[path = "ops/gemm_dense_int8.rs"]
 mod gemm_dense_int8;
+#[path = "ops/gemm_fp4.rs"]
+mod gemm_fp4;
+#[path = "ops/gemm_fp8_prefill.rs"]
+mod gemm_fp8_prefill;
 #[path = "ops/gemm_quant.rs"]
 mod gemm_quant;
 #[path = "ops/hyper_connection.rs"]
@@ -46,6 +50,8 @@ mod kv_cache;
 mod kv_cache_fp8k;
 #[path = "ops/kv_cache_turbok.rs"]
 mod kv_cache_turbok;
+#[path = "ops/lora_delta.rs"]
+pub mod lora_delta;
 #[path = "ops/moe_atomic_c4.rs"]
 mod moe_atomic_c4;
 #[path = "ops/moe_expert.rs"]
@@ -60,6 +66,8 @@ mod moe_grouped_a;
 mod moe_grouped_a2;
 #[path = "ops/moe_grouped_b.rs"]
 mod moe_grouped_b;
+#[path = "ops/moe_grouped_fp4.rs"]
+mod moe_grouped_fp4;
 #[path = "ops/moe_prefill.rs"]
 mod moe_prefill;
 #[path = "ops/norm.rs"]
@@ -96,11 +104,13 @@ mod ssm_gdn_batched;
 mod ssm_mamba;
 #[path = "ops/ssm_preproc.rs"]
 mod ssm_preproc;
+#[path = "ops/ssm_ssd.rs"]
+mod ssm_ssd;
 
 pub use activations::*;
-pub use dp4a::*;
 pub use dispatch_helpers::*;
 pub use dispatch_proj::*;
+pub use dp4a::*;
 pub use embeddings::*;
 pub use fp8_gemv_batch::*;
 pub use fp8_moe::*;
@@ -108,6 +118,8 @@ pub use fp8_moe_batch_a::*;
 pub use fp8_moe_batch_b::*;
 pub use gemm_dense::*;
 pub use gemm_dense_int8::*;
+pub use gemm_fp4::*;
+pub use gemm_fp8_prefill::*;
 pub use gemm_quant::*;
 pub use hyper_connection::*;
 pub use kv_cache::*;
@@ -121,6 +133,7 @@ pub use moe_grouped_a::*;
 pub use moe_grouped_a2::*;
 #[allow(unused_imports)]
 pub(crate) use moe_grouped_b::*;
+pub use moe_grouped_fp4::*;
 pub use moe_prefill::*;
 pub use norm::*;
 pub use nvfp4_mmq::*;
@@ -140,3 +153,4 @@ pub use ssm_gdn_b::*;
 pub use ssm_gdn_batched::*;
 pub use ssm_mamba::*;
 pub use ssm_preproc::*;
+pub use ssm_ssd::*;

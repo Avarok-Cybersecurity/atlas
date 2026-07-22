@@ -151,6 +151,15 @@ pub fn step_mtp(
             a.tool_call_end_token,
         )
         .to_vec();
+        // P1-4 (2026-07-09): the bootstrap token is one of only two
+        // stochastic sample points under MTP, and its stochastic branch
+        // previously sampled with a hardcoded `min_p: 0.0` deep inside
+        // `sample_token_with_grammar` — bypassing the MODEL.toml
+        // `min_p_floor` (0.05 on this family) that exists precisely to stop
+        // FP8/NVFP4 argmax-flip tail tokens. The sampler now reads
+        // `penalties.min_p`, which `penalty_params_for` copies from
+        // `a.min_p` (request value + floor, resolved in `sampling_setup`) —
+        // SSOT, no new channel. Kill-switch: ATLAS_NO_MTP_MINP=1.
         let tok = match sample_token_with_grammar(
             model,
             logits,
@@ -231,11 +240,11 @@ pub fn step_mtp(
         // (→ truncation). A single draft uses its own up-to-date mask and is
         // sound; drafts.len()==1 routes verify to the K=2 path. Mask is a no-op
         // when grammar is inactive, so NVFP4/non-tool paths keep full K.
-        let effective_num_drafts = if a.grammar_state.is_some() {
-            1
-        } else {
-            num_drafts
-        };
+        // 2026-07-09: hoisted to the `effective_drafts_under_grammar` SSOT,
+        // now also applied at the five verify-path re-propose sites that
+        // previously bypassed this clamp (the "mask held fixed" warn spam).
+        let effective_num_drafts =
+            crate::scheduler::spec_step::effective_drafts_under_grammar(a, num_drafts);
         // Adaptive speculation: a suspended seq skips proposing entirely and
         // stays on this serial bootstrap path until the re-probe fires.
         // (`will_propose` is the single spec_allowed evaluation above.)

@@ -166,40 +166,20 @@ pub(crate) fn dense(store: &WeightStore, name: &str) -> Result<DenseWeight> {
     Ok(DenseWeight { weight: w.ptr })
 }
 
-/// Load a BF16 norm weight and subtract 1.0 from every element.
-///
-/// Atlas's `rms_norm` kernel uses the Qwen3-Next "offset-from-1" convention
-/// (`out = x * (1 + weight)`). Models with STANDARD RMSNorm (`out = x * weight`,
-/// e.g. DeepSeek-V4: `DeepseekV4RMSNorm` = T5LayerNorm) must pre-subtract 1.0 so
-/// the kernel computes `1 + (w - 1) = w`. Without this, every norm is scaled
-/// wrong (e.g. kv_norm 2.6x, attn_norm ~30x too large) → attention overflow.
-pub(crate) fn dense_minus_one(
-    store: &WeightStore,
-    name: &str,
-    gpu: &dyn GpuBackend,
-) -> Result<DenseWeight> {
-    let w = store.get(name)?;
-    let n = w.num_elements();
-    let mut bf16_buf = vec![0u8; n * 2];
-    gpu.copy_d2h(w.ptr, &mut bf16_buf)?;
-    let adjusted: Vec<u8> = bf16_buf
-        .chunks_exact(2)
-        .flat_map(|c| {
-            let bits = u16::from_le_bytes([c[0], c[1]]);
-            let v = f32::from_bits((bits as u32) << 16) - 1.0;
-            // round-to-nearest-even bf16 truncation
-            let u = v.to_bits();
-            let round_bit = (u >> 15) & 1;
-            let sticky = (u & 0x7FFF != 0) as u32;
-            let bf =
-                ((u >> 16) as u16).wrapping_add((round_bit & (sticky | ((u >> 16) & 1))) as u16);
-            bf.to_le_bytes()
-        })
-        .collect();
-    let ptr = gpu.alloc(adjusted.len())?;
-    gpu.copy_h2d(&adjusted, ptr)?;
-    Ok(DenseWeight { weight: ptr })
-}
+// REMOVED: `dense_minus_one` — the offset-from-1 norm loader.
+//
+// It pre-subtracted 1.0 and stored `bf16(w - 1)` so the offset-from-1 `rms_norm`
+// kernel would recover `1 + (w - 1) = w`. That round-trip is only lossless when
+// `w ≈ 1`. DeepSeek-V4 — its ONLY caller — ships HF-vanilla norm weights of
+// ≈ 0.03, so it stored ≈ −0.97 and BF16's rounding error there (~1.9e-3 absolute)
+// became a 1.8–3.4 % RELATIVE error on the weight once 1 was added back
+// (catastrophic cancellation; up to 19 % on `q_norm`, 100 % with sign flips on the
+// compressor norms — measured over all 249 V4 norm tensors, 2026-07-13).
+//
+// V4 now loads its norm weights exactly (`dense_auto`) and dispatches
+// `rms_norm_vanilla`. See `crate::ships_vanilla_norm_weights`. Models whose norm
+// weights are genuinely stored as an offset (Qwen3-Next, init 0) use `dense` and
+// keep the offset kernel — they never needed this function.
 
 /// Load a weight, auto-dequanting FP8 block-scaled to BF16 when needed.
 ///

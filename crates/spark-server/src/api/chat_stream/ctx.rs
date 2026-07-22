@@ -47,7 +47,6 @@ pub(super) struct StreamCtx {
     /// (string → integer/boolean/array/object). True for qwen3_xml.
     pub(super) wants_typed_arguments: bool,
     pub(super) max_tool_calls_per_response: usize,
-    pub(super) req_stream_include_usage: bool,
     pub(super) req_return_token_ids: bool,
     pub(super) req_ctx: Option<crate::rate_limiter::RequestContext>,
     pub(super) dump_seq: Option<u64>,

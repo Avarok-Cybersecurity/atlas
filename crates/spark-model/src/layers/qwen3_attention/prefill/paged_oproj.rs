@@ -26,7 +26,40 @@ impl Qwen3AttentionLayer {
     ) -> Result<DevicePtr> {
         let o_out = ctx.buffers.norm_output();
         let force_w8a8 = ops::fp8_blockscaled_prefill_enabled();
-        if ops::cutlass_nvfp4_attn_o_enabled()
+        // Native FP4 o_proj: quantize attn_out to NVFP4 and consume o_proj in
+        // its original NVFP4 form. OPT-IN ONLY -- see the QKV path's comment.
+        let w4a4 = n >= 256
+            && self.w4a4_gemm_k.0 != 0
+            && self.quantize_nvfp4_k.0 != 0
+            && ctx.buffers.fp8_act_bytes() >= (n as usize) * (nq as usize) * (hd as usize)
+            && std::env::var("ATLAS_ATTN_W4A4").is_ok();
+        if w4a4 {
+            let kd = nq * hd;
+            let a4 = ctx.buffers.fp8_act();
+            let a4_sf = a4.offset((n as usize) * (kd as usize) / 2);
+            ops::quantize_bf16_to_nvfp4(
+                ctx.gpu,
+                self.quantize_nvfp4_k,
+                attn_out,
+                a4,
+                a4_sf,
+                n,
+                kd,
+                stream,
+            )?;
+            ops::w4a4_gemm_mfast(
+                ctx.gpu,
+                self.w4a4_gemm_k,
+                a4,
+                a4_sf,
+                &self.attn.o_proj,
+                o_out,
+                n,
+                h,
+                kd,
+                stream,
+            )?;
+        } else if ops::cutlass_nvfp4_attn_o_enabled()
             && let Some(ref nvfp4_t) = self.o_nvfp4_t
         {
             ops::log_cutlass_nvfp4_route("attn_o", n, h, nq * hd);
@@ -233,6 +266,74 @@ impl Qwen3AttentionLayer {
                 nq * hd,
                 stream,
             )?;
+        }
+        // ── LoRA delta on o_proj: o_out[n,h] += scale·(attn_out[n,nq*hd]@Aᵀ)@Bᵀ.
+        // attn_out is the exact o_proj input (post-attention), matching HF.
+        // Before the op_dump so dumps show the adapted output.
+        if let Some(ref lw) = self.lora
+            && let Some(ref pair) = lw.o
+        {
+            debug_assert_eq!(pair.k_in, nq * hd);
+            debug_assert_eq!(pair.n_out, h);
+            // #30 routed-prefill precision (see paged_qkv.rs): a routed (non-active)
+            // prefill selects the REQUEST slot's O pair and folds it through the SAME
+            // dense `apply_lora_delta` (dense_gemm_tc) the active adapter uses. Indexed
+            // by `lw.layer_idx` (GLOBAL layer index, not attn_layer_idx). MUST win over
+            // the bgmv branch (a routed prefill satisfies both). `None` → bgmv/installed.
+            let routed_pair = ctx.routed_lora_layers.and_then(|ls| {
+                crate::lora::select_routed_pair(ls, lw.layer_idx, crate::lora::LoraModule::OProj)
+            });
+            // Request-scoped routing (see paged_qkv.rs). attn_out is contiguous
+            // [n, nq*hd] and o_out is contiguous [n, h], so the routed bgmv is
+            // byte-identical to `n` single-row `apply_lora_delta`. No pool / no
+            // route → installed-active-pair path (pre-M2 behaviour).
+            let seq_slot = ctx
+                .attn_metadata
+                .map(|m| m.seq_slot)
+                .unwrap_or(DevicePtr(0));
+            if let Some(routed_pair) = routed_pair {
+                debug_assert_eq!(routed_pair.k_in, nq * hd);
+                debug_assert_eq!(routed_pair.n_out, h);
+                ops::lora_delta::apply_lora_delta(
+                    ctx.gpu,
+                    &lw.kernels,
+                    routed_pair,
+                    attn_out,
+                    o_out,
+                    n,
+                    ctx.buffers.lora_xa(),
+                    ctx.buffers.lora_delta(),
+                    stream,
+                )?;
+            } else if seq_slot.0 != 0
+                && let Some(ref route) = lw.o_route
+            {
+                ops::lora_delta::apply_lora_bgmv(
+                    ctx.gpu,
+                    &lw.kernels,
+                    route,
+                    attn_out,
+                    o_out,
+                    seq_slot,
+                    n,
+                    pair.k_in,
+                    pair.n_out,
+                    ctx.buffers.lora_xa(),
+                    stream,
+                )?;
+            } else {
+                ops::lora_delta::apply_lora_delta(
+                    ctx.gpu,
+                    &lw.kernels,
+                    pair,
+                    attn_out,
+                    o_out,
+                    n,
+                    ctx.buffers.lora_xa(),
+                    ctx.buffers.lora_delta(),
+                    stream,
+                )?;
+            }
         }
         // ATLAS_OP_DUMP hook: post-O-projection — this is the FULL attention
         // block output (Q*K^T*V * O_proj). Compares 1:1 against the HF

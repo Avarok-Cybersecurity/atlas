@@ -11,11 +11,11 @@ use crate::layer::TransformerLayer;
 use crate::layers::{DenseFfnLayer, FfnComponent, Qwen3AttentionLayer, Qwen3SsmLayer};
 use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_dense_bf16, shard_quantized_nvfp4};
 use crate::weight_map::{
-    AttentionWeights, DenseWeight, Fp8Weight, MtpWeights, Nvfp4Variant, SsmWeights, dense, dense_auto,
-    dense_auto_fp8_or_bf16,
-    dense_f32_safe, dense_keep_f32, dequant_nvfp4_to_bf16, detect_nvfp4_variant, gpu_concat_rows,
-    interleave_ba, load_dense_ffn, load_fp8_block_scaled_as_fp8weight, load_kv_scales, load_mtp,
-    quantize_to_nvfp4, quantized_auto,
+    AttentionWeights, DenseWeight, Fp8Weight, MtpWeights, Nvfp4Variant, SsmWeights, dense,
+    dense_auto, dense_auto_fp8_or_bf16, dense_f32_safe, dense_keep_f32, dequant_nvfp4_to_bf16,
+    detect_nvfp4_variant, gpu_concat_rows, interleave_ba, load_dense_ffn,
+    load_fp8_block_scaled_as_fp8weight, load_kv_scales, load_mtp, quantize_to_nvfp4,
+    quantized_auto,
 };
 
 /// True when `{prefix}.weight` is FP8 E4M3 on disk with a 2D block scale
@@ -463,18 +463,21 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         };
                         if let Some(ref qw) = q_nvfp4 {
                             let qt = qw.transpose_for_gemm(gpu, q_proj_n, h)?;
-                            let kt = k_nvfp4
-                                .as_ref()
-                                .unwrap()
-                                .transpose_for_gemm(gpu, num_kv_heads * head_dim, h)?;
-                            let vt = v_nvfp4
-                                .as_ref()
-                                .unwrap()
-                                .transpose_for_gemm(gpu, num_kv_heads * head_dim, h)?;
-                            let ot = layer
-                                .attn
-                                .o_proj
-                                .transpose_for_gemm(gpu, h, num_heads * head_dim)?;
+                            let kt = k_nvfp4.as_ref().unwrap().transpose_for_gemm(
+                                gpu,
+                                num_kv_heads * head_dim,
+                                h,
+                            )?;
+                            let vt = v_nvfp4.as_ref().unwrap().transpose_for_gemm(
+                                gpu,
+                                num_kv_heads * head_dim,
+                                h,
+                            )?;
+                            let ot = layer.attn.o_proj.transpose_for_gemm(
+                                gpu,
+                                h,
+                                num_heads * head_dim,
+                            )?;
                             layer.set_prefill_weights(Some(qt), Some(kt), Some(vt), Some(ot));
                         }
                     }
@@ -930,7 +933,12 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         loaders_b::load_final_norm(store, config)
     }
 
-    fn load_lm_head(&self, store: &WeightStore, config: &ModelConfig, gpu: &dyn GpuBackend) -> Result<DenseWeight> {
+    fn load_lm_head(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        gpu: &dyn GpuBackend,
+    ) -> Result<DenseWeight> {
         // unsloth's mixed-precision NVFP4 keeps lm_head as FP8 E4M3 + per-row
         // scale; a bare `dense()` hands FP8 bytes to a BF16 GEMM (2x over-read →
         // ILLEGAL_ADDRESS). Intercept FP8 and dequant to BF16; pass BF16 / U8

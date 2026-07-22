@@ -276,6 +276,10 @@ pub const ROLLBACK_RESTEER_CAP: u32 = 2;
 /// models ignore this (their ring is 0; they roll back to any boundary).
 pub const DECODE_ROLLBACK_RING_SLOTS: usize = 8;
 
+/// Domain salt folded into every decode cold-tier key so a decode-ring blob can
+/// never collide with a Marconi prefix-hash key on a shared store/peer.
+pub const DECODE_DOMAIN: u64 = 0xD3C0_DE12_A5B6_C7D8;
+
 impl Default for ModelBehavior {
     fn default() -> Self {
         Self {

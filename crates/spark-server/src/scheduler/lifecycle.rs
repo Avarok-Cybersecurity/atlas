@@ -28,6 +28,7 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
                 decode_time_ms: decode_ms,
                 reasoning_tokens: a.thinking_tokens,
                 cached_prompt_tokens: a.cached_prompt_tokens,
+                guard_stop: a.guard_stop,
             }) {
                 tracing::warn!(
                     "finish_sequence: streaming Done send failed (receiver dropped): {e}"
@@ -174,6 +175,8 @@ pub fn swap_out_sequence(
     Ok(SwappedSeq {
         tokens,
         session_hash: a.session_hash,
+        adapter_slot: a.seq.adapter_slot,
+        adapter_id: a.seq.adapter_id,
         seq_len,
         num_blocks,
         last_token: a.last_token,
@@ -222,6 +225,7 @@ pub fn swap_out_sequence(
         content_tokens: a.content_tokens,
         prose_tokens_since_last_tool: a.prose_tokens_since_last_tool,
         think_watchdog_fires: a.think_watchdog_fires,
+        think_force_closed: a.think_force_closed,
         rollback_count: a.rollback_count,
         tool_call_start_token: a.tool_call_start_token,
         tool_call_opened: a.tool_call_opened,
@@ -255,6 +259,14 @@ pub fn resume_swapped_seq(
     // Restore CPU-side metadata.
     seq.tokens = s.tokens;
     seq.seq_len = s.seq_len;
+    seq.adapter_slot = s.adapter_slot;
+    seq.adapter_id = s.adapter_id;
+    // Task #25: swap-out released this seq's slot ref (via free_sequence); a
+    // resumed seq re-enters ACTIVE decode WITHOUT re-running the prefill stamp,
+    // so re-acquire here to balance that release and re-protect the slot for the
+    // remainder of the decode. Stores the freshly resolved index (release keys
+    // off it, so the acquire/release stay balanced regardless of any rotate).
+    seq.acquired_adapter_slot = model.acquire_adapter_slot(s.adapter_slot);
 
     Ok(ActiveSeq {
         seq,
@@ -265,6 +277,8 @@ pub fn resume_swapped_seq(
         min_tokens: s.min_tokens,
         eos_tokens: s.eos_tokens,
         finished: false,
+        guard_stop: None,
+        param_close_pending: 0,
         sink: s.sink,
         // cancel_flag isn't preserved across spill/restore — the
         // original stream is long gone by the time a swapped-out seq
@@ -311,6 +325,7 @@ pub fn resume_swapped_seq(
         content_tokens: 0,
         prose_tokens_since_last_tool: 0,
         think_watchdog_fires: s.think_watchdog_fires,
+        think_force_closed: s.think_force_closed,
         rollback_count: s.rollback_count,
         // Decode-rollback SSM snapshots are GPU-resident and not part of
         // the disk swap image — a resumed sequence starts with an empty

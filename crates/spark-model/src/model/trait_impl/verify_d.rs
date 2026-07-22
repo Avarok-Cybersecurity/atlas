@@ -52,8 +52,11 @@ impl TransformerModel {
         let bf16 = 2usize;
         let fp32 = 2usize;
 
-        // F62 (2026-04-27): SpecMamba dual-buffer pre-verify copy.
-        self.pre_verify_copy_async(seq)?;
+        // Item #2 (STree-style in-place K=γ verify): `h_state` IS canonical
+        // — the verify kernel reads/writes it directly and the commit
+        // (`commit_accepted_prefix`) rewinds it in place on reject. No
+        // scratch/canonical split — dual-buffer pre-verify copy eliminated.
+        // Modeled on verify_b.rs (K=2 in-place).
 
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
@@ -127,6 +130,14 @@ impl TransformerModel {
         self.gpu
             .copy_h2d_async(bt_bytes, meta_base.offset(768), stream)?;
 
+        // Request-scoped LoRA routing (graphed γ-verify) — see verify_b.rs. One
+        // sequence → one adapter; [K]-all-equal buffer at the +128 gap, uploaded
+        // pre-`begin_capture`. γ spec depth MUST stay ≤ 32 or +128+K*4 would
+        // overrun slot@+256. `DevicePtr(0)` (no pool) → installed-pair path.
+        debug_assert!(k <= 32, "γ verify seq_slot +128 gap holds K ≤ 32");
+        let seq_slot =
+            self.upload_seq_slot_uniform(seq.adapter_slot, k, meta_base.offset(128), stream)?;
+
         let metadata = AttnMetadataDev {
             positions: meta_base,
             positions_h: meta_base,
@@ -136,6 +147,7 @@ impl TransformerModel {
             block_table: meta_base.offset(768),
             max_blocks_per_seq: max_blocks,
             num_seqs: k as u32,
+            seq_slot,
         };
 
         // Phase 6.2.c — HSS host I/O is illegal under CUDA graph capture.
@@ -144,12 +156,15 @@ impl TransformerModel {
         // CUDA_LAUNCH_BLOCKING=1 reports the exact failing kernel — used
         // to localize K=γ illegal-address crashes downstream of SSM.
         let force_eager = std::env::var("ATLAS_DFLASH_DEBUG_NO_GRAPH").ok().as_deref() == Some("1");
+        // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
+        let lora_eager = self.lora.is_some() && crate::lora::lora_eager_env();
         let use_graphs = self.comm.is_none()
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
             && !hss_engaged
-            && !force_eager;
+            && !force_eager
+            && !lora_eager;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -162,6 +177,7 @@ impl TransformerModel {
             gdn_exact_replay: false,
             midchunk_capture: None,
             token_ids: None,
+            routed_lora_layers: None, // #30: decode/verify never routes prefill.
         };
 
         // ── Phase 2: CUDA graph capture / replay ──

@@ -9,23 +9,33 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use axum::response::Response;
 
 use crate::AppState;
-use crate::openai::ChatCompletionRequest;
+use crate::ir::ChatRequest;
 use crate::tool_parser;
 
-use super::chat_stream::chat_completions_stream;
+use super::chat_stream::run_chat_stream;
 use super::compact::openai_error_response;
 use super::inference_types::GrammarSpec;
 
 pub(super) async fn dispatch_streaming(
     state: Arc<AppState>,
-    req: &ChatCompletionRequest,
+    req: &ChatRequest,
     req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
     dump_seq: Option<u64>,
     prompt_tokens: Vec<u32>,
     session_hash: u64,
+    // M2 per-request LoRA routing: resolved adapter slot (-1 = defer to active).
+    adapter_slot: i32,
+    // Resolved source-language token id (0 = deployment default).
+    src_lang_id: u32,
+    // Resolved target-language token id (0 = deployment default).
+    tgt_lang_id: u32,
+    // NLLB beam search params (1/1.0/false = greedy). Streaming + beam is
+    // rejected in the handler; threaded here only to set the Streaming defaults.
+    num_beams: u32,
+    length_penalty: f32,
+    early_stopping: bool,
     image_pixels: Vec<(Vec<f32>, usize, usize)>,
     max_tokens: usize,
     temperature: f32,
@@ -51,31 +61,34 @@ pub(super) async fn dispatch_streaming(
     grammar_spec: Option<GrammarSpec>,
     top_logprobs: Option<u8>,
     timeout_at: Option<std::time::Instant>,
-) -> Response {
+) -> super::chat::ChatOutcome {
     if req.n > 1 {
         crate::metrics::REQUESTS_ACTIVE.dec();
-        return openai_error_response(
+        return super::chat::ChatOutcome::Http(openai_error_response(
             StatusCode::BAD_REQUEST,
             "n > 1 is not supported in streaming mode".to_string(),
-        );
+        ));
     }
-    let tool_defs: Vec<tool_parser::ToolDefinition> = req.tools.clone().unwrap_or_default();
+    let tool_defs: Vec<tool_parser::ToolDefinition> = req.tools.clone();
     // Sort by length descending so the streaming stop-string scan
     // matches the longest overlapping prefix first (e.g. when the
     // caller provides ["</answer", "</answer>"], `find` would
     // otherwise truncate at the shorter, wrong boundary).
     let mut stop_strings = req.stop.clone();
     stop_strings.sort_by_key(|s| std::cmp::Reverse(s.len()));
-    let stream_include_usage = req.stream_options.map(|o| o.include_usage).unwrap_or(false);
     let req_return_token_ids = req.return_token_ids;
-    let req_service_tier = req.service_tier.clone();
-    let req_metadata = req.metadata.clone();
     let ctx_for_stream = req_ctx.as_ref().map(|e| e.0.clone());
-    let repetition_detection = req.repetition_detection();
-    match chat_completions_stream(
+    let repetition_detection = req.repetition_detection;
+    match run_chat_stream(
         state,
         prompt_tokens,
         session_hash,
+        adapter_slot,
+        src_lang_id,
+        tgt_lang_id,
+        num_beams,
+        length_penalty,
+        early_stopping,
         image_pixels,
         max_tokens,
         req.min_tokens,
@@ -106,16 +119,13 @@ pub(super) async fn dispatch_streaming(
         top_logprobs,
         timeout_at,
         stop_strings,
-        stream_include_usage,
         req_return_token_ids,
-        req_service_tier,
-        req_metadata,
         ctx_for_stream,
         dump_seq,
     )
     .await
     {
-        Ok(r) => r,
-        Err((status, msg)) => openai_error_response(status, msg),
+        Ok(deltas) => super::chat::ChatOutcome::Streaming(deltas),
+        Err((status, msg)) => super::chat::ChatOutcome::Http(openai_error_response(status, msg)),
     }
 }

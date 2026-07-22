@@ -9,8 +9,11 @@ use crate::gpu::{DevicePtr, GpuBackend};
 use anyhow::Result;
 use atlas_core::config::ModelConfig;
 
+mod accessors;
 mod sizes;
-pub use sizes::{BufferSizes, Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
+mod sizes_q12;
+pub use sizes::BufferSizes;
+pub use sizes_q12::{Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
 
 /// Pre-allocated GPU buffers for a single forward pass.
 ///
@@ -81,6 +84,9 @@ pub struct BufferArena {
     /// GDN FLA chunked-prefill scratch (W|U|S|uc sub-divided). NULL unless the
     /// model is a 128-dim-linear-head GDN model (ATLAS_GDN_FLA path).
     gdn_fla_scratch: DevicePtr,
+    /// Mamba-2 SSD chunked-scan scratch (dt | dA_cumsum | CB). NULL unless the model
+    /// has Mamba-2 SSM layers.
+    ssd_scratch: DevicePtr,
     /// Token IDs `[M]` u32 — stable across the layer loop so DeepSeek-V4
     /// hash-MoE layers can read `tid2eid[token_id]`.
     token_ids: DevicePtr,
@@ -96,6 +102,18 @@ pub struct BufferArena {
     fp8_act: DevicePtr,
     /// Persistent per-128-block FP32 scales paired with `fp8_act`.
     fp8_act_scale: DevicePtr,
+    /// LoRA shrink scratch `xa = x@Aᵀ`: [M, adapter_max_rank] BF16.
+    /// NULL when no adapter is configured.
+    lora_xa: DevicePtr,
+    /// LoRA expand scratch `delta = xa@Bᵀ`: [M, max(hidden, intermediate)]
+    /// BF16. NULL when no adapter is configured.
+    lora_delta: DevicePtr,
+    /// LoRA hidden-activation scratch: [M, intermediate_size] BF16 for the
+    /// runtime FFN delta path. NULL when no adapter is configured.
+    lora_hact: DevicePtr,
+    /// LoRA per-request routing slots `[M]` i32 for the prefill path (one
+    /// adapter SLOT index per prefilling token). NULL when no adapter.
+    lora_seq_slot: DevicePtr,
     /// Maximum batch tokens this arena was sized for.
     max_batch_tokens: usize,
     /// Sizes in bytes for each buffer (for debug/logging).
@@ -144,6 +162,11 @@ impl BufferArena {
         let hc_comb = gpu.alloc(sizes.hc_comb)?;
         // GDN FLA scratch: only allocate for the 128-dim-linear-head GDN path
         // (size 0 → NULL → ATLAS_GDN_FLA dispatch stays disabled).
+        let ssd_scratch = if sizes.ssd_scratch > 0 {
+            gpu.alloc(sizes.ssd_scratch)?
+        } else {
+            DevicePtr::NULL
+        };
         let gdn_fla_scratch = if sizes.gdn_fla_scratch > 0 {
             gpu.alloc(sizes.gdn_fla_scratch)?
         } else {
@@ -169,6 +192,28 @@ impl BufferArena {
         };
         let fp8_act = gpu.alloc(sizes.fp8_act)?;
         let fp8_act_scale = gpu.alloc(sizes.fp8_act_scale)?;
+        // LoRA scratch: only allocate when an adapter is configured
+        // (size 0 → NULL; cuMemAlloc rejects 0-byte allocations).
+        let lora_xa = if sizes.lora_xa > 0 {
+            gpu.alloc(sizes.lora_xa)?
+        } else {
+            DevicePtr::NULL
+        };
+        let lora_delta = if sizes.lora_delta > 0 {
+            gpu.alloc(sizes.lora_delta)?
+        } else {
+            DevicePtr::NULL
+        };
+        let lora_hact = if sizes.lora_hact > 0 {
+            gpu.alloc(sizes.lora_hact)?
+        } else {
+            DevicePtr::NULL
+        };
+        let lora_seq_slot = if sizes.lora_seq_slot > 0 {
+            gpu.alloc(sizes.lora_seq_slot)?
+        } else {
+            DevicePtr::NULL
+        };
 
         tracing::info!(
             "Buffer arena: {} tokens × {:.1} MB total (attn_out={:.1}MB, ssm_deint={:.1}MB, kv_lora_rank={})",
@@ -206,292 +251,20 @@ impl BufferArena {
             hc_post,
             hc_comb,
             gdn_fla_scratch,
+            ssd_scratch,
             token_ids,
             ffn_act_q8,
             ffn_act_a,
             ffn_act_scale,
             fp8_act,
             fp8_act_scale,
+            lora_xa,
+            lora_delta,
+            lora_hact,
+            lora_seq_slot,
             max_batch_tokens,
             sizes,
         })
-    }
-
-    pub fn hidden_states(&self) -> DevicePtr {
-        self.hidden_states
-    }
-    pub fn residual(&self) -> DevicePtr {
-        self.residual
-    }
-    pub fn norm_output(&self) -> DevicePtr {
-        self.norm_output
-    }
-    pub fn qkv_output(&self) -> DevicePtr {
-        self.qkv_output
-    }
-    pub fn attn_output(&self) -> DevicePtr {
-        self.attn_output
-    }
-    pub fn gate_logits(&self) -> DevicePtr {
-        self.gate_logits
-    }
-    pub fn gate_logits_f32(&self) -> DevicePtr {
-        self.gate_logits_f32
-    }
-    pub fn moe_router_in_f32(&self) -> DevicePtr {
-        self.moe_router_in_f32
-    }
-    pub fn moe_output(&self) -> DevicePtr {
-        self.moe_output
-    }
-    pub fn logits(&self) -> DevicePtr {
-        self.logits
-    }
-    pub fn ssm_qkvz(&self) -> DevicePtr {
-        self.ssm_qkvz
-    }
-    pub fn ssm_ba(&self) -> DevicePtr {
-        self.ssm_ba
-    }
-    /// Sequential [Q|K|V|Z] after deinterleaving.
-    pub fn ssm_deinterleaved(&self) -> DevicePtr {
-        self.ssm_deinterleaved
-    }
-    /// FP32 [gate, beta] for GDN (num_v_heads * 2 floats).
-    pub fn ssm_gates(&self) -> DevicePtr {
-        self.ssm_gates
-    }
-    /// FP32 conv1d output for SSM recurrent path (prevents BF16 precision drift).
-    pub fn ssm_conv_out_f32(&self) -> DevicePtr {
-        self.ssm_conv_out_f32
-    }
-    /// Scratch buffer for MoE routing + kernel metadata uploads.
-    pub fn scratch(&self) -> DevicePtr {
-        self.scratch
-    }
-    /// Token IDs `[M]` u32 — stable across the layer loop (DeepSeek-V4 hash-MoE
-    /// reads `tid2eid[token_id]`). Upload the pass's token IDs here before the
-    /// layer loop; under CUDA-graph decode upload before each replay.
-    pub fn token_ids(&self) -> DevicePtr {
-        self.token_ids
-    }
-    /// Allocated byte size of the scratch buffer (#110: bounds-check
-    /// batched metadata-staging uploads against this).
-    pub fn scratch_bytes(&self) -> usize {
-        self.sizes.scratch
-    }
-    /// Batched expert gate projection output.
-    pub fn expert_gate_out(&self) -> DevicePtr {
-        self.expert_gate_out
-    }
-    /// Batched expert up projection output.
-    pub fn expert_up_out(&self) -> DevicePtr {
-        self.expert_up_out
-    }
-    /// Batched expert down projection output.
-    pub fn expert_down_out(&self) -> DevicePtr {
-        self.expert_down_out
-    }
-    /// Split-K decode attention workspace (F32 partials).
-    /// GDN FLA chunked-prefill scratch base (W|U|S|uc sub-divided by the caller).
-    /// `DevicePtr::NULL` unless this is a 128-dim-linear-head GDN model.
-    pub fn gdn_fla_scratch(&self) -> DevicePtr {
-        self.gdn_fla_scratch
-    }
-    /// Shared dense-FFN q8_1 activation scratch (Q4_K MMQ gate/up). NULL for MoE.
-    pub fn ffn_act_q8(&self) -> DevicePtr {
-        self.ffn_act_q8
-    }
-    /// Shared dense-FFN int8/NVFP4 activation scratch (a_i8 / packed). NULL for MoE.
-    pub fn ffn_act_a(&self) -> DevicePtr {
-        self.ffn_act_a
-    }
-    /// Shared dense-FFN int8/NVFP4 activation-scale scratch. NULL for MoE.
-    pub fn ffn_act_scale(&self) -> DevicePtr {
-        self.ffn_act_scale
-    }
-    /// Persistent FP8 block-scaled activation scratch for prefill projections.
-    /// Replaces a per-projection alloc/sync/free in the W8A8+FP32-epilogue path.
-    pub fn fp8_act(&self) -> DevicePtr {
-        self.fp8_act
-    }
-    /// Allocated byte size of `fp8_act` (debug bounds-check at call sites).
-    pub fn fp8_act_bytes(&self) -> usize {
-        self.sizes.fp8_act
-    }
-    /// Persistent per-128-block FP32 scales paired with `fp8_act`.
-    pub fn fp8_act_scale(&self) -> DevicePtr {
-        self.fp8_act_scale
-    }
-    pub fn splitk_workspace(&self) -> DevicePtr {
-        self.splitk_workspace
-    }
-    /// Grouped O-projection latent [M, o_groups*o_lora_rank] BF16 (V4-Flash).
-    pub fn o_latent(&self) -> DevicePtr {
-        self.o_latent
-    }
-    /// All-ones BF16 vector (max_dim) — weight for unweighted RMSNorm (q_b_norm).
-    pub fn norm_unit_w(&self) -> DevicePtr {
-        self.norm_unit_w
-    }
-    /// HC residual streams [M, hc_mult, hidden] BF16 (DeepSeek-V4 mHC).
-    pub fn hc_streams(&self) -> DevicePtr {
-        self.hc_streams
-    }
-    /// HC `post` mixing weights [M, hc_mult] F32.
-    pub fn hc_post(&self) -> DevicePtr {
-        self.hc_post
-    }
-    /// HC `comb` Sinkhorn matrix [M, hc_mult, hc_mult] F32.
-    pub fn hc_comb(&self) -> DevicePtr {
-        self.hc_comb
-    }
-    pub fn max_batch_tokens(&self) -> usize {
-        self.max_batch_tokens
-    }
-    pub fn sizes(&self) -> &BufferSizes {
-        &self.sizes
-    }
-
-    /// Env-gated (`ATLAS_SSM_SAVE_DUMP`) per-buffer checksum probe.
-    ///
-    /// CBD: localize a stale/uninitialized decode-scratch buffer on the
-    /// prefix-cache skip path. Dumps sum/ssq/sabs over the FULL allocation
-    /// (so leftover-from-prior-occupant bytes in unwritten rows are visible)
-    /// for every reusable buffer. Treats raw bytes as f32 lanes — exact
-    /// numeric meaning is irrelevant; we only need a stable fingerprint that
-    /// differs iff the bytes differ. Synchronizes the stream first.
-    pub fn debug_buffer_checksum(&self, gpu: &dyn GpuBackend, stream: u64, tag: &str) {
-        gpu.synchronize(stream).ok();
-        let probe = |name: &str, ptr: DevicePtr, bytes: usize| {
-            let mut hb = vec![0u8; bytes];
-            if gpu.copy_d2h(ptr, &mut hb).is_err() {
-                return;
-            }
-            let (mut sum, mut ssq, mut sabs) = (0f64, 0f64, 0f64);
-            for c in hb.chunks_exact(4) {
-                let v = f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64;
-                if v.is_finite() {
-                    sum += v;
-                    ssq += v * v;
-                    sabs += v.abs();
-                }
-            }
-            tracing::warn!(
-                "ATLAS_BUF_CKSUM[{tag}] {name} bytes={bytes} sum={sum:.6} ssq={ssq:.6} sabs={sabs:.6}"
-            );
-        };
-        probe(
-            "hidden_states",
-            self.hidden_states,
-            self.sizes.hidden_states,
-        );
-        probe("residual", self.residual, self.sizes.residual);
-        probe("norm_output", self.norm_output, self.sizes.norm_output);
-        probe("qkv_output", self.qkv_output, self.sizes.qkv_output);
-        probe("attn_output", self.attn_output, self.sizes.attn_output);
-        probe("gate_logits", self.gate_logits, self.sizes.gate_logits);
-        probe("moe_output", self.moe_output, self.sizes.moe_output);
-        probe("ssm_qkvz", self.ssm_qkvz, self.sizes.ssm_qkvz);
-        probe("ssm_ba", self.ssm_ba, self.sizes.ssm_ba);
-        probe(
-            "ssm_deinterleaved",
-            self.ssm_deinterleaved,
-            self.sizes.ssm_deinterleaved,
-        );
-        probe("ssm_gates", self.ssm_gates, self.sizes.ssm_gates);
-        probe(
-            "ssm_conv_out_f32",
-            self.ssm_conv_out_f32,
-            self.sizes.ssm_conv_out_f32,
-        );
-        probe(
-            "expert_gate_out",
-            self.expert_gate_out,
-            self.sizes.expert_gate_out,
-        );
-        probe(
-            "expert_up_out",
-            self.expert_up_out,
-            self.sizes.expert_up_out,
-        );
-        probe(
-            "expert_down_out",
-            self.expert_down_out,
-            self.sizes.expert_down_out,
-        );
-        probe(
-            "splitk_workspace",
-            self.splitk_workspace,
-            self.sizes.splitk_workspace,
-        );
-    }
-
-    /// Zero only buffers that carry residual state between requests.
-    ///
-    /// During prefill, every buffer except hidden_states and residual is fully
-    /// overwritten before being read within the layer loop:
-    /// - norm_output, qkv_output, attn_output: written by each layer's projection
-    /// - gate_logits, moe_output: written by MoE gate/output
-    /// - ssm_*: written by SSM projection
-    /// - expert_*: written by expert compute
-    /// - logits: written by LM head on last token
-    /// - scratch: overwritten by metadata upload and MoE routing
-    /// - splitk_workspace: written by attention kernel
-    ///
-    /// This reduces per-chunk memset from 17 calls to 2, saving ~15 memset
-    /// launches × bandwidth on the LPDDR5X bus per prefill chunk.
-    pub fn zero_prefill_essentials(&self, gpu: &dyn GpuBackend, stream: u64) -> anyhow::Result<()> {
-        gpu.memset_async(self.hidden_states, 0, self.sizes.hidden_states, stream)?;
-        gpu.memset_async(self.residual, 0, self.sizes.residual, stream)?;
-        // MoE buffers: gate_logits may carry stale expert indices from a prior
-        // request with different token count, causing out-of-bounds expert access
-        // (CUDA error 700 at layer 38+ on 122B). Zero to prevent.
-        gpu.memset_async(self.gate_logits, 0, self.sizes.gate_logits, stream)?;
-        gpu.memset_async(self.expert_gate_out, 0, self.sizes.expert_gate_out, stream)?;
-        gpu.memset_async(self.expert_up_out, 0, self.sizes.expert_up_out, stream)?;
-        gpu.memset_async(self.expert_down_out, 0, self.sizes.expert_down_out, stream)?;
-        gpu.memset_async(self.moe_output, 0, self.sizes.moe_output, stream)?;
-        Ok(())
-    }
-
-    /// Zero all reusable buffers to eliminate stale data between requests.
-    /// Ensures deterministic computation regardless of request history.
-    pub fn zero_all(&self, gpu: &dyn GpuBackend, stream: u64) -> anyhow::Result<()> {
-        gpu.memset_async(self.hidden_states, 0, self.sizes.hidden_states, stream)?;
-        gpu.memset_async(self.residual, 0, self.sizes.residual, stream)?;
-        gpu.memset_async(self.norm_output, 0, self.sizes.norm_output, stream)?;
-        gpu.memset_async(self.qkv_output, 0, self.sizes.qkv_output, stream)?;
-        gpu.memset_async(self.attn_output, 0, self.sizes.attn_output, stream)?;
-        gpu.memset_async(self.gate_logits, 0, self.sizes.gate_logits, stream)?;
-        gpu.memset_async(self.moe_output, 0, self.sizes.moe_output, stream)?;
-        gpu.memset_async(self.ssm_qkvz, 0, self.sizes.ssm_qkvz, stream)?;
-        gpu.memset_async(self.ssm_ba, 0, self.sizes.ssm_ba, stream)?;
-        gpu.memset_async(
-            self.ssm_deinterleaved,
-            0,
-            self.sizes.ssm_deinterleaved,
-            stream,
-        )?;
-        gpu.memset_async(self.ssm_gates, 0, self.sizes.ssm_gates, stream)?;
-        gpu.memset_async(
-            self.ssm_conv_out_f32,
-            0,
-            self.sizes.ssm_conv_out_f32,
-            stream,
-        )?;
-        gpu.memset_async(
-            self.splitk_workspace,
-            0,
-            self.sizes.splitk_workspace,
-            stream,
-        )?;
-        gpu.memset_async(self.expert_gate_out, 0, self.sizes.expert_gate_out, stream)?;
-        gpu.memset_async(self.expert_up_out, 0, self.sizes.expert_up_out, stream)?;
-        gpu.memset_async(self.expert_down_out, 0, self.sizes.expert_down_out, stream)?;
-        gpu.memset_async(self.logits, 0, self.sizes.logits, stream)?;
-        gpu.memset_async(self.scratch, 0, self.sizes.scratch, stream)?;
-        Ok(())
     }
 }
 

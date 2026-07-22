@@ -19,6 +19,18 @@ impl StreamingToolDetector {
     /// string (still valid JSON). Returns `(norm_key, json_value_string)`.
     pub(super) fn coerce_kv(&self, raw_key: &str, raw_value: &str) -> (String, String) {
         let name = self.current_tc_name.clone().unwrap_or_default();
+        // Echo-attractor salvage (2026-07-09): re-split `parameter=filePath>…`
+        // shapes where the real key leaked into the value — same SSOT helper
+        // as the buffered pipeline (validation.rs step 2.5). Guarded on
+        // `emitted_keys` so a properly-streamed key is never duplicated in
+        // the fragment JSON.
+        let salvaged =
+            crate::tool_parser::salvage_echoed_param(&self.tools, &name, raw_key, raw_value)
+                .filter(|(real_key, _)| !self.emitted_keys.contains(real_key));
+        let (raw_key, raw_value) = match &salvaged {
+            Some((real_key, real_val)) => (real_key.as_str(), real_val.as_str()),
+            None => (raw_key, raw_value),
+        };
         let norm_key = crate::tool_parser::normalize_param_name(&self.tools, &name, raw_key);
         let fallback = || serde_json::to_string(raw_value).unwrap_or_else(|_| "\"\"".to_string());
         let single = serde_json::to_string(&serde_json::json!({ norm_key.clone(): raw_value }));
@@ -74,8 +86,20 @@ impl StreamingToolDetector {
                 };
                 let gt_at = key_region + rel_gt;
                 let value_region = gt_at + 1;
-                let Some(rel_close) = self.buffer[value_region..limit].find("</parameter>") else {
-                    break; // value not closed yet — not complete
+                // P0-2 (2026-07-09): VIRTUAL close on the garbled
+                // close-reopen signature. At depth the model can drop the
+                // `>` of a close, emitting `</parameter<parameter=KEY>` —
+                // grammar-legal value content the exact-literal scan would
+                // swallow into the previous value (real key+path lost, then
+                // backfilled as ""). Close the value at the garble and
+                // resume scanning at the reopen so the next param parses.
+                let exact = self.buffer[value_region..limit].find("</parameter>");
+                let garbled = self.buffer[value_region..limit].find("</parameter<parameter=");
+                let (rel_close, advance) = match (exact, garbled) {
+                    (Some(e), Some(g)) if g < e => (g, "</parameter".len()),
+                    (Some(e), _) => (e, "</parameter>".len()),
+                    (None, Some(g)) => (g, "</parameter".len()),
+                    (None, None) => break, // value not closed yet — not complete
                 };
                 let close_at = value_region + rel_close;
                 // Mirror parse_single_b.rs:79-105: key + value are both `.trim()`.
@@ -94,7 +118,7 @@ impl StreamingToolDetector {
                 outputs.push(DetectorOutput::ToolCallArgsFragment { fragment, idx });
                 self.incremental_emitted = true;
                 self.emitted_keys.push(norm_key);
-                self.current_tc_emitted = close_at + "</parameter>".len();
+                self.current_tc_emitted = close_at + advance;
             }
 
             if final_close {

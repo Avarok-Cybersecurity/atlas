@@ -12,6 +12,12 @@ use super::{BatchedAttnMetadata, ForwardContext, GdnPrefillBuffers, LayerState};
 mod default_loops;
 
 pub trait TransformerLayer: Send + Sync {
+    /// `&mut dyn Any` downcast hook for post-construction weight overlays (e.g.
+    /// the LoRA install walk). Default `None`; overlay-capable layers override.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
+
     /// Decode one token through this layer, modifying `hidden` in-place.
     ///
     /// # Arguments

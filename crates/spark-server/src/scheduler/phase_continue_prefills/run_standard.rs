@@ -74,6 +74,8 @@ pub(super) fn run_standard_chunk_loop(
     // there is exactly what the NEXT turn's block-floored `matched_tokens`
     // looks up — otherwise the warm restore falls back to the coarse
     // --ssm-checkpoint-interval grid and replays ~254 SSM tokens per turn.
+    // Suppressed when mid-chunk capture is ON (it captures in-pass, no clamp
+    // needed) and when the abandoned ATLAS_SSM_TAIL_CKPT is OFF (default).
     if spark_runtime::ssm_tail_ckpt_enabled()
         && !spark_runtime::ssm_tail_midchunk_enabled()
         && let Some(bs) = model.kv_block_size()
@@ -141,12 +143,16 @@ pub(super) fn run_standard_chunk_loop(
                     let _ = model.stream_wait_event(model.default_stream(), prefill_event);
                     // #131: grammar-constrain the FIRST token (and advance the
                     // matcher); no-op without a grammar.
+                    // P1-4 (2026-07-09): thread the resolved `min_p` —
+                    // previously a hardcoded 0.0 inside the sampler.
+                    // Kill-switch: ATLAS_NO_MTP_MINP=1.
                     match sample_first_token(
                         model,
                         result.prefill_logits,
                         p.temperature,
                         p.top_k,
                         p.top_p,
+                        p.min_p,
                         &p.eos_tokens,
                         p.grammar_state.as_mut(),
                     ) {
@@ -226,12 +232,16 @@ pub(super) fn run_standard_chunk_loop(
                 let _ = model.stream_wait_event(model.default_stream(), prefill_event);
                 // #131: grammar-constrain the FIRST token (and advance the
                 // matcher); no-op without a grammar.
+                // P1-4 (2026-07-09): thread the resolved `min_p` —
+                // previously a hardcoded 0.0 inside the sampler.
+                // Kill-switch: ATLAS_NO_MTP_MINP=1.
                 match sample_first_token(
                     model,
                     logits,
                     p.temperature,
                     p.top_k,
                     p.top_p,
+                    p.min_p,
                     &p.eos_tokens,
                     p.grammar_state.as_mut(),
                 ) {

@@ -21,6 +21,10 @@ struct SafetensorsIndex {
 pub(super) struct TensorMeta {
     pub(super) name: String,
     pub(super) dtype: WeightDtype,
+    /// True when the shard stores this tensor as IEEE F16. The tensor is
+    /// staged as BF16 (`dtype` above) and the copy loop converts the bytes —
+    /// same 2-byte element size, different bit layout.
+    pub(super) from_f16: bool,
     pub(super) shape: Vec<usize>,
     /// Absolute byte offset in the file where the tensor bytes start.
     pub(super) abs_offset: u64,
@@ -115,19 +119,23 @@ pub(super) fn parse_header(file: &mut File) -> Result<Vec<TensorMeta>> {
             continue;
         }
         let dtype_str = info["dtype"].as_str().unwrap_or("BF16");
-        let dtype = match dtype_str {
-            "F32" => WeightDtype::FP32,
-            "BF16" => WeightDtype::BF16,
-            "U8" => WeightDtype::UInt8,
+        let (dtype, from_f16) = match dtype_str {
+            "F32" => (WeightDtype::FP32, false),
+            "BF16" => (WeightDtype::BF16, false),
+            // F16 is not store-legal (WeightDtype is closed to store dtypes):
+            // stage as BF16 and mark for byte conversion in the copy loop.
+            // centml modelopt W4A4 exports ship all unquantized tensors as F16.
+            "F16" => (WeightDtype::BF16, true),
+            "U8" => (WeightDtype::UInt8, false),
             // I8 is a 1-byte raw container; DeepSeek-V4-Flash-NVFP4 ships its MTP
             // experts' 4-bit-packed weights as I8 (vs U8 for the main layers).
             // Signedness is irrelevant for packed FP4 — the dequant kernel extracts
             // nibbles by bit ops — so treat I8 as raw bytes (UInt8), matching the
             // NVFP4 expert path.
-            "I8" => WeightDtype::UInt8,
-            "F8_E4M3" => WeightDtype::FP8E4M3,
-            "F8_E8M0" => WeightDtype::FP8E8M0,
-            "I64" => WeightDtype::Int64,
+            "I8" => (WeightDtype::UInt8, false),
+            "F8_E4M3" => (WeightDtype::FP8E4M3, false),
+            "F8_E8M0" => (WeightDtype::FP8E8M0, false),
+            "I64" => (WeightDtype::Int64, false),
             other => bail!("Unsupported safetensors dtype '{other}' for tensor {name}"),
         };
         let shape: Vec<usize> = info["shape"]
@@ -147,6 +155,7 @@ pub(super) fn parse_header(file: &mut File) -> Result<Vec<TensorMeta>> {
         out.push(TensorMeta {
             name: name.clone(),
             dtype,
+            from_f16,
             shape,
             abs_offset: data_start + rel_start,
             len,

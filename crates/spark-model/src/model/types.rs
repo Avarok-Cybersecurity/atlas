@@ -28,6 +28,10 @@ use crate::weight_map::{DenseWeight, Fp8DenseWeight, MtpWeights, QuantizedWeight
 /// Adding a new model only requires implementing [`TransformerLayer`]
 /// for each layer type — the model loop stays unchanged.
 #[allow(dead_code)]
+/// Rows in the drafter catch-up hidden ring (see `mtp_catchup_ring`):
+/// 512 covers the gate's 256-token serial re-probe interval with 2x margin.
+pub(super) const MTP_CATCHUP_RING_ROWS: usize = 512;
+
 pub struct TransformerModel {
     pub(super) config: ModelConfig,
     pub(super) embed_tokens: DenseWeight,
@@ -41,6 +45,18 @@ pub struct TransformerModel {
     pub(super) lm_head_fp8: Option<Fp8DenseWeight>,
     pub(super) layers: Vec<Box<dyn TransformerLayer>>,
     pub(super) buffers: BufferArena,
+    /// Startup-static LoRA adapter (pool + per-layer pairs + M2 pointer
+    /// tables). `None` = no adapter. Installed post-construction via
+    /// `set_lora_weights`, which also copies the per-layer pairs into the
+    /// layer structs; kept here as the owner of the pool/tables and for
+    /// status introspection.
+    pub(super) lora: Option<crate::lora::LoraWeights>,
+    /// True when runtime adapter rotation is ARMED: `ATLAS_LORA_ROTATE=1`, or
+    /// `$ATLAS_LORA_PEER` set. Armed ⇒ decode runs eager (no CUDA-graph
+    /// capture) so a `set_active_lora` re-point is immediately live
+    /// (eager-on-rotate). `false` (single startup adapter, no rotation env)
+    /// keeps the decode-graph path byte-identical to today.
+    pub(super) lora_rotatable: bool,
     pub(super) kv_cache: Mutex<PagedKvCache>,
     pub(super) gpu: Box<dyn GpuBackend>,
     pub(super) rms_norm_kernel: KernelHandle,
@@ -56,11 +72,17 @@ pub struct TransformerModel {
     pub(super) w4a16_gemv_logits_kernel: KernelHandle, // FP32 output for LM head
     pub(super) w4a16_gemm_kernel: KernelHandle,
     pub(super) w4a16_gemv_batch2_kernel: KernelHandle,
+    /// Strix K=3 verify lm_head GEMV (num_tokens==3); 0-handle when absent.
     pub(super) w4a16_gemv_batch3_kernel: KernelHandle,
     /// W4A8 DP4A batch-2 verify kernels (lm_head_batched DP4A path). Engaged when
     /// ATLAS_W4A16_DP4A=1 AND both handles present; float batch2 is the fallback.
     pub(super) dp4a_quant_k: KernelHandle,
     pub(super) dp4a_lm_head_batch2_k: KernelHandle,
+    /// Batched M<=4 NVFP4 GEMV for the K=3/K=4 verify lm_head (one weight
+    /// read for all rows; nsys 2026-07-18: the M64-tile `w4a16_gemm` at M=4
+    /// cost 19.3 ms/verify-step on the 248320-row lm_head — 94% tile padding).
+    /// 0-handle when the target lacks the kernel (dispatch falls back).
+    pub(super) w4a16_gemv_batch4_kernel: KernelHandle,
     /// FP8 E4M3 LUT GEMV (M=1) for the FP8 LM head. Only used when
     /// `lm_head_fp8.is_some()`; loaded unconditionally (cheap handle) so the
     /// dispatch in `lm_head` / batched-decode / verify can reference it.
@@ -94,6 +116,12 @@ pub struct TransformerModel {
     pub(super) ssm_pool: Arc<SsmStatePool>,
     /// SSM state snapshot pool for Marconi prefix caching.
     pub(super) ssm_snapshots: SsmSnapshotPool,
+    /// Optional SSM snapshot spill tier (`ATLAS_SSM_TIER`). `None` (default)
+    /// keeps the drop-only reclaim path byte-identical; `Some` moves an evicted
+    /// snapshot's bytes to the tier (keeping its index entry findable) so a warm
+    /// turn faults it back instead of recomputing. Threaded into
+    /// [`SsmSnapshotPool::reclaim_from_cache`] at every reclaim call site.
+    pub(super) ssm_tier_store: Option<Arc<dyn super::ssm_tier::SnapshotBlobStore>>,
     /// Fixed max blocks per sequence (max_seq_len / block_size + 1).
     /// Used as constant stride in attention metadata for CUDA graph compatibility.
     pub(super) max_blocks_per_seq: u32,
@@ -115,15 +143,28 @@ pub struct TransformerModel {
     /// Size: hidden_size * 4 bytes (one FP32 vector). MTP overwrites shared
     /// buffers (norm_output etc.), so the target hidden must be saved here first.
     pub(super) mtp_hidden_save: DevicePtr,
-    /// ATLAS_MTP_DRAFTER_PREFILL: whole-prompt hidden capture buffer,
-    /// `[max_seq_len, hidden_size]` BF16. NULL unless the env is set AND an MTP
-    /// proposer is built. Filled by the prefill chunk epilogue; consumed by the
-    /// drafter-prefill pass on the first propose() of a sequence.
+    /// ATLAS_MTP_CATCHUP: circular per-position final-hidden ring captured
+    /// during serial-decode stretches (BF16 rows, slot = position % ring
+    /// len). Feeds the drafter catch-up on the next propose. NULL when the
+    /// feature is off or no proposer exists.
+    pub(super) mtp_catchup_ring: DevicePtr,
+    /// (first_position, count) of the contiguous position range currently
+    /// resident in the ring; a non-contiguous capture resets the range.
+    pub(super) mtp_catchup_meta: parking_lot::Mutex<(usize, usize)>,
+    /// ATLAS_MTP_DRAFTER_PREFILL: per-position final-layer hidden capture for
+    /// the whole prompt, `[max_seq_len, hidden_size]` BF16 (~335 MB at 32k /
+    /// h=5120). NULL unless the env is set AND an MTP proposer is built.
+    /// Filled contiguously by the prefill chunk epilogues; consumed once by
+    /// the drafter-prefill pass on the first propose() of a sequence.
     pub(super) mtp_prefill_hidden: DevicePtr,
-    /// Row capacity of `mtp_prefill_hidden` (0 when the feature is off).
+    /// Row capacity of `mtp_prefill_hidden` (== max_seq_len at alloc; 0 when
+    /// the feature is off). SSOT for the capture bounds check.
     pub(super) mtp_prefill_capacity: usize,
     /// Rows of `mtp_prefill_hidden` captured contiguously from position 0 for
-    /// the CURRENT sequence (reset on `alloc_sequence`).
+    /// the CURRENT sequence. Reset to 0 on `alloc_sequence`; a chunk whose
+    /// start does not extend the contiguous range (prefix-cache reuse, warm
+    /// restore) leaves it stale-short, which safely disables drafter-prefill
+    /// for that sequence (coverage check at the propose site).
     pub(super) mtp_prefill_capture_len: std::sync::atomic::AtomicUsize,
     /// ATLAS_MTP_CARRY_DRAFTER: the previous turn's drafter KV, held so the next
     /// turn of the same session can adopt it. Single slot (MTP is concurrency-1).

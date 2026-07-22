@@ -26,16 +26,53 @@ pub trait ProposerState: Send + Sync {
 /// The engine calls `propose()` after each target decode to get draft tokens,
 /// then verifies them with the target model. `after_verify()` lets the
 /// proposer trim state (e.g., KV cache) based on how many drafts were accepted.
+/// Confidence floor for submitting drafts to verification
+/// (`ATLAS_MTP_DRAFT_CONF`, default 0.0 = disabled). When the drafter's
+/// chain confidence (min top-1 softmax prob across the drafts of one
+/// propose) is below this, the drafts are discarded and the next step
+/// decodes serially — skipping a verify that would most likely reject.
+/// Economics at K=1 on the 35B MoE: verify ≈ 35 ms for 1+acc tokens vs
+/// decode+propose ≈ 21 ms for 1, so a draft is only worth verifying when
+/// p(accept) ≳ 0.66 — the threshold to calibrate around. Staged OFF until
+/// its measured A/B (same discipline as ATLAS_SNAP_EVICT_ALPHA).
+pub fn draft_conf_tau() -> f32 {
+    std::env::var("ATLAS_MTP_DRAFT_CONF")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .map(|t| t.clamp(0.0, 0.99))
+        .unwrap_or(0.0)
+}
+
+/// Drafter catch-up feed on serial->speculative transitions
+/// (`ATLAS_MTP_CATCHUP=1`, staged off). During serial-decode stretches the
+/// scheduler rings the per-step final hiddens; on the next propose the gap
+/// rows are batch-fed into the drafter KV so it never runs stale. Wrong
+/// feeds cannot corrupt output (verification rejects bad drafts) — the
+/// stake is acceptance only, which is the flip gate's metric.
+pub fn mtp_catchup_enabled() -> bool {
+    std::env::var("ATLAS_MTP_CATCHUP").ok().as_deref() == Some("1")
+}
+
 pub trait DraftProposer: Send + Sync {
     /// Allocate per-sequence proposer state.
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>>;
 
+    /// Chain confidence of the most recent `propose` (min top-1 softmax prob
+    /// across its drafts), when the proposer computes it (`draft_conf_tau` >
+    /// 0). `None` = not computed; callers must not gate on it then.
+    fn last_confidence(&self) -> Option<f32> {
+        None
+    }
+
     /// Current drafter KV length (rows), for the catch-up append point.
+    /// 0 = unknown / not applicable (catch-up is skipped).
     fn drafter_rows(&self, _state: &mut dyn ProposerState) -> usize {
         0
     }
 
-    /// Sequence-space pair key of the newest drafter row (`None` = untracked).
+    /// Sequence-space pair key of the newest drafter row (`None` = untracked;
+    /// catch-up is skipped). The drafter row space is compacted, so `rows`
+    /// cannot locate the drafter in the sequence — this can.
     fn last_pair_key(&self, _state: &mut dyn ProposerState) -> Option<usize> {
         None
     }
@@ -65,6 +102,7 @@ pub trait DraftProposer: Send + Sync {
 
     /// Append drafter rows at KV slots `row_base ..` with RoPE positions
     /// `pos_base ..` from `(tokens, hiddens)` pairs — the catch-up feed.
+    /// Returns rows written (0 = unsupported/no-op).
     #[allow(clippy::too_many_arguments)]
     fn catchup_drafter(
         &self,
@@ -76,20 +114,6 @@ pub trait DraftProposer: Send + Sync {
         _ctx: &ForwardContext,
         _stream: u64,
     ) -> Result<usize> {
-        Ok(0)
-    }
-
-    /// Prefill the drafter's own context (KV cache) over the prompt, before
-    /// the first `propose()` of a sequence (ATLAS_MTP_DRAFTER_PREFILL).
-    fn prefill_drafter(
-        &self,
-        prompt_tokens: &[u32],
-        hiddens: DevicePtr,
-        state: &mut dyn ProposerState,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<usize> {
-        let _ = (prompt_tokens, hiddens, state, ctx, stream);
         Ok(0)
     }
 
@@ -126,6 +150,27 @@ pub trait DraftProposer: Send + Sync {
         grammar_bitmask: Option<&[i32]>,
         target_hidden_stack: Option<DevicePtr>,
     ) -> Result<Vec<u32>>;
+
+    /// Prefill the drafter's own context (KV cache) over the prompt, before
+    /// the first `propose()` of a sequence (ATLAS_MTP_DRAFTER_PREFILL).
+    ///
+    /// * `prompt_tokens` — the prompt token ids `t_0..t_{P-1}`.
+    /// * `hiddens` — device buffer `[P, hidden_size]` BF16; row `i` is the
+    ///   target's final-layer (pre-final-norm) hidden after processing `t_i`.
+    ///
+    /// Returns the number of drafter positions written (0 = unsupported /
+    /// already prefilled / nothing to do). Default: no-op.
+    fn prefill_drafter(
+        &self,
+        prompt_tokens: &[u32],
+        hiddens: DevicePtr,
+        state: &mut dyn ProposerState,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<usize> {
+        let _ = (prompt_tokens, hiddens, state, ctx, stream);
+        Ok(0)
+    }
 
     /// Read the draft token ID stored on GPU by the last `propose()` call
     /// that used `draft_embed_target = Some(...)`. Returns 0 if not supported.

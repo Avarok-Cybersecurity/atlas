@@ -22,8 +22,10 @@
 //! - `sampling_setup` — preset / penalty / stop-token / grammar /
 //!                      timeout / logprobs resolution
 
+pub(crate) mod echo;
 mod loop_detect;
 mod msg_entry;
+pub(crate) mod prepare;
 mod sampling_setup;
 mod template;
 mod thinking;
@@ -34,7 +36,37 @@ use axum::response::{IntoResponse, Json, Response};
 use std::sync::Arc;
 
 use crate::AppState;
-use crate::openai::ChatCompletionRequest;
+
+pub(crate) use echo::ResponseEcho;
+
+/// Result of the shared chat pipeline. A non-streaming success carries
+/// the canonical response IR for the caller's surface encoder;
+/// streaming SSE and error envelopes are already-complete HTTP
+/// responses (streaming moves onto the delta IR next).
+pub(crate) enum ChatOutcome {
+    Blocking(Box<crate::ir::ChatResponse>),
+    /// Streaming success: the neutral delta stream; each surface runs
+    /// its own SSE encoder over it.
+    Streaming(crate::ir::DeltaStream),
+    Http(Response),
+}
+
+/// Test-only accessors: cross-module tests (the Anthropic adapter's
+/// rendered-prompt golden) drive the IR → MsgEntry → template-JSON
+/// path without an AppState.
+#[cfg(test)]
+#[allow(clippy::result_large_err)]
+pub(crate) fn test_build_msg_entries(
+    input: &[crate::ir::Message],
+    tools_active: bool,
+) -> Result<Vec<msg_entry::MsgEntry>, axum::response::Response> {
+    msg_entry::build_msg_entries(None, None, input, tools_active).map(|o| o.messages)
+}
+
+#[cfg(test)]
+pub(crate) fn test_build_json_messages(entries: &[msg_entry::MsgEntry]) -> Vec<serde_json::Value> {
+    template::build_json_messages(entries)
+}
 
 use super::compact::openai_error_response;
 
@@ -48,7 +80,7 @@ pub async fn chat_completions(
     // handler path and the `--dump` raw-capture path without
     // cloning the struct or cascading `Serialize` through every
     // request type.
-    let req: ChatCompletionRequest = match serde_json::from_slice(&body) {
+    let req: crate::openai::ChatCompletionRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
             return openai_error_response(
@@ -70,20 +102,31 @@ pub async fn chat_completions(
         }
     });
 
-    chat_completions_inner(state, req_ctx, req, dump_seq).await
+    // Wire → IR at the edge: echo-only fields peel off beside the
+    // envelope; everything downstream reads only the IR.
+    let echo = ResponseEcho::from(&req);
+    match chat_completions_inner(state.clone(), req_ctx, req.into(), dump_seq).await {
+        ChatOutcome::Blocking(ir) => {
+            crate::openai::encode_chat_response(&state, *ir, &echo, dump_seq)
+        }
+        ChatOutcome::Streaming(deltas) => {
+            crate::openai::encode_sse_response(deltas, state.model_name.clone(), echo.include_usage)
+        }
+        ChatOutcome::Http(r) => r,
+    }
 }
 
-/// Internal entry for the parsed-request path. Called by
-/// [`chat_completions`] after body capture, and by the Responses
-/// API adapter (which builds a `ChatCompletionRequest` in-memory
-/// and skips HTTP body bytes). `dump_seq` is `Some` only on the
-/// public handler path.
+/// Internal entry for the IR-request path. Called by
+/// [`chat_completions`] after body capture and wire→IR lowering, and
+/// by the Responses / Anthropic adapters (which lower their own wire
+/// formats and skip HTTP body bytes). `dump_seq` is `Some` only on
+/// the public handler path.
 pub(crate) async fn chat_completions_inner(
     state: Arc<AppState>,
     req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
-    mut req: ChatCompletionRequest,
+    mut req: crate::ir::ChatRequest,
     dump_seq: Option<u64>,
-) -> Response {
+) -> ChatOutcome {
     crate::metrics::REQUESTS_TOTAL.inc();
     crate::metrics::REQUESTS_ACTIVE.inc();
 
@@ -93,13 +136,8 @@ pub(crate) async fn chat_completions_inner(
         // terminal path decrements it, but this fail-fast 400 returns before
         // reaching a dispatch handler.
         crate::metrics::REQUESTS_ACTIVE.dec();
-        return resp;
+        return ChatOutcome::Http(resp);
     }
-
-    // Tool-active gating.
-    let tools_active = state.tool_call_parser.is_some()
-        && req.tools.as_ref().is_some_and(|t| !t.is_empty())
-        && !req.tool_choice.as_ref().is_some_and(|tc| tc.is_none());
 
     // Tool-parser behavioral system prompt REMOVED again (2026-05-25 PM).
     //
@@ -121,104 +159,91 @@ pub(crate) async fn chat_completions_inner(
     // byte-exact + gate-BF16 + thinking_in_tools=true is the live
     // combination.
 
-    // ST-995 fix: restore the parser-specific behavioral system prompt #90 removed.
-    // For the hermes parser this is the canonical NousResearch function-calling
-    // prompt ("you MAY call one or more functions... don't make assumptions"),
-    // which the GDN model needs to correctly DECLINE on irrelevance prompts. With
-    // it (and compact tool-JSON) hallucination returns to ~96 (vs 30/64 without).
-    if tools_active && let Some(ref parser) = state.tool_call_parser {
-        let default_choice = crate::tool_parser::ToolChoice::Mode("auto".to_string());
-        let tool_choice = req.tool_choice.as_ref().unwrap_or(&default_choice);
-        let tool_prompt = parser.system_prompt(req.tools.as_deref().unwrap_or(&[]), tool_choice);
-        if let Some(first) = req.messages.first_mut().filter(|m| m.role == "system") {
-            first.content.text = format!("{}\n\n{}", tool_prompt, first.content.text);
-        } else {
-            req.messages.insert(
-                0,
-                crate::openai::IncomingMessage::synthetic_system(tool_prompt),
-            );
-        }
-    }
-
-    tracing::info!(
-        "Request: model={}, messages={}, tools={}, tools_active={}, tool_choice={:?}, stream={}, temp={:?}, max_tokens={}, freq_pen={:?}, rep_pen={:?}",
-        req.model,
-        req.messages.len(),
-        req.tools.as_ref().map_or(0, |t| t.len()),
-        tools_active,
-        req.tool_choice,
-        req.stream,
-        req.temperature,
-        req.max_tokens,
-        req.frequency_penalty,
-        req.repetition_penalty,
-    );
-
-    // ── Phase 1: build MsgEntry vec + image preprocess + cwd ────
-    let msg_entry::BuildOut {
-        messages,
-        cwd_hint,
-        image_pixels,
-        image_pad_counts,
-    } = match msg_entry::build_msg_entries(&state, &req, tools_active) {
-        Ok(o) => o,
-        Err(resp) => return resp,
+    // M2 per-request LoRA routing: resolve the optional `adapter` name to a
+    // pool slot ONCE here (both dispatch paths inherit it). Unset defers to the
+    // installed active adapter (`-1`, byte-identical to today); an unknown name
+    // is a hard 400, a STAGEABLE name triggers the #27 on-miss RDMA promotion.
+    let adapter_slot = match super::lora_control::resolve_request_adapter_slot(
+        &state,
+        req.adapter.as_deref(),
+        &req.model,
+    )
+    .await
+    {
+        Ok(slot) => slot,
+        Err(resp) => return ChatOutcome::Http(resp),
     };
 
-    // ── Phase 1.5: merge server-level chat_template_kwargs default ─
-    // When the client sends no thinking parameters and the server has a
-    // --default-chat-template-kwargs flag set, inject those kwargs into
-    // the request so the existing resolve_thinking() chain sees them as
-    // normal request-body fields. We don't mutate the resolution logic —
-    // we just pre-populate the field it already checks.
-    if let Some(ref default_kw) = state.default_chat_template_kwargs
-        && !req.thinking_explicitly_requested()
-    {
-        req.chat_template_kwargs = Some(default_kw.clone());
+    // Resolve optional per-request source/target language token NAMES to token
+    // ids via the server tokenizer. Absent = deployment default (0); an unknown
+    // token is a hard 400 (mirrors the adapter-name resolution convention).
+    let resolve_lang = |name: &Option<String>| -> Result<u32, Response> {
+        match name {
+            None => Ok(0),
+            Some(s) => state.tokenizer.inner().token_to_id(s).ok_or_else(|| {
+                openai_error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!("unknown language token '{s}'"),
+                )
+            }),
+        }
+    };
+    let src_lang_id = match resolve_lang(&req.src_lang) {
+        Ok(v) => v,
+        Err(resp) => return ChatOutcome::Http(resp),
+    };
+    let tgt_lang_id = match resolve_lang(&req.tgt_lang) {
+        Ok(v) => v,
+        Err(resp) => return ChatOutcome::Http(resp),
+    };
+
+    // NLLB beam search params (mirrors src/tgt lang resolution). Streaming +
+    // beam is unsupported (the beam path emits a single completed hypothesis,
+    // not an incremental token stream) — reject up front like n>1.
+    let num_beams = req.num_beams.unwrap_or(1);
+    let length_penalty = req.length_penalty.unwrap_or(1.0);
+    let early_stopping = req.early_stopping.unwrap_or(false);
+    if num_beams > 1 && req.stream {
+        return ChatOutcome::Http(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "num_beams > 1 is not supported in streaming mode".to_string(),
+        ));
     }
 
-    // ── Phase 2: thinking resolution (pre-template) ─────────────
-    let (enable_thinking, thinking_budget) = thinking::resolve_thinking(&state, &req, tools_active);
+    // ── Phases 1-5 (prompt-affecting): shared with count_tokens ──
+    let prepare::PreparedChat {
+        tools_active,
+        cwd_hint,
+        image_pixels,
+        prompt_tokens,
+        enable_thinking,
+        thinking_budget,
+    } = match prepare::prepare_chat_prompt(&state, &mut req) {
+        Ok(p) => p,
+        Err(resp) => return ChatOutcome::Http(resp),
+    };
 
     // ── Phase 4: generic loop / spinning detection + task pin ───
     let loop_detect::LoopDetectOut {
         suppress_tool_call,
         tool_call_repeat_count,
-    } = loop_detect::check_loops(&req, tools_active);
-
-    // ── Phase 5: render Jinja template + image-pad expansion ────
-    let template::TemplateOut {
-        prompt_tokens,
-        enable_thinking,
-        thinking_budget,
-    } = match template::render_template(
-        &state,
-        &req,
-        &messages,
-        &image_pad_counts,
-        enable_thinking,
-        thinking_budget,
-        tools_active,
-    ) {
-        Ok(o) => o,
-        Err(resp) => return resp,
-    };
+    } = loop_detect::check_loops(&req.messages, tools_active);
 
     let session_hash = crate::session_manager::compute_session_hash(&prompt_tokens);
-    let tools_count = req.tools.as_ref().map_or(0, |t| t.len());
+    let tools_count = req.tools.len();
     tracing::info!(
         "Session {session_hash:#x}: {prompt_tokens} prompt tokens, tools={tools_active} ({tools_count} defined)",
         prompt_tokens = prompt_tokens.len()
     );
     let prompt_len = prompt_tokens.len();
     if prompt_len >= state.max_seq_len {
-        return openai_error_response(
+        return ChatOutcome::Http(openai_error_response(
             StatusCode::BAD_REQUEST,
             format!(
                 "Prompt too long: {prompt_len} tokens exceeds max_seq_len {} (leave room for output tokens)",
                 state.max_seq_len
             ),
-        );
+        ));
     }
 
     // ── Phase 6: sampling preset / stop / grammar / timeout ─────
@@ -251,7 +276,7 @@ pub(crate) async fn chat_completions_inner(
         tool_call_repeat_count,
     ) {
         Ok(s) => s,
-        Err(resp) => return resp,
+        Err(resp) => return ChatOutcome::Http(resp),
     };
 
     // ── Phase 7: dispatch streaming or blocking ─────────────────
@@ -263,6 +288,12 @@ pub(crate) async fn chat_completions_inner(
             dump_seq,
             prompt_tokens,
             session_hash,
+            adapter_slot,
+            src_lang_id,
+            tgt_lang_id,
+            num_beams,
+            length_penalty,
+            early_stopping,
             image_pixels,
             max_tokens,
             temperature,
@@ -296,9 +327,14 @@ pub(crate) async fn chat_completions_inner(
         state,
         req,
         req_ctx,
-        dump_seq,
         prompt_tokens,
         session_hash,
+        adapter_slot,
+        src_lang_id,
+        tgt_lang_id,
+        num_beams,
+        length_penalty,
+        early_stopping,
         image_pixels,
         max_tokens,
         temperature,

@@ -10,16 +10,16 @@
 use axum::http::StatusCode;
 use axum::response::Response;
 
-use crate::openai::ChatCompletionRequest;
+use crate::ir::ChatRequest;
 
 use super::compact::{openai_error_response, openai_error_response_with_param};
 
-/// Validate the OpenAI input contract: messages length, max_tokens > 0,
-/// temperature/top_p ranges, tool_choice mode/required compatibility.
-/// Returns `Err(Response)` for fail-fast 400 paths so the caller can
-/// `?` directly into a Response.
+/// Validate the input contract on the IR envelope: messages length,
+/// max_tokens > 0, temperature/top_p ranges, tool_choice mode/required
+/// compatibility. Returns `Err(Response)` for fail-fast 400 paths so
+/// the caller can `?` directly into a Response.
 #[allow(clippy::result_large_err)]
-pub(super) fn validate_input(req: &ChatCompletionRequest) -> Result<(), Response> {
+pub(super) fn validate_input(req: &ChatRequest) -> Result<(), Response> {
     if req.messages.is_empty() {
         return Err(openai_error_response_with_param(
             StatusCode::BAD_REQUEST,
@@ -36,7 +36,7 @@ pub(super) fn validate_input(req: &ChatCompletionRequest) -> Result<(), Response
             None,
         ));
     }
-    if let Some(t) = req.temperature
+    if let Some(t) = req.sampling.temperature
         && (!(0.0..=2.0).contains(&t))
     {
         return Err(openai_error_response_with_param(
@@ -46,7 +46,7 @@ pub(super) fn validate_input(req: &ChatCompletionRequest) -> Result<(), Response
             None,
         ));
     }
-    if let Some(p) = req.top_p
+    if let Some(p) = req.sampling.top_p
         && (p <= 0.0 || p > 1.0)
     {
         return Err(openai_error_response_with_param(
@@ -85,7 +85,7 @@ pub(super) fn validate_input(req: &ChatCompletionRequest) -> Result<(), Response
                 ),
             ));
         }
-        if s == "required" && req.tools.as_ref().is_none_or(|t| t.is_empty()) {
+        if s == "required" && req.tools.is_empty() {
             return Err(openai_error_response(
                 StatusCode::BAD_REQUEST,
                 "tool_choice is 'required' but no tools were provided".into(),

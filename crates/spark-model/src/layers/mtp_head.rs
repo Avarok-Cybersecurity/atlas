@@ -24,6 +24,42 @@ use crate::weight_map::{
     DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight, quantize_to_fp8, quantize_to_nvfp4,
 };
 
+/// ATLAS_MTP_DRAFTER_PREFILL=1 — opt-in drafter context prefill (cached once).
+///
+/// When set, the target prefill captures every position's final-layer hidden
+/// and the MTP drafter's KV cache is batch-prefilled over the whole prompt
+/// before the first propose(), mirroring vLLM's MTP proposer prefill. The
+/// drafter's KV entries are pure functions of its input pair
+/// `(embed(token_{i+1}), target_hidden_i)` — a single-layer drafter's K/V do
+/// not depend on its own attention outputs — so the prefill needs only the
+/// fc + k/v projections + norms + RoPE + cache write, no attention pass.
+pub fn mtp_drafter_prefill_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_MTP_DRAFTER_PREFILL").ok().as_deref() == Some("1"))
+}
+
+/// Dedicated scratch for the batched drafter prefill (allocated in
+/// `MtpHead::new` only when [`mtp_drafter_prefill_enabled`]). All buffers are
+/// sized for [`prefill::PREFILL_CHUNK`] rows; dedicated (not aliased onto the
+/// shared arena) so the pass has no aliasing hazards against target buffers.
+pub(crate) struct MtpPrefillScratch {
+    pub embed: DevicePtr,
+    pub normed_embed: DevicePtr,
+    pub normed_hidden: DevicePtr,
+    pub concat: DevicePtr,
+    pub fc_out: DevicePtr,
+    pub normed2: DevicePtr,
+    pub k_out: DevicePtr,
+    pub v_out: DevicePtr,
+    /// RoPE rotates Q and K in one launch; prefill discards Q, but the kernel
+    /// still needs a writable [chunk, nq*hd] region.
+    pub q_scratch: DevicePtr,
+    /// u32 RoPE positions, one per row.
+    pub pos_dev: DevicePtr,
+    /// i64 KV slot mapping, one per row.
+    pub slot_dev: DevicePtr,
+}
+
 /// MTP head weight precision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MtpQuantization {
@@ -58,32 +94,6 @@ enum ProjectionWeight {
     Bf16(DenseWeight),
 }
 
-/// ATLAS_MTP_DRAFTER_PREFILL=1 — opt-in drafter context prefill (cached once).
-pub fn mtp_drafter_prefill_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_MTP_DRAFTER_PREFILL").ok().as_deref() == Some("1"))
-}
-
-/// Dedicated scratch for the batched drafter prefill (allocated in
-/// `MtpHead::new` only when `mtp_drafter_prefill_enabled`). All buffers are
-/// sized for `prefill::PREFILL_CHUNK` rows.
-pub(crate) struct MtpPrefillScratch {
-    pub embed: DevicePtr,
-    pub normed_embed: DevicePtr,
-    pub normed_hidden: DevicePtr,
-    pub concat: DevicePtr,
-    pub fc_out: DevicePtr,
-    pub normed2: DevicePtr,
-    pub k_out: DevicePtr,
-    pub v_out: DevicePtr,
-    /// RoPE rotates Q and K in one launch; prefill discards Q.
-    pub q_scratch: DevicePtr,
-    /// u32 RoPE positions, one per row.
-    pub pos_dev: DevicePtr,
-    /// i64 KV slot mapping, one per row.
-    pub slot_dev: DevicePtr,
-}
-
 /// Per-sequence MTP proposer state.
 pub struct MtpProposerState {
     /// Block table for MTP's own KV cache.
@@ -93,8 +103,11 @@ pub struct MtpProposerState {
     /// Number of drafts produced in the last propose() call.
     /// Used by after_verify to know how many entries to trim.
     pub last_num_drafted: usize,
-    /// Sequence-space pair key of the newest drafter row (RoPE position `p`
-    /// writes pair key `p - 1`). `None` until the first row is written.
+    /// Sequence-space pair key of the newest drafter row (a `forward_one`
+    /// call with RoPE position `p` writes pair key `p - 1`). `seq_len` alone
+    /// cannot locate the drafter in the sequence — without drafter prefill
+    /// the row space is compacted (accepted pairs only) and drifts from the
+    /// sequence position. `None` until the first row is written.
     pub last_pair_key: Option<usize>,
 }
 
@@ -178,6 +191,10 @@ pub struct MtpHead {
     embed_from_argmax_k: KernelHandle,
     /// Fixed device buffer (4 bytes) for deferred draft token ID readback.
     draft_token_id_dev: DevicePtr,
+    /// Chain confidence of the last propose (f32 bits; min top-1 softmax
+    /// prob across drafts). Written by `forward_one` when
+    /// `draft_conf_tau() > 0`; reset to 1.0 at each propose start.
+    pub(super) last_conf_bits: std::sync::atomic::AtomicU32,
     // BF16/FP8 kernel handles (None if NVFP4 mode)
     dense_gemv_k: Option<KernelHandle>,
     dense_gemv_fp8w_k: Option<KernelHandle>,
@@ -306,6 +323,9 @@ impl DraftProposer for MtpHead {
             .downcast_mut::<MtpProposerState>()
             .ok_or_else(|| anyhow::anyhow!("Invalid MTP proposer state"))?;
 
+        // Reset chain confidence for this propose (forward_one mins into it).
+        self.last_conf_bits
+            .store(1.0f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
         let mut drafts = Vec::with_capacity(num_drafts);
         let mut current_token = last_token;
         let mut current_hidden = target_hidden;
@@ -440,6 +460,16 @@ impl DraftProposer for MtpHead {
         self.read_deferred_draft_token(gpu)
     }
 
+    fn last_confidence(&self) -> Option<f32> {
+        if crate::speculative::draft_conf_tau() <= 0.0 {
+            return None;
+        }
+        Some(f32::from_bits(
+            self.last_conf_bits
+                .load(std::sync::atomic::Ordering::Relaxed),
+        ))
+    }
+
     fn after_verify(
         &self,
         num_accepted: usize,
@@ -461,7 +491,8 @@ impl DraftProposer for MtpHead {
         let old_sl = mtp_state.seq_len;
         if num_to_trim > 0 {
             mtp_state.seq_len = mtp_state.seq_len.saturating_sub(num_to_trim);
-            // Trimmed rows have consecutive pair keys; move the newest key back.
+            // Trimmed rows have consecutive pair keys; the newest surviving
+            // key moves back by the same count.
             if let Some(k) = mtp_state.last_pair_key {
                 mtp_state.last_pair_key = Some(k.saturating_sub(num_to_trim));
             }

@@ -2,13 +2,13 @@
 //
 // `StreamEvent::Error(msg)` arm of the streaming `flat_map` closure.
 
-use axum::response::sse::Event;
+use crate::ir::StreamDelta;
 
 use super::ctx::StreamCtx;
 
-type SseVec = Vec<Result<Event, std::convert::Infallible>>;
+type DeltaVec = Vec<StreamDelta>;
 
-pub(super) fn handle_error(ctx: &StreamCtx, msg: String) -> SseVec {
+pub(super) fn handle_error(ctx: &StreamCtx, msg: String) -> DeltaVec {
     crate::metrics::REQUESTS_ACTIVE.dec();
     // Abandoned stream — refund the full reservation.
     if let Some(ref rctx) = ctx.req_ctx {
@@ -16,9 +16,12 @@ pub(super) fn handle_error(ctx: &StreamCtx, msg: String) -> SseVec {
             .rate_limiter
             .refund_tokens(&rctx.identity, rctx.reserved_tokens);
     }
+    // Wire-ready OpenAI error envelope; the encoder forwards it
+    // verbatim as SSE data.
     let err = serde_json::json!({
         "error": {"message": msg, "type": "server_error", "code": 500}
     });
-    let events: SseVec = vec![Ok(Event::default().data(err.to_string()))];
-    events
+    vec![StreamDelta::Error {
+        message: err.to_string(),
+    }]
 }

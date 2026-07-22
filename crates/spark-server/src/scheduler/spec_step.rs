@@ -393,6 +393,27 @@ pub fn mtp_grammar_mask_for(a: &mut ActiveSeq) -> Option<Vec<i32>> {
     Some(gs.bitmask_data().to_vec())
 }
 
+/// BUG#4 clamp, complete fix (2026-07-09): when a grammar is active, propose
+/// only ONE draft. `run_mtp_propose_multi` masks every draft position with
+/// the SAME position-0 bitmask snapshot (`mtp_head` warns "mask held fixed
+/// across draft positions"), so draft\[1..\] is drafted against a stale mask —
+/// grammar-illegal continuations get proposed, truncated at the boundary
+/// (`truncate_drafts_at_grammar_boundary`), and acceptance collapses. The
+/// original BUG#4 fix (2026-06-02) applied this clamp only in the Phase-A
+/// bootstrap (`mtp_step.rs`); the five verify-path re-propose sites
+/// (`verify_k2_step`, `verify_k3_step`) kept passing raw `num_drafts`, which
+/// is why the warning spammed on every step after the first during grammar-
+/// constrained tool calls (live opencode 42.5k session, 2026-07-09). SSOT
+/// for all six propose sites — semantics identical to the bootstrap clamp
+/// (`grammar_state.is_some()`). No-op when grammar is inactive: full K kept.
+pub fn effective_drafts_under_grammar(a: &ActiveSeq, num_drafts: usize) -> usize {
+    if a.grammar_state.is_some() {
+        1
+    } else {
+        num_drafts
+    }
+}
+
 /// Truncate a draft list at the first token the grammar would
 /// reject *if it were the next emitted token at that draft position*.
 ///

@@ -19,6 +19,7 @@ pub mod dflash_loader;
 mod gemma4;
 mod minimax;
 mod nemotron;
+mod nllb;
 mod qwen3;
 mod qwen35;
 mod qwen35_dense;
@@ -33,6 +34,7 @@ pub use dflash_loader::{
 pub use gemma4::Gemma4WeightLoader;
 pub use minimax::MinimaxM2WeightLoader;
 pub use nemotron::NemotronHWeightLoader;
+pub use nllb::NllbWeightLoader;
 pub use qwen3::Qwen3WeightLoader;
 pub use qwen3_vl::Qwen3VLWeightLoader;
 pub use qwen35::Qwen35WeightLoader;
@@ -250,6 +252,29 @@ pub trait ModelWeightLoader {
         _tp_size: usize,
     ) -> Result<Option<DflashWeights>> {
         Ok(None)
+    }
+
+    /// Load one or more startup-static PEFT LoRA adapters from their own
+    /// [`WeightStore`]s (the `adapter_model.safetensors` tensors, already
+    /// on-device BF16) into the fixed-address rank-padded pool (one slot each).
+    ///
+    /// Unlike `load_dflash_weights`' vestigial `Ok(None)` default, the
+    /// default here is a WORKING model-agnostic implementation (the remap
+    /// needs only `ModelConfig::layer_type` + projection dims); families
+    /// needing a bespoke key remap override it. Called from
+    /// `factory::build_model` BEFORE the buffer arena + KV sizing so the
+    /// pool bytes are budgeted against the KV cache. A single-element slice is
+    /// byte-identical to the pre-multi-adapter single-adapter path.
+    fn load_lora_adapters(
+        &self,
+        adapters: &[crate::lora::LoraAdapterInput<'_>],
+        config: &ModelConfig,
+        gpu: &dyn GpuBackend,
+        max_loras: usize,
+        max_lora_rank: usize,
+    ) -> Result<Option<crate::lora::LoraWeights>> {
+        crate::lora::load_lora_adapters_multi(adapters, config, gpu, max_loras, max_lora_rank)
+            .map(Some)
     }
 
     /// Load vision encoder weights (returns None for text-only models).

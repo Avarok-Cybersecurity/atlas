@@ -503,4 +503,139 @@ pub struct ServeArgs {
     /// `ps`/`/proc/<pid>/cmdline`. Use `--auth-tokens-file` instead.
     #[arg(long, value_name = "TOKEN", conflicts_with = "auth_tokens_file")]
     pub auth_token: Option<String>,
+
+    /// LoRA adapter to serve, as NAME=PATH_OR_HF_ID (e.g.
+    /// `holo-sft=/data/adapters/holo-sft` or `holo-sft=org/holo-31-08b-lora`).
+    /// Repeatable: each adapter loads into its own pool slot at startup and is
+    /// advertised by GET /v1/models; requests route per-slot via the `adapter`
+    /// field (unset = the installed active adapter). Runtime BF16 delta —
+    /// never merged into the base weights.
+    #[arg(long, value_name = "NAME=PATH_OR_HF_ID", value_parser = parse_lora_adapter_spec)]
+    pub lora_adapter: Vec<(String, String)>,
+
+    /// NLLB/M2M-100 ONLY: source-language token for translation (e.g.
+    /// `eng_Latn`). Prepended to the encoder input. Required when serving an
+    /// `m2m_100`/`nllb` checkpoint; ignored otherwise.
+    #[arg(long)]
+    pub src_lang: Option<String>,
+
+    /// NLLB/M2M-100 ONLY: target-language token (`forced_bos`, e.g. `fra_Latn`,
+    /// `gvn_Latn`). Forced as the first decoded token. Required when serving an
+    /// `m2m_100`/`nllb` checkpoint; ignored otherwise.
+    #[arg(long)]
+    pub tgt_lang: Option<String>,
+
+    /// Maximum LoRA adapter rank. The A/B slot pool and delta scratch buffers
+    /// are allocated rank-padded to this value at startup (frozen v1 layout
+    /// contract); an adapter whose `r` exceeds it is rejected at load.
+    #[arg(long, default_value_t = 64)]
+    pub max_lora_rank: usize,
+
+    /// Maximum number of LoRA adapter slots in the rank-padded pool. Slots
+    /// beyond the startup-resident adapters are cache headroom for demand
+    /// promotion (`--lora-stageable`).
+    #[arg(long, default_value_t = 8)]
+    pub max_loras: usize,
+
+    /// Task #27: a STAGEABLE (promotable-but-not-resident) LoRA adapter, as
+    /// `NAME=PEER_STAGE_ID=CONFIG_DIR` (repeatable). NAME is what a request's
+    /// `adapter` field asks for; PEER_STAGE_ID is the adapter's id on the
+    /// `$ATLAS_LORA_PEER` weight peer; CONFIG_DIR is a local dir with
+    /// `adapter_config.json` (the peer manifest carries no r/alpha, so the peft
+    /// scaling is read from here at startup). A request naming a stageable
+    /// adapter triggers an on-miss RDMA promotion into a cache pool slot instead
+    /// of a 404. Requires `$ATLAS_LORA_PEER`. Empty = today's resident-only
+    /// behaviour, byte-identical.
+    #[arg(long, value_name = "NAME=PEER_ID=DIR", value_parser = parse_lora_stageable_spec)]
+    pub lora_stageable: Vec<(String, String, String)>,
+
+    /// A DISK-stageable (promotable-but-not-resident, NO peer) LoRA adapter, as
+    /// `NAME=PATH_OR_HF_ID` (repeatable). A request naming NAME triggers an
+    /// on-miss DISK fault-in into a cache pool slot (LRU-evicted) instead of a
+    /// 404 — the no-RDMA sibling of `--lora-stageable`. Needs
+    /// `ATLAS_LORA_ROTATE=1` (so decode runs eager and the disk swap can
+    /// re-point a cache slot) and `--max-loras > resident count` for cache
+    /// headroom. Empty = today's behaviour, byte-identical.
+    #[arg(long, value_name = "NAME=PATH_OR_HF_ID", value_parser = parse_lora_adapter_spec)]
+    pub lora_stageable_disk: Vec<(String, String)>,
+}
+
+/// Value parser for `--lora-adapter NAME=PATH_OR_HF_ID`.
+fn parse_lora_adapter_spec(s: &str) -> Result<(String, String), String> {
+    let (name, spec) = s
+        .split_once('=')
+        .ok_or_else(|| format!("--lora-adapter must be NAME=PATH_OR_HF_ID, got '{s}'"))?;
+    if name.is_empty() || spec.is_empty() {
+        return Err(format!("--lora-adapter: empty name or path in '{s}'"));
+    }
+    Ok((name.to_string(), spec.to_string()))
+}
+
+/// Value parser for `--lora-stageable NAME=PEER_ID=DIR` (Task #27). Splits into
+/// exactly three non-empty parts on the first two `=` (a filesystem DIR may
+/// itself contain no `=`; peer ids and names never do). All three parts are
+/// required — a missing DIR would leave the promoted adapter with no peft
+/// scaling source.
+fn parse_lora_stageable_spec(s: &str) -> Result<(String, String, String), String> {
+    let mut parts = s.splitn(3, '=');
+    let name = parts.next().unwrap_or("");
+    let peer_id = parts.next().unwrap_or("");
+    let dir = parts.next().unwrap_or("");
+    if name.is_empty() || peer_id.is_empty() || dir.is_empty() {
+        return Err(format!(
+            "--lora-stageable must be NAME=PEER_ID=DIR (all three non-empty), got '{s}'"
+        ));
+    }
+    Ok((name.to_string(), peer_id.to_string(), dir.to_string()))
+}
+
+#[cfg(test)]
+mod stageable_spec_tests {
+    use super::{parse_lora_adapter_spec, parse_lora_stageable_spec};
+
+    #[test]
+    fn parses_disk_stageable() {
+        // `--lora-stageable-disk NAME=PATH_OR_HF_ID` reuses parse_lora_adapter_spec.
+        assert_eq!(
+            parse_lora_adapter_spec("cold-a=/data/adapters/cold-a"),
+            Ok(("cold-a".to_string(), "/data/adapters/cold-a".to_string()))
+        );
+        assert_eq!(
+            parse_lora_adapter_spec("cold-b=org/cold-b-lora"),
+            Ok(("cold-b".to_string(), "org/cold-b-lora".to_string()))
+        );
+        assert!(parse_lora_adapter_spec("cold-a").is_err());
+        assert!(parse_lora_adapter_spec("=/data/adapters/cold-a").is_err());
+        assert!(parse_lora_adapter_spec("cold-a=").is_err());
+    }
+
+    #[test]
+    fn parses_three_parts() {
+        assert_eq!(
+            parse_lora_stageable_spec("sparky=stage-7=/data/adapters/sparky"),
+            Ok((
+                "sparky".to_string(),
+                "stage-7".to_string(),
+                "/data/adapters/sparky".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn rejects_missing_parts() {
+        assert!(parse_lora_stageable_spec("sparky").is_err());
+        assert!(parse_lora_stageable_spec("sparky=stage-7").is_err());
+        assert!(parse_lora_stageable_spec("=stage-7=/dir").is_err());
+        assert!(parse_lora_stageable_spec("sparky==/dir").is_err());
+        assert!(parse_lora_stageable_spec("sparky=stage-7=").is_err());
+    }
+
+    #[test]
+    fn dir_may_contain_equals_after_first_two() {
+        // splitn(3) keeps everything after the 2nd '=' as the DIR.
+        assert_eq!(
+            parse_lora_stageable_spec("n=p=/weird/dir=x"),
+            Ok(("n".to_string(), "p".to_string(), "/weird/dir=x".to_string()))
+        );
+    }
 }

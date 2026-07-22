@@ -18,4 +18,3 @@ pub(super) fn load_final_norm(store: &WeightStore, config: &ModelConfig) -> Resu
     let prefix = &config.weight_prefix;
     dense(store, &format!("{prefix}.norm.weight"))
 }
-

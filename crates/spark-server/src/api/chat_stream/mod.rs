@@ -36,7 +36,6 @@ use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::AppState;
-use crate::openai::ChatCompletionChunk;
 use crate::tool_parser;
 
 use super::inference_types::{GrammarSpec, InferenceRequest, StreamEvent};
@@ -45,10 +44,21 @@ use ctx::StreamCtx;
 use state::StreamState;
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn chat_completions_stream(
+pub(crate) async fn run_chat_stream(
     state: Arc<AppState>,
     prompt_tokens: Vec<u32>,
     session_hash: u64,
+    // M2 per-request LoRA routing: resolved adapter slot (-1 = defer to active).
+    adapter_slot: i32,
+    // Resolved source-language token id (0 = deployment default).
+    src_lang_id: u32,
+    // Resolved target-language token id (0 = deployment default).
+    tgt_lang_id: u32,
+    // NLLB beam search params (1/1.0/false = greedy). Streaming + beam is
+    // rejected in the handler; threaded here only to set the Streaming defaults.
+    num_beams: u32,
+    length_penalty: f32,
+    early_stopping: bool,
     image_pixels: Vec<(Vec<f32>, usize, usize)>,
     max_tokens: usize,
     min_tokens: usize,
@@ -67,7 +77,7 @@ pub(crate) async fn chat_completions_stream(
     logit_bias: Vec<(u32, f32)>,
     enable_thinking: bool,
     thinking_budget: Option<u32>,
-    repetition_detection: Option<crate::openai::RepetitionDetectionParams>,
+    repetition_detection: Option<crate::api::inference_types::RepetitionDetectionParams>,
     tools_active: bool,
     tool_choice_required: bool,
     suppress_tool_call: bool,
@@ -79,18 +89,10 @@ pub(crate) async fn chat_completions_stream(
     top_logprobs: Option<u8>,
     timeout_at: Option<std::time::Instant>,
     stop_strings: Vec<String>,
-    req_stream_include_usage: bool,
     req_return_token_ids: bool,
-    req_service_tier: Option<String>,
-    req_metadata: Option<std::collections::HashMap<String, String>>,
     req_ctx: Option<crate::rate_limiter::RequestContext>,
     dump_seq: Option<u64>,
-) -> Result<Response, (StatusCode, String)> {
-    // service_tier + metadata are request echoes only; the chat-completion-
-    // chunk schema doesn't carry them, but we surface them via the final
-    // usage block when `include_usage=true`. Accept and retain for future
-    // wiring — see gap #18/#19 in the OpenAI compat plan.
-    let _ = (&req_service_tier, &req_metadata);
+) -> Result<crate::ir::DeltaStream, (StatusCode, String)> {
     // Channel capacity sized for ~30s of decode at 50 tok/s. The previous
     // 64-slot buffer would fill in <2s under any HTTP-flush stall and silently
     // drop the seq via emit_step.rs's `try_send().is_err()` (now fixed to
@@ -120,6 +122,12 @@ pub(crate) async fn chat_completions_stream(
     let request = InferenceRequest::Streaming {
         prompt_tokens,
         session_hash,
+        adapter_slot,
+        src_lang_id,
+        tgt_lang_id,
+        num_beams,
+        length_penalty,
+        early_stopping,
         image_pixels,
         max_tokens,
         min_tokens,
@@ -161,12 +169,10 @@ pub(crate) async fn chat_completions_stream(
         )
     })?;
 
-    let chunk_id = crate::openai::new_chunk_id();
+    // `ctx.id`/`ctx.model` feed the --dump synthesis; each surface
+    // encoder mints its own wire ids.
+    let chunk_id = format!("chatcmpl-{}", crate::ids::uuid_v4());
     let model_name = state.model_name.clone();
-
-    // First chunk: role announcement
-    let role_chunk = ChatCompletionChunk::role_chunk(&model_name, &chunk_id);
-    let role_json = serde_json::to_string(&role_chunk).unwrap_or_default();
 
     // Resolve the active parser's leak-marker vocabulary once, at request
     // setup. `'static` slices so we borrow by reference throughout the
@@ -216,7 +222,6 @@ pub(crate) async fn chat_completions_stream(
             .as_ref()
             .is_some_and(|p| p.wants_typed_arguments()),
         max_tool_calls_per_response,
-        req_stream_include_usage,
         req_return_token_ids,
         req_ctx,
         dump_seq,
@@ -237,7 +242,10 @@ pub(crate) async fn chat_completions_stream(
 
     let token_stream = ReceiverStream::new(token_rx).flat_map(move |event| {
         use futures::StreamExt;
-        let events = match event {
+        // The handlers emit provider-neutral deltas (`ir::StreamDelta`);
+        // they never touch the wire format. Encoding happens in the
+        // caller's surface encoder.
+        let deltas = match event {
             StreamEvent::Token(tok) | StreamEvent::TokenWithLogprobs(tok, _) => {
                 handle_token::handle_token(&mut stream_state, &ctx, tok)
             }
@@ -252,30 +260,25 @@ pub(crate) async fn chat_completions_stream(
                 decode_time_ms,
                 reasoning_tokens,
                 cached_prompt_tokens,
-            } => handle_done::handle_done(
-                &mut stream_state,
-                &ctx,
-                finish_reason,
-                completion_tokens,
-                time_to_first_token_ms,
-                decode_time_ms,
-                reasoning_tokens,
-                cached_prompt_tokens,
-            ),
+                guard_stop,
+            } => {
+                stream_state.guard_stop = guard_stop;
+                handle_done::handle_done(
+                    &mut stream_state,
+                    &ctx,
+                    finish_reason,
+                    completion_tokens,
+                    time_to_first_token_ms,
+                    decode_time_ms,
+                    reasoning_tokens,
+                    cached_prompt_tokens,
+                )
+            }
             StreamEvent::Error(msg) => handle_error::handle_error(&ctx, msg),
         };
 
-        futures::stream::iter(events).boxed()
+        futures::stream::iter(deltas).boxed()
     });
 
-    // Prepend role chunk, append [DONE] sentinel
-    let role_event = futures::stream::once(async move { Ok(Event::default().data(role_json)) });
-    let done_event = futures::stream::once(async {
-        Ok::<_, std::convert::Infallible>(Event::default().data("[DONE]"))
-    });
-    let full_stream = role_event.chain(token_stream).chain(done_event);
-
-    Ok(Sse::new(full_stream)
-        .keep_alive(KeepAlive::default())
-        .into_response())
+    Ok(Box::pin(token_stream))
 }

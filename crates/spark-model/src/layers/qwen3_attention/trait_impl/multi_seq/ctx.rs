@@ -41,6 +41,11 @@ pub(super) struct MultiSeqCtx<'a> {
     pub normed: DevicePtr,
     /// Per-token concatenated QKV output [Q | K | V] strided by `per_seq_qkv`.
     pub qkv_buf: DevicePtr,
+    /// M2 per-request LoRA routing: `[n]` i32 adapter-slot buffer for this
+    /// batched step (from `AttnMetadataDev.seq_slot`; `DevicePtr(0)` = no
+    /// routing). Set by the orchestrator after fetching `meta`. Read by the
+    /// K/V/O bgmv apply sites; `0` (or a base-only route) makes them no-op.
+    pub seq_slot: DevicePtr,
 }
 
 impl<'a> MultiSeqCtx<'a> {
@@ -88,6 +93,7 @@ impl<'a> MultiSeqCtx<'a> {
             per_seq_qkv,
             normed,
             qkv_buf,
+            seq_slot: DevicePtr(0),
         }
     }
 }

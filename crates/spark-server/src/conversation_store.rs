@@ -94,7 +94,7 @@ impl ConversationStore {
         initial_items: Vec<serde_json::Value>,
         metadata: HashMap<String, String>,
     ) -> String {
-        let id = format!("conv_{}", crate::openai::uuid_v4());
+        let id = format!("conv_{}", crate::ids::uuid_v4());
         let now_unix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())

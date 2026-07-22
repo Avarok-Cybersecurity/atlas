@@ -229,11 +229,35 @@ pub(crate) fn load_attention(
     let (k_scale, v_scale) = load_kv_scales(store, &p, gpu);
     let h = config.hidden_size;
     let qkv_out = config.num_attention_heads * config.head_dim;
-    let _kv_out = config.num_key_value_heads * config.head_dim;
+    // q/k/v may ship either as dense BF16/FP8 (`.weight`, kept in the quant
+    // ignore list) OR as compressed-tensors NVFP4 (`.weight_packed`) — e.g.
+    // RedHatAI/Qwen3-Coder-Next-NVFP4, which quantizes the attention
+    // projections too. This attention path consumes q/k/v as dense BF16
+    // (`AttentionWeights.{q,k,v}_proj: DenseWeight`), so dequant the NVFP4
+    // case to BF16 at load, mirroring the gemma4 loader; the dense case is
+    // untouched. Dims come from the packed tensor itself, not config: under
+    // `attn_output_gate` q_proj's row count is 2×(heads·head_dim), so a
+    // config-derived `n` would run the dequant kernel off the end. weight_packed
+    // is [out_features, in_features/2] (2 fp4 nibbles per byte). Without this,
+    // packed-q/k/v checkpoints die on `self_attn.q_proj.weight not found` at the
+    // first full_attention layer (issue #299 follow-on — the reported
+    // shared_expert half already loads).
+    let load_qkv = |name: &str| -> Result<DenseWeight> {
+        match store.get(&format!("{p}.{name}.weight_packed")) {
+            Ok(w) => crate::weight_map::dequant_nvfp4_to_bf16(
+                store,
+                &format!("{p}.{name}"),
+                w.shape[0],
+                w.shape[1] * 2,
+                gpu,
+            ),
+            Err(_) => dense_auto(store, &format!("{p}.{name}.weight"), gpu),
+        }
+    };
     Ok(AttentionWeights {
-        q_proj: dense_auto(store, &format!("{p}.q_proj.weight"), gpu)?,
-        k_proj: dense_auto(store, &format!("{p}.k_proj.weight"), gpu)?,
-        v_proj: dense_auto(store, &format!("{p}.v_proj.weight"), gpu)?,
+        q_proj: load_qkv("q_proj")?,
+        k_proj: load_qkv("k_proj")?,
+        v_proj: load_qkv("v_proj")?,
         o_proj: quantized_any(
             store,
             &format!("{p}.o_proj"),

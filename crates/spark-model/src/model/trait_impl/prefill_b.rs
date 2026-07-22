@@ -104,7 +104,11 @@ impl TransformerModel {
             let ep_active = self.comm.is_some() && self.config.ep_world_size > 1;
             if cut > chunk_start
                 && cut < total
-                && (ep_active || self.prefix_cache.peek_matched_tokens(tokens, bs) > 0)
+                && (ep_active
+                    || self
+                        .prefix_cache
+                        .peek_matched_tokens(tokens, bs, seq.adapter_id)
+                        > 0)
             {
                 self.prefill_chunk_dispatch(
                     tokens,
@@ -264,8 +268,14 @@ impl TransformerModel {
         // ── Mid-chunk tail SSM capture (opt-in): plan BEFORE the forward
         // pass so SSM layers split their h/conv kernels at `tb` in-pass.
         // `None` (flag off or pass doesn't span `tb`) => no split. ──
-        let midcap_plan =
-            self.prepare_midchunk_capture(tokens, seq, &mut kv_cache, proc_start, proc_count);
+        let midcap_plan = self.prepare_midchunk_capture(
+            tokens,
+            seq,
+            &mut kv_cache,
+            proc_start,
+            proc_count,
+            stream,
+        );
 
         // ── Phase 4: forward through all layers ──
         self.prefill_b_forward_layers(
@@ -292,11 +302,6 @@ impl TransformerModel {
         if let Some(plan) = midcap_plan.as_ref() {
             self.finalize_midchunk_capture(tokens, seq, plan);
         }
-
-        // ATLAS_MTP_DRAFTER_PREFILL: capture this chunk's final-layer hidden
-        // rows for the whole-prompt drafter prefill. No-op when disabled. This
-        // is the large/chunked-prompt path (small prompts go through prefill_a).
-        self.try_mtp_prefill_capture(effective_seq_len_start, proc_count, stream)?;
 
         // ── Phase 5: update sequence state incrementally ──
         // Always add chunk tokens exactly once. The early-return path for

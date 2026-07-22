@@ -362,11 +362,18 @@ pub fn mamba2_ssm_prefill_persistent(
     y_stride: u32,
     stream: u64,
 ) -> Result<()> {
-    // H_smem + smem_x + smem_warp
-    let smem = head_dim * state_size * 4 + head_dim * 4 + 4 * head_dim * 4;
+    // Dynamic shared memory, must match the kernel's layout:
+    //   sH     : head_dim * (state_size + 1)  (+1 pad avoids smem bank conflicts)
+    //   smem_x : head_dim
+    //   smem_B : state_size   (dt*B for the current token)
+    //   smem_C : state_size
+    // Must match the kernel layout: sH + sX + sB + sC.
+    let smem = head_dim * (state_size + 1) * 4 + head_dim * 4 + state_size * 4 + state_size * 4;
+    // SUB=4 threads cooperate per head_dim row (must match the kernel's `SUB`).
+    const SUB: u32 = 4;
     KernelLaunch::new(gpu, kernel)
         .grid([num_heads, batch_size, 1])
-        .block([state_size, 1, 1])
+        .block([head_dim * SUB, 1, 1])
         .shared_mem(smem)
         .arg_ptr(h_state)
         .arg_ptr(x)
@@ -391,3 +398,9 @@ pub fn mamba2_ssm_prefill_persistent(
         .arg_u32(y_stride)
         .launch(stream)
 }
+
+// ── Mamba-2 SSD chunked prefill scan ──────────────────────────────────────────
+//
+// Replaces the token-sequential recurrence with the chunked (state-space duality)
+// formulation: the scan becomes tensor-core matmuls with only ceil(T/64) sequential
+// links instead of T. See kernels/gb10/common/mamba2_ssd_chunk.cu.

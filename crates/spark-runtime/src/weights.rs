@@ -67,6 +67,45 @@ impl WeightDtype {
             other => bail!("Unsupported safetensors dtype: {other:?}"),
         }
     }
+
+    /// Map a raw safetensors header dtype STRING (as it appears in the JSON
+    /// header, e.g. `"BF16"`, `"F8_E4M3"`) to a [`WeightDtype`], factored out
+    /// so the RDMA weight loader (which receives dtype as a wire string in the
+    /// peer manifest, not a `safetensors::Dtype`) resolves it identically to
+    /// the disk loaders — byte-identity depends on the two ends agreeing.
+    pub fn from_safetensors_str(s: &str) -> Result<Self> {
+        Ok(match s {
+            "F32" => Self::FP32,
+            "BF16" => Self::BF16,
+            "U8" => Self::UInt8,
+            // I8 is a 1-byte raw container (packed NVFP4); signedness is
+            // irrelevant, treat as raw bytes exactly like the disk path.
+            "I8" => Self::UInt8,
+            "F8_E4M3" => Self::FP8E4M3,
+            "F8_E8M0" => Self::FP8E8M0,
+            "I64" => Self::Int64,
+            other => bail!("Unsupported safetensors dtype '{other}'"),
+        })
+    }
+}
+
+/// Convert a little-endian IEEE-754 half-precision (F16) tensor byte buffer
+/// to BF16 bytes. F16 and BF16 are both 2 bytes/element but have different
+/// bit layouts (5-bit vs 8-bit exponent), so the bytes cannot be
+/// reinterpreted — each value goes f16 → f32 (exact) → bf16
+/// (round-to-nearest-even). Shared by both disk loaders so F16 checkpoints
+/// (e.g. centml modelopt W4A4 exports, which ship all unquantized tensors as
+/// F16) land in the store as BF16; [`WeightDtype`] itself stays closed to
+/// store-legal dtypes and F16 can never appear on the RDMA wire.
+pub(crate) fn f16_to_bf16_bytes(src: &[u8]) -> Vec<u8> {
+    use half::{bf16, f16};
+    debug_assert_eq!(src.len() % 2, 0, "F16 tensor byte length must be even");
+    let mut out = Vec::with_capacity(src.len());
+    for pair in src.chunks_exact(2) {
+        let h = f16::from_le_bytes([pair[0], pair[1]]);
+        out.extend_from_slice(&bf16::from_f32(h.to_f32()).to_le_bytes());
+    }
+    out
 }
 
 /// A weight tensor on the GPU.
@@ -99,9 +138,10 @@ impl WeightStore {
         }
     }
 
-    /// Crate-internal: wrap a pre-built map. Used by alternate loaders
-    /// (e.g. `fast_weights::FastSafetensorsLoader`).
-    pub(crate) fn from_map(weights: HashMap<String, WeightTensor>) -> Self {
+    /// Wrap a pre-built map. Used by alternate loaders (e.g.
+    /// `fast_weights::FastSafetensorsLoader`, and the RDMA weight loader in
+    /// `spark-storage`, which lives in a different crate and so needs this pub).
+    pub fn from_map(weights: HashMap<String, WeightTensor>) -> Self {
         Self { weights }
     }
 
@@ -224,7 +264,7 @@ impl SafetensorsLoader {
 }
 
 /// Parse expert index from tensor name (e.g. "model.layers.3.mlp.experts.42.gate_proj.weight" → 42).
-pub(crate) fn parse_expert_index(name: &str) -> Option<usize> {
+pub fn parse_expert_index(name: &str) -> Option<usize> {
     let parts: Vec<&str> = name.split('.').collect();
     for (i, part) in parts.iter().enumerate() {
         if *part == "experts" && i + 1 < parts.len() {
@@ -234,6 +274,58 @@ pub(crate) fn parse_expert_index(name: &str) -> Option<usize> {
     None
 }
 
+pub mod adapter;
 mod loader;
 pub mod mlx_int8;
 pub(crate) use loader::{check_oom_guard, estimate_has_fp8, estimate_load_bytes};
+
+#[cfg(test)]
+mod from_str_tests {
+    use super::WeightDtype;
+
+    #[test]
+    fn from_safetensors_str_matches_disk_mapping() {
+        // The RDMA weight peer publishes these raw header strings; the client
+        // must resolve them to the exact WeightDtype the disk loaders use, else
+        // byte_size/shape diverge and logits break. Locks the closed mapping.
+        use WeightDtype::*;
+        for (s, want) in [
+            ("F32", FP32),
+            ("BF16", BF16),
+            ("U8", UInt8),
+            ("I8", UInt8), // packed NVFP4 raw container
+            ("F8_E4M3", FP8E4M3),
+            ("F8_E8M0", FP8E8M0),
+            ("I64", Int64),
+        ] {
+            assert_eq!(
+                WeightDtype::from_safetensors_str(s).unwrap(),
+                want,
+                "dtype {s}"
+            );
+        }
+        // F16 is converted to BF16 at disk-load; a store (and therefore a
+        // peer manifest) can never contain it, so the wire mapping rejects it.
+        assert!(WeightDtype::from_safetensors_str("F16").is_err());
+        assert!(WeightDtype::from_safetensors_str("bogus").is_err());
+    }
+
+    #[test]
+    fn f16_bytes_convert_to_bf16_via_f32() {
+        use half::{bf16, f16};
+        // Cover sign, exact powers of two, a value needing mantissa rounding
+        // (f16 has 10 mantissa bits, bf16 only 7), f16 max, and a subnormal.
+        let vals = [0.0f32, 1.0, -1.5, 0.1, 65504.0, -6.1035156e-5];
+        let src: Vec<u8> = vals
+            .iter()
+            .flat_map(|v| f16::from_f32(*v).to_le_bytes())
+            .collect();
+        let out = super::f16_to_bf16_bytes(&src);
+        assert_eq!(out.len(), src.len());
+        for (i, v) in vals.iter().enumerate() {
+            let got = bf16::from_le_bytes([out[2 * i], out[2 * i + 1]]);
+            let want = bf16::from_f32(f16::from_f32(*v).to_f32());
+            assert_eq!(got, want, "value {v}");
+        }
+    }
+}

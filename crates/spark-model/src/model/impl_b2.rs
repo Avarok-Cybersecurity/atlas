@@ -208,6 +208,7 @@ impl TransformerModel {
                 gdn_exact_replay: false,
                 midchunk_capture: None,
                 token_ids: None,
+                routed_lora_layers: None, // #30: MTP decode never routes prefill.
             };
             let drafts = proposer.propose(
                 token_0,

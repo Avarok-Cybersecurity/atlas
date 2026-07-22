@@ -119,9 +119,26 @@ __device__ __forceinline__ float sw_exp(float x) {
 #ifndef HDIM
 #define HDIM 256
 #endif
+// PAD_KV may be overridden by a kernel before including this header (e.g. the
+// FP8-smem cp.async path needs a 16-aligned row stride for 16-byte cp.async /
+// uint4 stores; FP8 elements are 1 byte so PAD_KV=8 → 264 = only 8-aligned,
+// whereas PAD_KV=16 → 272 = 16-aligned). Default 8 keeps the BF16 row stride
+// (256+8)*2 = 528 bytes 16-aligned, as before.
+#ifndef PAD_KV
 #define PAD_KV 8
+#endif
 #define HDIM_PAD (HDIM + PAD_KV)
 #define PAD_P 8
+
+// ATLAS_ATTN_LDMATRIX: use ldmatrix.x4 for the A-operand (Q for QK^T, P for PV)
+// smem loads instead of 4 scalar unsigned-int loads. One PTX instruction
+// replaces 4 manual loads, shortening the load→MMA dependency chain this
+// latency-bound prefill kernel is gated on. PROVEN on GB10/SM121 (ldmatrix_probe.cu
+// cosine 1.0; commit 7dbdfe41 "bit-identical, +2%"). Default ON — opt OUT with
+// -DATLAS_DISABLE_ATTN_LDMATRIX (the prior default-off) if a regression appears.
+#ifndef ATLAS_DISABLE_ATTN_LDMATRIX
+#define ATLAS_ATTN_LDMATRIX
+#endif
 #define N_TILES_PER_WARP ((HDIM / 8) / 2)
 #define TILE_CHUNKS (BR * (HDIM / 8))
 

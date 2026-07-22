@@ -81,7 +81,8 @@ impl TransformerModel {
         let prefix_match = if self.tokens_have_vision_pad(tokens) {
             spark_runtime::prefix_cache::PrefixMatch::empty()
         } else {
-            self.prefix_cache.lookup(tokens, bs, seq.session_hash)
+            self.prefix_cache
+                .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
         };
         let mut kv_write_start = prefix_match.matched_tokens;
         seq.cached_prefix_tokens = prefix_match.matched_tokens;
@@ -132,8 +133,12 @@ impl TransformerModel {
         // With intermediate checkpoints, ssm_snapshot_tokens may be less than
         // matched_tokens. Use ssm_snapshot_tokens as the skip point.
         // Session isolation: only restore snapshots belonging to this session.
-        let marconi_skip = if let Some(snap_id) = prefix_match.ssm_snapshot {
-            let snap_tok = prefix_match.ssm_snapshot_tokens;
+        // Phase 1b spill-tier fault-in (#6): fold a resident hit with a
+        // faulted-back spilled anchor; see `ssm_fault_in::eff_ssm_snapshot`.
+        let (eff_snapshot, eff_snapshot_tokens) =
+            self.eff_ssm_snapshot(&prefix_match, seq.session_hash, stream);
+        let marconi_skip = if let Some(snap_id) = eff_snapshot {
+            let snap_tok = eff_snapshot_tokens;
             if snap_tok > 0
                 && kv_write_start <= n
                 && self
@@ -164,9 +169,19 @@ impl TransformerModel {
                         snap_id,
                     );
                 }
-                // When all tokens matched (exact prompt), the snapshot covers
-                // everything — skip the entire prompt, process only the last token.
-                kv_write_start = if kv_write_start >= n { n } else { snap_tok };
+                // All tokens matched AND the snapshot covers the full match →
+                // skip the whole prompt (process only the last token). But an
+                // *intermediate* checkpoint at full match (snap_tok < n — e.g. a
+                // faulted-in anchor whose leaf was evicted) restored state at
+                // `snap_tok`, not `n`; skipping to `n` would desync SSM state
+                // from KV/positions → garbage. Then skip only to `snap_tok` so
+                // the suffix recomputes SSM over [snap_tok, n). (Mirrors the
+                // prefill_b/prefill_c warm-hit fix.)
+                kv_write_start = if kv_write_start >= n && snap_tok >= kv_write_start {
+                    n
+                } else {
+                    snap_tok
+                };
                 true
             } else {
                 if kv_write_start > 0 {
@@ -323,6 +338,24 @@ impl TransformerModel {
             devs
         };
 
+        // ── M2 request-scoped LoRA routing (prefill). Every one of the
+        // `proc_count` prompt tokens carries THIS request's adapter — the
+        // headline fix (prefill previously always applied the global active
+        // adapter, contaminating a routed request's prompt KV). A dedicated
+        // arena buffer (`lora_seq_slot`, sized max_batch_tokens) holds the
+        // m-element slot array; the packed meta gap is unsafe here because
+        // positions span `proc_count*4` bytes from meta_base+0. Prefill is
+        // eager (graph_capture:false) + this H2D precedes the layer loop, so
+        // it rides the existing metadata phasing. `DevicePtr(0)` (no pool) →
+        // the K/V/O apply sites take the byte-identical installed-pair path.
+        // `seq.adapter_slot == -1` (no `adapter` field) resolves to active.
+        let seq_slot = self.upload_seq_slot_uniform(
+            seq.adapter_slot,
+            proc_count,
+            self.buffers.lora_seq_slot(),
+            stream,
+        )?;
+
         let attn_metadata = AttnMetadataDev {
             positions: meta_base,
             positions_h: meta_base,
@@ -332,6 +365,7 @@ impl TransformerModel {
             block_table: block_table_dev,
             max_blocks_per_seq: seq.block_table.len() as u32,
             num_seqs: 1,
+            seq_slot,
         };
 
         let ctx = ForwardContext {
@@ -349,6 +383,8 @@ impl TransformerModel {
             // Hash-MoE: token IDs for the `proc_count` tokens processed this
             // pass, in MoE-loop order (uploaded above to the stable buffer).
             token_ids: Some(self.buffers.token_ids()),
+            // #30: request slot pairs (None unless routing to a non-active slot).
+            routed_lora_layers: self.routed_slot_layers(seq.adapter_slot),
         };
 
         // ── 4. Forward through all layers ──

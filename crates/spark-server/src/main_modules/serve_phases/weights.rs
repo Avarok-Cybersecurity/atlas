@@ -154,3 +154,79 @@ pub(crate) fn load_dflash_drafter(
     );
     Ok(Some((drafter_store, drafter_config)))
 }
+
+/// Startup-loaded LoRA adapter: its own WeightStore + parsed PEFT config.
+/// One `LoraAdapterState` per repeated `--lora-adapter NAME=PATH`; each becomes
+/// one resident pool slot. A single adapter is byte-identical to the v0 path.
+pub(crate) struct LoraAdapterState {
+    pub name: String,
+    pub peft_config: atlas_core::config::PeftAdapterConfig,
+    pub store: spark_runtime::weights::WeightStore,
+}
+
+/// Resolve + load every `--lora-adapter` into its own on-device `WeightStore`
+/// (slot 0..N-1). Empty when no adapter is requested. Rejects >`--max-loras`
+/// adapters and duplicate names up front.
+pub(crate) fn load_lora_adapters(
+    args: &cli::ServeArgs,
+    gpu: &dyn spark_runtime::gpu::GpuBackend,
+) -> Result<Vec<LoraAdapterState>> {
+    if args.lora_adapter.is_empty() {
+        return Ok(Vec::new());
+    }
+    if args.lora_adapter.len() > args.max_loras {
+        anyhow::bail!(
+            "--lora-adapter given {} times but --max-loras={} (pool has {} slots); \
+             raise --max-loras or stage the extras on an $ATLAS_LORA_PEER",
+            args.lora_adapter.len(),
+            args.max_loras,
+            args.max_loras,
+        );
+    }
+    let mut states: Vec<LoraAdapterState> = Vec::with_capacity(args.lora_adapter.len());
+    for (name, spec) in &args.lora_adapter {
+        if states.iter().any(|s| &s.name == name) {
+            anyhow::bail!("--lora-adapter name '{name}' given twice (names must be unique)");
+        }
+        tracing::info!("LoRA: resolving adapter '{name}' from '{spec}'");
+        let adapter_dir =
+            crate::model_resolver::resolve_adapter_dir(spec, args.cache_dir.as_deref())
+                .context("Failed to resolve LoRA adapter")?;
+        let cfg_path = adapter_dir.join("adapter_config.json");
+        let raw = std::fs::read_to_string(&cfg_path)
+            .with_context(|| format!("Failed to read {}", cfg_path.display()))?;
+        // Hard-error parser (atlas-core config/parsers/lora.rs) — scaling is read
+        // per adapter (alpha/r, alpha/sqrt(r) under use_rslora), NEVER defaulted.
+        let peft_config = atlas_core::config::parse_peft_adapter_config(&raw)
+            .with_context(|| format!("Failed to parse {}", cfg_path.display()))?;
+        if peft_config.r > args.max_lora_rank {
+            anyhow::bail!(
+                "LoRA adapter '{}' has r={} > --max-lora-rank {} — raise the flag \
+                 (slot pool is rank-padded to it) or use a smaller adapter",
+                name,
+                peft_config.r,
+                args.max_lora_rank,
+            );
+        }
+        let store = spark_runtime::weights::adapter::load_adapter_safetensors(&adapter_dir, gpu, 0)
+            .context("Failed to load LoRA adapter weights")?;
+        tracing::info!(
+            "LoRA adapter '{}': {} tensors, {} bytes loaded; r={}, alpha={}, \
+             use_rslora={}, scaling={:.6}, target_modules={:?}",
+            name,
+            store.len(),
+            store.total_bytes(),
+            peft_config.r,
+            peft_config.lora_alpha,
+            peft_config.use_rslora,
+            peft_config.scaling(),
+            peft_config.target_modules,
+        );
+        states.push(LoraAdapterState {
+            name: name.clone(),
+            peft_config,
+            store,
+        });
+    }
+    Ok(states)
+}

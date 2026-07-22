@@ -19,7 +19,7 @@
 use crate::gpu::GpuBackend;
 use crate::weights::{
     WeightLoader, WeightStore, WeightTensor, check_oom_guard, estimate_has_fp8,
-    estimate_load_bytes, evict_page_cache, parse_expert_index,
+    estimate_load_bytes, evict_page_cache, f16_to_bf16_bytes, parse_expert_index,
 };
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
@@ -339,7 +339,16 @@ fn load_shard_fast(
     for result in rx {
         let (idx, buf, slice_start) = result?;
         let meta = &tensors[idx];
-        let src = &buf.as_slice()[slice_start..slice_start + meta.len];
+        let raw = &buf.as_slice()[slice_start..slice_start + meta.len];
+        // F16 shards: convert bytes to BF16 before upload (same length,
+        // different bit layout — meta.dtype is already staged as BF16).
+        let converted: Vec<u8>;
+        let src: &[u8] = if meta.from_f16 {
+            converted = f16_to_bf16_bytes(raw);
+            &converted
+        } else {
+            raw
+        };
 
         let ptr = match gpu.alloc(meta.len) {
             Ok(p) => {
