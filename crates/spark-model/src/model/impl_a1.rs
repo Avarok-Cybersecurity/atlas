@@ -260,8 +260,10 @@ impl TransformerModel {
         //
         // Three conditions, all necessary: MTP must be active, the feature must
         // not be killed, and the head must be a precision the batched prefill
-        // can actually run at — an NVFP4/FP8 MTP head would allocate this and
-        // never write it.
+        // can actually run at — an NVFP4 MTP head (FP8 drafter KV) would
+        // allocate this and never write it. FP8 heads DO write it: the pass
+        // keeps its own BF16 fc/k/v, so the drafter context and a cheaper
+        // head are additive rather than mutually exclusive.
         let mtp_prefill_hidden = if has_mtp
             && mtp_quant.supports_drafter_prefill()
             && crate::layers::mtp_drafter_prefill_enabled()
@@ -282,8 +284,9 @@ impl TransformerModel {
             {
                 tracing::info!(
                     "MTP drafter context: INACTIVE — the batched drafter prefill \
-                     needs a BF16 MTP head (--mtp-quantization bf16); this head is \
-                     {mtp_quant:?}. No prompt-hidden capture allocated.",
+                     needs a BF16 drafter KV cache (--mtp-quantization bf16 or \
+                     fp8); this head is {mtp_quant:?}. No prompt-hidden capture \
+                     allocated.",
                 );
             }
             DevicePtr::NULL

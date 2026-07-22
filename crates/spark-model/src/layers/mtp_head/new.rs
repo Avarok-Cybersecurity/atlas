@@ -7,7 +7,7 @@ use parking_lot::Mutex;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::{KvCacheConfig, KvCacheDtype, PagedKvCache};
 
-use super::{MtpHead, MtpQuantization, ProjectionWeight};
+use super::{MtpHead, MtpQuantization, PrefillProjections, ProjectionWeight};
 use crate::layers::MoeLayer;
 use crate::weight_map::{DenseWeight, MoeWeights, MtpWeights, QuantizedWeight, quantize_to_nvfp4};
 
@@ -313,6 +313,20 @@ impl MtpHead {
                 None
             };
 
+        // BF16 fc/k/v for the batched prefill, kept whatever the head's own
+        // precision is (see `PrefillProjections`). Three pointer copies into
+        // the loader's BF16 weights — for a BF16 head they are the identical
+        // pointers `fc`/`k_proj`/`v_proj` above already hold, so that path is
+        // unchanged; for an FP8 head they are what lets the drafter context
+        // and the cheaper head coexist instead of excluding each other.
+        // Under the same predicate the caller uses to size the prompt-hidden
+        // capture, so the two decisions can never disagree.
+        let prefill_proj = quant.supports_drafter_prefill().then(|| PrefillProjections {
+            fc: weights.fc,
+            k_proj: weights.k_proj,
+            v_proj: weights.v_proj,
+        });
+
         Ok(Self {
             pre_fc_norm_embedding: weights.pre_fc_norm_embedding,
             pre_fc_norm_hidden: weights.pre_fc_norm_hidden,
@@ -374,6 +388,7 @@ impl MtpHead {
             // target's kernel set lacks it (prefill then no-ops).
             dense_gemm_k: crate::layers::try_kernel(gpu, "gemm", "dense_gemm_bf16"),
             prefill_scratch,
+            prefill_proj,
         })
     }
 }

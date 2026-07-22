@@ -22,14 +22,21 @@
 //! for i = 0..P-2. The first decode propose() then appends
 //! `(first_sampled_token, hidden_{P-1})` at position P, slot P-1 — gapless.
 //!
-//! v1 scope (explicit): BF16 MTP head (`--mtp-quantization bf16`, the
-//! recommended/highest-acceptance config) with BF16 drafter KV. Other quants
-//! warn once and no-op — propose() then behaves exactly as before.
+//! Scope: any head with a BF16 drafter KV cache — `--mtp-quantization bf16`
+//! and `fp8`. The pass itself always runs in BF16, reading
+//! [`super::PrefillProjections`] rather than the head's own (possibly
+//! quantized) fc/k/v, so the head's precision does not decide whether the
+//! drafter gets context. That split is deliberate and is the whole point:
+//! this pass runs ONCE per turn and is worth ~13% of TPOT, while `propose`
+//! runs `num_drafts` times per verify step and is where a cheaper head pays
+//! off (~2.7%). Gating one on the other made them mutually exclusive and cost
+//! more than it saved. NVFP4 still no-ops: its drafter KV is FP8.
+//! Unsupported configurations warn once — propose() then behaves as before.
 
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 
-use super::{MtpHead, MtpProposerState, ProjectionWeight};
+use super::{MtpHead, MtpProposerState};
 use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::speculative::ProposerState;
@@ -88,20 +95,20 @@ impl MtpHead {
             Some(s) => s,
             None => return Ok(0),
         };
-        // v1: BF16 head + BF16 drafter KV only (see module docs).
-        let (fc_w, k_w, v_w) = match (&self.fc, &self.k_proj, &self.v_proj) {
-            (ProjectionWeight::Bf16(fc), ProjectionWeight::Bf16(k), ProjectionWeight::Bf16(v))
-                if self.kv_bf16 && self.dense_gemm_k.0 != 0 =>
-            {
-                (fc, k, v)
-            }
+        // The pass is BF16 in its weights but NOT in the head's precision: it
+        // reads `PrefillProjections`, which holds fc/k/v in BF16 for any head
+        // that can run this at all. What it really needs is a BF16 drafter KV
+        // cache and the batched GEMM kernel.
+        let (fc_w, k_w, v_w) = match self.prefill_proj.as_ref() {
+            Some(p) if self.kv_bf16 && self.dense_gemm_k.0 != 0 => (&p.fc, &p.k_proj, &p.v_proj),
             _ => {
                 static WARNED: std::sync::Once = std::sync::Once::new();
                 WARNED.call_once(|| {
                     tracing::warn!(
-                        "MTP drafter context: the batched drafter prefill supports \
-                         the BF16 MTP head (--mtp-quantization bf16) with BF16 KV \
-                         only; continuing WITHOUT drafter context prefill."
+                        "MTP drafter context: the batched drafter prefill needs BF16 \
+                         fc/k/v projections, a BF16 drafter KV cache and the batched \
+                         dense_gemm_bf16 kernel (--mtp-quantization bf16 or fp8); \
+                         continuing WITHOUT drafter context prefill."
                     );
                 });
                 return Ok(0);

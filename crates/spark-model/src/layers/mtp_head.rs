@@ -78,14 +78,24 @@ impl MtpQuantization {
     /// Whether the batched drafter prefill can run at this precision.
     ///
     /// NECESSARY, not sufficient — `prefill::prefill_drafter` remains the
-    /// authority and re-checks the actual weight variants and kernel handles.
-    /// This predicate exists so the caller can skip the `max_seq_len x hidden`
+    /// authority and re-checks the actual weight handles and kernels. This
+    /// predicate exists so the caller can skip the `max_seq_len x hidden`
     /// BF16 prompt-hidden buffer (335 MB at 32k/h=5120, 2.7 GB at 256k) for a
-    /// head that could never use it. It is exact by construction:
-    /// `quantize_proj` produces `ProjectionWeight::Bf16` for, and only for,
-    /// [`MtpQuantization::Bf16`].
+    /// head that could never use it.
+    ///
+    /// **FP8 qualifies, and the head dtype is NOT what decides it.** The pass
+    /// reads exactly three projections — `fc`, `k_proj`, `v_proj` — and
+    /// [`PrefillProjections`] keeps those three in BF16 for every head that
+    /// can run the pass, at zero extra memory (see its docs). What the pass
+    /// genuinely requires is a **BF16 drafter KV cache**, which
+    /// `MtpHead::new` gives to BF16 and FP8 heads alike (`kv_bf16`) and denies
+    /// to NVFP4 — hence exactly these two arms.
+    ///
+    /// Keeping this in sync with [`PrefillProjections`] is what makes the
+    /// predicate exact; the constructor populates that field under this same
+    /// predicate, so there is one decision, not two.
     pub fn supports_drafter_prefill(self) -> bool {
-        matches!(self, Self::Bf16)
+        matches!(self, Self::Bf16 | Self::Fp8)
     }
 }
 
@@ -99,6 +109,42 @@ impl std::str::FromStr for MtpQuantization {
             _ => anyhow::bail!("Unknown MTP quantization: {s}. Expected: nvfp4, fp8, bf16"),
         }
     }
+}
+
+/// The three projections the batched drafter prefill reads, kept in BF16
+/// independently of the head's own precision.
+///
+/// # Why this exists
+///
+/// The drafter head is quantized to save bandwidth on the HOT path: `propose`
+/// runs `num_drafts` times per verify step. The batched drafter prefill is the
+/// COLD path — once per turn, plus a small carry append — and it is worth
+/// ~13% of TPOT (`crate::model::drafter_context`), five times the ~2.7% the
+/// cheaper head buys. Gating the prefill on the head's dtype made the two
+/// mutually exclusive and turned the cheaper head into a net 10% loss.
+/// Splitting them makes the two effects ADDITIVE: BF16 weights on the pass
+/// that runs once, quantized weights on the pass that runs twice per step.
+///
+/// # Why it is free
+///
+/// [`DenseWeight`] is a bare device pointer that owns nothing, and
+/// `quantize_proj` allocates the quantized copy WITHOUT releasing the BF16
+/// source it read — those buffers stay resident for the model's lifetime
+/// either way. So this is three pointer copies, not a second set of weights.
+/// For a BF16 head the pointers are the very ones `ProjectionWeight::Bf16`
+/// holds, so that path is unchanged bit for bit.
+///
+/// Only `fc`/`k_proj`/`v_proj` appear here because they are the only weights
+/// the pass touches: the drafter is a single decoder layer, so its K/V are a
+/// pure function of `fc(concat(norm(embed), norm(hidden)))` — `q_proj`,
+/// `o_proj`, the FFN and the LM head are never read (see `prefill`'s docs).
+pub(crate) struct PrefillProjections {
+    /// Concat projection, `[hidden, 2*hidden]` BF16.
+    pub fc: DenseWeight,
+    /// Key projection, `[num_kv_heads*head_dim, hidden]` BF16.
+    pub k_proj: DenseWeight,
+    /// Value projection, `[num_kv_heads*head_dim, hidden]` BF16.
+    pub v_proj: DenseWeight,
 }
 
 /// Weight storage that can hold any supported precision.
@@ -225,6 +271,9 @@ pub struct MtpHead {
     dense_gemm_k: KernelHandle,
     /// Drafter-prefill scratch; `None` unless ATLAS_MTP_DRAFTER_PREFILL=1.
     prefill_scratch: Option<MtpPrefillScratch>,
+    /// BF16 fc/k/v for the batched drafter prefill, independent of `quant`.
+    /// `None` iff [`MtpQuantization::supports_drafter_prefill`] is false.
+    prefill_proj: Option<PrefillProjections>,
 }
 
 impl MtpHead {
