@@ -56,6 +56,7 @@ pub struct TransformerModel {
     pub(super) w4a16_gemv_logits_kernel: KernelHandle, // FP32 output for LM head
     pub(super) w4a16_gemm_kernel: KernelHandle,
     pub(super) w4a16_gemv_batch2_kernel: KernelHandle,
+    pub(super) w4a16_gemv_batch3_kernel: KernelHandle,
     /// W4A8 DP4A batch-2 verify kernels (lm_head_batched DP4A path). Engaged when
     /// ATLAS_W4A16_DP4A=1 AND both handles present; float batch2 is the fallback.
     pub(super) dp4a_quant_k: KernelHandle,

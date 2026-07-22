@@ -188,6 +188,21 @@ impl TransformerModel {
                     stream,
                 )?;
             }
+        } else if num_tokens == 3 && self.lm_head_nvfp4.is_some() {
+            // K=3 verify (num_drafts=2): batch3 GEMV reads the lm_head weight
+            // ONCE for 3 rows instead of w4a16_gemm (M=3 on 64x64 tiles wastes
+            // ~95% of M => ~3x slower). Unblocks deeper MTP drafting.
+            let nvfp4 = self.lm_head_nvfp4.as_ref().unwrap();
+            ops::w4a16_gemv_batch3(
+                self.gpu.as_ref(),
+                self.w4a16_gemv_batch3_kernel,
+                hidden,
+                nvfp4,
+                logits,
+                v,
+                h,
+                stream,
+            )?;
         } else if let Some(ref nvfp4) = self.lm_head_nvfp4 {
             ops::w4a16_gemm(
                 self.gpu.as_ref(),
