@@ -7,7 +7,8 @@ use parking_lot::Mutex;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::{KvCacheConfig, KvCacheDtype, PagedKvCache};
 
-use super::{MtpHead, MtpQuantization, PrefillProjections, ProjectionWeight};
+use super::prefill::PrefillProjections;
+use super::{MtpHead, MtpQuantization, ProjectionWeight};
 use crate::layers::MoeLayer;
 use crate::weight_map::{DenseWeight, MoeWeights, MtpWeights, QuantizedWeight, quantize_to_nvfp4};
 
@@ -202,15 +203,11 @@ impl MtpHead {
             }
         };
 
-        // MTP KV cache: 1 attention layer. The FP8 KV path hard-codes
-        // k_scale=v_scale=1.0, which on Qwen3.6-A3B (large deep-layer K/V
-        // magnitudes) collapsed the single MTP attention layer's output to a
-        // constant → constant draft token 0 → ~0% acceptance, making
-        // --mtp-quantization fp8 a net slowdown. Use BF16 KV for both bf16
-        // and fp8 MTP heads — the MTP KV is one tiny layer, so BF16 cost is
-        // negligible. NVFP4 MTP keeps FP8 KV (measured-good acceptance;
-        // FP8-path changes must stay additive for NVFP4).
-        let kv_bf16 = matches!(quant, MtpQuantization::Bf16 | MtpQuantization::Fp8);
+        // MTP KV cache: 1 attention layer. Precision policy and the reason for
+        // it live on `MtpQuantization::has_bf16_drafter_kv` — the drafter
+        // prefill's own predicate derives from that same method, so the cache
+        // this builds and the pass that writes into it can never disagree.
+        let kv_bf16 = quant.has_bf16_drafter_kv();
         let kv_config = KvCacheConfig {
             block_size: 16,
             num_kv_heads: nkv,
@@ -321,11 +318,13 @@ impl MtpHead {
         // and the cheaper head coexist instead of excluding each other.
         // Under the same predicate the caller uses to size the prompt-hidden
         // capture, so the two decisions can never disagree.
-        let prefill_proj = quant.supports_drafter_prefill().then(|| PrefillProjections {
-            fc: weights.fc,
-            k_proj: weights.k_proj,
-            v_proj: weights.v_proj,
-        });
+        let prefill_proj = quant
+            .supports_drafter_prefill()
+            .then(|| PrefillProjections {
+                fc: weights.fc,
+                k_proj: weights.k_proj,
+                v_proj: weights.v_proj,
+            });
 
         Ok(Self {
             pre_fc_norm_embedding: weights.pre_fc_norm_embedding,

@@ -24,14 +24,10 @@
 //!
 //! Scope: any head with a BF16 drafter KV cache — `--mtp-quantization bf16`
 //! and `fp8`. The pass itself always runs in BF16, reading
-//! [`super::PrefillProjections`] rather than the head's own (possibly
-//! quantized) fc/k/v, so the head's precision does not decide whether the
-//! drafter gets context. That split is deliberate and is the whole point:
-//! this pass runs ONCE per turn and is worth ~13% of TPOT, while `propose`
-//! runs `num_drafts` times per verify step and is where a cheaper head pays
-//! off (~2.7%). Gating one on the other made them mutually exclusive and cost
-//! more than it saved. NVFP4 still no-ops: its drafter KV is FP8.
-//! Unsupported configurations warn once — propose() then behaves as before.
+//! [`PrefillProjections`] rather than the head's own (possibly quantized)
+//! fc/k/v, so the head's precision does not decide whether the drafter gets
+//! context. NVFP4 still no-ops: its drafter KV is FP8. Unsupported
+//! configurations warn once — propose() then behaves exactly as before.
 
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
@@ -40,10 +36,46 @@ use super::{MtpHead, MtpProposerState};
 use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::speculative::ProposerState;
+use crate::weight_map::DenseWeight;
 
 /// Rows processed per batched pass. Sizes the dedicated scratch (~50 MB at
 /// h=5120 / nq=32 / hd=256); one full weight read per chunk per projection.
 pub(crate) const PREFILL_CHUNK: usize = 512;
+
+/// The three projections this pass reads, kept in BF16 whatever precision the
+/// head itself was quantized to.
+///
+/// # Why it exists
+///
+/// The head is quantized to save bandwidth on the HOT path: `propose` runs
+/// `num_drafts` times per verify step. This pass is the COLD path — once per
+/// turn plus a small carry append — and it is worth ~13% of TPOT
+/// (`crate::model::drafter_context`), five times the ~2.7% a cheaper head
+/// buys. While the pass was gated on the head's dtype the two were mutually
+/// exclusive, and the cheaper head came out a net ~10% LOSS. Keeping BF16
+/// weights for the once-per-turn pass and quantized weights for the
+/// twice-per-step one makes both effects available at once.
+///
+/// # Why it is free
+///
+/// [`DenseWeight`] is a bare device pointer that owns nothing, and
+/// `quantize_proj` allocates the quantized copy WITHOUT releasing the BF16
+/// source it read — those buffers stay resident for the model's lifetime
+/// either way. So this is three pointer copies, not a second set of weights.
+/// For a BF16 head they are the very pointers `ProjectionWeight::Bf16` holds,
+/// which is why that path is unchanged bit for bit.
+///
+/// Only fc/k/v appear because they are the only weights the pass touches —
+/// see the row convention in the module docs above: `q_proj`, `o_proj`, the
+/// FFN and the LM head are never read.
+pub(crate) struct PrefillProjections {
+    /// Concat projection, `[hidden, 2*hidden]` BF16.
+    pub fc: DenseWeight,
+    /// Key projection, `[num_kv_heads*head_dim, hidden]` BF16.
+    pub k_proj: DenseWeight,
+    /// Value projection, `[num_kv_heads*head_dim, hidden]` BF16.
+    pub v_proj: DenseWeight,
+}
 
 impl MtpHead {
     /// Batch-prefill the drafter KV over `prompt_tokens` using per-position
@@ -373,4 +405,39 @@ fn self_copy_embed_row(
     let src = head.embed_tokens.weight.offset(token * row_bytes);
     ctx.gpu
         .copy_d2d_async(src, dst.offset(r * row_bytes), row_bytes, stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::MtpQuantization;
+
+    /// THE COUPLING. This pass writes BF16 K/V rows straight into the drafter
+    /// cache, so it can run exactly when that cache is BF16 — no more, no
+    /// less. `supports_drafter_prefill` must therefore stay DERIVED from
+    /// `has_bf16_drafter_kv` and never drift back into its own quantization
+    /// list. Exhaustive over the variants so adding one forces a decision here.
+    #[test]
+    fn prefill_support_is_exactly_the_bf16_kv_policy() {
+        for q in [
+            MtpQuantization::Nvfp4,
+            MtpQuantization::Fp8,
+            MtpQuantization::Bf16,
+        ] {
+            assert_eq!(
+                q.supports_drafter_prefill(),
+                q.has_bf16_drafter_kv(),
+                "{q:?}: prefill support must derive from the drafter-KV precision policy",
+            );
+        }
+    }
+
+    /// The values themselves, pinned. FP8 is the point of the whole split: a
+    /// quantized head must still get drafter context, because losing it costs
+    /// ~5x what the cheaper head saves. NVFP4 must NOT — its drafter KV is FP8.
+    #[test]
+    fn fp8_gets_drafter_context_and_nvfp4_does_not() {
+        assert!(MtpQuantization::Bf16.supports_drafter_prefill());
+        assert!(MtpQuantization::Fp8.supports_drafter_prefill());
+        assert!(!MtpQuantization::Nvfp4.supports_drafter_prefill());
+    }
 }
