@@ -132,8 +132,8 @@ pub fn mtp_catchup_enabled() -> bool {
 /// | ON  | 10,100 | 0.6262 | **0.4452** | 1.926 |
 /// | delta | | +0.016 (2.4 sd) | **+0.027 (3.9 sd)** | **+2.3%** |
 ///
-/// Criterion, pre-registered before the run: `p2_uncond` up by >= 0.015 at
-/// >= 3 sd. Met. At n=700 — the sample that produced the earlier "refuted"
+/// Criterion, pre-registered before the run: `p2_uncond` up by ≥ 0.015 at
+/// ≥ 3 sd. Met. At n=700 — the sample that produced the earlier "refuted"
 /// verdict — this same effect is ~1.0 sd, i.e. invisible. That verdict was a
 /// power problem, not a mapping problem.
 ///
@@ -261,7 +261,7 @@ pub trait DraftProposer: Send + Sync {
         None
     }
 
-    /// Inverse of [`take_drafter_kv`]: install carried blocks into a fresh
+    /// Inverse of [`Self::take_drafter_kv`]: install carried blocks into a fresh
     /// proposer state. Returns false when unsupported (caller must then free
     /// the blocks itself).
     fn install_drafter_kv(

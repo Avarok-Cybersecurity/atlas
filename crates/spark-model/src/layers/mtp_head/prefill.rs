@@ -138,14 +138,20 @@ impl MtpHead {
         let mut t_kv = 0f64;
         macro_rules! phase {
             ($acc:expr, $body:block) => {{
-                if profile {
-                    let s = std::time::Instant::now();
-                    let r = (|| -> Result<()> { $body })();
-                    ctx.gpu.synchronize(stream)?;
-                    $acc += s.elapsed().as_secs_f64() * 1e3;
-                    r?;
-                } else {
-                    (|| -> Result<()> { $body })()?;
+                // The immediately-invoked closures scope `?` to `$body` so the
+                // timing is recorded before the error propagates; that pattern
+                // trips `redundant_closure_call`, allowed narrowly here.
+                #[allow(clippy::redundant_closure_call)]
+                {
+                    if profile {
+                        let s = std::time::Instant::now();
+                        let r = (|| -> Result<()> { $body })();
+                        ctx.gpu.synchronize(stream)?;
+                        $acc += s.elapsed().as_secs_f64() * 1e3;
+                        r?;
+                    } else {
+                        (|| -> Result<()> { $body })()?;
+                    }
                 }
             }};
         }
