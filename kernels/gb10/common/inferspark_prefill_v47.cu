@@ -16,6 +16,11 @@
 
 #define BR 64
 #define BC 32
+// This kernel is a hard-coded HDIM=256 variant: the per-model KERNEL.toml
+// -DHDIM=<n> flag (meant for the generic attention kernels) must not leak in
+// here. Explicit #undef keeps the historical file-wins semantics and silences
+// the strict build's macro-redefinition error.
+#undef HDIM
 #define HDIM 256
 #define PAD 8
 #define HDIM_PAD (HDIM + PAD)    // 264

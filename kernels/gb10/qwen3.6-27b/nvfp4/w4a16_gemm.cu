@@ -3778,7 +3778,6 @@ void int8_gemm_faith(
         #pragma unroll
         for (int j=0;j<8;j++){
             unsigned mcol = cta_m + mh*64 + j*8 + (lane%4)*2; // M token (output row)
-            unsigned r0=mcol, r1=mcol;            // rows (M)
             unsigned cN0=nrow0, cN1=nrow0+8;      // cols (N), from l/2
             // l=0:(r=mcol,   c=nrow0)  l=1:(r=mcol+1, c=nrow0)
             // l=2:(r=mcol,   c=nrow0+8)l=3:(r=mcol+1, c=nrow0+8)
@@ -3786,7 +3785,6 @@ void int8_gemm_faith(
             if (mcol+1<M && cN0<N) C[(unsigned long long)(mcol+1)*N + cN0] = __float2bfloat16(acc[n][j][1]);
             if (mcol<M   && cN1<N) C[(unsigned long long)mcol*N + cN1]     = __float2bfloat16(acc[n][j][2]);
             if (mcol+1<M && cN1<N) C[(unsigned long long)(mcol+1)*N + cN1] = __float2bfloat16(acc[n][j][3]);
-            (void)r0;(void)r1;
         }
     }
 }
