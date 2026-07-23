@@ -766,14 +766,28 @@ fn build_hip_shim_windows(manifest_dir: &std::path::Path, out_dir: &std::path::P
             .unwrap_or_else(|e| panic!("copy import lib -> {lib}: {e}"));
     }
 
-    // 5. Stage the runtime DLLs for packaging (amdhip64.dll ships with the HIP SDK).
-    let amdhip_dll = hip_root.join("bin").join("amdhip64.dll");
-    if amdhip_dll.exists() {
-        std::fs::copy(&amdhip_dll, out_dir.join("amdhip64.dll")).expect("stage amdhip64.dll");
-    } else {
+    // 5. Stage the HIP runtime DLL for packaging. On Windows it is versioned
+    // (amdhip64_6.dll, not amdhip64.dll), so glob `amdhip64*.dll` under the SDK
+    // bin. If absent (a driverless CI runner may ship only the import lib), it
+    // is not fatal: amdhip64 is an AMD-driver component present on any real AMD
+    // Windows host, so the shipped shim resolves it there. Informational, not a
+    // warning, so a green build is not noisy.
+    let mut staged_runtime = false;
+    if let Ok(entries) = std::fs::read_dir(hip_root.join("bin")) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("amdhip64") && name.ends_with(".dll") {
+                std::fs::copy(entry.path(), out_dir.join(&*name))
+                    .unwrap_or_else(|e| panic!("stage {name}: {e}"));
+                staged_runtime = true;
+            }
+        }
+    }
+    if !staged_runtime {
         println!(
-            "cargo:warning=atlas-kernels: amdhip64.dll not at {} — package step must source it",
-            amdhip_dll.display()
+            "cargo:warning=atlas-kernels: no amdhip64*.dll in {}\\bin to bundle — it is an AMD-driver component, present on real AMD Windows hosts at runtime.",
+            hip_root.display()
         );
     }
 

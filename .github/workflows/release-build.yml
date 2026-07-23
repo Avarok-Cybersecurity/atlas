@@ -488,10 +488,15 @@ jobs:
           # imports amdhip64.dll). Built/staged into atlas-kernels' OUT_DIR by
           # build_hip_shim_windows.
           if [ "${{ matrix.toolchain }}" = hip ]; then
-            for dll in nvcuda.dll cuda.dll amdhip64.dll; do
-              found=$(find "target/${{ matrix.target }}/release/build" -name "$dll" -print -quit 2>/dev/null || true)
+            bdir="target/${{ matrix.target }}/release/build"
+            # Shim DLLs we build — required.
+            for dll in nvcuda.dll cuda.dll; do
+              found=$(find "$bdir" -name "$dll" -print -quit 2>/dev/null || true)
               if [ -n "$found" ]; then cp "$found" "$staging/"; else echo "::warning::$dll not found to bundle"; fi
             done
+            # HIP runtime DLL (versioned, e.g. amdhip64_6.dll) if the SDK shipped
+            # one; otherwise it is an AMD-driver component present on the target.
+            find "$bdir" -name 'amdhip64*.dll' -exec cp {} "$staging/" \; 2>/dev/null || true
           fi
           if [ "${{ matrix.os }}" = windows ]; then
             (cd dist && 7z a -tzip "$name.zip" "$name" >/dev/null)
