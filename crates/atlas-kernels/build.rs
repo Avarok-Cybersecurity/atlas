@@ -723,12 +723,11 @@ fn build_hip_shim_windows(manifest_dir: &std::path::Path, out_dir: &std::path::P
             // "<addr> T cuInit" — take the name (col 3) for text/data symbols.
             let mut it = line.split_whitespace();
             let (_, kind, name) = (it.next(), it.next(), it.next());
-            if let (Some(k), Some(n)) = (kind, name) {
-                if matches!(k, "T" | "D" | "B" | "R")
-                    && (n.starts_with("cu") || n.starts_with("cublas"))
-                {
-                    exports.push(n.to_string());
-                }
+            if let (Some(k), Some(n)) = (kind, name)
+                && matches!(k, "T" | "D" | "B" | "R")
+                && n.starts_with("cu")
+            {
+                exports.push(n.to_string());
             }
         }
     }
