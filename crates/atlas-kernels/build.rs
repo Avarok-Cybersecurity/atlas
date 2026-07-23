@@ -623,36 +623,46 @@ fn build_hip_shim(manifest_dir: &std::path::Path, out_dir: &std::path::Path) {
         build_hip_link_stubs_windows(manifest_dir, out_dir);
         return;
     }
-    let shim_src = manifest_dir.join("hip").join("libcuda_hip_shim.cpp");
-    assert!(
-        shim_src.exists(),
-        "libcuda→HIP shim source missing at {}",
-        shim_src.display()
-    );
-    println!("cargo:rerun-if-changed={}", shim_src.display());
-
     let hipcc = std::env::var("ATLAS_HIPCC").unwrap_or_else(|_| "/opt/rocm/bin/hipcc".into());
-    let shim_out = out_dir.join("libcuda.so");
-    let status = std::process::Command::new(&hipcc)
-        .args([
-            "-shared",
-            "-fPIC",
-            shim_src.to_str().unwrap(),
-            "-o",
-            shim_out.to_str().unwrap(),
-        ])
-        .status()
-        .unwrap_or_else(|e| panic!("failed to run hipcc for libcuda shim ({hipcc}): {e}"));
-    assert!(
-        status.success(),
-        "hipcc failed building libcuda→HIP shim ({})",
-        shim_src.display()
-    );
-    // Put OUT_DIR first on the link search path so `-lcuda` resolves to the shim.
+    // Three HIP shims so the HIP target resolves every CUDA lib spark emits:
+    //   libcuda.so     — cu* driver API, real (libcuda_hip_shim.cpp)
+    //   libcudart.so   — cudart runtime API, real (libcudart_hip_shim.cpp)
+    //   libcublasLt.so — cuBLASLt, stub (opt-in ATLAS_CUBLAS_GEMM path only)
+    // Before this, only libcuda.so existed, so native-HIP never linked (`-lcudart`
+    // / `-lcublasLt` had no provider). hipcc links libamdhip64 into each shim, so
+    // the AMD runtime is pulled via the shim's DT_NEEDED at serve time (needs
+    // /opt/rocm/lib on LD_LIBRARY_PATH alongside this OUT_DIR).
+    for (src_name, so_name) in [
+        ("libcuda_hip_shim.cpp", "libcuda.so"),
+        ("libcudart_hip_shim.cpp", "libcudart.so"),
+        ("libcublaslt_stub.cpp", "libcublasLt.so"),
+    ] {
+        let src = manifest_dir.join("hip").join(src_name);
+        assert!(src.exists(), "HIP shim source missing at {}", src.display());
+        println!("cargo:rerun-if-changed={}", src.display());
+        let out = out_dir.join(so_name);
+        let status = std::process::Command::new(&hipcc)
+            .args([
+                "-shared",
+                "-fPIC",
+                src.to_str().unwrap(),
+                "-o",
+                out.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap_or_else(|e| panic!("failed to run hipcc for {so_name} ({hipcc}): {e}"));
+        assert!(
+            status.success(),
+            "hipcc failed building {so_name} from {}",
+            src.display()
+        );
+    }
+    // OUT_DIR first on the link search path so `-lcuda`/`-lcudart`/`-lcublasLt`
+    // resolve to the shims.
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!(
-        "cargo:warning=atlas-kernels: built libcuda→HIP shim at {}",
-        shim_out.display()
+        "cargo:warning=atlas-kernels: built HIP shims (libcuda/libcudart/libcublasLt) in {}",
+        out_dir.display()
     );
 }
 
