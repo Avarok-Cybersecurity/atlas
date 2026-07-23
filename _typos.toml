@@ -25,6 +25,9 @@ extend-ignore-identifiers-re = [
 ]
 
 [default.extend-words]
+# `nd` — the num-drafts speculative-decode notation (`nd=2`, `nd=3`) used
+# throughout the MTP verify code and docs. Not a typo of "and".
+nd = "nd"
 # `deint` — short form of "deinterleaved" used as the Q|K|V|Z input
 # pointer name in the fused K=2 GDN verify kernel/ops. Not a typo.
 deint = "deint"

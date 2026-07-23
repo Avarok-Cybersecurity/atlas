@@ -564,8 +564,29 @@ pub fn run(
                             // token's hidden so the next MTP re-probe can
                             // batch-feed the drafter over the serial gap
                             // (no-op when the feature is off).
-                            if let Some(pos) = active[0].seq.seq_len.checked_sub(1)
-                                && let Err(e) = model.save_hidden_for_catchup(0, pos)
+                            //
+                            // LABEL CONVENTION (off-by-one fixed 2026-07-21).
+                            // The reader feeds drafter pair key `k` from ring
+                            // label `k + 1`, because pair key k is
+                            // `(embed(t_{k+1}), hidden_k)` — so label n must
+                            // hold `hidden_{n-1}`, the hidden that PREDICTED
+                            // token n. `step_decode_only` forwards
+                            // `last_token` at the OLD `seq_len` and only then
+                            // pushes that input token and increments
+                            // (`decode_a2.rs` / `decode_b.rs`: `tokens.push`
+                            // + `seq_len += 1`). So the hidden now in row 0 is
+                            // `hidden_{seq_len - 1}` and its label is
+                            // `seq_len`, not `seq_len - 1`.
+                            //
+                            // This previously wrote `seq_len - 1`, which handed
+                            // every serially-fed pair key the hidden of the
+                            // NEXT position. It is the same quantity the K=3
+                            // re-feed labels `base + t + 1` for verify row t at
+                            // position `base + t` — that convention is verified
+                            // by dumped hidden fingerprints (93/93 cross-step,
+                            // see `speculative::mtp_refeed_accepted_enabled`),
+                            // so the serial hook was the side that disagreed.
+                            if let Err(e) = model.save_hidden_for_catchup(0, active[0].seq.seq_len)
                             {
                                 tracing::warn!("save_hidden_for_catchup: {e:#}");
                             }

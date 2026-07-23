@@ -11,6 +11,68 @@ static K4_ACCEPT_2: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 static K4_ACCEPT_1: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static K4_ACCEPT_0: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+// UNCONDITIONAL per-position draft-match counters (2026-07-21). See the
+// matching block in verify_k3_step.rs for the rationale: the accept chain
+// short-circuits, so it can only ever report CONDITIONAL rates for positions
+// >= 2, and a conditional rate at position 3 selects contexts where BOTH
+// earlier positions succeeded (survivorship). The verify pass computes the
+// target argmax at every position in one batch, so every position is
+// observable on every step.
+static K4_STEPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static K4_D1: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static K4_D2U: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static K4_D3U: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static K4_D2C: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static K4_D3C: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[inline]
+fn k4_record_positional(d1: bool, d2: bool, d3: bool, seq_len: usize) {
+    K4_STEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if d1 {
+        K4_D1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if d2 {
+            K4_D2C.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if d3 {
+                K4_D3C.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+    if d2 {
+        K4_D2U.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    if d3 {
+        K4_D3U.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    if K4_STEPS.load(std::sync::atomic::Ordering::Relaxed) >= K4_SUMMARY_PERIOD {
+        let n = K4_STEPS
+            .swap(0, std::sync::atomic::Ordering::Relaxed)
+            .max(1);
+        let d1c = K4_D1.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let d2u = K4_D2U.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let d3u = K4_D3U.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let d2c = K4_D2C.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let d3c = K4_D3C.swap(0, std::sync::atomic::Ordering::Relaxed);
+        tracing::info!(
+            "K4 positional: steps={n} p1={:.3} p2_uncond={:.3} p3_uncond={:.3} \
+             p2_cond={:.3} p3_cond={:.3} (d1={d1c} d2u={d2u} d3u={d3u} d2c={d2c} d3c={d3c}) \
+             seq_len={seq_len}",
+            (d1c as f64) / (n as f64),
+            (d2u as f64) / (n as f64),
+            (d3u as f64) / (n as f64),
+            if d1c > 0 {
+                (d2c as f64) / (d1c as f64)
+            } else {
+                f64::NAN
+            },
+            if d2c > 0 {
+                (d3c as f64) / (d2c as f64)
+            } else {
+                f64::NAN
+            },
+        );
+    }
+}
+
 #[inline]
 fn k4_record_outcome(num_accepted: usize, seq_len: usize) {
     let counter = match num_accepted {
@@ -135,6 +197,33 @@ pub fn step_verify_k4(
         3
     };
 
+    // Unconditional per-position draft match — scored BEFORE the accept chain
+    // short-circuits, so positions 2 and 3 are measured on every step.
+    k4_record_positional(
+        drafts[0] == v0,
+        drafts[1] == v1,
+        drafts[2] == v2,
+        a.seq.seq_len,
+    );
+
+    // ATLAS_MTP_REFEED_ACCEPTED: same contract as `verify_k3_step` — ring the
+    // TARGET's true hidden for verify rows 0..=num_accepted under labels
+    // L+1..=L+num_accepted+1 (L = the pre-verify seq_len = seq_len - 4 here).
+    // `after_verify`'s extra trim (`mtp_rows_to_trim`) is K-agnostic, so this
+    // MUST exist on every width the scheduler can dispatch, or at nd=3 the
+    // drafter would lose the accepted rows with nothing rebuilding them.
+    if spark_model::speculative::mtp_refeed_accepted_enabled() {
+        let base = a.seq.seq_len.saturating_sub(4);
+        let shift = spark_model::speculative::mtp_refeed_shift();
+        for t in 0..=num_accepted {
+            let label = ((base + t + 1) as isize + shift).max(0) as usize;
+            if let Err(e) = model.save_hidden_for_catchup(t, label) {
+                tracing::debug!("save_hidden_for_catchup(K=4, t={t}): {e:#} — degrading");
+                break;
+            }
+        }
+    }
+
     // Extract logprobs from verify logits buffer (K=4 positions) when requested.
     let verify_lps = if let Some(top_logprobs) = a.top_logprobs {
         extract_verify_logprobs(model, &[v0, v1, v2, v3], top_logprobs)
@@ -184,7 +273,9 @@ pub fn step_verify_k4(
         // (num_accepted=k=4): the verify kernel already wrote the canonical
         // h_state, so the commit is a no-op.
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 4, 4) {
+            // SSM state is no longer trustworthy — terminate, do not continue.
             tracing::error!("commit_accepted_prefix (K=4 accept-4): {e:#}");
+            a.finished = true;
             return;
         }
         if let Err(e) = model.save_hidden_for_mtp(3, 0) {

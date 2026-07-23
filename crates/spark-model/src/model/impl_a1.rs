@@ -253,21 +253,39 @@ impl TransformerModel {
             DevicePtr::NULL
         };
 
-        // ATLAS_MTP_DRAFTER_PREFILL: whole-prompt hidden capture buffer,
-        // [max_seq_len, hidden_size] BF16 — 335 MB at 32k/h=5120. Explicitly
-        // opt-in (PCND): NULL (and zero cost) unless the env is set and MTP
-        // is active. Sized to max_seq_len so an 8k+ prompt capture holds.
-        let mtp_prefill_hidden = if has_mtp && crate::layers::mtp_drafter_prefill_enabled() {
+        // Whole-prompt hidden capture buffer, [max_seq_len, hidden_size] BF16 —
+        // 335 MB at 32k/h=5120. Backs BOTH halves of the drafter-context
+        // feature (see `crate::model::drafter_context`); NULL here disables
+        // prefill AND carry, since the carry path reads this buffer.
+        //
+        // Three conditions, all necessary: MTP must be active, the feature must
+        // not be killed, and the head must be a precision the batched prefill
+        // can actually run at — an NVFP4/FP8 MTP head would allocate this and
+        // never write it.
+        let mtp_prefill_hidden = if has_mtp
+            && mtp_quant.supports_drafter_prefill()
+            && crate::layers::mtp_drafter_prefill_enabled()
+        {
             let bytes = max_seq_len * config.hidden_size * 2;
             tracing::info!(
-                "ATLAS_MTP_DRAFTER_PREFILL=1: allocating {:.0} MB prompt-hidden \
-                 capture ({} x {} BF16) for MTP drafter prefill",
+                "MTP drafter context: allocating {:.0} MB prompt-hidden capture \
+                 ({} x {} BF16)",
                 bytes as f64 / 1e6,
                 max_seq_len,
                 config.hidden_size,
             );
             gpu.alloc(bytes)?
         } else {
+            if has_mtp
+                && !mtp_quant.supports_drafter_prefill()
+                && crate::layers::mtp_drafter_prefill_enabled()
+            {
+                tracing::info!(
+                    "MTP drafter context: INACTIVE — the batched drafter prefill \
+                     needs a BF16 MTP head (--mtp-quantization bf16); this head is \
+                     {mtp_quant:?}. No prompt-hidden capture allocated.",
+                );
+            }
             DevicePtr::NULL
         };
 
@@ -534,6 +552,8 @@ impl TransformerModel {
                 max_seq_len
             },
             mtp_prefill_capture_len: std::sync::atomic::AtomicUsize::new(0),
+            mtp_carry: parking_lot::Mutex::new(None),
+            mtp_store_range: parking_lot::Mutex::new((0, 0)),
             dflash_hidden_save,
             dflash_hidden_save_rows,
             dflash_capture_layers,

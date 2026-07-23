@@ -696,17 +696,6 @@ impl Model for TransformerModel {
     fn sync_secondary(&self) -> Result<()> {
         self.sync_secondary_dispatch()
     }
-    fn pre_verify_copy_async(&self, seq: &mut SequenceState) -> Result<()> {
-        self.pre_verify_copy_async_dispatch(seq)
-    }
-    fn commit_verify_state_async(
-        &self,
-        seq: &mut SequenceState,
-        num_accepted: usize,
-        k: usize,
-    ) -> Result<()> {
-        self.commit_verify_state_async_dispatch(seq, num_accepted, k)
-    }
     fn commit_accepted_prefix(
         &self,
         seq: &mut SequenceState,
