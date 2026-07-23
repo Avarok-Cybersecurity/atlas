@@ -55,17 +55,17 @@
 // Scale bytes per row per K tile (K_STEP_PT / GROUP_SIZE).
 #define BS_PER_ROW (K_STEP_PT / GROUP_SIZE)
 
-// The 33.8 GB of expert weights are read EXACTLY ONCE per prefill, so caching them in
-// L2 is pure pollution -- they evict the A tiles and routing metadata that ARE reused.
-// Marlin tags its weight stream with an evict-first L2 policy for exactly this reason.
-__device__ __forceinline__ uint4 moe_ld_stream_u4(const void* p, unsigned long long pol) {
-    uint4 v;
-    asm volatile("ld.global.L2::cache_hint.v4.u32 {%0,%1,%2,%3}, [%4], %5;"
-                 : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)
-                 : "l"(p), "l"(pol) : "memory");
-    return v;
-}
-
+// Design note (unwired optimization): the 33.8 GB of expert weights are read
+// EXACTLY ONCE per prefill, so caching them in L2 is pure pollution -- they
+// evict the A tiles and routing metadata that ARE reused. Marlin tags its
+// weight stream with an evict-first L2 policy
+// (`createpolicy.fractional.L2::evict_first` consumed by an
+// `ld.global.L2::cache_hint` weight load) for exactly this reason. An earlier
+// draft scaffolded that policy here but never wired it into the live load path
+// (`moe_cp_async16` below -- `cp.async` cannot take a per-access L2 hint, so
+// wiring it means restructuring the B-tile staging into hinted register loads
+// + st.shared). Removed as dead code by the strict kernel lint; re-adding it
+// is a benchmarked perf change, not a cleanup.
 __device__ __forceinline__ void moe_cp_async16(void* smem_ptr, const void* gmem_ptr) {
     unsigned int s = (unsigned int)__cvta_generic_to_shared(smem_ptr);
     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(s), "l"(gmem_ptr));
@@ -385,23 +385,6 @@ __device__ __forceinline__ void moe_w4a16_grouped_gemm_ptrtable_impl(
     // Byte-indexed dequant LUT -> two BF16 nibbles packed in one word (a divergent
     // __constant__ lookup SERIALISES; shared memory is banked).
     __shared__ unsigned int sLUT[256];
-
-    // @human-review (strict-lint finding, #550-D set-but-never-used): this builds an
-    // evict-first L2 cache policy for the expert-weight stream — the 33.8 GB of expert
-    // weights are read once, so caching them in L2 is pure pollution (see the sibling
-    // helper `moe_ld_stream_u4` at the top of this file, which issues
-    // `ld.global.L2::cache_hint` to consume exactly this policy). BOTH halves are
-    // currently orphaned: `moe_ld_stream_u4` is never called and the live load path
-    // (`moe_cp_async16`) uses a plain `cp.async.cg` with no cache hint, so `evict1` is
-    // built and dropped. This is a real (unwired) perf optimization, NOT dead
-    // scaffolding to delete blindly — wiring the weight stream through the cache-hint'd
-    // load belongs in a dedicated, benchmarked perf PR. Suppression is scoped to these
-    // two lines so the tree-wide strict lint still catches every other stray #550-D;
-    // codegen is unchanged (the policy was already dead).
-    #pragma nv_diag_suppress 550
-    unsigned long long evict1;
-    asm volatile("createpolicy.fractional.L2::evict_first.b64 %0, 1.0;" : "=l"(evict1));
-    #pragma nv_diag_default 550
 
     for (unsigned int i = threadIdx.x; i < 256u; i += blockDim.x) {
         const unsigned short lo =

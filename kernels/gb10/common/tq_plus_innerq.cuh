@@ -31,31 +31,22 @@ namespace tq_plus {
 // Bump if porting to head_dim > 128 models without splitting the array.
 #define INNERQ_MAX_CHANNELS 128
 
-// Device state — driven by host-side calibration controller.
-// Defined in tq_plus_innerq.cu (one TU only).
-//
-// Strict-lint note (#20044-D): Atlas compiles each `.cu` to its own PTX module
-// and loads them independently (no `-rdc` device linking), so these
-// `extern __device__` decls cannot resolve to the definitions in
-// tq_plus_innerq.cu across module boundaries — nvcc treats them as a static
-// per-module definition in every *other* including TU (only tq_plus_innerq_apply.cu
-// today). The suppression below is scoped to exactly these decls so the
-// tree-wide strict lint keeps flagging every other stray extern. It preserves
-// the existing (per-module-static) codegen byte-for-byte; it does NOT assert the
-// design is correct.
-// @human-review: confirm the host calibration controller uploads InnerQ scales to
-//   the *apply* module's copy (via that module's `cuModuleGetGlobal`), not only to
-//   tq_plus_innerq.cu's copy — otherwise the apply path reads zero-initialised
-//   scales and InnerQ is silently inert cross-module. Proper fix (separate PR):
-//   host-side per-module upload, or consolidate InnerQ state into one module.
-#pragma nv_diag_suppress 20044
+// Device state — driven by the host-side calibration controller
+// (innerq_driver.rs). Defined in tq_plus_innerq_apply.cu, the SAME TU as the
+// only kernels that read/write it: Atlas loads each .cu as its own PTX module
+// with no -rdc device linking, so `extern __device__` never resolves across
+// modules — state and its consumers must share one TU. If a new TU includes
+// this header without carrying the definitions, nvcc #20044-D ("extern
+// declaration treated as static definition") fires under the strict kernel
+// build: that error means the new TU would get a private zero-init copy the
+// host driver never uploads to. Don't suppress it — move the code needing the
+// state into tq_plus_innerq_apply.cu (or give the new module its own uploads).
 extern __device__ float d_innerq_scale[INNERQ_MAX_CHANNELS];
 extern __device__ float d_innerq_scale_inv[INNERQ_MAX_CHANNELS];
 extern __device__ float d_innerq_sq_accum[INNERQ_MAX_CHANNELS];
 extern __device__ int   d_innerq_count;
 extern __device__ int   d_innerq_active;       // 0 = identity scales, 1 = post-finalize
 extern __device__ int   d_innerq_calibrating;  // 1 = accumulating K² stats
-#pragma nv_diag_default 20044
 
 // Apply per-channel scale_inv to Q-side values. No-op when d_innerq_active=0.
 // Caller: each thread holds 4 floats for hd=128 (lane*4 + i indexing).
