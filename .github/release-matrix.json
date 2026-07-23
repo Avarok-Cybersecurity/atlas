@@ -101,7 +101,7 @@
     "toolchain": "hip",
     "experimental": true,
     "pr_validate": true,
-    "note": "Native-HIP AMD (gfx1151) build via the Windows HIP SDK (hipcc). SCALE, Atlas's other AMD toolchain, is Linux-only, so HIP is the only conceivable Windows AMD path. Compile-only — hosted runners have no AMD GPU. EXPERIMENTAL and expected to fail at the kernel-compile stage: ~20 kernels still emit NVIDIA mma.sync/cp.async PTX that hipcc/clang cannot compile and are not yet ported to AMD WMMA (see crates/atlas-kernels/hip/README-HIP.md) — the same wall the Linux native-HIP path has not cleared. Carried non-blocking (continue-on-error) to exercise the Windows HIP toolchain up to that wall.",
+    "note": "Native-HIP AMD (gfx1151) build via the Windows HIP SDK (clang/hipcc). SCALE, Atlas's other AMD toolchain, is Linux-only, so HIP is the only conceivable Windows AMD path. Compile-only — hosted runners have no AMD GPU. EXPERIMENTAL and expected to fail at the kernel-compile stage. Observed wall (CI 2026-07-23, ROCm 6.4 / HIP SDK 25.Q3): the CUDA->HIP compat shim in crates/atlas-kernels/hip/compat does not yet cover the Windows clang, which lacks the mask-arg warp intrinsics (__shfl_*_sync are undeclared, only __shfl_* exist) and has an ambiguous __nv_bfloat16->__bf16 C-style cast, so most kernels fail there — before the ~20 unported mma.sync tensor-core kernels are even reached (see crates/atlas-kernels/hip/README-HIP.md). Carried non-blocking (continue-on-error) to exercise the Windows HIP toolchain up to that wall.",
     "scale_arch": "gfx1151",
     "target_model": "qwen3.6-27b",
     "target_quant": "nvfp4"
