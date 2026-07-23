@@ -293,6 +293,16 @@ impl ComputeTarget for HipTarget {
             "-include".into(),
             "hip/hip_runtime.h".into(),
         ];
+        // The Windows HIP SDK (ROCm 6.4 clang) lacks the CUDA mask-arg warp
+        // intrinsics (__shfl_*_sync/__any_sync/__all_sync/__activemask) that
+        // Linux ROCm ships. Force-include the compat shim AFTER hip_runtime.h
+        // (so the base __shfl*/__ballot it maps onto are already declared). It
+        // is `-I{compat}` on the include path. Windows-only: Linux HIP declares
+        // these itself and must not get a second definition.
+        if cfg!(windows) {
+            args.push("-include".into());
+            args.push("atlas_hip_win_shims.h".into());
+        }
         // Translate nvcc-specific flags to their hipcc/clang equivalents so
         // KERNEL.toml `extra_nvcc_flags` (authored for nvcc) work on HIP.
         // `--fmad=false` (disable FMA contraction for determinism) → clang's
