@@ -312,10 +312,21 @@ jobs:
         if: matrix.os == 'windows'
         shell: pwsh
         run: |
-          # bindgen (xgrammar) needs libclang; windows-2022 ships LLVM.
+          # bindgen (xgrammar) needs libclang; windows-2022 ships LLVM. Needed by
+          # EVERY windows toolchain (cuda and hip alike), so it is not gated.
           $llvm = "C:\Program Files\LLVM\bin"
           if (Test-Path $llvm) { "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append }
           cmake --version
+
+      - name: Put CUDA import libs on the linker path (windows, cuda)
+        # cuda-only: the CUDA import libraries live in the NVIDIA toolkit. The
+        # AMD/hip toolchain has no $CUDA_PATH\lib\x64, so this check (and its
+        # `throw` on a missing cuda.lib) must NOT run for it — the hip row
+        # supplies its own linker inputs and walls at kernel compile long before
+        # linking anyway.
+        if: matrix.os == 'windows' && startsWith(matrix.toolchain, 'cuda')
+        shell: pwsh
+        run: |
           # The CUDA import libraries (cuda.lib, cudart.lib, nvrtc.lib,
           # cublasLt.lib -- everything the build scripts emit
           # `rustc-link-lib=dylib=` for) live in $CUDA_PATH\lib\x64, which is
@@ -377,6 +388,61 @@ jobs:
             echo "ATLAS_TARGET_QUANT=${{ matrix.target_quant }}"
           } >> "$GITHUB_ENV"
           echo "$SCALE_HOME/targets/$arch/bin" >> "$GITHUB_PATH"
+
+      - name: Install HIP SDK (AMD, windows)
+        if: matrix.toolchain == 'hip' && matrix.os == 'windows'
+        shell: pwsh
+        timeout-minutes: 30
+        env:
+          # AMD's PRO-Edition HIP SDK installer. There is no documented stable
+          # direct-download link (the download page is JS-gated), so the URL is
+          # pinned here as the single knob to bump. Pattern taken from
+          # llama.cpp's windows-setup-rocm action. gfx1151 (Strix Halo, RDNA3.5)
+          # codegen needs a recent clang; 6.2.x ships LLVM 18, the first with
+          # gfx1151 in its target list.
+          HIP_SDK_URL: https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-6.2.4-Win10-Win11-For-HIP.exe
+        run: |
+          $ErrorActionPreference = "Stop"
+          # ATLAS_TARGET_MODEL/QUANT are REQUIRED (same trap as SCALE): the
+          # kernel build defaults to qwen3-next-80b-a3b, which has no
+          # kernels/strix-hip/<model> dir, so build.rs panics resolving it.
+          Write-Host "Downloading HIP SDK: $env:HIP_SDK_URL"
+          $exe = "$env:RUNNER_TEMP\hip-sdk-setup.exe"
+          Invoke-WebRequest -Uri $env:HIP_SDK_URL -OutFile $exe -UseBasicParsing
+          # The installer is a GUI app even from the command line; `-install`
+          # runs it headless. -Wait blocks; the step timeout bounds a hung
+          # window (a known failure mode of this installer on headless runners).
+          Write-Host "Installing HIP SDK silently (-install)..."
+          $p = Start-Process -FilePath $exe -ArgumentList "-install" -Wait -PassThru -NoNewWindow
+          Write-Host "installer exit code: $($p.ExitCode)"
+          # Locate hipcc under the ROCm install root. The Windows HIP SDK ships
+          # hipcc as hipcc.bin.exe (native) beside a perl wrapper; prefer the
+          # native exe so build.rs's Command::new can invoke it directly (no perl).
+          $root = "C:\Program Files\AMD\ROCm"
+          if (-not (Test-Path $root)) {
+            throw "HIP SDK install root not found at $root (installer exit $($p.ExitCode))"
+          }
+          $hipcc = Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -in @("hipcc.bin.exe", "hipcc.exe") } |
+            Select-Object -First 1
+          if (-not $hipcc) {
+            Get-ChildItem -Path $root -Recurse -Filter "hipcc*" -ErrorAction SilentlyContinue |
+              Select-Object -First 20 FullName
+            throw "hipcc not found under $root after install"
+          }
+          $hipBin  = Split-Path $hipcc.FullName
+          $hipRoot = Split-Path $hipBin
+          Write-Host "hipcc: $($hipcc.FullName)"
+          & $hipcc.FullName --version 2>&1 | Select-Object -First 5
+          @(
+            "ATLAS_HIPCC=$($hipcc.FullName)",
+            "HIP_PATH=$hipRoot",
+            "ATLAS_TARGET_HW=strix-hip",
+            "ATLAS_TARGET_MODEL=${{ matrix.target_model }}",
+            "ATLAS_TARGET_QUANT=${{ matrix.target_quant }}",
+            "CUDARC_CUDA_VERSION=12080"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Append
+          $hipBin | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Build spark (unix)
         if: matrix.os != 'windows'
