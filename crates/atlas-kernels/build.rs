@@ -651,7 +651,7 @@ fn build_hip_shim(manifest_dir: &std::path::Path, out_dir: &std::path::Path) {
 /// Resolve all compilation targets from env vars, expanding wildcards.
 fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
     let hw = env::var("ATLAS_TARGET_HW").unwrap_or_else(|_| "gb10".into());
-    let model_spec = env::var("ATLAS_TARGET_MODEL").unwrap_or_else(|_| "qwen3-next-80b-a3b".into());
+    let model_spec = env::var("ATLAS_TARGET_MODEL").unwrap_or_else(|_| "*".into());
     let quant_spec = env::var("ATLAS_TARGET_QUANT").unwrap_or_else(|_| "nvfp4".into());
 
     let hw_dir = workspace_root.join("kernels").join(&hw);
