@@ -127,9 +127,11 @@ pub(crate) fn pool_slot_bytes(cfg: &ModelConfig, max_rank: usize) -> usize {
 /// Byte offset of slot `k`'s base within the pool. Slots are equal fixed size,
 /// so slot `k` starts at `k * pool_slot_bytes`. Slot 0 → 0 (byte-identical to
 /// the single-adapter path).
-// Only the cuda-gated RDMA landing path (`rdma_stage`) and the unit tests call
-// this; on a non-cuda build (metal) it is dead but must stay defined for tests.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+// Only the RDMA landing path (`rdma_stage`) and the unit tests call this. That
+// path is cuda AND unix (it lands through spark-storage's RDMA weight loader),
+// so the dead-code allowance must match: `not(all(cuda, unix))`, not
+// `not(cuda)`. It stays defined everywhere for the offset unit tests.
+#[cfg_attr(not(all(feature = "cuda", unix)), allow(dead_code))]
 pub(crate) fn slot_base_offset(slot: usize, cfg: &ModelConfig, max_rank: usize) -> usize {
     slot * pool_slot_bytes(cfg, max_rank)
 }
@@ -139,7 +141,7 @@ pub(crate) fn slot_base_offset(slot: usize, cfg: &ModelConfig, max_rank: usize) 
 /// A-then-B). `None` if `target_layer` is not a full-attention layer. Used by
 /// the pack loop, the RDMA landing path, and the offset unit tests so all three
 /// agree on the one frozen layout.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg_attr(not(all(feature = "cuda", unix)), allow(dead_code))]
 pub(crate) fn module_slot_offsets(
     cfg: &ModelConfig,
     max_rank: usize,

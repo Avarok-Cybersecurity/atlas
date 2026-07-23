@@ -36,6 +36,10 @@ pub use types::*;
 // (`swap_lora_slot_from_peer`) is already `cfg(feature = "cuda")`. Gate the
 // module so the non-cuda (metal) build doesn't try to resolve those imports.
 #[cfg(feature = "cuda")]
+// RDMA LoRA staging lands adapter tensors via spark-storage's RDMA weight
+// loader; RDMA needs rdma-core, so this stays unix-only even though the NVMe
+// tier itself is now portable.
+#[cfg(unix)]
 pub mod rdma_stage;
 
 #[cfg(test)]

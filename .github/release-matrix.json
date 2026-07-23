@@ -1,0 +1,94 @@
+[
+  {
+    "id": "linux-x86_64-nvidia-cuda",
+    "os": "linux",
+    "runner": "ubuntu-24.04",
+    "target": "x86_64-unknown-linux-gnu",
+    "platform": "nvidia",
+    "cargo_features": "--no-default-features --features cuda",
+    "toolchain": "cuda",
+    "experimental": false,
+    "pr_validate": true
+  },
+  {
+    "id": "linux-x86_64-nvidia-cuda-nccl",
+    "os": "linux",
+    "runner": "ubuntu-24.04",
+    "target": "x86_64-unknown-linux-gnu",
+    "platform": "nvidia",
+    "cargo_features": "--features cuda,nccl",
+    "toolchain": "cuda-nccl",
+    "experimental": true,
+    "pr_validate": true
+  },
+  {
+    "id": "linux-aarch64-nvidia-cuda",
+    "os": "linux",
+    "runner": "ubuntu-24.04-arm",
+    "target": "aarch64-unknown-linux-gnu",
+    "platform": "nvidia",
+    "cargo_features": "--no-default-features --features cuda",
+    "toolchain": "cuda-sbsa",
+    "experimental": false,
+    "pr_validate": true
+  },
+  {
+    "id": "linux-aarch64-nvidia-cuda-nccl",
+    "os": "linux",
+    "runner": "ubuntu-24.04-arm",
+    "target": "aarch64-unknown-linux-gnu",
+    "platform": "nvidia",
+    "cargo_features": "--features cuda,nccl",
+    "toolchain": "cuda-nccl-sbsa",
+    "experimental": true,
+    "pr_validate": true
+  },
+  {
+    "id": "linux-x86_64-amd-scale",
+    "os": "linux",
+    "runner": "ubuntu-24.04",
+    "target": "x86_64-unknown-linux-gnu",
+    "platform": "amd",
+    "cargo_features": "--no-default-features --features cuda",
+    "toolchain": "scale",
+    "experimental": true,
+    "pr_validate": true,
+    "scale_arch": "gfx1151",
+    "target_model": "qwen3.6-27b",
+    "target_quant": "nvfp4"
+  },
+  {
+    "id": "macos-aarch64-metal",
+    "os": "macos",
+    "runner": "macos-14",
+    "target": "aarch64-apple-darwin",
+    "platform": "metal",
+    "cargo_features": "--no-default-features --features metal",
+    "toolchain": "none",
+    "experimental": true,
+    "pr_validate": true
+  },
+  {
+    "id": "macos-x86_64-metal",
+    "os": "macos",
+    "runner": "macos-14",
+    "target": "x86_64-apple-darwin",
+    "platform": "metal",
+    "cargo_features": "--no-default-features --features metal",
+    "toolchain": "none",
+    "experimental": true,
+    "pr_validate": true,
+    "cross": true
+  },
+  {
+    "id": "windows-x86_64-nvidia-cuda",
+    "os": "windows",
+    "runner": "windows-2022",
+    "target": "x86_64-pc-windows-msvc",
+    "platform": "nvidia",
+    "cargo_features": "--no-default-features --features cuda",
+    "toolchain": "cuda",
+    "experimental": true,
+    "pr_validate": true
+  }
+]

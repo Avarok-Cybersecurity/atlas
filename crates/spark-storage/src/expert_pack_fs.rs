@@ -5,7 +5,9 @@
 
 use super::*;
 use std::fs::{File, OpenOptions};
-use std::os::unix::fs::FileExt;
+// Positional I/O via the shared helper rather than `std::os::unix::fs::FileExt`:
+// the only thing that made this 328-line module unix-only was the trait import.
+use atlas_tier::pio;
 use std::path::{Path, PathBuf};
 
 /// Offline writer: creates the manifest + one file per MoE layer and places
@@ -67,8 +69,7 @@ impl ExpertFileWriter {
         }
         let rec = pack_record(&self.spec, self.layout.record_stride, header, projs)?;
         let off = self.layout.file_offset(key);
-        self.files[key.layer as usize]
-            .write_all_at(&rec, off)
+        pio::write_all_at(&self.files[key.layer as usize], &rec, off)
             .with_context(|| format!("write record {:?} at {off}", key))?;
         Ok(())
     }
@@ -144,8 +145,7 @@ impl ExpertFileReader {
         }
         let mut buf = vec![0u8; self.layout.record_stride as usize];
         let off = self.layout.file_offset(key);
-        self.files[key.layer as usize]
-            .read_exact_at(&mut buf, off)
+        pio::read_exact_at(&self.files[key.layer as usize], &mut buf, off)
             .with_context(|| format!("read record {:?} at {off}", key))?;
         Ok(buf)
     }

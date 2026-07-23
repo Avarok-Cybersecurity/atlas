@@ -195,6 +195,7 @@ name = "atlas-tier"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "getrandom 0.3.4",
  "libc",
 ]
 

@@ -7,7 +7,14 @@
 
 use anyhow::{Context, Result};
 
-use crate::backend::IoUringBackend;
+// The tier's backend is io_uring on Linux and the portable positional-I/O
+// backend everywhere else. Selected by alias so the orchestrator below has ONE
+// body: only the submission mechanism differs, not the layout, the eviction
+// policy or the scratch pool.
+#[cfg(target_os = "linux")]
+use crate::backend::IoUringBackend as TierBackend;
+#[cfg(not(target_os = "linux"))]
+use crate::backend::PosixBackend as TierBackend;
 use crate::config::HighSpeedSwapConfig;
 use crate::cuda_min::{CudaCtx, DeviceBuffer};
 use crate::eviction::EvictionPolicy;
@@ -26,7 +33,7 @@ pub struct HighSpeedSwap {
     model: ModelDims,
     predictor: Predictor,
     pool: ScratchPool,
-    backend: IoUringBackend,
+    backend: TierBackend,
     attn: TiledAttention,
     eviction: EvictionPolicy,
     // Reusable scratch buffers.
@@ -81,7 +88,12 @@ impl HighSpeedSwap {
             4096,
         );
         let layout = Layout::create(&cfg.dir, group_layout).context("create layout")?;
-        let backend = IoUringBackend::new(layout, cfg.qd as usize)?;
+        // qd is the io_uring submission-queue depth; the portable backend
+        // serialises on a single pinned bounce buffer and has no queue.
+        #[cfg(target_os = "linux")]
+        let backend = TierBackend::new(layout, cfg.qd as usize)?;
+        #[cfg(not(target_os = "linux"))]
+        let backend = TierBackend::new(layout)?;
         let pool = ScratchPool::new(ScratchDims {
             num_slots: cfg.resident_blocks,
             num_kv_heads: model.num_kv_heads,

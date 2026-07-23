@@ -21,9 +21,8 @@
 // a single byte the GEMM reads — which the Tier-1 parity test proves.
 
 use anyhow::{Context, Result, bail};
-use std::fs::OpenOptions;
-use std::os::fd::{AsRawFd, OwnedFd};
-use std::os::unix::fs::OpenOptionsExt;
+use atlas_tier::pio;
+use std::fs::{File, OpenOptions};
 use std::path::Path;
 
 use crate::cuda_min::{DeviceBuffer, copy_h_to_d_async, stream_sync};
@@ -176,7 +175,7 @@ impl ExpertTier for PosixTier {
 /// the returned addresses point INTO the arena (GPU-addressable at the same
 /// VA), no `copy_h2d`.
 pub struct UmaArenaTier {
-    files: Vec<OwnedFd>, // one O_DIRECT fd per MoE layer
+    files: Vec<File>, // one O_DIRECT fd per MoE layer
     spec: ExpertRecordSpec,
     layout: ExpertLayout,
     arena: ExpertArena,
@@ -192,12 +191,13 @@ impl UmaArenaTier {
         let mut files = Vec::with_capacity(index.num_moe_layers as usize);
         for l in 0..index.num_moe_layers {
             let p = dir.join(index.file_name(l));
-            let f = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_DIRECT)
+            let mut opts = OpenOptions::new();
+            opts.read(true);
+            set_direct_flag(&mut opts);
+            let f = opts
                 .open(&p)
-                .with_context(|| format!("open O_DIRECT {}", p.display()))?;
-            files.push(f.into());
+                .with_context(|| format!("open {}", p.display()))?;
+            files.push(f);
         }
         let arena = ExpertArena::new(num_slabs, slots_per_slab, layout.record_stride as usize)?;
         Ok(Self {
@@ -217,38 +217,19 @@ impl ExpertTier for UmaArenaTier {
     fn fetch(&mut self, key: ExpertKey, slot: ArenaSlot, _stream: u64) -> Result<ExpertResidency> {
         let stride = self.layout.record_stride as usize;
         let host = self.arena.slot_host_ptr(slot.slab, slot.slot)?;
-        let fd = self
+        let file = self
             .files
             .get(key.layer as usize)
-            .with_context(|| format!("UmaArenaTier: no file for layer {}", key.layer))?
-            .as_raw_fd();
+            .with_context(|| format!("UmaArenaTier: no file for layer {}", key.layer))?;
         let off = self.layout.file_offset(key);
-        // O_DIRECT pread of the whole (4 KiB-aligned) record into the pinned,
-        // GPU-addressable slot — this is the "delete the bounce copy" step.
-        let mut done = 0usize;
-        while done < stride {
-            // SAFETY: `host` points at a slot of `stride` bytes inside the pinned
-            // arena; offset/len stay within it. fd is a valid O_DIRECT handle.
-            let n = unsafe {
-                libc::pread(
-                    fd,
-                    host.add(done) as *mut libc::c_void,
-                    stride - done,
-                    (off + done as u64) as libc::off_t,
-                )
-            };
-            if n < 0 {
-                bail!(
-                    "UmaArenaTier pread {:?} at {off}: {}",
-                    key,
-                    std::io::Error::last_os_error()
-                );
-            }
-            if n == 0 {
-                bail!("UmaArenaTier: short read for {:?} ({done}/{stride})", key);
-            }
-            done += n as usize;
-        }
+        // Positional read of the whole (4 KiB-aligned) record straight into the
+        // pinned, GPU-addressable slot — this is the "delete the bounce copy"
+        // step. O_DIRECT on Linux makes it zero-copy; elsewhere it is buffered.
+        // SAFETY: `host` points at a slot of `stride` bytes inside the pinned
+        // arena, and the slice covers exactly that slot.
+        let dst = unsafe { std::slice::from_raw_parts_mut(host, stride) };
+        pio::read_exact_at(file, dst, off)
+            .with_context(|| format!("UmaArenaTier read {key:?} at {off}"))?;
         // SAFETY: the slot holds `stride` valid bytes just read from disk.
         let record = unsafe { std::slice::from_raw_parts(host, stride) };
         let dev_va = self.arena.slot_dev_va(slot.slab, slot.slot)?;
@@ -272,17 +253,28 @@ pub fn open_tier(
     num_slabs: u32,
     slots_per_slab: u32,
 ) -> Result<Box<dyn ExpertTier>> {
+    // The RDMA expert tiers need rdma-core, so they exist on unix only. The
+    // local `posix`/`uma` tiers below are portable; asking for an RDMA backend
+    // elsewhere fails with a clear message rather than being silently absent
+    // from the match.
     let rdma = |use_verbs: bool| -> Result<Box<dyn ExpertTier>> {
         let flag = if use_verbs { "rdma-verbs" } else { "rdma" };
-        let addr = std::env::var("ATLAS_EXPERT_PEER").map_err(|_| {
-            anyhow::anyhow!("--expert-backend {flag} needs $ATLAS_EXPERT_PEER=host:port")
-        })?;
-        Ok(Box::new(crate::expert_tier_rdma::RdmaTier::connect(
-            &addr,
-            num_slabs,
-            slots_per_slab,
-            use_verbs,
-        )?))
+        #[cfg(unix)]
+        {
+            let addr = std::env::var("ATLAS_EXPERT_PEER").map_err(|_| {
+                anyhow::anyhow!("--expert-backend {flag} needs $ATLAS_EXPERT_PEER=host:port")
+            })?;
+            Ok(Box::new(crate::expert_tier_rdma::RdmaTier::connect(
+                &addr,
+                num_slabs,
+                slots_per_slab,
+                use_verbs,
+            )?))
+        }
+        #[cfg(not(unix))]
+        {
+            bail!("--expert-backend {flag} requires rdma-core, which is unix-only")
+        }
     };
     match backend {
         "posix" => Ok(Box::new(PosixTier::open(dir, num_slabs, slots_per_slab)?)),
@@ -305,3 +297,15 @@ pub fn read_device(dev_va: u64, len: usize, stream: u64) -> Result<Vec<u8>> {
     stream_sync(stream)?;
     Ok(out)
 }
+
+/// O_DIRECT on Linux (the zero-copy arena read depends on it); no equivalent
+/// flag elsewhere — see the `layout` module header for why Windows stays
+/// buffered rather than using FILE_FLAG_NO_BUFFERING.
+#[cfg(target_os = "linux")]
+fn set_direct_flag(opts: &mut OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+    opts.custom_flags(libc::O_DIRECT);
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_direct_flag(_opts: &mut OpenOptions) {}

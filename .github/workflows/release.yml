@@ -1,0 +1,170 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Release (dispatch only). Validates the inputs, re-runs the ordinary CI
+# gates, rebuilds the whole matrix via the SAME reusable workflow every PR
+# already exercises, then publishes.
+#
+# The PR path lives in ci.yml (`release-matrix`), not here — so a pull
+# request runs CI exactly once and the matrix flows after it. Because both
+# paths call `release-build.yml`, a green PR has already proven the build
+# and packaging steps a release will take.
+#
+# `dry_run` defaults to TRUE: artifacts are built and uploaded, and the
+# dry-run summary reports what would ship, but nothing is tagged or
+# published. Publishing is an explicit opt-out.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or SHA to build"
+        required: true
+        default: main
+      new_version:
+        description: "Release version, bare semver (e.g. 0.2.0) — tag becomes vX.Y.Z"
+        required: true
+      dry_run:
+        description: "Build and upload artifacts only; do not tag or publish"
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # Dispatch runs are never cancelled: interrupting a publish mid-tag is how
+  # a release ends up half-applied.
+  group: release-dispatch-${{ github.event.inputs.new_version }}
+  cancel-in-progress: false
+
+jobs:
+  # Cheap input guards. Everything statically checkable fails here, before a
+  # runner spends an hour installing toolchains.
+  validate-inputs:
+    name: validate inputs
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate new_version is bare semver
+        run: |
+          set -euo pipefail
+          v='${{ github.event.inputs.new_version }}'
+          # Bare semver only: the leading `v` is added when we build the tag,
+          # so accepting `v1.2.3` here would produce the tag `vv1.2.3`.
+          if ! printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::new_version must be bare semver (1.2.3), got '$v'"
+            exit 1
+          fi
+          # Ask the REMOTE, not the local clone: actions/checkout fetches
+          # depth-1 with no tags, so `git rev-parse refs/tags/...` would find
+          # nothing and this guard would silently always pass.
+          if git ls-remote --exit-code --tags origin "refs/tags/v$v" >/dev/null 2>&1; then
+            echo "::error::tag v$v already exists"
+            exit 1
+          fi
+
+      - name: Require a branch ref for a real publish
+        if: github.event.inputs.dry_run == 'false'
+        run: |
+          set -euo pipefail
+          # Publishing commits the version bump back to `ref`, so `ref` has to
+          # be a branch. A SHA or tag would make `git push HEAD:<ref>` fail
+          # AFTER the binaries were already built — an hour in.
+          ref='${{ github.event.inputs.ref }}'
+          git ls-remote --exit-code --heads origin "$ref" >/dev/null 2>&1 || {
+            echo "::error::dry_run=false requires 'ref' to be a branch; '$ref' is not"
+            exit 1
+          }
+
+  # The ordinary CI gates, from their single definition. `release-matrix`
+  # inside ci.yml is pull_request-guarded, so this call does not rebuild the
+  # matrix a second time.
+  ci:
+    name: ci
+    uses: ./.github/workflows/ci.yml
+
+  # The identical matrix every PR runs.
+  build:
+    name: build
+    needs: [validate-inputs, ci]
+    uses: ./.github/workflows/release-build.yml
+    with:
+      version: ${{ github.event.inputs.new_version }}
+      ref: ${{ github.event.inputs.ref }}
+      pr_mode: false
+      retention_days: 90
+
+
+  # ---------------------------------------------------------------------
+  # Publish. Skipped entirely on dry_run, so a dry run can never tag, never
+  # push and never create a Release.
+  # ---------------------------------------------------------------------
+  publish:
+    name: publish release
+    needs: [validate-inputs, build]
+    if: github.event.inputs.dry_run == 'false'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.ref }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Refuse to publish an empty release
+        run: |
+          set -euo pipefail
+          # Every non-experimental target could still have been skipped (a
+          # cancelled job, a matrix where everything is experimental). A
+          # Release with no binaries is worse than no Release.
+          count=$(find dist -type f ! -name '*.sha256' | wc -l)
+          [ "$count" -gt 0 ] || { echo "::error::no artifacts to publish"; exit 1; }
+          echo "publishing $count artifact(s)"
+          find dist -type f | sort
+
+      - name: Bump workspace version and tag (lockstep)
+        env:
+          NEW_VERSION: ${{ github.event.inputs.new_version }}
+        run: |
+          set -euo pipefail
+          # Cargo version, git tag and release name are kept identical:
+          # downstreams identify a build by `spark --version`, so a tag that
+          # disagrees with Cargo.toml is a silent mis-identification.
+          bash scripts/release-notes.sh bump "$NEW_VERSION"
+          git config user.name  "tbraun96"
+          git config user.email "tbraun96@gmail.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): v${NEW_VERSION}"
+          git tag -a "v${NEW_VERSION}" -m "Atlas v${NEW_VERSION}"
+          git push origin HEAD:"${{ github.event.inputs.ref }}"
+          git push origin "v${NEW_VERSION}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_VERSION: ${{ github.event.inputs.new_version }}
+        run: |
+          set -euo pipefail
+          # `--generate-notes` is GitHub's own changelog generator: it emits
+          # "What's Changed" (every merged PR since the previous tag) and
+          # "New Contributors". Hand-rolling either would duplicate data
+          # GitHub already derives from the same commits.
+          gh release create "v${NEW_VERSION}" \
+            --title "Atlas v${NEW_VERSION}" \
+            --generate-notes \
+            --verify-tag \
+            dist/*
+
+  # ---------------------------------------------------------------------
+  # Dry-run reporting. Makes `dry_run=true` show exactly what a real run
+  # would have published, so the decision to publish is made on evidence.
+  # ---------------------------------------------------------------------

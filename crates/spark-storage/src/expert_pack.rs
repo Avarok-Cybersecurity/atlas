@@ -6,7 +6,7 @@
 //   * Pure format functions (`pack_record` / `unpack_record`) that assemble and
 //     parse one fixed-stride record in memory. No I/O, no CUDA, no safetensors —
 //     unit-testable with synthetic bytes.
-//   * A `cfg(unix)` file writer/reader that lays those records into one file per
+//   * A portable file writer/reader that lays those records into one file per
 //     MoE layer, plus an `ExpertIndex` manifest (JSON) describing the geometry
 //     so the streamer can reconstruct `ExpertRecordSpec` / `ExpertLayout` and
 //     open the files without re-deriving anything from the checkpoint.
@@ -17,7 +17,8 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::expert::{ExpertKey, ExpertLayout, ExpertRecordHeader, ExpertRecordSpec, Proj};
+use crate::expert::ExpertKey;
+use crate::expert::{ExpertLayout, ExpertRecordHeader, ExpertRecordSpec, Proj};
 
 /// Borrowed packed+scale bytes for one projection, as they will sit on disk
 /// (prefill-resident / transposed layout).
@@ -222,10 +223,8 @@ impl ExpertIndex {
     }
 }
 
-#[cfg(unix)]
 pub use fs_impl::{ExpertFileReader, ExpertFileWriter};
 
-#[cfg(unix)]
 #[path = "expert_pack_fs.rs"]
 mod fs_impl;
 
