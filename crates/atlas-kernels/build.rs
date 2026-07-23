@@ -679,9 +679,6 @@ fn build_hip_shim(manifest_dir: &std::path::Path, out_dir: &std::path::Path) {
 fn build_hip_shim_windows(manifest_dir: &std::path::Path, out_dir: &std::path::Path) {
     let hipcc = std::env::var("ATLAS_HIPCC")
         .expect("ATLAS_HIPCC must point at the Windows HIP SDK hipcc for the hip target");
-    let hip_bin = std::path::Path::new(&hipcc)
-        .parent()
-        .expect("ATLAS_HIPCC has no parent dir");
     let hip_path =
         std::env::var("HIP_PATH").expect("HIP_PATH must be set for the windows hip build");
     let hip_root = std::path::Path::new(&hip_path);
@@ -709,25 +706,27 @@ fn build_hip_shim_windows(manifest_dir: &std::path::Path, out_dir: &std::path::P
         objs.push(obj);
     }
 
-    // 2. Export list: exactly the extern symbols the objects define (via
-    // llvm-nm from the HIP SDK), so the .def can never drift from the sources.
-    let llvm_nm = hip_bin.join("llvm-nm.exe");
+    // 2. Export list: exactly the extern symbols the objects define, read back
+    // with MSVC `dumpbin /SYMBOLS` (on PATH via msvc-dev-cmd, like cl/lib —
+    // the HIP SDK does not ship llvm-nm at a stable path). Reading the objects
+    // means the .def can never drift from the sources. Defined externals are
+    // `SECTn ... External | <name>`; undefined imports (the hip* the shim calls)
+    // are `UNDEF` and start with `hip`, so filtering on `External`, not `UNDEF`,
+    // and a `cu` name prefix keeps exactly cu*/cudart/cublasLt.
     let mut exports = Vec::new();
     for obj in &objs {
-        let out = std::process::Command::new(&llvm_nm)
-            .args(["--defined-only", "--extern-only"])
+        let out = std::process::Command::new("dumpbin")
+            .arg("/SYMBOLS")
             .arg(obj)
             .output()
-            .unwrap_or_else(|e| panic!("llvm-nm failed on {} ({e})", obj.display()));
+            .unwrap_or_else(|e| panic!("dumpbin /SYMBOLS failed on {} ({e})", obj.display()));
         for line in String::from_utf8_lossy(&out.stdout).lines() {
-            // "<addr> T cuInit" — take the name (col 3) for text/data symbols.
-            let mut it = line.split_whitespace();
-            let (_, kind, name) = (it.next(), it.next(), it.next());
-            if let (Some(k), Some(n)) = (kind, name)
-                && matches!(k, "T" | "D" | "B" | "R")
-                && n.starts_with("cu")
+            if line.contains("External")
+                && !line.contains("UNDEF")
+                && let Some(name) = line.split_whitespace().last()
+                && name.starts_with("cu")
             {
-                exports.push(n.to_string());
+                exports.push(name.to_string());
             }
         }
     }
