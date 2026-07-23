@@ -58,6 +58,13 @@ impl ComputeTarget for NvidiaTarget {
         extra_flags: &[String],
     ) -> Result<(), String> {
         let mut args = vec!["--ptx".into(), format!("-arch={arch}"), "-O3".into()];
+        // The MSVC host compiler defaults to C++14, so nvcc on Windows rejects
+        // the kernels' C++17 fold expressions and structured bindings. Force the
+        // dialect there (nvcc -std=c++17 sets device + cl.exe host std). Gated to
+        // Windows so the Linux/macOS nvcc builds are byte-for-byte unchanged.
+        if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+            args.push("-std=c++17".into());
+        }
         args.extend(extra_flags.iter().cloned());
         // ATLAS_EXTRA_NVCC_FLAGS — global override for kernel bisection
         // tests. Whitespace-separated list of additional nvcc args
