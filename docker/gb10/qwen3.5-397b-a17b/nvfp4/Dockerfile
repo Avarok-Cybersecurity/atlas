@@ -17,7 +17,7 @@
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS builder
 
 RUN apt-get update -qq && \
-    apt-get install -y -qq curl build-essential pkg-config git cmake libclang-dev && \
+    apt-get install -y -qq curl build-essential pkg-config git cmake libclang-dev libibverbs-dev && \
     # Pin the builder's NCCL to match the runtime stage (2.30.4). Not required
     # to link — the devel image's bundled 2.27.7 already exports the symbols
     # spark-comm uses (ncclMemAlloc/ncclMemFree, verified) and `-lnccl` is a
@@ -32,9 +32,9 @@ ENV CUDA_HOME=/usr/local/cuda
 
 WORKDIR /build
 
-# Dependencies are fetched from crates.io at build time (no vendored tree).
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/
+COPY vendor/ vendor/
 COPY kernels/ kernels/
 
 ENV ATLAS_TARGET_HW=gb10
