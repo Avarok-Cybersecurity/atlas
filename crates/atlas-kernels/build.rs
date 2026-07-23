@@ -615,6 +615,14 @@ fn widen_warp_masks(src: &str) -> String {
 /// search-path directive. The runtime keeps importing the CUDA driver API;
 /// this `.so` re-exports those symbols mapped onto HIP.
 fn build_hip_shim(manifest_dir: &std::path::Path, out_dir: &std::path::Path) {
+    // Windows has no libcuda→HIP `.so` mechanism (and no AMD-GPU runtime), so
+    // the windows/amd-hip target is compile-only. spark still emits
+    // `-lcuda`/`-lcudart`/`-lcublasLt`; satisfy those with link-only stub
+    // import libraries instead of a functional shim. See build_hip_link_stubs_windows.
+    if cfg!(windows) {
+        build_hip_link_stubs_windows(manifest_dir, out_dir);
+        return;
+    }
     let shim_src = manifest_dir.join("hip").join("libcuda_hip_shim.cpp");
     assert!(
         shim_src.exists(),
@@ -645,6 +653,52 @@ fn build_hip_shim(manifest_dir: &std::path::Path, out_dir: &std::path::Path) {
     println!(
         "cargo:warning=atlas-kernels: built libcuda→HIP shim at {}",
         shim_out.display()
+    );
+}
+
+/// Windows compile-only link support for the HIP target. Compiles the
+/// `extern "C"` link stubs (win_link_stubs.cpp) with MSVC `cl`, then archives
+/// the one object into `cuda.lib`, `cudart.lib` and `cublasLt.lib` with `lib`
+/// (both are on PATH via ilammy/msvc-dev-cmd, the same env nvcc's host compile
+/// uses). spark emits `-lcuda`/`-lcudart`/`-lcublasLt`; the three identical
+/// archives satisfy all three (the linker pulls the object once). No AMD GPU
+/// exists on hosted runners, so the binary is never run — these resolve the
+/// link without a functional CUDA/HIP runtime.
+fn build_hip_link_stubs_windows(manifest_dir: &std::path::Path, out_dir: &std::path::Path) {
+    let src = manifest_dir.join("hip").join("win_link_stubs.cpp");
+    assert!(
+        src.exists(),
+        "Windows HIP link stubs missing at {}",
+        src.display()
+    );
+    println!("cargo:rerun-if-changed={}", src.display());
+
+    let obj = out_dir.join("atlas_hip_link_stubs.obj");
+    let status = std::process::Command::new("cl")
+        .args(["/nologo", "/c", "/O2"])
+        .arg(format!("/Fo{}", obj.display()))
+        .arg(&src)
+        .status()
+        .unwrap_or_else(|e| panic!("failed to run cl for win_link_stubs ({e})"));
+    assert!(status.success(), "cl failed compiling {}", src.display());
+
+    // spark-runtime/spark-storage each emit one of these; give every `-l<name>`
+    // a file to open. Identical content is fine — archive members are pulled on
+    // demand, so a symbol defined in more than one archive is resolved once.
+    for lib in ["cuda.lib", "cudart.lib", "cublasLt.lib"] {
+        let out = out_dir.join(lib);
+        let status = std::process::Command::new("lib")
+            .arg("/nologo")
+            .arg(format!("/OUT:{}", out.display()))
+            .arg(&obj)
+            .status()
+            .unwrap_or_else(|e| panic!("failed to run lib for {lib} ({e})"));
+        assert!(status.success(), "lib failed producing {lib}");
+    }
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!(
+        "cargo:warning=atlas-kernels: built Windows HIP link stubs (cuda/cudart/cublasLt) at {}",
+        out_dir.display()
     );
 }
 
