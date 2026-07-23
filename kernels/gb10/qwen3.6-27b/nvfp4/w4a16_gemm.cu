@@ -1138,7 +1138,7 @@ void w4a16_gemm_t_m128(
 #if defined(__SCALE__)
     __shared__ __nv_bfloat16 smem_B_bf16[N_TILE_LG][K_STEP_T];          // BF16 (gfx1151)
 #else
-    __shared__ unsigned char smem_B_fp8[N_TILE_LG][K_STEP_T];             // 4096 B
+    __shared__ unsigned char smem_B_fp8[N_TILE_LG][K_STEP_T + 4];       // 4096 B + 512 B pad (bank conflict fix)
 #endif
     __shared__ float smem_LUT[16];                                         //   64 B
     // Total ≈ 29.8 KB → 3 blocks/SM
