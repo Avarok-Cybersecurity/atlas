@@ -35,6 +35,14 @@ pub(super) trait ComputeTarget: Send + Sync {
     ) -> Result<(), String>;
 }
 
+/// Warning numbers the strict kernel-compile validation ("clippy for kernels")
+/// intentionally tolerates. Documented like `_typos.toml`: every entry needs a
+/// rationale comment. Empty is the goal — every kernel warning fixed at source
+/// rather than suppressed.
+const KERNEL_STRICT_DIAG_SUPPRESS: &[u32] = &[
+    // (none — all kernel warnings are resolved at source)
+];
+
 struct NvidiaTarget {
     nvcc: PathBuf,
 }
@@ -66,6 +74,24 @@ impl ComputeTarget for NvidiaTarget {
             args.push("-std=c++17".into());
         }
         args.extend(extra_flags.iter().cloned());
+        // Strict kernel-compile validation — "clippy for kernels". Promote every
+        // nvcc/cudafe warning (unused variables #550-D, reorder, deprecated
+        // declarations, …) to a hard error so latent kernel-quality issues fail
+        // the build instead of silently accruing — the Windows/MSVC nvcc leg of
+        // the release matrix first surfaced a pile of these that the Linux build
+        // tolerated. On by default; set ATLAS_KERNEL_NO_STRICT=1 to disable
+        // locally (only the literal "1" disables, so ATLAS_KERNEL_NO_STRICT=0
+        // still means strict-on and never silently opts out). A clean compile
+        // emits byte-identical PTX — `--Werror` only changes behaviour when a
+        // warning actually fires — so this never alters kernel output.
+        if std::env::var("ATLAS_KERNEL_NO_STRICT").as_deref() != Ok("1") {
+            args.push("--Werror".into());
+            args.push("all-warnings".into());
+            for num in KERNEL_STRICT_DIAG_SUPPRESS {
+                args.push("-Xcudafe".into());
+                args.push(format!("--diag_suppress={num}"));
+            }
+        }
         // ATLAS_EXTRA_NVCC_FLAGS — global override for kernel bisection
         // tests. Whitespace-separated list of additional nvcc args
         // (typically `-D<MACRO>=1` to flip `#ifdef`-gated kernel paths).

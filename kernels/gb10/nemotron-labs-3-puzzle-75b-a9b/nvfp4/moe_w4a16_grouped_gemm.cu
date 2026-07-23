@@ -363,7 +363,6 @@ __device__ __forceinline__ void moe_w4a16_grouped_gemm_ptrtable_impl(
 
     const unsigned int warp_id = threadIdx.x / 32;
     const unsigned int lane_id = threadIdx.x % 32;
-    const unsigned int warp_m_offset = warp_id * 16;
     const unsigned int group_id = lane_id >> 2;
     const unsigned int tid = lane_id & 3;
 
@@ -387,8 +386,22 @@ __device__ __forceinline__ void moe_w4a16_grouped_gemm_ptrtable_impl(
     // __constant__ lookup SERIALISES; shared memory is banked).
     __shared__ unsigned int sLUT[256];
 
+    // @human-review (strict-lint finding, #550-D set-but-never-used): this builds an
+    // evict-first L2 cache policy for the expert-weight stream — the 33.8 GB of expert
+    // weights are read once, so caching them in L2 is pure pollution (see the sibling
+    // helper `moe_ld_stream_u4` at the top of this file, which issues
+    // `ld.global.L2::cache_hint` to consume exactly this policy). BOTH halves are
+    // currently orphaned: `moe_ld_stream_u4` is never called and the live load path
+    // (`moe_cp_async16`) uses a plain `cp.async.cg` with no cache hint, so `evict1` is
+    // built and dropped. This is a real (unwired) perf optimization, NOT dead
+    // scaffolding to delete blindly — wiring the weight stream through the cache-hint'd
+    // load belongs in a dedicated, benchmarked perf PR. Suppression is scoped to these
+    // two lines so the tree-wide strict lint still catches every other stray #550-D;
+    // codegen is unchanged (the policy was already dead).
+    #pragma nv_diag_suppress 550
     unsigned long long evict1;
     asm volatile("createpolicy.fractional.L2::evict_first.b64 %0, 1.0;" : "=l"(evict1));
+    #pragma nv_diag_default 550
 
     for (unsigned int i = threadIdx.x; i < 256u; i += blockDim.x) {
         const unsigned short lo =
@@ -410,10 +423,6 @@ __device__ __forceinline__ void moe_w4a16_grouped_gemm_ptrtable_impl(
     const unsigned int M_eff = (unsigned int)M_expert;
     const unsigned int half_K = K / 2;
     const unsigned int num_groups = K / GROUP_SIZE;
-
-    const unsigned int pf_n    = threadIdx.x >> 1;
-    const unsigned int pf_half = threadIdx.x & 1u;
-    const unsigned int pf_gn   = cta_n + pf_n;
 
 #define MOE_PF(kb, buf)                                                                \
     do {                                                                               \
@@ -686,7 +695,6 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
     const unsigned int a_stride = K_STEP + PAD;
     const unsigned int b_stride = N_TILE + PAD;
     const unsigned int M_eff = (unsigned int)M_expert;
-    const unsigned int num_groups = K / GROUP_SIZE;
 
     for (unsigned int k_base = 0; k_base < K; k_base += K_STEP) {
         {

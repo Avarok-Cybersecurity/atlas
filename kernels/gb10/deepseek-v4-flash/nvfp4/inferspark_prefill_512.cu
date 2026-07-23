@@ -82,7 +82,6 @@ extern "C" __global__ void inferspark_prefill_512(
         }
 
         // Reduce across 8 dim-lanes (within the 8-thread group for this row)
-        unsigned int row_base = (tid / 8) * 8;  // first thread in this row's group
         // Warp shuffle within the 8-thread group
         dot += __shfl_xor_sync(0xFFFFFFFF, dot, 1);
         dot += __shfl_xor_sync(0xFFFFFFFF, dot, 2);
