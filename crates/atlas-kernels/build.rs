@@ -615,12 +615,11 @@ fn widen_warp_masks(src: &str) -> String {
 /// search-path directive. The runtime keeps importing the CUDA driver API;
 /// this `.so` re-exports those symbols mapped onto HIP.
 fn build_hip_shim(manifest_dir: &std::path::Path, out_dir: &std::path::Path) {
-    // Windows has no libcuda→HIP `.so` mechanism (and no AMD-GPU runtime), so
-    // the windows/amd-hip target is compile-only. spark still emits
-    // `-lcuda`/`-lcudart`/`-lcublasLt`; satisfy those with link-only stub
-    // import libraries instead of a functional shim. See build_hip_link_stubs_windows.
+    // Windows: build the real cu*/cudart HIP shim as cuda.dll + import libs and
+    // stage the runtime DLLs for packaging (cudarc dlopens the driver at run
+    // time). See build_hip_shim_windows.
     if cfg!(windows) {
-        build_hip_link_stubs_windows(manifest_dir, out_dir);
+        build_hip_shim_windows(manifest_dir, out_dir);
         return;
     }
     let hipcc = std::env::var("ATLAS_HIPCC").unwrap_or_else(|_| "/opt/rocm/bin/hipcc".into());
@@ -666,48 +665,129 @@ fn build_hip_shim(manifest_dir: &std::path::Path, out_dir: &std::path::Path) {
     );
 }
 
-/// Windows compile-only link support for the HIP target. Compiles the
-/// `extern "C"` link stubs (win_link_stubs.cpp) with MSVC `cl`, then archives
-/// the one object into `cuda.lib`, `cudart.lib` and `cublasLt.lib` with `lib`
-/// (both are on PATH via ilammy/msvc-dev-cmd, the same env nvcc's host compile
-/// uses). spark emits `-lcuda`/`-lcudart`/`-lcublasLt`; the three identical
-/// archives satisfy all three (the linker pulls the object once). No AMD GPU
-/// exists on hosted runners, so the binary is never run — these resolve the
-/// link without a functional CUDA/HIP runtime.
-fn build_hip_link_stubs_windows(manifest_dir: &std::path::Path, out_dir: &std::path::Path) {
-    let src = manifest_dir.join("hip").join("win_link_stubs.cpp");
-    assert!(
-        src.exists(),
-        "Windows HIP link stubs missing at {}",
-        src.display()
-    );
-    println!("cargo:rerun-if-changed={}", src.display());
+/// Windows native-HIP runtime shim. Builds ONE `cuda.dll` from the real cu*
+/// (libcuda_hip_shim.cpp) and cudart (libcudart_hip_shim.cpp) HIP mappings plus
+/// the cuBLASLt stub, linked against `amdhip64.lib`, and generates its import
+/// library. cudarc dlopens `["cuda","nvcuda"]` at runtime, so the DLL is copied
+/// to `nvcuda.dll`; spark's own FFI links `-lcuda`/`-lcudart`/`-lcublasLt`, so
+/// the import lib is copied to all three names (each carries every export, the
+/// linker binds each symbol once). The runtime DLLs (`nvcuda.dll` +
+/// `amdhip64.dll`) are staged into OUT_DIR for the packaging step to bundle
+/// beside `spark.exe`. Mirrors the Linux `.so` shims — same mappings, proven to
+/// link on gfx1151. (Hosted CI has no AMD GPU, so CI proves compile+link+package,
+/// not execution.)
+fn build_hip_shim_windows(manifest_dir: &std::path::Path, out_dir: &std::path::Path) {
+    let hipcc = std::env::var("ATLAS_HIPCC")
+        .expect("ATLAS_HIPCC must point at the Windows HIP SDK hipcc for the hip target");
+    let hip_bin = std::path::Path::new(&hipcc)
+        .parent()
+        .expect("ATLAS_HIPCC has no parent dir");
+    let hip_path =
+        std::env::var("HIP_PATH").expect("HIP_PATH must be set for the windows hip build");
+    let hip_root = std::path::Path::new(&hip_path);
 
-    let obj = out_dir.join("atlas_hip_link_stubs.obj");
-    let status = std::process::Command::new("cl")
-        .args(["/nologo", "/c", "/O2"])
-        .arg(format!("/Fo{}", obj.display()))
-        .arg(&src)
-        .status()
-        .unwrap_or_else(|e| panic!("failed to run cl for win_link_stubs ({e})"));
-    assert!(status.success(), "cl failed compiling {}", src.display());
-
-    // spark-runtime/spark-storage each emit one of these; give every `-l<name>`
-    // a file to open. Identical content is fine — archive members are pulled on
-    // demand, so a symbol defined in more than one archive is resolved once.
-    for lib in ["cuda.lib", "cudart.lib", "cublasLt.lib"] {
-        let out = out_dir.join(lib);
-        let status = std::process::Command::new("lib")
-            .arg("/nologo")
-            .arg(format!("/OUT:{}", out.display()))
+    // 1. Compile the three shims to objects (host C++ over HIP; no -fPIC on MSVC).
+    let sources = [
+        "libcuda_hip_shim.cpp",
+        "libcudart_hip_shim.cpp",
+        "libcublaslt_stub.cpp",
+    ];
+    let mut objs = Vec::new();
+    for name in sources {
+        let src = manifest_dir.join("hip").join(name);
+        assert!(src.exists(), "HIP shim source missing at {}", src.display());
+        println!("cargo:rerun-if-changed={}", src.display());
+        let obj = out_dir.join(format!("{name}.obj"));
+        let status = std::process::Command::new(&hipcc)
+            .args(["-c", "-O2"])
+            .arg(&src)
+            .arg("-o")
             .arg(&obj)
             .status()
-            .unwrap_or_else(|e| panic!("failed to run lib for {lib} ({e})"));
-        assert!(status.success(), "lib failed producing {lib}");
+            .unwrap_or_else(|e| panic!("hipcc -c failed for {name} ({e})"));
+        assert!(status.success(), "hipcc failed compiling {name}");
+        objs.push(obj);
     }
+
+    // 2. Export list: exactly the extern symbols the objects define (via
+    // llvm-nm from the HIP SDK), so the .def can never drift from the sources.
+    let llvm_nm = hip_bin.join("llvm-nm.exe");
+    let mut exports = Vec::new();
+    for obj in &objs {
+        let out = std::process::Command::new(&llvm_nm)
+            .args(["--defined-only", "--extern-only"])
+            .arg(obj)
+            .output()
+            .unwrap_or_else(|e| panic!("llvm-nm failed on {} ({e})", obj.display()));
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            // "<addr> T cuInit" — take the name (col 3) for text/data symbols.
+            let mut it = line.split_whitespace();
+            let (_, kind, name) = (it.next(), it.next(), it.next());
+            if let (Some(k), Some(n)) = (kind, name) {
+                if matches!(k, "T" | "D" | "B" | "R")
+                    && (n.starts_with("cu") || n.starts_with("cublas"))
+                {
+                    exports.push(n.to_string());
+                }
+            }
+        }
+    }
+    exports.sort();
+    exports.dedup();
+    assert!(
+        !exports.is_empty(),
+        "no cu*/cudart/cublasLt exports found in shim objects"
+    );
+    let def = out_dir.join("atlas_hip_cuda.def");
+    std::fs::write(&def, format!("EXPORTS\n{}\n", exports.join("\n"))).expect("write cuda.def");
+
+    // 3. Link cuda.dll + its import lib against amdhip64 (hipcc -> clang -> lld-link).
+    let dll = out_dir.join("cuda.dll");
+    let implib = out_dir.join("cuda.lib");
+    let amdhip = hip_root.join("lib").join("amdhip64.lib");
+    let mut link = std::process::Command::new(&hipcc);
+    link.arg("-shared");
+    for obj in &objs {
+        link.arg(obj);
+    }
+    let status = link
+        .arg(&amdhip)
+        .arg("-o")
+        .arg(&dll)
+        .arg(format!("-Wl,/DEF:{}", def.display()))
+        .arg(format!("-Wl,/IMPLIB:{}", implib.display()))
+        .status()
+        .unwrap_or_else(|e| panic!("hipcc -shared (cuda.dll) failed ({e})"));
+    assert!(status.success(), "linking cuda.dll failed");
+
+    // 4. cudarc dlopens nvcuda.dll; spark links cuda/cudart/cublasLt.lib. One DLL,
+    // one import lib carrying every export, copied to each needed name.
+    std::fs::copy(&dll, out_dir.join("nvcuda.dll")).expect("copy cuda.dll -> nvcuda.dll");
+    for lib in ["cudart.lib", "cublasLt.lib"] {
+        std::fs::copy(&implib, out_dir.join(lib))
+            .unwrap_or_else(|e| panic!("copy import lib -> {lib}: {e}"));
+    }
+
+    // 5. Stage the runtime DLLs for packaging (amdhip64.dll ships with the HIP SDK).
+    let amdhip_dll = hip_root.join("bin").join("amdhip64.dll");
+    if amdhip_dll.exists() {
+        std::fs::copy(&amdhip_dll, out_dir.join("amdhip64.dll")).expect("stage amdhip64.dll");
+    } else {
+        println!(
+            "cargo:warning=atlas-kernels: amdhip64.dll not at {} — package step must source it",
+            amdhip_dll.display()
+        );
+    }
+
     println!("cargo:rustc-link-search=native={}", out_dir.display());
+    // Record the dir holding nvcuda.dll/amdhip64.dll so the packaging step bundles them.
     println!(
-        "cargo:warning=atlas-kernels: built Windows HIP link stubs (cuda/cudart/cublasLt) at {}",
+        "cargo:rustc-env=ATLAS_HIP_RUNTIME_DIR={}",
+        out_dir.display()
+    );
+    println!(
+        "cargo:warning=atlas-kernels: built Windows HIP runtime shim (cuda.dll/nvcuda.dll + import libs, {} exports) at {}",
+        exports.len(),
         out_dir.display()
     );
 }
