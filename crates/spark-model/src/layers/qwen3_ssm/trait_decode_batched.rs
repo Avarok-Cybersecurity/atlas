@@ -136,6 +136,46 @@ impl Qwen3SsmLayer {
                     )?;
                 }
             }
+        } else if num_tokens == 4 {
+            if let Some(ref nvfp4) = self.qkvz_nvfp4 {
+                ops::w4a16_gemv_batchm(
+                    ctx.gpu,
+                    self.w4a16_gemv_batch4_k,
+                    normed,
+                    nvfp4,
+                    proj_dst,
+                    num_tokens as u32,
+                    qkvz_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+            } else if let Some(ref fp8w) = self.qkvz_fp8w {
+                ops::w8a16_gemv_batch4(
+                    ctx.gpu,
+                    self.w8a16_gemv_batch4_k,
+                    normed,
+                    fp8w.weight,
+                    fp8w.row_scale,
+                    proj_dst,
+                    num_tokens as u32,
+                    qkvz_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+            } else {
+                for t in 0..4u32 {
+                    ops::dense_gemv(
+                        ctx.gpu,
+                        self.dense_gemv_k,
+                        normed.offset(t as usize * h * bf16),
+                        &self.ssm.in_proj_qkvz,
+                        proj_dst.offset(t as usize * qkvz_size * bf16),
+                        qkvz_size as u32,
+                        h as u32,
+                        stream,
+                    )?;
+                }
+            }
         } else if num_tokens == 3 {
             if let Some(ref nvfp4) = self.qkvz_nvfp4 {
                 ops::w4a16_gemv_batch3(
