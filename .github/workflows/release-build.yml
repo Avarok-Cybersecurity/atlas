@@ -396,11 +396,11 @@ jobs:
         env:
           # AMD's PRO-Edition HIP SDK installer. There is no documented stable
           # direct-download link (the download page is JS-gated), so the URL is
-          # pinned here as the single knob to bump. Pattern taken from
-          # llama.cpp's windows-setup-rocm action. gfx1151 (Strix Halo, RDNA3.5)
-          # codegen needs a recent clang; 6.2.x ships LLVM 18, the first with
-          # gfx1151 in its target list.
-          HIP_SDK_URL: https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-6.2.4-Win10-Win11-For-HIP.exe
+          # pinned here as the single knob to bump. NOTE the filename carries the
+          # AMD *driver* version (25.Q3), NOT the ROCm version — a `6.x` string
+          # 404s. 25.Q3 is the newest published as of 2026-07 (ROCm 6.4-era,
+          # LLVM 19), which has gfx1151 (Strix Halo, RDNA3.5) in its target list.
+          HIP_SDK_URL: https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-25.Q3-Win10-Win11-For-HIP.exe
         run: |
           $ErrorActionPreference = "Stop"
           # ATLAS_TARGET_MODEL/QUANT are REQUIRED (same trap as SCALE): the
@@ -408,7 +408,11 @@ jobs:
           # kernels/strix-hip/<model> dir, so build.rs panics resolving it.
           Write-Host "Downloading HIP SDK: $env:HIP_SDK_URL"
           $exe = "$env:RUNNER_TEMP\hip-sdk-setup.exe"
-          Invoke-WebRequest -Uri $env:HIP_SDK_URL -OutFile $exe -UseBasicParsing
+          # Legible failure if AMD rotates the URL (they carry the driver
+          # version, e.g. 25.Q3 — a ROCm-version string 404s) instead of an
+          # opaque WebRequest stack trace.
+          try { Invoke-WebRequest -Uri $env:HIP_SDK_URL -OutFile $exe -UseBasicParsing }
+          catch { throw "HIP SDK download failed for $env:HIP_SDK_URL — bump HIP_SDK_URL to a currently-published AMD-Software-PRO-Edition-<ver>-Win10-Win11-For-HIP.exe" }
           # The installer is a GUI app even from the command line; `-install`
           # runs it headless. -Wait blocks; the step timeout bounds a hung
           # window (a known failure mode of this installer on headless runners).
