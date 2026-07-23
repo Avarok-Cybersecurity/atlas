@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Sequence save/restore state I/O for `TransformerModel` (split from sequence.rs for the 500-LoC cap).
 use parking_lot::Mutex;
 use std::collections::HashMap;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! `DraftProposer` implementation for [`MtpHead`] (split from mtp_head.rs for the 500-LoC cap).
 use super::*;
 
