@@ -197,3 +197,13 @@ act-quant, NVFP4-GDN). The raw-TPOT vs the WEAK vLLM ref (31.39, verbose) is a n
 on the CONFIRMED vLLM's reported metrics (tps/qps/wall/BFCL/IoU) Atlas already WINS.
 Remaining decode levers = ACTIVATION/KV precision only: (A) fp8 KV cache (attn ~13% of step, halve KV
 reads, prev-passed 86.33) ← testing now, FREE flag. (B) NVFP4 MTP head (drafter 9%, forced bf16 ~3.1%).
+
+## ★★★ 04:55 — fp8-KV: the ONE decode win (+4.8% TPOT), accuracy-gate pending
+fp8-KV A/B (base binary, K=3, GATE_FORCE): bf16-KV 43.82ms → **fp8-KV 41.71ms = −4.8% (~2ms/tok)**.
+Output COHERENT (clean English), tool-path intact. NOT byte-identical (fp8 changes numerics → greedy
+tokens drift slightly) → needs full IoU/BFCL e2e gate. Prior golden_fp8kv = 86.33 BFCL PASS (vs ~87
+bf16), so it trades ~0.7 BFCL for ~5% decode. This is a serve-FLAG change (--kv-cache-dtype fp8), NO
+rebuild. → FOLD CANDIDATE if the conglomerate e2e holds IoU≥0.6269 (vLLM) + BFCL≥floor.
+Combined honest picture: fp8-KV recovers ~2ms (40→~38); all other decode levers roofline-dead. Partial
+close, not full — the rest is the hardware floor for the all-NVFP4 checkpoint.
+NEXT: run CONGLOMERATE e2e with fp8-KV (serve flag) → confirm IoU/BFCL + measure wall/TPOT gain → fold.
