@@ -23,7 +23,6 @@ datasets:
     inject_tool_delay: false
     num_trajectories_to_issue: 3
     stop_issuing_on_first_user_complete: false
-    use_dataset_history: true
 settings:
   runtime:
     min_duration_ms: 0
