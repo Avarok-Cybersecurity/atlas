@@ -154,6 +154,10 @@ name = "gdn_wy_verify_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "gdn_wyn_bench"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gdn_verify_fused_microtest"
 required-features = ["cuda", "gpu-examples"]
 
