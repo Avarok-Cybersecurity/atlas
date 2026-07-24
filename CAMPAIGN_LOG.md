@@ -93,3 +93,19 @@ H3 bubbles REFUTED (96% busy). H4 rollback REFUTED (0.9ms). T_no_spec=91ms → s
 ~12ms/step, BUT GDN FP8 is mandated (accuracy risk) → gate hard on KL/BFCL.**
 Pivot: the W4A4 agent's act-quant premise is refuted; redirect to GEMV BANDWIDTH tuning (lever #1)
 + assess W4-for-FP8-GDN (lever #2). Artifacts dgx3:/workspace/decode_phasesplit_20260724_025300/.
+
+## 03:45 — qwen W4A4 VERDICT (verifies "are we exploiting W4A4 fully": YES on weights)
+qwen + phase-split AGREE: W4A4/W4A8 **activation-quant is NOT a lever at M<=3**. Per-projection at
+M=3: weights ~9.44MB vs acts+out ~48KB → **acts are ~0.5% of traffic**. FP4 MMA is tile-based (pad
+M=3→M=16 = 18.75% lane util); w4a16_gemv already reads weights ONCE amortized over M rows. Kernel is
+memory-LATENCY bound (long-scoreboard stalls), not activation-precision bound. strix +25% W4A8-DP4A
+does NOT transfer (that was a lightweight int dot, not FP4 MMA; GB10 baseline already weight-once).
+→ **We exploit the 4-bit WEIGHTS fully; activations at M=3 are irrelevant.** Act-quant CLOSED.
+Cross-hw learning banked: gfx1151 int-DP4A vs GB10 FP4-MMA differ fundamentally at low M; the
+transferable trick is weight-once batched GEMV (both have it), NOT act-quant.
+
+**Confirmed levers (weight-bandwidth, not act-precision):**
+- LEVER #1 (primary): weight-load mainloop BW/latency tuning of w4a16_gemv_batch3/dual/qg + kernel
+  occupancy → 60-65%→85-90% peak → ~+9ms/tok. Kernel agent on it; qwen BW-design in flight.
+- LEVER #2: W4/NVFP4 the FP8 GDN in/out proj (w8a16_gemv_batch4, 24% step, 2× NVFP4 bytes) → halve
+  traffic ~12ms/step. GDN-FP8 mandated → HARD KL/BFCL accuracy gate before fold.
