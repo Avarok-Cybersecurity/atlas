@@ -224,3 +224,16 @@ Raw-TPOT 38.18 vs vLLM weak-run 31.39 = residual at the hardware roofline (per F
 NOTE: BFCL accuracy phase ERRORS on both boxes — `bfcl-eval` dep missing (bfcl_v4_scorer.py:110). Perf
 metrics (wall/TPOT/TTFT/tps) valid; BFCL/IoU from THIS run blocked. fp8-KV accuracy rests on prior
 golden_fp8kv=86.33 PASS.
+
+## ★★★★★ 07:45 — CONGLOMERATE e2e RESULT (fp8-KV) — the one foldable win
+fp8-KV full MLCommons (1007 perf + 995 BFCL, temp0/seed42, 1007/1007 OK):
+  **wall 4534.9s · TTFT p50 1271ms · TPOT p50 39.08ms · TPS 17.08 · QPS 0.22 · BFCL 87.54 · IoU 0.6223**
+vs confirmed vLLM (5361 / — / — / 14.6 / — / 86.43 / 0.6269):
+  wall **−15%** · TPS **+17%** · BFCL **+1.1** · IoU −0.005 (within ~0.022 MDE = tie).
+vs bf16-KV baseline (~4984 / 1557 / ~40 / 15.9 / — / ~87 / 0.6285):
+  wall **−9%** · TTFT **−18%** · TPS **+7%** · BFCL +0.5 · IoU −0.006 (within MDE).
+KEY: fp8-KV win is TTFT/wall (halved KV traffic → prefill), **TPOT ~unchanged (39 vs 40)** → CONFIRMS
+raw decode is roofline-bound; fp8-KV does NOT close the raw-decode gap, it widens the aggregate lead.
+VERDICT: FOLD fp8-KV as the recommended serve config (--kv-cache-dtype fp8) — wall/TTFT/TPS/BFCL all
+improve, IoU within-noise. Caveat flagged: IoU nominally −0.006 (MDE-tie); accuracy (BFCL) IMPROVED.
+Report: RESULT_fp8kv_conglom.txt.
