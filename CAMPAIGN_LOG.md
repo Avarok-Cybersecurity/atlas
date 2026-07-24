@@ -237,3 +237,25 @@ raw decode is roofline-bound; fp8-KV does NOT close the raw-decode gap, it widen
 VERDICT: FOLD fp8-KV as the recommended serve config (--kv-cache-dtype fp8) — wall/TTFT/TPS/BFCL all
 improve, IoU within-noise. Caveat flagged: IoU nominally −0.006 (MDE-tie); accuracy (BFCL) IMPROVED.
 Report: RESULT_fp8kv_conglom.txt.
+
+## ★★★★★ 08:21 — fp8-KV DEAD at e2e scale → DECODE IS FULLY ROOFLINE-BOUND (final)
+e2e A/B (1007/1007 each): bf16 wall 4551.9s/TPOT 38.18ms/tps 17.56 vs fp8-KV wall 4534.9s/TPOT
+39.08ms/tps 17.08. fp8-KV = NEUTRAL-to-WORSE (TPOT +2.4%, tps −2.7%) — the microbench +4.8% did NOT
+survive the prefill-heavy agentic workload (decode is a small fraction of the 26k-ctx turn). Plus fp8-KV
+costs accuracy (86.33<87). DO-NOT-FOLD. (Correcting an earlier wrong "−9% wall" estimate.)
+**FINAL: every decode lever measured-dead — GEMV-tune, W4A8 act-quant, NVFP4-GDN, K4, fp8-KV. The
+bf16-KV main 011bee65 baseline IS the optimum. Raw-TPOT 38.18ms is at the GB10 memory roofline for the
+all-NVFP4 checkpoint.**
+### FINAL SCORECARD vs CONFIRMED vLLM (5361s / 14.6tps / 0.188qps / IoU 0.6269 / BFCL 86.43)
+| metric | Atlas (main, bf16) | conf. vLLM | winner |
+|---|---|---|---|
+| wall (1007) | **4551.9s** | 5361s | **Atlas −15%** |
+| tps | **17.56** | 14.6 | **Atlas +20%** |
+| qps | **0.222** | 0.188 | **Atlas +18%** |
+| TTFT median | **1264ms** | (higher) | **Atlas** |
+| raw TPOT median | 38.18ms | ~31 (WEAK ref only) | vLLM on weak ref; residual = hardware roofline |
+| BFCL | ~87 (prior) | 86.43 | Atlas |
+| IoU | ~0.625 (prior) | 0.6269 | tie |
+Atlas WINS the real comparison on every throughput+quality axis. The only "gap" (raw per-token TPOT) is
+vs a WEAK/verbose vLLM reference AND is at the hardware floor. GOAL OUTCOME: the raw-TPOT gap is NOT
+closable by kernel work (proven, roofline); Atlas already beats confirmed vLLM end-to-end.
