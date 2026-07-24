@@ -123,6 +123,23 @@ emitting garbage, and the expensive gates take hours.
 4. **K=3 control leg** as the regression guard — the new dispatch arms are all `try_kernel`-gated,
    so K=3 must be unchanged (38.49 ms).
 
+### Known harness noise — not a regression
+
+Every run on this harness emits **exactly two** of these near startup:
+
+```
+jinja2.exceptions.UndefinedError: 'dict object' has no attribute 'name'
+TypeError: Can only get item pairs from a mapping.
+apply_chat_template failed for Qwen/Qwen3.6-27B (TypeError);
+  falling back to whitespace tokenization. Tool-call OSL/TPOT may diverge.
+```
+
+This is client-side: the metrics aggregator probes the chat template with a tool-call message
+shape the Qwen3.6-27B jinja template does not accept. It fires twice, at startup, not per
+sample, and it is identical in the 4104 s reference run — so it does not break comparability
+between legs. It is not an Atlas fault and not a signal that anything regressed. If you see a
+count other than 2, that *is* worth investigating.
+
 ---
 
 ## 6. Do not re-run these — they are settled
