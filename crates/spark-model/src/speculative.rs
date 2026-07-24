@@ -5,6 +5,8 @@
 //! Defines the [`DraftProposer`] trait for speculative decoding strategies.
 //! MTP implements this first; EAGLE-3 can implement later without engine changes.
 
+pub mod tree_shape;
+
 use std::any::Any;
 
 use anyhow::Result;
