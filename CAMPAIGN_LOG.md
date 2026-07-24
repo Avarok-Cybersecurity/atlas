@@ -171,3 +171,15 @@ already BEATS confirmed vLLM (15.9 vs 14.6 tps). Raw-TPOT gap likely real (decod
 independent) but exact target uncertain.
 DECISION: build C3 STAGED (out-proj NVFP4 first = safer, then in-proj), A/B TPOT + coherence/KL, full
 IoU/BFCL e2e gate on dgx2 when free. Fold only if faster AND IoU/BFCL clear.
+
+## 03:55 — C3 build DISPATCHED (last decode lever)
+Agent (worktree .wt-c3, branch c3-nvfp4-gdn) building NVFP4 GDN out-proj (stage1, out_proj_nvfp4_t
+dispatch already scaffolded init.rs:371; loader linear_attn_arms.rs re-quant behind ATLAS_GDN_OUT_NVFP4=1),
+then in-proj (stage2, riskier). Fast gates on dgx1: coherence + KL drift + TPOT A/B (FP8-GDN vs NVFP4).
+Full IoU/BFCL e2e gate on dgx2 when it frees (~04:30). PROCEED only if faster + coherent + small KL;
+FOLD only if IoU/BFCL also clear.
+LIVE SIGNALS (auto-notify): C3 agent (a5776bb4) · dgx2 baseline e2e done (blz3264q2, frees e2e box).
+HONEST OUTLOOK: easy decode levers exhausted (GEMVs near-roofline; act-quant/prefetch DEAD-measured).
+C3 is partial (~2-5ms/tok) + accuracy-risky + deviates from mandated FP8-GDN. Likely deliverable:
+confirmed e2e (Atlas already ≥ vLLM on tps/qps/wall/BFCL/IoU) + C3 folded IF it passes + honest
+memory-bound-floor documentation for the residual raw-TPOT.
