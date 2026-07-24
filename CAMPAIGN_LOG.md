@@ -156,3 +156,18 @@ PENDING (auto-notify): qwen C3 risk verdict (bvr5smtz4) → go/no-go on the buil
 (blz3264q2) → frees e2e box (~04:30) + baseline numbers for the C3 accuracy comparison.
 Reality check: if C3 fails IoU/BFCL, the decode gap is a MANDATED-CHECKPOINT byte-budget constraint
 (Atlas FP8-GDN vs vLLM all-NVFP4), not an engineering miss — will document honestly either way.
+
+## 03:53 — qwen C3 VERDICT: partial (~2-5ms/tok), accuracy-gated, GDN in-proj risky
+NVFP4 GDN proj: ~38-44% fewer bytes (0.5625 vs 1.0 B/wt) × 24% of step → ~10-12ms/step → ~2-5ms/tok
+(40→~35-38ms). NOT the full 8.56ms fix alone. Accuracy: vLLM all-NVFP4 PASSES (IoU 0.6269/BFCL 86.43)
+= evidence NVFP4 GDN CAN hold; but naive re-quant of centml FP8→NVFP4 is moderate-HIGH risk, esp. the
+GDN IN-proj (feeds recurrent state). IoU more at risk than BFCL. qwen's decisive experiment: Atlas
+FP8-GDN vs NVFP4-GDN, trajectory-pinned → TPOT + E + IoU/BFCL.
+⚠ CAVEAT to verify: mandated recipe = GDN **FP8** (mandated_nvidia_ckpt: GDN FP8+MLP NVFP4+MTP BF16).
+If vLLM also runs FP8 GDN, C3 DEVIATES from mandate (not "matching vLLM"). → C3 is an engineering
+decode lever, accuracy-gated; flag the recipe deviation for owner.
+⚠ Also unresolved: confirmed vLLM's REAL TPOT unknown (31.39 = weak run). On tps/qps basis Atlas
+already BEATS confirmed vLLM (15.9 vs 14.6 tps). Raw-TPOT gap likely real (decode speed ∝ output-len-
+independent) but exact target uncertain.
+DECISION: build C3 STAGED (out-proj NVFP4 first = safer, then in-proj), A/B TPOT + coherence/KL, full
+IoU/BFCL e2e gate on dgx2 when free. Fold only if faster AND IoU/BFCL clear.
