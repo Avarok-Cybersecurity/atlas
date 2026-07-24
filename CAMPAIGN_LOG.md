@@ -46,3 +46,26 @@ decode dequants acts to bf16. NO w4a4/w4a8/dp4a decode-GEMV kernel exists for gb
 (kernels/gb10/common: only w4a16_gemv, w8a16_gemv, dense_gemv_bf16/fp8w). strix banked W4A8 DP4A
 (v_dot4 int8) = +25% MTP-verify GEMV. GB10 has native sm_121a FP4 MMA (~2x FP8, per fp4_mma_gb10)
 UNUSED in decode. → candidate lever for qwen #2 (M=3 verify efficiency). Asking qwen GB10 vs gfx1151.
+
+## 03:30 — ACTIVE COMPONENTS (all boxes working)
+| box/agent | piece | status |
+|---|---|---|
+| dgx3 (agent) | nsys phase-split of K=3 step: drafter-propose vs M=3 verify vs bubbles; M=1-vs-M=3; non-spec T_no_spec | RUNNING (serve :8890 under nsys) |
+| dgx2 | full MLCommons e2e on main 011bee65 (baseline confirm) | RUNNING ~1027/2002 |
+| dgx1 (agent) | BUILD+microbench W4A4 verify GEMV (native NVFP4/E2M1 acts) vs w4a16(bf16 acts); microbench-first bandwidth gate | RUNNING (worktree .wt-w4a4) |
+| dgx1 (qwen) | GB10 sm_121a FP4 vs gfx1151 int8 DP4A — activation-quant verdict | RUNNING (w4a4_consult.txt) |
+| dgx1 (coord) | gate harness (kl_coherence_gate.py) + conglomerate launcher + this log | DONE, committed |
+
+## CROSS-HARDWARE LEARNING (first-class theme — exploit base W4A4 weights + tricks everywhere)
+The MLPerf checkpoint is NVFP4 **W4A4** — weights AND activations 4-bit — but GB10 decode only
+exploits W4 (weights); activations run bf16. Bank of activation-quant tricks to port BOTH ways:
+- **gfx1151 (strix, RDNA3.5):** no native FP4 MMA → **W4A8 int8 DP4A (v_dot4)** banked **+25% MTP-verify GEMV**.
+- **GB10 (sm_121a, Blackwell):** has **native FP4 MMA (~2× FP8)** + int8 tensor cores — neither used in decode GEMV.
+- OPEN QUESTIONS (qwen + microbench deciding): (1) at M<=3 the verify GEMV is weight-memory-bound
+  (4-bit weights streamed regardless of act precision) → does act-quant help at all, or only the
+  bf16-dequant *overhead*? (2) GB10 native-FP4 (W4A4) vs int8 (W4A8) — which wins, and does strix's
+  +25% translate? (3) is FP4 MMA even usable at M=3 (tensor cores want M>=8) or must it be a GEMV?
+- PRINCIPLE: verify by MEASUREMENT (microbench GB/s vs 273 peak). If w4a16 is already bandwidth-
+  saturated at M=3, W4A4 cannot help and we've *confirmed we exploit W4A4 fully* — a valid result.
+- Prior art to reuse: e2m1_branchless.cu, quantize_bf16_to_nvfp4.cu, dequant_nvfp4_bf16.cu,
+  inferspark_prefill_paged_nvfp4.cu (FP4 MMA). Kernel toml/precedence: fp4_mma_gb10 memory.
