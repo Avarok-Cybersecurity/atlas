@@ -153,3 +153,14 @@ output coherent, no errors/degrades. Warm prose TPOT 96.9ms = expected cliff-sta
 forward_prefill MMQ on 16 attn layers + M=6 lm_head/QKV GEMM + serial GDN): S6/S3 ≈ 3.1×. All of it
 is the in-flight batch8/gate work. **Chain K≤8 needs NO new structural code — only the kernels.**
 Prose accept at depth5 mean ≈ 2.2/5 (E≈3.2 even on the pessimistic workload).
+
+## ★★★★★ CHAIN-WIDENING RESULT (2026-07-24): K=4 = 31.69ms TPOT — vLLM-tuned parity, −17.7%
+Subset ladder (174-turn agentic, same seed, wyN binary): K3 38.49 / **K4 31.69** / K5 32.76 (best
+wall 734s + tps 20.12 + TTFT 1212) / K6-wy6 32.29 / K8 34.64. Winner **K=4 (--num-drafts 3)**: the
+n==4 FFN fix delivered the entire jump; deeper K flattens (depth-4+ accept below plateau + drafter
+propose cost; wy6-vs-serial ≈ noise, GDN 1.6% of step as profiled). Sub-30 NOT reached via chains —
+31.69 ≈ vLLM-tuned 31.39 (+0.95%) = raw-decode PARITY with the best-tuned vLLM, from 38-40 shipping.
+Gates: batch8 bit-exact ×3 refs; wyN cos-gate PASS K5-8; K3 control 38.49 = baseline (no regression).
+FOLDED: ff-merge feat/tree-spec-decode → perf/decode-fold-2026-07-24, pushed @5fc590fe.
+GOLDEN E2E (submission handoff): launched ND=3, frozen c2final env, both phases. K=5 noted as the
+wall/tps/TTFT-optimal alternative within noise.
