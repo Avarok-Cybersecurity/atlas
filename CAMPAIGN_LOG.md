@@ -145,3 +145,14 @@ INSIGHT: vLLM runs all-NVFP4 nvidia ckpt; Atlas mandated ckpt keeps GDN FP8 → 
 C3 = match vLLM byte budget. Owner authorized ("as long as it clears IoU+accuracy"). → PURSUE C3, hard
 KL+IoU+BFCL gate. Structural note: batch3 M=3 = 75% vs M=1 84% (3× compute/byte, occupancy/reg-bound) —
 not fixable by prefetch/DP4A. Agent files uncommitted on worktree .wt-w4a4 (C1/C2 kernels + bench).
+
+## 03:50 — C3 scope + wait state
+C3 feasibility: GDN layer ALREADY has `out_proj_nvfp4_t` slot (qwen3_ssm/init.rs:33) alongside
+out_proj_fp8w/fp8/dense → NVFP4 GDN out_proj is a partly-scaffolded path. C3 = re-quantize the FP8
+GDN in/out proj weights to NVFP4 (E2M1 + FP8 group scales) at load, populate the nvfp4 slot, dispatch
+w8a16_gemv_batch4 → w4a16_gemv_batchm. Loader: weight_loader/qwen3.rs (native_fp8 branch). Est build
++ gate ~1-2h. HARD gate: coherence + KL + full IoU/BFCL e2e (deviates from mandated FP8-GDN ckpt).
+PENDING (auto-notify): qwen C3 risk verdict (bvr5smtz4) → go/no-go on the build; dgx2 baseline e2e
+(blz3264q2) → frees e2e box (~04:30) + baseline numbers for the C3 accuracy comparison.
+Reality check: if C3 fails IoU/BFCL, the decode gap is a MANDATED-CHECKPOINT byte-budget constraint
+(Atlas FP8-GDN vs vLLM all-NVFP4), not an engineering miss — will document honestly either way.
