@@ -170,6 +170,10 @@ name = "w4a16_m17_bench"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "batchm_bench"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "w4a16_parity_microtest"
 required-features = ["cuda", "gpu-examples"]
 
