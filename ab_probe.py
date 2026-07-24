@@ -18,15 +18,21 @@ URL = f"http://0.0.0.0:{PORT}/v1/chat/completions"
 
 # Long-decode prompts so steady-state TPOT dominates TTFT.
 PROMPTS = [
-    "Explain, in detail and step by step, how paged attention manages KV cache "
-    "blocks during autoregressive decoding. Cover block tables, copy-on-write "
-    "for beam search, and fragmentation. Write at least 250 words.",
-    "Describe how speculative decoding with a draft model changes the number of "
-    "target forward passes, why acceptance rate matters, and how rejection "
-    "sampling preserves the target distribution. At least 250 words.",
-    "Walk through NVFP4 (E2M1 with FP8 block scales) quantization end to end: "
-    "packing, block scale factors, dequant in a GEMM epilogue, and where "
-    "accuracy is lost. At least 250 words.",
+    (
+        "Explain, in detail and step by step, how paged attention manages KV cache "
+        "blocks during autoregressive decoding. Cover block tables, copy-on-write "
+        "for beam search, and fragmentation. Write at least 250 words."
+    ),
+    (
+        "Describe how speculative decoding with a draft model changes the number of "
+        "target forward passes, why acceptance rate matters, and how rejection "
+        "sampling preserves the target distribution. At least 250 words."
+    ),
+    (
+        "Walk through NVFP4 (E2M1 with FP8 block scales) quantization end to end: "
+        "packing, block scale factors, dequant in a GEMM epilogue, and where "
+        "accuracy is lost. At least 250 words."
+    ),
 ]
 NREPEAT = 3          # each prompt run NREPEAT times; first is warmup-ish, keep all
 MAXTOK = 320
@@ -92,6 +98,7 @@ summary = {
     "combined_sha": combined.hexdigest()[:16],
     "runs": runs,
 }
-json.dump(summary, open(OUT, "w"), indent=2)
+with open(OUT, "w") as fh:
+    json.dump(summary, fh, indent=2)
 print(f"[{TAG}] TPOT warm-median={summary['tpot_med_warm']:.2f}ms  "
       f"combined_sha={summary['combined_sha']}")

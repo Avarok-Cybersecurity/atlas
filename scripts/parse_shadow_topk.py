@@ -101,7 +101,8 @@ def main():
         "n_joined_conditional": n_joined,
         "n_spine_mismatch": n_spine_mismatch,
     }
-    json.dump(result, open(args.out, "w"), indent=2)
+    with open(args.out, "w") as fh:
+        json.dump(result, fh, indent=2)
     print(json.dumps(result, indent=2))
     if n_spine_mismatch > 0.01 * max(n_joined, 1):
         print(

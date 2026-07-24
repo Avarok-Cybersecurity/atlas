@@ -24,7 +24,8 @@ KMAX = 4
 
 
 def load(path):
-    stats = json.load(open(path))["conditional"]
+    with open(path) as fh:
+        stats = json.load(fh)["conditional"]
     depths = sorted(int(d) for d in stats)
     s, h = {}, {}
     for d in depths:

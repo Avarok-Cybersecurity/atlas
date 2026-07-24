@@ -11,7 +11,6 @@ PASS criteria (printed): coherent (no degeneration + valid tool call), token-mat
 positions, mean_KL < 1e-3. Any fail => DO NOT FOLD.
 """
 import json
-import math
 import sys
 import urllib.request
 
@@ -132,7 +131,8 @@ result["match_frac"] = match_frac
 PASS = (result["coherent"] and result["tool_ok"] and match_frac >= 0.99
         and result["mean_kl"] < 1e-3)
 result["VERDICT"] = "PASS" if PASS else "FAIL"
-json.dump(result, open(OUT, "w"), indent=2)
+with open(OUT, "w") as fh:
+    json.dump(result, fh, indent=2)
 print(json.dumps({k: result[k] for k in
       ("VERDICT", "coherent", "tool_ok", "match_frac", "mean_kl", "max_kl",
        "first_divergence", "positions", "notes")}, indent=2))

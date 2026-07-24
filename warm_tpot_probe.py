@@ -108,7 +108,8 @@ def main():
         "combined_sha": combined.hexdigest()[:16],
         "runs": runs,
     }
-    json.dump(summary, open(args.out, "w"), indent=2)
+    with open(args.out, "w") as fh:
+        json.dump(summary, fh, indent=2)
     print(f"[{args.tag}] WARM TPOT median={summary['tpot_warm_median']:.2f}ms "
           f"mean={summary['tpot_warm_mean']:.2f}ms sha={summary['combined_sha']}")
 
