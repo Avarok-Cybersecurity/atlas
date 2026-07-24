@@ -109,3 +109,20 @@ transferable trick is weight-once batched GEMV (both have it), NOT act-quant.
   occupancy → 60-65%→85-90% peak → ~+9ms/tok. Kernel agent on it; qwen BW-design in flight.
 - LEVER #2: W4/NVFP4 the FP8 GDN in/out proj (w8a16_gemv_batch4, 24% step, 2× NVFP4 bytes) → halve
   traffic ~12ms/step. GDN-FP8 mandated → HARD KL/BFCL accuracy gate before fold.
+
+## 03:35 — LEVER #2 REINSTATED (owner directive): W4A8 int8-act GEMV (strix trick, measured not dismissed)
+Owner: the strix W4A8 (int8-act v_dot4 DP4A) verify-GEMV works there (+25%), so build it on GB10 and
+let IoU+accuracy decide — do NOT dismiss on qwen's theory. Per heavylift disagreement protocol
+(measurement decides). Mechanism at M=3: int8 acts don't cut DRAM traffic (weights dominate) but cut
+mainloop compute/register pressure → better memory-LATENCY hiding → lift off the 60-65% BW ceiling
+(qwen itself listed this as the only possible win). Kernel agent now has THREE candidates:
+  (1) pure access-pattern BW tune of w4a16 (byte-identical, primary)
+  (2) **W4A8 int8-act GEMV** (port strix w4a16_gemv_dp4a / quantize_act_int8_g16 → gb10) — KL-gated
+  (3) [assess] W4/NVFP4 the FP8 w8a16 GDN proj
+Each reported with M=3 GB/s + (byte-identical | KL vs bf16 ref). HARD gate before fold: faster at M=3
+AND IoU/BFCL clear (int8 acts lose precision → full regression, not just microbench KL).
+
+## WATCHERS (auto-notify → loop self-drives)
+- qwen GEMV-BW-tuning consult (beu3jsnfa) — design for candidate #1.
+- kernel agent (a877fb6b) — 3 candidates, dgx1 worktree .wt-w4a4.
+- dgx2 baseline e2e completion (blz3264q2, polls 90s) — frees e2e box for conglomerate.
