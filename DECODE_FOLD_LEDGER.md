@@ -164,3 +164,15 @@ Gates: batch8 bit-exact ×3 refs; wyN cos-gate PASS K5-8; K3 control 38.49 = bas
 FOLDED: ff-merge feat/tree-spec-decode → perf/decode-fold-2026-07-24, pushed @5fc590fe.
 GOLDEN E2E (submission handoff): launched ND=3, frozen c2final env, both phases. K=5 noted as the
 wall/tps/TTFT-optimal alternative within noise.
+
+## ★★★★★ GOLDEN E2E RESULT (K=4, 2026-07-24) — SHIPPED
+Full MLCommons both-phase, golden/frozen c2final config, only `--num-drafts 2→3`:
+**wall 4104.0s · TPOT 32.60ms · TTFT 1298ms · qps 0.245 · tps 19.20 · IoU 0.6231 · BFCL 87.44 ·
+1007/1007, 0 failed.**
+vs bf16 baseline (main 011bee65): wall −9.8%, TPOT −14.6%, qps +10.9%, tps +9.3%, accuracy tie.
+vs CONFIRMED vLLM (5361s/14.6tps/0.188qps/0.6269/86.43): **wall −23.4%, tps +31.5%, qps +30.3%,
+BFCL +1.01, IoU tie.** MLPerf floor 83.64/85.32 → PASS.
+Raw TPOT 32.60 vs the WEAK-run vLLM ref 31.39 = +3.9% (the only axis not won; that ref is a
+verbose-run artifact and our own vLLM re-run measured 104.9ms out-of-box).
+Winner rationale + the K-ladder + exact reproduce: HANDOFF_SUBMISSION.md. Artifacts:
+endpoints-fresh/results/chainK_golden_e2e_20260724_131209/.

@@ -53,15 +53,20 @@ wy6-vs-serial is within noise.
 
 Run dir: `dgx1:/workspace/endpoints-fresh/results/chainK_golden_e2e_20260724_131209/`
 
-<!-- FILLED ON COMPLETION -->
-| metric | this run (K=4) | bf16 baseline (main) | confirmed vLLM |
-|---|---|---|---|
-| perf wall (1007) | _pending_ | 4551.9 s | 5361 s |
-| TPOT median | _pending_ | 38.18 ms | ~31.4 (tuned) / 104.9 (out-of-box, re-measured) |
-| TTFT median | _pending_ | 1264 ms | — |
-| qps / tps | _pending_ | 0.221 / 17.56 | 0.188 / 14.6 |
-| IoU | _pending_ | ~0.625 | 0.6269 |
-| BFCL (995 ST) | _pending_ | ~87 | 86.43 |
+<!-- FILLED 2026-07-24 -->
+| metric | **this run (K=4)** | bf16 baseline (main) | confirmed vLLM | delta vs baseline / vLLM |
+|---|---|---|---|---|
+| perf wall (1007) | **4104.0 s** | 4551.9 s | 5361 s | **−9.8% / −23.4%** |
+| TPOT median | **32.60 ms** | 38.18 ms | ~31.4 (tuned) / 104.9 (out-of-box) | **−14.6%** / +3.9% vs tuned |
+| TTFT median | **1298 ms** | 1264 ms | — | +2.7% (noise) |
+| qps | **0.245** | 0.221 | 0.188 | **+10.9% / +30.3%** |
+| tps | **19.20** | 17.56 | 14.6 | **+9.3% / +31.5%** |
+| IoU | **0.6231** | ~0.625 | 0.6269 | −0.002 / −0.004 (tie, MDE ≈0.022) |
+| BFCL (995 ST) | **87.44** | ~87 | 86.43 | tie / **+1.01** |
+| samples | 1007/1007, **0 failed** | 1007/1007 | 1006/1007 | — |
+
+MLPerf accuracy floor (83.64 / 85.32): **BFCL 87.44 PASS**. IoU within measurement noise of both
+the baseline and vLLM. Perf-phase duration 4104.0 s; BFCL-phase duration 4781.5 s.
 
 ## 5. Exact reproduce
 
