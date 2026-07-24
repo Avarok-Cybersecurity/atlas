@@ -157,6 +157,13 @@ pub struct Qwen3SsmLayer {
     /// in which case decode_batched(K=17) falls through to the sequential
     /// per-token path.
     gdn_wy17_k: KernelHandle,
+    /// WY-Chunkwise K∈{5..8} GDN verify (chain-verify widths between the
+    /// dedicated wy4 and the DFlash wy17). One K-templated source
+    /// (`gated_delta_rule_wyn.cu`, gb10 common) instantiates wy5..wy8 with
+    /// the same pool-layout intermediates contract as wy17. Index = K-5;
+    /// NULL handles on targets lacking the module → sequential fallback.
+    /// Kill-switch: `ATLAS_GDN_WYN=0` (default ON).
+    gdn_wyn_k: [KernelHandle; 4],
     // State allocation sizes (pre-computed from config)
     h_state_bytes: usize,
     conv_state_bytes: usize,
@@ -212,6 +219,7 @@ mod ssm_forward;
 mod trait_decode;
 mod trait_decode_batched;
 mod trait_decode_batched_conv_gdn;
+mod trait_decode_batched_conv_gdn_wyn;
 mod trait_decode_multi_seq;
 mod trait_prefill;
 mod trait_prefill_gdn;
