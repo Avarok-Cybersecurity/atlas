@@ -126,3 +126,22 @@ AND IoU/BFCL clear (int8 acts lose precision → full regression, not just micro
 - qwen GEMV-BW-tuning consult (beu3jsnfa) — design for candidate #1.
 - kernel agent (a877fb6b) — 3 candidates, dgx1 worktree .wt-w4a4.
 - dgx2 baseline e2e completion (blz3264q2, polls 90s) — frees e2e box for conglomerate.
+
+## ★★★★★ 03:40 — kernel agent: GEMVs are NEAR-ROOFLINE; act-quant DEAD-confirmed; C3 is the lever
+Cold cycled-weight microbench (rigorous, streams DRAM each launch):
+  w4a16_gemv M=1: 84-88% peak | w4a16_gemv_batch3 M=3: 74-82% | w8a16_gemv_batch4 (FP8) M=3: 84-85%.
+→ kernels are ALREADY near the 273 GB/s roofline. dgx3's "60-65% in-step" was inflated by its config
+(f32 SSM, 11k ctx, 0.70 util — dgx3 flagged 1.3× absolutes). So per-kernel access-pattern tuning has
+NO headroom.
+Candidates measured (A/B M=3, cold, N=3):
+- C1 software-pipelined prefetch (byte-identical): 0.98-1.00× → DEAD (compiler already hides latency;
+  prefetch adds reg pressure).
+- **C2 W4A8 int8-act DP4A (the strix trick): 0.99-1.01× + 0.5% accuracy cost → DEAD ON GB10.** MEASURED,
+  not dismissed. Strix +25% doesn't transfer (GB10 baseline already weight-once+near-roofline; strix's
+  was pre-DP4A). Also hit the __constant__-LUT-serializes trap (5× slower until moved to __shared__).
+- C3 NVFP4 the FP8 GDN in/out proj (w8a16, ~24% of step, 2× NVFP4 bytes): NOT built (assess). ~halve
+  bytes → ~2× on those proj ≈ ~12ms/step. **THE remaining lever.** Deviates from mandated FP8-GDN ckpt.
+INSIGHT: vLLM runs all-NVFP4 nvidia ckpt; Atlas mandated ckpt keeps GDN FP8 → Atlas streams MORE bytes.
+C3 = match vLLM byte budget. Owner authorized ("as long as it clears IoU+accuracy"). → PURSUE C3, hard
+KL+IoU+BFCL gate. Structural note: batch3 M=3 = 75% vs M=1 84% (3× compute/byte, occupancy/reg-bound) —
+not fixable by prefetch/DP4A. Agent files uncommitted on worktree .wt-w4a4 (C1/C2 kernels + bench).
