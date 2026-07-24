@@ -280,3 +280,14 @@ not JIT). MTP acceptance: mean-len ~2.5, p1 0.83 / p2 0.65 = **≈ Atlas (p1 0.9
 NEVER reported a TPOT and I couldn't reproduce its tuned state in-window. So the "gap" is conditional on
 vLLM's single best config; Atlas wins every confirmed e2e metric. FINAL raw-TPOT answer: config-dependent,
 not a fixed vLLM number.
+
+## CHAIN-WIDENING: part B may ALREADY EXIST (discovery, post-Phase-0)
+- `decode_verify_graphed_kgamma_dispatch` (verify_d.rs) is FULLY K-GENERIC: k=tokens.len(), K-generic
+  metadata/layer-loop, graph cache keyed (slot_idx, k) at :191, debug_assert k<=32.
+- `step_verify_dflash` (:74-79) already branches on dflash_verify_raw_argmax==false → applies the FULL
+  MTP pre-sample pipeline; accept-prefix, commit_accepted_prefix(acc,k), trim_proposer_state all K-generic.
+- No num_drafts cap: --num-drafts N passes through; dispatch drafts.len()>=4 → dflash step.
+→ Chain K=5..8 on TODAY'S binary = `--num-drafts 4..7`. Expected slow-but-correct: M=5-8 projections hit
+  the GEMM cliff (batch8 agent fixing) + GDN uses the generic-K serial fallback (~+4ms; wy6/wy8 later).
+  PLAN: correctness+coherence probe at nd=5 now; TPOT after batch8 lands. Risk: dflash-specific drafter
+  ctx-feeds inside the step may degrade with the MTP proposer (watch for 'degrading' logs).
