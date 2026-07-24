@@ -116,3 +116,20 @@ grinding any decode-cost lever. dgx2 Atlas e2e gives the apples-to-apples Perf/A
 Byte-identical (sha match), TPOT delta -0.01% (noise). Epilogue fusion dead on GB10 (conv snapshot
 copies ~0.14% of decode GPU time), same as L1. Refactor dropped conv_gdn file 528→495 LoC (dedups
 K4/K17) — cleanup value only. NOT committed/folded.
+
+## ★★★★★ PHASE 0 VERDICT (tree-spec plan, 2026-07-24): GO — via CHAIN-WIDENING
+Shadow top-k measurement (warm agentic, K=4, 19,139 joined positions, spine-mismatch 0.4%):
+| depth | cond.top1 | top2 | top4 | miss |
+|---|---|---|---|---|
+| 1 | 0.909 | 0.941 | 0.951 | 4.9% |
+| 2 | 0.903 | 0.951 | 0.968 | 3.2% |
+| 3 | 0.881 | 0.934 | 0.955 | 4.5% |
+**The depth cliff does not exist warm** (old p2~0.53-0.65 = cold/blind-drafter artifact). Conditional
+top-1 plateaus 0.88-0.91 → hedges buy little (misses are outside top-4); DEEP CHAINS compound:
+enumerator best = **chain-K8 E=5.58 → TPOT ~21ms**; chain-K6 ~25ms; best tree 24.9ms (M=6 pure spine
+= itself a chain). Tree uplift over chain **−17.3%** → per the plan's decision rule + user-approved
+fallback: **build CHAIN-WIDENING** (batch8 GEMV + wy5-8 GDN + verify_k6/k8). Robustness: s4+=0.75 →
+K8 E=4.93 (24ms); s4+=0.60 → E=4.40 (27ms) — <30ms under all extrapolations.
+Immediate free check: measured depth-3 implies WARM K=4 (shipping kernels, --num-drafts 3) E≈3.45 →
+~33ms. The earlier "K=4 regresses +27.8%" sweep was COLD single-turn (cold drafter ~0.72/0.5) — warm
+A/B now running to validate. Artifacts: shadow_topk_stats.json, shadow_lines.log, scripts/.
