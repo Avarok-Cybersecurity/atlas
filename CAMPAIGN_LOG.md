@@ -259,3 +259,14 @@ all-NVFP4 checkpoint.**
 Atlas WINS the real comparison on every throughput+quality axis. The only "gap" (raw per-token TPOT) is
 vs a WEAK/verbose vLLM reference AND is at the hardware floor. GOAL OUTCOME: the raw-TPOT gap is NOT
 closable by kernel work (proven, roofline); Atlas already beats confirmed vLLM end-to-end.
+
+## ★★★ 07:50 — CORRECTION: fp8-KV DO-NOT-FOLD (control-leg refuted it)
+dgx2 bf16-KV baseline (SAME fresh main binary) = wall 4551.9 / TPOT 38.18 / TTFT 1264 / TPS 17.56.
+fp8-KV (dgx1) = 4534.9 / 39.08 / 1271 / 17.08. Same-binary A/B: wall −0.4% (noise), TPOT +2.4% SLOWER,
+TPS −2.7% WORSE, IoU 0.6285→0.6223. The microbench +4.8% did NOT survive the prefill-heavy e2e (decode
+is a small slice of a 26k-ctx turn). My earlier "fp8-KV −9% wall" compared vs the STALE 07-21 baseline
+(different binary) — WRONG, retracted. Lesson: always run the same-binary control leg (the gate exists
+for this). **VERDICT: NO decode fold; bf16-KV main is optimum. ALL decode levers measured-dead.**
+The completed conglomerate e2e (bf16 4551.9s or fp8 4534.9s) still BEATS confirmed vLLM (wall −15% /
+TPS +17-20% / BFCL +1 / IoU-tie). dgx2 BFCL scorer errored (bfcl-eval dep) → bf16 accuracy from prior
+runs (~87/0.625); dgx1 fp8 scored 87.54/0.6223.

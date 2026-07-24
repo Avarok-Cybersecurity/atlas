@@ -1,26 +1,22 @@
-# Recommended serve config — FOLD: fp8-KV (decode-gap campaign, 2026-07-24)
+# Serve config — VERDICT: NO decode fold. bf16-KV main is the optimum.
 
-**Change vs frozen c2final: `--kv-cache-dtype bf16` → `--kv-cache-dtype fp8`.** The ONE foldable win
-from the decode-gap campaign. Confirmed by full MLCommons e2e (1007 perf + 995 BFCL, temp0/seed42):
+The decode-gap campaign found **NO foldable decode win** — every lever measured-dead, INCLUDING fp8-KV.
 
-| config | wall | TTFT p50 | TPOT p50 | TPS | BFCL | IoU |
-|---|---|---|---|---|---|---|
-| bf16-KV (baseline) | ~4984s | ~1557ms | ~40ms | 15.9 | ~87 | 0.6285 |
-| **fp8-KV (FOLD)** | **4534.9s** | **1271ms** | 39.08ms | **17.08** | **87.54** | 0.6223 |
-| confirmed vLLM | 5361s | — | — | 14.6 | 86.43 | 0.6269 |
+## fp8-KV: DO-NOT-FOLD (corrected)
+A synthetic decode-heavy microbench showed fp8-KV +4.8% TPOT, but it **did NOT survive the full e2e**
+(prefill-heavy agentic turns, decode is a small slice of a ~26k-ctx turn). Proper same-binary A/B:
 
-fp8-KV: **wall −9% / TTFT −18% / TPS +7% / BFCL +0.5** vs bf16 baseline; **wall −15% / TPS +17% /
-BFCL +1.1** vs confirmed vLLM. IoU 0.6223 = −0.006 vs bf16, −0.005 vs vLLM — **within the ~0.022 IoU
-MDE (tie)**. Accuracy (BFCL) IMPROVED. The win is TTFT/wall (fp8 halves KV-cache traffic → prefill);
-raw TPOT is ~unchanged (roofline-bound). ⚠ OWNER CONFIRM: IoU nominally −0.006 (MDE-tie); if the thin
-IoU margin matters for the official submission, keep bf16-KV. For throughput, fp8-KV is the win.
+| config (fresh main 011bee65) | wall | TTFT p50 | TPOT p50 | TPS | IoU |
+|---|---|---|---|---|---|
+| **bf16-KV (OPTIMUM, keep)** | 4551.9s | 1264ms | **38.18ms** | **17.56** | 0.6285 |
+| fp8-KV | 4534.9s | 1271ms | 39.08ms | 17.08 | 0.6223 |
+| delta (fp8 vs bf16) | −0.4% (noise) | +0.6% | **+2.4% SLOWER** | **−2.7% WORSE** | −0.006 |
 
-## Full recommended serve (dense-27B, K=3)
-```
---kv-cache-dtype fp8   # <-- the fold (was bf16)
---max-seq-len 32768 --max-batch-size 1 --gpu-memory-utilization 0.70 --enable-prefix-caching
---ssm-cache-slots 128 --ssm-checkpoint-interval 32 --speculative --num-drafts 2 --mtp-quantization bf16
---tool-call-parser qwen3_xml --disable-tool-grammar true --disable-thinking
-ENV: ATLAS_NO_FFN_NVFP4_MMQ=1 ATLAS_SSM_TAIL_MIDCHUNK=0 ATLAS_MTP_CATCHUP=0 ATLAS_MTP_DRAFT_CONF=0.0
-     ATLAS_MTP_GATE_FORCE=1 ATLAS_SSM_TAIL_PROTECT=1 ATLAS_SSM_TAIL_LEASE_TTL=128 ATLAS_BF16_TC_PREFILL=1
-```
+fp8-KV is neutral-on-wall, worse on TPOT/TPS, and drops IoU → **keep bf16-KV.** (My earlier "−9% wall"
+was a comparison against a STALE 07-21 baseline/binary, not the same-binary control — corrected.)
+
+## The e2e result stands (either config beats confirmed vLLM)
+Atlas main (bf16-KV) e2e: wall 4551.9s / TPOT 38.18 / TPS 17.56 / BFCL ~87 / IoU 0.6285.
+Confirmed vLLM: wall 5361s / tps 14.6 / BFCL 86.43 / IoU 0.6269.
+→ **Atlas wins wall −15% / TPS +20% / BFCL / IoU-tie.** The RAW per-token TPOT (~38ms) is roofline-bound
+(all kernel/weight levers measured-dead); not closable by a same-checkpoint fold. See FINDINGS.md.
