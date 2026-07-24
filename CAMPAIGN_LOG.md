@@ -69,3 +69,27 @@ exploits W4 (weights); activations run bf16. Bank of activation-quant tricks to 
   saturated at M=3, W4A4 cannot help and we've *confirmed we exploit W4A4 fully* — a valid result.
 - Prior art to reuse: e2m1_branchless.cu, quantize_bf16_to_nvfp4.cu, dequant_nvfp4_bf16.cu,
   inferspark_prefill_paged_nvfp4.cu (FP4 MMA). Kernel toml/precedence: fp4_mma_gb10 memory.
+
+## ★★★★★ 03:40 — dgx3 PHASE-SPLIT: THE GAP LOCALIZED (all 4 hypotheses REFUTED)
+K=3 step 115ms, **96.2% GPU-busy** (idle 4.4ms). Breakdown:
+| phase | ms | % |  |
+|---|---|---|---|
+| **verify projection GEMVs (M=3)** | **78.1** | **68%** | w4a16_dual_batch3 27%, **w8a16_batch4 24%(FP8!)**, w4a16_batch3 16%, qg 2% |
+| full-attn (16 layers KV) | 14.6 | 12.7% | |
+| MTP drafter propose (2 drafts) | 10.3 | 9.0% | ~1-layer head, NOT a 2nd model pass |
+| lm_head verify | 3.1 | 2.7% | |
+| GDN wy3 recurrence | 1.8 | 1.6% | batched, confirmed |
+| GDN conv/norm epilogue | 1.0 | 0.9% | ← confirms L1/L6 rightly DEAD |
+| D2D rollback + sampling + misc | 2.7 | 2.4% | |
+| GPU idle | 4.4 | 3.8% | |
+Verdicts: H1 drafter-serial REFUTED (10ms). H2 M=3-not-weight-once REFUTED (M3/M1=1.03-1.09×).
+H3 bubbles REFUTED (96% busy). H4 rollback REFUTED (0.9ms). T_no_spec=91ms → spec HELPS ~1.8×.
+**ROOT CAUSE: the projection GEMVs are weight-once but run at only ~60-65% of peak LPDDR5X BW
+(~1.5-1.7× the bytes/BW floor). That inefficiency IS the 2× overhead.**
+**LEVER #1 (the fix): bandwidth-tune w4a16_gemv_dual_batch3 + w8a16_gemv_batch4 + w4a16_gemv_batch3
+(78ms) from 60-65% → 85-90% peak → 78→~56ms ≈ recover ~9ms/token.** Kernel access-pattern work
+(coalescing, 16B vectorized weight loads, occupancy, unroll) — NOT act-quant (M=3 acts are tiny).
+**LEVER #2 (W4A4-refined): w8a16_gemv_batch4 GDN in/out proj is FP8 = 2× NVFP4 bytes; W4 it → save
+~12ms/step, BUT GDN FP8 is mandated (accuracy risk) → gate hard on KL/BFCL.**
+Pivot: the W4A4 agent's act-quant premise is refuted; redirect to GEMV BANDWIDTH tuning (lever #1)
++ assess W4-for-FP8-GDN (lever #2). Artifacts dgx3:/workspace/decode_phasesplit_20260724_025300/.
