@@ -133,3 +133,15 @@ K8 E=4.93 (24ms); s4+=0.60 → E=4.40 (27ms) — <30ms under all extrapolations.
 Immediate free check: measured depth-3 implies WARM K=4 (shipping kernels, --num-drafts 3) E≈3.45 →
 ~33ms. The earlier "K=4 regresses +27.8%" sweep was COLD single-turn (cold drafter ~0.72/0.5) — warm
 A/B now running to validate. Artifacts: shadow_topk_stats.json, shadow_lines.log, scripts/.
+
+## ★★★★★ ROOT CAUSE: "K=4 regresses" = MISSING n==4 FFN ARM (dispatch gap, 2026-07-24)
+Warm K3-vs-K4 A/B (prose probe): K3 44.77ms vs K4 58.22ms (+30%). At similar accept (E 2.20 vs 2.39)
+→ **S4/S3 ≈ 1.41×** — NOT weight-once. Diagnosis: `multi_seq/ffn.rs` arm ladder has n==3→forward_k3,
+n==2→forward_k2, else dense → **forward_prefill (MMQ GEMM, ~156 GB/s cliff)**. NO n==4 arm — so K=4
+verify runs the 16 full-attn layers' FFN on the cliff. `forward_k4` EXISTS (dense_ffn.rs:1123, 54.8ms
+→ ~31ms per its own docstring) and is wired for the 48 GDN layers (trait_decode_batched.rs:668) but
+was never added to the attention multi-seq path. **Explains every historical K=4 regression** (cold
+sweep +27.8%, old nd=3 e2e 56-59ms). Fix = mirror the n==3 arm (kernel agent folding it in).
+ALSO: acceptance is workload-dependent — prose probe p1 0.63-0.72 vs agentic-harness shadow 0.88-0.91.
+The MLPerf target workload is agentic → shadow numbers govern the goal; freeform prose will see less.
+With the n==4 fix alone: predicted agentic K=4 TPOT ≈ 33-34ms (E≈3.45, S4/S3≈1.02) on TODAY'S kernels.
