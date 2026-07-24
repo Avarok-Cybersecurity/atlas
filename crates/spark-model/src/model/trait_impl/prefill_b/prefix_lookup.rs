@@ -134,12 +134,19 @@ impl TransformerModel {
                 let exact_without_hidden = snap_tok == matched
                     && matched == total
                     && !self.ssm_snapshots.has_hidden(snap_id);
+                // Session gate applies ONLY to TAIL snapshots (their state
+                // bleeds past the exact prefix). Exact / is_tail_sibling
+                // snapshots are content-addressed by the verified token prefix
+                // and safe cross-session — matching the KV radix. Gating them on
+                // the (unstable) session_hash is what rejected every valid warm-
+                // turn anchor and forced recompute-all. See lookup_tiered.
                 if snap_tok > 0
                     && matched <= total
                     && !exact_without_hidden
-                    && self
-                        .ssm_snapshots
-                        .session_matches(snap_id, seq.session_hash)
+                    && (!prefix_match.ssm_snapshot_is_tail
+                        || self
+                            .ssm_snapshots
+                            .session_matches(snap_id, seq.session_hash))
                 {
                     // Cross-stream ordering: the snapshot we are about to read
                     // was SAVED on the default stream (decode_marconi_checkpoint
