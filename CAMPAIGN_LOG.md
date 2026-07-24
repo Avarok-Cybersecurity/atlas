@@ -183,3 +183,17 @@ HONEST OUTLOOK: easy decode levers exhausted (GEMVs near-roofline; act-quant/pre
 C3 is partial (~2-5ms/tok) + accuracy-risky + deviates from mandated FP8-GDN. Likely deliverable:
 confirmed e2e (Atlas already ≥ vLLM on tps/qps/wall/BFCL/IoU) + C3 folded IF it passes + honest
 memory-bound-floor documentation for the residual raw-TPOT.
+
+## ★★★★★ 04:20 — C3 DEAD + CHECKPOINT REFRAME (the honest answer on decode)
+Kernel agent: the GATE model **centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf is DENSE and already ships NVFP4
+GDN** (U8-packed on disk, decodes w4a16 not FP8 w8a16). So ATLAS_GDN_OUT_NVFP4 is INERT on the gate
+model (byte-identical, KL=0, +0.3ms noise). The FP8-GDN (24% of step) the dgx3 phase-split saw was on
+the **nvidia** ckpt (mandated), NOT the centml gate model → phase-split's GDN slice doesn't transfer.
+On nvidia (where C3 applies) NVFP4-out made decode **SLOWER +4.6%** (w4a16 M=3 ~75% < w8a16 ~85%). C3
+DEAD both ways. C3 impl correct+live but not folded (worktree .wt-c3, qwen35_dense.rs:569, +71).
+**CONCLUSION: on the real gate model, decode is already all-NVFP4 (best byte budget) AND GEMVs are
+near-roofline. Every weight/kernel decode lever is now MEASURED-DEAD** (GEMV-tune, prefetch, W4A8
+act-quant, NVFP4-GDN). The raw-TPOT vs the WEAK vLLM ref (31.39, verbose) is a near-hardware-floor gap;
+on the CONFIRMED vLLM's reported metrics (tps/qps/wall/BFCL/IoU) Atlas already WINS.
+Remaining decode levers = ACTIVATION/KV precision only: (A) fp8 KV cache (attn ~13% of step, halve KV
+reads, prev-passed 86.33) ← testing now, FREE flag. (B) NVFP4 MTP head (drafter 9%, forced bf16 ~3.1%).
