@@ -129,6 +129,12 @@ pub struct DenseFfnLayer {
     // operands cut shared-memory load instructions ~4x (the v2 BF16 path is
     // smem-bandwidth-bound, L1/TEX 90% per ncu), and M64's lower register pressure
     // lifts occupancy → measured ~44 TFLOP/s vs ~30 for v2 (~1.47x prefill) on dgx1.
+    // NOTE: "FP8 M64" names the GB10 build only. There `w4a16_gemm_t` compiles
+    // an FP8 E4M3 branch (cosine ~0.9997, LOSSY — it broke coherence on a
+    // Fibonacci gen). The strix-hip `w4a16_gemm.cu` has NO `#ifdef` at all, so
+    // the same symbol there is the plain NVFP4 dequant path and is lossless;
+    // that is why it is the native-HIP default above and why the flag below is
+    // a no-op on that target.
     // LOSSY (FP8 E4M3, cosine ~0.9997) — OPT-IN via ATLAS_FP8_M64_PREFILL, gated on
     // quality. KernelHandle(0) on miss → dispatch unchanged.
     w4a16_gemm_t_k: KernelHandle,
@@ -1301,7 +1307,17 @@ impl DenseFfnLayer {
         }
         if let Some(wt) = wt {
             if m <= 64 && k.is_multiple_of(32) && small_m_enabled() {
-                if k >= 8192 && k.is_multiple_of(64) && self.w4a16_gemm_t_k64_k.0 != 0 {
+                // gfx1151 native-HIP: `w4a16_gemm_t_k64` is 0.61-0.77x of the
+                // M_TILE=64 `w4a16_gemm_t` at every measured shape (K_STEP=64
+                // costs 45248 B LDS, so fewer CTAs stay resident than the
+                // halved barrier count is worth). Measured on the real FFN
+                // shapes by `examples/strix_ffn_bench`. NVIDIA keeps this arm:
+                // it was selected there on the w4a16_m17_bench numbers.
+                if !cfg!(atlas_hip)
+                    && k >= 8192
+                    && k.is_multiple_of(64)
+                    && self.w4a16_gemm_t_k64_k.0 != 0
+                {
                     return ops::w4a16_gemm_n128(
                         ctx.gpu,
                         self.w4a16_gemm_t_k64_k,
@@ -1780,6 +1796,28 @@ impl DenseFfnLayer {
                     // priority.
                     Some(wt) if m <= 64 => {
                         self.w4a16_prefill_gemm(ctx, $w, Some(&wt), $in, $out, m, $n, $k, stream)?
+                    }
+                    // gfx1151 native-HIP: the M_TILE=64 `w4a16_gemm_t` beats the
+                    // M_TILE=128 `w4a16_gemm_t_m128` at EVERY measured shape
+                    // (1.16-2.09x over M=17..2048, both FFN shapes). m128 needs
+                    // 34432 B LDS and 256 VGPRs *with spill* -> 3 waves/SIMD;
+                    // the M64 tiling needs 24192 B and does not spill. Output is
+                    // byte-identical (per-output-element K accumulation order is
+                    // unchanged; only which CTA owns which m-rows differs) --
+                    // verified by `examples/strix_ffn_bench` byte-compare and a
+                    // 6484-position prompt-logprob diff (max|dlp| = 0, KL = 0).
+                    Some(wt) if cfg!(atlas_hip) && self.w4a16_gemm_t_k.0 != 0 => {
+                        ops::w4a16_gemm_n128(
+                            ctx.gpu,
+                            self.w4a16_gemm_t_k,
+                            $in,
+                            &wt,
+                            $out,
+                            m,
+                            $n,
+                            $k,
+                            stream,
+                        )?
                     }
                     // Prefer v2 (8-warp) > t_m128 (4-warp) > scalar-tile base.
                     Some(wt) if self.w4a16_gemm_t_m128_v2_k.0 != 0 => ops::w4a16_gemm_n128_m128_v2(
