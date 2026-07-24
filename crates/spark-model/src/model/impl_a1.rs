@@ -82,6 +82,10 @@ impl TransformerModel {
         // 0-handle on targets that predate it; dispatch falls back).
         let w4a16_gemv_batch4_kernel =
             crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch4");
+        // M<=8 batched GEMV for the K=5..8 chain-verify lm_head (same
+        // try_kernel contract: 0-handle → dispatch falls back to the GEMM).
+        let w4a16_gemv_batch8_kernel =
+            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch8");
         // FP8 E4M3 LUT GEMV for the `--lm-head-dtype fp8` head. Loaded
         // unconditionally (a handle is cheap); only invoked when `lm_head_fp8`
         // is set, so the NVFP4/BF16 paths never touch it.
@@ -511,6 +515,7 @@ impl TransformerModel {
             w4a16_gemm_kernel,
             w4a16_gemv_batch2_kernel,
             w4a16_gemv_batch4_kernel,
+            w4a16_gemv_batch8_kernel,
             dense_gemv_fp8w_kernel,
             dense_gemv_fp8w_batch2_kernel,
             dense_gemm_kernel,

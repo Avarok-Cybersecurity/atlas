@@ -77,6 +77,9 @@ pub struct TransformerModel {
     /// cost 19.3 ms/verify-step on the 248320-row lm_head — 94% tile padding).
     /// 0-handle when the target lacks the kernel (dispatch falls back).
     pub(super) w4a16_gemv_batch4_kernel: KernelHandle,
+    /// M<=8 batched GEMV for the K=5..8 chain-verify lm_head (batch8 —
+    /// removes the M>4 tile-GEMM cliff). 0-handle when absent.
+    pub(super) w4a16_gemv_batch8_kernel: KernelHandle,
     /// FP8 E4M3 LUT GEMV (M=1) for the FP8 LM head. Only used when
     /// `lm_head_fp8.is_some()`; loaded unconditionally (cheap handle) so the
     /// dispatch in `lm_head` / batched-decode / verify can reference it.

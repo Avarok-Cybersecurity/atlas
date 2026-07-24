@@ -130,10 +130,12 @@ pub struct Qwen3SsmLayer {
     // Kernels — fused chunk3 path (3-token verification)
     gdn_chunk3_k: KernelHandle,
     w4a16_gemv_batch3_k: KernelHandle,
-    // NVFP4 batched decode GEMV (multi-seq concurrency): batch4 (M<=4) /
-    // batch16 (M<=16) — siblings of w8a16_gemv_batch4/16 for the FP4 QKVZ +
-    // out_proj, so FP4 decode amortizes the weight read at C=4..16 like FP8.
+    // NVFP4 batched decode GEMV (multi-seq concurrency + chain verify):
+    // batch4 (M<=4) / batch8 (M<=8, K=5..8 chain verify) / batch16 (M<=16) —
+    // siblings of w8a16_gemv_batch4/16 for the FP4 QKVZ + out_proj, so FP4
+    // decode amortizes the weight read at C=4..16 like FP8.
     w4a16_gemv_batch4_k: KernelHandle,
+    w4a16_gemv_batch8_k: KernelHandle,
     w4a16_gemv_batch16_k: KernelHandle,
     // Kernels — WY-chunkwise path (2-pass verification)
     gdn_wy2_k: KernelHandle,
@@ -188,6 +190,19 @@ pub struct Qwen3SsmLayer {
     // `ATLAS_FP8_W8A8=1` for staged rollout.
     per_token_group_quant_fp8_k: KernelHandle,
     fp8_gemm_t_blockscaled_k: KernelHandle,
+}
+
+impl Qwen3SsmLayer {
+    /// W4A16 batchm-GEMV handle for `m` verify/decode rows: batch4 (m<=4) or
+    /// batch8 (m=5..8, chain verify). 0-handle when absent or out of range —
+    /// callers must check `.0 != 0` and fall back to the tile GEMMs.
+    fn w4a16_batchm_kernel(&self, m: usize) -> KernelHandle {
+        match m {
+            1..=4 => self.w4a16_gemv_batch4_k,
+            5..=8 => self.w4a16_gemv_batch8_k,
+            _ => KernelHandle(0),
+        }
+    }
 }
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
