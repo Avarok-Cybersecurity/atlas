@@ -80,10 +80,7 @@ fn main() -> Result<()> {
     let inter_pool = g.alloc((kmax - 1) * H_NUMEL * 4)?;
 
     for &k in &[5usize, 6, 7, 8] {
-        let wyn_k = g.kernel(
-            "gated_delta_rule_wyn",
-            &format!("gated_delta_rule_wy{k}"),
-        )?;
+        let wyn_k = g.kernel("gated_delta_rule_wyn", &format!("gated_delta_rule_wy{k}"))?;
 
         // ── (a) serial fallback: K× decode + K× h copy_d2d ──
         let serial = |iters: usize| -> Result<f64> {
