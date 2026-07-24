@@ -109,6 +109,14 @@ impl FfnComponent {
         }
     }
 
+    /// Whether the K=4 batched-GEMV verify FFN is available (dense only —
+    /// MoE / missing batch4 kernel / non-NVFP4 weights → false). Lets callers
+    /// gate branch entry BEFORE computing the pre-FFN norm, so there is no
+    /// half-done fallthrough to `forward_prefill`.
+    pub fn can_forward_k4(&self) -> bool {
+        matches!(self, Self::Dense(d) if d.can_forward_k4())
+    }
+
     /// K=4 verify FFN via batched GEMV (dense only). Returns `false` when the
     /// path is unavailable (MoE / missing batch4 kernel / non-NVFP4 weights)
     /// so the caller can fall back to `forward_prefill`.
