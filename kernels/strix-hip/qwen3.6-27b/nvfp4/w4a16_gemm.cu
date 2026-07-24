@@ -68,6 +68,7 @@ __device__ __forceinline__ unsigned short atlas_cvt_e4m3x2_f32(float a_hi, float
 #define PAD_T 8        // 16-byte aligned smem rows: (32+8)*2=80, 80%16=0
 #define BP_PAD 16      // smem_Bp row padding: stride 144 is 16-byte aligned
 #define GROUP_SIZE 16
+#define PADB 2         // smem_B_bf16 row 32->34 bf16 = 17 words, gcd(17,32)=1 => conflict-free (was 16-way)
 
 __device__ __constant__ float E2M1_LUT[16] = {
     0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
@@ -88,6 +89,15 @@ __device__ __forceinline__ void sync_copy_16(void* dst_smem, const void* src_gme
 // ═══════════════════════════════════════════════════════════════════
 // Original layout w4a16_gemm: N_TILE=64, BF16 WMMA. 4 WMMA n-sub-tiles.
 // ═══════════════════════════════════════════════════════════════════
+// Branchless RNE f32->bf16 bits for the dequant hot path. Dequant inputs are
+// E2M1_LUT[.]*scale, always finite, so the NaN handling __float2bfloat16 emits
+// (v_cmp_u/v_cndmask; gfx1151 has NO hardware bf16 convert) is dead. Bit-identical
+// to __float2bfloat16 for every finite input.
+__device__ __forceinline__ unsigned short f32_to_bf16_bits_finite(float f) {
+    unsigned int u = __float_as_uint(f);
+    return (unsigned short)((u + 0x7fffu + ((u >> 16) & 1u)) >> 16);
+}
+
 extern "C" __global__ void w4a16_gemm(
     const __nv_bfloat16* __restrict__ A,
     const unsigned char* __restrict__ B_packed,
@@ -192,7 +202,7 @@ extern "C" __global__ void w4a16_gemm_t(
     __shared__ __nv_bfloat16 smem_A[2][M_TILE][K_STEP_T + PAD_T];
     __shared__ unsigned char smem_Bp[2][K_STEP_T / 2][N_TILE_LG + BP_PAD];
     __shared__ unsigned char smem_Bs[2][K_STEP_T / GROUP_SIZE][N_TILE_LG + BP_PAD];
-    __shared__ __nv_bfloat16 smem_B_bf16[N_TILE_LG][K_STEP_T];
+    __shared__ __nv_bfloat16 smem_B_bf16[N_TILE_LG][K_STEP_T + PADB];
     __shared__ float smem_LUT[16];
 
     if (threadIdx.x < 16) smem_LUT[threadIdx.x] = E2M1_LUT[threadIdx.x];
@@ -241,14 +251,14 @@ extern "C" __global__ void w4a16_gemm_t(
         _Pragma("unroll") \
         for (int kp = 0; kp < 8; kp++) { \
             unsigned char packed = smem_Bp[(buf)][kp][my_n]; \
-            smem_B_bf16[my_n][kp * 2]     = __float2bfloat16(smem_LUT[packed & 0xF] * sv0); \
-            smem_B_bf16[my_n][kp * 2 + 1] = __float2bfloat16(smem_LUT[packed >> 4] * sv0); \
+            *(unsigned short*)&smem_B_bf16[my_n][kp * 2]     = f32_to_bf16_bits_finite(smem_LUT[packed & 0xF] * sv0); \
+            *(unsigned short*)&smem_B_bf16[my_n][kp * 2 + 1] = f32_to_bf16_bits_finite(smem_LUT[packed >> 4] * sv0); \
         } \
         _Pragma("unroll") \
         for (int kp = 8; kp < 16; kp++) { \
             unsigned char packed = smem_Bp[(buf)][kp][my_n]; \
-            smem_B_bf16[my_n][kp * 2]     = __float2bfloat16(smem_LUT[packed & 0xF] * sv1); \
-            smem_B_bf16[my_n][kp * 2 + 1] = __float2bfloat16(smem_LUT[packed >> 4] * sv1); \
+            *(unsigned short*)&smem_B_bf16[my_n][kp * 2]     = f32_to_bf16_bits_finite(smem_LUT[packed & 0xF] * sv1); \
+            *(unsigned short*)&smem_B_bf16[my_n][kp * 2 + 1] = f32_to_bf16_bits_finite(smem_LUT[packed >> 4] * sv1); \
         } \
     } while(0)
 
@@ -729,7 +739,7 @@ void w4a16_gemm_t_m128(
     __shared__ __nv_bfloat16 smem_A[2][2 * M_TILE][K_STEP_T + PAD_T];
     __shared__ unsigned char smem_Bp[2][K_STEP_T / 2][N_TILE_LG + BP_PAD];
     __shared__ unsigned char smem_Bs[2][K_STEP_T / GROUP_SIZE][N_TILE_LG + BP_PAD];
-    __shared__ __nv_bfloat16 smem_B_bf16[N_TILE_LG][K_STEP_T];
+    __shared__ __nv_bfloat16 smem_B_bf16[N_TILE_LG][K_STEP_T + PADB];
     __shared__ float smem_LUT[16];
 
     if (threadIdx.x < 16) smem_LUT[threadIdx.x] = E2M1_LUT[threadIdx.x];
@@ -780,14 +790,14 @@ void w4a16_gemm_t_m128(
         _Pragma("unroll") \
         for (int kp = 0; kp < 8; kp++) { \
             unsigned char packed = smem_Bp[(buf)][kp][my_n]; \
-            smem_B_bf16[my_n][kp * 2]     = __float2bfloat16(smem_LUT[packed & 0xF] * sv0); \
-            smem_B_bf16[my_n][kp * 2 + 1] = __float2bfloat16(smem_LUT[packed >> 4]  * sv0); \
+            *(unsigned short*)&smem_B_bf16[my_n][kp * 2]     = f32_to_bf16_bits_finite(smem_LUT[packed & 0xF] * sv0); \
+            *(unsigned short*)&smem_B_bf16[my_n][kp * 2 + 1] = f32_to_bf16_bits_finite(smem_LUT[packed >> 4]  * sv0); \
         } \
         _Pragma("unroll") \
         for (int kp = 8; kp < 16; kp++) { \
             unsigned char packed = smem_Bp[(buf)][kp][my_n]; \
-            smem_B_bf16[my_n][kp * 2]     = __float2bfloat16(smem_LUT[packed & 0xF] * sv1); \
-            smem_B_bf16[my_n][kp * 2 + 1] = __float2bfloat16(smem_LUT[packed >> 4]  * sv1); \
+            *(unsigned short*)&smem_B_bf16[my_n][kp * 2]     = f32_to_bf16_bits_finite(smem_LUT[packed & 0xF] * sv1); \
+            *(unsigned short*)&smem_B_bf16[my_n][kp * 2 + 1] = f32_to_bf16_bits_finite(smem_LUT[packed >> 4]  * sv1); \
         } \
     } while(0)
 
