@@ -111,6 +111,10 @@ pub fn step_verify_k3(
         return;
     }
 
+    // Captured before the verify/emit paths advance seq_len (shadow top-k
+    // join key; see SHADOW_TGT below).
+    let shadow_base = a.seq.seq_len;
+
     // EP: broadcast verify K=3 command + 3 tokens so worker runs decode_verify_graphed_k3 in lockstep.
     let tokens_k3 = [a.last_token, drafts[0], drafts[1]];
     if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, 0xFFFFFFF3) {
@@ -184,6 +188,17 @@ pub fn step_verify_k3(
     } else {
         2
     };
+
+    // Shadow top-k target line (ATLAS_MTP_SHADOW_TOPK): joins offline with
+    // the drafter's SHADOW_TOPK lines — draft i (drafter pos base+i) vs v_i.
+    // `base` is seq_len at step entry = the propose-time position of draft 0.
+    if spark_model::speculative::shadow_topk() > 0 {
+        tracing::info!(
+            "SHADOW_TGT base={shadow_base} v=[{v0},{v1},{v2}] drafts=[{},{}]",
+            drafts[0],
+            drafts[1],
+        );
+    }
 
     // Unconditional per-position draft match — scored BEFORE the accept chain
     // short-circuits, so position 2 is measured on every step, not only on the
