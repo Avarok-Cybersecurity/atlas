@@ -270,3 +270,13 @@ for this). **VERDICT: NO decode fold; bf16-KV main is optimum. ALL decode levers
 The completed conglomerate e2e (bf16 4551.9s or fp8 4534.9s) still BEATS confirmed vLLM (wall −15% /
 TPS +17-20% / BFCL +1 / IoU-tie). dgx2 BFCL scorer errored (bfcl-eval dep) → bf16 accuracy from prior
 runs (~87/0.625); dgx1 fp8 scored 87.54/0.6223.
+
+## ★★★★★ 09:00 — vLLM RE-RUN (owner-requested): TPOT is TUNING-DEPENDENT, no acceptance edge
+Served nvidia/Qwen3.6-27B-NVFP4 on dgx3 (sparkrun-eugr-vllm img, Triton/FLA GDN, MTP qwen3_next_mtp
+2-tok, fp8-KV), warmed 10×. **Steady-state MTP TPOT = 104.86ms** (min 104.6 / p90 106.3, n=10 — stable,
+not JIT). MTP acceptance: mean-len ~2.5, p1 0.83 / p2 0.65 = **≈ Atlas (p1 0.90, E~2.84), NO edge**.
+→ vLLM TPOT swings 3.4×: **31.39ms tuned (07-16 Marlin+CUDA-graph) vs 104.86ms out-of-box.** Atlas
+38-43ms BEATS untuned vLLM 2.5×, trails best-tuned vLLM only ~1.2×. The confirmed vLLM run (5361/86.43)
+NEVER reported a TPOT and I couldn't reproduce its tuned state in-window. So the "gap" is conditional on
+vLLM's single best config; Atlas wins every confirmed e2e metric. FINAL raw-TPOT answer: config-dependent,
+not a fixed vLLM number.
