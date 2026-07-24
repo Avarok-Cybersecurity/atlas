@@ -214,3 +214,13 @@ candidate) — report_dir endpoints-fresh/results/fp8kv_conglom_20260724_050249,
 dgx2: the bf16-KV baseline e2e (main 011bee65) finishing → the control leg.
 → e2e-level A/B: fp8-KV vs bf16-KV on wall/TPOT/IoU/BFCL. FOLD fp8-KV iff it improves wall/TPOT AND
 IoU≥0.6269 (confirmed vLLM) AND BFCL≥floor (83.64/85.32). Both runs ~2.5h; done ~07:30. Deadline 09:21.
+
+## ★★★★ 07:39 — dgx2 bf16 BASELINE e2e PERF (fresh main 011bee65) — Atlas CRUSHES confirmed vLLM
+1007/1007 complete. **wall 4551.86s · TPOT median 38.18ms · TTFT median 1264ms · qps 0.221 · tps 17.56 ·
+out-tok median 45.** (Fresh main is FASTER than the golden 5023s/39.95ms/15.67tps I'd quoted — #356
+prefill smem fix.) Warm accept p1 0.89-0.90, mean-accepted 1.84 (E~2.84).
+vs CONFIRMED vLLM (5361s/14.6tps/0.188qps/IoU 0.6269): **Atlas wall −15%, tps +20%, qps +18%.**
+Raw-TPOT 38.18 vs vLLM weak-run 31.39 = residual at the hardware roofline (per FINDINGS).
+NOTE: BFCL accuracy phase ERRORS on both boxes — `bfcl-eval` dep missing (bfcl_v4_scorer.py:110). Perf
+metrics (wall/TPOT/TTFT/tps) valid; BFCL/IoU from THIS run blocked. fp8-KV accuracy rests on prior
+golden_fp8kv=86.33 PASS.
