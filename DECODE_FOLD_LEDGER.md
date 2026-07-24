@@ -145,3 +145,11 @@ sweep +27.8%, old nd=3 e2e 56-59ms). Fix = mirror the n==3 arm (kernel agent fol
 ALSO: acceptance is workload-dependent — prose probe p1 0.63-0.72 vs agentic-harness shadow 0.88-0.91.
 The MLPerf target workload is agentic → shadow numbers govern the goal; freeform prose will see less.
 With the n==4 fix alone: predicted agentic K=4 TPOT ≈ 33-34ms (E≈3.45, S4/S3≈1.02) on TODAY'S kernels.
+
+## ★★★ K=6 STRUCTURAL VALIDATION: PASS (2026-07-24)
+`--num-drafts 5` on today's binary runs end-to-end: MTP drafter proposes 5-deep, dispatch routes to
+step_verify_dflash (γ=5) with the MTP pipeline branch, acceptance works (0-5/5 incl. 100% steps),
+output coherent, no errors/degrades. Warm prose TPOT 96.9ms = expected cliff-stack (n>4 FFN→
+forward_prefill MMQ on 16 attn layers + M=6 lm_head/QKV GEMM + serial GDN): S6/S3 ≈ 3.1×. All of it
+is the in-flight batch8/gate work. **Chain K≤8 needs NO new structural code — only the kernels.**
+Prose accept at depth5 mean ≈ 2.2/5 (E≈3.2 even on the pessimistic workload).
