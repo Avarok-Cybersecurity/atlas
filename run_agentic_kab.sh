@@ -10,10 +10,8 @@ cd /workspace/endpoints-fresh
 TS=$(date +%H%M%S); RD="results/kab_${TAG}_${TS}"
 python3 - "$RD" <<'PY'
 import sys, yaml
-c = yaml.safe_load(open("/workspace/endpoints/results/gc356_pr/config.yaml"))
+c = yaml.safe_load(open("/workspace/.wt-decode-fold/kab_template.yaml"))
 c["report_dir"] = sys.argv[1]
-c.setdefault("endpoint_config", {})["endpoints"] = ["http://localhost:8888"]
-# keep the subset shape (3 trajectories) as-is; perf phase only is enough
 yaml.safe_dump(c, open("/workspace/.wt-decode-fold/kab.yaml", "w"), sort_keys=False)
 PY
 sudo docker rm -f "$CN" >/dev/null 2>&1; sleep 3
