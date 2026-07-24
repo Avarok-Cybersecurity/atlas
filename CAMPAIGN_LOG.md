@@ -207,3 +207,10 @@ rebuild. → FOLD CANDIDATE if the conglomerate e2e holds IoU≥0.6269 (vLLM) + 
 Combined honest picture: fp8-KV recovers ~2ms (40→~38); all other decode levers roofline-dead. Partial
 close, not full — the rest is the hardware floor for the all-NVFP4 checkpoint.
 NEXT: run CONGLOMERATE e2e with fp8-KV (serve flag) → confirm IoU/BFCL + measure wall/TPOT gain → fold.
+
+## 05:03 — CONGLOMERATE e2e LAUNCHED (fp8-KV) on dgx1 — e2e-level A/B
+dgx1: full MLCommons e2e (1007 perf + 995 BFCL, temp0/seed42) with **--kv-cache-dtype fp8** (the fold
+candidate) — report_dir endpoints-fresh/results/fp8kv_conglom_20260724_050249, serve atlas-fp8kv-conglom.
+dgx2: the bf16-KV baseline e2e (main 011bee65) finishing → the control leg.
+→ e2e-level A/B: fp8-KV vs bf16-KV on wall/TPOT/IoU/BFCL. FOLD fp8-KV iff it improves wall/TPOT AND
+IoU≥0.6269 (confirmed vLLM) AND BFCL≥floor (83.64/85.32). Both runs ~2.5h; done ~07:30. Deadline 09:21.
