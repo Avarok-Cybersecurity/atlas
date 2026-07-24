@@ -99,3 +99,20 @@ Therefore: base consolidation branch ≈ main; the decisive measurement is a **f
 - **qwen RECONSULT / per-step teardown (2026-07-24):** COST is the wall (confirmed). Acceptance ~0.90 gives only ~7% headroom (E 2.8/3.0) → even perfect K=3 floors at **37.3ms, still misses 31.39**. Need **−21% per-step cost** (S 112→88ms). WY recurrence is NOT the suspect (L1 dead confirms epilogue≠wall). **Ranked overhead hypotheses:** #1 (30%) **non-overlapped drafter/MTP proposal** (2 sequential MTP passes not hidden behind verify; predict mtp_propose ≥18-25ms/step) · #2 (25%) **target verify not weight-once at M=3** (projections/FFN stream per-token or inefficient M=3; predict M=3 >1.3× M=1) · #3 (20%) launch/dispatch bubbles (predict GPU idle ≥12-15ms/step) · #4 (15%) SSM state/rollback D2D · #5 (10%) measurement artifact. **Method:** Step0 per-step phase split (NVTX/CUDA-events: target_verify/mtp_propose/sample/ssm-rollback/gaps) ← decisive; Step1 non-spec T_no_spec leg (decision tree); Step2 SHORT safe nsys on ONE warm decode loop (dgx3 idle, --delay/--duration, NOT full 1007); Step3 microbench M=1 vs M=3 projections/FFN/lm_head + GDN state traffic. Falsifier to confirm: live nd=2 dispatches batched wy3 (YES, seen in logs) and M=3 GEMVs truly batched. **L6 verdict: worth banking as small cost-cut but NOT the closer (epilogue is 2-6ms not 20+).**
 - **L1 `ATLAS_GDN_FUSED_VERIFY`: DEAD** (2026-07-24). base_off 42.87ms vs fused_on 43.12ms warm-median TPOT (+0.6%, noise; 9 runs/leg). Output BYTE-IDENTICAL (sha f0fdf42b, correctness confirmed). At K=2 the conv/norm epilogue is a small fraction of the verify step → fusing saves ~nothing. DO NOT FOLD. Lesson: reducing K=2 verify COST doesn't move TPOT; the lever is tokens-accepted-per-step (→ L6 unlock-K=3).
 - Neighbour: idle ollama gpt-oss-120b on :8000, model NOT resident (111GB free) — no contention.
+
+## ★★★★ RE-BASELINE (2026-07-24) — the vLLM reference was a WEAK/verbose run
+User confirmed a WELL-CONFIGURED vLLM-on-GB10 (same nvidia/Qwen3.6-27B-NVFP4 ckpt):
+  Perf(1007): wall **5361s**, IoU **0.6269**, tps 14.6, qps 0.188, 1006/0 missing.
+  Accuracy(995 ST): **86.43%** overall / 88.77 normalized. Gate PASS.
+vs the artifact I anchored on (vllm_edge_full_20260716): wall 7438s, IoU 0.6194, BFCL 79.90,
+TTFT 2985, TPOT 31.39, TPS 18.68. The 07-16 run was VERBOSE (~521 tok/BFCL leg per CLAUDE.md) →
+slow wall + weak BFCL. **The confirmed 5361/86.43/0.6269 is the REAL bar.**
+Re-scored vs REAL vLLM: Atlas golden (~5000s / ~87 / ~0.625) ≈ **PARITY** on wall/BFCL/IoU
+(all within noise), NOT a 4/5 blowout. **TTFT/TPOT of the confirmed run are UNKNOWN** → the
+31.39ms target is from the weak run and may be invalid. MUST obtain confirmed-run TTFT/TPOT before
+grinding any decode-cost lever. dgx2 Atlas e2e gives the apples-to-apples Perf/Accuracy phases.
+
+## L6 result: DO-NOT-FOLD
+Byte-identical (sha match), TPOT delta -0.01% (noise). Epilogue fusion dead on GB10 (conv snapshot
+copies ~0.14% of decode GPU time), same as L1. Refactor dropped conv_gdn file 528→495 LoC (dedups
+K4/K17) — cleanup value only. NOT committed/folded.
