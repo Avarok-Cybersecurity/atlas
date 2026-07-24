@@ -102,6 +102,11 @@ cd /workspace/endpoints-fresh && \
 **Delta vs the golden serve line: `--num-drafts 2` → `3`. Everything else — every env flag, every
 serve flag, model, harness config, seed — is byte-identical to the golden run.**
 
+**As of this PR, K=4 is the shipped default**: `kernels/gb10/qwen3.6-27b/MODEL.toml`
+`default_num_drafts = 1 → 3`, so serving without `--num-drafts` now selects K=4. Verified on a
+clean serve: `num_drafts: using MODEL.toml default_num_drafts=3 (K=4)`, scheduler `num_drafts=3`,
+coherent output, tool-call smoke PASS. `--num-drafts` still overrides.
+
 ## 6. Supporting artifacts (all on the branch)
 
 `CAMPAIGN_LOG.md` (chronological log) · `DECODE_FOLD_LEDGER.md` (every lever + verdict) ·
