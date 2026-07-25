@@ -112,6 +112,20 @@ pub fn step_verify_k4(
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
     dflash_verify_raw_argmax: bool,
 ) {
+    // `ATLAS_MTP_TIMING=1` summary for the K=4 path.
+    //
+    // The per-phase `record()` calls already fire for K=4 because the picks
+    // route through `verify_pipeline_helper`, but NOTHING called `step_done`
+    // here — that lived only in `verify_k2_step`. So with `--num-drafts 3`
+    // (K=4, the shipped config) the accumulators filled and the summary was
+    // never emitted: a probe that generated ~1800 tokens produced zero timing
+    // lines. This closes that hole.
+    //
+    // A Drop guard rather than hand-placed calls: this function has four accept
+    // branches and several early error returns, so an explicit call per tail
+    // would be one refactor away from silently drifting out of date again.
+    let _step_timer = crate::scheduler::mtp_timing::StepTimer::new(a.seq.seq_len);
+
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
         a.finished = true;
