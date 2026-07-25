@@ -6,10 +6,15 @@
 //! inference to compute per-tensor scales: `scale = max / 448.0` (mapping the
 //! observed dynamic range to FP8 E4M3 [-448, 448]).
 //!
-//! After the warmup period, scales are frozen and used for all subsequent
-//! tokens. During warmup, FP8 KV cache writes use scale=1.0 (uncalibrated).
-//! This is safe because typical attention projection outputs are well within
-//! [-448, 448] during the first few hundred tokens.
+//! The scale is frozen on the FIRST observation (which runs immediately before
+//! the first KV write) and is then constant for the entire lifetime of every
+//! cache entry. This is required for correctness: FP8 KV round-trips (write
+//! `fp8=bf16/scale`, read `bf16=fp8*scale`) only if the SAME scale quantizes
+//! and dequantizes an entry. Freezing after N warmup tokens (the old design)
+//! wrote early entries at a placeholder scale, then froze to a different value,
+//! silently invalidating all already-written / cached KV — a paged multi-query
+//! read spanning the freeze boundary then read history through the wrong scale
+//! and generation degenerated. See the freeze block in `observe`.
 //!
 //! Thread safety: uses `parking_lot::Mutex` for interior mutability. The lock
 //! is uncontended (single inference thread) so lock overhead is negligible.
@@ -46,8 +51,6 @@ struct CalibrationInner {
 /// struct (required by `TransformerLayer` trait).
 pub struct Fp8KvCalibration {
     inner: Mutex<CalibrationInner>,
-    /// Number of warmup tokens before freezing scales.
-    warmup_tokens: usize,
     /// GPU buffer for absmax reduction output: `[1]` f32 for K, `[1]` f32 for V.
     /// Layout: `[k_absmax: f32, v_absmax: f32]` = 8 bytes.
     absmax_buf: DevicePtr,
@@ -64,9 +67,12 @@ unsafe impl Sync for Fp8KvCalibration {}
 impl Fp8KvCalibration {
     /// Create a new calibration tracker.
     ///
-    /// `warmup_tokens`: number of tokens to observe before freezing scales.
+    /// `_warmup_tokens`: retained for API/CLI compat but no longer gates the
+    ///   freeze — the scale is now frozen on the FIRST observe (before any KV is
+    ///   persisted), so a warmup window would only reintroduce the write/read
+    ///   scale mismatch. Any value > 0 simply enables online calibration.
     /// `gpu`: GPU backend for allocating the absmax reduction buffer.
-    pub fn new(warmup_tokens: usize, gpu: &dyn GpuBackend) -> Result<Self> {
+    pub fn new(_warmup_tokens: usize, gpu: &dyn GpuBackend) -> Result<Self> {
         let absmax_kernel = gpu.kernel("reshape_and_cache", "bf16_absmax")?;
         // Allocate 8 bytes: [k_absmax: f32, v_absmax: f32]
         let absmax_buf = gpu.alloc(8)?;
@@ -87,7 +93,6 @@ impl Fp8KvCalibration {
                 k_scale: 2.0,
                 v_scale: 2.0,
             }),
-            warmup_tokens,
             absmax_buf,
             absmax_kernel,
         })
@@ -101,8 +106,10 @@ impl Fp8KvCalibration {
 
     /// Get current scales. Returns (k_scale, v_scale).
     ///
-    /// During warmup: returns (1.0, 1.0) (uncalibrated).
-    /// After warmup: returns calibrated scales.
+    /// Before the first observe: the conservative construction default (2.0,
+    /// covering ±896) — never used for a persisted write, since observe() runs
+    /// before every write and freezes on its first call. After the first
+    /// observe: the frozen, data-derived scale (constant thereafter).
     pub fn scales(&self) -> (f32, f32) {
         let inner = self.inner.lock();
         (inner.k_scale, inner.v_scale)
@@ -171,11 +178,46 @@ impl Fp8KvCalibration {
         inner.v_running_max = inner.v_running_max.max(v_max);
         inner.tokens_seen += num_tokens as usize;
 
-        if inner.tokens_seen >= self.warmup_tokens && !inner.frozen {
-            // Initial calibration: compute scales from warmup observations.
-            inner.k_scale = (inner.k_running_max / FP8_E4M3_MAX).max(MIN_SCALE);
-            inner.v_scale = (inner.v_running_max / FP8_E4M3_MAX).max(MIN_SCALE);
+        if !inner.frozen {
+            // HARDENING (2026-07-25): freeze the scale on the FIRST observation,
+            // BEFORE any KV is persisted with it. The write path calls observe()
+            // immediately before quantizing+writing KV (write_kv_cache.rs:482-485),
+            // so the scale frozen HERE is exactly what THIS batch — and every
+            // later batch — writes with, and what every read dequantizes with.
+            //
+            // The previous design wrote the first `warmup_tokens` (256) at a
+            // placeholder scale (2.0), then froze to a data-derived value (~0.3)
+            // and never re-quantized the already-written entries. A paged /
+            // multi-query attention read (chunked prefill, or a prefix-cache
+            // resume where seq_len_start>0) covers the whole history in one pass,
+            // so once the sequence crossed the freeze boundary it dequantized the
+            // pre-freeze KV (and cached/shared prefixes) through the NEW scale —
+            // ~6x error → generation garbage (loops/empty). Freezing on the first
+            // observe guarantees ONE constant scale for every cache entry's whole
+            // lifetime — the exact invariant the EMA-recal guard below documents.
+            // `warmup_tokens` no longer gates the freeze (kept for API compat).
+            //
+            // CALIB_HEADROOM: the first observe sees only the first prefill chunk,
+            // so size the scale to cover CALIB_HEADROOM× its observed max, giving
+            // headroom for later tokens whose magnitude grows (trades <1 bit of
+            // precision for no clipping). Overridable via ATLAS_FP8_KV_HEADROOM.
+            let headroom = std::env::var("ATLAS_FP8_KV_HEADROOM")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|h| *h >= 1.0)
+                .unwrap_or(2.0);
+            inner.k_scale = (inner.k_running_max * headroom / FP8_E4M3_MAX).max(MIN_SCALE);
+            inner.v_scale = (inner.v_running_max * headroom / FP8_E4M3_MAX).max(MIN_SCALE);
             inner.frozen = true;
+            tracing::info!(
+                "FP8 KV scale frozen on first observe ({} tok, headroom={:.1}): k_scale={:.6} (max={:.2}), v_scale={:.6} (max={:.2}) — constant for all entries",
+                inner.tokens_seen,
+                headroom,
+                inner.k_scale,
+                inner.k_running_max,
+                inner.v_scale,
+                inner.v_running_max,
+            );
         } else if inner.frozen
             && inner.tokens_seen % 128 < num_tokens as usize
             && std::env::var("ATLAS_FP8_KV_EMA_RECAL")
