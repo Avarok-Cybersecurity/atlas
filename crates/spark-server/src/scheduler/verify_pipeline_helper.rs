@@ -52,6 +52,7 @@
 
 mod argmax;
 mod fast_masked;
+mod scratch;
 
 use crate::scheduler::ActiveSeq;
 use crate::scheduler::decode_logits_seq::force_temp_zero_enabled;
@@ -139,30 +140,36 @@ pub fn verify_pick_with_pipeline(
     verify_pos: usize,
 ) -> u32 {
     use crate::scheduler::mtp_timing::{self, Phase};
-    // 1. Dequant per the same scheme as `process_seq_logits`.
+    // 1. Dequant per the same scheme as `process_seq_logits`, into a REUSED
+    //    thread-local buffer rather than a fresh ~1 MB `Vec<f32>` per K position
+    //    — see `scratch.rs`. Semantically inert: every `vocab_size` entry is
+    //    overwritten before any read.
     let t_dequant = std::time::Instant::now();
-    let mut f32_logits: Vec<f32> = if is_fp32 {
-        (0..vocab_size)
-            .map(|j| {
-                let off = j * 4;
-                f32::from_le_bytes([
-                    logits_bytes[off],
-                    logits_bytes[off + 1],
-                    logits_bytes[off + 2],
-                    logits_bytes[off + 3],
-                ])
-            })
-            .collect()
+    let mut f32_logits = scratch::DEQUANT_SCRATCH.with(|s| std::mem::take(&mut *s.borrow_mut()));
+    f32_logits.clear();
+    f32_logits.reserve(vocab_size);
+    if is_fp32 {
+        f32_logits.extend((0..vocab_size).map(|j| {
+            let off = j * 4;
+            f32::from_le_bytes([
+                logits_bytes[off],
+                logits_bytes[off + 1],
+                logits_bytes[off + 2],
+                logits_bytes[off + 3],
+            ])
+        }));
     } else {
-        (0..vocab_size)
-            .map(|j| {
-                let lo = logits_bytes[j * 2];
-                let hi = logits_bytes[j * 2 + 1];
-                bf16_to_f32(lo, hi)
-            })
-            .collect()
-    };
+        f32_logits.extend((0..vocab_size).map(|j| {
+            let lo = logits_bytes[j * 2];
+            let hi = logits_bytes[j * 2 + 1];
+            bf16_to_f32(lo, hi)
+        }));
+    }
     mtp_timing::record(Phase::Dequant, t_dequant);
+    // Hand the allocation back on EVERY exit below (forced-token short circuit,
+    // temp>0 sample, argmax), or the next call allocates from scratch again and
+    // the reuse is silently lost.
+    let mut f32_logits = scratch::ScratchGuard(f32_logits);
 
     // 2. Build this position's penalty/bias params (Verify kind: greedy,
     //    seed-free, no caller bias — the builder still appends the A4 floor
