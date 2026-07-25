@@ -211,6 +211,7 @@ pub(crate) async fn chat_completions_inner(
     }
 
     // ── Phases 1-5 (prompt-affecting): shared with count_tokens ──
+    let _t_seg = std::time::Instant::now();
     let prepare::PreparedChat {
         tools_active,
         cwd_hint,
@@ -223,13 +224,17 @@ pub(crate) async fn chat_completions_inner(
         Err(resp) => return ChatOutcome::Http(resp),
     };
 
+    let us_prepare = _t_seg.elapsed().as_micros();
+
     // ── Phase 4: generic loop / spinning detection + task pin ───
     let loop_detect::LoopDetectOut {
         suppress_tool_call,
         tool_call_repeat_count,
     } = loop_detect::check_loops(&req.messages, tools_active);
+    let us_loop_detect = _t_seg.elapsed().as_micros() - us_prepare;
 
     let session_hash = crate::session_manager::compute_session_hash(&prompt_tokens);
+    let us_session_hash = _t_seg.elapsed().as_micros() - us_prepare - us_loop_detect;
     let tools_count = req.tools.len();
     tracing::info!(
         "Session {session_hash:#x}: {prompt_tokens} prompt tokens, tools={tools_active} ({tools_count} defined)",
@@ -278,6 +283,16 @@ pub(crate) async fn chat_completions_inner(
         Ok(s) => s,
         Err(resp) => return ChatOutcome::Http(resp),
     };
+    if prepare::phase_timing_enabled() {
+        let us_sampling =
+            _t_seg.elapsed().as_micros() - us_prepare - us_loop_detect - us_session_hash;
+        tracing::info!(
+            "CHAT_PHASE handler: prepare={us_prepare}us loop_detect={us_loop_detect}us \
+             session_hash={us_session_hash}us sampling_and_grammar={us_sampling}us \
+             total_pre_dispatch={}us",
+            _t_seg.elapsed().as_micros()
+        );
+    }
 
     // ── Phase 7: dispatch streaming or blocking ─────────────────
     if req.stream {
