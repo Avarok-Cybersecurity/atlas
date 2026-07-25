@@ -9,6 +9,37 @@
 
 use super::*;
 
+/// Register-resident warm-replay GDN recurrence: **ON by default**, disabled only
+/// by `ATLAS_NO_GDN_REGRESIDENT=1`.
+///
+/// Default flipped 2026-07-25 on measured evidence. Full MLCommons edge-agentic
+/// e2e on the frozen GB10 golden config, this flag as the ONLY change:
+/// perf wall **4134.01 -> 3834.44 s (-7.25%)**, TTFT p50/p90/p99
+/// **-11.4% / -18.0% / -15.8%**, BFCL **identical at 87.24**, IoU -0.0048 (exactly
+/// on the measured two-identical-runs noise floor). Attribution confirms the win is
+/// TTFT and that decode is untouched: decode fell 80.5 s, of which 79.9 s is the
+/// 3.2% drop in emitted tokens at an unchanged 31.09 ms/token, leaving a -0.5 s
+/// residual. Discounting that trajectory effect, the defensible win is ~219 s =
+/// 5.3% of wall, all TTFT — which is exactly where a warm-replay kernel should act.
+///
+/// It had been opt-in since 2026-06-28 labelled "until serve-validated" and was
+/// never validated; this is that validation.
+///
+/// NOT output-neutral at long replay: the kernel is token-equal to WY4 by
+/// construction (cos 1.0, max|dH| ~1e-8) and matched on short replays, but a
+/// ~1200-token replay differed — a changed accumulation order tips razor-margin
+/// greedy tokens. Hence the kill switch.
+///
+/// The switch is a strict `== "1"` on an `ATLAS_NO_*` name, deliberately NOT a
+/// presence check on the old `ATLAS_GDN_REGRESIDENT`: presence-checked flags in this
+/// codebase are ENABLED by `=0`, a trap that has burned it before, so the disable
+/// path must be an explicit value on an explicitly negative name. Read once — the
+/// dispatch site is per-layer per-chunk.
+fn gdn_regresident_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_GDN_REGRESIDENT").as_deref() != Ok("1"))
+}
+
 impl Qwen3SsmLayer {
     /// GDN prefill recurrence via the WY4-persistent kernel.
     ///
@@ -231,7 +262,7 @@ impl Qwen3SsmLayer {
                 ctx.profile,
                 stream,
             )?;
-        } else if std::env::var_os("ATLAS_GDN_REGRESIDENT").is_some()
+        } else if gdn_regresident_enabled()
             && kd == 128
             && vd == 128
             && self.gdn_prefill_regresident_k.0 != 0
@@ -242,11 +273,13 @@ impl Qwen3SsmLayer {
             // registers (one warp per v-column, 4 k-rows/lane) instead of 64KB
             // smem, so >=2 CTA/SM and no per-token barriers. Token-equal to WY4
             // (cosine 1.0, max|dH|~1e-8 — same acceptance class) and ~2.9x faster
-            // in isolation. Gated by ATLAS_GDN_REGRESIDENT until serve-validated.
+            // in isolation.
+            //
+            // DEFAULT-ON since 2026-07-25 — see `gdn_regresident_enabled`.
             static RR_LOG: std::sync::Once = std::sync::Once::new();
             RR_LOG.call_once(|| {
                 tracing::info!(
-                    "GDN prefill: REGISTER-RESIDENT warm-replay path ACTIVE (ATLAS_GDN_REGRESIDENT; H in regs, no smem-H)"
+                    "GDN prefill: REGISTER-RESIDENT warm-replay path ACTIVE (default; H in regs, no smem-H)"
                 );
             });
             ops::gdn_prefill_regresident(
