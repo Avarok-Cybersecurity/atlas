@@ -110,3 +110,48 @@ regresident magnitude and produced a bogus "+6 ms for 310 new tokens" on dgx2.
   **not at startup**, so they must be read after the probes. They are the only proof a flag engaged.
 - `ATLAS_*` presence-flags treat `=0` as ENABLED; only `ATLAS_SSM_TAIL_MIDCHUNK` and
   `ATLAS_DECODE_GRAPHS_MULTISEQ` are strict-string tests. Control legs must OMIT the variable.
+
+## RESULT: ATLAS_GDN_REGRESIDENT — FOLD (full e2e, 2026-07-25)
+
+`results/regres_e2e_20260725_071238`, frozen golden config + `ATLAS_GDN_REGRESIDENT=1` only,
+both phases 1007/1007 + 995/995, MLPerf runtime seed lock, Gate C2 passed, traceback count 2
+(identical to the reference run's benign `apply_chat_template` fallback).
+
+| metric | tip (control) | regresident | delta |
+|---|---|---|---|
+| **perf wall** | 4134.01 s | **3834.44 s** | **−299.57 s (−7.25%)** |
+| tps | 19.25 | 20.08 | +4.3% |
+| TTFT p50 / p90 / p99 | 1301.6 / 2544.9 / 5415.6 ms | 1153.7 / 2085.9 / 4560.1 | **−11.4% / −18.0% / −15.8%** |
+| TPOT p50 | 32.62 ms | 32.90 | +0.8% |
+| **BFCL** | 87.24 | **87.24** | **identical** |
+| IoU | 0.6279 | 0.6231 | −0.0048 |
+| output tokens | 79576 | 77005 | −3.2% |
+
+### Attribution — the win is TTFT, and decode is provably untouched
+| slice | tip | regresident | delta |
+|---|---|---|---|
+| TTFT total | 1659.8 s | 1440.7 s | **−219.1 s (−13.2%)** |
+| decode total | 2474.1 s | 2393.7 s | −80.5 s |
+
+The decode delta is **entirely** the 3.2% drop in emitted tokens: at the tip's 31.09 ms/token the
+expected decode at the new token count is 2394.2 s against 2393.7 s actual — residual **−0.5 s**.
+Per-token decode cost is unchanged, which is exactly right for a kernel that only touches the warm
+replay path, and is a strong internal consistency check.
+
+**Discounting the token-count effect entirely as trajectory divergence, the defensible win is
+~219 s = 5.3% of wall, all TTFT.** The probe had projected 1.6-2.2%; the e2e beat it because the
+gain is not confined to the median — p90/p99 fell 16-18%, i.e. the kernel also relieves the deep
+replays that dominate the tail, which a fixed-delta probe cannot see.
+
+### Caveats carried forward
+- **IoU −0.0048 sits exactly ON the measured noise floor** (two identical runs differ by 0.0048).
+  Not a demonstrable regression, but not demonstrably clean either — it is the one number that is
+  undecidable at N=1. BFCL, the gated metric, is bit-identical at 87.24 against floors 83.64/85.32.
+- Not byte-identical at long replay (the 4320-char probe cell differed), so this is a numerics
+  change, not an output-neutral one. The accuracy evidence is the subset gate (0.8494 vs 0.8456)
+  plus this full 995-sample tie.
+
+**Verdict: FOLD, and flip the default with a kill switch** — it has been default-OFF since
+2026-06-28 labelled "until serve-validated", which is precisely the pattern
+`feedback_good_defaults_not_flags` exists to stop.
+
