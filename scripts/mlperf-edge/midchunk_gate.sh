@@ -107,7 +107,10 @@ r["min_duration_ms"] = 0
 yaml.safe_dump(c, open(cfg, "w"), sort_keys=False)
 print("accuracy subset ->", rd, gp.get("category_sample_pct"))
 PY
-  ( cd "$HARNESS" && ./.venv/bin/inference-endpoint benchmark from-config -c "$CFG" --mode accuracy -v ) \
+  # `--mode acc` — the choices are perf|acc|both. `--mode accuracy` is rejected
+  # with a bare "Required: --mode", which reads like a MISSING argument rather
+  # than an invalid value, so a failed accuracy leg is easy to miss in a log.
+  ( cd "$HARNESS" && ./.venv/bin/inference-endpoint benchmark from-config -c "$CFG" --mode acc -v ) \
       2>&1 | tail -40 | tee "$OUT/$leg.bfcl.log"
   cp "$HARNESS/$RD/report.txt" "$OUT/$leg.bfcl.report.txt" 2>/dev/null
 
