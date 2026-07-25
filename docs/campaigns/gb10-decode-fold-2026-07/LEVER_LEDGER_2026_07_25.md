@@ -31,6 +31,47 @@ Median output is only **45 tokens**, so per-request overhead competes directly w
 | **`ATLAS_BF16_TC_PROJ`** | **no speed case** | Monotonic warm TTFT 990.8 → 1016.5 ms (+2.6%), TPOT ~neutral, tool call fine. Its motivation is accuracy (removes FP8 E4M3 activation crushing on attention QKV/o, which we already avoid on the FFN via `ATLAS_BF16_TC_PREFILL=1`), so it would need an accuracy run to justify — but it does not pay for itself on speed. |
 | **`ATLAS_GDN_REGRESIDENT`** | **strongest candidate; re-measuring** | Token-equal to WY4 by construction (cos 1.0, max\|dH\|~1e-8) and confirmed MATCH on the probe. First-round monotonic warm TTFT 990.8 → 895.1 ms (**−9.7%**). Both rounds are N=1 with diverged trajectories, so the magnitude is not yet trustworthy — re-run in flight. |
 
+## The biggest claimed lever, measured and refuted
+
+A parallel investigation on dgx2 established a server-side law,
+`server_prefill_ms ~= 170 + 2.0 x tokens_actually_prefilled`, and found that Marconi restores at the
+previous turn's PROMPT end, leaving its generated response uncheckpointed and re-prefilled once it
+becomes prompt — measured 172-348 tokens in CHAT mode. Projected to this workload that read as
+"checkpoint at end-of-generation ⇒ ~660 ms/turn ⇒ ~655 s ≈ 16% of wall, bigger than the decode gap."
+
+**It does not hold here.** Rather than extrapolate, `run_replay_distance.sh` replays the REAL prompt
+sequence of a real golden-run conversation (`django__django-16899`, 25 turns, straight out of
+`events.jsonl`) and reads the server's own accounting:
+
+```
+Marconi intermediate hit: restored from checkpoint at token 1376
+  (skipping 1376 tokens, replaying 308 SSM tokens to reach 1684;
+   16 of those are the anchor->match gap to 1392)
+```
+
+Over 22 intermediate hits:
+
+| quantity | p50 | mean | max |
+|---|---|---|---|
+| **anchor->match gap (the only waste)** | **16** | **16.0** | **16** |
+| new tokens genuinely needed | 342 | 334 | 691 |
+| tokens skipped (cache win) | 4696 | — | 8240 |
+
+Total replayed 7691 tokens, of which waste = 352 = **4.6%**; the other 95.4% is content that must be
+prefilled regardless. The gap is **exactly 16 on every hit** — one block at `block_size=16`, i.e.
+pure block-granularity rounding. **Worth ~32 s = 0.8% of wall, not 16%.**
+
+Why the chat-mode result does not transfer: the harness never echoes the assistant turn back. It
+drives a flat prefix-extended prompt and substitutes its own
+`[{"id":"functions.bash:0",...}]` JSON, so the model's generated tokens never become prompt and
+there is nothing uncheckpointed to replay. This also independently corroborates the
+`WALL_DECOMPOSITION.md` finding that the warm fit predicts cold turn-1 within 3% — only possible if
+wasted replay is ~0.
+
+**Lesson: a root cause measured in one request-shaping regime does not automatically hold in
+another. Verify the mechanism in the target regime before sizing a lever off it.** This one was 20x
+over-sized and would have been the largest item in the queue.
+
 ## Two defects found in our own instruments
 
 **`kl_coherence_gate.py` could only ever return FAIL.** `kl()` renormalized P over the truncated
