@@ -65,8 +65,15 @@ scale = int(scale)
 c = yaml.safe_load(open(base))
 c["report_dir"] = rd
 c.setdefault("endpoint_config", {})["endpoints"] = [f"http://localhost:{port}"]
-c["datasets"] = [d for d in c["datasets"] if d.get("type") == "accuracy"]
+# Do NOT drop the performance dataset. `--mode acc` already skips the perf phase,
+# and removing it fails config validation outright:
+#   "load_pattern.type=agentic_inference requires the performance dataset to have
+#    agentic_inference config"
+# which kills the run before a single request is issued (banner files come back
+# empty, which is the tell).
 for d in c["datasets"]:
+    if d.get("type") != "accuracy":
+        continue
     gp = d.setdefault("generate_params", {})
     pct = gp.get("category_sample_pct") or {}
     gp["category_sample_pct"] = {k: max(1, v // scale) for k, v in pct.items()}
