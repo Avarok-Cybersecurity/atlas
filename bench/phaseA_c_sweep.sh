@@ -71,7 +71,7 @@ else
     -v "$ATLAS_BIN:/usr/local/bin/spark:ro" \
     atlas-gb10:followups serve "$MODEL_ATLAS" \
     --host 0.0.0.0 --port $PORT --model-name "$MODEL_ATLAS" \
-    --max-seq-len 32768 --max-batch-size 20 --kv-cache-dtype bf16 \
+    --max-seq-len 4096 --max-batch-size 16 --kv-cache-dtype bf16 \
     --gpu-memory-utilization 0.70 \
     --enable-prefix-caching --ssm-cache-slots 32 --ssm-checkpoint-interval 32 \
     --speculative --num-drafts 3 --mtp-quantization bf16 \
