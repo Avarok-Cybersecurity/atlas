@@ -24,3 +24,4 @@
   regimes (≤4096); agentic-harness `target_concurrency` sweep follows as a second driver.
 
 ## Log (appended by drivers)
+5048fa13d69c2870420a8b9050f54221  conc_sweep/spark_phaseA_baseline
