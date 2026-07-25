@@ -139,11 +139,7 @@ pub(super) fn continue_in_progress_prefills(
             // B4: clamp so padded decode + prefill slice fit the hidden
             // buffer (else mixed_forward silently de-fuses to sequential
             // decode_batch + prefill_chunk — weights loaded twice).
-            let padded_n = [2usize, 4, 8]
-                .iter()
-                .copied()
-                .find(|&s| s >= active.len())
-                .unwrap_or(active.len());
+            let padded_n = spark_model::traits::padded_batch_n(active.len());
             let fuse_cap = max_batch_tokens.saturating_sub(padded_n).max(4);
             debug_assert!(
                 fuse_cap >= 4,

@@ -99,14 +99,40 @@ pub(super) fn run_standard_chunk_loop(
     let no_mix_bisect = std::env::var("ATLAS_BISECT_NO_MIX")
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
-    let can_mix = !no_mix_bisect
-        && !active.is_empty()
-        && !model.is_ep()
-        && !use_mtp
-        && !use_self_speculative
-        && !use_ngram_speculative;
+    // The spec gate here used to be the process-GLOBAL flags (`!use_mtp && ...`),
+    // which meant a `--speculative` serve could NEVER fuse prefill with decode —
+    // at any concurrency. But speculative execution is per-STEP: the scheduler
+    // only runs a spec step when `active.len() == 1` (mod.rs:511/516/520);
+    // at C>=2 every sequence is on plain batched decode anyway, so fusing is
+    // exactly as safe as it is for a non-speculative serve. The correct
+    // predicate is "a spec step would run this tick", i.e. the same
+    // `single_active_with_spec` shape phase_continue_prefills.rs computes.
+    //
+    // Without this, one 8K prefill chunk froze every active decoder for the
+    // whole chunk (mixed_forward never fired in any --speculative production
+    // config) — the single largest scheduler-level concurrency gap found by
+    // the 2026-07-25 architecture map.
+    let any_spec = use_mtp || use_self_speculative || use_ngram_speculative;
+    let spec_step_this_tick = active.len() == 1 && any_spec;
+    let can_mix = !no_mix_bisect && !active.is_empty() && !model.is_ep() && !spec_step_this_tick;
 
     if can_mix {
+        // Entering the mixed step under a speculative serve at C>=2: mirror the
+        // decode-only arm's MTP->decode transition (mod.rs:636-647) EXACTLY.
+        // A sequence that ran solo MTP just before a second request arrived
+        // still carries `pending_drafts` and an in-flight async live-state
+        // restore on the secondary stream; decoding it here without the clear
+        // + sync would later verify STALE drafts against desynced SSM state
+        // when concurrency drops back to 1.
+        if any_spec {
+            let had_drafts = active.iter().any(|a| !a.pending_drafts.is_empty());
+            for a in active.iter_mut() {
+                a.pending_drafts.clear();
+            }
+            if had_drafts && let Err(e) = model.sync_secondary() {
+                tracing::error!("mtp->mixed sync_secondary: {e:#}");
+            }
+        }
         let decode_tokens: Vec<u32> = active.iter().map(|a| a.last_token).collect();
         let mut decode_refs: Vec<&mut SequenceState> =
             active.iter_mut().map(|a| &mut a.seq).collect();
