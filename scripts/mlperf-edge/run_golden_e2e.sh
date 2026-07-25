@@ -49,8 +49,29 @@ rd, cfg, base, port = sys.argv[1:5]
 c = yaml.safe_load(open(base))
 c["report_dir"] = rd
 c.setdefault("endpoint_config", {})["endpoints"] = [f"http://localhost:{port}"]
+
+# MLPerf submission-checker runtime lock. These are NOT free parameters: the
+# official checker compares them against the loadgen constants and rejects the
+# submission outright if they differ ("sample_index_rng_seed is wrong,
+# expected=2747215439041700203, found=42"), and it rejects a run whose
+# min_duration is 0 ("Test duration less than 600s in user config").
+#
+# The harness's own default template ships 42/42/0, which passes the endpoints
+# `check_compliance.py` but FAILS the official submission checker -- the two
+# rulesets disagree, and the official one is the gate for an actual submission.
+#
+# The seeds pick WHICH samples are drawn and in WHAT order, so they cannot be
+# edited into an already-recorded config after the fact: doing that makes the
+# artifact describe a run that never happened. Set them here, before the run.
+runtime = c.setdefault("settings", {}).setdefault("runtime", {})
+runtime["min_duration_ms"] = 600_000
+runtime["max_duration_ms"] = 14_400_000
+runtime["scheduler_random_seed"] = 16159082839903944936
+runtime["dataloader_random_seed"] = 2747215439041700203
+
 yaml.safe_dump(c, open(cfg, "w"), sort_keys=False)
 print("e2e config ->", rd)
+print("runtime lock ->", {k: runtime[k] for k in sorted(runtime)})
 PY
 
 sudo docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
