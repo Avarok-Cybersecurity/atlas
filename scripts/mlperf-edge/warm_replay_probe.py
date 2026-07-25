@@ -94,10 +94,17 @@ def main():
         ttfts, texts = [], []
         for i in range(a.reps):
             # Re-seat the base as a cache entry, then measure the extension.
-            # A unique marker per rep keeps each measured call a genuine replay
-            # rather than a full-prompt exact hit (which skips the SSM re-run).
+            #
+            # The rep marker must come BEFORE the delta, not after. With it
+            # appended, `BASE + delta` is identical across reps and is itself
+            # cached from rep 0 onward, so reps 1..n-1 only ever prefill the few
+            # marker tokens -- the measurement collapses to a ~5-token replay and
+            # goes flat in delta (observed: 241 ms at 288 chars vs 245 ms at 4320,
+            # i.e. +4 ms for 15x the delta). Putting the marker first forces the
+            # divergence point up front so the whole delta is genuinely new and
+            # the replayed suffix really is delta-sized.
             call(a.port, BASE, max_tokens=4)
-            t, txt = call(a.port, BASE + delta + f"\n# rep {i}\n")
+            t, txt = call(a.port, BASE + f"\n# rep {i}\n" + delta)
             ttfts.append(t); texts.append(txt)
         results[name] = {
             "delta_chars": len(delta), "n": len(ttfts),
