@@ -430,3 +430,69 @@ mod env_guard {
         }
     }
 }
+
+#[test]
+fn bare_function_streams_incrementally_and_emits_call_once() {
+    // BARE `<function=...>` — no `<tool_call>` wrapper. This is the shape the
+    // shipped GB10 `qwen3_xml` config actually receives, and it used to buffer
+    // the ENTIRE block: a client saw nothing until `</function>` landed, while
+    // the wrapped shape had been streaming header+params all along.
+    //
+    // Two things are asserted, and the second is the dangerous one: the
+    // incremental path and the complete-block path must be MUTUALLY EXCLUSIVE,
+    // or the call is delivered twice (once as fragments, once as a whole
+    // `ToolCall`).
+    let mut det = StreamingToolDetector::new_with_tools(write_and_bash_tools());
+    let full = "<function=Write>\n\
+                <parameter=file_path>\n/tmp/x.rs\n</parameter>\n\
+                <parameter=content>\nhello\n</parameter>\n\
+                </function>";
+    let bytes = full.as_bytes();
+    let mut outputs = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let end = (i + 5).min(bytes.len());
+        outputs.extend(det.process(&full[i..end]));
+        i = end;
+    }
+    outputs.extend(det.flush());
+
+    // 1. The header must arrive BEFORE the block closes (the whole point).
+    let start_pos = outputs
+        .iter()
+        .position(|o| matches!(o, DetectorOutput::ToolCallStart { .. }))
+        .expect("bare <function=> must emit ToolCallStart before the block closes");
+    let frag_positions: Vec<usize> = outputs
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| matches!(o, DetectorOutput::ToolCallArgsFragment { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        frag_positions.len() >= 2,
+        "expected MULTIPLE incremental fragments for a bare function, got {}",
+        frag_positions.len()
+    );
+    assert!(
+        frag_positions.iter().all(|&p| p > start_pos),
+        "fragments must follow ToolCallStart"
+    );
+
+    // 2. NO duplicate delivery: incrementally-streamed calls must NOT also be
+    //    emitted as a complete `ToolCall`.
+    let whole_calls = outputs
+        .iter()
+        .filter(|o| matches!(o, DetectorOutput::ToolCall(..)))
+        .count();
+    assert_eq!(
+        whole_calls, 0,
+        "a call streamed incrementally must not ALSO be emitted whole (duplicate delivery)"
+    );
+
+    // 3. The reassembled arguments must still be exactly right.
+    let args: serde_json::Value = serde_json::from_str(&collect_fragments(&outputs)).unwrap();
+    assert_eq!(
+        args,
+        serde_json::json!({"file_path": "/tmp/x.rs", "content": "hello"})
+    );
+}
