@@ -354,3 +354,55 @@ pub(super) fn bounded_stream_send(
         }
     }
 }
+
+/// Tokio runtime handle captured at serve startup (async context), used by
+/// [`spawn_terminal_send`] from the scheduler OS thread — where
+/// `Handle::try_current()` would fail because the thread is not a runtime
+/// worker. Unset (tests, exotic embeddings) falls back to the bounded
+/// synchronous send.
+static RUNTIME_HANDLE: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+
+/// Capture the current tokio runtime handle. Call from async context BEFORE
+/// spawning the scheduler thread. Idempotent.
+pub fn capture_runtime_handle() {
+    let _ = RUNTIME_HANDLE.set(tokio::runtime::Handle::current());
+}
+
+/// Fire-and-forget send for a TERMINAL stream event (Done / Error) — the last
+/// event a sequence's channel will ever carry.
+///
+/// Terminal frames are the only events that may be detached from the scheduler
+/// thread without an ordering hazard: every earlier token was already QUEUED
+/// (its send returned true before this is called) and nothing follows, so the
+/// FIFO channel delivers the spawned send after the full backlog regardless of
+/// when the task runs. Mid-stream events must NOT go through here — a spawned
+/// first-token send still waiting for capacity would race the next step's
+/// `try_send` of token #2 and deliver out of order.
+///
+/// The spawned task still applies [`stream_send_deadline`] via
+/// `tokio::time::timeout` so a wedged consumer cannot leak the task forever;
+/// on timeout the frame is dropped, which for a consumer that is 1024 events
+/// behind and unresponsive is indistinguishable from the receiver-drop case.
+/// Without a captured runtime handle this degrades to the synchronous bounded
+/// send.
+pub(super) fn spawn_terminal_send(
+    tx: &tokio::sync::mpsc::Sender<crate::api::inference_types::StreamEvent>,
+    event: crate::api::inference_types::StreamEvent,
+    what: &'static str,
+) {
+    if let Some(h) = RUNTIME_HANDLE.get() {
+        let tx = tx.clone();
+        let deadline = stream_send_deadline();
+        h.spawn(async move {
+            match tokio::time::timeout(deadline, tx.send(event)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => tracing::debug!("terminal send: receiver dropped ({what})"),
+                Err(_) => tracing::warn!(
+                    "terminal send: consumer stalled past {deadline:?}, frame dropped ({what})"
+                ),
+            }
+        });
+    } else if !bounded_stream_send(tx, event, what) {
+        tracing::debug!("terminal send failed synchronously ({what})");
+    }
+}

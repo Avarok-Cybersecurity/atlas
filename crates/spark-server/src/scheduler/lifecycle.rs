@@ -20,7 +20,10 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
         ResponseSink::Streaming(tx) => {
             let ttft_ms = a.decode_start.duration_since(a.request_start).as_secs_f64() * 1000.0;
             let decode_ms = a.decode_start.elapsed().as_secs_f64() * 1000.0;
-            if !super::mod_helpers::bounded_stream_send(
+            // Terminal frame: detached from the scheduler thread — safe
+            // because nothing follows Done on this channel and all earlier
+            // events are already queued (see spawn_terminal_send).
+            super::mod_helpers::spawn_terminal_send(
                 tx,
                 StreamEvent::Done {
                     finish_reason: reason.to_string(),
@@ -33,9 +36,7 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
                     guard_stop: a.guard_stop,
                 },
                 "done frame",
-            ) {
-                tracing::warn!("finish_sequence: streaming Done send failed (receiver dropped)");
-            }
+            );
         }
         ResponseSink::Blocking(tx) => {
             if let Some(tx) = tx.take() {
@@ -94,13 +95,11 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
 pub fn send_error(model: &dyn Model, a: &mut ActiveSeq, msg: &str) {
     match &mut a.sink {
         ResponseSink::Streaming(tx) => {
-            if !super::mod_helpers::bounded_stream_send(
+            super::mod_helpers::spawn_terminal_send(
                 tx,
                 StreamEvent::Error(msg.to_string()),
                 "error frame",
-            ) {
-                tracing::warn!("send_error: streaming Error send failed (receiver dropped)");
-            }
+            );
         }
         ResponseSink::Blocking(tx) => {
             if let Some(tx) = tx.take()
@@ -126,15 +125,11 @@ pub fn send_error(model: &dyn Model, a: &mut ActiveSeq, msg: &str) {
 pub fn send_error_to_sink(sink: &mut ResponseSink, msg: &str) {
     match sink {
         ResponseSink::Streaming(tx) => {
-            if !super::mod_helpers::bounded_stream_send(
+            super::mod_helpers::spawn_terminal_send(
                 tx,
                 StreamEvent::Error(msg.to_string()),
                 "pre-seq error frame",
-            ) {
-                tracing::warn!(
-                    "send_error_to_sink: streaming Error send failed (receiver dropped)"
-                );
-            }
+            );
         }
         ResponseSink::Blocking(tx) => {
             if let Some(tx) = tx.take()
