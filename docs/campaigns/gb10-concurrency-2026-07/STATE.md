@@ -25,3 +25,9 @@
 
 ## Log (appended by drivers)
 5048fa13d69c2870420a8b9050f54221  conc_sweep/spark_phaseA_baseline
+- 2026-07-25T18:13:50Z LEG atlas_synth SERVE_DIED
+- CONFIG CHANGE after first atlas_synth SERVE_DIED: --max-batch-size 16 + slots 128 + nd=3 needs
+  ~52G of SSM reservations (seq-state 14.2G + rollback ring 18.9G + Marconi 18.9G) + 17.5G weights
+  before ANY KV — preflight refusal territory at util 0.70. New atlas C-config: --max-batch-size 20
+  (headroom over C=16; pool-boundary exhaustion KILLS requests) + --ssm-cache-slots 32 (synthetic
+  sweep has no multi-turn reuse; 4.7G) = 46.2G SSM. Driver now captures a deathlog on serve failure.

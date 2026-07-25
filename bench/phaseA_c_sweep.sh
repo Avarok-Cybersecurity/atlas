@@ -71,9 +71,9 @@ else
     -v "$ATLAS_BIN:/usr/local/bin/spark:ro" \
     atlas-gb10:followups serve "$MODEL_ATLAS" \
     --host 0.0.0.0 --port $PORT --model-name "$MODEL_ATLAS" \
-    --max-seq-len 32768 --max-batch-size 16 --kv-cache-dtype bf16 \
+    --max-seq-len 32768 --max-batch-size 20 --kv-cache-dtype bf16 \
     --gpu-memory-utilization 0.70 \
-    --enable-prefix-caching --ssm-cache-slots 128 --ssm-checkpoint-interval 32 \
+    --enable-prefix-caching --ssm-cache-slots 32 --ssm-checkpoint-interval 32 \
     --speculative --num-drafts 3 --mtp-quantization bf16 \
     --tool-call-parser qwen3_xml --disable-tool-grammar true --disable-thinking >/dev/null 2>&1
   if wait_health atlas-csweep Qwen 200; then
@@ -87,7 +87,9 @@ else
     sudo docker logs atlas-csweep 2>&1 | grep -aic "pool exhausted" \
       | xargs -I{} echo "pool-exhausted lines: {}" | tee -a "$CS/atlas_synth.notes"
   else
-    note "LEG atlas_synth SERVE_DIED"
+    # Preserve the evidence BEFORE teardown destroys it (first death lost its log).
+    sudo docker logs atlas-csweep 2>&1 | tail -60 > "$CS/atlas_synth.deathlog" || true
+    note "LEG atlas_synth SERVE_DIED (deathlog: conc_sweep/atlas_synth.deathlog)"
     echo "SERVE_DIED atlas_synth"
   fi
   teardown
