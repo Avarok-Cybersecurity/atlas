@@ -33,6 +33,10 @@ ND="${ND:-3}"
 TAG="${TAG:-golden}"
 IMAGE="${IMAGE:-atlas-gb10:followups}"
 PORT="${PORT:-8888}"
+# SSM snapshot pool size. 128 is the submitted golden value. Slots cost ~151.5 MB
+# each and come straight out of the KV budget (128 -> 20.2 GB KV, 192 -> 10.8 GB),
+# so this is a genuine tradeoff, not a free dial -- see SSM_SLOTS_AB.md.
+SLOTS="${SLOTS:-128}"
 MODEL="centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf"
 CONTAINER="atlas-${TAG}-e2e"
 
@@ -87,7 +91,7 @@ sudo docker run -d --name "$CONTAINER" --network host --gpus all --ipc=host \
   "$IMAGE" serve "$MODEL" \
   --host 0.0.0.0 --port "$PORT" --model-name "$MODEL" \
   --max-seq-len 32768 --max-batch-size 1 --kv-cache-dtype bf16 --gpu-memory-utilization 0.70 \
-  --enable-prefix-caching --ssm-cache-slots 128 --ssm-checkpoint-interval 32 \
+  --enable-prefix-caching --ssm-cache-slots "$SLOTS" --ssm-checkpoint-interval 32 \
   --speculative --num-drafts "$ND" --mtp-quantization bf16 \
   --tool-call-parser qwen3_xml --disable-tool-grammar true --disable-thinking >/dev/null
 
@@ -96,7 +100,7 @@ for _ in $(seq 1 180); do
   sudo docker ps --format '{{.Names}}' | grep -q "$CONTAINER" || { echo "SERVE_DIED"; exit 1; }
   sleep 5
 done
-echo "serve up (nd=${ND}, K=$((ND + 1)), bin=${ATLAS_BIN})"
+echo "serve up (nd=${ND}, K=$((ND + 1)), slots=${SLOTS}, bin=${ATLAS_BIN})"
 
 # Gate C2 runs FIRST: an NVFP4 build can pass the correctness gates while emitting
 # garbage, so coherence + a real tool call are checked before committing to the
