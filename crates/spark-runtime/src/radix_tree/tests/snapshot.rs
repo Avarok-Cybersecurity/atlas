@@ -309,24 +309,42 @@ fn test_snapshot_index_lru_eviction() {
 
 #[test]
 fn test_snapshot_index_session_isolation() {
+    // Encodes the POST-2026-07-16 session contract, which is deliberately
+    // asymmetric:
+    //
+    //  * PLAIN (non-tail) entries are content-addressed — a pure function of
+    //    the verified token prefix — and are therefore SAFE and INTENDED to be
+    //    shared across sessions. (The pre-fix version of this test asserted
+    //    they were session-gated; that was the OLD semantics, and gating them
+    //    would resurrect the cold-recompute cost the prefix cache exists to
+    //    avoid.)
+    //  * TAIL entries capture state that bleeds past their advertised
+    //    token_count (mid-chunk capture), so they are gated to their OWN
+    //    non-zero session — reusing another session's tail is exactly the
+    //    cross-request corruption that garbled BFCL tool calls (77.31 vs 84.54
+    //    normalized) before the fix in `lookup`.
     let mut idx = SsmSnapshotIndex::new();
     let tokens: Vec<u32> = (0..16).collect();
     let prefix_hash = hash_token_prefix(&tokens, 16, 0);
 
-    // Insert snapshot for session 100
+    // Plain insert for session 100: cross-session lookup MUST match — the
+    // entry is content-addressed and session-free by design.
     idx.insert(prefix_hash, 42, 100, 16);
+    assert_eq!(idx.lookup(&tokens, 16, 200, 0), Some((42, 16)));
+    assert_eq!(idx.lookup(&tokens, 16, 100, 0), Some((42, 16)));
+    // Session-less lookups (single-turn requests hash to 0) also match plain
+    // entries.
+    assert_eq!(idx.lookup(&tokens, 16, 0, 0), Some((42, 16)));
 
-    // Lookup from session 200 — should NOT match (different session)
-    let result = idx.lookup(&tokens, 16, 200, 0);
-    assert_eq!(result, None);
-
-    // Lookup from session 100 — should match
+    // Re-home the same prefix as session 100's TAIL: now the session gate
+    // applies. Session 200 and session-less lookups must fall through to a
+    // recompute rather than restore another session's tail.
+    idx.insert_tail(prefix_hash, 43, 100, 16);
+    assert_eq!(idx.lookup(&tokens, 16, 200, 0), None);
+    assert_eq!(idx.lookup(&tokens, 16, 0, 0), None);
+    // The owning session still restores its own tail.
     let result = idx.lookup(&tokens, 16, 100, 0);
-    assert_eq!(result, Some((42, 16)));
-
-    // Lookup with session_hash=0 (legacy) — matches any session
-    let result = idx.lookup(&tokens, 16, 0, 0);
-    assert_eq!(result, Some((42, 16)));
+    assert_eq!(result, Some((43, 16)));
 }
 
 #[test]
