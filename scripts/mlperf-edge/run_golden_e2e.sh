@@ -13,6 +13,10 @@
 #   HARNESS_DIR   path to the inference-endpoint (MLCommons edge-agentic) checkout
 #   BASE_CONFIG   path to the harness config.yaml to derive from
 # Optional:
+#   EXTRA_ENV     additional `-e VAR=VAL` docker args, for A/B-ing ONE candidate
+#                 flag against the frozen config. Leave UNSET to reproduce the
+#                 submitted numbers -- anything passed here makes the run a
+#                 candidate, not a reproduction, so record it with the result.
 #   ND            speculative draft count; verify width K = ND + 1.
 #                 Default 3 => K=4, the width selected by the K-ladder.
 #   TAG           report-dir prefix. Default "golden".
@@ -37,6 +41,11 @@ PORT="${PORT:-8888}"
 # each and come straight out of the KV budget (128 -> 20.2 GB KV, 192 -> 10.8 GB),
 # so this is a genuine tradeoff, not a free dial -- see SSM_SLOTS_AB.md.
 SLOTS="${SLOTS:-128}"
+# Extra `-e VAR=VAL` docker args for validating a candidate flag against the frozen
+# config. Empty by default, so the default invocation stays byte-identical to the
+# submitted run. Anything passed here is by definition NOT part of the frozen
+# config and must be stated whenever the resulting numbers are quoted.
+EXTRA_ENV="${EXTRA_ENV:-}"
 MODEL="centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf"
 CONTAINER="atlas-${TAG}-e2e"
 
@@ -85,7 +94,7 @@ sleep 3
 sudo docker run -d --name "$CONTAINER" --network host --gpus all --ipc=host \
   -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
   -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 -e ATLAS_SSM_TAIL_PROTECT=1 \
-  -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 \
+  -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 $EXTRA_ENV \
   -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
   -v "$ATLAS_BIN:/usr/local/bin/spark:ro" \
   "$IMAGE" serve "$MODEL" \
