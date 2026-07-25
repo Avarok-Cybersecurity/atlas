@@ -72,6 +72,46 @@ impl Qwen3AttentionLayer {
                 (3 * h) as u32,
                 stream,
             )?;
+        } else if n == 4 && !force_seq_ffn {
+            // K=4 verify (num_drafts=3). Without this arm n=4 fell through to the
+            // dense `forward_prefill` branch below, i.e. the prefill GEMM at M=4 --
+            // 94% of the M-tile is padding, ~33 GB/s effective. `forward_k4` reads
+            // each projection weight ONCE for all 4 rows via the batched GEMV
+            // (~290 GB/s on these shapes), which is the same MMQ cliff the gb10
+            // side hit and fixed. The attention-layer FFN was the ONLY site still
+            // missing it -- lm_head (impl_a3), QKV (multi_seq/qkv) and the GDN
+            // decode path all already route M<=4 to the batch4 kernels, which is
+            // why K=4 measured net-negative here while gb10 measured it a win.
+            //
+            // `try_forward_k4` returns false when the path is unavailable (MoE /
+            // missing batch4 kernel / non-NVFP4 weights); the fallback below is
+            // byte-identical to the pre-existing behaviour for those configs.
+            let normed2 = fwd.buffers.norm_output();
+            ops::residual_add_rms_norm(
+                fwd.gpu,
+                self.residual_add_rms_norm_k,
+                hidden,
+                o_out,
+                &self.post_attn_norm,
+                normed2,
+                residual,
+                4,
+                h as u32,
+                eps,
+                stream,
+            )?;
+            if !self.ffn.try_forward_k4(normed2, fwd, stream)? {
+                self.ffn.forward_prefill(normed2, 4, fwd, stream)?;
+            }
+            let moe_out = fwd.buffers.moe_output();
+            ops::residual_add(
+                fwd.gpu,
+                self.residual_add_k,
+                hidden,
+                moe_out,
+                (4 * h) as u32,
+                stream,
+            )?;
         } else if n == 2 && !force_seq_ffn {
             let normed2 = fwd.buffers.norm_output();
             ops::residual_add_rms_norm(

@@ -56,13 +56,20 @@ spark serve $SNAP --model-name nvidia/Qwen3.6-27B-NVFP4 --host 0.0.0.0 --port 80
   --ssm-cache-slots 64 --ssm-checkpoint-interval 16 --disable-thinking
 ```
 
-- `--num-drafts 2` means **K=3** (drafts + 1). K=3 is the measured optimum on this box:
-  warm 25.27 tok/s / TPOT 39.57 ms, vs K=4 at 17.16 tok/s / 58.29 ms (**32% slower**)
-  at matched emitted-token counts. Caveat: that K=4 figure was taken with **no `n == 4`
-  arm** in `layers/qwen3_attention/trait_impl/multi_seq/ffn.rs`, so n=4 falls into
-  `forward_prefill` (GEMM tiles at M=4) instead of the batch-GEMV `forward_k4`. The
-  gb10 tree fixed exactly this; until that arm is ported here, K=4 is **untested**, not
-  disproven.
+- `--num-drafts 2` means **K=3** (drafts + 1). K=3 is the measured optimum on this box,
+  now confirmed with the `n == 4` dispatch arm in place (matched emitted-token counts):
+
+  | config | warm tok/s | TPOT |
+  |---|---|---|
+  | K=3 | **25.40** | **39.37 ms** |
+  | K=4, with `n == 4` arm | 19.42 | 51.48 ms |
+  | K=4, before the arm | 17.16 | 58.29 ms |
+
+  Adding the arm recovered +13% on the K=4 path but K=4 is still 23% behind K=3. The
+  wall is the GDN multi-token verify kernel, superlinear here at 1.11x / 3.25x / 8.54x
+  for 1 / 2 / 3 drafts; no FFN dispatch fix closes an 8.5x verify multiplier. The gb10
+  K=4 win shipped with `w4a16_gemv_batch8`, wy5-8 GDN kernels and M<=8 gates, none of
+  which exist in this tree.
 - **`--gpu-memory-utilization`**: the submission ran 0.40; on this box 0.40 now OOMs
   (`32 MB free / 62.5 GB`) even with no spark process, because the APU GTT reports ~93%
   allocated and does not release on `drop_caches`. **0.35 is the working ceiling.**
