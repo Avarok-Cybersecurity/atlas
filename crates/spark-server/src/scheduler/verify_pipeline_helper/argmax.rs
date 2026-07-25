@@ -36,35 +36,11 @@
 /// Deliberately NOT `f32::max`: that returns the non-NaN operand, which would
 /// let a NaN-adjacent value win where the original `>` ignored it.
 pub(super) fn argmax_first_wins(logits: &[f32]) -> u32 {
-    const LANES: usize = 8;
-    let mut acc = [f32::NEG_INFINITY; LANES];
-    let mut chunks = logits.chunks_exact(LANES);
-    for c in &mut chunks {
-        for (a, &v) in acc.iter_mut().zip(c) {
-            if v > *a {
-                *a = v;
-            }
-        }
-    }
-    let mut best_val = f32::NEG_INFINITY;
-    for &a in acc.iter() {
-        if a > best_val {
-            best_val = a;
-        }
-    }
-    for &v in chunks.remainder() {
-        if v > best_val {
-            best_val = v;
-        }
-    }
-
-    // Pass 2: first index attaining the max. `position` short-circuits.
-    logits
-        .iter()
-        .position(|&v| v == best_val)
-        .unwrap_or(0)
-        .try_into()
-        .unwrap_or(0)
+    // Delegates to the runtime SSOT (`spark_runtime::sampler::argmax_first_wins_f32`)
+    // so the verify path and the sampler share ONE first-index-wins argmax.
+    // The equivalence tests below remain the harness proving it against the
+    // exact loop this replaced.
+    spark_runtime::sampler::argmax_first_wins_f32(logits)
 }
 
 #[cfg(test)]
