@@ -39,3 +39,5 @@
   90.2 GB committed" vs 85.2 budget at bs=20/nd=3. Fix: bs=16 (saves ~8.3G: seq-state 3.6 + ring
   4.7) AND --max-seq-len 4096 (the sweep's regimes cap at ISL+OSL=2048; 32768 was inflating
   max_blocks_per_seq metadata and KV expectations for no benefit). nd=3 kept for C=1 K=4 fairness.
+51fc31d43a6e59aec8e9eaced56a02b2  conc_sweep/spark_phaseB
+5048fa13d69c2870420a8b9050f54221  conc_sweep/spark_phaseA_baseline
