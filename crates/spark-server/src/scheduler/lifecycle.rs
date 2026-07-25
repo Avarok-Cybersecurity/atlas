@@ -20,19 +20,21 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
         ResponseSink::Streaming(tx) => {
             let ttft_ms = a.decode_start.duration_since(a.request_start).as_secs_f64() * 1000.0;
             let decode_ms = a.decode_start.elapsed().as_secs_f64() * 1000.0;
-            if let Err(e) = tx.blocking_send(StreamEvent::Done {
-                finish_reason: reason.to_string(),
-                prompt_tokens: 0, // prompt_tokens tracked by API layer
-                completion_tokens: a.output_tokens.len(),
-                time_to_first_token_ms: ttft_ms,
-                decode_time_ms: decode_ms,
-                reasoning_tokens: a.thinking_tokens,
-                cached_prompt_tokens: a.cached_prompt_tokens,
-                guard_stop: a.guard_stop,
-            }) {
-                tracing::warn!(
-                    "finish_sequence: streaming Done send failed (receiver dropped): {e}"
-                );
+            if !super::mod_helpers::bounded_stream_send(
+                tx,
+                StreamEvent::Done {
+                    finish_reason: reason.to_string(),
+                    prompt_tokens: 0, // prompt_tokens tracked by API layer
+                    completion_tokens: a.output_tokens.len(),
+                    time_to_first_token_ms: ttft_ms,
+                    decode_time_ms: decode_ms,
+                    reasoning_tokens: a.thinking_tokens,
+                    cached_prompt_tokens: a.cached_prompt_tokens,
+                    guard_stop: a.guard_stop,
+                },
+                "done frame",
+            ) {
+                tracing::warn!("finish_sequence: streaming Done send failed (receiver dropped)");
             }
         }
         ResponseSink::Blocking(tx) => {
@@ -92,8 +94,12 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
 pub fn send_error(model: &dyn Model, a: &mut ActiveSeq, msg: &str) {
     match &mut a.sink {
         ResponseSink::Streaming(tx) => {
-            if let Err(e) = tx.blocking_send(StreamEvent::Error(msg.to_string())) {
-                tracing::warn!("send_error: streaming Error send failed (receiver dropped): {e}");
+            if !super::mod_helpers::bounded_stream_send(
+                tx,
+                StreamEvent::Error(msg.to_string()),
+                "error frame",
+            ) {
+                tracing::warn!("send_error: streaming Error send failed (receiver dropped)");
             }
         }
         ResponseSink::Blocking(tx) => {
@@ -120,9 +126,13 @@ pub fn send_error(model: &dyn Model, a: &mut ActiveSeq, msg: &str) {
 pub fn send_error_to_sink(sink: &mut ResponseSink, msg: &str) {
     match sink {
         ResponseSink::Streaming(tx) => {
-            if let Err(e) = tx.blocking_send(StreamEvent::Error(msg.to_string())) {
+            if !super::mod_helpers::bounded_stream_send(
+                tx,
+                StreamEvent::Error(msg.to_string()),
+                "pre-seq error frame",
+            ) {
                 tracing::warn!(
-                    "send_error_to_sink: streaming Error send failed (receiver dropped): {e}"
+                    "send_error_to_sink: streaming Error send failed (receiver dropped)"
                 );
             }
         }

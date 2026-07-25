@@ -423,24 +423,12 @@ pub fn process_decode_logits(
                 } else {
                     StreamEvent::Token(tok)
                 };
-                match tx.try_send(event) {
-                    Ok(()) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                        tracing::warn!(
-                            "Streaming receiver dropped during tool_call_end, finishing sequence"
-                        );
-                        a.finished = true;
-                        continue;
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                        if let Err(e) = tx.blocking_send(event) {
-                            tracing::error!(
-                                "Streaming send failed during tool_call_end backpressure: {e}"
-                            );
-                            a.finished = true;
-                            continue;
-                        }
-                    }
+                if !super::mod_helpers::bounded_stream_send(tx, event, "tool_call_end") {
+                    tracing::warn!(
+                        "Streaming receiver dropped during tool_call_end, finishing sequence"
+                    );
+                    a.finished = true;
+                    continue;
                 }
             }
             if a.grammar_state.is_none() && !a.tools_present {
@@ -626,22 +614,9 @@ pub fn process_decode_logits(
                 } else {
                     StreamEvent::Token(tok)
                 };
-                match tx.try_send(event) {
-                    Ok(()) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                        tracing::debug!(
-                            "Streaming receiver dropped (decode_logits), finishing seq"
-                        );
-                        a.finished = true;
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                        if let Err(e) = tx.blocking_send(event) {
-                            tracing::error!(
-                                "Streaming send failed during backpressure (decode_logits): {e}"
-                            );
-                            a.finished = true;
-                        }
-                    }
+                if !super::mod_helpers::bounded_stream_send(tx, event, "decode_logits token") {
+                    tracing::debug!("Streaming receiver dropped (decode_logits), finishing seq");
+                    a.finished = true;
                 }
             }
             if a.remaining == 0 {

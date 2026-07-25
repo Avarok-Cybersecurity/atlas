@@ -52,8 +52,12 @@ pub(super) fn promote_completed_prefills(
                     top: lp.top,
                 })
                 .collect();
-            if let Err(e) = tx.blocking_send(StreamEvent::PromptLogprobs(lps)) {
-                tracing::warn!("phase_promote_prefills: prompt-logprobs send failed: {e}");
+            if !super::mod_helpers::bounded_stream_send(
+                tx,
+                StreamEvent::PromptLogprobs(lps),
+                "promote prompt-logprobs",
+            ) {
+                tracing::warn!("phase_promote_prefills: prompt-logprobs send failed");
             }
         }
         // Only stream non-EOS tokens (OpenAI: stop seq not in output).
@@ -61,11 +65,13 @@ pub(super) fn promote_completed_prefills(
             && p.max_tokens > 0
             && !p.eos_tokens.contains(&first)
             && let ResponseSink::Streaming(ref tx) = p.sink
-            && let Err(e) = tx.blocking_send(StreamEvent::Token(first))
+            && !super::mod_helpers::bounded_stream_send(
+                tx,
+                StreamEvent::Token(first),
+                "promote first token",
+            )
         {
-            tracing::warn!(
-                "phase_promote_prefills: first-token send failed (receiver dropped): {e}"
-            );
+            tracing::warn!("phase_promote_prefills: first-token send failed (receiver dropped)");
         }
         let use_legacy_tool_call =
             p.require_tool_call && p.grammar_state.is_none() && tool_call_start_token.is_some();
