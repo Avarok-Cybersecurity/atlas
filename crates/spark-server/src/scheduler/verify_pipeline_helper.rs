@@ -50,6 +50,7 @@
 //! still see slightly stale `output_tokens` for positions ≥ 1 —
 //! best-effort, mirrors greedy unroll.
 
+mod argmax;
 mod fast_masked;
 
 use crate::scheduler::ActiveSeq;
@@ -261,14 +262,7 @@ pub fn verify_pick_with_pipeline(
     // 4. Argmax over the (now-masked-and-penalised) vector. Matches the
     //    sampler's argmax branch behaviour.
     let t_argmax = std::time::Instant::now();
-    let mut best_id: u32 = 0;
-    let mut best_val: f32 = f32::NEG_INFINITY;
-    for (i, &v) in f32_logits.iter().enumerate() {
-        if v > best_val {
-            best_val = v;
-            best_id = i as u32;
-        }
-    }
+    let best_id = argmax::argmax_first_wins(&f32_logits);
     mtp_timing::record(Phase::Argmax, t_argmax);
     best_id
 }
