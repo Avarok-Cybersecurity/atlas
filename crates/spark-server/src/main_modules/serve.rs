@@ -321,7 +321,12 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         kv_dtype,
         layer_dtypes,
         hss_cache_blocks_per_seq,
-    } = serve_phases::resolve_kv_cache_config(&args, &config, ptx_set.behavior.default_kv_dtype)?;
+    } = serve_phases::resolve_kv_cache_config(
+        &args,
+        &config,
+        ptx_set.behavior.default_kv_dtype,
+        store.fp8_kv_scale_count(),
+    )?;
 
     // Fail-fast: every kernel handle the selected --kv-cache-dtype's dispatch
     // arms need must resolve NOW — not at first dispatch after a multi-minute

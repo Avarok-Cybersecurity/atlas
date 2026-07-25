@@ -183,6 +183,15 @@ impl WeightStore {
             .values()
             .any(|w| matches!(w.dtype, WeightDtype::FP8E4M3))
     }
+
+    /// Number of per-layer FP8 KV-cache scale tensors (`*.k_scale`) the
+    /// checkpoint ships. `>0` means the model carries calibrated KV scales, so
+    /// FP8 KV needs no online calibration; `0` means the scales default to 1.0
+    /// (which clips BF16 into E4M3 range), so online calibration or a non-FP8 KV
+    /// dtype is required. Used to log the right guidance at serve time.
+    pub fn fp8_kv_scale_count(&self) -> usize {
+        self.names().filter(|n| n.ends_with(".k_scale")).count()
+    }
 }
 
 /// SBIO IORouter trait for weight loading.
