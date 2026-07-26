@@ -311,11 +311,9 @@ impl RadixTreeInner {
         // Re-insertion of an already-cached (node, disk_id) pair is NOT an
         // acquisition — the cache's ref already covers it.
         let mut newly_acquired: Vec<u32> = Vec::new();
-        // Physical blocks of nodes CREATED below. The cache's single KV ref per
-        // node is taken on exactly these — see `InsertAcquired`.
+        // Blocks the cache starts / stops storing here; the caller takes and
+        // releases exactly one KV ref each. See `InsertAcquired`.
         let mut newly_owned_blocks: Vec<u32> = Vec::new();
-        // Blocks this insert stops storing (a `partial_suffix` slot overwritten
-        // or dropped); the caller releases the ref taken when it was filled.
         let mut released_blocks: Vec<u32> = Vec::new();
 
         for i in 0..num_blocks {
@@ -353,12 +351,8 @@ impl RadixTreeInner {
                 parent_ctx_hash = ctx_hash;
                 current = child;
             } else {
-                // Creating a real child supersedes this node's partial slot.
-                // That slot held a KV ref (taken below when it was filled), so
-                // dropping it without releasing would pin the block forever.
-                if let Some((_, old_block, _)) = self.nodes[current].partial_suffix.take() {
-                    released_blocks.push(old_block);
-                }
+                // A real child supersedes the partial slot; release its ref.
+                released_blocks.extend(self.nodes[current].partial_suffix.take().map(|p| p.1));
                 let node = RadixNode {
                     children: HashMap::new(),
                     block_idx: block_table[i],
@@ -400,23 +394,15 @@ impl RadixTreeInner {
             // full-block path above). This branch fires rarely — partial
             // slots are tail-only and typically unique per-prefix.
             let prior = self.nodes[current].partial_suffix.as_ref().map(|p| p.2);
-            // The cache must own a KV ref on the partial block exactly as it does
-            // on a node's own block. It previously owned NONE: `walk` hands the
-            // partial block out to a matching sequence with no liveness check, and
-            // eviction hands it back in `freed_phys` — so once its only owner (the
-            // inserting sequence) freed it, the block sat at 0 refs ON THE FREE
-            // LIST while this node still pointed at it. Every later matching
-            // request then `inc_ref`d it 0->1 while it was still free, used it, and
-            // freed it 1->0 pushing a DUPLICATE free-list entry — the same block
-            // handed to several sequences at once. Observed on the agentic bench as
-            // one block underflowing 56 times.
+            // The cache owns a KV ref on the partial block exactly as it does on
+            // a node's own block — `walk` hands it out and `evict` hands it back,
+            // so an unreferenced one sits on the free list while still cached.
+            // See `InsertAcquired` for the failure this prevents.
             let prior_block = self.nodes[current].partial_suffix.as_ref().map(|p| p.1);
             self.nodes[current].partial_suffix = Some((partial_toks, partial_block, partial_disk));
             if prior_block != Some(partial_block) {
                 newly_owned_blocks.push(partial_block);
-                if let Some(old) = prior_block {
-                    released_blocks.push(old);
-                }
+                released_blocks.extend(prior_block);
             }
             if hss_active && partial_disk != u32::MAX && prior != Some(partial_disk) {
                 newly_acquired.push(partial_disk);
