@@ -121,6 +121,22 @@ pub struct SequenceState {
     /// the scheduler to populate `usage.prompt_tokens_details.cached_tokens`.
     /// 0 when prefix caching is disabled or the prompt had no cache match.
     pub cached_prefix_tokens: usize,
+    /// Whether the chunk-0 prefix-cache lookup already ran for this sequence.
+    ///
+    /// The lookup is NOT idempotent: it bumps radix refs, `inc_ref`s each
+    /// matched KV block and PUSHES it onto `block_table`. It also runs BEFORE
+    /// `ensure_blocks_through_prefill`, so a chunk-0 prefill that fails to
+    /// allocate its suffix (KV exhausted) leaves all of that applied. The
+    /// preempt-and-retry in `run_standard_chunk_loop` re-enters `prefill_chunk`
+    /// for the SAME chunk, which would run the lookup a second time — appending
+    /// the matched blocks to `block_table` again (so `block_table[i]` no longer
+    /// maps to logical block `i`) and taking a second radix ref that the single
+    /// `release` in `free_sequence` can never balance. This flag makes the
+    /// re-entry a no-op that replays chunk 0's original decision.
+    pub prefix_lookup_applied: bool,
+    /// The `skip` half of the chunk-0 lookup's return value, replayed verbatim
+    /// when `prefix_lookup_applied` short-circuits a retry.
+    pub prefix_lookup_skip: bool,
     /// Contiguous prefix length (in tokens, from position 0) whose paged KV is
     /// guaranteed fully written for THIS sequence — either reused from a valid
     /// prefix-cache match or written by a real prefill pass this turn. Updated

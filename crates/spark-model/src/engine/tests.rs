@@ -162,6 +162,8 @@ impl Model for MockModel {
             session_hash: 0,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
+            prefix_lookup_applied: false,
+            prefix_lookup_skip: false,
             kv_valid_tokens: 0,
             last_decode_ckpt_block: 0,
             prompt_len: 0,
