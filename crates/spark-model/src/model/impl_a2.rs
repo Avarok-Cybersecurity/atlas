@@ -47,6 +47,27 @@ impl TransformerModel {
         tokens.contains(&pad_id)
     }
 
+    /// Whether `--high-speed-swap` has slid this sequence's rolling window, so
+    /// `block_table` no longer parallels the token stream from position 0.
+    ///
+    /// Every prefix-cache insert assumes it does: the radix tree is keyed on the
+    /// token stream from position 0 and files `block_table[i]` on the node for
+    /// token chunk `i`. Once HSS slides (`hss_window_start() > 0`),
+    /// `block_table[0]` no longer holds position 0 — the front of the table holds
+    /// the most RECENT positions — so inserting files a block under a token chunk
+    /// whose KV it does not contain, and a later warm hit reuses the wrong KV as
+    /// if it were a valid prefix.
+    ///
+    /// There is no correct partial insert to fall back on: the tree indexes
+    /// prefixes from the root and what survives in a slid window is a
+    /// mid-sequence suffix, so a slid sequence has nothing cacheable. Skip.
+    ///
+    /// `cache_sequence` and `save_checkpoint`'s boundary insert already guarded
+    /// on this; the prefill-time inserts in `prefill_d`/`finalize_last` did not.
+    pub(super) fn hss_window_slid(&self, seq: &SequenceState) -> bool {
+        seq.hss_window_start() > 0
+    }
+
     /// Free pinned host memory on model destruction.
     pub(super) fn drop_pinned_staging(&self) {
         // SAFETY: Called from Drop, which runs on the owning thread.

@@ -317,7 +317,7 @@ impl TransformerModel {
         } else if cap_applied {
             // Cap forced — never attach the full-length snapshot to a
             // truncated tree (would be unreachable + leak a pool slot).
-            if !self.tokens_have_vision_pad(cache_tokens) {
+            if !self.tokens_have_vision_pad(cache_tokens) && !self.hss_window_slid(seq) {
                 let acquired = self.prefix_cache.insert(
                     cache_tokens,
                     cache_block_table,
@@ -374,7 +374,12 @@ impl TransformerModel {
                 }
             };
             if let Some(snap_id) = snap_result {
-                if self.tokens_have_vision_pad(tokens) {
+                if self.tokens_have_vision_pad(tokens) || self.hss_window_slid(seq) {
+                    // Vision-pad: image-tainted snapshot + colliding token key.
+                    // HSS-slid: `block_table` no longer parallels the token
+                    // stream (see `hss_window_slid`). Either way we decline the
+                    // radix insert, and the snapshot is only reachable through
+                    // those nodes — so free it rather than leak a pool slot.
                     self.ssm_snapshots.free(snap_id);
                 } else {
                     tracing::info!(
@@ -405,7 +410,7 @@ impl TransformerModel {
                         self.ssm_snapshots.free(old);
                     }
                 }
-            } else if !self.tokens_have_vision_pad(tokens) {
+            } else if !self.tokens_have_vision_pad(tokens) && !self.hss_window_slid(seq) {
                 let acquired = self.prefix_cache.insert(
                     tokens,
                     &seq.block_table,
@@ -416,7 +421,7 @@ impl TransformerModel {
                 );
                 super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
             }
-        } else if !self.tokens_have_vision_pad(tokens) {
+        } else if !self.tokens_have_vision_pad(tokens) && !self.hss_window_slid(seq) {
             let acquired = self.prefix_cache.insert(
                 tokens,
                 &seq.block_table,
