@@ -318,7 +318,10 @@ mod gguf;
 mod loader;
 pub mod mlx_int8;
 pub use gguf::{GgufLoader, config_from_gguf_dir, find_gguf};
-pub(crate) use loader::{check_oom_guard, estimate_has_fp8, estimate_load_bytes};
+pub(crate) use loader::estimate_load_bytes;
+// Consumed by the unix-only fast-weights (O_DIRECT) loader path.
+#[cfg(unix)]
+pub(crate) use loader::{check_oom_guard, estimate_has_fp8};
 
 #[cfg(test)]
 mod from_str_tests {

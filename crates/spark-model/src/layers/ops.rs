@@ -28,6 +28,14 @@ mod fp8_moe_batch_a;
 #[path = "ops/fp8_moe_batch_b.rs"]
 mod fp8_moe_batch_b;
 #[path = "ops/gdn_flashinfer.rs"]
+// The FlashInfer GDN bridge uses dlopen/dlsym, which do not exist on Windows.
+// The absent variant is mounted at the SAME module path so both call sites
+// (trait_prefill_recur, trait_prefill_gdn) need no cfg — they already gate on
+// `available()`, which is simply always false there.
+#[cfg(unix)]
+pub mod gdn_flashinfer;
+#[cfg(not(unix))]
+#[path = "ops/gdn_flashinfer_absent.rs"]
 pub mod gdn_flashinfer;
 #[path = "ops/gemm_dense.rs"]
 mod gemm_dense;

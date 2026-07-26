@@ -53,7 +53,7 @@ extern "C" __global__ void mla_paged_decode_fp8(
     const float v_scale,                             // FP8 scale for V
     const unsigned long long cache_stride_bytes,
     const unsigned int sliding_window,               // 0 = full; else attend only the last `sliding_window` positions
-    const __nv_bfloat16* __restrict__ sinks,         // [num_q_heads] per-head attn sink (s_aux); may be NULL
+    const float* __restrict__ sinks,                 // [num_q_heads] per-head attn sink (s_aux); may be NULL. FP32: checkpoint-native (reading as bf16 hard-zeroed 7 heads)
     const unsigned char* __restrict__ comp_pool,     // 4b: flat FP8 compressed-KV pool [comp_block_count][576]; may be NULL
     const unsigned int comp_block_count              // 4b: # completed compressed blocks to attend; 0 = no compressed arm (ratio-0 layers)
 ) {
@@ -73,8 +73,7 @@ extern "C" __global__ void mla_paged_decode_fp8(
     // KV cache dimensions for MLA
     // K and V are stored as [latent(512) | rope(64)] = 576 dims
     const unsigned int kv_latent_dim = KV_LORA_DIM;  // 512
-    const unsigned int kv_rope_dim = ROPE_DIM;       // 64
-    
+
     // Token stride in cache (576 dims per token, 1 byte per FP8 element)
     const unsigned int token_stride = num_kv_heads * kv_cache_dim;
     
@@ -394,7 +393,7 @@ extern "C" __global__ void mla_paged_decode_fp8(
         // eager_attention_forward concats `sinks`, softmaxes, then slices off the
         // sink column). Online-softmax: add exp(sink - running_max) to the sum.
         if (sinks != nullptr) {
-            final_l += __expf((float)sinks[q_head] - smem_m[0]);
+            final_l += __expf(sinks[q_head] - smem_m[0]);
         }
         float inv_l = (final_l > 0.0f) ? (1.0f / final_l) : 0.0f;
         unsigned int* o32 = (unsigned int*)(O + (unsigned long long)q_head * q_head_dim + vec_offset_bf16);

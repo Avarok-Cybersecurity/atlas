@@ -2,14 +2,16 @@
 
 use super::*;
 
-/// Build an entry with an explicit forecast profile. `snapshot_id` doubles
+#[path = "snapshot_lease.rs"]
+mod lease;
+
+/// Build an entry with an explicit recency profile. `snapshot_id` doubles
 /// as a stable identity we assert on (independent of Vec index).
 fn entry(
     snapshot_id: usize,
     session_hash: u64,
     token_count: usize,
     last_access: u64,
-    hit_count: u32,
 ) -> SnapshotEntry {
     SnapshotEntry {
         snapshot_id,
@@ -17,9 +19,22 @@ fn entry(
         token_count,
         prefix_hash: snapshot_id as u64, // unique, irrelevant to victim choice
         last_access,
-        hit_count,
         tiered: false,
         is_tail: false,
+        is_tail_sibling: false,
+    }
+}
+
+/// An `is_tail` restore-point entry (the per-session mid-chunk tail).
+fn tail_entry(
+    snapshot_id: usize,
+    session_hash: u64,
+    token_count: usize,
+    last_access: u64,
+) -> SnapshotEntry {
+    SnapshotEntry {
+        is_tail: true,
+        ..entry(snapshot_id, session_hash, token_count, last_access)
     }
 }
 
@@ -28,76 +43,101 @@ fn index(entries: Vec<SnapshotEntry>, live: u64) -> SsmSnapshotIndex {
         entries,
         access_counter: 1000,
         last_lookup_session: live,
+        evictions_since_lookup: 0,
         stats: SnapshotStats::default(),
     }
 }
 
-/// The deep-tail eviction inversion (#278 root cause), reproduced against
-/// the session-aware policy: within a SINGLE live session the hot 8192
-/// anchor (self-reinforced hit_count) out-scores the just-aged deep tail
-/// (hit_count=0), so without tail-protect the tail is the victim.
+/// Pure-LRU within a session: the older entry is the victim regardless of
+/// how often it was hit historically (regression for the 07-10 fossil
+/// pathology — the old `last_access * (1 + hit_count)` score let a once-hit
+/// old entry outlive every fresh save).
 #[test]
 fn deep_tail_evicted_without_tail_protect() {
     let idx = index(
         vec![
             entry(
                 /*id*/ 7, /*sess*/ 1, /*tok*/ 8192, /*last*/ 100,
-                /*hits*/ 10,
             ),
             entry(
                 /*id*/ 9, /*sess*/ 1, /*tok*/ 16000, /*last*/ 50,
-                /*hits*/ 0,
             ),
         ],
         1,
     );
-    // Victim is the deep tail (id 9) — the pathology.
+    // Victim is the OLDER entry (id 9) under pure LRU.
     let v = idx.session_aware_victim(false, false).unwrap();
     assert_eq!(idx.entries[v].snapshot_id, 9);
 }
 
-/// With tail-protect the live session's DEEPEST snapshot is exempt, so the
-/// hot anchor is evicted instead and the warm-turn restore anchor survives.
+// ─────────── 07-10 fossil-pinning regressions (re-landed, #317 revert) ──────────
+
+/// Eviction must ignore hit HISTORY: an entry selected many times but not
+/// recently loses to entries touched after it. Under the reverted
+/// `last_access * (1 + hit_count)` score, A's 5 hits made it unbeatable
+/// (escore 5*6=... vs fresh saves) and each new save evicted the previous
+/// fresh save — the frozen-anchor pathology. Exercises the SERVING path
+/// (`lookup_tiered`), not the dead `lookup`.
 #[test]
-fn deep_tail_survives_with_tail_protect() {
-    let idx = index(
-        vec![entry(7, 1, 8192, 100, 10), entry(9, 1, 16000, 50, 0)],
-        1,
-    );
-    let v = idx.session_aware_victim(true, false).unwrap();
-    // Victim must NOT be the protected deep tail (id 9); it is the anchor.
-    assert_eq!(idx.entries[v].snapshot_id, 7);
+fn eviction_ignores_hit_history() {
+    let mut idx = SsmSnapshotIndex::new();
+    let toks: Vec<u32> = (0..100).collect();
+    let ph = super::hash_token_prefix(&toks, 40, 0);
+    idx.insert(ph, /*slot*/ 1, /*session*/ 7, /*tok*/ 40);
+    // Hit the anchor 5 times (each legitimately bumps recency).
+    for _ in 0..5 {
+        assert!(idx.lookup_tiered(&toks, 60, 7, 0).is_some());
+    }
+    // Two fresh saves AFTER the last hit — strictly more recent.
+    let ph80 = super::hash_token_prefix(&toks, 80, 0);
+    let ph90 = super::hash_token_prefix(&toks, 90, 0);
+    idx.insert(ph80, 2, 7, 80);
+    idx.insert(ph90, 3, 7, 90);
+    // The victim must be the OLDEST entry (the much-hit anchor), never a
+    // fresh save. The old hit-weighted score inverted this.
+    assert_eq!(idx.evict_lru(), Some(1), "hit history must not pin fossils");
 }
 
-/// Tail-protect only shields the LIVE conversation's tail; a dormant
-/// session's deep tail is still evictable (correct — session-aware ranking
-/// evicts the stalest conversation first).
+/// The lookup scan must be side-effect-free for LOSING candidates: only the
+/// winner's recency moves. (The pre-fix scan bumped every improving
+/// candidate, keeping shallow early-prefix entries eternally fresh.)
 #[test]
-fn dormant_session_tail_not_protected() {
-    // session 2 is live; session 1 is dormant (older last_access).
-    let idx = index(
-        vec![
-            entry(1, 1, 20000, 10, 0), // dormant deep tail — should die first
-            entry(2, 2, 4000, 90, 0),  // live shallow
-            entry(3, 2, 12000, 95, 0), // live deep tail — protected
-        ],
-        2,
-    );
-    let v = idx.session_aware_victim(true, false).unwrap();
+fn lookup_bumps_winner_only() {
+    let mut idx = SsmSnapshotIndex::new();
+    let toks: Vec<u32> = (0..100).collect();
+    let ph40 = super::hash_token_prefix(&toks, 40, 0);
+    let ph80 = super::hash_token_prefix(&toks, 80, 0);
+    idx.insert(ph40, 1, 7, 40); // shallow — the improving-chain fossil
+    idx.insert(ph80, 2, 7, 80); // deep — the winner
+    let shallow_before = idx
+        .entries
+        .iter()
+        .find(|e| e.snapshot_id == 1)
+        .unwrap()
+        .last_access;
+    // Deep lookup walks past the shallow candidate to select the deep one.
+    let m = idx.lookup_tiered(&toks, 100, 7, 0).expect("hit");
+    assert_eq!(m.token_count, 80, "deep entry wins");
+    let shallow_after = idx
+        .entries
+        .iter()
+        .find(|e| e.snapshot_id == 1)
+        .unwrap()
+        .last_access;
     assert_eq!(
-        idx.entries[v].snapshot_id, 1,
-        "stalest (dormant) session evicted first"
+        shallow_before, shallow_after,
+        "losing candidate's recency must not move"
     );
-}
-
-/// A pool of exactly one entry must still yield that entry as victim even
-/// when it is the protected tail — otherwise `save` can never reclaim and
-/// the cache deadlocks.
-#[test]
-fn single_protected_entry_still_evictable() {
-    let idx = index(vec![entry(5, 1, 16000, 50, 0)], 1);
-    let v = idx.session_aware_victim(true, false).unwrap();
-    assert_eq!(idx.entries[v].snapshot_id, 5);
+    // Same contract on the reference (non-tier) lookup.
+    let m2 = idx.lookup(&toks, 100, 7, 0).expect("hit");
+    assert_eq!(m2.1, 80);
+    let shallow_final = idx
+        .entries
+        .iter()
+        .find(|e| e.snapshot_id == 1)
+        .unwrap()
+        .last_access;
+    assert_eq!(shallow_before, shallow_final);
 }
 
 /// `lookup` records the live session so a later eviction protects the right
@@ -153,11 +193,8 @@ fn stats_track_hits_and_recompute() {
 /// frees its HBM slot — the core spill-not-drop transition.
 #[test]
 fn evict_to_tier_spills_not_removes() {
-    // id 3 = hot 8192 anchor (escore 1100); id 9 = cold deep tail (escore 50).
-    let mut idx = index(
-        vec![entry(3, 1, 8192, 100, 10), entry(9, 1, 16000, 50, 0)],
-        1,
-    );
+    // id 3 = fresh 8192 anchor (recency 100); id 9 = cold deep tail (recency 50).
+    let mut idx = index(vec![entry(3, 1, 8192, 100), entry(9, 1, 16000, 50)], 1);
     let before = idx.len();
     let (freed_slot, key) = idx.evict_to_tier().expect("a resident victim exists");
     // No tail-protect (env off) → the coldest entry (deep tail id 9) is the

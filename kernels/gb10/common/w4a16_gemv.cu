@@ -577,6 +577,24 @@ extern "C" __global__ void w4a16_gemv_batch4(
     w4a16_gemv_batchm_impl<4>(A, B_packed, B_scale, scale2, C, M, N, K);
 }
 
+// M<=8 (chain-verify K=5..8) — keeps M=5..8 projections on the
+// weight-streaming batched GEMV instead of falling to the tile GEMMs.
+// batch16's acc[16] + smem[16][8] register/smem pressure is halved at
+// MAX_M=8; per-row accumulation order is identical to batch4/batch16
+// (same template, M-guarded), so output is bit-identical at matching M.
+extern "C" __global__ void w4a16_gemv_batch8(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    w4a16_gemv_batchm_impl<8>(A, B_packed, B_scale, scale2, C, M, N, K);
+}
+
 // M<=16 (high-concurrency decode, n=5..16) — sibling of w8a16_gemv_batch16.
 extern "C" __global__ void w4a16_gemv_batch16(
     const __nv_bfloat16* __restrict__ A,

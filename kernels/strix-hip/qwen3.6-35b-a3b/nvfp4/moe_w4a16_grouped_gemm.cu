@@ -149,12 +149,12 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
 
         v16bf a;
         #pragma unroll
-        for (int i = 0; i < 16; i++) a[i] = (__bf16)smem_A[warp_m_offset + (lane_id & 15)][i];
+        for (int i = 0; i < 16; i++) a[i] = (__bf16)(float)smem_A[warp_m_offset + (lane_id & 15)][i];
         #pragma unroll
         for (int nb = 0; nb < 4; nb++) {
             v16bf b;
             #pragma unroll
-            for (int k = 0; k < 16; k++) b[k] = (__bf16)smem_B[k][nb * 16 + (lane_id & 15)];
+            for (int k = 0; k < 16; k++) b[k] = (__bf16)(float)smem_B[k][nb * 16 + (lane_id & 15)];
             acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]);
         }
         __syncthreads();
@@ -284,13 +284,13 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
             v16bf a; \
             _Pragma("unroll") \
             for (int i = 0; i < 16; i++) \
-                a[i] = (__bf16)smem_A[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]; \
+                a[i] = (__bf16)(float)smem_A[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]; \
             _Pragma("unroll") \
             for (int nb = 0; nb < 8; nb++) { \
                 unsigned int nc = nb * 16 + (lane_id & 15); \
                 v16bf b; \
                 _Pragma("unroll") \
-                for (int k = 0; k < 16; k++) b[k] = (__bf16)smem_B_bf16[nc][h * 16 + k]; \
+                for (int k = 0; k < 16; k++) b[k] = (__bf16)(float)smem_B_bf16[nc][h * 16 + k]; \
                 acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]); \
             } \
         } \
@@ -459,13 +459,13 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t_k64(
             v16bf a; \
             _Pragma("unroll") \
             for (int i = 0; i < 16; i++) \
-                a[i] = (__bf16)smem_A_k64[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]; \
+                a[i] = (__bf16)(float)smem_A_k64[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]; \
             _Pragma("unroll") \
             for (int nb = 0; nb < 8; nb++) { \
                 unsigned int nc = nb * 16 + (lane_id & 15); \
                 v16bf b; \
                 _Pragma("unroll") \
-                for (int k = 0; k < 16; k++) b[k] = (__bf16)smem_B_bf16_k64[nc][h * 16 + k]; \
+                for (int k = 0; k < 16; k++) b[k] = (__bf16)(float)smem_B_bf16_k64[nc][h * 16 + k]; \
                 acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]); \
             } \
         } \
@@ -653,13 +653,13 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
             v16bf a; \
             _Pragma("unroll") \
             for (int i = 0; i < 16; i++) \
-                a[i] = (__bf16)smem_A_fgu64[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]; \
+                a[i] = (__bf16)(float)smem_A_fgu64[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]; \
             _Pragma("unroll") \
             for (int nb = 0; nb < 8; nb++) { \
                 unsigned int nc = nb * 16 + (lane_id & 15); \
                 v16bf b; \
                 _Pragma("unroll") \
-                for (int k = 0; k < 16; k++) b[k] = (__bf16)smem_B_bf16_fgu64[nc][h * 16 + k]; \
+                for (int k = 0; k < 16; k++) b[k] = (__bf16)(float)smem_B_bf16_fgu64[nc][h * 16 + k]; \
                 acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]); \
             } \
         } \
@@ -829,13 +829,13 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t(
             v16bf a; \
             _Pragma("unroll") \
             for (int i = 0; i < 16; i++) \
-                a[i] = (__bf16)smem_A[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]; \
+                a[i] = (__bf16)(float)smem_A[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]; \
             _Pragma("unroll") \
             for (int nb = 0; nb < 8; nb++) { \
                 unsigned int nc = nb * 16 + (lane_id & 15); \
                 v16bf b; \
                 _Pragma("unroll") \
-                for (int k = 0; k < 16; k++) b[k] = (__bf16)smem_B_bf16[nc][h * 16 + k]; \
+                for (int k = 0; k < 16; k++) b[k] = (__bf16)(float)smem_B_bf16[nc][h * 16 + k]; \
                 acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]); \
             } \
         } \
@@ -985,13 +985,13 @@ extern "C" __global__ void moe_fp8_grouped_gemm_ptrtable_t(
             v16bf a; \
             _Pragma("unroll") \
             for (int i = 0; i < 16; i++) \
-                a[i] = (__bf16)atlas_e4m3_to_f32(smem_Af2[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]); \
+                a[i] = (__bf16)(float)atlas_e4m3_to_f32(smem_Af2[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]); \
             _Pragma("unroll") \
             for (int nb = 0; nb < 8; nb++) { \
                 unsigned int nc = nb * 16 + (lane_id & 15); \
                 v16bf b; \
                 _Pragma("unroll") \
-                for (int k = 0; k < 16; k++) b[k] = (__bf16)smem_B2_bf16[nc][h * 16 + k]; \
+                for (int k = 0; k < 16; k++) b[k] = (__bf16)(float)smem_B2_bf16[nc][h * 16 + k]; \
                 acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]); \
             } \
         } \

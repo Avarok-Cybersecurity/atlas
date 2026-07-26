@@ -182,3 +182,47 @@ impl Qwen3AttentionLayer {
             .unwrap_or_else(|| 1.0f32 / (head_dim as f32).sqrt())
     }
 }
+
+#[cfg(test)]
+mod yarn_mscale_tests {
+    use super::yarn_rope_mscale;
+    use atlas_core::config::ModelConfig;
+
+    // Test 1 + Test 4: with the DS4F-forced config (yarn_mscale ==
+    // yarn_mscale_all_dim == 0.0, factor 16), yarn_rope_mscale returns EXACTLY
+    // 1.0 — the single value fed to all nine DS4F rope call sites, removing the
+    // erroneous 1.2772589 amplitude on CSA/HCA layers.
+    #[test]
+    fn ds4f_forced_config_yields_mscale_one() {
+        let mut c = ModelConfig::qwen3_next_80b_nvfp4();
+        c.yarn_factor = 16.0;
+        c.yarn_mscale = 0.0;
+        c.yarn_mscale_all_dim = 0.0;
+        assert_eq!(yarn_rope_mscale(&c), 1.0);
+    }
+
+    // Test 5 (helper side): the helper itself is UNCHANGED. Under the generic
+    // HF-DeepseekV3 default (mscale 1.0, mscale_all_dim 0.0) it still returns the
+    // 1.2772589 ratio, so any legitimate YaRN-mscale caller (a different model
+    // whose config sets these fields) is unaffected. Only the DS4F *config* flips
+    // the result, not this function.
+    #[test]
+    fn generic_yarn_default_unchanged_1277() {
+        let mut c = ModelConfig::qwen3_next_80b_nvfp4();
+        c.yarn_factor = 16.0;
+        c.yarn_mscale = 1.0;
+        c.yarn_mscale_all_dim = 0.0;
+        let m = yarn_rope_mscale(&c);
+        assert!((m - 1.2772589).abs() < 1e-5, "expected ~1.2772589, got {m}");
+    }
+
+    // YaRN disabled (factor <= 1) short-circuits to 1.0 (unchanged behavior).
+    #[test]
+    fn yarn_disabled_factor_one_is_mscale_one() {
+        let mut c = ModelConfig::qwen3_next_80b_nvfp4();
+        c.yarn_factor = 1.0;
+        c.yarn_mscale = 1.0;
+        c.yarn_mscale_all_dim = 0.0;
+        assert_eq!(yarn_rope_mscale(&c), 1.0);
+    }
+}

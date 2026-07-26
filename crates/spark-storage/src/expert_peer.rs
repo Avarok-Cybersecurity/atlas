@@ -19,6 +19,9 @@
 // The peer is pure I/O (no CUDA); the client half lives in the cuda-gated
 // `expert_tier_rdma` module because it lands bytes in the pinned arena.
 
+// Consumed only by the `#[cfg(unix)]` peer server below; same gate, so a
+// Windows build does not trip `unused_imports` under `warnings = "deny"`.
+#[cfg(unix)]
 use anyhow::{Context, Result, bail};
 
 // The handshake wire codecs moved verbatim to the CUDA-free `atlas-rdma`

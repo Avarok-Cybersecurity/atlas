@@ -151,6 +151,65 @@ impl Qwen3SsmLayer {
                     )?;
                 }
             }
+        } else if (5..=8).contains(&num_tokens)
+            && self.w4a16_gemv_batch8_k.0 != 0
+            && let Some(ref nvfp4) = self.qkvz_nvfp4
+        {
+            // Chain-verify K=5..8: keep the NVFP4 QKVZ on the weight-streaming
+            // batched GEMV (batch8) instead of falling through to the tile
+            // GEMMs below (the M>4 projection cliff). FP8 checkpoints fall
+            // through unchanged (fp8_gemm arm below).
+            ops::w4a16_gemv_batchm(
+                ctx.gpu,
+                self.w4a16_gemv_batch8_k,
+                normed,
+                nvfp4,
+                proj_dst,
+                num_tokens as u32,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )?;
+        } else if num_tokens == 4 {
+            if let Some(ref nvfp4) = self.qkvz_nvfp4 {
+                ops::w4a16_gemv_batchm(
+                    ctx.gpu,
+                    self.w4a16_gemv_batch4_k,
+                    normed,
+                    nvfp4,
+                    proj_dst,
+                    num_tokens as u32,
+                    qkvz_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+            } else if let Some(ref fp8w) = self.qkvz_fp8w {
+                ops::w8a16_gemv_batch4(
+                    ctx.gpu,
+                    self.w8a16_gemv_batch4_k,
+                    normed,
+                    fp8w.weight,
+                    fp8w.row_scale,
+                    proj_dst,
+                    num_tokens as u32,
+                    qkvz_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+            } else {
+                for t in 0..4u32 {
+                    ops::dense_gemv(
+                        ctx.gpu,
+                        self.dense_gemv_k,
+                        normed.offset(t as usize * h * bf16),
+                        &self.ssm.in_proj_qkvz,
+                        proj_dst.offset(t as usize * qkvz_size * bf16),
+                        qkvz_size as u32,
+                        h as u32,
+                        stream,
+                    )?;
+                }
+            }
         } else if num_tokens == 3 {
             if let Some(ref nvfp4) = self.qkvz_nvfp4 {
                 ops::w4a16_gemv_batch3(
@@ -501,6 +560,25 @@ impl Qwen3SsmLayer {
                     )?;
                 }
             }
+        } else if (4..=8).contains(&num_tokens)
+            && !self.ssm.out_proj.weight.is_null()
+            && self.w4a16_batchm_kernel(num_tokens).0 != 0
+        {
+            // NVFP4 out_proj at M=4..8 (K=4 verify + K=5..8 chain verify):
+            // previously fell through to the w4a16 tile GEMMs below (M>3
+            // cliff — there was no ==4 arm at all on the NVFP4 side); the
+            // batchm GEMV streams the weight once for all rows.
+            ops::w4a16_gemv_batchm(
+                ctx.gpu,
+                self.w4a16_batchm_kernel(num_tokens),
+                normed_out_buf,
+                &self.ssm.out_proj,
+                out_proj_buf,
+                num_tokens as u32,
+                h as u32,
+                value_dim as u32,
+                stream,
+            )?;
         } else if num_tokens == 3 {
             ops::w4a16_gemv_batch3(
                 ctx.gpu,
@@ -637,18 +715,19 @@ impl Qwen3SsmLayer {
                 (2 * h) as u32,
                 stream,
             )?;
-        } else if num_tokens == 4
+        } else if (4..=8).contains(&num_tokens)
             && self
                 .ffn
-                .try_forward_k4(normed2_base, ctx, stream)
-                .inspect_err(|e| tracing::error!("ffn.try_forward_k4: {e:#}"))
+                .try_forward_km(normed2_base, num_tokens as u32, ctx, stream)
+                .inspect_err(|e| tracing::error!("ffn.try_forward_km: {e:#}"))
                 .unwrap_or(false)
         {
-            // K=4 verify FFN via M<=4 batched GEMV: one weight read per
-            // projection for all 4 rows at near-peak stream bandwidth. nsys
-            // (2026-07-18): the forward_prefill MMQ arm below cost 54.8 ms/
-            // verify-step across the 64-layer dense FFN stack at M=4 vs the
-            // ~31 ms weight-traffic floor this path hits. Falls through to
+            // K=4..8 verify FFN via batched GEMV (batch4 M<=4, batch8
+            // M=5..8): one weight read per projection for all rows at
+            // near-peak stream bandwidth. nsys (2026-07-18): the
+            // forward_prefill MMQ arm below cost 54.8 ms/verify-step across
+            // the 64-layer dense FFN stack at M=4 vs the ~31 ms
+            // weight-traffic floor this path hits. Falls through to
             // forward_prefill when unavailable (MoE / missing kernel).
             let moe_out = ctx.buffers.moe_output();
             ops::residual_add(

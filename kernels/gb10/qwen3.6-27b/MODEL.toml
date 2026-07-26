@@ -128,7 +128,15 @@ thinking_default = true
 thinking_in_tools = true
 # 2026-05-23 sweep: 512 → 2048 (project-wide reasoning headroom bump).
 max_thinking_budget = 2048
-default_num_drafts = 1
+# 2026-07-24 chain-widening sweep: 1 → 3 (K=2 → K=4). The K=4 verify FFN on the
+# 16 full-attention layers was falling through to the MMQ prefill GEMM (no n==4
+# arm in multi_seq/ffn.rs) — the reason every earlier K>2 sweep regressed. With
+# that arm added, the agentic ladder measures TPOT 38.49 (K=3) → 31.69 (K=4),
+# and the full MLCommons e2e at K=4 gives wall 4104s / TPOT 32.60ms / BFCL 87.44
+# / IoU 0.6231 (vs 4551.9s / 38.18ms at the old default). K=5 wins wall/tps by
+# ~1.5-2.5% on the subset but has no full-e2e accuracy validation; revisit with
+# its own e2e before moving further.
+default_num_drafts = 3
 # FP8 KV cache (enabled 2026-07-19): lever #2 — cp.async pipelining in
 # inferspark_prefill_paged_fp8.cu hides KV-load latency behind QK^T compute.
 # The old sync fp8->bf16 dequant path was 10.2% SLOWER than BF16 KV (435.8

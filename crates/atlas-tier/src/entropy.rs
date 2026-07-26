@@ -18,7 +18,7 @@ use anyhow::Result;
 ///
 /// Linux: `libc::getrandom` (flags = 0: the `/dev/urandom` pool, blocking only
 /// pre-seed at early boot), looping on `EINTR` and partial reads. Other unix
-/// (macOS): `/dev/urandom` via `read_exact`.
+/// (macOS): `/dev/urandom` via `read_exact`. Windows: `BCryptGenRandom`.
 pub fn random_u64() -> Result<u64> {
     let mut buf = [0u8; 8];
     fill(&mut buf)?;
@@ -49,6 +49,16 @@ fn fill(buf: &mut [u8]) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("open /dev/urandom failed (refusing a degraded salt): {e}"))?;
     f.read_exact(buf)
         .map_err(|e| anyhow::anyhow!("read /dev/urandom failed (refusing a degraded salt): {e}"))
+}
+
+/// Windows: `BCryptGenRandom`, reached through the `getrandom` crate that is
+/// already in this workspace's dependency graph (0.3.4, pulled transitively) —
+/// so this arm adds no new supply-chain surface. Same PCND stance as the unix
+/// arms above: a failure is a hard error, never a degraded zero-entropy salt.
+#[cfg(windows)]
+fn fill(buf: &mut [u8]) -> Result<()> {
+    getrandom::fill(buf)
+        .map_err(|e| anyhow::anyhow!("BCryptGenRandom failed (refusing a degraded salt): {e}"))
 }
 
 #[cfg(test)]

@@ -235,13 +235,13 @@ __device__ __forceinline__ void mma_kstep(
 ) {
     v16bf a;
     #pragma unroll
-    for (int i = 0; i < 16; i++) a[i] = (__bf16)smem_A[warp_m_offset + (lane & 15)][i];
+    for (int i = 0; i < 16; i++) a[i] = (__bf16)(float)smem_A[warp_m_offset + (lane & 15)][i];
     #pragma unroll
     for (int j = 0; j < PM4_SUBTILES_PER_WARP; j++) {
         unsigned int nb = n_sub_base + j;
         v16bf b;
         #pragma unroll
-        for (int k = 0; k < 16; k++) b[k] = (__bf16)smem_B[k][nb * 16 + (lane & 15)];
+        for (int k = 0; k < 16; k++) b[k] = (__bf16)(float)smem_B[k][nb * 16 + (lane & 15)];
         inner[j] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, inner[j]);
     }
 }

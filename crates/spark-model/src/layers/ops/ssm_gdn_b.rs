@@ -227,17 +227,20 @@ pub fn gdn_decode_wy4(
         .launch(stream)
 }
 
-/// WY-Chunkwise Gated Delta Rule for K=17 verification (DFlash γ+1).
-/// Computes 17 H·k dot products in 1 pass over H, applies WY algebraic
-/// correction over 17 tokens (136 inter-token k-dot products), then
-/// applies 17 state updates in a second fused pass writing
-/// Hi_0..Hi_15 + final H.
+/// WY-Chunkwise Gated Delta Rule, pool-layout intermediates — K-generic
+/// launch shared by the K=17 DFlash verify (`gated_delta_rule_wy17`) and the
+/// chain-verify K∈{5..8} instantiations (`gated_delta_rule_wy5..wy8`, one
+/// templated source `gated_delta_rule_wyn.cu`). K is compile-time in the
+/// kernel; the caller selects it via the `kernel` handle. Computes K H·k dot
+/// products in 1 pass over H, applies WY algebraic correction over K tokens
+/// (K*(K-1)/2 inter-token k-dots), then applies K state updates in a second
+/// fused pass writing Hi_0..Hi_{K-2} + final H.
 ///
-/// `h_state_inter_base` points to a contiguous pool of (K-1)=16
-/// intermediate H states per (layer, slot). Each Hi_t is at
+/// `h_state_inter_base` points to a contiguous pool of (K-1) intermediate
+/// H states per (layer, slot). Each Hi_t is at
 /// `h_state_inter_base + t * inter_stride_floats` (per (b, vh) sub-region).
 #[allow(clippy::too_many_arguments)]
-pub fn gdn_decode_wy17(
+pub fn gdn_decode_wyn(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
     h_state: DevicePtr,

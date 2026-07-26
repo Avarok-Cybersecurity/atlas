@@ -138,7 +138,7 @@ fn main() -> Result<()> {
         let a8_ptr = upload_bytes(gpu, &a_fp8)?;
         // ldmab: FP8 A, FP8 B, grid (N/128, M/128), block 256 — vs scalar-load fp8_gemm_t.
         {
-            let h = gpu.kernel("w4a16", "fp8_fp8_gemm_ldmab")?;
+            let h = gpu.kernel("w4a16_fp8_ldmab", "fp8_fp8_gemm_ldmab")?;
             let launch = |s| {
                 KernelLaunch::new(gpu, h)
                     .grid([div_ceil(n as u32, 128), div_ceil(m as u32, 128), 1])

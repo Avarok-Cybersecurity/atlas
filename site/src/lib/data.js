@@ -39,6 +39,8 @@ export const qwenAmbassadorUrl = 'https://qwen.ai/ambassador';
 export const strixPrUrl = 'https://github.com/Avarok-Cybersecurity/atlas/pull/187';
 export const mlperfResultsUrl = 'https://mlcommons.org/benchmarks/inference-datacenter/';
 export const mlcommonsEndpointsPrUrl = 'https://github.com/mlcommons/endpoints/pull/346';
+export const mlcommonsArticleUrl =
+  'https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/';
 
 // --- brand -------------------------------------------------------------------
 export const tagline = 'Pure Rust inference, tuned for the machine on your desk.';
@@ -53,7 +55,23 @@ export const runCommandRaw =
 // --- hardware acknowledgment (modest banner) ---------------------------------
 export const gifts = {
   line: 'Thank you NVIDIA and AMD.',
-  sub: 'DGX Spark gifted by NVIDIA, Strix Halo gifted by AMD. Both camps handed us silicon and we intend to contnue proving to the world the raw power of these machines.'
+  sub: 'DGX Spark gifted by NVIDIA, Strix Halo gifted by AMD, and now a Strix Halo desktop from AMD too. That desktop is the box we ran our MLPerf submission on.',
+  ctaText: 'See the post',
+  ctaUrl: xUrl
+};
+
+// --- nav (SSOT for both the desktop bar and the mobile drawer) ---------------
+export const nav = {
+  links: [
+    { text: 'News', href: '#news' },
+    { text: 'Verified', href: '#verified' },
+    { text: 'Hardware', href: '#hardware' },
+    { text: 'Models', href: '#models' },
+    { text: 'Get running', href: '#run' },
+    { text: 'Contribute', href: '#contribute' }
+  ],
+  menuLabel: 'Menu',
+  closeLabel: 'Close menu'
 };
 
 // --- hero --------------------------------------------------------------------
@@ -79,14 +97,54 @@ export const proof = {
   items: [
     { text: 'Merged into Hugging Face Transformers', url: transformersPrUrl },
     { text: 'Qwen Dev Ambassadors', url: qwenAmbassadorUrl },
-    { text: 'MLPerf Agentic Edge task force', url: mlcommonsEndpointsPrUrl },
+    { text: 'MLPerf Edge Agentic task force', url: mlcommonsArticleUrl },
     { text: 'Built with SCALE by Spectral Compute', url: scaleUrl }
+  ]
+};
+
+// --- news band ----------------------------------------------------------------
+// Newest first. Every card points at a primary source, no numbers before
+// MLCommons publishes. See CLAIM POLICY at the top of this file.
+export const news = {
+  label: '// 01 · news',
+  title: 'What just happened.',
+  sub:
+    'Three things landed this month and every card links straight to the primary source.',
+  items: [
+    {
+      tag: 'MLCommons',
+      date: 'July 2026',
+      featured: true,
+      title: 'We helped build the MLPerf Edge Agentic benchmark',
+      body:
+        'MLCommons published the new MLPerf Inference v6.1 edge agentic benchmark and Atlas Inference is named as a contributor alongside NVIDIA. It measures multi turn agentic LLMs on a single edge accelerator, BFCL v4 for accuracy and replayed agentic coding trajectories for performance. We helped shape it because it is the benchmark that actually looks like the work.',
+      cta: 'Read the MLCommons announcement',
+      url: mlcommonsArticleUrl
+    },
+    {
+      tag: 'AMD',
+      date: 'July 2026',
+      title: 'AMD sent us a Strix Halo desktop',
+      body:
+        'Big thanks to AMD for the Strix Halo desktop. We took Atlas to ROCm to show what this silicon can really do when it is paired with custom kernels, and that desktop is the box we ran and submitted MLPerf on.',
+      cta: 'See the post on X',
+      url: xUrl
+    },
+    {
+      tag: 'MLPerf v6.1',
+      date: 'Submitted',
+      title: 'Our MLPerf submission is in',
+      body:
+        'Atlas is submitted to MLPerf Inference v6.1 in the closed edge division, the same CUDA source across NVIDIA GB10 and AMD gfx1151. llama.cpp is the bar we measure ourselves against on this workload and we like where we landed. Results stay under embargo until MLCommons publishes, so stay tuned.',
+      cta: 'Follow along in Discord',
+      url: discordUrl
+    }
   ]
 };
 
 // --- star / social proof -----------------------------------------------------
 export const stars = {
-  label: '// 01 · momentum',
+  label: '// 02 · momentum',
   title: 'Built in the open, starred in the open.',
   sub:
     'Atlas went from one Reddit post to a whole crew of builders running it on their own Sparks. The curve below is live, regenerated from the GitHub API on every deploy.',
@@ -129,13 +187,13 @@ export const community = {
 
 // --- verified performance (the gate receipt) ---------------------------------
 export const verified = {
-  label: '// 02 · verified',
+  label: '// 03 · verified',
   title: 'Every number is a receipt.',
   sub:
     'The website is a build artifact of the repo. Models come from recipes, performance comes from committed gate enforced baselines, stamped with commit and date. If a number is not in the repo, it is not on this page.',
-  pendingHeadline: 'MLPerf submission in progress',
+  pendingHeadline: 'MLPerf v6.1 submitted',
   pendingBody:
-    'We are prepping our numbers for a public MLPerf Inference submission. When they land they render right here in this receipt, gate enforced, reproducible, stamped. Until then the release gate holds every image to liveness and coherence, and you can reproduce any run yourself.',
+    'Our MLPerf Inference v6.1 submission is in, closed edge division, on both GB10 and gfx1151. The numbers render right here in this receipt the moment MLCommons publishes them, gate enforced, reproducible, stamped. Until then the release gate holds every image to liveness and coherence, and you can reproduce any run yourself.',
   mechanism:
     'A release that ships slower than the committed baseline fails our gate. That one sentence is the whole positioning.',
   reproLead: 'Reproduce the matrix',
@@ -146,15 +204,15 @@ export const mlperfCopy = {
   preparing:
     'We are prepping a submission to MLPerf Inference v6.1, the same CUDA source submitted across NVIDIA GB10 and AMD gfx1151. Aiming to be the first to run identical CUDA on both.',
   submitted:
-    'Submitted to MLPerf Inference v6.1 across NVIDIA GB10 and AMD gfx1151. Results are under embargo until MLCommons publishes.',
+    'Submitted to MLPerf Inference v6.1 in the closed edge division, the same CUDA source across NVIDIA GB10 and AMD gfx1151. Results are under embargo until MLCommons publishes them, so stay tuned.',
   published: 'Published in MLPerf Inference v6.1 across NVIDIA GB10 and AMD gfx1151.'
 };
 
 export const mlcommons = {
   line:
-    'Atlas is a member of MLCommons and sits on the MLPerf Agentic Edge task force, where we helped shape the BFCL-v4 edge agentic benchmark.',
-  linkText: 'the edge agentic benchmark work',
-  url: mlcommonsEndpointsPrUrl
+    'Atlas is a member of MLCommons and sits on the Edge LLM taskforce, where we helped shape the new v6.1 edge agentic benchmark. MLCommons names Atlas Inference as a contributor in the announcement.',
+  linkText: 'read the announcement',
+  url: mlcommonsArticleUrl
 };
 
 export const mlperfTrademark =
@@ -162,7 +220,7 @@ export const mlperfTrademark =
 
 // --- hardware ----------------------------------------------------------------
 export const hardware = {
-  label: '// 03 · hardware',
+  label: '// 04 · hardware',
   title: 'Prosumer first. Desk machines, not clusters.',
   cards: [
     {
@@ -178,11 +236,11 @@ export const hardware = {
     {
       name: 'AMD Strix Halo',
       chip: 'gfx1151 · RDNA 3.5',
-      status: 'bringup',
-      statusText: 'In bring up',
+      status: 'verified',
+      statusText: 'MLPerf submitted',
       gift: true,
       body:
-        'One codebase, both camps. Our CUDA kernels compile straight for AMD gfx1151 with SCALE by Spectral Compute. No HIP port, no second kernel tree. Serving Qwen at NVFP4 quality on a dev branch and stabilizing now.',
+        'One codebase, both camps. Our CUDA kernels compile straight for AMD gfx1151 with SCALE by Spectral Compute. No HIP port, no second kernel tree. AMD sent us a Strix Halo desktop and that is the box we ran and submitted our MLPerf Inference v6.1 numbers on.',
       cta: { text: 'Join the bring up, PR #187', url: strixPrUrl },
       scale: { text: 'Built with SCALE by Spectral Compute', url: scaleUrl }
     }
@@ -191,7 +249,7 @@ export const hardware = {
 
 // --- models ------------------------------------------------------------------
 export const models = {
-  label: '// 04 · models',
+  label: '// 05 · models',
   title: 'Every model here has a recipe.',
   sub:
     'Pick a vendor, then a family. Every card maps to one recipe in atlas-recipes, so the site cannot list a model we do not ship. Copy the command and run it as is. Qwen3.6 leads because it is our flagship.',
@@ -207,7 +265,7 @@ export const models = {
 
 // --- get running -------------------------------------------------------------
 export const getRunning = {
-  label: '// 05 · get running',
+  label: '// 06 · get running',
   title: 'Up and running in one command.',
   sub:
     'This is the first 60 seconds. Everything after, per model recipes, EP=2, tuning, lives in the docs.',
@@ -219,18 +277,18 @@ export const getRunning = {
 
 // --- mission -----------------------------------------------------------------
 export const mission = {
-  label: '// 06 · mission',
+  label: '// 07 · mission',
   title: 'Local AI worth having, open to all.',
   body: [
     'AI worth having should run on hardware you own. Prosumer machines like DGX Spark and Strix Halo are the first generation that makes that real, and we build for them first.',
-    'Pure Rust because the whole stack should be inspectable by one person, HTTP to kernel dispatch, no interpreter in the hot path. We develop on machines granted by NVIDIA and AMD. Both camps handed us silicon and we intend to contnue proving to the world the raw power of these machines.',
+    'Pure Rust because the whole stack should be inspectable by one person, HTTP to kernel dispatch, no interpreter in the hot path. We develop on machines granted by NVIDIA and AMD. Both camps handed us silicon and we intend to continue proving to the world the raw power of these machines.',
     'Open to all. The test fleet is the community desks. If a model matters to you, it matters to us.'
   ]
 };
 
 // --- contribute --------------------------------------------------------------
 export const contribute = {
-  label: '// 07 · contribute',
+  label: '// 08 · contribute',
   title: 'Your machine is the test fleet.',
   sub:
     'Atlas grows from the desks it runs on. Every path below is real and linked. Contributions ship in the Community Edition under AGPLv3, and the CLA lets us re license for the Enterprise Edition.',
@@ -265,7 +323,7 @@ export const contribute = {
 
 // --- roadmap (next up + artifact-linked) -------------------------------------
 export const roadmap = {
-  label: '// 08 · next up',
+  label: '// 09 · next up',
   title: 'What we are building next.',
   sub: 'Everything real links to an issue, a PR, or the Discord where the work happens. The teasers are teasers, and we say so.',
   items: [
@@ -286,18 +344,18 @@ export const roadmap = {
     },
     {
       title: 'AMD Strix Halo',
-      status: 'In bring up',
+      status: 'MLPerf submitted',
       gift: true,
-      body: 'Native gfx1151 through SCALE. Serving Qwen at NVFP4 quality on a branch and stabilizing CI.',
+      body: 'Native gfx1151 through SCALE. AMD sent us a Strix Halo desktop and we took Atlas to ROCm on it, custom kernels and all.',
       cta: 'PR #187',
       url: strixPrUrl
     },
     {
       title: 'MLPerf Inference v6.1',
-      status: 'Prepping',
-      body: 'The same CUDA source submitted across GB10 and gfx1151. No numbers until MLCommons publishes.',
-      cta: 'MLCommons',
-      url: mlperfResultsUrl
+      status: 'Submitted',
+      body: 'The same CUDA source submitted across GB10 and gfx1151, closed edge division. No numbers until MLCommons publishes.',
+      cta: 'Read the benchmark announcement',
+      url: mlcommonsArticleUrl
     },
     {
       title: 'Qwen GDN kernel upstream',
@@ -318,7 +376,7 @@ export const roadmap = {
 
 // --- reach out ---------------------------------------------------------------
 export const reachout = {
-  label: '// 09 · reach out',
+  label: '// 10 · reach out',
   title: 'Come work with us.',
   sub:
     'Building on Spark or Strix, bringing hardware to the table, or wanting to partner or talk business. We want to hear from you and we move fast.',

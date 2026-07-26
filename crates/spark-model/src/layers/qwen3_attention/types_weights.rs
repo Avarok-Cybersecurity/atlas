@@ -97,7 +97,8 @@ pub struct CompressorWeights {
     pub wgate: DenseWeight,
     /// kv_norm weight `[head_dim]` — HF-vanilla RMSNorm (loaded exactly).
     pub norm: DenseWeight,
-    /// position_bias / ape: [ratio, proj_dim] BF16, added to the gate before softmax.
+    /// position_bias / ape: [ratio, proj_dim] **F32** (checkpoint-native; csa_compress
+    /// indexes it as `const float*`), added to the gate before the per-dim softmax.
     pub ape: spark_runtime::gpu::DevicePtr,
     /// compress_rate for this layer (4 = CSA, 128 = HCA).
     pub ratio: usize,

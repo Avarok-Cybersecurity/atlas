@@ -166,20 +166,38 @@ impl TransformerModel {
                         );
                     }
                     if snap_tok < matched {
+                        // Report the REAL SSM replay length. The suffix
+                        // prefill resumes at `marconi_skip_to == snap_tok`
+                        // and runs the recurrence forward to `total`, so the
+                        // replay is `total - snap_tok`. This line used to
+                        // print `matched - snap_tok`, which silently omits
+                        // the whole `[matched, total)` suffix — on a warm
+                        // agentic turn that suffix IS the new user message,
+                        // so the logged cost understated the true replay by
+                        // exactly the part that grows with the conversation.
+                        // Both numbers are printed: the anchor->match gap is
+                        // the part attributable to snapshot granularity, the
+                        // total is what actually runs.
                         tracing::info!(
                             "Marconi intermediate hit: restored from checkpoint at token {} \
-                             (skipping {} tokens, recomputing {} SSM tokens to match point {})",
+                             (skipping {} tokens, replaying {} SSM tokens to reach {}; \
+                             {} of those are the anchor->match gap to {})",
                             snap_tok,
                             snap_tok,
-                            matched - snap_tok,
+                            total.saturating_sub(snap_tok),
+                            total,
+                            matched.saturating_sub(snap_tok),
                             matched,
                         );
                     } else {
                         tracing::info!(
-                            "Marconi SSM cache hit: {} tokens skipped ({} blocks), snapshot {}",
+                            "Marconi SSM cache hit: {} tokens skipped ({} blocks), \
+                             snapshot {}, replaying {} SSM tokens to reach {}",
                             matched,
                             prefix_match.matched_blocks.len(),
                             snap_id,
+                            total.saturating_sub(snap_tok),
+                            total,
                         );
                         // Exact full-prompt leaf hit (snap_tok == matched ==
                         // total): the last prompt token is re-run for logits,

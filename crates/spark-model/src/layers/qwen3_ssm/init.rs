@@ -242,6 +242,15 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_wy17",
                 "gated_delta_rule_wy17",
             ),
+            // Chain-verify K=5..8 WY kernels (one templated gb10-common
+            // module). Index = K-5; NULL on targets lacking the module, in
+            // which case those widths keep the sequential per-token path.
+            gdn_wyn_k: [
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy5"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy6"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy7"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy8"),
+            ],
             h_state_bytes: nv * vd * kd * 4, // FP32 [nv, kd, vd] transposed for coalescing
             conv_state_bytes: conv_dim * d_conv * 4, // FP32 [conv_dim, d_conv]
             qkvz_fp8: None,
@@ -266,6 +275,7 @@ impl Qwen3SsmLayer {
             ),
             // NVFP4 batched decode GEMV (both entries live in the w4a16_gemv module).
             w4a16_gemv_batch4_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
+            w4a16_gemv_batch8_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
             w4a16_gemv_batch16_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch16"),
             w8a16_gemm_t_k: super::super::try_kernel(gpu, "w8a16_gemm_t", "w8a16_gemm_t"),
             per_token_group_quant_fp8_k: super::super::try_kernel(

@@ -50,13 +50,38 @@ impl MtpHead {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<usize> {
+        self.drafter_rows_impl(prompt_tokens, hiddens, 0, 1, state, ctx, stream)
+    }
+
+    /// Row/position generalization of the drafter prefill: appends drafter
+    /// rows at KV slots `row_base ..` with RoPE positions `pos_base ..`
+    /// (row r = pair `(embed(prompt_tokens[r+1]), hiddens row r)`, RoPE
+    /// `pos_base + r` = its sequence pair key + 1). Slots and positions are
+    /// decoupled because without drafter prefill the row space is COMPACTED
+    /// (slots dense, RoPE sequence-space with gaps — matching `forward_one`).
+    /// `row_base = 0, pos_base = 1` is the classic whole-prompt prefill;
+    /// the catch-up feed (ATLAS_MTP_CATCHUP) appends at `row_base = seq_len`
+    /// with the fed pairs' true sequence positions.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn drafter_rows_impl(
+        &self,
+        prompt_tokens: &[u32],
+        hiddens: DevicePtr,
+        row_base: usize,
+        pos_base: usize,
+        state: &mut dyn ProposerState,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<usize> {
         let mtp_state = match state.as_any_mut().downcast_mut::<MtpProposerState>() {
             Some(s) => s,
             None => return Ok(0),
         };
-        // Only a fresh drafter (nothing proposed yet) can be prefilled; a
-        // non-zero seq_len means decode already started (or prefill ran).
-        if mtp_state.seq_len != 0 || prompt_tokens.len() < 2 {
+        // Rows must append exactly at the drafter's current length: for the
+        // classic prefill that means a fresh drafter (seq_len == 0); for the
+        // catch-up feed, row_base == seq_len. Anything else would leave a
+        // hole or overwrite live rows.
+        if mtp_state.seq_len != row_base || prompt_tokens.len() < 2 {
             return Ok(0);
         }
         let scratch = match self.prefill_scratch.as_ref() {
@@ -74,9 +99,9 @@ impl MtpHead {
                 static WARNED: std::sync::Once = std::sync::Once::new();
                 WARNED.call_once(|| {
                     tracing::warn!(
-                        "ATLAS_MTP_DRAFTER_PREFILL: drafter prefill supports the BF16 \
-                         MTP head (--mtp-quantization bf16) with BF16 KV only; \
-                         continuing WITHOUT drafter context prefill."
+                        "MTP drafter context: the batched drafter prefill supports \
+                         the BF16 MTP head (--mtp-quantization bf16) with BF16 KV \
+                         only; continuing WITHOUT drafter context prefill."
                     );
                 });
                 return Ok(0);
@@ -96,9 +121,39 @@ impl MtpHead {
         // Grow the drafter block table to cover all prefill slots up front.
         let mut kv_cache = self.kv_cache.lock();
         let bs = kv_cache.block_size();
-        let blocks_needed = (rows_total - 1) / bs + 1;
+        let blocks_needed = (row_base + rows_total - 1) / bs + 1;
         while mtp_state.block_table.len() < blocks_needed {
             mtp_state.block_table.push(kv_cache.alloc_block()?);
+        }
+
+        // ATLAS_MTP_PREFILL_PROFILE=1: per-phase wall clock for this pass, so the
+        // 1136 ms measured over 11,947 rows can be attributed to a phase instead
+        // of guessed at. Each phase is synced, so the totals are only meaningful
+        // WITH the flag on — never enable it in a timed leg.
+        let profile = std::env::var("ATLAS_MTP_PREFILL_PROFILE").ok().as_deref() == Some("1");
+        let mut t_embed = 0f64;
+        let mut t_concat = 0f64;
+        let mut t_rest = 0f64;
+        let mut t_fc = 0f64;
+        let mut t_kv = 0f64;
+        macro_rules! phase {
+            ($acc:expr, $body:block) => {{
+                // The immediately-invoked closures scope `?` to `$body` so the
+                // timing is recorded before the error propagates; that pattern
+                // trips `redundant_closure_call`, allowed narrowly here.
+                #[allow(clippy::redundant_closure_call)]
+                {
+                    if profile {
+                        let s = std::time::Instant::now();
+                        let r = (|| -> Result<()> { $body })();
+                        ctx.gpu.synchronize(stream)?;
+                        $acc += s.elapsed().as_secs_f64() * 1e3;
+                        r?;
+                    } else {
+                        (|| -> Result<()> { $body })()?;
+                    }
+                }
+            }};
         }
 
         let mut done = 0usize;
@@ -106,10 +161,13 @@ impl MtpHead {
             let c = (rows_total - done).min(PREFILL_CHUNK);
 
             // 1. Gather embeddings of t_{i+1} for rows done..done+c.
-            for r in 0..c {
-                let tok = prompt_tokens[done + r + 1] as usize;
-                self_copy_embed_row(self, ctx, tok, scratch.embed, r, h, stream)?;
-            }
+            phase!(t_embed, {
+                for r in 0..c {
+                    let tok = prompt_tokens[done + r + 1] as usize;
+                    self_copy_embed_row(self, ctx, tok, scratch.embed, r, h, stream)?;
+                }
+                Ok(())
+            });
 
             // 2. Pre-fc norms: embedding rows and target-hidden rows.
             ops::rms_norm(
@@ -136,30 +194,35 @@ impl MtpHead {
             )?;
 
             // 3. Per-row concat [normed_embed | normed_hidden] → [c, 2h].
-            for r in 0..c {
-                ops::bf16_concat(
-                    ctx.gpu,
-                    self.bf16_concat_k,
-                    scratch.normed_embed.offset(r * h * bf16),
-                    scratch.normed_hidden.offset(r * h * bf16),
-                    scratch.concat.offset(r * 2 * h * bf16),
-                    h as u32,
-                    stream,
-                )?;
-            }
+            phase!(t_concat, {
+                for r in 0..c {
+                    ops::bf16_concat(
+                        ctx.gpu,
+                        self.bf16_concat_k,
+                        scratch.normed_embed.offset(r * h * bf16),
+                        scratch.normed_hidden.offset(r * h * bf16),
+                        scratch.concat.offset(r * 2 * h * bf16),
+                        h as u32,
+                        stream,
+                    )?;
+                }
+                Ok(())
+            });
 
             // 4. fc: [c, 2h] → [c, h], then input layernorm.
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                scratch.concat,
-                fc_w,
-                scratch.fc_out,
-                c as u32,
-                h as u32,
-                (2 * h) as u32,
-                stream,
-            )?;
+            phase!(t_fc, {
+                ops::dense_gemm(
+                    ctx.gpu,
+                    self.dense_gemm_k,
+                    scratch.concat,
+                    fc_w,
+                    scratch.fc_out,
+                    c as u32,
+                    h as u32,
+                    (2 * h) as u32,
+                    stream,
+                )
+            });
             ops::rms_norm(
                 ctx.gpu,
                 self.rms_norm_k,
@@ -173,28 +236,30 @@ impl MtpHead {
             )?;
 
             // 5. K/V projections (Q is not needed — outputs are discarded).
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                scratch.normed2,
-                k_w,
-                scratch.k_out,
-                c as u32,
-                nkv * hd,
-                h as u32,
-                stream,
-            )?;
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                scratch.normed2,
-                v_w,
-                scratch.v_out,
-                c as u32,
-                nkv * hd,
-                h as u32,
-                stream,
-            )?;
+            phase!(t_kv, {
+                ops::dense_gemm(
+                    ctx.gpu,
+                    self.dense_gemm_k,
+                    scratch.normed2,
+                    k_w,
+                    scratch.k_out,
+                    c as u32,
+                    nkv * hd,
+                    h as u32,
+                    stream,
+                )?;
+                ops::dense_gemm(
+                    ctx.gpu,
+                    self.dense_gemm_k,
+                    scratch.normed2,
+                    v_w,
+                    scratch.v_out,
+                    c as u32,
+                    nkv * hd,
+                    h as u32,
+                    stream,
+                )
+            });
             if !self.k_norm.weight.is_null() {
                 ops::rms_norm(
                     ctx.gpu,
@@ -209,14 +274,15 @@ impl MtpHead {
                 )?;
             }
 
-            // 6. RoPE positions i+1 and KV slots i, uploaded per chunk.
-            let positions: Vec<u32> = (0..c).map(|r| (done + r + 1) as u32).collect();
+            // 6. RoPE positions pos_base+r and KV slots row_base+r, uploaded
+            //    per chunk (decoupled — see fn docs).
+            let positions: Vec<u32> = (0..c).map(|r| (pos_base + done + r) as u32).collect();
             let pos_bytes =
                 unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, c * 4) };
             ctx.gpu.copy_h2d_async(pos_bytes, scratch.pos_dev, stream)?;
             let slots: Vec<i64> = (0..c)
                 .map(|r| {
-                    let i = done + r;
+                    let i = row_base + done + r;
                     (mtp_state.block_table[i / bs] as i64) * (bs as i64) + (i % bs) as i64
                 })
                 .collect();
@@ -261,18 +327,32 @@ impl MtpHead {
             // The async H2D sources (positions/slots) are Vec-backed; the
             // driver has queued them, but sync before drop for safety —
             // one sync per 512-row chunk is negligible next to the GEMMs.
+            let t_sync = std::time::Instant::now();
             ctx.gpu.synchronize(stream)?;
+            if profile {
+                t_rest += t_sync.elapsed().as_secs_f64() * 1e3;
+            }
 
             done += c;
         }
 
-        mtp_state.seq_len = rows_total;
+        mtp_state.seq_len = row_base + rows_total;
+        // Last fed row has RoPE pos_base + rows_total - 1 = pair key + 1.
+        mtp_state.last_pair_key = Some(pos_base + rows_total - 2);
         tracing::info!(
             "MTP drafter prefill: {} positions ({} prompt tokens) in {:.1} ms",
             rows_total,
             prompt_tokens.len(),
             t0.elapsed().as_secs_f64() * 1e3,
         );
+        if profile {
+            tracing::info!(
+                "MTP drafter prefill PROFILE: embed_loop={t_embed:.1} ms \
+                 concat_loop={t_concat:.1} ms fc_gemm={t_fc:.1} ms kv_gemm={t_kv:.1} ms \
+                 tail_sync={t_rest:.1} ms \
+                 (rows={rows_total}, chunk={PREFILL_CHUNK})"
+            );
+        }
         Ok(rows_total)
     }
 }

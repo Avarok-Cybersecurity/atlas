@@ -193,6 +193,25 @@ impl GpuBackend for AtlasCudaBackend {
         }
     }
 
+    fn stream_is_capturing(&self, stream: u64) -> bool {
+        // SCALE's libcuda does not export cuStreamIsCapturing; report
+        // not-capturing there (gfx1151 telemetry taps then sample eagerly —
+        // acceptable for a default-off measurement knob).
+        #[cfg(atlas_scale)]
+        {
+            let _ = stream;
+            false
+        }
+        #[cfg(not(atlas_scale))]
+        {
+            let mut status: u32 = 0;
+            // CU_STREAM_CAPTURE_STATUS_NONE = 0; treat query failure as
+            // capturing (conservative: the tap skips its sample).
+            let rc = unsafe { super::cuStreamIsCapturing(stream, &mut status) };
+            rc != 0 || status != 0
+        }
+    }
+
     fn synchronize(&self, stream: u64) -> Result<()> {
         let status = unsafe { cuStreamSynchronize(stream) };
         if status != 0 {

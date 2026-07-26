@@ -13,8 +13,8 @@
 //! Two capture points per pass:
 //!   * `tb` — the block-floored matched-prefix boundary, registered as the
 //!     session TAIL snapshot.
-//!   * `tb - block_size` — one KV block earlier, registered as a NON-TAIL
-//!     intermediate. On ~5/19 warm turns the next turn's block-floored
+//!   * `tb - block_size` — one KV block earlier, registered as the tail's
+//!     SIBLING (leased alongside it). On ~5/19 warm turns the next turn's block-floored
 //!     `matched_tokens` lands exactly `tb - block_size` (the chat-template
 //!     generation-suffix / detokenize-retokenize divergence puts the longest
 //!     common prefix one block short of the tail). The tail@`tb` is then
@@ -31,8 +31,8 @@
 //!      `cap_local` (and `cap_local - bs` when present) and D2D-copies each
 //!      captured state into its reserved slot.
 //!   3. [`TransformerModel::finalize_midchunk_capture`] (after `forward_layers`)
-//!      registers the tail slot as the session tail and the earlier slot as an
-//!      intermediate snapshot in the index.
+//!      registers the tail slot as the session tail and the earlier slot as
+//!      the tail's sibling in the index (both leased against eviction).
 //!
 //! All behavior is gated on `ssm_tail_midchunk_enabled()` — opt-out
 //! (`ATLAS_SSM_TAIL_MIDCHUNK=0`) is a no-op (returns `None`) and byte-identical
@@ -122,8 +122,23 @@ impl TransformerModel {
         kv_cache: &mut PagedKvCache,
         proc_start: usize,
         proc_count: usize,
+        stream: u64,
     ) -> Option<MidCapturePlan> {
         if !spark_runtime::ssm_tail_midchunk_enabled() || !self.ssm_snapshots.is_enabled() {
+            return None;
+        }
+        // Reuse gate: capture costs a per-prefill kernel split + D2D copy and
+        // is only ever consumable by a LATER request of the SAME session (the
+        // snapshot lookup is session-gated). A session seen for the FIRST
+        // time — which includes ALL single-turn traffic, whose ≤1024-token
+        // prefix hash is unique per request — can never reuse this capture,
+        // so skip it entirely; sessions gain capture from their second
+        // request onward (the first request's leaf save tags the session),
+        // exactly when reuse begins. Measured (35B FP8 webserver_ok N=10,
+        // 2026-07-20): capture-always Σ1846s/9-of-10 + 257 tok/turn vs
+        // capture-off Σ1495s/10-of-10 + 203 tok/turn on sessionless agentic
+        // traffic; multi-turn warm-TTFT (-54% max) is preserved from turn 3.
+        if !self.ssm_snapshots.session_has_history(seq.session_hash) {
             return None;
         }
         let bs = kv_cache.block_size();
@@ -152,20 +167,93 @@ impl TransformerModel {
         let mut tb_early = None;
         let mut h_dsts_early = Vec::new();
         let mut conv_dsts_early = Vec::new();
-        if bs > 0
-            && cap_local > bs
-            && tb > bs
-            && let Some(slot2) = self.reserve_snapshot_slot(seq.session_hash, kv_cache)
-        {
-            cap_local_early = Some(cap_local - bs);
-            snap_slot_early = Some(slot2);
-            tb_early = Some(tb - bs);
-            h_dsts_early = Vec::with_capacity(n);
-            conv_dsts_early = Vec::with_capacity(n);
-            for l in 0..n {
-                h_dsts_early.push(self.ssm_snapshots.tail_h_dst(l, slot2));
-                conv_dsts_early.push(self.ssm_snapshots.tail_conv_dst(l, slot2));
+        if bs > 0 && cap_local > bs && tb > bs {
+            match self.reserve_snapshot_slot(seq.session_hash, kv_cache) {
+                Some(slot2) => {
+                    cap_local_early = Some(cap_local - bs);
+                    snap_slot_early = Some(slot2);
+                    tb_early = Some(tb - bs);
+                    h_dsts_early = Vec::with_capacity(n);
+                    conv_dsts_early = Vec::with_capacity(n);
+                    for l in 0..n {
+                        h_dsts_early.push(self.ssm_snapshots.tail_h_dst(l, slot2));
+                        conv_dsts_early.push(self.ssm_snapshots.tail_conv_dst(l, slot2));
+                    }
+                }
+                None => tracing::info!(
+                    "midchunk EARLY skipped: no snapshot slot (pool exhausted, \
+                     reclaim failed) tb_early={}",
+                    tb - bs,
+                ),
             }
+        } else if bs > 0 && cap_local == bs && tb > bs {
+            // The pass starts EXACTLY at tb - bs — the dominant geometry of
+            // warm chunked prefill (measured 7/7 tb-spanning passes on the
+            // 2026-07-20 eviction rig), and precisely the case the early
+            // sibling exists to serve: the next turn's block-floored match
+            // lands one block below tb. A kernel split at offset 0 is
+            // impossible by construction, but no split is needed — the LIVE
+            // pool state at pass start IS the state after [0, tb - bs). The
+            // caller synchronized `stream` immediately before planning, so a
+            // pre-pass save() D2D is ordered before the forward pass advances
+            // the state. Best-effort like the split path: degrade to
+            // tail-only when no slot is reclaimable.
+            let saved = match self.ssm_snapshots.save(
+                seq.slot_idx,
+                seq.session_hash,
+                &self.ssm_pool,
+                self.gpu.as_ref(),
+                stream,
+            ) {
+                Ok(Some(id)) => Some(id),
+                Ok(None) => {
+                    if self.ssm_snapshots.reclaim_from_cache(
+                        self.prefix_cache.as_ref(),
+                        kv_cache,
+                        self.ssm_tier_store.as_deref(),
+                        self.gpu.as_ref(),
+                    ) {
+                        self.ssm_snapshots
+                            .save(
+                                seq.slot_idx,
+                                seq.session_hash,
+                                &self.ssm_pool,
+                                self.gpu.as_ref(),
+                                stream,
+                            )
+                            .ok()
+                            .flatten()
+                    } else {
+                        None
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("midchunk EARLY pre-pass save failed: {e:#}");
+                    None
+                }
+            };
+            match saved {
+                Some(slot2) => {
+                    // Registration-only: cap_local_early stays None so the
+                    // forward pass performs NO split for this point.
+                    snap_slot_early = Some(slot2);
+                    tb_early = Some(tb - bs);
+                    tracing::info!(
+                        "midchunk EARLY pre-pass copy at token {} (snap {slot2})",
+                        tb - bs,
+                    );
+                }
+                None => tracing::info!(
+                    "midchunk EARLY skipped: no snapshot slot for pre-pass copy \
+                     tb_early={}",
+                    tb - bs,
+                ),
+            }
+        } else if bs > 0 && tb > bs {
+            tracing::info!(
+                "midchunk EARLY skipped: pass starts after tb-bs \
+                 (proc_start={proc_start} tb={tb} cap_local={cap_local} bs={bs})",
+            );
         }
 
         Some(MidCapturePlan {
@@ -214,17 +302,15 @@ impl TransformerModel {
         );
 
         if let (Some(tb_early), Some(slot2)) = (plan.tb_early, plan.snap_slot_early) {
-            // Intermediate (non-tail): the radix-tree nodes for [0, tb_early)
-            // are laid down by this turn's finalize_last `insert([0, total))`,
-            // so this is index-only (block_table/disk are ignored by the impl).
-            if let Some(old) = self.prefix_cache.insert_intermediate_snapshot(
+            // Tail SIBLING: leased alongside the tail (it serves the warm
+            // turns whose block-floored match lands one block below tb —
+            // measured 2/7 of restores on the eviction rig). Index-only, like
+            // the tail; must follow insert_tail_snapshot (its sweep clears the
+            // session's previous tail + sibling).
+            if let Some(old) = self.prefix_cache.insert_tail_sibling_snapshot(
                 &tokens[..tb_early],
-                &[],
-                &[],
-                plan.bs,
                 slot2,
                 seq.session_hash,
-                tb_early,
                 seq.adapter_id,
             ) {
                 self.ssm_snapshots.free(old);
