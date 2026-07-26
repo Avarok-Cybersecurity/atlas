@@ -181,6 +181,7 @@ impl Model for NllbGpuModel {
             mtp_capture_gen: 0,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
+            cached_prefix_blocks: 0,
             prefix_ref_tokens: Vec::new(),
             prefix_lookup_applied: false,
             prefix_lookup_skip: false,

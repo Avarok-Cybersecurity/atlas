@@ -53,8 +53,22 @@ pub(crate) fn apply_evicted_blocks(
     evicted: spark_runtime::prefix_cache::EvictedBlocks,
     kv_cache: &mut PagedKvCache,
 ) {
+    let free_before = kv_cache.num_free_blocks();
+    let n_evicted = evicted.physical.len();
     for block in &evicted.physical {
         kv_cache.return_evicted_block(*block);
+    }
+    // Leak detector: a radix node hands back exactly ONE ref per block, so if a
+    // block still carries refs after its node is gone, NO future eviction can
+    // ever release it — the pool wedges (small allocs still fit, large prefills
+    // fail with "no free blocks" until restart). Firing repeatedly here means an
+    // inc_ref/return imbalance, not capacity pressure.
+    let gained = kv_cache.num_free_blocks().saturating_sub(free_before);
+    if gained < n_evicted {
+        tracing::debug!(
+            "prefix-cache evict reclaimed {gained}/{n_evicted} blocks (free={}):              the rest still carry refs no future eviction can release",
+            kv_cache.num_free_blocks(),
+        );
     }
     if !evicted.disk_block_ids.is_empty()
         && let Some(res) = spark_storage::with_local(|hss| {

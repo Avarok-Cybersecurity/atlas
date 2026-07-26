@@ -164,6 +164,7 @@ impl TransformerModel {
         };
         let matched = prefix_match.matched_tokens;
         seq.cached_prefix_tokens = matched;
+        seq.cached_prefix_blocks = prefix_match.matched_blocks.len();
         // Record the original prompt length for cache_sequence bookkeeping.
         seq.prompt_len = tokens.len();
         for &block_idx in &prefix_match.matched_blocks {
