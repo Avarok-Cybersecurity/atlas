@@ -170,7 +170,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
         };
 
         if state.request_tx.send(request).await.is_err() {
-                return super::chat::ChatOutcome::Http(openai_error_response(
+            return super::chat::ChatOutcome::Http(openai_error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Scheduler queue full".to_string(),
             ));
@@ -179,13 +179,13 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
         let response = match rx.await {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => {
-                        return super::chat::ChatOutcome::Http(openai_error_response(
+                return super::chat::ChatOutcome::Http(openai_error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Inference error: {e}"),
                 ));
             }
             Err(_) => {
-                        return super::chat::ChatOutcome::Http(openai_error_response(
+                return super::chat::ChatOutcome::Http(openai_error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Inference cancelled".to_string(),
                 ));
