@@ -128,14 +128,13 @@ pub(crate) async fn chat_completions_inner(
     dump_seq: Option<u64>,
 ) -> ChatOutcome {
     crate::metrics::REQUESTS_TOTAL.inc();
-    crate::metrics::REQUESTS_ACTIVE.inc();
+    // RAII: decrements on EVERY exit path, including this future being dropped
+    // when the client disconnects (see ActiveRequestGuard / atlas#368). Moved
+    // into the SSE stream for streaming requests so it outlives this function.
+    let active_guard = crate::metrics::ActiveRequestGuard::new();
 
     // ── Input validation + cross-turn F-feature guards ──
     if let Err(resp) = super::chat_phases::validate_input(&req) {
-        // Balance the REQUESTS_ACTIVE gauge incremented above: every other
-        // terminal path decrements it, but this fail-fast 400 returns before
-        // reaching a dispatch handler.
-        crate::metrics::REQUESTS_ACTIVE.dec();
         return ChatOutcome::Http(resp);
     }
 
@@ -374,6 +373,7 @@ pub(crate) async fn chat_completions_inner(
             grammar_spec.clone(),
             top_logprobs,
             timeout_at,
+            active_guard,
         )
         .await;
     }
