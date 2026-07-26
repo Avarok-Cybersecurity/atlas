@@ -23,6 +23,20 @@ impl TransformerModel {
         stream: u64,
     ) -> Result<(usize, bool)> {
         let bs = kv_cache.block_size();
+        // Retry re-entry (scheduler preempt-and-retry on KV exhaustion): chunk 0
+        // already acquired this sequence's prefix — it `inc_ref`d each matched
+        // block and pushed it onto `block_table` BEFORE the allocation that
+        // failed. Re-running would push those blocks a second time and take a
+        // second radix ref that nothing releases. Replay the original decision.
+        if chunk_start == 0 && seq.prefix_lookup_applied {
+            tracing::debug!(
+                "prefix lookup re-entered at chunk 0 (retry): replaying \
+                 skip_to={} skip={} without re-acquiring the cached prefix",
+                seq.marconi_skip_to,
+                seq.prefix_lookup_skip,
+            );
+            return Ok((seq.marconi_skip_to, seq.prefix_lookup_skip));
+        }
         if chunk_start == 0 {
             // Prompt-logprob collection needs a live hidden row for EVERY
             // position — a cache/Marconi skip would leave gaps. Force the
@@ -317,6 +331,8 @@ impl TransformerModel {
                 0
             };
             seq.marconi_skip_to = skip_tokens;
+            seq.prefix_lookup_skip = skip;
+            seq.prefix_lookup_applied = true;
             Ok((skip_tokens, skip))
         } else if seq.marconi_skip_to > 0 {
             // Chunk 1+: inherit skip info from chunk 0's prefix cache lookup.
