@@ -189,9 +189,24 @@ impl PagedKvCache {
     /// Return a block to the free pool directly, bypassing ref counting.
     /// Used by eviction: the radix tree already removed its reference.
     pub fn return_evicted_block(&mut self, block_idx: u32) {
-        debug_assert!((block_idx as usize) < self.num_blocks);
-        self.block_ref_counts[block_idx as usize] = 0;
-        self.free_blocks.push(block_idx);
+        let idx = block_idx as usize;
+        debug_assert!(idx < self.num_blocks);
+        // Release exactly the prefix cache's OWN reference (the "+1" a cached
+        // block carries per sequence.rs `inc_ref` when the radix node is
+        // inserted), not every reference. Force-zeroing here freed blocks that
+        // an active sequence still held in its block_table whenever the radix
+        // ref-count and the KV pool ref-count had desynced (e.g. a warm prefill
+        // that matched a prefix then failed to allocate its suffix, or the
+        // sliding-window partial-cache path). alloc_block would then re-hand
+        // that still-live block to a new prefill and zero_block would memset it
+        // under a concurrent decode → aliased KV pointer → CUDA_ERROR_ILLEGAL_
+        // ADDRESS (700). Decrementing keeps a still-referenced block alive.
+        if self.block_ref_counts[idx] > 0 {
+            self.block_ref_counts[idx] -= 1;
+        }
+        if self.block_ref_counts[idx] == 0 {
+            self.free_blocks.push(idx as u32);
+        }
     }
 
     /// Current reference count for a block.

@@ -121,6 +121,15 @@ pub struct SequenceState {
     /// the scheduler to populate `usage.prompt_tokens_details.cached_tokens`.
     /// 0 when prefix caching is disabled or the prompt had no cache match.
     pub cached_prefix_tokens: usize,
+    /// The matched prefix token IDs (`tokens[..cached_prefix_tokens]`) stashed
+    /// at prefix-lookup time. `free_sequence` releases the prefix cache's radix
+    /// refs over these when `tokens` is too short to cover the prefix — i.e. a
+    /// prefill that matched a prefix (bumping radix refs) then FAILED to
+    /// allocate its suffix, so `tokens` was never populated. Without this the
+    /// `release(&tokens)` on the failure path is a no-op and the matched radix
+    /// nodes stay pinned at ref≥2 forever → the pool progressively wedges. Empty
+    /// on the common path (no match / success releases over the full `tokens`).
+    pub prefix_ref_tokens: Vec<u32>,
     /// Contiguous prefix length (in tokens, from position 0) whose paged KV is
     /// guaranteed fully written for THIS sequence — either reused from a valid
     /// prefix-cache match or written by a real prefill pass this turn. Updated
