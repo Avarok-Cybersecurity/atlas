@@ -387,6 +387,23 @@ pub fn run(
             for req in &new_reqs {
                 let prompt_len = req.prompt_len();
                 let blocks_needed = prompt_len / block_size + 1;
+                // Reclaim from the prefix cache BEFORE paying disk I/O for a live
+                // sequence. Cached blocks are a pure optimization; a swapped-out
+                // sequence is in-flight work that costs a write now and a read
+                // plus realloc later. This gate reads `num_free_blocks()`, which
+                // counts only UNHELD blocks — and the cache legitimately pins
+                // everything it caches, so "free" sits near zero on a warm server
+                // while thousands of blocks remain reclaimable. Measured at C=4 on
+                // a 8869-block pool: 10 swap-outs of ~40-block sequences followed
+                // by 16 swap-ins, all of it avoidable churn.
+                loop {
+                    let free = model.num_free_blocks();
+                    if free >= blocks_needed
+                        || model.reclaim_prefix_blocks(blocks_needed - free) == 0
+                    {
+                        break;
+                    }
+                }
                 while model.num_free_blocks() < blocks_needed && !active.is_empty() {
                     let victim_idx = active
                         .iter()
@@ -677,13 +694,29 @@ pub fn run(
                 if let Some(smallest) = swapped.iter().map(|s| s.num_blocks).min()
                     && smallest > free
                 {
-                    let reclaimed = model.reclaim_prefix_blocks(smallest - free);
-                    if reclaimed > 0 {
-                        tracing::info!(
-                            "Swap-in: reclaimed {reclaimed} block(s) from the prefix cache \
-                             to restore a {smallest}-block sequence (free was {free})",
-                        );
+                    // Evicting N radix nodes frees FEWER than N blocks whenever a
+                    // live sequence still holds one (eviction returns only the
+                    // cache's own ref), so a single pass sized to the shortfall
+                    // undershoots and the gate below still fails — measured as
+                    // "reclaimed 303 ... to restore a 305-block sequence" with
+                    // zero restores. Keep asking until the sequence fits or the
+                    // cache has nothing evictable left; each pass either frees at
+                    // least one block or returns 0, so this terminates.
+                    let was = free;
+                    let mut total = 0usize;
+                    while free < smallest {
+                        let got = model.reclaim_prefix_blocks(smallest - free);
+                        if got == 0 {
+                            break;
+                        }
+                        total += got;
                         free = model.num_free_blocks();
+                    }
+                    if total > 0 {
+                        tracing::info!(
+                            "Swap-in: reclaimed {total} block(s) from the prefix cache for a \
+                             {smallest}-block sequence (free {was} -> {free})",
+                        );
                     }
                 }
                 if let Some(idx) = swapped.iter().position(|s| s.num_blocks <= free) {
