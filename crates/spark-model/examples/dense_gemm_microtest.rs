@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Standalone correctness + kernel-only-throughput microtest for the
-//! `dense_gemm_bf16` family (pure BF16 × BF16 dense GEMM, no quantization).
+//! `dense_gemm_bf16` family and the M=1 `dense_gemv_bf16` path (pure BF16 ×
+//! BF16 dense matrix multiplication, no quantization).
 //!
 //! This is the grounding ORACLE for the Fix-E pipelined BF16-GEMM rewrite:
 //! every kernel iteration is validated here (seconds) against an independent
@@ -23,6 +24,7 @@
 //!   cargo run --release -p spark-model --example dense_gemm_microtest \
 //!       -- [kernel_name] [M] [N] [K] [seed]
 //! Defaults: dense_gemm_bf16 1024 2048 4096 0x51A7
+//! Router-shape GEMV: dense_gemv_bf16 1 256 4096 0x51A7
 //!
 //! Exit code 0 = PASS (cosine >= threshold), 1 = FAIL — so it is scriptable.
 
@@ -152,6 +154,12 @@ fn grid_block(name: &str, m: u32, n: u32) -> Result<([u32; 3], [u32; 3])> {
         // 4 warps. Validates the WMMA fragment layout shared by the FP8/NVFP4
         // GEMMs. Grid (ceil(N/64), ceil(M/16), 1), Block (128,1,1).
         "dense_gemm_tc" => ([n.div_ceil(64), m.div_ceil(16), 1], [128u32, 1, 1]),
+        "dense_gemv_bf16" => {
+            if m != 1 {
+                bail!("dense_gemv_bf16 requires M=1, got M={m}");
+            }
+            ([n.div_ceil(4), 1, 1], [256u32, 1, 1])
+        }
         other => bail!("no launch geometry registered for kernel '{other}' — add an arm"),
     })
 }
@@ -160,7 +168,8 @@ fn grid_block(name: &str, m: u32, n: u32) -> Result<([u32; 3], [u32; 3])> {
 /// dense_gemm_tc.cu is its own TU → module = file stem.
 fn module_for(name: &str) -> &'static str {
     match name {
-        "dense_gemm_tc" => "dense_gemm_tc",
+        "dense_gemm_tc" => "gemm_tc",
+        "dense_gemv_bf16" => "gemv",
         _ => "gemm",
     }
 }
@@ -180,16 +189,18 @@ fn launch(
     // function symbol is the kernel name.
     let handle = gpu.kernel(module_for(name), name)?;
     let (grid, block) = grid_block(name, m, n)?;
-    KernelLaunch::new(gpu, handle)
+    let mut launch = KernelLaunch::new(gpu, handle)
         .grid(grid)
         .block(block)
         .arg_ptr(a)
         .arg_ptr(b)
-        .arg_ptr(c)
-        .arg_u32(m)
-        .arg_u32(n)
-        .arg_u32(k)
-        .launch(stream)?;
+        .arg_ptr(c);
+    if name == "dense_gemv_bf16" {
+        launch = launch.arg_u32(n).arg_u32(k);
+    } else {
+        launch = launch.arg_u32(m).arg_u32(n).arg_u32(k);
+    }
+    launch.launch(stream)?;
     if sync {
         gpu.synchronize(stream)?;
     }

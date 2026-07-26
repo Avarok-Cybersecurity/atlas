@@ -87,7 +87,10 @@ pub(crate) fn resolve_topology(
                 tp_size,
             );
         }
-        if !config.num_key_value_heads.is_multiple_of(tp_size) {
+        // DeepSeek-V4 MLA/MQA: kv_heads=1 cannot be head-sharded — replicate K/V
+        // on every TP rank; only Q heads (and O) are TP-sharded. Matches vLLM TP=2.
+        let mla_mqa_tp = config.model_type == "deepseek_v4" && config.num_key_value_heads == 1;
+        if !mla_mqa_tp && !config.num_key_value_heads.is_multiple_of(tp_size) {
             anyhow::bail!(
                 "TP requires num_key_value_heads ({}) divisible by tp_size ({})",
                 config.num_key_value_heads,
@@ -95,7 +98,27 @@ pub(crate) fn resolve_topology(
             );
         }
         config.num_attention_heads /= tp_size;
-        config.num_key_value_heads /= tp_size;
+        if !mla_mqa_tp {
+            config.num_key_value_heads /= tp_size;
+        } else {
+            // o_groups is head-aligned (heads/group constant). Shard whole groups
+            // with Q heads so wo_a group_in stays valid on each TP rank.
+            if config.o_groups > 0 {
+                if !config.o_groups.is_multiple_of(tp_size) {
+                    anyhow::bail!(
+                        "DeepSeek-V4 MLA TP requires o_groups ({}) divisible by tp_size ({})",
+                        config.o_groups,
+                        tp_size,
+                    );
+                }
+                config.o_groups /= tp_size;
+            }
+            tracing::info!(
+                "DeepSeek-V4 MLA TP: Q heads sharded (local={}), o_groups local={}, K/V heads replicated (kv_heads=1)",
+                config.num_attention_heads,
+                config.o_groups,
+            );
+        }
         // GDN HeadParallel: linear-attention (SSM) key/value head counts are
         // sharded exactly like attention heads — each rank owns a contiguous
         // head range; the recurrence is head-parallel with one all-reduce after

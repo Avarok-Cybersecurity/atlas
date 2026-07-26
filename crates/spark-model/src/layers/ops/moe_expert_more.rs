@@ -65,11 +65,12 @@ pub fn moe_weighted_sum_blend(
 
 /// Fused gate+up expert GEMV for K=2 tokens with shared expert.
 ///
-/// Expands blockIdx.y from (top_k+1) to 2*(top_k+1) to process both tokens.
-/// Token index = blockIdx.y / (top_k+1), expert slot = blockIdx.y % (top_k+1).
+/// Dual-amortize (v2 safe): grid y = top_k+1 (not 2*(top_k+1)).
+/// y in 0..top_k-1 = routed slot (dual-accum when expert_indices match);
+/// y == top_k = shared expert, weights loaded once for both tokens.
 /// Shared expert blocks use direct weight pointers; routed use pointer table.
 ///
-/// Grid: (ceil(N/8), 2*(top_k+1), 2)  Block: (128, 1, 1)
+/// Grid: (ceil(N/8), top_k+1, 2)  Block: (128, 1, 1)
 #[allow(clippy::too_many_arguments)]
 pub fn moe_expert_gate_up_shared_batch2(
     gpu: &dyn GpuBackend,
@@ -95,7 +96,7 @@ pub fn moe_expert_gate_up_shared_batch2(
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 8), 2 * (top_k + 1), 2])
+        .grid([div_ceil(n, 8), top_k + 1, 2])
         .block([block_size, 1, 1])
         .arg_ptr(input)
         .arg_ptr(gate_packed_ptrs)
@@ -123,7 +124,7 @@ pub fn moe_expert_gate_up_shared_batch2(
 
 /// Fused SiLU+down expert GEMV for K=2 tokens with shared expert.
 ///
-/// Grid: (ceil(N/8), 2*(top_k+1), 1)  Block: (block_size, 1, 1)
+/// Grid: (ceil(N/8), top_k+1, 1)  Block: (block_size, 1, 1) — dual-amortize v2 safe
 #[allow(clippy::too_many_arguments)]
 pub fn moe_expert_silu_down_shared_batch2(
     gpu: &dyn GpuBackend,
@@ -147,9 +148,9 @@ pub fn moe_expert_silu_down_shared_batch2(
 ) -> Result<()> {
     // s_act is extern shared: K floats (issue #85 -- static 1024 overflowed
     // for Mistral-Small-4's expert_hidden_dim=2048).
-    let smem_bytes = (k as usize * std::mem::size_of::<f32>()) as u32;
+    let smem_bytes = (2 * k as usize * std::mem::size_of::<f32>()) as u32; // dual-token acts
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 8), 2 * (top_k + 1), 1])
+        .grid([div_ceil(n, 8), top_k + 1, 1])
         .block([block_size, 1, 1])
         .shared_mem(smem_bytes)
         .arg_ptr(gate_out)
@@ -161,6 +162,47 @@ pub fn moe_expert_silu_down_shared_batch2(
         .arg_ptr(expert_indices)
         .arg_ptr(sh_gate_in)
         .arg_ptr(sh_up_in)
+        .arg_ptr(sh_down.weight)
+        .arg_ptr(sh_down.weight_scale)
+        .arg_f32(sh_down.weight_scale_2)
+        .arg_ptr(sh_down_out)
+        .arg_u32(n)
+        .arg_u32(k)
+        .arg_u32(top_k)
+        .launch(stream)
+}
+
+/// Down projection for precomputed K=2 routed and shared SwiGLU activations.
+///
+/// Grid: (ceil(N/8), top_k+1, 1)  Block: (128, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn moe_expert_down_shared_batch2_precomputed(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    act: DevicePtr, // [2*top_k, inter] BF16
+    packed_ptrs: DevicePtr,
+    scale_ptrs: DevicePtr,
+    scale2_vals: DevicePtr,
+    output: DevicePtr,         // [2*top_k, H] BF16
+    expert_indices: DevicePtr, // [2*top_k] u32
+    sh_act: DevicePtr,         // [2, inter] BF16
+    sh_down: &QuantizedWeight,
+    sh_down_out: DevicePtr, // [2, H] BF16
+    n: u32,
+    k: u32,
+    top_k: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 8), top_k + 1, 1])
+        .block([128, 1, 1])
+        .arg_ptr(act)
+        .arg_ptr(packed_ptrs)
+        .arg_ptr(scale_ptrs)
+        .arg_ptr(scale2_vals)
+        .arg_ptr(output)
+        .arg_ptr(expert_indices)
+        .arg_ptr(sh_act)
         .arg_ptr(sh_down.weight)
         .arg_ptr(sh_down.weight_scale)
         .arg_f32(sh_down.weight_scale_2)

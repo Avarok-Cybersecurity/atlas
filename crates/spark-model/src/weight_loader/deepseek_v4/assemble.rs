@@ -13,6 +13,7 @@ use crate::layers::MoeLayer;
 use crate::layers::qwen3_attention::{
     CompressorWeights, HcHeadWeights, HcSiteWeights, HcWeights, MlaWeights, Qwen3AttentionLayer,
 };
+use crate::tp_shard::{TpShardKind, shard_dense_bf16, shard_fp8_block_scaled};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense, dense_auto,
     quantized, quantized_v2,
@@ -455,7 +456,7 @@ pub fn assemble_layer(
     let wo_a_fp8 = load_fp8_mla("wo_a");
     let wkv_a_fp8 = load_fp8_mla("wkv");
 
-    let mla = MlaWeights {
+    let mut mla = MlaWeights {
         wq_a,
         wq_a_nvfp4,
         wq_a_fp8,
@@ -497,6 +498,132 @@ pub fn assemble_layer(
         compressor,
         attn_sink,
     };
+
+    // ── MLA-aware TP shard (DeepSeek-V4 Flash) ──
+    // Topology already divided num_attention_heads and o_groups by tp_size.
+    // Full pre-shard dims = local * tp. wq_a / wkv_* stay replicated (shared
+    // latents; MQA kv_heads=1). Q-up and O low-rank are Megatron col/row.
+    // MoE experts stay fully local under pure TP (ep=1) — attention dominates
+    // decode time on V4-Flash (~95% in profile).
+    {
+        let tp_size = config.tp_world_size.max(1);
+        let tp_rank = config.tp_rank;
+        if tp_size > 1 && config.o_lora_rank > 0 {
+            let nq_local = config.num_attention_heads;
+            let nq_full = nq_local * tp_size;
+            let hd = config
+                .head_dim
+                .max(config.qk_nope_head_dim + config.qk_rope_head_dim);
+            let q_lora = config.q_lora_rank;
+            let o_lora = config.o_lora_rank;
+            let o_groups_local = config.o_groups.max(1);
+            let o_groups_full = o_groups_local * tp_size;
+            let group_in = (nq_full * hd) / o_groups_full;
+            let wq_b_n_full = nq_full * hd;
+            let o_latent_full = o_groups_full * o_lora;
+            let h = config.hidden_size;
+            tracing::info!(
+                "DeepSeek-V4 MLA TP shard rank={tp_rank}/{tp_size}: wq_b [{wq_b_n_full},{q_lora}]→col, \
+                 wo_a [{o_latent_full},{group_in}]→col, wo_b [{h},{o_latent_full}]→row, \
+                 local nq={nq_local} o_groups={o_groups_local}"
+            );
+
+            // wq_b BF16: column-parallel on heads*hd
+            if !mla.wq_b.weight.is_null() {
+                let (ptr, _, _) = shard_dense_bf16(
+                    mla.wq_b.weight,
+                    wq_b_n_full,
+                    q_lora,
+                    TpShardKind::ColumnParallel,
+                    tp_rank,
+                    tp_size,
+                    gpu,
+                )?;
+                if ptr != mla.wq_b.weight {
+                    let _ = gpu.free(mla.wq_b.weight);
+                    mla.wq_b.weight = ptr;
+                }
+            }
+            if let Some(ref w) = mla.wq_b_fp8 {
+                mla.wq_b_fp8 = Some(shard_fp8_block_scaled(
+                    w,
+                    TpShardKind::ColumnParallel,
+                    tp_rank,
+                    tp_size,
+                    128,
+                    gpu,
+                )?);
+            }
+            // wo_a BF16: column-parallel on o_groups*o_lora (group rows)
+            if !mla.wo_a.weight.is_null() {
+                let (ptr, _, _) = shard_dense_bf16(
+                    mla.wo_a.weight,
+                    o_latent_full,
+                    group_in,
+                    TpShardKind::ColumnParallel,
+                    tp_rank,
+                    tp_size,
+                    gpu,
+                )?;
+                if ptr != mla.wo_a.weight {
+                    let _ = gpu.free(mla.wo_a.weight);
+                    mla.wo_a.weight = ptr;
+                }
+            }
+            if let Some(ref w) = mla.wo_a_fp8 {
+                mla.wo_a_fp8 = Some(shard_fp8_block_scaled(
+                    w,
+                    TpShardKind::ColumnParallel,
+                    tp_rank,
+                    tp_size,
+                    128,
+                    gpu,
+                )?);
+            }
+            // wo_b / wo BF16: row-parallel on o_latent (same buffer for both fields)
+            if !mla.wo_b.weight.is_null() {
+                let src = mla.wo_b.weight;
+                let (ptr, _, _) = shard_dense_bf16(
+                    src,
+                    h,
+                    o_latent_full,
+                    TpShardKind::RowParallel,
+                    tp_rank,
+                    tp_size,
+                    gpu,
+                )?;
+                if ptr != src {
+                    let _ = gpu.free(src);
+                    mla.wo_b.weight = ptr;
+                    mla.wo.weight = ptr;
+                }
+            }
+            if let Some(ref w) = mla.wo_b_fp8 {
+                mla.wo_b_fp8 = Some(shard_fp8_block_scaled(
+                    w,
+                    TpShardKind::RowParallel,
+                    tp_rank,
+                    tp_size,
+                    128,
+                    gpu,
+                )?);
+            }
+            // attn_sink is per-head FP32 — shard with Q heads
+            if !mla.attn_sink.is_null() {
+                let local = nq_local;
+                let elem = 4usize;
+                let dst = gpu.alloc(local * elem)?;
+                let src_off = tp_rank * local * elem;
+                gpu.copy_d2d(
+                    spark_runtime::gpu::DevicePtr(mla.attn_sink.0 + src_off as u64),
+                    dst,
+                    local * elem,
+                )?;
+                let _ = gpu.free(mla.attn_sink);
+                mla.attn_sink = dst;
+            }
+        }
+    }
 
     // ── Attention dummy + layer ──
     let attn = AttentionWeights {
@@ -548,7 +675,13 @@ pub fn assemble_layer(
             ffn,
             head: hc_head.clone(),
             hc_mult: config.hc_mult,
-            sinkhorn_iters: config.hc_sinkhorn_iters,
+            sinkhorn_iters: {
+                // ATLAS_HC_SINKHORN_ITERS=N overrides (speed A/B). Default config is 20.
+                std::env::var("ATLAS_HC_SINKHORN_ITERS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(config.hc_sinkhorn_iters)
+            },
             hc_eps: config.hc_eps,
         });
     }

@@ -109,6 +109,7 @@ pub struct MoeLayer {
     // K=2 fused MoE kernel handles
     moe_expert_gate_up_shared_batch2: KernelHandle,
     moe_expert_silu_down_shared_batch2: KernelHandle,
+    moe_expert_down_shared_batch2_precomputed: KernelHandle,
     moe_weighted_sum_blend_batch2: KernelHandle,
     w4a16_gemv_batch2: KernelHandle,
     // K=3 fused MoE kernel handles
@@ -407,6 +408,7 @@ mod forward_atomic_c4;
 mod forward_batched;
 mod forward_ep;
 mod forward_k2;
+mod forward_k2_route;
 mod forward_k3;
 mod forward_phase;
 mod forward_prefill;

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Standalone correctness + rough-throughput microtest for the `w8a16_gemm`
-//! family of kernels (FP8 E4M3 weights × BF16 activations, 2D block scales).
+//! Standalone correctness + rough-throughput microtest for the `w8a16_gemv`
+//! and `w8a16_gemm` family of kernels (FP8 E4M3 weights × BF16 activations,
+//! 2D block scales).
 //!
 //! This is the grounding oracle for the Fix-A pipelined-GEMM rewrite: every
 //! kernel iteration is validated here (seconds) against an independent CPU
@@ -165,6 +166,27 @@ fn launch(
 ) -> Result<()> {
     let [a, b, scale, c] = ptrs;
     let handle = gpu.kernel(name, name)?;
+    if name == "w8a16_gemv" || name == "w8a16_gemv_batch4" {
+        let max_m = if name == "w8a16_gemv" { 1 } else { 4 };
+        if m == 0 || m > max_m {
+            bail!("{name} requires 1 <= M <= {max_m}, got M={m}");
+        }
+        let mut launch = KernelLaunch::new(gpu, handle)
+            .grid([n.div_ceil(4), 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(a)
+            .arg_ptr(b)
+            .arg_ptr(scale)
+            .arg_ptr(c);
+        launch = if name == "w8a16_gemv" {
+            launch.arg_u32(n).arg_u32(k)
+        } else {
+            launch.arg_u32(m).arg_u32(n).arg_u32(k)
+        };
+        launch.launch(stream)?;
+        gpu.synchronize(stream)?;
+        return Ok(());
+    }
     let (grid, block) = match name {
         // Geometry MUST match the production launcher (ops::w8a16_gemm) and the
         // per-target .cu: native-HIP (gfx1151) is a 256×128 tile / 512-thread
@@ -212,6 +234,26 @@ fn launch_no_sync(
 ) -> Result<()> {
     let [a, b, scale, c] = ptrs;
     let handle = gpu.kernel(name, name)?;
+    if name == "w8a16_gemv" || name == "w8a16_gemv_batch4" {
+        let max_m = if name == "w8a16_gemv" { 1 } else { 4 };
+        if m == 0 || m > max_m {
+            bail!("{name} requires 1 <= M <= {max_m}, got M={m}");
+        }
+        let mut launch = KernelLaunch::new(gpu, handle)
+            .grid([n.div_ceil(4), 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(a)
+            .arg_ptr(b)
+            .arg_ptr(scale)
+            .arg_ptr(c);
+        launch = if name == "w8a16_gemv" {
+            launch.arg_u32(n).arg_u32(k)
+        } else {
+            launch.arg_u32(m).arg_u32(n).arg_u32(k)
+        };
+        launch.launch(stream)?;
+        return Ok(());
+    }
     let (grid, block) = match name {
         // Geometry MUST match the production launcher (ops::w8a16_gemm) and the
         // per-target .cu: native-HIP (gfx1151) is a 256×128 tile / 512-thread

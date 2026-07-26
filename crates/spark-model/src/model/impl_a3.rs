@@ -129,31 +129,46 @@ impl TransformerModel {
                     stream,
                 )?;
             } else {
-                // Dense fallback: 2× GEMV. Stays BF16 even when
-                // use_fp32_logits is on — the FP32 path is decode-only
-                // (single-token `lm_head`); batched-decode/prefill keeps
-                // BF16 because the bug it fixes only manifests at decode
-                // step 1 (first-token argmax tiebreak).
-                ops::dense_gemv(
-                    self.gpu.as_ref(),
-                    self.dense_gemv_kernel,
-                    hidden,
-                    &self.lm_head_weight,
-                    logits,
-                    v,
-                    h,
-                    stream,
-                )?;
-                ops::dense_gemv(
-                    self.gpu.as_ref(),
-                    self.dense_gemv_kernel,
-                    hidden.offset(h as usize * 2),
-                    &self.lm_head_weight,
-                    logits.offset(v as usize * 2),
-                    v,
-                    h,
-                    stream,
-                )?;
+                static BF16_BATCH2: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                let use_batch2 = *BF16_BATCH2.get_or_init(|| {
+                    std::env::var("ATLAS_BF16_LM_HEAD_BATCH2").ok().as_deref() == Some("1")
+                });
+                if use_batch2 && self.dense_gemv_batch2_kernel.0 != 0 {
+                    ops::dense_gemv_batch2(
+                        self.gpu.as_ref(),
+                        self.dense_gemv_batch2_kernel,
+                        hidden,
+                        &self.lm_head_weight,
+                        logits,
+                        v,
+                        h,
+                        v,
+                        stream,
+                    )?;
+                } else {
+                    // Dense fallback: 2x GEMV. Stays BF16 even when
+                    // use_fp32_logits is on because that path is decode-only.
+                    ops::dense_gemv(
+                        self.gpu.as_ref(),
+                        self.dense_gemv_kernel,
+                        hidden,
+                        &self.lm_head_weight,
+                        logits,
+                        v,
+                        h,
+                        stream,
+                    )?;
+                    ops::dense_gemv(
+                        self.gpu.as_ref(),
+                        self.dense_gemv_kernel,
+                        hidden.offset(h as usize * 2),
+                        &self.lm_head_weight,
+                        logits.offset(v as usize * 2),
+                        v,
+                        h,
+                        stream,
+                    )?;
+                }
             }
         } else if (3..=8).contains(&num_tokens)
             && {

@@ -61,6 +61,9 @@ pub struct TransformerModel {
     pub(super) gpu: Box<dyn GpuBackend>,
     pub(super) rms_norm_kernel: KernelHandle,
     pub(super) dense_gemv_kernel: KernelHandle,
+    /// BF16 dual-row GEMV. Used by K=2 verification to read a shared weight
+    /// once while preserving each row's M=1 accumulation and rounding order.
+    pub(super) dense_gemv_batch2_kernel: KernelHandle,
     /// FP32-output variant of dense_gemv_bf16. Used by the LM head when
     /// `use_fp32_logits` is true, so the FP32 accumulator is preserved across
     /// the BF16-storage rounding boundary that flips greedy argmax tiebreaks

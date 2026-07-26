@@ -193,9 +193,15 @@ impl TransformerModel {
         // the verify eagerly. Zero production impact — only when K2_DIAG is set
         // (mirrors ATLAS_DFLASH_DEBUG_NO_GRAPH for the DFlash verify path).
         let k2_diag_eager = std::env::var("ATLAS_K2_DIAG").ok().as_deref() == Some("1");
+        let k2_stage_profile =
+            std::env::var("ATLAS_PROFILE").is_ok_and(|v| v == "1" || v == "true");
         // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
         let lora_eager = self.lora.is_some() && crate::lora::lora_eager_env();
-        let use_graphs = self.comm.is_none()
+        // Match decode_a: EP graphs opt-in via ATLAS_EP_GRAPHS=1 (NCCL
+        // send/recv + local-add is graph-capturable on NCCL ≥2.9). Without this,
+        // K=2 MTP verify always runs eager under EP and costs ~2× serial.
+        let ep_graphs = std::env::var("ATLAS_EP_GRAPHS").is_ok_and(|v| v == "1" || v == "true");
+        let use_graphs = (self.comm.is_none() || ep_graphs)
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
@@ -203,6 +209,7 @@ impl TransformerModel {
             // illegal under CUDA graph capture.
             && !hss_engaged
             && !k2_diag_eager
+            && !k2_stage_profile
             && !lora_eager;
 
         // DeepSeek-V4 hash-MoE (first `num_hash_layers`) routes experts by token

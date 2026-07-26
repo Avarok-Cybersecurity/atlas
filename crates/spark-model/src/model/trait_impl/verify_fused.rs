@@ -179,12 +179,18 @@ impl TransformerModel {
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
         // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
         let lora_eager = self.lora.is_some() && crate::lora::lora_eager_env();
-        let use_graphs = self.comm.is_none()
+        let ep_graphs = std::env::var("ATLAS_EP_GRAPHS").is_ok_and(|v| v == "1" || v == "true");
+        let use_graphs = (self.comm.is_none() || ep_graphs)
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
             && !hss_engaged
             && !lora_eager;
+
+        // DeepSeek-V4 hash-MoE: upload verify token ids (mirror K=2 verify_b).
+        let tid_bytes: Vec<u8> = tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
+        self.gpu
+            .copy_h2d_async(&tid_bytes, self.buffers.token_ids(), stream)?;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -195,7 +201,7 @@ impl TransformerModel {
             comm: self.comm_ref(),
             graph_capture: use_graphs,
             gdn_exact_replay: false,
-            token_ids: None,
+            token_ids: Some(self.buffers.token_ids()),
             routed_lora_layers: None, // #30: decode/verify never routes prefill.
             midchunk_capture: None,
         };

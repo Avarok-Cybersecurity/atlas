@@ -167,6 +167,7 @@ fn serial_mode_reprobes_mtp_and_recovers() {
 #[test]
 fn depth_change_schedules_early_probe_without_state_wipe() {
     let mut g = MtpGate::new(1);
+    g.maybe_remeasure(600);
     g.note_depth(600);
     // A few MTP windows at depth 600.
     drive_mtp(&mut g, WINDOW_STEPS * 2, 2, ms(50));
@@ -186,6 +187,19 @@ fn depth_change_schedules_early_probe_without_state_wipe() {
         GateStep::MeasureDecode,
         "stale regime must probe soon"
     );
+}
+
+#[test]
+fn initial_depth_does_not_force_an_immediate_serial_probe() {
+    let mut g = MtpGate::new(1);
+    g.maybe_remeasure(1024);
+    g.note_depth(1024);
+
+    drive_mtp(&mut g, 1, 2, ms(50));
+
+    assert_eq!(g.next_step(), GateStep::MeasureVerify);
+    assert!(!g.in_serial_mode());
+    assert_eq!(g.serial_tps_debug(), None);
 }
 
 #[test]

@@ -25,6 +25,8 @@ mod ctx;
 mod ffn;
 mod mla;
 mod mla_gemv;
+mod mla_v4_n2;
+mod mla_v4_n2_output;
 mod qkv;
 
 impl Qwen3AttentionLayer {
@@ -138,6 +140,26 @@ impl Qwen3AttentionLayer {
         let diag_enabled = std::env::var("ATLAS_DIAG_V4").is_ok_and(|v| v == "1" || v == "true");
         let diag_all =
             std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
+        let stage_profile = std::env::var("ATLAS_PROFILE").is_ok_and(|v| v == "1" || v == "true");
+        let mut stage_started = None;
+        if stage_profile {
+            ctx.gpu.synchronize(stream)?;
+            stage_started = Some(std::time::Instant::now());
+        }
+        macro_rules! k2_stage {
+            ($label:expr) => {
+                if let Some(started) = stage_started.as_mut() {
+                    ctx.gpu.synchronize(stream)?;
+                    tracing::info!(
+                        "K2_STAGE layer={} {} {:.3}ms",
+                        self.attn_layer_idx,
+                        $label,
+                        started.elapsed().as_secs_f64() * 1000.0
+                    );
+                    *started = std::time::Instant::now();
+                }
+            };
+        }
         let diag_this = diag_enabled && (self.attn_layer_idx == 0 || diag_all);
 
         if is_first_layer {
@@ -154,9 +176,10 @@ impl Qwen3AttentionLayer {
         }
 
         // ── Phase 1: collapse + norm for N tokens ──
-        ops::hc_pre(
+        ops::hc_pre_parallel(
             ctx.gpu,
-            self.hc_pre_k,
+            self.hc_pre_mix_parallel_k,
+            self.hc_pre_finalize_k,
             hc_streams,
             hc.attn.hc_fn,
             hc.attn.hc_scale,
@@ -206,6 +229,7 @@ impl Qwen3AttentionLayer {
             eps,
             stream,
         )?;
+        k2_stage!("pre_attn");
 
         let meta = ctx
             .attn_metadata
@@ -221,6 +245,7 @@ impl Qwen3AttentionLayer {
             let attn_out = self.ms_phase_paged_decode(&c, kv_cache, meta)?;
             self.ms_phase_o_proj(&c, attn_out)?
         };
+        k2_stage!("mla");
 
         if c.fwd.config.tp_world_size > 1
             && let Some(comm) = c.fwd.comm
@@ -228,6 +253,7 @@ impl Qwen3AttentionLayer {
             let bytes = c.n * c.h * c.bf16;
             comm.all_reduce_async(o_out.0, bytes, c.stream)?;
         }
+        k2_stage!("attn_ar");
 
         // Expand attention output back into multi-stream state.
         ops::hc_post(
@@ -243,6 +269,7 @@ impl Qwen3AttentionLayer {
             hc_mult,
             stream,
         )?;
+        k2_stage!("post_attn");
         if diag_this {
             super::diag_norm(
                 ctx.gpu,
@@ -300,9 +327,10 @@ impl Qwen3AttentionLayer {
         }
 
         // ── Phase 7: FFN + hc_post (per-token sequential only) ──
-        ops::hc_pre(
+        ops::hc_pre_parallel(
             ctx.gpu,
-            self.hc_pre_k,
+            self.hc_pre_mix_parallel_k,
+            self.hc_pre_finalize_k,
             hc_streams,
             hc.ffn.hc_fn,
             hc.ffn.hc_scale,
@@ -352,29 +380,70 @@ impl Qwen3AttentionLayer {
             eps,
             stream,
         )?;
+        k2_stage!("pre_ffn");
 
-        // Per-token sequential FFN (MLA models always take this path).
-        for i in 0..n {
-            let normed2_i = c.normed.offset(i * c.h * c.bf16);
-            let moe_out = self.ffn.forward(normed2_i, ctx, stream)?;
-            // hc_streams is the FP32 mHC highway (4 bytes/elem), not BF16.
-            let hc_streams_i = hc_streams.offset(i * hc.hc_mult * c.h * 4);
-            let post_i = post.offset(i * hc.hc_mult * 4);
-            let comb_i = comb.offset(i * hc.hc_mult * hc.hc_mult * 4);
+        // FFN: prefer fused K=2/K=3 MoE (one EP all-reduce for both tokens)
+        // instead of sequential single-token forwards. Measured on V4-Flash EP=2:
+        // K=2 verify was ~2× single-token cost because this loop ran MoE+AR twice
+        // per layer. forward_k2/k3 share gate/expert launches + one AR of 2H/3H.
+        // Opt out with ATLAS_V4_SEQ_FFN=1 if a kernel regresses.
+        // Default sequential single-token MoE (stable on V4 EP).
+        // ATLAS_V4_K2_MOE=1: fused forward_k2 for n==2 (one EP AR of 2H) — faster
+        // when NVFP4 batch2 kernels are healthy; diagnose with ATLAS_K2_DIAG=1.
+        // Default ON for deepseek_v4 (safe via forward_k2→forward_batched).
+        // Opt out: ATLAS_V4_SEQ_FFN=1. Force on for other models: ATLAS_V4_K2_MOE=1.
+        let is_v4 = ctx.config.model_type == "deepseek_v4";
+        let allow_fused = !self.ffn.is_dense()
+            && std::env::var("ATLAS_V4_SEQ_FFN").ok().as_deref() != Some("1")
+            && (is_v4 || std::env::var("ATLAS_V4_K2_MOE").ok().as_deref() == Some("1"));
+        // K=2 (n=2) and K=3 (n=3 / num_drafts=2) fused MoE: one EP AR for all verify tokens.
+        if allow_fused && (n == 2 || n == 3) {
+            if n == 3 {
+                self.ffn.forward_k3(c.normed, ctx, stream)?;
+            } else {
+                self.ffn.forward_k2(c.normed, ctx, stream)?;
+            }
+            // Batched hc_post over n verify tokens (same layout as attn-side
+            // hc_post above). One kernel launch instead of n — free win on K=2.
+            let moe_base = ctx.buffers.moe_output();
             ops::hc_post(
                 ctx.gpu,
                 self.hc_post_k,
-                moe_out,
-                hc_streams_i,
-                post_i,
-                comb_i,
-                hc_streams_i,
-                1,
+                moe_base,
+                hc_streams,
+                post,
+                comb,
+                hc_streams,
+                n as u32,
                 h as u32,
                 hc_mult,
                 stream,
             )?;
+        } else {
+            // Sequential single-token MoE (legacy / dense / force_seq).
+            for i in 0..n {
+                let normed2_i = c.normed.offset(i * c.h * c.bf16);
+                let moe_out = self.ffn.forward(normed2_i, ctx, stream)?;
+                // hc_streams is the FP32 mHC highway (4 bytes/elem), not BF16.
+                let hc_streams_i = hc_streams.offset(i * hc.hc_mult * c.h * 4);
+                let post_i = post.offset(i * hc.hc_mult * 4);
+                let comb_i = comb.offset(i * hc.hc_mult * hc.hc_mult * 4);
+                ops::hc_post(
+                    ctx.gpu,
+                    self.hc_post_k,
+                    moe_out,
+                    hc_streams_i,
+                    post_i,
+                    comb_i,
+                    hc_streams_i,
+                    1,
+                    h as u32,
+                    hc_mult,
+                    stream,
+                )?;
+            }
         }
+        k2_stage!("ffn_post");
         if diag_this {
             super::diag_norm(
                 ctx.gpu,
@@ -426,6 +495,7 @@ impl Qwen3AttentionLayer {
                 self.attn_layer_idx
             );
         }
+        k2_stage!("head");
 
         Ok(())
     }

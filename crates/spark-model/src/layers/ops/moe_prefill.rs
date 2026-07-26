@@ -92,9 +92,12 @@ pub fn moe_expert_silu_down_shared_prefill(
     num_tokens: u32,
     stream: u64,
 ) -> Result<()> {
+    // Dynamic s_act[K] smem (K = inter). Was static 1024 → CUDA-700 on V4.
+    let smem_bytes = (k as usize * std::mem::size_of::<f32>()) as u32;
     KernelLaunch::new(gpu, kernel)
         .grid([div_ceil(n, 8), num_tokens * (top_k + 1), 1])
         .block([128, 1, 1])
+        .shared_mem(smem_bytes)
         .arg_ptr(gate_out)
         .arg_ptr(up_out)
         .arg_ptr(packed_ptrs)

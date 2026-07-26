@@ -189,6 +189,224 @@ extern "C" __global__ void hc_pre(
     }
 }
 
+// Decode-specialized hc_pre split into two launches. The mix kernel assigns
+// one CTA to each of the 24 projection rows instead of making one CTA process
+// all rows serially. It uses the first 24 FP32 slots of y_out as temporary
+// storage; hc_pre_finalize loads them before writing the BF16 collapsed output.
+//
+// Grid: (T * mix_hc, 1, 1)  Block: (256, 1, 1).
+extern "C" __global__ void hc_pre_mix_parallel(
+    const float* __restrict__ streams,
+    const float* __restrict__ hc_fn,
+    __nv_bfloat16* __restrict__ y_out,
+    const unsigned int hidden_size,
+    const unsigned int hc_mult,
+    const float norm_eps
+) {
+    const unsigned int tid = threadIdx.x;
+    const unsigned int H = hidden_size;
+    const unsigned int hc = hc_mult;
+    const unsigned int hc_dim = hc * H;
+    const unsigned int mix_hc = (2 + hc) * hc;
+    const unsigned int t = blockIdx.x / mix_hc;
+    const unsigned int m = blockIdx.x - t * mix_hc;
+
+    const float* x = streams + (size_t)t * hc_dim;
+    const float* fn_row = hc_fn + (size_t)m * hc_dim;
+
+    float ss = 0.f;
+    float dot = 0.f;
+    for (unsigned int k = tid; k < hc_dim; k += HC_BLOCK) {
+        const float xv = x[k];
+        ss += xv * xv;
+        dot += fn_row[k] * xv;
+    }
+
+    __shared__ float red_ss[HC_BLOCK];
+    __shared__ float red_dot[HC_BLOCK];
+    red_ss[tid] = ss;
+    red_dot[tid] = dot;
+    __syncthreads();
+    for (unsigned int s = HC_BLOCK / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            red_ss[tid] += red_ss[tid + s];
+            red_dot[tid] += red_dot[tid + s];
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        float* mix_out = reinterpret_cast<float*>(y_out + (size_t)t * H);
+        const float rsqrt = rsqrtf(red_ss[0] / (float)hc_dim + norm_eps);
+        mix_out[m] = red_dot[0] * rsqrt;
+    }
+}
+
+// Finalize the parallel mix projection: split pre/post/comb, run Sinkhorn,
+// and collapse the highway streams. Grid: (T, 1, 1)  Block: (256, 1, 1).
+extern "C" __global__ void hc_pre_finalize(
+    const float* __restrict__ streams,
+    const float* __restrict__ hc_scale,
+    const float* __restrict__ hc_base,
+    __nv_bfloat16* __restrict__ y_out,
+    float* __restrict__ post_out,
+    float* __restrict__ comb_out,
+    const unsigned int hidden_size,
+    const unsigned int hc_mult,
+    const unsigned int sinkhorn_iters,
+    const float hc_eps
+) {
+    const unsigned int t = blockIdx.x;
+    const unsigned int tid = threadIdx.x;
+    const unsigned int H = hidden_size;
+    const unsigned int hc = hc_mult;
+    const unsigned int hc_dim = hc * H;
+    const unsigned int mix_hc = (2 + hc) * hc;
+    const float* x = streams + (size_t)t * hc_dim;
+    const float* mix_in =
+        reinterpret_cast<const float*>(y_out + (size_t)t * H);
+
+    __shared__ float s_mix[HC_MAX_MIX];
+    __shared__ float s_pre[HC_MAX_MULT];
+    __shared__ float s_comb[HC_MAX_MULT * HC_MAX_MULT];
+    if (tid < mix_hc) s_mix[tid] = mix_in[tid];
+    __syncthreads();
+
+    if (hc == HC_MAX_MULT && tid < 32) {
+        // DeepSeek-V4's fixed 4x4 Sinkhorn fits in half a warp. Keep one
+        // element per lane so reductions and normalization happen in parallel
+        // instead of serializing hundreds of divides on thread 0.
+        constexpr unsigned int HC16_MASK = 0x0000ffffu;
+        const unsigned int lane = tid & 31u;
+
+        if (lane < hc) {
+            const float pr = s_mix[lane] * hc_scale[0] + hc_base[lane];
+            s_pre[lane] = 1.f / (1.f + expf(-pr)) + hc_eps;
+        } else if (lane < 2 * hc) {
+            const unsigned int i = lane - hc;
+            const float po = s_mix[hc + i] * hc_scale[1] + hc_base[hc + i];
+            post_out[(size_t)t * hc + i] = 2.f * (1.f / (1.f + expf(-po)));
+        }
+
+        if (lane < hc * hc) {
+            const unsigned int i = lane / hc;
+            const unsigned int j = lane - i * hc;
+            float v = s_mix[2 * hc + lane] * hc_scale[2] + hc_base[2 * hc + lane];
+
+            // Row softmax + eps. Width=4 forms four independent row groups.
+            float row_max = v;
+            row_max = fmaxf(row_max, __shfl_down_sync(HC16_MASK, row_max, 2, 4));
+            row_max = fmaxf(row_max, __shfl_down_sync(HC16_MASK, row_max, 1, 4));
+            row_max = __shfl_sync(HC16_MASK, row_max, 0, 4);
+            v = expf(v - row_max);
+            float row_sum = v;
+            row_sum += __shfl_down_sync(HC16_MASK, row_sum, 2, 4);
+            row_sum += __shfl_down_sync(HC16_MASK, row_sum, 1, 4);
+            row_sum = __shfl_sync(HC16_MASK, row_sum, 0, 4);
+            v = v / row_sum + hc_eps;
+
+            // Initial column projection. Column peers are 4 lanes apart.
+            float col_sum = v;
+            col_sum += __shfl_down_sync(HC16_MASK, col_sum, 4, 16);
+            col_sum += __shfl_down_sync(HC16_MASK, col_sum, 8, 16);
+            col_sum = __shfl_sync(HC16_MASK, col_sum, j, 16);
+            v /= col_sum + hc_eps;
+            s_comb[lane] = v;
+            __syncwarp(HC16_MASK);
+
+            for (unsigned int it = 0; it + 1 < sinkhorn_iters; ++it) {
+                v = s_comb[lane];
+                row_sum = v;
+                row_sum += __shfl_down_sync(HC16_MASK, row_sum, 2, 4);
+                row_sum += __shfl_down_sync(HC16_MASK, row_sum, 1, 4);
+                row_sum = __shfl_sync(HC16_MASK, row_sum, 0, 4);
+                v /= row_sum + hc_eps;
+                s_comb[lane] = v;
+                __syncwarp(HC16_MASK);
+
+                col_sum = v;
+                col_sum += __shfl_down_sync(HC16_MASK, col_sum, 4, 16);
+                col_sum += __shfl_down_sync(HC16_MASK, col_sum, 8, 16);
+                col_sum = __shfl_sync(HC16_MASK, col_sum, j, 16);
+                v /= col_sum + hc_eps;
+                s_comb[lane] = v;
+                __syncwarp(HC16_MASK);
+            }
+
+            // Preserve Atlas's exact final column projection.
+            col_sum = v;
+            col_sum += __shfl_down_sync(HC16_MASK, col_sum, 4, 16);
+            col_sum += __shfl_down_sync(HC16_MASK, col_sum, 8, 16);
+            col_sum = __shfl_sync(HC16_MASK, col_sum, j, 16);
+            v = col_sum > 0.f ? v / col_sum : 0.f;
+            s_comb[lane] = v;
+            comb_out[(size_t)t * hc * hc + lane] = v;
+        }
+    } else if (tid == 0) {
+        float comb[HC_MAX_MULT * HC_MAX_MULT];
+        for (unsigned int i = 0; i < hc; ++i) {
+            float pr = s_mix[i] * hc_scale[0] + hc_base[i];
+            s_pre[i] = 1.f / (1.f + expf(-pr)) + hc_eps;
+            float po = s_mix[hc + i] * hc_scale[1] + hc_base[hc + i];
+            post_out[(size_t)t * hc + i] =
+                2.f * (1.f / (1.f + expf(-po)));
+        }
+        for (unsigned int i = 0; i < hc; ++i)
+            for (unsigned int j = 0; j < hc; ++j)
+                comb[i * hc + j] =
+                    s_mix[2 * hc + i * hc + j] * hc_scale[2] +
+                    hc_base[2 * hc + i * hc + j];
+        for (unsigned int i = 0; i < hc; ++i) {
+            float mx = -1e30f;
+            for (unsigned int j = 0; j < hc; ++j)
+                mx = fmaxf(mx, comb[i * hc + j]);
+            float sum = 0.f;
+            for (unsigned int j = 0; j < hc; ++j) {
+                float e = expf(comb[i * hc + j] - mx);
+                comb[i * hc + j] = e;
+                sum += e;
+            }
+            for (unsigned int j = 0; j < hc; ++j)
+                comb[i * hc + j] = comb[i * hc + j] / sum + hc_eps;
+        }
+        for (unsigned int j = 0; j < hc; ++j) {
+            float c = hc_eps;
+            for (unsigned int i = 0; i < hc; ++i) c += comb[i * hc + j];
+            for (unsigned int i = 0; i < hc; ++i) comb[i * hc + j] /= c;
+        }
+        for (unsigned int it = 0; it + 1 < sinkhorn_iters; ++it) {
+            for (unsigned int i = 0; i < hc; ++i) {
+                float r = hc_eps;
+                for (unsigned int j = 0; j < hc; ++j) r += comb[i * hc + j];
+                for (unsigned int j = 0; j < hc; ++j) comb[i * hc + j] /= r;
+            }
+            for (unsigned int j = 0; j < hc; ++j) {
+                float c = hc_eps;
+                for (unsigned int i = 0; i < hc; ++i) c += comb[i * hc + j];
+                for (unsigned int i = 0; i < hc; ++i) comb[i * hc + j] /= c;
+            }
+        }
+        for (unsigned int j = 0; j < hc; ++j) {
+            float c = 0.f;
+            for (unsigned int i = 0; i < hc; ++i) c += comb[i * hc + j];
+            float inv = (c > 0.f) ? (1.f / c) : 0.f;
+            for (unsigned int i = 0; i < hc; ++i) comb[i * hc + j] *= inv;
+        }
+        for (unsigned int i = 0; i < hc; ++i)
+            for (unsigned int j = 0; j < hc; ++j)
+                comb_out[(size_t)t * hc * hc + i * hc + j] =
+                    comb[i * hc + j];
+    }
+    __syncthreads();
+
+    for (unsigned int d = tid; d < H; d += HC_BLOCK) {
+        float acc = 0.f;
+        for (unsigned int i = 0; i < hc; ++i)
+            acc += s_pre[i] * x[i * H + d];
+        y_out[(size_t)t * H + d] = __float2bfloat16(acc);
+    }
+}
+
 // ── hc_post ──
 // out[t,j,d] = post[t,j]*block_out[t,d] + sum_i comb[t,i,j]*residual[t,i,d].
 // `out` may alias `residual` (all hc residual values are read before write).

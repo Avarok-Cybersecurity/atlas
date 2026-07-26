@@ -30,6 +30,15 @@ impl Qwen3AttentionLayer {
         // DeepSeek-V4: Manifold-Constrained Hyper-Connections (mHC).
         // When HC is enabled, the persistent multi-stream state lives in
         // `hc_streams`; `hidden` is used as a single-stream scratch buffer.
+        //
+        // MTP body exception: assembled with layer_idx = num_hidden_layers so
+        // is_first=is_last=false (middle mHC only). The reference MTPBlock is
+        // trained on the multi-stream residual of the full stack, not equal
+        // expand of a collapsed hidden. Middle mHC on equal streams explodes
+        // (absmax ~1e6) and trips CUDA-700 mid-propose. Until multi-stream
+        // residual is wired from the target, run the MTP body as a plain
+        // single-stream residual block (same as hc_mult=0). Opt back into
+        // multi-stream mHC with ATLAS_V4_MTP_USE_MHC=1.
         if self.hc.is_some() {
             return self.decode_inner_hc(
                 hidden,
@@ -433,6 +442,134 @@ impl Qwen3AttentionLayer {
         let hc_mult = hc.hc_mult as u32;
         let is_first_layer = self.attn_layer_idx == 0;
         let is_last_layer = self.attn_layer_idx + 1 == ctx.config.num_hidden_layers;
+
+        macro_rules! prof_hc {
+            ($label:expr, $body:expr) => {{
+                if ctx.profile {
+                    ctx.gpu.synchronize(stream)?;
+                    let started = std::time::Instant::now();
+                    let result = $body;
+                    ctx.gpu.synchronize(stream)?;
+                    tracing::info!(
+                        "    V4 HC {}: {:.0}μs",
+                        $label,
+                        started.elapsed().as_micros()
+                    );
+                    result
+                } else {
+                    $body
+                }
+            }};
+        }
+
+        // MTP body (layer_idx >= num_hidden_layers): default to single-stream
+        // residual with vanilla RMSNorm. Full multi-stream mHC requires the
+        // target multi-stream residual as input (reference MTPBlock); equal
+        // expand of a collapsed hidden explodes and has tripped CUDA-700.
+        // Enable multi-stream mHC with ATLAS_V4_MTP_USE_MHC=1.
+        // MTP body: private KV cache has 1 layer (pool index remapped via
+        // kv_layer_idx). Default single-stream residual; full mHC needs
+        // multi-stream residual from target (ATLAS_V4_MTP_USE_MHC=1).
+        // ATLAS_V4_MTP_BODY_ATTN_ONLY=1 skips MoE (bisect CUDA-700).
+        let mtp_single = (kv_cache.num_layers() == 1
+            || self.attn_layer_idx >= ctx.config.num_hidden_layers)
+            && std::env::var("ATLAS_V4_MTP_USE_MHC").ok().as_deref() == Some("0");
+        if mtp_single {
+            let attn_only =
+                std::env::var("ATLAS_V4_MTP_BODY_ATTN_ONLY").ok().as_deref() == Some("1");
+            let normed = ctx.buffers.norm_output();
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_w_k,
+                hidden,
+                &self.input_norm,
+                normed,
+                1,
+                h as u32,
+                eps,
+                stream,
+            )?;
+            let attn_out = self.attention_forward(
+                normed,
+                seq_len,
+                block_table,
+                disk_block_ids,
+                disk_last_offloaded_per_layer,
+                kv_cache,
+                ctx,
+                stream,
+            )?;
+            if let Some(ref post_norm) = self.post_attn_out_norm {
+                ops::rms_norm(
+                    ctx.gpu,
+                    self.rms_norm_w_k,
+                    attn_out,
+                    post_norm,
+                    attn_out,
+                    1,
+                    h as u32,
+                    eps,
+                    stream,
+                )?;
+            }
+            ops::residual_add(
+                ctx.gpu,
+                self.residual_add_k,
+                hidden,
+                attn_out,
+                h as u32,
+                stream,
+            )?;
+            if self.ffn.is_none() || attn_only {
+                return Ok(());
+            }
+            let normed2 = ctx.buffers.norm_output();
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_w_k,
+                hidden,
+                &self.post_attn_norm,
+                normed2,
+                1,
+                h as u32,
+                eps,
+                stream,
+            )?;
+            // MTP MoE: default through forward_prefill(M=1). The decode MoE
+            // path OOMs/OOBs under force_all_experts on EP=2 (CUDA-700 after
+            // ~50–60 draft steps). Prefill grouped path is stable. Force
+            // decode MoE with ATLAS_V4_MTP_MOE_DECODE=1 for A/B.
+            let use_decode_moe =
+                std::env::var("ATLAS_V4_MTP_MOE_DECODE").ok().as_deref() == Some("1");
+            let ffn_out = if use_decode_moe {
+                self.ffn.forward(normed2, ctx, stream)?
+            } else {
+                self.ffn.forward_prefill(normed2, 1, ctx, stream)?;
+                ctx.buffers.moe_output()
+            };
+            if let Some(ref post_norm) = self.post_ffn_out_norm {
+                ops::rms_norm(
+                    ctx.gpu,
+                    self.rms_norm_w_k,
+                    ffn_out,
+                    post_norm,
+                    ffn_out,
+                    1,
+                    h as u32,
+                    eps,
+                    stream,
+                )?;
+            }
+            ops::residual_add(
+                ctx.gpu,
+                self.residual_add_k,
+                hidden,
+                ffn_out,
+                h as u32,
+                stream,
+            )?;
+            return Ok(());
+        }
         let hc_streams = ctx.buffers.hc_streams();
         let post = ctx.buffers.hc_post();
         let comb = ctx.buffers.hc_comb();
@@ -456,23 +593,27 @@ impl Qwen3AttentionLayer {
         }
 
         // ── Attention sublayer ──
-        ops::hc_pre(
-            ctx.gpu,
-            self.hc_pre_k,
-            hc_streams,
-            hc.attn.hc_fn,
-            hc.attn.hc_scale,
-            hc.attn.hc_base,
-            hidden,
-            post,
-            comb,
-            1,
-            h as u32,
-            hc_mult,
-            hc.sinkhorn_iters as u32,
-            eps,
-            hc.hc_eps,
-            stream,
+        prof_hc!(
+            "hc_pre-attn",
+            ops::hc_pre_parallel(
+                ctx.gpu,
+                self.hc_pre_mix_parallel_k,
+                self.hc_pre_finalize_k,
+                hc_streams,
+                hc.attn.hc_fn,
+                hc.attn.hc_scale,
+                hc.attn.hc_base,
+                hidden,
+                post,
+                comb,
+                1,
+                h as u32,
+                hc_mult,
+                hc.sinkhorn_iters as u32,
+                eps,
+                hc.hc_eps,
+                stream,
+            )
         )?;
         if diag_this {
             super::diag_norm(
@@ -499,16 +640,19 @@ impl Qwen3AttentionLayer {
         }
 
         let normed = ctx.buffers.norm_output();
-        ops::rms_norm(
-            ctx.gpu,
-            self.rms_norm_w_k,
-            hidden,
-            &self.input_norm,
-            normed,
-            1,
-            h as u32,
-            eps,
-            stream,
+        prof_hc!(
+            "input-rms",
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_w_k,
+                hidden,
+                &self.input_norm,
+                normed,
+                1,
+                h as u32,
+                eps,
+                stream,
+            )
         )?;
 
         let attn_out = self.attention_forward(
@@ -526,37 +670,46 @@ impl Qwen3AttentionLayer {
             && let Some(comm) = ctx.comm
         {
             let bytes = h * 2;
-            comm.all_reduce_async(attn_out.0, bytes, stream)?;
+            prof_hc!(
+                "attn-all-reduce",
+                comm.all_reduce_async(attn_out.0, bytes, stream)
+            )?;
         }
 
         if let Some(ref post_norm) = self.post_attn_out_norm {
-            ops::rms_norm(
-                ctx.gpu,
-                self.rms_norm_w_k,
-                attn_out,
-                post_norm,
-                attn_out,
-                1,
-                h as u32,
-                eps,
-                stream,
+            prof_hc!(
+                "post-attn-out-rms",
+                ops::rms_norm(
+                    ctx.gpu,
+                    self.rms_norm_w_k,
+                    attn_out,
+                    post_norm,
+                    attn_out,
+                    1,
+                    h as u32,
+                    eps,
+                    stream,
+                )
             )?;
         }
 
         // Standalone attention (no FFN)
         if self.ffn.is_none() {
-            ops::hc_post(
-                ctx.gpu,
-                self.hc_post_k,
-                attn_out,
-                hc_streams,
-                post,
-                comb,
-                hc_streams,
-                1,
-                h as u32,
-                hc_mult,
-                stream,
+            prof_hc!(
+                "hc_post-attn-only",
+                ops::hc_post(
+                    ctx.gpu,
+                    self.hc_post_k,
+                    attn_out,
+                    hc_streams,
+                    post,
+                    comb,
+                    hc_streams,
+                    1,
+                    h as u32,
+                    hc_mult,
+                    stream,
+                )
             )?;
             if is_last_layer && let Some(ref head) = hc.head {
                 ops::hc_head(
@@ -579,18 +732,21 @@ impl Qwen3AttentionLayer {
         }
 
         // Expand attention output back into multi-stream state.
-        ops::hc_post(
-            ctx.gpu,
-            self.hc_post_k,
-            attn_out,
-            hc_streams,
-            post,
-            comb,
-            hc_streams,
-            1,
-            h as u32,
-            hc_mult,
-            stream,
+        prof_hc!(
+            "hc_post-attn",
+            ops::hc_post(
+                ctx.gpu,
+                self.hc_post_k,
+                attn_out,
+                hc_streams,
+                post,
+                comb,
+                hc_streams,
+                1,
+                h as u32,
+                hc_mult,
+                stream,
+            )
         )?;
         if diag_this {
             super::diag_norm(
@@ -613,23 +769,27 @@ impl Qwen3AttentionLayer {
         }
 
         // ── FFN sublayer ──
-        ops::hc_pre(
-            ctx.gpu,
-            self.hc_pre_k,
-            hc_streams,
-            hc.ffn.hc_fn,
-            hc.ffn.hc_scale,
-            hc.ffn.hc_base,
-            hidden,
-            post,
-            comb,
-            1,
-            h as u32,
-            hc_mult,
-            hc.sinkhorn_iters as u32,
-            eps,
-            hc.hc_eps,
-            stream,
+        prof_hc!(
+            "hc_pre-ffn",
+            ops::hc_pre_parallel(
+                ctx.gpu,
+                self.hc_pre_mix_parallel_k,
+                self.hc_pre_finalize_k,
+                hc_streams,
+                hc.ffn.hc_fn,
+                hc.ffn.hc_scale,
+                hc.ffn.hc_base,
+                hidden,
+                post,
+                comb,
+                1,
+                h as u32,
+                hc_mult,
+                hc.sinkhorn_iters as u32,
+                eps,
+                hc.hc_eps,
+                stream,
+            )
         )?;
         if diag_this {
             super::diag_norm(
@@ -656,16 +816,19 @@ impl Qwen3AttentionLayer {
         }
 
         let normed2 = ctx.buffers.norm_output();
-        ops::rms_norm(
-            ctx.gpu,
-            self.rms_norm_w_k,
-            hidden,
-            &self.post_attn_norm,
-            normed2,
-            1,
-            h as u32,
-            eps,
-            stream,
+        prof_hc!(
+            "post-attn-rms",
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_w_k,
+                hidden,
+                &self.post_attn_norm,
+                normed2,
+                1,
+                h as u32,
+                eps,
+                stream,
+            )
         )?;
 
         let ffn_out = if self.attn_layer_idx == ctx.config.num_hidden_layers
@@ -682,16 +845,19 @@ impl Qwen3AttentionLayer {
         };
 
         if let Some(ref post_norm) = self.post_ffn_out_norm {
-            ops::rms_norm(
-                ctx.gpu,
-                self.rms_norm_w_k,
-                ffn_out,
-                post_norm,
-                ffn_out,
-                1,
-                h as u32,
-                eps,
-                stream,
+            prof_hc!(
+                "post-ffn-out-rms",
+                ops::rms_norm(
+                    ctx.gpu,
+                    self.rms_norm_w_k,
+                    ffn_out,
+                    post_norm,
+                    ffn_out,
+                    1,
+                    h as u32,
+                    eps,
+                    stream,
+                )
             )?;
         }
 
@@ -699,18 +865,21 @@ impl Qwen3AttentionLayer {
             self.apply_layer_scalar(ctx.gpu, ffn_out, h, scalar, stream)?;
         }
 
-        ops::hc_post(
-            ctx.gpu,
-            self.hc_post_k,
-            ffn_out,
-            hc_streams,
-            post,
-            comb,
-            hc_streams,
-            1,
-            h as u32,
-            hc_mult,
-            stream,
+        prof_hc!(
+            "hc_post-ffn",
+            ops::hc_post(
+                ctx.gpu,
+                self.hc_post_k,
+                ffn_out,
+                hc_streams,
+                post,
+                comb,
+                hc_streams,
+                1,
+                h as u32,
+                hc_mult,
+                stream,
+            )
         )?;
         if diag_this {
             super::diag_norm(

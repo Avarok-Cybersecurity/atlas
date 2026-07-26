@@ -71,6 +71,11 @@ impl TransformerModel {
             gpu.kernel("norm", "rms_norm")?
         };
         let dense_gemv_kernel = gpu.kernel("gemv", "dense_gemv_bf16")?;
+        let dense_gemv_batch2_kernel = crate::layers::try_kernel(
+            gpu.as_ref(),
+            "dense_gemv_bf16_batch2",
+            "dense_gemv_bf16_batch2",
+        );
         // FP32-output dense GEMV — the FP32 logits path required an FP32
         // residual stream, which no longer exists, so this stays
         // KernelHandle(0) and the BF16 path is always taken.
@@ -516,6 +521,7 @@ impl TransformerModel {
             gpu,
             rms_norm_kernel,
             dense_gemv_kernel,
+            dense_gemv_batch2_kernel,
             dense_gemv_fp32out_kernel,
             w4a16_gemv_kernel,
             w4a16_gemv_logits_kernel,

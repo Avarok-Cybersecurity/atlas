@@ -196,6 +196,10 @@ impl MtpGate {
     /// let the normal probe cadence refresh them — no state wipe, no forced
     /// serial phase.
     pub fn maybe_remeasure(&mut self, current_depth: usize) {
+        if self.measured_at_depth == 0 {
+            self.measured_at_depth = current_depth;
+            return;
+        }
         let measured = self.measured_at_depth.max(REMEASURE_DEPTH_FLOOR);
         let live = current_depth.max(REMEASURE_DEPTH_FLOOR);
         if live >= measured * REMEASURE_DEPTH_FACTOR || measured >= live * REMEASURE_DEPTH_FACTOR {

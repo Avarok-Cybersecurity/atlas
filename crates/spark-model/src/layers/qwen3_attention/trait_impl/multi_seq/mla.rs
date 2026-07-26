@@ -125,6 +125,22 @@ impl Qwen3AttentionLayer {
             // the n=1 path uses) once per verify token instead — SSOT
             // with the correct algorithm and buffer layout.
             if mla.o_lora_rank > 0 {
+                // K=2: true dual-token V4 path (batch2 GEMVs + num_seqs=2 paged).
+                // Opt out: ATLAS_V4_MS_SEQ=1.
+                // Dual-token n2 path is OPT-IN only (`ATLAS_V4_MS_N2=1`).
+                // Default is sequential attention_forward_v4 (SSOT quality).
+                // The experimental batch4 path regressed quality (token salad)
+                // on V4-Flash EP/MTP; keep it gated until buffer-identical.
+                // `ATLAS_V4_MS_SEQ=1` also forces sequential (legacy opt-out).
+                if c.n == 2
+                    && i == 0
+                    && std::env::var("ATLAS_V4_MS_N2").ok().as_deref() == Some("1")
+                    && std::env::var("ATLAS_V4_MS_SEQ").ok().as_deref() != Some("1")
+                    && (self.w4a16_gemv_batch2_k.0 != 0 || self.w8a16_gemv_batch4_k.0 != 0)
+                {
+                    self.ms_v4_flash_n2(c, kv_cache, meta, mla, o_out, stream)?;
+                    break; // both tokens written into o_out
+                }
                 // Per-token forward context carrying this token's sliced
                 // attention metadata (positions / slot / seq_len /
                 // block_table). All other ctx fields are copied verbatim.

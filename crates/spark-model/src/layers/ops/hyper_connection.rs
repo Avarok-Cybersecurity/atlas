@@ -152,6 +152,57 @@ pub fn hc_pre(
         .launch(stream)
 }
 
+/// Decode-specialized HC collapse. The first kernel computes the `mix_hc`
+/// projection rows in parallel; the second performs Sinkhorn and emits the
+/// collapsed BF16 hidden state plus the saved post/comb tensors.
+#[allow(clippy::too_many_arguments)]
+pub fn hc_pre_parallel(
+    gpu: &dyn GpuBackend,
+    mix_kernel: KernelHandle,
+    finalize_kernel: KernelHandle,
+    streams: DevicePtr,
+    hc_fn: DevicePtr,
+    hc_scale: DevicePtr,
+    hc_base: DevicePtr,
+    y_out: DevicePtr,
+    post_out: DevicePtr,
+    comb_out: DevicePtr,
+    num_tokens: u32,
+    hidden_size: u32,
+    hc_mult: u32,
+    sinkhorn_iters: u32,
+    norm_eps: f32,
+    hc_eps: f32,
+    stream: u64,
+) -> Result<()> {
+    let mix_hc = (2 + hc_mult) * hc_mult;
+    KernelLaunch::new(gpu, mix_kernel)
+        .grid([num_tokens * mix_hc, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(streams)
+        .arg_ptr(hc_fn)
+        .arg_ptr(y_out)
+        .arg_u32(hidden_size)
+        .arg_u32(hc_mult)
+        .arg_f32(norm_eps)
+        .launch(stream)?;
+
+    KernelLaunch::new(gpu, finalize_kernel)
+        .grid([num_tokens, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(streams)
+        .arg_ptr(hc_scale)
+        .arg_ptr(hc_base)
+        .arg_ptr(y_out)
+        .arg_ptr(post_out)
+        .arg_ptr(comb_out)
+        .arg_u32(hidden_size)
+        .arg_u32(hc_mult)
+        .arg_u32(sinkhorn_iters)
+        .arg_f32(hc_eps)
+        .launch(stream)
+}
+
 /// Expand the sublayer output back into `hc_mult` streams, mixing the saved
 /// residual streams through the doubly-stochastic `comb`. `out` may alias
 /// `residual`. One block per token.
