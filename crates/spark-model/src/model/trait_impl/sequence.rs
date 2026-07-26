@@ -86,26 +86,21 @@ impl TransformerModel {
                         seq.adapter_id,
                     )
                 };
-                super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
-                // Bump KV block ref_counts so the prefix cache "owns" a reference.
-                // This keeps blocks alive after free_sequence drops the sequence's ref.
-                // Eviction (return_evicted_block) releases these refs when nodes are removed.
-                let mut kv = self.kv_cache.lock();
-                let num_cached_blocks = (seq.tokens.len() / bs).min(seq.block_table.len());
-                // Skip the leading blocks that came FROM the cache on this
-                // sequence's lookup: the cache already owns a "+1" on each, taken
-                // when they were first cached, and it gives back exactly ONE ref
-                // per radix node when that node is evicted. Re-bumping them here
-                // is a 1:N imbalance — every warm turn adds a ref no eviction can
-                // ever release, so reused prefixes accumulate until the block pool
-                // is permanently wedged (small requests still fit, large prefills
-                // fail with "no free blocks" until restart). The matched nodes are
-                // guaranteed to still hold their cache ref here: lookup's inc_refs
-                // put them at ref>=2 and eviction only takes nodes at ref<=1.
-                let skip = seq.cached_prefix_blocks.min(num_cached_blocks);
-                for &block_idx in &seq.block_table[skip..num_cached_blocks] {
-                    kv.inc_ref(block_idx);
-                }
+                // Take the cache's KV ref on exactly the blocks whose radix nodes
+                // this insert created — reported by the insert itself.
+                //
+                // This used to `inc_ref` a RANGE of the finishing sequence's
+                // `block_table` (everything past the matched prefix) on the
+                // assumption that node i holds `block_table[i]`. It does not: when
+                // a node for a token chunk already exists, `insert` keeps that
+                // node's original block, so a sequence that did not get its block
+                // from the cache (no match, or restored from a swap file) has a
+                // DIFFERENT block at that position. The ref then landed on a block
+                // no node referenced, while the node's own block carried none — so
+                // evicting it decremented a ref belonging to a live sequence,
+                // returning an in-use block to the free list to be handed out
+                // again. Reporting the blocks keeps ref lifetime == node lifetime.
+                super::super::block_mgmt::cache_acquires_refs(&acquired, &mut self.kv_cache.lock());
             }
         }
     }
@@ -443,5 +438,19 @@ impl TransformerModel {
 
     pub(super) fn num_free_blocks_dispatch(&self) -> usize {
         self.kv_cache.lock().num_free_blocks()
+    }
+
+    pub(super) fn reclaim_prefix_blocks_dispatch(&self, num_blocks: usize) -> usize {
+        if num_blocks == 0 || !self.prefix_cache.is_active() {
+            return 0;
+        }
+        let evicted = self.prefix_cache.evict(num_blocks);
+        if evicted.is_empty() {
+            return 0;
+        }
+        let mut kv = self.kv_cache.lock();
+        let before = kv.num_free_blocks();
+        super::super::block_mgmt::apply_evicted_blocks(evicted, &mut kv);
+        kv.num_free_blocks().saturating_sub(before)
     }
 }

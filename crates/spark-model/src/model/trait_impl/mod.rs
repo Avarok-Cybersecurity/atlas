@@ -683,6 +683,9 @@ impl Model for TransformerModel {
     fn num_free_blocks(&self) -> usize {
         self.num_free_blocks_dispatch()
     }
+    fn reclaim_prefix_blocks(&self, num_blocks: usize) -> usize {
+        self.reclaim_prefix_blocks_dispatch(num_blocks)
+    }
     fn start_checkpoint_async(&self, seq: &mut SequenceState) -> Result<()> {
         self.start_checkpoint_async_dispatch(seq)
     }

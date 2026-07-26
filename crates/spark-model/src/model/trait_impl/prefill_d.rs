@@ -78,7 +78,7 @@ impl TransformerModel {
                 seq.cached_prefix_tokens,
                 seq.adapter_id,
             );
-            super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+            super::super::block_mgmt::cache_acquires_refs(&acquired, &mut self.kv_cache.lock());
         }
         Ok(self.decode_logits_ptr())
     }
@@ -151,7 +151,7 @@ impl TransformerModel {
                         seq.cached_prefix_tokens,
                         seq.adapter_id,
                     );
-                    super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+                    super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
                     if let Some(old) = displaced {
                         self.ssm_snapshots.free(old);
                     }
@@ -165,7 +165,7 @@ impl TransformerModel {
                     seq.cached_prefix_tokens,
                     seq.adapter_id,
                 );
-                super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+                super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
             }
         } else if !self.tokens_have_vision_pad(tokens) {
             let acquired = self.prefix_cache.insert(
@@ -176,7 +176,7 @@ impl TransformerModel {
                 seq.cached_prefix_tokens,
                 seq.adapter_id,
             );
-            super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+            super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
         }
     }
 
@@ -262,7 +262,7 @@ impl TransformerModel {
                         seq.cached_prefix_tokens,
                         seq.adapter_id,
                     );
-                    super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+                    super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
                     if let Some(old) = displaced {
                         self.ssm_snapshots.free(old);
                     }
@@ -276,7 +276,7 @@ impl TransformerModel {
                     seq.cached_prefix_tokens,
                     seq.adapter_id,
                 );
-                super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+                super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
             }
         } else if !self.tokens_have_vision_pad(tokens) {
             let acquired = self.prefix_cache.insert(
@@ -287,7 +287,7 @@ impl TransformerModel {
                 seq.cached_prefix_tokens,
                 seq.adapter_id,
             );
-            super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+            super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
         }
     }
 }

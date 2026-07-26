@@ -666,7 +666,26 @@ pub fn run(
             let mut resumed_any = true;
             while resumed_any && !swapped.is_empty() && active.len() < max_batch_size {
                 resumed_any = false;
-                let free = model.num_free_blocks();
+                let mut free = model.num_free_blocks();
+                // Nothing fits: the blocks this sequence needs may be sitting in
+                // the prefix cache, which holds one ref per radix node and so
+                // never volunteers them. Prefill and decode reclaim implicitly
+                // (`try_alloc` → evict → retry); swap-in gates on free blocks
+                // BEFORE restoring, so it has to ask. Without this a swapped-out
+                // sequence waits forever on capacity that is reclaimable but not
+                // free — the scheduler goes idle with clients still connected.
+                if let Some(smallest) = swapped.iter().map(|s| s.num_blocks).min()
+                    && smallest > free
+                {
+                    let reclaimed = model.reclaim_prefix_blocks(smallest - free);
+                    if reclaimed > 0 {
+                        tracing::info!(
+                            "Swap-in: reclaimed {reclaimed} block(s) from the prefix cache \
+                             to restore a {smallest}-block sequence (free was {free})",
+                        );
+                        free = model.num_free_blocks();
+                    }
+                }
                 if let Some(idx) = swapped.iter().position(|s| s.num_blocks <= free) {
                     let s = swapped.remove(idx);
                     match resume_swapped_seq(think_end_token, think_start_token, &*model, s, spill)

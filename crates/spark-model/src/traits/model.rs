@@ -912,6 +912,21 @@ pub trait Model: Send + Sync {
         0
     }
 
+    /// Reclaim up to `num_blocks` blocks from the prefix cache, returning how
+    /// many actually became free.
+    ///
+    /// The prefill/decode allocators reclaim implicitly (`try_alloc` → evict →
+    /// retry), but swap-in cannot: it gates on `num_free_blocks()` BEFORE
+    /// attempting a restore, so cached-but-evictable capacity is invisible to
+    /// it and a swapped-out sequence waits for blocks that are never
+    /// volunteered. Cached blocks are legitimately held (the cache owns one ref
+    /// per radix node), so nothing frees them on its own — the swap-in path has
+    /// to ask. Returns 0 when nothing is evictable, which the caller must treat
+    /// as "no progress possible" rather than retrying forever.
+    fn reclaim_prefix_blocks(&self, _num_blocks: usize) -> usize {
+        0
+    }
+
     /// Return the default CUDA stream handle.
     fn default_stream(&self) -> u64 {
         0

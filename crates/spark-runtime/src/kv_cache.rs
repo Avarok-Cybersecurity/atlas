@@ -437,8 +437,11 @@ pub struct PagedKvCache {
     /// Default: 1 on alloc, freed when decremented to 0.
     block_ref_counts: Vec<u32>,
     config: KvCacheConfig,
+    /// Per-block refcount event history (`ATLAS_KV_TRACE=1`; inert otherwise).
+    trace: block_trace::BlockTrace,
 }
 
+mod block_trace;
 mod paged_impl;
 #[cfg(test)]
 mod tests;

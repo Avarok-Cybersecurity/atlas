@@ -47,6 +47,31 @@ pub struct EvictedBlocks {
     pub disk_block_ids: Vec<u32>,
 }
 
+/// What an `insert` newly took ownership of, so the caller can take the
+/// matching references.
+///
+/// Ownership rule: the cache holds exactly ONE reference on the physical block
+/// stored in each radix node, taken when that node is CREATED and returned when
+/// the node is evicted (`return_evicted_block`). The reference therefore has to
+/// follow the block the NODE holds — not the block the inserting sequence had at
+/// that position. Those two diverge whenever a node already exists for a token
+/// chunk: `insert` keeps the node's original `block_idx`, while the sequence has
+/// a different block there (it did not get that block from the cache — e.g. it
+/// never matched, or it was restored from a swap file). Referencing the
+/// sequence's block instead left the node's block with no reference at all, so
+/// evicting that node decremented a ref belonging to a LIVE sequence: the block
+/// went back on the free list while still in use and was handed out again, with
+/// the second owner's teardown underflowing. Reporting the blocks here keeps
+/// node lifetime and reference lifetime identical by construction.
+#[derive(Debug, Clone, Default)]
+pub struct InsertAcquired {
+    /// Disk-block IDs the cache newly references (caller `inc_disk_ref`s each).
+    pub disk_block_ids: Vec<u32>,
+    /// Physical KV blocks stored in radix nodes CREATED by this insert; the
+    /// caller `inc_ref`s each exactly once.
+    pub blocks: Vec<u32>,
+}
+
 impl EvictedBlocks {
     pub fn is_empty(&self) -> bool {
         self.physical.is_empty()
@@ -195,7 +220,7 @@ pub trait PrefixCache: Send + Sync {
         block_size: usize,
         matched_tokens: usize,
         adapter_id: u64,
-    ) -> Vec<u32>;
+    ) -> InsertAcquired;
 
     /// Insert blocks with an SSM state snapshot registered in the snapshot index.
     ///
@@ -218,7 +243,7 @@ pub trait PrefixCache: Send + Sync {
         session_hash: u64,
         matched_tokens: usize,
         adapter_id: u64,
-    ) -> (Option<usize>, Vec<u32>);
+    ) -> (Option<usize>, InsertAcquired);
 
     /// Insert an SSM snapshot at an intermediate token boundary.
     ///
@@ -334,8 +359,8 @@ impl PrefixCache for NoPrefixCaching {
         _block_size: usize,
         _matched_tokens: usize,
         _adapter_id: u64,
-    ) -> Vec<u32> {
-        Vec::new()
+    ) -> InsertAcquired {
+        InsertAcquired::default()
     }
 
     fn insert_with_snapshot(
@@ -348,8 +373,8 @@ impl PrefixCache for NoPrefixCaching {
         _session_hash: u64,
         _matched_tokens: usize,
         _adapter_id: u64,
-    ) -> (Option<usize>, Vec<u32>) {
-        (None, Vec::new())
+    ) -> (Option<usize>, InsertAcquired) {
+        (None, InsertAcquired::default())
     }
 
     fn insert_intermediate_snapshot(
@@ -429,7 +454,8 @@ mod tests {
 
         // These should not panic
         let new_acq = cache.insert(&tokens, &block_table, &disk_block_ids, 4, 0, 0);
-        assert!(new_acq.is_empty());
+        assert!(new_acq.disk_block_ids.is_empty());
+        assert!(new_acq.blocks.is_empty());
         cache.release(&tokens, 4, 0);
 
         let evicted = cache.evict(10);
