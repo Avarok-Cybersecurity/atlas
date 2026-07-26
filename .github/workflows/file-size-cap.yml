@@ -291,6 +291,20 @@ jobs:
             "crates/spark-model/src/layers/ops/gemm_dense.rs"
             "crates/spark-model/src/layers/qwen3_ssm/trait_decode_batched_conv_gdn.rs"
             "crates/spark-model/src/model/trait_impl/mod.rs"
+            # -- PR #373 (prefix-cache refcount fixes) carry-over --
+            # 505 LoC — paged KV block pool. Sat at 493 (under cap); the two
+            # refcount fixes push it 12 over: `return_evicted_block` must release
+            # only the prefix cache's own ref (force-zeroing freed blocks a live
+            # sequence still held → aliased KV pointer → CUDA-700), and `dec_ref`
+            # is now saturating because `debug_assert` is compiled out in release
+            # with no `overflow-checks`, so a 0-ref decrement wrapped to u32::MAX
+            # and pinned the block forever. Both need their "why" inline — the
+            # bugs are invisible from the code alone. Comments already trimmed
+            # 520 → 505. Single `impl PagedKvCache` (alloc/free/refcount/block IO)
+            # whose ordering is read top-to-bottom, same rationale as the other
+            # compute/state-heavy entries above. Clean split (block IO → sibling)
+            # tracked as follow-up.
+            "crates/spark-runtime/src/kv_cache/paged_impl.rs"
           )
 
           violations=0
