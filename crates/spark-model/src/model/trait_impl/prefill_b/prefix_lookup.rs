@@ -84,6 +84,16 @@ impl TransformerModel {
             }
             let matched = prefix_match.matched_tokens;
             seq.cached_prefix_tokens = matched;
+            // Stash the matched prefix so `free_sequence` can release the radix
+            // refs the lookup just bumped even if this prefill fails to allocate
+            // its suffix before `seq.tokens` is populated (else those nodes leak
+            // and the block pool progressively wedges). Cleared on the no-match
+            // path so a later cache-less turn on the same seq doesn't over-release.
+            if matched > 0 {
+                seq.prefix_ref_tokens = tokens[..matched].to_vec();
+            } else {
+                seq.prefix_ref_tokens.clear();
+            }
             seq.prompt_len = total;
             for &block_idx in &prefix_match.matched_blocks {
                 kv_cache.inc_ref(block_idx);

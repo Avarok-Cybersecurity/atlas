@@ -144,8 +144,23 @@ impl TransformerModel {
 
         // Release prefix cache refs before freeing blocks.
         // (i.e., blocks not shared with the prefix cache).
+        //
+        // Normally `seq.tokens` (prompt + generated) fully covers the matched
+        // prefix, so releasing over it undoes the lookup's radix inc_refs. But a
+        // prefill that matched a prefix then FAILED to allocate its suffix never
+        // populated `seq.tokens` (that happens in a later finalize phase), so
+        // `release(&seq.tokens)` would be a no-op and the matched radix nodes
+        // would stay pinned forever → the pool wedges. When `seq.tokens` is too
+        // short to cover the matched prefix, release over the stashed prefix
+        // tokens instead. Exactly one of the two covers the matched nodes, so
+        // they are released once (never double-released).
+        let release_tokens = if seq.tokens.len() >= seq.cached_prefix_tokens {
+            &seq.tokens
+        } else {
+            &seq.prefix_ref_tokens
+        };
         self.prefix_cache.release(
-            &seq.tokens,
+            release_tokens,
             self.kv_cache.lock().block_size(),
             seq.adapter_id,
         );
