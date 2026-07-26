@@ -314,6 +314,9 @@ impl RadixTreeInner {
         // Physical blocks of nodes CREATED below. The cache's single KV ref per
         // node is taken on exactly these — see `InsertAcquired`.
         let mut newly_owned_blocks: Vec<u32> = Vec::new();
+        // Blocks this insert stops storing (a `partial_suffix` slot overwritten
+        // or dropped); the caller releases the ref taken when it was filled.
+        let mut released_blocks: Vec<u32> = Vec::new();
 
         for i in 0..num_blocks {
             let chunk = &tokens[i * block_size..(i + 1) * block_size];
@@ -350,7 +353,12 @@ impl RadixTreeInner {
                 parent_ctx_hash = ctx_hash;
                 current = child;
             } else {
-                self.nodes[current].partial_suffix = None;
+                // Creating a real child supersedes this node's partial slot.
+                // That slot held a KV ref (taken below when it was filled), so
+                // dropping it without releasing would pin the block forever.
+                if let Some((_, old_block, _)) = self.nodes[current].partial_suffix.take() {
+                    released_blocks.push(old_block);
+                }
                 let node = RadixNode {
                     children: HashMap::new(),
                     block_idx: block_table[i],
@@ -392,7 +400,24 @@ impl RadixTreeInner {
             // full-block path above). This branch fires rarely — partial
             // slots are tail-only and typically unique per-prefix.
             let prior = self.nodes[current].partial_suffix.as_ref().map(|p| p.2);
+            // The cache must own a KV ref on the partial block exactly as it does
+            // on a node's own block. It previously owned NONE: `walk` hands the
+            // partial block out to a matching sequence with no liveness check, and
+            // eviction hands it back in `freed_phys` — so once its only owner (the
+            // inserting sequence) freed it, the block sat at 0 refs ON THE FREE
+            // LIST while this node still pointed at it. Every later matching
+            // request then `inc_ref`d it 0->1 while it was still free, used it, and
+            // freed it 1->0 pushing a DUPLICATE free-list entry — the same block
+            // handed to several sequences at once. Observed on the agentic bench as
+            // one block underflowing 56 times.
+            let prior_block = self.nodes[current].partial_suffix.as_ref().map(|p| p.1);
             self.nodes[current].partial_suffix = Some((partial_toks, partial_block, partial_disk));
+            if prior_block != Some(partial_block) {
+                newly_owned_blocks.push(partial_block);
+                if let Some(old) = prior_block {
+                    released_blocks.push(old);
+                }
+            }
             if hss_active && partial_disk != u32::MAX && prior != Some(partial_disk) {
                 newly_acquired.push(partial_disk);
             }
@@ -401,6 +426,7 @@ impl RadixTreeInner {
         crate::prefix_cache::InsertAcquired {
             disk_block_ids: newly_acquired,
             blocks: newly_owned_blocks,
+            released_blocks,
         }
     }
 

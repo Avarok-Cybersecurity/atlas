@@ -183,8 +183,14 @@ pub(crate) fn cache_acquires_refs(
     kv_cache: &mut PagedKvCache,
 ) {
     cache_acquires_disk_refs(&acquired.disk_block_ids);
+    // Acquire before release: a block that is both (e.g. a partial slot re-set to
+    // the same block via different paths) must never transiently hit 0 and get
+    // handed to another sequence.
     for &block in &acquired.blocks {
         kv_cache.inc_ref(block);
+    }
+    for &block in &acquired.released_blocks {
+        kv_cache.dec_ref(block);
     }
 }
 

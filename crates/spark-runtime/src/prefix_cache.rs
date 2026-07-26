@@ -70,6 +70,10 @@ pub struct InsertAcquired {
     /// Physical KV blocks stored in radix nodes CREATED by this insert; the
     /// caller `inc_ref`s each exactly once.
     pub blocks: Vec<u32>,
+    /// Physical KV blocks this insert stopped storing — a `partial_suffix` slot
+    /// that was overwritten or dropped. The caller `dec_ref`s each exactly once,
+    /// releasing the reference taken when that slot was first filled.
+    pub released_blocks: Vec<u32>,
 }
 
 impl EvictedBlocks {
