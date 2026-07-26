@@ -1,0 +1,218 @@
+/* =============================================================================
+   Atlas responsive layer. SSOT for every viewport rule on the site, plus the
+   mobile nav drawer it depends on. Loaded LAST (see routes/+layout.svelte) so
+   it narrows the desktop-first system in app.css.
+
+   Breakpoints: 1040 tablet · 900 two-column collapse · 860 nav drawer
+                680 phone · 480 small phone · 380 tiny.
+   ========================================================================== */
+
+/* ---- width safety, every viewport ----------------------------------------- */
+img, svg, video { max-width: 100%; }
+
+/* Grid and flex items default to min-width auto, which resolves to their
+   min-content. One nowrap command line (.repro, .hero-cmd, .cmd-pill) therefore
+   forced its whole track to the width of the command, blowing the page out to
+   ~694px on a 390px phone. Zeroing the automatic minimum lets the track shrink
+   and the command scroll inside its own box, which is what those boxes already
+   set up with overflow-x auto. */
+.hero-inner > *, .verified-grid > *, .star-wrap > *, .run-grid > *, .hw-grid > *,
+.news-grid > *, .road-grid > *, .contrib-grid > *, .reach-grid > *, .tstrip > *,
+.ms-grid > *, .community-band > *, .footer-inner > *, .mnav-vendors > *,
+.proof-strip > * { min-width: 0; }
+.repro, .hero-cmd, .cmd-pill, .term, .method-card, .receipt, .run-side { min-width: 0; }
+/* auto-fit tracks must never demand more than the viewport can give */
+.tstrip { grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
+.contrib-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+.road-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); }
+.ms-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr)); }
+.hero-cmd code, .repro code, .cmd-text { -webkit-overflow-scrolling: touch; }
+
+/* ---- mobile nav drawer (hidden until the 860 breakpoint) ------------------ */
+.nav-toggle {
+  display: none; align-items: center; justify-content: center;
+  width: 44px; height: 44px; flex-shrink: 0;
+  background: transparent; color: var(--t1);
+  border: 1px solid var(--border-strong); border-radius: 10px; cursor: pointer;
+}
+.nav-burger { position: relative; display: block; width: 18px; height: 12px; }
+.nav-burger span {
+  position: absolute; left: 0; width: 100%; height: 2px; border-radius: 2px;
+  background: currentColor; transition: transform 0.22s, opacity 0.18s, top 0.22s;
+}
+.nav-burger span:nth-child(1) { top: 0; }
+.nav-burger span:nth-child(2) { top: 5px; }
+.nav-burger span:nth-child(3) { top: 10px; }
+.nav-burger.is-x span:nth-child(1) { top: 5px; transform: rotate(45deg); }
+.nav-burger.is-x span:nth-child(2) { opacity: 0; }
+.nav-burger.is-x span:nth-child(3) { top: 5px; transform: rotate(-45deg); }
+
+.nav-drawer {
+  display: none; flex-direction: column;
+  padding: 0.35rem 1.15rem 1.15rem;
+  border-top: 1px solid var(--border);
+  background: rgba(244, 240, 232, 0.98);
+  max-height: calc(100dvh - 56px); overflow-y: auto;
+  animation: drawerin 0.18s ease-out both;
+}
+@keyframes drawerin { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+.nav-drawer-link {
+  display: flex; align-items: center; min-height: 50px;
+  padding: 0.25rem; font-size: 1rem; font-weight: 650;
+  color: var(--t1); text-decoration: none; border-bottom: 1px solid var(--border);
+}
+.nav-drawer-link:active { color: var(--accent); }
+.nav-drawer-foot { display: flex; align-items: center; gap: 1.25rem; padding-top: 1.1rem; }
+.nav-drawer-foot .nav-star-btn { padding: 0.65rem 1.1rem; font-size: 0.9rem; }
+.nav-scrim {
+  display: none; position: fixed; inset: 0; z-index: 80;
+  border: 0; padding: 0; background: rgba(26, 24, 21, 0.4); cursor: default;
+  touch-action: none; /* dragging the dimmed area must not scroll the page behind */
+}
+
+/* ---- 1040 ----------------------------------------------------------------- */
+@media (max-width: 1040px) {
+  section { padding: 5.5rem 1.75rem; }
+  .hero { padding: 4.5rem 1.75rem 4rem; }
+  .nav-inner, .gift-inner, .footer-inner { padding-left: 1.75rem; padding-right: 1.75rem; }
+  footer { padding-left: 1.75rem; padding-right: 1.75rem; }
+}
+
+/* ---- 900, the two-column collapse ----------------------------------------- */
+@media (max-width: 900px) {
+  .hero-inner, .star-wrap, .verified-grid, .hw-grid, .run-grid { grid-template-columns: 1fr; gap: 2rem; }
+  .verified-grid .receipt, .hero-receipt .receipt { max-width: 460px; }
+  .community-band { grid-template-columns: 1fr; gap: 1.75rem; padding: 2.25rem; }
+  .reach-grid { grid-template-columns: 1fr; }
+  .reach-head { align-items: flex-start; }
+  .reach-cta { min-width: 0; width: 100%; }
+}
+
+/* ---- 860, desktop bar becomes a drawer ------------------------------------ */
+@media (max-width: 860px) {
+  html { scroll-padding-top: 76px; }
+  .nav-inner { height: 56px; }
+  .nav-links { display: none; }
+  .nav-toggle { display: inline-flex; }
+  .nav-drawer.is-open { display: flex; }
+  .nav-scrim.is-on { display: block; }
+  .gift { margin-top: 56px; top: 56px; }
+}
+
+/* ---- 680, phone ----------------------------------------------------------- */
+@media (max-width: 680px) {
+  section { padding: 3.5rem 1.15rem; }
+  .hero { padding: 2.5rem 1.15rem 3rem; }
+  .nav-inner, .gift-inner, .footer-inner { padding-left: 1.15rem; padding-right: 1.15rem; }
+  footer { padding: 2.5rem 1.15rem 2rem; }
+
+  /* the banner scrolls away on a phone instead of eating the viewport */
+  .gift { position: static; }
+  .gift-inner { flex-direction: column; gap: 0.3rem; padding-top: 0.75rem; padding-bottom: 0.75rem; }
+  .gift-line { font-size: 0.85rem; }
+  .gift-sub { font-size: 0.78rem; line-height: 1.5; }
+
+  /* type scale */
+  .hero h1 { font-size: clamp(1.95rem, 7.4vw, 2.7rem); }
+  .hero-sub { font-size: 1rem; max-width: none; }
+  .stitle { font-size: clamp(1.6rem, 6.4vw, 2.2rem); }
+  .ssub { font-size: 0.97rem; }
+  .hero-badge { border-radius: 14px; line-height: 1.45; align-items: flex-start; margin-bottom: 1.1rem; }
+  .hero-badge .dot { margin-top: 0.42rem; flex-shrink: 0; }
+
+  /* full-bleed tap targets */
+  .hero-buttons .btn, .star-cta-row .btn, .run-copy .btn, .community-cta .btn {
+    width: 100%; justify-content: center;
+  }
+  .community-cta { align-items: stretch; }
+  .proof-strip { justify-content: flex-start; gap: 0.6rem 1.25rem; }
+  .proof-item { font-size: 0.86rem; }
+
+  /* cards and instruments */
+  .verified-grid .receipt, .hero-receipt .receipt { max-width: none; }
+  .hw-card { padding: 1.5rem 1.35rem; }
+  .news-card, .reach-card, .road-card, .contrib-card { padding: 1.35rem 1.3rem; }
+  .method-card { padding: 1.25rem 1.3rem; }
+  .community-band { padding: 1.85rem 1.35rem; border-radius: 20px; }
+  .term-body { padding: 0.9rem 1rem; }
+  .subcard-hf { white-space: normal; overflow-wrap: anywhere; }
+  .ms-famhead { padding: 1.15rem 1.15rem 0.75rem; }
+  .ms-grid { grid-template-columns: 1fr; padding: 0 1.15rem 1.25rem; }
+  .mnav-vendors, .mnav-subs {
+    flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin;
+    padding-bottom: 0.35rem; scroll-snap-type: x proximity;
+  }
+  .mnav-vendor, .mnav-sub { flex-shrink: 0; scroll-snap-align: start; }
+
+  /* star chart labels are drawn in SVG user units, scale them up as the svg shrinks */
+  .star-chart { padding: 0.9rem 0.9rem 0.5rem; }
+  .star-chart .axis-y, .star-chart .axis-x { font-size: 17px; }
+  .star-chart .axis-val { font-size: 20px; }
+  .star-figure { font-size: 3.1rem; }
+
+  /* footer stacks */
+  .footer-inner { flex-direction: column; gap: 1.9rem; }
+  .footer-brand { max-width: none; }
+}
+
+/* ---- legibility floor, tablet and down -------------------------------------
+   Micro type that reads fine on a 27 inch monitor is unreadable at arm's length.
+   This block sits after the layout breakpoints on purpose, so nothing above it
+   can push the small end of the scale back down.
+   -------------------------------------------------------------------------- */
+@media (max-width: 900px) {
+  .chip { font-size: 0.72rem; }
+  .mnav-sub-count { font-size: 0.68rem; }
+  .news-tag, .receipt-title, .receipt-hw, .road-status, .ms-count,
+  .receipt-pending .tag, .cmd-copy, .email-btn-copy { font-size: 0.74rem; }
+  .slabel { font-size: 0.75rem; }
+  .hw-chip, .hw-status, .news-date, .term-title, .hero-challenge .fine { font-size: 0.78rem; }
+  .subcard-hf, .cmd-text, .receipt-foot, .copy-btn, .term-body { font-size: 0.76rem; }
+  .trademark, .footer-legal, .cla-line { font-size: 0.74rem; }
+  .hw-card p, .news-card p, .road-card p, .contrib-card p, .reach-card p,
+  .method-card p, .tcard blockquote, .run-note, .ms-foot { font-size: 0.94rem; }
+  .fcol a, .footer-brand p { font-size: 0.88rem; }
+}
+
+/* ---- 480, small phone ----------------------------------------------------- */
+@media (max-width: 480px) {
+  section { padding: 3rem 1rem; }
+  .hero { padding: 2.25rem 1rem 2.5rem; }
+  .nav-inner, .gift-inner, .footer-inner { padding-left: 1rem; padding-right: 1rem; }
+  footer { padding: 2.25rem 1rem 1.75rem; }
+  .nav-wordmark { font-size: 1.2rem; }
+  .nav-mark { height: 30px; width: 30px; }
+
+  .hero-challenge { font-size: 0.86rem; }
+  .receipt-body { padding: 1.15rem 1.05rem 1.3rem; }
+  .receipt-row { font-size: 0.78rem; gap: 0.45rem; }
+  .mech-line { font-size: 0.94rem; padding-left: 0.75rem; }
+
+  .email-btn-addr { font-size: 0.76rem; padding: 0.65rem 0.7rem; }
+  .email-btn-copy { padding: 0 0.7rem; }
+  .reach-card, .news-card, .road-card, .contrib-card { padding: 1.2rem 1.15rem; }
+  .news-top { flex-wrap: wrap; gap: 0.4rem; }
+  .news-card h3 { font-size: 1rem; }
+  .tcard { padding: 1.1rem 1.15rem; }
+  .mission-body p { font-size: 1.02rem; }
+  .star-figure { font-size: 2.7rem; }
+}
+
+/* ---- 380, tiny ------------------------------------------------------------ */
+@media (max-width: 380px) {
+  section { padding: 2.75rem 0.9rem; }
+  .hero { padding: 2rem 0.9rem 2.25rem; }
+  .nav-inner, .gift-inner, .footer-inner { padding-left: 0.9rem; padding-right: 0.9rem; }
+  .hero h1 { font-size: 1.85rem; }
+  .stitle { font-size: 1.5rem; }
+  .email-btn-addr { font-size: 0.7rem; }
+}
+
+/* ---- touch targets, any coarse pointer ------------------------------------ */
+@media (pointer: coarse) {
+  .copy-btn, .cmd-copy, .email-btn-copy { min-height: 42px; }
+  .nav-icon-link, .proof-item { min-height: 40px; align-items: center; }
+  .fcol a { padding-block: 0.3rem; }
+  .news-link, .hw-links a, .road-card a, .contrib-card a { padding-block: 0.35rem; }
+  .subcard:hover, .news-card:hover, .reach-card:hover, .contrib-card:hover { transform: none; }
+}

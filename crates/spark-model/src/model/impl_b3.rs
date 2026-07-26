@@ -91,35 +91,138 @@ impl TransformerModel {
             routed_lora_layers: None, // #30: MTP/draft decode never routes prefill.
             midchunk_capture: None,
         };
+        // Give the drafter its prompt context on the first propose of this
+        // sequence: whole-prompt prefill on a COLD turn, carried rows + a
+        // short append on a WARM one. See `ensure_drafter_context`.
+        self.ensure_drafter_context(proposer, seq, &ctx, stream);
         let prop_state = seq
             .proposer_state
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("No proposer state for sequence"))?;
-        // ATLAS_MTP_DRAFTER_PREFILL: on the FIRST propose of a sequence,
-        // batch-prefill the drafter's KV over the prompt (fresh-state check
-        // and quant support live inside prefill_drafter; it fast-returns 0 on
-        // every later call). Requires the capture to cover the full prompt —
-        // partial capture (prefix-cache reuse / warm restore) skips cleanly.
-        if !self.mtp_prefill_hidden.is_null() {
-            let p = seq.prompt_len;
-            let captured = self
-                .mtp_prefill_capture_len
-                .load(std::sync::atomic::Ordering::Relaxed);
-            if p >= 2
-                && captured >= p
-                && seq.tokens.len() >= p
-                && let Err(e) = proposer.prefill_drafter(
-                    &seq.tokens[..p],
-                    self.mtp_prefill_hidden,
-                    prop_state.as_mut(),
-                    &ctx,
-                    stream,
-                )
+        // ATLAS_MTP_CATCHUP: before proposing, feed pairs the drafter missed
+        // during a serial-decode stretch. Coordinates (measured 2026-07-20 on
+        // the 27B rig): at propose entry `position == seq.tokens.len()` and
+        // the imminent forward_one writes the pair for sequence key
+        // `position - 1`; pair key k = (embed(tokens[k+1]), hidden_k), RoPE
+        // k+1. The serial-decode ring stores, under label n, the hidden of
+        // the step that COMMITTED token n — i.e. hidden_{n-1} — so pair key k
+        // reads ring label k+1. Drafter KV slots are compacted (append-only)
+        // while RoPE stays sequence-space, so RoPE gaps are already the norm:
+        // partial feeds (clipped to ring coverage) are safe, and wrong feeds
+        // cannot corrupt output (verify rejects bad drafts).
+        if crate::speculative::mtp_catchup_enabled() && !self.mtp_catchup_ring.is_null() {
+            let rows = proposer.drafter_rows(prop_state.as_mut());
+            let last_key = proposer.last_pair_key(prop_state.as_mut());
+            let (start, count) = *self.mtp_catchup_meta.lock();
+            // ATLAS_MTP_REFEED_DEBUG: the ring round-trip check. The pair key
+            // this propose is ABOUT to write is `position - 1`, and it reads
+            // its hidden from `mtp_hidden_save`; under the label convention
+            // that same hidden is ring label `position`. So
+            // `fp(ring[position % rows]) == fp(mtp_hidden_save)` iff the
+            // ring's write-side slot arithmetic, the D2D plumbing and the
+            // read-side slot arithmetic all agree. It does NOT prove the
+            // label convention itself (see `mtp_refeed_shift`).
+            if crate::speculative::mtp_refeed_debug() {
+                let ring_rows = super::types::MTP_CATCHUP_RING_ROWS;
+                let h = self.config.hidden_size;
+                let fp_save = crate::speculative::hidden_fingerprint(
+                    self.gpu.as_ref(),
+                    self.mtp_hidden_save,
+                    h,
+                );
+                let fp_ring = crate::speculative::hidden_fingerprint(
+                    self.gpu.as_ref(),
+                    self.mtp_catchup_ring.offset((position % ring_rows) * h * 2),
+                    h,
+                );
+                let covered = count > 0 && position >= start && position < start + count;
+                tracing::info!(
+                    "REFEED_DBG propose position={position} rows={rows} \
+                     last_key={last_key:?} ring=[{start},+{count}) \
+                     fp_save={fp_save:016x} fp_ring[{position}]={fp_ring:016x} \
+                     covered={covered} roundtrip_ok={}",
+                    covered && fp_save == fp_ring,
+                );
+            }
+            if let Some(last) = last_key
+                && rows > 0
+                && count > 0
             {
-                tracing::warn!("MTP drafter prefill failed (continuing without): {e:#}");
+                // Missing pair keys: (last .. position-1); the propose itself
+                // covers position-1. Clip to ring coverage [start, start+count)
+                // in label space (label = key + 1).
+                let mut k0 = (last + 1).max(start.saturating_sub(1));
+                let k1 = (position.saturating_sub(2)).min((start + count).saturating_sub(2));
+                let want = (position.saturating_sub(1)).saturating_sub(last + 1);
+                if k0 <= k1 && want > 0 {
+                    let ring_rows = super::types::MTP_CATCHUP_RING_ROWS;
+                    let h = self.config.hidden_size;
+                    let bf16 = 2usize;
+                    let fed_from = k0;
+                    while k0 <= k1 {
+                        // Ring-contiguous segment: labels k0+1 .. until wrap.
+                        let slot = (k0 + 1) % ring_rows;
+                        let seg_last = k1.min(k0 + (ring_rows - slot) - 1);
+                        let n_rows = seg_last - k0 + 1;
+                        // Row r feeds pair key k0+r = embed(tokens[k0+r+1]):
+                        // the impl reads prompt_tokens[r+1], so pass the
+                        // window starting at index k0 (n_rows + 1 tokens).
+                        let toks = &seq.tokens[k0..=seg_last + 1];
+                        let hid = self.mtp_catchup_ring.offset(slot * h * bf16);
+                        if crate::speculative::mtp_refeed_debug() {
+                            for r in 0..n_rows {
+                                let fp = crate::speculative::hidden_fingerprint(
+                                    self.gpu.as_ref(),
+                                    hid.offset(r * h * bf16),
+                                    h,
+                                );
+                                tracing::info!(
+                                    "REFEED_DBG feed key={} label={} tok={} rope={} fp={fp:016x}",
+                                    k0 + r,
+                                    k0 + r + 1,
+                                    toks[r + 1],
+                                    k0 + r + 1,
+                                );
+                            }
+                        }
+                        let row_base = proposer.drafter_rows(prop_state.as_mut());
+                        match proposer.catchup_drafter(
+                            toks,
+                            hid,
+                            row_base,
+                            k0 + 1,
+                            prop_state.as_mut(),
+                            &ctx,
+                            stream,
+                        ) {
+                            Ok(w) if w == n_rows => k0 = seg_last + 1,
+                            Ok(w) => {
+                                tracing::debug!(
+                                    "MTP catch-up: short feed ({w}/{n_rows} rows) — degrading"
+                                );
+                                break;
+                            }
+                            Err(e) => {
+                                tracing::debug!("MTP catch-up: feed failed ({e:#}) — degrading");
+                                break;
+                            }
+                        }
+                    }
+                    if k0 > k1 {
+                        tracing::debug!(
+                            "MTP catch-up: fed pair keys {fed_from}..={k1} \
+                             (missed {want}, position {position})"
+                        );
+                    }
+                } else if want > 0 {
+                    tracing::debug!(
+                        "MTP catch-up: gap of {want} pairs outside ring coverage \
+                         (last_key={last} position={position} ring=[{start},+{count}))"
+                    );
+                }
             }
         }
-        proposer.propose(
+        let drafts = proposer.propose(
             token,
             self.mtp_hidden_save,
             position,
@@ -130,7 +233,28 @@ impl TransformerModel {
             draft_embed_target,
             grammar_bitmask,
             self.dflash_hidden_save,
-        )
+        )?;
+        // Confidence clamp (ATLAS_MTP_DRAFT_CONF, staged off by default):
+        // when the drafter's chain confidence is below tau, discard the
+        // drafts — the next step decodes serially instead of paying a
+        // verify that would most likely reject (break-even acceptance at
+        // K=1 on the 35B MoE is ~0.66). The drafter KV rows written by
+        // this propose MUST be trimmed exactly as a full rejection would
+        // (after_verify(0)), or the drafter desyncs from the target.
+        let tau = crate::speculative::draft_conf_tau();
+        if tau > 0.0
+            && !drafts.is_empty()
+            && let Some(conf) = proposer.last_confidence()
+            && conf < tau
+        {
+            tracing::debug!(
+                "MTP draft skipped: chain confidence {conf:.3} < tau {tau:.3}                  (pos {position}, {} drafts trimmed)",
+                drafts.len(),
+            );
+            proposer.after_verify(0, prop_state.as_mut(), stream)?;
+            return Ok(Vec::new());
+        }
+        Ok(drafts)
     }
 
     /// Borrow the GPU backend for post-construction wiring (e.g. installing

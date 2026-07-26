@@ -36,6 +36,11 @@ unsafe extern "C" {
     pub(super) fn cuMemsetD8Async(dst: u64, value: u8, n: usize, stream: u64) -> i32;
     // CUDA graph capture/replay
     pub(super) fn cuStreamBeginCapture(hStream: u64, mode: u32) -> i32;
+    // Capture-status query (telemetry taps must not sync/copy inside an
+    // active capture). Not declared under SCALE — its libcuda export set is
+    // minimal and an unresolved extern would break the gfx1151 link.
+    #[cfg(not(atlas_scale))]
+    pub(super) fn cuStreamIsCapturing(hStream: u64, captureStatus: *mut u32) -> i32;
     pub(super) fn cuStreamEndCapture(hStream: u64, phGraph: *mut u64) -> i32;
     // CUDA-graph instantiate. NVIDIA's libcuda exports the 3-arg
     // `cuGraphInstantiateWithFlags`; SCALE's libcuda (gfx1151) exports only

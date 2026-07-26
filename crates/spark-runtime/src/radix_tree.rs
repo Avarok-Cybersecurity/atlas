@@ -14,6 +14,9 @@ use crate::prefix_cache::{EvictedBlocks, PrefixCache, PrefixMatch};
 
 mod inner;
 mod snapshot;
+mod snapshot_insert;
+mod snapshot_stats;
+mod snapshot_tier;
 
 #[cfg(test)]
 mod tests;
@@ -197,6 +200,23 @@ impl PrefixCache for RadixTree {
         self.snapshot_index
             .lock()
             .insert_tail(prefix_hash, snapshot_id, session_hash, tokens.len())
+    }
+
+    fn insert_tail_sibling_snapshot(
+        &self,
+        tokens: &[u32],
+        snapshot_id: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> Option<usize> {
+        // Index only, like the tail (finalize_last's insert lays the tree nodes).
+        let prefix_hash = hash_token_prefix(tokens, tokens.len(), adapter_id);
+        self.snapshot_index.lock().insert_tail_sibling(
+            prefix_hash,
+            snapshot_id,
+            session_hash,
+            tokens.len(),
+        )
     }
 
     fn insert_intermediate_snapshot(

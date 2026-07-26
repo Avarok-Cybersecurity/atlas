@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Equivalence oracle for the K∈{2,3,4} WY speculative-verify GDN kernels
-//! (`gated_delta_rule_wy2/wy3/wy4`) against an N-step sequential single-token
-//! GDN recurrence reference.
+//! (`gated_delta_rule_wy2/wy3/wy4`) and the pool-layout chain-verify
+//! K∈{5..8} kernels (`gated_delta_rule_wy5..wy8`, templated wyN source)
+//! against an N-step sequential single-token GDN recurrence reference.
 //!
 //! This is the losslessness foundation for the in-place SSM verify-commit
 //! change (item #2 of the MTP hybrid spec-decode fix): the in-place commit
@@ -218,6 +219,80 @@ fn run_wy(
     Ok((out, inter_h, final_h))
 }
 
+/// Run a pool-layout wyN kernel (wy5..wy8 signature == wy17: contiguous
+/// intermediates pool + inter_stride_floats) once. Same input packing as
+/// `run_wy`; returns (interleaved output, intermediates[0..K-1], final H).
+fn run_wyn(
+    g: &dyn GpuBackend,
+    kernel: spark_runtime::gpu::KernelHandle,
+    h0: &[f32],
+    q: &[Vec<bf16>],
+    key: &[Vec<bf16>],
+    val: &[Vec<bf16>],
+    gate: &[Vec<f32>],
+    beta: &[Vec<f32>],
+    k: usize,
+) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<f32>)> {
+    use spark_runtime::kernel_args::KernelLaunch;
+    let mut q_flat = Vec::with_capacity(k * NK * KD);
+    let mut k_flat = Vec::with_capacity(k * NK * KD);
+    let mut v_flat = Vec::with_capacity(k * NV * VD);
+    let mut g_flat = Vec::with_capacity(k * NV);
+    let mut b_flat = Vec::with_capacity(k * NV);
+    for t in 0..k {
+        q_flat.extend_from_slice(&q[t]);
+        k_flat.extend_from_slice(&key[t]);
+        v_flat.extend_from_slice(&val[t]);
+        g_flat.extend_from_slice(&gate[t]);
+        b_flat.extend_from_slice(&beta[t]);
+    }
+    let h_numel = NV * KD * VD;
+    let hp = up_f32(g, h0)?;
+    let qp = up_bf16(g, &q_flat)?;
+    let kp = up_bf16(g, &k_flat)?;
+    let vp = up_bf16(g, &v_flat)?;
+    let gp = up_f32(g, &g_flat)?;
+    let bp = up_f32(g, &b_flat)?;
+    let op = g.alloc(k * NV * VD * 2)?;
+    // Contiguous pool of (K-1) intermediates, stride = h_numel floats —
+    // the production ssm_pool slot layout the dispatch arm requires.
+    let inter_pool = g.alloc((k - 1) * h_numel * 4)?;
+
+    KernelLaunch::new(g, kernel)
+        .grid([NV as u32, 1, 1])
+        .block([128, 1, 1])
+        .arg_ptr(hp)
+        .arg_ptr(qp)
+        .arg_ptr(kp)
+        .arg_ptr(vp)
+        .arg_ptr(gp)
+        .arg_ptr(bp)
+        .arg_ptr(op)
+        .arg_ptr(inter_pool)
+        .arg_u32(h_numel as u32) // inter_stride_floats
+        .arg_u32(1) // batch_size
+        .arg_u32(NK as u32)
+        .arg_u32(NV as u32)
+        .arg_u32(KD as u32)
+        .arg_u32(VD as u32)
+        .arg_u32((NK * KD) as u32) // qk_stride
+        .arg_u32((NV * VD) as u32) // v_stride
+        .arg_u32(NV as u32) // gb_stride
+        .launch(0)?;
+    g.synchronize(0)?;
+
+    let out = dn_bf16(g, op, k * NV * VD)?;
+    let mut inter_h = Vec::with_capacity(k - 1);
+    for t in 0..k - 1 {
+        inter_h.push(dn_f32(g, inter_pool.offset(t * h_numel * 4), h_numel)?);
+    }
+    let final_h = dn_f32(g, hp, h_numel)?;
+    for p in [hp, qp, kp, vp, gp, bp, op, inter_pool] {
+        let _ = g.free(p);
+    }
+    Ok((out, inter_h, final_h))
+}
+
 fn main() -> Result<()> {
     let g0 = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &g0;
@@ -234,11 +309,28 @@ fn main() -> Result<()> {
             4usize,
             g.kernel("gated_delta_rule_wy4", "gated_delta_rule_wy4")?,
         ),
+        // Pool-layout chain-verify kernels (templated wyN source).
+        (
+            5usize,
+            g.kernel("gated_delta_rule_wyn", "gated_delta_rule_wy5")?,
+        ),
+        (
+            6usize,
+            g.kernel("gated_delta_rule_wyn", "gated_delta_rule_wy6")?,
+        ),
+        (
+            7usize,
+            g.kernel("gated_delta_rule_wyn", "gated_delta_rule_wy7")?,
+        ),
+        (
+            8usize,
+            g.kernel("gated_delta_rule_wyn", "gated_delta_rule_wy8")?,
+        ),
     ];
 
     let mut all_ok = true;
     // Multiple random layers (seeds) per K to exercise diverse H_0/inputs.
-    for &k in &[2usize, 3, 4] {
+    for &k in &[2usize, 3, 4, 5, 6, 7, 8] {
         let wk = wy.iter().find(|(kk, _)| *kk == k).unwrap().1;
         for layer in 0..6u64 {
             let mut r = Lcg(0xD17A ^ (k as u64) << 8 ^ layer);
@@ -272,7 +364,11 @@ fn main() -> Result<()> {
                 .collect();
 
             let (ref_out, ref_h) = sequential_ref(&h0, &q, &key, &val, &gate, &beta, k);
-            let (wy_out, wy_inter, wy_final) = run_wy(g, wk, &h0, &q, &key, &val, &gate, &beta, k)?;
+            let (wy_out, wy_inter, wy_final) = if k <= 4 {
+                run_wy(g, wk, &h0, &q, &key, &val, &gate, &beta, k)?
+            } else {
+                run_wyn(g, wk, &h0, &q, &key, &val, &gate, &beta, k)?
+            };
 
             // Per-token output cosine: wy_out is interleaved [token, vh, vd].
             let mut min_out_cos = 1.0f64;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! `KvPagingBackend` — the KV overflow tier as a PAGING client (flag-ON arm
-//! of `ATLAS_KV_PAGING`), plus [`connect_kv_peer_backend`], the single
+//! of `ATLAS_KV_PAGING`), plus [`super::connect_kv_peer_backend`], the single
 //! selection seam `HighSpeedSwap` calls (flag OFF ⇒ the raw one-sided
 //! `RdmaKvBackend`, identical data plane; its handshake is the
 //! v2 header with `blob_bytes == 0`).
@@ -45,7 +45,7 @@ use crate::snapshot_swap::{
 use atlas_rdma::verbs::Verbs;
 
 /// Fully-resolved connect parameters (env resolution lives in
-/// [`connect_kv_peer_backend`]; the smoke example constructs this directly
+/// [`super::connect_kv_peer_backend`]; the smoke example constructs this directly
 /// with exact byte sizes / explicit salts).
 #[derive(Clone, Copy, Debug)]
 pub struct KvPagingConnect {

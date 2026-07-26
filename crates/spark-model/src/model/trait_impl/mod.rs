@@ -173,7 +173,17 @@ impl Model for TransformerModel {
         name: &str,
         slot: usize,
     ) -> Result<()> {
-        self.swap_lora_slot_from_disk(dir, name, slot)
+        // Disk staging is plain file I/O and is portable; only the PEER path
+        // needs RDMA. Still cuda-gated, since it lands into a device pool.
+        #[cfg(feature = "cuda")]
+        {
+            self.swap_lora_slot_from_disk(dir, name, slot)
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            let _ = (dir, name, slot);
+            anyhow::bail!("LoRA disk swap requires the cuda feature")
+        }
     }
     fn promote_lora_from_peer(
         &mut self,
@@ -182,14 +192,14 @@ impl Model for TransformerModel {
         name: &str,
         peft: atlas_core::config::PeftAdapterConfig,
     ) -> Result<(usize, Option<String>)> {
-        #[cfg(feature = "cuda")]
+        #[cfg(all(feature = "cuda", unix))]
         {
             self.promote_lora_slot_from_peer(peer_addr, adapter_id, name, peft)
         }
-        #[cfg(not(feature = "cuda"))]
+        #[cfg(not(all(feature = "cuda", unix)))]
         {
             let _ = (peer_addr, adapter_id, name, peft);
-            anyhow::bail!("LoRA peer promotion requires the cuda feature")
+            anyhow::bail!("LoRA peer promotion stages over RDMA (rdma-core); unix-only")
         }
     }
     fn promote_lora_from_disk(
@@ -197,7 +207,15 @@ impl Model for TransformerModel {
         dir: &std::path::Path,
         name: &str,
     ) -> Result<(usize, Option<String>)> {
-        self.promote_lora_slot_from_disk(dir, name)
+        #[cfg(feature = "cuda")]
+        {
+            self.promote_lora_slot_from_disk(dir, name)
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            let _ = (dir, name);
+            anyhow::bail!("LoRA disk promotion requires the cuda feature")
+        }
     }
     fn high_speed_swap_dims(&self) -> Option<spark_storage::ModelDims> {
         self.high_speed_swap_dims_dispatch()
@@ -325,6 +343,10 @@ impl Model for TransformerModel {
     ) -> Result<Vec<u32>> {
         self.decode_and_verify_fused_dispatch(tokens, seq, _stream)
     }
+    fn save_hidden_for_catchup(&self, token_idx: usize, pos: usize) -> Result<()> {
+        self.save_hidden_for_catchup_dispatch(token_idx, pos)
+    }
+
     fn save_hidden_for_mtp(&self, token_idx: usize, _stream: u64) -> Result<()> {
         self.save_hidden_for_mtp_dispatch(token_idx, _stream)
     }
@@ -674,17 +696,6 @@ impl Model for TransformerModel {
     }
     fn sync_secondary(&self) -> Result<()> {
         self.sync_secondary_dispatch()
-    }
-    fn pre_verify_copy_async(&self, seq: &mut SequenceState) -> Result<()> {
-        self.pre_verify_copy_async_dispatch(seq)
-    }
-    fn commit_verify_state_async(
-        &self,
-        seq: &mut SequenceState,
-        num_accepted: usize,
-        k: usize,
-    ) -> Result<()> {
-        self.commit_verify_state_async_dispatch(seq, num_accepted, k)
     }
     fn commit_accepted_prefix(
         &self,

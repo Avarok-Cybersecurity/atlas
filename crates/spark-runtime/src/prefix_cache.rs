@@ -246,6 +246,18 @@ pub trait PrefixCache: Send + Sync {
         adapter_id: u64,
     ) -> Vec<usize>;
 
+    /// Register the tail's EARLY sibling (`tb - bs`) in the index. Must be
+    /// called after `insert_tail_snapshot` in the same finalize (the tail
+    /// insert sweeps the session's previous tail + sibling). Returns a
+    /// displaced snapshot id to free, if the prefix was already registered.
+    fn insert_tail_sibling_snapshot(
+        &self,
+        tokens: &[u32],
+        snapshot_id: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> Option<usize>;
+
     /// Release ref_counts on blocks that were acquired via `lookup`.
     ///
     /// Called when a sequence finishes. Decrements ref_count on cache
@@ -357,6 +369,16 @@ impl PrefixCache for NoPrefixCaching {
         _adapter_id: u64,
     ) -> Vec<usize> {
         Vec::new()
+    }
+
+    fn insert_tail_sibling_snapshot(
+        &self,
+        _tokens: &[u32],
+        _snapshot_id: usize,
+        _session_hash: u64,
+        _adapter_id: u64,
+    ) -> Option<usize> {
+        None
     }
 
     fn release(&self, _tokens: &[u32], _block_size: usize, _adapter_id: u64) {}

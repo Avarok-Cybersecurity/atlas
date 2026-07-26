@@ -89,6 +89,10 @@ impl TransformerModel {
             crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch16");
         let lmhead_batch_gemv =
             std::env::var("ATLAS_LMHEAD_BATCH_GEMV").ok().as_deref() == Some("1");
+        // M<=8 batched GEMV for the K=5..8 chain-verify lm_head (same
+        // try_kernel contract: 0-handle → dispatch falls back to the GEMM).
+        let w4a16_gemv_batch8_kernel =
+            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch8");
         // FP8 E4M3 LUT GEMV for the `--lm-head-dtype fp8` head. Loaded
         // unconditionally (a handle is cheap); only invoked when `lm_head_fp8`
         // is set, so the NVFP4/BF16 paths never touch it.
@@ -251,22 +255,48 @@ impl TransformerModel {
 
         // MTP hidden state save buffer (1 × hidden_size FP32)
         let mtp_hidden_save = gpu.alloc(config.hidden_size * 4)?;
+        // Catch-up ring: 512 rows covers the gate's serial re-probe interval
+        // (256 tokens) with 2x margin; ~4 MB at hidden 4096. Only allocated
+        // when the staged feature is enabled.
+        let mtp_catchup_ring = if crate::speculative::mtp_catchup_enabled() {
+            gpu.alloc(super::types::MTP_CATCHUP_RING_ROWS * config.hidden_size * 2)?
+        } else {
+            DevicePtr::NULL
+        };
 
-        // ATLAS_MTP_DRAFTER_PREFILL: whole-prompt hidden capture buffer,
-        // [max_seq_len, hidden_size] BF16 — 335 MB at 32k/h=5120. Explicitly
-        // opt-in (PCND): NULL (and zero cost) unless the env is set and MTP
-        // is active. Sized to max_seq_len so an 8k+ prompt capture holds.
-        let mtp_prefill_hidden = if has_mtp && crate::layers::mtp_drafter_prefill_enabled() {
+        // Whole-prompt hidden capture buffer, [max_seq_len, hidden_size] BF16 —
+        // 335 MB at 32k/h=5120. Backs BOTH halves of the drafter-context
+        // feature (see `crate::model::drafter_context`); NULL here disables
+        // prefill AND carry, since the carry path reads this buffer.
+        //
+        // Three conditions, all necessary: MTP must be active, the feature must
+        // not be killed, and the head must be a precision the batched prefill
+        // can actually run at — an NVFP4/FP8 MTP head would allocate this and
+        // never write it.
+        let mtp_prefill_hidden = if has_mtp
+            && mtp_quant.supports_drafter_prefill()
+            && crate::layers::mtp_drafter_prefill_enabled()
+        {
             let bytes = max_seq_len * config.hidden_size * 2;
             tracing::info!(
-                "ATLAS_MTP_DRAFTER_PREFILL=1: allocating {:.0} MB prompt-hidden \
-                 capture ({} x {} BF16) for MTP drafter prefill",
+                "MTP drafter context: allocating {:.0} MB prompt-hidden capture \
+                 ({} x {} BF16)",
                 bytes as f64 / 1e6,
                 max_seq_len,
                 config.hidden_size,
             );
             gpu.alloc(bytes)?
         } else {
+            if has_mtp
+                && !mtp_quant.supports_drafter_prefill()
+                && crate::layers::mtp_drafter_prefill_enabled()
+            {
+                tracing::info!(
+                    "MTP drafter context: INACTIVE — the batched drafter prefill \
+                     needs a BF16 MTP head (--mtp-quantization bf16); this head is \
+                     {mtp_quant:?}. No prompt-hidden capture allocated.",
+                );
+            }
             DevicePtr::NULL
         };
 
@@ -494,6 +524,7 @@ impl TransformerModel {
             w4a16_gemv_batch4_kernel,
             w4a16_gemv_batch16_kernel,
             lmhead_batch_gemv,
+            w4a16_gemv_batch8_kernel,
             dense_gemv_fp8w_kernel,
             dense_gemv_fp8w_batch2_kernel,
             dense_gemm_kernel,
@@ -526,6 +557,8 @@ impl TransformerModel {
             profile_first_pending: std::sync::atomic::AtomicBool::new(profile_first),
             proposer,
             mtp_hidden_save,
+            mtp_catchup_ring,
+            mtp_catchup_meta: parking_lot::Mutex::new((0, 0)),
             mtp_prefill_hidden,
             mtp_prefill_capacity: if mtp_prefill_hidden.is_null() {
                 0
@@ -533,6 +566,8 @@ impl TransformerModel {
                 max_seq_len
             },
             mtp_prefill_capture_len: std::sync::atomic::AtomicUsize::new(0),
+            mtp_carry: parking_lot::Mutex::new(None),
+            mtp_store_range: parking_lot::Mutex::new((0, 0)),
             dflash_hidden_save,
             dflash_hidden_save_rows,
             dflash_capture_layers,

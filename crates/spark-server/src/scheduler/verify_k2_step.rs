@@ -186,7 +186,11 @@ pub fn step_verify_k2(
         // h_state, so the commit is a no-op.
         let t_commit = Instant::now();
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 2, 2) {
+            // An SSM-state commit error means the recurrent state is no longer
+            // trustworthy for this sequence. Continuing would emit
+            // coherent-looking tokens from poisoned state; terminate instead.
             tracing::error!("commit_accepted_prefix (accept): {e:#}");
+            a.finished = true;
             return;
         }
         mtp_timing::record(Phase::Commit, t_commit);

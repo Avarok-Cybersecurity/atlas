@@ -557,6 +557,12 @@ pub trait Model: Send + Sync {
     /// overwrites shared buffers including `norm_output`.
     fn save_hidden_for_mtp(&self, token_idx: usize, stream: u64) -> Result<()>;
 
+    /// ATLAS_MTP_CATCHUP: ring-capture a serially decoded token's final
+    /// hidden at `pos` for the drafter catch-up feed. Default no-op.
+    fn save_hidden_for_catchup(&self, _token_idx: usize, _pos: usize) -> Result<()> {
+        Ok(())
+    }
+
     /// Capture `hidden_states[token_idx]` from every DFlash capture layer
     /// into `dflash_hidden_save`. Called after gamma verify Phase 3 D2H
     /// sync (bonus position known). No-op when DFlash is disabled.
@@ -833,14 +839,6 @@ pub trait Model: Send + Sync {
         Ok(()) // No-op if no secondary stream.
     }
 
-    /// F62 (2026-04-27): copy canonical SSM state from `*_checkpoint` into
-    /// `*_state` BEFORE verify so the kernel can scratch-write it. Runs on
-    /// default_stream (FIFO ordering with the next kernel). No-op default
-    /// for non-MTP backends.
-    fn pre_verify_copy_async(&self, _seq: &mut SequenceState) -> Result<()> {
-        Ok(())
-    }
-
     /// Item #2 (STree-style in-place verify commit): commit the surviving
     /// prefix of a verify pass directly onto the canonical `h_state` /
     /// `conv_state`. Full accept (`num_accepted == k`) is a no-op (the
@@ -855,28 +853,6 @@ pub trait Model: Send + Sync {
         _k: usize,
     ) -> Result<()> {
         Ok(())
-    }
-
-    /// F62 (2026-04-27): commit a verify pass to the canonical SSM state.
-    /// `num_accepted ∈ [0, k]`: full accept → copy `h_state` → checkpoint;
-    /// partial → copy `h_state_intermediates[num_accepted-1]`; full reject →
-    /// no-op. Runs on secondary_stream; pair with `sync_secondary`.
-    fn commit_verify_state_async(
-        &self,
-        seq: &mut SequenceState,
-        num_accepted: usize,
-        k: usize,
-    ) -> Result<()> {
-        // Default: fall back to synchronous behavior compatible with the
-        // legacy NGram path. Backends without dual-buffer support use the
-        // pre-existing checkpoint/rollback machinery.
-        if num_accepted == k {
-            self.checkpoint_ssm_states(seq)
-        } else if num_accepted > 0 {
-            self.rollback_ssm_states(seq, num_accepted)
-        } else {
-            Ok(())
-        }
     }
 
     /// Save KV blocks + SSM state to writer. Does NOT free resources.

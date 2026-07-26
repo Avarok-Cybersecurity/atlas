@@ -79,10 +79,10 @@ extern "C" __global__ void dense_gemm_tc(
         // WMMA: A[16,16] × B^T[16,64] → C[16,64]. This warp does its 16×16 N-tile.
         v16bf a;
         #pragma unroll
-        for (int i = 0; i < 16; i++) a[i] = (__bf16)smem_A[lane_id & 15][i];
+        for (int i = 0; i < 16; i++) a[i] = (__bf16)(float)smem_A[lane_id & 15][i];
         v16bf b;
         #pragma unroll
-        for (int k = 0; k < 16; k++) b[k] = (__bf16)smem_B[k][n_warp_base + (lane_id & 15)];
+        for (int k = 0; k < 16; k++) b[k] = (__bf16)(float)smem_B[k][n_warp_base + (lane_id & 15)];
         acc = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc);
 
         __syncthreads();

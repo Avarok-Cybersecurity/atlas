@@ -133,6 +133,12 @@ impl TransformerModel {
         // PREVIOUS sequence's captured hiddens in the drafter prefill.
         self.mtp_prefill_capture_len
             .store(0, std::sync::atomic::Ordering::Relaxed);
+        // ATLAS_MTP_CARRY_DRAFTER: the position-indexed hidden interval is
+        // per-sequence by construction. Resetting it here is what makes the
+        // carry path immune to the latent cross-sequence stale-hidden bug that
+        // the legacy `captured >= prompt_len` guard still has: a warm-turn
+        // append can only ever read rows THIS sequence's prefill wrote.
+        *self.mtp_store_range.lock() = (0, 0);
 
         // Build layer states: SSM layers point into the pool (fixed addresses),
         // attention layers use their own alloc_state (EmptyLayerState).
