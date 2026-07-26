@@ -54,6 +54,34 @@ pub struct BeamReq {
     pub early_stopping: bool,
 }
 
+/// The multi-sequence batch padding ladder — the SSOT for `padded_n`.
+///
+/// Batched decode pads the live sequence count up to a small set of captured
+/// sizes so that (a) CUDA graphs (`ATLAS_DECODE_GRAPHS_MULTISEQ`) are keyed by
+/// a handful of stable shapes instead of one per exact n, and (b) the batched
+/// kernels see a bounded set of widths. Padding rows point at the dummy SSM
+/// slot / dummy KV block and cost one wasted lane each.
+///
+/// This expression used to be duplicated at FOUR call sites
+/// (`decode_a2.rs:168`, `decode_b.rs:52` and `:110`,
+/// `phase_continue_prefills.rs:142` — the last one in a different crate), which
+/// is exactly how the ladder would have drifted when a step was added. All four
+/// now call here.
+///
+/// `12` and `16` were added for the `C=[1,2,4,8,16]` concurrency work
+/// (2026-07-25): previously any n ≥ 9 fell through to `padded_n = n`, so at
+/// C=16 every distinct batch composition minted its OWN CUDA graph (n=9, 10,
+/// ... 16 each a separate capture) and the buffer-fit guards were computed on
+/// exact n. Above 16 the fall-through behaviour is unchanged.
+#[inline]
+pub fn padded_batch_n(n: usize) -> usize {
+    [2usize, 4, 8, 12, 16]
+        .iter()
+        .copied()
+        .find(|&s| s >= n)
+        .unwrap_or(n)
+}
+
 pub trait Model: Send + Sync {
     /// True when this model implements run-to-completion beam search
     /// ([`Self::generate_beam_batch`]). Default `false` — only encoder-decoder

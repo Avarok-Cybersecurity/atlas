@@ -43,7 +43,7 @@ impl StreamingToolDetector {
 
     /// Clear the per-tool-call incremental-streaming bookkeeping (called after
     /// each call closes and on `reset`). Does NOT touch `tools`/`buffer_args`.
-    fn reset_call_state(&mut self) {
+    pub(super) fn reset_call_state(&mut self) {
         self.current_tc_name = None;
         self.current_tc_id = None;
         self.current_tc_emitted = 0;
@@ -283,28 +283,13 @@ impl StreamingToolDetector {
                     outputs.push(DetectorOutput::Content(before));
                 }
                 continue;
-            } else if let Some(func_pos) = self.buffer.find("<function") {
-                // Bare <function> or <function= without <tool_call> wrapper.
-                // Emit content before it, then try to parse the function block.
-                if func_pos > 0 {
-                    let before = self.buffer[..func_pos].to_string();
-                    self.buffer = self.buffer[func_pos..].to_string();
-                    outputs.push(DetectorOutput::Content(before));
-                }
-                // Check if we have a complete bare function block
-                if let Some(end) = bare_function_end(&self.buffer) {
-                    let block = self.buffer[..end].to_string();
-                    self.buffer = self.buffer[end..].to_string();
-                    let (_, calls) = parse_bare_function_calls(&block);
-                    for tc in calls {
-                        let idx = self.call_counter as usize;
-                        self.call_counter += 1;
-                        self.emitted_tool_calls = true;
-                        outputs.push(DetectorOutput::ToolCall(tc, idx));
-                    }
+            } else if self.buffer.contains("<function") {
+                // Bare `<function>` / `<function=` without a `<tool_call>` wrapper.
+                // Body lives in `streaming_emit.rs` (≤500 LoC cap).
+                if self.process_bare_function(&mut outputs) {
                     continue;
                 }
-                break; // Keep buffering until function block is complete
+                break; // Wait for more tokens (closing `</function>` not yet seen)
             } else {
                 let safe = self.safe_emit_len();
                 if safe > 0 {

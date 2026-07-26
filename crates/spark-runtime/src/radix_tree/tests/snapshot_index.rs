@@ -273,3 +273,123 @@ fn reinsert_unspills() {
     // The entry is resident again at slot 5; the drop path can free it.
     assert_eq!(idx.evict_lru(), Some(5));
 }
+
+// ── SsmSnapshotIndex tests ──
+
+#[test]
+fn test_snapshot_index_insert_lookup_roundtrip() {
+    let mut idx = SsmSnapshotIndex::new();
+    let tokens: Vec<u32> = (0..32).collect();
+    let prefix_hash = super::hash_token_prefix(&tokens, 32, 0);
+
+    assert!(idx.insert(prefix_hash, 42, 100, 32).is_none());
+    let result = idx.lookup(&tokens, 32, 100, 0);
+    assert_eq!(result, Some((42, 32)));
+}
+
+#[test]
+fn test_snapshot_index_lru_eviction() {
+    let mut idx = SsmSnapshotIndex::new();
+    let tokens_a: Vec<u32> = (0..16).collect();
+    let tokens_b: Vec<u32> = (100..116).collect();
+    let ha = super::hash_token_prefix(&tokens_a, 16, 0);
+    let hb = super::hash_token_prefix(&tokens_b, 16, 0);
+
+    idx.insert(ha, 1, 0, 16); // older
+    idx.insert(hb, 2, 0, 16); // newer
+
+    // LRU eviction should evict snapshot 1 (older)
+    let evicted = idx.evict_lru();
+    assert_eq!(evicted, Some(1));
+    assert_eq!(idx.len(), 1);
+
+    // Only snapshot 2 remains
+    let evicted = idx.evict_lru();
+    assert_eq!(evicted, Some(2));
+    assert_eq!(idx.len(), 0);
+
+    // Empty
+    assert_eq!(idx.evict_lru(), None);
+}
+
+#[test]
+fn test_snapshot_index_session_isolation() {
+    // Encodes the POST-2026-07-16 session contract, which is deliberately
+    // asymmetric:
+    //
+    //  * PLAIN (non-tail) entries are content-addressed — a pure function of
+    //    the verified token prefix — and are therefore SAFE and INTENDED to be
+    //    shared across sessions. (The pre-fix version of this test asserted
+    //    they were session-gated; that was the OLD semantics, and gating them
+    //    would resurrect the cold-recompute cost the prefix cache exists to
+    //    avoid.)
+    //  * TAIL entries capture state that bleeds past their advertised
+    //    token_count (mid-chunk capture), so they are gated to their OWN
+    //    non-zero session — reusing another session's tail is exactly the
+    //    cross-request corruption that garbled BFCL tool calls (77.31 vs 84.54
+    //    normalized) before the fix in `lookup`.
+    let mut idx = SsmSnapshotIndex::new();
+    let tokens: Vec<u32> = (0..16).collect();
+    let prefix_hash = super::hash_token_prefix(&tokens, 16, 0);
+
+    // Plain insert for session 100: cross-session lookup MUST match — the
+    // entry is content-addressed and session-free by design.
+    idx.insert(prefix_hash, 42, 100, 16);
+    assert_eq!(idx.lookup(&tokens, 16, 200, 0), Some((42, 16)));
+    assert_eq!(idx.lookup(&tokens, 16, 100, 0), Some((42, 16)));
+    // Session-less lookups (single-turn requests hash to 0) also match plain
+    // entries.
+    assert_eq!(idx.lookup(&tokens, 16, 0, 0), Some((42, 16)));
+
+    // Re-home the same prefix as session 100's TAIL: now the session gate
+    // applies. Session 200 and session-less lookups must fall through to a
+    // recompute rather than restore another session's tail.
+    idx.insert_tail(prefix_hash, 43, 100, 16);
+    assert_eq!(idx.lookup(&tokens, 16, 200, 0), None);
+    assert_eq!(idx.lookup(&tokens, 16, 0, 0), None);
+    // The owning session still restores its own tail.
+    let result = idx.lookup(&tokens, 16, 100, 0);
+    assert_eq!(result, Some((43, 16)));
+}
+
+#[test]
+fn test_snapshot_index_overwrite_existing() {
+    let mut idx = SsmSnapshotIndex::new();
+    let tokens: Vec<u32> = (0..16).collect();
+    let prefix_hash = super::hash_token_prefix(&tokens, 16, 0);
+
+    // Insert first
+    assert!(idx.insert(prefix_hash, 5, 0, 16).is_none());
+    assert_eq!(idx.len(), 1);
+
+    // Overwrite same prefix_hash — returns old snapshot_id
+    let old = idx.insert(prefix_hash, 8, 0, 16);
+    assert_eq!(old, Some(5));
+    assert_eq!(idx.len(), 1); // still 1 entry, not 2
+
+    // Lookup returns new value
+    let result = idx.lookup(&tokens, 16, 0, 0);
+    assert_eq!(result, Some((8, 16)));
+}
+
+#[test]
+fn test_snapshot_index_deepest_match() {
+    let mut idx = SsmSnapshotIndex::new();
+    let tokens: Vec<u32> = (0..64).collect();
+
+    // Snapshot at token 16
+    let h16 = super::hash_token_prefix(&tokens, 16, 0);
+    idx.insert(h16, 10, 0, 16);
+
+    // Snapshot at token 32
+    let h32 = super::hash_token_prefix(&tokens, 32, 0);
+    idx.insert(h32, 20, 0, 32);
+
+    // Lookup with 48 matched tokens — deepest snapshot at 32 wins
+    let result = idx.lookup(&tokens, 48, 0, 0);
+    assert_eq!(result, Some((20, 32)));
+
+    // Lookup with 20 matched tokens — only snapshot at 16 qualifies
+    let result = idx.lookup(&tokens, 20, 0, 0);
+    assert_eq!(result, Some((10, 16)));
+}
