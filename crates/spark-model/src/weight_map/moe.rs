@@ -68,6 +68,7 @@ impl MoeWeights {
             shared_expert: null_expert,
             shared_expert_gate: null_dense,
             experts: vec![null_expert; num_experts],
+            packed_experts: None,
             router_pre_norm: None,
             correction_bias: None,
         }

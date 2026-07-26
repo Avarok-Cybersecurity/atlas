@@ -55,7 +55,11 @@ fn test_buffer_arena_alloc() {
     // plus 2 added by the Holo-3.1/Ornith GB10 enablement (buffers.rs):
     //   - fp8_act + fp8_act_scale (persistent FP8 prefill-projection scratch,
     //     allocated unconditionally). 27 + 2 = 29.
-    assert_eq!(gpu.alloc_count(), 29);
+    // plus 1 added by the keep-packed GGUF grouped MoE (06c89a33):
+    //   - moe_grouped_q8 (q8_1 activation scratch, moved into the arena so
+    //     CUDA-graph replay sees a stable address; allocated unconditionally).
+    //     29 + 1 = 30.
+    assert_eq!(gpu.alloc_count(), 30);
 }
 
 #[test]
