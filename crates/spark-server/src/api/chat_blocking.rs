@@ -170,7 +170,6 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
         };
 
         if state.request_tx.send(request).await.is_err() {
-            crate::metrics::REQUESTS_ACTIVE.dec();
             return super::chat::ChatOutcome::Http(openai_error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Scheduler queue full".to_string(),
@@ -180,14 +179,12 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
         let response = match rx.await {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => {
-                crate::metrics::REQUESTS_ACTIVE.dec();
                 return super::chat::ChatOutcome::Http(openai_error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Inference error: {e}"),
                 ));
             }
             Err(_) => {
-                crate::metrics::REQUESTS_ACTIVE.dec();
                 return super::chat::ChatOutcome::Http(openai_error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Inference cancelled".to_string(),
@@ -502,7 +499,7 @@ fn finalize_response(
         response_tokens_per_second: tokens_per_second,
     };
 
-    crate::metrics::REQUESTS_ACTIVE.dec();
+    // REQUESTS_ACTIVE released by the caller's ActiveRequestGuard on return.
     crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(prompt_len as u64);
     crate::metrics::GENERATION_TOKENS_TOTAL.inc_by(total_completion_tokens as u64);
     crate::metrics::TTFT_SECONDS.observe(first_ttft / 1000.0);

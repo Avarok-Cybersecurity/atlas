@@ -9,7 +9,7 @@ use super::ctx::StreamCtx;
 type DeltaVec = Vec<StreamDelta>;
 
 pub(super) fn handle_error(ctx: &StreamCtx, msg: String) -> DeltaVec {
-    crate::metrics::REQUESTS_ACTIVE.dec();
+    // REQUESTS_ACTIVE released by StreamCtx's ActiveRequestGuard on drop.
     // Abandoned stream — refund the full reservation.
     if let Some(ref rctx) = ctx.req_ctx {
         ctx.state
