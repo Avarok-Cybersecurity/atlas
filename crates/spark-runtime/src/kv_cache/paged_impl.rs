@@ -163,18 +163,10 @@ impl PagedKvCache {
         debug_assert!(idx < self.num_blocks);
         // Saturating, not wrapping: `debug_assert` is compiled out in release and
         // the workspace sets no `overflow-checks`, so a 0-ref decrement would wrap
-        // to u32::MAX and pin that block for the process lifetime — a silent,
-        // unrecoverable pool leak. Log loudly and refuse instead; an over-release
-        // is a refcount bug worth seeing, not worth crashing or corrupting for.
-        debug_assert!(
-            self.block_ref_counts[idx] > 0,
-            "dec_ref on block with 0 refs"
-        );
+        // to u32::MAX and pin the block for the process lifetime (silent leak).
+        debug_assert!(self.block_ref_counts[idx] > 0, "dec_ref on 0-ref block");
         if self.block_ref_counts[idx] == 0 {
-            tracing::error!(
-                "dec_ref on block {block_idx} with 0 refs — refcount bug \
-                 (ignoring; would otherwise wrap to u32::MAX and pin the block)"
-            );
+            tracing::error!("dec_ref on block {block_idx} with 0 refs — refcount bug");
             return false;
         }
         self.block_ref_counts[idx] -= 1;
@@ -203,19 +195,12 @@ impl PagedKvCache {
     pub fn return_evicted_block(&mut self, block_idx: u32) {
         let idx = block_idx as usize;
         debug_assert!(idx < self.num_blocks);
-        // Release exactly the prefix cache's OWN reference (the "+1" a cached
-        // block carries per sequence.rs `inc_ref` when the radix node is
-        // inserted), not every reference. Force-zeroing here freed blocks that
-        // an active sequence still held in its block_table whenever the radix
-        // ref-count and the KV pool ref-count had desynced (e.g. a warm prefill
-        // that matched a prefix then failed to allocate its suffix, or the
-        // sliding-window partial-cache path). alloc_block would then re-hand
-        // that still-live block to a new prefill and zero_block would memset it
-        // under a concurrent decode → aliased KV pointer → CUDA_ERROR_ILLEGAL_
-        // ADDRESS (700). Decrementing keeps a still-referenced block alive.
-        if self.block_ref_counts[idx] > 0 {
-            self.block_ref_counts[idx] -= 1;
-        }
+        // Release exactly the prefix cache's OWN "+1" (taken in sequence.rs when
+        // the radix node is inserted), not every reference. Force-zeroing freed
+        // blocks a live sequence still held whenever radix/KV refcounts desynced;
+        // alloc_block re-handed that block out and zero_block memset it under a
+        // concurrent decode → aliased KV pointer → CUDA-700.
+        self.block_ref_counts[idx] = self.block_ref_counts[idx].saturating_sub(1);
         if self.block_ref_counts[idx] == 0 {
             self.free_blocks.push(idx as u32);
         }
