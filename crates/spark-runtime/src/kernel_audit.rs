@@ -38,6 +38,23 @@ fn ptx_hash(bytes: &[u8]) -> String {
     format!("{:012x}", h & 0xffff_ffff_ffff)
 }
 
+/// Structured resolution rows for observers (e.g. the TUI kernel table):
+/// deduped `(module, func, loaded)`, sorted. `loaded` is true if ANY lookup
+/// of that (module, func) resolved.
+pub fn audit_rows() -> Vec<(String, String, bool)> {
+    let mut resolved: BTreeMap<(String, String), bool> = BTreeMap::new();
+    if let Ok(v) = AUDIT.lock() {
+        for (m, f, ok) in v.iter() {
+            let e = resolved.entry((m.clone(), f.clone())).or_insert(false);
+            *e = *e || *ok;
+        }
+    }
+    resolved
+        .into_iter()
+        .map(|((m, f), ok)| (m, f, ok))
+        .collect()
+}
+
 /// Render the embedded kernel set (`embedded` = the binary's `ptx_modules()`,
 /// passed in since spark-runtime doesn't depend on atlas-kernels) plus the
 /// runtime resolution overlay. `set_hash` is `atlas_kernels::KERNEL_SET_HASH`.

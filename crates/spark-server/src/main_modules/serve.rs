@@ -22,9 +22,28 @@ use crate::{
     session_manager,
 };
 
-pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
+pub(crate) async fn serve(
+    mut args: cli::ServeArgs,
+    tui_progress: Option<std::sync::mpsc::Receiver<crate::tui::capture_layer::ProgressEvent>>,
+) -> Result<()> {
     tracing::info!("Atlas Spark starting...");
     tracing::info!("Licensed under AGPL-3.0-only — see /LICENSE in this container");
+    spark_runtime::progress::phase(0, "banner");
+
+    // Clean shutdown: SIGINT/SIGTERM now request a drain-and-exit instead of
+    // killing the process mid-write. In TUI mode Ctrl+C additionally arrives
+    // as a key event (raw mode) and calls the same request().
+    crate::tui::shutdown::install_signal_listeners();
+
+    // Start the dashboard thread as early as possible so the operator watches
+    // the load, not a blank screen. Everything it reads is process-global
+    // (log ring, progress channel, metrics, scheduler snapshot) plus this
+    // args snapshot for the badge chips. Head node only.
+    if let Some(progress_rx) = tui_progress
+        && args.rank == 0
+    {
+        crate::tui::start(args.clone(), progress_rx);
+    }
 
     // Reject contradictory flag combinations up front (issue #288) — before the
     // multi-minute model load — with a message that tells humans and AI agents
@@ -34,6 +53,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     }
 
     // 0. Resolve model directory from HF ID or path
+    spark_runtime::progress::phase(1, "model resolve");
     let model_dir = serve_phases::resolve_model_dir(&args)?;
 
     tracing::info!("Port: {}", args.port);
@@ -41,6 +61,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     tracing::info!("SSM decode dtype: f32 (full precision)");
 
     // 1. Load model config (supports HF config.json and Mistral params.json)
+    spark_runtime::progress::phase(2, "config");
     let (mut config, config_json) = serve_phases::load_model_config(&model_dir)?;
 
     // CLI `--lm-head-dtype` override (replaces ATLAS_LMHEAD_BF16). Validate eagerly (PCND).
@@ -93,6 +114,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     );
 
     // 2. Select kernel target and initialize GPU backend
+    spark_runtime::progress::phase(3, "gpu init");
     //
     // Each kernel target declares which (model_type, hidden_size) pairs it supports
     // via [[model_types]] in MODEL.toml. Exact hidden_size matches win over wildcards.
@@ -197,6 +219,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     tracing::info!("OOM watchdog started (threshold: 2 GB, interval: 2s)");
 
     // 2b. Resolve TP / EP topology and set on model config.
+    spark_runtime::progress::phase(4, "topology");
     let serve_phases::Topology {
         world_size,
         tp_size: _tp_size,
@@ -212,6 +235,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     };
 
     // 3. Load model weights
+    spark_runtime::progress::phase(5, "weight load");
     let oom_reserve_bytes = args.oom_guard_mb * 1024 * 1024;
     tracing::info!("OOM guard reserve: {} MB", args.oom_guard_mb);
     let store = serve_phases::load_weight_store(
@@ -278,6 +302,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     )?;
 
     // 5. Build model via factory.
+    spark_runtime::progress::phase(6, "kv cache");
     let serve_phases::PrefillBudget {
         prefill_budget,
         max_batch_tokens,
@@ -459,6 +484,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // (handle 0 → silent slower-fallback dispatch). Catches build/codegen
     // regressions like a dropped pipelined GEMM at load time, not as a
     // mystery slowdown.
+    spark_runtime::progress::phase(7, "kernel audit");
     tracing::info!(
         "{}",
         spark_runtime::kernel_audit::render_kernel_table(
@@ -508,6 +534,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     } = serve_phases::load_sampling_defaults(&model_dir, &args);
 
     // 6. Load tokenizer
+    spark_runtime::progress::phase(8, "tokenizer");
     // Thinking support is derived from model capabilities, not hardcoded model names.
     // Models with SSM layers or Qwen3.5-style architecture support <think> tokens.
     // The --enable-thinking flag controls OPEN-ENDED vs CLOSED thinking.
@@ -545,6 +572,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     );
 
     // 7. Create scheduler channel + spawn scheduler
+    spark_runtime::progress::phase(9, "scheduler");
     let (request_tx, request_rx) = mpsc::channel::<InferenceRequest>(args.max_num_seqs);
     // LoRA adapter-rotation control channel (POST /v1/lora/active). Small: it
     // carries only control messages, applied one-at-a-time at quiescence.

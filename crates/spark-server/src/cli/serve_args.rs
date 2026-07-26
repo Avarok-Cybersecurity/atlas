@@ -7,7 +7,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 /// Arguments for the `serve` subcommand.
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 pub struct ServeArgs {
     /// HuggingFace model ID (e.g. "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4")
     /// or a local directory path containing config.json.
@@ -457,6 +457,12 @@ pub struct ServeArgs {
     /// Setting `ATLAS_FAST_LOAD=0` has the same effect.
     #[arg(long, default_value_t = false)]
     pub no_fast_load: bool,
+
+    /// Disable the interactive TUI dashboard even on a TTY, keeping the plain
+    /// log stream. The TUI also auto-disables when stdout/stdin is not an
+    /// interactive terminal (pipes, `docker -d`, CI) or `ATLAS_NO_TUI=1`.
+    #[arg(long, default_value_t = false)]
+    pub no_tui: bool,
 
     /// Ask the fast loader to prefetch each buffered shard before per-tensor
     /// reads. Useful on NFS-backed model stores with many small tensors per

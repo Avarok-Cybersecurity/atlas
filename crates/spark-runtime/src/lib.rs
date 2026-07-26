@@ -34,6 +34,7 @@ pub mod kv_spill;
 #[cfg(feature = "metal")]
 pub mod metal_backend;
 pub mod prefix_cache;
+pub mod progress;
 pub mod radix_tree;
 pub mod sampler;
 pub mod weights;
