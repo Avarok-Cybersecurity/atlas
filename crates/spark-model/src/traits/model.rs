@@ -68,7 +68,7 @@ pub struct BeamReq {
 /// is exactly how the ladder would have drifted when a step was added. All four
 /// now call here.
 ///
-/// `12` and `16` were added for the C=[1,2,4,8,16] concurrency work
+/// `12` and `16` were added for the `C=[1,2,4,8,16]` concurrency work
 /// (2026-07-25): previously any n ≥ 9 fell through to `padded_n = n`, so at
 /// C=16 every distinct batch composition minted its OWN CUDA graph (n=9, 10,
 /// ... 16 each a separate capture) and the buffer-fit guards were computed on
