@@ -134,6 +134,11 @@ impl Qwen3AttentionLayer {
 
     /// Set per-layer scalar (Gemma-4: hidden_states *= scalar at end of
     /// layer).
+    /// Remap only the KV pool index (MTP private single-layer cache).
+    pub fn set_kv_layer_idx(&mut self, idx: usize) {
+        self.kv_layer_idx = idx;
+    }
+
     pub fn set_layer_scalar(&mut self, scalar: f32) {
         self.layer_scalar = Some(scalar);
     }

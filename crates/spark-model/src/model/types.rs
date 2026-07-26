@@ -140,6 +140,9 @@ pub struct TransformerModel {
     /// Size: hidden_size * 4 bytes (one FP32 vector). MTP overwrites shared
     /// buffers (norm_output etc.), so the target hidden must be saved here first.
     pub(super) mtp_hidden_save: DevicePtr,
+    /// Multi-stream residual after last main block [hc_mult, H] F32 for V4 MTP.
+    /// Null when hc_mult==0.
+    pub(super) mtp_streams_save: DevicePtr,
     /// ATLAS_MTP_CATCHUP: circular per-position final-hidden ring captured
     /// during serial-decode stretches (BF16 rows, slot = position % ring
     /// len). Feeds the drafter catch-up on the next propose. NULL when the

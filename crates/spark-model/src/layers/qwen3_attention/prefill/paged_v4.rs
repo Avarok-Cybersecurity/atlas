@@ -371,35 +371,27 @@ impl Qwen3AttentionLayer {
         // wo_a is block-diagonal over o_groups (DeepseekV4GroupedLinear): each
         // group_in slice of the attention output projects independently to o_lora,
         // giving an o_groups*o_lora latent that wo_b mixes back to hidden_size.
-        // Per-token×group GEMVs avoid the strided-input limitation of dense_gemm;
+        // grouped_gemm_mla processes every token/group row in one launch.
         // wo_b stays a single GEMM since o_latent is contiguous [n, latent_dim].
         let o_groups = ctx.config.o_groups.max(1) as u32;
         let group_in = (nq * hd_mla) / o_groups;
         let latent_dim = o_groups * o_lora;
         let o_latent = ctx.buffers.o_latent();
         let o_out = ctx.buffers.qkv_output();
-        for t in 0..n {
-            for g in 0..o_groups {
-                let in_g = attn_out.offset(((t * nq * hd_mla) + g * group_in) as usize * 2);
-                let w_g = crate::weight_map::DenseWeight {
-                    weight: mla
-                        .wo_a
-                        .weight
-                        .offset((g as usize) * (o_lora as usize) * (group_in as usize) * 2),
-                };
-                let out_g = o_latent.offset(((t * latent_dim) + g * o_lora) as usize * 2);
-                ops::dense_gemv(
-                    ctx.gpu,
-                    self.dense_gemv_k,
-                    in_g,
-                    &w_g,
-                    out_g,
-                    o_lora,
-                    group_in,
-                    stream,
-                )?;
-            }
-        }
+        ops::grouped_gemm_mla(
+            ctx.gpu,
+            self.grouped_gemm_mla_k,
+            attn_out,
+            mla.wo_a.weight,
+            o_latent,
+            n,
+            o_groups,
+            group_in,
+            o_lora,
+            nq * hd_mla,
+            latent_dim,
+            stream,
+        )?;
         ops::dense_gemm(
             ctx.gpu,
             self.dense_gemm_k,

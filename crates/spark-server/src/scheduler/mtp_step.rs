@@ -43,6 +43,62 @@ pub fn step_mtp(
     for &idx in &bootstrap_idxs {
         let a = &mut active[idx];
 
+        // Model-native V4 prompt bootstrap: the prefill pass has already
+        // built MTP KV for target rows 0..P-2 and saved target row P-1.
+        // Pair the first sampled token with that final prompt row immediately,
+        // then verify [first_token, draft] in one K2 target sweep. This matches
+        // vLLM's shifted-input MTP prefill and avoids Atlas's old standalone
+        // decode bootstrap, which skipped the final prompt pair.
+        //
+        // The sequence-length guard makes this first-bootstrap-only. Later
+        // empty-draft states still use the serial recovery path below.
+        let v4_prompt_bootstrap = !dflash_verify_raw_argmax
+            && std::env::var("ATLAS_V4_MTP_PROMPT_PREFILL").ok().as_deref() == Some("1")
+            && a.seq.seq_len == a.seq.prompt_len;
+        if v4_prompt_bootstrap && crate::scheduler::adaptive_spec::spec_allowed(a) {
+            let eff = crate::scheduler::spec_step::effective_drafts_under_grammar(a, num_drafts);
+            let grammar_mask = mtp_grammar_mask_for(a);
+            match model.run_mtp_propose_multi(
+                a.last_token,
+                a.seq.seq_len,
+                eff,
+                &mut a.seq,
+                0,
+                grammar_mask.as_deref(),
+            ) {
+                Ok(init) if !init.is_empty() => {
+                    if eff >= 2 && init.len() >= 2 {
+                        step_verify_k3(
+                            model,
+                            a,
+                            &init,
+                            num_drafts,
+                            verify_ctx,
+                            dflash_verify_raw_argmax,
+                        );
+                    } else {
+                        step_verify_k2(
+                            model,
+                            a,
+                            &init,
+                            num_drafts,
+                            verify_ctx,
+                            dflash_verify_raw_argmax,
+                        );
+                    }
+                    continue;
+                }
+                Ok(_) => tracing::warn!(
+                    "V4 prompt bootstrap propose returned empty; \
+                     falling back to standalone decode"
+                ),
+                Err(e) => tracing::error!(
+                    "V4 prompt bootstrap propose failed; \
+                     falling back to standalone decode: {e:#}"
+                ),
+            }
+        }
+
         // DFlash path: skip the standalone M=1 decode. The fused pass already
         // computes every position's logit in one weight sweep, so the "next
         // decoded token" is the bonus token at result[num_accepted] — the logit

@@ -52,6 +52,7 @@ impl TransformerModel {
         max_batch_size: usize,
         mtp_quant: crate::layers::MtpQuantization,
         use_speculative: bool,
+        has_postconstructed_mtp: bool,
         prefix_cache: Box<dyn spark_runtime::prefix_cache::PrefixCache>,
         mtp_vocab_size: u32,
         comm: Option<std::sync::Arc<dyn spark_comm::CommBackend>>,
@@ -148,6 +149,7 @@ impl TransformerModel {
         let draft_lm_head_nvfp4 = mtp_lm_head_nvfp4.or(lm_head_nvfp4);
         let has_mtp = self_speculative
             || (use_speculative && !mtp_weights.is_empty() && draft_lm_head_nvfp4.is_some())
+            || (use_speculative && has_postconstructed_mtp)
             || dflash_kgamma > 0;
         let num_intermediates = if has_mtp {
             (num_drafts + 1).max(dflash_kgamma)
@@ -248,6 +250,11 @@ impl TransformerModel {
 
         // MTP hidden state save buffer (1 × hidden_size FP32)
         let mtp_hidden_save = gpu.alloc(config.hidden_size * 4)?;
+        let mtp_streams_save = if config.hc_mult > 0 {
+            gpu.alloc(config.hc_mult * config.hidden_size * 4)?
+        } else {
+            DevicePtr::NULL
+        };
         // Catch-up ring: 512 rows covers the gate's serial re-probe interval
         // (256 tokens) with 2x margin; ~4 MB at hidden 4096. Only allocated
         // when the staged feature is enabled.
@@ -548,6 +555,7 @@ impl TransformerModel {
             profile_first_pending: std::sync::atomic::AtomicBool::new(profile_first),
             proposer,
             mtp_hidden_save,
+            mtp_streams_save,
             mtp_catchup_ring,
             mtp_catchup_meta: parking_lot::Mutex::new((0, 0)),
             mtp_prefill_hidden,
