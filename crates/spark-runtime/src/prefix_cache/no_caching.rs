@@ -4,7 +4,7 @@
 //!
 //! Split out of `prefix_cache.rs` to keep it under the repo's 500-LoC cap.
 
-use super::{EvictedBlocks, PrefixCache, PrefixMatch};
+use super::{EvictedBlocks, InsertAcquired, PrefixCache, PrefixMatch};
 
 /// No-op prefix cache (zero overhead when disabled).
 pub struct NoPrefixCaching;
@@ -32,8 +32,8 @@ impl PrefixCache for NoPrefixCaching {
         _block_size: usize,
         _matched_tokens: usize,
         _adapter_id: u64,
-    ) -> Vec<u32> {
-        Vec::new()
+    ) -> InsertAcquired {
+        InsertAcquired::default()
     }
 
     fn insert_with_snapshot(
@@ -46,8 +46,8 @@ impl PrefixCache for NoPrefixCaching {
         _session_hash: u64,
         _matched_tokens: usize,
         _adapter_id: u64,
-    ) -> (Option<usize>, Vec<u32>) {
-        (None, Vec::new())
+    ) -> (Option<usize>, InsertAcquired) {
+        (None, InsertAcquired::default())
     }
 
     fn insert_intermediate_snapshot(

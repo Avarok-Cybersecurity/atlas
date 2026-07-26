@@ -286,7 +286,7 @@ impl RadixTreeInner {
         block_size: usize,
         matched_tokens: usize,
         adapter_id: u64,
-    ) -> Vec<u32> {
+    ) -> crate::prefix_cache::InsertAcquired {
         let access = self.next_access();
         let root_id = self.root_for_insert(adapter_id);
         let mut current = root_id;
@@ -311,6 +311,9 @@ impl RadixTreeInner {
         // Re-insertion of an already-cached (node, disk_id) pair is NOT an
         // acquisition — the cache's ref already covers it.
         let mut newly_acquired: Vec<u32> = Vec::new();
+        // Physical blocks of nodes CREATED below. The cache's single KV ref per
+        // node is taken on exactly these — see `InsertAcquired`.
+        let mut newly_owned_blocks: Vec<u32> = Vec::new();
 
         for i in 0..num_blocks {
             let chunk = &tokens[i * block_size..(i + 1) * block_size];
@@ -360,6 +363,7 @@ impl RadixTreeInner {
                     partial_suffix: None,
                 };
                 let child_id = self.alloc_node(node);
+                newly_owned_blocks.push(block_table[i]);
                 self.nodes[current]
                     .children
                     .insert(chunk.to_vec(), child_id);
@@ -394,7 +398,10 @@ impl RadixTreeInner {
             }
         }
 
-        newly_acquired
+        crate::prefix_cache::InsertAcquired {
+            disk_block_ids: newly_acquired,
+            blocks: newly_owned_blocks,
+        }
     }
 
     /// Evict up to `num_blocks` LRU zero-ref leaf nodes.

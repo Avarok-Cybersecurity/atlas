@@ -114,6 +114,28 @@ pub(crate) fn cache_acquires_disk_refs(newly_acquired: &[u32]) {
     }
 }
 
+/// Apply BOTH ref obligations reported by a `prefix_cache.insert*` call: the
+/// disk-side refs and the cache's own KV ref on every block whose radix node
+/// this insert created.
+///
+/// The KV half must be taken here, against the blocks the CACHE stored, rather
+/// than later against the finishing sequence's `block_table`: a node that
+/// already existed keeps its original block, so the sequence's block at that
+/// position can be a different one entirely (no cache hit, or a swap-file
+/// restore). Referencing the sequence's block left the node's block
+/// unreferenced, and evicting that node then stole a live sequence's ref —
+/// freeing a block still in use and handing it to a second owner. See
+/// `InsertAcquired`.
+pub(crate) fn cache_acquires_refs(
+    acquired: &spark_runtime::prefix_cache::InsertAcquired,
+    kv_cache: &mut PagedKvCache,
+) {
+    cache_acquires_disk_refs(&acquired.disk_block_ids);
+    for &block in &acquired.blocks {
+        kv_cache.inc_ref(block);
+    }
+}
+
 /// Phase 6.1.e: bump disk-side refcounts for blocks reused from a prefix-cache
 /// hit, and push the disk_block_ids onto the sequence's history. The cache's
 /// own ref keeps these slots alive across eviction; we add the seq's ref so

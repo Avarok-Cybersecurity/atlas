@@ -173,7 +173,7 @@ impl TransformerModel {
             end_token,
             seq.adapter_id,
         );
-        super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+        super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
         if let Some(old) = self.prefix_cache.insert_intermediate_snapshot(
             boundary_tokens,
             boundary_blocks,

@@ -326,7 +326,7 @@ impl TransformerModel {
                     seq.cached_prefix_tokens.min(cache_tokens_len),
                     seq.adapter_id,
                 );
-                super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+                super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
             }
         } else if self.ssm_snapshots.is_enabled() {
             if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
@@ -400,7 +400,7 @@ impl TransformerModel {
                         seq.cached_prefix_tokens,
                         seq.adapter_id,
                     );
-                    super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+                    super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
                     if let Some(old) = displaced {
                         self.ssm_snapshots.free(old);
                     }
@@ -414,7 +414,7 @@ impl TransformerModel {
                     seq.cached_prefix_tokens,
                     seq.adapter_id,
                 );
-                super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+                super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
             }
         } else if !self.tokens_have_vision_pad(tokens) {
             let acquired = self.prefix_cache.insert(
@@ -425,7 +425,7 @@ impl TransformerModel {
                 seq.cached_prefix_tokens,
                 seq.adapter_id,
             );
-            super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+            super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
         }
 
         // DFlash: advance ctx_len after the LAST chunk of chunked prefill.
