@@ -121,6 +121,13 @@ pub struct SequenceState {
     /// the scheduler to populate `usage.prompt_tokens_details.cached_tokens`.
     /// 0 when prefix caching is disabled or the prompt had no cache match.
     pub cached_prefix_tokens: usize,
+    /// Number of `block_table` entries that came FROM the prefix cache on this
+    /// sequence's lookup (`matched_blocks.len()`). The cache already holds its
+    /// own "+1" KV ref on each of those blocks, and eviction returns exactly ONE
+    /// ref per radix node — so re-bumping them in `cache_sequence` would add a
+    /// ref nothing can ever release, permanently pinning the whole reused prefix
+    /// on every warm turn until the pool wedges. 0 when there was no cache hit.
+    pub cached_prefix_blocks: usize,
     /// The matched prefix token IDs (`tokens[..cached_prefix_tokens]`) stashed
     /// at prefix-lookup time. `free_sequence` releases the prefix cache's radix
     /// refs over these when `tokens` is too short to cover the prefix — i.e. a

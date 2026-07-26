@@ -180,6 +180,7 @@ impl Model for NllbGpuModel {
             session_hash: 0,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
+            cached_prefix_blocks: 0,
             prefix_ref_tokens: Vec::new(),
             kv_valid_tokens: 0,
             last_decode_ckpt_block: 0,

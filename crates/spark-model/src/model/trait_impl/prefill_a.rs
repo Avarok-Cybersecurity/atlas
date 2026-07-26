@@ -86,6 +86,7 @@ impl TransformerModel {
         };
         let mut kv_write_start = prefix_match.matched_tokens;
         seq.cached_prefix_tokens = prefix_match.matched_tokens;
+        seq.cached_prefix_blocks = prefix_match.matched_blocks.len();
         // Record the original prompt length — cache_sequence() uses it later
         // to avoid double-bumping ref_counts on the prompt portion.
         seq.prompt_len = n;

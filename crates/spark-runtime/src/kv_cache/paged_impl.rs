@@ -161,10 +161,22 @@ impl PagedKvCache {
     pub fn dec_ref(&mut self, block_idx: u32) -> bool {
         let idx = block_idx as usize;
         debug_assert!(idx < self.num_blocks);
+        // Saturating, not wrapping: `debug_assert` is compiled out in release and
+        // the workspace sets no `overflow-checks`, so a 0-ref decrement would wrap
+        // to u32::MAX and pin that block for the process lifetime — a silent,
+        // unrecoverable pool leak. Log loudly and refuse instead; an over-release
+        // is a refcount bug worth seeing, not worth crashing or corrupting for.
         debug_assert!(
             self.block_ref_counts[idx] > 0,
             "dec_ref on block with 0 refs"
         );
+        if self.block_ref_counts[idx] == 0 {
+            tracing::error!(
+                "dec_ref on block {block_idx} with 0 refs — refcount bug \
+                 (ignoring; would otherwise wrap to u32::MAX and pin the block)"
+            );
+            return false;
+        }
         self.block_ref_counts[idx] -= 1;
         if self.block_ref_counts[idx] == 0 {
             self.free_blocks.push(block_idx);

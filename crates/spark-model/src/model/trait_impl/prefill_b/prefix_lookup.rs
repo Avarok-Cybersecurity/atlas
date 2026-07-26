@@ -84,6 +84,7 @@ impl TransformerModel {
             }
             let matched = prefix_match.matched_tokens;
             seq.cached_prefix_tokens = matched;
+            seq.cached_prefix_blocks = prefix_match.matched_blocks.len();
             // Stash the matched prefix so `free_sequence` can release the radix
             // refs the lookup just bumped even if this prefill fails to allocate
             // its suffix before `seq.tokens` is populated (else those nodes leak

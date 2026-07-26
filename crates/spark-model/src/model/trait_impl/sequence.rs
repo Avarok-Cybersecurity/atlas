@@ -92,7 +92,18 @@ impl TransformerModel {
                 // Eviction (return_evicted_block) releases these refs when nodes are removed.
                 let mut kv = self.kv_cache.lock();
                 let num_cached_blocks = (seq.tokens.len() / bs).min(seq.block_table.len());
-                for &block_idx in &seq.block_table[..num_cached_blocks] {
+                // Skip the leading blocks that came FROM the cache on this
+                // sequence's lookup: the cache already owns a "+1" on each, taken
+                // when they were first cached, and it gives back exactly ONE ref
+                // per radix node when that node is evicted. Re-bumping them here
+                // is a 1:N imbalance — every warm turn adds a ref no eviction can
+                // ever release, so reused prefixes accumulate until the block pool
+                // is permanently wedged (small requests still fit, large prefills
+                // fail with "no free blocks" until restart). The matched nodes are
+                // guaranteed to still hold their cache ref here: lookup's inc_refs
+                // put them at ref>=2 and eviction only takes nodes at ref<=1.
+                let skip = seq.cached_prefix_blocks.min(num_cached_blocks);
+                for &block_idx in &seq.block_table[skip..num_cached_blocks] {
                     kv.inc_ref(block_idx);
                 }
             }
