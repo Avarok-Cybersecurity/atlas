@@ -114,7 +114,7 @@ PY
       2>&1 | tail -40 | tee "$OUT/$leg.bfcl.log"
   cp "$HARNESS/$RD/report.txt" "$OUT/$leg.bfcl.report.txt" 2>/dev/null
 
-  sudo docker logs atlas-mcg 2>&1 | grep -aciE 'midchunk' > "$OUT/$leg.midchunk_hits.txt" || true
+  sudo docker logs atlas-mcg 2>&1 | grep -c -aiE 'midchunk' > "$OUT/$leg.midchunk_hits.txt" || true
   sudo docker rm -f atlas-mcg >/dev/null 2>&1
 done
 

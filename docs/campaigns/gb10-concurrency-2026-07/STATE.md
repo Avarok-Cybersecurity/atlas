@@ -41,3 +41,9 @@
   max_blocks_per_seq metadata and KV expectations for no benefit). nd=3 kept for C=1 K=4 fairness.
 51fc31d43a6e59aec8e9eaced56a02b2  conc_sweep/spark_phaseB
 5048fa13d69c2870420a8b9050f54221  conc_sweep/spark_phaseA_baseline
+- 2026-07-25T22:10:42Z LEG atlas_synth DONE -> results/atlas_synth.json
+- 2026-07-25T22:10:46Z PHASE A compare written -> results/compare.txt
+- 2026-07-25T22:10:46Z PHASEA_DONE
+- 2026-07-26T00:40:49Z LEG atlasB_nographs DONE -> results/atlasB_nographs.json
+- 2026-07-26T02:57:30Z LEG atlasB_graphs DONE -> results/atlasB_graphs.json
+- 2026-07-26T02:57:34Z PHASEB_DONE
