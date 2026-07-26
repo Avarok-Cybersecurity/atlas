@@ -419,3 +419,45 @@ fn test_vision_pad_tokens_are_image_blind_collision() {
     );
     assert_eq!(m.matched_blocks, vec![10, 20]);
 }
+
+/// The cache must own a KV ref on a `partial_suffix` block, not just on full
+/// blocks. It previously owned none, while `walk` still handed the block out
+/// (no liveness check) and `evict` still handed it back — so once the inserting
+/// sequence freed it, the block sat at 0 refs on the free list with a live node
+/// pointing at it. Each later matching request then took it 0->1 while it was
+/// still free and dropped it 1->0 again, pushing DUPLICATE free-list entries and
+/// handing one block to several sequences. Seen on the agentic bench as a single
+/// block underflowing 56 times.
+#[test]
+fn test_partial_suffix_block_is_owned_and_released() {
+    let tree = RadixTree::new();
+    // 20 tokens @ bs=16 => 1 full block (10) + a 4-token partial (11).
+    let tokens: Vec<u32> = (0..20).collect();
+    let acquired = tree.insert(&tokens, &[10, 11], &[], 16, 0, 0);
+    assert!(
+        acquired.blocks.contains(&11),
+        "cache must take a ref on the partial-suffix block; got {:?}",
+        acquired.blocks
+    );
+    assert!(acquired.blocks.contains(&10), "and on the full block");
+    assert!(acquired.released_blocks.is_empty());
+
+    // Re-inserting the SAME partial block must not re-acquire it.
+    let again = tree.insert(&tokens, &[10, 11], &[], 16, 0, 0);
+    assert!(
+        !again.blocks.contains(&11),
+        "re-insert must not double-ref the partial block; got {:?}",
+        again.blocks
+    );
+
+    // Overwriting the slot with a DIFFERENT block acquires the new one and
+    // releases the old, so the displaced block cannot be pinned forever.
+    let other: Vec<u32> = (0..16).chain(90..94).collect();
+    let swapped = tree.insert(&other, &[10, 12], &[], 16, 0, 0);
+    assert!(swapped.blocks.contains(&12), "new partial block acquired");
+    assert_eq!(
+        swapped.released_blocks,
+        vec![11],
+        "displaced partial block released"
+    );
+}
