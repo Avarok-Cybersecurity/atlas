@@ -97,6 +97,8 @@ pub struct DenseFfnLayer {
     w4a16_gemv_batch3: KernelHandle,
     /// M<=4 batched GEMV (K=4 verify FFN); 0-handle when absent.
     w4a16_gemv_batch4: KernelHandle,
+    /// M<=8 batched GEMV (chain-verify K=5..8 FFN); 0-handle when absent.
+    w4a16_gemv_batch8: KernelHandle,
     w4a16_gemm: KernelHandle,
     // 128x128 2-stage cp.async pipelined w4a16 GEMM — the fast prefill kernel
     // attention/SSM already use. The base `w4a16_gemm` (M64xN64) only hits
@@ -270,6 +272,7 @@ impl DenseFfnLayer {
             w4a16_gemv_batch2: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
             w4a16_gemv_batch3: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch3")?,
             w4a16_gemv_batch4: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
+            w4a16_gemv_batch8: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
             w4a16_gemm: gpu.kernel("w4a16", "w4a16_gemm")?,
             w4a16_gemm_t_m128_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128"),
             w4a16_gemm_t_m128_v2_k: super::try_kernel(gpu, "w4a16_v2", "w4a16_gemm_t_m128_v2"),
@@ -1105,46 +1108,65 @@ impl DenseFfnLayer {
         Ok(())
     }
 
-    /// Whether the K=4 batched-GEMV verify path is available (batch4 kernel
-    /// present AND NVFP4 weights loaded — the batchm GEMV reads the
-    /// non-transposed NVFP4 layout).
-    pub fn can_forward_k4(&self) -> bool {
-        self.w4a16_gemv_batch4.0 != 0 && !self.weights.gate_proj.weight.is_null()
+    /// Batchm-GEMV kernel for `m` verify rows: batch4 (m<=4) or batch8
+    /// (m=5..8, chain verify). 0-handle when out of range or absent.
+    fn batchm_kernel(&self, m: u32) -> KernelHandle {
+        match m {
+            1..=4 => self.w4a16_gemv_batch4,
+            5..=8 => self.w4a16_gemv_batch8,
+            _ => KernelHandle(0),
+        }
     }
 
-    /// K=4 speculative verify: batched GEMV for 4 tokens.
-    /// 4 launches: batch4 gate + batch4 up + silu_mul + batch4 down — each
-    /// projection weight is read ONCE for all 4 rows at near-peak stream
-    /// bandwidth. nsys (2026-07-18): the `forward_prefill` MMQ arm this
+    /// Whether the M-row batched-GEMV verify path is available for `m` rows
+    /// (batchm kernel present AND NVFP4 weights loaded — the batchm GEMV
+    /// reads the non-transposed NVFP4 layout).
+    pub fn can_forward_km(&self, m: u32) -> bool {
+        self.batchm_kernel(m).0 != 0 && !self.weights.gate_proj.weight.is_null()
+    }
+
+    /// K=m (m<=8) speculative verify: batched GEMV for m tokens.
+    /// 4 launches: batchm gate + batchm up + silu_mul + batchm down — each
+    /// projection weight is read ONCE for all m rows at near-peak stream
+    /// bandwidth. nsys (2026-07-18, M=4): the `forward_prefill` MMQ arm this
     /// replaces for the K=4 verify cost 54.8 ms/step across the 64-layer
     /// dense FFN stack (~156 GB/s effective at M=4); the batch GEMV family
     /// measures ~290 GB/s on the same shapes (w8a16_gemv_batch4 sibling),
-    /// putting this path at the ~31 ms weight-traffic floor.
-    pub fn forward_k4(&self, input: DevicePtr, ctx: &ForwardContext, stream: u64) -> Result<()> {
+    /// putting this path at the ~31 ms weight-traffic floor. m=5..8 uses
+    /// `w4a16_gemv_batch8` (batchm_bench: same weight-streaming bandwidth,
+    /// removing the M>4 tile-GEMM cliff for chain-verify K=5..8).
+    pub fn forward_km(
+        &self,
+        input: DevicePtr,
+        m: u32,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
         let h = ctx.config.hidden_size as u32;
         let inter = ctx.config.intermediate_size as u32;
+        let kh = self.batchm_kernel(m);
 
         let gate_out = ctx.buffers.expert_gate_out();
         let up_out = ctx.buffers.expert_up_out();
 
         ops::w4a16_gemv_batchm(
             ctx.gpu,
-            self.w4a16_gemv_batch4,
+            kh,
             input,
             &self.weights.gate_proj,
             gate_out,
-            4,
+            m,
             inter,
             h,
             stream,
         )?;
         ops::w4a16_gemv_batchm(
             ctx.gpu,
-            self.w4a16_gemv_batch4,
+            kh,
             input,
             &self.weights.up_proj,
             up_out,
-            4,
+            m,
             inter,
             h,
             stream,
@@ -1155,17 +1177,17 @@ impl DenseFfnLayer {
             gate_out,
             up_out,
             gate_out,
-            4 * inter,
+            m * inter,
             stream,
         )?;
         let output = ctx.buffers.moe_output();
         ops::w4a16_gemv_batchm(
             ctx.gpu,
-            self.w4a16_gemv_batch4,
+            kh,
             gate_out,
             &self.weights.down_proj,
             output,
-            4,
+            m,
             h,
             inter,
             stream,

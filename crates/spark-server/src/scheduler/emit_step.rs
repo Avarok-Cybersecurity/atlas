@@ -186,9 +186,16 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         a.post_think_emitted += 1;
     }
 
-    // Thinking tokens are "free" (don't decrement remaining).
+    // §C-1 (DS4F hard-limit lane, 2026-07-21): thinking tokens draw down the
+    // SAME completion budget (`remaining`) as content tokens on the MTP/emit
+    // path too — twin of the non-MTP fix in `decode_logits_step`. A long
+    // `<think>` block can no longer run past `max_tokens`; `thinking_budget`
+    // stays the separate per-block cap (armed below). The `remaining == 0`
+    // force-stop at function end then finishes the sequence even while inside
+    // thinking. No-op for direct-mode (thinking-OFF) turns.
     // Detect </think> transition. Track thinking token count for budget enforcement.
     if a.inside_thinking {
+        a.consume_generation_budget();
         if a.think_end_token == Some(tok) {
             a.inside_thinking = false;
             // Sticky twin of the decode-path capture — see
@@ -395,14 +402,22 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
             return;
         }
     }
-    if a.remaining == 0 {
+    // §C-3 (DS4F hard-limit lane, 2026-07-21): the `remaining == 0` completion
+    // stop is now joined by the per-step served-`max_seq_len` ceiling stop
+    // (twin of the non-MTP guard in `decode_logits_step`), so the MTP/emit path
+    // also cannot run KV past the context ceiling. No-op when `max_seq_len` is
+    // unset (0) or not yet reached.
+    if a.remaining == 0 || seqlen_force_stop(a.seq.seq_len, max_seq_len_ceiling()) {
         // #144: before the hard length-stop, if a grammar is active and the
         // stop token is not legal at the current position (e.g. mid JSON
         // string), emit the shortest grammar-legal close so the truncated
         // `finish_reason="length"` output is still parseable.
         emit_grammar_close(a);
         tracing::info!(
-            "emit_token: remaining=0, output_tokens={}, thinking_tokens={}",
+            "emit_token: remaining={}, seq_len={}, max_seq_len={}, output_tokens={}, thinking_tokens={}",
+            a.remaining,
+            a.seq.seq_len,
+            max_seq_len_ceiling(),
             a.output_tokens.len(),
             a.thinking_tokens
         );

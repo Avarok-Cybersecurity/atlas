@@ -3,10 +3,11 @@
 //! Host-side driver for TurboQuant+ InnerQ per-channel K equalization.
 //!
 //! Triggers via `TURBO_INNERQ=N` env var (N = calibration token count). The
-//! kernel-side state lives in `kernels/gb10/common/tq_plus_innerq.cu` as a
-//! set of `__device__` globals inside `namespace tq_plus`. PTX strips the
-//! companion host functions in that translation unit, so this driver
-//! reproduces their work directly via the CUDA Driver API:
+//! kernel-side state lives in `kernels/gb10/common/tq_plus_innerq_apply.cu`
+//! as `__device__` globals inside `namespace tq_plus` — deliberately in the
+//! SAME translation unit (= same PTX module; Atlas has no `-rdc` device
+//! linking) as the apply/accumulate kernels that read it. This driver
+//! manipulates that state directly via the CUDA Driver API:
 //!
 //!   `cuModuleGetGlobal_v2` → device pointer for each symbol
 //!   `cuMemcpyHtoDAsync_v2` / `cuMemcpyDtoHAsync_v2` → push/pull state
@@ -29,9 +30,12 @@ use anyhow::{Context, Result, bail};
 use atlas_core::registry::AtlasRegistry;
 
 // Itanium-mangled names for `tq_plus::*` device globals. The kernel TU is
-// `kernels/gb10/common/tq_plus_innerq.cu`, which compiles to PTX module
-// `tq_plus_innerq` (no [modules] override in common/KERNEL.toml).
-const MODULE: &str = "tq_plus_innerq";
+// `kernels/gb10/common/tq_plus_innerq_apply.cu` — the module that also holds
+// `tq_plus_innerq_apply_q/_k`, the only kernels reading this state (module =
+// file stem; no [modules] override in common/KERNEL.toml). It MUST be that
+// module: each PTX module gets its own copy of `__device__` globals (no
+// -rdc), so uploading anywhere else feeds a copy the kernels never see.
+const MODULE: &str = "tq_plus_innerq_apply";
 const SYM_SCALE: &str = "_ZN7tq_plus14d_innerq_scaleE";
 const SYM_SCALE_INV: &str = "_ZN7tq_plus18d_innerq_scale_invE";
 const SYM_SQ_ACCUM: &str = "_ZN7tq_plus17d_innerq_sq_accumE";
@@ -172,9 +176,9 @@ impl InnerQDriver {
         }
         reg.stream_synchronize(stream)?;
 
-        // Identity-preserving equalization (mirrors turbo_innerq_finalize in
-        // tq_plus_innerq.cu): scale[i] = (mean_rms / rms[i])^strength, clamped
-        // to [0.5, 2.0]; auto-disable if max/min ratio < 1.2 either way.
+        // Identity-preserving equalization: scale[i] = (mean_rms / rms[i])
+        // ^strength, clamped to [0.5, 2.0]; auto-disable if max/min ratio
+        // < 1.2 either way.
         let count_f = count as f32;
         let mut rms = [0.0f32; MAX_CHANNELS];
         let mut mean_rms = 0.0f32;

@@ -24,6 +24,7 @@
 #![allow(unused_imports, dead_code)]
 
 pub(crate) mod block_mgmt;
+pub(crate) mod drafter_context;
 pub(crate) mod drop;
 pub(crate) mod impl_a1;
 pub(crate) mod impl_a1_init;
@@ -34,6 +35,7 @@ pub(crate) mod impl_b2;
 pub(crate) mod impl_b3;
 pub(crate) mod impl_lora;
 pub(crate) mod impl_lora_swap;
+pub(crate) mod mtp_carry;
 pub(crate) mod ssm_pool;
 pub(crate) mod ssm_snapshot;
 pub(crate) mod ssm_snapshot_spill;

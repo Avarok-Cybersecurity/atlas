@@ -69,12 +69,12 @@ __device__ __forceinline__ void w4a16_wmma_compute(
 ) {
     v16bf a;
     #pragma unroll
-    for (int i = 0; i < 16; i++) a[i] = (__bf16)smem_A[warp_m_offset + (lane & 15)][i];
+    for (int i = 0; i < 16; i++) a[i] = (__bf16)(float)smem_A[warp_m_offset + (lane & 15)][i];
     #pragma unroll
     for (int nb = 0; nb < 4; nb++) {
         v16bf b;
         #pragma unroll
-        for (int k = 0; k < 16; k++) b[k] = (__bf16)smem_B[k][nb * 16 + (lane & 15)];
+        for (int k = 0; k < 16; k++) b[k] = (__bf16)(float)smem_B[k][nb * 16 + (lane & 15)];
         acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]);
     }
 }

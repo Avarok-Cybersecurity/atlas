@@ -64,6 +64,7 @@ at conc=1; it trades against batch size and KV dtype (see §4).
 |-------|----------------|----------------------|--------------|--------------|--------|---------------|-------|
 | **Qwen3.6-35B-A3B** ⭐ | `Qwen/Qwen3.6-35B-A3B-FP8` | 35B / 3B | FP8 | hybrid SSM (GDN) + attn + MoE | ~157 (nvfp4) | **64K** | **Daily-driver / agentic coding.** MTP K=2, DFlash drafter `z-lab/…-DFlash`, live tool-call streaming |
 | **Qwen3.6-27B** | `Qwen/Qwen3.6-27B-FP8` | 27B dense | FP8 | hybrid attn + GDN + dense FFN | ~15 | 24K | Dense reasoning; MTP off; DFlash `z-lab/Qwen3.6-27B-DFlash` |
+| **Qwen3.6-27B** (NVFP4) | `nvidia/Qwen3.6-27B-NVFP4` | 27B dense | NVFP4 (mixed) | hybrid attn + GDN + dense FFN | ~14 | 24K | Dense; MTP off; ModelOpt mixed FP8-attn/NVFP4-MLP, requants at load. Avoid `unsloth/Qwen3.6-27B-NVFP4` on current HF main (2026-07-10 re-upload broke the layout, see #327; old pin `890bdef7` still works) |
 | **Qwen3.5-35B-A3B** | `Sehyo/Qwen3.5-35B-A3B-NVFP4` | 35B / 3B | NVFP4 | hybrid GDN + attn + MoE | ~131 | 24K | MTP K=2. (⚠️ HF-id drift — see below) |
 | **Qwen3.5-27B** | `Kbenkhaled/Qwen3.5-27B-NVFP4` | 27B dense | NVFP4 | hybrid attn + SSM, dense FFN | ~14 | 24K | Dense; MTP off |
 | **Qwen3-Next-80B-A3B** | `nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4` | 80B / 3B | NVFP4 | hybrid SSM + MoE (512 experts) | ~74–104 | 8K | MTP; NVIDIA reference checkpoint |
@@ -94,6 +95,9 @@ id; tracked for reconciliation — the recipe id is what to pull):
   404s, try the other.
 - **Qwen3.6-27B:** registry `MODEL.toml` says `Qwen/Qwen3.6-27B`, but the recipe
   and Dockerfile serve `Qwen/Qwen3.6-27B-FP8` — pull the `-FP8` checkpoint.
+  Validated NVFP4 path on GB10: `nvidia/Qwen3.6-27B-NVFP4` (~14 tok/s). Avoid
+  current `unsloth/Qwen3.6-27B-NVFP4` HF main (broken layout after 2026-07-10
+  re-upload; see #327).
 - **MiniMax-M2.7:** registry `MODEL.toml` (`minimax-m2-229b`) points at the base
   `MiniMaxAI/MiniMax-M2.7`, while the recipe uses the quantized
   `lukealonso/MiniMax-M2.7-NVFP4` — use the recipe's NVFP4 id.

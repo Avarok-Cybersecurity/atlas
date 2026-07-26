@@ -44,7 +44,7 @@ pub fn fp8_gemm_n128(
         static SCRATCH: Mutex<Option<(DevicePtr, usize)>> = Mutex::new(None);
         let qk = *QK.get_or_init(|| gpu.kernel("w4a16", "bf16_to_fp8").expect("bf16_to_fp8"));
         let lk = *LK.get_or_init(|| {
-            gpu.kernel("w4a16", "fp8_fp8_gemm_ldmab")
+            gpu.kernel("w4a16_fp8_ldmab", "fp8_fp8_gemm_ldmab")
                 .expect("fp8_fp8_gemm_ldmab")
         });
         let need = (m as usize) * (k as usize); // e4m3 bytes

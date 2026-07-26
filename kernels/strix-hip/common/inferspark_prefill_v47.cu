@@ -153,13 +153,13 @@ extern "C" __global__ __launch_bounds__(128, 2) void inferspark_prefill_v47(
                 unsigned int k_off = ks * K16;
                 v16bf a;
                 #pragma unroll
-                for (int i = 0; i < 16; i++) a[i] = (__bf16)smem_Q[qk_m + lane_lo][k_off + i];
+                for (int i = 0; i < 16; i++) a[i] = (__bf16)(float)smem_Q[qk_m + lane_lo][k_off + i];
                 #pragma unroll
                 for (int nt = 0; nt < QK_N_TILES; nt++) {
                     unsigned int key_row = nt * 16 + lane_lo;
                     v16bf bb;
                     #pragma unroll
-                    for (int k = 0; k < 16; k++) bb[k] = (__bf16)smem_K[key_row][k_off + k];
+                    for (int k = 0; k < 16; k++) bb[k] = (__bf16)(float)smem_K[key_row][k_off + k];
                     acc_s[nt] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, bb, acc_s[nt]);
                 }
             }
@@ -224,13 +224,13 @@ extern "C" __global__ __launch_bounds__(128, 2) void inferspark_prefill_v47(
                 unsigned int k_off = ks * K16;
                 v16bf a;
                 #pragma unroll
-                for (int i = 0; i < 16; i++) a[i] = (__bf16)smem_P[pv_warp_m + lane_lo][k_off + i];
+                for (int i = 0; i < 16; i++) a[i] = (__bf16)(float)smem_P[pv_warp_m + lane_lo][k_off + i];
                 #pragma unroll
                 for (int nt = 0; nt < PV_N_TILES; nt++) {
                     unsigned int d_col = (pv_n_start + nt) * 16 + lane_lo;
                     v16bf bb;
                     #pragma unroll
-                    for (int k = 0; k < 16; k++) bb[k] = (__bf16)smem_V[k_off + k][d_col];
+                    for (int k = 0; k < 16; k++) bb[k] = (__bf16)(float)smem_V[k_off + k][d_col];
                     acc_o[nt] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, bb, acc_o[nt]);
                 }
             }

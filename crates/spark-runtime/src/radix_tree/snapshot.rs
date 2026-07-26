@@ -7,27 +7,29 @@
 //! through the radix tree.
 
 use super::hash_token_prefix;
+use super::snapshot_stats::SnapshotStats;
 
 pub(super) struct SnapshotEntry {
-    snapshot_id: usize,
-    session_hash: u64,
-    token_count: usize,
-    prefix_hash: u64,
-    last_access: u64,
-    /// Cumulative hits over the entry's lifetime — combined with
-    /// `last_access` in eviction to approximate the forecast-based
-    /// policy from the Marconi paper §4 (B.4, 2026-04-25). Hot
-    /// prefixes (high hit count) survive longer than cold ones at
-    /// the same age.
-    hit_count: u32,
+    pub(super) snapshot_id: usize,
+    pub(super) session_hash: u64,
+    pub(super) token_count: usize,
+    pub(super) prefix_hash: u64,
+    pub(super) last_access: u64,
     /// Phase 1b — spill-not-drop location. `false` = resident in HBM at
     /// `snapshot_id`. `true` = spilled to the byte tier; `snapshot_id` is stale
     /// and the state is addressed by `prefix_hash` (the tier key). Always
     /// `false` when `ATLAS_SSM_TIER` is off, so the default path is unchanged.
-    tiered: bool,
+    pub(super) tiered: bool,
     /// True for the per-session TAIL snapshot (the restore point the next turn's
     /// block-floored `matched_tokens` looks up). Exactly one is kept per session.
-    is_tail: bool,
+    pub(super) is_tail: bool,
+    /// True for the tail's EARLY sibling (the mid-chunk capture at `tb - bs`).
+    /// Serves warm turns whose block-floored match lands one block below the
+    /// tail (measured 2/7 of restores on the eviction rig). Exact-prefix keyed
+    /// — NOT session-gated in lookups (safe cross-session, unlike `is_tail`) —
+    /// but leased alongside the tail. At most one per session (swept together
+    /// with the tail by `insert_tail`).
+    pub(super) is_tail_sibling: bool,
 }
 
 /// Where a matched snapshot's state currently lives (Phase 1b).
@@ -51,50 +53,85 @@ pub(super) struct SnapMatch {
 pub(super) struct SsmSnapshotIndex {
     pub(super) entries: Vec<SnapshotEntry>,
     pub(super) access_counter: u64,
-    /// Session of the most recent `lookup` — the live conversation. Its
-    /// DEEPEST snapshot is the one its next warm turn will restore from, so
-    /// `evict_lru` protects it (ATLAS_SSM_TAIL_PROTECT, ported from #278).
-    /// Tracks the running tip: recomputed each eviction from `token_count`,
-    /// never a pinned slot. Complements the session-aware victim ranking
-    /// below — session-aware protects the live session vs *dormant* ones;
-    /// tail-protect protects the deep tail *within* the live session (the
-    /// single/dominant-conversation case session-freshness can't see).
-    last_lookup_session: u64,
+    /// Session of the most recent `lookup`/`lookup_tiered` — the live
+    /// conversation. Eviction leases that session's `is_tail` entry (the
+    /// TRUE restore point the next warm turn's block-floored
+    /// `matched_tokens` looks up) — NOT its deepest entry: the deepest is
+    /// the finish leaf written at end-of-turn, which sits ABOVE
+    /// `matched_tokens` and is unusable for restore (#278's original
+    /// deepest-entry semantics protected exactly the wrong slot; measured
+    /// 2026-07-20 eviction rig: 0 Marconi hits with it on OR off).
+    /// Complements the session-aware victim ranking — session-aware
+    /// protects the live session vs *dormant* ones; the tail lease protects
+    /// the restore point *within* the live session under same-session or
+    /// sessionless-churn pressure.
+    pub(super) last_lookup_session: u64,
+    /// Evictions since the last session-latching lookup. The lease is a
+    /// LEASE, not a pin: if the leased session never looks up again (it
+    /// ended; subsequent cold traffic never reaches lookup at
+    /// matched_tokens == 0), the lease lapses after
+    /// [`tail_lease_ttl`] evictions so a dead session's tail cannot
+    /// squat a slot indefinitely.
+    pub(super) evictions_since_lookup: u32,
     /// Phase-0 measurement counters (ATLAS_SSM_SNAP_STATS). All aggregate,
     /// off the hot path's critical decisions — they only observe. The residual
     /// `recompute_tokens_on_hit` after tail-protect + a large pool is exactly
     /// what Phase 1 (spill-not-drop) converts from recompute → fault-in.
-    stats: SnapshotStats,
+    pub(super) stats: SnapshotStats,
 }
 
-/// Aggregate SSM-snapshot cache telemetry (Phase 0). Summarised via
-/// `log_stats_if_due` when `ATLAS_SSM_SNAP_STATS` is set.
-#[derive(Default, Clone, Copy)]
-pub(super) struct SnapshotStats {
-    /// Snapshots registered (new prefix inserted, not an overwrite).
-    pub saves: u64,
-    /// Prefix lookups attempted.
-    pub lookups: u64,
-    /// Lookups that restored *some* anchor (deep or shallow).
-    pub hits: u64,
-    /// Σ restored-anchor depth over hits — mean anchor = this / hits.
-    pub anchor_depth_sum: u64,
-    /// Σ (matched_tokens − anchor_depth) over hits: the SSM tokens that still
-    /// had to be recomputed because the deep tail was not resident. This is the
-    /// #278 metric ("mean recompute 4438→262 tok") and Phase 1's target.
-    pub recompute_tokens_on_hit: u64,
-    /// Σ matched_tokens over *misses* (no anchor at all → full recompute).
-    pub recompute_tokens_on_miss: u64,
-    /// Snapshot slots freed by `evict_lru` — a DROP (state discarded) on the
-    /// default path; Phase 1 spills instead via `evict_to_tier`.
-    pub evictions: u64,
-    /// Phase 1b: entries moved HBM→Tier by `evict_to_tier` (spills, not drops).
-    pub tier_spills: u64,
-    /// Phase 1b: lookups whose deepest anchor was found in the tier (would have
-    /// been a recompute pre-spill) — the converted loss.
-    pub tier_hits: u64,
-    /// Phase 1b: tier entries faulted back into HBM via `promote`.
-    pub tier_fault_ins: u64,
+/// Tail-lease kill switch. Default ON; `ATLAS_SSM_TAIL_PROTECT=0` (or `off`)
+/// disables. Backward compatible with the old opt-in scripts that set `=1`.
+///
+/// **INERT IN THE SHIPPING (MLPerf-edge) CONFIG — it protects nothing there.**
+/// The lease only ever shields an entry with `is_tail == true`, and the sole
+/// production writer of that flag is `insert_tail_snapshot`, called only from
+/// `finalize_midchunk_capture`, which is unreachable when
+/// `ATLAS_SSM_TAIL_MIDCHUNK=0` — which the frozen MLPerf-edge config sets.
+/// Verified 2026-07-21 by call-graph audit (the 2026-07-20 eviction rig
+/// likewise measured 0 lease hits). Do not read a `ATLAS_SSM_TAIL_PROTECT=1`
+/// in a launch script as evidence that tail protection is doing work; check
+/// `ATLAS_SSM_TAIL_MIDCHUNK` first. Behaviour here is deliberately unchanged —
+/// this note is a warning to the next reader, not a defect report.
+fn tail_lease_enabled() -> bool {
+    !matches!(
+        std::env::var("ATLAS_SSM_TAIL_PROTECT").as_deref(),
+        Ok("0") | Ok("off")
+    )
+}
+
+/// Evictions a leased tail survives without its session looking up again.
+/// Derivation: the 2026-07-20 eviction rig measured ~18 evictions between a
+/// deep session's turns at 8 slots with 6 churn requests/turn — 64 is a >3x
+/// margin there, while production pools (128–256 slots) evict rarely enough
+/// that the TTL almost never binds. Override: ATLAS_SSM_TAIL_LEASE_TTL.
+///
+/// Same caveat as [`tail_lease_enabled`]: with `ATLAS_SSM_TAIL_MIDCHUNK=0` no
+/// entry is ever marked `is_tail`, so this TTL governs an empty set and
+/// `ATLAS_SSM_TAIL_LEASE_TTL=128` in a launch script changes nothing.
+fn tail_lease_ttl() -> u32 {
+    std::env::var("ATLAS_SSM_TAIL_LEASE_TTL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(64)
+}
+
+/// Marconi Eq-2 depth weight (staged, INERT by default). Within a session,
+/// the eviction rank becomes `S(e) = norm(recency) + α·norm(token_count)`
+/// (MLSys'25 arXiv:2411.19379: `S(n) = recency(n) + α·flop_efficiency(n)`;
+/// with uniform snapshot slots, FLOPs-saved/byte degenerates to the token
+/// depth the snapshot lets a warm turn skip — and losing an SSM snapshot
+/// forfeits the whole KV prefix hit, so value ∝ depth). α = 0 (default) is
+/// exactly today's pure-LRU ordering (min-max normalization is monotonic);
+/// clamped to [0, 8] so a runaway env value cannot make depth
+/// recency-insensitive (a depth-pinned analog of the 07-10 hit-pinning).
+/// Default flip requires its own measured A/B: ATLAS_SNAP_EVICT_ALPHA.
+fn snap_evict_alpha() -> f64 {
+    std::env::var("ATLAS_SNAP_EVICT_ALPHA")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|a| a.clamp(0.0, 8.0))
+        .unwrap_or(0.0)
 }
 
 impl SsmSnapshotIndex {
@@ -103,89 +140,16 @@ impl SsmSnapshotIndex {
             entries: Vec::new(),
             access_counter: 0,
             last_lookup_session: 0,
+            evictions_since_lookup: 0,
             stats: SnapshotStats::default(),
         }
     }
 
-    pub(super) fn insert(
-        &mut self,
-        prefix_hash: u64,
-        snapshot_id: usize,
-        session_hash: u64,
-        token_count: usize,
-    ) -> Option<usize> {
-        for entry in &mut self.entries {
-            if entry.prefix_hash == prefix_hash {
-                let old = entry.snapshot_id;
-                entry.snapshot_id = snapshot_id;
-                entry.session_hash = session_hash;
-                entry.token_count = token_count;
-                // A fresh HBM save re-homes the prefix: it is resident again.
-                entry.tiered = false;
-                self.access_counter += 1;
-                entry.last_access = self.access_counter;
-                return Some(old);
-            }
-        }
-        self.access_counter += 1;
-        self.stats.saves += 1;
-        self.entries.push(SnapshotEntry {
-            snapshot_id,
-            session_hash,
-            token_count,
-            prefix_hash,
-            last_access: self.access_counter,
-            hit_count: 0,
-            tiered: false,
-            is_tail: false,
-        });
-        None
-    }
-
-    /// Insert the per-session TAIL snapshot, superseding this session's previous one.
-    /// Returns displaced snapshot_ids for the caller to free.
-    pub(super) fn insert_tail(
-        &mut self,
-        prefix_hash: u64,
-        snapshot_id: usize,
-        session_hash: u64,
-        token_count: usize,
-    ) -> Vec<usize> {
-        let mut displaced = Vec::new();
-        if session_hash != 0 {
-            let mut i = 0;
-            while i < self.entries.len() {
-                if self.entries[i].is_tail && self.entries[i].session_hash == session_hash {
-                    displaced.push(self.entries.swap_remove(i).snapshot_id);
-                } else {
-                    i += 1;
-                }
-            }
-        }
-        for entry in &mut self.entries {
-            if entry.prefix_hash == prefix_hash {
-                displaced.push(entry.snapshot_id);
-                entry.snapshot_id = snapshot_id;
-                entry.session_hash = session_hash;
-                entry.token_count = token_count;
-                entry.is_tail = true;
-                self.access_counter += 1;
-                entry.last_access = self.access_counter;
-                return displaced;
-            }
-        }
-        self.access_counter += 1;
-        self.entries.push(SnapshotEntry {
-            snapshot_id,
-            session_hash,
-            token_count,
-            prefix_hash,
-            last_access: self.access_counter,
-            hit_count: 0,
-            tiered: false,
-            is_tail: true,
-        });
-        displaced
+    /// Whether the live session's tail lease is currently in force.
+    pub(super) fn tail_lease_active(&self) -> bool {
+        self.last_lookup_session != 0
+            && tail_lease_enabled()
+            && self.evictions_since_lookup < tail_lease_ttl()
     }
 
     /// Find deepest snapshot matching session within matched_tokens range.
@@ -203,13 +167,22 @@ impl SsmSnapshotIndex {
         session_hash: u64,
         adapter_id: u64,
     ) -> Option<(usize, usize)> {
-        // Track the live conversation so eviction can protect its deep tail
-        // (ATLAS_SSM_TAIL_PROTECT).
+        // Track the live conversation so eviction can lease its is_tail
+        // restore point; a fresh lookup renews the lease.
         if session_hash != 0 {
             self.last_lookup_session = session_hash;
+            self.evictions_since_lookup = 0;
         }
+        // Side-effect-free scan: only the WINNER gets its recency bumped,
+        // below. Bumping every improving candidate kept shallow early-prefix
+        // entries eternally fresh (each deep lookup walks the improving chain
+        // through them), pinning them in the pool while the tail checkpoints
+        // the next warm turn actually needs were evicted — the measured
+        // frozen-anchor / 18.6k-token SSM replay pathology (2026-07-10,
+        // re-landed after #317's re-cut reverted it).
         let mut best: Option<(usize, usize)> = None; // (snapshot_id, token_count)
-        for entry in &mut self.entries {
+        let mut best_idx: Option<usize> = None;
+        for (i, entry) in self.entries.iter().enumerate() {
             // Tiered entries hold no HBM slot — the non-tier `lookup` must never
             // hand back a spilled entry's stale slot. Tier-aware callers use
             // `lookup_tiered`. (No entry is ever tiered when ATLAS_SSM_TIER off.)
@@ -232,11 +205,13 @@ impl SsmSnapshotIndex {
                 continue;
             }
             if best.is_none() || entry.token_count > best.unwrap().1 {
-                self.access_counter += 1;
-                entry.last_access = self.access_counter;
-                entry.hit_count = entry.hit_count.saturating_add(1);
                 best = Some((entry.snapshot_id, entry.token_count));
+                best_idx = Some(i);
             }
+        }
+        if let Some(i) = best_idx {
+            self.access_counter += 1;
+            self.entries[i].last_access = self.access_counter;
         }
         // Phase-0 telemetry: hit-rate + recompute distance. `recompute` is the
         // SSM prefix that still had to be re-run because no deeper anchor was
@@ -270,7 +245,7 @@ impl SsmSnapshotIndex {
     /// `ATLAS_SSM_SNAP_STATS` is set. Off-by-default and read-only, so it never
     /// perturbs serving; the line is the Phase-0 measurement surface (hit-rate,
     /// mean restore anchor, mean recompute tok/turn — the #278 metrics).
-    fn log_stats_if_due(&self) {
+    pub(super) fn log_stats_if_due(&self) {
         if !self.stats.lookups.is_multiple_of(64)
             || std::env::var_os("ATLAS_SSM_SNAP_STATS").is_none()
         {
@@ -305,17 +280,25 @@ impl SsmSnapshotIndex {
         if self.entries.is_empty() {
             return None;
         }
-        // Per-entry forecast score: last_access * (1 + hit_count) — old/cold first.
-        let escore = |e: &SnapshotEntry| e.last_access.saturating_mul(1 + e.hit_count as u64);
+        // Pure recency (LRU). The former forecast score
+        // `last_access * (1 + hit_count)` multiplied a monotonic timestamp by
+        // hit count, so any once-hit old entry outscored every fresh save;
+        // once the cold entries drained, each new save's evict victim was the
+        // PREVIOUS fresh save — the live turn's tail checkpoint died ms before
+        // the next turn's lookup needed it, freezing the restore anchor
+        // (measured 2026-07-10: anchor pinned at token 9056 for 29 turns,
+        // 12.7k-token SSM replay, 40s TTFT tail). Re-landed after #317's
+        // re-cut restored the old score.
+        let escore = |e: &SnapshotEntry| e.last_access;
 
         // SESSION-AWARE eviction (default ON; ATLAS_SNAP_EVICT_LEGACY=1 → old per-entry).
         if std::env::var_os("ATLAS_SNAP_EVICT_LEGACY").is_none() {
-            let tail_protect = self.last_lookup_session != 0
-                && std::env::var_os("ATLAS_SSM_TAIL_PROTECT").is_some();
+            let tail_protect = self.tail_lease_active();
             // Skip tiered entries (no HBM slot to free).
             let victim_idx = self.session_aware_victim(tail_protect, true)?;
             let entry = self.entries.swap_remove(victim_idx);
             self.stats.evictions += 1;
+            self.evictions_since_lookup = self.evictions_since_lookup.saturating_add(1);
             return Some(entry.snapshot_id);
         }
 
@@ -337,12 +320,33 @@ impl SsmSnapshotIndex {
     }
 
     /// Pure victim selection for session-aware eviction. Split out for unit tests.
-    /// Ranking: stalest session first, then lowest forecast score within it.
-    /// `tail_protect`: exempt the live session's deepest snapshot (one entry,
-    /// scoped, so pools ≥2 never deadlock). Correctness-safe (restore re-validates).
+    /// Ranking: stalest session first, then oldest entry within it.
+    /// `tail_protect`: lease the live session's `is_tail` restore point — the
+    /// snapshot the next warm turn's block-floored `matched_tokens` actually
+    /// looks up, NOT the deepest entry (that is the end-of-turn finish leaf,
+    /// which sits above `matched_tokens` and never restores; #278 semantics
+    /// protected it and bought nothing — 2026-07-20 rig: 0 hits either way).
+    /// insert_tail's supersede sweep plus insert()'s is_tail-clearing keep
+    /// the leased set at <=1 entry, so pools >=2 never deadlock.
+    /// Correctness-safe (restore re-validates).
     /// `skip_tiered`: ignore spilled entries (no HBM slot). Returns `None` if none eligible.
-    fn session_aware_victim(&self, tail_protect: bool, skip_tiered: bool) -> Option<usize> {
-        let escore = |e: &SnapshotEntry| e.last_access.saturating_mul(1 + e.hit_count as u64);
+    pub(super) fn session_aware_victim(
+        &self,
+        tail_protect: bool,
+        skip_tiered: bool,
+    ) -> Option<usize> {
+        self.session_aware_victim_with_alpha(tail_protect, skip_tiered, snap_evict_alpha())
+    }
+
+    /// α-parameterized core of [`Self::session_aware_victim`] — split so unit
+    /// tests can exercise α without mutating process-global env (a data race
+    /// under the parallel test runner).
+    pub(super) fn session_aware_victim_with_alpha(
+        &self,
+        tail_protect: bool,
+        skip_tiered: bool,
+        alpha: f64,
+    ) -> Option<usize> {
         let eligible = |e: &SnapshotEntry| !(skip_tiered && e.tiered);
 
         // session freshness = max last_access among that session's eligible entries.
@@ -354,133 +358,66 @@ impl SsmSnapshotIndex {
                 *f = e.last_access;
             }
         }
-        let n_eligible = self.entries.iter().filter(|e| eligible(e)).count();
-        let protected_idx: Option<usize> = if tail_protect {
-            self.entries
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| eligible(e) && e.session_hash == self.last_lookup_session)
-                .max_by_key(|(_, e)| e.token_count)
-                .map(|(i, _)| i)
-        } else {
-            None
+        let leased = |e: &SnapshotEntry| {
+            tail_protect
+                && (e.is_tail || e.is_tail_sibling)
+                && e.session_hash != 0
+                && e.session_hash == self.last_lookup_session
         };
-        // (stalest session first, then lowest entry score within it). Protected
-        // bites only when >1 eligible entry remains, so a single-entry pool
-        // (even if it is the protected tail) still yields a victim → no deadlock.
-        let mut victim: Option<(usize, (u64, u64))> = None;
+        // The lease bites only while an UNLEASED eligible candidate exists, so
+        // a pool of only-leased entries (or a single entry) still yields a
+        // victim — no deadlock, and `save`/reclaim always make progress.
+        let n_unleased = self
+            .entries
+            .iter()
+            .filter(|e| eligible(e) && !leased(e))
+            .count();
+        // Within-session rank: S(e) = norm(recency) + α·norm(depth) — Marconi
+        // Eq 2 (see snap_evict_alpha). At the default α=0 this is exactly
+        // pure-LRU ordering. Min-max normalization over the ELIGIBLE pool per
+        // pass keeps scores bounded and relative (no per-entry accumulation —
+        // the 07-10 fossil vector cannot re-enter here); a degenerate range
+        // (max == min) normalizes to 0 rather than dividing by zero.
+        let (mut min_a, mut max_a, mut min_t, mut max_t) = (u64::MAX, 0u64, usize::MAX, 0usize);
+        for e in self.entries.iter().filter(|e| eligible(e)) {
+            min_a = min_a.min(e.last_access);
+            max_a = max_a.max(e.last_access);
+            min_t = min_t.min(e.token_count);
+            max_t = max_t.max(e.token_count);
+        }
+        let norm = |x: u64, min: u64, max: u64| {
+            if max > min {
+                (x - min) as f64 / (max - min) as f64
+            } else {
+                0.0
+            }
+        };
+        let score = |e: &SnapshotEntry| {
+            norm(e.last_access, min_a, max_a)
+                + alpha * norm(e.token_count as u64, min_t as u64, max_t as u64)
+        };
+        // (stalest session first, then lowest S within it). The lease bites
+        // only when >1 eligible entry remains, so a single-entry pool (even
+        // if it is the leased tail) still yields a victim → no deadlock.
+        let mut victim: Option<(usize, u64, f64)> = None;
         for (i, e) in self.entries.iter().enumerate() {
             if !eligible(e) {
                 continue;
             }
-            if Some(i) == protected_idx && n_eligible > 1 {
-                continue; // never evict the live session's deepest tail
+            if leased(e) && n_unleased >= 1 {
+                continue; // never evict the live session's restore points
             }
             let sf = *session_fresh.get(&e.session_hash).unwrap_or(&0);
-            let key = (sf, escore(e));
-            if victim.is_none_or(|(_, vk)| key < vk) {
-                victim = Some((i, key));
-            }
-        }
-        victim.map(|(i, _)| i)
-    }
-
-    // ─── Phase 1b: spill tier ─── resident vs spilled state machine (ATLAS_SSM_TIER).
-
-    /// Spill victim selection (tier engaged). Marks the victim spilled, returns
-    /// `(freed_slot, key)`. Entry stays in the index for `lookup_tiered` fault-in.
-    pub(super) fn evict_to_tier(&mut self) -> Option<(usize, u64)> {
-        if self.entries.is_empty() {
-            return None;
-        }
-        let tail_protect =
-            self.last_lookup_session != 0 && std::env::var_os("ATLAS_SSM_TAIL_PROTECT").is_some();
-        let idx = self.session_aware_victim(tail_protect, /*skip_tiered*/ true)?;
-        let e = &mut self.entries[idx];
-        e.tiered = true;
-        let freed_slot = e.snapshot_id;
-        let key = e.prefix_hash;
-        self.stats.tier_spills += 1;
-        Some((freed_slot, key))
-    }
-
-    /// **Tier-aware lookup** (used in place of `lookup` when the tier is on).
-    /// Returns the deepest matching anchor and where its state lives, so the
-    /// caller either restores from HBM or faults in from the tier. Feeds the
-    /// same Phase-0 telemetry as `lookup`, plus `tier_hits`.
-    pub(super) fn lookup_tiered(
-        &mut self,
-        tokens: &[u32],
-        matched_tokens: usize,
-        session_hash: u64,
-        adapter_id: u64,
-    ) -> Option<SnapMatch> {
-        if session_hash != 0 {
-            self.last_lookup_session = session_hash;
-        }
-        // Deepest matching prefix across BOTH resident and spilled entries.
-        let mut best: Option<usize> = None;
-        let mut best_depth = 0usize;
-        for (i, entry) in self.entries.iter().enumerate() {
-            if entry.token_count > matched_tokens {
-                continue;
-            }
-            if session_hash != 0 && entry.session_hash != 0 && entry.session_hash != session_hash {
-                continue;
-            }
-            if hash_token_prefix(tokens, entry.token_count, adapter_id) != entry.prefix_hash {
-                continue;
-            }
-            if best.is_none() || entry.token_count > best_depth {
-                best = Some(i);
-                best_depth = entry.token_count;
-            }
-        }
-        self.stats.lookups += 1;
-        let result = if let Some(i) = best {
-            self.access_counter += 1;
-            let ac = self.access_counter;
-            let e = &mut self.entries[i];
-            e.last_access = ac;
-            e.hit_count = e.hit_count.saturating_add(1);
-            let tiered = e.tiered;
-            let depth = e.token_count;
-            let loc = if tiered {
-                SnapLoc::Tier(e.prefix_hash)
-            } else {
-                SnapLoc::Hbm(e.snapshot_id)
+            let s = score(e);
+            let better = match victim {
+                None => true,
+                Some((_, vsf, vs)) => sf < vsf || (sf == vsf && s.total_cmp(&vs).is_lt()),
             };
-            self.stats.hits += 1;
-            self.stats.anchor_depth_sum += depth as u64;
-            self.stats.recompute_tokens_on_hit += matched_tokens.saturating_sub(depth) as u64;
-            if tiered {
-                self.stats.tier_hits += 1;
-            }
-            Some(SnapMatch {
-                token_count: depth,
-                loc,
-            })
-        } else {
-            self.stats.recompute_tokens_on_miss += matched_tokens as u64;
-            None
-        };
-        self.log_stats_if_due();
-        result
-    }
-
-    /// **Promote** a spilled entry back to HBM after the caller faulted its
-    /// bytes into `new_slot`. Flips `tiered → false` and re-homes `snapshot_id`.
-    /// Returns `false` if `prefix_hash` is unknown (entry evicted meanwhile).
-    pub(super) fn promote(&mut self, prefix_hash: u64, new_slot: usize) -> bool {
-        for e in &mut self.entries {
-            if e.prefix_hash == prefix_hash {
-                e.tiered = false;
-                e.snapshot_id = new_slot;
-                self.stats.tier_fault_ins += 1;
-                return true;
+            if better {
+                victim = Some((i, sf, s));
             }
         }
-        false
+        victim.map(|(i, _, _)| i)
     }
 
     pub(super) fn len(&self) -> usize {

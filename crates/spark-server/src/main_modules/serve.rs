@@ -668,6 +668,11 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // flip this bool — this selects the verify architecture, not the pick
     // basis.
     let dflash_verify_raw_argmax = args.dflash;
+    // DS4F hard-limit lane (2026-07-21): install the served-context ceiling so
+    // the scheduler enforces `max_seq_len` per decode step (§C-3), not just as a
+    // KV-allocation ceiling trued-up on completion. Set once, before the
+    // scheduler thread spawns.
+    scheduler::set_max_seq_len(args.max_seq_len);
     std::thread::spawn(move || {
         scheduler::run(
             scheduler_model,

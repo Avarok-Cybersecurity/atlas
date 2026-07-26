@@ -467,7 +467,6 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
     const unsigned int a_stride = K_STEP + PAD;
     const unsigned int b_stride = N_TILE + PAD;
     const unsigned int M_eff = (unsigned int)M_expert;
-    const unsigned int num_groups = K / GROUP_SIZE;
 
     for (unsigned int k_base = 0; k_base < K; k_base += K_STEP) {
         {

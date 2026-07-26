@@ -268,8 +268,14 @@ impl TransformerModel {
         // ── Mid-chunk tail SSM capture (opt-in): plan BEFORE the forward
         // pass so SSM layers split their h/conv kernels at `tb` in-pass.
         // `None` (flag off or pass doesn't span `tb`) => no split. ──
-        let midcap_plan =
-            self.prepare_midchunk_capture(tokens, seq, &mut kv_cache, proc_start, proc_count);
+        let midcap_plan = self.prepare_midchunk_capture(
+            tokens,
+            seq,
+            &mut kv_cache,
+            proc_start,
+            proc_count,
+            stream,
+        );
 
         // ── Phase 4: forward through all layers ──
         self.prefill_b_forward_layers(

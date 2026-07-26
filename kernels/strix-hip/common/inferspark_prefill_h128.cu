@@ -118,11 +118,11 @@ __device__ __forceinline__ float sw_exp_h(float x) {
             for (unsigned int ks = 0; ks < WMMA_K_STEPS; ks++) {                       \
                 unsigned int k_off = ks * K16;                                         \
                 v16bf a;                                                               \
-                for (int i = 0; i < 16; i++) a[i] = (__bf16)smem_Q[qk_m + lane_lo][k_off + i]; \
+                for (int i = 0; i < 16; i++) a[i] = (__bf16)(float)smem_Q[qk_m + lane_lo][k_off + i]; \
                 for (int nt = 0; nt < QK_N_TILES; nt++) {                              \
                     unsigned int key_row = nt * 16 + lane_lo;                          \
                     v16bf bb;                                                          \
-                    for (int k = 0; k < 16; k++) bb[k] = (__bf16)smem_K[key_row][k_off + k]; \
+                    for (int k = 0; k < 16; k++) bb[k] = (__bf16)(float)smem_K[key_row][k_off + k]; \
                     acc_s[nt] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, bb, acc_s[nt]); \
                 }                                                                      \
             }                                                                          \
@@ -156,11 +156,11 @@ __device__ __forceinline__ float sw_exp_h(float x) {
             for (unsigned int ks = 0; ks < PV_K_STEPS; ks++) {                         \
                 unsigned int k_off = ks * K16;                                         \
                 v16bf a;                                                               \
-                for (int i = 0; i < 16; i++) a[i] = (__bf16)smem_P[pv_warp_m + lane_lo][k_off + i]; \
+                for (int i = 0; i < 16; i++) a[i] = (__bf16)(float)smem_P[pv_warp_m + lane_lo][k_off + i]; \
                 for (int nt = 0; nt < PV_N_TILES; nt++) {                              \
                     unsigned int d_col = (pv_n_start + nt) * 16 + lane_lo;             \
                     v16bf bb;                                                          \
-                    for (int k = 0; k < 16; k++) bb[k] = (__bf16)smem_V[k_off + k][d_col]; \
+                    for (int k = 0; k < 16; k++) bb[k] = (__bf16)(float)smem_V[k_off + k][d_col]; \
                     acc_o[nt] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, bb, acc_o[nt]); \
                 }                                                                      \
             }                                                                          \

@@ -38,6 +38,10 @@ qwen3_5     = "qwen"
 qwen3_6_moe = "qwen"
 holo3_1_moe = "qwen"
 nemotron_h  = "deepseek_r1"    # Nemotron-H ships the nano_v3 (DeepSeek-R1) parser
+deepseek_v4 = "deepseek_r1"    # DeepSeek-V4-Flash — official <think>/</think>; enables the reasoning
+                               # parser so think_end_token resolves and inside_thinking can engage on
+                               # enable_thinking=true. supports_thinking (has_ssm||has_mamba2) is false
+                               # for this pure-attention MLA model, so the parser MUST be set here.
 qwen3_next  = "qwen"
 qwen3_vl_moe = "qwen"
 mistral     = "mistral"

@@ -6,7 +6,9 @@
 //! MLA attention pattern as Mistral Small 4 with DeepSeek weight naming.
 
 mod assemble;
+mod attn_sink;
 mod compute;
+mod csa_ape;
 mod load_layers;
 // MTP draft-module loader for nvidia/DeepSeek-V4-Flash-NVFP4.
 mod mtp;

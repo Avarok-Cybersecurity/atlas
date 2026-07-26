@@ -168,6 +168,15 @@ pub trait GpuBackend: Send + Sync {
         self.launch(func, grid, block, shared_mem, stream, &mut params)
     }
 
+    /// Whether `stream` is inside an active CUDA-graph capture. Telemetry
+    /// taps MUST check this before any sync/D2H on a potentially-captured
+    /// stream — those calls invalidate the capture (CUDA 901) and wedge the
+    /// serve. Default `false` (backends without capture, or without a query
+    /// API, never capture through this trait's eager paths).
+    fn stream_is_capturing(&self, _stream: u64) -> bool {
+        false
+    }
+
     /// Synchronize a CUDA stream (blocks until all work completes).
     fn synchronize(&self, stream: u64) -> Result<()>;
 
