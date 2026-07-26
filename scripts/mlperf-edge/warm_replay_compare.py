@@ -21,8 +21,10 @@ import json
 import statistics
 import sys
 
-ctl = json.load(open(sys.argv[1]))
-cnd = json.load(open(sys.argv[2]))
+with open(sys.argv[1]) as fh:
+    ctl = json.load(fh)
+with open(sys.argv[2]) as fh:
+    cnd = json.load(fh)
 
 print("=== ATLAS_GDN_REGRESIDENT A/B (warm Marconi replay path) ===")
 print(f"base prompt: {ctl['base_chars']} chars\n")

@@ -117,7 +117,8 @@ def main():
         "delta_ch_p50": statistics.median([r["delta_chars"] for r in warm]) if warm else 0,
         "rows": rows,
     }
-    json.dump(summary, open(a.out, "w"), indent=2)
+    with open(a.out, "w") as fh:
+        json.dump(summary, fh, indent=2)
     print(f"\nwarm TTFT p50 = {summary['warm_ttft_p50']:.0f} ms, "
           f"delta p50 = {summary['delta_ch_p50']:.0f} chars")
     print("\nNow read the SERVER's own accounting from the container log:")

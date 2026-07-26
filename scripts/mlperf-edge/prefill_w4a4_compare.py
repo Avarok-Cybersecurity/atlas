@@ -32,8 +32,10 @@ def kl(p_top, q_top):
     return max(total, 0.0)
 
 
-ctl = json.load(open(sys.argv[1]))
-cnd = json.load(open(sys.argv[2]))
+with open(sys.argv[1]) as fh:
+    ctl = json.load(fh)
+with open(sys.argv[2]) as fh:
+    cnd = json.load(fh)
 
 print("=== prefill speed (cold, median wall per prompt-size bucket) ===")
 print(f"{'repeats':>8} {'ctl ms':>10} {'fp4 ms':>10} {'delta':>10} {'speedup':>9}")

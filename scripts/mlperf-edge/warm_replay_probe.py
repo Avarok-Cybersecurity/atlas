@@ -114,8 +114,9 @@ def main():
         print(f"[{a.tag}] {name:10s} delta={len(delta):6d}ch  "
               f"p50={statistics.median(ttfts):8.1f}  min={min(ttfts):8.1f} ms", flush=True)
 
-    json.dump({"tag": a.tag, "base_chars": len(BASE), "cells": results},
-              open(a.out, "w"), indent=2)
+    with open(a.out, "w") as fh:
+        json.dump({"tag": a.tag, "base_chars": len(BASE), "cells": results},
+                  fh, indent=2)
 
 
 if __name__ == "__main__":

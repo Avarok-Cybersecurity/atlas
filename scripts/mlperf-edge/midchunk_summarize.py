@@ -25,7 +25,8 @@ def load(leg):
     reps = []
     for p in sorted(glob.glob(os.path.join(OUT, f"{leg}.tpot.r*.json"))):
         try:
-            reps.append(json.load(open(p)))
+            with open(p) as fh:
+                reps.append(json.load(fh))
         except Exception:
             pass
     return reps

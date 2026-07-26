@@ -113,7 +113,8 @@ def main():
         "warm_mean": statistics.mean(warm) if warm else 0.0,
         "runs": runs,
     }
-    json.dump(summary, open(args.out, "w"), indent=2)
+    with open(args.out, "w") as fh:
+        json.dump(summary, fh, indent=2)
     print(f"[{args.tag}] WARM TTFT n={len(warm)} p50={summary['warm_p50']:.0f} "
           f"p90={summary['warm_p90']:.0f} p95={summary['warm_p95']:.0f} "
           f"p99={summary['warm_p99']:.0f} max={summary['warm_max']:.0f} ms")

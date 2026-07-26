@@ -109,7 +109,8 @@ def main():
         print(f"{name:8s} completions p50={row['completions']['p50']:7.1f}  "
               f"chat p50={row['chat']['p50']:7.1f}  gap={gap:+7.1f} ms", flush=True)
 
-    json.dump(out, open(a.out, "w"), indent=2)
+    with open(a.out, "w") as fh:
+        json.dump(out, fh, indent=2)
     g = {k: v["gap_ms"] for k, v in out.items()}
     print(f"\ngap plain={g['plain']:+.1f}  long={g['long']:+.1f}  tools={g['tools']:+.1f} ms")
     print("Reading:")
