@@ -211,6 +211,47 @@ pub(crate) async fn chat_completions_inner(
     }
 
     // ── Phases 1-5 (prompt-affecting): shared with count_tokens ──
+    //
+    // Runs on the BLOCKING pool, not the async worker. Phase timing measured
+    // this chain at 1.4-3.2 ms on a short prompt and 13.0 ms at 12931 prompt
+    // tokens — nearly all of it the Jinja render + tokenize — and it used to run
+    // inline in this async fn, so a worker thread was held for the duration and
+    // could poll no other request.
+    //
+    // `spawn_blocking` rather than `block_in_place`: `block_in_place` evicts the
+    // other tasks from the current worker and may spawn a replacement thread, so
+    // it suits OCCASIONAL blocking. Here every request would do it, which turns
+    // into continuous worker cannibalisation as concurrency rises. The blocking
+    // pool exists for exactly this and keeps all async workers pollable.
+    //
+    // `'static` is satisfied by ownership, not by a scoped-spawn crate: `state`
+    // is already an `Arc` (clone = refcount bump) and `req` is MOVED in and
+    // handed back, which also preserves the tool-system-prompt mutation
+    // `prepare_chat_prompt` applies to it via `&mut`.
+    //
+    // NOTE: this is a CONCURRENCY fix. At --max-batch-size 1 single-stream there
+    // is no second request to unblock, so it buys nothing there and costs one
+    // task handoff; it is worth it for concurrent serving.
+    let _t_seg = std::time::Instant::now();
+    let state_for_prepare = state.clone();
+    let (prepared, moved_req) = match tokio::task::spawn_blocking(move || {
+        let out = prepare::prepare_chat_prompt(&state_for_prepare, &mut req);
+        (out, req)
+    })
+    .await
+    {
+        Ok(pair) => pair,
+        Err(join_err) => {
+            // The blocking task panicked. Surface a 500 rather than letting the
+            // JoinError unwind through the handler.
+            tracing::error!("prepare_chat_prompt panicked: {join_err}");
+            return ChatOutcome::Http(openai_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal error preparing the chat prompt".to_string(),
+            ));
+        }
+    };
+    req = moved_req;
     let prepare::PreparedChat {
         tools_active,
         cwd_hint,
@@ -218,18 +259,22 @@ pub(crate) async fn chat_completions_inner(
         prompt_tokens,
         enable_thinking,
         thinking_budget,
-    } = match prepare::prepare_chat_prompt(&state, &mut req) {
+    } = match prepared {
         Ok(p) => p,
         Err(resp) => return ChatOutcome::Http(resp),
     };
+
+    let us_prepare = _t_seg.elapsed().as_micros();
 
     // ── Phase 4: generic loop / spinning detection + task pin ───
     let loop_detect::LoopDetectOut {
         suppress_tool_call,
         tool_call_repeat_count,
     } = loop_detect::check_loops(&req.messages, tools_active);
+    let us_loop_detect = _t_seg.elapsed().as_micros() - us_prepare;
 
     let session_hash = crate::session_manager::compute_session_hash(&prompt_tokens);
+    let us_session_hash = _t_seg.elapsed().as_micros() - us_prepare - us_loop_detect;
     let tools_count = req.tools.len();
     tracing::info!(
         "Session {session_hash:#x}: {prompt_tokens} prompt tokens, tools={tools_active} ({tools_count} defined)",
@@ -278,6 +323,16 @@ pub(crate) async fn chat_completions_inner(
         Ok(s) => s,
         Err(resp) => return ChatOutcome::Http(resp),
     };
+    if prepare::phase_timing_enabled() {
+        let us_sampling =
+            _t_seg.elapsed().as_micros() - us_prepare - us_loop_detect - us_session_hash;
+        tracing::info!(
+            "CHAT_PHASE handler: prepare={us_prepare}us loop_detect={us_loop_detect}us \
+             session_hash={us_session_hash}us sampling_and_grammar={us_sampling}us \
+             total_pre_dispatch={}us",
+            _t_seg.elapsed().as_micros()
+        );
+    }
 
     // ── Phase 7: dispatch streaming or blocking ─────────────────
     if req.stream {

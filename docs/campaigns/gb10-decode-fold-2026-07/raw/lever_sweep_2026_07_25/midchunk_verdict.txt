@@ -1,0 +1,18 @@
+=== midchunk gate: monotonic warm-conversation probe ===
+
+mc_off: reps=3 warm_turns=18
+   warm TTFT  mean=  958.9  med=  894.1  sd= 107.5  range=[832, 1220] ms
+   warm TPOT  med= 43.41 ms   tokens emitted=3746
+mc_on: reps=3 warm_turns=18
+   warm TTFT  mean=  933.0  med=  894.1  sd=  72.5  range=[849, 1110] ms
+   warm TPOT  med= 43.62 ms   tokens emitted=3956
+
+warm TTFT mean: 958.9 -> 933.0 ms (-25.9 ms, -2.7%)
+warm TTFT sd:   107.5 -> 72.5 ms (stability; midchunk should REDUCE this if it is retaining the tail)
+
+tokens emitted: 3746 vs 3956  (divergence 5.6%)
+  -> trajectories DIVERGED: TPOT is confounded and must NOT be quoted as a
+     speed result. Only the TTFT comparison is usable here.
+
+VERDICT REQUIRES the BFCL subset above to hold. midchunk's known failure
+mode is cross-request output corruption, which no latency number can see.

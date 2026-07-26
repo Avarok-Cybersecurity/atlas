@@ -55,5 +55,5 @@ access-pattern/prefetch.
 ## Reproduce (git-replicable)
 Branch `perf/decode-fold-2026-07-24`. Build/serve/gate/e2e commands in CAMPAIGN_LOG.md "Exact reproduce
 commands". Investigation worktrees (uncommitted, correct-but-not-folded): `.wt-w4a4` (C1/C2 kernels +
-w4a4_verify_bench.rs), `.wt-c3` (NVFP4-GDN-out-proj, qwen35_dense.rs:569). Gate: kl_coherence_gate.py.
+w4a4_verify_bench.rs), `.wt-c3` (NVFP4-GDN-out-proj, qwen35_dense.rs:569). Gate: scripts/mlperf-edge/kl_coherence_gate.py.
 Phase-split artifacts: dgx3:/workspace/decode_phasesplit_20260724_025300/.

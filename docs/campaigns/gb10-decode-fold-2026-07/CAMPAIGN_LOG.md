@@ -27,7 +27,7 @@ Win → commit immediately (tbraun96 author, Atlas co-author, no Claude attribut
 ## Exact reproduce commands
 Build: `cd <worktree> && PATH=/usr/local/cuda/bin:$PATH ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=qwen3.6-27b cargo build --release -p spark-server --bin spark --features cuda`
 Serve (frozen c2final, K=3): see DECODE_FOLD_LEDGER.md "Serve config".
-Gate: `python3 kl_coherence_gate.py <baseline_port> <cand_port>` ; A/B: `bash draft_sweep.sh`-style.
+Gate: `python3 scripts/mlperf-edge/kl_coherence_gate.py <baseline_port> <cand_port>` ; A/B: `bash scripts/mlperf-edge/draft_sweep.sh`-style.
 e2e: endpoints-fresh edge-agentic-full-run config (temp0/seed42), 1007 perf + 995 BFCL.
 
 ## Iteration log (append-only)
@@ -54,7 +54,7 @@ UNUSED in decode. → candidate lever for qwen #2 (M=3 verify efficiency). Askin
 | dgx2 | full MLCommons e2e on main 011bee65 (baseline confirm) | RUNNING ~1027/2002 |
 | dgx1 (agent) | BUILD+microbench W4A4 verify GEMV (native NVFP4/E2M1 acts) vs w4a16(bf16 acts); microbench-first bandwidth gate | RUNNING (worktree .wt-w4a4) |
 | dgx1 (qwen) | GB10 sm_121a FP4 vs gfx1151 int8 DP4A — activation-quant verdict | RUNNING (w4a4_consult.txt) |
-| dgx1 (coord) | gate harness (kl_coherence_gate.py) + conglomerate launcher + this log | DONE, committed |
+| dgx1 (coord) | gate harness (scripts/mlperf-edge/kl_coherence_gate.py) + conglomerate launcher + this log | DONE, committed |
 
 ## CROSS-HARDWARE LEARNING (first-class theme — exploit base W4A4 weights + tricks everywhere)
 The MLPerf checkpoint is NVFP4 **W4A4** — weights AND activations 4-bit — but GB10 decode only

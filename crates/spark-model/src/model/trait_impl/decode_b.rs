@@ -49,11 +49,7 @@ impl TransformerModel {
         let n_prefill = prefill_chunk_len;
 
         // Padded decode count for batched decode kernel compatibility
-        let padded_n_guard = [2usize, 4, 8]
-            .iter()
-            .copied()
-            .find(|&s| s >= n_decode)
-            .unwrap_or(n_decode);
+        let padded_n_guard = crate::traits::padded_batch_n(n_decode);
 
         // Guard: fall back to default (sequential) for EP, oversized, no decode,
         // or MLA. MLA models route the decode portion through `decode_batch`,
@@ -106,12 +102,8 @@ impl TransformerModel {
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
-        // Pad decode count to nearest [2, 4, 8] for batched decode kernel compat
-        let padded_n = [2usize, 4, 8]
-            .iter()
-            .copied()
-            .find(|&s| s >= n_decode)
-            .unwrap_or(n_decode);
+        // Pad decode count to the SSOT ladder (traits::padded_batch_n) for batched kernel compat
+        let padded_n = crate::traits::padded_batch_n(n_decode);
 
         // ── 1. Embed all tokens contiguously ──
 

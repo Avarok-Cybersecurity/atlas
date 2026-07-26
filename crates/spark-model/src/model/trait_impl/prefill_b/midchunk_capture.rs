@@ -138,7 +138,20 @@ impl TransformerModel {
         // 2026-07-20): capture-always Σ1846s/9-of-10 + 257 tok/turn vs
         // capture-off Σ1495s/10-of-10 + 203 tok/turn on sessionless agentic
         // traffic; multi-turn warm-TTFT (-54% max) is preserved from turn 3.
-        if !self.ssm_snapshots.session_has_history(seq.session_hash) {
+        // A prefix-cache HIT on THIS request (cached_prefix_tokens>0) is a
+        // direct, session-hash-independent signal that this is a WARM multi-turn
+        // continuation — exactly when the captured anchor is reused next turn.
+        // The original session_has_history proxy depends on session_hash, which
+        // is UNSTABLE across turns of a growing <1024-token conversation, so it
+        // wrongly skipped capture on every warm turn of short-prompt multi-turn
+        // traffic (the warm-TTFT-climb: only turn-1's anchor ever survived). Keep
+        // the session_has_history OR so a cold first turn of a long-prompt session
+        // still captures from its second request, and cold single-turn traffic
+        // (no hit, no history) is still skipped (the measured sessionless-cost
+        // optimization is preserved).
+        if seq.cached_prefix_tokens == 0
+            && !self.ssm_snapshots.session_has_history(seq.session_hash)
+        {
             return None;
         }
         let bs = kv_cache.block_size();
