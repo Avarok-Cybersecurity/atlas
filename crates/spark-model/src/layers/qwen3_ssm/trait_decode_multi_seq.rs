@@ -170,6 +170,39 @@ impl Qwen3SsmLayer {
                     )?;
                 }
             }
+            4.. if self.ffn.can_forward_km(8.min(n) as u32) => {
+                // MISSING n=4..8 ARM (2026-07-26) — the SSM-side twin of the
+                // attention ladder's 2026-07-24 K=4 gap (multi_seq/ffn.rs:100).
+                // The ladder fell from n==2/3 straight to the per-token loop,
+                // so C=4..8 decode streamed the full dense FFN weights n
+                // TIMES per layer. MS_PROFILE at C=4: 2632us/layer FFN vs
+                // 577us mixer = 63% of the step, 126ms of ~200ms across the
+                // 48-layer SSM stack. forward_km reads each projection ONCE
+                // for all n rows (batched GEMV, ~290 GB/s vs the loop's
+                // per-seq streams). Dense-only by construction:
+                // can_forward_km is false for MoE, which keeps the loop.
+                // n > 8 is processed in chunks of 8 (the batchm GEMV family
+                // caps at m=8): weights are read ceil(n/8) times instead of n.
+                // moe_output[0..m] is reused per chunk, so each chunk's
+                // residual add runs before the next chunk overwrites it.
+                let mut done = 0usize;
+                while done < n {
+                    let m = (n - done).min(8);
+                    let normed_c = normed_base.offset(done * h * bf16);
+                    let used = self.ffn.try_forward_km(normed_c, m as u32, ctx, stream)?;
+                    debug_assert!(used, "can_forward_km checked at branch entry");
+                    let hidden_c = hidden.offset(done * h * residual_elem);
+                    ops::residual_add(
+                        ctx.gpu,
+                        self.residual_add_k,
+                        hidden_c,
+                        ctx.buffers.moe_output(),
+                        (m * h) as u32,
+                        stream,
+                    )?;
+                    done += m;
+                }
+            }
             _ => {
                 // Per-token MoE: each seq's forward() writes moe_output[0];
                 // consume it immediately with a per-seq residual add before
