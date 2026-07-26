@@ -1,0 +1,16 @@
+Gate C2 — NVFP4 smoke: Qwen3.6-27B-Q4_K_M @ http://localhost:8085
+
+  [tool-call probes]
+    ok    'What is the weather in Paris?': get_weather({"location":"Paris"})
+    ok    "What's the current weather in Tokyo right ": get_weather({"location":"Tokyo"})
+    ok    'Use the add tool to compute 17 plus 25.': add({"a":17,"b":25})
+
+  [coherence probes]
+    ok    'What is the capital of France? Answer in o': 'Paris'
+    ok    'What is 2+2? Reply with just the number.': '4'
+    ok    'List the first five prime numbers.': 'The first five prime numbers are:\n\n1.  **2**\n2.  **3**\n'
+
+  tool_calls=3/3  coherent=3/3  degenerate=0
+
+  GATE C2: PASS
+GATE_C2_EXIT=0

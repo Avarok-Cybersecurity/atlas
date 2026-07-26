@@ -53,6 +53,14 @@ impl Qwen3SsmLayer {
             // BF16 kernel via the `.0 != 0` gate at the use site
             // (ssm_forward.rs). Warn instead of error: missing-on-Metal is
             // expected, and a startup `error!` would page on benign cases.
+            // Strided twin of `conv1d_l2norm_f32_k` for the batched multi-seq
+            // decode path. Optional: absent on older kernel sets, where the
+            // multi-seq conv stays a per-sequence loop.
+            conv1d_l2norm_f32_strided_k: super::super::try_kernel(
+                gpu,
+                "causal_conv1d",
+                "causal_conv1d_update_l2norm_f32_strided",
+            ),
             conv1d_l2norm_f32_k: {
                 let h = super::super::try_kernel(
                     gpu,

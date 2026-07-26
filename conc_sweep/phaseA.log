@@ -1,0 +1,83 @@
+STATE: LEG atlas_synth SERVE_DIED
+SERVE_DIED atlas_synth
+LEG_DONE atlas_synth
+=== LEG vllm_synth: trying checkpoint centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf ===
+=== vllm up on centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf, benching ===
+    conc=  4: TTFT p50=   1128ms p99=   1266ms | TPOT p50=  75.2ms p99=  75.6ms | Agg=  52.4 tok/s | Req/s= 0.05 | n=8/8
+    conc=  8: TTFT p50=   2028ms p99=   2520ms | TPOT p50=  81.4ms p99=  82.5ms | Agg=  95.8 tok/s | Req/s= 0.09 | n=16/16
+    conc= 16: TTFT p50=   3389ms p99=   5049ms | TPOT p50=  96.9ms p99=  99.2ms | Agg= 159.5 tok/s | Req/s= 0.16 | n=32/32
+
+==========================================================================================
+  SUMMARY — Aggregate Throughput (tok/s) by Concurrency
+==========================================================================================
+
+  Agg Throughput (tok/s)    |       1       2       4       8      16
+  --------------------------+----------------------------------------
+  128/1024 decode_          |    14.2    27.8    53.3    98.8   168.9
+  256/256 balance           |    14.2    27.8    52.8    96.7   161.9
+  1024/128 prefill          |    13.9    26.4    47.5    80.5   120.3
+  1024/1024 balance         |    14.2    27.7    52.4    95.8   159.5
+
+  TTFT P99 (ms)             |       1       2       4       8      16
+  --------------------------+----------------------------------------
+  128/1024 decode_          |     205     719     664     531    1075
+  256/256 balance           |     159     300     444     822    1544
+  1024/128 prefill          |     325     627    1264    2594    5061
+  1024/1024 balance         |     327     630    1266    2520    5049
+
+  TPOT P99 (ms)             |       1       2       4       8      16
+  --------------------------+----------------------------------------
+  128/1024 decode_          |    71.5    73.1    74.9    80.9    94.1
+  256/256 balance           |    70.4    71.6    75.0    81.1    96.4
+  1024/128 prefill          |    71.3    73.3    78.8    92.2   124.4
+  1024/1024 balance         |    70.2    71.8    75.6    82.5    99.2
+
+Results saved to /workspace/.wt-golden/conc_sweep/results/vllm_synth.json
+STATE: LEG vllm_synth DONE on centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf -> results/vllm_synth.json
+LEG_DONE vllm_synth
+STATE: PHASEA_DONE
+PHASEA_DONE
+STATE: LEG atlas_synth SERVE_DIED (deathlog: conc_sweep/atlas_synth.deathlog)
+SERVE_DIED atlas_synth
+LEG_DONE atlas_synth
+SKIP vllm_synth (results exist)
+STATE: PHASEA_DONE
+PHASEA_DONE
+=== LEG atlas_synth: serve up, benching ===
+    conc=  4: TTFT p50=   2579ms p99=   4721ms | TPOT p50= 197.6ms p99= 197.6ms | Agg=   3.4 tok/s | Req/s= 0.00 | n=4/8
+    conc=  8: TTFT p50=   4727ms p99=   6300ms | TPOT p50= 347.7ms p99= 347.7ms | Agg=   2.6 tok/s | Req/s= 0.01 | n=11/16
+    conc= 16: TTFT p50=   5517ms p99=   6668ms | TPOT p50= 635.2ms p99= 636.1ms | Agg=   0.2 tok/s | Req/s= 0.02 | n=29/32
+
+==========================================================================================
+  SUMMARY — Aggregate Throughput (tok/s) by Concurrency
+==========================================================================================
+
+  Agg Throughput (tok/s)    |       1       2       4       8      16
+  --------------------------+----------------------------------------
+  128/1024 decode_          |    27.3    20.5    20.1    22.7    23.5
+  256/256 balance           |    24.3    20.5    20.0    22.6    23.4
+  1024/128 prefill          |    25.5    20.3    19.9    22.5     5.8
+  1024/1024 balance         |    29.4     1.5     3.4     2.6     0.2
+
+  TTFT P99 (ms)             |       1       2       4       8      16
+  --------------------------+----------------------------------------
+  128/1024 decode_          |     619     657    1261    2666    4578
+  256/256 balance           |     743     669    1291    2366    4561
+  1024/128 prefill          |    1684     680    1289    2258    5666
+  1024/1024 balance         |     472    1959    4721    6300    6668
+
+  TPOT P99 (ms)             |       1       2       4       8      16
+  --------------------------+----------------------------------------
+  128/1024 decode_          |    36.6    96.9   198.2   350.7   673.8
+  256/256 balance           |    41.4    95.5   195.6   346.3   670.9
+  1024/128 prefill          |    36.4    94.8   193.0   341.3   659.9
+  1024/1024 balance         |    34.6    36.3   197.6   347.7   636.1
+
+Results saved to /workspace/.wt-golden/conc_sweep/results/atlas_synth.json
+STATE: LEG atlas_synth DONE -> results/atlas_synth.json
+pool-exhausted lines: 0
+LEG_DONE atlas_synth
+SKIP vllm_synth (results exist)
+STATE: PHASE A compare written -> results/compare.txt
+STATE: PHASEA_DONE
+PHASEA_DONE

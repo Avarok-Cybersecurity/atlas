@@ -1,0 +1,30 @@
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO - Total samples issued: 0
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO - Total samples completed: 0
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO - Total samples failed: 0
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO - Duration: N/A
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO - QPS: N/A
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO - TPS: N/A
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO - Accuracy:
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -   bfcl_v4::function_calling: 0.8456 (unit=259, repeats=1, total=259, duration=1292.90s)
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -     responses: 259/259 scored (0 empty, 0 missing)
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -     output tokens (avg/min/max): 102.7/16/1024
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -     irrelevance: 100.00%
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -     live_irrelevance: 76.47%
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -     live_multiple: 85.71%
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -     live_parallel: 93.75%
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -     live_parallel_multiple: 75.00%
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -     live_simple: 100.00%
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -     multiple: 96.67%
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -     parallel: 83.33%
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -     parallel_multiple: 83.33%
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -     simple_java: 46.67%
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -     simple_javascript: 42.86%
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -     simple_python: 95.00%
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -   Average: 0.8456
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO -   OSL tokenization: 0.008s
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO - ----------------- End of Summary -----------------
+2026-07-25 06:48:57,439 - inference_endpoint.commands.benchmark.execute - INFO - Report written to results/accgate_control_062706/report.txt
+2026-07-25 06:48:57,440 - inference_endpoint.commands.benchmark.execute - INFO - Completed in 1292.9s
+2026-07-25 06:48:57,440 - inference_endpoint.commands.benchmark.execute - INFO - Accuracy-only: 259 samples evaluated
+2026-07-25 06:48:57,458 - inference_endpoint.commands.benchmark.execute - INFO - Saved: results/accgate_control_062706/accuracy/accuracy_results.json
+2026-07-25 06:48:57,459 - inference_endpoint.commands.benchmark.execute - INFO - Partial results saved to results/accgate_control_062706

@@ -1,0 +1,9 @@
+[regres] t0 cold: ttft= 2651.0ms tpot= 44.70ms n=276
+[regres] t1 cold: ttft= 3217.9ms tpot= 41.16ms n=264
+[regres] t2 warm: ttft=  865.9ms tpot= 46.57ms n=237
+[regres] t3 warm: ttft= 1059.1ms tpot= 43.88ms n=294
+[regres] t4 warm: ttft=  890.0ms tpot= 44.62ms n=299
+[regres] t5 warm: ttft=  896.2ms tpot= 46.85ms n=258
+[regres] t6 warm: ttft=  878.7ms tpot= 41.91ms n=184
+[regres] t7 warm: ttft=  765.8ms tpot= 45.32ms n=207
+[regres] WARM TPOT median=44.97ms mean=44.86ms sha=c3a4fb003ed5e160

@@ -1,0 +1,6 @@
+MTP verify timing [25 steps, seq_len=3175]: d2h=0.11ms(x1.0) dequant=0.47ms(x4.0) pipeline=0.00ms(x4.0) penalties=0.00ms(x4.0) argmax=0.20ms(x4.0) TOTAL=101.04ms(x1.0)
+MTP verify timing [25 steps, seq_len=3223]: d2h=0.11ms(x1.0) dequant=0.46ms(x4.0) pipeline=0.00ms(x4.0) penalties=0.00ms(x4.0) argmax=0.20ms(x4.0) TOTAL=100.96ms(x1.0)
+MTP verify timing [25 steps, seq_len=3310]: d2h=0.12ms(x1.0) dequant=0.46ms(x4.0) pipeline=0.00ms(x4.0) penalties=0.00ms(x4.0) argmax=0.21ms(x4.0) TOTAL=100.76ms(x1.0)
+MTP verify timing [25 steps, seq_len=3365]: d2h=0.11ms(x1.0) dequant=0.46ms(x4.0) pipeline=0.00ms(x4.0) penalties=0.00ms(x4.0) argmax=0.20ms(x4.0) TOTAL=101.07ms(x1.0)
+MTP verify timing [25 steps, seq_len=3416]: d2h=0.11ms(x1.0) dequant=0.46ms(x4.0) pipeline=0.00ms(x4.0) penalties=0.00ms(x4.0) argmax=0.19ms(x4.0) TOTAL=101.69ms(x1.0)
+MTP verify timing [25 steps, seq_len=3468]: d2h=0.12ms(x1.0) dequant=0.46ms(x4.0) pipeline=0.00ms(x4.0) penalties=0.00ms(x4.0) argmax=0.20ms(x4.0) TOTAL=101.26ms(x1.0)

@@ -1,0 +1,2 @@
+recompute_wu → chunk_delta_h_ksplit → chunk_fwd_o)
+REGISTER-RESIDENT warm-replay path ACTIVE (default; H in regs, no smem-H)

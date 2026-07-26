@@ -1,0 +1,36 @@
+[2m2026-07-25T16:15:23.200984Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=5us thinking=0us template_render_and_tokenize=593us prompt_tokens=125
+[2m2026-07-25T16:15:23.201003Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=649us loop_detect=1us session_hash=1us sampling_and_grammar=9us total_pre_dispatch=661us
+[2m2026-07-25T16:15:23.911910Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=12us thinking=0us template_render_and_tokenize=590us prompt_tokens=125
+[2m2026-07-25T16:15:23.911926Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=646us loop_detect=1us session_hash=1us sampling_and_grammar=7us total_pre_dispatch=656us
+[2m2026-07-25T16:15:24.618564Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=5us thinking=0us template_render_and_tokenize=569us prompt_tokens=125
+[2m2026-07-25T16:15:24.618585Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=641us loop_detect=1us session_hash=1us sampling_and_grammar=8us total_pre_dispatch=652us
+[2m2026-07-25T16:15:25.090051Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=9us thinking=1us template_render_and_tokenize=685us prompt_tokens=125
+[2m2026-07-25T16:15:25.090070Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=749us loop_detect=1us session_hash=1us sampling_and_grammar=10us total_pre_dispatch=761us
+[2m2026-07-25T16:15:25.455492Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=13us thinking=0us template_render_and_tokenize=696us prompt_tokens=125
+[2m2026-07-25T16:15:25.455513Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=756us loop_detect=1us session_hash=1us sampling_and_grammar=9us total_pre_dispatch=768us
+[2m2026-07-25T16:15:25.829887Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=4us thinking=0us template_render_and_tokenize=590us prompt_tokens=125
+[2m2026-07-25T16:15:25.829917Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=656us loop_detect=1us session_hash=1us sampling_and_grammar=10us total_pre_dispatch=669us
+[2m2026-07-25T16:15:44.739496Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=4us thinking=0us template_render_and_tokenize=13868us prompt_tokens=12931
+[2m2026-07-25T16:15:44.739520Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=13906us loop_detect=1us session_hash=3us sampling_and_grammar=7us total_pre_dispatch=13917us
+[2m2026-07-25T16:16:03.146612Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=3us thinking=0us template_render_and_tokenize=10703us prompt_tokens=12931
+[2m2026-07-25T16:16:03.146638Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=10738us loop_detect=2us session_hash=3us sampling_and_grammar=10us total_pre_dispatch=10753us
+[2m2026-07-25T16:16:03.586708Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=6us thinking=0us template_render_and_tokenize=13882us prompt_tokens=12931
+[2m2026-07-25T16:16:03.586756Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=13948us loop_detect=1us session_hash=4us sampling_and_grammar=14us total_pre_dispatch=13968us
+[2m2026-07-25T16:16:04.025121Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=5us thinking=0us template_render_and_tokenize=12957us prompt_tokens=12931
+[2m2026-07-25T16:16:04.025152Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=13003us loop_detect=0us session_hash=4us sampling_and_grammar=9us total_pre_dispatch=13017us
+[2m2026-07-25T16:16:04.457176Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=3us thinking=0us template_render_and_tokenize=10305us prompt_tokens=12931
+[2m2026-07-25T16:16:04.457197Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=10355us loop_detect=2us session_hash=3us sampling_and_grammar=8us total_pre_dispatch=10368us
+[2m2026-07-25T16:16:04.901434Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=4us thinking=0us template_render_and_tokenize=12975us prompt_tokens=12931
+[2m2026-07-25T16:16:04.901462Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=13015us loop_detect=1us session_hash=4us sampling_and_grammar=10us total_pre_dispatch=13031us
+[2m2026-07-25T16:16:06.375095Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=21us thinking=0us template_render_and_tokenize=2882us prompt_tokens=1257
+[2m2026-07-25T16:16:06.375129Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=2938us loop_detect=17us session_hash=2us sampling_and_grammar=8us total_pre_dispatch=2965us
+[2m2026-07-25T16:16:08.489810Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=21us thinking=1us template_render_and_tokenize=3108us prompt_tokens=1257
+[2m2026-07-25T16:16:08.489832Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=3212us loop_detect=2us session_hash=2us sampling_and_grammar=11us total_pre_dispatch=3227us
+[2m2026-07-25T16:16:10.900327Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=21us thinking=0us template_render_and_tokenize=1357us prompt_tokens=1257
+[2m2026-07-25T16:16:10.900341Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=1408us loop_detect=3us session_hash=2us sampling_and_grammar=5us total_pre_dispatch=1418us
+[2m2026-07-25T16:16:11.482166Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=25us thinking=0us template_render_and_tokenize=1964us prompt_tokens=1257
+[2m2026-07-25T16:16:11.482193Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=2034us loop_detect=3us session_hash=4us sampling_and_grammar=9us total_pre_dispatch=2050us
+[2m2026-07-25T16:16:11.963523Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=28us thinking=0us template_render_and_tokenize=1980us prompt_tokens=1257
+[2m2026-07-25T16:16:11.963550Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=2053us loop_detect=3us session_hash=4us sampling_and_grammar=9us total_pre_dispatch=2069us
+[2m2026-07-25T16:16:12.438197Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m CHAT_PHASE prepare: msg_entry=27us thinking=0us template_render_and_tokenize=1992us prompt_tokens=1257
+[2m2026-07-25T16:16:12.438224Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m CHAT_PHASE handler: prepare=2060us loop_detect=2us session_hash=4us sampling_and_grammar=9us total_pre_dispatch=2075us

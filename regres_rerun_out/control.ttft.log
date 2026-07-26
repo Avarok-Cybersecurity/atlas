@@ -1,0 +1,4 @@
+[control] d_128tok   delta=   288ch  p50=   476.2  min=   466.6 ms
+[control] d_400tok   delta=   864ch  p50=   554.4  min=   545.7 ms
+[control] d_900tok   delta=  2016ch  p50=   844.6  min=   841.4 ms
+[control] d_2000tok  delta=  4320ch  p50=  1373.8  min=  1372.1 ms

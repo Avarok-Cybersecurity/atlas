@@ -1,0 +1,90 @@
+{
+  "tag": "mc_on",
+  "base_chars": 37440,
+  "cells": {
+    "d_128tok": {
+      "delta_chars": 288,
+      "n": 5,
+      "p50": 462.7799987792969,
+      "min": 461.2236022949219,
+      "p90": 465.78240394592285,
+      "vals": [
+        461.2302780151367,
+        465.78240394592285,
+        462.7799987792969,
+        463.53769302368164,
+        461.2236022949219
+      ],
+      "texts": [
+        "# rep 1\ndef _resolve_readonly_fields(self, obj, name):\n    # walk the admin class",
+        "# rep 2\ndef _resolve_readonly_fields(self, obj, name):\n    # walk the admin class",
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors",
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors",
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors"
+      ]
+    },
+    "d_400tok": {
+      "delta_chars": 864,
+      "n": 5,
+      "p50": 557.5590133666992,
+      "min": 546.574592590332,
+      "p90": 564.1491413116455,
+      "vals": [
+        553.3277988433838,
+        558.0167770385742,
+        546.574592590332,
+        564.1491413116455,
+        557.5590133666992
+      ],
+      "texts": [
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors",
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors",
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors",
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors",
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors"
+      ]
+    },
+    "d_900tok": {
+      "delta_chars": 2016,
+      "n": 5,
+      "p50": 1111.4451885223389,
+      "min": 1109.0404987335205,
+      "p90": 1131.4637660980225,
+      "vals": [
+        1129.9984455108643,
+        1131.4637660980225,
+        1109.9472045898438,
+        1111.4451885223389,
+        1109.0404987335205
+      ],
+      "texts": [
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors",
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors",
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors",
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors",
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors"
+      ]
+    },
+    "d_2000tok": {
+      "delta_chars": 4320,
+      "n": 5,
+      "p50": 1796.241044998169,
+      "min": 1789.6170616149902,
+      "p90": 1798.7725734710693,
+      "vals": [
+        1798.0074882507324,
+        1798.7725734710693,
+        1796.241044998169,
+        1790.9510135650635,
+        1789.6170616149902
+      ],
+      "texts": [
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors",
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors",
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors",
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors",
+        "def _resolve_readonly_fields(self, obj, name):\n    # walk the admin class MRO so inherited descriptors"
+      ]
+    }
+  }
+}

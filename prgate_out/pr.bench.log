@@ -1,0 +1,25 @@
+2026-07-25 10:20:26,085 - inference_endpoint.async_utils.services.metrics_aggregator.aggregator - INFO - Draining 0 async tasks...
+2026-07-25 10:20:26,085 - inference_endpoint.async_utils.services.metrics_aggregator.aggregator - INFO - Async tasks drained (n_pending_tasks=0 at finalize)
+2026-07-25 10:20:26,103 - inference_endpoint.async_utils.services.metrics_aggregator.aggregator - INFO - Aggregator finalized: 526 total records processed
+2026-07-25 10:20:26,574 - inference_endpoint.endpoint_client.http_client - INFO - [c6b4ad40] Shutdown complete.
+2026-07-25 10:20:26,574 - inference_endpoint.commands.benchmark.execute - INFO - Closing publisher (buffer=0, pending=0)...
+2026-07-25 10:20:26,574 - inference_endpoint.commands.benchmark.execute - INFO - Waiting for services to finish processing...
+2026-07-25 10:20:26,574 - inference_endpoint.commands.benchmark.execute - INFO - Built report from final_snapshot.json
+Qwen3.6-27B-Q4_K_M (Streaming: True):  17%|█▋        | 174/1007 [12:06<57:57,  4.17s/it]
+2026-07-25 10:20:26,576 - inference_endpoint.commands.benchmark.execute - INFO - ----------------- Summary -----------------
+2026-07-25 10:20:26,576 - inference_endpoint.commands.benchmark.execute - INFO - Version: 0.1.0
+2026-07-25 10:20:26,576 - inference_endpoint.commands.benchmark.execute - INFO - Git SHA: 3131730
+2026-07-25 10:20:26,576 - inference_endpoint.commands.benchmark.execute - INFO - Seeds: scheduler_random_seed=42, dataloader_random_seed=42, warmup_random_seed=42
+2026-07-25 10:20:26,576 - inference_endpoint.commands.benchmark.execute - INFO - Total samples issued: 174
+2026-07-25 10:20:26,576 - inference_endpoint.commands.benchmark.execute - INFO - Total samples completed: 174
+2026-07-25 10:20:26,576 - inference_endpoint.commands.benchmark.execute - INFO - Total samples failed: 0
+2026-07-25 10:20:26,576 - inference_endpoint.commands.benchmark.execute - INFO - Duration: 724.33 seconds
+2026-07-25 10:20:26,576 - inference_endpoint.commands.benchmark.execute - INFO - QPS: 0.24
+2026-07-25 10:20:26,576 - inference_endpoint.commands.benchmark.execute - INFO - ----------------- End of Summary -----------------
+2026-07-25 10:20:26,576 - inference_endpoint.commands.benchmark.execute - INFO - Report written to results/prgate_pr_100817/report.txt
+2026-07-25 10:20:26,607 - inference_endpoint.commands.benchmark.execute - INFO - Score for performance: 0.5948 (1 repeats)
+2026-07-25 10:20:26,607 - inference_endpoint.commands.benchmark.execute - INFO - Completed in 724.3s
+2026-07-25 10:20:26,607 - inference_endpoint.commands.benchmark.execute - INFO - Results: 174/174 successful
+2026-07-25 10:20:26,607 - inference_endpoint.commands.benchmark.execute - INFO - Estimated QPS: 0.2
+2026-07-25 10:20:26,607 - inference_endpoint.commands.benchmark.execute - INFO - Saved: results/prgate_pr_100817/results.json
+2026-07-25 10:20:26,623 - inference_endpoint.commands.benchmark.execute - INFO - Partial results saved to results/prgate_pr_100817

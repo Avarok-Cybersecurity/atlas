@@ -64,6 +64,11 @@ pub struct Qwen3SsmLayer {
     conv1d_k: KernelHandle,
     conv1d_l2norm_k: KernelHandle,
     conv1d_l2norm_f32_k: KernelHandle,
+    /// `conv1d_l2norm_f32_k` with explicit input/output row strides, letting
+    /// the concurrent-decode path batch all N sequences into one launch.
+    /// `KernelHandle(0)` on kernel sets that predate it — the multi-seq path
+    /// then falls back to the per-sequence conv loop.
+    conv1d_l2norm_f32_strided_k: KernelHandle,
     gdn_k: KernelHandle,
     gdn_f32_k: KernelHandle,
     gdn_f32_norm_k: KernelHandle,

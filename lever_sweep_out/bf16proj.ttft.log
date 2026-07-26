@@ -1,0 +1,4 @@
+[bf16proj] d_128tok   delta=   288ch  p50=   243.0  min=   241.1 ms
+[bf16proj] d_400tok   delta=   864ch  p50=   232.2  min=   228.0 ms
+[bf16proj] d_900tok   delta=  2016ch  p50=   235.1  min=   230.4 ms
+[bf16proj] d_2000tok  delta=  4320ch  p50=   244.6  min=   239.6 ms

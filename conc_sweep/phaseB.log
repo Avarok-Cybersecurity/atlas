@@ -1,0 +1,48 @@
+=== LEG atlasB_nographs: serve up, benching (env: <none>) ===
+  128/1024 decode_          |    27.4    20.7    20.3    22.9    23.7
+  256/256 balance           |    24.3    20.7    20.2    22.8    23.6
+  1024/128 prefill          |    25.6    20.4    20.1    22.6    23.4
+  1024/1024 balance         |    25.7     3.8     3.4     4.8     0.2
+
+  TTFT P99 (ms)             |       1       2       4       8      16
+  --------------------------+----------------------------------------
+  128/1024 decode_          |     621     665    1255    2208    4236
+  256/256 balance           |     742     586    1276    2377    4369
+  1024/128 prefill          |    1684     674    1285    2360    4506
+  1024/1024 balance         |     282    2253    3702    5187    7214
+
+  TPOT P99 (ms)             |       1       2       4       8      16
+  --------------------------+----------------------------------------
+  128/1024 decode_          |    36.5    96.2   196.5   347.9   668.4
+  256/256 balance           |    41.3    94.7   194.0   344.0   664.7
+  1024/128 prefill          |    36.4    93.9   191.4   339.4   654.4
+  1024/1024 balance         |    40.1    97.2    97.2   349.4   666.9
+
+Results saved to /workspace/.wt-golden/conc_sweep/results/atlasB_nographs.json
+STATE: LEG atlasB_nographs DONE -> results/atlasB_nographs.json
+LEG_DONE atlasB_nographs
+=== LEG atlasB_graphs: serve up, benching (env: -e ATLAS_DECODE_GRAPHS_MULTISEQ=1) ===
+  128/1024 decode_          |    27.4    21.3    18.3    23.5    24.3
+  256/256 balance           |    24.3    21.3    20.8    23.4    24.3
+  1024/128 prefill          |    25.6    20.9    20.7    23.2     5.8
+  1024/1024 balance         |    29.4     1.0    20.7    19.4     0.7
+
+  TTFT P99 (ms)             |       1       2       4       8      16
+  --------------------------+----------------------------------------
+  128/1024 decode_          |     616     645    1691    2557    4489
+  256/256 balance           |     737     660    1258    2329    4195
+  1024/128 prefill          |    1680     672    1265    2320    5660
+  1024/1024 balance         |     473    1396    1168    4421    7898
+
+  TPOT P99 (ms)             |       1       2       4       8      16
+  --------------------------+----------------------------------------
+  128/1024 decode_          |    36.6    93.5   190.6   338.1   649.5
+  256/256 balance           |    41.4    92.1   188.6   334.4   645.8
+  1024/128 prefill          |    36.4    91.4   185.7   329.7   636.6
+  1024/1024 balance         |    34.6    33.1   191.9   340.5   656.2
+
+Results saved to /workspace/.wt-golden/conc_sweep/results/atlasB_graphs.json
+STATE: LEG atlasB_graphs DONE -> results/atlasB_graphs.json
+LEG_DONE atlasB_graphs
+STATE: PHASEB_DONE
+PHASEB_DONE

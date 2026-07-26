@@ -1,0 +1,2 @@
+[2m2026-07-25T10:50:19.192434Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill_recur[0m[2m:[0m GDN prefill: FLA chunked path ACTIVE (baked default: recompute_wu → chunk_delta_h_ksplit → chunk_fwd_o)
+[2m2026-07-25T10:53:20.495852Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill_recur[0m[2m:[0m GDN prefill: REGISTER-RESIDENT warm-replay path ACTIVE (ATLAS_GDN_REGRESIDENT; H in regs, no smem-H)

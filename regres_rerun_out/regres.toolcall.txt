@@ -1,0 +1,1 @@
+[{"id": "call_0000000000000000", "type": "function", "function": {"name": "get_weather", "arguments": "{\"location\":\"Paris\"}"}}]

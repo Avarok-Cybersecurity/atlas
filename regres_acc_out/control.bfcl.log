@@ -1,0 +1,4 @@
+2026-07-25 06:23:38,950 - inference_endpoint.main - ERROR - Config error: 1 validation error for tagged-union[function-after[_propagate_client_api_type(), function-after[_resolve_and_validate(), OfflineBenchmarkConfig]],function-after[_propagate_client_api_type(), function-after[_resolve_and_validate(), OnlineBenchmarkConfig]],function-after[_propagate_client_api_type(), function-after[_resolve_and_validate(), BenchmarkConfig]]]
+online
+  Value error, load_pattern.type=agentic_inference requires the performance dataset to have agentic_inference config [type=value_error, input_value={'name': 'edge-agentic-fu...ble_cpu_affinity': True}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/value_error

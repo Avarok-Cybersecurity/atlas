@@ -1,0 +1,9 @@
+[bf16proj] t0 cold: ttft= 2777.4ms tpot= 45.96ms n=236
+[bf16proj] t1 cold: ttft= 3327.7ms tpot= 42.04ms n=230
+[bf16proj] t2 warm: ttft=  926.3ms tpot= 45.13ms n=251
+[bf16proj] t3 warm: ttft= 1254.0ms tpot= 44.81ms n=283
+[bf16proj] t4 warm: ttft= 1069.3ms tpot= 49.15ms n=280
+[bf16proj] t5 warm: ttft= 1063.1ms tpot= 44.69ms n=216
+[bf16proj] t6 warm: ttft=  915.7ms tpot= 40.12ms n=177
+[bf16proj] t7 warm: ttft=  870.8ms tpot= 44.83ms n=177
+[bf16proj] WARM TPOT median=44.82ms mean=44.79ms sha=b5262c06e6805b50

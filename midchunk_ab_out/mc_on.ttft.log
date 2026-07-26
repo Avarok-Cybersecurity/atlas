@@ -1,0 +1,4 @@
+[mc_on] d_128tok   delta=   288ch  p50=   462.8  min=   461.2 ms
+[mc_on] d_400tok   delta=   864ch  p50=   557.6  min=   546.6 ms
+[mc_on] d_900tok   delta=  2016ch  p50=  1111.4  min=  1109.0 ms
+[mc_on] d_2000tok  delta=  4320ch  p50=  1796.2  min=  1789.6 ms

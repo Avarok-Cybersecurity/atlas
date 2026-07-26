@@ -197,6 +197,11 @@ fn main() {
 
     // Per-target: (target_idx, vec of (stem, module_name))
     let mut all_target_modules: Vec<Vec<(String, String)>> = Vec::new();
+    // Per-target: (module, kernel) pairs this model's files dropped by shadowing
+    // their `common/` namesakes. Baked into the binary so the startup audit can
+    // separate "dropped by a fork" (fatal) from "never built for this target"
+    // (expected). See `shadowed_dropped_pairs`.
+    let mut all_target_drops: Vec<Vec<(String, String)>> = Vec::new();
 
     // 2026-05-24 dedup+parallel: pre-walk every (target, cu_file) pair
     // and split into two queues:
@@ -336,6 +341,30 @@ fn main() {
 
         all_target_modules.push(modules);
 
+        let drops = shadowed_dropped_pairs(
+            target.common_kernel_dir.as_deref(),
+            &target.model_kernel_dir,
+            source_ext,
+            &target.module_overrides,
+        );
+        if !drops.is_empty() {
+            println!(
+                "cargo:warning=atlas-kernels: ({}, {}) drops {} kernel(s) by shadowing common/: {}. \
+                 A dropped kernel fails CLOSED (try_kernel -> handle 0). If the model genuinely \
+                 cannot use it this is fine; the startup audit will only hard-error if the model's \
+                 dispatch actually requests it.",
+                target.model,
+                target.quant,
+                drops.len(),
+                drops
+                    .iter()
+                    .map(|(m, f)| format!("{m}::{f}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
+        all_target_drops.push(drops);
+
         println!(
             "cargo:rerun-if-changed={}",
             target.model_kernel_dir.display()
@@ -436,8 +465,13 @@ fn main() {
     }
 
     // ── Generate target_ptx.rs ──
-    let generated =
-        generate_target_ptx_rs(&targets, &all_target_modules, output_ext, uses_cuda_api);
+    let generated = generate_target_ptx_rs(
+        &targets,
+        &all_target_modules,
+        &all_target_drops,
+        output_ext,
+        uses_cuda_api,
+    );
     let gen_path = out_dir.join("target_ptx.rs");
     std::fs::write(&gen_path, &generated)
         .unwrap_or_else(|e| panic!("Failed to write {}: {e}", gen_path.display()));
@@ -1045,3 +1079,120 @@ use build_codegen::generate_target_ptx_rs;
 mod build_target;
 use build_target::resolve_compute_target;
 // Force recompilation 1775404930
+
+/// Every `(module, kernel)` this target's model-specific files drop relative to
+/// their `common/` namesakes.
+///
+/// SHADOWING DRIFT. Shadowing is whole-file, not per-symbol: a model file
+/// replaces its common namesake entirely. When `common/` later gains a kernel
+/// the fork never picked up, that kernel silently vanishes for this model —
+/// `try_kernel` returns handle 0 and whatever depends on it fails CLOSED. That
+/// is exactly how the 27B lost the four multi-sequence decode kernels
+/// (`gated_delta_rule_decode_f32_{norm,conv_norm,strided,strided_norm}`),
+/// pinning every concurrent decode to the per-sequence fallback until
+/// 2026-07-26.
+///
+/// This list is baked into the binary (`TargetPtxSet::shadowed_dropped`) so the
+/// startup kernel audit can tell the two failure classes apart:
+///
+///   * a lookup that failed AND is in this list — the kernel EXISTS in
+///     `common/`, this model's fork dropped it. A build defect: fatal.
+///   * a lookup that failed and is NOT — the kernel was never compiled for this
+///     target at all (typically another architecture's: MLA, hyper-connection,
+///     CSA). Expected, and merely informational.
+///
+/// Without that split the audit prints ~26 benign entries for a Qwen model and
+/// the one that matters hides among them.
+fn shadowed_dropped_pairs(
+    common_dir: Option<&std::path::Path>,
+    model_dir: &std::path::Path,
+    source_ext: &str,
+    module_overrides: &HashMap<String, String>,
+) -> Vec<(String, String)> {
+    let Some(common) = common_dir else {
+        return Vec::new();
+    };
+    let common_by_stem: HashMap<String, PathBuf> = find_cu_files(common, source_ext)
+        .into_iter()
+        .map(|f| (f.file_stem().unwrap().to_str().unwrap().to_string(), f))
+        .collect();
+    let mut out = Vec::new();
+    for f in find_cu_files(model_dir, source_ext) {
+        let stem = f.file_stem().unwrap().to_str().unwrap().to_string();
+        let Some(common_f) = common_by_stem.get(&stem) else {
+            continue;
+        };
+        let module = module_overrides.get(&stem).cloned().unwrap_or(stem);
+        for func in shadowed_missing_symbols(common_f, &f) {
+            out.push((module.clone(), func));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Kernel entry points a shadowing model file drops relative to its `common/`
+/// namesake. Scans for `extern "C" __global__ void <name>` (tolerating an
+/// interposed `__launch_bounds__(...)`), which is how every Atlas kernel entry
+/// point is declared. Text-scan by design: it runs before nvcc, so it cannot
+/// depend on compiled artifacts. Returns sorted names for stable warnings.
+fn shadowed_missing_symbols(
+    common_file: &std::path::Path,
+    model_file: &std::path::Path,
+) -> Vec<String> {
+    fn entry_points(p: &std::path::Path) -> std::collections::BTreeSet<String> {
+        let Ok(text) = std::fs::read_to_string(p) else {
+            return Default::default();
+        };
+        let mut out = std::collections::BTreeSet::new();
+        for (idx, _) in text.match_indices("__global__") {
+            let tail = &text[idx..];
+            // Skip `__global__`, an optional `__launch_bounds__(...)`, and the
+            // return type, then take the identifier before `(`.
+            let Some(paren) = tail.find('(') else {
+                continue;
+            };
+            let mut head = &tail[..paren];
+            if let Some(lb) = head.find("__launch_bounds__") {
+                // `__launch_bounds__(N, M)` — the name follows its close paren.
+                let after = &tail[idx_after_balanced(tail, lb)..];
+                let Some(p2) = after.find('(') else { continue };
+                head = &after[..p2];
+            }
+            if let Some(name) = head.split_whitespace().last() {
+                let name = name.trim_start_matches('*');
+                if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    out.insert(name.to_string());
+                }
+            }
+        }
+        out
+    }
+    // Index just past the balanced `(...)` that follows `from` in `s`.
+    fn idx_after_balanced(s: &str, from: usize) -> usize {
+        let bytes = s.as_bytes();
+        let mut i = from;
+        while i < bytes.len() && bytes[i] != b'(' {
+            i += 1;
+        }
+        let mut depth = 0usize;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return i + 1;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        from
+    }
+    entry_points(common_file)
+        .difference(&entry_points(model_file))
+        .cloned()
+        .collect()
+}

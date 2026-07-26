@@ -1,0 +1,4 @@
+[regres] d_128tok   delta=   288ch  p50=   438.2  min=   429.1 ms
+[regres] d_400tok   delta=   864ch  p50=   495.2  min=   487.1 ms
+[regres] d_900tok   delta=  2016ch  p50=   717.2  min=   712.6 ms
+[regres] d_2000tok  delta=  4320ch  p50=  1109.7  min=  1105.2 ms

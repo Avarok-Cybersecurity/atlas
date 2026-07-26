@@ -47,3 +47,6 @@
 - 2026-07-26T00:40:49Z LEG atlasB_nographs DONE -> results/atlasB_nographs.json
 - 2026-07-26T02:57:30Z LEG atlasB_graphs DONE -> results/atlasB_graphs.json
 - 2026-07-26T02:57:34Z PHASEB_DONE
+- 2026-07-26T18:21:44Z LEG atlasC_perseq DONE -> results/atlasC_perseq.json
+- 2026-07-26T21:07:11Z LEG atlasC_batched DONE -> results/atlasC_batched.json
+- 2026-07-26T21:07:15Z PHASEC_DONE

@@ -112,33 +112,54 @@ impl Qwen3SsmLayer {
             detail_step!("recurrent_batched_ba");
 
             let conv_out = ctx.buffers.ssm_conv_out_f32();
-            // CONV INPUT-STRIDE FIX: the conv kernel strides its input by `dim`
-            // (= conv_dim), but `deinterleaved` (the QKVZ-projection output) is
-            // laid out [Q|K|V|Z] with stride `qkvz_size` (> conv_dim). A single
-            // batched launch (batch=n) would read seq b>=1 from `b*conv_dim`
-            // instead of `b*qkvz_size`, pulling in the previous seq's Z-gate
-            // region → garbage into the GDN scan (correct at n=1, corrupt at
-            // n>=2). Mirror the proven per-token pattern in
-            // `trait_decode_batched_conv_gdn.rs`: run the cheap conv per-seq
-            // (batch=1) with pre-offset pointers so the qkvz_size input stride
-            // and conv_dim output stride are both honored. The expensive GDN
-            // scan below stays fully batched.
-            for i in 0..n {
-                ops::conv1d_update_l2norm(
+            // CONV INPUT-STRIDE: the conv reads `deinterleaved` (the QKVZ
+            // projection output), whose rows are `qkvz_size` apart, and writes
+            // a `conv_dim`-strided FP32 row. The plain kernel hardcodes BOTH
+            // strides as `dim` (= conv_dim), so a batch=n launch would read
+            // seq b>=1 from `b*conv_dim` instead of `b*qkvz_size` — landing in
+            // the previous seq's Z-gate region and feeding garbage into the
+            // GDN scan (correct at n=1, silently corrupt at n>=2).
+            //
+            // The strided kernel takes both strides explicitly, so the whole
+            // batch goes in ONE launch. Kernel sets that predate it report
+            // handle 0; there we keep the per-seq loop with pre-offset
+            // pointers, which honours the same two strides one row at a time.
+            if self.conv1d_l2norm_f32_strided_k.0 != 0 {
+                ops::conv1d_update_l2norm_strided(
                     ctx.gpu,
-                    self.conv1d_l2norm_f32_k,
-                    conv_state_base.offset(i * self.conv_state_bytes),
-                    deinterleaved.offset(i * qkvz_size * bf16),
+                    self.conv1d_l2norm_f32_strided_k,
+                    conv_state_base,
+                    deinterleaved,
                     &self.ssm.conv1d,
-                    conv_out.offset(i * conv_dim as usize * 4), // FP32 output, conv_dim-strided
+                    conv_out,
                     conv_dim,
                     d_conv,
-                    1,
+                    n as u32,
                     qk_channels,
                     kd as u32,
                     1e-6,
+                    qkvz_size as u32, // input row stride (BF16 elements)
+                    conv_dim,         // output row stride (FP32 elements)
                     stream,
                 )?;
+            } else {
+                for i in 0..n {
+                    ops::conv1d_update_l2norm(
+                        ctx.gpu,
+                        self.conv1d_l2norm_f32_k,
+                        conv_state_base.offset(i * self.conv_state_bytes),
+                        deinterleaved.offset(i * qkvz_size * bf16),
+                        &self.ssm.conv1d,
+                        conv_out.offset(i * conv_dim as usize * 4), // FP32, conv_dim-strided
+                        conv_dim,
+                        d_conv,
+                        1,
+                        qk_channels,
+                        kd as u32,
+                        1e-6,
+                        stream,
+                    )?;
+                }
             }
             detail_step!("recurrent_batched_conv");
 

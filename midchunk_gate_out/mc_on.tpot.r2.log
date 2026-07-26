@@ -1,0 +1,9 @@
+[mc_on_r2] t0 cold: ttft= 2841.0ms tpot= 43.95ms n=231
+[mc_on_r2] t1 cold: ttft=  887.9ms tpot= 39.95ms n=282
+[mc_on_r2] t2 warm: ttft= 1012.6ms tpot= 43.61ms n=255
+[mc_on_r2] t3 warm: ttft= 1005.0ms tpot= 42.18ms n=296
+[mc_on_r2] t4 warm: ttft= 1044.4ms tpot= 48.07ms n=240
+[mc_on_r2] t5 warm: ttft=  908.0ms tpot= 39.50ms n=215
+[mc_on_r2] t6 warm: ttft=  882.1ms tpot= 41.48ms n=215
+[mc_on_r2] t7 warm: ttft=  891.6ms tpot= 51.94ms n=189
+[mc_on_r2] WARM TPOT median=42.90ms mean=44.47ms sha=d347e7a36621daa1

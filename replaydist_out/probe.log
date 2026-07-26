@@ -1,0 +1,32 @@
+replaying 25 real turns of django__django-16899
+  turn   0  prompt=   5371ch  delta=  5371ch  ttft=  1635.2 ms
+  turn   1  prompt=   6089ch  delta=   718ch  ttft=  2026.4 ms
+  turn   2  prompt=   7100ch  delta=  1011ch  ttft=   809.4 ms
+  turn   3  prompt=   9195ch  delta=  2095ch  ttft=  1095.8 ms
+  turn   4  prompt=  10635ch  delta=  1440ch  ttft=   833.2 ms
+  turn   5  prompt=  11347ch  delta=   712ch  ttft=   614.2 ms
+  turn   6  prompt=  11837ch  delta=   490ch  ttft=   600.6 ms
+  turn   7  prompt=  12933ch  delta=  1096ch  ttft=   815.8 ms
+  turn   8  prompt=  14552ch  delta=  1619ch  ttft=   903.6 ms
+  turn   9  prompt=  16736ch  delta=  2184ch  ttft=  1262.5 ms
+  turn  10  prompt=  18452ch  delta=  1716ch  ttft=  1060.4 ms
+  turn  11  prompt=  18669ch  delta=   217ch  ttft=   440.6 ms
+  turn  12  prompt=  18832ch  delta=   163ch  ttft=   431.9 ms
+  turn  13  prompt=  19796ch  delta=   964ch  ttft=   848.8 ms
+  turn  14  prompt=  20115ch  delta=   319ch  ttft=   621.4 ms
+  turn  15  prompt=  20427ch  delta=   312ch  ttft=   622.7 ms
+  turn  16  prompt=  20665ch  delta=   238ch  ttft=   491.6 ms
+  turn  17  prompt=  21727ch  delta=  1062ch  ttft=   846.1 ms
+  turn  18  prompt=  23556ch  delta=  1829ch  ttft=  1101.9 ms
+  turn  19  prompt=  23789ch  delta=   233ch  ttft=   452.7 ms
+  turn  20  prompt=  26682ch  delta=  2893ch  ttft=  1402.2 ms
+  turn  21  prompt=  29620ch  delta=  2938ch  ttft=  1500.5 ms
+  turn  22  prompt=  31316ch  delta=  1696ch  ttft=  1129.4 ms
+  turn  23  prompt=  33201ch  delta=  1885ch  ttft=  1312.5 ms
+  turn  24  prompt=  35161ch  delta=  1960ch  ttft=  1184.7 ms
+
+warm TTFT p50 = 847 ms, delta p50 = 1079 chars
+
+Now read the SERVER's own accounting from the container log:
+  sudo docker logs <container> 2>&1 | grep -a 'Marconi'
+The 'replaying R SSM tokens' field is the measurement this probe exists for.

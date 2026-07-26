@@ -1,0 +1,734 @@
+{
+  "label": "atlas-slai",
+  "model": "centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf",
+  "server": "localhost:8888",
+  "concurrency_levels": [
+    1,
+    2,
+    4,
+    8,
+    16
+  ],
+  "warmup_requests": 3,
+  "test_configs": [
+    {
+      "isl": 128,
+      "osl": 1024,
+      "regime": "decode_short",
+      "label": "Code generation (NVIDIA NIM 200/1000 class)"
+    },
+    {
+      "isl": 256,
+      "osl": 256,
+      "regime": "balanced_short",
+      "label": "Short chat baseline"
+    },
+    {
+      "isl": 1024,
+      "osl": 128,
+      "regime": "prefill_short",
+      "label": "Summarization short (NVIDIA NIM 1000/200 class)"
+    },
+    {
+      "isl": 1024,
+      "osl": 1024,
+      "regime": "balanced_long",
+      "label": "Standard chat (SemiAnalysis/SGLang 1K/1K)"
+    }
+  ],
+  "results": {
+    "128/1024_decode_short": {
+      "isl": 128,
+      "osl": 1024,
+      "regime": "decode_short",
+      "label": "Code generation (NVIDIA NIM 200/1000 class)",
+      "concurrency_sweep": [
+        {
+          "concurrency": 1,
+          "status": "ok",
+          "total_requests": 8,
+          "successful": 8,
+          "errors": 0,
+          "rounds": 8,
+          "wall_time_s": 299.52,
+          "ttft_ms": {
+            "p50": 267.1,
+            "p90": 556.1,
+            "p99": 624.0,
+            "avg": 344.4,
+            "min": 263.3,
+            "max": 631.6
+          },
+          "tpot_ms": {
+            "p50": 36.58,
+            "p90": 36.61,
+            "p99": 36.61,
+            "avg": 36.26,
+            "min": 34.58,
+            "max": 36.61
+          },
+          "aggregate_throughput_tok_s": 27.4,
+          "per_request_e2e_tok_s": 27.4,
+          "per_request_decode_tok_s": 27.6,
+          "requests_per_sec": 0.03,
+          "total_output_tokens": 8192,
+          "total_input_tokens": 1200,
+          "avg_output_tokens": 1024.0,
+          "avg_input_tokens": 150.0
+        },
+        {
+          "concurrency": 2,
+          "status": "ok",
+          "total_requests": 8,
+          "successful": 8,
+          "errors": 0,
+          "rounds": 4,
+          "wall_time_s": 395.48,
+          "ttft_ms": {
+            "p50": 566.4,
+            "p90": 597.4,
+            "p99": 654.6,
+            "avg": 577.5,
+            "min": 557.9,
+            "max": 661.0
+          },
+          "tpot_ms": {
+            "p50": 96.1,
+            "p90": 96.13,
+            "p99": 96.13,
+            "avg": 96.07,
+            "min": 95.94,
+            "max": 96.14
+          },
+          "aggregate_throughput_tok_s": 20.7,
+          "per_request_e2e_tok_s": 10.4,
+          "per_request_decode_tok_s": 10.4,
+          "requests_per_sec": 0.02,
+          "total_output_tokens": 8192,
+          "total_input_tokens": 1200,
+          "avg_output_tokens": 1024.0,
+          "avg_input_tokens": 150.0
+        },
+        {
+          "concurrency": 4,
+          "status": "ok",
+          "total_requests": 8,
+          "successful": 8,
+          "errors": 0,
+          "rounds": 2,
+          "wall_time_s": 403.79,
+          "ttft_ms": {
+            "p50": 1145.0,
+            "p90": 1251.0,
+            "p99": 1251.2,
+            "avg": 1147.0,
+            "min": 1046.8,
+            "max": 1251.2
+          },
+          "tpot_ms": {
+            "p50": 196.17,
+            "p90": 196.23,
+            "p99": 196.23,
+            "avg": 196.17,
+            "min": 196.11,
+            "max": 196.23
+          },
+          "aggregate_throughput_tok_s": 20.3,
+          "per_request_e2e_tok_s": 5.1,
+          "per_request_decode_tok_s": 5.1,
+          "requests_per_sec": 0.02,
+          "total_output_tokens": 8192,
+          "total_input_tokens": 1200,
+          "avg_output_tokens": 1024.0,
+          "avg_input_tokens": 150.0
+        },
+        {
+          "concurrency": 8,
+          "status": "ok",
+          "total_requests": 16,
+          "successful": 16,
+          "errors": 0,
+          "rounds": 2,
+          "wall_time_s": 600.52,
+          "ttft_ms": {
+            "p50": 2208.1,
+            "p90": 2349.9,
+            "p99": 2350.0,
+            "avg": 2170.9,
+            "min": 1862.5,
+            "max": 2350.0
+          },
+          "tpot_ms": {
+            "p50": 348.09,
+            "p90": 348.5,
+            "p99": 348.5,
+            "avg": 348.09,
+            "min": 347.68,
+            "max": 348.5
+          },
+          "aggregate_throughput_tok_s": 22.8,
+          "per_request_e2e_tok_s": 2.9,
+          "per_request_decode_tok_s": 2.9,
+          "requests_per_sec": 0.03,
+          "total_output_tokens": 13717,
+          "total_input_tokens": 2400,
+          "avg_output_tokens": 857.0,
+          "avg_input_tokens": 150.0
+        },
+        {
+          "concurrency": 16,
+          "status": "ok",
+          "total_requests": 32,
+          "successful": 32,
+          "errors": 0,
+          "rounds": 2,
+          "wall_time_s": 600.97,
+          "ttft_ms": {
+            "p50": 4364.8,
+            "p90": 4382.4,
+            "p99": 4382.7,
+            "avg": 4205.0,
+            "min": 3692.7,
+            "max": 4382.7
+          },
+          "tpot_ms": {
+            "p50": 668.37,
+            "p90": 668.41,
+            "p99": 668.42,
+            "avg": 668.37,
+            "min": 668.3,
+            "max": 668.42
+          },
+          "aggregate_throughput_tok_s": 23.7,
+          "per_request_e2e_tok_s": 1.5,
+          "per_request_decode_tok_s": 1.5,
+          "requests_per_sec": 0.05,
+          "total_output_tokens": 14216,
+          "total_input_tokens": 4800,
+          "avg_output_tokens": 444.0,
+          "avg_input_tokens": 150.0
+        }
+      ]
+    },
+    "256/256_balanced_short": {
+      "isl": 256,
+      "osl": 256,
+      "regime": "balanced_short",
+      "label": "Short chat baseline",
+      "concurrency_sweep": [
+        {
+          "concurrency": 1,
+          "status": "ok",
+          "total_requests": 8,
+          "successful": 8,
+          "errors": 0,
+          "rounds": 8,
+          "wall_time_s": 84.42,
+          "ttft_ms": {
+            "p50": 268.3,
+            "p90": 501.4,
+            "p99": 748.9,
+            "avg": 346.0,
+            "min": 264.5,
+            "max": 776.4
+          },
+          "tpot_ms": {
+            "p50": 41.32,
+            "p90": 41.4,
+            "p99": 41.4,
+            "avg": 40.01,
+            "min": 36.77,
+            "max": 41.4
+          },
+          "aggregate_throughput_tok_s": 24.3,
+          "per_request_e2e_tok_s": 24.3,
+          "per_request_decode_tok_s": 25.1,
+          "requests_per_sec": 0.09,
+          "total_output_tokens": 2048,
+          "total_input_tokens": 2080,
+          "avg_output_tokens": 256.0,
+          "avg_input_tokens": 260.0
+        },
+        {
+          "concurrency": 2,
+          "status": "ok",
+          "total_requests": 8,
+          "successful": 8,
+          "errors": 0,
+          "rounds": 4,
+          "wall_time_s": 98.79,
+          "ttft_ms": {
+            "p50": 570.6,
+            "p90": 585.9,
+            "p99": 586.0,
+            "avg": 573.2,
+            "min": 565.6,
+            "max": 586.0
+          },
+          "tpot_ms": {
+            "p50": 94.6,
+            "p90": 94.64,
+            "p99": 94.65,
+            "avg": 94.59,
+            "min": 94.51,
+            "max": 94.65
+          },
+          "aggregate_throughput_tok_s": 20.7,
+          "per_request_e2e_tok_s": 10.4,
+          "per_request_decode_tok_s": 10.6,
+          "requests_per_sec": 0.08,
+          "total_output_tokens": 2048,
+          "total_input_tokens": 2080,
+          "avg_output_tokens": 256.0,
+          "avg_input_tokens": 260.0
+        },
+        {
+          "concurrency": 4,
+          "status": "ok",
+          "total_requests": 8,
+          "successful": 8,
+          "errors": 0,
+          "rounds": 2,
+          "wall_time_s": 101.22,
+          "ttft_ms": {
+            "p50": 1148.4,
+            "p90": 1268.3,
+            "p99": 1268.3,
+            "avg": 1160.0,
+            "min": 1074.9,
+            "max": 1268.3
+          },
+          "tpot_ms": {
+            "p50": 193.85,
+            "p90": 193.87,
+            "p99": 193.88,
+            "avg": 193.79,
+            "min": 193.57,
+            "max": 193.88
+          },
+          "aggregate_throughput_tok_s": 20.2,
+          "per_request_e2e_tok_s": 5.1,
+          "per_request_decode_tok_s": 5.2,
+          "requests_per_sec": 0.08,
+          "total_output_tokens": 2048,
+          "total_input_tokens": 2080,
+          "avg_output_tokens": 256.0,
+          "avg_input_tokens": 260.0
+        },
+        {
+          "concurrency": 8,
+          "status": "ok",
+          "total_requests": 16,
+          "successful": 16,
+          "errors": 0,
+          "rounds": 2,
+          "wall_time_s": 180.03,
+          "ttft_ms": {
+            "p50": 2227.3,
+            "p90": 2371.8,
+            "p99": 2371.9,
+            "avg": 2188.9,
+            "min": 1875.3,
+            "max": 2372.0
+          },
+          "tpot_ms": {
+            "p50": 344.11,
+            "p90": 344.48,
+            "p99": 344.5,
+            "avg": 344.03,
+            "min": 343.39,
+            "max": 344.5
+          },
+          "aggregate_throughput_tok_s": 22.8,
+          "per_request_e2e_tok_s": 2.8,
+          "per_request_decode_tok_s": 2.9,
+          "requests_per_sec": 0.09,
+          "total_output_tokens": 4096,
+          "total_input_tokens": 4160,
+          "avg_output_tokens": 256.0,
+          "avg_input_tokens": 260.0
+        },
+        {
+          "concurrency": 16,
+          "status": "ok",
+          "total_requests": 32,
+          "successful": 32,
+          "errors": 0,
+          "rounds": 2,
+          "wall_time_s": 351.18,
+          "ttft_ms": {
+            "p50": 4372.2,
+            "p90": 4376.3,
+            "p99": 4376.4,
+            "avg": 4247.9,
+            "min": 3697.8,
+            "max": 4376.5
+          },
+          "tpot_ms": {
+            "p50": 671.26,
+            "p90": 677.11,
+            "p99": 677.14,
+            "avg": 671.31,
+            "min": 665.42,
+            "max": 677.14
+          },
+          "aggregate_throughput_tok_s": 23.3,
+          "per_request_e2e_tok_s": 1.5,
+          "per_request_decode_tok_s": 1.5,
+          "requests_per_sec": 0.09,
+          "total_output_tokens": 8192,
+          "total_input_tokens": 8320,
+          "avg_output_tokens": 256.0,
+          "avg_input_tokens": 260.0
+        }
+      ]
+    },
+    "1024/128_prefill_short": {
+      "isl": 1024,
+      "osl": 128,
+      "regime": "prefill_short",
+      "label": "Summarization short (NVIDIA NIM 1000/200 class)",
+      "concurrency_sweep": [
+        {
+          "concurrency": 1,
+          "status": "ok",
+          "total_requests": 8,
+          "successful": 8,
+          "errors": 0,
+          "rounds": 8,
+          "wall_time_s": 40.5,
+          "ttft_ms": {
+            "p50": 272.9,
+            "p90": 819.1,
+            "p99": 1737.2,
+            "avg": 482.3,
+            "min": 270.8,
+            "max": 1839.2
+          },
+          "tpot_ms": {
+            "p50": 36.4,
+            "p90": 36.57,
+            "p99": 36.6,
+            "avg": 36.03,
+            "min": 34.01,
+            "max": 36.6
+          },
+          "aggregate_throughput_tok_s": 25.3,
+          "per_request_e2e_tok_s": 25.4,
+          "per_request_decode_tok_s": 28.0,
+          "requests_per_sec": 0.2,
+          "total_output_tokens": 1024,
+          "total_input_tokens": 7600,
+          "avg_output_tokens": 128.0,
+          "avg_input_tokens": 950.0
+        },
+        {
+          "concurrency": 2,
+          "status": "ok",
+          "total_requests": 8,
+          "successful": 8,
+          "errors": 0,
+          "rounds": 4,
+          "wall_time_s": 50.31,
+          "ttft_ms": {
+            "p50": 586.2,
+            "p90": 673.2,
+            "p99": 676.5,
+            "avg": 613.0,
+            "min": 564.8,
+            "max": 676.9
+          },
+          "tpot_ms": {
+            "p50": 93.95,
+            "p90": 94.0,
+            "p99": 94.0,
+            "avg": 93.92,
+            "min": 93.76,
+            "max": 94.0
+          },
+          "aggregate_throughput_tok_s": 20.4,
+          "per_request_e2e_tok_s": 10.2,
+          "per_request_decode_tok_s": 10.7,
+          "requests_per_sec": 0.16,
+          "total_output_tokens": 1024,
+          "total_input_tokens": 7600,
+          "avg_output_tokens": 128.0,
+          "avg_input_tokens": 950.0
+        },
+        {
+          "concurrency": 4,
+          "status": "ok",
+          "total_requests": 8,
+          "successful": 8,
+          "errors": 0,
+          "rounds": 2,
+          "wall_time_s": 51.0,
+          "ttft_ms": {
+            "p50": 1266.6,
+            "p90": 1271.8,
+            "p99": 1271.9,
+            "avg": 1195.9,
+            "min": 1071.0,
+            "max": 1271.9
+          },
+          "tpot_ms": {
+            "p50": 190.96,
+            "p90": 191.27,
+            "p99": 191.28,
+            "avg": 190.87,
+            "min": 190.23,
+            "max": 191.28
+          },
+          "aggregate_throughput_tok_s": 20.1,
+          "per_request_e2e_tok_s": 5.0,
+          "per_request_decode_tok_s": 5.3,
+          "requests_per_sec": 0.16,
+          "total_output_tokens": 1024,
+          "total_input_tokens": 7600,
+          "avg_output_tokens": 128.0,
+          "avg_input_tokens": 950.0
+        },
+        {
+          "concurrency": 8,
+          "status": "ok",
+          "total_requests": 16,
+          "successful": 16,
+          "errors": 0,
+          "rounds": 2,
+          "wall_time_s": 90.49,
+          "ttft_ms": {
+            "p50": 2232.2,
+            "p90": 2236.3,
+            "p99": 2236.5,
+            "avg": 2190.3,
+            "min": 1876.2,
+            "max": 2236.5
+          },
+          "tpot_ms": {
+            "p50": 338.56,
+            "p90": 338.66,
+            "p99": 338.69,
+            "avg": 338.55,
+            "min": 338.36,
+            "max": 338.69
+          },
+          "aggregate_throughput_tok_s": 22.6,
+          "per_request_e2e_tok_s": 2.8,
+          "per_request_decode_tok_s": 3.0,
+          "requests_per_sec": 0.18,
+          "total_output_tokens": 2048,
+          "total_input_tokens": 15200,
+          "avg_output_tokens": 128.0,
+          "avg_input_tokens": 950.0
+        },
+        {
+          "concurrency": 16,
+          "status": "ok",
+          "total_requests": 32,
+          "successful": 32,
+          "errors": 0,
+          "rounds": 2,
+          "wall_time_s": 175.06,
+          "ttft_ms": {
+            "p50": 4273.2,
+            "p90": 4273.6,
+            "p99": 4274.2,
+            "avg": 4189.4,
+            "min": 3596.2,
+            "max": 4274.3
+          },
+          "tpot_ms": {
+            "p50": 655.34,
+            "p90": 655.56,
+            "p99": 655.63,
+            "avg": 655.32,
+            "min": 654.82,
+            "max": 655.64
+          },
+          "aggregate_throughput_tok_s": 23.4,
+          "per_request_e2e_tok_s": 1.5,
+          "per_request_decode_tok_s": 1.5,
+          "requests_per_sec": 0.18,
+          "total_output_tokens": 4096,
+          "total_input_tokens": 30400,
+          "avg_output_tokens": 128.0,
+          "avg_input_tokens": 950.0
+        }
+      ]
+    },
+    "1024/1024_balanced_long": {
+      "isl": 1024,
+      "osl": 1024,
+      "regime": "balanced_long",
+      "label": "Standard chat (SemiAnalysis/SGLang 1K/1K)",
+      "concurrency_sweep": [
+        {
+          "concurrency": 1,
+          "status": "ok",
+          "total_requests": 8,
+          "successful": 8,
+          "errors": 0,
+          "rounds": 8,
+          "wall_time_s": 318.62,
+          "ttft_ms": {
+            "p50": 270.0,
+            "p90": 274.0,
+            "p99": 280.1,
+            "avg": 271.2,
+            "min": 269.1,
+            "max": 280.8
+          },
+          "tpot_ms": {
+            "p50": 38.91,
+            "p90": 38.92,
+            "p99": 38.92,
+            "avg": 38.66,
+            "min": 37.06,
+            "max": 38.92
+          },
+          "aggregate_throughput_tok_s": 25.7,
+          "per_request_e2e_tok_s": 25.7,
+          "per_request_decode_tok_s": 25.9,
+          "requests_per_sec": 0.03,
+          "total_output_tokens": 8192,
+          "total_input_tokens": 7600,
+          "avg_output_tokens": 1024.0,
+          "avg_input_tokens": 950.0
+        },
+        {
+          "concurrency": 2,
+          "status": "ok",
+          "total_requests": 8,
+          "successful": 7,
+          "errors": 1,
+          "rounds": 4,
+          "wall_time_s": 899.58,
+          "ttft_ms": {
+            "p50": 490.0,
+            "p90": 1183.1,
+            "p99": 1977.4,
+            "avg": 742.1,
+            "min": 479.9,
+            "max": 2065.7
+          },
+          "tpot_ms": {
+            "p50": 96.93,
+            "p90": 97.21,
+            "p99": 97.21,
+            "avg": 88.42,
+            "min": 37.1,
+            "max": 97.21
+          },
+          "aggregate_throughput_tok_s": 8.0,
+          "per_request_e2e_tok_s": 12.5,
+          "per_request_decode_tok_s": 12.7,
+          "requests_per_sec": 0.01,
+          "total_output_tokens": 7168,
+          "total_input_tokens": 6650,
+          "avg_output_tokens": 1024.0,
+          "avg_input_tokens": 950.0
+        },
+        {
+          "concurrency": 4,
+          "status": "ok",
+          "total_requests": 8,
+          "successful": 4,
+          "errors": 4,
+          "rounds": 2,
+          "wall_time_s": 1201.42,
+          "ttft_ms": {
+            "p50": 3212.1,
+            "p90": 3221.2,
+            "p99": 3221.2,
+            "avg": 3212.1,
+            "min": 3203.0,
+            "max": 3221.2
+          },
+          "tpot_ms": {
+            "p50": 97.2,
+            "p90": 97.24,
+            "p99": 97.24,
+            "avg": 97.2,
+            "min": 97.16,
+            "max": 97.24
+          },
+          "aggregate_throughput_tok_s": 3.4,
+          "per_request_e2e_tok_s": 10.0,
+          "per_request_decode_tok_s": 10.3,
+          "requests_per_sec": 0.0,
+          "total_output_tokens": 4096,
+          "total_input_tokens": 3800,
+          "avg_output_tokens": 1024.0,
+          "avg_input_tokens": 950.0
+        },
+        {
+          "concurrency": 8,
+          "status": "ok",
+          "total_requests": 16,
+          "successful": 13,
+          "errors": 3,
+          "rounds": 2,
+          "wall_time_s": 1202.0,
+          "ttft_ms": {
+            "p50": 2933.9,
+            "p90": 4156.5,
+            "p99": 4156.6,
+            "avg": 3498.0,
+            "min": 2933.5,
+            "max": 4156.6
+          },
+          "tpot_ms": {
+            "p50": 347.98,
+            "p90": 347.99,
+            "p99": 347.99,
+            "avg": 346.8,
+            "min": 345.4,
+            "max": 347.99
+          },
+          "aggregate_throughput_tok_s": 5.8,
+          "per_request_e2e_tok_s": 2.8,
+          "per_request_decode_tok_s": 2.9,
+          "requests_per_sec": 0.01,
+          "total_output_tokens": 7003,
+          "total_input_tokens": 5700,
+          "avg_output_tokens": 539.0,
+          "avg_input_tokens": 438.0
+        },
+        {
+          "concurrency": 16,
+          "status": "ok",
+          "total_requests": 32,
+          "successful": 29,
+          "errors": 3,
+          "rounds": 2,
+          "wall_time_s": 1202.0,
+          "ttft_ms": {
+            "p50": 4271.3,
+            "p90": 5678.6,
+            "p99": 5678.9,
+            "avg": 4950.4,
+            "min": 4270.7,
+            "max": 5679.0
+          },
+          "tpot_ms": {
+            "p50": 683.24,
+            "p90": 683.24,
+            "p99": 683.24,
+            "avg": 676.1,
+            "min": 668.43,
+            "max": 683.24
+          },
+          "aggregate_throughput_tok_s": 1.6,
+          "per_request_e2e_tok_s": 1.3,
+          "per_request_decode_tok_s": 1.5,
+          "requests_per_sec": 0.02,
+          "total_output_tokens": 1877,
+          "total_input_tokens": 0,
+          "avg_output_tokens": 65.0,
+          "avg_input_tokens": 0.0
+        }
+      ]
+    }
+  },
+  "timestamp": "2026-07-26T14:21:44"
+}

@@ -1,0 +1,9 @@
+[control] t0 cold: ttft= 2669.2ms tpot= 44.60ms n=276
+[control] t1 cold: ttft= 3220.0ms tpot= 41.17ms n=264
+[control] t2 warm: ttft= 1010.1ms tpot= 44.16ms n=286
+[control] t3 warm: ttft= 1141.3ms tpot= 41.24ms n=293
+[control] t4 warm: ttft= 1043.6ms tpot= 43.55ms n=239
+[control] t5 warm: ttft=  994.0ms tpot= 44.56ms n=214
+[control] t6 warm: ttft=  888.4ms tpot= 37.90ms n=195
+[control] t7 warm: ttft=  867.4ms tpot= 46.76ms n=150
+[control] WARM TPOT median=43.86ms mean=43.03ms sha=3ef677605f4ac66f

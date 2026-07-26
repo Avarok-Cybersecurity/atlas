@@ -1,0 +1,27 @@
+```python
+def fibonacci(n: int) -> int:
+    """
+    Returns the nth Fibonacci number iteratively.
+    
+    The Fibonacci sequence is defined as:
+    F(0) = 0
+    F(1) = 1
+    F(n) = F(n-1) + F(n-2) for n >= 2
+    
+    Args:
+        n: A non-negative integer representing the position in the Fibonacci sequence.
+        
+    Returns:
+        The nth Fibonacci number.
+        
+    Raises:
+        ValueError: If n is negative.
+    """
+    if n < 0:
+        raise ValueError("n must be a non-negative integer")
+    if n == 0:
+        return 0
+    if n == 1:
+        return 1
+    
+    prev, curr = 0,

@@ -1,0 +1,20 @@
+[2m2026-07-25T09:22:06.345192Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill_recur[0m[2m:[0m GDN prefill: FLA chunked path ACTIVE (baked default: recompute_wu → chunk_delta_h_ksplit → chunk_fwd_o)
+[2m2026-07-25T09:22:06.527740Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a[0m[2m:[0m CUDA graph capture: starting for 64 layers
+[2m2026-07-25T09:22:06.528905Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a[0m[2m:[0m CUDA graph captured successfully for slot=0 (handle=259015386629696)
+[2m2026-07-25T09:22:06.620917Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::verify_c2[0m[2m:[0m Captured CUDA graph for K=4 verify (slot=0)
+[2m2026-07-25T09:22:11.841993Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a[0m[2m:[0m CUDA graph capture: starting for 64 layers
+[2m2026-07-25T09:22:11.843486Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a[0m[2m:[0m CUDA graph captured successfully for slot=0 (handle=259015393462800)
+[2m2026-07-25T09:22:12.043048Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::verify_c2[0m[2m:[0m Captured CUDA graph for K=4 verify (slot=0)
+[2m2026-07-25T09:22:15.058141Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a[0m[2m:[0m CUDA graph capture: starting for 64 layers
+[2m2026-07-25T09:22:15.059600Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a[0m[2m:[0m CUDA graph captured successfully for slot=0 (handle=259015393721392)
+[2m2026-07-25T09:22:15.318148Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::verify_c2[0m[2m:[0m Captured CUDA graph for K=4 verify (slot=0)
+[2m2026-07-25T09:22:30.571191Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a[0m[2m:[0m CUDA graph capture: starting for 64 layers
+[2m2026-07-25T09:22:30.572634Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a[0m[2m:[0m CUDA graph captured successfully for slot=0 (handle=259015387474768)
+[2m2026-07-25T09:22:30.861277Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::verify_c2[0m[2m:[0m Captured CUDA graph for K=4 verify (slot=0)
+[2m2026-07-25T09:22:41.808763Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill_recur[0m[2m:[0m GDN prefill: REGISTER-RESIDENT warm-replay path ACTIVE (ATLAS_GDN_REGRESIDENT; H in regs, no smem-H)
+[2m2026-07-25T09:22:42.441628Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a[0m[2m:[0m CUDA graph capture: starting for 64 layers
+[2m2026-07-25T09:22:42.443148Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a[0m[2m:[0m CUDA graph captured successfully for slot=0 (handle=259015387461600)
+[2m2026-07-25T09:22:42.565944Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::verify_c2[0m[2m:[0m Captured CUDA graph for K=4 verify (slot=0)
+[2m2026-07-25T09:22:54.308608Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a[0m[2m:[0m CUDA graph capture: starting for 64 layers
+[2m2026-07-25T09:22:54.310118Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a[0m[2m:[0m CUDA graph captured successfully for slot=0 (handle=259015398267728)
+[2m2026-07-25T09:22:54.431401Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::verify_c2[0m[2m:[0m Captured CUDA graph for K=4 verify (slot=0)
