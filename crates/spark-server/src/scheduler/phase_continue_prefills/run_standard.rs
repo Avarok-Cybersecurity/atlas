@@ -11,6 +11,7 @@ use spark_model::traits::{Model, SequenceState};
 use std::time::Instant;
 
 use super::super::decode_logits_step::process_decode_logits;
+use super::super::lifecycle::send_error;
 use super::super::sample_first_token;
 use super::super::types::{ActiveSeq, PrefillInProgress};
 
@@ -249,14 +250,59 @@ pub(super) fn run_standard_chunk_loop(
         return;
     }
 
-    match model.prefill_chunk(
+    // Preempt-and-retry on KV exhaustion, mirroring `decode_step`: a prompt chunk
+    // that cannot allocate should evict a LARGER in-flight sequence rather than
+    // fail this request outright. Safe to retry because
+    // `ensure_blocks_through_prefill` fails during block allocation, BEFORE the
+    // forward pass — no GPU state has been mutated. Victim policy matches
+    // admission control (largest block_table, grammar-active excluded, since
+    // their state is not reconstructible). Falls through to the original
+    // fail-this-sequence behavior when nothing can be evicted.
+    let mut chunk_res = model.prefill_chunk(
         &p.prompt_tokens,
         &mut p.seq,
         p.chunk_offset,
         chunk_len,
         is_last,
         prefill_stream,
-    ) {
+    );
+    while chunk_res
+        .as_ref()
+        .err()
+        .is_some_and(|e| format!("{e:#}").contains("KV cache exhausted"))
+    {
+        let Some(vi) = active
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.grammar_state.is_none())
+            .max_by_key(|(_, a)| a.seq.block_table.len())
+            .map(|(i, _)| i)
+        else {
+            break;
+        };
+        let mut victim = active.remove(vi);
+        tracing::warn!(
+            "KV cache exhausted during prefill chunk: preempting slot={} ({} blocks) \
+             so this prefill can proceed ({} sequence(s) remain)",
+            victim.seq.slot_idx,
+            victim.seq.block_table.len(),
+            active.len(),
+        );
+        send_error(
+            model,
+            &mut victim,
+            "preempted: KV cache exhausted (a prefill needed its blocks)",
+        );
+        chunk_res = model.prefill_chunk(
+            &p.prompt_tokens,
+            &mut p.seq,
+            p.chunk_offset,
+            chunk_len,
+            is_last,
+            prefill_stream,
+        );
+    }
+    match chunk_res {
         Ok(logits) => {
             p.chunk_offset += chunk_len;
             tracing::info!(
