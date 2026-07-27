@@ -644,3 +644,58 @@ The detail profile emits both batched and per-seq recurrent stage names in one r
 per-seq rows had **48 samples vs 9120** for the batched rows (one warmup step, 0.2% share) --
 the batched path carries everything. Always print sample COUNTS before scaling a stage mean by
 the layer count.
+
+## 2026-07-27 — ★ NSYS KERNEL PROFILE (C=16, 154 decode steps) — THE REAL RANKING
+
+`nsys profile --trace=cuda --cuda-graph-trace=node` on a native serve, real C=16 drive at
+97.5 tok/s (matches the committed baseline, so the profiled run is representative).
+Report: /tmp/atlas_prof3.nsys-rep. Invocation that WORKS: plain `nsys profile` + SIGTERM to
+the spark PID. `--delay/--duration` produced no report; `--cpuctxsw` is invalid on
+`nsys launch`; the driver script's port must match the serve's.
+
+| kernel                                   | %GPU | inst/step | avg     | ms/step | vs floor |
+|------------------------------------------|------|-----------|---------|---------|----------|
+| atlas_nvfp4_mmq16_nc (FFN)               | 35.5 | 154       | 283 us  | 43.6    | 1.29x    |
+| **w4a16_gemm_t_k64 (projections)**       | 26.6 | 129       | 255 us  | **32.9**| **2.1x** |
+| gated_delta_rule_decode_f32_strided_norm | 19.2 | 48        | 613 us  | 29.4    | 1.31x    |
+| **w4a16_gemv_batch16 (lm_head)**         | 6.3  | 1         | 9.68 ms | **9.7** | **3.5x** |
+| atlas_nvfp4_mmq32_nc                     | 3.6  | 16        | 276 us  | 4.4     | --       |
+| rope_forward                             | 0.8  | 256       | 4.5 us  | 1.2     | fan-out  |
+| rms_norm                                 | 0.5  | 414       | 1.5 us  | 0.6     | fan-out  |
+| **paged_decode_attn**                    | 0.4  | 16        | 42.6 us | **0.68**| --       |
+
+### ★ THE ATTENTION LEVER IS DEAD — DO NOT RE-OPEN
+`paged_decode_attn` is **0.68 ms/step, 0.4% of GPU time**. The GQA 6x-KV-re-read fold, the
+per-position shuffle-chain rewrite, the split-KV work — ALL of it targets 0.4% of the GPU.
+The 38.5 ms that ATLAS_MS_PROFILE attributes to "attention layers" is those layers' FFN
+(~12 ms) + their projections (~16 ms) + fan-out; the attention kernel itself is noise.
+This killed three successive sizings of that lever (19 ms -> 3 ms -> 1 ms -> 0).
+
+### ★ THE REAL #1: PROJECTIONS AT 2.1x FLOOR (even after the k64 fix)
+32.9 ms/step for 3.6 GB of projection weights (SSM qkvz 2.01 + SSM out_proj 0.755 + attn
+qkv/o 0.84). Floor at 230 GB/s = 15.7 ms. **~17 ms available** -- the largest single prize.
+
+### ★ #2: lm_head IS AN M-DISPATCH INSTANCE, STILL
+ONE launch per step at **9.68 ms**. 636 MB of weights (5120 x 248320 x 0.5) = **66 GB/s =
+29% of achievable**. It runs `w4a16_gemv_batch16`. Earlier this campaign lm_head was moved
+ONTO that GEMV for +22% C=4 -- but the alternative then was `w4a16_gemm` (N64), which the
+bench shows is **4.7x slower than w4a16_gemm_t_k64**. Route it to the k64 tile GEMM
+(needs a transposed weight twin): 9.7 ms -> ~3 ms.
+
+### ★ METHOD CORRECTION: THE ISOLATED BENCH OVERSTATES BY ~1.5x
+`w4a16_m17_bench` reports 166 us for a ~50 MB weight = ~300 GB/s, ABOVE the 230 GB/s STREAM
+ceiling -- impossible. Its 100 back-to-back iterations over ONE weight get L2 reuse the
+in-model path never sees (in-model k64 avg is 255 us, not 166). This is exactly why k64's
+predicted 1.30x delivered +1.6% e2e. **Size levers from in-model nsys numbers, not from the
+microbench.**
+
+### Revised prize table (step ~166 ms at C=16, 195 tok/s roofline)
+| lever                        | ms/step | floor | prize   |
+|------------------------------|---------|-------|---------|
+| projections -> better tiling | 32.9    | 15.7  | ~17 ms  |
+| FFN mmq16                    | 43.6    | 37.2* | ~11 ms  |
+| lm_head -> k64 tile GEMM     | 9.7     | 2.8   | ~7 ms   |
+| GDN state                    | 29.4    | 22.5  | ~7 ms   |
+| host leg                     | ~20     | ~0    | ~16 ms  |
+| rope/rms_norm fan-out        | 1.8     | ~0.2  | ~1.6 ms |
+(*FFN floor is for the full 64-layer weight stream.)
