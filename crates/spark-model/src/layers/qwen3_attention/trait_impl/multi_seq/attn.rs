@@ -12,6 +12,15 @@ use crate::layer::AttnMetadataDev;
 use crate::layers::ops;
 use crate::layers::qwen3_attention::Qwen3AttentionLayer;
 
+/// One batched `reshape_and_cache` launch for all N sequences instead of one
+/// launch per sequence. Kill switch: `ATLAS_NO_ATTN_BATCH_CACHE_WRITE=1`.
+fn batch_cache_write_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("ATLAS_NO_ATTN_BATCH_CACHE_WRITE").ok().as_deref() != Some("1")
+    })
+}
+
 impl Qwen3AttentionLayer {
     /// Phase 3: per-token RoPE (each sequence has its own position).
     pub(super) fn ms_phase_rope(&self, c: &MultiSeqCtx<'_>, meta: AttnMetadataDev) -> Result<()> {
@@ -72,6 +81,34 @@ impl Qwen3AttentionLayer {
             ..
         } = *c;
         let kv_stride = nkv * hd;
+        // The reshape_and_cache kernels already take `num_tokens` plus explicit
+        // key/value row strides ("row stride may differ", reshape_and_cache.cu),
+        // and their grid is [num_tokens,1,1] — so all N sequences go in ONE
+        // launch. `slot` and `positions` are already contiguous per-sequence
+        // arrays. Each sequence's K row sits `per_seq_qkv` bytes after the last,
+        // so the row stride is that gap in ELEMENTS.
+        //
+        // `ATLAS_NO_ATTN_BATCH_CACHE_WRITE=1` restores the per-sequence loop.
+        let k_out_0 = qkv_buf.offset(q_proj_bytes);
+        let v_out_0 = k_out_0.offset((nkv * hd) as usize * bf16);
+        if n > 1 && batch_cache_write_enabled() && per_seq_qkv.is_multiple_of(bf16) {
+            let row_stride = (per_seq_qkv / bf16) as u32;
+            return self.write_kv_cache(
+                fwd.gpu,
+                k_out_0,
+                v_out_0,
+                kv_cache,
+                meta.slot,
+                n as u32,
+                nkv,
+                hd,
+                bs,
+                row_stride,
+                row_stride,
+                stream,
+                fwd.graph_capture,
+            );
+        }
         for i in 0..n {
             let q_out_i = qkv_buf.offset(i * per_seq_qkv);
             let k_out_i = q_out_i.offset(q_proj_bytes);

@@ -1,0 +1,48 @@
+=== ctx_words=100 ===
+ctx_words=100 prompt_tok=317 completion=604
+   n=16 samples=23  total=150.2ms ssm=104.8 attn=35.8 head=9.6  attn/layer=2.239ms
+=== ctx_words=700 ===
+ctx_words=700 prompt_tok=2717 completion=644
+   n=16 samples=25  total=161.5ms ssm=104.8 attn=46.8 head=10.0  attn/layer=2.923ms
+=== ctx_words=2200 ===
+Traceback (most recent call last):
+  File "/tmp/claude-996/-workspace/731b7370-37d0-492e-9f7c-469813792067/scratchpad/ctx_drive.py", line 13, in <module>
+    rs = list(ex.map(fire, range(n)))
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 619, in result_iterator
+    yield _result_or_cancel(fs.pop())
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 317, in _result_or_cancel
+    return fut.result(timeout)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 456, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
+    raise self._exception
+  File "/usr/lib/python3.12/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/claude-996/-workspace/731b7370-37d0-492e-9f7c-469813792067/scratchpad/ctx_drive.py", line 10, in fire
+    d = json.loads(urllib.request.urlopen(req, timeout=600).read())
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 521, in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 630, in http_response
+    response = self.parent.error(
+               ^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 559, in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 639, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 400: Bad Request
+   too few n=16 samples (0)
+ATTN_CTX_DONE

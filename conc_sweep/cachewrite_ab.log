@@ -1,0 +1,19 @@
+--- leg: OLD (per-seq cache-write loop) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   first80: '```python\ndef fibonacci(n: int, memo: dict = None) -> int:\n    """\n    Compute t'
+   rep1 C=4: wall=16.2s total_tok=768 agg=47.3 tok/s
+   rep2 C=4: wall=16.1s total_tok=768 agg=47.6 tok/s
+   rep1 C=8: wall=22.6s total_tok=1536 agg=68.0 tok/s
+   rep2 C=8: wall=22.6s total_tok=1536 agg=68.0 tok/s
+   rep1 C=16: wall=31.5s total_tok=3072 agg=97.4 tok/s
+   rep2 C=16: wall=31.7s total_tok=3072 agg=97.0 tok/s
+--- leg: NEW (batched cache write) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   first80: '```python\ndef fibonacci(n: int, memo: dict = None) -> int:\n    """\n    Compute t'
+   rep1 C=4: wall=16.1s total_tok=768 agg=47.6 tok/s
+   rep2 C=4: wall=16.2s total_tok=768 agg=47.5 tok/s
+   rep1 C=8: wall=22.6s total_tok=1531 agg=67.8 tok/s
+   rep2 C=8: wall=22.6s total_tok=1531 agg=67.8 tok/s
+   rep1 C=16: wall=31.4s total_tok=3072 agg=97.9 tok/s
+   rep2 C=16: wall=31.5s total_tok=3072 agg=97.5 tok/s
+CW_AB_DONE
